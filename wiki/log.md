@@ -188,3 +188,12 @@ Append-only audit trail. Add one dated entry per generation or refresh run, reco
 - Pages: [Table catalog](./reference/table-catalog.md), [Data sources](./reference/data-sources.md), [Run the pipeline](./guides/run-the-pipeline.md), [Live database](./reference/live-database.md), [TODO](./TODO.md)
 - Evidence: `reports/validate/2026-10-02-entity-symbol-lineage/` (`03-implementation.md`)
 - Operational boundary: the live identity tables keep the old shape until the user-run cutover.
+
+## 2026-10-04: refresh — verified point-in-time superinvestor roster
+
+- Profile: internal/standard
+- source_commit: 548f3a2 (branch `harness/sec13f-superinvestor-roster`)
+- Coverage: roster config moved to `configs/superinvestors/` (`dataroma_roster_history.json`, `overrides.json`); quarterly capture-dated Wayback history and its builder `scripts/build_dataroma_roster_history.py`; evidence-backed overrides; manager chains (manager ID = oldest filer CIK, dated windows, returning filer allowed) with `to_manager_books` relabelling; 13F activity gate with EDGAR-listing fallback and dated `inactive` exceptions; daily refresh writes only on change; `superinvestors --seed` rebuilds the table; deferred items in the TODO
+- Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/table-catalog.md), [Configuration](./reference/configuration.md), [Run the pipeline](./guides/run-the-pipeline.md), [TODO](./TODO.md)
+- Evidence: `reports/validate/2026-10-04-sec13f-superinvestor-roster/` (`03-implementation.md`)
+- Operational boundary: the live roster was rebuilt from the branch; after merge the user reruns `superinvestors --seed`, unpauses the `data_extraction` DAG and rebuilds the cube.

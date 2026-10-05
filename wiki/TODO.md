@@ -44,6 +44,33 @@ Deferred from the single-table merge of `insider_transactions` (findings F-007..
 - **P3 — Half-cent tolerance in the mismatch line (F-013).** `_same` compares `gap.le(0.005)` on floats, so the zip's half-up rounding of a half-cent EDGAR value (116.695 vs 116.70) counts as a mismatch: 65 of 66 in the 2026q2 replay. Fix: compare `round_half_up(edgar)` with the zip value, or allow a few ulps. Trigger: with F-012.
 - **P3 — `validate pull` fails on `insider_transactions` (F-014).** `_coerce` in [io.py](../src/validate/io.py) fixes a float policy for `footnote_ids` from an all-null first chunk (zip rows come first), then fails on `'F5,F6'`. Fix: decide the policy on the first non-null value or from the DB column type. Trigger: the next validation-library run on an insider table.
 
+## Superinvestor roster follow-ups
+
+Deferred from the verified point-in-time roster run (branch `harness/sec13f-superinvestor-roster`; local, gitignored run dir `reports/validate/2026-10-04-sec13f-superinvestor-roster/`). See [Superinvestor roster (Dataroma)](./reference/data-sources.md#superinvestor-roster-dataroma).
+
+- **P1 — Post-merge rebuild (user).** After the branch merges into `dev`: rerun `superinvestors --seed` from the merged code, unpause the `data_extraction` DAG, then rebuild the cube and re-baseline the aggregate fingerprint. The elite-manager features shift by design: managers with a book per quarter rise from about 51 to 65 on average.
+- **P1 — Garbage rows from legacy text 13F books (F-001).** The Phase 5 catch-up (`years_history` 31, periods back to 1995) imported 5,317 garbage `sec13f_manager_holdings` rows in 72 pre-XML text-era books; pre-existing books hold 1,290 more in 57. Garbage means a common row with shares 0 and `value_usd` > 0, one position above $1tn (max 3.27e17), or unsplit information-table text in `issuer_name`; e.g. Davis `0001036325` 2010-03-31, Wells Fargo with shares 0 and `value_usd` 327,403,410,520,673,000. Inside the feature window (period ≥ 2011-09-30), 133 rows in 5 books give wrong concentration and weight denominators: Third Avenue `0001099281` 2012-03-31 and 2012-06-30, Pabrai (Dalal Street) `0001549575` 2012-12-31 and 2013-03-31, ValueAct `0001418814` 2013-03-31. Cause: `_read_filing` in [fetch_13f.py](../src/data_extract/utils/institutionals/fetch_13f.py) misaligns legacy text information tables, and `_save_book` only counts implied-price outliers, never rejects a row. Not a value-unit issue: clean 1000× filings occur at the same rate in new and pre-existing books (4.5% vs 4.0%), and `repair_value_basis` already repairs them. **Parser ported (branch `fix/13f-legacy-parser`):** `_read_filing` now re-reads a pre-XML text book that EdgarTools failed on, that disagrees with the source (entry count, CUSIPs, Summary Page value total), or that holds a garbage row, with the source-checked [legacy_13f_fallback.py](../src/data_extract/utils/institutionals/legacy_13f_fallback.py); an unverifiable book is a deterministic read failure and is never stored. XML-era reads are unchanged. **Data repair done (2026-10-05, run folder `fixes/F-001-repair.md`):**
+  - The 34 verifiable books were deleted and refetched: 4,234 rows went out and 4,233 verified rows came back, with 0 garbage and totals equal to the replay.
+  - The 95 other books were classified by the gap between the stored total and the SEC cover total, read in $1000s, dollars or $ billions:
+    - 65 books within 10% were kept as stored.
+    - 30 books (5 in the feature window: Harris `0000813917` 2011-09-30 and 2011-12-31, Third Avenue `0001099281` 2012-06-30, Pabrai `0001549575` 2012-12-31 and 2013-03-31) kept their positions, but all nine amount columns were set to NULL (4,044 rows).
+  - `load_superinvestor_holdings` drops any book whose `value_usd` is all NULL, so that manager-quarter reads as unfiled. The catch-up never re-reads these books, because their `(period, filing_date)` is still stored.
+  - **Remaining:**
+    - The 65 kept books still carry 4,492 garbage rows: 4,313 zero-share common rows (94 in-window), 17 negative and 194 issuer-text rows.
+    - The XML book `0001061165` 2014-12-31 has 5 positions above $1tn. The whole book is 1000x; `repair_value_basis` measures a median implied-price/close ratio of 1000.0 on it and divides it.
+    - The 30 NULL-amount books, plus 58 issuer-text names inside them, are waiting for a better parser (`harness/13f-managers-cusip`).
+    - Every catch-up run logs 246 ERRORs on 228 never-stored (cik, period) filings across 19 CIKs. 15 of them are in-window, and they are the R-06 missing quarters.
+    - Fixed (`ea37ef0`): `0000098758` 2011-06-30 was held back as "transient" on every run because `is_rate_limited` matched "429" inside the cover text "460,429"; an unverifiable legacy book is now always a deterministic failure.
+    - The 228 never-stored (cik, period) are re-read on every catch-up (cheap: archives are cached locally) and log an ERROR each time. Options: record them as all-NULL placeholder books like the 30 above, or log them at INFO once known.
+- **P2 — `sec13f_hr` unpadded-CIK duplicates (R-07).** The same manager is stored padded and unpadded. Owner: `feat/db-derived-resume` Phase 11.
+- **P2 — Ghost non-quarter-end manager periods and pre-2013 text 13F books (R-06).** Legacy-era manager periods that are not quarter ends, and the pre-XML text 13F books (Greenhaven, the 15 missing 2011Q3 to 2013Q1 quarters at 0000098758, 0000846222 and 0001099281). Owner: `harness/13f-managers-cusip`.
+- **P2 — `fetch_13f_managers` code health.** Its private cross-imports from `fetch_13f.py` and the dual-padding lookup in `_warn_empty_books`. Trigger: after `feat/db-derived-resume` merges (it rewrites `fetch_13f.py`).
+- **P3 — `step_super_investors` survivorship.** The replication sleeve builds its history from today's roster (expanded to chain members), not the roster at each date. Pre-existing.
+- **P3 — `lmvtx` reads a diluted book after 2018Q3 (F-002 / F-010).** The `0000820330` chain in [overrides.json](../configs/superinvestors/overrides.json) is right on identity: ClearBridge Investments `0001348883` holds the Legg Mason Value Trust book from 2018-09-30 (the fund's N-CSR records the advisory agreement moving on 2018-07-01). But the fund (about $2.3bn) is about 2% of that filer's ~1,125-position, ~$116bn book, and no 13F filer isolates it. So over the 16 snapshots from 2018-12-31 to 2022-09-30, `lmvtx` adds a diversified holder on about 1,100 names to breadth, ownership-count and `continuous`-weight features. Options: an `inactive` range for `lmvtx` from 2018-09-30, or excluding the code. Today `inactive` only exempts a code from the activity gate and readers still use its CIK, so either option also needs the roster readers to drop the code in that range. Owner: user policy decision.
+- **P3 — Successor CIKs log without a name.** `fetch_13f_managers` looks log names up by filer CIK, so a chain successor logs nameless. Cosmetic.
+- **P3 — Stale `schema.py` comment.** The `superinvestor_roster` comment in [schema.py](../src/data_store/schema.py) (lines 104–121, "13 captures") predates the quarterly history. Edit when `schema.py` is next touched (guarded zone).
+- **Trigger — Holdings-fingerprint resolver.** Match a Dataroma holdings page against 13F books to resolve a code mechanically. Build it if a refresh leaves more than two codes unresolved.
+
 ## Schedule 13D/13G ownership numerics
 
 Reliable structured ownership values begin with the SEC mandate on 2024-12-17. The level and per-filer delta versions of `percent_of_class`, their cross-sectional transforms, and related power/aggregate fields remain excluded from `cube_part_institutionals`.
@@ -190,8 +217,6 @@ After this migration is reviewed:
 - earnings surprises starts 1999-08, but empty till ~2003
 - financial notes (text & nums) 2009 from sec XBLR (zip), but possible directly from fillings (edgar)
 - fix volume to be adjusted to spinoffs in price
-- fix EC extraction history and gaps. 2/3 are available today vs 90% potential
-- fix employee count, lots of MVs and gaps. Play with LLM extract.
 - fine tune def 14 data extraction
 
 # other data checks

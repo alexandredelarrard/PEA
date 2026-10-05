@@ -26,6 +26,7 @@ from src.data_extract.utils.common.edgar_driver import FilingStamp
 from src.data_extract.utils.common.rate_limit import is_rate_limited
 from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.institutionals.fetch_cusip_map import build_cusip_ticker_map, normalize_cusip
+from src.data_extract.utils.institutionals.legacy_13f_fallback import needs_legacy_fallback, parse_legacy_information_table
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik
 from src.utils.superinvestor_roster import roster_cik_union
@@ -74,6 +75,10 @@ _BOOK_KEY = ["cik", "period", "cusip"]
 
 # edgartools infers the per-filing $thousands/$ones unit; an implied price outside this band flags a wrong inference.
 _IMPLIED_PRICE_BAND = (1.0, 5000.0)
+
+#: One position above this, or issuer text matching the info-table pattern, is a parse artefact.
+_MAX_POSITION_USD = 1e12
+_TABLE_TEXT_IN_NAME = r"\bSH\b.*\bSOLE\b|\d{1,3},\d{3} SH"
 
 #: The five mutually exclusive holding classes, in tie-break order (`common` wins).
 POSITION_TYPES = ("common", "call", "put", "debt", "other")
@@ -194,14 +199,52 @@ def _is_transient(exc: Exception) -> bool:
     return is_rate_limited(exc) or is_unreachable(exc) or isinstance(exc, ConnectionError | TimeoutError | httpx.TransportError)
 
 
+def _garbage_rows(book: pd.DataFrame) -> pd.Series:
+    """Rows no information table holds: a valued common line with zero shares, a position above
+    `_MAX_POSITION_USD`, a negative amount, or table text merged into `issuer_name`."""
+    zero_shares = (book["position_type"] == "common") & (book["shares"] == 0) & (book["value_usd"] > 0)
+    table_text = book["issuer_name"].fillna("").str.contains(_TABLE_TEXT_IN_NAME, regex=True)
+    return zero_shares | (book["value_usd"] > _MAX_POSITION_USD) | (book["shares"] < 0) | (book["value_usd"] < 0) | table_text
+
+
+def _legacy_book(stamp: FilingStamp, raw: str) -> pd.DataFrame:
+    """The book from the source-checked text parse. Raises `ValueError` when the text cannot be
+    verified against its SEC cover totals or still yields a garbage row: never a partial book."""
+    try:
+        book = _book_frame(stamp.cik, stamp.filed, stamp.period_of_report, parse_legacy_information_table(raw))
+    except ValueError as e:
+        raise ValueError(f"legacy text table unverifiable against its SEC cover totals: {e}") from e
+    n_garbage = int(_garbage_rows(book).sum())
+    if n_garbage:
+        raise ValueError(f"legacy text table unverifiable: {n_garbage} source row(s) carry zero shares, a negative or >$1tn value, or table text")
+    logger.info(f"13F {stamp.accession_number}: EdgarTools' text parse disagreed with the source; {len(book)} verified legacy row(s) used")
+    return book
+
+
 def _read_filing(stamp: FilingStamp) -> pd.DataFrame | ReadFailure:
     """Fetch and parse one 13F-HR into its book: empty for an empty info table, a `ReadFailure`
-    (not logged; the caller decides) when the read failed, so one bad filing never aborts a batch."""
+    (not logged; the caller decides) when the read failed, so one bad filing never aborts a batch.
+    An XML-era book is EdgarTools' parse as is. A pre-XML text book that EdgarTools failed on,
+    disagrees with the source text, or holds a garbage row is re-read by the source-checked legacy
+    parser; an unverifiable one is a deterministic failure, never stored."""
     try:
-        infotable = stamp.filing.obj().infotable
-        if infotable is None or infotable.empty:
-            return pd.DataFrame()
-        return _book_frame(stamp.cik, stamp.filed, stamp.period_of_report, infotable)
+        report = stamp.filing.obj()
+        try:
+            infotable, edgar_error = report.infotable, None
+        except Exception as e:  # noqa: BLE001 -- malformed legacy text makes EdgarTools raise
+            if _is_transient(e):
+                raise
+            infotable, edgar_error = None, e
+        raw = None if getattr(report, "infotable_xml", None) else getattr(report, "infotable_txt", None)
+        if edgar_error is not None and not raw:
+            raise edgar_error
+        book = pd.DataFrame() if infotable is None or infotable.empty else _book_frame(stamp.cik, stamp.filed, stamp.period_of_report, infotable)
+        if raw and (edgar_error is not None or needs_legacy_fallback(raw, infotable) or _garbage_rows(book).any()):
+            try:
+                return _legacy_book(stamp, raw)
+            except ValueError as e:  # deterministic: its text quotes source numbers the 429 matcher would misread
+                return ReadFailure(transient=False, reason=f"ValueError: {e}")
+        return book
     except Exception as e:  # noqa: BLE001
         return ReadFailure(transient=_is_transient(e), reason=f"{type(e).__name__}: {e}")
 

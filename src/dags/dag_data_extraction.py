@@ -204,7 +204,7 @@ splits >> price_history
 identity_tables >> price_history  # the fetch list adds the security master's current secondary classes
 [insider_download, notes_download, ftd_download, sec_tickers] >> identity_tables >> identity_propagate >> identity_consumers
 insider_transactions >> insider_edgar  # zips fill first; EDGAR then replaces each filing it re-reads
-thirteen_f >> superinvestors  # roster reads the 13F holdings
+thirteen_f >> superinvestors  # roster gate reads the filers' 13F activity
 superinvestors >> thirteen_f_managers  # roster IS the walk scope
 [fundamentals, fundamentals_employees] >> fundamentals_sharadar
 [sec_8k_items, def14a] >> sec_8k_votes

@@ -33,7 +33,7 @@ class StepExtractInstitutionals(Step):
         # One walk over every 13F-HR since the stored frontier: the S&P 500 slice and the roster managers' complete books.
         fetch_13f(self._context, tickers=tickers, years_history=years_history)
 
-        # Point-in-time roster snapshot; after the 13F pull, which settles an ambiguous manager name on CIK row counts.
+        # Point-in-time roster snapshot, written only on change; after the 13F pull, whose filings are the activity gate's evidence.
         upsert_roster_snapshot(self._context)
 
         # Per-CIK catch-up after the snapshot, so a manager added today gets its whole window; no universe filter by design.

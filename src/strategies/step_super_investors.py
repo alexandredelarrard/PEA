@@ -25,7 +25,7 @@ from src.strategies.utils.replication import replicate_superinvestors
 from src.strategies.utils.superinvestors import _aggregate_superinvestors
 from src.utils.macro import load_macro_series
 from src.utils.risk_parity import series_metrics
-from src.utils.superinvestor_roster import roster_as_of, roster_map_as_of
+from src.utils.superinvestor_roster import config_dir_of, filer_ciks, roster_as_of, roster_map_as_of, to_manager_books
 from src.utils.universe import load_universe_tickers
 
 # A name the cohort has exited must be gone, not merely small. The only legitimate residual is
@@ -152,18 +152,21 @@ class SuperInvestorsStrategy(Strategy):
 
         Returns the RAW filings rather than an aggregated panel because the caller aggregates
         the same rows twice -- once pooled, once `by_cik` -- and `sec13f_hr` is a 21.7M-row
-        table, so reading it (and the whole `prices` table) a second time is the expensive part."""
+        table, so reading it (and the whole `prices` table) a second time is the expensive part.
+        A chained manager's filers are all read and relabelled to its manager ID (`to_manager_books`)."""
         store = self._context.store
         funds_cols = ["cik", "ticker", "filing_date", "period", "shares", "value_usd"]
 
-        roster_ciks = roster_as_of(self._context)
-        if not roster_ciks:
+        config_dir = config_dir_of(self._context)
+        manager_ids = roster_as_of(self._context)
+        if not manager_ids:
             raise RuntimeError(
                 f"super_investors: '{Tables.superinvestor_roster}' resolved to no manager -- run `data_extract superinvestors --seed`."
             )
-        df_funds = store.load(Tables.sec13f_hr, columns=funds_cols, where={"cik": roster_ciks})
+        df_funds = store.load(Tables.sec13f_hr, columns=funds_cols, where={"cik": sorted(filer_ciks(manager_ids, config_dir))})
         if df_funds is None:
             raise RuntimeError(f"super_investors: '{Tables.sec13f_hr}' returned no filing frame")
+        df_funds = to_manager_books(df_funds, config_dir=config_dir)
         # `close_split` renamed to `close` for the replication helper: this is an EXECUTION
         # price (what a mirrored share is marked at), so it wants the split-adjusted quote,
         # not the dividend-reinvested path. A 13F mirror holds shares, not a total-return

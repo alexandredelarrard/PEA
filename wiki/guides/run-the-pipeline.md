@@ -98,6 +98,27 @@ For a notes availability-date correction, first obtain the approved `available_a
 
 For a `pension_facts` ZIP-vintage/clock correction, first verify every cached quarterly ZIP has readable `sub.txt` and `num.txt`, take a restorable table dump, then recreate only `public.pension_facts` and run `rtk "$PY" -m src data_extract financial-statements -c ./configs --reparse`. A normal incremental run cannot replace the old four-column primary key or recover earlier ZIP vintages. Verify the new five-column key, `available_at DATE`, one date per quarter, and representative revisions before using the data. Rebuild `cube_part_fundamentals` with `-F` and reassemble `cube` separately: the 45-session refresh does not repair old feature dates. Do not treat the +12 historical estimate as a verified SEC posting date. See [data sources](../reference/data-sources.md) and [table catalog](../reference/table-catalog.md).
 
+### Superinvestor roster
+
+The daily `superinvestors` command writes a snapshot only when Dataroma's roster changed. Rebuild the whole `superinvestor_roster` table after any change to `configs/superinvestors/` or to the roster code, and on a cold database:
+
+```bash
+rtk "$PY" -m src data_extract superinvestors --seed -c ./configs
+rtk "$PY" -m src data_extract thirteen-f-managers -c ./configs
+```
+
+`--seed` reads the committed quarterly history plus every stored live snapshot, resolves every code fresh (overrides, then EDGAR company search), stores each chained manager's member valid at the snapshot, checks primary-key uniqueness and runs the resolution and 13F activity gates, and only then writes: it upserts the rebuilt rows in one transaction, then deletes the stored keys they lack with targeted per-date deletes; it then runs the ordinary on-change refresh, so a broken Dataroma page fails `--seed` after the rebuild is already written (the rebuild itself is unaffected). A resolution, primary-key or gate failure, an `EdgarListingError` (the EDGAR 13F-HR listing could not be read: rerun, do not edit the overrides) or a refused scrape (the page lists no manager or under 80% of the latest snapshot's) raises before its write touches the table. The table is never emptied, so its live snapshots stay readable for the next rebuild: a crash during the upsert leaves the old table, a crash during the deletes leaves a superset, and a rerun converges to the same table. A gate failure names the code, CIK, nearest known 13F period and window: research the filer on EDGAR and add an evidence-backed `cik_overrides`, `manager_ciks` window or dated `inactive` range to [overrides.json](../../configs/superinvestors/overrides.json), then rerun. `thirteen-f-managers` then fetches the books of any new filer CIK (one EDGAR walk; run nothing else against SEC meanwhile).
+
+If the `data_extraction` DAG was paused so older code could not append a snapshot while a roster change was on a branch, rerun `--seed` from the merged code first, then unpause the DAG.
+
+To regenerate the history file (a parser fix, or new Wayback captures of past quarters), keep the end before the first live snapshot so history and live dates never collide, review the diff, commit it, then rebuild as above:
+
+```bash
+rtk "$PY" scripts/build_dataroma_roster_history.py --cache-dir <wayback-cache-dir> --until 2026-09-07
+```
+
+The cache directory keeps the CDX and every capture, so a rerun is offline and byte-identical. See [Superinvestor roster (Dataroma)](../reference/data-sources.md#superinvestor-roster-dataroma).
+
 ## Peers and cube
 
 ```bash

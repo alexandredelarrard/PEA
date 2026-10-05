@@ -59,7 +59,7 @@ family boundary for the persisted panel and every derived sink output.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from typing import cast
 
 import numpy as np
@@ -77,6 +77,7 @@ from src.data_aggregate.utils.institutionals.holdings_clean import clean_holding
 from src.data_aggregate.utils.institutionals.value_basis import repair_value_basis
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik
+from src.utils.superinvestor_roster import config_dir_of, filer_ciks, to_manager_books
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +134,7 @@ EMISSION: dict[str, str] = {
 #: map.
 
 
-def load_superinvestor_holdings(context: Context, roster: dict | list | set | None) -> pd.DataFrame | None:
+def load_superinvestor_holdings(context: Context, roster: Iterable[str] | None) -> pd.DataFrame | None:
     """The roster managers' COMPLETE quarterly books from `sec13f_manager_holdings`.
 
     `cik` is written by ONE producer with `pad_cik` already applied -- verified on the live
@@ -143,39 +144,44 @@ def load_superinvestor_holdings(context: Context, roster: dict | list | set | No
     submission and holds the same manager both padded and unpadded; it is not needed here and
     reintroducing it would be cargo cult.
 
+    Every filer CIK of a chained manager is read and the book comes back keyed by manager ID
+    (`to_manager_books`), so it compares with `roster_as_of`.
+
+    A `(cik, period)` book whose `value_usd` is NULL on every row is dropped, so that
+    manager-quarter reads as unfiled. Such a book is an unverifiable legacy text filing: the
+    positions are known but the amounts are not. `clean_holdings` would zero-fill it into a book
+    that holds every name at weight 0.
+
     Returns None when the roster resolves to no manager or the table is not populated.
     """
-    ciks = sorted(_selection_ciks(roster))
+    config_dir = config_dir_of(context)
+    ciks = sorted(filer_ciks(_selection_ciks(roster), config_dir))
     if not ciks:
         return None
 
-    return context.store.load(Tables.sec13f_manager_holdings, _HOLDINGS_COLS, where={"cik": ciks}, optional=True)
+    holdings = context.store.load(Tables.sec13f_manager_holdings, _HOLDINGS_COLS, where={"cik": ciks}, optional=True)
+    if holdings is None:
+        return None
+    unknown = holdings["value_usd"].isna().groupby([holdings["cik"], holdings["period"]]).transform("all")
+    if unknown.any():
+        n_books = holdings.loc[unknown, ["cik", "period"]].drop_duplicates().shape[0]
+        logger.info("superinvestor books: %d (cik, period) book(s) with all-NULL amounts dropped as unfiled (%d row(s))", n_books, int(unknown.sum()))
+        holdings = holdings[~unknown]
+    return to_manager_books(holdings, config_dir=config_dir)
 
 
-def _selection_ciks(roster: dict | list | set | None) -> set[str]:
-    """Padded CIKs from a roster in any of the shapes callers hold it in: the
-    `{cik: manager_name}` map `roster_map_as_of` returns, a `{"cik_to_name": {...}}` wrapper,
-    the legacy `{"managers": [{"cik": ...}]}` / bare list, or a plain set of CIK strings --
-    which is what `roster_cik_union` returns and what the READ SCOPE must be.
+def _selection_ciks(roster: Iterable[str] | None) -> set[str]:
+    """Padded CIKs from a roster: the keys of the `{cik: manager_name}` map `roster_map_as_of`
+    returns, or an iterable of CIK strings such as the `roster_cik_union` set -- which is
+    what the READ SCOPE must be.
 
     ⚠ THE READ SCOPE IS THE UNION, NOT TODAY'S ROSTER (plan D19/D20). Loading only today's
     83 managers drops the 19 culled managers that have a book
     """
 
-    if roster is None:
+    if not roster:
         return set()
-    if isinstance(roster, set | frozenset) or (isinstance(roster, list | tuple) and all(isinstance(m, str) for m in roster)):
-        return {c for m in roster if (c := pad_cik(m))}
-    if isinstance(roster, dict):
-        mapping = roster.get("cik_to_name")
-        if mapping is None and "managers" not in roster:
-            mapping = {k: v for k, v in roster.items() if isinstance(v, str)}
-        if mapping:
-            return {c for k in mapping if (c := pad_cik(k))}
-        managers = roster.get("managers", [])
-    else:
-        managers = roster or []
-    return {c for m in managers if (c := pad_cik(m.get("cik")))}
+    return {c for m in roster if (c := pad_cik(m))}
 
 
 def attach_tickers(holdings: pd.DataFrame, cusip_map: pd.DataFrame | None, universe: Sequence[str] | None = None) -> pd.DataFrame:
@@ -691,7 +697,7 @@ def _to_long(frame: pd.DataFrame, name: str) -> pd.DataFrame:
 def build_superinvestor_feature_panel(
     frames: PriceFrames,
     holdings: pd.DataFrame | None,
-    roster: dict | list | set | None,
+    roster: Iterable[str] | None,
     *,
     shares_out_history: pd.DataFrame | None = None,
     cusip_map: pd.DataFrame | None = None,

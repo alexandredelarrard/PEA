@@ -43,10 +43,14 @@ Curated evidence registers under [configs/sec](../../configs/sec/) are versioned
 - `registrant_cutover.json`: dated legal-filer chains;
 - `entity_lineage_manual.json`: CIK-to-economic-entity adjudication;
 - `symbol_tenure_manual.json`: evidenced half-open market-symbol intervals;
-- `superinvestor_overrides.json`: Dataroma manager-code to CIK overrides and the codes recorded as unresolvable, each with its reason, read by `load_superinvestor_overrides` in [fetch_superinvestors.py](../../src/data_extract/utils/institutionals/fetch_superinvestors.py) and cached per resolved config directory;
 - `employees_manual_roster.json`: per-accession employee headcount decisions (count or null) that replace the LLM for a filing with no table row.
 
 Runtime readers consume their validated/materialized representation where available; do not merge these concepts into one register.
+
+The Dataroma superinvestor roster keeps its two registers under `configs/superinvestors/`, read from `<config_dir>/superinvestors/` by [superinvestor_roster.py](../../src/utils/superinvestor_roster.py):
+
+- [dataroma_roster_history.json](../../configs/superinvestors/dataroma_roster_history.json): one Wayback capture of the Dataroma home page per calendar quarter from 2012Q1, each with `captured_at`, `source_url` and `managers` (code to name). It is generated, never hand-edited: [build_dataroma_roster_history.py](../../scripts/build_dataroma_roster_history.py) regenerates it (see [data sources](./data-sources.md#superinvestor-roster-dataroma)).
+- [overrides.json](../../configs/superinvestors/overrides.json): hand resolutions, each with its 13F evidence. `cik_overrides` maps a code to its filer CIK; `manager_ciks` chains a manager's successive filer CIKs in dated period windows under a manager ID (the oldest CIK); `unresolvable` lists codes allowed a NULL CIK; `inactive` lists dated ranges in which a resolved filer legitimately has no 13F. `load_superinvestor_overrides` validates the chains (no overlapping windows, manager ID = oldest member, a CIK in one chain only) and caches per resolved directory. Rebuild the table after any change (see [run the pipeline](../guides/run-the-pipeline.md#superinvestor-roster)).
 
 ## Extraction settings
 

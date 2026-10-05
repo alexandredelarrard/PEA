@@ -240,7 +240,10 @@ def _read_filing(stamp: FilingStamp) -> pd.DataFrame | ReadFailure:
             raise edgar_error
         book = pd.DataFrame() if infotable is None or infotable.empty else _book_frame(stamp.cik, stamp.filed, stamp.period_of_report, infotable)
         if raw and (edgar_error is not None or needs_legacy_fallback(raw, infotable) or _garbage_rows(book).any()):
-            return _legacy_book(stamp, raw)
+            try:
+                return _legacy_book(stamp, raw)
+            except ValueError as e:  # deterministic: its text quotes source numbers the 429 matcher would misread
+                return ReadFailure(transient=False, reason=f"ValueError: {e}")
         return book
     except Exception as e:  # noqa: BLE001
         return ReadFailure(transient=_is_transient(e), reason=f"{type(e).__name__}: {e}")

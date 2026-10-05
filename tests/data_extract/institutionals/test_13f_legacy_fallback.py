@@ -254,6 +254,17 @@ def test_unverifiable_text_is_a_parse_failure_not_stored() -> None:
     print(f"\n=== SANITY: unverifiable legacy text -> ReadFailure(transient=False): {out.reason[:90]!r}. Validated.")
 
 
+def test_unverifiable_reason_quoting_429_is_not_transient() -> None:
+    """Torray 2011-06-30 shape: the reason quotes a source number ending in ",429", which the
+    rate-limit text matcher reads as an HTTP 429; the failure must stay deterministic."""
+    raw = _table(_HEADER, _AFLAC).replace("Entry Total: 1", "Entry Total: 460,429")
+    info = pd.DataFrame([_edgar_line("001055102", "Aflac", 145_462_000, 3_362_515)])
+    out = _read(_Report(info, txt=raw))
+    assert isinstance(out, f13.ReadFailure) and "460,429" in out.reason
+    assert not out.transient, "a source-verification failure is never a throttle"
+    print(f"\n=== SANITY: reason {out.reason[-40:]!r} quotes ',429' yet stays ReadFailure(transient=False). Validated.")
+
+
 def test_zero_share_huge_value_parse_is_replaced() -> None:
     """(d) F-001 Davis shape: right CUSIPs and count, but shares 0 and a $3.3e17 value."""
     info = pd.DataFrame(

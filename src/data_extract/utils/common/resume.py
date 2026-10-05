@@ -230,6 +230,11 @@ def _hole_spans(calendar: pd.DatetimeIndex, stored: pd.Series, first: pd.Timesta
     return [(span[int(run.iloc[0])], span[int(run.iloc[-1])]) for _, run in positions.groupby(runs)]
 
 
+def _has_holes(calendar: pd.DatetimeIndex | None, first: pd.Timestamp, last: pd.Timestamp, n: int) -> bool:
+    """True when the daily `calendar` holds more sessions in `[first, last]` than the key's `n` stored rows."""
+    return calendar is not None and bool(n < calendar.searchsorted(last, side="right") - calendar.searchsorted(first, side="left"))
+
+
 def series_windows(
     context: Context,
     table: Table,
@@ -263,10 +268,9 @@ def series_windows(
         elif key not in stats:
             key_class[key], since = KEY_ROWLESS, max(table_max - overlap, floor)
         else:
-            first, last, n = stats[key]
-            key_class[key], since = KEY_ESTABLISHED, max(last - overlap, floor)
-            if calendar is not None and n < calendar.searchsorted(last, side="right") - calendar.searchsorted(first, side="left"):
-                holed[key] = (max(first, floor), since)
+            key_class[key], since = KEY_ESTABLISHED, max(stats[key][1] - overlap, floor)
+        if key_class[key] == KEY_ESTABLISHED and _has_holes(calendar, *stats[key]):
+            holed[key] = (max(stats[key][0], floor), since)
         windows[key] = [(since, until)] if since <= until else []
     read_stats = time.perf_counter()
     if holed:

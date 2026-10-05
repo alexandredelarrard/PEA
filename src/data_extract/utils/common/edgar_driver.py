@@ -307,10 +307,15 @@ def _read_key(
             failed.append(position)
             continue
         markers += int(is_marker)
-        for table, df in outcome.items():
-            if df is not None and not df.empty:
-                frames.setdefault(table, []).append(df)
+        _add_frames(frames, outcome)
     return frames, df_units.iloc[failed].reset_index(drop=True), markers
+
+
+def _add_frames(frames: dict[Table, list[pd.DataFrame]], outcome: dict[Table, pd.DataFrame]) -> None:
+    """Append each non-empty frame of one filing's `outcome` to its table's list in `frames`."""
+    for table, df in outcome.items():
+        if df is not None and not df.empty:
+            frames.setdefault(table, []).append(df)
 
 
 def _save_key(context: Context, fetch: EdgarFetch, ticker: str, frames: dict[Table, list[pd.DataFrame]]) -> tuple[dict[Table, int], bool]:

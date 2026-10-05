@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import cache
@@ -368,17 +368,14 @@ def _union_walk(
     """Kept filings across `sources` sorted by filing date, first writer per accession, and per-label counts."""
     by_accession: dict[str, tuple[pd.Timestamp, object]] = {}
     contributions: dict[str, int] = {}
-    for label, company in sources:
-        if company is None:
+    for label, filing in _listed_filings(sources, forms):
+        if filing.accession_number in by_accession:
             continue
-        for filing in sec_io.company_filings(company, forms):
-            if filing.accession_number in by_accession:
-                continue
-            filed = keep(filing)
-            if filed is None:
-                continue
-            by_accession[filing.accession_number] = (filed, filing)
-            contributions[label] = contributions.get(label, 0) + 1
+        filed = keep(filing)
+        if filed is None:
+            continue
+        by_accession[filing.accession_number] = (filed, filing)
+        contributions[label] = contributions.get(label, 0) + 1
     return [filing for _, filing in sorted(by_accession.values(), key=itemgetter(0))], contributions
 
 
@@ -386,24 +383,33 @@ def _split_walk(ticker: str, entry: Registrant, forms: list[str], keep: Callable
     """Each segment's kept filings inside its own dates, sorted; a duplicate accession is warned and dropped."""
     dated: list[tuple[pd.Timestamp, object]] = []
     seen: dict[str, str] = {}
-    for segment in entry.segments:
-        company = _company_or_none(segment.cik, ticker, _CIK_KIND)
-        for filing in [] if company is None else sec_io.company_filings(company, forms):
-            filed = keep(filing)
-            if filed is None or not segment.covers(filed):
-                continue
-            if filing.accession_number in seen:
-                logger.warning(
-                    "%s: accession %s kept by BOTH segment %s and %s -- the dated split makes that impossible, so the register's boundary is wrong",
-                    ticker,
-                    filing.accession_number,
-                    seen[filing.accession_number],
-                    segment.cik,
-                )
-                continue
-            seen[filing.accession_number] = segment.cik
-            dated.append((filed, filing))
+    segments = ((segment, _company_or_none(segment.cik, ticker, _CIK_KIND)) for segment in entry.segments)
+    for segment, filing in _listed_filings(segments, forms):
+        filed = keep(filing)
+        if filed is None or not segment.covers(filed):
+            continue
+        if filing.accession_number in seen:
+            logger.warning(
+                "%s: accession %s kept by BOTH segment %s and %s -- the dated split makes that impossible, so the register's boundary is wrong",
+                ticker,
+                filing.accession_number,
+                seen[filing.accession_number],
+                segment.cik,
+            )
+            continue
+        seen[filing.accession_number] = segment.cik
+        dated.append((filed, filing))
     return [filing for _, filing in sorted(dated, key=itemgetter(0))]
+
+
+def _listed_filings[T](pairs: Iterable[tuple[T, Any | None]], forms: list[str]) -> Iterator[tuple[T, Any]]:
+    """`(tag, filing)` for every filing each pair's `Company` lists, lazily and in order; a pair without a
+    `Company` is skipped. Lazy, so a segment's `Company` resolves only after the previous one's filings."""
+    for tag, company in pairs:
+        if company is None:
+            continue
+        for filing in sec_io.company_filings(company, forms):
+            yield tag, filing
 
 
 def _log_contributions(ticker: str, entry: Registrant | None, forms: list[str], contributions: dict[str, int]) -> None:

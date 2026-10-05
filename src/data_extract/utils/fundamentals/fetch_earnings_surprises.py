@@ -77,10 +77,9 @@ def _plan_fetch(
             plan.append((t, full_limit))  # never seen -> full pull
             continue
         nxt = next_expected.get(t, last)
-        if nxt > last:  # a forward earnings date is known
-            if nxt <= today:  # ... and it has passed -> new quarter due
-                plan.append((t, _RECENT_LIMIT))
-        elif (today - last).days > refetch_window_days:  # no forward date -> staleness window
+        # a known forward earnings date is due once it has passed; without one, the staleness window decides
+        due = (nxt <= today) if nxt > last else ((today - last).days > refetch_window_days)
+        if due:
             plan.append((t, _RECENT_LIMIT))
         # else: next earnings still in the future / already current -> skip
     return plan

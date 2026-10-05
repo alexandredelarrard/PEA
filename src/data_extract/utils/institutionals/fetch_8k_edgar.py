@@ -156,18 +156,23 @@ def _filing_row(ticker: str, stamp: FilingStamp) -> list[dict]:
 
     rows = []
     for item_code in item_list:
-        item_text = None
-        if obj is not None:
-            try:
-                item_text = obj["Item " + item_code]
-            except Exception:  # noqa: BLE001 -- best-effort only
-                item_text = None
+        item_text = _item_text(obj, item_code)
         if item_code == "5.07":
             item_text = _recover_item_507_from_primary(filing, str(item_text or ""))
         rows.append(
             {**base, "item": item_code, "item_tag": _HIGH_SIGNAL_ITEMS.get(item_code, "other_unclassified_item"), "item_text": item_text or ""}
         )
     return rows
+
+
+def _item_text(obj: Any, item_code: str) -> Any:
+    """The parsed report's text for one item code; None without a parsed report or when the lookup fails."""
+    if obj is None:
+        return None
+    try:
+        return obj["Item " + item_code]
+    except Exception:  # noqa: BLE001 -- best-effort only
+        return None
 
 
 def submission_filings(ticker: str, df_units: pd.DataFrame) -> dict[str, Any]:

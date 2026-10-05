@@ -247,8 +247,7 @@ def _stream_to(response: Any, path: Path) -> None:
     tmp = path.with_suffix(".part")
     try:
         with open(tmp, "wb") as handle:
-            for chunk in response.iter_content(chunk_size=_CHUNK):
-                handle.write(chunk)
+            handle.writelines(response.iter_content(chunk_size=_CHUNK))
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise

@@ -382,6 +382,18 @@ def fundamentals_history_sec(config_path: str, tickers: str | None, rebuild_hist
     build_fundamentals_history(context, tickers=_tickers(context, tickers), rebuild_history=rebuild_history)
 
 
+def _delete_fundamentals_layers(context: Context, names: list[str]) -> None:
+    """Delete each ticker's facts, history and reason-code rows, so the next fetch refetches every filing."""
+    for ticker in names:
+        for table in (
+            Tables.fundamentals_facts,
+            Tables.fundamentals_history_sec,
+            Tables.fundamentals_reason_codes,
+        ):
+            context.store.delete(table, {"ticker": ticker})
+    context.log.warning("fundamentals: --rebuild deleted the facts/history tables for %d ticker(s); every XBRL filing will be refetched", len(names))
+
+
 @cli.command(help="Both fundamentals layers in order: facts (network) then history (replay).")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
@@ -401,16 +413,7 @@ def fundamentals(config_path: str, tickers: str | None, rebuild: bool, full: boo
     config, context = get_config_context(config_path, use_cache=False, save=False)
     names = _tickers(context, tickers)
     if rebuild:
-        for ticker in names:
-            for table in (
-                Tables.fundamentals_facts,
-                Tables.fundamentals_history_sec,
-                Tables.fundamentals_reason_codes,
-            ):
-                context.store.delete(table, {"ticker": ticker})
-        context.log.warning(
-            "fundamentals: --rebuild deleted the facts/history tables for %d ticker(s); every XBRL filing will be refetched", len(names)
-        )
+        _delete_fundamentals_layers(context, names)
     fetch_fundamentals_sec(
         context, tickers=names, full=full or rebuild, years_history=int(config.data_extract.years_history), as_of=_run_date(as_of), no_cap=no_cap
     )

@@ -794,6 +794,55 @@ def test_a_current_sec_listing_keeps_a_class_line_open():
     print("\n=== SANITY CHECK: listed class ===\n  BRK-A is in the SEC current-tickers snapshot, so its line stays open past its last FTD fail")
 
 
+def test_a_current_sec_listing_keeps_only_the_latest_cusip_of_its_symbol_open():
+    obs = pd.concat([BRK_OBS, _obs("084670702", "BRKB", "BERKSHIRE HATHWY INC(HLDG CO)B", "2011-07-06", "2013-12-30", price=110.0)])
+    listing = pd.DataFrame({"cik": ["0001067983", "0001067983"], "ticker": ["BRK-A", "BRK-B"], "exchange": ["NYSE", "NYSE"]})
+    build = _derive(obs, BRK, _roster(("BRK-B", "0001067983")), BRK_MANUAL, sec_tickers=listing)
+    old = _rows(build, "084670207", "BRKB")
+    new_start = _rows(build, "084670702", "BRKB")["valid_from"].min()
+    assert old["valid_to"].notna().all() and old["valid_to"].max() <= new_start, old
+    assert old["lineage_role"].eq("canonical_current").all(), old
+    assert _canonical_overlaps(build, "BRK-B") == []
+    print("\n=== SANITY CHECK: listing opens the latest line only ===")
+    print("  BRK-B is listed today, so its current CUSIP stays open; the pre-split CUSIP of the same symbol ends where the new one starts")
+
+
+def test_a_superseded_cusip_that_still_fails_or_is_listed_does_not_stay_open():
+    aon = _lineage(
+        _row("AON", "0000315293", "0000315293", "cik_window", sources="roster"),
+        _row("AON", "0000315293", "0000315293", "symbol", "AON", "2006-01-03", sources="form345,roster"),
+    )
+    obs = pd.concat(
+        [
+            _obs("G0408V102", "AON", "AON PLC CL A", "2012-04-04", "2020-04-01"),  # fails on two days past the new CUSIP's first
+            _obs("G0403H108", "AON", "AON PLC CL A", "2020-03-30", "2026-09-30"),
+        ],
+        ignore_index=True,
+    )
+    listing = pd.DataFrame({"cik": ["0000315293"], "ticker": ["AON"], "exchange": ["NYSE"]})
+    for kw in ({"sec_tickers": listing}, {}):
+        build = _derive(obs, aon, _roster(("AON", "0000315293")), **kw)
+        old = _rows(build, "G0408V102", "AON")
+        assert old["valid_to"].notna().all(), (kw, old)
+        open_rows = build.rows[build.rows["source_symbol"].eq("AON") & build.rows["valid_to"].isna()]
+        assert open_rows["cusip"].tolist() == ["G0403H108"], open_rows
+    # still failing in the latest periods: the old CUSIP of a symbol changed in the last period ends too
+    late = pd.concat(
+        [_obs("682680103", "OKE", "ONEOK INC", "2009-07-01", "2026-09-30"), _obs("30609A109", "OKE", "ONEOK INC", "2026-09-16", "2026-09-30")],
+        ignore_index=True,
+    )
+    oke = _lineage(
+        _row("OKE", "0001039684", "0001039684", "cik_window", sources="roster"),
+        _row("OKE", "0001039684", "0001039684", "symbol", "OKE", "2006-01-03"),
+    )
+    build = _derive(late, oke, _roster(("OKE", "0001039684")))
+    assert build.rows[build.rows["source_symbol"].eq("OKE") & build.rows["valid_to"].isna()]["cusip"].tolist() == ["30609A109"]
+    print("\n=== SANITY CHECK: one open line per symbol ===")
+    print(
+        "  AON's pre-redomicile CUSIP (fails two days past the new one's first, symbol listed) and ONEOK's pre-change CUSIP (still failing) end; only the latest CUSIP stays open"
+    )
+
+
 def test_wbd_seam_discovery_stays_canonical_until_wbd_first_trades():
     manual = sm.load_security_manual(str(CONFIG_DIR))
     wbd = _lineage(

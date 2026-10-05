@@ -467,14 +467,19 @@ def _lines(obs: pd.DataFrame) -> pd.DataFrame:
 def _line_ends(
     lines: pd.DataFrame, current_periods: frozenset[str], listed: frozenset[tuple[str, str]], issuer: Mapping[str, str]
 ) -> list[pd.Timestamp]:
-    """Exclusive end of each line: open (`_FAR`) when current, bridged to the next CUSIP of its symbol, else the day after its last row."""
+    """Exclusive end of each line: open (`_FAR`) when current, bridged to the next CUSIP of its symbol, else the day after its last row.
+
+    Being current (recent fails or a current SEC listing, which names a symbol, not a CUSIP) keeps open only the line
+    of the symbol's latest CUSIP: a superseded CUSIP that still fails, or shares the listed symbol, ends normally.
+    """
     starts = lines.groupby("key")[["first", "cusip"]].apply(lambda g: sorted(zip(g["first"], g["cusip"], strict=True))).to_dict()
     ends: list[pd.Timestamp] = []
-    for cusip, key, last, period in lines[["cusip", "key", "last", "last_period"]].to_numpy().tolist():
-        if period in current_periods or (issuer.get(cusip), key) in listed:
+    for cusip, key, first, last, period in lines[["cusip", "key", "first", "last", "last_period"]].to_numpy().tolist():
+        nxt = next((start for start, other in starts.get(key, []) if other != cusip and start > last), None)
+        superseded = any(other != cusip and start > first for start, other in starts.get(key, []))
+        if not superseded and (period in current_periods or (issuer.get(cusip), key) in listed):
             ends.append(_FAR)
             continue
-        nxt = next((start for start, other in starts.get(key, []) if other != cusip and start > last), None)
         ends.append(nxt if nxt is not None and nxt - last <= BRIDGE_MAX_GAP else last + pd.Timedelta(days=1))
     return ends
 

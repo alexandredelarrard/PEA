@@ -44,6 +44,21 @@ Deferred from the single-table merge of `insider_transactions` (findings F-007..
 - **P3 — Half-cent tolerance in the mismatch line (F-013).** `_same` compares `gap.le(0.005)` on floats, so the zip's half-up rounding of a half-cent EDGAR value (116.695 vs 116.70) counts as a mismatch: 65 of 66 in the 2026q2 replay. Fix: compare `round_half_up(edgar)` with the zip value, or allow a few ulps. Trigger: with F-012.
 - **P3 — `validate pull` fails on `insider_transactions` (F-014).** `_coerce` in [io.py](../src/validate/io.py) fixes a float policy for `footnote_ids` from an all-null first chunk (zip rows come first), then fails on `'F5,F6'`. Fix: decide the policy on the first non-null value or from the DB column type. Trigger: the next validation-library run on an insider table.
 
+## Superinvestor roster follow-ups
+
+Deferred from the verified point-in-time roster run (branch `harness/sec13f-superinvestor-roster`; local, gitignored run dir `reports/validate/2026-10-04-sec13f-superinvestor-roster/`). See [Superinvestor roster (Dataroma)](./reference/data-sources.md#superinvestor-roster-dataroma).
+
+- **P1 — Post-merge rebuild (user).** After the branch merges into `dev`: rerun `superinvestors --seed` from the merged code, unpause the `data_extraction` DAG, then rebuild the cube and re-baseline the aggregate fingerprint. The elite-manager features shift by design: managers with a book per quarter rise from about 51 to 65 on average.
+- **P1 — Check value units on back-filled manager books.** The Phase 5 catch-up logged 9,483 of 109,155 back-filled `sec13f_manager_holdings` rows with an implied share price outside (1, 5000), the `$thousands` warning in [fetch_13f_managers.py](../src/data_extract/utils/institutionals/fetch_13f_managers.py). Check `value_usd` on pre-2023 back-filled books before trusting their portfolio weights.
+- **P2 — `sec13f_hr` unpadded-CIK duplicates (R-07).** The same manager is stored padded and unpadded. Owner: `feat/db-derived-resume` Phase 11.
+- **P2 — Ghost non-quarter-end manager periods and pre-2013 text 13F books (R-06).** Legacy-era manager periods that are not quarter ends, and the pre-XML text 13F books (Greenhaven, the 15 missing 2011Q3 to 2013Q1 quarters at 0000098758, 0000846222 and 0001099281). Owner: `harness/13f-managers-cusip`.
+- **P2 — `fetch_13f_managers` code health.** Its private cross-imports from `fetch_13f.py` and the dual-padding lookup in `_warn_empty_books`. Trigger: after `feat/db-derived-resume` merges (it rewrites `fetch_13f.py`).
+- **P3 — `lmvtx` adviser in 2012–2013.** The override maps Legg Mason Value Trust to ClearBridge Investments (0001348883) throughout, while its adviser until the 2013 merger was Legg Mason Capital Management (0000820330, mapped for `LMGTX`). Verify the handover quarter and, if confirmed, chain 0000820330 to 0001348883.
+- **P3 — `step_super_investors` survivorship.** The replication sleeve builds its history from today's roster (expanded to chain members), not the roster at each date. Pre-existing.
+- **P3 — Successor CIKs log without a name.** `fetch_13f_managers` looks log names up by filer CIK, so a chain successor logs nameless. Cosmetic.
+- **P3 — Stale `schema.py` comment.** The `superinvestor_roster` comment in [schema.py](../src/data_store/schema.py) (lines 104–121, "13 captures") predates the quarterly history. Edit when `schema.py` is next touched (guarded zone).
+- **Trigger — Holdings-fingerprint resolver.** Match a Dataroma holdings page against 13F books to resolve a code mechanically. Build it if a refresh leaves more than two codes unresolved.
+
 ## Schedule 13D/13G ownership numerics
 
 Reliable structured ownership values begin with the SEC mandate on 2024-12-17. The level and per-filer delta versions of `percent_of_class`, their cross-sectional transforms, and related power/aggregate fields remain excluded from `cube_part_institutionals`.

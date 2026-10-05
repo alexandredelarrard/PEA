@@ -193,14 +193,14 @@ def sharadar_get(
         text = _page(context, url, params)
         if text is None:
             raise SharadarRequestError(f"Sharadar {table}: page at offset {offset} failed ({filters.get('ticker', 'market-wide')})")
-        page = _parse_csv(text, keep_default_na=keep_default_na)
-        if page.empty:
+        df_page = _parse_csv(text, keep_default_na=keep_default_na)
+        if df_page.empty:
             break
         if expect_columns is not None:
-            _validate_header(context, table, page, expect_columns)
-            page = page.reindex(columns=list(expect_columns))
-        frames.append(page)
-        if len(page) < _PAGE_LIMIT:
+            _validate_header(context, table, df_page, expect_columns)
+            df_page = df_page.reindex(columns=list(expect_columns))
+        frames.append(df_page)
+        if len(df_page) < _PAGE_LIMIT:
             break
         offset += _PAGE_LIMIT
     if not frames:

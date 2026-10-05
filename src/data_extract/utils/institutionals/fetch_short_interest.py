@@ -228,31 +228,31 @@ def fetch_short_interest(
         time.sleep(pause)
     session.close()
 
-    raw = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=["date", "source_symbol", "short_volume", "total_volume"])
-    fresh, unresolved = _canonicalise_regsho(context, raw, resolver, universe)
+    df_raw = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=["date", "source_symbol", "short_volume", "total_volume"])
+    df_fresh, df_unresolved = _canonicalise_regsho(context, df_raw, resolver, universe)
 
     if not full:
-        context.store.save(Tables.short_interest, fresh)
-        logger.info(f"Saved {len(fresh)} new short-volume rows to DB table '{Tables.short_interest}'")
-        logger.info(f"RegSHO: {len(unresolved)} unresolved raw row(s) excluded; {len(failed_days)} day file(s) not served")
+        context.store.save(Tables.short_interest, df_fresh)
+        logger.info(f"Saved {len(df_fresh)} new short-volume rows to DB table '{Tables.short_interest}'")
+        logger.info(f"RegSHO: {len(df_unresolved)} unresolved raw row(s) excluded; {len(failed_days)} day file(s) not served")
         return
 
     if not successful_days:
         raise RuntimeError("RegSHO full refresh retrieved no source date; preserving the table by aborting")
     earliest = min(successful_days)
-    legacy = _stored_rows(context, until=earliest - pd.Timedelta(days=1))
-    corrected_legacy, legacy_stats = _reconcile_legacy(context, legacy, resolver, universe)
-    failed_stored = _stored_rows(context, dates=[day for day in failed_days if day >= earliest])
-    complete = pd.concat([corrected_legacy, failed_stored, fresh], ignore_index=True)
-    if not complete.empty:
-        complete = complete.groupby(["ticker", "date"], as_index=False)[["short_volume", "total_volume"]].sum()
-    _validate_full_frame(complete, universe)
-    written = context.store.replace(Tables.short_interest, complete)
+    df_legacy = _stored_rows(context, until=earliest - pd.Timedelta(days=1))
+    df_corrected_legacy, legacy_stats = _reconcile_legacy(context, df_legacy, resolver, universe)
+    df_failed_stored = _stored_rows(context, dates=[day for day in failed_days if day >= earliest])
+    df_complete = pd.concat([df_corrected_legacy, df_failed_stored, df_fresh], ignore_index=True)
+    if not df_complete.empty:
+        df_complete = df_complete.groupby(["ticker", "date"], as_index=False)[["short_volume", "total_volume"]].sum()
+    _validate_full_frame(df_complete, universe)
+    written = context.store.replace(Tables.short_interest, df_complete)
 
     logger.info(
         f"RegSHO full: retained={legacy_stats['retained']} "
         f"relabelled={legacy_stats['relabelled']} removed={legacy_stats['removed']} "
-        f"legacy_unresolved={legacy_stats['unresolved']} refreshed={len(fresh)} "
-        f"fresh_unresolved={len(unresolved)} preserved_failed_date_rows={len(failed_stored)}"
+        f"legacy_unresolved={legacy_stats['unresolved']} refreshed={len(df_fresh)} "
+        f"fresh_unresolved={len(df_unresolved)} preserved_failed_date_rows={len(df_failed_stored)}"
     )
     logger.info(f"RegSHO full: {written} row(s) written to '{Tables.short_interest}'")

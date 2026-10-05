@@ -144,8 +144,8 @@ def fetch_13f_managers(context: Context, years_history: int = 15) -> int:
     logger.info("13F managers: %d roster CIK(s), %d with a stored book, periods from %s", len(ciks), len(with_book & set(ciks)), since.date())
 
     worker = partial(_catch_up_cik, context=context, since=since)
-    scope = pd.DataFrame({"cik_label": [names.get(c, c) for c in ciks], "cik": ciks})
-    guarded = run_per_ticker(scope, worker, desc="13F manager books", log=context.log, key_cols=("cik_label", "cik"))
+    df_scope = pd.DataFrame({"cik_label": [names.get(c, c) for c in ciks], "cik": ciks})
+    guarded = run_per_ticker(df_scope, worker, desc="13F manager books", log=context.log, key_cols=("cik_label", "cik"))
     results = [result or (0, 0, 0) for result in guarded]
     saved = sum(n for n, _, _ in results)
     suspect = sum(s for _, s, _ in results)

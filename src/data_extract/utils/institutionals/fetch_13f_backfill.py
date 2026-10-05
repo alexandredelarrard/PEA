@@ -211,7 +211,7 @@ def _read_data_set(path: Path, cusips: frozenset[str], roster_ciks: set[str]) ->
 def _value_in_thousands(df_info: pd.DataFrame, report_period: pd.Series) -> pd.Series:
     """Per accession, edgartools' unit decision on that filing's raw holdings (the data sets carry no
     schema version, so an ambiguous filing falls back on its report period)."""
-    frame = pd.DataFrame(
+    df_holdings = pd.DataFrame(
         {
             "accession": df_info["accession"],
             "Type": _pick(df_info, "SSHPRNAMTTYPE").astype("string").str.strip().str.upper().map(_AMOUNT_TYPES),
@@ -221,9 +221,11 @@ def _value_in_thousands(df_info: pd.DataFrame, report_period: pd.Series) -> pd.S
         }
     )
     decided: dict[str, bool] = {}
-    for accession, group in frame.groupby("accession", sort=False):
+    for accession, df_filing in df_holdings.groupby("accession", sort=False):
         reported = report_period.get(accession)
-        decided[str(accession)] = bool(_detect_value_in_thousands(group, None, None if pd.isna(reported) else pd.Timestamp(reported).to_pydatetime()))
+        decided[str(accession)] = bool(
+            _detect_value_in_thousands(df_filing, None, None if pd.isna(reported) else pd.Timestamp(reported).to_pydatetime())
+        )
     return pd.Series(decided, dtype=bool)
 
 
@@ -266,9 +268,9 @@ def unit_check(context: Context, book: pd.DataFrame, roster_ciks: set[str]) -> U
     if df_stored is None:
         return UnitCheck(0, 0, [])
     df_stored = df_stored.assign(**{col: pd.to_datetime(df_stored[col]).dt.normalize() for col in ("period", "filing_date")})
-    merged = df_zip.merge(df_stored, on=[*keys, "cusip"], suffixes=("_zip", "_db"))
-    totals = merged.groupby(keys)[["value_usd_zip", "value_usd_db"]].sum()
-    ratio = (totals["value_usd_zip"] / totals["value_usd_db"])[totals["value_usd_db"] > 0]
+    df_merged = df_zip.merge(df_stored, on=[*keys, "cusip"], suffixes=("_zip", "_db"))
+    df_totals = df_merged.groupby(keys)[["value_usd_zip", "value_usd_db"]].sum()
+    ratio = (df_totals["value_usd_zip"] / df_totals["value_usd_db"])[df_totals["value_usd_db"] > 0]
     low, high = _UNIT_FLIP
     flipped = ratio.between(low, high) | ratio.between(1 / high, 1 / low)
     flips = [f"{cik} {period:%Y-%m-%d} filed {filed:%Y-%m-%d}" for cik, period, filed in ratio[flipped].index]
@@ -292,8 +294,8 @@ def _drop_superseded(context: Context, df_hr: pd.DataFrame) -> pd.DataFrame:
     df_stored = df_stored.assign(
         period=pd.to_datetime(df_stored["period"]).dt.normalize(), stored_filed=pd.to_datetime(df_stored["filing_date"]).dt.normalize()
     )
-    merged = df_hr[[*pk, "filing_date"]].merge(df_stored[[*pk, "stored_filed"]], on=pk, how="left")
-    keep = merged["stored_filed"].isna() | (merged["filing_date"] > merged["stored_filed"])
+    df_merged = df_hr[[*pk, "filing_date"]].merge(df_stored[[*pk, "stored_filed"]], on=pk, how="left")
+    keep = df_merged["stored_filed"].isna() | (df_merged["filing_date"] > df_merged["stored_filed"])
     return df_hr[keep.to_numpy()]
 
 

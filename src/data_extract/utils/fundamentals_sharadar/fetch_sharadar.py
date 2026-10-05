@@ -102,7 +102,7 @@ def _sf1_pages(context: Context, symbol: str, since: str, pace: float) -> list[p
     """The non-empty SF1 pages of `symbol` since `since`, one request per dimension; raises `NotEntitledError`."""
     frames: list[pd.DataFrame] = []
     for dimension in SHARADAR_DIMENSIONS:
-        page = sharadar_get(
+        df_page = sharadar_get(
             context,
             "fundamentals",
             expect_columns=SHARADAR_SF1_COLUMNS,
@@ -111,8 +111,8 @@ def _sf1_pages(context: Context, symbol: str, since: str, pace: float) -> list[p
             sort="date.asc",
             **cast(dict[str, Any], {"date.gte": since}),
         )
-        if not page.empty:
-            frames.append(page)
+        if not df_page.empty:
+            frames.append(df_page)
         sleep_pace(pace, SHARADAR_BASE_URL)
     return frames
 
@@ -179,13 +179,13 @@ def fetch_sharadar_fundamentals(
             context.log.debug("Sharadar SF1: %s up to date (since %s)", ticker, since)
             continue
 
-        frame = pd.concat(frames, ignore_index=True)
+        df_sf1 = pd.concat(frames, ignore_index=True)
         # relabel to the repo's canonical ticker, which every downstream join keys on
-        frame["ticker"] = ticker
+        df_sf1["ticker"] = ticker
         # cast before the first write: `ensure_table` would type an all-None object column as TEXT
-        frame = cast_value_columns(frame)
-        frame = coerce_date_columns(frame, Tables.sharadar_fundamentals.date_type_cols)
-        total_rows += context.store.save(Tables.sharadar_fundamentals, frame)
+        df_sf1 = cast_value_columns(df_sf1)
+        df_sf1 = coerce_date_columns(df_sf1, Tables.sharadar_fundamentals.date_type_cols)
+        total_rows += context.store.save(Tables.sharadar_fundamentals, df_sf1)
 
     context.log.info(
         "Sharadar SF1: %d entitled, %d not entitled (403), %d failed; %d rows written to %s",

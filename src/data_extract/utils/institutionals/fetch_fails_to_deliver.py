@@ -186,10 +186,10 @@ def _rebuild(context: Context, cache: Path, periods: list[str], resolver: Identi
             continue
         parsed.add(period)
         frames.append(df)
-    accepted, unresolved = _canonicalise_ftd(context, _concat_raw(frames), resolver, universe)
-    _validate_full_frame(accepted, universe, parsed, _cached_periods(cache))
-    logger.info(f"FTD: {len(unresolved)} unresolved raw row(s) excluded")
-    return context.store.replace(Tables.sec_fails_to_deliver, accepted)
+    df_accepted, df_unresolved = _canonicalise_ftd(context, _concat_raw(frames), resolver, universe)
+    _validate_full_frame(df_accepted, universe, parsed, _cached_periods(cache))
+    logger.info(f"FTD: {len(df_unresolved)} unresolved raw row(s) excluded")
+    return context.store.replace(Tables.sec_fails_to_deliver, df_accepted)
 
 
 def fetch_fails_to_deliver(
@@ -226,13 +226,13 @@ def fetch_fails_to_deliver(
             for period in tqdm(periods, desc=f"SEC fails-to-deliver ({name})")
             if (df := _read_period(context, cache, period, candidates)) is not None
         ]
-        accepted, unresolved = _canonicalise_ftd(context, _concat_raw(frames), resolver, keys)
-        accepted_frames.append(accepted)
-        unresolved_count += len(unresolved)
-    accepted = (
+        df_accepted, df_unresolved = _canonicalise_ftd(context, _concat_raw(frames), resolver, keys)
+        accepted_frames.append(df_accepted)
+        unresolved_count += len(df_unresolved)
+    df_accepted = (
         pd.concat(accepted_frames, ignore_index=True).drop_duplicates(["ticker", "date"]) if accepted_frames else pd.DataFrame(columns=_OUT_COLS)
     )
-    saved = context.store.save(Tables.sec_fails_to_deliver, accepted) if not accepted.empty else 0
+    saved = context.store.save(Tables.sec_fails_to_deliver, df_accepted) if not df_accepted.empty else 0
     logger.info(f"sec_fails_to_deliver completed ({len(work.pending)} pending + {len(work.rescan)} rescanned period(s)) +{saved}")
     logger.info(f"FTD: {unresolved_count} unresolved raw row(s) excluded")
     return saved

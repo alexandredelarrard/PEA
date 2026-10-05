@@ -92,21 +92,21 @@ def fetch_8k_votes_llm(
         context.log.warning("sec_8k does not exist yet — run the 8-K fetcher first; Item 5.07 votes skipped")
         return
 
-    source = context.store.load(Tables.sec_8k, columns=list(_SOURCE_COLS), where={"item": _ITEM, "ticker": list(tickers)})
-    if source is None or source.empty:
+    df_source = context.store.load(Tables.sec_8k, columns=list(_SOURCE_COLS), where={"item": _ITEM, "ticker": list(tickers)})
+    if df_source is None or df_source.empty:
         context.log.info("no stored Item 5.07 narratives for the %d requested ticker(s)", len(tickers))
         return
 
     seen = stored_values(context, Tables.sec_8k_votes, "accession_number")
-    todo = source[~source["accession_number"].isin(seen)]
+    df_todo = df_source[~df_source["accession_number"].isin(seen)]
     context.log.info(
         "Item 5.07: %d stored filing(s) for %d ticker(s), %d already parsed, %d to read",
-        len(source),
-        source["ticker"].nunique(),
-        len(source) - len(todo),
-        len(todo),
+        len(df_source),
+        df_source["ticker"].nunique(),
+        len(df_source) - len(df_todo),
+        len(df_todo),
     )
-    if todo.empty:
+    if df_todo.empty:
         return
 
     try:
@@ -117,13 +117,13 @@ def fetch_8k_votes_llm(
 
     total_rows, total_rejected = 0, 0
     skips: dict[str, int] = {}
-    for ticker, group in tqdm(todo.groupby("ticker"), desc="8-K votes"):
+    for ticker, df_filings in tqdm(df_todo.groupby("ticker"), desc="8-K votes"):
         # Read once per ticker on this thread, so a worker never needs the database to categorise a nominee.
         role_source = _role_source(context, str(ticker))
 
         tasks: list[LlmTask] = []
         refused: list[pd.DataFrame] = []
-        for _, f in group.iterrows():
+        for _, f in df_filings.iterrows():
             text = f.get("item_text")
             reason = rejection_reason(text)
             if reason is not None:
@@ -164,7 +164,12 @@ def fetch_8k_votes_llm(
             unmatched = sum(r.get("n_nominees_unmatched") or 0 for r in ticker_rows)
             nominees = sum(r.get("n_nominees") or 0 for r in ticker_rows)
             context.log.info(
-                "%s: +%d vote row(s) from %d filing(s); %d/%d nominees unmatched", ticker, len(ticker_rows), len(group), int(unmatched), int(nominees)
+                "%s: +%d vote row(s) from %d filing(s); %d/%d nominees unmatched",
+                ticker,
+                len(ticker_rows),
+                len(df_filings),
+                int(unmatched),
+                int(nominees),
             )
 
     context.log.info("Item 5.07: %d row(s) written, %d row(s) rejected by the fabrication guard", total_rows, total_rejected)

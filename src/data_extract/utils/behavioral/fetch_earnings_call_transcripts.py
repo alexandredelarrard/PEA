@@ -449,31 +449,33 @@ def extract_earnings_calls(
     rows_written = 0
     try:
         index_frames = [frame for _, frame in _ordered_parallel(groups, lambda g: _read_index(readers, g), workers)]
-        index = pd.concat(index_frames, ignore_index=True) if index_frames else pd.DataFrame(columns=[*INDEX_COLUMNS, "row_group", "row"])
-        calls = calls_from_index(index, set(scope), since, backfill)
-        stored = _stored_calls(context, calls, scope, is_full)
-        new, reissued = diff_calls(calls, stored)
-        gone, vanished = stale_calls(calls, stored if is_full else None)
+        df_index = pd.concat(index_frames, ignore_index=True) if index_frames else pd.DataFrame(columns=[*INDEX_COLUMNS, "row_group", "row"])
+        df_calls = calls_from_index(df_index, set(scope), since, backfill)
+        df_stored = _stored_calls(context, df_calls, scope, is_full)
+        df_new, df_reissued = diff_calls(df_calls, df_stored)
+        df_gone, vanished = stale_calls(df_calls, df_stored if is_full else None)
         if vanished:
             log.warning("Earnings calls: %d stored ticker(s) have no call left in the source, kept as stored: %s", len(vanished), vanished[:20])
         log.info(
             "Earnings calls: %d source calls in scope, %d new, %d re-issued, %d removed from the source.",
-            len(calls),
-            len(new),
-            len(reissued),
-            len(gone),
+            len(df_calls),
+            len(df_new),
+            len(df_reissued),
+            len(df_gone),
         )
-        if not gone.empty:
-            log.warning("Earnings calls: deleting %d stored call(s) absent from the source: %s", len(gone), _sample_keys(gone))
-            _remove_calls(context, gone)
+        if not df_gone.empty:
+            log.warning("Earnings calls: deleting %d stored call(s) absent from the source: %s", len(df_gone), _sample_keys(df_gone))
+            _remove_calls(context, df_gone)
 
-        needed = pd.concat([new.assign(old_as_of=pd.Series(pd.NaT, index=new.index, dtype="datetime64[ns]")), reissued], ignore_index=True)
-        by_group = {int(cast(SupportsInt, g)): part for g, part in needed.groupby("row_group", sort=True)}
+        df_needed = pd.concat(
+            [df_new.assign(old_as_of=pd.Series(pd.NaT, index=df_new.index, dtype="datetime64[ns]")), df_reissued], ignore_index=True
+        )
+        by_group = {int(cast(SupportsInt, g)): df_part for g, df_part in df_needed.groupby("row_group", sort=True)}
         empty_calls = 0
-        for group, paragraphs in _ordered_parallel(list(by_group), lambda g: _read_transcripts(readers, g, by_group[g]), workers):
-            part = by_group[group]
-            empty_calls += len(part) - paragraphs[_KEY].drop_duplicates().shape[0]
-            rows_written += _write_batch(context, paragraphs, part[part["old_as_of"].notna()].reset_index(drop=True))
+        for group, df_paragraphs in _ordered_parallel(list(by_group), lambda g: _read_transcripts(readers, g, by_group[g]), workers):
+            df_part = by_group[group]
+            empty_calls += len(df_part) - df_paragraphs[_KEY].drop_duplicates().shape[0]
+            rows_written += _write_batch(context, df_paragraphs, df_part[df_part["old_as_of"].notna()].reset_index(drop=True))
         if empty_calls:
             log.warning("Earnings calls: %d call(s) carry no paragraph in the source.", empty_calls)
     finally:
@@ -484,8 +486,8 @@ def extract_earnings_calls(
         full=is_full,
         revision=src.revision,
         row_groups=len(groups),
-        calls_new=len(new),
-        calls_reissued=len(reissued),
+        calls_new=len(df_new),
+        calls_reissued=len(df_reissued),
         rows_written=rows_written,
-        calls_removed=len(gone),
+        calls_removed=len(df_gone),
     )

@@ -193,16 +193,16 @@ def _completed_accessions(context: Context) -> set[str]:
     stored_columns = set(context.store.columns(Tables.def14a_llm))
     if not stored_columns:
         return set()
-    stored = context.store.load(
+    df_stored = context.store.load(
         Tables.def14a_llm,
         columns=["accession_number", *(c for c in _DEF14A_EVIDENCE_COLUMNS if c in stored_columns)],
         optional=True,
     )
-    if stored is None or stored.empty:
+    if df_stored is None or df_stored.empty:
         return set()
     return {
         str(row["accession_number"])
-        for row in cast(list[dict[str, object]], stored.to_dict(orient="records"))
+        for row in cast(list[dict[str, object]], df_stored.to_dict(orient="records"))
         if row.get("accession_number") is not None and _has_parent_evidence(row)
     }
 

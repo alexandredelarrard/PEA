@@ -8,9 +8,7 @@ as ONE manager: both filers are read, each only inside its window, under the man
 
 from __future__ import annotations
 
-import json
 from datetime import date
-from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
@@ -18,16 +16,9 @@ from omegaconf import OmegaConf
 
 from src.data_store.schema import Tables
 from src.strategies.step_super_investors import SuperInvestorsStrategy
+from tests.fixtures.superinvestor_config import APPALOOSA_CHAIN, APPALOOSA_NEW, APPALOOSA_OLD, write_roster_config
 
-_AM_OLD, _AM_NEW, _BRK = "0001006438", "0001656456", "0001067983"
-
-
-def _config_dir(tmp_path: Path) -> str:
-    folder = tmp_path / "configs" / "superinvestors"
-    folder.mkdir(parents=True)
-    chain = {_AM_OLD: [{"cik": _AM_OLD, "to": "2015-12-31"}, {"cik": _AM_NEW, "from": "2016-03-31"}]}
-    (folder / "overrides.json").write_text(json.dumps({"cik_overrides": {}, "unresolvable": {}, "manager_ciks": chain}), encoding="utf-8")
-    return str(tmp_path / "configs")
+_AM_OLD, _AM_NEW, _BRK = APPALOOSA_OLD, APPALOOSA_NEW, "0001067983"
 
 
 def _hr(cik: str, period: date, ticker: str, value: float) -> dict:
@@ -50,7 +41,7 @@ def test_load_raw_relabels_chain(sqlite_store, tmp_path):
     ]
     sqlite_store.save(Tables.sec13f_hr, pd.DataFrame(hr))
     sqlite_store.save(Tables.prices, pd.DataFrame({"date": [date(2016, 7, 1)], "ticker": ["AAA"], "close_split": [10.0]}))
-    ctx = SimpleNamespace(store=sqlite_store, config_dir=_config_dir(tmp_path))
+    ctx = SimpleNamespace(store=sqlite_store, config_dir=write_roster_config(tmp_path, {"manager_ciks": APPALOOSA_CHAIN}))
 
     funds, _prices, end = SuperInvestorsStrategy(context=ctx, config=OmegaConf.create({})).load_raw()  # type: ignore[arg-type]
 

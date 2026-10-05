@@ -257,9 +257,10 @@ def first_snapshot_date(context: Context) -> pd.Timestamp | None:
     """The earliest `snapshot_date` in the table, or None when it has never been written.
 
     The roster history starts after the first 13F books, so `roster_as_of(q)` is EMPTY for
-    the earliest quarters and a caller that used it unguarded would zero every manager there. Callers floor their lookup at this date: extrapolating
-    the oldest roster backwards is a compromise, but the alternative is today's roster,
-    which is the survivorship bias this table exists to remove."""
+    the earliest quarters and a caller that used it unguarded would zero every manager there.
+    Callers floor their lookup at this date: extrapolating the oldest roster backwards is a
+    compromise, but the alternative is today's roster, which is the survivorship bias this
+    table exists to remove."""
     df = _load(context)
     if df is None:
         return None

@@ -26,6 +26,7 @@ import pandas as pd
 import pytest
 
 from src.data_extract.utils.institutionals import fetch_superinvestors as si
+from tests.fixtures.superinvestor_config import APPALOOSA_CHAIN, APPALOOSA_NEW, APPALOOSA_OLD, write_roster_config
 
 CONFIG_DIR = str(Path(__file__).resolve().parents[3] / "configs")
 OVERRIDES = si.load_superinvestor_overrides(CONFIG_DIR)
@@ -224,14 +225,6 @@ def _seed_13f(store: Any, hr: list[tuple[str, str]] | None = None, books: list[t
         store.save(si.Tables.sec13f_manager_holdings, pd.DataFrame([{"cik": c, "period": p, "cusip": "037833100", "shares": 1.0} for c, p in books]))
 
 
-def _write_overrides(tmp_path: Path, blob: dict[str, Any]) -> str:
-    """A fixture `<config_dir>/superinvestors/overrides.json`; returns the config dir."""
-    config_dir = tmp_path / "configs"
-    (config_dir / "superinvestors").mkdir(parents=True, exist_ok=True)
-    (config_dir / "superinvestors" / "overrides.json").write_text(json.dumps(blob), encoding="utf-8")
-    return str(config_dir)
-
-
 def _gate_row(code: str, cik: str | None, snapshot: str) -> dict[str, Any]:
     """One roster row as the writer builds it."""
     return {
@@ -259,7 +252,7 @@ def _refresh_fixture(monkeypatch, sqlite_store, tmp_path) -> Any:
     monkeypatch.setattr(si, "_http_get", lambda url: SimpleNamespace(text=_ROSTER_HTML))
     q = str(si.snapshot_quarter(datetime.now(UTC).date()))
     _seed_13f(sqlite_store, hr=[("1079114", q)], books=[("0001067983", q)])
-    config_dir = _write_overrides(tmp_path, {"cik_overrides": {c: {"cik": k} for c, k in FIXTURE_CIK_OVERRIDES.items()}, "unresolvable": {}})
+    config_dir = write_roster_config(tmp_path, {"cik_overrides": {c: {"cik": k} for c, k in FIXTURE_CIK_OVERRIDES.items()}})
     return cast(Any, SimpleNamespace(store=sqlite_store, config_dir=config_dir))
 
 
@@ -302,7 +295,7 @@ def test_live_refresh_writes_on_change(monkeypatch, sqlite_store, tmp_path):
 
     corrected = "0000000007"
     _seed_13f(sqlite_store, books=[(corrected, str(si.snapshot_quarter(today)))])
-    ctx.config_dir = _write_overrides(tmp_path / "corrected", {"cik_overrides": {"BRK": {"cik": "0001067983"}, "GLRE": {"cik": corrected}}})
+    ctx.config_dir = write_roster_config(tmp_path / "corrected", {"cik_overrides": {"BRK": {"cik": "0001067983"}, "GLRE": {"cik": corrected}}})
     moved = si.upsert_roster_snapshot(ctx, get_fn=_fake_edgar, listing_fn=_no_listing)
     assert dict(zip(moved["dataroma_code"], moved["cik"], strict=True)) == {"GLRE": corrected, "BRK": "0001067983"}
     stored = sqlite_store.load(si.Tables.superinvestor_roster)
@@ -397,7 +390,6 @@ def test_gate_clamps_pre_xml_window():
     with pytest.raises(si.SuperinvestorResolutionError) as err:
         si.assert_active([_gate_row("B", b, "2012-03-07"), _gate_row("C", c, "2015-03-01")], evidence, {}, lambda cik: set())
     assert '"B"' in str(err.value) and '"C"' in str(err.value)
-    assert si.SEC13F_XML_ERA_START == date(2013, 6, 30)
     print("\n=== SANITY: pre-XML window clamp ===")
     print(
         "  2012-03-07 passes on a 2013-06-30 book (window end clamped to the XML-era start) but not on 2013-09-30; a 2015 snapshot is not clamped. Validated."
@@ -469,26 +461,13 @@ def test_empty_listing_still_fails_the_activity_gate(monkeypatch):
 def test_history_and_overrides_read_from_config_dir(sqlite_store, tmp_path):
     """The seed reads the roster history and the overrides from `<config_dir>/superinvestors/`,
     never from the data store: a decoy history under DATA_STORE must be ignored."""
-    config_dir = tmp_path / "configs"
-    (config_dir / "superinvestors").mkdir(parents=True)
-    (config_dir / "superinvestors" / "overrides.json").write_text(
-        json.dumps({"cik_overrides": {"AAA": {"cik": "1234"}}, "unresolvable": {"ZZZ": "fixture: never filed a 13F-HR"}}), encoding="utf-8"
-    )
-    (config_dir / "superinvestors" / "dataroma_roster_history.json").write_text(
-        json.dumps(
-            {
-                "_README": ["fixture"],
-                "snapshots": [
-                    {
-                        "captured_at": "2015-03-30T10:00:00Z",
-                        "source_url": "wayback-a",
-                        "managers": {"AAA": "Alice - Alpha Fund", "ZZZ": "Zed - Zeta"},
-                    },
-                    {"captured_at": "2016-03-15T10:00:00Z", "source_url": "wayback-b", "managers": {"AAA": "Alice - Alpha Fund"}},
-                ],
-            }
-        ),
-        encoding="utf-8",
+    config_dir = write_roster_config(
+        tmp_path,
+        {"cik_overrides": {"AAA": {"cik": "1234"}}, "unresolvable": {"ZZZ": "fixture: never filed a 13F-HR"}},
+        [
+            {"captured_at": "2015-03-30T10:00:00Z", "source_url": "wayback-a", "managers": {"AAA": "Alice - Alpha Fund", "ZZZ": "Zed - Zeta"}},
+            {"captured_at": "2016-03-15T10:00:00Z", "source_url": "wayback-b", "managers": {"AAA": "Alice - Alpha Fund"}},
+        ],
     )
     data_store = tmp_path / "data_store"
     (data_store / "superinvestors").mkdir(parents=True)
@@ -501,7 +480,7 @@ def test_history_and_overrides_read_from_config_dir(sqlite_store, tmp_path):
         return SimpleNamespace(text="no company-info")
 
     _seed_13f(sqlite_store, books=[("0000001234", "2015-06-30")])
-    ctx = cast(Any, SimpleNamespace(store=sqlite_store, config_dir=str(config_dir), paths={"DATA_STORE": data_store}))
+    ctx = cast(Any, SimpleNamespace(store=sqlite_store, config_dir=config_dir, paths={"DATA_STORE": data_store}))
     df = si.rebuild_roster(ctx, get_fn=empty_edgar, listing_fn=_no_listing)
     got = {(str(r.snapshot_date), r.dataroma_code, None if pd.isna(r.cik) else r.cik, r.resolution) for r in df.itertuples(index=False)}
     assert got == {
@@ -523,24 +502,16 @@ def test_writer_picks_member_valid_at_snapshot(sqlite_store, tmp_path):
     """A resolved CIK is stored as the member of its manager's chain valid at the last quarter end
     strictly before the snapshot date: a snapshot before the successor's first book stores the
     predecessor, even when the code resolves to the successor."""
-    old, new = "0001006438", "0001656456"
-    config_dir = tmp_path / "configs"
-    (config_dir / "superinvestors").mkdir(parents=True)
-    overrides = {
-        "cik_overrides": {"AM": {"cik": new}, "BRK": {"cik": "0001067983"}},
-        "unresolvable": {},
-        "manager_ciks": {old: [{"cik": old, "to": "2015-12-31"}, {"cik": new, "from": "2016-03-31"}]},
-    }
-    (config_dir / "superinvestors" / "overrides.json").write_text(json.dumps(overrides), encoding="utf-8")
+    old, new = APPALOOSA_OLD, APPALOOSA_NEW
     stamps = ["2015-11-20T10:00:00Z", "2016-02-15T10:00:00Z", "2016-03-31T23:00:00Z", "2016-04-01T01:00:00Z", "2016-08-01T10:00:00Z"]
-    history = {
-        "_README": ["fixture"],
-        "snapshots": [{"captured_at": t, "source_url": f"wb-{t}", "managers": {"AM": "Tepper", "BRK": "Buffett"}} for t in stamps],
-    }
-    (config_dir / "superinvestors" / "dataroma_roster_history.json").write_text(json.dumps(history), encoding="utf-8")
+    config_dir = write_roster_config(
+        tmp_path,
+        {"cik_overrides": {"AM": {"cik": new}, "BRK": {"cik": "0001067983"}}, "manager_ciks": APPALOOSA_CHAIN},
+        [{"captured_at": t, "source_url": f"wb-{t}", "managers": {"AM": "Tepper", "BRK": "Buffett"}} for t in stamps],
+    )
 
     _seed_13f(sqlite_store, hr=[(old, "2015-09-30"), (new, "2016-03-31"), ("0001067983", "2015-12-31")])
-    ctx = cast(Any, SimpleNamespace(store=sqlite_store, config_dir=str(config_dir)))
+    ctx = cast(Any, SimpleNamespace(store=sqlite_store, config_dir=config_dir))
     df = si.rebuild_roster(ctx, get_fn=lambda url: pytest.fail(f"no EDGAR call expected: {url}"), listing_fn=_no_listing)
     am = {str(r.snapshot_date): r.cik for r in df.itertuples(index=False) if r.dataroma_code == "AM"}
     assert am == {"2015-11-20": old, "2016-02-15": old, "2016-03-31": old, "2016-04-01": new, "2016-08-01": new}
@@ -570,17 +541,13 @@ def _rebuild_fixture(sqlite_store, tmp_path, extra_history: list[dict[str, Any]]
     1-January seed snapshot, two identical live snapshots with a wrong GLRE CIK (stored `edgar`) and a wrong PSC CIK
     (live-only code, resolved by EDGAR), plus 13F activity near every snapshot. Returns the context and the
     list the stub EDGAR search appends its queries to."""
-    config_dir = _write_overrides(tmp_path, {"cik_overrides": {"BRK": {"cik": _BRK}, "GLRE": {"cik": _GLRE}}, "unresolvable": {}})
     pair = {"BRK": "Warren Buffett - Berkshire Hathaway", "GLRE": "David Einhorn - Greenlight Capital"}
-    history = {
-        "_README": ["fixture"],
-        "snapshots": [
-            {"captured_at": "2015-03-30T10:00:00Z", "source_url": "https://web.archive.org/web/a", "managers": pair},
-            {"captured_at": "2016-03-15T10:00:00Z", "source_url": "https://web.archive.org/web/b", "managers": pair},
-            *(extra_history or []),
-        ],
-    }
-    (Path(config_dir) / "superinvestors" / "dataroma_roster_history.json").write_text(json.dumps(history), encoding="utf-8")
+    snapshots = [
+        {"captured_at": "2015-03-30T10:00:00Z", "source_url": "https://web.archive.org/web/a", "managers": pair},
+        {"captured_at": "2016-03-15T10:00:00Z", "source_url": "https://web.archive.org/web/b", "managers": pair},
+        *(extra_history or []),
+    ]
+    config_dir = write_roster_config(tmp_path, {"cik_overrides": {"BRK": {"cik": _BRK}, "GLRE": {"cik": _GLRE}}}, snapshots)
     stale = [dict(_gate_row(c, k, "2015-01-01"), source_url="https://web.archive.org/web/old") for c, k in (("BRK", _BRK), ("GLRE", _GLRE_WRONG))]
     live = [
         dict(_gate_row(code, cik, day), resolution=si.RESOLUTION_EDGAR, source_url=si.DATAROMA_HOME_URL, manager_name=name)

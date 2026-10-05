@@ -1,18 +1,10 @@
 """
 fetch_superinvestors.py (src/data_extract/utils/institutionals/fetch_superinvestors.py)
 --------------------------------------------------------------------------------
-WRITE side of `superinvestor_roster`: Dataroma's manager roster (names only), one row per
-(snapshot_date, dataroma_code) so membership is point-in-time, with CIKs resolved via SEC EDGAR
-company search. Hand resolutions and the committed history live in configs/superinvestors/ and are
-loaded by `src/utils/superinvestor_roster.py`, which is also the read side; a chained manager's row
-stores the filer CIK valid at `snapshot_quarter(snapshot_date)`. Entry points:
-`rebuild_roster` (the committed Wayback history plus every stored live snapshot, all resolved fresh, upserted,
-then the stale keys deleted) and `upsert_roster_snapshot` (today's roster, written only when its code -> CIK mapping
-differs from the latest stored snapshot).
-Every write passes two gates: `assert_fully_resolved` (no unexpected NULL CIK) and `assert_active`
-(each CIK filed a 13F-HR near its snapshot, from local tables, else the EDGAR listing).
-The committed history is built by `quarterly_capture_candidates` + `history_from_captures`, driven by
-`scripts/build_dataroma_roster_history.py`.
+WRITE side of `superinvestor_roster`: Dataroma's manager roster, one row per (snapshot_date,
+dataroma_code), CIKs resolved via SEC EDGAR company search and the hand overrides in configs/superinvestors/.
+Two entry points: a full rebuild (committed Wayback history plus every stored live snapshot) and the daily
+refresh (today's roster, written only on change). Every write passes a resolution gate and a 13F-activity gate.
 """
 
 from __future__ import annotations

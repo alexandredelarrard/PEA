@@ -139,6 +139,29 @@ def test_days_after_the_calendar_are_business_days(sqlite_store):
     print("  prices end 06-26 -> 06-27 and 06-28 are still requested as business days.")
 
 
+def test_days_before_the_source_start_are_never_requested(sqlite_store):
+    # FINRA serves nothing before 2018-08-01 except one stray 2017-12-29 file, so the
+    # never-stored sessions between them must not be listed as holes, nightly or on repair.
+    assert Tables.short_interest.resume is not None and Tables.short_interest.resume.source_start == "2018-08-01"
+    ctx = _context(sqlite_store)
+    sessions = pd.bdate_range("2017-12-26", "2018-08-17")
+    served = sessions[sessions >= pd.Timestamp("2018-08-01")]
+    sqlite_store.save(Tables.prices, pd.DataFrame({"ticker": "CAL", "date": sessions, "close_split": 1.0}))
+    sqlite_store.save(Tables.short_interest, _si("AAA", served.union(pd.DatetimeIndex(["2017-12-29"]))))
+    sqlite_store.save(Tables.short_interest, _si("BBB", served))
+    as_of = pd.Timestamp("2018-08-18")  # last completed session: Friday 2018-08-17
+
+    nightly = si._plan_days(ctx, ["AAA", "BBB"], 1, False, as_of)
+    repair = si._plan_days(ctx, ["AAA", "BBB"], 1, False, as_of, repair=True)
+
+    forward = served[served >= pd.Timestamp("2018-08-10")]
+    assert nightly.equals(forward)
+    assert repair.equals(forward)
+    print("\n=== SANITY CHECK: RegSHO source start ===")
+    print("  stored span starts 2017-12-29 but source_start is 2018-08-01: nightly and repair both read only the")
+    print(f"  {len(forward)} forward sessions from 08-10; the 2018-01..07 block FINRA answers 403 is never requested.")
+
+
 def test_stored_rows_returns_empty_for_an_empty_bounded_prefix(sqlite_store):
     sqlite_store.replace(
         Tables.short_interest,

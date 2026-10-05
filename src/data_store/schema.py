@@ -279,7 +279,8 @@ class Tables:
         # read instead of degrading it, back when the projection demanded them unconditionally.
         read_columns=("date", "ticker", "short_volume", "total_volume", "short_interest", "avg_daily_volume"),
         optional_columns=frozenset({"short_interest", "avg_daily_volume"}),
-        resume=Resume(RESUME_SERIES, "ticker", "date", 7),
+        # The first day FINRA serves; earlier never-stored days are not requested.
+        resume=Resume(RESUME_SERIES, "ticker", "date", 7, source_start="2018-08-01"),
     )
     # SEC Fails-to-Deliver: settlement fails per ticker x date. Same grain as
     # short_interest but a separate table -> its semi-monthly, ~2-month-lagged files don't

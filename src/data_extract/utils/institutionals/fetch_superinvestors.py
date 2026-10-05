@@ -6,8 +6,8 @@ WRITE side of `superinvestor_roster`: Dataroma's manager roster (names only), on
 company search. Hand resolutions and the committed history live in configs/superinvestors/ and are
 loaded by `src/utils/superinvestor_roster.py`, which is also the read side; a chained manager's row
 stores the filer CIK valid at `snapshot_quarter(snapshot_date)`. Entry points:
-`rebuild_roster` (the committed Wayback history plus every stored live snapshot, all resolved fresh, then a
-full table replace) and `upsert_roster_snapshot` (today's roster, written only when its code -> CIK mapping
+`rebuild_roster` (the committed Wayback history plus every stored live snapshot, all resolved fresh, upserted,
+then the stale keys deleted) and `upsert_roster_snapshot` (today's roster, written only when its code -> CIK mapping
 differs from the latest stored snapshot).
 Every write passes two gates: `assert_fully_resolved` (no unexpected NULL CIK) and `assert_active`
 (each CIK filed a 13F-HR near its snapshot, from local tables, else the EDGAR listing).
@@ -593,17 +593,35 @@ def _assert_unique_pk(rows: list[dict]) -> None:
 # --------------------------------------------------------------------------- #
 # Entry points                                                                  #
 # --------------------------------------------------------------------------- #
+def _delete_stale_keys(context: Context, df: pd.DataFrame) -> int:
+    """Delete the stored (snapshot_date, dataroma_code) keys absent from `df`, one targeted delete per snapshot date.
+    Returns the rows deleted."""
+    table = Tables.superinvestor_roster
+    stored = context.store.load(table, columns=["snapshot_date", "dataroma_code"])
+    keep = set(zip(pd.to_datetime(df["snapshot_date"]).dt.date, df["dataroma_code"], strict=True))
+    stored_days = pd.to_datetime(stored["snapshot_date"]).dt.date
+    stale = stored.assign(snapshot_date=stored_days)[[k not in keep for k in zip(stored_days, stored["dataroma_code"], strict=True)]]
+    return sum(
+        context.store.delete(table, where={"snapshot_date": day, "dataroma_code": sorted(codes)})
+        for day, codes in stale.groupby("snapshot_date", sort=True)["dataroma_code"]
+    )
+
+
 def rebuild_roster(context: Context, get_fn=None, listing_fn: ListingFn | None = None) -> pd.DataFrame:
-    """Rebuild `superinvestor_roster` from scratch: `rebuild_rows`, primary-key uniqueness, both write gates, then
-    `store.replace`. Any failure raises before the table is touched. Returns the written frame."""
+    """Rebuild `superinvestor_roster` from scratch: `rebuild_rows`, primary-key uniqueness, both write gates, then an
+    upsert of the rebuilt frame and only then the delete of the stored keys it lacks. The live snapshots are read
+    from this same table, so it is never emptied: a crash leaves the old table or a superset, and a rerun converges.
+    A resolution, primary-key or gate failure raises before the table is touched. Returns the written frame."""
     get_fn = get_fn or (lambda url: sec_get(context, url))
     overrides = load_superinvestor_overrides(getattr(context, "config_dir", None))
     rows = rebuild_rows(context, get_fn, overrides)
     _assert_unique_pk(rows)
     _gate(context, rows, overrides, listing_fn)
     df = pd.DataFrame(rows).sort_values(["snapshot_date", "dataroma_code"], ignore_index=True)
-    context.store.replace(Tables.superinvestor_roster, df)
+    context.store.save(Tables.superinvestor_roster, df)
+    deleted = _delete_stale_keys(context, df)
     _log_written(df, "rebuilt with")
+    logger.info("superinvestor_roster: deleted %d stale row(s) absent from the rebuild", deleted)
     return df
 
 

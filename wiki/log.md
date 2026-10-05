@@ -197,3 +197,12 @@ Append-only audit trail. Add one dated entry per generation or refresh run, reco
 - Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/table-catalog.md), [Configuration](./reference/configuration.md), [Run the pipeline](./guides/run-the-pipeline.md), [TODO](./TODO.md)
 - Evidence: `reports/validate/2026-10-04-sec13f-superinvestor-roster/` (`03-implementation.md`)
 - Operational boundary: the live roster was rebuilt from the branch; after merge the user reruns `superinvestors --seed`, unpauses the `data_extraction` DAG and rebuilds the cube.
+
+## 2026-10-05: refresh — extraction resume cutover and refactor
+
+- Profile: internal/standard
+- source_commit: f02bbb6 (branch `feat/db-derived-resume`)
+- Coverage: the document planner reads each table's stored accessions once and cuts them to each key's listing; `incremental.stored_values` is the one stored-value reader; Item 5.07 votes run as load, plan, tasks, extract and save steps; the 13F backfill treats a missing `added_on` as no new tickers; 13F information-table downloads and the superinvestor 13F listing go through `sec_io`; `sp500_tickers.added_on` exists (cutover rows 2000-01-01); the EDGAR index cache is in `data/sec_edgar_index`; `sec13f_hr` CIKs are 10-digit; `sec_short_interest` starts at 2018-08-01 and a scoped `-F` upserts its own tickers; the manifest and sidecars are retired to `data/_retired/2026-10/`. TODO: the R-07 unpadded-CIK item is removed, the insider 2026q1 ingest is marked done, and an entity-symbol-lineage re-run block is added.
+- Pages: [Data extraction](./modules/data-extract.md), [Table catalog](./reference/table-catalog.md), [Data sources](./reference/data-sources.md), [Run the pipeline](./guides/run-the-pipeline.md), [Live database](./reference/live-database.md), [TODO](./TODO.md)
+- Evidence: `reports/validate/2026-10-03-db-derived-extraction-resume/` (`05-final-report.md`, `refactor/04-validate.md`, `03-implementation-phase-11-*.md`)
+- Operational boundary: the stage E file move, stage D, the cube rebuild and `superinvestors --seed` run after the merge into dev.

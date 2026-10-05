@@ -95,13 +95,13 @@ Run `seed-universe` before stages that resolve the default ticker set.
 
 ### What a run fetches
 
-Every fetcher derives its work list from its own table's rows, its `Resume` contract in [schema.py](../../src/data_store/schema.py) and the run date. Missing filings, holes and new tickers are found on every run; to repair stored rows, delete them and the next run fetches them again.
+Every fetcher derives its work list from its own table's rows, its `Resume` contract in [schema.py](../../src/data_store/schema.py) and the run date. Missing filings, holes and new tickers are found on every run; to repair stored rows, delete them and the next run fetches them again. No code reads the retired run manifest or the bulk `*_universe.json` sidecars; they are kept in `data/_retired/2026-10/`.
 
 - **New ticker.** A ticker whose `sp500_tickers.added_on` lies inside the table's overlap (7 days for the archives and the 13F backfill) gets its full history. A ticker taken out of `INSUFFICIENT_HISTORY_TICKERS` keeps its old `added_on`, so it is not new: run `-t <ticker> -F` once for each source.
 - **`-t X`** plans X alone. An EDGAR document command reads X's missing filings. An archive command (`financial-statements`, `financial-notes`, `fails-to-deliver`, the zip half of `insider-transactions`) does nothing for an established X; `-t X -F` re-reads X's stored periods. A `-t` 13F run never reads past the stored frontier.
 - **`-F`** re-reads the whole listed history, stored filings and markers included. `--no-cap` lifts `max_documents_per_run`.
 - **Archives.** A period is done only when every table of its fetcher holds it. A period with no universe row is listed again every night. A change of the FTD symbol policy needs an explicit `-F`.
-- **Short interest.** A night reads only the days on which no key has a row; `--repair-gaps` re-reads each key's own gap days once.
+- **Short interest.** A night reads only the days on which no key has a row; `--repair-gaps` re-reads each key's own gap days once. `-t X -F` re-reads X's days and upserts only X's rows.
 - **DEF 14A LLM.** A stored row, an evidence-free answer included, counts as done; only `-F` sends the proxy again.
 - **13F.** A hole older than the 7-day overlap needs `thirteen-f --filing-window START:END`.
 

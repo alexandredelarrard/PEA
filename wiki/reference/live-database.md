@@ -66,6 +66,15 @@ The fundamentals layer was intentionally asymmetric during the recorded migratio
 
 The older warning that Sharadar data reflected a free-tier subset became stale after the subscription upgrade and re-extraction work. Treat individual counts here as dated evidence, not current entitlement.
 
+## Extraction resume cutover (2026-10-05)
+
+- `sp500_tickers.added_on` exists; all 500 rows then present carry 2000-01-01, so none counts as new.
+- The local EDGAR filing index sits in `data/sec_edgar_index`: 125 quarters (1995Q4 to 2026Q4), about 16.9 M rows and 267 MB, built on 2026-10-05; every EDGAR document fetch refreshes it.
+- `sec13f_hr` CIKs are all 10-digit: 43,704 rows were padded and 878 keys stored in both forms were merged, keeping the later-filed row (23,811,342 rows after).
+- `sec_short_interest` starts at its source start, 2018-08-01. After the one-time `--repair-gaps`, 1,120 key-days over 18 tickers are still missing (PSKY 400 under PARA/PARAA, SMCI 349 absent at FINRA, F 183 from a false second symbol tenure, EXE 156).
+- The run manifest and the 4 bulk sidecars are retired to `data/_retired/2026-10/`.
+- There is no `cube` table, and every `cube_part_*` ends on 2026-09-04.
+
 ## Institutional and identity snapshot
 
 Important measured state:

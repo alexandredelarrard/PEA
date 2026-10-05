@@ -60,7 +60,7 @@ def test_overrides_config_carries_evidence_and_valid_chains():
         assert "13F-HR" in entry.get("evidence", ""), code
     windows = [w for chain in blob["manager_ciks"].values() for w in chain]
     assert all(re.fullmatch(r"\d{10}", w["cik"]) and "13F-HR" in w.get("evidence", "") for w in windows)
-    assert set(OVERRIDES.manager_ciks) == {"0001006438", "0000728014", "0001079114", "0001056258", "0000898382"}
+    assert set(OVERRIDES.manager_ciks) == {"0001006438", "0000728014", "0001079114", "0001056258", "0000898382", "0000820330"}
     assert not WRONG_OVERRIDE_CIKS & set(OVERRIDES.cik_by_code.values())
     assert not {"CMAFX", "LUK"} & set(OVERRIDES.unresolvable)
     assert all(r.reason and r.window.start for r in OVERRIDES.inactive.values())

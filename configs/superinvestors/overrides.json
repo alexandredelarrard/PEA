@@ -81,9 +81,9 @@
       "evidence": "DAVIS SELECTED ADVISERS; EDGAR 93 13F-HR filed 1999-05-12->2026-08-11; sec13f_hr 53q 2013-06-30->2026-06-30"
     },
     "lmvtx": {
-      "cik": "0001348883",
-      "note": "dropped from the roster since 2013, verified against sec13f_hr: ClearBridge / Legg Mason Capital, 14,379 rows / 51q",
-      "evidence": "Clearbridge Investments, LLC; EDGAR 75 13F-HR filed 2008-02-14->2026-08-13; sec13f_hr 53q 2013-06-30->2026-06-30"
+      "cik": "0000820330",
+      "note": "Bill Miller - Legg Mason Value Trust (later ClearBridge Value Trust), dropped from the roster since 2013: the fund's adviser Legg Mason Capital Management (now CLEARBRIDGE, LLC, 0000820330) until 2018-06-30, then ClearBridge Investments, LLC (0001348883, chained) after the advisory agreement moved on 2018-07-01",
+      "evidence": "CLEARBRIDGE, LLC (formerly LEGG MASON CAPITAL MANAGEMENT LLC/INC); EDGAR 45 13F-HR filed 2008-02-14->2019-02-14, report periods 2007-12-31->2018-12-31; sec13f_hr 23q 2013-06-30->2018-12-31; Value Trust N-CSR (CIK 0000357235 FY2011, 0001474103 FY2013) name LMCM as adviser; N-Q 2014-01-31 / 2015-07-31 holdings covered by this filer's 13F at 98% / 97% of fund value against 65% / 64% for 0001348883"
     },
     "oakvx": {
       "cik": "0001085256",
@@ -391,6 +391,20 @@
         "from": "2019-03-31",
         "to": null,
         "evidence": "COOPERMAN LEON G; EDGAR 92 13F-HR filed 1999-05-13->2026-08-14, report periods 1999-03-31->2014-06-30 then 2019-03-31->2026-06-30 (none 2014Q3-2018Q4); sec13f_hr 35q 2013-06-30->2026-06-30; Omega returned outside capital end-2018 and Cooperman resumed filing from period 2019-03-31"
+      }
+    ],
+    "0000820330": [
+      {
+        "cik": "0000820330",
+        "from": null,
+        "to": "2018-06-30",
+        "evidence": "CLEARBRIDGE, LLC (formerly LEGG MASON CAPITAL MANAGEMENT LLC/INC); EDGAR 45 13F-HR, report periods 2007-12-31->2018-12-31; the Value Trust's adviser per its N-CSR (FY2011, FY2013) and N-CSRS 2018-04-30 (ClearBridge, LLC); its 13F covers 95% of the fund's N-Q 2018-07-31 value at 2018-06-30 and 0% at 2018-09-30 (book $5.97bn -> $0.41bn)"
+      },
+      {
+        "cik": "0001348883",
+        "from": "2018-09-30",
+        "to": null,
+        "evidence": "Clearbridge Investments, LLC; EDGAR 75 13F-HR filed 2008-02-14->2026-08-13; sec13f_hr 53q 2013-06-30->2026-06-30; Value Trust N-CSR 2018-10-31: 'On July 1, 2018, ClearBridge, LLC transferred the Fund's investment management and advisory agreement to ClearBridge Investments, LLC'; its 13F covers 96% of the fund's N-Q 2018-07-31 value at 2018-09-30; the fund (~$2.3bn) is ~2% of this ~$116bn book"
       }
     ]
   },

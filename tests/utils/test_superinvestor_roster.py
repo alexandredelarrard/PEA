@@ -265,3 +265,34 @@ def test_loader_rejects_overlapping_windows(tmp_path, manager_ciks, match):
     with pytest.raises(ValueError, match=match):
         sr.load_superinvestor_overrides(_config_dir(tmp_path, manager_ciks))
     print(f"\n=== SANITY: chain validation ({match}) ===\n  the loader raised on a malformed chain. Validated.")
+
+
+_REPO_CONFIGS = Path(__file__).resolve().parents[2] / "configs"
+_LMCM, _CBI = "0000820330", "0001348883"
+
+
+def test_production_lmvtx_maps_to_the_value_trust_adviser_book():
+    """The committed overrides map Legg Mason Value Trust (`lmvtx`) to the filer that held the fund's book each quarter:
+    Legg Mason Capital Management / ClearBridge, LLC up to 2018-06-30, ClearBridge Investments from 2018-09-30 (the
+    advisory agreement moved on 2018-07-01). Before the chain, the 1,100-position ClearBridge Investments book stood in."""
+    overrides = sr.load_superinvestor_overrides(_REPO_CONFIGS)
+    lmvtx = overrides.cik_by_code["lmvtx"]
+    assert overrides.manager_id(lmvtx) == _LMCM
+    assert overrides.manager_id(overrides.cik_by_code["LMGTX"]) == _LMCM
+    assert [overrides.member_at(lmvtx, d) for d in ("2012-03-31", "2015-06-30", "2018-06-30", "2018-09-30", "2022-06-30")] == [_LMCM] * 3 + [_CBI] * 2
+    books = pd.DataFrame(
+        {
+            "cik": [_LMCM, _LMCM, _CBI, _CBI, _LMCM, _CBI],
+            "period": [date(2015, 6, 30), date(2015, 6, 30), date(2015, 6, 30), date(2018, 6, 30), date(2018, 9, 30), date(2018, 9, 30)],
+            "issuer_name": ["CITIGROUP INC", "MICROSOFT CORP", "UNITEDHEALTH GROUP INC", "COMCAST CORP NEW", "RESIDUAL", "ALPHABET INC"],
+        }
+    )
+    out = sr.to_manager_books(books, config_dir=_REPO_CONFIGS)
+    q2_2015 = out[out["period"] == date(2015, 6, 30)]
+    assert list(q2_2015["issuer_name"]) == ["CITIGROUP INC", "MICROSOFT CORP"] and set(out["cik"]) == {_LMCM}
+    assert list(out.loc[out["period"] == date(2018, 9, 30), "issuer_name"]) == ["ALPHABET INC"]
+    print("\n=== SANITY: production lmvtx chain ===")
+    print(
+        f"  lmvtx -> manager {_LMCM}: member {_LMCM} through 2018-06-30, {_CBI} from 2018-09-30; the 2015Q2 book keeps only "
+        f"{_LMCM}'s rows ({len(q2_2015)} of 3) and 2018Q3 only {_CBI}'s; LMGTX shares the manager ID. Validated."
+    )

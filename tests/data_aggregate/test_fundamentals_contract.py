@@ -44,9 +44,9 @@ def test_fundamentals_requests_its_45_session_tail_refresh(monkeypatch):
         step.run(full=False)
 
     assert captured["refresh"] == FUNDAMENTALS_REFRESH_TRADING_DAYS == 45
-    assert PART_REFRESH_TRADING_DAYS == 5
+    assert PART_REFRESH_TRADING_DAYS == 7
     print("\n=== SANITY CHECK: fundamentals incremental repair window ===")
-    print("  fundamentals requests 45 sessions while the shared sibling-part refresh remains 5. Validated.")
+    print("  fundamentals requests 45 sessions while the shared sibling-part refresh is 7. Validated.")
 
 
 class _SourceStore:
@@ -92,7 +92,7 @@ def test_every_direct_source_read_is_pushed_down_to_the_price_universe(monkeypat
     step._load_optional(
         Tables.dividends,
         "dividend history",
-        "fetch_price_history",
+        "fetch_prices_and_actions",
         ("AAA", "BBB"),
     )
 

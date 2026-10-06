@@ -19,14 +19,14 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pandas as pd
 import pytest
 
 from src.data_extract.utils.common import edgar_driver
-from src.data_extract.utils.common.edgar_driver import EdgarScope, run_edgar_fetch
+from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp, run_edgar_fetch
 from src.data_extract.utils.common.identity import FilingScope
-from src.data_extract.utils.common.sec_utils import CIK_MAPPING_COLS
 from src.data_extract.utils.structure import fetch_def14a_edgar
 from src.data_extract.utils.structure.def14a.ecd import (
     _CATEGORY_AXIS,
@@ -39,7 +39,7 @@ from src.data_extract.utils.structure.def14a.ecd import (
 )
 from src.data_extract.utils.structure.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
 from src.data_store.schema import Tables
-from tests.data_extract.fake_context import extract_config
+from tests.data_extract.edgar_fixtures import fake_context, patch_index_filings, seed_index
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -229,44 +229,52 @@ def _fake_filing(*, accession: str, filing_date: str, form: str = "DEF 14A"):
     )
 
 
-def test_build_ticker_skips_done_accessions_and_pre_since_filings(monkeypatch):
-    filings = [
-        _fake_filing(accession="0001-old", filing_date="2020-01-01"),
-        _fake_filing(accession="0001-done", filing_date="2024-01-01"),
-        _fake_filing(accession="0001-new", filing_date="2024-06-01"),
-    ]
-    monkeypatch.setattr("edgar.Company", lambda ticker: SimpleNamespace(get_filings=lambda form: filings))
-
-    df = DEF14A_EDGAR_FETCH.build("BA", "0000012927", since=pd.Timestamp("2024-01-01"), done_accessions=frozenset({"0001-done"}), scope=EdgarScope())[
-        Tables.def14a_edgar
-    ]
-
-    assert set(df["accession_number"]) == {"0001-new"}
-    assert df["n_peos"].iloc[0] == 2.0  # the real frame really was read
-    print("\n=== SANITY: incremental walk ===")
-    print(f"  3 filings offered, 1 written ({set(df['accession_number'])}); n_peos={df['n_peos'].iloc[0]} proves a real facts frame went through.")
+def _parse(filing) -> pd.DataFrame:
+    return DEF14A_EDGAR_FETCH.parse("BA", "0000012927", FilingStamp.of(filing, "0000012927"), EdgarScope())[Tables.def14a_edgar]
 
 
-def test_a_filing_without_xbrl_is_skipped_not_crashed(monkeypatch):
+def _ba_context(tmp_path, sqlite_store, monkeypatch, filings: list) -> Any:
+    """BA on a seeded index holding `filings`, read back as those fakes; identity scope = the roster CIK."""
+    context = fake_context(tmp_path, sqlite_store, ["BA"], ciks=["12927"])
+    seed_index(context, [(12927, "BOEING CO", f.form, str(f.filing_date), f.accession_number) for f in filings])
+    patch_index_filings(monkeypatch, {f.accession_number: f for f in filings})
+    scope = FilingScope.roster_only("BA", "12927")
+    monkeypatch.setattr(edgar_driver, "load_identity", lambda _context: SimpleNamespace(filing_scope=lambda _ticker: scope))
+    return context
+
+
+def test_the_run_skips_stored_accessions(tmp_path, sqlite_store, monkeypatch):
+    filings = [_fake_filing(accession="0001-done", filing_date="2024-01-02"), _fake_filing(accession="0001-new", filing_date="2024-06-03")]
+    context = _ba_context(tmp_path, sqlite_store, monkeypatch, filings)
+    sqlite_store.save(Tables.def14a_edgar, _parse(filings[0]))
+
+    summary = run_edgar_fetch(context, ["BA"], 31, DEF14A_EDGAR_FETCH, as_of=pd.Timestamp("2024-07-01"), refresh_index=False, max_workers=1)
+
+    df = sqlite_store.load(Tables.def14a_edgar)
+    assert summary.work.size == 1 and set(df["accession_number"]) == {"0001-done", "0001-new"}
+    assert df["n_peos"].tolist() == [2.0, 2.0]  # the real frame really was read
+    print("\n=== SANITY: incremental run ===")
+    print(f"  2 proxies indexed, 1 stored -> work list {summary.work.size}; n_peos=2.0 proves a real facts frame went through.")
+
+
+def test_a_filing_without_xbrl_parses_to_no_row(monkeypatch):
     """DEF 14C is not in edgartools' `PROXY_FORMS` dispatch, so the old code's
     `hasattr(proxy, "voting_proposals")` guard silently skipped every one of them. Going straight
     to `filing.xbrl()` treats both forms alike -- what decides now is whether the filing carries
-    ECD facts, which is the regulatory question and not a library artefact."""
+    ECD facts. A filing with none parses to no row, which the driver stores as one marker."""
     good = _fake_filing(accession="0001-good", filing_date="2025-03-07")
     empty = _fake_filing(accession="0001-empty", filing_date="2025-03-08", form="DEF 14C")
     empty.xbrl = lambda: None
     raising = _fake_filing(accession="0001-raises", filing_date="2025-03-09")
     raising.xbrl = lambda: (_ for _ in ()).throw(RuntimeError("xbrl parse failed"))
 
-    monkeypatch.setattr("edgar.Company", lambda ticker: SimpleNamespace(get_filings=lambda form: [good, empty, raising]))
-
-    df = DEF14A_EDGAR_FETCH.build("BA", "0000012927", since=None, done_accessions=frozenset(), scope=EdgarScope())[Tables.def14a_edgar]
-    assert set(df["accession_number"]) == {"0001-good"}
+    assert _parse(good)["accession_number"].tolist() == ["0001-good"]
+    assert _parse(empty).empty and _parse(raising).empty
     print("\n=== SANITY: unreadable filings ===")
-    print("  xbrl() -> None and xbrl() -> raise both skip the row; neither crashes the walk.")
+    print("  xbrl() -> None and xbrl() -> raise both parse to no row (one marker each in the driver); neither crashes.")
 
 
-def test_company_name_falls_back_to_the_filing_index(monkeypatch):
+def test_company_name_falls_back_to_the_filing_index():
     """edgartools reads `dei:EntityRegistrantName` XBRL-only with NO fallback to the filing
     index, and DEF 14A has no mandatory cover-page iXBRL requirement -- so it was None on every
     pre-2023 filing and `__str__` substituted the literal "Unknown Company"."""
@@ -274,35 +282,21 @@ def test_company_name_falls_back_to_the_filing_index(monkeypatch):
     facts = _facts(_FIXTURE)
     stripped = facts[facts["concept"].astype(str) != "dei:EntityRegistrantName"]
     f.xbrl = lambda: SimpleNamespace(facts=SimpleNamespace(to_dataframe=lambda: stripped))
-    monkeypatch.setattr("edgar.Company", lambda ticker: SimpleNamespace(get_filings=lambda form: [f]))
 
-    df = DEF14A_EDGAR_FETCH.build("BA", "0000012927", since=None, done_accessions=frozenset(), scope=EdgarScope())[Tables.def14a_edgar]
+    df = _parse(f)
     assert df["company_name"].iloc[0] == "THE BOEING COMPANY"
     print("\n=== SANITY: company_name fallback ===")
     print(f"  dei tag removed from the frame -> company_name={df['company_name'].iloc[0]!r} from the filing index.")
 
 
 def test_ecd_run_never_parses_a_proxy_filed_before_item_402v(tmp_path, sqlite_store, monkeypatch):
-    """A cold `run_edgar_fetch` lists the whole `years_history` window, floored at the 402(v) start."""
-    sqlite_store.save(
-        Tables.sp500_tickers, pd.DataFrame({col: ["12927" if col == "cik" else f"{col}-BA"] for col in CIK_MAPPING_COLS} | {"ticker": ["BA"]})
-    )
-    context = SimpleNamespace(
-        store=sqlite_store,
-        paths={"DATA_STORE": tmp_path},
-        log=SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None),
-        config=extract_config(data_extract={"manifest_full_rescan_days": 30}),
-        ensure_edgar_identity=lambda: None,
-        config_dir=tmp_path,
-    )
-    scope = FilingScope.roster_only("BA", "12927")
-    monkeypatch.setattr(edgar_driver, "load_identity", lambda _context: SimpleNamespace(filing_scope=lambda _ticker: scope))
+    """A cold `run_edgar_fetch` lists the whole `years_history` window, floored at the table's 402(v) source start."""
     filings = [_fake_filing(accession="0001-2021", filing_date="2021-03-10"), _fake_filing(accession="0001-2024", filing_date="2024-03-08")]
-    monkeypatch.setattr("edgar.Company", lambda ticker: SimpleNamespace(get_filings=lambda form: filings))
+    context = _ba_context(tmp_path, sqlite_store, monkeypatch, filings)
     parsed: list[str] = []
     monkeypatch.setattr(fetch_def14a_edgar, "ecd_facts", lambda filing: parsed.append(filing.accession_number))
 
-    run_edgar_fetch(context, ["BA"], 31, DEF14A_EDGAR_FETCH)
+    run_edgar_fetch(context, ["BA"], 31, DEF14A_EDGAR_FETCH, as_of=pd.Timestamp("2026-09-30"), refresh_index=False, max_workers=1)
 
     assert parsed == ["0001-2024"]
     print("\n=== SANITY: ECD listing floor ===")

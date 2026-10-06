@@ -103,12 +103,11 @@ def canonical_symbols(tickers: pd.Series) -> pd.Series:
 
 
 class NotEntitledError(RuntimeError):
-    """HTTP 403 -- the subscription does not cover this ticker/table.
+    """HTTP 403 -- the subscription does not cover this ticker/table."""
 
-    An exception rather than a `None` return because `None` already means "no data / the
-    request failed", and a caller that cannot tell those apart cannot report the entitlement
-    summary the run is required to end with.
-    """
+
+class SharadarRequestError(RuntimeError):
+    """A page still failed after the retrying GET; the request's rows are incomplete and none are returned."""
 
 
 def _api_key() -> str:
@@ -174,21 +173,16 @@ def _page(context: Context, url: str, params: dict) -> str | None:
 
 
 def sharadar_get(
-    context: Context, table: str, /, *, expect_columns: tuple[str, ...] | None = None, keep_default_na: bool = True, **filters
-) -> pd.DataFrame | None:
+    context: Context, table: str, /, *, expect_columns: tuple[str, ...] | None = None, keep_default_na: bool = True, **filters: str
+) -> pd.DataFrame:
     """`GET {SHARADAR_BASE_URL}/data/{table}` with `filters`, paged, as a DataFrame.
 
-    `None` means the request failed; an EMPTY frame means the filters matched no rows.
-    `NotEntitledError` is raised on 403.
-
-    The caller MUST pass an explicit `date.gte` for any table with a date column: the API
-    defaults `from` to "1 year ago" and `sort` to `date.desc`, so omitting either silently
-    truncates history to the last year. Dotted filter names go in as
-    `sharadar_get(..., **{"date.gte": "2021-01-01"})`.
-
-    `table` is POSITIONAL-ONLY (the `/`) because the `tickers` endpoint has a FILTER of its
-    own called `table` -- `sharadar_get(ctx, "tickers", **{"table": "fundamentals"})` is a
-    legitimate call, and without the `/` it would raise "got multiple values for argument".
+    An EMPTY frame means the filters matched no rows. `NotEntitledError` is raised on 403 and
+    `SharadarRequestError` when any page fails, so a partial result is never returned.
+    The caller MUST pass an explicit `date.gte` for any dated table: the API defaults `from`
+    to one year ago and sorts newest first. Dotted filters go in as `**{"date.gte": <iso date>}`.
+    `table` is positional-only because the `tickers` endpoint has a filter of its own called
+    `table` (`sharadar_get(ctx, "tickers", **{"table": "fundamentals"})`).
     """
     url = f"{SHARADAR_BASE_URL}/data/{table}"
     key = _api_key()
@@ -198,15 +192,15 @@ def sharadar_get(
         params = {"api_key": key, "limit": _PAGE_LIMIT, "offset": offset, **filters}
         text = _page(context, url, params)
         if text is None:
-            return pd.concat(frames, ignore_index=True) if frames else None
-        page = _parse_csv(text, keep_default_na=keep_default_na)
-        if page.empty:
+            raise SharadarRequestError(f"Sharadar {table}: page at offset {offset} failed ({filters.get('ticker', 'market-wide')})")
+        df_page = _parse_csv(text, keep_default_na=keep_default_na)
+        if df_page.empty:
             break
         if expect_columns is not None:
-            _validate_header(context, table, page, expect_columns)
-            page = page.reindex(columns=list(expect_columns))
-        frames.append(page)
-        if len(page) < _PAGE_LIMIT:
+            _validate_header(context, table, df_page, expect_columns)
+            df_page = df_page.reindex(columns=list(expect_columns))
+        frames.append(df_page)
+        if len(df_page) < _PAGE_LIMIT:
             break
         offset += _PAGE_LIMIT
     if not frames:

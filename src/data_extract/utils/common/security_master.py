@@ -33,7 +33,6 @@ from src.data_extract.utils.common.entity_lineage import (
     roster_cik_map,
 )
 from src.data_extract.utils.common.incremental import matches_stored
-from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.common.symbol_tenure import DEI_SOURCE
 from src.data_store.schema import Tables
 from src.utils.cutover_continuity import ShareExchange
@@ -1386,6 +1385,5 @@ def build_security_master(
     log_identity_flags(context.log, build.items)
     unchanged = matches_stored(existing, rows, Tables.security_master)
     written = 0 if unchanged else context.store.replace(Tables.security_master, rows)
-    record_run(context, Tables.security_master, 0, written, is_full_rescan=True)
     context.log.info("security_master: unchanged; replace skipped" if unchanged else f"security_master: wrote {written} row(s)")
     return rows

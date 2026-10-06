@@ -2,20 +2,22 @@
 
 from __future__ import annotations
 
-import json
-from types import SimpleNamespace
-from typing import Any, cast
+from typing import cast
 
 import pandas as pd
 import pytest
 
-from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
+from src.data_aggregate.utils.common.incremental import PART_REFRESH_TRADING_DAYS
 from src.data_aggregate.utils.institutionals.availability import (
     InstitutionalAvailability,
     availability_date,
 )
-from src.data_store.schema import Tables
+from src.data_aggregate.utils.institutionals.frontiers import schedule_complete_through
+from src.data_aggregate.utils.institutionals.ownership_features import build_ownership_feature_panel
+from src.data_extract.utils.common.edgar_driver import FilingStamp, marker_row
+from src.data_store.schema import Table, Tables
 from src.utils.config import read_config
+from tests.conftest import make_frames
 
 
 def _rules() -> InstitutionalAvailability:
@@ -68,60 +70,95 @@ def test_source_frontier_is_inclusive_and_cannot_extend_stale_data() -> None:
     print("  A source observed through 2026-03-31 is available on that date and unavailable after it. Validated.")
 
 
-def test_schedule_frontier_requires_complete_analysis_universe_manifest(tmp_path) -> None:
-    manifest_path = tmp_path / "extraction_manifest.json"
-    step = cast(Any, object.__new__(StepCubeInstitutionals))
-    step._context = SimpleNamespace(
-        paths={"DATA_STORE": tmp_path},
-        config=SimpleNamespace(local=SimpleNamespace(filename=SimpleNamespace(extraction=manifest_path.name))),
+def _schedule_rows(table: Table, rows: list[tuple[str, str, pd.Timestamp, str]]) -> pd.DataFrame:
+    """`sec_13d`/`sec_13g` rows: (ticker, accession, filing date, reporting-person CIK)."""
+    df_rows = pd.DataFrame(
+        [
+            {
+                "ticker": ticker,
+                "cik": "0000000099",
+                "accession_number": accession,
+                "form": "SC 13D" if table is Tables.sec_13d else "SC 13G",
+                "filing_date": filed,
+                "rp_seq": 0,
+                "cusip": f"{ticker}CUSIP",
+                "reporting_person_cik": owner,
+                "reporting_person_name": f"Holder {owner}",
+            }
+            for ticker, accession, filed, owner in rows
+        ]
     )
-    step._log = SimpleNamespace(warning=lambda *args: None)
+    if table is Tables.sec_13d:
+        df_rows["is_amendment"] = 0.0
+    return df_rows
 
-    def write_entry(entry: dict) -> None:
-        manifest_path.write_text(
-            json.dumps({Tables.sec_13g.name: entry}),
-            encoding="utf-8",
-        )
 
-    expected = ["AAA", "BBB"]
-    write_entry({"last_run_date": "2026-09-24", "ticker_count": 2})
-    assert step._schedule_complete_through(Tables.sec_13g, expected_tickers=expected) is None
+def _marker(table: Table, ticker: str, accession: str, filed: pd.Timestamp) -> pd.DataFrame:
+    stamp = FilingStamp(accession, "SC 13G", "0000000001", filed, False, None, None)
+    return marker_row(table, ticker, stamp)
 
-    write_entry(
-        {
-            "last_run_date": "2026-09-24",
-            "ticker_count": 1,
-            "coverage_complete": True,
-        }
-    )
-    assert step._schedule_complete_through(Tables.sec_13g, expected_tickers=expected) is None
 
-    write_entry(
-        {
-            "last_run_date": "2026-09-24",
-            "ticker_count": 2,
-            "coverage_complete": True,
-            "tickers": ["AAA", "CCC"],
-        }
-    )
-    assert step._schedule_complete_through(Tables.sec_13g, expected_tickers=expected) is None
+def test_schedule_frontier_reaches_the_last_session_within_the_overlap(sqlite_store) -> None:
+    """The 13D/13G zero frontier is read from the table, markers included; no manifest.
 
-    write_entry(
-        {
-            "last_run_date": "2026-09-24",
-            "ticker_count": 2,
-            "coverage_complete": True,
-            "tickers": expected,
-        }
-    )
-    assert step._schedule_complete_through(
-        Tables.sec_13g,
-        expected_tickers=expected,
-    ) == pd.Timestamp("2026-09-24")
+    A table whose latest filing lies within its 7-day overlap of the last price session is
+    complete through that session; a staler table is complete only through its latest filing."""
+    last = pd.Timestamp("2026-09-11")
+    assert schedule_complete_through(sqlite_store, Tables.sec_13g, last) is None
 
-    print("\n=== SANITY CHECK: Schedule absence frontier ===")
-    print("  legacy, partial, or same-sized wrong membership -> unavailable; exact analysis-universe roster -> trusted")
-    print("  OK: aggregation emits zeros only behind a proven issuer-side discovery frontier")
+    sqlite_store.save(Tables.sec_13g, _schedule_rows(Tables.sec_13g, [("AAA", "g1", pd.Timestamp("2026-09-01"), "1")]))
+    stale = schedule_complete_through(sqlite_store, Tables.sec_13g, last)
+    assert stale == pd.Timestamp("2026-09-01"), "10 days behind the last session: only through the filing"
+
+    sqlite_store.save(Tables.sec_13g, _marker(Tables.sec_13g, "BBB", "m1", pd.Timestamp("2026-09-04")))
+    fresh = schedule_complete_through(sqlite_store, Tables.sec_13g, last)
+    assert fresh == last, "a marker 7 days back keeps the table fresh through the last session"
+    assert schedule_complete_through(sqlite_store, Tables.sec_13g, None) == pd.Timestamp("2026-09-04")
+    assert len(cast(pd.DataFrame, sqlite_store.load(Tables.sec_13g))) == 1, "consumers still never see the marker"
+    assert stale is not None and fresh is not None
+
+    print("\n=== SANITY CHECK: Schedule absence frontier from the DB ===")
+    print(f"  last session {last.date()}: empty table -> None; latest filing 2026-09-01 (stale) -> {stale.date()}")
+    print(f"  a marker on 2026-09-04 (within the 7-day overlap) -> {fresh.date()}")
+    print("  CONCLUSION: a fresh table is complete through the last session, a stale one through its latest filing. Validated.")
+
+
+def test_db_frontier_only_turns_nan_into_zero_inside_it(sqlite_store) -> None:
+    """AC-007 (fixture): over the bounded tail, the DB frontier leaves every 13D/13G cell inside
+    it identical or turns NaN into 0, compared with today's frontier (None)."""
+    idx = pd.bdate_range("2026-03-02", periods=140)
+    tickers = ["AAA", "BBB", "CCC"]
+    rows_13d = [("AAA", "d1", idx[20], "1"), ("BBB", "d2", idx[90], "2"), ("BBB", "d3", idx[-4], "3")]
+    rows_13g = [("AAA", "g1", idx[10], "1"), ("CCC", "g2", idx[70], "4"), ("AAA", "g3", idx[-2], "5")]
+    sqlite_store.save(Tables.sec_13d, _schedule_rows(Tables.sec_13d, rows_13d))
+    sqlite_store.save(Tables.sec_13g, _schedule_rows(Tables.sec_13g, rows_13g))
+    frontier_13d = schedule_complete_through(sqlite_store, Tables.sec_13d, idx[-1])
+    frontier_13g = schedule_complete_through(sqlite_store, Tables.sec_13g, idx[-1])
+    assert frontier_13d is not None and frontier_13g is not None
+    frames = make_frames(idx, {t: {p: 1.0 for p in tickers if p != t} for t in tickers}, close_split=pd.DataFrame(100.0, index=idx, columns=tickers))
+    sec_13d, sec_13g = sqlite_store.load(Tables.sec_13d, project=True), sqlite_store.load(Tables.sec_13g, project=True)
+
+    def build(complete_13d: pd.Timestamp | None, complete_13g: pd.Timestamp | None) -> pd.DataFrame:
+        panel = build_ownership_feature_panel(frames, sec_13d, sec_13g, complete_through_13d=complete_13d, complete_through_13g=complete_13g)
+        grid = pd.MultiIndex.from_product([idx[-PART_REFRESH_TRADING_DAYS:], tickers], names=["date", "ticker"])
+        return panel.set_index(["date", "ticker"]).reindex(grid)
+
+    old, new = build(None, None), build(frontier_13d, frontier_13g)
+    columns = sorted(set(old.columns) | set(new.columns))
+    old, new = old.reindex(columns=columns), new.reindex(columns=columns)
+    frontier = pd.Series([frontier_13d if c.startswith("f_ic_act_") else frontier_13g for c in columns], index=columns)
+    inside = pd.DataFrame({c: new.index.get_level_values("date") <= frontier[c] for c in columns}, index=new.index)
+    same = old.eq(new) | (old.isna() & new.isna())
+    nan_to_zero = old.isna() & new.eq(0.0)
+    moved_inside = inside & ~same
+    assert (~moved_inside | nan_to_zero).all().all(), new[moved_inside & ~nan_to_zero].stack()
+    assert new[~inside].isna().all().all(), "past its frontier a cell is unknown, not zero"
+
+    print("\n=== SANITY CHECK: DB frontier vs today's (None) on the bounded tail (AC-007) ===")
+    print(f"  frontiers: 13D {frontier_13d.date()}, 13G {frontier_13g.date()}; tail {idx[-PART_REFRESH_TRADING_DAYS].date()}..{idx[-1].date()}")
+    print(f"  inside the frontier: {int((inside & same).to_numpy().sum())} identical, {int((inside & nan_to_zero).to_numpy().sum())} NaN->0, 0 other")
+    print(f"  past the frontier: {int((~inside).to_numpy().sum())} cell(s), all NaN")
+    print("  CONCLUSION: inside the DB frontier a 13D/13G cell keeps its value or becomes a proven 0. Validated.")
 
 
 @pytest.mark.parametrize(

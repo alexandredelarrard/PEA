@@ -7,9 +7,10 @@ local:
     fails_deliver: "sec_fails_to_deliver"
     financial_notes: "sec_financial_notes"
     financial_statements: "sec_financial_statements"
+    sec_edgar_index: "sec_edgar_index"
+    sec_13f_datasets: "sec_13f_datasets"
     fundamentals_catalogue_subdir: "fundamentals"
   filename:
-    extraction: "extraction_manifest.json"
     fundamentals_kpis_filename : "fundamentals_kpis.json"
     fundamentals_regimes_filename : "fundamentals_regimes.json"
     fundamentals_exceptions_filename : "fundamentals_exceptions.json"

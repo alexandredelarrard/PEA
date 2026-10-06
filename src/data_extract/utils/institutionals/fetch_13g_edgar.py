@@ -3,7 +3,7 @@ fetch_13g_edgar.py (src/data_extract/utils/institutionals/fetch_13g_edgar.py)
 -----------------------------------------------------------------------------
 Schedule 13G / 13G/A (passive >5% ownership) via edgartools into `sec_13g`, one row per reporting
 person with `sec_13d`'s grain and column names, built by the shared `schedule_rows` row builder.
-A missing reporting-person CIK is backfilled from the SGML header filer list.
+A missing reporting-person CIK is backfilled from the SGML header filer list (read through `sec_io`).
 """
 
 from __future__ import annotations
@@ -16,7 +16,9 @@ import pandas as pd
 
 from src.constants.constants import SEC_13G_FORMS
 from src.data_extract.utils.common.edgar_driver import EdgarFetch
-from src.data_extract.utils.institutionals.schedule_rows import ScheduleSpec, build_schedule_rows
+from src.data_extract.utils.common.resume import DONE_PER_KEY
+from src.data_extract.utils.common.sec_io import TransientReadError, filing_header
+from src.data_extract.utils.institutionals.schedule_rows import ScheduleSpec, parse_schedule, schedule_is_subject
 from src.data_store.schema import Tables
 
 # `sec_13d`'s columns minus the four Item narratives, plus `rule_designation`.
@@ -72,9 +74,12 @@ def _norm_entity(name: str | None) -> str:
 
 
 def _header_filers(filing: Any) -> list[tuple[str, str]]:
-    """`(cik, name)` per SGML header filer, in header order; empty on any failure (never drops the filing)."""
+    """`(cik, name)` per SGML header filer, in header order; empty when the header cannot be parsed
+    (never drops the filing); a transient read raises."""
     try:
-        header = filing.header
+        header = filing_header(filing)
+    except TransientReadError:
+        raise
     except Exception:  # noqa: BLE001 -- best-effort only
         return []
     out: list[tuple[str, str]] = []
@@ -149,8 +154,13 @@ SCHEDULE_13G = ScheduleSpec(
     blank_to_none=True,
 )
 
+#: Done per key: a schedule a universe company FILED is a marker under that company, never a reason
+#: to skip it for the universe company it is about.
 SEC_13G_FETCH = EdgarFetch(
     desc="SC 13G (edgartools)",
     tables=(Tables.sec_13g,),
-    build=partial(build_schedule_rows, spec=SCHEDULE_13G, table=Tables.sec_13g),
+    forms=tuple(SEC_13G_FORMS),
+    parse=partial(parse_schedule, spec=SCHEDULE_13G, table=Tables.sec_13g),
+    is_subject=schedule_is_subject,
+    done_scope=DONE_PER_KEY,
 )

@@ -586,7 +586,6 @@ def test_build_writes_through_the_store_and_skips_an_unchanged_rebuild(tmp_path,
     monkeypatch.setattr(
         lineage_module, "load_manual_symbol_tenure", lambda *a, **k: pd.DataFrame(columns=["canonical_ticker", "symbol", "issuer_cik"])
     )
-    monkeypatch.setattr(lineage_module, "record_run", lambda *a, **k: None)
     context: Any = SimpleNamespace(store=sqlite_store, log=logging.getLogger("test.entity_lineage.store"), config_dir=_config(tmp_path))
     caplog.set_level(logging.INFO)
 
@@ -628,7 +627,6 @@ def test_entity_lineage_build_logs_changed_ciks_and_affected_tickers(monkeypatch
     monkeypatch.setattr(lineage_module, "derive_entity_lineage", lambda *args, **kwargs: _empty_build(new))
     monkeypatch.setattr(lineage_module, "validate_manual_tenure_entities", lambda *args, **kwargs: None)
     monkeypatch.setattr(lineage_module, "load_manual_symbol_tenure", lambda *a, **k: pd.DataFrame({"canonical_ticker": ["AAA"]}))
-    monkeypatch.setattr(lineage_module, "record_run", lambda *args, **kwargs: None)
     context: Any = SimpleNamespace(store=Store(), log=logging.getLogger("test.entity_lineage"))
     caplog.set_level(logging.INFO, logger="test.entity_lineage")
 
@@ -663,7 +661,6 @@ def test_the_build_logs_the_manual_decision_block(monkeypatch, caplog):
     monkeypatch.setattr(lineage_module, "derive_entity_lineage", lambda *args, **kwargs: build)
     monkeypatch.setattr(lineage_module, "validate_manual_tenure_entities", lambda *args, **kwargs: None)
     monkeypatch.setattr(lineage_module, "load_manual_symbol_tenure", lambda *a, **k: pd.DataFrame({"canonical_ticker": ["AAA"]}))
-    monkeypatch.setattr(lineage_module, "record_run", lambda *args, **kwargs: None)
     context: Any = SimpleNamespace(store=Store(), log=logging.getLogger("test.entity_lineage.flags"))
     caplog.set_level(logging.INFO, logger="test.entity_lineage.flags")
 

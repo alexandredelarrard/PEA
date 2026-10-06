@@ -609,7 +609,6 @@ def test_build_rewrites_only_its_partitions_and_keeps_dei_rows(sqlite_store, mon
     monkeypatch.setattr(tenure_module, "derive_symbol_tenure", lambda scan: derived)
     manual_columns = ["canonical_ticker", "symbol", "issuer_cik", "valid_from", "valid_to", "n_filings", "source", "evidence", "reason"]
     monkeypatch.setattr(tenure_module, "load_manual_symbol_tenure", lambda config_dir: pd.DataFrame(columns=manual_columns))
-    monkeypatch.setattr(tenure_module, "record_run", lambda *args, **kwargs: None)
     writes: list[str] = []
     for method in ("save", "replace", "delete"):
         real = getattr(sqlite_store, method)
@@ -663,7 +662,6 @@ def test_symbol_tenure_build_logs_cold_and_changed_symbols(sqlite_store, monkeyp
             ]
         ),
     )
-    monkeypatch.setattr(tenure_module, "record_run", lambda *args, **kwargs: None)
     context: Any = SimpleNamespace(store=sqlite_store, log=logging.getLogger("test.symbol_tenure"))
     caplog.set_level(logging.INFO, logger="test.symbol_tenure")
 
@@ -701,7 +699,6 @@ def test_symbol_tenure_write_is_skipped_when_unchanged(sqlite_store, monkeypatch
     monkeypatch.setattr(tenure_module, "derive_symbol_tenure", lambda scan: current["frame"])
     manual_columns = ["canonical_ticker", "symbol", "issuer_cik", "valid_from", "valid_to", "n_filings", "source", "evidence", "reason"]
     monkeypatch.setattr(tenure_module, "load_manual_symbol_tenure", lambda config_dir: pd.DataFrame(columns=manual_columns))
-    monkeypatch.setattr(tenure_module, "record_run", lambda *args, **kwargs: None)
     saved: list[int] = []
     real_save = sqlite_store.save
 

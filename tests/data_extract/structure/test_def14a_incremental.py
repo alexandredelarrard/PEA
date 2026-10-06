@@ -1,5 +1,7 @@
-"""DEF 14A LLM: the incremental up-to-date check must be per-TICKER (not date+count),
-and the new board-technology-maturity fields must flatten into the output row.
+"""DEF 14A LLM: every run lists each ticker's whole window and sends only proxies that are neither
+stored with evidence nor marked; an evidence-free answer becomes one empty-filing marker (never
+written over a stored parent row); a failed read or LLM call writes nothing and is listed again.
+Also the flatten of the auditor block. LLM calls are fakes (no spend).
 """
 
 from __future__ import annotations
@@ -15,7 +17,6 @@ import pytest
 from sqlalchemy import create_engine
 
 from src.data_extract.utils.common.identity import FilingScope
-from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.schemas.def14a_schema import BeneficialOwner as _BeneficialOwner
 from src.data_extract.utils.schemas.def14a_schema import Def14AExtract as _Def14AExtract
 from src.data_extract.utils.schemas.def14a_schema import DirectorCompensation as _DirectorCompensation
@@ -23,7 +24,7 @@ from src.data_extract.utils.schemas.def14a_schema import DirectorInfo as _Direct
 from src.data_extract.utils.schemas.def14a_schema import ExecutiveCompensation as _ExecutiveCompensation
 from src.data_extract.utils.schemas.def14a_schema import GovernanceProfile as _GovernanceProfile
 from src.data_extract.utils.structure.def14a import flatten as flatten_mod
-from src.data_extract.utils.structure.def14a.fetch import _is_up_to_date, _subject_is_accepted
+from src.data_extract.utils.structure.def14a.fetch import _subject_is_accepted
 from src.data_extract.utils.structure.def14a.flatten import _flatten, _result_frames
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
@@ -47,35 +48,6 @@ def _completed_parent_row(ticker: str, accession: str, as_of: str) -> dict[str, 
     row: dict[str, object] = {column: None for column in flatten_mod._DEF14A_EVIDENCE_COLUMNS}
     row.update({"ticker": ticker, "accession_number": accession, "as_of": as_of, "ceo_name_proxy": "Already extracted"})
     return row
-
-
-def _ctx(tmp_path: Path, tickers: list[str], write_meta_today: bool = True) -> Any:
-    tmp_path.mkdir(parents=True, exist_ok=True)
-    ds = DataStore(create_engine(f"sqlite:///{tmp_path / 'd.db'}"))
-    ds.save("def14a_llm", pd.DataFrame([_completed_parent_row(t, f"acc-{t}", "2024-04-01") for t in tickers]))
-    ctx: Any = types.SimpleNamespace(store=ds, paths={"DATA_STORE": tmp_path}, config_dir="configs", config=extract_config())
-    if write_meta_today:
-        record_run(ctx, "def14a_llm", len(tickers), 0, is_full_rescan=True)
-    return ctx
-
-
-def test_up_to_date_is_per_ticker_not_date_count(tmp_path):
-    ctx = _ctx(tmp_path, ["AAPL", "MSFT"])
-    # every requested ticker present + built today -> up to date (skip)
-    assert _is_up_to_date(ctx, ["AAPL", "MSFT"]) is True
-    # a MISSING ticker must NOT be skipped, even though it was "built today" for 2
-    # (this is the '~15 tickers then it stops' bug -> now fixed)
-    assert _is_up_to_date(ctx, ["AAPL", "MSFT", "NVDA"]) is False
-
-    # no meta today -> not up to date (re-scan, picks up new annual proxies)
-    ctx2 = _ctx(tmp_path / "b", ["AAPL", "MSFT"], write_meta_today=False)
-    assert _is_up_to_date(ctx2, ["AAPL", "MSFT"]) is False
-
-    print("\n=== SANITY: DEF 14A incremental is per-ticker ===")
-    print(
-        "  all requested present -> skip; a missing ticker (NVDA) -> NOT skipped "
-        "(re-processes it); no meta -> re-scan. date+count bug fixed. Validated."
-    )
 
 
 @pytest.mark.parametrize(
@@ -136,12 +108,20 @@ def test_evidence_gate_parsed_stored_and_persistence_agree(label, extract, expec
     task = LlmTask(seq=0, payload="proxy", schema=Def14AExtract, table=Tables.def14a_llm, meta={"ticker": "ZZ", "filing": filing})
     frames = _result_frames(LlmResult(seq=0, task=task, parsed=extract))
 
+    parent = frames[Tables.def14a_llm].iloc[0]
     assert flatten_mod._has_extract_evidence(extract) is expected, label
     assert flatten_mod._has_parent_evidence(projected) is expected, label
-    assert (Tables.def14a_llm in frames) is expected, label
+    assert (parent["def14a_json"] != "_empty") is expected, label
+    if not expected:
+        assert set(frames) == {Tables.def14a_llm} and list(frames[Tables.def14a_llm].columns) == [
+            "ticker",
+            "accession_number",
+            "as_of",
+            "def14a_json",
+        ]
 
     print(f"\n=== SANITY: DEF 14A evidence gate — {label} ===")
-    print(f"  parsed={expected}, stored={expected}, parent persisted={expected}. Validated.")
+    print(f"  parsed={expected}, stored={expected}, {'parent row' if expected else 'empty-filing marker, no child row'}. Validated.")
 
 
 def _daily_context(tmp_path: Path) -> Any:
@@ -151,7 +131,7 @@ def _daily_context(tmp_path: Path) -> Any:
         log=logging.getLogger("test.def14a.daily"),
         paths={"DATA_STORE": tmp_path},
         config_dir="configs",
-        config=extract_config(data_extract={"years_history": 15, "manifest_full_rescan_days": 30}),
+        config=extract_config(data_extract={"years_history": 15}),
     )
 
 
@@ -231,7 +211,7 @@ def _install_daily_fetch_doubles(monkeypatch, extractor, filing: pd.DataFrame, l
     monkeypatch.setattr(mod, "_finalise_gender", lambda *_: None)
 
 
-def test_provider_failure_is_retried_through_real_daily_manifest_gates(tmp_path, monkeypatch):
+def test_provider_failure_writes_nothing_and_is_retried_next_run(tmp_path, monkeypatch):
     from src.data_extract.utils.structure.def14a import fetch as mod
 
     context = _daily_context(tmp_path)
@@ -249,19 +229,18 @@ def test_provider_failure_is_retried_through_real_daily_manifest_gates(tmp_path,
     mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini")
     assert not context.store.exists(Tables.def14a_llm), "day-D provider failure must not create a parent"
 
-    record_run(context, Tables.def14a_llm, ticker_count=1, rows_added=0, is_full_rescan=True, run_date=yesterday, tickers=["ZZ"])
     mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini")
 
-    assert listed_since[-1] == yesterday - pd.Timedelta(days=1)
+    assert listed_since == [None, None]
     assert tasked == [accession, accession]
     parent = context.store.load(Tables.def14a_llm)
     assert parent is not None and list(parent["accession_number"]) == [accession]
 
     print("\n=== SANITY: provider failure retries on D+1 ===")
-    print(f"  day D saved no parent; D+1 listed since {listed_since[-1].date()} and queued {accession} again. Validated.")
+    print(f"  day D saved no parent and no marker; D+1 listed the whole window again and queued {accession} again. Validated.")
 
 
-def test_legacy_empty_parent_is_repaired_through_real_daily_manifest_gates(tmp_path, monkeypatch):
+def test_legacy_empty_parent_is_repaired_by_a_full_run(tmp_path, monkeypatch):
     from src.data_extract.utils.structure.def14a import fetch as mod
 
     context = _daily_context(tmp_path)
@@ -273,7 +252,6 @@ def test_legacy_empty_parent_is_repaired_through_real_daily_manifest_gates(tmp_p
         Def14AExtract(governance=GovernanceProfile(classified_board=False, dual_class_shares=False)),
         yesterday,
     )
-    record_run(context, Tables.def14a_llm, ticker_count=1, rows_added=0, is_full_rescan=True, run_date=yesterday, tickers=["ZZ"])
 
     listed_since: list[pd.Timestamp | None] = []
     tasked: list[str] = []
@@ -284,17 +262,17 @@ def test_legacy_empty_parent_is_repaired_through_real_daily_manifest_gates(tmp_p
     )
     _install_daily_fetch_doubles(monkeypatch, _extractor_double([response], tasked), _listed_filing(accession, yesterday), listed_since)
 
-    mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini")
+    mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini", full=True)
 
-    assert listed_since == [yesterday - pd.Timedelta(days=1)]
-    assert tasked == [accession], "the legacy empty key must not count as completed"
+    assert listed_since == [None]
+    assert tasked == [accession], "under -F the legacy empty key must not count as completed"
     parent = context.store.load(Tables.def14a_llm)
     directors = context.store.load(Tables.def14a_directors)
     assert parent is not None and len(parent) == 1
     assert parent.iloc[0]["ceo_name_proxy"] == "Jane CEO" and float(parent.iloc[0]["board_size"]) == 1.0
     assert directors is not None and len(directors) == 1 and directors.iloc[0]["accession_number"] == accession
 
-    print("\n=== SANITY: legacy empty parent repairs on D+1 ===")
+    print("\n=== SANITY: legacy empty parent repairs under -F ===")
     print(f"  {accession} was re-listed, re-extracted, and upserted to one evidenced parent plus one director. Validated.")
 
 
@@ -305,7 +283,6 @@ def test_valid_parent_is_relisted_but_not_reextracted_next_day(tmp_path, monkeyp
     accession = "daily-valid-parent"
     yesterday = pd.Timestamp.today().normalize() - pd.Timedelta(days=1)
     _save_parent(context, accession, Def14AExtract(ceo_name="Jane CEO", governance=GovernanceProfile(board_size=8)), yesterday)
-    record_run(context, Tables.def14a_llm, ticker_count=1, rows_added=1, is_full_rescan=True, run_date=yesterday, tickers=["ZZ"])
 
     listed_since: list[pd.Timestamp | None] = []
     tasked: list[str] = []
@@ -316,12 +293,12 @@ def test_valid_parent_is_relisted_but_not_reextracted_next_day(tmp_path, monkeyp
     mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini")
 
     parent = context.store.load(Tables.def14a_llm)
-    assert listed_since == [yesterday - pd.Timedelta(days=1)]
+    assert listed_since == [None]
     assert tasked == [] and payloads == [], "semantic completion must filter the re-listed accession before token spend"
     assert parent is not None and len(parent) == 1
 
     print("\n=== SANITY: valid parent stays idempotent on D+1 ===")
-    print(f"  {accession} was re-listed through the real daily window but produced zero payloads and zero LLM tasks. Validated.")
+    print(f"  {accession} was re-listed over the whole window but produced zero payloads and zero LLM tasks. Validated.")
 
 
 def test_subject_guard_rejects_only_known_disjoint_subjects(monkeypatch, caplog):
@@ -410,7 +387,6 @@ def test_disjoint_subject_never_becomes_an_llm_task(tmp_path, monkeypatch):
             return []
 
     monkeypatch.setattr(mod, "LLMExtractor", FakeLLM)
-    monkeypatch.setattr(mod, "_is_up_to_date", lambda *_: False)
     monkeypatch.setattr(
         mod, "load_cik_mapping", lambda *_: pd.DataFrame([{"ticker": "PSKY", "cik": "0002041610", "name": "Paramount Skydance Corp"}])
     )
@@ -433,11 +409,9 @@ def test_disjoint_subject_never_becomes_an_llm_task(tmp_path, monkeypatch):
 
 
 def test_gap_fill_lists_full_window_and_skips_present(tmp_path, monkeypatch):
-    """Gap-filling on a FRESH manifest (no recorded run yet -> full rescan, per
-    `run_manifest.manifest_window`): the FULL window is listed (no `since` cutoff)
-    and the LLM runs ONLY on filings whose accession is not already in the table —
-    so a HOLE in the middle (2023 here) is filled while the present years (2022,
-    2024) are skipped. Uses an in-memory SQLite store (no Postgres)."""
+    """Every run lists the FULL window (no `since` cutoff) and the LLM runs ONLY on filings whose
+    accession is not already in the table -- so a HOLE in the middle (2023 here) is filled while
+    the present years (2022, 2024) are skipped. Uses a SQLite store (no Postgres)."""
     import logging
 
     from src.data_extract.utils.structure.def14a import fetch as mod
@@ -507,7 +481,6 @@ def test_gap_fill_lists_full_window_and_skips_present(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "_payload_for", lambda context, ticker, f: "=== CARVED ===")
     monkeypatch.setattr(mod, "LLMExtractor", _FakeLLM)
     monkeypatch.setattr(mod, "load_cik_mapping", lambda _c, _t=None: pd.DataFrame({"ticker": ["ZZ"], "cik": ["0000000001"], "name": ["Z"]}))
-    monkeypatch.setattr(mod, "_is_up_to_date", lambda _c, _n: False)
 
     mod.fetch_def14a_llm(ctx, ctx.config, tickers=["ZZ"], model="gpt-5-mini")
 
@@ -522,74 +495,6 @@ def test_gap_fill_lists_full_window_and_skips_present(tmp_path, monkeypatch):
     print(
         f"  had 2022+2024, listed full window (since={listed_since[0]}) -> LLM ran ONLY on the "
         f"missing {sorted(set(extracted))} (2023 hole + new 2025); 2 present skipped. Validated."
-    )
-
-
-def test_manifest_narrows_since_on_routine_rerun(tmp_path, monkeypatch):
-    """A ROUTINE re-run (manifest already has a recent run for this table, same
-    ticker count, rescan not due) must list only from the manifest's last run date
-    onward -- not the full `years_history` window -- per `run_manifest.manifest_window`.
-    This is the narrow-window counterpart to the full-rescan case exercised by
-    `test_gap_fill_lists_full_window_and_skips_present` above."""
-    import logging
-
-    from src.data_extract.utils.common.run_manifest import record_run
-    from src.data_extract.utils.structure.def14a import fetch as mod
-
-    ds = DataStore(create_engine(f"sqlite:///{tmp_path / 'd.db'}"))
-    ds.save(
-        "def14a_llm",
-        pd.DataFrame(
-            [
-                _completed_parent_row("ZZ", "a2024", "2024-04-01"),
-            ]
-        ),
-    )
-    ctx: Any = types.SimpleNamespace(
-        store=ds,
-        log=logging.getLogger("t"),
-        paths={"DATA_STORE": tmp_path},
-        config_dir="configs",
-        config=extract_config(data_extract={"years_history": 15}),
-    )
-    # A prior run 10 days ago, one ticker -- same ticker count as this run, and well
-    # inside the (default 30-day) self-heal window, so `manifest_window` must return
-    # the narrow cutoff, not the full-rescan fallback.
-    last_run = pd.Timestamp.today().normalize() - pd.Timedelta(days=10)
-    record_run(ctx, "def14a_llm", ticker_count=1, rows_added=1, is_full_rescan=True, run_date=last_run, tickers=["ZZ"])
-
-    listed_since = []
-
-    def _fake_list(context, cik, forms, years, company_name="", since=None, cache_dir=None):  # mirrors edgar_fillings.list_filings EXACTLY
-        # -- a stale stub binds `since` positionally
-        listed_since.append(since)
-        return pd.DataFrame(columns=["accession_number", "doc_url", "filing_date", "period_of_report", "form"])
-
-    class _FakeLLM:
-        """This ticker lists no filings, so the extracter is built and never used."""
-
-        def __init__(self, context, config, action=None, threads=None, methodes=None):
-            pass
-
-        def run_extraction(self, tasks, flatten=None, group_key=None):
-            return []
-
-    monkeypatch.setattr(mod, "list_filings", _fake_list)
-    monkeypatch.setattr(mod, "load_identity", lambda context: _ROSTER_ONLY)
-    monkeypatch.setattr(mod, "LLMExtractor", _FakeLLM)
-    monkeypatch.setattr(mod, "load_cik_mapping", lambda _c, _t=None: pd.DataFrame({"ticker": ["ZZ"], "cik": ["0000000001"], "name": ["Z"]}))
-    monkeypatch.setattr(mod, "_is_up_to_date", lambda _c, _n: False)
-
-    mod.fetch_def14a_llm(ctx, ctx.config, tickers=["ZZ"], model="gpt-5-mini")
-
-    # list_filings' own `since` is STRICTLY AFTER the date passed, so the manifest's
-    # last run date (inclusive) is passed as (last_run - 1 day).
-    assert listed_since == [last_run - pd.Timedelta(days=1)], f"routine rerun must narrow to the manifest cutoff, got {listed_since}"
-
-    print("\n=== SANITY: DEF 14A manifest narrows the window on a routine rerun ===")
-    print(
-        f"  prior run {last_run.date()}, same ticker count, rescan not due -> "
-        f"listed since={listed_since[0]} (inclusive of the prior run date). Validated."
     )
 
 
@@ -651,58 +556,59 @@ def _stub_proxy_listing(monkeypatch, mod, listed: dict[str, Any]) -> None:
     monkeypatch.setattr(mod, "load_identity", lambda context: _ROSTER_ONLY)
 
 
-def test_same_size_universe_swap_lists_the_new_ticker_over_the_full_window(tmp_path, monkeypatch):
+def test_every_ticker_is_listed_over_the_full_window_on_every_run(tmp_path, monkeypatch):
     from src.data_extract.utils.structure.def14a import fetch as mod
 
     context = _daily_context(tmp_path)
-    last_run = pd.Timestamp.today().normalize() - pd.Timedelta(days=10)
-    record_run(context, Tables.def14a_llm, ticker_count=2, rows_added=0, is_full_rescan=True, run_date=last_run, tickers=["AA", "BB"])
+    context.store.save(Tables.def14a_llm, pd.DataFrame([_completed_parent_row("AA", "acc-AA", "2024-04-01")]))
     listed: dict[str, Any] = {}
     _stub_proxy_listing(monkeypatch, mod, listed)
     monkeypatch.setattr(mod, "LLMExtractor", _extractor_double([], []))
     monkeypatch.setattr(mod, "load_cik_mapping", lambda *_: pd.DataFrame({"ticker": ["AA", "CC"], "cik": ["1", "2"], "name": ["A", "C"]}))
 
     mod.fetch_def14a_llm(context, context.config, ["AA", "CC"], model="gpt-5-mini")
+    first = dict(listed)
+    mod.fetch_def14a_llm(context, context.config, ["AA", "CC"], model="gpt-5-mini")
 
-    assert listed["CC"] is None, listed
-    print("\n=== SANITY: DEF 14A same-size universe swap ===")
-    print(f"  AA/BB -> AA/CC: CC listed with since={listed['CC']} (the whole 15y window), not the last run date {last_run.date()}. Validated.")
+    assert first == listed == {"AA": None, "CC": None}, (first, listed)
+    print("\n=== SANITY: DEF 14A lists every ticker's whole window ===")
+    print(f"  AA (stored) and CC (new): listed with since={listed} on two consecutive runs; no gate skips a ticker. Validated.")
 
 
-def test_a_ticker_whose_lineage_changed_since_the_last_run_is_relisted_over_the_full_window(tmp_path, monkeypatch):
-    """F-005: a lineage expansion (new predecessor window) after the table's last run relists that ticker over
-    the whole `years_history` window; an unchanged ticker keeps the manifest cutoff."""
+def test_a_lineage_expansion_lists_the_new_window_on_the_next_run_with_no_run_state(tmp_path, monkeypatch):
+    """F-005: a ticker that gains a predecessor window lists that CIK's proxies on the next run. Every run
+    lists every window over the whole `years_history`, and the done set is the stored rows, so no record of a
+    previous run is read."""
     from src.data_extract.utils.structure.def14a import fetch as mod
 
     context = _daily_context(tmp_path)
-    today = pd.Timestamp.today().normalize()
-    last_run = today - pd.Timedelta(days=10)
-    record_run(context, Tables.def14a_llm, ticker_count=2, rows_added=0, is_full_rescan=True, run_date=last_run, tickers=["AA", "CC"])
     identity = dated_identity(
-        [("AA", "0000000001", "cik_window", SENTINEL, None), ("CC", "0000000002", "cik_window", SENTINEL, None)],
-        {"AA": "0000000001", "CC": "0000000002"},
-        changed_at={"AA": today - pd.Timedelta(days=30), "CC": today - pd.Timedelta(days=2)},
+        [("CC", "0000000009", "cik_window", SENTINEL, "2020-01-01"), ("CC", "0000000002", "cik_window", "2020-01-01", None)],
+        {"CC": "0000000002"},
     )
-    listed: dict[str, Any] = {}
-    _stub_proxy_listing(monkeypatch, mod, listed)
+    listed: list[tuple[str, Any]] = []
+
+    def fake_list(context, cik, forms, years, company, since=None):
+        listed.append((cik, since))
+        return pd.DataFrame()
+
+    monkeypatch.setattr(mod, "list_filings", fake_list)
     monkeypatch.setattr(mod, "load_identity", lambda context: identity)
     monkeypatch.setattr(mod, "LLMExtractor", _extractor_double([], []))
-    monkeypatch.setattr(mod, "load_cik_mapping", lambda *_: pd.DataFrame({"ticker": ["AA", "CC"], "cik": ["1", "2"], "name": ["A", "C"]}))
+    monkeypatch.setattr(mod, "load_cik_mapping", lambda *_: pd.DataFrame({"ticker": ["CC"], "cik": ["2"], "name": ["C"]}))
 
-    mod.fetch_def14a_llm(context, context.config, ["AA", "CC"], model="gpt-5-mini")
+    mod.fetch_def14a_llm(context, context.config, ["CC"], model="gpt-5-mini")
 
-    assert listed == {"AA": last_run - pd.Timedelta(days=1), "CC": None}, listed
-    print("\n=== SANITY: DEF 14A relists a ticker whose lineage changed ===")
-    print(
-        f"  CC's scope changed after the last run ({last_run.date()}) -> since=None (whole window); AA keeps since={listed['AA'].date()}. Validated."
-    )
+    assert listed == [("0000000009", None), ("0000000002", None)], listed
+    print("\n=== SANITY: DEF 14A lists a newly added predecessor window ===")
+    print(f"  CC's scope holds a predecessor window -> both CIKs listed over the whole window: {listed}. Validated.")
 
 
 def test_llm_workers_default_to_config_gpt_threads(tmp_path, monkeypatch):
     from src.data_extract.utils.structure.def14a import fetch as mod
 
     context = _daily_context(tmp_path)
-    context.config = extract_config(data_extract={"years_history": 15, "manifest_full_rescan_days": 30}, gpt={"threads": 7})
+    context.config = extract_config(data_extract={"years_history": 15}, gpt={"threads": 7})
     built: list[int] = []
 
     class _RecordingExtractor(LLMExtractor):
@@ -754,3 +660,120 @@ def test_llm_proxies_are_listed_per_scope_window_with_the_seam_margin(monkeypatc
     assert mod.accepted_subjects(FilingScope.roster_only("AAPL", "320193")) == frozenset()
     print("\n=== SANITY: DEF 14A LLM per-window listing ===")
     print("  both PSKY CIKs listed; the predecessor's 2026 proxy (past its margin) dropped; margin proxies on both sides kept")
+
+
+_EMPTY_ANSWER = Def14AExtract(governance=GovernanceProfile(classified_board=False, dual_class_shares=False))
+
+
+def _seed_full_width_parent(context: Any) -> None:
+    """One unrelated evidenced parent, so the SQLite table carries every column (Postgres adds them on save)."""
+    _save_parent(context, "seed", Def14AExtract(ceo_name="Seed CEO"), pd.Timestamp("2020-04-01"))
+
+
+def test_an_evidence_free_answer_is_marked_and_never_sent_again(tmp_path, monkeypatch):
+    from src.data_extract.utils.structure.def14a import fetch as mod
+
+    context = _daily_context(tmp_path)
+    _seed_full_width_parent(context)
+    accession = "evidence-free"
+    filed = pd.Timestamp("2025-04-01")
+    tasked: list[str] = []
+    listed_since: list[pd.Timestamp | None] = []
+    _install_daily_fetch_doubles(monkeypatch, _extractor_double([_EMPTY_ANSWER], tasked), _listed_filing(accession, filed), listed_since)
+
+    mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini")
+    mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini")
+
+    marker = context.store.load(Tables.def14a_llm, markers=True).set_index("accession_number").loc[accession]
+    assert tasked == [accession], tasked
+    assert marker["def14a_json"] == "_empty" and pd.isna(marker["ceo_name_proxy"]) and pd.isna(marker["board_size"])
+    assert context.store.load(Tables.def14a_llm)["accession_number"].tolist() == ["seed"]
+    assert not context.store.exists(Tables.def14a_directors)
+    print("\n=== SANITY: DEF 14A evidence-free answer (D17) ===")
+    print(f"  run 1: 1 LLM call -> marker def14a_json='_empty', no child row, hidden by load; run 2: {len(tasked) - 1} call.")
+
+
+def test_a_failed_read_writes_nothing_and_is_sent_on_the_next_run(tmp_path, monkeypatch):
+    from src.data_extract.utils.structure.def14a import fetch as mod
+
+    context = _daily_context(tmp_path)
+    accession = "read-failed"
+    tasked: list[str] = []
+    answer = Def14AExtract(ceo_name="Jane CEO", governance=GovernanceProfile(board_size=8))
+    _install_daily_fetch_doubles(monkeypatch, _extractor_double([answer], tasked), _listed_filing(accession, pd.Timestamp("2025-04-01")), [])
+    reads = iter([None, "=== BOARD OF DIRECTORS ===\nJane Director"])
+    monkeypatch.setattr(mod, "_payload_for", lambda *_: next(reads))
+
+    mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini")
+    exists_after_failure = context.store.exists(Tables.def14a_llm)
+    mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini")
+
+    assert not exists_after_failure and tasked == [accession]
+    assert context.store.load(Tables.def14a_llm)["ceo_name_proxy"].tolist() == ["Jane CEO"]
+    print("\n=== SANITY: DEF 14A failed read ===")
+    print("  run 1: the proxy could not be read -> no row, no marker, no LLM call; run 2: read, sent once, parent stored.")
+
+
+def test_full_sends_a_marked_proxy_again(tmp_path, monkeypatch):
+    from src.data_extract.utils.structure.def14a import fetch as mod
+
+    context = _daily_context(tmp_path)
+    _seed_full_width_parent(context)
+    accession = "marked-then-full"
+    tasked: list[str] = []
+    answer = Def14AExtract(ceo_name="Jane CEO")
+    _install_daily_fetch_doubles(
+        monkeypatch, _extractor_double([_EMPTY_ANSWER, answer], tasked), _listed_filing(accession, pd.Timestamp("2025-04-01")), []
+    )
+
+    mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini")
+    mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini", full=True)
+
+    stored = context.store.load(Tables.def14a_llm, markers=True).set_index("accession_number").loc[accession]
+    assert tasked == [accession, accession]
+    assert stored["def14a_json"] != "_empty" and stored["ceo_name_proxy"] == "Jane CEO"
+    print("\n=== SANITY: DEF 14A --full ===")
+    print("  a marked proxy is sent again under --full; the evidenced answer replaces the marker.")
+
+
+def test_an_evidence_free_answer_never_overwrites_a_stored_parent(tmp_path, monkeypatch):
+    from src.data_extract.utils.structure.def14a import fetch as mod
+
+    context = _daily_context(tmp_path)
+    accession = "legacy-evidence-free"
+    filed = pd.Timestamp("2025-04-01")
+    _save_parent(context, accession, Def14AExtract(company_name="Legacy Co", governance=GovernanceProfile(classified_board=False)), filed)
+    before = context.store.load(Tables.def14a_llm, markers=True).iloc[0]
+    tasked: list[str] = []
+    _install_daily_fetch_doubles(monkeypatch, _extractor_double([_EMPTY_ANSWER], tasked), _listed_filing(accession, filed), [])
+
+    mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini", full=True)
+
+    after = context.store.load(Tables.def14a_llm, markers=True)
+    assert len(after) == 1 and after.iloc[0]["def14a_json"] == before["def14a_json"] != "_empty"
+    assert after.iloc[0]["company_name"] == "Legacy Co"
+    assert tasked == [accession]
+    print("\n=== SANITY: never mark over data (def14a_llm) ===")
+    print("  -F re-sends a stored evidence-free parent; the evidence-free answer's marker is dropped and the parent row is untouched.")
+
+
+def test_a_stored_evidence_free_parent_is_skipped_unless_full(tmp_path, monkeypatch):
+    from src.data_extract.utils.structure.def14a import fetch as mod
+
+    context = _daily_context(tmp_path)
+    accession = "stored-evidence-free"
+    filed = pd.Timestamp("2025-04-01")
+    _save_parent(context, accession, Def14AExtract(company_name="Legacy Co", governance=GovernanceProfile(classified_board=False)), filed)
+    tasked: list[str] = []
+    payloads: list[str] = []
+    _install_daily_fetch_doubles(monkeypatch, _extractor_double([_EMPTY_ANSWER, _EMPTY_ANSWER], tasked), _listed_filing(accession, filed), [])
+    monkeypatch.setattr(mod, "_payload_for", lambda *_: payloads.append(accession) or "=== BOARD OF DIRECTORS ===")
+
+    mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini")
+    nightly = (list(tasked), list(payloads))
+    mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini", full=True)
+
+    assert nightly == ([], []), "a saved row counts as done on a nightly run"
+    assert tasked == [accession] and payloads == [accession]
+    print("\n=== SANITY: stored evidence-free parent (user decision 2026-10-04) ===")
+    print(f"  nightly run: {len(nightly[0])} LLM task, {len(nightly[1])} document read; -F: re-sent once ({tasked}).")

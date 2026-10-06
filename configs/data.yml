@@ -45,6 +45,4 @@ data_availability:
 
 # defeatbeta earnings-call transcript extraction (`extract-earnings-calls`).
 earnings_calls:
-  lookback_days: 45  # incremental runs re-check calls dated within this many days of the stored frontier
   read_workers: 4  # parallel HuggingFace row-group reads; writes stay on one thread
-  reconcile_days: 7  # a full compare of every scoped call at least this often

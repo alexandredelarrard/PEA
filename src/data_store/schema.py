@@ -30,9 +30,46 @@ KIND_EXTRACT = "extract"
 KIND_AGGREGATE = "aggregate"
 KIND_PART = "part"
 
+# Resume modes: how a nightly run derives an extracted table's work list from its own rows.
+# SERIES = dated per-key series (frontier minus overlap, plus interior holes); DOCUMENTS =
+# per-filing units diffed against a listing; ARCHIVE = published bulk periods; MARKET = one
+# market-wide walk by filing date; SNAPSHOT = rebuilt whole, no resume.
+RESUME_SERIES = "series"
+RESUME_DOCUMENTS = "documents"
+RESUME_ARCHIVE = "archive"
+RESUME_MARKET = "market"
+RESUME_SNAPSHOT = "snapshot"
+
 # Columns that are zero-padded string identifiers, never numeric -- forcing them to TEXT
 # preserves leading zeros (SEC CIK "0000320193" would lose them as BIGINT).
 _TEXT_IDENTIFIER_COLS = {"cik"}
+
+# EDGAR form spellings shared by more than one contract below.
+_FORMS_13D = ("SC 13D", "SC 13D/A", "SCHEDULE 13D", "SCHEDULE 13D/A")
+_FORMS_13G = ("SC 13G", "SC 13G/A", "SCHEDULE 13G", "SCHEDULE 13G/A")
+_FORMS_345 = ("3", "4", "5", "3/A", "4/A", "5/A")
+_FORMS_DEF14A = ("DEF 14A", "DEF 14C", "DEFC14A")
+_FORMS_13F = ("13F-HR", "13F-HR/A")
+# The sentinel a child-sequence or label column takes on an empty-filing marker row.
+_EMPTY = "_empty"
+
+
+@dataclass(frozen=True, slots=True)
+class Resume:
+    """How the nightly run derives this table's work list from its own rows."""
+
+    mode: str
+    # Entity column ("ticker", "cik"); None = one market-wide frontier.
+    key: str | None
+    # Publication date the overlap is measured on.
+    frontier_col: str | None
+    overlap_days: int = 0
+    # Documents: EDGAR forms diffed against the local filing index.
+    forms: tuple[str, ...] = ()
+    # Archive: the source period column.
+    period_col: str | None = None
+    # Earliest date the source serves (ISO); the work list never starts before it.
+    source_start: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +113,13 @@ class Table:
     # table lacks raises KeyError, so these are dropped quietly.
     optional_columns: frozenset[str] = field(default_factory=frozenset)
 
+    # The extraction resume contract; None for tables no fetcher resumes.
+    resume: Resume | None = None
+    # (column, sentinel) that marks a read filing holding no data for its key. `load` and
+    # `iter_load` hide these rows; the resume reads (`distinct`, `max_date_by`, `key_stats`)
+    # count them.
+    empty_marker: tuple[str, object] | None = None
+
     def __str__(self) -> str:  # so f"{Tables.prices}" is the name
         return self.name
 
@@ -99,7 +143,8 @@ class Tables:
     # sub_industry. Also the single source of truth for ticker->CIK resolution (see
     # sec_utils.load_cik_mapping); the old separate `cik_mapping` table was dropped as a
     # redundant duplicate.
-    sp500_tickers = Table("sp500_tickers", ("ticker",), KIND_REFERENCE)
+    # `added_on` is the date a ticker entered the table; a NULL reads as an established ticker.
+    sp500_tickers = Table("sp500_tickers", ("ticker",), KIND_REFERENCE, date_type_cols=("added_on",))
 
     # Dataroma's curated "superinvestors" roster, ONE ROW PER (snapshot, manager). Seeded
     # from 13 web.archive.org captures (2013 -> 2026, 879 manager-rows, 104 distinct codes)
@@ -288,15 +333,15 @@ class Tables:
     # `security_master` rows with role `secondary_class` and an open end: BRK-A, GOOG, LEN-B, ...),
     # each under its own Yahoo symbol. ⚠ Every reader filters on the universe
     # (`load_universe_tickers`); an unfiltered read mixes the classes into the cross-section.
-    prices = Table("prices", ("ticker", "date"), date_col="date", freshness="daily")
-    dividends = Table("prices_dividends", ("ticker", "date"), date_col="date")
+    prices = Table("prices", ("ticker", "date"), date_col="date", freshness="daily", resume=Resume(RESUME_SERIES, "ticker", "date", 7))
+    dividends = Table("prices_dividends", ("ticker", "date"), date_col="date", freshness="daily", resume=Resume(RESUME_SERIES, "ticker", "date", 7))
     # Share-split ex-dates, yfinance-sourced and unioned with `sharadar_actions` (which has
     # nine known holes -- GOOGL 2022, NVDA 2021, TSLA 2022, AVGO/CMG/ANET 2024, BKNG/MNST/AMCR
     # 2026 -- and at least one false positive, SJM's 0.945 merger factor).
     # Sparse like `dividends`, not daily: only non-zero events are stored, so it resumes from
     # its own frontier rather than the price one.
     # NOT a market-cap input -- see the table comment in sql/schema.sql.
-    prices_splits = Table("prices_splits", ("ticker", "date"), date_col="date")
+    prices_splits = Table("prices_splits", ("ticker", "date"), date_col="date", freshness="daily", resume=Resume(RESUME_SERIES, "ticker", "date", 7))
     # ⚠ FIRST USABLE DATE 2018-08-01, and it MOVES FORWARD. FINRA serves the RegSHO daily
     # files from a rolling ~8-year CDN window (probed 2026-09-08: last 403 2018-07-31, first
     # 200 2018-08-01, ~8.10 years deep). The stored min(date) of 2017-12-29 is one anomalous
@@ -321,6 +366,8 @@ class Tables:
         # read instead of degrading it, back when the projection demanded them unconditionally.
         read_columns=("date", "ticker", "short_volume", "total_volume", "short_interest", "avg_daily_volume"),
         optional_columns=frozenset({"short_interest", "avg_daily_volume"}),
+        # The first day FINRA serves; earlier never-stored days are not requested.
+        resume=Resume(RESUME_SERIES, "ticker", "date", 7, source_start="2018-08-01"),
     )
     # SEC Fails-to-Deliver: settlement fails per ticker x date. Same grain as
     # short_interest but a separate table -> its semi-monthly, ~2-month-lagged files don't
@@ -334,18 +381,22 @@ class Tables:
         date_type_cols=("date",),
         freshness="biweekly",
         read_columns=("date", "ticker", "fails_quantity", "period"),
+        resume=Resume(RESUME_ARCHIVE, "ticker", "period", 31, period_col="period", source_start="2009-07-01"),
     )
     # SEC Fails-to-Deliver, RAW and PER SECURITY: one row per source line (no summing), keyed
     # on the CUSIP the file reports. `ftd-download` stores the in-scope lines (lineage symbols
     # and the CUSIP-6 of their voted issuers) with `security_id`, `ticker`, `lineage_role` and
     # `security_class` NULL; the security master is derived from these rows. `date` is the
     # settlement date as filed, `trade_date` its settlement-cycle conversion; `price` is NULL
-    # where the file has '.', and so is `fails_value`.
+    # where the file has '.', and so is `fails_value`. `ftd-download` resumes on the periods no stored
+    # line carries; one market-wide frontier (no key), the ticker grain is rebuilt from these rows.
     sec_fails_to_deliver_security = Table(
         "sec_fails_to_deliver_security",
         ("cusip", "date"),
         date_col="date",
         date_type_cols=("date", "trade_date"),
+        freshness="biweekly",
+        resume=Resume(RESUME_ARCHIVE, None, "date", 31, period_col="period", source_start="2009-07-01"),
         read_columns=(
             "date",
             "trade_date",
@@ -366,12 +417,16 @@ class Tables:
     # (case kept: `BACpB` is a preferred, `BRK/A` a class), `market` the reporting facilities. The four
     # stamp columns come from `security_master` (a symbol never seen in FTD: the P21 lineage fallback,
     # `security_id` `S<cik>:<symbol>`); NULL when the symbol's security is known but not on that date.
-    # `short-interest` rebuilds the ticker-grain `short_interest` from these rows.
+    # `short-interest` rebuilds the ticker-grain `short_interest` from these rows and plans its day files
+    # on that table's per-ticker windows; one day file serves every symbol, so this table has one
+    # market-wide frontier (no key) from FINRA's first served day.
     sec_short_volume_security = Table(
         "sec_short_volume_security",
         ("source_symbol", "date"),
         date_col="date",
         date_type_cols=("date",),
+        freshness="daily",
+        resume=Resume(RESUME_SERIES, None, "date", 7, source_start="2018-08-01"),
         read_columns=(
             "date",
             "source_symbol",
@@ -396,7 +451,13 @@ class Tables:
     # Long, not wide: the legs start on different dates (gold 2000, breakeven 2003) and a
     # wide layout paid for that with a NaN block per series. See fetch_macro.py.
     prices_macro = Table(
-        "prices_macro", ("ticker", "date"), date_col="date", date_type_cols=("date",), freshness="daily", read_columns=("date", "ticker", "close")
+        "prices_macro",
+        ("ticker", "date"),
+        date_col="date",
+        date_type_cols=("date",),
+        freshness="daily",
+        read_columns=("date", "ticker", "close"),
+        resume=Resume(RESUME_SERIES, "ticker", "date", 7),
     )
     cusip_ticker_map = Table("cusip_ticker_map", ("cusip",), ticker_col="ticker")
 
@@ -582,7 +643,15 @@ class Tables:
     # Headcount, parsed from 10-K BODY TEXT. Its own table because the source is prose: in the
     # wide table one failed regex would fail the whole snapshot. Annual, so `as_of` is a 10-K
     # filing date and consumers forward-fill (`build_history.carry_latest_known`).
-    fundamentals_employees = Table("fundamentals_employees", ("ticker", "as_of"), date_col="as_of", date_type_cols=("as_of",), freshness="quarterly")
+    # Its NULL-headcount rows already record an undecidable 10-K, so it declares no marker.
+    fundamentals_employees = Table(
+        "fundamentals_employees",
+        ("ticker", "as_of"),
+        date_col="as_of",
+        date_type_cols=("as_of",),
+        freshness="quarterly",
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "as_of", 95, forms=("10-K", "10-K/A", "10-K405")),
+    )
     # Accession-grain, amendment-aware fundamentals facts: one row per catalogue FIELD per
     # period per filing, resolved from the filer's own XBRL calculation linkbase (see
     # data_extract/utils/fundamentals/xbrl_linkbase.py) rather than from a priority-ordered
@@ -616,8 +685,17 @@ class Tables:
         date_col="filing_date",
         date_type_cols=("filing_date", "period_start", "period_end", "period_of_report"),
         freshness="quarterly",
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 95, forms=("10-K", "10-K/A", "10-Q", "10-Q/A"), source_start="2009-04-15"),
+        empty_marker=("field", _EMPTY),
     )
-    earnings_surprises = Table("earnings_surprises", ("ticker", "earnings_date"), date_col="earnings_date", freshness="quarterly")
+    # Not index-diffed: the source lists no documents, so its units come from the stored dates.
+    earnings_surprises = Table(
+        "earnings_surprises",
+        ("ticker", "earnings_date"),
+        date_col="earnings_date",
+        freshness="quarterly",
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "earnings_date", 95),
+    )
     # SEC Financial Statement Data Sets (num/sub): curated pension facts per
     # company/tag/period-end (`ddate`) / duration (`qtrs`) / ZIP quarter vintage.
     pension_facts = Table(
@@ -627,6 +705,7 @@ class Tables:
         date_type_cols=("ddate", "filed", "available_at"),
         freshness="quarterly",
         freshness_date_col="available_at",
+        resume=Resume(RESUME_ARCHIVE, "ticker", "quarter", 95, period_col="quarter", source_start="2009-01-01"),
     )
     # SEC Financial Statement AND NOTES Data Sets -- footnote NUMERIC facts (consolidated /
     # undimensioned, curated tag set: PBO, plan assets, funded status, service cost,
@@ -639,6 +718,7 @@ class Tables:
         date_type_cols=("ddate", "filed", "available_at"),
         freshness="monthly",
         freshness_date_col="available_at",
+        resume=Resume(RESUME_ARCHIVE, "ticker", "period", 62, period_col="period", source_start="2009-01-01"),
     )
     # SEC notes NARRATIVE TEXT blocks (high-signal notes only), stored raw for later
     # embedding / sentiment. Same grain as notes_num; `value` is the text.
@@ -649,6 +729,7 @@ class Tables:
         date_type_cols=("ddate", "filed", "available_at"),
         freshness="monthly",
         freshness_date_col="available_at",
+        resume=Resume(RESUME_ARCHIVE, "ticker", "period", 62, period_col="period", source_start="2009-01-01"),
     )
     # NOTE: `employees_history` was RETIRED, and so was the `fundamentals_history_sec."employees"`
     # column that briefly replaced it. Headcount now has its own `fundamentals_employees`
@@ -761,6 +842,7 @@ class Tables:
             "ncf",
             "fcf",
         ),
+        resume=Resume(RESUME_SERIES, "ticker", "date", 95),
     )
     # Sharadar's own ticker dimension, filtered to `table=fundamentals` (17,826 rows
     # measured 2026-08-26). Kept vendor-shaped and SEPARATE from `sp500_tickers`: this one
@@ -819,7 +901,9 @@ class Tables:
         ("date", "ticker", "action", "contraticker"),
         date_col="date",
         date_type_cols=("date",),
+        freshness="daily",
         read_columns=("date", "action", "ticker", "name", "value", "contraticker", "contraname"),
+        resume=Resume(RESUME_SERIES, None, "date", 7),
     )
     # S&P 500 index membership events (added / removed / historical), back to 1992. Ingested
     # for the survivorship-bias fix, which is a SEPARATE task: `src/utils/universe.py` still
@@ -829,7 +913,9 @@ class Tables:
         ("date", "ticker", "action"),
         date_col="date",
         date_type_cols=("date",),
+        freshness="daily",
         read_columns=("date", "action", "ticker", "name", "contraticker", "contraname", "note"),
+        resume=Resume(RESUME_SERIES, None, "date", 7),
     )
 
     # ----------------------------------------------------------------- #
@@ -860,6 +946,8 @@ class Tables:
         read_columns=("cik", "period", "ticker", "shares", "value_usd", "call_value", "put_value", "filing_date"),
         # institutional_features zero-fills the option legs when they are absent
         optional_columns=frozenset({"call_value", "put_value", "filing_date"}),
+        # Market-wide nightly walk; a new ticker is backfilled per ticker from `source_start`.
+        resume=Resume(RESUME_MARKET, None, "filing_date", 7, forms=_FORMS_13F, source_start="2013-04-01"),
     )
     # The COMPLETE quarterly book of every manager that has ever been on the Dataroma roster, at
     # CUSIP grain and with NO universe filter -- the denominator `sec13f_hr` above cannot supply.
@@ -907,6 +995,7 @@ class Tables:
             "debt_value",
             "other_value",
         ),
+        resume=Resume(RESUME_MARKET, "cik", "filing_date", 95, forms=_FORMS_13F),
     )
     # Forms 3/4/5 transactions, one row per (accession, nonderiv/deriv table, 1-based row in
     # that table). One table for both sources: EDGAR daily rows are authoritative
@@ -966,6 +1055,11 @@ class Tables:
             "source",
             "row_sequence",
         ),
+        # Two legs resume from these rows. EDGAR: the local index's Forms 3/4/5 filed after the last
+        # stored zip quarter, minus the accessions stored from EDGAR under the key (markers
+        # included). Zip: the quarters no row carries yet. A marker takes `row_sequence` = 0.
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 7, forms=_FORMS_345, period_col="quarter", source_start="2006-01-01"),
+        empty_marker=("security_type", _EMPTY),
     )
     # Form 3/4/5 footnote prose, one row per (accession, footnote id). Free -- already inside the
     # cached zips, and the PK holds without dedup (0 duplicate (accession, id) pairs measured on
@@ -1002,6 +1096,10 @@ class Tables:
             "reporting_person_name",
             "item4_purpose_of_transaction",
         ),
+        freshness="daily",
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 7, forms=_FORMS_13D),
+        # rp_seq counts from 0, so the sentinel is negative
+        empty_marker=("rp_seq", -1),
     )
     # Item 5(c) 60-day transaction log: one row PER DISCLOSED TRADE, keyed (ticker,
     # accession, trade_seq) -- an independent grain from `sec_13d` (no rp_seq
@@ -1045,12 +1143,22 @@ class Tables:
         # ownership_features, same shape as `sec_13d` minus the two 13D-only
         # columns above.
         read_columns=("ticker", "accession_number", "cusip", "filing_date", "percent_of_class", "reporting_person_cik", "reporting_person_name"),
+        freshness="daily",
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 7, forms=_FORMS_13G),
+        empty_marker=("rp_seq", -1),
     )
 
     # ----------------------------------------------------------------- #
     # Extract -- governance (DEF 14A) & events                          #
     # ----------------------------------------------------------------- #
-    def14a_llm = Table("def14a_llm", ("ticker", "accession_number"), date_col="as_of", freshness="yearly")
+    def14a_llm = Table(
+        "def14a_llm",
+        ("ticker", "accession_number"),
+        date_col="as_of",
+        freshness="yearly",
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "as_of", 95, forms=_FORMS_DEF14A),
+        empty_marker=("def14a_json", _EMPTY),
+    )
     # ---- the four LLM-side child tables, flattened out of `def14a_llm.def14a_json` ----
     # Free by construction: the tokens are already paid, so these rows cost nothing beyond the
     # flatten. They were simply unqueryable inside the JSON blob.
@@ -1139,7 +1247,13 @@ class Tables:
     # are silently wrong rather than absent, and the LLM path's own child tables replaced them
     # on every measurable axis (title 100% vs 45.4%, 0 rows > $1e9 vs 109).
     def14a_edgar = Table(
-        "sec_def14a", ("ticker", "accession_number"), date_col="filing_date", date_type_cols=("filing_date", "period_of_report", "ecd_period_end")
+        "sec_def14a",
+        ("ticker", "accession_number"),
+        date_col="filing_date",
+        date_type_cols=("filing_date", "period_of_report", "ecd_period_end"),
+        freshness="yearly",
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 95, forms=_FORMS_DEF14A, source_start="2022-12-16"),
+        empty_marker=("form", _EMPTY),
     )
     # 8-K events: one row per ITEM CODE of a filing, keyed (ticker, accession, item) -- an
     # 8-K reports 1..n items and ~75% report more than one. `item` is in the PK because
@@ -1147,7 +1261,15 @@ class Tables:
     # keeping only the last (95,785 accessions stored for 196,875 item rows built).
     # `has_earnings`/`has_press_release` come from edgartools' typed `CurrentReport`
     # (best-effort -- NaN, not False, when that parse fails).
-    sec_8k = Table("sec_8k", ("ticker", "accession_number", "item"), date_col="filing_date", date_type_cols=("filing_date", "period_of_report"))
+    sec_8k = Table(
+        "sec_8k",
+        ("ticker", "accession_number", "item"),
+        date_col="filing_date",
+        date_type_cols=("filing_date", "period_of_report"),
+        freshness="daily",
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 7, forms=("8-K", "8-K/A")),
+        empty_marker=("item", _EMPTY),
+    )
     # Shareholder-meeting vote tallies parsed out of the ALREADY-STORED `sec_8k` Item 5.07
     # narratives -- one row per proposal. Item 5.07 is the ONLY source of certified vote
     # counts (Rel. 33-9089 moved the disclosure out of 10-Q Part II Item 4, so it begins
@@ -1166,11 +1288,21 @@ class Tables:
         ("ticker", "accession_number", "proposal_seq"),
         date_col="filing_date",
         date_type_cols=("filing_date", "period_of_report", "meeting_date"),
+        freshness="daily",
+        # Units are the stored Item 5.07 rows of `sec_8k`, not an index listing.
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 7),
+        empty_marker=("proposal_seq", 0.0),
     )
     # 10-K Item 1A (Risk Factors) + Item 7 (MD&A) raw text; one row per
     # (ticker, accession, section). Feeds the embedding/drift feature layer.
     filing_risk_text = Table(
-        "sec_filing_text", ("ticker", "accession_number", "section"), date_col="filed", date_type_cols=("filed", "period_of_report")
+        "sec_filing_text",
+        ("ticker", "accession_number", "section"),
+        date_col="filed",
+        date_type_cols=("filed", "period_of_report"),
+        freshness="quarterly",
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "filed", 95, forms=("10-K", "10-Q")),
+        empty_marker=("section", _EMPTY),
     )
 
     # ----------------------------------------------------------------- #
@@ -1182,8 +1314,14 @@ class Tables:
     # `speaker`, `content`. Nothing is split here: prepared remarks / Q&A are cut at
     # aggregate time in data_aggregate via `src/utils/earnings_call_split.py`, so a
     # splitter fix needs no refetch. NOT projected: `content` IS the payload.
+    # Not index-diffed: units are calls in the source parquet.
     earnings_call_sections = Table(
-        "earnings_call_sections", ("ticker", "quarter", "paragraph"), date_col="as_of", date_type_cols=("as_of",), freshness="quarterly"
+        "earnings_call_sections",
+        ("ticker", "quarter", "paragraph"),
+        date_col="as_of",
+        date_type_cols=("as_of",),
+        freshness="quarterly",
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "as_of", 95, source_start="2005-01-01"),
     )
     # Per-call sentiment / text-metrics cache (FinBERT-tone + LM lexicon), one row per
     # ticker / fiscal quarter / section. Holds the EXPENSIVE, call-intrinsic scores (tone
@@ -1334,6 +1472,16 @@ def by_kind(kind: str) -> tuple[Table, ...]:
 def freshness_tables() -> tuple[Table, ...]:
     """The tables checked by the extraction freshness gate, in registry order."""
     return tuple(t for t in ALL if t.freshness is not None)
+
+
+def resume_tables() -> tuple[Table, ...]:
+    """The tables that declare an extraction resume contract, in registry order."""
+    return tuple(t for t in ALL if t.resume is not None)
+
+
+def marker_tables() -> tuple[Table, ...]:
+    """The tables that declare an empty-filing marker, in registry order."""
+    return tuple(t for t in ALL if t.empty_marker is not None)
 
 
 def projection(table: Table | str, available: Sequence[str] | None) -> list[str] | None:

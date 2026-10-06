@@ -7,11 +7,12 @@ authoritative: a filing EDGAR already stored only gets the zip `quarter`; every 
 upserted with `source='zip'`, one row per (accession, table, `row_sequence`); FOOTNOTES follow the
 kept accessions. Each quarter logs how many of its filings EDGAR missed.
 
-`download_insider_transactions` caches every quarter's zip (the identity build reads them);
-`fetch_insider_transactions` parses them, downloading only a zip still missing. A stored quarter is
-skipped unless the universe gained tickers or `reparse` is set, in which case cached zips are re-parsed.
-`restamp_insider_lineage` rewrites the lineage stamp of stored rows (either source) after a lineage
-change and purges co-registrant rows, reading no zip and no EDGAR filing.
+`download_insider_transactions` caches every quarter's zip (the identity build reads them). Zips are
+cached and downloaded only when missing. The quarters parsed come from `resume.archive_worklist`: those
+no stored row carries, plus every cached quarter for a new ticker with no zip-covered row yet (its rows
+only); `reparse` re-reads every stored quarter too. `restamp_insider_lineage` rewrites the lineage stamp
+of stored rows (either source) after a lineage change and purges co-registrant rows, reading no zip and
+no EDGAR filing.
 """
 
 from __future__ import annotations
@@ -33,14 +34,13 @@ from src.context import Context
 from src.data_extract.utils.common.bulk_cache import (
     ZipRead,
     cache_dir,
+    cached_periods,
     ensure_zip,
-    is_cached,
-    mark_processed,
-    pending_periods,
     quarter_periods,
     read_zip_tables,
 )
 from src.data_extract.utils.common.identity import Identity, load_identity
+from src.data_extract.utils.common.resume import archive_worklist
 from src.data_extract.utils.institutionals.insider_common import (
     BULK_DATE_FORMATS,
     INSIDER_COLUMNS,
@@ -369,46 +369,65 @@ def download_insider_transactions(context: Context) -> list[str]:
     return cached
 
 
-def fetch_insider_transactions(context: Context, tickers: list[str], years_history: int = 15, reparse: bool = False) -> int:
-    """Download (cached) the insider data sets and ingest each pending quarter with
-    `store_zip_quarter` and its `report_zip_quarter` lines, save the kept footnotes, log one
-    identity-exclusion summary for the run, then, on a full-universe run only, sweep stored rows
-    against the loaded universe. Returns the zip rows saved.
+def _keep_keys(parsed: tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame], keys: Sequence[str]) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """A rescanned quarter's output cut to `keys`: their kept rows, the rejects that claimed them, and the
+    footnotes of the kept accessions."""
+    df_kept, df_rejected, df_notes = parsed
+    wanted = set(keys)
+    df_kept = df_kept[df_kept["ticker"].isin(wanted)] if "ticker" in df_kept.columns else df_kept
+    df_rejected = df_rejected[df_rejected["claimed_ticker"].isin(wanted)] if "claimed_ticker" in df_rejected.columns else df_rejected
+    df_notes = filter_footnotes(df_notes, set(df_kept["accession_number"].dropna().unique())) if not df_kept.empty else empty_footnotes()
+    return df_kept, df_rejected, df_notes
+
+
+def fetch_insider_transactions(
+    context: Context, tickers: list[str], years_history: int, reparse: bool = False, as_of: pd.Timestamp | None = None
+) -> int:
+    """Download (cached) the insider data sets and ingest each quarter of the work list with
+    `store_zip_quarter` (a pending quarter also logs its `report_zip_quarter` lines), save the kept
+    footnotes, log one identity-exclusion summary for the run, then, on a full-universe run only, sweep
+    stored rows against the loaded universe. Returns the zip rows saved.
 
     `reparse` re-reads every quarter the source has back to `SEC_INSIDER_FIRST_YEAR`, even those
-    already stored, so a parse change reaches the oldest rows too. The run manifest is left to the
-    EDGAR ingest, the only writer of the `insider_transactions` completeness entry.
+    already stored, so a parse change reaches the oldest rows too.
     """
     identity = load_identity(context)
     cache = cache_dir(context, context.config.local.paths.insider_transactions)
-    span = (pd.Timestamp.today().year - SEC_INSIDER_FIRST_YEAR + 1) if reparse else years_history + 1
-    quarters = quarter_periods(span, SEC_INSIDER_FIRST_YEAR)
-    pending = pending_periods(context, cache, Tables.insider_transactions, quarters, tickers, reparse=reparse, column="quarter")
+    run_date = pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize()
+    span = (run_date.year - SEC_INSIDER_FIRST_YEAR + 1) if reparse else years_history + 1
+    quarters = quarter_periods(span, SEC_INSIDER_FIRST_YEAR, run_date)
+    work = archive_worklist(context, (Tables.insider_transactions,), quarters, cached_periods(cache), tickers, run_date, full=reparse)
 
+    rescanned = set(work.rescan)
+    units = list(work.units())
     saved = notes_saved = 0
     excluded: list[pd.DataFrame] = []
     fetched_at = pd.Timestamp.now(tz="UTC").tz_localize(None)
-    for quarter in tqdm(pending, desc="insider data sets"):
+    for quarter, keys in tqdm(units, desc="insider data sets"):
         path = ensure_zip(context, cache / f"{quarter}.zip", zip_urls(quarter), label=f"insider {quarter}", log=logger)
         tables = _read_tables(path) if path is not None else None
         if tables is None:
             continue
-        df_kept, df_rejected, df_notes = _parse_quarter(tables, quarter, tickers, identity, fetched_at)
+        # Screened against the whole universe, so a row of another universe ticker is never rejected;
+        # a rescanned quarter then keeps only its keys' rows.
+        parsed = _parse_quarter(tables, quarter, work.screen, identity, fetched_at)
+        df_kept, df_rejected, df_notes = _keep_keys(parsed, keys) if quarter in rescanned else parsed
         excluded.append(exclusion_rows(df_rejected))
-        report_zip_quarter(context, quarter, df_kept)
+        if quarter not in rescanned:
+            report_zip_quarter(context, quarter, df_kept)
         saved += store_zip_quarter(context, quarter, df_kept)
         if not df_notes.empty:
             notes_saved += context.store.save(Tables.insider_footnotes, df_notes)
-    log_exclusions(logger, f"zip run ({len(pending)} quarter(s))", excluded)
+    log_exclusions(logger, f"zip run ({len(units)} quarter(s))", excluded)
 
     sweep_universe = _sweep_universe(context, tickers)
     deleted = _screen_stored_rows(context, sweep_universe, identity) if sweep_universe else 0
-    mark_processed(cache, Tables.insider_transactions, tickers)
     logger.info(
-        "insider_transactions: saved %d zip row(s) (+%d footnotes) over %d pending quarter(s) of %s -> %s; sweep deleted %d",
+        "insider_transactions: saved %d zip row(s) (+%d footnotes) over %d pending + %d rescanned quarter(s) of %s -> %s; sweep deleted %d",
         saved,
         notes_saved,
-        len(pending),
+        len(work.pending),
+        len(work.rescan),
         quarters[0],
         quarters[-1],
         deleted,
@@ -420,13 +439,12 @@ def reparse_insider_transactions(context: Context, tickers: list[str]) -> int:
     """Re-read every cached quarter for `tickers` only (a lineage expansion); returns the zip rows saved.
 
     Each quarter goes through `store_zip_quarter`, so a filing EDGAR already stored keeps its rows. The
-    stored-row sweep, the marker file and the manifest belong to the regular full-universe run.
+    stored-row sweep belongs to the regular full-universe run.
     """
     identity = load_identity(context)
     cache = cache_dir(context, context.config.local.paths.insider_transactions)
-    quarters = [
-        q for q in quarter_periods(pd.Timestamp.today().year - SEC_INSIDER_FIRST_YEAR + 1, SEC_INSIDER_FIRST_YEAR) if is_cached(cache / f"{q}.zip")
-    ]
+    on_disk = cached_periods(cache)
+    quarters = [q for q in quarter_periods(pd.Timestamp.today().year - SEC_INSIDER_FIRST_YEAR + 1, SEC_INSIDER_FIRST_YEAR) if q in on_disk]
     saved = 0
     fetched_at = pd.Timestamp.now(tz="UTC").tz_localize(None)
     for quarter in quarters:
@@ -444,7 +462,9 @@ def reparse_insider_transactions(context: Context, tickers: list[str]) -> int:
 def _restamp_targets(context: Context, tickers: Sequence[str], identity: Identity) -> list[str]:
     """`tickers`, every ticker holding a row without a stamp (rows stored before the lineage columns existed), and the
     tickers the manual `merger_metadata` and co-registrants name, since editing those moves no lineage stamp."""
-    unstamped = {str(t) for t in context.store.distinct(Tables.insider_transactions, "ticker", where={"lineage_role": None})}
+    # An empty-filing marker carries no issuer CIK and no stamp; only real rows count as unstamped.
+    unstamped_rows = {"lineage_role": None, "issuer_cik": context.store.NOT_NULL}
+    unstamped = {str(t) for t in context.store.distinct(Tables.insider_transactions, "ticker", where=unstamped_rows)}
     co_registrant = {identity.ticker_for_cik(cik) for cik in identity.co_registrant_ciks} - {None}
     return sorted(set(tickers) | unstamped | set(identity.merger_boundaries) | {str(t) for t in co_registrant})
 

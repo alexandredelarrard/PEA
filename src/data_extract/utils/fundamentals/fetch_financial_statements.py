@@ -4,7 +4,8 @@ Each quarter's `sub.txt` + `num.txt` is cached locally; consolidated rows (no `s
 the curated pension tags are joined to `sub` for cik / form / filed, mapped to the universe ticker whose lineage window
 of the filer CIK holds the filing date (consolidating) and upserted to
 `pension_facts`, one row per (cik, tag, ddate, qtrs, quarter), latest filed wins, stamped with the archive's
-point-in-time `available_at`. Footnote pension detail comes from `fetch_financial_notes.py`.
+point-in-time `available_at`. The quarters parsed come from `resume.archive_worklist`. Footnote pension detail
+comes from `fetch_financial_notes.py`.
 """
 
 from __future__ import annotations
@@ -21,17 +22,16 @@ from src.data_extract.utils.common.bulk_cache import (
     ZipRead,
     archive_available_at,
     cache_dir,
+    cached_periods,
     ensure_zip,
     is_cached,
-    mark_processed,
-    pending_periods,
     period_end,
     quarter_periods,
     read_zip_tables,
     stored_period_clock,
 )
 from src.data_extract.utils.common.identity import Identity, load_identity, tickers_for_ciks
-from src.data_extract.utils.common.run_manifest import record_run
+from src.data_extract.utils.common.resume import archive_worklist
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik_series
 
@@ -130,21 +130,25 @@ def _save_pension_quarter(context: Context, identity: Identity, path: Path, quar
     return context.store.save(Tables.pension_facts, facts[[c for c in _OUT_COLS if c in facts.columns]])
 
 
-def fetch_financial_statements(context: Context, tickers: list[str], years_history: int = 15, reparse: bool = False) -> int:
+def fetch_financial_statements(
+    context: Context, tickers: list[str], years_history: int, reparse: bool = False, as_of: pd.Timestamp | None = None
+) -> int:
     """Extract universe pension facts over `years_history` into `pension_facts`; returns rows upserted.
 
-    Only pending quarters are read. `reparse` re-reads the WHOLE cached window (needed after a lineage change;
-    never a partial suffix). Cached quarters cost no network.
+    Quarters missing from the table are parsed for every ticker, and cached quarters again for a new
+    ticker with no row. `reparse` re-reads every stored quarter too (after a parse
+    change). Cached quarters cost no network.
     """
 
     identity = load_identity(context)
     cache = cache_dir(context, context.config.local.paths.financial_statements)
 
-    periods = quarter_periods(years_history + 1, SEC_FINSTMT_FIRST_YEAR)
-    pending = pending_periods(context, cache, Tables.pension_facts, periods, tickers, reparse=reparse, column="quarter")
+    run_date = pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize()
+    periods = quarter_periods(years_history + 1, SEC_FINSTMT_FIRST_YEAR, run_date)
+    work = archive_worklist(context, (Tables.pension_facts,), periods, cached_periods(cache), tickers, run_date, full=reparse)
 
     saved = 0
-    for q in tqdm(pending, desc="financial-statement data sets"):
+    for q, keys in tqdm(list(work.units()), desc="financial-statement data sets"):
         cached_path = cache / f"{q}.zip"
         downloaded = not is_cached(cached_path)
         path = ensure_zip(context, cached_path, SEC_FINSTMT_URL_TEMPLATE.format(quarter=q), label=f"finstmt {q}", log=logger)
@@ -157,18 +161,16 @@ def fetch_financial_statements(context: Context, tickers: list[str], years_histo
         if available_at is None:
             logger.warning("finstmt %s: archive clock unavailable -> leaving quarter un-ingested", q)
             continue
-        saved += _save_pension_quarter(context, identity, path, q, available_at, tickers)
+        saved += _save_pension_quarter(context, identity, path, q, available_at, list(keys))
 
-    mark_processed(cache, Tables.pension_facts, tickers)
-    logger.info("pension_facts: upserted %d rows (%d quarters scanned)", saved, len(periods))
-    record_run(context, Tables.pension_facts, len(tickers), saved)
+    logger.info("pension_facts: upserted %d rows (%d pending + %d rescanned quarters)", saved, len(work.pending), len(work.rescan))
     return saved
 
 
 def reparse_financial_statements(context: Context, tickers: list[str]) -> int:
     """Re-read every cached statement zip for `tickers` only (a lineage expansion); returns rows upserted.
 
-    No download, marker file or manifest entry: the next regular run keeps its own resume.
+    No download: the next regular run keeps its own resume.
     """
     identity = load_identity(context)
     cache = cache_dir(context, context.config.local.paths.financial_statements)

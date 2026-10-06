@@ -12,8 +12,7 @@ from typing import Any
 import pandas as pd
 
 from src.context import Context
-from src.data_extract.utils.common.run_manifest import record_run
-from src.data_extract.utils.common.sec_utils import sec_get
+from src.data_extract.utils.common.sec_io import sec_get
 from src.data_store.schema import Tables
 from src.utils.string import normalise_ticker, pad_cik_series
 
@@ -44,6 +43,5 @@ def download_sec_company_tickers(context: Context) -> int:
     payload = sec_get(context, SEC_COMPANY_TICKERS_URL).json()
     frame = parse_company_tickers_exchange(payload, fetched_at=pd.Timestamp.now().floor("s"))
     written = context.store.replace(Tables.sec_company_tickers, frame)
-    record_run(context, Tables.sec_company_tickers, 0, written, is_full_rescan=True)
     logger.info("sec_company_tickers: %d (cik, ticker) row(s) over %d CIK(s)", written, frame["cik"].nunique())
     return written

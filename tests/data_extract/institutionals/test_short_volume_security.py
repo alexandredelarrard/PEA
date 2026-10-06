@@ -19,14 +19,14 @@ import pytest
 
 from src.data_extract.utils.common import security_master as sm
 from src.data_extract.utils.common.identity import build_identity
-from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.institutionals import fetch_short_interest as si
 from src.data_store.schema import Tables
 from tests.data_extract.fake_context import extract_config
 
 REPO = Path(__file__).resolve().parents[3]
 BUILT = pd.Timestamp("2026-10-04 12:00:00")
-LAST_RUN = pd.Timestamp("2026-10-05")
+#: The run date: LATER falls inside the 7-day re-check window before it, BUILT does not.
+RUN_DATE = pd.Timestamp("2026-10-12")
 LATER = pd.Timestamp("2026-10-06 09:00:00")
 HEADER = "Date|Symbol|ShortVolume|ShortExemptVolume|TotalVolume|Market"
 UNIVERSE = ["BRK-B", "BAC", "GOOGL", "LEN", "DOC", "AAA"]
@@ -308,7 +308,6 @@ def _stamped_store(store, tmp_path: Path) -> Any:
     store.save(Tables.sec_short_volume_security, stamped[list(si.SECURITY_COLUMNS)])
     store.save(Tables.short_interest, si.ticker_rows(stamped))
     context = _context(store, tmp_path)
-    record_run(context, Tables.short_interest, ticker_count=6, rows_added=0, run_date=LAST_RUN)
     return context
 
 
@@ -320,7 +319,7 @@ def test_e31_a_moved_master_boundary_restamps_exactly_the_affected_rows(sqlite_s
     master.loc[master["canonical_company"].eq("LEN"), "scope_changed_at"] = LATER
     sqlite_store.replace(Tables.security_master, master)
 
-    records = si.restamp_short_volume(context, None, UNIVERSE, identity=_identity(master))
+    records = si.restamp_short_volume(context, None, UNIVERSE, identity=_identity(master), as_of=RUN_DATE)
 
     raw = sqlite_store.load(Tables.sec_short_volume_security)
     raw["day"] = pd.to_datetime(raw["date"]).dt.strftime("%Y-%m-%d")
@@ -339,6 +338,8 @@ def test_e32_an_unchanged_master_restamps_nothing(sqlite_store, tmp_path, monkey
     context = _stamped_store(sqlite_store, tmp_path)
     for name in ("save", "delete", "replace", "load"):
         monkeypatch.setattr(sqlite_store, name, lambda *a, _n=name, **k: pytest.fail(f"unchanged master must not {_n}"))
-    assert si.restamp_short_volume(context, None, UNIVERSE, identity=_identity(), stamps=si.change_stamps(_master(), _identity())) == []
+    assert (
+        si.restamp_short_volume(context, None, UNIVERSE, identity=_identity(), stamps=si.change_stamps(_master(), _identity()), as_of=RUN_DATE) == []
+    )
     print("\n=== SANITY CHECK: E32 unchanged master ===")
     print("  every company's stamp predates the last run: no read, no re-stamp, no write")

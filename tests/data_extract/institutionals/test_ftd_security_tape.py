@@ -18,14 +18,14 @@ import pytest
 
 from src.data_extract.utils.common import security_master as sm
 from src.data_extract.utils.common.identity import build_identity
-from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.institutionals import fetch_fails_to_deliver as ftd
 from src.data_store.schema import Tables
 from tests.data_extract.fake_context import extract_config
 
 REPO = Path(__file__).resolve().parents[3]
 BUILT = pd.Timestamp("2026-10-04 12:00:00")
-LAST_RUN = pd.Timestamp("2026-10-05")
+#: The run date: LATER falls inside the 7-day re-check window before it, BUILT does not.
+RUN_DATE = pd.Timestamp("2026-10-12")
 LATER = pd.Timestamp("2026-10-06 09:00:00")
 HEADER = "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE"
 UNIVERSE = ["CB", "DOC", "GM", "MRK", "PLD", "JCI", "XOM", "APTV", "EXE"]
@@ -581,17 +581,16 @@ def test_incremental_run_stamps_only_unstamped_rows_and_builds_their_periods(sql
     monkeypatch.setattr(ftd, "read_zip_text", lambda *a, **k: pytest.fail("the incremental run reads no zip"))
     monkeypatch.setattr(ftd, "load_identity", lambda context, refresh=False: _identity(), raising=False)
 
-    assert ftd.fetch_fails_to_deliver(context, tickers=UNIVERSE) > 0
+    assert ftd.fetch_fails_to_deliver(context, tickers=UNIVERSE, as_of=RUN_DATE) > 0
     security = _security(sqlite_store)
     assert security["security_id"].notna().all() and "370442105" not in set(security["cusip"]), "GMGMQ left scope: deleted"
     assert _grain(sqlite_store) == {("CB", "2015-06-02"): 293.0}
-    record_run(context, Tables.sec_fails_to_deliver, ticker_count=9, rows_added=0, run_date=LAST_RUN)
 
     writes: list[str] = []
     for name in ("save", "delete", "replace"):
         original = getattr(sqlite_store, name)
         monkeypatch.setattr(sqlite_store, name, lambda *a, _n=name, _o=original, **k: writes.append(_n) or _o(*a, **k))
-    assert ftd.fetch_fails_to_deliver(context, tickers=UNIVERSE) == 0
+    assert ftd.fetch_fails_to_deliver(context, tickers=UNIVERSE, as_of=RUN_DATE) == 0
     assert writes == [], "nothing unstamped and an unchanged master: no write (E32)"
     print("\n=== SANITY CHECK: incremental FTD stamp ===")
     print("  only NULL-stamped rows are read; the out-of-scope GMGMQ line is deleted; a rerun with an unchanged master writes nothing")
@@ -599,7 +598,6 @@ def test_incremental_run_stamps_only_unstamped_rows_and_builds_their_periods(sql
 
 def _stamped_store(store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     context = _rebuild(store, tmp_path, monkeypatch)
-    record_run(context, Tables.sec_fails_to_deliver, ticker_count=9, rows_added=0, run_date=LAST_RUN)
     return context
 
 
@@ -625,7 +623,7 @@ def test_e31_a_moved_boundary_restamps_exactly_the_affected_rows(sqlite_store, t
         lambda table, frame, *a, **k: saved.append(frame.assign(_table=getattr(table, "name", table))) or original(table, frame, *a, **k),
     )
 
-    records = ftd.restamp_fails(context, companies=None, tickers=UNIVERSE)
+    records = ftd.restamp_fails(context, companies=None, tickers=UNIVERSE, as_of=RUN_DATE)
 
     after = _security(sqlite_store)
     changed = before.merge(after, on=["cusip", "date"], suffixes=("_b", "_a"))
@@ -643,6 +641,6 @@ def test_e32_an_unchanged_master_restamps_nothing(sqlite_store, tmp_path, monkey
     context = _stamped_store(sqlite_store, tmp_path, monkeypatch)
     for name in ("save", "delete", "replace", "load"):
         monkeypatch.setattr(sqlite_store, name, lambda *a, _n=name, **k: pytest.fail(f"unchanged master must not {_n}"))
-    assert ftd.restamp_fails(context, companies=None, tickers=UNIVERSE, master=_master()) == []
+    assert ftd.restamp_fails(context, companies=None, tickers=UNIVERSE, master=_master(), as_of=RUN_DATE) == []
     print("\n=== SANITY CHECK: E32 unchanged master ===")
     print("  every company's stamp predates the last run: no read, no re-stamp, no purge, no write")

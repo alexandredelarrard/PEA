@@ -192,7 +192,8 @@ def run_ecd(context, limit: int | None, dry: bool) -> None:
     """Reuses the production builder verbatim rather than re-implementing it, so what the gate
     measures is what the pipeline will write. 2023+ only: an earlier proxy carries no `ecd:`
     facts (Item 402(v), FY ending >= 2022-12-16) and correctly gets no row."""
-    from src.data_extract.utils.common.edgar_driver import load_edgar_scope
+    from src.constants.constants import DEF14A_FORMS
+    from src.data_extract.utils.common.edgar_driver import FilingStamp, load_edgar_scope
     from src.data_extract.utils.common.sec_utils import load_cik_mapping
     from src.data_extract.utils.structure.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
 
@@ -224,7 +225,9 @@ def run_ecd(context, limit: int | None, dry: bool) -> None:
         try:
             # returns {Table: DataFrame}, keyed by the registry object -- one entry since
             # Phase 4 slimmed this path to `sec_def14a` alone
-            df = DEF14A_EDGAR_FETCH.build(t, cik, since=cutoff, done_accessions=frozenset(), scope=scope)[Tables.def14a_edgar]
+            filings = scope.list_filings(t, cik, DEF14A_FORMS, since=cutoff, done_accessions=frozenset())
+            frames = [DEF14A_EDGAR_FETCH.parse(t, cik, FilingStamp.of(f, cik), scope)[Tables.def14a_edgar] for f in filings]
+            df = pd.concat(frames, ignore_index=True) if frames else None
         except Exception as e:
             print(f"  {t}: FAILED {type(e).__name__}: {e}")
             continue

@@ -11,7 +11,7 @@ import pytest
 import src.data_aggregate.transformers.step_cube_institutionals as step_module
 from src.constants.constants import DEFAULT_CONFIG_DIR
 from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
-from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PartWindow, write_part
+from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_REFRESH_TRADING_DAYS, PartWindow, write_part
 from src.data_aggregate.utils.institutionals.cross_source_features import EMISSION as CROSS_SOURCE_EMISSION
 from src.data_aggregate.utils.institutionals.insider_features import EMISSION as INSIDER_EMISSION
 from src.data_aggregate.utils.institutionals.institutional_features import EMISSION as INSTITUTIONAL_EMISSION
@@ -237,14 +237,14 @@ def test_symbol_lineage_loader_reads_only_form345_and_manual_tenure(sqlite_store
     print("SANITY: of four FISV/FI tenure rows the loader kept the form345 and manual ones; the two dei rows stay out of the mask.")
 
 
-def test_insider_panel_reads_one_table_and_the_manifest_frontier(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_insider_panel_reads_one_table_and_the_db_frontier(monkeypatch: pytest.MonkeyPatch) -> None:
     step = _bare_step()
     fake_step = cast(Any, step)
     fake_step._cfg = {"institutionals": {"decay_halflife": {"insider": 21}}}
     fake_step._availability = None
     insider = pd.DataFrame({"ticker": ["AAA"], "filing_date": [pd.Timestamp("2026-09-01")]})
     shares = pd.DataFrame({"ticker": ["AAA"]})
-    frames = SimpleNamespace(universe=("BBB", "AAA"))
+    frames = SimpleNamespace(universe=("BBB", "AAA"), trading_index=pd.DatetimeIndex(["2026-09-30", "2026-10-01"]))
     sink = ConditioningSink()
     frontier = pd.Timestamp("2026-10-02")
     loads: list[tuple[object, object]] = []
@@ -255,8 +255,8 @@ def test_insider_panel_reads_one_table_and_the_manifest_frontier(monkeypatch: py
         loads.append((Tables.insider_transactions, universe))
         return insider
 
-    def schedule_complete_through(table: object, *, expected_tickers: object) -> pd.Timestamp:
-        frontiers.append((table, expected_tickers))
+    def schedule_complete_through(store: object, table: object, last_session: object) -> pd.Timestamp:
+        frontiers.append((table, last_session))
         return frontier
 
     def build(actual_frames: object, actual_insider: object, **kwargs: Any) -> pd.DataFrame:
@@ -264,14 +264,15 @@ def test_insider_panel_reads_one_table_and_the_manifest_frontier(monkeypatch: py
         return pd.DataFrame({"date": [frontier], "ticker": ["AAA"]})
 
     fake_step._load_insider = load_insider
-    fake_step._schedule_complete_through = schedule_complete_through
+    fake_step._store = object()
+    monkeypatch.setattr(step_module.institutional_frontiers, "schedule_complete_through", schedule_complete_through)
     monkeypatch.setattr(step_module, "build_insider_feature_panel", build)
 
     out = step._insider_panel(cast(Any, frames), shares, sink)
 
     assert out is not None and len(out) == 1
     assert loads == [(Tables.insider_transactions, ("BBB", "AAA"))]
-    assert frontiers == [(Tables.insider_transactions, ["AAA", "BBB"])]
+    assert frontiers == [(Tables.insider_transactions, pd.Timestamp("2026-10-01"))]
     assert built == {
         "frames": frames,
         "insider": insider,
@@ -282,7 +283,7 @@ def test_insider_panel_reads_one_table_and_the_manifest_frontier(monkeypatch: py
         "sink": sink,
     }
     print(
-        "SANITY: the insider panel read only insider_transactions (canonical-lineage rows, `load_insider_transactions`), took complete_through from the manifest over the sorted universe, and passed the builder the same arguments."
+        "SANITY: the insider panel read only insider_transactions (canonical-lineage rows, `load_insider_transactions`), took complete_through from the table's DB frontier at the last session, and passed the builder the same arguments."
     )
 
 
@@ -407,6 +408,7 @@ def test_build_panel_preserves_order_sink_and_output_contract(monkeypatch: pytes
         "full": True,
         "warmup": 390,
         "trading_index": trading_index,
+        "refresh": PART_REFRESH_TRADING_DAYS,
     }
     assert got_window is window
     assert loads == {"frames": 1, "shares": 1, "splits": 1, "calendar": 1}

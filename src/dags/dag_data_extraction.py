@@ -16,14 +16,16 @@ Airflow POOLS (created in airflow-init):
                           superinvestors, earnings calls  (+ the one heavy yfinance pull:
                           price_history)
 
-Flow: seed_universe -> (fetchers, with source dependencies) -> extraction_status -> trigger
-the data_aggregation DAG. Identity stage: the Form 3/4/5, Notes and FTD zip downloads and the SEC
-current-tickers snapshot -> identity_tables (tenure, lineage, security master) ->
-identity_propagate -> every task that reads the lineage (price_history waits for identity_tables only:
-it reads the master's current secondary classes); a failed build or propagation leaves the
-gate unrun. After every fetcher, `identity_check` (`python -m src validate identity`) fails on rows
-filed by a CIK outside the ticker's entity. Fetchers and both gates each get three attempts;
-the final gate is a hard block.
+Flow: seed_universe -> (fetchers, with source dependencies) -> identity_check -> extraction_status -> trigger
+the data_aggregation DAG. Every task has `retries: 3`, so four attempts in all. No source blocks
+the night: `identity_check`, `extraction_status` and the aggregation trigger run on ALL_DONE, so they
+start once every fetcher has finished, failed or not. Identity stage: the Form 3/4/5, Notes and FTD
+zip downloads and the SEC current-tickers snapshot -> identity_tables (tenure, lineage, security
+master) -> identity_propagate -> every task that reads the lineage (price_history waits for
+identity_tables only: it reads the master's current secondary classes); a failed build or propagation
+leaves those consumers unrun. After every fetcher, `identity_check` (`python -m src validate identity`)
+fails on rows filed by a CIK outside the ticker's entity. `extraction_status` prints the per-table
+freshness report, logs a WARNING per RED table and exits 0; only `modelling predict` refuses stale inputs.
 
 Every command is `/opt/pipeline/bin/python -m src data_extract <cmd>` (the pipeline's isolated venv),
 run from the mounted repo. Fetchers are incremental, so a nightly run only pulls new data.
@@ -66,6 +68,7 @@ def fetch(
     cmd: str,
     pool: str = "default_pool",
     task_id: str | None = None,
+    trigger_rule: str = TriggerRule.ALL_SUCCESS,
 ) -> BashOperator:
     """Run one retryable extraction command from the pipeline venv."""
     return BashOperator(
@@ -74,6 +77,7 @@ def fetch(
         cwd=PROJECT,
         pool=pool,
         pool_slots=2 if pool == "sec_api" else 1,
+        trigger_rule=trigger_rule,
         dag=dag,
     )
 
@@ -86,10 +90,8 @@ macro = fetch("macro")
 short_interest = fetch("short-interest")
 earnings_surprises = fetch("earnings-surprises")
 
-# yfinance sources: splits must finish before prices so a new event triggers a full re-pull
-splits = fetch("splits")
+# yfinance: one download writes prices, prices_dividends and prices_splits (a new split re-pulls its ticker)
 price_history = fetch("price-history")
-dividends = fetch("dividends")
 
 # 2) identity stage: cache the Form 3/4/5 zips, the Notes zips (+ cover-page dei symbols) and the FTD zips
 #    (+ raw in-scope lines), snapshot SEC's current tickers, build symbol_tenure + entity_lineage +
@@ -104,6 +106,8 @@ identity_propagate = fetch("identity-propagate")
 # 3) SEC bulk zips — capped to 2 concurrent (disk + SEC bandwidth)
 fails_to_deliver = fetch("fails-to-deliver", pool="sec_bulk")
 thirteen_f = fetch("thirteen-f", pool="sec_api")
+# new tickers' 13F history (cached data-set ZIPs + one EDGAR walk); a no-op on nights with no new ticker
+thirteen_f_backfill = fetch("thirteen-f-backfill", pool="sec_api")
 financial_statements = fetch("financial-statements", pool="sec_bulk")
 insider_transactions = fetch("insider-transactions --bulk-only", pool="sec_bulk", task_id="insider_transactions")
 financial_notes = fetch("financial-notes", pool="sec_bulk")  # VERY heavy
@@ -128,23 +132,24 @@ filing_text = fetch("filing-text", pool="sec_api")  # 10-K Item 1A + Item 7 text
 # 5) earnings calls: HuggingFace defeatbeta parquet -> earnings_call_sections (incremental)
 extract_earnings_calls = fetch("extract-earnings-calls")
 
-# 6) identity gate: rows filed by a CIK outside the ticker's entity, or a broken lineage invariant, fail
+# 6) identity check: rows filed by a CIK outside the ticker's entity, or a broken lineage invariant, fail
 #    it (the items needing a manual decision are logged, not failed); then the schema-driven freshness
-#    gate. A red gate retries and never permits aggregation.
+#    report (exit 0). Both run whatever the fetchers' outcome.
 identity_check = BashOperator(
     task_id="identity_check",
     bash_command=f"{PIPE_PY} -m src validate identity -o {PROJECT}/reports/validate/identity-nightly -c {CONFIGS}",
     cwd=PROJECT,
+    trigger_rule=TriggerRule.ALL_DONE,
     dag=dag,
 )
-extraction_status = fetch("extraction-status", task_id="extraction_status")
+extraction_status = fetch("extraction-status", task_id="extraction_status", trigger_rule=TriggerRule.ALL_DONE)
 
 trigger_aggregation = TriggerDagRunOperator(
     task_id="trigger_data_aggregation",
     trigger_dag_id="data_aggregation",
     wait_for_completion=False,
     reset_dag_run=True,
-    trigger_rule=TriggerRule.ALL_SUCCESS,
+    trigger_rule=TriggerRule.ALL_DONE,
     dag=dag,
 )
 
@@ -153,11 +158,10 @@ all_fetchers = [
     macro,
     short_interest,
     earnings_surprises,
-    splits,
     price_history,
-    dividends,
     fails_to_deliver,
     thirteen_f,
+    thirteen_f_backfill,
     financial_statements,
     insider_transactions,
     insider_edgar,
@@ -200,14 +204,14 @@ identity_consumers = [
 ]
 
 seed_universe >> all_fetchers
-splits >> price_history
 identity_tables >> price_history  # the fetch list adds the security master's current secondary classes
 [insider_download, notes_download, ftd_download, sec_tickers] >> identity_tables >> identity_propagate >> identity_consumers
 insider_transactions >> insider_edgar  # zips fill first; EDGAR then replaces each filing it re-reads
+thirteen_f >> thirteen_f_backfill  # one EDGAR walk at a time: after the nightly walk
 thirteen_f >> superinvestors  # roster gate reads the filers' 13F activity
 superinvestors >> thirteen_f_managers  # roster IS the walk scope
 [fundamentals, fundamentals_employees] >> fundamentals_sharadar
 [sec_8k_items, def14a] >> sec_8k_votes
 
-# all sources refreshed -> identity gate -> schema freshness hard gate -> aggregation
+# every source done (failed or not) -> identity check -> freshness report -> aggregation
 all_fetchers >> identity_check >> extraction_status >> trigger_aggregation

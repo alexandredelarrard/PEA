@@ -54,6 +54,7 @@ from src.data_aggregate.utils.fundamentals.fundamental_features import (
     load_pension_facts_scoped,
 )
 from src.data_aggregate.utils.fundamentals.sector_features import build_sector_feature_panel
+from src.data_store.schema import Table as SchemaTable
 from src.data_store.schema import Tables
 from src.utils.step import Step
 
@@ -256,7 +257,7 @@ class StepCubeFundamentals(Step):
 
     def _load_optional(
         self,
-        table: str,
+        table: SchemaTable | str,
         what: str,
         fetcher: str,
         universe: tuple[str, ...],
@@ -402,7 +403,7 @@ class StepCubeFundamentals(Step):
         + buyback yield. RECONCILES the per-share ex-date history (`dividends`, primary) with
         the SEC cash-flow `dividendsPaid` total (gap-fill + payout/coverage). Non-payers get a
         real 0 yield so they rank correctly."""
-        dividends = self._load_optional(Tables.dividends, "dividend history", "fetch_price_history -> StepExtractPrices", frames.universe)
+        dividends = self._load_optional(Tables.dividends, "dividend history", "fetch_prices_and_actions -> StepExtractPrices", frames.universe)
         if dividends is None:
             return None
         return build_dividend_feature_panel(

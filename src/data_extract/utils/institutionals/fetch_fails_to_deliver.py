@@ -8,7 +8,9 @@ lineage role, class) and rebuilds the ticker-grain `sec_fails_to_deliver`, its o
 publication lag never moves `short_interest`'s frontier: per (ticker, settlement date) the sum over
 the canonical and secondary-class lines of quantity x conversion ratio, and of quantity x the file's
 PRICE (NULL when a summed line has no price). Values are cumulative net unsettled balances, not new
-fails. `full` rebuilds both tables from every cached ZIP.
+fails. The download reads the periods no raw line carries (`resume.archive_periods`), plus every cached
+period for the symbols and CUSIP-6 prefixes whose lineage or master rows changed recently; `full`
+rebuilds both tables from every cached ZIP.
 """
 
 from __future__ import annotations
@@ -24,14 +26,8 @@ from tqdm import tqdm
 
 from src.constants.constants import FTD_ZIP_NAME_TEMPLATE
 from src.context import Context
-from src.data_extract.utils.common.bulk_cache import (
-    cache_dir,
-    ensure_zip,
-    mark_processed,
-    pending_periods,
-    read_zip_text,
-)
-from src.data_extract.utils.common.run_manifest import get_entry, record_run, scope_changed_tickers
+from src.data_extract.utils.common.bulk_cache import cache_dir, cached_periods, ensure_zip, read_zip_text
+from src.data_extract.utils.common.resume import archive_periods, recently_changed
 from src.data_extract.utils.common.security_master import (
     CANONICAL_ROLES,
     SECONDARY_CLASS,
@@ -45,6 +41,7 @@ from src.data_extract.utils.common.security_master import (
 from src.data_store.schema import Table, Tables
 from src.utils.filer_tables import filing_window
 from src.utils.string import normalise_ticker
+from src.utils.universe import load_universe_tickers
 
 logger = logging.getLogger(__name__)
 
@@ -82,8 +79,6 @@ _MASTER_COLUMNS = [
     "scope_changed_at",
 ]
 _LINEAGE_SCOPE_COLUMNS = ["entity_id", "canonical_ticker", "cik", "role", "symbol", "valid_from", "valid_to", "status", "sources"]
-#: Scope members of the raw ingest that are CUSIP-6 prefixes, not symbols.
-_PREFIX_TAG = "cusip6:"
 #: Tickers per scoped load, keys per targeted delete.
 _TICKER_CHUNK = 50
 _KEY_CHUNK = 500
@@ -94,6 +89,7 @@ SEC_FTD_URL_TEMPLATE = "https://www.sec.gov/files/data/fails-deliver-data/cnsfai
 SEC_FTD_LEGACY_URL_TEMPLATE = "https://www.sec.gov/files/data/frequently-requested-foia-document-fails-deliver-data/cnsfails{period}.zip"
 SEC_FTD_LEGACY_LAST_PERIOD = "201706a"  # last period on the legacy path
 SEC_FTD_FIRST_YEAR = 2009  # earliest FTD file (2009-07)
+SEC_FTD_ZIP_PREFIX = "cnsfails"  # a cached archive is named `{prefix}{period}.zip`
 
 
 def _periods(years_history: int, today: pd.Timestamp | None = None) -> list[str]:
@@ -160,7 +156,7 @@ def _period_urls(period: str) -> tuple[str, ...]:
 
 def _cached_periods(cache: Path) -> set[str]:
     """Period tags present in the local SEC FTD ZIP cache."""
-    return {path.stem.removeprefix("cnsfails") for path in cache.glob("cnsfails*.zip")}
+    return cached_periods(cache, prefix=SEC_FTD_ZIP_PREFIX)
 
 
 # --------------------------------------------------------------------------- #
@@ -306,8 +302,13 @@ def _purge_out_of_scope(context: Context, stamped: pd.DataFrame) -> int:
     return len(gone)
 
 
-def _rebuild_from_cache(context: Context, master: pd.DataFrame, universe: frozenset[str]) -> tuple[int, int]:
-    """Every cached ZIP's lines of the master's CUSIPs, stamped; both tables replaced. `(raw rows, ticker rows)`."""
+def _rebuild_from_cache(context: Context, master: pd.DataFrame, universe: frozenset[str], *, upsert: bool = False) -> tuple[int, int]:
+    """Every cached ZIP's lines of the master's CUSIPs, stamped; both tables replaced. `(raw rows, ticker rows)`.
+
+    `upsert` (a `-t` run) reads only the CUSIPs of `universe`'s companies and upserts their lines and ticker rows;
+    no other company's row is touched."""
+    if upsert:
+        master = master[master["canonical_company"].isin(universe)]
     cache = cache_dir(context, context.config.local.paths.fails_deliver)
     cached = sorted(_cached_periods(cache))
     missing = sorted(set(map(str, context.store.distinct(Tables.sec_fails_to_deliver_security, "period"))) - set(cached))
@@ -325,9 +326,14 @@ def _rebuild_from_cache(context: Context, master: pd.DataFrame, universe: frozen
         frames.append(stamp_lines(lines[scoped], master))
     stamped = _unique_keys(pd.concat(frames, ignore_index=True), "FTD rebuild") if frames else pd.DataFrame(columns=list(SECURITY_COLUMNS))
     grain = ticker_rows(stamped, universe)
-    if grain.empty:
+    if grain.empty and not upsert:
         raise ValueError("FTD full rebuild staged no ticker rows")
     _log_unplaced(stamped)
+    if upsert:
+        raw = context.store.save(Tables.sec_fails_to_deliver_security, stamped[list(SECURITY_COLUMNS)])
+        _apply_grain(context, sorted(universe), grain, dry_run=False)
+        logger.info("FTD scoped rebuild: %d line(s) and %d ticker row(s) upserted for %s", raw, len(grain), ", ".join(sorted(universe)))
+        return raw, len(grain)
     raw = context.store.replace(Tables.sec_fails_to_deliver_security, stamped[list(SECURITY_COLUMNS)])
     saved = context.store.replace(Tables.sec_fails_to_deliver, grain)
     roles = stamped["lineage_role"].fillna("none").value_counts().sort_index().to_dict()
@@ -437,19 +443,19 @@ def restamp_fails(
     *,
     master: pd.DataFrame | None = None,
     dry_run: bool = False,
+    as_of: pd.Timestamp | None = None,
 ) -> list[dict]:
     """Re-stamp the stored lines of `companies` from the master and rebuild their ticker rows, writing only what changed.
 
-    `companies` None: those whose master rows changed since `sec_fails_to_deliver`'s last run (all when it has none).
-    Lines of CUSIPs the master no longer holds are deleted. Returns one record per ticker whose ticker rows vanished.
+    `companies` None: those whose master rows changed recently (`resume.recently_changed` of their
+    `scope_changed_at` on `as_of`, default today). Lines of CUSIPs the master no longer holds are deleted.
+    Returns one record per ticker whose ticker rows vanished.
     """
     master = load_fails_master(context) if master is None else master
     if master is None or master.empty:
         return []
     if companies is None:
-        entry = get_entry(context, Tables.sec_fails_to_deliver)
-        stamps = master_stamps(master)
-        companies = sorted(stamps) if not (entry or {}).get("last_run_date") else scope_changed_tickers(entry, stamps)
+        companies = recently_changed(master_stamps(master), pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()))
     names = sorted(set(companies))
     if not names:
         return []
@@ -468,11 +474,12 @@ def restamp_fails(
     return _apply_grain(context, rebuilt, ticker_rows(fresh, rebuilt), dry_run=dry_run) if rebuilt else []
 
 
-def fetch_fails_to_deliver(context: Context, tickers: Sequence[str], full: bool = False) -> int:
+def fetch_fails_to_deliver(context: Context, tickers: Sequence[str], full: bool = False, as_of: pd.Timestamp | None = None) -> int:
     """Stamp the stored raw FTD lines from `security_master` and rebuild `sec_fails_to_deliver`; returns ticker rows written.
 
     Incremental: the NULL-stamped lines (new from `ftd-download`) and the lines of companies whose master rows changed
-    since the table's last run; no ZIP is read. `full` rebuilds both tables from every cached ZIP.
+    recently; no ZIP is read. `full` rebuilds both tables from every cached ZIP; a scoped (`-t`) `full` upserts only
+    its tickers' lines and rows.
     """
     universe = frozenset(normalise_ticker(ticker) for ticker in tickers)
     master = load_fails_master(context)
@@ -480,14 +487,13 @@ def fetch_fails_to_deliver(context: Context, tickers: Sequence[str], full: bool 
         logger.warning("FTD: no security_master yet (run identity-tables first); nothing stamped")
         return 0
     if full:
-        _, saved = _rebuild_from_cache(context, master, universe)
+        _, saved = _rebuild_from_cache(context, master, universe, upsert=bool(set(load_universe_tickers(context)) - universe))
     else:
         saved = _stamp_new(context, master, universe)
-        for record in restamp_fails(context, None, universe, master=master):
+        for record in restamp_fails(context, None, universe, master=master, as_of=as_of):
             logger.warning(
                 "FTD: %s lost %d ticker row(s) %s..%s on re-stamp", record["ticker"], record["rows"], record["first_filed"], record["last_filed"]
             )
-    record_run(context, Tables.sec_fails_to_deliver, len(universe), saved, is_full_rescan=full)
     return saved
 
 
@@ -501,6 +507,24 @@ def _ingest_scope(context: Context) -> tuple[pd.DataFrame | None, frozenset[str]
     cusips = set() if master is None else set(master["cusip"].dropna().astype(str))
     cusips |= set(manual.boundaries["cusip"].dropna()) | set(manual.ratios["cusip"].dropna())
     return lineage, lineage_scope_symbols(lineage), frozenset(c[:6] for c in cusips if c)
+
+
+def _changed_scope(context: Context, lineage: pd.DataFrame, as_of: pd.Timestamp) -> tuple[frozenset[str], frozenset[str]]:
+    """`(symbols, CUSIP-6 prefixes)` of the lineage entities and master securities whose rows changed recently."""
+    if "scope_changed_at" not in context.store.columns(Tables.entity_lineage):
+        return frozenset(), frozenset()
+    stamped = context.store.load(Tables.entity_lineage, columns=["entity_id", "scope_changed_at"])
+    assert stamped is not None
+    stamps = pd.to_datetime(stamped["scope_changed_at"], errors="coerce").groupby(stamped["entity_id"].astype(str)).max()
+    entities = set(recently_changed({str(k): v for k, v in stamps.items()}, as_of))
+    symbols = lineage_scope_symbols(lineage[lineage["entity_id"].astype(str).isin(entities)]) if entities else frozenset()
+    if "scope_changed_at" not in context.store.columns(Tables.security_master):
+        return symbols, frozenset()
+    master = context.store.load(Tables.security_master, columns=["cusip", "scope_changed_at"], optional=True)
+    if master is None or master.empty:
+        return symbols, frozenset()
+    by_cusip = pd.to_datetime(master["scope_changed_at"], errors="coerce").groupby(master["cusip"].astype(str)).max()
+    return symbols, frozenset(cusip[:6] for cusip in recently_changed({str(k): v for k, v in by_cusip.items()}, as_of) if cusip)
 
 
 def _in_scope(lines: pd.DataFrame, symbols: frozenset[str], prefixes: frozenset[str]) -> pd.DataFrame:
@@ -517,17 +541,19 @@ def _read_period(context: Context, cache: Path, period: str, *, download: bool) 
     return None if raw is None else _parse_ftd_lines(raw).assign(period=period)
 
 
-def download_fails_to_deliver(context: Context, years_history: int = 15, full: bool = False) -> int:
+def download_fails_to_deliver(context: Context, years_history: int = 15, full: bool = False, as_of: pd.Timestamp | None = None) -> int:
     """Cache the FTD ZIPs and store their in-scope source lines raw in `sec_fails_to_deliver_security`.
 
-    Scope: lineage symbols plus the CUSIP-6 of the master's securities; a CUSIP-6 newly voted for by a
-    lineage symbol interval re-reads every cached period for it. Stamp columns stay NULL. `full` replaces
-    the table from every cached period. Returns the rows written.
+    Scope: lineage symbols plus the CUSIP-6 of the master's securities. The periods read are those no stored line
+    carries; every cached period is re-read for the symbols and prefixes whose lineage or master rows changed
+    recently and for a CUSIP-6 newly voted for by a lineage symbol interval. Stamp columns stay NULL. `full`
+    replaces the table from every listed period. Returns the rows written.
     """
     cache = cache_dir(context, context.config.local.paths.fails_deliver)
     table = Tables.sec_fails_to_deliver_security
+    run_date = pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize()
     lineage, symbols, prefixes = _ingest_scope(context)
-    periods = sorted(_cached_periods(cache) | set(_periods(years_history + 1)))
+    periods = sorted(_cached_periods(cache) | set(_periods(years_history + 1, run_date)))
     if lineage is None:
         cached = [
             p
@@ -536,8 +562,8 @@ def download_fails_to_deliver(context: Context, years_history: int = 15, full: b
         ]
         logger.warning("FTD download: no entity_lineage yet; %d zip(s) cached, lines are ingested after identity-tables has run", len(cached))
         return 0
-    scope = set(symbols) | {_PREFIX_TAG + p for p in prefixes}
-    pending = pending_periods(context, cache, table, periods, scope, reparse=full)
+    listed, stored = archive_periods(context, (table,), periods)
+    pending = listed if full else [p for p in listed if p not in stored]
     frames = []
     for period in tqdm(pending, desc="FTD download"):
         frame = _read_period(context, cache, period, download=True)
@@ -546,21 +572,25 @@ def download_fails_to_deliver(context: Context, years_history: int = 15, full: b
     kept = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=list(SECURITY_COLUMNS[:9]))
     voted = cusip_votes(kept, lineage) if not kept.empty else pd.DataFrame(columns=["cusip"])
     added = frozenset(str(c)[:6] for c in voted["cusip"]) - prefixes
-    if added:
-        logger.info("FTD download: %d CUSIP-6 prefix(es) newly voted for (%s); re-reading every cached period", len(added), ", ".join(sorted(added)))
+    changed_symbols, changed_prefixes = (frozenset(), frozenset()) if full else _changed_scope(context, lineage, run_date)
+    rescan_prefixes = added | changed_prefixes
+    if rescan_prefixes or changed_symbols:
+        logger.info(
+            "FTD download: re-reading every cached period for %d changed symbol(s) and %d CUSIP-6 prefix(es) (%s)",
+            len(changed_symbols),
+            len(rescan_prefixes),
+            ", ".join(sorted(rescan_prefixes)),
+        )
         for period in sorted(_cached_periods(cache)):
             frame = _read_period(context, cache, period, download=False)
             if frame is not None:
-                kept = pd.concat([kept, _in_scope(frame, frozenset(), added)], ignore_index=True)
-        scope |= {_PREFIX_TAG + p for p in added}
+                kept = pd.concat([kept, _in_scope(frame, changed_symbols, rescan_prefixes)], ignore_index=True)
     kept = _unique_keys(kept, "FTD download")
     rows = kept.assign(security_id=None, ticker=None, lineage_role=None, security_class=None)[list(SECURITY_COLUMNS)]
     if full:
         written = context.store.replace(table, rows)
     else:
         written = context.store.save(table, rows) if not rows.empty else 0
-    mark_processed(cache, table, scope)
-    record_run(context, table, 0, written, is_full_rescan=full)
     logger.info(
         "FTD download: %d period(s) read, %d in-scope line(s) stored (%d symbol(s), %d CUSIP-6 prefix(es) in scope)",
         len(pending),

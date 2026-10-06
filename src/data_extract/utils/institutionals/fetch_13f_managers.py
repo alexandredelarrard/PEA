@@ -15,13 +15,12 @@ import logging
 from functools import partial
 
 import pandas as pd
-from edgar import Company
 
 from src.constants.constants import SEC_13F_FORMS
 from src.context import Context
 from src.data_extract.utils.common.edgar_driver import FilingStamp
 from src.data_extract.utils.common.parallel_fetch import run_per_ticker
-from src.data_extract.utils.common.run_manifest import record_run
+from src.data_extract.utils.common.sec_io import company, company_filings, configure
 from src.data_extract.utils.institutionals.fetch_13f import _IMPLIED_PRICE_BAND, ReadFailure, _latest_per_key, _read_filing, _save_book
 from src.data_store.schema import Tables
 from src.utils.superinvestor_roster import roster_cik_union, roster_map_as_of
@@ -37,7 +36,7 @@ def _listed_filings(cik: str, since: pd.Timestamp) -> list[tuple[FilingStamp, pd
     """`(stamp, period)` for the CIK's 13F-HR filings whose period is on/after `since`, oldest
     first by (filed, amendment last, accession) -- edgartools lists newest first; a null or
     unparseable period is skipped."""
-    listing = Company(cik).get_filings(form=SEC_13F_FORMS) or []
+    listing = company_filings(company(cik), SEC_13F_FORMS) or []
     stamps = sorted((FilingStamp.of(f, cik) for f in listing), key=lambda s: (s.filed, s.is_amendment, s.accession_number))
     periods = [pd.to_datetime(s.period_of_report, errors="coerce") for s in stamps]
     return [(s, period.normalize()) for s, period in zip(stamps, periods, strict=True) if pd.notna(period) and period >= since]
@@ -132,6 +131,7 @@ def fetch_13f_managers(context: Context, years_history: int = 15) -> int:
     saved. `years_history` bounds by PERIOD. A failed CIK counts as zero rows. Raises
     `SuperinvestorRosterEmptyError` when the roster holds no CIK."""
     context.ensure_edgar_identity()
+    configure(context)
     ciks = sorted(roster_cik_union(context))
     if not ciks:
         raise SuperinvestorRosterEmptyError(
@@ -144,8 +144,8 @@ def fetch_13f_managers(context: Context, years_history: int = 15) -> int:
     logger.info("13F managers: %d roster CIK(s), %d with a stored book, periods from %s", len(ciks), len(with_book & set(ciks)), since.date())
 
     worker = partial(_catch_up_cik, context=context, since=since)
-    scope = pd.DataFrame({"cik_label": [names.get(c, c) for c in ciks], "cik": ciks})
-    guarded = run_per_ticker(scope, worker, desc="13F manager books", log=context.log, key_cols=("cik_label", "cik"))
+    df_scope = pd.DataFrame({"cik_label": [names.get(c, c) for c in ciks], "cik": ciks})
+    guarded = run_per_ticker(df_scope, worker, desc="13F manager books", log=context.log, key_cols=("cik_label", "cik"))
     results = [result or (0, 0, 0) for result in guarded]
     saved = sum(n for n, _, _ in results)
     suspect = sum(s for _, s, _ in results)
@@ -168,5 +168,4 @@ def fetch_13f_managers(context: Context, years_history: int = 15) -> int:
             _IMPLIED_PRICE_BAND,
         )
     logger.info("13F managers: saved %d row(s) across %d manager(s) -> %s", saved, len(ciks), Tables.sec13f_manager_holdings)
-    record_run(context, Tables.sec13f_manager_holdings, len(ciks), saved)
     return saved

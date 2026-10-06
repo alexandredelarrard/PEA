@@ -24,13 +24,13 @@ If [DataStore](../../src/data_store/store.py) cannot express a required operatio
 
 | Group | Operations |
 | --- | --- |
-| Introspection | `exists`, `columns`, `row_count`, `bounds`, `max_date`, `distinct` |
+| Introspection | `exists`, `columns`, `row_count`, `bounds`, `max_date`, `max_date_by`, `key_stats`, `distinct` |
 | Reads | `load`, `iter_load` |
 | Writes | `save`, `replace`, `append_tail`, `bulk_seed`, `delete`, `drop`, `ensure_columns` |
 
 Pass a `Table` from [schema.py](../../src/data_store/schema.py). New code must not pass a string name even when the resolver accepts legacy strings.
 
-There is no `existing_dates` method. Resume with a registry date column, `max_date`, `max_date_by`, `bounds`, or `distinct` as appropriate.
+There is no `existing_dates` method. Fetchers plan through their `Resume` contract and [resume.py](../../src/data_extract/utils/common/resume.py), whose reads are `max_date`, `max_date_by`, `key_stats` (first, last and count per key in one `GROUP BY`) and `distinct`.
 
 ## Reading safely
 
@@ -73,6 +73,10 @@ if df is None:
 
 Branch on `is None`, not `.empty`.
 
+## Marker rows
+
+A table that declares `Table.empty_marker` holds one marker row per filing that was read and holds no data for its key. `load` and `iter_load` drop marker rows unless `markers=True`, which only resume and maintenance code passes. `distinct`, `max_date`, `max_date_by` and `key_stats` count markers, and so does raw SQL outside the store.
+
 ## Writing safely
 
 | Method | Use it for | Contract |
@@ -89,13 +93,19 @@ Tabular data belongs in PostgreSQL. Do not substitute CSV or Parquet as an appli
 
 ## Incremental extraction
 
-Resume from the database frontier, never from a full table read.
+Plan from the database, never from a file or a full table read. Each extracted table declares a `Resume` contract in [schema.py](../../src/data_store/schema.py), and [resume.py](../../src/data_extract/utils/common/resume.py) turns it into a work list:
 
-- Per-entity providers use `max_date_by` and the shared resume helper. The batch starts at the oldest entity frontier, and upsert makes already-current entities no-ops.
-- Market-wide files use one global `max_date`; one downloaded day contains every security.
+- `series_windows` (dated per-key series): each key's own last date minus the overlap, full history for a new key or an absent table, the table-wide frontier minus the overlap for a rowless key, plus one window per run of sessions missing inside the key's stored span;
+- `document_worklist` (EDGAR documents): the local filing-index rows of the table's forms for each key's registrant lineage, from the floor on, minus the accessions already stored, markers included; newest first and capped per run;
+- `archive_worklist` (bulk archives): the published periods missing from any of the fetcher's tables, plus every cached period for a new key with no archive row yet.
+
+Fetch rules:
+
+- A key's frontier is its latest stored date in the contract's frontier column, markers included, so a filing read with no data is not listed again.
+- A market-wide walk (the 13F filings) keeps one table-wide frontier. A FINRA day file covers every symbol, so short interest reads the union of the days its keys need.
 - Save completed entities or durable chunks immediately.
 - Catch provider failures per ticker/filing and continue, but re-raise programming errors in repository code.
-- Periodically force full source listings to recover filings missed by a previous bug or out-of-order publication.
+- A missed or late SEC filing heals on the next run, because the work list is the filing index minus the stored accessions; `-F` only re-reads stored history.
 
 The source grain, not the destination primary key alone, determines the correct frontier.
 
@@ -143,7 +153,7 @@ A declaration can still be wrong. Governance required a longer warm-up because a
 
 ## Artifact boundary
 
-[Context](../../src/context.py) resolves the root, data store, output, models, peer dictionary, and diagnostic paths. Bulk-cache sidecars live beside their own cache directory rather than in a shared metadata file.
+[Context](../../src/context.py) resolves the root, data store, output, models, peer dictionary, and diagnostic paths. Source caches (bulk archives, the EDGAR filing index, the 13F data sets) hold source files only; no file under `data/` decides what a run fetches.
 
 Both `data/` and the PostgreSQL volume are risk zones. Ask before modifying or deleting either.
 

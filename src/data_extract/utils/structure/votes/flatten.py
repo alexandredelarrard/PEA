@@ -16,6 +16,7 @@ import re
 
 import pandas as pd
 
+from src.data_extract.utils.common.empty_markers import marker_frame
 from src.data_extract.utils.common.frame_sanitize import strip_nul
 from src.data_extract.utils.schemas.vote_schema import (
     PROPOSAL_TYPES,
@@ -329,3 +330,15 @@ def _prepare_frame(rows: list[dict]) -> pd.DataFrame:
         if c in df.columns:
             df[c] = pd.to_datetime(df[c], errors="coerce")
     return df.drop_duplicates(subset=list(Tables.sec_8k_votes.pk), keep="last")
+
+
+def _marker_frame(ticker: str, filing: pd.Series) -> pd.DataFrame:
+    """The empty-filing marker of a read Item 5.07 filing that yields no vote row (`proposal_seq` 0.0)."""
+    values = {
+        "ticker": ticker,
+        "accession_number": filing["accession_number"],
+        "filing_date": filing.get("filing_date"),
+        "cik": filing.get("cik"),
+        "form": clean_text(filing.get("form")),
+    }
+    return marker_frame(Tables.sec_8k_votes, values)

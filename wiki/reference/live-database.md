@@ -38,7 +38,7 @@ Prefer catalog queries that return table presence, row estimates, physical size,
 | `prices` | about 1.78M rows | 2011-08 to 2026-08, 500 tickers | Price-dependent integration tests can run only when this table is present and current. |
 | `earnings_call_sections` | 2,804,060 paragraph rows, 33,591 calls (2026-10-02 full load) | 2005-10 to the load date, 487 tickers | Text is the payload; project and scope by ticker. |
 | `sec_filing_text` | about 34K rows / 1.2 GB | 2011-07 to 2026-08 | Do not perform unbounded text reads. |
-| `insider_transactions` | 2,027,338 rows after the single-table refill, measured 2026-10-04: zip 2,004,933 rows / 721,416 accessions (filed 2006-01-03 to 2026-06-22), EDGAR 22,405 rows / 8,867 accessions (filed 2025-09-30 to 2026-10-02) | 81 zip quarters (2006q1 to 2026q2); **2026q1 is not yet ingested** (the refill hit an HTTP 404 on the new SEC path), so only its 77 EDGAR re-reads are stored | Reads must apply the scope, repair, repeat-collapse and amendment rules of `insider_quality.py`, and the manifest completeness frontier. Ingest 2026q1 before the next cube build (see the [TODO](../TODO.md)). The retired EDGAR staging, coverage and quarantine tables are dropped. |
+| `insider_transactions` | 2,027,338 rows after the single-table refill, measured 2026-10-04: zip 2,004,933 rows / 721,416 accessions (filed 2006-01-03 to 2026-06-22), EDGAR 22,405 rows / 8,867 accessions (filed 2025-09-30 to 2026-10-02) | 81 zip quarters (2006q1 to 2026q2); **2026q1 is not yet ingested** (the refill hit an HTTP 404 on the new SEC path), so only its 77 EDGAR re-reads are stored | Reads must apply the scope, repair, repeat-collapse and amendment rules of `insider_quality.py`, and the DB completeness frontier. Ingest 2026q1 before the next cube build (see the [TODO](../TODO.md)). The retired EDGAR staging, coverage and quarantine tables are dropped. |
 | `insider_footnotes` | about 1.94M rows | accession-linked, no ticker/date grain | Join at filing grain; accessions deleted by the identity sweep can leave explainable orphans. |
 
 The 2026-09-23 targeted rebuild of `cube_part_institutionals` recorded roughly 3.27M rows, 120 feature columns, 491 tickers, and 1995-09 to 2026-09 coverage. Insider-dependent cross-source cells stop at the insider completeness frontier rather than being forward-filled.
@@ -66,6 +66,15 @@ The fundamentals layer was intentionally asymmetric during the recorded migratio
 
 The older warning that Sharadar data reflected a free-tier subset became stale after the subscription upgrade and re-extraction work. Treat individual counts here as dated evidence, not current entitlement.
 
+## Extraction resume cutover (2026-10-05)
+
+- `sp500_tickers.added_on` exists; all 500 rows then present carry 2000-01-01, so none counts as new.
+- The local EDGAR filing index sits in `data/sec_edgar_index`: 125 quarters (1995Q4 to 2026Q4), about 16.9 M rows and 267 MB, built on 2026-10-05; every EDGAR document fetch refreshes it.
+- `sec13f_hr` CIKs are all 10-digit: 43,704 rows were padded and 878 keys stored in both forms were merged, keeping the later-filed row (23,811,342 rows after).
+- `sec_short_interest` starts at its source start, 2018-08-01. After the one-time `--repair-gaps`, 1,120 key-days over 18 tickers are still missing (PSKY 400 under PARA/PARAA, SMCI 349 absent at FINRA, F 183 from a false second symbol tenure, EXE 156).
+- The run manifest and the 4 bulk sidecars are retired to `data/_retired/2026-10/`.
+- There is no `cube` table, and every `cube_part_*` ends on 2026-09-04.
+
 ## Institutional and identity snapshot
 
 Important measured state:
@@ -89,6 +98,7 @@ Important measured state:
 | DEF 14A parent covers many tickers but children cover only a smoke roster | Joining a child silently narrows the universe unless coverage is checked first. |
 | `dividends` covers fewer tickers | Correct for non-payers; no row is not automatically missing data. |
 | `earnings_surprises` has future dates | Scheduled calls are present; realized signals require non-null actual EPS. |
+| Row counts include empty-filing markers | Raw SQL counts the marker rows of the tables that declare one; `DataStore.load` drops them. `data_extract markers --count` gives the marker count per table. |
 | Roster names with no earnings-call rows | BRK-B holds no calls; ED, EXPD and NVR are absent from the defeatbeta source. Their `f_ec_*` features are null, not stale. |
 | Bulk pension maxima, and the latest insider `quarter` tag, lag today | Publication cadence, not automatically failed extraction. Insider rows after the last zip quarter come from EDGAR with a NULL `quarter`. |
 | Short-volume minimum predates the current provider window | The isolated stored date is not proof of continuously recoverable history. |

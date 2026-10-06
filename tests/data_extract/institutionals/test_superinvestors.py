@@ -25,6 +25,7 @@ from typing import Any, cast
 import pandas as pd
 import pytest
 
+from src.data_extract.utils.common import sec_io
 from src.data_extract.utils.institutionals import fetch_superinvestors as si
 from tests.fixtures.superinvestor_config import APPALOOSA_CHAIN, APPALOOSA_NEW, APPALOOSA_OLD, write_roster_config
 
@@ -416,16 +417,18 @@ def test_gate_uses_listing_on_local_miss(sqlite_store):
     print(f"  {old} (no local rows) passed 2 snapshots on 1 listing call; BRK passed on its local book without one. Validated on the real store.")
 
 
-def _listing_context(monkeypatch, filings: Any) -> Any:
-    """A context for `edgar_13f_report_dates` whose edgartools `Company(cik).get_filings` returns `filings` or, when
-    it is an exception, raises it."""
+def _listing_context(monkeypatch, filings: Any, calls: list[int] | None = None) -> Any:
+    """A context for `edgar_13f_report_dates` whose edgartools `Company(cik).get_filings`, reached through `sec_io`,
+    returns `filings` or, when it is an exception, raises it; `calls` counts the listing attempts."""
 
     def get_filings(**_kwargs: Any) -> Any:
+        if calls is not None:
+            calls.append(1)
         if isinstance(filings, Exception):
             raise filings
         return filings
 
-    monkeypatch.setattr(si, "Company", lambda cik: SimpleNamespace(get_filings=get_filings))
+    monkeypatch.setattr(sec_io.edgar, "Company", lambda cik: SimpleNamespace(cik=cik, get_filings=get_filings))
     return cast(Any, SimpleNamespace(ensure_edgar_identity=lambda: None))
 
 
@@ -433,9 +436,11 @@ def test_listing_failure_is_reported_as_listing_error(monkeypatch):
     """A failed EDGAR listing surfaces as a listing error naming the CIK, through the activity gate too, never as
     "no 13F activity, correct the CIK"."""
     cik = "0000846222"
-    ctx = _listing_context(monkeypatch, RuntimeError("429 Too Many Requests"))
-    with pytest.raises(RuntimeError, match=cik) as direct:
+    calls: list[int] = []
+    ctx = _listing_context(monkeypatch, RuntimeError("429 Too Many Requests"), calls)
+    with pytest.raises(si.EdgarListingError, match=cik) as direct:
         si.edgar_13f_report_dates(ctx, cik)
+    assert len(calls) > 1, "the 429 is retried by the sec_io policy before it surfaces"
     with pytest.raises(RuntimeError) as gated:
         si.assert_active([_gate_row("GH", cik, "2012-05-01")], set(), {}, partial(si.edgar_13f_report_dates, ctx))
     for err in (direct, gated):

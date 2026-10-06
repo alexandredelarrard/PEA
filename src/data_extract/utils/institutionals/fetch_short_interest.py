@@ -7,7 +7,11 @@ from `security_master`: the FINRA symbol is read before upper-casing (`BACpB` ->
 the FTD spelling) and resolved on its trade date with `Identity.security_on`; a symbol never seen in FTD maps
 only through a lineage window CIK inside its window (P21). The ticker-grain `short_interest` is rebuilt from
 those rows: per (ticker, date) the sum over the canonical and secondary-class lines of volume x conversion
-ratio. `full` re-fetches every served date and keeps no legacy row. Missing the Lit exchange volumes.
+ratio. The day files read come from `resume.series_windows` over `short_interest` (forward overlap, a
+new key's full history) plus the calendar sessions inside the stored span on which no key has a row;
+`repair` adds each key's own interior gaps once. An unscoped `full` re-fetches every served date and
+keeps no legacy row; a scoped one (`-t`) re-reads every served date for its tickers and upserts them.
+Missing the Lit exchange volumes.
 """
 
 from __future__ import annotations
@@ -25,8 +29,9 @@ from tqdm import tqdm
 from src.constants.constants import BROWSER_HEADERS, DATE_FORMAT_COMPACT
 from src.context import Context
 from src.data_extract.utils.common.identity import Identity, SecurityHit, load_identity
-from src.data_extract.utils.common.run_manifest import get_entry, record_run, scope_changed_tickers
+from src.data_extract.utils.common.resume import document_floor, recently_changed, series_windows, session_dates, trading_calendar
 from src.data_extract.utils.common.security_master import CANONICAL_CURRENT, CANONICAL_PREDECESSOR, EXCLUDED, SOURCE_FTD, squash
+from src.data_extract.utils.common.sessions import last_completed_session
 from src.data_extract.utils.common.symbol_tenure import normalise_market_symbol
 from src.data_extract.utils.institutionals.fetch_fails_to_deliver import (
     SUMMED_ROLES,
@@ -38,9 +43,9 @@ from src.data_extract.utils.institutionals.fetch_fails_to_deliver import (
 )
 from src.data_store.schema import Tables
 from src.utils.string import normalise_ticker
+from src.utils.universe import load_universe_tickers
 
 _URL = "https://cdn.finra.org/equity/regsho/daily/CNMSshvol{yyyymmdd}.txt"
-SHORT_REFRESH_TRADING_DAYS = 7
 #: The CDN's first served date (a rolling window) and the one older file it still serves.
 FIRST_SERVED_DAY = pd.Timestamp("2018-08-01")
 EXTRA_SERVED_DAYS = (pd.Timestamp("2017-12-29"),)
@@ -233,13 +238,30 @@ def _fetch_day(
     return r.text if r.status_code == 200 else None
 
 
-def _resume_day(context: Context, years_history: int = 15) -> pd.Timestamp:
-    """`SHORT_REFRESH_TRADING_DAYS` before the global stored max (a day file carries every symbol, and the overlap
-    repairs a failed interior day), or the `years_history` window on a cold table."""
-    stored_max = context.store.max_date(Tables.sec_short_volume_security)
-    if stored_max is None:
-        return pd.Timestamp.today().normalize() - pd.DateOffset(years=years_history)
-    return pd.Timestamp(stored_max) - pd.tseries.offsets.BDay(SHORT_REFRESH_TRADING_DAYS)
+def _missing_days(context: Context, calendar: pd.DatetimeIndex, floor: pd.Timestamp) -> pd.DatetimeIndex:
+    """Calendar sessions inside the stored span (from `floor`) on which no key has a row: day files never stored."""
+    stored = pd.DatetimeIndex(pd.to_datetime(context.store.distinct(Tables.short_interest, "date"))).normalize()
+    if stored.empty:
+        return pd.DatetimeIndex([])
+    span = calendar[(calendar >= max(stored.min(), floor)) & (calendar <= stored.max())]
+    return span.difference(stored)
+
+
+def _plan_days(
+    context: Context, tickers: list[str], years_history: int, full: bool, as_of: pd.Timestamp | None, *, repair: bool = False
+) -> pd.DatetimeIndex:
+    """The day files to read: every key's windows plus the never-stored days, as trading sessions (business
+    days past the calendar). `repair` adds each key's own interior gaps (a one-time pass, not nightly)."""
+    run_date = pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize()
+    until = last_completed_session(as_of)
+    calendar = trading_calendar(context)
+    work = series_windows(
+        context, Tables.short_interest, tickers, run_date, until=until, years_history=years_history, full=full, calendar=calendar if repair else None
+    )
+    days = _missing_days(context, calendar, document_floor(Tables.short_interest, run_date, years_history))
+    for since, end, _keys in work.groups():
+        days = days.union(session_dates(calendar, since, end))
+    return days
 
 
 def _stored_days(context: Context) -> set[pd.Timestamp]:
@@ -290,12 +312,13 @@ def restamp_short_volume(
     identity: Identity | None = None,
     stamps: Mapping[str, pd.Timestamp] | None = None,
     dry_run: bool = False,
+    as_of: pd.Timestamp | None = None,
 ) -> list[dict]:
     """Re-stamp the stored rows of `companies` and rebuild their ticker rows, writing only what changed.
 
-    `companies` None: those whose master rows or lineage symbol rows changed since `short_interest`'s last run (all
-    when it has none). Rows that no longer resolve to a kept security are deleted. Returns one record per ticker
-    whose ticker rows vanished. A security newly in scope needs `short-interest --full` (rows are not cached).
+    `companies` None: those whose master rows or lineage symbol rows changed recently (`resume.recently_changed`
+    on `as_of`, default today). Rows that no longer resolve to a kept security are deleted. Returns one record per
+    ticker whose ticker rows vanished. A security newly in scope needs `short-interest --full` (rows are not cached).
     """
     table = Tables.sec_short_volume_security
     if not context.store.exists(table):
@@ -303,8 +326,7 @@ def restamp_short_volume(
     resolver = identity or load_identity(context)
     if companies is None:
         stamps = change_stamps(load_fails_master(context), resolver) if stamps is None else stamps
-        entry = get_entry(context, Tables.short_interest)
-        companies = sorted(stamps) if not (entry or {}).get("last_run_date") else scope_changed_tickers(entry, dict(stamps))
+        companies = recently_changed(stamps, pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()))
     names = sorted(set(companies))
     if not names:
         return []
@@ -355,20 +377,23 @@ def fetch_short_interest(
     pause: float = 0.05,
     full: bool = False,
     identity: Identity | None = None,
+    as_of: pd.Timestamp | None = None,
+    repair: bool = False,
 ) -> None:
     """Fetch the RegSHO day files, store their in-scope lines stamped, and rebuild `short_interest` for those days.
 
-    Incremental: from the stored max minus `SHORT_REFRESH_TRADING_DAYS`, then a re-stamp of the companies whose
-    master or lineage symbol rows changed. `full`: every served day (and every stored one); any stored day not
-    served, or any fetch error, aborts before the two tables are replaced.
+    Incremental: the `_plan_days` work list (`repair` adds each key's interior gaps), then a re-stamp of the
+    companies whose master or lineage symbol rows changed recently. `full`: every served day (and every stored
+    one); unscoped, any stored day not served or any fetch error aborts before the two tables are replaced;
+    scoped (`-t`), the tickers' rows are upserted and no other key is touched.
     """
-    today = pd.Timestamp.today().normalize()
-    if full:
-        days, stored_days = _full_days(context, today)
-    else:
-        days, stored_days = list(pd.bdate_range(_resume_day(context, years_history), today)), set()
-    resolver = identity or load_identity(context)
     universe = frozenset(normalise_ticker(ticker) for ticker in tickers)
+    scoped = bool(set(load_universe_tickers(context)) - universe)
+    if full:
+        days, stored_days = _full_days(context, pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize())
+    else:
+        days, stored_days = list(_plan_days(context, sorted(universe), years_history, False, as_of, repair=repair)), set()
+    resolver = identity or load_identity(context)
     known, fallback = master_keys(resolver, universe), resolver.universe_symbols(universe)
     logger.info(f"Fetching {len(days)} RegSHO day-file(s) for {len(universe)} tickers")
 
@@ -395,7 +420,7 @@ def fetch_short_interest(
         time.sleep(pause)
     session.close()
 
-    if full:
+    if full and not scoped:
         lost = sorted(day.date().isoformat() for day in set(missing) & stored_days)
         if errors or lost or not successful:
             raise RuntimeError(
@@ -408,13 +433,12 @@ def fetch_short_interest(
     if not stamped.empty:
         _log_stamps(stamped)
 
-    if full:
+    if full and not scoped:
         if grain.empty or stamped.duplicated(["source_symbol", "date"]).any():
             raise ValueError("RegSHO full staged no ticker row, or a duplicate (source_symbol, date) key; aborting before any write")
         context.store.replace(Tables.sec_short_volume_security, stamped[list(SECURITY_COLUMNS)])
         written = context.store.replace(Tables.short_interest, grain)
         logger.info(f"RegSHO full: {len(successful)} served day(s), {len(stamped)} raw row(s), {written} ticker row(s); no legacy row kept")
-        record_run(context, Tables.short_interest, len(universe), written, is_full_rescan=True)
         return
 
     written = 0
@@ -426,8 +450,7 @@ def fetch_short_interest(
     if not grain.empty:
         written = context.store.save(Tables.short_interest, grain)
     logger.info(f"Saved {written} short-volume ticker row(s) over {len(successful)} day(s) to '{Tables.short_interest}'")
-    for record in restamp_short_volume(context, None, universe, identity=resolver):
+    for record in restamp_short_volume(context, None, universe, identity=resolver, as_of=as_of):
         logger.warning(
             "RegSHO: %s lost %d ticker row(s) %s..%s on re-stamp", record["ticker"], record["rows"], record["first_filed"], record["last_filed"]
         )
-    record_run(context, Tables.short_interest, len(universe), written)

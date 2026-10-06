@@ -17,6 +17,7 @@ import pandas as pd
 import pytest
 
 from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp
+from src.data_extract.utils.common.sec_io import ParseFailureError
 from src.data_extract.utils.institutionals.fetch_13g_edgar import (
     _COLS,
     SCHEDULE_13G,
@@ -217,20 +218,18 @@ def test_empty_reporting_persons_yields_one_nan_fallback_row():
 # --------------------------------------------------------------------------- #
 # The issuer/filer guard                                                        #
 # --------------------------------------------------------------------------- #
-def _patch_schedule_filings(monkeypatch, filings):
-    monkeypatch.setattr(
-        "src.data_extract.utils.institutionals.schedule_rows.resolve_schedule_subject_filings",
-        lambda ticker, subject_ciks, forms, since, done_accessions: filings,
-    )
+def _parse_all(ticker: str, cik: str, filings: list) -> pd.DataFrame:
+    """`filings` through the 13G per-filing parse, concatenated as the driver saves them."""
+    frames = [SEC_13G_FETCH.parse(ticker, cik, FilingStamp.of(f, cik), EdgarScope())[Tables.sec_13g] for f in filings]
+    return pd.concat(frames, ignore_index=True)
 
 
-def test_guard_drops_filings_where_the_ticker_is_the_filer(monkeypatch):
+def test_guard_drops_filings_where_the_ticker_is_the_filer():
     """JNJ's own 13G listing is 159 filings, 60 of them JNJ disclosing stakes in Rallybio, CVRx
     and Rapport Therapeutics. Kept, every field would describe a different company."""
     own = _filing(issuer_cik="0000200406", issuer_name="JOHNSON & JOHNSON")
     other = _filing(issuer_cik="0001739410", issuer_name="Rallybio Corporation", accession="0000904454-26-000233")
-    _patch_schedule_filings(monkeypatch, [own, other])
-    frame = SEC_13G_FETCH.build("JNJ", "0000200406", scope=EdgarScope())[Tables.sec_13g]
+    frame = _parse_all("JNJ", "0000200406", [own, other])
     assert len(frame) == 1
     assert frame.iloc[0]["issuer_name"] == "JOHNSON & JOHNSON"
     assert list(frame.columns) == _COLS
@@ -238,27 +237,24 @@ def test_guard_drops_filings_where_the_ticker_is_the_filer(monkeypatch):
     print("  2 listed filings -> 1 kept; the one naming another issuer is dropped. Validated.")
 
 
-def test_guard_does_not_reject_when_either_cik_is_unresolvable(monkeypatch):
+def test_guard_does_not_reject_when_either_cik_is_unresolvable():
     """An unknown CIK on either side means "unknown", which must not reject -- otherwise a
     header that failed to parse would silently cost the ticker its whole history."""
-    _patch_schedule_filings(monkeypatch, [_filing(issuer_cik="", issuer_name="")])
-    assert len(SEC_13G_FETCH.build("JNJ", "0000200406", scope=EdgarScope())[Tables.sec_13g]) == 1
-    _patch_schedule_filings(monkeypatch, [_filing(issuer_cik="0001739410")])
-    assert len(SEC_13G_FETCH.build("JNJ", "", scope=EdgarScope())[Tables.sec_13g]) == 1
+    assert len(_parse_all("JNJ", "0000200406", [_filing(issuer_cik="", issuer_name="")])) == 1
+    assert len(_parse_all("JNJ", "", [_filing(issuer_cik="0001739410")])) == 1
 
 
-def test_known_13g_parse_failure_fails_the_ticker(monkeypatch):
+def test_known_13g_parse_failure_is_a_deterministic_parse_failure():
     filing = _filing(accession="0001-broken")
 
     def fail_parse():
         raise ValueError("broken schedule")
 
     filing.obj = fail_parse
-    _patch_schedule_filings(monkeypatch, [filing])
-    with pytest.raises(RuntimeError, match="0001-broken"):
-        SEC_13G_FETCH.build("JNJ", "0000200406", scope=EdgarScope())
+    with pytest.raises(ParseFailureError, match="0001-broken"):
+        _parse_all("JNJ", "0000200406", [filing])
     print("\n=== SANITY CHECK: known 13G parse failure ===")
-    print("  the accession fails its ticker build, so a completeness-sensitive driver cannot advance the manifest")
+    print("  the accession raises ParseFailureError naming it: the driver logs it and stores one empty-filing marker")
 
 
 if __name__ == "__main__":

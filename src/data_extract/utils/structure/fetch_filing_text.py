@@ -1,17 +1,21 @@
 """10-K Item 1A (Risk Factors) + Item 7 (MD&A) and 10-Q Item 2 (MD&A) as raw text.
 
 Writes `sec_filing_text`, one row per (ticker, accession, section). Primary path: edgartools' typed
-`TenK`/`TenQ` section parser; fallback: a regex carve over `filing.text()`, used only for a section the
-structured parse missed or returned as a sub-`FILING_TEXT_MIN_CHARS` stub.
+`TenK`/`TenQ` section parser; fallback: a regex carve over the filing text, used only for a section the
+structured parse missed or returned as a sub-`FILING_TEXT_MIN_CHARS` stub. A transient SEC failure
+raises and fails the filing; a parse failure falls back as above; a filing with no readable section
+becomes an empty-filing marker.
 """
 
 from __future__ import annotations
 
 import re
 from functools import partial
+from typing import Any
 
-from src.data_extract.utils.common.edgar_driver import EdgarFetch, FilingStamp, build_filing_rows
+from src.data_extract.utils.common.edgar_driver import EdgarFetch, FilingStamp, parse_filing_rows
 from src.data_extract.utils.common.item_carve import ITEM_SEP, CrossRefCues, carve_spans, item_heading
+from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, filing_obj, filing_text
 from src.data_store.schema import Tables
 
 FILING_TEXT_FORMS = ["10-K", "10-Q"]
@@ -104,20 +108,22 @@ def _structured_sections(obj, form: str) -> dict[str, str]:
     return out
 
 
-def _filing_sections(filing) -> dict[str, str]:
-    """Structured sections from `filing.obj()`, with the regex carve filling whichever section it missed."""
+def _filing_sections(filing: Any) -> dict[str, str]:
+    """Structured sections from the parsed filing, with the regex carve filling whichever section it missed."""
     form = filing.form
     needed = {FILING_SECTION_RISK, FILING_SECTION_MDA} if str(form).upper().startswith("10-K") else {FILING_SECTION_MDA}
     try:
-        obj = filing.obj()
-    except Exception:  # noqa: BLE001 -- best-effort only
+        obj = filing_obj(filing)
+    except ParseFailureError:
         obj = None
     sections = _structured_sections(obj, form) if obj is not None else {}
     missing = needed - sections.keys()
     if not missing:
         return sections
     try:
-        text = filing.text()
+        text = filing_text(filing)
+    except TransientReadError:
+        raise
     except Exception:  # noqa: BLE001 -- best-effort only
         text = None
     if not text:
@@ -152,5 +158,6 @@ def _filing_rows(ticker: str, stamp: FilingStamp) -> list[dict]:
 FILING_TEXT_FETCH = EdgarFetch(
     desc="10-K/10-Q text (edgartools)",
     tables=(Tables.filing_risk_text,),
-    build=partial(build_filing_rows, forms=FILING_TEXT_FORMS, table=Tables.filing_risk_text, columns=_COLS, row_fn=_filing_rows),
+    forms=tuple(FILING_TEXT_FORMS),
+    parse=partial(parse_filing_rows, table=Tables.filing_risk_text, columns=_COLS, row_fn=_filing_rows),
 )

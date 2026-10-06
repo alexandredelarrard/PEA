@@ -8,9 +8,14 @@ cube, modelling, backtest) resolves which tickers to analyse from ONE place: the
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
+import pandas as pd
+
 from src.constants.constants import INSUFFICIENT_HISTORY_TICKERS
 from src.context import Context
 from src.data_store.schema import Tables
+from src.data_store.store import DataStore
 
 
 def load_universe_tickers(context: Context) -> list[str]:
@@ -27,11 +32,37 @@ def load_universe_tickers(context: Context) -> list[str]:
     return sorted({t for raw in df["ticker"].dropna() if (t := str(raw).strip().upper()) and t not in excluded})
 
 
+def new_tickers(store: DataStore, overlap_days: int, as_of: pd.Timestamp) -> set[str]:
+    """Upper-cased `sp500_tickers` rows whose `added_on` is after `as_of - overlap_days`.
+
+    A NULL `added_on` is an established ticker, and a table without the column has no new
+    ticker."""
+    if "added_on" not in store.columns(Tables.sp500_tickers):
+        return set()
+    cutoff = pd.Timestamp(as_of).normalize() - pd.Timedelta(days=overlap_days - 1)
+    df = store.load(Tables.sp500_tickers, columns=["ticker"], date_col="added_on", since=cutoff, optional=True)
+    if df is None:
+        return set()
+    return {t for raw in df["ticker"].dropna() if (t := str(raw).strip().upper())}
+
+
 #: The filing tables a company keyed by CIK must appear in if its CIK is the right one. Kept
 #: short and cheap on purpose: this runs on every seed, and one hit is enough to prove the ID
 #: resolves at EDGAR. `prices` is NOT in the list -- it keys on the TICKER via yfinance and so
 #: is populated for a company whose CIK is wrong, which is exactly how XOM's error survived.
 CIK_EVIDENCE_TABLES: tuple[str, ...] = ("def14a_llm", "sec_def14a", "sec_8k", "sec_13d")
+
+
+def added_on_dates(store: DataStore, tickers: Sequence[str]) -> dict[str, pd.Timestamp]:
+    """Each ticker's `sp500_tickers.added_on`; a ticker without one is left out, and a table without the
+    column has no joined ticker."""
+    if "added_on" not in store.columns(Tables.sp500_tickers):
+        return {}
+    df = store.load(Tables.sp500_tickers, columns=["ticker", "added_on"], where={"ticker": list(tickers)}, optional=True)
+    if df is None:
+        return {}
+    df = df.dropna(subset=["added_on"])
+    return {str(t).strip().upper(): pd.Timestamp(d).normalize() for t, d in zip(df["ticker"], df["added_on"], strict=True)}
 
 
 def unverified_ciks(context: Context) -> list[dict]:

@@ -1,7 +1,7 @@
 """
 test_schedule_rows.py (tests/data_extract/institutionals/test_schedule_rows.py)
 ------------------------------------------------------------------------------
-The shared Schedule 13D/13G row builder and its issuer-guarded walk, driven through both form
+The shared Schedule 13D/13G row builder and its issuer-guarded per-filing parse, driven through both form
 specs with known-truth fake filings. Each test pins one rule the two forms share or one stored
 divergence they must keep (13D keeps `cusip=''`, has no header CIK backfill, parses its event
 date with `pd.Timestamp`; 13G normalises blanks to None and backfills CIKs from the header).
@@ -16,14 +16,14 @@ import pandas as pd
 import pytest
 
 from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp
+from src.data_extract.utils.common.sec_io import ParseFailureError
 from src.data_extract.utils.institutionals import fetch_13d_edgar
 from src.data_extract.utils.institutionals.fetch_13d_edgar import SCHEDULE_13D, SEC_13D_FETCH
 from src.data_extract.utils.institutionals.fetch_13g_edgar import SCHEDULE_13G, SEC_13G_FETCH
 from src.data_extract.utils.institutionals.schedule_rows import SCHEDULE_NUMERIC_COLS, schedule_filing_rows
-from src.data_store.schema import Tables
+from src.data_store.schema import Table, Tables
 
 _NUMERIC = SCHEDULE_NUMERIC_COLS
-_RESOLVE = "src.data_extract.utils.institutionals.schedule_rows.resolve_schedule_subject_filings"
 _SPEC = {"13D": SCHEDULE_13D, "13G": SCHEDULE_13G}
 _FETCH = {"13D": SEC_13D_FETCH, "13G": SEC_13G_FETCH}
 _TABLE = {"13D": Tables.sec_13d, "13G": Tables.sec_13g}
@@ -35,13 +35,13 @@ def _rows(family: str, filing: Any) -> list[dict]:
     return schedule_filing_rows(FilingStamp.of(filing, ""), _SPEC[family])
 
 
-def _patch(monkeypatch: pytest.MonkeyPatch, filings: list[Any]) -> None:
-    """Serve `filings` as the schedule listing of either form (both walk the shared resolver)."""
-    monkeypatch.setattr(_RESOLVE, lambda ticker, subject_ciks, forms, since, done_accessions: filings)
-
-
-def _build(family: str, ticker: str = "AAPL", cik: str = "0000320193") -> dict:
-    return _FETCH[family].build(ticker, cik, since=None, done_accessions=frozenset(), scope=_SCOPE)
+def _build(family: str, filings: list[Any], ticker: str = "AAPL", cik: str = "0000320193") -> dict[Table, pd.DataFrame]:
+    """`filings` through the form's per-filing parse, frames concatenated per table as the driver saves them."""
+    frames: dict[Table, list[pd.DataFrame]] = {}
+    for filing in filings:
+        for table, df in _FETCH[family].parse(ticker, cik, FilingStamp.of(filing, cik), _SCOPE).items():
+            frames.setdefault(table, []).append(df)
+    return {table: pd.concat(dfs, ignore_index=True) for table, dfs in frames.items()}
 
 
 def _rp(name: str = "Icahn Carl C", cik: str = "", *, no_cik: bool = False, comment: str | None = None, values: tuple = (0, 0, 0, 0, 0, 0.0)) -> Any:
@@ -200,8 +200,7 @@ def test_walk_skips_filer_side_filings_and_stamps_the_ticker(monkeypatch: pytest
         own = _filing(structured=True, persons=[_rp(), _rp("Second")], accession="0001-own")
         filer_side = _filing(structured=True, persons=[_rp()], accession="0001-other", issuer_cik="0001199004")
         unknown = _filing(structured=True, persons=[_rp()], accession="0001-unknown", issuer_cik="")
-        _patch(monkeypatch, [own, filer_side, unknown])
-        frame = _build(family)[_TABLE[family]]
+        frame = _build(family, [own, filer_side, unknown])[_TABLE[family]]
         assert list(frame["accession_number"]) == ["0001-own", "0001-own", "0001-unknown"]
         assert set(frame["ticker"]) == {"AAPL"}
         assert list(frame["rp_seq"]) == [0, 1, 0]
@@ -216,21 +215,19 @@ def test_parse_failures_keep_their_messages(monkeypatch: pytest.MonkeyPatch):
     for family, label in (("13D", "SC 13D"), ("13G", "SC 13G")):
         filing = _filing(structured=True, persons=[_rp()], accession="0001-broken")
         filing.obj = broken
-        _patch(monkeypatch, [filing])
-        with pytest.raises(RuntimeError, match=f"^{label} accession 0001-broken could not be parsed$"):
-            _build(family)
+        with pytest.raises(ParseFailureError, match=f"^{label} accession 0001-broken could not be parsed$"):
+            _build(family, [filing])
     bad_event = _filing(structured=True, persons=[_rp()], accession="0001-garbage", date_of_event="not a date")
-    _patch(monkeypatch, [bad_event])
-    with pytest.raises(RuntimeError, match="^SC 13D accession 0001-garbage could not be parsed$"):
-        _build("13D")
+    with pytest.raises(ParseFailureError, match="^SC 13D accession 0001-garbage could not be parsed$"):
+        _build("13D", [bad_event])
     exploding = SimpleNamespace(is_html=lambda: True)
-    _patch(monkeypatch, [_filing(structured=True, persons=[_rp()], accession="0001-txn", attachments=[exploding])])
+    txn_filing = _filing(structured=True, persons=[_rp()], accession="0001-txn", attachments=[exploding])
     monkeypatch.setattr(fetch_13d_edgar, "BeautifulSoup", lambda *a, **k: (_ for _ in ()).throw(ValueError("bad html")))
     exploding.content = "<table><tr><td>Trade Date</td></tr></table>"
-    with pytest.raises(RuntimeError, match="^SC 13D accession 0001-txn transaction exhibit could not be parsed$"):
-        _build("13D")
+    with pytest.raises(ParseFailureError, match="^SC 13D accession 0001-txn transaction exhibit could not be parsed$"):
+        _build("13D", [txn_filing])
     print("\n=== SANITY: parse failure messages ===")
-    print("  SC 13D / SC 13G parse and 13D exhibit failures raise RuntimeError with the accession named. Validated.")
+    print("  SC 13D / SC 13G parse and 13D exhibit failures raise ParseFailureError with the accession named (one marker each). Validated.")
 
 
 def test_13d_transaction_rows_carry_the_issuer_stamp(monkeypatch: pytest.MonkeyPatch):
@@ -243,8 +240,7 @@ def test_13d_transaction_rows_carry_the_issuer_stamp(monkeypatch: pytest.MonkeyP
     """
     attachment = SimpleNamespace(is_html=lambda: True, content=html)
     filing = _filing(structured=True, persons=[_rp("Icahn Carl C")], accession="0001-txn", issuer_cik="320193", attachments=[attachment])
-    _patch(monkeypatch, [filing])
-    txn = _build("13D")[Tables.sec_13d_transactions]
+    txn = _build("13D", [filing])[Tables.sec_13d_transactions]
     assert list(txn["trade_seq"]) == [0, 1]
     assert set(txn["ticker"]) == {"AAPL"} and set(txn["cik"]) == {"320193"}
     assert set(txn["reporting_person_name"]) == {"Icahn Carl C"}

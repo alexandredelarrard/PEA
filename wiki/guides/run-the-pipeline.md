@@ -85,12 +85,27 @@ Run `seed-universe` before stages that resolve the default ticker set.
 
 | Area | Commands | Notes |
 | --- | --- | --- |
-| Universe/prices | `seed-universe`, `price-history`, `dividends`, `splits`, `macro` | Price history is heavy; split adjustment is retroactive, so a full price refresh can be required after a split. |
-| Institutionals | `thirteen-f`, `superinvestors`, `thirteen-f-managers`, `insider-transactions`, `short-interest`, `fails-to-deliver`, `sec-8k-items`, `sec-13d`, `sec-13g` | 13G is heavy. `thirteen-f` writes the S&P 500 slice and the roster managers' complete books in one oldest-first walk; `thirteen-f-managers` only catches each roster CIK up from its stored `sec13f_manager_holdings` frontier. Use the dedicated vote command only after 8-K narratives exist. |
+| Universe/prices | `seed-universe`, `price-history`, `macro` | One `price-history` download writes `prices`, `prices_dividends` and `prices_splits`; a new split re-pulls its ticker's full history. Price history is heavy. |
+| Institutionals | `thirteen-f`, `thirteen-f-backfill`, `superinvestors`, `thirteen-f-managers`, `insider-transactions`, `short-interest`, `fails-to-deliver`, `sec-8k-items`, `sec-13d`, `sec-13g` | 13G is heavy. `thirteen-f` writes the S&P 500 slice and the roster managers' complete books in one oldest-first walk; `thirteen-f-backfill` fills a new ticker's 13F history; `thirteen-f-managers` only catches each roster CIK up from its stored `sec13f_manager_holdings` frontier. `short-interest --repair-gaps` re-reads once the days a key misses inside its stored span. Use the dedicated vote command only after 8-K narratives exist. |
 | Identity | `insider-download`, `notes-download [-F]`, `identity-tables [--approve-rekey OLD:NEW]`, `identity-propagate [-t] [--dry-run]` | Run in this order before any identity-consuming SEC command. The downloads cache the Form 3/4/5 and Notes zips; `notes-download` also captures cover-page symbols (`-F` re-captures every cached zip). `identity-tables` rebuilds `symbol_tenure` and `entity_lineage` offline. `identity-propagate` purges rows whose filer CIK left the ticker's entity, re-parses the bulk families and re-resolves FTD for changed tickers, and rebuilds purged tickers' history; `--dry-run` only lists the pending removals. `validate identity` is the read-only check. |
 | Fundamentals | `fundamentals`, `fundamentals-facts`, `fundamentals-employees`, `fundamentals-history-sec`, `fundamentals-sharadar`, `fundamentals-history-merged`, `sharadar-tickers`, `sharadar-actions`, `sharadar-sp500`, `sharadar-gap-check`, `earnings-surprises`, `financial-statements`, `financial-notes` | Facts and employees are independent SEC network walks; SEC and merged history rebuilds are local once inputs exist. |
 | Structure/text | `def14a`, `def14a-edgar`, `sec-8k-votes`, `filing-text` | LLM-backed DEF 14A and vote extraction spend API calls; deterministic DEF 14A XBRL is separate. |
-| Earnings calls | `extract-earnings-calls [-F] [-t]` | Reads the defeatbeta HuggingFace parquet into `earnings_call_sections`. An unchanged source file is a no-op; `-F` compares every scoped call. |
+| Earnings calls | `extract-earnings-calls [-F] [-t]` | Reads the defeatbeta HuggingFace parquet into `earnings_call_sections`: only the row groups whose latest call reaches the stored frontier minus the overlap; `-F` compares every scoped call and deletes calls the source no longer has. |
+| Resume tooling | `extraction-status`, `resume-plan`, `edgar-index`, `markers` | `extraction-status` prints the per-table freshness report and exits 0. `resume-plan [--table T] [-t X] [--timings]` prints each EDGAR document table's work list by key class, read-only. `edgar-index [--build]` refreshes the local filing index (`--build` downloads every quarter again). `markers --count` counts empty-filing markers per table; `markers --delete` removes them, for a rollback only. |
+
+### What a run fetches
+
+Every fetcher derives its work list from its own table's rows, its `Resume` contract in [schema.py](../../src/data_store/schema.py) and the run date. Missing filings, holes and new tickers are found on every run; to repair stored rows, delete them and the next run fetches them again. No code reads the retired run manifest or the bulk `*_universe.json` sidecars; they are kept in `data/_retired/2026-10/`.
+
+- **New ticker.** A ticker whose `sp500_tickers.added_on` lies inside the table's overlap (7 days for the archives and the 13F backfill) gets its full history. A ticker taken out of `INSUFFICIENT_HISTORY_TICKERS` keeps its old `added_on`, so it is not new: run `-t <ticker> -F` once for each source.
+- **`-t X`** plans X alone. An EDGAR document command reads X's missing filings. An archive command (`financial-statements`, `financial-notes`, `fails-to-deliver`, the zip half of `insider-transactions`) does nothing for an established X; `-t X -F` re-reads X's stored periods. A `-t` 13F run never reads past the stored frontier.
+- **`-F`** re-reads the whole listed history, stored filings and markers included. `--no-cap` lifts `max_documents_per_run`.
+- **Archives.** A period is done only when every table of its fetcher holds it. A period with no universe row is listed again every night. A change of the FTD symbol policy needs an explicit `-F`.
+- **Short interest.** A night reads only the days on which no key has a row; `--repair-gaps` re-reads each key's own gap days once. `-t X -F` re-reads X's days and upserts only X's rows.
+- **DEF 14A LLM.** A stored row, an evidence-free answer included, counts as done; only `-F` sends the proxy again.
+- **13F.** A hole older than the 7-day overlap needs `thirteen-f --filing-window START:END`.
+
+### Source-specific notes
 
 `fundamentals-employees` owns the 10-K/10-K/A/10-K405 headcount walk and uses GPT-6 Luna on filing text. It stores source-supported values at the SEC filing date, and a NULL row for a filing with no usable count, and can run without replaying SEC XBRL facts or `fundamentals_history_sec`. A normal run lists the whole history window and skips filing dates that already have a row; a filing in `configs/sec/employees_manual_roster.json` takes its value from there instead of the LLM. Delete a row to have that filing re-decided. `--full` re-decides every filing in the window and upserts counts or NULLs. A full run uses SEC and OpenAI APIs and writes the employee table. Exact current names and options are defined in [data_extract/cli.py](../../src/data_extract/cli.py).
 
@@ -136,7 +151,7 @@ rtk "$PY" -m src data_aggregate cube-status
 
 The same eight part objects are driven by the composite build, individual CLI commands, and the Airflow chain. The command list and warm-ups come from [parts.py](../../src/data_aggregate/utils/common/parts.py).
 
-Parts are incremental by default. `-F` forces a rebuild. A changed target label/horizon set changes physical columns; the target step detects this and rebuilds, after which the cube must be assembled again.
+Parts are incremental by default: each rewrites at least its last 7 sessions (45 for fundamentals), so a source correction older than that needs `-F`, which forces a rebuild. A changed target label/horizon set changes physical columns; the target step detects this and rebuilds, after which the cube must be assembled again.
 
 Institutional incremental computation intentionally reads full history for expanding/event-age families and writes only the tail. Budget it like a full calculation. Governance carries a long daily self-history despite annual filing inputs; do not infer cheapness from source cadence.
 
@@ -212,7 +227,7 @@ This page keeps the decision summary. Exact recovery sequences, rollback evidenc
 - Back up affected tables before destructive or broad writes.
 - Chunk edgartools walks into separate processes; its per-filing caches can retain memory.
 - Run only one SEC network walk at a time because the rate limiter is per process.
-- Use full/reparse flags when the manifest watermark would otherwise skip historical rows.
+- Use full/reparse flags only to re-read history that is already stored; missing filings and holes need no flag.
 - Stop jobs by PID.
 - Do not infer success from row-count growth alone; run source coverage and domain validation.
 
@@ -242,11 +257,11 @@ The dated lineage changes both identity tables' primary keys, and `CREATE TABLE 
 
 ### 13D/13G
 
-Form-string eras and manifests make `-F` important for complete rebuilds. 13G listing cost is driven by all filings a financial institution submitted against other issuers, not only rows retained for that ticker, so chunk it.
+Both form-string eras are in the contract forms, so a normal run lists every missing filing; `-F` re-reads stored ones too. The filing index lists a 13G under every party, so a universe bank or asset manager also lists the thousands of 13Gs it filed on other issuers; each is read once and stored as a filer-role marker, so the first backlog run pays that cost. Chunk a 13G `-F`.
 
 ### Insider transactions
 
-`insider-transactions` loads one table: pending zip quarters first (only the filings EDGAR lacks), then EDGAR from each ticker's own latest stored `filing_date` minus 7 days, so a `-t` run never moves another ticker's window. The stored-row identity sweep runs only on a full-universe run; a `-t` run skips it. `--reparse` re-reads every cached zip quarter after a zip parse change; `-F` implies `--reparse` and also re-reads the EDGAR window, including filings already stored from EDGAR. A full rebuild drops the table first, then runs `-F` (see [large backfills and recovery](./large-backfills-and-recovery.md)). Read the per-quarter `filings missing from EDGAR` WARNING and the one identity-exclusion WARNING per run; there is no parity or promotion step.
+`insider-transactions` loads one table: pending zip quarters first (only the filings EDGAR lacks), then every indexed Form 3/4/5 of each ticker's lineage filed from the earlier of the day after the last stored zip quarter and the run date minus 7 days that is not yet stored from EDGAR. The stored-row identity sweep runs only on a full-universe run; a `-t` run skips it. `--reparse` re-reads every cached zip quarter after a zip parse change; `-F` implies `--reparse` and also re-reads the EDGAR window, including filings already stored from EDGAR. A full rebuild drops the table first, then runs `-F` (see [large backfills and recovery](./large-backfills-and-recovery.md)). Read the per-quarter `filings missing from EDGAR` WARNING and the one identity-exclusion WARNING per run; there is no parity or promotion step.
 
 ### Earnings-call rebuild
 
@@ -254,7 +269,7 @@ A full text rebuild is dominated by FinBERT. Measured on 2026-10-02 (`reports/va
 
 | Stage | Cost | Resume |
 | --- | --- | --- |
-| `extract-earnings-calls -F` | 18.6 min for 33,591 calls, mostly DB writes; an unchanged source revision is a no-op in seconds | Writes one row group per batch, so a crash loses at most one batch. |
+| `extract-earnings-calls -F` | 18.6 min for 33,591 calls, mostly DB writes | Writes one row group per batch, so a crash loses at most one batch. |
 | FinBERT sentiment | 27–37 s per call on CPU, about 280 h for every call | Scores are upserted per ticker under the `speaker-clean-v2` cache version. |
 | OpenAI embeddings | about 9,150 tokens per call, about $6 for every call; about 100 calls/min, bound by `float8[]` inserts | Complete calls are skipped on (ticker, quarter, model tag). |
 
@@ -294,7 +309,7 @@ Regenerate managed DDL through [generate_schema_sql.py](../../scripts/generate_s
 - PostgreSQL `DATE` returns `datetime.date`; a Parquet-only test can hide this.
 - `load` raises on missing/empty tables by design.
 - `iter_load` holds a connection until exhausted or closed.
-- Bulk SEC caches can be tens of gigabytes; check before downloading again.
+- Bulk SEC caches can be tens of gigabytes; check before downloading again. The SEC 13F data sets (`sec_13f_datasets`) download lazily, only when a new ticker needs them.
 - A full fundamentals quality pass can take hours; scope iterations.
 - The running container may not reflect the latest compose bind configuration.
 - A shell pipeline can mask the underlying command's exit status; capture logs without losing the real code.

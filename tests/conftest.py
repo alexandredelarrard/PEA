@@ -52,7 +52,7 @@ from sqlalchemy import create_engine  # noqa: E402
 from sqlalchemy.pool import StaticPool  # noqa: E402
 
 from src.data_store.errors import TableEmptyError  # noqa: E402
-from src.data_store.schema import name_of, resolve  # noqa: E402
+from src.data_store.schema import BY_NAME, name_of, resolve  # noqa: E402
 from src.data_store.store import DataStore  # noqa: E402
 from src.utils.db import get_engine  # noqa: E402
 
@@ -173,7 +173,7 @@ class FakeStore:
 
     def max_date_by(self, table: Any, key_col: str, date_col: str | None = None) -> dict[str, pd.Timestamp]:
         """Per-key latest stored date. The grouped counterpart of `max_date` -- what
-        `resume_since` and the macro freshness gate resolve their frontier with, so the double
+        the macro freshness gate and the Phase 4 resume reads resolve their frontier with, so the double
         needs it or those paths are untestable without a DB. Empty dict when the table or
         either column is absent, matching the real store's "nothing stored yet" contract."""
         df = self.t.get(name_of(table))
@@ -192,10 +192,15 @@ class FakeStore:
         where: dict[str, Any] | None = None,
         *,
         optional: bool = False,
+        markers: bool = False,
         **kw: Any,
     ) -> pd.DataFrame | None:
         name = name_of(table)
         df = self._filter(self.t.get(name, pd.DataFrame()), where)
+        marker = None if markers or name not in BY_NAME else BY_NAME[name].empty_marker
+        if marker is not None and marker[0] in df.columns:
+            values = cast(pd.Series, df[marker[0]])
+            df = cast(pd.DataFrame, df[values.isna() | (values != cast(Any, marker[1]))])
         if df.empty:
             if optional:
                 return None

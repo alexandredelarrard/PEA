@@ -9,6 +9,9 @@ import types
 from pathlib import Path
 from types import SimpleNamespace
 
+from src.data_extract import cli as extraction_cli
+from tests.dags.dag_harness import ALL_DONE, ALL_SUCCESS, load_dag, replay
+
 DAG_FILE = Path(__file__).resolve().parents[2] / "src" / "dags" / "dag_data_extraction.py"
 AGG_DAG_FILE = Path(__file__).resolve().parents[2] / "src" / "dags" / "dag_data_aggregation.py"
 EDGAR_DRIVER_FILE = "src/data_extract/utils/common/edgar_driver.py"
@@ -26,11 +29,10 @@ REQUIRED_COMMANDS = {
     "macro",
     "short-interest",
     "earnings-surprises",
-    "splits",
     "price-history",
-    "dividends",
     "fails-to-deliver",
     "thirteen-f",
+    "thirteen-f-backfill",
     "financial-statements",
     "insider-transactions",
     "insider-edgar",
@@ -123,8 +125,7 @@ IDENTITY_INDEPENDENT = {
     "thirteen_f_managers",
     "macro",
     "earnings_surprises",
-    "splits",
-    "dividends",
+    "thirteen_f_backfill",
     "extract_earnings_calls",
 }
 
@@ -167,7 +168,7 @@ def _load_dag_graph(monkeypatch) -> tuple[dict[str, set[str]], dict[str, dict]]:
     trigger = types.ModuleType("airflow.operators.trigger_dagrun")
     trigger.TriggerDagRunOperator = operator  # type: ignore[attr-defined]
     rule = types.ModuleType("airflow.utils.trigger_rule")
-    rule.TriggerRule = SimpleNamespace(ALL_SUCCESS="all_success")  # type: ignore[attr-defined]
+    rule.TriggerRule = SimpleNamespace(ALL_SUCCESS="all_success", ALL_DONE="all_done")  # type: ignore[attr-defined]
     modules = {
         "airflow": airflow,
         "airflow.operators": types.ModuleType("airflow.operators"),
@@ -216,13 +217,15 @@ def test_retries_dependencies_and_hard_gates_are_wired():
     source = _source(DAG_FILE)
     assert '"retries": 3' in source
     assert 'pool_slots=2 if pool == "sec_api" else 1' in source
-    assert "splits >> price_history" in source
-    assert "trigger_rule=TriggerRule.ALL_SUCCESS" in source
-    assert "trigger_rule=TriggerRule.ALL_SUCCESS" in _source(AGG_DAG_FILE)
+    assert "thirteen_f >> thirteen_f_backfill" in source  # one EDGAR walk at a time: the backfill follows the nightly walk
+    assert 'thirteen_f_backfill = fetch("thirteen-f-backfill", pool="sec_api")' in source
+    assert "[fundamentals, fundamentals_employees] >> fundamentals_sharadar" in source
+    assert "[sec_8k_items, def14a] >> sec_8k_votes" in source
+    assert "all_fetchers >> identity_check >> extraction_status >> trigger_aggregation" in source
 
     print("\n=== SANITY CHECK: extraction retry + gate wiring ===")
-    print("  three retries per task, sec_api tasks take both pool slots, both DAG triggers wait for ALL_SUCCESS")
-    print("  OK: a failed source never lets aggregation start")
+    print("  three retries per task, sec_api tasks take both pool slots, the backfill follows the 13F walk")
+    print("  OK: every fetcher -> identity_check -> extraction_status -> trigger_aggregation")
 
 
 def test_identity_stage_orders_downloads_build_propagation_consumers_and_status(monkeypatch):
@@ -245,16 +248,16 @@ def test_identity_stage_orders_downloads_build_propagation_consumers_and_status(
     assert IDENTITY_INDEPENDENT.isdisjoint(after_build), sorted(IDENTITY_INDEPENDENT & after_build)
     assert not (IDENTITY_DOWNLOADS | {"identity_tables"}) & after_propagation
 
-    # the hard gate: every task upstream, default ALL_SUCCESS, so an identity or propagation failure blocks it
+    # every task upstream of the report; the check, the report and the trigger run ALL_DONE (no source blocks the night)
     upstream_of_status = {task for task in graph if "extraction_status" in _descendants(graph, task)}
     assert upstream_of_status == set(graph) - {"extraction_status", "trigger_data_aggregation"}
-    assert "trigger_rule" not in params["extraction_status"]
-    assert params["trigger_data_aggregation"]["trigger_rule"] == "all_success"
+    assert params["extraction_status"]["trigger_rule"] == "all_done"
+    assert params["trigger_data_aggregation"]["trigger_rule"] == "all_done"
     assert graph["extraction_status"] == {"trigger_data_aggregation"}
-    # AC-039 foreign-row half: the identity validator runs after every fetcher and before the freshness gate
+    # AC-039 foreign-row half: the identity validator runs after every fetcher and before the freshness report
     fetchers = set(graph) - {"identity_check", "extraction_status", "trigger_data_aggregation", "seed_universe"}
     assert all("identity_check" in graph[task] for task in fetchers), sorted(t for t in fetchers if "identity_check" not in graph[t])
-    assert graph["identity_check"] == {"extraction_status"} and "trigger_rule" not in params["identity_check"]
+    assert graph["identity_check"] == {"extraction_status"} and params["identity_check"]["trigger_rule"] == "all_done"
     assert " -m src validate identity -o " in str(params["identity_check"]["bash_command"])
     for task in IDENTITY_DOWNLOADS:
         assert params[task]["pool"] == "sec_bulk"
@@ -264,15 +267,17 @@ def test_identity_stage_orders_downloads_build_propagation_consumers_and_status(
     print(f"  -> {len(IDENTITY_CONSUMERS)} consumers -> sec_8k_votes / fundamentals_sharadar -> identity_check -> extraction_status")
     first = min(position[task] for task in IDENTITY_DOWNLOADS)
     print(f"  first identity task at topological position {first}, gate at {position['extraction_status']}")
-    print(f"  OK: {len(IDENTITY_INDEPENDENT)} non-identity sources run beside the stage; a failed build or propagation leaves the gate unrun")
+    print(
+        f"  OK: {len(IDENTITY_INDEPENDENT)} non-identity sources run beside the stage; a failed build leaves its consumers unrun, the check still runs"
+    )
 
 
-def test_price_history_waits_for_the_security_master_and_the_splits(monkeypatch):
+def test_price_history_waits_for_the_security_master(monkeypatch):
     """Q2d: the price fetch list adds the master's current secondary classes, so it runs after `identity_tables`."""
     graph, _ = _load_dag_graph(monkeypatch)
-    assert "price_history" in graph["identity_tables"] and "price_history" in graph["splits"]
+    assert "price_history" in graph["identity_tables"]
     assert "price_history" not in _descendants(graph, "identity_propagate"), "prices read only the master, not the propagation"
-    print("\n=== SANITY CHECK: price_history order ===\n  splits -> price_history and identity_tables -> price_history; no wait on propagation")
+    print("\n=== SANITY CHECK: price_history order ===\n  identity_tables -> price_history; no wait on propagation")
 
 
 def test_the_live_insider_walk_runs_in_the_sec_api_pool_after_the_bulk_parse(monkeypatch):
@@ -294,37 +299,58 @@ def test_the_live_insider_walk_runs_in_the_sec_api_pool_after_the_bulk_parse(mon
     print("  OK: the live EDGAR walk holds both sec_api slots and starts after the bulk parse and the identity propagation.")
 
 
-def _raises_incomplete(node: ast.AST) -> bool:
-    return any(
-        isinstance(sub, ast.Raise) and isinstance(sub.exc, ast.Call) and getattr(sub.exc.func, "id", None) == "IncompleteEdgarRunError"
-        for sub in ast.walk(node)
-    )
+def test_one_price_task_and_no_alias_commands():
+    dag = load_dag(DAG_FILE)
+    price_tasks = [task_id for task_id, task in dag.tasks.items() if "price-history" in str(task.kwargs.get("bash_command", ""))]
+    assert price_tasks == ["price_history"]
+    assert not {"splits", "dividends"} & set(dag.tasks), "the merged download has one task"
+    assert not {"splits", "dividends"} & set(extraction_cli.cli.commands), "the CLI aliases are gone"
+    assert "price-history" in extraction_cli.cli.commands
+
+    print("\n=== SANITY CHECK: one yfinance task ===")
+    print("  price_history is the only task writing prices, prices_dividends and prices_splits; the splits/dividends aliases are removed")
 
 
-def test_scheduled_edgar_walks_require_complete_ticker_coverage():
+def test_gate_and_trigger_run_all_done_and_a_failed_fetcher_never_blocks_aggregation():
+    dag = load_dag(DAG_FILE)
+    gate, trigger, check = dag.tasks["extraction_status"], dag.tasks["trigger_data_aggregation"], dag.tasks["identity_check"]
+    assert gate.trigger_rule == ALL_DONE and trigger.trigger_rule == ALL_DONE and check.trigger_rule == ALL_DONE
+    assert trigger.upstream == {"extraction_status"} and gate.upstream == {"identity_check"}
+    fetchers = {
+        task_id for task_id in dag.tasks if task_id not in {"seed_universe", "identity_check", "extraction_status", "trigger_data_aggregation"}
+    }
+    assert check.upstream == fetchers, "the identity check, then the report, wait for every fetcher"
+    assert {"thirteen_f"} <= dag.tasks["thirteen_f_backfill"].upstream, "one EDGAR walk at a time: the backfill follows the nightly 13F walk"
+    assert all(dag.tasks[task_id].trigger_rule == ALL_SUCCESS for task_id in fetchers), "a fetcher still waits for its own sources"
+
+    for failed in (["price_history"], ["identity_tables"], ["thirteen_f", "insider_transactions", "extraction_status"]):
+        states = replay(dag, failed)
+        assert states["trigger_data_aggregation"] == "success", (failed, states)
+    states = replay(dag, ["identity_tables"])
+    assert states["fundamentals"] == "upstream_failed" and states["extraction_status"] == "success"
+
+    print("\n=== SANITY CHECK: non-blocking extraction DAG (AC-015) ===")
+    print(f"  {len(fetchers)} fetchers -> identity_check (ALL_DONE) -> extraction_status (ALL_DONE) -> trigger_data_aggregation (ALL_DONE)")
+    print("  replay: price_history failed / identity_tables failed (its 12 consumers upstream_failed) / 13F + insider + the report failed")
+    print("  -> aggregation is triggered every time. Validated.")
+
+
+def _raises(node: ast.AST, name: str) -> bool:
+    return any(isinstance(sub, ast.Raise) and isinstance(sub.exc, ast.Call) and getattr(sub.exc.func, "id", None) == name for sub in ast.walk(node))
+
+
+def _calls(node: ast.AST) -> list[str]:
+    return [sub.func.id for sub in ast.walk(node) if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)]
+
+
+def test_scheduled_edgar_walks_save_what_they_read_and_exit_zero():
     root = DAG_FILE.parents[2]
     driver = ast.parse(_source(root / EDGAR_DRIVER_FILE))
-    fields = {
-        node.target.id
-        for cls in ast.walk(driver)
-        if isinstance(cls, ast.ClassDef) and cls.name == "EdgarFetch"
-        for node in cls.body
-        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
-    }
-    assert "require_complete" not in fields, "EdgarFetch must not offer a partial-success mode"
     run = next(f for f in ast.walk(driver) if isinstance(f, ast.FunctionDef) and f.name == "run_edgar_fetch")
-    order = [
-        "raise"
-        if isinstance(stmt, ast.If) and isinstance(stmt.test, ast.Name) and stmt.test.id == "failed" and _raises_incomplete(stmt)
-        else "record"
-        for stmt in run.body
-        if (isinstance(stmt, ast.If) and _raises_incomplete(stmt))
-        or (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call) and getattr(stmt.value.func, "id", None) == "_record_tables")
-    ]
-    assert order == ["raise", "record"], f"a failed ticker must raise IncompleteEdgarRunError before any manifest entry is recorded: {order}"
-    record = next(f for f in ast.walk(driver) if isinstance(f, ast.FunctionDef) and f.name == "_record_tables")
-    coverage = [kw.value for call in ast.walk(record) if isinstance(call, ast.Call) for kw in call.keywords if kw.arg == "coverage_complete"]
-    assert len(coverage) == 1 and isinstance(coverage[0], ast.Constant) and coverage[0].value is True
+    assert not _raises(run, "IncompleteEdgarRunError"), "a failed document must not fail the task"
+    calls = _calls(run)
+    assert "record_run" not in calls and "_record_tables" not in calls, "the driver must not write the run manifest"
+    assert calls.index("_run_pass") < calls.index("_retry_rounds") < calls.index("_log_coverage")
 
     missing = [
         path
@@ -336,10 +362,9 @@ def test_scheduled_edgar_walks_require_complete_ticker_coverage():
     ]
     assert not missing, f"scheduled EDGAR walks no longer declare an EdgarFetch spec: {missing}"
 
-    print("\n=== SANITY CHECK: strict EDGAR walks ===")
-    print(f"  all {len(STRICT_EDGAR_FILES)} scheduled per-ticker EDGAR fetchers run the one strict driver path: no flag, a failed")
-    print("  ticker raises IncompleteEdgarRunError before _record_tables, and recorded runs are coverage_complete=True")
-    print("  OK: one failed ticker makes the source task retry without advancing its manifest")
+    print("\n=== SANITY CHECK: EDGAR walks save what they read ===")
+    print(f"  all {len(STRICT_EDGAR_FILES)} scheduled EDGAR fetchers declare an EdgarFetch; run_edgar_fetch reads, retries in")
+    print("  rounds and logs coverage, never raises IncompleteEdgarRunError and writes no run manifest.")
 
 
 def test_earnings_calls_are_one_task_outside_the_retired_scrape_pool():

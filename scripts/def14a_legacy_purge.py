@@ -25,12 +25,10 @@ The delete is surgical by construction: the target accessions own ZERO rows in a
 tables (that is what predicate A says), so nothing is orphaned and no child cleanup is needed.
 Asserted at run time rather than trusted.
 
-The manifest entry MUST be cleared as part of the same operation. `manifest_window` returns a
-narrow `since` cutoff whenever the ticker count is unchanged and the last full rescan is under
-`manifest_full_rescan_days` old -- so after a full-universe run stamps today's date, the next
-run would list only filings after today, find nothing, and the deleted rows would stay gone
-without being refetched. Deleting rows and leaving the manifest is the one combination that
-loses data for real.
+Empty-filing markers (`def14a_json = '_empty'`) are never selected: the delete set is read with
+the store's default marker filter, so a proxy already answered without evidence is not re-sent.
+The fetcher lists every ticker's whole history on each run, so a deleted row is listed again
+by the next run.
 
     "$PY" scripts/def14a_legacy_purge.py [-c ./configs]             # dry run + snapshot
     "$PY" scripts/def14a_legacy_purge.py [-c ./configs] --confirm   # snapshot, then delete
@@ -40,7 +38,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -55,7 +52,6 @@ if str(ROOT) not in sys.path:
 # ruff: noqa: E402
 
 from src.context import get_config_context
-from src.data_extract.utils.common.run_manifest import manifest_path
 from src.data_store.schema import Tables
 
 #: The 12 columns the refactored flatten added. A row carrying ANY of them was written by the
@@ -90,8 +86,8 @@ OUT_DIR = ROOT / "reports/2026-09-04/def14a-legacy-purge"
 
 
 def snapshot(store, out_dir: Path) -> dict:
-    """Freeze all five DEF 14A tables to parquet -- every row, every column, `def14a_json`
-    included -- plus a byte copy of the run manifest.
+    """Freeze all five DEF 14A tables to parquet -- every row (empty-filing markers included),
+    every column, `def14a_json` included.
 
     Deliberately unprojected, the one case AGENTS.md's projection rule does not cover: a
     rollback artefact that omits a column cannot roll anything back. The child tables are in
@@ -102,7 +98,7 @@ def snapshot(store, out_dir: Path) -> dict:
     info: dict = {"snapshot_utc": datetime.now(UTC).isoformat(timespec="seconds"), "tables": {}}
 
     for name, table in (("def14a_llm", Tables.def14a_llm),) + CHILD_TABLES:
-        df = store.load(table)
+        df = store.load(table, markers=True)
         df.to_parquet(out_dir / f"{name}.parquet", index=False)
         info["tables"][name] = {
             "rows": int(len(df)),
@@ -116,8 +112,9 @@ def snapshot(store, out_dir: Path) -> dict:
 
 
 def legacy_accessions(store) -> tuple[set[str], pd.DataFrame, dict]:
-    """The delete set (A & B), the parent rows it selects, and the evidence for both."""
-    llm = store.load(Tables.def14a_llm, columns=["ticker", "as_of", "accession_number", *NEW_SCHEMA_COLUMNS])
+    """The delete set (A & B), the parent rows it selects, and the evidence for both; marker rows are
+    excluded by the read itself."""
+    llm = store.load(Tables.def14a_llm, columns=["ticker", "as_of", "accession_number", *NEW_SCHEMA_COLUMNS], markers=False)
     llm["as_of"] = pd.to_datetime(llm["as_of"])
 
     with_directors = set(store.load(Tables.def14a_directors, columns=["accession_number"])["accession_number"])
@@ -163,24 +160,6 @@ def assert_no_child_rows(store, target: set[str]) -> None:
         print(f"  {name:24s} 0 of {len(target):,} target accessions own rows here")
 
 
-def clear_manifest_entry(context, out_dir: Path) -> None:
-    """Drop `def14a_llm` from the run manifest so the next run does a FULL relist.
-
-    An absent entry makes `manifest_window` return `(fallback_since, True)` on its first
-    branch -- the same state a first-ever run sees. The file is copied into the snapshot
-    directory first; it is the only part of this operation that touches `data/`.
-    """
-    path = manifest_path(context)
-    if not path.exists():
-        print("  manifest absent -- nothing to clear (already means 'full rescan')")
-        return
-    shutil.copy2(path, out_dir / "extraction_manifest.json.before")
-    data = json.loads(path.read_text(encoding="utf-8"))
-    removed = data.pop("def14a_llm", None)
-    path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
-    print(f"  cleared manifest entry def14a_llm: {removed}")
-
-
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("-c", "--config", default="./configs")
@@ -224,9 +203,6 @@ def main() -> None:
         raise SystemExit(
             f"ABORT: deleted {deleted} but targeted {len(target)}; investigate against {OUT_DIR / 'def14a_llm.parquet'} before re-running anything."
         )
-
-    print("\n=== manifest ===")
-    clear_manifest_entry(context, OUT_DIR)
 
     print("\n=== after ===")
     after = store.load(Tables.def14a_llm, columns=["ticker", "accession_number"])

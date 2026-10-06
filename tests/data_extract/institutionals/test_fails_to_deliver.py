@@ -22,7 +22,9 @@ def _context(sqlite_store, tmp_path) -> Any:
         store=sqlite_store,
         log=logging.getLogger("test.ftd"),
         paths={"DATA_STORE": tmp_path},
-        config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(fails_deliver="sec_fails_to_deliver"))),
+        config=SimpleNamespace(
+            local=SimpleNamespace(paths=SimpleNamespace(fails_deliver="sec_fails_to_deliver")), data_extract=SimpleNamespace(redundant_ticks=[])
+        ),
     )
 
 
@@ -143,7 +145,6 @@ def test_full_rebuild_keys_on_cusip_excludes_a_reused_symbol_and_is_repeatable(s
     }
     monkeypatch.setattr(ftd, "_cached_periods", lambda cache: set(raw_by_period))
     monkeypatch.setattr(ftd, "read_zip_text", lambda path, log=None: raw_by_period[path.stem.removeprefix("cnsfails")])
-    monkeypatch.setattr(ftd, "record_run", lambda *a, **k: None)
     replace_calls: list[str] = []
     original_replace = sqlite_store.replace
 
@@ -165,6 +166,31 @@ def test_full_rebuild_keys_on_cusip_excludes_a_reused_symbol_and_is_repeatable(s
     print("\n=== SANITY CHECK: FTD CUSIP full rebuild ===")
     print("  FB and META one CUSIP -> META; pre-2020 IR -> TT by its CUSIP; the Weight Watchers WTW line never stored")
     print("  second full run is byte-equivalent; both tables replaced each run")
+
+
+def test_a_scoped_full_run_upserts_its_company_and_never_replaces_the_tables(sqlite_store, monkeypatch, tmp_path):
+    """`fails-to-deliver -t META -F` re-reads the cache for META's CUSIPs only and upserts; TT's stored row survives."""
+    ctx = _context(sqlite_store, tmp_path)
+    sqlite_store.replace(Tables.security_master, _master(_REUSE_MASTER))
+    sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["META", "TT"], "cik": ["0001326801", "0001466258"]}))
+    sqlite_store.save(
+        Tables.sec_fails_to_deliver,
+        pd.DataFrame(
+            {"ticker": ["TT"], "date": pd.to_datetime(["2015-01-02"]), "fails_quantity": [7.0], "fails_value": [7.0], "period": ["201501a"]}
+        ),
+    )
+    raw = "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20220720|30303M102|META|200|META PLATFORMS INC|10\n20220720|G47791101|IR|9|X|1\n"
+    monkeypatch.setattr(ftd, "_cached_periods", lambda cache: {"202207b"})
+    monkeypatch.setattr(ftd, "read_zip_text", lambda path, log=None: raw)
+    monkeypatch.setattr(sqlite_store, "replace", lambda *a, **k: pytest.fail("a scoped -F must never replace a table"))
+
+    ftd.fetch_fails_to_deliver(ctx, ["META"], full=True)
+
+    stored = sqlite_store.load(Tables.sec_fails_to_deliver).set_index("ticker")
+    assert stored.loc["TT", "fails_quantity"] == 7.0 and stored.loc["META", "fails_quantity"] == 200.0
+    assert set(sqlite_store.load(Tables.sec_fails_to_deliver_security)["cusip"]) == {"30303M102"}
+    print("\n=== SANITY CHECK: FTD -t META -F ===")
+    print("  META's CUSIP re-read and upserted (200); TT's stored row kept, the IR/TT line not read; no table replaced. Validated.")
 
 
 def test_full_rebuild_unreadable_cached_period_aborts_before_replace(sqlite_store, monkeypatch, tmp_path):
@@ -234,7 +260,6 @@ def test_ftd_download_first_successful_http_response_stores_source_period(sqlite
         "read_zip_text",
         lambda path, log=None: "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20260902|000111AAA|ABC|100|ABC CORP|190.00\n",
     )
-    monkeypatch.setattr(ftd, "record_run", lambda *a, **k: None)
 
     assert ftd.download_fails_to_deliver(ctx, years_history=1) == 1
     assert ftd.download_fails_to_deliver(ctx, years_history=1) == 0
@@ -342,7 +367,6 @@ def test_ftd_download_ingests_symbols_then_the_voted_cusip6_from_cache(sqlite_st
         return raw_by_period[period]
 
     monkeypatch.setattr(ftd, "read_zip_text", read)
-    monkeypatch.setattr(ftd, "record_run", lambda *a, **k: None)
 
     saved = ftd.download_fails_to_deliver(ctx, years_history=1)
     stored = sqlite_store.load(Tables.sec_fails_to_deliver_security).sort_values("cusip").reset_index(drop=True)

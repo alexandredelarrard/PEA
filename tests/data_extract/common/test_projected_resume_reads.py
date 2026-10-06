@@ -65,23 +65,24 @@ def test_earnings_surprise_plan_is_unchanged_by_the_projected_read(sqlite_store:
     sqlite_store.save(Tables.earnings_surprises, df_stored)
     tickers = ["FRESH", "STALE", "NOACTUAL", "DUE", "NEW"]
 
+    # The plan the full-table read used to give: the latest reported date and the latest stored date per ticker.
     df_full = sqlite_store.load(Tables.earnings_surprises)
     df_full["earnings_date"] = pd.to_datetime(df_full["earnings_date"], format="%Y-%m-%d")
-    expected = surprises._plan_fetch(tickers, df_full, 64, 95)
+    reported = df_full.dropna(subset=["eps_actual"]).groupby("ticker")["earnings_date"].max().to_dict()
+    expected = surprises._plan_fetch(tickers, reported, df_full.groupby("ticker")["earnings_date"].max().to_dict(), 64, 95)
 
     plans: list[list[tuple[str, int]]] = []
     plan_fetch = surprises._plan_fetch
     monkeypatch.setattr(surprises, "_plan_fetch", lambda *a: plans.append(plan_fetch(*a)) or plans[-1])
     monkeypatch.setattr(surprises, "_download_one", lambda ticker, limit: None)
-    monkeypatch.setattr(surprises, "record_run", lambda *a, **k: None)
     loads = _spy_loads(monkeypatch, sqlite_store, Tables.earnings_surprises.name)
-    surprises.fetch_earnings_surprises(_context(sqlite_store), tickers, pause=0.0)
+    surprises.fetch_earnings_surprises(_context(sqlite_store), tickers, years_history=15, pause=0.0)
 
-    assert loads[0]["columns"] == ["ticker", "earnings_date", "eps_actual"]
+    assert loads == [], "the plan must come from key_stats, never a table read"
     assert plans == [expected]
     print("\n=== SANITY CHECK: earnings-surprise resume read ===")
-    print(f"  projected read of 3 columns -> plan {plans[0]}; full read -> {expected}")
-    print("  OK: identical fetch plan from the projected resume read")
+    print(f"  two key_stats GROUP BY reads -> plan {plans[0]}; full read -> {expected}")
+    print("  OK: identical fetch plan with no table read")
 
 
 def test_load_identity_with_the_projected_roster_matches_the_full_roster(sqlite_store: Any) -> None:

@@ -44,7 +44,7 @@ sequenceDiagram
 3. It saves one pickle per member, `metadata.json`, predictions, signals, the `Monitor` diagnostics (IC and drawdown, SHAP, PDPs), a label-only quantile backtest per horizon, and run KPIs.
 4. The portfolio backtest uses the holdout artifacts before production refitting.
 5. `run_train(full_history=True)` trains the production ensemble on all history.
-6. `run_predict()` loads only latest feature rows and writes member, horizon-ensemble, and blended predictions in long form.
+6. `run_predict()` first raises `StaleInputsError` and scores nothing when the share of universe tickers with a fresh own latest date in `prices`, `fundamentals_sharadar` or `fundamentals_history` is below `prediction_fresh_share`, or when the cube ends before `prices` ([freshness.py](../../src/utils/freshness.py)). It then loads only latest feature rows and writes member, horizon-ensemble, and blended predictions in long form.
 
 ## Failure modes
 

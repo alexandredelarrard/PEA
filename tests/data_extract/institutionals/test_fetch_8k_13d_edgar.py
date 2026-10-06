@@ -17,8 +17,9 @@ import pytest
 from src.constants.constants import SEC_8K_FORMS, SEC_13D_FORMS
 from src.data_extract.transformers.step_extract_institutionals import StepExtractInstitutionals
 from src.data_extract.transformers.step_extract_structure import StepExtractStructure
-from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp, build_filing_rows, run_edgar_fetch
-from src.data_extract.utils.institutionals.fetch_8k_edgar import SEC_8K_FETCH, _filing_row
+from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp, parse_filing_rows, run_edgar_fetch
+from src.data_extract.utils.common.sec_io import ParseFailureError
+from src.data_extract.utils.institutionals.fetch_8k_edgar import SEC_8K_FETCH, _filing_row, submission_filings
 from src.data_extract.utils.institutionals.fetch_13d_edgar import (
     _ITEM_ANCHORS,
     SCHEDULE_13D,
@@ -27,7 +28,7 @@ from src.data_extract.utils.institutionals.fetch_13d_edgar import (
     _extract_13d_item_sections,
     _extract_transaction_rows,
     _normalize_item_text,
-    build_ticker_13d_edgar,
+    parse_13d,
 )
 from src.data_extract.utils.institutionals.schedule_rows import schedule_filing_rows
 from src.data_store.schema import Tables
@@ -60,9 +61,8 @@ def test_filing_fetchers_take_years_history_as_an_argument():
     # each step is the single place that reads the window off the config, for its own fetchers
     expected = {
         # 13F, 13F-manager books, bulk insiders, daily insiders, 13D, 13G, 8-K,
-        # short interest, FTD
-        # (superinvestors takes no window)
-        StepExtractInstitutionals: 9,
+        # short interest (superinvestors takes no window; FTD stamps stored lines and reads none)
+        StepExtractInstitutionals: 8,
         # DEF 14A edgar + filing text (the LLM and vote passes take no window)
         StepExtractStructure: 2,
     }
@@ -81,18 +81,41 @@ def test_filing_fetchers_take_years_history_as_an_argument():
 
 
 def test_sec_8k_fetch_declares_its_driver_settings():
-    """The 8-K fetch is one declaration: its table, description and identity
-    settings, and the generic filing-rows builder bound to the 8-K forms and row function.
+    """The 8-K fetch is one declaration: its table, description, forms and identity settings, the
+    generic per-filing row parse bound to the 8-K row function, and the submissions metadata source.
     (`full` reaching the driver is covered by tests/data_extract/test_cli_edgar_commands.py.)"""
-    assert SEC_8K_FETCH.tables == (Tables.sec_8k,)
+    assert SEC_8K_FETCH.tables == (Tables.sec_8k,) and SEC_8K_FETCH.done == Tables.sec_8k
     assert SEC_8K_FETCH.desc == "8-K (edgartools)"
-    build = cast(Any, SEC_8K_FETCH.build)
-    assert build.func is build_filing_rows
-    assert build.keywords["forms"] == SEC_8K_FORMS
-    assert build.keywords["table"] == Tables.sec_8k
-    assert build.keywords["row_fn"] is _filing_row
+    assert SEC_8K_FETCH.identity_aware is True
+    assert SEC_8K_FETCH.forms == tuple(SEC_8K_FORMS)
+    parse = cast(Any, SEC_8K_FETCH.parse)
+    assert parse.func is parse_filing_rows
+    assert parse.keywords["table"] == Tables.sec_8k
+    assert parse.keywords["row_fn"] is _filing_row
+    assert SEC_8K_FETCH.filings is submission_filings
     print("\n=== SANITY: 8-K fetch declaration ===")
-    print("  SEC_8K_FETCH -> sec_8k, build_filing_rows over SEC_8K_FORMS with the 8-K row function.")
+    print("  SEC_8K_FETCH -> sec_8k over SEC_8K_FORMS, identity_aware, parse_filing_rows with the 8-K row function, item codes from submissions.")
+
+
+def test_8k_item_codes_come_from_the_submissions_listing_of_listed_units(monkeypatch):
+    """An index-built `Filing` carries no item codes; the 8-K fetch reads them from the issuer's
+    `Company` listing, once per CIK holding listed units, and warns about an accession it lacks."""
+    entity = SimpleNamespace(accession_number="0001-24-000001", items="2.02,9.01")
+    other = SimpleNamespace(accession_number="0001-24-000999", items="8.01")
+    built: list[object] = []
+
+    def company(key):
+        built.append(key)
+        return SimpleNamespace(cik=key, get_filings=lambda form: [entity, other])
+
+    monkeypatch.setattr("edgar.Company", company)
+    units = pd.DataFrame({"cik": ["0000000001", "0000000001"], "accession": ["0001-24-000001", "0001-24-000002"]})
+
+    got = submission_filings("AAA", units)
+
+    assert got == {"0001-24-000001": entity} and built == [1]
+    print("\n=== SANITY: 8-K item codes ===")
+    print("  one Company listing for the CIK; the listed accession maps to its EntityFiling, the unlisted one is ignored.")
 
 
 def _fake_8k_filing(
@@ -831,7 +854,7 @@ def test_pad_cik_normalizes_the_issuer_filer_guard_inputs():
     assert not pad_cik("not-a-cik")
 
 
-def test_build_ticker_13d_edgar_skips_filings_where_ticker_is_filer_not_issuer(monkeypatch):
+def test_parse_13d_rejects_filings_where_ticker_is_filer_not_issuer():
     """Real bug found via a live-DB audit: `Company(ticker).get_filings(...)`
     returns every SC 13D where the ticker's CIK appears at all -- as the
     subject company being targeted, OR merely as a FILER disclosing a >5%
@@ -863,31 +886,27 @@ def test_build_ticker_13d_edgar_skips_filings_where_ticker_is_filer_not_issuer(m
         accession="0001-bad",
         obj=_obj("0001199004", "Federated Hermes Premier Municipal Income Fund", "Apple Inc."),
     )
-    monkeypatch.setattr(
-        "src.data_extract.utils.institutionals.schedule_rows.resolve_schedule_subject_filings",
-        lambda ticker, subject_ciks, forms, since, done_accessions: [good_filing, bad_filing],
-    )
+    scope = EdgarScope()
+    good = parse_13d("AAPL", "0000320193", FilingStamp.of(good_filing, "0000320193"), scope)[Tables.sec_13d]
+    bad = parse_13d("AAPL", "0000320193", FilingStamp.of(bad_filing, "0000320193"), scope)
+    assert list(good["accession_number"]) == ["0001-good"]
+    assert good.iloc[0]["issuer_name"] == "Apple Inc."
+    assert bad[Tables.sec_13d].empty and bad[Tables.sec_13d_transactions].empty  # the driver stores a marker
+    print("\n=== SANITY CHECK: 13D issuer guard ===")
+    print("  Apple's own 13D -> rows; a 13D Apple FILED about a municipal fund -> no rows (an empty-filing marker under AAPL).")
 
-    out = build_ticker_13d_edgar("AAPL", "0000320193", scope=EdgarScope())[Tables.sec_13d]
-    assert list(out["accession_number"]) == ["0001-good"]
-    assert out.iloc[0]["issuer_name"] == "Apple Inc."
 
-
-def test_known_13d_parse_failure_fails_the_ticker(monkeypatch):
+def test_known_13d_parse_failure_is_a_deterministic_parse_failure():
     filing = _fake_13d_filing(accession="0001-broken")
 
     def fail_parse():
         raise ValueError("broken schedule")
 
     filing.obj = fail_parse
-    monkeypatch.setattr(
-        "src.data_extract.utils.institutionals.schedule_rows.resolve_schedule_subject_filings",
-        lambda ticker, subject_ciks, forms, since, done_accessions: [filing],
-    )
-    with pytest.raises(RuntimeError, match="0001-broken"):
-        build_ticker_13d_edgar("AAPL", "0000320193", scope=EdgarScope())
+    with pytest.raises(ParseFailureError, match="0001-broken"):
+        parse_13d("AAPL", "0000320193", FilingStamp.of(filing, "0000320193"), EdgarScope())
     print("\n=== SANITY CHECK: known 13D parse failure ===")
-    print("  the accession fails its ticker build, so a completeness-sensitive driver cannot advance the manifest")
+    print("  the accession raises ParseFailureError naming it: the driver logs it and stores one empty-filing marker")
 
 
 def test_13d_item3_and_item6_use_correct_structured_attribute_names():

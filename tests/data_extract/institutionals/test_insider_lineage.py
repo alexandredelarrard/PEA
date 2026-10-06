@@ -22,7 +22,6 @@ from src.data_aggregate.utils.institutionals import inputs as institutional_inpu
 from src.data_extract import identity_propagate as prop
 from src.data_extract.utils.common import security_master as sm
 from src.data_extract.utils.common.identity import build_identity
-from src.data_extract.utils.common.run_manifest import record_run
 from src.data_extract.utils.institutionals import fetch_insider_transactions as ins
 from src.data_extract.utils.institutionals import insider_common as ic
 from src.data_store import ddl
@@ -426,13 +425,12 @@ def test_a_lineage_change_restamps_stored_rows_in_place(sqlite_store: Any, tmp_p
 
 
 def test_identity_propagate_restamps_insider_rows_of_changed_tickers(sqlite_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The re-stamp is wired into `identity-propagate`: driven by the lineage `scope_changed_at` against the table's last run."""
+    """The re-stamp is wired into `identity-propagate`: driven by the lineage `scope_changed_at` inside the re-check window."""
     sqlite_store.save(Tables.insider_transactions, _stored(_identity(pld_windows=False)))
     context = _context(sqlite_store, tmp_path)
-    record_run(context, Tables.insider_transactions, 0, 4, is_full_rescan=True, run_date=pd.Timestamp("2026-01-10"))
     monkeypatch.setattr(prop, "_reparse_bulk", lambda *a, **k: {})
     after = _identity(pld_windows=True, stamp=pd.Timestamp("2026-01-12 09:00"))
-    prop.propagate_identity(context, list(UNIVERSE), identity=after)
+    prop.propagate_identity(context, list(UNIVERSE), identity=after, as_of=pd.Timestamp("2026-01-13"))
     got = sqlite_store.load(Tables.insider_transactions, columns=["accession_number", "lineage_role"])
     assert dict(zip(got["accession_number"], got["lineage_role"], strict=True))["amb"] == "acquired_constituent"
     print("\nSANITY: identity-propagate re-stamps the stored insider rows of the company whose lineage changed")
@@ -466,11 +464,10 @@ def test_a_config_edit_restamps_and_purges_on_the_next_propagation_without_a_lin
     sourced = kept.assign(source="zip")
     sqlite_store.save(Tables.insider_transactions, sourced[[c for c in ic.INSIDER_COLUMNS if c in sourced.columns]])
     context = _context(sqlite_store, tmp_path)
-    record_run(context, Tables.insider_transactions, 0, 3, is_full_rescan=True, run_date=STAMP + pd.Timedelta(days=5))
     monkeypatch.setattr(prop, "_reparse_bulk", lambda *a, **k: {})
 
     after = _identity()  # same lineage and stamps; the shipped merger metadata and both fixture co-registrants
-    result = prop.propagate_identity(context, list(UNIVERSE), identity=after)
+    result = prop.propagate_identity(context, list(UNIVERSE), identity=after, as_of=STAMP + pd.Timedelta(days=10))
     got = sqlite_store.load(Tables.insider_transactions, columns=["accession_number", "lineage_role"])
     roles = dict(zip(got["accession_number"], got["lineage_role"], strict=True))
     print("\n=== SANITY CHECK: config-driven re-stamp (P32) ===")

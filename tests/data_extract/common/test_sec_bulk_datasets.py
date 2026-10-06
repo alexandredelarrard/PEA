@@ -12,6 +12,7 @@ import os
 from datetime import UTC, date, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pandas as pd
 import pytest
@@ -25,6 +26,7 @@ from src.data_extract.utils.common.identity import build_identity
 from src.data_extract.utils.fundamentals import fetch_financial_statements as fin
 from src.data_extract.utils.institutionals import fetch_insider_transactions as ins
 from src.data_extract.utils.institutionals.insider_common import BULK_DATE_FORMATS, build_insider_frame, screen_insider_rows
+from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
 
@@ -164,30 +166,44 @@ def test_insider_parse_real_zip():
     assert len(df) > 10000 and df["ticker"].nunique() > 1000
 
 
-def test_insider_incremental_state_converges(tmp_path):
-    """Quarter-skip comes from the DB; the re-parse-on-new-ticker decision compares
-    the CURRENT universe to the PROCESSED-universe sidecar (so it converges instead
-    of re-parsing every run just because some names never file that quarter)."""
-    from src.data_extract.utils.common.bulk_cache import mark_processed, pending_periods
-    from src.data_extract.utils.common.incremental import stored_values
+def test_insider_work_list_comes_from_the_stored_quarters_alone(tmp_path):
+    """Quarter-skip comes from the DB: a stored quarter is skipped, and a new ticker with no zip-covered
+    row gets every cached quarter re-parsed for itself only; once it holds one nothing is re-parsed."""
+    from src.data_extract.utils.common.resume import archive_worklist
 
     ds = DataStore(create_engine(f"sqlite:///{tmp_path / 't.db'}"))
     ds.save(
         "insider_transactions",
         pd.DataFrame([{"accession_number": "a1", "security_type": "nonderiv", "row_sequence": 1, "ticker": "AAPL", "quarter": "2024q1"}]),
     )
-    context = SimpleNamespace(store=ds)
-    assert stored_values(context, "insider_transactions", "quarter") == {"2024q1"}
-    quarters = ["2024q1", "2024q2"]
+    ds.save(
+        "sp500_tickers", pd.DataFrame({"ticker": ["AAPL", "MSFT", "NVDA"], "added_on": pd.to_datetime(["2000-01-01", "2000-01-01", "2024-06-25"])})
+    )
+    context: Any = SimpleNamespace(store=ds, config=SimpleNamespace(data_extract=SimpleNamespace(redundant_ticks=[])))
+    quarters, as_of = ["2024q1", "2024q2"], pd.Timestamp("2024-07-01")
 
-    mark_processed(tmp_path, "insider_transactions", {"AAPL", "MSFT"})
-    # unchanged universe -> nothing new -> done quarters are skipped (converged)
-    assert pending_periods(context, tmp_path, "insider_transactions", quarters, {"AAPL", "MSFT"}, column="quarter") == ["2024q2"]
-    # grown universe -> every cached quarter is re-parsed to back-fill the new name
-    assert pending_periods(context, tmp_path, "insider_transactions", quarters, {"AAPL", "MSFT", "NVDA"}, column="quarter") == quarters
+    work = archive_worklist(context, (Tables.insider_transactions,), quarters, {"2024q1"}, ["AAPL", "MSFT", "NVDA"], as_of)
+    assert dict(work.units()) == {"2024q1": ["NVDA"], "2024q2": ["AAPL", "MSFT", "NVDA"]}
 
-    print("\n=== SANITY: incremental state converges ===")
-    print("  2024q1 ingested -> skipped next run; unchanged universe -> no re-parse; adding NVDA -> only NVDA flagged for back-fill. Validated.")
+    ds.save(
+        "insider_transactions",
+        pd.DataFrame(
+            [{"accession_number": "e1", "security_type": "nonderiv", "row_sequence": 1, "ticker": "NVDA", "source": "edgar", "quarter": None}]
+        ),
+    )
+    edgar_only = archive_worklist(context, (Tables.insider_transactions,), quarters, {"2024q1"}, ["AAPL", "MSFT", "NVDA"], as_of)
+    assert dict(edgar_only.units()) == {"2024q1": ["NVDA"], "2024q2": ["AAPL", "MSFT", "NVDA"]}, "an EDGAR row carries no quarter"
+
+    ds.save(
+        "insider_transactions",
+        pd.DataFrame([{"accession_number": "a2", "security_type": "nonderiv", "row_sequence": 1, "ticker": "NVDA", "quarter": "2024q1"}]),
+    )
+    again = archive_worklist(context, (Tables.insider_transactions,), quarters, {"2024q1"}, ["AAPL", "MSFT", "NVDA"], as_of)
+    assert dict(again.units()) == {"2024q2": ["AAPL", "MSFT", "NVDA"]}
+
+    print("\n=== SANITY: insider work list from the DB ===")
+    print("  2024q1 stored -> skipped for established keys; new NVDA re-reads cached 2024q1 alone, still after an EDGAR row (no quarter);")
+    print("  once NVDA has a zip-covered row only 2024q2 is left. Validated.")
 
 
 def test_insider_download_caches_every_quarter_from_the_first_year_and_parses_nothing(tmp_path, monkeypatch):
@@ -333,14 +349,12 @@ def test_pension_fetch_preserves_two_zip_vintages(tmp_path: Path, monkeypatch: p
 
     monkeypatch.setattr(fin, "load_identity", lambda context: BDX_IDENTITY)
     monkeypatch.setattr(fin, "cache_dir", lambda context, key: tmp_path)
-    monkeypatch.setattr(fin, "mark_processed", lambda *args: None)
-    monkeypatch.setattr(fin, "record_run", lambda *args: None)
     monkeypatch.setattr(fin, "quarter_periods", lambda *args: ["2026q1", "2026q2"])
     monkeypatch.setattr(fin, "ensure_zip", lambda context, path, url, **kwargs: path)
     monkeypatch.setattr(fin, "_read_pension_facts", fact)
 
-    assert fin.fetch_financial_statements(context, ["BDX"]) == 2
-    assert fin.fetch_financial_statements(context, ["BDX"], reparse=True) == 2
+    assert fin.fetch_financial_statements(context, ["BDX"], years_history=15) == 2
+    assert fin.fetch_financial_statements(context, ["BDX"], years_history=15, reparse=True) == 2
     rows = store.load(fin.Tables.pension_facts, columns=["cik", "tag", "ddate", "qtrs", "quarter", "value", "available_at"])
     assert rows is not None and len(rows) == 2
     rows = rows.sort_values("quarter")
@@ -378,8 +392,6 @@ def test_pension_new_zip_uses_successful_download_day_and_preserves_it(tmp_path:
     monkeypatch.setattr(bulk_cache, "datetime", Clock)
     monkeypatch.setattr(fin, "load_identity", lambda context: BDX_IDENTITY)
     monkeypatch.setattr(fin, "cache_dir", lambda context, key: tmp_path)
-    monkeypatch.setattr(fin, "mark_processed", lambda *args: None)
-    monkeypatch.setattr(fin, "record_run", lambda *args: None)
     monkeypatch.setattr(fin, "quarter_periods", lambda *args: ["2026q3"])
     monkeypatch.setattr(fin, "ensure_zip", download)
     monkeypatch.setattr(
@@ -404,14 +416,72 @@ def test_pension_new_zip_uses_successful_download_day_and_preserves_it(tmp_path:
         ),
     )
 
-    assert fin.fetch_financial_statements(context, ["BDX"]) == 1
+    assert fin.fetch_financial_statements(context, ["BDX"], years_history=15) == 1
     future_mtime = datetime(2026, 10, 25, tzinfo=UTC).timestamp()
     os.utime(path, (future_mtime, future_mtime))
-    assert fin.fetch_financial_statements(context, ["BDX"], reparse=True) == 1
+    assert fin.fetch_financial_statements(context, ["BDX"], years_history=15, reparse=True) == 1
     rows = store.load(fin.Tables.pension_facts, columns=["quarter", "available_at"])
     assert rows is not None and pd.to_datetime(rows["available_at"]).dt.date.tolist() == [date(2026, 10, 15)]
     print("\n=== SANITY CHECK: first successful future ZIP download ===")
     print("  new Q3 uses the New York completion day, and cached reparse cannot change its stored clock. Validated.")
+
+
+def _pension_zip(path: Path, rows: list[tuple[str, str, str, str]]) -> Path:
+    """A Financial Statement data-set ZIP with one `sub.txt` and one `num.txt` row per (adsh, cik, value, filed)."""
+    import zipfile
+
+    tag = "DefinedBenefitPlanBenefitObligation"
+    sub = "adsh\tcik\tname\tform\tperiod\tfy\tfp\tfiled\n" + "".join(f"{a}\t{c}\tCo\t10-K\t20251231\t2025\tFY\t{f}\n" for a, c, _, f in rows)
+    num = "adsh\ttag\tversion\tcoreg\tddate\tqtrs\tuom\tsegments\tvalue\n" + "".join(
+        f"{a}\t{tag}\tus-gaap/2025\t\t20251231\t0\tUSD\t\t{v}\n" for a, _, v, _ in rows
+    )
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("sub.txt", sub)
+        archive.writestr("num.txt", num)
+    return path
+
+
+def test_pension_new_key_re_reads_a_cached_stored_quarter_for_itself_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = DataStore(create_engine(f"sqlite:///{tmp_path / 'p.db'}"))
+    context = SimpleNamespace(
+        store=store,
+        config_dir="configs",
+        config=SimpleNamespace(
+            local=SimpleNamespace(paths=SimpleNamespace(financial_statements="unused")), data_extract=SimpleNamespace(redundant_ticks=[])
+        ),
+    )
+    _pension_zip(tmp_path / "2026q1.zip", [("adsh-a", "1", "999", "20260210"), ("adsh-n", "2", "500", "20260211")])
+    store.save("sp500_tickers", pd.DataFrame({"ticker": ["AAA", "NEW"], "added_on": pd.to_datetime(["2000-01-01", "2026-09-28"])}))
+    stored = pd.DataFrame(
+        [
+            {
+                "cik": "0000000001",
+                "ticker": "AAA",
+                "tag": "DefinedBenefitPlanBenefitObligation",
+                "ddate": pd.Timestamp("2025-12-31"),
+                "qtrs": 0,
+                "value": 111.0,
+                "quarter": "2026q1",
+            }
+        ]
+    )
+    store.save(Tables.pension_facts, stored)
+    identity = dated_identity(
+        [("AAA", "0000000001", "cik_window", SENTINEL, None), ("NEW", "0000000002", "cik_window", SENTINEL, None)],
+        {"AAA": "0000000001", "NEW": "0000000002"},
+    )
+    monkeypatch.setattr(fin, "load_identity", lambda context: identity)
+    monkeypatch.setattr(fin, "cache_dir", lambda context, key: tmp_path)
+    monkeypatch.setattr(fin, "quarter_periods", lambda *args: ["2026q1"])
+
+    saved = fin.fetch_financial_statements(context, ["AAA", "NEW"], years_history=15, as_of=pd.Timestamp("2026-09-30"))
+    rows = store.load(Tables.pension_facts, columns=["ticker", "value"]).set_index("ticker")["value"]
+
+    assert saved == 1 and rows.to_dict() == {"AAA": 111.0, "NEW": 500.0}
+    assert fin.fetch_financial_statements(context, ["AAA", "NEW"], years_history=15, as_of=pd.Timestamp("2026-10-01")) == 0
+    print("\n=== SANITY CHECK: pension new-key re-read from a fixture ZIP ===")
+    print("  NEW (added 2026-09-28) gets its 500 from the cached 2026q1 ZIP; AAA keeps its stored 111 (not the ZIP's 999);")
+    print("  the next night NEW holds a row, so nothing is re-read. Validated.")
 
 
 @pytest.mark.skipif(not FINSTMT_ZIP.exists(), reason="cached financial-statement 2024q1 zip absent")

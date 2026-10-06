@@ -1,45 +1,13 @@
-"""Shared SEC EDGAR helpers: rate-limited GET and the universe CIK mapping.
+"""Shared SEC EDGAR helpers: the universe CIK mapping.
 
-SEC's fair-access policy requires a descriptive User-Agent and <= 10 requests/second
-(https://www.sec.gov/os/webmaster-faq#developers). The limiter is thread-safe but per process:
-request starts are spaced by `_MIN_INTERVAL` across threads while transfers overlap, so run one
-EDGAR walk at a time.
+Every SEC request goes through `sec_io` (rate limit and retry policy).
 """
 
-import threading
-import time
-
 import pandas as pd
-import requests
 
 from src.context import Context
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik_series
-
-_MIN_INTERVAL = 0.11  # ~9 req/sec, safely under SEC's 10/sec limit
-_DEFAULT_TIMEOUT = 30  # seconds; avoid a hung socket stalling a worker
-_rate_lock = threading.Lock()
-_next_slot = [0.0]  # monotonic time of the next allowed request start
-
-
-def _reserve_slot() -> None:
-    """Reserve the next evenly-spaced request slot; the wait happens outside the lock."""
-    with _rate_lock:
-        start = max(time.monotonic(), _next_slot[0])
-        _next_slot[0] = start + _MIN_INTERVAL
-    delay = start - time.monotonic()
-    if delay > 0:
-        time.sleep(delay)
-
-
-def sec_get(context: Context, url: str, **kwargs) -> requests.Response:
-    """Rate-limited, thread-safe GET on `context.sec_session` (User-Agent pre-set); raises on HTTP error."""
-    kwargs.setdefault("timeout", _DEFAULT_TIMEOUT)
-    _reserve_slot()
-    resp = context.sec_session.get(url, **kwargs)
-    resp.raise_for_status()
-    return resp
-
 
 #: The `sp500_tickers` projection every SEC fetcher resolves its universe through; test fixtures build from it.
 CIK_MAPPING_COLS: tuple[str, ...] = ("ticker", "cik", "name", "sector", "industry_group", "sub_industry")

@@ -13,7 +13,6 @@ from omegaconf import OmegaConf
 import src.data_extract.cli as cli_mod
 import src.data_extract.utils.fundamentals.fundamentals_employees as mod
 from src.data_extract.utils.common import edgar_driver
-from src.data_extract.utils.common.edgar_driver import IncompleteEdgarRunError
 from src.data_extract.utils.common.identity import FilingScope
 from src.data_extract.utils.common.registrant import Combine, combine_for
 from src.gpt_extract.utils.schemas_gpt import LlmResult
@@ -362,29 +361,28 @@ def test_missing_report_period_keeps_filing_date_and_a_foreign_cik_is_skipped_an
     print("\nSANITY: optional report metadata does not block filing-date storage; a foreign CIK is skipped and counted (1), not raised.")
 
 
-def run_context(saved: list[pd.DataFrame], stored: pd.DataFrame | None) -> SimpleNamespace:
+def run_context(saved: list[pd.DataFrame], stored: pd.DataFrame | None, warnings: list[str] | None = None) -> SimpleNamespace:
+    logged = warnings if warnings is not None else []
     return SimpleNamespace(
         store=SimpleNamespace(save=lambda table, frame: saved.append(frame), load=lambda *args, **kwargs: stored),
         config=SimpleNamespace(data_extract=SimpleNamespace(fundamentals_workers=1)),
         config_dir="configs",
         ensure_edgar_identity=lambda: None,
-        log=SimpleNamespace(info=lambda *args: None, warning=lambda *args: None),
+        log=SimpleNamespace(info=lambda *args: None, warning=lambda msg, *args: logged.append(msg % args if args else msg)),
     )
 
 
-def patch_run(monkeypatch: pytest.MonkeyPatch, runs: list[dict]) -> None:
+def patch_run(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(mod, "load_cik_mapping", lambda *args: pd.DataFrame([{"ticker": "AAA", "cik": "0000000001"}]))
     monkeypatch.setattr(mod, "load_identity", lambda *args: SimpleNamespace())
     monkeypatch.setattr(mod, "load_manual_roster", lambda *args: {})
-    monkeypatch.setattr(mod, "record_run", lambda *args, **kwargs: runs.append(kwargs))
 
 
 def test_table_rows_decide_what_is_done_and_full_rereads_them(monkeypatch):
     # 1030 ambiguous filings once lived only in a side manifest and went back to the LLM nightly.
     saved: list[pd.DataFrame] = []
-    runs: list[dict] = []
     decided = pd.DataFrame([{"ticker": "AAA", "as_of": pd.Timestamp("2024-02-26")}])
-    patch_run(monkeypatch, runs)
+    patch_run(monkeypatch)
     seen: list[dict] = []
 
     def fake_build(*args, **kwargs):
@@ -399,20 +397,24 @@ def test_table_rows_decide_what_is_done_and_full_rereads_them(monkeypatch):
     assert seen[0]["done_dates"] == frozenset({pd.Timestamp("2024-02-26")})
     assert seen[0]["since"] == pd.Timestamp.today().normalize() - pd.DateOffset(years=15)
     assert pd.isna(saved[0]["employees"].iloc[0])
-    assert runs[0]["coverage_complete"] is True
     mod.fetch_fundamentals_employees(run_context(saved, decided), ["AAA"], 15, full=True)
     assert seen[1]["done_dates"] == frozenset()
     print("\nSANITY: an ambiguous filing is stored as a NULL row and completes the run; dates with rows are skipped, `--full` re-reads them.")
 
 
-def test_failed_ticker_still_blocks_the_frontier(monkeypatch):
-    runs: list[dict] = []
-    patch_run(monkeypatch, runs)
+def test_a_failed_ticker_is_logged_and_the_run_exits_cleanly(monkeypatch):
+    saved: list[pd.DataFrame] = []
+    warnings: list[str] = []
+    patch_run(monkeypatch)
     monkeypatch.setattr(mod, "build_ticker_employees", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("EDGAR down")))
-    with pytest.raises(IncompleteEdgarRunError, match="1 ticker"):
-        mod.fetch_fundamentals_employees(run_context([], None), ["AAA"], 15)
-    assert runs == []
-    print("\nSANITY: a ticker that could not be read keeps the run incomplete; it has no rows, so it retries next run.")
+
+    mod.fetch_fundamentals_employees(run_context(saved, None, warnings), ["AAA"], 15)
+
+    assert saved == []
+    assert any("1/1 ticker(s) not read, listed again next run: AAA" in w for w in warnings), warnings
+    print(
+        "\nSANITY: a failed ticker saves nothing, is named in the coverage log and the run returns (exit 0); it has no rows, so it retries next run."
+    )
 
 
 def test_missing_roster_cik_cannot_certify_coverage(monkeypatch):

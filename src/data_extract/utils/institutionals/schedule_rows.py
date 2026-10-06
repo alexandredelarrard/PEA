@@ -1,14 +1,16 @@
 """
 schedule_rows.py (src/data_extract/utils/institutionals/schedule_rows.py)
 -------------------------------------------------------------------------
-One Schedule 13D/13G row builder and one issuer-guarded filing walk. A `ScheduleSpec` carries what
-differs between the two forms (columns, form-specific filing fields, numeric trust, reporting-person
-CIK, event-date parse, blank normalisation); each form module declares one spec.
+One Schedule 13D/13G row builder, the subject test and the issuer-guarded per-filing parse. A
+`ScheduleSpec` carries what differs between the two forms (columns, form-specific filing fields,
+numeric trust, reporting-person CIK, event-date parse, blank normalisation); each form module
+declares one spec. The local index lists a schedule under every party, so a schedule on which the
+ticker is only a filer is rejected (an empty-filing marker) before its document is parsed.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -16,7 +18,9 @@ import pandas as pd
 
 from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp, num_or_null
 from src.data_extract.utils.common.frame_sanitize import finalise_frame
-from src.data_extract.utils.common.registrant import resolve_schedule_subject_filings
+from src.data_extract.utils.common.parallel_fetch import PROGRAMMING_ERRORS
+from src.data_extract.utils.common.registrant import header_subject_ciks
+from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, filing_obj
 from src.data_store.schema import Table
 from src.utils.string import pad_cik
 
@@ -94,7 +98,7 @@ def _fallback_row(base: dict[str, Any]) -> dict[str, Any]:
 
 def schedule_filing_rows(stamp: FilingStamp, spec: ScheduleSpec) -> list[dict[str, Any]]:
     """One schedule -> one row per reporting person (one fallback row when none parsed)."""
-    obj = stamp.filing.obj()
+    obj = filing_obj(stamp.filing)
     has_structured = bool(getattr(obj, "has_structured_data", False))
     base = _base_fields(stamp, obj, has_structured, spec)
     persons = getattr(obj, "reporting_persons", None) or []
@@ -120,49 +124,35 @@ def schedule_filing_rows(stamp: FilingStamp, spec: ScheduleSpec) -> list[dict[st
     return rows
 
 
-def kept_schedule_filings(
-    ticker: str,
-    cik: str,
-    *,
-    since: pd.Timestamp | None,
-    done_accessions: frozenset[str],
-    scope: EdgarScope,
-    spec: ScheduleSpec,
-) -> Iterator[tuple[FilingStamp, list[dict[str, Any]]]]:
-    """`ticker`'s new schedules of `spec.forms` with their rows, ticker-stamped, oldest first.
+def schedule_is_subject(ticker: str, cik: str, stamp: FilingStamp, scope: EdgarScope) -> bool:
+    """False when the SGML header names subject companies and none is one of the ticker's CIKs.
 
-    The subject set is the scope's event CIKs. Issuer/filer guard: the listing holds every schedule
-    naming any of those CIKs, including ones the ticker FILED about another issuer; those are skipped
-    and counted in `scope.guard`. An unresolvable CIK on either side means unknown and does not
-    reject. A parse failure raises `RuntimeError` naming the accession.
-    """
+    A header without subject companies defers to the issuer guard of `schedule_ticker_rows`; an
+    unreadable header (an SEC error page) raises `TransientReadError`."""
+    subjects = header_subject_ciks(stamp.filing)
+    return not subjects or not subjects.isdisjoint(scope.filing_scope(ticker, cik).event_ciks)
+
+
+def schedule_ticker_rows(ticker: str, cik: str, stamp: FilingStamp, scope: EdgarScope, spec: ScheduleSpec) -> list[dict[str, Any]]:
+    """One schedule's rows stamped with `ticker`; [] when the parsed issuer CIK is another company's.
+
+    An unresolvable CIK on either side means unknown and does not reject. A parse failure raises
+    `ParseFailureError` naming the accession; a transient SEC failure raises `TransientReadError`."""
+    try:
+        rows = schedule_filing_rows(stamp, spec)
+    except (TransientReadError, *PROGRAMMING_ERRORS):
+        raise
+    except Exception as exc:  # noqa: BLE001 -- filing parser boundary
+        raise ParseFailureError(f"{spec.label} accession {stamp.accession_number} could not be parsed") from exc
     ticker_ciks = frozenset(scope.filing_scope(ticker, cik).event_ciks)
-    for filing in resolve_schedule_subject_filings(ticker, ticker_ciks, spec.forms, since=since, done_accessions=done_accessions):
-        stamp = FilingStamp.of(filing, cik)
-        try:
-            rows = schedule_filing_rows(stamp, spec)
-        except Exception as exc:  # noqa: BLE001 -- filing parser boundary
-            raise RuntimeError(f"{spec.label} accession {stamp.accession_number} could not be parsed") from exc
-        issuer_cik = pad_cik(rows[0].get("cik")) if rows else ""
-        if ticker_ciks and issuer_cik and issuer_cik not in ticker_ciks:
-            scope.guard.add(1)
-            continue
-        for row in rows:
-            row["ticker"] = ticker
-        yield stamp, rows
+    issuer_cik = pad_cik(rows[0].get("cik")) if rows else ""
+    if ticker_ciks and issuer_cik and issuer_cik not in ticker_ciks:
+        return []
+    for row in rows:
+        row["ticker"] = ticker
+    return rows
 
 
-def build_schedule_rows(
-    ticker: str,
-    cik: str,
-    *,
-    since: pd.Timestamp | None = None,
-    done_accessions: frozenset[str] = frozenset(),
-    scope: EdgarScope,
-    spec: ScheduleSpec,
-    table: Table,
-) -> dict[Table, pd.DataFrame]:
-    """`ticker`'s new schedules as one `table` frame finalised by `finalise_frame`."""
-    walk = kept_schedule_filings(ticker, cik, since=since, done_accessions=done_accessions, scope=scope, spec=spec)
-    rows = [row for _, filing_rows in walk for row in filing_rows]
-    return {table: finalise_frame(table, rows, columns=spec.columns)}
+def parse_schedule(ticker: str, cik: str, stamp: FilingStamp, scope: EdgarScope, *, spec: ScheduleSpec, table: Table) -> dict[Table, pd.DataFrame]:
+    """A schedule fetch's `parse`: one `table` frame finalised by `finalise_frame`."""
+    return {table: finalise_frame(table, schedule_ticker_rows(ticker, cik, stamp, scope, spec), columns=spec.columns)}

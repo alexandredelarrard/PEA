@@ -1,13 +1,16 @@
 """`identity-propagate`: carry an `entity_lineage` change into the stored SEC rows.
 
-Per table, the tickers whose lineage stamp is at or after the table's manifest `last_run_date` (every
-ticker when the table has no recorded run) are re-checked. Contraction: rows whose filer CIK is no
-longer a CIK of the ticker's entity are deleted, one WARNING per table. Expansion: the bulk families
-re-parse those tickers from their cached zips (EDGAR tables relist in their own fetchers). The raw FTD
-lines and RegSHO short-volume rows of companies whose `security_master` rows changed (for short volume,
-also their lineage symbol rows) are re-stamped from the stored rows and their ticker rows rebuilt. The
-stored insider rows of changed tickers (and every unstamped row) get their lineage stamp rewritten in place,
-and co-registrant insider rows are purged. A ticker whose facts were purged has its SEC and merged history rebuilt.
+The tickers whose lineage stamp (`entity_lineage.scope_changed_at`) falls inside
+`resume.recently_changed`'s window on the run date are re-checked, on every table; each step is
+idempotent, so a ticker seen on several runs inside the window costs reads only. Contraction: rows
+whose filer CIK is no longer a CIK of the ticker's entity are deleted, one WARNING per table.
+Expansion: the bulk families re-parse, from their cached zips, the changed tickers whose table holds no
+row from one of their scope CIKs (EDGAR tables list a new CIK's filings in their own fetchers). The raw
+FTD lines and RegSHO short-volume rows of companies whose `security_master` rows changed recently (for
+short volume, also their lineage symbol rows) are re-stamped from the stored rows and their ticker rows
+rebuilt. The stored insider rows of changed tickers (and every unstamped row) get their lineage stamp
+rewritten in place, and co-registrant insider rows are purged. A ticker whose facts were purged has its
+SEC and merged history rebuilt.
 """
 
 from __future__ import annotations
@@ -19,7 +22,7 @@ import pandas as pd
 
 from src.context import Context
 from src.data_extract.utils.common.identity import Identity, load_identity
-from src.data_extract.utils.common.run_manifest import get_entry, scope_changed_tickers
+from src.data_extract.utils.common.resume import recently_changed
 from src.data_extract.utils.fundamentals.build_history import build_fundamentals_history
 from src.data_extract.utils.fundamentals.fetch_financial_notes import reparse_financial_notes
 from src.data_extract.utils.fundamentals.fetch_financial_statements import reparse_financial_statements
@@ -54,12 +57,20 @@ class PropagationResult:
     rebuilt: tuple[str, ...] = ()
 
 
-def _changed(context: Context, table: Table, stamps: Mapping[str, pd.Timestamp | None], *, every: bool = False) -> list[str]:
-    """Tickers stamped at or after `table`'s last run; every ticker under `every` or when the table has no recorded run."""
-    entry = get_entry(context, table)
-    if every or not (entry or {}).get("last_run_date"):
-        return sorted(stamps)
-    return sorted(scope_changed_tickers(entry, stamps))
+def _changed(stamps: Mapping[str, pd.Timestamp | None], as_of: pd.Timestamp, *, every: bool = False) -> list[str]:
+    """Keys whose stamp is inside `resume.recently_changed`'s window on `as_of`; every key under `every`."""
+    return sorted(stamps) if every else recently_changed(stamps, as_of)
+
+
+def _lacking_scope_rows(context: Context, table: Table, tickers: Sequence[str], scope_ciks: Mapping[str, frozenset[str]]) -> list[str]:
+    """`tickers` whose rows in `table` come from no CIK of one of their scope CIKs (a bulk re-parse may add them)."""
+    cik_col = PURGE_TABLES_BY_NAME[table.name].cik_col
+    lacking = []
+    for ticker in tickers:
+        stored = {pad_cik(cik) for cik in context.store.distinct(table, cik_col, where={"ticker": ticker})}
+        if scope_ciks.get(ticker, frozenset()) - stored:
+            lacking.append(ticker)
+    return lacking
 
 
 def _own_ciks(identity: Identity) -> dict[str, frozenset[str]]:
@@ -114,8 +125,8 @@ def _purge(context: Context, spec: FilerTable, tickers: Sequence[str], own_ciks:
     return records
 
 
-def _reparse_bulk(context: Context, stamps: Mapping[str, pd.Timestamp | None]) -> dict[str, tuple[str, ...]]:
-    """Re-parse each bulk family from its cache for the tickers whose scope changed since its last run."""
+def _reparse_bulk(context: Context, changed: Sequence[str], scope_ciks: Mapping[str, frozenset[str]]) -> dict[str, tuple[str, ...]]:
+    """Re-parse each bulk family from its cache for the changed tickers whose table lacks rows of a scope CIK."""
     families: tuple[tuple[Table, Callable[[Context, list[str]], int]], ...] = (
         (Tables.notes_num, reparse_financial_notes),
         (Tables.pension_facts, reparse_financial_statements),
@@ -123,7 +134,7 @@ def _reparse_bulk(context: Context, stamps: Mapping[str, pd.Timestamp | None]) -
     )
     done: dict[str, tuple[str, ...]] = {}
     for table, reparse in families:
-        tickers = _changed(context, table, stamps)
+        tickers = _lacking_scope_rows(context, table, changed, scope_ciks) if context.store.exists(table) else list(changed)
         if tickers:
             context.log.info("identity-propagate: re-parsing '%s' from cache for %d ticker(s): %s", table.name, len(tickers), ", ".join(tickers))
             reparse(context, tickers)
@@ -131,14 +142,14 @@ def _reparse_bulk(context: Context, stamps: Mapping[str, pd.Timestamp | None]) -
     return done
 
 
-def _refresh_fails(context: Context, tickers: Sequence[str], *, dry_run: bool, every: bool) -> list[dict]:
-    """Re-stamp the stored FTD lines of companies whose master rows changed since the ticker table's last run; rebuild their rows."""
+def _refresh_fails(context: Context, tickers: Sequence[str], as_of: pd.Timestamp, *, dry_run: bool, every: bool) -> list[dict]:
+    """Re-stamp the stored FTD lines of companies whose master rows changed recently; rebuild their rows."""
     if not context.store.exists(Tables.sec_fails_to_deliver_security):
         return []
     master = load_fails_master(context)
     if master is None or master.empty:
         return []
-    changed = _changed(context, Tables.sec_fails_to_deliver, master_stamps(master), every=every)
+    changed = _changed(master_stamps(master), as_of, every=every)
     if not changed:
         return []
     context.log.info("identity-propagate: re-stamping FTD lines for %d company(ies): %s", len(changed), ", ".join(changed))
@@ -147,12 +158,14 @@ def _refresh_fails(context: Context, tickers: Sequence[str], *, dry_run: bool, e
     return records
 
 
-def _refresh_short_volume(context: Context, identity: Identity, tickers: Sequence[str], *, dry_run: bool, every: bool) -> list[dict]:
-    """Re-stamp the stored short-volume rows of companies whose master or symbol rows changed since the ticker table's last run."""
+def _refresh_short_volume(
+    context: Context, identity: Identity, tickers: Sequence[str], as_of: pd.Timestamp, *, dry_run: bool, every: bool
+) -> list[dict]:
+    """Re-stamp the stored short-volume rows of companies whose master or symbol rows changed recently."""
     if not context.store.exists(Tables.sec_short_volume_security):
         return []
     stamps = change_stamps(load_fails_master(context), identity)
-    changed = _changed(context, Tables.short_interest, stamps, every=every)
+    changed = _changed(stamps, as_of, every=every)
     if not changed:
         return []
     context.log.info("identity-propagate: re-stamping short-volume rows for %d company(ies): %s", len(changed), ", ".join(changed))
@@ -161,11 +174,10 @@ def _refresh_short_volume(context: Context, identity: Identity, tickers: Sequenc
     return records
 
 
-def _refresh_insider(context: Context, identity: Identity, stamps: Mapping[str, pd.Timestamp | None], *, dry_run: bool, every: bool) -> list[dict]:
-    """Re-stamp the stored insider rows of tickers whose lineage changed since the table's last run; purge co-registrant rows."""
+def _refresh_insider(context: Context, identity: Identity, changed: Sequence[str], *, dry_run: bool) -> list[dict]:
+    """Re-stamp the stored insider rows of the changed tickers; purge co-registrant rows."""
     if not context.store.exists(Tables.insider_transactions):
         return []
-    changed = _changed(context, Tables.insider_transactions, stamps, every=every)
     records = restamp_insider_lineage(context, changed, identity=identity, dry_run=dry_run)
     _warn(context, Tables.insider_transactions.name, records, dry_run=dry_run)
     return records
@@ -179,23 +191,35 @@ def _rebuild_history(context: Context, tickers: list[str]) -> None:
 
 
 def propagate_identity(
-    context: Context, tickers: Sequence[str], *, dry_run: bool = False, every_ticker: bool = False, identity: Identity | None = None
+    context: Context,
+    tickers: Sequence[str],
+    *,
+    dry_run: bool = False,
+    every_ticker: bool = False,
+    identity: Identity | None = None,
+    as_of: pd.Timestamp | None = None,
 ) -> PropagationResult:
-    """Purge, re-parse and rebuild for the lineage changes since each table's last run; `dry_run` only lists removals.
+    """Purge, re-parse and rebuild for the lineage changes inside the re-check window on `as_of` (default
+    today); `dry_run` only lists removals.
 
     `every_ticker` checks every ticker whatever its stamp (the validator's dry run; the tapes then re-stamp every company).
     """
     resolver = identity or load_identity(context)
+    run_date = pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize()
     universe = [normalise_ticker(ticker) for ticker in tickers if normalise_ticker(ticker) in resolver.roster_cik]
-    cik_stamps = {ticker: resolver.filing_scope(ticker).scope_changed_at for ticker in universe}
+    scopes = {ticker: resolver.filing_scope(ticker) for ticker in universe}
+    changed = _changed({ticker: scope.scope_changed_at for ticker, scope in scopes.items()}, run_date, every=every_ticker)
+    if changed:
+        context.log.info("identity-propagate: %d ticker lineage scope(s) to re-check: %s", len(changed), ", ".join(changed))
     own_ciks = _own_ciks(resolver)
     records: list[dict] = []
     for spec in PURGE_TABLES:
-        records += _purge(context, spec, _changed(context, spec.table, cik_stamps, every=every_ticker), own_ciks, dry_run=dry_run)
-    reparsed = {} if dry_run else _reparse_bulk(context, cik_stamps)
-    records += _refresh_insider(context, resolver, cik_stamps, dry_run=dry_run, every=every_ticker)
-    records += _refresh_fails(context, universe, dry_run=dry_run, every=every_ticker)
-    records += _refresh_short_volume(context, resolver, universe, dry_run=dry_run, every=every_ticker)
+        records += _purge(context, spec, changed, own_ciks, dry_run=dry_run)
+    scope_ciks = {ticker: frozenset(scope.event_ciks) | {window.cik for window in scope.windows} for ticker, scope in scopes.items()}
+    reparsed = {} if dry_run else _reparse_bulk(context, changed, scope_ciks)
+    records += _refresh_insider(context, resolver, changed, dry_run=dry_run)
+    records += _refresh_fails(context, universe, run_date, dry_run=dry_run, every=every_ticker)
+    records += _refresh_short_volume(context, resolver, universe, run_date, dry_run=dry_run, every=every_ticker)
     removals = pd.DataFrame(records, columns=list(REMOVAL_COLUMNS))
     purged_facts = sorted(set(removals.loc[removals["table"] == Tables.fundamentals_facts.name, "ticker"]))
     if purged_facts and not dry_run:

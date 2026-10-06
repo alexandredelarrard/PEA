@@ -97,8 +97,6 @@ def _patch_bulk_io(module: Any, monkeypatch: pytest.MonkeyPatch, tmp_path) -> No
     monkeypatch.setattr(module, "is_cached", lambda path: True)
     monkeypatch.setattr(module, "archive_available_at", lambda *args, **kwargs: date(2025, 1, 13))
     monkeypatch.setattr(module, "stored_period_clock", lambda *args, **kwargs: None)
-    monkeypatch.setattr(module, "mark_processed", lambda *args, **kwargs: None)
-    monkeypatch.setattr(module, "record_run", lambda *args, **kwargs: None)
 
 
 def test_notes_rows_resolve_through_the_lineage_window_of_their_filer(sqlite_store, monkeypatch, tmp_path):
@@ -107,10 +105,9 @@ def test_notes_rows_resolve_through_the_lineage_window_of_their_filer(sqlite_sto
     (tmp_path / f"{period}_notes.zip").write_bytes(_notes_zip())
     _patch_bulk_io(fn, monkeypatch, tmp_path)
     monkeypatch.setattr(fn, "_repair_stored_clocks", lambda *args, **kwargs: {})
-    monkeypatch.setattr(fn, "_notes_periods", lambda context, years_history: [period])
-    monkeypatch.setattr(fn, "pending_periods", lambda *args, **kwargs: [period])
+    monkeypatch.setattr(fn, "_notes_periods", lambda context, years_history, today=None: [period])
 
-    fn.fetch_financial_notes(_context(sqlite_store, tmp_path), UNIVERSE)
+    fn.fetch_financial_notes(_context(sqlite_store, tmp_path), UNIVERSE, years_history=1)
 
     stored = sqlite_store.load(Tables.notes_num, columns=["adsh", "ticker"])
     got = dict(zip(stored["adsh"], stored["ticker"], strict=True))
@@ -141,10 +138,9 @@ def test_pension_rows_resolve_through_the_lineage_window_of_their_filer(sqlite_s
     )
     _patch_bulk_io(fin, monkeypatch, tmp_path)
     monkeypatch.setattr(fin, "quarter_periods", lambda *args: ["2020q3"])
-    monkeypatch.setattr(fin, "pending_periods", lambda *args, **kwargs: ["2020q3"])
     monkeypatch.setattr(fin, "_read_pension_facts", lambda path: facts.copy())
 
-    fin.fetch_financial_statements(_context(sqlite_store, tmp_path), UNIVERSE)
+    fin.fetch_financial_statements(_context(sqlite_store, tmp_path), UNIVERSE, years_history=1)
 
     stored = sqlite_store.load(Tables.pension_facts, columns=["adsh", "ticker"])
     got = dict(zip(stored["adsh"], stored["ticker"], strict=True))

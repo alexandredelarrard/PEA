@@ -1,7 +1,5 @@
-"""Tests for the EDGAR incremental-extraction machinery (`list_filings`'s `since`
-cutoff -- the mechanism the manifest-driven EDGAR fetchers reuse, see
-`run_manifest.py` and `tests/data_extract/utils/common/test_run_manifest.py` for
-the manifest side). All network access is mocked, so these are fast and offline.
+"""Tests for `list_filings`'s `since` cutoff, the incremental filter of the EDGAR filing
+listers. All network access is mocked, so these are fast and offline.
 
 What matters: a re-run must fetch ONLY filings after the last date already parsed
 (`D`).
@@ -69,14 +67,5 @@ def test_list_filings_since_filters_to_after_d(monkeypatch):
     print(f"  full window -> {len(allf)} 10-Ks;  since 2021-02-15 -> {len(inc)} (only 2022-02-15, strictly after D). Validated.")
 
 
-# NOTE: the bespoke `sec_utils` meta-sidecar (`meta_path`/`load_extract_meta`/
-# `save_extract_meta`) was RETIRED -- `fetch_def14a_llm.py` was its only caller and
-# now reads/writes the shared `run_manifest.py` checkpoint instead (see
-# tests/data_extract/utils/common/test_run_manifest.py and
-# test_def14a_incremental.py's manifest-driven window tests). The employee-specific
-# skip-if-fresh guard (`_is_up_to_date`) and per-ticker `as_of` cutoff
-# (`_last_asof_by_ticker`) tests were REMOVED with the machinery they covered.
-# Employee headcount is now a `fundamentals_facts` field parsed from the same 10-K
-# as the fundamentals (`fundamentals_employees.py`), so its incremental behaviour is
-# the fundamentals fetcher's `done_accessions` skip -- one mechanism for every
-# field, exercised by tests/data_extract/test_fundamentals_employees.py.
+# Employee headcount's incremental behaviour is the stored-accession skip of the shared EDGAR
+# driver, exercised by tests/data_extract/test_fundamentals_employees.py.

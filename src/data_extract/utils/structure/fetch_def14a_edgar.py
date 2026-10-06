@@ -2,7 +2,8 @@
 
 One row per `(ticker, accession_number)`, zero LLM cost: facts the filer tagged, read deterministically.
 Everything a proxy states in prose (comp tables, ownership, audit fees, ...) belongs to `def14a/fetch.py`.
-Listing starts at the Item 402(v) effective date (`minimum_since`), since no earlier proxy carries ECD facts.
+Listing starts at the Item 402(v) effective date (the table's resume `source_start`), since no earlier
+proxy carries ECD facts; a proxy without ECD facts becomes an empty-filing marker.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from functools import partial
 import pandas as pd
 
 from src.constants.constants import DEF14A_FORMS
-from src.data_extract.utils.common.edgar_driver import EdgarFetch, FilingStamp, build_filing_rows
+from src.data_extract.utils.common.edgar_driver import EdgarFetch, FilingStamp, parse_filing_rows
 from src.data_extract.utils.structure.def14a.ecd import ecd_facts, ecd_row, has_ecd_block
 from src.data_extract.utils.structure.def14a.validate import repair_main_row
 from src.data_store.schema import Tables
@@ -110,6 +111,6 @@ def _filing_row(ticker: str, stamp: FilingStamp) -> list[dict]:
 DEF14A_EDGAR_FETCH = EdgarFetch(
     desc="DEF 14A (ECD XBRL)",
     tables=(Tables.def14a_edgar,),
-    build=partial(build_filing_rows, forms=DEF14A_FORMS, table=Tables.def14a_edgar, columns=_MAIN_COLS, row_fn=_filing_row, numeric=_NUMERIC_COLS),
-    minimum_since=_PVP_EFFECTIVE,
+    forms=tuple(DEF14A_FORMS),
+    parse=partial(parse_filing_rows, table=Tables.def14a_edgar, columns=_MAIN_COLS, row_fn=_filing_row, numeric=_NUMERIC_COLS),
 )

@@ -54,6 +54,9 @@ INSIDER_COLUMNS = (
     "footnote_ids",
     "acceptance_datetime",
     "fetched_at",
+    "source_symbol",
+    "economic_date",
+    "lineage_role",
 )
 DATE_COLUMNS = (
     "transaction_date",
@@ -63,6 +66,7 @@ DATE_COLUMNS = (
     "exercise_date",
     "expiration_date",
     "original_submission_date",
+    "economic_date",
 )
 PK = ("accession_number", "security_type", "row_sequence")
 NEW_READ_COLUMNS = ("owner_ciks", "n_reporting_owners", "original_submission_date", "document_type", "source", "row_sequence")

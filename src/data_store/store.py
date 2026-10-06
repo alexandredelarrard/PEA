@@ -125,11 +125,14 @@ def copy_load(engine: Engine, df: pd.DataFrame, name: str) -> int:
     df.to_csv(buf, index=False, header=False, quoting=csv.QUOTE_MINIMAL)
     buf.seek(0)
     cols = ", ".join(f'"{c}"' for c in df.columns)
+    # CSV COPY reads an unquoted empty field as NULL; a NOT NULL text column keeps '' instead.
+    keep_empty = [f'"{c}"' for c in df.columns if not tbl.c[c].nullable and isinstance(tbl.c[c].type, sqltypes.String)]
+    options = "FORMAT csv" + (f", FORCE_NOT_NULL ({', '.join(keep_empty)})" if keep_empty else "")
     raw = engine.raw_connection()
     try:
         cur = raw.cursor()
         try:
-            cur.copy_expert(f'COPY "{name}" ({cols}) FROM STDIN WITH (FORMAT csv)', buf)
+            cur.copy_expert(f'COPY "{name}" ({cols}) FROM STDIN WITH ({options})', buf)
         finally:
             cur.close()
         raw.commit()

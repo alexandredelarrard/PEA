@@ -99,6 +99,14 @@ Restore them only after:
 
 Mean imputation over unavailable decades is not acceptable. Raw fields remain in the [source tables](./reference/table-catalog.md) for audit and future backfill.
 
+## Schedule 13G holder identity
+
+- **P1 — Re-registered holders read as new holders (`ic_bo_new_holder`).** The feature keys a holder on the raw filer CIK, so a large holder that changes its SEC registration shows up as a brand-new holder on every stock it owns. BlackRock moved to CIK 0002012383 (88 false new-holder events in 2024, 154 in 2025); Vanguard split into Vanguard Capital Management (487 tickers) and Vanguard Portfolio Management (170 tickers) in 2026. The share of 13G filings counted as a new holder goes from about 7 % a year (2018–2022) to 21 % in 2025 and 40 % in 2026 (figures from the 2026-10-06 ticker-coverage session, not re-measured). This is holder-side identity; the issuer-side `entity_lineage` does not cover it.
+  - Fix: a curated, dated holder map in `configs/` (holder CIK -> canonical holder id, `valid_from`, cited evidence), one-to-many for splits such as Vanguard; `ic_bo_new_holder` counts a holder as new only when the canonical id never held the stock before. Reuse the superinvestor roster's filer-chain key (manager ID = oldest CIK of the chain).
+  - Detection: flag a holder CIK that appears on hundreds of tickers in the quarter an established holder disappears (a `missing_cutover`-style action item), so the next re-registration is caught.
+  - Check: the new-holder share of 13G filings returns to the 2018–2022 level; needs an aggregate rebuild (user-run).
+  - Trigger: before the next model retrain that uses `ic_bo_new_holder`.
+
 ## Pre-mandate beneficial-ownership event coverage
 
 Investigate the roughly sixfold rise in Schedule 13D event rows around the structured-data mandate. Event-only features remain because filer identity and filing date exist before the mandate, but confirmed historical filing-discovery gaps must be backfilled before treating event intensity as time-comparable.

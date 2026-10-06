@@ -21,7 +21,7 @@ from typing import Any, Literal, cast
 
 import pandas as pd
 
-from src.constants.constants import CANONICAL_CURRENT, CANONICAL_PREDECESSOR
+from src.constants.constants import CANONICAL_CURRENT, CANONICAL_PREDECESSOR, CANONICAL_ROLES, SECONDARY_CLASS
 from src.context import Context
 from src.data_extract.utils.common.config_paths import resolve_config_dir
 from src.data_extract.utils.common.entity_lineage import (
@@ -89,6 +89,10 @@ def _as_timestamp(value) -> pd.Timestamp | None:
 def _covers(start: pd.Timestamp | None, end: pd.Timestamp | None, day: pd.Timestamp) -> bool:
     """Half-open `start <= day < end`; a None bound is open."""
     return (start is None or start <= day) and (end is None or day < end)
+
+
+#: Roles whose tape lines are summed into the ticker grain; one of them wins a symbol's CUSIP-change day.
+_SUMMED_ROLES = frozenset({*CANONICAL_ROLES, SECONDARY_CLASS})
 
 
 @dataclass(frozen=True)
@@ -318,13 +322,16 @@ class Identity:
     def security_on(self, *, cusip: str | None = None, symbol: str | None = None, source: str, day: object) -> SecurityHit | None:
         """The security a tape line is on trade date `day`, by CUSIP when given, else by `(source, symbol)`.
 
-        None when nothing covers the day, or when two securities do (a symbol `conflict`).
+        None when nothing covers the day, or when two securities do (a symbol `conflict`), unless exactly one is in a
+        summed role and every other is an acquired constituent's line (a CUSIP-change day under one symbol).
         """
         stamp = _as_timestamp(day)
         if stamp is None:
             return None
         rows = self.securities_by_cusip.get(str(cusip).strip().upper(), ()) if cusip else self.securities_by_symbol.get((source, squash(symbol)), ())
         hits = [hit for start, end, hit in rows if _covers(start, end, stamp)]
+        if len({hit.security_id for hit in hits}) > 1 and all(hit.lineage_role in _SUMMED_ROLES | {ACQUIRED_CONSTITUENT} for hit in hits):
+            hits = [hit for hit in hits if hit.lineage_role in _SUMMED_ROLES]
         if len({hit.security_id for hit in hits}) != 1:
             return None
         return hits[0]

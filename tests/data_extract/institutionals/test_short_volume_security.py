@@ -364,3 +364,16 @@ def test_f101_a_scoped_restamp_never_deletes_or_restamps_another_companys_rows(s
     assert unscoped == [] and len(sqlite_store.load(Tables.sec_short_volume_security)) == 6
     print("\n=== SANITY CHECK: F-101 scoped re-stamp ===")
     print("  LEN changed recently; a re-stamp scoped to BAC leaves all 6 stored rows (4 LEN, 2 BRK-B) byte-identical")
+
+
+def test_f107_on_a_cusip_change_day_the_single_summed_security_takes_the_finra_line():
+    """STE 2019-03-26: the old CUSIP's last fail and the new CUSIP's first share one trade date under one symbol."""
+    old = ("526057999", "LEN", "0000920760", "LEN", "common", 1.0, "acquired_constituent", "2019-12-31", "2020-01-03", "outside_window")
+    master = _master([*MASTER_ROWS, old])
+    stamped = si.stamp_short_volume(_lines("20200102", [("LEN", 60.0, 200.0)]), _identity(master), UNIVERSE)
+    assert stamped[["security_id", "lineage_role"]].values.tolist() == [["C526057104", "canonical_current"]]
+    both = _master([*MASTER_ROWS, (*old[:6], "canonical_predecessor", *old[7:])])
+    unresolved = si.stamp_short_volume(_lines("20200102", [("LEN", 60.0, 200.0)]), _identity(both), UNIVERSE)
+    assert unresolved["security_id"].isna().all(), "two summed securities on one day stay a conflict"
+    print("\n=== SANITY CHECK: F-107 CUSIP-change day ===")
+    print("  LEN under an acquired line and the canonical line on one day: the canonical takes it; two summed lines stay a conflict")

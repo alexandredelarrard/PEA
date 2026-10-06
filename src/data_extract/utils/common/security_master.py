@@ -587,7 +587,17 @@ class _Flags:
     rows: list[dict[str, Any]] = field(default_factory=list)
 
     def add(
-        self, kind: str, company: str | None, cik: str | None, cusip: str, symbol: str, first, last, n: int, description: str, detail: str
+        self,
+        kind: str,
+        company: str | None,
+        cik: str | None,
+        cusip: str,
+        symbol: str,
+        first: object,
+        last: object,
+        n: int,
+        description: str,
+        detail: str,
     ) -> None:
         self.rows.append(dict(zip(FLAG_DETAIL_COLUMNS, (kind, company, cik, cusip, symbol, first, last, n, description, detail), strict=True)))
 

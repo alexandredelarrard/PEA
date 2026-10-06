@@ -5,7 +5,8 @@ FINRA RegSHO consolidated daily short-sale VOLUME (`CNMSshvol` files) -> `short_
 [date, ticker, short_volume, total_volume]; despite the table name it is not reported short
 interest. Each day's file is disseminated the next morning, so aggregation lags it one trading day.
 One day file covers every symbol, so a run reads the union of the sessions any universe key needs
-(`resume.series_windows`: forward overlap, new keys in full) plus the missing DAYS: calendar sessions
+(`resume.series_windows`: forward overlap, new keys in full until their days reach the later of the source start and their first
+`prices` date) plus the missing DAYS: calendar sessions
 inside the stored span on which no key has a row. A day with rows for some keys was read; `repair`
 re-reads those per-key gaps once.
 The CDN keeps only a rolling ~8-year window, so stored rows older than it cannot be re-fetched;
@@ -88,12 +89,21 @@ def _plan_days(
     context: Context, tickers: list[str], years_history: int, full: bool, as_of: pd.Timestamp | None, *, repair: bool = False
 ) -> pd.DatetimeIndex:
     """The day files to read: every key's windows plus the never-stored days, as trading sessions (business
-    days past the calendar). `repair` adds each key's own interior gaps (a one-time pass, not nightly)."""
+    days past the calendar). `repair` adds each key's own interior gaps (a one-time pass, not nightly).
+    A new key's first `prices` date is its listing floor: a joiner listed after the FINRA start is read in full once."""
     run_date = pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize()
     until = last_completed_session(as_of)
     calendar = trading_calendar(context)
     work = series_windows(
-        context, Tables.short_interest, tickers, run_date, until=until, years_history=years_history, full=full, calendar=calendar if repair else None
+        context,
+        Tables.short_interest,
+        tickers,
+        run_date,
+        until=until,
+        years_history=years_history,
+        full=full,
+        calendar=calendar if repair else None,
+        listing=Tables.prices,
     )
     days = _missing_days(context, calendar, document_floor(Tables.short_interest, run_date, years_history))
     for since, end, _keys in work.groups():

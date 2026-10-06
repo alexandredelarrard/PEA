@@ -54,6 +54,27 @@ def test_new_tickers_window(sqlite_store) -> None:
     print(f"  as_of {_AS_OF.date()}: 7-day overlap -> {sorted(week)}, 95-day -> {sorted(quarter)}; NULL and 2000-01-01 are established. Validated.")
 
 
+def test_a_future_added_on_is_not_new_yet(sqlite_store) -> None:
+    sqlite_store.save(
+        Tables.sp500_tickers,
+        pd.DataFrame(
+            {
+                "ticker": ["EDGE", "TODAY", "TOMORROW", "LATER"],
+                "cik": ["1", "2", "3", "4"],
+                "added_on": pd.to_datetime(pd.Series(["2026-09-27", "2026-10-03", "2026-10-04", "2026-12-01"])),
+            }
+        ),
+    )
+
+    week = new_tickers(sqlite_store, 7, _AS_OF)
+    on_the_day = new_tickers(sqlite_store, 7, pd.Timestamp("2026-10-04"))
+
+    assert week == {"EDGE", "TODAY"}  # as_of - 6 days and as_of itself are new; after as_of is not yet
+    assert on_the_day == {"TODAY", "TOMORROW"}  # a day later EDGE is 7 days back and TOMORROW has joined
+    print("\n=== SANITY CHECK: the new-ticker window ends on as_of ===")
+    print(f"  as_of {_AS_OF.date()}: {sorted(week)} new, TOMORROW and LATER not yet; on 2026-10-04 -> {sorted(on_the_day)}. Validated.")
+
+
 def test_new_tickers_without_the_column_or_table(sqlite_store) -> None:
     assert new_tickers(sqlite_store, 7, _AS_OF) == set()
     sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["AAPL"], "cik": ["320193"]}))

@@ -27,6 +27,9 @@ _COLUMNS = ["ticker", "earnings_date", "eps_estimate", "eps_actual", "surprise_p
 # a stale ticker (no new row within this many days) is re-pulled with this limit
 _RECENT_LIMIT = 8
 
+# yfinance's `get_earnings_dates` refuses a larger limit ("Yahoo caps limit at 100")
+_YAHOO_MAX_LIMIT = 100
+
 # rows before this date are sporadic and almost always missing, so they are dropped
 MIGRATION_DATE = "2002-10-01"
 
@@ -94,7 +97,8 @@ def fetch_earnings_surprises(context: Context, tickers: list[str], years_history
     resume = Tables.earnings_surprises.resume
     refetch_window_days = resume.overlap_days if resume is not None else 95
     last_reported, next_expected = _resume_dates(context)
-    plan = _plan_fetch(tickers, last_reported, next_expected, (years_history + 1) * 4, refetch_window_days)
+    full_limit = min((years_history + 1) * 4, _YAHOO_MAX_LIMIT)
+    plan = _plan_fetch(tickers, last_reported, next_expected, full_limit, refetch_window_days)
     context.log.info("Earnings surprises: %d/%d tickers to fetch (%d already current)", len(plan), len(tickers), len(tickers) - len(plan))
 
     new_frames = []

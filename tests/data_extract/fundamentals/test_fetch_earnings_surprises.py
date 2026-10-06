@@ -75,3 +75,46 @@ def test_a_run_that_fetches_nothing_returns_without_saving(sqlite_store, monkeyp
     assert infos[0] == "Earnings surprises: 2/2 tickers to fetch (0 already current)" and infos[-1] == "Earnings surprises: nothing new fetched."
     print("\n=== SANITY CHECK: earnings-surprises empty run ===")
     print(f"  cold table + no Yahoo calendar -> planned 2 full pulls, saved nothing, returned: {infos[-1]!r}")
+
+
+class _CappedYahooTicker:
+    """Stands in for `yf.Ticker`: like yfinance, it refuses a limit above 100 and otherwise
+    returns `limit` quarterly earnings dates ending at the latest report."""
+
+    limits: list[int] = []
+
+    def __init__(self, ticker: str) -> None:
+        self._ticker = ticker
+
+    def get_earnings_dates(self, limit: int = 12) -> pd.DataFrame:
+        type(self).limits.append(limit)
+        if limit > 100:
+            raise ValueError("Yahoo caps limit at 100")
+        dates = pd.date_range(end="2026-07-30", periods=limit, freq="91D", tz="America/New_York")
+        return pd.DataFrame(
+            {"EPS Estimate": 1.0, "Reported EPS": 1.1, "Surprise(%)": 10.0},
+            index=pd.Index(dates[::-1], name="Earnings Date"),
+        )
+
+
+def test_a_new_ticker_full_pull_stays_within_the_yahoo_cap(sqlite_store, monkeypatch):
+    """A never-seen ticker under the live `years_history` (31 -> 128 quarters) is asked for at most
+    Yahoo's 100 rows, so its history is saved instead of the call failing every night."""
+    warnings: list[str] = []
+    context: Any = types.SimpleNamespace(
+        store=sqlite_store,
+        log=types.SimpleNamespace(info=lambda *a, **k: None, warning=lambda msg, *a: warnings.append(msg % a if a else msg)),
+    )
+    _CappedYahooTicker.limits = []
+    monkeypatch.setattr(surprises.yf, "Ticker", _CappedYahooTicker)
+
+    surprises.fetch_earnings_surprises(context, ["HOG"], years_history=31, pause=0.0)
+
+    assert _CappedYahooTicker.limits == [100], f"full pull must ask for Yahoo's maximum, asked {_CappedYahooTicker.limits}"
+    assert not any("failed" in w for w in warnings), warnings
+    saved = sqlite_store.load(Tables.earnings_surprises)
+    assert set(saved["ticker"]) == {"HOG"} and len(saved) > 0
+    assert pd.to_datetime(saved["earnings_date"]).min() >= pd.Timestamp(surprises.MIGRATION_DATE)
+    print("\n=== SANITY CHECK: new-ticker full pull under the Yahoo cap ===")
+    print(f"  years_history=31 (128 quarters wanted) -> asked limit={_CappedYahooTicker.limits[0]}, no failure,")
+    print(f"  saved {len(saved)} HOG rows from {pd.to_datetime(saved['earnings_date']).min().date()} (cutoff {surprises.MIGRATION_DATE}).")

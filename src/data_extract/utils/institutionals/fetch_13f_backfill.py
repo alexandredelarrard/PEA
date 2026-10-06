@@ -11,9 +11,10 @@ tickers through the stored `cusip_ticker_map` only. Each filing's value unit is 
 classifier. A ZIP whose roster-manager filings sit a unit factor away from their stored books is not
 saved, and a stored row filed on or after the data-set row is kept.
 
-The filings after the newest published data set and before a ticker joined the universe are in no data
+The filings after the newest data set on disk (listed and cached) and before a ticker joined the universe are in no data
 set yet and were walked before the ticker was in it: one EDGAR walk (`fetch_13f` over that filing
-window, the new tickers only) fills them, once per ticker.
+window, the new tickers only) fills them. A completed walk saves one `sec13f_hr` marker per ticker,
+dated the gap start, so each ticker's gap is walked once.
 """
 
 from __future__ import annotations
@@ -34,7 +35,8 @@ from tqdm import tqdm
 
 from src.constants.constants import SEC_13F_FORMS
 from src.context import Context
-from src.data_extract.utils.common.bulk_cache import ZipRead, cache_dir, ensure_zip, read_zip_tables
+from src.data_extract.utils.common.bulk_cache import ZipRead, cache_dir, ensure_zip, is_cached, read_zip_tables
+from src.data_extract.utils.common.empty_markers import marker_frame
 from src.data_extract.utils.common.sec_io import TransientReadError, sec_get
 from src.data_extract.utils.institutionals.fetch_13f import (
     _HR_COLS,
@@ -328,53 +330,68 @@ def _backfill_data_set(context: Context, path: Path, data_set: DataSet, tickers:
     return saved
 
 
-def _joined(context: Context, tickers: list[str]) -> dict[str, pd.Timestamp]:
-    """Each ticker's `sp500_tickers.added_on`; a ticker without one is left out, and a table without the
-    column has no joined ticker."""
+def _joined(context: Context, tickers: list[str], as_of: pd.Timestamp) -> dict[str, pd.Timestamp]:
+    """Each ticker's `sp500_tickers.added_on` on or before `as_of`; a ticker without one, or added
+    later, is left out, and a table without the column has no joined ticker."""
     if "added_on" not in context.store.columns(Tables.sp500_tickers):
         return {}
-    df = context.store.load(Tables.sp500_tickers, columns=["ticker", "added_on"], where={"ticker": tickers}, optional=True)
+    df = context.store.load(
+        Tables.sp500_tickers, columns=["ticker", "added_on"], where={"ticker": tickers}, date_col="added_on", until=as_of, optional=True
+    )
     if df is None:
         return {}
     df = df.dropna(subset=["added_on"])
     return {str(t).strip().upper(): pd.Timestamp(d).normalize() for t, d in zip(df["ticker"], df["added_on"], strict=True)}
 
 
-def gap_tickers(context: Context, tickers: list[str], since: pd.Timestamp, full: bool) -> dict[str, pd.Timestamp]:
-    """`{ticker: added_on}` of the tickers whose gap `[since, added_on]` still needs the EDGAR walk.
+def gap_tickers(context: Context, tickers: list[str], since: pd.Timestamp, as_of: pd.Timestamp, full: bool) -> dict[str, pd.Timestamp]:
+    """`{ticker: added_on}` of the tickers joined by `as_of` whose gap `[since, added_on]` still needs the EDGAR walk.
 
-    Only `[since, added_on - overlap)` counts: the join night's walk can write the rest. A ticker whose
-    part is empty has no gap; one holding a `sec13f_hr` row filed inside it is done (every ticker with a
-    gap is due under `full`)."""
+    Only `[since, added_on - overlap)` counts: the join night's walk can write the rest, so a ticker
+    whose part is empty has no gap. A ticker is done when a completed gap walk left its marker dated on
+    or before `since` (every ticker with a gap is due under `full`)."""
     overlap = pd.Timedelta(days=cast(Resume, Tables.sec13f_hr.resume).overlap_days)
-    joined = {t: d for t, d in _joined(context, tickers).items() if d - overlap > since}
+    joined = {t: d for t, d in _joined(context, tickers, as_of).items() if d - overlap > since}
     if full or not joined:
         return joined
+    column, sentinel = cast(tuple[str, object], Tables.sec13f_hr.empty_marker)
     df = context.store.load(
-        Tables.sec13f_hr,
-        columns=["ticker", "filing_date"],
-        where={"ticker": sorted(joined)},
-        date_col="filing_date",
-        since=since,
-        until=max(joined.values()) - overlap,
-        optional=True,
+        Tables.sec13f_hr, columns=["ticker"], where={"ticker": sorted(joined), column: sentinel}, until=since, markers=True, optional=True
     )
-    done = (
-        set() if df is None else {str(t) for t, f in zip(df["ticker"], df["filing_date"], strict=True) if pd.Timestamp(f) < joined[str(t)] - overlap}
-    )
+    done = set() if df is None else {str(t) for t in df["ticker"]}
     return {t: d for t, d in joined.items() if t not in done}
 
 
-def _walk_gap(context: Context, data_sets: list[DataSet], tickers: list[str], full: bool) -> None:
-    """One EDGAR walk from the day after the newest data set ends to the latest join date, for the gap tickers only."""
-    since = max(d.end for d in data_sets) + pd.Timedelta(days=1)
-    due = gap_tickers(context, tickers, since, full)
+def mark_gap_walked(context: Context, tickers: list[str], since: pd.Timestamp) -> int:
+    """Save one `sec13f_hr` marker per ticker, `period` and `filing_date` both `since`: the record that a
+    completed EDGAR walk covered the ticker's gap from `since`. Returns rows saved."""
+    markers = [marker_frame(Tables.sec13f_hr, {"ticker": t, "period": since, "filing_date": since}) for t in tickers]
+    return save_hr(context, pd.concat(markers, ignore_index=True)) if markers else 0
+
+
+def _walk_gap(context: Context, data_sets: list[DataSet], cache: Path, tickers: list[str], as_of: pd.Timestamp, full: bool) -> None:
+    """One EDGAR walk from the day after the newest cached data set ends to the latest join date, for
+    the gap tickers only, then one marker per ticker. A listed data set whose ZIP is not cached (not
+    published yet) is no coverage; with none cached the walk waits for the next run. A walk that raises
+    or leaves a filing unread writes no marker, so the next run walks the gap again."""
+    available = [d.end for d in data_sets if is_cached(cache / d.filename)]
+    if not available:
+        logger.warning("13F backfill: no data set is cached, so the gap start is unknown; the EDGAR gap walk is retried next run")
+        return
+    since = max(available) + pd.Timedelta(days=1)
+    due = gap_tickers(context, tickers, since, as_of, full)
     if not due:
         return
     until = max(due.values())
     logger.info("13F backfill: EDGAR walk %s:%s for %s (after the newest data set)", f"{since:%Y-%m-%d}", f"{until:%Y-%m-%d}", ", ".join(sorted(due)))
     years_history = int(context.config.data_extract.years_history)
-    fetch_13f(context, tickers=sorted(due), years_history=years_history, filing_window=(f"{since:%Y-%m-%d}", f"{until:%Y-%m-%d}"))
+    unread = fetch_13f(context, tickers=sorted(due), years_history=years_history, filing_window=(f"{since:%Y-%m-%d}", f"{until:%Y-%m-%d}"))
+    if unread:
+        logger.warning(
+            "13F backfill: %d filing(s) of the gap walk stayed unread; no ticker is marked walked, so the gap is walked again next run", unread
+        )
+        return
+    mark_gap_walked(context, sorted(due), since)
 
 
 def fetch_13f_backfill(context: Context, tickers: list[str] | None, as_of: pd.Timestamp, *, full: bool = False) -> int:
@@ -402,5 +419,5 @@ def fetch_13f_backfill(context: Context, tickers: list[str] | None, as_of: pd.Ti
         if path is not None:
             saved += _backfill_data_set(context, path, data_set, due, cmap, roster_ciks)
     logger.info("13F backfill: saved %d row(s) for %d ticker(s) from %d data set(s)", saved, len(targets), len(work))
-    _walk_gap(context, data_sets, targets, full)
+    _walk_gap(context, data_sets, cache, targets, as_of, full)
     return saved

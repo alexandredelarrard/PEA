@@ -24,7 +24,8 @@ hard identity gate); extraction itself never waits for it. Identity stage: the F
 zip downloads and the SEC current-tickers snapshot -> identity_tables (tenure, lineage, security
 master) -> identity_propagate -> every task that reads the lineage (price_history waits for
 identity_tables only: it reads the master's current secondary classes); a failed build or propagation
-leaves those consumers unrun. After every fetcher, `extraction_status` prints the per-table freshness
+leaves those consumers unrun. identity_tables and price_history run on ALL_DONE: a failed download leaves
+the build on its cached evidence, and a failed build leaves prices on the stored master. After every fetcher, `extraction_status` prints the per-table freshness
 report, logs a WARNING per RED table and exits 0; only `modelling predict` refuses stale inputs. Then
 `identity_check` (`python -m src validate identity`) fails on rows filed by a CIK outside the ticker's
 entity or a broken lineage invariant, which holds the aggregation trigger.
@@ -93,7 +94,7 @@ short_interest = fetch("short-interest")
 earnings_surprises = fetch("earnings-surprises")
 
 # yfinance: one download writes prices, prices_dividends and prices_splits (a new split re-pulls its ticker)
-price_history = fetch("price-history")
+price_history = fetch("price-history", trigger_rule=TriggerRule.ALL_DONE)  # the stored master is enough when identity_tables fails
 
 # 2) identity stage: cache the Form 3/4/5 zips, the Notes zips (+ cover-page dei symbols) and the FTD zips
 #    (+ raw in-scope lines), snapshot SEC's current tickers, build symbol_tenure + entity_lineage +
@@ -102,7 +103,7 @@ insider_download = fetch("insider-download", pool="sec_bulk")
 notes_download = fetch("notes-download", pool="sec_bulk")
 ftd_download = fetch("ftd-download", pool="sec_bulk")
 sec_tickers = fetch("sec-tickers", pool="sec_bulk")
-identity_tables = fetch("identity-tables")
+identity_tables = fetch("identity-tables", trigger_rule=TriggerRule.ALL_DONE)  # builds offline from cached evidence
 identity_propagate = fetch("identity-propagate")
 
 # 3) SEC bulk zips — capped to 2 concurrent (disk + SEC bandwidth)

@@ -322,13 +322,19 @@ def test_a_failed_fetcher_never_blocks_aggregation_but_a_failed_identity_check_d
     }
     assert gate.upstream == fetchers, "the report, then the identity check, wait for every fetcher"
     assert {"thirteen_f"} <= dag.tasks["thirteen_f_backfill"].upstream, "one EDGAR walk at a time: the backfill follows the nightly 13F walk"
-    assert all(dag.tasks[task_id].trigger_rule == ALL_SUCCESS for task_id in fetchers), "a fetcher still waits for its own sources"
+    lenient = {"identity_tables", "price_history"}
+    assert all(dag.tasks[task_id].trigger_rule == ALL_SUCCESS for task_id in fetchers - lenient), "a fetcher still waits for its own sources"
+    assert all(dag.tasks[task_id].trigger_rule == ALL_DONE for task_id in lenient), "F-106: a failed SEC download never skips prices"
 
     for failed in (["price_history"], ["identity_tables"], ["thirteen_f", "insider_transactions", "extraction_status"]):
         states = replay(dag, failed)
         assert states["trigger_data_aggregation"] == "success", (failed, states)
     states = replay(dag, ["identity_tables"])
     assert states["fundamentals"] == "upstream_failed" and states["extraction_status"] == "success"
+    assert states["price_history"] == "success", "prices read the stored master when the build fails"
+    for download in ("notes_download", "insider_download", "ftd_download", "sec_tickers"):
+        states = replay(dag, [download])
+        assert states["price_history"] == states["identity_tables"] == states["identity_propagate"] == states["fundamentals"] == "success", download
     held = replay(dag, ["identity_check"])
     assert held["trigger_data_aggregation"] == "upstream_failed", held
     assert held["extraction_status"] == "success" and all(held[task_id] == "success" for task_id in fetchers), (
@@ -339,6 +345,7 @@ def test_a_failed_fetcher_never_blocks_aggregation_but_a_failed_identity_check_d
     print(f"  {len(fetchers)} fetchers -> extraction_status (ALL_DONE) -> identity_check (ALL_DONE) -> trigger_data_aggregation (ALL_SUCCESS)")
     print("  replay: price_history failed / identity_tables failed (its 12 consumers upstream_failed) / 13F + insider + the report failed")
     print("  -> aggregation triggered every time; identity_check failed -> every fetcher and the report succeed, the trigger is upstream_failed")
+    print("  F-106: a failed SEC download still runs identity_tables, the consumers and price_history; a failed build still runs prices")
 
 
 def _raises(node: ast.AST, name: str) -> bool:

@@ -77,8 +77,8 @@ NOISE_MAX_OBSERVATIONS = 5
 CURRENT_RECENCY_DAYS = 120
 #: A CIK switch: the predecessor's last and the successor's first filing within this many days, in each source.
 SWITCH_TOLERANCE_DAYS = 31
-#: D3 automatic CIK windows. Enabled only while the register reproduction shows zero contradictions.
-AUTO_WINDOWS_ENABLED = False
+#: D3 automatic CIK windows (P36): on; a register entry always wins and every automatic chain is listed in `validate identity`.
+AUTO_WINDOWS_ENABLED = True
 
 #: Column order of `entity_lineage`.
 TABLE_COLUMNS = (

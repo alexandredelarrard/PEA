@@ -30,6 +30,7 @@ KIND_ORDER = (
     "vendor_coverage_gap",
     "vendor_series_other_company",
     "noise",
+    "automatic_cik_window",
     "co_registrant",
 )
 _REGISTER = "configs/sec/registrant_cutover.json"
@@ -38,6 +39,8 @@ _SYMBOLS = "configs/sec/symbol_tenure_manual.json"
 _ACTIVITY_SOURCES = ("dei", "form345")
 _TAPE_SOURCES = ("form345", "manual")
 _FAR = pd.Timestamp("2262-01-01")
+#: The stored open start of a window (`entity_lineage.SENTINEL_START`).
+_SENTINEL = pd.Timestamp("1900-01-01")
 
 
 def cik_activity(evidence: pd.DataFrame) -> pd.DataFrame:
@@ -84,7 +87,10 @@ def _item(kind: str, action: bool, ticker: str, ciks: Iterable[str], evidence: s
     }
 
 
-_LINEAGE_COLUMNS = ("entity_id", "canonical_ticker", "cik", "role", "symbol", "valid_from", "valid_to", "status", "sources", "oracle")
+_LINEAGE_COLUMNS = ("entity_id", "canonical_ticker", "cik", "role", "symbol", "valid_from", "valid_to", "status", "sources", "oracle", "evidence")
+#: `sources` of a `cik_window` row dated by the automatic rule (both filed evidence sources agreeing).
+_AUTOMATIC_SOURCES = "dei,form345"
+_AUTOMATIC_NOTE = "automatic window: "
 
 
 def _prepare(lineage: pd.DataFrame) -> pd.DataFrame:
@@ -185,6 +191,30 @@ def _register_items(
                         _REGISTER,
                     )
                 )
+    return items
+
+
+def _automatic_window_items(rows: pd.DataFrame) -> list[dict[str, object]]:
+    """One information item per entity whose CIK windows the automatic rule dated, with the chain and its switch evidence."""
+    windows = rows[rows["role"].eq("cik_window") & rows["sources"].eq(_AUTOMATIC_SOURCES)]
+    items: list[dict[str, object]] = []
+    for _, group in windows.sort_values(["entity_id", "valid_from"], kind="mergesort").groupby("entity_id", sort=True):
+        chain = ", ".join(
+            f"{cik} from {'open' if start <= _SENTINEL else start.date()}" + ("" if pd.isna(end) else f" to {end.date()}")
+            for cik, start, end in zip(group["cik"], group["valid_from"], group["valid_to"], strict=True)
+        )
+        notes = [str(text).split(_AUTOMATIC_NOTE, 1)[1] for text in group["evidence"].fillna("") if _AUTOMATIC_NOTE in str(text)]
+        items.append(
+            _item(
+                "automatic_cik_window",
+                False,
+                str(group["canonical_ticker"].iloc[0]),
+                list(group["cik"]),
+                f"automatic chain {chain}; " + (notes[0] if notes else "switch evidence not stored"),
+                "review: a register entry citing the successor's 8-K12B/8-K12G3 overrides it",
+                _REGISTER,
+            )
+        )
     return items
 
 
@@ -306,6 +336,7 @@ def identity_flags(
         *_multi_cik_items(rows, spans),
         *_register_items(rows, spans, _spans(activity[activity["source"].eq("dei")])),
         *_backlog_items(backlog),
+        *_automatic_window_items(rows),
         *_tape_mix_items(rows, frozenset(redundant_symbols)),
         *_symbol_status_items(rows),
     ]

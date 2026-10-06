@@ -41,6 +41,7 @@ from src.data_extract.utils.common.entity_lineage import (
 from src.data_extract.utils.common.registrant import load_registrants
 from src.data_extract.utils.common.symbol_tenure import scan_form345_cache
 from src.data_store.schema import Tables
+from src.utils.identity_flags import KIND_ORDER, cik_activity, identity_flags
 
 CONFIG_DIR = "./configs"
 CACHE = Path("data/sec_insider_transactions")
@@ -367,6 +368,51 @@ def test_automatic_windows_when_both_sources_agree(tmp_path):
     print(windows[["valid_from", "valid_to", "status", "sources"]].to_string())
     print(f"  disabled: roster window only, predecessor event-only, backlog: {pending['detail'].iloc[0]}")
     print("  OK: agreeing sources date the seam; with D3 off the P4 behaviour applies")
+
+
+def test_automatic_windows_are_live_and_a_register_entry_overrides_them(tmp_path):
+    """P36: agreeing sources date a chain by default; a register entry for the ticker wins over the evidence."""
+    tenure, dei = _handoff_evidence()
+    roster = _roster([("ABC", "0000000200")])
+    live = derive_entity_lineage(tenure, roster, _owner_pairs({}), _config(tmp_path), dei=dei)
+    windows = _rows(live, role="cik_window").set_index("cik")
+    assert sorted(windows.index) == ["0000000100", "0000000200"], "automatic windows are on without an explicit flag"
+    assert windows.loc["0000000200", "valid_from"] == pd.Timestamp("2015-07-01")
+    assert windows["evidence"].str.contains("automatic window").all()
+
+    segments = [{"cik": "100", "valid_to": "2016-01-04", "evidence": "old"}, {"cik": "200", "valid_from": "2016-01-04", "evidence": "new"}]
+    register = {"ABC": {"kind": "reorganisation", "segments": segments}}
+    curated = derive_entity_lineage(tenure, roster, _owner_pairs({}), _config(tmp_path / "register", register=register), dei=dei)
+    register_windows = _rows(curated, role="cik_window").set_index("cik")
+    assert set(register_windows["sources"]) == {"register"}
+    assert register_windows.loc["0000000200", "valid_from"] == pd.Timestamp("2016-01-04")
+    assert not register_windows["evidence"].str.contains("automatic window").any()
+
+    print("\n=== SANITY CHECK: P36 automatic windows live, register first ===")
+    print(f"  evidence only: 100 -> 200 on {windows.loc['0000000200', 'valid_from'].date()} (dei + Forms 3/4/5)")
+    print(f"  with a register entry dated 2016-01-04: windows {register_windows['sources'].unique().tolist()}, seam 2016-01-04")
+    print("  OK: the automatic rule fills only what the register leaves undeclared")
+
+
+def test_every_automatic_window_is_listed_for_review(tmp_path):
+    """P36: an automatic chain is an information item (`automatic_cik_window`) carrying the switch evidence."""
+    tenure, dei = _handoff_evidence()
+    build = derive_entity_lineage(tenure, _roster([("ABC", "0000000200")]), _owner_pairs({}), _config(tmp_path), dei=dei, auto_windows=True)
+    flags = identity_flags(build.rows, cik_activity(pd.concat([tenure, dei], ignore_index=True)))
+    auto = flags[flags["kind"].eq("automatic_cik_window")]
+    assert "automatic_cik_window" in KIND_ORDER
+    assert len(auto) == 1 and not bool(auto["action"].iloc[0]) and auto["ticker"].iloc[0] == "ABC"
+    assert auto["ciks"].iloc[0] == "0000000100,0000000200"
+    text = auto["evidence"].iloc[0]
+    assert "0000000200 from 2015-07-01" in text and "dei" in text and "form345" in text
+    assert "registrant_cutover.json" in auto["config_file"].iloc[0]
+
+    off = derive_entity_lineage(tenure, _roster([("ABC", "0000000200")]), _owner_pairs({}), _config(tmp_path), dei=dei, auto_windows=False)
+    assert identity_flags(off.rows, cik_activity(pd.concat([tenure, dei], ignore_index=True)))["kind"].ne("automatic_cik_window").all()
+
+    print("\n=== SANITY CHECK: automatic windows listed for review ===")
+    print(f"  [info] {auto['kind'].iloc[0]} {auto['ticker'].iloc[0]} ({auto['ciks'].iloc[0]}): {text[:160]}")
+    print("  OK: each automatic chain is one info item; none when the rule is off")
 
 
 def test_disagreeing_sources_abstain_and_keep_the_roster_window(tmp_path):

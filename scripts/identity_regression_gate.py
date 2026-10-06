@@ -530,16 +530,17 @@ def filing_diff(
             reasons.append("co_registrant_purge")
             continue
         scope = scopes.get(normalise_ticker(row.canonical_company))
+        undated = dated and scope is not None and scope.undated_events  # P40: as before P35, an undated event union
         reasons.append(
             filing_reason(
                 row.change,
                 row.cik,
                 row.filed,
-                row.consolidating,
+                row.consolidating and not undated,
                 scope,
                 old_ciks.get(normalise_ticker(row.canonical_company), frozenset()),
                 frontier,
-                dated,
+                dated and not undated,
             )
         )
     out["reason"] = reasons
@@ -1159,7 +1160,7 @@ def _merged_section(context: Any, snap_dir: Path, scope: Sequence[str] | None) -
             if column in frame.columns:
                 frame[column] = pd.to_datetime(frame[column])
     names = sorted(set(before["ticker"]) | set(after["ticker"]))
-    series = load_predecessor_series(context, names)
+    series = load_predecessor_series(context, names, str(context.config_dir))
     stored = (
         set(store.distinct(Tables.sharadar_fundamentals, "ticker", where={"ticker": sorted({s.vendor_ticker for s in series})})) if series else set()
     )

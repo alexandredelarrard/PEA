@@ -401,7 +401,7 @@ def with_predecessor_series(
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """`(vendor, splits)` with each predecessor window's canonical ARQ rows replaced by the window owner's own on the
     ticker's share basis, and the split events rebased so the window's PIT count is the owner's; logged per quarter."""
-    series = load_predecessor_series(context, names)
+    series = load_predecessor_series(context, names, config_dir)
     if not series:
         return vendor, splits
     owners = context.store.load(

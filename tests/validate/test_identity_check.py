@@ -450,3 +450,28 @@ def test_without_the_owner_series_the_window_is_an_action_item(sqlite_store, tmp
     print(other[["ticker", "ciks", "evidence"]].to_string(index=False))
     assert len(other) == 1 and other["action"].iloc[0] and "not stored" in other["evidence"].iloc[0] and "10 canonical" in other["evidence"].iloc[0]
     print("  OK: REG1 missing -> one action naming the 10 unverified canonical quarters inside the window.")
+
+
+def test_a_deferred_predecessor_series_is_information_pointing_to_the_deferral(sqlite_store, tmp_path):
+    """P38: a ticker whose replacement is deferred (plan §13.10) keeps the vendor's rows; the validator says so, as INFO."""
+    _seed_store(sqlite_store, _store_lineage())
+    sqlite_store.save(Tables.sharadar_fundamentals, _quarters("REG", _all_quarters("2013Q1", "2017Q4"), 7.0))
+    url = "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={}"
+    pd.DataFrame({"ticker": ["REG1"], "secfilings": [url.format(PRED)], "lastquarter": pd.to_datetime(["2015-06-30"])}).to_sql(
+        Tables.sharadar_tickers.name, sqlite_store.engine, index=False
+    )
+    (tmp_path / "sec").mkdir()
+    deferral = {"ticker": "REG", "defers": ["predecessor_series"], "source": "plan §13.10 (P38)"}
+    (tmp_path / "sec" / "security_master_manual.json").write_text(json.dumps({"deferred_to_traded_security": [deferral]}), encoding="utf-8")
+    context = SimpleNamespace(**vars(_context(sqlite_store)), config_dir=tmp_path)
+
+    report = check_identity(context)
+
+    other = report.flags[report.flags["kind"].eq("vendor_series_other_company")]
+    print("\n=== SANITY CHECK: deferred predecessor series in validate identity ===")
+    print(other[["ticker", "action", "evidence", "suggested_action"]].to_string(index=False))
+    assert len(other) == 1 and not bool(other["action"].iloc[0])
+    assert "deferred" in other["evidence"].iloc[0] and "13.10" in other["suggested_action"].iloc[0]
+    assert report.result.metrics["predecessor_vendor_tickers"] == {}
+    assert not [f for f in report.result.findings if f.field == "manual_decision" and "REG1" in f.observed]
+    print("  OK: REG's replacement deferred -> one INFO item pointing to §13.10, no action, no predecessor series applied.")

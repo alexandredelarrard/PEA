@@ -4,7 +4,8 @@ Filings follow the legal registrant, whose CIK changes on a reorganisation or do
 `registrant_cutover.json` declares each such ticker as an ordered, contiguous chain of evidenced
 `[valid_from, valid_to)` segments, validated strictly at load; the lineage build turns it into dated
 CIK windows. `FORM_POLICY` decides per form whether filings UNION across a ticker's event CIKs
-(insider forms) or SPLIT by its CIK windows (everything else); `resolve_registrant_entries` applies
+(insider forms) or SPLIT by its CIK windows (everything else; `scope_policy` unions 8-K / 13D / 13G for
+a ticker deferred to the traded-security realignment); `resolve_registrant_entries` applies
 it to local EDGAR index rows and `resolve_registrant_filings` to `Company` listings, both by CIK
 only, never by symbol.
 """
@@ -242,6 +243,20 @@ def combine_for(forms: Sequence[str]) -> Combine:
     return policies.pop()
 
 
+#: The event forms SPLIT by dated CIK window (P35); a scope with `undated_events` lists them UNION instead.
+DATED_EVENT_FORMS = frozenset(
+    {"8-K", "8-K/A", "8-K12B", "SC 13D", "SC 13D/A", "SCHEDULE 13D", "SCHEDULE 13D/A", "SC 13G", "SC 13G/A", "SCHEDULE 13G", "SCHEDULE 13G/A"}
+)
+
+
+def scope_policy(scope: FilingScope, forms: Sequence[str]) -> Combine:
+    """`combine_for(forms)`, except that a ticker deferred to the traded-security realignment unions its 8-K / 13D / 13G."""
+    policy = combine_for(forms)
+    if policy is Combine.SPLIT and scope.undated_events and set(forms) <= DATED_EVENT_FORMS:
+        return Combine.UNION
+    return policy
+
+
 @dataclass
 class _FilingWindow:
     """The filter shared by every walk: the scope guard, `since` and `done_accessions`.
@@ -293,7 +308,7 @@ def resolve_registrant_filings(
     inside the seam-widened dates, so an event-only CIK contributes nothing. A filing from a CIK outside the listed CIKs is skipped and counted
     (`stats["foreign_skipped"]`). `since` and `done_accessions` filter before the sort.
     """
-    policy = combine_for(forms)
+    policy = scope_policy(scope, forms)
     forms = list(forms)
     if stats is not None:
         stats.setdefault("skipped_existing", 0)
@@ -361,7 +376,7 @@ def resolve_registrant_entries(scope: FilingScope, df_entries: pd.DataFrame, for
     event CIK's rows; SPLIT keeps each CIK window's rows inside its seam-widened dates. An accession
     two CIKs list goes to the CIK whose stated window owns its date, else the first CIK listed.
     """
-    policy = combine_for(forms)
+    policy = scope_policy(scope, forms)
     df = df_entries[df_entries["form"].isin(list(forms))]
     walks: list[tuple[str, CikWindow | None]]
     if policy is Combine.UNION:

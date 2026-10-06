@@ -57,7 +57,7 @@ class StepExtractFundamentalsSharadar(Step):
         #    costs one request and is counted, never retried.
         #    The vendor tickers carrying a register predecessor CIK's own series (BHI, STE1, ...) are fetched
         #    too and stored under their own ticker; the merge reads them inside the predecessor's window.
-        predecessors = [t for t in predecessor_vendor_tickers(self._context, tickers) if t not in set(tickers)]
+        predecessors = [t for t in predecessor_vendor_tickers(self._context, tickers, config_dir) if t not in set(tickers)]
         if predecessors:
             self._log.info("Sharadar SF1: + %d predecessor vendor ticker(s): %s", len(predecessors), ", ".join(predecessors))
         fetch_sharadar_fundamentals(self._context, tickers=[*tickers, *predecessors], years_history=years, full=full, as_of=as_of)

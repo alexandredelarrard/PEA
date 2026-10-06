@@ -248,10 +248,11 @@ def _window_text(spans: list[tuple[pd.Timestamp, pd.Timestamp]]) -> str:
 
 
 def _tape_mix_items(rows: pd.DataFrame, redundant: frozenset[str]) -> list[dict[str, object]]:
-    """A second tape symbol resolving to a ticker while the ticker itself trades: two securities summed on FTD/short interest.
+    """A second tape symbol dated to a ticker while the ticker itself trades: two securities under one company on the tapes.
 
-    A redundant class counts only where the ticker trades on cover pages alone (no tape interval of its own); overlaps
-    of a margin or less (single typed filings) are left out.
+    `security_master` decides per security (CUSIP, class) whether the second line is summed into the ticker (canonical
+    or secondary class) or kept apart. A redundant class counts only where the ticker trades on cover pages alone (no
+    tape interval of its own); overlaps of a margin or less (single typed filings) are left out.
     """
     items: list[dict[str, object]] = []
     symbols = rows[rows["role"].eq("symbol")]
@@ -273,8 +274,8 @@ def _tape_mix_items(rows: pd.DataFrame, redundant: frozenset[str]) -> list[dict[
                         True,
                         str(ticker),
                         sorted(set(other["cik"])),
-                        f"{why}: {_window_text(spans)}; FTD and new short-interest rows of both are summed",
-                        f"curate {symbol} (symbol tenure) or list it as redundant (data_extract.redundant_ticks)",
+                        f"{why}: {_window_text(spans)}; security_master decides per security whether their FTD and short-volume lines are summed",
+                        f"check the security_master role of {symbol}'s lines (security_master_manual.json) or curate {symbol} (symbol tenure)",
                         _SYMBOLS,
                     )
                 )

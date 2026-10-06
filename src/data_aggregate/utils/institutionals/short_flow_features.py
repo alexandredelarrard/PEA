@@ -19,6 +19,7 @@ import re
 from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -173,7 +174,7 @@ def _publish_ftd_zip_states(
 
     events: list[tuple[int, str, pd.Series]] = []
     for period, days in periods.items():
-        observed_days = pd.DatetimeIndex(days).intersection(settlement_state.index).sort_values()
+        observed_days = pd.DatetimeIndex(days).intersection(cast(pd.DatetimeIndex, settlement_state.index)).sort_values()
         if observed_days.empty:
             continue
         if period not in available_by_period:
@@ -313,8 +314,8 @@ def _proven_tenure_mask(
         target = _lineage_target(row.symbol, row.issuer_cik, exact, current)
         if target not in mask.columns:
             continue
-        start = pd.to_datetime(row.valid_from, errors="coerce")
-        end = pd.to_datetime(row.valid_to, errors="coerce")
+        start = pd.to_datetime(cast(Any, row.valid_from), errors="coerce")
+        end = pd.to_datetime(cast(Any, row.valid_to), errors="coerce")
         if pd.isna(start):
             continue
         valid = idx >= pd.Timestamp(start).normalize()

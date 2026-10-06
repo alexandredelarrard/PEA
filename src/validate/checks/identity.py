@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections.abc import Hashable, Mapping, Sequence
 from dataclasses import dataclass
 from itertools import combinations
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 
@@ -87,7 +87,7 @@ def _from_old_shape(lineage: pd.DataFrame, roster: pd.DataFrame) -> pd.DataFrame
         }
     )
     out = pd.concat([windows, events], ignore_index=True)
-    return out.assign(symbol="", valid_from=SENTINEL, valid_to=pd.NaT, status="")
+    return out.assign(symbol="", valid_from=SENTINEL, valid_to=cast(Any, pd.NaT), status="")
 
 
 def _entity_ciks(lineage: pd.DataFrame) -> dict[str, frozenset[str]]:

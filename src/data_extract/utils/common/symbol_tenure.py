@@ -83,6 +83,8 @@ DEI_SOURCE = "dei"
 
 MANUAL_TENURE_FILE = Path("sec") / "symbol_tenure_manual.json"
 MANUAL_TENURE_VERSION = 1
+#: An SEC accession number, the evidence a rejected tenure must cite.
+_ACCESSION = re.compile(r"^\d{10}-\d{2}-\d{6}$")
 
 
 class ManualSymbolTenureError(ValueError):
@@ -195,6 +197,61 @@ def load_manual_symbol_tenure(config_dir: str | Path) -> pd.DataFrame:
     out = out.drop_duplicates(identity_columns, keep="first").sort_values(["symbol", "valid_from", "issuer_cik"], kind="mergesort", ignore_index=True)
     _check_manual_overlaps(out)
     return out
+
+
+def load_rejected_symbol_tenure(config_dir: str | Path) -> pd.DataFrame:
+    """The manual config's `rejected` derived tenures: `symbol`, `issuer_cik`, `valid_from`, `valid_to`, cited
+    `accessions`, `evidence`, `reason`. Empty when the file or the list is absent; an uncited entry raises."""
+    columns = ["symbol", "issuer_cik", "valid_from", "valid_to", "accessions", "evidence", "reason"]
+    path = Path(config_dir) / MANUAL_TENURE_FILE
+    if not path.exists():
+        return pd.DataFrame(columns=columns)
+    raw_entries = json.loads(path.read_text(encoding="utf-8")).get("rejected", [])
+    if not isinstance(raw_entries, list):
+        raise ManualSymbolTenureError(f"symbol_tenure: {path}.rejected must be a list")
+    records = [_parse_rejection(raw, f"rejected[{index}]") for index, raw in enumerate(raw_entries)]
+    return pd.DataFrame.from_records(records, columns=columns)
+
+
+def _parse_rejection(raw: object, location: str) -> dict[str, object]:
+    """One validated rejected tenure: a dated (symbol, issuer CIK) interval and the accessions that mis-tag it."""
+    if not isinstance(raw, dict):
+        raise ManualSymbolTenureError(f"{location} must be an object")
+    record = _parse_manual_interval(
+        {key: raw.get(key) for key in ("symbol", "issuer_cik", "valid_from", "valid_to", "evidence", "reason")}, "-", location
+    )
+    if record["valid_to"] is None:
+        raise ManualSymbolTenureError(f"{location}.valid_to must close the rejected interval")
+    accessions = raw.get("accessions")
+    if not isinstance(accessions, list) or not accessions or any(not isinstance(a, str) or not _ACCESSION.fullmatch(a) for a in accessions):
+        raise ManualSymbolTenureError(f"{location}.accessions must be a non-empty list of SEC accession numbers")
+    return {key: record[key] for key in ("symbol", "issuer_cik", "valid_from", "valid_to", "evidence", "reason")} | {"accessions": tuple(accessions)}
+
+
+def reject_derived_tenure(derived: pd.DataFrame, rejected: pd.DataFrame) -> pd.DataFrame:
+    """`derived` without its rows that a rejection covers: same (symbol, issuer CIK), interval inside the rejected
+    dates. A rejection that matches the pair but no longer covers its interval keeps the row and warns."""
+    if rejected.empty or derived.empty:
+        return derived
+    drop = pd.Series(False, index=derived.index)
+    starts, ends = pd.to_datetime(derived["valid_from"]), pd.to_datetime(derived["valid_to"])
+    for symbol, cik, start, end, accessions in zip(
+        rejected["symbol"],
+        rejected["issuer_cik"],
+        pd.to_datetime(rejected["valid_from"]),
+        pd.to_datetime(rejected["valid_to"]),
+        rejected["accessions"],
+        strict=True,
+    ):
+        pair = derived["symbol"].astype(str).eq(symbol) & derived["issuer_cik"].astype(str).eq(cik)
+        covered = pair & (starts >= start) & ends.notna() & (ends <= end)
+        label = f"{symbol}/{cik} {start.date()}..{end.date()}"
+        if (pair & ~covered).any():
+            logger.warning("symbol_tenure: the rejection of %s no longer covers the derived interval; kept for review", label)
+        if covered.any():
+            logger.info("symbol_tenure: rejected %s (%d accession(s) cited)", label, len(accessions))
+        drop |= covered
+    return derived[~drop].reset_index(drop=True)
 
 
 def _parse_manual_interval(raw: object, ticker: str, location: str) -> dict[str, object]:
@@ -462,12 +519,13 @@ def changed_tenure_symbols(
 
 
 def build_symbol_tenure(context: Context, scan: Form345Scan, config_dir: str | Path | None = None) -> pd.DataFrame:
-    """Derive the `form345` and `manual` partitions of `symbol_tenure` and rewrite them unless unchanged.
+    """Derive the `form345` and `manual` partitions of `symbol_tenure` (minus the manual config's cited rejections)
+    and rewrite them unless unchanged.
 
     Only those partitions are deleted and saved, so rows of other sources survive; returns the materialized frame.
     """
     existing = context.store.load(Tables.symbol_tenure, project=True, where={"source": list(BUILD_SOURCES)}, optional=True)
-    derived = derive_symbol_tenure(scan)
+    derived = reject_derived_tenure(derive_symbol_tenure(scan), load_rejected_symbol_tenure(config_dir or context.config_dir))
     manual = load_manual_symbol_tenure(config_dir or context.config_dir)
     out = materialize_symbol_tenure(derived, manual)
     context.log.info(

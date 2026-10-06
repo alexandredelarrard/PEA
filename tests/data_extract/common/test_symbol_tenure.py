@@ -29,7 +29,9 @@ from src.data_extract.utils.common.symbol_tenure import (
     changed_tenure_symbols,
     derive_symbol_tenure,
     load_manual_symbol_tenure,
+    load_rejected_symbol_tenure,
     materialize_symbol_tenure,
+    reject_derived_tenure,
     scan_form345_cache,
 )
 from src.data_store.schema import Tables
@@ -758,6 +760,106 @@ def test_repository_manual_tenure_covers_validated_ia3_boundaries():
     print("\n=== SANITY CHECK: repository IA-3 manual boundaries ===")
     print(f"  {len(transitions)} transitions have one exact old end and one exact new start")
     print("  OK: ticker changes and successor-CIK changes are explicit; no date is guessed")
+
+
+_FORD, _FCF = "0000037996", "0000712537"
+_FCF_REJECTION = {
+    "symbol": "F",
+    "issuer_cik": _FCF,
+    "valid_from": "2018-04-26",
+    "valid_to": "2019-04-25",
+    "accessions": ["0001229952-18-000026", "0001229952-19-000024"],
+    "evidence": ["SEC Form 3/4/5 data sets: First Commonwealth's own Forms 4/5 carry ISSUERTRADINGSYMBOL F"],
+    "reason": "a mis-tagged symbol; Ford held F throughout",
+}
+
+
+def _ford_and_fcf(fcf_end: str = "2019-04-25") -> pd.DataFrame:
+    """Derived F tenure: Ford's open interval and First Commonwealth's false one."""
+    return pd.DataFrame(
+        {
+            "symbol": ["F", "F"],
+            "issuer_cik": [_FORD, _FCF],
+            "valid_from": pd.to_datetime(["2006-01-03", "2018-04-26"]),
+            "valid_to": pd.to_datetime(pd.Series([None, fcf_end], dtype="object")),
+            "n_filings": [2309, 6],
+            "source": ["form345", "form345"],
+            "evidence": ["FORD MOTOR CO", "FIRST COMMONWEALTH FINANCIAL CORP /PA/"],
+        }
+    )
+
+
+def _manual_with_rejections(directory: Path, rejected: list[dict]) -> None:
+    ford = {"symbol": "F", "issuer_cik": _FORD, "valid_from": "2006-01-03", "valid_to": None, "evidence": ["x"], "reason": "y"}
+    _write_manual(directory, {"version": 1, "tickers": {"F": [ford]}, "rejected": rejected})
+
+
+def test_a_rejected_tenure_is_dropped_from_the_derived_partition(tmp_path, caplog):
+    _manual_with_rejections(tmp_path, [_FCF_REJECTION])
+    rejected = load_rejected_symbol_tenure(tmp_path)
+    caplog.set_level(logging.INFO, logger=tenure_module.__name__)
+
+    out = reject_derived_tenure(_ford_and_fcf(), rejected)
+
+    assert list(zip(out["symbol"], out["issuer_cik"], strict=True)) == [("F", _FORD)]
+    assert rejected.iloc[0]["accessions"] == ("0001229952-18-000026", "0001229952-19-000024")
+    assert "F/0000712537 2018-04-26..2019-04-25" in caplog.text
+    print("\n=== SANITY CHECK: a cited rejection drops a false derived tenure ===")
+    print("  F: Ford's open interval kept; First Commonwealth's 2018-04-26..2019-04-25 interval rejected (2 accessions cited)")
+
+
+def test_a_rejection_that_no_longer_covers_the_derived_interval_keeps_it_and_warns(tmp_path, caplog):
+    _manual_with_rejections(tmp_path, [_FCF_REJECTION])
+    caplog.set_level(logging.WARNING, logger=tenure_module.__name__)
+
+    out = reject_derived_tenure(_ford_and_fcf(fcf_end="2020-06-01"), load_rejected_symbol_tenure(tmp_path))
+
+    assert len(out) == 2
+    assert "no longer covers" in caplog.text
+    print("\n=== SANITY CHECK: a stale rejection never hides new evidence ===")
+    print("  FCF filed under F past the cited window -> the row is kept and the rejection is flagged for review")
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (lambda entry: entry.update(accessions=[]), ".accessions must be"),
+        (lambda entry: entry.update(accessions=["12-34"]), ".accessions must be"),
+        (lambda entry: entry.update(evidence=[]), ".evidence must be"),
+        (lambda entry: entry.update(valid_to="2018-04-26"), "valid_from < valid_to"),
+    ],
+)
+def test_a_rejection_must_be_cited_and_dated(tmp_path, mutation, message):
+    entry = dict(_FCF_REJECTION)
+    mutation(entry)
+    _manual_with_rejections(tmp_path, [entry])
+    with pytest.raises(ManualSymbolTenureError, match=message):
+        load_rejected_symbol_tenure(tmp_path)
+
+
+def test_build_writes_the_partition_without_the_rejected_rows(sqlite_store, monkeypatch, tmp_path):
+    _manual_with_rejections(tmp_path, [_FCF_REJECTION])
+    monkeypatch.setattr(tenure_module, "derive_symbol_tenure", lambda scan: _ford_and_fcf())
+    context: Any = SimpleNamespace(store=sqlite_store, log=logging.getLogger("test.symbol_tenure.rejected"))
+
+    out = tenure_module.build_symbol_tenure(context, cast(Any, None), tmp_path)
+
+    stored = sqlite_store.load(Tables.symbol_tenure, project=True)
+    assert stored is not None and _FCF not in set(stored["issuer_cik"]) and _FCF not in set(out["issuer_cik"])
+    print("\n=== SANITY CHECK: the build stores no rejected tenure ===")
+    print(f"  stored {sorted(zip(stored['symbol'], stored['issuer_cik'], stored['source'], strict=True))}")
+
+
+def test_repository_rejections_cite_their_accessions_and_never_hit_a_curated_interval():
+    rejected = load_rejected_symbol_tenure(Path("configs"))
+    manual = load_manual_symbol_tenure(Path("configs"))
+    assert not rejected.empty
+    assert all(len(accessions) > 0 for accessions in rejected["accessions"])
+    curated = set(zip(manual["symbol"], manual["issuer_cik"], strict=True))
+    assert not set(zip(rejected["symbol"], rejected["issuer_cik"], strict=True)) & curated, "a rejection names a curated interval"
+    print("\n=== SANITY CHECK: repository rejections ===")
+    for row in rejected.itertuples(index=False):
+        print(f"  {row.symbol}/{row.issuer_cik} {row.valid_from.date()}..{row.valid_to.date()}: {len(row.accessions)} accession(s)")
 
 
 # --------------------------------------------------------------------------- #

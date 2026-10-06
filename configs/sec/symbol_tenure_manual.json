@@ -749,5 +749,136 @@
         "reason": "XYZ became the NYSE symbol at the 2025-01-21 market open."
       }
     ]
-  }
+  },
+  "rejected": [
+    {
+      "symbol": "F",
+      "issuer_cik": "0000712537",
+      "valid_from": "2018-04-26",
+      "valid_to": "2019-04-25",
+      "accessions": [
+        "0001229952-18-000026",
+        "0001229952-18-000035",
+        "0001229952-19-000002",
+        "0001229952-19-000014",
+        "0001229952-19-000015",
+        "0001229952-19-000024"
+      ],
+      "evidence": [
+        "SEC Form 3/4/5 data sets 2018q2-2019q2: 6 Forms 4/5 filed for FIRST COMMONWEALTH FINANCIAL CORP /PA/ (CIK 0000712537) carry ISSUERTRADINGSYMBOL F"
+      ],
+      "reason": "First Commonwealth's own filings mis-tag its symbol as F; Ford Motor (CIK 0000037996) held F throughout."
+    },
+    {
+      "symbol": "F",
+      "issuer_cik": "0001592379",
+      "valid_from": "2014-05-01",
+      "valid_to": "2014-05-02",
+      "accessions": [
+        "0001140361-14-018368"
+      ],
+      "evidence": [
+        "SEC Form 3/4/5 data set 2014q2: one Form 3 filed for Papa Murphy's Holdings, Inc. (CIK 0001592379) carries ISSUERTRADINGSYMBOL F"
+      ],
+      "reason": "A mis-tagged symbol on one IPO-day Form 3; Ford Motor held F."
+    },
+    {
+      "symbol": "AXP",
+      "issuer_cik": "0001387156",
+      "valid_from": "2017-07-07",
+      "valid_to": "2018-09-05",
+      "accessions": [
+        "0001437749-17-012344",
+        "0001437749-17-012345",
+        "0001437749-17-012346",
+        "0001437749-17-012347",
+        "0001437749-17-012348",
+        "0001437749-17-012349",
+        "0001437749-17-012350",
+        "0001437749-18-002710",
+        "0001437749-18-004055",
+        "0001437749-18-009072",
+        "0001437749-18-010577",
+        "0001437749-18-010578",
+        "0001437749-18-010579",
+        "0001437749-18-010580",
+        "0001437749-18-010581",
+        "0001437749-18-012395",
+        "0001615774-18-009062",
+        "0001615774-18-009063",
+        "0001437749-18-016512",
+        "0001437749-18-016513"
+      ],
+      "evidence": [
+        "SEC Form 3/4/5 data sets 2017q3-2018q3: 20 Forms 3/4 filed for AIRXPANDERS INC (CIK 0001387156) carry ISSUERTRADINGSYMBOL AXP"
+      ],
+      "reason": "AirXpanders is not American Express; American Express (CIK 0000004962) held AXP throughout."
+    },
+    {
+      "symbol": "NTRS",
+      "issuer_cik": "0001063537",
+      "valid_from": "2012-04-23",
+      "valid_to": "2012-04-24",
+      "accessions": [
+        "0001088843-12-000003"
+      ],
+      "evidence": [
+        "SEC Form 3/4/5 data set 2012q2: one Form 4 filed for NUTRACEA (CIK 0001063537) carries ISSUERTRADINGSYMBOL NTRS"
+      ],
+      "reason": "A mis-tagged symbol on one Form 4; Northern Trust (CIK 0000073124) held NTRS."
+    },
+    {
+      "symbol": "NTRS",
+      "issuer_cik": "0000049826",
+      "valid_from": "2018-08-06",
+      "valid_to": "2018-08-07",
+      "accessions": [
+        "0001124194-18-000007"
+      ],
+      "evidence": [
+        "SEC Form 3/4/5 data set 2018q3: one Form 4 filed for ILLINOIS TOOL WORKS INC (CIK 0000049826) carries ISSUERTRADINGSYMBOL NTRS"
+      ],
+      "reason": "A mis-tagged symbol on one Form 4; Northern Trust held NTRS."
+    },
+    {
+      "symbol": "PM",
+      "issuer_cik": "0001521373",
+      "valid_from": "2022-02-22",
+      "valid_to": "2022-02-24",
+      "accessions": [
+        "0001521373-22-000002",
+        "0001521373-22-000004"
+      ],
+      "evidence": [
+        "SEC Form 3/4/5 data set 2022q1: a Form 3 and a Form 4 filed for FAC PROPERTYS LLC (CIK 0001521373) carry ISSUERTRADINGSYMBOL PM"
+      ],
+      "reason": "A mis-tagged symbol on two filings; Philip Morris International (CIK 0001413329) held PM."
+    },
+    {
+      "symbol": "AME",
+      "issuer_cik": "0001411579",
+      "valid_from": "2021-11-03",
+      "valid_to": "2021-11-04",
+      "accessions": [
+        "0001411579-21-000060"
+      ],
+      "evidence": [
+        "SEC Form 3/4/5 data set 2021q4: one Form 4 filed for AMC ENTERTAINMENT HOLDINGS, INC. (CIK 0001411579) carries ISSUERTRADINGSYMBOL AME"
+      ],
+      "reason": "A mis-tagged symbol on one Form 4; AMETEK (CIK 0001037868) held AME."
+    },
+    {
+      "symbol": "SPG",
+      "issuer_cik": "0001778922",
+      "valid_from": "2026-02-05",
+      "valid_to": "2026-02-06",
+      "accessions": [
+        "0001193125-26-039466"
+      ],
+      "evidence": [
+        "SEC Form 3/4/5 data set 2026q1: one Form 3 filed for SpyGlass Pharma, Inc. (CIK 0001778922) carries ISSUERTRADINGSYMBOL SPG"
+      ],
+      "reason": "A mis-tagged symbol on one Form 3; Simon Property Group (CIK 0001063761) held SPG."
+    }
+  ]
 }

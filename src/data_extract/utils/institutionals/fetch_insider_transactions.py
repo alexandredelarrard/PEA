@@ -525,7 +525,7 @@ def _restamp_rows(context: Context, df_rows: pd.DataFrame, identity: Identity, *
         for batch in accession_batches(sorted(df_purge["accession_number"].unique())):
             context.store.delete(Tables.insider_transactions, where={"accession_number": batch})
     df_kept = df_rows[~co_registrant]
-    df_changed = _changed_stamps(df_kept, stamp_lineage(df_kept, identity, originals=df_kept))
+    df_changed = _changed_stamps(df_kept, stamp_lineage(df_kept, identity))
     if not df_changed.empty and not dry_run:
         context.store.save(Tables.insider_transactions, df_changed)
     return records, len(df_changed)

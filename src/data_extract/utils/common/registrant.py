@@ -245,7 +245,7 @@ def combine_for(forms: Sequence[str]) -> Combine:
 
 #: The event forms SPLIT by dated CIK window (P35); a scope with `undated_events` lists them UNION instead.
 DATED_EVENT_FORMS = frozenset(
-    {"8-K", "8-K/A", "8-K12B", "SC 13D", "SC 13D/A", "SCHEDULE 13D", "SCHEDULE 13D/A", "SC 13G", "SC 13G/A", "SCHEDULE 13G", "SCHEDULE 13G/A"}
+    form for form, policy in FORM_POLICY.items() if policy is Combine.SPLIT and form.startswith(("8-K", "SC 13", "SCHEDULE 13"))
 )
 
 

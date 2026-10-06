@@ -95,15 +95,15 @@ OUTPUTS = {
     "merged": "gate_fundamentals_diff.csv",
     "prices": "gate_prices_diff.csv",
 }
-HISTORY_TABLE = "fundamentals_history_sec"
+HISTORY_TABLE = Tables.fundamentals_history_sec.name
 HYPOTHESES_FILE = Path("sec") / "expected_lineage_changes.json"
 _TABLE_POLICY = {
-    "sec_8k": Combine.SPLIT,
-    "sec_8k_votes": Combine.SPLIT,
-    "sec_13d": Combine.SPLIT,
-    "sec_13d_transactions": Combine.SPLIT,
-    "sec_13g": Combine.SPLIT,
-    "insider_transactions": Combine.UNION,
+    Tables.sec_8k.name: Combine.SPLIT,
+    Tables.sec_8k_votes.name: Combine.SPLIT,
+    Tables.sec_13d.name: Combine.SPLIT,
+    Tables.sec_13d_transactions.name: Combine.SPLIT,
+    Tables.sec_13g.name: Combine.SPLIT,
+    Tables.insider_transactions.name: Combine.UNION,
 }
 #: Event-filing tables (8-K, 13D/13G by subject company) whose rows belong to a ticker only inside a window of their CIK.
 _DATED_TABLES = frozenset(spec.table.name for spec in PURGE_TABLES if spec.dated)
@@ -347,12 +347,15 @@ def tape_reason(old: str, new: str, role: str, master_reason: str, security_clas
     return ""
 
 
-def tape_diff(raw: pd.DataFrame, master: pd.DataFrame, resolver: LegacyTapeResolver, universe: Collection[str], source: str) -> pd.DataFrame:
-    """One row per raw tape row whose issuer or weight changed: old = the frozen resolver, new = the master stamp."""
+def tape_diff(
+    raw: pd.DataFrame, master: pd.DataFrame, resolver: LegacyTapeResolver, universe: Collection[str], source: str, old: pd.Series | None = None
+) -> pd.DataFrame:
+    """One row per raw tape row whose issuer or weight changed: old = the frozen resolver (`old` when already resolved),
+    new = the master stamp."""
     if raw.empty:
         return pd.DataFrame(columns=TAPE_COLUMNS)
     facts = master_facts(raw, master)
-    old = legacy_tickers(resolver, raw["source_symbol"], raw["date"], universe)
+    old = legacy_tickers(resolver, raw["source_symbol"], raw["date"], universe) if old is None else old
     summed = raw["lineage_role"].isin(SUMMED_ROLES) & raw["ticker"].isin(set(universe))
     new = _text(raw["ticker"].where(summed))
     ratio = facts["conversion_ratio"].where(summed, 0.0)
@@ -1098,8 +1101,8 @@ def _tape_section(
         new_rows = stored["date"] > frontier if not pd.isna(frontier) else pd.Series(False, index=stored.index)
         raw = stored[~new_rows].reset_index(drop=True)
         stats[f"{source}_raw_rows"], stats[f"{source}_rows_after_snapshot"] = len(raw), int(new_rows.sum())
-        diff = tape_diff(raw, master, resolver, universe, source)
         old = legacy_tickers(resolver, raw["source_symbol"], raw["date"], universe)
+        diff = tape_diff(raw, master, resolver, universe, source, old)
         before_scoped = before if scope is None else before[before["ticker"].isin(scope)]
         residual = grain_residual(raw, old.where(old.isin(scope), "") if scope else old, before_scoped, values, source)
         if scope is not None:

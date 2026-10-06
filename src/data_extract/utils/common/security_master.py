@@ -10,7 +10,6 @@ and date. `build_security_master` reads the inputs through the store and replace
 from __future__ import annotations
 
 import json
-import logging
 import re
 from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, field
@@ -24,7 +23,6 @@ from src.constants.constants import CANONICAL_CURRENT, CANONICAL_PREDECESSOR, CA
 from src.context import Context
 from src.data_extract.utils.common.config_paths import resolve_config_dir
 from src.data_extract.utils.common.entity_lineage import (
-    ROLE_EVENT,
     ROLE_SYMBOL,
     ROLE_WINDOW,
     ROSTER_COLUMNS,
@@ -40,9 +38,9 @@ from src.utils.cutover_continuity import ShareExchange
 from src.utils.identity_flags import FLAG_COLUMNS, cik_activity, identity_flags, log_identity_flags
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
 
-logger = logging.getLogger(__name__)
-
 MANUAL_CONFIG_FILENAME = "security_master_manual.json"
+#: The stored FTD line columns the master derives from.
+_OBSERVATION_COLUMNS = ("date", "trade_date", "cusip", "source_symbol", "description", "price", "period")
 
 SOURCE_FTD = "ftd"
 ACQUIRED_CONSTITUENT = "acquired_constituent"
@@ -384,8 +382,6 @@ def _lineage_view(lineage: pd.DataFrame, roster: pd.DataFrame) -> _Lineage:
         windows.setdefault(cik, [(_NEAR, _FAR)])
     symbols = rows[rows["role"].eq(ROLE_SYMBOL)]
     symbols_by_entity = symbols.groupby("entity_id")["symbol"].agg(lambda s: frozenset(map(str, s))).to_dict()
-    for cik in set(rows.loc[rows["role"].eq(ROLE_EVENT), "cik"]) - set(windows):
-        windows.pop(cik, None)
     return _Lineage(
         entity_by_cik=entity_by_cik,
         ticker_by_entity=ticker_by_entity,
@@ -1397,10 +1393,6 @@ def _former_listing(tape: pd.DataFrame, other: str, home: str) -> bool:
     return True
 
 
-def _observation_columns() -> list[str]:
-    return ["date", "trade_date", "cusip", "source_symbol", "description", "price", "period"]
-
-
 def _finra_presence(context: Context, spellings: list[str]) -> pd.DataFrame | None:
     """Stored RegSHO days of the unmarked FINRA spellings: the trading evidence a line runs over."""
     wanted = sorted(s for s in spellings if s == s.upper())
@@ -1413,7 +1405,7 @@ def build_security_master(
     context: Context, lineage: pd.DataFrame, config_dir: str | None = None, *, built_at: pd.Timestamp | None = None
 ) -> pd.DataFrame:
     """Derive `security_master` from the stored FTD lines and the lineage just built; replace the table unless unchanged."""
-    observations = context.store.load(Tables.sec_fails_to_deliver_security, columns=_observation_columns(), optional=True)
+    observations = context.store.load(Tables.sec_fails_to_deliver_security, columns=list(_OBSERVATION_COLUMNS), optional=True)
     if observations is None:
         context.log.warning("security_master: no stored FTD lines (run ftd-download first); table left unchanged")
         return pd.DataFrame(columns=list(TABLE_COLUMNS))

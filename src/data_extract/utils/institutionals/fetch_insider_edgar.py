@@ -167,19 +167,6 @@ def insider_fetch(tickers: Sequence[str], excluded: list[pd.DataFrame] | None = 
     )
 
 
-def _zip_frontier(context: Context) -> pd.Timestamp | None:
-    """The last day of the latest zip quarter stored, or None when no row carries a `quarter`."""
-    if "quarter" not in context.store.columns(Tables.insider_transactions):
-        return None
-    _, latest_quarter = context.store.bounds(Tables.insider_transactions, "quarter")
-    if latest_quarter is None:
-        return None
-    try:
-        return pd.Period(str(latest_quarter).upper(), freq="Q").end_time.normalize()
-    except (TypeError, ValueError):
-        return None
-
-
 def replace_zip_accessions(context: Context, since: pd.Timestamp) -> int:
     """Finish EDGAR's replacement of zip-sourced accessions filed since `since`: stamp each
     accession's stored zip `quarter` on its EDGAR rows that lack one (rows EDGAR added beyond the

@@ -175,7 +175,7 @@ def stubs(monkeypatch) -> dict[str, list]:
 
 
 def _keys(store, table) -> set[tuple[str, str]]:
-    key = prop.PURGE_TABLES_BY_NAME[table.name].key_col
+    key = filer_tables.PURGE_TABLES_BY_NAME[table.name].key_col
     frame = store.load(table, columns=["ticker", key])
     return set(zip(frame["ticker"], frame[key], strict=True))
 
@@ -268,7 +268,7 @@ def test_the_dry_run_returns_the_same_removals_and_deletes_nothing(sqlite_store,
     assert {table.name: sqlite_store.row_count(table) for table in PURGED_FAMILIES} == before
     assert stubs["notes"] == stubs["pension"] == stubs["insider"] == stubs["history"] == stubs["merged"] == []
     wet = prop.propagate_identity(context, list(ROSTER), as_of=RUN_DATE)
-    columns = list(prop.REMOVAL_COLUMNS)
+    columns = list(filer_tables.REMOVAL_COLUMNS)
     assert dry.removals[columns].reset_index(drop=True).equals(wet.removals[columns].reset_index(drop=True))
     assert len(dry.removals) == len(PURGED_FAMILIES)
     print("\n=== SANITY CHECK: dry run ===")
@@ -318,7 +318,7 @@ def test_short_volume_is_restamped_from_stored_rows_not_purged(sqlite_store, tmp
 
     prop.propagate_identity(context, list(ROSTER), as_of=RUN_DATE)
 
-    assert Tables.short_interest.name not in prop.PURGE_TABLES_BY_NAME
+    assert Tables.short_interest.name not in filer_tables.PURGE_TABLES_BY_NAME
     assert stubs["short"] == [["ALB"]], stubs["short"]
     print("\n=== SANITY CHECK: short volume re-stamp ===")
     print("  ALB's master rows changed inside the re-check window: its stored short-volume rows are re-stamped; nothing is purged by CIK")

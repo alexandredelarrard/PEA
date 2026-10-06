@@ -16,8 +16,9 @@ from typing import Literal, NamedTuple
 
 import pandas as pd
 
+from src.constants.constants import CANONICAL_CURRENT, CANONICAL_PREDECESSOR
 from src.data_extract.utils.common.identity import Identity
-from src.data_extract.utils.common.security_master import ACQUIRED_CONSTITUENT, CANONICAL_CURRENT, CANONICAL_PREDECESSOR, MergerBoundary
+from src.data_extract.utils.common.security_master import ACQUIRED_CONSTITUENT, MergerBoundary
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik, pad_cik_series
 

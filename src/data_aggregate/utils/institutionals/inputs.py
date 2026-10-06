@@ -8,6 +8,7 @@ from typing import Any
 
 import pandas as pd
 
+from src.constants.constants import CANONICAL_ROLES, SECONDARY_CLASS
 from src.context import Context
 from src.data_aggregate.utils.common.level_basis import apply_volume_scale
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
@@ -19,12 +20,9 @@ from src.utils.string import pad_cik, yahoo_symbol
 SHARES_OUT_COLUMNS = ("ticker", "as_of", "sharesOutstanding", "sharesOutstandingPit")
 #: `symbol_tenure` sources behind the proven-tenure mask; cover-page `dei` rows stay out so features do not move.
 TENURE_SOURCES = ("form345", "manual")
-#: `security_master` role of a company's concurrently traded common class, and the columns its volume needs.
-SECONDARY_CLASS = "secondary_class"
+#: Columns a concurrently traded common class (`security_master` role `secondary_class`) needs for its volume.
 CLASS_LINE_COLUMNS = ("canonical_company", "market_symbol", "conversion_ratio", "valid_from", "valid_to")
 CLASS_BAR_COLUMNS = ("ticker", "date", "volume")
-#: The insider rows that are the company's own history (`insider_transactions.lineage_role`).
-CANONICAL_INSIDER_ROLES = ("canonical_predecessor", "canonical_current")
 
 
 def load_full_price_frames(
@@ -174,4 +172,4 @@ def load_secondary_classes(
 def load_insider_transactions(store: DataStore, log: logging.Logger, universe: Sequence[str] | None = None) -> pd.DataFrame | None:
     """`insider_transactions` rows of the companies' own history: `lineage_role` canonical (predecessor or current).
     Acquired-constituent rows and rows without a stamp are not read."""
-    return load_source(store, log, Tables.insider_transactions, universe, where={"lineage_role": list(CANONICAL_INSIDER_ROLES)})
+    return load_source(store, log, Tables.insider_transactions, universe, where={"lineage_role": list(CANONICAL_ROLES)})

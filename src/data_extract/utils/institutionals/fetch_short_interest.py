@@ -26,11 +26,11 @@ import pandas as pd
 import requests
 from tqdm import tqdm
 
-from src.constants.constants import BROWSER_HEADERS, DATE_FORMAT_COMPACT
+from src.constants.constants import BROWSER_HEADERS, CANONICAL_CURRENT, CANONICAL_PREDECESSOR, DATE_FORMAT_COMPACT
 from src.context import Context
 from src.data_extract.utils.common.identity import Identity, SecurityHit, load_identity
 from src.data_extract.utils.common.resume import document_floor, recently_changed, series_windows, session_dates, trading_calendar
-from src.data_extract.utils.common.security_master import CANONICAL_CURRENT, CANONICAL_PREDECESSOR, EXCLUDED, SOURCE_FTD, squash
+from src.data_extract.utils.common.security_master import EXCLUDED, SOURCE_FTD, squash
 from src.data_extract.utils.common.sessions import last_completed_session
 from src.data_extract.utils.common.symbol_tenure import normalise_market_symbol
 from src.data_extract.utils.institutionals.fetch_fails_to_deliver import (

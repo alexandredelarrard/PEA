@@ -25,6 +25,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from src.constants.constants import CANONICAL_ROLES, SECONDARY_CLASS  # noqa: E402
 from src.data_extract.utils.common.entity_lineage import entity_by_cik_map, entity_or_singleton, load_d19_allowlist, roster_cik_map  # noqa: E402
 from src.data_extract.utils.common.identity import FilingScope, Identity, UnknownUniverseTickerError, load_identity  # noqa: E402
 from src.data_extract.utils.common.registrant import FORM_POLICY, Combine  # noqa: E402
@@ -96,7 +97,6 @@ OUTPUTS = {
 }
 HISTORY_TABLE = "fundamentals_history_sec"
 HYPOTHESES_FILE = Path("sec") / "expected_lineage_changes.json"
-CANONICAL_ROLES = frozenset({"canonical_current", "canonical_predecessor"})
 _TABLE_POLICY = {
     "sec_8k": Combine.SPLIT,
     "sec_8k_votes": Combine.SPLIT,
@@ -340,7 +340,7 @@ def tape_reason(old: str, new: str, role: str, master_reason: str, security_clas
                 return "preferred_excluded"
         return ""
     if new and not old:
-        if role == "secondary_class":
+        if role == SECONDARY_CLASS:
             return "secondary_class_summed"
         if role in CANONICAL_ROLES:
             return "manual_market_boundary" if "manual_boundary" in master_reason else "cusip_recovered"
@@ -1190,7 +1190,7 @@ def _changed_tickers(before: pd.DataFrame, after: pd.DataFrame, key: list[str]) 
 def _prices_section(store: Any, snap_dir: Path, master: pd.DataFrame, scope: Sequence[str] | None) -> pd.DataFrame:
     before = _snap(snap_dir, "prices")
     secondary = (
-        {yahoo_symbol(str(s)) for s in master.loc[master["lineage_role"].eq("secondary_class"), "market_symbol"].dropna()}
+        {yahoo_symbol(str(s)) for s in master.loc[master["lineage_role"].eq(SECONDARY_CLASS), "market_symbol"].dropna()}
         if "market_symbol" in master.columns
         else set()
     )

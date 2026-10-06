@@ -20,6 +20,7 @@ from typing import Any, cast
 
 import pandas as pd
 
+from src.constants.constants import CANONICAL_CURRENT, CANONICAL_PREDECESSOR, CANONICAL_ROLES, SECONDARY_CLASS
 from src.context import Context
 from src.data_extract.utils.common.config_paths import resolve_config_dir
 from src.data_extract.utils.common.entity_lineage import (
@@ -44,12 +45,8 @@ logger = logging.getLogger(__name__)
 MANUAL_CONFIG_FILENAME = "security_master_manual.json"
 
 SOURCE_FTD = "ftd"
-CANONICAL_PREDECESSOR = "canonical_predecessor"
-CANONICAL_CURRENT = "canonical_current"
-SECONDARY_CLASS = "secondary_class"
 ACQUIRED_CONSTITUENT = "acquired_constituent"
 EXCLUDED = "excluded"
-CANONICAL_ROLES = (CANONICAL_PREDECESSOR, CANONICAL_CURRENT)
 ROLES = (*CANONICAL_ROLES, SECONDARY_CLASS, ACQUIRED_CONSTITUENT, EXCLUDED)
 NON_COMMON_KINDS = ("preferred", "debt", "warrant", "unit", "right")
 

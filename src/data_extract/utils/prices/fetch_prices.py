@@ -20,7 +20,7 @@ import pandas as pd
 import yfinance as yf
 from tqdm import tqdm
 
-from src.constants.constants import DATE_FORMAT
+from src.constants.constants import DATE_FORMAT, SECONDARY_CLASS
 from src.context import Context
 from src.data_extract.utils.common.resume import document_floor, series_windows, trading_calendar
 from src.data_extract.utils.common.sessions import last_completed_session
@@ -247,9 +247,6 @@ def download_ohlcv(
         return pd.DataFrame()
 
     return _normalize_prices(pd.concat(frames, ignore_index=True), auto_adjust)
-
-
-SECONDARY_CLASS = "secondary_class"
 
 
 def secondary_class_symbols(context: Context, companies: list[str]) -> dict[str, str]:

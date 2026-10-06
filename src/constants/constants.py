@@ -22,6 +22,12 @@ FTD_HISTORICAL_LAG_DAYS = 15
 FTD_LATEST_PERIOD_MAX_AGE_DAYS = 60
 FTD_RECENT_CACHE_DAYS = 2
 
+# `security_master` lineage roles read by the tapes, the insider lineage stamp and the aggregate readers.
+CANONICAL_PREDECESSOR = "canonical_predecessor"
+CANONICAL_CURRENT = "canonical_current"
+SECONDARY_CLASS = "secondary_class"
+CANONICAL_ROLES = (CANONICAL_PREDECESSOR, CANONICAL_CURRENT)
+
 # Exchange-local time of US equity sessions and of the SEC / FINRA file calendars.
 MARKET_TIMEZONE = ZoneInfo("America/New_York")
 

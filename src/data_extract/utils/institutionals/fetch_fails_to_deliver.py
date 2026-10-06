@@ -24,13 +24,11 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from src.constants.constants import FTD_ZIP_NAME_TEMPLATE
+from src.constants.constants import CANONICAL_ROLES, FTD_ZIP_NAME_TEMPLATE, SECONDARY_CLASS
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import cache_dir, cached_periods, ensure_zip, read_zip_text
 from src.data_extract.utils.common.resume import archive_periods, recently_changed
 from src.data_extract.utils.common.security_master import (
-    CANONICAL_ROLES,
-    SECONDARY_CLASS,
     SOURCE_FTD,
     cusip_votes,
     lineage_scope_symbols,

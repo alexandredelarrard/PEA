@@ -21,6 +21,7 @@ from typing import Any, Literal, cast
 
 import pandas as pd
 
+from src.constants.constants import CANONICAL_CURRENT, CANONICAL_PREDECESSOR
 from src.context import Context
 from src.data_extract.utils.common.config_paths import resolve_config_dir
 from src.data_extract.utils.common.entity_lineage import (
@@ -40,8 +41,6 @@ from src.data_extract.utils.common.entity_lineage import (
 )
 from src.data_extract.utils.common.security_master import (
     ACQUIRED_CONSTITUENT,
-    CANONICAL_CURRENT,
-    CANONICAL_PREDECESSOR,
     MergerBoundary,
     co_registrant_ciks,
     load_security_manual,

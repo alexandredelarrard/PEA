@@ -401,7 +401,7 @@ def restamp_fails(
     if master is None or master.empty:
         return []
     if companies is None:
-        companies = recently_changed(master_stamps(master), pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()))
+        companies = recently_changed(master_stamps(master), as_of)
     names = sorted(set(companies))
     if not names:
         return []
@@ -462,22 +462,26 @@ def _ingest_scope(context: Context) -> tuple[pd.DataFrame | None, frozenset[str]
     return lineage, lineage_scope_symbols(lineage), frozenset(c[:6] for c in cusips if c)
 
 
+def _recent_keys(rows: pd.DataFrame, key: str, as_of: pd.Timestamp) -> list[str]:
+    """The values of `key` whose latest `scope_changed_at` is inside `resume.recently_changed`'s window on `as_of`."""
+    stamps = pd.to_datetime(rows["scope_changed_at"], errors="coerce").groupby(rows[key].astype(str)).max()
+    return recently_changed({str(k): v for k, v in stamps.items()}, as_of)
+
+
 def _changed_scope(context: Context, lineage: pd.DataFrame, as_of: pd.Timestamp) -> tuple[frozenset[str], frozenset[str]]:
     """`(symbols, CUSIP-6 prefixes)` of the lineage entities and master securities whose rows changed recently."""
     if "scope_changed_at" not in context.store.columns(Tables.entity_lineage):
         return frozenset(), frozenset()
     stamped = context.store.load(Tables.entity_lineage, columns=["entity_id", "scope_changed_at"])
     assert stamped is not None
-    stamps = pd.to_datetime(stamped["scope_changed_at"], errors="coerce").groupby(stamped["entity_id"].astype(str)).max()
-    entities = set(recently_changed({str(k): v for k, v in stamps.items()}, as_of))
+    entities = set(_recent_keys(stamped, "entity_id", as_of))
     symbols = lineage_scope_symbols(lineage[lineage["entity_id"].astype(str).isin(entities)]) if entities else frozenset()
     if "scope_changed_at" not in context.store.columns(Tables.security_master):
         return symbols, frozenset()
     master = context.store.load(Tables.security_master, columns=["cusip", "scope_changed_at"], optional=True)
     if master is None or master.empty:
         return symbols, frozenset()
-    by_cusip = pd.to_datetime(master["scope_changed_at"], errors="coerce").groupby(master["cusip"].astype(str)).max()
-    return symbols, frozenset(cusip[:6] for cusip in recently_changed({str(k): v for k, v in by_cusip.items()}, as_of) if cusip)
+    return symbols, frozenset(cusip[:6] for cusip in _recent_keys(master, "cusip", as_of) if cusip)
 
 
 def _in_scope(lines: pd.DataFrame, symbols: frozenset[str], prefixes: frozenset[str]) -> pd.DataFrame:

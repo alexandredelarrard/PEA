@@ -860,7 +860,7 @@ def _scope_changed_recently(context: Context, tickers: list[str], as_of: pd.Time
     """Tickers whose lineage `scope_changed_at` falls inside `resume.recently_changed`'s window on `as_of` (default today)."""
     identity = load_identity(context)
     stamps = {ticker: identity.filing_scope(ticker).scope_changed_at for ticker in tickers if ticker in identity.roster_cik}
-    return frozenset(recently_changed(stamps, pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today())))
+    return frozenset(recently_changed(stamps, as_of))
 
 
 def build_fundamentals_history(context: Context, tickers: list[str], *, rebuild_history: bool = False, as_of: pd.Timestamp | None = None) -> None:

@@ -319,7 +319,7 @@ def restamp_short_volume(
     resolver = identity or load_identity(context)
     if companies is None:
         stamps = change_stamps(load_fails_master(context), resolver) if stamps is None else stamps
-        companies = recently_changed(stamps, pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()))
+        companies = recently_changed(stamps, as_of)
     names = sorted(set(companies))
     if not names:
         return []

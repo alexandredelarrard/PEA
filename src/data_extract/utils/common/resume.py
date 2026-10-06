@@ -49,12 +49,12 @@ ARCHIVE_NEW_KEY_DAYS = 7
 LINEAGE_RECHECK_DAYS = ARCHIVE_NEW_KEY_DAYS
 
 
-def recently_changed(stamps: Mapping[str, pd.Timestamp | None], as_of: pd.Timestamp, days: int = LINEAGE_RECHECK_DAYS) -> list[str]:
-    """Keys whose change stamp (a lineage or master `scope_changed_at`) is on or after `as_of - days`, sorted.
+def recently_changed(stamps: Mapping[str, pd.Timestamp | None], as_of: pd.Timestamp | None, days: int = LINEAGE_RECHECK_DAYS) -> list[str]:
+    """Keys whose change stamp (a lineage or master `scope_changed_at`) is on or after `as_of - days` (`as_of` None: today), sorted.
 
     Every re-check it drives is idempotent, so a key seen on several runs inside the window costs reads only,
     and a failed run is healed by the next one."""
-    since = pd.Timestamp(as_of).normalize() - pd.Timedelta(days=days)
+    since = pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize() - pd.Timedelta(days=days)
     return sorted(str(key) for key, stamp in stamps.items() if stamp is not None and not pd.isna(stamp) and pd.Timestamp(stamp) >= since)
 
 

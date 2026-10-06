@@ -1,7 +1,7 @@
 """Which company is this row about: the `Identity` accessor over `entity_lineage` and the roster.
 
 `entity_lineage` holds, per entity, its CIK windows (consolidating filings), its event-only CIKs and
-its dated symbol intervals. `filing_scope`, `ticker_for_cik`, `ticker_for_symbol` and `tape_interval` answer
+its dated symbol intervals. `filing_scope`, `ticker_for_cik` and `tape_interval` answer
 from those rows; `tickers_for_ciks` applies `ticker_for_cik` to whole frames for the bulk data sets. `security_on`
 answers the market tapes from `security_master` (security grain: CUSIP, class, role); `lineage_role` dates a CIK's
 filings against its consolidating windows.
@@ -269,33 +269,25 @@ class Identity:
             return None
         return ticker if any(window.cik == key and window.admits(stamp) for window in self.windows_by_entity.get(entity, ())) else None
 
-    def ticker_for_symbol(self, symbol: str, on) -> str | None:
-        """The universe ticker holding `symbol` on date `on`, or None.
-
-        `noise` intervals are ignored; a `conflict` interval on that date, or two entities, leaves it unresolved.
-        """
-        hits = self._symbol_hits(symbol, on, tape=False)
-        entities = {row.entity for row in hits}
-        return self.ticker_by_entity.get(entities.pop()) if len(entities) == 1 else None
-
     def tape_interval(self, symbol: str, on) -> SymbolInterval | None:
         """The symbol interval a market tape may read for `symbol` on date `on` (P21), or None.
 
-        As `ticker_for_symbol`, and also ignoring intervals evidenced by `dei` alone and intervals whose CIK is
-        not the roster CIK or a `cik_window` CIK whose declared window holds `on`: event-only CIKs never answer.
+        `noise` intervals, intervals evidenced by `dei` alone and intervals whose CIK is not the roster CIK or a
+        `cik_window` CIK whose declared window holds `on` are ignored (event-only CIKs never answer); a `conflict`
+        interval on that date, or two entities, leaves it unresolved.
         """
-        hits = self._symbol_hits(symbol, on, tape=True)
+        hits = self._symbol_hits(symbol, on)
         if len({row.entity for row in hits}) != 1:
             return None
         return max(hits, key=lambda row: (row.valid_from or pd.Timestamp.min, row.cik))
 
-    def _symbol_hits(self, symbol: str, on, *, tape: bool) -> list[SymbolInterval]:
-        """The non-noise intervals of `symbol` covering `on`; none when a `conflict` interval covers it."""
+    def _symbol_hits(self, symbol: str, on) -> list[SymbolInterval]:
+        """The non-noise tape intervals of `symbol` covering `on` inside their CIK's window; none when a `conflict` one does."""
         stamp = _as_timestamp(on)
         if stamp is None:
             return []
         rows = self.symbol_intervals.get(normalise_market_symbol(symbol), ())
-        hits = [row for row in rows if row.status != "noise" and row.covers(stamp) and (not tape or (row.tape_symbol and self._windowed(row, stamp)))]
+        hits = [row for row in rows if row.status != "noise" and row.covers(stamp) and row.tape_symbol and self._windowed(row, stamp)]
         return [] if any(row.status == "conflict" for row in hits) else hits
 
     def universe_symbols(self, universe: Collection[str]) -> frozenset[str]:

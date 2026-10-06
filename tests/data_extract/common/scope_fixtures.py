@@ -72,7 +72,7 @@ SymbolRow = tuple[str, str, str, str, str | None, str]
 
 
 def symbol_identity(rows: list[SymbolRow], roster: dict[str, str], *, redundant: frozenset[str] = frozenset()) -> Identity:
-    """A real `Identity` whose dated `symbol` rows answer `ticker_for_symbol`; each roster ticker gets one open window."""
+    """A real `Identity` whose dated `symbol` rows answer `tape_interval`; each roster ticker gets one open window."""
     entity_of = {ticker: f"E{cik}" for ticker, cik in roster.items()}
     base = {"sources": "form345", "oracle": "roster", "confidence": None, "n_observations": 1, "evidence": "fixture", "scope_changed_at": CHANGED_AT}
     windows = [

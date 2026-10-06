@@ -414,6 +414,13 @@ def apply_predecessor_series(
     return out, pd.DataFrame(events, columns=list(EVENT_COLUMNS))
 
 
+def _assets_by_quarter(frame: pd.DataFrame, series: PredecessorSeries) -> pd.Series:
+    """`assets` per calendar-quarter ordinal inside the series window, from each quarter's earliest filing."""
+    frame = frame[_inside(frame, series)]
+    keyed = frame.assign(_q=quarter_ordinal(frame["calendardate"]), _d=pd.to_datetime(frame["date"])).sort_values("_d", kind="mergesort")
+    return keyed.drop_duplicates("_q").set_index("_q")["assets"].astype("float64")
+
+
 def other_company_quarters(
     arq: pd.DataFrame, predecessors: pd.DataFrame, series: PredecessorSeries, tolerance: float = OTHER_COMPANY_TOLERANCE
 ) -> pd.DataFrame:
@@ -423,13 +430,7 @@ def other_company_quarters(
     """
     canonical = arq[arq["ticker"].astype(str).eq(series.ticker)]
     own = predecessors[predecessors["ticker"].map(normalise_ticker).eq(series.vendor_ticker)]
-
-    def by_quarter(frame: pd.DataFrame) -> pd.Series:
-        frame = frame[_inside(frame, series)]
-        keyed = frame.assign(_q=quarter_ordinal(frame["calendardate"]), _d=pd.to_datetime(frame["date"])).sort_values("_d", kind="mergesort")
-        return keyed.drop_duplicates("_q").set_index("_q")["assets"].astype("float64")
-
-    left, right = by_quarter(canonical), by_quarter(own)
+    left, right = _assets_by_quarter(canonical, series), _assets_by_quarter(own, series)
     both = pd.concat([left.rename("canonical_assets"), right.rename("owner_assets")], axis=1, join="inner").dropna()
     differs = (both["canonical_assets"] - both["owner_assets"]).abs() > tolerance * both["owner_assets"].abs()
     out = both[differs].reset_index(names="_q")

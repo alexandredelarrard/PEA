@@ -1,5 +1,5 @@
 """
-`identity.py` -- the lineage accessor (`filing_scope`, `ticker_for_cik`, `ticker_for_symbol`), the
+`identity.py` -- the lineage accessor (`filing_scope`, `ticker_for_cik`, `tape_interval`), the
 tenure resolver, its load-time raises and the live acceptance table of every (ticker, issuer CIK)
 group the 2.3 screen flagged.
 
@@ -400,33 +400,10 @@ def test_an_entity_without_window_rows_reads_its_roster_cik_as_one_open_window()
     assert identity.ticker_for_cik("100", "2010-01-01", "consolidating") is None
     assert identity.ticker_for_cik("100", "2010-01-01", "event") == "AAA"
     assert identity.ticker_for_cik("200", "2010-01-01", "consolidating") == "AAA"
-    assert identity.ticker_for_symbol("AAA", "2020-01-01") is None  # no symbol rows to answer from
+    assert identity.tape_interval("AAA", "2020-01-01") is None  # no symbol rows to answer from
 
     print("\n=== SANITY CHECK: roster-only scope ===")
     print("  no cik_window row -> the roster CIK is the one open window; other entity CIKs are event-only")
-
-
-def test_ticker_for_symbol_ignores_noise_and_leaves_conflict_unresolved():
-    identity = _dated()
-    expected = {
-        ("AAA", "2010-01-01"): "AAA",
-        ("aaa", "2020-01-01"): "AAA",  # normalised spelling
-        ("AAA", "2005-12-31"): None,  # before the first interval
-        ("OLDX", "2003-01-01"): None,  # noise only
-        ("ZZZ", "2011-01-01"): None,  # conflict
-        ("ZZZ", "2011-07-01"): None,  # conflict covers the day, another entity too
-        ("ZZZ", "2012-06-01"): "BBB",  # the conflict interval has ended
-        ("DUP", "2018-06-01"): "AAA",
-        ("DUP", "2020-01-01"): None,  # two entities, neither in conflict
-        ("BBB", None): None,  # no date, no answer
-        ("QQQ", "2020-01-01"): None,
-    }
-    for (symbol, day), ticker in expected.items():
-        assert identity.ticker_for_symbol(symbol, day) == ticker, (symbol, day)
-
-    print("\n=== SANITY CHECK: ticker_for_symbol ===")
-    print("  noise rows are ignored; a conflict row on the date, or two entities, leaves the symbol unresolved")
-    print("  dated half-open intervals decide; no date is no answer")
 
 
 def test_dei_tenure_rows_do_not_reach_the_tenure_resolver():
@@ -480,14 +457,18 @@ def test_tape_interval_answers_dated_intervals_and_universe_symbols_skip_noise()
     assert hit is not None and hit.entity == entity
     for symbol, day in (("OLDX", "2003-01-01"), ("ZZZ", "2011-01-01"), ("QQQ", "2020-01-01"), ("BBB", None)):
         assert identity.tape_interval(symbol, day) is None, (symbol, day)
+    assert identity.tape_interval("DUP", "2020-01-01") is None  # two entities, neither in conflict
+    ended = identity.tape_interval("ZZZ", "2012-06-01")  # the conflict interval has ended
+    assert ended is not None and identity.ticker_by_entity.get(ended.entity) == "BBB"
     assert identity.universe_symbols(frozenset({"AAA"})) == frozenset({"AAA", "ZZZ", "DUP"})
     print("\n=== SANITY CHECK: tape intervals ===")
-    print("  AAA on its interval answers with its entity; noise OLDX, conflict ZZZ, unknown QQQ and an undated lookup do not")
+    print("  AAA on its interval answers with its entity; noise OLDX, conflict ZZZ, two-entity DUP, unknown QQQ and an undated lookup do not;")
+    print("  ZZZ answers BBB once the conflict interval has ended")
 
 
 def test_a_tape_symbol_never_maps_an_interval_evidenced_by_dei_alone():
     """Cover-page `dei` lists every security line (preferreds, notes); FTD/RegSHO rows map only intervals with
-    Form 3/4/5, manual or roster evidence, while the plain accessor still answers from the `dei` interval."""
+    Form 3/4/5, manual or roster evidence."""
     rows = _dated_lineage(
         [
             ("E0000000100", "AAA", "0000000100", "cik_window", "", "1900-01-01", None, "curated"),
@@ -500,7 +481,6 @@ def test_a_tape_symbol_never_maps_an_interval_evidenced_by_dei_alone():
         lineage=rows, tenure=_tenure([("AAA", "0000000100", pd.Timestamp("2006-01-01"), None, 10)]), roster=_roster([("AAA", "0000000100")])
     )
     assert identity.tape_interval("AAA", "2020-01-02") is not None
-    assert identity.ticker_for_symbol("AAA-PR-C", "2020-01-02") == "AAA"
     assert identity.tape_interval("AAA-PR-C", "2020-01-02") is None
     assert identity.universe_symbols(frozenset({"AAA"})) == frozenset({"AAA"})
     print("\n=== SANITY CHECK: dei-only intervals stay off the symbol tapes ===")

@@ -388,7 +388,6 @@ def test_p21_tape_symbol_resolves_only_through_window_ciks_inside_their_windows(
     assert tape("AMB", "2011-05-02") is None
     assert tape("TYC", "2016-08-15") is None
     assert tape("MRK", "2009-10-01") == "MRK"
-    assert identity.ticker_for_symbol("CB", "2015-06-02") == "CB", "the non-tape accessor is unchanged"
     assert {"TYC", "MTLQQ"}.isdisjoint(identity.universe_symbols(frozenset(UNIVERSE))), "no day inside a window CIK's window"
     print("\n=== SANITY CHECK: P21 symbol fallback ===")
     print("  tape symbols resolve only through the roster CIK or a cik_window CIK inside its window; event-only CIKs never")

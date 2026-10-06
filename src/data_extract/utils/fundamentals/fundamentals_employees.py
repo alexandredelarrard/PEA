@@ -74,10 +74,12 @@ class EmployeeAnswer(BaseModel):
 
 @dataclass(frozen=True)
 class EmployeeTickerResult:
-    """One row per decided filing date (`employees` NaN when no count is supported) and the per-filing decisions."""
+    """One row per decided filing date (`employees` NaN when no count is supported), the per-filing
+    decisions, and the accessions left undecided because their LLM call failed (listed again next run)."""
 
     frame: pd.DataFrame
     outcomes: list[dict]
+    failed: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -315,29 +317,43 @@ def _employee_task(sequence: int, ticker: str, stamp: FilingStamp, identity: Ide
 
 
 def _extract_answers(context: Context, config: DictConfig, ticker: str, stamps: list[FilingStamp], identity: Identity) -> list[LlmResult]:
-    """One LLM answer per filing, in filing order; any failed call fails the ticker."""
+    """One LLM result per filing, in filing order; a failed call is a result with its error, not a raise."""
     extractor = LLMExtractor(context, config, action="employees", threads=1)
     max_chars = int(config.gpt.max_chars.employees)
     for sequence, stamp in enumerate(stamps):
         extractor.submit(_employee_task(sequence, ticker, stamp, identity, max_chars))
     results = extractor.run()
-    if len(results) != len(stamps) or any(not result.ok for result in results):
-        errors = [f"{_task_stamp(result).accession_number}: {result.error}" for result in results if not result.ok]
-        raise RuntimeError(f"{ticker}: employee LLM extraction incomplete: {errors}")
+    if len(results) != len(stamps):
+        raise RuntimeError(f"{ticker}: {len(results)} employee LLM result(s) for {len(stamps)} filing(s)")
     return results
 
 
-def _llm_decisions(context: Context, ticker: str, stamps: list[FilingStamp], identity: Identity) -> list[_Decision]:
-    """One guarded LLM decision per filing; any failed call fails the ticker."""
+def _llm_decisions(context: Context, ticker: str, stamps: list[FilingStamp], identity: Identity) -> tuple[list[_Decision], list[FilingStamp]]:
+    """`(decisions, failed)`: one guarded decision per answered filing, and the filings whose call failed.
+
+    A failed call (invalid JSON included) is not a property of the filing, so it gets no row and
+    is listed again next run; only a parsed answer is decided.
+    """
     config = with_gpt_overrides(context.config, "employees", provider="open_ai_cheap")
-    decisions = []
+    decisions: list[_Decision] = []
+    failed: list[FilingStamp] = []
     for result in _extract_answers(context, config, ticker, stamps, identity):
+        stamp = _task_stamp(result)
+        if not result.ok:
+            context.log.warning(
+                "fundamentals employees: %s %s LLM call failed (%s); its filing date is not stored and is listed again next run",
+                ticker,
+                stamp.accession_number,
+                result.error,
+            )
+            failed.append(stamp)
+            continue
         answer = result.parsed
         if not isinstance(answer, EmployeeAnswer):
             raise TypeError(f"{ticker}: unexpected employee LLM result {type(answer).__name__}")
         status, count = _decide(answer, str(result.task.meta["source_text"]))
-        decisions.append(_Decision(_task_stamp(result), "llm", status, count))
-    return decisions
+        decisions.append(_Decision(stamp, "llm", status, count))
+    return decisions, failed
 
 
 def _manual_decision(stamp: FilingStamp, entry: dict) -> _Decision:
@@ -394,7 +410,11 @@ def build_ticker_employees(
     manual: dict[str, dict],
     scope: EdgarScope,
 ) -> EmployeeTickerResult:
-    """Decide every annual filing whose date has no row yet: from the manual roster when listed, else the LLM."""
+    """Decide every annual filing whose date has no row yet: from the manual roster when listed, else the LLM.
+
+    A filing whose LLM call failed withholds its whole filing date, so a stored same-day filing
+    cannot mark that date done; the ticker's other dates are kept.
+    """
     identity = scope.identity
     if identity is None:
         raise ValueError(f"{ticker}: employee extraction needs an identity-aware EdgarScope")
@@ -412,8 +432,11 @@ def build_ticker_employees(
     )
     by_hand = [_manual_decision(stamp, manual[str(stamp.accession_number)]) for stamp in stamps if str(stamp.accession_number) in manual]
     to_read = [stamp for stamp in stamps if str(stamp.accession_number) not in manual]
-    decisions = by_hand + (_llm_decisions(context, ticker, to_read, identity) if to_read else [])
-    return _decide_ticker(context, ticker, decisions)
+    by_llm, failed = _llm_decisions(context, ticker, to_read, identity) if to_read else ([], [])
+    withheld = {stamp.filed.normalize() for stamp in failed}
+    decisions = [decision for decision in by_hand + by_llm if decision.stamp.filed.normalize() not in withheld]
+    result = _decide_ticker(context, ticker, decisions)
+    return EmployeeTickerResult(result.frame, result.outcomes, tuple(str(stamp.accession_number) for stamp in failed))
 
 
 def _done_dates(context: Context, tickers: list[str], since: pd.Timestamp) -> dict[str, frozenset[pd.Timestamp]]:
@@ -462,8 +485,9 @@ def fetch_fundamentals_employees(
     Each run lists the whole `years_history` window and skips filing dates already in
     `fundamentals_employees`. A filing with no supported count is stored as a NULL row, so it is
     decided once and never sent to the LLM again. A filing listed in the manual roster takes its
-    value from there instead of the LLM, on `--full` too. A ticker that fails saves nothing, is named
-    in the coverage log and is retried on the next run; the run never raises for it.
+    value from there instead of the LLM, on `--full` too. A failed LLM call fails only its own filing
+    date, which gets no row and is retried on the next run; the ticker's other dates are saved. A
+    ticker that fails otherwise saves nothing. Both are named in the coverage log; the run never raises.
     """
     context.ensure_edgar_identity()
     configure(context)
@@ -506,6 +530,20 @@ def fetch_fundamentals_employees(
         counted,
         rows - counted,
     )
+    failed_filings = [
+        f"{ticker} {accession}"
+        for ticker, result in zip(cik_map["ticker"], results, strict=True)
+        if result is not None
+        for accession in result.failed
+    ]
+    if failed_filings:
+        more = f" (+{len(failed_filings) - _FAILED_SHOWN} more)" if len(failed_filings) > _FAILED_SHOWN else ""
+        context.log.warning(
+            "fundamentals employees: %d filing(s) not decided (LLM call failed), listed again next run: %s%s",
+            len(failed_filings),
+            ", ".join(failed_filings[:_FAILED_SHOWN]),
+            more,
+        )
     if failed_tickers:
         more = f" (+{failed - _FAILED_SHOWN} more)" if failed > _FAILED_SHOWN else ""
         context.log.warning(

@@ -93,7 +93,7 @@ Choose the narrowest repair:
 
 A ticker with no stored accession lists its whole window on the next ordinary run. A filing that was read and has no XBRL facts is stored as a marker and is not listed again.
 
-Employee repair is independent of facts and SEC-history replay. To re-decide specific filings, delete their `fundamentals_employees` rows (count or NULL) and let the next run read them; to pin a value by hand, add the accession to `configs/sec/employees_manual_roster.json`. Full employee mode re-decides every filing in the window. Retrieval or body-read failures write no row, so they retry on the next run.
+Employee repair is independent of facts and SEC-history replay. To re-decide specific filings, delete their `fundamentals_employees` rows (count or NULL) and let the next run read them; to pin a value by hand, add the accession to `configs/sec/employees_manual_roster.json`. Full employee mode re-decides every filing in the window. Retrieval or body-read failures write no row, so they retry on the next run; a failed LLM call writes no row for its own filing date only, and the ticker's other dates are kept.
 
 ## Applying a fundamentals schema change
 

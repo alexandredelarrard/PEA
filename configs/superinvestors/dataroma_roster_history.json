@@ -1,7 +1,7 @@
 {
  "_README": [
   "Dataroma superinvestor roster history: one snapshot per calendar quarter, the newest valid Wayback capture of dataroma.com/m/home.php in that quarter.",
-  "captured_at is the capture instant (UTC); `data_extract superinvestors --seed` dates the snapshot at its day. source_url is the raw (id_) capture; managers maps Dataroma code -> name in page order.",
+  "captured_at is the capture instant (UTC); `data_extract superinvestors -F` dates the snapshot at its day. source_url is the raw (id_) capture; managers maps Dataroma code -> name in page order.",
   "A capture is valid when it lists at least one manager and at least 80% of the previous snapshot's count; a quarter with no valid capture is absent (a logged gap).",
   "Generated file, do not hand-edit: scripts/build_dataroma_roster_history.py --cache-dir DIR --until YYYY-MM-DD."
  ],

@@ -28,6 +28,7 @@ from tqdm import tqdm
 from src.constants.constants import SEC_13F_FORMS
 from src.context import Context
 from src.data_extract.utils.common.edgar_driver import FilingStamp, RetryRounds
+from src.data_extract.utils.common.empty_markers import marker_mask
 from src.data_extract.utils.common.resume import document_floor
 from src.data_extract.utils.common.sec_io import TransientReadError, configure, filing_obj, sec_call
 from src.data_extract.utils.institutionals.fetch_cusip_map import build_cusip_ticker_map, normalize_cusip
@@ -278,8 +279,9 @@ def _latest_per_key(df_book: pd.DataFrame) -> pd.DataFrame:
 
 
 def _padded(df: pd.DataFrame) -> pd.DataFrame:
-    """`df` with its `cik` in the stored 10-digit form, whatever form it arrived in."""
-    return df.assign(cik=pad_cik_series(df["cik"]))
+    """`df` with its `cik` in the stored 10-digit form, whatever form it arrived in; a `sec13f_hr`
+    marker row keeps its sentinel."""
+    return df.assign(cik=pad_cik_series(df["cik"]).where(~marker_mask(Tables.sec13f_hr, df), df["cik"]))
 
 
 def save_hr(context: Context, hr: pd.DataFrame) -> int:
@@ -462,11 +464,12 @@ def fetch_13f(
     save_every: int = 600,
     filing_window: tuple[str, str] | None = None,
     as_of: pd.Timestamp | None = None,
-) -> None:
+) -> int:
     """Ingest every 13F-HR filed in the resume window (or the `filing_window` backfill, watermark
     untouched), oldest first, so an amendment overwrites its original. Each batch upserts the `tickers`
     slice to `sec13f_hr` and roster CIKs' books to `sec13f_manager_holdings`, idempotent on their PKs.
-    One EDGAR walk at a time."""
+    One EDGAR walk at a time. Returns the filings still failing transiently after the retry rounds
+    (held back or skipped); 0 for a complete walk."""
     context.ensure_edgar_identity()
     configure(context)
     run_date = cast(pd.Timestamp, pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize())
@@ -482,10 +485,11 @@ def fetch_13f(
     total = len(filings)
     logger.info(f"13F: {total} filing(s) to read in {since:%Y-%m-%d}:{until:%Y-%m-%d}")
     if not total:
-        return
+        return 0
 
     saver = _Saver(context, universe, roster_ciks, save_every)
     held = _first_pass(filings, saver)
     _retry_rounds(context, held)
     n_held = _save_held(held, hold_from, saver)
     _log_walk(saver.walk, total - n_held)
+    return sum(1 for read in held if read.transient)

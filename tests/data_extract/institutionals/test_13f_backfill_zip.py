@@ -9,6 +9,7 @@ decides the filing's $-thousands unit) and built by `fetch_13f._book_frame`.
 
 from __future__ import annotations
 
+import logging
 import time
 import zipfile
 from types import SimpleNamespace
@@ -18,16 +19,20 @@ import pandas as pd
 import pytest
 from edgar.thirteenf.models import ThirteenF
 
+from src.data_aggregate.utils.institutionals.inputs import load_source
 from src.data_extract.utils.common import bulk_cache
 from src.data_extract.utils.common.sec_utils import CIK_MAPPING_COLS
 from src.data_extract.utils.institutionals import fetch_13f as f13
 from src.data_extract.utils.institutionals import fetch_13f_backfill as fb
+from src.data_extract.utils.institutionals.fetch_superinvestors import activity_evidence
 from src.data_store.schema import Tables
 from tests.data_extract.edgar_fixtures import fake_context
 from tests.data_extract.institutionals.test_13f_one_walk import ROSTER, _seed_roster
 
 _AS_OF = pd.Timestamp("2026-09-30")
 _NEW, _NEW_CUSIP = "NEWCO", "111111111"
+_GAP_START = pd.Timestamp("2024-09-01")  # the day after the newest fixture data set ends
+_SENTINEL = "_empty"
 _MAP = {"037833100": "AAPL", "594918104": "MSFT", _NEW_CUSIP: _NEW, "G0450A105": "XNOTSP"}
 
 # (cik, accession, form, filed, period, [(cusip, issuer, value as filed, shares, putcall)])
@@ -149,20 +154,30 @@ def _offline(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return pages
 
 
-def _patch_gap_walk(monkeypatch: pytest.MonkeyPatch, *, save: bool = False) -> list[dict[str, Any]]:
-    """`fetch_13f` as the gap walk sees it: each call is recorded; with `save` it stores one row filed
-    2025-01-10 (inside the gap) for every ticker it was given, like a real walk over that window."""
+def _patch_gap_walk(monkeypatch: pytest.MonkeyPatch, *, save: bool = False, cut: bool = False, unread: int = 0) -> list[dict[str, Any]]:
+    """`fetch_13f` as the gap walk sees it: each call is recorded; with `save` (or `cut`) it stores one
+    row filed 2025-01-10 (inside the gap) for every ticker it was given, like a real walk over that
+    window. `cut` then raises, as an interrupted walk does; the call returns `unread`, the filings a
+    transient failure left unread."""
     walks: list[dict[str, Any]] = []
 
-    def _walk(context: Any, **kwargs: Any) -> None:
+    def _walk(context: Any, **kwargs: Any) -> int:
         walks.append(kwargs)
-        if not save:
-            return
-        row = {"cik": "0000000007", "period": pd.Timestamp("2024-12-31"), "cusip": _NEW_CUSIP, "filing_date": pd.Timestamp("2025-01-10")}
-        context.store.save(Tables.sec13f_hr, pd.DataFrame([row | {"ticker": ticker} for ticker in kwargs["tickers"]]))
+        if save or cut:
+            row = {"cik": "0000000007", "period": pd.Timestamp("2024-12-31"), "cusip": _NEW_CUSIP, "filing_date": pd.Timestamp("2025-01-10")}
+            context.store.save(Tables.sec13f_hr, pd.DataFrame([row | {"ticker": ticker} for ticker in kwargs["tickers"]]))
+        if cut:
+            raise RuntimeError("EDGAR walk cut off")
+        return unread
 
     monkeypatch.setattr(fb, "fetch_13f", _walk, raising=False)
     return walks
+
+
+def _markers(store: Any) -> pd.DataFrame:
+    """The stored gap-walk marker rows of `sec13f_hr` (empty frame when none)."""
+    df = store.load(Tables.sec13f_hr, where={"cusip": _SENTINEL}, markers=True, optional=True)
+    return pd.DataFrame(columns=f13._HR_COLS) if df is None else df
 
 
 def _stored_hr(store: Any, ticker: str) -> pd.DataFrame:
@@ -308,11 +323,11 @@ def test_the_gap_after_the_newest_data_set_is_walked_once_per_ticker(tmp_path, s
     fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF)
     fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF + pd.Timedelta(days=1))  # night 2, NEWCO still new
 
-    assert len(walks) == 1, walks  # the stored row inside the gap marks it done
+    assert len(walks) == 1, walks  # the completed walk's marker marks it done
     assert walks[0]["tickers"] == [_NEW] and walks[0]["filing_window"] == ("2024-09-01", "2026-09-28")
     print("\n=== SANITY: 13F gap walk ===")
     print(f"  NEWCO joined 2026-09-28, newest data set ends 2024-08-31 -> one EDGAR walk {walks[0]['filing_window']};")
-    print("  night 2 finds a NEWCO row filed inside the gap and walks nothing. Validated.")
+    print("  night 2 finds the walk's NEWCO marker and walks nothing. Validated.")
 
 
 def test_the_gap_starts_after_the_newest_data_set_read_not_the_newest_listed(tmp_path, sqlite_store, monkeypatch):
@@ -351,6 +366,177 @@ def test_rows_from_the_nightly_overlap_do_not_mark_the_gap_done(tmp_path, sqlite
     assert len(walks) == 1
     print("\n=== SANITY: gap done test ignores the nightly overlap ===")
     print("  a NEWCO row filed 2026-09-25 (within 7 days of joining) is the nightly walk's; the gap is still walked. Validated.")
+
+
+def test_rows_a_stale_nightly_walk_wrote_do_not_mark_the_gap_done(tmp_path, sqlite_store, monkeypatch):
+    ctx = _ctx(tmp_path, sqlite_store, added_on={_NEW: "2026-09-28"})
+    _offline(monkeypatch)
+    walks = _patch_gap_walk(monkeypatch)
+    # The join night's walk ran from a stale frontier (stage D: HOG rows filed 09-22/09-23, joined 10-06):
+    # its rows sit inside [since, added_on - 7d), yet nothing walked 2024-09-01..2026-09-14.
+    stale = {"cik": "0000000008", "period": pd.Timestamp("2026-06-30"), "ticker": _NEW, "cusip": _NEW_CUSIP}
+    sqlite_store.save(
+        Tables.sec13f_hr,
+        pd.DataFrame([stale | {"filing_date": pd.Timestamp("2026-09-15")}, stale | {"cik": "0000000009", "filing_date": pd.Timestamp("2026-09-16")}]),
+    )
+
+    fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF)
+
+    assert len(walks) == 1, walks
+    print("\n=== SANITY: gap done test vs a stale-frontier nightly walk ===")
+    print("  NEWCO rows filed 2026-09-15/16 came from the nightly walk, not the gap walk; the gap is still walked. Validated.")
+
+
+def test_a_completed_gap_walk_marks_each_walked_ticker_once_and_the_next_night_skips(tmp_path, sqlite_store, monkeypatch):
+    ctx = _ctx(tmp_path, sqlite_store, added_on={_NEW: "2026-09-28", "MSFT": "2026-09-27"})
+    _offline(monkeypatch)
+    walks = _patch_gap_walk(monkeypatch)
+
+    fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF)
+    fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF + pd.Timedelta(days=1))  # night 2, both still new
+
+    markers = _markers(sqlite_store).sort_values("ticker")
+    shown = sqlite_store.load(Tables.sec13f_hr, where={"ticker": ["MSFT", _NEW]})
+    assert len(walks) == 1 and walks[0]["tickers"] == ["MSFT", _NEW], walks
+    assert markers["ticker"].tolist() == ["MSFT", _NEW]
+    assert set(markers["cik"]) == {_SENTINEL}
+    assert (pd.to_datetime(markers["period"]) == _GAP_START).all() and (pd.to_datetime(markers["filing_date"]) == _GAP_START).all()
+    assert markers[["shares", "value_usd", "put_value"]].isna().all().all()
+    assert _SENTINEL not in set(shown["cusip"]) and _SENTINEL not in set(shown["cik"])
+    print("\n=== SANITY: a completed gap walk writes one marker per walked ticker ===")
+    print(f"  one walk for MSFT+NEWCO -> markers {markers['ticker'].tolist()} (cik/cusip '_empty', period = filing_date = 2024-09-01,")
+    print(f"  values NULL); night 2 walks nothing; a consumer read of their {len(shown)} rows shows no marker. Validated.")
+
+
+def test_a_cut_off_gap_walk_writes_no_marker_and_is_walked_again(tmp_path, sqlite_store, monkeypatch):
+    ctx = _ctx(tmp_path, sqlite_store, added_on={_NEW: "2026-09-28"})
+    _offline(monkeypatch)
+    _patch_gap_walk(monkeypatch, cut=True)  # saves a NEWCO row filed 2025-01-10, then fails
+
+    with pytest.raises(RuntimeError, match="cut off"):
+        fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF)
+    after_cut = _markers(sqlite_store)
+    walks = _patch_gap_walk(monkeypatch)
+    fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF + pd.Timedelta(days=1))
+
+    assert after_cut.empty
+    assert len(walks) == 1 and walks[0]["filing_window"] == ("2024-09-01", "2026-09-28"), walks
+    assert _markers(sqlite_store)["ticker"].tolist() == [_NEW]
+    print("\n=== SANITY: a cut-off gap walk ===")
+    print("  night 1's walk saved a NEWCO row inside the gap, then failed: no marker; night 2 walks the whole gap again")
+    print("  and only then writes NEWCO's marker. Validated.")
+
+
+def test_a_gap_walk_that_leaves_filings_unread_writes_no_marker(tmp_path, sqlite_store, monkeypatch, caplog):
+    ctx = _ctx(tmp_path, sqlite_store, added_on={_NEW: "2026-09-28"})
+    _offline(monkeypatch)
+    _patch_gap_walk(monkeypatch, save=True, unread=2)  # two filings still failing transiently after the retry rounds
+
+    with caplog.at_level("WARNING"):
+        fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF)
+    after_night_1 = _markers(sqlite_store)
+    walks = _patch_gap_walk(monkeypatch)
+    fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF + pd.Timedelta(days=1))
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING" and "unread" in r.getMessage()]
+    assert after_night_1.empty and len(warnings) == 1, warnings
+    assert len(walks) == 1
+    print("\n=== SANITY: a gap walk with unread filings ===")
+    print(f"  2 filings left unread -> no marker, {warnings[0][:80]!r}...; night 2 walks the gap again. Validated.")
+
+
+def _seed_frontier_rows(store: Any) -> None:
+    """A data-set row (period 2023-03-31) and a nightly row (filed 2026-09-25) for NEWCO; AAPL has none."""
+    row = {"cik": "0000000001", "ticker": _NEW, "cusip": _NEW_CUSIP, "shares": 10, "value_usd": 1.0}
+    store.save(
+        Tables.sec13f_hr,
+        pd.DataFrame(
+            [
+                row | {"period": pd.Timestamp("2023-03-31"), "filing_date": pd.Timestamp("2023-05-15")},
+                row | {"period": pd.Timestamp("2026-06-30"), "filing_date": pd.Timestamp("2026-09-25")},
+            ]
+        ),
+    )
+
+
+def test_gap_markers_move_neither_the_nightly_frontier_nor_the_zip_resume_point(tmp_path, sqlite_store, monkeypatch):
+    ctx = _ctx(tmp_path, sqlite_store, added_on={_NEW: "2026-09-28"})
+    _seed_frontier_rows(sqlite_store)
+    data_sets = [fb.DataSet.parse(n) for n in _DATA_SETS]
+
+    def _frontiers() -> tuple[Any, ...]:
+        points = fb.resume_points(ctx, [_NEW, "AAPL"])
+        return sqlite_store.max_date(Tables.sec13f_hr, "filing_date"), f13._resolve_window(ctx, 15, None, _AS_OF, False), points
+
+    before = _frontiers()
+    saved = fb.mark_gap_walked(ctx, [_NEW, "AAPL"], _GAP_START)
+    after = _frontiers()
+
+    assert saved == 2
+    assert after[0] == before[0] == pd.Timestamp("2026-09-25")  # the nightly frontier max(filing_date)
+    assert after[1] == before[1]  # the nightly walk window
+    assert after[2][_NEW] == before[2][_NEW] == pd.Timestamp("2023-03-31")  # the ZIP resume point min(period)
+    # A ticker with no holding row: its resume point becomes the gap start, which reads the same data sets.
+    assert before[2]["AAPL"] is None and after[2]["AAPL"] == _GAP_START
+    assert fb.backfill_work(data_sets, after[2], False) == fb.backfill_work(data_sets, before[2], False)
+    print("\n=== SANITY: gap markers and the 13F frontiers ===")
+    print(f"  max(filing_date) {after[0]:%Y-%m-%d} and the nightly window {after[1][0]:%Y-%m-%d}:{after[1][1]:%Y-%m-%d} unchanged;")
+    print(f"  NEWCO min(period) stays {after[2][_NEW]:%Y-%m-%d}; a rowless AAPL reads the same data sets either way. Validated.")
+
+
+def test_every_sec13f_hr_consumer_read_hides_the_gap_marker(tmp_path, sqlite_store, monkeypatch):
+    ctx = _ctx(tmp_path, sqlite_store, added_on={_NEW: "2026-09-28"})
+    _offline(monkeypatch)
+    _save_oracle_book(sqlite_store, _A2)
+    fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF)  # the data-set rows, then the walk's NEWCO marker
+    cache = tmp_path / str(ctx.config.local.paths.sec_13f_datasets)
+    cmap = sqlite_store.load(Tables.cusip_ticker_map)
+    tables = fb._read_data_set(cache / "2023q2_form13f.zip", frozenset({_NEW_CUSIP}), {ROSTER})
+    assert tables is not None
+    book = fb.data_set_book(*tables)
+    candidates = f13._resolve_tickers(book, cmap, {_NEW})
+    universe = ["AAPL", "MSFT", _NEW]
+    log = logging.getLogger("test")
+
+    def _reads() -> dict[str, Any]:
+        return {
+            "load": sqlite_store.load(Tables.sec13f_hr),
+            "load projected": sqlite_store.load(Tables.sec13f_hr, project=True),
+            "iter_load": pd.concat(sqlite_store.iter_load(Tables.sec13f_hr, project=True), ignore_index=True),
+            "aggregation load_source": load_source(sqlite_store, log, Tables.sec13f_hr, universe),
+            "superseded check": fb._drop_superseded(ctx, candidates),
+            "unit check": fb.unit_check(ctx, book, {ROSTER}),
+            "superinvestor activity": activity_evidence(ctx, [ROSTER, "1"]),
+        }
+
+    with_marker = _reads()
+    n_markers = len(_markers(sqlite_store))
+    sqlite_store.delete(Tables.sec13f_hr, {"cusip": _SENTINEL})
+    without = _reads()
+
+    assert n_markers == 1
+    for name, value in with_marker.items():
+        if isinstance(value, pd.DataFrame):
+            pd.testing.assert_frame_equal(value.reset_index(drop=True), without[name].reset_index(drop=True), check_exact=True)
+            assert "cusip" not in value.columns or _SENTINEL not in set(value["cusip"]), name
+        else:
+            assert value == without[name], name
+    print("\n=== SANITY: sec13f_hr consumers vs the gap marker ===")
+    print(f"  with NEWCO's marker stored, {len(with_marker)} reads ({', '.join(with_marker)})")
+    print("  return exactly what they return without it. Validated.")
+
+
+def test_the_cik_padding_guard_keeps_the_marker_sentinel(sqlite_store):
+    ctx: Any = SimpleNamespace(store=sqlite_store)
+    real = {"cik": "7", "period": pd.Timestamp("2026-06-30"), "filing_date": pd.Timestamp("2026-08-14"), "ticker": _NEW, "cusip": _NEW_CUSIP}
+
+    f13.save_hr(ctx, pd.DataFrame([real]))
+    fb.mark_gap_walked(ctx, [_NEW], _GAP_START)
+
+    stored = sqlite_store.load(Tables.sec13f_hr, markers=True)
+    assert sorted(zip(stored["cik"], stored["cusip"], strict=True)) == [("0000000007", _NEW_CUSIP), (_SENTINEL, _SENTINEL)]
+    print("\n=== SANITY: 13F CIK padding vs the gap marker ===")
+    print(f"  save_hr pads cik '7' to '0000000007' and keeps the marker's cik {_SENTINEL!r} (not padded to ''). Validated.")
 
 
 def test_an_established_ticker_has_no_gap(tmp_path, sqlite_store, monkeypatch):

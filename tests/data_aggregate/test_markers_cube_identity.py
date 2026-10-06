@@ -2,13 +2,16 @@
 
 Real rows of five tickers are copied from the live DB (read only) into an in-memory SQLite
 store. The governance, insider and beneficial-ownership panels and the fundamentals history
-are built from that store, 20 marker rows are added, and everything is built again.
+are built from that store, 20 marker rows are added, and everything is built again. The
+all-filer 13F panel gets the same check against the new-ticker gap-walk markers.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
-from typing import cast
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pandas as pd
 import pytest
@@ -17,11 +20,14 @@ from src.data_aggregate.utils.governance.def14a_impute import impute_def14a
 from src.data_aggregate.utils.governance.directors import finalize_board_source
 from src.data_aggregate.utils.governance.panel import build_governance_feature_panel
 from src.data_aggregate.utils.institutionals.frontiers import schedule_complete_through
+from src.data_aggregate.utils.institutionals.inputs import load_source
 from src.data_aggregate.utils.institutionals.insider_features import build_insider_feature_panel
+from src.data_aggregate.utils.institutionals.institutional_features import build_institutional_feature_panel
 from src.data_aggregate.utils.institutionals.ownership_features import build_ownership_feature_panel
 from src.data_extract.utils.common.edgar_driver import FilingStamp, marker_row
 from src.data_extract.utils.common.empty_markers import marker_frame
 from src.data_extract.utils.fundamentals.build_history import FACT_COLUMNS, build_ticker_history
+from src.data_extract.utils.institutionals.fetch_13f_backfill import mark_gap_walked
 from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore
 from tests.conftest import _store, make_frames
@@ -40,6 +46,10 @@ MARKERS_PER_TABLE = {
     Tables.sec_8k_votes: 3,
     Tables.fundamentals_facts: 3,
 }
+#: The 13F gap-marker check: two tickers' `sec13f_hr` rows from F13_SINCE and one marker each.
+F13_TICKERS = ["HPQ", "PG"]
+F13_SINCE = pd.Timestamp("2023-01-01")
+F13_GAP_START = pd.Timestamp("2024-09-01")
 
 
 def _copy_live_rows(live: DataStore, sqlite: DataStore) -> pd.DataFrame:
@@ -155,3 +165,37 @@ def test_markers_never_change_a_cube_cell(sqlite_store: DataStore) -> None:
         print(f"  {name:<20} {frame.shape[0]:>7,} rows x {frame.shape[1]:>3} cols: identical")
     print(f"  13D/13G/insider frontiers unchanged: {', '.join(f'{t.name}={d.date() if d is not None else None}' for t, d in frontiers.items())}")
     print("  CONCLUSION: the store's marker filter keeps every consumer cell-identical. Validated.")
+
+
+def test_13f_gap_markers_never_change_an_institutional_cell(sqlite_store: DataStore) -> None:
+    """The all-filer 13F panel, read the way the cube step reads `sec13f_hr`, is cell-identical with and
+    without one gap-walk marker per ticker."""
+    live = _store()
+    try:
+        holdings = live.load(Tables.sec13f_hr, columns=[*Tables.sec13f_hr.read_columns, "cusip"], where={"ticker": F13_TICKERS}, since=F13_SINCE)
+        prices = cast(
+            pd.DataFrame, live.load(Tables.prices, columns=["date", "ticker", "close_split"], where={"ticker": F13_TICKERS}, since=GRID_START)
+        )
+    except Exception as exc:  # noqa: BLE001 -- a missing live table means no real data to test on
+        pytest.skip(f"live source rows unavailable: {type(exc).__name__}: {exc}")
+    sqlite_store.save(Tables.sec13f_hr, cast(pd.DataFrame, holdings))
+    close = prices.assign(date=pd.to_datetime(prices["date"])).pivot(index="date", columns="ticker", values="close_split").sort_index()
+    frames = make_frames(close.index, {t: {p: 1.0 for p in F13_TICKERS if p != t} for t in F13_TICKERS}, close_split=close)
+    log = logging.getLogger(__name__)
+
+    def build() -> pd.DataFrame:
+        return build_institutional_feature_panel(frames, load_source(sqlite_store, log, Tables.sec13f_hr, F13_TICKERS))
+
+    before = _canonical(build())
+    saved = mark_gap_walked(cast(Any, SimpleNamespace(store=sqlite_store)), F13_TICKERS, F13_GAP_START)
+    hidden = len(cast(pd.DataFrame, sqlite_store.load(Tables.sec13f_hr, markers=True))) - len(cast(pd.DataFrame, sqlite_store.load(Tables.sec13f_hr)))
+    after = _canonical(build())
+
+    assert saved == hidden == len(F13_TICKERS)
+    assert not before.empty
+    pd.testing.assert_frame_equal(before, after, check_exact=True)
+    print("\n=== SANITY CHECK: 13F gap markers never change an institutional cell ===")
+    print(
+        f"  {len(cast(pd.DataFrame, holdings)):,} live sec13f_hr rows of {F13_TICKERS} since {F13_SINCE.date()}, {saved} markers dated {F13_GAP_START.date()}"
+    )
+    print(f"  institutional panel {before.shape[0]:,} rows x {before.shape[1]} cols: identical. Validated.")

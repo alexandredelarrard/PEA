@@ -138,7 +138,7 @@ The nightly `thirteen-f` walk starts at the newest stored `filing_date` minus th
 rtk "$PY" -m src data_extract thirteen-f --filing-window 2024-01-01:2024-03-01
 ~~~
 
-`thirteen-f-backfill` fills the history of a ticker added within the last 7 days from the SEC 13F data sets, then one EDGAR walk over the filings after the newest data set, once per ticker. `-t X` narrows the new tickers (an established X does nothing); `-t X -F` re-reads every data set for X. Run a first manual backfill outside 01:00 and read its unit-check log lines. The value unit of each filing comes from edgartools' private `_detect_value_in_thousands`: an edgartools upgrade that renames it breaks the `data_extract` CLI import, which `test_13f_backfill_zip.py` catches.
+`thirteen-f-backfill` fills the history of a ticker added within the last 7 days from the SEC 13F data sets, then one EDGAR walk over the filings after the newest cached data set. Only a completed walk saves the ticker's `sec13f_hr` marker (`cusip` = `_empty`), which stops the walk on later nights; an interrupted walk is redone in full. `-t X -F` walks X's gap again whatever its marker. `-t X` narrows the new tickers (an established X does nothing); `-t X -F` re-reads every data set for X. Run a first manual backfill outside 01:00 and read its unit-check log lines. The value unit of each filing comes from edgartools' private `_detect_value_in_thousands`: an edgartools upgrade that renames it breaks the `data_extract` CLI import, which `test_13f_backfill_zip.py` catches.
 
 ## Insider reparse and full rebuild
 

@@ -34,8 +34,8 @@ from src.data_extract.utils.common.symbol_tenure import normalise_market_symbol 
 from src.data_extract.utils.fundamentals.build_history import keep_window_owner_filings  # noqa: E402
 from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import load_predecessor_series  # noqa: E402
 from src.data_extract.utils.fundamentals_sharadar.field_map import load_field_map  # noqa: E402
-from src.data_extract.utils.institutionals.fetch_fails_to_deliver import SUMMED_ROLES  # noqa: E402
 from src.data_extract.utils.institutionals.fetch_short_interest import finra_key  # noqa: E402
+from src.data_extract.utils.institutionals.security_tape import SUMMED_ROLES  # noqa: E402
 from src.data_store.schema import Tables  # noqa: E402
 from src.utils.filer_tables import PURGE_TABLES, FilerTable  # noqa: E402
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series, yahoo_symbol  # noqa: E402

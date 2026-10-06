@@ -33,13 +33,17 @@ from src.data_extract.utils.common.resume import document_floor, recently_change
 from src.data_extract.utils.common.security_master import EXCLUDED, SOURCE_FTD, squash
 from src.data_extract.utils.common.sessions import last_completed_session
 from src.data_extract.utils.common.symbol_tenure import normalise_market_symbol
-from src.data_extract.utils.institutionals.fetch_fails_to_deliver import (
+from src.data_extract.utils.institutionals.fetch_fails_to_deliver import load_fails_master, master_stamps
+from src.data_extract.utils.institutionals.security_tape import (
+    KEY_CHUNK,
     SUMMED_ROLES,
-    _apply_grain,
-    _chunks,
-    _nullable,
-    load_fails_master,
-    master_stamps,
+    TICKER_CHUNK,
+    apply_grain,
+    chunks,
+    load_chunked,
+    stamp_changed,
+    summed_lines,
+    warn_lost_rows,
 )
 from src.data_store.schema import Tables
 from src.utils.string import normalise_ticker
@@ -55,7 +59,6 @@ RAW_COLUMNS = ("date", "source_symbol", "market", "short_volume", "short_exempt_
 SECURITY_COLUMNS = (*RAW_COLUMNS, "security_id", "ticker", "lineage_role", "security_class")
 #: Columns of the ticker-grain `sec_short_interest` (the consumers' schema).
 TICKER_COLUMNS = ("date", "ticker", "short_volume", "total_volume")
-_STAMP_COLUMNS = ["security_id", "ticker", "lineage_role", "security_class"]
 _VOLUMES = ["short_volume", "short_exempt_volume", "total_volume"]
 
 #: FINRA lower-case markers: their FTD spelling and the kind of line they mark.
@@ -64,8 +67,6 @@ _MARKER_KIND = {"p": "preferred", "r": "right", "w": "when_issued"}
 #: Suffixes after a `/`: the kind of line they mark (a single class letter marks a common class).
 _SUFFIX_KIND = (("WS", "warrant"), ("CL", "called"), ("U", "unit"))
 _CLASS_SUFFIX = re.compile(r"^[A-TV-Z]$")
-_KEY_CHUNK = 500
-_TICKER_CHUNK = 50
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +153,11 @@ def _fallback(identity: Identity, symbol: str, day: pd.Timestamp) -> SecurityHit
     return SecurityHit(f"S{interval.cik}:{_market_symbol(symbol)}", company, role, f"class_{letter}" if letter else "common", 1.0)
 
 
+def _hit_column(hits: Sequence[SecurityHit | None], field: str, index: pd.Index) -> pd.Series:
+    """One `SecurityHit` field per row (None where the row has no hit)."""
+    return pd.Series([None if h is None else getattr(h, field) for h in hits], index=index, dtype=object)
+
+
 def stamp_short_volume(lines: pd.DataFrame, identity: Identity, universe: Collection[str]) -> pd.DataFrame:
     """The rows of `lines` kept in `sec_short_volume_security`, with the four stamp columns and `conversion_ratio`.
 
@@ -178,16 +184,12 @@ def stamp_short_volume(lines: pd.DataFrame, identity: Identity, universe: Collec
         hit = hit if hit is not None and hit.canonical_company in requested else None
         hits.append(hit)
         kept.append(hit is not None)
-
-    def column(field: str) -> pd.Series:
-        return pd.Series([None if h is None else getattr(h, field) for h in hits], index=rows.index, dtype=object)
-
     out = rows.assign(
-        security_id=column("security_id"),
-        ticker=column("canonical_company"),
-        lineage_role=column("lineage_role"),
-        security_class=column("security_class"),
-        conversion_ratio=column("conversion_ratio").astype("float64"),
+        security_id=_hit_column(hits, "security_id", rows.index),
+        ticker=_hit_column(hits, "canonical_company", rows.index),
+        lineage_role=_hit_column(hits, "lineage_role", rows.index),
+        security_class=_hit_column(hits, "security_class", rows.index),
+        conversion_ratio=_hit_column(hits, "conversion_ratio", rows.index).astype("float64"),
     )
     marked = out["source_symbol"].astype(str).map(finra_marker_kind)
     unsafe = marked.notna() & out["lineage_role"].isin(SUMMED_ROLES)
@@ -198,9 +200,7 @@ def stamp_short_volume(lines: pd.DataFrame, identity: Identity, universe: Collec
 
 def ticker_rows(stamped: pd.DataFrame, tickers: Collection[str] | None = None) -> pd.DataFrame:
     """Ticker-grain rows: per (ticker, date) over the canonical and secondary-class lines, the volumes x conversion ratio."""
-    summed = stamped[stamped["lineage_role"].isin(SUMMED_ROLES) & stamped["ticker"].notna()]
-    if tickers is not None:
-        summed = summed[summed["ticker"].isin(set(tickers))]
+    summed = summed_lines(stamped, tickers)
     if summed.empty:
         return pd.DataFrame(columns=list(TICKER_COLUMNS))
     ratio = pd.to_numeric(summed["conversion_ratio"], errors="coerce").fillna(1.0)
@@ -282,15 +282,8 @@ def _company_rows(context: Context, identity: Identity, companies: Sequence[str]
     table = Tables.sec_short_volume_security
     keys = master_keys(identity, companies)
     symbols = sorted(s for s in map(str, context.store.distinct(table, "source_symbol")) if finra_key(s) in keys)
-    frames = [
-        context.store.load(table, columns=list(SECURITY_COLUMNS), where={"ticker": chunk}, optional=True)
-        for chunk in _chunks(companies, _TICKER_CHUNK)
-    ]
-    frames += [
-        context.store.load(table, columns=list(SECURITY_COLUMNS), where={"source_symbol": chunk}, optional=True)
-        for chunk in _chunks(symbols, _KEY_CHUNK)
-    ]
-    kept = [frame for frame in frames if frame is not None]
+    kept = load_chunked(context, table, SECURITY_COLUMNS, "ticker", companies, TICKER_CHUNK)
+    kept += load_chunked(context, table, SECURITY_COLUMNS, "source_symbol", symbols, KEY_CHUNK)
     if not kept:
         return pd.DataFrame(columns=list(SECURITY_COLUMNS))
     rows = pd.concat(kept, ignore_index=True)
@@ -300,7 +293,7 @@ def _company_rows(context: Context, identity: Identity, companies: Sequence[str]
 
 def _delete_rows(context: Context, rows: pd.DataFrame) -> None:
     for symbol, group in rows.groupby("source_symbol", sort=True):
-        for chunk in _chunks(sorted(group["date"]), _KEY_CHUNK):
+        for chunk in chunks(sorted(group["date"]), KEY_CHUNK):
             context.store.delete(Tables.sec_short_volume_security, where={"source_symbol": str(symbol), "date": chunk})
 
 
@@ -338,9 +331,7 @@ def restamp_short_volume(
     merged = stored.merge(fresh, on=["source_symbol", "date"], how="left", suffixes=("_old", ""), indicator=True)
     gone = merged[merged["_merge"].eq("left_only")]
     both = merged[merged["_merge"].eq("both")]
-    changed = pd.Series(False, index=both.index)
-    for column in _STAMP_COLUMNS:
-        changed |= _nullable(both[f"{column}_old"]).astype(str).ne(_nullable(both[column]).astype(str))
+    changed = stamp_changed(both, both, old_suffix="_old")
     if not dry_run:
         if not gone.empty:
             _delete_rows(context, gone)
@@ -353,7 +344,7 @@ def restamp_short_volume(
     if not rebuilt:
         return []
     grain = ticker_rows(fresh, rebuilt)
-    return _apply_grain(context, rebuilt, grain, dry_run=dry_run, table=Tables.short_interest, columns=TICKER_COLUMNS, text_columns=())
+    return apply_grain(context, rebuilt, grain, dry_run=dry_run, table=Tables.short_interest, columns=TICKER_COLUMNS)
 
 
 def _log_stamps(stamped: pd.DataFrame) -> None:
@@ -445,12 +436,9 @@ def fetch_short_interest(
     if not stamped.empty:
         context.store.save(Tables.sec_short_volume_security, stamped[list(SECURITY_COLUMNS)])
     if successful and context.store.exists(Tables.short_interest):
-        for chunk in _chunks(sorted(universe), _TICKER_CHUNK):
+        for chunk in chunks(sorted(universe), TICKER_CHUNK):
             context.store.delete(Tables.short_interest, where={"ticker": chunk, "date": successful})
     if not grain.empty:
         written = context.store.save(Tables.short_interest, grain)
     logger.info(f"Saved {written} short-volume ticker row(s) over {len(successful)} day(s) to '{Tables.short_interest}'")
-    for record in restamp_short_volume(context, None, universe, identity=resolver, as_of=as_of):
-        logger.warning(
-            "RegSHO: %s lost %d ticker row(s) %s..%s on re-stamp", record["ticker"], record["rows"], record["first_filed"], record["last_filed"]
-        )
+    warn_lost_rows(logger, "RegSHO", restamp_short_volume(context, None, universe, identity=resolver, as_of=as_of))

@@ -18,7 +18,7 @@ import sys
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -309,7 +309,7 @@ def uncovered(raw: pd.DataFrame, master: pd.DataFrame, source: str) -> pd.Series
         valid_from=pd.to_datetime(master["valid_from"]), valid_to=pd.to_datetime(master["valid_to"]).fillna(pd.Timestamp("2262-01-01"))
     )
     if source == "finra":
-        keys = raw["source_symbol"].astype(str).map(lambda s: squash(finra_key(s)))
+        keys = raw["source_symbol"].astype(str).map(lambda s: squash(finra_key(str(s))))
         rows = rows.assign(key=rows["source_symbol"].fillna("").astype(str).map(squash))
     else:
         keys = _text(raw["security_id"])
@@ -442,7 +442,7 @@ def grain_residual(raw: pd.DataFrame, old: pd.Series, before: pd.DataFrame, valu
 def _consolidating(table: str, forms: pd.Series) -> pd.Series:
     """Per row: whether its form (else its table) combines across a registrant boundary by window (SPLIT)."""
     default = _TABLE_POLICY.get(table, Combine.SPLIT) is Combine.SPLIT
-    return forms.map(lambda form: FORM_POLICY[form] is Combine.SPLIT if form in FORM_POLICY else default).astype(bool)
+    return forms.map(lambda form: FORM_POLICY[str(form)] is Combine.SPLIT if form in FORM_POLICY else default).astype(bool)
 
 
 def filing_reason(
@@ -463,8 +463,9 @@ def filing_reason(
         return ""
     windows = [w for w in scope.windows if w.cik == cik]
     known = filed is not None and not pd.isna(filed)
-    owned = known and any(w.owns(filed) for w in windows)
-    admitted = known and any(w.admits(filed) for w in windows)
+    day = cast(pd.Timestamp, filed)
+    owned = known and any(w.owns(day) for w in windows)
+    admitted = known and any(w.admits(day) for w in windows)
     if change == "removed":
         if cik not in scope.event_ciks:
             return "foreign_filer_purge"
@@ -481,7 +482,7 @@ def filing_reason(
         return ""
     if cik not in old_ciks:
         return "register_window"
-    if frontier is not None and known and filed > frontier:
+    if frontier is not None and known and day > frontier:
         return "new_filing"
     return "relisted_own_filing"
 
@@ -533,10 +534,10 @@ def filing_diff(
         undated = dated and scope is not None and scope.undated_events  # P40: as before P35, an undated event union
         reasons.append(
             filing_reason(
-                row.change,
-                row.cik,
-                row.filed,
-                row.consolidating and not undated,
+                cast(str, row.change),
+                cast(str, row.cik),
+                cast(Any, row.filed),
+                bool(row.consolidating) and not undated,
                 scope,
                 old_ciks.get(normalise_ticker(row.canonical_company), frozenset()),
                 frontier,
@@ -618,15 +619,17 @@ def history_diff(before: pd.DataFrame, after: pd.DataFrame, scopes: Mapping[str,
             continue
         scope = scopes.get(normalise_ticker(row.canonical_company))
         windows = [w for w in scope.windows if w.cik == row.cik] if scope is not None else []
-        filed = row.filed
+        filed = cast(pd.Timestamp, row.filed)
         admitted = not pd.isna(filed) and any(w.admits(filed) for w in windows)
         decisions.append("set_aside")
         if not admitted:
             reasons.append("register_window")
-            evidence.append(_window_text(scope, row.cik))
+            evidence.append(_window_text(scope, cast(str, row.cik)))
             owners.append("")
             continue
-        holder = next((w.cik for w in (scope.windows if scope else ()) if not pd.isna(row.period_end) and w.owns(row.period_end)), None)
+        holder = next(
+            (w.cik for w in (scope.windows if scope else ()) if not pd.isna(row.period_end) and w.owns(cast(pd.Timestamp, row.period_end))), None
+        )
         owner_rows = kept[
             (kept["ticker"] == row.canonical_company)
             & (pad_cik_series(kept["cik"]) == holder)
@@ -646,6 +649,29 @@ def history_diff(before: pd.DataFrame, after: pd.DataFrame, scopes: Mapping[str,
 # --------------------------------------------------------------------------- insider, merged fundamentals, prices
 
 
+def _insider_reason(
+    state: str,
+    cik: str,
+    ticker: str,
+    role: str,
+    filed: Any,
+    ticker_after: str,
+    co_registrants: Collection[str],
+    own_ciks: Mapping[str, frozenset[str]],
+    frontier: Any,
+) -> str:
+    """The rule explaining one changed insider row, '' when none does."""
+    if state == "left_only":
+        if cik in co_registrants:
+            return "co_registrant_purge"
+        return "foreign_filer_purge" if cik not in own_ciks.get(normalise_ticker(ticker), frozenset()) else ""
+    if state == "right_only":
+        return "new_filing" if frontier is not None and not pd.isna(filed) and filed > frontier else ""
+    if ticker != ticker_after and normalise_market_symbol(ticker) == normalise_market_symbol(ticker_after):
+        return "symbol_normalisation"
+    return "acquired_constituent" if role == "acquired_constituent" else ""
+
+
 def insider_diff(before: pd.DataFrame, after: pd.DataFrame, own_ciks: Mapping[str, frozenset[str]], co_registrants: Collection[str]) -> pd.DataFrame:
     """Rows that leave canonical insider history: a non-canonical role, a purge, or a ticker move."""
     merged = before.merge(after, on=_INSIDER_KEY, how="outer", suffixes=("_b", "_a"), indicator=True)
@@ -662,20 +688,10 @@ def insider_diff(before: pd.DataFrame, after: pd.DataFrame, own_ciks: Mapping[st
     filed = pd.to_datetime(rows["filing_date_b"].where(rows["filing_date_b"].notna(), rows["filing_date_a"]), errors="coerce")
     new_role = _text(rows["lineage_role"]) if "lineage_role" in rows.columns else pd.Series("", index=rows.index)
     co = {pad_cik(c) for c in co_registrants}
-    reasons = []
-    for state, c, t, r, f, ta in zip(rows["_merge"], cik, ticker, new_role, filed, _text(rows["ticker_a"]), strict=True):
-        if state == "left_only":
-            reasons.append(
-                "co_registrant_purge" if c in co else "foreign_filer_purge" if c not in own_ciks.get(normalise_ticker(t), frozenset()) else ""
-            )
-        elif state == "right_only":
-            reasons.append("new_filing" if frontier is not None and not pd.isna(f) and f > frontier else "")
-        elif t != ta and normalise_market_symbol(t) == normalise_market_symbol(ta):
-            reasons.append("symbol_normalisation")
-        elif r == "acquired_constituent":
-            reasons.append("acquired_constituent")
-        else:
-            reasons.append("")
+    reasons = [
+        _insider_reason(state, c, t, r, f, ta, co, own_ciks, frontier)
+        for state, c, t, r, f, ta in zip(rows["_merge"], cik, ticker, new_role, filed, _text(rows["ticker_a"]), strict=True)
+    ]
     out = pd.DataFrame(
         {
             "accession_number": rows["accession_number"].astype(str),
@@ -725,6 +741,34 @@ def _same_cells(a: pd.DataFrame, b: pd.DataFrame, columns: Sequence[str]) -> pd.
     return pd.DataFrame(same, index=a.index)
 
 
+def _merged_reason(
+    change: str,
+    ticker: Any,
+    stamp: pd.Timestamp,
+    cols: Sequence[str],
+    fiscal_end: Any,
+    windows: Sequence[Window],
+    frontier: Mapping[Any, pd.Timestamp],
+    sec_columns: Collection[str],
+    sec_changed: Collection[str],
+) -> tuple[str, str]:
+    """`(reason, evidence)` explaining one changed merged row: a predecessor window, a period after the snapshot, a changed
+    SEC block, or the trailing quarters after a window; empty strings when none does."""
+    hit = next((w for w in windows if w.ticker == ticker and w.holds(fiscal_end)), None)
+    trail = next((w for w in windows if w.ticker == ticker and w.trails(fiscal_end)), None)
+    if hit is not None:
+        start, end = hit.start.date() if hit.start is not None else "-", hit.end.date() if hit.end is not None else "-"
+        return "predecessor_vendor_series", f"{hit.vendor_ticker} window {start}..{end}"
+    if change == "added" and ticker in frontier and stamp > frontier[ticker]:
+        return "new_period", f"after the snapshot's last as_of {frontier[ticker].date()}"
+    if change == "changed" and ticker in sec_changed and set(cols) <= set(sec_columns):
+        return "sec_block_changed", "the ticker's fundamentals_history_sec rows changed"
+    if change == "changed" and trail is not None:
+        end = trail.end.date() if trail.end is not None else "-"
+        return "predecessor_vendor_series", f"trailing quarters after the {trail.vendor_ticker} window ending {end}"
+    return "", ""
+
+
 def merged_diff(
     before: pd.DataFrame, after: pd.DataFrame, windows: Sequence[Window], sec_columns: Collection[str], sec_changed: Collection[str]
 ) -> pd.DataFrame:
@@ -750,25 +794,8 @@ def merged_diff(
             continue
         change = {"left_only": "removed", "right_only": "added"}.get(state, "changed")
         fiscal_end = pd.to_datetime(a_end if not pd.isna(a_end) else b_end)
-        hit = next((w for w in windows if w.ticker == ticker and w.holds(fiscal_end)), None)
-        trail = next((w for w in windows if w.ticker == ticker and w.trails(fiscal_end)), None)
         stamp = pd.Timestamp(as_of)
-        if hit is not None:
-            reason, evidence = (
-                "predecessor_vendor_series",
-                f"{hit.vendor_ticker} window {hit.start.date() if hit.start is not None else '-'}..{hit.end.date() if hit.end is not None else '-'}",
-            )
-        elif change == "added" and ticker in frontier and stamp > frontier[ticker]:
-            reason, evidence = "new_period", f"after the snapshot's last as_of {frontier[ticker].date()}"
-        elif change == "changed" and ticker in sec_changed and set(cols) <= set(sec_columns):
-            reason, evidence = "sec_block_changed", "the ticker's fundamentals_history_sec rows changed"
-        elif change == "changed" and trail is not None:
-            reason, evidence = (
-                "predecessor_vendor_series",
-                f"trailing quarters after the {trail.vendor_ticker} window ending {trail.end.date() if trail.end is not None else '-'}",
-            )
-        else:
-            reason, evidence = "", ""
+        reason, evidence = _merged_reason(change, ticker, stamp, cols, fiscal_end, windows, frontier, sec_columns, sec_changed)
         out.append(
             {
                 "ticker": ticker,
@@ -805,7 +832,7 @@ def prices_diff(before: pd.DataFrame, after: pd.DataFrame, secondary_symbols: Co
             reason = "new_data"
         else:
             reason = ""
-        cols = [c for c in columns if not same.loc[idx, c]] if state == "both" else []
+        cols = [c for c in columns if not same.at[cast(Any, idx), c]] if state == "both" else []
         out.append(
             {
                 "ticker": ticker,

@@ -3,7 +3,7 @@
 `snapshot <dir>` dumps the before state, read-only and projected, as parquet files. `diff <dir>` compares it with
 the current store, writes one explained-difference CSV per surface plus `gate_hypotheses.csv` and
 `gate_summary.txt`, and exits 1 when a row has no reason or a hypothesis of
-`configs/sec/expected_lineage_changes.json` does not hold.
+`configs/sec/expected_lineage_changes.json` does not hold, 2 when the run itself fails.
 
   python scripts/identity_regression_gate.py snapshot <dir> [-c ./configs] [-t TICKER ...]
   python scripts/identity_regression_gate.py diff <dir> [-o <out dir>] [-c ./configs] [-t TICKER ...] [--skip-hypothesis ID ...] [--store-url URL]
@@ -621,7 +621,8 @@ def history_diff(before: pd.DataFrame, after: pd.DataFrame, scopes: Mapping[str,
     for ticker, facts in after.groupby("ticker", sort=True):
         scope = scopes.get(normalise_ticker(str(ticker)))
         frame = facts.rename(columns={"accession": "accession_number", "filed": "filing_date", "period_end": "period_of_report"})
-        if scope is not None and pad_cik_series(frame["cik"]).nunique() > 1:
+        ciks = pad_cik_series(frame["cik"])
+        if scope is not None and ciks[ciks.ne("")].nunique() > 1:  # a null CIK is no filer, as in the history build
             frame = keep_window_owner_filings(frame, scope.windows)
         kept_frames.append(frame.rename(columns={"accession_number": "accession", "filing_date": "filed", "period_of_report": "period_end"}))
     kept = pd.concat(kept_frames, ignore_index=True) if kept_frames else after.iloc[0:0]
@@ -1089,8 +1090,10 @@ def _tape_section(
     frames, stats = [], {}
     scope = set(tickers) if tickers else None
     for source, table, before_name, values in specs:
-        stored = _raw_tape(store, table, values)
         before = _snap(snap_dir, before_name)
+        if not store.exists(table) and not before.empty:
+            raise FileNotFoundError(f"the after store has no `{table.name}` while the snapshot holds {len(before):,} `{before_name}` row(s)")
+        stored = _raw_tape(store, table, values)
         frontier = pd.to_datetime(before["date"]).max() if not before.empty else pd.NaT
         new_rows = stored["date"] > frontier if not pd.isna(frontier) else pd.Series(False, index=stored.index)
         raw = stored[~new_rows].reset_index(drop=True)
@@ -1125,6 +1128,7 @@ def run_diff(
     store, config_dir = context.store, str(context.config_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     scope = [normalise_ticker(t) for t in tickers] if tickers else None
+    _check_scope(snap_dir, scope)
     identity = load_identity(context, refresh=True)
     old_lineage, old_tenure, old_roster = _snap(snap_dir, "entity_lineage"), _snap(snap_dir, "symbol_tenure"), _snap(snap_dir, "roster")
     master = store.load(Tables.security_master, optional=True)
@@ -1162,11 +1166,13 @@ def run_diff(
     if "prices" in sections:
         frames["prices"] = _prices_section(store, snap_dir, master, scope)
     computed = {"filing_lineage": "filing", "market_tape": "tape"}
+    listed = [h for h in load_hypotheses(config_dir) if computed[h["kind"]] in frames]
+    outside = {h["id"] for h in listed if scope is not None and not set(h.get("tickers") or ()) <= set(scope)}
     hypotheses = check_hypotheses(
-        [h for h in load_hypotheses(config_dir) if computed[h["kind"]] in frames],
+        listed,
         frames.get("filing", pd.DataFrame(columns=FILING_COLUMNS)),
         frames.get("tape", pd.DataFrame(columns=TAPE_COLUMNS)),
-        skip,
+        set(skip) | outside,
     )
     for name, frame in frames.items():
         frame.to_csv(out_dir / OUTPUTS[name], index=False)
@@ -1188,6 +1194,14 @@ def run_diff(
     (out_dir / "gate_summary.txt").write_text(text + "\n", encoding="utf-8")
     print(text)
     return 0 if verdict == "PASS" else 1
+
+
+def _check_scope(snap_dir: Path, scope: Sequence[str] | None) -> None:
+    """Refuse a diff scope the snapshot does not cover (a scoped snapshot holds only its own tickers)."""
+    meta_path = snap_dir / "snapshot_meta.json"
+    taken = json.loads(meta_path.read_text(encoding="utf-8")).get("tickers") if meta_path.is_file() else None
+    if taken and (scope is None or not set(scope) <= {normalise_ticker(t) for t in taken}):
+        raise ValueError(f"diff scope {scope or 'all'} is outside the snapshot's {sorted(taken)}")
 
 
 def _filing_section(
@@ -1322,14 +1336,18 @@ def main(argv: Sequence[str] | None = None, context_factory: Callable[[str, str 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     context = context_factory(args.config_dir, args.store_url if args.command == "diff" else None)
     context.store = ReadOnlyStore(context.store)
-    tickers = [normalise_ticker(t) for t in args.tickers] if args.tickers else None
-    if args.command == "snapshot":
-        counts = take_snapshot(context.store, args.directory, tickers)
-        print(f"snapshot written to {args.directory}: {counts}")
-        return 0
-    return run_diff(
-        context, args.directory, args.out or args.directory.parent, tickers=tickers, skip=set(args.skip_hypothesis), sections=args.sections
-    )
+    tickers = [normalise_ticker(t) for raw in args.tickers for t in raw.split(",") if t.strip()] if args.tickers else None
+    try:
+        if args.command == "snapshot":
+            counts = take_snapshot(context.store, args.directory, tickers)
+            print(f"snapshot written to {args.directory}: {counts}")
+            return 0
+        return run_diff(
+            context, args.directory, args.out or args.directory.parent, tickers=tickers, skip=set(args.skip_hypothesis), sections=args.sections
+        )
+    except Exception:
+        log.exception("identity regression gate: %s failed", args.command)
+        return 2
 
 
 if __name__ == "__main__":

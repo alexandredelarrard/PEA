@@ -476,6 +476,20 @@ def test_the_history_view_names_the_seam_rule_set_asides_with_the_owner_accessio
     )
 
 
+def test_f116_a_null_cik_is_no_filer_in_the_history_view() -> None:
+    windows = (_window("0000000001", None, "2022-01-01", margin_after=True), _window("0000000002", "2022-01-01", None, margin_before=True))
+    scopes = {"APO": FilingScope("APO", "E1", "0000000002", ("0000000001", "0000000002"), windows)}
+    facts = _filings(
+        [
+            ("APO", "old-late", "0000000001", "10-Q", "2023-03-01", "2022-12-31"),  # outside its window: the seam rule would set it aside
+            ("APO", "null-cik", None, "10-Q", "2022-05-01", "2022-03-31"),
+        ]
+    )
+    history = gate.history_diff(facts, facts, scopes, pd.DataFrame(columns=gate.FILING_COLUMNS))
+    assert history.empty, history[["accession", "reason"]]
+    print("sanity: one filer CIK plus null-CIK rows: the seam rule is not simulated (the build skips it), so nothing is set aside")
+
+
 # --------------------------------------------------------------------------- insider, merged fundamentals, prices
 
 
@@ -744,3 +758,21 @@ def test_the_cli_computes_only_the_requested_sections_and_reads_only(sqlite_stor
     print(
         "sanity: the CLI diff of the tape section alone writes its file, the summary and only the tape hypotheses; the wrapped store refuses writes"
     )
+
+
+def test_f112_the_cli_splits_commas_refuses_a_scope_outside_the_snapshot_and_skips_out_of_scope_hypotheses(sqlite_store: Any, tmp_path: Path) -> None:
+    _seed_before(sqlite_store)
+    factory = lambda c, u: _Context(sqlite_store)  # noqa: E731
+    assert gate.main(["snapshot", str(tmp_path / "before"), "-t", "CB,MRK"], context_factory=factory) == 0
+    meta = json.loads((tmp_path / "before" / "snapshot_meta.json").read_text(encoding="utf-8"))
+    assert meta["tickers"] == ["CB", "MRK"], "-t CB,MRK is two tickers"
+    _make_after(sqlite_store, lose_own=False)
+    out = tmp_path / "out"
+    assert gate.main(["diff", str(tmp_path / "before"), "-o", str(out), "--sections", "tape"], context_factory=factory) == 2, (
+        "unscoped diff of a scoped snapshot"
+    )
+    assert gate.main(["diff", str(tmp_path / "before"), "-o", str(out), "-t", "CB,AAPL", "--sections", "tape"], context_factory=factory) == 2
+    code = gate.main(["diff", str(tmp_path / "before"), "-o", str(out), "-t", "CB", "--sections", "tape"], context_factory=factory)
+    hypotheses = pd.read_csv(out / "gate_hypotheses.csv")
+    assert code != 2 and set(hypotheses.loc[hypotheses["tickers"].ne("CB"), "status"]) == {"skipped"}, hypotheses
+    print("sanity: -t CB,MRK snapshots two tickers; a diff outside that scope exits 2; a CB diff skips every hypothesis naming another ticker")

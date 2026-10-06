@@ -49,12 +49,11 @@ from src.data_extract.utils.common.security_master import (
 )
 from src.data_extract.utils.common.symbol_tenure import DEI_SOURCE, normalise_market_symbol
 from src.data_store.schema import Tables
+from src.utils.cik_windows import widen_seams
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
 
 logger = logging.getLogger(__name__)
 
-#: Days a consolidating window is widened on each side of a seam between two windows of one entity.
-SEAM_MARGIN_DAYS = 31
 #: The `symbol_tenure` sources the resolver reads; `dei` evidence reaches it only through `entity_lineage`.
 TENURE_SOURCES = (FORM345_SOURCE, MANUAL_SOURCE)
 #: `event`: any CIK of the entity; `consolidating`: the CIK whose margin-widened window holds the filing date.
@@ -168,6 +167,10 @@ class FilingScope:
         key = pad_cik(cik)
         windows = (CikWindow(key, None, None, None, None),) if key else ()
         return cls(ticker=normalise_ticker(ticker), entity=f"E{key}", roster_cik=key, event_ciks=(key,) if key else (), windows=windows)
+
+    def ciks_on(self, day: pd.Timestamp) -> frozenset[str]:
+        """The CIKs whose seam-widened window admits `day`: the ones a date-limited filing may come from."""
+        return frozenset(window.cik for window in self.windows if window.admits(day))
 
 
 @dataclass(frozen=True)
@@ -581,24 +584,8 @@ def _cik_scopes(
 
 
 def _widen_seams(windows: list[tuple[str, pd.Timestamp | None, pd.Timestamp | None]]) -> tuple[CikWindow, ...]:
-    """Windows oldest first; a bound within `SEAM_MARGIN_DAYS` of another window's opposite bound is widened by that margin."""
-    margin = pd.Timedelta(days=SEAM_MARGIN_DAYS)
-    ordered = sorted(windows, key=lambda window: (window[1] or SENTINEL_START, window[0]))
-    out: list[CikWindow] = []
-    for i, (cik, start, end) in enumerate(ordered):
-        others = ordered[:i] + ordered[i + 1 :]
-        seam_before = start is not None and any(other_end is not None and abs(other_end - start) <= margin for _, _, other_end in others)
-        seam_after = end is not None and any(other_start is not None and abs(other_start - end) <= margin for _, other_start, _ in others)
-        out.append(
-            CikWindow(
-                cik=cik,
-                valid_from=start,
-                valid_to=end,
-                listed_from=start - margin if start is not None and seam_before else start,
-                listed_to=end + margin if end is not None and seam_after else end,
-            )
-        )
-    return tuple(out)
+    """Windows oldest first, widened at seams by `SEAM_MARGIN_DAYS` (`cik_windows.widen_seams`)."""
+    return tuple(CikWindow(*window) for window in widen_seams(windows))
 
 
 def _symbol_intervals(lineage: pd.DataFrame) -> dict[str, tuple[SymbolInterval, ...]]:

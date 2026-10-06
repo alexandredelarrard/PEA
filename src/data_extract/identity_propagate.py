@@ -3,7 +3,8 @@
 The tickers whose lineage stamp (`entity_lineage.scope_changed_at`) falls inside
 `resume.recently_changed`'s window on the run date are re-checked, on every table; each step is
 idempotent, so a ticker seen on several runs inside the window costs reads only. Contraction: rows
-whose filer CIK is no longer a CIK of the ticker's entity are deleted, one WARNING per table.
+whose filer CIK is no longer a CIK of the ticker's entity, and 8-K / 13D / 13G rows whose CIK has no
+seam-widened window admitting their date, are deleted, one WARNING per table.
 Expansion: the bulk families re-parse, from their cached zips, the changed tickers whose table holds no
 row from one of their scope CIKs (EDGAR tables list a new CIK's filings in their own fetchers). The raw
 FTD lines and RegSHO short-volume rows of companies whose `security_master` rows changed recently (for
@@ -36,9 +37,11 @@ from src.utils.filer_tables import (
     PURGE_TABLES_BY_NAME,
     REMOVAL_COLUMNS,
     FilerTable,
+    ListedWindow,
     judged_cik_mask,
     own_filer_mask,
     removal_records,
+    windowed_filer_mask,
 )
 from src.utils.string import normalise_ticker, pad_cik
 
@@ -83,8 +86,23 @@ def _own_ciks(identity: Identity) -> dict[str, frozenset[str]]:
     return {ticker: frozenset(ciks) for ticker, ciks in owned.items()}
 
 
-def _foreign_rows(context: Context, spec: FilerTable, tickers: Sequence[str], own_ciks: Mapping[str, frozenset[str]]) -> pd.DataFrame:
-    """`tickers`' rows of `spec` whose filer CIK no longer belongs to the ticker's entity (a CIK with no digit is never judged)."""
+def _own_windows(identity: Identity) -> dict[str, tuple[ListedWindow, ...]]:
+    """`{ticker: (cik, listed_from, listed_to) per seam-widened window}` of every universe entity."""
+    return {
+        ticker: tuple((window.cik, window.listed_from, window.listed_to) for window in identity.windows_by_entity.get(entity, ()))
+        for entity, ticker in identity.ticker_by_entity.items()
+    }
+
+
+def _foreign_rows(
+    context: Context,
+    spec: FilerTable,
+    tickers: Sequence[str],
+    own_ciks: Mapping[str, frozenset[str]],
+    own_windows: Mapping[str, Sequence[ListedWindow]],
+) -> pd.DataFrame:
+    """`tickers`' rows of `spec` whose filer CIK no longer belongs to the ticker's entity, or for a dated table whose CIK
+    has no window admitting the row's date (a CIK with no digit is never judged)."""
     columns = ["ticker", spec.cik_col, spec.date_col, spec.key_col]
     frames: list[pd.DataFrame] = []
     for start in range(0, len(tickers), _TICKER_CHUNK):
@@ -92,7 +110,11 @@ def _foreign_rows(context: Context, spec: FilerTable, tickers: Sequence[str], ow
         if rows is None or rows.empty:
             continue
         rows = rows[judged_cik_mask(rows[spec.cik_col])]
-        foreign = rows[~own_filer_mask(rows["ticker"], rows[spec.cik_col].map(pad_cik), own_ciks)]
+        padded = rows[spec.cik_col].map(pad_cik)
+        own = own_filer_mask(rows["ticker"], padded, own_ciks)
+        if spec.dated:
+            own &= windowed_filer_mask(rows["ticker"], padded, rows[spec.date_col], own_windows)
+        foreign = rows[~own]
         if not foreign.empty:
             frames.append(foreign)
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=columns)
@@ -110,11 +132,19 @@ def _warn(context: Context, table: str, records: list[dict], *, dry_run: bool) -
         context.log.warning("identity-propagate: purged %d row(s) from '%s' -- %s", total, table, detail)
 
 
-def _purge(context: Context, spec: FilerTable, tickers: Sequence[str], own_ciks: Mapping[str, frozenset[str]], *, dry_run: bool) -> list[dict]:
-    """Delete (or list) `tickers`' rows of `spec` filed by a CIK outside the ticker's entity."""
+def _purge(
+    context: Context,
+    spec: FilerTable,
+    tickers: Sequence[str],
+    own_ciks: Mapping[str, frozenset[str]],
+    own_windows: Mapping[str, Sequence[ListedWindow]],
+    *,
+    dry_run: bool,
+) -> list[dict]:
+    """Delete (or list) `tickers`' rows of `spec` filed by a CIK outside the ticker's entity, or outside its windows for a dated table."""
     if not tickers or not context.store.exists(spec.table):
         return []
-    foreign = _foreign_rows(context, spec, tickers, own_ciks)
+    foreign = _foreign_rows(context, spec, tickers, own_ciks, own_windows)
     records = removal_records(spec.table.name, foreign, spec)
     if not dry_run:
         for (ticker, cik), group in foreign.groupby(["ticker", spec.cik_col], sort=True):
@@ -211,10 +241,10 @@ def propagate_identity(
     changed = _changed({ticker: scope.scope_changed_at for ticker, scope in scopes.items()}, run_date, every=every_ticker)
     if changed:
         context.log.info("identity-propagate: %d ticker lineage scope(s) to re-check: %s", len(changed), ", ".join(changed))
-    own_ciks = _own_ciks(resolver)
+    own_ciks, own_windows = _own_ciks(resolver), _own_windows(resolver)
     records: list[dict] = []
     for spec in PURGE_TABLES:
-        records += _purge(context, spec, changed, own_ciks, dry_run=dry_run)
+        records += _purge(context, spec, changed, own_ciks, own_windows, dry_run=dry_run)
     scope_ciks = {ticker: frozenset(scope.event_ciks) | {window.cik for window in scope.windows} for ticker, scope in scopes.items()}
     reparsed = {} if dry_run else _reparse_bulk(context, changed, scope_ciks)
     records += _refresh_insider(context, resolver, changed, dry_run=dry_run)

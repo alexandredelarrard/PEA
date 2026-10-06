@@ -208,8 +208,9 @@ def test_a_contraction_purges_the_removed_cik_in_every_family_and_warns_once_per
     print("  ALB's history rebuilt (delete + recompute) and its merged history rebuilt in full. Validated.")
 
 
-def test_a_sibling_cik_of_the_entity_survives_the_purge(sqlite_store, tmp_path, monkeypatch, stubs):
-    """AC-022: T-Mobile USA's rows under TMUS are the entity's own; only the foreign filer's go."""
+def test_a_sibling_cik_of_the_entity_survives_the_purge_except_its_event_filings(sqlite_store, tmp_path, monkeypatch, stubs):
+    """AC-022 with P35: T-Mobile USA's facts under TMUS are the entity's own; its 8-Ks (an event-only CIK) and the
+    foreign filer's rows go."""
     context = _context(sqlite_store, tmp_path)
     for table in (Tables.sec_8k, Tables.fundamentals_facts):
         sqlite_store.save(
@@ -219,12 +220,13 @@ def test_a_sibling_cik_of_the_entity_survives_the_purge(sqlite_store, tmp_path, 
 
     prop.propagate_identity(context, list(ROSTER), as_of=RUN_DATE)
 
-    for table in (Tables.sec_8k, Tables.fundamentals_facts):
+    expected = {Tables.sec_8k: {TMUS: 2}, Tables.fundamentals_facts: {TMUS: 2, TMO_USA: 2}}
+    for table, want in expected.items():
         rows = sqlite_store.load(table, columns=["ticker", "cik"])
         counts = rows.groupby("cik").size().to_dict()
-        assert counts == {TMUS: 2, TMO_USA: 2}, (table.name, counts)
-    print("\n=== SANITY CHECK: sibling CIK (AC-022) ===")
-    print("  TMUS: T-Mobile USA (event CIK of the entity) 2 rows kept per table; the foreign 0001727074 filing purged")
+        assert counts == want, (table.name, counts)
+    print("\n=== SANITY CHECK: sibling CIK (AC-022, P35) ===")
+    print("  TMUS: T-Mobile USA's facts kept (the history seam rule judges them), its 8-K purged (no window); the foreign 0001727074 filing purged")
 
 
 def test_a_cik_with_no_digit_is_never_judged_as_the_validator_rules(sqlite_store, tmp_path, monkeypatch, stubs):

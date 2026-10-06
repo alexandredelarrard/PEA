@@ -36,7 +36,7 @@ def _messages(caplog: pytest.LogCaptureFixture, level: int) -> list[str]:
 
 
 # --------------------------------------------------------------------------- #
-# (a) UNION over event CIKs                                                    #
+# (a) UNION over event CIKs (insider forms; 8-Ks split since P35)              #
 # --------------------------------------------------------------------------- #
 def test_union_walks_every_event_cik_in_order_first_writer_wins_and_logs_contributions(monkeypatch, caplog):
     built = patch_company(
@@ -50,14 +50,14 @@ def test_union_walks_every_event_cik_in_order_first_writer_wins_and_logs_contrib
     stats: dict[str, int] = {}
     with caplog.at_level(logging.INFO, logger=LOGGER):
         out = resolve_registrant_filings(
-            _XOM.filing_scope("XOM"), ["8-K", "8-K/A"], since=pd.Timestamp("2000-01-01"), done_accessions=frozenset({"done"}), stats=stats
+            _XOM.filing_scope("XOM"), ["4", "4/A"], since=pd.Timestamp("2000-01-01"), done_accessions=frozenset({"done"}), stats=stats
         )
 
     assert [f.accession_number for f in out] == ["e", "c", "b", "a", "d"]
     assert built == [99, 34088, 2115436]
     assert stats == {"skipped_existing": 1, "foreign_skipped": 0}
-    assert _messages(caplog, logging.INFO) == ["XOM: 8-K,8-K/A listed by union across 2 from 0000000099, 2 from 0000034088, 1 from 0002115436"]
-    print("\n=== SANITY: UNION over event CIKs ===")
+    assert _messages(caplog, logging.INFO) == ["XOM: 4,4/A listed by union across 2 from 0000000099, 2 from 0000034088, 1 from 0002115436"]
+    print("\n=== SANITY: UNION over event CIKs (insider forms) ===")
     print(f"  order {[f.accession_number for f in out]}; CIKs walked {built}; first writer wins; 'done' skipped once")
 
 
@@ -128,20 +128,20 @@ def test_listing_ciks_is_the_scope_superset_roster_first():
 
 def test_index_union_lists_every_event_cik_and_a_co_indexed_accession_goes_to_its_date_owner():
     df = _rows(
-        ("0000034088", "8-K", "2026-05-01", "pred"),
-        ("0002115436", "8-K", "2026-07-07", "suc"),
-        ("0000000099", "8-K", "2025-01-01", "event"),
-        ("0000034088", "8-K", "2026-08-03", "shared"),
-        ("0002115436", "8-K", "2026-08-03", "shared"),
-        ("0000555555", "8-K", "2026-08-04", "foreign"),
+        ("0000034088", "4", "2026-05-01", "pred"),
+        ("0002115436", "4", "2026-07-07", "suc"),
+        ("0000000099", "4", "2025-01-01", "event"),
+        ("0000034088", "4", "2026-08-03", "shared"),
+        ("0002115436", "4", "2026-08-03", "shared"),
+        ("0000555555", "4", "2026-08-04", "foreign"),
         ("0000034088", "10-K", "2026-02-01", "other-form"),
     )
 
-    out = resolve_registrant_entries(_XOM.filing_scope("XOM"), df, ["8-K"])
+    out = resolve_registrant_entries(_XOM.filing_scope("XOM"), df, ["4"])
 
     assert out["accession"].tolist() == ["event", "pred", "suc", "shared"]
     assert out.loc[out["accession"] == "shared", "cik"].item() == "0002115436"  # the window that owns 2026-08-03
-    print("\n=== SANITY: index UNION ===")
+    print("\n=== SANITY: index UNION (insider forms) ===")
     print("  every event CIK listed, oldest first; a co-indexed accession once (its date owner); a foreign CIK and other forms dropped")
 
 

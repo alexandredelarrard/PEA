@@ -3,7 +3,8 @@ and the vendor-series continuity at register cutovers.
 
 Reads only through `context.store`. The pending removals are the ones `identity-propagate` would purge,
 recomputed from the stored rows and the lineage: a filing of any CIK of the entity (margin filings and
-siblings included) is own; a null CIK is never judged. Foreign rows and invariant breaches fail the check;
+siblings included) is own, an 8-K / 13D / 13G only inside a seam-widened window of its CIK; a null CIK is
+never judged. Foreign rows and invariant breaches fail the check;
 flags needing a manual decision are information.
 """
 
@@ -19,7 +20,17 @@ import pandas as pd
 from src.context import Context
 from src.data_store.schema import Tables
 from src.utils import cutover_continuity as cc
-from src.utils.filer_tables import PURGE_TABLES, REMOVAL_COLUMNS, FilerTable, judged_cik_mask, own_filer_mask, removal_records
+from src.utils.cik_windows import widen_seams
+from src.utils.filer_tables import (
+    PURGE_TABLES,
+    REMOVAL_COLUMNS,
+    FilerTable,
+    ListedWindow,
+    judged_cik_mask,
+    own_filer_mask,
+    removal_records,
+    windowed_filer_mask,
+)
 from src.utils.identity_flags import FLAG_COLUMNS, KIND_ORDER, MARGIN, cik_activity, identity_flags, log_identity_flags
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
 from src.validate.result import CheckResult, Finding
@@ -81,14 +92,48 @@ def _entity_ciks(lineage: pd.DataFrame) -> dict[str, frozenset[str]]:
     return {normalise_ticker(t): ciks_by_entity[e] for t, e in zip(named["canonical_ticker"], named["entity_id"], strict=True)}
 
 
-def _foreign_in_table(context: Context, spec: FilerTable, tickers: Sequence[str], ciks: dict[str, frozenset[str]]) -> list[dict]:
-    """One removal record per (ticker, filer CIK) of `spec` outside the ticker's entity."""
+def _listed_windows(lineage: pd.DataFrame) -> dict[str, tuple[ListedWindow, ...]]:
+    """`{ticker: (cik, listed_from, listed_to) per seam-widened window}` from the `cik_window` rows; a ticker with none is absent."""
+    rows = lineage[lineage["role"].eq(_ROLE_WINDOW)]
+    named = lineage[lineage["role"].ne("symbol") & lineage["canonical_ticker"].notna()]
+    ticker_of = dict(zip(named["entity_id"], named["canonical_ticker"].map(normalise_ticker), strict=True))
+    declared: dict[str, list[tuple[str, pd.Timestamp | None, pd.Timestamp | None]]] = {}
+    for entity, cik, start, end in zip(
+        rows["entity_id"], rows["cik"], pd.to_datetime(rows["valid_from"]), pd.to_datetime(rows["valid_to"]), strict=True
+    ):
+        if entity in ticker_of:
+            declared.setdefault(ticker_of[entity], []).append(
+                (pad_cik(cik), None if pd.isna(start) or start <= SENTINEL else start, None if pd.isna(end) else end)
+            )
+    return {ticker: tuple((cik, lo, hi) for cik, _, _, lo, hi in widen_seams(windows)) for ticker, windows in declared.items()}
+
+
+def _outside_windows(context: Context, spec: FilerTable, ticker: str, filers: list, windows: dict[str, tuple[ListedWindow, ...]]) -> list[dict]:
+    """Removal records of a dated table's rows from the entity's own `filers` that no window of their CIK admits."""
+    if not filers or normalise_ticker(ticker) not in windows:
+        return []
+    rows = context.store.load(
+        spec.table, columns=["ticker", spec.cik_col, spec.date_col, spec.key_col], where={"ticker": ticker, spec.cik_col: filers}
+    )
+    if rows is None or rows.empty:
+        return []
+    outside = rows[~windowed_filer_mask(rows["ticker"], rows[spec.cik_col].map(pad_cik), rows[spec.date_col], windows)]
+    return removal_records(spec.table.name, outside, spec) if not outside.empty else []
+
+
+def _foreign_in_table(
+    context: Context, spec: FilerTable, tickers: Sequence[str], ciks: dict[str, frozenset[str]], windows: dict[str, tuple[ListedWindow, ...]]
+) -> list[dict]:
+    """One removal record per (ticker, filer CIK) of `spec` outside the ticker's entity, or outside its windows for a dated table."""
     records: list[dict] = []
     columns = ["ticker", spec.cik_col, spec.date_col, spec.key_col]
     for ticker in tickers:
         filers = pd.Series(context.store.distinct(spec.table, spec.cik_col, where={"ticker": ticker}), dtype=object)
         padded = filers.map(pad_cik)
-        foreign = filers[judged_cik_mask(filers) & ~own_filer_mask(pd.Series(ticker, index=filers.index, dtype=object), padded, ciks)].tolist()
+        judged, own = judged_cik_mask(filers), own_filer_mask(pd.Series(ticker, index=filers.index, dtype=object), padded, ciks)
+        if spec.dated:
+            records += _outside_windows(context, spec, ticker, filers[judged & own].tolist(), windows)
+        foreign = filers[judged & ~own].tolist()
         if not foreign:
             continue
         rows = context.store.load(spec.table, columns=columns, where={"ticker": ticker, spec.cik_col: foreign})
@@ -97,13 +142,15 @@ def _foreign_in_table(context: Context, spec: FilerTable, tickers: Sequence[str]
     return records
 
 
-def pending_removals(context: Context, lineage: pd.DataFrame, tickers: Sequence[str]) -> pd.DataFrame:
-    """The rows `identity-propagate` would purge from every filer-CIK table, as `REMOVAL_COLUMNS` records."""
-    ciks = _entity_ciks(lineage)
+def pending_removals(context: Context, lineage: pd.DataFrame, tickers: Sequence[str], *, dated: bool = True) -> pd.DataFrame:
+    """The rows `identity-propagate` would purge from every filer-CIK table, as `REMOVAL_COLUMNS` records.
+
+    `dated=False` skips the window rule (a pre-cutover lineage declares no dated windows)."""
+    ciks, windows = _entity_ciks(lineage), _listed_windows(lineage) if dated else {}
     records: list[dict] = []
     for spec in PURGE_TABLES:
         if context.store.exists(spec.table):
-            records += _foreign_in_table(context, spec, tickers, ciks)
+            records += _foreign_in_table(context, spec, tickers, ciks, windows)
     return pd.DataFrame(records, columns=list(REMOVAL_COLUMNS))
 
 
@@ -183,7 +230,7 @@ def _removal_findings(removals: pd.DataFrame) -> list[Finding]:
         Finding.at(
             8,
             f"{r.rows} row(s) / {r.keys} filing(s) in {r.table} filed by CIK {r.cik} ({r.first_filed}..{r.last_filed})",
-            "every row filed by a CIK of the ticker's entity (AC-024)",
+            "every row filed by a CIK of the ticker's entity; an 8-K / 13D / 13G inside that CIK's window (AC-024, P35)",
             field="foreign_rows",
             ticker=str(r.ticker),
             table=r.table,
@@ -306,7 +353,7 @@ def continuity_flags(context: Context, lineage: pd.DataFrame, scope: Sequence[st
 
 def _unmigrated_report(context: Context, lineage: pd.DataFrame, scope: list[str]) -> IdentityReport:
     """Foreign rows against a pre-cutover lineage; its invariants and flags need the new shape and are skipped."""
-    removals = pending_removals(context, lineage, scope)
+    removals = pending_removals(context, lineage, scope, dated=False)
     findings = [
         Finding.at(
             2,

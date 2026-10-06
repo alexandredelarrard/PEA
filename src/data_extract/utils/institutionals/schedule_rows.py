@@ -125,16 +125,16 @@ def schedule_filing_rows(stamp: FilingStamp, spec: ScheduleSpec) -> list[dict[st
 
 
 def schedule_is_subject(ticker: str, cik: str, stamp: FilingStamp, scope: EdgarScope) -> bool:
-    """False when the SGML header names subject companies and none is one of the ticker's CIKs.
+    """False when the SGML header names subject companies and none is a CIK that is the ticker's company on the filing date.
 
     A header without subject companies defers to the issuer guard of `schedule_ticker_rows`; an
     unreadable header (an SEC error page) raises `TransientReadError`."""
     subjects = header_subject_ciks(stamp.filing)
-    return not subjects or not subjects.isdisjoint(scope.filing_scope(ticker, cik).event_ciks)
+    return not subjects or not subjects.isdisjoint(scope.filing_scope(ticker, cik).ciks_on(stamp.filed))
 
 
 def schedule_ticker_rows(ticker: str, cik: str, stamp: FilingStamp, scope: EdgarScope, spec: ScheduleSpec) -> list[dict[str, Any]]:
-    """One schedule's rows stamped with `ticker`; [] when the parsed issuer CIK is another company's.
+    """One schedule's rows stamped with `ticker`; [] when the parsed issuer CIK is not the ticker's company on the filing date.
 
     An unresolvable CIK on either side means unknown and does not reject. A parse failure raises
     `ParseFailureError` naming the accession; a transient SEC failure raises `TransientReadError`."""
@@ -144,7 +144,7 @@ def schedule_ticker_rows(ticker: str, cik: str, stamp: FilingStamp, scope: Edgar
         raise
     except Exception as exc:  # noqa: BLE001 -- filing parser boundary
         raise ParseFailureError(f"{spec.label} accession {stamp.accession_number} could not be parsed") from exc
-    ticker_ciks = frozenset(scope.filing_scope(ticker, cik).event_ciks)
+    ticker_ciks = scope.filing_scope(ticker, cik).ciks_on(stamp.filed)
     issuer_cik = pad_cik(rows[0].get("cik")) if rows else ""
     if ticker_ciks and issuer_cik and issuer_cik not in ticker_ciks:
         return []

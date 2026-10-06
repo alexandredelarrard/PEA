@@ -3,9 +3,10 @@
 Filings follow the legal registrant, whose CIK changes on a reorganisation or domestication.
 `registrant_cutover.json` declares each such ticker as an ordered, contiguous chain of evidenced
 `[valid_from, valid_to)` segments, validated strictly at load; the lineage build turns it into dated
-CIK windows. `FORM_POLICY` decides per form whether filings UNION across a ticker's event CIKs or
-SPLIT by its CIK windows; `resolve_registrant_entries` applies it to local EDGAR index rows and
-`resolve_registrant_filings` to `Company` listings, both by CIK only, never by symbol.
+CIK windows. `FORM_POLICY` decides per form whether filings UNION across a ticker's event CIKs
+(insider forms) or SPLIT by its CIK windows (everything else); `resolve_registrant_entries` applies
+it to local EDGAR index rows and `resolve_registrant_filings` to `Company` listings, both by CIK
+only, never by symbol.
 """
 
 from __future__ import annotations
@@ -177,27 +178,27 @@ def _check_ciks_unique_across_entries(registrants: dict[str, Registrant]) -> Non
 class Combine(StrEnum):
     """How a form's filings combine across a registrant boundary."""
 
-    UNION = "union"  # events: additive, because an event happened whoever indexed it
-    SPLIT = "split"  # consolidating: one registrant owns each date, disjoint by construction
+    UNION = "union"  # insider forms: every CIK of the entity, each row stamped with its lineage role
+    SPLIT = "split"  # one registrant owns each date: a CIK's filings count only inside its seam-widened window
 
 
 #: Every form this repo fetches and how it combines across a registrant boundary; an absent form raises (fail closed).
-#: Event forms UNION (an event happened whoever indexed it); periodic reports, their carved text and the
-#: proxy family SPLIT, since one registrant's accounts, narrative or board must never blend with another's.
+#: Insider forms UNION (an acquired company's rows are kept with their role); 8-Ks, schedules, periodic reports
+#: and the proxy family SPLIT, since a CIK speaks for the company only on the dates it is the company.
 FORM_POLICY: dict[str, Combine] = {
     # events -- 8-K
-    "8-K": Combine.UNION,
-    "8-K/A": Combine.UNION,
-    "8-K12B": Combine.UNION,
-    # events -- beneficial ownership; both spellings, since EDGAR renamed the form types and matching is exact.
-    "SC 13D": Combine.UNION,
-    "SC 13D/A": Combine.UNION,
-    "SCHEDULE 13D": Combine.UNION,
-    "SCHEDULE 13D/A": Combine.UNION,
-    "SC 13G": Combine.UNION,
-    "SC 13G/A": Combine.UNION,
-    "SCHEDULE 13G": Combine.UNION,
-    "SCHEDULE 13G/A": Combine.UNION,
+    "8-K": Combine.SPLIT,
+    "8-K/A": Combine.SPLIT,
+    "8-K12B": Combine.SPLIT,
+    # events -- beneficial ownership, by subject company; both spellings, since EDGAR renamed the form types and matching is exact.
+    "SC 13D": Combine.SPLIT,
+    "SC 13D/A": Combine.SPLIT,
+    "SCHEDULE 13D": Combine.SPLIT,
+    "SCHEDULE 13D/A": Combine.SPLIT,
+    "SC 13G": Combine.SPLIT,
+    "SC 13G/A": Combine.SPLIT,
+    "SCHEDULE 13G": Combine.SPLIT,
+    "SCHEDULE 13G/A": Combine.SPLIT,
     # events -- insider transactions
     "3": Combine.UNION,
     "4": Combine.UNION,
@@ -224,8 +225,8 @@ def combine_for(forms: Sequence[str]) -> Combine:
     if unknown:
         raise ValueError(
             f"no registrant-combination policy declared for form(s) {unknown}. Add them to "
-            "`FORM_POLICY` as UNION (an event: additive across a boundary) or SPLIT (a "
-            "consolidating disclosure: one registrant owns each date). This RAISES rather "
+            "`FORM_POLICY` as UNION (every CIK of the entity, role stamped per row) or SPLIT "
+            "(one registrant owns each date). This RAISES rather "
             "than defaulting because a silent default is how the registrant-cutover defect "
             "stayed invisible for a year."
         )
@@ -289,7 +290,7 @@ def resolve_registrant_filings(
     """Every filing of `forms` in `scope`, oldest first, listed by CIK only.
 
     UNION (`FORM_POLICY`) lists every event CIK; SPLIT lists each CIK window and keeps its filings
-    inside the seam-widened dates. A filing from a CIK outside the listed CIKs is skipped and counted
+    inside the seam-widened dates, so an event-only CIK contributes nothing. A filing from a CIK outside the listed CIKs is skipped and counted
     (`stats["foreign_skipped"]`). `since` and `done_accessions` filter before the sort.
     """
     policy = combine_for(forms)

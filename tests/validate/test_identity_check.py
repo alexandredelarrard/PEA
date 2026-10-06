@@ -239,30 +239,33 @@ def _seed_store(store: Any, lineage: pd.DataFrame) -> None:
     )
 
 
-def test_the_validator_counts_foreign_rows_and_keeps_margin_and_sibling_filings_as_own(sqlite_store):
-    """AC-024/AC-034: only AllianceBernstein's filings under ALB are pending removals."""
+def test_the_validator_counts_foreign_rows_and_keeps_margin_filings_as_own(sqlite_store):
+    """AC-024/AC-034 with P35: AllianceBernstein's filings under ALB and the event-only sibling's 8-K under TMUS are pending."""
     _seed_store(sqlite_store, _store_lineage())
     sqlite_store.save(Tables.symbol_tenure, _evidence([(ALB, "form345", "2006-01-02", None)]).assign(evidence="", evidence_period=""))
 
     report = check_identity(_context(sqlite_store))
 
     removals = report.removals
-    assert list(zip(removals["table"], removals["ticker"], removals["cik"], removals["rows"], strict=True)) == [("sec_8k", "ALB", AB, 4)], removals
+    got = list(zip(removals["table"], removals["ticker"], removals["cik"], removals["rows"], strict=True))
+    assert got == [("sec_8k", "ALB", AB, 4), ("sec_8k", "TMUS", TMO_USA, 2)], removals
     assert removals.iloc[0]["first_filed"] == "2019-03-01" and removals.iloc[0]["last_filed"] == "2021-08-01"
     assert report.result.status == "fail"
     foreign = [f for f in report.result.findings if f.field == "foreign_rows"]
-    assert len(foreign) == 1 and foreign[0].ticker == "ALB" and foreign[0].score >= 7
-    assert report.result.metrics["foreign_rows"] == 4
+    assert {f.ticker for f in foreign} == {"ALB", "TMUS"} and all(f.score >= 7 for f in foreign)
+    assert report.result.metrics["foreign_rows"] == 6
 
     print("\n=== SANITY CHECK: identity validator foreign rows ===")
     print(removals.to_string(index=False))
-    print("  OK: the foreign filer's 4 rows are pending; TMUS's sibling, REG's margin filing and the null-CIK row are own or not judged")
+    print(
+        "  OK: the foreign filer's 4 rows and the event-only sibling's 8-K (P35) are pending; REG's margin filing and the null-CIK row are own or not judged"
+    )
 
 
 def test_a_clean_lineage_and_clean_tables_pass(sqlite_store):
     lineage = _store_lineage()
     _seed_store(sqlite_store, lineage)
-    sqlite_store.delete(Tables.sec_8k, where={"cik": [AB]})
+    sqlite_store.delete(Tables.sec_8k, where={"cik": [AB, TMO_USA]})
 
     report = check_identity(_context(sqlite_store))
 
@@ -328,7 +331,7 @@ def test_a_pre_cutover_lineage_is_read_as_membership_rows_and_reported_unmigrate
     assert report.result.metrics["foreign_rows"] == 4 and report.flags.empty
     print("\n=== SANITY CHECK: validator before the cutover (old-shape entity_lineage) ===")
     print(f"  {report.result.summary()}")
-    print("  OK: no KeyError; membership CIKs and roster CIKs are own, AllianceBernstein's 4 rows are pending, invariants skipped")
+    print("  OK: no KeyError; membership CIKs and roster CIKs are own (no dated windows), AllianceBernstein's 4 rows are pending, invariants skipped")
 
 
 # --------------------------------------------------------------------------- #

@@ -98,13 +98,15 @@ HISTORY_TABLE = "fundamentals_history_sec"
 HYPOTHESES_FILE = Path("sec") / "expected_lineage_changes.json"
 CANONICAL_ROLES = frozenset({"canonical_current", "canonical_predecessor"})
 _TABLE_POLICY = {
-    "sec_8k": Combine.UNION,
-    "sec_8k_votes": Combine.UNION,
-    "sec_13d": Combine.UNION,
-    "sec_13d_transactions": Combine.UNION,
-    "sec_13g": Combine.UNION,
+    "sec_8k": Combine.SPLIT,
+    "sec_8k_votes": Combine.SPLIT,
+    "sec_13d": Combine.SPLIT,
+    "sec_13d_transactions": Combine.SPLIT,
+    "sec_13g": Combine.SPLIT,
     "insider_transactions": Combine.UNION,
 }
+#: Event-filing tables (8-K, 13D/13G by subject company) whose rows belong to a ticker only inside a window of their CIK.
+_DATED_TABLES = frozenset(spec.table.name for spec in PURGE_TABLES if spec.dated)
 _NON_COMMON = frozenset({"preferred", "debt", "warrant", "unit", "right", "unclassified"})
 _SUPERSEDED = frozenset({"superseded", "cancelled_security"})
 _INSIDER_KEY = ["accession_number", "security_type", "row_sequence"]
@@ -125,6 +127,8 @@ REASONS = frozenset(
         "no_master_interval",
         # filing lineage
         "foreign_filer_purge",
+        "acquired_constituent_purge",
+        "outside_cik_window",
         "register_window",
         "seam_margin",
         "same_period_rule",
@@ -449,8 +453,12 @@ def filing_reason(
     scope: FilingScope | None,
     old_ciks: frozenset[str],
     frontier: pd.Timestamp | None,
+    dated: bool = False,
 ) -> str:
-    """The rule explaining one added or removed accession, '' when none does."""
+    """The rule explaining one added or removed accession, '' when none does.
+
+    `dated`: an event-filing table, whose removed rows from an event-only CIK or outside the CIK's widened window are named
+    as such (P35)."""
     if scope is None:
         return ""
     windows = [w for w in scope.windows if w.cik == cik]
@@ -460,8 +468,10 @@ def filing_reason(
     if change == "removed":
         if cik not in scope.event_ciks:
             return "foreign_filer_purge"
+        if dated and not windows:
+            return "acquired_constituent_purge"
         if consolidating and known and not admitted:
-            return "register_window"
+            return "outside_cik_window" if dated else "register_window"
         return ""
     if cik not in scope.event_ciks:
         return ""
@@ -484,8 +494,8 @@ def filing_diff(
     old_ciks: Mapping[str, frozenset[str]],
     co_registrants: Collection[str] = (),
 ) -> pd.DataFrame:
-    """One row per accession added to or removed from a ticker in a filer-CIK table; an insider accession of a
-    co-registrant CIK leaves by its own purge."""
+    """One row per accession added to or removed from a ticker in a filer-CIK table; an insider or event-filing accession
+    of a co-registrant CIK leaves by its own purge."""
     key = ["ticker", "accession"]
     merged = before.merge(after, on=key, how="outer", suffixes=("_b", "_a"), indicator=True)
     merged = merged[merged["_merge"].ne("both")]
@@ -509,7 +519,8 @@ def filing_diff(
     out["consolidating"] = _consolidating(table, out["form"])
     # the same accession leaving one spelling of a ticker for its normalised spelling
     moved = out.groupby("accession")["canonical_company"].transform(lambda s: s.map(normalise_market_symbol).nunique() == 1 and s.nunique() > 1)
-    co = {pad_cik(c) for c in co_registrants} if table == Tables.insider_transactions.name else set()
+    dated = table in _DATED_TABLES
+    co = {pad_cik(c) for c in co_registrants} if dated or table == Tables.insider_transactions.name else set()
     reasons = []
     for row, is_moved in zip(out.itertuples(index=False), moved, strict=True):
         if is_moved:
@@ -521,7 +532,14 @@ def filing_diff(
         scope = scopes.get(normalise_ticker(row.canonical_company))
         reasons.append(
             filing_reason(
-                row.change, row.cik, row.filed, row.consolidating, scope, old_ciks.get(normalise_ticker(row.canonical_company), frozenset()), frontier
+                row.change,
+                row.cik,
+                row.filed,
+                row.consolidating,
+                scope,
+                old_ciks.get(normalise_ticker(row.canonical_company), frozenset()),
+                frontier,
+                dated,
             )
         )
     out["reason"] = reasons

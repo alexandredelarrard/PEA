@@ -1,7 +1,7 @@
 """`resolve_registrant_filings` -- which CIKs a ticker's filings are listed from, and how they combine.
 
-Listing reads only the ticker's `FilingScope` (`entity_lineage`): event forms UNION every event CIK,
-consolidating forms SPLIT by the CIK windows, widened 31 days at a seam. No symbol, current or
+Listing reads only the ticker's `FilingScope` (`entity_lineage`): insider forms UNION every event CIK,
+every other form (8-Ks and schedules too, P35) SPLITs by the CIK windows, widened 31 days at a seam. No symbol, current or
 historical, ever reaches `edgar.Company`: a reused symbol resolves to whoever holds it TODAY, which is
 how ~1,750 foreign 8-Ks reached `sec_8k`. A filing whose CIK is outside the listed CIKs is skipped and
 counted, never raised.
@@ -53,17 +53,17 @@ def test_an_undeclared_form_raises_and_the_message_names_it():
 
 def test_a_mixed_policy_list_raises_at_the_call_site():
     with pytest.raises(ValueError, match="mix"):
-        combine_for(["8-K", "10-K"])
+        combine_for(["4", "8-K"])
     print("\n=== SANITY CHECK: a mixed forms list raises ===")
-    print("  ['8-K', '10-K'] mixes union and split -> refused. Validated.")
+    print("  ['4', '8-K'] mixes union and split -> refused. Validated.")
 
 
 @pytest.mark.parametrize(
     ("forms", "expected"),
     [
-        (["8-K", "8-K/A"], Combine.UNION),
-        (["SC 13D", "SCHEDULE 13D/A"], Combine.UNION),
-        (["SC 13G", "SC 13G/A", "SCHEDULE 13G", "SCHEDULE 13G/A"], Combine.UNION),
+        (["8-K", "8-K/A"], Combine.SPLIT),
+        (["SC 13D", "SCHEDULE 13D/A"], Combine.SPLIT),
+        (["SC 13G", "SC 13G/A", "SCHEDULE 13G", "SCHEDULE 13G/A"], Combine.SPLIT),
         (["3", "4", "5"], Combine.UNION),
         (["10-K", "10-K/A", "10-Q", "10-Q/A"], Combine.SPLIT),
         (["10-K", "10-Q"], Combine.SPLIT),
@@ -149,11 +149,11 @@ def test_a_renamed_issuer_keeps_its_old_symbol_era_through_its_cik(monkeypatch, 
 
 
 # --------------------------------------------------------------------------- #
-# AC-009: sibling CIKs on event forms                                          #
+# AC-009 as amended by P35: sibling CIKs                                       #
 # --------------------------------------------------------------------------- #
-def test_a_co_registrant_sibling_is_listed_for_events_but_never_for_consolidating_forms(monkeypatch):
-    """AC-009 (TMUS): T-Mobile USA co-files 8-Ks with T-Mobile US. Its event CIK is unioned (a co-indexed
-    accession once); its own 10-Ks are a subsidiary's accounts and are not listed."""
+def test_a_co_registrant_sibling_is_never_listed_and_a_joint_8k_comes_through_the_parent(monkeypatch):
+    """AC-009 (TMUS) under P35: T-Mobile USA is an event-only CIK, so neither its own 8-Ks nor its 10-Ks are
+    listed; an 8-K it co-files with T-Mobile US comes through the parent's window."""
     identity = dated_identity(
         [("TMUS", "0001283699", "cik_window", SENTINEL, None), ("TMUS", "0001330849", "cik_event", SENTINEL, None)],
         {"TMUS": "0001283699"},
@@ -166,18 +166,18 @@ def test_a_co_registrant_sibling_is_listed_for_events_but_never_for_consolidatin
             1330849: [shared, filing("sub-8k", "2024-09-01", 1330849), filing("sub-10k", "2024-02-02", 1330849)],
         },
     )
-    assert _list(identity, "TMUS", ["8-K"]) == ["parent-8k", "parent-10k", "sub-10k", "joint-8k", "sub-8k"]
-    assert sorted(set(built)) == [1283699, 1330849]
+    assert _list(identity, "TMUS", ["8-K"]) == ["parent-8k", "parent-10k", "joint-8k"]
+    assert built == [1283699]
     built.clear()
     assert _list(identity, "TMUS", ["10-K"]) == ["parent-8k", "parent-10k", "joint-8k"]
     assert built == [1283699]
-    print("\n=== SANITY CHECK: AC-009 TMUS sibling ===")
-    print("  8-K: both CIKs listed, the joint accession once; 10-K: the parent's window only (stub returns every form)")
+    print("\n=== SANITY CHECK: AC-009 TMUS sibling (P35) ===")
+    print("  8-K and 10-K: the parent's window only, the joint 8-K through it; the sibling CIK is never walked (stub returns every form)")
 
 
-def test_a_predecessor_keeps_its_events_after_the_seam_but_not_its_accounts(monkeypatch):
-    """AC-009 (APA): Apache files 8-Ks and 10-Ks for years after APA Corp became the parent. Events
-    union; the subsidiary's consolidating filings beyond the 31-day margin are not the group's."""
+def test_a_predecessor_keeps_neither_its_events_nor_its_accounts_after_the_seam(monkeypatch):
+    """AC-009 (APA) under P35: Apache files 8-Ks and 10-Ks for years after APA Corp became the parent; beyond
+    the 31-day margin they are a subsidiary's, for events as for accounts."""
     identity = dated_identity(
         [("APA", "0000006769", "cik_window", SENTINEL, "2021-03-01"), ("APA", "0001841666", "cik_window", "2021-03-01", None)],
         {"APA": "0001841666"},
@@ -189,10 +189,10 @@ def test_a_predecessor_keeps_its_events_after_the_seam_but_not_its_accounts(monk
             1841666: [filing("apa-2022", "2022-02-23", 1841666)],
         },
     )
-    assert _list(identity, "APA", ["8-K"]) == ["apache-2020", "apa-2022", "apache-sub-2023"]
+    assert _list(identity, "APA", ["8-K"]) == ["apache-2020", "apa-2022"]
     assert _list(identity, "APA", ["10-K"]) == ["apache-2020", "apa-2022"]
-    print("\n=== SANITY CHECK: AC-009 APA ===")
-    print("  8-K keeps Apache's 2023 filing (event); 10-K drops it (a subsidiary's accounts two years past the seam)")
+    print("\n=== SANITY CHECK: AC-009 APA (P35) ===")
+    print("  8-K and 10-K both drop Apache's 2023 filing (a subsidiary two years past the seam)")
 
 
 # --------------------------------------------------------------------------- #
@@ -235,7 +235,7 @@ def test_a_joint_filing_inside_the_margin_goes_to_the_window_that_owns_its_date(
 
 def test_an_event_filing_listed_by_two_ciks_is_stamped_with_the_cik_whose_window_owns_its_date(monkeypatch):
     """F-006 (XOM shape): a holdco's listing also returns its predecessor's history under the holdco CIK.
-    When the holdco CIK sorts first, the event union must still stamp each accession with its window owner."""
+    When the holdco CIK sorts first, each 8-K must still be stamped with its window owner."""
     holdco, predecessor = "0000000001", "0000000002"
     identity = dated_identity(
         [("HC", predecessor, "cik_window", SENTINEL, "2026-07-01"), ("HC", holdco, "cik_window", "2026-07-01", None)], {"HC": holdco}
@@ -287,7 +287,7 @@ def test_split_over_a_five_window_chain_assigns_each_filing_once(monkeypatch):
 # --------------------------------------------------------------------------- #
 def test_an_uncurated_extra_cik_warns_lists_the_roster_cik_and_is_backlogged(tmp_path, monkeypatch, caplog):
     """No register entry, D3 off: the lineage build warns and backlogs the extra CIK; consolidating
-    forms list the roster CIK alone, event forms both."""
+    forms list the roster CIK alone, insider forms both, and 8-Ks (P35) the roster CIK alone."""
     (tmp_path / "configs" / "sec").mkdir(parents=True)
     tenure = pd.DataFrame(
         [
@@ -319,9 +319,10 @@ def test_an_uncurated_extra_cik_warns_lists_the_roster_cik_and_is_backlogged(tmp
     built = patch_company(monkeypatch, {100: [filing("pred", "2012-02-01", 100)], 200: [filing("succ", "2020-02-01", 200)]})
     assert _list(identity, "ABC", ["10-K"]) == ["succ"]
     assert built == [200]
-    assert _list(identity, "ABC", ["8-K"]) == ["pred", "succ"]
+    assert _list(identity, "ABC", ["8-K"]) == ["succ"]
+    assert _list(identity, "ABC", ["4"]) == ["pred", "succ"]
     print("\n=== SANITY CHECK: AC-006 uncurated multi-CIK ===")
-    print(f"  build WARNING + backlog row ({backlog['detail'].iloc[0][:70]}...); 10-K lists roster CIK 200 only; 8-K lists both")
+    print(f"  build WARNING + backlog row ({backlog['detail'].iloc[0][:70]}...); 10-K and 8-K list roster CIK 200 only; Form 4 lists both")
 
 
 # --------------------------------------------------------------------------- #

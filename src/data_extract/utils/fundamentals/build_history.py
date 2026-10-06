@@ -737,7 +737,7 @@ def keep_window_owner_filings(facts: pd.DataFrame, windows: Sequence[CikWindow])
     """
     if len(windows) < 2 or facts.empty or "cik" not in facts.columns:
         return facts
-    facts = facts[_filed_inside_window(facts, windows)]
+    facts = facts[pd.Series(_filed_inside_window(facts, windows), index=facts.index, dtype=bool)]
     ciks = pad_cik_series(facts["cik"]).tolist()
     periods = [None if pd.isna(day) else pd.Timestamp(day) for day in pd.to_datetime(facts["period_of_report"], errors="coerce")]
     reported = set(zip(periods, ciks, strict=True))
@@ -746,7 +746,7 @@ def keep_window_owner_filings(facts: pd.DataFrame, windows: Sequence[CikWindow])
         day is not None and (holder := owner[day]) is not None and cik != holder and (day, holder) in reported
         for day, cik in zip(periods, ciks, strict=True)
     ]
-    return facts[[not dropped for dropped in drop]]
+    return facts[pd.Series([not dropped for dropped in drop], index=facts.index, dtype=bool)]
 
 
 def _filed_inside_window(facts: pd.DataFrame, windows: Sequence[CikWindow]) -> list[bool]:

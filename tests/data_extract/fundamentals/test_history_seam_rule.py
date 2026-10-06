@@ -130,3 +130,13 @@ def test_the_history_build_applies_the_rule_before_the_event_ladder(sqlite_store
     assert "seam rule set aside 1 filing(s)" in caplog.text and "alphabet-q3" in caplog.text
     print("\n=== SANITY CHECK: build_fundamentals_history wiring ===")
     print("  the replay read `cik`, asked the identity layer for GOOGL's windows and set aside alphabet-q3 before the ladder")
+
+
+def test_f114_every_row_outside_its_window_leaves_an_empty_frame_with_its_columns():
+    facts = _facts()
+    late = facts[facts["accession_number"].eq("google-q2")].assign(filing_date=pd.Timestamp("2018-01-02"), accession_number="google-late")
+    kept = keep_window_owner_filings(late, _IDENTITY.filing_scope("GOOGL").windows)
+    assert kept.empty and list(kept.columns) == list(late.columns), list(kept.columns)
+    assert kept["accession_number"].tolist() == []
+    print("\n=== SANITY CHECK: F-114 all rows set aside ===")
+    print("  Google Inc's 10-Q filed in 2018, past its window: no row kept, every column kept (no KeyError downstream)")

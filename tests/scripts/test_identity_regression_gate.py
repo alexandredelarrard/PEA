@@ -330,6 +330,31 @@ def test_the_ticker_grain_residual_lists_a_stored_value_the_legacy_resolver_does
     )
 
 
+def test_f102_a_before_day_no_raw_row_carries_and_an_after_table_off_the_new_stamps_are_unexplained() -> None:
+    raw = _raw(TAPE_ROWS[:2])
+    raw["fails_quantity"] = raw["quantity"]
+    old = gate.legacy_tickers(_resolver(), raw["source_symbol"], raw["date"], UNIVERSE)
+    before = pd.DataFrame({"ticker": ["CB", "CB"], "date": pd.to_datetime(["2015-06-02", "2015-06-01"]), "fails_quantity": [2661.0, 50.0]})
+    residual = gate.grain_residual(raw, old, before, ["fails_quantity"], "ftd")
+    assert residual[["settlement_date", "old_canonical_issuer", "reason"]].values.tolist() == [["2015-06-01", "CB", ""]]
+
+    after = pd.DataFrame({"ticker": ["CB"], "date": [pd.Timestamp("2015-06-02")], "fails_quantity": [293.0]})
+    assert gate.after_grain_residual(raw, _master(), after, ["fails_quantity"], UNIVERSE, "ftd").empty
+    stale = pd.concat([after.assign(fails_quantity=2661.0), after.assign(date=pd.Timestamp("2015-06-01"), fails_quantity=50.0)])
+    off = gate.after_grain_residual(raw, _master(), stale, ["fails_quantity"], UNIVERSE, "ftd")
+    assert off[["settlement_date", "new_canonical_issuer", "reason", "source"]].values.tolist() == [
+        ["2015-06-01", "CB", "", "ftd_after_grain"],
+        ["2015-06-02", "CB", "", "ftd_after_grain"],
+    ]
+    brk = _raw([TAPE_ROWS[3]]).rename(columns={"quantity": "fails_quantity"})
+    brk_after = pd.DataFrame({"ticker": ["BRK-B"], "date": [pd.Timestamp("2015-01-05")], "fails_quantity": [4500.0]})
+    assert gate.after_grain_residual(brk, _master(), brk_after, ["fails_quantity"], UNIVERSE, "ftd").empty, "3 class A x 1,500"
+    print(
+        "sanity: a before CB day no raw row carries is unexplained; the after table must equal the new stamps' sum "
+        "(ACE 293, BRK-B 3 x 1,500), a stale or extra after day is unexplained"
+    )
+
+
 # --------------------------------------------------------------------------- filing lineage
 
 
@@ -665,6 +690,8 @@ def _make_after(store: Any, *, lose_own: bool) -> None:
     store.save(Tables.security_master, master)
     raw = _raw(TAPE_ROWS[:2]).rename(columns={"quantity": "fails_quantity"}).assign(description="", price=1.0, fails_value=1.0, period="201506a")
     store.save(Tables.sec_fails_to_deliver_security, raw)
+    after = {"ticker": ["CB"], "date": [pd.Timestamp("2015-06-02")], "fails_quantity": [293.0], "fails_value": [1.0], "period": ["201506a"]}
+    store.save(Tables.sec_fails_to_deliver, pd.DataFrame(after))  # rebuilt from the new stamps: ACE only
     store.delete(Tables.sec_8k, {"accession_number": "a-foreign"})
     if lose_own:
         store.delete(Tables.sec_8k, {"accession_number": "a-own"})

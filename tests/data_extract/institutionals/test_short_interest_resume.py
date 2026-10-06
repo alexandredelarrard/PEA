@@ -191,6 +191,13 @@ def test_full_refetches_every_served_day_and_keeps_no_legacy_row(sqlite_store, m
     assert _grain(sqlite_store) == {("LEN", "2015-01-02"): 9.0}, "a stored date the source no longer serves aborts before any write"
 
     sqlite_store.drop(Tables.sec_short_volume_security)
+    with pytest.raises(RuntimeError, match="2015-01-02"):
+        si.fetch_short_interest(_context(sqlite_store), UNIVERSE, pause=0.0, full=True, identity=_identity())
+    assert _grain(sqlite_store) == {("LEN", "2015-01-02"): 9.0}, "an empty raw table (cold start): the ticker table's day still guards"
+
+    sqlite_store.delete(Tables.short_interest, where={"date": [pd.Timestamp("2015-01-02")]})
+    legacy = pd.DataFrame({"date": pd.to_datetime(["2018-08-02"]), "ticker": "LEN", "short_volume": [99.0], "total_volume": [99.0]})
+    sqlite_store.save(Tables.short_interest, legacy)
     asked.clear()
     si.fetch_short_interest(_context(sqlite_store), UNIVERSE, pause=0.0, full=True, identity=_identity())
 
@@ -198,8 +205,9 @@ def test_full_refetches_every_served_day_and_keeps_no_legacy_row(sqlite_store, m
     assert min(asked) == pd.Timestamp("2017-12-29") and pd.Timestamp("2018-07-31") not in asked
     assert _grain(sqlite_store) == {("LEN", "2017-12-29"): 1.0, ("LEN", "2018-08-01"): 3.0, ("LEN", "2018-08-02"): 5.0, ("LEN", "2018-08-03"): 7.0}
     print("\n=== SANITY CHECK: RegSHO full ===")
-    print("  a stored 2015 date the source no longer serves aborts the run with both tables intact;")
-    print("  without it, full re-fetches 2017-12-29 plus 2018-08-01 on and the legacy 2015 ticker row is gone")
+    print("  a stored 2015 date the source no longer serves aborts the run with both tables intact, read from the raw table or,")
+    print("  when it is empty (cold start), from the ticker table; without it, full re-fetches 2017-12-29 plus 2018-08-01 on")
+    print("  and the legacy 2018-08-02 ticker value 99 is replaced")
 
 
 def test_full_aborts_before_replace_when_a_served_date_fails(sqlite_store, monkeypatch):

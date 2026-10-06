@@ -265,13 +265,17 @@ def _plan_days(
 
 
 def _stored_days(context: Context) -> set[pd.Timestamp]:
-    if not context.store.exists(Tables.sec_short_volume_security):
-        return set()
-    return {pd.Timestamp(day).normalize() for day in context.store.distinct(Tables.sec_short_volume_security, "date")}
+    """Every day stored in the raw table or in the ticker-grain table (which alone holds them before the first `full`)."""
+    days: set[pd.Timestamp] = set()
+    for table in (Tables.sec_short_volume_security, Tables.short_interest):
+        if context.store.exists(table):
+            days |= {pd.Timestamp(day).normalize() for day in context.store.distinct(table, "date")}
+    return days
 
 
 def _full_days(context: Context, today: pd.Timestamp) -> tuple[list[pd.Timestamp], set[pd.Timestamp]]:
-    """`(days to fetch, stored days)`: every business day from `FIRST_SERVED_DAY`, the extra served files, and every stored day."""
+    """`(days to fetch, stored days)`: every business day from `FIRST_SERVED_DAY`, the extra served files, and every
+    day stored in either table."""
     stored = _stored_days(context)
     days = set(pd.bdate_range(FIRST_SERVED_DAY, today)) | set(EXTRA_SERVED_DAYS) | stored
     return sorted(day for day in days if day <= today), stored

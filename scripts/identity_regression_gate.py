@@ -398,24 +398,33 @@ def tape_diff(raw: pd.DataFrame, master: pd.DataFrame, resolver: LegacyTapeResol
     )[TAPE_COLUMNS].reset_index(drop=True)
 
 
-def grain_residual(raw: pd.DataFrame, old: pd.Series, before: pd.DataFrame, value_cols: Sequence[str], source: str) -> pd.DataFrame:
-    """Ticker-days where the stored before table differs from the frozen resolver's sum over the raw rows
-    (rows the per-row diff cannot see); one unexplained tape row each."""
-    rows = raw.assign(old=old)[old.ne("")]
-    legacy = rows.groupby(["old", rows["date"].dt.normalize()])[list(value_cols)].sum().reset_index().rename(columns={"old": "ticker"})
-    days = set(pd.to_datetime(raw["date"]).dt.normalize())
-    stored = before[pd.to_datetime(before["date"]).dt.normalize().isin(days)].assign(date=lambda f: pd.to_datetime(f["date"]).dt.normalize())
-    both = stored[["ticker", "date", *value_cols]].merge(legacy, on=["ticker", "date"], how="outer", suffixes=("_before", "_legacy"))
+def _grain_mismatch(
+    stored: pd.DataFrame, computed: pd.DataFrame, value_cols: Sequence[str], labels: tuple[str, str]
+) -> tuple[pd.DataFrame, list[str]]:
+    """The (ticker, date) rows where `stored` and `computed` differ on a value column (a side missing counts), with evidence."""
+    left = stored[["ticker", "date", *value_cols]].assign(ticker=stored["ticker"].astype(str), date=pd.to_datetime(stored["date"]).dt.normalize())
+    for column in value_cols:
+        left[column] = pd.to_numeric(left[column], errors="coerce")
+    both = left.merge(computed, on=["ticker", "date"], how="outer", suffixes=(f"_{labels[0]}", f"_{labels[1]}"))
     differs = np.zeros(len(both), dtype=bool)
     for column in value_cols:
-        a = both[f"{column}_before"].to_numpy(dtype="float64")
-        b = both[f"{column}_legacy"].to_numpy(dtype="float64")
+        a = both[f"{column}_{labels[0]}"].to_numpy(dtype="float64")
+        b = both[f"{column}_{labels[1]}"].to_numpy(dtype="float64")
         differs |= ~(np.isclose(a, b, rtol=1e-9, atol=1e-6) | (np.isnan(a) & np.isnan(b)))
     bad = both[differs]
     evidence = [
-        "; ".join(f"{c} before {getattr(r, f'{c}_before')} legacy {getattr(r, f'{c}_legacy')}" for c in value_cols)
+        "; ".join(f"{c} {labels[0]} {getattr(r, f'{c}_{labels[0]}')} {labels[1]} {getattr(r, f'{c}_{labels[1]}')}" for c in value_cols)
         for r in bad.itertuples(index=False)
     ]
+    return bad, evidence
+
+
+def grain_residual(raw: pd.DataFrame, old: pd.Series, before: pd.DataFrame, value_cols: Sequence[str], source: str) -> pd.DataFrame:
+    """Ticker-days where the stored before table differs from the frozen resolver's sum over the raw rows (rows the
+    per-row diff cannot see, including a before day no raw row carries any more); one unexplained tape row each."""
+    rows = raw.assign(old=old)[old.ne("")]
+    legacy = rows.groupby(["old", rows["date"].dt.normalize()])[list(value_cols)].sum().reset_index().rename(columns={"old": "ticker"})
+    bad, evidence = _grain_mismatch(before, legacy, value_cols, ("before", "legacy"))
     return pd.DataFrame(
         {
             "settlement_date": bad["date"].dt.strftime("%Y-%m-%d"),
@@ -427,6 +436,39 @@ def grain_residual(raw: pd.DataFrame, old: pd.Series, before: pd.DataFrame, valu
             "new_canonical_issuer": "",
             "reason": "",
             "source": f"{source}_ticker_grain",
+            "lineage_role": "",
+            "old_weight": np.nan,
+            "new_weight": np.nan,
+            "quantity": np.nan,
+            "evidence": evidence,
+        }
+    )[TAPE_COLUMNS].reset_index(drop=True)
+
+
+def after_grain_residual(
+    raw: pd.DataFrame, master: pd.DataFrame, after: pd.DataFrame, value_cols: Sequence[str], universe: Collection[str], source: str
+) -> pd.DataFrame:
+    """Ticker-days where the stored after ticker table differs from the sum of the new stamps over the raw rows (summed
+    roles of universe tickers, values x conversion ratio); one unexplained tape row each."""
+    summed = raw[raw["lineage_role"].isin(SUMMED_ROLES) & raw["ticker"].isin(set(universe))]
+    ratio = master_facts(summed, master)["conversion_ratio"].astype("float64")
+    weighted = pd.DataFrame(
+        {"ticker": summed["ticker"].astype(str), "date": pd.to_datetime(summed["date"]).dt.normalize()}
+        | {c: pd.to_numeric(summed[c], errors="coerce") * ratio for c in value_cols}
+    )
+    stamped = weighted.groupby(["ticker", "date"], as_index=False)[list(value_cols)].sum()
+    bad, evidence = _grain_mismatch(after, stamped, value_cols, ("after", "stamped"))
+    return pd.DataFrame(
+        {
+            "settlement_date": bad["date"].dt.strftime("%Y-%m-%d"),
+            "cusip": "",
+            "source_symbol": "",
+            "exchange": "",
+            "security_class": "",
+            "old_canonical_issuer": "",
+            "new_canonical_issuer": bad["ticker"].astype(str),
+            "reason": "",
+            "source": f"{source}_after_grain",
             "lineage_role": "",
             "old_weight": np.nan,
             "new_weight": np.nan,
@@ -1038,27 +1080,31 @@ def _raw_tape(store: Any, table: Any, values: Sequence[str]) -> pd.DataFrame:
 def _tape_section(
     store: Any, snap_dir: Path, master: pd.DataFrame, resolver: LegacyTapeResolver, universe: list[str], tickers: Sequence[str] | None
 ) -> tuple[pd.DataFrame, dict[str, int]]:
-    """Per raw row diff of both tapes, plus the ticker-grain residual against the stored before tables."""
+    """Per raw row diff of both tapes, the ticker-grain residual against the stored before tables (every before day),
+    and the stored after ticker tables against the sum of the new stamps."""
     specs = (
         ("ftd", Tables.sec_fails_to_deliver_security, "ftd", ("fails_quantity",)),
         ("finra", Tables.sec_short_volume_security, "short_interest", ("short_volume", "total_volume")),
     )
     frames, stats = [], {}
+    scope = set(tickers) if tickers else None
     for source, table, before_name, values in specs:
-        raw = _raw_tape(store, table, values)
+        stored = _raw_tape(store, table, values)
         before = _snap(snap_dir, before_name)
         frontier = pd.to_datetime(before["date"]).max() if not before.empty else pd.NaT
-        new_rows = raw["date"] > frontier if not pd.isna(frontier) else pd.Series(False, index=raw.index)
-        raw = raw[~new_rows].reset_index(drop=True)
+        new_rows = stored["date"] > frontier if not pd.isna(frontier) else pd.Series(False, index=stored.index)
+        raw = stored[~new_rows].reset_index(drop=True)
         stats[f"{source}_raw_rows"], stats[f"{source}_rows_after_snapshot"] = len(raw), int(new_rows.sum())
         diff = tape_diff(raw, master, resolver, universe, source)
         old = legacy_tickers(resolver, raw["source_symbol"], raw["date"], universe)
-        scope = set(tickers) if tickers else None
         before_scoped = before if scope is None else before[before["ticker"].isin(scope)]
         residual = grain_residual(raw, old.where(old.isin(scope), "") if scope else old, before_scoped, values, source)
         if scope is not None:
             diff = diff[diff["old_canonical_issuer"].isin(scope) | diff["new_canonical_issuer"].isin(scope)]
-        frames += [diff, residual]
+        after = _read(store, before_name, tickers)
+        after_residual = after_grain_residual(stored, master, after, values, set(universe) & scope if scope is not None else universe, source)
+        stats[f"{source}_after_ticker_rows"] = len(after)
+        frames += [diff, residual, after_residual]
     return pd.concat(frames, ignore_index=True), stats
 
 

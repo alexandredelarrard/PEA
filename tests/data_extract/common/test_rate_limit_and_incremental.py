@@ -94,7 +94,7 @@ def test_earnings_download_one_retries_rate_limit(monkeypatch):
         def __init__(self, t):
             pass
 
-        def get_earnings_dates(self, limit):
+        def get_earnings_dates(self, limit, offset=0):
             state["n"] += 1
             if state["n"] < 2:
                 raise RuntimeError("YFRateLimitError: Too Many Requests 429")

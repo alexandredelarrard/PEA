@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Collection, Sequence
+from itertools import batched
 
 import numpy as np
 import pandas as pd
@@ -17,6 +18,8 @@ from src.constants.constants import CANONICAL_ROLES, SECONDARY_CLASS
 from src.context import Context
 from src.data_store.schema import Table
 from src.utils.filer_tables import filing_window
+from src.utils.string import normalise_ticker
+from src.utils.universe import load_universe_tickers
 
 #: The four columns stamped from the security master on every stored tape line.
 STAMP_COLUMNS = ["security_id", "ticker", "lineage_role", "security_class"]
@@ -27,9 +30,9 @@ TICKER_CHUNK = 50
 KEY_CHUNK = 500
 
 
-def chunks[T](values: Sequence[T], size: int) -> list[list[T]]:
-    """`values` in consecutive lists of at most `size`."""
-    return [list(values[start : start + size]) for start in range(0, len(values), size)]
+def outside_scope(context: Context, scope: Collection[str]) -> frozenset[str]:
+    """The universe companies outside `scope`: a scoped run neither deletes nor re-stamps their rows (empty when unscoped)."""
+    return frozenset(normalise_ticker(t) for t in load_universe_tickers(context)) - frozenset(scope)
 
 
 def nullable(values: pd.Series) -> pd.Series:
@@ -39,7 +42,9 @@ def nullable(values: pd.Series) -> pd.Series:
 
 def load_chunked(context: Context, table: Table, columns: Sequence[str], column: str, values: Sequence[str], size: int) -> list[pd.DataFrame]:
     """The non-empty loads of `table` where `column` is in each chunk of `values`."""
-    frames = [context.store.load(table, columns=list(columns), where={column: chunk}, optional=True) for chunk in chunks(values, size)]
+    frames = [
+        context.store.load(table, columns=list(columns), where={column: list(chunk)}, optional=True) for chunk in batched(values, size, strict=False)
+    ]
     return [frame for frame in frames if frame is not None]
 
 
@@ -92,7 +97,7 @@ def apply_grain(
             {"table": table.name, "ticker": str(ticker), "cik": "", "first_filed": first, "last_filed": last, "keys": len(group), "rows": len(group)}
         )
         if not dry_run:
-            for chunk in chunks(sorted(group["date"]), KEY_CHUNK):
+            for chunk in batched(sorted(group["date"]), KEY_CHUNK, strict=False):
                 context.store.delete(table, where={"ticker": str(ticker), "date": chunk})
     if not dry_run and not write.empty:
         context.store.save(table, write)

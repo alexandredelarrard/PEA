@@ -643,3 +643,65 @@ def test_e32_an_unchanged_master_restamps_nothing(sqlite_store, tmp_path, monkey
     assert ftd.restamp_fails(context, companies=None, tickers=UNIVERSE, master=_master(), as_of=RUN_DATE) == []
     print("\n=== SANITY CHECK: E32 unchanged master ===")
     print("  every company's stamp predates the last run: no read, no re-stamp, no purge, no write")
+
+
+def _with_universe(context: Any, store) -> Any:
+    """`context` over a stored `sp500_tickers` universe, so a run on fewer tickers is a scoped (`-t`) run."""
+    store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": [*UNIVERSE, "BRK-B"]}))
+    context.config = extract_config(data_extract={"years_history": 15, "redundant_ticks": []})
+    return context
+
+
+def test_f103_a_scoped_incremental_run_stamps_only_its_own_lines_and_saves_stamps_after_the_rebuild(sqlite_store, tmp_path, monkeypatch):
+    sqlite_store.replace(Tables.security_master, _master())
+    _seed_unstamped(sqlite_store, {"201506a": REAL_LINES["201506a"]})
+    context = _with_universe(_context(sqlite_store, tmp_path), sqlite_store)
+    monkeypatch.setattr(ftd, "read_zip_text", lambda *a, **k: pytest.fail("the incremental run reads no zip"))
+
+    ftd.fetch_fails_to_deliver(context, tickers=["MRK"], as_of=RUN_DATE)
+    security = _security(sqlite_store)
+    assert security.loc[security["cusip"].eq("H0023R105"), "security_id"].isna().all(), "ACE's line stays pending for an unscoped run"
+    assert not sqlite_store.exists(Tables.sec_fails_to_deliver) or ("CB", "2015-06-02") not in _grain(sqlite_store)
+
+    original = sqlite_store.save
+
+    def _fail_grain(table, frame, *a, **k):
+        if getattr(table, "name", table) == Tables.sec_fails_to_deliver.name:
+            raise RuntimeError("crash while rebuilding the ticker rows")
+        return original(table, frame, *a, **k)
+
+    monkeypatch.setattr(sqlite_store, "save", _fail_grain)
+    with pytest.raises(RuntimeError):
+        ftd.fetch_fails_to_deliver(context, tickers=[*UNIVERSE, "BRK-B"], as_of=RUN_DATE)
+    assert _security(sqlite_store).loc[lambda f: f["cusip"].eq("H0023R105"), "security_id"].isna().all(), "a failed rebuild leaves the lines pending"
+    monkeypatch.setattr(sqlite_store, "save", original)
+    ftd.fetch_fails_to_deliver(context, tickers=[*UNIVERSE, "BRK-B"], as_of=RUN_DATE)
+    assert _grain(sqlite_store)[("CB", "2015-06-02")] == 293.0
+    print("\n=== SANITY CHECK: F-103 scoped incremental FTD ===")
+    print("  a MRK-scoped run leaves ACE's 201506a line pending; a crashed rebuild stamps nothing; the next unscoped run builds CB 2015-06-02 = 293")
+
+
+def test_f101_a_scoped_restamp_never_touches_another_companys_lines(sqlite_store, tmp_path, monkeypatch):
+    context = _with_universe(_stamped_store(sqlite_store, tmp_path, monkeypatch), sqlite_store)
+    before, grain_before = _security(sqlite_store), _grain(sqlite_store)
+    master = _master()
+    master.loc[master["cusip"].eq("806605101"), "valid_to"] = pd.Timestamp("2009-10-30")
+    master.loc[master["canonical_company"].eq("MRK"), "scope_changed_at"] = LATER
+    master = pd.concat(
+        [
+            master,
+            _master([("806605101", "MRK", "0000310158", "SGP", "common", 1.0, "canonical_current", "2009-10-30", "2009-10-31", "x")], stamp=LATER),
+        ]
+    )
+    sqlite_store.replace(Tables.security_master, master)
+
+    assert ftd.restamp_fails(context, companies=None, tickers=["CB"], as_of=RUN_DATE) == []
+
+    pd.testing.assert_frame_equal(
+        _security(sqlite_store).sort_values(["cusip", "date"], ignore_index=True), before.sort_values(["cusip", "date"], ignore_index=True)
+    )
+    assert _grain(sqlite_store) == grain_before
+    ftd.restamp_fails(context, companies=None, tickers=[*UNIVERSE, "BRK-B"], as_of=RUN_DATE)
+    assert _grain(sqlite_store)[("MRK", "2009-11-04")] == 804174.0 + 4163.0
+    print("\n=== SANITY CHECK: F-101 scoped FTD re-stamp ===")
+    print("  MRK's master moved; a CB-scoped re-stamp leaves every line and ticker row; the unscoped one re-stamps MRK 2009-11-04")

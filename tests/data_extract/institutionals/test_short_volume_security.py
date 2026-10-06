@@ -343,3 +343,24 @@ def test_e32_an_unchanged_master_restamps_nothing(sqlite_store, tmp_path, monkey
     )
     print("\n=== SANITY CHECK: E32 unchanged master ===")
     print("  every company's stamp predates the last run: no read, no re-stamp, no write")
+
+
+def test_f101_a_scoped_restamp_never_deletes_or_restamps_another_companys_rows(sqlite_store, tmp_path):
+    context = _stamped_store(sqlite_store, tmp_path)
+    context.config = extract_config(data_extract={"years_history": 15, "redundant_ticks": []})
+    sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": UNIVERSE}))
+    master = _master()
+    master.loc[master["canonical_company"].eq("LEN"), "scope_changed_at"] = LATER  # LEN changed recently, nothing else moved
+    sqlite_store.replace(Tables.security_master, master)
+    before = sqlite_store.load(Tables.sec_short_volume_security).sort_values(["source_symbol", "date"], ignore_index=True)
+
+    records = si.restamp_short_volume(context, None, ["BAC"], identity=_identity(master), as_of=RUN_DATE)
+
+    after = sqlite_store.load(Tables.sec_short_volume_security).sort_values(["source_symbol", "date"], ignore_index=True)
+    assert records == []
+    assert len(after) == len(before) == 6, "a run scoped to BAC deletes no LEN or BRK-B row"
+    pd.testing.assert_frame_equal(after[list(si.SECURITY_COLUMNS)], before[list(si.SECURITY_COLUMNS)])
+    unscoped = si.restamp_short_volume(context, None, UNIVERSE, identity=_identity(master), as_of=RUN_DATE)
+    assert unscoped == [] and len(sqlite_store.load(Tables.sec_short_volume_security)) == 6
+    print("\n=== SANITY CHECK: F-101 scoped re-stamp ===")
+    print("  LEN changed recently; a re-stamp scoped to BAC leaves all 6 stored rows (4 LEN, 2 BRK-B) byte-identical")

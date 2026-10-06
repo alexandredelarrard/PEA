@@ -18,6 +18,7 @@ from __future__ import annotations
 import io
 import logging
 from collections.abc import Collection, Sequence
+from itertools import batched
 from pathlib import Path
 
 import pandas as pd
@@ -39,16 +40,15 @@ from src.data_extract.utils.institutionals.security_tape import (
     KEY_CHUNK,
     TICKER_CHUNK,
     apply_grain,
-    chunks,
     load_chunked,
     nullable,
+    outside_scope,
     stamp_changed,
     summed_lines,
     warn_lost_rows,
 )
 from src.data_store.schema import Tables
 from src.utils.string import normalise_ticker
-from src.utils.universe import load_universe_tickers
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +70,7 @@ SECURITY_COLUMNS = (
     "lineage_role",
     "security_class",
 )
-#: Roles whose lines are summed into the canonical ticker.
+#: The `security_master` columns read for stamping.
 _MASTER_COLUMNS = [
     "security_id",
     "canonical_company",
@@ -84,7 +84,7 @@ _MASTER_COLUMNS = [
     "scope_changed_at",
 ]
 _LINEAGE_SCOPE_COLUMNS = ["entity_id", "canonical_ticker", "cik", "role", "symbol", "valid_from", "valid_to", "status", "sources"]
-#: Tickers per scoped load, keys per targeted delete.
+#: The open end of a master interval.
 _FAR = pd.Timestamp("2262-01-01")
 
 # The ZIP's period tag, not the settlement day, controls availability; files <= 2017-06a live on the FOIA path.
@@ -284,31 +284,44 @@ def _log_unplaced(stamped: pd.DataFrame) -> None:
         )
 
 
-def _purge_out_of_scope(context: Context, stamped: pd.DataFrame) -> int:
-    """Delete the stored lines of CUSIPs the master lacks (no universe security, or a co-registrant's)."""
-    gone = stamped.loc[stamped["security_id"].isna(), "cusip"].astype(str)
+def _purge_out_of_scope(context: Context, stamped: pd.DataFrame, *, by_key: bool = False) -> int:
+    """Delete the stored lines of CUSIPs the master lacks (no universe security, or a co-registrant's): every line
+    of such a CUSIP, or under `by_key` only the (CUSIP, settlement date) keys of `stamped`."""
+    gone = stamped[stamped["security_id"].isna()]
     if gone.empty:
         return 0
-    cusips = sorted(set(gone))
-    for chunk in chunks(cusips, KEY_CHUNK):
-        context.store.delete(Tables.sec_fails_to_deliver_security, where={"cusip": chunk})
+    cusips = sorted(set(gone["cusip"].astype(str)))
+    if by_key:
+        for cusip, group in gone.groupby(gone["cusip"].astype(str), sort=True):
+            for chunk in batched(sorted(pd.to_datetime(group["date"])), KEY_CHUNK, strict=False):
+                context.store.delete(Tables.sec_fails_to_deliver_security, where={"cusip": str(cusip), "date": chunk})
+    else:
+        for chunk in batched(cusips, KEY_CHUNK, strict=False):
+            context.store.delete(Tables.sec_fails_to_deliver_security, where={"cusip": chunk})
     logger.warning("FTD: %d stored line(s) over %d CUSIP(s) have no security_master row; deleted", len(gone), len(cusips))
     return len(gone)
 
 
-def _rebuild_from_cache(context: Context, master: pd.DataFrame, universe: frozenset[str], *, upsert: bool = False) -> tuple[int, int]:
+def _held_keys(context: Context, cusips: Sequence[str], others: frozenset[str]) -> pd.DataFrame:
+    """The stored (cusip, date) keys of `cusips` stamped with a company of `others`."""
+    kept = load_chunked(context, Tables.sec_fails_to_deliver_security, ["cusip", "date", "ticker"], "cusip", cusips, KEY_CHUNK) if others else []
+    rows = pd.concat(kept, ignore_index=True) if kept else pd.DataFrame(columns=["cusip", "date", "ticker"])
+    rows = rows[rows["ticker"].isin(others)]
+    return pd.DataFrame({"cusip": rows["cusip"].astype(str), "date": pd.to_datetime(rows["date"])})
+
+
+def _rebuild_from_cache(context: Context, master: pd.DataFrame, universe: frozenset[str], others: frozenset[str] = frozenset()) -> tuple[int, int]:
     """Every cached ZIP's lines of the master's CUSIPs, stamped; both tables replaced. `(raw rows, ticker rows)`.
 
-    `upsert` (a `-t` run) reads only the CUSIPs of `universe`'s companies and upserts their lines and ticker rows;
-    no other company's row is touched."""
-    if upsert:
-        master = master[master["canonical_company"].isin(universe)]
+    With `others` (the universe companies outside a `-t` scope) only the CUSIPs of `universe`'s companies are read
+    and their lines and ticker rows upserted; a line stamped, stored or fresh, with a company of `others` is left."""
+    upsert = bool(others)
     cache = cache_dir(context, context.config.local.paths.fails_deliver)
     cached = sorted(_cached_periods(cache))
     missing = sorted(set(map(str, context.store.distinct(Tables.sec_fails_to_deliver_security, "period"))) - set(cached))
     if missing:
         raise FileNotFoundError(f"FTD full rebuild cannot reproduce stored period(s) {missing}: not in the cache")
-    cusips = frozenset(master["cusip"])
+    cusips = frozenset(master.loc[master["canonical_company"].isin(universe), "cusip"] if upsert else master["cusip"])
     frames: list[pd.DataFrame] = []
     other = 0
     for period in tqdm(cached, desc="SEC fails-to-deliver (rebuild)"):
@@ -324,7 +337,10 @@ def _rebuild_from_cache(context: Context, master: pd.DataFrame, universe: frozen
         raise ValueError("FTD full rebuild staged no ticker rows")
     _log_unplaced(stamped)
     if upsert:
-        raw = context.store.save(Tables.sec_fails_to_deliver_security, stamped[list(SECURITY_COLUMNS)])
+        held = _held_keys(context, sorted(cusips), others).assign(_held=True)
+        keys = pd.DataFrame({"cusip": stamped["cusip"].astype(str), "date": pd.to_datetime(stamped["date"])})
+        mine = keys.merge(held, on=["cusip", "date"], how="left")["_held"].isna().to_numpy() & ~stamped["ticker"].isin(others).to_numpy()
+        raw = context.store.save(Tables.sec_fails_to_deliver_security, stamped.loc[mine, list(SECURITY_COLUMNS)])
         apply_grain(
             context, sorted(universe), grain, dry_run=False, table=Tables.sec_fails_to_deliver, columns=TICKER_COLUMNS, text_columns=("period",)
         )
@@ -344,25 +360,35 @@ def _rebuild_from_cache(context: Context, master: pd.DataFrame, universe: frozen
     return raw, saved
 
 
-def _stamp_new(context: Context, master: pd.DataFrame, universe: frozenset[str]) -> int:
-    """Stamp the NULL-stamped lines (`ftd-download`'s new rows) and rebuild the ticker rows of their periods."""
+def _stamp_new(context: Context, master: pd.DataFrame, universe: frozenset[str], others: frozenset[str] = frozenset()) -> int:
+    """Stamp the NULL-stamped lines (`ftd-download`'s new rows) and rebuild the ticker rows of their periods.
+
+    The stamps are saved after the rebuild, so a failed run leaves the lines pending. With `others` (a `-t` run)
+    only the lines of `universe`'s companies are stamped; every other line stays pending for an unscoped run."""
     table = Tables.sec_fails_to_deliver_security
     new = context.store.load(table, columns=list(SECURITY_COLUMNS[:9]), where={"security_id": None}, optional=True)
     if new is None:
         return 0
     stamped = stamp_lines(new, master)
-    _purge_out_of_scope(context, stamped)
+    unowned = stamped[stamped["security_id"].isna()]
     stamped = stamped[stamped["security_id"].notna()]
+    if others:
+        scope_cusips = set(master.loc[master["canonical_company"].isin(universe), "cusip"])
+        stamped = stamped[stamped["ticker"].isin(universe) | (stamped["ticker"].isna() & stamped["cusip"].isin(scope_cusips))]
     if stamped.empty:
+        if not others:
+            _purge_out_of_scope(context, unowned)
         return 0
-    context.store.save(table, stamped[list(SECURITY_COLUMNS)])
     _log_unplaced(stamped)
     periods = sorted(set(stamped["period"].astype(str)))
     lines = context.store.load(table, columns=list(SECURITY_COLUMNS), where={"period": periods}, optional=True)
     grain = ticker_rows(stamp_lines(lines, master), universe) if lines is not None else pd.DataFrame(columns=list(TICKER_COLUMNS))
-    for chunk in chunks(sorted(universe), TICKER_CHUNK):
+    for chunk in batched(sorted(universe), TICKER_CHUNK, strict=False):
         context.store.delete(Tables.sec_fails_to_deliver, where={"ticker": chunk, "period": periods})
     saved = context.store.save(Tables.sec_fails_to_deliver, grain) if not grain.empty else 0
+    context.store.save(table, stamped[list(SECURITY_COLUMNS)])
+    if not others:
+        _purge_out_of_scope(context, unowned)
     logger.info("FTD: %d new line(s) stamped over %d period(s); %d ticker row(s) rebuilt", len(stamped), len(periods), saved)
     return saved
 
@@ -395,39 +421,41 @@ def restamp_fails(
 
     `companies` None: those whose master rows changed recently (`resume.recently_changed` of their
     `scope_changed_at` on `as_of`, default today). Lines of CUSIPs the master no longer holds are deleted.
-    Returns one record per ticker whose ticker rows vanished.
+    Returns one record per ticker whose ticker rows vanished. A scoped run (`tickers` short of the universe) never
+    deletes or re-stamps a line stamped, before or after, with a universe company outside it; stamps are saved after
+    the ticker rows are rebuilt.
     """
     master = load_fails_master(context) if master is None else master
     if master is None or master.empty:
         return []
     if companies is None:
         companies = recently_changed(master_stamps(master), as_of)
-    names = sorted(set(companies))
+    if not companies:
+        return []
+    universe = frozenset(normalise_ticker(ticker) for ticker in tickers)
+    others = outside_scope(context, universe)
+    names = sorted(set(companies) - others)
     if not names:
         return []
     stored = _company_lines(context, master, names)
     if stored.empty:
         return []
     fresh = stamp_lines(stored, master)
-    changed = stamp_changed(stored, fresh) & fresh["security_id"].notna()
+    mine = ~(stored["ticker"].isin(others) | fresh["ticker"].isin(others))
+    changed = stamp_changed(stored, fresh) & fresh["security_id"].notna() & mine
+    rebuilt = [name for name in names if name in universe]
+    grain = ticker_rows(fresh, rebuilt)
+    records = (
+        apply_grain(context, rebuilt, grain, dry_run=dry_run, table=Tables.sec_fails_to_deliver, columns=TICKER_COLUMNS, text_columns=("period",))
+        if rebuilt
+        else []
+    )
     if not dry_run:
-        _purge_out_of_scope(context, fresh)
         if changed.any():
             context.store.save(Tables.sec_fails_to_deliver_security, fresh.loc[changed, list(SECURITY_COLUMNS)])
+        _purge_out_of_scope(context, fresh[mine], by_key=bool(others))
     logger.info("FTD: %d line(s) of %d company(ies) re-stamped%s", int(changed.sum()), len(names), " (dry run)" if dry_run else "")
-    universe = frozenset(normalise_ticker(ticker) for ticker in tickers)
-    rebuilt = [name for name in names if name in universe]
-    if not rebuilt:
-        return []
-    return apply_grain(
-        context,
-        rebuilt,
-        ticker_rows(fresh, rebuilt),
-        dry_run=dry_run,
-        table=Tables.sec_fails_to_deliver,
-        columns=TICKER_COLUMNS,
-        text_columns=("period",),
-    )
+    return records
 
 
 def fetch_fails_to_deliver(context: Context, tickers: Sequence[str], full: bool = False, as_of: pd.Timestamp | None = None) -> int:
@@ -442,10 +470,11 @@ def fetch_fails_to_deliver(context: Context, tickers: Sequence[str], full: bool 
     if master is None or master.empty:
         logger.warning("FTD: no security_master yet (run identity-tables first); nothing stamped")
         return 0
+    others = outside_scope(context, universe)
     if full:
-        _, saved = _rebuild_from_cache(context, master, universe, upsert=bool(set(load_universe_tickers(context)) - universe))
+        _, saved = _rebuild_from_cache(context, master, universe, others)
     else:
-        saved = _stamp_new(context, master, universe)
+        saved = _stamp_new(context, master, universe, others)
         warn_lost_rows(logger, "FTD", restamp_fails(context, None, universe, master=master, as_of=as_of))
     return saved
 

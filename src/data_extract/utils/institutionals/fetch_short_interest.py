@@ -21,6 +21,7 @@ import logging
 import re
 import time
 from collections.abc import Collection, Mapping, Sequence
+from itertools import batched
 
 import pandas as pd
 import requests
@@ -39,15 +40,14 @@ from src.data_extract.utils.institutionals.security_tape import (
     SUMMED_ROLES,
     TICKER_CHUNK,
     apply_grain,
-    chunks,
     load_chunked,
+    outside_scope,
     stamp_changed,
     summed_lines,
     warn_lost_rows,
 )
 from src.data_store.schema import Tables
 from src.utils.string import normalise_ticker
-from src.utils.universe import load_universe_tickers
 
 _URL = "https://cdn.finra.org/equity/regsho/daily/CNMSshvol{yyyymmdd}.txt"
 #: The CDN's first served date (a rolling window) and the one older file it still serves.
@@ -293,7 +293,7 @@ def _company_rows(context: Context, identity: Identity, companies: Sequence[str]
 
 def _delete_rows(context: Context, rows: pd.DataFrame) -> None:
     for symbol, group in rows.groupby("source_symbol", sort=True):
-        for chunk in chunks(sorted(group["date"]), KEY_CHUNK):
+        for chunk in batched(sorted(group["date"]), KEY_CHUNK, strict=False):
             context.store.delete(Tables.sec_short_volume_security, where={"source_symbol": str(symbol), "date": chunk})
 
 
@@ -310,8 +310,10 @@ def restamp_short_volume(
     """Re-stamp the stored rows of `companies` and rebuild their ticker rows, writing only what changed.
 
     `companies` None: those whose master rows or lineage symbol rows changed recently (`resume.recently_changed`
-    on `as_of`, default today). Rows that no longer resolve to a kept security are deleted. Returns one record per
-    ticker whose ticker rows vanished. A security newly in scope needs `short-interest --full` (rows are not cached).
+    on `as_of`, default today). Rows that no longer resolve to a kept security are deleted. A scoped run (`tickers`
+    short of the universe) never deletes or re-stamps a row stamped, before or after, with a universe company
+    outside it. Returns one record per ticker whose ticker rows vanished. A security newly in scope needs
+    `short-interest --full` (rows are not cached).
     """
     table = Tables.sec_short_volume_security
     if not context.store.exists(table):
@@ -320,17 +322,21 @@ def restamp_short_volume(
     if companies is None:
         stamps = change_stamps(load_fails_master(context), resolver) if stamps is None else stamps
         companies = recently_changed(stamps, as_of)
-    names = sorted(set(companies))
-    if not names:
+    if not companies:
         return []
     universe = frozenset(normalise_ticker(t) for t in tickers)
+    others = outside_scope(context, universe)
+    names = sorted(set(companies) - others)
+    if not names:
+        return []
     stored = _company_rows(context, resolver, names)
     if stored.empty:
         return []
-    fresh = stamp_short_volume(stored[list(RAW_COLUMNS)], resolver, universe)
+    fresh = stamp_short_volume(stored[list(RAW_COLUMNS)], resolver, universe | others)
     merged = stored.merge(fresh, on=["source_symbol", "date"], how="left", suffixes=("_old", ""), indicator=True)
-    gone = merged[merged["_merge"].eq("left_only")]
-    both = merged[merged["_merge"].eq("both")]
+    held = merged["ticker_old"].isin(others) | merged["ticker"].isin(others)
+    gone = merged[merged["_merge"].eq("left_only") & ~held]
+    both = merged[merged["_merge"].eq("both") & ~held]
     changed = stamp_changed(both, both, old_suffix="_old")
     if not dry_run:
         if not gone.empty:
@@ -379,7 +385,8 @@ def fetch_short_interest(
     scoped (`-t`), the tickers' rows are upserted and no other key is touched.
     """
     universe = frozenset(normalise_ticker(ticker) for ticker in tickers)
-    scoped = bool(set(load_universe_tickers(context)) - universe)
+    others = outside_scope(context, universe)
+    scoped = bool(others)
     if full:
         days, stored_days = _full_days(context, pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize())
     else:
@@ -419,7 +426,8 @@ def fetch_short_interest(
                 f"{len(successful)} served; aborting before any write"
             )
     raw = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=list(RAW_COLUMNS))
-    stamped = stamp_short_volume(raw, resolver, universe) if not raw.empty else pd.DataFrame(columns=[*SECURITY_COLUMNS, "conversion_ratio"])
+    stamped = stamp_short_volume(raw, resolver, universe | others) if not raw.empty else pd.DataFrame(columns=[*SECURITY_COLUMNS, "conversion_ratio"])
+    stamped = stamped[~stamped["ticker"].isin(others)]
     grain = ticker_rows(stamped, universe)
     if not stamped.empty:
         _log_stamps(stamped)
@@ -436,7 +444,7 @@ def fetch_short_interest(
     if not stamped.empty:
         context.store.save(Tables.sec_short_volume_security, stamped[list(SECURITY_COLUMNS)])
     if successful and context.store.exists(Tables.short_interest):
-        for chunk in chunks(sorted(universe), TICKER_CHUNK):
+        for chunk in batched(sorted(universe), TICKER_CHUNK, strict=False):
             context.store.delete(Tables.short_interest, where={"ticker": chunk, "date": successful})
     if not grain.empty:
         written = context.store.save(Tables.short_interest, grain)

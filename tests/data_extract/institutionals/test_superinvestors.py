@@ -24,7 +24,9 @@ from typing import Any, cast
 
 import pandas as pd
 import pytest
+from click.testing import CliRunner
 
+import src.data_extract.cli as cli_mod
 from src.data_extract.utils.common import sec_io
 from src.data_extract.utils.institutionals import fetch_superinvestors as si
 from tests.fixtures.superinvestor_config import APPALOOSA_CHAIN, APPALOOSA_NEW, APPALOOSA_OLD, write_roster_config
@@ -664,3 +666,24 @@ def test_rebuild_roster_refuses_to_write(sqlite_store, tmp_path, failure):
     print(
         f"\n=== SANITY: rebuild refuses on a {failure} failure ===\n  raised {expected[0].__name__}; table hash {before[:12]} unchanged. Validated."
     )
+
+
+def test_superinvestors_full_flag_rebuilds_then_refreshes(monkeypatch):
+    """`superinvestors -F` rebuilds the roster before the on-change refresh; without it only the refresh
+    runs, and the retired `--seed` spelling is refused."""
+    calls: list[str] = []
+    monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (None, SimpleNamespace(name="ctx")))
+    monkeypatch.setattr(cli_mod, "rebuild_roster", lambda context: calls.append("rebuild"))
+    monkeypatch.setattr(cli_mod, "upsert_roster_snapshot", lambda context: calls.append("refresh"))
+
+    full = CliRunner().invoke(cli_mod.cli, ["superinvestors", "-F"])
+    full_calls, calls[:] = list(calls), []
+    plain = CliRunner().invoke(cli_mod.cli, ["superinvestors"])
+    plain_calls = list(calls)
+    seed = CliRunner().invoke(cli_mod.cli, ["superinvestors", "--seed"])
+
+    assert full.exit_code == 0 and full_calls == ["rebuild", "refresh"], (full.output, full_calls)
+    assert plain.exit_code == 0 and plain_calls == ["refresh"], (plain.output, plain_calls)
+    assert seed.exit_code != 0 and "No such option" in seed.output
+    print("\n=== SANITY CHECK: superinvestors -F ===")
+    print(f"  -F -> {full_calls}; no flag -> {plain_calls}; --seed refused (exit {seed.exit_code}).")

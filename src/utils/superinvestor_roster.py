@@ -209,7 +209,7 @@ def _snapshot(context: Context, as_of=None) -> pd.DataFrame | None:
     roster yet", not an empty roster to be silently ffilled backwards."""
     df = _load(context)
     if df is None:
-        logger.warning("`%s` is empty -- run `data_extract superinvestors --seed`.", Tables.superinvestor_roster)
+        logger.warning("`%s` is empty -- run `data_extract superinvestors -F`.", Tables.superinvestor_roster)
         return None
     if as_of is not None:
         df = df[df["snapshot_date"] <= pd.Timestamp(as_of)]

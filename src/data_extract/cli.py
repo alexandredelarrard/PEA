@@ -298,23 +298,21 @@ def thirteen_f_backfill(config_path: str, tickers: str | None, full: bool, as_of
 @click.option(*YEARS_ARGS, **YEARS_KWARGS)
 def thirteen_f_managers(config_path: str, years: int | None) -> None:
     """Scope is the union of every CIK ever in `superinvestor_roster`, so a departed manager keeps its history.
-    An empty roster raises: run `superinvestors --seed` first on a cold database."""
+    An empty roster raises: run `superinvestors -F` first on a cold database."""
     config, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_13f_managers(context, years_history=years or config.data_extract.years_history)
 
 
-@cli.command(help="Superinvestor roster (Dataroma) -> today's `superinvestor_roster` snapshot, written only when it changed. Light.")
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option(
-    "--seed",
-    is_flag=True,
-    default=False,
-    help="REBUILD first: upsert the committed quarterly Wayback history (configs/superinvestors/) plus every stored live "
-    "snapshot, all re-resolved and 13F-gated, then delete stale keys; idempotent. Rerun after any overrides.json change.",
+@cli.command(
+    help="Superinvestor roster (Dataroma) -> today's `superinvestor_roster` snapshot, written only when it changed. Light. "
+    "-F rebuilds first: upsert the committed quarterly Wayback history (configs/superinvestors/) plus every stored live "
+    "snapshot, all re-resolved and 13F-gated, then delete stale keys; idempotent. Rerun -F after any overrides.json change."
 )
-def superinvestors(config_path: str, seed: bool) -> None:
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+def superinvestors(config_path: str, full: bool) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
-    if seed:
+    if full:
         rebuild_roster(context)
     upsert_roster_snapshot(context)
 

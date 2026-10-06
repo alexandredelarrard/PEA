@@ -135,7 +135,7 @@ def fetch_13f_managers(context: Context, years_history: int = 15) -> int:
     ciks = sorted(roster_cik_union(context))
     if not ciks:
         raise SuperinvestorRosterEmptyError(
-            "superinvestor_roster is empty -- run `data_extract superinvestors --seed` first. "
+            "superinvestor_roster is empty -- run `data_extract superinvestors -F` first. "
             "The roster is this walk's entire scope; there is nothing to fetch without it."
         )
     names = roster_map_as_of(context)  # latest snapshot; only used for log lines

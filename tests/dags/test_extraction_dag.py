@@ -221,11 +221,11 @@ def test_retries_dependencies_and_hard_gates_are_wired():
     assert 'thirteen_f_backfill = fetch("thirteen-f-backfill", pool="sec_api")' in source
     assert "[fundamentals, fundamentals_employees] >> fundamentals_sharadar" in source
     assert "[sec_8k_items, def14a] >> sec_8k_votes" in source
-    assert "all_fetchers >> identity_check >> extraction_status >> trigger_aggregation" in source
+    assert "all_fetchers >> extraction_status >> identity_check >> trigger_aggregation" in source
 
     print("\n=== SANITY CHECK: extraction retry + gate wiring ===")
     print("  three retries per task, sec_api tasks take both pool slots, the backfill follows the 13F walk")
-    print("  OK: every fetcher -> identity_check -> extraction_status -> trigger_aggregation")
+    print("  OK: every fetcher -> extraction_status -> identity_check -> trigger_aggregation")
 
 
 def test_identity_stage_orders_downloads_build_propagation_consumers_and_status(monkeypatch):
@@ -239,7 +239,7 @@ def test_identity_stage_orders_downloads_build_propagation_consumers_and_status(
     # downloads -> identity build -> propagation -> every consumer
     for download in IDENTITY_DOWNLOADS:
         assert "identity_tables" in graph[download], f"{download} must feed identity_tables"
-    assert graph["identity_tables"] == {"identity_propagate", "identity_check", "price_history"}
+    assert graph["identity_tables"] == {"identity_propagate", "extraction_status", "price_history"}
     assert IDENTITY_CONSUMERS <= graph["identity_propagate"], sorted(IDENTITY_CONSUMERS - graph["identity_propagate"])
     for derived, parents in DERIVED_PARENTS.items():
         assert all(derived in graph[parent] for parent in parents), f"{derived} must wait for {sorted(parents)}"
@@ -248,23 +248,23 @@ def test_identity_stage_orders_downloads_build_propagation_consumers_and_status(
     assert IDENTITY_INDEPENDENT.isdisjoint(after_build), sorted(IDENTITY_INDEPENDENT & after_build)
     assert not (IDENTITY_DOWNLOADS | {"identity_tables"}) & after_propagation
 
-    # every task upstream of the report; the check, the report and the trigger run ALL_DONE (no source blocks the night)
+    # every fetcher upstream of the report; the report and the check run ALL_DONE (no source blocks the night)
     upstream_of_status = {task for task in graph if "extraction_status" in _descendants(graph, task)}
-    assert upstream_of_status == set(graph) - {"extraction_status", "trigger_data_aggregation"}
+    assert upstream_of_status == set(graph) - {"extraction_status", "identity_check", "trigger_data_aggregation"}
     assert params["extraction_status"]["trigger_rule"] == "all_done"
-    assert params["trigger_data_aggregation"]["trigger_rule"] == "all_done"
-    assert graph["extraction_status"] == {"trigger_data_aggregation"}
-    # AC-039 foreign-row half: the identity validator runs after every fetcher and before the freshness report
+    assert graph["extraction_status"] == {"identity_check"}
+    # AC-039 / P37: the identity validator runs after the report and is the hard gate on aggregation
     fetchers = set(graph) - {"identity_check", "extraction_status", "trigger_data_aggregation", "seed_universe"}
-    assert all("identity_check" in graph[task] for task in fetchers), sorted(t for t in fetchers if "identity_check" not in graph[t])
-    assert graph["identity_check"] == {"extraction_status"} and params["identity_check"]["trigger_rule"] == "all_done"
+    assert all("extraction_status" in graph[task] for task in fetchers), sorted(t for t in fetchers if "extraction_status" not in graph[t])
+    assert graph["identity_check"] == {"trigger_data_aggregation"} and params["identity_check"]["trigger_rule"] == "all_done"
+    assert params["trigger_data_aggregation"]["trigger_rule"] == "all_success"
     assert " -m src validate identity -o " in str(params["identity_check"]["bash_command"])
     for task in IDENTITY_DOWNLOADS:
         assert params[task]["pool"] == "sec_bulk"
 
     print("\n=== SANITY CHECK: identity stage order (AC-011, AC-037-039) ===")
     print(f"  {len(graph)} tasks, acyclic; downloads {sorted(IDENTITY_DOWNLOADS)} -> identity_tables -> identity_propagate")
-    print(f"  -> {len(IDENTITY_CONSUMERS)} consumers -> sec_8k_votes / fundamentals_sharadar -> identity_check -> extraction_status")
+    print(f"  -> {len(IDENTITY_CONSUMERS)} consumers -> sec_8k_votes / fundamentals_sharadar -> extraction_status -> identity_check")
     first = min(position[task] for task in IDENTITY_DOWNLOADS)
     print(f"  first identity task at topological position {first}, gate at {position['extraction_status']}")
     print(
@@ -289,7 +289,7 @@ def test_the_live_insider_walk_runs_in_the_sec_api_pool_after_the_bulk_parse(mon
     assert bulk["pool"] == "sec_bulk" and " insider-transactions --bulk-only -c " in str(bulk["bash_command"])
     assert walk["pool"] == "sec_api" and walk["pool_slots"] == 2 and " insider-edgar -c " in str(walk["bash_command"])
     assert "insider_edgar" in graph["insider_transactions"], "the live tail resumes from the bulk table's latest quarter"
-    assert "insider_edgar" in _descendants(graph, "identity_propagate") and "identity_check" in graph["insider_edgar"]
+    assert "insider_edgar" in _descendants(graph, "identity_propagate") and "extraction_status" in graph["insider_edgar"]
     edgar_in_bulk = [task for task, kwargs in params.items() if kwargs.get("pool") == "sec_bulk" and "edgar" in str(kwargs.get("bash_command"))]
     assert not edgar_in_bulk, edgar_in_bulk
 
@@ -311,15 +311,16 @@ def test_one_price_task_and_no_alias_commands():
     print("  price_history is the only task writing prices, prices_dividends and prices_splits; the splits/dividends aliases are removed")
 
 
-def test_gate_and_trigger_run_all_done_and_a_failed_fetcher_never_blocks_aggregation():
+def test_a_failed_fetcher_never_blocks_aggregation_but_a_failed_identity_check_does():
+    """AC-015 for sources, P37 for identity: the report and the check run ALL_DONE; the trigger needs the check's success."""
     dag = load_dag(DAG_FILE)
     gate, trigger, check = dag.tasks["extraction_status"], dag.tasks["trigger_data_aggregation"], dag.tasks["identity_check"]
-    assert gate.trigger_rule == ALL_DONE and trigger.trigger_rule == ALL_DONE and check.trigger_rule == ALL_DONE
-    assert trigger.upstream == {"extraction_status"} and gate.upstream == {"identity_check"}
+    assert gate.trigger_rule == ALL_DONE and check.trigger_rule == ALL_DONE and trigger.trigger_rule == ALL_SUCCESS
+    assert trigger.upstream == {"identity_check"} and check.upstream == {"extraction_status"}
     fetchers = {
         task_id for task_id in dag.tasks if task_id not in {"seed_universe", "identity_check", "extraction_status", "trigger_data_aggregation"}
     }
-    assert check.upstream == fetchers, "the identity check, then the report, wait for every fetcher"
+    assert gate.upstream == fetchers, "the report, then the identity check, wait for every fetcher"
     assert {"thirteen_f"} <= dag.tasks["thirteen_f_backfill"].upstream, "one EDGAR walk at a time: the backfill follows the nightly 13F walk"
     assert all(dag.tasks[task_id].trigger_rule == ALL_SUCCESS for task_id in fetchers), "a fetcher still waits for its own sources"
 
@@ -328,11 +329,16 @@ def test_gate_and_trigger_run_all_done_and_a_failed_fetcher_never_blocks_aggrega
         assert states["trigger_data_aggregation"] == "success", (failed, states)
     states = replay(dag, ["identity_tables"])
     assert states["fundamentals"] == "upstream_failed" and states["extraction_status"] == "success"
+    held = replay(dag, ["identity_check"])
+    assert held["trigger_data_aggregation"] == "upstream_failed", held
+    assert held["extraction_status"] == "success" and all(held[task_id] == "success" for task_id in fetchers), (
+        "extraction is never blocked by the check"
+    )
 
-    print("\n=== SANITY CHECK: non-blocking extraction DAG (AC-015) ===")
-    print(f"  {len(fetchers)} fetchers -> identity_check (ALL_DONE) -> extraction_status (ALL_DONE) -> trigger_data_aggregation (ALL_DONE)")
+    print("\n=== SANITY CHECK: extraction never blocked, aggregation gated on identity (AC-015, P37) ===")
+    print(f"  {len(fetchers)} fetchers -> extraction_status (ALL_DONE) -> identity_check (ALL_DONE) -> trigger_data_aggregation (ALL_SUCCESS)")
     print("  replay: price_history failed / identity_tables failed (its 12 consumers upstream_failed) / 13F + insider + the report failed")
-    print("  -> aggregation is triggered every time. Validated.")
+    print("  -> aggregation triggered every time; identity_check failed -> every fetcher and the report succeed, the trigger is upstream_failed")
 
 
 def _raises(node: ast.AST, name: str) -> bool:

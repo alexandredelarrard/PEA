@@ -551,6 +551,21 @@ def test_an_established_ticker_has_no_gap(tmp_path, sqlite_store, monkeypatch):
     print("  -t AAPL -F reads the data sets only; AAPL joined long before 2024-08-31, so no EDGAR walk. Validated.")
 
 
+def test_a_ticker_added_after_as_of_is_not_backfilled_yet(tmp_path, sqlite_store, monkeypatch):
+    ctx = _ctx(tmp_path, sqlite_store, added_on={_NEW: "2026-10-03"})  # three days after the run date
+    pages = _offline(monkeypatch)
+    walks = _patch_gap_walk(monkeypatch)
+
+    nightly = fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF)
+    assert nightly == 0 and pages == [] and walks == []
+    assert sqlite_store.load(Tables.sec13f_hr, optional=True) is None
+
+    fb.fetch_13f_backfill(ctx, tickers=[_NEW], as_of=_AS_OF, full=True)
+    assert walks == []  # under -F the data sets are read, but a ticker that has not joined yet has no gap to walk
+    print("\n=== SANITY: 13F backfill and a future added_on ===")
+    print("  NEWCO added 2026-10-03, run date 2026-09-30: the night reads nothing; -t NEWCO -F reads the data sets, no gap walk. Validated.")
+
+
 def test_gap_tickers_without_added_on_column_is_empty(tmp_path: Any, sqlite_store: Any) -> None:
     tickers = ["AAPL", _NEW]
     ctx = fake_context(tmp_path, sqlite_store, tickers, redundant_ticks=[])
@@ -561,8 +576,8 @@ def test_gap_tickers_without_added_on_column_is_empty(tmp_path: Any, sqlite_stor
     assert "added_on" not in sqlite_store.columns(Tables.sp500_tickers)
 
     since = pd.Timestamp("2024-09-01")
-    nightly = fb.gap_tickers(ctx, tickers, since, full=False)
-    forced = fb.gap_tickers(ctx, tickers, since, full=True)
+    nightly = fb.gap_tickers(ctx, tickers, since, _AS_OF, full=False)
+    forced = fb.gap_tickers(ctx, tickers, since, _AS_OF, full=True)
 
     assert nightly == {} and forced == {}
     print("\n=== SANITY: 13F gap tickers before the added_on migration ===")

@@ -330,26 +330,28 @@ def _backfill_data_set(context: Context, path: Path, data_set: DataSet, tickers:
     return saved
 
 
-def _joined(context: Context, tickers: list[str]) -> dict[str, pd.Timestamp]:
-    """Each ticker's `sp500_tickers.added_on`; a ticker without one is left out, and a table without the
-    column has no joined ticker."""
+def _joined(context: Context, tickers: list[str], as_of: pd.Timestamp) -> dict[str, pd.Timestamp]:
+    """Each ticker's `sp500_tickers.added_on` on or before `as_of`; a ticker without one, or added
+    later, is left out, and a table without the column has no joined ticker."""
     if "added_on" not in context.store.columns(Tables.sp500_tickers):
         return {}
-    df = context.store.load(Tables.sp500_tickers, columns=["ticker", "added_on"], where={"ticker": tickers}, optional=True)
+    df = context.store.load(
+        Tables.sp500_tickers, columns=["ticker", "added_on"], where={"ticker": tickers}, date_col="added_on", until=as_of, optional=True
+    )
     if df is None:
         return {}
     df = df.dropna(subset=["added_on"])
     return {str(t).strip().upper(): pd.Timestamp(d).normalize() for t, d in zip(df["ticker"], df["added_on"], strict=True)}
 
 
-def gap_tickers(context: Context, tickers: list[str], since: pd.Timestamp, full: bool) -> dict[str, pd.Timestamp]:
-    """`{ticker: added_on}` of the tickers whose gap `[since, added_on]` still needs the EDGAR walk.
+def gap_tickers(context: Context, tickers: list[str], since: pd.Timestamp, as_of: pd.Timestamp, full: bool) -> dict[str, pd.Timestamp]:
+    """`{ticker: added_on}` of the tickers joined by `as_of` whose gap `[since, added_on]` still needs the EDGAR walk.
 
     Only `[since, added_on - overlap)` counts: the join night's walk can write the rest, so a ticker
     whose part is empty has no gap. A ticker is done when a completed gap walk left its marker dated on
     or before `since` (every ticker with a gap is due under `full`)."""
     overlap = pd.Timedelta(days=cast(Resume, Tables.sec13f_hr.resume).overlap_days)
-    joined = {t: d for t, d in _joined(context, tickers).items() if d - overlap > since}
+    joined = {t: d for t, d in _joined(context, tickers, as_of).items() if d - overlap > since}
     if full or not joined:
         return joined
     column, sentinel = cast(tuple[str, object], Tables.sec13f_hr.empty_marker)
@@ -367,7 +369,7 @@ def mark_gap_walked(context: Context, tickers: list[str], since: pd.Timestamp) -
     return save_hr(context, pd.concat(markers, ignore_index=True)) if markers else 0
 
 
-def _walk_gap(context: Context, data_sets: list[DataSet], cache: Path, tickers: list[str], full: bool) -> None:
+def _walk_gap(context: Context, data_sets: list[DataSet], cache: Path, tickers: list[str], as_of: pd.Timestamp, full: bool) -> None:
     """One EDGAR walk from the day after the newest cached data set ends to the latest join date, for
     the gap tickers only, then one marker per ticker. A listed data set whose ZIP is not cached (not
     published yet) is no coverage; with none cached the walk waits for the next run. A walk that raises
@@ -377,7 +379,7 @@ def _walk_gap(context: Context, data_sets: list[DataSet], cache: Path, tickers: 
         logger.warning("13F backfill: no data set is cached, so the gap start is unknown; the EDGAR gap walk is retried next run")
         return
     since = max(available) + pd.Timedelta(days=1)
-    due = gap_tickers(context, tickers, since, full)
+    due = gap_tickers(context, tickers, since, as_of, full)
     if not due:
         return
     until = max(due.values())
@@ -417,5 +419,5 @@ def fetch_13f_backfill(context: Context, tickers: list[str] | None, as_of: pd.Ti
         if path is not None:
             saved += _backfill_data_set(context, path, data_set, due, cmap, roster_ciks)
     logger.info("13F backfill: saved %d row(s) for %d ticker(s) from %d data set(s)", saved, len(targets), len(work))
-    _walk_gap(context, data_sets, cache, targets, full)
+    _walk_gap(context, data_sets, cache, targets, as_of, full)
     return saved

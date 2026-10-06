@@ -204,10 +204,12 @@ def check_coverage(
 
     # -- 3. names in the table that the universe does not know ---------------------------- #
     #    Split by `prices`, because the two cases are different defects: a name with price
-    #    history is a roster that moved on, a name with none is a row from nowhere.
+    #    history is a roster that moved on, a name with none is a row from nowhere. "Has
+    #    prices" reads the whole reference table: the grid above holds universe names only.
     unknown = sorted(present - universe_set - excluded)
+    ever_priced = {str(t).strip().upper() for t in context.store.distinct(reference, ref_ticker)} if unknown else set()
     for ticker in unknown[:_MAX_FINDINGS]:
-        in_prices = ticker in priced
+        in_prices = ticker in ever_priced
         findings.append(
             Finding.at(
                 4 if in_prices else 7,

@@ -205,6 +205,17 @@ def test_coverage_reference_grid_is_the_universe_only():
     _same(read, "validate coverage (reference = prices)")
 
 
+def test_f108_a_former_member_with_prices_is_a_roster_that_moved_on_not_a_row_from_nowhere():
+    context = _context(_store(True))
+    part = _prices([*UNIVERSE, EXTRA, "ZZZ"], SESSIONS, 1.0)[["date", "ticker"]].assign(f_x=1.0)
+    context.store.save(Tables.cube_part_momentum, part)
+    findings = check_coverage(context, Tables.cube_part_momentum, config=context.config).findings
+    scores = {f.ticker: f.score for f in findings if f.ticker in (EXTRA, "ZZZ")}
+    assert scores == {EXTRA: 4, "ZZZ": 7}, scores
+    print("\n=== SANITY CHECK: F-108 coverage unknown tickers ===")
+    print(f"  {EXTRA} (in `prices`, not in the universe) scores 4 (roster moved on); ZZZ (no `prices` row) scores 7 (row from nowhere)")
+
+
 def test_leakage_last_price_session_is_the_universe_only():
     def read(context: Any) -> Any:
         targets = _prices(UNIVERSE, SESSIONS, 1.0)[["date", "ticker"]].assign(f_ret_h30=1.0)

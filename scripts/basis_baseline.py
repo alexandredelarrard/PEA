@@ -42,6 +42,7 @@ if str(ROOT) not in sys.path:
 
 from src.context import get_config_context
 from src.data_store.schema import Tables
+from src.utils.universe import load_universe_tickers
 
 #: Years the research tabulated. Kept explicit so a rerun in 2027 still diffs against the
 #: same rows rather than silently gaining a column.
@@ -107,11 +108,11 @@ def _as_ns(frame: pd.DataFrame, column: str) -> pd.DataFrame:
 # --------------------------------------------------------------------------- #
 # loads                                                                       #
 # --------------------------------------------------------------------------- #
-def load_frames(store) -> dict[str, pd.DataFrame]:
-    """The five extract tables, projected. `prices` is the only large read (3.3M rows), and
+def load_frames(store, universe: list[str]) -> dict[str, pd.DataFrame]:
+    """The five extract tables, projected; `prices` for the `universe` tickers only. It is the only large read (3.3M rows), and
     it is needed whole -- the spike scan and the forward-12m leg both span the full history."""
     price_col = "close_split" if _has_column(store, "prices", "close_split") else "close"
-    prices = store.load(Tables.prices, columns=["ticker", "date", price_col])
+    prices = store.load(Tables.prices, columns=["ticker", "date", price_col], where={"ticker": universe})
     prices = prices.rename(columns={price_col: "close"})
     prices = _as_ns(prices, "date")
 
@@ -463,7 +464,7 @@ def main() -> None:
     _, context = get_config_context("./configs", use_cache=False, save=False)
     store = context.store
 
-    frames = load_frames(store)
+    frames = load_frames(store, load_universe_tickers(context))
     panel = build_panel(frames)
     prices = frames["prices"]
 

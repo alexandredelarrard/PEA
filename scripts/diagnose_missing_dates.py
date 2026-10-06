@@ -34,6 +34,7 @@ from src.context import get_config_context
 from src.data_aggregate.utils.assemble.cube import TARGET_COL_RE
 from src.data_store.schema import Tables
 from src.utils.macro import load_macro_wide
+from src.utils.universe import load_universe_tickers
 
 
 def _window(a: str, b: str) -> tuple[pd.Timestamp, pd.Timestamp]:
@@ -66,7 +67,14 @@ def main(lo: str, hi: str):
     # projected + bounded: `prices` is ~1.8M rows and only the window is needed
     # `close_split` is never null when `close_total` is, so it defines the widest grid --
     # which is what a coverage diagnostic wants.
-    win = store.load(Tables.prices, columns=["date", "ticker", "close_split"], since=lo_date, until=hi_date, optional=True)
+    win = store.load(
+        Tables.prices,
+        columns=["date", "ticker", "close_split"],
+        where={"ticker": load_universe_tickers(context)},
+        since=lo_date,
+        until=hi_date,
+        optional=True,
+    )
     if win is None:
         print("   rows in window: 0  -> the whole window is absent from `prices`.")
         close = pd.DataFrame()

@@ -42,6 +42,7 @@ import pandas as pd
 from src.constants.constants import DEFAULT_CONFIG_DIR
 from src.context import Context, get_config_context
 from src.data_store.schema import Tables
+from src.utils.universe import load_universe_tickers
 
 #: (label, Table, date column). The sources the institutionals feature families read, plus
 #: `prices` and the fundamentals history as reference denominators -- a source that starts late
@@ -69,8 +70,9 @@ def _unit(table) -> str:
 
 
 def ticker_coverage(context: Context, since_year: int) -> pd.DataFrame:
-    """Distinct tickers (or manager CIKs) present per calendar year, one column per source."""
+    """Distinct tickers (or manager CIKs) present per calendar year, one column per source (`prices`: universe tickers only)."""
     since = pd.Timestamp(f"{since_year}-01-01")
+    universe = load_universe_tickers(context)
     columns: dict[str, pd.Series] = {}
     for label, table, date_col in _SOURCES:
         if not context.store.exists(table):
@@ -79,7 +81,8 @@ def ticker_coverage(context: Context, since_year: int) -> pd.DataFrame:
         if unit not in context.store.columns(table):
             continue
         per_year: dict[int, set] = {}
-        for chunk in context.store.iter_load(table, columns=[unit, date_col], date_col=date_col, since=since):
+        where: dict[str, object] | None = {"ticker": universe} if table is Tables.prices else None
+        for chunk in context.store.iter_load(table, columns=[unit, date_col], where=where, date_col=date_col, since=since):
             years = pd.to_datetime(chunk[date_col], errors="coerce").dt.year
             for year, values in chunk.assign(_y=years).dropna(subset=["_y"]).groupby("_y")[unit]:
                 per_year.setdefault(int(cast(int, year)), set()).update(values.dropna().unique())

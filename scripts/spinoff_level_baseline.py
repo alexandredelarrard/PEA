@@ -61,6 +61,7 @@ from src.constants.constants import SHARADAR_ACTION_SPINOFF, SHARADAR_ACTION_SPL
 from src.context import get_config_context
 from src.data_extract.utils.fundamentals_sharadar.field_map import split_events
 from src.data_store.schema import Tables
+from src.utils.universe import load_universe_tickers
 from src.validate.utils.prices import MCAP_TOLERANCE, PRICE_TOLERANCE, load_panel
 
 #: Names with a spinoff in their history and no `sharadar_actions` row to explain it -- the
@@ -496,14 +497,15 @@ def cross_sectional_impact(panel: pd.DataFrame, buckets: int = 10) -> dict:
 # --------------------------------------------------------------------------- #
 # controls                                                                    #
 # --------------------------------------------------------------------------- #
-def return_controls(store) -> dict:
+def return_controls(store, universe: list[str]) -> dict:
     """Digests that MUST NOT MOVE. `S` multiplies a LEVEL and never a RETURN, so any change
     here means the factor leaked into the return path.
 
     Taken from `prices` rather than `cube_part_prices` because the part table is a build
     behind (it still carries the pre-fix `close` column), and a control has to be measurable
-    on both sides of the change. `cube_part_prices` is digested too when its columns exist."""
-    px = store.load(Tables.prices, columns=["ticker", "date", "close_total"])
+    on both sides of the change. `cube_part_prices` is digested too when its columns exist. `prices` is read for the
+    `universe` tickers only."""
+    px = store.load(Tables.prices, columns=["ticker", "date", "close_total"], where={"ticker": universe})
     px = _as_ns(px, "date").sort_values(["ticker", "date"])
     ret = cast(Any, px.groupby("ticker")["close_total"]).pct_change(fill_method=None)
 
@@ -724,7 +726,7 @@ def main() -> None:
         "cross_sectional_impact": cross_sectional_impact(panel),
         "dividend_leg": dividend_leg_question(store, panel),
         "earnings_leg": earnings_leg_question(store, panel),
-        "return_controls": return_controls(store),
+        "return_controls": return_controls(store, load_universe_tickers(context)),
     }
 
     out = Path(args.out)

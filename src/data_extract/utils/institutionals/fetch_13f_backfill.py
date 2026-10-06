@@ -11,7 +11,7 @@ tickers through the stored `cusip_ticker_map` only. Each filing's value unit is 
 classifier. A ZIP whose roster-manager filings sit a unit factor away from their stored books is not
 saved, and a stored row filed on or after the data-set row is kept.
 
-The filings after the newest published data set and before a ticker joined the universe are in no data
+The filings after the newest data set on disk (listed and cached) and before a ticker joined the universe are in no data
 set yet and were walked before the ticker was in it: one EDGAR walk (`fetch_13f` over that filing
 window, the new tickers only) fills them, once per ticker.
 """
@@ -34,7 +34,7 @@ from tqdm import tqdm
 
 from src.constants.constants import SEC_13F_FORMS
 from src.context import Context
-from src.data_extract.utils.common.bulk_cache import ZipRead, cache_dir, ensure_zip, read_zip_tables
+from src.data_extract.utils.common.bulk_cache import ZipRead, cache_dir, ensure_zip, is_cached, read_zip_tables
 from src.data_extract.utils.common.sec_io import TransientReadError, sec_get
 from src.data_extract.utils.institutionals.fetch_13f import (
     _HR_COLS,
@@ -365,9 +365,15 @@ def gap_tickers(context: Context, tickers: list[str], since: pd.Timestamp, full:
     return {t: d for t, d in joined.items() if t not in done}
 
 
-def _walk_gap(context: Context, data_sets: list[DataSet], tickers: list[str], full: bool) -> None:
-    """One EDGAR walk from the day after the newest data set ends to the latest join date, for the gap tickers only."""
-    since = max(d.end for d in data_sets) + pd.Timedelta(days=1)
+def _walk_gap(context: Context, data_sets: list[DataSet], cache: Path, tickers: list[str], full: bool) -> None:
+    """One EDGAR walk from the day after the newest cached data set ends to the latest join date, for
+    the gap tickers only. A listed data set whose ZIP is not cached (not published yet) is no
+    coverage; with none cached the walk waits for the next run."""
+    available = [d.end for d in data_sets if is_cached(cache / d.filename)]
+    if not available:
+        logger.warning("13F backfill: no data set is cached, so the gap start is unknown; the EDGAR gap walk is retried next run")
+        return
+    since = max(available) + pd.Timedelta(days=1)
     due = gap_tickers(context, tickers, since, full)
     if not due:
         return
@@ -402,5 +408,5 @@ def fetch_13f_backfill(context: Context, tickers: list[str] | None, as_of: pd.Ti
         if path is not None:
             saved += _backfill_data_set(context, path, data_set, due, cmap, roster_ciks)
     logger.info("13F backfill: saved %d row(s) for %d ticker(s) from %d data set(s)", saved, len(targets), len(work))
-    _walk_gap(context, data_sets, targets, full)
+    _walk_gap(context, data_sets, cache, targets, full)
     return saved

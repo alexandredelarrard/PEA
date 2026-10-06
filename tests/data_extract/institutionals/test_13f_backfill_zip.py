@@ -315,6 +315,24 @@ def test_the_gap_after_the_newest_data_set_is_walked_once_per_ticker(tmp_path, s
     print("  night 2 finds a NEWCO row filed inside the gap and walks nothing. Validated.")
 
 
+def test_the_gap_starts_after_the_newest_data_set_read_not_the_newest_listed(tmp_path, sqlite_store, monkeypatch):
+    ctx = _ctx(tmp_path, sqlite_store, added_on={_NEW: "2026-09-28"})
+    _offline(monkeypatch)
+    walks = _patch_gap_walk(monkeypatch)
+    listed = [*_DATA_SETS, "01sep2024-30nov2024"]  # the newest is listed but its ZIP answers HTTP 404
+    links = "".join(f'<a href="/files/structureddata/data/form-13f-data-sets/{n}_form13f.zip">{n}</a>' for n in listed)
+    monkeypatch.setattr(fb, "sec_get", lambda *a, **k: SimpleNamespace(text=f"<html>{links}</html>"))
+    asked: list[str] = []
+    monkeypatch.setattr(bulk_cache, "download", lambda context, url, path, **k: asked.append(url) or 404)
+
+    fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF)
+
+    assert [u.rsplit("/", 1)[-1] for u in asked] == ["01sep2024-30nov2024_form13f.zip"]
+    assert len(walks) == 1 and walks[0]["filing_window"] == ("2024-09-01", "2026-09-28"), walks
+    print("\n=== SANITY: 13F gap start after a missing data set ===")
+    print(f"  01sep2024-30nov2024 listed but HTTP 404 -> the walk starts after 01jun2024-31aug2024: {walks[0]['filing_window']}. Validated.")
+
+
 def test_rows_from_the_nightly_overlap_do_not_mark_the_gap_done(tmp_path, sqlite_store, monkeypatch):
     ctx = _ctx(tmp_path, sqlite_store, added_on={_NEW: "2026-09-28"})
     _offline(monkeypatch)

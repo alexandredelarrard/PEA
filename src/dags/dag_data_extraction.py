@@ -7,9 +7,9 @@ big group: the light sources fan out freely, while the heavy / long / rate-limit
 Airflow POOLS (created in airflow-init):
 
   * sec_bulk (2 slots)  — big SEC zip downloads: fails_to_deliver, financial_statements,
-                          insider_transactions, financial_notes  (disk + SEC bandwidth bound)
+                          insider_zip, financial_notes  (disk + SEC bandwidth bound)
   * sec_api  (2 slots)  — per-ticker EDGAR API (shared 10 req/s); each task consumes both
-                          slots, so only one EDGAR walk runs at a time
+                          slots, so only one EDGAR walk runs at a time (insider_edgar included)
   * default             — light / fast: macro, short_interest, earnings_surprises,
                           superinvestors, earnings calls  (+ the one heavy yfinance pull:
                           price_history)
@@ -92,12 +92,14 @@ thirteen_f = fetch("thirteen-f", pool="sec_api")
 # new tickers' 13F history (cached data-set ZIPs + one EDGAR walk); a no-op on nights with no new ticker
 thirteen_f_backfill = fetch("thirteen-f-backfill", pool="sec_api")
 financial_statements = fetch("financial-statements", pool="sec_bulk")
-insider_transactions = fetch("insider-transactions", pool="sec_bulk")
+# insiders: the zip leg feeds identity_tables; the EDGAR leg is an EDGAR walk, so it sits in sec_api after identity
+insider_zip = fetch("insider-zip", pool="sec_bulk")
+insider_edgar = fetch("insider-edgar", pool="sec_api")
 financial_notes = fetch("financial-notes", pool="sec_bulk")  # VERY heavy
 identity_tables = fetch("identity-tables")
 superinvestors = fetch("superinvestors")  # light, needs 13F
 thirteen_f_managers = fetch("thirteen-f-managers", pool="sec_api")  # roster books, needs roster
-#   ^ institutionals step: thirteen_f, insider_transactions, fails_to_deliver,
+#   ^ institutionals step: thirteen_f, insider_zip + insider_edgar, fails_to_deliver,
 #     superinvestors, short-interest, sec_8k_items, sec_13d and sec_13g (below)
 
 # 3) per-ticker EDGAR API — capped to 2 (shared SEC 10 req/s)
@@ -137,7 +139,8 @@ all_fetchers = [
     thirteen_f,
     thirteen_f_backfill,
     financial_statements,
-    insider_transactions,
+    insider_zip,
+    insider_edgar,
     financial_notes,
     identity_tables,
     fundamentals,
@@ -168,10 +171,11 @@ identity_consumers = [
     sec_13d,
     sec_13g,
     filing_text,
+    insider_edgar,
 ]
 
 seed_universe >> all_fetchers
-insider_transactions >> identity_tables >> identity_consumers
+insider_zip >> identity_tables >> identity_consumers  # insider_edgar: after the zip leg, whose last quarter starts its window
 thirteen_f >> thirteen_f_backfill  # one EDGAR walk at a time: after the nightly walk
 thirteen_f >> superinvestors  # roster gate reads the filers' 13F activity
 superinvestors >> thirteen_f_managers  # roster IS the walk scope

@@ -790,71 +790,108 @@ def _cusip_facts(
     out: list[_Cusip] = []
     for key, group in lines[~lines["placeholder"]].groupby("cusip", sort=True):
         cusip = str(key)
-        if cusip not in issuers:
+        issuer = issuers.get(cusip)
+        company = None if issuer is None else view.ticker(issuer.primary)
+        if issuer is None or company is None:
             continue
-        issuer = issuers[cusip]
-        company = view.ticker(issuer.primary)
-        if company is None:
-            continue
-        entity = view.entity(issuer.primary)
-        own = {squash(s) for s in view.symbols_by_entity.get(entity, frozenset())}
-        tape = view.tape[view.tape["cik"].isin([c for c in view.windows if view.entity(c) == entity])]
-        letters = {class_letter(d) for descs in group["descriptions"] for d in descs} - {None}
-        spelled = {
-            m.group(1)
-            for s in view.symbols_by_entity.get(entity, frozenset())
-            if (m := _CLASS_SYMBOL.match(str(s))) and squash(s) in set(group["key"])
-        }
-        symbol_letter = len(letters) == 0 and len(spelled) == 1
-        letters = letters or spelled
-        letter = next(iter(letters)) if len(letters) == 1 else None
-        priorities, kinds = [], []
-        for line in _records(group):
-            if line.key == squash(company):
-                priorities.append(0)
-                continue
-            on_tape = not tape[(tape["key"] == line.key) & (tape["valid_from"] <= line.last) & (tape["valid_to"] > line.first)].empty
-            kind = non_common_kind(line.description, "" if (on_tape or line.key in own) else line.source_symbol)
-            kind = kind or next((k for k in (non_common_kind(d) for d in line.descriptions) if k), None)
-            if kind:
-                kinds.append((line.n_obs, kind))
-            elif on_tape:
-                priorities.append(1 if letter in (None, "A") else 3)
-            elif letter == "A":
-                priorities.append(2)
-        priority = min(priorities) if priorities else None
-        kind = None if priority == 0 else (max(kinds)[1] if kinds else None)
-        if manual_class.get(cusip) in NON_COMMON_KINDS:
-            kind = manual_class[cusip]
-        evidence = (
-            "manual_class"
-            if cusip in manual_class
-            else "lineage_class_symbol"
-            if letter and symbol_letter
-            else "class_description"
-            if letter
-            else "sec_tickers_listing"
-            if any((c, k) in listed for c, _, _ in issuer.spans for k in group["key"])
-            else "finra_symbology"
-            if any(k in finra for k in group["key"])
-            else None
-        )
-        rows = manual.boundaries[manual.boundaries["cusip"].eq(cusip)]
-        man = [
-            (
-                _bound(r.valid_from) or _NEAR,
-                _bound(r.valid_to) or _FAR,
-                r.role,
-                r.reason or "manual_boundary",
-                str(r.source),
-                r.issuer_cik or issuer.primary,
-            )
-            for r in _records(rows)
-        ]
-        out.append(
-            _Cusip(cusip, issuer, company, group["start"].min(), max(group["end"]), kind, letter, priority, evidence, man),
-        )
+        out.append(_cusip_fact(cusip, group, issuer, company, view, manual, manual_class, listed, finra))
     return out
+
+
+def _cusip_fact(
+    cusip: str,
+    group: pd.DataFrame,
+    issuer: _Issuer,
+    company: str,
+    view: _Lineage,
+    manual: SecurityManual,
+    manual_class: Mapping[str, str],
+    listed: frozenset[tuple[str, str]],
+    finra: frozenset[str],
+) -> _Cusip:
+    """One attributed CUSIP's facts from its lines, its entity's symbols and tape intervals, and the manual config."""
+    entity = view.entity(issuer.primary)
+    symbols = view.symbols_by_entity.get(entity, frozenset())
+    own = {squash(s) for s in symbols}
+    tape = view.tape[view.tape["cik"].isin([c for c in view.windows if view.entity(c) == entity])]
+    letters = {class_letter(d) for descs in group["descriptions"] for d in descs} - {None}
+    spelled = {m.group(1) for s in symbols if (m := _CLASS_SYMBOL.match(str(s))) and squash(s) in set(group["key"])}
+    symbol_letter = len(letters) == 0 and len(spelled) == 1
+    letters = letters or spelled
+    letter = next(iter(letters)) if len(letters) == 1 else None
+    priorities, kinds = _line_priorities(group, company, tape, own, letter)
+    priority = min(priorities) if priorities else None
+    kind = None if priority == 0 else (max(kinds)[1] if kinds else None)
+    if manual_class.get(cusip) in NON_COMMON_KINDS:
+        kind = manual_class[cusip]
+    evidence = _class_evidence(cusip, group, issuer, letter, symbol_letter, manual_class, listed, finra)
+    return _Cusip(
+        cusip, issuer, company, group["start"].min(), max(group["end"]), kind, letter, priority, evidence, _manual_bounds(cusip, issuer, manual)
+    )
+
+
+def _line_priorities(
+    group: pd.DataFrame, company: str, tape: pd.DataFrame, own: set[str], letter: str | None
+) -> tuple[list[int], list[tuple[int, str]]]:
+    """Canonical priorities of a CUSIP's common lines, and `(observations, kind)` of its non-common ones."""
+    priorities: list[int] = []
+    kinds: list[tuple[int, str]] = []
+    for line in _records(group):
+        if line.key == squash(company):
+            priorities.append(0)
+            continue
+        on_tape = not tape[(tape["key"] == line.key) & (tape["valid_from"] <= line.last) & (tape["valid_to"] > line.first)].empty
+        kind = non_common_kind(line.description, "" if (on_tape or line.key in own) else line.source_symbol)
+        kind = kind or next((k for k in (non_common_kind(d) for d in line.descriptions) if k), None)
+        if kind:
+            kinds.append((line.n_obs, kind))
+        elif on_tape:
+            priorities.append(1 if letter in (None, "A") else 3)
+        elif letter == "A":
+            priorities.append(2)
+    return priorities, kinds
+
+
+def _class_evidence(
+    cusip: str,
+    group: pd.DataFrame,
+    issuer: _Issuer,
+    letter: str | None,
+    symbol_letter: bool,
+    manual_class: Mapping[str, str],
+    listed: frozenset[tuple[str, str]],
+    finra: frozenset[str],
+) -> str | None:
+    """Why a CUSIP is a common class: manual config, a lineage class symbol, its description, the SEC listing or FINRA symbology."""
+    return (
+        "manual_class"
+        if cusip in manual_class
+        else "lineage_class_symbol"
+        if letter and symbol_letter
+        else "class_description"
+        if letter
+        else "sec_tickers_listing"
+        if any((c, k) in listed for c, _, _ in issuer.spans for k in group["key"])
+        else "finra_symbology"
+        if any(k in finra for k in group["key"])
+        else None
+    )
+
+
+def _manual_bounds(cusip: str, issuer: _Issuer, manual: SecurityManual) -> list[tuple[pd.Timestamp, pd.Timestamp, str, str, str, str]]:
+    """The CUSIP's manual role boundaries as `(start, end, role, reason, source, issuer CIK)`; open bounds at the far dates."""
+    rows = manual.boundaries[manual.boundaries["cusip"].eq(cusip)]
+    return [
+        (
+            _bound(r.valid_from) or _NEAR,
+            _bound(r.valid_to) or _FAR,
+            r.role,
+            r.reason or "manual_boundary",
+            str(r.source),
+            r.issuer_cik or issuer.primary,
+        )
+        for r in _records(rows)
+    ]
 
 
 def _assign(facts: list[_Cusip], view: _Lineage, co_registrants: frozenset[str], horizon: pd.Timestamp) -> dict[str, list[_Segment]]:
@@ -864,41 +901,56 @@ def _assign(facts: list[_Cusip], view: _Lineage, co_registrants: frozenset[str],
     for fact in facts:
         if fact.issuer.primary in co_registrants:
             continue
-        life = [(fact.start, fact.end)]
-        out: list[_Segment] = []
-        for a, b, role, reason, source, cik in fact.manual:
-            for lo, hi in _intersect(life, a, b):
-                if role in CANONICAL_ROLES:
-                    candidates.setdefault(fact.company, []).append(_Candidate(-1, fact.start, fact.cusip, cik, ((lo, hi),), source))
-                else:
-                    out.append(_Segment(lo, hi, role, reason, cik, source))
-        free = _subtract(life, [(a, b) for a, b, *_ in fact.manual])
-        for cik, a, b in fact.issuer.spans:
-            part = _intersect(free, a, b)
-            windows = view.windows.get(cik)
-            if windows is None:
-                out += [_Segment(lo, hi, ACQUIRED_CONSTITUENT, "event_only_cik", cik) for lo, hi in part]
-                continue
-            inside = [p for lo, hi in part for p in _window_spans(windows, lo, hi)]
-            outside = _subtract(part, inside)
-            if fact.kind:
-                out += [_Segment(lo, hi, EXCLUDED, fact.kind, cik) for lo, hi in inside]
-                out += [_Segment(lo, hi, ACQUIRED_CONSTITUENT, "outside_window", cik) for lo, hi in outside]
-                continue
-            if fact.priority is not None:
-                if inside:
-                    candidates.setdefault(fact.company, []).append(_Candidate(fact.priority, fact.start, fact.cusip, cik, tuple(inside)))
-                if outside:
-                    candidates.setdefault(fact.company, []).append(_Candidate(FALLBACK_PRIORITY, fact.start, fact.cusip, cik, tuple(outside)))
-                continue
-            role, why = (SECONDARY_CLASS, fact.class_evidence) if fact.class_evidence else (EXCLUDED, "unclassified")
-            out += [_Segment(lo, hi, role, why, cik) for lo, hi in inside]
-            out += [_Segment(lo, hi, ACQUIRED_CONSTITUENT, "outside_window", cik) for lo, hi in outside]
-        segments[fact.cusip] = out
+        segments[fact.cusip] = _fact_segments(fact, view, candidates)
     by_cusip = {fact.cusip: fact for fact in facts}
     for company, cands in candidates.items():
         _canonical(company, cands, by_cusip, view, segments, horizon)
     return segments
+
+
+def _fact_segments(fact: _Cusip, view: _Lineage, candidates: dict[str, list[_Candidate]]) -> list[_Segment]:
+    """One CUSIP's non-canonical segments over its life; its canonical candidates are appended to `candidates`."""
+    life = [(fact.start, fact.end)]
+    out = _manual_segments(fact, life, candidates)
+    free = _subtract(life, [(a, b) for a, b, *_ in fact.manual])
+    for cik, a, b in fact.issuer.spans:
+        out += _span_segments(fact, cik, _intersect(free, a, b), view, candidates)
+    return out
+
+
+def _manual_segments(fact: _Cusip, life: list[Span], candidates: dict[str, list[_Candidate]]) -> list[_Segment]:
+    """Segments of the CUSIP's manual boundaries; a manual canonical role becomes a top-priority candidate."""
+    out: list[_Segment] = []
+    for a, b, role, reason, source, cik in fact.manual:
+        for lo, hi in _intersect(life, a, b):
+            if role in CANONICAL_ROLES:
+                candidates.setdefault(fact.company, []).append(_Candidate(-1, fact.start, fact.cusip, cik, ((lo, hi),), source))
+            else:
+                out.append(_Segment(lo, hi, role, reason, cik, source))
+    return out
+
+
+def _span_segments(fact: _Cusip, cik: str, part: list[Span], view: _Lineage, candidates: dict[str, list[_Candidate]]) -> list[_Segment]:
+    """Segments of one issuer span's free part: acquired outside the CIK's windows; inside, excluded by kind, a canonical
+    candidate by priority, else a secondary class with class evidence or excluded as unclassified."""
+    windows = view.windows.get(cik)
+    if windows is None:
+        return [_Segment(lo, hi, ACQUIRED_CONSTITUENT, "event_only_cik", cik) for lo, hi in part]
+    inside = [p for lo, hi in part for p in _window_spans(windows, lo, hi)]
+    outside = _subtract(part, inside)
+    if fact.priority is not None and not fact.kind:
+        if inside:
+            candidates.setdefault(fact.company, []).append(_Candidate(fact.priority, fact.start, fact.cusip, cik, tuple(inside)))
+        if outside:
+            candidates.setdefault(fact.company, []).append(_Candidate(FALLBACK_PRIORITY, fact.start, fact.cusip, cik, tuple(outside)))
+        return []
+    if fact.kind:
+        role, why = EXCLUDED, fact.kind
+    else:
+        role, why = (SECONDARY_CLASS, fact.class_evidence) if fact.class_evidence else (EXCLUDED, "unclassified")
+    return [_Segment(lo, hi, role, why, cik) for lo, hi in inside] + [
+        _Segment(lo, hi, ACQUIRED_CONSTITUENT, "outside_window", cik) for lo, hi in outside
+    ]
 
 
 def _canonical(
@@ -1006,49 +1058,59 @@ def _line_rows(
         if line.cusip not in segments:
             continue
         issuer = issuers[line.cusip]
-        company = ctx.view.ticker(issuer.primary) or ""
-        merged: list[dict[str, Any]] = []
-        for seg in sorted(_line_pieces(line, segments[line.cusip], issuer.primary), key=lambda s: s.start):
-            for a, b, ratio, ratio_source in _ratio_pieces(line.cusip, seg.start, seg.end, ctx.manual.ratios):
-                cls = _class_of(facts.get(line.cusip), seg.role, seg.reason)
-                key = (seg.role, seg.reason, ratio, cls, seg.issuer)
-                if merged and merged[-1]["valid_to"] == a and merged[-1]["_key"] == key:
-                    merged[-1]["valid_to"] = b
-                    continue
-                merged.append(
-                    {
-                        "_key": key,
-                        "security_id": f"C{line.cusip}",
-                        "canonical_company": company,
-                        "issuer_cik": seg.issuer,
-                        "source": SOURCE_FTD,
-                        "source_symbol": line.source_symbol,
-                        "market_symbol": _market_symbol(line.source_symbol, company, seg.issuer, ctx.view, ctx.sec_symbols),
-                        "cusip": line.cusip,
-                        "security_class": cls,
-                        "conversion_ratio": ratio,
-                        "lineage_role": seg.role,
-                        "valid_from": a,
-                        "valid_to": b,
-                        "lineage_reason": seg.reason,
-                        "source_accession": seg.source or ratio_source,
-                    }
-                )
-        days = dates.get((line.cusip, line.source_symbol))
-        for row in merged:
-            row.pop("_key")
-            start, end = row["valid_from"].to_datetime64(), row["valid_to"].to_datetime64()
-            row["n_observations"] = int(((days >= start) & (days < end)).sum()) if days is not None else 0
-            row["valid_to"] = None if row["valid_to"] >= _FAR else row["valid_to"]
-            row["exchange"] = ctx.sec_exchange.get((row["issuer_cik"], squash(line.source_symbol))) if row["valid_to"] is None else None
-            traded = (f"; FINRA from {line.finra_from.date()}" if pd.notna(line.finra_from) else "") + (
-                f"; FINRA to {line.finra_to.date()}" if pd.notna(line.finra_to) else ""
-            )
-            row["evidence"] = (
-                f"issuer {issuer.primary} by {issuer.how}; FTD {line.first.date()}..{line.last.date()} n={line.n_obs}{traded}; {line.description}"
-            )
-        out += merged
+        merged = _merged_pieces(line, segments[line.cusip], facts.get(line.cusip), issuer, ctx)
+        out += _finish_rows(merged, line, issuer, dates.get((line.cusip, line.source_symbol)), ctx)
     return out
+
+
+def _merged_pieces(line: Any, segments: list[_Segment], fact: _Cusip | None, issuer: _Issuer, ctx: _RowContext) -> list[dict[str, Any]]:
+    """The line's role pieces split at conversion-ratio dates, adjacent pieces with the same role, reason, ratio, class and issuer merged."""
+    company = ctx.view.ticker(issuer.primary) or ""
+    merged: list[dict[str, Any]] = []
+    for seg in sorted(_line_pieces(line, segments, issuer.primary), key=lambda s: s.start):
+        for a, b, ratio, ratio_source in _ratio_pieces(line.cusip, seg.start, seg.end, ctx.manual.ratios):
+            cls = _class_of(fact, seg.role, seg.reason)
+            key = (seg.role, seg.reason, ratio, cls, seg.issuer)
+            if merged and merged[-1]["valid_to"] == a and merged[-1]["_key"] == key:
+                merged[-1]["valid_to"] = b
+                continue
+            merged.append(
+                {
+                    "_key": key,
+                    "security_id": f"C{line.cusip}",
+                    "canonical_company": company,
+                    "issuer_cik": seg.issuer,
+                    "source": SOURCE_FTD,
+                    "source_symbol": line.source_symbol,
+                    "market_symbol": _market_symbol(line.source_symbol, company, seg.issuer, ctx.view, ctx.sec_symbols),
+                    "cusip": line.cusip,
+                    "security_class": cls,
+                    "conversion_ratio": ratio,
+                    "lineage_role": seg.role,
+                    "valid_from": a,
+                    "valid_to": b,
+                    "lineage_reason": seg.reason,
+                    "source_accession": seg.source or ratio_source,
+                }
+            )
+    return merged
+
+
+def _finish_rows(merged: list[dict[str, Any]], line: Any, issuer: _Issuer, days: Any, ctx: _RowContext) -> list[dict[str, Any]]:
+    """The merged pieces as table rows: observation counts, open end as None, listing exchange of an open row, evidence text."""
+    for row in merged:
+        row.pop("_key")
+        start, end = row["valid_from"].to_datetime64(), row["valid_to"].to_datetime64()
+        row["n_observations"] = int(((days >= start) & (days < end)).sum()) if days is not None else 0
+        row["valid_to"] = None if row["valid_to"] >= _FAR else row["valid_to"]
+        row["exchange"] = ctx.sec_exchange.get((row["issuer_cik"], squash(line.source_symbol))) if row["valid_to"] is None else None
+        traded = (f"; FINRA from {line.finra_from.date()}" if pd.notna(line.finra_from) else "") + (
+            f"; FINRA to {line.finra_to.date()}" if pd.notna(line.finra_to) else ""
+        )
+        row["evidence"] = (
+            f"issuer {issuer.primary} by {issuer.how}; FTD {line.first.date()}..{line.last.date()} n={line.n_obs}{traded}; {line.description}"
+        )
+    return merged
 
 
 def _finalise(rows: list[dict[str, Any]], existing: pd.DataFrame | None, built_at: pd.Timestamp) -> pd.DataFrame:

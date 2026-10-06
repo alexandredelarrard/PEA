@@ -845,7 +845,8 @@ def _line_priorities(
         kind = kind or next((k for k in (non_common_kind(d) for d in line.descriptions) if k), None)
         if kind:
             kinds.append((line.n_obs, kind))
-        elif on_tape:
+            continue
+        if on_tape:
             priorities.append(1 if letter in (None, "A") else 3)
         elif letter == "A":
             priorities.append(2)

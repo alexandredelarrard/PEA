@@ -1079,3 +1079,29 @@ def test_build_reads_common_symbol_days_through_the_store(sqlite_store, tmp_path
     rows = sm.build_security_master(context, EG, str(CONFIG_DIR), built_at=BUILT_AT)
     assert rows[rows["source_symbol"].eq("EG")]["valid_from"].min() == pd.Timestamp("2023-07-10")
     print("\n=== SANITY CHECK: build wiring ===\n  the stored FINRA rows of a common symbol (EG) reach the derivation: the line starts at 2023-07-10")
+
+
+def test_f107_a_line_run_back_ends_the_bridge_of_the_earlier_cusip_of_its_symbol():
+    """STE's redomicile: the old CUSIP's last fail is bridged to the new CUSIP's first; the new line runs back over the
+    FINRA days after the old CUSIP's last fail, so the bridge ends where the run back starts (no day under two lines)."""
+    cik = "0001757898"
+    steris = _lineage(
+        _row("STE", cik, cik, "cik_window", sources="roster"), _row("STE", cik, cik, "symbol", "STE", "2015-01-02", sources="dei,form345,roster")
+    )
+    obs = pd.concat(
+        [
+            _obs("G84720104", "STE", "STERIS PLC ORD SHS", "2018-06-06", "2019-03-06"),
+            _obs("G8473T100", "STE", "STERIS PLC ORD SHS", "2019-04-10", "2020-06-24"),
+        ]
+    )
+    build = _derive(obs, steris, _roster(("STE", cik)), finra_presence=_finra("STE", "2018-06-01", "2020-06-30", freq="B"))
+    rows = build.rows[build.rows["source_symbol"].eq("STE")].assign(vt=lambda f: pd.to_datetime(f["valid_to"]).fillna(pd.Timestamp("2262-01-01")))
+    old, new = rows[rows["cusip"].eq("G84720104")], rows[rows["cusip"].eq("G8473T100")]
+    assert new["valid_from"].min() < pd.Timestamp("2019-04-05"), "the new line runs back over the FINRA days"
+    assert old["vt"].max() == new["valid_from"].min(), (old[["valid_from", "valid_to"]], new[["valid_from", "valid_to"]])
+    overlaps = [(a, b) for a in old.itertuples() for b in new.itertuples() if max(a.valid_from, b.valid_from) < min(a.vt, b.vt)]
+    assert overlaps == []
+    print("\n=== SANITY CHECK: F-107 no overlap under one symbol ===")
+    print(
+        f"  old CUSIP ends {old['vt'].max().date()}, the new line starts {new['valid_from'].min().date()} (run back over FINRA days); no shared day"
+    )

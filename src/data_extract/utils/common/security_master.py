@@ -536,13 +536,15 @@ def _extend_by_trading(
     """A class line runs over the FINRA days of its symbol around its fails: on past its last fail, back before its first.
     Another common line only runs back, and no earlier than its issuer's tape interval of the symbol (`symbol_starts`).
 
-    A run stops at a gap longer than `FINRA_MAX_GAP`, where another CUSIP of the symbol trades, and at a manual bound.
+    A run stops at a gap longer than `FINRA_MAX_GAP`, where another CUSIP of the symbol trades (going on, at its current
+    start; going back, after its last fail or the end of its own run on), and at a manual bound. A line run back ends the
+    bridge of an earlier CUSIP of its symbol at its new start, so two lines of one symbol never overlap.
     """
     out = lines.copy()
     out["start"], out["finra_from"], out["finra_to"] = out["first"], pd.NaT, pd.NaT
     if not finra_days:
         return out
-    lives = out.groupby("key")[["cusip", "first", "last"]].apply(lambda g: list(zip(g["cusip"], g["first"], g["last"], strict=True))).to_dict()
+    by_key = {key: list(index) for key, index in out.groupby("key").groups.items()}
     manual_ends = manual.boundaries.dropna(subset=["valid_to"]).groupby("cusip")["valid_to"].agg(list).to_dict()
     manual_starts = manual.boundaries.dropna(subset=["valid_from"]).groupby("cusip")["valid_from"].agg(list).to_dict()
     for i, line, symbol_from in zip(out.index, _records(out), symbol_starts, strict=True):
@@ -550,19 +552,24 @@ def _extend_by_trading(
         classed = _is_class_line(line.descriptions, line.source_symbol, finra_classes)
         if days is None or not (classed or (symbol_from is not None and _is_common_line(line.descriptions, line.source_symbol))):
             continue
-        others = [(first, last) for cusip, first, last in lives.get(line.key, []) if cusip != line.cusip]
+        others = out.loc[[j for j in by_key.get(line.key, []) if out.at[j, "cusip"] != line.cusip], ["start", "first", "last", "end", "finra_to"]]
         if classed and line.end < _FAR:
-            stops = [max(first, line.last + pd.Timedelta(days=1)) for first, last in others if last > line.last]
+            later = others[others["last"] > line.last]
+            stops = [max(start, line.last + pd.Timedelta(days=1)) for start in later["start"]]
             stops += [end for end in manual_ends.get(line.cusip, []) if end > line.last]
             last = _chain(days, line.last, min(stops, default=_FAR), forward=True)
             if last > line.last and last + pd.Timedelta(days=1) > line.end:
                 out.at[i, "end"], out.at[i, "finra_to"] = last + pd.Timedelta(days=1), last
-        floors = [min(last + pd.Timedelta(days=1), line.first) for first, last in others if first < line.first]
+        earlier = others[others["first"] < line.first]
+        ran_on = earlier["end"].where(earlier["finra_to"].notna(), earlier["last"] + pd.Timedelta(days=1))
+        floors = [min(end, line.first) for end in ran_on]
         floors += [start for start in manual_starts.get(line.cusip, []) if start <= line.first]
         floors += [] if classed else [symbol_from]
         first = _chain(days, line.first, max(floors, default=_NEAR), forward=False)
         if first < line.first:
             out.at[i, "start"], out.at[i, "finra_from"] = first, first
+            bridged = earlier.index[(earlier["end"] > first) & (earlier["end"] < _FAR) & earlier["finra_to"].isna()]
+            out.loc[bridged, "end"] = first
     return out
 
 

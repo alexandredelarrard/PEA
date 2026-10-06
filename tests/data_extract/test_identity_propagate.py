@@ -483,3 +483,34 @@ def test_the_history_build_rebuilds_a_ticker_whose_scope_changed_since_its_last_
     assert list(history["totalRevenue"]) == [4.0]
     print("\n=== SANITY CHECK: history expansion rebuild ===")
     print("  unchanged scope: a changed published row still refuses; scope changed inside the re-check window: ALB rebuilt (2 -> 4 fact rows)")
+
+
+def test_f105_the_bulk_reparse_compares_each_table_only_with_the_ciks_it_can_hold(sqlite_store, tmp_path, monkeypatch, stubs):
+    """Every scope changed: ALB holds its notes rows, MSFT none, TMUS insider rows but never its co-registrant's."""
+    context = _context(sqlite_store, tmp_path)
+    sqlite_store.save(Tables.notes_num, _filings(Tables.notes_num, "ALB", [("alb-1", ALB, "2024-02-01")]))
+    sqlite_store.save(Tables.insider_transactions, _filings(Tables.insider_transactions, "TMUS", [("t-1", TMUS, "2024-02-01")]))
+    sqlite_store.save(Tables.insider_transactions, _filings(Tables.insider_transactions, "ALB", [("alb-1", ALB, "2024-02-01")]))
+    rows = pd.DataFrame(
+        [
+            _row(t, c, r, stamp=AFTER)
+            for t, c, r in (("ALB", ALB, "cik_window"), ("MSFT", MSFT, "cik_window"), ("TMUS", TMUS, "cik_window"), ("TMUS", TMO_USA, "cik_event"))
+        ]
+    )
+    tenure = pd.DataFrame(
+        [
+            {"symbol": t, "issuer_cik": c, "valid_from": pd.Timestamp("2000-01-01"), "valid_to": None, "n_filings": 5, "source": "form345"}
+            for t, c in ROSTER.items()
+        ]
+    )
+    roster = pd.DataFrame([{"ticker": t, "cik": c} for t, c in ROSTER.items()])
+    identity = build_identity(rows, tenure, roster, co_registrant_ciks=[TMO_USA])
+    monkeypatch.setattr(prop, "load_identity", lambda context: identity)
+
+    result = prop.propagate_identity(context, list(ROSTER), as_of=RUN_DATE)
+
+    assert stubs["notes"] == [] and stubs["insider"] == [], "no table lacks a CIK it can hold: nothing re-parsed"
+    assert stubs["pension"] == [["ALB", "MSFT", "TMUS"]], "pension_facts not created yet: every changed ticker"
+    assert "notes_num" not in result.reparsed and "insider_transactions" not in result.reparsed
+    print("\n=== SANITY CHECK: F-105 bulk re-parse trigger ===")
+    print("  every scope changed: ALB holds its window CIK's notes, MSFT holds none, TMUS's co-registrant is never stored -> no re-parse")

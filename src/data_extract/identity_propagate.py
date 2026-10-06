@@ -5,8 +5,8 @@ The tickers whose lineage stamp (`entity_lineage.scope_changed_at`) falls inside
 idempotent, so a ticker seen on several runs inside the window costs reads only. Contraction: rows
 whose filer CIK is no longer a CIK of the ticker's entity, and 8-K / 13D / 13G rows whose CIK has no
 seam-widened window admitting their date, are deleted, one WARNING per table.
-Expansion: the bulk families re-parse, from their cached zips, the changed tickers whose table holds no
-row from one of their scope CIKs (EDGAR tables list a new CIK's filings in their own fetchers). The raw
+Expansion: the bulk families re-parse, from their cached zips, the changed tickers whose table holds their
+rows but none from a scope CIK it can hold (EDGAR tables list a new CIK's filings in their own fetchers). The raw
 FTD lines and RegSHO short-volume rows of companies whose `security_master` rows changed recently (for
 short volume, also their lineage symbol rows) are re-stamped from the stored rows and their ticker rows
 rebuilt. The stored insider rows of changed tickers (and every unstamped row) get their lineage stamp
@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from src.context import Context
-from src.data_extract.utils.common.identity import Identity, load_identity
+from src.data_extract.utils.common.identity import FilingScope, Identity, load_identity
 from src.data_extract.utils.common.resume import recently_changed
 from src.data_extract.utils.fundamentals.build_history import build_fundamentals_history
 from src.data_extract.utils.fundamentals.fetch_financial_notes import reparse_financial_notes
@@ -66,12 +66,13 @@ def _changed(stamps: Mapping[str, pd.Timestamp | None], as_of: pd.Timestamp, *, 
 
 
 def _lacking_scope_rows(context: Context, table: Table, tickers: Sequence[str], scope_ciks: Mapping[str, frozenset[str]]) -> list[str]:
-    """`tickers` whose rows in `table` come from no CIK of one of their scope CIKs (a bulk re-parse may add them)."""
+    """`tickers` holding rows in `table` but none from one of the scope CIKs the table can hold (a bulk re-parse may
+    add them); a ticker with no row at all is the table's own fetcher's work, not a lineage expansion."""
     cik_col = PURGE_TABLES_BY_NAME[table.name].cik_col
     lacking = []
     for ticker in tickers:
         stored = {pad_cik(cik) for cik in context.store.distinct(table, cik_col, where={"ticker": ticker})}
-        if scope_ciks.get(ticker, frozenset()) - stored:
+        if stored and scope_ciks.get(ticker, frozenset()) - stored:
             lacking.append(ticker)
     return lacking
 
@@ -157,15 +158,29 @@ def _purge(
     return records
 
 
-def _reparse_bulk(context: Context, changed: Sequence[str], scope_ciks: Mapping[str, frozenset[str]]) -> dict[str, tuple[str, ...]]:
-    """Re-parse each bulk family from its cache for the changed tickers whose table lacks rows of a scope CIK."""
-    families: tuple[tuple[Table, Callable[[Context, list[str]], int]], ...] = (
-        (Tables.notes_num, reparse_financial_notes),
-        (Tables.pension_facts, reparse_financial_statements),
-        (Tables.insider_transactions, reparse_insider_transactions),
+def _window_ciks(scopes: Mapping[str, FilingScope], table: Table) -> dict[str, frozenset[str]]:
+    """`{ticker: window CIKs}` whose window is still open on `table`'s first data-set date."""
+    start = pd.Timestamp(table.resume.source_start) if table.resume is not None and table.resume.source_start else None
+    return {
+        ticker: frozenset(w.cik for w in scope.windows if start is None or w.listed_to is None or pd.Timestamp(w.listed_to) > start)
+        for ticker, scope in scopes.items()
+    }
+
+
+def _reparse_bulk(
+    context: Context, changed: Sequence[str], scopes: Mapping[str, FilingScope], co_registrants: frozenset[str]
+) -> dict[str, tuple[str, ...]]:
+    """Re-parse each bulk family from its cache for the changed tickers whose table lacks rows of a CIK it can hold:
+    a window CIK listed after the data set starts for the consolidating Notes and statement families, an event CIK
+    other than a co-registrant for insider."""
+    events = {ticker: frozenset(scope.event_ciks) - co_registrants for ticker, scope in scopes.items()}
+    families: tuple[tuple[Table, Callable[[Context, list[str]], int], Mapping[str, frozenset[str]]], ...] = (
+        (Tables.notes_num, reparse_financial_notes, _window_ciks(scopes, Tables.notes_num)),
+        (Tables.pension_facts, reparse_financial_statements, _window_ciks(scopes, Tables.pension_facts)),
+        (Tables.insider_transactions, reparse_insider_transactions, events),
     )
     done: dict[str, tuple[str, ...]] = {}
-    for table, reparse in families:
+    for table, reparse, scope_ciks in families:
         tickers = _lacking_scope_rows(context, table, changed, scope_ciks) if context.store.exists(table) else list(changed)
         if tickers:
             context.log.info("identity-propagate: re-parsing '%s' from cache for %d ticker(s): %s", table.name, len(tickers), ", ".join(tickers))
@@ -247,8 +262,7 @@ def propagate_identity(
     records: list[dict] = []
     for spec in PURGE_TABLES:
         records += _purge(context, spec, changed, own_ciks, own_windows, dry_run=dry_run)
-    scope_ciks = {ticker: frozenset(scope.event_ciks) | {window.cik for window in scope.windows} for ticker, scope in scopes.items()}
-    reparsed = {} if dry_run else _reparse_bulk(context, changed, scope_ciks)
+    reparsed = {} if dry_run else _reparse_bulk(context, changed, scopes, resolver.co_registrant_ciks)
     records += _refresh_insider(context, resolver, changed, dry_run=dry_run)
     records += _refresh_fails(context, universe, run_date, dry_run=dry_run, every=every_ticker)
     records += _refresh_short_volume(context, resolver, universe, run_date, dry_run=dry_run, every=every_ticker)

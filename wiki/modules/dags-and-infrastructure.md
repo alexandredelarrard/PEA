@@ -23,7 +23,7 @@ Infrastructure combines a PostgreSQL 16 pipeline database with an Airflow deploy
 
 ## Public API / entry points
 
-- [dag_data_extraction.py](../../src/dags/dag_data_extraction.py) schedules insiders (one `insider-transactions` task in the `sec_bulk` pool: pending zip quarters, then the EDGAR walk, into the one `insider_transactions` table), then identity tables, then identity-consuming SEC tasks; its standalone employee task is a sibling of SEC fundamentals rather than a side effect.
+- [dag_data_extraction.py](../../src/dags/dag_data_extraction.py) schedules insiders (two tasks into the one `insider_transactions` table: `insider-zip`, the pending zip quarters, in the `sec_bulk` pool before identity tables; `insider-edgar`, the EDGAR walk, in the `sec_api` pool among the identity consumers, so it never runs beside another EDGAR walk), then identity tables, then identity-consuming SEC tasks; its standalone employee task is a sibling of SEC fundamentals rather than a side effect.
 - [dag_data_aggregation.py](../../src/dags/dag_data_aggregation.py) chains peer deduction, registered cube parts, assembly, status, and downstream prediction. The extraction DAG's freshness report and aggregation trigger, and every aggregation task, run on `ALL_DONE`, so a failed source or part never stops the night; `modelling predict` alone refuses stale inputs. The 13F new-ticker backfill is a task of the extraction DAG, after the nightly 13F walk.
 - [dag_modelling.py](../../src/dags/dag_modelling.py) runs holdout training, portfolio backtest, and full-history production training.
 - [dag_strat_prediction.py](../../src/dags/dag_strat_prediction.py) scores the newest cube and writes strategy moves.

@@ -95,7 +95,7 @@ Tabular data belongs in PostgreSQL. Do not substitute CSV or Parquet as an appli
 
 Plan from the database, never from a file or a full table read. Each extracted table declares a `Resume` contract in [schema.py](../../src/data_store/schema.py), and [resume.py](../../src/data_extract/utils/common/resume.py) turns it into a work list:
 
-- `series_windows` (dated per-key series): each key's own last date minus the overlap, full history for a new key or an absent table, the table-wide frontier minus the overlap for a rowless key, plus one window per run of sessions missing inside the key's stored span;
+- `series_windows` (dated per-key series): each key's own last date minus the overlap, full history for an absent table or for a new key until its stored history reaches the floor (within the table's overlap; after that it resumes like any key), the table-wide frontier minus the overlap for a rowless key, plus one window per run of sessions missing inside the key's stored span;
 - `document_worklist` (EDGAR documents): the local filing-index rows of the table's forms for each key's registrant lineage, from the floor on, minus the accessions already stored, markers included; newest first and capped per run;
 - `archive_worklist` (bulk archives): the published periods missing from any of the fetcher's tables, plus every cached period for a new key with no archive row yet.
 

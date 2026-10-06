@@ -5,7 +5,7 @@ FINRA RegSHO consolidated daily short-sale VOLUME (`CNMSshvol` files) -> `short_
 [date, ticker, short_volume, total_volume]; despite the table name it is not reported short
 interest. Each day's file is disseminated the next morning, so aggregation lags it one trading day.
 One day file covers every symbol, so a run reads the union of the sessions any universe key needs
-(`resume.series_windows`: forward overlap, new keys in full) plus the missing DAYS: calendar sessions
+(`resume.series_windows`: forward overlap, new keys in full until their days reach the source start) plus the missing DAYS: calendar sessions
 inside the stored span on which no key has a row. A day with rows for some keys was read; `repair`
 re-reads those per-key gaps once.
 The CDN keeps only a rolling ~8-year window, so stored rows older than it cannot be re-fetched;

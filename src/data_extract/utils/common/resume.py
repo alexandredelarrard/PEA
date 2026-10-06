@@ -6,7 +6,8 @@ each key's registrant lineage, from the floor on, minus the accessions already s
 markers included; optionally only on the rows of one source); newest first and capped per run.
 
 `series_windows` (dated per-key series): per key, its own last date minus the overlap through
-`until`; the full history for a new key, an absent table or `full`; the table-wide frontier minus
+`until`; the full history for an absent table, `full`, or a new key whose stored history does not
+yet reach the floor (a new key whose full pull is stored resumes like any other); the table-wide frontier minus
 the overlap for a rowless key; plus one window per run of calendar sessions missing inside the
 key's stored span.
 
@@ -235,6 +236,14 @@ def _has_holes(calendar: pd.DatetimeIndex | None, first: pd.Timestamp, last: pd.
     return calendar is not None and bool(n < calendar.searchsorted(last, side="right") - calendar.searchsorted(first, side="left"))
 
 
+def _reaches_floor(edges: tuple[pd.Timestamp, pd.Timestamp, int] | None, floor: pd.Timestamp, tolerance: pd.Timedelta) -> bool:
+    """True when a key's stored history starts within `tolerance` of the floor: its full pull is done.
+
+    The tolerance (the table's overlap) absorbs a floor on a non-session day and a quarterly series'
+    first filing after it."""
+    return edges is not None and pd.Timestamp(edges[0]) <= floor + tolerance
+
+
 def series_windows(
     context: Context,
     table: Table,
@@ -263,7 +272,7 @@ def series_windows(
     key_class: dict[str, str] = {}
     holed: dict[str, tuple[pd.Timestamp, pd.Timestamp]] = {}
     for key in keys:
-        if full or table_max is None or key in new:
+        if full or table_max is None or (key in new and not _reaches_floor(stats.get(key), floor, overlap)):
             key_class[key], since = KEY_NEW, floor
         elif key not in stats:
             key_class[key], since = KEY_ROWLESS, max(table_max - overlap, floor)

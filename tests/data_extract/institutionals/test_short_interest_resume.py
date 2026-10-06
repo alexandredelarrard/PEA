@@ -162,6 +162,29 @@ def test_days_before_the_source_start_are_never_requested(sqlite_store):
     print(f"  {len(forward)} forward sessions from 08-10; the 2018-01..07 block FINRA answers 403 is never requested.")
 
 
+def test_a_new_key_reads_every_day_file_once_then_only_forward(sqlite_store):
+    # REQ-010: once a new key's stored days reach the FINRA start, a rerun (same night or a later night
+    # inside the new-key window) reads only the forward days, not the whole source window again.
+    ctx = _context(sqlite_store)
+    sessions = pd.bdate_range("2018-08-01", "2018-08-17")
+    sqlite_store.save(Tables.prices, pd.DataFrame({"ticker": "CAL", "date": sessions, "close_split": 1.0}))
+    sqlite_store.save(Tables.short_interest, _si("AAA", sessions))
+    _seed_universe(sqlite_store, ["AAA", "NEW"], {"NEW": "2018-08-17"})
+    as_of = pd.Timestamp("2018-08-18")  # last completed session: Friday 2018-08-17
+
+    first = si._plan_days(ctx, ["AAA", "NEW"], 1, False, as_of)
+    sqlite_store.save(Tables.short_interest, _si("NEW", first[1:]))  # no NEW row in the 2018-08-01 file
+    again = si._plan_days(ctx, ["AAA", "NEW"], 1, False, as_of)
+    next_night = si._plan_days(ctx, ["AAA", "NEW"], 1, False, as_of + pd.Timedelta(days=3))
+
+    assert first.equals(sessions)  # the whole window from the FINRA start
+    assert again.equals(sessions[sessions >= pd.Timestamp("2018-08-10")])
+    assert next_night.equals(pd.bdate_range("2018-08-10", "2018-08-20"))  # Tuesday: NEW is still inside its window
+    print("\n=== SANITY CHECK: RegSHO new key, rerun ===")
+    print(f"  NEW reads all {len(first)} day files from 2018-08-01 once; stored from 08-02 (inside the tolerance), the")
+    print(f"  rerun reads {len(again)} forward files and the next night {len(next_night)}, not the whole window again.")
+
+
 def test_stored_rows_returns_empty_for_an_empty_bounded_prefix(sqlite_store):
     sqlite_store.replace(
         Tables.short_interest,

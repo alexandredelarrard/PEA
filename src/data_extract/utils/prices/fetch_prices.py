@@ -293,7 +293,8 @@ def fetch_prices_and_actions(
     """`prices`, `prices_dividends` and `prices_splits` from ONE yfinance `actions=True` download per window group.
 
     Windows come from `series_windows` over `prices` and `prices_dividends` (each key from its own last
-    date minus the overlap, holes, new keys in full) and end at the last completed session. A key whose
+    date minus the overlap, holes, new keys in full until their history reaches the floor) and end at the
+    last completed session. A key whose
     response holds a split after its last stored bar is re-pulled over the whole window before saving."""
     run_date = pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize()
     until = last_completed_session(as_of)

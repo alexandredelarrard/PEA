@@ -31,6 +31,7 @@ from src.data_extract.utils.fundamentals_sharadar.merge_history import build_mer
 from src.data_extract.utils.institutionals.fetch_fails_to_deliver import load_fails_master, master_stamps, restamp_fails
 from src.data_extract.utils.institutionals.fetch_insider_transactions import reparse_insider_transactions, restamp_insider_lineage
 from src.data_extract.utils.institutionals.fetch_short_interest import change_stamps, restamp_short_volume
+from src.data_extract.utils.institutionals.security_tape import restamp_targets
 from src.data_store.schema import Table, Tables
 from src.utils.filer_tables import (
     PURGE_TABLES,
@@ -196,7 +197,7 @@ def _refresh_fails(context: Context, tickers: Sequence[str], as_of: pd.Timestamp
     master = load_fails_master(context)
     if master is None or master.empty:
         return []
-    changed = _changed(master_stamps(master), as_of, every=every)
+    changed = restamp_targets(context, Tables.sec_fails_to_deliver_security, master_stamps(master), as_of, every=every)
     if not changed:
         return []
     context.log.info("identity-propagate: re-stamping FTD lines for %d company(ies): %s", len(changed), ", ".join(changed))
@@ -212,7 +213,7 @@ def _refresh_short_volume(
     if not context.store.exists(Tables.sec_short_volume_security):
         return []
     stamps = change_stamps(load_fails_master(context), identity)
-    changed = _changed(stamps, as_of, every=every)
+    changed = restamp_targets(context, Tables.sec_short_volume_security, stamps, as_of, every=every)
     if not changed:
         return []
     context.log.info("identity-propagate: re-stamping short-volume rows for %d company(ies): %s", len(changed), ", ".join(changed))

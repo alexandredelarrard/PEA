@@ -705,3 +705,20 @@ def test_f101_a_scoped_restamp_never_touches_another_companys_lines(sqlite_store
     assert _grain(sqlite_store)[("MRK", "2009-11-04")] == 804174.0 + 4163.0
     print("\n=== SANITY CHECK: F-101 scoped FTD re-stamp ===")
     print("  MRK's master moved; a CB-scoped re-stamp leaves every line and ticker row; the unscoped one re-stamps MRK 2009-11-04")
+
+
+def test_f113_a_company_whose_master_rows_all_vanished_is_restamped(sqlite_store, tmp_path, monkeypatch):
+    context = _stamped_store(sqlite_store, tmp_path, monkeypatch)
+    before = _grain(sqlite_store)
+    gone = "CB"
+    assert any(t == gone for t, _ in before), "the fixture builds CB ticker rows"
+    master = _master()
+    sqlite_store.replace(Tables.security_master, master[master["canonical_company"].ne(gone)])  # every other stamp is old
+
+    records = ftd.restamp_fails(context, companies=None, tickers=UNIVERSE, as_of=RUN_DATE)
+
+    assert not _security(sqlite_store)["ticker"].eq(gone).any(), "no stored line is still stamped with the vanished company"
+    assert not any(t == gone for t, _ in _grain(sqlite_store)) and [r["ticker"] for r in records] == [gone]
+    assert {k: v for k, v in _grain(sqlite_store).items() if k[0] != gone} == {k: v for k, v in before.items() if k[0] != gone}
+    print("\n=== SANITY CHECK: F-113 vanished company ===")
+    print("  CB's master rows all removed (no stamp moved): its lines are re-stamped away and its ticker rows deleted (one WARNING record)")

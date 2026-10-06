@@ -30,7 +30,7 @@ from tqdm import tqdm
 from src.constants.constants import BROWSER_HEADERS, CANONICAL_CURRENT, CANONICAL_PREDECESSOR, DATE_FORMAT_COMPACT
 from src.context import Context
 from src.data_extract.utils.common.identity import Identity, SecurityHit, load_identity
-from src.data_extract.utils.common.resume import document_floor, recently_changed, series_windows, session_dates, trading_calendar
+from src.data_extract.utils.common.resume import document_floor, series_windows, session_dates, trading_calendar
 from src.data_extract.utils.common.security_master import EXCLUDED, SOURCE_FTD, squash
 from src.data_extract.utils.common.sessions import last_completed_session
 from src.data_extract.utils.common.symbol_tenure import normalise_market_symbol
@@ -42,6 +42,7 @@ from src.data_extract.utils.institutionals.security_tape import (
     apply_grain,
     load_chunked,
     outside_scope,
+    restamp_targets,
     stamp_changed,
     summed_lines,
     warn_lost_rows,
@@ -313,8 +314,8 @@ def restamp_short_volume(
 ) -> list[dict]:
     """Re-stamp the stored rows of `companies` and rebuild their ticker rows, writing only what changed.
 
-    `companies` None: those whose master rows or lineage symbol rows changed recently (`resume.recently_changed`
-    on `as_of`, default today). Rows that no longer resolve to a kept security are deleted. A scoped run (`tickers`
+    `companies` None: `security_tape.restamp_targets` (master or lineage symbol rows changed recently on `as_of`,
+    default today, or all vanished). Rows that no longer resolve to a kept security are deleted. A scoped run (`tickers`
     short of the universe) never deletes or re-stamps a row stamped, before or after, with a universe company
     outside it. Returns one record per ticker whose ticker rows vanished. A security newly in scope needs
     `short-interest --full` (rows are not cached).
@@ -325,7 +326,7 @@ def restamp_short_volume(
     resolver = identity or load_identity(context)
     if companies is None:
         stamps = change_stamps(load_fails_master(context), resolver) if stamps is None else stamps
-        companies = recently_changed(stamps, as_of)
+        companies = restamp_targets(context, table, stamps, as_of)
     if not companies:
         return []
     universe = frozenset(normalise_ticker(t) for t in tickers)

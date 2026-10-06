@@ -43,6 +43,7 @@ from src.data_extract.utils.institutionals.security_tape import (
     load_chunked,
     nullable,
     outside_scope,
+    restamp_targets,
     stamp_changed,
     summed_lines,
     warn_lost_rows,
@@ -419,8 +420,8 @@ def restamp_fails(
 ) -> list[dict]:
     """Re-stamp the stored lines of `companies` from the master and rebuild their ticker rows, writing only what changed.
 
-    `companies` None: those whose master rows changed recently (`resume.recently_changed` of their
-    `scope_changed_at` on `as_of`, default today). Lines of CUSIPs the master no longer holds are deleted.
+    `companies` None: `security_tape.restamp_targets` (master rows changed recently on `as_of`, default today, or all
+    vanished). Lines of CUSIPs the master no longer holds are deleted.
     Returns one record per ticker whose ticker rows vanished. A scoped run (`tickers` short of the universe) never
     deletes or re-stamps a line stamped, before or after, with a universe company outside it; stamps are saved after
     the ticker rows are rebuilt.
@@ -429,7 +430,7 @@ def restamp_fails(
     if master is None or master.empty:
         return []
     if companies is None:
-        companies = recently_changed(master_stamps(master), as_of)
+        companies = restamp_targets(context, Tables.sec_fails_to_deliver_security, master_stamps(master), as_of)
     if not companies:
         return []
     universe = frozenset(normalise_ticker(ticker) for ticker in tickers)

@@ -8,7 +8,7 @@ compare stamps, and write only the ticker rows that changed.
 from __future__ import annotations
 
 import logging
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from itertools import batched
 
 import numpy as np
@@ -16,6 +16,7 @@ import pandas as pd
 
 from src.constants.constants import CANONICAL_ROLES, SECONDARY_CLASS
 from src.context import Context
+from src.data_extract.utils.common.resume import recently_changed
 from src.data_store.schema import Table
 from src.utils.filer_tables import filing_window
 from src.utils.string import normalise_ticker
@@ -28,6 +29,16 @@ SUMMED_ROLES = (*CANONICAL_ROLES, SECONDARY_CLASS)
 #: Tickers per scoped load, and keys per targeted load or delete.
 TICKER_CHUNK = 50
 KEY_CHUNK = 500
+
+
+def restamp_targets(
+    context: Context, table: Table, stamps: Mapping[str, pd.Timestamp], as_of: pd.Timestamp | None, *, every: bool = False
+) -> list[str]:
+    """The companies whose stored rows of `table` need a re-stamp: those whose change stamp is recent (`every`: all of
+    them), plus every company still stamped on a row but with no stamp left (its master rows all vanished)."""
+    changed = set(stamps) if every else set(recently_changed(stamps, as_of))
+    stored = {str(t) for t in context.store.distinct(table, "ticker") if t is not None and not pd.isna(t)} if context.store.exists(table) else set()
+    return sorted(changed | (stored - set(stamps)))
 
 
 def outside_scope(context: Context, scope: Collection[str]) -> frozenset[str]:

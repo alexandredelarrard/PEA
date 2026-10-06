@@ -227,7 +227,7 @@ def test_the_purge_removes_event_rows_outside_their_ciks_windows_and_keeps_insid
     context = _context(sqlite_store, tmp_path)
     _seed(sqlite_store)
     identity = _identity()
-    monkeypatch.setattr(prop, "_reparse_bulk", lambda context, changed, scope_ciks: {})
+    monkeypatch.setattr(prop, "_reparse_bulk", lambda context, changed, scopes, co_registrants: {})
     monkeypatch.setattr(prop, "_refresh_insider", lambda context, identity, changed, dry_run: [])
     lineage = _lineage()
     pending = pending_removals(context, lineage, list(ROSTER))

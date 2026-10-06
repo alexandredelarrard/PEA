@@ -178,7 +178,7 @@ MRK_8K = [("sgp-2009", MRK, "2009-06-01"), ("merck-2008", OLD_MERCK, "2008-05-01
 def test_the_purge_and_the_validator_keep_jcis_undated_event_rows(sqlite_store, tmp_path, monkeypatch) -> None:
     context = _Context(sqlite_store, tmp_path)
     sqlite_store.save(Tables.sec_8k, pd.concat([_8k("JCI", JCI_8K), _8k("MRK", MRK_8K)], ignore_index=True))
-    monkeypatch.setattr(prop, "_reparse_bulk", lambda context, changed, scope_ciks: {})
+    monkeypatch.setattr(prop, "_reparse_bulk", lambda context, changed, scopes, co_registrants: {})
     monkeypatch.setattr(prop, "_refresh_insider", lambda context, identity, changed, dry_run: [])
     pending = pending_removals(context, _lineage(), list(ROSTER))
 

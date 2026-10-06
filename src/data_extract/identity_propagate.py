@@ -249,7 +249,7 @@ def propagate_identity(
     """Purge, re-parse and rebuild for the lineage changes inside the re-check window on `as_of` (default
     today); `dry_run` only lists removals.
 
-    `every_ticker` checks every ticker whatever its stamp (the validator's dry run; the tapes then re-stamp every company).
+    `every_ticker` (`identity-propagate --every-ticker`) checks every ticker whatever its stamp; the tapes then re-stamp every company.
     """
     resolver = identity or load_identity(context)
     run_date = pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize()

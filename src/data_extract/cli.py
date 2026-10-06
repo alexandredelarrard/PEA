@@ -695,10 +695,16 @@ def identity_tables(config_path: str, approved_rekeys: tuple[str, ...]) -> None:
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option("--dry-run", is_flag=True, help="List the pending removals (table, ticker, cik, window, rows); delete, re-parse and rebuild nothing.")
+@click.option(
+    "--every-ticker",
+    is_flag=True,
+    help="Re-check every ticker whatever its lineage stamp, and re-stamp every company's tape rows: for a config-only "
+    "identity change (a deferral, a co-registrant, a form policy) that moves no stamp.",
+)
 @AS_OF_OPTION
-def identity_propagate(config_path: str, tickers: str | None, dry_run: bool, as_of: datetime | None) -> None:
+def identity_propagate(config_path: str, tickers: str | None, dry_run: bool, every_ticker: bool, as_of: datetime | None) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
-    result = propagate_identity(context, _tickers(context, tickers), dry_run=dry_run, as_of=_run_date(as_of))
+    result = propagate_identity(context, _tickers(context, tickers), dry_run=dry_run, every_ticker=every_ticker, as_of=_run_date(as_of))
     if dry_run:
         click.echo(result.removals.to_string(index=False) if not result.removals.empty else "identity-propagate: no pending removals")
 
@@ -739,8 +745,8 @@ def financial_notes(config_path: str, tickers: str | None, reparse: bool, repair
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def notes_download(config_path: str, full: bool) -> None:
     """`--full` re-captures every cached zip (one-off backfill); the default captures only periods not yet stored."""
-    _, context = get_config_context(config_path, use_cache=False, save=False)
-    download_financial_notes(context, full=full)
+    config, context = get_config_context(config_path, use_cache=False, save=False)
+    download_financial_notes(context, years_history=int(config.data_extract.years_history), full=full)
 
 
 # --- Structure (governance) ---

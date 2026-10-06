@@ -171,3 +171,24 @@ def test_the_insider_bulk_parse_and_its_live_edgar_tail_run_as_separate_commands
     print("\n=== SANITY: insider commands (D-8) ===")
     print("  insider-transactions --bulk-only -> bulk parse only; insider-edgar -F -> live walk only (full=True);")
     print("  insider-transactions -> both, as before. OK: the DAG can schedule the walk in its own pool.")
+
+
+def test_f109_f115_identity_propagate_every_ticker_and_notes_download_years_reach_their_functions(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = SimpleNamespace(data_extract=SimpleNamespace(years_history=31))
+    calls: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, SimpleNamespace(name="ctx")))
+    monkeypatch.setattr(cli_mod, "_tickers", lambda ctx, names: ["AAA"])
+    monkeypatch.setattr(
+        cli_mod,
+        "propagate_identity",
+        lambda context, tickers, **kwargs: calls.append(("propagate", kwargs)) or SimpleNamespace(removals=pd.DataFrame()),
+    )
+    monkeypatch.setattr(cli_mod, "download_financial_notes", lambda context, **kwargs: calls.append(("notes", kwargs)) or 0)
+
+    assert CliRunner().invoke(cli_mod.cli, ["identity-propagate", "--every-ticker", "--dry-run"]).exit_code == 0
+    assert CliRunner().invoke(cli_mod.cli, ["identity-propagate"]).exit_code == 0
+    assert CliRunner().invoke(cli_mod.cli, ["notes-download"]).exit_code == 0
+    assert [kwargs.get("every_ticker") for name, kwargs in calls if name == "propagate"] == [True, False]
+    assert [kwargs for name, kwargs in calls if name == "notes"] == [{"years_history": 31, "full": False}]
+    print("\n=== SANITY CHECK: F-109 / F-115 CLI wiring ===")
+    print("  identity-propagate --every-ticker reaches propagate_identity(every_ticker=True); notes-download passes years_history 31")

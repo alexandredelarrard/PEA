@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Collection, Iterator, Sequence
-from typing import Literal, NamedTuple
+from typing import Any, Literal, NamedTuple
 
 import pandas as pd
 
@@ -450,16 +450,24 @@ def lineage_roles(df: pd.DataFrame, identity: Identity) -> pd.Series:
     pairs = keys.drop_duplicates(ignore_index=True)
     pairs["role"] = [identity.lineage_role(cik, day) for cik, day in zip(pairs["cik"], pairs["day"], strict=True)]
     roles = pd.Series(keys.merge(pairs, on=["cik", "day"], how="left")["role"].to_numpy(dtype=object), index=df.index, dtype=object)
+    for index, role in _boundary_day_roles(df, identity, ciks, days).items():
+        roles[index] = role
+    return roles
+
+
+def _boundary_day_roles(df: pd.DataFrame, identity: Identity, ciks: pd.Series, days: pd.Series) -> dict[Any, str]:
+    """`{row index: role}` of the rows on a merger seam date of their ticker that a boundary-day rule decides (a later
+    boundary of the same row wins)."""
     tickers = df["ticker"].astype("string") if "ticker" in df.columns else pd.Series(pd.NA, index=df.index, dtype="string")
     codes = df["transaction_code"] if "transaction_code" in df.columns else pd.Series(None, index=df.index, dtype=object)
-    for ticker, boundaries in identity.merger_boundaries.items():
-        for boundary in boundaries:
-            on_day = (tickers.eq(ticker) & days.eq(boundary.seam_date)).fillna(False).astype(bool)
-            for index in df.index[on_day]:
-                role = _boundary_role(boundary, ciks[index], df.at[index, "source_symbol"], codes[index])
-                if role is not None:
-                    roles[index] = role
-    return roles
+    decided: dict[Any, str] = {}
+    for ticker, boundary in ((ticker, boundary) for ticker, boundaries in identity.merger_boundaries.items() for boundary in boundaries):
+        on_day = (tickers.eq(ticker) & days.eq(boundary.seam_date)).fillna(False).astype(bool)
+        for index in df.index[on_day]:
+            role = _boundary_role(boundary, ciks[index], df.at[index, "source_symbol"], codes[index])
+            if role is not None:
+                decided[index] = role
+    return decided
 
 
 def stamp_lineage(df: pd.DataFrame, identity: Identity, originals: pd.DataFrame | None = None) -> pd.DataFrame:

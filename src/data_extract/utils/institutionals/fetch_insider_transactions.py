@@ -501,19 +501,11 @@ def restamp_insider_lineage(context: Context, tickers: Sequence[str], *, identit
         )
         if df_rows is None:
             continue
-        df_rows = df_rows.reindex(columns=_RESTAMP_COLUMNS).reset_index(drop=True)
-        co_registrant = pad_cik_series(df_rows["issuer_cik"]).isin(identity.co_registrant_ciks)
-        df_purge = df_rows[co_registrant]
-        if not df_purge.empty:
-            records += removal_records(Tables.insider_transactions.name, df_purge, _CO_REGISTRANT_SPEC)
-            if not dry_run:
-                for batch in accession_batches(sorted(df_purge["accession_number"].unique())):
-                    context.store.delete(Tables.insider_transactions, where={"accession_number": batch})
-        df_kept = df_rows[~co_registrant]
-        df_changed = _changed_stamps(df_kept, stamp_lineage(df_kept, identity, originals=df_kept))
-        restamped += len(df_changed)
-        if not df_changed.empty and not dry_run:
-            context.store.save(Tables.insider_transactions, df_changed)
+        chunk_records, chunk_restamped = _restamp_rows(
+            context, df_rows.reindex(columns=_RESTAMP_COLUMNS).reset_index(drop=True), identity, dry_run=dry_run
+        )
+        records += chunk_records
+        restamped += chunk_restamped
     context.log.info(
         "insider lineage%s: re-stamped %d row(s) over %d ticker(s); %d co-registrant row(s) purged",
         " (dry run)" if dry_run else "",
@@ -522,3 +514,18 @@ def restamp_insider_lineage(context: Context, tickers: Sequence[str], *, identit
         sum(record["rows"] for record in records),
     )
     return records
+
+
+def _restamp_rows(context: Context, df_rows: pd.DataFrame, identity: Identity, *, dry_run: bool) -> tuple[list[dict], int]:
+    """Purge one chunk's co-registrant rows and rewrite the stamps that changed; `(removal records, rows re-stamped)`."""
+    co_registrant = pad_cik_series(df_rows["issuer_cik"]).isin(identity.co_registrant_ciks)
+    df_purge = df_rows[co_registrant]
+    records = removal_records(Tables.insider_transactions.name, df_purge, _CO_REGISTRANT_SPEC) if not df_purge.empty else []
+    if not df_purge.empty and not dry_run:
+        for batch in accession_batches(sorted(df_purge["accession_number"].unique())):
+            context.store.delete(Tables.insider_transactions, where={"accession_number": batch})
+    df_kept = df_rows[~co_registrant]
+    df_changed = _changed_stamps(df_kept, stamp_lineage(df_kept, identity, originals=df_kept))
+    if not df_changed.empty and not dry_run:
+        context.store.save(Tables.insider_transactions, df_changed)
+    return records, len(df_changed)

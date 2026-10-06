@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import ast
+import inspect
+import textwrap
 from pathlib import Path
 
 from src.data_extract import cli as extraction_cli
@@ -30,7 +32,8 @@ REQUIRED_COMMANDS = {
     "thirteen-f",
     "thirteen-f-backfill",
     "financial-statements",
-    "insider-transactions",
+    "insider-zip",
+    "insider-edgar",
     "financial-notes",
     "identity-tables",
     "superinvestors",
@@ -109,9 +112,10 @@ def test_retries_dependencies_and_hard_gates_are_wired():
         "sec_13d",
         "sec_13g",
         "filing_text",
+        "insider_edgar",
     }
     identity_independent = {
-        "insider_transactions",
+        "insider_zip",
         "thirteen_f",
         "thirteen_f_backfill",
         "superinvestors",
@@ -128,13 +132,13 @@ def test_retries_dependencies_and_hard_gates_are_wired():
     assert identity_consumers == expected_identity_consumers
     assert identity_consumers.isdisjoint(identity_independent)
     assert "sec_8k_votes" not in identity_consumers
-    assert "insider_transactions >> identity_tables >> identity_consumers" in source
+    assert "insider_zip >> identity_tables >> identity_consumers" in source
     assert "[fundamentals, fundamentals_employees] >> fundamentals_sharadar" in source
     assert "[sec_8k_items, def14a] >> sec_8k_votes" in source
     assert "all_fetchers >> extraction_status >> trigger_aggregation" in source
 
     print("\n=== SANITY CHECK: extraction retry + gate wiring ===")
-    print("  identity producer -> 12 direct consumers; 8-K votes inherit through item/proxy parents")
+    print("  identity producer -> 13 direct consumers (insider_edgar after the zip leg); 8-K votes inherit through item/proxy parents")
     print("  fundamentals facts + employees are siblings; merged history waits for both")
     print("  OK: independent manager-CIK and non-SEC sources stay outside the identity barrier")
 
@@ -161,7 +165,7 @@ def test_gate_and_trigger_run_all_done_and_a_failed_fetcher_never_blocks_aggrega
     assert {"thirteen_f"} <= dag.tasks["thirteen_f_backfill"].upstream, "one EDGAR walk at a time: the backfill follows the nightly 13F walk"
     assert all(dag.tasks[task_id].trigger_rule == ALL_SUCCESS for task_id in fetchers), "a fetcher still waits for its own sources"
 
-    for failed in (["price_history"], ["identity_tables"], ["thirteen_f", "insider_transactions", "extraction_status"]):
+    for failed in (["price_history"], ["identity_tables"], ["thirteen_f", "insider_zip", "extraction_status"]):
         states = replay(dag, failed)
         assert states["trigger_data_aggregation"] == "success", (failed, states)
     states = replay(dag, ["identity_tables"])
@@ -169,8 +173,67 @@ def test_gate_and_trigger_run_all_done_and_a_failed_fetcher_never_blocks_aggrega
 
     print("\n=== SANITY CHECK: non-blocking extraction DAG (AC-015) ===")
     print(f"  {len(fetchers)} fetchers -> extraction_status (ALL_DONE) -> trigger_data_aggregation (ALL_DONE)")
-    print("  replay: price_history failed / identity_tables failed (its 12 consumers upstream_failed) / 13F + insider + the report failed")
+    print("  replay: price_history failed / identity_tables failed (its 13 consumers upstream_failed) / 13F + insider zip + the report failed")
     print("  -> aggregation is triggered every time. Validated.")
+
+
+#: Modules whose entry points walk EDGAR filing by filing (the document walks plus the 13F walks).
+EDGAR_WALK_FILES = (
+    *STRICT_EDGAR_FILES,
+    "src/data_extract/utils/institutionals/fetch_13f.py",
+    "src/data_extract/utils/institutionals/fetch_13f_backfill.py",
+    "src/data_extract/utils/institutionals/fetch_13f_managers.py",
+)
+
+
+def _edgar_walk_names() -> set[str]:
+    """Names `cli.py` imports from an EDGAR-walk module."""
+    modules = {path.removesuffix(".py").replace("/", ".") for path in EDGAR_WALK_FILES}
+    tree = ast.parse(_source(DAG_FILE.parents[2] / "src/data_extract/cli.py"))
+    return {
+        alias.asname or alias.name for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module in modules for alias in node.names
+    }
+
+
+def _command_names(command: str) -> set[str]:
+    """Every name the CLI command's function refers to, through the `cli.py` helpers it calls."""
+    seen: set[str] = set()
+    pending = [extraction_cli.cli.commands[command].callback]
+    while pending:
+        tree = ast.parse(textwrap.dedent(inspect.getsource(pending.pop())))
+        for name in {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)} - seen:
+            seen.add(name)
+            helper = getattr(extraction_cli, name, None)
+            if inspect.isfunction(helper) and helper.__module__ == extraction_cli.__name__:
+                pending.append(helper)
+    return seen
+
+
+def test_every_edgar_walk_runs_in_the_sec_api_pool():
+    """A task whose command walks EDGAR holds both sec_api slots, so only one EDGAR walk runs at a time;
+    a walk in another pool would run beside it, two rate limiters against SEC's one 10 req/s."""
+    dag = load_dag(DAG_FILE)
+    walk_names = _edgar_walk_names()
+    walks: dict[str, str] = {}
+    for task_id, task in dag.tasks.items():
+        bash = str(task.kwargs.get("bash_command", ""))
+        if " data_extract " not in bash:
+            continue
+        command = bash.split(" data_extract ", 1)[1].split()[0]
+        if _command_names(command) & walk_names:
+            walks[task_id] = str(task.kwargs.get("pool"))
+    assert {"thirteen_f", "fundamentals", "sec_13d"} <= set(walks), f"the walk detection lost known walks: {sorted(walks)}"
+    outside = {task_id: pool for task_id, pool in walks.items() if pool != "sec_api"}
+    assert not outside, f"EDGAR walks outside the sec_api pool: {outside}"
+    # insiders: the zip leg is no walk; the EDGAR leg follows it through identity_tables
+    assert "insider_edgar" in walks and "insider_zip" not in walks
+    assert dag.tasks["identity_tables"].upstream == {"seed_universe", "insider_zip"}
+    assert "identity_tables" in dag.tasks["insider_edgar"].upstream
+    # the manual command still runs both legs
+    assert {"_insider_zip", "_insider_edgar"} <= _command_names("insider-transactions")
+
+    print("\n=== SANITY CHECK: one EDGAR walk at a time ===")
+    print(f"  {len(walks)} tasks walk EDGAR (derived from the CLI code), all in sec_api: {sorted(walks)}")
 
 
 def _raises(node: ast.AST, name: str) -> bool:

@@ -560,12 +560,47 @@ def financial_statements(config_path: str, tickers: str | None, reparse: bool, a
 def insider_transactions(config_path: str, tickers: str | None, reparse: bool, full: bool, as_of: datetime | None, no_cap: bool) -> None:
     config, context = get_config_context(config_path, use_cache=False, save=False)
     names = _tickers(context, tickers)
-    fetch_insider_transactions(
-        context, tickers=names, years_history=int(config.data_extract.years_history), reparse=reparse or full, as_of=_run_date(as_of)
-    )
-    fetch_insider_edgar(
-        context, tickers=names, years_history=int(config.data_extract.years_history), full=full, as_of=_run_date(as_of), no_cap=no_cap
-    )
+    years_history = int(config.data_extract.years_history)
+    _insider_zip(context, names, years_history, reparse=reparse or full, as_of=as_of)
+    _insider_edgar(context, names, years_history, full=full, as_of=as_of, no_cap=no_cap)
+
+
+@cli.command(
+    name="insider-zip",
+    help="The zip half of `insider-transactions` alone: the pending quarterly Forms 3/4/5 zips (a new ticker also re-parses "
+    "the cached zips). The DAG runs it in the sec_bulk pool, before `identity-tables`.",
+)
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
+@click.option("--reparse", is_flag=True, default=False, help="Re-read every cached quarter even when already ingested (implied by -F).")
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+@AS_OF_OPTION
+def insider_zip(config_path: str, tickers: str | None, reparse: bool, full: bool, as_of: datetime | None) -> None:
+    config, context = get_config_context(config_path, use_cache=False, save=False)
+    _insider_zip(context, _tickers(context, tickers), int(config.data_extract.years_history), reparse=reparse or full, as_of=as_of)
+
+
+@cli.command(
+    name="insider-edgar",
+    help="The EDGAR half of `insider-transactions` alone: every indexed Forms 3/4/5 filing after the last stored zip quarter "
+    "not yet stored from EDGAR. An EDGAR walk, so the DAG runs it in the sec_api pool, after `identity-tables`.",
+)
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+@AS_OF_OPTION
+@NO_CAP_OPTION
+def insider_edgar(config_path: str, tickers: str | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
+    config, context = get_config_context(config_path, use_cache=False, save=False)
+    _insider_edgar(context, _tickers(context, tickers), int(config.data_extract.years_history), full=full, as_of=as_of, no_cap=no_cap)
+
+
+def _insider_zip(context: Context, names: list[str], years_history: int, *, reparse: bool, as_of: datetime | None) -> None:
+    fetch_insider_transactions(context, tickers=names, years_history=years_history, reparse=reparse, as_of=_run_date(as_of))
+
+
+def _insider_edgar(context: Context, names: list[str], years_history: int, *, full: bool, as_of: datetime | None, no_cap: bool) -> None:
+    fetch_insider_edgar(context, tickers=names, years_history=years_history, full=full, as_of=_run_date(as_of), no_cap=no_cap)
 
 
 @cli.command(

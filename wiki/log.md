@@ -215,3 +215,12 @@ Append-only audit trail. Add one dated entry per generation or refresh run, reco
 - Pages: [Data extraction](./modules/data-extract.md), [Table catalog](./reference/table-catalog.md), [Data sources](./reference/data-sources.md), [Run the pipeline](./guides/run-the-pipeline.md), [Live database](./reference/live-database.md), [TODO](./TODO.md)
 - Evidence: `reports/validate/2026-10-03-db-derived-extraction-resume/` (`05-final-report.md`, `refactor/04-validate.md`, `03-implementation-phase-11-*.md`)
 - Operational boundary: the stage E file move, stage D, the cube rebuild and `superinvestors --seed` run after the merge into dev.
+
+## 2026-10-06: refresh — security master, dated event windows and the identity cutover order
+
+- Profile: internal/standard
+- source_commit: 09aaaae6 (branch `harness/entity-symbol-lineage`)
+- Coverage: `security_master`, `sec_company_tickers` and the per-security tape tables; ticker tapes rebuilt as class sums × conversion ratio; insider `source_symbol`/`economic_date`/`lineage_role`; 8-K/13D/13G by dated CIK windows and the PLD/JCI/DD deferrals; automatic CIK windows; oracle order and one universe ticker per entity; `--every-ticker`; the hard identity gate; the cutover order; identity configs; BRK-A volume scale; lineage TODO (traded-security realignment, F-105 residual, F-110, F-111, F-117 and data findings)
+- Pages: [Table catalog](./reference/table-catalog.md), [Data sources](./reference/data-sources.md), [Run the pipeline](./guides/run-the-pipeline.md), [Configuration](./reference/configuration.md), [TODO](./TODO.md)
+- Evidence: `reports/validate/2026-10-02-entity-symbol-lineage/` (`p11-runbook.md`, `plans/02-revision-4-q2.md`, `defects.md`)
+- Operational boundary: the live database keeps the old identity shape until the user-run cutover.

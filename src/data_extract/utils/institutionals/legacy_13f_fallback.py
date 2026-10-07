@@ -188,30 +188,42 @@ def _check_totals(raw: str, rows: list[dict[str, Any]]) -> None:
 
 def needs_legacy_fallback(raw: str, parsed: pd.DataFrame | None) -> bool:
     """True when EdgarTools' text parse is short, malformed, or off the source: entry count,
-    CUSIP multiset, or (when stated) the Summary Page value total. A clean book is not reparsed."""
+    logical holding facts, or (when stated) the Summary Page value total. A clean book is not reparsed."""
     if parsed is None or parsed.empty:
         return True
     count = _ENTRY_COUNT.search(raw)
     if count is None or len(parsed) != int(count.group(1).replace(",", "")):
         return True
-    column = next((name for name in parsed.columns if name.lower() == "cusip"), None)
+    columns = {name.lower(): name for name in parsed.columns}
+    column = columns.get("cusip")
     if column is None:
         return True
     parsed_cusips = [normalize_cusip(value) for value in parsed[column]]
     if any(not _valid_cusip(value or "") for value in parsed_cusips):
         return True
-    values = next((name for name in parsed.columns if name.lower() == "value"), None)
-    if values is None or _value_total_error(raw, pd.to_numeric(parsed[values], errors="coerce").fillna(0).tolist()):
+    values = columns.get("value")
+    amounts = columns.get("sshprnamt", columns.get("sharesprnamount"))
+    if values is None or amounts is None:
         return True
-    source_cusips = []
+    parsed_values = pd.to_numeric(parsed[values], errors="coerce")
+    if _value_total_error(raw, parsed_values.fillna(0).tolist()):
+        return True
+    parsed_amounts = pd.to_numeric(parsed[amounts], errors="coerce")
+    amount_type = columns.get("sshprnamttype", columns.get("type"))
+    option = columns.get("putcall")
+    parsed_types = parsed[amount_type] if amount_type else pd.Series("", index=parsed.index)
+    parsed_options = parsed[option] if option else pd.Series("", index=parsed.index)
+    parsed_types = parsed_types.astype("string").str.strip().str.upper().fillna("").replace({"": "SH", "SHARES": "SH", "PRINCIPAL": "PRN"})
+    parsed_options = parsed_options.astype("string").str.strip().str.upper().fillna("")
+    source_facts = []
     prior: tuple[str, str, str] | None = None
     try:
         for header, line, pending in _source_rows(raw):
             row, prior = _holding(header, line, pending, prior)
-            source_cusips.append(row["CUSIP"])
+            source_facts.append((row["CUSIP"], row["VALUE"], row["SSHPRNAMT"], row["SSHPRNAMTTYPE"], row["PUTCALL"]))
     except ValueError:
         return True
-    return Counter(source_cusips) != Counter(parsed_cusips)
+    return Counter(source_facts) != Counter(zip(parsed_cusips, parsed_values, parsed_amounts, parsed_types, parsed_options, strict=True))
 
 
 def parse_legacy_information_table(raw: str) -> pd.DataFrame:

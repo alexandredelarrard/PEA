@@ -347,6 +347,58 @@ def test_clean_text_parse_skips_the_fallback(monkeypatch: pytest.MonkeyPatch) ->
     print("\n=== SANITY: a source-consistent EdgarTools text parse is kept as is, with no reparse. Validated.")
 
 
+@pytest.mark.parametrize("field,value", [("SharesPrnAmount", 3_362_514), ("Value", 145_461_999), ("PutCall", "CALL")])
+def test_matching_cover_and_cusip_cannot_accept_wrong_holding_facts(field: str, value: Any) -> None:
+    raw = _table(_HEADER, _AFLAC) + "\nForm 13F Information Table Value Total: 145,462"
+    parsed = _edgar_line("001055102", "Aflac, Inc.", 145_462_000, 3_362_515)
+    parsed[field] = value
+    out = _read(_Report(pd.DataFrame([parsed]), txt=raw))
+    assert isinstance(out, pd.DataFrame)
+    row = out.iloc[0]
+    assert (row["shares"], row["value_usd"], row["call_shares"], row["debt_prn"]) == (3_362_515, 145_462_000, 0, 0)
+    print(f"\n=== SANITY: matching count, CUSIP and cover cannot admit source-discrepant {field}; exact Aflac facts recovered. Validated.")
+
+
+@pytest.mark.parametrize("parsed_type", ["Shares", "Principal", "PRN"])
+def test_oaktree_source_principal_is_never_common_shares(parsed_type: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    # SEC 0000949509-03-000018: source SHA256 e4804579bd49b7a0a3cb7160d0a022b1226d3c8a969da7c496da596dfc9f352c.
+    raw = (
+        _table(
+            "NAME OF ISSUER                TITLE OF CLASS    CUSIP      (X$1000)   PRN AMT     PRN DSCRETN",
+            "QUANTA SVCS INC               NOTE 4.000% 7/0   74762EAA0  52,772     108,870,000 PRN  SOLE",
+        )
+        + "\nForm 13F Information Table Value Total: $52,772"
+    )
+    parsed = _edgar_line("74762EAA0", "QUANTA SVCS INC", 52_772_000, 108_870_000)
+    parsed["Type"] = parsed_type
+    if parsed_type != "Shares":
+        monkeypatch.setattr(f13, "parse_legacy_information_table", _forbidden("parse_legacy_information_table"))
+    out = _read(_Report(pd.DataFrame([parsed]), txt=raw))
+    assert isinstance(out, pd.DataFrame)
+    row = out.iloc[0]
+    assert (row["shares"], row["value_usd"], row["debt_prn"], row["debt_value"]) == (0, 0, 108_870_000, 52_772_000)
+    print(
+        f"\n=== SANITY: Oaktree's 108,870,000 PRN remains debt for EdgarTools type {parsed_type!r}; clean principal aliases avoid fallback. Validated."
+    )
+
+
+@pytest.mark.parametrize("xml_names,parsed_type", [(False, ""), (False, "SH"), (False, "Shares"), (True, "sh"), (True, None)])
+def test_clean_reordered_duplicate_lines_preserve_field_aliases(xml_names: bool, parsed_type: str | None, monkeypatch: pytest.MonkeyPatch) -> None:
+    raw = _table(_HEADER, _AFLAC, _AFLAC.replace("145,462  3,362,515", "12,000  100,000"))
+    info = pd.DataFrame(
+        [_edgar_line("001055102", "Aflac, Inc.", 12_000_000, 100_000), _edgar_line("001055102", "Aflac, Inc.", 145_462_000, 3_362_515)]
+    )
+    info["Type"] = parsed_type
+    if xml_names:
+        info = info.rename(columns={"SharesPrnAmount": "SSHPRNAMT", "Type": "SSHPRNAMTTYPE"})
+    info.columns = info.columns.str.swapcase()
+    monkeypatch.setattr(f13, "parse_legacy_information_table", _forbidden("parse_legacy_information_table"))
+    out = _read(_Report(info, txt=raw))
+    assert isinstance(out, pd.DataFrame) and len(out) == 1
+    assert (out.iloc[0]["shares"], out.iloc[0]["value_usd"]) == (3_462_515, 157_462_000)
+    print("\n=== SANITY: reordered duplicate-CUSIP lines and case-insensitive XML/EdgarTools share aliases remain clean. Validated.")
+
+
 def test_malformed_text_parse_is_replaced_by_verified_source_rows() -> None:
     """(b) EdgarTools merges Amgen into a false CUSIP and drops a line; the source text is verifiable."""
     info = pd.DataFrame([_edgar_line("COM031162", "Aflac, Inc. Com 001055102 145,462", 12_000_000, 100_000)])

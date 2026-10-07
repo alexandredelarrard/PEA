@@ -26,6 +26,7 @@ class Filing:
         self.form = form
         self.cik = "0000000001"
         self.body = text
+        self.attachments: list[object] = []
 
     def html(self) -> str:
         return f"<p>{self.body}</p>"
@@ -296,6 +297,92 @@ def test_missing_primary_document_reads_full_submission(monkeypatch):
     print(
         "\nSANITY: a filing whose index lists no primary document no longer aborts the run with AttributeError; "
         "its full submission supplies the source text, and a truly empty one fails only its ticker."
+    )
+
+
+FILLER = "The Company designs and sells measurement instruments to laboratories in many markets. "  # no workforce word
+
+
+def test_ix_header_is_stripped_and_the_workforce_sentence_survives(monkeypatch):
+    """Agilent FY2019 shape: a hidden inline-XBRL header precedes the visible text."""
+    junk = " ".join(f"<ix:nonNumeric name='us-gaap:Fact{i}' contextRef='c{i}'>0001090872 2019-10-31 {i * 37}</ix:nonNumeric>" for i in range(400))
+    header = f"<div style='display:none'><ix:header><ix:hidden>{junk}</ix:hidden><ix:references/></ix:header></div>"
+    statement = "As of October 31, 2019, we employed approximately 16,300 people worldwide."
+    filing = Filing("a-2019", "2019-12-19", "")
+    filing.html = lambda: f"<html><body>{header}<p>{FILLER * 150}</p><p>{statement}</p></body></html>"
+    text = mod.filing_body_text(filing)
+    assert len(junk) > 20_000 and "us-gaap" not in text and "0001090872" not in text
+    assert statement in mod.employee_excerpt(text, 10_000)
+    result = build(monkeypatch, [filing], {"a-2019": answer(16300, statement)})
+    assert result.frame["employees"].tolist() == [16300.0]
+    print("\nSANITY: >20k chars of hidden ix:header values are dropped before excerpting; Agilent's 16,300 people sentence is sent and saved.")
+
+
+def test_workforce_number_windows_come_before_generic_context():
+    persons = "As of December 31, 2019, 502 persons were employed by the Company."
+    kim = f"{FILLER * 120}{persons} {FILLER * 20}"
+    assert persons in mod.employee_excerpt(kim, 12_000)
+    noise = "".join(f"Our employees value safety and training, item {i}. {FILLER * 15}" for i in range(130))
+    workforce = "At December 31, 2020, we had 41,000 employees worldwide."
+    many_hits = f"{noise}{workforce} {FILLER * 10}"
+    excerpt = mod.employee_excerpt(many_hits, 60_000)
+    assert workforce in excerpt and len(excerpt) <= 60_000
+    assert len(mod._CONTEXT_RE.findall(many_hits)) > 120
+    for headcount in ("Headcount 256,981 at year end.", "Our workforce of more than 10,000 people.", "We employ more than 25,000 people."):
+        assert headcount in mod.employee_excerpt(f"{FILLER * 120}{headcount} {FILLER * 10}", 9_000)
+    print(
+        "\nSANITY: '502 persons were employed', 'Headcount 256,981' and 'employ more than 25,000' are excerpted, and a 41,000-employee "
+        "sentence after 130 generic workforce mentions stays inside the 60,000-char budget."
+    )
+
+
+class Attachment:
+    def __init__(self, document_type: str, content: str, description: str = "") -> None:
+        self.document_type = document_type
+        self.description = description
+        self._content = content
+
+    @property
+    def content(self) -> str:
+        return self._content
+
+    def is_binary(self) -> bool:
+        return False
+
+
+class UnreadAttachment(Attachment):
+    @property
+    def content(self) -> str:
+        pytest.fail(f"{self.document_type} is not an annual-report exhibit and was read")
+
+
+def test_exhibit_fallback_reads_the_annual_report_exhibit(monkeypatch):
+    wy = "The company has 44,800 employees, of whom 43,800 are employed in its timber-based businesses."
+    primary = (
+        f"{FILLER * 30}The following information is included in the 1999 Annual Report to Stockholders and is incorporated "
+        "herein by reference: 1. Segment information--Pages 75 and 76. 2. The number of persons employed by the registrant--Page 49."
+    )
+    filing = Filing("wy-2000", "2000-03-10", primary)
+    filing.attachments = [UnreadAttachment("EX-21", ""), Attachment("EX-13", f"<p>{FILLER * 40}</p><p>{wy}</p>")]
+    chosen = mod.employee_text(filing)
+    assert chosen.source_document == "EX-13" and wy in chosen.text
+    no_number = Filing("wy-bare", "2000-03-10", f"{FILLER * 30}Employees are described in the Annual Report.")
+    no_number.attachments = [Attachment("EX-99", f"<p>{wy}</p>", description="1999 Annual Report to Shareholders")]
+    assert mod.employee_text(no_number).source_document == "EX-99"
+    task = mod._employee_task(0, "AAA", edgar_driver.FilingStamp.of(filing, "0000000001"), 60_000)
+    assert task.meta["source_document"] == "EX-13" and wy in str(task.meta["source_text"])
+    result = build(monkeypatch, [filing], {"wy-2000": answer(44800, "The company has 44,800 employees")})
+    assert result.frame["employees"].tolist() == [44800.0]
+    assert mod.is_annual_report_exhibit("EX-99", "Annual Report to Shareholders") and not mod.is_annual_report_exhibit("EX-99.1", "Press release")
+    stated = Filing("own", "2025-03-01", "We had 41,000 employees.")
+    stated.attachments = [UnreadAttachment("EX-13", "")]
+    assert mod.employee_text(stated).source_document == "primary"
+    bare = Filing("bare", "2025-03-01", f"{FILLER * 30}No exhibit carries a workforce figure.")
+    bare.attachments = [Attachment("EX-13", f"<p>{FILLER * 10}</p>")]
+    assert mod.employee_text(bare).source_document == "primary"
+    print(
+        "\nSANITY: a primary document that incorporates its employee count by reference sends the EX-13 text (44,800 saved, "
+        "source EX-13), as does an EX-99 annual report; a primary that states its own count reads no exhibit; an exhibit with no workforce number is not used."
     )
 
 

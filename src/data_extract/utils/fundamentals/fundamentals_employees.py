@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from functools import partial
 from itertools import combinations
@@ -21,7 +21,7 @@ from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp
 from src.data_extract.utils.common.edgar_extract import html_to_text
 from src.data_extract.utils.common.identity import Identity, load_identity
 from src.data_extract.utils.common.parallel_fetch import run_per_ticker
-from src.data_extract.utils.common.sec_io import configure, sec_call
+from src.data_extract.utils.common.sec_io import configure, filing_attachments, sec_call
 from src.data_extract.utils.common.sec_utils import load_cik_mapping
 from src.data_store.schema import Tables
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
@@ -34,12 +34,31 @@ MANUAL_ROSTER = Path("sec") / "employees_manual_roster.json"
 _GAP = "[... filing gap ...]"
 _FRAGMENT_GAP = 2_000  # max source chars between two `...`-joined quote fragments
 _FAILED_SHOWN = 20  # failed tickers named in the coverage log
+_OPENING = 8_000  # chars of the filing's opening text sent after the workforce-number windows
+_WINDOW = (550, 850)  # chars kept before and after a workforce mention
+_BY_REFERENCE_REACH = 1_000  # max chars between "incorporated by reference" and a workforce topic
+
+_IX_HEADER_RE = re.compile(r"<ix:header\b.*?</ix:header\s*>", re.I | re.S)
 
 _CONTEXT_RE = re.compile(
     r"\b(?:employees?|workforce|associates?|team\s+members?|human\s+capital|"
     r"personnel|staff|colleagues?|full[- ]time|part[- ]time)\b",
     re.I,
 )
+_NUMBER = r"(?P<n>(?<![\d,.])(?!(?:19|20)\d\d\b)(?:\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?\s*(?:thousand|million)\b|\d{2,}))"
+_NOUN = r"(?:employees|people|persons|associates|team\s+members|workforce|headcount|full[\s-]*time|part[\s-]*time)"
+# A workforce number: a number a few words from a workforce noun or `employ(s/ed)`, or after a headcount label.
+_WORKFORCE_NUMBER_RES = tuple(
+    re.compile(pattern, re.I)
+    for pattern in (
+        rf"{_NUMBER}(?:[\s-]+[^\s\d-]+){{0,4}}?[\s-]+(?:{_NOUN}|employ(?:s|ed)?)\b",
+        rf"\b(?:{_NOUN}|employ(?:s|ed)?)(?:[\s:,-]+[^\s\d:,-]+){{0,4}}?[\s:,-]+{_NUMBER}",
+        rf"\b(?:headcount|number\s+of\s+(?:[a-z]+\s+){{0,2}}?employees)\b[^.\d]{{0,60}}{_NUMBER}",
+    )
+)
+_BY_REFERENCE_RE = re.compile(r"\bincorporated\s+(?:herein\s+)?by\s+reference\b", re.I)
+# A workforce topic pointed at a page of another document: "Human Capital—page 15".
+_WORKFORCE_PAGE_RE = re.compile(r"\b(?:human\s+capital|employees|(?:persons|people)\s+employed)\b[^.]{0,80}?\bpages?\s+[a-z]?-?\d", re.I)
 _ELLIPSIS_RE = re.compile(r"\s*(?:\.\s*\.\s*\.|…)\s*")
 _QUANTITY_RE = re.compile(r"(?<![\d,.])(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?(?:\s*(thousand|million)\b)?", re.I)
 _SCALES = {"thousand": 1_000, "million": 1_000_000}
@@ -114,9 +133,9 @@ def filing_body_text(filing: Filing) -> str:
     Each read runs under the `sec_io` retry policy; a transient failure raises.
     """
     readers: tuple[tuple[str, Callable[[str], str]], ...] = (
-        ("html", html_to_text),
+        ("html", _visible_text),
         ("text", str),
-        ("full_text_submission", html_to_text),
+        ("full_text_submission", _visible_text),
     )
     for method, to_text in readers:
         try:
@@ -128,20 +147,97 @@ def filing_body_text(filing: Filing) -> str:
     return ""
 
 
-def employee_excerpt(text: str, limit: int) -> str:
-    """The filing's opening text plus windows around the first workforce mentions, gap-marked and capped at `limit`."""
-    spans = [(0, min(8_000, len(text)))]
-    for match in _CONTEXT_RE.finditer(text):
-        spans.append((max(0, match.start() - 550), min(len(text), match.end() + 850)))
-        if len(spans) >= 121:
-            break
-    merged: list[list[int]] = []
+def _visible_text(raw: str) -> str:
+    """`html_to_text` without the hidden inline-XBRL header, whose fact values are not filing prose."""
+    return html_to_text(_IX_HEADER_RE.sub(" ", raw))
+
+
+def _workforce_number_spans(text: str) -> list[tuple[int, int]]:
+    """Matches of a workforce number in document order; a day after a month name is not one."""
+    spans = {
+        (match.start(), match.end())
+        for pattern in _WORKFORCE_NUMBER_RES
+        for match in pattern.finditer(text)
+        if not _MONTH_RE.search(text[max(0, match.start("n") - 12) : match.start("n")])
+    }
+    return sorted(spans)
+
+
+def _merge(spans: Iterable[tuple[int, int]]) -> list[tuple[int, int]]:
+    merged: list[tuple[int, int]] = []
     for start, end in sorted(spans):
         if merged and start <= merged[-1][1]:
-            merged[-1][1] = max(merged[-1][1], end)
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
         else:
-            merged.append([start, end])
-    return f"\n\n{_GAP}\n\n".join(text[start:end] for start, end in merged)[:limit]
+            merged.append((start, end))
+    return merged
+
+
+def employee_excerpt(text: str, limit: int) -> str:
+    """Windows around workforce numbers, then the filing's opening, then windows around other workforce
+    mentions, each kept while the gap-joined excerpt stays within `limit` characters."""
+    before, after = _WINDOW
+    windows = [(max(0, start - before), min(len(text), end + after)) for start, end in _workforce_number_spans(text)]
+    windows.append((0, min(_OPENING, len(text))))
+    windows += [(max(0, match.start() - before), min(len(text), match.end() + after)) for match in _CONTEXT_RE.finditer(text)]
+    separator = f"\n\n{_GAP}\n\n"
+    chosen: list[tuple[int, int]] = []
+    for window in windows:
+        trial = _merge([*chosen, window])
+        if sum(end - start for start, end in trial) + len(separator) * (len(trial) - 1) <= limit:
+            chosen = trial
+    return separator.join(text[start:end] for start, end in chosen)
+
+
+@dataclass(frozen=True)
+class EmployeeText:
+    """The document text the employee excerpt is cut from, and which document it is ("primary" or an exhibit type)."""
+
+    text: str
+    source_document: str
+
+
+def is_annual_report_exhibit(document_type: str, description: str) -> bool:
+    """An EX-13 (annual report to security holders) or an EX-99 its filer describes as an annual report."""
+    kind = document_type.strip().upper()
+    return kind.startswith("EX-13") or (kind.startswith("EX-99") and "annual report" in description.casefold())
+
+
+def _incorporates_workforce(text: str) -> bool:
+    """Whether the text points its workforce disclosure at a page of a document it incorporates by reference."""
+    reach = _BY_REFERENCE_REACH
+    return any(_WORKFORCE_PAGE_RE.search(text, max(0, match.start() - reach), match.end() + reach) for match in _BY_REFERENCE_RE.finditer(text))
+
+
+def choose_employee_text(primary: str, exhibits: Iterable[tuple[str, Callable[[], str]]]) -> EmployeeText:
+    """The primary document, unless it states no workforce number or incorporates its workforce disclosure
+    by reference; then the first annual-report exhibit (read lazily, in order) that states one."""
+    if _workforce_number_spans(primary) and not _incorporates_workforce(primary):
+        return EmployeeText(primary, "primary")
+    for document_type, read in exhibits:
+        if _workforce_number_spans(text := read()):
+            return EmployeeText(text, document_type)
+    return EmployeeText(primary, "primary")
+
+
+def _annual_report_exhibits(filing: Filing) -> Iterator[tuple[str, Callable[[], str]]]:
+    """The filing's annual-report exhibits as (document type, text reader); attachments are listed on first use."""
+    for attachment in filing_attachments(filing) or []:
+        document_type = str(attachment.document_type or "").strip().upper()
+        if attachment.is_binary() or not is_annual_report_exhibit(document_type, str(attachment.description or "")):
+            continue
+        label = f"{getattr(filing, 'accession_number', '?')} {document_type}"
+        yield document_type, partial(_attachment_text, attachment, label)
+
+
+def _attachment_text(attachment: object, label: str) -> str:
+    raw = sec_call(getattr, attachment, "content", label=label)
+    return _visible_text(raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw or ""))
+
+
+def employee_text(filing: Filing) -> EmployeeText:
+    """The text the employee excerpt is cut from: the primary document, or its annual-report exhibit fallback."""
+    return choose_employee_text(filing_body_text(filing), _annual_report_exhibits(filing))
 
 
 @dataclass(frozen=True)
@@ -289,26 +385,25 @@ def _task_stamp(result: LlmResult) -> FilingStamp:
 
 
 def _employee_task(sequence: int, ticker: str, stamp: FilingStamp, max_chars: int) -> LlmTask:
-    """Package one owned filing's excerpt as one LLM task."""
-    filing = stamp.filing
+    """Package one owned filing's excerpt as one LLM task; `meta["source_document"]` names the document it came from."""
     report = stamp.period_of_report
     report_date = pd.Timestamp(report).normalize() if report is not None else None
-    text = filing_body_text(filing)
-    if not text.strip():
+    document = employee_text(stamp.filing)
+    if not document.text.strip():
         raise ValueError(f"{ticker} {stamp.accession_number}: filing text unavailable")
     prefix = (
         f"Ticker: {ticker}\nFiscal period end: {report_date.date() if report_date is not None else 'unknown'}\n"
-        f"SEC filing date: {stamp.filed.date()}\nAccession: {stamp.accession_number}\n"
+        f"SEC filing date: {stamp.filed.date()}\nAccession: {stamp.accession_number}\nSource document: {document.source_document}\n"
         "The following is an excerpt, not necessarily the complete 10-K:\n\n"
     )
     if max_chars <= len(prefix):
         raise ValueError("gpt.max_chars.employees is too small for filing metadata")
-    source_text = employee_excerpt(text, max_chars - len(prefix))
+    source_text = employee_excerpt(document.text, max_chars - len(prefix))
     return LlmTask(
         seq=sequence,
         payload=prefix + source_text,
         schema=EmployeeAnswer,
-        meta={"stamp": stamp, "report_date": report_date, "source_text": source_text},
+        meta={"stamp": stamp, "report_date": report_date, "source_text": source_text, "source_document": document.source_document},
     )
 
 

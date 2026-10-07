@@ -57,10 +57,12 @@ class StepExtractFundamentalsSharadar(Step):
         #    costs one request and is counted, never retried.
         #    The vendor tickers carrying a register predecessor CIK's own series (BHI, STE1, ...) are fetched
         #    too and stored under their own ticker; the merge reads them inside the predecessor's window.
+        #    They are delisted, so they are read over the whole window: a rowless key resumes from a recent date.
+        fetch_sharadar_fundamentals(self._context, tickers=tickers, years_history=years, full=full, as_of=as_of)
         predecessors = [t for t in predecessor_vendor_tickers(self._context, tickers, config_dir) if t not in set(tickers)]
         if predecessors:
             self._log.info("Sharadar SF1: + %d predecessor vendor ticker(s): %s", len(predecessors), ", ".join(predecessors))
-        fetch_sharadar_fundamentals(self._context, tickers=[*tickers, *predecessors], years_history=years, full=full, as_of=as_of)
+            fetch_sharadar_fundamentals(self._context, tickers=predecessors, years_history=years, full=True, as_of=as_of)
 
         # 3. Corporate actions: dividends, splits, spinoffs, acquisitions, relations.
         fetch_sharadar_actions(self._context, years_history=years, full=full, as_of=as_of)

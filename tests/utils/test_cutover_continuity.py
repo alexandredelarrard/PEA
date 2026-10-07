@@ -62,13 +62,13 @@ def test_cutover_classification_rules() -> None:
     print(f"  OK: all {len(cases)} cases classify as defined; only a recorded, admitted vendor gap is explained.")
 
 
-def test_the_exceptions_config_holds_the_13_accession_exact_rows() -> None:
+def test_the_exceptions_config_holds_the_6_accession_exact_rows() -> None:
     rows = cc.load_vendor_exceptions(CONFIG_DIR)
     keys = [(r.ticker, r.quarter) for r in rows]
-    assert len(rows) == 13 and len(set(keys)) == 13
-    assert {r.ticker for r in rows} == {"BKR", "DOW", "STE", "VMC"}
+    assert len(rows) == 6 and len(set(keys)) == 6
+    assert {r.ticker for r in rows} == {"BKR", "DOW", "VMC"}
     assert all(r.accession and r.cik and r.label == LABEL and cc.quarter_of(r.period_end) == r.quarter for r in rows)
-    assert ("BKR", "2017Q1", "0000808362-17-000025") in [(r.ticker, r.quarter, r.accession) for r in rows]
+    assert ("BKR", "2017Q2", "0000808362-17-000034") in [(r.ticker, r.quarter, r.accession) for r in rows]
     print("\n=== SANITY CHECK: configs/sec/vendor_coverage_exceptions.json ===")
     print(f"  {len(rows)} rows, one per (ticker, quarter), each with its accession and the vendor-gap label")
 

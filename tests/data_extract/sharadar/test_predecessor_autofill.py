@@ -117,10 +117,10 @@ def test_predecessor_vendor_tickers_are_derived_not_listed(monkeypatch: pytest.M
 
 
 def test_the_step_fetches_universe_and_predecessor_tickers(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: dict[str, list[str]] = {}
+    calls: list[tuple[list[str], bool]] = []
     for name in ("fetch_sharadar_tickers", "fetch_sharadar_actions", "fetch_sharadar_sp500", "build_merged_history"):
         monkeypatch.setattr(step_module, name, lambda *a, **k: None)
-    monkeypatch.setattr(step_module, "fetch_sharadar_fundamentals", lambda context, tickers, **k: calls.setdefault("fetched", list(tickers)))
+    monkeypatch.setattr(step_module, "fetch_sharadar_fundamentals", lambda context, tickers, **k: calls.append((list(tickers), k["full"])))
     monkeypatch.setattr(step_module, "predecessor_vendor_tickers", lambda context, tickers, config_dir=None: ["PLD1", "STE1"])
     step = step_module.StepExtractFundamentalsSharadar.__new__(step_module.StepExtractFundamentalsSharadar)
     step._context = SimpleNamespace(log=logging.getLogger(LOGGER))
@@ -128,10 +128,10 @@ def test_the_step_fetches_universe_and_predecessor_tickers(monkeypatch: pytest.M
     step._config = SimpleNamespace(data_extract=SimpleNamespace(sharadar_years_history=30))
     step._config_dir = "./configs"
     step.run(["PLD", "STE"])
-    assert calls["fetched"] == ["PLD", "STE", "PLD1", "STE1"]
     print("\n=== SANITY CHECK: Sharadar fetch list ===")
-    print(f"  {calls['fetched']}")
-    print("  OK: universe then the derived predecessor vendor tickers, stored under their own vendor ticker.")
+    print(f"  {calls}")
+    assert calls == [(["PLD", "STE"], False), (["PLD1", "STE1"], True)]
+    print("  OK: the universe resumes; the delisted predecessor series are read over the whole window (a rowless key's resume window is recent).")
 
 
 @pytest.mark.usefixtures("no_deferral")

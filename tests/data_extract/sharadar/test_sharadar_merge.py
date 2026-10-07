@@ -25,6 +25,7 @@ from sqlalchemy import inspect
 
 from src.data_extract.utils.fundamentals.kpi_catalogue import HISTORY_PROVENANCE
 from src.data_extract.utils.fundamentals_sharadar.build_ttm import ARQ
+from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import load_predecessor_series
 from src.data_extract.utils.fundamentals_sharadar.field_map import load_field_map
 from src.data_extract.utils.fundamentals_sharadar.gap_check import candidates, measure_gaps
 from src.data_extract.utils.fundamentals_sharadar.merge_history import (
@@ -41,6 +42,7 @@ from src.data_extract.utils.fundamentals_sharadar.merge_history import (
     write_overrides,
 )
 from src.data_store.schema import Tables, name_of
+from src.utils.traded_security_deferrals import PREDECESSOR_SERIES, deferred_tickers
 
 CONFIG_DIR = Path("./configs")
 
@@ -123,6 +125,21 @@ def overlap(sources):
 
 
 @pytest.fixture(scope="module")
+def comparable(context, sources, overlap):
+    """`(vendor ARQ rows, tickers)` describing the same filer as the SEC history: the tickers deferred to the
+    traded-security realignment are dropped, and so are vendor rows inside a predecessor window, which the merge
+    replaces with the predecessor's own series."""
+    vendor, *_ = sources
+    tickers = sorted(set(overlap) - deferred_tickers(CONFIG_DIR, PREDECESSOR_SERIES))
+    dates = pd.to_datetime(vendor["date"])
+    replaced = pd.Series(False, index=vendor.index)
+    for series in load_predecessor_series(context, tickers, str(CONFIG_DIR)):
+        if series.valid_to is not None:
+            replaced |= (vendor["ticker"] == series.ticker) & (dates < series.valid_to)
+    return vendor[vendor["ticker"].isin(tickers) & ~replaced], tickers
+
+
+@pytest.fixture(scope="module")
 def sec_periods(context):
     """`(ticker, as_of, fiscal_end)` -- the SEC side's PERIOD axis, which `sources` omits.
 
@@ -138,7 +155,7 @@ def sec_periods(context):
 # --------------------------------------------------------------------------- #
 # the grain: is Sharadar's `date` the SEC filing date?                         #
 # --------------------------------------------------------------------------- #
-def test_as_of_matches_sec(sources, overlap, sec_periods):
+def test_as_of_matches_sec(comparable, sec_periods):
     """`ARQ.date` vs `fundamentals_history_sec.as_of`, on the overlapping tickers.
 
     THE premise of the whole phase. If these two are not the same event, the merged table's
@@ -164,7 +181,7 @@ def test_as_of_matches_sec(sources, overlap, sec_periods):
       * `no-sec-period` -- the SEC replay has no row for that period at all. A hole in the
                       SEC REPLAY (it is built one filer at a time), not a grain disagreement.
     """
-    vendor, sec, *_ = sources
+    vendor, overlap = comparable
     vendor_dates = pd.to_datetime(vendor["date"])
     vendor_periods = pd.to_datetime(vendor["reportperiod"])
     tolerance = pd.Timedelta(days=PERIOD_TOLERANCE_DAYS)

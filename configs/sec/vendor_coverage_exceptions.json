@@ -5,16 +5,9 @@
     "Read through src/utils/cutover_continuity.py by the continuity gate (tests/data_extract/sharadar/test_sharadar_diagnostics.py) and `validate identity`. The vendor series is judged as merged: a quarter the predecessor's own vendor series (BHI, STE1, ...) fills inside its register window heals its row, which must then be deleted."
   ],
   "exceptions": [
-    {"ticker": "BKR", "quarter": "2017Q1", "period_end": "2017-03-31", "cik": "0000808362", "accession": "0000808362-17-000025", "filed": "2017-04-28", "label": "Sharadar/source coverage gap; SEC filings present"},
     {"ticker": "BKR", "quarter": "2017Q2", "period_end": "2017-06-30", "cik": "0000808362", "accession": "0000808362-17-000034", "filed": "2017-07-28", "label": "Sharadar/source coverage gap; SEC filings present"},
     {"ticker": "DOW", "quarter": "2018Q1", "period_end": "2018-03-31", "cik": "0000029915", "accession": "0000029915-18-000013", "filed": "2018-05-04", "label": "Sharadar/source coverage gap; SEC filings present"},
     {"ticker": "DOW", "quarter": "2018Q2", "period_end": "2018-06-30", "cik": "0000029915", "accession": "0000029915-18-000020", "filed": "2018-08-03", "label": "Sharadar/source coverage gap; SEC filings present"},
-    {"ticker": "STE", "quarter": "2014Q2", "period_end": "2014-06-30", "cik": "0000815065", "accession": "0000815065-14-000008", "filed": "2014-08-08", "label": "Sharadar/source coverage gap; SEC filings present"},
-    {"ticker": "STE", "quarter": "2014Q3", "period_end": "2014-09-30", "cik": "0000815065", "accession": "0000815065-14-000012", "filed": "2014-11-04", "label": "Sharadar/source coverage gap; SEC filings present"},
-    {"ticker": "STE", "quarter": "2014Q4", "period_end": "2014-12-31", "cik": "0000815065", "accession": "0001628280-15-000532", "filed": "2015-02-09", "label": "Sharadar/source coverage gap; SEC filings present"},
-    {"ticker": "STE", "quarter": "2015Q1", "period_end": "2015-03-31", "cik": "0000815065", "accession": "0000815065-15-000004", "filed": "2015-05-27", "label": "Sharadar/source coverage gap; SEC filings present"},
-    {"ticker": "STE", "quarter": "2015Q2", "period_end": "2015-06-30", "cik": "0000815065", "accession": "0000815065-15-000008", "filed": "2015-08-07", "label": "Sharadar/source coverage gap; SEC filings present"},
-    {"ticker": "STE", "quarter": "2015Q3", "period_end": "2015-09-30", "cik": "0000815065", "accession": "0000815065-15-000009", "filed": "2015-10-30", "label": "Sharadar/source coverage gap; SEC filings present"},
     {"ticker": "VMC", "quarter": "2006Q1", "period_end": "2006-03-31", "cik": "0000103973", "accession": "0000103973-06-000112", "filed": "2006-04-28", "label": "Sharadar/source coverage gap; SEC filings present"},
     {"ticker": "VMC", "quarter": "2006Q2", "period_end": "2006-06-30", "cik": "0000103973", "accession": "0000103973-06-000197", "filed": "2006-08-01", "label": "Sharadar/source coverage gap; SEC filings present"},
     {"ticker": "VMC", "quarter": "2006Q3", "period_end": "2006-09-30", "cik": "0000103973", "accession": "0000103973-06-000268", "filed": "2006-10-31", "label": "Sharadar/source coverage gap; SEC filings present"}

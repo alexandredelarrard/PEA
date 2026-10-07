@@ -27,13 +27,22 @@ _COLUMNS = ["ticker", "earnings_date", "eps_estimate", "eps_actual", "surprise_p
 # a stale ticker (no new row within this many days) is re-pulled with this limit
 _RECENT_LIMIT = 8
 
+# yfinance's `get_earnings_dates` refuses a larger limit ("Yahoo caps limit at 100"), so a longer pull is paged
+_YAHOO_MAX_LIMIT = 100
+
 # rows before this date are sporadic and almost always missing, so they are dropped
 MIGRATION_DATE = "2002-10-01"
 
 
-def _download_one(ticker: str, limit: int) -> pd.DataFrame | None:
-    """One ticker's earnings-date table normalized to `_COLUMNS`, retried with backoff on 429; None if empty."""
-    raw = call_with_retries(lambda: yf.Ticker(ticker).get_earnings_dates(limit=limit), retries=3, base_wait=10.0, label=f"earnings {ticker}")
+def _download_page(ticker: str, limit: int, offset: int) -> pd.DataFrame | None:
+    """One page of a ticker's earnings dates, `offset` rows from the newest, normalized to `_COLUMNS`; None if empty.
+
+    A fresh `yf.Ticker` per page, because yfinance caches earnings dates by `limit` alone and a reused
+    instance would return its first page again.
+    """
+    raw = call_with_retries(
+        lambda: yf.Ticker(ticker).get_earnings_dates(limit=limit, offset=offset), retries=3, base_wait=10.0, label=f"earnings {ticker}"
+    )
     if raw is None or raw.empty:
         return None
 
@@ -46,6 +55,25 @@ def _download_one(ticker: str, limit: int) -> pd.DataFrame | None:
     df["ticker"] = ticker
     df["earnings_date"] = pd.to_datetime(df["earnings_date"], utc=True).dt.tz_localize(None).dt.normalize()
     return df[_COLUMNS]
+
+
+def _download_one(ticker: str, limit: int) -> pd.DataFrame | None:
+    """The newest `limit` earnings dates of one ticker, read in Yahoo pages of at most `_YAHOO_MAX_LIMIT` rows.
+
+    Paging stops once `limit` rows are asked for, Yahoo has no more rows, or a page reaches `MIGRATION_DATE`;
+    retried with backoff on 429; None if empty.
+    """
+    pages: list[pd.DataFrame] = []
+    for offset in range(0, limit, _YAHOO_MAX_LIMIT):
+        page = _download_page(ticker, min(limit - offset, _YAHOO_MAX_LIMIT), offset)
+        if page is None:
+            break
+        pages.append(page)
+        if page["earnings_date"].min() < pd.Timestamp(MIGRATION_DATE):
+            break
+    if not pages:
+        return None
+    return pd.concat(pages, ignore_index=True).drop_duplicates(subset=["ticker", "earnings_date"]).reset_index(drop=True)
 
 
 def _resume_dates(context: Context) -> tuple[dict[str, pd.Timestamp], dict[str, pd.Timestamp]]:
@@ -94,7 +122,8 @@ def fetch_earnings_surprises(context: Context, tickers: list[str], years_history
     resume = Tables.earnings_surprises.resume
     refetch_window_days = resume.overlap_days if resume is not None else 95
     last_reported, next_expected = _resume_dates(context)
-    plan = _plan_fetch(tickers, last_reported, next_expected, (years_history + 1) * 4, refetch_window_days)
+    full_limit = (years_history + 1) * 4
+    plan = _plan_fetch(tickers, last_reported, next_expected, full_limit, refetch_window_days)
     context.log.info("Earnings surprises: %d/%d tickers to fetch (%d already current)", len(plan), len(tickers), len(tickers) - len(plan))
 
     new_frames = []

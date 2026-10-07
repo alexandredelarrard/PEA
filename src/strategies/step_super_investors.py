@@ -160,9 +160,7 @@ class SuperInvestorsStrategy(Strategy):
         config_dir = config_dir_of(self._context)
         manager_ids = roster_as_of(self._context)
         if not manager_ids:
-            raise RuntimeError(
-                f"super_investors: '{Tables.superinvestor_roster}' resolved to no manager -- run `data_extract superinvestors --seed`."
-            )
+            raise RuntimeError(f"super_investors: '{Tables.superinvestor_roster}' resolved to no manager -- run `data_extract superinvestors -F`.")
         df_funds = store.load(Tables.sec13f_hr, columns=funds_cols, where={"cik": sorted(filer_ciks(manager_ids, config_dir))})
         if df_funds is None:
             raise RuntimeError(f"super_investors: '{Tables.sec13f_hr}' returned no filing frame")

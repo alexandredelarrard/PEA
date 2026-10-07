@@ -33,14 +33,16 @@ def load_universe_tickers(context: Context) -> list[str]:
 
 
 def new_tickers(store: DataStore, overlap_days: int, as_of: pd.Timestamp) -> set[str]:
-    """Upper-cased `sp500_tickers` rows whose `added_on` is after `as_of - overlap_days`.
+    """Upper-cased `sp500_tickers` rows whose `added_on` is after `as_of - overlap_days` and on or
+    before `as_of`.
 
-    A NULL `added_on` is an established ticker, and a table without the column has no new
-    ticker."""
+    A NULL `added_on` is an established ticker, a later one is not new yet, and a table without the
+    column has no new ticker."""
     if "added_on" not in store.columns(Tables.sp500_tickers):
         return set()
-    cutoff = pd.Timestamp(as_of).normalize() - pd.Timedelta(days=overlap_days - 1)
-    df = store.load(Tables.sp500_tickers, columns=["ticker"], date_col="added_on", since=cutoff, optional=True)
+    day = pd.Timestamp(as_of).normalize()
+    cutoff = day - pd.Timedelta(days=overlap_days - 1)
+    df = store.load(Tables.sp500_tickers, columns=["ticker"], date_col="added_on", since=cutoff, until=day, optional=True)
     if df is None:
         return set()
     return {t for raw in df["ticker"].dropna() if (t := str(raw).strip().upper())}
@@ -53,12 +55,14 @@ def new_tickers(store: DataStore, overlap_days: int, as_of: pd.Timestamp) -> set
 CIK_EVIDENCE_TABLES: tuple[str, ...] = ("def14a_llm", "sec_def14a", "sec_8k", "sec_13d")
 
 
-def added_on_dates(store: DataStore, tickers: Sequence[str]) -> dict[str, pd.Timestamp]:
-    """Each ticker's `sp500_tickers.added_on`; a ticker without one is left out, and a table without the
-    column has no joined ticker."""
+def added_on_dates(store: DataStore, tickers: Sequence[str], as_of: pd.Timestamp) -> dict[str, pd.Timestamp]:
+    """Each ticker's `sp500_tickers.added_on` on or before `as_of`; a ticker without one, or added
+    later, is left out, and a table without the column has no joined ticker."""
     if "added_on" not in store.columns(Tables.sp500_tickers):
         return {}
-    df = store.load(Tables.sp500_tickers, columns=["ticker", "added_on"], where={"ticker": list(tickers)}, optional=True)
+    df = store.load(
+        Tables.sp500_tickers, columns=["ticker", "added_on"], where={"ticker": list(tickers)}, date_col="added_on", until=as_of, optional=True
+    )
     if df is None:
         return {}
     df = df.dropna(subset=["added_on"])

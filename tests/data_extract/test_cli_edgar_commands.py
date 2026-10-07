@@ -149,10 +149,10 @@ def insider_calls(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict[str, 
 
 
 def test_the_insider_bulk_parse_and_its_live_edgar_tail_run_as_separate_commands(insider_calls: list[tuple[str, dict[str, Any]]]) -> None:
-    """D-8: `--bulk-only` parses the zips without the EDGAR walk, `insider-edgar` walks only; the bare command still does both."""
+    """D-8: `insider-zip` parses the zips without the EDGAR walk, `insider-edgar` walks only; the bare command still does both."""
     runner = CliRunner()
     invocations = (
-        ["insider-transactions", "--bulk-only", "-t", "aapl"],
+        ["insider-zip", "-t", "aapl"],
         ["insider-edgar", "-t", "aapl", "-F"],
         ["insider-transactions", "-t", "aapl"],
     )
@@ -169,7 +169,7 @@ def test_the_insider_bulk_parse_and_its_live_edgar_tail_run_as_separate_commands
     }
     assert insider_calls[3][1]["full"] is False and insider_calls[0][1]["tickers"] == ["AAPL"]
     print("\n=== SANITY: insider commands (D-8) ===")
-    print("  insider-transactions --bulk-only -> bulk parse only; insider-edgar -F -> live walk only (full=True);")
+    print("  insider-zip -> bulk parse only; insider-edgar -F -> live walk only (full=True);")
     print("  insider-transactions -> both, as before. OK: the DAG can schedule the walk in its own pool.")
 
 

@@ -243,6 +243,29 @@ def test_m1_a_new_key_alone_gets_its_full_window(tmp_path, sqlite_store):
     print("  NEW (added 2026-09-28, inside the 7-day overlap) -> full window; AAA stays forward from 2026-09-23.")
 
 
+def test_m1_a_new_key_is_pulled_in_full_once_then_resumes_forward(tmp_path, sqlite_store):
+    """REQ-010: the second run of the night (and every later night inside the new-key window) is forward-only
+    once the key's stored history reaches the floor; a key whose history starts past the tolerance stays full."""
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA", "NEW", "LATE"])
+    _universe(ctx, {"AAA": "1", "NEW": "2", "LATE": "3"}, added_on={"NEW": "2026-09-28", "LATE": "2026-09-28"})
+    sqlite_store.save(Tables.prices, _bars("AAA", _SESSIONS))
+
+    first = _series(ctx, ["NEW"])
+    ((since, until),) = first.windows["NEW"]
+    sqlite_store.save(Tables.prices, _bars("NEW", pd.bdate_range(since, until)[1:]))  # floor 09-30 (Thu): first bar 10-01
+    sqlite_store.save(Tables.prices, _bars("LATE", pd.bdate_range("2021-10-15", until)))  # 15 days past the floor
+    again = _series(ctx, ["AAA", "NEW", "LATE"])
+    next_night = _series(ctx, ["AAA", "NEW", "LATE"], as_of=_AS_OF + pd.Timedelta(days=1))
+
+    assert _spans(first, "NEW") == [("2021-09-30", "2026-09-30")] and first.key_class["NEW"] == KEY_NEW
+    assert _spans(again, "NEW") == _spans(again, "AAA") == [("2026-09-23", "2026-09-30")]
+    assert again.key_class["NEW"] == KEY_ESTABLISHED and next_night.key_class["NEW"] == KEY_ESTABLISHED
+    assert _spans(again, "LATE") == [("2021-09-30", "2026-09-30")] and again.key_class["LATE"] == KEY_NEW
+    print("\n=== SANITY CHECK: M1 new key, same-night rerun (REQ-010) ===")
+    print(f"  NEW: full {_spans(first, 'NEW')} once; stored from 2021-10-01 (1 day past the floor) -> rerun {_spans(again, 'NEW')};")
+    print("  LATE, stored only from 2021-10-15 (past the 7-day tolerance), still gets the full window.")
+
+
 def test_m1_forward_window_is_the_key_s_own_last_date_minus_the_overlap(tmp_path, sqlite_store):
     ctx = fake_context(tmp_path, sqlite_store, ["AAA", "LAG"])
     sqlite_store.save(Tables.prices, _bars("AAA", _SESSIONS))

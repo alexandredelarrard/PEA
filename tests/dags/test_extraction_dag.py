@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import inspect
 import sys
+import textwrap
 import types
 from pathlib import Path
 from types import SimpleNamespace
@@ -34,7 +36,7 @@ REQUIRED_COMMANDS = {
     "thirteen-f",
     "thirteen-f-backfill",
     "financial-statements",
-    "insider-transactions",
+    "insider-zip",
     "insider-edgar",
     "insider-download",
     "notes-download",
@@ -100,7 +102,7 @@ def test_freshness_inventory_comes_only_from_schema():
 IDENTITY_DOWNLOADS = {"insider_download", "notes_download", "ftd_download", "sec_tickers"}
 #: every task that reads the lineage; each must start after `identity_propagate`.
 IDENTITY_CONSUMERS = {
-    "insider_transactions",
+    "insider_zip",
     "financial_notes",
     "financial_statements",
     "fails_to_deliver",
@@ -284,18 +286,18 @@ def test_the_live_insider_walk_runs_in_the_sec_api_pool_after_the_bulk_parse(mon
     """D-8: the Form 3/4/5 bulk parse stays in `sec_bulk`; its live EDGAR tail is its own `sec_api` task, so it never
     overlaps another EDGAR walk."""
     graph, params = _load_dag_graph(monkeypatch)
-    bulk, walk = params["insider_transactions"], params["insider_edgar"]
+    bulk, walk = params["insider_zip"], params["insider_edgar"]
 
-    assert bulk["pool"] == "sec_bulk" and " insider-transactions --bulk-only -c " in str(bulk["bash_command"])
+    assert bulk["pool"] == "sec_bulk" and " insider-zip -c " in str(bulk["bash_command"])
     assert walk["pool"] == "sec_api" and walk["pool_slots"] == 2 and " insider-edgar -c " in str(walk["bash_command"])
-    assert "insider_edgar" in graph["insider_transactions"], "the live tail resumes from the bulk table's latest quarter"
+    assert "insider_edgar" in graph["insider_zip"], "the live tail resumes from the bulk table's latest quarter"
     assert "insider_edgar" in _descendants(graph, "identity_propagate") and "extraction_status" in graph["insider_edgar"]
     edgar_in_bulk = [task for task, kwargs in params.items() if kwargs.get("pool") == "sec_bulk" and "edgar" in str(kwargs.get("bash_command"))]
     assert not edgar_in_bulk, edgar_in_bulk
 
     print("\n=== SANITY CHECK: insider tasks by pool (D-8) ===")
-    print(f"  insider_transactions: {bulk['pool']} -> {bulk['bash_command'].split(' -m src data_extract ')[1]}")
-    print(f"  insider_edgar:        {walk['pool']} ({walk['pool_slots']} slots) -> {walk['bash_command'].split(' -m src data_extract ')[1]}")
+    print(f"  insider_zip:   {bulk['pool']} -> {bulk['bash_command'].split(' -m src data_extract ')[1]}")
+    print(f"  insider_edgar: {walk['pool']} ({walk['pool_slots']} slots) -> {walk['bash_command'].split(' -m src data_extract ')[1]}")
     print("  OK: the live EDGAR walk holds both sec_api slots and starts after the bulk parse and the identity propagation.")
 
 
@@ -326,7 +328,7 @@ def test_a_failed_fetcher_never_blocks_aggregation_but_a_failed_identity_check_d
     assert all(dag.tasks[task_id].trigger_rule == ALL_SUCCESS for task_id in fetchers - lenient), "a fetcher still waits for its own sources"
     assert all(dag.tasks[task_id].trigger_rule == ALL_DONE for task_id in lenient), "F-106: a failed SEC download never skips prices"
 
-    for failed in (["price_history"], ["identity_tables"], ["thirteen_f", "insider_transactions", "extraction_status"]):
+    for failed in (["price_history"], ["identity_tables"], ["thirteen_f", "insider_zip", "extraction_status"]):
         states = replay(dag, failed)
         assert states["trigger_data_aggregation"] == "success", (failed, states)
     states = replay(dag, ["identity_tables"])
@@ -346,6 +348,64 @@ def test_a_failed_fetcher_never_blocks_aggregation_but_a_failed_identity_check_d
     print("  replay: price_history failed / identity_tables failed (its 12 consumers upstream_failed) / 13F + insider + the report failed")
     print("  -> aggregation triggered every time; identity_check failed -> every fetcher and the report succeed, the trigger is upstream_failed")
     print("  F-106: a failed SEC download still runs identity_tables, the consumers and price_history; a failed build still runs prices")
+
+
+#: Modules whose entry points walk EDGAR filing by filing (the document walks plus the 13F walks).
+EDGAR_WALK_FILES = (
+    *STRICT_EDGAR_FILES,
+    "src/data_extract/utils/institutionals/fetch_13f.py",
+    "src/data_extract/utils/institutionals/fetch_13f_backfill.py",
+    "src/data_extract/utils/institutionals/fetch_13f_managers.py",
+)
+
+
+def _edgar_walk_names() -> set[str]:
+    """Names `cli.py` imports from an EDGAR-walk module."""
+    modules = {path.removesuffix(".py").replace("/", ".") for path in EDGAR_WALK_FILES}
+    tree = ast.parse(_source(DAG_FILE.parents[2] / "src/data_extract/cli.py"))
+    return {
+        alias.asname or alias.name for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module in modules for alias in node.names
+    }
+
+
+def _command_names(command: str) -> set[str]:
+    """Every name the CLI command's function refers to, through the `cli.py` helpers it calls."""
+    seen: set[str] = set()
+    pending = [extraction_cli.cli.commands[command].callback]
+    while pending:
+        tree = ast.parse(textwrap.dedent(inspect.getsource(pending.pop())))
+        for name in {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)} - seen:
+            seen.add(name)
+            helper = getattr(extraction_cli, name, None)
+            if inspect.isfunction(helper) and helper.__module__ == extraction_cli.__name__:
+                pending.append(helper)
+    return seen
+
+
+def test_every_edgar_walk_runs_in_the_sec_api_pool():
+    """A task whose command walks EDGAR holds both sec_api slots, so only one EDGAR walk runs at a time;
+    a walk in another pool would run beside it, two rate limiters against SEC's one 10 req/s."""
+    dag = load_dag(DAG_FILE)
+    walk_names = _edgar_walk_names()
+    walks: dict[str, str] = {}
+    for task_id, task in dag.tasks.items():
+        bash = str(task.kwargs.get("bash_command", ""))
+        if " data_extract " not in bash:
+            continue
+        command = bash.split(" data_extract ", 1)[1].split()[0]
+        if _command_names(command) & walk_names:
+            walks[task_id] = str(task.kwargs.get("pool"))
+    assert {"thirteen_f", "fundamentals", "sec_13d"} <= set(walks), f"the walk detection lost known walks: {sorted(walks)}"
+    outside = {task_id: pool for task_id, pool in walks.items() if pool != "sec_api"}
+    assert not outside, f"EDGAR walks outside the sec_api pool: {outside}"
+    # insiders: the zip leg is no walk; the EDGAR leg follows it and the identity propagation
+    assert "insider_edgar" in walks and "insider_zip" not in walks
+    assert {"insider_zip", "identity_propagate"} <= dag.tasks["insider_edgar"].upstream
+    # the manual command still runs both legs
+    assert {"_insider_zip", "_insider_edgar"} <= _command_names("insider-transactions")
+
+    print("\n=== SANITY CHECK: one EDGAR walk at a time ===")
+    print(f"  {len(walks)} tasks walk EDGAR (derived from the CLI code), all in sec_api: {sorted(walks)}")
 
 
 def _raises(node: ast.AST, name: str) -> bool:

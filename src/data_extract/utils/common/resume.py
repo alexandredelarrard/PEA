@@ -6,7 +6,9 @@ each key's filing scope (event CIKs and CIK windows), from the floor on, minus t
 markers included; optionally only on the rows of one source); newest first and capped per run.
 
 `series_windows` (dated per-key series): per key, its own last date minus the overlap through
-`until`; the full history for a new key, an absent table or `full`; the table-wide frontier minus
+`until`; the full history for an absent table, `full`, or a new key whose stored history does not
+yet reach the floor, or its own first date in an optional `listing` table when later (a new key
+whose full pull is stored resumes like any other); the table-wide frontier minus
 the overlap for a rowless key; plus one window per run of calendar sessions missing inside the
 key's stored span.
 
@@ -246,6 +248,22 @@ def _has_holes(calendar: pd.DatetimeIndex | None, first: pd.Timestamp, last: pd.
     return calendar is not None and bool(n < calendar.searchsorted(last, side="right") - calendar.searchsorted(first, side="left"))
 
 
+def _reaches_floor(edges: tuple[pd.Timestamp, pd.Timestamp, int] | None, floor: pd.Timestamp, tolerance: pd.Timedelta) -> bool:
+    """True when a key's stored history starts within `tolerance` of the floor: its full pull is done.
+
+    The tolerance (the table's overlap) absorbs a floor on a non-session day and a quarterly series'
+    first filing after it."""
+    return edges is not None and pd.Timestamp(edges[0]) <= floor + tolerance
+
+
+def _listing_floors(context: Context, listing: Table | None, key_col: str, keys: Sequence[str], floor: pd.Timestamp) -> dict[str, pd.Timestamp]:
+    """Per key, the later of `floor` and its first date in `listing`; a key with no `listing` row is absent."""
+    if listing is None or not keys:
+        return {}
+    df = context.store.key_stats(listing, key_col, where={key_col: list(keys)})
+    return {str(key): max(floor, pd.Timestamp(first)) for key, first in zip(df["key"], df["first"], strict=True) if pd.notna(first)}
+
+
 def series_windows(
     context: Context,
     table: Table,
@@ -256,10 +274,14 @@ def series_windows(
     years_history: int,
     full: bool = False,
     calendar: pd.DatetimeIndex | None,
+    listing: Table | None = None,
 ) -> SeriesWork:
     """Per-key fetch windows for a dated series `table` from one `key_stats` read (plus one date read
     for the keys with interior holes against the daily `calendar`; None for a non-daily series, which
-    gets no hole windows). Never earlier than the history floor."""
+    gets no hole windows). Never earlier than the history floor.
+
+    `listing`: a table keyed like `table` whose first date per new key is that key's listing floor
+    when later than the floor; a key listed late has its full pull done once its history reaches it."""
     started = time.perf_counter()
     if table.resume is None or table.resume.key is None:
         raise ValueError(f"{table.name} declares no per-key resume contract")
@@ -270,11 +292,12 @@ def series_windows(
     stats = dict(zip(map(str, df_stats["key"]), zip(df_stats["first"], df_stats["last"], map(int, df_stats["n"]), strict=True), strict=True))
     new = set() if full else new_tickers(context.store, table.resume.overlap_days, as_of)
     table_max = context.store.max_date(table, date_col)
+    reach = _listing_floors(context, listing, key_col, [key for key in keys if key in new], floor)
     windows: dict[str, list[tuple[pd.Timestamp, pd.Timestamp]]] = {}
     key_class: dict[str, str] = {}
     holed: dict[str, tuple[pd.Timestamp, pd.Timestamp]] = {}
     for key in keys:
-        if full or table_max is None or key in new:
+        if full or table_max is None or (key in new and not _reaches_floor(stats.get(key), reach.get(key, floor), overlap)):
             key_class[key], since = KEY_NEW, floor
         elif key not in stats:
             key_class[key], since = KEY_ROWLESS, max(table_max - overlap, floor)

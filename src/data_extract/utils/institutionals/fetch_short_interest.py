@@ -7,9 +7,10 @@ from `security_master`: the FINRA symbol is read before upper-casing (`BACpB` ->
 the FTD spelling) and resolved on its trade date with `Identity.security_on`; a symbol never seen in FTD maps
 only through a lineage window CIK inside its window (P21). The ticker-grain `short_interest` is rebuilt from
 those rows: per (ticker, date) the sum over the canonical and secondary-class lines of volume x conversion
-ratio. The day files read come from `resume.series_windows` over `short_interest` (forward overlap, a
-new key's full history) plus the calendar sessions inside the stored span on which no key has a row;
-`repair` adds each key's own interior gaps once. An unscoped `full` re-fetches every served date and
+ratio. The day files read come from `resume.series_windows` over `short_interest` (forward overlap, new
+keys in full until their days reach the later of the source start and their first `prices` date) plus the
+calendar sessions inside the stored span on which no key has a row; `repair` adds each key's own interior
+gaps once. An unscoped `full` re-fetches every served date and
 keeps no legacy row; a scoped one (`-t`) re-reads every served date for its tickers and upserts them.
 Missing the Lit exchange volumes.
 """
@@ -252,12 +253,21 @@ def _plan_days(
     context: Context, tickers: list[str], years_history: int, full: bool, as_of: pd.Timestamp | None, *, repair: bool = False
 ) -> pd.DatetimeIndex:
     """The day files to read: every key's windows plus the never-stored days, as trading sessions (business
-    days past the calendar). `repair` adds each key's own interior gaps (a one-time pass, not nightly)."""
+    days past the calendar). `repair` adds each key's own interior gaps (a one-time pass, not nightly).
+    A new key's first `prices` date is its listing floor: a joiner listed after the FINRA start is read in full once."""
     run_date = pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize()
     until = last_completed_session(as_of)
     calendar = trading_calendar(context)
     work = series_windows(
-        context, Tables.short_interest, tickers, run_date, until=until, years_history=years_history, full=full, calendar=calendar if repair else None
+        context,
+        Tables.short_interest,
+        tickers,
+        run_date,
+        until=until,
+        years_history=years_history,
+        full=full,
+        calendar=calendar if repair else None,
+        listing=Tables.prices,
     )
     days = _missing_days(context, calendar, document_floor(Tables.short_interest, run_date, years_history))
     for since, end, _keys in work.groups():

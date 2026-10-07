@@ -155,6 +155,89 @@ def test_days_before_the_source_start_are_never_requested(sqlite_store):
     print(f"  {len(forward)} forward sessions from 08-10; the 2018-01..07 block FINRA answers 403 is never requested.")
 
 
+def test_a_new_key_reads_every_day_file_once_then_only_forward(sqlite_store):
+    # REQ-010: once a new key's stored days reach the FINRA start, a rerun (same night or a later night
+    # inside the new-key window) reads only the forward days, not the whole source window again.
+    ctx = _context(sqlite_store)
+    sessions = pd.bdate_range("2018-08-01", "2018-08-17")
+    sqlite_store.save(Tables.prices, pd.DataFrame({"ticker": "CAL", "date": sessions, "close_split": 1.0}))
+    sqlite_store.save(Tables.short_interest, _si("AAA", sessions))
+    _seed_universe(sqlite_store, ["AAA", "NEW"], {"NEW": "2018-08-17"})
+    as_of = pd.Timestamp("2018-08-18")  # last completed session: Friday 2018-08-17
+
+    first = si._plan_days(ctx, ["AAA", "NEW"], 1, False, as_of)
+    sqlite_store.save(Tables.short_interest, _si("NEW", first[1:]))  # no NEW row in the 2018-08-01 file
+    again = si._plan_days(ctx, ["AAA", "NEW"], 1, False, as_of)
+    next_night = si._plan_days(ctx, ["AAA", "NEW"], 1, False, as_of + pd.Timedelta(days=3))
+
+    assert first.equals(sessions)  # the whole window from the FINRA start
+    assert again.equals(sessions[sessions >= pd.Timestamp("2018-08-10")])
+    assert next_night.equals(pd.bdate_range("2018-08-10", "2018-08-20"))  # Tuesday: NEW is still inside its window
+    print("\n=== SANITY CHECK: RegSHO new key, rerun ===")
+    print(f"  NEW reads all {len(first)} day files from 2018-08-01 once; stored from 08-02 (inside the tolerance), the")
+    print(f"  rerun reads {len(again)} forward files and the next night {len(next_night)}, not the whole window again.")
+
+
+_SPIN_AS_OF = pd.Timestamp("2024-03-16")  # last completed session: Friday 2024-03-15; floor = FINRA start 2018-08-01
+_SPIN_CALENDAR = pd.bdate_range("2018-08-01", "2024-03-15")
+_SPIN_LISTED = pd.bdate_range("2024-03-01", "2024-03-15")
+
+
+def _spin_store(store, prices: dict[str, pd.DatetimeIndex]) -> None:
+    """A calendar from the FINRA start, AAA established from 2024-02-01, SPIN and NOPX added 2024-03-14."""
+    store.save(Tables.prices, pd.DataFrame({"ticker": "CAL", "date": _SPIN_CALENDAR, "close_split": 1.0}))
+    for ticker, dates in prices.items():
+        store.save(Tables.prices, pd.DataFrame({"ticker": ticker, "date": dates, "close_split": 1.0}))
+    store.save(Tables.short_interest, _si("AAA", _SPIN_CALENDAR[_SPIN_CALENDAR >= pd.Timestamp("2024-02-01")]))
+    _seed_universe(store, ["AAA", "SPIN", "NOPX"], {"SPIN": "2024-03-14", "NOPX": "2024-03-14"})
+
+
+def test_a_joiner_listed_after_the_source_start_is_read_in_full_once_then_only_forward(sqlite_store):
+    # A spin-off whose first price is 2024-03-01 has no FINRA row before it: once its stored days
+    # reach max(FINRA start, first price date) plus the tolerance, its full pull is done.
+    ctx = _context(sqlite_store)
+    _spin_store(sqlite_store, {"SPIN": _SPIN_LISTED})
+
+    first = si._plan_days(ctx, ["AAA", "SPIN"], 8, False, _SPIN_AS_OF)
+    sqlite_store.save(Tables.short_interest, _si("SPIN", first[first >= pd.Timestamp("2024-03-01")]))
+    again = si._plan_days(ctx, ["AAA", "SPIN"], 8, False, _SPIN_AS_OF)
+    next_night = si._plan_days(ctx, ["AAA", "SPIN"], 8, False, _SPIN_AS_OF + pd.Timedelta(days=3))
+
+    assert first.equals(_SPIN_CALENDAR)  # the whole window from the FINRA start, once
+    assert again.equals(_SPIN_CALENDAR[_SPIN_CALENDAR >= pd.Timestamp("2024-03-08")])
+    assert next_night.equals(pd.bdate_range("2024-03-08", "2024-03-18"))  # Tuesday: SPIN is still inside its window
+    print("\n=== SANITY CHECK: RegSHO joiner listed 2024-03-01, rerun ===")
+    print(f"  SPIN reads all {len(first)} day files from 2018-08-01 once; stored from its first price date, the rerun")
+    print(f"  reads {len(again)} forward files and the next night {len(next_night)}, not the whole window again.")
+
+
+def test_a_new_key_with_no_price_row_keeps_the_source_start_floor(sqlite_store):
+    # No `prices` row, no listing date: the floor stays the FINRA start, so days stored only from
+    # 2024-03-01 do not complete the full pull (the bug-2 rule, unchanged).
+    ctx = _context(sqlite_store)
+    _spin_store(sqlite_store, {})
+    sqlite_store.save(Tables.short_interest, _si("NOPX", _SPIN_LISTED))
+
+    again = si._plan_days(ctx, ["AAA", "NOPX"], 8, False, _SPIN_AS_OF)
+
+    assert again.equals(_SPIN_CALENDAR)
+    print("\n=== SANITY CHECK: RegSHO new key without prices ===")
+    print(f"  NOPX, stored from 2024-03-01 with no price row, still reads all {len(again)} day files from 2018-08-01.")
+
+
+def test_an_established_key_ignores_its_listing_date(sqlite_store):
+    # The listing floor only decides when a NEW key's full pull is done: an established key whose
+    # prices start late resumes from its own last day minus the overlap, as before.
+    ctx = _context(sqlite_store)
+    _spin_store(sqlite_store, {"AAA": _SPIN_LISTED})
+
+    plan = si._plan_days(ctx, ["AAA"], 8, False, _SPIN_AS_OF)
+
+    assert plan.equals(_SPIN_CALENDAR[_SPIN_CALENDAR >= pd.Timestamp("2024-03-08")])
+    print("\n=== SANITY CHECK: RegSHO established key ===")
+    print(f"  AAA (established, prices from 2024-03-01) reads {len(plan)} forward files from 2024-03-08, unchanged.")
+
+
 def test_incremental_run_rewrites_only_the_fetched_days(sqlite_store, tmp_path, monkeypatch):
     sqlite_store.replace(Tables.security_master, _master())
     sqlite_store.save(Tables.sec_short_volume_security, _raw([("LEN", "2020-01-02", 1.0, 2.0), ("LEN", "2020-01-03", 3.0, 4.0)]))

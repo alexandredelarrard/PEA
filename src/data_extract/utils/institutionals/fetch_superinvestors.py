@@ -98,7 +98,7 @@ ROSTER_CAPTURE_MIN_RATIO = 0.8
 ROSTER_HISTORY_README = [
     "Dataroma superinvestor roster history: one snapshot per calendar quarter, the newest valid Wayback capture of "
     "dataroma.com/m/home.php in that quarter.",
-    "captured_at is the capture instant (UTC); `data_extract superinvestors --seed` dates the snapshot at its day. "
+    "captured_at is the capture instant (UTC); `data_extract superinvestors -F` dates the snapshot at its day. "
     "source_url is the raw (id_) capture; managers maps Dataroma code -> name in page order.",
     f"A capture is valid when it lists at least one manager and at least {ROSTER_CAPTURE_MIN_RATIO:.0%} of the previous "
     "snapshot's count; a quarter with no valid capture is absent (a logged gap).",

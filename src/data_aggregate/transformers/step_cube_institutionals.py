@@ -234,7 +234,7 @@ class StepCubeInstitutionals(Step):
 
         roster = roster_cik_union(self._context)  # 106 managers as of 2026-09-08
         if not roster:
-            self._log.warning("`superinvestor_roster` has no snapshot -> elite 13F features skipped (run `data_extract superinvestors --seed`).")
+            self._log.warning("`superinvestor_roster` has no snapshot -> elite 13F features skipped (run `data_extract superinvestors -F`).")
             return None
 
         holdings = load_superinvestor_holdings(self._context, roster)

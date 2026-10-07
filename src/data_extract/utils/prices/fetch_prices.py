@@ -272,17 +272,25 @@ def secondary_class_symbols(context: Context, companies: list[str]) -> dict[str,
     return dict(sorted(listed.items()))
 
 
-def _split_repulls(df_splits: pd.DataFrame, last: dict[str, pd.Timestamp], full_keys: set[str]) -> list[str]:
-    """Keys whose response carries a split after their last stored bar: split adjustment restates
-    every earlier bar, so their stored history is on a stale basis. Keys already pulled in full are skipped."""
-    if df_splits.empty:
+def _restated_repulls(df_events: pd.DataFrame, last: dict[str, pd.Timestamp], full_keys: set[str]) -> list[str]:
+    """Keys whose response carries a split or a cash dividend after their last stored bar: both restate every
+    earlier bar (`close_split` for a split, `close_total` for either), so their stored history is on a stale
+    basis. Keys already pulled in full are skipped."""
+    if df_events.empty:
         return []
     stale = {
         str(ticker)
-        for ticker, day in zip(df_splits["ticker"], pd.to_datetime(df_splits["date"]), strict=True)
+        for ticker, day in zip(df_events["ticker"], pd.to_datetime(df_events["date"]), strict=True)
         if str(ticker) in last and str(ticker) not in full_keys and day > last[str(ticker)]
     }
     return sorted(stale)
+
+
+def _restating_events(df_raw: pd.DataFrame) -> pd.DataFrame:
+    """`[ticker, date]` of every split and non-zero dividend in an `actions=True` response."""
+    df_dividends = _extract_dividends(df_raw)
+    df_dividends = df_dividends[df_dividends["dividends"].fillna(0) > 0]
+    return pd.concat([_extract_splits(df_raw)[["ticker", "date"]], df_dividends[["ticker", "date"]]], ignore_index=True)
 
 
 def _price_rows(df_raw: pd.DataFrame) -> pd.DataFrame:
@@ -322,8 +330,8 @@ def fetch_prices_and_actions(
     Windows come from `series_windows` over `prices` and `prices_dividends` (each key from its own last
     date minus the overlap, holes, new keys in full until their history reaches the floor) and end at the
     last completed session. The companies' current secondary classes (`secondary_class_symbols`) are fetched
-    alongside; a class with no stored bar takes the whole window. A key whose response holds a split after its
-    last stored bar is re-pulled over the whole window before saving."""
+    alongside; a class with no stored bar takes the whole window. A key whose response holds a split or a cash
+    dividend after its last stored bar is re-pulled over the whole window before saving."""
     run_date = pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize()
     until = last_completed_session(as_of)
     calendar = trading_calendar(context)
@@ -342,11 +350,13 @@ def fetch_prices_and_actions(
     df_raw = _download_groups(work.groups(), chunk_size, pause, "resume")
 
     full_keys = {key for key, spans in work.windows.items() if spans and spans[0][0] <= floor}
-    repull = _split_repulls(_extract_splits(df_raw), prices_work.last, full_keys)
+    repull = _restated_repulls(_restating_events(df_raw), prices_work.last, full_keys)
     if repull:
-        logger.info("%d ticker(s) split after their last stored bar; re-pulling their whole window: %s", len(repull), ", ".join(repull))
+        logger.info(
+            "%d ticker(s) split or went ex-dividend after their last stored bar; re-pulling their whole window: %s", len(repull), ", ".join(repull)
+        )
         df_raw = pd.concat(
-            [df_raw[~df_raw["ticker"].isin(repull)], _download_groups([(floor, until, repull)], chunk_size, pause, "post-split re-pull")],
+            [df_raw[~df_raw["ticker"].isin(repull)], _download_groups([(floor, until, repull)], chunk_size, pause, "post-action re-pull")],
             ignore_index=True,
         )
 

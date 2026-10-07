@@ -133,6 +133,26 @@ def test_a_split_after_the_last_bar_re_pulls_that_ticker_only(sqlite_store: Data
     print(f"  its 2024-05-01 close_split is restated from {truth['NVDA'] * 10:.3f} to {stored['NVDA']:.3f}.")
 
 
+def test_a_dividend_after_the_last_bar_re_pulls_that_ticker_and_restates_close_total(sqlite_store: DataStore, yahoo: FakeYahoo) -> None:
+    recorded = fp.download_ohlcv(_TICKERS, pd.Timestamp("2024-05-01"), pd.Timestamp("2024-06-07"), pause=0.0, auto_adjust=False, actions=False)
+    # Stored before MO's 2024-06-14 ex-date: its close_total was not yet reduced for that dividend.
+    stale = recorded.assign(close_total=lambda d: d["close_total"].where(d["ticker"] != "MO", d["close_total"] * 1.02))
+    sqlite_store.save(Tables.prices, stale)
+    sqlite_store.save(Tables.dividends, fd._extract_dividends(recorded.assign(dividends=0.0)))
+    yahoo.calls.clear()
+
+    fp.fetch_prices_and_actions(_context(sqlite_store), _TICKERS, years_history=1, as_of=pd.Timestamp("2024-06-18"), pause=0.0)
+
+    assert [c["tickers"] for c in yahoo.calls] == [_TICKERS, ["MO", "NVDA"]]
+    stored = cast(pd.DataFrame, sqlite_store.load(Tables.prices, where={"date": [pd.Timestamp("2024-05-01")]})).set_index("ticker")["close_total"]
+    truth = recorded[recorded["date"] == pd.Timestamp("2024-05-01")].set_index("ticker")["close_total"]
+    assert stored["MO"] == truth["MO"], "MO's bars before its new ex-date must be restated"
+    assert stored["AAPL"] == truth["AAPL"]
+    print("\n=== SANITY CHECK: post-dividend re-pull ===")
+    print("  MO ex-dividend 2024-06-14 after its last bar 2024-06-07 -> re-pulled with NVDA (split); AAPL's 2024-05-10")
+    print(f"  dividend predates its last bar -> not re-pulled. MO 2024-05-01 close_total {truth['MO'] * 1.02:.4f} -> {stored['MO']:.4f}.")
+
+
 def test_a_failed_download_saves_nothing_and_logs_the_tickers(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, caplog) -> None:
     monkeypatch.setattr(fp, "download_ohlcv", lambda *a, **k: pd.DataFrame())
     with caplog.at_level("WARNING"):

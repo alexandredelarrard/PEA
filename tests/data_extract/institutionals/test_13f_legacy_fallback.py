@@ -199,6 +199,111 @@ def test_source_column_order_and_false_fragment_rejected() -> None:
     print("\n=== SANITY: a SHARES-before-VALUE header keeps value and shares in their source roles. Validated.")
 
 
+def test_shifted_harris_cusip_and_attached_share_type() -> None:
+    # SEC 0000813917-11-000099: the displayed header is wider than the rows.
+    raw = (
+        _table(
+            "        NAME OF ISSUER          TITLE OF CLASS    CUSIP   (x$1000) PRN AMT  PRN CALL DSCRETN",
+            "3M               COM       88579Y101    55045 766746.00SH       SOLE                  766746.00",
+        )
+        + "\nForm 13F Information Table Value Total: $55,045 (in thousands)"
+    )
+    out = _read(_Report(None, txt=raw, error=ValueError("shifted columns")))
+    assert isinstance(out, pd.DataFrame)
+    row = out.iloc[0]
+    assert (row["issuer_name"], row["cusip"], row["shares"], row["value_usd"]) == ("3M", "88579Y101", 766_746, 55_045_000)
+    print("\n=== SANITY: Harris 3M retains the source issuer, CUSIP, 766,746 shares and $55,045,000. Validated.")
+
+
+@pytest.mark.parametrize(
+    ("line", "cusip", "amount", "kind"),
+    [
+        ("D ENERGIZER HLDGS INC    COM 29266R108 18991 1040607.84SH DEFINED 2,4,5 1039441.83 1166.00", "29266R108", 1_040_607.84, "SH"),
+        ("UNITED STATES CELLULAR CORP  NOTE 6/1 911684AA6 3,687 10,385,000PRN SOLE", "911684AA6", 10_385_000, "PRN"),
+        ("Key 3 Media  com 49326R104 538 117200sh sole 0 117200", "49326R104", 117_200, "SH"),
+    ],
+)
+def test_complete_attached_amount_tokens(line: str, cusip: str, amount: float, kind: str) -> None:
+    # Exact amount tokens in SEC 0000813917-00-000053, 0000949509-02-000013,
+    # and 0001112520-02-000005; shortened whitespace makes column shifts explicit.
+    rows = parse_legacy_information_table(_table(_HEADER, line))
+    assert rows.iloc[0]["CUSIP"] == cusip
+    assert rows.iloc[0]["SSHPRNAMT"] == amount
+    assert rows.iloc[0]["SSHPRNAMTTYPE"] == kind
+    print(f"\n=== SANITY: complete attached {kind} amount is {amount}, without partial numeric matching. Validated.")
+
+
+def test_explicit_billion_cover_uses_displayed_precision() -> None:
+    # SEC 0001036325-12-000004: $45.864729bn rounds to its $45.9bn cover.
+    raw = _table(_HEADER, _AFLAC.replace("145,462", "45,864,729"))
+    raw += "\nForm 13F Information Table Value Total: $45.9 Billion"
+    assert parse_legacy_information_table(raw).iloc[0]["VALUE"] == 45_864_729_000
+    with pytest.raises(ValueError, match="value total differs"):
+        parse_legacy_information_table(raw.replace("45,864,729", "45,840,000"))
+    print("\n=== SANITY: explicit Billion precision admits $45.864729bn and rejects $45.84bn. Validated.")
+
+
+def test_wrapped_pabrai_value_and_class_do_not_use_voting_or_date() -> None:
+    # SEC 0001546927-13-000077: value is on the next line; SH amount and
+    # voting authority are on the first. The warrant date is a class fragment.
+    raw = "\n".join(
+        [
+            "Form 13F Information Table Entry Total: 2",
+            "Form 13F Information Table Value Total: 161,275.81 (thousands)",
+            "<TABLE>",
+            "       Name of Issuer         Title of Class   CUSIP   (x$1000)  Prn Amt  Prn Call Discretion Managers   Sole",
+            "<S>                           <C>            <C>       <C>      <C>       <C> <C>  <C>        <C>      <C>",
+            "BANK OF AMERICA CORPORATION   COM            060505104          7,502,000 SH          SOLE             7,502,000",
+            "                                                       91,374.36",
+            "GENERAL MTRS CO               *W EXP         37045V126          5,928,876 SH          SOLE             5,928,876",
+            "                              07/10/201                69,901.45",
+            "</TABLE>",
+        ]
+    )
+    rows = parse_legacy_information_table(raw).set_index("CUSIP")
+    assert rows.loc["060505104", "VALUE"] == 91_374_360
+    assert rows.loc["060505104", "SSHPRNAMT"] == 7_502_000
+    assert rows.loc["37045V126", "VALUE"] == 69_901_450
+    assert rows.loc["37045V126", "SSHPRNAMT"] == 5_928_876
+    assert rows.loc["37045V126", "NAMEOFISSUER"] == "GENERAL MTRS CO"
+    assert rows.loc["37045V126", "TITLEOFCLASS"] == "*W EXP 07/10/201"
+    print("\n=== SANITY: wrapped values and warrant class are associated with their holdings; dates/votes are excluded. Validated.")
+
+
+def test_headerless_table_page_inherits_only_compatible_markers() -> None:
+    # SEC 0001193125-12-439529: second page has identical column markers.
+    markers = "<S>                              <C>              <C>       <C>       <C>     <C> <C>  <C>"
+    raw = "\n".join(
+        [
+            "Form 13F Information Table Entry Total: 2",
+            "Form 13F Information Table Value Total: $60,303 (thousands)",
+            "<TABLE>",
+            "NAME OF ISSUER                   -TITLE OF CLASS- --CUSIP--   x$1000  PRN AMT PRN CALL DSCRETN",
+            markers,
+            "D APPLE INC                      COM              037833100    35406    53074 SH       SOLE                  47837        0     5237",
+            "</TABLE><PAGE><TABLE>",
+            markers,
+            "D COCA-COLA CO                   COM              191216100    24897   656384 SH       SOLE                 595730        0    60654",
+            "</TABLE>",
+        ]
+    )
+    rows = parse_legacy_information_table(raw)
+    assert list(rows["CUSIP"]) == ["037833100", "191216100"]
+    assert list(rows["VALUE"]) == [35_406_000, 24_897_000]
+    assert list(rows["SSHPRNAMT"]) == [53_074, 656_384]
+    with pytest.raises(ValueError):
+        parse_legacy_information_table(raw.replace("</TABLE><PAGE><TABLE>\n" + markers, "</TABLE><PAGE><TABLE>\n<S> <C> <C>"))
+    print("\n=== SANITY: compatible marker-only page retains both holdings; incompatible markers cannot certify a book. Validated.")
+
+
+@pytest.mark.parametrize("amount", ["117200oops", "10,38,500", "1.2.3", "1e6"])
+def test_malformed_amount_cannot_fall_back_to_voting_numbers(amount: str) -> None:
+    raw = _table(_HEADER, f"Key 3 Media  com 49326R104 538 {amount} SH SOLE 0 117200")
+    with pytest.raises(ValueError):
+        parse_legacy_information_table(raw)
+    print(f"\n=== SANITY: unsupported amount {amount!r} is rejected before voting fields can replace it. Validated.")
+
+
 # ---- `_read_filing` hook ------------------------------------------------------------------------
 
 

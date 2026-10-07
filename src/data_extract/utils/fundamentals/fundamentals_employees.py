@@ -78,16 +78,60 @@ _ROW_LABEL_RE = re.compile(
     r"(?:(?!\b(?:Total|TOTAL|Full|FULL|Part|PART)\b)[^\d]){0,40}(?:[\d,.]+(?:\s+|$))*$"
 )
 _FULL_AND_PART_RE = re.compile(r"full[\s-]*(?:time\s*)?(?:and|or|&|/)\s*part", re.I)
+_FTE_AFTER_RE = re.compile(r"^\W*(?:[a-z]+\s+){0,2}?full[\s-]*time[\s-]*equivalent", re.I)
 _MONTH_RE = re.compile(r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s*$", re.I)
+# Non-employees folded into a number: prose after it is lower case (a capitalised word there is the next table
+# row's label); a label or subject before it may be capitalised. "an additional" / "excluding" state them apart.
+_CONTRACTOR_RE = re.compile(r"\b(?:contractors?|contingent|temporar(?:y|ies)|complementary)\b")
+_CONTRACTOR_LABEL_RE = re.compile(_CONTRACTOR_RE.pattern, re.I)
+_SEPARATELY_RE = re.compile(r"\b(?:exclud\w*|not\s+includ\w*|additional|in\s+addition|besides|apart\s+from|other\s+than)\b", re.I)
+_PHRASE_STOP_RE = re.compile(r"\d|[.;]\s")  # a number's own phrase ends at the next number or sentence end
+
+COMPONENTS = ("total", "full_time", "part_time")
+_COMPONENT_SHIFT = {"total": None, "full_time": "full", "part_time": "part"}  # the shift label a component's number must carry
+# Decided statuses. `found`: at least one component is supported. With every component NULL: `not_disclosed`
+# (no count stated), `image_only` (only in an image), `incorporated` (in a document the filing incorporates by
+# reference but does not include), `ambiguous` (contradictory, a range, or no count claimed), `unsupported`
+# (a component was claimed and the guard rejected it).
+DECIDED_STATUSES = ("found", "not_disclosed", "image_only", "incorporated", "ambiguous", "unsupported")
+# The proxy formula a decided row supports: `total_incl_contractors` and `fte` qualify the total; `full_part` is
+# full-time with part-time or with a stated total; `total` alone; `full_time_only`.
+BASES = ("total", "full_part", "full_time_only", "fte", "total_incl_contractors")
+_NULL_STATUS = {"not_disclosed": "not_disclosed", "image_only": "image_only", "incorporated_by_reference": "incorporated", "ambiguous": "ambiguous"}
 
 
 class EmployeeAnswer(BaseModel):
-    status: Literal["found", "not_disclosed", "image_only", "ambiguous"]
-    count: int | None = Field(description="Issuer-wide current-period employees or FTE, or null")
-    quote: str | None = Field(description="Short exact contiguous source quote, or null")
+    status: Literal["found", "not_disclosed", "image_only", "incorporated_by_reference", "ambiguous"]
+    total: int | None = Field(description="Issuer-wide current-period total employees (or FTE when is_fte), or null")
+    total_quote: str | None = Field(description="Verbatim source words stating the total, or null")
+    full_time: int | None = Field(description="Issuer-wide current-period full-time employees as stated, or null")
+    full_time_quote: str | None = Field(description="Verbatim source words stating the full-time count, or null")
+    part_time: int | None = Field(description="Issuer-wide current-period part-time employees as stated, or null")
+    part_time_quote: str | None = Field(description="Verbatim source words stating the part-time count, or null")
+    is_fte: bool = Field(description="True when the total is stated as full-time equivalents")
+    includes_contractors: bool = Field(description="True when the stated total folds in contractors, contingent or temporary workers")
     measurement_period: str | None = Field(description="Headcount date or period as stated, at original precision")
-    qualifier: str | None = Field(description="For example approximate or FTE, if stated")
+    qualifier: str | None = Field(description="For example approximate, over or FTE, if stated")
     reason: str
+
+
+@dataclass(frozen=True)
+class EmployeeDecision:
+    """The guarded components of one answer, their basis and status; `quotes` are the (component, quote) pairs
+    kept, and `rejected` names each claimed component the guard rejected, as `component: reason`."""
+
+    status: str
+    employees_total: int | None = None
+    employees_full_time: int | None = None
+    employees_part_time: int | None = None
+    basis: str | None = None
+    measurement_period: str | None = None
+    quotes: tuple[tuple[str, str], ...] = ()
+    rejected: tuple[str, ...] = ()
+
+    @property
+    def counted(self) -> bool:
+        return any(value is not None for value in (self.employees_total, self.employees_full_time, self.employees_part_time))
 
 
 @dataclass(frozen=True)
@@ -104,8 +148,8 @@ class EmployeeTickerResult:
 class _Decision:
     stamp: FilingStamp
     source: str  # "manual" (the roster file) or "llm"
-    status: str
-    count: int | None
+    source_document: str  # "primary", an exhibit type, or "manual"
+    decided: EmployeeDecision
 
 
 def load_manual_roster(config_dir: str) -> dict[str, dict]:
@@ -246,9 +290,10 @@ class _Quantity:
 
     value: int
     bound: int  # +1 for "over N", -1 for "nearly N", 0 for an exact or approximate N
-    shift: str | None  # "full" or "part" when the source labels the number full- or part-time
+    shift: str | None  # "full", "part" or "fte" when the source labels the number full-, part-time or FTE
     in_range: bool
     is_date: bool
+    contractor: bool  # the number's own phrase folds in contractors, contingent or temporary workers
 
 
 def _compact(text: str) -> tuple[str, list[int]]:
@@ -293,11 +338,24 @@ def _locate(quote: str, source: str) -> list[tuple[int, int]] | None:
 
 def _shift(before: str, after: str) -> str | None:
     row = _ROW_LABEL_RE.search(before)
-    if (row and row.group(1).casefold() == "total") or _FULL_AND_PART_RE.search(after[:40]):
+    if row and row.group(1).casefold() == "total":
+        return None
+    if _FTE_AFTER_RE.match(after):
+        return "fte"
+    if _FULL_AND_PART_RE.search(after[:40]):
         return None
     if label := _SHIFT_AFTER_RE.match(after) or row:
         return label.group(1).casefold()
     return None
+
+
+def _folds_in_contractors(source: str, start: int, end: int) -> bool:
+    """Whether the phrase of the number at `source[start:end]` (to the neighbouring numbers or sentence ends)
+    counts contractors, contingent or temporary workers with it, rather than stating them apart."""
+    before = _PHRASE_STOP_RE.split(source[max(0, start - 120) : start])[-1]
+    after = _PHRASE_STOP_RE.split(source[end : end + 120], maxsplit=1)[0]
+    mentioned = _CONTRACTOR_RE.search(after) or _CONTRACTOR_LABEL_RE.search(before)
+    return bool(mentioned) and not _SEPARATELY_RE.search(f"{before} {after}")
 
 
 def _quantities(source: str, spans: list[tuple[int, int]]) -> list[_Quantity]:
@@ -318,6 +376,7 @@ def _quantities(source: str, spans: list[tuple[int, int]]) -> list[_Quantity]:
                     shift=_shift(before, after),
                     in_range=bool(_RANGE_BEFORE_RE.search(before) or _RANGE_AFTER_RE.match(after)),
                     is_date=is_date,
+                    contractor=_folds_in_contractors(source, match.start(), match.end()),
                 )
             )
     return quantities
@@ -342,37 +401,97 @@ def _resolve_bound(quantity: _Quantity) -> int:
     return quantity.value + quantity.bound * (unit // 2)
 
 
-def supported_employee_count(answer: EmployeeAnswer, source_text: str) -> int | None:
-    """The source-backed headcount for the model's claim, or None when the source does not support it.
+def _support(component: str, value: int, quote: str | None, source_text: str) -> list[_Quantity] | str:
+    """The stated numbers behind one claimed component, or why the source does not support it.
 
-    The quote must be in the source and the model's count must be a number it states, or the sum of
-    stated components. Only full-time is kept: part-time components are dropped, and a total the
-    quoted passage splits into full- and part-time rows becomes its full-time row. Open bounds resolve
-    by `_resolve_bound`, and a stated range such as `50,000 to 100,000` is unclear, so None.
+    The quote must be located in the source, and the value must be one number it states, or a sum of
+    stated disjoint numbers, carrying the component's shift label (full- or part-time); a range is unclear.
     """
-    if answer.count is None or answer.count <= 0 or not answer.quote or _GAP in answer.quote:
-        return None
-    spans = _locate(answer.quote, source_text)
-    claimed = _claimed(_quantities(source_text, spans), answer.count) if spans else None
-    if not claimed or any(quantity.in_range for quantity in claimed):
-        return None
-    if len(claimed) == 1 and claimed[0].shift is None and spans:
-        passage = _quantities(source_text, [(spans[0][0], spans[-1][1])])
-        part_values = {q.value for q in passage if q.shift == "part"}
-        if split := next((q for q in passage if q.shift != "part" and claimed[0].value - q.value in part_values), None):
-            claimed = [split]
-    full_time = [quantity for quantity in claimed if quantity.shift != "part"]
-    return sum(map(_resolve_bound, full_time)) if full_time else None
+    if value <= 0 or not quote or _GAP in quote:
+        return "no_quote"
+    spans = _locate(quote, source_text)
+    if not spans:
+        return "not_located"
+    shift = _COMPONENT_SHIFT[component]
+    claimed = _claimed([quantity for quantity in _quantities(source_text, spans) if shift is None or quantity.shift == shift], value)
+    if claimed is None:
+        return "not_stated"
+    return "range" if any(quantity.in_range for quantity in claimed) else claimed
 
 
-def _decide(answer: EmployeeAnswer, source_text: str) -> tuple[str, int | None]:
-    """Every status is final: an `ambiguous` filing is not sent to the LLM again."""
-    count = supported_employee_count(answer, source_text)
-    if count is not None:
-        return "saved", count
-    if answer.status in {"not_disclosed", "image_only"} and answer.count is None:
-        return "no_headcount", None
-    return "ambiguous", None
+def _settle_total(supported: dict[str, list[_Quantity]], quotes: dict[str, str], rejected: list[str], includes_contractors: bool) -> None:
+    """Keep a supported total only when it is a total: one that folds in contractors (unflagged) or is only
+    part-time is rejected; one stated only as full-time, or as full- plus part-time numbers, becomes those components."""
+    total = supported.get("total")
+    if total is None:
+        return
+    shifts = {quantity.shift for quantity in total}
+    if not includes_contractors and any(quantity.contractor for quantity in total):
+        rejected.append("total: contractors")
+    elif shifts == {"part"}:
+        rejected.append("total: part_time_only")
+    elif shifts <= {"full", "part"}:
+        for component in ("full_time", "part_time"):
+            parts = [quantity for quantity in total if quantity.shift == _COMPONENT_SHIFT[component]]
+            if parts and component not in supported:
+                supported[component], quotes[component] = parts, quotes["total"]
+    else:
+        return
+    del supported["total"], quotes["total"]
+
+
+def _basis(values: dict[str, int], is_fte: bool, includes_contractors: bool) -> str | None:
+    """The proxy formula the supported components allow (one of `BASES`), or None when none does."""
+    if "total" in values and includes_contractors:
+        return "total_incl_contractors"
+    if "total" in values and is_fte:
+        return "fte"
+    if "full_time" in values and ("part_time" in values or "total" in values):
+        return "full_part"
+    if "total" in values:
+        return "total"
+    return "full_time_only" if "full_time" in values else None
+
+
+def decide_employee_answer(answer: EmployeeAnswer, source_text: str) -> EmployeeDecision:
+    """Guard each claimed component against the text sent, then derive the stored total, basis and status.
+
+    The total is the stated total, else the sum of stated full- and part-time counts; it is never a total
+    less a component. A part-time count with neither a full-time count nor a total supports no basis and
+    is dropped. Open bounds resolve by `_resolve_bound`. Every status is final: the filing is not re-asked.
+    """
+    supported: dict[str, list[_Quantity]] = {}
+    quotes: dict[str, str] = {}
+    rejected: list[str] = []
+    for component in COMPONENTS:
+        value, quote = cast("int | None", getattr(answer, component)), cast("str | None", getattr(answer, f"{component}_quote"))
+        if value is None:
+            continue
+        support = _support(component, value, quote, source_text)
+        if isinstance(support, str):
+            rejected.append(f"{component}: {support}")
+        else:
+            supported[component], quotes[component] = support, str(quote)
+    _settle_total(supported, quotes, rejected, answer.includes_contractors)
+    if "part_time" in supported and not {"full_time", "total"} & supported.keys():
+        del supported["part_time"], quotes["part_time"]
+        rejected.append("part_time: no_full_time_or_total")
+    values = {component: sum(map(_resolve_bound, quantities)) for component, quantities in supported.items()}
+    if not values:
+        status = "unsupported" if rejected else _NULL_STATUS.get(answer.status, "ambiguous")
+        return EmployeeDecision(status, measurement_period=answer.measurement_period, rejected=tuple(rejected))
+    is_fte = answer.is_fte or {quantity.shift for quantity in supported.get("total", [])} == {"fte"}
+    full_part = values["full_time"] + values["part_time"] if {"full_time", "part_time"} <= values.keys() else None
+    return EmployeeDecision(
+        "found",
+        employees_total=values.get("total", full_part),
+        employees_full_time=values.get("full_time"),
+        employees_part_time=values.get("part_time"),
+        basis=_basis(values, is_fte, answer.includes_contractors),
+        measurement_period=answer.measurement_period,
+        quotes=tuple((component, quotes[component]) for component in COMPONENTS if component in quotes),
+        rejected=tuple(rejected),
+    )
 
 
 def _filing_key(stamp: FilingStamp) -> tuple[pd.Timestamp, int, str]:
@@ -384,16 +503,27 @@ def _task_stamp(result: LlmResult) -> FilingStamp:
     return cast(FilingStamp, result.task.meta["stamp"])
 
 
-def _employee_task(sequence: int, ticker: str, stamp: FilingStamp, max_chars: int) -> LlmTask:
-    """Package one owned filing's excerpt as one LLM task; `meta["source_document"]` names the document it came from."""
-    report = stamp.period_of_report
-    report_date = pd.Timestamp(report).normalize() if report is not None else None
-    document = employee_text(stamp.filing)
+def employee_task(
+    sequence: int,
+    ticker: str,
+    document: EmployeeText,
+    max_chars: int,
+    *,
+    filed: pd.Timestamp,
+    accession: str,
+    report_date: pd.Timestamp | None,
+    meta: dict[str, object] | None = None,
+) -> LlmTask:
+    """One LLM task for a filing's document text, within `max_chars`; needs no Filing or network.
+
+    `meta` carries the caller's keys plus `report_date`, `source_text` (the excerpt sent, which the guard
+    checks quotes against) and `source_document`.
+    """
     if not document.text.strip():
-        raise ValueError(f"{ticker} {stamp.accession_number}: filing text unavailable")
+        raise ValueError(f"{ticker} {accession}: filing text unavailable")
     prefix = (
         f"Ticker: {ticker}\nFiscal period end: {report_date.date() if report_date is not None else 'unknown'}\n"
-        f"SEC filing date: {stamp.filed.date()}\nAccession: {stamp.accession_number}\nSource document: {document.source_document}\n"
+        f"SEC filing date: {filed.date()}\nAccession: {accession}\nSource document: {document.source_document}\n"
         "The following is an excerpt, not necessarily the complete 10-K:\n\n"
     )
     if max_chars <= len(prefix):
@@ -403,7 +533,22 @@ def _employee_task(sequence: int, ticker: str, stamp: FilingStamp, max_chars: in
         seq=sequence,
         payload=prefix + source_text,
         schema=EmployeeAnswer,
-        meta={"stamp": stamp, "report_date": report_date, "source_text": source_text, "source_document": document.source_document},
+        meta={**(meta or {}), "report_date": report_date, "source_text": source_text, "source_document": document.source_document},
+    )
+
+
+def _employee_task(sequence: int, ticker: str, stamp: FilingStamp, max_chars: int) -> LlmTask:
+    """Read one owned filing's employee text and package it as one LLM task carrying its stamp."""
+    report = stamp.period_of_report
+    return employee_task(
+        sequence,
+        ticker,
+        employee_text(stamp.filing),
+        max_chars,
+        filed=stamp.filed,
+        accession=str(stamp.accession_number),
+        report_date=pd.Timestamp(report).normalize() if report is not None else None,
+        meta={"stamp": stamp},
     )
 
 
@@ -442,25 +587,30 @@ def _llm_decisions(context: Context, ticker: str, stamps: list[FilingStamp]) -> 
         answer = result.parsed
         if not isinstance(answer, EmployeeAnswer):
             raise TypeError(f"{ticker}: unexpected employee LLM result {type(answer).__name__}")
-        status, count = _decide(answer, str(result.task.meta["source_text"]))
-        decisions.append(_Decision(stamp, "llm", status, count))
+        meta = result.task.meta
+        decided = decide_employee_answer(answer, str(meta["source_text"]))
+        decisions.append(_Decision(stamp, "llm", str(meta["source_document"]), decided))
     return decisions, failed
 
 
 def _manual_decision(stamp: FilingStamp, entry: dict) -> _Decision:
     count = entry.get("employees")
     status = str(entry.get("status") or ("saved" if count is not None else "no_headcount"))
-    return _Decision(stamp, "manual", status, None if count is None else int(count))
+    total = None if count is None else int(count)
+    return _Decision(stamp, "manual", "manual", EmployeeDecision(status, employees_total=total, basis=None if total is None else "total"))
 
 
 def _decide_ticker(context: Context, ticker: str, decisions: list[_Decision]) -> EmployeeTickerResult:
-    """One row per filing date: the last supported count in filing order, else NaN; earlier counts are superseded."""
+    """One row per filing date: the last decision with a component in filing order, else NaN; earlier ones are superseded.
+
+    The frame's `employees` column carries `employees_total`; the outcomes carry every component, the basis and the status.
+    """
     outcomes: list[dict] = []
-    chosen: dict[pd.Timestamp, int] = {}  # filing date -> index of the outcome whose count is kept
+    chosen: dict[pd.Timestamp, int] = {}  # filing date -> index of the outcome whose components are kept
     for decision in sorted(decisions, key=lambda decision: _filing_key(decision.stamp)):
-        stamp = decision.stamp
+        stamp, decided = decision.stamp, decision.decided
         filed = stamp.filed.normalize()
-        if decision.count is not None:
+        if decided.counted:
             if filed in chosen:
                 outcomes[chosen[filed]]["status"] = "superseded"
             chosen[filed] = len(outcomes)
@@ -468,27 +618,43 @@ def _decide_ticker(context: Context, ticker: str, decisions: list[_Decision]) ->
             {
                 "ticker": ticker,
                 "accession_number": str(stamp.accession_number),
+                "cik": stamp.cik,
+                "form": stamp.form,
                 "filing_date": filed,
                 "source": decision.source,
-                "status": decision.status,
-                "count": decision.count,
+                "source_document": decision.source_document,
+                "status": decided.status,
+                "employees_total": decided.employees_total,
+                "employees_full_time": decided.employees_full_time,
+                "employees_part_time": decided.employees_part_time,
+                "basis": decided.basis,
+                "measurement_period": decided.measurement_period,
+                "quotes": decided.quotes,
             }
         )
         context.log.info(
-            "employees decision ticker=%s accession=%s cik=%s as_of=%s source=%s status=%s count=%s",
+            "employees decision ticker=%s accession=%s cik=%s as_of=%s source=%s status=%s total=%s full_time=%s part_time=%s basis=%s rejected=%s",
             ticker,
             stamp.accession_number,
             stamp.cik,
             filed.date(),
             decision.source,
-            decision.status,
-            decision.count,
+            decided.status,
+            decided.employees_total,
+            decided.employees_full_time,
+            decided.employees_part_time,
+            decided.basis,
+            "; ".join(decided.rejected) or "-",
         )
     rows = [
-        {"ticker": ticker, "as_of": filed, "employees": float(outcomes[chosen[filed]]["count"]) if filed in chosen else float("nan")}
+        {"ticker": ticker, "as_of": filed, "employees": _as_float(outcomes[chosen[filed]]["employees_total"]) if filed in chosen else float("nan")}
         for filed in sorted({outcome["filing_date"] for outcome in outcomes})
     ]
     return EmployeeTickerResult(pd.DataFrame(rows, columns=FRAME_COLUMNS), outcomes)
+
+
+def _as_float(value: int | None) -> float:
+    return float("nan") if value is None else float(value)
 
 
 def build_ticker_employees(
@@ -615,14 +781,14 @@ def fetch_fundamentals_employees(
     rows = sum(len(result.frame) for result in successful)
     counted = sum(int(result.frame["employees"].notna().sum()) for result in successful)
     context.log.info(
-        "fundamentals employees: %d/%d ticker(s) read, %d failed; %d filing(s) decided (%d from the manual roster, %d ambiguous) "
+        "fundamentals employees: %d/%d ticker(s) read, %d failed; %d filing(s) decided (%d from the manual roster, %d ambiguous or unsupported) "
         "-> %d count row(s), %d NULL row(s); guard skipped %d filing(s) outside a filing scope for 'fundamentals_employees'",
         len(successful),
         len(cik_map),
         failed,
         len(outcomes),
         sum(outcome["source"] == "manual" for outcome in outcomes),
-        sum(outcome["status"] == "ambiguous" for outcome in outcomes),
+        sum(outcome["status"] in {"ambiguous", "unsupported"} for outcome in outcomes),
         counted,
         rows - counted,
         scope.guard.skipped,

@@ -307,6 +307,22 @@ def test_malformed_amount_cannot_fall_back_to_voting_numbers(amount: str) -> Non
 # ---- `_read_filing` hook ------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("edgar_parsed", [False, True])
+def test_invalid_logical_line_cannot_be_hidden_by_duplicate_grouping(edgar_parsed: bool) -> None:
+    zero = _AFLAC.replace("3,362,515", "0")
+    info = pd.DataFrame([_edgar_line("001055102", "Aflac, Inc.", 145_462_000, shares) for shares in [0, 3_362_515]]) if edgar_parsed else None
+    out = _read(_Report(info, txt=_table(_HEADER, zero, _AFLAC)))
+    assert isinstance(out, f13.ReadFailure) and not out.transient
+    print("\n=== SANITY: a valued zero-share source line cannot disappear into a positive duplicate-CUSIP aggregate. Validated.")
+
+
+def test_invalid_shifted_cusip_cannot_become_a_prior_holding_continuation() -> None:
+    raw = _table(_HEADER, _AFLAC, _AMGEN.replace("031162100", "031162101"))
+    with pytest.raises(ValueError):
+        parse_legacy_information_table(raw)
+    print("\n=== SANITY: invalid named source CUSIP is rejected even after a valid prior holding. Validated.")
+
+
 def test_clean_xml_is_untouched(monkeypatch: pytest.MonkeyPatch) -> None:
     """(a) An XML-era filing never reads the text table nor calls the fallback."""
     for name in ("parse_legacy_information_table", "needs_legacy_fallback"):

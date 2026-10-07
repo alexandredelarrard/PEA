@@ -417,6 +417,83 @@ def test_a_failed_ticker_is_logged_and_the_run_exits_cleanly(monkeypatch):
     )
 
 
+INVALID_JSON = (
+    "ValidationError: 1 validation error for EmployeeAnswer\n  Invalid JSON: expected value at line 1 column 2 "
+    "[type=json_invalid, input_value=' ensembling?', input_type=str]"
+)
+
+
+def test_one_invalid_llm_answer_fails_only_its_own_filing_date(monkeypatch):
+    filings = [Filing(f"good-{year}", f"{year}-03-01", f"We had {10 * year:,} employees.") for year in range(2001, 2031)]
+    filings += [
+        Filing("bad", "2031-03-01", "We had 9,999 employees."),
+        Filing("bad-day-original", "2032-03-01", "We had 7,000 employees."),
+        Filing("bad-day-amendment", "2032-03-01", "We had 7,100 employees.", form="10-K/A"),
+    ]
+    answers: dict[str, mod.EmployeeAnswer | str] = {
+        f"good-{year}": answer(10 * year, f"We had {10 * year:,} employees.") for year in range(2001, 2031)
+    }
+    answers |= {"bad": INVALID_JSON, "bad-day-original": answer(7000, "We had 7,000 employees."), "bad-day-amendment": INVALID_JSON}
+    sent: list[list[str]] = []
+
+    class FakeLLM:
+        """No LLM call: each accession gets its fixture answer, or a failed result carrying the error."""
+
+        def __init__(self, *args, **kwargs):
+            self.tasks = []
+
+        def submit(self, task):
+            self.tasks.append(task)
+
+        def run(self):
+            sent.append([task.meta["stamp"].accession_number for task in self.tasks])
+            results = []
+            for task in self.tasks:
+                reply = answers[task.meta["stamp"].accession_number]
+                failed = isinstance(reply, str)
+                results.append(LlmResult(seq=task.seq, task=task, parsed=None if failed else reply, error=reply if failed else None))
+            return results
+
+    stored: list[pd.DataFrame] = []
+    warnings: list[str] = []
+    context = SimpleNamespace(
+        store=SimpleNamespace(
+            save=lambda table, frame: stored.append(frame),
+            load=lambda *args, **kwargs: pd.concat(stored, ignore_index=True) if stored else None,
+        ),
+        config=OmegaConf.create(
+            {
+                "data_extract": {"fundamentals_workers": 1},
+                "gpt": {"default_api": "open_ai", "llm_model": {"open_ai": "a", "open_ai_cheap": "b"}, "max_chars": {"employees": 60000}},
+            }
+        ),
+        config_dir="configs",
+        ensure_edgar_identity=lambda: None,
+        log=SimpleNamespace(info=lambda *args: None, warning=lambda msg, *args: warnings.append(msg % args if args else msg)),
+    )
+    patch_run(monkeypatch)
+    identity = SimpleNamespace(owns=lambda ticker, cik: True, filing_scope=lambda ticker: FilingScope.roster_only(ticker, "0000000001"))
+    monkeypatch.setattr(mod, "load_identity", lambda *args: identity)
+    monkeypatch.setattr(edgar_driver, "resolve_registrant_filings", lambda *args, **kwargs: filings)
+    monkeypatch.setattr(mod, "LLMExtractor", FakeLLM)
+
+    mod.fetch_fundamentals_employees(context, ["AAA"], 50)
+
+    night_one = pd.concat(stored, ignore_index=True) if stored else pd.DataFrame(columns=mod.FRAME_COLUMNS)
+    assert len(sent[0]) == 33
+    assert night_one["as_of"].tolist() == [pd.Timestamp(f"{year}-03-01") for year in range(2001, 2031)]
+    assert night_one["employees"].tolist() == [float(10 * year) for year in range(2001, 2031)]
+    assert any("bad" in w and "listed again next run" in w for w in warnings), warnings
+
+    mod.fetch_fundamentals_employees(context, ["AAA"], 50)
+
+    assert sorted(sent[1]) == ["bad", "bad-day-amendment", "bad-day-original"]
+    print(
+        "\nSANITY: one invalid-JSON answer among 33 keeps the 30 good counts stored and marks nothing; the failed filing "
+        "(and the other filing sharing its date) is the only work listed, and re-sent, on the next night."
+    )
+
+
 def test_missing_roster_cik_cannot_certify_coverage(monkeypatch):
     context = SimpleNamespace(ensure_edgar_identity=lambda: None)
     monkeypatch.setattr(mod, "load_cik_mapping", lambda *args: pd.DataFrame(columns=["ticker", "cik"]))

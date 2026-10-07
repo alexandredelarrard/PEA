@@ -153,6 +153,25 @@ def test_a_dividend_after_the_last_bar_re_pulls_that_ticker_and_restates_close_t
     print(f"  dividend predates its last bar -> not re-pulled. MO 2024-05-01 close_total {truth['MO'] * 1.02:.4f} -> {stored['MO']:.4f}.")
 
 
+def test_a_re_pull_starts_at_the_earliest_stored_bar_when_history_predates_the_floor(
+    sqlite_store: DataStore, yahoo: FakeYahoo, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recorded = fp.download_ohlcv(_TICKERS, pd.Timestamp("2024-05-01"), pd.Timestamp("2024-06-07"), pause=0.0, auto_adjust=False, actions=False)
+    sqlite_store.save(Tables.prices, recorded)
+    sqlite_store.save(Tables.dividends, fd._extract_dividends(recorded.assign(dividends=0.0)))
+    # Rows stored by an older, longer window: the floor now falls after the first stored bar.
+    monkeypatch.setattr(fp, "document_floor", lambda *a, **k: pd.Timestamp("2024-05-15"))
+    yahoo.calls.clear()
+
+    fp.fetch_prices_and_actions(_context(sqlite_store), _TICKERS, years_history=1, as_of=pd.Timestamp("2024-06-18"), pause=0.0)
+
+    assert [c["tickers"] for c in yahoo.calls][1] == ["MO", "NVDA"]
+    assert pd.Timestamp(yahoo.calls[1]["start"]) == pd.Timestamp("2024-05-01")
+    print("\n=== SANITY CHECK: re-pull below the floor ===")
+    print("  floor 2024-05-15, first stored bar 2024-05-01 -> the post-action re-pull starts 2024-05-01, so no stored bar")
+    print("  keeps the stale adjustment basis.")
+
+
 def test_a_failed_download_saves_nothing_and_logs_the_tickers(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, caplog) -> None:
     monkeypatch.setattr(fp, "download_ohlcv", lambda *a, **k: pd.DataFrame())
     with caplog.at_level("WARNING"):

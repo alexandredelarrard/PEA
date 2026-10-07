@@ -76,7 +76,9 @@ def test_close_split_is_the_split_adjusted_quote(store, ticker, day, split_px, t
         f"{ticker} {day}: close_split {got_split} != {split_px}. If this reads {total_px} "
         f"the two columns are SWAPPED and market cap is on the dividend-adjusted basis."
     )
-    assert got_total == pytest.approx(total_px, abs=0.01)
+    # `total_px` is the Adj Close of the vintage the case was written on; every later ex-date discounts it
+    # further, so the stored value may only be lower, never higher (KO 12.790 -> 12.714 after 2026-09-15).
+    assert total_px * 0.97 <= got_total <= total_px + 0.01, f"{ticker} {day}: close_total {got_total} vs {total_px}"
 
     print(f"\n=== SANITY CHECK: {ticker} {day} basis ===")
     print(f"  close_split {got_split} (== Sharadar `price`, split-adjusted only)")

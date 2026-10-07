@@ -293,6 +293,12 @@ def _restating_events(df_raw: pd.DataFrame) -> pd.DataFrame:
     return pd.concat([_extract_splits(df_raw)[["ticker", "date"]], df_dividends[["ticker", "date"]]], ignore_index=True)
 
 
+def _repull_start(context: Context, floor: pd.Timestamp) -> pd.Timestamp:
+    """The re-pull start: the floor, or the first stored bar when an older, longer window stored history before it."""
+    first, _ = context.store.bounds(Tables.prices)
+    return min(floor, pd.Timestamp(first).normalize()) if first is not None else floor
+
+
 def _price_rows(df_raw: pd.DataFrame) -> pd.DataFrame:
     """The `prices` rows of an `actions=True` response: the action columns dropped, rows with no bar
     dropped (what an `actions=False` response holds), then the synthetic pre-listing prefix trimmed."""
@@ -356,7 +362,10 @@ def fetch_prices_and_actions(
             "%d ticker(s) split or went ex-dividend after their last stored bar; re-pulling their whole window: %s", len(repull), ", ".join(repull)
         )
         df_raw = pd.concat(
-            [df_raw[~df_raw["ticker"].isin(repull)], _download_groups([(floor, until, repull)], chunk_size, pause, "post-action re-pull")],
+            [
+                df_raw[~df_raw["ticker"].isin(repull)],
+                _download_groups([(_repull_start(context, floor), until, repull)], chunk_size, pause, "post-action re-pull"),
+            ],
             ignore_index=True,
         )
 

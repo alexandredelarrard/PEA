@@ -271,6 +271,35 @@ def test_full_and_part_time_components_and_basis():
     print("\nSANITY: FT+PT give a full_part total (DLTR 30,155; MAA 2019 2,513 = benchmark); MAA 2020 keeps its 2,530 total; no FT conversion.")
 
 
+# ADM FY2019 10-K 0000007084-20-000009: the shift is named before the number, in the same phrase.
+ADM_2019 = (
+    "Number of Employees The number of full-time employees of the Company was approximately 38,100 at December 31, 2019 and 31,600 at "
+    "December 31, 2018 . The net increase in the number of full-time employees is primarily related to acquisitions."
+)
+
+
+def test_shift_named_before_the_number_is_a_full_time_count():
+    quote = "The number of full-time employees of the Company was approximately 38,100 at December 31, 2019"
+    # The model's total is a full-time count, so it is recorded as full-time only, never as a total.
+    assert components(decide(ADM_2019, total=38100, quote=quote)) == (None, 38100, None, "full_time_only", "found")
+    assert components(decide(ADM_2019, full_time=38100, quote=quote)) == (None, 38100, None, "full_time_only", "found")
+    # A shift that labels an earlier number does not label the next one (C 2001): the sum stays a total.
+    c_2001 = (
+        "the Company had approximately 138,000 full-time and 9,000 part-time employees in the United States and "
+        "approximately 95,000 employees outside of the United States."
+    )
+    assert components(decide(c_2001, total=242000)) == (242000, None, None, "total", "found")
+    # A combined "full- and part-time" label before the number stays a total.
+    assert components(decide("The number of full- and part-time employees was 5,400 at year end.", total=5400)) == (
+        5400,
+        None,
+        None,
+        "total",
+        "found",
+    )
+    print("\nSANITY: ADM 2019 'number of full-time employees ... was approximately 38,100' is full_time_only 38,100, not a 38,100 total.")
+
+
 # DLTR FY2020 10-K 0000935703-21-000014 (Human Capital table).
 DLTR_2021 = (
     "for 11 Table of Contents progress on key DEI objectives. As of January 30, 2021, we employed more than 199,300 associates, as follows: "

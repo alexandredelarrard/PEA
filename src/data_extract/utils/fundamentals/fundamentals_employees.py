@@ -77,6 +77,9 @@ _ROW_LABEL_RE = re.compile(
     r"\b(Total|TOTAL|Full|FULL|Part|PART)(?:[\s-]*(?:time|Time|TIME))?\b"
     r"(?:(?!\b(?:Total|TOTAL|Full|FULL|Part|PART)\b)[^\d]){0,40}(?:[\d,.]+(?:\s+|$))*$"
 )
+# Prose may label the number before it, in its own phrase: "the number of full-time employees ... was 38,100". Only a
+# "number of" label counts: in "N1 part-time employees in the US and N2 employees outside", N2 has no shift.
+_SHIFT_BEFORE_RE = re.compile(r"\bnumber\s+of\s+(full|part)[\s-]*time\s+(?:employees|associates|staff|workers|team\s+members|people|persons)\b")
 _FULL_AND_PART_RE = re.compile(r"full[\s-]*(?:time\s*)?(?:and|or|&|/)\s*part", re.I)
 _FTE_AFTER_RE = re.compile(r"^\W*(?:[a-z]+\s+){0,2}?full[\s-]*time[\s-]*equivalent", re.I)
 _MONTH_RE = re.compile(r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s*$", re.I)
@@ -346,6 +349,9 @@ def _shift(before: str, after: str) -> str | None:
         return None
     if label := _SHIFT_AFTER_RE.match(after) or row:
         return label.group(1).casefold()
+    phrase = _PHRASE_STOP_RE.split(before)[-1]
+    if not _FULL_AND_PART_RE.search(phrase) and (label := _SHIFT_BEFORE_RE.search(phrase)):
+        return label.group(1)
     return None
 
 

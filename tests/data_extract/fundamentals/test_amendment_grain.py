@@ -181,3 +181,18 @@ def test_a_10q_whose_header_states_the_prior_year_end_lands_on_its_own_quarter()
     print(history[["as_of", "fiscal_end", FIELD]].to_string(index=False))
     print("  the 2024-05-01 10-Q states 2023-12-31 but tags a quarter ending 2024-03-31 -> its row is fiscal_end")
     print("  2024-03-31 (TTM 1400), and the 2023-12-31 row is not repeated. Validated.")
+
+
+def test_a_duration_ending_after_the_filing_date_never_moves_the_period():
+    """A forward-tagged context (FDS's 2012-07-10 10-Q carries a quarter ending 2012-08-31, GD's 2011-11-01
+    10-Q one ending 2011-12-31) is not the filing's period: the header stands when no duration that has
+    already ended contradicts it."""
+    forward = dict(_originals()[2])
+    forward.update({"accession_number": "orig-Q3", "period_start": "2023-10-01", "period_end": "2023-12-31", "value": 0.0})
+    history = _history([*_originals()[:3], forward])
+
+    q3 = history[history["as_of"] == pd.Timestamp("2023-11-01")]
+    assert pd.Timestamp(q3["fiscal_end"].iloc[0]) == pd.Timestamp("2023-09-30"), q3[["as_of", "fiscal_end"]]
+    print("\n=== SANITY CHECK: forward-tagged duration ===")
+    print(history[["as_of", "fiscal_end"]].to_string(index=False))
+    print("  the 2023-11-01 10-Q's extra quarter ending 2023-12-31 is after its filing date -> fiscal_end stays 2023-09-30.")

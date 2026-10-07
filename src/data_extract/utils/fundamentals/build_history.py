@@ -681,11 +681,12 @@ def _own_period_of_report(facts: pd.DataFrame) -> pd.DataFrame:
     """A filing whose quarterly or annual duration ends after its stated `period_of_report` takes that end.
 
     The SEC header's period is filer-typed and can name the prior fiscal year end on a 10-Q; the filing's own
-    tagged duration is the period it reports.
+    tagged duration is the period it reports. Only durations that ended by the filing date count: a
+    forward-tagged context is not the period.
     """
     if "duration_type" not in facts.columns:
         return facts
-    own = facts["duration_type"].isin(OWN_PERIOD_DURATIONS)
+    own = facts["duration_type"].isin(OWN_PERIOD_DURATIONS) & (facts["period_end"] <= facts["filing_date"])
     latest = facts["period_end"].where(own).groupby(facts["accession_number"]).transform("max")
     stale = latest > facts["period_of_report"] + pd.Timedelta(days=STATED_PERIOD_TOLERANCE_DAYS)
     facts.loc[stale, "period_of_report"] = latest[stale]

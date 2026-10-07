@@ -210,10 +210,9 @@ After this migration is reviewed:
 # extraction data
 - short interest : extract also the Lit exchange NYSE /NASDAQ, from 2009 for all (now is 2018)
 - insiders trading : sec form 3/4/5 -> sec since 2003, zip since Q1 2006 -> take sec. Done for the latest ones. So should be quick + add the Tickers fixed in gov
-- earnings surprises starts 1999-08, but empty till ~2003
+- earnings surprises starts 1999-08, but empty till ~2002
 - financial notes (text & nums) 2009 from sec XBLR (zip), but possible directly from fillings (edgar)
 - fix volume to be adjusted to spinoffs in price
-- fine tune def 14 data extraction
 
 # other data checks
 - check data is consistent over time, even for latest 2026 month ?

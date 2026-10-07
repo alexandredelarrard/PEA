@@ -93,6 +93,7 @@ def test_years_history_is_an_argument_not_a_config_read(monkeypatch):
 # --------------------------------------------------------------------------- #
 # 3. opt-in live pull (FRED + yfinance)                                        #
 # --------------------------------------------------------------------------- #
+@pytest.mark.live
 @pytest.mark.skipif(not os.getenv("FRED_API_KEY"), reason="needs FRED_API_KEY (and network) for the live pull")
 def test_real_pull_ranges_and_fx_convention():
     ctx = SimpleNamespace(log=SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None))

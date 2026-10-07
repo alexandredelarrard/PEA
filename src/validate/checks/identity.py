@@ -119,7 +119,7 @@ def _outside_windows(context: Context, spec: FilerTable, ticker: str, filers: li
     if not filers or normalise_ticker(ticker) not in windows:
         return []
     rows = context.store.load(
-        spec.table, columns=["ticker", spec.cik_col, spec.date_col, spec.key_col], where={"ticker": ticker, spec.cik_col: filers}
+        spec.table, columns=["ticker", spec.cik_col, spec.date_col, spec.key_col], where={"ticker": ticker, spec.cik_col: filers}, optional=True
     )
     if rows is None or rows.empty:
         return []
@@ -142,7 +142,7 @@ def _foreign_in_table(
         foreign = filers[judged & ~own].tolist()
         if not foreign:
             continue
-        rows = context.store.load(spec.table, columns=columns, where={"ticker": ticker, spec.cik_col: foreign})
+        rows = context.store.load(spec.table, columns=columns, where={"ticker": ticker, spec.cik_col: foreign}, optional=True)
         if rows is not None and not rows.empty:
             records += removal_records(spec.table.name, rows, spec)
     return records

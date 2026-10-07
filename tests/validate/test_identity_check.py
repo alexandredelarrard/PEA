@@ -275,6 +275,22 @@ def test_a_clean_lineage_and_clean_tables_pass(sqlite_store):
     print("  OK: no foreign rows and no invariant breach -> pass (AC-033 shape)")
 
 
+def test_a_filer_whose_only_rows_are_empty_markers_is_not_a_removal(sqlite_store):
+    """`distinct` sees an empty-filing marker but `load` hides it: the re-read of such a filer is empty, not an error."""
+    lineage = _store_lineage()
+    _seed_store(sqlite_store, lineage)
+    sqlite_store.delete(Tables.sec_8k, where={"cik": [AB, TMO_USA]})
+    marker = {"ticker": "REG", "accession_number": "succ-vote", "proposal_seq": 0.0, "cik": SUCC, "filing_date": pd.Timestamp("2016-05-01")}
+    sqlite_store.save(Tables.sec_8k_votes, pd.DataFrame([marker]))
+
+    report = check_identity(_context(sqlite_store))
+
+    assert report.removals.empty and report.result.status == "pass", report.result.summary()
+    print("\n=== SANITY CHECK: marker-only filer ===")
+    print(f"  {report.result.summary()}")
+    print("  OK: REG's lone sec_8k_votes marker under its own CIK is read as no rows, not a TableEmptyError")
+
+
 def test_lineage_invariant_breaches_are_findings(sqlite_store):
     """AC-012, sentinel open start, one entity per CIK, no window overlap inside an entity beyond the margin."""
     lineage = pd.DataFrame(

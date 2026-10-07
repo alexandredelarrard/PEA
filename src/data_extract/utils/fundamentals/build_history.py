@@ -638,6 +638,12 @@ PERIOD_COLUMNS: tuple[str, ...] = (
 )
 
 
+#: Duration types that are a filing's own reporting period (a 10-Q's quarter, a 10-K's year).
+OWN_PERIOD_DURATIONS = ("quarterly", "annual")
+#: Days a filing's own duration may end after its stated period of report before the header is taken as wrong.
+STATED_PERIOD_TOLERANCE_DAYS = 7
+
+
 def _period_projection(frame: pd.DataFrame) -> pd.DataFrame:
     """`frame` reduced to `PERIOD_COLUMNS`, with string columns cast to object (cheap per-slice takes, unlike Arrow)."""
     out = frame[[c for c in PERIOD_COLUMNS if c in frame.columns]].copy()
@@ -668,7 +674,22 @@ def _normalise_facts(facts, catalogue: Catalogue) -> pd.DataFrame:
     out["is_amendment"] = out["is_amendment"].fillna(False).astype(bool)
     if "period_of_report" in out and out["period_of_report"].isna().all():
         out["period_of_report"] = out["period_end"]
-    return out.sort_values("filing_date")
+    return _own_period_of_report(out).sort_values("filing_date")
+
+
+def _own_period_of_report(facts: pd.DataFrame) -> pd.DataFrame:
+    """A filing whose quarterly or annual duration ends after its stated `period_of_report` takes that end.
+
+    The SEC header's period is filer-typed and can name the prior fiscal year end on a 10-Q; the filing's own
+    tagged duration is the period it reports.
+    """
+    if "duration_type" not in facts.columns:
+        return facts
+    own = facts["duration_type"].isin(OWN_PERIOD_DURATIONS)
+    latest = facts["period_end"].where(own).groupby(facts["accession_number"]).transform("max")
+    stale = latest > facts["period_of_report"] + pd.Timedelta(days=STATED_PERIOD_TOLERANCE_DAYS)
+    facts.loc[stale, "period_of_report"] = latest[stale]
+    return facts
 
 
 def _companyfacts_rows(concept: str, payload: dict, field: str) -> list[dict]:

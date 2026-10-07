@@ -151,3 +151,33 @@ if __name__ == "__main__":
     import sys
 
     sys.exit(pytest.main([__file__, "-v", "-s"]))
+
+
+def test_a_10q_whose_header_states_the_prior_year_end_lands_on_its_own_quarter():
+    """A filer-typed SEC header can name the prior fiscal year end as a 10-Q's period of report (MRVL's
+    Q1 FY2019 10-Q states 2018-02-03, VTRS's Q1 2012 10-Q states 2011-03-30). The filing's own quarterly
+    duration is the period; trusting the header re-opened the year-end row with the new quarter's values."""
+    q1 = dict(_originals()[0])
+    q1.update(
+        {
+            "accession_number": "q1-2024",
+            "fiscal_year": 2024,
+            "filing_date": "2024-05-01",
+            "period_of_report": "2023-12-31",
+            "period_start": "2024-01-01",
+            "period_end": "2024-03-31",
+            "value": 500.0,
+        }
+    )
+    history = _history([*_originals(), q1])
+
+    repeats = history.groupby("fiscal_end").size()
+    assert (repeats == 1).all(), f"repeated fiscal_end: {repeats[repeats > 1].to_dict()}"
+    last = history.iloc[-1]
+    assert pd.Timestamp(last["fiscal_end"]) == pd.Timestamp("2024-03-31")
+    assert last[FIELD] == 1400.0
+
+    print("\n=== SANITY CHECK: header period earlier than the filing's own quarter ===")
+    print(history[["as_of", "fiscal_end", FIELD]].to_string(index=False))
+    print("  the 2024-05-01 10-Q states 2023-12-31 but tags a quarter ending 2024-03-31 -> its row is fiscal_end")
+    print("  2024-03-31 (TTM 1400), and the 2023-12-31 row is not repeated. Validated.")

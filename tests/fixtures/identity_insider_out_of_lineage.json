@@ -1,0 +1,1022 @@
+[
+ {
+  "ticker": "EA",
+  "issuer_cik": "0000712515",
+  "issuer_name": "ELECTRONIC ARTS INC.",
+  "rows": "6161",
+  "ps": "1633",
+  "first": "2011-02-01",
+  "last": "2026-03-16",
+  "ok": "False"
+ },
+ {
+  "ticker": "DD",
+  "issuer_cik": "0000030554",
+  "issuer_name": "DUPONT E I DE NEMOURS & CO",
+  "rows": "3422",
+  "ps": "222",
+  "first": "2004-12-03",
+  "last": "2017-08-31",
+  "ok": "False"
+ },
+ {
+  "ticker": "CB",
+  "issuer_cik": "0000020171",
+  "issuer_name": "CHUBB CORP",
+  "rows": "3231",
+  "ps": "860",
+  "first": "2004-05-07",
+  "last": "2016-01-14",
+  "ok": "False"
+ },
+ {
+  "ticker": "JCI",
+  "issuer_cik": "0000053669",
+  "issuer_name": "JOHNSON CONTROLS INC",
+  "rows": "2190",
+  "ps": "168",
+  "first": "2004-01-02",
+  "last": "2016-09-02",
+  "ok": "False"
+ },
+ {
+  "ticker": "IR",
+  "issuer_cik": "0001466258",
+  "issuer_name": "Ingersoll-Rand plc",
+  "rows": "2075",
+  "ps": "323",
+  "first": "2004-07-30",
+  "last": "2020-02-20",
+  "ok": "False"
+ },
+ {
+  "ticker": "WTW",
+  "issuer_cik": "0000105319",
+  "issuer_name": "WEIGHT WATCHERS INTERNATIONAL INC",
+  "rows": "2046",
+  "ps": "314",
+  "first": "2005-09-15",
+  "last": "2019-04-15",
+  "ok": "False"
+ },
+ {
+  "ticker": "MRVL",
+  "issuer_cik": "0001058057",
+  "issuer_name": "MARVELL TECHNOLOGY GROUP LTD",
+  "rows": "2026",
+  "ps": "256",
+  "first": "2006-01-05",
+  "last": "2021-04-16",
+  "ok": "False"
+ },
+ {
+  "ticker": "COHR",
+  "issuer_cik": "0000021510",
+  "issuer_name": "COHERENT INC",
+  "rows": "2017",
+  "ps": "384",
+  "first": "2001-10-21",
+  "last": "2022-07-01",
+  "ok": "False"
+ },
+ {
+  "ticker": "DOW",
+  "issuer_cik": "0000029915",
+  "issuer_name": "DOW CHEMICAL CO /DE/",
+  "rows": "1992",
+  "ps": "140",
+  "first": "2005-12-28",
+  "last": "2017-08-31",
+  "ok": "False"
+ },
+ {
+  "ticker": "AVB",
+  "issuer_cik": "0000915912",
+  "issuer_name": "AVALONBAY COMMUNITIES INC",
+  "rows": "1788",
+  "ps": "368",
+  "first": "2010-12-03",
+  "last": "2026-03-02",
+  "ok": "False"
+ },
+ {
+  "ticker": "STE",
+  "issuer_cik": "0000815065",
+  "issuer_name": "STERIS CORP",
+  "rows": "1379",
+  "ps": "244",
+  "first": "2006-01-03",
+  "last": "2015-11-02",
+  "ok": "False"
+ },
+ {
+  "ticker": "PLD",
+  "issuer_cik": "0000899881",
+  "issuer_name": "PROLOGIS",
+  "rows": "1270",
+  "ps": "68",
+  "first": "1999-09-15",
+  "last": "2011-06-03",
+  "ok": "False"
+ },
+ {
+  "ticker": "COR",
+  "issuer_cik": "0001490892",
+  "issuer_name": "CoreSite Realty Corp",
+  "rows": "1207",
+  "ps": "481",
+  "first": "2010-09-28",
+  "last": "2021-12-28",
+  "ok": "False"
+ },
+ {
+  "ticker": "CEG",
+  "issuer_cik": "0001004440",
+  "issuer_name": "CONSTELLATION ENERGY GROUP INC",
+  "rows": "1111",
+  "ps": "514",
+  "first": "2001-07-25",
+  "last": "2012-03-12",
+  "ok": "False"
+ },
+ {
+  "ticker": "AVGO",
+  "issuer_cik": "0001441634",
+  "issuer_name": "Avago Technologies LTD",
+  "rows": "1053",
+  "ps": "482",
+  "first": "2009-08-05",
+  "last": "2016-02-01",
+  "ok": "False"
+ },
+ {
+  "ticker": "ACN",
+  "issuer_cik": "0001134538",
+  "issuer_name": "ACCENTURE LTD",
+  "rows": "973",
+  "ps": "375",
+  "first": "2006-01-10",
+  "last": "2009-08-05",
+  "ok": "False"
+ },
+ {
+  "ticker": "DOC",
+  "issuer_cik": "0001574540",
+  "issuer_name": "Physicians Realty Trust",
+  "rows": "881",
+  "ps": "91",
+  "first": "2013-07-19",
+  "last": "2024-03-01",
+  "ok": "False"
+ },
+ {
+  "ticker": "DELL",
+  "issuer_cik": "0000826083",
+  "issuer_name": "DELL INC",
+  "rows": "873",
+  "ps": "187",
+  "first": "2005-03-03",
+  "last": "2023-12-20",
+  "ok": "False"
+ },
+ {
+  "ticker": "ECHO",
+  "issuer_cik": "0001426945",
+  "issuer_name": "Echo Global Logistics, Inc.",
+  "rows": "772",
+  "ps": "201",
+  "first": "2009-11-06",
+  "last": "2021-11-23",
+  "ok": "False"
+ },
+ {
+  "ticker": "VMC",
+  "issuer_cik": "0000103973",
+  "issuer_name": "VULCAN MATERIALS CO",
+  "rows": "649",
+  "ps": "224",
+  "first": "2005-10-19",
+  "last": "2007-11-05",
+  "ok": "False"
+ },
+ {
+  "ticker": "DLR",
+  "issuer_cik": "0001494877",
+  "issuer_name": "DIGITAL REALTY TRUST, L.P.",
+  "rows": "547",
+  "ps": "2",
+  "first": "2019-04-18",
+  "last": "2026-03-13",
+  "ok": "False"
+ },
+ {
+  "ticker": "TPL",
+  "issuer_cik": "0000097517",
+  "issuer_name": "TEXAS PACIFIC LAND TRUST",
+  "rows": "505",
+  "ps": "420",
+  "first": "2008-10-06",
+  "last": "2021-01-08",
+  "ok": "False"
+ },
+ {
+  "ticker": "MNST",
+  "issuer_cik": "0001020416",
+  "issuer_name": "MONSTER WORLDWIDE INC",
+  "rows": "497",
+  "ps": "330",
+  "first": "2006-01-03",
+  "last": "2008-11-04",
+  "ok": "False"
+ },
+ {
+  "ticker": "IR",
+  "issuer_cik": "0001160497",
+  "issuer_name": "INGERSOLL RAND CO LTD",
+  "rows": "479",
+  "ps": "35",
+  "first": "2005-12-07",
+  "last": "2009-06-03",
+  "ok": "False"
+ },
+ {
+  "ticker": "BR",
+  "issuer_cik": "0000833320",
+  "issuer_name": "BURLINGTON RESOURCES INC",
+  "rows": "450",
+  "ps": "147",
+  "first": "2005-12-23",
+  "last": "2006-03-31",
+  "ok": "False"
+ },
+ {
+  "ticker": "BKR",
+  "issuer_cik": "0000009263",
+  "issuer_name": "BAKER MICHAEL CORP",
+  "rows": "405",
+  "ps": "155",
+  "first": "2005-12-05",
+  "last": "2010-12-01",
+  "ok": "False"
+ },
+ {
+  "ticker": "PTC",
+  "issuer_cik": "0000708821",
+  "issuer_name": "PAR TECHNOLOGY CORP",
+  "rows": "380",
+  "ps": "140",
+  "first": "2002-01-02",
+  "last": "2011-03-29",
+  "ok": "False"
+ },
+ {
+  "ticker": "GEN",
+  "issuer_cik": "0001351051",
+  "issuer_name": "Genesis Healthcare, Inc.",
+  "rows": "371",
+  "ps": "239",
+  "first": "2015-02-02",
+  "last": "2021-05-15",
+  "ok": "False"
+ },
+ {
+  "ticker": "HLT",
+  "issuer_cik": "0000047580",
+  "issuer_name": "HILTON HOTELS CORP",
+  "rows": "345",
+  "ps": "36",
+  "first": "2005-11-10",
+  "last": "2007-10-24",
+  "ok": "False"
+ },
+ {
+  "ticker": "TT",
+  "issuer_cik": "0000836102",
+  "issuer_name": "TRANE INC.",
+  "rows": "335",
+  "ps": "97",
+  "first": "2001-12-20",
+  "last": "2008-06-05",
+  "ok": "False"
+ },
+ {
+  "ticker": "MRK",
+  "issuer_cik": "0000064978",
+  "issuer_name": "MERCK SHARP & DOHME CORP.",
+  "rows": "317",
+  "ps": "0",
+  "first": "2009-10-29",
+  "last": "2009-11-03",
+  "ok": "False"
+ },
+ {
+  "ticker": "ECHO",
+  "issuer_cik": "0000721773",
+  "issuer_name": "ELECTRONIC CLEARING HOUSE INC",
+  "rows": "305",
+  "ps": "172",
+  "first": "2004-01-08",
+  "last": "2008-01-17",
+  "ok": "False"
+ },
+ {
+  "ticker": "APP",
+  "issuer_cik": "0001336545",
+  "issuer_name": "AMERICAN APPAREL, INC",
+  "rows": "292",
+  "ps": "91",
+  "first": "2008-04-17",
+  "last": "2015-09-30",
+  "ok": "False"
+ },
+ {
+  "ticker": "GM",
+  "issuer_cik": "0000040730",
+  "issuer_name": "GENERAL MOTORS CORP",
+  "rows": "291",
+  "ps": "17",
+  "first": "2005-12-31",
+  "last": "2009-06-05",
+  "ok": "False"
+ },
+ {
+  "ticker": "LIN",
+  "issuer_cik": "0001575571",
+  "issuer_name": "LIN Media LLC",
+  "rows": "283",
+  "ps": "118",
+  "first": "2013-07-30",
+  "last": "2014-12-19",
+  "ok": "False"
+ },
+ {
+  "ticker": "GEN",
+  "issuer_cik": "0001126294",
+  "issuer_name": "GenOn Energy, Inc.",
+  "rows": "261",
+  "ps": "4",
+  "first": "2010-12-03",
+  "last": "2012-12-14",
+  "ok": "False"
+ },
+ {
+  "ticker": "KEYS",
+  "issuer_cik": "0001012393",
+  "issuer_name": "KEYSTONE AUTOMOTIVE INDUSTRIES INC",
+  "rows": "258",
+  "ps": "32",
+  "first": "2006-01-30",
+  "last": "2007-10-12",
+  "ok": "False"
+ },
+ {
+  "ticker": "ES",
+  "issuer_cik": "0001393744",
+  "issuer_name": "EnergySolutions, Inc.",
+  "rows": "257",
+  "ps": "53",
+  "first": "2007-11-14",
+  "last": "2013-05-24",
+  "ok": "False"
+ },
+ {
+  "ticker": "DUK",
+  "issuer_cik": "0000030371",
+  "issuer_name": "Duke Power CO LLC",
+  "rows": "255",
+  "ps": "0",
+  "first": "2006-02-28",
+  "last": "2006-04-03",
+  "ok": "False"
+ },
+ {
+  "ticker": "EXE",
+  "issuer_cik": "0001075736",
+  "issuer_name": "Crexendo, Inc.",
+  "rows": "236",
+  "ps": "170",
+  "first": "2011-07-01",
+  "last": "2015-05-08",
+  "ok": "False"
+ },
+ {
+  "ticker": "BKR",
+  "issuer_cik": "0000009263",
+  "issuer_name": "MICHAEL BAKER CORP",
+  "rows": "235",
+  "ps": "0",
+  "first": "2010-05-27",
+  "last": "2013-10-11",
+  "ok": "False"
+ },
+ {
+  "ticker": "DLR",
+  "issuer_cik": "0001494877",
+  "issuer_name": "Digital Realty Trust, L.P.",
+  "rows": "231",
+  "ps": "0",
+  "first": "2015-04-20",
+  "last": "2019-05-13",
+  "ok": "False"
+ },
+ {
+  "ticker": "COIN",
+  "issuer_cik": "0001366340",
+  "issuer_name": "Converted Organics Inc.",
+  "rows": "207",
+  "ps": "156",
+  "first": "2007-03-07",
+  "last": "2013-06-03",
+  "ok": "False"
+ },
+ {
+  "ticker": "MRNA",
+  "issuer_cik": "0000737207",
+  "issuer_name": "Marina Biotech, Inc.",
+  "rows": "196",
+  "ps": "96",
+  "first": "2009-09-30",
+  "last": "2018-10-01",
+  "ok": "False"
+ },
+ {
+  "ticker": "FERG",
+  "issuer_cik": "0001832433",
+  "issuer_name": "Ferguson plc",
+  "rows": "163",
+  "ps": "83",
+  "first": "2023-10-02",
+  "last": "2024-06-18",
+  "ok": "False"
+ },
+ {
+  "ticker": "PCG",
+  "issuer_cik": "0000075488",
+  "issuer_name": "PACIFIC GAS & ELECTRIC Co",
+  "rows": "149",
+  "ps": "149",
+  "first": "2022-02-10",
+  "last": "2023-02-02",
+  "ok": "False"
+ },
+ {
+  "ticker": "PSA",
+  "issuer_cik": "0000318380",
+  "issuer_name": "PUBLIC STORAGE INC /CA",
+  "rows": "145",
+  "ps": "52",
+  "first": "2005-03-31",
+  "last": "2007-07-26",
+  "ok": "False"
+ },
+ {
+  "ticker": "COR",
+  "issuer_cik": "0000849636",
+  "issuer_name": "CORTEX PHARMACEUTICALS INC/DE/",
+  "rows": "142",
+  "ps": "36",
+  "first": "2000-09-05",
+  "last": "2012-08-10",
+  "ok": "False"
+ },
+ {
+  "ticker": "KMI",
+  "issuer_cik": "0000054502",
+  "issuer_name": "KINDER MORGAN INC",
+  "rows": "126",
+  "ps": "16",
+  "first": "2005-10-04",
+  "last": "2007-05-30",
+  "ok": "False"
+ },
+ {
+  "ticker": "DUK",
+  "issuer_cik": "0000030371",
+  "issuer_name": "DUKE ENERGY CORP",
+  "rows": "116",
+  "ps": "0",
+  "first": "2005-12-22",
+  "last": "2006-03-21",
+  "ok": "False"
+ },
+ {
+  "ticker": "LIN",
+  "issuer_cik": "0001023052",
+  "issuer_name": "LINENS N THINGS INC",
+  "rows": "113",
+  "ps": "0",
+  "first": "2006-02-10",
+  "last": "2006-02-14",
+  "ok": "False"
+ },
+ {
+  "ticker": "TKO",
+  "issuer_cik": "0001094084",
+  "issuer_name": "TELKONET INC",
+  "rows": "109",
+  "ps": "47",
+  "first": "2000-10-15",
+  "last": "2008-12-31",
+  "ok": "False"
+ },
+ {
+  "ticker": "AXON",
+  "issuer_cik": "0001636050",
+  "issuer_name": "Axovant Sciences Ltd.",
+  "rows": "80",
+  "ps": "30",
+  "first": "2015-06-22",
+  "last": "2019-03-18",
+  "ok": "False"
+ },
+ {
+  "ticker": "MRK",
+  "issuer_cik": "0000064978",
+  "issuer_name": "MERCK & CO INC",
+  "rows": "69",
+  "ps": "2",
+  "first": "2002-09-24",
+  "last": "2009-10-27",
+  "ok": "False"
+ },
+ {
+  "ticker": "DOC",
+  "issuer_cik": "0000771252",
+  "issuer_name": "DIGITAL ANGEL CORP",
+  "rows": "66",
+  "ps": "3",
+  "first": "2006-03-14",
+  "last": "2007-12-28",
+  "ok": "False"
+ },
+ {
+  "ticker": "ANET",
+  "issuer_cik": "0001017172",
+  "issuer_name": "Authorize.Net Holdings, Inc.",
+  "rows": "66",
+  "ps": "6",
+  "first": "2007-05-04",
+  "last": "2007-11-01",
+  "ok": "False"
+ },
+ {
+  "ticker": "BLK",
+  "issuer_cik": "0001060021",
+  "issuer_name": "BLACKROCK INC /NY",
+  "rows": "60",
+  "ps": "11",
+  "first": "2005-11-09",
+  "last": "2006-09-14",
+  "ok": "False"
+ },
+ {
+  "ticker": "BNY",
+  "issuer_cik": "0001137390",
+  "issuer_name": "BLACKROCK NEW YORK MUNICIPAL INCOME TRUST",
+  "rows": "57",
+  "ps": "46",
+  "first": "2009-01-22",
+  "last": "2026-02-09",
+  "ok": "False"
+ },
+ {
+  "ticker": "MRNA",
+  "issuer_cik": "0000737207",
+  "issuer_name": "MDRNA, Inc.",
+  "rows": "49",
+  "ps": "9",
+  "first": "2008-06-10",
+  "last": "2009-08-11",
+  "ok": "False"
+ },
+ {
+  "ticker": "MSI",
+  "issuer_cik": "0000093631",
+  "issuer_name": "MOVIE STAR INC /NY/",
+  "rows": "34",
+  "ps": "2",
+  "first": "2006-01-06",
+  "last": "2008-01-07",
+  "ok": "False"
+ },
+ {
+  "ticker": "APO",
+  "issuer_cik": "0001065645",
+  "issuer_name": "AMERICAN COMMUNITY PROPERTIES TRUST",
+  "rows": "33",
+  "ps": "7",
+  "first": "2006-08-28",
+  "last": "2009-12-30",
+  "ok": "False"
+ },
+ {
+  "ticker": "MRVL",
+  "issuer_cik": "0000105805",
+  "issuer_name": "WEST FLORIDA NATURAL GAS CO",
+  "rows": "28",
+  "ps": "28",
+  "first": "2013-04-03",
+  "last": "2013-04-04",
+  "ok": "False"
+ },
+ {
+  "ticker": "WM",
+  "issuer_cik": "0000933136",
+  "issuer_name": "WASHINGTON MUTUAL, INC",
+  "rows": "26",
+  "ps": "2",
+  "first": "2008-04-21",
+  "last": "2008-09-15",
+  "ok": "False"
+ },
+ {
+  "ticker": "CBRE",
+  "issuer_cik": "0001124074",
+  "issuer_name": "Calibre Energy, Inc.",
+  "rows": "18",
+  "ps": "1",
+  "first": "2006-04-10",
+  "last": "2007-07-23",
+  "ok": "False"
+ },
+ {
+  "ticker": "AKAM",
+  "issuer_cik": "0000108622",
+  "issuer_name": "WTC CORP",
+  "rows": "16",
+  "ps": "12",
+  "first": "2006-05-05",
+  "last": "2006-05-08",
+  "ok": "False"
+ },
+ {
+  "ticker": "AXP",
+  "issuer_cik": "0001387156",
+  "issuer_name": "AIRXPANDERS INC",
+  "rows": "15",
+  "ps": "4",
+  "first": "2018-02-13",
+  "last": "2018-09-03",
+  "ok": "False"
+ },
+ {
+  "ticker": "TFC",
+  "issuer_cik": "0000836267",
+  "issuer_name": "TAIWAN GREATER CHINA FUND",
+  "rows": "14",
+  "ps": "14",
+  "first": "2005-12-29",
+  "last": "2008-10-23",
+  "ok": "False"
+ },
+ {
+  "ticker": "ORCL",
+  "issuer_cik": "0000777676",
+  "issuer_name": "ORACLE CORP /DE/",
+  "rows": "13",
+  "ps": "3",
+  "first": "2005-09-30",
+  "last": "2006-01-26",
+  "ok": "False"
+ },
+ {
+  "ticker": "TPL",
+  "issuer_cik": "0000919567",
+  "issuer_name": "RENN Fund, Inc.",
+  "rows": "12",
+  "ps": "12",
+  "first": "2020-09-28",
+  "last": "2020-11-27",
+  "ok": "False"
+ },
+ {
+  "ticker": "COR",
+  "issuer_cik": "0001594337",
+  "issuer_name": "Corium International, Inc.",
+  "rows": "8",
+  "ps": "2",
+  "first": "2015-12-08",
+  "last": "2016-05-16",
+  "ok": "False"
+ },
+ {
+  "ticker": "F",
+  "issuer_cik": "0000712537",
+  "issuer_name": "FIRST COMMONWEALTH FINANCIAL CORP /PA/",
+  "rows": "7",
+  "ps": "1",
+  "first": "2018-04-24",
+  "last": "2019-04-23",
+  "ok": "False"
+ },
+ {
+  "ticker": "GEN",
+  "issuer_cik": "0001342287",
+  "issuer_name": "General Finance CORP",
+  "rows": "7",
+  "ps": "3",
+  "first": "2006-09-10",
+  "last": "2009-03-16",
+  "ok": "False"
+ },
+ {
+  "ticker": "OKE",
+  "issuer_cik": "0000074154",
+  "issuer_name": "ONEOK INC",
+  "rows": "7",
+  "ps": "0",
+  "first": "2012-01-01",
+  "last": "2017-06-30",
+  "ok": "False"
+ },
+ {
+  "ticker": "AME",
+  "issuer_cik": "0001411579",
+  "issuer_name": "AMC ENTERTAINMENT HOLDINGS, INC.",
+  "rows": "5",
+  "ps": "1",
+  "first": "2021-11-01",
+  "last": "2021-11-01",
+  "ok": "False"
+ },
+ {
+  "ticker": "O",
+  "issuer_cik": "0001108924",
+  "issuer_name": "OPNET TECHNOLOGIES INC",
+  "rows": "5",
+  "ps": "1",
+  "first": "2009-10-26",
+  "last": "2012-02-06",
+  "ok": "False"
+ },
+ {
+  "ticker": "KR",
+  "issuer_cik": "0000899629",
+  "issuer_name": "ACADIA REALTY TRUST",
+  "rows": "5",
+  "ps": "1",
+  "first": "2016-05-05",
+  "last": "2016-05-06",
+  "ok": "False"
+ },
+ {
+  "ticker": "A",
+  "issuer_cik": "0001132651",
+  "issuer_name": "AMES NATIONAL CORP",
+  "rows": "4",
+  "ps": "4",
+  "first": "2018-11-20",
+  "last": "2023-08-14",
+  "ok": "False"
+ },
+ {
+  "ticker": "XEL",
+  "issuer_cik": "0000939767",
+  "issuer_name": "EXELIXIS INC",
+  "rows": "3",
+  "ps": "0",
+  "first": "2009-12-09",
+  "last": "2009-12-09",
+  "ok": "False"
+ },
+ {
+  "ticker": "AVGO",
+  "issuer_cik": "0001317092",
+  "issuer_name": "Avicena Group, Inc.",
+  "rows": "3",
+  "ps": "0",
+  "first": "2006-12-28",
+  "last": "2007-04-17",
+  "ok": "False"
+ },
+ {
+  "ticker": "ANET",
+  "issuer_cik": "0001474439",
+  "issuer_name": "Telenav, Inc.",
+  "rows": "3",
+  "ps": "0",
+  "first": "2014-12-03",
+  "last": "2014-12-03",
+  "ok": "False"
+ },
+ {
+  "ticker": "TT",
+  "issuer_cik": "0000749251",
+  "issuer_name": "GARTNER INC",
+  "rows": "3",
+  "ps": "0",
+  "first": "2018-02-06",
+  "last": "2018-02-06",
+  "ok": "False"
+ },
+ {
+  "ticker": "C",
+  "issuer_cik": "0001043325",
+  "issuer_name": "CENTERLINE HOLDING CO",
+  "rows": "3",
+  "ps": "0",
+  "first": "2009-03-11",
+  "last": "2009-03-11",
+  "ok": "False"
+ },
+ {
+  "ticker": "TMUS",
+  "issuer_cik": "0001097609",
+  "issuer_name": "T MOBILE USA",
+  "rows": "2",
+  "ps": "2",
+  "first": "2018-02-14",
+  "last": "2018-02-15",
+  "ok": "False"
+ },
+ {
+  "ticker": "TGT",
+  "issuer_cik": "0000946115",
+  "issuer_name": "TARGET RECEIVABLES CORP",
+  "rows": "2",
+  "ps": "0",
+  "first": "2007-07-03",
+  "last": "2007-07-23",
+  "ok": "False"
+ },
+ {
+  "ticker": "IR",
+  "issuer_cik": "0000068270",
+  "issuer_name": "RUBY TUESDAY INC",
+  "rows": "2",
+  "ps": "0",
+  "first": "2016-10-05",
+  "last": "2016-10-05",
+  "ok": "False"
+ },
+ {
+  "ticker": "A",
+  "issuer_cik": "0001083446",
+  "issuer_name": "Apollo Medical Holdings, Inc.",
+  "rows": "1",
+  "ps": "1",
+  "first": "2013-01-31",
+  "last": "2013-01-31",
+  "ok": "False"
+ },
+ {
+  "ticker": "C",
+  "issuer_cik": "0001108967",
+  "issuer_name": "CUI Global, Inc.",
+  "rows": "1",
+  "ps": "0",
+  "first": "2017-08-04",
+  "last": "2017-08-04",
+  "ok": "False"
+ },
+ {
+  "ticker": "COF",
+  "issuer_cik": "0001201135",
+  "issuer_name": "CREDIT ONE FINANCIAL INC",
+  "rows": "1",
+  "ps": "1",
+  "first": "2006-05-10",
+  "last": "2006-05-10",
+  "ok": "False"
+ },
+ {
+  "ticker": "ACN",
+  "issuer_cik": "0001143908",
+  "issuer_name": "ACCENTURE SCA",
+  "rows": "1",
+  "ps": "0",
+  "first": "2006-07-05",
+  "last": "2006-07-05",
+  "ok": "False"
+ },
+ {
+  "ticker": "A",
+  "issuer_cik": "0001823406",
+  "issuer_name": "Affinity Bancshares, Inc.",
+  "rows": "1",
+  "ps": "1",
+  "first": "2022-03-04",
+  "last": "2022-03-04",
+  "ok": "False"
+ },
+ {
+  "ticker": "A",
+  "issuer_cik": "0001001463",
+  "issuer_name": "ACACIA AUTOMOTIVE INC",
+  "rows": "1",
+  "ps": "0",
+  "first": "2010-09-28",
+  "last": "2010-09-28",
+  "ok": "False"
+ },
+ {
+  "ticker": "A",
+  "issuer_cik": "0000896747",
+  "issuer_name": "AMERICAN BIO MEDICA CORP",
+  "rows": "1",
+  "ps": "0",
+  "first": "2019-06-20",
+  "last": "2019-06-20",
+  "ok": "False"
+ },
+ {
+  "ticker": "IRM",
+  "issuer_cik": "0001132694",
+  "issuer_name": "IRON MOUNTAIN GLOBAL INC",
+  "rows": "1",
+  "ps": "0",
+  "first": "2011-03-11",
+  "last": "2011-03-11",
+  "ok": "False"
+ },
+ {
+  "ticker": "MPC",
+  "issuer_cik": "0000061398",
+  "issuer_name": "MAGELLAN PETROLEUM CORP /DE/",
+  "rows": "1",
+  "ps": "1",
+  "first": "2009-05-14",
+  "last": "2009-05-14",
+  "ok": "False"
+ },
+ {
+  "ticker": "MRK",
+  "issuer_cik": "0001364856",
+  "issuer_name": "Monarch Financial Holdings, Inc.",
+  "rows": "1",
+  "ps": "0",
+  "first": "2016-06-24",
+  "last": "2016-06-24",
+  "ok": "False"
+ },
+ {
+  "ticker": "MSCI",
+  "issuer_cik": "0001417451",
+  "issuer_name": "Master Silicon Carbide Industries, Inc.",
+  "rows": "1",
+  "ps": "0",
+  "first": "2010-04-01",
+  "last": "2010-04-01",
+  "ok": "False"
+ },
+ {
+  "ticker": "NTRS",
+  "issuer_cik": "0000049826",
+  "issuer_name": "ILLINOIS TOOL WORKS INC",
+  "rows": "1",
+  "ps": "0",
+  "first": "2018-08-03",
+  "last": "2018-08-03",
+  "ok": "False"
+ },
+ {
+  "ticker": "NTRS",
+  "issuer_cik": "0001063537",
+  "issuer_name": "NUTRACEA",
+  "rows": "1",
+  "ps": "0",
+  "first": "2012-03-27",
+  "last": "2012-03-27",
+  "ok": "False"
+ },
+ {
+  "ticker": "RL",
+  "issuer_cik": "0001102238",
+  "issuer_name": "AMERICAN REALTY INVESTORS INC",
+  "rows": "1",
+  "ps": "1",
+  "first": "2015-11-05",
+  "last": "2015-11-05",
+  "ok": "False"
+ },
+ {
+  "ticker": "TECH",
+  "issuer_cik": "0000084023",
+  "issuer_name": "RIM DRIVE WHEEL INC",
+  "rows": "1",
+  "ps": "0",
+  "first": "2007-10-25",
+  "last": "2007-10-25",
+  "ok": "False"
+ },
+ {
+  "ticker": "TT",
+  "issuer_cik": "0001341141",
+  "issuer_name": "CatchMark Timber Trust, Inc.",
+  "rows": "1",
+  "ps": "0",
+  "first": "2016-06-17",
+  "last": "2016-06-17",
+  "ok": "False"
+ },
+ {
+  "ticker": "WFC",
+  "issuer_cik": "0000105598",
+  "issuer_name": "WFC HOLDINGS CORP",
+  "rows": "1",
+  "ps": "1",
+  "first": "2017-11-17",
+  "last": "2017-11-17",
+  "ok": "False"
+ }
+]

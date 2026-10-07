@@ -19,6 +19,8 @@ Beverage -- so this file pins a reviewed judgement and not merely the code's own
 from __future__ import annotations
 
 import datetime as dt
+import json
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -659,12 +661,14 @@ KEEP_GROUPS = {
     ("IRM", "0001132694"),
     ("WFC", "0000105598"),
 }
+#: The Phase 2.3 screen output the table above was reviewed against (102 flagged groups).
+FLAGGED_GROUPS_JSON = Path(__file__).resolve().parents[2] / "fixtures" / "identity_insider_out_of_lineage.json"
 MOVE_GROUPS = {("IR", "0001466258"): "TT", ("IR", "0001160497"): "TT", ("TT", "0000749251"): "IT", ("NTRS", "0000049826"): "ITW"}
 
 
 def test_every_flagged_group_resolves_to_its_reviewed_verdict(live):
     """The acceptance table for the whole plan, on the live tables."""
-    flagged = pd.read_csv("reports/planning/active-tasks/2026-09-07-informed-capital/insider_out_of_lineage.csv", dtype=str)
+    flagged = pd.DataFrame(json.loads(FLAGGED_GROUPS_JSON.read_text(encoding="utf-8")), dtype=str)
     flagged["rows"] = flagged["rows"].astype(int)
     counts, wrong = {"KEEP": 0, "MOVE": 0, "DROP": 0}, []
     rows = {"KEEP": 0, "MOVE": 0, "DROP": 0}

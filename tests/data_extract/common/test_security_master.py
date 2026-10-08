@@ -1107,3 +1107,22 @@ def test_f107_a_line_run_back_ends_the_bridge_of_the_earlier_cusip_of_its_symbol
     print(
         f"  old CUSIP ends {old['vt'].max().date()}, the new line starts {new['valid_from'].min().date()} (run back over FINRA days); no shared day"
     )
+
+
+def test_reverse_acquisitions_declare_pld_and_jci_only():
+    """REQ-014: the survivor's post-seam comparatives are the accounting acquirer's; DD (DowDuPont is a new registrant) is not declared."""
+    manual = sm.load_security_manual(str(CONFIG_DIR))
+    by_ticker = {entry.ticker: entry for entry in manual.reverse_acquisitions}
+    assert set(by_ticker) == {"PLD", "JCI"}, sorted(by_ticker)
+    assert all(isinstance(entry, sm.ReverseAcquisition) and entry.source for entry in by_ticker.values())
+    pld, jci = by_ticker["PLD"], by_ticker["JCI"]
+    assert (pld.seam_date, pld.accounting_acquirer_cik, pld.legal_acquirer_cik) == (pd.Timestamp("2011-06-03"), "0000899881", "0001045609")
+    assert (jci.seam_date, jci.accounting_acquirer_cik, jci.legal_acquirer_cik) == (pd.Timestamp("2016-09-02"), "0000053669", "0000833444")
+    with pytest.raises(ValueError, match="source"):
+        sm.parse_security_manual(
+            {"reverse_acquisitions": [{"ticker": "X", "seam_date": "2020-01-01", "accounting_acquirer_cik": "1", "legal_acquirer_cik": "2"}]}
+        )
+    assert sm.SecurityManual.empty().reverse_acquisitions == ()
+    print("\n=== SANITY CHECK: reverse_acquisitions ===")
+    print("  PLD 2011-06-03 (accounting acquirer old ProLogis 0000899881, survivor AMB 0001045609)")
+    print("  JCI 2016-09-02 (accounting acquirer old JCI 0000053669, survivor Tyco 0000833444); DD undeclared; an unsourced entry is refused")

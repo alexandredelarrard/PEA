@@ -23,6 +23,7 @@ from src.context import Context
 from src.data_extract.utils.common.frame_sanitize import pin_dtypes
 from src.data_extract.utils.common.identity import CikWindow, Identity, load_identity
 from src.data_extract.utils.common.resume import recently_changed
+from src.data_extract.utils.common.security_master import load_security_manual
 from src.data_extract.utils.fundamentals import reason_codes as rc
 from src.data_extract.utils.fundamentals.kpi_catalogue import HISTORY_KEYS, HISTORY_PROVENANCE, HISTORY_REGIME, Catalogue, load_catalogue
 from src.data_extract.utils.fundamentals.periods import (
@@ -786,6 +787,20 @@ def _filed_inside_window(facts: pd.DataFrame, windows: Sequence[CikWindow]) -> l
     ]
 
 
+def drop_reverse_acquisition_comparatives(facts: pd.DataFrame, seam: pd.Timestamp) -> pd.DataFrame:
+    """Facts of a reverse acquisition's survivor minus the pre-seam periods its post-seam filings restate.
+
+    A fact whose `period_end` is before `seam` in a filing whose `period_of_report` is on or after it is the
+    accounting acquirer's comparative, not the traded security's history. The survivor's own amendment of a
+    pre-seam period has a pre-seam `period_of_report` and is kept; a row with no date is kept.
+    """
+    if facts.empty:
+        return facts
+    ends = pd.to_datetime(facts["period_end"], errors="coerce")
+    reports = pd.to_datetime(facts["period_of_report"], errors="coerce")
+    return facts[~((ends < seam) & (reports >= seam))]
+
+
 def _filer_count(facts: pd.DataFrame) -> int:
     """Distinct filer CIKs in a ticker's facts (0 when the projection has no `cik`)."""
     return int(pad_cik_series(facts["cik"].dropna()).nunique()) if "cik" in facts.columns else 0
@@ -896,10 +911,12 @@ def build_fundamentals_history(context: Context, tickers: list[str], *, rebuild_
     logging the diff. `rebuild_history=True` (CLI `--rebuild-history`) deletes the ticker's rows from both tables
     and rebuilds from stored facts, with no network; so does a ticker whose lineage scope changed recently
     (`resume.recently_changed` on `as_of`) when its recomputed history differs from the stored one. A ticker whose
-    facts come from several CIKs reads its windows from the identity layer for the seam rule (`keep_window_owner_filings`).
+    facts come from several CIKs reads its windows from the identity layer for the seam rule (`keep_window_owner_filings`);
+    a declared reverse acquisition then drops the pre-seam comparatives of its survivor's post-seam filings.
     """
     catalogue = load_catalogue(str(context.config_dir))
     guards = load_guards(str(context.config_dir))
+    seams = {entry.ticker: entry.seam_date for entry in load_security_manual(str(context.config_dir)).reverse_acquisitions}
     history_rows = codes_rows = 0
     identity: Identity | None = None
     rebuild = frozenset(tickers) if rebuild_history else _scope_changed_recently(context, tickers, as_of)
@@ -924,6 +941,18 @@ def build_fundamentals_history(context: Context, tickers: list[str], *, rebuild_
                     ticker,
                     len(set_aside),
                     ", ".join(set_aside),
+                )
+            df_facts = df_kept
+        if ticker in seams:
+            df_kept = drop_reverse_acquisition_comparatives(df_facts, seams[ticker])
+            dropped = df_facts.loc[~df_facts.index.isin(df_kept.index), "accession_number"].value_counts().sort_index()
+            if not dropped.empty:
+                context.log.info(
+                    "history: %s reverse-acquisition rule dropped %d pre-seam comparative fact(s) of %d post-seam filing(s): %s",
+                    ticker,
+                    int(dropped.sum()),
+                    len(dropped),
+                    ", ".join(f"{accession} ({count})" for accession, count in dropped.items()),
                 )
             df_facts = df_kept
         built = build_ticker(ticker, df_facts, catalogue=catalogue, guards=guards)

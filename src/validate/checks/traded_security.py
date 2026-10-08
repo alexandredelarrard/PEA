@@ -72,7 +72,10 @@ def line_stats(lines: pd.DataFrame, ftd: pd.DataFrame, prices: pd.DataFrame, spl
     days = lines.merge(ftd, on="cusip")
     days = days[days["trade_date"].ge(days["valid_from"]) & days["trade_date"].lt(days["valid_to"])]
     days = days.drop_duplicates([*_LINE, "date"]).sort_values("date", kind="mergesort").reset_index(drop=True)
-    quotes = prices.assign(pdate=_ts(prices["date"]), symbol=prices["ticker"].map(normalise_ticker), close_split=pd.to_numeric(prices["close_split"]))
+    days["symbol"] = days["symbol"].astype(str)  # one key dtype on both sides, also when a read came back empty
+    quotes = prices.assign(
+        pdate=_ts(prices["date"]), symbol=prices["ticker"].map(normalise_ticker).astype(str), close_split=pd.to_numeric(prices["close_split"])
+    )
     quotes = quotes[quotes["close_split"].notna()].sort_values("pdate", kind="mergesort")[["symbol", "pdate", "close_split"]]
     days = pd.merge_asof(days, quotes, left_on="date", right_on="pdate", by="symbol", allow_exact_matches=False, direction="backward")
     valid = splits[pd.to_numeric(splits["ratio"], errors="coerce").gt(0)]

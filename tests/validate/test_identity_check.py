@@ -640,3 +640,19 @@ def test_traded_security_mismatch_flags_one_row_per_ticker_and_counts_unverified
     assert not any(f.score >= 4 for f in report.result.findings), [f.observed for f in report.result.findings if f.score >= 4]
     assert report.result.metrics["traded_security_lines"] == 7
     print("  OK: ALN passes across a split, its secondary class is not judged; MIS, JCO, TWO are one score-2 row each; FEW, NOP are counts.")
+
+
+def test_a_chunk_without_prices_counts_its_lines_as_unverified(sqlite_store):
+    """A scope whose tickers have no stored Yahoo prices gives n = 0 lines (unverified), not a merge error."""
+    _seed_traded(sqlite_store)
+
+    report = check_identity(_context(sqlite_store), tickers=["NOP"])
+
+    metrics = report.result.metrics
+    print("\n=== SANITY CHECK: traded_security on a chunk without prices ===")
+    print(f"  lines={metrics['traded_security_lines']} unverified={metrics['traded_security_unverified_lines']}")
+    assert metrics["traded_security_lines"] == 1
+    assert metrics["traded_security_mismatch"] == []
+    assert [line.split()[:2] for line in metrics["traded_security_unverified_lines"]] == [["NOP", "NOP000001"]]
+    assert "(0 matched of 79 FTD days)" in metrics["traded_security_unverified_lines"][0]
+    print("  OK: the NOP line is one unverified count (0 matched of 79 FTD days) and check_identity completes.")

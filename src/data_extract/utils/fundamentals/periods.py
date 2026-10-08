@@ -608,11 +608,18 @@ def trailing_twelve(quarters: pd.DataFrame, spec: FieldSpec, annual: pd.DataFram
     ordered = quarters.sort_values("period_end").reset_index(drop=True)
     # Only the non-additive branch reads the annual facts.
     reported_annual = {} if spec.is_additive else _annual_by_end(annual)
+    ticker = ordered["ticker"].iloc[0]
+    # Arrays taken once; each window below is a positional slice of them.
+    ends = list(ordered["period_end"])
+    values = ordered["value"].to_numpy(dtype=float)
+    days_all = _inclusive_days(ordered["period_days"]).to_numpy(dtype=float)
+    known = ordered["known_from"]
+    known_ns = known.to_numpy() if is_datetime64_any_dtype(known) else None
     rows = []
-    for i in range(len(ordered)):
-        window = ordered.iloc[max(0, i - TTM_QUARTERS + 1) : i + 1]
-        end = window["period_end"].iloc[-1]
-        base = {"ticker": ordered["ticker"].iloc[0], "field": spec.name, "period_end": end}
+    for i, end in enumerate(ends):
+        low = max(0, i - TTM_QUARTERS + 1)
+        size = i + 1 - low
+        base = {"ticker": ticker, "field": spec.name, "period_end": end}
         if not spec.is_additive and end in reported_annual:
             fact = reported_annual[end]
             rows.append(
@@ -626,21 +633,28 @@ def trailing_twelve(quarters: pd.DataFrame, spec: FieldSpec, annual: pd.DataFram
                 }
             )
             continue
-        if len(window) < TTM_QUARTERS or not _window_is_contiguous(window):
-            rows.append({**base, "value": None, "basis": None, "known_from": None, "n_quarters": len(window), "dc_code": INSUFFICIENT_QUARTERS})
+        if size < TTM_QUARTERS or not _window_is_contiguous(ordered.iloc[low : i + 1]):
+            rows.append({**base, "value": None, "basis": None, "known_from": None, "n_quarters": size, "dc_code": INSUFFICIENT_QUARTERS})
             continue
-        if not spec.is_additive and not _one_share_basis(window, guards):
-            rows.append({**base, "value": None, "basis": None, "known_from": None, "n_quarters": len(window), "dc_code": SPLIT_BASIS_MISMATCH})
+        window = values[low : i + 1]
+        if not spec.is_additive and not _one_share_basis_values(window, guards):
+            rows.append({**base, "value": None, "basis": None, "known_from": None, "n_quarters": size, "dc_code": SPLIT_BASIS_MISMATCH})
             continue
         # A twelve-month weighted average is share-days over days, not the mean of four means.
-        days = _inclusive_days(window["period_days"])
-        value = window["value"].sum() if spec.is_additive else (window["value"] * days).sum() / days.sum()
+        days = days_all[low : i + 1]
+        value = _skipna_sum(window) if spec.is_additive else _skipna_sum(window * days) / _skipna_sum(days)
+        if known_ns is not None:
+            seen = known_ns[low : i + 1]
+            seen = seen[~np.isnat(seen)]
+            latest = pd.Timestamp(seen.max()) if seen.size else pd.NaT
+        else:
+            latest = known.iloc[low : i + 1].max()
         rows.append(
             {
                 **base,
                 "value": float(value),
                 "basis": TTM_FOUR_QUARTERS if spec.is_additive else TTM_FOUR_QUARTER_MEAN,
-                "known_from": window["known_from"].max(),
+                "known_from": latest,
                 "n_quarters": TTM_QUARTERS,
                 "dc_code": None,
             }
@@ -662,9 +676,21 @@ def _one_share_basis(window: pd.DataFrame, guards: PeriodGuards) -> bool:
 
     A window straddling a split mixes two incompatible units; it is refused, not repaired.
     """
-    values = window["value"].abs()
-    smallest = values.min()
-    return smallest > 0 and (values.max() / smallest) <= guards.share_basis_max_ratio
+    return _one_share_basis_values(window["value"].to_numpy(dtype=float), guards)
+
+
+def _one_share_basis_values(values: np.ndarray, guards: PeriodGuards) -> bool:
+    """`_one_share_basis` on a window's value array; NaN is skipped, an all-NaN window is refused."""
+    present = np.abs(values[~np.isnan(values)])
+    if present.size == 0:
+        return False
+    smallest = present.min()
+    return bool(smallest > 0 and (present.max() / smallest) <= guards.share_basis_max_ratio)
+
+
+def _skipna_sum(values: np.ndarray) -> np.float64:
+    """`Series.sum()` on a float array: NaN counts as zero, the same `ndarray.sum` underneath (numpy division rules kept)."""
+    return np.where(np.isnan(values), 0.0, values).sum()
 
 
 def _window_is_contiguous(window: pd.DataFrame) -> bool:

@@ -615,6 +615,7 @@ def trailing_twelve(quarters: pd.DataFrame, spec: FieldSpec, annual: pd.DataFram
     days_all = _inclusive_days(ordered["period_days"]).to_numpy(dtype=float)
     known = ordered["known_from"]
     known_ns = known.to_numpy() if is_datetime64_any_dtype(known) else None
+    starts_ns, ends_ns = _window_bounds(ordered)
     rows = []
     for i, end in enumerate(ends):
         low = max(0, i - TTM_QUARTERS + 1)
@@ -633,7 +634,7 @@ def trailing_twelve(quarters: pd.DataFrame, spec: FieldSpec, annual: pd.DataFram
                 }
             )
             continue
-        if size < TTM_QUARTERS or not _window_is_contiguous(ordered.iloc[low : i + 1]):
+        if size < TTM_QUARTERS or not _bounds_are_contiguous(starts_ns[low : i + 1], ends_ns[low : i + 1]):
             rows.append({**base, "value": None, "basis": None, "known_from": None, "n_quarters": size, "dc_code": INSUFFICIENT_QUARTERS})
             continue
         window = values[low : i + 1]
@@ -695,13 +696,21 @@ def _skipna_sum(values: np.ndarray) -> np.float64:
 
 def _window_is_contiguous(window: pd.DataFrame) -> bool:
     """True when the quarters abut (gaps of at most 1 day) and span `TTM_MIN_DAYS`..`TTM_MAX_DAYS`."""
-    starts = list(window["period_start"])
-    ends = list(window["period_end"])
-    for previous_end, next_start in zip(ends, starts[1:], strict=False):
-        if abs((pd.Timestamp(next_start) - pd.Timestamp(previous_end)).days) > 1:
-            return False
-    span = (pd.Timestamp(ends[-1]) - pd.Timestamp(starts[0])).days
-    return TTM_MIN_DAYS <= span <= TTM_MAX_DAYS
+    starts, ends = _window_bounds(window)
+    return _bounds_are_contiguous(starts, ends)
+
+
+def _bounds_are_contiguous(starts: np.ndarray, ends: np.ndarray) -> bool:
+    """`_window_is_contiguous` on nanosecond bound arrays; whole days are floored, a NaT gap is not a break."""
+    day = np.timedelta64(1, "D")
+    gaps = starts[1:] - ends[:-1]
+    known = ~np.isnat(gaps)
+    if (np.abs(gaps[known] // day) > 1).any():
+        return False
+    span = ends[-1] - starts[0]
+    if np.isnat(span):
+        return False
+    return bool(TTM_MIN_DAYS <= span // day <= TTM_MAX_DAYS)
 
 
 # --------------------------------------------------------------------------- instants ---

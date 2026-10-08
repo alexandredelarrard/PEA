@@ -253,3 +253,12 @@ Append-only audit trail. Add one dated entry per generation or refresh run, reco
 - Pages: [Table catalog](./reference/table-catalog.md), [Data sources](./reference/data-sources.md), [Data extraction](./modules/data-extract.md), [Modelling and portfolio](./reference/modelling-and-portfolio.md), [Configuration](./reference/configuration.md), [Run the pipeline](./guides/run-the-pipeline.md), [Large backfills and recovery](./guides/large-backfills-and-recovery.md), [Live database](./reference/live-database.md), [Nightly data refresh](./flows/nightly-data-refresh.md), [DAGs and infrastructure](./modules/dags-and-infrastructure.md), [TODO](./TODO.md)
 - Evidence: `reports/validate/2026-10-07-employee-headcount-coverage/` (`02-plan.md`, `03-implementation.md`)
 - Operational boundary: the live table was recreated and `employees_sec` dropped on 2026-10-07; the universe run and the cube rebuild are user-run after the merge.
+
+## 2026-10-08: refresh — identity manual review
+
+- Profile: internal/standard
+- source_commit: ebc78771 (branch `harness/identity-manual-review`)
+- Coverage: the 2026-10-08 `identity_tables` manual items resolved in `configs/sec` (seven `same_entity` acquired-target / LBO verdicts incl. VMRK/AvalonBay, same-CIK symbol renames, 12 evidenced `form345` rejections, five FINRA seam market boundaries); tape-mix flags decided by the stored `security_master` are information, not action
+- Pages: [Data sources](./reference/data-sources.md), [TODO](./TODO.md)
+- Evidence: `reports/validate/2026-10-08-identity-manual-review/` (`01-research.md` price-continuity audit, `03-implementation.md`)
+- Operational boundary: no database write; the next `identity_tables` → `identity_propagate` DAG run applies it.

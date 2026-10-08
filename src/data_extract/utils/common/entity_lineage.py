@@ -33,7 +33,7 @@ from src.data_extract.utils.common.incremental import matches_stored
 from src.data_extract.utils.common.registrant import Registrant, load_registrants
 from src.data_extract.utils.common.symbol_tenure import DEI_SOURCE, collapse_dei_periods, load_manual_symbol_tenure
 from src.data_store.schema import Tables
-from src.utils.identity_flags import cik_activity, identity_flags, log_identity_flags
+from src.utils.identity_flags import MASTER_COLUMNS, cik_activity, identity_flags, log_identity_flags
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
 
 logger = logging.getLogger(__name__)
@@ -1238,7 +1238,7 @@ def build_entity_lineage(
 
     An older-CIK rekey is excluded and backlogged unless its ``(old_entity_id, new_entity_id)`` pair is in
     `approved_rekeys`. Logs the items needing a manual decision (`redundant_symbols`: the configured
-    redundant share classes). Returns the derived rows.
+    redundant share classes), reading tape-mix pairs against the stored `security_master`. Returns the derived rows.
     """
     roster = context.store.load(Tables.sp500_tickers, columns=list(ROSTER_COLUMNS))
     assert roster is not None
@@ -1257,7 +1257,9 @@ def build_entity_lineage(
         f"dei evidence {0 if dei is None else len(dei)} (symbol, CIK) interval(s); curation backlog {len(build.backlog)} item(s)"
     )
     evidence = tenure if dei is None else pd.concat([tenure, dei], ignore_index=True)
-    log_identity_flags(context.log, identity_flags(out, cik_activity(evidence), redundant_symbols=redundant_symbols, backlog=build.backlog))
+    master = context.store.load(Tables.security_master, columns=list(MASTER_COLUMNS), optional=True)
+    flags = identity_flags(out, cik_activity(evidence), redundant_symbols=redundant_symbols, backlog=build.backlog, master=master)
+    log_identity_flags(context.log, flags)
     if not build.blocked.empty:
         logger.warning(
             "entity_lineage: %d merge(s) refused because they would put two universe tickers in one entity:\n%s",

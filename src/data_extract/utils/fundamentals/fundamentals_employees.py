@@ -75,8 +75,8 @@ _RANGE_AFTER_RE = re.compile(r"^\s*(?:-|–|to)\s*\d", re.I)
 _SHIFT_AFTER_RE = re.compile(r"^\W*(?:[a-z]+\s+){0,3}?(full|part)[\s-]*time")
 _ROW_LABEL_RE = re.compile(
     r"\b(Total|TOTAL|Full|FULL|Part|PART)(?:[\s-]*(?:time|Time|TIME))?\b"
-    r"(?:(?!\b(?:Total|TOTAL|Full|FULL|Part|PART)\b)[^\d]){0,40}(?:[\d,.]+(?:\s+|$))*$"
-)
+    r"(?:(?!\b(?:Total|TOTAL|Full|FULL|Part|PART)\b)[^\d]){0,40}(?:[\d,.]+(?:\s*%)?(?:\s+|$))*$"
+)  # a row's earlier cells may be percentages: "Full-time 30,497 76 % 9,716 24 % 40,213"
 # Prose may label the number before it, in its own phrase: "the number of full-time employees ... was 38,100". Only a
 # "number of" label counts: in "N1 part-time employees in the US and N2 employees outside", N2 has no shift.
 _SHIFT_BEFORE_RE = re.compile(r"\bnumber\s+of\s+(full|part)[\s-]*time\s+(?:employees|associates|staff|workers|team\s+members|people|persons)\b")
@@ -103,19 +103,59 @@ BASES = ("total", "full_part", "full_time_only", "fte", "total_incl_contractors"
 _NULL_STATUS = {"not_disclosed": "not_disclosed", "image_only": "image_only", "incorporated_by_reference": "incorporated", "ambiguous": "ambiguous"}
 
 
+_WHOLE = "the whole consolidated registrant (subject 'we', 'the Company', the registrant's name, or the registrant and its subsidiaries)"
+_SUBSET = (
+    "one subsidiary, operating company, segment, country, site, union or workforce group (such as shipboard or shoreside staff), even the largest"
+)
+_QUOTE = (
+    "Shortest span of the supplied text that contains this number and its noun, copied character for character. If a page "
+    "number or header interrupts the span, stop before it and continue after ` ... `; never delete, reorder or reword words. Null when the value is null."
+)
+
+
 class EmployeeAnswer(BaseModel):
-    status: Literal["found", "not_disclosed", "image_only", "incorporated_by_reference", "ambiguous"]
-    total: int | None = Field(description="Issuer-wide current-period total employees (or FTE when is_fte), or null")
-    total_quote: str | None = Field(description="Verbatim source words stating the total, or null")
-    full_time: int | None = Field(description="Issuer-wide current-period full-time employees as stated, or null")
-    full_time_quote: str | None = Field(description="Verbatim source words stating the full-time count, or null")
-    part_time: int | None = Field(description="Issuer-wide current-period part-time employees as stated, or null")
-    part_time_quote: str | None = Field(description="Verbatim source words stating the part-time count, or null")
+    """One filing's company-wide employee components. Fields are generated in order, so the scope check in `reason` comes
+    before any number. The JSON schema, descriptions included, is sent to the model as the structured-output format."""
+
+    reason: str = Field(
+        description=(
+            "Write this first. Name the sentence or table row that states the workforce of " + _WHOLE + ", with its date. "
+            "Name each count you reject because it covers only " + _SUBSET + ", a prior year, a range, or contractors. "
+            "If you sum disjoint parts that together cover the whole registrant, list every part and the arithmetic."
+        )
+    )
+    status: Literal["found", "not_disclosed", "image_only", "incorporated_by_reference", "ambiguous"] = Field(
+        description=(
+            "found: total, full_time or part_time is filled. not_disclosed: no company-wide count is stated (counts for subsets "
+            "only included). image_only: the count is only in an image. incorporated_by_reference: the filing says the count is in "
+            "another document not supplied. ambiguous: only a range is given, or company-wide counts for the same date truly contradict. The same count stated twice at different precision (a rounded narrative and an exact table) is not a contradiction: use the exact one."
+        )
+    )
+    total: int | None = Field(
+        description=(
+            "Current-period number of employees of " + _WHOLE + ", part-time and seasonal staff included; full-time equivalents "
+            "when is_fte. Never a count for " + _SUBSET + ". For 'more than N' or 'over N' return N. Null when no company-wide count is stated."
+        )
+    )
+    total_quote: str | None = Field(description=_QUOTE)
+    full_time: int | None = Field(
+        description=(
+            "Current-period full-time employees of " + _WHOLE + ", only when the company-wide count is labelled full-time. Null when "
+            "the full-/part-time split covers only " + _SUBSET + "."
+        )
+    )
+    full_time_quote: str | None = Field(description=_QUOTE)
+    part_time: int | None = Field(
+        description=(
+            "Current-period part-time employees of " + _WHOLE + ", only when the company-wide count is labelled part-time. Null when "
+            "the split covers only " + _SUBSET + "."
+        )
+    )
+    part_time_quote: str | None = Field(description=_QUOTE)
     is_fte: bool = Field(description="True when the total is stated as full-time equivalents")
-    includes_contractors: bool = Field(description="True when the stated total folds in contractors, contingent or temporary workers")
+    includes_contractors: bool = Field(description="True when the only stated total folds in contractors, contingent or temporary workers")
     measurement_period: str | None = Field(description="Headcount date or period as stated, at original precision")
-    qualifier: str | None = Field(description="For example approximate, over or FTE, if stated")
-    reason: str
+    qualifier: str | None = Field(description="For example approximate, over, more than, average or FTE, if stated")
 
 
 @dataclass(frozen=True)

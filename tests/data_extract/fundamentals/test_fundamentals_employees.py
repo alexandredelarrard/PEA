@@ -300,6 +300,29 @@ def test_shift_named_before_the_number_is_a_full_time_count():
     print("\nSANITY: ADM 2019 'number of full-time employees ... was approximately 38,100' is full_time_only 38,100, not a 38,100 total.")
 
 
+# ADM FY2023 10-K 0000007084-24-000009: type-by-gender table whose earlier cells are percentages.
+ADM_2023_TABLE = (
+    "Number of Employees by Type and Gender Male % Female % Total % Full-time 30,497 76 % 9,716 24 % 40,213 100 % "
+    "Part-time 603 38 % 986 62 % 1,589 100 % Total 31,100 74 % 10,702 26 % 41,802 100 %"
+)
+
+
+def test_table_rows_with_percentage_cells_keep_their_shift_label():
+    reply = answer(
+        41802,
+        "Total 31,100 74 % 10,702 26 % 41,802",
+        full_time=40213,
+        full_time_quote="Full-time 30,497 76 % 9,716 24 % 40,213",
+        part_time=1589,
+        part_time_quote="Part-time 603 38 % 986 62 % 1,589",
+    )
+    assert components(mod.decide_employee_answer(reply, ADM_2023_TABLE)) == (41802, 40213, 1589, "full_part", "found")
+    # The Total row's number is still unlabelled, so it cannot stand in for the full-time row.
+    wrong_row = answer(None, None, full_time=41802, full_time_quote="Total 31,100 74 % 10,702 26 % 41,802")
+    assert components(mod.decide_employee_answer(wrong_row, ADM_2023_TABLE)) == (None, None, None, None, "unsupported")
+    print("\nSANITY: ADM FY2023 rows with % cells store 41,802 / 40,213 / 1,589 (full_part); a Total-row number is not a full-time count.")
+
+
 # DLTR FY2020 10-K 0000935703-21-000014 (Human Capital table).
 DLTR_2021 = (
     "for 11 Table of Contents progress on key DEI objectives. As of January 30, 2021, we employed more than 199,300 associates, as follows: "

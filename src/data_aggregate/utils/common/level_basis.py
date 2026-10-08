@@ -499,10 +499,9 @@ def apply_return_seams(wide: dict[str, pd.DataFrame], bugfix: dict, log: Callabl
     fabricated return.
 
     Unlike `apply_split_vintage` this is a SINGLE boundary with no islands behind it, so the
-    whole prefix moves together and no per-bar decision is needed. JCI is the case: its
-    `close_split` falls 70.354 -> 27.775 on 2007-07-02, a factor of 0.3948, while its feed
-    claims 0.25 and its real three-for-one was 2007-10-03, where the series does not step at
-    all. Feed, applied adjustment and real event disagree three ways.
+    whole prefix moves together and no per-bar decision is needed. JCI is the case: on Tyco's
+    2007-07-02 reverse split `close_split` applies the split but not the Covidien and TE
+    Connectivity spin-offs of the same day.
 
     ⚠ It moves `ret`, and that is the point -- a fabricated -60.52% bar is a LABEL defect
     first and a level defect second. Every leg in `REPAIRED_PRICE_FIELDS` moves by the same
@@ -565,9 +564,9 @@ def apply_null_ret(ret: pd.DataFrame, bugfix: dict, log: Callable[..., None]) ->
 
     ⚠ WHY A NULL AND NOT A RESCALE. `apply_return_seams` repairs the same SHAPE by multiplying
     the whole prefix by the observed step, which asserts that the post-seam basis is the right
-    one. That assertion needs the per-ticker corroboration JCI got -- the feed's claimed factor,
-    the applied factor and the real event date checked against each other, plus Sharadar's
-    independent price. None of the six has it. Nulling makes the weaker, provable claim: this
+    one. That assertion needs the per-ticker corroboration JCI got -- the feed's factor, the
+    applied factor and the traded company's own corporate actions on that date checked against
+    each other. None of the six has it. Nulling makes the weaker, provable claim: this
     number is not a return. It leaves `close_split`, `close_total` and the OHLC range exactly as
     published, so anything reading a LEVEL is untouched, and it costs only the <=2h forward and
     trailing windows that span the bar -- the same, already-accepted mechanism that nulls a

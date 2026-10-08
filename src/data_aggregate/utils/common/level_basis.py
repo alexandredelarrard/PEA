@@ -91,6 +91,7 @@ from src.data_extract.utils.fundamentals_sharadar.field_map import split_events 
 from src.data_store.schema import Tables
 from src.utils.cutover_continuity import predecessor_actions
 from src.utils.predecessor_series import load_predecessor_series
+from src.utils.string import normalise_ticker
 
 __all__ = ["genuine_splits"]
 
@@ -205,7 +206,8 @@ def level_actions(context: Context, tickers: Sequence[str], where: Mapping[str, 
     """The `sharadar_actions` rows feeding S(d)'s denominator for `tickers` (read with `where`, or all tickers).
 
     Inside a predecessor vendor series window the ticker's prices follow the window owner, so its own actions there
-    are replaced by the owner's (`cutover_continuity.predecessor_actions`), as the merged history does for shares."""
+    are replaced by the owner's (`cutover_continuity.predecessor_actions`), as the merged history does for shares; an
+    owner with no stored action is logged and the ticker's own actions are kept."""
     kinds = {"action": LEVEL_ACTION_KINDS}
     actions = context.store.load(Tables.sharadar_actions, columns=LEVEL_ACTION_COLUMNS, where={**(where or {}), **kinds}, optional=True)
     series = load_predecessor_series(context, list(map(str, tickers)))
@@ -214,6 +216,16 @@ def level_actions(context: Context, tickers: Sequence[str], where: Mapping[str, 
     owners = context.store.load(
         Tables.sharadar_actions, columns=LEVEL_ACTION_COLUMNS, where={"ticker": sorted({s.vendor_ticker for s in series}), **kinds}, optional=True
     )
+    stored = set(owners["ticker"].map(normalise_ticker)) if owners is not None else set()
+    for s in series:
+        if s.vendor_ticker not in stored:
+            context.log.warning(
+                "level factor: the predecessor vendor series %s of %s (CIK %s) is not stored; actions before %s are kept as fetched",
+                s.vendor_ticker,
+                s.ticker,
+                s.cik,
+                s.valid_to.date() if s.valid_to is not None else "-",
+            )
     return predecessor_actions(actions, owners, series)
 
 

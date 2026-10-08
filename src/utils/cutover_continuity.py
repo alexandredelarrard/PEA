@@ -404,13 +404,15 @@ def rebase_split_events(splits: pd.DataFrame, owner_splits: pd.DataFrame, window
 
 def predecessor_actions(actions: pd.DataFrame, owner_actions: pd.DataFrame | None, series: Sequence[PredecessorSeries]) -> pd.DataFrame:
     """`actions` with each window's own rows (dated in [valid_from, valid_to)) replaced by the window owner's, relabelled
-    to the ticker, so the level factor S(d) reads the actions of the security the prices follow."""
+    to the ticker, so the level factor S(d) reads the actions of the security the prices follow. A window whose owner
+    has no stored action keeps the ticker's own."""
     if not series:
         return actions
     out = actions.assign(date=pd.to_datetime(actions["date"]))
     owners = _owner_frame(owner_actions if owner_actions is not None else out.iloc[0:0], list(actions.columns))
+    stored = set(owners["_vendor"])
     added: list[pd.DataFrame] = []
-    for s in series:
+    for s in (s for s in series if s.vendor_ticker in stored):
         out, own = _swap_window(out, owners, s, s.valid_to)
         added.append(own)
     return _concat_sorted((out, *added), out)

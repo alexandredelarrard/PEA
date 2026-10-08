@@ -1,5 +1,5 @@
-"""Identity check: rows filed by a CIK outside the ticker's entity, `entity_lineage` invariants, the manual-fix flags
-and the vendor-series continuity at register cutovers.
+"""Identity check: rows filed by a CIK outside the ticker's entity, `entity_lineage` invariants, the manual-fix flags,
+the vendor-series continuity at register cutovers and the traded-security price match (`traded_security`).
 
 Reads only through `context.store`. The pending removals are the ones `identity-propagate` would purge,
 recomputed from the stored rows and the lineage: a filing of any CIK of the entity (margin filings and
@@ -34,6 +34,7 @@ from src.utils.filer_tables import (
 )
 from src.utils.identity_flags import FLAG_COLUMNS, KIND_ORDER, MARGIN, cik_activity, identity_flags, log_identity_flags
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
+from src.validate.checks.traded_security import traded_security_flags
 from src.validate.result import CheckResult, Finding
 
 CHECK = "identity"
@@ -394,9 +395,11 @@ def check_identity(context: Context, *, tickers: Sequence[str] | None = None) ->
         return _unmigrated_report(context, _from_old_shape(lineage, roster), scope)
     removals = pending_removals(context, lineage, scope)
     continuity, continuity_metrics = continuity_flags(context, lineage, scope, _config_dir(context))
+    traded, traded_metrics = traded_security_flags(context, scope)
     flags = _flags(context, lineage)
-    if not continuity.empty:
-        flags = pd.concat([flags, continuity], ignore_index=True)
+    extra = [part for part in (continuity, traded) if not part.empty]
+    if extra:
+        flags = pd.concat([flags, *extra], ignore_index=True)
         order = flags["kind"].map({kind: rank for rank, kind in enumerate(KIND_ORDER)})
         flags = flags.assign(_order=order).sort_values(["_order", "ticker"], kind="mergesort").drop(columns="_order").reset_index(drop=True)
     log_identity_flags(context.log, flags)
@@ -412,6 +415,7 @@ def check_identity(context: Context, *, tickers: Sequence[str] | None = None) ->
         "backlog": int(flags["action"].sum()),
         "symbol_statuses": lineage.loc[lineage["role"].eq("symbol"), "status"].value_counts().sort_index().to_dict(),
         **continuity_metrics,
+        **traded_metrics,
     }
     scope_info = {"rows": len(lineage), "tickers": len(scope), "tables": [spec.table.name for spec in PURGE_TABLES]}
     result = CheckResult.measured(CHECK, Tables.entity_lineage.name, findings, scope=scope_info, metrics=metrics)

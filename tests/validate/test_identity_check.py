@@ -503,3 +503,110 @@ def test_without_the_owner_series_the_window_is_an_action_item(sqlite_store, tmp
     print(other[["ticker", "ciks", "evidence"]].to_string(index=False))
     assert len(other) == 1 and other["action"].iloc[0] and "not stored" in other["evidence"].iloc[0] and "10 canonical" in other["evidence"].iloc[0]
     print("  OK: REG1 missing -> one action naming the 10 unverified canonical quarters inside the window.")
+
+
+# --------------------------------------------------------------------------- #
+# validator: traded-security mismatch (REQ-007, AC-008)                        #
+# --------------------------------------------------------------------------- #
+_DAYS = pd.bdate_range("2012-01-02", periods=80)
+_SPLIT_DAY = _DAYS[60]
+
+
+def _raw_close(day: pd.Timestamp) -> float:
+    """The fixture's raw (as-traded) close: 100 before the 2-for-1 split, 50 from it."""
+    return 100.0 + 0.1 * _DAYS.get_loc(day) if day < _SPLIT_DAY else 50.0
+
+
+def _master_row(ticker: str, cusip: str, role: str, start: str, end: str | None = None, *, symbol: str | None = None) -> dict:
+    return {
+        "security_id": f"C{cusip}",
+        "canonical_company": ticker,
+        "issuer_cik": "0000000001",
+        "source": "ftd",
+        "source_symbol": symbol or ticker,
+        "market_symbol": symbol or ticker,
+        "cusip": cusip,
+        "security_class": "common",
+        "lineage_role": role,
+        "valid_from": pd.Timestamp(start),
+        "valid_to": pd.Timestamp(end) if end else pd.NaT,
+    }
+
+
+def _ftd(cusip: str, ratios: list[float], *, scale: float = 1.0) -> list[dict]:
+    """One FTD row per day from the second fixture day, priced `ratio x scale x` the raw close of the prior day."""
+    return [
+        {"cusip": cusip, "date": day, "trade_date": day, "price": ratio * scale * _raw_close(prev)}
+        for prev, day, ratio in zip(_DAYS[:-1], _DAYS[1:], ratios, strict=False)
+    ]
+
+
+def _seed_traded(store: Any) -> None:
+    """ALN aligned across a split (its secondary class at 30x is not judged), MIS at 0.446, JCO median 0.987 with 6 % inside, FEW with
+    10 days, NOP without Yahoo prices, TWO with two mismatched CUSIPs."""
+    tickers = ["ALN", "MIS", "JCO", "FEW", "NOP", "TWO"]
+    lineage = pd.DataFrame(
+        [row for i, t in enumerate(tickers) for row in (_cik(t, f"00000009{i:02d}", "cik_window"), _sym(t, f"00000009{i:02d}", t, "2006-01-02"))]
+    )
+    store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": tickers, "cik": [f"00000009{i:02d}" for i in range(len(tickers))]}))
+    store.save(Tables.entity_lineage, lineage.assign(valid_from=pd.to_datetime(lineage["valid_from"]), valid_to=pd.to_datetime(lineage["valid_to"])))
+    master = [
+        _master_row("ALN", "ALN000001", "canonical_current", "2011-01-01"),
+        _master_row("ALN", "ALN000002", "secondary_class", "2011-01-01", symbol="ALN.A"),
+        _master_row("MIS", "MIS000001", "canonical_predecessor", "2011-01-01"),
+        _master_row("JCO", "JCO000001", "canonical_predecessor", "2011-01-01"),
+        _master_row("FEW", "FEW000001", "canonical_current", "2011-01-01"),
+        _master_row("NOP", "NOP000001", "canonical_current", "2011-01-01"),
+        _master_row("TWO", "TWO000001", "canonical_predecessor", "2011-01-01", "2012-02-15"),
+        _master_row("TWO", "TWO000002", "canonical_current", "2012-02-15"),
+        _master_row("TWO", "TWO000009", "excluded", "2011-01-01"),
+    ]
+    store.save(Tables.security_master, pd.DataFrame(master))
+    n = len(_DAYS) - 1
+    jco = [0.90] * 24 + [0.974, 1.0, 1.0] + [1.10] * 23
+    ftd = [
+        *_ftd("ALN000001", [1.0] * n),
+        *_ftd("ALN000002", [1.0] * n, scale=30.0),
+        *_ftd("MIS000001", [0.446] * n),
+        *_ftd("JCO000001", jco),
+        *_ftd("FEW000001", [1.0] * 10),
+        *_ftd("NOP000001", [1.0] * n),
+        *_ftd("TWO000001", [0.5] * n),
+        *_ftd("TWO000002", [0.446] * n),
+        *_ftd("TWO000009", [5.0] * n),
+    ]
+    store.save(Tables.sec_fails_to_deliver_security, pd.DataFrame(ftd))
+    prices = [
+        {"ticker": t, "date": day, "close_split": scale * _raw_close(day) * (0.5 if day < _SPLIT_DAY else 1.0)}
+        for t, scale in (("ALN", 1.0), ("ALN-A", 30.0), ("MIS", 1.0), ("JCO", 1.0), ("FEW", 1.0), ("TWO", 1.0))
+        for day in _DAYS
+    ]
+    store.save(Tables.prices, pd.DataFrame(prices))
+    store.save(Tables.prices_splits, pd.DataFrame({"ticker": ["ALN", "ALN-A", "MIS", "JCO", "FEW", "TWO"], "date": _SPLIT_DAY, "ratio": 2.0}))
+
+
+def test_traded_security_mismatch_flags_one_row_per_ticker_and_counts_unverified_lines(sqlite_store):
+    """AC-008 fixture: an aligned line across a split passes and a secondary class is not judged; 0.446, a 0.987 median with 6 % of days
+    inside +-3 %, and a two-CUSIP ticker are one warning row each; < 20 days and no Yahoo price are unverified counts."""
+    _seed_traded(sqlite_store)
+
+    report = check_identity(_context(sqlite_store))
+
+    flags = report.flags[report.flags["kind"].eq("traded_security_mismatch")]
+    print("\n=== SANITY CHECK: traded_security_mismatch ===")
+    print(flags[["ticker", "action", "ciks", "evidence"]].to_string(index=False))
+    metrics = report.result.metrics
+    print(f"  unverified: {metrics['traded_security_unverified']} {metrics['traded_security_unverified_lines']}")
+    assert sorted(flags["ticker"]) == ["JCO", "MIS", "TWO"], flags
+    assert flags["action"].astype(bool).all() and flags["config_file"].eq("configs/sec/security_master_manual.json").all()
+    evidence = dict(zip(flags["ticker"], flags["evidence"], strict=True))
+    assert "MIS000001" in evidence["MIS"] and "median ratio 0.446" in evidence["MIS"] and "0% of 79" in evidence["MIS"]
+    assert "median ratio 0.987" in evidence["JCO"] and "6% of 50" in evidence["JCO"]
+    assert "TWO000002" in evidence["TWO"] and "2 flagged line(s)" in evidence["TWO"] and "TWO000009" not in evidence["TWO"]
+    assert metrics["traded_security_unverified"] == 2
+    assert [line.split()[:2] for line in metrics["traded_security_unverified_lines"]] == [["FEW", "FEW000001"], ["NOP", "NOP000001"]]
+    manual = [f for f in report.result.findings if f.field == "manual_decision" and "traded_security_mismatch" in f.observed]
+    assert len(manual) == 3 and all(f.score == 2 for f in manual)
+    assert not any(f.score >= 4 for f in report.result.findings), [f.observed for f in report.result.findings if f.score >= 4]
+    assert report.result.metrics["traded_security_lines"] == 7
+    print("  OK: ALN passes across a split, its secondary class is not judged; MIS, JCO, TWO are one score-2 row each; FEW, NOP are counts.")

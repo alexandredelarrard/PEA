@@ -328,18 +328,34 @@ def _is_empty_header(header: Any) -> bool:
     return getattr(header, "text", None) == "" and not any(parties)
 
 
-def _forget_sgml(filing: Any) -> None:
-    """Drop edgartools' cached submission and header so the next read fetches them again."""
+def forget_sgml(filing: Any) -> None:
+    """Drop edgartools' cached submission and header: the next read fetches them again, and a held Filing stops holding every document.
+
+    The submission's documents, attachments and summary point back at it, so it is emptied first:
+    dropping the reference alone leaves every document to the cyclic collector, which runs rarely.
+    """
     if isinstance(getattr(type(filing), "header", None), cached_property):
         vars(filing).pop("header", None)
+    if (sgml := getattr(filing, "_sgml", None)) is not None:
+        _empty(sgml)
     if hasattr(filing, "_sgml"):
         filing._sgml = None
+
+
+def _empty(obj: Any) -> None:
+    """Delete every instance attribute of `obj`, `__slots__` included, breaking the cycles through it."""
+    if hasattr(obj, "__dict__"):
+        vars(obj).clear()
+    for klass in type(obj).__mro__:
+        for slot in getattr(klass, "__slots__", ()):
+            if slot not in {"__dict__", "__weakref__"} and hasattr(obj, slot):
+                delattr(obj, slot)
 
 
 def _read_header(filing: Any) -> Any:
     header = filing.header
     if _is_empty_header(header):
-        _forget_sgml(filing)
+        forget_sgml(filing)
         raise _EmptyHeaderError(f"{_label(filing, 'header')}: empty SGML header")
     return header
 

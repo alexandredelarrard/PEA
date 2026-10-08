@@ -86,7 +86,9 @@ def build(
         def submit(self, task):
             self.tasks.append(task)
 
-        def run(self):
+        def run(self, tasks=()):
+            for task in tasks:
+                self.submit(task)
             return [LlmResult(seq=task.seq, task=task, parsed=answers[task.meta["stamp"].accession_number]) for task in self.tasks]
 
     identity = SimpleNamespace(
@@ -852,7 +854,9 @@ def test_one_invalid_llm_answer_fails_only_its_own_filing_date(monkeypatch):
         def submit(self, task):
             self.tasks.append(task)
 
-        def run(self):
+        def run(self, tasks=()):
+            for task in tasks:
+                self.submit(task)
             sent.append([task.meta["stamp"].accession_number for task in self.tasks])
             results = []
             for task in self.tasks:
@@ -923,7 +927,9 @@ def test_a_rerun_without_full_makes_no_llm_call_for_decided_dates(monkeypatch, s
             tasks.append(task.meta["stamp"].accession_number)
             self.tasks.append(task)
 
-        def run(self):
+        def run(self, tasks=()):
+            for task in tasks:
+                self.submit(task)
             return [LlmResult(seq=task.seq, task=task, parsed=answers[task.meta["stamp"].accession_number]) for task in self.tasks]
 
     context = SimpleNamespace(
@@ -981,3 +987,25 @@ def test_cli_still_dispatches_explicit_full_replay(monkeypatch):
     assert result.exit_code == 0, result.output
     assert calls == [(["AAA"], 31, True)]
     print("\nSANITY: the existing CLI runs a ticker-scoped full employee replay when explicitly requested.")
+
+
+def test_a_read_filing_drops_its_cached_submission(monkeypatch):
+    """F1: the stamp outlives the read, so the task builder drops the Filing's cached submission (every
+    document of the filing) and header once the employee text is read; the metadata the row needs stays."""
+    filing = Filing("big", "2025-03-01", "We had 41,000 employees.")
+    filing._sgml = object()  # edgartools' cached full submission
+    stamp = edgar_driver.FilingStamp.of(filing, "0000000001")
+    task = mod._employee_task(0, "AAA", stamp, 60_000)
+    assert filing._sgml is None
+    assert "41,000 employees" in str(task.meta["source_text"]) and task.meta["stamp"].accession_number == "big"
+    result = build(monkeypatch, [Filing("big", "2025-03-01", "We had 41,000 employees.")], {"big": answer(41000, "We had 41,000 employees.")})
+    assert result.frame["employees_total"].tolist() == [41000]
+    scans: list[int] = []
+    spans = mod._workforce_number_spans
+    monkeypatch.setattr(mod, "_workforce_number_spans", lambda text: scans.append(len(text)) or spans(text))
+    one = edgar_driver.FilingStamp.of(Filing("one", "2025-03-01", "We had 41,000 employees."), "0000000001")
+    assert "41,000 employees" in str(mod._employee_task(1, "AAA", one, 60_000).meta["source_text"]) and len(scans) == 1
+    print(
+        "\nSANITY: after the employee text is read the filing holds no cached submission; the task and the 41,000 row are unchanged, "
+        "and the document is scanned for workforce numbers once."
+    )

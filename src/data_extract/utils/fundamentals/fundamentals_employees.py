@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from functools import partial
 from itertools import combinations
@@ -20,7 +20,7 @@ from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp
 from src.data_extract.utils.common.edgar_extract import html_to_text
 from src.data_extract.utils.common.identity import Identity, load_identity
 from src.data_extract.utils.common.parallel_fetch import run_per_ticker
-from src.data_extract.utils.common.sec_io import configure, filing_attachments, sec_call
+from src.data_extract.utils.common.sec_io import configure, filing_attachments, forget_sgml, sec_call
 from src.data_extract.utils.common.sec_utils import load_cik_mapping
 from src.data_store.schema import Tables
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
@@ -255,11 +255,13 @@ def _merge(spans: Iterable[tuple[int, int]]) -> list[tuple[int, int]]:
     return merged
 
 
-def employee_excerpt(text: str, limit: int) -> str:
+def employee_excerpt(text: str, limit: int, spans: Sequence[tuple[int, int]] | None = None) -> str:
     """Windows around workforce numbers, then the filing's opening, then windows around other workforce
-    mentions, each kept while the gap-joined excerpt stays within `limit` characters."""
+    mentions, each kept while the gap-joined excerpt stays within `limit` characters. `spans` are the
+    text's `_workforce_number_spans` when the caller already has them."""
     before, after = _WINDOW
-    windows = [(max(0, start - before), min(len(text), end + after)) for start, end in _workforce_number_spans(text)]
+    spans = _workforce_number_spans(text) if spans is None else spans
+    windows = [(max(0, start - before), min(len(text), end + after)) for start, end in spans]
     windows.append((0, min(_OPENING, len(text))))
     windows += [(max(0, match.start() - before), min(len(text), match.end() + after)) for match in _CONTEXT_RE.finditer(text)]
     separator = f"\n\n{_GAP}\n\n"
@@ -273,10 +275,12 @@ def employee_excerpt(text: str, limit: int) -> str:
 
 @dataclass(frozen=True)
 class EmployeeText:
-    """The document text the employee excerpt is cut from, and which document it is ("primary" or an exhibit type)."""
+    """The document text the employee excerpt is cut from, which document it is ("primary" or an exhibit type),
+    and its workforce-number spans when already scanned."""
 
     text: str
     source_document: str
+    spans: tuple[tuple[int, int], ...] | None = None
 
 
 def is_annual_report_exhibit(document_type: str, description: str) -> bool:
@@ -294,12 +298,13 @@ def _incorporates_workforce(text: str) -> bool:
 def choose_employee_text(primary: str, exhibits: Iterable[tuple[str, Callable[[], str]]]) -> EmployeeText:
     """The primary document, unless it states no workforce number or incorporates its workforce disclosure
     by reference; then the first annual-report exhibit (read lazily, in order) that states one."""
-    if _workforce_number_spans(primary) and not _incorporates_workforce(primary):
-        return EmployeeText(primary, "primary")
+    primary_spans = tuple(_workforce_number_spans(primary))
+    if primary_spans and not _incorporates_workforce(primary):
+        return EmployeeText(primary, "primary", primary_spans)
     for document_type, read in exhibits:
-        if _workforce_number_spans(text := read()):
-            return EmployeeText(text, document_type)
-    return EmployeeText(primary, "primary")
+        if spans := tuple(_workforce_number_spans(text := read())):
+            return EmployeeText(text, document_type, spans)
+    return EmployeeText(primary, "primary", primary_spans)
 
 
 def _annual_report_exhibits(filing: Filing) -> Iterator[tuple[str, Callable[[], str]]]:
@@ -569,7 +574,7 @@ def employee_task(
     )
     if max_chars <= len(prefix):
         raise ValueError("gpt.max_chars.employees is too small for filing metadata")
-    source_text = employee_excerpt(document.text, max_chars - len(prefix))
+    source_text = employee_excerpt(document.text, max_chars - len(prefix), document.spans)
     return LlmTask(
         seq=sequence,
         payload=prefix + source_text,
@@ -579,12 +584,18 @@ def employee_task(
 
 
 def _employee_task(sequence: int, ticker: str, stamp: FilingStamp, max_chars: int) -> LlmTask:
-    """Read one owned filing's employee text and package it as one LLM task carrying its stamp."""
+    """Read one owned filing's employee text and package it as one LLM task carrying its stamp.
+
+    The filing's cached submission is then dropped: the stamp outlives the read, and an edgartools
+    Filing otherwise keeps every document of its submission in memory.
+    """
     report = stamp.period_of_report
+    document = employee_text(stamp.filing)
+    forget_sgml(stamp.filing)
     return employee_task(
         sequence,
         ticker,
-        employee_text(stamp.filing),
+        document,
         max_chars,
         filed=stamp.filed,
         accession=str(stamp.accession_number),
@@ -594,12 +605,13 @@ def _employee_task(sequence: int, ticker: str, stamp: FilingStamp, max_chars: in
 
 
 def _extract_answers(context: Context, config: DictConfig, ticker: str, stamps: list[FilingStamp]) -> list[LlmResult]:
-    """One LLM result per filing, in filing order; a failed call is a result with its error, not a raise."""
+    """One LLM result per filing, in filing order; a failed call is a result with its error, not a raise.
+
+    Filings are read as the calls run, so reading the next filing overlaps the call on the previous one.
+    """
     extractor = LLMExtractor(context, config, action="employees", threads=1)
     max_chars = int(config.gpt.max_chars.employees)
-    for sequence, stamp in enumerate(stamps):
-        extractor.submit(_employee_task(sequence, ticker, stamp, max_chars))
-    results = extractor.run()
+    results = extractor.run(_employee_task(sequence, ticker, stamp, max_chars) for sequence, stamp in enumerate(stamps))
     if len(results) != len(stamps):
         raise RuntimeError(f"{ticker}: {len(results)} employee LLM result(s) for {len(stamps)} filing(s)")
     return results

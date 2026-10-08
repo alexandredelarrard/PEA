@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import re
+import warnings
 from functools import partial
 from typing import Any
 
@@ -26,6 +27,11 @@ from src.data_extract.utils.structure.votes.guard import has_vote_table
 from src.data_store.schema import Tables
 
 logger = logging.getLogger(__name__)
+
+# An item code listed in the filing index but absent from the parsed body is routine (items are
+# optional per filer); `_item_text` already maps that None to an empty text. Process-wide filter,
+# because `warnings.catch_warnings` is not thread-safe and the fetch runs threaded.
+warnings.filterwarnings("ignore", message=r"CurrentReport\[.*found no such item in this filing", category=FutureWarning)
 
 _COLS = [
     "ticker",

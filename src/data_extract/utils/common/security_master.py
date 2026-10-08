@@ -34,7 +34,7 @@ from src.data_extract.utils.common.entity_lineage import (
 from src.data_extract.utils.common.incremental import matches_stored
 from src.data_extract.utils.common.symbol_tenure import DEI_SOURCE
 from src.data_store.schema import Tables
-from src.utils.cutover_continuity import ShareExchange
+from src.utils.cutover_continuity import PredecessorSeries, ShareExchange
 from src.utils.identity_flags import FLAG_COLUMNS, cik_activity, identity_flags, log_identity_flags
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
 
@@ -223,7 +223,8 @@ def _length(spans: Iterable[Span], horizon: pd.Timestamp) -> float:
 @dataclass(frozen=True)
 class SecurityManual:
     """Parsed `security_master_manual.json`: dated conversion ratios, CUSIP market boundaries, class overrides, merger
-    metadata, the declared co-registrant CIKs, the merger exchange ratios and the reverse acquisitions."""
+    metadata, the declared co-registrant CIKs, the merger exchange ratios, the reverse acquisitions and the vendor
+    series overrides."""
 
     ratios: pd.DataFrame
     boundaries: pd.DataFrame
@@ -232,6 +233,7 @@ class SecurityManual:
     co_registrants: tuple[str, ...] = ()
     exchanges: tuple[ShareExchange, ...] = ()
     reverse_acquisitions: tuple[ReverseAcquisition, ...] = ()
+    vendor_series: tuple[PredecessorSeries, ...] = ()
 
     @classmethod
     def empty(cls) -> SecurityManual:
@@ -243,6 +245,7 @@ _BOUNDARY_COLUMNS = ("ticker", "cusip", "issuer_cik", "role", "valid_from", "val
 _CLASS_COLUMNS = ("cusip", "security_class", "source")
 _EXCHANGE_COLUMNS = ("ticker", "predecessor_cik", "seam_date", "ratio", "source")
 _REVERSE_COLUMNS = ("ticker", "seam_date", "accounting_acquirer_cik", "legal_acquirer_cik", "source")
+_VENDOR_SERIES_COLUMNS = ("ticker", "vendor_ticker", "cik", "valid_from", "valid_to", "source")
 
 
 @dataclass(frozen=True)
@@ -293,6 +296,7 @@ def parse_security_manual(blob: Mapping[str, Any]) -> SecurityManual:
         co_registrants=tuple(sorted(set(pad_cik_series(co_registrants["cik"])))) if not co_registrants.empty else (),
         exchanges=_exchanges(_entries(blob, "exchange_ratios", _EXCHANGE_COLUMNS)),
         reverse_acquisitions=_reverse_acquisitions(_entries(blob, "reverse_acquisitions", _REVERSE_COLUMNS)),
+        vendor_series=_vendor_series(_entries(blob, "vendor_series_overrides", _VENDOR_SERIES_COLUMNS)),
     )
 
 
@@ -316,6 +320,20 @@ def _reverse_acquisitions(rows: pd.DataFrame) -> tuple[ReverseAcquisition, ...]:
             accounting_acquirer_cik=pad_cik(row.accounting_acquirer_cik),
             legal_acquirer_cik=pad_cik(row.legal_acquirer_cik),
             source=str(row.source),
+        )
+        for row in rows.itertuples(index=False)
+    )
+
+
+def _vendor_series(rows: pd.DataFrame) -> tuple[PredecessorSeries, ...]:
+    """The `vendor_series_overrides` entries as predecessor series; a null bound is an open end."""
+    return tuple(
+        PredecessorSeries(
+            ticker=normalise_ticker(str(row.ticker)),
+            vendor_ticker=normalise_ticker(str(row.vendor_ticker)),
+            cik=pad_cik(row.cik),
+            valid_from=_bound(row.valid_from),
+            valid_to=_bound(row.valid_to),
         )
         for row in rows.itertuples(index=False)
     )

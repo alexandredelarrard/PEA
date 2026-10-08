@@ -7,6 +7,7 @@ predecessor vendor ticker; STE (STERIS Corp, STE1) is the worked window. Offline
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -19,6 +20,7 @@ from src.data_store.schema import Tables
 from tests.conftest import FakeStore
 
 LOGGER = "test.predecessor_autofill"
+REPO_CONFIGS = Path(__file__).resolve().parents[3] / "configs"
 URL = "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={}&type=&dateb=&owner=include&count=40"
 
 
@@ -91,7 +93,7 @@ def _empties() -> dict[Any, pd.DataFrame]:
 
 
 def _context(store: FakeStore) -> Any:
-    return SimpleNamespace(store=store, log=logging.getLogger(LOGGER))
+    return SimpleNamespace(store=store, log=logging.getLogger(LOGGER), config_dir=str(REPO_CONFIGS))
 
 
 def test_predecessor_vendor_tickers_are_derived_not_listed() -> None:

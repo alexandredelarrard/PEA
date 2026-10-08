@@ -18,7 +18,7 @@ import pandas as pd
 import pytest
 
 from src.data_extract.utils.common import security_master as sm
-from src.data_extract.utils.fundamentals_sharadar import merge_history
+from src.data_extract.utils.fundamentals_sharadar import fetch_sharadar, merge_history
 from src.data_extract.utils.fundamentals_sharadar.field_map import load_field_map
 from src.data_store.schema import Tables
 from src.utils import cutover_continuity as cc
@@ -48,12 +48,13 @@ EXCHANGES = [
 ]
 
 
-def _config(tmp_path: Path, exchanges: list[dict[str, Any]]) -> str:
-    """A config dir holding the Sharadar and fundamentals maps of the repo and a manual with `exchanges` only."""
+def _config(tmp_path: Path, exchanges: list[dict[str, Any]], overrides: list[dict[str, Any]] | None = None) -> str:
+    """A config dir holding the Sharadar and fundamentals maps of the repo and a manual with `exchanges` (and `overrides`) only."""
     for sub in ("sharadar", "fundamentals"):
         shutil.copytree(REPO_CONFIGS / sub, tmp_path / sub)
     (tmp_path / "sec").mkdir()
-    (tmp_path / "sec" / "security_master_manual.json").write_text(json.dumps({"exchange_ratios": exchanges}), encoding="utf-8")
+    manual = {"exchange_ratios": exchanges, "vendor_series_overrides": overrides or []}
+    (tmp_path / "sec" / "security_master_manual.json").write_text(json.dumps(manual), encoding="utf-8")
     return str(tmp_path)
 
 
@@ -277,8 +278,160 @@ def test_the_shipped_config_cites_one_exchange_ratio_per_replaced_window() -> No
     print("\n=== SANITY CHECK: shipped exchange ratios ===")
     for x in exchanges.values():
         print(f"  {x.ticker} {x.predecessor_cik} {x.seam_date.date()} x{x.ratio}")
-    assert set(exchanges) == {"LIN", "EVRG", "BKR", "STE"}, "PLD and DD follow their traded security: no replacement, no ratio"
+    assert set(exchanges) == {"LIN", "EVRG", "BKR", "STE", "JCI"}, "PLD and DD follow their traded security: no replacement, no ratio"
     assert all(exchanges[t].ratio == 1 for t in ("LIN", "EVRG", "BKR", "STE"))
+    assert (exchanges["JCI"].predecessor_cik, exchanges["JCI"].seam_date, exchanges["JCI"].ratio) == ("0000833444", pd.Timestamp("2016-09-02"), 0.955)
     with pytest.raises(sm.SecurityManualError):
         sm.parse_security_manual({"exchange_ratios": [{"ticker": "X", "predecessor_cik": "1", "seam_date": "2020-01-01", "ratio": 2.0}]})
-    print("  OK: four cited entries, each ratio 1 (PLD/DD removed with the traded-security view); an entry without a source is refused.")
+    print("  OK: five cited entries: LIN/EVRG/BKR/STE ratio 1, JCI <- Tyco 0.955 (the consolidation split_events drops); PLD/DD have none;")
+    print("  an entry without a source is refused.")
+
+
+# --------------------------------------------------------------------------- JCI <- TYC (vendor_series_overrides)
+
+JCI_SEAM = pd.Timestamp("2016-09-02")
+SPIN_2012 = 2.011667672500503
+#: Yahoo's JCI split events (prices_splits, live 2026-10-07): Tyco's own splits, the 2012 ADT/Pentair spin and the 2016 consolidation.
+JCI_YF = [
+    ("JCI", "1995-11-15", 2.0),
+    ("JCI", "1997-10-23", 2.0),
+    ("JCI", "1999-10-22", 2.0),
+    ("JCI", "2007-07-02", 0.25),
+    ("JCI", "2012-10-01", SPIN_2012),
+    ("JCI", "2016-09-06", 0.955),
+]
+#: sharadar_actions splits and spinoffs (live 2026-10-07): old JCI's own splits under JCI, Tyco's under TYC.
+JCI_ACTIONS = [
+    ("JCI", "2004-01-05", "split", 2.0),
+    ("JCI", "2007-10-03", "split", 3.0),
+    ("JCI", "2016-10-31", "spinoff", 0.1),
+    ("TYC", "1999-10-22", "split", 2.0),
+    ("TYC", "2007-07-02", "spinoff", 1.0),
+    ("TYC", "2007-07-02", "split", 0.25),
+    ("TYC", "2012-10-01", "spinoff", 0.5),
+    ("TYC", "2012-10-01", "spinoff", 0.23994),
+]
+#: Real Sharadar TYC ARQ rows: (date, reportperiod, calendardate, sharesbas, shareswa, price, marketcap, dps, JCI close_split on `date`).
+TYC_ROWS = [
+    ("1997-02-13", "1996-12-31", "1996-12-31", 156679751, 157445000, 59.00, 9244105309, 0.050, 30.710890),
+    ("2006-05-09", "2006-03-31", "2006-03-31", 509150440, 504750000, 111.60, 56821189048, 0.400, 58.090427),
+    ("2011-01-27", "2010-12-24", "2010-12-31", 473753233, 488000000, 44.74, 21195719644, 0.210, 23.288223),
+    ("2012-07-31", "2012-06-29", "2012-06-30", 459875217, 463000000, 54.94, 25265544422, 0.250, 28.597565),
+    ("2012-11-16", "2012-09-28", "2012-09-30", 465717368, 463000000, 26.77, 12467253941, 0.150, 28.031414),
+    ("2016-07-29", "2016-06-24", "2016-06-30", 426224367, 426000000, 45.57, 19423044404, 0.205, 47.717278),
+]
+JCI_OVERRIDE = {
+    "ticker": "JCI",
+    "vendor_ticker": "TYC",
+    "cik": "0000833444",
+    "valid_from": None,
+    "valid_to": "2016-09-02",
+    "source": "0001104659-16-143068",
+    "evidence": "fixture",
+}
+JCI_EXCHANGE = {"ticker": "JCI", "predecessor_cik": "0000833444", "seam_date": "2016-09-02", "ratio": 0.955, "source": "0001104659-16-143068"}
+
+
+def _tyc() -> pd.DataFrame:
+    rows = []
+    for date, period, calendar, sharesbas, shareswa, price, marketcap, dps, _ in TYC_ROWS:
+        row = _arq("TYC", [str(pd.Period(calendar, freq="Q"))], sharesbas=sharesbas, shareswa=shareswa, price=price, marketcap=marketcap, dps=dps)
+        rows.append(row.assign(date=pd.Timestamp(date).date(), reportperiod=pd.Timestamp(period).date(), calendardate=pd.Timestamp(calendar).date()))
+    return pd.concat(rows, ignore_index=True)
+
+
+def _jci_store() -> FakeStore:
+    """Old JCI's own rows inside the window (another company's shares), one post-seam JCI row, Tyco's real rows under TYC."""
+    canonical = pd.concat(
+        [_arq("JCI", ["2006Q1", "2010Q4", "2012Q2"], sharesbas=590e6, price=30.0), _arq("JCI", ["2016Q4"], sharesbas=935e6, price=41.0)],
+        ignore_index=True,
+    )
+    return FakeStore(
+        {
+            Tables.entity_lineage: _lineage(),
+            Tables.sharadar_tickers: _vendor_tickers(),
+            Tables.sharadar_fundamentals: pd.concat([canonical, _tyc()], ignore_index=True),
+            Tables.sharadar_actions: pd.DataFrame(
+                [{"ticker": t, "date": pd.Timestamp(d), "action": a, "value": v} for t, d, a, v in JCI_ACTIONS],
+                columns=["ticker", "date", "action", "value"],
+            ),
+            Tables.prices_splits: pd.DataFrame(
+                [{"ticker": t, "date": pd.Timestamp(d), "ratio": v} for t, d, v in JCI_YF], columns=["ticker", "date", "ratio"]
+            ),
+            Tables.fundamentals_employees: pd.DataFrame(columns=["ticker", "as_of", "employees"]),
+            Tables.fundamentals_history_sec: pd.DataFrame(
+                {"ticker": ["JCI"], "as_of": pd.Timestamp("1990-01-01")}
+                | {c: float("nan") for c in load_field_map(str(REPO_CONFIGS)).sec_owned if c != "employees"}
+            ),
+        }
+    )
+
+
+def test_a_vendor_series_override_declares_jci_from_tyc(tmp_path: Path) -> None:
+    manual = sm.parse_security_manual({"vendor_series_overrides": [JCI_OVERRIDE]})
+    expected = cc.PredecessorSeries("JCI", "TYC", "0000833444", None, JCI_SEAM)
+    shipped = sm.load_security_manual(str(REPO_CONFIGS)).vendor_series
+    context = SimpleNamespace(store=_jci_store(), log=logging.getLogger(LOGGER), config_dir=_config(tmp_path, [JCI_EXCHANGE], [JCI_OVERRIDE]))
+    print("\n=== SANITY CHECK: vendor_series_overrides ===")
+    print(f"  parsed {manual.vendor_series}; shipped {shipped}")
+    assert manual.vendor_series == (expected,) and shipped == (expected,)
+    assert fetch_sharadar.load_predecessor_series(context, ["JCI", "AAPL"]) == (expected,)
+    assert fetch_sharadar.predecessor_vendor_tickers(context, ["JCI"]) == ["TYC"]
+    assert fetch_sharadar.predecessor_vendor_tickers(context, ["AAPL"]) == []
+    with pytest.raises(sm.SecurityManualError):
+        sm.parse_security_manual({"vendor_series_overrides": [{**JCI_OVERRIDE, "source": ""}]})
+    print("  OK: JCI -> TYC (CIK 0000833444, open start, to 2016-09-02) from the cited entry; JCI has no register window yet the fetch")
+    print("  lists TYC; a ticker outside the override is unchanged; an entry without a source is refused.")
+
+
+def test_price_only_events_are_the_ticker_events_the_vendor_shows_as_a_spinoff_without_a_split() -> None:
+    actions = pd.DataFrame([{"ticker": t, "date": pd.Timestamp(d), "action": a, "value": v} for t, d, a, v in JCI_ACTIONS])
+    yf = pd.DataFrame([{"ticker": t, "date": pd.Timestamp(d), "ratio": v} for t, d, v in JCI_YF])
+    jci = cc.PredecessorSeries("JCI", "TYC", "0000833444", None, JCI_SEAM)
+    got = cc.price_only_events(yf, actions, [(jci, JCI_SEAM)])
+    # the existing windows' in-window ticker events are genuine vendor splits (PX1 2003-12-16, STE1 1998-08-25): none price-only
+    lin = cc.PredecessorSeries("LIN", "PX1", "0000884905", None, pd.Timestamp("2018-10-31"))
+    ste = cc.PredecessorSeries("STE", "STE1", "0000815065", None, pd.Timestamp("2015-11-02"))
+    others = cc.price_only_events(
+        pd.DataFrame({"ticker": ["LIN", "STE"], "date": pd.to_datetime(["2003-12-16", "1998-08-25"]), "ratio": [2.0, 2.0]}),
+        pd.DataFrame({"ticker": ["PX1", "STE1"], "date": pd.to_datetime(["2003-12-16", "1998-08-25"]), "action": "split", "value": [2.0, 2.0]}),
+        [(lin, pd.Timestamp("2018-10-31")), (ste, pd.Timestamp("2015-11-02"))],
+    )
+    print("\n=== SANITY CHECK: price-only events inside a window ===")
+    print(got.to_string())
+    assert got[["ticker", "date", "value"]].values.tolist() == [["JCI", pd.Timestamp("2012-10-01"), SPIN_2012]]
+    assert others.empty
+    print("  OK: only 2012-10-01 (TYC spinoffs ADT1/PNR, no split); 2007-07-02 has a TYC split, 1995/1997/1999 no TYC spinoff,")
+    print("  2016-09-06 is after the seam; LIN's and STE's in-window events are vendor splits, so their windows are unchanged.")
+
+
+def test_jci_rows_before_the_seam_are_tyco_on_jci_basis_per_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    arq, out = _merged(_jci_store(), "JCI", _config(tmp_path, [JCI_EXCHANGE], [JCI_OVERRIDE]), monkeypatch, caplog)
+    truth = pd.DataFrame(
+        TYC_ROWS, columns=["date", "reportperiod", "calendardate", "sharesbas", "shareswa", "price", "marketcap", "dps", "close_split"]
+    )
+    truth = truth.assign(quarter=[str(pd.Period(d, freq="Q")) for d in truth["calendardate"]]).set_index("quarter")
+    factor = pd.Series([0.955 * SPIN_2012 if pd.Timestamp(d) < pd.Timestamp("2012-10-01") else 0.955 for d in truth["date"]], index=truth.index)
+    print("\n=== SANITY CHECK: JCI <- TYC on JCI's share basis ===")
+    shown = arq.loc[truth.index, ["ticker", "date", "sharesbas", "price", "marketcap"]].assign(factor=factor, close_split=truth["close_split"])
+    print(shown.to_string())
+    print(out[["sharesOutstanding", "sharesOutstandingPit"]].to_string())
+    assert arq.loc[truth.index, "marketcap"].tolist() == truth["marketcap"].tolist(), "the inside rows are Tyco's"
+    assert arq.loc[truth.index, "sharesbas"].tolist() == pytest.approx((truth["sharesbas"] * factor).tolist())
+    assert arq.loc[truth.index, "dps"].tolist() == pytest.approx((truth["dps"] / factor).tolist())
+    # known truth: Tyco's price on JCI's basis is JCI's own close_split, so close_split x shares is Tyco's market cap
+    assert arq.loc[truth.index, "price"].tolist() == pytest.approx(truth["close_split"].tolist(), rel=1e-6)
+    implied = truth["close_split"] * arq.loc[truth.index, "sharesbas"] / truth["marketcap"]
+    assert implied.tolist() == pytest.approx([1.0] * len(truth), rel=1e-6)
+    assert arq.loc["2016Q4", "sharesbas"] == 935e6 and arq.loc["2016Q4", "price"] == 41.0
+    # PIT: Tyco's as-filed count (its own 1999 2:1 and 2007 1:4 undone), never the price-only spin or old JCI's splits
+    assert out.loc["2006Q1", "sharesOutstandingPit"] == pytest.approx(509150440 / 0.25)
+    assert out.loc["2010Q4", "sharesOutstandingPit"] == pytest.approx(473753233)
+    assert out.loc["2012Q2", "sharesOutstandingPit"] == pytest.approx(459875217)
+    assert out.loc["2012Q3", "sharesOutstandingPit"] == pytest.approx(465717368)
+    assert out.loc["2016Q2", "sharesOutstandingPit"] == pytest.approx(426224367)
+    assert out.loc["2016Q4", "sharesOutstandingPit"] == pytest.approx(935e6)
+    print("  OK: inside the window Tyco's real rows at 0.955 x 2.0117 before 2012-10-01 and 0.955 after (no 0.25, no 0.955^2):")
+    print("  converted price = JCI close_split and close_split x shares = Tyco's market cap; PIT = Tyco's as-filed count; after the seam untouched.")

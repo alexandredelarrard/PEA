@@ -2,7 +2,8 @@
 
 `fetch_sharadar_tickers` (entity dimension; must run first, it supplies the USD check), `fetch_sharadar_fundamentals`
 (SF1, one request per (ticker, dimension)), `fetch_sharadar_actions` and `fetch_sharadar_sp500` (market-wide).
-`predecessor_vendor_tickers` adds the vendor tickers carrying a register predecessor CIK's own series.
+`predecessor_vendor_tickers` adds the vendor tickers carrying a register predecessor CIK's own series and the cited
+`vendor_series_overrides` of `security_master_manual.json`.
 SF1 resumes per TICKER from its own last filing `date` minus the contract overlap (`resume.series_windows`); the two
 market-wide tables from the table's last date minus the overlap. `lastupdated` is not a watermark, so a Sharadar
 restatement older than the overlap needs `--full`. A failed page fails its ticker (or table) whole; nothing partial is saved.
@@ -18,6 +19,7 @@ from tqdm import tqdm
 from src.constants.constants import DATE_FORMAT, SHARADAR_BASE_URL, SHARADAR_SF1_COLUMNS
 from src.context import Context
 from src.data_extract.utils.common.resume import document_floor, series_windows
+from src.data_extract.utils.common.security_master import load_security_manual
 from src.data_extract.utils.fundamentals_sharadar.client import (
     NotEntitledError,
     SharadarRequestError,
@@ -30,6 +32,7 @@ from src.data_extract.utils.fundamentals_sharadar.client import (
 from src.data_store.schema import Table, Tables
 from src.utils.cutover_continuity import PredecessorSeries, predecessor_series, register_windows
 from src.utils.polite_http import sleep_pace
+from src.utils.string import normalise_ticker
 
 # As-reported dimensions only: point-in-time and immutable (MR* rows restate in place).
 SHARADAR_DIMENSIONS = ("ARQ", "ARY", "ART")
@@ -72,9 +75,18 @@ def _usd_roster(context: Context) -> dict[str, str]:
     return dict(zip(frame["ticker"].astype(str), frame["currency"].astype(str), strict=False))
 
 
-def load_predecessor_series(context: Context, tickers: list[str]) -> tuple[PredecessorSeries, ...]:
-    """The predecessor vendor series of `tickers`: `sharadar_tickers` rows whose `secfilings` CIK owns a closed register
-    window in `entity_lineage`. None before the dated lineage exists."""
+def load_predecessor_series(context: Context, tickers: list[str], config_dir: str | None = None) -> tuple[PredecessorSeries, ...]:
+    """The predecessor vendor series of `tickers`: the cited `vendor_series_overrides` (from `config_dir`, else the
+    context's), plus the `sharadar_tickers` rows whose `secfilings` CIK owns a closed register window in `entity_lineage`.
+    An override wins over a derived series of the same `(ticker, cik)`."""
+    names = {normalise_ticker(t) for t in tickers}
+    declared = tuple(s for s in load_security_manual(config_dir or str(context.config_dir)).vendor_series if s.ticker in names)
+    taken = {(s.ticker, s.cik) for s in declared}
+    return tuple(s for s in _register_series(context, tickers) if (s.ticker, s.cik) not in taken) + declared
+
+
+def _register_series(context: Context, tickers: list[str]) -> tuple[PredecessorSeries, ...]:
+    """The register-derived predecessor series; none before the dated lineage exists."""
     if "role" not in context.store.columns(Tables.entity_lineage):
         return ()
     lineage = context.store.load(

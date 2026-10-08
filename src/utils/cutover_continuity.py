@@ -16,6 +16,7 @@ from typing import Any
 
 import pandas as pd
 
+from src.constants.constants import SHARADAR_ACTION_SPINOFF, SHARADAR_ACTION_SPLIT
 from src.utils.identity_flags import MARGIN
 from src.utils.quarters import quarter_label, quarter_ordinal
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
@@ -333,8 +334,8 @@ def _inside(frame: pd.DataFrame, series: PredecessorSeries) -> pd.Series:
 EVENT_COLUMNS = ("ticker", "vendor_ticker", "cik", "quarter", "event", "canonical_rows", "predecessor_rows")
 
 
-def convert_share_basis(frame: pd.DataFrame, factor: float | None) -> pd.DataFrame:
-    """`frame` with its share counts multiplied and its per-share figures divided by `factor`.
+def convert_share_basis(frame: pd.DataFrame, factor: float | pd.Series | None) -> pd.DataFrame:
+    """`frame` with its share counts multiplied and its per-share figures divided by `factor` (a scalar or one per row).
 
     `factor=None` (no cited exchange ratio) nulls the whole share block rather than mixing two share bases.
     """
@@ -344,14 +345,66 @@ def convert_share_basis(frame: pd.DataFrame, factor: float | None) -> pd.DataFra
     if factor is None:
         out[counts + per_share] = float("nan")
         return out
-    out[counts] = out[counts].astype("float64") * factor
-    out[per_share] = out[per_share].astype("float64") / factor
+    out[counts] = out[counts].astype("float64").mul(factor, axis=0)
+    out[per_share] = out[per_share].astype("float64").div(factor, axis=0)
     return out
 
 
-def rebase_split_events(splits: pd.DataFrame, owner_splits: pd.DataFrame, windows: Sequence[tuple[PredecessorSeries, ShareExchange]]) -> pd.DataFrame:
-    """The split events with each converted window's pre-seam part replaced by the owner's own splits plus one event
-    of the exchange ratio on the seam, so a count de-adjusted inside the window is the owner's as-filed count."""
+def price_only_events(
+    yf_splits: pd.DataFrame | None, vendor_actions: pd.DataFrame | None, windows: Sequence[tuple[PredecessorSeries, pd.Timestamp]]
+) -> pd.DataFrame:
+    """`(ticker, cik, date, value)`: each window ticker's `prices_splits` events in `[valid_from, seam)` that the
+    owner's vendor series never applied, i.e. its `sharadar_actions` show a spinoff and no split that day."""
+    empty = pd.DataFrame(
+        {
+            "ticker": pd.Series(dtype=object),
+            "cik": pd.Series(dtype=object),
+            "date": pd.Series(dtype="datetime64[ns]"),
+            "value": pd.Series(dtype="float64"),
+        }
+    )
+    if yf_splits is None or yf_splits.empty or vendor_actions is None or vendor_actions.empty:
+        return empty
+    yf = yf_splits.assign(date=pd.to_datetime(yf_splits["date"]), _ticker=yf_splits["ticker"].map(normalise_ticker))
+    acts = vendor_actions.assign(date=pd.to_datetime(vendor_actions["date"]), _vendor=vendor_actions["ticker"].map(normalise_ticker))
+    found: list[pd.DataFrame] = []
+    for s, seam in windows:
+        own = acts[acts["_vendor"].eq(s.vendor_ticker)]
+        spun = set(own.loc[own["action"].eq(SHARADAR_ACTION_SPINOFF), "date"]) - set(own.loc[own["action"].eq(SHARADAR_ACTION_SPLIT), "date"])
+        start = s.valid_from if s.valid_from is not None else pd.Timestamp.min
+        hit = yf[yf["_ticker"].eq(s.ticker) & yf["date"].ge(start) & yf["date"].lt(seam) & yf["date"].isin(spun)]
+        found.append(pd.DataFrame({"ticker": s.ticker, "cik": s.cik, "date": hit["date"], "value": hit["ratio"].astype("float64")}))
+    frames = [frame for frame in found if not frame.empty]
+    return pd.concat(frames, ignore_index=True) if frames else empty
+
+
+def _window_events(events: pd.DataFrame | None, s: PredecessorSeries) -> pd.DataFrame:
+    """The `price_only_events` rows of one window."""
+    if events is None or events.empty:
+        return pd.DataFrame(columns=["ticker", "date", "value"])
+    return events.loc[events["ticker"].eq(s.ticker) & events["cik"].eq(s.cik), ["ticker", "date", "value"]].assign(
+        date=lambda f: pd.to_datetime(f["date"])
+    )
+
+
+def _later_events(dates: pd.Series, events: pd.DataFrame) -> pd.Series:
+    """Per row, the product of `events` dated strictly after its `dates` value (1.0 if none)."""
+    factor = pd.Series(1.0, index=dates.index)
+    stamps = pd.to_datetime(dates, errors="coerce")
+    for day, value in zip(events["date"], events["value"], strict=True):
+        factor[stamps < day] *= float(value)
+    return factor
+
+
+def rebase_split_events(
+    splits: pd.DataFrame,
+    owner_splits: pd.DataFrame,
+    windows: Sequence[tuple[PredecessorSeries, ShareExchange]],
+    price_only: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """The split events with each converted window's pre-seam part replaced by the owner's own splits, its
+    `price_only` events and one event of the exchange ratio on the seam, so a count de-adjusted inside the window is
+    the owner's as-filed count."""
     out = splits[["ticker", "date", "value"]].assign(date=pd.to_datetime(splits["date"]))
     owners = owner_splits[["ticker", "date", "value"]].assign(
         date=pd.to_datetime(owner_splits["date"]), _vendor=owner_splits["ticker"].map(normalise_ticker)
@@ -363,6 +416,7 @@ def rebase_split_events(splits: pd.DataFrame, owner_splits: pd.DataFrame, window
         own = owners[owners["_vendor"].eq(s.vendor_ticker) & owners["date"].ge(start) & owners["date"].lt(exchange.seam_date)]
         out = out[~before]
         added.append(own.drop(columns="_vendor").assign(ticker=s.ticker))
+        added.append(_window_events(price_only, s))
         added.append(pd.DataFrame({"ticker": [s.ticker], "date": [exchange.seam_date], "value": [float(exchange.ratio)]}))
     frames = [frame for frame in (out, *added) if not frame.empty]
     if not frames:
@@ -375,11 +429,13 @@ def apply_predecessor_series(
     predecessors: pd.DataFrame,
     series: Sequence[PredecessorSeries],
     factors: Mapping[tuple[str, str], float | None] | None = None,
+    price_only: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Inside each predecessor window, replace the canonical ticker's ARQ rows by the window owner's own rows.
 
     Rows are tested on `reportperiod`; the owner's rows are relabelled to the canonical ticker and, when `factors`
-    is given, put on the canonical share basis by `factors[(ticker, cik)]` (`convert_share_basis`). A window whose
+    is given, put on the canonical share basis by `factors[(ticker, cik)]` times the window's `price_only` events
+    dated after the row's `date` (`convert_share_basis`). A window whose
     owner has no stored row inside it is left unchanged. Returns `(arq, events)`, one event per quarter
     (`EVENT_COLUMNS`): `replaced` (both had it), `filled` (only the owner) or `dropped` (only the canonical series).
     """
@@ -392,7 +448,9 @@ def apply_predecessor_series(
         if own.empty:
             continue
         if factors is not None:
-            own = convert_share_basis(own, factors.get((s.ticker, s.cik)))
+            factor = factors.get((s.ticker, s.cik))
+            spins = _window_events(price_only, s)
+            own = convert_share_basis(own, factor * _later_events(own["date"], spins) if factor is not None and not spins.empty else factor)
         canonical = out["ticker"].astype(str).eq(s.ticker) & _inside(out, s)
         before = quarter_ordinal(out.loc[canonical, "calendardate"]).value_counts()
         after = quarter_ordinal(own["calendardate"]).value_counts()

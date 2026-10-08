@@ -505,6 +505,36 @@ def test_without_the_owner_series_the_window_is_an_action_item(sqlite_store, tmp
     print("  OK: REG1 missing -> one action naming the 10 unverified canonical quarters inside the window.")
 
 
+def test_a_cited_vendor_series_override_is_checked_like_a_register_series(sqlite_store, tmp_path):
+    """JCI <- TYC shape: ALB has one open window (no register seam), and a cited override names ALB0 as the vendor series
+    of ALB's CIK before 2015-07-01. The validator reads the override, so ALB's pre-boundary rows are judged against ALB0
+    (another company's assets -> INFO, replaced at the merge) and the boundary is assessed through the replaced series."""
+    _seed_store(sqlite_store, _store_lineage())
+    canonical, owner = _all_quarters("2013Q1", "2017Q4"), _all_quarters("2013Q1", "2015Q2")
+    sqlite_store.save(Tables.sharadar_fundamentals, pd.concat([_quarters("ALB", canonical, 7.0), _quarters("ALB0", owner, 20.0)], ignore_index=True))
+    (tmp_path / "sec").mkdir()
+    override = {"ticker": "ALB", "vendor_ticker": "ALB0", "cik": ALB, "valid_from": None, "valid_to": "2015-07-01", "source": "fixture 8-K"}
+    (tmp_path / "sec" / "security_master_manual.json").write_text(json.dumps({"vendor_series_overrides": [override]}), encoding="utf-8")
+    context = SimpleNamespace(**vars(_context(sqlite_store)), config_dir=tmp_path)
+
+    report = check_identity(context)
+
+    other = report.flags[report.flags["kind"].eq("vendor_series_other_company")]
+    gaps = report.flags[report.flags["kind"].isin(["vendor_coverage_gap", "incorrect_cik_window", "missing_sec_filing"])]
+    print("\n=== SANITY CHECK: a cited vendor-series override in validate identity ===")
+    print(other[["ticker", "action", "evidence", "suggested_action"]].to_string(index=False))
+    print(f"  predecessor_vendor_tickers {report.result.metrics.get('predecessor_vendor_tickers')}; continuity items {len(gaps)}")
+    assert report.result.metrics.get("predecessor_vendor_tickers") == {"ALB": "ALB0"}
+    assert (
+        len(other) == 1
+        and not other["action"].iloc[0]
+        and "ALB0" in other["suggested_action"].iloc[0]
+        and "10 quarter(s)" in other["evidence"].iloc[0]
+    )
+    assert gaps.empty, gaps
+    print("  OK: the override is seen; ALB's 10 pre-boundary quarters are another company's (INFO, replaced by ALB0); no gap at the boundary.")
+
+
 # --------------------------------------------------------------------------- #
 # validator: traded-security mismatch (REQ-007, AC-008)                        #
 # --------------------------------------------------------------------------- #

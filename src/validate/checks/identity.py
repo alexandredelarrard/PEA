@@ -33,6 +33,7 @@ from src.utils.filer_tables import (
     windowed_filer_mask,
 )
 from src.utils.identity_flags import FLAG_COLUMNS, KIND_ORDER, MARGIN, cik_activity, identity_flags, log_identity_flags
+from src.utils.predecessor_series import load_vendor_series
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
 from src.validate.checks.traded_security import traded_security_flags
 from src.validate.result import CheckResult, Finding
@@ -316,15 +317,21 @@ def _series_items(arq: pd.DataFrame, owners: pd.DataFrame, series: Sequence[cc.P
 
 
 def continuity_flags(context: Context, lineage: pd.DataFrame, scope: Sequence[str], config_dir: str) -> tuple[pd.DataFrame, dict[str, Any]]:
-    """Vendor-series discontinuities near every register boundary of the scope's tickers, as flag items, plus metrics.
+    """Vendor-series discontinuities near every register or cited-override boundary of the scope's tickers, as flag items, plus metrics.
 
     The vendor series is read as the merge builds it (predecessor series applied), so a filled quarter heals its record.
     """
     windows = {t: w for t, w in cc.register_windows(lineage).items() if t in set(scope)}
+    # a cited vendor-series override (JCI <- TYC) is a boundary too: its CIK before `valid_to`, the same CIK after
+    declared = tuple(s for s in load_vendor_series(config_dir) if s.ticker in set(scope) and s.valid_to is not None)
+    for s in declared:
+        windows.setdefault(s.ticker, (cc.CikWindow(s.cik, s.valid_from, s.valid_to), cc.CikWindow(s.cik, s.valid_to, None)))
     if not windows or not context.store.exists(Tables.sharadar_fundamentals):
         return pd.DataFrame(columns=list(FLAG_COLUMNS)), {}
     vendor_tickers = context.store.load(Tables.sharadar_tickers, columns=["ticker", "secfilings", "lastquarter"], optional=True)
-    series = cc.predecessor_series(vendor_tickers if vendor_tickers is not None else pd.DataFrame(), windows, scope)
+    derived = cc.predecessor_series(vendor_tickers if vendor_tickers is not None else pd.DataFrame(), windows, scope)
+    taken = {(s.ticker, s.cik) for s in declared}
+    series = tuple(s for s in derived if (s.ticker, s.cik) not in taken) + declared
     arq = _vendor_arq(context, sorted(windows))
     owners = _vendor_arq(context, sorted({s.vendor_ticker for s in series})) if series else pd.DataFrame(columns=_VENDOR_COLUMNS)
     merged, events = cc.apply_predecessor_series(arq, owners, series)

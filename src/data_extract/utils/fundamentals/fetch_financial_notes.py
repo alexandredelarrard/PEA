@@ -98,8 +98,11 @@ _NUM_USECOLS = frozenset({"adsh", "tag", "ddate", "qtrs", "uom", "dimn", "coreg"
 _TXT_USECOLS = frozenset({"adsh", "tag", "ddate", "qtrs", "dimn", "coreg", "escaped", "txtlen", "footnote", "value"})
 _FACT_PK = ["adsh", "tag", "ddate", "qtrs"]
 _DEI_SUB_USECOLS = frozenset({"adsh", "cik", "name", "filed"})
-_DEI_TXT_USECOLS = frozenset({"adsh", "tag", "coreg", "value"})
+_DEI_TXT_USECOLS = frozenset({"adsh", "tag", "coreg", "dimh", "value"})
+_DEI_DIM_USECOLS = frozenset({"dimhash", "segments"})
 _DEI_SYMBOL_TAG = "TradingSymbol"
+#: A dimension on this axis names another entity's security on a combined cover (Entergy tagging `EAI`).
+_LEGAL_ENTITY_SEGMENT = "LegalEntity="
 _NOTES_ZIP_NAME = re.compile(r"(\d{4}(?:q[1-4]|_\d{2}))_notes\.zip")
 _NUM_OUT = ["cik", "ticker", "adsh", "tag", "ddate", "qtrs", "uom", "value", "footnote", "form", "fy", "fp", "filed", "period", "available_at"]
 _TXT_OUT = [
@@ -323,18 +326,29 @@ def _cover_symbol_rows(chunk: pd.DataFrame) -> pd.Series:
     return chunk["tag"].eq(_DEI_SYMBOL_TAG) & (coreg == "")
 
 
+def _legal_entity_dims(chunk: pd.DataFrame) -> pd.Series:
+    """`dim.tsv` rows whose segments include a LegalEntityAxis member."""
+    return chunk["segments"].astype("string").str.contains(_LEGAL_ENTITY_SEGMENT, regex=False).fillna(False)
+
+
 def _read_dei_facts(path: Path) -> pd.DataFrame | None:
-    """One notes zip -> `[adsh, value, cik, name, filed]` cover-page symbol facts of every filer; None when unreadable."""
+    """One notes zip -> `[adsh, value, cik, name, filed]` cover-page symbol facts of every filer; None when unreadable.
+
+    A fact dimensioned on another legal entity is that entity's security (a subsidiary bond or preferred), so it is dropped.
+    """
     specs = {
         "sub.tsv": ZipRead(usecols=_DEI_SUB_USECOLS),
         "txt.tsv": ZipRead(usecols=_DEI_TXT_USECOLS, keep=_cover_symbol_rows, chunksize=_CHUNK, skip_bad_lines=True),
+        "dim.tsv": ZipRead(usecols=_DEI_DIM_USECOLS, keep=_legal_entity_dims, chunksize=_CHUNK, required=False),
     }
     tables = read_zip_tables(path, specs, on_corrupt="delete", log=logger)
     if not tables:
         return None
     if tables["txt.tsv"].empty:
         return pd.DataFrame(columns=["adsh", "value", *sorted(_DEI_SUB_USECOLS - {"adsh"})])
-    return tables["txt.tsv"][["adsh", "value"]].merge(tables["sub.tsv"], on="adsh", how="inner")
+    txt = tables["txt.tsv"]
+    other_entity = txt["dimh"].isin(set(tables["dim.tsv"].get("dimhash", ())))
+    return txt.loc[~other_entity, ["adsh", "value"]].merge(tables["sub.tsv"], on="adsh", how="inner")
 
 
 def _cached_notes_periods(cache: Path) -> list[str]:

@@ -277,3 +277,12 @@ Append-only audit trail. Add one dated entry per generation or refresh run, reco
 - Pages: [Data sources](./reference/data-sources.md), [TODO](./TODO.md)
 - Evidence: `reports/validate/2026-10-08-identity-manual-review/` (`01-research.md` price-continuity audit, `03-implementation.md`)
 - Operational boundary: no database write; the next `identity_tables` → `identity_propagate` DAG run applies it.
+
+## 2026-10-08: refresh — dei cover-page symbol parser
+
+- Profile: internal/standard
+- source_commit: branch `harness/dei-symbol-parser`
+- Coverage: `parse_symbol_field` keeps a slash series code on its issuer (`BDX/26A` → `BDX-26A`, `MS/PL` → `MS-PL`); `notes-download` drops `dei:TradingSymbol` facts dimensioned on `LegalEntityAxis` (subsidiary securities on combined covers). Removes `F` from Ford Motor Credit, `GM` from GM Financial, `PG` from BAC/MS, `PM` from Vornado, `SO` from Southern Power
+- Pages: [Data sources](./reference/data-sources.md), [TODO](./TODO.md)
+- Evidence: `reports/validate/2026-10-08-dei-symbol-parser/` (offline replay of the 2019+ Notes zips: conflicts 43 → 2, no universe filer loses its own ticker)
+- Operational boundary: no database write; a `notes-download --full` recapture applies it.

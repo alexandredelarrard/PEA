@@ -48,24 +48,43 @@ _FACTS = {
     "D1": [("TradingSymbol", "1", "DowInc", "DOW")],
 }
 
+_DIM_COLS = ["dimhash", "segments", "segt"]
+
+#: dimhash -> segments of the combined-cover filing E1 (Entergy's shape): its own common stock, a subsidiary's
+#: bond on LegalEntityAxis, a note series typed `ETR/26A`.
+_DIMS = {
+    "0xcommon": "ClassOfStock=CommonStock;",
+    "0xsubsid": "ClassOfStock=MortgageBonds4875SeriesDueSeptember2066;EntityListingsExchange=XNYS;LegalEntity=EntergyArkansasLlc;",
+    "0xnotes": "ClassOfStock=Notes1.208dueJune42026;",
+}
+_FILINGS["E1"] = ("0000065984-25-000001", "65984", "ENTERGY CORP /DE/", "10-Q", "20250806")
+_FACTS["E1"] = [
+    ("TradingSymbol", "1", "", "ETR", "0xcommon"),
+    ("TradingSymbol", "2", "", "EAI", "0xsubsid"),
+    ("TradingSymbol", "1", "", "ETR/26A", "0xnotes"),
+]
+
 
 def _row(cols: list[str], **values: str) -> str:
     return "\t".join(values.get(col, "") for col in cols)
 
 
-def _write_notes_zip(cache: Path, period: str, keys: list[str]) -> Path:
-    """A minimal `<period>_notes.zip` with `sub.tsv` and `txt.tsv` holding the named filings."""
+def _write_notes_zip(cache: Path, period: str, keys: list[str], dims: dict[str, str] | None = None) -> Path:
+    """A minimal `<period>_notes.zip` with `sub.tsv` and `txt.tsv` holding the named filings (and `dim.tsv` from `dims`)."""
     sub = ["\t".join(_SUB_COLS)]
     txt = ["\t".join(_TXT_COLS)]
     for key in keys:
         adsh, cik, name, form, filed = _FILINGS[key]
         sub.append(_row(_SUB_COLS, adsh=adsh, cik=cik, name=name, form=form, filed=filed))
-        for tag, dimn, coreg, value in _FACTS[key]:
-            txt.append(_row(_TXT_COLS, adsh=adsh, tag=tag, ddate=filed, qtrs="0", dimn=dimn, coreg=coreg, value=value))
+        for tag, dimn, coreg, value, *dimh in _FACTS[key]:
+            txt.append(_row(_TXT_COLS, adsh=adsh, tag=tag, ddate=filed, qtrs="0", dimh=dimh[0] if dimh else "", dimn=dimn, coreg=coreg, value=value))
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("sub.tsv", "\n".join(sub) + "\n")
         archive.writestr("txt.tsv", "\n".join(txt) + "\n")
+        if dims is not None:
+            rows = ["\t".join(_DIM_COLS)] + [_row(_DIM_COLS, dimhash=h, segments=s, segt="0") for h, s in dims.items()]
+            archive.writestr("dim.tsv", "\n".join(rows) + "\n")
     path = cache / f"{period}_notes.zip"
     path.write_bytes(buffer.getvalue())
     return path
@@ -132,6 +151,26 @@ def test_one_zip_aggregates_normalised_symbols_over_distinct_accessions(tmp_path
     print("\n=== SANITY CHECK: one Notes zip -> dei rows ===")
     print(f"  5 filings, 9 symbol facts -> {len(rows)} rows: {sorted(got)}")
     print("  OK: counts are distinct accessions; 'xyz'/'BFA, BFB'/'XYZ.PRA' normalise; '(NONE)' and the coreg DOW fact drop")
+
+
+def test_a_combined_cover_keeps_the_filers_own_securities_only(tmp_path: Path) -> None:
+    """Known truth for an Entergy-shaped cover: a symbol dimensioned on another legal entity is that entity's
+    security, and a `/26A` series code stays on its issuer's symbol instead of becoming a `26A` ticker."""
+    path = _write_notes_zip(tmp_path, "2025q3", ["E1", "B1"], dims=_DIMS)
+    facts = fn._read_dei_facts(path)
+    assert facts is not None
+    rows = aggregate_dei_symbols(facts, "2025q3")
+
+    got = set(zip(rows["symbol"], rows["issuer_cik"], strict=True))
+    assert got == {("ETR", "0000065984"), ("ETR-26A", "0000065984"), ("BFA", "0000000002"), ("BFB", "0000000002")}, got
+
+    (tmp_path / "old").mkdir()
+    no_dim = fn._read_dei_facts(_write_notes_zip(tmp_path / "old", "2025q3", ["B1"]))
+    assert no_dim is not None and set(aggregate_dei_symbols(no_dim, "2025q3")["symbol"]) == {"BFA", "BFB"}
+
+    print("\n=== SANITY CHECK: combined cover page ===")
+    print(f"  E1 tags ETR, EAI (LegalEntity=EntergyArkansas), ETR/26A; B1 tags 'BFA, BFB' -> {sorted(got)}")
+    print("  OK: EAI is Entergy Arkansas's bond, not Entergy's symbol; '26A' is never a ticker; a zip without dim.tsv still reads")
 
 
 def test_monthly_and_quarterly_zips_holding_the_same_accessions_collapse_to_distinct_count(tmp_path: Path, sqlite_store: Any) -> None:

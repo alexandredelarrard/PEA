@@ -14,9 +14,14 @@ from typing import Any
 
 import pandas as pd
 import pytest
+from click.testing import CliRunner
 
+import src.data_extract.cli as cli_mod
+from src.data_extract.utils.common.edgar_driver import FetchSummary, KeyOutcome
+from src.data_extract.utils.common.resume import DocumentWork
 from src.data_extract.utils.fundamentals import build_history as mod
 from src.data_extract.utils.fundamentals.build_history import FACT_COLUMNS
+from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import fetched_filing_dates
 from src.data_store.schema import Tables
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
 
@@ -388,3 +393,108 @@ def test_rebuild_history_deletes_and_replays_in_full(sqlite_store: Any, snapshot
     assert "TST REBUILT -- 4 row(s) deleted and recomputed" in caplog.text
     print("\n=== SANITY CHECK: --rebuild-history ===")
     print(f"  tampered 999 -> {restored} after delete + {len(snapshots)}-event replay; the REBUILT warning is logged. Validated.")
+
+
+# --------------------------------------------------------------------------- #
+# P2 (AC-003, AC-006) the `fundamentals` command hands its reads to the triage #
+# --------------------------------------------------------------------------- #
+def _summary(units: dict[str, list[tuple[str, str]]], failed: dict[str, list[str]]) -> FetchSummary:
+    """A `FetchSummary` listing `(accession, filed)` per ticker, with `failed` accessions still missing."""
+    frames = {
+        ticker: pd.DataFrame(
+            {"cik": "0000000001", "company": ticker, "form": "10-Q", "filed": [pd.Timestamp(f) for _, f in rows], "accession": [a for a, _ in rows]}
+        )
+        for ticker, rows in units.items()
+    }
+    outcomes = {
+        ticker: KeyOutcome(listed=len(df), failed=df[df["accession"].isin(failed.get(ticker, []))].reset_index(drop=True))
+        for ticker, df in frames.items()
+    }
+    return FetchSummary(work=DocumentWork(units=frames, key_class={t: "established" for t in frames}), outcomes=outcomes)
+
+
+def test_fetched_dates_exclude_missing_documents() -> None:
+    summary = _summary(
+        {"AAA": [("a-1", "2023-08-01"), ("a-2", "2023-05-01"), ("a-3", "2024-02-15")], "BBB": [("b-1", "2024-01-10")], "CCC": []},
+        {"AAA": ["a-3"], "BBB": ["b-1"]},
+    )
+
+    fetched = fetched_filing_dates(summary)
+
+    assert summary.missing == {"AAA": ["a-3"], "BBB": ["b-1"]}
+    assert fetched == {"AAA": [pd.Timestamp("2023-05-01"), pd.Timestamp("2023-08-01")]}, fetched
+    print("\n=== SANITY CHECK: summary -> fetched ===")
+    print(
+        f"  AAA listed 3, a-3 missing -> {[d.date().isoformat() for d in fetched['AAA']]}; BBB all missing -> left out; CCC nothing listed -> left out."
+    )
+    print("  Only documents actually read reach the history triage. Validated.")
+
+
+def _cli(monkeypatch: pytest.MonkeyPatch, store: Any, summary: FetchSummary | None = None) -> list[dict]:
+    """Route the CLI to `store`; the fetch returns `summary` (recording its kwargs) instead of walking EDGAR."""
+    fetches: list[dict] = []
+    config = SimpleNamespace(data_extract=SimpleNamespace(years_history=15))
+    monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, _context(store)))
+    monkeypatch.setattr(cli_mod, "_tickers", lambda ctx, names: [t.strip().upper() for t in names.split(",")])
+    monkeypatch.setattr(cli_mod, "fetch_fundamentals_sec", lambda context, **kwargs: fetches.append(kwargs) or summary)
+    return fetches
+
+
+def test_cli_backdated_fetch_reaches_the_history_as_a_full_replay(sqlite_store: Any, snapshots: list[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    sqlite_store.save(Tables.fundamentals_facts, _quarters())
+    stored = _built(sqlite_store, snapshots)
+    runner = CliRunner()
+    report = []
+    cases = (
+        ("back-dated read", _summary({"TST": [("TST-acc-2023-08-01", "2023-08-01")]}, {}), [], stored),
+        ("back-dated read, missing", _summary({"TST": [("TST-acc-2023-08-01", "2023-08-01")]}, {"TST": ["TST-acc-2023-08-01"]}), [], 0),
+        ("nothing read", _summary({}, {}), [], 0),
+        ("-F", _summary({"TST": [("TST-acc-2024-02-15", "2024-02-15")]}, {}), ["-F"], stored),
+    )
+    for label, summary, extra, expected in cases:
+        fetches = _cli(monkeypatch, sqlite_store, summary)
+        snapshots.clear()
+        result = runner.invoke(cli_mod.cli, ["fundamentals", "-t", "tst", *extra], catch_exceptions=False)
+        assert result.exit_code == 0, result.output
+        assert len(snapshots) == expected, (label, snapshots)
+        assert fetches[0]["full"] is bool(extra), fetches
+        report.append(f"{label}: {len(snapshots)} snapshot(s)")
+    assert sqlite_store.row_count(Tables.fundamentals_history_sec) == stored
+
+    # A re-read that changed a published row: through the CLI hand-off the drift guard refuses.
+    facts = _quarters()
+    q2 = facts[(facts["filing_date"] == pd.Timestamp("2023-08-01")) & (facts["field"] == "totalAssets")].assign(value=5000.0)
+    sqlite_store.save(Tables.fundamentals_facts, q2)
+    _cli(monkeypatch, sqlite_store, _summary({"TST": [("TST-acc-2023-08-01", "2023-08-01")]}, {}))
+    with pytest.raises(ValueError, match="append-only"):
+        runner.invoke(cli_mod.cli, ["fundamentals", "-t", "TST"], catch_exceptions=False)
+
+    print("\n=== SANITY CHECK: CLI hand-off (stored newest 2024-02-15) ===")
+    for line in report:
+        print(f"  {line}")
+    print("  changed re-read handed off by the CLI -> drift error (append-only). Validated.")
+
+
+def test_verify_history_flag_reaches_the_history_build(monkeypatch: pytest.MonkeyPatch) -> None:
+    builds: list[dict] = []
+    _cli(monkeypatch, None, _summary({}, {}))
+    monkeypatch.setattr(cli_mod, "build_fundamentals_history", lambda context, **kwargs: builds.append(kwargs))
+    runner = CliRunner()
+    for args in (
+        ["fundamentals", "-t", "AAA"],
+        ["fundamentals", "-t", "AAA", "--verify-history"],
+        ["fundamentals-history-sec", "-t", "AAA", "--verify-history"],
+    ):
+        result = runner.invoke(cli_mod.cli, args)
+        assert result.exit_code == 0, result.output
+    helps = {name: runner.invoke(cli_mod.cli, [name, "--help"]).output for name in ("fundamentals", "fundamentals-history-sec", "fundamentals-facts")}
+
+    assert [b["verify_history"] for b in builds] == [False, True, True], builds
+    assert builds[0]["fetched"] == {} and builds[0]["full_fetch"] is False and builds[0]["rebuild_history"] is False
+    assert "fetched" not in builds[2], "fundamentals-history-sec has no fetch to hand off"
+    assert "--verify-history" in helps["fundamentals"] and "--verify-history" in helps["fundamentals-history-sec"]
+    assert "--verify-history" not in helps["fundamentals-facts"]
+    print("\n=== SANITY CHECK: --verify-history wiring ===")
+    print(
+        f"  verify_history per call: {[b['verify_history'] for b in builds]}; both history commands list the flag, fundamentals-facts does not. Validated."
+    )

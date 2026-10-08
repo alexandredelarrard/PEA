@@ -214,7 +214,7 @@ insider_zip >> insider_edgar  # zips fill first; EDGAR resumes after their last 
 thirteen_f >> thirteen_f_backfill  # one EDGAR walk at a time: after the nightly walk
 thirteen_f >> superinvestors  # roster gate reads the filers' 13F activity
 superinvestors >> thirteen_f_managers  # roster IS the walk scope
-[fundamentals, fundamentals_employees] >> fundamentals_sharadar
+fundamentals >> fundamentals_sharadar  # headcount is read by the cube, not merged
 [sec_8k_items, def14a] >> sec_8k_votes
 
 # every source done (failed or not) -> freshness report -> identity check -> aggregation only when the check passed

@@ -12,7 +12,7 @@ build_cube:
                                # factor is shrunk by 1/(1+alpha) at EVERY window length.
     ridge_alpha_market: 0.48   # market's OWN ratio: it shrinks toward 1.0 rather than 0.0 and
                                # forecasts its window far better than the macro loadings do,
-                               # so it needs much less. 
+                               # so it needs much less.
     market_prior: 1.0          # beta_market shrinks toward 1.0 (its natural centre)
     step: 1                    # re-fit every N days. 1 = daily => no 5-day staircase
     ffill_limit: 21            # carry a beta at most N days over a gap with no estimable window
@@ -20,7 +20,7 @@ build_cube:
   targets:
     horizons: [30, 60, 90]
     primary_horizon: 60
-    labels: [rank, zscore, epsilon]   
+    labels: [rank, zscore, epsilon]
     min_names: 20
     # Every label is finally PROJECTED cross-sectionally orthogonal to EVERY fitted loading +
     # momentum + log market cap + GICS industry_group indicators, jointly and AFTER the
@@ -56,6 +56,9 @@ build_cube:
     years: 5                 # explicit high-growth stage length
     growth_cap: 0.15         # winsorize the firm's own growth used in the DCF
     growth_floor: -0.10
+
+  workforce:                 # headcount proxy of the workforce features
+    part_time_weight: 0.65   # α in FT + α·PT; must lie in [0.5, 1]
 
   institutionals:            # informed-capital panels (13F, insider, 13D/G, short flow)
     decay_halflife:          # trading days for the exponential event-decay transform.

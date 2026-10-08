@@ -15,7 +15,7 @@ Infrastructure combines a PostgreSQL 16 pipeline database with an Airflow deploy
 ## Responsibilities
 
 - Run the nightly extraction fan-out with source-specific pools, placing `identity-tables` before every issuer-identity SEC consumer.
-- Keep SEC facts/history and employee headcount as independent tasks; Sharadar merge waits for both.
+- Keep SEC facts/history and employee headcount as independent tasks; the Sharadar merge waits for SEC facts/history only.
 - Trigger a sequential, memory-bounded cube build.
 - Retrain models weekly and score the latest cube daily.
 - Initialize and operate the database, Airflow metadata database, scheduler, and webserver.

@@ -14,8 +14,8 @@ the economics belong to the quantity, not to the standardiser.
 this file cannot see, and the whole reason this report exists is that the codebase had
 accumulated exactly that kind of claim. Coverage, percentiles and clip saturation all come
 from the live table at generation time. The few figures that DO appear are properties of a
-source or a definition, not of a build -- `employees_sec` at 75.7%, the r = 1.0000 pairs the
-audit broke -- and each names what it measured.
+source or a definition, not of a build -- the r = 1.0000 pairs the audit broke -- and each
+names what it measured.
 
 The generator asserts BOTH directions: every cube column must have an entry here, and every
 entry here must correspond to a live column. An unmatched name in either direction fails the
@@ -651,7 +651,7 @@ add(
     "revenue_per_employee",
     "workforce",
     "TTM revenue / headcount, from the 10-K body-text employee count.",
-    "Reads `employees_sec` -- SEC-owned in the Sharadar-first merged table (SF1 does not carry headcount), so `merge_history` namespaces it. Reading the bare `employees` returned an empty frame and killed all four workforce features on the first lookup, before revenue was ever read. Live coverage 75.7%.",
+    "Headcount is read directly from `fundamentals_employees` (SF1 does not carry it, and the Sharadar-first merged table no longer does either), joined point-in-time on the filing date.",
     "Enormous across sectors (a bank vs a restaurant chain); the raw level describes the model and self-history measures productivity change within the firm.",
 )
 add(

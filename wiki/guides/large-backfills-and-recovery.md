@@ -93,7 +93,32 @@ Choose the narrowest repair:
 
 A ticker with no stored accession lists its whole window on the next ordinary run. A filing that was read and has no XBRL facts is stored as a marker and is not listed again.
 
-Employee repair is independent of facts and SEC-history replay. To re-decide specific filings, delete their `fundamentals_employees` rows (count or NULL) and let the next run read them; to pin a value by hand, add the accession to `configs/sec/employees_manual_roster.json`. Full employee mode re-decides every filing in the window. Retrieval or body-read failures write no row, so they retry on the next run; a failed LLM call writes no row for its own filing date only, and the ticker's other dates are kept.
+Employee repair is independent of facts and SEC-history replay. To re-decide specific filings, delete their `fundamentals_employees` rows (counted or status-only) and let the next run read them. Full employee mode re-decides every filing in the window. Retrieval or body-read failures write no row, so they retry on the next run; a failed LLM call writes no row for its own filing date only, and the ticker's other dates are kept.
+
+## Employee headcount universe run
+
+The component-shape `fundamentals_employees` (components, basis, status, provenance) replaced the old table on the live database on 2026-10-07, and `fundamentals_history.employees_sec` was dropped. The table holds only the 50 focus tickers of that run and A; every other universe filing date is undecided. The local, gitignored run dir `reports/validate/2026-10-07-employee-headcount-coverage/` holds the backups and scripts named below.
+
+> [!WARNING]
+> Until `harness/employee-headcount-coverage` merges into `dev`, `dev`'s merged build (`fundamentals-sharadar`, `fundamentals-history-merged`) and the cube's fundamentals part fail loudly: that code still reads the old `employees` column and the dropped `employees_sec`. Do not run them from `dev` in that window.
+
+1. **Backups and rollback.** `_cache/fundamentals_employees_2026-10-07.parquet` holds the old table (11,735 rows) and `_cache/fundamentals_history_employees_sec_2026-10-07.parquet` the dropped column (`ticker`, `as_of`, `fiscal_end`, `employees_sec`; 51,856 rows). `_scripts/p8_restore.py` prints the rollback plan; `--execute` runs it in one `psql -1` transaction (drop the new table, recreate the old one, copy the rows back), and `--history` also re-adds and refills `employees_sec`. Roll back only together with the pre-merge code.
+2. **Run the universe without `-F`.** Decided dates are skipped before any text is read, so only undecided filings reach the LLM. Expect about $0.0014 per filing, roughly $17 for the about 12,600 undecided owned filing dates, and about 4 minutes per ticker.
+3. **Batch for memory.** One fetch process grows by about 0.6–1 GB per ticker and frees it only at exit; with the configured 8 `fundamentals_workers` it reached 95 % of a 32 GB machine within minutes. Run one process per one or two tickers, sequentially, with one worker and under a memory guard. The working pattern is `_scripts/p8_batches.sh <batch_size> <tickers>`: it runs `_scripts/p8_run.py 1 <batch>` (the CLI body with `fundamentals_workers` lowered in memory, no config edit) once per batch. Keep one EDGAR walk at a time. A killed batch leaves its dates undecided; run it again. With the CLI, lower `fundamentals_workers` and run one call per batch:
+
+   ~~~bash
+   rtk "$PY" -m src data_extract fundamentals-employees -t TICKER1,TICKER2
+   ~~~
+
+4. **Rerun once, still without `-F`.** It reads the filings whose LLM call failed (an invalid-JSON answer, about 0.2 % of calls) and any ticker a network error skipped, and makes no call for a decided date.
+5. **Validate coverage.** The check is read-only and lists owned annual filings from the cached EDGAR index, without SEC calls:
+
+   ~~~bash
+   rtk "$PY" -m src validate employees -o reports/validate/YYYY-MM-DD-employees [-t TICKER1,TICKER2]
+   ~~~
+
+   From a worktree, set `ROOT_PATH=<main repo root>/` so it finds `data/sec_edgar_index`. It writes `employees.json` and `employees_{per_ticker,missing_dates,stale_rows,scope_jumps,basis_switches}.csv`. Targets: no owned original 10-K date without a row, 0 foreign rows, 0 stale rows, complete provenance on `found` rows. Known false positives are listed under [Employee headcount follow-ups](../TODO.md#employee-headcount-follow-ups).
+6. **Rebuild the cube after the merge.** `build-fundamentals -F`, then `assemble-cube` and `cube-status` (see [run the pipeline](./run-the-pipeline.md#peers-and-cube)). The merged history needs no rebuild for headcount.
 
 ## Applying a fundamentals schema change
 

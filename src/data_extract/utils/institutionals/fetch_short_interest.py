@@ -22,7 +22,6 @@ import logging
 import re
 import time
 from collections.abc import Collection, Mapping, Sequence
-from itertools import batched
 
 import pandas as pd
 import requests
@@ -49,6 +48,7 @@ from src.data_extract.utils.institutionals.security_tape import (
     warn_lost_rows,
 )
 from src.data_store.schema import Tables
+from src.utils.batching import batched_tuples
 from src.utils.string import normalise_ticker
 
 _URL = "https://cdn.finra.org/equity/regsho/daily/CNMSshvol{yyyymmdd}.txt"
@@ -308,7 +308,7 @@ def _company_rows(context: Context, identity: Identity, companies: Sequence[str]
 
 def _delete_rows(context: Context, rows: pd.DataFrame) -> None:
     for symbol, group in rows.groupby("source_symbol", sort=True):
-        for chunk in batched(sorted(group["date"]), KEY_CHUNK, strict=False):
+        for chunk in batched_tuples(sorted(group["date"]), KEY_CHUNK):
             context.store.delete(Tables.sec_short_volume_security, where={"source_symbol": str(symbol), "date": chunk})
 
 
@@ -459,7 +459,7 @@ def fetch_short_interest(
     if not stamped.empty:
         context.store.save(Tables.sec_short_volume_security, stamped[list(SECURITY_COLUMNS)])
     if successful and context.store.exists(Tables.short_interest):
-        for chunk in batched(sorted(universe), TICKER_CHUNK, strict=False):
+        for chunk in batched_tuples(sorted(universe), TICKER_CHUNK):
             context.store.delete(Tables.short_interest, where={"ticker": chunk, "date": successful})
     if not grain.empty:
         written = context.store.save(Tables.short_interest, grain)

@@ -66,6 +66,11 @@ The fundamentals layer was intentionally asymmetric during the recorded migratio
 
 The older warning that Sharadar data reflected a free-tier subset became stale after the subscription upgrade and re-extraction work. Treat individual counts here as dated evidence, not current entitlement.
 
+## Employee headcount migration (2026-10-08)
+
+- `fundamentals_employees` was dropped and recreated in the component shape on 2026-10-07 (the old 11,735 rows over 487 tickers are backed up in the local run dir `reports/validate/2026-10-07-employee-headcount-coverage/_cache/`). It holds 1,471 rows over 51 tickers: the 50 focus tickers of that run and A. Every other ticker's filing dates are undecided until the user's universe run ([runbook](../guides/large-backfills-and-recovery.md#employee-headcount-universe-run)).
+- `fundamentals_history` has no `employees_sec` column (92 columns, 51,856 rows unchanged). Code older than the `harness/employee-headcount-coverage` merge fails loudly on the merged build and the cube's fundamentals part.
+
 ## Extraction resume cutover (2026-10-05)
 
 - `sp500_tickers.added_on` exists; all 500 rows then present carry 2000-01-01, so none counts as new.

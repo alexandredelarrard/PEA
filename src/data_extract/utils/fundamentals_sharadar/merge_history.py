@@ -1,7 +1,7 @@
 """Merge the Sharadar TTM frame with the SEC-owned block into `fundamentals_history`, the table consumers read.
 
-Field-block precedence: Sharadar owns its declared columns for all history, `fundamentals_history_sec` (plus
-`fundamentals_employees`) owns the `sec`-kind columns, and no column switches source mid-series; the only
+Field-block precedence: Sharadar owns its declared columns for all history, `fundamentals_history_sec` owns the
+`sec`-kind columns, and no column switches source mid-series; the only
 exception is a whole `(ticker, field)` series moved to SEC by the approved override register. Inside a register
 predecessor window the canonical ARQ rows are replaced by the window owner's vendor series before the TTM build, on the
 ticker's share basis through the cited merger exchange ratio. SEC-sourced
@@ -17,7 +17,6 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 from src.constants.constants import (
@@ -68,9 +67,6 @@ def sec_column(name: str) -> str:
 
 #: Keys plus `regime_sec`, the only non-float column; excluded from the float cast by name.
 NON_VALUE_COLUMNS: frozenset[str] = frozenset({*MERGE_KEYS, sec_column("regime")})
-
-#: SEC-owned, but read from `fundamentals_employees`, not from `fundamentals_history_sec`.
-EMPLOYEES_COLUMN = "employees"
 
 #: Prefix carrying an override's SEC value through the join; not in the contract, so the final projection drops it.
 _SEC_PREFIX = "__sec__"
@@ -223,22 +219,6 @@ def join_sec_block(sharadar: pd.DataFrame, sec: pd.DataFrame, *, tolerance_days:
     return _asof_join(sharadar, right, tolerance_days=tolerance_days, also_to_datetime=(SEC_AS_OF,))
 
 
-def attach_employees(frame: pd.DataFrame, employees: pd.DataFrame | None, *, tolerance_days: int = SHARADAR_SEC_ASOF_TOLERANCE_DAYS) -> pd.DataFrame:
-    """Attach annual headcount by backward as-of join, capped at `tolerance_days` so it reaches the following quarters only.
-
-    A NULL row records a 10-K that states no usable count; it is dropped so it neither becomes
-    the as-of match nor cuts the prior year's carry short.
-    """
-    if employees is not None:
-        employees = employees.dropna(subset=[EMPLOYEES_COLUMN])
-    if employees is None or employees.empty:
-        out = frame.copy()
-        out[EMPLOYEES_COLUMN] = np.nan
-        return out
-    right = employees[["ticker", "as_of", EMPLOYEES_COLUMN]]
-    return _asof_join(frame, right, tolerance_days=tolerance_days)
-
-
 def apply_overrides(frame: pd.DataFrame, overrides: Overrides) -> tuple[pd.DataFrame, set[str]]:
     """Replace each approved `(ticker, field)` series with the SEC one; returns `(frame, changed fields)`.
 
@@ -293,7 +273,6 @@ def rederive(frame: pd.DataFrame, field_map: FieldMap, changed: set[str]) -> pd.
 def build_frame(
     sharadar_arq: pd.DataFrame,
     sec: pd.DataFrame,
-    employees: pd.DataFrame | None,
     actions: pd.DataFrame | None,
     field_map: FieldMap,
     overrides: Overrides,
@@ -304,7 +283,7 @@ def build_frame(
 ) -> pd.DataFrame:
     """The whole merge transform, no I/O.
 
-    translate -> TTM (+ split de-adjustment) -> same-date collapse -> backward SEC join -> employees -> overrides
+    translate -> TTM (+ split de-adjustment) -> same-date collapse -> backward SEC join -> overrides
     -> re-derive -> `_sec` rename -> contract -> cast. Split events (`actions` + `yf_splits`, or `splits` when given)
     de-adjust only the `split_basis` columns (`sharesOutstandingPit`); other share columns stay on the vendor's
     split-adjusted basis.
@@ -334,11 +313,9 @@ def build_frame(
         )
 
     # drop the all-NaN SEC-owned placeholders so the join lands the real ones without `_x`/`_y`
-    sec_owned = [c for c in field_map.sec_owned if c != EMPLOYEES_COLUMN]
-    joined = join_sec_block(collapsed.drop(columns=[*sec_owned, EMPLOYEES_COLUMN], errors="ignore"), sec)
-    joined = attach_employees(joined, employees)
+    joined = join_sec_block(collapsed.drop(columns=field_map.sec_owned, errors="ignore"), sec)
     joined, changed = apply_overrides(joined, overrides)
-    joined = rederive(joined, field_map, changed | set(sec_owned))
+    joined = rederive(joined, field_map, changed | set(field_map.sec_owned))
     # suffix last: `rederive` reads SEC-owned inputs under their field-map names
     joined = joined.rename(columns={n: sec_column(n) for n in field_map.sec_owned})
 
@@ -487,23 +464,21 @@ def build_merged_history(context: Context, tickers: list[str], *, full: bool = F
     yf_splits = context.store.load(Tables.prices_splits, columns=["ticker", "date", "ratio"], where={"ticker": names}, optional=True)
     report = TranslationReport()
     vendor, splits = with_predecessor_series(context, vendor, names, split_events(actions, yf_splits, report=report), config_dir=config_dir)
-    employees = context.store.load(Tables.fundamentals_employees, where={"ticker": names}, optional=True)
 
-    # projection built from the register (so every override column is loaded); `employees` lives elsewhere
-    sec_owned = [c for c in field_map.sec_owned if c != EMPLOYEES_COLUMN]
-    sec_columns = ["ticker", "as_of", *sec_owned]
+    # projection built from the register, so every override column is loaded
+    sec_columns = ["ticker", "as_of", *field_map.sec_owned]
     sec = context.store.load(Tables.fundamentals_history_sec, columns=sec_columns + list(overrides.fields), where={"ticker": names}, optional=True)
     if sec is None:
         context.log.warning(
-            "merged history: NO SEC rows for these tickers -- all 15 "
-            "SEC-owned columns will be NULL. That is the stated coverage "
-            "asymmetry (D14), not a failure."
+            "merged history: NO SEC rows for these tickers -- all %d SEC-owned columns will be NULL. "
+            "That is the stated coverage asymmetry (D14), not a failure.",
+            len(field_map.sec_owned),
         )
         sec = pd.DataFrame(columns=sec_columns)
     else:
         sec = sec.rename(columns={f: f"{_SEC_PREFIX}{f}" for f in overrides.fields})
 
-    frame = build_frame(vendor, sec, employees, actions, field_map, overrides, yf_splits=yf_splits, report=report, splits=splits)
+    frame = build_frame(vendor, sec, actions, field_map, overrides, yf_splits=yf_splits, report=report, splits=splits)
     if frame.empty:
         context.log.warning("merged history: the transform produced 0 rows")
         return

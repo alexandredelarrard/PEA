@@ -135,6 +135,29 @@ def test_legacy_text_without_summary_count_fails_closed() -> None:
     print("\n=== SANITY: a text book with no SEC Summary Page count cannot be certified. Validated.")
 
 
+def test_no_summary_count_keeps_an_edgartools_book_that_matches_the_source() -> None:
+    """Greenhaven/Tiger shape: the filing is the table alone. Two independent parses agreeing is the check."""
+    raw = _table(_HEADER, _AFLAC, _AMGEN).replace("Form 13F Information Table Entry Total: 2\n", "")
+    info = pd.DataFrame(
+        [_edgar_line("001055102", "Aflac, Inc.", 145_462_000, 3_362_515), _edgar_line("031162100", "Amgen Inc.", 12_000_000, 100_000)]
+    )
+    assert not needs_legacy_fallback(raw, info)
+    out = _read(_Report(info, txt=raw))
+    assert isinstance(out, pd.DataFrame) and set(out["cusip"]) == {"001055102", "031162100"}
+    print("\n=== SANITY: no cover count, EdgarTools == source parse row for row -> 2-row book kept. Validated.")
+
+
+@pytest.mark.parametrize("field,value", [("SharesPrnAmount", 3_362_514), ("Value", 145_461_999)])
+def test_no_summary_count_still_rejects_when_the_parsers_disagree(field: str, value: Any) -> None:
+    raw = _table(_HEADER, _AFLAC).replace("Form 13F Information Table Entry Total: 1\n", "")
+    line = _edgar_line("001055102", "Aflac, Inc.", 145_462_000, 3_362_515) | {field: value}
+    info = pd.DataFrame([line])
+    assert needs_legacy_fallback(raw, info)
+    out = _read(_Report(info, txt=raw))
+    assert isinstance(out, f13.ReadFailure) and not out.transient and "entry count is missing" in out.reason
+    print(f"\n=== SANITY: no cover count and {field} off by one -> ReadFailure(transient=False), nothing stored. Validated.")
+
+
 def test_repeated_cusip_continuation_keeps_both_source_rows() -> None:
     raw = _table(
         "        NAME OF ISSUER          TITLE OF CLASS    CUSIP   (x$1000) PRN AMT  PRN CALL DSCRETN",

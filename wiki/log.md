@@ -244,3 +244,12 @@ Append-only audit trail. Add one dated entry per generation or refresh run, reco
 - Evidence: `harness/superinvestor-legacy-p1` at `d25365bd` merged without conflicts; local ignored `reports/validate/2026-10-07-superinvestor-legacy-p1/` (`_out/dev_merge_T1.json`, `_out/baseline.json`, `_out/dispositions.json`, `_out/repair_manifest.json`).
 - Remaining priorities: P1 applies 4 verified whole-book replacements and 62 NULL-amount book updates atomically after a live-before check and backup; P2 resolves 15 in-window gaps among 228 never-stored books and source-checks ghost periods, then rebuilds and validates the institutional features; P3 defers further recovery of 90 / 7,369 stored books (1.22%, including 81 before 2011Q3 and 9 in-window), following the user's 2% cutoff.
 - Operational boundary: this merge and wiki refresh apply no database repair, source recovery or cube rebuild; the production price-part prerequisite and feature-certification abstention remain. No push or PR was requested.
+
+## 2026-10-08: refresh — employee headcount components and direct read
+
+- Profile: internal/standard
+- source_commit: c01ffda6 (branch `harness/employee-headcount-coverage`)
+- Coverage: `fundamentals_employees` component shape (components, basis, status, CIK, accession, source document, JSON quotes); no employee roster; ix:header strip, workforce-number windows and annual-report exhibit fallback; scope-first answer schema and per-component quote guard; `employees_sec` removed from the merged history (92 columns) and the DAG edge; the cube reads the table directly (370-day as-of join, FT + α·PT proxy, basis-masked growth); `validate employees`; the universe runbook
+- Pages: [Table catalog](./reference/table-catalog.md), [Data sources](./reference/data-sources.md), [Data extraction](./modules/data-extract.md), [Modelling and portfolio](./reference/modelling-and-portfolio.md), [Configuration](./reference/configuration.md), [Run the pipeline](./guides/run-the-pipeline.md), [Large backfills and recovery](./guides/large-backfills-and-recovery.md), [Live database](./reference/live-database.md), [Nightly data refresh](./flows/nightly-data-refresh.md), [DAGs and infrastructure](./modules/dags-and-infrastructure.md), [TODO](./TODO.md)
+- Evidence: `reports/validate/2026-10-07-employee-headcount-coverage/` (`02-plan.md`, `03-implementation.md`)
+- Operational boundary: the live table was recreated and `employees_sec` dropped on 2026-10-07; the universe run and the cube rebuild are user-run after the merge.

@@ -187,12 +187,14 @@ def _check_totals(raw: str, rows: list[dict[str, Any]]) -> None:
 
 
 def needs_legacy_fallback(raw: str, parsed: pd.DataFrame | None) -> bool:
-    """True when EdgarTools' text parse is short, malformed, or off the source: entry count,
-    logical holding facts, or (when stated) the Summary Page value total. A clean book is not reparsed."""
+    """True when EdgarTools' text parse is short, malformed, or off the source: entry count (when
+    stated), logical holding facts, or (when stated) the Summary Page value total. A clean book is
+    not reparsed. A filing with no Summary Page keeps EdgarTools' book only when it matches the
+    independent source parse row for row; the legacy parser itself still requires the count."""
     if parsed is None or parsed.empty:
         return True
     count = _ENTRY_COUNT.search(raw)
-    if count is None or len(parsed) != int(count.group(1).replace(",", "")):
+    if count is not None and len(parsed) != int(count.group(1).replace(",", "")):
         return True
     columns = {name.lower(): name for name in parsed.columns}
     column = columns.get("cusip")

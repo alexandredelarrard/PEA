@@ -25,6 +25,7 @@ import edgar
 import httpx
 import requests
 from edgar.httprequests import is_unreachable
+from edgar.sgml.sgml_parser import SECHTMLResponseError
 
 from src.context import Context
 from src.data_extract.utils.common.rate_limit import is_rate_limited
@@ -173,10 +174,13 @@ def _is_network(exc: BaseException) -> bool:
 
 
 def _verdict(exc: BaseException, *, network_retry: bool) -> _Verdict | None:
-    """RETRY a throttle/5xx (and a network error when `network_retry`), FAIL an edgartools network
+    """RETRY a throttle/5xx, an SEC HTML page served in place of a filing (its throttle page; edgartools
+    raises it status-less), and a network error when `network_retry`; FAIL an edgartools network
     error at once, None (re-raise as is) for everything else, including this module's own errors."""
     if isinstance(exc, TransientReadError | ParseFailureError):
         return None
+    if any(isinstance(err, SECHTMLResponseError) for err in _causes(exc)):
+        return _Verdict.RETRY
     status = _status_code(exc)
     if status is not None:
         return _Verdict.RETRY if status in _RETRYABLE_STATUS else None

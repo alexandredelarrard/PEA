@@ -22,6 +22,7 @@ import pytest
 import requests
 from edgar.exceptions import TooManyRequestsError
 from edgar.sgml.sgml_header import FilingHeader
+from edgar.sgml.sgml_parser import SECHTMLResponseError
 from omegaconf import OmegaConf
 
 from src.data_extract.utils.common import edgar_fillings as ef
@@ -146,6 +147,22 @@ def test_edgartools_network_errors_are_not_retried(waits: list[float]) -> None:
     assert len(calls) == 1 and waits == []
     print("\n=== SANITY CHECK: no multiplied retry layers ===")
     print("  an edgartools network error (already retried by edgartools) raises TransientReadError after 1 call.")
+
+
+def test_sec_html_page_in_place_of_a_filing_is_retried_with_waits(waits: list[float]) -> None:
+    """The log's `SECHTMLResponseError ... failed after 1 attempt(s)`: edgartools raises it status-less."""
+    html = SECHTMLResponseError("SEC returned HTML or XML content instead of expected SGML filing data.")
+    call, calls = _scripted([html, html, "parsed"])
+    assert sec_io.sec_call(call, label="period_of_report") == "parsed"
+    assert len(calls) == 3 and waits == [5.0, 20.0]
+
+    waits.clear()
+    call, calls = _scripted([html])
+    with pytest.raises(TransientReadError):
+        sec_io.sec_call(call, label="period_of_report")
+    assert len(calls) == 3 and waits == [5.0, 20.0]
+    print("\n=== SANITY CHECK: SEC HTML page = throttle ===")
+    print("  SECHTMLResponseError retries (5 s, 20 s) and succeeds on call 3; a persistent one raises TransientReadError after 3 calls, not 1.")
 
 
 def test_deterministic_errors_pass_through(waits: list[float]) -> None:

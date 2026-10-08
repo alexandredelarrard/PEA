@@ -12,7 +12,9 @@ one filer per fiscal period, the CIK whose stated window owns the period end (`k
 from __future__ import annotations
 
 import json
+from collections import deque
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import Future, ProcessPoolExecutor
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -1043,18 +1045,54 @@ def _ticker_facts(context: Context, ticker: str) -> pd.DataFrame | None:
     return df_kept
 
 
+# ------------------------------------------------------------- the replay pool ---
+
+#: Full builds in flight per pool worker; bounds the fact frames and results the parent holds.
+_IN_FLIGHT_PER_WORKER = 2
+
+#: A pool child's catalogue and guards, set once by `_init_replay_worker`.
+_WORKER_STATE: dict[str, Any] = {}
+
+
+def _init_replay_worker(catalogue: Catalogue, guards: PeriodGuards) -> None:
+    """Pool initializer: keep the parent's catalogue and guards for every build in this child."""
+    _WORKER_STATE["catalogue"] = catalogue
+    _WORKER_STATE["guards"] = guards
+
+
+def _build_in_worker(ticker: str, df_facts: pd.DataFrame) -> TickerHistory:
+    """The pure full build of one ticker, run in a pool child (no store, no log)."""
+    return build_ticker(ticker, df_facts, catalogue=_WORKER_STATE["catalogue"], guards=_WORKER_STATE["guards"])
+
+
+def _replay_workers(context: Context) -> int:
+    """The full-replay pool size, `data_extract.fundamentals_workers`; 1 for a context without a config (test doubles)."""
+    config = getattr(context, "config", None)
+    if config is None:
+        return 1
+    return max(int(config.data_extract.fundamentals_workers), 1)
+
+
+@dataclass
+class _Pending:
+    """One non-skipped ticker waiting for its in-order save: a full build (future or done), or incremental rows."""
+
+    ticker: str
+    full: Future[TickerHistory] | TickerHistory | None = None
+    rows: TickerHistory | None = None
+    no_facts: bool = False
+
+
 def _full_rows(
     context: Context,
     ticker: str,
-    df_facts: pd.DataFrame,
+    built: TickerHistory,
     *,
     rebuild_history: bool,
     rebuild: frozenset[str],
     catalogue: Catalogue,
-    guards: PeriodGuards,
 ) -> TickerHistory | None:
-    """Full replay of every event: the rows to save after the drift guard, or None when the facts yield no event."""
-    built = build_ticker(ticker, df_facts, catalogue=catalogue, guards=guards)
+    """The rows of a full replay (`built`) to save after the drift guard, or None when the facts yield no event."""
     if built.history.empty:
         if ticker in rebuild:
             _drop_history(context, ticker)
@@ -1099,6 +1137,8 @@ def build_fundamentals_history(
     history differs from the stored one. `fetched` (filing dates a same-process fetch read, per ticker) and
     `full_fetch` (that fetch ran with `-F`) route back-dated reads to the full replay. A ticker whose facts come from
     several CIKs reads its windows from the identity layer for the seam rule (`keep_window_owner_filings`).
+    Full builds run in a process pool of `data_extract.fundamentals_workers` (in-process for 1 worker or a single
+    ticker); the parent reads, guards, saves and logs, in ticker order.
     """
     catalogue = load_catalogue(str(context.config_dir))
     guards = load_guards(str(context.config_dir))
@@ -1121,36 +1161,66 @@ def build_fundamentals_history(
         paths.get(CHECK, 0),
         paths.get(SKIP, 0),
     )
-    for ticker in tickers:
-        item = work[ticker]
-        if item.path == SKIP:
-            continue
-        df_facts = _ticker_facts(context, ticker)
-        if df_facts is None:
+    active = [ticker for ticker in tickers if work[ticker].path != SKIP]
+    workers = _replay_workers(context)
+    use_pool = workers > 1 and len(active) > 1
+    limit = workers * _IN_FLIGHT_PER_WORKER if use_pool else 1
+    executor: ProcessPoolExecutor | None = None
+    pending: deque[_Pending] = deque()
+
+    def finish(entry: _Pending) -> None:
+        """The parent's in-order tail of one ticker: drift guard, save, log."""
+        nonlocal history_rows, codes_rows
+        ticker = entry.ticker
+        if entry.no_facts:
             context.log.info("history: %s has no stored facts -- skipped", ticker)
             if ticker in rebuild:
                 _drop_history(context, ticker)
-            continue
-        built = None
-        if item.path in (INCREMENTAL, CHECK):
-            built = _incremental_rows(ticker, df_facts, item, catalogue, guards)
-            if built is None:
-                context.log.warning(
-                    "history: %s event list differs from the stored one up to %s -> full replay", ticker, pd.Timestamp(item.newest).date()
-                )
+            return
+        built = entry.rows
+        if entry.full is not None:
+            full = entry.full.result() if isinstance(entry.full, Future) else entry.full
+            built = _full_rows(context, ticker, full, rebuild_history=rebuild_history, rebuild=rebuild, catalogue=catalogue)
         if built is None:
-            built = _full_rows(context, ticker, df_facts, rebuild_history=rebuild_history, rebuild=rebuild, catalogue=catalogue, guards=guards)
-            if built is None:
-                continue
+            return
         df_history, df_codes = built.history, built.reason_codes
         if df_history.empty:
             context.log.info("history: %s already current (0 new events)", ticker)
-            continue
+            return
         context.store.save(Tables.fundamentals_history_sec, df_history)
         if not df_codes.empty:
             context.store.save(Tables.fundamentals_reason_codes, df_codes)
         context.log.info("history: %s +%d event row(s), %d reason code(s)", ticker, len(df_history), len(df_codes))
         history_rows += len(df_history)
         codes_rows += len(df_codes)
+
+    try:
+        for ticker in active:
+            item = work[ticker]
+            df_facts = _ticker_facts(context, ticker)
+            entry = _Pending(ticker, no_facts=df_facts is None)
+            if df_facts is not None and item.path in (INCREMENTAL, CHECK):
+                entry.rows = _incremental_rows(ticker, df_facts, item, catalogue, guards)
+                if entry.rows is None:
+                    context.log.warning(
+                        "history: %s event list differs from the stored one up to %s -> full replay", ticker, pd.Timestamp(item.newest).date()
+                    )
+            if df_facts is not None and entry.rows is None:
+                if use_pool:
+                    if executor is None:
+                        executor = ProcessPoolExecutor(max_workers=workers, initializer=_init_replay_worker, initargs=(catalogue, guards))
+                    entry.full = executor.submit(_build_in_worker, ticker, df_facts)
+                else:
+                    entry.full = build_ticker(ticker, df_facts, catalogue=catalogue, guards=guards)
+            del df_facts
+            pending.append(entry)
+            # Saves stay in ticker order; the bound keeps at most `limit` builds (and their facts) in flight.
+            while pending and (len(pending) >= limit or not isinstance(pending[0].full, Future) or pending[0].full.done()):
+                finish(pending.popleft())
+        while pending:
+            finish(pending.popleft())
+    finally:
+        if executor is not None:
+            executor.shutdown(wait=True, cancel_futures=True)
 
     context.log.info("history: %d ticker(s), +%d event row(s), %d reason code(s)", len(tickers), history_rows, codes_rows)

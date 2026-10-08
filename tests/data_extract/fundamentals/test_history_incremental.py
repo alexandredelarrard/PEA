@@ -8,6 +8,7 @@ are genuine `fundamentals_facts` rows). The store is the in-memory SQLite double
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -498,3 +499,54 @@ def test_verify_history_flag_reaches_the_history_build(monkeypatch: pytest.Monke
     print(
         f"  verify_history per call: {[b['verify_history'] for b in builds]}; both history commands list the flag, fundamentals-facts does not. Validated."
     )
+
+
+# --------------------------------------------------------------------------- #
+# P3 (AC-007) the replay pool saves exactly what the in-process build saves    #
+# --------------------------------------------------------------------------- #
+class _CountingPool(ProcessPoolExecutor):
+    """A real process pool that counts its submissions."""
+
+    submitted: list[str] = []
+
+    def submit(self, fn: Any, /, *args: Any, **kwargs: Any) -> Any:
+        _CountingPool.submitted.append(str(args[0]))
+        return super().submit(fn, *args, **kwargs)
+
+
+def _pool_run(store: Any, workers: int) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Three first builds and one incremental ticker (BBB, 3 of 4 events stored) with `workers`; the saved tables."""
+    tickers = ["AAA", "BBB", "CCC", "DDD"]
+    store.delete(Tables.fundamentals_history_sec, {"ticker": tickers})
+    store.delete(Tables.fundamentals_reason_codes, {"ticker": tickers})
+    serial = _context(store)
+    mod.build_fundamentals_history(serial, ["BBB"])
+    history, codes = _stored(store, "BBB")
+    _keep_first(store, "BBB", history, codes, 3)
+    context = SimpleNamespace(**vars(serial), config=SimpleNamespace(data_extract=SimpleNamespace(fundamentals_workers=workers)))
+    mod.build_fundamentals_history(context, tickers)
+    history = store.load(Tables.fundamentals_history_sec).sort_values(["ticker", "as_of"]).reset_index(drop=True)
+    codes = store.load(Tables.fundamentals_reason_codes).sort_values(["ticker", "as_of", "field", "dc_code"]).reset_index(drop=True)
+    return history, codes
+
+
+def test_pool_build_equals_in_process_build(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(mod, "_scope_changed_recently", lambda context, tickers, as_of=None: frozenset())
+    monkeypatch.setattr(mod, "ProcessPoolExecutor", _CountingPool)
+    for k, ticker in enumerate(("AAA", "BBB", "CCC", "DDD")):
+        facts = _quarters(ticker)
+        sqlite_store.save(Tables.fundamentals_facts, facts.assign(value=facts["value"] * (k + 1)))
+
+    _CountingPool.submitted = []
+    serial_history, serial_codes = _pool_run(sqlite_store, workers=1)
+    assert _CountingPool.submitted == [], "workers=1 must build in-process"
+    pooled_history, pooled_codes = _pool_run(sqlite_store, workers=2)
+
+    assert _CountingPool.submitted == ["AAA", "CCC", "DDD"], _CountingPool.submitted
+    pd.testing.assert_frame_equal(pooled_history, serial_history)
+    pd.testing.assert_frame_equal(pooled_codes, serial_codes)
+    per_ticker = pooled_history.groupby("ticker").size().to_dict()
+    assert per_ticker == {"AAA": 4, "BBB": 4, "CCC": 4, "DDD": 4}, per_ticker
+    print("\n=== SANITY CHECK: replay pool == in-process ===")
+    print(f"  workers=2 submitted {_CountingPool.submitted} to a real process pool (BBB stayed incremental in the parent);")
+    print(f"  {len(pooled_history)} history rows and {len(pooled_codes)} reason codes identical to workers=1. Validated.")

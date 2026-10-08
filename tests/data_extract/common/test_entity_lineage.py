@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -662,7 +663,7 @@ def test_entity_lineage_build_logs_changed_ciks_and_affected_tickers(monkeypatch
 
     class Store:
         def load(self, table, **kwargs):
-            if table is Tables.symbol_tenure:
+            if table in (Tables.symbol_tenure, Tables.security_master):  # optional tables not stored yet
                 return None
             return {Tables.sp500_tickers: roster, Tables.entity_lineage: old}[table]
 
@@ -928,6 +929,37 @@ def test_a_manual_verdict_clears_the_cpt_grey_band():
     print("\n=== SANITY CHECK: CPT grey band settled ===")
     print(f"  overlap shared={shared} jaccard={jaccard:.3f} -> grey; curated own_entity -> no backlog, {typo} is its own entity")
     print("  OK: the one-digit-off CIK stays out of Camden's entity by a recorded decision")
+
+
+def test_manual_config_records_the_2026_10_08_verdicts():
+    """The seven event-only predecessor / acquired-target verdicts of the review load, each citing an SEC accession."""
+    manual = load_manual_lineage(CONFIG_DIR)
+    expected = {
+        "CDW": {"0000899171", "0001402057"},
+        "KMI": {"0000054502", "0001506307"},
+        "CB": {"0000020171", "0000896159"},
+        "DOC": {"0001574540", "0000765880"},
+        "DELL": {"0000826083", "0001571996"},
+        "GM": {"0000040730", "0001467858"},
+        "VMRK": {"0000915912", "0000906107"},
+    }
+    accession = re.compile(r"\d{10}-\d{2}-\d{6}")
+    found: dict[str, tuple[str, dict]] = {}
+    for key, entry in manual.items():
+        for ticker, ciks in expected.items():
+            if set(entry["same_entity"]) == ciks:
+                found[ticker] = (key, entry)
+    missing = sorted(set(expected) - set(found))
+    assert not missing, f"no same_entity verdict for {missing}"
+    for ticker, (key, entry) in found.items():
+        assert key.startswith(f"{ticker}/"), f"{ticker}: verdict filed under {key!r}"
+        assert accession.search(entry["evidence"]), f"{key}: evidence cites no SEC accession"
+        assert not entry["own_entity"], f"{key}: a same_entity verdict also declares own_entity"
+
+    print("\n=== SANITY CHECK: 2026-10-08 same_entity verdicts ===")
+    for key, entry in found.values():
+        print(f"  {key:32s} {sorted(entry['same_entity'])}  cites {accession.search(entry['evidence']).group(0)}")
+    print(f"  OK: {len(found)} verdicts load through load_manual_lineage, each evidenced by an SEC accession")
 
 
 def test_d19_allowlist_is_loaded_from_the_curated_file():

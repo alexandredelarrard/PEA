@@ -748,6 +748,296 @@
         ],
         "reason": "XYZ became the NYSE symbol at the 2025-01-21 market open."
       }
+    ],
+    "AON": [
+      {
+        "symbol": "AOC",
+        "issuer_cik": "0000315293",
+        "valid_from": "2006-01-04",
+        "valid_to": "2009-12-01",
+        "evidence": [
+          "0001104659-09-066886 (8-K Item 8.01: the NYSE symbol changes to AON from AOC at the start of trading on 2009-12-01)"
+        ],
+        "reason": "AOC was Aon's NYSE symbol (SEC-observed lower bound) until the 2009-12-01 open; later Forms 3/4/5 typing AOC are stale."
+      },
+      {
+        "symbol": "AON",
+        "issuer_cik": "0000315293",
+        "valid_from": "2009-12-01",
+        "valid_to": null,
+        "evidence": [
+          "0001104659-09-066886 (8-K Item 8.01: the NYSE symbol changes to AON from AOC at the start of trading on 2009-12-01)"
+        ],
+        "reason": "AON is the common-stock symbol from the 2009-12-01 open."
+      }
+    ],
+    "CB": [
+      {
+        "symbol": "ACE",
+        "issuer_cik": "0000896159",
+        "valid_from": "2006-01-06",
+        "valid_to": "2016-01-15",
+        "evidence": [
+          "0001193125-16-430900 (8-K Item 2.01: the ACE common shares commenced trading on the NYSE as CB on 2016-01-15)"
+        ],
+        "reason": "ACE Limited traded as ACE (SEC-observed lower bound) until it became Chubb Limited."
+      },
+      {
+        "symbol": "CB",
+        "issuer_cik": "0000896159",
+        "valid_from": "2016-01-15",
+        "valid_to": null,
+        "evidence": [
+          "0001193125-16-430900 (8-K Item 2.01: the ACE common shares commenced trading on the NYSE as CB on 2016-01-15)"
+        ],
+        "reason": "Chubb Limited (the former ACE) trades as CB from 2016-01-15; CB before that was the acquired Chubb Corp (0000020171)."
+      }
+    ],
+    "CBRE": [
+      {
+        "symbol": "CBG",
+        "issuer_cik": "0001138118",
+        "valid_from": "2006-01-05",
+        "valid_to": "2018-03-19",
+        "evidence": [
+          "0001564590-18-004821 (8-K Item 7.01: trading under CBRE instead of CBG begins on 2018-03-19)"
+        ],
+        "reason": "CBG was the NYSE symbol (SEC-observed lower bound) until the 2018-03-19 change; later CBG filings are stale."
+      },
+      {
+        "symbol": "CBRE",
+        "issuer_cik": "0001138118",
+        "valid_from": "2018-03-19",
+        "valid_to": null,
+        "evidence": [
+          "0001564590-18-004821 (8-K Item 7.01: trading under CBRE instead of CBG begins on 2018-03-19)"
+        ],
+        "reason": "CBRE is the NYSE symbol from 2018-03-19."
+      }
+    ],
+    "ECHO": [
+      {
+        "symbol": "SATS",
+        "issuer_cik": "0001415404",
+        "valid_from": "2008-01-02",
+        "valid_to": "2026-06-24",
+        "evidence": [
+          "0000950134-08-000254 (8-K: EchoStar Holding is an independent public company whose Class A shares trade as SATS after the 2008-01-01 spin-off; first trading day 2008-01-02, the first Yahoo bar of ECHO)",
+          "FINRA RegSHO: last SATS day 2026-06-23, first ECHO day 2026-06-24 (sec_short_volume_security); 10-K/10-Q/8-K covers of 0001415404 read SATS to 0001415404-26-000027 (2026-06-18) and ECHO from 0001415404-26-000030 (2026-06-25)"
+        ],
+        "reason": "EchoStar Class A traded as SATS from its 2008 spin-off until the 2026 change to ECHO."
+      },
+      {
+        "symbol": "ECHO",
+        "issuer_cik": "0001415404",
+        "valid_from": "2026-06-24",
+        "valid_to": null,
+        "evidence": [
+          "FINRA RegSHO: last SATS day 2026-06-23, first ECHO day 2026-06-24 (sec_short_volume_security); 10-K/10-Q/8-K covers of 0001415404 read SATS to 0001415404-26-000027 (2026-06-18) and ECHO from 0001415404-26-000030 (2026-06-25)"
+        ],
+        "reason": "ECHO from 2026-06-24, the first FINRA day under the new symbol; earlier ECHO tenures belong to unrelated companies (entity_lineage_manual.json D19 note)."
+      }
+    ],
+    "MNST": [
+      {
+        "symbol": "HANS",
+        "issuer_cik": "0000865752",
+        "valid_from": "2006-01-10",
+        "valid_to": "2012-01-09",
+        "evidence": [
+          "0001104659-12-000837 (8-K Item 8.01: effective 2012-01-09 the common stock, previously HANS, trades as MNST)"
+        ],
+        "reason": "Hansen Natural traded as HANS (SEC-observed lower bound) until the 2012-01-09 change to MNST; later HANS filings are stale."
+      },
+      {
+        "symbol": "MNST",
+        "issuer_cik": "0000865752",
+        "valid_from": "2012-01-09",
+        "valid_to": null,
+        "evidence": [
+          "0001104659-12-000837 (8-K Item 8.01: effective 2012-01-09 the common stock, previously HANS, trades as MNST)"
+        ],
+        "reason": "MNST from 2012-01-09."
+      }
+    ],
+    "MSI": [
+      {
+        "symbol": "MOT",
+        "issuer_cik": "0000068505",
+        "valid_from": "2006-01-04",
+        "valid_to": "2011-01-04",
+        "evidence": [
+          "0001104659-10-060618 (8-K: Motorola Solutions common trades on the NYSE as MSI from 2011-01-04); 0001104659-11-001040"
+        ],
+        "reason": "Motorola, Inc. traded as MOT (SEC-observed lower bound) until the Mobility separation and the 2011-01-04 change to MSI; later MOT filings are stale."
+      },
+      {
+        "symbol": "MSI",
+        "issuer_cik": "0000068505",
+        "valid_from": "2011-01-04",
+        "valid_to": null,
+        "evidence": [
+          "0001104659-10-060618 (8-K: Motorola Solutions common trades on the NYSE as MSI from 2011-01-04); 0001104659-11-001040"
+        ],
+        "reason": "MSI from 2011-01-04, after the 1-for-7 reverse split."
+      }
+    ],
+    "ZBH": [
+      {
+        "symbol": "ZMH",
+        "issuer_cik": "0001136869",
+        "valid_from": "2006-01-04",
+        "valid_to": "2015-06-29",
+        "evidence": [
+          "0001193125-15-237276 (8-K Item 5.03: ZMH until 2015-06-29; on 2015-06-29 the symbol changes to ZBH, CUSIP unchanged)"
+        ],
+        "reason": "Zimmer traded as ZMH (SEC-observed lower bound) until 2015-06-29."
+      },
+      {
+        "symbol": "ZBH",
+        "issuer_cik": "0001136869",
+        "valid_from": "2015-06-29",
+        "valid_to": null,
+        "evidence": [
+          "0001193125-15-237276 (8-K Item 5.03: ZMH until 2015-06-29; on 2015-06-29 the symbol changes to ZBH, CUSIP unchanged)"
+        ],
+        "reason": "ZBH from 2015-06-29, same CUSIP."
+      }
+    ],
+    "VMRK": [
+      {
+        "symbol": "EQR",
+        "issuer_cik": "0000906107",
+        "valid_from": "2006-01-05",
+        "valid_to": "2026-08-18",
+        "evidence": [
+          "0001140361-26-033377 (8-K Item 5.03: beginning on 2026-08-18 the common shares trade on the NYSE as VMRK)"
+        ],
+        "reason": "Equity Residential traded as EQR (SEC-observed lower bound) until the 2026-08-18 change to VMRK."
+      },
+      {
+        "symbol": "VMRK",
+        "issuer_cik": "0000906107",
+        "valid_from": "2026-08-18",
+        "valid_to": null,
+        "evidence": [
+          "0001140361-26-033377 (8-K Item 5.03: beginning on 2026-08-18 the common shares trade on the NYSE as VMRK)"
+        ],
+        "reason": "VMRK from 2026-08-18 on the same registrant CIK."
+      },
+      {
+        "symbol": "AVB",
+        "issuer_cik": "0000915912",
+        "valid_from": "2006-01-04",
+        "valid_to": "2026-08-18",
+        "evidence": [
+          "0001140361-26-033377 (8-K Item 5.03: beginning on 2026-08-18 the common shares trade on the NYSE as VMRK)"
+        ],
+        "reason": "AvalonBay common traded as AVB (SEC-observed lower bound) through its last session, 2026-08-17; an acquired target of VMRK, never summed into it."
+      }
+    ],
+    "VTRS": [
+      {
+        "symbol": "MYL",
+        "issuer_cik": "0000069499",
+        "valid_from": "2006-01-06",
+        "valid_to": "2015-03-02",
+        "evidence": [
+          "0001193125-15-068777 (8-K Items 2.01/3.01: old Mylan common suspended before the 2015-03-02 open; New Mylan ordinary shares listed on Nasdaq as MYL)"
+        ],
+        "reason": "Old Mylan Inc. traded as MYL (SEC-observed lower bound) until its common was suspended before the 2015-03-02 open."
+      },
+      {
+        "symbol": "MYL",
+        "issuer_cik": "0001623613",
+        "valid_from": "2015-03-02",
+        "valid_to": "2020-11-17",
+        "evidence": [
+          "0001193125-15-068777 (8-K Items 2.01/3.01: old Mylan common suspended before the 2015-03-02 open; New Mylan ordinary shares listed on Nasdaq as MYL)",
+          "0001193125-20-298224 (8-K Item 3.01: Mylan shares suspended and delisted after the 2020-11-16 closing); FINRA RegSHO: last MYL day 2020-11-16, first VTRS day 2020-11-17"
+        ],
+        "reason": "Mylan N.V. traded as MYL from 2015-03-02 through the 2020-11-16 session."
+      },
+      {
+        "symbol": "VTRS",
+        "issuer_cik": "0001792044",
+        "valid_from": "2020-11-17",
+        "valid_to": null,
+        "evidence": [
+          "0001193125-20-298224 (8-K Item 3.01: Mylan shares suspended and delisted after the 2020-11-16 closing); FINRA RegSHO: last MYL day 2020-11-16, first VTRS day 2020-11-17"
+        ],
+        "reason": "Viatris trades as VTRS from 2020-11-17; Upjohn's earlier VTRS-typed Forms 3/4 precede any VTRS trading."
+      }
+    ],
+    "FOXA": [
+      {
+        "symbol": "FOX",
+        "issuer_cik": "0001754301",
+        "valid_from": "2019-03-19",
+        "valid_to": null,
+        "evidence": [
+          "0001193125-19-079678 (8-K Item 2.01: regular-way trading of Fox Corporation Class A and Class B began on Nasdaq as FOXA and FOX on 2019-03-19); FOX before that date was 21st Century Fox's Class B"
+        ],
+        "reason": "Fox Corporation Class B trades as FOX from 2019-03-19; earlier FOX tenures are 21st Century Fox's Class B."
+      }
+    ],
+    "NWSA": [
+      {
+        "symbol": "NWS",
+        "issuer_cik": "0001564708",
+        "valid_from": "2013-07-01",
+        "valid_to": null,
+        "evidence": [
+          "0001193125-13-281463 (8-K: new News Corp began regular-way trading on 2013-07-01 after the 2013-06-28 separation; NWS before that was the old News Corp, later 21st Century Fox)"
+        ],
+        "reason": "News Corp Class B trades as NWS from 2013-07-01; earlier NWS tenures are the old News Corp's."
+      }
+    ],
+    "WBD": [
+      {
+        "symbol": "DISCA",
+        "issuer_cik": "0001437107",
+        "valid_from": "2008-09-18",
+        "valid_to": "2022-04-11",
+        "evidence": [
+          "0001299933-08-004378 (8-K 2008-09-18: Discovery Communications became the public registrant on completion of the Discovery Holding transaction); 0001193125-22-103051 (8-K Item 8.01: DISCA ceased trading after the 2022-04-08 close, WBD from 2022-04-11)"
+        ],
+        "reason": "Discovery Communications Series A traded as DISCA from 2008-09-18 through the 2022-04-08 session; DISCA before 2008-09-18 was Discovery Holding Company's."
+      }
+    ],
+    "APTV": [
+      {
+        "symbol": "DLPH",
+        "issuer_cik": "0001521332",
+        "valid_from": "2011-11-17",
+        "valid_to": "2017-12-05",
+        "evidence": [
+          "0001193125-17-363912 (8-K Item 2.01: Delphi Automotive renamed Aptiv and traded as APTV from 2017-12-05, when Delphi Technologies began trading as DLPH); IPO 2011-11-17 (security_master_manual.json APTV boundary)"
+        ],
+        "reason": "Delphi Automotive traded as DLPH from its 2011-11-17 IPO to 2017-12-04; DLPH from 2017-12-05 is Delphi Technologies (0001707092), not APTV."
+      }
+    ],
+    "GOOGL": [
+      {
+        "symbol": "GOOGL",
+        "issuer_cik": "0001288776",
+        "valid_from": "2014-04-03",
+        "valid_to": "2015-10-02",
+        "evidence": [
+          "0001193125-14-116456 (8-K Item 3.03: the Class C dividend of 2014-04-03 moved Class A to GOOGL); registrant_cutover.json GOOGL seam 2015-10-02 (Alphabet holding-company reorganisation)"
+        ],
+        "reason": "Google Inc. Class A traded as GOOGL from the 2014-04-03 Class C dividend until the Alphabet reorganisation."
+      },
+      {
+        "symbol": "GOOGL",
+        "issuer_cik": "0001652044",
+        "valid_from": "2015-10-02",
+        "valid_to": null,
+        "evidence": [
+          "0001193125-14-116456 (8-K Item 3.03: the Class C dividend of 2014-04-03 moved Class A to GOOGL); registrant_cutover.json GOOGL seam 2015-10-02 (Alphabet holding-company reorganisation)"
+        ],
+        "reason": "Alphabet Class A trades as GOOGL from 2015-10-02."
+      }
     ]
   },
   "rejected": [
@@ -879,6 +1169,259 @@
         "SEC Form 3/4/5 data set 2026q1: one Form 3 filed for SpyGlass Pharma, Inc. (CIK 0001778922) carries ISSUERTRADINGSYMBOL SPG"
       ],
       "reason": "A mis-tagged symbol on one Form 3; Simon Property Group (CIK 0001063761) held SPG."
+    },
+    {
+      "symbol": "FEC",
+      "issuer_cik": "0001031296",
+      "valid_from": "2006-01-05",
+      "valid_to": "2006-03-01",
+      "accessions": [
+        "0001031296-06-000004",
+        "0001031296-06-000003",
+        "0001031296-06-000020",
+        "0001031296-06-000021"
+      ],
+      "evidence": [
+        "SEC Form 3/4/5 data sets 2006q1: 4 filing(s) for FIRSTENERGY CORP (CIK 0001031296) carry ISSUERTRADINGSYMBOL parsed as FEC"
+      ],
+      "reason": "FirstEnergy (CIK 0001031296) never listed FEC; contemporaneous Forms typed FE, its only common symbol. A typo."
+    },
+    {
+      "symbol": "NDNS",
+      "issuer_cik": "0000072331",
+      "valid_from": "2006-01-17",
+      "valid_to": "2008-12-09",
+      "accessions": [
+        "0001340481-06-000002",
+        "0001340481-06-000003",
+        "0001340481-07-000002",
+        "0001340481-07-000003",
+        "0001340481-08-000001"
+      ],
+      "evidence": [
+        "SEC Form 3/4/5 data sets 2006q1-2008q4: 5 filing(s) for NORDSON CORP (CIK 0000072331) carry ISSUERTRADINGSYMBOL parsed as NDNS"
+      ],
+      "reason": "A transposition of NDSN; Nordson never listed NDNS."
+    },
+    {
+      "symbol": "NLFX",
+      "issuer_cik": "0001065280",
+      "valid_from": "2009-02-27",
+      "valid_to": "2010-02-19",
+      "accessions": [
+        "0001445927-09-000003",
+        "0001445927-09-000004",
+        "0001445927-10-000001"
+      ],
+      "evidence": [
+        "SEC Form 3/4/5 data sets 2009q1-2010q1: 3 filing(s) for NETFLIX INC (CIK 0001065280) carry ISSUERTRADINGSYMBOL parsed as NLFX"
+      ],
+      "reason": "A transposition of NFLX; Netflix never listed NLFX."
+    },
+    {
+      "symbol": "IDEXX",
+      "issuer_cik": "0000874716",
+      "valid_from": "2012-02-01",
+      "valid_to": "2014-11-13",
+      "accessions": [
+        "0001140361-12-004604",
+        "0001140361-14-041120"
+      ],
+      "evidence": [
+        "SEC Form 3/4/5 data sets 2012q1-2014q4: 2 filing(s) for IDEXX LABORATORIES INC (CIK 0000874716) carry ISSUERTRADINGSYMBOL parsed as IDEXX"
+      ],
+      "reason": "The company name typed as a symbol; IDEXX trades as IDXX."
+    },
+    {
+      "symbol": "AAM",
+      "issuer_cik": "0001411494",
+      "valid_from": "2022-01-03",
+      "valid_to": "2022-10-05",
+      "accessions": [
+        "0000950142-22-000128",
+        "0000950142-22-000082",
+        "0000950142-22-000051",
+        "0000950142-22-000085",
+        "0000950142-22-000086",
+        "0000950142-22-000049",
+        "0000950142-22-000048",
+        "0000950142-22-000047",
+        "0000950142-22-000053",
+        "0000950142-22-000050",
+        "0000899243-22-000246",
+        "0000950142-22-000057",
+        "0000950142-22-000056",
+        "0000950142-22-000055",
+        "0000950142-22-000052",
+        "0000950142-22-000054",
+        "0000950142-22-000058",
+        "0000950142-22-000059",
+        "0000950142-22-000364",
+        "0000950142-22-000858",
+        "0000950142-22-001220",
+        "0000950142-22-002844"
+      ],
+      "evidence": [
+        "SEC Form 3/4/5 data sets 2022q1-2022q4: 22 filing(s) for Apollo Asset Management, Inc. (CIK 0001411494) carry ISSUERTRADINGSYMBOL parsed as AAM"
+      ],
+      "reason": "After the 2022-01-01 reorganisation CIK 0001411494 became Apollo Asset Management, a subsidiary with no listed common; AAM is not a traded common symbol (its listed securities were the AAM preferred series), and Apollo Global Management common trades as APO under 0001858681."
+    },
+    {
+      "symbol": "BRKB",
+      "issuer_cik": "0001067983",
+      "valid_from": "2016-01-06",
+      "valid_to": "2025-03-05",
+      "accessions": [
+        "0000919574-16-008962",
+        "0000899243-22-009350",
+        "0000919574-25-001652",
+        "0000919574-25-001778"
+      ],
+      "evidence": [
+        "SEC Form 3/4/5 data sets 2016q1-2025q1: 4 filing(s) for BERKSHIRE HATHAWAY INC (CIK 0001067983) carry ISSUERTRADINGSYMBOL parsed as BRKB"
+      ],
+      "reason": "A vendor spelling of BRK-B (Class B) typed on four filings: the same security as the ticker, not a second tape symbol."
+    },
+    {
+      "symbol": "SCH",
+      "issuer_cik": "0000316709",
+      "valid_from": "2006-02-07",
+      "valid_to": "2006-12-27",
+      "accessions": [
+        "0001311481-06-000003",
+        "0001311481-06-000004",
+        "0001186004-06-000002",
+        "0001296424-06-000002",
+        "0001296455-06-000002",
+        "0001116722-06-000004",
+        "0001296455-06-000003",
+        "0001116722-06-000005",
+        "0001296455-06-000004",
+        "0001296455-06-000007",
+        "0001296455-06-000013"
+      ],
+      "evidence": [
+        "SEC Form 3/4/5 data sets 2006q1-2006q4: 11 filing(s) for SCHWAB CHARLES CORP (CIK 0000316709) carry ISSUERTRADINGSYMBOL parsed as SCH"
+      ],
+      "reason": "SCH was Schwab's NYSE symbol until the NYSE listing was withdrawn and SCHW became the sole (Nasdaq) symbol on 2005-12-20 (8-K 0001181431-05-066971); these 2006 filings are stale."
+    },
+    {
+      "symbol": "VIA",
+      "issuer_cik": "0000813828",
+      "valid_from": "2006-01-04",
+      "valid_to": "2006-01-05",
+      "accessions": [
+        "0000813828-06-000025",
+        "0000813828-06-000048",
+        "0000813828-06-000021",
+        "0000813828-06-000037",
+        "0000813828-06-000035",
+        "0000813828-06-000024",
+        "0000813828-06-000022",
+        "0000813828-06-000029",
+        "0000813828-06-000027",
+        "0000813828-06-000036",
+        "0000813828-06-000033",
+        "0000813828-06-000034",
+        "0000813828-06-000023",
+        "0000813828-06-000028",
+        "0000813828-06-000026",
+        "0000813828-06-000031",
+        "0000813828-06-000049",
+        "0000813828-06-000030",
+        "0000813828-06-000032",
+        "0000813828-06-000038",
+        "0000813828-06-000050"
+      ],
+      "evidence": [
+        "SEC Form 3/4/5 data sets 2006q1: 21 filing(s) for CBS CORP (CIK 0000813828) carry ISSUERTRADINGSYMBOL parsed as VIA"
+      ],
+      "reason": "Filed under the former Viacom (renamed CBS Corp, CIK 0000813828) on the first days after the 2005-12-31 separation; VIA and VIA.B then belonged to the new Viacom (CIK 0001339947)."
+    },
+    {
+      "symbol": "VIAB",
+      "issuer_cik": "0000813828",
+      "valid_from": "2006-01-04",
+      "valid_to": "2006-01-05",
+      "accessions": [
+        "0000813828-06-000025",
+        "0000813828-06-000048",
+        "0000813828-06-000021",
+        "0000813828-06-000037",
+        "0000813828-06-000035",
+        "0000813828-06-000024",
+        "0000813828-06-000022",
+        "0000813828-06-000029",
+        "0000813828-06-000027",
+        "0000813828-06-000036",
+        "0000813828-06-000033",
+        "0000813828-06-000034",
+        "0000813828-06-000023",
+        "0000813828-06-000028",
+        "0000813828-06-000026",
+        "0000813828-06-000031",
+        "0000813828-06-000049",
+        "0000813828-06-000030",
+        "0000813828-06-000032",
+        "0000813828-06-000038",
+        "0000813828-06-000050"
+      ],
+      "evidence": [
+        "SEC Form 3/4/5 data sets 2006q1: 21 filing(s) for CBS CORP (CIK 0000813828) carry ISSUERTRADINGSYMBOL parsed as VIAB"
+      ],
+      "reason": "As VIA: VIA.B belonged to the new Viacom (CIK 0001339947) from the 2005-12-31 separation."
+    },
+    {
+      "symbol": "B",
+      "issuer_cik": "0000030554",
+      "valid_from": "2019-06-10",
+      "valid_to": "2019-06-11",
+      "accessions": [
+        "0001209191-19-035893",
+        "0001209191-19-035897",
+        "0001209191-19-035867",
+        "0001209191-19-035899",
+        "0001209191-19-035883",
+        "0001209191-19-035888",
+        "0001209191-19-035904",
+        "0001209191-19-035906"
+      ],
+      "evidence": [
+        "SEC Form 3/4/5 data sets 2019q2: 8 filing(s) for E. I. du Pont de Nemours and Company (CIK 0000030554) carry ISSUERTRADINGSYMBOL parsed as B"
+      ],
+      "reason": "A one-letter fragment of a preferred-series symbol typed on eight filings of one day; it names no security."
+    },
+    {
+      "symbol": "PCG-PR",
+      "issuer_cik": "0000075488",
+      "valid_from": "2009-01-09",
+      "valid_to": "2009-09-23",
+      "accessions": [
+        "0001127602-09-000988",
+        "0001127602-09-003795",
+        "0001127602-09-019290",
+        "0001127602-09-019319"
+      ],
+      "evidence": [
+        "SEC Form 3/4/5 data sets 2009q1-2009q3: 4 filing(s) for PACIFIC GAS & ELECTRIC CO (CIK 0000075488) carry ISSUERTRADINGSYMBOL parsed as PCG-PR"
+      ],
+      "reason": "A generic umbrella token for the utility's several preferred series, which trade under their own series symbols; PCG common is the parent PG&E Corporation (CIK 0001004980)."
+    },
+    {
+      "symbol": "HUB-A",
+      "issuer_cik": "0000048898",
+      "valid_from": "2007-11-02",
+      "valid_to": "2008-04-29",
+      "accessions": [
+        "0000902664-07-003114",
+        "0000902664-08-001440",
+        "0000902664-08-001848",
+        "0000902664-08-001847"
+      ],
+      "evidence": [
+        "SEC Form 3/4/5 data sets 2007q4-2008q2: 4 filing(s) for HUBBELL INC (CIK 0000048898) carry ISSUERTRADINGSYMBOL parsed as HUB-A"
+      ],
+      "reason": "A spelling of HUBA (Hubbell Class A, typed 'HUB A') on four filings; the Class A line is HUBA."
     }
   ]
 }

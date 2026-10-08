@@ -872,6 +872,155 @@ def test_wbd_seam_discovery_stays_canonical_until_wbd_first_trades():
     print("  DISCA canonical to 2022-04-11 (it traded through 2022-04-08); WBD canonical from its first trading day 2022-04-11")
 
 
+def _trading_days(*spans: tuple[str, str, str]) -> pd.DataFrame:
+    """FINRA presence on every business day of each `(symbol, first, last)` span."""
+    return pd.concat([_finra(symbol, first, last, freq="B") for symbol, first, last in spans], ignore_index=True)
+
+
+def _finra_hit(build: sm.MasterBuild, lineage: pd.DataFrame, roster_pair: tuple[str, str], symbol: str, day: str):
+    """How a stored FINRA row of `symbol` on trade date `day` is stamped (`stamp_short_volume` resolves by FTD symbol)."""
+    return _identity(lineage, roster_pair, build.rows).security_on(symbol=symbol, source="ftd", day=pd.Timestamp(day))
+
+
+def test_seam_boundaries_from_the_real_config():
+    """REQ-005: FINRA days at five symbol seams, stamped through the real manual config.
+
+    Fixtures mirror the stored FTD lines (settlement dates) and FINRA day ranges of each seam; the market dates are
+    the 8-K dates the manual boundaries cite.
+    """
+    manual = sm.load_security_manual(str(CONFIG_DIR))
+
+    # FOX: 21st Century Fox's Class B traded as FOX until 2019-03-18; Fox Corp's FOX starts 2019-03-19.
+    fox_pair = ("FOXA", "0001754301")
+    foxa = _lineage(
+        _row("FOXA", "0001754301", "0001754301", "cik_window", sources="roster"),
+        _row("FOXA", "0001754301", "0001754301", "symbol", "FOX", "2019-02-05", status="conflict", sources="dei,form345"),
+        _row("FOXA", "0001754301", "0001754301", "symbol", "FOXA", "2019-05-10", status="single_source", sources="dei,roster"),
+    )
+    fox_obs = pd.concat(
+        [
+            _obs("90130A200", "FOX", "TWENTY-FIRST CENTY FOX INC CL B", "2018-06-07", "2019-01-18", freq="B"),
+            _obs("35137L105", "FOXA", "FOX CORP CL A (DE)", "2019-03-21", "2020-06-30", freq="B"),
+            _obs("35137L204", "FOX", "FOX CORP CL B (DE)", "2019-03-21", "2020-06-30", freq="B"),
+        ],
+        ignore_index=True,
+    )
+    fox_finra = _trading_days(("FOX", "2018-08-01", "2020-06-30"), ("FOXA", "2018-08-01", "2020-06-30"))
+    fox = _derive(fox_obs, foxa, _roster(fox_pair), manual, finra_presence=fox_finra)
+    fox_b = _rows(fox, "35137L204", "FOX")
+    for day in ("2018-08-01", "2019-01-17", "2019-03-18"):
+        hit = _finra_hit(fox, foxa, fox_pair, "FOX", day)
+        assert hit is None or hit.lineage_role not in {*sm.CANONICAL_ROLES, "secondary_class"}, (day, hit, fox_b)
+    hit = _finra_hit(fox, foxa, fox_pair, "FOX", "2019-03-19")
+    assert hit is not None and (hit.security_id, hit.lineage_role) == ("C35137L204", "secondary_class"), fox_b
+    assert fox_b["valid_from"].min() == pd.Timestamp("2019-03-19"), fox_b
+
+    # DOC: Physicians Realty traded as DOC through 2024-02-29; Healthpeak traded as PEAK through 03-01, DOC from 03-04.
+    doc_pair = ("DOC", "0000765880")
+    doc = _lineage(
+        _row("DOC", "0000765880", "0000765880", "cik_window", sources="roster"),
+        _row("DOC", "0000765880", "0001574540", "cik_event", status="corroborated", sources="dei,form345"),
+        _row("DOC", "0000765880", "0000765880", "symbol", "HCP", "2006-01-04", "2019-11-05", sources="dei,form345"),
+        _row("DOC", "0000765880", "0000765880", "symbol", "PEAK", "2019-11-05", "2024-03-02", sources="dei,form345"),
+        _row("DOC", "0000765880", "0000765880", "symbol", "DOC", "2024-03-04", sources="dei,form345,roster"),
+        _row("DOC", "0000765880", "0001574540", "symbol", "DOC", "2013-07-19", "2024-03-02", sources="dei,form345"),
+    )
+    doc_obs = pd.concat(
+        [
+            _obs("71943U104", "DOC", "PHYSICIANS RLTY TR COM", "2018-06-08", "2024-03-01", freq="B"),
+            _obs("71943U104", "DOCXXXX", "PHYSICIANS RLTY TR COM", "2024-03-04", "2024-03-04"),
+            _obs("42250P103", "PEAK", "HEALTHPEAK PPTYS INC COM (MD)", "2019-11-05", "2024-03-04", freq="B"),
+            _obs("42250P103", "DOC", "HEALTHPEAK PPTYS INC COM (MD)", "2024-03-05", "2024-12-31", freq="B"),
+        ],
+        ignore_index=True,
+    )
+    doc_finra = _trading_days(("DOC", "2018-08-01", "2024-12-31"), ("PEAK", "2019-11-05", "2024-03-01"))
+    docb = _derive(doc_obs, doc, _roster(doc_pair), manual, finra_presence=doc_finra)
+    physicians = _finra_hit(docb, doc, doc_pair, "DOC", "2024-02-29")
+    assert physicians is not None and (physicians.security_id, physicians.lineage_role) == ("C71943U104", "acquired_constituent"), physicians
+    healthpeak = _finra_hit(docb, doc, doc_pair, "DOC", "2024-03-04")
+    assert healthpeak is not None and (healthpeak.security_id, healthpeak.lineage_role) == ("C42250P103", "canonical_current")
+    assert _canonical_overlaps(docb, "DOC") == [], _rows(docb, "42250P103")
+
+    # IR: Ingersoll-Rand plc's last IR session is 2020-02-28; Trane Technologies trades as TT from 2020-03-02.
+    tt_pair = ("TT", "0001466258")
+    tt = _lineage(
+        _row("TT", "0001160497", "0001160497", "cik_window", vt="2009-07-01"),
+        _row("TT", "0001160497", "0001466258", "cik_window", vf="2009-07-01"),
+        _row("TT", "0001160497", "0001466258", "symbol", "IR", "2009-07-09", "2020-03-02", status="curated", sources="manual"),
+        _row("TT", "0001160497", "0001466258", "symbol", "TT", "2020-03-02", status="curated", sources="manual,roster"),
+    )
+    tt_obs = pd.concat(
+        [
+            _obs("G47791101", "IR", "INGERSOLL-RAND PLC ORD SHS (IR", "2018-06-05", "2020-03-02", freq="B"),
+            _obs("G47791101", "IRXXXX", "INGERSOLL-RAND PLC ORD SHS (IR", "2020-03-03", "2020-03-11", freq="B"),
+            _obs("G8994E103", "TT", "TRANE TECHNOLOGIES PLC SHS (IR", "2020-03-03", "2021-06-30", freq="B"),
+            _obs("45687V106", "IR", "INGERSOLL RAND INC COM (DE)", "2020-03-04", "2021-06-30", freq="B"),
+        ],
+        ignore_index=True,
+    )
+    tt_finra = _trading_days(("IR", "2018-08-01", "2021-06-30"), ("TT", "2020-03-02", "2021-06-30"))
+    ttb = _derive(tt_obs, tt, _roster(tt_pair), manual, finra_presence=tt_finra)
+    ir_last = _finra_hit(ttb, tt, tt_pair, "IR", "2020-02-28")
+    assert ir_last is not None, ir_last
+    assert (ir_last.security_id, ir_last.lineage_role, ir_last.canonical_company) == ("CG47791101", "canonical_current", "TT"), ir_last
+    assert _canonical_overlaps(ttb, "TT") == []
+
+    # MYL: Mylan N.V. traded through the 2020-11-16 session; VTRS from 2020-11-17.
+    vtrs_pair = ("VTRS", "0001792044")
+    vtrs = _lineage(
+        _row("VTRS", "0000069499", "0000069499", "cik_window", vt="2015-05-01"),
+        _row("VTRS", "0000069499", "0001623613", "cik_window", "", "2015-05-01", "2020-11-07"),
+        _row("VTRS", "0000069499", "0001792044", "cik_window", vf="2020-11-07"),
+        _row("VTRS", "0000069499", "0000069499", "symbol", "MYL", "2006-01-06", "2015-02-28", status="single_source"),
+        _row("VTRS", "0000069499", "0001623613", "symbol", "MYL", "2015-02-27", "2020-11-19", sources="dei,form345"),
+        _row("VTRS", "0000069499", "0001792044", "symbol", "VTRS", "2020-08-06", sources="dei,form345,roster"),
+    )
+    vtrs_obs = pd.concat(
+        [
+            _obs("N59465109", "MYL", "MYLAN N V SHS EURO", "2018-06-05", "2020-11-18", freq="B"),
+            _obs("92556V106", "VTRS", "VIATRIS INC COM", "2020-11-17", "2021-06-30", freq="B"),
+        ],
+        ignore_index=True,
+    )
+    vtrs_finra = _trading_days(("MYL", "2018-08-01", "2020-11-16"), ("VTRS", "2020-11-17", "2021-06-30"))
+    vtrsb = _derive(vtrs_obs, vtrs, _roster(vtrs_pair), manual, finra_presence=vtrs_finra)
+    for day in ("2020-11-13", "2020-11-16"):
+        myl = _finra_hit(vtrsb, vtrs, vtrs_pair, "MYL", day)
+        assert myl is not None and (myl.security_id, myl.lineage_role) == ("CN59465109", "canonical_predecessor"), (day, myl)
+    assert _canonical_overlaps(vtrsb, "VTRS") == []
+
+    # IIVI: II-VI traded as IIVI through the 2022-09-07 session; COHR from 2022-09-08.
+    cohr_pair = ("COHR", "0000820318")
+    cohr = _lineage(
+        _row("COHR", "0000820318", "0000820318", "cik_window", sources="roster"),
+        _row("COHR", "0000820318", "0000021510", "cik_event", status="curated", sources="manual"),
+        _row("COHR", "0000820318", "0000021510", "symbol", "COHR", "2006-02-01", "2022-07-02", sources="dei,form345"),
+        _row("COHR", "0000820318", "0000820318", "symbol", "IIVI", "2006-02-09", "2022-09-08", status="curated", sources="manual"),
+        _row("COHR", "0000820318", "0000820318", "symbol", "COHR", "2022-09-08", status="curated", sources="manual,roster"),
+    )
+    cohr_obs = pd.concat(
+        [
+            _obs("902104108", "IIVI", "II-VI INC", "2018-06-05", "2022-09-09", freq="B"),
+            _obs("19247G107", "COHR", "COHERENT CORP COM", "2022-09-08", "2023-06-30", freq="B"),
+        ],
+        ignore_index=True,
+    )
+    cohr_finra = _trading_days(("IIVI", "2018-08-01", "2022-09-07"), ("COHR", "2022-09-08", "2023-06-30"))
+    cohrb = _derive(cohr_obs, cohr, _roster(cohr_pair), manual, finra_presence=cohr_finra)
+    for day in ("2022-09-06", "2022-09-07"):
+        iivi = _finra_hit(cohrb, cohr, cohr_pair, "IIVI", day)
+        assert iivi is not None and (iivi.security_id, iivi.lineage_role) == ("C902104108", "canonical_current"), (day, iivi)
+    assert _canonical_overlaps(cohrb, "COHR") == []
+
+    print("\n=== SANITY CHECK: REQ-005 seam boundaries (real config) ===")
+    print(f"  FOX: 35137L204 starts {fox_b['valid_from'].min().date()}; FINRA FOX 2018-08-01 / 2019-01-17 / 2019-03-18 not summed into FOXA")
+    print("  DOC 2024-02-29 -> C71943U104 acquired_constituent (Physicians); DOC 2024-03-04 -> C42250P103 canonical; no canonical overlap")
+    print("  IR 2020-02-28 -> CG47791101 canonical_current (TT); MYL 2020-11-13/16 -> CN59465109 canonical_predecessor (VTRS)")
+    print("  IIVI 2022-09-06/07 -> C902104108 canonical_current (COHR)")
+    print("  OK: each FINRA seam day is stamped to the security that traded on it, per the 8-K dates")
+
+
 def test_build_reads_finra_trading_days_through_the_store(sqlite_store, tmp_path):
     obs = STZ_OBS.assign(trade_date=sm.trade_dates(STZ_OBS["date"]), fails_quantity=1000.0)
     sqlite_store.save(

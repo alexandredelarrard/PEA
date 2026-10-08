@@ -1,12 +1,13 @@
 """Small string normalisers shared across packages.
 
 `pad_cik` / `pad_cik_series` are the one CIK spelling every package writes and joins on;
-`normalise_ticker` is the one ticker spelling and `yahoo_symbol` Yahoo's spelling of a share class; `clean_text` is the whitespace half of the
+`normalise_ticker` is the one ticker spelling, `yahoo_symbol` Yahoo's spelling of a share class and `squash` the
+separator-free key two symbol spellings are compared on; `clean_text` is the whitespace half of the
 person key in `src/utils/names.py`.
 """
 
 import re
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 
@@ -48,3 +49,10 @@ def normalise_ticker(value: object) -> str:
 def yahoo_symbol(symbol: object) -> str:
     """Yahoo's spelling of a share-class symbol: a `/` or `.` class separator becomes `-` (`BRK/A`, `BRK.A` -> `BRK-A`)."""
     return normalise_ticker(symbol).replace("/", "-").replace(".", "-")
+
+
+def squash(symbol: object) -> str:
+    """The comparison key of a symbol: upper case without class separators (`BRK-B`, `BRK/B`, `BRK.B` -> `BRKB`)."""
+    if symbol is None or (not isinstance(symbol, str) and pd.isna(cast(Any, symbol))):
+        return ""
+    return re.sub(r"[\s\-./]", "", str(symbol)).upper()

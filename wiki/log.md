@@ -268,3 +268,12 @@ Append-only audit trail. Add one dated entry per generation or refresh run, reco
 - Change: `fetch_8k_edgar.py` filters edgartools' `CurrentReport[...] found no such item` FutureWarning (absent item = empty text, already handled); test `test_8k_item_absent_from_parsed_body_is_silent_and_empty`.
 - Pages: [Data sources](./reference/data-sources.md)
 - Documentation note: OpenKnowledge refused the disk write, so the pages were edited directly.
+
+## 2026-10-08: refresh — identity manual review
+
+- Profile: internal/standard
+- source_commit: ebc78771 (branch `harness/identity-manual-review`)
+- Coverage: the 2026-10-08 `identity_tables` manual items resolved in `configs/sec` (seven `same_entity` acquired-target / LBO verdicts incl. VMRK/AvalonBay, same-CIK symbol renames, 12 evidenced `form345` rejections, five FINRA seam market boundaries); tape-mix flags decided by the stored `security_master` are information, not action
+- Pages: [Data sources](./reference/data-sources.md), [TODO](./TODO.md)
+- Evidence: `reports/validate/2026-10-08-identity-manual-review/` (`01-research.md` price-continuity audit, `03-implementation.md`)
+- Operational boundary: no database write; the next `identity_tables` → `identity_propagate` DAG run applies it.

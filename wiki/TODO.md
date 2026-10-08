@@ -202,6 +202,19 @@ Deferred from the entity-safe EDGAR filing scope and dated lineage work (`report
 - **P3 — APA short volume on 2021-02-26.** The holding-company CUSIP change gives the old and new CUSIP a master interval on the same day, so the conflict rule leaves that day unresolved (1 row). Fix: the new CUSIP's interval starts the session after the old one ends.
 - **P3 — Gate attribution gaps.** The regression gate labels DD (+32), MRVL (+45) and FERG (+8) predecessor periods under another reason than `register_window`, so three hypotheses read FAIL although the rows are present; merged-history changes are explained only through `fundamentals_history_sec`, so a merged table stale in the snapshot (employees, SEC block) reads UNEXPLAINED. Fix the gate's reason labels and compare the merged SEC block with the snapshot's `fundamentals_history_sec`. Trigger: the next gate run.
 
+### Identity manual review of 2026-10-08 (open items)
+
+Deferred from the identity manual-review run (local run dir `reports/validate/2026-10-08-identity-manual-review/`). Rule applied: a ticker's fundamentals follow its traded price series; a CIK whose price stops joins the survivor as an event-only acquired target.
+
+- **DELL price history before 2018-12-28.** Yahoo's DELL series before 2018-12-28 is DVMT (the VMware tracking stock), unrelated to Dell Technologies' fundamentals. No mechanism starts a ticker's price history at a date; the price pipeline needs a dated start register, then DELL's usable history starts 2018-12-28.
+- **VMRK comparatives.** AvalonBay (0000915912) is recorded as VMRK's acquired target (Yahoo's VMRK is EQR's series). If the first post-merger VMRK reports present AvalonBay as the accounting predecessor, their comparatives need the PLD-style handling.
+- **Stale tape symbols.** DWDP→DD (2019-06-03, 8-K 0001193125-19-163322) is left to the traded-security realignment run, which owns DD; LTR→L has no SEC text found yet.
+- **`parse_symbol_field` issuer-prefix split.** `_SLASH_LIST` reads `BDX/26A`-style notes as a symbol list and combined covers carry subsidiary symbols; 37 `dei` conflict intervals stay unresolved (correctly) until a parser fix plus a `notes-download -F` recapture.
+- **Live apply.** The merged configs take effect at the next `identity_tables` → `identity_propagate` DAG run (`identity-propagate --every-ticker` re-stamps the FINRA seam rows of FOXA, DOC, TT, VTRS and COHR).
+- **PEAK on 2024-03-01.** Healthpeak's last PEAK session (2.19M shares on FINRA) stays unattributed: the 42250P103 line from 2024-03-01 is keyed on DOC, and a second boundary on the CUSIP would overlap it. Needs a per-symbol boundary on one CUSIP.
+- **Remaining tape-mix actions.** FITBP (an open `form345` tenure while the master's FITBP lines stop at 2026-06-09 and gap 2013–2019) and HUBA (the overlap runs to 2016-08-18, the master's HUBA line ends 2015-12-24) stay ACTION items for a tenure curation.
+- **Tape-mix flag reads the previous master.** `build_entity_lineage` judges tape-mix overlaps against the stored `security_master`, rebuilt after the lineage; a new acquired line is information only from the following run.
+
 ## Employee headcount follow-ups
 
 Deferred from the employee headcount coverage run (local, gitignored run dir `reports/validate/2026-10-07-employee-headcount-coverage/`, findings F1–F6 in `03-implementation.md`). The branch merged into `dev` without the independent validation stage, so F2, F3 and the scope-jump rule below are still open.

@@ -99,7 +99,7 @@ Every fetcher derives its work list from its own table's rows, its `Resume` cont
 
 - **New ticker.** A ticker whose `sp500_tickers.added_on` lies inside the table's overlap (7 days for the archives and the 13F backfill) gets its full history. A dated series (prices, short interest, Sharadar) pulls it once: when the key's first stored date is within the overlap of the history floor or source start, a rerun resumes forward. For short interest that start is the later of the FINRA start and the key's first `prices` date, so a joiner listed late (a spin-off) is also read in full once; a key with no price row keeps the FINRA start. A ticker taken out of `INSUFFICIENT_HISTORY_TICKERS` keeps its old `added_on`, so it is not new: run `-t <ticker> -F` once for each source.
 - **`-t X`** plans X alone. An EDGAR document command reads X's missing filings. An archive command (`financial-statements`, `financial-notes`, `fails-to-deliver`, the zip half of `insider-transactions`) does nothing for an established X; `-t X -F` re-reads X's stored periods. A `-t` 13F run never reads past the stored frontier.
-- **`-F`** re-reads the whole listed history, stored filings and markers included. `--no-cap` lifts `max_documents_per_run`.
+- **`-F`** is command-specific. EDGAR document commands that support it re-read their listed history, stored filings and markers included; `--no-cap` lifts `max_documents_per_run` where offered. Neither `thirteen-f` nor `thirteen-f-managers` accepts `-F`; use their explicit filing-window or pending-book rules below. Check [extraction CLI](../../src/data_extract/cli.py) for the owning command's options.
 - **Archives.** A period is done only when every table of its fetcher holds it. A period with no universe row is listed again every night. A change of the FTD symbol policy needs an explicit `-F`.
 - **Short interest.** A night reads each ticker's window plus the days on which no key has a row; `--repair-gaps` re-reads each key's own gap days once. `-t X -F` re-reads X's days and upserts only X's rows.
 - **Tapes after a lineage change.** Run `short-interest`, `fails-to-deliver` and `identity-propagate` unscoped while tickers sit in the 7-day window: a `-t` re-stamp counts a line that moved between two universe companies under both until the next unscoped run.
@@ -115,6 +115,17 @@ For a notes availability-date correction, first obtain the approved `available_a
 For a `pension_facts` ZIP-vintage/clock correction, first verify every cached quarterly ZIP has readable `sub.txt` and `num.txt`, take a restorable table dump, then recreate only `public.pension_facts` and run `rtk "$PY" -m src data_extract financial-statements -c ./configs --reparse`. A normal incremental run cannot replace the old four-column primary key or recover earlier ZIP vintages. Verify the new five-column key, `available_at DATE`, one date per quarter, and representative revisions before using the data. Rebuild `cube_part_fundamentals` with `-F` and reassemble `cube` separately: the 45-session refresh does not repair old feature dates. Do not treat the +12 historical estimate as a verified SEC posting date. See [data sources](../reference/data-sources.md) and [table catalog](../reference/table-catalog.md).
 
 ### Superinvestor roster
+
+For an ordinary refresh, update the roster and then catch up its managers' missing books:
+
+```bash
+rtk proxy "$PY" -m src data_extract superinvestors -c ./configs
+rtk proxy "$PY" -m src data_extract thirteen-f-managers --years 31 -c ./configs
+```
+
+`--years 31` sets the report-period history depth for this run; it does not force a reread. `thirteen-f-managers` has no `-F` option. Its [pending-book planner](../../src/data_extract/utils/institutionals/fetch_13f_managers.py) skips a stored `(period, filing_date)` even when the book's amounts are NULL. `superinvestors -F` rebuilds roster dates and CIK resolutions; it does not repair holdings.
+
+After a parser fix, repair existing holdings with a backed-up, source-verified whole-book proposal and an atomic scoped application, rather than relying on catch-up upserts to remove stale CUSIPs. The parser fix is merged into `dev`, but the 2026-10-07 historical repair is still unapplied; priorities and exact remaining gaps are in [TODO](../TODO.md#superinvestor-roster-follow-ups). After that repair, build `cube_part_prices` if absent, run `data_aggregate build-institutionals -F`, then `data_aggregate assemble-cube` and the relevant read-only [validation](./validate-a-change.md). The latter assembly command has no `-F` option; see [aggregate CLI](../../src/data_aggregate/cli.py).
 
 The daily `superinvestors` command writes a snapshot only when Dataroma's roster changed. Rebuild the whole `superinvestor_roster` table after any change to `configs/superinvestors/` or to the roster code, and on a cold database:
 

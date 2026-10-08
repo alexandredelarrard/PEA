@@ -19,6 +19,7 @@ from src.data_extract.utils.common.identity import build_identity
 from src.data_extract.utils.common.sec_tickers import parse_company_tickers_exchange
 from src.data_store.schema import Tables
 from src.utils.cutover_continuity import load_vendor_exceptions
+from src.utils.predecessor_series import load_vendor_series
 from tests.data_extract.fake_context import extract_config
 
 CONFIG_DIR = Path(__file__).resolve().parents[3] / "configs"
@@ -568,7 +569,7 @@ def test_real_manual_config_is_evidenced_and_holds_the_brk_ratio():
     mergers = {entry["ticker"]: entry for entry in manual.mergers}
     assert mergers["MRK"]["acquired_symbol"] == "SGP" and "PLD" not in mergers  # PLD: the CIK window decides (traded view)
     assert {(x.ticker, x.ratio) for x in manual.exchanges} == {("LIN", 1.0), ("EVRG", 1.0), ("BKR", 1.0), ("STE", 1.0), ("JCI", 1.0)}
-    assert [(s.ticker, s.vendor_ticker) for s in manual.vendor_series] == [("JCI", "TYC")]
+    assert [(s.ticker, s.vendor_ticker) for s in load_vendor_series(CONFIG_DIR)] == [("JCI", "TYC")]
     for frame in (manual.ratios, manual.boundaries):
         assert frame["source"].astype(str).str.len().gt(0).all()
     assert all(entry.get("source") for entry in manual.mergers)

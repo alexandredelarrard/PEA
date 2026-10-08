@@ -14,18 +14,20 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from src.constants.constants import CANONICAL_ROLES
 from src.context import Context
+from src.data_aggregate.utils.common.level_basis import suffix_factor
 from src.data_store.schema import Tables
 from src.utils.identity_flags import FLAG_COLUMNS
+from src.utils.predecessor_series import SECURITY_MANUAL_FILE
 from src.utils.string import normalise_ticker, pad_cik
 
 KIND = "traded_security_mismatch"
-ROLES = ("canonical_current", "canonical_predecessor")
 TOLERANCE = 0.03
 MIN_SHARE = 0.90
 MIN_DAYS = 20
 CHUNK = 50
-_CONFIG = "configs/sec/security_master_manual.json"
+_CONFIG = f"configs/{SECURITY_MANUAL_FILE.as_posix()}"
 _LINE = ["ticker", "cusip", "lineage_role", "symbol"]
 _MASTER_COLUMNS = ["canonical_company", "issuer_cik", "cusip", "lineage_role", "valid_from", "valid_to"]
 _FAR = pd.Timestamp("2262-01-01")
@@ -39,7 +41,7 @@ def _ts(values: pd.Series) -> pd.Series:
 
 def _lines(master: pd.DataFrame, scope: Sequence[str]) -> pd.DataFrame:
     """The scope's canonical rows, each with the Yahoo symbol it is priced under (its ticker)."""
-    rows = master[master["lineage_role"].isin(ROLES) & master["cusip"].notna()].copy()
+    rows = master[master["lineage_role"].isin(CANONICAL_ROLES) & master["cusip"].notna()].copy()
     rows["ticker"] = rows["canonical_company"].map(normalise_ticker)
     rows = rows[rows["ticker"].isin(set(scope))]
     rows["symbol"] = rows["ticker"]
@@ -52,14 +54,10 @@ def _lines(master: pd.DataFrame, scope: Sequence[str]) -> pd.DataFrame:
 def _split_factor(days: pd.DataFrame, splits: pd.DataFrame) -> pd.Series:
     """Per row, the product of its symbol's split ratios dated strictly after `pdate` (1 when none)."""
     factor = pd.Series(1.0, index=days.index)
-    for symbol, group in splits.groupby("symbol", sort=False):
-        ordered = group.sort_values("date")
-        logs = np.log(ordered["ratio"].to_numpy(dtype=float))
-        after = np.concatenate([np.cumsum(logs[::-1])[::-1], [0.0]])
-        mine = days["symbol"].eq(symbol) & days["pdate"].notna()
-        if mine.any():
-            at = np.searchsorted(ordered["date"].to_numpy(), days.loc[mine, "pdate"].to_numpy(), side="right")
-            factor[mine] = np.exp(after[at])
+    for symbol, rows in days[days["pdate"].notna()].groupby("symbol", sort=False):
+        after = suffix_factor(splits, [symbol], rows["pdate"].to_numpy(dtype="datetime64[ns]"))
+        if symbol in after:
+            factor[rows.index] = after[symbol]
     return factor
 
 
@@ -78,9 +76,8 @@ def line_stats(lines: pd.DataFrame, ftd: pd.DataFrame, prices: pd.DataFrame, spl
     )
     quotes = quotes[quotes["close_split"].notna()].sort_values("pdate", kind="mergesort")[["symbol", "pdate", "close_split"]]
     days = pd.merge_asof(days, quotes, left_on="date", right_on="pdate", by="symbol", allow_exact_matches=False, direction="backward")
-    valid = splits[pd.to_numeric(splits["ratio"], errors="coerce").gt(0)]
-    valid = valid.assign(date=_ts(valid["date"]), symbol=valid["ticker"].map(normalise_ticker), ratio=pd.to_numeric(valid["ratio"]))
-    days["raw"] = days["close_split"] * _split_factor(days, valid)
+    events = splits.assign(ticker=splits["ticker"].map(normalise_ticker), value=pd.to_numeric(splits["ratio"], errors="coerce"))
+    days["raw"] = days["close_split"] * _split_factor(days, events)
     days["ratio"] = days["price"] / days["raw"].where(days["raw"].gt(0))
     days["inside"] = (days["ratio"] - 1).abs().le(TOLERANCE)
     matched = days[days["ratio"].notna()]
@@ -136,7 +133,7 @@ def traded_security_stats(context: Context, scope: Sequence[str]) -> pd.DataFram
     needed = (Tables.security_master, Tables.sec_fails_to_deliver_security)
     if not all(context.store.exists(t) for t in needed):
         return pd.DataFrame(columns=list(STAT_COLUMNS))
-    master = _load(context, Tables.security_master, _MASTER_COLUMNS, {"lineage_role": list(ROLES)})
+    master = _load(context, Tables.security_master, _MASTER_COLUMNS, {"lineage_role": list(CANONICAL_ROLES)})
     lines = _lines(master, scope)
     tickers = sorted(set(lines["ticker"]))
     parts = []

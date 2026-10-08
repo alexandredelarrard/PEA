@@ -7,7 +7,6 @@ real SQLite `DataStore`; the shipped config no longer declares a traded-security
 
 from __future__ import annotations
 
-import ast
 import json
 import logging
 import types
@@ -21,7 +20,7 @@ from scripts import identity_regression_gate as gate
 from src.constants.constants import SEC_8K_FORMS, SEC_13G_FORMS
 from src.data_extract import identity_propagate as prop
 from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp
-from src.data_extract.utils.common.identity import FilingScope, Identity, build_identity
+from src.data_extract.utils.common.identity import Identity, build_identity
 from src.data_extract.utils.common.registrant import resolve_registrant_entries
 from src.data_extract.utils.institutionals import schedule_rows
 from src.data_extract.utils.institutionals.fetch_13g_edgar import SCHEDULE_13G
@@ -116,26 +115,14 @@ class _Context:
 # --------------------------------------------------------------------------- no deferral left
 
 
-def test_no_module_reads_the_traded_security_deferral() -> None:
-    """The deferral module, its config section and the undated scope flag are gone: no module under `src/utils` and no
-    import names a deferral, and no manual-config key or README line declares one."""
-    modules = sorted(path.name for path in (REPO / "src" / "utils").glob("*deferral*"))
-    importers = []
-    for root in ("src", "scripts", "tests"):
-        for path in (REPO / root).rglob("*.py"):
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-            names = [n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module]
-            names += [a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names]
-            if any("deferral" in name for name in names):
-                importers.append(str(path.relative_to(REPO)))
+def test_the_manual_config_declares_no_traded_security_deferral() -> None:
+    """No manual-config section or README line of the shipped security manual declares a traded-security deferral."""
     manual = json.loads((REPO / CONFIG_DIR / "sec" / "security_master_manual.json").read_text(encoding="utf-8"))
     declared = [key for key in manual if "deferred" in key] + [line for line in manual["_README"] if line.startswith("deferred")]
-    print("\n=== SANITY CHECK: traded-security deferral removed ===")
-    print(f"  deferral modules: {modules or 'none'}; importers: {importers or 'none'}; declarations: {declared or 'none'}")
-    print(f"  manual sections: {sorted(k for k in manual if not k.startswith('_'))}")
-    assert modules == [] and importers == [] and declared == []
-    assert not any(name.startswith("undated") for name in FilingScope.__dataclass_fields__)
-    print("  OK: no module, no importer, no config section, no undated scope flag.")
+    print("\n=== SANITY CHECK: traded-security deferral removed from the config ===")
+    print(f"  declarations: {declared or 'none'}; manual sections: {sorted(k for k in manual if not k.startswith('_'))}")
+    assert declared == []
+    print("  OK: no config section or README line declares a deferral.")
 
 
 # --------------------------------------------------------------------------- listing

@@ -5,7 +5,7 @@
     "status stays `hypothesis` until the gate produces the matching rows; `expected` is the measured count (null = reported, never failed), `source` where and when it was measured.",
     "Narrowing: table (filing_lineage, default fundamentals_history_sec); ciks (filer CIK for filing_lineage, issuer CIK for insider); cusips and tape_source (market_tape: ftd, finra or <source>_ticker_grain); dates lists ticker-grain rows a hypothesis explains by name (reason other_issuer_line).",
     "Declared reasons (traded_security_realignment, other_issuer_line) explain only the rows their hypothesis lists: a tape line moving between two named tickers on a listed CUSIP, or a ticker-grain row on a listed date.",
-    "Removal counts were measured on the live tables while Airflow was still writing them; P8 re-measures them from its own gate snapshot (run dir _scripts/p6_hypotheses.py --snapshot) before the first write. Additions that only P8's EDGAR walk produces carry expected null."
+    "A removal's `expected` is counted on the tables before the cutover writes them, and is re-measured from the gate's own snapshot before the first write. An addition that only the cutover's EDGAR walk produces carries expected null."
   ],
   "hypotheses": [
     {"id": "trs_pld_sec_8k_event_only_cik", "kind": "filing_lineage", "table": "sec_8k", "tickers": ["PLD"], "ciks": ["0000899881"], "change": "removed", "expected": 176, "reason": "acquired_constituent_purge", "source": "live distinct accessions per (table, ticker, cik), read 2026-10-08 12:57 UTC (_out/p6/live_filer_counts.txt)", "status": "hypothesis", "change_set": "traded_security_realignment"},

@@ -118,7 +118,7 @@ __all__ = ["genuine_splits"]
 LEVEL_SNAP_TOL = 1e-12
 
 
-def _suffix_factor(events: pd.DataFrame | None, tickers: Sequence[str], stamps: np.ndarray) -> dict[str, np.ndarray]:
+def suffix_factor(events: pd.DataFrame | None, tickers: Sequence[str], stamps: np.ndarray) -> dict[str, np.ndarray]:
     """Per ticker, `PROD(value : event date > d)` evaluated at every `d` in `stamps`.
 
     A suffix product plus a `searchsorted`, not a loop over events: the products are formed
@@ -174,10 +174,10 @@ def level_factor(
     frame.index.name, frame.columns.name = "date", "ticker"
 
     stamps = idx.to_numpy(dtype="datetime64[ns]")
-    numerator = _suffix_factor(
+    numerator = suffix_factor(
         (yf_splits.rename(columns={"ratio": "value"}) if yf_splits is not None and "ratio" in yf_splits.columns else yf_splits), columns, stamps
     )
-    denominator = _suffix_factor(genuine_splits, columns, stamps)
+    denominator = suffix_factor(genuine_splits, columns, stamps)
 
     for ticker in set(numerator) | set(denominator):
         up = numerator.get(ticker)
@@ -202,15 +202,16 @@ LEVEL_ACTION_COLUMNS = ["ticker", "date", "action", "value"]
 LEVEL_ACTION_KINDS = [SHARADAR_ACTION_SPLIT, SHARADAR_ACTION_SPINOFF]
 
 
-def level_actions(context: Context, tickers: Sequence[str], where: Mapping[str, Any] | None = None) -> pd.DataFrame | None:
-    """The `sharadar_actions` rows feeding S(d)'s denominator for `tickers` (read with `where`, or all tickers).
+def level_actions(context: Context, tickers: Sequence[str]) -> pd.DataFrame | None:
+    """The `sharadar_actions` rows feeding S(d)'s denominator for `tickers`.
 
     Inside a predecessor vendor series window the ticker's prices follow the window owner, so its own actions there
     are replaced by the owner's (`cutover_continuity.predecessor_actions`), as the merged history does for shares; an
     owner with no stored action is logged and the ticker's own actions are kept."""
     kinds = {"action": LEVEL_ACTION_KINDS}
-    actions = context.store.load(Tables.sharadar_actions, columns=LEVEL_ACTION_COLUMNS, where={**(where or {}), **kinds}, optional=True)
-    series = load_predecessor_series(context, list(map(str, tickers)))
+    names = list(map(str, tickers))
+    actions = context.store.load(Tables.sharadar_actions, columns=LEVEL_ACTION_COLUMNS, where={"ticker": names, **kinds}, optional=True)
+    series = load_predecessor_series(context, names)
     if actions is None or not series:
         return actions
     owners = context.store.load(

@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.data_aggregate.utils.common.level_basis import genuine_splits, level_factor
 from src.data_extract.utils.common import security_master as sm
 from src.data_extract.utils.fundamentals_sharadar import fetch_sharadar, merge_history
 from src.data_extract.utils.fundamentals_sharadar.field_map import load_field_map
@@ -280,10 +281,10 @@ def test_the_shipped_config_cites_one_exchange_ratio_per_replaced_window() -> No
         print(f"  {x.ticker} {x.predecessor_cik} {x.seam_date.date()} x{x.ratio}")
     assert set(exchanges) == {"LIN", "EVRG", "BKR", "STE", "JCI"}, "PLD and DD follow their traded security: no replacement, no ratio"
     assert all(exchanges[t].ratio == 1 for t in ("LIN", "EVRG", "BKR", "STE"))
-    assert (exchanges["JCI"].predecessor_cik, exchanges["JCI"].seam_date, exchanges["JCI"].ratio) == ("0000833444", pd.Timestamp("2016-09-02"), 0.955)
+    assert (exchanges["JCI"].predecessor_cik, exchanges["JCI"].seam_date, exchanges["JCI"].ratio) == ("0000833444", pd.Timestamp("2016-09-02"), 1)
     with pytest.raises(sm.SecurityManualError):
         sm.parse_security_manual({"exchange_ratios": [{"ticker": "X", "predecessor_cik": "1", "seam_date": "2020-01-01", "ratio": 2.0}]})
-    print("  OK: five cited entries: LIN/EVRG/BKR/STE ratio 1, JCI <- Tyco 0.955 (the consolidation split_events drops); PLD/DD have none;")
+    print("  OK: five cited entries, each ratio 1 (JCI's 0.955 consolidation is price-only for split_events, so it lives in S); PLD/DD have none;")
     print("  an entry without a source is refused.")
 
 
@@ -329,7 +330,7 @@ JCI_OVERRIDE = {
     "source": "0001104659-16-143068",
     "evidence": "fixture",
 }
-JCI_EXCHANGE = {"ticker": "JCI", "predecessor_cik": "0000833444", "seam_date": "2016-09-02", "ratio": 0.955, "source": "0001104659-16-143068"}
+JCI_EXCHANGE = {"ticker": "JCI", "predecessor_cik": "0000833444", "seam_date": "2016-09-02", "ratio": 1, "source": "0001104659-16-143068"}
 
 
 def _tyc() -> pd.DataFrame:
@@ -384,54 +385,62 @@ def test_a_vendor_series_override_declares_jci_from_tyc(tmp_path: Path) -> None:
     print("  lists TYC; a ticker outside the override is unchanged; an entry without a source is refused.")
 
 
-def test_price_only_events_are_the_ticker_events_the_vendor_shows_as_a_spinoff_without_a_split() -> None:
-    actions = pd.DataFrame([{"ticker": t, "date": pd.Timestamp(d), "action": a, "value": v} for t, d, a, v in JCI_ACTIONS])
-    yf = pd.DataFrame([{"ticker": t, "date": pd.Timestamp(d), "ratio": v} for t, d, v in JCI_YF])
-    jci = cc.PredecessorSeries("JCI", "TYC", "0000833444", None, JCI_SEAM)
-    got = cc.price_only_events(yf, actions, [(jci, JCI_SEAM)])
-    # the existing windows' in-window ticker events are genuine vendor splits (PX1 2003-12-16, STE1 1998-08-25): none price-only
-    lin = cc.PredecessorSeries("LIN", "PX1", "0000884905", None, pd.Timestamp("2018-10-31"))
-    ste = cc.PredecessorSeries("STE", "STE1", "0000815065", None, pd.Timestamp("2015-11-02"))
-    others = cc.price_only_events(
-        pd.DataFrame({"ticker": ["LIN", "STE"], "date": pd.to_datetime(["2003-12-16", "1998-08-25"]), "ratio": [2.0, 2.0]}),
-        pd.DataFrame({"ticker": ["PX1", "STE1"], "date": pd.to_datetime(["2003-12-16", "1998-08-25"]), "action": "split", "value": [2.0, 2.0]}),
-        [(lin, pd.Timestamp("2018-10-31")), (ste, pd.Timestamp("2015-11-02"))],
+def _tyco_genuine_events() -> pd.DataFrame:
+    """The genuine split events of JCI as the cube's S needs them once its actions are Tyco's before the seam:
+    TYC's own sharadar_actions relabelled to JCI (old JCI's 2004/2007-10 splits left out), with JCI's prices_splits."""
+    actions = pd.DataFrame(
+        [
+            {"ticker": "JCI", "date": pd.Timestamp(d), "action": a, "value": v}
+            for t, d, a, v in JCI_ACTIONS
+            if t == "TYC" or pd.Timestamp(d) >= JCI_SEAM
+        ]
     )
-    print("\n=== SANITY CHECK: price-only events inside a window ===")
-    print(got.to_string())
-    assert got[["ticker", "date", "value"]].values.tolist() == [["JCI", pd.Timestamp("2012-10-01"), SPIN_2012]]
-    assert others.empty
-    print("  OK: only 2012-10-01 (TYC spinoffs ADT1/PNR, no split); 2007-07-02 has a TYC split, 1995/1997/1999 no TYC spinoff,")
-    print("  2016-09-06 is after the seam; LIN's and STE's in-window events are vendor splits, so their windows are unchanged.")
+    yf = pd.DataFrame([{"ticker": t, "date": pd.Timestamp(d), "ratio": v} for t, d, v in JCI_YF])
+    return genuine_splits(actions, yf)
 
 
-def test_jci_rows_before_the_seam_are_tyco_on_jci_basis_per_row(
+def test_jci_rows_before_the_seam_are_tyco_and_agree_with_the_cube_level_factor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
+    """Shares carry only genuine share events; the 2012 spin and the 2016 consolidation (rejected by split_events)
+    live in S(d), so close_split x S x shares and raw price x PIT shares are both Tyco's market cap."""
     arq, out = _merged(_jci_store(), "JCI", _config(tmp_path, [JCI_EXCHANGE], [JCI_OVERRIDE]), monkeypatch, caplog)
     truth = pd.DataFrame(
         TYC_ROWS, columns=["date", "reportperiod", "calendardate", "sharesbas", "shareswa", "price", "marketcap", "dps", "close_split"]
     )
-    truth = truth.assign(quarter=[str(pd.Period(d, freq="Q")) for d in truth["calendardate"]]).set_index("quarter")
-    factor = pd.Series([0.955 * SPIN_2012 if pd.Timestamp(d) < pd.Timestamp("2012-10-01") else 0.955 for d in truth["date"]], index=truth.index)
-    print("\n=== SANITY CHECK: JCI <- TYC on JCI's share basis ===")
-    shown = arq.loc[truth.index, ["ticker", "date", "sharesbas", "price", "marketcap"]].assign(factor=factor, close_split=truth["close_split"])
-    print(shown.to_string())
-    print(out[["sharesOutstanding", "sharesOutstandingPit"]].to_string())
+    truth = truth.assign(quarter=[str(pd.Period(d, freq="Q")) for d in truth["calendardate"]], date=pd.to_datetime(truth["date"])).set_index(
+        "quarter"
+    )
+    yf = pd.DataFrame([{"ticker": t, "date": pd.Timestamp(d), "ratio": v} for t, d, v in JCI_YF])
+    level = level_factor(pd.DatetimeIndex(truth["date"]), ["JCI"], yf, _tyco_genuine_events())["JCI"]
+    s = pd.Series(level.to_numpy(), index=truth.index)
+    yahoo_after = pd.Series([float(np.prod([v for _, d, v in JCI_YF if pd.Timestamp(d) > day] or [1.0])) for day in truth["date"]], index=truth.index)
+    shares = arq.loc[truth.index, "sharesbas"]
+    cube = truth["close_split"] * s * shares / truth["marketcap"]
+    pit = truth["close_split"] * yahoo_after * out.loc[truth.index, "sharesOutstandingPit"] / truth["marketcap"]
+    print("\n=== SANITY CHECK: JCI <- TYC against the cube's level factor ===")
+    print(pd.DataFrame({"date": truth["date"].dt.date, "sharesbas": shares, "S": s, "cube_mc/vendor": cube, "pit_mc/vendor": pit}).to_string())
     assert arq.loc[truth.index, "marketcap"].tolist() == truth["marketcap"].tolist(), "the inside rows are Tyco's"
-    assert arq.loc[truth.index, "sharesbas"].tolist() == pytest.approx((truth["sharesbas"] * factor).tolist())
-    assert arq.loc[truth.index, "dps"].tolist() == pytest.approx((truth["dps"] / factor).tolist())
-    # known truth: Tyco's price on JCI's basis is JCI's own close_split, so close_split x shares is Tyco's market cap
-    assert arq.loc[truth.index, "price"].tolist() == pytest.approx(truth["close_split"].tolist(), rel=1e-6)
-    implied = truth["close_split"] * arq.loc[truth.index, "sharesbas"] / truth["marketcap"]
-    assert implied.tolist() == pytest.approx([1.0] * len(truth), rel=1e-6)
-    assert arq.loc["2016Q4", "sharesbas"] == 935e6 and arq.loc["2016Q4", "price"] == 41.0
-    # PIT: Tyco's as-filed count (its own 1999 2:1 and 2007 1:4 undone), never the price-only spin or old JCI's splits
-    assert out.loc["2006Q1", "sharesOutstandingPit"] == pytest.approx(509150440 / 0.25)
-    assert out.loc["2010Q4", "sharesOutstandingPit"] == pytest.approx(473753233)
-    assert out.loc["2012Q2", "sharesOutstandingPit"] == pytest.approx(459875217)
-    assert out.loc["2012Q3", "sharesOutstandingPit"] == pytest.approx(465717368)
-    assert out.loc["2016Q2", "sharesOutstandingPit"] == pytest.approx(426224367)
-    assert out.loc["2016Q4", "sharesOutstandingPit"] == pytest.approx(935e6)
-    print("  OK: inside the window Tyco's real rows at 0.955 x 2.0117 before 2012-10-01 and 0.955 after (no 0.25, no 0.955^2):")
-    print("  converted price = JCI close_split and close_split x shares = Tyco's market cap; PIT = Tyco's as-filed count; after the seam untouched.")
+    assert shares.tolist() == truth["sharesbas"].tolist(), "no price-only factor in the share count"
+    assert arq.loc[truth.index, "price"].tolist() == truth["price"].tolist()
+    assert s["2006Q1"] == pytest.approx(SPIN_2012 * 0.955) and s["2012Q3"] == pytest.approx(0.955)
+    assert cube.tolist() == pytest.approx([1.0] * len(truth), rel=1e-6)
+    # 1996Q4 is filed before Tyco's 1997-10-23 2:1, which TYC's sharadar_actions do not carry, so its PIT is not as-filed
+    assert pit.drop("1996Q4").tolist() == pytest.approx([1.0] * (len(truth) - 1), rel=1e-6)
+    assert arq.loc["2016Q4", "sharesbas"] == 935e6 and out.loc["2016Q4", "sharesOutstandingPit"] == pytest.approx(935e6)
+    print("  OK: Tyco's sharesbas unchanged (ratio 1, no genuine JCI split after the seam); S = 2.0117 x 0.955 before 2012-10-01")
+    print("  and 0.955 after; close_split x S x shares and raw price x PIT both equal Tyco's market cap; after the seam untouched.")
+
+
+def test_old_jci_split_actions_make_the_cube_level_factor_wrong_before_2007_10() -> None:
+    """Known defect, outside this window's rule: JCI's own sharadar_actions before the seam are old JCI's (2004 x2,
+    2007-10 x3), and split_events accepts them as genuine for ticker JCI, so S is off by 1/6 and 1/3 before 2007-10-03."""
+    actions = pd.DataFrame([{"ticker": t, "date": pd.Timestamp(d), "action": a, "value": v} for t, d, a, v in JCI_ACTIONS if t == "JCI"])
+    yf = pd.DataFrame([{"ticker": t, "date": pd.Timestamp(d), "ratio": v} for t, d, v in JCI_YF])
+    days = pd.DatetimeIndex(["2003-05-01", "2006-05-09", "2011-01-27"])
+    live = level_factor(days, ["JCI"], yf, genuine_splits(actions, yf))["JCI"]
+    right = level_factor(days, ["JCI"], yf, _tyco_genuine_events())["JCI"]
+    print("\n=== SANITY CHECK: S(d) with old JCI's split actions ===")
+    print(pd.DataFrame({"live_actions": live, "tyco_actions": right, "ratio": live / right}).to_string())
+    assert (live / right).tolist() == pytest.approx([1 / 6, 1 / 3, 1.0])
+    print("  OK (pinned defect): old JCI's 2004 and 2007-10 splits divide S by 6 and 3 before 2007-10-03; reported, not fixed in P4.")

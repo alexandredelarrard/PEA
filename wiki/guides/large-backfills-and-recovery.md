@@ -103,11 +103,11 @@ The component-shape `fundamentals_employees` (components, basis, status, provena
 > Until `harness/employee-headcount-coverage` merges into `dev`, `dev`'s merged build (`fundamentals-sharadar`, `fundamentals-history-merged`) and the cube's fundamentals part fail loudly: that code still reads the old `employees` column and the dropped `employees_sec`. Do not run them from `dev` in that window.
 
 1. **Backups and rollback.** `_cache/fundamentals_employees_2026-10-07.parquet` holds the old table (11,735 rows) and `_cache/fundamentals_history_employees_sec_2026-10-07.parquet` the dropped column (`ticker`, `as_of`, `fiscal_end`, `employees_sec`; 51,856 rows). `_scripts/p8_restore.py` prints the rollback plan; `--execute` runs it in one `psql -1` transaction (drop the new table, recreate the old one, copy the rows back), and `--history` also re-adds and refills `employees_sec`. Roll back only together with the pre-merge code.
-2. **Run the universe without `-F`.** Decided dates are skipped before any text is read, so only undecided filings reach the LLM. Expect about $0.0014 per filing, roughly $17 for the about 12,600 undecided owned filing dates, and about 4 minutes per ticker.
-3. **Batch for memory.** One fetch process grows by about 0.6–1 GB per ticker and frees it only at exit; with the configured 8 `fundamentals_workers` it reached 95 % of a 32 GB machine within minutes. Run one process per one or two tickers, sequentially, with one worker and under a memory guard. The working pattern is `_scripts/p8_batches.sh <batch_size> <tickers>`: it runs `_scripts/p8_run.py 1 <batch>` (the CLI body with `fundamentals_workers` lowered in memory, no config edit) once per batch. Keep one EDGAR walk at a time. A killed batch leaves its dates undecided; run it again. With the CLI, lower `fundamentals_workers` and run one call per batch:
+2. **Run the universe without `-F`.** Decided dates are skipped before any text is read, so only undecided filings reach the LLM. Expect about $0.0014 per filing, roughly $17 for the about 12,600 undecided owned filing dates, and 4 to 8 minutes per ticker with 8 tickers in flight, so 40 to 90 seconds per ticker overall.
+3. **One process, the configured workers.** Memory follows the tickers in flight, not the tickers done: each worker holds one filing at a time, so the 8 `fundamentals_workers` peak near 2–3 GB and memory falls back between tickers. Keep one EDGAR walk at a time. A ticker that fails leaves its dates undecided; the rerun in step 4 picks them up:
 
    ~~~bash
-   rtk "$PY" -m src data_extract fundamentals-employees -t TICKER1,TICKER2
+   rtk "$PY" -m src data_extract fundamentals-employees
    ~~~
 
 4. **Rerun once, still without `-F`.** It reads the filings whose LLM call failed (an invalid-JSON answer, about 0.2 % of calls) and any ticker a network error skipped, and makes no call for a decided date.

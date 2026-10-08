@@ -123,27 +123,38 @@ class LLMExtractor(GptExtracter):
                     progress.update(1)
             self._tasks.task_done()
 
-    def run(self) -> list[LlmResult]:
-        """Drain the queue and return every result in SUBMISSION order."""
-        total = self._submitted
-        if total == 0:
+    def run(self, tasks: Iterable[LlmTask] = ()) -> list[LlmResult]:
+        """Drain the queue, then `tasks`, and return every result in SUBMISSION order.
+
+        `tasks` is consumed while the workers call, so building a task (reading its document) overlaps the
+        calls already submitted. If it raises, the submitted calls finish and the error propagates.
+        """
+        pending = iter(tasks)
+        if (first := next(pending, None)) is not None:
+            self.submit(first)
+        if self._submitted == 0:
             return []
 
-        n_workers = max(1, min(self.threads, total))
+        n_workers = max(1, self.threads if first is not None else min(self.threads, self._submitted))
         self.initialize_queue_clients(n_workers)
 
-        with tqdm(total=total, desc=f"llm:{self.action or 'extract'}", unit="call") as bar:
+        with tqdm(total=self._submitted, desc=f"llm:{self.action or 'extract'}", unit="call") as bar:
             workers = [Thread(target=self._worker, args=(bar,), daemon=True) for _ in range(n_workers)]
             for worker in workers:
                 worker.start()
-            self.close_queue_clients(n_workers)
-            for worker in workers:
-                worker.join()
+            try:
+                for task in pending:
+                    self.submit(task)
+                    bar.total = self._submitted
+            finally:
+                self.close_queue_clients(n_workers)
+                for worker in workers:
+                    worker.join()
+                total, self._submitted = self._submitted, 0
+                done, self._results = self._results, {}
 
         # From the results DICT, not the queue: a raising task must still occupy its slot.
-        results = [self._results[seq] for seq in range(total)]
-        self._submitted = 0
-        self._results = {}
+        results = [done[seq] for seq in range(total)]
         self._log.info(
             "%d call(s), %s, $%.2f, cached input %.0f%%",
             self.usage.totals["calls"],

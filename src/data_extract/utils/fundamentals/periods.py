@@ -462,13 +462,16 @@ def _ladder(
                 out.append(derived)
 
     y9_bounds = _window_bounds(y9)
+    q_starts, q_ends = _window_bounds(quarters)
+    q_values = quarters["value"].to_numpy(dtype=float)
     for fy in annual.itertuples():
         fy_row = cast(Any, fy)._asdict()
-        inside = quarters[(quarters["period_start"] >= fy.period_start) & (quarters["period_end"] <= fy.period_end)]
+        fy_end = np.datetime64(pd.Timestamp(cast(Any, fy.period_end)), "ns")
+        within = (q_starts >= np.datetime64(pd.Timestamp(cast(Any, fy.period_start)), "ns")) & (q_ends <= fy_end)
         # A discrete quarter ending on the fiscal year-end IS Q4 as reported.
-        if (inside["period_end"] == fy.period_end).any():
+        if (q_ends[within] == fy_end).any():
             continue
-        siblings = [float(cast(Any, v)) for v in inside["value"]]
+        siblings = [float(v) for v in q_values[within]]
 
         ytd9 = _same_start_before(y9, fy.period_start, fy.period_end, y9_bounds)
         if ytd9 is not None:
@@ -478,8 +481,9 @@ def _ladder(
                 continue
 
         # Fallback needs exactly the three preceding quarters; a gap, overlap or stub is ambiguous.
-        if len(inside) != TTM_QUARTERS - 1:
+        if int(within.sum()) != TTM_QUARTERS - 1:
             continue
+        inside = quarters[within]
         total = float(inside["value"].sum())
         last = inside.sort_values("period_end").iloc[-1]
         derived = _derived(

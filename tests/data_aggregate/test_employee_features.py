@@ -207,7 +207,8 @@ def test_growth_is_nan_across_a_basis_change_and_computed_within_one():
 def test_part_time_weight_is_read_from_build_cube_config_and_range_checked():
     cfg = OmegaConf.load(CONFIG_DIR / "build_cube.yml")
     alpha = part_time_weight(cfg.build_cube)
-    assert alpha == 0.5
+    assert alpha == float(cfg.build_cube.workforce.part_time_weight)
+    assert 0.5 <= alpha <= 1.0
     for bad in (0.3, 1.2):
         with pytest.raises(ValueError, match="part_time_weight"):
             part_time_weight(OmegaConf.create({"workforce": {"part_time_weight": bad}}))

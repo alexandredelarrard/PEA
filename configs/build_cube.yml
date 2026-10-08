@@ -58,7 +58,7 @@ build_cube:
     growth_floor: -0.10
 
   workforce:                 # headcount proxy of the workforce features
-    part_time_weight: 0.5    # α in FT + α·PT; must lie in [0.5, 1]
+    part_time_weight: 0.65   # α in FT + α·PT; must lie in [0.5, 1]
 
   institutionals:            # informed-capital panels (13F, insider, 13D/G, short flow)
     decay_halflife:          # trading days for the exponential event-decay transform.

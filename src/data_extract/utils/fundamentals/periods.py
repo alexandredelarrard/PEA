@@ -258,17 +258,27 @@ def _drop_annual_masquerading_as_quarter(
     return frame.drop(index=drop) if drop else frame
 
 
-def _same_start_before(candidates: pd.DataFrame, start, end) -> pd.Series | None:
+def _window_bounds(frame: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    """`frame`'s `(period_start, period_end)` as nanosecond arrays, taken once per candidate frame."""
+    return frame["period_start"].to_numpy("datetime64[ns]"), frame["period_end"].to_numpy("datetime64[ns]")
+
+
+def _same_start_before(candidates: pd.DataFrame, start, end, bounds: tuple[np.ndarray, np.ndarray] | None = None) -> pd.Series | None:
     """The latest candidate sharing this window's START and ending strictly earlier, or None.
 
     Sharing the start is what makes a cumulative subtraction valid (never across a fiscal-year boundary).
+    `bounds` is `_window_bounds(candidates)`, passed by a caller that probes the same frame repeatedly.
     """
-    if candidates.empty or pd.isna(start):
+    if candidates.empty or pd.isna(start) or pd.isna(end):
         return None
-    hits = candidates[(candidates["period_start"] == start) & (candidates["period_end"] < end)]
-    if hits.empty:
+    starts, ends = bounds if bounds is not None else _window_bounds(candidates)
+    hit = (starts == np.datetime64(pd.Timestamp(start), "ns")) & (ends < np.datetime64(pd.Timestamp(end), "ns"))
+    if not hit.any():
         return None
-    return hits.sort_values("period_end").iloc[-1]
+    # The latest end wins; on a tie, the last such row in frame order.
+    positions = np.flatnonzero(hit)
+    hit_ends = ends[positions]
+    return candidates.iloc[int(positions[np.flatnonzero(hit_ends == hit_ends.max())[-1]])]
 
 
 # ---------------------------------------------------------------------------- guards ---
@@ -442,14 +452,16 @@ def _ladder(
     """
     out: list[dict] = []
     for cumulative, earlier, basis in ((y6, quarters, Q2_FROM_YTD6), (y9, y6, Q3_FROM_YTD9)):
+        earlier_bounds = _window_bounds(earlier)
         for row in cumulative.itertuples():
-            prior = _same_start_before(earlier, row.period_start, row.period_end)
+            prior = _same_start_before(earlier, row.period_start, row.period_end, earlier_bounds)
             if prior is None:
                 continue
             derived = _derived(cast(Any, row)._asdict(), prior, basis, spec, [float(cast(Any, prior["value"]))], guards, refusals)
             if derived:
                 out.append(derived)
 
+    y9_bounds = _window_bounds(y9)
     for fy in annual.itertuples():
         fy_row = cast(Any, fy)._asdict()
         inside = quarters[(quarters["period_start"] >= fy.period_start) & (quarters["period_end"] <= fy.period_end)]
@@ -458,7 +470,7 @@ def _ladder(
             continue
         siblings = [float(cast(Any, v)) for v in inside["value"]]
 
-        ytd9 = _same_start_before(y9, fy.period_start, fy.period_end)
+        ytd9 = _same_start_before(y9, fy.period_start, fy.period_end, y9_bounds)
         if ytd9 is not None:
             derived = _derived(fy_row, ytd9, FY_MINUS_YTD9, spec, siblings, guards, refusals)
             if derived:

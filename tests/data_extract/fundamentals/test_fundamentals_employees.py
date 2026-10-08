@@ -72,7 +72,6 @@ def build(
     answers: dict[str, mod.EmployeeAnswer],
     *,
     done_dates: frozenset[pd.Timestamp] = frozenset(),
-    manual: dict[str, dict] | None = None,
     scope: mod.EdgarScope | None = None,
 ) -> mod.EmployeeTickerResult:
     def listing(filing_scope, forms, **kwargs):
@@ -112,7 +111,6 @@ def build(
         "0000000001",
         since=None,
         done_dates=done_dates,
-        manual=manual or {},
         scope=scope or mod.EdgarScope(identity),
     )
 
@@ -134,35 +132,69 @@ def test_decided_date_skips_filing_before_llm(monkeypatch: pytest.MonkeyPatch) -
     print("\nSANITY: a filing date that already has a row (count or NULL) is skipped before filing text and the LLM.")
 
 
-def test_manual_roster_replaces_the_llm(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-    (tmp_path / "sec").mkdir()
-    roster = {
-        "_README": "fixture",
-        "AAA": [
-            {"accession_number": "hand", "filing_date": "2023-03-01", "employees": 1234, "status": "saved"},
-            {"accession_number": "hand-null", "filing_date": "2024-03-01", "employees": None, "status": "no_headcount"},
-        ],
-    }
-    (tmp_path / mod.MANUAL_ROSTER).write_text(json.dumps(roster), encoding="utf-8")
-    manual = mod.load_manual_roster(str(tmp_path))
-    assert set(manual) == {"hand", "hand-null"} and manual["hand"]["ticker"] == "AAA"
-    assert mod.load_manual_roster(str(tmp_path / "absent")) == {}
+STORED_COLUMNS = [
+    "ticker",
+    "as_of",
+    "cik",
+    "accession_number",
+    "form",
+    "employees_total",
+    "employees_full_time",
+    "employees_part_time",
+    "basis",
+    "status",
+    "source_document",
+    "source_quote",
+    "measurement_period",
+]
+
+
+def test_no_roster_and_every_column_is_stored(monkeypatch: pytest.MonkeyPatch) -> None:
+    """REQ-005 / A1: no roster file or reader; each decided date is one row with provenance, NULL components carry a status."""
+    assert not hasattr(mod, "load_manual_roster") and not hasattr(mod, "MANUAL_ROSTER")
+    assert not (Path(mod.__file__).parents[4] / "configs" / "sec" / "employees_manual_roster.json").exists()
+    low = "Lowe’s employed approximately 161,000 full-time associates and 109,000 part-time associates"
     filings = [
-        Filing("hand", "2023-03-01", "unused"),
-        Filing("hand-null", "2024-03-01", "unused"),
-        Filing("new", "2025-03-01", "We had 41,000 employees."),
+        Filing("low", "2025-03-24", f"{low}.", report="2025-01-31"),
+        Filing("quiet", "2024-03-01", "We sell hardware."),
+        Filing("image", "2023-03-01", "Workforce totals are shown in the following image."),
+        Filing("paraphrase", "2022-03-01", "We had 41,000 employees."),
     ]
-    for filing in filings[:2]:
-        filing.html = lambda: pytest.fail("a manual roster filing was read or sent to the LLM")
-    result = build(monkeypatch, filings, {"new": answer(41000, "We had 41,000 employees.")}, manual=manual)
-    employees = result.frame["employees"].tolist()
-    assert employees[0] == 1234.0 and pd.isna(employees[1]) and employees[2] == 41000.0
-    assert [(outcome["source"], outcome["status"]) for outcome in result.outcomes] == [
-        ("manual", "saved"),
-        ("manual", "no_headcount"),
-        ("llm", "found"),
-    ]
-    print("\nSANITY: a manual roster filing takes its count (or NULL) from configs/sec without text or LLM; others go to the LLM.")
+    answers = {
+        "low": answer(
+            None, None, full_time=161000, full_time_quote=low, part_time=109000, part_time_quote=low, measurement_period="January 31, 2025"
+        ),
+        "quiet": answer(None, None, status="not_disclosed", measurement_period=None),
+        "image": answer(None, None, status="image_only", measurement_period=None),
+        "paraphrase": answer(41000, "The company employs 41,000 people."),
+    }
+    frame = build(monkeypatch, filings, answers).frame
+    assert frame.columns.tolist() == STORED_COLUMNS == mod.FRAME_COLUMNS
+    rows = {row["accession_number"]: row for row in frame.to_dict("records")}
+    found = rows["low"]
+    assert (found["ticker"], found["as_of"], found["cik"], found["form"], found["status"], found["source_document"]) == (
+        "AAA",
+        pd.Timestamp("2025-03-24"),
+        "0000000001",
+        "10-K",
+        "found",
+        "primary",
+    )
+    assert (found["employees_total"], found["employees_full_time"], found["employees_part_time"], found["basis"]) == (
+        270000,
+        161000,
+        109000,
+        "full_part",
+    )
+    assert json.loads(found["source_quote"]) == {"full_time": low, "part_time": low} and found["measurement_period"] == "January 31, 2025"
+    for accession, status in (("quiet", "not_disclosed"), ("image", "image_only"), ("paraphrase", "unsupported")):
+        row = rows[accession]
+        assert row["status"] == status and row["cik"] == "0000000001" and row["source_document"] == "primary", row
+        assert all(pd.isna(row[column]) for column in ("employees_total", "employees_full_time", "employees_part_time", "basis", "source_quote")), row
+    print(
+        "\nSANITY: no roster file or reader remains; LOW stores 270,000 = 161,000 FT + 109,000 PT (full_part) with cik, accession, form, "
+        "source document and both component quotes; not_disclosed, image_only and unsupported filings are NULL rows carrying their status."
+    )
 
 
 def decide(
@@ -520,7 +552,7 @@ def test_missing_primary_document_reads_full_submission(monkeypatch):
     filing = NoPrimaryDocumentFiling("no-primary", "2000-03-01", submission)
     assert mod.filing_body_text(filing) == "As of December 31, 1999, we had 1,234 employees."
     result = build(monkeypatch, [filing], {"no-primary": answer(1234, "we had 1,234 employees.")})
-    assert result.frame["employees"].tolist() == [1234.0]
+    assert result.frame["employees_total"].tolist() == [1234.0]
     unreadable = NoPrimaryDocumentFiling("unreadable", "2000-03-01", "")
     with pytest.raises(ValueError, match="filing text unavailable"):
         build(monkeypatch, [unreadable], {})
@@ -544,7 +576,7 @@ def test_ix_header_is_stripped_and_the_workforce_sentence_survives(monkeypatch):
     assert len(junk) > 20_000 and "us-gaap" not in text and "0001090872" not in text
     assert statement in mod.employee_excerpt(text, 10_000)
     result = build(monkeypatch, [filing], {"a-2019": answer(16300, statement)})
-    assert result.frame["employees"].tolist() == [16300.0]
+    assert result.frame["employees_total"].tolist() == [16300.0]
     print("\nSANITY: >20k chars of hidden ix:header values are dropped before excerpting; Agilent's 16,300 people sentence is sent and saved.")
 
 
@@ -602,7 +634,7 @@ def test_exhibit_fallback_reads_the_annual_report_exhibit(monkeypatch):
     task = mod._employee_task(0, "AAA", edgar_driver.FilingStamp.of(filing, "0000000001"), 60_000)
     assert task.meta["source_document"] == "EX-13" and wy in str(task.meta["source_text"])
     result = build(monkeypatch, [filing], {"wy-2000": answer(44800, "The company has 44,800 employees")})
-    assert result.frame["employees"].tolist() == [44800.0]
+    assert result.frame["employees_total"].tolist() == [44800.0]
     assert mod.is_annual_report_exhibit("EX-99", "Annual Report to Shareholders") and not mod.is_annual_report_exhibit("EX-99.1", "Press release")
     stated = Filing("own", "2025-03-01", "We had 41,000 employees.")
     stated.attachments = [UnreadAttachment("EX-13", "")]
@@ -683,8 +715,9 @@ def test_legacy_form_table_total_and_image_null_row(monkeypatch):
         ),
     }
     result = build(monkeypatch, filings, answers)
-    employees = result.frame["employees"].tolist()
+    employees = result.frame["employees_total"].tolist()
     assert employees[:4] == [9603.0, 10211.0, 74042.0, 199327.0] and pd.isna(employees[4])
+    assert result.frame["status"].tolist() == ["found", "found", "found", "found", "image_only"]
     assert result.frame["as_of"].tolist() == [pd.Timestamp(day) for day in ("2001-12-21", "2002-12-19", "2014-09-09", "2021-03-16", "2024-02-26")]
     by_accession = {row["accession_number"]: row for row in result.outcomes}
     assert {key: row["status"] for key, row in by_accession.items()} == {
@@ -700,7 +733,7 @@ def test_legacy_form_table_total_and_image_null_row(monkeypatch):
     assert by_accession["dltr-2021"]["source_document"] == "primary"
     print(
         "\nSANITY: AAPL 9,603 / 10,211 (separate contractors excluded) and CSCO 74,042 keep their truths at SEC filing dates; image-only PEG "
-        "is a NULL row; DLTR's FT/PT rows give a 199,327 full_part total, which fills the interim `employees` column."
+        "is a NULL row with status image_only; DLTR's FT/PT rows give a 199,327 full_part total."
     )
 
 
@@ -717,7 +750,7 @@ def test_same_day_amendment_uses_later_supported_count(monkeypatch):
             "amendment": answer(41000, "We had 41,000 employees."),
         },
     )
-    assert result.frame["employees"].tolist() == [41000.0]
+    assert result.frame["employees_total"].tolist() == [41000.0]
     assert [row["status"] for row in result.outcomes] == ["superseded", "found"]
     print("\nSANITY: a same-date amendment replaces the original value at the one-row filing-date grain.")
 
@@ -752,7 +785,6 @@ def run_context(saved: list[pd.DataFrame], stored: pd.DataFrame | None, warnings
 def patch_run(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(mod, "load_cik_mapping", lambda *args: pd.DataFrame([{"ticker": "AAA", "cik": "0000000001"}]))
     monkeypatch.setattr(mod, "load_identity", lambda *args: SimpleNamespace())
-    monkeypatch.setattr(mod, "load_manual_roster", lambda *args: {})
 
 
 def test_table_rows_decide_what_is_done_and_full_rereads_them(monkeypatch):
@@ -764,16 +796,14 @@ def test_table_rows_decide_what_is_done_and_full_rereads_them(monkeypatch):
 
     def fake_build(*args, **kwargs):
         seen.append(kwargs)
-        frame = pd.DataFrame([{"ticker": "AAA", "as_of": pd.Timestamp("2025-02-26"), "employees": float("nan")}], columns=mod.FRAME_COLUMNS)
-        return mod.EmployeeTickerResult(
-            frame, [{"ticker": "AAA", "accession_number": "unclear", "source": "llm", "status": "ambiguous", "count": None}]
-        )
+        frame = pd.DataFrame([{"ticker": "AAA", "as_of": pd.Timestamp("2025-02-26"), "status": "ambiguous"}], columns=mod.FRAME_COLUMNS)
+        return mod.EmployeeTickerResult(frame, [{"ticker": "AAA", "accession_number": "unclear", "status": "ambiguous", "employees_total": None}])
 
     monkeypatch.setattr(mod, "build_ticker_employees", fake_build)
     mod.fetch_fundamentals_employees(run_context(saved, decided), ["AAA"], 15)
     assert seen[0]["done_dates"] == frozenset({pd.Timestamp("2024-02-26")})
     assert seen[0]["since"] == pd.Timestamp.today().normalize() - pd.DateOffset(years=15)
-    assert pd.isna(saved[0]["employees"].iloc[0])
+    assert pd.isna(saved[0]["employees_total"].iloc[0])
     mod.fetch_fundamentals_employees(run_context(saved, decided), ["AAA"], 15, full=True)
     assert seen[1]["done_dates"] == frozenset()
     print("\nSANITY: an ambiguous filing is stored as a NULL row and completes the run; dates with rows are skipped, `--full` re-reads them.")
@@ -859,7 +889,7 @@ def test_one_invalid_llm_answer_fails_only_its_own_filing_date(monkeypatch):
     night_one = pd.concat(stored, ignore_index=True) if stored else pd.DataFrame(columns=mod.FRAME_COLUMNS)
     assert len(sent[0]) == 33
     assert night_one["as_of"].tolist() == [pd.Timestamp(f"{year}-03-01") for year in range(2001, 2031)]
-    assert night_one["employees"].tolist() == [float(10 * year) for year in range(2001, 2031)]
+    assert night_one["employees_total"].tolist() == [float(10 * year) for year in range(2001, 2031)]
     assert any("bad" in w and "listed again next run" in w for w in warnings), warnings
 
     mod.fetch_fundamentals_employees(context, ["AAA"], 50)
@@ -868,6 +898,63 @@ def test_one_invalid_llm_answer_fails_only_its_own_filing_date(monkeypatch):
     print(
         "\nSANITY: one invalid-JSON answer among 33 keeps the 30 good counts stored and marks nothing; the failed filing "
         "(and the other filing sharing its date) is the only work listed, and re-sent, on the next night."
+    )
+
+
+def test_a_rerun_without_full_makes_no_llm_call_for_decided_dates(monkeypatch, sqlite_store):
+    """A1: NULL-status rows mark their dates decided in the real store, so a routine rerun lists nothing for the LLM."""
+    filings = [
+        Filing("count", "2023-03-01", "We had 41,000 employees."),
+        Filing("quiet", "2024-03-01", "We sell hardware."),
+        Filing("unsupported", "2025-03-01", "We had 42,000 employees."),
+    ]
+    answers = {
+        "count": answer(41000, "We had 41,000 employees."),
+        "quiet": answer(None, None, status="not_disclosed", measurement_period=None),
+        "unsupported": answer(42000, "The company employs 42,000 people."),
+    }
+    tasks: list[str] = []
+
+    class CountingLLM:
+        def __init__(self, *args, **kwargs):
+            self.tasks = []
+
+        def submit(self, task):
+            tasks.append(task.meta["stamp"].accession_number)
+            self.tasks.append(task)
+
+        def run(self):
+            return [LlmResult(seq=task.seq, task=task, parsed=answers[task.meta["stamp"].accession_number]) for task in self.tasks]
+
+    context = SimpleNamespace(
+        store=sqlite_store,
+        config=OmegaConf.create(
+            {
+                "data_extract": {"fundamentals_workers": 1},
+                "gpt": {"default_api": "open_ai", "llm_model": {"open_ai": "a", "open_ai_cheap": "b"}, "max_chars": {"employees": 60000}},
+            }
+        ),
+        ensure_edgar_identity=lambda: None,
+        log=SimpleNamespace(info=lambda *args: None, warning=lambda *args: None),
+    )
+    patch_run(monkeypatch)
+    identity = SimpleNamespace(owns=lambda ticker, cik: True, filing_scope=lambda ticker: FilingScope.roster_only(ticker, "0000000001"))
+    monkeypatch.setattr(mod, "load_identity", lambda *args: identity)
+    monkeypatch.setattr(edgar_driver, "resolve_registrant_filings", lambda *args, **kwargs: filings)
+    monkeypatch.setattr(mod, "LLMExtractor", CountingLLM)
+
+    mod.fetch_fundamentals_employees(context, ["AAA"], 15)
+    first = len(tasks)
+    stored = sqlite_store.load(mod.Tables.fundamentals_employees)
+    statuses = dict(zip(stored["accession_number"], stored["status"], strict=True))
+    mod.fetch_fundamentals_employees(context, ["AAA"], 15)
+
+    assert first == 3 and statuses == {"count": "found", "quiet": "not_disclosed", "unsupported": "unsupported"}
+    assert len(tasks) == first, tasks
+    assert sorted(stored.columns) == sorted(mod.FRAME_COLUMNS) and len(sqlite_store.load(mod.Tables.fundamentals_employees)) == 3
+    print(
+        f"\nSANITY: night one sent {first} filings and stored 3 rows (found, not_disclosed, unsupported); the rerun without -F "
+        f"made {len(tasks) - first} LLM calls, so NULL-status rows count as decided."
     )
 
 

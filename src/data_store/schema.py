@@ -640,10 +640,13 @@ class Tables:
     fundamentals_reason_codes = Table(
         "fundamentals_reason_codes", ("ticker", "as_of", "field", "dc_code"), date_col="as_of", date_type_cols=("as_of",), freshness="quarterly"
     )
-    # Headcount, parsed from 10-K BODY TEXT. Its own table because the source is prose: in the
-    # wide table one failed regex would fail the whole snapshot. Annual, so `as_of` is a 10-K
-    # filing date and consumers forward-fill (`build_history.carry_latest_known`).
-    # Its NULL-headcount rows already record an undecidable 10-K, so it declares no marker.
+    # Headcount, read from 10-K prose by `fundamentals_employees.py`. One row per 10-K filing date
+    # (`as_of`), from the filing `accession_number` filed by `cik`: the stated `employees_total`,
+    # `employees_full_time` and `employees_part_time`, the `basis` they support, a `status`, the
+    # `source_document` read and `source_quote` (JSON, one verbatim quote per component).
+    # A filing with no usable count is a row with NULL components and its status, so the row
+    # itself marks the date decided and the table declares no marker. `identity-propagate`
+    # purges rows by `cik` (`filer_tables.PURGE_TABLES`).
     fundamentals_employees = Table(
         "fundamentals_employees",
         ("ticker", "as_of"),

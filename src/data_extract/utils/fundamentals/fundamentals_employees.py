@@ -8,7 +8,6 @@ from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from functools import partial
 from itertools import combinations
-from pathlib import Path
 from typing import Literal, cast
 
 import pandas as pd
@@ -29,8 +28,23 @@ from src.gpt_extract.transformers.step_gpt_extracter import with_gpt_overrides
 from src.gpt_extract.utils.schemas_gpt import LlmResult, LlmTask
 
 HEADCOUNT_FORMS = ("10-K", "10-K/A", "10-K405")
-FRAME_COLUMNS = ["ticker", "as_of", "employees"]
-MANUAL_ROSTER = Path("sec") / "employees_manual_roster.json"
+# The stored row: filer identity, the guarded components, their basis and status, and where they were read.
+FRAME_COLUMNS = [
+    "ticker",
+    "as_of",
+    "cik",
+    "accession_number",
+    "form",
+    "employees_total",
+    "employees_full_time",
+    "employees_part_time",
+    "basis",
+    "status",
+    "source_document",
+    "source_quote",
+    "measurement_period",
+]
+_COUNT_COLUMNS = ("employees_total", "employees_full_time", "employees_part_time")
 _GAP = "[... filing gap ...]"
 _FRAGMENT_GAP = 2_000  # max source chars between two `...`-joined quote fragments
 _FAILED_SHOWN = 20  # failed tickers named in the coverage log
@@ -179,8 +193,8 @@ class EmployeeDecision:
 
 @dataclass(frozen=True)
 class EmployeeTickerResult:
-    """One row per decided filing date (`employees` NaN when no count is supported), the per-filing
-    decisions, and the accessions left undecided because their LLM call failed (listed again next run)."""
+    """One `FRAME_COLUMNS` row per decided filing date (NULL components with a status when no count is
+    supported), the per-filing decisions, and the accessions whose LLM call failed (listed again next run)."""
 
     frame: pd.DataFrame
     outcomes: list[dict]
@@ -190,27 +204,8 @@ class EmployeeTickerResult:
 @dataclass(frozen=True)
 class _Decision:
     stamp: FilingStamp
-    source: str  # "manual" (the roster file) or "llm"
-    source_document: str  # "primary", an exhibit type, or "manual"
+    source_document: str  # "primary" or an exhibit type such as "EX-13"
     decided: EmployeeDecision
-
-
-def load_manual_roster(config_dir: str) -> dict[str, dict]:
-    """Hand-kept employee decisions from `configs/sec/employees_manual_roster.json`, by accession.
-
-    An entry's `employees` is stored as-is (null for a filing that states no usable count) and
-    replaces the LLM for that filing; the pipeline only reads this file.
-    """
-    path = Path(config_dir) / MANUAL_ROSTER
-    if not path.exists():
-        return {}
-    roster = json.loads(path.read_text(encoding="utf-8"))
-    return {
-        str(entry["accession_number"]): {**entry, "ticker": ticker}
-        for ticker, entries in roster.items()
-        if not ticker.startswith("_")
-        for entry in entries
-    }
 
 
 def filing_body_text(filing: Filing) -> str:
@@ -635,30 +630,30 @@ def _llm_decisions(context: Context, ticker: str, stamps: list[FilingStamp]) -> 
             raise TypeError(f"{ticker}: unexpected employee LLM result {type(answer).__name__}")
         meta = result.task.meta
         decided = decide_employee_answer(answer, str(meta["source_text"]))
-        decisions.append(_Decision(stamp, "llm", str(meta["source_document"]), decided))
+        decisions.append(_Decision(stamp, str(meta["source_document"]), decided))
     return decisions, failed
 
 
-def _manual_decision(stamp: FilingStamp, entry: dict) -> _Decision:
-    count = entry.get("employees")
-    status = str(entry.get("status") or ("saved" if count is not None else "no_headcount"))
-    total = None if count is None else int(count)
-    return _Decision(stamp, "manual", "manual", EmployeeDecision(status, employees_total=total, basis=None if total is None else "total"))
+def source_quote(quotes: tuple[tuple[str, str], ...]) -> str | None:
+    """The kept quotes as a JSON object keyed by component (`total`, `full_time`, `part_time`); None when none is kept."""
+    return json.dumps(dict(quotes), ensure_ascii=False) if quotes else None
 
 
 def _decide_ticker(context: Context, ticker: str, decisions: list[_Decision]) -> EmployeeTickerResult:
-    """One row per filing date: the last decision with a component in filing order, else NaN; earlier ones are superseded.
-
-    The frame's `employees` column carries `employees_total`; the outcomes carry every component, the basis and the status.
-    """
+    """One row per filing date: the last decision with a component in filing order, else the last decision
+    (NULL components, its status); an earlier counted decision on that date is superseded."""
     outcomes: list[dict] = []
-    chosen: dict[pd.Timestamp, int] = {}  # filing date -> index of the outcome whose components are kept
+    chosen: dict[pd.Timestamp, int] = {}  # filing date -> index of the outcome stored as its row
+    counted: set[pd.Timestamp] = set()
     for decision in sorted(decisions, key=lambda decision: _filing_key(decision.stamp)):
         stamp, decided = decision.stamp, decision.decided
         filed = stamp.filed.normalize()
         if decided.counted:
-            if filed in chosen:
+            if filed in counted:
                 outcomes[chosen[filed]]["status"] = "superseded"
+            chosen[filed] = len(outcomes)
+            counted.add(filed)
+        elif filed not in counted:
             chosen[filed] = len(outcomes)
         outcomes.append(
             {
@@ -667,7 +662,6 @@ def _decide_ticker(context: Context, ticker: str, decisions: list[_Decision]) ->
                 "cik": stamp.cik,
                 "form": stamp.form,
                 "filing_date": filed,
-                "source": decision.source,
                 "source_document": decision.source_document,
                 "status": decided.status,
                 "employees_total": decided.employees_total,
@@ -679,12 +673,12 @@ def _decide_ticker(context: Context, ticker: str, decisions: list[_Decision]) ->
             }
         )
         context.log.info(
-            "employees decision ticker=%s accession=%s cik=%s as_of=%s source=%s status=%s total=%s full_time=%s part_time=%s basis=%s rejected=%s",
+            "employees decision ticker=%s accession=%s cik=%s as_of=%s source_document=%s status=%s total=%s full_time=%s part_time=%s basis=%s rejected=%s",
             ticker,
             stamp.accession_number,
             stamp.cik,
             filed.date(),
-            decision.source,
+            decision.source_document,
             decided.status,
             decided.employees_total,
             decided.employees_full_time,
@@ -692,15 +686,26 @@ def _decide_ticker(context: Context, ticker: str, decisions: list[_Decision]) ->
             decided.basis,
             "; ".join(decided.rejected) or "-",
         )
-    rows = [
-        {"ticker": ticker, "as_of": filed, "employees": _as_float(outcomes[chosen[filed]]["employees_total"]) if filed in chosen else float("nan")}
-        for filed in sorted({outcome["filing_date"] for outcome in outcomes})
-    ]
-    return EmployeeTickerResult(pd.DataFrame(rows, columns=FRAME_COLUMNS), outcomes)
+    rows = [_row(ticker, filed, outcomes[chosen[filed]]) for filed in sorted(chosen)]
+    frame = pd.DataFrame(rows, columns=FRAME_COLUMNS).astype(dict.fromkeys(_COUNT_COLUMNS, "Int64"))
+    return EmployeeTickerResult(frame, outcomes)
 
 
-def _as_float(value: int | None) -> float:
-    return float("nan") if value is None else float(value)
+def _row(ticker: str, filed: pd.Timestamp, outcome: dict) -> dict:
+    """The stored row for one filing date, from its chosen outcome."""
+    return {
+        "ticker": ticker,
+        "as_of": filed,
+        "cik": outcome["cik"],
+        "accession_number": outcome["accession_number"],
+        "form": outcome["form"],
+        **{column: outcome[column] for column in _COUNT_COLUMNS},
+        "basis": outcome["basis"],
+        "status": outcome["status"],
+        "source_document": outcome["source_document"],
+        "source_quote": source_quote(outcome["quotes"]),
+        "measurement_period": outcome["measurement_period"],
+    }
 
 
 def build_ticker_employees(
@@ -710,10 +715,9 @@ def build_ticker_employees(
     *,
     since: pd.Timestamp | None,
     done_dates: frozenset[pd.Timestamp],
-    manual: dict[str, dict],
     scope: EdgarScope,
 ) -> EmployeeTickerResult:
-    """Decide every annual filing whose date has no row yet: from the manual roster when listed, else the LLM.
+    """Decide every annual filing whose date has no row yet, through the LLM and the source guard.
 
     A listed filing whose filer the identity layer does not tie to `ticker` is skipped and counted in `scope.guard`.
     A filing whose LLM call failed withholds its whole filing date, so a stored same-day filing
@@ -729,11 +733,9 @@ def build_ticker_employees(
         (stamp for stamp in (FilingStamp.of(filing, cik) for filing in owned) if stamp.filed.normalize() not in done_dates),
         key=_filing_key,
     )
-    by_hand = [_manual_decision(stamp, manual[str(stamp.accession_number)]) for stamp in stamps if str(stamp.accession_number) in manual]
-    to_read = [stamp for stamp in stamps if str(stamp.accession_number) not in manual]
-    by_llm, failed = _llm_decisions(context, ticker, to_read) if to_read else ([], [])
+    by_llm, failed = _llm_decisions(context, ticker, stamps) if stamps else ([], [])
     withheld = {stamp.filed.normalize() for stamp in failed}
-    decisions = [decision for decision in by_hand + by_llm if decision.stamp.filed.normalize() not in withheld]
+    decisions = [decision for decision in by_llm if decision.stamp.filed.normalize() not in withheld]
     result = _decide_ticker(context, ticker, decisions)
     return EmployeeTickerResult(result.frame, result.outcomes, tuple(str(stamp.accession_number) for stamp in failed))
 
@@ -748,7 +750,7 @@ def _owned(context: Context, identity: Identity, ticker: str, filing: object) ->
 
 
 def _done_dates(context: Context, tickers: list[str], since: pd.Timestamp) -> dict[str, frozenset[pd.Timestamp]]:
-    """Filing dates that already have a row, count or NULL: the table alone says what is decided."""
+    """Filing dates that already have a row, counted or NULL with a status: the table alone says what is decided."""
     stored = context.store.load(Tables.fundamentals_employees, columns=["ticker", "as_of"], where={"ticker": tickers}, since=since, optional=True)
     done: dict[str, set[pd.Timestamp]] = {}
     for row in [] if stored is None else stored.itertuples(index=False):
@@ -763,7 +765,6 @@ def _fetch_ticker_employees(
     context: Context,
     since: pd.Timestamp,
     done: dict[str, frozenset[pd.Timestamp]],
-    manual: dict[str, dict],
     scope: EdgarScope,
 ) -> EmployeeTickerResult:
     """Decide one ticker's undecided filings and save its rows; the per-ticker worker."""
@@ -773,7 +774,6 @@ def _fetch_ticker_employees(
         cik,
         since=since,
         done_dates=done.get(ticker, frozenset()),
-        manual=manual,
         scope=scope,
     )
     if not result.frame.empty:
@@ -791,9 +791,8 @@ def fetch_fundamentals_employees(
     """Decide every annual filing in the window whose date has no row; `--full` re-decides them all.
 
     Each run lists the whole `years_history` window and skips filing dates already in
-    `fundamentals_employees`. A filing with no supported count is stored as a NULL row, so it is
-    decided once and never sent to the LLM again. A filing listed in the manual roster takes its
-    value from there instead of the LLM, on `--full` too. A failed LLM call fails only its own filing
+    `fundamentals_employees`. A filing with no supported count is stored as a row with NULL components
+    and its status, so it is decided once and never sent to the LLM again. A failed LLM call fails only its own filing
     date, which gets no row and is retried on the next run; the ticker's other dates are saved. A
     ticker that fails otherwise saves nothing. Both are named in the coverage log; the run never raises.
     """
@@ -805,14 +804,9 @@ def fetch_fundamentals_employees(
         raise ValueError(f"Employee extraction has no roster CIK for {', '.join(sorted(missing))}")
     since = pd.Timestamp.today().normalize() - pd.DateOffset(years=years_history)
     scope = EdgarScope(load_identity(context))
-    manual = load_manual_roster(str(context.config_dir))
     done = {} if full else _done_dates(context, tickers, since)
-    context.log.info(
-        "fundamentals employees: %d decided filing date(s) skipped, %d manual roster entries",
-        sum(map(len, done.values())),
-        len(manual),
-    )
-    worker = partial(_fetch_ticker_employees, context=context, since=since, done=done, manual=manual, scope=scope)
+    context.log.info("fundamentals employees: %d decided filing date(s) skipped", sum(map(len, done.values())))
+    worker = partial(_fetch_ticker_employees, context=context, since=since, done=done, scope=scope)
     results = run_per_ticker(
         cik_map,
         worker,
@@ -825,15 +819,14 @@ def fetch_fundamentals_employees(
     failed = len(failed_tickers)
     outcomes = [outcome for result in successful for outcome in result.outcomes]
     rows = sum(len(result.frame) for result in successful)
-    counted = sum(int(result.frame["employees"].notna().sum()) for result in successful)
+    counted = sum(int(result.frame["status"].eq("found").sum()) for result in successful)
     context.log.info(
-        "fundamentals employees: %d/%d ticker(s) read, %d failed; %d filing(s) decided (%d from the manual roster, %d ambiguous or unsupported) "
+        "fundamentals employees: %d/%d ticker(s) read, %d failed; %d filing(s) decided (%d ambiguous or unsupported) "
         "-> %d count row(s), %d NULL row(s); guard skipped %d filing(s) outside a filing scope for 'fundamentals_employees'",
         len(successful),
         len(cik_map),
         failed,
         len(outcomes),
-        sum(outcome["source"] == "manual" for outcome in outcomes),
         sum(outcome["status"] in {"ambiguous", "unsupported"} for outcome in outcomes),
         counted,
         rows - counted,

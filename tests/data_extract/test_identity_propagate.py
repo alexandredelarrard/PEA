@@ -208,6 +208,48 @@ def test_a_contraction_purges_the_removed_cik_in_every_family_and_warns_once_per
     print("  ALB's history rebuilt (delete + recompute) and its merged history rebuilt in full. Validated.")
 
 
+def _employee_row(ticker: str, as_of: str, cik: str, accession: str, total: int | None, status: str) -> dict:
+    """One `fundamentals_employees` row in its stored shape."""
+    return {
+        "ticker": ticker,
+        "as_of": pd.Timestamp(as_of),
+        "cik": cik,
+        "accession_number": accession,
+        "form": "10-K",
+        "employees_total": total,
+        "employees_full_time": None,
+        "employees_part_time": None,
+        "basis": "total" if total is not None else None,
+        "status": status,
+        "source_document": "primary",
+        "source_quote": '{"total": "We had employees."}' if total is not None else None,
+        "measurement_period": None,
+    }
+
+
+def test_a_contraction_purges_foreign_employee_rows_by_filer_cik(sqlite_store, tmp_path, monkeypatch, stubs):
+    """AC-005: ALB's scope changed; AB's employee rows under ALB (a count and a NULL-status row) go, ALB's own and MSFT's stay."""
+    context = _context(sqlite_store, tmp_path)
+    rows = [
+        _employee_row("ALB", "2024-02-20", ALB, "alb-10k", 9000, "found"),
+        _employee_row("ALB", "2019-03-01", AB, "ab-10k-1", 4000, "found"),
+        _employee_row("ALB", "2021-03-01", AB, "ab-10k-2", None, "not_disclosed"),
+        _employee_row("MSFT", "2024-08-01", MSFT_FOREIGN, "msft-x", 1000, "found"),
+    ]
+    sqlite_store.save(Tables.fundamentals_employees, pd.DataFrame(rows).astype({"employees_total": "Int64"}))
+    monkeypatch.setattr(prop, "load_identity", lambda context: _identity({"ALB": AFTER}))
+
+    result = prop.propagate_identity(context, list(ROSTER), as_of=RUN_DATE)
+
+    stored = sqlite_store.load(Tables.fundamentals_employees, columns=["ticker", "accession_number"])
+    keys = set(zip(stored["ticker"], stored["accession_number"], strict=True))
+    assert keys == {("ALB", "alb-10k"), ("MSFT", "msft-x")}, keys
+    removed = result.removals[result.removals["table"] == Tables.fundamentals_employees.name]
+    assert removed[["ticker", "cik", "first_filed", "last_filed", "rows"]].values.tolist() == [["ALB", AB, "2019-03-01", "2021-03-01", 2]]
+    print("\n=== SANITY CHECK: employee rows purged by filer CIK (AC-005) ===")
+    print("  AB's two employee rows under ALB (one count, one NULL-status) purged; ALB's own row and MSFT's (scope unchanged) kept. Validated.")
+
+
 def test_a_sibling_cik_of_the_entity_survives_the_purge_except_its_event_filings(sqlite_store, tmp_path, monkeypatch, stubs):
     """AC-022 with P35: T-Mobile USA's facts under TMUS are the entity's own; its 8-Ks (an event-only CIK) and the
     foreign filer's rows go."""

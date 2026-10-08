@@ -635,20 +635,29 @@ CREATE TABLE IF NOT EXISTS "fundamentals_reason_codes" (
 CREATE INDEX IF NOT EXISTS ix_fundamentals_reason_codes_code ON "fundamentals_reason_codes" ("dc_code");
 
 -- [extract] fundamentals_employees  (pk: ticker, as_of)
--- Employee headcount, parsed out of the 10-K BODY TEXT (there is no GAAP concept for it and
--- US filers essentially never tag `dei:EntityNumberOfEmployees`). Its own table because the
--- source is prose: in the wide table one failed regex would fail the whole snapshot, and a
--- text-parsed number sitting among 67 XBRL-sourced columns reads as if it were one.
---
--- Disclosed ANNUALLY, so `as_of` is a 10-K (or 10-K/A) filing date and a consumer
--- forward-fills into the interim quarters -- `build_history.carry_latest_known` is that
--- alignment. `employees` keeps its tier and authority in the KPI catalogue; it is only out
--- of the wide table's column contract.
+-- Employee headcount, read from 10-K prose (there is no GAAP concept for it). One row per
+-- 10-K filing date `as_of`, from filing `accession_number` filed by `cik`. The stated
+-- components `employees_total` / `employees_full_time` / `employees_part_time`, the `basis`
+-- they support (total, full_part, full_time_only, fte, total_incl_contractors), the decided
+-- `status`, the `source_document` read (primary or an exhibit type) and `source_quote`, a
+-- JSON object holding one verbatim quote per kept component. A filing with no usable count
+-- is a row with NULL components and its status, so the row marks the date decided.
+-- `identity-propagate` purges rows by `cik`.
 
 CREATE TABLE IF NOT EXISTS "fundamentals_employees" (
     "ticker" TEXT NOT NULL,
     "as_of" DATE NOT NULL,
-    "employees" DOUBLE PRECISION,
+    "cik" TEXT,
+    "accession_number" TEXT NOT NULL,
+    "form" TEXT,
+    "employees_total" BIGINT,
+    "employees_full_time" BIGINT,
+    "employees_part_time" BIGINT,
+    "basis" TEXT,
+    "status" TEXT NOT NULL,
+    "source_document" TEXT,
+    "source_quote" TEXT,
+    "measurement_period" TEXT,
     PRIMARY KEY ("ticker", "as_of")
 );
 

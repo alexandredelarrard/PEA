@@ -1342,7 +1342,11 @@ def _merged_section(context: Any, snap_dir: Path, scope: Sequence[str] | None) -
     sec_before = _snap(snap_dir, "history_sec")
     sec_after = _read(store, "history_sec", scope)
     sec_changed = _changed_tickers(sec_before, sec_after, ["ticker", "as_of"])
-    sec_columns = {c for c in before.columns if c.endswith("_sec")} | set(load_field_map(str(context.config_dir)).sec_owned)
+    field_map = load_field_map(str(context.config_dir))
+    sec_owned = set(field_map.sec_owned)
+    # a column the merge derives from an SEC-owned input (`stockholdersEquityInclNci`) moves with the SEC block
+    sec_derived = {name for name, spec in field_map.derived.items() if set(spec.inputs) & sec_owned}
+    sec_columns = {c for c in before.columns if c.endswith("_sec")} | sec_owned | sec_derived
     return merged_diff(before, after, windows, sec_columns, sec_changed)
 
 

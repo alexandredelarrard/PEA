@@ -565,6 +565,37 @@ def test_merged_rows_change_only_inside_a_predecessor_window_with_a_stored_owner
     )
 
 
+def test_a_column_the_merge_derives_from_an_sec_owned_input_moves_with_the_sec_block(sqlite_store: Any, tmp_path: Path) -> None:
+    """P7 shape (DD after old DuPont's SEC history leaves): `stockholdersEquityInclNci` = vendor equity + the SEC-owned
+    `minorityInterest`, so a merged row whose only changes are SEC columns and that derived column is `sec_block_changed`;
+    a vendor column changing on the same ticker stays unexplained."""
+    snap = tmp_path / "before"
+    snap.mkdir()
+    day = pd.Timestamp("2012-05-02")
+    merged_before = pd.DataFrame(
+        {
+            "ticker": ["DD", "DD"],
+            "as_of": [day, day + pd.Timedelta(days=91)],
+            "fiscal_end": [pd.Timestamp("2012-03-31"), pd.Timestamp("2012-06-30")],
+            "totalRevenue": [10.0, 11.0],
+            "minorityInterest_sec": [0.5, 0.5],
+            "stockholdersEquityInclNci": [9.5, 9.6],
+        }
+    )
+    merged_after = merged_before.assign(minorityInterest_sec=[None, None], stockholdersEquityInclNci=[None, None], totalRevenue=[10.0, 12.0])
+    merged_before.to_parquet(snap / "merged.parquet", index=False)
+    pd.DataFrame({"ticker": ["DD"], "as_of": [day], "minorityInterest": [0.5]}).to_parquet(snap / "history_sec.parquet", index=False)
+    sqlite_store.save(Tables.fundamentals_history, merged_after)
+    sqlite_store.save(Tables.fundamentals_history_sec, pd.DataFrame({"ticker": ["DOW"], "as_of": [day], "minorityInterest": [0.1]}))
+
+    diff = gate._merged_section(_Context(sqlite_store), snap, ["DD"])
+
+    reasons = dict(zip(diff["fiscal_end"], diff["reason"], strict=True))
+    print(diff[["ticker", "fiscal_end", "change", "columns", "reason"]].to_string(index=False))
+    assert reasons == {"2012-03-31": "sec_block_changed", "2012-06-30": ""}, reasons
+    print("sanity: the SEC-derived stockholdersEquityInclNci moves with DD's SEC block; a vendor revenue change is still unexplained")
+
+
 def test_prices_may_only_gain_secondary_class_symbols_and_new_dates() -> None:
     def frame(rows: list[tuple[str, str, float]]) -> pd.DataFrame:
         out = pd.DataFrame(rows, columns=["ticker", "date", "close_split"])

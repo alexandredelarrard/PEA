@@ -19,7 +19,6 @@ from tqdm import tqdm
 from src.constants.constants import DATE_FORMAT, SHARADAR_BASE_URL, SHARADAR_SF1_COLUMNS
 from src.context import Context
 from src.data_extract.utils.common.resume import document_floor, series_windows
-from src.data_extract.utils.common.security_master import load_security_manual
 from src.data_extract.utils.fundamentals_sharadar.client import (
     NotEntitledError,
     SharadarRequestError,
@@ -30,9 +29,8 @@ from src.data_extract.utils.fundamentals_sharadar.client import (
     vendor_symbol,
 )
 from src.data_store.schema import Table, Tables
-from src.utils.cutover_continuity import PredecessorSeries, predecessor_series, register_windows
 from src.utils.polite_http import sleep_pace
-from src.utils.string import normalise_ticker
+from src.utils.predecessor_series import load_predecessor_series
 
 # As-reported dimensions only: point-in-time and immutable (MR* rows restate in place).
 SHARADAR_DIMENSIONS = ("ARQ", "ARY", "ART")
@@ -73,32 +71,6 @@ def _usd_roster(context: Context) -> dict[str, str]:
     frame = frame.assign(_live=(frame["isdelisted"].astype(str).str.upper() != "Y"))
     frame = frame.sort_values("_live", ascending=False).drop_duplicates("ticker")
     return dict(zip(frame["ticker"].astype(str), frame["currency"].astype(str), strict=False))
-
-
-def load_predecessor_series(context: Context, tickers: list[str], config_dir: str | None = None) -> tuple[PredecessorSeries, ...]:
-    """The predecessor vendor series of `tickers`: the cited `vendor_series_overrides` (from `config_dir`, else the
-    context's), plus the `sharadar_tickers` rows whose `secfilings` CIK owns a closed register window in `entity_lineage`.
-    An override wins over a derived series of the same `(ticker, cik)`."""
-    names = {normalise_ticker(t) for t in tickers}
-    declared = tuple(s for s in load_security_manual(config_dir or str(context.config_dir)).vendor_series if s.ticker in names)
-    taken = {(s.ticker, s.cik) for s in declared}
-    return tuple(s for s in _register_series(context, tickers) if (s.ticker, s.cik) not in taken) + declared
-
-
-def _register_series(context: Context, tickers: list[str]) -> tuple[PredecessorSeries, ...]:
-    """The register-derived predecessor series; none before the dated lineage exists."""
-    if "role" not in context.store.columns(Tables.entity_lineage):
-        return ()
-    lineage = context.store.load(
-        Tables.entity_lineage,
-        columns=["canonical_ticker", "cik", "role", "valid_from", "valid_to", "sources"],
-        where={"role": "cik_window"},
-        optional=True,
-    )
-    vendor = context.store.load(Tables.sharadar_tickers, columns=["ticker", "secfilings", "lastquarter"], optional=True)
-    if lineage is None or vendor is None:
-        return ()
-    return predecessor_series(vendor, register_windows(lineage), tickers)
 
 
 def predecessor_vendor_tickers(context: Context, tickers: list[str]) -> list[str]:

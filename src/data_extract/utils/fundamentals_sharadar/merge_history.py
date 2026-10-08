@@ -37,7 +37,6 @@ from src.data_extract.utils.common.frame_sanitize import pin_dtypes
 from src.data_extract.utils.common.security_master import load_security_manual
 from src.data_extract.utils.fundamentals.kpi_catalogue import DEFAULT_CONFIG_DIR
 from src.data_extract.utils.fundamentals_sharadar.build_ttm import ARQ, build_ttm
-from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import load_predecessor_series
 from src.data_extract.utils.fundamentals_sharadar.field_map import (
     FieldMap,
     TranslationReport,
@@ -49,6 +48,7 @@ from src.data_extract.utils.fundamentals_sharadar.field_map import (
 )
 from src.data_store.schema import Tables
 from src.utils.cutover_continuity import PredecessorSeries, ShareExchange, apply_predecessor_series, rebase_split_events
+from src.utils.predecessor_series import load_predecessor_series
 
 log = logging.getLogger(__name__)
 

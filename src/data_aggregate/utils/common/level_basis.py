@@ -85,7 +85,12 @@ from typing import Any, cast
 import numpy as np
 import pandas as pd
 
+from src.constants.constants import SHARADAR_ACTION_SPINOFF, SHARADAR_ACTION_SPLIT
+from src.context import Context
 from src.data_extract.utils.fundamentals_sharadar.field_map import split_events as genuine_splits
+from src.data_store.schema import Tables
+from src.utils.cutover_continuity import predecessor_actions
+from src.utils.predecessor_series import load_predecessor_series
 
 __all__ = ["genuine_splits"]
 
@@ -189,6 +194,27 @@ def level_factor(
     values = frame.to_numpy(dtype="float64", copy=True)
     values[np.abs(values - 1.0) < LEVEL_SNAP_TOL] = 1.0
     return pd.DataFrame(values, index=frame.index, columns=frame.columns)
+
+
+#: The `sharadar_actions` columns and kinds `split_events` reads; the table is market-wide, so the read is filtered to them.
+LEVEL_ACTION_COLUMNS = ["ticker", "date", "action", "value"]
+LEVEL_ACTION_KINDS = [SHARADAR_ACTION_SPLIT, SHARADAR_ACTION_SPINOFF]
+
+
+def level_actions(context: Context, tickers: Sequence[str], where: Mapping[str, Any] | None = None) -> pd.DataFrame | None:
+    """The `sharadar_actions` rows feeding S(d)'s denominator for `tickers` (read with `where`, or all tickers).
+
+    Inside a predecessor vendor series window the ticker's prices follow the window owner, so its own actions there
+    are replaced by the owner's (`cutover_continuity.predecessor_actions`), as the merged history does for shares."""
+    kinds = {"action": LEVEL_ACTION_KINDS}
+    actions = context.store.load(Tables.sharadar_actions, columns=LEVEL_ACTION_COLUMNS, where={**(where or {}), **kinds}, optional=True)
+    series = load_predecessor_series(context, list(map(str, tickers)))
+    if actions is None or not series:
+        return actions
+    owners = context.store.load(
+        Tables.sharadar_actions, columns=LEVEL_ACTION_COLUMNS, where={"ticker": sorted({s.vendor_ticker for s in series}), **kinds}, optional=True
+    )
+    return predecessor_actions(actions, owners, series)
 
 
 def describe(factor: pd.DataFrame, top: int = 10) -> str:

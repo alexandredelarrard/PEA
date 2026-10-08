@@ -433,8 +433,9 @@ def test_jci_rows_before_the_seam_are_tyco_and_agree_with_the_cube_level_factor(
 
 
 def test_old_jci_split_actions_make_the_cube_level_factor_wrong_before_2007_10() -> None:
-    """Known defect, outside this window's rule: JCI's own sharadar_actions before the seam are old JCI's (2004 x2,
-    2007-10 x3), and split_events accepts them as genuine for ticker JCI, so S is off by 1/6 and 1/3 before 2007-10-03."""
+    """Why S reads the window owner's actions: JCI's own sharadar_actions before the seam are old JCI's (2004 x2,
+    2007-10 x3), and split_events accepts them as genuine for ticker JCI, so S from them is off by 1/6 and 1/3 before
+    2007-10-03 (`level_basis.level_actions` swaps in TYC's; see `test_level_predecessor_actions`)."""
     actions = pd.DataFrame([{"ticker": t, "date": pd.Timestamp(d), "action": a, "value": v} for t, d, a, v in JCI_ACTIONS if t == "JCI"])
     yf = pd.DataFrame([{"ticker": t, "date": pd.Timestamp(d), "ratio": v} for t, d, v in JCI_YF])
     days = pd.DatetimeIndex(["2003-05-01", "2006-05-09", "2011-01-27"])
@@ -443,4 +444,4 @@ def test_old_jci_split_actions_make_the_cube_level_factor_wrong_before_2007_10()
     print("\n=== SANITY CHECK: S(d) with old JCI's split actions ===")
     print(pd.DataFrame({"live_actions": live, "tyco_actions": right, "ratio": live / right}).to_string())
     assert (live / right).tolist() == pytest.approx([1 / 6, 1 / 3, 1.0])
-    print("  OK (pinned defect): old JCI's 2004 and 2007-10 splits divide S by 6 and 3 before 2007-10-03; reported, not fixed in P4.")
+    print("  OK (pinned defect): old JCI's 2004 and 2007-10 splits divide S by 6 and 3 before 2007-10-03; the cube reads TYC's actions instead.")

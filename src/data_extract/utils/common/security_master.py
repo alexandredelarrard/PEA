@@ -34,11 +34,12 @@ from src.data_extract.utils.common.entity_lineage import (
 from src.data_extract.utils.common.incremental import matches_stored
 from src.data_extract.utils.common.symbol_tenure import DEI_SOURCE
 from src.data_store.schema import Tables
-from src.utils.cutover_continuity import PredecessorSeries, ShareExchange
+from src.utils.cutover_continuity import PredecessorSeries, ShareExchange, vendor_series_overrides
 from src.utils.identity_flags import FLAG_COLUMNS, cik_activity, identity_flags, log_identity_flags
+from src.utils.predecessor_series import SECURITY_MANUAL_FILE
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
 
-MANUAL_CONFIG_FILENAME = "security_master_manual.json"
+MANUAL_CONFIG_FILENAME = SECURITY_MANUAL_FILE.name
 #: The stored FTD line columns the master derives from.
 _OBSERVATION_COLUMNS = ("date", "trade_date", "cusip", "source_symbol", "description", "price", "period")
 
@@ -296,7 +297,7 @@ def parse_security_manual(blob: Mapping[str, Any]) -> SecurityManual:
         co_registrants=tuple(sorted(set(pad_cik_series(co_registrants["cik"])))) if not co_registrants.empty else (),
         exchanges=_exchanges(_entries(blob, "exchange_ratios", _EXCHANGE_COLUMNS)),
         reverse_acquisitions=_reverse_acquisitions(_entries(blob, "reverse_acquisitions", _REVERSE_COLUMNS)),
-        vendor_series=_vendor_series(_entries(blob, "vendor_series_overrides", _VENDOR_SERIES_COLUMNS)),
+        vendor_series=vendor_series_overrides(_entries(blob, "vendor_series_overrides", _VENDOR_SERIES_COLUMNS)),
     )
 
 
@@ -320,20 +321,6 @@ def _reverse_acquisitions(rows: pd.DataFrame) -> tuple[ReverseAcquisition, ...]:
             accounting_acquirer_cik=pad_cik(row.accounting_acquirer_cik),
             legal_acquirer_cik=pad_cik(row.legal_acquirer_cik),
             source=str(row.source),
-        )
-        for row in rows.itertuples(index=False)
-    )
-
-
-def _vendor_series(rows: pd.DataFrame) -> tuple[PredecessorSeries, ...]:
-    """The `vendor_series_overrides` entries as predecessor series; a null bound is an open end."""
-    return tuple(
-        PredecessorSeries(
-            ticker=normalise_ticker(str(row.ticker)),
-            vendor_ticker=normalise_ticker(str(row.vendor_ticker)),
-            cik=pad_cik(row.cik),
-            valid_from=_bound(row.valid_from),
-            valid_to=_bound(row.valid_to),
         )
         for row in rows.itertuples(index=False)
     )
@@ -371,7 +358,7 @@ def merger_boundaries(manual: SecurityManual) -> tuple[MergerBoundary, ...]:
 
 def load_security_manual(config_dir: str | None = None) -> SecurityManual:
     """`configs/sec/security_master_manual.json`, parsed; an absent file is an empty config."""
-    path = Path(resolve_config_dir(config_dir)) / "sec" / MANUAL_CONFIG_FILENAME
+    path = Path(resolve_config_dir(config_dir)) / SECURITY_MANUAL_FILE
     if not path.exists():
         return SecurityManual.empty()
     return parse_security_manual(json.loads(path.read_text(encoding="utf-8")))

@@ -320,6 +320,21 @@ def predecessor_series(
     return tuple(out)
 
 
+def vendor_series_overrides(rows: pd.DataFrame) -> tuple[PredecessorSeries, ...]:
+    """The `vendor_series_overrides` entries (`ticker, vendor_ticker, cik, valid_from, valid_to`) as predecessor series;
+    a null bound is an open end."""
+    return tuple(
+        PredecessorSeries(
+            ticker=normalise_ticker(str(row.ticker)),
+            vendor_ticker=normalise_ticker(str(row.vendor_ticker)),
+            cik=pad_cik(row.cik),
+            valid_from=_bound(row.valid_from),
+            valid_to=_bound(row.valid_to),
+        )
+        for row in rows.itertuples(index=False)
+    )
+
+
 def _inside(frame: pd.DataFrame, series: PredecessorSeries) -> pd.Series:
     period = pd.to_datetime(frame["reportperiod"], errors="coerce")
     mask = period.notna()
@@ -349,25 +364,56 @@ def convert_share_basis(frame: pd.DataFrame, factor: float | None) -> pd.DataFra
     return out
 
 
+def _swap_window(
+    events: pd.DataFrame, owners: pd.DataFrame, series: PredecessorSeries, end: pd.Timestamp | None
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """`events` without `series.ticker`'s rows dated in [valid_from, end), and the owner's rows there relabelled to it.
+
+    Both frames carry a datetime `date`; `owners` also carries `_vendor`, the normalised owner ticker."""
+    start = series.valid_from if series.valid_from is not None else pd.Timestamp.min
+    stop = end if end is not None else pd.Timestamp.max
+    before = events["ticker"].eq(series.ticker) & events["date"].ge(start) & events["date"].lt(stop)
+    own = owners[owners["_vendor"].eq(series.vendor_ticker) & owners["date"].ge(start) & owners["date"].lt(stop)]
+    return events[~before], own.drop(columns="_vendor").assign(ticker=series.ticker)
+
+
+def _owner_frame(owner_events: pd.DataFrame, columns: Sequence[str]) -> pd.DataFrame:
+    frame = owner_events[list(columns)]
+    return frame.assign(date=pd.to_datetime(frame["date"]), _vendor=frame["ticker"].map(normalise_ticker))
+
+
+def _concat_sorted(frames: Sequence[pd.DataFrame], fallback: pd.DataFrame) -> pd.DataFrame:
+    kept = [frame for frame in frames if not frame.empty]
+    if not kept:
+        return fallback
+    return pd.concat(kept, ignore_index=True).sort_values(["ticker", "date"], kind="mergesort").reset_index(drop=True)
+
+
 def rebase_split_events(splits: pd.DataFrame, owner_splits: pd.DataFrame, windows: Sequence[tuple[PredecessorSeries, ShareExchange]]) -> pd.DataFrame:
     """The split events with each converted window's pre-seam part replaced by the owner's own splits plus one event
     of the exchange ratio on the seam, so a count de-adjusted inside the window is the owner's as-filed count."""
     out = splits[["ticker", "date", "value"]].assign(date=pd.to_datetime(splits["date"]))
-    owners = owner_splits[["ticker", "date", "value"]].assign(
-        date=pd.to_datetime(owner_splits["date"]), _vendor=owner_splits["ticker"].map(normalise_ticker)
-    )
+    owners = _owner_frame(owner_splits, ("ticker", "date", "value"))
     added: list[pd.DataFrame] = []
     for s, exchange in windows:
-        start = s.valid_from if s.valid_from is not None else pd.Timestamp.min
-        before = out["ticker"].eq(s.ticker) & out["date"].ge(start) & out["date"].lt(exchange.seam_date)
-        own = owners[owners["_vendor"].eq(s.vendor_ticker) & owners["date"].ge(start) & owners["date"].lt(exchange.seam_date)]
-        out = out[~before]
-        added.append(own.drop(columns="_vendor").assign(ticker=s.ticker))
+        out, own = _swap_window(out, owners, s, exchange.seam_date)
+        added.append(own)
         added.append(pd.DataFrame({"ticker": [s.ticker], "date": [exchange.seam_date], "value": [float(exchange.ratio)]}))
-    frames = [frame for frame in (out, *added) if not frame.empty]
-    if not frames:
-        return out
-    return pd.concat(frames, ignore_index=True).sort_values(["ticker", "date"], kind="mergesort").reset_index(drop=True)
+    return _concat_sorted((out, *added), out)
+
+
+def predecessor_actions(actions: pd.DataFrame, owner_actions: pd.DataFrame | None, series: Sequence[PredecessorSeries]) -> pd.DataFrame:
+    """`actions` with each window's own rows (dated in [valid_from, valid_to)) replaced by the window owner's, relabelled
+    to the ticker, so the level factor S(d) reads the actions of the security the prices follow."""
+    if not series:
+        return actions
+    out = actions.assign(date=pd.to_datetime(actions["date"]))
+    owners = _owner_frame(owner_actions if owner_actions is not None else out.iloc[0:0], list(actions.columns))
+    added: list[pd.DataFrame] = []
+    for s in series:
+        out, own = _swap_window(out, owners, s, s.valid_to)
+        added.append(own)
+    return _concat_sorted((out, *added), out)
 
 
 def apply_predecessor_series(

@@ -33,7 +33,7 @@ from src.utils.filer_tables import (
     windowed_filer_mask,
 )
 from src.utils.identity_flags import FLAG_COLUMNS, KIND_ORDER, MARGIN, cik_activity, identity_flags, log_identity_flags
-from src.utils.predecessor_series import load_vendor_series
+from src.utils.predecessor_series import load_vendor_series, with_overrides
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
 from src.validate.checks.traded_security import traded_security_flags
 from src.validate.result import CheckResult, Finding
@@ -329,9 +329,7 @@ def continuity_flags(context: Context, lineage: pd.DataFrame, scope: Sequence[st
     if not windows or not context.store.exists(Tables.sharadar_fundamentals):
         return pd.DataFrame(columns=list(FLAG_COLUMNS)), {}
     vendor_tickers = context.store.load(Tables.sharadar_tickers, columns=["ticker", "secfilings", "lastquarter"], optional=True)
-    derived = cc.predecessor_series(vendor_tickers if vendor_tickers is not None else pd.DataFrame(), windows, scope)
-    taken = {(s.ticker, s.cik) for s in declared}
-    series = tuple(s for s in derived if (s.ticker, s.cik) not in taken) + declared
+    series = with_overrides(cc.predecessor_series(vendor_tickers if vendor_tickers is not None else pd.DataFrame(), windows, scope), declared)
     arq = _vendor_arq(context, sorted(windows))
     owners = _vendor_arq(context, sorted({s.vendor_ticker for s in series})) if series else pd.DataFrame(columns=_VENDOR_COLUMNS)
     merged, events = cc.apply_predecessor_series(arq, owners, series)

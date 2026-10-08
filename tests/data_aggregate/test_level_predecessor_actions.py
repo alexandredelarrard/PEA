@@ -17,33 +17,14 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.transformers.step_cube_prices import StepCubePrices
-from src.data_aggregate.utils.common.level_basis import genuine_splits, level_factor
+from src.data_aggregate.utils.common.level_basis import genuine_splits, level_actions, level_factor
 from src.data_store.schema import Tables
+from src.utils.cutover_continuity import PredecessorSeries, predecessor_actions
 from src.validate.utils import prices as vprices
 from tests.conftest import FakeStore
+from tests.fixtures.jci_tyco_rows import JCI_ACTIONS, JCI_YF, SPIN_2012
 
 LOGGER = "test.level_predecessor_actions"
-SPIN_2012 = 2.011667672500503
-#: Yahoo's JCI split events (prices_splits, live 2026-10-07): Tyco's splits, the 2012 ADT/Pentair spin, the 2016 consolidation.
-JCI_YF = [
-    ("JCI", "1995-11-15", 2.0),
-    ("JCI", "1997-10-23", 2.0),
-    ("JCI", "1999-10-22", 2.0),
-    ("JCI", "2007-07-02", 0.25),
-    ("JCI", "2012-10-01", SPIN_2012),
-    ("JCI", "2016-09-06", 0.955),
-]
-#: sharadar_actions splits and spinoffs (live 2026-10-07): old JCI's own splits under JCI, Tyco's under TYC.
-JCI_ACTIONS = [
-    ("JCI", "2004-01-05", "split", 2.0),
-    ("JCI", "2007-10-03", "split", 3.0),
-    ("JCI", "2016-10-31", "spinoff", 0.1),
-    ("TYC", "1999-10-22", "split", 2.0),
-    ("TYC", "2007-07-02", "spinoff", 1.0),
-    ("TYC", "2007-07-02", "split", 0.25),
-    ("TYC", "2012-10-01", "spinoff", 0.5),
-    ("TYC", "2012-10-01", "spinoff", 0.23994),
-]
 #: Real Sharadar TYC ARQ rows (`_cache/tyc_sf1.csv`): (date, sharesbas, marketcap, JCI close_split on `date`).
 TYC_ROWS = [
     ("1997-02-13", 156679751, 9244105309, 30.710890),
@@ -136,3 +117,32 @@ def _jci_inputs(context: SimpleNamespace) -> tuple[pd.DataFrame, pd.DataFrame]:
     actions = context.store.load(Tables.sharadar_actions, where={"ticker": ["JCI"]})
     yf = context.store.load(Tables.prices_splits, where={"ticker": ["JCI"]})
     return yf, genuine_splits(actions, yf)
+
+
+@pytest.mark.parametrize("owners", [None, "empty"])
+def test_a_window_without_owner_actions_keeps_the_tickers_own(owners: str | None) -> None:
+    actions = pd.DataFrame([{"ticker": t, "date": pd.Timestamp(d), "action": a, "value": v} for t, d, a, v in JCI_ACTIONS if t == "JCI"])
+    stored = None if owners is None else actions.iloc[0:0]
+    series = [PredecessorSeries("JCI", "TYC", "0000833444", None, pd.Timestamp("2016-09-02"))]
+    out = predecessor_actions(actions, stored, series)
+    print(f"\n=== SANITY CHECK: owner actions {owners!r}, JCI keeps its own ===")
+    print(out.to_string(index=False))
+    assert out[["ticker", "date", "action", "value"]].reset_index(drop=True).equals(actions.reset_index(drop=True))
+    print("  OK: with no stored TYC action, JCI's 2004 and 2007 splits stay inside the window (nothing is swapped).")
+
+
+def test_level_actions_warns_when_the_owner_actions_are_not_stored(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    context = _context(tmp_path, [JCI_OVERRIDE])
+    table = context.store.load(Tables.sharadar_actions)
+    context.store = FakeStore(
+        {Tables.sharadar_actions: table[table["ticker"].ne("TYC")], Tables.prices_splits: context.store.load(Tables.prices_splits)}
+    )
+    with caplog.at_level(logging.WARNING, logger=LOGGER):
+        out = level_actions(context, ["JCI"])  # type: ignore[arg-type]
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    print("\n=== SANITY CHECK: level_actions without TYC actions ===")
+    print(out.to_string(index=False))
+    print(warnings)
+    assert out is not None and sorted(out["date"].dt.strftime("%Y-%m-%d")) == ["2004-01-05", "2007-10-03", "2016-10-31"]
+    assert len(warnings) == 1 and "TYC of JCI (CIK 0000833444) is not stored" in warnings[0]
+    print("  OK: JCI keeps its 3 own actions and one WARNING names the missing TYC series.")

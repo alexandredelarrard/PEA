@@ -7,6 +7,7 @@ Shared by the Sharadar fetch and merge, the cube's level factor and the validate
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from pathlib import Path
 
 import pandas as pd
@@ -40,8 +41,13 @@ def load_predecessor_series(context: Context, tickers: list[str], config_dir: st
     register-derived series. An override wins over a derived series of the same `(ticker, cik)`."""
     names = {normalise_ticker(t) for t in tickers}
     declared = tuple(s for s in load_vendor_series(config_dir or context.config_dir) if s.ticker in names)
+    return with_overrides(_register_series(context, tickers), declared)
+
+
+def with_overrides(derived: Iterable[PredecessorSeries], declared: tuple[PredecessorSeries, ...]) -> tuple[PredecessorSeries, ...]:
+    """`derived` without the series a declared override replaces (same `(ticker, cik)`), then `declared`."""
     taken = {(s.ticker, s.cik) for s in declared}
-    return tuple(s for s in _register_series(context, tickers) if (s.ticker, s.cik) not in taken) + declared
+    return tuple(s for s in derived if (s.ticker, s.cik) not in taken) + declared
 
 
 def _register_series(context: Context, tickers: list[str]) -> tuple[PredecessorSeries, ...]:

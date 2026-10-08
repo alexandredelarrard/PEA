@@ -34,12 +34,11 @@ from src.data_extract.utils.common.entity_lineage import (
 from src.data_extract.utils.common.incremental import matches_stored
 from src.data_extract.utils.common.symbol_tenure import DEI_SOURCE
 from src.data_store.schema import Tables
-from src.utils.cutover_continuity import PredecessorSeries, ShareExchange, vendor_series_overrides
+from src.utils.cutover_continuity import ShareExchange
 from src.utils.identity_flags import FLAG_COLUMNS, cik_activity, identity_flags, log_identity_flags
 from src.utils.predecessor_series import SECURITY_MANUAL_FILE
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
 
-MANUAL_CONFIG_FILENAME = SECURITY_MANUAL_FILE.name
 #: The stored FTD line columns the master derives from.
 _OBSERVATION_COLUMNS = ("date", "trade_date", "cusip", "source_symbol", "description", "price", "period")
 
@@ -224,8 +223,8 @@ def _length(spans: Iterable[Span], horizon: pd.Timestamp) -> float:
 @dataclass(frozen=True)
 class SecurityManual:
     """Parsed `security_master_manual.json`: dated conversion ratios, CUSIP market boundaries, class overrides, merger
-    metadata, the declared co-registrant CIKs, the merger exchange ratios, the reverse acquisitions and the vendor
-    series overrides."""
+    metadata, the declared co-registrant CIKs, the merger exchange ratios and the reverse acquisitions. The vendor
+    series overrides are read by `predecessor_series.load_vendor_series`."""
 
     ratios: pd.DataFrame
     boundaries: pd.DataFrame
@@ -234,7 +233,6 @@ class SecurityManual:
     co_registrants: tuple[str, ...] = ()
     exchanges: tuple[ShareExchange, ...] = ()
     reverse_acquisitions: tuple[ReverseAcquisition, ...] = ()
-    vendor_series: tuple[PredecessorSeries, ...] = ()
 
     @classmethod
     def empty(cls) -> SecurityManual:
@@ -246,7 +244,6 @@ _BOUNDARY_COLUMNS = ("ticker", "cusip", "issuer_cik", "role", "valid_from", "val
 _CLASS_COLUMNS = ("cusip", "security_class", "source")
 _EXCHANGE_COLUMNS = ("ticker", "predecessor_cik", "seam_date", "ratio", "source")
 _REVERSE_COLUMNS = ("ticker", "seam_date", "accounting_acquirer_cik", "legal_acquirer_cik", "source")
-_VENDOR_SERIES_COLUMNS = ("ticker", "vendor_ticker", "cik", "valid_from", "valid_to", "source")
 
 
 @dataclass(frozen=True)
@@ -297,7 +294,6 @@ def parse_security_manual(blob: Mapping[str, Any]) -> SecurityManual:
         co_registrants=tuple(sorted(set(pad_cik_series(co_registrants["cik"])))) if not co_registrants.empty else (),
         exchanges=_exchanges(_entries(blob, "exchange_ratios", _EXCHANGE_COLUMNS)),
         reverse_acquisitions=_reverse_acquisitions(_entries(blob, "reverse_acquisitions", _REVERSE_COLUMNS)),
-        vendor_series=vendor_series_overrides(_entries(blob, "vendor_series_overrides", _VENDOR_SERIES_COLUMNS)),
     )
 
 
@@ -1305,7 +1301,7 @@ def flag_items(flags: pd.DataFrame) -> pd.DataFrame:
                 "ciks": ",".join(sorted({str(c) for c in part["issuer_cik"].dropna()})),
                 "evidence": f"{len(part)} line(s): {examples}" + (" ..." if len(part) > 12 else ""),
                 "suggested_action": suggested,
-                "config_file": f"configs/sec/{MANUAL_CONFIG_FILENAME}",
+                "config_file": f"configs/{SECURITY_MANUAL_FILE.as_posix()}",
             }
         )
     return pd.DataFrame(items, columns=list(FLAG_COLUMNS))

@@ -73,7 +73,7 @@ def test_a_ticker_whose_two_sources_agree_is_exactly_one():
 
     Asserted as `== 1.0` on the raw floats, not `approx`: 4 x 7 x 2 x 2 x 2 / (4 x 7 x 2 x 2
     x 2) is only exactly 1.0 if both products are accumulated in the same order, which is why
-    `_suffix_factor` builds them right-to-left over dates sorted ascending. `approx` would
+    `suffix_factor` builds them right-to-left over dates sorted ascending. `approx` would
     pass on a version of this code that silently moves every AAPL market cap by 1 ulp."""
     events = [
         ("AAPL", "1987-06-16", 2.0),

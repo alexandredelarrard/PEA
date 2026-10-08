@@ -23,7 +23,9 @@ from src.data_extract.utils.fundamentals_sharadar import fetch_sharadar, gap_che
 from src.data_extract.utils.fundamentals_sharadar.field_map import load_field_map
 from src.data_store.schema import Tables
 from src.utils import cutover_continuity as cc
+from src.utils.predecessor_series import load_predecessor_series, load_vendor_series
 from tests.conftest import FakeStore
+from tests.fixtures.jci_tyco_rows import JCI_ACTIONS, JCI_YF, SPIN_2012
 
 LOGGER = "test.predecessor_share_basis"
 URL = "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={}&type=&dateb=&owner=include&count=40"
@@ -291,27 +293,6 @@ def test_the_shipped_config_cites_one_exchange_ratio_per_replaced_window() -> No
 # --------------------------------------------------------------------------- JCI <- TYC (vendor_series_overrides)
 
 JCI_SEAM = pd.Timestamp("2016-09-02")
-SPIN_2012 = 2.011667672500503
-#: Yahoo's JCI split events (prices_splits, live 2026-10-07): Tyco's own splits, the 2012 ADT/Pentair spin and the 2016 consolidation.
-JCI_YF = [
-    ("JCI", "1995-11-15", 2.0),
-    ("JCI", "1997-10-23", 2.0),
-    ("JCI", "1999-10-22", 2.0),
-    ("JCI", "2007-07-02", 0.25),
-    ("JCI", "2012-10-01", SPIN_2012),
-    ("JCI", "2016-09-06", 0.955),
-]
-#: sharadar_actions splits and spinoffs (live 2026-10-07): old JCI's own splits under JCI, Tyco's under TYC.
-JCI_ACTIONS = [
-    ("JCI", "2004-01-05", "split", 2.0),
-    ("JCI", "2007-10-03", "split", 3.0),
-    ("JCI", "2016-10-31", "spinoff", 0.1),
-    ("TYC", "1999-10-22", "split", 2.0),
-    ("TYC", "2007-07-02", "spinoff", 1.0),
-    ("TYC", "2007-07-02", "split", 0.25),
-    ("TYC", "2012-10-01", "spinoff", 0.5),
-    ("TYC", "2012-10-01", "spinoff", 0.23994),
-]
 #: Real Sharadar TYC ARQ rows: (date, reportperiod, calendardate, sharesbas, shareswa, price, marketcap, dps, JCI close_split on `date`).
 TYC_ROWS = [
     ("1997-02-13", "1996-12-31", "1996-12-31", 156679751, 157445000, 59.00, 9244105309, 0.050, 30.710890),
@@ -369,18 +350,20 @@ def _jci_store() -> FakeStore:
 
 
 def test_a_vendor_series_override_declares_jci_from_tyc(tmp_path: Path) -> None:
-    manual = sm.parse_security_manual({"vendor_series_overrides": [JCI_OVERRIDE]})
     expected = cc.PredecessorSeries("JCI", "TYC", "0000833444", None, JCI_SEAM)
-    shipped = sm.load_security_manual(str(REPO_CONFIGS)).vendor_series
     context = SimpleNamespace(store=_jci_store(), log=logging.getLogger(LOGGER), config_dir=_config(tmp_path, [JCI_EXCHANGE], [JCI_OVERRIDE]))
+    parsed, shipped = load_vendor_series(context.config_dir), load_vendor_series(REPO_CONFIGS)
     print("\n=== SANITY CHECK: vendor_series_overrides ===")
-    print(f"  parsed {manual.vendor_series}; shipped {shipped}")
-    assert manual.vendor_series == (expected,) and shipped == (expected,)
-    assert fetch_sharadar.load_predecessor_series(context, ["JCI", "AAPL"]) == (expected,)
+    print(f"  parsed {parsed}; shipped {shipped}")
+    assert parsed == (expected,) and shipped == (expected,)
+    assert load_predecessor_series(context, ["JCI", "AAPL"]) == (expected,)
     assert fetch_sharadar.predecessor_vendor_tickers(context, ["JCI"]) == ["TYC"]
     assert fetch_sharadar.predecessor_vendor_tickers(context, ["AAPL"]) == []
-    with pytest.raises(sm.SecurityManualError):
-        sm.parse_security_manual({"vendor_series_overrides": [{**JCI_OVERRIDE, "source": ""}]})
+    unsourced = tmp_path / "unsourced"
+    (unsourced / "sec").mkdir(parents=True)
+    (unsourced / "sec" / "security_master_manual.json").write_text(json.dumps({"vendor_series_overrides": [{**JCI_OVERRIDE, "source": ""}]}))
+    with pytest.raises(ValueError, match="has no source"):
+        load_vendor_series(unsourced)
     print("  OK: JCI -> TYC (CIK 0000833444, open start, to 2016-09-02) from the cited entry; JCI has no register window yet the fetch")
     print("  lists TYC; a ticker outside the override is unchanged; an entry without a source is refused.")
 
@@ -430,21 +413,6 @@ def test_jci_rows_before_the_seam_are_tyco_and_agree_with_the_cube_level_factor(
     assert arq.loc["2016Q4", "sharesbas"] == 935e6 and out.loc["2016Q4", "sharesOutstandingPit"] == pytest.approx(935e6)
     print("  OK: Tyco's sharesbas unchanged (ratio 1, no genuine JCI split after the seam); S = 2.0117 x 0.955 before 2012-10-01")
     print("  and 0.955 after; close_split x S x shares and raw price x PIT both equal Tyco's market cap; after the seam untouched.")
-
-
-def test_old_jci_split_actions_make_the_cube_level_factor_wrong_before_2007_10() -> None:
-    """Why S reads the window owner's actions: JCI's own sharadar_actions before the seam are old JCI's (2004 x2,
-    2007-10 x3), and split_events accepts them as genuine for ticker JCI, so S from them is off by 1/6 and 1/3 before
-    2007-10-03 (`level_basis.level_actions` swaps in TYC's; see `test_level_predecessor_actions`)."""
-    actions = pd.DataFrame([{"ticker": t, "date": pd.Timestamp(d), "action": a, "value": v} for t, d, a, v in JCI_ACTIONS if t == "JCI"])
-    yf = pd.DataFrame([{"ticker": t, "date": pd.Timestamp(d), "ratio": v} for t, d, v in JCI_YF])
-    days = pd.DatetimeIndex(["2003-05-01", "2006-05-09", "2011-01-27"])
-    live = level_factor(days, ["JCI"], yf, genuine_splits(actions, yf))["JCI"]
-    right = level_factor(days, ["JCI"], yf, _tyco_genuine_events())["JCI"]
-    print("\n=== SANITY CHECK: S(d) with old JCI's split actions ===")
-    print(pd.DataFrame({"live_actions": live, "tyco_actions": right, "ratio": live / right}).to_string())
-    assert (live / right).tolist() == pytest.approx([1 / 6, 1 / 3, 1.0])
-    print("  OK (pinned defect): old JCI's 2004 and 2007-10 splits divide S by 6 and 3 before 2007-10-03; the cube reads TYC's actions instead.")
 
 
 def test_the_gap_check_compares_the_sec_history_with_the_swapped_vendor_series(tmp_path: Path) -> None:

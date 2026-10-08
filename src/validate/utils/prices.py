@@ -245,7 +245,7 @@ def _level_factor_for(context: Context, panel: pd.DataFrame, where: dict | None)
     """
     yf_splits = context.store.load(Tables.prices_splits, columns=["ticker", "date", "ratio"], where=where, optional=True)
     tickers = sorted(panel["ticker"].astype(str).unique())
-    actions = level_actions(context, tickers, where)
+    actions = level_actions(context, tickers)
     idx = pd.DatetimeIndex(sorted(panel["date"].dropna().unique()), name="date")
     if idx.empty:
         return pd.Series(1.0, index=panel.index)

@@ -33,12 +33,12 @@ from src.data_extract.utils.common.registrant import FORM_POLICY, Combine  # noq
 from src.data_extract.utils.common.security_master import squash  # noqa: E402
 from src.data_extract.utils.common.symbol_tenure import normalise_market_symbol  # noqa: E402
 from src.data_extract.utils.fundamentals.build_history import keep_window_owner_filings  # noqa: E402
-from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import load_predecessor_series  # noqa: E402
 from src.data_extract.utils.fundamentals_sharadar.field_map import load_field_map  # noqa: E402
 from src.data_extract.utils.institutionals.fetch_short_interest import finra_key  # noqa: E402
 from src.data_extract.utils.institutionals.security_tape import SUMMED_ROLES  # noqa: E402
 from src.data_store.schema import Tables  # noqa: E402
 from src.utils.filer_tables import PURGE_TABLES, FilerTable  # noqa: E402
+from src.utils.predecessor_series import load_predecessor_series  # noqa: E402
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series, yahoo_symbol  # noqa: E402
 from src.utils.universe import load_universe_tickers  # noqa: E402
 
@@ -154,7 +154,8 @@ REASONS = frozenset(
 )
 #: Reasons no rule computes: a hypothesis names their rows (by date or CUSIP) and the gate takes its word.
 DECLARED_REASONS = frozenset({"other_issuer_line", "traded_security_realignment"})
-HYPOTHESIS_KINDS = frozenset({"filing_lineage", "market_tape", "insider"})
+#: Each hypothesis kind and the gate section whose rows it explains.
+HYPOTHESIS_KINDS = {"filing_lineage": "filing", "market_tape": "tape", "insider": "insider"}
 
 
 def _text(values: pd.Series) -> pd.Series:
@@ -1251,8 +1252,7 @@ def run_diff(
         frames["merged"] = _merged_section(context, snap_dir, scope)
     if "prices" in sections:
         frames["prices"] = _prices_section(store, snap_dir, master, scope)
-    computed = {"filing_lineage": "filing", "market_tape": "tape", "insider": "insider"}
-    listed = [h for h in load_hypotheses(config_dir) if computed[h["kind"]] in frames]
+    listed = [h for h in load_hypotheses(config_dir) if HYPOTHESIS_KINDS[h["kind"]] in frames]
     outside = {h["id"] for h in listed if scope is not None and not set(h.get("tickers") or ()) <= set(scope)}
     hypotheses = check_hypotheses(
         listed,

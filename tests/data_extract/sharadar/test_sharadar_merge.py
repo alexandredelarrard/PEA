@@ -25,7 +25,6 @@ from sqlalchemy import inspect
 
 from src.data_extract.utils.fundamentals.kpi_catalogue import HISTORY_PROVENANCE
 from src.data_extract.utils.fundamentals_sharadar.build_ttm import ARQ
-from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import load_predecessor_series
 from src.data_extract.utils.fundamentals_sharadar.field_map import load_field_map
 from src.data_extract.utils.fundamentals_sharadar.gap_check import candidates, measure_gaps
 from src.data_extract.utils.fundamentals_sharadar.merge_history import (
@@ -42,6 +41,7 @@ from src.data_extract.utils.fundamentals_sharadar.merge_history import (
     write_overrides,
 )
 from src.data_store.schema import Tables, name_of
+from src.utils.predecessor_series import load_predecessor_series
 
 CONFIG_DIR = Path("./configs")
 

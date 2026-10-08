@@ -4,7 +4,8 @@ The tickers whose lineage stamp (`entity_lineage.scope_changed_at`) falls inside
 `resume.recently_changed`'s window on the run date are re-checked, on every table; each step is
 idempotent, so a ticker seen on several runs inside the window costs reads only. Contraction: rows
 whose filer CIK is no longer a CIK of the ticker's entity, and 8-K / 13D / 13G rows whose CIK has no
-seam-widened window admitting their date, are deleted, one WARNING per table.
+seam-widened window admitting their date, and consolidating rows (facts, notes, filing text, proxies) whose CIK
+holds no window of the ticker, are deleted, one WARNING per table.
 Expansion: the bulk families re-parse, from their cached zips, the changed tickers whose table holds their
 rows but none from a scope CIK it can hold (EDGAR tables list a new CIK's filings in their own fetchers). The raw
 FTD lines and RegSHO short-volume rows of companies whose `security_master` rows changed recently (for
@@ -42,6 +43,7 @@ from src.utils.filer_tables import (
     judged_cik_mask,
     own_filer_mask,
     removal_records,
+    window_owner_mask,
     windowed_filer_mask,
 )
 from src.utils.string import normalise_ticker, pad_cik
@@ -103,8 +105,9 @@ def _foreign_rows(
     own_ciks: Mapping[str, frozenset[str]],
     own_windows: Mapping[str, Sequence[ListedWindow]],
 ) -> pd.DataFrame:
-    """`tickers`' rows of `spec` whose filer CIK no longer belongs to the ticker's entity, or for a dated table whose CIK
-    has no window admitting the row's date (a CIK with no digit is never judged)."""
+    """`tickers`' rows of `spec` whose filer CIK no longer belongs to the ticker's entity, for a dated table whose CIK
+    has no window admitting the row's date, and for a windowed table whose CIK holds no window of the ticker (a CIK with
+    no digit is never judged)."""
     columns = ["ticker", spec.cik_col, spec.date_col, spec.key_col]
     frames: list[pd.DataFrame] = []
     for start in range(0, len(tickers), _TICKER_CHUNK):
@@ -116,6 +119,8 @@ def _foreign_rows(
         own = own_filer_mask(rows["ticker"], padded, own_ciks)
         if spec.dated:
             own &= windowed_filer_mask(rows["ticker"], padded, rows[spec.date_col], own_windows)
+        if spec.windowed:
+            own &= window_owner_mask(rows["ticker"], padded, own_windows)
         foreign = rows[~own]
         if not foreign.empty:
             frames.append(foreign)

@@ -752,14 +752,18 @@ def facts_frame_from_companyfacts(blob: dict, catalogue: Catalogue) -> pd.DataFr
 
 
 def keep_window_owner_filings(facts: pd.DataFrame, windows: Sequence[CikWindow]) -> pd.DataFrame:
-    """Rule 6: a filing is kept only when its filer CIK's seam-widened window admits its filing date, and rows of a
-    fiscal period reported by several CIKs keep only the CIK whose stated window owns the period end.
+    """Rule 6: a filing is kept only when its filer CIK's seam-widened window admits its filing date (so a CIK with no
+    window, such as an acquired target, contributes nothing), and across a seam rows of a fiscal period reported by
+    several CIKs keep only the CIK whose stated window owns the period end.
 
-    A period no other CIK reports (a margin filing alone in its period) is kept, as is a row with no CIK, date or period.
+    A period no other CIK reports (a margin filing alone in its period) is kept, as is a row with no CIK, date or period;
+    with no window at all the facts are returned unchanged.
     """
-    if len(windows) < 2 or facts.empty or "cik" not in facts.columns:
+    if not windows or facts.empty or "cik" not in facts.columns:
         return facts
     facts = facts[pd.Series(_filed_inside_window(facts, windows), index=facts.index, dtype=bool)]
+    if len(windows) < 2:
+        return facts
     ciks = pad_cik_series(facts["cik"]).tolist()
     periods = [None if pd.isna(day) else pd.Timestamp(day) for day in pd.to_datetime(facts["period_of_report"], errors="coerce")]
     reported = set(zip(periods, ciks, strict=True))

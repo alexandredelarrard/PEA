@@ -3,8 +3,9 @@ and the vendor-series continuity at register cutovers.
 
 Reads only through `context.store`. The pending removals are the ones `identity-propagate` would purge,
 recomputed from the stored rows and the lineage: a filing of any CIK of the entity (margin filings and
-siblings included) is own, an 8-K / 13D / 13G only inside a seam-widened window of its CIK; a null CIK is
-never judged. Foreign rows and invariant breaches fail the check; flags needing a manual decision are information.
+siblings included) is own, an 8-K / 13D / 13G only inside a seam-widened window of its CIK, a consolidating row
+(facts, notes, filing text, proxies) only when its CIK holds a window of the ticker; a null CIK is never judged.
+Foreign rows and invariant breaches fail the check; flags needing a manual decision are information.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from src.utils.filer_tables import (
     judged_cik_mask,
     own_filer_mask,
     removal_records,
+    window_owner_mask,
     windowed_filer_mask,
 )
 from src.utils.identity_flags import FLAG_COLUMNS, KIND_ORDER, MARGIN, cik_activity, identity_flags, log_identity_flags
@@ -127,13 +129,17 @@ def _outside_windows(context: Context, spec: FilerTable, ticker: str, filers: li
 def _foreign_in_table(
     context: Context, spec: FilerTable, tickers: Sequence[str], ciks: dict[str, frozenset[str]], windows: dict[str, tuple[ListedWindow, ...]]
 ) -> list[dict]:
-    """One removal record per (ticker, filer CIK) of `spec` outside the ticker's entity, or outside its windows for a dated table."""
+    """One removal record per (ticker, filer CIK) of `spec` outside the ticker's entity, outside its windows for a dated
+    table, or holding no window of the ticker for a windowed table."""
     records: list[dict] = []
     columns = ["ticker", spec.cik_col, spec.date_col, spec.key_col]
     for ticker in tickers:
         filers = pd.Series(context.store.distinct(spec.table, spec.cik_col, where={"ticker": ticker}), dtype=object)
         padded = filers.map(pad_cik)
-        judged, own = judged_cik_mask(filers), own_filer_mask(pd.Series(ticker, index=filers.index, dtype=object), padded, ciks)
+        tickers_of = pd.Series(ticker, index=filers.index, dtype=object)
+        judged, own = judged_cik_mask(filers), own_filer_mask(tickers_of, padded, ciks)
+        if spec.windowed:
+            own &= window_owner_mask(tickers_of, padded, windows)
         if spec.dated:
             records += _outside_windows(context, spec, ticker, filers[judged & own].tolist(), windows)
         foreign = filers[judged & ~own].tolist()

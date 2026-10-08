@@ -2,8 +2,9 @@
 
 Shared by `identity-propagate` (which purges) and the identity validator (which recomputes the same
 pending removals through the store); a row is foreign when its filer CIK is not a CIK of its ticker's entity
-(`own_filer_mask`), and for a dated table (8-K, 13D/13G) also when no seam-widened window of that CIK
-admits its date (`windowed_filer_mask`).
+(`own_filer_mask`), for a dated table (8-K, 13D/13G) also when no seam-widened window of that CIK
+admits its date (`windowed_filer_mask`), and for a consolidating table also when that CIK holds no window
+of the ticker at all (`window_owner_mask`).
 """
 
 from __future__ import annotations
@@ -27,6 +28,8 @@ class FilerTable:
     """A table whose rows carry the filer CIK: the purge reads `ticker`, `cik_col`, `date_col` and deletes by `key_col`.
 
     `dated`: a row belongs to its ticker only inside a window of its CIK (8-K; 13D/13G by subject company).
+    `windowed`: a row belongs to its ticker only when its CIK holds a window of the ticker, whatever the date (the
+    SPLIT consolidating forms: periodic reports, their notes and text, the proxy family).
     """
 
     table: Table
@@ -34,6 +37,7 @@ class FilerTable:
     date_col: str
     key_col: str
     dated: bool = False
+    windowed: bool = False
 
 
 #: Every stored table that keeps a filer CIK per row. `def14a_llm` and `fundamentals_employees` keep none.
@@ -44,16 +48,16 @@ PURGE_TABLES: tuple[FilerTable, ...] = (
     FilerTable(Tables.sec_13d_transactions, "cik", "filing_date", "accession_number", dated=True),
     FilerTable(Tables.sec_13g, "cik", "filing_date", "accession_number", dated=True),
     FilerTable(Tables.insider_transactions, "issuer_cik", "filing_date", "accession_number"),
-    FilerTable(Tables.fundamentals_facts, "cik", "filing_date", "accession_number"),
-    FilerTable(Tables.filing_risk_text, "cik", "filed", "accession_number"),
-    FilerTable(Tables.def14a_edgar, "cik", "filing_date", "accession_number"),
-    FilerTable(Tables.def14a_directors, "cik", "as_of", "accession_number"),
-    FilerTable(Tables.def14a_executive_comp, "cik", "as_of", "accession_number"),
-    FilerTable(Tables.def14a_director_comp, "cik", "as_of", "accession_number"),
-    FilerTable(Tables.def14a_ownership, "cik", "as_of", "accession_number"),
-    FilerTable(Tables.notes_num, "cik", "filed", "adsh"),
-    FilerTable(Tables.notes_text, "cik", "filed", "adsh"),
-    FilerTable(Tables.pension_facts, "cik", "filed", "adsh"),
+    FilerTable(Tables.fundamentals_facts, "cik", "filing_date", "accession_number", windowed=True),
+    FilerTable(Tables.filing_risk_text, "cik", "filed", "accession_number", windowed=True),
+    FilerTable(Tables.def14a_edgar, "cik", "filing_date", "accession_number", windowed=True),
+    FilerTable(Tables.def14a_directors, "cik", "as_of", "accession_number", windowed=True),
+    FilerTable(Tables.def14a_executive_comp, "cik", "as_of", "accession_number", windowed=True),
+    FilerTable(Tables.def14a_director_comp, "cik", "as_of", "accession_number", windowed=True),
+    FilerTable(Tables.def14a_ownership, "cik", "as_of", "accession_number", windowed=True),
+    FilerTable(Tables.notes_num, "cik", "filed", "adsh", windowed=True),
+    FilerTable(Tables.notes_text, "cik", "filed", "adsh", windowed=True),
+    FilerTable(Tables.pension_facts, "cik", "filed", "adsh", windowed=True),
 )
 PURGE_TABLES_BY_NAME: Mapping[str, FilerTable] = {spec.table.name: spec for spec in PURGE_TABLES}
 
@@ -69,6 +73,17 @@ def own_filer_mask(tickers: pd.Series, ciks: pd.Series, own_ciks: Mapping[str, f
     df_own = pd.DataFrame([(ticker, cik) for ticker, owned in own_ciks.items() for cik in owned], columns=["ticker", "cik"], dtype=object)
     owned = df_keys.merge(df_own.assign(own=True), on=["ticker", "cik"], how="left")["own"].notna()
     return pd.Series(owned.to_numpy(dtype=bool), index=tickers.index, dtype=bool)
+
+
+def window_owner_mask(tickers: pd.Series, ciks: pd.Series, windows: Mapping[str, Sequence[ListedWindow]]) -> pd.Series:
+    """True where a padded filer CIK holds some window of its ticker; a ticker absent from `windows` is not judged (True)."""
+    df_rows = pd.DataFrame({"ticker": tickers.map(normalise_ticker).to_numpy(dtype=object), "cik": ciks.to_numpy(dtype=object)})
+    df_owners = pd.DataFrame(sorted({(t, c) for t, rows in windows.items() for c, _, _ in rows}), columns=["ticker", "cik"], dtype=object).assign(
+        owner=True
+    )
+    owner = df_rows.merge(df_owners, on=["ticker", "cik"], how="left")["owner"].notna()
+    unjudged = ~df_rows["ticker"].isin(list(windows))
+    return pd.Series((owner | unjudged).to_numpy(dtype=bool), index=tickers.index, dtype=bool)
 
 
 def windowed_filer_mask(tickers: pd.Series, ciks: pd.Series, dates: pd.Series, windows: Mapping[str, Sequence[ListedWindow]]) -> pd.Series:

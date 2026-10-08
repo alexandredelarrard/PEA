@@ -262,6 +262,43 @@ def test_the_validator_counts_foreign_rows_and_keeps_margin_filings_as_own(sqlit
     )
 
 
+def test_pending_removals_list_an_event_only_ciks_consolidating_rows(sqlite_store):
+    """H1 (AC-004): TMUS's event-only sibling has no window, so its facts and proxy are pending like its 8-K; TMUS's own
+    rows and REG's predecessor-window facts (outside its window's dates, no date test on a consolidating table) are kept."""
+    _seed_store(sqlite_store, _store_lineage())
+    filings = [("TMUS", "tmus-10q", TMUS, "2024-05-01"), ("TMUS", "tmo-usa-10k", TMO_USA, "2018-02-20"), ("REG", "pred-10k", PRED, "2019-02-01")]
+    facts = pd.DataFrame(
+        [
+            {
+                "ticker": t,
+                "accession_number": a,
+                "field": f,
+                "duration_type": "quarterly",
+                "period_end": pd.Timestamp(d),
+                "cik": c,
+                "filing_date": pd.Timestamp(d),
+            }
+            for t, a, c, d in filings
+            for f in ("totalRevenue", "totalAssets")
+        ]
+    )
+    sqlite_store.save(Tables.fundamentals_facts, facts)
+    sqlite_store.save(
+        Tables.def14a_edgar,
+        pd.DataFrame([{"ticker": t, "accession_number": a, "form": "DEF 14A", "cik": c, "filing_date": pd.Timestamp(d)} for t, a, c, d in filings]),
+    )
+
+    report = check_identity(_context(sqlite_store))
+
+    removals = report.removals[report.removals["ticker"].eq("TMUS")]
+    got = sorted(zip(removals["table"], removals["cik"], removals["keys"], removals["rows"], strict=True))
+    assert got == [("fundamentals_facts", TMO_USA, 1, 2), ("sec_8k", TMO_USA, 1, 2), (Tables.def14a_edgar.name, TMO_USA, 1, 1)], got
+    assert report.removals[report.removals["ticker"].eq("REG")].empty, report.removals
+    print("\n=== SANITY CHECK: validator pending removals, H1 ===")
+    print(removals.to_string(index=False))
+    print("  OK: the event-only CIK's facts and DEF 14A are pending with its 8-K; REG's window-CIK facts are not judged by date")
+
+
 def test_a_clean_lineage_and_clean_tables_pass(sqlite_store):
     lineage = _store_lineage()
     _seed_store(sqlite_store, lineage)

@@ -29,7 +29,6 @@ from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import load_pre
 from src.data_extract.utils.fundamentals_sharadar.field_map import load_field_map
 from src.data_extract.utils.fundamentals_sharadar.gap_check import candidates, measure_gaps
 from src.data_extract.utils.fundamentals_sharadar.merge_history import (
-    EMPLOYEES_COLUMN,
     NON_VALUE_COLUMNS,
     SEC_AS_OF,
     Overrides,
@@ -103,19 +102,17 @@ def context():
 
 @pytest.fixture(scope="module")
 def sources(context, field_map):
-    """The four real inputs, loaded once: Sharadar ARQ, the SEC block, employees, actions."""
+    """The three real inputs, loaded once: Sharadar ARQ, the SEC block, actions."""
     vendor = context.store.load(Tables.sharadar_fundamentals, project=True, where={"dimension": ARQ})
-    sec_owned = [c for c in field_map.sec_owned if c != EMPLOYEES_COLUMN]
-    sec = context.store.load(Tables.fundamentals_history_sec, columns=["ticker", "as_of", *sec_owned])
-    employees = context.store.load(Tables.fundamentals_employees, optional=True)
+    sec = context.store.load(Tables.fundamentals_history_sec, columns=["ticker", "as_of", *field_map.sec_owned])
     actions = context.store.load(Tables.sharadar_actions, project=True, optional=True)
-    return vendor, sec, employees, actions
+    return vendor, sec, actions
 
 
 @pytest.fixture(scope="module")
 def merged(sources, field_map):
-    vendor, sec, employees, actions = sources
-    return build_frame(vendor, sec, employees, actions, field_map, Overrides(approved={}, pending={}))
+    vendor, sec, actions = sources
+    return build_frame(vendor, sec, actions, field_map, Overrides(approved={}, pending={}))
 
 
 @pytest.fixture(scope="module")
@@ -256,12 +253,11 @@ def test_sec_block_joins_at_zero_lag(sources, field_map):
     is not the same event on both sides and `test_as_of_matches_sec` is measuring the wrong
     thing.
     """
-    vendor, sec, employees, actions = sources
+    vendor, sec, actions = sources
     from src.data_extract.utils.fundamentals_sharadar.gap_check import sharadar_history
 
     shar = sharadar_history(vendor, field_map, actions)
-    sec_owned = [c for c in field_map.sec_owned if c != EMPLOYEES_COLUMN]
-    joined = join_sec_block(shar.drop(columns=sec_owned, errors="ignore"), sec)
+    joined = join_sec_block(shar.drop(columns=field_map.sec_owned, errors="ignore"), sec)
     lag = (joined["as_of"] - joined[SEC_AS_OF]).dt.days.dropna()
     print(f"\nSEC block joined on {len(lag)} of {len(joined)} row(s); lag in days: min {lag.min()}, median {lag.median()}, max {lag.max()}")
     print(f"rows carried from an EARLIER SEC filing: {int((lag > 0).sum())}")
@@ -327,8 +323,8 @@ def test_column_contract(merged, field_map):
     # read generated lists, so editing the field map and `schema.py` together satisfies them
     # even when the change was careless. This literal makes a column count change something
     # someone has to type on purpose. Bump it WITH the change, never to make the test pass --
-    # 91 -> 93 was `intangibles` (commit d2ed8a6) plus one sibling.
-    assert len(built) == 93, f"the merged contract is {len(built)}, not 93"
+    # 93 -> 92 is `employees_sec` leaving: the cube reads `fundamentals_employees` directly.
+    assert len(built) == 92, f"the merged contract is {len(built)}, not 92"
     assert tuple(Tables.fundamentals_history.read_columns) == declared, (
         "schema.py's read_columns and the field map state the same contract twice; they differ"
     )
@@ -383,7 +379,7 @@ def test_unapproved_override_is_ignored(sources, field_map, tmp_path):
     human approves in, so if a proposal were live on write, running the proposer would BE the
     approval and the review would be theatre.
     """
-    vendor, sec, employees, actions = sources
+    vendor, sec, actions = sources
     ticker = "AXP"
     (tmp_path / "sharadar").mkdir()
     entry = {"source": "sec", "reason": "test: proposed, not adjudicated", "approved": None}
@@ -392,8 +388,8 @@ def test_unapproved_override_is_ignored(sources, field_map, tmp_path):
     print(f"\napproved {len(loaded.approved)} | awaiting decision {len(loaded.pending)}: {sorted(f'{t}/{f}' for t, f in loaded.pending)}")
     assert not loaded.approved and len(loaded.pending) == 1
 
-    base = build_frame(vendor, sec, employees, actions, field_map, Overrides(approved={}, pending={}))
-    with_pending = build_frame(vendor, sec, employees, actions, field_map, loaded)
+    base = build_frame(vendor, sec, actions, field_map, Overrides(approved={}, pending={}))
+    with_pending = build_frame(vendor, sec, actions, field_map, loaded)
     revenue = base.loc[base["ticker"] == ticker, "totalRevenue"]
     print(f"{ticker} totalRevenue unchanged on {len(revenue)} row(s): {revenue.head(3).round(0).tolist()}")
     pd.testing.assert_frame_equal(base, with_pending)
@@ -405,7 +401,7 @@ def test_approved_override_takes_the_sec_value(context, sources, field_map):
     Also pins the coverage cost D14 accepts -- the override reads from a 54-ticker source, so
     for a ticker outside that roster it yields NULL rather than falling back to Sharadar.
     """
-    vendor, sec, employees, actions = sources
+    vendor, sec, actions = sources
     ticker, field = "AXP", "totalRevenue"
     entry = {"source": "sec", "reason": "test", "approved": "2026-08-26"}
     overrides = Overrides(approved={(ticker, field): entry}, pending={})
@@ -414,7 +410,7 @@ def test_approved_override_takes_the_sec_value(context, sources, field_map):
     # brought must RAISE. Writing a NULL over a real Sharadar value instead would be the
     # override silently doing the opposite of what it says.
     with pytest.raises(RuntimeError, match="the SEC block was not loaded"):
-        build_frame(vendor, sec, employees, actions, field_map, overrides)
+        build_frame(vendor, sec, actions, field_map, overrides)
     print(
         f"\nan override naming a column the SEC projection omitted RAISES rather than NULLing {ticker} {field} -- the two cannot drift apart silently"
     )
@@ -425,8 +421,8 @@ def test_approved_override_takes_the_sec_value(context, sources, field_map):
     wide["as_of"] = pd.to_datetime(wide["as_of"]).astype("datetime64[ns]")
     wide = wide.merge(values.rename(columns={field: f"__sec__{field}"}), on=["ticker", "as_of"], how="left")
 
-    base = build_frame(vendor, sec, employees, actions, field_map, Overrides(approved={}, pending={}))
-    out = build_frame(vendor, wide, employees, actions, field_map, overrides)
+    base = build_frame(vendor, sec, actions, field_map, Overrides(approved={}, pending={}))
+    out = build_frame(vendor, wide, actions, field_map, overrides)
     rows = out["ticker"] == ticker
     moved, before = out.loc[rows, field], base.loc[rows, field]
     print(
@@ -565,17 +561,14 @@ def test_stockholders_equity_incl_nci_is_rederived_at_the_merge(merged, overlap)
     assert np.allclose(filled["stockholdersEquityInclNci"], leg, equal_nan=True)
 
 
-def test_employees_is_forward_filled_from_its_own_table(merged):
-    """Headcount is annual 10-K PROSE and was never on the filing cadence, so it comes from
-    `fundamentals_employees` carried forward -- NOT from `fundamentals_history_sec`, which has
-    no such column at all."""
-    employees = sec_column(EMPLOYEES_COLUMN)
-    filled = merged[merged[employees].notna()]
-    print(f"\n{employees}: {len(filled)} of {len(merged)} row(s), {filled['ticker'].nunique()} ticker(s)")
-    assert not filled.empty
-    per_ticker = filled.groupby("ticker")[employees].nunique()
-    print(f"distinct headcounts per ticker (annual disclosure, quarterly rows): min {per_ticker.min()}, max {per_ticker.max()}")
-    assert (filled.groupby("ticker").size() > per_ticker).any(), "no ticker repeats a headcount -- the annual value is not reaching the interim rows"
+def test_headcount_is_not_in_the_merged_contract(field_map):
+    """Headcount is not a merged column: the cube reads `fundamentals_employees` directly."""
+    declared = Tables.fundamentals_history.read_columns
+    print(f"\nmerged contract: {len(declared)} column(s); SEC-owned: {len(field_map.sec_owned)}")
+    assert "employees" not in field_map.outputs and "employees" not in field_map.sec_owned
+    assert not [c for c in declared if c.startswith("employees")]
+    assert len(merged_columns(field_map)) == 92
+    print("OK: no headcount column in the field map or the merged contract (92 columns)")
 
 
 @pytest.mark.parametrize("ticker", CIK_CUTOVER)
@@ -641,8 +634,8 @@ def test_override_on_a_sec_owned_column_is_refused(sources, field_map):
     decision -- and a silently destructive one, because the SEC projection would rename the
     column out from under the join and the contract assertion would then report it as
     'missing' rather than as what it is."""
-    vendor, sec, employees, actions = sources
+    vendor, sec, actions = sources
     overrides = Overrides(approved={("JPM", "goodwill"): {"source": "sec", "reason": "r", "approved": "x"}}, pending={})
     with pytest.raises(RuntimeError, match="already"):
-        build_frame(vendor, sec, employees, actions, field_map, overrides)
+        build_frame(vendor, sec, actions, field_map, overrides)
     print("\nan override on a SEC-owned column is refused by name, with the reason stated")

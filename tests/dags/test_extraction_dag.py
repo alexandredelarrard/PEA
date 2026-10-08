@@ -119,7 +119,7 @@ IDENTITY_CONSUMERS = {
 #: derived from consumer tables; each must start after its parents.
 DERIVED_PARENTS = {
     "sec_8k_votes": {"sec_8k_items", "def14a"},
-    "fundamentals_sharadar": {"fundamentals", "fundamentals_employees"},
+    "fundamentals_sharadar": {"fundamentals"},
 }
 IDENTITY_INDEPENDENT = {
     "thirteen_f",
@@ -221,7 +221,8 @@ def test_retries_dependencies_and_hard_gates_are_wired():
     assert 'pool_slots=2 if pool == "sec_api" else 1' in source
     assert "thirteen_f >> thirteen_f_backfill" in source  # one EDGAR walk at a time: the backfill follows the nightly walk
     assert 'thirteen_f_backfill = fetch("thirteen-f-backfill", pool="sec_api")' in source
-    assert "[fundamentals, fundamentals_employees] >> fundamentals_sharadar" in source
+    assert "fundamentals >> fundamentals_sharadar" in source
+    assert "fundamentals_employees] >> fundamentals_sharadar" not in source  # the cube reads headcount directly
     assert "[sec_8k_items, def14a] >> sec_8k_votes" in source
     assert "all_fetchers >> extraction_status >> identity_check >> trigger_aggregation" in source
 
@@ -272,6 +273,16 @@ def test_identity_stage_orders_downloads_build_propagation_consumers_and_status(
     print(
         f"  OK: {len(IDENTITY_INDEPENDENT)} non-identity sources run beside the stage; a failed build leaves its consumers unrun, the check still runs"
     )
+
+
+def test_the_sharadar_merge_does_not_wait_for_headcount(monkeypatch):
+    """Headcount is read by the cube from `fundamentals_employees`, so the merged history does not wait for it."""
+    graph, _ = _load_dag_graph(monkeypatch)
+    assert "fundamentals_sharadar" in graph["fundamentals"]
+    assert "fundamentals_sharadar" not in _descendants(graph, "fundamentals_employees"), "the merge still waits for headcount"
+    assert "extraction_status" in graph["fundamentals_employees"]
+    print("\n=== SANITY CHECK: headcount is not a merge input ===")
+    print("  fundamentals -> fundamentals_sharadar; fundamentals_employees -> extraction_status only")
 
 
 def test_price_history_waits_for_the_security_master(monkeypatch):

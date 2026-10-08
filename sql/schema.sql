@@ -438,8 +438,9 @@ CREATE INDEX IF NOT EXISTS ix_fundamentals_history_sec_ticker ON "fundamentals_h
 -- against `fundamentals_history_sec.as_of` on 14 tickers x 5 years it matched 279 of 280
 -- (99.64%), the single miss being a 10-K/A Sharadar has no row for.
 --
--- EXACTLY 91 columns: 3 keys + the 60 HISTORY_STATEMENT_ORDER names +
--- `stockholdersEquityInclNci` + `employees` + `regime` + the 25 Sharadar extras. The list
+-- EXACTLY 92 columns: 3 keys + the 60 HISTORY_STATEMENT_ORDER names +
+-- `stockholdersEquityInclNci` + `regime` + `sharesOutstandingPit` + the 26 Sharadar extras.
+-- Headcount is not here: the cube reads `fundamentals_employees` directly. The list
 -- is declared in `schema.py`'s `read_columns` and asserted by the builder.
 --
 -- NAMING, and it is load-bearing rather than cosmetic:
@@ -453,11 +454,11 @@ CREATE INDEX IF NOT EXISTS ix_fundamentals_history_sec_ticker ON "fundamentals_h
 --     (`cashneq` -> `cashAndEquivalents`, `ncfx` -> `exchangeRateEffect`). The vendor
 --     spelling survives only in `fundamentals_sharadar`, which is the table it belongs to.
 --
--- The 15 SEC-OWNED columns (D18): `goodwill`, `intangiblesExGoodwill`, `ppeGross`,
+-- The 14 SEC-OWNED columns (D18): `goodwill`, `intangiblesExGoodwill`, `ppeGross`,
 -- `accumulatedDepreciation`, `minorityInterest`, `operatingLeaseLiability`,
 -- `financeLeaseLiability`, the 6 regime top-line legs (`premiumsEarned`,
 -- `netInterestIncome`, `noninterestIncome`, `netInvestmentIncome`,
--- `realizedInvestmentGains`, `rentalIncome`), `employees` and `regime`. They carry the SEC
+-- `realizedInvestmentGains`, `rentalIncome`) and `regime`. They carry the SEC
 -- roster's coverage, not Sharadar's, and that ASYMMETRY IS THE DESIGN: a ticker outside the
 -- SEC roster has them NULL rather than falling back, because a per-row fallback is exactly
 -- the mid-series source switch D14 forbids.
@@ -553,11 +554,10 @@ CREATE TABLE IF NOT EXISTS "fundamentals_history" (
     -- other consumer wants `sharesOutstanding` on the vendor basis, where F(d) cancels
     -- against `close_split`.
     "sharesOutstandingPit" DOUBLE PRECISION,
-    -- the roll-up that needs BOTH sources (its NCI leg is SEC-owned), then the two
-    -- SEC-owned added columns. `regime` is the ONE TEXT column among the 88 values.
+    -- the roll-up that needs BOTH sources (its NCI leg is SEC-owned), then the
+    -- SEC-owned added column. `regime` is the ONE TEXT column among the 89 values.
     "optionOverhang" DOUBLE PRECISION,
     "stockholdersEquityInclNci" DOUBLE PRECISION,
-    "employees_sec" DOUBLE PRECISION,
     -- the 26 Sharadar EXTRAS, under their own vendor names (D16: there is nothing to
     -- rename them to). Eight of these revive currently-dead cube inputs.
     "regime_sec" TEXT,

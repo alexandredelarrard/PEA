@@ -499,13 +499,14 @@ class Tables:
     #
     # `read_columns` IS the column contract, declared here rather than only in the builder:
     # 3 keys + the 60 `HISTORY_STATEMENT_ORDER` names + `stockholdersEquityInclNci` +
-    # `employees` + `regime` + the 25 Sharadar extras = 91. `merge_history` asserts its own
+    # `regime` + `sharesOutstandingPit` + the 26 Sharadar extras = 92 (headcount is read from
+    # `fundamentals_employees` directly, not merged here). `merge_history` asserts its own
     # frame against this tuple, so a drift on either side fails the build instead of
     # surfacing as an empty feature -- `pit.fundamentals_to_daily` returns an EMPTY FRAME for
     # a column it cannot find rather than raising, which makes silent column loss invisible
     # all the way to the model.
     #
-    # ⚠ `regime` is the ONE non-float column among the 88 values (a label). Anything casting
+    # ⚠ `regime` is the ONE non-float column among the 89 values (a label). Anything casting
     # "the value columns" must exclude it by NAME, never by a looks-numeric heuristic.
     fundamentals_history = Table(
         "fundamentals_history",
@@ -578,12 +579,11 @@ class Tables:
             "dilutedShares",
             "sharesOutstanding",
             "optionOverhang",
-            # -- the roll-up that needs BOTH sources, then the 2 SEC-owned added columns,
+            # -- the roll-up that needs BOTH sources, then the SEC-owned added column,
             #    then the point-in-time share count (see `_SPLIT_ADJUSTMENT` in
             #    sharadar_field_map.json -- it is the ONLY de-adjusted column, and only
             #    `ic_inst_ownership_pct` and the insider %-of-shares leg may read it)
             "stockholdersEquityInclNci",
-            "employees_sec",
             "regime_sec",
             "sharesOutstandingPit",
             # -- the 26 Sharadar EXTRAS, renamed to repo camelCase. They are keyed by their

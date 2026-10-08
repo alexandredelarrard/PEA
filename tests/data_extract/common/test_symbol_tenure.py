@@ -226,6 +226,20 @@ _SYMBOL_FIELDS: list[tuple[str, tuple[str, ...] | None]] = [
     ("TAP.A, TAP", ("TAP-A", "TAP")),
     ("FCE A/FCE", ("FCE-A", "FCE")),
     ("KVA / KVB", ("KVA", "KVB")),
+    ("MOGA/MOGB", ("MOGA", "MOGB")),
+    ("PETV/PETVW", ("PETV", "PETVW")),
+    ("BDX/26A", ("BDX-26A",)),
+    ("CE /26A", ("CE-26A",)),
+    ("F/26A", ("F-26A",)),
+    ("GS/43PE", ("GS-43PE",)),
+    ("MS/PL", ("MS-PL",)),
+    ("ETI/PR", ("ETI-PR",)),
+    ("SOR/PR", ("SOR-PR",)),
+    ("BFS/PRD", ("BFS-PRD",)),
+    ("BIR/PR.A", ("BIR-PR-A",)),
+    ("CANO/WS", ("CANO-WS",)),
+    ("C/28", ()),
+    ("12/14/18", ()),
     ("FNF, FIS", ("FNF", "FIS")),
     ("L; LMC.B", ("L", "LMC-B")),
     ("ALF A", ("ALF-A",)),
@@ -331,7 +345,8 @@ def test_symbol_fields_normalise_to_roster_spelling():
     print(f"  {len(_SYMBOL_FIELDS)} known-truth fields: {n_lists} multi-symbol lists, {n_placeholders} placeholders, {n_noise} noise")
     print("  '(BBT)'->BBT  '[FB]'->FB  'NYSE: GLW'->GLW  'BFA/BFB'->BFA,BFB  'BRK.B'/'BRK/B'->BRK-B  'BRKB' stays")
     print("  'ALF A'->ALF-A  'N O G'->NOG  'OWL ROCK T'->noise: whitespace never splits a list, so no stray single-letter ticker appears")
-    print("  OK: lists split before the share-class rule; a slash before one letter is a class, not a list")
+    print("  'BDX/26A'->BDX-26A  'MS/PL'->MS-PL  'CANO/WS'->CANO-WS: a series code after a slash is one security, never PL/26A")
+    print("  OK: lists split before the share-class rule; a slash before one letter or a series code is a class, not a list")
 
 
 def test_junk_symbol_fields_derive_clean_tenures(tmp_path):

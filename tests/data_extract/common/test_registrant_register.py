@@ -254,11 +254,10 @@ def test_the_missing_register_file_is_not_an_error(tmp_path):
 
 
 def test_the_approved_governance_cutovers_are_in_the_live_register():
-    """The three accepted governance repairs stay dated, explicit, and reviewable."""
+    """The accepted governance repairs stay dated, explicit, and reviewable; JCI's left with the traded-security view."""
     registrants = load_registrants(CONFIG_DIR)
     expected = {
         "EVRG": (("0000054507", "0001711269"), "2018-06-04"),
-        "JCI": (("0000053669", "0000833444"), "2016-09-02"),
         "PSKY": (("0000813828", "0002041610"), "2025-08-07"),
     }
 
@@ -269,32 +268,32 @@ def test_the_approved_governance_cutovers_are_in_the_live_register():
     print("\n=== SANITY CHECK: approved governance registrant chains ===")
     for ticker, (ciks, boundary) in expected.items():
         print(f"  {ticker}: {' -> '.join(ciks)} at {boundary}")
-    print("  OK: the three evidence-backed chains are exact and dated.")
+    print("  OK: the evidence-backed chains are exact and dated.")
 
 
-def test_the_revision_4_register_decisions_are_in_the_live_register():
-    """P18: MRK, TPL, DOW and PLD are dated chains; the two reverse mergers name their basis, and DD
-    carries the annotations that keep it from being a precedent for them."""
+def test_the_register_follows_the_traded_security():
+    """AC-001: PLD, JCI and DOW have no entry (AMB, Tyco and Dow Inc own their tickers from the sentinel start); DD's
+    predecessor is TDCC, whose prices DD carries before 2017-08-31; MRK and TPL keep their revision-4 chains."""
     registrants = load_registrants(CONFIG_DIR)
     raw = json.loads((Path(CONFIG_DIR) / "sec" / "registrant_cutover.json").read_text(encoding="utf-8"))
-    expected = {
+    kept = {
         "MRK": (("0000064978", "0000310158"), "2009-11-03", "reverse_merger_accounting_predecessor"),
         "TPL": (("0000097517", "0001811074"), "2021-01-11", None),
-        "DOW": (("0000029915", "0001751788"), "2019-04-01", None),
-        "PLD": (("0000899881", "0001045609"), "2011-06-03", "reverse_acquisition_accounting_predecessor"),
+        "DD": (("0000029915", "0001666700"), "2017-08-31", None),
     }
+    absent = ("PLD", "JCI", "DOW")
+    by_cik = {cik: ticker for ticker, reg in registrants.items() for cik in reg.all_ciks()}
 
-    for ticker, (ciks, boundary, basis) in expected.items():
+    print("\n=== SANITY CHECK: register follows the traded security ===")
+    for ticker, (ciks, boundary, basis) in kept.items():
+        print(f"  {ticker}: {' -> '.join(registrants[ticker].all_ciks())} at {[str(b.date()) for b in registrants[ticker].boundaries]}")
         assert registrants[ticker].all_ciks() == ciks, ticker
         assert [str(value.date()) for value in registrants[ticker].boundaries] == [boundary], ticker
         assert raw[ticker].get("basis") == basis, ticker
-        assert all("2026-10-04" in s.evidence for s in registrants[ticker].segments), ticker
-    assert raw["DD"]["lineage_basis"] == "successor_security"
-    assert raw["DD"]["comparability"] == "mixed_pre_separation_businesses"
-    assert registrants["DD"].all_ciks() == ("0000030554", "0001666700")
-
-    print("\n=== SANITY CHECK: revision-4 register decisions (P18) ===")
-    for ticker, (ciks, boundary, basis) in expected.items():
-        print(f"  {ticker}: {' -> '.join(ciks)} at {boundary}  basis={basis}")
-    print("  DD: lineage_basis=successor_security, comparability=mixed_pre_separation_businesses")
-    print("  OK: four new dated chains load; the metadata fields are carried in the file and ignored by the loader.")
+    print(
+        f"  absent: {[t for t in absent if t not in registrants]}; old ProLogis/old JCI/old DuPont in the register: {[c for c in ('0000899881', '0000053669', '0000030554') if c in by_cik]}"
+    )
+    assert not set(absent) & set(registrants)
+    assert not {"0000899881", "0000053669", "0000030554", "0001045609", "0000833444", "0001751788"} & set(by_cik)
+    assert "0001193125-17-274834" in registrants["DD"].segments[0].evidence
+    print("  OK: PLD/JCI/DOW absent, DD = TDCC -> DowDuPont at 2017-08-31 citing 8-K12B 0001193125-17-274834.")

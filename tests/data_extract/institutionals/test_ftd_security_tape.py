@@ -1,8 +1,9 @@
 """FTD per security (Q2b): raw lines stamped from `security_master`, the ticker-grain table rebuilt from them.
 
 The cached-ZIP lines below are real (copied verbatim from the SEC files of the named periods) and so are the
-master rows (the Q2a build over the whole cache) and the lineage rows (the q1 lineage) of the companies they
-pin: P21 (AC-104) and the edge cases E6-E11, E15, E31, E32, AC-106 and AC-108.
+master rows (the Q2a build over the whole cache; PLD and JCI from the traded-security build of 2026-10-07) and the
+lineage rows (the q1 lineage, PLD and JCI realigned) of the companies they pin: P21 (AC-104, AC-003) and the edge
+cases E6-E11, E15, E31, E32, AC-106 and AC-108.
 """
 
 from __future__ import annotations
@@ -132,13 +133,14 @@ MASTER_ROWS = [
     ("589331107", "MRK", "0000064978", "MRK", "common", 1.0, "canonical_predecessor", "2009-06-26", "2009-11-02", "ticker_symbol"),
     ("58933Y105", "MRK", "0000310158", "MRK", "common", 1.0, "canonical_current", "2009-11-02", None, "ticker_symbol"),
     ("806605101", "MRK", "0000310158", "SGP", "common", 1.0, "acquired_constituent", "2009-06-26", "2009-10-31", "outside_window"),
-    ("00163T109", "PLD", "0001045609", "AMB", "common", 1.0, "acquired_constituent", "2009-06-26", "2011-06-01", "outside_window"),
-    ("743410102", "PLD", "0000899881", "PLD", "common", 1.0, "canonical_predecessor", "2009-06-26", "2011-06-01", "ticker_symbol"),
+    ("00163T109", "PLD", "0001045609", "AMB", "common", 1.0, "canonical_current", "2009-06-26", "2011-06-01", "tape_symbol"),
+    ("743410102", "PLD", "0000899881", "PLD", "common", 1.0, "acquired_constituent", "2009-06-26", "2011-06-01", "event_only_cik"),
     ("74340W103", "PLD", "0001045609", "PLD", "common", 1.0, "canonical_current", "2011-06-01", None, "ticker_symbol"),
-    ("478366107", "JCI", "0000053669", "JCI", "common", 1.0, "canonical_predecessor", "2009-06-26", "2016-09-02", "ticker_symbol"),
+    ("478366107", "JCI", "0000053669", "JCI", "common", 1.0, "acquired_constituent", "2009-06-26", "2016-09-02", "event_only_cik"),
     ("G51502105", "JCI", "0000833444", "JCI", "common", 1.0, "canonical_current", "2016-09-02", None, "ticker_symbol"),
     ("G51502105", "JCI", "0000833444", "JCIZZZZ", "common", 1.0, "excluded", "2016-09-01", "2016-09-02", "transition_placeholder"),
-    ("G91442106", "JCI", "0000833444", "TYC", "common", 1.0, "acquired_constituent", "2014-11-13", "2016-09-03", "outside_window"),
+    ("G91442106", "JCI", "0000833444", "TYC", "common", 1.0, "canonical_current", "2014-11-13", "2016-09-02", "tape_symbol"),
+    ("G91442106", "JCI", "0000833444", "TYC", "common", 1.0, "excluded", "2016-09-02", "2016-09-03", "superseded"),
     ("30231G102", "XOM", "0000034088", "XOM", "common", 1.0, "canonical_predecessor", "2009-06-26", "2026-07-02", "manual_boundary"),
     ("30231G102", "XOM", "0000034088", "XOM", "common", 1.0, "canonical_predecessor", "2026-07-02", "2026-07-03", "company_line"),
     ("30233Q108", "XOM", "0002115436", "XOM", "common", 1.0, "canonical_current", "2026-07-03", None, "manual_boundary"),
@@ -177,8 +179,8 @@ LINEAGE_ROWS = [
     ("GM", "0000040730", "symbol", "GM", "2006-01-03", "2009-06-06"),
     ("GM", "0000040730", "symbol", "MTLQQ", "2009-10-23", "2019-06-05"),
     ("GM", "0001467858", "symbol", "GM", "2010-11-24", None),
-    ("JCI", "0000053669", "cik_window", "", None, "2016-09-02"),
-    ("JCI", "0000833444", "cik_window", "", "2016-09-02", None),
+    ("JCI", "0000053669", "cik_event", "", None, None),
+    ("JCI", "0000833444", "cik_window", "", None, None),
     ("JCI", "0000053669", "symbol", "JCI", "2006-01-04", "2016-09-08"),
     ("JCI", "0000833444", "symbol", "JCI", "2016-09-07", None),
     ("JCI", "0000833444", "symbol", "TYC", "2006-01-17", "2016-08-19"),
@@ -192,8 +194,8 @@ LINEAGE_ROWS = [
     ("DOC", "0000765880", "symbol", "DOC", "2024-03-04", None),
     ("DOC", "0000765880", "symbol", "PEAK", "2019-11-05", "2024-03-02"),
     ("DOC", "0001574540", "symbol", "DOC", "2013-07-19", "2024-03-02"),
-    ("PLD", "0000899881", "cik_window", "", None, "2011-06-03"),
-    ("PLD", "0001045609", "cik_window", "", "2011-06-03", None),
+    ("PLD", "0000899881", "cik_event", "", None, None),
+    ("PLD", "0001045609", "cik_window", "", None, None),
     ("PLD", "0000899881", "symbol", "PLD", "2006-01-03", "2011-06-08"),
     ("PLD", "0001045609", "symbol", "AMB", "2006-01-04", "2011-06-04"),
     ("PLD", "0001045609", "symbol", "PLD", "2011-06-07", None),
@@ -357,18 +359,22 @@ def test_ac104_p21_acquired_and_event_only_lines_never_reach_the_canonical_ticke
     assert not any(t == "GM" for t, _ in grain)
     assert _role(security, "62010A105", "2010-01-04") == ("GM", "acquired_constituent")
     assert "370442105" not in set(security["cusip"])
-    # SGP and AMB are acquired constituents of MRK and PLD before their mergers.
+    # SGP is an acquired constituent of MRK before its merger.
     assert grain[("MRK", "2009-11-03")] == 3647.0 and grain[("MRK", "2009-11-04")] == 804174.0 and grain[("MRK", "2009-11-05")] == 373679.0
     assert _role(security, "806605101", "2009-11-03") == ("MRK", "acquired_constituent")
-    assert grain[("PLD", "2011-06-01")] == 2017.0 and grain[("PLD", "2011-06-03")] == 50574.0 and grain[("PLD", "2011-06-06")] == 619884.0
-    assert _role(security, "00163T109", "2011-06-03") == ("PLD", "acquired_constituent")
-    # TYC out of JCI before 2016-09-02.
-    assert grain[("JCI", "2016-08-15")] == 129.0 and grain[("JCI", "2016-09-02")] == 48898.0 and grain[("JCI", "2016-09-07")] == 314448.0
-    assert ("JCI", "2016-09-06") not in grain, "JCIZZZZ placeholder and Tyco only"
-    assert _role(security, "G91442106", "2016-09-07") == ("JCI", "acquired_constituent")
-    print("\n=== SANITY CHECK: AC-104 P21 on real FTD lines ===")
-    print("  CB 2015-06-02 = ACE 293 (old Chubb 2,368 kept raw, acquired); DOC = PEAK only; old GM never counted;")
-    print("  SGP, AMB and Tyco stored as acquired_constituent and out of MRK, PLD and JCI. Validated.")
+    # AC-003: PLD's prices are AMB's, so AMB is canonical before the seam and old ProLogis an acquired target.
+    assert grain[("PLD", "2011-06-01")] == 2147.0 and grain[("PLD", "2011-06-03")] == 6174.0 and grain[("PLD", "2011-06-06")] == 619884.0
+    assert _role(security, "00163T109", "2011-06-03") == ("PLD", "canonical_current")
+    assert _role(security, "743410102", "2011-06-03") == ("PLD", "acquired_constituent")
+    # AC-003: JCI's prices are Tyco's, so Tyco is canonical before 2016-09-02 and old JCI an acquired target.
+    assert grain[("JCI", "2016-08-15")] == 815.0 and grain[("JCI", "2016-09-02")] == 5.0 and grain[("JCI", "2016-09-07")] == 314448.0
+    assert grain[("JCI", "2016-09-06")] == 938.0, "Tyco's last pre-seam trade day; JCIZZZZ is a placeholder"
+    assert _role(security, "478366107", "2016-09-02") == ("JCI", "acquired_constituent")
+    assert _role(security, "G91442106", "2016-09-07")[1] == "excluded", "Tyco's line after the seam is superseded"
+    print("\n=== SANITY CHECK: AC-104 P21 / AC-003 on real FTD lines ===")
+    print("  CB 2015-06-02 = ACE 293 (old Chubb 2,368 kept raw, acquired); DOC = PEAK only; old GM never counted; SGP out of MRK;")
+    print("  PLD 2011-06-01/03 = AMB 2,147 / 6,174 (old ProLogis 2,017 / 50,574 kept raw, acquired);")
+    print("  JCI 2016-08-15/09-02/09-06 = Tyco 815 / 5 / 938 (old JCI 129 / 48,898 kept raw, acquired). Validated.")
 
 
 def test_p21_tape_symbol_resolves_only_through_window_ciks_inside_their_windows():
@@ -385,12 +391,16 @@ def test_p21_tape_symbol_resolves_only_through_window_ciks_inside_their_windows(
     assert tape("PEAK", "2023-01-03") == "DOC"
     assert tape("MTLQQ", "2010-01-04") is None
     assert tape("SGP", "2009-10-01") is None, "window CIK before its window"
-    assert tape("AMB", "2011-05-02") is None
-    assert tape("TYC", "2016-08-15") is None
+    assert tape("AMB", "2011-05-02") == "PLD", "AMB's CIK owns PLD from the sentinel start"
+    assert tape("PLD", "2011-05-02") is None, "old ProLogis: event-only CIK"
+    assert tape("TYC", "2016-08-15") == "JCI", "Tyco's CIK owns JCI from the sentinel start"
     assert tape("MRK", "2009-10-01") == "MRK"
-    assert {"TYC", "MTLQQ"}.isdisjoint(identity.universe_symbols(frozenset(UNIVERSE))), "no day inside a window CIK's window"
+    universe_symbols = identity.universe_symbols(frozenset(UNIVERSE))
+    assert "MTLQQ" not in universe_symbols, "no day inside a window CIK's window"
+    assert {"TYC", "AMB"} <= universe_symbols, "the traded securities' own symbols"
     print("\n=== SANITY CHECK: P21 symbol fallback ===")
-    print("  tape symbols resolve only through the roster CIK or a cik_window CIK inside its window; event-only CIKs never")
+    print("  tape symbols resolve only through the roster CIK or a cik_window CIK inside its window; event-only CIKs never;")
+    print("  AMB and TYC are PLD's and JCI's own pre-seam symbols (traded-security view)")
 
 
 # --------------------------------------------------------------------------- edge cases

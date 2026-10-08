@@ -6,8 +6,6 @@
   ],
   "exceptions": [
     {"ticker": "BKR", "quarter": "2017Q2", "period_end": "2017-06-30", "cik": "0000808362", "accession": "0000808362-17-000034", "filed": "2017-07-28", "label": "Sharadar/source coverage gap; SEC filings present"},
-    {"ticker": "DOW", "quarter": "2018Q1", "period_end": "2018-03-31", "cik": "0000029915", "accession": "0000029915-18-000013", "filed": "2018-05-04", "label": "Sharadar/source coverage gap; SEC filings present"},
-    {"ticker": "DOW", "quarter": "2018Q2", "period_end": "2018-06-30", "cik": "0000029915", "accession": "0000029915-18-000020", "filed": "2018-08-03", "label": "Sharadar/source coverage gap; SEC filings present"},
     {"ticker": "VMC", "quarter": "2006Q1", "period_end": "2006-03-31", "cik": "0000103973", "accession": "0000103973-06-000112", "filed": "2006-04-28", "label": "Sharadar/source coverage gap; SEC filings present"},
     {"ticker": "VMC", "quarter": "2006Q2", "period_end": "2006-06-30", "cik": "0000103973", "accession": "0000103973-06-000197", "filed": "2006-08-01", "label": "Sharadar/source coverage gap; SEC filings present"},
     {"ticker": "VMC", "quarter": "2006Q3", "period_end": "2006-09-30", "cik": "0000103973", "accession": "0000103973-06-000268", "filed": "2006-10-31", "label": "Sharadar/source coverage gap; SEC filings present"}

@@ -3,9 +3,9 @@
 lineage change re-stamps the stored rows in place.
 
 Known-truth fixtures on the real CIKs and seams: Merck / Schering-Plough (2009-11-03, closing
-after the 16:00 close), ProLogis / AMB (2011-06-03), old Chubb (event-only acquired target),
-Digital Realty LP and the PG&E utility (co-registrants). Merger metadata comes from the shipped
-`configs/sec/security_master_manual.json`.
+after the 16:00 close), Prologis = AMB with old ProLogis an acquired target (2011-06-03, the traded-security
+view), old Chubb (event-only acquired target), Digital Realty LP and the PG&E utility (co-registrants).
+Merger metadata comes from the shipped `configs/sec/security_master_manual.json` (MRK only).
 """
 
 from __future__ import annotations
@@ -60,8 +60,9 @@ def _row(ticker: str, cik: str, role: str, start: str = SENTINEL, end: str | Non
     }
 
 
-def _lineage(*, mrk_windows: bool = True, pld_windows: bool = True, stamp: pd.Timestamp = STAMP) -> pd.DataFrame:
-    """The register seams of MRK and PLD (or, unset, the legal acquirer as one open roster window)."""
+def _lineage(*, mrk_windows: bool = True, pld_windows: bool = False, stamp: pd.Timestamp = STAMP) -> pd.DataFrame:
+    """MRK's register seam (or, unset, the legal acquirer as one open roster window). PLD follows the traded security by
+    default (AMB's CIK one open window, old ProLogis event-only); `pld_windows` restores the former accounting register."""
     rows = []
     if mrk_windows:
         rows += [_row("MRK", OLD_MERCK, "cik_window", end="2009-11-03"), _row("MRK", SGP, "cik_window", start="2009-11-03")]
@@ -91,7 +92,11 @@ def _lineage(*, mrk_windows: bool = True, pld_windows: bool = True, stamp: pd.Ti
     return frame
 
 
-def _identity(**kwargs: Any) -> Any:
+#: The former accounting view's PLD boundary day (removed from the shipped config by the traded-security realignment).
+ACCOUNTING_PLD = sm.MergerBoundary("PLD", pd.Timestamp("2011-06-03"), None, AMB, OLD_PROLOGIS, "AMB")
+
+
+def _identity(*, mergers: tuple[sm.MergerBoundary, ...] = (), **kwargs: Any) -> Any:
     tenure = pd.DataFrame(
         [
             {"symbol": t, "issuer_cik": c, "valid_from": pd.Timestamp("2000-01-01"), "valid_to": None, "n_filings": 5, "source": "form345"}
@@ -99,8 +104,8 @@ def _identity(**kwargs: Any) -> Any:
         ]
     )
     roster = pd.DataFrame([{"ticker": t, "cik": c} for t, c in ROSTER.items()])
-    mergers = sm.merger_boundaries(sm.load_security_manual(None))
-    return build_identity(_lineage(**kwargs), tenure, roster, co_registrant_ciks=CO_REGISTRANTS, mergers=mergers)
+    shipped = sm.merger_boundaries(sm.load_security_manual(None))
+    return build_identity(_lineage(**kwargs), tenure, roster, co_registrant_ciks=CO_REGISTRANTS, mergers=(*shipped, *mergers))
 
 
 def _tx(
@@ -187,7 +192,8 @@ def test_economic_date_rules_form3_form45_amendment_and_holdings() -> None:
 
 
 def test_window_roles_predecessor_acquired_and_current() -> None:
-    """MRK and PLD reverse mergers off the boundary day, and E17 (old Chubb, an event-only acquired target)."""
+    """MRK's reverse merger off the boundary day, PLD's traded view (AMB canonical throughout, old ProLogis an acquired
+    target), and E17 (old Chubb, an event-only acquired target)."""
     kept, rejected = _screen(
         [
             _tx("om", OLD_MERCK, "MRK", txn="2009-06-01", filed="2009-06-03"),
@@ -206,20 +212,23 @@ def test_window_roles_predecessor_acquired_and_current() -> None:
         "om": "canonical_predecessor",
         "sgp": "acquired_constituent",
         "new": "canonical_current",
-        "amb": "acquired_constituent",
-        "opld": "canonical_predecessor",
+        "amb": "canonical_current",
+        "opld": "acquired_constituent",
         "pld": "canonical_current",
         "chubb": "acquired_constituent",
         "ace": "canonical_current",
     }
     assert set(kept["ticker"]) == {"MRK", "PLD", "CB"}  # roles never relabel: every row keeps its company
-    print("\nSANITY: a window CIK is canonical inside its declared window and acquired outside it; old Chubb is acquired, never canonical")
+    print(
+        "\nSANITY: a window CIK is canonical inside its declared window and acquired outside it; AMB is PLD's own history; old ProLogis and old Chubb are acquired"
+    )
 
 
 def test_boundary_day_rules_mrk_after_close_and_pld() -> None:
     """E22: on 2009-11-03 (closing after 16:00) a row reporting SGP is acquired; under the legal acquirer
     code A is current, D/J acquired, open-market P/S acquired, other codes follow the window; rows under the
-    accounting predecessor are predecessor. PLD 2011-06-03: an AMB row is acquired, old ProLogis predecessor."""
+    accounting predecessor are predecessor. AC-015 (E3): PLD 2011-06-03 has no merger metadata, so the issuer CIK
+    decides whatever the symbol or code: AMB's CIK is canonical, old ProLogis (which also reported PLD) acquired."""
     day = "2009-11-03"
     kept, _ = _screen(
         [
@@ -232,7 +241,9 @@ def test_boundary_day_rules_mrk_after_close_and_pld() -> None:
             _tx("old_d", OLD_MERCK, "MRK", code="D", txn=day, filed="2009-11-05"),
             _tx("amb_day", AMB, "AMB", code="D", txn="2011-06-03", filed="2011-06-07"),
             _tx("pld_day", AMB, "PLD", code="A", txn="2011-06-03", filed="2011-06-07"),
+            _tx("pld_day_d", AMB, "PLD", code="D", txn="2011-06-03", filed="2011-06-07"),
             _tx("opld_day", OLD_PROLOGIS, "PLD", code="D", txn="2011-06-03", filed="2011-06-07"),
+            _tx("opld_day_a", OLD_PROLOGIS, "PLD", code="A", txn="2011-06-03", filed="2011-06-07"),
         ]
     )
     roles = dict(zip(kept["accession_number"], kept["lineage_role"], strict=True))
@@ -244,18 +255,20 @@ def test_boundary_day_rules_mrk_after_close_and_pld() -> None:
         "s": "acquired_constituent",
         "m": "canonical_current",
         "old_d": "canonical_predecessor",
-        "amb_day": "acquired_constituent",
+        "amb_day": "canonical_current",
         "pld_day": "canonical_current",
-        "opld_day": "canonical_predecessor",
+        "pld_day_d": "canonical_current",
+        "opld_day": "acquired_constituent",
+        "opld_day_a": "acquired_constituent",
     }
     print(
-        "\nSANITY: every boundary-day row is placed by the merger metadata: received under the acquirer counts, surrendered and SGP/AMB rows do not"
+        "\nSANITY: MRK's boundary-day rows follow its merger metadata; PLD's follow the issuer CIK alone (AMB canonical, old ProLogis acquired, even reporting PLD)"
     )
 
 
 def test_amendment_and_late_form5_after_the_seam_keep_the_pre_seam_role() -> None:
     """E19: an SGP 4/A filed after the seam, dated or inheriting its original's date, stays acquired.
-    E20: AMB's Form 5 filed after the seam for a pre-seam transaction stays acquired."""
+    E20: AMB's Form 5 filed after the seam for a pre-seam transaction keeps AMB's role, canonical (PLD's own history)."""
     kept, _ = _screen(
         [
             _tx("orig", SGP, "SGP", txn="2009-10-01", filed="2009-10-05", seq=1),
@@ -269,7 +282,7 @@ def test_amendment_and_late_form5_after_the_seam_keep_the_pre_seam_role() -> Non
         "orig": "acquired_constituent",
         "amend_dated": "acquired_constituent",
         "amend_blank": "acquired_constituent",
-        "f5": "acquired_constituent",
+        "f5": "canonical_current",
     }
     dates = dict(zip(kept["accession_number"], kept["economic_date"], strict=True))
     assert dates["amend_blank"] == pd.Timestamp("2009-10-01")
@@ -394,23 +407,28 @@ def _stored(identity: Any) -> pd.DataFrame:
 
 
 def test_a_lineage_change_restamps_stored_rows_in_place(sqlite_store: Any, tmp_path: Path) -> None:
-    """E31-style: the PLD register window moves AMB's pre-merger rows out of canonical history. The re-stamp reads
-    stored rows only (no ZIP, no EDGAR), so EDGAR-sourced rows change too; an unchanged lineage writes nothing (E32);
-    a co-registrant row stored before D-Q2-1 is purged."""
-    before = _identity(pld_windows=False)
+    """E31-style: removing PLD's accounting register window moves AMB's pre-merger rows into canonical history and old
+    ProLogis's out of it. The re-stamp reads stored rows only (no ZIP, no EDGAR), so EDGAR-sourced rows change too; an
+    unchanged lineage writes nothing (E32); a co-registrant row stored before D-Q2-1 is purged."""
+    before = _identity(pld_windows=True, mergers=(ACCOUNTING_PLD,))
     stored = _stored(before)
-    assert dict(zip(stored["accession_number"], stored["lineage_role"], strict=True))["amb"] == "canonical_current"
+    assert dict(zip(stored["accession_number"], stored["lineage_role"], strict=True)) == {
+        "amb": "acquired_constituent",
+        "pld": "canonical_current",
+        "opld": "canonical_predecessor",
+        "dlr": "canonical_current",
+    }
     lp_row = pd.DataFrame([_tx("lp", DLR_LP, "DLR", txn="2015-06-01", filed="2015-06-03")]).assign(
         ticker="DLR", source="edgar", source_symbol="DLR", economic_date=pd.Timestamp("2015-06-01"), lineage_role="acquired_constituent"
     )
     sqlite_store.save(Tables.insider_transactions, pd.concat([stored, lp_row[[c for c in stored.columns if c in lp_row.columns]]], ignore_index=True))
     context = _context(sqlite_store, tmp_path)
 
-    after = _identity(pld_windows=True)
+    after = _identity()
     records = ins.restamp_insider_lineage(context, list(UNIVERSE), identity=after)
     got = sqlite_store.load(Tables.insider_transactions, columns=["accession_number", "lineage_role", "source"])
     roles = dict(zip(got["accession_number"], got["lineage_role"], strict=True))
-    assert roles == {"amb": "acquired_constituent", "pld": "canonical_current", "opld": "canonical_predecessor", "dlr": "canonical_current"}
+    assert roles == {"amb": "canonical_current", "pld": "canonical_current", "opld": "acquired_constituent", "dlr": "canonical_current"}
     assert [(r["ticker"], r["cik"], r["rows"]) for r in records] == [("DLR", DLR_LP, 1)]
 
     saves: list[int] = []
@@ -420,19 +438,20 @@ def test_a_lineage_change_restamps_stored_rows_in_place(sqlite_store: Any, tmp_p
     sqlite_store.save = original_save
     assert again == [] and saves == []
     print(
-        "\nSANITY: the PLD seam re-stamps AMB's stored EDGAR row to acquired in place, purges the co-registrant row, and a second pass writes nothing"
+        "\nSANITY: the traded view re-stamps AMB's stored EDGAR row to canonical and old ProLogis's to acquired in place, purges the co-registrant row, and a second pass writes nothing"
     )
 
 
 def test_identity_propagate_restamps_insider_rows_of_changed_tickers(sqlite_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The re-stamp is wired into `identity-propagate`: driven by the lineage `scope_changed_at` inside the re-check window."""
-    sqlite_store.save(Tables.insider_transactions, _stored(_identity(pld_windows=False)))
+    sqlite_store.save(Tables.insider_transactions, _stored(_identity(pld_windows=True, mergers=(ACCOUNTING_PLD,))))
     context = _context(sqlite_store, tmp_path)
     monkeypatch.setattr(prop, "_reparse_bulk", lambda *a, **k: {})
-    after = _identity(pld_windows=True, stamp=pd.Timestamp("2026-01-12 09:00"))
+    after = _identity(stamp=pd.Timestamp("2026-01-12 09:00"))
     prop.propagate_identity(context, list(UNIVERSE), identity=after, as_of=pd.Timestamp("2026-01-13"))
     got = sqlite_store.load(Tables.insider_transactions, columns=["accession_number", "lineage_role"])
-    assert dict(zip(got["accession_number"], got["lineage_role"], strict=True))["amb"] == "acquired_constituent"
+    roles = dict(zip(got["accession_number"], got["lineage_role"], strict=True))
+    assert roles["amb"] == "canonical_current" and roles["opld"] == "acquired_constituent"
     print("\nSANITY: identity-propagate re-stamps the stored insider rows of the company whose lineage changed")
 
 
@@ -440,8 +459,8 @@ def test_a_config_edit_restamps_and_purges_on_the_next_propagation_without_a_lin
     sqlite_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """P32: declaring a co-registrant or a merger in the manual config moves no lineage stamp, yet the next
-    propagation re-checks the tickers the config names: the PG&E utility row is purged and AMB's pre-merger row,
-    canonical without the PLD merger entry, becomes acquired."""
+    propagation re-checks the tickers the config names: the PG&E utility row is purged and the boundary-day row
+    reporting SGP, canonical without the MRK merger entry, becomes acquired."""
     tenure = pd.DataFrame(
         [
             {"symbol": t, "issuer_cik": c, "valid_from": pd.Timestamp("2000-01-01"), "valid_to": None, "n_filings": 5, "source": "form345"}
@@ -451,13 +470,13 @@ def test_a_config_edit_restamps_and_purges_on_the_next_propagation_without_a_lin
     roster = pd.DataFrame([{"ticker": t, "cik": c} for t, c in ROSTER.items()])
     before = build_identity(_lineage(), tenure, roster, co_registrant_ciks=(DLR_LP,), mergers=())
     rows = [
-        _tx("amb", AMB, "AMB", txn="2011-05-01", filed="2011-05-03"),
+        _tx("sgp_day", SGP, "SGP", code="A", txn="2009-11-03", filed="2009-11-05"),
         _tx("util", PCG_UTILITY, "PCG", txn="2022-06-01", filed="2022-06-03"),
         _tx("pcg", PCG, "PCG", txn="2022-06-01", filed="2022-06-03"),
     ]
     kept, _ = ic.screen_insider_rows(pd.DataFrame(rows), UNIVERSE, before)
     assert dict(zip(kept["accession_number"], kept["lineage_role"], strict=True)) == {
-        "amb": "canonical_predecessor",
+        "sgp_day": "canonical_current",
         "util": "acquired_constituent",
         "pcg": "canonical_current",
     }
@@ -473,10 +492,10 @@ def test_a_config_edit_restamps_and_purges_on_the_next_propagation_without_a_lin
     print("\n=== SANITY CHECK: config-driven re-stamp (P32) ===")
     print(f"  roles after: {roles}")
     print(result.removals[["table", "ticker", "cik", "rows"]].to_string(index=False))
-    assert roles == {"amb": "acquired_constituent", "pcg": "canonical_current"}
+    assert roles == {"sgp_day": "acquired_constituent", "pcg": "canonical_current"}
     assert [(r.ticker, r.cik, r.rows) for r in result.removals.itertuples()] == [("PCG", PCG_UTILITY, 1)]
     print(
-        "  OK: with no lineage change the propagation re-checks the config-named tickers: the new co-registrant's row is purged, the merger entry re-stamps AMB."
+        "  OK: with no lineage change the propagation re-checks the config-named tickers: the new co-registrant's row is purged, the MRK merger entry re-stamps the SGP row."
     )
 
 

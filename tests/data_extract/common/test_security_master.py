@@ -566,12 +566,14 @@ def test_real_manual_config_is_evidenced_and_holds_the_brk_ratio():
         boundaries.index
     )
     mergers = {entry["ticker"]: entry for entry in manual.mergers}
-    assert mergers["MRK"]["acquired_symbol"] == "SGP" and mergers["PLD"]["acquired_symbol"] == "AMB"
+    assert mergers["MRK"]["acquired_symbol"] == "SGP" and "PLD" not in mergers  # PLD: the CIK window decides (traded view)
+    assert {(x.ticker, x.ratio) for x in manual.exchanges} == {("LIN", 1.0), ("EVRG", 1.0), ("BKR", 1.0), ("STE", 1.0)}
     for frame in (manual.ratios, manual.boundaries):
         assert frame["source"].astype(str).str.len().gt(0).all()
     assert all(entry.get("source") for entry in manual.mergers)
     print("\n=== SANITY CHECK: configs/sec/security_master_manual.json ===")
-    print(f"  BRK-A 30 -> 1,500 at 2010-01-21; {len(manual.boundaries)} market boundaries; MRK/PLD merger metadata; every entry sourced")
+    print(f"  BRK-A 30 -> 1,500 at 2010-01-21; {len(manual.boundaries)} market boundaries; every entry sourced")
+    print("  MRK merger metadata only (PLD's left with the traded-security view); exchange ratios LIN/EVRG/BKR/STE (PLD/DD removed)")
 
 
 def test_vendor_exceptions_and_expected_changes_configs():

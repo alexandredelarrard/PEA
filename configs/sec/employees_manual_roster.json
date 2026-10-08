@@ -1378,10 +1378,6 @@
     {"accession_number": "0000950144-97-010967", "filing_date": "1997-10-16", "form": "10-K/A", "cik": "0000898293", "employees": null, "status": "no_headcount", "source_quote": null, "measurement_period": null, "model": "gpt-6-luna"},
     {"accession_number": "0001193125-23-259599", "filing_date": "2023-10-20", "form": "10-K", "cik": "0000898293", "employees": null, "status": "no_headcount", "source_quote": null, "measurement_period": null, "model": "gpt-6-luna"}
   ],
-  "JCI": [
-    {"accession_number": "0000950124-98-002744", "filing_date": "1998-05-12", "form": "10-K/A", "cik": "0000053669", "employees": null, "status": "no_headcount", "source_quote": null, "measurement_period": null, "model": "gpt-6-luna"},
-    {"accession_number": "0000950134-03-001084", "filing_date": "2003-01-27", "form": "10-K/A", "cik": "0000053669", "employees": null, "status": "no_headcount", "source_quote": null, "measurement_period": null, "model": "gpt-6-luna"}
-  ],
   "JKHY": [
     {"accession_number": "0000779152-97-000015", "filing_date": "1997-10-03", "form": "10-K/A", "cik": "0000779152", "employees": null, "status": "no_headcount", "source_quote": null, "measurement_period": null, "model": "gpt-6-luna"},
     {"accession_number": "0000926236-11-000078", "filing_date": "2011-09-01", "form": "10-K/A", "cik": "0000779152", "employees": null, "status": "no_headcount", "source_quote": null, "measurement_period": null, "model": "gpt-6-luna"}

@@ -277,10 +277,8 @@ def test_the_shipped_config_cites_one_exchange_ratio_per_replaced_window() -> No
     print("\n=== SANITY CHECK: shipped exchange ratios ===")
     for x in exchanges.values():
         print(f"  {x.ticker} {x.predecessor_cik} {x.seam_date.date()} x{x.ratio}")
-    assert set(exchanges) == {"PLD", "DD", "LIN", "EVRG", "BKR", "STE"}
-    assert exchanges["PLD"].ratio == PLD_RATIO and exchanges["DD"].ratio == DD_RATIO
+    assert set(exchanges) == {"LIN", "EVRG", "BKR", "STE"}, "PLD and DD follow their traded security: no replacement, no ratio"
     assert all(exchanges[t].ratio == 1 for t in ("LIN", "EVRG", "BKR", "STE"))
-    assert exchanges["PLD"].predecessor_cik == "0000899881" and exchanges["DD"].predecessor_cik == "0000030554"
     with pytest.raises(sm.SecurityManualError):
         sm.parse_security_manual({"exchange_ratios": [{"ticker": "X", "predecessor_cik": "1", "seam_date": "2020-01-01", "ratio": 2.0}]})
-    print("  OK: six cited entries; PLD 0.4464 and DD 1.282, the four others 1; an entry without a source is refused.")
+    print("  OK: four cited entries, each ratio 1 (PLD/DD removed with the traded-security view); an entry without a source is refused.")

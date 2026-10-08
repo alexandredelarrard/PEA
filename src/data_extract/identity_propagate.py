@@ -89,12 +89,10 @@ def _own_ciks(identity: Identity) -> dict[str, frozenset[str]]:
 
 
 def _own_windows(identity: Identity) -> dict[str, tuple[ListedWindow, ...]]:
-    """`{ticker: (cik, listed_from, listed_to) per seam-widened window}` of every universe entity; a ticker whose
-    event filings are undated (`Identity.undated_event_tickers`) is left out, so its rows are not date-limited."""
+    """`{ticker: (cik, listed_from, listed_to) per seam-widened window}` of every universe entity."""
     return {
         ticker: tuple((window.cik, window.listed_from, window.listed_to) for window in identity.windows_by_entity.get(entity, ()))
         for entity, ticker in identity.ticker_by_entity.items()
-        if ticker not in identity.undated_event_tickers
     }
 
 

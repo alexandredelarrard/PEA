@@ -224,3 +224,13 @@ Append-only audit trail. Add one dated entry per generation or refresh run, reco
 - Pages: [Table catalog](./reference/table-catalog.md), [Data sources](./reference/data-sources.md), [Run the pipeline](./guides/run-the-pipeline.md), [Configuration](./reference/configuration.md), [TODO](./TODO.md)
 - Evidence: `reports/validate/2026-10-02-entity-symbol-lineage/` (`p11-runbook.md`, `plans/02-revision-4-q2.md`, `defects.md`)
 - Operational boundary: the live database keeps the old identity shape until the user-run cutover.
+
+## 2026-10-07: refresh — remaining legacy 13F P1 parser
+
+- Profile: internal/standard
+- source_commit: e1d349d0 (was 2f8f8dad)
+- Coverage: shared legacy numeric/column/page/wrap/cover handling and pre-group source guards; finite historical replay and remaining P1 data boundary
+- Pages: [Data sources](./reference/data-sources.md), [TODO](./TODO.md), [Overview](./OVERVIEW.md)
+- Evidence: local ignored `reports/validate/2026-10-07-superinvestor-legacy-p1/`; exact-source regressions in [test_13f_legacy_fallback.py](../tests/data_extract/institutionals/test_13f_legacy_fallback.py)
+- Operational boundary: 4 source-verified replacement books and 62 proposed NULL-amount books are unapplied. Unsupported sources remain unavailable. Production feature certification abstains without `cube_part_prices`; no database write, cube rebuild, P2 correction, push or PR.
+- Integrated correction source_commit: a2310a580795e282a180f0ce721913164282bb5a; review R-001 proved matching CUSIPs/cover totals can retain wrong positive shares or a PRN note as common stock. Successful text reads now agree with normalized logical source value, amount, instrument type and put/call. The isolated correction is `2de7d42c`; its provenance is preserved in the local Harness merge.

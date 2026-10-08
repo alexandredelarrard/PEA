@@ -20,9 +20,13 @@ from src.data_extract.utils.institutionals.fetch_cusip_map import normalize_cusi
 
 _TABLE = re.compile(r"<TABLE[^>]*>(.*?)</TABLE>", re.I | re.S)
 _CUSIP = re.compile(r"(?<![A-Z0-9])([A-Z0-9]{8,9})(?![A-Z0-9])", re.I)
-_NUMBER = re.compile(r"(?<![A-Z0-9])[-+]?\d[\d,]*(?:\.\d+)?(?![A-Z0-9])", re.I)
+_NUMBER = re.compile(r"(?<![\w.,/])(?P<number>[-+]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)(?P<type>SH|PRN)?(?=\s|$)", re.I)
 _ENTRY_COUNT = re.compile(r"Form\s+13F\s+Information\s+Table\s+Entry\s+Total[ \t]*:?[ \t]*([\d,]+)\b", re.I)
-_VALUE_TOTAL = re.compile(r"Form\s+13F\s+Information\s+Table\s+Value\s+Total(?:\s*x\s*1000)?:\s*\$?\s*([\d,]+(?:\.\d+)?)", re.I)
+_VALUE_TOTAL = re.compile(
+    r"Form\s+13F\s+Information\s+Table\s+Value\s+Total(?:\s*x\s*1000)?:\s*\$?\s*([\d,]+(?:\.\d+)?)"
+    r"(?:\s*(Billion|Million|\(?(?:in\s+)?thousands?\)?|dollars?))?",
+    re.I,
+)
 _FOOTER_TOTAL = re.compile(r"REPORT SUMMARY\s+\d+\s+DATA RECORDS\s+([\d,]+)", re.I)
 
 
@@ -36,22 +40,48 @@ def _valid_cusip(token: str) -> bool:
 
 
 def _source_rows(raw: str) -> list[tuple[str, str, str]]:
-    """`(header, line, pending issuer text)` for every holding line of every `<TABLE>` block."""
+    """Logical holding lines, carrying a layout only across compatible continuation pages."""
     rows: list[tuple[str, str, str]] = []
+    header = ""
+    columns: list[int] = []
     for block in _TABLE.findall(raw):
         lines = block.splitlines()
         headers = [i for i, line in enumerate(lines) if "CUSIP" in line.upper()]
-        if not headers:
-            continue
         markers = [i for i, line in enumerate(lines) if "<S>" in line.upper()]
-        start = max([*markers, *headers]) + 1
-        header = lines[max(headers)]
+        positions = [match.start() for match in re.finditer(r"<[SC]>", lines[markers[0]], re.I)] if markers else []
+        if headers:
+            header = lines[headers[0]]
+            columns = positions
+            start = max(headers[0], markers[0] if markers else 0) + 1
+        elif not header or not positions or positions[:5] != columns[:5]:
+            continue
+        else:
+            start = markers[0] + 1
         pending = ""
-        for line in lines[start:]:
+        i = start
+        while i < len(lines):
+            line = lines[i]
+            i += 1
             upper = line.upper()
+            if "CUSIP" in upper:
+                header = line
+                continue
             if "<" in line or "REPORT SUMMARY" in upper or re.fullmatch(r"[\s\-=._]+", line):
                 continue
+            match = _cusip_match(header, line)
+            # A blank value cell with a populated shares cell may wrap onto the next
+            # physical line. Read only that value column; a warrant date stays in class.
+            if match and len(columns) >= 5 and abs(match.start() - columns[2]) <= 2 and not line[match.end() : columns[4]].strip() and i < len(lines):
+                continuation = lines[i]
+                value = continuation[columns[3] :].strip()
+                if not continuation[: columns[1]].strip() and not continuation[columns[2] : columns[3]].strip() and _NUMBER.fullmatch(value):
+                    fragment = continuation[columns[1] : columns[2]].strip()
+                    prefix = line[: match.start()].rstrip() + (" " + fragment if fragment else "")
+                    line = f"{prefix}  {match.group(1)} {value} {line[match.end() :].lstrip()}"
+                    i += 1
             if len(_NUMBER.findall(line)) < 2:
+                if match:
+                    raise ValueError(f"Unsplit source value/shares: {line[:120]}")
                 if line.strip() and not any(word in upper for word in ("INVSTMT", "DSCRTN", "VOTING", "FORM 13F")):
                     pending = (pending + " " + line.strip()).strip()
                 continue
@@ -61,14 +91,15 @@ def _source_rows(raw: str) -> list[tuple[str, str, str]]:
 
 
 def _cusip_match(header: str, line: str) -> re.Match[str] | None:
-    """The line's CUSIP token: the first valid one in a tabbed table, else the one nearest the header column."""
-    column = header.upper().find("CUSIP")
-    matches = list(_CUSIP.finditer(line.upper()))
-    if "\t" in header:
-        eligible = [match for match in matches if _valid_cusip(normalize_cusip(match.group(1)) or "")]
-        return eligible[0] if eligible else None
-    eligible = [match for match in matches if column - 8 <= match.start() <= column + 12]
-    return min(eligible, key=lambda match: abs(match.start() - column)) if eligible else None
+    """Find the checksum-valid identifier before amounts; header spacing is only a hint."""
+    matches = [match for match in _CUSIP.finditer(line.upper()) if _valid_cusip(normalize_cusip(match.group(1)) or "")]
+    eligible = [match for match in matches if re.search(r"[A-Z]", line[: match.start()], re.I) and _NUMBER.match(line[match.end() :].lstrip())]
+    if not eligible:
+        return None
+    first = eligible[0]
+    if any(match.start() < first.start() for match in matches):
+        raise ValueError(f"Ambiguous source CUSIP: {line[:120]}")
+    return first
 
 
 def _name_and_class(prefix: str) -> tuple[str, str]:
@@ -96,17 +127,24 @@ def _holding(header: str, line: str, pending: str, prior: tuple[str, str, str] |
         if prior is None:
             raise ValueError(f"Continuation without a prior CUSIP: {line[:100]}")
         cusip, issuer, title = prior
-        column = header.upper().find("CUSIP")
-        tail = line if "\t" in line else line[max(column + 6, 0) :]
-    numbers = list(_NUMBER.finditer(tail))
-    if len(numbers) < 2:
-        raise ValueError(f"Unsplit source value/shares for {cusip}: {line[:120]}")
-    first, second = (Decimal(token.group().replace(",", "")) for token in numbers[:2])
+        tail = line.lstrip()
+    numbers = []
+    offset = len(tail) - len(tail.lstrip())
+    for _ in range(2):
+        token = _NUMBER.match(tail, offset)
+        if token is None:
+            raise ValueError(f"Unsplit source value/shares for {cusip}: {line[:120]}")
+        numbers.append(token)
+        offset = token.end() + len(tail[token.end() :]) - len(tail[token.end() :].lstrip())
+    first, second = (Decimal(token.group("number").replace(",", "")) for token in numbers)
     reverse = "SHARES" in header.upper() and "VALUE" in header.upper() and header.upper().find("SHARES") < header.upper().find("VALUE")
     value, amount = (second, first) if reverse else (first, second)
     rest = tail[numbers[1].end() :]
-    amount_type = "PRN" if re.search(r"\b(?:PRN|PRINCIPAL)\b", rest, re.I) else "SH"
+    amount_token = numbers[0] if reverse else numbers[1]
+    amount_type = "PRN" if (amount_token.group("type") or "").upper() == "PRN" or re.search(r"\b(?:PRN|PRINCIPAL)\b", rest, re.I) else "SH"
     option = re.search(r"\b(?:PUT|CALL)\b", rest, re.I)
+    if value < 0 or amount < 0 or value * 1000 > 1e12 or (amount_type == "SH" and option is None and value > 0 and amount == 0):
+        raise ValueError(f"Invalid source amounts for {cusip}: {line[:120]}")
     row = {
         "CUSIP": cusip,
         "NAMEOFISSUER": issuer,
@@ -120,15 +158,18 @@ def _holding(header: str, line: str, pending: str, prior: tuple[str, str, str] |
 
 
 def _value_total_error(raw: str, values_usd: list[Any]) -> str | None:
-    """Why dollar `values_usd` disagree with the stated Summary Page value total ($1000s or
-    dollars), or None when they agree or no total is stated."""
+    """Compare USD to explicit cover magnitude/precision; unlabelled legacy covers are $1000s."""
     summary = _VALUE_TOTAL.search(raw) or _FOOTER_TOTAL.search(raw)
     if summary is None:
         return None
     total = Decimal(summary.group(1).replace(",", ""))
-    parsed = sum((Decimal(str(value)) / 1000 for value in values_usd), Decimal(0))
-    difference = min(abs(parsed - total), abs(parsed * 1000 - total))
-    if difference > max(Decimal(15), total / 100000):
+    unit = (summary.group(2) or "").lower() if summary.re is _VALUE_TOTAL else ""
+    scale = Decimal(10**9 if unit == "billion" else 10**6 if unit == "million" else 1 if unit == "dollars" else 1000)
+    parsed = sum((Decimal(str(value)) for value in values_usd), Decimal(0))
+    tolerance = (
+        scale * Decimal(10) ** total.as_tuple().exponent / 2 if unit in ("billion", "million") else max(Decimal(15000), total * scale / 100000)
+    )
+    if abs(parsed - total * scale) > tolerance:
         return f"Source value total differs materially: {parsed} versus {total}"
     return None
 
@@ -147,31 +188,42 @@ def _check_totals(raw: str, rows: list[dict[str, Any]]) -> None:
 
 def needs_legacy_fallback(raw: str, parsed: pd.DataFrame | None) -> bool:
     """True when EdgarTools' text parse is short, malformed, or off the source: entry count,
-    CUSIP multiset, or (when stated) the Summary Page value total. A clean book is not reparsed."""
+    logical holding facts, or (when stated) the Summary Page value total. A clean book is not reparsed."""
     if parsed is None or parsed.empty:
         return True
     count = _ENTRY_COUNT.search(raw)
     if count is None or len(parsed) != int(count.group(1).replace(",", "")):
         return True
-    column = next((name for name in parsed.columns if name.lower() == "cusip"), None)
+    columns = {name.lower(): name for name in parsed.columns}
+    column = columns.get("cusip")
     if column is None:
         return True
     parsed_cusips = [normalize_cusip(value) for value in parsed[column]]
     if any(not _valid_cusip(value or "") for value in parsed_cusips):
         return True
-    values = next((name for name in parsed.columns if name.lower() == "value"), None)
-    if values is None or _value_total_error(raw, pd.to_numeric(parsed[values], errors="coerce").fillna(0).tolist()):
+    values = columns.get("value")
+    amounts = columns.get("sshprnamt", columns.get("sharesprnamount"))
+    if values is None or amounts is None:
         return True
-    source_cusips = []
-    previous: str | None = None
-    for header, line, _ in _source_rows(raw):
-        match = _cusip_match(header, line)
-        if match:
-            previous = normalize_cusip(match.group(1))
-        if not _valid_cusip(previous or ""):
-            return True
-        source_cusips.append(previous)
-    return Counter(source_cusips) != Counter(parsed_cusips)
+    parsed_values = pd.to_numeric(parsed[values], errors="coerce")
+    if _value_total_error(raw, parsed_values.fillna(0).tolist()):
+        return True
+    parsed_amounts = pd.to_numeric(parsed[amounts], errors="coerce")
+    amount_type = columns.get("sshprnamttype", columns.get("type"))
+    option = columns.get("putcall")
+    parsed_types = parsed[amount_type] if amount_type else pd.Series("", index=parsed.index)
+    parsed_options = parsed[option] if option else pd.Series("", index=parsed.index)
+    parsed_types = parsed_types.astype("string").str.strip().str.upper().fillna("").replace({"": "SH", "SHARES": "SH", "PRINCIPAL": "PRN"})
+    parsed_options = parsed_options.astype("string").str.strip().str.upper().fillna("")
+    source_facts = []
+    prior: tuple[str, str, str] | None = None
+    try:
+        for header, line, pending in _source_rows(raw):
+            row, prior = _holding(header, line, pending, prior)
+            source_facts.append((row["CUSIP"], row["VALUE"], row["SSHPRNAMT"], row["SSHPRNAMTTYPE"], row["PUTCALL"]))
+    except ValueError:
+        return True
+    return Counter(source_facts) != Counter(zip(parsed_cusips, parsed_values, parsed_amounts, parsed_types, parsed_options, strict=True))
 
 
 def parse_legacy_information_table(raw: str) -> pd.DataFrame:

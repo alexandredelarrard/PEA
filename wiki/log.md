@@ -253,3 +253,18 @@ Append-only audit trail. Add one dated entry per generation or refresh run, reco
 - Pages: [Table catalog](./reference/table-catalog.md), [Data sources](./reference/data-sources.md), [Data extraction](./modules/data-extract.md), [Modelling and portfolio](./reference/modelling-and-portfolio.md), [Configuration](./reference/configuration.md), [Run the pipeline](./guides/run-the-pipeline.md), [Large backfills and recovery](./guides/large-backfills-and-recovery.md), [Live database](./reference/live-database.md), [Nightly data refresh](./flows/nightly-data-refresh.md), [DAGs and infrastructure](./modules/dags-and-infrastructure.md), [TODO](./TODO.md)
 - Evidence: `reports/validate/2026-10-07-employee-headcount-coverage/` (`02-plan.md`, `03-implementation.md`)
 - Operational boundary: the live table was recreated and `employees_sec` dropped on 2026-10-07; the universe run and the cube rebuild are user-run after the merge.
+
+## 2026-10-08: refresh — legacy 13F stored-book repair applied
+
+- Profile: internal/standard
+- source_commit: none (database change; no code merged)
+- Coverage: `sec13f_manager_holdings` P1 cleanup after the legacy parser fix: 4 source-verified whole-book replacements (Oaktree `0000949509` 2011-03-31, Pabrai `0001549575` 2012-12-31 and 2013-03-31, Vulcan `0001556785` 2012-09-30) and all-nine-amount NULL in 62 structurally corrupt books
+- Pages: [TODO](./TODO.md), [Run the pipeline](./guides/run-the-pipeline.md)
+- Evidence: local ignored `reports/validate/2026-10-07-superinvestor-legacy-p1/` (`_out/repair_manifest.json`, `_out/apply_repair.sql`, `_scripts/build_apply_sql.py`, table dump `_out/sec13f_manager_holdings_pre_repair_2026-10-08.dump`); the 4 books were re-read live from SEC with the merged parser and matched the manifest's after-rows exactly
+- Operational boundary: user-authorized; live rows matched the manifest before-state (9,416 rows, 0 drift), a rolled-back dry run passed, then one psql transaction committed 162 updates, 1 deletion and 9,162 NULL updates (the 66 books now hold 9,415 rows). No source recovery, cube rebuild or push; `cube_part_prices` and `build-institutionals -F` remain the P2 follow-up.
+- Documentation note: the OpenKnowledge MCP refused these wiki writes on disk ("document path could not be resolved"), so the three pages were edited directly at the user's request.
+
+## 2026-10-08 - 8-K item FutureWarning silenced
+- Change: `fetch_8k_edgar.py` filters edgartools' `CurrentReport[...] found no such item` FutureWarning (absent item = empty text, already handled); test `test_8k_item_absent_from_parsed_body_is_silent_and_empty`.
+- Pages: [Data sources](./reference/data-sources.md)
+- Documentation note: OpenKnowledge refused the disk write, so the pages were edited directly.

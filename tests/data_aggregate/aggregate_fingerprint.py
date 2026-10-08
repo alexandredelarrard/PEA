@@ -124,6 +124,41 @@ def fundamentals() -> pd.DataFrame:
     return df
 
 
+def employee_rows(fund: pd.DataFrame) -> pd.DataFrame:
+    """`fundamentals_employees`-shaped rows read off the frozen slice's `employees_sec` column.
+
+    The slice predates the employee table, so each history row's carried count becomes one
+    employee row filed the same day. By sorted ticker position (no RNG): `% 4 == 0` keeps basis
+    `total`; `% 4 == 1` states it as 80 % full-time plus part-time (`full_part`); `% 4 == 2`
+    switches from `total` to a total with a 70 % full-time count from 2022 (a basis change);
+    `% 4 == 3` adds a status-only row the day after each count, which the features must ignore.
+    """
+    rows = fund.loc[fund["employees_sec"].notna(), ["ticker", "as_of", "employees_sec"]]
+    rows = rows.drop_duplicates(["ticker", "as_of"], keep="last")
+    position = {ticker: i for i, ticker in enumerate(sorted(rows["ticker"].astype(str).unique()))}
+    kind = rows["ticker"].astype(str).map(position).to_numpy() % 4
+    total = rows["employees_sec"].round().astype("int64").to_numpy()
+    as_of = pd.to_datetime(rows["as_of"]).to_numpy()
+    switched = (kind == 2) & (as_of >= np.datetime64("2022-01-01"))
+    full_time = np.where(kind == 1, np.round(0.8 * total), np.where(switched, np.round(0.7 * total), np.nan))
+    part_time = np.where(kind == 1, total - np.round(0.8 * total), np.nan)
+    counts = pd.DataFrame(
+        {
+            "ticker": rows["ticker"].to_numpy(),
+            "as_of": as_of,
+            "employees_total": pd.array(total, dtype="Int64"),
+            "employees_full_time": pd.Series(full_time, dtype="Int64"),
+            "employees_part_time": pd.Series(part_time, dtype="Int64"),
+            "basis": np.where((kind == 1) | switched, "full_part", "total"),
+        }
+    )
+    status_only = counts.loc[kind == 3, ["ticker", "as_of"]].assign(as_of=lambda f: f["as_of"] + pd.Timedelta(days=1))
+    for column in ("employees_total", "employees_full_time", "employees_part_time"):
+        status_only[column] = pd.array([None] * len(status_only), dtype="Int64")
+    status_only["basis"] = None
+    return pd.concat([counts, status_only], ignore_index=True).sort_values(["ticker", "as_of"], kind="stable").reset_index(drop=True)
+
+
 # --------------------------------------------------------------------------- #
 # fixed inputs: seeded synthetic sources                                       #
 # --------------------------------------------------------------------------- #
@@ -836,7 +871,7 @@ def compute() -> dict:
     sp = build_sector_feature_panel(fund, peers, idx)
     out["panel.sector"] = frame_digest(sp)
     out["panel.earnings"] = frame_digest(build_earnings_feature_panel(earn, peers, idx, stock_close=close))
-    out["panel.employee"] = frame_digest(build_employee_feature_panel(fund, peers, idx))
+    out["panel.employee"] = frame_digest(build_employee_feature_panel(fund, employee_rows(fund), peers, idx, part_time_weight=0.5))
     out["panel.dividend"] = frame_digest(build_dividend_feature_panel(div, peers, idx, stock_close=close, fundamentals_history=fund))
     # `exec_comp` and `close_total` are what make the three EXECUTIVE-PAY families exist:
     # without the child table there is no CPS denominator, and without a total-return series no

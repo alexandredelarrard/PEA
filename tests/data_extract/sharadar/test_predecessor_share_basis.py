@@ -19,7 +19,7 @@ import pytest
 
 from src.data_aggregate.utils.common.level_basis import genuine_splits, level_factor
 from src.data_extract.utils.common import security_master as sm
-from src.data_extract.utils.fundamentals_sharadar import fetch_sharadar, merge_history
+from src.data_extract.utils.fundamentals_sharadar import fetch_sharadar, gap_check, merge_history
 from src.data_extract.utils.fundamentals_sharadar.field_map import load_field_map
 from src.data_store.schema import Tables
 from src.utils import cutover_continuity as cc
@@ -445,3 +445,29 @@ def test_old_jci_split_actions_make_the_cube_level_factor_wrong_before_2007_10()
     print(pd.DataFrame({"live_actions": live, "tyco_actions": right, "ratio": live / right}).to_string())
     assert (live / right).tolist() == pytest.approx([1 / 6, 1 / 3, 1.0])
     print("  OK (pinned defect): old JCI's 2004 and 2007-10 splits divide S by 6 and 3 before 2007-10-03; the cube reads TYC's actions instead.")
+
+
+def test_the_gap_check_compares_the_sec_history_with_the_swapped_vendor_series(tmp_path: Path) -> None:
+    """F-008: JCI's SEC history before the seam is Tyco's, so the gap check must read TYC's vendor rows there, as the merge
+    does. Old JCI's own rows are published on Tyco's dates here, so comparing them is a gap on every pre-seam quarter."""
+    store = _jci_store()
+    vendor = store.t[str(Tables.sharadar_fundamentals)]
+    tyc = vendor[vendor["ticker"].eq("TYC")].set_index("calendardate")
+    inside = vendor["ticker"].eq("JCI") & vendor["calendardate"].isin(tyc.index)
+    vendor.loc[inside, "date"] = vendor.loc[inside, "calendardate"].map(tyc["date"])
+    fields = gap_check.comparable_fields(load_field_map(str(REPO_CONFIGS)))
+    # Tyco's SEC rows on Tyco's publication dates, and JCI's own after the seam
+    sec = pd.DataFrame({"ticker": "JCI", "as_of": pd.to_datetime([*tyc.loc[vendor.loc[inside, "calendardate"], "date"], "2017-02-09"])})
+    sec = sec.assign(**{f: float("nan") for f in fields}).assign(sharesOutstanding=[*tyc.loc[vendor.loc[inside, "calendardate"], "sharesbas"], 935e6])
+    store.t[str(Tables.fundamentals_history_sec)] = sec
+    config = SimpleNamespace(data_extract=SimpleNamespace(sharadar_gap_floor={"money": 1e6, "shares": 1e5, "ratio": 0.005}))
+    config_dir = _config(tmp_path, [JCI_EXCHANGE], [JCI_OVERRIDE])
+    context = SimpleNamespace(store=store, log=logging.getLogger(LOGGER), config=config, config_dir=config_dir)
+    gaps = gap_check.measure_gaps(context, ["JCI"], config_dir=config_dir).set_index(["ticker", "field"])
+    shares = gaps.loc[("JCI", "sharesOutstanding")]
+    print("\n=== SANITY CHECK: gap check through the JCI <- TYC vendor series ===")
+    print(gaps[["n_dates", "n_flagged", "median_pct_gap"]].to_string())
+    assert shares["n_dates"] == int(inside.sum()) + 1, "every pre-seam Tyco quarter and the post-seam row are compared"
+    assert shares["n_flagged"] == 0, "old JCI's raw rows were compared with Tyco's SEC history"
+    assert gaps["n_flagged"].sum() == 0
+    print(f"  OK: {int(inside.sum())} pre-seam quarters compared with TYC's rows (0 flagged), the post-seam JCI row with JCI's own.")

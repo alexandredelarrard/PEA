@@ -286,3 +286,12 @@ Append-only audit trail. Add one dated entry per generation or refresh run, reco
 - Pages: [Data sources](./reference/data-sources.md), [TODO](./TODO.md)
 - Evidence: `reports/validate/2026-10-08-dei-symbol-parser/` (offline replay of the 2019+ Notes zips: conflicts 43 → 2, no universe filer loses its own ticker)
 - Operational boundary: no database write; a `notes-download --full` recapture applies it.
+
+## 2026-10-09: refresh — EXE fresh start
+
+- Profile: internal/standard
+- source_commit: branch `harness/exe-fresh-start`
+- Coverage: register kind `fresh_start` dates a ticker's only CIK; the history seam rule also runs for a single filer with a dated start; EXE (Chesapeake, CIK 0000895126) starts at its 2021-02-10 emergence and the old CUSIPs 165167107/165167743 are excluded as cancelled equity (user decision 2026-10-08, like Sharadar)
+- Pages: [Configuration](./reference/configuration.md), [TODO](./TODO.md)
+- Evidence: `reports/validate/2026-10-08-exe-fresh-start/` (offline: lineage and flags change only EXE's window, 481 FINRA rows re-stamp, EXE history 72 → 24 rows from as_of 2021-03-01)
+- Operational boundary: no database write; the next identity and fundamentals-history runs apply it.

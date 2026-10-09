@@ -1073,11 +1073,9 @@ def _build_in_worker(ticker: str, df_facts: pd.DataFrame) -> TickerHistory:
 
 
 def _replay_workers(context: Context) -> int:
-    """The full-replay pool size, `data_extract.fundamentals_workers`; 1 for a context without a config (test doubles)."""
-    config = getattr(context, "config", None)
-    if config is None:
-        return 1
-    return max(int(config.data_extract.fundamentals_workers), 1)
+    """The full-replay pool size, `data_extract.fundamentals_workers`; 1 when a test double's config lacks it."""
+    section = getattr(getattr(context, "config", None), "data_extract", None)
+    return max(int(getattr(section, "fundamentals_workers", 1)), 1)
 
 
 @dataclass

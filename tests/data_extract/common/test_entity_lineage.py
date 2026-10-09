@@ -1073,3 +1073,27 @@ def test_symbol_rows_carry_their_own_change_stamp(tmp_path):
     assert stamps.to_dict() == {("AAA", "cik"): {t1}, ("AAA", "symbol"): {t1}, ("BBB", "cik"): {t1}, ("BBB", "symbol"): {t2}}
     print("\n=== SANITY CHECK: symbol change stamp ===")
     print(f"  BBB gains the BBX symbol interval: its symbol rows -> {t2}, its CIK rows keep {t1}; AAA untouched")
+
+
+def test_a_fresh_start_entry_dates_the_only_cik_window_from_its_valid_from(tmp_path):
+    """A same-CIK bankruptcy emergence (EXE): the lone register segment opens the window at `valid_from`, end open."""
+    register = {
+        "EXE": {
+            "kind": "fresh_start",
+            "segments": [{"cik": "895126", "valid_from": "2021-02-10", "evidence": "plan of reorganisation effective 2021-02-09"}],
+        }
+    }
+    tenure = _tenure([("CHK", "0000895126", "2006-01-05", "2021-02-10", 300), ("EXE", "0000895126", "2021-02-10", None, 40)])
+    build = derive_entity_lineage(tenure, _roster([("EXE", "0000895126")]), _owner_pairs({}), _config(tmp_path, register=register))
+
+    windows = _rows(build, role="cik_window")
+    assert len(windows) == 1
+    (window,) = windows.to_dict("records")
+    assert window["canonical_ticker"] == "EXE" and window["cik"] == "0000895126"
+    assert window["valid_from"] == pd.Timestamp("2021-02-10") and pd.isna(window["valid_to"])
+    assert window["status"] == "curated" and window["oracle"] == "register" and window["sources"] == "register"
+    assert build.backlog[build.backlog["canonical_ticker"].eq("EXE") & build.backlog["kind"].eq("multi_cik_no_window")].empty
+
+    print("\n=== SANITY CHECK: fresh_start register window ===")
+    print(windows[["canonical_ticker", "cik", "valid_from", "valid_to", "status", "oracle", "sources"]].to_string(index=False))
+    print("  OK: the one CIK's window is [2021-02-10, open), curated by the register -- not the 1900-01-01 sentinel")

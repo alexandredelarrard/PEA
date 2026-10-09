@@ -736,3 +736,27 @@ def test_no_live_entity_holds_two_universe_tickers(live):
     print(f"  {len(live.roster_cik)} tickers -> {len(live.ticker_by_entity)} entities, 0 collisions")
     print("  OK: no entity can relabel one universe ticker's rows onto another")
     print("  -> load_identity would have raised before returning if it could.")
+
+
+def test_a_fresh_start_window_admits_filings_from_its_start_and_refuses_earlier_ones():
+    """A lone dated window (a `fresh_start` CIK) has no seam, so it gets no margin: the start is exact."""
+    lineage = _dated_lineage([("E0000895126", "EXE", "0000895126", "cik_window", "", "2021-02-10", None, "curated")])
+    identity = build_identity(
+        lineage=lineage,
+        tenure=_tenure([("EXE", "0000895126", pd.Timestamp("2021-02-10"), None, 10)]),
+        roster=_roster([("EXE", "0000895126")]),
+    )
+    (window,) = identity.filing_scope("EXE").windows
+    assert (window.cik, window.valid_from, window.valid_to) == ("0000895126", pd.Timestamp("2021-02-10"), None)
+    assert (window.listed_from, window.listed_to) == (pd.Timestamp("2021-02-10"), None)
+    verdicts = {day: window.admits(pd.Timestamp(day)) for day in ("2020-11-05", "2021-02-09", "2021-02-10", "2021-03-01")}
+    assert verdicts == {"2020-11-05": False, "2021-02-09": False, "2021-02-10": True, "2021-03-01": True}
+    assert all(window.owns(pd.Timestamp(day)) == admitted for day, admitted in verdicts.items())
+    assert identity.ticker_for_cik("895126", "2021-02-10", "consolidating") == "EXE"
+    assert identity.ticker_for_cik("895126", "2021-02-09", "consolidating") is None
+    assert identity.ticker_for_cik("895126", "2020-11-05", "event") == "EXE"
+
+    print("\n=== SANITY CHECK: fresh_start filing scope ===")
+    print(f"  EXE window {window.cik} declared [{window.valid_from.date()}, open), listed [{window.listed_from.date()}, open)")
+    print(f"  consolidating admits: {verdicts}")
+    print("  OK: filings on/after 2021-02-10 count, earlier ones are refused; a lone window takes no seam margin")

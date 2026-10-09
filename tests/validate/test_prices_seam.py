@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -113,3 +114,86 @@ def test_run_prices_validation_includes_the_seam_invariant(tmp_path: Path, monke
     ok, _ = gate(report)
     assert "unrebased_seam" in names and not ok
     print(f"\nSANITY run_prices_validation reports {names}; the gate blocks on the seam")
+
+
+# --------------------------------------------------------------------------- #
+# small split ratios (spinoff price factors within 10% of 1)                  #
+# --------------------------------------------------------------------------- #
+SMALL = 1.057  # SPGI's 2026-07-01 spinoff factor
+SEAM_DAY = 100
+
+
+def _noisy(sigma: float, seed: int) -> list[float]:
+    """A random walk with daily log-return dispersion `sigma`, starting at 100."""
+    rng = np.random.default_rng(seed)
+    return list(100.0 * np.exp(np.cumsum(rng.normal(0.0, sigma, SESSIONS))))
+
+
+def _series_context(tmp_path: Path, closes: dict[str, list[float]], split_ratio: float, split_ticker: str = "T") -> Any:
+    """Several tickers' closes on `DATES`; one `prices_splits` row for `split_ticker` two days before `SEAM_DAY`."""
+    prices = pd.concat([pd.DataFrame({"ticker": t, "date": DATES, "close_split": c}) for t, c in closes.items()], ignore_index=True)
+    splits = pd.DataFrame({"ticker": [split_ticker], "date": [DATES[SEAM_DAY] - pd.Timedelta(days=2)], "ratio": [split_ratio]})
+    return SimpleNamespace(store=FakeStore({Tables.prices: prices, Tables.prices_splits: splits}), config_dir=str(tmp_path))
+
+
+def _with_step(close: list[float], step: float, at: int = SEAM_DAY) -> list[float]:
+    """`close` with every bar from `at` on multiplied by `step` (a permanent one-bar step)."""
+    return [c * (step if i >= at else 1.0) for i, c in enumerate(close)]
+
+
+def _small_verdict(context: Any, tickers: list[str]) -> Any:
+    return invariant_unrebased_seam(context, tickers=tickers)
+
+
+def test_small_ratio_unrebased_seam_on_a_calm_series_is_flagged(tmp_path: Path) -> None:
+    close = _with_step(_noisy(0.004, seed=1), 1 / SMALL)
+    result = _small_verdict(_series_context(tmp_path, {"T": close}, SMALL), ["T"])
+    assert result.failed == 1 and result.detail[0]["date"] == DATES[SEAM_DAY].strftime("%Y-%m-%d"), result.detail
+    ok, _ = gate(PricesReport(invariants=[result]))
+    assert not ok
+    print(f"\nSANITY ratio {SMALL} with a {1 / SMALL - 1:+.1%} step on a 0.4%-sigma series: flagged {result.detail[0]}, gate blocks")
+
+
+def test_small_ratio_ordinary_move_on_a_volatile_series_is_not_flagged(tmp_path: Path) -> None:
+    close = _with_step(_noisy(0.04, seed=2), 1 / SMALL)
+    result = _small_verdict(_series_context(tmp_path, {"T": close}, SMALL), ["T"])
+    assert result.failed == 0 and not result.detail, result.detail
+    print(f"\nSANITY ratio {SMALL}, the same {1 / SMALL - 1:+.1%} step on a 4%-sigma series: an ordinary day, not flagged")
+
+
+def test_small_ratio_step_against_the_stale_direction_is_not_flagged(tmp_path: Path) -> None:
+    close = _with_step(_noisy(0.004, seed=1), SMALL)
+    result = _small_verdict(_series_context(tmp_path, {"T": close}, SMALL), ["T"])
+    assert result.failed == 0, result.detail
+    print(f"\nSANITY ratio {SMALL} with a {SMALL - 1:+.1%} step: a stale history steps by 1/ratio, so not flagged")
+
+
+def test_tiny_ratio_below_the_noise_floor_is_not_flagged(tmp_path: Path) -> None:
+    tiny = 1.0017  # OXY 2016-02-25
+    close = _with_step([100.0] * SESSIONS, 1 / tiny)
+    result = _small_verdict(_series_context(tmp_path, {"T": close}, tiny), ["T"])
+    assert result.failed == 0, result.detail
+    print(f"\nSANITY ratio {tiny} on a flat series: below the noise floor, not scanned")
+
+
+def test_small_ratio_step_shared_by_the_market_is_not_flagged(tmp_path: Path) -> None:
+    peers = {f"P{i:02d}": _noisy(0.004, seed=10 + i) for i in range(60)}
+    alone = {"T": _with_step(_noisy(0.004, seed=1), 1 / SMALL), **peers}
+    shared = {"T": alone["T"], **{t: _with_step(c, 1 / SMALL) for t, c in peers.items()}}
+    flagged = _small_verdict(_series_context(tmp_path, alone, SMALL), list(alone))
+    market = _small_verdict(_series_context(tmp_path, shared, SMALL), list(shared))
+    assert flagged.failed == 1 and market.failed == 0, (flagged.detail, market.detail)
+    print(f"\nSANITY 61 tickers: T alone steps {1 / SMALL - 1:+.1%} -> flagged; every ticker steps the same day -> market move, not flagged")
+
+
+def test_reviewed_genuine_move_is_declared_without_a_data_repair(tmp_path: Path) -> None:
+    close = _with_step(_noisy(0.004, seed=1), 1 / SMALL)
+    context = _series_context(tmp_path, {"T": close}, SMALL)
+    seam_day = DATES[SEAM_DAY].strftime("%Y-%m-%d")
+    path = tmp_path / "prices" / "yf_price_bugfix.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"_APPROVED": {"by": "test"}, "seam_reviewed": {"T": [{"date": seam_day, "why": "earnings"}]}}), encoding="utf-8")
+    result = _small_verdict(context, ["T"])
+    ok, _ = gate(PricesReport(invariants=[result]))
+    assert len(result.detail) == 1 and result.detail[0]["declared"] and result.failed == 0 and ok, result.detail
+    print(f"\nSANITY {seam_day} listed under seam_reviewed: reported as declared, gate passes")

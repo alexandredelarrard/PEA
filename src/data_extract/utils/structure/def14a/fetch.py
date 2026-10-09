@@ -284,7 +284,7 @@ def fetch_def14a_llm(
     included); a proxy with stored evidence is never re-sent.
     """
     config = with_gpt_overrides(config, "def14a", model=model, max_chars=max_chars, cache=cache)
-    de = context.config.data_extract
+    de = config.data_extract
     cik_map = load_cik_mapping(context, tickers)
     identity = load_identity(context)
     try:

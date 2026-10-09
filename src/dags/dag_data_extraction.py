@@ -51,7 +51,7 @@ default_args = {
     "owner": "pea",
     "depends_on_past": False,
     "retries": 3,
-    "retry_delay": timedelta(minutes=10),
+    "retry_delay": timedelta(minutes=3),
     "email_on_failure": False,
 }
 

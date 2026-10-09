@@ -51,7 +51,7 @@ from src.data_extract.utils.fundamentals.build_history import build_fundamentals
 from src.data_extract.utils.fundamentals.fetch_earnings_surprises import fetch_earnings_surprises
 from src.data_extract.utils.fundamentals.fetch_financial_notes import download_financial_notes, fetch_financial_notes
 from src.data_extract.utils.fundamentals.fetch_financial_statements import fetch_financial_statements
-from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import fetch_fundamentals_sec, fundamentals_fetch
+from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import fetch_fundamentals_sec, fetched_filing_dates, fundamentals_fetch
 from src.data_extract.utils.fundamentals.fundamentals_employees import fetch_fundamentals_employees
 from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import (
     fetch_sharadar_actions,
@@ -98,6 +98,13 @@ AS_OF_OPTION = click.option(
 )
 # The one-time EDGAR backlog run lifts `data_extract.max_documents_per_run`; nightly runs keep it.
 NO_CAP_OPTION = click.option("--no-cap", "no_cap", is_flag=True, default=False, help="Lift the per-run document cap (one-time backlog runs only).")
+VERIFY_HISTORY_OPTION = click.option(
+    "--verify-history",
+    is_flag=True,
+    help="Replay every ticker's fundamentals_history_sec in full and refuse (append-only) if a stored row "
+    "would change, instead of the incremental triage. Writes only new events. Use after a standalone "
+    "`fundamentals-facts -F`.",
+)
 
 
 @click.group(cls=SpecialHelpOrder)
@@ -387,9 +394,10 @@ def fundamentals_employees(config_path: str, tickers: str | None, full: bool) ->
     "rebuild from the facts ALREADY STORED. For a bug in the history layer; "
     "costs no network. (Use `fundamentals --rebuild` for a resolution bug.)",
 )
-def fundamentals_history_sec(config_path: str, tickers: str | None, rebuild_history: bool) -> None:
+@VERIFY_HISTORY_OPTION
+def fundamentals_history_sec(config_path: str, tickers: str | None, rebuild_history: bool, verify_history: bool) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
-    build_fundamentals_history(context, tickers=_tickers(context, tickers), rebuild_history=rebuild_history)
+    build_fundamentals_history(context, tickers=_tickers(context, tickers), rebuild_history=rebuild_history, verify_history=verify_history)
 
 
 def _delete_fundamentals_layers(context: Context, names: list[str]) -> None:
@@ -417,17 +425,28 @@ def _delete_fundamentals_layers(context: Context, names: list[str]) -> None:
     "about. There is no build_version column: the rebuild IS the version.",
 )
 @click.option(*FULL_ARGS, **FULL_KWARGS)
+@VERIFY_HISTORY_OPTION
 @AS_OF_OPTION
 @NO_CAP_OPTION
-def fundamentals(config_path: str, tickers: str | None, rebuild: bool, full: bool, as_of: datetime | None, no_cap: bool) -> None:
+def fundamentals(
+    config_path: str, tickers: str | None, rebuild: bool, full: bool, verify_history: bool, as_of: datetime | None, no_cap: bool
+) -> None:
+    """The fetch hands the filing dates it read to the history triage, so a back-dated read replays that ticker in full."""
     config, context = get_config_context(config_path, use_cache=False, save=False)
     names = _tickers(context, tickers)
     if rebuild:
         _delete_fundamentals_layers(context, names)
-    fetch_fundamentals_sec(
+    summary = fetch_fundamentals_sec(
         context, tickers=names, full=full or rebuild, years_history=int(config.data_extract.years_history), as_of=_run_date(as_of), no_cap=no_cap
     )
-    build_fundamentals_history(context, tickers=names, rebuild_history=rebuild)
+    build_fundamentals_history(
+        context,
+        tickers=names,
+        rebuild_history=rebuild,
+        verify_history=verify_history,
+        fetched=fetched_filing_dates(summary),
+        full_fetch=full or rebuild,
+    )
 
 
 # --- Fundamentals: Sharadar (SF1) ---

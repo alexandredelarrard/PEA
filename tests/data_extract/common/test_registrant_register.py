@@ -25,6 +25,7 @@ import pytest
 
 from src.data_extract.utils.common.registrant import (
     CUTOVER_KINDS,
+    FRESH_START_KIND,
     REGISTRANT_CONFIG_FILENAME,
     REGISTRANT_CONFIG_SUBDIR,
     RENAME_KIND,
@@ -34,7 +35,6 @@ from src.data_extract.utils.common.registrant import (
 )
 
 CONFIG_DIR = "./configs"
-FRESH_START = "fresh_start"  # the register spelling of a same-CIK dated start
 
 
 def _segment_for(reg: Registrant, date: object) -> Segment:
@@ -170,10 +170,10 @@ def test_one_cik_cannot_be_claimed_by_two_tickers(tmp_path):
 def test_a_fresh_start_entry_is_one_dated_segment(tmp_path):
     """A same-CIK fresh start (EXE emerging from bankruptcy) keeps its CIK, so it is one segment
     open at the new end and closed at the old: no seam, and dates before `valid_from` belong to no one."""
-    blob = {"X": _entry(_seg("895126", valid_from="2021-02-10"), kind=FRESH_START)}
+    blob = {"X": _entry(_seg("895126", valid_from="2021-02-10"), kind=FRESH_START_KIND)}
     reg = load_registrants(_write(tmp_path, blob))["X"]
     only = reg.segments[0]
-    assert reg.kind == FRESH_START
+    assert reg.kind == FRESH_START_KIND
     assert len(reg.segments) == 1
     assert only.cik == "0000895126"
     assert only.valid_from == pd.Timestamp("2021-02-10")
@@ -188,12 +188,12 @@ def test_a_fresh_start_entry_is_one_dated_segment(tmp_path):
 @pytest.mark.parametrize(
     ("entry", "match"),
     [
-        (_entry(_seg("1", valid_to="2021-02-10"), _seg("2", valid_from="2021-02-10"), kind=FRESH_START), "exactly 1"),
-        (_entry(_seg("1"), kind=FRESH_START), "requires `valid_from`"),
-        (_entry({"cik": "1", "valid_from": None, "evidence": "e"}, kind=FRESH_START), "requires `valid_from`"),
-        (_entry(_seg("1", valid_from="2021-02-10", valid_to="2024-01-01"), kind=FRESH_START), "must omit `valid_to`"),
-        (_entry(_seg("1", valid_from="2021-02-10", evidence="  "), kind=FRESH_START), "empty `evidence`"),
-        (_entry(_seg("1", valid_from="not-a-date"), kind=FRESH_START), "unparseable date|Unknown datetime string"),
+        (_entry(_seg("1", valid_to="2021-02-10"), _seg("2", valid_from="2021-02-10"), kind=FRESH_START_KIND), "exactly 1"),
+        (_entry(_seg("1"), kind=FRESH_START_KIND), "requires `valid_from`"),
+        (_entry({"cik": "1", "valid_from": None, "evidence": "e"}, kind=FRESH_START_KIND), "requires `valid_from`"),
+        (_entry(_seg("1", valid_from="2021-02-10", valid_to="2024-01-01"), kind=FRESH_START_KIND), "must omit `valid_to`"),
+        (_entry(_seg("1", valid_from="2021-02-10", evidence="  "), kind=FRESH_START_KIND), "empty `evidence`"),
+        (_entry(_seg("1", valid_from="not-a-date"), kind=FRESH_START_KIND), "unparseable date|Unknown datetime string"),
     ],
     ids=["two_segments", "no_valid_from", "null_valid_from", "valid_to_present", "empty_evidence", "bad_date"],
 )
@@ -209,7 +209,7 @@ def test_a_malformed_fresh_start_is_rejected(tmp_path, entry, match):
 def test_a_fresh_start_cik_claimed_by_another_entry_is_rejected(tmp_path):
     """The cross-entry CIK uniqueness rule applies to a fresh start like any cutover chain."""
     blob = {
-        "A": _entry(_seg("9", valid_from="2021-02-10"), kind=FRESH_START),
+        "A": _entry(_seg("9", valid_from="2021-02-10"), kind=FRESH_START_KIND),
         "B": _entry(_seg("9", valid_to="2020-01-01"), _seg("3", valid_from="2020-01-01")),
     }
     with pytest.raises(ValueError, match="claimed by both"):
@@ -288,8 +288,8 @@ def test_the_live_register_declares_only_kinds_that_change_the_cik():
     assert registrants, "the register is empty"
     print("\n=== SANITY CHECK: the live register ===")
     for ticker, reg in sorted(registrants.items()):
-        assert reg.kind in CUTOVER_KINDS | {FRESH_START}, ticker
-        if reg.kind == FRESH_START:
+        assert reg.kind in CUTOVER_KINDS | {FRESH_START_KIND}, ticker
+        if reg.kind == FRESH_START_KIND:
             (segment,) = reg.segments
             assert segment.valid_from is not None and segment.valid_to is None, ticker
         else:
@@ -302,7 +302,7 @@ def test_the_live_register_declares_only_kinds_that_change_the_cik():
             f"{', '.join(str(b.date()) for b in reg.boundaries) or f'from {reg.segments[0].valid_from.date()}'}"
         )
     n_chains = sum(1 for r in registrants.values() if len(r.segments) > 2)
-    n_fresh = sum(1 for r in registrants.values() if r.kind == FRESH_START)
+    n_fresh = sum(1 for r in registrants.values() if r.kind == FRESH_START_KIND)
     print(f"  OK: {len(registrants)} entries, {n_chains} of them chains, {n_fresh} dated fresh start(s); every other kind one that changes the CIK.")
 
 
@@ -310,7 +310,7 @@ def test_exe_is_a_fresh_start_from_its_emergence():
     """EXE keeps Chesapeake's CIK but its filings count from the 2021-02-10 emergence (user decision 2026-10-08)."""
     exe = load_registrants(CONFIG_DIR)["EXE"]
     (segment,) = exe.segments
-    assert exe.kind == FRESH_START and exe.all_ciks() == ("0000895126",)
+    assert exe.kind == FRESH_START_KIND and exe.all_ciks() == ("0000895126",)
     assert segment.valid_from == pd.Timestamp("2021-02-10") and segment.valid_to is None
     assert "0000895126-21-000033" in segment.evidence
     assert not segment.covers("2021-02-09") and segment.covers("2021-02-10")

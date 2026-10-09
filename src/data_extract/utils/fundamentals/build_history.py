@@ -1189,7 +1189,8 @@ def build_fundamentals_history(
     history differs from the stored one. `fetched` (filing dates a same-process fetch read, per ticker) and
     `full_fetch` (that fetch ran with `-F`) route back-dated reads to the full replay. A ticker whose facts come from
     several CIKs, or whose window has a dated start (a `fresh_start` CIK), goes through the seam rule
-    (`keep_window_owner_filings`) on its identity-layer windows; a declared reverse acquisition then drops the pre-seam comparatives of its survivor's post-seam filings.
+    (`keep_window_owner_filings`) on its identity-layer windows; a declared reverse acquisition then drops the pre-seam
+    comparatives of its survivor's post-seam filings.
     Full builds run in a process pool of `data_extract.fundamentals_workers` (in-process for 1 worker or a single
     ticker); the parent reads, guards, saves and logs, in ticker order.
     """

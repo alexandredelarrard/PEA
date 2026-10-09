@@ -49,6 +49,11 @@ class FakeYahoo:
         self.response = response
         self.calls: list[dict[str, Any]] = []
 
+    @property
+    def pulls(self) -> list[dict[str, Any]]:
+        """The `actions=True` downloads: the resume and re-pull calls, not the `actions=False` anchor check."""
+        return [c for c in self.calls if c["actions"]]
+
     def __call__(self, tickers: list[str], start: str, end: str, **kwargs: Any) -> pd.DataFrame:
         self.calls.append({"tickers": list(tickers), "start": start, "end": end} | kwargs)
         rows = (self.response.index >= pd.Timestamp(start)) & (self.response.index < pd.Timestamp(end))
@@ -123,8 +128,8 @@ def test_a_split_after_the_last_bar_re_pulls_that_ticker_only(sqlite_store: Data
 
     fp.fetch_prices_and_actions(_context(sqlite_store), _TICKERS, years_history=1, as_of=pd.Timestamp("2024-06-13"), pause=0.0)
 
-    assert [c["tickers"] for c in yahoo.calls] == [_TICKERS, ["NVDA"]]
-    assert pd.Timestamp(yahoo.calls[1]["start"]) == pd.Timestamp("2023-06-13")
+    assert [c["tickers"] for c in yahoo.pulls] == [_TICKERS, ["NVDA"]]
+    assert pd.Timestamp(yahoo.pulls[1]["start"]) == pd.Timestamp("2023-06-13")
     stored = cast(pd.DataFrame, sqlite_store.load(Tables.prices, where={"date": [pd.Timestamp("2024-05-01")]})).set_index("ticker")["close_split"]
     truth = recorded[recorded["date"] == pd.Timestamp("2024-05-01")].set_index("ticker")["close_split"]
     assert stored["NVDA"] == truth["NVDA"], "NVDA's pre-split bars must be restated"
@@ -143,7 +148,7 @@ def test_a_dividend_after_the_last_bar_re_pulls_that_ticker_and_restates_close_t
 
     fp.fetch_prices_and_actions(_context(sqlite_store), _TICKERS, years_history=1, as_of=pd.Timestamp("2024-06-18"), pause=0.0)
 
-    assert [c["tickers"] for c in yahoo.calls] == [_TICKERS, ["MO", "NVDA"]]
+    assert [c["tickers"] for c in yahoo.pulls] == [_TICKERS, ["MO", "NVDA"]]
     stored = cast(pd.DataFrame, sqlite_store.load(Tables.prices, where={"date": [pd.Timestamp("2024-05-01")]})).set_index("ticker")["close_total"]
     truth = recorded[recorded["date"] == pd.Timestamp("2024-05-01")].set_index("ticker")["close_total"]
     assert stored["MO"] == truth["MO"], "MO's bars before its new ex-date must be restated"
@@ -165,8 +170,8 @@ def test_a_re_pull_starts_at_the_earliest_stored_bar_when_history_predates_the_f
 
     fp.fetch_prices_and_actions(_context(sqlite_store), _TICKERS, years_history=1, as_of=pd.Timestamp("2024-06-18"), pause=0.0)
 
-    assert [c["tickers"] for c in yahoo.calls][1] == ["MO", "NVDA"]
-    assert pd.Timestamp(yahoo.calls[1]["start"]) == pd.Timestamp("2024-05-01")
+    assert [c["tickers"] for c in yahoo.pulls][1] == ["MO", "NVDA"]
+    assert pd.Timestamp(yahoo.pulls[1]["start"]) == pd.Timestamp("2024-05-01")
     print("\n=== SANITY CHECK: re-pull below the floor ===")
     print("  floor 2024-05-15, first stored bar 2024-05-01 -> the post-action re-pull starts 2024-05-01, so no stored bar")
     print("  keeps the stale adjustment basis.")

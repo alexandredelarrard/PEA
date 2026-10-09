@@ -24,6 +24,7 @@ from src.constants.constants import DATE_FORMAT, SECONDARY_CLASS
 from src.context import Context
 from src.data_extract.utils.common.resume import document_floor, series_windows, trading_calendar
 from src.data_extract.utils.common.sessions import last_completed_session
+from src.data_extract.utils.prices.anchor_check import anchor_restated_keys
 from src.data_extract.utils.prices.fetch_dividends import _extract_dividends
 from src.data_extract.utils.prices.fetch_splits import _extract_splits
 from src.data_store.schema import Tables
@@ -176,7 +177,7 @@ def _chunk_response_to_frames(data: pd.DataFrame, chunk: list[str]) -> list[pd.D
             sub = data[tkr].dropna(how="all").reset_index()
             sub["ticker"] = tkr
             frames.append(sub)
-    elif len(chunk) == 1:
+    elif len(chunk) == 1 and not data.empty:
         sub = data.dropna(how="all").reset_index()
         sub["ticker"] = chunk[0]
         frames.append(sub)
@@ -337,7 +338,8 @@ def fetch_prices_and_actions(
     date minus the overlap, holes, new keys in full until their history reaches the floor) and end at the
     last completed session. The companies' current secondary classes (`secondary_class_symbols`) are fetched
     alongside; a class with no stored bar takes the whole window. A key whose response holds a split or a cash
-    dividend after its last stored bar is re-pulled over the whole window before saving."""
+    dividend after its last stored bar, or whose first-year `close_split` disagrees with Yahoo's (`anchor_check`),
+    is re-pulled over the whole window before saving."""
     run_date = pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize()
     until = last_completed_session(as_of)
     calendar = trading_calendar(context)
@@ -361,6 +363,18 @@ def fetch_prices_and_actions(
         logger.info(
             "%d ticker(s) split or went ex-dividend after their last stored bar; re-pulling their whole window: %s", len(repull), ", ".join(repull)
         )
+    if not full:
+        checked = [key for key in prices_work.last if key not in full_keys and key not in repull]
+        anchored = anchor_restated_keys(
+            context,
+            checked,
+            until,
+            lambda keys, since, end: download_ohlcv(
+                keys, since, end, chunk_size, pause, desc="Downloading prices (anchor)", auto_adjust=False, actions=False
+            ),
+        )
+        repull = sorted({*repull, *anchored})
+    if repull:
         df_raw = pd.concat(
             [
                 df_raw[~df_raw["ticker"].isin(repull)],

@@ -190,11 +190,12 @@ def test_a_fresh_start_entry_is_one_dated_segment(tmp_path):
     [
         (_entry(_seg("1", valid_to="2021-02-10"), _seg("2", valid_from="2021-02-10"), kind=FRESH_START), "exactly 1"),
         (_entry(_seg("1"), kind=FRESH_START), "requires `valid_from`"),
+        (_entry({"cik": "1", "valid_from": None, "evidence": "e"}, kind=FRESH_START), "requires `valid_from`"),
         (_entry(_seg("1", valid_from="2021-02-10", valid_to="2024-01-01"), kind=FRESH_START), "must omit `valid_to`"),
         (_entry(_seg("1", valid_from="2021-02-10", evidence="  "), kind=FRESH_START), "empty `evidence`"),
         (_entry(_seg("1", valid_from="not-a-date"), kind=FRESH_START), "unparseable date|Unknown datetime string"),
     ],
-    ids=["two_segments", "no_valid_from", "valid_to_present", "empty_evidence", "bad_date"],
+    ids=["two_segments", "no_valid_from", "null_valid_from", "valid_to_present", "empty_evidence", "bad_date"],
 )
 def test_a_malformed_fresh_start_is_rejected(tmp_path, entry, match):
     """Every way a fresh start can be mis-written raises at load: it must be one evidenced segment with a parseable start."""

@@ -339,6 +339,88 @@ def test_i_a_key_already_re_pulled_by_the_event_rule_is_not_anchor_downloaded(sq
     print("  split after the last bar -> event-rule re-pull; CTVA is absent from every anchor download.")
 
 
+def _unserved_first_year(yahoo: FakeYahoo, served_from: str) -> None:
+    """Yahoo no longer serves any bar of CTVA before `served_from` (the PSKY / WBD shape)."""
+    for ticker, frame in list(yahoo.response.items()):
+        if ticker == "CTVA":
+            yahoo.response[ticker] = frame.loc[frame.index >= pd.Timestamp(served_from)]
+
+
+def _anchor_calls_naming(yahoo: FakeYahoo, ticker: str) -> list[dict[str, Any]]:
+    return [c for c in yahoo.anchor if ticker in c["tickers"]]
+
+
+def test_j_unserved_first_year_falls_back_to_a_later_served_year_and_re_pulls(sqlite_store: DataStore, yahoo: FakeYahoo) -> None:
+    truth, stale = _stale_ctva("2024-06-03")
+    fresh_ctva = _with_event(truth, "2024-06-03", split=1.0 / _FACTOR)
+    quiet = _bars(150.0)
+    _seed(sqlite_store, yahoo, {"CTVA": stale, "QUIET": quiet}, {"CTVA": fresh_ctva, "QUIET": quiet})
+    _unserved_first_year(yahoo, "2024-01-02")  # 2023 unserved; 2024 served and restated
+
+    _fetch(sqlite_store)
+
+    assert yahoo.repulls("CTVA"), (
+        f"first year unserved, 2024 served and restated: re-pull expected; anchors: {[(c['tickers'], c['start'].date()) for c in yahoo.anchor]}"
+    )
+    assert not yahoo.repulls("QUIET")
+    print("\n=== SANITY CHECK: (j) fallback anchor year ===")
+    print("  2023 not served, 2024 served and restated -> CTVA re-pulled; QUIET untouched.")
+
+
+def test_k_unserved_first_year_with_an_agreeing_later_year_is_silent(
+    sqlite_store: DataStore, yahoo: FakeYahoo, caplog: pytest.LogCaptureFixture
+) -> None:
+    truth = _bars(60.0)
+    quiet = _bars(150.0)
+    _seed(sqlite_store, yahoo, {"CTVA": truth, "QUIET": quiet}, {"CTVA": truth, "QUIET": quiet})
+    _unserved_first_year(yahoo, "2024-01-02")
+
+    with caplog.at_level(logging.WARNING):
+        _fetch(sqlite_store)
+
+    assert len(yahoo.resume) == 1, "the fallback year agrees with storage: no re-pull"
+    assert not [r for r in caplog.records if r.name.endswith("anchor_check") and "CTVA" in r.getMessage() and r.levelno >= logging.WARNING], (
+        "an anchored ticker is not warned about"
+    )
+    print("\n=== SANITY CHECK: (k) fallback agrees ===")
+    print("  2023 not served, 2024 served and equal -> no re-pull, no warning.")
+
+
+def test_l_a_ticker_served_in_no_year_is_named_in_one_warning(sqlite_store: DataStore, yahoo: FakeYahoo, caplog: pytest.LogCaptureFixture) -> None:
+    stale = _rescale(_bars(60.0), "2024-03-01", 1.0 / _FACTOR)
+    quiet = _bars(150.0)
+    _seed(sqlite_store, yahoo, {"CTVA": stale, "QUIET": quiet}, {"CTVA": stale, "QUIET": quiet})
+    _unserved_first_year(yahoo, "2030-01-01")  # nothing of CTVA is served in any year
+    before = _stored(sqlite_store, "CTVA").copy()
+
+    with caplog.at_level(logging.WARNING):
+        _fetch(sqlite_store)
+
+    named = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING and r.name.endswith("anchor_check") and "CTVA" in r.getMessage() and "QUIET" not in r.getMessage()
+    ]
+    assert len(named) == 1, f"exactly one WARNING must name the unanchorable ticker, got {[r.getMessage() for r in caplog.records]}"
+    assert len(yahoo.resume) == 1, "missing data is never evidence: no re-pull"
+    pd.testing.assert_series_equal(_stored(sqlite_store, "CTVA"), before)
+    print("\n=== SANITY CHECK: (l) unanchorable ticker ===")
+    print("  no year served -> one WARNING naming CTVA, no trigger, no crash, storage untouched.")
+
+
+def test_m_a_ticker_served_in_its_first_year_is_downloaded_once(sqlite_store: DataStore, yahoo: FakeYahoo) -> None:
+    truth = _bars(60.0)
+    quiet = _bars(150.0)
+    _seed(sqlite_store, yahoo, {"CTVA": truth, "QUIET": quiet}, {"CTVA": truth, "QUIET": quiet})
+
+    _fetch(sqlite_store)
+
+    assert len(_anchor_calls_naming(yahoo, "CTVA")) == 1, f"served in its first year: one anchor download, got {yahoo.anchor}"
+    assert len(yahoo.anchor) == 1
+    print("\n=== SANITY CHECK: (m) no extra calls ===")
+    print("  both tickers served in 2023 -> exactly one grouped anchor download.")
+
+
 # --- the pure comparison -----------------------------------------------------------------------------------
 
 

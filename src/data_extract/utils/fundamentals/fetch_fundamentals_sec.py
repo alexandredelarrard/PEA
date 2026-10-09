@@ -24,6 +24,7 @@ from src.context import Context
 from src.data_extract.utils.common.edgar_driver import (
     EdgarFetch,
     EdgarScope,
+    FetchSummary,
     FilingStamp,
     run_edgar_fetch,
 )
@@ -642,12 +643,26 @@ def fundamentals_fetch(context: Context, cik_map: pd.DataFrame) -> EdgarFetch:
     )
 
 
+def fetched_filing_dates(summary: FetchSummary) -> dict[str, list[pd.Timestamp]]:
+    """Per ticker, the filing dates of the documents the fetch read (listed minus still missing), oldest first.
+
+    A ticker that read nothing is left out, so the history build treats it as not fetched.
+    """
+    missing = summary.missing
+    out: dict[str, list[pd.Timestamp]] = {}
+    for ticker, df_units in summary.work.units.items():
+        read = df_units[~df_units["accession"].astype(str).isin(missing.get(ticker, []))]
+        if not read.empty:
+            out[ticker] = sorted(pd.Timestamp(day).normalize() for day in read["filed"])
+    return out
+
+
 def fetch_fundamentals_sec(
     context: Context, tickers: list[str], years_history: int, *, full: bool = False, as_of: pd.Timestamp | None = None, no_cap: bool = False
-) -> None:
-    """Fetch the `fundamentals_facts` documents not yet stored for `tickers` (see `run_edgar_fetch`)."""
+) -> FetchSummary:
+    """Fetch the `fundamentals_facts` documents not yet stored for `tickers` (see `run_edgar_fetch`); returns its summary."""
     cik_map = load_cik_mapping(context, tickers)
-    run_edgar_fetch(
+    return run_edgar_fetch(
         context,
         tickers,
         years_history,

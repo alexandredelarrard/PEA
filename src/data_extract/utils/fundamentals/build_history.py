@@ -12,16 +12,19 @@ one filer per fiscal period, the CIK whose stated window owns the period end (`k
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Sequence
+from collections import deque
+from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import Future, ProcessPoolExecutor
 from dataclasses import dataclass
 from typing import Any, cast
 
+import numpy as np
 import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype
 
 from src.context import Context
 from src.data_extract.utils.common.frame_sanitize import pin_dtypes
-from src.data_extract.utils.common.identity import CikWindow, Identity, load_identity
+from src.data_extract.utils.common.identity import CikWindow, load_identity
 from src.data_extract.utils.common.resume import recently_changed
 from src.data_extract.utils.common.security_master import load_security_manual
 from src.data_extract.utils.fundamentals import reason_codes as rc
@@ -287,9 +290,15 @@ def _qualifiers(by_field: dict[str, pd.DataFrame], field: str) -> list[str]:
     rows = by_field.get(field)
     if rows is None:
         return []
-    latest = rows[rows["filing_date"] == rows["filing_date"].max()]
-    found = {str(c) for c in latest["dc_code"].dropna() if str(c) in rc.IS_QUALIFIER}
-    for blob in latest["adjustment"].dropna():
+    filed = rows["filing_date"].to_numpy("datetime64[ns]")
+    known = filed[~np.isnat(filed)]
+    if known.size == 0:
+        return []
+    latest = filed == known.max()
+    codes = rows["dc_code"].to_numpy(dtype=object)[latest]
+    blobs = rows["adjustment"].to_numpy(dtype=object)[latest]
+    found = {str(c) for c in codes[pd.notna(codes)] if str(c) in rc.IS_QUALIFIER}
+    for blob in blobs[pd.notna(blobs)]:
         try:
             parsed = json.loads(blob)
         except (TypeError, ValueError):
@@ -566,12 +575,15 @@ def build_ticker_history(ticker: str, facts, *, catalogue: Catalogue | None = No
     return build_ticker(ticker, facts, catalogue=catalogue, guards=guards).history
 
 
-def build_ticker(ticker: str, facts, *, catalogue: Catalogue | None = None, guards: PeriodGuards | None = None) -> TickerHistory:
+def build_ticker(
+    ticker: str, facts, *, catalogue: Catalogue | None = None, guards: PeriodGuards | None = None, after: pd.Timestamp | None = None
+) -> TickerHistory:
     """`build_ticker_history` plus the dense reason-code side table.
 
     The facts frame is loaded once and sliced in memory; every event rebuilds its whole snapshot from facts with
-    `filing_date <= as_of`, so no-leakage follows from the algorithm. Asserts the 69-column contract, known codes
-    only, and the grain (`_assert_grain`).
+    `filing_date <= as_of`, so no-leakage follows from the algorithm. `after` keeps only the events with
+    `as_of > after`; each snapshot depends on its own prefix only, so those rows equal a full replay's. Asserts the
+    69-column contract, known codes only, and the grain (`_assert_grain`).
     """
     catalogue = catalogue or load_catalogue()
     guards = guards or load_guards()
@@ -579,6 +591,8 @@ def build_ticker(ticker: str, facts, *, catalogue: Catalogue | None = None, guar
     columns = catalogue.history_columns
     assert len(columns) == 69, f"the column contract is {len(columns)}, not 69"
     events = publication_events(frame)
+    if after is not None and not events.empty:
+        events = events[pd.to_datetime(events["as_of"]) > pd.Timestamp(after)].reset_index(drop=True)
     if events.empty:
         return TickerHistory(pd.DataFrame(columns=columns), pd.DataFrame(columns=list(_CODE_COLUMNS)))
 
@@ -904,88 +918,350 @@ def _scope_changed_recently(context: Context, tickers: list[str], as_of: pd.Time
     return frozenset(recently_changed(stamps, as_of))
 
 
-def build_fundamentals_history(context: Context, tickers: list[str], *, rebuild_history: bool = False, as_of: pd.Timestamp | None = None) -> None:
+# ------------------------------------------------------------------------ triage ---
+
+#: Per-ticker history paths chosen by `_history_work`.
+FULL, INCREMENTAL, CHECK, SKIP = "full", "incremental", "check", "skip"
+
+#: The `fundamentals_facts` columns the triage reads: one filing date per row, and whether it is an original.
+_TRIAGE_COLUMNS: tuple[str, ...] = ("ticker", "filing_date", "is_amendment")
+
+
+@dataclass(frozen=True)
+class HistoryWork:
+    """One ticker's history path, its newest stored `as_of`, and its stored event list (`as_of` + provenance)."""
+
+    path: str
+    newest: pd.Timestamp | None = None
+    stored_events: pd.DataFrame | None = None
+
+
+def _stored_events(context: Context, tickers: list[str]) -> dict[str, pd.DataFrame]:
+    """Each ticker's stored `as_of` + provenance rows, sorted by `as_of`; tickers with no history are absent."""
+    if not tickers:
+        return {}
+    stored = context.store.load(
+        Tables.fundamentals_history_sec, columns=["ticker", "as_of", *HISTORY_PROVENANCE], where={"ticker": list(tickers)}, optional=True
+    )
+    if stored is None:
+        return {}
+    stored = stored.assign(as_of=pd.to_datetime(stored["as_of"]).dt.normalize())
+    return {str(ticker): group.drop(columns="ticker").sort_values("as_of").reset_index(drop=True) for ticker, group in stored.groupby("ticker")}
+
+
+def _filing_dates(context: Context, tickers: list[str]) -> dict[str, pd.DataFrame]:
+    """Each ticker's distinct `(filing_date, original)` pairs, streamed so no chunk outlives its reduction."""
+    if not tickers:
+        return {}
+    parts = []
+    for chunk in context.store.iter_load(Tables.fundamentals_facts, columns=list(_TRIAGE_COLUMNS), where={"ticker": list(tickers)}):
+        filed = pd.to_datetime(chunk["filing_date"], errors="coerce").dt.normalize()
+        original = ~chunk["is_amendment"].fillna(False).astype(bool)
+        parts.append(pd.DataFrame({"ticker": chunk["ticker"].astype(str), "filing_date": filed, "original": original}).dropna().drop_duplicates())
+    if not parts:
+        return {}
+    dates = pd.concat(parts, ignore_index=True).drop_duplicates()
+    return {str(ticker): group.drop(columns="ticker") for ticker, group in dates.groupby("ticker")}
+
+
+def _ticker_path(
+    ticker: str, events: pd.DataFrame, filed: pd.DataFrame | None, *, read: Sequence[pd.Timestamp] | None, full_fetch: bool, recent: frozenset[str]
+) -> str:
+    """The path of a ticker with stored history (see `_history_work`)."""
+    newest = pd.Timestamp(events["as_of"].max())
+    if filed is None:
+        return FULL
+    if read is not None and (full_fetch or any(pd.Timestamp(day).normalize() <= newest for day in read)):
+        return FULL
+    stored = set(events["as_of"])
+    upto = filed[filed["filing_date"] <= newest]
+    # An original always publishes, so an unstored original or a stored date with no filing means the past moved.
+    moved = not stored <= set(upto["filing_date"]) or not set(upto.loc[upto["original"], "filing_date"]) <= stored
+    if (filed["filing_date"] > newest).any():
+        return INCREMENTAL
+    return CHECK if moved or ticker in recent else SKIP
+
+
+def _history_work(
+    context: Context,
+    tickers: list[str],
+    *,
+    fetched: Mapping[str, Sequence[pd.Timestamp]] | None = None,
+    full_fetch: bool = False,
+    verify: bool = False,
+    recent: frozenset[str] = frozenset(),
+) -> dict[str, HistoryWork]:
+    """Each ticker's history path, from two narrow reads and before any replay.
+
+    `full`: no stored history, `verify`, a same-process fetch (`fetched`) read a filing dated on or before the newest
+    stored row or read the ticker under `full_fetch`, or no facts. `incremental`: a filing newer than the newest stored
+    row. `check`: lineage-recent (`recent`), or the stored dates and the filing dates disagree up to the newest stored
+    row. `skip`: otherwise. `incremental` and `check` compare the rebuilt event list first (`_incremental_rows`).
+    """
+    stored = _stored_events(context, tickers)
+    if verify:
+        return {t: HistoryWork(FULL, stored[t]["as_of"].max(), stored[t]) if t in stored else HistoryWork(FULL) for t in tickers}
+    dates = _filing_dates(context, sorted(stored))
+    work: dict[str, HistoryWork] = {}
+    for ticker in tickers:
+        events = stored.get(ticker)
+        if events is None:
+            work[ticker] = HistoryWork(FULL)
+            continue
+        read = None if fetched is None else fetched.get(ticker)
+        path = _ticker_path(ticker, events, dates.get(ticker), read=read, full_fetch=full_fetch, recent=recent)
+        work[ticker] = HistoryWork(path, pd.Timestamp(events["as_of"].max()), events)
+    return work
+
+
+def _event_keys(events: pd.DataFrame) -> list[tuple]:
+    """`(as_of, *HISTORY_PROVENANCE)` per event, normalised so stored (DB round-trip) and rebuilt frames compare equal."""
+
+    def text(value: Any) -> str | None:
+        return None if value is None or pd.isna(value) else str(value)
+
+    def day(value: Any) -> pd.Timestamp | None:
+        return None if value is None or pd.isna(value) else pd.Timestamp(value).normalize()
+
+    keys = [
+        (
+            day(row["as_of"]),
+            text(row["publication_form"]),
+            bool(row["is_amendment"]) if pd.notna(row["is_amendment"]) else False,
+            day(row["amended_fiscal_end"]),
+            text(row["amended_fields"]),
+        )
+        for row in events[["as_of", *HISTORY_PROVENANCE]].to_dict("records")
+    ]
+    return sorted(keys, key=lambda key: key[0])
+
+
+def _incremental_rows(ticker: str, df_facts: pd.DataFrame, work: HistoryWork, catalogue: Catalogue, guards: PeriodGuards) -> TickerHistory | None:
+    """Rows of the events after `work.newest` only, or None when the rebuilt event list up to it differs from the stored one."""
+    assert work.newest is not None and work.stored_events is not None
+    events = publication_events(_normalise_facts(df_facts, catalogue))
+    dates = pd.to_datetime(events["as_of"])
+    if _event_keys(events[dates <= work.newest]) != _event_keys(work.stored_events):
+        return None
+    if not (dates > work.newest).any():
+        return TickerHistory(pd.DataFrame(columns=catalogue.history_columns), pd.DataFrame(columns=list(_CODE_COLUMNS)))
+    built = build_ticker(ticker, df_facts, catalogue=catalogue, guards=guards, after=work.newest)
+    # Append-only: never upsert onto a stored row, whatever the build returned.
+    new = pd.to_datetime(built.history["as_of"]) > work.newest
+    return TickerHistory(built.history[new.values], built.reason_codes[pd.to_datetime(built.reason_codes["as_of"]) > work.newest])
+
+
+# ---------------------------------------------------------------------- the build ---
+
+
+def _ticker_facts(context: Context, ticker: str, seams: Mapping[str, pd.Timestamp]) -> pd.DataFrame | None:
+    """The ticker's replay facts with the seam rule and, for a declared reverse acquisition (`seams`), the comparatives
+    rule applied, or None when it has none stored."""
+    df_facts = context.store.load(Tables.fundamentals_facts, columns=list(FACT_COLUMNS), where={"ticker": ticker}, optional=True)
+    if df_facts is None:
+        return df_facts
+    if _filer_count(df_facts) > 1:
+        df_kept = keep_window_owner_filings(df_facts, load_identity(context).filing_scope(ticker).windows)
+        set_aside = sorted(set(df_facts["accession_number"]) - set(df_kept["accession_number"]))
+        if set_aside:
+            context.log.info(
+                "history: %s seam rule set aside %d filing(s) outside the filer's window or of a period its window owner reports: %s",
+                ticker,
+                len(set_aside),
+                ", ".join(set_aside),
+            )
+        df_facts = df_kept
+    if ticker in seams:
+        df_kept = drop_reverse_acquisition_comparatives(df_facts, seams[ticker])
+        dropped = df_facts.loc[~df_facts.index.isin(df_kept.index), "accession_number"].value_counts().sort_index()
+        if not dropped.empty:
+            context.log.info(
+                "history: %s reverse-acquisition rule dropped %d pre-seam comparative fact(s) of %d post-seam filing(s): %s",
+                ticker,
+                int(dropped.sum()),
+                len(dropped),
+                ", ".join(f"{accession} ({count})" for accession, count in dropped.items()),
+            )
+        df_facts = df_kept
+    return df_facts
+
+
+# ------------------------------------------------------------- the replay pool ---
+
+#: Full builds in flight per pool worker; bounds the fact frames and results the parent holds.
+_IN_FLIGHT_PER_WORKER = 2
+
+#: A pool child's catalogue and guards, set once by `_init_replay_worker`.
+_WORKER_STATE: dict[str, Any] = {}
+
+
+def _init_replay_worker(catalogue: Catalogue, guards: PeriodGuards) -> None:
+    """Pool initializer: keep the parent's catalogue and guards for every build in this child."""
+    _WORKER_STATE["catalogue"] = catalogue
+    _WORKER_STATE["guards"] = guards
+
+
+def _build_in_worker(ticker: str, df_facts: pd.DataFrame) -> TickerHistory:
+    """The pure full build of one ticker, run in a pool child (no store, no log)."""
+    return build_ticker(ticker, df_facts, catalogue=_WORKER_STATE["catalogue"], guards=_WORKER_STATE["guards"])
+
+
+def _replay_workers(context: Context) -> int:
+    """The full-replay pool size, `data_extract.fundamentals_workers`; 1 when a test double's config lacks it."""
+    section = getattr(getattr(context, "config", None), "data_extract", None)
+    return max(int(getattr(section, "fundamentals_workers", 1)), 1)
+
+
+@dataclass
+class _Pending:
+    """One non-skipped ticker waiting for its in-order save: a full build (future or done), or incremental rows."""
+
+    ticker: str
+    full: Future[TickerHistory] | TickerHistory | None = None
+    rows: TickerHistory | None = None
+    no_facts: bool = False
+
+
+def _full_rows(
+    context: Context,
+    ticker: str,
+    built: TickerHistory,
+    *,
+    rebuild_history: bool,
+    rebuild: frozenset[str],
+    catalogue: Catalogue,
+) -> TickerHistory | None:
+    """The rows of a full replay (`built`) to save after the drift guard, or None when the facts yield no event."""
+    if built.history.empty:
+        if ticker in rebuild:
+            _drop_history(context, ticker)
+        return None
+    # Explicit projection so the read fails loudly if the table and the column contract diverge.
+    df_stored = context.store.load(Tables.fundamentals_history_sec, columns=list(catalogue.history_columns), where={"ticker": ticker}, optional=True)
+    df_history, df_codes = built.history, built.reason_codes
+    drifted = ticker in rebuild and df_stored is not None and not diff_against_stored(df_stored, df_history).empty
+    if rebuild_history or drifted:
+        deleted = context.store.delete(Tables.fundamentals_history_sec, {"ticker": ticker})
+        context.store.delete(Tables.fundamentals_reason_codes, {"ticker": ticker})
+        context.log.warning(
+            "history: %s REBUILT -- %d row(s) deleted and recomputed. "
+            "Log this in the phase report: a rebuild re-derives numbers "
+            "under whatever model is already trained on them.",
+            ticker,
+            deleted,
+        )
+    elif df_stored is not None:
+        df_history, df_codes = _unpublished_events(context, ticker, df_stored, df_history, df_codes)
+    return TickerHistory(df_history, df_codes)
+
+
+def build_fundamentals_history(
+    context: Context,
+    tickers: list[str],
+    *,
+    rebuild_history: bool = False,
+    verify_history: bool = False,
+    fetched: Mapping[str, Sequence[pd.Timestamp]] | None = None,
+    full_fetch: bool = False,
+    as_of: pd.Timestamp | None = None,
+) -> None:
     """`fundamentals_facts` -> `fundamentals_history_sec` + `fundamentals_reason_codes`, per ticker.
 
-    Append-only: only new `as_of` events are saved, and a stored row that would change raises ValueError after
-    logging the diff. `rebuild_history=True` (CLI `--rebuild-history`) deletes the ticker's rows from both tables
-    and rebuilds from stored facts, with no network; so does a ticker whose lineage scope changed recently
-    (`resume.recently_changed` on `as_of`) when its recomputed history differs from the stored one. A ticker whose
-    facts come from several CIKs reads its windows from the identity layer for the seam rule (`keep_window_owner_filings`);
-    a declared reverse acquisition then drops the pre-seam comparatives of its survivor's post-seam filings.
+    Triage first (`_history_work`): a current ticker is skipped without reading its facts, a ticker with newer
+    filings snapshots its new events only, and the rest replay in full. Append-only: a full replay saves only new
+    `as_of` events, and a stored row that would change raises ValueError after logging the diff.
+    `verify_history=True` replays every ticker in full under that guard. `rebuild_history=True` (CLI
+    `--rebuild-history`) deletes the ticker's rows from both tables and rebuilds from stored facts, with no network;
+    so does a ticker whose lineage scope changed recently (`resume.recently_changed` on `as_of`) when its recomputed
+    history differs from the stored one. `fetched` (filing dates a same-process fetch read, per ticker) and
+    `full_fetch` (that fetch ran with `-F`) route back-dated reads to the full replay. A ticker whose facts come from
+    several CIKs reads its windows from the identity layer for the seam rule (`keep_window_owner_filings`); a declared
+    reverse acquisition then drops the pre-seam comparatives of its survivor's post-seam filings.
+    Full builds run in a process pool of `data_extract.fundamentals_workers` (in-process for 1 worker or a single
+    ticker); the parent reads, guards, saves and logs, in ticker order.
     """
     catalogue = load_catalogue(str(context.config_dir))
     guards = load_guards(str(context.config_dir))
     seams = {entry.ticker: entry.seam_date for entry in load_security_manual(str(context.config_dir)).reverse_acquisitions}
     history_rows = codes_rows = 0
-    identity: Identity | None = None
     rebuild = frozenset(tickers) if rebuild_history else _scope_changed_recently(context, tickers, as_of)
     if rebuild and not rebuild_history:
         context.log.info(
             "history: %d ticker lineage scope(s) changed recently -> rebuilt where the history moved: %s", len(rebuild), ", ".join(sorted(rebuild))
         )
-    for ticker in tickers:
-        df_facts = context.store.load(Tables.fundamentals_facts, columns=list(FACT_COLUMNS), where={"ticker": ticker}, optional=True)
-        if df_facts is None:
+    if rebuild_history:
+        work = {ticker: HistoryWork(FULL) for ticker in tickers}
+    else:
+        work = _history_work(context, tickers, fetched=fetched, full_fetch=full_fetch, verify=verify_history, recent=rebuild)
+    paths = pd.Series([item.path for item in work.values()], dtype=object).value_counts().to_dict()
+    context.log.info(
+        "history: triage of %d ticker(s): %d full, %d incremental, %d check, %d current (skipped, no replay)",
+        len(tickers),
+        paths.get(FULL, 0),
+        paths.get(INCREMENTAL, 0),
+        paths.get(CHECK, 0),
+        paths.get(SKIP, 0),
+    )
+    active = [ticker for ticker in tickers if work[ticker].path != SKIP]
+    workers = _replay_workers(context)
+    use_pool = workers > 1 and len(active) > 1
+    limit = workers * _IN_FLIGHT_PER_WORKER if use_pool else 1
+    executor: ProcessPoolExecutor | None = None
+    pending: deque[_Pending] = deque()
+
+    def finish(entry: _Pending) -> None:
+        """The parent's in-order tail of one ticker: drift guard, save, log."""
+        nonlocal history_rows, codes_rows
+        ticker = entry.ticker
+        if entry.no_facts:
             context.log.info("history: %s has no stored facts -- skipped", ticker)
             if ticker in rebuild:
                 _drop_history(context, ticker)
-            continue
-        if _filer_count(df_facts) > 1:
-            identity = identity or load_identity(context)
-            df_kept = keep_window_owner_filings(df_facts, identity.filing_scope(ticker).windows)
-            set_aside = sorted(set(df_facts["accession_number"]) - set(df_kept["accession_number"]))
-            if set_aside:
-                context.log.info(
-                    "history: %s seam rule set aside %d filing(s) outside the filer's window or of a period its window owner reports: %s",
-                    ticker,
-                    len(set_aside),
-                    ", ".join(set_aside),
-                )
-            df_facts = df_kept
-        if ticker in seams:
-            df_kept = drop_reverse_acquisition_comparatives(df_facts, seams[ticker])
-            dropped = df_facts.loc[~df_facts.index.isin(df_kept.index), "accession_number"].value_counts().sort_index()
-            if not dropped.empty:
-                context.log.info(
-                    "history: %s reverse-acquisition rule dropped %d pre-seam comparative fact(s) of %d post-seam filing(s): %s",
-                    ticker,
-                    int(dropped.sum()),
-                    len(dropped),
-                    ", ".join(f"{accession} ({count})" for accession, count in dropped.items()),
-                )
-            df_facts = df_kept
-        built = build_ticker(ticker, df_facts, catalogue=catalogue, guards=guards)
-        if built.history.empty:
-            if ticker in rebuild:
-                _drop_history(context, ticker)
-            continue
-        # Explicit projection so the read fails loudly if the table and the column contract diverge.
-        df_stored = context.store.load(
-            Tables.fundamentals_history_sec, columns=list(catalogue.history_columns), where={"ticker": ticker}, optional=True
-        )
+            return
+        built = entry.rows
+        if entry.full is not None:
+            full = entry.full.result() if isinstance(entry.full, Future) else entry.full
+            built = _full_rows(context, ticker, full, rebuild_history=rebuild_history, rebuild=rebuild, catalogue=catalogue)
+        if built is None:
+            return
         df_history, df_codes = built.history, built.reason_codes
-        drifted = ticker in rebuild and df_stored is not None and not diff_against_stored(df_stored, df_history).empty
-        if rebuild_history or drifted:
-            deleted = context.store.delete(Tables.fundamentals_history_sec, {"ticker": ticker})
-            context.store.delete(Tables.fundamentals_reason_codes, {"ticker": ticker})
-            context.log.warning(
-                "history: %s REBUILT -- %d row(s) deleted and recomputed. "
-                "Log this in the phase report: a rebuild re-derives numbers "
-                "under whatever model is already trained on them.",
-                ticker,
-                deleted,
-            )
-        elif df_stored is not None:
-            df_history, df_codes = _unpublished_events(context, ticker, df_stored, df_history, df_codes)
         if df_history.empty:
             context.log.info("history: %s already current (0 new events)", ticker)
-            continue
+            return
         context.store.save(Tables.fundamentals_history_sec, df_history)
         if not df_codes.empty:
             context.store.save(Tables.fundamentals_reason_codes, df_codes)
         context.log.info("history: %s +%d event row(s), %d reason code(s)", ticker, len(df_history), len(df_codes))
         history_rows += len(df_history)
         codes_rows += len(df_codes)
+
+    try:
+        for ticker in active:
+            item = work[ticker]
+            df_facts = _ticker_facts(context, ticker, seams)
+            entry = _Pending(ticker, no_facts=df_facts is None)
+            if df_facts is not None and item.path in (INCREMENTAL, CHECK):
+                entry.rows = _incremental_rows(ticker, df_facts, item, catalogue, guards)
+                if entry.rows is None:
+                    context.log.warning(
+                        "history: %s event list differs from the stored one up to %s -> full replay", ticker, pd.Timestamp(item.newest).date()
+                    )
+            if df_facts is not None and entry.rows is None:
+                if use_pool:
+                    if executor is None:
+                        executor = ProcessPoolExecutor(max_workers=workers, initializer=_init_replay_worker, initargs=(catalogue, guards))
+                    entry.full = executor.submit(_build_in_worker, ticker, df_facts)
+                else:
+                    entry.full = build_ticker(ticker, df_facts, catalogue=catalogue, guards=guards)
+            del df_facts
+            pending.append(entry)
+            # Saves stay in ticker order; the bound keeps at most `limit` builds (and their facts) in flight.
+            while pending and (len(pending) >= limit or not isinstance(pending[0].full, Future) or pending[0].full.done()):
+                finish(pending.popleft())
+        while pending:
+            finish(pending.popleft())
+    finally:
+        if executor is not None:
+            executor.shutdown(wait=True, cancel_futures=True)
 
     context.log.info("history: %d ticker(s), +%d event row(s), %d reason code(s)", len(tickers), history_rows, codes_rows)

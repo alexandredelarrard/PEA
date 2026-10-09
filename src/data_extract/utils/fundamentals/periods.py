@@ -258,17 +258,27 @@ def _drop_annual_masquerading_as_quarter(
     return frame.drop(index=drop) if drop else frame
 
 
-def _same_start_before(candidates: pd.DataFrame, start, end) -> pd.Series | None:
+def _window_bounds(frame: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    """`frame`'s `(period_start, period_end)` as nanosecond arrays, taken once per candidate frame."""
+    return frame["period_start"].to_numpy("datetime64[ns]"), frame["period_end"].to_numpy("datetime64[ns]")
+
+
+def _same_start_before(candidates: pd.DataFrame, start, end, bounds: tuple[np.ndarray, np.ndarray] | None = None) -> pd.Series | None:
     """The latest candidate sharing this window's START and ending strictly earlier, or None.
 
     Sharing the start is what makes a cumulative subtraction valid (never across a fiscal-year boundary).
+    `bounds` is `_window_bounds(candidates)`, passed by a caller that probes the same frame repeatedly.
     """
-    if candidates.empty or pd.isna(start):
+    if candidates.empty or pd.isna(start) or pd.isna(end):
         return None
-    hits = candidates[(candidates["period_start"] == start) & (candidates["period_end"] < end)]
-    if hits.empty:
+    starts, ends = bounds if bounds is not None else _window_bounds(candidates)
+    hit = (starts == np.datetime64(pd.Timestamp(start), "ns")) & (ends < np.datetime64(pd.Timestamp(end), "ns"))
+    if not hit.any():
         return None
-    return hits.sort_values("period_end").iloc[-1]
+    # The latest end wins; on a tie, the last such row in frame order.
+    positions = np.flatnonzero(hit)
+    hit_ends = ends[positions]
+    return candidates.iloc[int(positions[np.flatnonzero(hit_ends == hit_ends.max())[-1]])]
 
 
 # ---------------------------------------------------------------------------- guards ---
@@ -442,23 +452,28 @@ def _ladder(
     """
     out: list[dict] = []
     for cumulative, earlier, basis in ((y6, quarters, Q2_FROM_YTD6), (y9, y6, Q3_FROM_YTD9)):
+        earlier_bounds = _window_bounds(earlier)
         for row in cumulative.itertuples():
-            prior = _same_start_before(earlier, row.period_start, row.period_end)
+            prior = _same_start_before(earlier, row.period_start, row.period_end, earlier_bounds)
             if prior is None:
                 continue
             derived = _derived(cast(Any, row)._asdict(), prior, basis, spec, [float(cast(Any, prior["value"]))], guards, refusals)
             if derived:
                 out.append(derived)
 
+    y9_bounds = _window_bounds(y9)
+    q_starts, q_ends = _window_bounds(quarters)
+    q_values = quarters["value"].to_numpy(dtype=float)
     for fy in annual.itertuples():
         fy_row = cast(Any, fy)._asdict()
-        inside = quarters[(quarters["period_start"] >= fy.period_start) & (quarters["period_end"] <= fy.period_end)]
+        fy_end = np.datetime64(pd.Timestamp(cast(Any, fy.period_end)), "ns")
+        within = (q_starts >= np.datetime64(pd.Timestamp(cast(Any, fy.period_start)), "ns")) & (q_ends <= fy_end)
         # A discrete quarter ending on the fiscal year-end IS Q4 as reported.
-        if (inside["period_end"] == fy.period_end).any():
+        if (q_ends[within] == fy_end).any():
             continue
-        siblings = [float(cast(Any, v)) for v in inside["value"]]
+        siblings = [float(v) for v in q_values[within]]
 
-        ytd9 = _same_start_before(y9, fy.period_start, fy.period_end)
+        ytd9 = _same_start_before(y9, fy.period_start, fy.period_end, y9_bounds)
         if ytd9 is not None:
             derived = _derived(fy_row, ytd9, FY_MINUS_YTD9, spec, siblings, guards, refusals)
             if derived:
@@ -466,8 +481,9 @@ def _ladder(
                 continue
 
         # Fallback needs exactly the three preceding quarters; a gap, overlap or stub is ambiguous.
-        if len(inside) != TTM_QUARTERS - 1:
+        if int(within.sum()) != TTM_QUARTERS - 1:
             continue
+        inside = quarters[within]
         total = float(inside["value"].sum())
         last = inside.sort_values("period_end").iloc[-1]
         derived = _derived(
@@ -568,14 +584,23 @@ def label_fiscal_periods(quarters: pd.DataFrame, year_ends: list[pd.Timestamp]) 
     bounds = pd.Series(ends)
     # side='left' puts a quarter ending exactly ON a year end into that year, where Q4 lives.
     slot = bounds.searchsorted(out["period_end"].values, side="left")
-    for position, index in zip(slot, out.index, strict=False):
-        if position >= len(ends):
-            continue
-        year_start, year_end = starts[position], ends[position]
-        quarter_length = max((year_end - year_start).days + 1, 1) / TTM_QUARTERS
-        offset = (pd.Timestamp(cast(Any, out.at[index, "period_start"])) - year_start).days
-        out.at[index, "fiscal_year"] = year_end.year
-        out.at[index, "fiscal_quarter"] = int(min(max(round(offset / quarter_length) + 1, 1), TTM_QUARTERS))
+    inside = slot < len(ends)
+    if inside.any():
+        day = np.timedelta64(1, "D")
+        position = slot[inside]
+        year_end = np.array(ends, dtype="datetime64[ns]")[position]
+        year_start = np.array(starts, dtype="datetime64[ns]")[position]
+        quarter_length = np.maximum((year_end - year_start) // day + 1, 1) / TTM_QUARTERS
+        offset = (out["period_start"].to_numpy("datetime64[ns]")[inside] - year_start) // day
+        # np.round is half-to-even, like the builtin `round`; cells stay python ints in an object column.
+        quarter = np.minimum(np.maximum(np.round(offset / quarter_length) + 1, 1), TTM_QUARTERS)
+        years = np.array([end.year for end in ends])[position]
+        fiscal_year = np.full(len(out), pd.NA, dtype=object)
+        fiscal_quarter = np.full(len(out), pd.NA, dtype=object)
+        fiscal_year[inside] = [int(y) for y in years]
+        fiscal_quarter[inside] = [int(q) for q in quarter]
+        out["fiscal_year"] = fiscal_year
+        out["fiscal_quarter"] = fiscal_quarter
     return out[list(_QUARTER_COLUMNS)]
 
 
@@ -596,11 +621,19 @@ def trailing_twelve(quarters: pd.DataFrame, spec: FieldSpec, annual: pd.DataFram
     ordered = quarters.sort_values("period_end").reset_index(drop=True)
     # Only the non-additive branch reads the annual facts.
     reported_annual = {} if spec.is_additive else _annual_by_end(annual)
+    ticker = ordered["ticker"].iloc[0]
+    # Arrays taken once; each window below is a positional slice of them.
+    ends = list(ordered["period_end"])
+    values = ordered["value"].to_numpy(dtype=float)
+    days_all = _inclusive_days(ordered["period_days"]).to_numpy(dtype=float)
+    known = ordered["known_from"]
+    known_ns = known.to_numpy() if is_datetime64_any_dtype(known) else None
+    starts_ns, ends_ns = _window_bounds(ordered)
     rows = []
-    for i in range(len(ordered)):
-        window = ordered.iloc[max(0, i - TTM_QUARTERS + 1) : i + 1]
-        end = window["period_end"].iloc[-1]
-        base = {"ticker": ordered["ticker"].iloc[0], "field": spec.name, "period_end": end}
+    for i, end in enumerate(ends):
+        low = max(0, i - TTM_QUARTERS + 1)
+        size = i + 1 - low
+        base = {"ticker": ticker, "field": spec.name, "period_end": end}
         if not spec.is_additive and end in reported_annual:
             fact = reported_annual[end]
             rows.append(
@@ -614,21 +647,28 @@ def trailing_twelve(quarters: pd.DataFrame, spec: FieldSpec, annual: pd.DataFram
                 }
             )
             continue
-        if len(window) < TTM_QUARTERS or not _window_is_contiguous(window):
-            rows.append({**base, "value": None, "basis": None, "known_from": None, "n_quarters": len(window), "dc_code": INSUFFICIENT_QUARTERS})
+        if size < TTM_QUARTERS or not _bounds_are_contiguous(starts_ns[low : i + 1], ends_ns[low : i + 1]):
+            rows.append({**base, "value": None, "basis": None, "known_from": None, "n_quarters": size, "dc_code": INSUFFICIENT_QUARTERS})
             continue
-        if not spec.is_additive and not _one_share_basis(window, guards):
-            rows.append({**base, "value": None, "basis": None, "known_from": None, "n_quarters": len(window), "dc_code": SPLIT_BASIS_MISMATCH})
+        window = values[low : i + 1]
+        if not spec.is_additive and not _one_share_basis_values(window, guards):
+            rows.append({**base, "value": None, "basis": None, "known_from": None, "n_quarters": size, "dc_code": SPLIT_BASIS_MISMATCH})
             continue
         # A twelve-month weighted average is share-days over days, not the mean of four means.
-        days = _inclusive_days(window["period_days"])
-        value = window["value"].sum() if spec.is_additive else (window["value"] * days).sum() / days.sum()
+        days = days_all[low : i + 1]
+        value = _skipna_sum(window) if spec.is_additive else _skipna_sum(window * days) / _skipna_sum(days)
+        if known_ns is not None:
+            seen = known_ns[low : i + 1]
+            seen = seen[~np.isnat(seen)]
+            latest = pd.Timestamp(seen.max()) if seen.size else pd.NaT
+        else:
+            latest = known.iloc[low : i + 1].max()
         rows.append(
             {
                 **base,
                 "value": float(value),
                 "basis": TTM_FOUR_QUARTERS if spec.is_additive else TTM_FOUR_QUARTER_MEAN,
-                "known_from": window["known_from"].max(),
+                "known_from": latest,
                 "n_quarters": TTM_QUARTERS,
                 "dc_code": None,
             }
@@ -650,20 +690,40 @@ def _one_share_basis(window: pd.DataFrame, guards: PeriodGuards) -> bool:
 
     A window straddling a split mixes two incompatible units; it is refused, not repaired.
     """
-    values = window["value"].abs()
-    smallest = values.min()
-    return smallest > 0 and (values.max() / smallest) <= guards.share_basis_max_ratio
+    return _one_share_basis_values(window["value"].to_numpy(dtype=float), guards)
+
+
+def _one_share_basis_values(values: np.ndarray, guards: PeriodGuards) -> bool:
+    """`_one_share_basis` on a window's value array; NaN is skipped, an all-NaN window is refused."""
+    present = np.abs(values[~np.isnan(values)])
+    if present.size == 0:
+        return False
+    smallest = present.min()
+    return bool(smallest > 0 and (present.max() / smallest) <= guards.share_basis_max_ratio)
+
+
+def _skipna_sum(values: np.ndarray) -> np.float64:
+    """`Series.sum()` on a float array: NaN counts as zero, the same `ndarray.sum` underneath (numpy division rules kept)."""
+    return np.where(np.isnan(values), 0.0, values).sum()
 
 
 def _window_is_contiguous(window: pd.DataFrame) -> bool:
     """True when the quarters abut (gaps of at most 1 day) and span `TTM_MIN_DAYS`..`TTM_MAX_DAYS`."""
-    starts = list(window["period_start"])
-    ends = list(window["period_end"])
-    for previous_end, next_start in zip(ends, starts[1:], strict=False):
-        if abs((pd.Timestamp(next_start) - pd.Timestamp(previous_end)).days) > 1:
-            return False
-    span = (pd.Timestamp(ends[-1]) - pd.Timestamp(starts[0])).days
-    return TTM_MIN_DAYS <= span <= TTM_MAX_DAYS
+    starts, ends = _window_bounds(window)
+    return _bounds_are_contiguous(starts, ends)
+
+
+def _bounds_are_contiguous(starts: np.ndarray, ends: np.ndarray) -> bool:
+    """`_window_is_contiguous` on nanosecond bound arrays; whole days are floored, a NaT gap is not a break."""
+    day = np.timedelta64(1, "D")
+    gaps = starts[1:] - ends[:-1]
+    known = ~np.isnat(gaps)
+    if (np.abs(gaps[known] // day) > 1).any():
+        return False
+    span = ends[-1] - starts[0]
+    if np.isnat(span):
+        return False
+    return bool(TTM_MIN_DAYS <= span // day <= TTM_MAX_DAYS)
 
 
 # --------------------------------------------------------------------------- instants ---

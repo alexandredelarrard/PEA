@@ -77,8 +77,19 @@ The extraction CLI separates network resolution from local history replay:
 
 ~~~bash
 rtk "$PY" -m src data_extract fundamentals-facts -F -t AAPL,CSCO,KR,XOM,APA,EOG
-rtk "$PY" -m src data_extract fundamentals-history-sec -t AAPL,CSCO,KR,XOM,APA,EOG
+rtk "$PY" -m src data_extract fundamentals-history-sec --verify-history -t AAPL,CSCO,KR,XOM,APA,EOG
 ~~~
+
+The SEC history build sorts each ticker before any replay:
+
+| Ticker state | Work |
+| --- | --- |
+| no filing newer than its newest stored row | skipped; facts not read |
+| filings only after its newest stored row | snapshots of the new events only |
+| no stored history, a back-dated or `-F` re-read handed over by `fundamentals`, an event list that disagrees with the stored rows, or `--verify-history` | full replay with the append-only guard |
+| `--rebuild-history` | delete, then full replay |
+
+Full replays run in a process pool of `fundamentals_workers`. The combined `fundamentals` command hands its fetched filings to the history build; a standalone `fundamentals-facts -F` does not, so follow it with `--verify-history` as above.
 
 Use multiple bounded ticker chunks. A from-scratch chunk needs no `-F`: its work list is every indexed filing not yet stored. Use `-F` only to re-read stored filings. A chunk larger than `max_documents_per_run` drains over several runs unless `--no-cap` is given.
 

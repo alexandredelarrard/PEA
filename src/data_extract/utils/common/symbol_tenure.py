@@ -48,8 +48,9 @@ _SYMBOL_BRACKETS = re.compile(r"[()\[\]{}]")
 #: EDGAR state-of-incorporation marker typed in front of a symbol (`/DE/CHD`, `DE/TGAL`).
 _STATE_MARKER = re.compile(r"^(?:/[A-Z]{2}/|DE/)")
 
-#: A slash before a full symbol separates a list (`BFA/BFB`); before one character it is a class (`BRK/B`).
-_SLASH_LIST = re.compile(r"/(?=[A-Z0-9]{2})")
+#: A slash before a full symbol separates a list (`BFA/BFB`); before one character (`BRK/B`) or a series code
+#: (note `BDX/26A`, preferred `MS/PL`, `BFS/PRD`, warrant `CANO/WS`) it names one security of that issuer.
+_SLASH_LIST = re.compile(r"/(?!(?:\d{2}[A-Z]{1,2}|PR?[A-Z]|WS)(?![A-Z0-9]))(?=[A-Z0-9]{2})")
 
 #: Spaces around a slash (`KVA / KVB`).
 _SLASH_SPACES = re.compile(r"\s*/\s*")
@@ -100,7 +101,7 @@ def parse_symbol_field(value: object) -> tuple[str, ...] | None:
     """The market symbols one filer-typed symbol field names, in roster spelling.
 
     None for a missing field or a placeholder ("no symbol"), () for noise. Quotes, brackets, qualifier
-    words and venue suffixes are removed; `,` `;` `:` and a slash before a full symbol split a list,
+    words and venue suffixes are removed; `,` `;` `:` and a slash before a full symbol (not a series code) split a list,
     before the share-class rule (`.` and `/` -> `-`). Words inside one item join as a class (`ALF A` -> `ALF-A`).
     """
     if not isinstance(value, str):

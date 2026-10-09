@@ -130,11 +130,10 @@ def _store(vendor: pd.DataFrame, actions: list[tuple[str, str, float]], yf: list
             Tables.prices_splits: pd.DataFrame(
                 [{"ticker": t, "date": pd.Timestamp(d), "ratio": v} for t, d, v in yf], columns=["ticker", "date", "ratio"]
             ),
-            Tables.fundamentals_employees: pd.DataFrame(columns=["ticker", "as_of", "employees"]),
             # one NULL SEC row per ticker, so the backward join lands the SEC-owned columns (all NULL here)
             Tables.fundamentals_history_sec: pd.DataFrame(
                 {"ticker": ["PLD", "DD"], "as_of": pd.Timestamp("1990-01-01")}
-                | {c: float("nan") for c in load_field_map(str(REPO_CONFIGS)).sec_owned if c != "employees"}
+                | {c: float("nan") for c in load_field_map(str(REPO_CONFIGS)).sec_owned}
             ),
         }
     )

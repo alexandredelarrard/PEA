@@ -72,6 +72,25 @@ A model family is not complete until it has:
 
 Every member, of any family, serializes as one pickle of its fitted transformer (`model_h<h>_<family>.pkl`, without context, config or logger), so a new family round-trips with no extra persistence code.
 
+## Workforce features
+
+`StepCubeFundamentals` loads `fundamentals_employees` itself: projected to the keys, components and basis, scoped to the universe, and read from two years before the build start so the first in-window growth has its prior year. The merged `fundamentals_history` carries no headcount. [employee_features.py](../../src/data_aggregate/utils/fundamentals/employee_features.py) builds `revenue_per_employee`, `employee_growth`, `revenue_per_employee_growth` and `headcount_elasticity`.
+
+- **Join.** Each counted employee row is attached backward as-of to the ticker's `fundamentals_history` rows filed on or after it, within 370 days (`SHARADAR_SEC_ASOF_TOLERANCE_DAYS`). Revenue and headcount therefore come from the same then-public history row and nothing is visible before it; a count filed after its 10-K history row (a 10-K/A) appears at the next history row. Status-only rows are dropped first and do not cut the carry. Values project from the history row's `as_of` and expire after 460 days.
+- **Proxy.** The headcount the features use depends on the stored components:
+
+| Stored components | Basis | Headcount proxy |
+| --- | --- | --- |
+| FT and PT | `full_part` | FT + α·PT |
+| total and FT, no PT | `full_part` | FT + α·(total − FT) |
+| total | `total`, `fte` or `total_incl_contractors` | total |
+| FT only | `full_time_only` | FT |
+
+  α is `build_cube.workforce.part_time_weight` in [build_cube.yml](../../configs/build_cube.yml) (0.65). It must lie in [0.5, 1]; any other value raises.
+- **Basis rule.** `employee_growth`, `revenue_per_employee_growth` and `headcount_elasticity` are NaN when the proxy's basis differs from its basis a fiscal year earlier, and the daily carry stops at the switch, so a pre-switch growth never stays visible across it. `revenue_per_employee` uses the proxy and is not masked.
+
+After employee rows change, rebuild `cube_part_fundamentals` with `-F`: the 45-session incremental tail does not rewrite older feature dates.
+
 ## Cube loading and memory
 
 Training resolves the union of configured family features against the actual cube schema, then loads one target horizon at a time with an explicit projection, labelled-row filter, and float32 downcast. Do not load the full wide cube or all horizons into one frame.

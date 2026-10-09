@@ -18,7 +18,6 @@ from __future__ import annotations
 import io
 import logging
 from collections.abc import Collection, Sequence
-from itertools import batched
 from pathlib import Path
 
 import pandas as pd
@@ -49,6 +48,7 @@ from src.data_extract.utils.institutionals.security_tape import (
     warn_lost_rows,
 )
 from src.data_store.schema import Tables
+from src.utils.batching import batched_tuples
 from src.utils.string import normalise_ticker
 
 logger = logging.getLogger(__name__)
@@ -294,10 +294,10 @@ def _purge_out_of_scope(context: Context, stamped: pd.DataFrame, *, by_key: bool
     cusips = sorted(set(gone["cusip"].astype(str)))
     if by_key:
         for cusip, group in gone.groupby(gone["cusip"].astype(str), sort=True):
-            for chunk in batched(sorted(pd.to_datetime(group["date"])), KEY_CHUNK, strict=False):
+            for chunk in batched_tuples(sorted(pd.to_datetime(group["date"])), KEY_CHUNK):
                 context.store.delete(Tables.sec_fails_to_deliver_security, where={"cusip": str(cusip), "date": chunk})
     else:
-        for chunk in batched(cusips, KEY_CHUNK, strict=False):
+        for chunk in batched_tuples(cusips, KEY_CHUNK):
             context.store.delete(Tables.sec_fails_to_deliver_security, where={"cusip": chunk})
     logger.warning("FTD: %d stored line(s) over %d CUSIP(s) have no security_master row; deleted", len(gone), len(cusips))
     return len(gone)
@@ -384,7 +384,7 @@ def _stamp_new(context: Context, master: pd.DataFrame, universe: frozenset[str],
     periods = sorted(set(stamped["period"].astype(str)))
     lines = context.store.load(table, columns=list(SECURITY_COLUMNS), where={"period": periods}, optional=True)
     grain = ticker_rows(stamp_lines(lines, master), universe) if lines is not None else pd.DataFrame(columns=list(TICKER_COLUMNS))
-    for chunk in batched(sorted(universe), TICKER_CHUNK, strict=False):
+    for chunk in batched_tuples(sorted(universe), TICKER_CHUNK):
         context.store.delete(Tables.sec_fails_to_deliver, where={"ticker": chunk, "period": periods})
     saved = context.store.save(Tables.sec_fails_to_deliver, grain) if not grain.empty else 0
     context.store.save(table, stamped[list(SECURITY_COLUMNS)])

@@ -355,8 +355,9 @@ def fundamentals_facts(config_path: str, tickers: str | None, full: bool, as_of:
 
 @cli.command(
     name="fundamentals-employees",
-    help="SEC 10-K prose -> fundamentals_employees, skipping filing dates that already have a row (NULL decisions included), over the registrant lineage. "
-    "A ticker that fails is logged and retried next run; the task exits 0.",
+    help="SEC 10-K prose -> fundamentals_employees: total, full-time and part-time counts with basis, status, filer CIK, accession "
+    "and source quotes, one row per filing date over the registrant lineage. Dates that already have a row (NULL-status rows included) "
+    "are skipped unless --full. A failed LLM call or ticker is logged and retried next run; the task exits 0.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)

@@ -177,5 +177,47 @@
     "own_entity": ["0000096345"],
     "evidence": "One Form 4, accession 0000906345-06-000003 filed 2006-01-12, carrying (CPT) as the symbol under issuer CIK 0000096345, which EDGAR names TAPE CABLE ELECTRONICS CO INC. The accession was submitted by Camden Property Trust's own filer CIK (0000906345, the 0000906345- prefix), and Camden's 61 other (CPT) filings of 2006-01-12 .. 2007-06-14 carry issuer CIK 0000906345: the filed issuer CIK is Camden's with one digit dropped, so this is a CIK typo, not a Camden CIK. Owner overlap 1 shared, jaccard 0.032 (grey band). Recorded as its own entity, as for AKAM and TECH: refusing costs one filing, admitting would pull an unrelated CIK into Camden's scope.",
     "decided": "2026-10-04"
+  },
+
+  "CDW/old-cdw-lbo": {
+    "same_entity": ["0000899171", "0001402057"],
+    "evidence": "CDW Corporation (0000899171, Form 3/4/5 2006-01-30 .. 2007-10-17) was taken private by Madison Dearborn and Providence Equity on 2007-10-12 (its last 8-K, 0001193125-07-221351, filed 2007-10-18); the same business re-registered as CDW Corp (0001402057), which reported as a debt issuer from 2010 and re-listed under CDW at its 2013-06-27 IPO (first Form 3/4 2013-06-27). The HLT pattern: one business through a private interval, so one entity -- but NOT a register entry, because a dated split would give CDW the 2006-07 accounts of a pre-LBO equity that has no price history on today's ticker and a different accounting basis. The old CIK stays event-only: its Forms 3/4/5 are acquired_constituent and never reach the cube, and no 10-K/10-Q or 8-K of it is CDW's.",
+    "decided": "2026-10-08"
+  },
+
+  "KMI/old-kinder-morgan-lbo": {
+    "same_entity": ["0000054502", "0001506307"],
+    "evidence": "Kinder Morgan, Inc. (0000054502, Form 3/4/5 2006-01-19 .. 2007-06-01) was taken private on 2007-05-30 as Knight Inc. (8-K 0000054502-07-000044, filed 2007-06-05) and kept filing as a debt issuer; the new parent Kinder Morgan, Inc. (0001506307) IPO'd on 2011-02-11 under KMI (first 10-K 0001506307-11-000009). The HLT pattern, as for CDW: one entity across a private interval, no register entry (the dated split would hand KMI pre-IPO subsidiary accounts on a different basis), the old CIK event-only and its insider rows acquired_constituent.",
+    "decided": "2026-10-08"
+  },
+
+  "CB/old-chubb-acquired": {
+    "same_entity": ["0000020171", "0000896159"],
+    "evidence": "The Chubb Corporation (0000020171) was acquired by ACE Limited (0000896159) on 2016-01-14; ACE, the legal and accounting acquirer, renamed itself Chubb Limited and its common shares began trading as CB on 2016-01-15, while the old Chubb common, which had traded as CB, was delisted (8-K 0001193125-16-430900 of 0000896159; 8-K 0001193125-16-430909 of 0000020171). Not a reverse merger: the roster CIK is the accounting predecessor, so no register entry. Old Chubb is an acquired target in CB's entity: an event-only CIK whose Forms 3/4/5 and FTD line (171232101) are acquired_constituent, never summed and never in the cube.",
+    "decided": "2026-10-08"
+  },
+
+  "DOC/physicians-realty-acquired": {
+    "same_entity": ["0001574540", "0000765880"],
+    "evidence": "Physicians Realty Trust (0001574540) merged into Healthpeak Properties (0000765880) on 2024-03-01; Healthpeak, the legal and accounting acquirer, began trading as DOC at the 2024-03-04 open, taking the symbol Physicians Realty had traded under (8-K Item 8.01 0001104659-24-029661 of 0000765880; 8-K 0001104659-24-029662 of 0001574540). Not a reverse merger: the roster CIK is the accounting predecessor (HCP -> PEAK -> DOC), so no register entry. Physicians Realty is an acquired target in DOC's entity: event-only, its Forms 3/4/5 and FTD line (71943U104) acquired_constituent.",
+    "decided": "2026-10-08"
+  },
+
+  "DELL/old-dell-lbo": {
+    "same_entity": ["0000826083", "0001571996"],
+    "evidence": "Dell Inc. (0000826083) was taken private on 2013-10-29 by Denali Holding (0001571996, later Dell Technologies; old Dell's last 8-K 0001193125-13-416110); Dell Technologies listed its Class V tracking stock as DVMT in 2016 and its Class C common as DELL (when-issued 2018-12-26, regular-way 2018-12-28, 8-K 0001193125-18-360943). Old Dell's public equity ended at the LBO, with an accounting-basis break, so no register entry; it stays an event-only CIK of DELL's entity and its Forms 3/4/5 and FTD line (24702R101) are acquired_constituent. DVMT is not touched here: Yahoo's DELL series starts 2016-08-17, i.e. it carries DVMT's bars, so DVMT stays DELL's tape predecessor.",
+    "decided": "2026-10-08"
+  },
+
+  "GM/old-gm-bankruptcy": {
+    "same_entity": ["0000040730", "0001467858"],
+    "evidence": "General Motors Corporation (0000040730) sold substantially all its assets to the new General Motors Company (0001467858) in the 2009-07-10 section 363 sale (8-K Items 2.01/3.02 0001193125-09-150199 of 0001467858, filed 2009-07-16); the old company, renamed Motors Liquidation Company, traded as MTLQQ until its equity was cancelled, while new GM listed as GM on 2010-11-18. Old GM's equity is not new GM's, so no register entry and no consolidating window; old GM stays an event-only CIK of GM's entity (its Forms 3/4/5 and MTLQQ FTD line are acquired_constituent and never reach the cube). Recorded so the verdict is stated, not merely abstained (it was a multi_cik_no_window backlog item and a co-registrant pair).",
+    "decided": "2026-10-08"
+  },
+
+  "VMRK/avalonbay-acquired": {
+    "same_entity": ["0000915912", "0000906107"],
+    "evidence": "AvalonBay Communities (0000915912) merged into a subsidiary of Equity Residential (0000906107) on 2026-08-17 in a merger of equals; Equity Residential, the surviving registrant, renamed itself and its common shares began trading as VMRK on 2026-08-18, while AvalonBay's AVB common was delisted (8-K 0001140361-26-033377). Yahoo's VMRK series is Equity Residential's EQR series back to 1995 (price ratio 1.000), so under the traded-security rule the price owner is Equity Residential: no register entry, AvalonBay's filings and price stop at the merger, and its CIK is integrated into VMRK's entity as an acquired target (event-only; its Forms 3/4/5 acquired_constituent), the D3a pattern. If the first post-merger VMRK reports present AvalonBay as the accounting predecessor, their comparatives need the PLD-style handling (open TODO).",
+    "decided": "2026-10-08"
   }
 }

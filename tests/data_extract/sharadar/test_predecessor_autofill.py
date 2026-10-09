@@ -87,7 +87,6 @@ def _empties() -> dict[Any, pd.DataFrame]:
     return {
         Tables.sharadar_actions: pd.DataFrame(columns=["ticker", "action"]),
         Tables.prices_splits: pd.DataFrame(columns=["ticker", "date", "ratio"]),
-        Tables.fundamentals_employees: pd.DataFrame(columns=["ticker", "as_of", "employees"]),
         Tables.fundamentals_history_sec: pd.DataFrame(columns=["ticker", "as_of"]),
     }
 

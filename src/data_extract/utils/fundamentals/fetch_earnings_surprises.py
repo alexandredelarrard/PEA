@@ -157,4 +157,4 @@ def fetch_earnings_surprises(context: Context, tickers: list[str], years_history
     new = pd.concat(new_frames, ignore_index=True)[_COLUMNS]
     new = new.loc[new["earnings_date"] >= MIGRATION_DATE].reset_index(drop=True)
     context.store.save(Tables.earnings_surprises, new)
-    context.log.info(f"Saved {len(new)} new earnings rows for {new['ticker'].nunique()} tickers to DB")
+    context.log.info(f"Saved {len(new)} new earnings rows: {new['ticker'].unique()} tickers to DB")

@@ -740,14 +740,14 @@
    "f_revenue_per_employee_vs_hist",
    "ticker"
   ],
-  "hash": "c5d322b4d07acbd918c5cd54639c152d",
+  "hash": "99ee370a4470c168d1b85ed093d5703b",
   "per_column": {
    "date": "cbfcfe9a40ab077b",
-   "f_employee_growth": "4ee7bbbd45febc88",
-   "f_headcount_elasticity": "4facd788861d55f2",
-   "f_revenue_per_employee": "63b57206383d5388",
-   "f_revenue_per_employee_growth": "0962c9b3e3760594",
-   "f_revenue_per_employee_vs_hist": "207a92419559f512",
+   "f_employee_growth": "0aedb0f8f157fb9b",
+   "f_headcount_elasticity": "fbc808be58bd1408",
+   "f_revenue_per_employee": "917a2e446033b4b0",
+   "f_revenue_per_employee_growth": "222cb68bc041877b",
+   "f_revenue_per_employee_vs_hist": "4496bf1d0a4436fc",
    "ticker": "20baf79a52b9d113"
   },
   "rows": 43010

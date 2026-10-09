@@ -285,3 +285,44 @@ if __name__ == "__main__":
         pass
 
     print("run via pytest -s for the sanity output")
+
+
+# --------------------------------------------------------------------------- #
+# Streaming                                                                    #
+# --------------------------------------------------------------------------- #
+def test_a_streamed_task_is_called_while_the_next_is_built(monkeypatch):
+    """`run(tasks)` consumes the iterable while workers call: building task i+1 (reading its document)
+    overlaps the call on task i, results keep submission order, and a raising producer still lets the
+    submitted calls finish before its error propagates."""
+    called = threading.Event()
+
+    class Recorder(StubProvider):
+        def parse(self, schema, system, user):
+            called.set()
+            return super().parse(schema, system, user)
+
+    runner = _runner(monkeypatch, n_threads=1, provider_factory=lambda methode=None, key_index=None: Recorder())
+    overlapped: list[bool] = []
+
+    def produce():
+        for task in _tasks(3):
+            if task.seq > 0:
+                overlapped.append(called.wait(timeout=5))
+                called.clear()
+            yield task
+
+    results = runner.run(produce())
+    assert [r.seq for r in results] == [0, 1, 2] and all(r.ok for r in results)
+    assert overlapped == [True, True], overlapped
+
+    def broken():
+        yield from _tasks(2)
+        raise RuntimeError("document read failed")
+
+    with pytest.raises(RuntimeError, match="document read failed"):
+        runner.run(broken())
+    assert runner.run() == [] and runner.usage.totals["calls"] == 5
+
+    print("\n=== SANITY: streamed tasks ===")
+    print("  task 1 and task 2 were built only after the call on the task before them had started; order kept.")
+    print("  a producer that raises after 2 tasks: both calls ran (5 calls in all), the error propagated, state reset.")

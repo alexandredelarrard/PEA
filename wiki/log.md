@@ -224,3 +224,65 @@ Append-only audit trail. Add one dated entry per generation or refresh run, reco
 - Pages: [Table catalog](./reference/table-catalog.md), [Data sources](./reference/data-sources.md), [Run the pipeline](./guides/run-the-pipeline.md), [Configuration](./reference/configuration.md), [TODO](./TODO.md)
 - Evidence: `reports/validate/2026-10-02-entity-symbol-lineage/` (`p11-runbook.md`, `plans/02-revision-4-q2.md`, `defects.md`)
 - Operational boundary: the live database keeps the old identity shape until the user-run cutover.
+
+## 2026-10-07: refresh — remaining legacy 13F P1 parser
+
+- Profile: internal/standard
+- source_commit: e1d349d0 (was 2f8f8dad)
+- Coverage: shared legacy numeric/column/page/wrap/cover handling and pre-group source guards; finite historical replay and remaining P1 data boundary
+- Pages: [Data sources](./reference/data-sources.md), [TODO](./TODO.md), [Overview](./OVERVIEW.md)
+- Evidence: local ignored `reports/validate/2026-10-07-superinvestor-legacy-p1/`; exact-source regressions in [test_13f_legacy_fallback.py](../tests/data_extract/institutionals/test_13f_legacy_fallback.py)
+- Operational boundary: 4 source-verified replacement books and 62 proposed NULL-amount books are unapplied. Unsupported sources remain unavailable. Production feature certification abstains without `cube_part_prices`; no database write, cube rebuild, P2 correction, push or PR.
+- Integrated correction source_commit: a2310a580795e282a180f0ce721913164282bb5a; review R-001 proved matching CUSIPs/cover totals can retain wrong positive shares or a PRN note as common stock. Successful text reads now agree with normalized logical source value, amount, instrument type and put/call. The isolated correction is `2de7d42c`; its provenance is preserved in the local Harness merge.
+
+## 2026-10-07: refresh — legacy 13F parser merged into dev and data backlog prioritized
+
+- Profile: internal/standard
+- source_commit: 2c8575ab45f73da9f87711880983660213d289e3 (was e1d349d0)
+- Coverage: parser/source-fact fix merged into `dev`; 183 prior scope tests and 74 fresh parser/shared-reader tests on `dev`; catch-up versus roster `-F` semantics; prioritized remaining superinvestor data and output work.
+- Pages: [Overview](./OVERVIEW.md), [Data sources](./reference/data-sources.md), [Run the pipeline](./guides/run-the-pipeline.md), [TODO](./TODO.md)
+- Evidence: `harness/superinvestor-legacy-p1` at `d25365bd` merged without conflicts; local ignored `reports/validate/2026-10-07-superinvestor-legacy-p1/` (`_out/dev_merge_T1.json`, `_out/baseline.json`, `_out/dispositions.json`, `_out/repair_manifest.json`).
+- Remaining priorities: P1 applies 4 verified whole-book replacements and 62 NULL-amount book updates atomically after a live-before check and backup; P2 resolves 15 in-window gaps among 228 never-stored books and source-checks ghost periods, then rebuilds and validates the institutional features; P3 defers further recovery of 90 / 7,369 stored books (1.22%, including 81 before 2011Q3 and 9 in-window), following the user's 2% cutoff.
+- Operational boundary: this merge and wiki refresh apply no database repair, source recovery or cube rebuild; the production price-part prerequisite and feature-certification abstention remain. No push or PR was requested.
+
+## 2026-10-08: refresh — employee headcount components and direct read
+
+- Profile: internal/standard
+- source_commit: c01ffda6 (branch `harness/employee-headcount-coverage`)
+- Coverage: `fundamentals_employees` component shape (components, basis, status, CIK, accession, source document, JSON quotes); no employee roster; ix:header strip, workforce-number windows and annual-report exhibit fallback; scope-first answer schema and per-component quote guard; `employees_sec` removed from the merged history (92 columns) and the DAG edge; the cube reads the table directly (370-day as-of join, FT + α·PT proxy, basis-masked growth); `validate employees`; the universe runbook
+- Pages: [Table catalog](./reference/table-catalog.md), [Data sources](./reference/data-sources.md), [Data extraction](./modules/data-extract.md), [Modelling and portfolio](./reference/modelling-and-portfolio.md), [Configuration](./reference/configuration.md), [Run the pipeline](./guides/run-the-pipeline.md), [Large backfills and recovery](./guides/large-backfills-and-recovery.md), [Live database](./reference/live-database.md), [Nightly data refresh](./flows/nightly-data-refresh.md), [DAGs and infrastructure](./modules/dags-and-infrastructure.md), [TODO](./TODO.md)
+- Evidence: `reports/validate/2026-10-07-employee-headcount-coverage/` (`02-plan.md`, `03-implementation.md`)
+- Operational boundary: the live table was recreated and `employees_sec` dropped on 2026-10-07; the universe run and the cube rebuild are user-run after the merge.
+
+## 2026-10-08: refresh — legacy 13F stored-book repair applied
+
+- Profile: internal/standard
+- source_commit: none (database change; no code merged)
+- Coverage: `sec13f_manager_holdings` P1 cleanup after the legacy parser fix: 4 source-verified whole-book replacements (Oaktree `0000949509` 2011-03-31, Pabrai `0001549575` 2012-12-31 and 2013-03-31, Vulcan `0001556785` 2012-09-30) and all-nine-amount NULL in 62 structurally corrupt books
+- Pages: [TODO](./TODO.md), [Run the pipeline](./guides/run-the-pipeline.md)
+- Evidence: local ignored `reports/validate/2026-10-07-superinvestor-legacy-p1/` (`_out/repair_manifest.json`, `_out/apply_repair.sql`, `_scripts/build_apply_sql.py`, table dump `_out/sec13f_manager_holdings_pre_repair_2026-10-08.dump`); the 4 books were re-read live from SEC with the merged parser and matched the manifest's after-rows exactly
+- Operational boundary: user-authorized; live rows matched the manifest before-state (9,416 rows, 0 drift), a rolled-back dry run passed, then one psql transaction committed 162 updates, 1 deletion and 9,162 NULL updates (the 66 books now hold 9,415 rows). No source recovery, cube rebuild or push; `cube_part_prices` and `build-institutionals -F` remain the P2 follow-up.
+- Documentation note: the OpenKnowledge MCP refused these wiki writes on disk ("document path could not be resolved"), so the three pages were edited directly at the user's request.
+
+## 2026-10-08 - 8-K item FutureWarning silenced
+- Change: `fetch_8k_edgar.py` filters edgartools' `CurrentReport[...] found no such item` FutureWarning (absent item = empty text, already handled); test `test_8k_item_absent_from_parsed_body_is_silent_and_empty`.
+- Pages: [Data sources](./reference/data-sources.md)
+- Documentation note: OpenKnowledge refused the disk write, so the pages were edited directly.
+
+## 2026-10-08: refresh — identity manual review
+
+- Profile: internal/standard
+- source_commit: ebc78771 (branch `harness/identity-manual-review`)
+- Coverage: the 2026-10-08 `identity_tables` manual items resolved in `configs/sec` (seven `same_entity` acquired-target / LBO verdicts incl. VMRK/AvalonBay, same-CIK symbol renames, 12 evidenced `form345` rejections, five FINRA seam market boundaries); tape-mix flags decided by the stored `security_master` are information, not action
+- Pages: [Data sources](./reference/data-sources.md), [TODO](./TODO.md)
+- Evidence: `reports/validate/2026-10-08-identity-manual-review/` (`01-research.md` price-continuity audit, `03-implementation.md`)
+- Operational boundary: no database write; the next `identity_tables` → `identity_propagate` DAG run applies it.
+
+## 2026-10-08: refresh — dei cover-page symbol parser
+
+- Profile: internal/standard
+- source_commit: branch `harness/dei-symbol-parser`
+- Coverage: `parse_symbol_field` keeps a slash series code on its issuer (`BDX/26A` → `BDX-26A`, `MS/PL` → `MS-PL`); `notes-download` drops `dei:TradingSymbol` facts dimensioned on `LegalEntityAxis` (subsidiary securities on combined covers). Removes `F` from Ford Motor Credit, `GM` from GM Financial, `PG` from BAC/MS, `PM` from Vornado, `SO` from Southern Power
+- Pages: [Data sources](./reference/data-sources.md), [TODO](./TODO.md)
+- Evidence: `reports/validate/2026-10-08-dei-symbol-parser/` (offline replay of the 2019+ Notes zips: conflicts 43 → 2, no universe filer loses its own ticker)
+- Operational boundary: no database write; a `notes-download --full` recapture applies it.

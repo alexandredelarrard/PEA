@@ -21,7 +21,6 @@ from __future__ import annotations
 # Measured 2026-09-05 against `fundamentals_history` with
 #   select count("<col>")::float / count(*) from fundamentals_history
 SEC_COVERAGE: list[tuple[str, str, str]] = [
-    ("employees_sec", "75.7%", "*already used* — the whole workforce family"),
     ("regime_sec", "11.6%", "filer-type conditioning"),
     ("goodwill_sec", "10.2%", "a true ex-**goodwill** ROIC (today's deduction is goodwill **and** other intangibles, combined)"),
     ("intangiblesExGoodwill_sec", "7.1%", "the other half of that split"),

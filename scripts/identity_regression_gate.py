@@ -30,7 +30,6 @@ from src.constants.constants import CANONICAL_ROLES, SECONDARY_CLASS  # noqa: E4
 from src.data_extract.utils.common.entity_lineage import entity_by_cik_map, entity_or_singleton, load_d19_allowlist, roster_cik_map  # noqa: E402
 from src.data_extract.utils.common.identity import FilingScope, Identity, UnknownUniverseTickerError, load_identity  # noqa: E402
 from src.data_extract.utils.common.registrant import FORM_POLICY, Combine  # noqa: E402
-from src.data_extract.utils.common.security_master import squash  # noqa: E402
 from src.data_extract.utils.common.symbol_tenure import normalise_market_symbol  # noqa: E402
 from src.data_extract.utils.fundamentals.build_history import keep_window_owner_filings  # noqa: E402
 from src.data_extract.utils.fundamentals_sharadar.field_map import load_field_map  # noqa: E402
@@ -39,7 +38,7 @@ from src.data_extract.utils.institutionals.security_tape import SUMMED_ROLES  # 
 from src.data_store.schema import Tables  # noqa: E402
 from src.utils.filer_tables import PURGE_TABLES, FilerTable  # noqa: E402
 from src.utils.predecessor_series import load_predecessor_series  # noqa: E402
-from src.utils.string import normalise_ticker, pad_cik, pad_cik_series, yahoo_symbol  # noqa: E402
+from src.utils.string import normalise_ticker, pad_cik, pad_cik_series, squash, yahoo_symbol  # noqa: E402
 from src.utils.universe import load_universe_tickers  # noqa: E402
 
 log = logging.getLogger("identity_regression_gate")

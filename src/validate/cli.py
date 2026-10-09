@@ -36,6 +36,7 @@ from src.context import get_config_context
 from src.data_store.schema import resolve
 from src.utils.cli_helper import SpecialHelpOrder
 from src.validate import checks
+from src.validate.checks.employees import check_employees
 from src.validate.checks.identity import check_identity
 from src.validate.io import OUT_DIR, run_dir, write_result
 from src.validate.io import pull as pull_snapshot
@@ -167,4 +168,32 @@ def identity(out: str, config_path: str, tickers: str | None) -> None:
     report.removals.to_csv(run_dir(out) / OUT_DIR / "identity_pending_removals.csv", index=False)
     click.echo(report.result.summary())
     click.echo(f"  -> {path} (+ identity_flags.csv, identity_pending_removals.csv)")
+    sys.exit(EXIT[report.result.status])
+
+
+@cli.command(
+    name="employees",
+    help="fundamentals_employees per ticker: owned 10-K coverage (cached EDGAR index), status mix, provenance, identity, basis switches, scope jumps.",
+)
+@click.option(*OUT_ARGS, **cast(dict[str, Any], OUT_KWARGS))
+@click.option(*CONFIG_ARGS, **cast(dict[str, Any], CONFIG_KWARGS))
+@click.option(*TICKERS_ARGS, **cast(dict[str, Any], TICKERS_KWARGS))
+def employees(out: str, config_path: str, tickers: str | None) -> None:
+    _, context = get_config_context(config_path, use_cache=False, save=False)
+    started = time.perf_counter()
+    names = [t.strip().upper() for t in tickers.split(",")] if tickers else None
+    report = check_employees(context, tickers=names)
+    report.result.scope.setdefault("elapsed_s", round(time.perf_counter() - started, 1))
+    path = write_result(out, report.result)
+    files = {
+        "per_ticker": report.per_ticker,
+        "missing_dates": report.missing,
+        "stale_rows": report.stale,
+        "scope_jumps": report.jumps,
+        "basis_switches": report.switches,
+    }
+    for name, frame in files.items():
+        frame.to_csv(run_dir(out) / OUT_DIR / f"employees_{name}.csv", index=False)
+    click.echo(report.result.summary())
+    click.echo(f"  -> {path} (+ {', '.join(f'employees_{name}.csv' for name in files)})")
     sys.exit(EXIT[report.result.status])

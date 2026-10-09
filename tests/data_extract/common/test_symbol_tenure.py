@@ -226,6 +226,20 @@ _SYMBOL_FIELDS: list[tuple[str, tuple[str, ...] | None]] = [
     ("TAP.A, TAP", ("TAP-A", "TAP")),
     ("FCE A/FCE", ("FCE-A", "FCE")),
     ("KVA / KVB", ("KVA", "KVB")),
+    ("MOGA/MOGB", ("MOGA", "MOGB")),
+    ("PETV/PETVW", ("PETV", "PETVW")),
+    ("BDX/26A", ("BDX-26A",)),
+    ("CE /26A", ("CE-26A",)),
+    ("F/26A", ("F-26A",)),
+    ("GS/43PE", ("GS-43PE",)),
+    ("MS/PL", ("MS-PL",)),
+    ("ETI/PR", ("ETI-PR",)),
+    ("SOR/PR", ("SOR-PR",)),
+    ("BFS/PRD", ("BFS-PRD",)),
+    ("BIR/PR.A", ("BIR-PR-A",)),
+    ("CANO/WS", ("CANO-WS",)),
+    ("C/28", ()),
+    ("12/14/18", ()),
     ("FNF, FIS", ("FNF", "FIS")),
     ("L; LMC.B", ("L", "LMC-B")),
     ("ALF A", ("ALF-A",)),
@@ -331,7 +345,8 @@ def test_symbol_fields_normalise_to_roster_spelling():
     print(f"  {len(_SYMBOL_FIELDS)} known-truth fields: {n_lists} multi-symbol lists, {n_placeholders} placeholders, {n_noise} noise")
     print("  '(BBT)'->BBT  '[FB]'->FB  'NYSE: GLW'->GLW  'BFA/BFB'->BFA,BFB  'BRK.B'/'BRK/B'->BRK-B  'BRKB' stays")
     print("  'ALF A'->ALF-A  'N O G'->NOG  'OWL ROCK T'->noise: whitespace never splits a list, so no stray single-letter ticker appears")
-    print("  OK: lists split before the share-class rule; a slash before one letter is a class, not a list")
+    print("  'BDX/26A'->BDX-26A  'MS/PL'->MS-PL  'CANO/WS'->CANO-WS: a series code after a slash is one security, never PL/26A")
+    print("  OK: lists split before the share-class rule; a slash before one letter or a series code is a class, not a list")
 
 
 def test_junk_symbol_fields_derive_clean_tenures(tmp_path):
@@ -746,6 +761,27 @@ def test_repository_manual_tenure_covers_validated_ia3_boundaries():
         ("MRSH", "MMC", "MRSH", "2026-01-14", "0000062709", "0000062709"),
         ("RVTY", "PKI", "RVTY", "2023-05-16", "0000031791", "0000031791"),
         ("XYZ", "SQ", "XYZ", "2025-01-21", "0001512673", "0001512673"),
+        # 2026-10-08 identity review: same-CIK renames and successor CIKs, each dated by an SEC accession
+        ("AON", "AOC", "AON", "2009-12-01", "0000315293", "0000315293"),
+        ("CB", "ACE", "CB", "2016-01-15", "0000896159", "0000896159"),
+        ("CBRE", "CBG", "CBRE", "2018-03-19", "0001138118", "0001138118"),
+        ("ECHO", "SATS", "ECHO", "2026-06-24", "0001415404", "0001415404"),
+        ("MNST", "HANS", "MNST", "2012-01-09", "0000865752", "0000865752"),
+        ("MSI", "MOT", "MSI", "2011-01-04", "0000068505", "0000068505"),
+        ("ZBH", "ZMH", "ZBH", "2015-06-29", "0001136869", "0001136869"),
+        ("VMRK", "EQR", "VMRK", "2026-08-18", "0000906107", "0000906107"),
+        ("VTRS", "MYL", "MYL", "2015-03-02", "0000069499", "0001623613"),
+        ("VTRS", "MYL", "VTRS", "2020-11-17", "0001623613", "0001792044"),
+        ("GOOGL", "GOOGL", "GOOGL", "2015-10-02", "0001288776", "0001652044"),
+    )
+    # (ticker, symbol, cik, valid_from, valid_to): symbol handoffs and closed tenures with one exact interval
+    intervals = (
+        ("FOXA", "FOX", "0001754301", "2019-03-19", None),
+        ("NWSA", "NWS", "0001564708", "2013-07-01", None),
+        ("WBD", "DISCA", "0001437107", "2008-09-18", "2022-04-11"),
+        ("APTV", "DLPH", "0001521332", "2011-11-17", "2017-12-05"),
+        ("VMRK", "AVB", "0000915912", "2006-01-04", "2026-08-18"),
+        ("GOOGL", "GOOGL", "0001288776", "2014-04-03", "2015-10-02"),
     )
 
     for ticker, old_symbol, new_symbol, boundary, old_cik, new_cik in transitions:
@@ -757,8 +793,15 @@ def test_repository_manual_tenure_covers_validated_ia3_boundaries():
             f"{ticker}: expected one half-open {old_symbol}/{old_cik} -> {new_symbol}/{new_cik} transition at {boundary}"
         )
 
+    for ticker, symbol, cik, start, end in intervals:
+        rows = manual[manual["canonical_ticker"].eq(ticker) & manual["symbol"].eq(symbol) & manual["issuer_cik"].eq(cik)]
+        ends = rows["valid_to"].isna() if end is None else rows["valid_to"].eq(pd.Timestamp(end))
+        exact = rows[rows["valid_from"].eq(pd.Timestamp(start)) & ends]
+        assert len(exact) == 1, f"{ticker}: expected one curated {symbol}/{cik} [{start}, {end or 'open'})"
+
     print("\n=== SANITY CHECK: repository IA-3 manual boundaries ===")
     print(f"  {len(transitions)} transitions have one exact old end and one exact new start")
+    print(f"  {len(intervals)} handoff/closed intervals are curated exactly (FOX, NWS, DISCA, DLPH, AVB, GOOGL)")
     print("  OK: ticker changes and successor-CIK changes are explicit; no date is guessed")
 
 
@@ -860,6 +903,38 @@ def test_repository_rejections_cite_their_accessions_and_never_hit_a_curated_int
     print("\n=== SANITY CHECK: repository rejections ===")
     for row in rejected.itertuples(index=False):
         print(f"  {row.symbol}/{row.issuer_cik} {row.valid_from.date()}..{row.valid_to.date()}: {len(row.accessions)} accession(s)")
+
+
+def test_repository_rejections_cover_the_2026_10_08_review():
+    """Each mis-typed or stale form345 tenure of the review is rejected and cites every accession in the cached zips."""
+    rejected = load_rejected_symbol_tenure(Path("configs"))
+    expected = {
+        ("FEC", "0001031296"): 4,
+        ("NDNS", "0000072331"): 5,
+        ("NLFX", "0001065280"): 3,
+        ("IDEXX", "0000874716"): 2,
+        ("AAM", "0001411494"): 22,
+        ("BRKB", "0001067983"): 4,
+        ("SCH", "0000316709"): 11,
+        ("VIA", "0000813828"): 21,
+        ("VIAB", "0000813828"): 21,
+        ("B", "0000030554"): 8,
+        ("PCG-PR", "0000075488"): 4,
+        ("HUB-A", "0000048898"): 4,
+    }
+    found = {(row.symbol, row.issuer_cik): row for row in rejected.itertuples(index=False)}
+    missing = sorted(set(expected) - set(found))
+    assert not missing, f"not rejected: {missing}"
+    counts = {pair: len(found[pair].accessions) for pair in expected}
+    assert counts == expected, counts
+    for pair in expected:
+        accessions = found[pair].accessions
+        assert len(set(accessions)) == len(accessions), f"{pair}: duplicate accession cited"
+    print("\n=== SANITY CHECK: 2026-10-08 rejections ===")
+    for (symbol, cik), n in expected.items():
+        row = found[(symbol, cik)]
+        print(f"  {symbol:7s}/{cik} {row.valid_from.date()}..{row.valid_to.date()}: {n} accession(s), all distinct")
+    print(f"  OK: {len(expected)} typo/stale/fragment tenures rejected with every cached Form 3/4/5 accession cited")
 
 
 # --------------------------------------------------------------------------- #

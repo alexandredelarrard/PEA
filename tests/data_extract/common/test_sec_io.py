@@ -8,9 +8,11 @@ the sleeper and the rate limiter are injected, nothing waits for real.
 
 from __future__ import annotations
 
+import gc
 import io
 import re
 import tokenize
+import weakref
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,6 +24,7 @@ import pytest
 import requests
 from edgar.exceptions import TooManyRequestsError
 from edgar.sgml.sgml_header import FilingHeader
+from edgar.sgml.sgml_parser import SECHTMLResponseError
 from omegaconf import OmegaConf
 
 from src.data_extract.utils.common import edgar_fillings as ef
@@ -148,6 +151,22 @@ def test_edgartools_network_errors_are_not_retried(waits: list[float]) -> None:
     print("  an edgartools network error (already retried by edgartools) raises TransientReadError after 1 call.")
 
 
+def test_sec_html_page_in_place_of_a_filing_is_retried_with_waits(waits: list[float]) -> None:
+    """The log's `SECHTMLResponseError ... failed after 1 attempt(s)`: edgartools raises it status-less."""
+    html = SECHTMLResponseError("SEC returned HTML or XML content instead of expected SGML filing data.")
+    call, calls = _scripted([html, html, "parsed"])
+    assert sec_io.sec_call(call, label="period_of_report") == "parsed"
+    assert len(calls) == 3 and waits == [5.0, 20.0]
+
+    waits.clear()
+    call, calls = _scripted([html])
+    with pytest.raises(TransientReadError):
+        sec_io.sec_call(call, label="period_of_report")
+    assert len(calls) == 3 and waits == [5.0, 20.0]
+    print("\n=== SANITY CHECK: SEC HTML page = throttle ===")
+    print("  SECHTMLResponseError retries (5 s, 20 s) and succeeds on call 3; a persistent one raises TransientReadError after 3 calls, not 1.")
+
+
 def test_deterministic_errors_pass_through(waits: list[float]) -> None:
     call, calls = _scripted([ValueError("bad xml"), "parsed"])
     with pytest.raises(ValueError, match="bad xml"):
@@ -193,6 +212,38 @@ def test_filing_header_retries_an_empty_header_then_raises(waits: list[float], m
     assert waits == [5.0, 20.0]
     print("\n=== SANITY CHECK: 503 HTML header fixture ===")
     print("  edgartools' empty fallback header is re-fetched (cache dropped) and, when it persists, raises TransientReadError.")
+
+
+class _Document:
+    def __init__(self, submission: object) -> None:
+        self.submission = submission  # edgartools' documents and attachments point back at their submission
+        self.content = "x" * 1_000_000
+
+
+class _Submission:
+    __slots__ = ("header", "_documents_by_sequence", "__dict__", "__weakref__")
+
+    def __init__(self) -> None:
+        self.header = SimpleNamespace(text="<SEC-HEADER>")
+        self._documents_by_sequence = [_Document(self)]
+        self.attachments = [_Document(self)]
+
+
+def test_forget_sgml_frees_the_submission_without_the_cyclic_collector() -> None:
+    """A dropped submission sits in reference cycles with its documents; forgetting it must free it by refcount,
+    because the cyclic collector rarely reaches it in a long walk."""
+    filing = edgar.Filing(cik=1, company="X", form="10-K", filing_date="2024-01-02", accession_no="0001104659-24-000001")
+    filing._sgml = _Submission()
+    held = [weakref.ref(filing._sgml), weakref.ref(filing._sgml._documents_by_sequence[0]), weakref.ref(filing._sgml.attachments[0])]
+    gc.disable()
+    try:
+        sec_io.forget_sgml(filing)
+        alive = [ref() is not None for ref in held]
+    finally:
+        gc.enable()
+    assert filing._sgml is None and alive == [False, False, False], alive
+    print("\n=== SANITY CHECK: forget_sgml ===")
+    print("  with the cyclic collector off, the submission, its documents and its attachments are freed once forgotten.")
 
 
 def test_download_retries_a_broken_stream_and_never_leaves_a_part_file(waits: list[float], tmp_path: Path) -> None:

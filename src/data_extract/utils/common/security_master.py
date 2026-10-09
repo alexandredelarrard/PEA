@@ -37,7 +37,7 @@ from src.data_store.schema import Tables
 from src.utils.cutover_continuity import ShareExchange
 from src.utils.identity_flags import FLAG_COLUMNS, cik_activity, identity_flags, log_identity_flags
 from src.utils.predecessor_series import SECURITY_MANUAL_FILE
-from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
+from src.utils.string import normalise_ticker, pad_cik, pad_cik_series, squash
 
 #: The stored FTD line columns the master derives from.
 _OBSERVATION_COLUMNS = ("date", "trade_date", "cusip", "source_symbol", "description", "price", "period")
@@ -143,13 +143,6 @@ class SecurityManualError(ValueError):
 
 
 # --------------------------------------------------------------------------- small pure helpers
-
-
-def squash(symbol: object) -> str:
-    """The comparison key of a symbol: upper case without class separators (`BRK-B`, `BRK/B`, `BRK.B` -> `BRKB`)."""
-    if symbol is None or (not isinstance(symbol, str) and pd.isna(cast(Any, symbol))):
-        return ""
-    return re.sub(r"[\s\-./]", "", str(symbol)).upper()
 
 
 def trade_dates(settlement: pd.Series) -> pd.Series:

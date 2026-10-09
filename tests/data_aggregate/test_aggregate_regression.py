@@ -265,6 +265,12 @@ from tests.data_aggregate.aggregate_fingerprint import BASELINE, compute
 #     moved: f_ic_ftd_to_adv20, f_ic_shortvol_market_coverage
 #
 # exactly the two denominators; the other eight short-flow legs did not move.
+#
+# Spliced an ELEVENTH time, 2026-10-07, when the workforce features moved to `fundamentals_employees`
+# (employee-headcount-coverage P6). Only `panel.employee` was replaced. Fed one basis-`total` row per
+# history row through a same-day join, the new path reproduced all four old feature frames exactly;
+# the pinned fixture (`employee_rows`) adds `full_part` rows, a basis switch and status-only rows,
+# and the diff read 37 outputs, 36 BYTE-IDENTICAL, `panel.employee` rows 43,010 and cols 7 unchanged.
 DECLARED_DRIFT: frozenset[str] = frozenset()
 
 
@@ -511,7 +517,7 @@ def test_baseline_covers_every_panel_and_deduped_primitive(baseline):
         ("industry_group", "the finer gate, same failure mode"),
         ("revenueGrowth", "a CUBE_TIME_COLUMN: only the cube can compute it"),
         ("earningsGrowth", "ditto"),
-        ("employees_sec", "the whole workforce family reads this exact name"),
+        ("employees_sec", "`aggregate_fingerprint.employee_rows` builds the workforce fixture from this frozen column"),
         ("intangibles", "the ROIC deduction; the bare `goodwill` is written by no producer"),
         ("dividendsPaid", "payout_ratio and sustainable_growth_rate both need its sign"),
     ):

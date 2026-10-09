@@ -40,7 +40,7 @@ class FilerTable:
     windowed: bool = False
 
 
-#: Every stored table that keeps a filer CIK per row. `def14a_llm` and `fundamentals_employees` keep none.
+#: Every stored table that keeps a filer CIK per row. `def14a_llm` keeps none.
 PURGE_TABLES: tuple[FilerTable, ...] = (
     FilerTable(Tables.sec_8k, "cik", "filing_date", "accession_number", dated=True),
     FilerTable(Tables.sec_8k_votes, "cik", "filing_date", "accession_number", dated=True),
@@ -55,6 +55,7 @@ PURGE_TABLES: tuple[FilerTable, ...] = (
     FilerTable(Tables.def14a_executive_comp, "cik", "as_of", "accession_number", windowed=True),
     FilerTable(Tables.def14a_director_comp, "cik", "as_of", "accession_number", windowed=True),
     FilerTable(Tables.def14a_ownership, "cik", "as_of", "accession_number", windowed=True),
+    FilerTable(Tables.fundamentals_employees, "cik", "as_of", "accession_number", windowed=True),
     FilerTable(Tables.notes_num, "cik", "filed", "adsh", windowed=True),
     FilerTable(Tables.notes_text, "cik", "filed", "adsh", windowed=True),
     FilerTable(Tables.pension_facts, "cik", "filed", "adsh", windowed=True),

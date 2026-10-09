@@ -8,6 +8,8 @@ live `Company(ticker).get_filings(...)` call.
 
 from __future__ import annotations
 
+import importlib
+import warnings
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -19,6 +21,7 @@ from src.data_extract.transformers.step_extract_institutionals import StepExtrac
 from src.data_extract.transformers.step_extract_structure import StepExtractStructure
 from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp, parse_filing_rows, run_edgar_fetch
 from src.data_extract.utils.common.sec_io import ParseFailureError
+from src.data_extract.utils.institutionals import fetch_8k_edgar
 from src.data_extract.utils.institutionals.fetch_8k_edgar import SEC_8K_FETCH, _filing_row, submission_filings
 from src.data_extract.utils.institutionals.fetch_13d_edgar import (
     _ITEM_ANCHORS,
@@ -156,6 +159,25 @@ def test_8k_filing_row_reads_current_report_flags():
     assert all(r["n_items"] == 2 for r in rows)
     assert all(r["is_amendment"] == 0.0 for r in rows)
     assert all(r["cik"] == "0000320193" for r in rows)
+
+
+def test_8k_item_absent_from_parsed_body_is_silent_and_empty():
+    """An item code in the index but missing from the parsed report (edgartools 5.5x warns
+    `CurrentReport['Item 7.01'] found no such item`) yields empty text with no FutureWarning."""
+
+    class _Report(SimpleNamespace):
+        def __getitem__(self, key: str):
+            warnings.warn(f"CurrentReport['{key}'] found no such item in this filing. Items are optional.", FutureWarning, stacklevel=2)
+
+    filing = _fake_8k_filing(obj=_Report(has_earnings=True, has_press_release=False))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        importlib.reload(fetch_8k_edgar)  # re-installs the module filter on top of "always"
+        rows = fetch_8k_edgar._filing_row("MAA", FilingStamp.of(filing, "0000320193"))
+    leaked = [w for w in caught if "found no such item" in str(w.message)]
+    assert [r["item_text"] for r in rows] == ["", ""]
+    assert not leaked
+    print(f"\n=== SANITY CHECK: {len(rows)} rows, empty text, {len(leaked)} leaked FutureWarnings. Validated. ===")
 
 
 def test_8k_filing_row_survives_failed_obj_parse():

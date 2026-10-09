@@ -32,7 +32,7 @@ from src.utils.filer_tables import (
     window_owner_mask,
     windowed_filer_mask,
 )
-from src.utils.identity_flags import FLAG_COLUMNS, KIND_ORDER, MARGIN, cik_activity, identity_flags, log_identity_flags
+from src.utils.identity_flags import FLAG_COLUMNS, KIND_ORDER, MARGIN, MASTER_COLUMNS, cik_activity, identity_flags, log_identity_flags
 from src.utils.predecessor_series import load_vendor_series, with_overrides
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
 from src.validate.checks.traded_security import traded_security_flags
@@ -233,7 +233,8 @@ def _flags(context: Context, lineage: pd.DataFrame) -> pd.DataFrame:
     )
     activity = cik_activity(evidence if evidence is not None else pd.DataFrame(columns=_EVIDENCE_COLUMNS))
     redundant = frozenset(normalise_ticker(t) for t in context.config.data_extract.redundant_ticks)
-    return identity_flags(lineage, activity, redundant_symbols=redundant)
+    master = context.store.load(Tables.security_master, columns=list(MASTER_COLUMNS), optional=True)
+    return identity_flags(lineage, activity, redundant_symbols=redundant, master=master)
 
 
 def _removal_findings(removals: pd.DataFrame) -> list[Finding]:

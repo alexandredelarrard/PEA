@@ -438,8 +438,9 @@ CREATE INDEX IF NOT EXISTS ix_fundamentals_history_sec_ticker ON "fundamentals_h
 -- against `fundamentals_history_sec.as_of` on 14 tickers x 5 years it matched 279 of 280
 -- (99.64%), the single miss being a 10-K/A Sharadar has no row for.
 --
--- EXACTLY 91 columns: 3 keys + the 60 HISTORY_STATEMENT_ORDER names +
--- `stockholdersEquityInclNci` + `employees` + `regime` + the 25 Sharadar extras. The list
+-- EXACTLY 92 columns: 3 keys + the 60 HISTORY_STATEMENT_ORDER names +
+-- `stockholdersEquityInclNci` + `regime` + `sharesOutstandingPit` + the 26 Sharadar extras.
+-- Headcount is not here: the cube reads `fundamentals_employees` directly. The list
 -- is declared in `schema.py`'s `read_columns` and asserted by the builder.
 --
 -- NAMING, and it is load-bearing rather than cosmetic:
@@ -453,11 +454,11 @@ CREATE INDEX IF NOT EXISTS ix_fundamentals_history_sec_ticker ON "fundamentals_h
 --     (`cashneq` -> `cashAndEquivalents`, `ncfx` -> `exchangeRateEffect`). The vendor
 --     spelling survives only in `fundamentals_sharadar`, which is the table it belongs to.
 --
--- The 15 SEC-OWNED columns (D18): `goodwill`, `intangiblesExGoodwill`, `ppeGross`,
+-- The 14 SEC-OWNED columns (D18): `goodwill`, `intangiblesExGoodwill`, `ppeGross`,
 -- `accumulatedDepreciation`, `minorityInterest`, `operatingLeaseLiability`,
 -- `financeLeaseLiability`, the 6 regime top-line legs (`premiumsEarned`,
 -- `netInterestIncome`, `noninterestIncome`, `netInvestmentIncome`,
--- `realizedInvestmentGains`, `rentalIncome`), `employees` and `regime`. They carry the SEC
+-- `realizedInvestmentGains`, `rentalIncome`) and `regime`. They carry the SEC
 -- roster's coverage, not Sharadar's, and that ASYMMETRY IS THE DESIGN: a ticker outside the
 -- SEC roster has them NULL rather than falling back, because a per-row fallback is exactly
 -- the mid-series source switch D14 forbids.
@@ -553,11 +554,10 @@ CREATE TABLE IF NOT EXISTS "fundamentals_history" (
     -- other consumer wants `sharesOutstanding` on the vendor basis, where F(d) cancels
     -- against `close_split`.
     "sharesOutstandingPit" DOUBLE PRECISION,
-    -- the roll-up that needs BOTH sources (its NCI leg is SEC-owned), then the two
-    -- SEC-owned added columns. `regime` is the ONE TEXT column among the 88 values.
+    -- the roll-up that needs BOTH sources (its NCI leg is SEC-owned), then the
+    -- SEC-owned added column. `regime` is the ONE TEXT column among the 89 values.
     "optionOverhang" DOUBLE PRECISION,
     "stockholdersEquityInclNci" DOUBLE PRECISION,
-    "employees_sec" DOUBLE PRECISION,
     -- the 26 Sharadar EXTRAS, under their own vendor names (D16: there is nothing to
     -- rename them to). Eight of these revive currently-dead cube inputs.
     "regime_sec" TEXT,
@@ -635,20 +635,29 @@ CREATE TABLE IF NOT EXISTS "fundamentals_reason_codes" (
 CREATE INDEX IF NOT EXISTS ix_fundamentals_reason_codes_code ON "fundamentals_reason_codes" ("dc_code");
 
 -- [extract] fundamentals_employees  (pk: ticker, as_of)
--- Employee headcount, parsed out of the 10-K BODY TEXT (there is no GAAP concept for it and
--- US filers essentially never tag `dei:EntityNumberOfEmployees`). Its own table because the
--- source is prose: in the wide table one failed regex would fail the whole snapshot, and a
--- text-parsed number sitting among 67 XBRL-sourced columns reads as if it were one.
---
--- Disclosed ANNUALLY, so `as_of` is a 10-K (or 10-K/A) filing date and a consumer
--- forward-fills into the interim quarters -- `build_history.carry_latest_known` is that
--- alignment. `employees` keeps its tier and authority in the KPI catalogue; it is only out
--- of the wide table's column contract.
+-- Employee headcount, read from 10-K prose (there is no GAAP concept for it). One row per
+-- 10-K filing date `as_of`, from filing `accession_number` filed by `cik`. The stated
+-- components `employees_total` / `employees_full_time` / `employees_part_time`, the `basis`
+-- they support (total, full_part, full_time_only, fte, total_incl_contractors), the decided
+-- `status`, the `source_document` read (primary or an exhibit type) and `source_quote`, a
+-- JSON object holding one verbatim quote per kept component. A filing with no usable count
+-- is a row with NULL components and its status, so the row marks the date decided.
+-- `identity-propagate` purges rows by `cik`.
 
 CREATE TABLE IF NOT EXISTS "fundamentals_employees" (
     "ticker" TEXT NOT NULL,
     "as_of" DATE NOT NULL,
-    "employees" DOUBLE PRECISION,
+    "cik" TEXT,
+    "accession_number" TEXT NOT NULL,
+    "form" TEXT,
+    "employees_total" BIGINT,
+    "employees_full_time" BIGINT,
+    "employees_part_time" BIGINT,
+    "basis" TEXT,
+    "status" TEXT NOT NULL,
+    "source_document" TEXT,
+    "source_quote" TEXT,
+    "measurement_period" TEXT,
     PRIMARY KEY ("ticker", "as_of")
 );
 

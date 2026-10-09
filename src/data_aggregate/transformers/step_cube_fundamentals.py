@@ -46,7 +46,11 @@ from src.data_aggregate.utils.common.price_frames import (
 )
 from src.data_aggregate.utils.fundamentals.dividend_features import build_dividend_feature_panel
 from src.data_aggregate.utils.fundamentals.earnings_features import build_earnings_feature_panel
-from src.data_aggregate.utils.fundamentals.employee_features import build_employee_feature_panel
+from src.data_aggregate.utils.fundamentals.employee_features import (
+    EMPLOYEE_COLUMNS,
+    build_employee_feature_panel,
+    part_time_weight,
+)
 from src.data_aggregate.utils.fundamentals.feature_views import FEATURE_COLUMNS, HISTORY_FEATURES
 from src.data_aggregate.utils.fundamentals.fundamental_features import (
     build_fundamental_feature_panel,
@@ -59,6 +63,8 @@ from src.data_store.schema import Tables
 from src.utils.step import Step
 
 _INCREMENTAL_SOURCE_YEARS = 6
+# Employee rows reach back this far before the history window, so its first growth has a prior year.
+_EMPLOYEE_LOOKBACK_YEARS = 2
 
 
 class StepCubeFundamentals(Step):
@@ -108,6 +114,7 @@ class StepCubeFundamentals(Step):
             frames.universe,
             since=source_since,
         )
+        employees = self._load_employees(frames.universe, since=source_since)
 
         # ONE point-in-time cache for all five builders (see the module docstring)
         pit = PitFrames(fundamentals, frames.trading_index, frames.close_split, frames.level_factor)
@@ -142,7 +149,7 @@ class StepCubeFundamentals(Step):
 
         # employees
         merger.add(
-            self._employee_panel(frames, fundamentals, pit, history_fields, output_since),
+            self._employee_panel(frames, fundamentals, employees, history_fields, output_since),
             "workforce",
             "No workforce features built.",
         )
@@ -159,7 +166,7 @@ class StepCubeFundamentals(Step):
         panel = self._restrict_to_skeleton(panel, frames.skeleton())
         if not window.is_full:
             panel = panel.reindex(columns=["date", "ticker", *FEATURE_COLUMNS])
-        del frames, fundamentals, earnings, pit
+        del frames, fundamentals, earnings, employees, pit
 
         n = write_part(self._store, Tables.cube_part_fundamentals, panel, window, drop_empty=True)
         if n == COLUMNS_CHANGED:
@@ -262,9 +269,11 @@ class StepCubeFundamentals(Step):
         fetcher: str,
         universe: tuple[str, ...],
         since: pd.Timestamp | None = None,
+        columns: tuple[str, ...] | None = None,
     ) -> pd.DataFrame | None:
         df = self._context.store.load(
             table,
+            columns=list(columns) if columns is not None else None,
             optional=True,
             where={"ticker": list(universe)},
             since=since,
@@ -273,6 +282,17 @@ class StepCubeFundamentals(Step):
             self._log.warning("No %s -> related features skipped (run %s).", what, fetcher)
             return None
         return df
+
+    def _load_employees(self, universe: tuple[str, ...], since: pd.Timestamp | None) -> pd.DataFrame | None:
+        """`fundamentals_employees` keys, components and basis, from `_EMPLOYEE_LOOKBACK_YEARS` before `since`."""
+        return self._load_optional(
+            Tables.fundamentals_employees,
+            "employee headcount",
+            "fundamentals-employees",
+            universe,
+            since=None if since is None else pd.Timestamp(since) - pd.DateOffset(years=_EMPLOYEE_LOOKBACK_YEARS),
+            columns=EMPLOYEE_COLUMNS,
+        )
 
     @staticmethod
     def _restrict_to_skeleton(
@@ -375,18 +395,20 @@ class StepCubeFundamentals(Step):
         self,
         frames: PriceFrames,
         fundamentals: pd.DataFrame | None,
-        pit: PitFrames,
+        employees: pd.DataFrame | None,
         history_fields: dict[str, pd.DataFrame] | None,
         output_since: pd.Timestamp | None,
     ) -> pd.DataFrame | None:
-        """Revenue per employee and YoY headcount growth, from the `employees` column of
-        `fundamentals_history` (10-K body-text headcount)."""
-        if fundamentals is None:
+        """Revenue per employee, headcount growth and elasticity: `fundamentals_employees` joined
+        point-in-time onto `fundamentals_history`, on the `FT + α·PT` headcount proxy."""
+        if fundamentals is None or employees is None:
             return None
         return build_employee_feature_panel(
             fundamentals,
+            employees,
             frames.peers,
             frames.trading_index,
+            part_time_weight=part_time_weight(self._cfg),
             history_fields=history_fields,
             output_since=output_since,
         )

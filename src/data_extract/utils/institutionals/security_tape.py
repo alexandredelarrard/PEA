@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Collection, Mapping, Sequence
-from itertools import batched
 
 import numpy as np
 import pandas as pd
@@ -18,6 +17,7 @@ from src.constants.constants import CANONICAL_ROLES, SECONDARY_CLASS
 from src.context import Context
 from src.data_extract.utils.common.resume import recently_changed
 from src.data_store.schema import Table
+from src.utils.batching import batched_tuples
 from src.utils.filer_tables import filing_window
 from src.utils.string import normalise_ticker
 from src.utils.universe import load_universe_tickers
@@ -53,9 +53,7 @@ def nullable(values: pd.Series) -> pd.Series:
 
 def load_chunked(context: Context, table: Table, columns: Sequence[str], column: str, values: Sequence[str], size: int) -> list[pd.DataFrame]:
     """The non-empty loads of `table` where `column` is in each chunk of `values`."""
-    frames = [
-        context.store.load(table, columns=list(columns), where={column: list(chunk)}, optional=True) for chunk in batched(values, size, strict=False)
-    ]
+    frames = [context.store.load(table, columns=list(columns), where={column: list(chunk)}, optional=True) for chunk in batched_tuples(values, size)]
     return [frame for frame in frames if frame is not None]
 
 
@@ -108,7 +106,7 @@ def apply_grain(
             {"table": table.name, "ticker": str(ticker), "cik": "", "first_filed": first, "last_filed": last, "keys": len(group), "rows": len(group)}
         )
         if not dry_run:
-            for chunk in batched(sorted(group["date"]), KEY_CHUNK, strict=False):
+            for chunk in batched_tuples(sorted(group["date"]), KEY_CHUNK):
                 context.store.delete(table, where={"ticker": str(ticker), "date": chunk})
     if not dry_run and not write.empty:
         context.store.save(table, write)

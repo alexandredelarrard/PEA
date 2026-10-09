@@ -139,7 +139,15 @@
     "of the 20 bars before `before` over that of the 20 at or after it, as Yahoo serves it; the",
     "entry fires only while the observed jump sits within `level_basis.VOLUME_JUMP_TOL` of it,",
     "so a vendor fix is refused rather than divided twice. Applied by `StepCubePrices` and by",
-    "the secondary-class volume read of the short-flow features (`load_secondary_classes`)."
+    "the secondary-class volume read of the short-flow features (`load_secondary_classes`).",
+    "",
+    "## `seam_reviewed` -- a genuine move the seam invariant flagged and a person checked",
+    "",
+    "Read ONLY by the read-only validator (`src.validate.utils.prices`). It changes no data: no",
+    "price is rescaled or nulled, and the cube builder never looks at it. An entry `{\"date\", \"why\"}`",
+    "marks a flagged bar within a few days of that date as reviewed, so the gate reports it without",
+    "blocking. Use it only for a move that is anchor-clean and real; a defect belongs in one of the",
+    "repair sections above."
   ],
 
   "_APPROVED": {
@@ -302,5 +310,10 @@
         "approved": "user decision P30, 2026-10-05 (reports/validate/2026-10-02-entity-symbol-lineage, finding F-Q2e-1)"
       }
     ]
+  },
+
+  "seam_reviewed": {
+    "HON": [{"date": "2026-07-23", "why": "genuine move; anchor-clean"}],
+    "SPGI": [{"date": "2026-07-28", "why": "genuine move; anchor-clean"}]
   }
 }

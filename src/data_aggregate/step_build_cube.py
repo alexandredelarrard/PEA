@@ -82,8 +82,9 @@ class StepBuildCube(Step):
         never happened flows straight into momentum, vol, betas and every label. MNST carried
         exactly that for six weeks in 2026 and nothing noticed until an audit.
 
-        Only invariant 3 gates -- invariants 1 and 2 are reported. See
-        `src/validate/prices.gate` for why, measured."""
+        Two conditions gate: unexplained spike-and-revert rows over their budget, and a recent
+        undeclared unrebased seam. The other invariants are reported. See
+        `src/validate/utils/prices.gate`."""
         report = run_prices_validation(self._context)
         for result in report.invariants:
             self._log.info(result.summary())

@@ -39,7 +39,7 @@ from src.data_extract.utils.fundamentals.periods import (
     load_guards,
 )
 from src.data_store.schema import Tables
-from src.utils.string import pad_cik_series
+from src.utils.string import normalise_ticker, pad_cik_series
 
 #: Form precedence for a same-day collapse; keeps `publication_form` a scalar.
 FORM_PRECEDENCE: tuple[str, ...] = ("10-K", "10-K/A", "10-Q", "10-Q/A")
@@ -820,6 +820,18 @@ def _filer_count(facts: pd.DataFrame) -> int:
     return int(pad_cik_series(facts["cik"].dropna()).nunique()) if "cik" in facts.columns else 0
 
 
+def _seam_rule_windows(context: Context, ticker: str, filers: int) -> tuple[CikWindow, ...] | None:
+    """The windows the seam rule runs on, or None when it does not run: it runs for several filers, and for one filer
+    only when a window has a dated start (a `fresh_start` CIK) -- a single filer the roster does not hold is left as is."""
+    if filers == 0:
+        return None
+    identity = load_identity(context)
+    if filers == 1 and normalise_ticker(ticker) not in identity.roster_cik:
+        return None
+    windows = identity.filing_scope(ticker).windows
+    return windows if filers > 1 or any(window.valid_from is not None for window in windows) else None
+
+
 # ------------------------------------------------------------------- immutability ---
 
 #: The `fundamentals_facts` columns the replay reads (projected read, one ticker at a time).
@@ -1060,8 +1072,9 @@ def _ticker_facts(context: Context, ticker: str, seams: Mapping[str, pd.Timestam
     df_facts = context.store.load(Tables.fundamentals_facts, columns=list(FACT_COLUMNS), where={"ticker": ticker}, optional=True)
     if df_facts is None:
         return df_facts
-    if _filer_count(df_facts) > 1:
-        df_kept = keep_window_owner_filings(df_facts, load_identity(context).filing_scope(ticker).windows)
+    windows = _seam_rule_windows(context, ticker, _filer_count(df_facts))
+    if windows is not None:
+        df_kept = keep_window_owner_filings(df_facts, windows)
         set_aside = sorted(set(df_facts["accession_number"]) - set(df_kept["accession_number"]))
         if set_aside:
             context.log.info(
@@ -1175,8 +1188,8 @@ def build_fundamentals_history(
     so does a ticker whose lineage scope changed recently (`resume.recently_changed` on `as_of`) when its recomputed
     history differs from the stored one. `fetched` (filing dates a same-process fetch read, per ticker) and
     `full_fetch` (that fetch ran with `-F`) route back-dated reads to the full replay. A ticker whose facts come from
-    several CIKs reads its windows from the identity layer for the seam rule (`keep_window_owner_filings`); a declared
-    reverse acquisition then drops the pre-seam comparatives of its survivor's post-seam filings.
+    several CIKs, or whose window has a dated start (a `fresh_start` CIK), goes through the seam rule
+    (`keep_window_owner_filings`) on its identity-layer windows; a declared reverse acquisition then drops the pre-seam comparatives of its survivor's post-seam filings.
     Full builds run in a process pool of `data_extract.fundamentals_workers` (in-process for 1 worker or a single
     ticker); the parent reads, guards, saves and logs, in ticker order.
     """

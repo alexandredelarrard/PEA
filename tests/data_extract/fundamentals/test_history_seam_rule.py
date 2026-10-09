@@ -314,3 +314,76 @@ def test_post_seam_comparatives_of_a_reverse_acquisition_are_ignored(sqlite_stor
     print("  JCI plc FY2016 10-K: FY2015/FY2014 comparatives (old JCI's) dropped, its FY2016 kept; Q1-2017 10-Q: Dec-2015 quarter dropped")
     print("  Tyco's own FY2015 10-K and its 10-K/A filed after the seam (period of report 2015-09-25) kept; old JCI's 10-K set aside by H1")
     print(f"  DD (undeclared): all {len(seen['DD'])} facts kept, including DowDuPont's 2016 comparative")
+
+
+#: EXE: one CIK, fresh start at the 2021-02-10 bankruptcy emergence (register kind `fresh_start`).
+EXE = "0000895126"
+
+
+def _fresh_start_facts() -> pd.DataFrame:
+    """A pre-start 10-Q and a post-start 10-K whose comparative column reports a pre-2021 period."""
+    filings = [
+        ("exe-q3-2020", "10-Q", "2020-11-05", "2020-09-30", ("2020-09-30",)),
+        ("exe-fy-2020", "10-K", "2021-03-01", "2020-12-31", ("2020-12-31", "2019-12-31")),
+    ]
+    facts = pd.DataFrame(
+        [
+            {
+                "ticker": "EXE",
+                "cik": EXE,
+                "accession_number": accession,
+                "form": form,
+                "filing_date": pd.Timestamp(filed),
+                "period_of_report": pd.Timestamp(period),
+                "period_end": pd.Timestamp(end),
+                "field": "totalRevenue",
+                "value": 1.0,
+                "duration_type": "annual",
+            }
+            for accession, form, filed, period, ends in filings
+            for end in ends
+        ]
+    )
+    return facts.assign(**{column: None for column in FACT_COLUMNS if column not in facts.columns})
+
+
+def _replayed_facts(sqlite_store: Any, monkeypatch, identity) -> pd.DataFrame:
+    """The EXE facts `build_fundamentals_history` hands to the replay under `identity`."""
+    sqlite_store.save(Tables.fundamentals_facts, _fresh_start_facts().assign(fiscal_year=2020, period_days=365.0, is_amendment=False))
+    seen: dict[str, pd.DataFrame] = {}
+
+    def spy_build(ticker, facts, **kwargs):
+        seen[ticker] = facts
+        return TickerHistory(pd.DataFrame(), pd.DataFrame())
+
+    monkeypatch.setattr(mod, "build_ticker", spy_build)
+    monkeypatch.setattr(mod, "load_identity", lambda context: identity)
+    context = SimpleNamespace(store=sqlite_store, log=logging.getLogger("test.seam_rule"), config_dir="./configs")
+    mod.build_fundamentals_history(context, ["EXE"])
+    return seen["EXE"]
+
+
+def test_a_fresh_start_single_filer_sets_aside_its_pre_start_filings(sqlite_store: Any, monkeypatch, caplog):
+    """AC-005: EXE's only CIK is dated from 2021-02-10; a 10-Q filed before is set aside, the FY2020 10-K filed after
+    is kept with its 2019 comparative."""
+    identity = dated_identity([("EXE", EXE, "cik_window", "2021-02-10", None)], {"EXE": EXE})
+    with caplog.at_level(logging.INFO, logger="test.seam_rule"):
+        replayed = _replayed_facts(sqlite_store, monkeypatch, identity)
+
+    pairs = {(a, str(pd.Timestamp(e).date())) for a, e in zip(replayed["accession_number"], replayed["period_end"], strict=True)}
+    assert pairs == {("exe-fy-2020", "2020-12-31"), ("exe-fy-2020", "2019-12-31")}, pairs
+    assert "seam rule set aside 1 filing(s)" in caplog.text and "exe-q3-2020" in caplog.text
+    print("\n=== SANITY CHECK: AC-005 fresh-start single filer (EXE from 2021-02-10) ===")
+    print("  Q3-2020 10-Q filed 2020-11-05 set aside; FY2020 10-K filed 2021-03-01 kept with its 2019-12-31 comparative")
+
+
+def test_an_open_window_single_filer_keeps_every_filing(sqlite_store: Any, monkeypatch, caplog):
+    """Control: the same facts under an open window reach the replay unchanged, and nothing is logged as set aside."""
+    identity = dated_identity([("EXE", EXE, "cik_window", SENTINEL, None)], {"EXE": EXE})
+    with caplog.at_level(logging.INFO, logger="test.seam_rule"):
+        replayed = _replayed_facts(sqlite_store, monkeypatch, identity)
+
+    assert len(replayed) == len(_fresh_start_facts()) and set(replayed["accession_number"]) == {"exe-q3-2020", "exe-fy-2020"}
+    assert "seam rule set aside" not in caplog.text
+    print("\n=== SANITY CHECK: open-window single filer ===")
+    print(f"  all {len(replayed)} facts of both filings kept, no seam-rule log line")

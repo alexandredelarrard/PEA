@@ -17,7 +17,7 @@ import pytest
 
 from src.data_store.schema import Tables
 from src.validate.utils import prices as prices_mod
-from src.validate.utils.prices import PricesReport, gate, invariant_unrebased_seam, run_prices_validation
+from src.validate.utils.prices import SPIKE_BLOCK_SHARE, InvariantResult, PricesReport, gate, invariant_unrebased_seam, run_prices_validation
 from tests.conftest import FakeStore
 
 SESSIONS = 120
@@ -197,3 +197,28 @@ def test_reviewed_genuine_move_is_declared_without_a_data_repair(tmp_path: Path)
     ok, _ = gate(PricesReport(invariants=[result]))
     assert len(result.detail) == 1 and result.detail[0]["declared"] and result.failed == 0 and ok, result.detail
     print(f"\nSANITY {seam_day} listed under seam_reviewed: reported as declared, gate passes")
+
+
+def _spike(failed: int) -> InvariantResult:
+    return InvariantResult(name="spike_and_revert", rows=1_000_000, failed=failed, failing_tickers={"X": {}} if failed else {})
+
+
+def _seam(recent: bool, declared: bool) -> InvariantResult:
+    detail = [{"ticker": "T", "date": "2026-09-29", "recent": recent, "declared": declared}]
+    return InvariantResult(name="unrebased_seam", rows=100, failed=0 if declared else 1, detail=detail)
+
+
+def test_gate_blocks_on_spike_over_budget_and_passes_without_the_spike_scan() -> None:
+    over = int(SPIKE_BLOCK_SHARE * 1_000_000 * 5)
+    clean = InvariantResult(name="unrebased_seam", rows=100)
+    blocked, reason = gate(PricesReport(invariants=[_spike(over), clean]))
+    assert not blocked and "spike-and-revert" in reason, reason
+    assert not gate(PricesReport(invariants=[_spike(over), _seam(False, False)]))[0], "an old seam must not hide a spike"
+    assert gate(PricesReport(invariants=[_spike(0), clean]))[0]
+    assert gate(PricesReport(invariants=[_spike(1), clean]))[0], "a spike inside the budget is reported, not blocking"
+    assert gate(PricesReport(invariants=[clean]))[0], "skip_spike with a clean seam passes"
+    assert gate(PricesReport(invariants=[_seam(True, True)]))[0], "skip_spike with a declared recent seam passes"
+    assert not gate(PricesReport(invariants=[_seam(True, False)]))[0], "skip_spike still blocks on a recent undeclared seam"
+    print(
+        "\nSANITY gate: spike over budget blocks (with a clean or old seam), in-budget and skip_spike pass, recent undeclared seam blocks either way"
+    )

@@ -165,7 +165,7 @@ def _parse_fresh_start(ticker: str, entry: dict[str, Any]) -> Registrant:
         raise ValueError(f"registrant[{ticker}]: kind='{FRESH_START_KIND}' takes exactly 1 segment -- the CIK does not change.")
     seg = raw[0]
     _require_evidence(ticker, 0, seg)
-    if "valid_from" not in seg:
+    if seg.get("valid_from") is None:
         raise ValueError(f"registrant[{ticker}] segment 0: kind='{FRESH_START_KIND}' requires `valid_from` -- the date its filings start to count.")
     if "valid_to" in seg:
         raise ValueError(f"registrant[{ticker}] segment 0: a fresh start must omit `valid_to` -- it is open at the new end.")

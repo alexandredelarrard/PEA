@@ -14,7 +14,7 @@ The nightly path refreshes source tables, reports their freshness, and triggers 
 
 ## Trigger
 
-The `data_extraction` DAG is scheduled daily by [dag_data_extraction.py](../../src/dags/dag_data_extraction.py). Once every fetcher has finished, failed or not, it triggers the unscheduled aggregation DAG in [dag_data_aggregation.py](../../src/dags/dag_data_aggregation.py). Every gate in both DAGs runs on `ALL_DONE`. The schedule is `0 1 * * *` with `start_date` 2026-11-11 and `catchup=False`. `sharadar_actions` is refreshed by its own task and by `fundamentals_sharadar`, `prices_splits` by `price_history`; a refresh cannot restate stored prices, so `price_history` also re-pulls a ticker whose first-year `close_split` disagrees with Yahoo (see the [price-basis contract](../reference/data-sources.md#price-basis-contract)).
+The `data_extraction` DAG is scheduled daily by [dag_data_extraction.py](../../src/dags/dag_data_extraction.py). Once every fetcher has finished, failed or not, it triggers the unscheduled aggregation DAG in [dag_data_aggregation.py](../../src/dags/dag_data_aggregation.py). Every gate in both DAGs runs on `ALL_DONE`. `sharadar_actions` is refreshed by its own task and by `fundamentals_sharadar`, `prices_splits` by `price_history`; a refresh cannot restate stored prices, so `price_history` also re-pulls a ticker whose first-year `close_split` disagrees with Yahoo (see the [price-basis contract](../reference/data-sources.md#price-basis-contract)).
 
 ## Sequence diagram
 

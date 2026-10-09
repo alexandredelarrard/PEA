@@ -282,21 +282,40 @@ def test_every_date_lands_in_exactly_one_segment(tmp_path):
 # --------------------------------------------------------------------------- #
 def test_the_live_register_declares_only_kinds_that_change_the_cik():
     """A standing assertion over the real file, so a future entry cannot slip a rename
-    through by spelling it something else."""
+    through by spelling it something else. A fresh start keeps its CIK but must be dated."""
     registrants = load_registrants(CONFIG_DIR)
     assert registrants, "the register is empty"
     print("\n=== SANITY CHECK: the live register ===")
     for ticker, reg in sorted(registrants.items()):
-        assert reg.kind in CUTOVER_KINDS
+        assert reg.kind in CUTOVER_KINDS | {FRESH_START}, ticker
+        if reg.kind == FRESH_START:
+            (segment,) = reg.segments
+            assert segment.valid_from is not None and segment.valid_to is None, ticker
+        else:
+            assert len(reg.segments) >= 2, ticker
         assert len(set(reg.all_ciks())) == len(reg.segments)
         assert all(s.evidence.strip() for s in reg.segments)
         print(
             f"  {ticker:6s} {reg.kind:15s} {len(reg.segments)} segments  "
             f"{' -> '.join(reg.all_ciks())}  at "
-            f"{', '.join(str(b.date()) for b in reg.boundaries)}"
+            f"{', '.join(str(b.date()) for b in reg.boundaries) or f'from {reg.segments[0].valid_from.date()}'}"
         )
     n_chains = sum(1 for r in registrants.values() if len(r.segments) > 2)
-    print(f"  OK: {len(registrants)} entries, {n_chains} of them chains, every kind one that changes the CIK.")
+    n_fresh = sum(1 for r in registrants.values() if r.kind == FRESH_START)
+    print(f"  OK: {len(registrants)} entries, {n_chains} of them chains, {n_fresh} dated fresh start(s); every other kind one that changes the CIK.")
+
+
+def test_exe_is_a_fresh_start_from_its_emergence():
+    """EXE keeps Chesapeake's CIK but its filings count from the 2021-02-10 emergence (user decision 2026-10-08)."""
+    exe = load_registrants(CONFIG_DIR)["EXE"]
+    (segment,) = exe.segments
+    assert exe.kind == FRESH_START and exe.all_ciks() == ("0000895126",)
+    assert segment.valid_from == pd.Timestamp("2021-02-10") and segment.valid_to is None
+    assert "0000895126-21-000033" in segment.evidence
+    assert not segment.covers("2021-02-09") and segment.covers("2021-02-10")
+    print("\n=== SANITY CHECK: EXE fresh start (live register) ===")
+    print(f"  {exe.ticker}: {exe.kind}, CIK {segment.cik} from {segment.valid_from.date()}, open-ended")
+    print("  OK: 2021-02-09 (old Chesapeake equity) is outside the window, the emergence day is inside.")
 
 
 def test_the_missing_register_file_is_not_an_error(tmp_path):

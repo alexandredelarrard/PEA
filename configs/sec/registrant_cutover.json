@@ -263,6 +263,16 @@
       }
     ]
   },
+  "EXE": {
+    "kind": "fresh_start",
+    "segments": [
+      {
+        "cik": "0000895126",
+        "valid_from": "2021-02-10",
+        "evidence": "USER DECISION 2026-10-08 (EXE fresh start, run 2026-10-08-exe-fresh-start). Chesapeake Energy Corporation (CIK 0000895126) emerged from chapter 11 on 2021-02-09: its old common (CUSIPs 165167107 / 165167743, traded as CHK, then CHKAQ) was cancelled and new common 165167735 issued (8-K accession 0000895126-21-000033, Items 1.02, 3.03, 5.03, filed 2021-02-09). Renamed Expand Energy Corporation, symbol EXE from 2024-10-02; the CIK never changed. The traded price series starts at the emergence: Yahoo's first EXE bar is 2021-02-10, and Sharadar lists the old equity as the separate delisted series CHKAQ (action bankruptcyliquidation 2021-02-10) and EXE as listed 2021-02-10. The ticker's filings count from 2021-02-10; consolidating filings filed earlier are the cancelled predecessor security's. Comparatives in post-emergence filings are kept."
+      }
+    ]
+  },
   "FERG": {
     "kind": "reorganisation",
     "segments": [

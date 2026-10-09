@@ -36,9 +36,9 @@ from src.data_extract.utils.common.symbol_tenure import DEI_SOURCE
 from src.data_store.schema import Tables
 from src.utils.cutover_continuity import ShareExchange
 from src.utils.identity_flags import FLAG_COLUMNS, cik_activity, identity_flags, log_identity_flags
+from src.utils.predecessor_series import SECURITY_MANUAL_FILE
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series, squash
 
-MANUAL_CONFIG_FILENAME = "security_master_manual.json"
 #: The stored FTD line columns the master derives from.
 _OBSERVATION_COLUMNS = ("date", "trade_date", "cusip", "source_symbol", "description", "price", "period")
 
@@ -216,7 +216,8 @@ def _length(spans: Iterable[Span], horizon: pd.Timestamp) -> float:
 @dataclass(frozen=True)
 class SecurityManual:
     """Parsed `security_master_manual.json`: dated conversion ratios, CUSIP market boundaries, class overrides, merger
-    metadata, the declared co-registrant CIKs and the merger exchange ratios."""
+    metadata, the declared co-registrant CIKs, the merger exchange ratios and the reverse acquisitions. The vendor
+    series overrides are read by `predecessor_series.load_vendor_series`."""
 
     ratios: pd.DataFrame
     boundaries: pd.DataFrame
@@ -224,6 +225,7 @@ class SecurityManual:
     mergers: tuple[dict[str, Any], ...] = ()
     co_registrants: tuple[str, ...] = ()
     exchanges: tuple[ShareExchange, ...] = ()
+    reverse_acquisitions: tuple[ReverseAcquisition, ...] = ()
 
     @classmethod
     def empty(cls) -> SecurityManual:
@@ -234,6 +236,19 @@ _RATIO_COLUMNS = ("ticker", "cusip", "ratio", "valid_from", "valid_to", "source"
 _BOUNDARY_COLUMNS = ("ticker", "cusip", "issuer_cik", "role", "valid_from", "valid_to", "reason", "source")
 _CLASS_COLUMNS = ("cusip", "security_class", "source")
 _EXCHANGE_COLUMNS = ("ticker", "predecessor_cik", "seam_date", "ratio", "source")
+_REVERSE_COLUMNS = ("ticker", "seam_date", "accounting_acquirer_cik", "legal_acquirer_cik", "source")
+
+
+@dataclass(frozen=True)
+class ReverseAcquisition:
+    """A merger whose legal survivor (the traded security) was not the accounting acquirer: from `seam_date` the
+    survivor's filings restate pre-seam periods with the accounting acquirer's numbers."""
+
+    ticker: str
+    seam_date: pd.Timestamp
+    accounting_acquirer_cik: str
+    legal_acquirer_cik: str
+    source: str
 
 
 def _entries(blob: Mapping[str, Any], key: str, columns: tuple[str, ...]) -> pd.DataFrame:
@@ -271,6 +286,7 @@ def parse_security_manual(blob: Mapping[str, Any]) -> SecurityManual:
         mergers=mergers,
         co_registrants=tuple(sorted(set(pad_cik_series(co_registrants["cik"])))) if not co_registrants.empty else (),
         exchanges=_exchanges(_entries(blob, "exchange_ratios", _EXCHANGE_COLUMNS)),
+        reverse_acquisitions=_reverse_acquisitions(_entries(blob, "reverse_acquisitions", _REVERSE_COLUMNS)),
     )
 
 
@@ -283,6 +299,20 @@ def _exchanges(rows: pd.DataFrame) -> tuple[ShareExchange, ...]:
             raise SecurityManualError(f"security_master_manual.json: exchange ratio {row} is not a positive number")
         out.append(ShareExchange(normalise_ticker(str(row.ticker)), pad_cik(row.predecessor_cik), pd.Timestamp(str(row.seam_date)), float(ratio)))
     return tuple(out)
+
+
+def _reverse_acquisitions(rows: pd.DataFrame) -> tuple[ReverseAcquisition, ...]:
+    """The `reverse_acquisitions` entries, CIKs padded and seams as Timestamps."""
+    return tuple(
+        ReverseAcquisition(
+            ticker=normalise_ticker(str(row.ticker)),
+            seam_date=pd.Timestamp(str(row.seam_date)),
+            accounting_acquirer_cik=pad_cik(row.accounting_acquirer_cik),
+            legal_acquirer_cik=pad_cik(row.legal_acquirer_cik),
+            source=str(row.source),
+        )
+        for row in rows.itertuples(index=False)
+    )
 
 
 @dataclass(frozen=True)
@@ -317,7 +347,7 @@ def merger_boundaries(manual: SecurityManual) -> tuple[MergerBoundary, ...]:
 
 def load_security_manual(config_dir: str | None = None) -> SecurityManual:
     """`configs/sec/security_master_manual.json`, parsed; an absent file is an empty config."""
-    path = Path(resolve_config_dir(config_dir)) / "sec" / MANUAL_CONFIG_FILENAME
+    path = Path(resolve_config_dir(config_dir)) / SECURITY_MANUAL_FILE
     if not path.exists():
         return SecurityManual.empty()
     return parse_security_manual(json.loads(path.read_text(encoding="utf-8")))
@@ -1264,7 +1294,7 @@ def flag_items(flags: pd.DataFrame) -> pd.DataFrame:
                 "ciks": ",".join(sorted({str(c) for c in part["issuer_cik"].dropna()})),
                 "evidence": f"{len(part)} line(s): {examples}" + (" ..." if len(part) > 12 else ""),
                 "suggested_action": suggested,
-                "config_file": f"configs/sec/{MANUAL_CONFIG_FILENAME}",
+                "config_file": f"configs/{SECURITY_MANUAL_FILE.as_posix()}",
             }
         )
     return pd.DataFrame(items, columns=list(FLAG_COLUMNS))

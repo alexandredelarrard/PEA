@@ -24,7 +24,6 @@ locals are collected and the next sub-step starts from a clean slate.
 import pandas as pd
 from omegaconf import DictConfig
 
-from src.constants.constants import SHARADAR_ACTION_SPINOFF, SHARADAR_ACTION_SPLIT
 from src.constants.constants_price import MACRO_MARKET_SERIES
 from src.context import Context
 from src.data_aggregate.utils.common import data_utils as du
@@ -37,6 +36,7 @@ from src.data_aggregate.utils.common.level_basis import (
     apply_volume_scale,
     describe,
     genuine_splits,
+    level_actions,
     level_factor,
     load_bugfix,
 )
@@ -50,9 +50,6 @@ from src.utils.step import Step
 from src.utils.universe import load_universe_tickers
 
 PRICE_COLS = ["date", "open", "high", "low", "close_split", "close_total", "volume", "ticker"]
-#: The two `sharadar_actions` kinds `split_events` reads. Market-wide table, so the read is
-#: filtered to these or it drags back every action of every ticker Sharadar covers.
-ACTION_COLS = ["ticker", "date", "action", "value"]
 #: Sharadar's as-reported quarterly dimension -- the only one whose `price` is a single dated
 #: observation rather than a period aggregate, so the only one a bar can be compared against.
 VENDOR_DIMENSION = "ARQ"
@@ -277,9 +274,7 @@ class StepCubePrices(Step):
         grid -- including years before a ticker listed.
         """
         yf_splits = self._store.load(Tables.prices_splits, columns=["ticker", "date", "ratio"], optional=True)
-        actions = self._store.load(
-            Tables.sharadar_actions, columns=ACTION_COLS, where={"action": [SHARADAR_ACTION_SPLIT, SHARADAR_ACTION_SPINOFF]}, optional=True
-        )
+        actions = level_actions(self._context, list(close_split.columns))
         genuine = genuine_splits(actions, yf_splits)
         factor = level_factor(idx, list(close_split.columns), yf_splits, genuine)
         # The registered wedges are cases `S` is structurally BLIND to -- Yahoo adjusted the

@@ -14,10 +14,10 @@
     "",
     "  * SILENT ADJUSTMENT -- Yahoo back-adjusted the history and published no row at all.",
     "    IP's market cap reads 6.6% low for 20 years and `prices_splits` has no IP row.",
-    "  * MIS-APPLIED ADJUSTMENT -- Yahoo published one factor and applied a different one on",
-    "    a different date. JCI's `close_split` steps 70.354 -> 27.775 on 2007-07-02, a factor",
-    "    of 0.3948, while its feed claims 0.25 and its REAL 3-for-1 was 2007-10-03 (where the",
-    "    series does not step at all).",
+    "  * MISSING ADJUSTMENT -- Yahoo published and applied one factor of an event and left the",
+    "    rest of it out. JCI's `close_split` (Tyco's prices before 2016-09-02) steps 70.354 ->",
+    "    27.775 on 2007-07-02, a factor of 0.3948: Tyco's 1-for-4 (0.25, in the feed) is applied,",
+    "    the Covidien and TE Connectivity spin-offs of the same day are not.",
     "  * SPLIT VINTAGE -- Yahoo adjusted PART of its own history for a split it published",
     "    and left the rest. MNST alternates between two bases inside three weeks.",
     "",
@@ -78,8 +78,8 @@
     "⚠ It is a NULL, not a rescale, and that is why it is a separate shape rather than six more",
     "`return_seams` rows. A seam ASSERTS that the post-seam basis is the correct one and",
     "multiplies the prefix to match -- a claim that needs the per-ticker corroboration JCI got",
-    "(the feed's claimed factor, the applied factor and the real event date checked against each",
-    "other, plus Sharadar's independent price). None of these six has been through that. Nulling",
+    "(the feed's factor, the applied factor and the traded company's own corporate actions on",
+    "that date checked against each other). None of these six has been through that. Nulling",
     "makes only the claim the measurement supports: this number is not a return. It leaves",
     "`close_split`, `close_total` and the OHLC range EXACTLY as published, so every LEVEL is",
     "untouched, and it costs only the <=2h forward and trailing windows spanning the bar -- the",
@@ -239,8 +239,8 @@
         "date": "2007-07-02",
         "step": 0.394789,
         "expect_ret": -0.60521,
-        "evidence": "close_split falls 70.354 -> 27.775 in one bar, a -60.52% return that never happened. JCI's real 3-for-1 was 2007-10-03, where the series does NOT step. yfinance's own feed claims 0.25 on this date; the applied factor is 0.3948. So the feed, the applied adjustment and the real event disagree three ways, and the bar is corroborated by NOTHING -- Sharadar's price shows no such move.",
-        "note": "⚠ This repairs the fabricated RETURN, which is what reaches momentum, vol, betas and every JCI label. It does NOT make JCI's level basis correct: the residual wedge drifts monotonically across 83 segments (0.32 -> 0.11 over 1996-1999), which is a corrupt series rather than a basis offset and cannot be expressed as a factor. MNST's defect looked like this one and turned out NOT to be -- see split_vintage -- so JCI stays the last named residual, and it is the genuinely corrupt one."
+        "evidence": "JCI's prices before 2016-09-02 are Tyco International's (TYC; JCI plc is the renamed Tyco, which acquired old Johnson Controls). On 2007-07-02 Tyco did a 1-for-4 reverse split and, the same day, spun off Covidien (COV) and TE Connectivity (TEL): Sharadar's TYC actions for that date are split 0.25, spinoff COV and spinoff TEL (spinoffdividend 46 and 42.53). Yahoo's feed states the 0.25 and close_split applies it, but neither adjusts the two distributions, so close_split falls 70.354 -> 27.775 in one bar (x0.3948): a -60.52% return that holders never had, since the value moved into their COV and TEL shares. Old Johnson Controls' own 3-for-1 of 2007-10-03 is another company's event and does not belong to these prices.",
+        "note": "⚠ This repairs the fabricated RETURN, which is what reaches momentum, vol, betas and every JCI label. The LEVEL basis is separate: inside the JCI <- TYC vendor-series window the cube's level factor reads TYC's own corporate actions (security_master_manual.json vendor_series_overrides), and this seam does not change it."
       }
     ]
   }

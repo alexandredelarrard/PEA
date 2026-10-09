@@ -26,13 +26,13 @@ from typing import Any, cast
 
 import pandas as pd
 
-from src.constants.constants import SHARADAR_ACTION_SPINOFF, SHARADAR_ACTION_SPLIT
 from src.context import Context
 from src.data_aggregate.utils.common.level_basis import (
     apply_level_bugfix,
     apply_return_seams,
     apply_split_vintage,
     genuine_splits,
+    level_actions,
     level_factor,
     load_bugfix,
 )
@@ -244,14 +244,8 @@ def _level_factor_for(context: Context, panel: pd.DataFrame, where: dict | None)
     (date x ticker) grid, and the panel is ~52k rows over ~500 tickers.
     """
     yf_splits = context.store.load(Tables.prices_splits, columns=["ticker", "date", "ratio"], where=where, optional=True)
-    actions = context.store.load(
-        Tables.sharadar_actions,
-        columns=["ticker", "date", "action", "value"],
-        where={**(where or {}), "action": [SHARADAR_ACTION_SPLIT, SHARADAR_ACTION_SPINOFF]},
-        optional=True,
-    )
-
     tickers = sorted(panel["ticker"].astype(str).unique())
+    actions = level_actions(context, tickers)
     idx = pd.DatetimeIndex(sorted(panel["date"].dropna().unique()), name="date")
     if idx.empty:
         return pd.Series(1.0, index=panel.index)

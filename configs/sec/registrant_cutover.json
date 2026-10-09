@@ -186,9 +186,9 @@
     "comparability": "mixed_pre_separation_businesses",
     "segments": [
       {
-        "cik": "0000030554",
+        "cik": "0000029915",
         "valid_to": "2017-08-31",
-        "evidence": "HAND-ADJUDICATED 2026-10-04 (P6b, decision P16). E. I. du Pont de Nemours and Company (CIK 0000030554, EDGAR name DUPONT E I DE NEMOURS & CO to 2022-11-04, now EIDP, Inc.), the DD registrant until the Dow-DuPont merger of equals. Successor filing: DowDuPont Inc. (CIK 0001666700, now DuPont de Nemours, Inc.) 8-K12B accession 0001193125-17-274834 filed 2017-09-01: 'Effective August 31, 2017, DowDuPont Inc. (f/k/a Diamond-Orion Holdco, Inc.) (the Company) completed the previously announced merger of equals transaction' ... 'Upon the consummation of the Mergers, each of Dow and DuPont became subsidiaries of the Company' ... 'This Current Report on Form 8-K establishes the Company as the successor issuer to Dow and DuPont pursuant to Rule 12g-3(c)'. boundary = the effective date the filing states. ⚠ The filing names TWO predecessors; only DuPont carries this ticker's DD symbol and price history. Dow (CIK 0000029915) belongs to DOW's entity and is not in this entry. After the boundary CIK 0000030554 filed as a subsidiary (of DowDuPont, then Corteva); the dated split excludes those filings."
+        "evidence": "USER DECISION 2026-10-07 (traded-security realignment, D1a/D3a). The Dow Chemical Company (TDCC, CIK 0000029915), the DD registrant until the Dow-DuPont merger of equals, because DD's pre-seam prices are TDCC's: the FTD price of TDCC CUSIP 260543103 equals DD's Yahoo raw close (64.90 on 2017-08-30; old DuPont 263534109 / Yahoo 1.28-1.68), DD's 2000-06-19 3:1 split is Dow Chemical's, and Sharadar's DD series before the seam is Dow Chemical's (2017Q1 revenue 13.23bn). Successor filing: DowDuPont Inc. (CIK 0001666700, now DuPont de Nemours, Inc.) 8-K12B accession 0001193125-17-274834 filed 2017-09-01: 'Effective August 31, 2017, DowDuPont Inc. (f/k/a Diamond-Orion Holdco, Inc.) (the Company) completed the previously announced merger of equals transaction' ... 'Upon the consummation of the Mergers, each of Dow and DuPont became subsidiaries of the Company' ... 'This Current Report on Form 8-K establishes the Company as the successor issuer to Dow and DuPont pursuant to Rule 12g-3(c)'. boundary = the effective date the filing states. Old DuPont (CIK 0000030554) is an acquired target in DD's entity (entity_lineage_manual.json), not a window. DOW has no register entry: its history starts with Dow Inc. (0001751788) on 2019-04-01. After the boundary TDCC filed as a DowDuPont, then Dow Inc., subsidiary; the dated split excludes those filings."
       },
       {
         "cik": "0001666700",
@@ -209,21 +209,6 @@
         "cik": "0001744489",
         "valid_from": "2019-02-06",
         "evidence": "PROPOSED 2026-09-10. The successor, CIK 0001744489. Its own archive starts 2018-06-25 (268 d before the truncation) with 0 filings older than the pre-registration grace window, and it has filed 32 10-K/10-Q from 2019-05-08."
-      }
-    ]
-  },
-  "DOW": {
-    "kind": "reorganisation",
-    "segments": [
-      {
-        "cik": "0000029915",
-        "valid_to": "2019-04-01",
-        "evidence": "USER DECISION 2026-10-04 (revision 4, decision P18). The Dow Chemical Company (TDCC, CIK 0000029915), the DOW registrant until the separation of Dow Inc. from DowDuPont. From 2017-08-31 TDCC was a DowDuPont subsidiary that kept filing its own 10-K/10-Q; those are the accounts of the business Dow Inc. took over. Successor filing: Dow Inc. (CIK 0001751788) 8-K accession 0001193125-19-095067 filed 2019-04-02: 'This Current Report on Form 8-K serves as notice that Dow is the successor issuer to TDCC' ... 'In connection with the Separation, effective as of April 1, 2019'. boundary = the separation date the filing states. After the boundary TDCC files as Dow Inc.'s subsidiary; the dated split excludes those filings."
-      },
-      {
-        "cik": "0001751788",
-        "valid_from": "2019-04-01",
-        "evidence": "USER DECISION 2026-10-04 (revision 4, decision P18). Dow Inc., successor issuer to TDCC from 2019-04-01 per its own 8-K 0001193125-19-095067 (and 8-K 0001193125-19-094612 filed 2019-04-01 on the completed distribution)."
       }
     ]
   },
@@ -317,21 +302,6 @@
       }
     ]
   },
-  "JCI": {
-    "kind": "reorganisation",
-    "segments": [
-      {
-        "cik": "0000053669",
-        "valid_to": "2016-09-02",
-        "evidence": "HAND-ADJUDICATED 2026-09-28 FROM SEC FILINGS. JOHNSON CONTROLS INC, CIK 0000053669, is the accounting acquirer and its pre-merger financial statements are the combined company's historical statements. The merger with Tyco completed on 2016-09-02; its 2016-09-06 completion 8-K is still retained by the event-form union policy."
-      },
-      {
-        "cik": "0000833444",
-        "valid_from": "2016-09-02",
-        "evidence": "HAND-ADJUDICATED 2026-09-28 FROM SEC FILINGS. TYCO INTERNATIONAL PLC, CIK 0000833444, changed its name to Johnson Controls International plc when the combination completed on 2016-09-02. The successor's 2016 Form 10-K states that JCI Inc was the accounting acquirer and that periods before 2016-09-03 are JCI Inc history, making 2016-09-02 the legal cutover while preserving the old-CIK archive before it."
-      }
-    ]
-  },
   "LIN": {
     "kind": "reorganisation",
     "segments": [
@@ -405,22 +375,6 @@
         "cik": "0001341439",
         "valid_from": "2006-01-31",
         "evidence": "HAND-ADJUDICATED 2026-10-04 (P6b, P16). Oracle Corporation (new holding company), successor issuer from 2006-01-31 per its own 8-K12G3 0001193125-06-020874."
-      }
-    ]
-  },
-  "PLD": {
-    "kind": "reorganisation",
-    "basis": "reverse_acquisition_accounting_predecessor",
-    "segments": [
-      {
-        "cik": "0000899881",
-        "valid_to": "2011-06-03",
-        "evidence": "USER DECISION 2026-10-04 (revision 4, decision P18). Old ProLogis (ProLogis, CIK 0000899881), the ACCOUNTING ACQUIRER in the 2011 merger with AMB Property Corporation (a reverse acquisition). No Rule 12g-3 successor filing exists: AMB (CIK 0001045609) was the legal acquirer and renamed itself Prologis, Inc. Date filing: CIK 0001045609 8-K accession 0000950123-11-057596 filed 2011-06-08 (Items 2.01, 3.03, 5.03): 'This Current Report on Form 8-K is being filed in connection with the consummation on June 3, 2011 (the Closing Date) of the transaction'. boundary = the closing date the filing states. Before it, CIK 0001045609's 10-K/10-Q are AMB's own accounts and the dated split excludes them."
-      },
-      {
-        "cik": "0001045609",
-        "valid_from": "2011-06-03",
-        "evidence": "USER DECISION 2026-10-04 (revision 4, decision P18). Prologis, Inc. (formerly AMB Property Corporation, CIK 0001045609), the legal acquirer, owns PLD from the 2011-06-03 closing per its own 8-K 0000950123-11-057596."
       }
     ]
   },

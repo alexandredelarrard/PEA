@@ -25,7 +25,6 @@ from sqlalchemy import inspect
 
 from src.data_extract.utils.fundamentals.kpi_catalogue import HISTORY_PROVENANCE
 from src.data_extract.utils.fundamentals_sharadar.build_ttm import ARQ
-from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import load_predecessor_series
 from src.data_extract.utils.fundamentals_sharadar.field_map import load_field_map
 from src.data_extract.utils.fundamentals_sharadar.gap_check import candidates, measure_gaps
 from src.data_extract.utils.fundamentals_sharadar.merge_history import (
@@ -41,7 +40,7 @@ from src.data_extract.utils.fundamentals_sharadar.merge_history import (
     write_overrides,
 )
 from src.data_store.schema import Tables, name_of
-from src.utils.traded_security_deferrals import PREDECESSOR_SERIES, deferred_tickers
+from src.utils.predecessor_series import load_predecessor_series
 
 CONFIG_DIR = Path("./configs")
 
@@ -123,14 +122,13 @@ def overlap(sources):
 
 @pytest.fixture(scope="module")
 def comparable(context, sources, overlap):
-    """`(vendor ARQ rows, tickers)` describing the same filer as the SEC history: the tickers deferred to the
-    traded-security realignment are dropped, and so are vendor rows inside a predecessor window, which the merge
-    replaces with the predecessor's own series."""
+    """`(vendor ARQ rows, tickers)` describing the same filer as the SEC history: vendor rows inside a predecessor
+    window are dropped, because the merge replaces them with the predecessor's own series."""
     vendor, *_ = sources
-    tickers = sorted(set(overlap) - deferred_tickers(CONFIG_DIR, PREDECESSOR_SERIES))
+    tickers = sorted(overlap)
     dates = pd.to_datetime(vendor["date"])
     replaced = pd.Series(False, index=vendor.index)
-    for series in load_predecessor_series(context, tickers, str(CONFIG_DIR)):
+    for series in load_predecessor_series(context, tickers):
         if series.valid_to is not None:
             replaced |= (vendor["ticker"] == series.ticker) & (dates < series.valid_to)
     return vendor[vendor["ticker"].isin(tickers) & ~replaced], tickers

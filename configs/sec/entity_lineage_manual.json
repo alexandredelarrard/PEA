@@ -101,6 +101,24 @@
     "decided": "2026-09-11"
   },
 
+  "PLD/old-prologis": {
+    "same_entity": ["0000899881", "0001045609"],
+    "evidence": "Old ProLogis (0000899881) merged into AMB Property Corporation (0001045609) on 2011-06-03; AMB, the legal acquirer, renamed itself Prologis, Inc. and kept the PLD symbol (8-K Items 2.01, 3.03, 5.03 of CIK 0001045609, accession 0000950123-11-057596; each New Pumpkin share became 0.4464 Prologis shares). PLD's pre-seam prices are AMB's (FTD 00163T109 / Yahoo 1.000 in 2011-03 and 2011-05; first bar 1997-11-21 = AMB IPO; old ProLogis 743410102 / Yahoo 0.446), so AMB's CIK owns PLD from the sentinel start and has no register entry. Old ProLogis is an acquired target in PLD's entity: an event-only CIK whose Forms 3/4/5 and FTD line are acquired_constituent and whose consolidating and 8-K / 13D / 13G filings are not PLD's. User decision D3a, 2026-10-07 (traded-security realignment).",
+    "decided": "2026-10-07"
+  },
+
+  "JCI/old-johnson-controls": {
+    "same_entity": ["0000053669", "0000833444"],
+    "evidence": "Johnson Controls, Inc. (0000053669) merged with Tyco International plc (0000833444) on 2016-09-02; Tyco, the legal acquirer, renamed itself Johnson Controls International plc and took the JCI symbol (8-K of CIK 0000833444, accession 0001104659-16-143068, filed 2016-09-06, Items 2.01/3.03, with the 0.955-for-one share consolidation). JCI's pre-seam prices are Tyco's (FTD H89128104 / G91442106 / Yahoo 1.000; old JCI 478366107 / Yahoo 0.875-0.937 in 2011; the 2007-07-02, 2012-10-01 and 2016-09-06 split events are Tyco's), so Tyco's CIK owns JCI from the sentinel start and has no register entry. Old JCI is an acquired target in JCI's entity: an event-only CIK whose Forms 3/4/5 and FTD line are acquired_constituent and whose consolidating and 8-K / 13D / 13G filings are not JCI's. User decision D3a, 2026-10-07 (traded-security realignment).",
+    "decided": "2026-10-07"
+  },
+
+  "DD/old-dupont": {
+    "same_entity": ["0000030554", "0001666700"],
+    "evidence": "E. I. du Pont de Nemours and Company (0000030554) became a DowDuPont Inc. (0001666700) subsidiary in the 2017-08-31 merger of equals, each DuPont share converted into 1.2820 DowDuPont shares (8-K12B 0001193125-17-274834; 8-K Item 8.01 of CIK 0000030554, accession 0001193125-17-274840). DD's pre-seam prices are Dow Chemical's (TDCC 260543103 FTD price = DD Yahoo raw close, 64.90 on 2017-08-30; old DuPont 263534109 / Yahoo 1.28-1.68), so TDCC (0000029915) is DD's register predecessor. Old DuPont is an acquired target in DD's entity: an event-only CIK whose Forms 3/4/5 and FTD line are acquired_constituent and whose consolidating and 8-K / 13D / 13G filings are not DD's (its post-seam subsidiary filings included). User decision D3a, 2026-10-07 (traded-security realignment).",
+    "decided": "2026-10-07"
+  },
+
   "CEG/old-constellation-energy-group": {
     "own_entity": ["0001004440"],
     "evidence": "Constellation Energy Group Inc (0001004440, 334 filings 2006-01-04 .. 2012-03-15) was ACQUIRED BY EXELON in March 2012 and ceased to exist as a separate company. The name and the CEG symbol were revived ten years later by a SEPARATE 2022 Exelon spin-off, Constellation Energy Corp (0001868275), whose first Form 4 is 2022-02-10. Two shared owners / jaccard 0.032 is the residue of Exelon-era directors, not continuity. Recorded as its own entity so the verdict is stated rather than merely absent -- this is the textbook symbol-revival case and the one most likely to be 'fixed' by someone who sees only the name.",

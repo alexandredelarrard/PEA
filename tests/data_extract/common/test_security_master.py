@@ -19,6 +19,7 @@ from src.data_extract.utils.common.identity import build_identity
 from src.data_extract.utils.common.sec_tickers import parse_company_tickers_exchange
 from src.data_store.schema import Tables
 from src.utils.cutover_continuity import load_vendor_exceptions
+from src.utils.predecessor_series import load_vendor_series
 from tests.data_extract.fake_context import extract_config
 
 CONFIG_DIR = Path(__file__).resolve().parents[3] / "configs"
@@ -566,12 +567,17 @@ def test_real_manual_config_is_evidenced_and_holds_the_brk_ratio():
         boundaries.index
     )
     mergers = {entry["ticker"]: entry for entry in manual.mergers}
-    assert mergers["MRK"]["acquired_symbol"] == "SGP" and mergers["PLD"]["acquired_symbol"] == "AMB"
+    assert mergers["MRK"]["acquired_symbol"] == "SGP" and "PLD" not in mergers  # PLD: the CIK window decides (traded view)
+    assert {(x.ticker, x.ratio) for x in manual.exchanges} == {("LIN", 1.0), ("EVRG", 1.0), ("BKR", 1.0), ("STE", 1.0), ("JCI", 1.0)}
+    assert [(s.ticker, s.vendor_ticker) for s in load_vendor_series(CONFIG_DIR)] == [("JCI", "TYC")]
     for frame in (manual.ratios, manual.boundaries):
         assert frame["source"].astype(str).str.len().gt(0).all()
     assert all(entry.get("source") for entry in manual.mergers)
     print("\n=== SANITY CHECK: configs/sec/security_master_manual.json ===")
-    print(f"  BRK-A 30 -> 1,500 at 2010-01-21; {len(manual.boundaries)} market boundaries; MRK/PLD merger metadata; every entry sourced")
+    print(f"  BRK-A 30 -> 1,500 at 2010-01-21; {len(manual.boundaries)} market boundaries; every entry sourced")
+    print(
+        "  MRK merger metadata only (PLD's left with the traded-security view); exchange ratios LIN/EVRG/BKR/STE/JCI (PLD/DD removed); vendor series JCI <- TYC"
+    )
 
 
 def test_vendor_exceptions_and_expected_changes_configs():
@@ -581,9 +587,9 @@ def test_vendor_exceptions_and_expected_changes_configs():
     ]
     expected = json.loads((CONFIG_DIR / "sec" / "expected_lineage_changes.json").read_text(encoding="utf-8"))["hypotheses"]
     ids = {row["id"] for row in expected}
-    assert {"dd_predecessor_periods", "mrvl_predecessor_periods", "ferg_predecessor_periods", "tyco_window_filter", "seam_rule_set_aside"} <= ids
-    assert all(row.get("status") == "hypothesis" and row.get("source") for row in expected)
-    print("\n=== SANITY CHECK: Q2g/Q2h configs created ===")
+    assert {"trs_pld_fundamentals_facts_event_only_cik", "trs_ftd_tdcc_to_dd", "trs_insider_tdcc_moves"} <= ids
+    assert all(row.get("status") == "hypothesis" and row.get("source") and row.get("change_set") == "traded_security_realignment" for row in expected)
+    print("\n=== SANITY CHECK: vendor exceptions and the traded-security realignment hypotheses ===")
     print(f"  {len(rows)} vendor exceptions read back by the shared loader; {len(expected)} lineage-change hypotheses recorded")
 
 
@@ -1254,3 +1260,22 @@ def test_f107_a_line_run_back_ends_the_bridge_of_the_earlier_cusip_of_its_symbol
     print(
         f"  old CUSIP ends {old['vt'].max().date()}, the new line starts {new['valid_from'].min().date()} (run back over FINRA days); no shared day"
     )
+
+
+def test_reverse_acquisitions_declare_pld_and_jci_only():
+    """REQ-014: the survivor's post-seam comparatives are the accounting acquirer's; DD (DowDuPont is a new registrant) is not declared."""
+    manual = sm.load_security_manual(str(CONFIG_DIR))
+    by_ticker = {entry.ticker: entry for entry in manual.reverse_acquisitions}
+    assert set(by_ticker) == {"PLD", "JCI"}, sorted(by_ticker)
+    assert all(isinstance(entry, sm.ReverseAcquisition) and entry.source for entry in by_ticker.values())
+    pld, jci = by_ticker["PLD"], by_ticker["JCI"]
+    assert (pld.seam_date, pld.accounting_acquirer_cik, pld.legal_acquirer_cik) == (pd.Timestamp("2011-06-03"), "0000899881", "0001045609")
+    assert (jci.seam_date, jci.accounting_acquirer_cik, jci.legal_acquirer_cik) == (pd.Timestamp("2016-09-02"), "0000053669", "0000833444")
+    with pytest.raises(ValueError, match="source"):
+        sm.parse_security_manual(
+            {"reverse_acquisitions": [{"ticker": "X", "seam_date": "2020-01-01", "accounting_acquirer_cik": "1", "legal_acquirer_cik": "2"}]}
+        )
+    assert sm.SecurityManual.empty().reverse_acquisitions == ()
+    print("\n=== SANITY CHECK: reverse_acquisitions ===")
+    print("  PLD 2011-06-03 (accounting acquirer old ProLogis 0000899881, survivor AMB 0001045609)")
+    print("  JCI 2016-09-02 (accounting acquirer old JCI 0000053669, survivor Tyco 0000833444); DD undeclared; an unsourced entry is refused")

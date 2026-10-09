@@ -30,8 +30,14 @@ from src.data_extract.utils.common.frame_sanitize import pin_dtypes
 from src.data_extract.utils.fundamentals.kpi_catalogue import DEFAULT_CONFIG_DIR, HISTORY_STATEMENT_ORDER
 from src.data_extract.utils.fundamentals_sharadar.build_ttm import ARQ, build_ttm
 from src.data_extract.utils.fundamentals_sharadar.diagnostics import md_table
-from src.data_extract.utils.fundamentals_sharadar.field_map import FieldMap, load_field_map, translate
-from src.data_extract.utils.fundamentals_sharadar.merge_history import _KEY_FROM_VENDOR, collapse_same_date, load_overrides, write_overrides
+from src.data_extract.utils.fundamentals_sharadar.field_map import FieldMap, load_field_map, split_events, translate
+from src.data_extract.utils.fundamentals_sharadar.merge_history import (
+    _KEY_FROM_VENDOR,
+    collapse_same_date,
+    load_overrides,
+    with_predecessor_series,
+    write_overrides,
+)
 from src.data_store.schema import Tables
 
 log = logging.getLogger(__name__)
@@ -76,9 +82,11 @@ def comparable_fields(field_map: FieldMap) -> list[str]:
     return [n for n in HISTORY_STATEMENT_ORDER if n in owned]
 
 
-def sharadar_history(vendor_arq: pd.DataFrame, field_map: FieldMap, actions: pd.DataFrame | None) -> pd.DataFrame:
+def sharadar_history(
+    vendor_arq: pd.DataFrame, field_map: FieldMap, actions: pd.DataFrame | None, *, splits: pd.DataFrame | None = None
+) -> pd.DataFrame:
     """The Sharadar side on the merged grain, without the SEC join or overrides (unlike `build_frame`)."""
-    frame = build_ttm(translate(vendor_arq, field_map), field_map, actions=actions)
+    frame = build_ttm(translate(vendor_arq, field_map), field_map, actions=actions, splits=splits)
     collapsed, _ = collapse_same_date(pin_dtypes(frame.rename(columns=_KEY_FROM_VENDOR), dates=("as_of", "fiscal_end")))
     return collapsed
 
@@ -100,13 +108,16 @@ def measure_gaps(context: Context, tickers: Sequence[str] | None = None, *, conf
     actions = context.store.load(
         Tables.sharadar_actions, project=True, optional=True, where={**where, "action": [SHARADAR_ACTION_SPLIT, SHARADAR_ACTION_SPINOFF]}
     )
+    # the vendor series the merge reads: each predecessor window's rows are the window owner's (`with_predecessor_series`)
+    names = sorted(set(vendor["ticker"].astype(str)))
+    vendor, splits = with_predecessor_series(context, vendor, names, split_events(actions), config_dir=config_dir)
     fields = comparable_fields(field_map)
     sec = context.store.load(Tables.fundamentals_history_sec, columns=["ticker", "as_of", *fields], where=where or None, optional=True)
     if sec is None:
         raise RuntimeError("gap check: fundamentals_history_sec has no rows for this scope")
     sec["as_of"] = pd.to_datetime(sec["as_of"]).astype("datetime64[ns]")
 
-    shar = sharadar_history(vendor, field_map, actions)
+    shar = sharadar_history(vendor, field_map, actions, splits=splits)
     overlap = sorted(set(shar["ticker"]) & set(sec["ticker"]))
     log.info(
         "gap check: %d overlapping ticker(s) of %d Sharadar / %d SEC; %d comparable field(s)",

@@ -1,7 +1,8 @@
 """Explained-difference regression gate for the identity cutover (decision P22).
 
-`snapshot <dir>` dumps the before state, read-only and projected, as parquet files. `diff <dir>` compares it with
-the current store, writes one explained-difference CSV per surface plus `gate_hypotheses.csv` and
+`snapshot <dir>` dumps the before state, read-only and projected, as parquet files; a snapshot that holds the tape
+stamps and the master takes each tape line's old issuer from them, an older one from the frozen legacy resolver.
+`diff <dir>` compares it with the current store, writes one explained-difference CSV per surface plus `gate_hypotheses.csv` and
 `gate_summary.txt`, and exits 1 when a row has no reason or a hypothesis of
 `configs/sec/expected_lineage_changes.json` does not hold, 2 when the run itself fails.
 
@@ -31,12 +32,12 @@ from src.data_extract.utils.common.identity import FilingScope, Identity, Unknow
 from src.data_extract.utils.common.registrant import FORM_POLICY, Combine  # noqa: E402
 from src.data_extract.utils.common.symbol_tenure import normalise_market_symbol  # noqa: E402
 from src.data_extract.utils.fundamentals.build_history import keep_window_owner_filings  # noqa: E402
-from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import load_predecessor_series  # noqa: E402
 from src.data_extract.utils.fundamentals_sharadar.field_map import load_field_map  # noqa: E402
 from src.data_extract.utils.institutionals.fetch_short_interest import finra_key  # noqa: E402
 from src.data_extract.utils.institutionals.security_tape import SUMMED_ROLES  # noqa: E402
 from src.data_store.schema import Tables  # noqa: E402
 from src.utils.filer_tables import PURGE_TABLES, FilerTable  # noqa: E402
+from src.utils.predecessor_series import load_predecessor_series  # noqa: E402
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series, squash, yahoo_symbol  # noqa: E402
 from src.utils.universe import load_universe_tickers  # noqa: E402
 
@@ -144,8 +145,16 @@ REASONS = frozenset(
         "new_data",
         # a stored before value whose lines the master never stores (listed by date in a hypothesis)
         "other_issuer_line",
+        # a tape line moving between two tickers, declared by CUSIP in a hypothesis
+        "traded_security_realignment",
+        # an insider row following its issuer CIK into the entity that now holds it
+        "entity_moved",
     }
 )
+#: Reasons no rule computes: a hypothesis names their rows (by date or CUSIP) and the gate takes its word.
+DECLARED_REASONS = frozenset({"other_issuer_line", "traded_security_realignment"})
+#: Each hypothesis kind and the gate section whose rows it explains.
+HYPOTHESIS_KINDS = {"filing_lineage": "filing", "market_tape": "tape", "insider": "insider"}
 
 
 def _text(values: pd.Series) -> pd.Series:
@@ -321,10 +330,12 @@ def uncovered(raw: pd.DataFrame, master: pd.DataFrame, source: str) -> pd.Series
     return pd.Series(known.to_numpy() & ~probe["_row"].isin(covered).to_numpy(), index=raw.index)
 
 
-def tape_reason(old: str, new: str, role: str, master_reason: str, security_class: str, ratio: float, outside: bool = False) -> str:
+def tape_reason(
+    old: str, new: str, role: str, master_reason: str, security_class: str, ratio: float, outside: bool = False, old_ratio: float = 1.0
+) -> str:
     """The rule explaining one changed tape row, '' when none does."""
     if old and old == new:
-        return "conversion_ratio" if ratio != 1 else ""
+        return "conversion_ratio" if ratio != old_ratio else ""
     if old and not new:
         if not role and outside:
             return "no_master_interval"
@@ -347,10 +358,16 @@ def tape_reason(old: str, new: str, role: str, master_reason: str, security_clas
 
 
 def tape_diff(
-    raw: pd.DataFrame, master: pd.DataFrame, resolver: LegacyTapeResolver, universe: Collection[str], source: str, old: pd.Series | None = None
+    raw: pd.DataFrame,
+    master: pd.DataFrame,
+    resolver: LegacyTapeResolver,
+    universe: Collection[str],
+    source: str,
+    old: pd.Series | None = None,
+    old_ratio: pd.Series | None = None,
 ) -> pd.DataFrame:
-    """One row per raw tape row whose issuer or weight changed: old = the frozen resolver (`old` when already resolved),
-    new = the master stamp."""
+    """One row per raw tape row whose issuer or weight changed: old = the frozen resolver (`old` when already resolved,
+    weighted by `old_ratio`, else 1), new = the master stamp."""
     if raw.empty:
         return pd.DataFrame(columns=TAPE_COLUMNS)
     facts = master_facts(raw, master)
@@ -358,6 +375,7 @@ def tape_diff(
     summed = raw["lineage_role"].isin(SUMMED_ROLES) & raw["ticker"].isin(set(universe))
     new = _text(raw["ticker"].where(summed))
     ratio = facts["conversion_ratio"].where(summed, 0.0)
+    oratio = pd.Series(np.where(old.ne(""), 1.0, 0.0), index=raw.index) if old_ratio is None else old_ratio.where(old.ne(""), 0.0)
     work = pd.DataFrame(
         {
             "old": old,
@@ -367,11 +385,12 @@ def tape_diff(
             "cls": _text(raw["security_class"]),
             "ratio": ratio.astype("float64"),
             "outside": uncovered(raw, master, source) & raw["lineage_role"].isna(),
+            "oratio": oratio.astype("float64"),
         }
     )
     combos = work.drop_duplicates(ignore_index=True)
-    combos["reason"] = [tape_reason(o, n, r, m, c, x, u) for o, n, r, m, c, x, u in combos.itertuples(index=False, name=None)]
-    combos["changed"] = combos["old"].ne(combos["new"]) | (combos["old"].ne("") & combos["ratio"].ne(1.0))
+    combos["reason"] = [tape_reason(o, n, r, m, c, x, u, w) for o, n, r, m, c, x, u, w in combos.itertuples(index=False, name=None)]
+    combos["changed"] = combos["old"].ne(combos["new"]) | (combos["old"].ne("") & combos["ratio"].ne(combos["oratio"]))
     work = work.merge(combos, on=list(work.columns), how="left").set_index(raw.index)
     changed = work["changed"].to_numpy(dtype=bool)
     rows = raw[changed]
@@ -392,7 +411,7 @@ def tape_diff(
             "reason": work.loc[changed, "reason"],
             "source": source,
             "lineage_role": _text(rows["lineage_role"]),
-            "old_weight": np.where(work.loc[changed, "old"].ne(""), 1.0, 0.0),
+            "old_weight": work.loc[changed, "oratio"],
             "new_weight": work.loc[changed, "ratio"],
             "quantity": pd.to_numeric(rows["quantity"], errors="coerce"),
             "evidence": facts.loc[changed, "lineage_reason"],
@@ -448,10 +467,17 @@ def grain_residual(raw: pd.DataFrame, old: pd.Series, before: pd.DataFrame, valu
 
 
 def after_grain_residual(
-    raw: pd.DataFrame, master: pd.DataFrame, after: pd.DataFrame, value_cols: Sequence[str], universe: Collection[str], source: str
+    raw: pd.DataFrame,
+    master: pd.DataFrame,
+    after: pd.DataFrame,
+    value_cols: Sequence[str],
+    universe: Collection[str],
+    source: str,
+    side: str = "after",
 ) -> pd.DataFrame:
-    """Ticker-days where the stored after ticker table differs from the sum of the new stamps over the raw rows (summed
-    roles of universe tickers, values x conversion ratio); one unexplained tape row each."""
+    """Ticker-days where a stored ticker table differs from the sum of its stamps over the raw rows (summed roles of
+    universe tickers, values x conversion ratio); one unexplained tape row each. `side` "before" checks the snapshot's
+    table against the snapshot's stamps and master."""
     summed = raw[raw["lineage_role"].isin(SUMMED_ROLES) & raw["ticker"].isin(set(universe))]
     ratio = master_facts(summed, master)["conversion_ratio"].astype("float64")
     weighted = pd.DataFrame(
@@ -459,7 +485,8 @@ def after_grain_residual(
         | {c: pd.to_numeric(summed[c], errors="coerce") * ratio for c in value_cols}
     )
     stamped = weighted.groupby(["ticker", "date"], as_index=False)[list(value_cols)].sum()
-    bad, evidence = _grain_mismatch(after, stamped, value_cols, ("after", "stamped"))
+    bad, evidence = _grain_mismatch(after, stamped, value_cols, (side, "stamped"))
+    issuer = bad["ticker"].astype(str)
     return pd.DataFrame(
         {
             "settlement_date": bad["date"].dt.strftime("%Y-%m-%d"),
@@ -467,10 +494,10 @@ def after_grain_residual(
             "source_symbol": "",
             "exchange": "",
             "security_class": "",
-            "old_canonical_issuer": "",
-            "new_canonical_issuer": bad["ticker"].astype(str),
+            "old_canonical_issuer": issuer if side == "before" else "",
+            "new_canonical_issuer": "" if side == "before" else issuer,
             "reason": "",
-            "source": f"{source}_after_grain",
+            "source": f"{source}_{side}_grain",
             "lineage_role": "",
             "old_weight": np.nan,
             "new_weight": np.nan,
@@ -575,17 +602,16 @@ def filing_diff(
             reasons.append("co_registrant_purge")
             continue
         scope = scopes.get(normalise_ticker(row.canonical_company))
-        undated = dated and scope is not None and scope.undated_events  # P40: as before P35, an undated event union
         reasons.append(
             filing_reason(
                 cast(str, row.change),
                 cast(str, row.cik),
                 cast(Any, row.filed),
-                bool(row.consolidating) and not undated,
+                bool(row.consolidating),
                 scope,
                 old_ciks.get(normalise_ticker(row.canonical_company), frozenset()),
                 frontier,
-                dated and not undated,
+                dated,
             )
         )
     out["reason"] = reasons
@@ -714,6 +740,8 @@ def _insider_reason(
         return "new_filing" if frontier is not None and not pd.isna(filed) and filed > frontier else ""
     if ticker != ticker_after and normalise_market_symbol(ticker) == normalise_market_symbol(ticker_after):
         return "symbol_normalisation"
+    if ticker != ticker_after and cik in own_ciks.get(normalise_ticker(ticker_after), ()) and cik not in own_ciks.get(normalise_ticker(ticker), ()):
+        return "entity_moved"
     return "acquired_constituent" if role == "acquired_constituent" else ""
 
 
@@ -895,33 +923,51 @@ def prices_diff(before: pd.DataFrame, after: pd.DataFrame, secondary_symbols: Co
 
 
 def explain_listed_rows(tape: pd.DataFrame, hypotheses: Sequence[Mapping[str, Any]]) -> pd.DataFrame:
-    """Ticker-grain rows no raw line explains take the reason of a hypothesis that lists them by ticker and date
-    (a stored before value whose source lines the master never stores, attested in the hypothesis note)."""
+    """Rows no rule explains take the reason of a hypothesis that lists them: ticker-grain rows by ticker and date (a
+    stored before value whose source lines the master never stores), or lines moving between two tickers by CUSIP under
+    a declared reason; the hypothesis note attests either."""
     out = tape.copy()
     for h in hypotheses:
-        if h["kind"] != "market_tape" or not h.get("dates") or not h.get("tape_source"):
+        if h["kind"] != "market_tape" or not h.get("tape_source"):
             continue
-        hit = (
-            out["source"].eq(h["tape_source"])
-            & out["old_canonical_issuer"].isin(set(h["tickers"]))
-            & out["settlement_date"].isin(set(h["dates"]))
-            & out["reason"].eq("")
-        )
+        tickers = set(h["tickers"])
+        if h.get("dates"):
+            listed = out["old_canonical_issuer"].isin(tickers) & out["settlement_date"].isin(set(h["dates"]))
+        elif h.get("cusips") and h["reason"] in DECLARED_REASONS:
+            old, new = out["old_canonical_issuer"], out["new_canonical_issuer"]
+            listed = out["cusip"].isin(set(h["cusips"])) & old.ne("") & new.ne("") & (old.isin(tickers) | new.isin(tickers))
+        else:
+            continue
+        hit = out["source"].eq(h["tape_source"]) & listed & out["reason"].eq("")
         out.loc[hit, "reason"] = h["reason"]
         out.loc[hit, "evidence"] = out.loc[hit, "evidence"] + f"; hypothesis {h['id']}"
     return out
 
 
-def check_hypotheses(hypotheses: Sequence[Mapping[str, Any]], filing: pd.DataFrame, tape: pd.DataFrame, skip: Collection[str] = ()) -> pd.DataFrame:
-    """Each hypothesis's count of diff rows with its reason; `fail` when it differs from `expected` (null = report only)."""
+def check_hypotheses(
+    hypotheses: Sequence[Mapping[str, Any]],
+    filing: pd.DataFrame,
+    tape: pd.DataFrame,
+    skip: Collection[str] = (),
+    insider: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Each hypothesis's count of diff rows with its reason; `fail` when it differs from `expected` (null = report only).
+    `ciks` narrows filing rows by filer CIK and insider rows by issuer CIK."""
     out = []
     for h in hypotheses:
         tickers = set(h.get("tickers") or ())
+        ciks = set(h.get("ciks") or ())
         if h["kind"] == "filing_lineage":
             table = h.get("table", HISTORY_TABLE)
             change = "removed" if h["change"] == "removed" else "added"
             decision = filing["old_decision"].isin(["stored", "kept"]) if change == "removed" else filing["new_decision"].isin(["stored", "kept"])
             rows = filing[filing["table"].eq(table) & filing["canonical_company"].isin(tickers) & decision]
+            rows = rows[rows["cik"].isin(ciks)] if ciks else rows
+        elif h["kind"] == "insider":
+            table = Tables.insider_transactions.name
+            frame = insider if insider is not None else pd.DataFrame(columns=INSIDER_COLUMNS)
+            rows = frame[frame["ticker"].isin(tickers)]
+            rows = rows[rows["issuer_cik"].isin(ciks)] if ciks else rows
         else:
             table = "market_tape"
             side = "old_canonical_issuer" if h["change"] == "removed" else "new_canonical_issuer"
@@ -1011,6 +1057,14 @@ _FRAMES: dict[str, tuple[Any, tuple[str, ...] | None]] = {
     "prices": (Tables.prices, ("ticker", "date", "open", "high", "low", "close_split", "close_total", "volume")),
 }
 _UNSCOPED = {"entity_lineage", "symbol_tenure", "roster"}
+_MASTER_COLUMNS = ("security_id", "valid_from", "valid_to", "lineage_role", "lineage_reason", "conversion_ratio", "issuer_cik", "exchange")
+#: The tapes' before stamps and the master behind them, dumped unscoped when the store has them: name -> (table, columns,
+#: raw-line key).
+_STAMPS: dict[str, tuple[Any, tuple[str, ...], tuple[str, ...]]] = {
+    "ftd_stamps": (Tables.sec_fails_to_deliver_security, ("cusip", "date", "trade_date", "security_id", "ticker", "lineage_role"), ("cusip", "date")),
+    "finra_stamps": (Tables.sec_short_volume_security, ("source_symbol", "date", "security_id", "ticker", "lineage_role"), ("source_symbol", "date")),
+    "master": (Tables.security_master, _MASTER_COLUMNS, ()),
+}
 
 
 def _read(store: Any, name: str, tickers: Sequence[str] | None) -> pd.DataFrame:
@@ -1027,6 +1081,13 @@ def take_snapshot(store: Any, out_dir: Path, tickers: Sequence[str] | None = Non
     counts: dict[str, int] = {}
     for name in _FRAMES:
         frame = _read(store, name, tickers)
+        frame.to_parquet(out_dir / f"{name}.parquet", index=False)
+        counts[name] = len(frame)
+        log.info("snapshot %s: %d row(s)", name, len(frame))
+    for name, (table, columns, _) in _STAMPS.items():
+        if not store.exists(table):
+            continue
+        frame = _stream(store, table, [c for c in columns if c in set(store.columns(table))], None)
         frame.to_parquet(out_dir / f"{name}.parquet", index=False)
         counts[name] = len(frame)
         log.info("snapshot %s: %d row(s)", name, len(frame))
@@ -1091,6 +1152,8 @@ def _tape_section(
     )
     frames, stats = [], {}
     scope = set(tickers) if tickers else None
+    judged = set(universe) & scope if scope is not None else set(universe)
+    stamped = (snap_dir / "master.parquet").is_file()
     for source, table, before_name, values in specs:
         before = _snap(snap_dir, before_name)
         if not store.exists(table) and not before.empty:
@@ -1100,17 +1163,38 @@ def _tape_section(
         new_rows = stored["date"] > frontier if not pd.isna(frontier) else pd.Series(False, index=stored.index)
         raw = stored[~new_rows].reset_index(drop=True)
         stats[f"{source}_raw_rows"], stats[f"{source}_rows_after_snapshot"] = len(raw), int(new_rows.sum())
-        old = legacy_tickers(resolver, raw["source_symbol"], raw["date"], universe)
-        diff = tape_diff(raw, master, resolver, universe, source, old)
         before_scoped = before if scope is None else before[before["ticker"].isin(scope)]
-        residual = grain_residual(raw, old.where(old.isin(scope), "") if scope else old, before_scoped, values, source)
+        stamps_name = f"{source}_stamps"
+        if stamped and (snap_dir / f"{stamps_name}.parquet").is_file():
+            raw_before = stamped_view(raw, _snap(snap_dir, stamps_name), _STAMPS[stamps_name][2])
+            old_master = _snap(snap_dir, "master")
+            summed = raw_before["lineage_role"].isin(SUMMED_ROLES) & raw_before["ticker"].isin(set(universe))
+            old = _text(raw_before["ticker"].where(summed))
+            old_ratio = master_facts(raw_before, old_master)["conversion_ratio"].astype("float64")
+            diff = tape_diff(raw, master, resolver, universe, source, old, old_ratio)
+            residual = after_grain_residual(raw_before, old_master, before_scoped, values, judged, source, side="before")
+        else:
+            old = legacy_tickers(resolver, raw["source_symbol"], raw["date"], universe)
+            diff = tape_diff(raw, master, resolver, universe, source, old)
+            residual = grain_residual(raw, old.where(old.isin(scope), "") if scope else old, before_scoped, values, source)
         if scope is not None:
             diff = diff[diff["old_canonical_issuer"].isin(scope) | diff["new_canonical_issuer"].isin(scope)]
         after = _read(store, before_name, tickers)
-        after_residual = after_grain_residual(stored, master, after, values, set(universe) & scope if scope is not None else universe, source)
+        after_residual = after_grain_residual(stored, master, after, values, judged, source)
         stats[f"{source}_after_ticker_rows"] = len(after)
         frames += [diff, residual, after_residual]
     return pd.concat(frames, ignore_index=True), stats
+
+
+def stamped_view(raw: pd.DataFrame, stamps: pd.DataFrame, key: Sequence[str]) -> pd.DataFrame:
+    """The raw lines as the snapshot stamped them: its `ticker`, `lineage_role` and `security_id` by raw-line key (a line
+    the snapshot lacks carries no stamp)."""
+    columns = list(key)
+    keys = raw[columns].assign(date=pd.to_datetime(raw["date"]))
+    before = stamps.assign(date=pd.to_datetime(stamps["date"])).drop_duplicates(columns)
+    joined = keys.merge(before, on=columns, how="left").set_axis(raw.index)
+    security = joined["security_id"].where(joined["security_id"].notna(), raw["security_id"])
+    return raw.assign(ticker=joined["ticker"], lineage_role=joined["lineage_role"], security_id=security)
 
 
 SECTIONS = ("filing", "tape", "insider", "merged", "prices")
@@ -1167,14 +1251,14 @@ def run_diff(
         frames["merged"] = _merged_section(context, snap_dir, scope)
     if "prices" in sections:
         frames["prices"] = _prices_section(store, snap_dir, master, scope)
-    computed = {"filing_lineage": "filing", "market_tape": "tape"}
-    listed = [h for h in load_hypotheses(config_dir) if computed[h["kind"]] in frames]
+    listed = [h for h in load_hypotheses(config_dir) if HYPOTHESIS_KINDS[h["kind"]] in frames]
     outside = {h["id"] for h in listed if scope is not None and not set(h.get("tickers") or ()) <= set(scope)}
     hypotheses = check_hypotheses(
         listed,
         frames.get("filing", pd.DataFrame(columns=FILING_COLUMNS)),
         frames.get("tape", pd.DataFrame(columns=TAPE_COLUMNS)),
         set(skip) | outside,
+        frames.get("insider"),
     )
     for name, frame in frames.items():
         frame.to_csv(out_dir / OUTPUTS[name], index=False)
@@ -1249,7 +1333,7 @@ def _merged_section(context: Any, snap_dir: Path, scope: Sequence[str] | None) -
             if column in frame.columns:
                 frame[column] = pd.to_datetime(frame[column])
     names = sorted(set(before["ticker"]) | set(after["ticker"]))
-    series = load_predecessor_series(context, names, str(context.config_dir))
+    series = load_predecessor_series(context, names)
     stored = (
         set(store.distinct(Tables.sharadar_fundamentals, "ticker", where={"ticker": sorted({s.vendor_ticker for s in series})})) if series else set()
     )
@@ -1257,7 +1341,11 @@ def _merged_section(context: Any, snap_dir: Path, scope: Sequence[str] | None) -
     sec_before = _snap(snap_dir, "history_sec")
     sec_after = _read(store, "history_sec", scope)
     sec_changed = _changed_tickers(sec_before, sec_after, ["ticker", "as_of"])
-    sec_columns = {c for c in before.columns if c.endswith("_sec")} | set(load_field_map(str(context.config_dir)).sec_owned)
+    field_map = load_field_map(str(context.config_dir))
+    sec_owned = set(field_map.sec_owned)
+    # a column the merge derives from an SEC-owned input (`stockholdersEquityInclNci`) moves with the SEC block
+    sec_derived = {name for name, spec in field_map.derived.items() if set(spec.inputs) & sec_owned}
+    sec_columns = {c for c in before.columns if c.endswith("_sec")} | sec_owned | sec_derived
     return merged_diff(before, after, windows, sec_columns, sec_changed)
 
 

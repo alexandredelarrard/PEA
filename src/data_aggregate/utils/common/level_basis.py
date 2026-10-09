@@ -85,7 +85,13 @@ from typing import Any, cast
 import numpy as np
 import pandas as pd
 
+from src.constants.constants import SHARADAR_ACTION_SPINOFF, SHARADAR_ACTION_SPLIT
+from src.context import Context
 from src.data_extract.utils.fundamentals_sharadar.field_map import split_events as genuine_splits
+from src.data_store.schema import Tables
+from src.utils.cutover_continuity import predecessor_actions
+from src.utils.predecessor_series import load_predecessor_series
+from src.utils.string import normalise_ticker
 
 __all__ = ["genuine_splits"]
 
@@ -112,7 +118,7 @@ __all__ = ["genuine_splits"]
 LEVEL_SNAP_TOL = 1e-12
 
 
-def _suffix_factor(events: pd.DataFrame | None, tickers: Sequence[str], stamps: np.ndarray) -> dict[str, np.ndarray]:
+def suffix_factor(events: pd.DataFrame | None, tickers: Sequence[str], stamps: np.ndarray) -> dict[str, np.ndarray]:
     """Per ticker, `PROD(value : event date > d)` evaluated at every `d` in `stamps`.
 
     A suffix product plus a `searchsorted`, not a loop over events: the products are formed
@@ -168,10 +174,10 @@ def level_factor(
     frame.index.name, frame.columns.name = "date", "ticker"
 
     stamps = idx.to_numpy(dtype="datetime64[ns]")
-    numerator = _suffix_factor(
+    numerator = suffix_factor(
         (yf_splits.rename(columns={"ratio": "value"}) if yf_splits is not None and "ratio" in yf_splits.columns else yf_splits), columns, stamps
     )
-    denominator = _suffix_factor(genuine_splits, columns, stamps)
+    denominator = suffix_factor(genuine_splits, columns, stamps)
 
     for ticker in set(numerator) | set(denominator):
         up = numerator.get(ticker)
@@ -189,6 +195,39 @@ def level_factor(
     values = frame.to_numpy(dtype="float64", copy=True)
     values[np.abs(values - 1.0) < LEVEL_SNAP_TOL] = 1.0
     return pd.DataFrame(values, index=frame.index, columns=frame.columns)
+
+
+#: The `sharadar_actions` columns and kinds `split_events` reads; the table is market-wide, so the read is filtered to them.
+LEVEL_ACTION_COLUMNS = ["ticker", "date", "action", "value"]
+LEVEL_ACTION_KINDS = [SHARADAR_ACTION_SPLIT, SHARADAR_ACTION_SPINOFF]
+
+
+def level_actions(context: Context, tickers: Sequence[str]) -> pd.DataFrame | None:
+    """The `sharadar_actions` rows feeding S(d)'s denominator for `tickers`.
+
+    Inside a predecessor vendor series window the ticker's prices follow the window owner, so its own actions there
+    are replaced by the owner's (`cutover_continuity.predecessor_actions`), as the merged history does for shares; an
+    owner with no stored action is logged and the ticker's own actions are kept."""
+    kinds = {"action": LEVEL_ACTION_KINDS}
+    names = list(map(str, tickers))
+    actions = context.store.load(Tables.sharadar_actions, columns=LEVEL_ACTION_COLUMNS, where={"ticker": names, **kinds}, optional=True)
+    series = load_predecessor_series(context, names)
+    if actions is None or not series:
+        return actions
+    owners = context.store.load(
+        Tables.sharadar_actions, columns=LEVEL_ACTION_COLUMNS, where={"ticker": sorted({s.vendor_ticker for s in series}), **kinds}, optional=True
+    )
+    stored = set(owners["ticker"].map(normalise_ticker)) if owners is not None else set()
+    for s in series:
+        if s.vendor_ticker not in stored:
+            context.log.warning(
+                "level factor: the predecessor vendor series %s of %s (CIK %s) is not stored; actions before %s are kept as fetched",
+                s.vendor_ticker,
+                s.ticker,
+                s.cik,
+                s.valid_to.date() if s.valid_to is not None else "-",
+            )
+    return predecessor_actions(actions, owners, series)
 
 
 def describe(factor: pd.DataFrame, top: int = 10) -> str:
@@ -473,10 +512,9 @@ def apply_return_seams(wide: dict[str, pd.DataFrame], bugfix: dict, log: Callabl
     fabricated return.
 
     Unlike `apply_split_vintage` this is a SINGLE boundary with no islands behind it, so the
-    whole prefix moves together and no per-bar decision is needed. JCI is the case: its
-    `close_split` falls 70.354 -> 27.775 on 2007-07-02, a factor of 0.3948, while its feed
-    claims 0.25 and its real three-for-one was 2007-10-03, where the series does not step at
-    all. Feed, applied adjustment and real event disagree three ways.
+    whole prefix moves together and no per-bar decision is needed. JCI is the case: on Tyco's
+    2007-07-02 reverse split `close_split` applies the split but not the Covidien and TE
+    Connectivity spin-offs of the same day.
 
     ⚠ It moves `ret`, and that is the point -- a fabricated -60.52% bar is a LABEL defect
     first and a level defect second. Every leg in `REPAIRED_PRICE_FIELDS` moves by the same
@@ -539,9 +577,9 @@ def apply_null_ret(ret: pd.DataFrame, bugfix: dict, log: Callable[..., None]) ->
 
     ⚠ WHY A NULL AND NOT A RESCALE. `apply_return_seams` repairs the same SHAPE by multiplying
     the whole prefix by the observed step, which asserts that the post-seam basis is the right
-    one. That assertion needs the per-ticker corroboration JCI got -- the feed's claimed factor,
-    the applied factor and the real event date checked against each other, plus Sharadar's
-    independent price. None of the six has it. Nulling makes the weaker, provable claim: this
+    one. That assertion needs the per-ticker corroboration JCI got -- the feed's factor, the
+    applied factor and the traded company's own corporate actions on that date checked against
+    each other. None of the six has it. Nulling makes the weaker, provable claim: this
     number is not a return. It leaves `close_split`, `close_total` and the OHLC range exactly as
     published, so anything reading a LEVEL is untouched, and it costs only the <=2h forward and
     trailing windows that span the bar -- the same, already-accepted mechanism that nulls a

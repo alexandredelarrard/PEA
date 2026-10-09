@@ -38,7 +38,6 @@ from src.data_extract.utils.fundamentals_sharadar.diagnostics import (
 )
 from src.data_store.schema import Tables
 from src.utils import cutover_continuity as cc
-from src.utils.traded_security_deferrals import PREDECESSOR_SERIES, deferred_tickers
 
 CONFIG_DIR = Path("./configs")
 
@@ -325,9 +324,7 @@ def test_cik_cutover_continuity(context, frames):
     for ticker in testable:
         print(f"    {ticker}: boundaries {[str(b.date()) for b in registrants[ticker].boundaries]}")
     vendor_tickers = context.store.load(Tables.sharadar_tickers, columns=["ticker", "secfilings", "lastquarter"], optional=True)
-    deferred = deferred_tickers(CONFIG_DIR, PREDECESSOR_SERIES)  # P38: as the merge builds it
-    found = cc.predecessor_series(vendor_tickers if vendor_tickers is not None else pd.DataFrame(), windows, registrants)
-    series = tuple(s for s in found if s.ticker not in deferred)
+    series = cc.predecessor_series(vendor_tickers if vendor_tickers is not None else pd.DataFrame(), windows, registrants)
     merged, events = cc.apply_predecessor_series(frames.arq, frames.arq, series)
     print(
         f"  predecessor vendor series: {[f'{s.ticker}<-{s.vendor_ticker}' for s in series] or 'none'}; stored: {sorted(set(events['vendor_ticker'])) or 'none'}"

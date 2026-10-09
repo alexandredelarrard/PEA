@@ -23,7 +23,6 @@ import pandas as pd
 
 from src.constants.constants import CANONICAL_CURRENT, CANONICAL_PREDECESSOR, CANONICAL_ROLES, SECONDARY_CLASS
 from src.context import Context
-from src.data_extract.utils.common.config_paths import resolve_config_dir
 from src.data_extract.utils.common.entity_lineage import (
     FORM345_SOURCE,
     MANUAL_SOURCE,
@@ -51,7 +50,6 @@ from src.data_extract.utils.common.symbol_tenure import DEI_SOURCE, normalise_ma
 from src.data_store.schema import Tables
 from src.utils.cik_windows import widen_seams
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
-from src.utils.traded_security_deferrals import EVENT_FILING_WINDOWS, deferred_tickers
 
 logger = logging.getLogger(__name__)
 
@@ -156,8 +154,7 @@ class FilingScope:
     """One universe ticker's filing scope: the only input of an EDGAR listing.
 
     `event_ciks` lists every CIK of the entity (event forms); `windows` the consolidating CIK windows,
-    widened at seams; `scope_changed_at` the lineage timestamp of the last scope change; `undated_events`
-    lists 8-K / 13D / 13G over every event CIK, undated (a ticker deferred to the traded-security realignment).
+    widened at seams; `scope_changed_at` the lineage timestamp of the last scope change.
     """
 
     ticker: str
@@ -166,7 +163,6 @@ class FilingScope:
     event_ciks: tuple[str, ...]
     windows: tuple[CikWindow, ...]
     scope_changed_at: pd.Timestamp | None = None
-    undated_events: bool = False
 
     @classmethod
     def roster_only(cls, ticker: str, cik: str) -> FilingScope:
@@ -176,10 +172,7 @@ class FilingScope:
         return cls(ticker=normalise_ticker(ticker), entity=f"E{key}", roster_cik=key, event_ciks=(key,) if key else (), windows=windows)
 
     def ciks_on(self, day: pd.Timestamp) -> frozenset[str]:
-        """The CIKs whose seam-widened window admits `day`: the ones a date-limited filing may come from (every
-        event CIK when `undated_events`)."""
-        if self.undated_events:
-            return frozenset(self.event_ciks)
+        """The CIKs whose seam-widened window admits `day`: the ones a date-limited filing may come from."""
         return frozenset(window.cik for window in self.windows if window.admits(day))
 
 
@@ -217,8 +210,6 @@ class Identity:
     co_registrant_ciks: frozenset[str] = frozenset()
     #: universe ticker -> the boundary days of its mergers (insider lineage).
     merger_boundaries: Mapping[str, tuple[MergerBoundary, ...]] = field(default_factory=dict)
-    #: Universe tickers whose 8-K / 13D / 13G are not date-limited (`traded_security_deferrals`).
-    undated_event_tickers: frozenset[str] = frozenset()
 
     # entity_lineage
 
@@ -248,7 +239,6 @@ class Identity:
             event_ciks=tuple(sorted(self.event_ciks_by_entity.get(entity, frozenset({roster_cik})))),
             windows=self.windows_by_entity.get(entity, ()),
             scope_changed_at=self.scope_changed_at_by_entity.get(entity),
-            undated_events=key in self.undated_event_tickers,
         )
 
     def symbols_changed_at(self, ticker: str) -> pd.Timestamp | None:
@@ -436,7 +426,6 @@ def build_identity(
     master: pd.DataFrame | None = None,
     co_registrant_ciks: Collection[str] = (),
     mergers: Collection[MergerBoundary] = (),
-    undated_event_tickers: Collection[str] = (),
 ) -> Identity:
     """Validate the tables and return the frozen resolver; pure, no DB or config reads.
 
@@ -465,7 +454,6 @@ def build_identity(
         **_security_maps(master),
         co_registrant_ciks=frozenset(pad_cik(cik) for cik in co_registrant_ciks),
         merger_boundaries=_by_ticker(mergers),
-        undated_event_tickers=frozenset(normalise_ticker(t) for t in undated_event_tickers),
     )
     _log_identity(identity)
     return identity
@@ -702,7 +690,6 @@ def load_identity(context: Context, refresh: bool = False) -> Identity:
         master=master,
         co_registrant_ciks=co_registrant_ciks(lineage, evidence, manual.co_registrants),
         mergers=merger_boundaries(manual),
-        undated_event_tickers=deferred_tickers(resolve_config_dir(str(context.config_dir)), EVENT_FILING_WINDOWS),
     )
     _CACHE[context] = identity
     return identity

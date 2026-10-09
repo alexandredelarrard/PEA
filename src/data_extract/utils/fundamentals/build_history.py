@@ -26,6 +26,7 @@ from src.context import Context
 from src.data_extract.utils.common.frame_sanitize import pin_dtypes
 from src.data_extract.utils.common.identity import CikWindow, load_identity
 from src.data_extract.utils.common.resume import recently_changed
+from src.data_extract.utils.common.security_master import load_security_manual
 from src.data_extract.utils.fundamentals import reason_codes as rc
 from src.data_extract.utils.fundamentals.kpi_catalogue import HISTORY_KEYS, HISTORY_PROVENANCE, HISTORY_REGIME, Catalogue, load_catalogue
 from src.data_extract.utils.fundamentals.periods import (
@@ -766,14 +767,18 @@ def facts_frame_from_companyfacts(blob: dict, catalogue: Catalogue) -> pd.DataFr
 
 
 def keep_window_owner_filings(facts: pd.DataFrame, windows: Sequence[CikWindow]) -> pd.DataFrame:
-    """Rule 6: a filing is kept only when its filer CIK's seam-widened window admits its filing date, and rows of a
-    fiscal period reported by several CIKs keep only the CIK whose stated window owns the period end.
+    """Rule 6: a filing is kept only when its filer CIK's seam-widened window admits its filing date (so a CIK with no
+    window, such as an acquired target, contributes nothing), and across a seam rows of a fiscal period reported by
+    several CIKs keep only the CIK whose stated window owns the period end.
 
-    A period no other CIK reports (a margin filing alone in its period) is kept, as is a row with no CIK, date or period.
+    A period no other CIK reports (a margin filing alone in its period) is kept, as is a row with no CIK, date or period;
+    with no window at all the facts are returned unchanged.
     """
-    if len(windows) < 2 or facts.empty or "cik" not in facts.columns:
+    if not windows or facts.empty or "cik" not in facts.columns:
         return facts
     facts = facts[pd.Series(_filed_inside_window(facts, windows), index=facts.index, dtype=bool)]
+    if len(windows) < 2:
+        return facts
     ciks = pad_cik_series(facts["cik"]).tolist()
     periods = [None if pd.isna(day) else pd.Timestamp(day) for day in pd.to_datetime(facts["period_of_report"], errors="coerce")]
     reported = set(zip(periods, ciks, strict=True))
@@ -794,6 +799,20 @@ def _filed_inside_window(facts: pd.DataFrame, windows: Sequence[CikWindow]) -> l
         not cik or pd.isna(day) or any(window.cik == cik and window.admits(pd.Timestamp(day)) for window in windows)
         for cik, day in zip(pad_cik_series(facts["cik"]), filed, strict=True)
     ]
+
+
+def drop_reverse_acquisition_comparatives(facts: pd.DataFrame, seam: pd.Timestamp) -> pd.DataFrame:
+    """Facts of a reverse acquisition's survivor minus the pre-seam periods its post-seam filings restate.
+
+    A fact whose `period_end` is before `seam` in a filing whose `period_of_report` is on or after it is the
+    accounting acquirer's comparative, not the traded security's history. The survivor's own amendment of a
+    pre-seam period has a pre-seam `period_of_report` and is kept; a row with no date is kept.
+    """
+    if facts.empty:
+        return facts
+    ends = pd.to_datetime(facts["period_end"], errors="coerce")
+    reports = pd.to_datetime(facts["period_of_report"], errors="coerce")
+    return facts[~((ends < seam) & (reports >= seam))]
 
 
 def _filer_count(facts: pd.DataFrame) -> int:
@@ -1035,21 +1054,36 @@ def _incremental_rows(ticker: str, df_facts: pd.DataFrame, work: HistoryWork, ca
 # ---------------------------------------------------------------------- the build ---
 
 
-def _ticker_facts(context: Context, ticker: str) -> pd.DataFrame | None:
-    """The ticker's replay facts with the seam rule applied, or None when it has none stored."""
+def _ticker_facts(context: Context, ticker: str, seams: Mapping[str, pd.Timestamp]) -> pd.DataFrame | None:
+    """The ticker's replay facts with the seam rule and, for a declared reverse acquisition (`seams`), the comparatives
+    rule applied, or None when it has none stored."""
     df_facts = context.store.load(Tables.fundamentals_facts, columns=list(FACT_COLUMNS), where={"ticker": ticker}, optional=True)
-    if df_facts is None or _filer_count(df_facts) <= 1:
+    if df_facts is None:
         return df_facts
-    df_kept = keep_window_owner_filings(df_facts, load_identity(context).filing_scope(ticker).windows)
-    set_aside = sorted(set(df_facts["accession_number"]) - set(df_kept["accession_number"]))
-    if set_aside:
-        context.log.info(
-            "history: %s seam rule set aside %d filing(s) outside the filer's window or of a period its window owner reports: %s",
-            ticker,
-            len(set_aside),
-            ", ".join(set_aside),
-        )
-    return df_kept
+    if _filer_count(df_facts) > 1:
+        df_kept = keep_window_owner_filings(df_facts, load_identity(context).filing_scope(ticker).windows)
+        set_aside = sorted(set(df_facts["accession_number"]) - set(df_kept["accession_number"]))
+        if set_aside:
+            context.log.info(
+                "history: %s seam rule set aside %d filing(s) outside the filer's window or of a period its window owner reports: %s",
+                ticker,
+                len(set_aside),
+                ", ".join(set_aside),
+            )
+        df_facts = df_kept
+    if ticker in seams:
+        df_kept = drop_reverse_acquisition_comparatives(df_facts, seams[ticker])
+        dropped = df_facts.loc[~df_facts.index.isin(df_kept.index), "accession_number"].value_counts().sort_index()
+        if not dropped.empty:
+            context.log.info(
+                "history: %s reverse-acquisition rule dropped %d pre-seam comparative fact(s) of %d post-seam filing(s): %s",
+                ticker,
+                int(dropped.sum()),
+                len(dropped),
+                ", ".join(f"{accession} ({count})" for accession, count in dropped.items()),
+            )
+        df_facts = df_kept
+    return df_facts
 
 
 # ------------------------------------------------------------- the replay pool ---
@@ -1141,12 +1175,14 @@ def build_fundamentals_history(
     so does a ticker whose lineage scope changed recently (`resume.recently_changed` on `as_of`) when its recomputed
     history differs from the stored one. `fetched` (filing dates a same-process fetch read, per ticker) and
     `full_fetch` (that fetch ran with `-F`) route back-dated reads to the full replay. A ticker whose facts come from
-    several CIKs reads its windows from the identity layer for the seam rule (`keep_window_owner_filings`).
+    several CIKs reads its windows from the identity layer for the seam rule (`keep_window_owner_filings`); a declared
+    reverse acquisition then drops the pre-seam comparatives of its survivor's post-seam filings.
     Full builds run in a process pool of `data_extract.fundamentals_workers` (in-process for 1 worker or a single
     ticker); the parent reads, guards, saves and logs, in ticker order.
     """
     catalogue = load_catalogue(str(context.config_dir))
     guards = load_guards(str(context.config_dir))
+    seams = {entry.ticker: entry.seam_date for entry in load_security_manual(str(context.config_dir)).reverse_acquisitions}
     history_rows = codes_rows = 0
     rebuild = frozenset(tickers) if rebuild_history else _scope_changed_recently(context, tickers, as_of)
     if rebuild and not rebuild_history:
@@ -1202,7 +1238,7 @@ def build_fundamentals_history(
     try:
         for ticker in active:
             item = work[ticker]
-            df_facts = _ticker_facts(context, ticker)
+            df_facts = _ticker_facts(context, ticker, seams)
             entry = _Pending(ticker, no_facts=df_facts is None)
             if df_facts is not None and item.path in (INCREMENTAL, CHECK):
                 entry.rows = _incremental_rows(ticker, df_facts, item, catalogue, guards)

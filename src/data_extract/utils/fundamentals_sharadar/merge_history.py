@@ -3,8 +3,8 @@
 Field-block precedence: Sharadar owns its declared columns for all history, `fundamentals_history_sec` owns the
 `sec`-kind columns, and no column switches source mid-series; the only
 exception is a whole `(ticker, field)` series moved to SEC by the approved override register. Inside a register
-predecessor window the canonical ARQ rows are replaced by the window owner's vendor series before the TTM build, on the
-ticker's share basis through the cited merger exchange ratio. SEC-sourced
+predecessor window (register-derived or a cited vendor series override) the canonical ARQ rows are replaced by the window
+owner's vendor series before the TTM build, on the ticker's share basis through the cited merger exchange ratio. SEC-sourced
 columns carry the `_sec` suffix (applied last, after `rederive`). The SEC block is joined BACKWARD as-of
 Sharadar's filing date within `SHARADAR_SEC_ASOF_TOLERANCE_DAYS` -- never forward. Every value column is cast
 to float64 before the write except `regime_sec` (text), excluded by name.
@@ -36,7 +36,6 @@ from src.data_extract.utils.common.frame_sanitize import pin_dtypes
 from src.data_extract.utils.common.security_master import load_security_manual
 from src.data_extract.utils.fundamentals.kpi_catalogue import DEFAULT_CONFIG_DIR
 from src.data_extract.utils.fundamentals_sharadar.build_ttm import ARQ, build_ttm
-from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import load_predecessor_series
 from src.data_extract.utils.fundamentals_sharadar.field_map import (
     FieldMap,
     TranslationReport,
@@ -48,6 +47,7 @@ from src.data_extract.utils.fundamentals_sharadar.field_map import (
 )
 from src.data_store.schema import Tables
 from src.utils.cutover_continuity import PredecessorSeries, ShareExchange, apply_predecessor_series, rebase_split_events
+from src.utils.predecessor_series import load_predecessor_series
 
 log = logging.getLogger(__name__)
 
@@ -360,7 +360,10 @@ def _cast(frame: pd.DataFrame, columns: tuple[str, ...]) -> pd.DataFrame:
 def share_basis_factors(
     series: tuple[PredecessorSeries, ...], exchanges: tuple[ShareExchange, ...], splits: pd.DataFrame
 ) -> dict[tuple[str, str], tuple[ShareExchange, float] | None]:
-    """Per `(ticker, cik)` window: its cited exchange and factor = ratio x the ticker's splits after the seam; None when uncited."""
+    """Per `(ticker, cik)` window: its cited exchange and factor = ratio x the ticker's splits after the seam; None when uncited.
+
+    Only genuine share events (`split_events`) enter the count; a price-only factor Yahoo books as a split (a spinoff)
+    stays in the cube's level factor S(d), never in the shares."""
     by_window = {(x.ticker, x.predecessor_cik): x for x in exchanges}
     out: dict[tuple[str, str], tuple[ShareExchange, float] | None] = {}
     for s in series:

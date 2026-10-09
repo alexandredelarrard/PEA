@@ -1,11 +1,11 @@
-"""Identity check: rows filed by a CIK outside the ticker's entity, `entity_lineage` invariants, the manual-fix flags
-and the vendor-series continuity at register cutovers.
+"""Identity check: rows filed by a CIK outside the ticker's entity, `entity_lineage` invariants, the manual-fix flags,
+the vendor-series continuity at register cutovers and the traded-security price match (`traded_security`).
 
 Reads only through `context.store`. The pending removals are the ones `identity-propagate` would purge,
 recomputed from the stored rows and the lineage: a filing of any CIK of the entity (margin filings and
-siblings included) is own, an 8-K / 13D / 13G only inside a seam-widened window of its CIK (undated for the
-tickers deferred to the traded-security realignment); a null CIK is never judged. Foreign rows and invariant
-breaches fail the check; flags needing a manual decision are information.
+siblings included) is own, an 8-K / 13D / 13G only inside a seam-widened window of its CIK, a consolidating row
+(facts, notes, filing text, proxies) only when its CIK holds a window of the ticker; a null CIK is never judged.
+Foreign rows and invariant breaches fail the check; flags needing a manual decision are information.
 """
 
 from __future__ import annotations
@@ -29,12 +29,13 @@ from src.utils.filer_tables import (
     judged_cik_mask,
     own_filer_mask,
     removal_records,
+    window_owner_mask,
     windowed_filer_mask,
 )
 from src.utils.identity_flags import FLAG_COLUMNS, KIND_ORDER, MARGIN, MASTER_COLUMNS, cik_activity, identity_flags, log_identity_flags
+from src.utils.predecessor_series import load_vendor_series, with_overrides
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
-from src.utils.traded_security_deferrals import CONFIG_FILE as DEFERRALS_FILE
-from src.utils.traded_security_deferrals import EVENT_FILING_WINDOWS, PREDECESSOR_SERIES, deferred_tickers
+from src.validate.checks.traded_security import traded_security_flags
 from src.validate.result import CheckResult, Finding
 
 CHECK = "identity"
@@ -130,13 +131,17 @@ def _outside_windows(context: Context, spec: FilerTable, ticker: str, filers: li
 def _foreign_in_table(
     context: Context, spec: FilerTable, tickers: Sequence[str], ciks: dict[str, frozenset[str]], windows: dict[str, tuple[ListedWindow, ...]]
 ) -> list[dict]:
-    """One removal record per (ticker, filer CIK) of `spec` outside the ticker's entity, or outside its windows for a dated table."""
+    """One removal record per (ticker, filer CIK) of `spec` outside the ticker's entity, outside its windows for a dated
+    table, or holding no window of the ticker for a windowed table."""
     records: list[dict] = []
     columns = ["ticker", spec.cik_col, spec.date_col, spec.key_col]
     for ticker in tickers:
         filers = pd.Series(context.store.distinct(spec.table, spec.cik_col, where={"ticker": ticker}), dtype=object)
         padded = filers.map(pad_cik)
-        judged, own = judged_cik_mask(filers), own_filer_mask(pd.Series(ticker, index=filers.index, dtype=object), padded, ciks)
+        tickers_of = pd.Series(ticker, index=filers.index, dtype=object)
+        judged, own = judged_cik_mask(filers), own_filer_mask(tickers_of, padded, ciks)
+        if spec.windowed:
+            own &= window_owner_mask(tickers_of, padded, windows)
         if spec.dated:
             records += _outside_windows(context, spec, ticker, filers[judged & own].tolist(), windows)
         foreign = filers[judged & ~own].tolist()
@@ -151,11 +156,8 @@ def _foreign_in_table(
 def pending_removals(context: Context, lineage: pd.DataFrame, tickers: Sequence[str], *, dated: bool = True) -> pd.DataFrame:
     """The rows `identity-propagate` would purge from every filer-CIK table, as `REMOVAL_COLUMNS` records.
 
-    `dated=False` skips the window rule (a pre-cutover lineage declares no dated windows); a ticker deferring its
-    event-filing windows is never date-limited."""
-    undated = deferred_tickers(_config_dir(context), EVENT_FILING_WINDOWS)
-    ciks = _entity_ciks(lineage)
-    windows = {t: w for t, w in _listed_windows(lineage).items() if t not in undated} if dated else {}
+    `dated=False` skips the window rule (a pre-cutover lineage declares no dated windows)."""
+    ciks, windows = _entity_ciks(lineage), _listed_windows(lineage) if dated else {}
     records: list[dict] = []
     for spec in PURGE_TABLES:
         if context.store.exists(spec.table):
@@ -315,35 +317,20 @@ def _series_items(arq: pd.DataFrame, owners: pd.DataFrame, series: Sequence[cc.P
     return items
 
 
-def _deferred_series_items(series: Sequence[cc.PredecessorSeries]) -> list[dict[str, object]]:
-    """A predecessor window whose replacement is deferred: the vendor's own rows stay, as information."""
-    return [
-        _flag(
-            cc.VENDOR_SERIES_OTHER_COMPANY,
-            False,
-            s.ticker,
-            s.cik,
-            f"replacement by {s.vendor_ticker} deferred: the canonical vendor rows inside {s.cik}'s window "
-            f"..{s.valid_to.date() if s.valid_to is not None else 'open'} are the traded security's own and stay (no exchange-ratio conversion)",
-            "none: deferred to the traded-security realignment (plan §13.10)",
-            f"configs/{DEFERRALS_FILE.as_posix()}",
-        )
-        for s in series
-    ]
-
-
 def continuity_flags(context: Context, lineage: pd.DataFrame, scope: Sequence[str], config_dir: str) -> tuple[pd.DataFrame, dict[str, Any]]:
-    """Vendor-series discontinuities near every register boundary of the scope's tickers, as flag items, plus metrics.
+    """Vendor-series discontinuities near every register or cited-override boundary of the scope's tickers, as flag items, plus metrics.
 
     The vendor series is read as the merge builds it (predecessor series applied), so a filled quarter heals its record.
     """
     windows = {t: w for t, w in cc.register_windows(lineage).items() if t in set(scope)}
+    # a cited vendor-series override (JCI <- TYC) is a boundary too: its CIK before `valid_to`, the same CIK after
+    declared = tuple(s for s in load_vendor_series(config_dir) if s.ticker in set(scope) and s.valid_to is not None)
+    for s in declared:
+        windows.setdefault(s.ticker, (cc.CikWindow(s.cik, s.valid_from, s.valid_to), cc.CikWindow(s.cik, s.valid_to, None)))
     if not windows or not context.store.exists(Tables.sharadar_fundamentals):
         return pd.DataFrame(columns=list(FLAG_COLUMNS)), {}
     vendor_tickers = context.store.load(Tables.sharadar_tickers, columns=["ticker", "secfilings", "lastquarter"], optional=True)
-    found = cc.predecessor_series(vendor_tickers if vendor_tickers is not None else pd.DataFrame(), windows, scope)
-    deferred = deferred_tickers(config_dir, PREDECESSOR_SERIES)
-    series = tuple(s for s in found if s.ticker not in deferred)
+    series = with_overrides(cc.predecessor_series(vendor_tickers if vendor_tickers is not None else pd.DataFrame(), windows, scope), declared)
     arq = _vendor_arq(context, sorted(windows))
     owners = _vendor_arq(context, sorted({s.vendor_ticker for s in series})) if series else pd.DataFrame(columns=_VENDOR_COLUMNS)
     merged, events = cc.apply_predecessor_series(arq, owners, series)
@@ -369,7 +356,6 @@ def continuity_flags(context: Context, lineage: pd.DataFrame, scope: Sequence[st
         for key in report.duplicated
     ]
     items += _series_items(arq, owners, series)
-    items += _deferred_series_items([s for s in found if s.ticker in deferred])
     metrics = {
         "continuity_discontinuities": len(report.table),
         "continuity_explained": int(report.table["explained"].sum()) if not report.table.empty else 0,
@@ -415,9 +401,11 @@ def check_identity(context: Context, *, tickers: Sequence[str] | None = None) ->
         return _unmigrated_report(context, _from_old_shape(lineage, roster), scope)
     removals = pending_removals(context, lineage, scope)
     continuity, continuity_metrics = continuity_flags(context, lineage, scope, _config_dir(context))
+    traded, traded_metrics = traded_security_flags(context, scope)
     flags = _flags(context, lineage)
-    if not continuity.empty:
-        flags = pd.concat([flags, continuity], ignore_index=True)
+    extra = [part for part in (continuity, traded) if not part.empty]
+    if extra:
+        flags = pd.concat([flags, *extra], ignore_index=True)
         order = flags["kind"].map({kind: rank for rank, kind in enumerate(KIND_ORDER)})
         flags = flags.assign(_order=order).sort_values(["_order", "ticker"], kind="mergesort").drop(columns="_order").reset_index(drop=True)
     log_identity_flags(context.log, flags)
@@ -433,6 +421,7 @@ def check_identity(context: Context, *, tickers: Sequence[str] | None = None) ->
         "backlog": int(flags["action"].sum()),
         "symbol_statuses": lineage.loc[lineage["role"].eq("symbol"), "status"].value_counts().sort_index().to_dict(),
         **continuity_metrics,
+        **traded_metrics,
     }
     scope_info = {"rows": len(lineage), "tickers": len(scope), "tables": [spec.table.name for spec in PURGE_TABLES]}
     result = CheckResult.measured(CHECK, Tables.entity_lineage.name, findings, scope=scope_info, metrics=metrics)

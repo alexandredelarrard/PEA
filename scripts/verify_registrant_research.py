@@ -57,7 +57,7 @@ PROPOSED: dict[str, tuple[list[str], str, str]] = {
     "WBD": (["0001320482"], "2008-09-17", "Discovery Holding Company"),
     "HST": (["0000314733"], "1998-12-29", "Host Marriott Corporation"),
     "SPG": (["0000912564"], "1998-09-24", "Simon DeBartolo Group, Inc."),
-    "DD": (["0000030554"], "2017-08-31", "E.I. du Pont de Nemours -- ticker lineage"),
+    "DD": (["0000029915"], "2017-08-31", "The Dow Chemical Company -- DD's pre-seam prices are its security"),
     "VMC": (["0000103973"], "2007-11-16", "Vulcan Materials (old)"),
     "BNY": (["0000009626"], "2007-07-01", "The Bank of New York Company"),
     "RF": (["0000036032"], "2004-07-01", "Regions Financial (old)"),
@@ -74,7 +74,7 @@ PROPOSED: dict[str, tuple[list[str], str, str]] = {
 #: second parent's 10-K history to this ticker would import another company's accounts. Held
 #: here so the evidence string can name it and nobody rediscovers it as a missing hop.
 CO_PREDECESSOR = {
-    "DD": "0000029915 Dow Chemical (ACCOUNTING acquirer -- see report, DD is the one case where the two lineages diverge)",
+    "DD": "0000030554 E.I. du Pont de Nemours (acquired target, an event-only CIK of DD; still files as the EIDP subsidiary)",
     "VMC": "0000037651 Florida Rock",
     "BNY": "0000064782 Mellon Financial",
     "RF": "0000100893 Union Planters",

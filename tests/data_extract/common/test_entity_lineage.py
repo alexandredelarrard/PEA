@@ -723,7 +723,7 @@ def test_the_build_logs_the_manual_decision_block(monkeypatch, caplog):
 # Real data: the live register + curated files against the live tables         #
 # --------------------------------------------------------------------------- #
 @pytest.fixture(scope="module")
-def live_lineage() -> tuple[pd.DataFrame, pd.DataFrame]:
+def live_build() -> Any:
     if not CACHE.exists() or len(list(CACHE.glob("*.zip"))) < 40:
         pytest.skip(f"no cached Form 345 quarters under {CACHE}")
     from src.context import get_config_context
@@ -737,8 +737,12 @@ def live_lineage() -> tuple[pd.DataFrame, pd.DataFrame]:
     if tenure is None or roster is None or tenure.empty or roster.empty:
         pytest.skip("symbol_tenure / sp500_tickers empty -- run `identity-tables` first")
     assert tenure is not None and roster is not None
-    build = derive_entity_lineage(tenure, roster, scan_form345_cache(CACHE).owner_pairs, CONFIG_DIR)
-    return build.rows, build.blocked
+    return derive_entity_lineage(tenure, roster, scan_form345_cache(CACHE).owner_pairs, CONFIG_DIR)
+
+
+@pytest.fixture(scope="module")
+def live_lineage(live_build: Any) -> tuple[pd.DataFrame, pd.DataFrame]:
+    return live_build.rows, live_build.blocked
 
 
 def test_no_entity_holds_two_universe_tickers(live_lineage):
@@ -797,6 +801,50 @@ def test_the_worked_cases_resolve_as_the_plan_specifies(live_lineage):
     print("  OK: every verdict matches the plan, and there is no IR-specific rule anywhere")
 
 
+#: AC-002, the traded view: ticker -> ({window CIK: (valid_from, valid_to)}, {event-only CIKs}).
+TRADED_VIEW = {
+    "PLD": ({"0001045609": ("1900-01-01", None)}, {"0000899881"}),
+    "JCI": ({"0000833444": ("1900-01-01", None)}, {"0000053669"}),
+    "DD": ({"0000029915": ("1900-01-01", "2017-08-31"), "0001666700": ("2017-08-31", None)}, {"0000030554"}),
+    "DOW": ({"0001751788": ("1900-01-01", None)}, set()),
+}
+
+
+def test_the_four_realigned_entities_follow_the_traded_security(live_build):
+    """AC-002 on real inputs: the security whose prices each ticker carries owns its windows, the acquired targets are
+    event-only CIKs declared by the manual (no `multi_cik_no_window`, no `manual_review`), and TDCC is DD's, not DOW's."""
+    rows = live_build.rows
+    cik_rows = rows[rows["role"].isin(["cik_window", "cik_event"])]
+    print("\n=== SANITY CHECK: PLD / JCI / DD / DOW entities on real inputs ===")
+    for ticker, (windows, events) in TRADED_VIEW.items():
+        mine = cik_rows[cik_rows["canonical_ticker"].eq(ticker)]
+        got_windows = {
+            r.cik: (str(pd.Timestamp(r.valid_from).date()), None if pd.isna(r.valid_to) else str(pd.Timestamp(r.valid_to).date()))
+            for r in mine[mine["role"].eq("cik_window")].itertuples(index=False)
+        }
+        got_events = set(mine.loc[mine["role"].eq("cik_event"), "cik"])
+        print(f"  {ticker:4s} entity {sorted(set(mine['entity_id']))} windows {got_windows} events {sorted(got_events)}")
+        assert got_windows == windows, ticker
+        assert got_events == events, ticker
+        assert set(mine.loc[mine["cik"].isin(events), "oracle"]) <= {"manual"}, ticker
+    backlog = live_build.backlog
+    stuck = backlog[backlog["kind"].eq("multi_cik_no_window") & backlog["canonical_ticker"].isin(list(TRADED_VIEW))]
+    no_activity = pd.DataFrame(columns=["symbol", "issuer_cik", "valid_from", "valid_to", "n_filings", "source", "evidence"])
+    flags = identity_flags(rows, cik_activity(no_activity))
+    mine = flags[flags["ticker"].isin(list(TRADED_VIEW))]
+    # extra-CIK items; the concurrent-symbol `manual_review` items (symbol_tenure_manual.json) are another question
+    review = mine[
+        mine["kind"].isin(["manual_review", "missing_cutover", "co_registrant"]) & mine["config_file"].ne("configs/sec/symbol_tenure_manual.json")
+    ]
+    symbols = mine[mine["config_file"].eq("configs/sec/symbol_tenure_manual.json")]
+    print(f"  multi_cik_no_window for the four: {len(stuck)}; extra-CIK flags for the four: {len(review)}")
+    print(
+        f"  concurrent-symbol items (security_master decides per security): {sorted(symbols['evidence'].str.split(' resolves').str[0] + '->' + symbols['ticker'])}"
+    )
+    assert stuck.empty and review.empty
+    print("  OK: AMB, Tyco, TDCC and Dow Inc own the pre-seam history; old ProLogis, old JCI and old DuPont are cited event-only CIKs.")
+
+
 def test_the_register_beats_owner_overlap(live_lineage):
     """XOM's successor shell shares zero reporting owners with the predecessor; the register still wins."""
     lineage, _ = live_lineage
@@ -811,9 +859,9 @@ def test_the_register_beats_owner_overlap(live_lineage):
 
 
 def test_governance_cutover_ciks_are_register_sourced_without_owner_inference():
-    """The accepted pairs must resolve through the register even with no owner evidence."""
+    """The accepted pairs must resolve through the register even with no owner evidence; JCI's old CIK through the manual."""
     current = {"EVRG": "0001711269", "JCI": "0000833444", "PSKY": "0002041610"}
-    pairs = {"EVRG": ("0000054507", current["EVRG"]), "JCI": ("0000053669", current["JCI"]), "PSKY": ("0000813828", current["PSKY"])}
+    pairs = {"EVRG": ("0000054507", current["EVRG"]), "PSKY": ("0000813828", current["PSKY"])}
     build = derive_entity_lineage(
         _tenure([(ticker, cik, "2000-01-01", None, 1) for ticker, cik in current.items()]),
         _roster(list(current.items())),
@@ -826,16 +874,18 @@ def test_governance_cutover_ciks_are_register_sourced_without_owner_inference():
     for predecessor, successor in pairs.values():
         assert entity[predecessor] == entity[successor]
         assert oracle[predecessor] == oracle[successor] == "register"
-    print("\n=== SANITY CHECK: governance lineage comes from the register ===")
+    assert entity["0000053669"] == entity["0000833444"] and oracle["0000053669"] == "manual"
+    print("\n=== SANITY CHECK: governance lineage comes from the curated files ===")
     for ticker, (predecessor, successor) in pairs.items():
         print(f"  {ticker}: {predecessor} == {successor} via register")
-    print("  OK: all six CIK assignments are register-sourced without owner overlap.")
+    print(f"  JCI: 0000053669 == 0000833444 via {oracle['0000053669']} (acquired target, traded-security view)")
+    print("  OK: every CIK assignment is curated without owner overlap.")
 
 
 #: ticker: (predecessor, successor, seam) -- each dated from the successor's own 8-K12B / 8-K12G3.
 SUCCESSOR_FILINGS = {
     "ACN": ("0001134538", "0001467373", "2009-09-01"),
-    "DD": ("0000030554", "0001666700", "2017-08-31"),
+    "DD": ("0000029915", "0001666700", "2017-08-31"),
     "DUK": ("0000030371", "0001326160", "2006-04-03"),
     "FERG": ("0001832433", "0002011641", "2024-08-01"),
     "MRVL": ("0001058057", "0001835632", "2021-04-20"),
@@ -875,18 +925,17 @@ def test_a_register_entry_turns_a_backlogged_multi_cik_entity_into_dated_windows
     print("  OK: every successor-filing entry yields dated register windows and leaves the backlog")
 
 
-#: P18 register decisions: (predecessor, successor, seam, the successor's own pre-seam symbol or None).
+#: P18 register decisions kept by the traded-security realignment: (predecessor, successor, seam, the successor's own
+#: pre-seam symbol or None). PLD and DOW left the register (2026-10-07).
 REVISION_4_SEAMS = {
     "MRK": ("0000064978", "0000310158", "2009-11-03", "SGP"),
-    "PLD": ("0000899881", "0001045609", "2011-06-03", "AMB"),
     "TPL": ("0000097517", "0001811074", "2021-01-11", None),
-    "DOW": ("0000029915", "0001751788", "2019-04-01", None),
 }
 
 
 def test_the_revision_4_register_dates_the_reverse_mergers_from_the_accounting_predecessor(tmp_path):
-    """P18: MRK, PLD, TPL and DOW get dated register windows. In the two reverse mergers the legal acquirer filed
-    under its own symbol before the seam, yet the accounting predecessor owns the whole pre-seam window."""
+    """P18: MRK and TPL get dated register windows. In MRK's reverse merger the legal acquirer filed under its own
+    symbol before the seam, yet the accounting predecessor (whose prices MRK carries) owns the whole pre-seam window."""
     rows, owners = [], {}
     for i, (ticker, (predecessor, successor, seam, own_symbol)) in enumerate(REVISION_4_SEAMS.items()):
         rows += [(ticker, predecessor, "2000-01-03", seam, 50), (ticker, successor, seam, None, 50)]
@@ -912,6 +961,43 @@ def test_the_revision_4_register_dates_the_reverse_mergers_from_the_accounting_p
         note = f"; {successor} typed {own_symbol} before the seam and still owns nothing before it" if own_symbol else ""
         print(f"  {ticker:4s} {predecessor} [1900-01-01, {seam}) -> {successor} [{seam}, open){note}")
     print("  OK: without the register no predecessor window exists; with it each seam is dated and the accounting predecessor owns the past")
+
+
+#: The acquired targets of the traded-security view: (target, roster CIK, seam, the roster CIK's own pre-seam symbol).
+ACQUIRED_TARGETS = {
+    "PLD": ("0000899881", "0001045609", "2011-06-03", "AMB"),
+    "JCI": ("0000053669", "0000833444", "2016-09-02", "TYC"),
+}
+
+
+def test_an_acquired_target_is_an_event_only_cik_declared_by_the_manual(tmp_path):
+    """D3a: with no register entry the roster CIK owns the ticker from the sentinel start; the target that typed the
+    ticker before the seam stays in the entity as `cik_event`. Without the manual entry it is backlogged instead."""
+    rows, owners = [], {}
+    for i, (ticker, (target, home, seam, own_symbol)) in enumerate(ACQUIRED_TARGETS.items()):
+        rows += [(ticker, target, "2000-01-03", seam, 50), (ticker, home, seam, None, 50), (own_symbol, home, "2000-01-03", seam, 40)]
+        owners[target] = owners[home] = {f"{i:04d}{k:06d}" for k in range(10)}
+    tenure = _tenure(rows)
+    roster = _roster([(ticker, home) for ticker, (_, home, _, _) in ACQUIRED_TARGETS.items()])
+
+    before = derive_entity_lineage(tenure, roster, _owner_pairs(owners), _config(tmp_path))
+    after = derive_entity_lineage(tenure, roster, _owner_pairs(owners), CONFIG_DIR)
+    pending = before.backlog[before.backlog["kind"].eq("multi_cik_no_window")]
+    windows = _rows(after, role="cik_window").set_index("cik")
+    events = _rows(after, role="cik_event").set_index("cik")
+    print("\n=== SANITY CHECK: acquired targets (D3a) ===")
+    print(f"  without the manual: multi_cik_no_window {sorted(pending['canonical_ticker'])}")
+    for ticker, (target, home, seam, own_symbol) in ACQUIRED_TARGETS.items():
+        print(
+            f"  {ticker}: {home} window [{windows.loc[home, 'valid_from'].date()}, open) ({own_symbol} before {seam}); "
+            f"{target} cik_event via {events.loc[target, 'oracle']}"
+        )
+        assert windows.loc[home, "valid_from"] == L.SENTINEL_START and pd.isna(windows.loc[home, "valid_to"]), ticker
+        assert target not in windows.index, ticker
+        assert events.loc[target, "oracle"] == "manual" and events.loc[target, "entity_id"] == windows.loc[home, "entity_id"], ticker
+    assert sorted(pending["canonical_ticker"]) == sorted(ACQUIRED_TARGETS)
+    assert after.backlog[after.backlog["kind"].eq("multi_cik_no_window") & after.backlog["canonical_ticker"].isin(list(ACQUIRED_TARGETS))].empty
+    print("  OK: the traded security's CIK owns the past; the target is a cited event-only CIK, never a window.")
 
 
 def test_a_manual_verdict_clears_the_cpt_grey_band():

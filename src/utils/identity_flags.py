@@ -29,6 +29,7 @@ KIND_ORDER = (
     "conflict",
     "vendor_coverage_gap",
     "vendor_series_other_company",
+    "traded_security_mismatch",
     "noise",
     "automatic_cik_window",
     "co_registrant",

@@ -16,6 +16,7 @@ Infrastructure combines a PostgreSQL 16 pipeline database with an Airflow deploy
 
 - Run the nightly extraction fan-out with source-specific pools, placing `identity-tables` before every issuer-identity SEC consumer.
 - Keep SEC facts/history and employee headcount as independent tasks; the Sharadar merge waits for SEC facts/history only.
+- Keep `sharadar_actions` an independent fetcher and keep `fundamentals >> fundamentals_sharadar`: `fundamentals_sharadar` fetches the actions itself before the merge. The extraction schedule is `0 1 * * *` and its `start_date` is 2026-11-11.
 - Trigger a sequential, memory-bounded cube build.
 - Retrain models weekly and score the latest cube daily.
 - Initialize and operate the database, Airflow metadata database, scheduler, and webserver.

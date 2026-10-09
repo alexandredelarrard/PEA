@@ -70,6 +70,13 @@ Secrets live only in the ignored root `.env`, loaded by [Context](../../src/cont
 
 Use `close_split` for levels such as market capitalization, execution price, enterprise value, yields, and ATR inputs. Use `close_total` for returns, momentum, volatility, betas, and labels. Split/spinoff corrections that affect cube levels are applied when building `cube_part_prices`; the raw vendor table remains auditable. See [cube build](../flows/cube-build.md).
 
+One basis per ticker: every stored `close_split` bar of a ticker must sit on Yahoo's current adjustment basis. The incremental window restates only its own tail, so a split or spinoff that Yahoo registers late leaves older bars on the previous basis. Two triggers re-pull a ticker's full history:
+
+- **Event rule.** A `prices_splits` event dated after the last stored bar.
+- **Anchor rule.** The bars of the ticker's first stored calendar year are downloaded (one download per distinct first year) and compared with storage on `close_split` only. The ticker is restated when the median `abs(fresh/stored - 1)` over at least 3 common bars (the maximum if fewer) exceeds `ANCHOR_TOLERANCE = 1e-4` ([anchor_check.py](../../src/data_extract/utils/prices/anchor_check.py)). Any later split changes every early bar, so one comparison covers the whole history. Float noise is about 1e-16 and the smallest recorded split factor is 1.0017, so the tolerance is blind only to a restatement below 0.01%. An empty download or a missing or non-positive bar never triggers; `full` runs skip the check.
+
+Invariant `unrebased_seam` ([prices.py](../../src/validate/utils/prices.py)) is the read-only guard. It flags a one-bar `close_split` step within 5% of a `prices_splits` ratio (or its inverse) of the same ticker dated within `SEAM_MATCH_DAYS = 30` calendar days of the step; splits within 10% of ratio 1 are not scanned. An unrebased seam sits at the start of the overlap window, not at the ex-date, hence the window. `gate` blocks the cube build only on seams in the last 60 sessions that `yf_price_bugfix.json` does not declare; older seams are reported. Known false-positive class: a genuine move that coincides with a small split ratio (EXPE-style reverse-split coincidences, ratios within 10-20% of 1) reads as a seam; declare it in the register.
+
 ## Sharadar SF1
 
 The supported channel is the Sharadar Direct API. Its field names and entitlements differ from Nasdaq Data Link clients, so the channels are not interchangeable.

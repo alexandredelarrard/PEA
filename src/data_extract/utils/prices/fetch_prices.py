@@ -24,6 +24,7 @@ from src.constants.constants import DATE_FORMAT, SECONDARY_CLASS
 from src.context import Context
 from src.data_extract.utils.common.resume import document_floor, series_windows, trading_calendar
 from src.data_extract.utils.common.sessions import last_completed_session
+from src.data_extract.utils.prices.anchor_check import anchor_restated_keys
 from src.data_extract.utils.prices.fetch_dividends import _extract_dividends
 from src.data_extract.utils.prices.fetch_splits import _extract_splits
 from src.data_store.schema import Tables
@@ -176,7 +177,7 @@ def _chunk_response_to_frames(data: pd.DataFrame, chunk: list[str]) -> list[pd.D
             sub = data[tkr].dropna(how="all").reset_index()
             sub["ticker"] = tkr
             frames.append(sub)
-    elif len(chunk) == 1:
+    elif len(chunk) == 1 and not data.empty:
         sub = data.dropna(how="all").reset_index()
         sub["ticker"] = chunk[0]
         frames.append(sub)
@@ -309,6 +310,23 @@ def _price_rows(df_raw: pd.DataFrame) -> pd.DataFrame:
     return trim_prelisting_bars(df_bars.dropna(subset=bar_columns, how="all").reset_index(drop=True))
 
 
+def _warn_shorter_history(context: Context, rows: pd.DataFrame, keys: list[str]) -> None:
+    """WARN for each re-pulled key whose fresh bars start after its first stored bar: the upsert never deletes,
+    so the older stored bars keep the old basis."""
+    if rows.empty:
+        return
+    served = pd.to_datetime(rows["date"]).groupby(rows["ticker"]).min()
+    stats = context.store.key_stats(Tables.prices, "ticker", where={"ticker": keys}).dropna(subset=["first"])
+    for key, first in zip(stats["key"].astype(str), pd.to_datetime(stats["first"]), strict=True):
+        if key in served.index and served[key].normalize() > first.normalize():
+            logger.warning(
+                "%s re-pulled, but Yahoo now serves it only from %s while bars are stored from %s: the older bars stay on the old basis",
+                key,
+                served[key].date(),
+                first.date(),
+            )
+
+
 def _download_groups(groups: list[tuple[pd.Timestamp, pd.Timestamp, list[str]]], chunk_size: int, pause: float, label: str) -> pd.DataFrame:
     """One `actions=True` download per window group, concatenated; duplicate `(ticker, date)` rows keep the last."""
     frames = []
@@ -337,7 +355,8 @@ def fetch_prices_and_actions(
     date minus the overlap, holes, new keys in full until their history reaches the floor) and end at the
     last completed session. The companies' current secondary classes (`secondary_class_symbols`) are fetched
     alongside; a class with no stored bar takes the whole window. A key whose response holds a split or a cash
-    dividend after its last stored bar is re-pulled over the whole window before saving."""
+    dividend after its last stored bar, or whose first-year `close_split` disagrees with Yahoo's (`anchor_check`),
+    is re-pulled over the whole window before saving."""
     run_date = pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize()
     until = last_completed_session(as_of)
     calendar = trading_calendar(context)
@@ -361,13 +380,21 @@ def fetch_prices_and_actions(
         logger.info(
             "%d ticker(s) split or went ex-dividend after their last stored bar; re-pulling their whole window: %s", len(repull), ", ".join(repull)
         )
-        df_raw = pd.concat(
-            [
-                df_raw[~df_raw["ticker"].isin(repull)],
-                _download_groups([(_repull_start(context, floor), until, repull)], chunk_size, pause, "post-action re-pull"),
-            ],
-            ignore_index=True,
+    if not full:
+        checked = [key for key in prices_work.last if key not in full_keys and key not in repull]
+        anchored = anchor_restated_keys(
+            context,
+            checked,
+            until,
+            lambda keys, since, end: download_ohlcv(
+                keys, since, end, chunk_size, pause, desc="Downloading prices (anchor)", auto_adjust=False, actions=False
+            ),
         )
+        repull = sorted({*repull, *anchored})
+    if repull:
+        df_repull = _download_groups([(_repull_start(context, floor), until, repull)], chunk_size, pause, "post-action re-pull")
+        _warn_shorter_history(context, _price_rows(df_repull), repull)
+        df_raw = pd.concat([df_raw[~df_raw["ticker"].isin(repull)], df_repull], ignore_index=True)
 
     n_prices = context.store.save(Tables.prices, _price_rows(df_raw))
     # Dividends and splits are kept for the universe only; a secondary class lands in `prices` alone.

@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from typing import Any, cast
 
+import numpy as np
 import pandas as pd
 
 from src.context import Context
@@ -85,6 +86,31 @@ DAY_COVERAGE_FLOOR = 0.90
 DAY_COVERAGE_WINDOW = 21
 #: How many short days the report lists individually.
 DAY_COVERAGE_MAX_LISTED = 40
+#: Invariant 5: calendar days either side of a `prices_splits` date within which a one-bar step
+#: of the split's ratio is read as that split left unrebased. Wide on purpose: an unrebased seam
+#: sits where the stored history meets the re-pulled window, which can be weeks from the ex-date.
+SEAM_MATCH_DAYS = 30
+#: How near the one-bar step must be to the ratio or its inverse (a genuine move on the seam bar
+#: shifts it a little).
+SEAM_RATIO_TOL = 0.05
+#: Ratios at most this far from 1 take the small-ratio rule below; the match above is too coarse for them.
+SEAM_MIN_RATIO_DEV = 0.10
+#: Small-ratio rule: ratios with |log ratio| at or below this floor (a few ticks) are not scanned.
+SEAM_SMALL_MIN_LOG = 0.005
+#: Small-ratio rule: the market-adjusted log step must sit within this fraction of |log ratio| of
+#: -log ratio (a history left on the old basis steps by 1/ratio).
+SEAM_SMALL_REL_TOL = 0.5
+#: Small-ratio rule: the step must also exceed this many trailing robust sigmas of the ticker.
+SEAM_SMALL_MIN_Z = 2.5
+#: Trailing sessions (and minimum) for that sigma; a shorter history is not excused.
+SEAM_SIGMA_SESSIONS = 60
+SEAM_SIGMA_MIN_SESSIONS = 20
+#: The cross-sectional median step is subtracted only on dates with at least this many tickers.
+SEAM_MARKET_MIN_TICKERS = 50
+#: Only a seam inside this many of the latest sessions blocks the gate; older ones are reported.
+SEAM_RECENT_SESSIONS = 60
+#: How near a register date must be for a seam to count as declared.
+SEAM_DECLARED_DAYS = 3
 
 
 @dataclass
@@ -450,6 +476,130 @@ def invariant_day_coverage(context: Context, tickers: list[str] | None = None) -
     )
 
 
+def _declared_dates(blob: dict) -> dict[str, list[tuple[pd.Timestamp, int]]]:
+    """Per ticker, the dates the register declares a seam at, with the day window each allows.
+
+    `seam_reviewed` is read only here: it accepts a reviewed genuine move without changing data."""
+    out: dict[str, list[tuple[pd.Timestamp, int]]] = {}
+    for key, field, window in (
+        ("return_seams", "date", SEAM_DECLARED_DAYS),
+        ("null_ret", "date", SEAM_DECLARED_DAYS),
+        ("split_vintage", "before", SEAM_MATCH_DAYS),
+        ("seam_reviewed", "date", SEAM_DECLARED_DAYS),
+    ):
+        for ticker, entries in (blob.get(key) or {}).items():
+            for entry in entries:
+                if field in entry:
+                    out.setdefault(str(ticker), []).append((pd.Timestamp(entry[field]), window))
+    return out
+
+
+def _small_ratio_seams(px: pd.DataFrame, events: pd.DataFrame) -> pd.DataFrame:
+    """Seams of ratios within `SEAM_MIN_RATIO_DEV` of 1: a market-adjusted log step near
+    -log ratio that is also unusual for the ticker (above `SEAM_SMALL_MIN_Z` trailing sigmas)."""
+    log_step = np.log(px["step"])
+    breadth = log_step.groupby(px["date"]).transform("count")
+    market = log_step.groupby(px["date"]).transform("median").where(breadth >= SEAM_MARKET_MIN_TICKERS, 0.0)
+    bars = px[["ticker", "date", "step"]].assign(excess=log_step - market)
+    bars = bars[bars["ticker"].isin(events["ticker"])].copy()
+    trailing = bars.groupby("ticker")["excess"].transform(
+        lambda s: s.abs().rolling(SEAM_SIGMA_SESSIONS, min_periods=SEAM_SIGMA_MIN_SESSIONS).median().shift(1)
+    )
+    bars["sigma"] = trailing * 1.4826  # MAD -> sigma for a normal distribution
+    pairs = bars.dropna(subset=["excess"]).merge(events[["ticker", "split_date", "ratio"]], on="ticker")
+    pairs = pairs[(pairs["date"] - pairs["split_date"]).abs() <= pd.Timedelta(days=SEAM_MATCH_DAYS)]
+    log_ratio = np.log(pairs["ratio"])
+    gap = (pairs["excess"] + log_ratio).abs() / log_ratio.abs()
+    z = (pairs["excess"].abs() / pairs["sigma"]).where(pairs["sigma"] > 0, np.inf)
+    keep = (gap <= SEAM_SMALL_REL_TOL) & (z > SEAM_SMALL_MIN_Z)
+    return pairs[keep].assign(gap=gap[keep].to_numpy())
+
+
+def find_unrebased_seams(px: pd.DataFrame, splits: pd.DataFrame) -> pd.DataFrame:
+    """One-bar `close_split` steps that equal a nearby `prices_splits` ratio (or its inverse).
+
+    A correctly adjusted series is continuous across a split date, so such a step means the
+    history before it was left on the old basis. Ratios within `SEAM_MIN_RATIO_DEV` of 1 use
+    `_small_ratio_seams`, which matches only the stale direction (-log ratio): a small seam of the
+    opposite direction (a retracted factor) passes and is left to the fetch-time anchor rule, and
+    its recall drops on extreme market days. Columns: ticker, date, step, split_date, ratio."""
+    columns = ["ticker", "date", "step", "split_date", "ratio"]
+    px = px.sort_values(["ticker", "date"]).copy()
+    px["step"] = px["close_split"] / px.groupby("ticker")["close_split"].shift(1)
+    steps = px[(px["step"] - 1).abs() > SEAM_MIN_RATIO_DEV][["ticker", "date", "step"]]
+    events = splits.dropna(subset=["ratio"]).rename(columns={"date": "split_date"})
+    events = events[events["ratio"] > 0]
+    deviation = pd.concat([(events["ratio"] - 1).abs(), (1 / events["ratio"] - 1).abs()], axis=1).max(axis=1)
+    small = events[(deviation <= SEAM_MIN_RATIO_DEV) & (np.log(events["ratio"]).abs() > SEAM_SMALL_MIN_LOG)]
+    events = events[deviation > SEAM_MIN_RATIO_DEV]
+    pairs = steps.merge(events[["ticker", "split_date", "ratio"]], on="ticker")
+    near = (pairs["date"] - pairs["split_date"]).abs() <= pd.Timedelta(days=SEAM_MATCH_DAYS)
+    direct = (pairs["step"] / pairs["ratio"] - 1).abs()
+    inverse = (pairs["step"] * pairs["ratio"] - 1).abs()
+    keep = near & ((direct <= SEAM_RATIO_TOL) | (inverse <= SEAM_RATIO_TOL))
+    hits = [pairs[keep].assign(gap=pd.concat([direct, inverse], axis=1).min(axis=1)[keep].to_numpy())]
+    if not small.empty:
+        hits.append(_small_ratio_seams(px, small))
+    hits = [h for h in hits if not h.empty]
+    hit = pd.concat(hits, ignore_index=True) if hits else pd.DataFrame()
+    if hit.empty:
+        return pd.DataFrame(columns=columns)
+    return hit.sort_values("gap").drop_duplicates(["ticker", "date"]).sort_values(["date", "ticker"])[columns].reset_index(drop=True)
+
+
+def invariant_unrebased_seam(context: Context, tickers: list[str] | None = None) -> InvariantResult:
+    """INVARIANT 5 -- no one-bar `close_split` step equal to a split ratio dated near it.
+
+    Unlike invariant 3 this finds a PERMANENT step, the shape of a stored history left on the
+    old basis after a split or spinoff reached only the re-pulled tail. Every seam is listed in
+    `detail` with `recent` (inside the last `SEAM_RECENT_SESSIONS` sessions) and `declared` (in
+    `configs/prices/yf_price_bugfix.json`); `failing_tickers` holds the undeclared ones.
+
+    False positives: a genuine move matching a split ratio inside that split's window (for a
+    ratio within 10% of 1, a move of the stale direction that is also unusual for the ticker).
+    Blind spots: ratios within `SEAM_SMALL_MIN_LOG` of 1, a small-ratio seam no larger than the
+    ticker's ordinary daily moves, an event with no `prices_splits` row (`sharadar_actions` is not
+    read), and tickers outside the universe (secondary classes)."""
+    where = _price_scope(context, tickers)
+    px = context.store.load(Tables.prices, columns=["ticker", "date", "close_split"], where=where)
+    if px is None:
+        raise RuntimeError(f"'{Tables.prices}' returned no price frame")
+    px = _as_ns(px, "date").dropna(subset=["close_split"])
+    px = px[px["close_split"] > 0]
+    splits = context.store.load(Tables.prices_splits, columns=["ticker", "date", "ratio"], where=where, optional=True)
+    seams = find_unrebased_seams(px, _as_ns(splits, "date")) if splits is not None and not splits.empty else pd.DataFrame()
+
+    sessions = sorted(px["date"].unique())
+    cutoff = pd.Timestamp(sessions[-SEAM_RECENT_SESSIONS]) if len(sessions) >= SEAM_RECENT_SESSIONS else pd.Timestamp.min
+    declared = _declared_dates(load_bugfix(context.config_dir))
+    detail, failing = [], {}
+    for raw_row in seams.itertuples():
+        row: Any = raw_row
+        is_declared = any(abs((row.date - when).days) <= window for when, window in declared.get(str(row.ticker), []))
+        record = {
+            "ticker": str(row.ticker),
+            "date": row.date.strftime("%Y-%m-%d"),
+            "step": round(float(row.step), 4),
+            "split_date": row.split_date.strftime("%Y-%m-%d"),
+            "split_ratio": round(float(row.ratio), 4),
+            "recent": bool(row.date >= cutoff),
+            "declared": is_declared,
+        }
+        detail.append(record)
+        if not is_declared:
+            entry = failing.setdefault(record["ticker"], {"rows": 0, "dates": []})
+            entry["rows"] += 1
+            entry["dates"].append(record["date"])
+    return InvariantResult(
+        name="unrebased_seam",
+        rows=int(len(px)),
+        failed=sum(v["rows"] for v in failing.values()),
+        tickers=int(px["ticker"].nunique()),
+        failing_tickers=failing,
+        detail=detail,
+    )
+
+
 # --------------------------------------------------------------------------- #
 # entry point                                                                 #
 # --------------------------------------------------------------------------- #
@@ -539,10 +689,21 @@ MCAP_BLOCK_SHARE = None
 def gate(report: PricesReport) -> tuple[bool, str]:
     """`(ok, reason)` for the pre-cube-build gate.
 
-    Only invariant 3 blocks. It is the one whose failures are unambiguous -- an unexplained
-    >50% round-trip with no split on the books is always a data fault -- and the one that
-    catches the mechanism that re-corrupts the table every time a stock splits."""
+    Invariants 3 and 5 block. Invariant 3: an unexplained >50% round-trip with no split on the
+    books is always a data fault. Invariant 5: only a recent, undeclared unrebased seam blocks;
+    older ones are reported."""
     by_name = {r.name: r for r in report.invariants}
+    seam = by_name.get("unrebased_seam")
+    blocking = [d for d in (seam.detail if seam else []) if d["recent"] and not d["declared"]]
+    if blocking:
+        listed = ", ".join(f"{d['ticker']} {d['date']}" for d in blocking[:8])
+        return False, (
+            f"{len(blocking)} unrebased split seam(s) in the last {SEAM_RECENT_SESSIONS} sessions: {listed}. "
+            f"A one-bar `close_split` step equal to a `prices_splits` ratio usually means the stored history "
+            f"is on the old basis. Compare the stored bars with Yahoo's: if they differ, re-pull those tickers "
+            f"with `price-history -t <TICKER> --full`; if they agree, it is a genuine move, so add a `seam_reviewed` "
+            f"entry (date, why) for it in `configs/prices/yf_price_bugfix.json`."
+        )
     spike = by_name.get("spike_and_revert")
     if spike is None:
         return True, "spike scan skipped -- nothing to gate on"
@@ -561,9 +722,10 @@ def gate(report: PricesReport) -> tuple[bool, str]:
 def run_prices_validation(
     context: Context, tickers: list[str] | None = None, since: str | pd.Timestamp | None = None, skip_spike: bool = False
 ) -> PricesReport:
-    """Run all four invariants and return the report. Writes nothing."""
+    """Run all five invariants and return the report. Writes nothing."""
     panel = load_panel(context, tickers=tickers, since=since)
     results = [invariant_market_cap(panel), invariant_price_vintage(panel), invariant_day_coverage(context, tickers=tickers)]
     if not skip_spike:
         results.append(invariant_spike_revert(context, tickers=tickers))
+    results.append(invariant_unrebased_seam(context, tickers=tickers))
     return PricesReport(invariants=results)

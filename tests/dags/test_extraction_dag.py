@@ -8,6 +8,7 @@ import inspect
 import sys
 import textwrap
 import types
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -50,6 +51,7 @@ REQUIRED_COMMANDS = {
     "fundamentals",
     "fundamentals-employees",
     "fundamentals-sharadar",
+    "sharadar-actions",
     "def14a",
     "def14a-edgar",
     "sec-8k-items",
@@ -462,3 +464,30 @@ def test_earnings_calls_are_one_task_outside_the_retired_scrape_pool():
     print("\n=== SANITY CHECK: earnings-call extraction task ===")
     print("  one extract-earnings-calls task in the default pool replaces download + ingest")
     print("  OK: no task or airflow-init pool definition references the scrape pool")
+
+
+def test_sharadar_actions_is_an_sec_independent_task():
+    """AC-010: the market-wide Sharadar actions table refreshes nightly; an SEC walk failure never blocks it."""
+    dag = load_dag(DAG_FILE)
+    task = dag.tasks["sharadar_actions"]
+    assert str(task.kwargs["bash_command"]).split(" data_extract ", 1)[1].split()[0] == "sharadar-actions"
+    assert task.upstream == {"seed_universe"}, "no SEC edge: it waits for the seed only"
+    assert "sharadar_actions" in dag.tasks["extraction_status"].upstream
+    assert "sharadar_actions" not in dag.tasks["fundamentals_sharadar"].upstream
+    assert dag.tasks["fundamentals_sharadar"].upstream >= {"fundamentals"}
+    assert "fundamentals >> fundamentals_sharadar" in _source(DAG_FILE)
+
+    states = replay(dag, ["fundamentals"])
+    assert states["sharadar_actions"] == "success", states
+    assert states["fundamentals_sharadar"] == "upstream_failed", states
+    assert states["trigger_data_aggregation"] == "success", states
+
+    assert dag.kwargs["schedule"] == "0 1 * * *" and dag.kwargs["start_date"] == datetime(2026, 11, 11)
+    agg = _source(AGG_DAG_FILE)
+    assert "sharadar_actions" not in agg and "sharadar-actions" not in agg, "the aggregation DAG is untouched"
+    assert {"fundamentals", "fundamentals_employees", "def14a"} <= IDENTITY_CONSUMERS and "sharadar_actions" not in IDENTITY_CONSUMERS
+    assert DERIVED_PARENTS["fundamentals_sharadar"] == {"fundamentals"}
+
+    print("\n=== SANITY CHECK: sharadar_actions task (AC-010) ===")
+    print(f"  upstream {sorted(task.upstream)}; feeds extraction_status; not an ancestor of fundamentals_sharadar")
+    print("  fundamentals failure -> sharadar_actions success, fundamentals_sharadar upstream_failed; schedule/start_date unchanged")

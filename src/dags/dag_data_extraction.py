@@ -124,6 +124,7 @@ fundamentals = fetch("fundamentals", pool="sec_api")
 insider_edgar = fetch("insider-edgar", pool="sec_api")  # Form 3/4/5 EDGAR walk, after the zip half
 fundamentals_employees = fetch("fundamentals-employees", pool="sec_api")
 fundamentals_sharadar = fetch("fundamentals-sharadar")  # vendor tables + merged consumer history
+sharadar_actions = fetch("sharadar-actions")  # market-wide Sharadar actions, independent of the SEC walk
 def14a = fetch("def14a", pool="sec_api")  # + LLM
 def14a_edgar = fetch("def14a-edgar", pool="sec_api")  # deterministic PVP XBRL
 sec_8k_items = fetch("sec-8k-items", pool="sec_api")  # 8-K item codes (structured)
@@ -178,6 +179,7 @@ all_fetchers = [
     fundamentals,
     fundamentals_employees,
     fundamentals_sharadar,
+    sharadar_actions,
     def14a,
     def14a_edgar,
     sec_8k_items,

@@ -53,7 +53,7 @@ def _bars(symbols: list[str], day: str = "2026-09-30", split: float = 0.0, divid
             "open": 10.0,
             "high": 11.0,
             "low": 9.0,
-            "close": 10.5,
+            "close_split": 10.5,
             "volume": 1_000.0,
             "dividends": dividend,
             "stock splits": split,

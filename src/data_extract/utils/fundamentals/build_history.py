@@ -18,6 +18,7 @@ from concurrent.futures import Future, ProcessPoolExecutor
 from dataclasses import dataclass
 from typing import Any, cast
 
+import numpy as np
 import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype
 
@@ -288,9 +289,15 @@ def _qualifiers(by_field: dict[str, pd.DataFrame], field: str) -> list[str]:
     rows = by_field.get(field)
     if rows is None:
         return []
-    latest = rows[rows["filing_date"] == rows["filing_date"].max()]
-    found = {str(c) for c in latest["dc_code"].dropna() if str(c) in rc.IS_QUALIFIER}
-    for blob in latest["adjustment"].dropna():
+    filed = rows["filing_date"].to_numpy("datetime64[ns]")
+    known = filed[~np.isnat(filed)]
+    if known.size == 0:
+        return []
+    latest = filed == known.max()
+    codes = rows["dc_code"].to_numpy(dtype=object)[latest]
+    blobs = rows["adjustment"].to_numpy(dtype=object)[latest]
+    found = {str(c) for c in codes[pd.notna(codes)] if str(c) in rc.IS_QUALIFIER}
+    for blob in blobs[pd.notna(blobs)]:
         try:
             parsed = json.loads(blob)
         except (TypeError, ValueError):

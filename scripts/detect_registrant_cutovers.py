@@ -82,7 +82,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.context import get_config_context  # noqa: E402
-from src.data_extract.utils.common.registrant import load_registrants  # noqa: E402
+from src.data_extract.utils.common.registrant import FRESH_START_KIND, load_registrants  # noqa: E402
 from src.data_extract.utils.common.sec_io import sec_get  # noqa: E402
 
 #: A filing archive starting more than this many years after the first price is the symptom
@@ -815,6 +815,8 @@ def audit_chains(context, registrants: dict, price_start: dict) -> list[dict]:
     """
     out: list[dict] = []
     for ticker, reg in sorted(registrants.items()):
+        if reg.kind == FRESH_START_KIND:  # one CIK and no seam: there is no older hop to audit
+            continue
         oldest = reg.segments[0]
         try:
             doc = submissions(context, oldest.cik)

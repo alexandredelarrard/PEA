@@ -34,6 +34,7 @@ from src.data_extract.utils.common.registrant import (
 )
 
 CONFIG_DIR = "./configs"
+FRESH_START = "fresh_start"  # the register spelling of a same-CIK dated start
 
 
 def _segment_for(reg: Registrant, date: object) -> Segment:
@@ -161,6 +162,59 @@ def test_one_cik_cannot_be_claimed_by_two_tickers(tmp_path):
         load_registrants(_write(tmp_path, blob))
     print("\n=== SANITY CHECK: a CIK belongs to one ticker ===")
     print("  CIK 0000000009 claimed by A and B -> refused. Validated.")
+
+
+# --------------------------------------------------------------------------- #
+# The `fresh_start` kind: one CIK that counts from a date                      #
+# --------------------------------------------------------------------------- #
+def test_a_fresh_start_entry_is_one_dated_segment(tmp_path):
+    """A same-CIK fresh start (EXE emerging from bankruptcy) keeps its CIK, so it is one segment
+    open at the new end and closed at the old: no seam, and dates before `valid_from` belong to no one."""
+    blob = {"X": _entry(_seg("895126", valid_from="2021-02-10"), kind=FRESH_START)}
+    reg = load_registrants(_write(tmp_path, blob))["X"]
+    only = reg.segments[0]
+    assert reg.kind == FRESH_START
+    assert len(reg.segments) == 1
+    assert only.cik == "0000895126"
+    assert only.valid_from == pd.Timestamp("2021-02-10")
+    assert only.valid_to is None
+    assert reg.boundaries == ()
+    assert not only.covers("2021-02-09") and only.covers("2021-02-10")
+    print("\n=== SANITY CHECK: a fresh_start entry loads as one dated segment ===")
+    print(f"  {reg.ticker}: {only.cik} from {only.valid_from.date()} to open, boundaries {reg.boundaries}")
+    print("  OK: 2021-02-09 is outside the window, 2021-02-10 inside.")
+
+
+@pytest.mark.parametrize(
+    ("entry", "match"),
+    [
+        (_entry(_seg("1", valid_to="2021-02-10"), _seg("2", valid_from="2021-02-10"), kind=FRESH_START), "exactly 1"),
+        (_entry(_seg("1"), kind=FRESH_START), "requires `valid_from`"),
+        (_entry(_seg("1", valid_from="2021-02-10", valid_to="2024-01-01"), kind=FRESH_START), "must omit `valid_to`"),
+        (_entry(_seg("1", valid_from="2021-02-10", evidence="  "), kind=FRESH_START), "empty `evidence`"),
+        (_entry(_seg("1", valid_from="not-a-date"), kind=FRESH_START), "unparseable date|Unknown datetime string"),
+    ],
+    ids=["two_segments", "no_valid_from", "valid_to_present", "empty_evidence", "bad_date"],
+)
+def test_a_malformed_fresh_start_is_rejected(tmp_path, entry, match):
+    """Every way a fresh start can be mis-written raises at load: it must be one evidenced segment with a parseable start."""
+    with pytest.raises(ValueError, match=match) as raised:
+        load_registrants(_write(tmp_path, {"X": entry}))
+    print("\n=== SANITY CHECK: a malformed fresh_start is refused ===")
+    print(f"  {str(raised.value)[:110]}")
+    print("  OK: the loader names the rule broken.")
+
+
+def test_a_fresh_start_cik_claimed_by_another_entry_is_rejected(tmp_path):
+    """The cross-entry CIK uniqueness rule applies to a fresh start like any cutover chain."""
+    blob = {
+        "A": _entry(_seg("9", valid_from="2021-02-10"), kind=FRESH_START),
+        "B": _entry(_seg("9", valid_to="2020-01-01"), _seg("3", valid_from="2020-01-01")),
+    }
+    with pytest.raises(ValueError, match="claimed by both"):
+        load_registrants(_write(tmp_path, blob))
+    print("\n=== SANITY CHECK: a fresh_start CIK still belongs to one ticker ===")
+    print("  CIK 0000000009 claimed by fresh_start A and cutover B -> refused. Validated.")
 
 
 # --------------------------------------------------------------------------- #

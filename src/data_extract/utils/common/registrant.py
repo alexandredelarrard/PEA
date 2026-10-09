@@ -3,10 +3,10 @@
 Filings follow the legal registrant, whose CIK changes on a reorganisation or domestication.
 `registrant_cutover.json` declares each such ticker as an ordered, contiguous chain of evidenced
 `[valid_from, valid_to)` segments, validated strictly at load; a `fresh_start` entry is one CIK counted
-only from its `valid_from`. The lineage build turns it into dated CIK windows. `FORM_POLICY` decides per form whether filings UNION across a ticker's event CIKs
-(insider forms) or SPLIT by its CIK windows (everything else); `resolve_registrant_entries` applies
-it to local EDGAR index rows and `resolve_registrant_filings` to `Company` listings, both by CIK
-only, never by symbol.
+only from its `valid_from`. The lineage build turns it into dated CIK windows. `FORM_POLICY` decides per
+form whether filings UNION across a ticker's event CIKs (insider forms) or SPLIT by its CIK windows (everything
+else); `resolve_registrant_entries` applies it to local EDGAR index rows and `resolve_registrant_filings` to
+`Company` listings, both by CIK only, never by symbol.
 """
 
 from __future__ import annotations
@@ -176,7 +176,7 @@ def _require_evidence(ticker: str, i: int, seg: dict[str, Any]) -> None:
     """Raise unless segment `i` documents its evidence."""
     if not str(seg.get("evidence", "")).strip():
         raise ValueError(
-            f"registrant[{ticker}] segment {i}: empty `evidence`. An undocumented cutover "
+            f"registrant[{ticker}] segment {i}: empty `evidence`. An undocumented entry "
             "is a guess that deletes history, which is exactly what this register replaces."
         )
 

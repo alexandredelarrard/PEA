@@ -584,14 +584,23 @@ def label_fiscal_periods(quarters: pd.DataFrame, year_ends: list[pd.Timestamp]) 
     bounds = pd.Series(ends)
     # side='left' puts a quarter ending exactly ON a year end into that year, where Q4 lives.
     slot = bounds.searchsorted(out["period_end"].values, side="left")
-    for position, index in zip(slot, out.index, strict=False):
-        if position >= len(ends):
-            continue
-        year_start, year_end = starts[position], ends[position]
-        quarter_length = max((year_end - year_start).days + 1, 1) / TTM_QUARTERS
-        offset = (pd.Timestamp(cast(Any, out.at[index, "period_start"])) - year_start).days
-        out.at[index, "fiscal_year"] = year_end.year
-        out.at[index, "fiscal_quarter"] = int(min(max(round(offset / quarter_length) + 1, 1), TTM_QUARTERS))
+    inside = slot < len(ends)
+    if inside.any():
+        day = np.timedelta64(1, "D")
+        position = slot[inside]
+        year_end = np.array(ends, dtype="datetime64[ns]")[position]
+        year_start = np.array(starts, dtype="datetime64[ns]")[position]
+        quarter_length = np.maximum((year_end - year_start) // day + 1, 1) / TTM_QUARTERS
+        offset = (out["period_start"].to_numpy("datetime64[ns]")[inside] - year_start) // day
+        # np.round is half-to-even, like the builtin `round`; cells stay python ints in an object column.
+        quarter = np.minimum(np.maximum(np.round(offset / quarter_length) + 1, 1), TTM_QUARTERS)
+        years = np.array([end.year for end in ends])[position]
+        fiscal_year = np.full(len(out), pd.NA, dtype=object)
+        fiscal_quarter = np.full(len(out), pd.NA, dtype=object)
+        fiscal_year[inside] = [int(y) for y in years]
+        fiscal_quarter[inside] = [int(q) for q in quarter]
+        out["fiscal_year"] = fiscal_year
+        out["fiscal_quarter"] = fiscal_quarter
     return out[list(_QUARTER_COLUMNS)]
 
 

@@ -599,10 +599,12 @@ def live():
 #: mint. ⚠ `IR`'s predecessor entity is `E0000836102` and not the plan's `E0001160497`: the
 #: register's `TT` entry chains in the older Ingersoll-Rand Company CIK `0000836102`, and D16
 #: says in writing that a group gaining an older CIK shifts its id. The VERDICT -- which is
-#: what the plan actually asserts -- is unchanged.
+#: what the plan actually asserts -- is unchanged. `DD`'s entity is `E0000029915`: its
+#: register entry makes Dow Chemical the pre-2017 registrant (D1a) and old DuPont an acquired
+#: target in the same entity (D3a).
 WORKED_CASES = [
     ("IR", "0001466258", "E0000836102", "E0001699150", False, "Ingersoll-Rand plc is TT's"),
-    ("DD", "0000030554", "E0000030554", "E0000030554", True, "DuPont E I, 3,422 real rows"),
+    ("DD", "0000030554", "E0000029915", "E0000029915", True, "DuPont E I, an acquired target in DD's entity"),
     ("AVGO", "0001317092", "E0001317092", "E0001441634", False, "Avicena Group, a 2006 reuse"),
     ("COR", "0001140859", "E0001140859", "E0001140859", True, "AmerisourceBergen filed as ABC"),
 ]
@@ -634,7 +636,6 @@ KEEP_GROUPS = {
     ("JCI", "0000053669"),
     ("MRVL", "0001058057"),
     ("COHR", "0000021510"),
-    ("DOW", "0000029915"),
     ("STE", "0000815065"),
     ("PLD", "0000899881"),
     ("AVGO", "0001441634"),
@@ -663,7 +664,16 @@ KEEP_GROUPS = {
 }
 #: The Phase 2.3 screen output the table above was reviewed against (102 flagged groups).
 FLAGGED_GROUPS_JSON = Path(__file__).resolve().parents[2] / "fixtures" / "identity_insider_out_of_lineage.json"
-MOVE_GROUPS = {("IR", "0001466258"): "TT", ("IR", "0001160497"): "TT", ("TT", "0000749251"): "IT", ("NTRS", "0000049826"): "ITW"}
+#: Two verdicts changed after the review: Dow Chemical is `DD`'s pre-2017 registrant (D1a,
+#: 2026-10-07) and AvalonBay is an acquired target of `VMRK` (`VMRK/avalonbay-acquired`).
+MOVE_GROUPS = {
+    ("IR", "0001466258"): "TT",
+    ("IR", "0001160497"): "TT",
+    ("TT", "0000749251"): "IT",
+    ("NTRS", "0000049826"): "ITW",
+    ("DOW", "0000029915"): "DD",
+    ("AVB", "0000915912"): "VMRK",
+}
 
 
 def test_every_flagged_group_resolves_to_its_reviewed_verdict(live):
@@ -692,7 +702,7 @@ def test_every_flagged_group_resolves_to_its_reviewed_verdict(live):
     print(f"  MOVE {counts['MOVE']:>3} groups {rows['MOVE']:>7,} rows  relabelled onto the universe ticker that owns them")
     print(f"  DROP {counts['DROP']:>3} groups {rows['DROP']:>7,} rows  another company -- quarantined")
     print("  OK: every one of the 102 matches the verdict read from the issuer name")
-    print("  -> A register-only cut would have deleted the 25,635 KEEP rows.")
+    print(f"  -> A register-only cut would have deleted the {rows['KEEP']:,} KEEP rows.")
 
 
 def test_owns_is_symmetric_with_event_ticker_for_cik_on_every_lineage_cik(live):

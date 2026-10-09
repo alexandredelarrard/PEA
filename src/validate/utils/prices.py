@@ -107,8 +107,6 @@ SEAM_SIGMA_SESSIONS = 60
 SEAM_SIGMA_MIN_SESSIONS = 20
 #: The cross-sectional median step is subtracted only on dates with at least this many tickers.
 SEAM_MARKET_MIN_TICKERS = 50
-#: MAD to sigma for a normal distribution.
-MAD_TO_SIGMA = 1.4826
 #: Only a seam inside this many of the latest sessions blocks the gate; older ones are reported.
 SEAM_RECENT_SESSIONS = 60
 #: How near a register date must be for a seam to count as declared.
@@ -507,7 +505,7 @@ def _small_ratio_seams(px: pd.DataFrame, events: pd.DataFrame) -> pd.DataFrame:
     trailing = bars.groupby("ticker")["excess"].transform(
         lambda s: s.abs().rolling(SEAM_SIGMA_SESSIONS, min_periods=SEAM_SIGMA_MIN_SESSIONS).median().shift(1)
     )
-    bars["sigma"] = trailing * MAD_TO_SIGMA
+    bars["sigma"] = trailing * 1.4826  # MAD -> sigma for a normal distribution
     pairs = bars.dropna(subset=["excess"]).merge(events[["ticker", "split_date", "ratio"]], on="ticker")
     pairs = pairs[(pairs["date"] - pairs["split_date"]).abs() <= pd.Timedelta(days=SEAM_MATCH_DAYS)]
     log_ratio = np.log(pairs["ratio"])
@@ -522,7 +520,9 @@ def find_unrebased_seams(px: pd.DataFrame, splits: pd.DataFrame) -> pd.DataFrame
 
     A correctly adjusted series is continuous across a split date, so such a step means the
     history before it was left on the old basis. Ratios within `SEAM_MIN_RATIO_DEV` of 1 use
-    `_small_ratio_seams`. Columns: ticker, date, step, split_date, ratio."""
+    `_small_ratio_seams`, which matches only the stale direction (-log ratio): a small seam of the
+    opposite direction (a retracted factor) passes and is left to the fetch-time anchor rule, and
+    its recall drops on extreme market days. Columns: ticker, date, step, split_date, ratio."""
     columns = ["ticker", "date", "step", "split_date", "ratio"]
     px = px.sort_values(["ticker", "date"]).copy()
     px["step"] = px["close_split"] / px.groupby("ticker")["close_split"].shift(1)
@@ -557,8 +557,9 @@ def invariant_unrebased_seam(context: Context, tickers: list[str] | None = None)
 
     False positives: a genuine move matching a split ratio inside that split's window (for a
     ratio within 10% of 1, a move of the stale direction that is also unusual for the ticker).
-    Blind spots: ratios within `SEAM_SMALL_MIN_LOG` of 1, and a small-ratio seam no larger than
-    the ticker's ordinary daily moves."""
+    Blind spots: ratios within `SEAM_SMALL_MIN_LOG` of 1, a small-ratio seam no larger than the
+    ticker's ordinary daily moves, an event with no `prices_splits` row (`sharadar_actions` is not
+    read), and tickers outside the universe (secondary classes)."""
     where = _price_scope(context, tickers)
     px = context.store.load(Tables.prices, columns=["ticker", "date", "close_split"], where=where)
     if px is None:
@@ -600,7 +601,7 @@ def invariant_unrebased_seam(context: Context, tickers: list[str] | None = None)
 
 
 # --------------------------------------------------------------------------- #
-# entry point                                                                #
+# entry point                                                                 #
 # --------------------------------------------------------------------------- #
 @dataclass
 class PricesReport:
@@ -698,8 +699,10 @@ def gate(report: PricesReport) -> tuple[bool, str]:
         listed = ", ".join(f"{d['ticker']} {d['date']}" for d in blocking[:8])
         return False, (
             f"{len(blocking)} unrebased split seam(s) in the last {SEAM_RECENT_SESSIONS} sessions: {listed}. "
-            f"A one-bar `close_split` step equal to a `prices_splits` ratio means the stored history "
-            f"is on the old basis -- re-pull those tickers with `price-history --full` before building."
+            f"A one-bar `close_split` step equal to a `prices_splits` ratio usually means the stored history "
+            f"is on the old basis. Compare the stored bars with Yahoo's: if they differ, re-pull those tickers "
+            f"with `price-history -t <TICKER> --full`; if they agree, it is a genuine move, so add a `seam_reviewed` "
+            f"entry (date, why) for it in `configs/prices/yf_price_bugfix.json`."
         )
     spike = by_name.get("spike_and_revert")
     if spike is None:

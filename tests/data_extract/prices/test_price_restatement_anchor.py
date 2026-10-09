@@ -8,12 +8,7 @@ Known-truth fixtures: a synthetic deterministic price path per ticker, a spinoff
 `_FACTOR` on every bar before the ex-date (volume on the same basis), a fake `yf.download` that honours
 tickers, dates and the `actions` flag and records its calls. No network. Everything is driven through the
 public `fetch_prices_and_actions`; an anchor download is any call with `actions=False` (the resume and the
-re-pull downloads carry `actions=True`).
-
-Cases (a) and (b) are the genuine RED on the base code (no re-pull); (c)-(i) are guards that must stay
-GREEN once the anchor rule exists. The pure comparison `anchor_restated(stored, fresh, tol)` (Series of
-`close_split` indexed by date -> bool) lives in `anchor_check` and is imported inside its tests so that the
-fetch-level cases still run before that module exists.
+re-pull downloads carry `actions=True`). `anchor_restated` is the pure comparison.
 """
 
 from __future__ import annotations
@@ -30,6 +25,7 @@ from omegaconf import OmegaConf
 
 from src.data_extract.utils.prices import fetch_dividends as fd
 from src.data_extract.utils.prices import fetch_prices as fp
+from src.data_extract.utils.prices.anchor_check import anchor_restated
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 
@@ -146,8 +142,8 @@ def _seed(
     yahoo.calls.clear()
 
 
-def _fetch(store: DataStore, *, full: bool = False) -> None:
-    fp.fetch_prices_and_actions(_context(store), _UNIVERSE, years_history=1, full=full, as_of=_AS_OF, pause=0.0)
+def _fetch(store: DataStore, *, full: bool = False, universe: list[str] | None = None) -> None:
+    fp.fetch_prices_and_actions(_context(store), universe or _UNIVERSE, years_history=1, full=full, as_of=_AS_OF, pause=0.0)
 
 
 def _stored(store: DataStore, ticker: str, column: str = "close_split") -> pd.Series:
@@ -290,7 +286,7 @@ def test_g_sparse_first_year_still_triggers_and_a_missing_first_year_does_not(sq
 
 
 def test_g_zero_common_bars_triggers_nothing(sqlite_store: DataStore, yahoo: FakeYahoo) -> None:
-    stale = _rescale(_bars(60.0, start="2023-12-28"), "2024-03-01", 1.0 / _FACTOR)
+    stale = _rescale(_bars(60.0, start="2023-12-28"), "2024-01-01", 1.0 / _FACTOR)  # only the two December bars differ
     served = _bars(60.0, start="2024-01-02")  # Yahoo no longer serves CTVA's two December bars
     quiet = _bars(150.0)
     _seed(sqlite_store, yahoo, {"CTVA": stale, "QUIET": quiet}, {"CTVA": served, "QUIET": quiet})
@@ -341,13 +337,7 @@ def test_i_a_key_already_re_pulled_by_the_event_rule_is_not_anchor_downloaded(sq
 
 def _unserved_first_year(yahoo: FakeYahoo, served_from: str) -> None:
     """Yahoo no longer serves any bar of CTVA before `served_from` (the PSKY / WBD shape)."""
-    for ticker, frame in list(yahoo.response.items()):
-        if ticker == "CTVA":
-            yahoo.response[ticker] = frame.loc[frame.index >= pd.Timestamp(served_from)]
-
-
-def _anchor_calls_naming(yahoo: FakeYahoo, ticker: str) -> list[dict[str, Any]]:
-    return [c for c in yahoo.anchor if ticker in c["tickers"]]
+    yahoo.response["CTVA"] = yahoo.response["CTVA"].loc[lambda f: f.index >= pd.Timestamp(served_from)]
 
 
 def test_j_unserved_first_year_falls_back_to_a_later_served_year_and_re_pulls(sqlite_store: DataStore, yahoo: FakeYahoo) -> None:
@@ -415,20 +405,122 @@ def test_m_a_ticker_served_in_its_first_year_is_downloaded_once(sqlite_store: Da
 
     _fetch(sqlite_store)
 
-    assert len(_anchor_calls_naming(yahoo, "CTVA")) == 1, f"served in its first year: one anchor download, got {yahoo.anchor}"
+    assert len([c for c in yahoo.anchor if "CTVA" in c["tickers"]]) == 1, f"served in its first year: one anchor download, got {yahoo.anchor}"
     assert len(yahoo.anchor) == 1
     print("\n=== SANITY CHECK: (m) no extra calls ===")
     print("  both tickers served in 2023 -> exactly one grouped anchor download.")
 
 
+def _anchor_records(caplog: pytest.LogCaptureFixture, level: int) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.name.endswith("anchor_check") and r.levelno == level]
+
+
+def _breadth_run(store: DataStore, yahoo: FakeYahoo, n_tickers: int, n_stale: int) -> list[str]:
+    """`n_tickers` tickers served in their first year, the first `n_stale` stored on the old basis; returns them."""
+    tickers = [f"T{i:02d}" for i in range(n_tickers)]
+    truth = {t: _bars(50.0 + i) for i, t in enumerate(tickers)}
+    stored = {t: _rescale(frame, "2024-03-01", 1.0 / _FACTOR) if i < n_stale else frame for i, (t, frame) in enumerate(truth.items())}
+    _seed(store, yahoo, stored, truth)
+    _fetch(store, universe=tickers)
+    return tickers
+
+
+def test_n_a_few_triggered_tickers_are_re_pulled_and_their_factor_logged(
+    sqlite_store: DataStore, yahoo: FakeYahoo, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.WARNING):
+        tickers = _breadth_run(sqlite_store, yahoo, n_tickers=34, n_stale=1)
+
+    assert yahoo.repulls("T00") and not any(yahoo.repulls(t) for t in tickers[1:]), "1 of 34 triggered (3%): it is re-pulled alone"
+    warned = [m for m in _anchor_records(caplog, logging.WARNING) if "disagrees" in m]
+    assert warned and "T00 x0.1500" in warned[0], f"the WARNING must give the median fresh/stored factor: {warned}"
+    assert not _anchor_records(caplog, logging.ERROR)
+    print("\n=== SANITY CHECK: (n) breadth guard, 3% ===")
+    print(f"  1 of 34 compared tickers restated -> re-pulled; WARNING: {warned[0][-40:]}")
+
+
+def test_n_a_market_wide_trigger_re_pulls_none_and_logs_an_error(sqlite_store: DataStore, yahoo: FakeYahoo, caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING):
+        tickers = _breadth_run(sqlite_store, yahoo, n_tickers=20, n_stale=6)
+
+    assert len(yahoo.resume) == 1, f"6 of 20 triggered (30%): no anchor re-pull, got {[c['tickers'] for c in yahoo.resume[1:]]}"
+    errors = _anchor_records(caplog, logging.ERROR)
+    assert len(errors) == 1 and "price-history" in errors[0] and all(t in errors[0] for t in tickers[:6]), errors
+    print("\n=== SANITY CHECK: (n) breadth guard, 30% ===")
+    print(f"  6 of 20 restated -> none re-pulled, one ERROR: {errors[0][:90]}...")
+
+
+def test_n_a_small_run_is_not_guarded(sqlite_store: DataStore, yahoo: FakeYahoo, caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING):
+        tickers = _breadth_run(sqlite_store, yahoo, n_tickers=4, n_stale=2)
+
+    assert yahoo.repulls("T00") and yahoo.repulls("T01") and not yahoo.repulls("T02"), "fewer than 20 compared: no breadth guard"
+    assert not _anchor_records(caplog, logging.ERROR)
+    print("\n=== SANITY CHECK: (n) small run ===")
+    print(f"  2 of {len(tickers)} restated (50%) on a 4-ticker run -> both re-pulled, no ERROR.")
+
+
+def test_o_a_re_pull_served_from_a_later_date_warns_about_the_stale_prefix(
+    sqlite_store: DataStore, yahoo: FakeYahoo, caplog: pytest.LogCaptureFixture
+) -> None:
+    truth, stale = _stale_ctva("2024-06-17")
+    fresh_ctva = _with_event(truth, "2024-06-17", split=1.0 / _FACTOR).loc["2023-07-03":]  # Yahoo serves less history
+    quiet = _bars(150.0)
+    _seed(sqlite_store, yahoo, {"CTVA": stale, "QUIET": quiet}, {"CTVA": fresh_ctva, "QUIET": quiet})
+
+    with caplog.at_level(logging.WARNING):
+        _fetch(sqlite_store)
+
+    assert yahoo.repulls("CTVA"), "the event rule still re-pulls"
+    warned = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING and "CTVA" in r.getMessage() and "old basis" in r.getMessage()]
+    assert len(warned) == 1 and "2023-01-02" in warned[0] and "2023-07-03" in warned[0], [r.getMessage() for r in caplog.records]
+    assert float(_stored(sqlite_store, "CTVA").loc[:"2023-06-30"].iloc[0]) > 100, "nothing is deleted or rescaled: the old prefix stays"
+    print("\n=== SANITY CHECK: (o) shorter served history ===")
+    print(f"  re-pull served from 2023-07-03, stored from 2023-01-02 -> one WARNING: {warned[0][:100]}...")
+
+
+def test_p_a_failing_anchor_download_is_not_checked_and_takes_no_fallback(
+    sqlite_store: DataStore, yahoo: FakeYahoo, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    truth = _bars(60.0)
+    quiet = _bars(150.0)
+    _seed(sqlite_store, yahoo, {"CTVA": truth, "QUIET": quiet}, {"CTVA": truth, "QUIET": quiet})
+
+    def throttled(tickers: list[str], start: str, end: str, **kwargs: Any) -> pd.DataFrame:
+        if not kwargs.get("actions"):
+            yahoo.calls.append({"tickers": list(tickers), "start": pd.Timestamp(start), "end": pd.Timestamp(end)} | kwargs)
+            raise RuntimeError("429 Too Many Requests")
+        return yahoo(tickers, start, end, **kwargs)
+
+    monkeypatch.setattr(fp.yf, "download", throttled)
+    with caplog.at_level(logging.WARNING):
+        _fetch(sqlite_store)
+
+    years = {c["start"].year for c in yahoo.anchor}
+    warned = _anchor_records(caplog, logging.WARNING)
+    assert years == {2023}, f"a failed download is not evidence of an unserved year: no fallback, got years {years}"
+    assert len(warned) == 1 and "CTVA" in warned[0] and "QUIET" in warned[0], warned
+    assert len(yahoo.resume) == 1
+    print("\n=== SANITY CHECK: (p) throttled anchor ===")
+    print(f"  anchor download raises -> {len(yahoo.anchor)} attempts on 2023 only, one WARNING: {warned[0][:80]}...")
+
+
+def test_q_the_anchor_log_counts_only_tickers_actually_compared(sqlite_store: DataStore, yahoo: FakeYahoo, caplog: pytest.LogCaptureFixture) -> None:
+    truth = _bars(60.0)
+    quiet = _bars(150.0)
+    _seed(sqlite_store, yahoo, {"CTVA": truth, "QUIET": quiet}, {"CTVA": truth, "QUIET": quiet})
+    _unserved_first_year(yahoo, "2024-01-02")
+
+    with caplog.at_level(logging.INFO):
+        _fetch(sqlite_store)
+
+    first = [m for m in _anchor_records(caplog, logging.INFO) if "year 2023" in m]
+    assert first and "1 ticker(s) compared" in first[0], first
+    print("\n=== SANITY CHECK: (q) compared count ===")
+    print(f"  CTVA unserved in 2023, QUIET served -> {first[0]}")
+
+
 # --- the pure comparison -----------------------------------------------------------------------------------
-
-
-def _anchor_restated() -> Callable[..., bool]:
-    """Imported lazily: the module does not exist before P2 and the fetch-level cases above must still run."""
-    from src.data_extract.utils.prices.anchor_check import anchor_restated
-
-    return anchor_restated
 
 
 def _series(values: list[float]) -> pd.Series:
@@ -439,47 +531,52 @@ _FLAT = [100.0, 101.0, 102.0, 103.0, 104.0, 105.0]
 
 
 def test_anchor_restated_flags_a_uniform_factor_and_ignores_an_equal_series() -> None:
-    f = _anchor_restated()
     stored = _series(_FLAT)
-    assert f(stored, stored * _FACTOR, 0.03) is True
-    assert f(stored, stored.copy(), 0.03) is False
+    assert anchor_restated(stored, stored * _FACTOR, 0.03) is True
+    assert anchor_restated(stored, stored.copy(), 0.03) is False
     print("\n=== SANITY CHECK: anchor_restated basics ===")
     print("  every bar off by x0.15 -> restated; identical bars -> not restated.")
 
 
 def test_anchor_restated_uses_the_median_so_one_bad_bar_does_not_trigger() -> None:
-    f = _anchor_restated()
     stored = _series(_FLAT)
     fresh = stored.copy()
     fresh.iloc[2] = fresh.iloc[2] * 1.5
-    assert f(stored, fresh, 0.03) is False
+    assert anchor_restated(stored, fresh, 0.03) is False
     print("\n=== SANITY CHECK: median rule ===")
     print("  1 of 6 bars off by 50% -> median deviation 0 -> not restated.")
 
 
 def test_anchor_restated_uses_the_max_below_three_common_bars() -> None:
-    f = _anchor_restated()
     stored = _series([100.0, 100.0])
-    assert f(stored, pd.Series([100.0, 104.0], index=stored.index), 0.03) is True  # median 2% would pass, max 4% fails
+    assert anchor_restated(stored, pd.Series([100.0, 104.0], index=stored.index), 0.03) is True  # median 2% would pass, max 4% fails
     three = _series([100.0, 100.0, 100.0])
-    assert f(three, pd.Series([100.0, 100.0, 104.0], index=three.index), 0.03) is False  # three bars: median 0
+    assert anchor_restated(three, pd.Series([100.0, 100.0, 104.0], index=three.index), 0.03) is False  # three bars: median 0
     print("\n=== SANITY CHECK: sparse rule ===")
     print("  deviations [0, 4%] with tol 3% -> restated (max); [0, 0, 4%] -> not (median).")
 
 
 def test_anchor_restated_has_no_opinion_without_common_or_valid_bars() -> None:
-    f = _anchor_restated()
     stored = _series(_FLAT)
     elsewhere = pd.Series(_FLAT, index=stored.index + pd.Timedelta(days=400))
-    assert f(stored, elsewhere, 0.03) is False
-    assert f(stored, stored.iloc[0:0], 0.03) is False
+    assert anchor_restated(stored, elsewhere, 0.03) is False
+    assert anchor_restated(stored, stored.iloc[0:0], 0.03) is False
     bad = stored.copy()
     bad.iloc[0], bad.iloc[1] = 0.0, np.nan
-    assert f(bad, stored, 0.03) is False, "zero and NaN stored bars are dropped, the rest agree"
+    assert anchor_restated(bad, stored, 0.03) is False, "zero and NaN stored bars are dropped, the rest agree"
     all_bad = pd.Series([0.0, np.nan, 0.0], index=stored.index[:3])
-    assert f(all_bad, stored * _FACTOR, 0.03) is False
+    assert anchor_restated(all_bad, stored * _FACTOR, 0.03) is False
     fresh_bad = stored.copy()
     fresh_bad.iloc[:3] = [np.nan, 0.0, np.nan]
-    assert f(stored, fresh_bad, 0.03) is False
+    assert anchor_restated(stored, fresh_bad, 0.03) is False
     print("\n=== SANITY CHECK: no evidence, no trigger ===")
     print("  no common dates, empty fresh, zero/NaN on either side -> False, no exception.")
+
+
+def test_anchor_restated_sees_an_event_inside_the_first_year() -> None:
+    stored = pd.Series(np.linspace(100.0, 130.0, 260), index=pd.bdate_range("2023-01-02", periods=260))
+    fresh = stored.copy()
+    fresh.iloc[:40] = fresh.iloc[:40] / 2  # an event after bar 40 restated only the earlier bars
+    assert anchor_restated(stored, fresh, 1e-4) is True
+    print("\n=== SANITY CHECK: earliest anchor bars ===")
+    print("  260-bar year, first 40 bars restated /2 -> the earliest 20 common bars disagree -> restated.")

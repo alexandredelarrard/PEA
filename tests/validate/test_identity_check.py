@@ -558,6 +558,7 @@ def _master_row(ticker: str, cusip: str, role: str, start: str, end: str | None 
         "cusip": cusip,
         "security_class": "common",
         "lineage_role": role,
+        "lineage_reason": None,
         "valid_from": pd.Timestamp(start),
         "valid_to": pd.Timestamp(end) if end else pd.NaT,
     }

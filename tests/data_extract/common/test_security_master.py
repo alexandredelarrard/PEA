@@ -458,15 +458,18 @@ def test_manual_boundaries_dlph_exe_xom_from_the_real_config():
         ignore_index=True,
     )
     build = _derive(obs, exe, _roster(("EXE", "0000895126")), manual)
-    chk_old = _rows(build, "165167107")
-    assert chk_old["lineage_role"].tolist() == ["canonical_current"] and chk_old["valid_from"].iloc[0] == pd.Timestamp("2009-06-26")
-    chkaq = _rows(build, "165167743").sort_values("valid_from")
-    assert chkaq["lineage_role"].tolist() == ["canonical_current", "excluded"]
-    assert chkaq["lineage_reason"].tolist()[1] == "cancelled_security" and chkaq["valid_from"].iloc[1] == pd.Timestamp("2021-02-10")
+    old_equity = build.rows[build.rows["cusip"].isin(["165167107", "165167743"])]
+    assert set(old_equity["lineage_role"]) == {"excluded"} and set(old_equity["lineage_reason"]) == {"cancelled_security"}
+    assert _rows(build, "165167107")["valid_from"].iloc[0] == pd.Timestamp("2009-06-26")
+    new_chk = _rows(build, "165167735")
+    assert new_chk["lineage_role"].tolist() == ["canonical_current"] and new_chk["valid_from"].iloc[0] == pd.Timestamp("2021-02-10")
+    exe_canonical = build.rows[build.rows["canonical_company"].eq("EXE") & build.rows["lineage_role"].isin(sm.CANONICAL_ROLES)]
+    assert exe_canonical["valid_from"].min() == pd.Timestamp("2021-02-10")
     assert _canonical_overlaps(build, "EXE") == []
     print("\n=== SANITY CHECK: manual market boundaries (real config) ===")
-    print("  DLPH G27823106 canonical [first obs, 2017-12-05); CHK 165167107 open start back to the first FTD row")
-    print("  CHKAQ 165167743 ends at the 2021-02-09 cancellation and is never summed with 165167735")
+    print("  DLPH G27823106 canonical [first obs, 2017-12-05)")
+    print(f"  EXE fresh start: old Chesapeake 165167107/165167743 excluded (cancelled_security) over {len(old_equity)} row(s);")
+    print("  165167735 is EXE's only canonical line, from 2021-02-10")
 
 
 def test_ac101_ac102_deterministic_and_evidenced():
@@ -566,6 +569,10 @@ def test_real_manual_config_is_evidenced_and_holds_the_brk_ratio():
     assert {"G27823106", "65249B109", "30231G102", "30233Q108", "35137L105", "38259P508", "165167107", "165167743", "165167735"} <= set(
         boundaries.index
     )
+    exe = manual.boundaries[manual.boundaries["ticker"].eq("EXE")]
+    old_equity = exe[exe["cusip"].isin(["165167107", "165167743"])]
+    assert len(old_equity) == 3 and set(old_equity["role"]) == {"excluded"} and set(old_equity["reason"]) == {"cancelled_security"}
+    assert exe.loc[exe["role"].isin(sm.CANONICAL_ROLES), ["cusip", "valid_from"]].values.tolist() == [["165167735", pd.Timestamp("2021-02-10")]]
     mergers = {entry["ticker"]: entry for entry in manual.mergers}
     assert mergers["MRK"]["acquired_symbol"] == "SGP" and "PLD" not in mergers  # PLD: the CIK window decides (traded view)
     assert {(x.ticker, x.ratio) for x in manual.exchanges} == {("LIN", 1.0), ("EVRG", 1.0), ("BKR", 1.0), ("STE", 1.0), ("JCI", 1.0)}
@@ -575,6 +582,7 @@ def test_real_manual_config_is_evidenced_and_holds_the_brk_ratio():
     assert all(entry.get("source") for entry in manual.mergers)
     print("\n=== SANITY CHECK: configs/sec/security_master_manual.json ===")
     print(f"  BRK-A 30 -> 1,500 at 2010-01-21; {len(manual.boundaries)} market boundaries; every entry sourced")
+    print("  EXE: old Chesapeake 165167107/165167743 excluded (cancelled_security); 165167735 canonical from 2021-02-10")
     print(
         "  MRK merger metadata only (PLD's left with the traded-security view); exchange ratios LIN/EVRG/BKR/STE/JCI (PLD/DD removed); vendor series JCI <- TYC"
     )

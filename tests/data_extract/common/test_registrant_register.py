@@ -25,6 +25,7 @@ import pytest
 
 from src.data_extract.utils.common.registrant import (
     CUTOVER_KINDS,
+    FRESH_START_KIND,
     REGISTRANT_CONFIG_FILENAME,
     REGISTRANT_CONFIG_SUBDIR,
     RENAME_KIND,
@@ -164,6 +165,60 @@ def test_one_cik_cannot_be_claimed_by_two_tickers(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# The `fresh_start` kind: one CIK that counts from a date                      #
+# --------------------------------------------------------------------------- #
+def test_a_fresh_start_entry_is_one_dated_segment(tmp_path):
+    """A same-CIK fresh start (EXE emerging from bankruptcy) keeps its CIK, so it is one segment
+    open at the new end and closed at the old: no seam, and dates before `valid_from` belong to no one."""
+    blob = {"X": _entry(_seg("895126", valid_from="2021-02-10"), kind=FRESH_START_KIND)}
+    reg = load_registrants(_write(tmp_path, blob))["X"]
+    only = reg.segments[0]
+    assert reg.kind == FRESH_START_KIND
+    assert len(reg.segments) == 1
+    assert only.cik == "0000895126"
+    assert only.valid_from == pd.Timestamp("2021-02-10")
+    assert only.valid_to is None
+    assert reg.boundaries == ()
+    assert not only.covers("2021-02-09") and only.covers("2021-02-10")
+    print("\n=== SANITY CHECK: a fresh_start entry loads as one dated segment ===")
+    print(f"  {reg.ticker}: {only.cik} from {only.valid_from.date()} to open, boundaries {reg.boundaries}")
+    print("  OK: 2021-02-09 is outside the window, 2021-02-10 inside.")
+
+
+@pytest.mark.parametrize(
+    ("entry", "match"),
+    [
+        (_entry(_seg("1", valid_to="2021-02-10"), _seg("2", valid_from="2021-02-10"), kind=FRESH_START_KIND), "exactly 1"),
+        (_entry(_seg("1"), kind=FRESH_START_KIND), "requires `valid_from`"),
+        (_entry({"cik": "1", "valid_from": None, "evidence": "e"}, kind=FRESH_START_KIND), "requires `valid_from`"),
+        (_entry(_seg("1", valid_from="2021-02-10", valid_to="2024-01-01"), kind=FRESH_START_KIND), "must omit `valid_to`"),
+        (_entry(_seg("1", valid_from="2021-02-10", evidence="  "), kind=FRESH_START_KIND), "empty `evidence`"),
+        (_entry(_seg("1", valid_from="not-a-date"), kind=FRESH_START_KIND), "unparseable date|Unknown datetime string"),
+    ],
+    ids=["two_segments", "no_valid_from", "null_valid_from", "valid_to_present", "empty_evidence", "bad_date"],
+)
+def test_a_malformed_fresh_start_is_rejected(tmp_path, entry, match):
+    """Every way a fresh start can be mis-written raises at load: it must be one evidenced segment with a parseable start."""
+    with pytest.raises(ValueError, match=match) as raised:
+        load_registrants(_write(tmp_path, {"X": entry}))
+    print("\n=== SANITY CHECK: a malformed fresh_start is refused ===")
+    print(f"  {str(raised.value)[:110]}")
+    print("  OK: the loader names the rule broken.")
+
+
+def test_a_fresh_start_cik_claimed_by_another_entry_is_rejected(tmp_path):
+    """The cross-entry CIK uniqueness rule applies to a fresh start like any cutover chain."""
+    blob = {
+        "A": _entry(_seg("9", valid_from="2021-02-10"), kind=FRESH_START_KIND),
+        "B": _entry(_seg("9", valid_to="2020-01-01"), _seg("3", valid_from="2020-01-01")),
+    }
+    with pytest.raises(ValueError, match="claimed by both"):
+        load_registrants(_write(tmp_path, blob))
+    print("\n=== SANITY CHECK: a fresh_start CIK still belongs to one ticker ===")
+    print("  CIK 0000000009 claimed by fresh_start A and cutover B -> refused. Validated.")
+
+
+# --------------------------------------------------------------------------- #
 # The schema's behaviour                                                       #
 # --------------------------------------------------------------------------- #
 def test_the_boundary_is_strictly_before_and_on_or_after(tmp_path):
@@ -228,21 +283,40 @@ def test_every_date_lands_in_exactly_one_segment(tmp_path):
 # --------------------------------------------------------------------------- #
 def test_the_live_register_declares_only_kinds_that_change_the_cik():
     """A standing assertion over the real file, so a future entry cannot slip a rename
-    through by spelling it something else."""
+    through by spelling it something else. A fresh start keeps its CIK but must be dated."""
     registrants = load_registrants(CONFIG_DIR)
     assert registrants, "the register is empty"
     print("\n=== SANITY CHECK: the live register ===")
     for ticker, reg in sorted(registrants.items()):
-        assert reg.kind in CUTOVER_KINDS
+        assert reg.kind in CUTOVER_KINDS | {FRESH_START_KIND}, ticker
+        if reg.kind == FRESH_START_KIND:
+            (segment,) = reg.segments
+            assert segment.valid_from is not None and segment.valid_to is None, ticker
+        else:
+            assert len(reg.segments) >= 2, ticker
         assert len(set(reg.all_ciks())) == len(reg.segments)
         assert all(s.evidence.strip() for s in reg.segments)
         print(
             f"  {ticker:6s} {reg.kind:15s} {len(reg.segments)} segments  "
             f"{' -> '.join(reg.all_ciks())}  at "
-            f"{', '.join(str(b.date()) for b in reg.boundaries)}"
+            f"{', '.join(str(b.date()) for b in reg.boundaries) or f'from {reg.segments[0].valid_from.date()}'}"
         )
     n_chains = sum(1 for r in registrants.values() if len(r.segments) > 2)
-    print(f"  OK: {len(registrants)} entries, {n_chains} of them chains, every kind one that changes the CIK.")
+    n_fresh = sum(1 for r in registrants.values() if r.kind == FRESH_START_KIND)
+    print(f"  OK: {len(registrants)} entries, {n_chains} of them chains, {n_fresh} dated fresh start(s); every other kind one that changes the CIK.")
+
+
+def test_exe_is_a_fresh_start_from_its_emergence():
+    """EXE keeps Chesapeake's CIK but its filings count from the 2021-02-10 emergence (user decision 2026-10-08)."""
+    exe = load_registrants(CONFIG_DIR)["EXE"]
+    (segment,) = exe.segments
+    assert exe.kind == FRESH_START_KIND and exe.all_ciks() == ("0000895126",)
+    assert segment.valid_from == pd.Timestamp("2021-02-10") and segment.valid_to is None
+    assert "0000895126-21-000033" in segment.evidence
+    assert not segment.covers("2021-02-09") and segment.covers("2021-02-10")
+    print("\n=== SANITY CHECK: EXE fresh start (live register) ===")
+    print(f"  {exe.ticker}: {exe.kind}, CIK {segment.cik} from {segment.valid_from.date()}, open-ended")
+    print("  OK: 2021-02-09 (old Chesapeake equity) is outside the window, the emergence day is inside.")
 
 
 def test_the_missing_register_file_is_not_an_error(tmp_path):

@@ -99,6 +99,13 @@ def _context(store: Any) -> SimpleNamespace:
     return SimpleNamespace(store=store, log=logging.getLogger(LOGGER), config_dir=CATALOGUE_DIR)
 
 
+@pytest.fixture(autouse=True)
+def _identity_without_these_tickers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An identity layer whose roster holds none of the synthetic tickers, so their single-filer facts skip the seam rule."""
+    identity = dated_identity([("ZZZ", "0000009999", "cik_window", SENTINEL, None)], {"ZZZ": "0000009999"})
+    monkeypatch.setattr(mod, "load_identity", lambda context: identity)
+
+
 @pytest.fixture
 def snapshots(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """Every `_snapshot` call's `as_of`, in order; the lineage window reads as unchanged for every ticker."""

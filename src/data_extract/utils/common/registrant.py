@@ -2,11 +2,11 @@
 
 Filings follow the legal registrant, whose CIK changes on a reorganisation or domestication.
 `registrant_cutover.json` declares each such ticker as an ordered, contiguous chain of evidenced
-`[valid_from, valid_to)` segments, validated strictly at load; the lineage build turns it into dated
-CIK windows. `FORM_POLICY` decides per form whether filings UNION across a ticker's event CIKs
-(insider forms) or SPLIT by its CIK windows (everything else); `resolve_registrant_entries` applies
-it to local EDGAR index rows and `resolve_registrant_filings` to `Company` listings, both by CIK
-only, never by symbol.
+`[valid_from, valid_to)` segments, validated strictly at load; a `fresh_start` entry is one CIK counted
+only from its `valid_from`. The lineage build turns it into dated CIK windows. `FORM_POLICY` decides per
+form whether filings UNION across a ticker's event CIKs (insider forms) or SPLIT by its CIK windows (everything
+else); `resolve_registrant_entries` applies it to local EDGAR index rows and `resolve_registrant_filings` to
+`Company` listings, both by CIK only, never by symbol.
 """
 
 from __future__ import annotations
@@ -38,6 +38,9 @@ REGISTRANT_CONFIG_FILENAME = "registrant_cutover.json"
 
 #: `reorganisation` = a new legal parent; `domestication` = re-registered in another jurisdiction. Both change the CIK.
 CUTOVER_KINDS: frozenset[str] = frozenset({"reorganisation", "domestication"})
+
+#: The CIK is unchanged but the ticker's filings count only from `valid_from` (a same-CIK bankruptcy fresh start).
+FRESH_START_KIND = "fresh_start"
 
 #: Rejected by name: a rename keeps the CIK, so an entry would walk one CIK twice and duplicate every filing.
 RENAME_KIND = "rename"
@@ -103,7 +106,10 @@ def _registrants_at(config_dir: str) -> dict[str, Registrant]:
 
 
 def _parse_entry(ticker: str, entry: dict[str, Any]) -> Registrant:
-    """One validated `Registrant`, or a `ValueError` naming the ticker and the rule broken."""
+    """One validated `Registrant`, or a `ValueError` naming the ticker and the rule broken.
+
+    A cutover kind is a contiguous chain of at least two CIKs; `fresh_start` is exactly one segment with `valid_from`.
+    """
     kind = str(entry.get("kind", ""))
     if kind == RENAME_KIND:
         raise ValueError(
@@ -111,8 +117,10 @@ def _parse_entry(ticker: str, entry: dict[str, Any]) -> Registrant:
             "CIK (CVS Caremark -> CVS Health, Facebook -> Meta), so an entry here would walk "
             "one CIK twice and duplicate every filing. Delete it."
         )
+    if kind == FRESH_START_KIND:
+        return _parse_fresh_start(ticker, entry)
     if kind not in CUTOVER_KINDS:
-        raise ValueError(f"registrant[{ticker}]: kind={kind!r} not in {sorted(CUTOVER_KINDS)}")
+        raise ValueError(f"registrant[{ticker}]: kind={kind!r} not in {sorted(CUTOVER_KINDS | {FRESH_START_KIND})}")
 
     raw = entry.get("segments")
     if not isinstance(raw, list) or len(raw) < 2:
@@ -120,11 +128,7 @@ def _parse_entry(ticker: str, entry: dict[str, Any]) -> Registrant:
 
     segments: list[Segment] = []
     for i, seg in enumerate(raw):
-        if not str(seg.get("evidence", "")).strip():
-            raise ValueError(
-                f"registrant[{ticker}] segment {i}: empty `evidence`. An undocumented cutover "
-                "is a guess that deletes history, which is exactly what this register replaces."
-            )
+        _require_evidence(ticker, i, seg)
         first, last = i == 0, i == len(raw) - 1
         if first and "valid_from" in seg:
             raise ValueError(f"registrant[{ticker}] segment 0: the oldest segment must omit `valid_from` -- the chain is open at the old end.")
@@ -134,14 +138,7 @@ def _parse_entry(ticker: str, entry: dict[str, Any]) -> Registrant:
             raise ValueError(f"registrant[{ticker}] segment {i}: missing `valid_from`.")
         if not last and "valid_to" not in seg:
             raise ValueError(f"registrant[{ticker}] segment {i}: missing `valid_to`.")
-        segments.append(
-            Segment(
-                cik=pad_cik(seg["cik"]),
-                valid_from=_stamp(ticker, i, seg.get("valid_from")),
-                valid_to=_stamp(ticker, i, seg.get("valid_to")),
-                evidence=str(seg["evidence"]),
-            )
-        )
+        segments.append(_segment(ticker, i, seg))
 
     for i in range(len(segments) - 1):
         if segments[i].valid_to != segments[i + 1].valid_from:
@@ -159,6 +156,39 @@ def _parse_entry(ticker: str, entry: dict[str, Any]) -> Registrant:
             "a cutover, and would walk one CIK twice and duplicate every filing."
         )
     return Registrant(ticker=ticker, kind=kind, segments=tuple(segments))
+
+
+def _parse_fresh_start(ticker: str, entry: dict[str, Any]) -> Registrant:
+    """A `fresh_start` entry: exactly one evidenced segment, closed at `valid_from` and open at the new end."""
+    raw = entry.get("segments")
+    if not isinstance(raw, list) or len(raw) != 1:
+        raise ValueError(f"registrant[{ticker}]: kind='{FRESH_START_KIND}' takes exactly 1 segment -- the CIK does not change.")
+    seg = raw[0]
+    _require_evidence(ticker, 0, seg)
+    if seg.get("valid_from") is None:
+        raise ValueError(f"registrant[{ticker}] segment 0: kind='{FRESH_START_KIND}' requires `valid_from` -- the date its filings start to count.")
+    if "valid_to" in seg:
+        raise ValueError(f"registrant[{ticker}] segment 0: a fresh start must omit `valid_to` -- it is open at the new end.")
+    return Registrant(ticker=ticker, kind=FRESH_START_KIND, segments=(_segment(ticker, 0, seg),))
+
+
+def _require_evidence(ticker: str, i: int, seg: dict[str, Any]) -> None:
+    """Raise unless segment `i` documents its evidence."""
+    if not str(seg.get("evidence", "")).strip():
+        raise ValueError(
+            f"registrant[{ticker}] segment {i}: empty `evidence`. An undocumented entry "
+            "is a guess that deletes history, which is exactly what this register replaces."
+        )
+
+
+def _segment(ticker: str, i: int, seg: dict[str, Any]) -> Segment:
+    """One parsed segment: padded CIK, parsed dates, evidence."""
+    return Segment(
+        cik=pad_cik(seg["cik"]),
+        valid_from=_stamp(ticker, i, seg.get("valid_from")),
+        valid_to=_stamp(ticker, i, seg.get("valid_to")),
+        evidence=str(seg["evidence"]),
+    )
 
 
 def _check_ciks_unique_across_entries(registrants: dict[str, Registrant]) -> None:

@@ -30,12 +30,18 @@
     "",
     "A RENAME IS NOT A CUTOVER AND BELONGS NOWHERE IN THIS FILE. CVS Caremark -> CVS Health",
     "and Facebook -> Meta keep their CIK; an entry for either would walk one CIK twice and",
-    "duplicate every filing. `kind` may only be `reorganisation` or `domestication`, and the",
+    "duplicate every filing. A cutover `kind` is `reorganisation` or `domestication`, and the",
     "loader rejects `kind: rename` BY NAME so the mistake cannot be made quietly. Sharadar",
     "records a name change whether or not the CIK moved, which is exactly why the shell-name",
     "evidence that motivates most entries here also fits a pure rename -- IVZ (AMVESCAP plc ->",
     "Invesco) carries such an action and is NOT in this file, because CIK 914208 filed",
     "continuously from 1994.",
+    "",
+    "A FRESH START KEEPS THE CIK BUT NOT THE HISTORY. `kind: fresh_start` is a ticker whose",
+    "only CIK counts from a date -- a same-CIK bankruptcy emergence. It has exactly one",
+    "segment, which carries `valid_from` (the first day the ticker's filings and tape count)",
+    "and omits `valid_to`. Earlier filings under that CIK belong to the cancelled predecessor",
+    "security, so consolidating forms filed before `valid_from` fall outside the window.",
     "",
     "⚠ RISK ZONE. The failure mode is QUIET DATA LOSS: a `valid_to` set a year early drops the",
     "predecessor's last four filings and admits nothing in their place, and nothing downstream",
@@ -254,6 +260,16 @@
         "cik": "0001711269",
         "valid_from": "2018-06-04",
         "evidence": "HAND-ADJUDICATED 2026-09-28. EVERGY INC, CIK 0001711269, is the post-close registrant from 2018-06-04. The dated split retains Westar before the close and Evergy on/after it; event forms continue to use the register's union policy."
+      }
+    ]
+  },
+  "EXE": {
+    "kind": "fresh_start",
+    "segments": [
+      {
+        "cik": "0000895126",
+        "valid_from": "2021-02-10",
+        "evidence": "USER DECISION 2026-10-08 (EXE fresh start, run 2026-10-08-exe-fresh-start). Chesapeake Energy Corporation (CIK 0000895126) emerged from chapter 11 on 2021-02-09: its old common (CUSIPs 165167107 / 165167743, traded as CHK, then CHKAQ) was cancelled and new common 165167735 issued (8-K accession 0000895126-21-000033, Items 1.02, 3.03, 5.03, filed 2021-02-09). Renamed Expand Energy Corporation, symbol EXE from 2024-10-02; the CIK never changed. The traded price series starts at the emergence: Yahoo's first EXE bar is 2021-02-10, and Sharadar lists the old equity as the separate delisted series CHKAQ (action bankruptcyliquidation 2021-02-10) and EXE as listed 2021-02-10. The ticker's filings count from 2021-02-10; consolidating filings filed earlier are the cancelled predecessor security's. Comparatives in post-emergence filings are kept."
       }
     ]
   },

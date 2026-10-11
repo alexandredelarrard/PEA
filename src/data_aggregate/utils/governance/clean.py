@@ -11,11 +11,15 @@ import pandas as pd
 
 from src.data_aggregate.utils.common.typing import frame_column
 from src.data_aggregate.utils.governance.def14a_impute import (
+    CEO_COMP,
+    FILL_BACKFILL,
     FILL_CARRY,
     FILL_CROSS_SOURCE,
     FILL_ESTIMATE,
     FILL_IDENTITY,
+    FILL_INTERP,
     ensure_provenance,
+    evidence_date_column,
     fill_kind_column,
     impute_def14a,
     impute_exec_comp,
@@ -30,7 +34,7 @@ from src.data_aggregate.utils.governance.directors import (
     finalize_board_source,
     merge_board_aggregates,
 )
-from src.data_aggregate.utils.governance.names import ceo_identity_series
+from src.data_aggregate.utils.governance.names import ceo_identity_series, ceo_stint_ids
 from src.data_aggregate.utils.governance.pay_features import SCT_GROWTH
 from src.utils.names import person_key
 
@@ -46,6 +50,23 @@ _SOP_WINDOW_DAYS = 450
 VOTE_SOURCE_8K = "8k"
 VOTE_SOURCE_PROXY = "proxy"
 _TOTAL = "ceo_total_comp"
+#: stats stage of the historical pay backfill, and the warning its counts are logged under
+PAY_BACKFILL_STAGE = "pay_backfill"
+PAY_BACKFILL_WARNING = (
+    "historical CEO pay cells filled from LATER filings (accepted lookahead): %s. A value missing today in live data is not filled the same way."
+)
+#: parent CEO pay column -> the same component in `def14a_executive_comp`
+_SCT_COLUMN: dict[str, str] = {
+    "ceo_salary": "salary",
+    "ceo_bonus": "bonus",
+    "ceo_stock_awards": "stock_awards",
+    "ceo_option_awards": "option_awards",
+    "ceo_non_equity_incentive": "non_equity_incentive",
+    "ceo_all_other_comp": "other_compensation",
+    _TOTAL: "total",
+}
+#: the most consecutive missing proxies of one CEO stint that interpolation may bridge
+_INTERP_MAX_GAP = 2
 
 
 @dataclass(frozen=True)
@@ -73,7 +94,9 @@ def clean_governance_inputs(raw: GovernanceInputs, fundamentals: pd.DataFrame | 
     """Clean the raw governance inputs. Returns `(cleaned bundle, stats keyed "<stage>|<rule>")`.
 
     Order: child fills, board merge, `impute_def14a`, board provenance, ownership basis repair,
-    economic ownership, ownership estimate, same-filing SCT pay growth, say-on-pay votes fallback. A bundle already cleaned
+    economic ownership, ownership estimate, same-filing SCT pay growth, historical CEO pay
+    backfill, say-on-pay votes fallback. The `PAY_BACKFILL_STAGE` stats are lookahead fills that
+    the caller reports as one warning (`PAY_BACKFILL_WARNING`). A bundle already cleaned
     is returned unchanged with empty stats.
     """
     if raw.cleaned:
@@ -116,6 +139,9 @@ def clean_governance_inputs(raw: GovernanceInputs, fundamentals: pd.DataFrame | 
             tally = {}
             frame = sct_pay_growth(frame, cast(pd.DataFrame, exec_comp), tally)
             _record(stats, "sct_growth", tally)
+            tally = {}
+            frame = backfill_ceo_pay(frame, cast(pd.DataFrame, exec_comp), tally)
+            _record(stats, PAY_BACKFILL_STAGE, tally)
         df = frame
 
     votes = raw.votes
@@ -390,6 +416,148 @@ def sct_pay_growth(def14a_hist: pd.DataFrame, exec_comp: pd.DataFrame, tally: di
     tally["CEO not matched in the filing's own SCT (filing has SCT rows)"] = int((sct["fy"].notna() & sct["t1"].isna()).sum())
     tally["ceo_total_comp filled from the filing's own SCT row"] = int(fill.sum())
     return out
+
+
+def _row_fiscal_year(def14a: pd.DataFrame, exec_comp: pd.DataFrame) -> pd.Series:
+    """The fiscal year a proxy row's pay covers: its filing's latest SCT year, else the extracted one."""
+    filing_fy = exec_comp.assign(_fy=pd.to_numeric(exec_comp["fiscal_year"], errors="coerce")).groupby("accession_number")["_fy"].max()
+    fy = def14a["accession_number"].map(filing_fy)
+    if "fiscal_year_extract" in def14a.columns:
+        fy = fy.fillna(pd.to_numeric(def14a["fiscal_year_extract"], errors="coerce"))
+    return cast(pd.Series, pd.to_numeric(fy, errors="coerce"))
+
+
+def later_sct_values(def14a: pd.DataFrame, exec_comp: pd.DataFrame, col: str) -> tuple[pd.Series, pd.Series]:
+    """`(value, filing date)` of `col` for each proxy row's CEO and fiscal year, as disclosed by
+    the EARLIEST later proxy of the same ticker whose SCT carries it. NaN where none does. A
+    total is taken only where the filer stated it."""
+    stated = pd.to_numeric(exec_comp["total_imputed"], errors="coerce").fillna(0.0) == 0.0 if "total_imputed" in exec_comp.columns else True
+    child = pd.DataFrame(
+        {
+            "ticker": exec_comp["ticker"].astype(str),
+            "person": exec_comp["name"].astype(object).map(person_key),
+            "fiscal_year": pd.to_numeric(exec_comp["fiscal_year"], errors="coerce"),
+            "_later": pd.to_datetime(exec_comp["as_of"], errors="coerce"),
+            "_value": pd.to_numeric(exec_comp[_SCT_COLUMN[col]], errors="coerce"),
+        }
+    ).dropna()
+    child = child.loc[(child["_value"] > 0) & stated] if col == _TOTAL else child.loc[child["_value"] >= 0]
+    rows = pd.DataFrame(
+        {
+            "_row": np.arange(len(def14a)),
+            "ticker": def14a["ticker"].astype(str).to_numpy(),
+            "person": ceo_identity_series(def14a["ceo_name_proxy"]).to_numpy(),
+            "fiscal_year": _row_fiscal_year(def14a, exec_comp).to_numpy(),
+            "_as_of": _proxy_dates(def14a).to_numpy(),
+        }
+    ).dropna()
+    hit = rows.merge(child, on=["ticker", "person", "fiscal_year"])
+    hit = hit.loc[hit["_later"] > hit["_as_of"]].sort_values(["_row", "_later"]).drop_duplicates("_row").set_index("_row")
+    positions = np.arange(len(def14a))
+    value = pd.Series(hit["_value"].reindex(positions).to_numpy(), index=def14a.index)
+    later = pd.Series(hit["_later"].reindex(positions).to_numpy(), index=def14a.index)
+    return value, later
+
+
+def interpolate_in_stint(values: pd.Series, as_of: pd.Series, stint: pd.Series, evidence: pd.Series) -> tuple[pd.Series, pd.Series, pd.Series]:
+    """`(value, evidence date, refused)` for each missing cell bridged by at most `_INTERP_MAX_GAP`
+    proxies between two known values of the same stint: log-linear in time, 0 between two zeros.
+    `refused` marks a bridgeable cell between one zero and one positive value. Inputs are sorted
+    chronologically within ticker; the evidence date is the later neighbour's."""
+    on = stint.notna()
+    v, t, st, ev = values[on], as_of[on], stint[on], evidence[on]
+    known = v.notna()
+
+    def fwd(x: pd.Series) -> pd.Series:
+        return x.where(known).groupby(st).ffill()
+
+    def bwd(x: pd.Series) -> pd.Series:
+        return x.where(known).groupby(st).bfill()
+
+    pos = st.groupby(st).cumcount().astype("float64")
+    prev_v, next_v = fwd(v), bwd(v)
+    middle = ~known & prev_v.notna() & next_v.notna() & (bwd(pos) - fwd(pos) - 1 <= _INTERP_MAX_GAP)
+    prev_t, next_t = fwd(t), bwd(t)
+    w = (t - prev_t) / (next_t - prev_t)
+    positive = (prev_v > 0) & (next_v > 0)
+    zeros = (prev_v == 0) & (next_v == 0)
+    lo, hi = np.log(prev_v.where(positive)), np.log(next_v.where(positive))
+    value = cast(pd.Series, np.exp(lo + w * (hi - lo))).where(positive, 0.0).where(middle & (positive | zeros))
+    later = bwd(ev).where(value.notna())
+    refused = middle & ~positive & ~zeros
+    return value.reindex(values.index), later.reindex(values.index), refused.reindex(values.index, fill_value=False).astype(bool)
+
+
+def backfill_ceo_pay(def14a_hist: pd.DataFrame, exec_comp: pd.DataFrame, tally: dict[str, int]) -> pd.DataFrame:
+    """Fill historical CEO pay holes from LATER filings (accepted lookahead): first the exact value
+    a later proxy's SCT discloses for the same CEO and fiscal year (kind `backfill`), then a
+    log-linear bridge inside one CEO stint (kind `interp`). Components first; the total then
+    takes the backfill, the six-component identity and the bridge.
+
+    A row with no later value is left to the past-only carry. Each written cell is dated at its
+    own `as_of`, with the later evidence date in `<col>_evidence_as_of`.
+    """
+    need = {"ticker", "as_of", "accession_number", "ceo_name_proxy"}
+    if not need.issubset(def14a_hist.columns) or not {"ticker", "accession_number", "as_of", "name", "fiscal_year"}.issubset(exec_comp.columns):
+        return def14a_hist
+    out = def14a_hist.copy()
+    out["_t"] = _proxy_dates(out)
+    order = out.sort_values(["ticker", "_t"], kind="stable").index
+    view = out.loc[order]
+    stint = ceo_stint_ids(view["ceo_name_proxy"], view["ticker"])
+    components = [c for c in CEO_COMP if c in out.columns]
+    for col in components:
+        _backfill_then_bridge(out, exec_comp, col, order, stint, tally, backfill=_SCT_COLUMN[col] in exec_comp.columns)
+    if _TOTAL in out.columns:
+        _backfill_then_bridge(out, exec_comp, _TOTAL, order, stint, tally, backfill="total" in exec_comp.columns, bridge=False)
+        if len(components) == len(CEO_COMP):
+            _total_identity(out, components, tally)
+        _backfill_then_bridge(out, exec_comp, _TOTAL, order, stint, tally, backfill=False)
+    return out.drop(columns="_t")
+
+
+def _backfill_then_bridge(
+    out: pd.DataFrame,
+    exec_comp: pd.DataFrame,
+    col: str,
+    order: pd.Index,
+    stint: pd.Series,
+    tally: dict[str, int],
+    backfill: bool = True,
+    bridge: bool = True,
+) -> None:
+    """Write the later-SCT value, then the in-stint bridge, into the NULL cells of `col`."""
+    out[col] = pd.to_numeric(out[col], errors="coerce")
+    if backfill:
+        value, later = later_sct_values(out, exec_comp, col)
+        fill = out[col].isna() & value.notna()
+        if int(fill.sum()):
+            write_with_provenance(out, fill, col, value, FILL_BACKFILL, out["_t"], later)
+            tally[f"backfill (later SCT, same CEO and FY): {col}"] = int(fill.sum())
+    if not bridge:
+        return
+    ev_col = evidence_date_column(col)
+    evidence = pd.to_datetime(out[ev_col], errors="coerce").fillna(out["_t"]) if ev_col in out.columns else out["_t"]
+    value, later, refused = interpolate_in_stint(out.loc[order, col], out.loc[order, "_t"], stint, evidence.loc[order])
+    value, later = value.reindex(out.index), later.reindex(out.index)
+    fill = out[col].isna() & value.notna()
+    if int(fill.sum()):
+        write_with_provenance(out, fill, col, value, FILL_INTERP, out["_t"], later)
+        tally[f"interp (same stint, <= {_INTERP_MAX_GAP} missing proxies): {col}"] = int(fill.sum())
+    if int(refused.sum()):
+        tally[f"interp refused (one zero and one positive neighbour): {col}"] = int(refused.sum())
+
+
+def _total_identity(out: pd.DataFrame, components: list[str], tally: dict[str, int]) -> None:
+    """A NULL total becomes the sum of its six components, with their latest evidence date."""
+    legs = out[components].apply(pd.to_numeric, errors="coerce")
+    fill = out[_TOTAL].isna() & legs.notna().all(axis=1)
+    if not int(fill.sum()):
+        return
+    dates = [pd.to_datetime(out[evidence_date_column(c)], errors="coerce") for c in components if evidence_date_column(c) in out.columns]
+    later = pd.concat(dates, axis=1).max(axis=1) if dates else pd.Series(pd.NaT, index=out.index)
+    write_with_provenance(out, fill, _TOTAL, legs.sum(axis=1), FILL_IDENTITY, out["_t"], later)
+    tally["identity: ceo_total_comp = sum of backfilled/bridged components"] = int(fill.sum())
 
 
 def say_on_pay_fallback(def14a_raw: pd.DataFrame, votes: pd.DataFrame | None, tally: dict[str, int]) -> pd.DataFrame | None:

@@ -315,6 +315,9 @@ FILL_CARRY = "carry"
 FILL_PERSON = "person"
 FILL_CROSS_SOURCE = "cross_source"
 FILL_ESTIMATE = "estimate"
+#: Written from a LATER filing (accepted lookahead): an exact later SCT value, or interpolated.
+FILL_BACKFILL = "backfill"
+FILL_INTERP = "interp"
 
 #: Every parent column `impute_def14a` can write; each gets `<col>_source_as_of` and `<col>_fill`.
 WRITTEN_COLUMNS: tuple[str, ...] = tuple(

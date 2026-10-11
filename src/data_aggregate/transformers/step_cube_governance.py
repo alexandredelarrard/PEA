@@ -20,7 +20,7 @@ from src.data_aggregate.utils.common.price_frames import (
     load_price_frames,
     load_trading_calendar,
 )
-from src.data_aggregate.utils.governance.clean import GovernanceInputs, clean_governance_inputs
+from src.data_aggregate.utils.governance.clean import PAY_BACKFILL_STAGE, PAY_BACKFILL_WARNING, GovernanceInputs, clean_governance_inputs
 from src.data_aggregate.utils.governance.panel import build_governance_feature_panel
 from src.data_store.schema import Tables
 from src.utils.step import Step
@@ -162,8 +162,12 @@ class StepCubeGovernance(Step):
         )
         fundamentals = self._load_fundamentals()
         inputs, stats = clean_governance_inputs(raw, fundamentals)
+        lookahead = {k.split("|", 1)[1]: v for k, v in stats.items() if k.startswith(f"{PAY_BACKFILL_STAGE}|")}
         for key, value in stats.items():
-            self._log.info("  governance clean | %s: %s", key, f"{value:,}")
+            if not key.startswith(f"{PAY_BACKFILL_STAGE}|"):
+                self._log.info("  governance clean | %s: %s", key, f"{value:,}")
+        if lookahead:
+            self._log.warning(PAY_BACKFILL_WARNING, "; ".join(f"{k}: {v:,}" for k, v in lookahead.items()))
 
         panel, tally = build_governance_feature_panel(
             inputs.def14a,

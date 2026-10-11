@@ -37,6 +37,8 @@ _HELPERS = frozenset(
         "repair_ownership_basis",
         "economic_ownership",
         "estimate_insider_ownership",
+        "sct_pay_growth",
+        "backfill_ceo_pay",
     }
 )
 _GUARDED = (

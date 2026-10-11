@@ -5,6 +5,11 @@ Known-truth fixture: the cleaning stage matches the named CEO in the filing's ow
 writes `log(total_FY / total_FY-1)`. Both pay-growth features prefer it, the CEO-change guard
 still nulls a succession, an unmatched CEO falls back to the cross-filing pair, a two-year FY
 gap is refused, and a NULL parent total is filled from the same-FY SCT row (kind `identity`).
+
+The historical backfill (accepted lookahead) fills a component from a later SCT's exact value
+(kind `backfill`), else bridges at most 2 missing proxies of one CEO stint (kind `interp`), never
+the latest row; the total is then recomputed from its six components. Every fill is dated at its
+own row with the later evidence date beside it.
 """
 
 from __future__ import annotations
@@ -12,8 +17,15 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.governance.clean import GovernanceInputs, clean_governance_inputs
-from src.data_aggregate.utils.governance.def14a_impute import FILL_IDENTITY, fill_kind_column
+from src.data_aggregate.utils.governance.clean import PAY_BACKFILL_STAGE, GovernanceInputs, clean_governance_inputs
+from src.data_aggregate.utils.governance.def14a_impute import (
+    CEO_COMP,
+    FILL_BACKFILL,
+    FILL_IDENTITY,
+    FILL_INTERP,
+    evidence_date_column,
+    fill_kind_column,
+)
 from src.data_aggregate.utils.governance.panel import _ceo_pay_growth
 from src.data_aggregate.utils.governance.pay_features import SCT_GROWTH, _comp_history
 from src.data_aggregate.utils.governance.staleness import source_date_column
@@ -107,4 +119,94 @@ def test_same_filing_growth_is_preferred_and_guarded() -> None:
     print(
         "SANITY: same-filing growth AAA=log(1.2) preferred over log(1.5); BBB succession nulled; "
         "CCC unmatched, DDD FY-gap and FFF component-sum fall back; EEE total filled 7.5M (identity) -> PASS"
+    )
+
+
+def _history_bundle() -> GovernanceInputs:
+    """One ticker, CEO Ann Lee 2016-2020 then Bob Ray 2021-2022 (pay in $M, FY = proxy year - 1).
+
+    2016 bonus      NULL; the 2017 SCT discloses Ann's FY2015 bonus 0.25 -> backfill
+    2016 total      NULL; all six legs known after the backfill -> identity 4.15
+    2018 stock      NULL between 1.0 (2017) and 4.0 (2019), same stint -> interp 2.0
+    2017-19 option  three missing proxies -> not bridged
+    2021 NEI        first row of Bob's stint (Ann's 0.3 is another stint) -> not bridged
+    2022 other      latest row, nothing later -> not filled
+    """
+    cols = ["year", "name", *CEO_COMP, "ceo_total_comp"]
+    nan = np.nan
+    parent = pd.DataFrame(
+        [
+            (2016, "Ann Lee", 1.0, nan, 2.0, 0.5, 0.3, 0.1, nan),
+            (2017, "Ann Lee", 1.0, 0.2, 1.0, nan, 0.3, 0.1, nan),
+            (2018, "Ann Lee", 1.0, 0.2, nan, nan, 0.3, 0.1, nan),
+            (2019, "Ann Lee", 1.0, 0.2, 4.0, nan, 0.3, 0.1, nan),
+            (2020, "Ann Lee", 1.0, 0.2, 4.0, 0.8, 0.3, 0.1, 6.4),
+            (2021, "Bob Ray", 2.0, 0.0, 5.0, 1.0, nan, 0.2, nan),
+            (2022, "Bob Ray", 2.0, 0.0, 5.0, 1.0, 0.9, nan, nan),
+        ],
+        columns=cols,
+    )
+    parent[[*CEO_COMP, "ceo_total_comp"]] *= 1e6
+    def14a = parent.assign(
+        ticker="AAA",
+        accession_number=[f"A-{y}" for y in parent["year"]],
+        as_of=[f"{y}-04-01" for y in parent["year"]],
+        fiscal_year_extract=parent["year"] - 1,
+        ceo_name_proxy=parent["name"],
+    ).drop(columns=["year", "name"])
+    # the 2017 filing: someone else for FY2016 (no same-filing CEO match), Ann's FY2015 bonus only
+    exec_comp = pd.DataFrame(
+        [
+            {
+                "ticker": "AAA",
+                "accession_number": "A-2017",
+                "as_of": "2017-04-01",
+                "name": "Zed Other",
+                "fiscal_year": 2016,
+                "salary": 5e5,
+                "total": 5e5,
+            },
+            {
+                "ticker": "AAA",
+                "accession_number": "A-2017",
+                "as_of": "2017-04-01",
+                "name": "Ann Lee",
+                "fiscal_year": 2015,
+                "bonus": 2.5e5,
+                "total": nan,
+            },
+        ]
+    )
+    return GovernanceInputs(def14a=def14a, exec_comp=exec_comp)
+
+
+def test_historical_backfill_and_bridge_rules() -> None:
+    cleaned, stats = clean_governance_inputs(_history_bundle(), None)
+    d = cleaned.def14a
+    assert d is not None
+    d = d.assign(_y=pd.to_datetime(d["as_of"]).dt.year).set_index("_y")
+
+    def cell(year: int, col: str) -> tuple[float, object, pd.Timestamp, pd.Timestamp]:
+        row = d.loc[year]
+        return row[col], row[fill_kind_column(col)], pd.Timestamp(row[source_date_column(col)]), pd.Timestamp(row[evidence_date_column(col)])
+
+    value, kind, source, evidence = cell(2016, "ceo_bonus")
+    assert value == 2.5e5 and kind == FILL_BACKFILL  # exact later-SCT value
+    assert source == pd.Timestamp("2016-04-01") and evidence == pd.Timestamp("2017-04-01")
+    value, kind, source, evidence = cell(2016, "ceo_total_comp")
+    assert np.isclose(value, 4.15e6) and kind == FILL_IDENTITY  # recomputed after the components
+    assert source == pd.Timestamp("2016-04-01") and evidence == pd.Timestamp("2017-04-01")
+    value, kind, source, evidence = cell(2018, "ceo_stock_awards")
+    assert np.isclose(value, 2.0e6) and kind == FILL_INTERP  # log-linear midpoint of 1 and 4
+    assert source == pd.Timestamp("2018-04-01") and evidence == pd.Timestamp("2019-04-01")
+    assert d.loc[[2017, 2018, 2019], "ceo_option_awards"].isna().all()  # gap of 3 not bridged
+    assert np.isnan(d.loc[2021, "ceo_non_equity_incentive"])  # no bridge across a stint
+    assert np.isnan(d.loc[2022, "ceo_all_other_comp"])  # latest row: past only
+    assert d.loc[2020, fill_kind_column("ceo_total_comp")] == "filed"
+    assert stats[f"{PAY_BACKFILL_STAGE}|backfill (later SCT, same CEO and FY): ceo_bonus"] == 1
+    assert stats[f"{PAY_BACKFILL_STAGE}|interp (same stint, <= 2 missing proxies): ceo_stock_awards"] == 1
+    assert not any("ceo_option_awards" in k or "ceo_all_other_comp" in k for k in stats if k.startswith(PAY_BACKFILL_STAGE))
+    print(
+        "SANITY: 2016 bonus backfilled 0.25M (evidence 2017) and total recomputed 4.15M; 2018 stock bridged 2.0M; "
+        "3-proxy gap, stint boundary and latest row left NULL -> PASS"
     )

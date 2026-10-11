@@ -25,6 +25,7 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.transformers import step_cube_institutionals
+from src.data_aggregate.transformers.step_cube_governance import REFRESH_TRADING_DAYS as GOVERNANCE_REFRESH
 from src.data_aggregate.transformers.step_cube_governance import StepCubeGovernance
 from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
 from src.data_aggregate.utils.common.incremental import (
@@ -537,6 +538,21 @@ def test_governance_increment_covers_price_frontier_and_is_idempotent():
     print("\n=== SANITY: governance incremental frontier ===")
     print(f"  prior max {old_end.date()} was rewritten; new max is {new_end.date()}")
     print("  every new price session is present and a same-day rerun is idempotent. Validated.")
+
+
+def test_governance_refresh_covers_three_years_of_restated_pay():
+    """A governance run rewrites three years, the reach of a new proxy's pay table, not a week."""
+    calendar = pd.bdate_range("2020-01-01", "2026-09-30")
+    store = _StatefulGovernanceStore(pd.DataFrame({"date": calendar[:-10], "ticker": "T0", "f": 0.0}))
+    window = plan_window(store, Tables.cube_part_governance, warmup=5, full=False, trading_index=calendar, refresh=GOVERNANCE_REFRESH)
+    years = (window.last - window.refresh_from).days / 365.25
+    assert GOVERNANCE_REFRESH > PART_REFRESH_TRADING_DAYS
+    assert years >= 2.85, f"governance rewrites only {years:.2f} years"  # bdate calendar: ~261 sessions/yr, real ~252
+
+    print("\n=== SANITY: governance refresh window ===")
+    print(
+        f"  rewrites {GOVERNANCE_REFRESH} sessions = {years:.2f} years back from {window.last.date()} (other parts: {PART_REFRESH_TRADING_DAYS}). Validated."
+    )
 
 
 def test_read_projection_covers_builder_needs():

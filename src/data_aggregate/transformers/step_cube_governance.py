@@ -8,7 +8,6 @@ from omegaconf import DictConfig
 from src.context import Context
 from src.data_aggregate.utils.common.incremental import (
     COLUMNS_CHANGED,
-    PART_REFRESH_TRADING_DAYS,
     PartWindow,
     plan_window,
     write_part,
@@ -30,9 +29,12 @@ _PRICE_FIELDS = ("close_split", "close_total")
 _OWNERSHIP_COLUMNS = ("ticker", "accession_number", "holder_type", "holder_name", "shares")
 #: the cleaning stage reads later proxies (stint constants, the historical pay backfill), so an
 #: incremental run cannot restate the rows it does not rewrite
+# A new proxy restates up to three fiscal years of CEO pay on older rows (the later-SCT
+# backfill and the <= 2-proxy interpolation), so every run rewrites three years, not a week.
+REFRESH_TRADING_DAYS = 756
 _INCREMENTAL_WARNING = (
-    "Incremental governance build rewrites from %s only: a new proxy can restate cleaned values on older rows "
-    "(CEO stint constants, the historical pay backfill), which keep their last-built values -> run build-governance -F after each proxy season."
+    "Incremental governance build rewrites from %s only: a new proxy can still restate older rows through "
+    "the CEO stint constants and the ever-dual / ceiling refusals -> run build-governance -F once a year after the proxy season."
 )
 
 
@@ -49,7 +51,7 @@ class StepCubeGovernance(Step):
     def run(self, full: bool = False) -> None:
         calendar = load_trading_calendar(self._store)
         window = plan_window(
-            self._store, Tables.cube_part_governance, full=full, warmup=self._warmup(), trading_index=calendar, refresh=PART_REFRESH_TRADING_DAYS
+            self._store, Tables.cube_part_governance, full=full, warmup=self._warmup(), trading_index=calendar, refresh=REFRESH_TRADING_DAYS
         )
         frames = self._load_frames(window.since)
 

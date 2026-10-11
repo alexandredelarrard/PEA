@@ -3,12 +3,11 @@ insider_quality.py  (src/data_aggregate/utils/institutionals/insider_quality.py)
 -------------------------------------------------------------------
 Scope and repair the Form 3/4/5 transaction log before any feature is summed off it.
 
-Scope: non-derivative, common-stock, open-market (P/S) rows with a usable price. Repair: a filed
-`price_per_share` more than `PRICE_TOLERANCE` above the split-free consensus (median price of
-same-ticker, same-class common-stock filings over a trailing window ending on the filing day) is
-replaced by `shares x consensus`; too-low prices are only counted. The clock is `filing_date`, so a
-later filing never enters an earlier reference. Corrupt `shares` cannot be separated by size, so
-oversized rows are logged, never dropped.
+Scope: non-derivative common-stock P/S, positive finite shares and a usable unit price.
+Prices are compared with independent as-traded quotes on the transaction date. Within10% keeps
+the filed execution; only gross corruption uses an explicitly estimated quote. Exact dated
+source evidence can correct a price or mark/retire a disputed quantity prospectively. Canonical
+USD is shares times cleaned unit price. Titles, owner identity and flags are cleaned here once.
 
 Versions: a trade repeated in a later accession (same ticker, transaction day, code, shares, price
 and post-trade holding) is kept once, from its earliest filing. An amendment replaces the original's
@@ -27,6 +26,9 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.common.data_utils import to_day
+from src.data_aggregate.utils.institutionals.value_basis import _period_close
+from src.utils.names import clean_person_name
+from src.utils.string import pad_cik
 
 _log = logging.getLogger(__name__)
 
@@ -62,7 +64,7 @@ ROLE_PATTERNS: tuple[tuple[str, str], ...] = (
         "CEO",
         rf"\b{CHIEF}\s+EXEC(?:UTIVE)?\s+{OFFICER}\b" rf"|\bC\s*E\s*O\b",
     ),
-    ("CFO", rf"\b{CHIEF}\s+FIN(?:ANCIAL)?\s+{OFFICER}\b" rf"|\bPRINCIPAL\s+FIN(?:ANCIAL)?\s+{OFFICER}\b" rf"|\bC\s*F\s*O\b" rf"|\bTREASURER\b"),
+    ("CFO", rf"\b{CHIEF}\s+FIN(?:ANCIAL)?\s+{OFFICER}\b" rf"|\bPRINCIPAL\s+FIN(?:ANCIAL)?\s+{OFFICER}\b" rf"|\bC\s*F\s*O\b"),
     ("COO", rf"\b{CHIEF}\s+{OPERATIONS}\s+{OFFICER}\b" rf"|\bC\s*O\s*O\b"),
     ("CTO_or_technology", rf"\b{CHIEF}\s+TECH(?:NOLOGY)?\s+{OFFICER}\b" rf"|\bC\s*T\s*O\b" rf"|\bTECH(?:NOLOGY)?\b"),
     ("CMO_or_marketing", rf"\b{CHIEF}\s+MARKETING\s+{OFFICER}\b"),
@@ -97,11 +99,185 @@ def common_stock_mask(security_title: pd.Series) -> pd.Series:
 
 def officer_role(title: object) -> str:
     """Free-text `officer_title` -> the first matching `ROLE_PATTERNS` name, else `OTHER_OFFICER` (also for a blank)."""
-    s = "" if title is None else str(title)
+    s = clean_officer_title(title)
+    if re.search(r"\b(?:FORMER|RETIRED|SUBSIDIAR(?:Y|IES)|DIVISION(?:AL)?|REGIONAL|SEGMENT|BUSINESS\s+UNIT)\b", s, re.I):
+        return OTHER_OFFICER
     for name, rx in _ROLE_COMPILED:
-        if rx.search(s):
+        match = rx.search(s)
+        if match is None:
+            continue
+        # A named entity after the role is a unit/affiliate, not another issuer title.
+        tail = s[match.end() :].strip(" ,;&/:-().")
+        companion = r"^(?:AND\s+)?(?:CHIEF\b|C\s*[BEFOT]\s*O\b|PRES(?:IDENT)?\b|(?:SR|SENIOR)\s+(?:VP|VICE|EXEC)\b|VP\b|VICE\b|[ES]VP\b|MD\b|MANAGING\s+DIRECTOR\b|INTERIM\b|ACTING\b|EXEC(?:UTIVE)?\b|CHAIR\w*\b|DIR(?:ECTOR)?\b|TREASURER\b|CONTROLLER\b|SECRETARY\b|PRINCIPAL\b|(?:CO[- ]?)?FOUNDER\b)"
+        if not tail or re.match(companion, tail, re.I):
             return name
+        return OTHER_OFFICER
     return OTHER_OFFICER
+
+
+def clean_officer_title(value: object) -> str:
+    """Normalize title punctuation and explicit abbreviations, preserving role modifiers."""
+    if not isinstance(value, str):
+        return ""
+    title = value.replace(".", " ").strip()
+    title = re.sub(r",\s*", ", ", title)
+    title = re.sub(r"\bCHIEF\s+EXEC\b(?=\s+OFF(?:ICER|CR|R)\b)", "Chief Executive", title, flags=re.I)
+    title = re.sub(r"\bCHIEF\s+EXEC\b(?!\s*UTIVE)", "Chief Executive Officer", title, flags=re.I)
+    return re.sub(r"\s+", " ", title)
+
+
+def owner_name_key(value: object) -> str:
+    """Strict full-name comparison tokens; actual initials and surname particles survive."""
+    name = clean_person_name(value)
+    if not name:
+        return ""
+    tokens = re.findall(r"[^\W\d_]+", name.casefold())
+    return " ".join(sorted(token for token in tokens if token not in {"mr", "mrs", "ms", "dr", "jr", "sr", "ii", "iii", "iv"}))
+
+
+def _canonical_inputs(df_rows: pd.DataFrame, role_evidence: pd.DataFrame | None) -> pd.DataFrame:
+    """Clean shared downstream fields and enrich blank titles from prior public identity evidence."""
+    df_rows = df_rows.copy().reset_index(drop=True)
+    df_rows["ticker"] = df_rows["ticker"].fillna("").astype(str).str.upper().str.strip()
+    df_rows["source_row"] = np.arange(len(df_rows))
+    for column in ("officer_title", "owner_name", "owner_cik", "issuer_cik", "direct_indirect", "security_title"):
+        if column not in df_rows:
+            df_rows[column] = ""
+    for column in ("owner_cik", "issuer_cik"):
+        df_rows[column + "_raw"] = df_rows[column]
+        values = df_rows[column]
+        df_rows[column] = values.map({value: pad_cik(value) for value in values.dropna().unique()}).fillna("")
+    values = df_rows["owner_name"]
+    df_rows["owner_name_clean"] = values.map({value: owner_name_key(value) for value in values.dropna().unique()}).fillna("")
+    values = df_rows["officer_title"]
+    df_rows["officer_title_clean"] = values.map({value: clean_officer_title(value) for value in values.dropna().unique()}).fillna("")
+    df_rows["role_source"] = "filed"
+    df_rows["role_as_of"] = to_day(df_rows["filing_date"])
+    df_rows["transaction_day"] = to_day(df_rows.get("transaction_date", pd.Series(pd.NaT, index=df_rows.index)))
+    df_rows["direct_indirect"] = df_rows["direct_indirect"].fillna("").astype(str).str.upper().str.strip()
+    for column in ("shares", "price_per_share", "value_usd", "shares_owned_after"):
+        values = pd.to_numeric(df_rows.get(column, pd.Series(np.nan, index=df_rows.index)), errors="coerce")
+        df_rows[column + "_raw"] = df_rows.get(column, values)
+        df_rows[column] = values.where(np.isfinite(values))
+    for column in ("is_director", "is_officer", "is_ten_pct_owner", "is_10b5_1"):
+        values = df_rows.get(column, pd.Series(np.nan, index=df_rows.index)).replace({"Y": 1, "N": 0, "true": 1, "false": 0})
+        df_rows[column] = pd.to_numeric(values, errors="coerce").where(lambda x: x.isin([0, 1]))
+    titles = df_rows["officer_title_clean"]
+    df_rows["role"] = titles.map({title: officer_role(title) for title in titles.unique()})
+    df_rows = _fill_prior_roles(df_rows, role_evidence)
+    df_rows["is_management"] = df_rows["role"].isin(["CEO", "CFO", "COO"])
+    df_rows["is_management"] &= ~df_rows["is_officer"].eq(0)
+    return df_rows
+
+
+def _fill_prior_roles(df_rows: pd.DataFrame, role_evidence: pd.DataFrame | None) -> pd.DataFrame:
+    """Fill only blank current officer titles; later/conflicting evidence never overwrites a row."""
+    keys = ["ticker", "issuer_cik", "owner_cik"]
+    df_rows["role_as_of"] = to_day(df_rows["filing_date"])
+    df_prior = df_rows.loc[df_rows["owner_cik"].ne(""), [*keys, "role_as_of", "officer_title_clean", "role"]].copy()
+    df_prior["role_source"] = "prior_form4"
+    df_prior = df_prior[df_prior["officer_title_clean"].ne("") & df_prior["role_as_of"].notna()]
+    # A conflicting or non-management title is a history barrier, not a row to skip.
+    grouped = df_prior.groupby([*keys, "role_as_of"], dropna=False)
+    conflict = grouped["officer_title_clean"].transform("nunique").gt(1)
+    df_prior.loc[conflict, ["role", "officer_title_clean"]] = [OTHER_OFFICER, "conflicting titles"]
+    df_prior = df_prior.drop_duplicates([*keys, "role_as_of"])
+    if role_evidence is not None and not role_evidence.empty:
+        df_proxy = role_evidence.copy()
+        for column in ("issuer_cik", "owner_cik"):
+            df_proxy[column] = df_proxy[column].map(pad_cik).fillna("")
+        df_prior = pd.concat([df_prior, df_proxy[df_prior.columns]], ignore_index=True)
+    eligible = df_rows["officer_title_clean"].eq("") & df_rows["is_officer"].eq(1) & df_rows["owner_cik"].ne("") & df_rows["role_as_of"].notna()
+    if not eligible.any() or df_prior.empty:
+        return df_rows
+    df_prior = df_prior.dropna(subset=["role_as_of"])
+    conflict = df_prior.groupby([*keys, "role_as_of"])["role"].transform("nunique").gt(1)
+    df_prior.loc[conflict, ["role", "officer_title_clean"]] = [OTHER_OFFICER, "conflicting roles"]
+    df_prior = df_prior.sort_values("role_as_of").drop_duplicates([*keys, "role_as_of"], keep="first")
+    df_match = pd.merge_asof(
+        df_rows.loc[eligible, [*keys, "role_as_of"]].reset_index().sort_values("role_as_of"),
+        df_prior.rename(columns={"role_as_of": "evidence_day"}).sort_values("evidence_day"),
+        left_on="role_as_of",
+        right_on="evidence_day",
+        by=keys,
+        allow_exact_matches=False,
+        tolerance=pd.Timedelta(days=365),
+    )
+    supported = df_match["role"].isin(["CEO", "CFO", "COO"])
+    df_match = df_match[supported].set_index("index")
+    for column in ("role", "officer_title_clean", "role_source"):
+        df_rows.loc[df_match.index, column] = df_match[column]
+    df_rows.loc[df_match.index, "role_as_of"] = df_match["evidence_day"]
+    return df_rows
+
+
+def _source_assessments() -> tuple[dict[str, object], ...]:
+    """Accession-exact source evidence, applied only from its public disclosure day."""
+    return (
+        {
+            "accession_number": "0001127602-15-015564",
+            "public_from": "2015-04-29",
+            "state": "uncertain_price",
+            "match": {"transaction_day": pd.Timestamp("2015-04-29"), "code": "S", "shares_n": 2475, "security_title": "Class A Common Stock"},
+            "evidence": "https://www.sec.gov/Archives/edgar/data/1288776/000112760215015564/xslF345X03/form4.xml",
+        },
+        {
+            "accession_number": "0000947871-17-000614",
+            "public_from": "2017-08-04",
+            "state": "corrected_price",
+            "price_per_share": 13.14,
+            "evidence": "https://ir.amd.com/financial-information/sec-filings/content/0000947871-17-000613/ss54101_sc13da.htm",
+        },
+        {
+            "accession_number": "0001584209-16-000008",
+            "public_from": "2016-10-19",
+            "state": "uncertain",
+            "evidence": "https://www.investing.com/news/stock-market-news/apparent-fake-filing-says-artist-bought-%2488-billion-of-bank-of-america-stock-433448",
+        },
+        {
+            "accession_number": "0001584209-16-000008",
+            "public_from": "2017-03-22",
+            "state": "invalidated",
+            "evidence": "https://www.treasuryandrisk.com/2017/03/22/just-disregard-that-sec-filing/",
+        },
+    )
+
+
+def _apply_assessments(df_rows: pd.DataFrame, assessments: tuple[dict[str, object], ...]) -> pd.DataFrame:
+    """Split affected visibility intervals at dated evidence, never rewriting earlier information."""
+    df_rows["quality_uncertain"] = False
+    df_rows["quality_evidence"] = ""
+    if "accession_number" not in df_rows:
+        return df_rows
+    for evidence in sorted(assessments, key=lambda x: str(x["public_from"])):
+        date = pd.Timestamp(evidence["public_from"])
+        affected = df_rows["accession_number"].eq(evidence["accession_number"]) & (
+            df_rows["visible_until"].isna() | df_rows["visible_until"].gt(date)
+        )
+        for column, value in cast(dict[str, object], evidence.get("match", {})).items():
+            affected &= df_rows[column].eq(value)
+        if not affected.any():
+            continue
+        df_new = df_rows.loc[affected].copy()
+        starts = df_new["visible_from"].clip(lower=date)
+        before = affected & df_rows["visible_from"].lt(date)
+        df_rows.loc[before, "visible_until"] = date
+        df_rows = df_rows.loc[~(affected & ~before)].copy()
+        if evidence["state"] == "invalidated":
+            continue
+        df_new["visible_from"] = starts
+        df_new["quality_evidence"] = str(evidence["evidence"])
+        if evidence["state"] == "uncertain":
+            df_new["quality_uncertain"] = True
+        elif evidence["state"] == "uncertain_price":
+            df_new[["price_clean", "value"]] = np.nan
+        elif evidence["state"] == "corrected_price":
+            df_new["price_clean"] = float(evidence["price_per_share"])
+            df_new["value"] = df_new["shares_n"] * df_new["price_clean"]
+            df_new["price_repaired"] = True
+            df_new["price_estimated"] = False
+        df_rows = pd.concat([df_rows, df_new], ignore_index=True)
+    return df_rows.reset_index(drop=True)
 
 
 def security_class(security_title: pd.Series) -> pd.Series:
@@ -152,7 +328,15 @@ def consensus_price(txns: pd.DataFrame, *, window: str = CONSENSUS_WINDOW) -> pd
     return merged["consensus"]
 
 
-def clean_transactions(insider: pd.DataFrame, *, price_tolerance: float = PRICE_TOLERANCE) -> tuple[pd.DataFrame, dict]:
+def clean_transactions(
+    insider: pd.DataFrame,
+    *,
+    price_tolerance: float = PRICE_TOLERANCE,
+    as_traded_quotes: pd.DataFrame | None = None,
+    role_evidence: pd.DataFrame | None = None,
+    max_price_age_days: int = 7,
+    assessments: tuple[dict[str, object], ...] | None = None,
+) -> tuple[pd.DataFrame, dict]:
     """Scope to priced common-stock open-market trades and repair the mispriced ones.
 
     Returns `(frame, diagnostics)`. Added columns: `code`, `day` (normalised `filing_date`, the
@@ -162,68 +346,86 @@ def clean_transactions(insider: pd.DataFrame, *, price_tolerance: float = PRICE_
     and unpriced rows are dropped, never zero-filled; later repeat copies are dropped.
     """
 
-    need = {"ticker", "filing_date", "transaction_code", "shares", "value_usd"}
+    need = {"ticker", "filing_date", "transaction_code", "shares"}
     diag: dict = {"input_rows": 0 if insider is None else len(insider)}
     if insider is None or insider.empty or not need.issubset(insider.columns):
         return pd.DataFrame(), diag
 
-    df_trades = insider.copy()
+    df_trades = _canonical_inputs(insider, role_evidence)
     df_trades["ticker"] = df_trades["ticker"].astype(str).str.upper().str.strip()
     df_trades["code"] = df_trades["transaction_code"].astype(str).str.upper().str.strip()
     df_trades["day"] = to_day(df_trades["filing_date"])
     df_trades["shares_n"] = pd.to_numeric(df_trades["shares"], errors="coerce")
+    diag["source_first"] = df_trades.loc[df_trades["ticker"].ne("") & df_trades["day"].notna()].groupby("ticker")["day"].min()
+    diag["other_flows"] = (
+        df_trades.loc[~df_trades["code"].isin(OPEN_MARKET_CODES), ["ticker", "owner_cik", "transaction_day", "day", "code", "security_type"]].copy()
+        if "security_type" in df_trades
+        else pd.DataFrame()
+    )
     pps = pd.to_numeric(cast(pd.Series, df_trades.get("price_per_share")), errors="coerce")
 
     # Computed before the scope cut, which removes the derivative `M` leg of the package.
     df_trades["in_exercise_package"] = _exercise_packages(df_trades)
 
+    df_trades["scope_unknown"] = False
     if "security_type" in df_trades.columns:
-        df_trades = df_trades[df_trades["security_type"].astype(str).str.lower().eq("nonderiv")]
+        security_type = df_trades["security_type"].fillna("").astype(str).str.lower().str.strip()
+        unknown_type = ~security_type.isin(["nonderiv", "deriv"])
+        df_trades["scope_unknown"] |= unknown_type
+        df_trades = df_trades[security_type.eq("nonderiv") | unknown_type]
 
     if "security_title" in df_trades.columns:
-        df_trades = df_trades[common_stock_mask(df_trades["security_title"])]
+        unknown_title = df_trades["security_title"].fillna("").astype(str).str.strip().eq("")
+        df_trades["scope_unknown"] |= unknown_title
+        df_trades = df_trades[common_stock_mask(df_trades["security_title"]) | unknown_title]
 
     df_trades = df_trades[df_trades["code"].isin(OPEN_MARKET_CODES) & df_trades["day"].notna() & (df_trades["ticker"] != "")]
-    df_trades = df_trades.dropna(subset=["shares_n"])
     pps = pps.reindex(df_trades.index)
-    diag["scoped_rows"] = len(df_trades)
-    if df_trades.empty:
-        return pd.DataFrame(), diag
-
+    diag["scoped_rows"] = int((df_trades["shares_n"].gt(0) & ~df_trades["scope_unknown"]).sum())
     df_trades, versions = versioned_records(df_trades, pps)
     diag.update(versions)
-    pps = pps.reindex(df_trades.index)
+    # Unknown quantities/classes share correction/expiry intervals with usable disclosures.
+    unsupported = ~df_trades["shares_n"].gt(0) | df_trades["scope_unknown"]
+    diag["unsupported_events"] = df_trades.loc[unsupported].assign(quality_uncertain=True).copy()
+    df_trades = df_trades[~unsupported]
+    pps = df_trades["price_per_share"]
 
-    priced = pps > 0
-    diag["dropped_unpriced"] = int((~priced).sum())
-    diag["dropped_unpriced_shares"] = float(df_trades.loc[~priced, "shares_n"].sum()) / df_trades["shares_n"].sum()
-    diag["unpriced_events"] = df_trades.loc[~priced, ["ticker", "day", "code", *VISIBILITY_COLUMNS]].copy()
-    df_trades, pps = df_trades[priced], pps[priced]
-
-    ref = consensus_price(insider).reindex(df_trades.index)
-    ratio = pps / ref.where(ref > 0)
-    # One-sided repair: a too-low ratio may be a genuine low-priced row under a reused ticker, so it is only counted.
-    bad = ratio.notna() & (ratio > price_tolerance)
-    low = ratio.notna() & (ratio < 1.0 / price_tolerance)
-    raw_value = pd.to_numeric(df_trades["value_usd"], errors="coerce")
-
-    # Repair rather than drop: the trade and its share count are real, only the price is wrong.
-    df_trades["value"] = raw_value.where(~bad, df_trades["shares_n"] * ref)
+    ref = pd.Series(np.nan, index=df_trades.index, dtype=float)
+    if as_traded_quotes is not None and not as_traded_quotes.empty:
+        quotes = _period_close(as_traded_quotes, df_trades["transaction_day"], max_price_age_days)
+        lookup = pd.MultiIndex.from_arrays([df_trades["transaction_day"], df_trades["ticker"]], names=["period", "ticker"])
+        ref[:] = quotes.reindex(lookup).to_numpy()
+        # An explicit non-primary class needs its own quote; the canonical ticker cannot certify it.
+        ref = ref.where(security_class(df_trades["security_title"]).eq("COMMON"))
+    ratio = pps / ref.where(ref.gt(0))
+    bad = ratio.gt(price_tolerance)
+    low = ratio.lt(1.0 / price_tolerance)
+    df_trades["price_check_ratio"] = ratio
+    df_trades["price_outside_band"] = ratio.notna() & ~ratio.between(0.90, 1.10)
+    df_trades["price_clean"] = pps.where(~bad, ref)
     df_trades["price_repaired"] = bad
+    df_trades["price_estimated"] = bad
+    raw_value = pd.to_numeric(df_trades.loc[df_trades["price_clean"].gt(0), "value_usd"], errors="coerce")
+    df_trades["value"] = df_trades["shares_n"] * df_trades["price_clean"]
+    df_trades = _apply_assessments(df_trades, _source_assessments() if assessments is None else assessments)
+    priced = df_trades["price_clean"].gt(0)
+    diag["dropped_unpriced"] = int((~priced).sum())
+    total_shares = df_trades["shares_n"].sum()
+    diag["dropped_unpriced_shares"] = float(df_trades.loc[~priced, "shares_n"].sum()) / total_shares if total_shares > 0 else 0.0
+    diag["unpriced_events"] = df_trades.loc[~priced].copy()
+    df_trades = df_trades[priced].copy()
+    diag["uncertain_events"] = pd.concat([df_trades, diag["unpriced_events"]], ignore_index=True).loc[lambda rows: rows["quality_uncertain"]].copy()
 
-    # A row whose price survived but whose `value_usd` is missing is still a real trade.
-    df_trades["value"] = df_trades["value"].fillna(df_trades["shares_n"] * pps)
-
-    diag["repaired_rows"] = int(bad.sum())
+    diag["repaired_rows"] = int(df_trades["price_repaired"].sum())
     diag["underpriced_rows"] = int(low.sum())
     diag["value_before"] = float(raw_value.sum())
     diag["value_after"] = float(df_trades["value"].sum())
     diag["no_consensus_rows"] = int(ratio.isna().sum())
 
-    df_trades["role"] = df_trades["officer_title"].map(officer_role) if "officer_title" in df_trades.columns else OTHER_OFFICER
-    for flag in ("is_director", "is_officer", "is_ten_pct_owner"):
-        df_trades[flag] = pd.to_numeric(cast(pd.Series, df_trades.get(flag)), errors="coerce")
-    df_trades["is_10b5_1"] = pd.to_numeric(cast(pd.Series, df_trades.get("is_10b5_1")), errors="coerce")
+    diag["roles_imputed"] = int(df_trades["role_source"].ne("filed").sum())
+    diag["outside_price_band"] = int(df_trades["price_outside_band"].sum())
+    diag["uncertain_rows"] = len(diag["uncertain_events"])
+    # Unsupported non-P/S account flows forbid reconstructing a starting position from P/S alone.
 
     _log.info(
         "insider: %s rows -> %s scoped, %s unpriced dropped, %s overpriced repaired, %s underpriced left as filed ($%.3ftn -> $%.3fbn)",
@@ -284,7 +486,7 @@ def versioned_records(df_scoped: pd.DataFrame, pps: pd.Series) -> tuple[pd.DataF
         "amendment_cells_identical": 0,
         "amendment_rows_identical": 0,
     }
-    if "accession_number" not in df_rows.columns:
+    if df_rows.empty or "accession_number" not in df_rows.columns:
         return df_rows, counts
 
     df_key = _copy_key(df_rows, pps)
@@ -299,12 +501,18 @@ def versioned_records(df_scoped: pd.DataFrame, pps: pd.Series) -> tuple[pd.DataF
     if not df_plan.empty:
         df_rows.loc[df_plan.index, "anchor"] = df_plan["anchor"].to_numpy()
         df_rows.loc[df_plan.index, "visible_until"] = df_plan["visible_until"].to_numpy()
-    for column in ("owner_ciks", "n_reporting_owners"):
-        if column in df_rows.columns and not df_owners.empty:
-            df_rows[column] = df_rows[column].astype(object)
-            df_rows.loc[df_owners.index, column] = df_owners[column]
     identical = df_rows.index.isin(df_plan.index[df_plan["identical"]]) if not df_plan.empty else np.zeros(len(df_rows), dtype=bool)
-    return df_rows[~(drop_copy.to_numpy() | identical)], counts
+    df_rows = df_rows[~(drop_copy.to_numpy() | identical)].copy()
+    if not df_owners.empty:
+        # Co-reporters learned from later copies change metadata prospectively, not transaction size.
+        df_copies = df_rows.loc[df_owners.index].copy().reset_index(drop=True)
+        df_copies["visible_from"] = df_owners["visible_from"].to_numpy()
+        stop = df_owners["visible_until"].reset_index(drop=True)
+        df_copies["visible_until"] = pd.concat([df_copies["visible_until"], stop], axis=1).min(axis=1)
+        for column in ("owner_ciks", "n_reporting_owners"):
+            df_copies[column] = df_owners[column].to_numpy()
+        df_rows = pd.concat([df_rows.drop(index=df_owners.index.unique()), df_copies], ignore_index=True)
+    return df_rows, counts
 
 
 def _copy_key(df: pd.DataFrame, pps: pd.Series) -> pd.DataFrame:
@@ -455,8 +663,8 @@ def _collapse_copies(df: pd.DataFrame, df_key: pd.DataFrame, *, eligible: pd.Ser
     """REQ-010 on the `eligible` rows: rows of different accessions with an equal `COPY_KEY` are one trade.
 
     The earliest accession (filing day, then accession number) keeps its rows; the others are
-    dropped. A NaN key field never matches. Returns the drop mask, the kept rows' union of
-    owners (`owner_ciks`, `n_reporting_owners`) and the counts.
+    dropped. A NaN key field never matches. Returns the drop mask, dated metadata versions
+    of already-public owners (`owner_ciks`, `n_reporting_owners`) and the counts.
     """
     drop = pd.Series(False, index=df.index)
     counts = {"copy_groups": 0, "copy_rows_dropped": 0, "copy_value_removed": 0.0}
@@ -474,18 +682,29 @@ def _collapse_copies(df: pd.DataFrame, df_key: pd.DataFrame, *, eligible: pd.Ser
     counts["copy_rows_dropped"] = int(drop.sum())
     counts["copy_value_removed"] = float(pd.to_numeric(df.loc[drop, "value_usd"], errors="coerce").sum())
 
-    df_union = (
+    df_members = (
         df_group[["group", "accession_number"]]
         .drop_duplicates()
         .merge(_owner_pairs(df.loc[df_group.index]), on="accession_number")
         .assign(owner=lambda d: d["owner"].str.zfill(10))
-        .drop_duplicates(["group", "owner"])
-        .sort_values(["group", "owner"])
-        .groupby("group")["owner"]
-        .agg(owner_ciks=_joined, n_reporting_owners="size")
+        .merge(df_group[["accession_number", "day"]].drop_duplicates(), on="accession_number")
     )
-    df_kept = df_group.loc[~later.to_numpy(), ["group"]]
-    df_owners = df_kept.join(df_union, on="group")[["owner_ciks", "n_reporting_owners"]]
+    records = []
+    for group_id, members in df_members.groupby("group", sort=False):
+        owners: set[str] = set()
+        versions = []
+        for day, public in members.groupby("day", sort=True):
+            new_owners = set(public["owner"]) - owners
+            if new_owners:
+                owners.update(new_owners)
+                versions.append((day, ",".join(sorted(owners)), len(owners)))
+        kept_rows = df_group.index[df_group["group"].eq(group_id) & ~later]
+        for i, (day, owner_ciks, number) in enumerate(versions):
+            stop = versions[i + 1][0] if i + 1 < len(versions) else pd.NaT
+            records.extend(
+                {"row": row, "visible_from": day, "visible_until": stop, "owner_ciks": owner_ciks, "n_reporting_owners": number} for row in kept_rows
+            )
+    df_owners = pd.DataFrame(records).set_index("row")
     return drop, df_owners, counts
 
 

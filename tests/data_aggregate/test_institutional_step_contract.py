@@ -11,7 +11,7 @@ import pytest
 import src.data_aggregate.transformers.step_cube_institutionals as step_module
 from src.constants.constants import DEFAULT_CONFIG_DIR
 from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
-from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_REFRESH_TRADING_DAYS, PartWindow, write_part
+from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PartWindow, write_part
 from src.data_aggregate.utils.institutionals.cross_source_features import EMISSION as CROSS_SOURCE_EMISSION
 from src.data_aggregate.utils.institutionals.insider_features import EMISSION as INSIDER_EMISSION
 from src.data_aggregate.utils.institutionals.institutional_features import EMISSION as INSTITUTIONAL_EMISSION
@@ -63,10 +63,10 @@ def test_final_taxonomy_is_raw_only_without_unproved_peer_legs() -> None:
     assert set(declared.values()) == {"raw"}
     assert peer_features == set()
     assert removed.isdisjoint(declared)
-    assert len(declared) == 71
-    assert sum(1 if mode == "raw" else 2 for mode in declared.values()) == 71
+    assert len(declared) == 72
+    assert sum(1 if mode == "raw" else 2 for mode in declared.values()) == 72
     print(
-        "SANITY: the final schema declares 71 unique characteristics / 71 legs, all raw; "
+        "SANITY: the final schema declares 72 unique characteristics / 72 legs, all raw; "
         "both provisional peer legs were removed because target/OOS evidence was unavailable."
     )
 
@@ -244,7 +244,9 @@ def test_insider_panel_reads_one_table_and_the_db_frontier(monkeypatch: pytest.M
     fake_step._availability = None
     insider = pd.DataFrame({"ticker": ["AAA"], "filing_date": [pd.Timestamp("2026-09-01")]})
     shares = pd.DataFrame({"ticker": ["AAA"]})
-    frames = SimpleNamespace(universe=("BBB", "AAA"), trading_index=pd.DatetimeIndex(["2026-09-30", "2026-10-01"]))
+    frames = SimpleNamespace(
+        universe=("BBB", "AAA"), trading_index=pd.DatetimeIndex(["2026-09-30", "2026-10-01"]), close_split=None, level_factor=None
+    )
     sink = ConditioningSink()
     frontier = pd.Timestamp("2026-10-02")
     loads: list[tuple[object, object]] = []
@@ -265,6 +267,8 @@ def test_insider_panel_reads_one_table_and_the_db_frontier(monkeypatch: pytest.M
 
     fake_step._load_insider = load_insider
     fake_step._store = object()
+    fake_step._context = object()
+    monkeypatch.setattr(step_module, "level_actions", lambda context, universe: None)
     monkeypatch.setattr(step_module.institutional_frontiers, "schedule_complete_through", schedule_complete_through)
     monkeypatch.setattr(step_module, "build_insider_feature_panel", build)
 
@@ -273,6 +277,8 @@ def test_insider_panel_reads_one_table_and_the_db_frontier(monkeypatch: pytest.M
     assert out is not None and len(out) == 1
     assert loads == [(Tables.insider_transactions, ("BBB", "AAA"))]
     assert frontiers == [(Tables.insider_transactions, pd.Timestamp("2026-10-01"))]
+    assert built.pop("as_traded_quotes") is None
+    assert built.pop("role_evidence").empty
     assert built == {
         "frames": frames,
         "insider": insider,
@@ -390,7 +396,7 @@ def test_build_panel_preserves_order_sink_and_output_contract(monkeypatch: pytes
             else pytest.fail("superinvestor inputs changed")
         ),
     )
-    monkeypatch.setattr(step, "_insider_panel", lambda actual_frames, actual_shares, sink: emit("insider", sink))
+    monkeypatch.setattr(step, "_insider_panel", lambda actual_frames, actual_shares, sink, actual_splits: emit("insider", sink))
     monkeypatch.setattr(
         step,
         "_short_flow_panel",
@@ -400,18 +406,10 @@ def test_build_panel_preserves_order_sink_and_output_contract(monkeypatch: pytes
     monkeypatch.setattr(step, "_conditioning_panel", lambda actual_frames, actual_splits, sink: emit("conditioning", sink))
     monkeypatch.setattr(step, "_cross_source_panel", lambda actual_frames, sink: emit("cross", sink))
 
-    got, got_window = step.build_panel(full=True)
+    got = step.build_panel(full=True)
 
-    assert planned == {
-        "store": store,
-        "table": Tables.cube_part_institutionals,
-        "full": True,
-        "warmup": 390,
-        "trading_index": trading_index,
-        "refresh": PART_REFRESH_TRADING_DAYS,
-    }
-    assert got_window is window
-    assert loads == {"frames": 1, "shares": 1, "splits": 1, "calendar": 1}
+    assert planned == {}
+    assert loads == {"frames": 1, "shares": 1, "splits": 1, "calendar": 0}
     assert calls == ["institutional", "superinvestor", "insider", "short", "ownership", "conditioning", "cross"]
     assert len(sinks) == 6 and all(sink is sinks[0] for sink in sinks)
     assert isinstance(sinks[0], ConditioningSink)
@@ -441,7 +439,8 @@ def test_build_panel_preserves_order_sink_and_output_contract(monkeypatch: pytes
     assert second not in got.loc[got["ticker"] == "AAA", "date"].tolist()
     print("SANITY: build_panel kept order, one sink, one input load, exact output schema/dtypes/nulls, and the planned window.")
 
-    incremental_panel, incremental_window = step.build_panel(full=False)
+    incremental_panel = step.build_panel(full=False)
+    incremental_window = window
     pd.testing.assert_frame_equal(got, incremental_panel)
 
     class _SeededStore:
@@ -469,6 +468,29 @@ def test_build_panel_preserves_order_sink_and_output_contract(monkeypatch: pytes
     )
 
 
+def test_insider_loader_includes_issuer_identity_for_proxy_roles() -> None:
+    class Store:
+        def columns(self, table: object) -> list[str]:
+            assert table is Tables.insider_transactions
+            return [*Tables.insider_transactions.read_columns, "issuer_cik"]
+
+        def distinct(self, table: object, column: str) -> list[str]:
+            return ["AAA"]
+
+        def load(self, table: object, **kwargs: Any) -> pd.DataFrame:
+            return pd.DataFrame({"ticker": ["AAA"]})
+
+        def iter_load(self, table: object, *, columns: list[str], where: dict[str, Any]) -> list[pd.DataFrame]:
+            assert table is Tables.insider_transactions
+            assert "issuer_cik" in columns
+            assert where["ticker"] == ["AAA"]
+            return [pd.DataFrame({"ticker": ["AAA"], "issuer_cik": ["0000000123"]})]
+
+    got = step_module.institutional_inputs.load_insider_transactions(cast(Any, Store()), logging.getLogger(__name__), ["AAA"])
+    assert got is not None and got["issuer_cik"].iloc[0] == "0000000123"
+    print("SANITY: scoped insider loader projects issuer identity for same-issuer proxy matching without changing the registry.")
+
+
 def test_run_requests_a_full_rerun_when_columns_change(monkeypatch: pytest.MonkeyPatch) -> None:
     step = _bare_step()
     store = object()
@@ -483,15 +505,17 @@ def test_run_requests_a_full_rerun_when_columns_change(monkeypatch: pytest.Monke
     writes: list[tuple[object, object, pd.DataFrame, PartWindow, bool]] = []
     results = iter([COLUMNS_CHANGED, 1])
 
-    def build_panel(*, full: bool = False) -> tuple[pd.DataFrame, PartWindow]:
+    def build_panel(*, full: bool = False) -> pd.DataFrame:
         build_calls.append(full)
-        return panel, full_window if full else incremental
+        return panel
 
     def write_part(store_arg: object, table: object, rows: pd.DataFrame, window: PartWindow, *, drop_empty: bool) -> int:
         writes.append((store_arg, table, rows, window, drop_empty))
         return next(results)
 
-    full_window = full
+    monkeypatch.setattr(step_module, "load_trading_calendar", lambda actual_store: pd.DatetimeIndex(panel["date"]))
+    monkeypatch.setattr(step_module, "plan_window", lambda actual_store, table, **kwargs: full if kwargs["full"] else incremental)
+    monkeypatch.setattr(step, "_warmup", lambda: 390)
     monkeypatch.setattr(step, "build_panel", build_panel)
     monkeypatch.setattr(step_module, "write_part", write_part)
 

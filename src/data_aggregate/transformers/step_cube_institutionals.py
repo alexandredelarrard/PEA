@@ -48,8 +48,8 @@ from omegaconf import DictConfig
 
 from src.constants.constants import F13_REVISION_MIN_MOVE, F13_SETTLE_TRADING_DAYS
 from src.context import Context
-from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_REFRESH_TRADING_DAYS, PartWindow, plan_window, write_part
-from src.data_aggregate.utils.common.level_basis import load_bugfix
+from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_REFRESH_TRADING_DAYS, plan_window, write_part
+from src.data_aggregate.utils.common.level_basis import genuine_splits, level_actions, load_bugfix
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
 from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.price_frames import (
@@ -89,6 +89,7 @@ from src.data_aggregate.utils.institutionals.superinvestor_features import (
     build_superinvestor_feature_panel,
     load_superinvestor_holdings,
 )
+from src.data_aggregate.utils.institutionals.value_basis import as_traded_close
 from src.data_store.schema import Table, Tables
 from src.utils.step import Step
 from src.utils.superinvestor_roster import (
@@ -118,15 +119,7 @@ class StepCubeInstitutionals(Step):
         self._availability = InstitutionalAvailability.from_config(availability_config) if availability_config is not None else None
 
     def run(self, full: bool = False) -> None:
-        panel, window = self.build_panel(full=full)
-        n = write_part(self._store, Tables.cube_part_institutionals, panel, window, drop_empty=True)
-        if n == COLUMNS_CHANGED:
-            return self.run(full=True)
 
-    def build_panel(self, full: bool = False) -> tuple[pd.DataFrame, PartWindow]:
-        """The merge chain without the write, so `validate institutionals` scores the same panel
-        this step persists. Returns the merged panel and its `PartWindow`; the source frames are
-        locals, freed on return."""
         window = plan_window(
             self._store,
             Tables.cube_part_institutionals,
@@ -135,6 +128,17 @@ class StepCubeInstitutionals(Step):
             trading_index=load_trading_calendar(self._store),
             refresh=PART_REFRESH_TRADING_DAYS,
         )
+
+        panel = self.build_panel(full=full)
+        n = write_part(self._store, Tables.cube_part_institutionals, panel, window, drop_empty=True)
+
+        if n == COLUMNS_CHANGED:
+            return self.run(full=True)
+
+    def build_panel(self, full: bool = False) -> pd.DataFrame:
+        """The merge chain without the write, so `validate institutionals` scores the same panel
+        this step persists. Returns the merged panel; the source frames are
+        locals, freed on return."""
 
         price_frames = self._load_frames()
 
@@ -155,13 +159,13 @@ class StepCubeInstitutionals(Step):
         merger.add(
             self._superinvestor_panel(price_frames, shares, splits, sink), "superinvestor (elite 13F)", "No superinvestor (elite 13F) features built."
         )
-        merger.add(self._insider_panel(price_frames, shares, sink), "insider-trading", "No insider-trading features built.")
+        merger.add(self._insider_panel(price_frames, shares, sink, splits), "insider-trading", "No insider-trading features built.")
         merger.add(self._short_flow_panel(price_frames, shares, splits, sink), "short-flow", "No short-flow features built.")
         merger.add(self._ownership_panel(price_frames, sink), "beneficial-ownership", "No beneficial-ownership features built.")
         merger.add(self._conditioning_panel(price_frames, splits, sink), "price-conditioning", "No price-conditioning features built.")
         merger.add(self._cross_source_panel(price_frames, sink), "cross-source", "No cross-source features built.")
 
-        return merger.to_long(), window
+        return merger.to_long()
 
     def _warmup(self) -> int:
         override = self._cfg.get("incremental", {}).get("warmup_trading_days")
@@ -345,7 +349,9 @@ class StepCubeInstitutionals(Step):
         cfg = self._cfg.get("institutionals", {}).get("decay_halflife", {})
         return float(cfg.get(family, 63))
 
-    def _insider_panel(self, frames: PriceFrames, shares: pd.DataFrame | None, sink: ConditioningSink) -> pd.DataFrame | None:
+    def _insider_panel(
+        self, frames: PriceFrames, shares: pd.DataFrame | None, sink: ConditioningSink, splits: pd.DataFrame | None = None
+    ) -> pd.DataFrame | None:
         """Fourteen Form 3/4/5 features: size-scaled open-market buying, cluster breadth,
         CEO/CFO/director legs, the buyer's own-history surprise, and the 10b5-1 split of
         selling. Point-in-time on the filing date. The dollar figures are scoped and repaired
@@ -359,6 +365,9 @@ class StepCubeInstitutionals(Step):
             return None
         last_session = pd.DatetimeIndex(frames.trading_index).max() if len(frames.trading_index) else None
         complete_through = institutional_frontiers.schedule_complete_through(self._store, Tables.insider_transactions, last_session)
+        actions = level_actions(self._context, frames.universe)
+        restored_quotes = as_traded_close(frames.close_split, frames.level_factor, genuine_splits(actions, splits))
+        roles = institutional_inputs.load_insider_role_evidence(self._store, insider)
         return build_insider_feature_panel(
             frames,
             insider,
@@ -367,6 +376,8 @@ class StepCubeInstitutionals(Step):
             availability=self._availability,
             complete_through=complete_through,
             sink=sink,
+            as_traded_quotes=restored_quotes,
+            role_evidence=roles,
         )
 
     def _short_flow_panel(

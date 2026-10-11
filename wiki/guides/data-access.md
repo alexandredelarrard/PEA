@@ -178,3 +178,13 @@ Before merging a data-path change:
 - [Table registry and store boundary](../concepts/table-registry-and-store-boundary.md)
 - [Add a data source](./add-a-data-source.md)
 - [Add a cube feature](./add-a-cube-feature.md)
+
+## Candidate 13F accession persistence and causal reads
+
+P3's `context.store.save_13f_filing(manifest, holdings)` is the bounded atomic entry point: one complete accession, declared source totals and actual typed payload reconciled, unique CIK/accession/CUSIP grain. Holdings and completion manifest commit together. Failed parsing or a rolled-back transaction cannot establish an empty public book. Exact replay returns zero; a changed checksum for an existing accession raises visibly. Resume is by completed accession, so a stored amendment cannot hide a missing original.
+
+Project and bound the manifest by CIK/report period/filing cutoff, then stream its accession-selected holdings through `context.store.iter_load`. The shared candidate resolver `src/utils/institutional_vintages.py` filters public, complete source versions before resolving each CIK/report quarter. Current levels come from the greatest usable report quarter. Comparison inputs use the **latest public resolved version of the adjacent preceding report quarter at the target as-of**, not a fixed 90-day-old snapshot. A prior amendment updates that baseline prospectively; an older irrelevant amendment stays in audit history. Unknown adjacent-quarter coverage remains unknown rather than silently widening the comparison interval.
+
+Candidate per-manager publications include active current/prior changes, including value-only corrections. An unrelated manager's event does not emit another manager's unchanged current rows. The daily DAG dependency lookback/output rewrite remains separately deferred in the refresh TODO (`reports/validate/2026-10-09-institutional-13f-audit/todo-13f-refresh.md`, local ignored audit artifact). No production consumer switch is implied by the scoped ledger proof.
+
+The P3 candidate distinguishes `comparison_eligible` (otherwise comparable public books) from `zero_eligible` (absence supports a zero). Present known quantities can compare without inventing omitted holdings. Inferred position patches mask previously positive or unknown typed common/call/put/debt legs when the incoming leg is merely structural zero; later inferred packets preserve that unknown. `prior_resolution_status` exposes inferred baselines even when the current book is a clean original. Only a clean original/restatement clears inference. Failed/unavailable source histories are outside the verified complete scope, and must not be certified for production by the successful subset.

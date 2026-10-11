@@ -90,7 +90,6 @@ _PEER_LEGACY = frozenset(
 )
 _VS_HIST_LEGACY = frozenset({"avg_board_tenure"})
 _RAW_ONLY_COMPUTED = frozenset({"ceo_pay_growth", "ceo_pay_vs_revenue_growth"})
-_RAW_ONLY_BOUNDED = frozenset({"control_wedge"})
 
 
 def _domain_condition(def14a_hist: pd.DataFrame, field: str, idx: pd.DatetimeIndex, tally: dict[str, int] | None = None) -> pd.DataFrame | None:

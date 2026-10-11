@@ -249,3 +249,23 @@ Finish with the project’s required sanity conclusion and the appropriate [vali
 - [Live database](../reference/live-database.md)
 - [Testing and validation](./testing.md)
 - [TODO](../TODO.md)
+
+## Candidate bounded 13F vintage recovery
+
+The approved P3 branch `harness/institutional-13f-pit-20261009` extends the existing manager command with `--vintages`; legacy invocation is unchanged. Work from the candidate worktree. Require explicit manager CIKs, report-period bounds, filing cutoff and accession cap. Preview source cost and back up the new ledgers' prestate before any approved bounded live append. Never use a marketwide filing-window command as a manager recovery shortcut.
+
+Example preview for the verified Morgan Q2 pair (replace `<PY>` with the configured Python 3.13 executable):
+
+~~~powershell
+rtk "<PY>" -m src data_extract thirteen-f-managers --vintages --cik 0000895421 --period-start 2024-06-30 --period-end 2024-06-30 --filed-through 2025-05-14 --max-filings 2 --accession 0000895421-24-000408 --accession 0000895421-25-000378 --archive "../../data/sec_13f_datasets/01jun2024-31aug2024_form13f.zip" --archive "../../data/sec_13f_datasets/01mar2025-31may2025_form13f.zip" --dry-run -c ../../configs
+~~~
+
+Paths are relative to the candidate worktree: existing source archives live at the repository root, so use their resolved absolute paths or `../../data/...` for `--archive`. Archives stay read-only. The actual scoped CLI, original-gap resume, cap, dry-run and replay were tested; the real bounded append wrote only the two approved new ledgers. Failed source reconciliation stops recovery; it does not remove or relabel existing versions.
+
+Run the candidate read-only validator after a completed batch:
+
+~~~powershell
+rtk "<PY>" -m src validate institutionals --cik 0000895421 --period-start 2013-03-31 --period-end 2026-06-30 --filed-through 2026-10-08 -o ../../reports/validate/2026-10-09-institutional-13f-audit/_validate/p3-manual -c ../../configs
+~~~
+
+A passing source/version validator does not certify full-universe coverage, dollar-unit economics, split flows or production adoption. Bounded recovery evidence is saved in the local ignored artifact `reports/validate/2026-10-09-institutional-13f-audit/p3-amendments.html`.

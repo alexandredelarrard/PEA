@@ -156,3 +156,9 @@ Use configuration for research choices and operational tuning. Use [constants.py
 - [Modelling and portfolio contracts](./modelling-and-portfolio.md)
 - [Add a model or sleeve](../guides/add-a-model-or-sleeve.md)
 - [Run the pipeline](../guides/run-the-pipeline.md)
+
+## Institutional value-unit candidate — 10 October 2026
+
+The tested P1 candidate in .worktrees/institutional-13f-pit adds build_cube.institutionals.value_basis: min_securities=15, min_agreement=0.8, price_tolerance=0.1 and max_price_age_days=7. These knobs govern a common filing-wide monetary factor against reconstructed report-quarter-end as-traded prices, independently per quarter/filing. They do not represent the separate P2 minimum of 15 managers holding the same security. Shares are unchanged; explicit shares==value reconstruction and source-only/abstained statuses are distinguishable.
+
+The candidate is not activated. The later user-approved fallback estimates uncertain common dollars as valid reported shares × the eligible restored quarter-end price, after the raw unit decision; estimated rows cannot vote for a factor. Source zeros remain zero. The subsequent typed-option extension uses call_shares/put_shares × the same eligible reference for uncertain underlying exposure; options never vote for the common filing factor. Nonzero unresolved debt values still require a debt-instrument quote and remain unknown. Common-dollar completeness is now 457/461, 472/476 and 436/482 ticker totals in the three tested first-publication cohorts; option/value coverage and immutable filing versions remain pending. [Candidate evidence](../../reports/validate/2026-10-09-institutional-13f-audit/06-final.md).

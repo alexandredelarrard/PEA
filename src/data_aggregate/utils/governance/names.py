@@ -8,11 +8,12 @@ The key itself is deliberately NOT redefined here. `person_key` is shared with t
 that wrote `sec_8k_votes`' role-category columns, so this module only decides what STRING to
 hand it -- which for a CEO cell means splitting a co-CEO listing first.
 
-Used at exactly four places, and nowhere else a name is compared:
+Used at exactly five places, and nowhere else a name is compared:
   * the CEO-turnover guard, comparing a filing's identity against the previous filing's;
   * `def14a_impute`'s identity gap fill, comparing the value before a gap against the one after;
   * the CEO<->NEO cross-check against `def14a_executive_comp.name`;
-  * the election-nominee lookup against `sec_8k_votes.nominee_votes_json[].name` (diagnostic).
+  * the election-nominee lookup against `sec_8k_votes.nominee_votes_json[].name` (diagnostic);
+  * `ceo_stint_ids`, the CEO stints `def14a_impute` completes the start year and founder flag over.
 
 ⚠ `None` means UNKNOWN, never a value. Two `None`s must never compare equal in a turnover or
 agreement test, because "we do not know who ran this company either year" is not evidence that
@@ -24,6 +25,7 @@ from __future__ import annotations
 
 import re
 
+import numpy as np
 import pandas as pd
 
 from src.utils.names import person_key
@@ -106,3 +108,33 @@ def ceo_identity_changed(names: pd.Series, groups: pd.Series) -> pd.Series:
     idents = ceo_identity_series(names)
     prev = idents.groupby(groups, sort=False).shift(1)
     return (idents != prev).astype("float64").where(idents.notna() & prev.notna())
+
+
+#: A generational suffix on a person cell. `person_key` strips it, so father and son
+#: (`William R. Berkley` / `W. Robert Berkley, Jr.`) share one key; the stint reads it back.
+_GENERATIONAL_RE = re.compile(r"(?:^|[\s,])(jr|sr|ii|iii|iv)\.?(?=$|[\s,])", re.I)
+
+
+def generational_suffix(value: object) -> str:
+    """The generational suffix of the first person named in a cell (`jr`, `iii`, ...), or ""."""
+    names = split_co_names(value)
+    if not names:
+        return ""
+    found = _GENERATIONAL_RE.findall(names[0])
+    return found[-1].lower() if found else ""
+
+
+def ceo_stint_ids(names: pd.Series, tickers: pd.Series) -> pd.Series:
+    """A stint number per row: consecutive rows of one ticker naming the same CEO identity and
+    generational suffix share it. NaN where the CEO is UNKNOWN; such a row breaks no stint.
+
+    The caller must sort chronologically within `tickers`, as for `ceo_identity_changed`.
+    """
+    ident = ceo_identity_series(names)
+    known = ident.notna()
+    token = (tickers.astype(str) + "\x1f" + ident.astype(str) + "\x1f" + names.astype(object).map(generational_suffix)).where(known)
+    kt = token[known]
+    starts = kt.ne(kt.shift(1))
+    stint = pd.Series(np.nan, index=names.index, dtype="float64")
+    stint[known] = starts.cumsum().astype("float64")
+    return stint

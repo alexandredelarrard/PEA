@@ -149,19 +149,21 @@ def clean_governance_inputs(raw: GovernanceInputs, fundamentals: pd.DataFrame | 
         if "as_of" in frame.columns:
             # Blank per-class ownership before computed economic ownership fills the gap.
             tally: dict[str, int] = {}
+            shares_out = pit_shares_outstanding(frame, fundamentals, tally)
             frame = repair_ownership_basis(frame, tally)
-            frame = economic_ownership(frame, fundamentals, tally)
+            frame = economic_ownership(frame, shares_out, tally)
             _record(stats, "ownership", tally)
             if _present(raw.ownership):
                 tally = {}
-                frame = estimate_insider_ownership(frame, cast(pd.DataFrame, raw.ownership), fundamentals, tally)
+                frame = estimate_insider_ownership(frame, cast(pd.DataFrame, raw.ownership), shares_out, tally)
                 _record(stats, "ownership_estimate", tally)
         if _present(exec_comp):
+            sct = sct_frames(frame, cast(pd.DataFrame, exec_comp))
             tally = {}
-            frame = sct_pay_growth(frame, cast(pd.DataFrame, exec_comp), tally)
+            frame = sct_pay_growth(frame, sct, tally)
             _record(stats, "sct_growth", tally)
             tally = {}
-            frame = backfill_ceo_pay(frame, cast(pd.DataFrame, exec_comp), tally)
+            frame = backfill_ceo_pay(frame, sct, tally)
             _record(stats, PAY_BACKFILL_STAGE, tally)
         df = frame
 
@@ -210,6 +212,18 @@ def _pit_shares_outstanding(def14a_hist: pd.DataFrame, fundamentals: pd.DataFram
     return aligned
 
 
+def pit_shares_outstanding(def14a_hist: pd.DataFrame, fundamentals: pd.DataFrame | None, tally: dict[str, int] | None = None) -> pd.Series | None:
+    """Point-in-time shares outstanding at each proxy's `as_of` (the ownership denominator), or
+    None when the fundamentals cannot supply it."""
+    if fundamentals is None or fundamentals.empty or not {"ticker", "as_of"}.issubset(def14a_hist.columns):
+        return None
+    if not {"ticker", "as_of", _SHARES_OUTSTANDING}.issubset(fundamentals.columns):
+        if tally is not None and "insider_shares" in def14a_hist.columns:
+            tally[f"⚠ economic ownership not computed: {_SHARES_OUTSTANDING} absent"] = 1
+        return None
+    return _pit_shares_outstanding(def14a_hist, fundamentals)
+
+
 def _proxy_dates(df: pd.DataFrame) -> pd.Series:
     return pd.to_datetime(df["as_of"], errors="coerce")
 
@@ -230,20 +244,9 @@ def _clear_comp_imputed(df: pd.DataFrame, mask: pd.Series) -> None:
 
 
 # The denominator must be point-in-time at the proxy date.
-def economic_ownership(def14a_hist: pd.DataFrame, fundamentals: pd.DataFrame | None, tally: dict[str, int] | None = None) -> pd.DataFrame:
-    """Replace ownership with same-filing shares/outstanding where both are available."""
-    if fundamentals is None or fundamentals.empty:
-        return def14a_hist
-    need = {"ticker", "as_of", "insider_shares"}
-    if not need.issubset(def14a_hist.columns):
-        return def14a_hist
-    if not {"ticker", "as_of", _SHARES_OUTSTANDING}.issubset(fundamentals.columns):
-        if tally is not None:
-            tally[f"⚠ economic ownership not computed: {_SHARES_OUTSTANDING} absent"] = 1
-        return def14a_hist
-
-    shares_out = _pit_shares_outstanding(def14a_hist, fundamentals)
-    if shares_out is None:
+def economic_ownership(def14a_hist: pd.DataFrame, shares_out: pd.Series | None, tally: dict[str, int] | None = None) -> pd.DataFrame:
+    """Replace ownership with same-filing shares / `pit_shares_outstanding` where both are available."""
+    if shares_out is None or not {"ticker", "as_of", "insider_shares"}.issubset(def14a_hist.columns):
         return def14a_hist
 
     out = def14a_hist.copy()
@@ -280,22 +283,17 @@ def economic_ownership(def14a_hist: pd.DataFrame, fundamentals: pd.DataFrame | N
 
 
 def estimate_insider_ownership(
-    def14a_hist: pd.DataFrame, ownership: pd.DataFrame, fundamentals: pd.DataFrame | None, tally: dict[str, int] | None = None
+    def14a_hist: pd.DataFrame, ownership: pd.DataFrame, shares_out: pd.Series | None, tally: dict[str, int] | None = None
 ) -> pd.DataFrame:
     """Fill a still-missing ownership share with the filing's summed director/officer holdings
-    over point-in-time shares outstanding, on tickers never flagged dual-class.
+    over `pit_shares_outstanding`, on tickers never flagged dual-class.
 
     Holder rows that name an entity are not summed, and an estimate above
     `_MAX_FILED_MULTIPLE` times the ticker's largest filed value is refused. Filed, computed and
     carried values are never overwritten. "Ever dual" and the filed ceiling read later proxies
     too; that can only refuse a fill.
     """
-    if fundamentals is None or fundamentals.empty or _SHARES_OUTSTANDING not in fundamentals.columns:
-        return def14a_hist
-    if not {"ticker", "as_of", "accession_number", _OWNERSHIP}.issubset(def14a_hist.columns):
-        return def14a_hist
-    shares_out = _pit_shares_outstanding(def14a_hist, fundamentals)
-    if shares_out is None:
+    if shares_out is None or not {"ticker", "as_of", "accession_number", _OWNERSHIP}.issubset(def14a_hist.columns):
         return def14a_hist
 
     named = ownership.loc[(ownership["holder_type"] == _DIRECTOR_OFFICER) & ownership["shares"].notna()]
@@ -424,47 +422,73 @@ def _named_ceo(hit: pd.DataFrame, by: list[str]) -> pd.Series:
     return ~shared | keep.astype(bool)
 
 
-def _ceo_sct_totals(def14a: pd.DataFrame, exec_comp: pd.DataFrame) -> tuple[pd.DataFrame, int]:
-    """The named CEO's positive SCT totals per proxy row, from the proxy's own filing:
-    columns `fy` (the filing's latest fiscal year), `t1` (CEO total for `fy`), `t0` (for
-    `fy - 1`), `t2` (for `fy - 2`) and `s1` / `s0` (True where `t1` / `t0` is filer-stated
-    rather than a sum of components), indexed like `def14a`; plus the number of proxies whose
-    CEO cannot be told apart from a relative sharing the key."""
-    imputed = (
-        pd.to_numeric(exec_comp["total_imputed"], errors="coerce").fillna(0.0)
-        if "total_imputed" in exec_comp.columns
-        else pd.Series(0.0, index=exec_comp.index)
-    )
-    child = pd.concat(
-        [
-            pd.DataFrame(
-                {
-                    "accession_number": exec_comp["accession_number"],
-                    "person": exec_comp["name"].astype(object).map(person_key),
-                    "fiscal_year": pd.to_numeric(exec_comp["fiscal_year"], errors="coerce"),
-                    "total": pd.to_numeric(exec_comp["total"], errors="coerce"),
-                    "stated": imputed.to_numpy() == 0.0,
-                }
-            ),
-            _given_parts(exec_comp["name"]),
-        ],
-        axis=1,
-    ).dropna(subset=["accession_number", "fiscal_year"])
-    filing_fy = child.groupby("accession_number")["fiscal_year"].max()
+@dataclass(frozen=True)
+class SctFrames:
+    """The SCT lines and the proxies' named-CEO rows, built once for the pay growth and backfill.
+
+    `rows`: one line per `def14a_executive_comp` row (ticker, accession, `_later` filing date,
+    person key, given-name parts, fiscal year, `stated` total, the `_SCT_COLUMN` values present).
+    `ceo`: one row per proxy in frame order (`_row`), with the CEO's key and given-name parts,
+    `fy` (the filing's latest SCT year) and `fiscal_year` (`fy`, else the extracted year)."""
+
+    rows: pd.DataFrame
+    ceo: pd.DataFrame
+
+
+def sct_frames(def14a: pd.DataFrame, exec_comp: pd.DataFrame) -> SctFrames:
+    """Build the `SctFrames` of one cleaning pass (exec comp already imputed, so `total_imputed` is set)."""
+    present = {c: c for c in ("ticker", "accession_number") if c in exec_comp.columns}
+    rows = pd.DataFrame({k: exec_comp[c] for k, c in present.items()}, index=exec_comp.index)
+    if "ticker" in rows.columns:
+        rows["ticker"] = rows["ticker"].astype(str)
+    if "as_of" in exec_comp.columns:
+        rows["_later"] = pd.to_datetime(exec_comp["as_of"], errors="coerce")
+    if "name" in exec_comp.columns:
+        rows["person"] = exec_comp["name"].astype(object).map(person_key)
+        rows = pd.concat([rows, _given_parts(exec_comp["name"])], axis=1)
+    if "fiscal_year" in exec_comp.columns:
+        rows["fiscal_year"] = pd.to_numeric(exec_comp["fiscal_year"], errors="coerce")
+    imputed = exec_comp["total_imputed"] if "total_imputed" in exec_comp.columns else pd.Series(0.0, index=exec_comp.index)
+    rows["stated"] = pd.to_numeric(imputed, errors="coerce").fillna(0.0).to_numpy() == 0.0
+    for c in sorted(set(_SCT_COLUMN.values()) & set(exec_comp.columns)):
+        rows[c] = pd.to_numeric(exec_comp[c], errors="coerce")
+
+    names = def14a["ceo_name_proxy"] if "ceo_name_proxy" in def14a.columns else pd.Series(None, index=def14a.index, dtype="object")
     ceo = pd.concat(
         [
             pd.DataFrame(
                 {
                     "_row": np.arange(len(def14a)),
-                    "accession_number": def14a["accession_number"].to_numpy(),
-                    "person": ceo_identity_series(def14a["ceo_name_proxy"]).to_numpy(),
+                    "ticker": def14a["ticker"].astype(str).to_numpy() if "ticker" in def14a.columns else None,
+                    "accession_number": def14a["accession_number"].to_numpy() if "accession_number" in def14a.columns else None,
+                    "person": ceo_identity_series(names).to_numpy(),
+                    "_as_of": _proxy_dates(def14a).to_numpy() if "as_of" in def14a.columns else pd.NaT,
                 }
             ),
-            _given_parts(def14a["ceo_name_proxy"], "ceo_").reset_index(drop=True),
+            _given_parts(names, "ceo_").reset_index(drop=True),
         ],
         axis=1,
     )
-    ceo["fy"] = ceo["accession_number"].map(filing_fy)
+    if {"accession_number", "fiscal_year"}.issubset(rows.columns):
+        ceo["fy"] = ceo["accession_number"].map(rows.groupby("accession_number")["fiscal_year"].max())
+    else:
+        ceo["fy"] = np.nan
+    ceo["fiscal_year"] = ceo["fy"]
+    if "fiscal_year_extract" in def14a.columns:
+        ceo["fiscal_year"] = ceo["fy"].fillna(pd.Series(pd.to_numeric(def14a["fiscal_year_extract"], errors="coerce").to_numpy(), index=ceo.index))
+    return SctFrames(rows=rows, ceo=ceo)
+
+
+def _ceo_sct_totals(sct: SctFrames, index: pd.Index) -> tuple[pd.DataFrame, int]:
+    """The named CEO's positive SCT totals per proxy row, from the proxy's own filing:
+    columns `fy` (the filing's latest fiscal year), `t1` (CEO total for `fy`), `t0` (for
+    `fy - 1`), `t2` (for `fy - 2`) and `s1` / `s0` (True where `t1` / `t0` is filer-stated
+    rather than a sum of components), on `index`; plus the number of proxies whose CEO cannot
+    be told apart from a relative sharing the key."""
+    child = sct.rows[["accession_number", "person", "first", "initials", "fiscal_year", "total", "stated"]].dropna(
+        subset=["accession_number", "fiscal_year"]
+    )
+    ceo = sct.ceo[["_row", "accession_number", "person", "ceo_first", "ceo_initials", "fy"]]
     hit = ceo.dropna(subset=["person", "fy"]).merge(child, on=["accession_number", "person"])
     named = _named_ceo(hit, ["_row"])
     ambiguous = int((~named.groupby(hit["_row"]).any()).sum())
@@ -473,16 +497,17 @@ def _ceo_sct_totals(def14a: pd.DataFrame, exec_comp: pd.DataFrame) -> tuple[pd.D
         .groupby(["_row", "fy", "fiscal_year"], as_index=False)
         .agg(total=("total", "max"), stated=("stated", "min"))
     )
-    out = pd.DataFrame({"fy": ceo["fy"].to_numpy()}, index=def14a.index)
+    positions = np.arange(len(index))
+    out = pd.DataFrame({"fy": sct.ceo["fy"].to_numpy()}, index=index)
     for col, lag in (("t1", 0), ("t0", 1), ("t2", 2)):
         rows = paid.loc[paid["fiscal_year"] == paid["fy"] - lag].set_index("_row")
-        out[col] = rows["total"].reindex(np.arange(len(def14a))).to_numpy()
+        out[col] = rows["total"].reindex(positions).to_numpy()
         if lag < 2:
-            out[f"s{1 - lag}"] = rows["stated"].reindex(np.arange(len(def14a))).fillna(False).astype(bool).to_numpy()
+            out[f"s{1 - lag}"] = rows["stated"].reindex(positions).fillna(False).astype(bool).to_numpy()
     return out, ambiguous
 
 
-def sct_pay_growth(def14a_hist: pd.DataFrame, exec_comp: pd.DataFrame, tally: dict[str, int]) -> pd.DataFrame:
+def sct_pay_growth(def14a_hist: pd.DataFrame, sct: SctFrames, tally: dict[str, int]) -> pd.DataFrame:
     """Write `ceo_comp_growth_sct` = log(total FY / total FY-1) of the named CEO from the proxy's
     own Summary Compensation Table, and fill a NULL `ceo_total_comp` from the same-FY SCT row.
 
@@ -492,91 +517,56 @@ def sct_pay_growth(def14a_hist: pd.DataFrame, exec_comp: pd.DataFrame, tally: di
     """
     if not {"accession_number", "ceo_name_proxy", "as_of"}.issubset(def14a_hist.columns):
         return def14a_hist
-    if not {"accession_number", "name", "fiscal_year", "total"}.issubset(exec_comp.columns):
+    if not {"accession_number", "person", "fiscal_year", "total"}.issubset(sct.rows.columns):
         return def14a_hist
-    sct, ambiguous = _ceo_sct_totals(def14a_hist, exec_comp)
+    totals, ambiguous = _ceo_sct_totals(sct, def14a_hist.index)
     out = def14a_hist.copy()
-    disclosed = sct["t1"].notna() & sct["t0"].notna()
-    pair = disclosed & sct["s1"] & sct["s0"]
-    out[SCT_GROWTH] = np.log(sct["t1"] / sct["t0"]).where(pair)
+    disclosed = totals["t1"].notna() & totals["t0"].notna()
+    pair = disclosed & totals["s1"] & totals["s0"]
+    out[SCT_GROWTH] = np.log(totals["t1"] / totals["t0"]).where(pair)
 
     total = (
         cast(pd.Series, pd.to_numeric(frame_column(out, _TOTAL), errors="coerce")) if _TOTAL in out.columns else pd.Series(np.nan, index=out.index)
     )
     carried = _carried_total(out)
-    fill = (total.isna() | carried) & sct["t1"].notna()
+    fill = (total.isna() | carried) & totals["t1"].notna()
     if int(fill.sum()):
         out[_TOTAL] = total
         # same filing, so the value is as old as the proxy itself
-        write_with_provenance(out, fill, _TOTAL, sct["t1"], FILL_IDENTITY, _proxy_dates(out))
+        write_with_provenance(out, fill, _TOTAL, totals["t1"], FILL_IDENTITY, _proxy_dates(out))
         _clear_comp_imputed(out, fill & carried)
 
     tally["growth from the filing's own SCT (FY vs FY-1, named CEO)"] = int(pair.sum())
     tally["growth refused: an SCT total is a sum of components, not filer-stated"] = int((disclosed & ~pair).sum())
-    tally["growth refused: CEO has no FY-1 SCT row (FY-2 only)"] = int((sct["t1"].notna() & sct["t0"].isna() & sct["t2"].notna()).sum())
-    tally["growth refused: CEO has FY only"] = int((sct["t1"].notna() & sct["t0"].isna() & sct["t2"].isna()).sum())
-    tally["CEO not matched in the filing's own SCT (filing has SCT rows)"] = int((sct["fy"].notna() & sct["t1"].isna()).sum())
+    tally["growth refused: CEO has no FY-1 SCT row (FY-2 only)"] = int((totals["t1"].notna() & totals["t0"].isna() & totals["t2"].notna()).sum())
+    tally["growth refused: CEO has FY only"] = int((totals["t1"].notna() & totals["t0"].isna() & totals["t2"].isna()).sum())
+    tally["CEO not matched in the filing's own SCT (filing has SCT rows)"] = int((totals["fy"].notna() & totals["t1"].isna()).sum())
     tally["ceo_total_comp filled from the filing's own SCT row"] = int((fill & ~carried).sum())
     tally["ceo_total_comp built with a carried leg REPLACED by the filing's own SCT row"] = int((fill & carried).sum())
     tally["CEO ambiguous in the filing's SCT (relatives share the key)"] = ambiguous
     return out
 
 
-def _row_fiscal_year(def14a: pd.DataFrame, exec_comp: pd.DataFrame) -> pd.Series:
-    """The fiscal year a proxy row's pay covers: its filing's latest SCT year, else the extracted one."""
-    filing_fy = exec_comp.assign(_fy=pd.to_numeric(exec_comp["fiscal_year"], errors="coerce")).groupby("accession_number")["_fy"].max()
-    fy = def14a["accession_number"].map(filing_fy)
-    if "fiscal_year_extract" in def14a.columns:
-        fy = fy.fillna(pd.to_numeric(def14a["fiscal_year_extract"], errors="coerce"))
-    return cast(pd.Series, pd.to_numeric(fy, errors="coerce"))
-
-
-def later_sct_values(def14a: pd.DataFrame, exec_comp: pd.DataFrame, col: str) -> tuple[pd.Series, pd.Series]:
+def later_sct_values(sct: SctFrames, col: str, index: pd.Index) -> tuple[pd.Series, pd.Series]:
     """`(value, filing date)` of `col` for each proxy row's CEO and fiscal year, as disclosed by
-    the EARLIEST later proxy of the same ticker whose SCT carries it. NaN where none does. A
-    total is taken only where the filer stated it; relatives sharing the key are told apart as
-    in `_named_ceo`."""
-    stated = pd.to_numeric(exec_comp["total_imputed"], errors="coerce").fillna(0.0) == 0.0 if "total_imputed" in exec_comp.columns else True
-    child = pd.concat(
-        [
-            pd.DataFrame(
-                {
-                    "ticker": exec_comp["ticker"].astype(str),
-                    "accession_number": exec_comp["accession_number"],
-                    "person": exec_comp["name"].astype(object).map(person_key),
-                    "fiscal_year": pd.to_numeric(exec_comp["fiscal_year"], errors="coerce"),
-                    "_later": pd.to_datetime(exec_comp["as_of"], errors="coerce"),
-                    "_value": pd.to_numeric(exec_comp[_SCT_COLUMN[col]], errors="coerce"),
-                    "_stated": stated,
-                }
-            ),
-            _given_parts(exec_comp["name"]),
-        ],
-        axis=1,
-    ).dropna(subset=["ticker", "accession_number", "person", "fiscal_year", "_later"])
-    rows = pd.concat(
-        [
-            pd.DataFrame(
-                {
-                    "_row": np.arange(len(def14a)),
-                    "ticker": def14a["ticker"].astype(str).to_numpy(),
-                    "person": ceo_identity_series(def14a["ceo_name_proxy"]).to_numpy(),
-                    "fiscal_year": _row_fiscal_year(def14a, exec_comp).to_numpy(),
-                    "_as_of": _proxy_dates(def14a).to_numpy(),
-                }
-            ),
-            _given_parts(def14a["ceo_name_proxy"], "ceo_").reset_index(drop=True),
-        ],
-        axis=1,
-    ).dropna(subset=["ticker", "person", "fiscal_year", "_as_of"])
+    the EARLIEST later proxy of the same ticker whose SCT carries it, on `index`. NaN where none
+    does. A total is taken only where the filer stated it; relatives sharing the key are told
+    apart as in `_named_ceo`."""
+    value_col = _SCT_COLUMN[col]
+    child = sct.rows[["ticker", "accession_number", "person", "first", "initials", "fiscal_year", "_later", "stated", value_col]].dropna(
+        subset=["ticker", "accession_number", "person", "fiscal_year", "_later"]
+    )
+    rows = sct.ceo[["_row", "ticker", "person", "fiscal_year", "_as_of", "ceo_first", "ceo_initials"]].dropna(
+        subset=["ticker", "person", "fiscal_year", "_as_of"]
+    )
     hit = rows.merge(child, on=["ticker", "person", "fiscal_year"])
     hit = hit.loc[hit["_later"] > hit["_as_of"]]
     hit = hit.loc[_named_ceo(hit, ["_row", "accession_number"])]
-    usable = (hit["_value"] > 0) & hit["_stated"] if col == _TOTAL else hit["_value"] >= 0
+    usable = (hit[value_col] > 0) & hit["stated"] if col == _TOTAL else hit[value_col] >= 0
     hit = hit.loc[usable].sort_values(["_row", "_later"]).drop_duplicates("_row").set_index("_row")
-    positions = np.arange(len(def14a))
-    value = pd.Series(hit["_value"].reindex(positions).to_numpy(), index=def14a.index)
-    later = pd.Series(hit["_later"].reindex(positions).to_numpy(), index=def14a.index)
+    positions = np.arange(len(index))
+    value = pd.Series(hit[value_col].reindex(positions).to_numpy(), index=index)
+    later = pd.Series(hit["_later"].reindex(positions).to_numpy(), index=index)
     return value, later
 
 
@@ -609,7 +599,7 @@ def interpolate_in_stint(values: pd.Series, as_of: pd.Series, stint: pd.Series, 
     return value.reindex(values.index), later.reindex(values.index), refused.reindex(values.index, fill_value=False).astype(bool)
 
 
-def backfill_ceo_pay(def14a_hist: pd.DataFrame, exec_comp: pd.DataFrame, tally: dict[str, int]) -> pd.DataFrame:
+def backfill_ceo_pay(def14a_hist: pd.DataFrame, sct: SctFrames, tally: dict[str, int]) -> pd.DataFrame:
     """Fill historical CEO pay holes from LATER filings (accepted lookahead): first the exact value
     a later proxy's SCT discloses for the same CEO and fiscal year (kind `backfill`), then a
     log-linear bridge inside one CEO stint (kind `interp`). Components first; the total then
@@ -619,7 +609,7 @@ def backfill_ceo_pay(def14a_hist: pd.DataFrame, exec_comp: pd.DataFrame, tally: 
     own `as_of`, with the later evidence date in `<col>_evidence_as_of`.
     """
     need = {"ticker", "as_of", "accession_number", "ceo_name_proxy"}
-    if not need.issubset(def14a_hist.columns) or not {"ticker", "accession_number", "as_of", "name", "fiscal_year"}.issubset(exec_comp.columns):
+    if not need.issubset(def14a_hist.columns) or not {"ticker", "accession_number", "_later", "person", "fiscal_year"}.issubset(sct.rows.columns):
         return def14a_hist
     out = def14a_hist.copy()
     out["_t"] = _proxy_dates(out)
@@ -630,15 +620,13 @@ def backfill_ceo_pay(def14a_hist: pd.DataFrame, exec_comp: pd.DataFrame, tally: 
     carried = _carried_total(out)
     replaced_leg = pd.Series(False, index=out.index)
     for col in components:
-        replaced_leg |= _backfill_then_bridge(out, exec_comp, col, order, stint, tally, backfill=_SCT_COLUMN[col] in exec_comp.columns)
+        replaced_leg |= _backfill_then_bridge(out, sct, col, order, stint, tally, backfill=_SCT_COLUMN[col] in sct.rows.columns)
     if _TOTAL in out.columns:
-        replaced = _backfill_then_bridge(
-            out, exec_comp, _TOTAL, order, stint, tally, backfill="total" in exec_comp.columns, bridge=False, also=carried
-        )
+        replaced = _backfill_then_bridge(out, sct, _TOTAL, order, stint, tally, backfill="total" in sct.rows.columns, bridge=False, also=carried)
         rederive = carried & replaced_leg & ~replaced
         if len(components) == len(CEO_COMP):
             _total_identity(out, components, tally, rederive)
-        _backfill_then_bridge(out, exec_comp, _TOTAL, order, stint, tally, backfill=False)
+        _backfill_then_bridge(out, sct, _TOTAL, order, stint, tally, backfill=False)
         _clear_comp_imputed(out, replaced | rederive)
         bridged = bridged_total(out)
         out["comp_imputed"] = (pd.to_numeric(out.get("comp_imputed", 0.0), errors="coerce").fillna(0.0).astype(bool) | bridged).astype("float64")
@@ -647,7 +635,7 @@ def backfill_ceo_pay(def14a_hist: pd.DataFrame, exec_comp: pd.DataFrame, tally: 
 
 def _backfill_then_bridge(
     out: pd.DataFrame,
-    exec_comp: pd.DataFrame,
+    sct: SctFrames,
     col: str,
     order: pd.Index,
     stint: pd.Series,
@@ -661,7 +649,7 @@ def _backfill_then_bridge(
     out[col] = pd.to_numeric(out[col], errors="coerce")
     replaced = pd.Series(False, index=out.index)
     if backfill:
-        value, later = later_sct_values(out, exec_comp, col)
+        value, later = later_sct_values(sct, col, out.index)
         kind_col = fill_kind_column(col)
         stale = (out[kind_col] == FILL_CARRY) if kind_col in out.columns else pd.Series(False, index=out.index)
         if also is not None:

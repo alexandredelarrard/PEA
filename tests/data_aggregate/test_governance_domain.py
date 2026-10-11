@@ -274,7 +274,7 @@ def test_economic_ownership_is_computed_from_the_filed_share_count():
     filing space — dividing two independently forward-filled daily frames would put a stale
     proxy's share count over a fresh quarter's outstanding and drift with every buyback.
     """
-    from src.data_aggregate.utils.governance.clean import economic_ownership
+    from src.data_aggregate.utils.governance.clean import economic_ownership, pit_shares_outstanding
 
     hist = pd.DataFrame(
         [
@@ -308,7 +308,7 @@ def test_economic_ownership_is_computed_from_the_filed_share_count():
         ]
     )
     tally: dict[str, int] = {}
-    out = economic_ownership(hist, fun, tally).set_index("ticker")["insider_ownership_pct"]
+    out = economic_ownership(hist, pit_shares_outstanding(hist, fun, tally), tally).set_index("ticker")["insider_ownership_pct"]
 
     # ⚠ PER TICKER BY NAME. `merge_asof` resets the index, and a first cut realigned on the
     # original labels against a 0..n-1 result — silently giving GOOGL META's percentage and

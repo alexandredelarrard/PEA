@@ -30,7 +30,7 @@ from __future__ import annotations
 import pandas as pd
 
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
-from src.data_aggregate.utils.governance.names import ceo_stint_ids
+from src.data_aggregate.utils.governance.names import ceo_stint_ids, key_at_last_value
 
 #: Marks a proxy that ends the previous CEO stint's value in `stint_to_daily`; never a real value.
 _STINT_ENDED = float("-inf")
@@ -223,7 +223,7 @@ def stint_to_daily(history: pd.DataFrame, field: str, trading_index: pd.Datetime
     value = pd.to_numeric(h[field], errors="coerce")
     stint = ceo_stint_ids(h["ceo_name_proxy"], h["ticker"], h["as_of"])
     current = stint.groupby(h["ticker"], sort=False).ffill()
-    source = current.where(value.notna()).groupby(h["ticker"], sort=False).ffill()
+    source = key_at_last_value(current, value, h["ticker"])
     ends = value.isna() & stint.notna() & source.notna() & (stint != source)
     # A same-day row that carries a value wins over the terminator.
     keys = pd.MultiIndex.from_frame(h[["ticker", "as_of"]])

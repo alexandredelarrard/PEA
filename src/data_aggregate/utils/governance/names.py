@@ -110,6 +110,12 @@ def ceo_identity_changed(names: pd.Series, groups: pd.Series) -> pd.Series:
     return (idents != prev).astype("float64").where(idents.notna() & prev.notna())
 
 
+def key_at_last_value(keys: pd.Series, values: pd.Series, groups: pd.Series) -> pd.Series:
+    """The key of the last row of each group, at or before each row, whose `values` is present
+    (the CEO identity or stint that SOURCED a carried value). The caller sorts within `groups`."""
+    return keys.where(values.notna()).groupby(groups, sort=False).ffill()
+
+
 #: Leading honorifics; `person_key` keeps them as the first initial (`Dr. Sehat Sutardja` -> `sutardja|d`).
 _HONORIFIC_RE = re.compile(r"^\s*(?:(?:dr|mr|mrs|ms|miss|mx|prof|professor|sir|dame|hon|rev)\.?\s+)+", re.I)
 _GIVEN_DROP = frozenset({"jr", "sr", "ii", "iii", "iv"})

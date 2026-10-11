@@ -159,7 +159,7 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.governance.accrual import accrual_anchor, accrue
-from src.data_aggregate.utils.governance.names import ceo_identity_series, ceo_stint_ids
+from src.data_aggregate.utils.governance.names import ceo_identity_series, ceo_stint_ids, key_at_last_value
 from src.data_aggregate.utils.governance.staleness import (
     LEVEL_MAX_AGE_DAYS,
     source_date_column,
@@ -443,7 +443,7 @@ def _carry(df: pd.DataFrame, col: str, gk: pd.Series) -> tuple[pd.Series, pd.Ser
     return fwd, (df["as_of"] - src).dt.days
 
 
-def _same_ceo_as_source(df: pd.DataFrame, col: str, gk: pd.Series) -> pd.Series:
+def _same_ceo_as_source(df: pd.DataFrame, col: str, gk: pd.Series, key: pd.Series) -> pd.Series:
     """True where the CEO named on THIS row is the CEO named on the row sourcing `col`'s carry.
 
     Both legs are at or before the row being filled, which is what makes the gate PIT. It
@@ -457,12 +457,11 @@ def _same_ceo_as_source(df: pd.DataFrame, col: str, gk: pd.Series) -> pd.Series:
 
     ⚠ STRICTER THAN ITS PREDECESSOR, deliberately: a row that does not name its CEO now fails
     the gate, where the old `bfill` leg handed it an identity it does not have.
+
+    `key` is the CEO identity (`IDENTITY_GATED_CARRY`) or the CEO stint (`STINT_GATED_CARRY`).
     """
-    if "ceo_name_proxy" not in df.columns:
-        return pd.Series(False, index=df.index)
-    ident = ceo_identity_series(df["ceo_name_proxy"])
-    at_source = ident.where(df[col].notna()).groupby(gk, sort=False).ffill()
-    return ident.notna() & at_source.notna() & (ident == at_source)
+    at_source = key_at_last_value(key, df[col], gk)
+    return key.notna() & at_source.notna() & (key == at_source)
 
 
 def _accrue_ceo_age(df: pd.DataFrame, stats: dict) -> pd.Series:
@@ -525,16 +524,19 @@ def _temporal_fill(df: pd.DataFrame, stats: dict) -> None:
     """
     df.sort_values(["ticker", "as_of"], inplace=True)
     gk = df["ticker"]
-    stint = ceo_stint_ids(df["ceo_name_proxy"], gk, df["as_of"]) if "ceo_name_proxy" in df.columns else pd.Series(np.nan, index=df.index)
+    named = "ceo_name_proxy" in df.columns
+    stint = ceo_stint_ids(df["ceo_name_proxy"], gk, df["as_of"]) if named else pd.Series(np.nan, index=df.index)
+    ident = ceo_identity_series(df["ceo_name_proxy"]) if named else pd.Series(None, index=df.index, dtype="object")
+    gates = ((IDENTITY_GATED_CARRY, ident, "identity changed"), (STINT_GATED_CARRY, stint, "stint boundary"))
     for col in CARRY_LEVELS + sorted(IDENTITY_GATED_CARRY):
-        _carry_one(df, col, gk, stint, stats)
+        _carry_one(df, col, gk, gates, stats)
     _accrue_ceo_age(df, stats)
     for col in FLAGS:
-        _carry_one(df, col, gk, stint, stats)
+        _carry_one(df, col, gk, gates, stats)
     _complete_stint_constants(df, stint, stats)
 
 
-def _carry_one(df: pd.DataFrame, col: str, gk: pd.Series, stint: pd.Series, stats: dict) -> None:
+def _carry_one(df: pd.DataFrame, col: str, gk: pd.Series, gates: tuple[tuple[frozenset[str], pd.Series, str], ...], stats: dict) -> None:
     """Carry `col` forward into its gaps, bounded and gated, and record what was declined.
 
     Every reason a candidate cell is NOT filled gets its own counter, because a fill count on
@@ -557,19 +559,13 @@ def _carry_one(df: pd.DataFrame, col: str, gk: pd.Series, stint: pd.Series, stat
     if stale:
         stats[f"declined (>{CARRY_MAX_DAYS}d stale): {col}"] = stale
     newly = candidate & within
-    if col in IDENTITY_GATED_CARRY:
-        same_ceo = _same_ceo_as_source(df, col, gk)
-        declined = int((newly & ~same_ceo).sum())
-        if declined:
-            stats[f"declined (identity changed): {col}"] = declined
-        newly &= same_ceo
-    if col in STINT_GATED_CARRY:
-        at_source = stint.where(df[col].notna()).groupby(gk, sort=False).ffill()
-        same_stint = stint.notna() & at_source.notna() & (stint == at_source)
-        declined = int((newly & ~same_stint).sum())
-        if declined:
-            stats[f"declined (stint boundary): {col}"] = declined
-        newly &= same_stint
+    for gated, key, reason in gates:
+        if col in gated:
+            same = _same_ceo_as_source(df, col, gk, key)
+            declined = int((newly & ~same).sum())
+            if declined:
+                stats[f"declined ({reason}): {col}"] = declined
+            newly &= same
     n = int(newly.sum())
     if n:
         write_with_provenance(df, newly, col, fwd, FILL_CARRY, source)

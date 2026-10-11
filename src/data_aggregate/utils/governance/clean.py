@@ -3,6 +3,7 @@ raw proxy inputs runs here, in a fixed order, before any feature is built."""
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, replace
 from typing import cast
 
@@ -16,6 +17,7 @@ from src.data_aggregate.utils.governance.def14a_impute import (
     FILL_CARRY,
     FILL_CROSS_SOURCE,
     FILL_ESTIMATE,
+    FILL_FILED,
     FILL_IDENTITY,
     FILL_INTERP,
     ensure_provenance,
@@ -43,6 +45,18 @@ _OWNERSHIP = "insider_ownership_pct"
 _DIRECTOR_OFFICER = "director_officer"
 #: a holder table naming fewer directors/officers than this is too partial to sum
 _MIN_HOLDERS = 5
+#: a `director_officer` holder row naming an entity (an institution, a vehicle, the "as a group"
+#: total) is a 5% holder or a total mis-tagged by the extraction, never one person's holding
+_ENTITY_HOLDER = re.compile(
+    r"\b(?:inc|incorporated|corp|corporation|company|llc|l\.l\.c|lp|l\.p|llp|ltd|limited|plc|trust|funds?|foundation|bancorp|"
+    r"group|holdings?|capital|management|partners|partnership|advisors|advisers|investors|investments?|associates|securities|"
+    r"bank of|vanguard|blackrock|state street|fmr|fidelity|t\.? ?rowe|mufg|mitsubishi ufj|primecap|"
+    r"dodge & cox|invesco|geode|barclays|northern trust|jp ?morgan|"
+    r"goldman,? sachs|morgan stanley|alliancebernstein|norges|berkshire hathaway)\b",
+    re.IGNORECASE,
+)
+#: an estimate above this multiple of the ticker's largest filed value is refused
+_MAX_FILED_MULTIPLE = 3.0
 _SOP_SUPPORT = "say_on_pay_support_pct"
 _SAY_ON_PAY = "say_on_pay"
 #: an 8-K say-on-pay tally filed this many days before a proxy already covers that proxy's vote
@@ -249,7 +263,9 @@ def estimate_insider_ownership(
     """Fill a still-missing ownership share with the filing's summed director/officer holdings
     over point-in-time shares outstanding, on tickers never flagged dual-class.
 
-    Filed, computed and carried values are never overwritten. "Ever dual" reads later proxies
+    Holder rows that name an entity are not summed, and an estimate above
+    `_MAX_FILED_MULTIPLE` times the ticker's largest filed value is refused. Filed, computed and
+    carried values are never overwritten. "Ever dual" and the filed ceiling read later proxies
     too; that can only refuse a fill.
     """
     if fundamentals is None or fundamentals.empty or _SHARES_OUTSTANDING not in fundamentals.columns:
@@ -261,6 +277,12 @@ def estimate_insider_ownership(
         return def14a_hist
 
     named = ownership.loc[(ownership["holder_type"] == _DIRECTOR_OFFICER) & ownership["shares"].notna()]
+    entity = (
+        named["holder_name"].fillna("").astype(str).str.contains(_ENTITY_HOLDER)
+        if "holder_name" in named.columns
+        else pd.Series(False, index=named.index)
+    )
+    named = named.loc[~entity]
     holders = named.groupby(["ticker", "accession_number"])["shares"].agg(["sum", "count"])
     keys = pd.MultiIndex.from_frame(def14a_hist[["ticker", "accession_number"]])
     summed = pd.Series(holders["sum"].reindex(keys).to_numpy(), index=def14a_hist.index)
@@ -271,15 +293,23 @@ def estimate_insider_ownership(
     dual = cast(pd.Series, pd.to_numeric(dual_raw, errors="coerce")) > 0
     ever_dual = def14a_hist["ticker"].map(dual.groupby(def14a_hist["ticker"]).max()).fillna(False).astype(bool)
     in_bound = (estimate > 0) & (estimate <= 1.0)
-    usable = ~ever_dual & (n_holders >= _MIN_HOLDERS) & in_bound
+    # Like "ever dual", the ticker's filed history can only refuse an estimate.
+    pct = cast(pd.Series, pd.to_numeric(def14a_hist[_OWNERSHIP], errors="coerce"))
+    kind_col = fill_kind_column(_OWNERSHIP)
+    filed = pct.where(def14a_hist[kind_col] == FILL_FILED) if kind_col in def14a_hist.columns else pct
+    ceiling = def14a_hist["ticker"].map(filed.groupby(def14a_hist["ticker"]).max()) * _MAX_FILED_MULTIPLE
+    implausible = estimate > ceiling
+    usable = ~ever_dual & (n_holders >= _MIN_HOLDERS) & in_bound & ~implausible
 
     out = def14a_hist.copy()
-    candidate = cast(pd.Series, pd.to_numeric(out[_OWNERSHIP], errors="coerce")).isna() & summed.notna()
+    candidate = pct.isna() & summed.notna()
     fills = candidate & usable
     if int(fills.sum()):
         write_with_provenance(out, fills, _OWNERSHIP, estimate, FILL_ESTIMATE, _proxy_dates(out))
     if tally is not None:
-        _tally_estimate(tally, def14a_hist, candidate, fills, ever_dual, n_holders, estimate, usable)
+        _tally_estimate(tally, def14a_hist, candidate, fills, ever_dual, n_holders, estimate, usable, implausible)
+        if int(entity.sum()):
+            tally["insider_ownership_pct: director/officer holder rows EXCLUDED (entity name)"] = int(entity.sum())
     return out
 
 
@@ -292,6 +322,7 @@ def _tally_estimate(
     n_holders: pd.Series,
     estimate: pd.Series,
     usable: pd.Series,
+    implausible: pd.Series,
 ) -> None:
     """Count each estimate outcome, in rule order, plus the carries a same-filing estimate could replace."""
     eligible = candidate & ~ever_dual & (n_holders >= _MIN_HOLDERS)
@@ -303,6 +334,10 @@ def _tally_estimate(
         f"insider_ownership_pct: estimate REFUSED (< {_MIN_HOLDERS} director/officer holders)": candidate & ~ever_dual & (n_holders < _MIN_HOLDERS),
         "insider_ownership_pct: estimate REFUSED (no point-in-time shares outstanding)": eligible & estimate.isna(),
         "insider_ownership_pct: estimate REJECTED (outside (0, 1])": eligible & estimate.notna() & ~((estimate > 0) & (estimate <= 1.0)),
+        f"insider_ownership_pct: estimate REJECTED (> {_MAX_FILED_MULTIPLE:g}x the ticker's largest filed value)": eligible
+        & (estimate > 0)
+        & (estimate <= 1.0)
+        & implausible,
         "insider_ownership_pct: carried value KEPT over a same-filing estimate": carried & usable,
     }
     tally.update({key: int(mask.sum()) for key, mask in counts.items() if int(mask.sum())})

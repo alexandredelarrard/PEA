@@ -26,7 +26,7 @@ from src.data_store.schema import Tables
 from src.utils.step import Step
 
 _PRICE_FIELDS = ("close_split", "close_total")
-_OWNERSHIP_COLUMNS = ("ticker", "accession_number", "holder_type", "shares")
+_OWNERSHIP_COLUMNS = ("ticker", "accession_number", "holder_type", "holder_name", "shares")
 
 
 class StepCubeGovernance(Step):

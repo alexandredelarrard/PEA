@@ -106,3 +106,40 @@ def test_estimate_without_ownership_table_is_a_no_op() -> None:
 
     print("\n=== SANITY CHECK: no holder table, no estimate ===")
     print("  S-0 stays NULL and no ownership_estimate stats are emitted. Validated.")
+
+
+def test_entity_holders_and_implausible_estimates_are_excluded() -> None:
+    """Institutions mis-tagged `director_officer` are not summed; an estimate far above the filed history is refused."""
+    def14a = pd.DataFrame(
+        [
+            ("TXN", "T-0", "2021-03-01", 0.005, np.nan, 0.0),
+            ("TXN", "T-1", "2026-03-01", np.nan, np.nan, 0.0),
+            ("GGG", "G-0", "2021-03-01", 0.001, np.nan, 0.0),
+            ("GGG", "G-1", "2026-03-01", np.nan, np.nan, 0.0),
+        ],
+        columns=["ticker", "accession_number", "as_of", _COL, "insider_shares", "dual_class_shares"],
+    )
+    def14a["ceo_name_proxy"] = "Jane Doe"
+    def14a["insider_voting_pct"] = np.nan
+    people = [f"Director {c}. Smith" for c in "ABCDEF"]
+    rows = [{"ticker": "TXN", "accession_number": "T-1", "holder_type": "director_officer", "holder_name": n, "shares": 1.0e5} for n in people]
+    rows += [
+        {"ticker": "TXN", "accession_number": "T-1", "holder_type": "director_officer", "holder_name": n, "shares": 1.0e7}
+        for n in ("The Vanguard Group", "BlackRock, Inc.", "All directors and executive officers as a group")
+    ]
+    rows += [{"ticker": "GGG", "accession_number": "G-1", "holder_type": "director_officer", "holder_name": n, "shares": 1.0e5} for n in people]
+    fundamentals = pd.DataFrame({"ticker": ["TXN", "GGG"], "as_of": pd.to_datetime(["2020-12-31"] * 2), "sharesOutstandingPit": [1.0e8] * 2})
+    cleaned, stats = clean_governance_inputs(GovernanceInputs(def14a=def14a, ownership=pd.DataFrame(rows)), fundamentals)
+    d = cast(pd.DataFrame, cleaned.def14a).set_index("accession_number")
+    # TXN: 6 x 1e5 / 1e8 = 0.006, the three entity rows (3e7 shares) are not summed
+    assert np.isclose(d.loc["T-1", _COL], 0.006) and d.loc["T-1", fill_kind_column(_COL)] == FILL_ESTIMATE
+    # GGG: 0.006 is 6x the largest filed 0.001 -> refused
+    assert pd.isna(d.loc["G-1", _COL])
+    est = {k.split("|", 1)[1]: v for k, v in stats.items() if k.startswith("ownership_estimate|")}
+    assert est["insider_ownership_pct: director/officer holder rows EXCLUDED (entity name)"] == 3
+    assert est["insider_ownership_pct: estimate REJECTED (> 3x the ticker's largest filed value)"] == 1
+    print("\n=== SANITY CHECK: entity holder rows and implausible estimates ===")
+    print(
+        f"  TXN T-1 {d.loc['T-1', _COL]:.4f} (Vanguard, BlackRock and the group row excluded) | GGG G-1 {d.loc['G-1', _COL]} (6x filed max refused)"
+    )
+    print("  CONCLUSION: the estimate sums people only and cannot jump far above what the ticker ever filed.")

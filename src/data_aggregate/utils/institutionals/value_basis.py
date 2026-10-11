@@ -21,8 +21,10 @@ from __future__ import annotations
 import logging
 from typing import cast
 
+import numpy as np
 import pandas as pd
 
+from src.data_aggregate.utils.common.level_basis import suffix_factor
 from src.data_aggregate.utils.common.typing import frame_column
 
 logger = logging.getLogger(__name__)
@@ -52,19 +54,34 @@ KEPT, DIVIDED, MULTIPLIED, ABSTAINED = 0, 1, -1, 9
 _VALUE_COLUMNS = ("value_usd", "call_value", "put_value", "debt_value", "other_value")
 
 
-def _period_close(close_split: pd.DataFrame, periods: pd.Series) -> pd.Series:
-    """The last close at or before each period end, as a `(period, ticker)` Series.
+def as_traded_close(
+    close_split: pd.DataFrame | None,
+    level_factor: pd.DataFrame | None,
+    split_events: pd.DataFrame,
+) -> pd.DataFrame | None:
+    """Undo the repaired quote's level adjustment and genuine future share splits."""
+    if close_split is None or level_factor is None:
+        return None
+    df_close = close_split * level_factor.reindex_like(close_split)
+    factors = suffix_factor(split_events, list(df_close.columns), df_close.index.to_numpy(dtype="datetime64[ns]"))
+    for ticker, factor in factors.items():
+        df_close[ticker] *= factor
+    return df_close.where(np.isfinite(df_close) & df_close.gt(0))
 
-    As-of, never exact: a quarter end is 2024-03-31, a Sunday, and an exact lookup on a
-    trading calendar returns NaN for every ticker on the most common period ends there are.
-    """
-    wanted = pd.DatetimeIndex(sorted(pd.Series(periods).dropna().unique()))
-    if wanted.empty:
-        return pd.Series(dtype=float)
-    asof = close_split.reindex(close_split.index.union(wanted)).ffill().reindex(wanted)
-    out = cast(pd.Series, asof.stack(future_stack=True))
-    out.index = out.index.set_names(["period", "ticker"])
-    return out
+
+def _period_close(close: pd.DataFrame, periods: pd.Series, max_age_days: int | None = None) -> pd.Series:
+    """Last observed valuation-day quote, bounded by age and never from the future."""
+    wanted = pd.DatetimeIndex(sorted(periods.dropna().unique()))
+    df_quotes = close.sort_index().where(np.isfinite(close) & close.gt(0))
+    union = df_quotes.index.union(wanted)
+    df_asof = df_quotes.reindex(union).ffill().reindex(wanted)
+    for ticker in df_quotes if max_age_days is not None else ():
+        observed = pd.Series(df_quotes.index, index=df_quotes.index).where(df_quotes[ticker].notna())
+        last = observed.reindex(union).ffill().reindex(wanted)
+        df_asof[ticker] = df_asof[ticker].where((pd.Series(wanted, index=wanted) - last).le(pd.Timedelta(days=max_age_days)))
+    result = cast(pd.Series, df_asof.stack(future_stack=True))
+    result.index = result.index.set_names(["period", "ticker"])
+    return result
 
 
 def repair_value_basis(

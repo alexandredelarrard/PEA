@@ -157,6 +157,11 @@ def asof_view(df_rows: pd.DataFrame, as_of: pd.Timestamp) -> pd.DataFrame:
         if len(accessions) < 2:
             continue
         keeper = min(accessions, key=lambda a: (by_acc[a]["_day"].iloc[0], a))
+        owners = sorted({owner.zfill(10) for i in members for owner in _owners(seen.loc[i])})
+        for i in members:
+            if seen.at[i, "accession_number"] == keeper:
+                seen.at[i, "owner_ciks"] = ",".join(owners)
+                seen.at[i, "n_reporting_owners"] = len(owners)
         drop |= {i for i in members if seen.at[i, "accession_number"] != keeper}
 
     redate: dict = {}

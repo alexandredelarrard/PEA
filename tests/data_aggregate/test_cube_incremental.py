@@ -399,7 +399,7 @@ def _run_institutionals(monkeypatch, store: _StatefulGovernanceStore, calendar: 
         "_cross_source_panel",
     ):
         setattr(step, panel, lambda *args, **kwargs: None)
-    step._insider_panel = lambda f, s, sink: build_insider_feature_panel(f, insider, shares_out_history=s, sink=sink)
+    step._insider_panel = lambda f, s, sink, splits=None: build_insider_feature_panel(f, insider, shares_out_history=s, sink=sink)
     step.run(full=full)
 
 

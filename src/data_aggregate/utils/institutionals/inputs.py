@@ -13,6 +13,7 @@ from src.context import Context
 from src.data_aggregate.utils.common.level_basis import apply_volume_scale
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
 from src.data_aggregate.utils.common.price_frames import PriceFrames, load_price_frames
+from src.data_aggregate.utils.institutionals.insider_quality import OTHER_OFFICER, clean_officer_title, officer_role, owner_name_key
 from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore
 from src.utils.string import pad_cik, yahoo_symbol
@@ -172,4 +173,68 @@ def load_secondary_classes(
 def load_insider_transactions(store: DataStore, log: logging.Logger, universe: Sequence[str] | None = None) -> pd.DataFrame | None:
     """`insider_transactions` rows of the companies' own history: `lineage_role` canonical (predecessor or current).
     Acquired-constituent rows and rows without a stamp are not read."""
-    return load_source(store, log, Tables.insider_transactions, universe, where={"lineage_role": list(CANONICAL_ROLES)})
+    table = Tables.insider_transactions
+    present = store.columns(table)
+    if not present:
+        log.warning("%s is absent -> insider features are skipped.", table.name)
+        return None
+    columns = [column for column in dict.fromkeys((*table.read_columns, "issuer_cik")) if column in present]
+    where: dict[str, Any] = {"lineage_role": list(CANONICAL_ROLES)}
+    if universe is not None:
+        where["ticker"] = sorted(set(map(str, universe)))
+        _report_off_universe(store, log, table, universe)
+    chunks = list(store.iter_load(table, columns=columns, where=where))
+    if not chunks:
+        return None
+    frame = pd.concat(chunks, ignore_index=True)
+    log.info("Loaded %s: %s rows x %s cols", table.name, len(frame), len(frame.columns))
+    return frame
+
+
+def load_insider_role_evidence(store: DataStore, insider: pd.DataFrame) -> pd.DataFrame:
+    """Projected proxy title evidence for unique same-issuer/full-name owner identities only."""
+    columns = ["ticker", "issuer_cik", "owner_cik", "role_as_of", "officer_title_clean", "role", "role_source"]
+    if not {"issuer_cik", "owner_cik", "owner_name", "officer_title"}.issubset(insider):
+        return pd.DataFrame(columns=columns)
+    candidates = insider[insider["officer_title"].fillna("").astype(str).str.strip().eq("")].copy()
+    if candidates.empty:
+        return pd.DataFrame(columns=columns)
+    owners = insider[["ticker", "issuer_cik", "owner_cik", "owner_name", "filing_date"]].copy()
+    owners["filing_date"] = pd.to_datetime(owners["filing_date"], errors="coerce").dt.normalize()
+    owners = owners.sort_values("filing_date").drop_duplicates(["ticker", "issuer_cik", "owner_cik", "owner_name"])
+    owners["name_key"] = owners["owner_name"].map(owner_name_key)
+    for column in ("issuer_cik", "owner_cik"):
+        owners[column] = owners[column].map(pad_cik).fillna("")
+    identity = ["ticker", "issuer_cik", "name_key"]
+    owners["identity_from"] = pd.to_datetime(owners["filing_date"], errors="coerce").dt.normalize()
+    owners = owners[owners["name_key"].ne("") & owners["owner_cik"].ne("")].dropna(subset=["identity_from"])
+    owners = owners.groupby([*identity, "owner_cik"], as_index=False)["identity_from"].min()
+    ticks = sorted(candidates["ticker"].dropna().astype(str).unique())
+    df_proxy = store.load(
+        Tables.def14a_executive_comp, columns=["ticker", "cik", "as_of", "name", "title", "fiscal_year"], where={"ticker": ticks}, optional=True
+    )
+    if df_proxy is None or df_proxy.empty:
+        return pd.DataFrame(columns=columns)
+    df_proxy["issuer_cik"] = df_proxy["cik"].map(pad_cik).fillna("")
+    df_proxy["name_key"] = df_proxy["name"].map(owner_name_key)
+    df_proxy["role_as_of"] = pd.to_datetime(df_proxy["as_of"], errors="coerce").dt.normalize()
+    df_proxy["officer_title_clean"] = df_proxy["title"].map(clean_officer_title)
+    df_proxy["role"] = df_proxy["officer_title_clean"].map(officer_role)
+    latest = df_proxy.groupby(["ticker", "as_of"])["fiscal_year"].transform("max")
+    df_proxy = df_proxy[df_proxy["fiscal_year"].eq(latest)].dropna(subset=["role_as_of"])
+    # Explicit non-management/former titles are history barriers; parent CEO fallback is not evidence.
+    df_proxy = df_proxy[df_proxy["officer_title_clean"].ne("")]
+    df_proxy = df_proxy.merge(owners, on=identity, how="inner")
+    df_proxy["role_as_of"] = df_proxy[["role_as_of", "identity_from"]].max(axis=1)
+    # Name uniqueness is evaluated when the mapping becomes public, never against future owners.
+    identities = owners.set_index(identity)
+    for _, group in df_proxy.groupby(identity, sort=False):
+        first = identities.loc[tuple(group.iloc[0][identity])]["identity_from"]
+        if isinstance(first, pd.Timestamp):
+            continue
+        ambiguous = group["role_as_of"].map(lambda day, first=first: first.le(day).sum() > 1)
+        df_proxy.loc[group.index[ambiguous], "role"] = OTHER_OFFICER
+    df_proxy["role_source"] = "explicit_proxy_title"
+    conflicted = df_proxy.groupby(["ticker", "issuer_cik", "owner_cik", "role_as_of"])["role"].transform("nunique").gt(1)
+    df_proxy.loc[conflicted, ["role", "officer_title_clean"]] = [OTHER_OFFICER, "conflicting roles"]
+    return df_proxy[columns].drop_duplicates()

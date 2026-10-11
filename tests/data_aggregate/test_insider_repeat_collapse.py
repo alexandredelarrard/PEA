@@ -85,16 +85,18 @@ def test_rows_kept_apart_by_holding_nan_or_accession():
     )
 
 
-def test_the_kept_copy_carries_every_copys_owners():
+def test_the_kept_copy_carries_only_already_public_owners():
     first, second = _copy_pair()
     second = {**second, "owner_ciks": "0000000009,0000000010", "n_reporting_owners": 2}
     cleaned, diag = clean_transactions(frame([first, second]))
     kept = cleaned.iloc[0]
-    assert len(cleaned) == 1 and kept["owner_cik"] == "0000000008"
-    assert kept["owner_ciks"] == "0000000008,0000000009,0000000010" and kept["n_reporting_owners"] == 3
-    print(
-        f"SANITY: the earliest copy keeps primary owner {kept['owner_cik']} and the union owner_ciks {kept['owner_ciks']}; {diag['copy_rows_dropped']} copy dropped."
-    )
+    assert len(cleaned) == 2 and kept["owner_cik"] == "0000000008"
+    assert kept["owner_ciks"] == "0000000008" and kept["n_reporting_owners"] == 1
+    assert kept["visible_until"] == pd.Timestamp("2024-03-07")
+    later = cleaned.iloc[1]
+    assert later["owner_ciks"] == "0000000008,0000000009,0000000010" and later["n_reporting_owners"] == 3
+    assert later["anchor"] == pd.Timestamp("2024-03-01") and later["visible_from"] == pd.Timestamp("2024-03-07")
+    print(f"SANITY: later co-reporters appear only on March 7, without refreshing the March 1 anchor; {diag['copy_rows_dropped']} copy dropped.")
 
 
 def _snapshot() -> pd.DataFrame:
@@ -118,7 +120,7 @@ def test_real_copy_groups_contribute_once_and_coincidences_survive():
         df["security_type"].str.lower().eq("nonderiv")
         & common_stock_mask(df["security_title"])
         & df["transaction_code"].str.upper().str.strip().isin(OPEN_MARKET_CODES)
-        & df["shares"].notna()
+        & df["shares"].gt(0)
         & df["filing_date"].notna()
     ].copy()
     for column in ("shares", "price_per_share", "shares_owned_after"):
@@ -133,12 +135,12 @@ def test_real_copy_groups_contribute_once_and_coincidences_survive():
     coincidence = keyed[loose & ~keyed.index.isin(grouped.index)]
 
     cleaned, diag = clean_transactions(df)
-    survivors = cleaned.index.intersection(later)
+    survivors = pd.Index(cleaned["source_row"]).intersection(later)
     removed = float(df.loc[later, "value_usd"].sum())
     assert survivors.empty, f"{len(survivors)} later copies reach the features"
     assert diag["copy_rows_dropped"] == len(later) and diag["copy_groups"] == grouped.groupby(KEY).ngroups
     assert diag["copy_value_removed"] == pytest.approx(removed, rel=1e-12)
-    assert coincidence.index.isin(cleaned.index).all()
+    assert coincidence.index.isin(cleaned["source_row"]).all()
     raw = float(scoped["value_usd"].sum())
     print(
         f"SANITY: {len(scoped):,} scoped P/S rows; {diag['copy_groups']:,} copy groups, {len(later):,} later copies dropped carrying "

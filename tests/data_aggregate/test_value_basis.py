@@ -19,6 +19,8 @@ from src.data_aggregate.utils.institutionals.value_basis import (
     DIVIDED,
     KEPT,
     MULTIPLIED,
+    _period_close,
+    as_traded_close,
     repair_value_basis,
 )
 
@@ -214,3 +216,17 @@ def test_no_close_split_degrades_instead_of_nulling_every_value():
     print(
         "  close_split=None -> every row KEPT and value left as filed, register empty. The builder degrades rather than nulling the table. Validated."
     )
+
+
+def test_shared_as_traded_quote_restores_split_and_level() -> None:
+    idx = pd.to_datetime(["2020-01-01", "2020-01-02", "2020-01-03"])
+    close = pd.DataFrame({"AAA": [25.0, 25.0, 50.0]}, index=idx)
+    level = pd.DataFrame(2.0, index=idx, columns=["AAA"])
+    splits = pd.DataFrame({"ticker": ["AAA"], "date": [idx[2]], "value": [2.0]})
+    quotes = as_traded_close(close, level, splits)
+    assert quotes["AAA"].tolist() == [100.0, 100.0, 100.0]
+    found = _period_close(quotes, pd.Series(pd.to_datetime(["2019-12-31", "2020-01-04", "2020-01-20"])), 7)
+    assert pd.isna(found.loc[(pd.Timestamp("2019-12-31"), "AAA")])
+    assert found.loc[(pd.Timestamp("2020-01-04"), "AAA")] == 100
+    assert pd.isna(found.loc[(pd.Timestamp("2020-01-20"), "AAA")])
+    print("SANITY: shared quote restores only genuine split and level units; no forward or stale quote enters cleaning.")

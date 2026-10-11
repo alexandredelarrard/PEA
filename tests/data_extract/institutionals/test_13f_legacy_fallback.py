@@ -92,6 +92,25 @@ def _read(report: _Report) -> pd.DataFrame | f13.ReadFailure:
     return f13._read_filing(FilingStamp.of(filing, filing.cik))
 
 
+def test_legacy_edgar_preserves_accession_and_reconciled_book(sqlite_store: Any) -> None:
+    raw = "[X] 13F HOLDINGS REPORT\nForm 13F Information Table Value Total: $157,462\n" + _table(_HEADER, _AFLAC, _AMGEN)
+    filing = _Filing(_Report(None, txt=raw))
+    packet = f13.read_filing_vintage(FilingStamp.of(filing, filing.cik))
+    assert not isinstance(packet, f13.ReadFailure), packet
+    manifest, holdings = packet
+    assert manifest.iloc[0].accession_number == filing.accession_number
+    assert len(holdings) == 2 and holdings.value_usd.sum() == 157462000
+    sqlite_store.save_13f_filing(manifest, holdings)
+    assert len(sqlite_store.load(f13.Tables.sec13f_manager_holdings)) == 2
+    amendment = _Filing(_Report(None, txt=raw), form="13F-HR/A", accession_number="missing-type")
+    failed = f13.read_filing_vintage(FilingStamp.of(amendment, amendment.cik))
+    assert isinstance(failed, f13.ReadFailure) and "amendment type" in failed.reason
+    amendment.report._txt = "[X] is a restatement\n" + raw
+    parsed = f13.read_filing_vintage(FilingStamp.of(amendment, amendment.cik))
+    assert not isinstance(parsed, f13.ReadFailure) and parsed[0].iloc[0].amendment_type == "restatement"
+    print("SANITY: legacy EDGAR source totals, raw values, accession/date survive; unsupported amendment type cannot complete a book.")
+
+
 def _forbidden(name: str) -> Any:
     """A stand-in that fails the test if `name` is ever called."""
 
@@ -332,11 +351,11 @@ def test_malformed_amount_cannot_fall_back_to_voting_numbers(amount: str) -> Non
 
 @pytest.mark.parametrize("edgar_parsed", [False, True])
 def test_invalid_logical_line_cannot_be_hidden_by_duplicate_grouping(edgar_parsed: bool) -> None:
-    zero = _AFLAC.replace("3,362,515", "0")
-    info = pd.DataFrame([_edgar_line("001055102", "Aflac, Inc.", 145_462_000, shares) for shares in [0, 3_362_515]]) if edgar_parsed else None
+    zero = _AFLAC.replace("3,362,515", "-1")
+    info = pd.DataFrame([_edgar_line("001055102", "Aflac, Inc.", 145_462_000, shares) for shares in [-1, 3_362_515]]) if edgar_parsed else None
     out = _read(_Report(info, txt=_table(_HEADER, zero, _AFLAC)))
     assert isinstance(out, f13.ReadFailure) and not out.transient
-    print("\n=== SANITY: a valued zero-share source line cannot disappear into a positive duplicate-CUSIP aggregate. Validated.")
+    print("\n=== SANITY: a negative source quantity cannot disappear into a positive duplicate-CUSIP aggregate. Validated.")
 
 
 def test_invalid_shifted_cusip_cannot_become_a_prior_holding_continuation() -> None:
@@ -520,3 +539,16 @@ def test_garbage_in_the_source_itself_is_a_parse_failure() -> None:
     out = _read(_Report(info, txt=_table(_HEADER, zero)))
     assert isinstance(out, f13.ReadFailure) and not out.transient
     print(f"\n=== SANITY: a zero-share valued source row -> deterministic failure, no rows: {out.reason[:80]!r}. Validated.")
+
+
+def test_legacy_separate_cover_and_zero_quantity_reach_p1(monkeypatch: pytest.MonkeyPatch) -> None:
+    table = _table(_HEADER, _AFLAC.replace("3,362,515", "0"))
+    raw = "[X] 13F HOLDINGS REPORT\nForm 13F Information Table Value Total: $145,462\n" + table
+    filing = _Filing(_Report(None, txt=table))
+    monkeypatch.setattr(filing, "full_text_submission", lambda: raw, raising=False)
+    packet = f13.read_filing_vintage(FilingStamp.of(filing, filing.cik))
+    assert not isinstance(packet, f13.ReadFailure), packet
+    manifest, rows = packet
+    assert manifest.iloc[0].source_row_count == 1
+    assert rows.iloc[0].shares == 0 and rows.iloc[0].value_usd == 145462000
+    print("SANITY: separate legacy cover/table reconciles; zero quantity and positive source value survive for inverse P1 price fallback.")

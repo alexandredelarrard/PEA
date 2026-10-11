@@ -281,6 +281,11 @@ from tests.data_aggregate.aggregate_fingerprint import BASELINE, compute
 #   CEO stints: f_founder_ceo (stint mode);
 #   say-on-pay: f_say_on_pay_support removed, the seven f_sop_dissent* added (proxy fallback rows);
 #   same-filing SCT growth: f_ceo_comp_growth_1y, f_ceo_pay_growth and the nine pay-vs-performance legs.
+#
+# 2026-10-11: approved 13F value/share corrections update only the institutional,
+# superinvestor and cross-source entries. The old implementation reproduces all 37
+# old digests; the repaired fixture supplies typed options and as-traded prices,
+# checks non-degenerate dollar features, and preserves all 34 unrelated digests.
 DECLARED_DRIFT: frozenset[str] = frozenset()
 
 

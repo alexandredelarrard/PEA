@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import time
 import zipfile
+from io import BytesIO
 from types import SimpleNamespace
 from typing import Any
 
@@ -61,7 +62,7 @@ def _dmy(day: str) -> str:
     return pd.Timestamp(day).strftime("%d-%b-%Y").upper()
 
 
-def _write_zip(path: Any, filings: list[tuple]) -> None:
+def _write_zip(path: Any, filings: list[tuple], *, confidential: str | None = "N", omit_confidential: bool = False) -> None:
     """A data-set ZIP with the SEC member names and upper-case headers."""
     sub = pd.DataFrame(
         [
@@ -69,7 +70,32 @@ def _write_zip(path: Any, filings: list[tuple]) -> None:
             for c, a, form, f, p, _ in filings
         ]
     )
-    cover = pd.DataFrame([{"ACCESSION_NUMBER": a, "REPORTCALENDARORQUARTER": _dmy(p), "ISAMENDMENT": "N"} for _, a, _, _, p, _ in filings])
+    cover = pd.DataFrame(
+        [
+            {
+                "ACCESSION_NUMBER": a,
+                "REPORTCALENDARORQUARTER": _dmy(p),
+                "ISAMENDMENT": "Y" if form.endswith("/A") else "N",
+                "AMENDMENTTYPE": "RESTATEMENT" if form.endswith("/A") else "",
+                "AMENDMENTNO": 1 if form.endswith("/A") else 0,
+                "REPORTTYPE": "13F HOLDINGS REPORT",
+            }
+            for _, a, form, _, p, _ in filings
+        ]
+    )
+    summary = pd.DataFrame(
+        [
+            {
+                "ACCESSION_NUMBER": a,
+                "TABLEENTRYTOTAL": len(lines),
+                "TABLEVALUETOTAL": sum(line[2] for line in lines),
+                "ISCONFIDENTIALOMITTED": confidential,
+            }
+            for _, a, _, _, _, lines in filings
+        ]
+    )
+    if omit_confidential:
+        summary = summary.drop(columns="ISCONFIDENTIALOMITTED")
     info = pd.DataFrame(
         [
             {
@@ -89,8 +115,21 @@ def _write_zip(path: Any, filings: list[tuple]) -> None:
         ]
     )
     with zipfile.ZipFile(path, "w") as archive:
-        for name, frame in (("SUBMISSION.tsv", sub), ("COVERPAGE.tsv", cover), ("INFOTABLE.tsv", info)):
+        for name, frame in (("SUBMISSION.tsv", sub), ("COVERPAGE.tsv", cover), ("SUMMARYPAGE.tsv", summary), ("INFOTABLE.tsv", info)):
             archive.writestr(name, frame.to_csv(sep="\t", index=False))
+
+
+@pytest.mark.parametrize(("flag", "restricted"), [(None, False), ("N", False), ("false", False), ("Y", True), ("true", True)])
+@pytest.mark.parametrize("omit_column", [False, True])
+def test_optional_zip_confidentiality_requires_affirmative_evidence(tmp_path: Any, flag: str | None, restricted: bool, omit_column: bool) -> None:
+    path = tmp_path / "source.zip"
+    _write_zip(path, [_B1], confidential=flag, omit_confidential=omit_column)
+    packets = fb.cached_filing_vintages(path, [_B1[1]])
+    assert len(packets) == 1
+    manifest, holdings = packets[0]
+    assert bool(manifest.restricted.iloc[0]) is (restricted and not omit_column)
+    assert holdings.shares.iloc[0] == 25000 and holdings.value_usd.iloc[0] == 4000000
+    print(f"SANITY: ZIP flag {flag!r}, absent column={omit_column}; only affirmative metadata restricts a complete book.")
 
 
 def _xml(lines: list[tuple]) -> str:
@@ -176,7 +215,7 @@ def _patch_gap_walk(monkeypatch: pytest.MonkeyPatch, *, save: bool = False, cut:
 
 def _markers(store: Any) -> pd.DataFrame:
     """The stored gap-walk marker rows of `sec13f_hr` (empty frame when none)."""
-    df = store.load(Tables.sec13f_hr, where={"cusip": _SENTINEL}, markers=True, optional=True)
+    df = store.load(Tables.sec13f_hr, where={"cusip": _SENTINEL, "cik": _SENTINEL}, markers=True, optional=True)
     return pd.DataFrame(columns=f13._HR_COLS) if df is None else df
 
 
@@ -193,29 +232,21 @@ def _save_oracle_book(store: Any, filing: tuple, scale: float = 1.0) -> None:
     store.save(Tables.sec13f_manager_holdings, book.assign(**{c: book[c] * scale for c in value_cols}))
 
 
-def test_values_match_the_edgartools_rows_per_filing_unit(tmp_path, sqlite_store, monkeypatch):
+def test_zip_preserves_raw_units_and_complete_source_books(tmp_path, sqlite_store, monkeypatch):
     ctx = _ctx(tmp_path, sqlite_store, added_on={_NEW: "2026-09-28"})
     _offline(monkeypatch)
-    _save_oracle_book(sqlite_store, _A2)  # the roster manager's stored book (unit check reference)
-
     saved = fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF)
-
-    oracle = pd.concat([_edgartools_book(f) for f in (_A1, _A2, _B1)], ignore_index=True)
-    oracle = oracle[oracle["cusip"] == _NEW_CUSIP]
     got = _stored_hr(sqlite_store, _NEW)
-    keys = ["cik", "period", "cusip"]
-    both = got.merge(oracle, on=keys, suffixes=("", "_oracle"))
-    assert saved == len(got) == len(oracle) == len(both) == 3
-    for col in ("value_usd", "shares", "put_value", "put_shares"):
-        assert ((both[col] - both[f"{col}_oracle"]).abs() <= 0.005 * both[f"{col}_oracle"].abs()).all(), both[[*keys, col, f"{col}_oracle"]]
-    a1 = both[both["cik"] == "0000000001"].sort_values("period").iloc[0]
-    assert a1["value_usd"] == 1_500_000.0 and a1["put_value"] == 50_000.0  # the $-thousands filing scaled x1000
-    a2 = both[both["cik"] == ROSTER].iloc[0]
-    assert a2["value_usd"] == 3_000_000.0  # the whole-dollar filing of the same period left as filed
-    assert _stored_hr(sqlite_store, "AAPL").empty and _stored_hr(sqlite_store, "MSFT").empty  # M4-2: other tickers untouched
-    print("\n=== SANITY: 13F data-set backfill vs edgartools rows (D13) ===")
-    print(f"  {len(both)} NEWCO rows equal the edgartools-parsed rows within 0.5%: the 2023-03-31 $-thousands filing")
-    print("  scaled to 1,500,000 (put 50,000), the whole-dollar one kept at 3,000,000; AAPL/MSFT rows never written. Validated.")
+    assert saved == 5 and len(got) == 3
+    a1 = got.loc[got.cik.eq("0000000001") & got.period.eq(pd.Timestamp("2023-03-31"))].iloc[0]
+    assert a1.raw_value_usd == a1.value_usd == 1500
+    assert a1.raw_put_value == a1.put_value == 50
+    assert a1.shares == 10000 and a1.put_shares == 100
+    a2 = got.loc[got.cik.eq(ROSTER)].iloc[0]
+    assert a2.value_usd == 3000000 and a2.shares == 20000
+    assert not _stored_hr(sqlite_store, "AAPL").empty
+    assert not _stored_hr(sqlite_store, "MSFT").empty
+    print("SANITY: complete ZIP books keep source quantities/raw values; filing-date unit evidence stays distinct from later P1 market corrections.")
 
 
 def test_resume_starts_from_the_tickers_own_minimum_period_newest_first(tmp_path, sqlite_store, monkeypatch):
@@ -236,8 +267,8 @@ def test_resume_starts_from_the_tickers_own_minimum_period_newest_first(tmp_path
         ),
     )
     read: list[str] = []
-    real = fb._read_data_set
-    monkeypatch.setattr(fb, "_read_data_set", lambda path, *a: read.append(path.name) or real(path, *a))
+    real = fb._archive_scope
+    monkeypatch.setattr(fb, "_archive_scope", lambda path, *a: read.append(path.name) or real(path, *a))
 
     fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF)
     points = fb.resume_points(ctx, [_NEW])
@@ -279,27 +310,26 @@ def test_a_stored_row_filed_later_is_kept(tmp_path, sqlite_store, monkeypatch):
 
     fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF, full=True)
 
-    got = _stored_hr(sqlite_store, _NEW).set_index(["cik", "period"])
-    assert got.loc[("0000000001", pd.Timestamp("2024-06-30")), "value_usd"] == 9.0  # the 2024-08-14 data-set row did not overwrite it
-    assert got.loc[("0000000001", pd.Timestamp("2023-03-31")), "value_usd"] == 1_500_000.0
-    print("\n=== SANITY: backfill never overwrites a later filing ===")
-    print("  the stored 2024-09-02 amendment row kept value 9; the data set's 2024-08-14 original was dropped. Validated.")
+    got = _stored_hr(sqlite_store, _NEW)
+    legacy = got.loc[got.accession_number.eq("_legacy")]
+    assert len(legacy) == 1 and legacy.iloc[0].value_usd == 9
+    original = got.loc[got.accession_number.eq(_B1[1])]
+    assert len(original) == 1 and original.iloc[0].value_usd == 4000000
+    assert got.loc[got.accession_number.eq(_A1[1]), "value_usd"].iloc[0] == 1500
+    print("SANITY: historical source replay preserves the later legacy row and separately restores the original accession.")
 
 
-def test_a_unit_flip_against_the_stored_roster_book_aborts_the_data_set(tmp_path, sqlite_store, monkeypatch, caplog):
+def test_legacy_unit_error_cannot_block_verified_source_packets(tmp_path, sqlite_store, monkeypatch, caplog):
     ctx = _ctx(tmp_path, sqlite_store, added_on={_NEW: "2026-09-28"})
     _offline(monkeypatch)
-    _save_oracle_book(sqlite_store, _A2, scale=1000.0)  # stored book 1000x the data-set filing
-
+    _save_oracle_book(sqlite_store, _A2, scale=1000)
     with caplog.at_level("ERROR"):
         fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF)
-
     got = _stored_hr(sqlite_store, _NEW)
-    assert sorted(got["period"].dt.strftime("%Y-%m-%d")) == ["2024-06-30"]  # 2023q2 not saved; the 2024 data set has no roster filing
-    errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
-    assert len(errors) == 1 and "2023q2" in errors[0] and ROSTER in errors[0], errors
-    print("\n=== SANITY: backfill unit check ===")
-    print(f"  the roster filing's data-set total is 1/1000 of its stored book -> {errors[0][:90]!r}; 2023q2 not saved. Validated.")
+    assert len(got) == 3
+    assert got.loc[got.accession_number.eq(_A2[1]), "value_usd"].iloc[0] == 3000000
+    assert not any(r.levelno >= logging.ERROR for r in caplog.records)
+    print("SANITY: a previously mis-scaled legacy book cannot veto reconciled source accessions; P1 determines economic scaling.")
 
 
 @pytest.mark.parametrize(("tickers", "full", "saved_tickers"), [(["AAPL"], False, []), (["AAPL"], True, ["AAPL"]), ([_NEW], False, [_NEW])])
@@ -310,9 +340,13 @@ def test_scoped_runs_follow_the_archive_rules(tmp_path, sqlite_store, monkeypatc
     fb.fetch_13f_backfill(ctx, tickers=tickers, as_of=_AS_OF, full=full)
 
     df = sqlite_store.load(Tables.sec13f_hr, columns=["ticker"], optional=True)
-    assert (sorted(set(df["ticker"])) if df is not None else []) == saved_tickers
+    if not saved_tickers:
+        assert df is None
+    else:
+        assert set(saved_tickers) <= set(df.ticker)
+        assert {"AAPL", "MSFT", _NEW} <= set(df.ticker)
     print(f"\n=== SANITY: backfill -t {tickers} {'-F' if full else ''} ===")
-    print(f"  saved tickers {saved_tickers}: -t narrows the new tickers; an established ticker needs -F. Validated.")
+    print(f"  requested tickers {saved_tickers}: manager discovery is scoped; complete source portfolios remain stored. Validated.")
 
 
 def test_the_gap_after_the_newest_data_set_is_walked_once_per_ticker(tmp_path, sqlite_store, monkeypatch):
@@ -490,11 +524,9 @@ def test_every_sec13f_hr_consumer_read_hides_the_gap_marker(tmp_path, sqlite_sto
     _save_oracle_book(sqlite_store, _A2)
     fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF)  # the data-set rows, then the walk's NEWCO marker
     cache = tmp_path / str(ctx.config.local.paths.sec_13f_datasets)
-    cmap = sqlite_store.load(Tables.cusip_ticker_map)
     tables = fb._read_data_set(cache / "2023q2_form13f.zip", frozenset({_NEW_CUSIP}), {ROSTER})
     assert tables is not None
     book = fb.data_set_book(*tables)
-    candidates = f13._resolve_tickers(book, cmap, {_NEW})
     universe = ["AAPL", "MSFT", _NEW]
     log = logging.getLogger("test")
 
@@ -504,14 +536,13 @@ def test_every_sec13f_hr_consumer_read_hides_the_gap_marker(tmp_path, sqlite_sto
             "load projected": sqlite_store.load(Tables.sec13f_hr, project=True),
             "iter_load": pd.concat(sqlite_store.iter_load(Tables.sec13f_hr, project=True), ignore_index=True),
             "aggregation load_source": load_source(sqlite_store, log, Tables.sec13f_hr, universe),
-            "superseded check": fb._drop_superseded(ctx, candidates),
             "unit check": fb.unit_check(ctx, book, {ROSTER}),
             "superinvestor activity": activity_evidence(ctx, [ROSTER, "1"]),
         }
 
     with_marker = _reads()
     n_markers = len(_markers(sqlite_store))
-    sqlite_store.delete(Tables.sec13f_hr, {"cusip": _SENTINEL})
+    sqlite_store.delete(Tables.sec13f_hr, {"cusip": _SENTINEL, "cik": _SENTINEL})
     without = _reads()
 
     assert n_markers == 1
@@ -582,3 +613,105 @@ def test_gap_tickers_without_added_on_column_is_empty(tmp_path: Any, sqlite_stor
     assert nightly == {} and forced == {}
     print("\n=== SANITY: 13F gap tickers before the added_on migration ===")
     print(f"  sp500_tickers without added_on -> gap_tickers {nightly} nightly and {forced} under -F, no KeyError. Validated.")
+
+
+def test_normal_zip_backfill_preserves_whole_original_and_amended_books(tmp_path, sqlite_store, monkeypatch):
+    ctx = _ctx(tmp_path, sqlite_store, added_on={_NEW: "2026-09-28"})
+    _offline(monkeypatch)
+    amendment = ("1", "0000000001-23-000009", "13F-HR/A", "2023-06-01", "2023-03-31", [(_NEW_CUSIP, "NEWCO", 1600, 11000, "")])
+    cache = tmp_path / str(ctx.config.local.paths.sec_13f_datasets)
+    _write_zip(cache / "2023q2_form13f.zip", [_A1, amendment])
+    fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF)
+    manifests = sqlite_store.load(
+        Tables.sec13f_hr,
+        columns=["accession_number", "amendment_type", "parsed_row_count"],
+        where={"cik": "0000000001", "cusip": "_empty", "parse_status": "complete"},
+        markers=True,
+    )
+    assert set(manifests.accession_number) == {_A1[1], amendment[1], _B1[1]}
+    vintages = sqlite_store.load(Tables.sec13f_hr, columns=["accession_number", "cusip", "shares"], where={"cik": "0000000001"})
+    original = vintages.loc[vintages.accession_number.eq(_A1[1])]
+    assert set(original.cusip) == {_NEW_CUSIP, "037833100"}, "keep the whole book before filtering its NEWCO leg"
+    assert original.set_index("cusip").loc[_NEW_CUSIP, "shares"] == 10000
+    assert set(vintages.loc[vintages.accession_number.eq(amendment[1])].cusip) == {_NEW_CUSIP}
+    first = vintages.sort_values(["accession_number", "cusip"]).reset_index(drop=True)
+    fb.fetch_13f_backfill(ctx, tickers=[_NEW], as_of=_AS_OF, full=True)
+    again = sqlite_store.load(Tables.sec13f_hr, columns=["accession_number", "cusip", "shares"], where={"cik": "0000000001"})
+    pd.testing.assert_frame_equal(first, again.sort_values(["accession_number", "cusip"]).reset_index(drop=True))
+    print("SANITY: ordinary cached-ZIP backfill retains original whole book, amended omission and immutable repeat saves.")
+
+
+def test_invalid_zip_accession_does_not_hide_another_complete_packet(tmp_path):
+    path = tmp_path / "source.zip"
+    _write_zip(path, [_A1, _A2])
+    with zipfile.ZipFile(path) as archive:
+        entries = {name: archive.read(name) for name in archive.namelist()}
+    summary = pd.read_csv(BytesIO(entries["SUMMARYPAGE.tsv"]), sep="\t")
+    summary.loc[summary.ACCESSION_NUMBER.eq(_A1[1]), "TABLEENTRYTOTAL"] = 99
+    entries["SUMMARYPAGE.tsv"] = summary.to_csv(sep="\t", index=False).encode()
+    with zipfile.ZipFile(path, "w") as archive:
+        for name, content in entries.items():
+            archive.writestr(name, content)
+    failures = []
+    packets = fb.cached_filing_vintages(path, [_A1[1], _A2[1]], on_invalid=lambda accession, error: failures.append((accession, str(error))))
+    assert len(packets) == 1 and packets[0][0].iloc[0].accession_number == _A2[1]
+    assert len(failures) == 1 and failures[0][0] == _A1[1]
+    print("SANITY: invalid source packet is explicitly rejected; independent complete packet remains recoverable.")
+
+
+def test_zip_scope_preserves_earlier_baseline_and_later_omission(tmp_path, sqlite_store, monkeypatch):
+    ctx = _ctx(tmp_path, sqlite_store, added_on={_NEW: "2026-09-28"})
+    _offline(monkeypatch)
+    cache = tmp_path / str(ctx.config.local.paths.sec_13f_datasets)
+    earlier = ("42", "baseline", "13F-HR", "2023-05-15", "2023-03-31", [("037833100", "APPLE", 500, 5, "")])
+    first = ("42", "holding", "13F-HR", "2024-08-14", "2024-06-30", [(_NEW_CUSIP, "NEWCO", 1000, 10, "")])
+    amended = ("42", "omission", "13F-HR/A", "2024-08-20", "2024-06-30", [("037833100", "APPLE", 500, 5, "")])
+    _write_zip(cache / "2023q2_form13f.zip", [earlier])
+    _write_zip(cache / "01jun2024-31aug2024_form13f.zip", [first, amended])
+    fb.fetch_13f_backfill(ctx, tickers=[_NEW], as_of=_AS_OF, full=True)
+    raw = sqlite_store.load(Tables.sec13f_hr, where={"cik": "0000000042"})
+    assert set(raw.accession_number) == {"baseline", "holding", "omission"}
+    print("SANITY: manager union across ZIPs preserves an earlier baseline and the later amendment that omits the last requested ticker.")
+
+
+def test_zip_and_xml_equivalent_packet_replays_once(tmp_path, sqlite_store):
+    path = tmp_path / "replay.zip"
+    _write_zip(path, [_A1])
+    packet = fb.cached_filing_vintages(path, [_A1[1]])[0]
+    sqlite_store.save_13f_filing(*packet)
+    cover = (
+        "<edgarSubmission><isAmendment>false</isAmendment><amendmentNo>0</amendmentNo>"
+        "<reportCalendarOrQuarter>2023-03-31</reportCalendarOrQuarter>"
+        "<reportType>13F HOLDINGS REPORT</reportType><isConfidentialOmitted>false</isConfidentialOmitted>"
+        "<tableEntryTotal>3</tableEntryTotal><tableValueTotal>2250</tableValueTotal></edgarSubmission>"
+    )
+    xml = _xml(_A1[5]).replace("<titleOfClass>COM</titleOfClass>", "<titleOfClass>  COM  </titleOfClass>")
+    parsed = f13.xml_filing_vintage(cover, xml, cik=_A1[0], accession_number=_A1[1], period=_A1[4], filing_date=_A1[3], source="edgar")
+    assert sqlite_store.save_13f_filing(*parsed) == 0
+    assert len(sqlite_store.load(Tables.sec13f_manager_holdings)) == 2
+    print("SANITY: actual ZIP and XML parsers produce equivalent accession content despite source whitespace/transport differences.")
+
+
+def test_original_xml_can_omit_false_amendment_flag():
+    cover = (
+        "<edgarSubmission><submissionType>13F-HR</submissionType>"
+        "<reportCalendarOrQuarter>2023-03-31</reportCalendarOrQuarter>"
+        "<reportType>13F HOLDINGS REPORT</reportType><isConfidentialOmitted>false</isConfidentialOmitted>"
+        "<tableEntryTotal>3</tableEntryTotal><tableValueTotal>2250</tableValueTotal></edgarSubmission>"
+    )
+    kwargs = dict(cik=_A1[0], accession_number=_A1[1], period=_A1[4], filing_date=_A1[3], source="edgar")
+    manifest, rows = f13.xml_filing_vintage(cover, _xml(_A1[5]), expected_form="13F-HR", **kwargs)
+    assert manifest.iloc[0].amendment_type == "original" and len(rows) == 2
+    with pytest.raises(ValueError, match="disagrees"):
+        f13.xml_filing_vintage(cover, _xml(_A1[5]), expected_form="13F-HR/A", **kwargs)
+    with pytest.raises(ValueError, match="missing or invalid"):
+        f13.xml_filing_vintage(cover.replace("<submissionType>13F-HR</submissionType>", ""), _xml(_A1[5]), **kwargs)
+    for form, flag in (("13F-HR/A", "false"), ("13F-HR", "true")):
+        conflicting = cover.replace(
+            "<submissionType>13F-HR</submissionType>", f"<submissionType>{form}</submissionType><isAmendment>{flag}</isAmendment>"
+        )
+        with pytest.raises(ValueError, match="disagrees with cover form"):
+            f13.xml_filing_vintage(conflicting, _xml(_A1[5]), **kwargs)
+    print(
+        "SANITY: missing false amendment checkbox is accepted only for an explicitly original SEC cover; unknown/conflicting form remains rejected."
+    )

@@ -313,8 +313,14 @@ def test_build_panel_preserves_order_sink_and_output_contract(monkeypatch: pytes
             return grid.copy()
 
     frames = _Frames()
+    fake_step._context = object()
+    monkeypatch.setattr(step_module, "level_actions", lambda *args: None)
+    monkeypatch.setattr(step_module, "as_traded_close", lambda *args: pd.DataFrame())
+    frames.close_split = None
+    frames.level_factor = None
     shares = pd.DataFrame({"ticker": ["AAA"], "as_of": [first]})
     splits = pd.DataFrame({"ticker": ["AAA"], "date": [first], "ratio": [2.0]})
+    share_splits = step_module.genuine_splits(None, splits).rename(columns={"value": "ratio"})
     window = PartWindow(last=first, since=first, refresh_from=second)
 
     panels = {
@@ -381,18 +387,18 @@ def test_build_panel_preserves_order_sink_and_output_contract(monkeypatch: pytes
     monkeypatch.setattr(
         step,
         "_institutional_panel",
-        lambda actual_frames, actual_shares, actual_splits: (
+        lambda actual_frames, actual_shares, actual_splits, valuation_close: (
             emit("institutional")
-            if (actual_frames is frames and actual_shares is shares and actual_splits is splits)
+            if (actual_frames is frames and actual_shares is shares and actual_splits.equals(share_splits))
             else pytest.fail("institutional inputs changed")
         ),
     )
     monkeypatch.setattr(
         step,
         "_superinvestor_panel",
-        lambda actual_frames, actual_shares, actual_splits, sink: (
+        lambda actual_frames, actual_shares, actual_splits, sink, valuation_close: (
             emit("superinvestor", sink)
-            if (actual_frames is frames and actual_shares is shares and actual_splits is splits)
+            if (actual_frames is frames and actual_shares is shares and actual_splits.equals(share_splits))
             else pytest.fail("superinvestor inputs changed")
         ),
     )
@@ -527,3 +533,48 @@ def test_run_requests_a_full_rerun_when_columns_change(monkeypatch: pytest.Monke
     assert all(call[2] is panel for call in writes)
     assert all(call[4] is True for call in writes)
     print("SANITY: COLUMNS_CHANGED requested a full rebuild and both writes retained the table, panel, window, and drop-empty contract.")
+
+
+def test_share_panels_receive_genuine_splits_without_spinoff_factors(monkeypatch: pytest.MonkeyPatch) -> None:
+    step = _bare_step()
+    actual = cast(Any, step)
+    day = pd.Timestamp("2024-04-02")
+    raw = pd.DataFrame({"ticker": ["AAA", "BBB"], "date": [day, day], "ratio": [2.0, 1.37]})
+    actions = pd.DataFrame({"ticker": ["AAA", "BBB"], "date": [day, day], "action": ["split", "spinoff"], "value": [2.0, 1.37]})
+    frames = SimpleNamespace(
+        universe=["AAA", "BBB"],
+        close_split=pd.DataFrame(),
+        level_factor=pd.DataFrame(),
+        skeleton=lambda: pd.DataFrame({"date": [day], "ticker": ["AAA"]}),
+    )
+    actual._context = object()
+    actual._load_frames = lambda: frames
+    actual._load_shares_out = lambda: None
+    actual._load_source = lambda table: raw if table is Tables.prices_splits else pytest.fail("unexpected source")
+    received: dict[str, pd.DataFrame] = {}
+
+    def capture(name: str, events: pd.DataFrame) -> None:
+        received[name] = events
+
+    monkeypatch.setattr(step_module, "level_actions", lambda *args: actions)
+    monkeypatch.setattr(step_module, "as_traded_close", lambda close, factor, events: capture("valuation", events))
+    monkeypatch.setattr(step, "_institutional_panel", lambda frames, shares, events, close: capture("institutional", events))
+    monkeypatch.setattr(step, "_superinvestor_panel", lambda frames, shares, events, sink, close: capture("elite", events))
+    monkeypatch.setattr(step, "_short_flow_panel", lambda frames, shares, events, sink: capture("short", events))
+    monkeypatch.setattr(step, "_conditioning_panel", lambda frames, events, sink: capture("conditioning", events))
+    monkeypatch.setattr(step, "_insider_panel", lambda *args: None)
+    monkeypatch.setattr(step, "_ownership_panel", lambda *args: None)
+    monkeypatch.setattr(step, "_cross_source_panel", lambda *args: None)
+
+    step.build_panel()
+    expected = pd.DataFrame({"ticker": ["AAA"], "date": [day], "ratio": [2.0]})
+    for family in ("institutional", "elite"):
+        pd.testing.assert_frame_equal(received[family][["ticker", "date", "ratio"]].reset_index(drop=True), expected)
+    assert received["institutional"] is received["elite"]
+    assert received["short"] is raw and received["conditioning"] is raw
+    pd.testing.assert_frame_equal(
+        received["valuation"][["ticker", "date", "value"]].reset_index(drop=True), expected.rename(columns={"ratio": "value"})
+    )
+    print(
+        "SANITY: both 13F share consumers receive one genuine event frame; parent spinoff factor is excluded, and other families keep their existing basis."
+    )

@@ -34,7 +34,7 @@ other's memory. Now they are one step reading a 160-day window, and the serializ
 constraint disappears because the sub-steps run sequentially by construction.
 
 MEMORY DISCIPLINE. Each `_*_panel` loads its own source into a LOCAL and returns a panel,
-so the projected `sec13f_hr` read (the ~21.7M-row table, cut to 8 columns) and
+so the projected `sec13f_hr` read (the ~21.7M-row table, cut to 10 columns) and
 `insider_transactions` are never resident at the same time. Peak is the largest single
 source plus the accumulating panel.
 """
@@ -86,8 +86,8 @@ from src.data_aggregate.utils.institutionals.signal_conditioning import (
 )
 from src.data_aggregate.utils.institutionals.sink import ConditioningSink
 from src.data_aggregate.utils.institutionals.superinvestor_features import (
+    attach_tickers,
     build_superinvestor_feature_panel,
-    load_superinvestor_holdings,
 )
 from src.data_aggregate.utils.institutionals.value_basis import as_traded_close
 from src.data_store.schema import Table, Tables
@@ -145,19 +145,27 @@ class StepCubeInstitutionals(Step):
         # shares outstanding for the market-cap scaling shared by 13F / insider panels
         shares = self._load_shares_out()
 
-        # `prices_splits` is read ONCE here rather than per panel: three families need the
-        # same restatement (13F share counts, elite prior-quarter counts, insider filed
-        # prices) and the table is small enough that the cost is the read, not the memory.
+        # Read actions once. 13F quantities use genuine share splits: a vendor's
+        # spinoff price factor does not change the parent's reported share count.
         splits = self._load_source(Tables.prices_splits)
+        value_splits = genuine_splits(level_actions(self._context, price_frames.universe), splits)
+        share_splits = value_splits.rename(columns={"value": "ratio"})
+        valuation_close = as_traded_close(price_frames.close_split, price_frames.level_factor, value_splits)
 
         # What the two DERIVED panels consume. Filled by the source panels as they run,
         # so nothing here re-reads a source -- see `sink.py`.
         sink = ConditioningSink()
 
         merger = PanelMerger(self._log, anchor=price_frames.skeleton())
-        merger.add(self._institutional_panel(price_frames, shares, splits), "institutional (13F)", "No institutional (13F) features built.")
         merger.add(
-            self._superinvestor_panel(price_frames, shares, splits, sink), "superinvestor (elite 13F)", "No superinvestor (elite 13F) features built."
+            self._institutional_panel(price_frames, shares, share_splits, valuation_close),
+            "institutional (13F)",
+            "No institutional (13F) features built.",
+        )
+        merger.add(
+            self._superinvestor_panel(price_frames, shares, share_splits, sink, valuation_close),
+            "superinvestor (elite 13F)",
+            "No superinvestor (elite 13F) features built.",
         )
         merger.add(self._insider_panel(price_frames, shares, sink, splits), "insider-trading", "No insider-trading features built.")
         merger.add(self._short_flow_panel(price_frames, shares, splits, sink), "short-flow", "No short-flow features built.")
@@ -192,17 +200,21 @@ class StepCubeInstitutionals(Step):
         return institutional_inputs.load_shares_out(self._store, self._log)
 
     # ---- panels ---- #
-    def _institutional_panel(self, price_frames: PriceFrames, shares: pd.DataFrame | None, splits: pd.DataFrame | None) -> pd.DataFrame | None:
+    def _institutional_panel(
+        self, price_frames: PriceFrames, shares: pd.DataFrame | None, splits: pd.DataFrame | None, valuation_close: pd.DataFrame | None = None
+    ) -> pd.DataFrame | None:
         """The registry's eleven `ic_inst_*`: breadth SHARE (D28), split-restated share
         accumulation, new-buyer / exit ratios, cluster buying, Herfindahl concentration, net
         put/call sentiment, ownership %, value/market-cap weight and net $ flow -- stamped
-        point-in-time on each period's AVAILABILITY DATE (the 45-day deadline snapped onto the
-        trading calendar plus a settle buffer) over only the filings public by then, and
-        re-emitted on each later date a material filing for that period arrives."""
+        point-in-time on public filing dates plus the configured settlement delay.
+        Daily changes compare eligible managers across adjacent report quarters, using only
+        the versions public by that day's snapshot."""
 
-        holdings = self._load_source(Tables.sec13f_hr, price_frames.universe)
-        if holdings is None:
+        packet = institutional_inputs.load_filing_vintages(self._store, self._log, price_frames.trading_index.max())
+        if packet is None:
             return None
+        filings, holdings = packet
+        holdings = attach_tickers(holdings, self._load_source(Tables.cusip_ticker_map), price_frames.universe)
 
         cfg = self._institutionals_cfg()
         return build_institutional_feature_panel(
@@ -210,20 +222,27 @@ class StepCubeInstitutionals(Step):
             holdings,
             shares_out_history=shares,
             splits=splits,
+            valuation_close=valuation_close,
+            value_basis=cfg.get("value_basis"),
+            filings=filings,
             break_pct=float(cfg.get("coverage_break_pct", COVERAGE_BREAK_DEFAULT)),
             settle_trading_days=int(cfg.get("f13_settle_trading_days", F13_SETTLE_TRADING_DAYS)),
             revision_min_move=float(cfg.get("f13_revision_min_move", F13_REVISION_MIN_MOVE)),
         )
 
     def _superinvestor_panel(
-        self, frames: PriceFrames, shares: pd.DataFrame | None, splits: pd.DataFrame | None, sink: ConditioningSink
+        self,
+        frames: PriceFrames,
+        shares: pd.DataFrame | None,
+        splits: pd.DataFrame | None,
+        sink: ConditioningSink,
+        valuation_close: pd.DataFrame | None = None,
     ) -> pd.DataFrame | None:
         """Elite-manager 13F conviction (Dataroma superinvestors), layered ON TOP of the
         all-filer features.
 
-        Reads `sec13f_manager_holdings` -- the roster managers' WHOLE books -- not the
-        S&P500-filtered `sec13f_hr`, because a portfolio weight is only comparable across
-        managers when its denominator is the whole book (README Finding 2: the index sleeve
+        Reads immutable accession packets for the roster managers' whole books, because a
+        portfolio weight is only comparable across managers when its denominator is the whole book (README Finding 2: the index sleeve
         is a median 47% of positions and swings 8%-100% by manager). `cusip_ticker_map`
         resolves the S&P500 leg for the numerator without touching that denominator, and
         `prices_splits` restates a prior quarter's share count so a 20-for-1 split is not
@@ -241,10 +260,13 @@ class StepCubeInstitutionals(Step):
             self._log.warning("`superinvestor_roster` has no snapshot -> elite 13F features skipped (run `data_extract superinvestors -F`).")
             return None
 
-        holdings = load_superinvestor_holdings(self._context, roster)
-        if holdings is None or holdings.empty:
+        packet = institutional_inputs.load_filing_vintages(
+            self._store, self._log, frames.trading_index.max(), sorted(roster), table=Tables.sec13f_manager_holdings
+        )
+        if packet is None:
             self._log.warning("No elite-manager 13F holdings -> superinvestor features skipped.")
             return None
+        filings, holdings = packet
         self._log.info(
             "Elite 13F books: %s rows across %s ever-listed managers (%s on today's roster)",
             len(holdings),
@@ -259,6 +281,9 @@ class StepCubeInstitutionals(Step):
             shares_out_history=shares,
             cusip_map=self._load_source(Tables.cusip_ticker_map),
             splits=splits,
+            valuation_close=valuation_close,
+            value_basis=self._institutionals_cfg().get("value_basis"),
+            filings=filings,
             selection=self._superinvestor_selector(),
             decay_halflife=float(self._decay_halflife("super")),
             stale_quarters=int(self._superinvestor_cfg().get("stale_quarters", 4)),

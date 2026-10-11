@@ -19,6 +19,8 @@ incremental run able to replace that row.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import numpy as np
@@ -387,6 +389,7 @@ def _run_institutionals(monkeypatch, store: _StatefulGovernanceStore, calendar: 
     monkeypatch.setattr(step_cube_institutionals, "load_trading_calendar", lambda _store: calendar)
     step = cast(Any, object.__new__(StepCubeInstitutionals))
     step._store, step._log, step._cfg = store, logging.getLogger("test"), {}
+    step._context = SimpleNamespace(store=store, log=step._log, config_dir=Path(__file__).resolve().parents[2] / "configs")
     step._part = PART_BY_NAME["cube_part_institutionals"]
     step._load_frames = lambda: frames
     step._load_shares_out = lambda: shares
@@ -480,6 +483,12 @@ class _StatefulGovernanceStore:
 
     def columns(self, _part):
         return list(self.rows.columns)
+
+    def load(self, table: object, *, columns: list[str], where: dict[str, Any], optional: bool) -> pd.DataFrame:
+        assert table is Tables.sharadar_actions and optional
+        assert set(where["ticker"]) == {"AAA", "BBB"}
+        assert where["action"] == ["split", "spinoff"]
+        return pd.DataFrame(columns=columns)
 
     def distinct(self, _part, column):
         return self.rows[column].drop_duplicates().tolist()

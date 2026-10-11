@@ -78,6 +78,15 @@ def test_members_case_insensitive_required_optional_and_upper(tmp_path: Path) ->
     print("  mixed-case member found, columns upper-cased and projected, optional absent -> empty frame, required absent -> {}. Validated.")
 
 
+def test_nested_members_and_ambiguous_basenames(tmp_path: Path) -> None:
+    path = _zip(tmp_path / "nested.zip", {"SEC_2025/Submission.tsv": "id\na1\n"})
+    frames = read_zip_tables(path, {"SUBMISSION.tsv": ZipRead()}, on_corrupt="skip", log=LOG)
+    assert frames["SUBMISSION.tsv"].id.tolist() == ["a1"]
+    path = _zip(tmp_path / "ambiguous.zip", {"a/submission.tsv": "id\na1\n", "b/submission.tsv": "id\na2\n"})
+    assert read_zip_tables(path, {"SUBMISSION.tsv": ZipRead()}, on_corrupt="skip", log=LOG) == {}
+    print("SANITY: nested SEC members are found; duplicate basenames never select an arbitrary source.")
+
+
 def test_chunked_keep_concatenates_matches_and_returns_bare_frame_when_none_match(tmp_path: Path) -> None:
     rows = "".join(f"a{i}\t{'Pension' if i % 3 == 0 else 'Other'}\n" for i in range(10))
     path = _zip(tmp_path / "q.zip", {"num.txt": "adsh\ttag\n" + rows})
@@ -87,11 +96,13 @@ def test_chunked_keep_concatenates_matches_and_returns_bare_frame_when_none_matc
     assert tables["num.txt"]["adsh"].tolist() == ["a0", "a3", "a6", "a9"]
     assert tables["num.txt"].index.tolist() == [0, 1, 2, 3]
     none = read_zip_tables(path, {"num.txt": ZipRead(keep=lambda chunk: chunk["tag"] == "Nope", chunksize=4)}, on_corrupt="delete", log=LOG)
-    assert none is not None and none["num.txt"].shape == (0, 0)
+    assert none is not None and none["num.txt"].shape == (0, 2)
     with pytest.raises(ValueError):
         ZipRead(keep=lambda chunk: chunk["tag"] == "Pension")
     print("\n=== SANITY CHECK: chunked row filter ===")
-    print("  4 of 10 rows kept across 3 chunks with a fresh index; no match -> a bare empty frame; keep without chunksize rejected. Validated.")
+    print(
+        "  4 of 10 rows kept across 3 chunks with a fresh index; no match -> empty frame retaining source columns; keep without chunksize rejected. Validated."
+    )
 
 
 def test_cached_periods_lists_non_empty_archives_by_their_tag(tmp_path: Path) -> None:

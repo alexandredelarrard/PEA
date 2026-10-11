@@ -10,7 +10,7 @@ that shared five of their six steps and drifted apart on the sixth.
 
 What they genuinely differ on is exactly three things, and each is a parameter here:
 the dedup KEY, the `position_type == "common"` filter, and whether `cik` needs padding.
-Everything else -- the date coercion, the numeric coercion, the required-key dropna, and the
+Everything else -- the date coercion, the numeric coercion with dollar missingness preserved, the required-key dropna, and the
 amendment-wins ordering -- is identical and is stated once.
 """
 
@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 
+import numpy as np
 import pandas as pd
 
 from src.constants.constants import SEC_13F_FILING_LAG_DAYS
@@ -111,7 +112,7 @@ def clean_holdings(
     `pad_ciks` applies `pad_cik`, needed only where the source writes `cik` straight from the
     SEC submission rather than through the padding the roster join expects.
 
-    `numeric` is the set to coerce and zero-fill -- see `_NUMERIC_13F`. The elite table passes
+    `numeric` is the set to coerce; only shares are zero-filled -- see `_NUMERIC_13F`. The elite table passes
     only `("shares", "value_usd")`, because it resolves options by ROW (`position_type`) and
     two all-zero option columns on its conviction frame would be noise.
 
@@ -146,7 +147,9 @@ def clean_holdings(
         if col in h.columns:
             h[col] = to_day(h[col])
     for col in numeric:
-        h[col] = pd.to_numeric(h[col], errors="coerce").fillna(0.0) if col in h.columns else pd.Series(0.0, index=h.index)
+        h[col] = pd.to_numeric(h[col], errors="coerce") if col in h.columns else pd.Series(np.nan if col == "value_usd" else 0.0, index=h.index)
+        if col == "shares":
+            h[col] = h[col].fillna(0.0)
 
     h = h.dropna(subset=list(key))
     if common_only and "position_type" in h.columns:

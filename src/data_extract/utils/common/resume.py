@@ -88,6 +88,8 @@ def document_floor(table: Table, as_of: pd.Timestamp, years_history: int, runtim
 def stored_accessions(context: Context, table: Table, keys: Sequence[str], scope: str, where: dict[str, object] | None = None) -> dict[str, set[str]]:
     """Accessions already stored on the rows matching `where`, markers included: per key (`DONE_PER_KEY`,
     one two-column read) or one table-wide set shared by every key (`DONE_TABLE`, one `SELECT DISTINCT`)."""
+    if table in (Tables.sec13f_hr, Tables.sec13f_manager_holdings) and not {"accession_number", "parse_status"} <= set(context.store.columns(table)):
+        return {key: set() for key in keys}
     key_col = table.resume.key if table.resume is not None and table.resume.key else "ticker"
     if scope == DONE_TABLE:
         everywhere = set(stored_values(context, table, "accession_number", where=where))

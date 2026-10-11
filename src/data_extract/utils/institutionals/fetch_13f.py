@@ -2,8 +2,8 @@
 fetch_13f.py (src/data_extract/utils/institutionals/fetch_13f.py)
 -----------------------------------------------------------------
 One oldest-first walk over every 13F-HR by filing date (edgartools), feeding two tables from one parse: the
-universe ticker slice of each book -> `sec13f_hr`, and the complete CUSIP book of every roster manager ->
-`sec13f_manager_holdings`. In-batch dedup keeps the last filed (amendment wins). Tickers come from the
+complete CUSIP book -> `sec13f_hr`, and roster managers also -> `sec13f_manager_holdings`.
+Originals and amendments have separate accession keys. Tickers come from the
 CUSIP map (OpenFIGI), never from issuer names.
 
 The window runs from `max(sec13f_hr.filing_date)` minus the table's overlap to the run date. Transient read
@@ -14,25 +14,38 @@ an ERROR naming its accession. A scoped (`-t`) run never reads past the stored f
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
+import math
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, cast
+from xml.etree import ElementTree
 
 import pandas as pd
 import pyarrow.compute as pc
 from edgar import Filings, get_filings
+from edgar.thirteenf.parsers.infotable_xml import parse_infotable_xml
 from tqdm import tqdm
 
 from src.constants.constants import SEC_13F_FORMS
 from src.context import Context
 from src.data_extract.utils.common.edgar_driver import FilingStamp, RetryRounds
 from src.data_extract.utils.common.empty_markers import marker_mask
-from src.data_extract.utils.common.resume import document_floor
+from src.data_extract.utils.common.resume import DONE_PER_KEY, document_floor, stored_accessions
 from src.data_extract.utils.common.sec_io import TransientReadError, configure, filing_obj, sec_call
 from src.data_extract.utils.institutionals.fetch_cusip_map import build_cusip_ticker_map, normalize_cusip
-from src.data_extract.utils.institutionals.legacy_13f_fallback import needs_legacy_fallback, parse_legacy_information_table
+from src.data_extract.utils.institutionals.legacy_13f_fallback import (
+    _FOOTER_TOTAL,
+    _VALUE_TOTAL,
+    _value_total_error,
+    needs_legacy_fallback,
+    parse_legacy_information_table,
+)
+from src.data_extract.utils.institutionals.value_units import ValueUnits, normalize_information_values, resolve_value_units
 from src.data_store.schema import Resume, Tables
 from src.utils.string import pad_cik, pad_cik_series
 from src.utils.superinvestor_roster import roster_cik_union
@@ -80,10 +93,10 @@ _BOOK_COLS = [
     "other_value",
 ]
 
-#: `sec13f_manager_holdings`' PK; the last filing wins on it.
+#: Legacy diagnostic reduction key; immutable source storage also keys by accession.
 _BOOK_KEY = ["cik", "period", "cusip"]
 
-# edgartools infers the per-filing $thousands/$ones unit; an implied price outside this band flags a wrong inference.
+# Cheap source sanity check; aggregation validates units/values against historical quotes.
 _IMPLIED_PRICE_BAND = (1.0, 5000.0)
 
 #: One position above this, or issuer text matching the info-table pattern, is a parse artefact.
@@ -133,7 +146,9 @@ def _holding_masks(infotable: pd.DataFrame) -> tuple[dict[str, pd.Series], pd.Se
     putcall = _pick(infotable, "PUTCALL").astype("string").str.strip().str.upper().fillna("")
     amttype = _pick(infotable, "SSHPRNAMTTYPE", "Type").astype("string").str.strip().str.upper().fillna("")
     amt = pd.to_numeric(_pick(infotable, "SSHPRNAMT", "SharesPrnAmount"), errors="coerce").fillna(0.0)
-    val = pd.to_numeric(_pick(infotable, "VALUE"), errors="coerce").fillna(0.0)
+    val = pd.to_numeric(_pick(infotable, "VALUE"), errors="coerce")
+    if "raw_value" not in infotable:
+        val = val.fillna(0.0)
 
     is_call = putcall == "CALL"
     is_put = putcall == "PUT"
@@ -198,6 +213,16 @@ def _book_frame(cik: str, filing_date: Any, period: Any, infotable: pd.DataFrame
     numeric = [c for c in typed.columns if c not in ("cusip", "issuer_name", "title_of_class")]
     out = typed.groupby("cusip", as_index=False).agg({**{c: "sum" for c in numeric}, "issuer_name": "first", "title_of_class": "first"})
     out["position_type"] = _dominant_type(out)
+    if "raw_value" in infotable:
+        # Unknown dollars cannot become zero through the CUSIP sum (including mixed legs).
+        invalid = typed.groupby("cusip")[list(_VALUE_BY_TYPE.values())].agg(lambda values: values.isna().any())
+        for column in _VALUE_BY_TYPE.values():
+            out[column] = out[column].mask(out["cusip"].map(invalid[column]))
+        source_types = position_type(infotable)
+        source_cusips = _pick(infotable, "CUSIP").map(normalize_cusip)
+        for name in reversed(POSITION_TYPES):
+            present = set(source_cusips[source_types.eq(name)].dropna())
+            out.loc[out["cusip"].isin(present), "position_type"] = name
     out["cik"] = pad_cik(cik)  # the stored form; the PK join depends on matching it
     out["period"] = pd.Timestamp(period)
     out["filing_date"] = pd.Timestamp(filing_date)
@@ -226,7 +251,33 @@ def _legacy_book(stamp: FilingStamp, raw: str) -> pd.DataFrame:
     return book
 
 
-def _read_filing(stamp: FilingStamp) -> pd.DataFrame | ReadFailure:
+def _source_information_table(report: Any, stamp: FilingStamp, xml: str | None, raw: str | None) -> tuple[pd.DataFrame, ValueUnits]:
+    """Raw parser output and source-unit evidence, for the versioned-book path only."""
+    schema = sec_call(getattr, report, "_schema_version", None, label=f"{stamp.accession_number} schema_version")
+    units = resolve_value_units(stamp.filed, schema_version=schema, information_table_text=raw)
+    if xml:
+        root = ElementTree.fromstring(xml)  # Strict parse: library recovery must not certify a partial book.
+        source_rows = [element for element in root.iter() if element.tag.rsplit("}", 1)[-1] == "infoTable"]
+        table = parse_infotable_xml(xml)
+        if len(table) != len(source_rows):
+            raise ValueError("13F raw XML row count differs from parsed information table")
+    elif raw:
+        table = parse_legacy_information_table(raw, value_factor=1.0, verify_values=False)
+    else:
+        return pd.DataFrame(), units
+    if table.empty:
+        return table, units
+    normalized = normalize_information_values(table, units)
+    if raw and units.factor is not None:
+        value_column = next(column for column in normalized if column.lower() == "value")
+        error = _value_total_error(raw, normalized[value_column].tolist(), default_factor=units.factor)
+        if error:
+            units = ValueUnits(units.expected_factor, units.stated_factor, None, "conflicting_cover_total")
+            normalized = normalize_information_values(table, units)
+    return normalized, units
+
+
+def _read_filing(stamp: FilingStamp, *, source_values: bool = False) -> pd.DataFrame | ReadFailure:
     """Fetch and parse one 13F-HR into its book: empty for an empty info table, a `ReadFailure`
     (not logged; the caller decides) when the read failed, so one bad filing never aborts a batch.
     The failure is transient exactly when `sec_io` gave up on a throttle, 5xx or network error.
@@ -239,6 +290,11 @@ def _read_filing(stamp: FilingStamp) -> pd.DataFrame | ReadFailure:
         report = filing_obj(stamp.filing)
         xml = sec_call(getattr, report, "infotable_xml", None, label=f"{stamp.accession_number} infotable_xml")
         raw = None if xml else sec_call(getattr, report, "infotable_txt", None, label=f"{stamp.accession_number} infotable_txt")
+        if source_values:
+            infotable, units = _source_information_table(report, stamp, xml, raw)
+            book = pd.DataFrame(columns=_BOOK_COLS) if infotable.empty else _book_frame(stamp.cik, stamp.filed, stamp.period_of_report, infotable)
+            book.attrs["value_units"] = units
+            return book
         try:
             infotable, edgar_error = report.infotable, None
         except Exception as e:  # noqa: BLE001 -- malformed legacy text makes EdgarTools raise
@@ -263,8 +319,7 @@ def _resolve_tickers(book: pd.DataFrame, cmap: pd.DataFrame, universe: set[str])
 
 
 def _suspect_prices(df: pd.DataFrame) -> int:
-    """Rows whose implied share price falls outside `_IMPLIED_PRICE_BAND` -- the detector for
-    edgartools inferring the wrong $thousands-vs-$ones unit on a filing."""
+    """Source common positions with extreme implied prices, before aggregate P1 repair."""
     if df.empty:
         return 0
     implied = (df["value_usd"] / df["shares"].where(df["shares"] > 0)).dropna()
@@ -335,7 +390,26 @@ def _resolve_window(
         return since, until, None
     overlap = pd.Timedelta(days=cast(Resume, Tables.sec13f_hr.resume).overlap_days)
     hold_from = as_of - overlap
-    watermark = context.store.max_date(Tables.sec13f_hr, "filing_date")
+    completed = (
+        context.store.load(
+            Tables.sec13f_hr,
+            columns=["filing_date"],
+            where={"parse_status": "complete"},
+            markers=True,
+            limit=1,
+            order_by="filing_date",
+            descending=True,
+            optional=True,
+        )
+        if "parse_status" in context.store.columns(Tables.sec13f_hr)
+        else None
+    )
+    vintage_frontier = pd.Timestamp(completed.iloc[0].filing_date) if completed is not None else None
+    legacy_frontier = context.store.max_date(Tables.sec13f_hr, "filing_date")
+    frontiers = [date for date in (vintage_frontier, legacy_frontier) if date is not None]
+    watermark = max(frontiers) if frontiers else None
+    if vintage_frontier is None and legacy_frontier is not None:
+        context.log.warning("13F: filing versions start at the legacy frontier; older source versions need historical recovery.")
     if watermark is None:
         since = document_floor(Tables.sec13f_hr, as_of, years_history)
         logger.warning(f"{Tables.sec13f_hr} has no stored filing_date -- full history from {since:%Y-%m-%d}")
@@ -360,7 +434,7 @@ class _Read:
     """One listed filing in walk order and its latest read: a book, or a `ReadFailure`."""
 
     stamp: FilingStamp
-    result: pd.DataFrame | ReadFailure
+    result: tuple[pd.DataFrame, pd.DataFrame] | ReadFailure
 
     @property
     def transient(self) -> bool:
@@ -369,42 +443,61 @@ class _Read:
 
 @dataclass
 class _Saver:
-    """Books waiting to be saved, upserted every `save_every` filings with rows."""
+    """Save each accession atomically and accumulate walk diagnostics."""
 
     context: Context
     universe: set[str]
     roster_ciks: set[str]
     save_every: int
     walk: _WalkState = field(default_factory=_WalkState)
-    batch: list[pd.DataFrame] = field(default_factory=list)
 
     def add(self, read: _Read) -> None:
-        """Queue a read's book (an unreadable filing is skipped with an ERROR); save a full batch."""
+        """Save a verified filing; report an unreadable source without certifying completion."""
         if isinstance(read.result, ReadFailure):
             logger.error(f"13F {read.stamp.accession_number} (filed {read.stamp.filed:%Y-%m-%d}) is unreadable ({read.result.reason}); skipped")
-        elif not read.result.empty:
-            self.batch.append(read.result)
-        if len(self.batch) >= self.save_every:
-            self.flush()
+        else:
+            manifest, book = read.result
+            self.save_packet(manifest, book)
 
-    def flush(self) -> None:
-        if self.batch:
-            _save_batch(self.context, pd.concat(self.batch, ignore_index=True), self.universe, self.roster_ciks, self.walk)
-            self.batch.clear()
+    def save_packet(self, manifest: pd.DataFrame, book: pd.DataFrame) -> None:
+        """Preserve the full source book in each existing destination, without latest-only collapse."""
+        cmap = _ticker_map(self.context, book, self.walk)
+        broad = book.merge(cmap[["cusip", "ticker"]].drop_duplicates("cusip"), on="cusip", how="left")
+        broad["ticker"] = broad["ticker"].fillna(Tables.sec13f_hr.empty_marker[1])
+        self.walk.hr_saved += self.context.store.save_13f_filing(manifest, broad, table=Tables.sec13f_hr)
+        self.walk.hr_suspect += _suspect_prices(book)
+        if str(manifest.iloc[0].cik) in self.roster_ciks:
+            self.walk.book_saved += self.context.store.save_13f_filing(manifest, book)
+            self.walk.book_suspect += _suspect_prices(book)
 
 
 def _first_pass(filings: Filings | list[Any], saver: _Saver) -> list[_Read]:
     """Read every filing in order, saving books until the first transient failure; from that
     filing on, the reads are returned unsaved for the retry rounds."""
     held: list[_Read] = []
+    completed: dict[str, set[str]] = {}
     for filing in tqdm(filings, total=len(filings), desc="13F-HR"):
         stamp = FilingStamp.of(filing, "")
-        read = _Read(stamp, _read_filing(stamp))
+        if stamp.cik not in completed:
+            completed[stamp.cik] = stored_accessions(
+                saver.context,
+                Tables.sec13f_hr,
+                [stamp.cik],
+                DONE_PER_KEY,
+                where={"parse_status": "complete"},
+            )[stamp.cik]
+            if stamp.cik in saver.roster_ciks:
+                manager_done = stored_accessions(
+                    saver.context, Tables.sec13f_manager_holdings, [stamp.cik], DONE_PER_KEY, where={"parse_status": "complete"}
+                )[stamp.cik]
+                completed[stamp.cik] &= manager_done
+        if stamp.accession_number in completed[stamp.cik]:
+            continue
+        read = _Read(stamp, read_filing_vintage(stamp))
         if held or read.transient:
             held.append(read)
         else:
             saver.add(read)
-    saver.flush()
     return held
 
 
@@ -419,7 +512,7 @@ def _retry_rounds(context: Context, held: list[_Read]) -> None:
         logger.info(f"13F: retry round {round_no}/{policy.rounds} for {len(failed)} filing(s) after {wait:.0f}s")
         _sleep(wait)
         for read in failed:
-            read.result = _read_filing(read.stamp)
+            read.result = read_filing_vintage(read.stamp)
 
 
 def _save_held(held: list[_Read], hold_from: pd.Timestamp | None, saver: _Saver) -> int:
@@ -431,14 +524,12 @@ def _save_held(held: list[_Read], hold_from: pd.Timestamp | None, saver: _Saver)
             continue
         reason, filed = cast(ReadFailure, read.result).reason, read.stamp.filed.normalize()
         if hold_from is not None and filed >= hold_from:
-            saver.flush()
             logger.warning(
                 f"13F: {read.stamp.accession_number} (filed {filed:%Y-%m-%d}) still fails ({reason}); it and the "
                 f"{len(held) - i - 1} filing(s) after it are held back, so the next run starts at or before it"
             )
             return len(held) - i
         logger.error(f"13F: {read.stamp.accession_number} (filed {filed:%Y-%m-%d}) still fails ({reason}) and is older than the overlap; skipped")
-    saver.flush()
     return 0
 
 
@@ -465,11 +556,11 @@ def fetch_13f(
     filing_window: tuple[str, str] | None = None,
     as_of: pd.Timestamp | None = None,
 ) -> int:
-    """Ingest every 13F-HR filed in the resume window (or the `filing_window` backfill, watermark
-    untouched), oldest first, so an amendment overwrites its original. Each batch upserts the `tickers`
-    slice to `sec13f_hr` and roster CIKs' books to `sec13f_manager_holdings`, idempotent on their PKs.
-    One EDGAR walk at a time. Returns the filings still failing transiently after the retry rounds
-    (held back or skipped); 0 for a complete walk."""
+    """Save verified original/amendment accessions separately, oldest first in the resume window.
+
+    Latest-only compatibility tables are still batched. Completed accession packets are not re-read.
+    Returns transiently unread filings; explicit filing windows leave the regular frontier unchanged.
+    """
     context.ensure_edgar_identity()
     configure(context)
     run_date = cast(pd.Timestamp, pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize())
@@ -493,3 +584,246 @@ def fetch_13f(
     n_held = _save_held(held, hold_from, saver)
     _log_walk(saver.walk, total - n_held)
     return sum(1 for read in held if read.transient)
+
+
+def filing_vintage(
+    information_table: pd.DataFrame,
+    *,
+    cik: str,
+    accession_number: str,
+    period: object,
+    filing_date: object,
+    amendment_type: str,
+    source: str,
+    declared_rows: int | None = None,
+    declared_value: float | None = None,
+    restricted: bool = False,
+    report_type: str = "13F HOLDINGS REPORT",
+    amendment_number: int = 0,
+    units: ValueUnits | None = None,
+    accepted_at: object = None,
+    source_checksum: str | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Prepare one complete accession; raw typed dollars never lose their source basis."""
+    kind = amendment_type.strip().lower().replace("new holdings", "additions")
+    if kind not in {"original", "restatement", "additions"}:
+        raise ValueError(f"Unknown 13F amendment type: {amendment_type!r}")
+    if not accession_number or pd.isna(pd.Timestamp(period)) or pd.isna(pd.Timestamp(filing_date)):
+        raise ValueError("13F accession, report period and filing date are required")
+    units = units or resolve_value_units(filing_date)
+    raw = information_table.copy()
+    raw["VALUE"] = pd.to_numeric(_pick(raw, "VALUE"), errors="coerce")
+    amounts = pd.to_numeric(_pick(raw, "SSHPRNAMT", "SharesPrnAmount"), errors="coerce")
+    if not amounts.map(math.isfinite).all() or amounts.lt(0).any() or not raw["VALUE"].map(math.isfinite).all() or raw["VALUE"].lt(0).any():
+        raise ValueError("13F source quantities/values are incomplete or negative")
+    if declared_rows is None or int(declared_rows) != len(raw):
+        raise ValueError("13F source row count does not reconcile")
+    total = float(raw["VALUE"].sum())
+    if (
+        declared_value is None
+        or not math.isfinite(float(declared_value))
+        or not math.isclose(total, float(declared_value), rel_tol=0.005, abs_tol=1.0)
+    ):
+        raise ValueError(f"13F source VALUE total does not reconcile: rows={total:g}, declared={declared_value!r}")
+    raw["raw_value"] = raw["VALUE"]
+    book = _book_frame(cik, filing_date, period, raw)
+    if len(raw) and _pick(raw, "CUSIP").map(normalize_cusip).isna().any():
+        raise ValueError("13F source CUSIP identity is missing")
+    for column in _VALUE_BY_TYPE.values():
+        book["raw_" + column] = book[column]
+        book[column] = book[column] * units.factor if units.factor is not None else book[column].where(book[column].eq(0))
+    identities = pd.DataFrame(
+        {
+            "cusip": _pick(raw, "CUSIP").map(normalize_cusip),
+            "class": _pick(raw, "TITLEOFCLASS", "Class").fillna("").astype(str).str.strip().str.replace(r"\s+", " ", regex=True),
+        }
+    )
+    evidence = identities.groupby("cusip")["class"].agg(lambda s: json.dumps(sorted(set(s))))
+    book["class_evidence"] = book["cusip"].map(evidence)
+    book["accession_number"] = accession_number
+    # Include cover semantics in the canonical checksum: changed amendment meaning is a conflict.
+    canonical = {
+        "cik": pad_cik(cik),
+        "accession": accession_number,
+        "period": str(pd.Timestamp(period).date()),
+        "filed": str(pd.Timestamp(filing_date).date()),
+        "kind": kind,
+        "restricted": restricted,
+        "report_type": report_type,
+        "amendment_number": amendment_number,
+        "declared_rows": int(declared_rows),
+        "declared_value": declared_value,
+        "unit_factor": units.factor,
+        "unit_evidence": units.evidence,
+        "rows": raw.fillna("").astype(str).sort_values(list(raw.columns), kind="stable").to_dict("records"),
+    }
+    checksum = source_checksum or hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest()
+    accepted = pd.to_datetime(accepted_at, utc=True) if accepted_at is not None else pd.NaT
+    manifest = pd.DataFrame(
+        [
+            {
+                "accession_number": accession_number,
+                "cik": pad_cik(cik),
+                "period": pd.Timestamp(period),
+                "filing_date": pd.Timestamp(filing_date),
+                "form": "13F-HR" if kind == "original" else "13F-HR/A",
+                "amendment_type": kind,
+                "amendment_number": int(amendment_number),
+                "report_type": report_type,
+                "accepted_at": accepted,
+                "clock_source": "SEC acceptance" if pd.notna(accepted) else "SEC filing date",
+                "clock_timezone": "UTC" if pd.notna(accepted) else "America/New_York",
+                "clock_precision": "timestamp" if pd.notna(accepted) else "date",
+                "restricted": bool(restricted),
+                "source": source,
+                "source_checksum": checksum,
+                "expected_unit_factor": units.expected_factor,
+                "stated_unit_factor": units.stated_factor,
+                "value_unit_factor": units.factor,
+                "value_unit_evidence": units.evidence,
+                "source_row_count": len(raw),
+                "declared_row_count": int(declared_rows),
+                "source_value_total": total,
+                "declared_value_total": float(declared_value),
+                "parsed_row_count": len(book),
+                "parse_status": "complete",
+                "completed_at": pd.Timestamp.now(tz="UTC").tz_localize(None),
+            }
+        ]
+    )
+    # Stable dtypes also when an empty or unknown-unit book is the first saved accession.
+    for column in ("expected_unit_factor", "stated_unit_factor", "value_unit_factor"):
+        manifest[column] = pd.to_numeric(manifest[column], errors="coerce").astype(float)
+    manifest["accepted_at"] = pd.to_datetime(manifest["accepted_at"], utc=True).dt.tz_localize(None)
+    for column in (*_VALUE_BY_TYPE.values(), *("raw_" + c for c in _VALUE_BY_TYPE.values()), "shares", "call_shares", "put_shares", "debt_prn"):
+        book[column] = pd.to_numeric(book[column], errors="coerce").astype(float)
+    for column in ("cik", "accession_number", "cusip", "issuer_name", "title_of_class", "position_type", "class_evidence"):
+        book[column] = book[column].astype("string")
+    return manifest, book
+
+
+def read_filing_vintage(stamp: FilingStamp) -> tuple[pd.DataFrame, pd.DataFrame] | ReadFailure:
+    """Strict source parse for accession recovery; never certify an unverified book."""
+    try:
+        report = filing_obj(stamp.filing)
+        xml = sec_call(getattr, report, "infotable_xml", None, label=f"{stamp.accession_number} infotable_xml")
+        if not xml:
+            raw = sec_call(getattr, report, "infotable_txt", None, label=f"{stamp.accession_number} infotable_txt")
+            if (
+                not raw
+                or not (_VALUE_TOTAL.search(raw) or _FOOTER_TOTAL.search(raw))
+                or not re.search(
+                    r"\[\s*[xX]\s*\]\s*13F\s+(?:HOLDINGS|COMBINATION|NOTICE)\s+REPORT",
+                    raw,
+                    re.I,
+                )
+            ):
+                raw = sec_call(stamp.filing.full_text_submission, label=f"{stamp.accession_number} full legacy submission")
+            if not raw:
+                raise ValueError("13F legacy information table is missing")
+            return text_filing_vintage(raw, stamp)
+        primary = sec_call(stamp.filing.xml, label=f"{stamp.accession_number} cover XML")
+        return xml_filing_vintage(
+            primary,
+            xml,
+            cik=stamp.cik,
+            accession_number=stamp.accession_number,
+            period=stamp.period_of_report,
+            filing_date=stamp.filed,
+            source=stamp.doc_url,
+            accepted_at=getattr(stamp.filing, "acceptance_datetime", None),
+            expected_form=stamp.form,
+        )
+    except Exception as exc:  # noqa: BLE001 -- one malformed source is not a complete filing
+        return ReadFailure(isinstance(exc, TransientReadError), f"{type(exc).__name__}: {exc}")
+
+
+def text_filing_vintage(raw: str, stamp: FilingStamp) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Reuse the source-reconciled pre-XML parser; unsupported cover semantics remain explicit."""
+    units = resolve_value_units(stamp.filed, information_table_text=raw)
+    if units.factor is None or not (_VALUE_TOTAL.search(raw) or _FOOTER_TOTAL.search(raw)):
+        raise ValueError("13F legacy VALUE unit/cover total is unverifiable")
+    verified = parse_legacy_information_table(raw, value_factor=units.factor)
+    info = verified.copy()
+    info["VALUE"] /= units.factor
+    kind = "original"
+    if stamp.is_amendment:
+        restated = re.search(r"\[\s*[xX]\s*\]\s*(?:is\s+a\s+)?restatement", raw, re.I)
+        added = re.search(r"\[\s*[xX]\s*\]\s*(?:adds?\s+)?new\s+holdings", raw, re.I)
+        if bool(restated) == bool(added):
+            raise ValueError("13F legacy amendment type is unverifiable")
+        kind = "restatement" if restated else "additions"
+    report = re.search(r"\[\s*[xX]\s*\]\s*(13F\s+(?:HOLDINGS|COMBINATION|NOTICE)\s+REPORT)", raw, re.I)
+    if report is None:
+        raise ValueError("13F legacy report type is unverifiable")
+    return filing_vintage(
+        info,
+        cik=stamp.cik,
+        accession_number=stamp.accession_number,
+        period=stamp.period_of_report,
+        filing_date=stamp.filed,
+        amendment_type=kind,
+        source=stamp.doc_url or "SEC legacy text",
+        declared_rows=len(info),
+        declared_value=float(info.VALUE.sum()),
+        report_type=re.sub(r"\s+", " ", report.group(1)).upper(),
+        restricted=bool(re.search(r"confidential\s+information\s+has\s+been\s+omitted", raw, re.I)),
+        accepted_at=getattr(stamp.filing, "acceptance_datetime", None),
+        units=units,
+        source_checksum=hashlib.sha256(raw.encode()).hexdigest(),
+    )
+
+
+def xml_filing_vintage(
+    primary_xml: str,
+    information_xml: str,
+    *,
+    cik: str,
+    accession_number: str,
+    period: object,
+    filing_date: object,
+    source: str,
+    accepted_at: object = None,
+    expected_form: str | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Exact original documents, using the same completion and unit contract as bulk sources."""
+    root = ElementTree.fromstring(primary_xml)
+    fields = {element.tag.rsplit("}", 1)[-1]: (element.text or "").strip() for element in root.iter()}
+    # Original SEC XML may omit the false checkbox; only its cover form can establish that default.
+    default = "false" if fields.get("submissionType") == "13F-HR" else ""
+    flag = fields.get("isAmendment", default).lower()
+    if flag not in {"true", "false", "1", "0"}:
+        raise ValueError("13F cover amendment flag is missing or invalid")
+    is_amendment = flag in {"true", "1"}
+    cover_form = fields.get("submissionType")
+    if cover_form is not None and (cover_form not in {"13F-HR", "13F-HR/A"} or is_amendment != cover_form.endswith("/A")):
+        raise ValueError("13F cover amendment flag disagrees with cover form")
+    if expected_form is not None and is_amendment != expected_form.endswith("/A"):
+        raise ValueError("13F cover amendment flag disagrees with filing form")
+    reported = pd.to_datetime(fields.get("reportCalendarOrQuarter", ""), errors="coerce")
+    if pd.isna(reported) or reported.normalize() != pd.Timestamp(period).normalize():
+        raise ValueError("13F cover report period disagrees with accession report period")
+    info_root = ElementTree.fromstring(information_xml)
+    source_count = sum(element.tag.rsplit("}", 1)[-1] == "infoTable" for element in info_root.iter())
+    info = parse_infotable_xml(information_xml)
+    if source_count != len(info):
+        raise ValueError("13F raw XML row count differs from parsed information table")
+    units = resolve_value_units(filing_date, schema_version=fields.get("schemaVersion"))
+    kind = fields.get("amendmentType", "") if is_amendment else "original"
+    return filing_vintage(
+        info,
+        cik=cik,
+        accession_number=accession_number,
+        period=period,
+        filing_date=filing_date,
+        amendment_type=kind,
+        source=source,
+        declared_rows=int(fields["tableEntryTotal"]),
+        declared_value=float(fields["tableValueTotal"]),
+        restricted=fields.get("isConfidentialOmitted", "false").strip().lower() in {"true", "1", "y"},
+        report_type=fields.get("reportType", ""),
+        amendment_number=int(fields.get("amendmentNo", "0")),
+        accepted_at=accepted_at,
+        units=units,
+        source_checksum=hashlib.sha256((primary_xml + "\n" + information_xml).encode()).hexdigest(),
+    )

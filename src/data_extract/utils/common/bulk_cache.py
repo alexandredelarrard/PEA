@@ -135,8 +135,14 @@ def _read_member(archive: zipfile.ZipFile, name: str, spec: ZipRead) -> pd.DataF
         if spec.keep is None:
             frame = read
         else:
-            kept = [chunk.loc[mask] for chunk in read if (mask := spec.keep(chunk)).any()]
-            frame = pd.concat(kept, ignore_index=True) if kept else pd.DataFrame()
+            kept: list[pd.DataFrame] = []
+            empty = pd.DataFrame()
+            for chunk in read:
+                empty = chunk.iloc[:0]
+                mask = spec.keep(chunk)
+                if mask.any():
+                    kept.append(chunk.loc[mask])
+            frame = pd.concat(kept, ignore_index=True) if kept else empty
     if spec.upper:
         frame.columns = [str(c).upper() for c in frame.columns]
     return frame
@@ -152,7 +158,16 @@ def read_zip_tables(
     """
     try:
         with zipfile.ZipFile(path) as archive:
-            names = {n.lower(): n for n in archive.namelist()}
+            names = {n.lower(): n for n in archive.namelist() if not n.endswith("/")}
+            for member in specs:
+                if member.lower() in names:
+                    continue
+                matches = [n for n in archive.namelist() if n.rsplit("/", 1)[-1].lower() == member.lower()]
+                if len(matches) > 1:
+                    log.error("%s: ambiguous ZIP member %s", path.name, member)
+                    return {}
+                if matches:
+                    names[member.lower()] = matches[0]
             if any(spec.required and member.lower() not in names for member, spec in specs.items()):
                 return {}
             return {

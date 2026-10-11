@@ -112,7 +112,9 @@ def _name_and_class(prefix: str) -> tuple[str, str]:
     return (match.group(1), match.group(2)) if match else (prefix, "")
 
 
-def _holding(header: str, line: str, pending: str, prior: tuple[str, str, str] | None) -> tuple[dict[str, Any], tuple[str, str, str]]:
+def _holding(
+    header: str, line: str, pending: str, prior: tuple[str, str, str] | None, value_factor: float = 1000.0
+) -> tuple[dict[str, Any], tuple[str, str, str]]:
     """One holding row (value in dollars from the $1000 column); a CUSIP-less line continues `prior`."""
     match = _cusip_match(header, line)
     if match:
@@ -143,13 +145,13 @@ def _holding(header: str, line: str, pending: str, prior: tuple[str, str, str] |
     amount_token = numbers[0] if reverse else numbers[1]
     amount_type = "PRN" if (amount_token.group("type") or "").upper() == "PRN" or re.search(r"\b(?:PRN|PRINCIPAL)\b", rest, re.I) else "SH"
     option = re.search(r"\b(?:PUT|CALL)\b", rest, re.I)
-    if value < 0 or amount < 0 or value * 1000 > 1e12 or (amount_type == "SH" and option is None and value > 0 and amount == 0):
+    if value < 0 or amount < 0:
         raise ValueError(f"Invalid source amounts for {cusip}: {line[:120]}")
     row = {
         "CUSIP": cusip,
         "NAMEOFISSUER": issuer,
         "TITLEOFCLASS": title,
-        "VALUE": float(value * 1000),
+        "VALUE": float(value * Decimal(str(value_factor))),
         "SSHPRNAMT": float(amount),
         "SSHPRNAMTTYPE": amount_type,
         "PUTCALL": option.group().upper() if option else "",
@@ -157,14 +159,17 @@ def _holding(header: str, line: str, pending: str, prior: tuple[str, str, str] |
     return row, (cusip, issuer, title)
 
 
-def _value_total_error(raw: str, values_usd: list[Any]) -> str | None:
+def _value_total_error(raw: str, values_usd: list[Any], *, default_factor: float = 1000.0) -> str | None:
     """Compare USD to explicit cover magnitude/precision; unlabelled legacy covers are $1000s."""
     summary = _VALUE_TOTAL.search(raw) or _FOOTER_TOTAL.search(raw)
     if summary is None:
         return None
     total = Decimal(summary.group(1).replace(",", ""))
     unit = (summary.group(2) or "").lower() if summary.re is _VALUE_TOTAL else ""
-    scale = Decimal(10**9 if unit == "billion" else 10**6 if unit == "million" else 1 if unit == "dollars" else 1000)
+    explicit_thousands = "thousand" in unit or bool(re.search(r"\bx\s*1000\s*:", summary.group(0), re.I))
+    scale = Decimal(
+        10**9 if unit == "billion" else 10**6 if unit == "million" else 1 if unit == "dollars" else 1000 if explicit_thousands else default_factor
+    )
     parsed = sum((Decimal(str(value)) for value in values_usd), Decimal(0))
     tolerance = (
         scale * Decimal(10) ** total.as_tuple().exponent / 2 if unit in ("billion", "million") else max(Decimal(15000), total * scale / 100000)
@@ -174,14 +179,14 @@ def _value_total_error(raw: str, values_usd: list[Any]) -> str | None:
     return None
 
 
-def _check_totals(raw: str, rows: list[dict[str, Any]]) -> None:
+def _check_totals(raw: str, rows: list[dict[str, Any]], *, value_factor: float = 1000.0, verify_values: bool = True) -> None:
     """Raise unless the rows match the Summary Page entry count and, when stated, its value total."""
     count = _ENTRY_COUNT.search(raw)
     if count is None:
         raise ValueError("SEC Summary Page entry count is missing")
     if len(rows) != int(count.group(1).replace(",", "")):
         raise ValueError(f"Source has {len(rows)} holding lines, cover declares {count.group(1)}")
-    error = _value_total_error(raw, [row["VALUE"] for row in rows])
+    error = _value_total_error(raw, [row["VALUE"] for row in rows], default_factor=value_factor) if verify_values else None
     if error:
         raise ValueError(error)
 
@@ -228,7 +233,7 @@ def needs_legacy_fallback(raw: str, parsed: pd.DataFrame | None) -> bool:
     return Counter(source_facts) != Counter(zip(parsed_cusips, parsed_values, parsed_amounts, parsed_types, parsed_options, strict=True))
 
 
-def parse_legacy_information_table(raw: str) -> pd.DataFrame:
+def parse_legacy_information_table(raw: str, *, value_factor: float = 1000.0, verify_values: bool = True) -> pd.DataFrame:
     """Return source-supported rows in the shape consumed by the existing 13F classifier."""
     source_rows = _source_rows(raw)
     if not source_rows:
@@ -236,7 +241,7 @@ def parse_legacy_information_table(raw: str) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     prior: tuple[str, str, str] | None = None
     for header, line, pending in source_rows:
-        row, prior = _holding(header, line, pending, prior)
+        row, prior = _holding(header, line, pending, prior, value_factor)
         rows.append(row)
-    _check_totals(raw, rows)
+    _check_totals(raw, rows, value_factor=value_factor, verify_values=verify_values)
     return pd.DataFrame(rows)

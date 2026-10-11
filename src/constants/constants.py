@@ -154,6 +154,10 @@ SEC_13D_FORMS = [
 ]
 SEC_13G_FORMS = ["SC 13G", "SC 13G/A", "SCHEDULE 13G", "SCHEDULE 13G/A"]
 SEC_13F_FORMS = ["13F-HR", "13F-HR/A"]
+# SEC Form 13F v1.7 changed VALUE units on the filing date, including old-quarter amendments.
+SEC_13F_DOLLAR_UNITS_FROM = "2023-01-03"
+SEC_13F_VALUE_FACTORS = (1.0, 0.001, 1000.0)
+SEC_13F_SCHEMA_VALUE_FACTORS: dict[str, float] = {"X0101": 1000.0, "X0102": 1000.0, "X0202": 1.0}
 FUNDAMENTALS_FORMS = ["10-K", "10-K/A", "10-Q", "10-Q/A"]
 DEF14A_FORMS = ["DEF 14A", "DEF 14C", "DEFC14A"]
 

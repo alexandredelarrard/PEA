@@ -449,11 +449,55 @@ def test_a_book_with_all_null_amounts_reads_as_absent_not_zero(sqlite_store):
         assert col in panel_null.columns, col
         pd.testing.assert_series_equal(panel_null[col], panel_absent[col])
     pd.testing.assert_frame_equal(panel_null, panel_absent)
-    # the same NULL book handed straight to the panel (no loader) is zero-filled and moves features
+    # The same unusable book handed straight to the panel is now excluded before aggregation.
     raw = pd.DataFrame(first + _null_amounts(middle) + last + other)
     panel_zero = build_superinvestor_feature_panel(make_frames(idx, peers, universe=_UNIVERSE), raw, _ROSTER, cusip_map=_CUSIP_MAP)
     panel_zero = panel_zero.sort_values(["date", "ticker"]).reset_index(drop=True)
     moved = {c: int((~(panel_zero[c].eq(panel_absent[c]) | (panel_zero[c].isna() & panel_absent[c].isna()))).sum()) for c in named}
-    print(f"  cells a zero-filled NULL book would move, per named feature: {moved}")
-    assert any(moved.values()), "the probe must be sensitive: zero-filling the book has to change a feature"
+    print(f"  raw NULL-book cells differing after exclusion, per named feature: {moved}")
+    assert not any(moved.values()), "unusable NULL rows must behave like an absent book"
+    pd.testing.assert_frame_equal(panel_zero, panel_absent)
     print("  held / w / shares / is_top10 and every panel column are identical to the deleted-book run. Validated.")
+
+
+def test_unknown_book_values_preserve_the_share_position_and_do_not_signal_exit() -> None:
+    h = _holdings()
+    uncertain = (h["cik"] == "0000000001") & (h["period"] == "2025-12-31")
+    h.loc[uncertain, "value_usd"] = np.nan
+    _, state, conv = _prepared(h)
+    one = state.loc[(state.cik == "0000000001") & (state.period == pd.Timestamp("2025-12-31"))].iloc[0]
+    assert pd.isna(one["total_common_value"])
+    contrib = _contrib(conv, state)
+    held = contrib.loc[(contrib.cik == "0000000001") & (contrib.period == pd.Timestamp("2025-12-31")) & contrib.ticker.eq("HOT")].iloc[0]
+    assert bool(held["held"])
+    assert held["shares"] == 1000
+    assert pd.isna(held["w"])
+    print("SANITY: an unknown-dollar book keeps its 1,000-share HOT holding and cannot create a false exit.")
+
+
+def test_partial_missing_dollars_do_not_inflate_known_portfolio_weights() -> None:
+    h = _holdings()
+    h.loc[0, "value_usd"] = np.nan
+    _, state, conv = _prepared(h)
+    group = conv.loc[(conv.cik == "0000000001") & (conv.period == pd.Timestamp("2025-09-30"))]
+    assert group["portfolio_weight"].isna().all()
+    assert group["shares"].sum() == 9000
+    print("SANITY: an incomplete dollar denominator is unknown; other holding weights are not inflated.")
+
+
+def test_absent_common_value_column_reaches_panel_fallback(caplog) -> None:
+    holdings = _holdings().drop(columns="value_usd")
+    idx = pd.bdate_range("2025-09-30", "2026-06-01")
+    prices = pd.DataFrame(10.0, index=pd.DatetimeIndex(["2025-09-30", "2025-12-31", "2026-03-31"]), columns=_UNIVERSE)
+    with caplog.at_level(logging.INFO):
+        panel = build_superinvestor_feature_panel(
+            make_frames(idx, {}, universe=_UNIVERSE),
+            holdings,
+            _ROSTER,
+            cusip_map=_CUSIP_MAP,
+            valuation_close=prices,
+        )
+    assert not panel.empty
+    assert "missing filed value" in caplog.text
+    assert panel.filter(like="f_ic_super_holders").notna().any().any()
+    print("SANITY: the elite panel accepts an absent value column, reconstructs supported common dollars and retains shareholder outputs.")

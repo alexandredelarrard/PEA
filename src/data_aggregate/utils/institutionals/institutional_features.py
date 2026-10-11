@@ -58,6 +58,7 @@ while retaining legitimate late filings as dated revisions.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from typing import Any, cast
 
 import numpy as np
@@ -74,10 +75,11 @@ from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
 from src.data_aggregate.utils.common.price_frames import PriceFrames
 from src.data_aggregate.utils.common.typing import frame_column
-from src.data_aggregate.utils.institutionals.availability import availability_date
+from src.data_aggregate.utils.institutionals.availability import availability_date, filing_public_dates, public_books
 from src.data_aggregate.utils.institutionals.holdings_clean import clean_holdings
-from src.data_aggregate.utils.institutionals.split_basis import future_split_factor
-from src.data_aggregate.utils.institutionals.value_basis import log_register, repair_value_basis
+from src.data_aggregate.utils.institutionals.split_basis import future_split_factor, split_cum_product
+from src.data_aggregate.utils.institutionals.value_basis import log_register, nullable_value_to_daily, repair_value_basis
+from src.utils.institutional_vintages import iter_public_books
 
 logger = logging.getLogger(__name__)
 
@@ -545,12 +547,6 @@ def _quarter_features(
         prev_total = np.nan
         prev_period = None
         for p, pdf in tdf.groupby("period", sort=True):
-            # remove the nan values before doing any sum, otherwise stops
-            # 60680 nans, due to the ratio work before, nulling strange values
-            pdf = pdf.loc[pdf["value_usd"].notnull()]
-            if pdf.empty:
-                continue
-
             ciks = pdf["cik"].to_numpy()
             shares = pdf["shares"].to_numpy(dtype="float64")
             values = pdf["value_usd"].to_numpy(dtype="float64")
@@ -729,6 +725,9 @@ def build_institutional_feature_panel(
     min_prior_holders: int = MIN_PRIOR_HOLDERS,
     settle_trading_days: int = F13_SETTLE_TRADING_DAYS,
     revision_min_move: float = F13_REVISION_MIN_MOVE,
+    valuation_close: pd.DataFrame | None = None,
+    value_basis: Mapping[str, float] | None = None,
+    filings: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Long-format 13F feature panel (`f_<name>` per `EMISSION`). Empty if no holdings.
 
@@ -763,36 +762,53 @@ def build_institutional_feature_panel(
     if splits is None or splits.empty:
         logger.warning("No `prices_splits` -> 13F share changes are NOT split-restated; a 20-for-1 split will read as +1,900%% accumulation.")
 
-    # clean and report holdings
-    holdings = clean_holdings(holdings, key=("ticker", "cik", "period"), filing_band=(F13_MAX_EARLY_DAYS, F13_MAX_LATE_DAYS))
+    if filings is not None:
+        holdings, register = repair_value_basis(holdings, valuation_close, **dict(value_basis or {}))
+        log_register(register, float(holdings.value_usd.sum()), logger)
+        if "value_basis_excluded" in holdings:
+            holdings.loc[holdings.value_basis_excluded, ["shares", "value_usd"]] = np.nan
+        qf = _versioned_quarter_features(
+            filings, holdings, trading_index, splits=splits, settle_days=settle_trading_days, min_prior_holders=min_prior_holders
+        )
+    else:
+        # clean and report holdings
+        holdings = clean_holdings(holdings, key=("ticker", "cik", "period"), filing_band=(F13_MAX_EARLY_DAYS, F13_MAX_LATE_DAYS))
 
-    # ⚠ THE UNIT REPAIR RUNS BEFORE ANYTHING READS A VALUE, and that ordering is the whole
-    # point: `_quarter_features` sums value into `ic_inst_concentration`,
-    # `ic_inst_net_options_ratio` and `ic_inst_value_to_mcap`.
-    # Measured 2026-09-14 on the repaired table, 1.074% of rows (2,458 filings in the
-    # divide-by-1000 band) carry 84.08% of the table's filed dollars, against 15.22% for the
-    # 95.57% of rows that are already correct. Every value-weighted statement made before this
-    # call is a statement about those 2,458 filings.
-    value_before = cast(pd.Series, pd.to_numeric(frame_column(holdings, "value_usd"), errors="coerce")).sum()
-    holdings, register = repair_value_basis(holdings, close_split)
-    log_register(register, float(value_before), logger)
+        # ⚠ THE UNIT REPAIR RUNS BEFORE ANYTHING READS A VALUE, and that ordering is the whole
+        # point: `_quarter_features` sums value into `ic_inst_concentration`,
+        # `ic_inst_net_options_ratio` and `ic_inst_value_to_mcap`.
+        # Measured 2026-09-14 on the repaired table, 1.074% of rows (2,458 filings in the
+        # divide-by-1000 band) carry 84.08% of the table's filed dollars, against 15.22% for the
+        # 95.57% of rows that are already correct. Every value-weighted statement made before this
+        # call is a statement about those 2,458 filings.
+        value_before = cast(pd.Series, pd.to_numeric(frame_column(holdings, "value_usd"), errors="coerce")).sum()
+        holdings, register = repair_value_basis(holdings, valuation_close, **dict(value_basis or {}))
+        log_register(register, float(value_before), logger)
+        if "value_basis_excluded" in holdings:
+            holdings = holdings.loc[~holdings["value_basis_excluded"]]
+        if holdings.empty:
+            return pd.DataFrame(columns=["date", "ticker"])
 
-    holdings = _stamp_availability(holdings, trading_index, settle_trading_days=settle_trading_days)
-    _report_first_publication_shortfall(holdings)
-    _report_availability_coverage(holdings)
+        holdings = _stamp_availability(holdings, trading_index, settle_trading_days=settle_trading_days)
+        _report_first_publication_shortfall(holdings)
+        _report_availability_coverage(holdings)
 
-    # build features
-    qf = _quarter_features(holdings, splits=splits, break_pct=break_pct, min_prior_holders=min_prior_holders, revision_min_move=revision_min_move)
+        # build features
+        qf = _quarter_features(holdings, splits=splits, break_pct=break_pct, min_prior_holders=min_prior_holders, revision_min_move=revision_min_move)
     if qf.empty:
         return pd.DataFrame(columns=["date", "ticker"])
-    _assert_emission_windows_ordered(qf)
+    if filings is None:
+        _assert_emission_windows_ordered(qf)
 
     feats = [c for c in EMISSION if c in qf.columns]
-    fields = {f: fundamentals_to_daily(qf, f, trading_index) for f in feats}
+    value_fields = {"ic_inst_concentration", "ic_inst_net_options_ratio"}
+    fields = {
+        f: (nullable_value_to_daily if filings is not None or f in value_fields else fundamentals_to_daily)(qf, f, trading_index) for f in feats
+    }
 
     if shares_out_history is not None and not shares_out_history.empty:
         # ownership % by SHARES (aggregate 13F shares / shares outstanding)
-        inst_sh = fundamentals_to_daily(qf, "inst_shares", trading_index)
+        inst_sh = nullable_value_to_daily(qf, "inst_shares", trading_index)
 
         # ⚠ `sharesOutstandingPit`, NOT `sharesOutstanding`.
         shares = fundamentals_to_daily(shares_out_history, "sharesOutstandingPit", trading_index)
@@ -816,7 +832,7 @@ def build_institutional_feature_panel(
             )
         else:
             mpos = mcap.where(mcap > 0)
-            inst_val = fundamentals_to_daily(qf, "inst_value", trading_index)
+            inst_val = nullable_value_to_daily(qf, "inst_value", trading_index)
             iv = (inst_val / mpos).replace([np.inf, -np.inf], np.nan)
             if iv.notna().any().any():
                 fields["ic_inst_value_to_mcap"] = iv
@@ -851,3 +867,330 @@ def build_institutional_feature_panel(
         return pd.DataFrame(columns=["date", "ticker"])
     emission = {name: EMISSION[name] for name in fields}
     return build_peer_relative_panel(fields, peer_dict, emission=emission, availability=frames.availability)
+
+
+def vintage_changes(
+    manifests: pd.DataFrame,
+    holdings: pd.DataFrame,
+    as_of: object,
+    trading_index: pd.DatetimeIndex,
+) -> pd.DataFrame:
+    """Scoped manager/CUSIP preview: current levels and causally resolved matched-quarter flows."""
+    books, states = public_books(manifests, holdings, as_of, trading_index)
+    output: list[pd.DataFrame] = []
+    for cik, group in states.groupby("cik", sort=True):
+        usable = group.loc[group["book_known"]].sort_values("period")
+        if usable.empty:
+            continue
+        current = usable.iloc[-1]
+        prior_period = (pd.Timestamp(current.period).to_period("Q") - 1).end_time.normalize()
+        prior_state = group.loc[group["period"].eq(prior_period) & group["book_known"]]
+        cur = books.loc[books.cik.eq(cik) & books.period.eq(current.period)].set_index("cusip")
+        prev = books.loc[books.cik.eq(cik) & books.period.eq(prior_period)].set_index("cusip")
+        names = cur.index.union(prev.index)
+        result = pd.DataFrame(index=names)
+        result["shares"] = cur["shares"].reindex(names)
+        result["prior_shares"] = prev["shares"].reindex(names)
+        paired = not prior_state.empty and bool(current.comparison_eligible) and bool(prior_state.iloc[0].comparison_eligible)
+        if current.zero_eligible:
+            result.loc[~result.index.isin(cur.index), "shares"] = 0.0
+        if not prior_state.empty and prior_state.iloc[0].zero_eligible:
+            result.loc[~result.index.isin(prev.index), "prior_shares"] = 0.0
+        result["comparison_known"] = paired & result["shares"].notna() & result["prior_shares"].notna()
+        result["shares_change"] = (result["shares"] - result["prior_shares"]).where(result["comparison_known"])
+        result["reported_exit"] = result["comparison_known"] & result["shares"].eq(0) & result["prior_shares"].gt(0)
+        result["value_usd"] = cur["value_usd"].reindex(names)
+        result["prior_value_usd"] = prev["value_usd"].reindex(names)
+        if current.zero_eligible:
+            result.loc[~result.index.isin(cur.index), "value_usd"] = 0.0
+        if not prior_state.empty and prior_state.iloc[0].zero_eligible:
+            result.loc[~result.index.isin(prev.index), "prior_value_usd"] = 0.0
+        result["value_change"] = (result["value_usd"] - result["prior_value_usd"]).where(result["comparison_known"])
+        result["cik"] = cik
+        result["period"] = current.period
+        result["prior_period"] = prior_period
+        result["as_of"] = pd.Timestamp(as_of)
+        result["current_public_at"] = current.public_at
+        result["resolution_status"] = current.resolution_status
+        result["publication_age_days"] = (pd.Timestamp(as_of) - pd.Timestamp(current.public_at)).days
+        result["prior_public_at"] = prior_state.iloc[0].public_at if not prior_state.empty else pd.NaT
+        result["prior_resolution_status"] = prior_state.iloc[0].resolution_status if not prior_state.empty else "missing_original"
+        output.append(result.reset_index())
+    columns = [
+        "cusip",
+        "shares",
+        "prior_shares",
+        "shares_change",
+        "reported_exit",
+        "comparison_known",
+        "value_usd",
+        "prior_value_usd",
+        "value_change",
+        "cik",
+        "period",
+        "prior_period",
+        "as_of",
+        "current_public_at",
+        "publication_age_days",
+        "prior_public_at",
+        "resolution_status",
+        "prior_resolution_status",
+    ]
+    return pd.concat(output, ignore_index=True)[columns] if output else pd.DataFrame(columns=columns)
+
+
+def vintage_publications(
+    manifests: pd.DataFrame,
+    holdings: pd.DataFrame,
+    trading_index: pd.DatetimeIndex,
+    *,
+    until: object,
+) -> pd.DataFrame:
+    """Emit per-manager snapshots for relevant public vintages, including value-only corrections."""
+    public_dates = filing_public_dates(manifests, trading_index)
+    frames: list[pd.DataFrame] = []
+    for day in public_dates.dropna().drop_duplicates().sort_values():
+        if day > pd.Timestamp(until):
+            continue
+        preview = vintage_changes(manifests, holdings, day, trading_index)
+        active = preview[["cik", "period", "prior_period"]].drop_duplicates().rename(columns={"period": "current_period"})
+        events = manifests.loc[public_dates.eq(day), ["cik", "period"]].copy()
+        events["period"] = pd.to_datetime(events["period"])
+        relevant = events.merge(active, on="cik", how="inner")
+        matches = relevant["period"].eq(relevant["current_period"]) | relevant["period"].eq(relevant["prior_period"])
+        ciks = relevant.loc[matches, "cik"]
+        if not ciks.empty:
+            frames.append(preview.loc[preview["cik"].isin(ciks)])
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def vintage_cohort_snapshot(
+    manifests: pd.DataFrame,
+    holdings: pd.DataFrame,
+    as_of: object,
+    trading_index: pd.DatetimeIndex,
+    *,
+    security_tickers: Mapping[str, str],
+    period: object | None = None,
+    splits: pd.DataFrame | None = None,
+    settle_days: int = F13_SETTLE_TRADING_DAYS,
+) -> pd.DataFrame:
+    """Scoped daily preview over complete public books from one report quarter.
+
+    Callers must supply CUSIPs independently verified to identify the same common
+    security across both quarters, and already-classified genuine splits. Changed
+    CUSIPs and manager reporting-perimeter bridges need separate source evidence;
+    this preview never guesses aliases or activates the latest-only source.
+    """
+    if len(set(security_tickers.values())) != len(security_tickers):
+        raise ValueError("Preview requires one verified stable CUSIP per ticker; changed identities need a verified bridge")
+    books, states = public_books(manifests, holdings, as_of, trading_index, settle_days)
+    known = states.loc[states.book_known]
+    if known.empty or not security_tickers:
+        return pd.DataFrame()
+    current_period = pd.Timestamp(period) if period is not None else known.period.max()
+    prior_period = (current_period.to_period("Q") - 1).end_time.normalize()
+    current_states = known.loc[known.period.eq(current_period)].set_index("cik")
+    all_prior_states = known.loc[known.period.eq(prior_period)].set_index("cik")
+    if current_states.empty:
+        return pd.DataFrame()
+    ciks = current_states.index
+    prior_states = all_prior_states.reindex(ciks)
+    paired = current_states.comparison_eligible & prior_states.comparison_eligible.eq(True)
+
+    def quantities(cusip: str, report: pd.Timestamp, column: str, zero: pd.Series, managers: pd.Index) -> pd.Series:
+        selected = books.loc[books.period.eq(report) & books.cusip.eq(cusip)].set_index("cik")
+        amounts = selected[column].reindex(managers).astype("float64")
+        # Only absence from a complete, unrestricted public book establishes zero.
+        amounts.loc[~managers.isin(selected.index) & zero.eq(True)] = 0.0
+        return amounts
+
+    def total(amounts: pd.Series) -> float:
+        # Unknown contributions cannot become zero or an apparently complete total.
+        return float(amounts.sum()) if len(amounts) and amounts.notna().all() else np.nan
+
+    tickers = pd.Series(list(security_tickers.values()))
+    factors = split_cum_product(splits, tickers, pd.Series(current_period, index=tickers.index)) / split_cum_product(
+        splits, tickers, pd.Series(prior_period, index=tickers.index)
+    )
+    rows: list[dict[str, Any]] = []
+    for (cusip, ticker), factor in zip(security_tickers.items(), factors, strict=True):
+        current = quantities(cusip, current_period, "shares", current_states.zero_eligible, ciks)
+        prior = quantities(cusip, prior_period, "shares", prior_states.zero_eligible, ciks) * factor
+        value = quantities(cusip, current_period, "value_usd", current_states.zero_eligible, ciks)
+        prior_value = quantities(cusip, prior_period, "value_usd", prior_states.zero_eligible, ciks)
+        all_prior = quantities(cusip, prior_period, "shares", all_prior_states.zero_eligible, all_prior_states.index) * factor
+        all_prior_total = total(all_prior)
+        comparable = paired & current.notna() & prior.notna()
+        cur, prev = current.loc[comparable], prior.loc[comparable]
+        cur_total, prev_total = total(cur), total(prev)
+        cur_value, prev_value = total(value.loc[comparable]), total(prior_value.loc[comparable])
+        holders, old_holders = int(cur.gt(0).sum()), int(prev.gt(0).sum())
+        both = cur.gt(0) & prev.gt(0)
+        rows.append(
+            {
+                "as_of": pd.Timestamp(as_of),
+                "period": current_period,
+                "prior_period": prior_period,
+                "cusip": cusip,
+                "ticker": ticker,
+                "public_books": len(ciks),
+                "paired_books": int(paired.sum()),
+                "matched_books": int(comparable.sum()),
+                "share_support": int(current.notna().sum()),
+                "value_support": int(value.notna().sum()),
+                "shares": total(current),
+                "value_usd": total(value),
+                "public_prior_books": len(all_prior_states),
+                "prior_share_support": int(all_prior.notna().sum()),
+                "public_prior_shares": all_prior_total,
+                "prior_share_coverage": float(prev.sum()) / all_prior_total if all_prior_total > 0 else np.nan,
+                "publication_reference_at": current_states.public_at.median(),
+                "publication_age_days": float((pd.Timestamp(as_of) - current_states.public_at).dt.days.median()),
+                "matched_shares": cur_total,
+                "matched_prior_shares": prev_total,
+                "matched_value_usd": cur_value,
+                "matched_prior_value_usd": prev_value,
+                "shares_chg": cur_total / prev_total - 1 if prev_total > 0 else np.nan,
+                "value_chg": cur_value / prev_value - 1 if prev_value > 0 else np.nan,
+                "matched_holders": holders,
+                "matched_prior_holders": old_holders,
+                "new_ratio": float((cur.gt(0) & prev.eq(0)).sum()) / holders if holders else np.nan,
+                "exit_ratio": float((cur.eq(0) & prev.gt(0)).sum()) / old_holders if old_holders else np.nan,
+                "cluster_buying": float((both & cur.gt(prev)).sum() - (both & cur.lt(prev)).sum()) / holders if holders else np.nan,
+                "breadth_chg": (holders - old_holders) / len(cur) if len(cur) else np.nan,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def vintage_cohort_publications(
+    manifests: pd.DataFrame,
+    holdings: pd.DataFrame,
+    trading_index: pd.DatetimeIndex,
+    *,
+    until: object,
+    security_tickers: Mapping[str, str],
+    splits: pd.DataFrame | None = None,
+    settle_days: int = F13_SETTLE_TRADING_DAYS,
+) -> pd.DataFrame:
+    """Publish changed cohort snapshots, including value/support and active-prior changes.
+
+    Between events the consumer carries the last state, including its unknowns.
+    No extra waiting buffer or hindsight-complete denominator is introduced.
+    """
+    frames: list[pd.DataFrame] = []
+    previous: pd.DataFrame | None = None
+    days = filing_public_dates(manifests, trading_index, settle_days).dropna().drop_duplicates().sort_values()
+    for day in days.loc[days.le(pd.Timestamp(until))]:
+        snapshot = vintage_cohort_snapshot(
+            manifests, holdings, day, trading_index, security_tickers=security_tickers, splits=splits, settle_days=settle_days
+        )
+        if snapshot.empty:
+            continue
+        # Passage of time alone is not a filing revision; age advances between events.
+        state = snapshot.drop(columns=["as_of", "publication_age_days"])
+        if previous is None or not state.equals(previous):
+            frames.append(snapshot)
+            previous = state
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def _versioned_quarter_features(
+    manifests: pd.DataFrame,
+    holdings: pd.DataFrame,
+    trading_index: pd.DatetimeIndex,
+    *,
+    splits: pd.DataFrame | None,
+    settle_days: int,
+    min_prior_holders: int,
+) -> pd.DataFrame:
+    """Aggregate observed levels and identical eligible book cohorts at each public event."""
+    rows: list[pd.DataFrame] = []
+    seen: set[str] = set()
+    numeric = ["shares", "value_usd", "call_value", "put_value"]
+    for day, books, states in iter_public_books(manifests, holdings, trading_index, settle_days=settle_days):
+        known = states.loc[states.book_known]
+        if known.empty:
+            continue
+        period = known.period.max()
+        prior_period = (period.to_period("Q") - 1).end_time.normalize()
+        current_states = known.loc[known.period.eq(period)].set_index("cik")
+        prior_states = known.loc[known.period.eq(prior_period)].set_index("cik")
+        mapped = books.loc[books.ticker.notna()]
+        grouped = mapped.groupby(["period", "cik", "ticker"])[numeric]
+        totals = grouped.sum(min_count=1).where(grouped.count().eq(mapped.groupby(["period", "cik", "ticker"]).size(), axis=0))
+        securities = mapped.loc[mapped.shares.gt(0)].groupby(["period", "cik", "ticker"]).cusip.agg(frozenset)
+        current = totals.xs(period).copy() if period in totals.index.get_level_values("period") else totals.droplevel("period").iloc[:0]
+        prior = totals.xs(prior_period).copy() if prior_period in totals.index.get_level_values("period") else current.iloc[:0]
+        observed = current[["shares", "call_value", "put_value"]].gt(0).any(axis=1)
+        seen.update(current.loc[observed].index.get_level_values("ticker"))
+        names = sorted(seen)
+        if not names:
+            continue
+        out = pd.DataFrame(index=pd.Index(names, name="ticker"))
+        level = current.groupby("ticker")
+        out["inst_shares"] = level.shares.agg(lambda amounts: amounts.sum(skipna=False))
+        out["inst_value"] = level.value_usd.agg(lambda amounts: amounts.sum(skipna=False))
+        holders = current.shares.gt(0).groupby("ticker").sum()
+        out["ic_inst_holders"] = holders / len(current_states)
+        unknown_quantity = current.shares.isna().groupby("ticker").any()
+        out.loc[unknown_quantity.reindex(out.index).eq(True), "ic_inst_holders"] = np.nan
+        if current_states.zero_eligible.all():
+            empty_names = ~out.index.isin(current.index.get_level_values("ticker"))
+            out.loc[empty_names, ["inst_shares", "inst_value", "ic_inst_holders"]] = 0.0
+        value_total = current.value_usd.groupby("ticker").transform(lambda amounts: amounts.sum(skipna=False)).reindex(current.index)
+        hhi = (current.value_usd / value_total.where(value_total.gt(0))).pow(2).groupby("ticker").sum(min_count=1)
+        out["ic_inst_concentration"] = hhi.where(out.inst_value.notna())
+        calls = level.call_value.agg(lambda amounts: amounts.sum(skipna=False))
+        puts = level.put_value.agg(lambda amounts: amounts.sum(skipna=False))
+        investment = out.inst_value + calls + puts
+        out["ic_inst_net_options_ratio"] = (calls - puts) / investment.where(investment.gt(0))
+        paired = current_states.index[current_states.comparison_eligible & prior_states.comparison_eligible.reindex(current_states.index).eq(True)]
+        joined = current.add_suffix("_current").join(prior.add_suffix("_prior"), how="outer")
+        joined = joined.loc[joined.index.get_level_values("cik").isin(paired)]
+        for suffix, values, state in (("current", current, current_states), ("prior", prior, prior_states)):
+            absent = ~joined.index.isin(values.index)
+            zeros = state.zero_eligible.reindex(joined.index.get_level_values("cik")).eq(True).to_numpy()
+            joined.loc[absent & zeros, [col + "_" + suffix for col in numeric]] = 0.0
+        factors = split_cum_product(
+            splits, pd.Series(joined.index.get_level_values("ticker")), pd.Series(period, index=range(len(joined)))
+        ) / split_cum_product(splits, pd.Series(joined.index.get_level_values("ticker")), pd.Series(prior_period, index=range(len(joined))))
+        joined["shares_prior"] *= factors
+        if period in securities.index.get_level_values("period") and prior_period in securities.index.get_level_values("period"):
+            now_ids = securities.xs(period).reindex(joined.index)
+            old_ids = securities.xs(prior_period).reindex(joined.index)
+            changed = now_ids.notna() & old_ids.notna() & now_ids.ne(old_ids)
+            joined.loc[changed, ["shares_current", "shares_prior"]] = np.nan
+        supported = joined.shares_current.notna() & joined.shares_prior.notna()
+        matched = joined.loc[supported]
+        groups = matched.groupby("ticker")
+        current_shares = groups.shares_current.sum(min_count=1)
+        previous_shares = groups.shares_prior.sum(min_count=1)
+        now_held, was_held = matched.shares_current.gt(0), matched.shares_prior.gt(0)
+        holder_count = now_held.groupby("ticker").sum()
+        prior_count = was_held.groupby("ticker").sum()
+        out["ic_inst_shares_chg"] = current_shares / previous_shares.where(previous_shares.gt(0)) - 1
+        zero_books = current_states.zero_eligible.reindex(paired) & prior_states.zero_eligible.reindex(paired)
+        safe_absence = zero_books.reindex(joined.index.get_level_values("cik")).to_numpy(dtype=bool)
+        support_count = (
+            int(zero_books.sum())
+            + pd.Series(
+                (supported.to_numpy() & ~safe_absence).astype(int) - (~supported.to_numpy() & safe_absence).astype(int),
+                index=joined.index,
+            )
+            .groupby("ticker")
+            .sum()
+        )
+        out["ic_inst_breadth_chg"] = (holder_count - prior_count) / support_count.where(support_count.gt(0))
+        out["ic_inst_new_buyer_ratio"] = (now_held & matched.shares_prior.eq(0)).groupby("ticker").sum() / holder_count.where(holder_count.gt(0))
+        out["ic_inst_exit_ratio"] = (matched.shares_current.eq(0) & was_held).groupby("ticker").sum() / prior_count.where(prior_count.gt(0))
+        increases = (now_held & was_held & matched.shares_current.gt(matched.shares_prior)).groupby("ticker").sum()
+        decreases = (now_held & was_held & matched.shares_current.lt(matched.shares_prior)).groupby("ticker").sum()
+        out["ic_inst_cluster_buying"] = (increases - decreases) / holder_count.where(holder_count.gt(0))
+        out.loc[prior_count.reindex(out.index).fillna(0).lt(min_prior_holders), list(DELTA_FEATURES)] = np.nan
+        out["period"], out["as_of"] = period, day
+        rows.append(out.reset_index())
+    result = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
+    logger.info("13F immutable publication: %s ticker states; unfiled/restricted books never imply exits.", len(result))
+    return result

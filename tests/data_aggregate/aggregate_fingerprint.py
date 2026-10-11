@@ -665,6 +665,9 @@ def synthetic_13f(tickers: list[str], idx: pd.DatetimeIndex, rng: np.random.Gene
                     }
                 )
     holdings = pd.DataFrame(rows)
+    implied = holdings["value_usd"] / holdings["shares"]
+    for leg in ("call", "put"):
+        holdings[f"{leg}_shares"] = (holdings[f"{leg}_value"] / implied).round()
     roster = {c: f"Manager {k}" for k, c in enumerate(ciks[: N_MANAGERS // 2])}
     return holdings, roster
 
@@ -691,7 +694,7 @@ def synthetic_manager_book(holdings: pd.DataFrame, tickers: list[str], rng: np.r
     )
     by_ticker = dict(zip(cusip_map["ticker"], cusip_map["cusip"], strict=False))
     book = holdings.assign(cusip=holdings["ticker"].map(by_ticker), position_type="common")
-    book = book.drop(columns=[c for c in ("ticker", "call_value", "put_value") if c in book.columns])
+    book = book.drop(columns=[c for c in ("ticker", "call_value", "put_value", "call_shares", "put_shares") if c in book.columns])
 
     # the rest of each manager's book: names outside the analysis universe, which carry a
     # median ~40-50% of real book value and are exactly what the slice denominator missed.
@@ -834,6 +837,7 @@ def compute() -> dict:
         manager_quarter_state,
         manager_stock_conviction,
     )
+    from src.data_aggregate.utils.institutionals.value_basis import as_traded_close
     from src.data_aggregate.utils.momentum.features import (
         build_feature_panel,
         compute_raw_features,
@@ -868,6 +872,26 @@ def compute() -> dict:
     insider = synthetic_insider(tickers, idx, rng_for("insider"))
     holdings, roster = synthetic_13f(tickers, idx, rng_for("13f"))
     book, cusip_map = synthetic_manager_book(holdings, tickers, rng_for("13f_manager_book"))
+    # Public builders need the same as-traded reference and typed quantities as the step.
+    # Keep the older raw primitive inputs and RNG streams unchanged.
+    valuation_close = as_traded_close(close, close * 0 + 1, splits.rename(columns={"ratio": "value"}))
+    period_prices = (
+        valuation_close.reindex(valuation_close.index.union(pd.DatetimeIndex(holdings["period"].unique()))).ffill().stack(future_stack=True)
+    )
+    quote = period_prices.reindex(pd.MultiIndex.from_frame(holdings[["period", "ticker"]])).to_numpy()
+    priced_holdings = holdings.assign(
+        value_usd=holdings["shares"] * quote, call_value=holdings["call_shares"] * quote, put_value=holdings["put_shares"] * quote
+    )
+    priced_book = book.copy()
+    book_tickers = book["cusip"].map(cusip_map.set_index("cusip")["ticker"])
+    book_quotes = period_prices.reindex(pd.MultiIndex.from_arrays([book["period"], book_tickers])).to_numpy()
+    priced_book.loc[book_tickers.notna(), "value_usd"] = (book["shares"] * book_quotes).loc[book_tickers.notna()]
+    # One wrong VALUE per book must fall back without losing a holder or changing shares.
+    corrupt = priced_holdings.groupby(["cik", "period"], sort=False).head(1)
+    priced_holdings.loc[corrupt.index, "value_usd"] *= 1000
+    corrupt_keys = pd.MultiIndex.from_frame(corrupt[["cik", "period", "ticker"]])
+    book_keys = pd.MultiIndex.from_arrays([book["cik"], book["period"], book_tickers])
+    priced_book.loc[book_keys.isin(corrupt_keys), "value_usd"] *= 1000
     fx = primitive_fixtures(rng_for("primitives"))
 
     out: dict[str, dict] = {}
@@ -931,26 +955,32 @@ def compute() -> dict:
     # file already records twice (the empty superinvestor panel it digested for months, the
     # say-on-pay hole), so the guard is turned OFF here and covered instead by
     # test_institutional_features.py::test_per_ticker_coverage_onset_guard.
-    out["panel.institutional"] = frame_digest(
-        build_institutional_feature_panel(
-            make_frames(idx, peers, close_split=close), holdings, shares_out_history=fund, splits=splits, min_prior_holders=0
-        )
+    institutional = build_institutional_feature_panel(
+        make_frames(idx, peers, close_split=close),
+        priced_holdings,
+        shares_out_history=fund,
+        splits=splits,
+        min_prior_holders=0,
+        valuation_close=valuation_close,
     )
+    assert institutional["f_ic_inst_net_options_ratio"].nunique() > 1, "Do not freeze an unavailable options feature"
+    out["panel.institutional"] = frame_digest(institutional)
     # ⚠ `cusip_map` AND `universe` ARE BOTH REQUIRED. Without a cusip map `attach_tickers`
     # nulls every ticker and the builder returns an EMPTY frame -- which is what this
     # fingerprint silently digested between the Phase 2.2 rebuild and 2026-09-10, pinning a
     # hole exactly as the say-on-pay gate once did.
-    out["panel.superinvestor"] = frame_digest(
-        build_superinvestor_feature_panel(
-            make_frames(idx, peers, close_split=close, universe=tickers),
-            book,
-            roster,
-            shares_out_history=fund,
-            cusip_map=cusip_map,
-            splits=splits,
-            sink=sink,
-        )
+    superinvestor = build_superinvestor_feature_panel(
+        make_frames(idx, peers, close_split=close, universe=tickers),
+        priced_book,
+        roster,
+        shares_out_history=fund,
+        cusip_map=cusip_map,
+        splits=splits,
+        sink=sink,
+        valuation_close=valuation_close,
     )
+    assert superinvestor["f_ic_super_conviction_weight"].nunique() > 1, "Do not freeze unknown whole-book denominators"
+    out["panel.superinvestor"] = frame_digest(superinvestor)
     out["panel.insider"] = frame_digest(
         build_insider_feature_panel(make_frames(idx, peers, close_split=close), insider, shares_out_history=fund, sink=sink)
     )

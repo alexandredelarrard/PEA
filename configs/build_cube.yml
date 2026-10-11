@@ -61,6 +61,11 @@ build_cube:
     part_time_weight: 0.65   # α in FT + α·PT; must lie in [0.5, 1]
 
   institutionals:            # informed-capital panels (13F, insider, 13D/G, short flow)
+    value_basis:
+      min_securities: 15      # distinct priced common securities for a unit-changing override
+      min_agreement: 0.8
+      price_tolerance: 0.1
+      max_price_age_days: 7  # last available close at report-quarter end
     decay_halflife:          # trading days for the exponential event-decay transform.
                              # An EVENT is 0 on ~99.9% of ticker-days, and a peer basket of
                              # all-zeros has zero dispersion -> `peer_relative` returns NaN by

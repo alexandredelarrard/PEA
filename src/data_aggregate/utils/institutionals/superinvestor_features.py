@@ -59,7 +59,7 @@ family boundary for the persisted panel and every derived sink output.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import cast
 
 import numpy as np
@@ -69,13 +69,13 @@ from src.constants.constants import SEC_13F_FILING_LAG_DAYS
 from src.context import Context
 from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
-from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 from src.data_aggregate.utils.common.price_frames import PriceFrames
 from src.data_aggregate.utils.institutionals.availability import InstitutionalAvailability
 from src.data_aggregate.utils.institutionals.decay import decay_events
 from src.data_aggregate.utils.institutionals.holdings_clean import clean_holdings
-from src.data_aggregate.utils.institutionals.value_basis import repair_value_basis
+from src.data_aggregate.utils.institutionals.value_basis import log_register, nullable_value_to_daily, repair_value_basis
 from src.data_store.schema import Tables
+from src.utils.institutional_vintages import filing_public_dates, iter_public_books
 from src.utils.string import pad_cik
 from src.utils.superinvestor_roster import config_dir_of, filer_ciks, to_manager_books
 
@@ -147,10 +147,8 @@ def load_superinvestor_holdings(context: Context, roster: Iterable[str] | None) 
     Every filer CIK of a chained manager is read and the book comes back keyed by manager ID
     (`to_manager_books`), so it compares with `roster_as_of`.
 
-    A `(cik, period)` book whose `value_usd` is NULL on every row is dropped, so that
-    manager-quarter reads as unfiled. Such a book is an unverifiable legacy text filing: the
-    positions are known but the amounts are not. `clean_holdings` would zero-fill it into a book
-    that holds every name at weight 0.
+    A `(cik, period)` book with both shares and values missing on every row reads as unfiled.
+    Valid share positions survive unknown dollars; their dollar weights remain unknown.
 
     Returns None when the roster resolves to no manager or the table is not populated.
     """
@@ -162,10 +160,15 @@ def load_superinvestor_holdings(context: Context, roster: Iterable[str] | None) 
     holdings = context.store.load(Tables.sec13f_manager_holdings, _HOLDINGS_COLS, where={"cik": ciks}, optional=True)
     if holdings is None:
         return None
-    unknown = holdings["value_usd"].isna().groupby([holdings["cik"], holdings["period"]]).transform("all")
+    unknown_row = holdings["value_usd"].isna() & pd.to_numeric(holdings["shares"], errors="coerce").isna()
+    unknown = unknown_row.groupby([holdings["cik"], holdings["period"]]).transform("all")
     if unknown.any():
         n_books = holdings.loc[unknown, ["cik", "period"]].drop_duplicates().shape[0]
-        logger.info("superinvestor books: %d (cik, period) book(s) with all-NULL amounts dropped as unfiled (%d row(s))", n_books, int(unknown.sum()))
+        logger.info(
+            "superinvestor books: %d (cik, period) book(s) with all-NULL shares and values dropped as unfiled (%d row(s))",
+            n_books,
+            int(unknown.sum()),
+        )
         holdings = holdings[~unknown]
     return to_manager_books(holdings, config_dir=config_dir)
 
@@ -228,6 +231,8 @@ def manager_quarter_state(holdings: pd.DataFrame) -> pd.DataFrame:
 
     g = holdings.groupby(["cik", "period"], sort=True)
     state = g.agg(total_common_value=("value_usd", "sum"), n_positions=("cusip", "nunique")).reset_index()
+    unknown = g["value_usd"].count().lt(g.size()).to_numpy()
+    state.loc[unknown, "total_common_value"] = np.nan
 
     val = holdings[["cik", "period", "value_usd"]].copy()
     val = val.merge(state[["cik", "period", "total_common_value"]], on=["cik", "period"])
@@ -245,6 +250,7 @@ def manager_quarter_state(holdings: pd.DataFrame) -> pd.DataFrame:
         .reset_index()
     )
     state = state.merge(conc, on=["cik", "period"], how="left")
+    state.loc[state["total_common_value"].isna(), ["eff_n", "top1_weight", "top5_weight", "top10_weight"]] = np.nan
 
     if "filing_date" in holdings.columns:
         lag = g["filing_date"].max().reset_index()
@@ -290,6 +296,8 @@ def manager_stock_conviction(holdings: pd.DataFrame, state: pd.DataFrame) -> pd.
     c = c.sort_values(["cik", "period", "value_usd", "cusip"], ascending=[True, True, False, True])
     c["rank_in_book"] = c.groupby(["cik", "period"]).cumcount() + 1
     c["conviction_pct"] = c.groupby(["cik", "period"])["value_usd"].rank(pct=True)
+    c["rank_in_book"] = c["rank_in_book"].where(denom.reindex(c.index).notna() & c["value_usd"].notna())
+    c["conviction_pct"] = c["conviction_pct"].where(denom.reindex(c.index).notna())
     c["is_top10"] = c["rank_in_book"] <= _TOP_N
     return c
 
@@ -443,9 +451,9 @@ def _contributions(conv: pd.DataFrame, state: pd.DataFrame, sel: pd.Series) -> p
     # keep the BEST rank -- "is this a top-ten name for them" is about the issuer.
     c = c.groupby(["cik", "period", "ticker"], as_index=False).agg(
         sel=("sel", "first"),
-        w=("portfolio_weight", "sum"),
+        w=("portfolio_weight", lambda values: values.sum(skipna=False)),
         shares=("shares", "sum"),
-        value_usd=("value_usd", "sum"),
+        value_usd=("value_usd", lambda values: values.sum(skipna=False)),
         rank_in_book=("rank_in_book", "min"),
     )
 
@@ -468,10 +476,10 @@ def _contributions(conv: pd.DataFrame, state: pd.DataFrame, sel: pd.Series) -> p
     pairs = c[["cik", "ticker"]].drop_duplicates()
     full = pairs.merge(st, on="cik", how="left")
     full = full.merge(c.drop(columns=["sel"]), on=["cik", "period", "ticker"], how="left")
-    full["held"] = full["w"].notna()
+    full["held"] = full["shares"].gt(0)
     for col in ("w", "shares", "value_usd"):
-        full[col] = full[col].fillna(0.0)
-    full["is_top10"] = full["rank_in_book"].le(_TOP_N).fillna(False)
+        full.loc[~full["held"], col] = 0.0
+    full["is_top10"] = full["rank_in_book"].le(_TOP_N).where(full["w"].notna(), False)
     full = full.sort_values(["cik", "ticker", "seq"])
 
     g = full.groupby(["cik", "ticker"], sort=False)
@@ -508,10 +516,23 @@ def _effective(
         .reindex(index=grid, columns=pairs)
         .ffill()
     )
+    known = (
+        contrib.assign(_known=contrib[column].notna().astype(float))
+        .pivot_table(index="avail", columns=["cik", "ticker"], values="_known", aggfunc="last", dropna=False)
+        .reindex(index=grid, columns=pairs)
+        .ffill()
+    )
+    wide = wide.where(known.eq(1.0))
     return wide.where(stale_after) if stale_after is not None else wide
 
 
-def _aggregate(contrib: pd.DataFrame, st: pd.DataFrame, stale_quarters: int = _STALE_QUARTERS) -> tuple[dict[str, pd.DataFrame], pd.DatetimeIndex]:
+def _aggregate(
+    contrib: pd.DataFrame,
+    st: pd.DataFrame,
+    stale_quarters: int = _STALE_QUARTERS,
+    *,
+    seen_tickers: Iterable[str] | None = None,
+) -> tuple[dict[str, pd.DataFrame], pd.DatetimeIndex]:
     """Aggregate ACROSS managers on the availability grid -> `{feature: (date x ticker)}`."""
 
     grid = pd.DatetimeIndex(sorted(contrib["avail"].dropna().unique()))
@@ -618,7 +639,17 @@ def _aggregate(contrib: pd.DataFrame, st: pd.DataFrame, stale_quarters: int = _S
     # EVER hold -- so a name first bought in 2024 has a non-null 0 stretching back to 2011,
     # and whether the feature is present at all would depend on the future. Keying the mask
     # on the first date the name is actually held is causal: it is decidable from the past.
+    unknown_value = across((held_e.fillna(False).astype(bool) & w_e.isna() & sel_e.gt(0)).astype(float)).gt(0)
+    for feature in ("ic_super_conviction_weight", "ic_super_max_conviction", "ic_super_top10_holders", "ic_super_sp500_share"):
+        out[feature] = out[feature].mask(unknown_value)
+    unknown_previous = across((prev_held_e.fillna(False).astype(bool) & prev_w_e.isna() & prev_sel_e.gt(0)).astype(float)).gt(0)
+    out["ic_super_conviction_chg"] = out["ic_super_conviction_chg"].mask(unknown_value | unknown_previous)
+    out["ic_super_conviction_weight_yoy"] = out["ic_super_conviction_weight_yoy"].mask(
+        unknown_value | across((eff("held4").fillna(False).astype(bool) & eff("w4").isna() & eff("sel4").gt(0)).astype(float)).gt(0)
+    )
     seen = (holders.fillna(0.0) > 0).cummax()
+    if seen_tickers is not None:
+        seen.loc[:, seen.columns.isin(seen_tickers)] = True
     return {k: v.where(seen) for k, v in out.items()}, grid
 
 
@@ -707,6 +738,9 @@ def build_superinvestor_feature_panel(
     stale_quarters: int = _STALE_QUARTERS,
     availability: InstitutionalAvailability | None = None,
     sink=None,
+    valuation_close: pd.DataFrame | None = None,
+    value_basis: Mapping[str, float] | None = None,
+    filings: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Long-format elite-manager 13F panel -- raw `f_ic_super_*` characteristics.
 
@@ -737,46 +771,76 @@ def build_superinvestor_feature_panel(
     peer_dict = frames.peers
     trading_index = frames.trading_index
     universe = frames.universe
-    close_split = frames.close_split
 
     empty = pd.DataFrame(columns=["date", "ticker"])
-    need = {"cik", "period", "cusip", "shares", "value_usd"}
+    need = {"cik", "period", "cusip", "shares"}
     if holdings is None or holdings.empty or not need.issubset(holdings.columns):
         return empty
     if not _selection_ciks(roster):
         return empty
 
-    holdings = attach_tickers(holdings, cusip_map, universe)
-    h = clean_holdings(holdings, key=("cik", "period", "cusip"), numeric=("shares", "value_usd"), common_only=True, pad_ciks=True)
-    h, _ = repair_value_basis(h, close_split)
-    if h.empty:
-        return empty
+    if filings is not None:
+        levels, contrib, state = _versioned_super_levels(
+            frames,
+            holdings,
+            filings,
+            cusip_map,
+            splits,
+            selection,
+            valuation_close,
+            value_basis,
+            stale_quarters,
+            decay_halflife,
+        )
+        if not levels:
+            return empty
+        family_start = min(frame.index.min() for frame in levels.values())
+        if availability is not None:
+            family_start = max(family_start, availability.source_date(Tables.sec13f_manager_holdings))
+    else:
+        holdings = attach_tickers(holdings, cusip_map, universe)
+        h = clean_holdings(holdings, key=("cik", "period", "cusip"), numeric=("shares", "value_usd"), common_only=True, pad_ciks=True)
+        value_before = float(h["value_usd"].sum())
+        h, register = repair_value_basis(h, valuation_close, **dict(value_basis or {}))
+        log_register(register, value_before, logger)
+        if "value_basis_excluded" in h:
+            h = h.loc[~h["value_basis_excluded"]]
+        if h.empty:
+            return empty
 
-    state = manager_quarter_state(h)
-    conv = manager_stock_conviction(h, state)
-    if state.empty or conv.empty:
-        return empty
+        state = manager_quarter_state(h)
+        conv = manager_stock_conviction(h, state)
+        if state.empty or conv.empty:
+            return empty
 
-    # `avail` is attached HERE rather than inside `public_state` because a callable
-    # `selection` needs it: `manager_selection` ranks each manager against the peers who
-    # were public when their filing landed, which is not answerable from `period` alone.
-    state["avail"] = _as_of_stamp(state).to_numpy()
-    sel = _selection_series(state, selection)
-    st = public_state(state, sel)
-    contrib = attach_split_factor(_contributions(conv, state, sel), splits)
-    if contrib.empty:
-        return empty
-    family_start = pd.Timestamp(contrib["avail"].min()).normalize()
-    if availability is not None:
-        family_start = max(family_start, availability.source_date(Tables.sec13f_manager_holdings))
-    levels, _grid = _aggregate(contrib, st, stale_quarters)
+        # `avail` is attached HERE rather than inside `public_state` because a callable
+        # `selection` needs it: `manager_selection` ranks each manager against the peers who
+        # were public when their filing landed, which is not answerable from `period` alone.
+        state["avail"] = _as_of_stamp(state).to_numpy()
+        sel = _selection_series(state, selection)
+        st = public_state(state, sel)
+        contrib = attach_split_factor(_contributions(conv, state, sel), splits)
+        if contrib.empty:
+            return empty
+        family_start = pd.Timestamp(contrib["avail"].min()).normalize()
+        if availability is not None:
+            family_start = max(family_start, availability.source_date(Tables.sec13f_manager_holdings))
+        levels, _grid = _aggregate(contrib, st, stale_quarters)
 
-    fields = {name: fundamentals_to_daily(_to_long(frame, name), name, trading_index) for name, frame in levels.items()}
+    fields = {name: nullable_value_to_daily(_to_long(frame, name), name, trading_index) for name, frame in levels.items()}
+
+    if filings is not None:
+        for name in ("ic_super_new_top10", "ic_super_rank_jump", "ic_super_initiations", "ic_super_full_exits"):
+            if name in fields:
+                dates = pd.Series(np.arange(len(trading_index)), index=trading_index)
+                publication = pd.Series(trading_index.get_indexer(levels[name].index), index=levels[name].index)
+                age = dates - publication.reindex(trading_index).ffill()
+                fields[name] = fields[name].mul(0.5 ** (age / decay_halflife), axis=0)
 
     # The five class-S features, decayed onto the trading grid. Already stamped on each
     # manager's own availability date -- an event is not tradable before the filing that
     # discloses it.
-    events = _events(contrib)
+    events = _events(contrib) if filings is None else pd.DataFrame()
     if not events.empty:
         for kind, sub in events.groupby("kind"):
             frame = decay_events(sub, trading_index, decay_halflife, magnitude_col="magnitude")
@@ -847,6 +911,218 @@ def _fill_sink(
             if availability is not None
             else raw.notna()
         )
+        if name == "ic_super_conviction_chg":
+            mask &= raw.notna()
         signal_masks[name] = mask
         signal_fields[name] = raw.fillna(0.0).where(mask)
     sink.keep_signals(signal_fields, signal_masks)
+
+
+def _snapshot_super_contributions(
+    books: pd.DataFrame,
+    states: pd.DataFrame,
+    first_public: pd.Series,
+    selection: pd.Series | Callable | None,
+    day: pd.Timestamp,
+    splits: pd.DataFrame | None,
+    stale_quarters: int,
+    observed_pairs: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Use whole-book conviction and the latest public adjacent-quarter baseline."""
+    common = books.loc[books.position_type.eq("common") | books.shares.isna()].copy()
+    state = manager_quarter_state(common)
+    keys = states.loc[states.book_known, ["cik", "period"]]
+    state = keys.merge(state, on=["cik", "period"], how="left") if not state.empty else keys.copy()
+    for col in (
+        "total_common_value",
+        "n_positions",
+        "eff_n",
+        "top1_weight",
+        "top5_weight",
+        "top10_weight",
+        "sp500_share",
+        "n_index_positions",
+        "filing_lag_days",
+    ):
+        if col not in state:
+            state[col] = np.nan
+    state["n_positions"] = state.n_positions.fillna(0)
+    state["avail"] = first_public.reindex(pd.MultiIndex.from_frame(state[["cik", "period"]])).to_numpy()
+    sel = _selection_series(state, selection)
+    conviction = manager_stock_conviction(common, state)
+    observed = observed_pairs.merge(state[["cik", "period"]], on="cik")
+    present = (
+        pd.MultiIndex.from_frame(conviction[["cik", "period", "ticker"]])
+        if not conviction.empty
+        else pd.MultiIndex.from_tuples([], names=["cik", "period", "ticker"])
+    )
+    absent = observed.loc[~pd.MultiIndex.from_frame(observed[["cik", "period", "ticker"]]).isin(present)].copy()
+    for column in ("shares", "value_usd", "portfolio_weight"):
+        absent[column] = 0.0
+    absent["rank_in_book"] = np.nan
+    conviction = pd.concat([conviction, absent], ignore_index=True)
+    contrib = _contributions(conviction, state, sel)
+    if contrib.empty:
+        return contrib, state, pd.DataFrame(), contrib
+    contrib = attach_split_factor(contrib, splits)
+    latest = states.loc[states.book_known].sort_values("period").drop_duplicates("cik", keep="last")
+    active = contrib.merge(states[["cik", "period", "public_at", "comparison_eligible", "zero_eligible"]], on=["cik", "period"])
+    prior = states[["cik", "period", "comparison_eligible", "zero_eligible"]].rename(
+        columns={"period": "prior_period", "comparison_eligible": "prior_eligible", "zero_eligible": "prior_zero"}
+    )
+    active["prior_period"] = active.period.map(lambda q: (q.to_period("Q") - 1).end_time.normalize())
+    active = active.merge(prior, on=["cik", "prior_period"], how="left")
+    paired = active.comparison_eligible & active.prior_eligible.eq(True) & active.prev_period.eq(active.prior_period)
+    current_rows = common.groupby(["cik", "period", "ticker"]).shares.agg(lambda amounts: amounts.sum(skipna=False))
+    current_known = current_rows.reindex(pd.MultiIndex.from_frame(active[["cik", "period", "ticker"]])).notna().to_numpy()
+    present = pd.MultiIndex.from_frame(active[["cik", "period", "ticker"]]).isin(current_rows.index)
+    active["quantity_known"] = current_known | (~present & active.zero_eligible.to_numpy())
+    missing_current = ~active.quantity_known
+    prior_keys = pd.MultiIndex.from_frame(active[["cik", "prior_period", "ticker"]].rename(columns={"prior_period": "period"}))
+    prior_known = current_rows.reindex(prior_keys).notna().to_numpy() | (~prior_keys.isin(current_rows.index) & active.prior_zero.eq(True).to_numpy())
+    paired &= prior_known
+    identity = common.loc[common.shares.gt(0)].groupby(["cik", "period", "ticker"]).cusip.agg(frozenset)
+    current_identity = identity.reindex(pd.MultiIndex.from_frame(active[["cik", "period", "ticker"]])).reset_index(drop=True)
+    prior_identity = identity.reindex(prior_keys).reset_index(drop=True)
+    paired &= ~(current_identity.notna() & prior_identity.notna() & current_identity.ne(prior_identity)).to_numpy()
+    active["shares"] = current_rows.reindex(pd.MultiIndex.from_frame(active[["cik", "period", "ticker"]])).to_numpy()
+    active.loc[~present & active.zero_eligible, "shares"] = 0.0
+    active.loc[missing_current, ["shares", "w", "value_usd"]] = np.nan
+    active.loc[~paired, ["prev_sel", "prev_w", "prev_shares_adj", "prev_held", "prev_rank_in_book"]] = np.nan
+    year_keys = pd.MultiIndex.from_arrays(
+        [
+            active.cik,
+            active.period.map(lambda q: (q.to_period("Q") - 4).end_time.normalize()),
+            active.ticker,
+        ],
+        names=["cik", "period", "ticker"],
+    )
+    past = active.set_index(["cik", "period", "ticker"]).reindex(year_keys)
+    active["year_known"] = (
+        active.comparison_eligible.to_numpy() & past.comparison_eligible.eq(True).to_numpy() & past.quantity_known.eq(True).to_numpy()
+    )
+    for old, current in (("w4", "w"), ("held4", "held"), ("sel4", "sel")):
+        active[old] = past[current].to_numpy()
+        active.loc[~active.year_known, old] = np.nan
+    historical = active.copy()
+    active = active.merge(latest[["cik", "period"]], on=["cik", "period"])
+    active = active.loc[active.public_at + pd.DateOffset(months=3 * stale_quarters) >= day].copy()
+    active["avail"] = day
+    st = public_state(state, sel)
+    st = st.merge(latest[["cik", "period"]], on=["cik", "period"])
+    st = st.loc[st.cik.isin(active.cik)].copy()
+    st["avail"] = day
+    return active, state, st, historical
+
+
+def _versioned_super_levels(
+    frames: PriceFrames,
+    holdings: pd.DataFrame,
+    filings: pd.DataFrame,
+    cusip_map: pd.DataFrame | None,
+    splits: pd.DataFrame | None,
+    selection: pd.Series | Callable | None,
+    valuation_close: pd.DataFrame | None,
+    value_basis: Mapping[str, float] | None,
+    stale_quarters: int,
+    decay_halflife: float,
+) -> tuple[dict[str, pd.DataFrame], pd.DataFrame, pd.DataFrame]:
+    """Freeze each historical observation from its public source prefix, including revisions."""
+    holdings = attach_tickers(holdings, cusip_map, frames.universe)
+    holdings, register = repair_value_basis(holdings, valuation_close, **dict(value_basis or {}))
+    log_register(register, float(holdings.value_usd.sum()), logger)
+    if "value_basis_excluded" in holdings:
+        holdings.loc[holdings.value_basis_excluded, ["shares", "value_usd"]] = np.nan
+    public = filing_public_dates(filings, frames.trading_index, settle_days=0)
+    first = filings.assign(public_at=public).loc[filings.amendment_type.isin(["original", "restatement"])]
+    first_public = first.groupby(["cik", "period"]).public_at.min()
+    snapshots: dict[str, list[pd.DataFrame]] = {}
+    contributions: list[pd.DataFrame] = []
+    state = pd.DataFrame()
+    observed_pairs = pd.DataFrame(columns=["cik", "ticker"])
+    for day, books, states in iter_public_books(
+        filings, holdings, frames.trading_index, settle_days=0, history_quarters=None, expiry_quarters=stale_quarters
+    ):
+        observed = books.loc[books.position_type.eq("common") & books.shares.gt(0) & books.ticker.notna(), ["cik", "ticker"]]
+        observed_pairs = pd.concat([observed_pairs, observed], ignore_index=True).drop_duplicates()
+        contrib, state, st, historical = _snapshot_super_contributions(
+            books,
+            states,
+            first_public,
+            selection,
+            day,
+            splits,
+            stale_quarters,
+            observed_pairs,
+        )
+        if contrib.empty or st.empty:
+            for parts in snapshots.values():
+                columns = parts[-1].columns
+                parts.append(pd.DataFrame(np.nan, index=[day], columns=columns))
+            continue
+        levels, _ = _aggregate(contrib, st, stale_quarters, seen_tickers=observed_pairs.ticker.unique())
+        paired = contrib.prev_sel.notna() & contrib.prev_shares_adj.notna() & contrib.shares.notna()
+        matched = contrib.loc[paired]
+        groups = matched.groupby("ticker")
+        now = (matched.sel * matched.shares).groupby(matched.ticker).sum(min_count=1)
+        old = (matched.prev_sel * matched.prev_shares_adj).groupby(matched.ticker).sum(min_count=1)
+        levels["ic_super_shares_chg"] = (now / old.where(old.gt(0)) - 1).to_frame(day).T
+        pool = groups.sel.sum(min_count=1).where(lambda totals: totals.gt(0))
+        prior_pool = groups.prev_sel.sum(min_count=1).where(lambda totals: totals.gt(0))
+        breadth = (matched.sel * matched.held).groupby(matched.ticker).sum() / pool
+        previous_breadth = (matched.prev_sel * matched.prev_held).groupby(matched.ticker).sum() / prior_pool
+        levels["ic_super_breadth_chg"] = (breadth - previous_breadth).to_frame(day).T
+        weight = (matched.sel * matched.w).where(matched.sel.gt(0), 0).groupby(matched.ticker).agg(lambda values: values.sum(skipna=False)) / pool
+        prior_weight = (matched.prev_sel * matched.prev_w).where(matched.prev_sel.gt(0), 0).groupby(matched.ticker).agg(
+            lambda values: values.sum(skipna=False)
+        ) / prior_pool
+        levels["ic_super_conviction_chg"] = (weight - prior_weight).to_frame(day).T
+        unknown = contrib.loc[~contrib.quantity_known, "ticker"].unique()
+        for feature in levels:
+            levels[feature].loc[:, levels[feature].columns.isin(unknown)] = np.nan
+        annual = contrib.loc[contrib.quantity_known & contrib.year_known]
+        annual_pool = annual.groupby("ticker").sel.sum(min_count=1).where(lambda totals: totals.gt(0))
+        old_annual_pool = annual.groupby("ticker").sel4.sum(min_count=1).where(lambda totals: totals.gt(0))
+        levels["ic_super_holders_yoy"] = (
+            (
+                (annual.sel * annual.held).groupby(annual.ticker).sum() / annual_pool
+                - (annual.sel4 * annual.held4).groupby(annual.ticker).sum() / old_annual_pool
+            )
+            .to_frame(day)
+            .T
+        )
+        levels["ic_super_conviction_weight_yoy"] = (
+            (
+                (annual.sel * annual.w).where(annual.sel.gt(0), 0).groupby(annual.ticker).agg(lambda values: values.sum(skipna=False)) / annual_pool
+                - (annual.sel4 * annual.w4).where(annual.sel4.gt(0), 0).groupby(annual.ticker).agg(lambda values: values.sum(skipna=False))
+                / old_annual_pool
+            )
+            .to_frame(day)
+            .T
+        )
+        # Unknown books and omitted legs cannot prove an initiation or an exit.
+        events = _events(historical.loc[historical.quantity_known])
+        for kind in ("ic_super_initiations", "ic_super_full_exits", "ic_super_new_top10", "ic_super_rank_jump"):
+            subset = events.loc[events.kind.eq(kind)] if not events.empty else events
+            score = pd.Series(0.0, index=contrib.ticker.unique())
+            if not subset.empty:
+                elapsed = frames.trading_index.get_loc(day) - frames.trading_index.get_indexer(pd.DatetimeIndex(subset.date))
+                score = (
+                    (subset.magnitude * 0.5 ** (elapsed / decay_halflife))
+                    .groupby(subset.ticker)
+                    .sum(min_count=1)
+                    .reindex(score.index, fill_value=0.0)
+                )
+            unsupported = contrib.loc[~paired, "ticker"].unique()
+            score.loc[score.index.isin(unsupported)] = np.nan
+            levels[kind] = score.to_frame(day).T
+        for feature in levels:
+            levels[feature].loc[:, levels[feature].columns.isin(unknown)] = np.nan
+        for name, frame in levels.items():
+            snapshots.setdefault(name, []).append(frame)
+        contributions.append(contrib.loc[contrib.public_at.eq(day)])
+    return (
+        {name: pd.concat(parts).sort_index() for name, parts in snapshots.items()},
+        pd.concat(contributions, ignore_index=True) if contributions else pd.DataFrame(),
+        state,
+    )

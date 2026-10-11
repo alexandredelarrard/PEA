@@ -430,9 +430,7 @@ def build_candidate(
     peer_path = _manifest_peer_path(manifest)
     context.paths["SECTOR_PEERS_PATH"] = peer_path
     sources = _verify_source_identity(context.store, manifest)
-    panel, window = StepCubeInstitutionals(context=context, config=config_node).build_panel(full=True)
-    if not window.is_full:
-        raise ValueError("build_panel(full=True) returned a non-full PartWindow")
+    panel = StepCubeInstitutionals(context=context, config=config_node).build_panel(full=True)
     if not set(KEYS).issubset(panel.columns):
         raise ValueError(f"candidate panel is missing keys {sorted(set(KEYS) - set(panel.columns))}")
     panel = panel.copy()

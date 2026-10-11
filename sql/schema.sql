@@ -969,28 +969,60 @@ CREATE TABLE IF NOT EXISTS "sharadar_sp500" (
     PRIMARY KEY ("date", "ticker", "action")
 );
 
--- [extract] sec13f_hr  (pk: cik, period, ticker, cusip)
+-- [extract] sec13f_hr  (pk: cik, period, accession_number, ticker, cusip)
 
 CREATE TABLE IF NOT EXISTS "sec13f_hr" (
     "cik" TEXT NOT NULL,
-    "period" TIMESTAMP NOT NULL,
-    "filing_date" TIMESTAMP,
-    "ticker" TEXT NOT NULL,
+    "period" DATE NOT NULL,
+    "filing_date" DATE,
     "cusip" TEXT NOT NULL,
-    "shares" BIGINT,
+    "issuer_name" TEXT,
+    "title_of_class" TEXT,
+    "position_type" TEXT,
+    "shares" DOUBLE PRECISION,
     "value_usd" DOUBLE PRECISION,
-    "call_shares" BIGINT,
+    "call_shares" DOUBLE PRECISION,
     "call_value" DOUBLE PRECISION,
-    "put_shares" BIGINT,
+    "put_shares" DOUBLE PRECISION,
     "put_value" DOUBLE PRECISION,
-    "debt_prn" BIGINT,
+    "debt_prn" DOUBLE PRECISION,
     "debt_value" DOUBLE PRECISION,
     "other_value" DOUBLE PRECISION,
-    "quarter" TEXT,
-    PRIMARY KEY ("cik", "period", "ticker", "cusip")
+    "raw_value_usd" DOUBLE PRECISION,
+    "raw_call_value" DOUBLE PRECISION,
+    "raw_put_value" DOUBLE PRECISION,
+    "raw_debt_value" DOUBLE PRECISION,
+    "raw_other_value" DOUBLE PRECISION,
+    "class_evidence" TEXT,
+    "accession_number" TEXT NOT NULL,
+    "parse_status" TEXT,
+    "ticker" TEXT NOT NULL,
+    "form" TEXT,
+    "amendment_type" TEXT,
+    "amendment_number" BIGINT,
+    "report_type" TEXT,
+    "accepted_at" TIMESTAMP,
+    "clock_source" TEXT,
+    "clock_timezone" TEXT,
+    "clock_precision" TEXT,
+    "restricted" BOOLEAN,
+    "source" TEXT,
+    "source_checksum" TEXT,
+    "expected_unit_factor" DOUBLE PRECISION,
+    "stated_unit_factor" DOUBLE PRECISION,
+    "value_unit_factor" DOUBLE PRECISION,
+    "value_unit_evidence" TEXT,
+    "source_row_count" BIGINT,
+    "declared_row_count" BIGINT,
+    "source_value_total" DOUBLE PRECISION,
+    "declared_value_total" DOUBLE PRECISION,
+    "parsed_row_count" BIGINT,
+    "completed_at" TIMESTAMP,
+    "content_checksum" TEXT,
+    PRIMARY KEY ("cik", "period", "accession_number", "ticker", "cusip")
 );
 
--- [extract] sec13f_manager_holdings  (pk: cik, period, cusip)
+-- [extract] sec13f_manager_holdings  (pk: cik, period, accession_number, cusip)
 
 CREATE TABLE IF NOT EXISTS "sec13f_manager_holdings" (
     "cik" TEXT NOT NULL,
@@ -1009,9 +1041,38 @@ CREATE TABLE IF NOT EXISTS "sec13f_manager_holdings" (
     "debt_prn" DOUBLE PRECISION,
     "debt_value" DOUBLE PRECISION,
     "other_value" DOUBLE PRECISION,
-    PRIMARY KEY ("cik", "period", "cusip")
+    "raw_value_usd" DOUBLE PRECISION,
+    "raw_call_value" DOUBLE PRECISION,
+    "raw_put_value" DOUBLE PRECISION,
+    "raw_debt_value" DOUBLE PRECISION,
+    "raw_other_value" DOUBLE PRECISION,
+    "class_evidence" TEXT,
+    "accession_number" TEXT NOT NULL,
+    "parse_status" TEXT,
+    "form" TEXT,
+    "amendment_type" TEXT,
+    "amendment_number" BIGINT,
+    "report_type" TEXT,
+    "accepted_at" TIMESTAMP,
+    "clock_source" TEXT,
+    "clock_timezone" TEXT,
+    "clock_precision" TEXT,
+    "restricted" BOOLEAN,
+    "source" TEXT,
+    "source_checksum" TEXT,
+    "expected_unit_factor" DOUBLE PRECISION,
+    "stated_unit_factor" DOUBLE PRECISION,
+    "value_unit_factor" DOUBLE PRECISION,
+    "value_unit_evidence" TEXT,
+    "source_row_count" BIGINT,
+    "declared_row_count" BIGINT,
+    "source_value_total" DOUBLE PRECISION,
+    "declared_value_total" DOUBLE PRECISION,
+    "parsed_row_count" BIGINT,
+    "completed_at" TIMESTAMP,
+    "content_checksum" TEXT,
+    PRIMARY KEY ("cik", "period", "accession_number", "cusip")
 );
-CREATE INDEX IF NOT EXISTS ix_sec13f_manager_holdings_period ON "sec13f_manager_holdings" ("period");
 
 -- [extract] insider_transactions  (pk: accession_number, security_type, row_sequence)
 -- EDGAR daily rows are authoritative (source='edgar'); zip quarters add missing filings (source='zip').

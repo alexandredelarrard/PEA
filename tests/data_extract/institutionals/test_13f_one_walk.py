@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from types import SimpleNamespace
 from typing import Any
+from xml.etree import ElementTree
 
 import edgar.exceptions as edgar_exceptions
 import httpx
@@ -21,6 +22,7 @@ import pandas as pd
 import pyarrow as pa
 import pytest
 
+from src.data_aggregate.utils.institutionals.availability import public_books
 from src.data_extract.utils.common import parallel_fetch
 from src.data_extract.utils.common.edgar_driver import FilingStamp
 from src.data_extract.utils.institutionals import fetch_13f as f13
@@ -74,7 +76,35 @@ class _FakeFiling:
         if self.fail_reads > 0:
             self.fail_reads -= 1
             raise self.fail_error("429 Too Many Requests")
-        return SimpleNamespace(infotable=pd.DataFrame(self.lines))
+        root = ElementTree.Element("informationTable")
+        for line in self.lines:
+            entry = ElementTree.SubElement(root, "infoTable")
+            for source, tag in (
+                ("CUSIP", "cusip"),
+                ("NAMEOFISSUER", "nameOfIssuer"),
+                ("TITLEOFCLASS", "titleOfClass"),
+                ("VALUE", "value"),
+                ("PUTCALL", "putCall"),
+            ):
+                ElementTree.SubElement(entry, tag).text = str(line[source])
+            amount = ElementTree.SubElement(entry, "shrsOrPrnAmt")
+            ElementTree.SubElement(amount, "sshPrnamt").text = str(line["SSHPRNAMT"])
+            ElementTree.SubElement(amount, "sshPrnamtType").text = str(line["SSHPRNAMTTYPE"])
+        return SimpleNamespace(infotable=pd.DataFrame(self.lines), infotable_xml=ElementTree.tostring(root, encoding="unicode"))
+
+    def xml(self) -> str:
+        return (
+            "<edgarSubmission><isAmendment>"
+            + str(self.form.endswith("/A")).lower()
+            + "</isAmendment><amendmentType>RESTATEMENT</amendmentType><amendmentNo>1</amendmentNo>"
+            "<reportCalendarOrQuarter>" + str(self.period_of_report) + "</reportCalendarOrQuarter>"
+            "<reportType>13F HOLDINGS REPORT</reportType><isConfidentialOmitted>false</isConfidentialOmitted>"
+            "<tableEntryTotal>"
+            + str(len(self.lines))
+            + "</tableEntryTotal><tableValueTotal>"
+            + str(sum(row["VALUE"] for row in self.lines))
+            + "</tableValueTotal></edgarSubmission>"
+        )
 
 
 def _ctx(store: Any) -> Any:
@@ -130,6 +160,12 @@ def _stored(store: Any, table: Any) -> pd.DataFrame:
     return df
 
 
+def _resolved(store: Any, table: Any, as_of: str = "2026-06-15") -> pd.DataFrame:
+    manifests = store.load(table, where={"cusip": "_empty", "parse_status": "complete"}, markers=True)
+    book, _ = public_books(manifests, _stored(store, table), as_of, pd.bdate_range("2024-01-01", "2027-01-01"))
+    return book
+
+
 def _old_hr_rows(filing: _FakeFiling) -> pd.DataFrame:
     """The pre-P7 `sec13f_hr` path, verbatim: `_holdings_frame` then `_resolve_tickers`."""
     typed = f13._classify_holdings(pd.DataFrame(filing.lines)).dropna(subset=["cusip"])
@@ -174,7 +210,7 @@ def test_fetch_13f_writes_hr_as_before_and_books_only_for_roster_ciks(sqlite_sto
     hr = _stored(sqlite_store, Tables.sec13f_hr)
     expected = pd.concat([_old_hr_rows(f) for f in filings], ignore_index=True)
     keys = ["cik", "period", "ticker", "cusip"]
-    got = hr[f13._HR_COLS].sort_values(keys).reset_index(drop=True)
+    got = hr.loc[hr.ticker.isin(UNIVERSE), f13._HR_COLS].sort_values(keys).reset_index(drop=True)
     want = expected.sort_values(keys).reset_index(drop=True)
     pd.testing.assert_frame_equal(got, want, check_dtype=False)
 
@@ -184,7 +220,9 @@ def test_fetch_13f_writes_hr_as_before_and_books_only_for_roster_ciks(sqlite_sto
     aapl = book[book["cusip"] == "037833100"].iloc[0]
     assert aapl["value_usd"] == 1_000_000.0 and aapl["shares"] == 5_000
     print("\n=== SANITY: one 13F walk, two tables ===")
-    print(f"  sec13f_hr {len(hr)} rows == pre-P7 path; manager book {len(book)} rows, roster CIK only, non-S&P500 kept. Validated.")
+    print(
+        f"  sec13f_hr {len(hr)} full-source rows; mapped universe slice == pre-P7 path; manager book {len(book)} rows, roster CIK only, non-S&P500 kept. Validated."
+    )
 
 
 @pytest.mark.parametrize(("order", "save_every"), [("newest_first", 600), ("newest_first", 1), ("oldest_first", 1)])
@@ -197,25 +235,27 @@ def test_amendment_wins_in_both_tables_whatever_the_listing_order(sqlite_store, 
 
     f13.fetch_13f(_ctx(sqlite_store), tickers=UNIVERSE, years_history=15, save_every=save_every)
 
-    book = _stored(sqlite_store, Tables.sec13f_manager_holdings).set_index("cusip")
-    assert len(book) == 2
-    assert book.loc["037833100", "value_usd"] == 1_200_000.0
-    assert book.loc["037833100", "filing_date"] == pd.Timestamp("2026-06-01")
-    assert book.loc["G0450A105", "filing_date"] == pd.Timestamp("2026-05-10")  # only the original carries it
-    hr = _stored(sqlite_store, Tables.sec13f_hr)
-    roster_aapl = hr[(hr["cik"] == ROSTER) & (hr["ticker"] == "AAPL")]
-    assert len(roster_aapl) == 1 and len(hr) == 3
-    assert roster_aapl["value_usd"].iloc[0] == 1_200_000.0 and roster_aapl["filing_date"].iloc[0] == pd.Timestamp("2026-06-01")
-    print(f"\n=== SANITY: amendment wins in both tables ({order}, save_every={save_every}) ===")
-    print(f"  sec13f_hr and the manager book carry the 2026-06-01 13F-HR/A for AAPL (value {roster_aapl['value_usd'].iloc[0]:,.0f});")
-    print("  the CUSIP only the original reported survives in the book. Validated.")
+    for table in (Tables.sec13f_hr, Tables.sec13f_manager_holdings):
+        raw = _stored(sqlite_store, table)
+        roster = raw.loc[raw.cik.eq(ROSTER)]
+        assert len(roster) == 3
+        assert set(roster.accession_number) == {_roster_original().accession_number, _roster_amendment().accession_number}
+        before = _resolved(sqlite_store, table, "2026-05-20")
+        after = _resolved(sqlite_store, table)
+        assert set(before.loc[before.cik.eq(ROSTER), "cusip"]) == {"037833100", "G0450A105"}
+        latest = after.loc[after.cik.eq(ROSTER)]
+        assert len(latest) == 1 and latest.iloc[0].value_usd == 1_200_000
+    assert len(_stored(sqlite_store, Tables.sec13f_hr)) == 5
+    print(
+        f"SANITY: both tables retain original and restatement ({order}, save_every={save_every}); omissions become exits only after amendment publication."
+    )
 
 
 def test_crash_mid_walk_leaves_the_watermark_at_the_oldest_saved_batch(sqlite_store, monkeypatch):
     filings = [_roster_amendment(), _other_filer(), _roster_original()]  # newest first
     _seed_roster(sqlite_store, [ROSTER])
     _patch_walk(monkeypatch, filings)
-    real_save, calls = f13._save_batch, []
+    real_save, calls = f13._Saver.save_packet, []
 
     def _save_then_crash(*args: Any, **kwargs: Any) -> None:
         calls.append(1)
@@ -223,7 +263,7 @@ def test_crash_mid_walk_leaves_the_watermark_at_the_oldest_saved_batch(sqlite_st
             raise ConnectionError("store went away")
         real_save(*args, **kwargs)
 
-    monkeypatch.setattr(f13, "_save_batch", _save_then_crash)
+    monkeypatch.setattr(f13._Saver, "save_packet", _save_then_crash)
 
     with pytest.raises(ConnectionError):
         f13.fetch_13f(_ctx(sqlite_store), tickers=UNIVERSE, years_history=15, save_every=1)
@@ -241,11 +281,11 @@ def test_empty_roster_still_writes_hr_and_warns(sqlite_store, monkeypatch, caplo
     with caplog.at_level(logging.WARNING):
         f13.fetch_13f(_ctx(sqlite_store), tickers=UNIVERSE, years_history=15)
 
-    assert len(sqlite_store.load(Tables.sec13f_hr)) == 3
+    assert len(sqlite_store.load(Tables.sec13f_hr)) == 4
     assert not sqlite_store.exists(Tables.sec13f_manager_holdings.name)
     assert any("holds no CIK" in r.getMessage() for r in caplog.records)
     print("\n=== SANITY: empty roster ===")
-    print("  sec13f_hr written (3 rows), no manager book, one warning. Validated.")
+    print("  sec13f_hr written (4 full-source rows), no manager book, one warning. Validated.")
 
 
 def _save_book_rows(store: Any, rows: list[tuple[str, str, str]]) -> None:
@@ -276,6 +316,12 @@ def _save_book_rows(store: Any, rows: list[tuple[str, str, str]]) -> None:
             ]
         ),
     )
+
+    for cik, period, filed in rows:
+        filing = _FakeFiling(cik, filed, period, [_line("037833100", "APPLE INC", 1000.0, 10)])
+        packet = f13.read_filing_vintage(FilingStamp.of(filing, cik))
+        assert not isinstance(packet, f13.ReadFailure)
+        store.save_13f_filing(*packet)
 
 
 def _patch_company(monkeypatch: pytest.MonkeyPatch, listings: dict[str, list[_FakeFiling]], down: set[str] | None = None) -> None:
@@ -347,7 +393,7 @@ def test_a_new_cik_whose_newest_filing_was_written_inline_still_backfills(sqlite
     print("  day-1 listing failed, day-2 inline write of 2026-03-31; the catch-up still back-filled 2025-09-30 and 2025-12-31. Validated.")
 
 
-def test_a_stored_filing_is_never_reread_and_an_empty_info_table_is_rechecked_once_per_run(sqlite_store, monkeypatch, caplog):
+def test_stored_accession_and_verified_empty_book_are_never_reread(sqlite_store, monkeypatch, caplog):
     aapl = [_line("037833100", "APPLE INC", 1_000.0, 10)]
     stored = _FakeFiling(ROSTER, "2026-05-15", "2026-03-31", aapl)
     empty = _FakeFiling(ROSTER, "2026-08-14", "2026-06-30", [])
@@ -359,7 +405,7 @@ def test_a_stored_filing_is_never_reread_and_an_empty_info_table_is_rechecked_on
         saved = [f13m.fetch_13f_managers(_ctx(sqlite_store), years_history=15) for _ in range(2)]
 
     assert stored.reads == []  # the old frontier re-read the newest stored filing on every run
-    assert len(empty.reads) == 2 and saved == [0, 0]  # one cheap re-check per run, nothing saved, no loop
+    assert len(empty.reads) == 1 and saved == [0, 0]  # one cheap re-check per run, nothing saved, no loop
     assert not any("read(s) failed" in r.getMessage() for r in caplog.records)  # empty is not a failure
     print("\n=== SANITY: done-set cost ===")
     print(
@@ -423,28 +469,25 @@ def test_catch_up_keeps_the_last_filed_amendment_from_a_newest_first_listing(sql
             return list(listing)
 
     sent: list[pd.DataFrame] = []
-    real_save_book = f13m._save_book
+    real_save_book = sqlite_store.save_13f_filing
 
-    def _spy_save_book(context: Any, book: pd.DataFrame) -> tuple[int, int]:
+    def _spy_save_book(manifest: pd.DataFrame, book: pd.DataFrame, **kwargs: Any) -> int:
         sent.append(book.copy())
-        return real_save_book(context, book)
+        return real_save_book(manifest, book, **kwargs)
 
     monkeypatch.setattr("edgar.Company", _FakeCompany)  # `sec_io.company` builds it
-    monkeypatch.setattr(f13m, "_save_book", _spy_save_book)
+    monkeypatch.setattr(sqlite_store, "save_13f_filing", _spy_save_book)
     monkeypatch.setattr(parallel_fetch, "DEFAULT_WORKERS", 1)
 
     saved = f13m.fetch_13f_managers(_ctx(sqlite_store), years_history=15)
 
     df_sent = pd.concat(sent, ignore_index=True)
-    assert not df_sent.duplicated(subset=f13._BOOK_KEY).any(), df_sent[f13._BOOK_KEY]  # Postgres rejects a repeated PK in one upsert
-    assert saved == 2  # AAPL from the amendment + the CUSIP only the original reported
-    df_book = _stored(sqlite_store, Tables.sec13f_manager_holdings).set_index("cusip")
-    assert df_book.loc["037833100", "value_usd"] == 1_200_000.0
-    assert df_book.loc["037833100", "filing_date"] == pd.Timestamp("2026-06-01")
-    assert df_book.loc["G0450A105", "filing_date"] == pd.Timestamp("2026-05-10")
-    print("\n=== SANITY: catch-up keeps the amendment ===")
-    print(f"  newest-first listing, original + 13F-HR/A for one CUSIP: {len(df_sent)} rows sent, one per PK;")
-    print(f"  AAPL stored {df_book.loc['037833100', 'value_usd']:,.0f} filed 2026-06-01 (the 13F-HR/A). Validated.")
+    assert not df_sent.duplicated(subset=["cik", "accession_number", "cusip"]).any()
+    assert saved == 3
+    assert len(_stored(sqlite_store, Tables.sec13f_manager_holdings)) == 3
+    latest = _resolved(sqlite_store, Tables.sec13f_manager_holdings)
+    assert len(latest) == 1 and latest.iloc[0].value_usd == 1_200_000
+    print("SANITY: catch-up preserves all source accessions; original two-position book resolves to the one-position replacement only when public.")
 
 
 def _same_day_pair() -> list[_FakeFiling]:
@@ -468,10 +511,11 @@ def test_a_same_day_amendment_wins_over_an_original_with_a_higher_accession(sqli
         _patch_company(monkeypatch, {ROSTER: filings})
         f13m.fetch_13f_managers(_ctx(sqlite_store), years_history=15)
 
-    book = _stored(sqlite_store, Tables.sec13f_manager_holdings).set_index("cusip")
-    assert book.loc["037833100", "value_usd"] == 1_200_000.0, book
-    print(f"\n=== SANITY: same-day original vs amendment ({path}) ===")
-    print(f"  original accession sorts after the 13F-HR/A; stored AAPL value {book.loc['037833100', 'value_usd']:,.0f} = the amendment. Validated.")
+    raw = _stored(sqlite_store, Tables.sec13f_manager_holdings)
+    assert len(raw.loc[raw.cusip.eq("037833100")]) == 2
+    latest = _resolved(sqlite_store, Tables.sec13f_manager_holdings)
+    assert latest.loc[latest.cusip.eq("037833100"), "value_usd"].iloc[0] == 1_200_000
+    print(f"SANITY: same-day amendment wins by source semantics ({path}); both accessions remain stored despite inverse accession order.")
 
 
 def _book_by_period(store: Any, cik: str) -> dict[str, tuple[float, str]]:
@@ -547,7 +591,7 @@ def test_a_parse_failure_skips_only_its_filing_and_the_quarter_saves(sqlite_stor
 # `sec_io` retries a "429" up to its 3 attempts, so that failure must last 3 reads to outlive the
 # policy; a network error edgartools already retried fails at once.
 @pytest.mark.parametrize(("fail_error", "fail_reads"), [(RuntimeError, 3), (ConnectionError, 1), (TimeoutError, 1)])
-def test_a_transient_failure_holds_the_quarter_back_and_fills_it_next_run(sqlite_store, monkeypatch, caplog, fail_error, fail_reads):
+def test_a_transient_failure_preserves_original_and_retries_only_amendment(sqlite_store, monkeypatch, caplog, fail_error, fail_reads):
     original = _FakeFiling(ROSTER, "2026-05-15", "2026-03-31", [_line("037833100", "APPLE INC", 1_000.0, 10)], accession="0000000001-26-000001")
     amendment = _FakeFiling(
         ROSTER,
@@ -569,12 +613,15 @@ def test_a_transient_failure_holds_the_quarter_back_and_fills_it_next_run(sqlite
     f13m.fetch_13f_managers(_ctx(sqlite_store), years_history=15)
     after_run2 = _book_by_period(sqlite_store, ROSTER)
 
-    assert after_run1 == {"2025-12-31": (500.0, "2026-02-14")}  # the quarter is held back whole; the other quarter saves
+    assert after_run1 == {
+        "2025-12-31": (500.0, "2026-02-14"),
+        "2026-03-31": (1_000.0, "2026-05-15"),
+    }  # the verified original stays public; only the unread amendment is retried
     assert after_run2["2026-03-31"] == (2_000.0, "2026-06-01")  # filled next run, the amendment winning
     warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING and amendment.accession_number in r.getMessage()]
     assert warnings and all(s in warnings[0] for s in (ROSTER, "2026-03-31")), warnings
     assert not any(r.levelno >= logging.ERROR for r in caplog.records)
-    print(f"\n=== SANITY: transient read failure ({fail_error.__name__}) holds the quarter back (F-011) ===")
+    print(f"\n=== SANITY: transient read failure ({fail_error.__name__}) preserves readable source versions (F-011) ===")
     print(
         f"  run 1 stored {sorted(after_run1)} only; run 2 filled 2026-03-31 with {after_run2['2026-03-31']}; WARNING: {warnings[0][:100]!r}. Validated."
     )
@@ -607,3 +654,40 @@ def test_read_filing_reports_the_failure_kind(error, transient):
     assert isinstance(failure, f13.ReadFailure) and failure.transient is transient, failure
     assert type(error).__name__ in failure.reason
     print(f"\n=== SANITY: {type(error).__name__} -> {'transient' if transient else 'deterministic'} ({failure.reason[:60]!r}). Validated.")
+
+
+def test_ordinary_walk_preserves_original_and_amendment_accessions(sqlite_store, monkeypatch):
+    filings = [_roster_amendment(), _roster_original(), _other_filer()]
+    _seed_roster(sqlite_store, [ROSTER])
+    _patch_walk(monkeypatch, filings)
+    f13.fetch_13f(_ctx(sqlite_store), tickers=UNIVERSE, years_history=15)
+    manifests = sqlite_store.load(Tables.sec13f_hr, where={"cusip": "_empty", "parse_status": "complete"}, markers=True)
+    versions = sqlite_store.load(Tables.sec13f_hr)
+    assert len(manifests) == 3
+    assert set(manifests.amendment_type) == {"original", "restatement"}
+    original = versions.loc[versions.accession_number.eq(_roster_original().accession_number)]
+    assert original.loc[original.cusip.eq("037833100"), "shares"].iloc[0] == 5000
+    before = versions.copy()
+    f13.fetch_13f(_ctx(sqlite_store), tickers=UNIVERSE, years_history=15)
+    pd.testing.assert_frame_equal(before, sqlite_store.load(Tables.sec13f_hr))
+    assert sum(len(f.reads) for f in filings) == 3
+    print(
+        "SANITY: ordinary extraction retains all three complete accessions; originals survive amendments; completed-accession replay skips parsing."
+    )
+
+
+def test_catch_up_original_gap_cannot_overwrite_a_completed_amendment(sqlite_store, monkeypatch, tmp_path):
+    ctx = _ctx(sqlite_store)
+    original = _FakeFiling(ROSTER, "2024-08-14", "2024-06-30", [_line("037833100", "APPLE INC", 1000, 100)])
+    amendment = _FakeFiling(ROSTER, "2024-10-17", "2024-06-30", [_line("037833100", "APPLE INC", 1500, 150)], form="13F-HR/A")
+    stamp = FilingStamp.of(amendment, ROSTER)
+    manifest, book = f13.read_filing_vintage(stamp)
+    sqlite_store.save_13f_filing(manifest, book)
+    amendment.reads.clear()
+    _patch_company(monkeypatch, {ROSTER: [original, amendment]})
+    f13m._catch_up_cik("truth", ROSTER, context=ctx, since=pd.Timestamp("2024-01-01"))
+    stored = _stored(sqlite_store, Tables.sec13f_manager_holdings)
+    assert stored.set_index("accession_number").shares.to_dict() == {amendment.accession_number: 150, original.accession_number: 100}
+    assert len(sqlite_store.load(Tables.sec13f_manager_holdings, where={"cusip": "_empty", "parse_status": "complete"}, markers=True)) == 2
+    assert len(original.reads) == 1 and amendment.reads == []
+    print("SANITY: accession catch-up restores missing original without overwriting the already-preserved amended150 version.")

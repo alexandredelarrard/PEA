@@ -8,6 +8,7 @@ fetcher. Fetchers resume from the DB, so a nightly rerun pulls only new data. `s
 
 import json
 from datetime import datetime
+from pathlib import Path
 from typing import Any, cast
 
 import click
@@ -69,7 +70,7 @@ from src.data_extract.utils.institutionals.fetch_8k_edgar import SEC_8K_FETCH
 from src.data_extract.utils.institutionals.fetch_13d_edgar import SEC_13D_FETCH
 from src.data_extract.utils.institutionals.fetch_13f import fetch_13f
 from src.data_extract.utils.institutionals.fetch_13f_backfill import fetch_13f_backfill
-from src.data_extract.utils.institutionals.fetch_13f_managers import fetch_13f_managers
+from src.data_extract.utils.institutionals.fetch_13f_managers import fetch_13f_managers, recover_13f_vintages
 from src.data_extract.utils.institutionals.fetch_13g_edgar import SEC_13G_FETCH
 from src.data_extract.utils.institutionals.fetch_fails_to_deliver import download_fails_to_deliver, fetch_fails_to_deliver
 from src.data_extract.utils.institutionals.fetch_insider_edgar import fetch_insider_edgar, insider_fetch
@@ -313,11 +314,49 @@ def thirteen_f_backfill(config_path: str, tickers: str | None, full: bool, as_of
 @cli.command(name="thirteen-f-managers", help="FULL 13F portfolios of the superinvestor roster (all securities, CUSIP grain).")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*YEARS_ARGS, **YEARS_KWARGS)
-def thirteen_f_managers(config_path: str, years: int | None) -> None:
+@click.option("--vintages", is_flag=True, help="Preserve explicit accession versions; legacy sinks are untouched.")
+@click.option("--cik", "ciks", multiple=True)
+@click.option("--accession", "accessions", multiple=True)
+@click.option("--period-start", type=str)
+@click.option("--period-end", type=str)
+@click.option("--filed-through", type=str)
+@click.option("--max-filings", type=int)
+@click.option("--archive", "archives", multiple=True, type=click.Path(exists=True, path_type=Path))
+@click.option("--dry-run", is_flag=True)
+def thirteen_f_managers(
+    config_path: str,
+    years: int | None,
+    vintages: bool,
+    ciks: tuple[str, ...],
+    accessions: tuple[str, ...],
+    period_start: str | None,
+    period_end: str | None,
+    filed_through: str | None,
+    max_filings: int | None,
+    archives: tuple[Path, ...],
+    dry_run: bool,
+) -> None:
     """Scope is the union of every CIK ever in `superinvestor_roster`, so a departed manager keeps its history.
     An empty roster raises: run `superinvestors -F` first on a cold database."""
     config, context = get_config_context(config_path, use_cache=False, save=False)
-    fetch_13f_managers(context, years_history=years or config.data_extract.years_history)
+    if vintages:
+        if not (period_start and period_end and filed_through and max_filings):
+            raise click.UsageError("--vintages requires --period-start, --period-end, --filed-through and --max-filings")
+        recover_13f_vintages(
+            context,
+            ciks=list(ciks),
+            start_period=period_start,
+            end_period=period_end,
+            filed_through=filed_through,
+            accessions=list(accessions),
+            max_filings=max_filings,
+            dry_run=dry_run,
+            archives=list(archives) or None,
+        )
+    else:
+        if ciks or accessions or archives or dry_run or period_start or period_end or filed_through or max_filings is not None:
+            raise click.UsageError("Version recovery options require --vintages")
+        fetch_13f_managers(context, years_history=years or config.data_extract.years_history)
 
 
 @cli.command(

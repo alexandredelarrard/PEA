@@ -247,7 +247,7 @@ def test_m4_7_deleted_rows_inside_the_window_are_read_again(tmp_path, sqlite_sto
     _run(ctx, as_of=_AS_OF + pd.Timedelta(days=1))
 
     assert _saved_ciks(sqlite_store) == ["0000000001", "0000000002"]
-    assert filings[1].reads == [filings[1].accession_number]
+    assert filings[1].reads == [filings[1].accession_number]  # deleting the existing packet requires a source reread
     print("\n=== SANITY: M4-7 deleted rows ===")
     print("  deleting the newest filing's rows moved the frontier back to 2026-09-20; the next run re-read and re-saved it. Validated.")
 

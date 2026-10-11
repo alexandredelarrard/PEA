@@ -238,3 +238,64 @@ def load_insider_role_evidence(store: DataStore, insider: pd.DataFrame) -> pd.Da
     conflicted = df_proxy.groupby(["ticker", "issuer_cik", "owner_cik", "role_as_of"])["role"].transform("nunique").gt(1)
     df_proxy.loc[conflicted, ["role", "officer_title_clean"]] = [OTHER_OFFICER, "conflicting roles"]
     return df_proxy[columns].drop_duplicates()
+
+
+def load_filing_vintages(
+    store: DataStore,
+    log: logging.Logger,
+    until: object,
+    ciks: Sequence[str] | None = None,
+    *,
+    table: Table = Tables.sec13f_hr,
+) -> tuple[pd.DataFrame, pd.DataFrame] | None:
+    """Read complete accession metadata and stream its whole books, never latest-only substitutes."""
+    columns = (
+        "accession_number",
+        "cik",
+        "period",
+        "filing_date",
+        "accepted_at",
+        "amendment_type",
+        "amendment_number",
+        "report_type",
+        "restricted",
+        "parsed_row_count",
+        "parse_status",
+    )
+    if not set(columns) <= set(store.columns(table)):
+        log.warning("%s has no completed accession schema; replay original sources before building PIT features.", table.name)
+        return None
+    where: dict[str, Any] = {"parse_status": "complete", "cusip": table.empty_marker[1]}
+    if ciks is not None:
+        where["cik"] = sorted({pad_cik(cik) for cik in ciks})
+    manifests = store.load(table, columns=columns, where=where, until=until, date_col="filing_date", markers=True, optional=True)
+    if manifests is None:
+        log.warning("No complete immutable 13F filings in scope; recover originals/amendments. Latest-only rows cannot supply PIT books.")
+        return None
+    numeric = ("shares", "value_usd", "call_shares", "call_value", "put_shares", "put_value", "debt_prn", "debt_value", "other_value")
+    row_columns = (
+        "cik",
+        "accession_number",
+        "cusip",
+        "period",
+        "filing_date",
+        "position_type",
+        "class_evidence",
+        *numeric,
+        *("raw_" + col for col in numeric if "value" in col),
+    )
+    position_scope: dict[str, Any] = {"parse_status": "position"}
+    if ciks is not None:
+        position_scope["cik"] = where["cik"]
+    chunks = list(store.iter_load(table, columns=row_columns, where=position_scope, until=until, date_col="filing_date"))
+    holdings = pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame(columns=row_columns)
+    for column in ("period", "filing_date"):
+        manifests[column] = pd.to_datetime(manifests[column])
+        holdings[column] = pd.to_datetime(holdings[column])
+    log.info(
+        "Immutable 13F: %s complete accessions / %s whole-book rows / %s managers; unverified legacy rows are excluded.",
+        len(manifests),
+        len(holdings),
+        manifests.cik.nunique(),
+    )
+    return manifests, holdings

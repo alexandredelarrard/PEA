@@ -297,10 +297,10 @@ def test_build_candidate_calls_full_panel_only_and_hashes_cutoff_output(tmp_path
         def __init__(self, context: object, config: object) -> None:
             self.context = context
 
-        def build_panel(self, full: bool = False) -> tuple[pd.DataFrame, object]:
+        def build_panel(self, full: bool = False) -> pd.DataFrame:
             calls.append(full)
             future = pd.DataFrame({"date": [pd.Timestamp("2024-01-04")], "ticker": ["AAA"], "f_ic_inst_holders": [99.0]})
-            return pd.concat([source, future], ignore_index=True), SimpleNamespace(is_full=True)
+            return pd.concat([source, future], ignore_index=True)
 
         def run(self, full: bool = False) -> None:
             raise AssertionError("run/write path must not be called")

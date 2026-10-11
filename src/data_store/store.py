@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import csv
 import datetime as dt
+import hashlib
 import io
+import json
 import logging
 import threading
 from collections.abc import Iterator, Sequence
@@ -28,6 +30,7 @@ from src.data_store import ddl
 from src.data_store.errors import TableEmptyError, TableMissingError
 from src.data_store.schema import (
     MANAGED,
+    Tables,
     name_of,
     projection_report,
     resolve,
@@ -89,8 +92,8 @@ def ensure_columns(engine: Engine, name: str, df: pd.DataFrame) -> list[str]:
     table, so newly-extracted fundamentals / features persist instead of being
     silently dropped by the column-filter in upsert/copy. Returns the columns
     added. No-op if the table doesn't exist yet (caller runs ensure_table first)
-    or on non-Postgres engines (SQLite is dynamically typed)."""
-    if engine.dialect.name != "postgresql" or not table_exists(engine, name):
+    or on engines other than PostgreSQL and SQLite."""
+    if engine.dialect.name not in {"postgresql", "sqlite"} or not table_exists(engine, name):
         return []
     existing = set(_reflect(engine, name).c.keys())
     missing = [c for c in df.columns if c not in existing]
@@ -100,7 +103,8 @@ def ensure_columns(engine: Engine, name: str, df: pd.DataFrame) -> list[str]:
     with engine.begin() as conn:
         for c in missing:
             sqltype = ddl.sql_type(c, df[c].dtype, spec=spec)
-            conn.execute(text(f'ALTER TABLE "{name}" ADD COLUMN IF NOT EXISTS "{c}" {sqltype}'))
+            guard = "IF NOT EXISTS " if engine.dialect.name == "postgresql" else ""
+            conn.execute(text(f'ALTER TABLE "{name}" ADD COLUMN {guard}"{c}" {sqltype}'))
     return missing
 
 
@@ -497,7 +501,121 @@ class DataStore:
             values = [r[0] for r in conn.execute(stmt).all()]
         return [v for v in values if v is not None] if dropna else values
 
-    # -- reads ------------------------------------------------------------- #
+    def migrate_13f_tables(self) -> list[str]:
+        """Rekey the two existing PostgreSQL tables, retaining every unverified legacy row."""
+        changed: list[str] = []
+        for spec in (Tables.sec13f_hr, Tables.sec13f_manager_holdings):
+            if not self.exists(spec):
+                continue
+            with self.engine.begin() as conn:
+                if self.engine.dialect.name == "postgresql":
+                    conn.execute(text("SELECT pg_advisory_xact_lock(hashtext(:scope))"), {"scope": spec.name})
+                old = inspect(conn).get_pk_constraint(spec.name)
+                if tuple(old["constrained_columns"]) == spec.pk:
+                    continue
+                expected = tuple(key for key in spec.pk if key != "accession_number")
+                if tuple(old["constrained_columns"]) != expected:
+                    raise ValueError(f"Unexpected 13F primary key: {spec.name}: {old}")
+                if self.engine.dialect.name != "postgresql":
+                    raise ValueError("Legacy 13F primary-key migration requires PostgreSQL")
+                conn.execute(text(f"ALTER TABLE {ddl.quote(spec.name)} ADD COLUMN IF NOT EXISTS accession_number TEXT NOT NULL DEFAULT '_legacy'"))
+                conn.execute(text(f"ALTER TABLE {ddl.quote(spec.name)} DROP CONSTRAINT {ddl.quote(old['name'])}"))
+                conn.execute(text(f"ALTER TABLE {ddl.quote(spec.name)} ADD PRIMARY KEY ({', '.join(ddl.quote(key) for key in spec.pk)})"))
+            changed.append(spec.name)
+            logger.warning("%s: accession primary key installed; legacy rows retained as unverified _legacy.", spec.name)
+        return changed
+
+    def save_13f_filing(
+        self,
+        manifest: pd.DataFrame,
+        holdings: pd.DataFrame,
+        *,
+        table: SchemaTable = Tables.sec13f_manager_holdings,
+    ) -> int:
+        """Atomically preserve a full accession and its completion marker in an existing table."""
+        if table not in (Tables.sec13f_hr, Tables.sec13f_manager_holdings):
+            raise ValueError("13F filings belong in the two existing holdings tables")
+        if len(manifest) != 1 or manifest.iloc[0]["parse_status"] != "complete":
+            raise ValueError("13F save requires one complete filing manifest")
+        row = manifest.iloc[0]
+        if int(row["source_row_count"]) != int(row["declared_row_count"]) or int(row["parsed_row_count"]) != len(holdings):
+            raise ValueError("13F source row count does not reconcile")
+        if not np.isclose(float(row["source_value_total"]), float(row["declared_value_total"]), rtol=0.005, atol=1):
+            raise ValueError("13F source value total does not reconcile")
+        if holdings.duplicated(["cik", "accession_number", "cusip"]).any() or holdings.cusip.eq(table.empty_marker[1]).any():
+            raise ValueError("Duplicate or reserved CUSIP within an immutable filing")
+        for key in ("cik", "accession_number", "period", "filing_date"):
+            if key not in holdings or (
+                not holdings.empty
+                and not (
+                    pd.to_datetime(holdings[key]).eq(pd.Timestamp(row[key])).all()
+                    if key in {"period", "filing_date"}
+                    else holdings[key].eq(row[key]).all()
+                )
+            ):
+                raise ValueError(f"13F manifest/holdings mismatch: {key}")
+        raw_columns = ["raw_value_usd", "raw_call_value", "raw_put_value", "raw_debt_value", "raw_other_value"]
+        if any(column not in holdings for column in raw_columns):
+            raise ValueError("13F immutable holdings require raw typed value legs")
+        raw_values = holdings[raw_columns].to_numpy(dtype=float)
+        if not np.isfinite(raw_values).all() or (raw_values < 0).any():
+            raise ValueError("13F raw holdings values must be finite and nonnegative")
+        if not np.isclose(float(raw_values.sum()), float(row["source_value_total"]), rtol=0.005, atol=1):
+            raise ValueError("13F holdings raw value total does not reconcile to source")
+        # Byte layout and clocks differ between ZIP and EDGAR; compare economic source content.
+        keys = (
+            "cik",
+            "accession_number",
+            "period",
+            "filing_date",
+            "amendment_type",
+            "amendment_number",
+            "report_type",
+            "restricted",
+            "source_row_count",
+            "source_value_total",
+        )
+        canonical = {key: str(row[key]) for key in keys}
+        payload_cols = ["cusip", "shares", "call_shares", "put_shares", "debt_prn", *raw_columns, "class_evidence"]
+        canonical["positions"] = holdings.sort_values("cusip")[payload_cols].fillna("").astype(str).to_dict("records")
+        checksum = hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest()
+        marker = manifest.assign(cusip=table.empty_marker[1], content_checksum=checksum)
+        if table == Tables.sec13f_hr:
+            if "ticker" not in holdings or holdings.ticker.isna().any():
+                raise ValueError("13F broad holdings require ticker or the unmapped sentinel")
+            marker["ticker"] = table.empty_marker[1]
+        positions = holdings.assign(parse_status="position")
+        frame = pd.concat([positions, marker], ignore_index=True)
+        for column in manifest:
+            if column not in holdings:
+                dtype = manifest[column].dtype
+                dtype = "Int64" if pd.api.types.is_integer_dtype(dtype) else ("boolean" if pd.api.types.is_bool_dtype(dtype) else dtype)
+                frame[column] = frame[column].astype(dtype)
+        ensure_table(self.engine, table.name, frame)
+        self.migrate_13f_tables()
+        ensure_columns(self.engine, table.name, frame)
+        books = _reflect(self.engine, table.name)
+        with self.engine.begin() as conn:
+            if self.engine.dialect.name == "postgresql":
+                conn.execute(text("SELECT pg_advisory_xact_lock(hashtext(:scope))"), {"scope": f"{table.name}:{row['accession_number']}"})
+            existing = conn.execute(
+                select(books.c.content_checksum).where(
+                    books.c.cik == row["cik"],
+                    books.c.period == _bind_date(books.c.period, pd.Timestamp(row["period"])),
+                    books.c.accession_number == row["accession_number"],
+                    books.c.cusip == table.empty_marker[1],
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                if existing != checksum:
+                    raise ValueError(f"13F checksum conflict for {row['accession_number']}")
+                return 0
+            records = _records(_coerce_temporal(positions.reindex(columns=frame.columns), books))
+            for offset in range(0, len(records), _CHUNK):
+                conn.execute(books.insert(), records[offset : offset + _CHUNK])
+            conn.execute(books.insert(), _records(_coerce_temporal(marker.reindex(columns=frame.columns), books)))
+        return len(holdings)
+
     def load(
         self,
         table: SchemaTable | str,
@@ -641,6 +759,10 @@ class DataStore:
             return 0
         if pk is None:
             pk = list(resolve(table).pk)
+        if name in (Tables.sec13f_hr.name, Tables.sec13f_manager_holdings.name):
+            if "accession_number" not in df:
+                df = df.assign(accession_number="_legacy")
+            self.migrate_13f_tables()
         ensure_table(self.engine, name, df)
         ensure_columns(self.engine, name, df)  # evolve schema for new columns
         return upsert_dataframe(self.engine, df, name, pk)
@@ -717,6 +839,10 @@ class DataStore:
         name = name_of(table)
         if resolve(table).is_unmanaged:
             self.drop(name)
+        if name in (Tables.sec13f_hr.name, Tables.sec13f_manager_holdings.name):
+            if "accession_number" not in df:
+                df = df.assign(accession_number="_legacy")
+            self.migrate_13f_tables()
         ensure_table(self.engine, name, df)
         ensure_columns(self.engine, name, df)  # evolve schema for new columns
         with self.engine.begin() as conn:

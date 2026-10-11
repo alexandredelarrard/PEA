@@ -39,9 +39,10 @@ from typing import Any, cast
 import numpy as np
 import pandas as pd
 
-from src.constants.constants import F13_SETTLE_TRADING_DAYS, SEC_13F_FILING_LAG_DAYS
-from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_store.schema import Table, Tables
+from src.utils.institutional_vintages import availability_date as availability_date
+from src.utils.institutional_vintages import filing_public_dates as filing_public_dates
+from src.utils.institutional_vintages import public_books as public_books
 
 _DERIVED_FEATURES = frozenset(
     {
@@ -255,57 +256,3 @@ class InstitutionalAvailability:
         if not values.index.equals(available.index) or not values.columns.equals(available.columns):
             raise ValueError("Signal values and availability mask must be aligned")
         return values.where(available)
-
-
-def availability_date(
-    periods: pd.Series | pd.DatetimeIndex,
-    trading_index: pd.DatetimeIndex,
-    *,
-    settle_trading_days: int = F13_SETTLE_TRADING_DAYS,
-) -> pd.Series:
-    """The date each 13F `period` becomes public: deadline, snapped forward, plus the settle.
-
-    Returns a `datetime64` Series on `periods`' own index (a `DatetimeIndex` input gets itself
-    as the index, so the result is a period -> date lookup).
-
-    ⚠ `NaT` PAST THE END OF THE GRID, NEVER THE LAST SESSION. A period whose availability date
-    the calendar has not reached yet is NOT available, and clamping it onto the last trading
-    day would publish the newest quarter days-to-weeks early -- the exact look-ahead the snap
-    direction is chosen to avoid. `fundamentals_to_daily` reindexes such a stamp away anyway,
-    so the honest value costs nothing and the clamped one is a trap.
-
-    ⚠ AND THE FIRST SESSION, WITH NO SETTLE, BEFORE THE START OF THE GRID -- which is the
-    opposite case and takes the opposite treatment. `sec13f_hr` carries periods back to
-    1987-03-31 while the trading grid starts in 1995, so those deadlines fall off the front.
-    They are not "unavailable": they were public years before the panel begins, and the first
-    session is the earliest date the panel can carry them. Adding the settle there would say
-    the 1987 filing season was still settling on the panel's fourth day, which is how the
-    L1/L9 floor came out four sessions later than the panel's own start.
-
-    `settle_trading_days=0` gives the snapped deadline with no buffer. That is the setting the
-    ISOLATION TEST uses, not a production option.
-    """
-    if settle_trading_days < 0:
-        raise ValueError(f"settle_trading_days must be >= 0, got {settle_trading_days!r}")
-    # A `DatetimeIndex` input gets ITSELF as the index, which is what makes the result a
-    # `period -> availability date` lookup a caller can `.map()` with.
-    values = to_day(periods if isinstance(periods, pd.Series) else pd.Series(pd.DatetimeIndex(periods), index=pd.DatetimeIndex(periods)))
-
-    grid = pd.DatetimeIndex(trading_index).normalize().unique().sort_values()
-    if grid.empty:
-        return pd.Series(pd.NaT, index=values.index, dtype="datetime64[ns]")
-
-    deadline = values + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS)
-    snap = grid.searchsorted(deadline.to_numpy(), side="left")
-    # The settle applies only where the deadline is IN the grid's span. Before the start it
-    # would push a long-settled 1987 season into the panel's first week (see the docstring).
-    pos = np.where(deadline.to_numpy() < grid[0].to_datetime64(), snap, snap + settle_trading_days)
-    return pd.Series(
-        np.where(
-            (pos < len(grid)) & deadline.notna().to_numpy(),
-            grid.to_numpy()[np.clip(pos, 0, len(grid) - 1)],
-            np.datetime64("NaT"),
-        ),
-        index=values.index,
-        dtype="datetime64[ns]",
-    )

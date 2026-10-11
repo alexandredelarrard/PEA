@@ -38,6 +38,7 @@ from src.utils.cli_helper import SpecialHelpOrder
 from src.validate import checks
 from src.validate.checks.employees import check_employees
 from src.validate.checks.identity import check_identity
+from src.validate.checks.institutionals import check_institutionals
 from src.validate.io import OUT_DIR, run_dir, write_result
 from src.validate.io import pull as pull_snapshot
 from src.validate.result import EXIT, CheckResult
@@ -197,3 +198,19 @@ def employees(out: str, config_path: str, tickers: str | None) -> None:
     click.echo(report.result.summary())
     click.echo(f"  -> {path} (+ {', '.join(f'employees_{name}.csv' for name in files)})")
     sys.exit(EXIT[report.result.status])
+
+
+@cli.command(name="institutionals", help="Read-only validation of explicitly recovered 13F accession vintages.")
+@click.option(*OUT_ARGS, **cast(dict[str, Any], OUT_KWARGS))
+@click.option(*CONFIG_ARGS, **cast(dict[str, Any], CONFIG_KWARGS))
+@click.option("--cik", "ciks", multiple=True, required=True)
+@click.option("--period-start", required=True)
+@click.option("--period-end", required=True)
+@click.option("--filed-through", required=True)
+def institutionals(out: str, config_path: str, ciks: tuple[str, ...], period_start: str, period_end: str, filed_through: str) -> None:
+    _, context = get_config_context(config_path, use_cache=False, save=False)
+    result = check_institutionals(context, ciks=list(ciks), start_period=period_start, end_period=period_end, filed_through=filed_through)
+    path = write_result(out, result)
+    click.echo(result.summary())
+    click.echo(f"  -> {path}")
+    sys.exit(EXIT[result.status])

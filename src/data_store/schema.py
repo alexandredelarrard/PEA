@@ -924,13 +924,9 @@ class Tables:
     # ----------------------------------------------------------------- #
     # Extract -- ownership & institutional                              #
     # ----------------------------------------------------------------- #
-    # Renamed from `institutional_holdings` to match the form-dispatch registry's logical
-    # name for 13F-HR. 13F is an all-filers pull walked by filing date (fetch_13f.py), so the
-    # grain stays one row per manager x security x period -- no accession_number.
-    #
-    # ⚠ THIS TABLE IS THE S&P 500 SLICE OF EACH MANAGER'S BOOK, not the book. The extraction
-    # filters to the universe, so a portfolio weight computed here is inflated by a
-    # manager-specific 1.0x-7.6x. Use `sec13f_manager_holdings` below for any denominator.
+    # Full source books keyed by accession; ticker is a mapped label or _empty for unmapped
+    # securities. Consumers filter the universe after source completeness and amendment resolution.
+    # Original and amended books coexist. Historical latest-only rows retain _legacy accession.
     #
     # ⚠ NOT USABLE BEFORE 2013-06-30, even though min(period) is 1987-03-31. Distinct managers
     # per ticker per quarter: 14 (2012-09-30), 22 (2012-12-31), 41 (2013-03-31), then 556
@@ -941,46 +937,42 @@ class Tables:
     # responsibility rather than something a null check would catch.
     sec13f_hr = Table(
         "sec13f_hr",
-        ("cik", "period", "ticker", "cusip"),
+        ("cik", "period", "accession_number", "ticker", "cusip"),
         date_col="period",
+        date_type_cols=("period", "filing_date"),
         freshness="quarterly",
         # institutional_features + superinvestor_features. THE reason projections exist:
         # ~21.7M rows.
-        read_columns=("cik", "period", "ticker", "shares", "value_usd", "call_value", "put_value", "filing_date"),
-        # institutional_features zero-fills the option legs when they are absent
-        optional_columns=frozenset({"call_value", "put_value", "filing_date"}),
+        read_columns=(
+            "cik",
+            "period",
+            "accession_number",
+            "ticker",
+            "shares",
+            "value_usd",
+            "call_shares",
+            "call_value",
+            "put_shares",
+            "put_value",
+            "filing_date",
+        ),
+        # Option quantities are optional for older sources; never synthesize them.
+        optional_columns=frozenset({"accession_number", "call_shares", "call_value", "put_shares", "put_value", "filing_date"}),
         # Market-wide nightly walk; a new ticker is backfilled per ticker from `source_start`.
-        resume=Resume(RESUME_MARKET, None, "filing_date", 7, forms=_FORMS_13F, source_start="2013-04-01"),
+        resume=Resume(RESUME_MARKET, "cik", "filing_date", 7, forms=_FORMS_13F, source_start="2013-04-01"),
         # A completed new-ticker EDGAR gap walk (`fetch_13f_backfill`) saves one marker per ticker,
         # cik and cusip '_empty', period = filing_date = the gap start. That day follows every
         # data-set row and precedes the nightly frontier, so neither max(filing_date) nor a
         # ticker's min(period) moves.
         empty_marker=("cusip", _EMPTY),
     )
-    # The COMPLETE quarterly book of every manager that has ever been on the Dataroma roster, at
-    # CUSIP grain and with NO universe filter -- the denominator `sec13f_hr` above cannot supply.
-    #
-    # `sec13f_hr` is filtered to the S&P 500 at extraction (`fetch_13f._resolve_tickers`), so a
-    # portfolio weight computed from it is inflated by a manager-specific factor. Measured over
-    # 12 roster managers' 2026Q1 filings: median S&P 500 coverage 47% of positions and 52% of
-    # value, ranging from Atlantic Investment at 8.3%/13.1% to AltaRock at 100%/100% -- a
-    # 1.0x-7.6x spread that makes cross-manager conviction comparison meaningless without this
-    # table. Never recompute a weight from `sec13f_hr`.
-    #
-    # NO TICKER COLUMN, by design. A conviction denominator needs value and shares, not a symbol,
-    # and resolving the non-S&P500 CUSIPs would cost thousands of OpenFIGI lookups for securities
-    # nothing else reads. S&P 500 rows join through `cusip_ticker_map` when a ticker is needed.
-    #
-    # `position_type` in {common, call, put, debt, other} is the classification
-    # `fetch_13f._classify_holdings` already performs, carried here rather than re-derived. It is
-    # what keeps puts, calls and debt out of a single-name common-equity conviction denominator.
-    #
-    # The walk scope is the UNION of every CIK ever on `superinvestor_roster`, not today's
-    # roster: walking only current members would rebuild the exact survivorship bias the
-    # point-in-time roster table exists to remove.
+    # Complete accession books for the union of ever-listed roster managers; no ticker filter.
+    # Common, option and debt legs remain separate. Both 13F tables hide the inline completion
+    # marker (cusip=_empty); a completed empty book still retains its source metadata.
+    # Legacy _legacy rows are preserved for inspection, never proof of an original PIT filing.
     sec13f_manager_holdings = Table(
         "sec13f_manager_holdings",
-        ("cik", "period", "cusip"),
+        ("cik", "period", "accession_number", "cusip"),
         date_col="period",
         ticker_col=None,
         freshness="quarterly",
@@ -988,6 +980,7 @@ class Tables:
         read_columns=(
             "cik",
             "period",
+            "accession_number",
             "filing_date",
             "cusip",
             "issuer_name",
@@ -1003,7 +996,9 @@ class Tables:
             "debt_value",
             "other_value",
         ),
+        optional_columns=frozenset({"accession_number"}),
         resume=Resume(RESUME_MARKET, "cik", "filing_date", 95, forms=_FORMS_13F),
+        empty_marker=("cusip", _EMPTY),
     )
     # Forms 3/4/5 transactions, one row per (accession, nonderiv/deriv table, 1-based row in
     # that table). One table for both sources: EDGAR daily rows are authoritative

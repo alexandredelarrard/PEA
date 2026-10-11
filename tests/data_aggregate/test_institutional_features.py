@@ -117,22 +117,18 @@ def test_quarter_feature_math_on_the_d28_share():
     )
 
 
-def test_quarter_with_no_usable_value_rows_is_not_emitted() -> None:
+def test_unknown_values_preserve_shares_holders_and_known_neighbors() -> None:
     cleaned = _clean_holdings(_holdings(), key=("ticker", "cik", "period"))
-    valid = cleaned.loc[cleaned["ticker"].eq("A")].copy()
-    with_invalid_quarter = cleaned.copy()
-    with_invalid_quarter.loc[with_invalid_quarter["ticker"].eq("B"), "value_usd"] = np.nan
-
-    expected = _qf(valid, min_prior_holders=0).reset_index(drop=True)
-    got = _qf(with_invalid_quarter, min_prior_holders=0).reset_index(drop=True)
-
-    pd.testing.assert_frame_equal(got, expected)
-    assert "B" not in set(got["ticker"])
-    print(
-        "\n=== SANITY CHECK: unusable 13F quarter ===\n"
-        "  A ticker/quarter with no finite value rows emits nothing; valid neighbouring "
-        "groups remain bit-identical. Validated."
-    )
+    expected = _qf(cleaned, min_prior_holders=0).reset_index(drop=True)
+    cleaned.loc[cleaned["ticker"].eq("B"), "value_usd"] = np.nan
+    got = _qf(cleaned, min_prior_holders=0).reset_index(drop=True)
+    pd.testing.assert_frame_equal(got.loc[got.ticker.eq("A")], expected.loc[expected.ticker.eq("A")])
+    b = got.loc[got.ticker.eq("B")].iloc[0]
+    assert b["inst_shares"] == 40
+    assert b["ic_inst_holders"] == 0.5
+    assert pd.isna(b["inst_value"])
+    assert pd.isna(b["ic_inst_concentration"])
+    print("SANITY: unknown dollars preserve B's 40 shares and holder; A remains unchanged and B dollars remain unknown.")
 
 
 def _growing_universe(pairs: list[tuple[str, int, int]]) -> pd.DataFrame:
@@ -466,7 +462,13 @@ def test_value_to_mcap_panel_excludes_reported_value_change_as_flow():
         [{"ticker": t, "as_of": "2025-01-01", "sharesOutstanding": 1_000_000.0, "sharesOutstandingPit": 1_000_000.0} for t in tickers]
     )
     close = pd.DataFrame({t: 10.0 for t in tickers}, index=idx)  # price 10 -> mcap 10M
-    panel = build_institutional_feature_panel(make_frames(idx, peers, close_split=close), _holdings_opts(), shares_out_history=fund)
+    # Known-truth dollar exposure uses each typed underlying quantity on the same $10 basis.
+    holdings = _holdings_opts()
+    holdings["shares"] = holdings["value_usd"] / 10
+    holdings["call_shares"] = holdings["call_value"] / 10
+    holdings["put_shares"] = holdings["put_value"] / 10
+    frames = make_frames(idx, peers, close_split=close, level_factor=pd.DataFrame(1.0, index=idx, columns=tickers))
+    panel = build_institutional_feature_panel(frames, holdings, shares_out_history=fund, valuation_close=close)
     for c in (
         "f_ic_inst_net_options_ratio",
         "f_ic_inst_concentration",
@@ -1157,3 +1159,29 @@ def test_first_publication_shares_chg_error_does_not_regress():
         f"{float(naive.median()):.3f}pp vs matched-sample {float(matched_err.median()):.3f}pp. "
         f"Naive wins, so the per-filer self-join stays unbuilt. Validated."
     )
+
+
+def test_missing_common_value_is_unknown_but_missing_option_legs_are_zero() -> None:
+    h = pd.DataFrame({"ticker": ["A"], "cik": ["M1"], "period": ["2024-06-30"], "shares": [100.0]})
+    got = _clean_holdings(h, key=("ticker", "cik", "period"))
+    assert got["shares"].iloc[0] == 100
+    assert pd.isna(got["value_usd"].iloc[0])
+    assert got["call_value"].iloc[0] == 0
+    assert got["put_value"].iloc[0] == 0
+    print("SANITY: shares-only input preserves unknown common dollars; absent option legs retain structural zero.")
+
+
+def test_all_fallback_exclusions_return_an_empty_panel() -> None:
+    holdings = pd.DataFrame(
+        {
+            "ticker": ["NOQUOTE"],
+            "cik": ["0000000001"],
+            "period": [pd.Timestamp("2023-09-30")],
+            "filing_date": [pd.Timestamp("2023-11-01")],
+            "shares": [0.0],
+            "value_usd": [200.0],
+        }
+    )
+    panel = _panel(make_frames(pd.bdate_range("2023-09-01", "2023-12-01"), {}, universe=["NOQUOTE"]), holdings)
+    assert panel.empty and list(panel.columns) == ["date", "ticker"]
+    print("SANITY: excluding every unsupported holding returns the normal empty panel before date-availability arithmetic.")

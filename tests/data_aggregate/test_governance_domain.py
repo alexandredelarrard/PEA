@@ -276,7 +276,7 @@ def test_economic_ownership_is_computed_from_the_filed_share_count():
     filing space — dividing two independently forward-filled daily frames would put a stale
     proxy's share count over a fresh quarter's outstanding and drift with every buyback.
     """
-    from src.data_aggregate.utils.governance.panel import economic_ownership
+    from src.data_aggregate.utils.governance.clean import economic_ownership
 
     hist = pd.DataFrame(
         [
@@ -353,7 +353,7 @@ def test_a_per_class_ownership_percentage_is_blanked_by_the_voting_leg():
     ownership` is an IDENTITY on a dual-class filer. `own > vote` therefore proves the two are
     on different denominators, which only happens when the ownership leg is per-class.
     """
-    from src.data_aggregate.utils.governance.panel import repair_ownership_basis
+    from src.data_aggregate.utils.governance.clean import repair_ownership_basis
 
     hist = _proxy()
     # GOOGL's real measured pair on BAD; GOOD carries a consistent (economic, voting) pair
@@ -386,7 +386,7 @@ def test_the_basis_repair_ignores_single_class_filers():
     """For a single-class filer the two legs are the same quantity by construction, so the
     comparison carries no information and any inequality is noise. LVS 2005 is why this
     matters: 0.91 economic ownership, single class, and it must survive untouched."""
-    from src.data_aggregate.utils.governance.panel import repair_ownership_basis
+    from src.data_aggregate.utils.governance.clean import repair_ownership_basis
 
     hist = _proxy()
     hist["insider_ownership_pct"] = [0.012, 0.91]
@@ -606,7 +606,7 @@ def test_the_basis_repair_corroborates_dual_class_across_the_filers_history():
     live archive after the 2026-09-09 re-extraction: UHS 2024-04-04 reported own 0.9996 against
     vote 0.9080 with the flag at 0, while 27 of UHS's other 31 filings disclose dual class.
     """
-    from src.data_aggregate.utils.governance.panel import repair_ownership_basis
+    from src.data_aggregate.utils.governance.clean import repair_ownership_basis
 
     # the flag is RIGHT on this filing -- repaired under either keying
     honest = repair_ownership_basis(_two_filings(1.0), {})
@@ -629,7 +629,7 @@ def test_corroboration_still_spares_a_genuinely_single_class_filer():
     """LVS discloses single class in 23 of 23 filings, so promoting the condition to "ever
     disclosed dual class" must leave its real 0.91 exactly where it is. This is the direction
     that pays for the change: if it also blanked LVS, unconditional would be simpler."""
-    from src.data_aggregate.utils.governance.panel import repair_ownership_basis
+    from src.data_aggregate.utils.governance.clean import repair_ownership_basis
 
     lvs = pd.DataFrame(
         [

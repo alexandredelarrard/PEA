@@ -214,6 +214,7 @@ def check_retired(store, results: list) -> None:
 def check_cube(context, results: list) -> None:
     """The governance panel must still BUILD, and its feature names must be the old set minus
     the dropped ones. The aggregate fingerprint moving is expected — features were removed."""
+    from src.data_aggregate.utils.governance.clean import GovernanceInputs, clean_governance_inputs
     from src.data_aggregate.utils.governance.panel import build_governance_feature_panel
 
     store = context.store
@@ -221,7 +222,8 @@ def check_cube(context, results: list) -> None:
     idx = pd.DatetimeIndex(sorted(pd.to_datetime(hist["as_of"]).dropna().unique()))
     tickers = sorted(hist["ticker"].dropna().unique())[:40]
     peers = {t: [x for x in tickers if x != t][:8] for t in tickers}
-    panel, _ = build_governance_feature_panel(hist[hist["ticker"].isin(tickers)], peers, idx)
+    inputs, _ = clean_governance_inputs(GovernanceInputs(def14a=hist[hist["ticker"].isin(tickers)]), None)
+    panel, _ = build_governance_feature_panel(inputs.def14a, peers, idx)
     feats = sorted(c for c in panel.columns if c.startswith("f_"))
     dropped = [c for c in feats if "technolog" in c]
     _row(

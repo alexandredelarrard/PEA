@@ -290,7 +290,7 @@ def synthetic_def14a(tickers: list[str], idx: pd.DatetimeIndex, rng: np.random.G
                     "say_on_pay_support_pct": float(rng.uniform(0.60, 0.99)),
                     # ⚠ THE OWNERSHIP BLOCK EXERCISES FOUR CODE PATHS AND USED TO EXERCISE NONE.
                     # Without `insider_shares` and `insider_voting_pct` this fixture made
-                    # `panel.economic_ownership`, `panel.repair_ownership_basis` and
+                    # `clean.economic_ownership`, `clean.repair_ownership_basis` and
                     # `panel._control_wedge` all return early on their first guard, so the whole
                     # phase-5 ownership rework was absent from the digest -- and regenerating the
                     # baseline over that would have frozen `f_control_wedge` as permanently
@@ -771,6 +771,7 @@ def compute() -> dict:
     from src.data_aggregate.utils.fundamentals.employee_features import build_employee_feature_panel
     from src.data_aggregate.utils.fundamentals.fundamental_features import build_fundamental_feature_panel
     from src.data_aggregate.utils.fundamentals.sector_features import build_sector_feature_panel
+    from src.data_aggregate.utils.governance.clean import economic_ownership, repair_ownership_basis
     from src.data_aggregate.utils.governance.director_comp import impute_director_comp
     from src.data_aggregate.utils.governance.directors import fill_director_attributes
     from src.data_aggregate.utils.governance.panel import build_governance_feature_panel
@@ -882,10 +883,12 @@ def compute() -> dict:
     # raw children would freeze a different contract than the one that ships. The board-average
     # REPAIR (D35) is deliberately NOT in this digest -- `merge_board_aggregates` runs in the
     # step, before `impute_def14a`, and is guarded by `test_governance_directors.py` plus the D3
-    # twelve-feature guard.
+    # twelve-feature guard. The ownership repair runs here, as the cleaning stage runs it, so
+    # the builder sees the same frame it saw when the repair lived inside it.
+    gov_proxies = economic_ownership(repair_ownership_basis(proxies, {}), fund, {})
     out["panel.governance"] = frame_digest(
         build_governance_feature_panel(
-            proxies, peers, idx, fundamentals_history=fund, exec_comp=neo_comp, directors=board_filled, director_comp=board_pay, close_total=close
+            gov_proxies, peers, idx, fundamentals_history=fund, exec_comp=neo_comp, directors=board_filled, director_comp=board_pay, close_total=close
         )[0]
     )
     # ⚠ THE SINK IS THREADED THROUGH ALL FOUR SOURCE PANELS, because the two DERIVED panels

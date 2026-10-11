@@ -210,7 +210,6 @@ CARRY_LEVELS = [
     "insider_ownership_pct",
     "ceo_ownership_pct",
     "n_five_percent_holders",
-    "say_on_pay_support_pct",
     "median_employee_pay",
     "ceo_pay_ratio",
 ]

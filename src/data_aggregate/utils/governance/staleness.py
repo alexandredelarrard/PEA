@@ -118,7 +118,6 @@ LEVEL_HORIZON_FIELDS: frozenset[str] = frozenset(
         "pct_female_directors",
         "board_size",
         "avg_board_tenure",
-        "say_on_pay_support",
         "insider_ownership_pct",
     }
 )
@@ -163,7 +162,7 @@ def expire_stale(daily: pd.DataFrame, history: pd.DataFrame, field: str, max_age
     recovered downstream and has to be carried in alongside.
 
     `field` names the column in `history`; `feature` names the emitted feature when the two
-    differ (`say_on_pay_support_pct` -> `say_on_pay_support`), and it is `feature` that picks
+    differ (`ceo_is_founder` -> `founder_ceo`), and it is `feature` that picks
     the horizon.
 
     `max_age_days=None` means "ask `horizon_for`", which is the two-tier rule: a level gets

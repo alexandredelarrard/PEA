@@ -126,15 +126,13 @@ def test_measured_breach_is_blanked(src, name, bad_value, label):
     assert frame.loc[COVERED, "GOOD"].notna().all(), f"{label}: the gate leaked onto the control ticker"
 
 
-def test_say_on_pay_support_is_gated_on_the_raw_path():
-    """`_def14a_raw_fields` is a gated call site too, not just the `_LEVEL_FIELDS` loop.
-
-    The bound fires on 0 cells in production today; it is here to catch a percent-vs-fraction
-    regression on the one RAW fraction in the panel.
-    """
-    r = _def14a_raw_fields(_proxy(say_on_pay_support_pct=94.0), IDX, {})
-    assert r["say_on_pay_support"]["BAD"].isna().all()
-    assert r["say_on_pay_support"].loc[COVERED, "GOOD"].notna().all()
+def test_say_on_pay_support_is_not_a_proxy_feature():
+    """Say-on-pay ships only from the 8-K vote series (`sop_dissent`); the proxy value is a
+    fallback vote row in the cleaning stage, never a panel field of its own."""
+    r = _def14a_raw_fields(_proxy(say_on_pay_support_pct=0.94), IDX, {})
+    assert "say_on_pay_support" not in r
+    assert "say_on_pay_support" not in _governance_fields(_proxy(say_on_pay_support_pct=0.94), IDX, None, {})
+    print("\n[domain] say_on_pay_support is not emitted from the proxy path. Validated.")
 
 
 # --------------------------------------------------------------------------- #

@@ -35,6 +35,12 @@ _OWNERSHIP = "insider_ownership_pct"
 _DIRECTOR_OFFICER = "director_officer"
 #: a holder table naming fewer directors/officers than this is too partial to sum
 _MIN_HOLDERS = 5
+_SOP_SUPPORT = "say_on_pay_support_pct"
+_SAY_ON_PAY = "say_on_pay"
+#: an 8-K say-on-pay tally filed this many days before a proxy already covers that proxy's vote
+_SOP_WINDOW_DAYS = 450
+VOTE_SOURCE_8K = "8k"
+VOTE_SOURCE_PROXY = "proxy"
 
 
 @dataclass(frozen=True)
@@ -62,8 +68,8 @@ def clean_governance_inputs(raw: GovernanceInputs, fundamentals: pd.DataFrame | 
     """Clean the raw governance inputs. Returns `(cleaned bundle, stats keyed "<stage>|<rule>")`.
 
     Order: child fills, board merge, `impute_def14a`, board provenance, ownership basis repair,
-    economic ownership, ownership estimate. A bundle already cleaned is returned unchanged with
-    empty stats.
+    economic ownership, ownership estimate, say-on-pay votes fallback. A bundle already cleaned
+    is returned unchanged with empty stats.
     """
     if raw.cleaned:
         return raw, {}
@@ -103,7 +109,13 @@ def clean_governance_inputs(raw: GovernanceInputs, fundamentals: pd.DataFrame | 
                 _record(stats, "ownership_estimate", tally)
         df = frame
 
-    cleaned = replace(raw, def14a=df, exec_comp=exec_comp, directors=directors, director_comp=director_comp, cleaned=True)
+    votes = raw.votes
+    if _present(raw.def14a):
+        vote_tally: dict[str, int] = {}
+        votes = say_on_pay_fallback(cast(pd.DataFrame, raw.def14a), votes, vote_tally)
+        _record(stats, "votes_fallback", vote_tally)
+
+    cleaned = replace(raw, def14a=df, exec_comp=exec_comp, directors=directors, director_comp=director_comp, votes=votes, cleaned=True)
     return cleaned, stats
 
 
@@ -290,3 +302,78 @@ def repair_ownership_basis(def14a_hist: pd.DataFrame, tally: dict[str, int] | No
                 int(out.loc[per_class, "ticker"].nunique()) if "ticker" in out.columns else 0
             )
     return out
+
+
+def say_on_pay_fallback(def14a_raw: pd.DataFrame, votes: pd.DataFrame | None, tally: dict[str, int]) -> pd.DataFrame | None:
+    """Append one synthetic say-on-pay vote row per proxy whose FILED support has no 8-K tally
+    in the prior `_SOP_WINDOW_DAYS` days.
+
+    Reads the raw (pre-impute) proxy frame, so a carried value never becomes a vote. The row
+    is for = support, against = 1 - support, abstain 0, dated at the proxy `as_of`, keyed by
+    the proxy's accession, with `source = proxy`; the 8-K rows get `source = 8k`.
+    """
+    out = None if votes is None else votes.assign(source=VOTE_SOURCE_8K)
+    if not {"ticker", "as_of", "accession_number", _SOP_SUPPORT}.issubset(def14a_raw.columns):
+        return out
+    support = cast(pd.Series, pd.to_numeric(def14a_raw[_SOP_SUPPORT], errors="coerce"))
+    proxies = pd.DataFrame(
+        {
+            "ticker": def14a_raw["ticker"].astype(str),
+            "accession_number": def14a_raw["accession_number"],
+            "_as_of": pd.to_datetime(def14a_raw["as_of"], errors="coerce").astype("datetime64[ns]"),
+            "_support": support,
+        }
+    ).dropna(subset=["_as_of", "_support"])
+    in_domain = proxies["_support"].between(0.0, 1.0)
+    if int((~in_domain).sum()):
+        tally["say_on_pay: proxy value REFUSED (outside [0, 1])"] = int((~in_domain).sum())
+    proxies = proxies.loc[in_domain]
+    if proxies.empty:
+        return out
+
+    covered = _covered_by_8k(proxies, out)
+    if int(covered.sum()):
+        tally[f"say_on_pay: proxy value NOT used (8-K tally within {_SOP_WINDOW_DAYS} d)"] = int(covered.sum())
+    use = proxies.loc[~covered]
+    if use.empty:
+        return out
+    rows = pd.DataFrame(
+        {
+            "ticker": use["ticker"].to_numpy(),
+            "accession_number": use["accession_number"].to_numpy(),
+            "proposal_seq": np.nan,
+            "filing_date": use["_as_of"].to_numpy(),
+            "proposal_type": _SAY_ON_PAY,
+            "votes_for": use["_support"].to_numpy(),
+            "votes_against": 1.0 - use["_support"].to_numpy(),
+            "votes_abstain": 0.0,
+            "source": VOTE_SOURCE_PROXY,
+        }
+    )
+    tally[f"say_on_pay: fallback vote rows ADDED from the proxy (no 8-K tally within {_SOP_WINDOW_DAYS} d)"] = len(rows)
+    return rows if out is None else pd.concat([out, rows], ignore_index=True)
+
+
+def _covered_by_8k(proxies: pd.DataFrame, votes: pd.DataFrame | None) -> pd.Series:
+    """True where the ticker has a usable 8-K say-on-pay tally filed in the window before the proxy."""
+    none = pd.Series(False, index=proxies.index)
+    if votes is None or not {"ticker", "filing_date", "proposal_type", "votes_for"}.issubset(votes.columns):
+        return none
+    sop = votes.loc[(votes["proposal_type"].astype("object") == _SAY_ON_PAY) & votes["votes_for"].notna()]
+    right = pd.DataFrame(
+        {"ticker": sop["ticker"].astype(str), "_vote_date": pd.to_datetime(sop["filing_date"], errors="coerce").astype("datetime64[ns]")}
+    ).dropna(subset=["_vote_date"])
+    if right.empty:
+        return none
+    left = proxies[["ticker", "_as_of"]].assign(_key=range(len(proxies))).sort_values("_as_of")
+    merged = pd.merge_asof(
+        left,
+        right.sort_values("_vote_date"),
+        left_on="_as_of",
+        right_on="_vote_date",
+        by="ticker",
+        direction="backward",
+        tolerance=pd.Timedelta(days=_SOP_WINDOW_DAYS),
+    )
+    hit = pd.Series(merged["_vote_date"].notna().to_numpy(), index=merged["_key"].to_numpy()).sort_index()
+    return pd.Series(hit.to_numpy(), index=proxies.index)

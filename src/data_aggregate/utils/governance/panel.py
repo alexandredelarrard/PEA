@@ -70,7 +70,6 @@ _DOMAIN: dict[str, tuple[float, float, bool]] = {
     "ceo_equity_pay_pct": (0.0, 1.0, True),
     "pct_independent_directors": (0.0, 1.0, True),
     "pct_female_directors": (0.0, 1.0, True),
-    "say_on_pay_support_pct": (0.0, 1.0, True),
     "board_size": (3.0, 60.0, True),
     "ceo_pay_ratio": (0.0, 1e5, True),  # Zero is valid for genuinely unpaid CEOs.
     "insider_ownership_pct": (0.0, 0.90, True),
@@ -81,7 +80,6 @@ _DOMAIN: dict[str, tuple[float, float, bool]] = {
 _DOMAIN_ONLY_WHERE: dict[str, str] = {"insider_ownership_pct": "dual_class_shares"}
 _RAW_DEF14A_FIELDS: list[tuple[str, str]] = [
     ("ceo_is_founder", "founder_ceo"),
-    ("say_on_pay_support_pct", "say_on_pay_support"),
 ]
 _PEER_LEGACY = frozenset(
     {

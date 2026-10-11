@@ -62,7 +62,6 @@ _CARRIED = [
     "insider_ownership_pct",
     "pct_independent_directors",
     "avg_other_public_boards",
-    "say_on_pay_support_pct",
     "poison_pill",
     "majority_voting",
     "independent_chair",

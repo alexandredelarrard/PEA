@@ -64,13 +64,11 @@ def test_clean_stage_returns_a_copy():
     assert df["say_on_pay_support_pct"].iloc[0] == 0.31, "input frame was mutated"
 
 
-def test_impute_still_fills_a_genuinely_missing_year():
-    """Removing the floor must not disturb the gap-fill: a NaN between two filled years is
-    still interpolated, which is the behaviour a real missing proxy relies on."""
+def test_impute_leaves_a_missing_year_missing():
+    """Say-on-pay is no longer carried: the 8-K vote series is the single source and the proxy
+    value only feeds the cleaning stage's fallback vote row, which must read FILED values."""
     out, _ = impute_def14a(_proxies([0.90, np.nan, 0.94]))
-    filled = out["say_on_pay_support_pct"].iloc[1]
-    assert not np.isnan(filled), "interior missing cell was not gap-filled"
-    assert 0.90 <= filled <= 0.94
+    assert np.isnan(out["say_on_pay_support_pct"].iloc[1]), "a missing say-on-pay year was filled"
 
 
 def test_say_on_pay_prints_conclusion():

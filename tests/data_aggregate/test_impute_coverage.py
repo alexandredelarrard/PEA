@@ -49,8 +49,8 @@ _REPORTED = [
     "ceo_pay_ratio",
     "board_size",
 ]
-#: The two fields whose DELTA is a feature and whose level is filled anyway (D23).
-_DELTA_SOURCES = ["avg_other_public_boards", "say_on_pay_support_pct"]
+#: The field whose DELTA is a feature and whose level is filled anyway (D23).
+_DELTA_SOURCES = ["avg_other_public_boards"]
 
 
 def _load():

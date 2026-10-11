@@ -92,7 +92,7 @@ def test_expiry_boundary_on_both_tiers():
     legacy = _daily(hist, "ceo_pay_growth", idx)
     kept = expire_stale(legacy, hist, "ceo_pay_growth")
     assert "ceo_pay_growth" in LEVEL_HORIZON_FIELDS
-    assert len(LEVEL_HORIZON_FIELDS) == 12, "the twelve legacy features are the LEVEL tier"
+    assert len(LEVEL_HORIZON_FIELDS) == 11, "the eleven legacy features are the LEVEL tier (say_on_pay_support dropped)"
     assert LEGACY_EXEMPT_FROM_EXPIRY is LEVEL_HORIZON_FIELDS, "the alias drifted from the set"
     assert horizon_for("ceo_pay_growth") == LEVEL_MAX_AGE_DAYS == 1095
     assert horizon_for("sop_dissent") == GOVERNANCE_EVENT_MAX_AGE_DAYS == 548

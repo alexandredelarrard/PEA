@@ -271,7 +271,12 @@ from tests.data_aggregate.aggregate_fingerprint import BASELINE, compute
 # history row through a same-day join, the new path reproduced all four old feature frames exactly;
 # the pinned fixture (`employee_rows`) adds `full_part` rows, a basis switch and status-only rows,
 # and the diff read 37 outputs, 36 BYTE-IDENTICAL, `panel.employee` rows 43,010 and cols 7 unchanged.
-DECLARED_DRIFT: frozenset[str] = frozenset()
+#
+# DECLARED for the governance cleaning stage (run 2026-10-10-governance-fill-review), until the
+# one P7 regeneration empties it again:
+#   panel.governance  P5: `f_say_on_pay_support` removed (cols 66 -> 65, every other column
+#                     byte-identical); the 8-K series is the single say-on-pay source.
+DECLARED_DRIFT: frozenset[str] = frozenset({"panel.governance"})
 
 
 @pytest.fixture(scope="module")

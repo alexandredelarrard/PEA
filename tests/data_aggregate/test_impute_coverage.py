@@ -96,7 +96,7 @@ def test_impute_coverage_table():
     for f, b, a, rec, m, holes in sorted(rows, key=lambda r: -r[3]):
         print(f"  {f:<28} {b:>6.1%} {a:>8.1%} {rec:>+10,} {m:>7.1%} {holes:>7,}")
     # REQ-004: the stint constants are unified per stint; the filed value survives in `_raw`
-    # and every cell the completion wrote is labelled `person` or `censored`.
+    # and every cell the completion wrote is labelled `person`.
     for f in STINT_CONSTANTS:
         if f not in raw.columns:
             continue

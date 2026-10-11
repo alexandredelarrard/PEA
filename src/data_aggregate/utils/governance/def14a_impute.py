@@ -315,7 +315,6 @@ FILL_IDENTITY = "identity"
 FILL_CARRY = "carry"
 FILL_PERSON = "person"
 FILL_CROSS_SOURCE = "cross_source"
-FILL_CENSORED = "censored"
 
 #: Every parent column `impute_def14a` can write; each gets `<col>_source_as_of` and `<col>_fill`.
 WRITTEN_COLUMNS: tuple[str, ...] = tuple(
@@ -341,7 +340,7 @@ def fill_kind_column(field: str) -> str:
 
 
 def evidence_date_column(field: str) -> str:
-    """Date of the filing that disclosed a `person` / `censored` stint value written on another row."""
+    """Date of the filing that disclosed a `person` stint value written on another row."""
     return f"{field}_evidence_as_of"
 
 
@@ -573,26 +572,17 @@ def _filed_values(df: pd.DataFrame, col: str) -> pd.Series:
     return pd.to_numeric(df[raw_col], errors="coerce")
 
 
-def _since_year_by_stint(df: pd.DataFrame, stint: pd.Series, filed: pd.Series, stats: dict) -> tuple[pd.Series, pd.Series, pd.Series]:
-    """`(value, evidence date, censored mask)` per row for `ceo_since_year`.
-
-    The value is the largest disclosed start year <= the stint's first proxy year. When none
-    qualifies, a stint that began after the ticker's first stint takes its first proxy year
-    (left-censored); the ticker's first stint, possibly in office before the archive, stays as filed.
-    """
-    first_as_of = df["as_of"].groupby(stint).transform("min")
-    year0 = first_as_of.dt.year
+def _since_year_by_stint(df: pd.DataFrame, stint: pd.Series, filed: pd.Series, stats: dict) -> tuple[pd.Series, pd.Series]:
+    """`(value, evidence date)` per row for `ceo_since_year`: the largest disclosed start year <=
+    the stint's first proxy year. A stint with no such value is left as filed."""
+    year0 = df["as_of"].groupby(stint).transform("min").dt.year
     eligible = stint.notna() & filed.notna() & (filed <= year0)
     best = filed.where(eligible).groupby(stint).transform("max")
     evidence = df["as_of"].where(eligible & (filed == best)).groupby(stint).transform("min")
-    later_stint = stint > stint.groupby(df["ticker"]).transform("min")
-    open_rows = stint.notna() & best.isna()
-    censored = open_rows & later_stint
-    refused = int((open_rows & ~later_stint).sum())
-    if refused:
-        stats["censored refused (in office at archive start): ceo_since_year"] = refused
-    value = best.where(~censored, year0)
-    return value, evidence.where(~censored, first_as_of), censored
+    declined = int((stint.notna() & best.isna()).sum())
+    if declined:
+        stats["declined (no disclosed start <= stint's first proxy year): ceo_since_year"] = declined
+    return best, evidence
 
 
 def _founder_by_stint(df: pd.DataFrame, stint: pd.Series, filed: pd.Series, stats: dict) -> tuple[pd.Series, pd.Series]:
@@ -611,33 +601,32 @@ def _complete_stint_constants(df: pd.DataFrame, stint: pd.Series, stats: dict) -
     """One `ceo_since_year` and one `ceo_is_founder` per CEO stint (REQ-004, decision D1).
 
     A start year and a founder status are constants of the stint, so a later filing of the same
-    stint may complete an earlier row: kind `person` (or `censored`), dated at the row's own
+    stint may complete an earlier row: kind `person`, dated at the row's own
     `as_of`, with the disclosing filing in `<col>_evidence_as_of`. Rows outside any stint are
     left as filed.
     """
     if "ceo_since_year" in df.columns:
         filed = _filed_values(df, "ceo_since_year")
-        value, evidence, censored = _since_year_by_stint(df, stint, filed, stats)
-        _write_stint_value(df, "ceo_since_year", filed, value, evidence, censored, stats)
+        value, evidence = _since_year_by_stint(df, stint, filed, stats)
+        _write_stint_value(df, "ceo_since_year", filed, value, evidence, stats)
     if "ceo_is_founder" in df.columns:
         filed = _filed_values(df, "ceo_is_founder")
         mode, evidence = _founder_by_stint(df, stint, filed, stats)
-        _write_stint_value(df, "ceo_is_founder", filed, mode, evidence, pd.Series(False, index=df.index), stats)
+        _write_stint_value(df, "ceo_is_founder", filed, mode, evidence, stats)
 
 
-def _write_stint_value(df: pd.DataFrame, col: str, filed: pd.Series, value: pd.Series, evidence: pd.Series, censored: pd.Series, stats: dict) -> None:
+def _write_stint_value(df: pd.DataFrame, col: str, filed: pd.Series, value: pd.Series, evidence: pd.Series, stats: dict) -> None:
     """Write the stint value where the filed value is missing or differs, with its provenance."""
     write = value.notna() & (filed.isna() | (filed != value))
-    for kind, mask in ((FILL_PERSON, write & ~censored), (FILL_CENSORED, write & censored)):
-        if not mask.any():
-            continue
-        write_with_provenance(df, mask, col, value, kind, df["as_of"], evidence)
-        filled = int((mask & filed.isna()).sum())
-        if filled:
-            stats[f"{kind}: {col}"] = filled
-        overridden = int((mask & filed.notna()).sum())
-        if overridden:
-            stats[f"{kind} overrides a filed value: {col}"] = overridden
+    if not write.any():
+        return
+    write_with_provenance(df, write, col, value, FILL_PERSON, df["as_of"], evidence)
+    filled = int((write & filed.isna()).sum())
+    if filled:
+        stats[f"person: {col}"] = filled
+    overridden = int((write & filed.notna()).sum())
+    if overridden:
+        stats[f"person overrides a filed value: {col}"] = overridden
 
 
 def impute_def14a(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:

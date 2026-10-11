@@ -4,7 +4,7 @@ CEO stints and stint-constant completion (REQ-003/004).
   * `names.ceo_stint_ids`: a stint breaks on a change of CEO identity or of generational suffix;
     an unknown name belongs to no stint and breaks none;
   * `impute_def14a`: `ceo_since_year` = the largest disclosed value <= the stint's first proxy
-    year (censored fallback only for a stint starting after the archive start), `ceo_is_founder`
+    year (no value when none qualifies), `ceo_is_founder`
     = the stint mode, `ceo_is_board_chair` carried only within a stint; the filed value stays in
     `<col>_raw`.
 """
@@ -15,7 +15,6 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.governance.def14a_impute import (
-    FILL_CENSORED,
     FILL_PERSON,
     evidence_date_column,
     fill_kind_column,
@@ -162,18 +161,18 @@ def test_since_year_rule_and_no_cross_stint_carry() -> None:
     print("  CONCLUSION: one start year per stint, chosen by the largest-disclosed-<=-first-year rule, no predecessor value crosses.")
 
 
-def test_censored_fallback_only_after_archive_start() -> None:
-    """A stint in office at the archive start stays NaN; a later stint gets its first proxy year."""
-    out, _ = _out()
+def test_no_disclosed_start_leaves_the_stint_as_filed() -> None:
+    """No censored fallback: a stint without a disclosed start <= its first proxy year stays as filed."""
+    out, stats = _out()
     since, kind = out["ceo_since_year"], out[fill_kind_column("ceo_since_year")]
-    assert since.loc["CENS"].loc[[2010, 2011, 2012]].isna().all()
-    # Bob's only disclosed value (2016) is after his first proxy year -> censored 2013
-    assert since[("CENS", 2013)] == 2013 and since[("CENS", 2014)] == 2013
-    assert kind[("CENS", 2013)] == FILL_CENSORED and kind[("CENS", 2014)] == FILL_CENSORED
-    assert out.loc[("CENS", 2014), "ceo_since_year_raw"] == 2016
-    print("\n=== SANITY CHECK: censored fallback ===")
+    assert since.loc["CENS"].loc[[2010, 2011, 2012, 2013]].isna().all()
+    # Bob's only disclosed value (2016) is after his first proxy year: kept as filed, never copied
+    assert since[("CENS", 2014)] == 2016 and kind[("CENS", 2014)] == "filed"
+    assert "censored" not in set(out[fill_kind_column("ceo_since_year")].dropna())
+    assert stats.get("declined (no disclosed start <= stint's first proxy year): ceo_since_year", 0) >= 4
+    print("\n=== SANITY CHECK: no censored fallback ===")
     print(f"  CENS since {since.loc['CENS'].tolist()} kinds {kind.loc['CENS'].tolist()}")
-    print("  CONCLUSION: the censored start year applies only to a stint that began inside the archive.")
+    print("  CONCLUSION: without a qualifying disclosure the start year stays unknown rather than guessed.")
 
 
 def test_founder_mode_and_chair_stint_gate() -> None:

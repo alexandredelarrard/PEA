@@ -700,7 +700,8 @@ def say_on_pay_fallback(def14a_raw: pd.DataFrame, votes: pd.DataFrame | None, ta
     is for = support, against = 1 - support, abstain 0, dated at the proxy `as_of`, keyed by
     the proxy's accession, with `source = proxy`; the 8-K rows get `source = 8k`.
     """
-    out = None if votes is None else votes.assign(source=VOTE_SOURCE_8K)
+    # a row already labelled (a re-cleaned bundle) keeps its source
+    out = None if votes is None else votes.assign(source=votes["source"].fillna(VOTE_SOURCE_8K) if "source" in votes.columns else VOTE_SOURCE_8K)
     if not {"ticker", "as_of", "accession_number", _SOP_SUPPORT}.issubset(def14a_raw.columns):
         return out
     support = cast(pd.Series, pd.to_numeric(def14a_raw[_SOP_SUPPORT], errors="coerce"))

@@ -3,13 +3,14 @@ The governance cleaning stage (src/data_aggregate/utils/governance/clean.py).
 
   * a static guard: every impute / carry / repair / reconcile helper is called from the stage
     only, never from a feature module, the builder or the step;
-  * re-cleaning a cleaned bundle is a no-op;
+  * cleaning the same raw input twice gives identical frames, and re-cleaning keeps the filed snapshots;
   * the stats keys are stable `<stage>|<rule>` counts covering every stage (REQ-010).
 """
 
 from __future__ import annotations
 
 import ast
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
@@ -17,7 +18,7 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
-from src.data_aggregate.utils.governance.clean import GovernanceInputs, clean_governance_inputs
+from src.data_aggregate.utils.governance.clean import VOTE_SOURCE_PROXY, GovernanceInputs, clean_governance_inputs
 from src.data_aggregate.utils.governance.def14a_impute import fill_kind_column
 from src.data_aggregate.utils.governance.staleness import LEVEL_MAX_AGE_DAYS, expire_stale, source_date_column
 
@@ -166,24 +167,44 @@ def _frames(b: GovernanceInputs) -> dict[str, pd.DataFrame | None]:
     return {k: getattr(b, k) for k in ("def14a", "exec_comp", "directors", "director_comp", "votes", "ownership")}
 
 
-def test_clean_is_idempotent() -> None:
-    """Re-cleaning a cleaned bundle returns it unchanged and reports no fills."""
+def _fresh() -> tuple[GovernanceInputs, pd.DataFrame]:
+    """`_bundle` plus filed start years and say-on-pay support (no 8-K votes, so every filed
+    support becomes a proxy fallback vote)."""
     raw, fundamentals = _bundle()
-    once, stats = clean_governance_inputs(raw, fundamentals)
-    twice, again = clean_governance_inputs(once, fundamentals)
+    d = cast(pd.DataFrame, raw.def14a).assign(
+        ceo_since_year=[2015.0, np.nan, 2015.0, np.nan, 2010.0, 2012.0], say_on_pay_support_pct=[0.9, 0.8, np.nan, 0.95, np.nan, 0.7]
+    )
+    return replace(raw, def14a=d), fundamentals
 
-    assert stats, "the fixture must exercise the stage"
-    assert once.cleaned and not raw.cleaned
-    assert again == {}, f"a second pass reported fills: {again}"
+
+def test_clean_is_idempotent() -> None:
+    """The same raw input cleans to identical frames twice; a cleaned bundle is returned as is; and
+    cleaned frames re-wrapped as raw keep their filed `_raw` values and the vote `source`."""
+    raw, fundamentals = _fresh()
+    once, stats = clean_governance_inputs(raw, fundamentals)
+    other, stats_other = clean_governance_inputs(_fresh()[0], fundamentals)
+    assert stats and stats == stats_other
     for name, frame in _frames(once).items():
-        other = _frames(twice)[name]
+        twin = _frames(other)[name]
         if frame is None:
-            assert other is None, name
+            assert twin is None, name
         else:
-            pd.testing.assert_frame_equal(frame, other, check_exact=True, obj=name)
+            pd.testing.assert_frame_equal(frame, twin, check_exact=True, obj=name)
+
+    twice, again = clean_governance_inputs(once, fundamentals)
+    assert again == {} and twice is once
+
+    again_raw, _ = clean_governance_inputs(replace(once, cleaned=False), fundamentals)
+    d = cast(pd.DataFrame, again_raw.def14a).set_index("accession_number")
+    filed = cast(pd.DataFrame, raw.def14a).set_index("accession_number")["ceo_since_year"]
+    pd.testing.assert_series_equal(d["ceo_since_year_raw"].reindex(filed.index), filed, check_names=False)
+    votes, first_votes = cast(pd.DataFrame, again_raw.votes), cast(pd.DataFrame, once.votes)
+    assert len(votes) == len(first_votes) == 4, "re-cleaning must not add fallback rows twice"
+    assert (votes["source"] == VOTE_SOURCE_PROXY).all(), f"fallback rows relabelled: {votes['source'].tolist()}"
 
     print("\n=== SANITY CHECK: the cleaning stage is idempotent ===")
-    print(f"  first pass: {len(stats)} stats keys; second pass: {len(again)} keys and every frame identical. Validated.")
+    print(f"  two fresh raw passes: {len(stats)} identical stats keys and identical frames; re-wrapped pass keeps _raw and {len(votes)} proxy votes")
+    print("  CONCLUSION: cleaning is a pure function of the raw input, and a second pass cannot corrupt the filed snapshots.")
 
 
 def _expired_daily(def14a: pd.DataFrame, col: str, days: list[str]) -> pd.Series:

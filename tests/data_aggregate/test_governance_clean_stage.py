@@ -3,7 +3,8 @@ The governance cleaning stage (src/data_aggregate/utils/governance/clean.py).
 
   * a static guard: every impute / carry / repair / reconcile helper is called from the stage
     only, never from a feature module, the builder or the step;
-  * re-cleaning a cleaned bundle is a no-op.
+  * re-cleaning a cleaned bundle is a no-op;
+  * the stats keys are stable `<stage>|<rule>` counts covering every stage (REQ-010).
 """
 
 from __future__ import annotations
@@ -263,3 +264,85 @@ def test_ownership_writes_reset_provenance() -> None:
 
     print("\n=== SANITY CHECK: every ownership write resets its provenance ===")
     print("  B-0 blanked -> value, stamp and kind all empty; A-0 computed -> cross_source @ 2021-03-01; A-2 carry @ 2022-03-01. Validated.")
+
+
+#: Every stage the cleaning stage reports under, in run order (REQ-010).
+_STAGES = (
+    "exec_comp",
+    "directors",
+    "director_comp",
+    "board_merge",
+    "impute_def14a",
+    "board_source",
+    "ownership",
+    "ownership_estimate",
+    "sct_growth",
+    "pay_backfill",
+    "votes_fallback",
+)
+
+
+def _tally_bundle() -> tuple[GovernanceInputs, pd.DataFrame]:
+    """`_bundle` plus a CEO succession, stint constants, say-on-pay, votes and holder rows."""
+    raw, fundamentals = _bundle()
+    d = raw.def14a.copy()
+    d["ceo_name_proxy"] = ["Jane Doe"] * 3 + ["John Roe", "John Roe", "Mary Poe"]
+    d["ceo_since_year"] = [2015.0, np.nan, 2016.0, 2010.0, np.nan, np.nan]
+    d["ceo_is_founder"] = [0.0, np.nan, 0.0, 1.0, np.nan, np.nan]
+    d["ceo_is_board_chair"] = [1.0, np.nan, 1.0, 1.0, 1.0, np.nan]
+    d["say_on_pay_support_pct"] = [0.90, 0.92, np.nan, 0.62, np.nan, 0.70]
+    votes = pd.DataFrame(
+        {
+            "ticker": ["AAA"],
+            "accession_number": ["8K-A"],
+            "proposal_seq": [1.0],
+            "filing_date": pd.to_datetime(["2021-05-01"]),
+            "proposal_type": ["say_on_pay"],
+            "votes_for": [9.0e7],
+            "votes_against": [1.0e7],
+            "votes_abstain": [0.0],
+        }
+    )
+    ownership = pd.DataFrame(
+        {
+            "ticker": ["AAA"] * 6,
+            "accession_number": ["A-2"] * 6,
+            "holder_type": ["director_officer"] * 6,
+            "shares": [2.0e5] * 6,
+        }
+    )
+    bundle = GovernanceInputs(
+        def14a=d, exec_comp=raw.exec_comp, directors=raw.directors, director_comp=raw.director_comp, votes=votes, ownership=ownership
+    )
+    return bundle, fundamentals
+
+
+def test_clean_stage_tally_keys() -> None:
+    """REQ-010: stats are `<stage>|<rule>` integer counts, from known stages only, identical on a
+    fresh re-run, and they carry the filled / declined / overridden and stint-boundary counts."""
+    raw, fundamentals = _tally_bundle()
+    _, stats = clean_governance_inputs(raw, fundamentals)
+    raw2, fundamentals2 = _tally_bundle()
+    _, stats2 = clean_governance_inputs(raw2, fundamentals2)
+
+    assert stats == stats2, "the tally is not stable across identical runs"
+    assert all("|" in k for k in stats), [k for k in stats if "|" not in k]
+    stages = {k.split("|", 1)[0] for k in stats}
+    assert stages == set(_STAGES), f"stages unknown {sorted(stages - set(_STAGES))}, silent {sorted(set(_STAGES) - stages)}"
+    assert all(isinstance(v, int) and v >= 0 for v in stats.values())
+
+    rules = {k.split("|", 1)[1] for k in stats}
+    required = {
+        "person: ceo_since_year",  # stint-constant fills
+        "person overrides a filed value: ceo_since_year",
+        "declined (stint boundary): ceo_is_board_chair",  # carry refused at a stint boundary
+        "ceo_total_comp filled from the filing's own SCT row",
+    }
+    assert required <= rules, f"missing REQ-010 rules: {sorted(required - rules)}"
+    assert any(k.startswith("votes_fallback|say_on_pay: fallback vote rows ADDED") for k in stats)
+    assert any(k.startswith("votes_fallback|say_on_pay: proxy value NOT used") for k in stats)
+    assert any(k.startswith("impute_def14a|declined") for k in stats)
+
+    print("\n=== SANITY CHECK: the cleaning-stage tally is stable and complete ===")
+    print(f"  {len(stats)} keys over {len(stages)} stages ({', '.join(s for s in _STAGES if s in stages)}),")
+    print("  identical on a re-run; stint fills, overrides, stint-boundary refusals and the vote fallback all counted. Validated.")

@@ -369,3 +369,12 @@ Updated only the [insider aggregate contract](./modules/data-aggregate.md#inside
 - Operational boundary: no database write; the user's `build-governance -F` and `assemble-cube` apply it.
 - Validation fixes (same day): CEO-person daily values end at a successor's first proxy (`staleness.stint_to_daily`); the stint start year is the majority disclosed value; the ownership estimate drops entity-named holder rows and estimates above 3x the filed maximum; the pay-backfill by-year profile is stated on the module page. Evidence: `defects.md` F-001..F-004.
 - Fix round 2 (2026-10-11): the SCT CEO is told apart from relatives sharing the person key; bridged totals feed no cross-filing growth; exact later SCT values replace a carried salary; CEO stints ignore honorifics, same-first-name suffix toggles and one-off foreign proxies; MetLife's board-held trust is not an insider holding; incremental governance builds warn that `build-governance -F` is needed after each proxy season. Evidence: `defects.md` R-C-*, F-008, F-009.
+
+## 2026-10-11: scoped refresh — insider title and quiet-window corrections
+
+- Profile: internal/standard
+- source_commit: 415528a38162966b7646243cc7dbf2a6bd1c8efd plus uncommitted insider identity 6754e31aabfa47642aba1f0bfc614d4e2cfcef7939989b4eef308d89f790b5a9
+- Coverage: insider subsection only; compound issuer titles, shared confirmed-inactivity zero policy, active uncertainty/version dependencies, final independent validation and source-completeness limits. No SEC13F holdings, source extraction, model or repository-wide refresh.
+- Page: [Cube aggregation](./modules/data-aggregate.md)
+- Sources: [Insider cleaner](../src/data_aggregate/utils/institutionals/insider_quality.py), [Insider features](../src/data_aggregate/utils/institutionals/insider_features.py)
+- Evidence: 124 focused tests, overlapping final-tree 29-test check, full 2,044,497-row paired census, independent correctness/Ponytail and exact final identity checks; conditional source completeness and generic failures retained in the local insider audit report.

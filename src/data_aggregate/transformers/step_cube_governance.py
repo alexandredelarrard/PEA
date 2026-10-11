@@ -9,6 +9,7 @@ from src.context import Context
 from src.data_aggregate.utils.common.incremental import (
     COLUMNS_CHANGED,
     PART_REFRESH_TRADING_DAYS,
+    PartWindow,
     plan_window,
     write_part,
 )
@@ -27,6 +28,12 @@ from src.utils.step import Step
 
 _PRICE_FIELDS = ("close_split", "close_total")
 _OWNERSHIP_COLUMNS = ("ticker", "accession_number", "holder_type", "holder_name", "shares")
+#: the cleaning stage reads later proxies (stint constants, the historical pay backfill), so an
+#: incremental run cannot restate the rows it does not rewrite
+_INCREMENTAL_WARNING = (
+    "Incremental governance build rewrites from %s only: a new proxy can restate cleaned values on older rows "
+    "(CEO stint constants, the historical pay backfill), which keep their last-built values -> run build-governance -F after each proxy season."
+)
 
 
 class StepCubeGovernance(Step):
@@ -48,7 +55,9 @@ class StepCubeGovernance(Step):
 
         merger = PanelMerger(self._log, anchor=frames.skeleton())
         merger.add(
-            self._governance_panel(frames), "governance", "No governance features built (def14a_llm empty — accrues as fetch_def14a_llm runs)."
+            self._governance_panel(frames, window),
+            "governance",
+            "No governance features built (def14a_llm empty — accrues as fetch_def14a_llm runs).",
         )
 
         panel = merger.to_long()
@@ -146,11 +155,13 @@ class StepCubeGovernance(Step):
         return df
 
     # ---- panels ---- #
-    def _governance_panel(self, frames: PriceFrames) -> pd.DataFrame | None:
+    def _governance_panel(self, frames: PriceFrames, window: PartWindow) -> pd.DataFrame | None:
         """Load the raw governance frames, clean them once, then build the features."""
         df = self._load_def14a()
         if df is None:
             return None
+        if not window.is_full:
+            self._log.warning(_INCREMENTAL_WARNING, pd.Timestamp(window.refresh_from or window.last).date())
 
         raw = GovernanceInputs(
             def14a=df,

@@ -295,3 +295,12 @@ Append-only audit trail. Add one dated entry per generation or refresh run, reco
 - Pages: [Configuration](./reference/configuration.md), [TODO](./TODO.md)
 - Evidence: `reports/validate/2026-10-08-exe-fresh-start/` (offline: lineage and flags change only EXE's window, 481 FINRA rows re-stamp, EXE history 72 → 24 rows from as_of 2021-03-01)
 - Operational boundary: no database write; the next identity and fundamentals-history runs apply it.
+
+## 2026-10-11: refresh — governance cleaning stage
+
+- Profile: internal/standard
+- source_commit: branch `harness/governance-clean-stage`
+- Coverage: one governance cleaning stage (`clean_governance_inputs`) before the features; per-cell provenance (`_source_as_of`, fill kind) so carries expire at true age; CEO stints and stint constants; insider-ownership estimate from holder rows; `f_say_on_pay_support` dropped for the 8-K series plus a proxy fallback; same-filing SCT pay growth; the historical pay backfill lookahead warning
+- Pages: [Cube aggregation](./modules/data-aggregate.md), [TODO](./TODO.md)
+- Evidence: `reports/validate/2026-10-10-governance-fill-review/` (`03-implementation.md`, `04-handoff.md`)
+- Operational boundary: no database write; the user's `build-governance -F` and `assemble-cube` apply it.

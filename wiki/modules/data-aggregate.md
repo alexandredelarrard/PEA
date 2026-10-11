@@ -58,6 +58,22 @@ A call yields features only when its split status is `ok` and its cleaned texts 
 
 Sentiment rows carry the cache version `speaker-clean-v2` and embedding rows the model tag `text-embedding-3-small:speaker-clean-v2`; rows under another tag are rescored or re-embedded by the normal incremental pass. When a re-issued source call arrives, a durable pending marker carries its call date across the extract/aggregate boundary and is acknowledged only after the inclusive cube repair succeeds.
 
+## Governance cleaning stage
+
+`StepCubeGovernance` loads the raw governance tables (`def14a_llm`, `def14a_executive_comp`, `def14a_directors`, `def14a_director_comp`, `sec_8k_votes`, and `def14a_ownership` projected to ticker, accession, holder type and shares). It cleans them once with `clean_governance_inputs` in [clean.py](../../src/data_aggregate/utils/governance/clean.py). `build_governance_feature_panel` only builds features from the cleaned bundle. No impute, carry, repair or reconcile helper is called anywhere else; `test_governance_clean_stage.py` guards this.
+
+The stage runs in a fixed order: child fills, board merge, `impute_def14a` (carries, identities, CEO stints), board provenance, ownership basis repair, economic ownership, ownership estimate, same-filing SCT pay growth, historical CEO pay backfill, say-on-pay vote fallback. A cleaned bundle is returned unchanged on a second call.
+
+- **Provenance.** Every proxy column the stage writes carries `<col>_source_as_of` (the filing the value comes from) and `<col>_fill`: `filed`, `identity`, `carry`, `person`, `cross_source`, `estimate`, `backfill` or `interp`. A fill that uses a later filing also carries `<col>_evidence_as_of`. `staleness.expire_stale` ages a level by `_source_as_of`, so a carried value expires 1,095 days after its true source, not after the proxy it was carried onto.
+- **CEO stints.** `names.ceo_stint_ids` splits a ticker's proxies on a change of CEO identity or of generational suffix (Jr., Sr., II, III); `person_key` is unchanged. `ceo_since_year` takes the largest disclosed value at or before the stint's first proxy year, else stays as filed. `ceo_is_founder` takes the stint's mode. Both are kind `person`, dated at the row's own `as_of`, and keep the filed value in `<col>_raw`. `ceo_is_board_chair` is carried only within a stint.
+- **Ownership estimate.** A NULL `insider_ownership_pct` on a ticker never flagged dual-class is the sum of `director_officer` shares in `def14a_ownership` over point-in-time `sharesOutstandingPit`. It needs at least 5 holders and a result in (0, 1], and is kind `estimate`. Filed, computed and carried values are never overwritten.
+- **Say-on-pay.** `f_say_on_pay_support` is gone; the 8-K vote series is the single say-on-pay source. A proxy with a filed support value and no 8-K tally in the prior 450 days adds one vote row (for = support, against = 1 − support, `source = proxy`), dated at the proxy.
+- **SCT pay growth.** `ceo_comp_growth_sct` is log(total FY / total FY−1) from the CEO's row in the filing's own Summary Compensation Table, filer-stated totals only. `ceo_comp_growth_1y` and `ceo_pay_growth` prefer it and fall back to the cross-filing pair; the CEO-change mask still applies. A NULL parent `ceo_total_comp` takes the CEO's same-year SCT total (kind `identity`).
+
+> ⚠ **Historical pay backfill is a deliberate lookahead.** A NULL CEO pay component or total is filled from a LATER proxy's SCT for the same CEO and fiscal year (`backfill`), or log-linearly inside one stint across at most 2 missing proxies (`interp`). In live data a value missing today is not filled this way, so history is more complete than the present. The step logs the counts as one WARNING. Two smaller lookaheads are also accepted: stint `person` values come from the stint's other filings, and the estimate's "ever dual-class" test reads later proxies (it can only refuse a fill).
+
+Every rule's count is logged as `governance clean | <stage>|<rule>: n`; `test_clean_stage_tally_keys` pins the stage names. Evidence: `reports/validate/2026-10-10-governance-fill-review/`.
+
 ## Dependencies
 
 The module reads through [DataStore](./data-store.md), loads peer dictionaries from [peer deduction](./data-peers.md), and consumes the full set of normalized extract tables from [data extraction](./data-extract.md).

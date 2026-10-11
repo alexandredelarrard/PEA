@@ -149,17 +149,45 @@ def generational_suffix(value: object) -> str:
     return found[-1].lower() if found else ""
 
 
-def ceo_stint_ids(names: pd.Series, tickers: pd.Series) -> pd.Series:
-    """A stint number per row: consecutive rows of one ticker naming the same CEO identity and
-    generational suffix share it. NaN where the CEO is UNKNOWN; such a row breaks no stint.
+#: the two proxies around a one-off foreign proxy are at most this far apart (one annual cycle)
+_OFF_CYCLE_DAYS = 400
 
-    The caller must sort chronologically within `tickers`, as for `ceo_identity_changed`.
+
+def _stint_person(value: object) -> tuple[str, str, str | None] | None:
+    """`(key, generational suffix, first name)` of the first CEO named, honorifics stripped. None
+    when no first name or initial is left (`Mr. Cherkasky`): a bare surname is an unknown CEO."""
+    names = split_co_names(value)
+    key = person_key(strip_honorific(names[0])) if names else None
+    if key is None or "|" not in key:
+        return None
+    given = given_names(value)
+    return key, generational_suffix(value), given[0] if given else None
+
+
+def ceo_stint_ids(names: pd.Series, tickers: pd.Series, dates: pd.Series | None = None) -> pd.Series:
+    """A stint number per row: consecutive rows of one ticker naming the same CEO. NaN where the
+    CEO is UNKNOWN; such a row breaks no stint.
+
+    The CEO is the honorific-stripped `person_key` of the first person named. A generational
+    suffix change splits the stint only with a change of first name (`William R. Berkley` /
+    `W. Robert Berkley, Jr.`). With `dates`, a single off-cycle proxy naming a CEO seen nowhere
+    else in the ticker, between two proxies of one CEO, belongs to no stint (another company's
+    proxy filed under the ticker). The caller sorts chronologically within `tickers`.
     """
-    ident = ceo_identity_series(names)
-    known = ident.notna()
-    token = (tickers.astype(str) + "\x1f" + ident.astype(str) + "\x1f" + names.astype(object).map(generational_suffix)).where(known)
-    kt = token[known]
-    starts = kt.ne(kt.shift(1))
+    parts = names.astype(object).map(_stint_person)
+    known = parts.notna()
+    p = pd.DataFrame(parts[known].tolist(), index=parts.index[known], columns=["key", "suffix", "first"])
+    tick = tickers[known].astype(str)
+    if dates is not None and len(p):
+        g = p["key"].groupby(tick, sort=False)
+        t = pd.Series(pd.to_datetime(dates[known], errors="coerce"), index=p.index)
+        span = (t.groupby(tick, sort=False).shift(-1) - t.groupby(tick, sort=False).shift(1)).dt.days
+        once = p["key"].groupby([tick, p["key"]], sort=False).transform("size") == 1
+        foreign = once & (g.shift(1) == g.shift(-1)) & (p["key"] != g.shift(1)) & (span <= _OFF_CYCLE_DAYS)
+        p, tick = p.loc[~foreign], tick.loc[~foreign]
+    prev = p.groupby(tick, sort=False).shift(1)
+    renamed = (p["suffix"] != prev["suffix"]) & p["first"].notna() & prev["first"].notna() & (p["first"] != prev["first"])
+    starts = (tick != tick.shift(1)) | (p["key"] != prev["key"]) | renamed
     stint = pd.Series(np.nan, index=names.index, dtype="float64")
-    stint[known] = starts.cumsum().astype("float64")
+    stint[p.index] = starts.cumsum().astype("float64")
     return stint

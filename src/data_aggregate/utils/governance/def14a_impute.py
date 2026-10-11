@@ -525,7 +525,7 @@ def _temporal_fill(df: pd.DataFrame, stats: dict) -> None:
     """
     df.sort_values(["ticker", "as_of"], inplace=True)
     gk = df["ticker"]
-    stint = ceo_stint_ids(df["ceo_name_proxy"], gk) if "ceo_name_proxy" in df.columns else pd.Series(np.nan, index=df.index)
+    stint = ceo_stint_ids(df["ceo_name_proxy"], gk, df["as_of"]) if "ceo_name_proxy" in df.columns else pd.Series(np.nan, index=df.index)
     for col in CARRY_LEVELS + sorted(IDENTITY_GATED_CARRY):
         _carry_one(df, col, gk, stint, stats)
     _accrue_ceo_age(df, stats)

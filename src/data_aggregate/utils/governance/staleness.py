@@ -221,7 +221,7 @@ def stint_to_daily(history: pd.DataFrame, field: str, trading_index: pd.Datetime
     h["as_of"] = pd.to_datetime(h["as_of"], errors="coerce")
     h = h.dropna(subset=["ticker", "as_of"]).sort_values(["ticker", "as_of"], kind="stable").reset_index(drop=True)
     value = pd.to_numeric(h[field], errors="coerce")
-    stint = ceo_stint_ids(h["ceo_name_proxy"], h["ticker"])
+    stint = ceo_stint_ids(h["ceo_name_proxy"], h["ticker"], h["as_of"])
     current = stint.groupby(h["ticker"], sort=False).ffill()
     source = current.where(value.notna()).groupby(h["ticker"], sort=False).ffill()
     ends = value.isna() & stint.notna() & source.notna() & (stint != source)

@@ -251,3 +251,55 @@ def test_daily_projection_ends_the_previous_stint() -> None:
         f"  tenure 1999-12 {tenure.loc['1999-12-31']} | Barton 2000-04..2003-03 non-null {int(tenure.loc[barton].notna().sum())} | 2005-06 {tenure.loc['2005-06-30']}"
     )
     print("  CONCLUSION: the predecessor's start year, founder and chair flag end at the successor's first proxy.")
+
+
+def test_name_variants_and_a_foreign_proxy_keep_one_stint() -> None:
+    """An honorific (`Dr.`), a generational suffix toggled under one first name, and one off-cycle
+    proxy of another company (APD's 2010 Airgas proxy) do not split a CEO's stint; a co-CEO who
+    becomes the first-listed CEO opens his own stint (the co-CEO rows carry the first-listed
+    CEO's values)."""
+
+    def row(t: str, d: str, n: str | None, since: float, founder: float = 0.0) -> dict:
+        return {"ticker": t, "accession_number": f"{t}-{d}", "as_of": d, "ceo_name_proxy": n, "ceo_since_year": since, "ceo_is_founder": founder}
+
+    hist = pd.DataFrame(
+        [row("MRVL", f"{y}-05-01", "Sehat Sutardja", 1995.0, 1.0) for y in (2008, 2009, 2010)]
+        + [row("MRVL", f"{y}-05-01", "Dr. Sehat Sutardja", NA, NA) for y in (2011, 2012, 2013)]
+        + [
+            row("ECL", f"{y}-03-30", n, s)
+            for y, n, s in ((2005, "Douglas M. Baker, Jr.", 2004.0), (2006, "Douglas M. Baker", NA), (2007, "Douglas M. Baker, Jr.", NA))
+        ]
+        + [
+            row("APD", "2008-12-12", "John E. McGlade", 2007.0),
+            row("APD", "2009-12-10", "John E. McGlade", 2007.0),
+            row("APD", "2010-07-29", "Peter McCausland", NA),
+            row("APD", "2010-12-15", "John E. McGlade", NA),
+            row("APD", "2011-12-14", "John E. McGlade", NA),
+        ]
+        + [
+            row("NFX", "2022-04-22", "Reed Hastings", 1997.0, 1.0),
+            row("NFX", "2023-04-21", "Reed Hastings; Ted Sarandos", NA, NA),
+            row("NFX", "2024-04-18", "Ted Sarandos; Greg Peters", NA, 0.0),
+        ]
+    )
+    hist["as_of"] = pd.to_datetime(hist["as_of"])
+    hist = hist.sort_values(["ticker", "as_of"]).reset_index(drop=True)
+    stint = ceo_stint_ids(hist["ceo_name_proxy"], hist["ticker"], hist["as_of"])
+    by = hist.assign(stint=stint).groupby("ticker")["stint"]
+    assert by.get_group("MRVL").nunique() == 1 and by.get_group("ECL").nunique() == 1
+    apd = hist.assign(stint=stint).loc[hist["ticker"] == "APD"]
+    assert apd["stint"].nunique() == 1 and apd.loc[apd["ceo_name_proxy"] == "Peter McCausland", "stint"].isna().all()
+    assert by.get_group("NFX").nunique() == 2, "Sarandos as first-listed CEO is his own stint"
+
+    out, _ = impute_def14a(hist.copy())
+    since = out.set_index(["ticker", out["as_of"].dt.year])["ceo_since_year"]
+    assert (since.loc["MRVL"] == 1995).all() and (since.loc["ECL"] == 2004).all()
+    idx = pd.DatetimeIndex(pd.date_range("2008-01-01", "2024-12-31", freq="ME"))
+    tenure = _governance_fields(out, idx, None, {})["ceo_tenure"]
+    assert tenure.loc["2012-06-30", "MRVL"] == 17 and tenure.loc["2011-06-30", "APD"] == 4
+    assert pd.isna(tenure.loc["2024-06-30", "NFX"]), "Hastings' 1997 must not reach Sarandos"
+    print("\n=== SANITY CHECK: name variants, foreign proxy, co-CEO ===")
+    print(
+        f"  MRVL since {sorted(set(since.loc['MRVL']))} tenure 2012-06 {tenure.loc['2012-06-30', 'MRVL']} | APD tenure 2011-06 {tenure.loc['2011-06-30', 'APD']}"
+    )
+    print("  CONCLUSION: Dr./Jr. variants and one foreign proxy no longer end a CEO's stint; a new first-listed co-CEO still does.")

@@ -36,6 +36,7 @@ _HELPERS = frozenset(
         "finalize_board_source",
         "repair_ownership_basis",
         "economic_ownership",
+        "estimate_insider_ownership",
     }
 )
 _GUARDED = (

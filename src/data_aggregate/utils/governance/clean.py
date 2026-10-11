@@ -6,11 +6,14 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import cast
 
+import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.common.typing import frame_column
 from src.data_aggregate.utils.governance.def14a_impute import (
+    FILL_CARRY,
     FILL_CROSS_SOURCE,
+    FILL_ESTIMATE,
     ensure_provenance,
     fill_kind_column,
     impute_def14a,
@@ -28,6 +31,10 @@ from src.data_aggregate.utils.governance.directors import (
 )
 
 _SHARES_OUTSTANDING = "sharesOutstandingPit"
+_OWNERSHIP = "insider_ownership_pct"
+_DIRECTOR_OFFICER = "director_officer"
+#: a holder table naming fewer directors/officers than this is too partial to sum
+_MIN_HOLDERS = 5
 
 
 @dataclass(frozen=True)
@@ -55,7 +62,8 @@ def clean_governance_inputs(raw: GovernanceInputs, fundamentals: pd.DataFrame | 
     """Clean the raw governance inputs. Returns `(cleaned bundle, stats keyed "<stage>|<rule>")`.
 
     Order: child fills, board merge, `impute_def14a`, board provenance, ownership basis repair,
-    economic ownership. A bundle already cleaned is returned unchanged with empty stats.
+    economic ownership, ownership estimate. A bundle already cleaned is returned unchanged with
+    empty stats.
     """
     if raw.cleaned:
         return raw, {}
@@ -89,6 +97,10 @@ def clean_governance_inputs(raw: GovernanceInputs, fundamentals: pd.DataFrame | 
             frame = repair_ownership_basis(frame, tally)
             frame = economic_ownership(frame, fundamentals, tally)
             _record(stats, "ownership", tally)
+            if _present(raw.ownership):
+                tally = {}
+                frame = estimate_insider_ownership(frame, cast(pd.DataFrame, raw.ownership), fundamentals, tally)
+                _record(stats, "ownership_estimate", tally)
         df = frame
 
     cleaned = replace(raw, def14a=df, exec_comp=exec_comp, directors=directors, director_comp=director_comp, cleaned=True)
@@ -101,6 +113,37 @@ def _board_fill_kinds(frame: pd.DataFrame) -> None:
         if field in frame.columns and f"{field}_source" in frame.columns:
             ensure_provenance(frame, field)
             frame.loc[frame[f"{field}_source"] == SOURCE_DERIVED, fill_kind_column(field)] = FILL_CROSS_SOURCE
+
+
+def _pit_shares_outstanding(def14a_hist: pd.DataFrame, fundamentals: pd.DataFrame) -> pd.Series | None:
+    """Point-in-time shares outstanding at each proxy's `as_of`, aligned on the proxy index."""
+    # merge_asof requires identical datetime resolution across the two sources.
+    left = pd.DataFrame({"ticker": def14a_hist["ticker"], "_as_of": pd.to_datetime(def14a_hist["as_of"], errors="coerce").astype("datetime64[ns]")})
+    right = cast(
+        pd.DataFrame,
+        fundamentals[["ticker", "as_of", _SHARES_OUTSTANDING]]
+        .copy()
+        .assign(_as_of=lambda d: pd.to_datetime(d["as_of"], errors="coerce").astype("datetime64[ns]"))
+        .drop(columns="as_of")
+        .dropna(subset=["_as_of"]),
+    )
+    right = cast(pd.DataFrame, right.loc[frame_column(right, _SHARES_OUTSTANDING) > 0])
+    if right.empty:
+        return None
+
+    # Preserve row identity because merge_asof resets the index.
+    left["_key"] = range(len(left))
+    dated_left = cast(pd.DataFrame, left.dropna(subset=["_as_of"])).sort_values("_as_of")
+    merged = pd.merge_asof(dated_left, right.sort_values("_as_of"), on="_as_of", by="ticker", direction="backward")
+    shares_out = cast(pd.Series, pd.to_numeric(frame_column(merged, _SHARES_OUTSTANDING), errors="coerce"))
+    by_key = pd.Series(shares_out.to_numpy(), index=frame_column(merged, "_key").to_numpy())
+    aligned = by_key.reindex(frame_column(left, "_key").to_numpy())
+    aligned.index = def14a_hist.index
+    return aligned
+
+
+def _proxy_dates(df: pd.DataFrame) -> pd.Series:
+    return pd.to_datetime(df["as_of"], errors="coerce")
 
 
 # The denominator must be point-in-time at the proxy date.
@@ -116,55 +159,34 @@ def economic_ownership(def14a_hist: pd.DataFrame, fundamentals: pd.DataFrame | N
             tally[f"⚠ economic ownership not computed: {_SHARES_OUTSTANDING} absent"] = 1
         return def14a_hist
 
-    # merge_asof requires identical datetime resolution across the two sources.
-    left = def14a_hist.copy()
-    left["_as_of"] = pd.to_datetime(left["as_of"], errors="coerce").astype("datetime64[ns]")
-    right = cast(
-        pd.DataFrame,
-        fundamentals[["ticker", "as_of", _SHARES_OUTSTANDING]]
-        .copy()
-        .assign(_as_of=lambda d: pd.to_datetime(d["as_of"], errors="coerce").astype("datetime64[ns]"))
-        .drop(columns="as_of")
-        .dropna(subset=["_as_of"]),
-    )
-    right = cast(pd.DataFrame, right.loc[frame_column(right, _SHARES_OUTSTANDING) > 0])
-    if right.empty:
+    shares_out = _pit_shares_outstanding(def14a_hist, fundamentals)
+    if shares_out is None:
         return def14a_hist
 
-    # Preserve row identity because merge_asof resets the index.
-    left["_key"] = range(len(left))
-    dated_left = cast(pd.DataFrame, left.dropna(subset=["_as_of"])).sort_values("_as_of")
-    merged = pd.merge_asof(dated_left, right.sort_values("_as_of"), on="_as_of", by="ticker", direction="backward")
-
-    shares_out = cast(pd.Series, pd.to_numeric(frame_column(merged, _SHARES_OUTSTANDING), errors="coerce"))
-    insider = cast(pd.Series, pd.to_numeric(frame_column(merged, "insider_shares"), errors="coerce"))
+    out = def14a_hist.copy()
+    insider = cast(pd.Series, pd.to_numeric(frame_column(out, "insider_shares"), errors="coerce"))
     computed = insider / shares_out
     # a share of a whole: anything outside (0, 1] means the two counts are on different bases
     # (one class's shares over the total, or a count in thousands) and is not usable
-    computed = computed.where((shares_out > 0) & (computed > 0) & (computed <= 1.0))
+    filled = computed.where((shares_out > 0) & (computed > 0) & (computed <= 1.0))
 
     # Economic ownership cannot exceed the disclosed voting share on a comparable basis.
-    if "insider_voting_pct" in merged.columns:
-        vote = cast(pd.Series, pd.to_numeric(frame_column(merged, "insider_voting_pct"), errors="coerce"))
-        bad = computed.notna() & vote.notna() & (computed > vote + 1e-9)
+    if "insider_voting_pct" in out.columns:
+        vote = cast(pd.Series, pd.to_numeric(frame_column(out, "insider_voting_pct"), errors="coerce"))
+        bad = filled.notna() & vote.notna() & (filled > vote + 1e-9)
         if tally is not None and int(bad.sum()):
             tally["insider_ownership_pct: computed value REJECTED (exceeds voting power)"] = int(bad.sum())
-        computed = computed.where(~bad)
+        filled = filled.where(~bad)
 
-    by_key = pd.Series(computed.to_numpy(), index=frame_column(merged, "_key").to_numpy())
-    filled = by_key.reindex(frame_column(left, "_key").to_numpy())
-    filled.index = left.index
-
-    out = left.drop(columns=["_as_of", "_key"])
-    disclosed = cast(pd.Series, pd.to_numeric(frame_column(out, "insider_ownership_pct"), errors="coerce"))
+    disclosed = cast(pd.Series, pd.to_numeric(frame_column(out, _OWNERSHIP), errors="coerce"))
 
     # Filed evidence wins; the computed percentage only fills a missing disclosure.
     fills = filled.notna() & disclosed.isna()
     n = int(fills.sum())
     if n:
-        out["insider_ownership_pct"] = disclosed
+        out[_OWNERSHIP] = disclosed
         # dated at the proxy that disclosed the share count
-        write_with_provenance(out, fills, "insider_ownership_pct", filled, FILL_CROSS_SOURCE, pd.to_datetime(out["as_of"], errors="coerce"))
+        write_with_provenance(out, fills, _OWNERSHIP, filled, FILL_CROSS_SOURCE, _proxy_dates(out))
         if tally is not None:
             tally["insider_ownership_pct: COMPUTED (no disclosed combined percentage)"] = n
     if tally is not None:
@@ -172,6 +194,71 @@ def economic_ownership(def14a_hist: pd.DataFrame, fundamentals: pd.DataFrame | N
         if kept:
             tally["insider_ownership_pct: disclosed value PREFERRED over the computed one"] = kept
     return out
+
+
+def estimate_insider_ownership(
+    def14a_hist: pd.DataFrame, ownership: pd.DataFrame, fundamentals: pd.DataFrame | None, tally: dict[str, int] | None = None
+) -> pd.DataFrame:
+    """Fill a still-missing ownership share with the filing's summed director/officer holdings
+    over point-in-time shares outstanding, on tickers never flagged dual-class.
+
+    Filed, computed and carried values are never overwritten. "Ever dual" reads later proxies
+    too; that can only refuse a fill.
+    """
+    if fundamentals is None or fundamentals.empty or _SHARES_OUTSTANDING not in fundamentals.columns:
+        return def14a_hist
+    if not {"ticker", "as_of", "accession_number", _OWNERSHIP}.issubset(def14a_hist.columns):
+        return def14a_hist
+    shares_out = _pit_shares_outstanding(def14a_hist, fundamentals)
+    if shares_out is None:
+        return def14a_hist
+
+    named = ownership.loc[(ownership["holder_type"] == _DIRECTOR_OFFICER) & ownership["shares"].notna()]
+    holders = named.groupby(["ticker", "accession_number"])["shares"].agg(["sum", "count"])
+    keys = pd.MultiIndex.from_frame(def14a_hist[["ticker", "accession_number"]])
+    summed = pd.Series(holders["sum"].reindex(keys).to_numpy(), index=def14a_hist.index)
+    n_holders = pd.Series(holders["count"].reindex(keys).fillna(0).to_numpy(), index=def14a_hist.index)
+    estimate = summed / shares_out
+
+    dual_raw = def14a_hist["dual_class_shares"] if "dual_class_shares" in def14a_hist.columns else pd.Series(np.nan, index=def14a_hist.index)
+    dual = cast(pd.Series, pd.to_numeric(dual_raw, errors="coerce")) > 0
+    ever_dual = def14a_hist["ticker"].map(dual.groupby(def14a_hist["ticker"]).max()).fillna(False).astype(bool)
+    in_bound = (estimate > 0) & (estimate <= 1.0)
+    usable = ~ever_dual & (n_holders >= _MIN_HOLDERS) & in_bound
+
+    out = def14a_hist.copy()
+    candidate = cast(pd.Series, pd.to_numeric(out[_OWNERSHIP], errors="coerce")).isna() & summed.notna()
+    fills = candidate & usable
+    if int(fills.sum()):
+        write_with_provenance(out, fills, _OWNERSHIP, estimate, FILL_ESTIMATE, _proxy_dates(out))
+    if tally is not None:
+        _tally_estimate(tally, def14a_hist, candidate, fills, ever_dual, n_holders, estimate, usable)
+    return out
+
+
+def _tally_estimate(
+    tally: dict[str, int],
+    before: pd.DataFrame,
+    candidate: pd.Series,
+    fills: pd.Series,
+    ever_dual: pd.Series,
+    n_holders: pd.Series,
+    estimate: pd.Series,
+    usable: pd.Series,
+) -> None:
+    """Count each estimate outcome, in rule order, plus the carries a same-filing estimate could replace."""
+    eligible = candidate & ~ever_dual & (n_holders >= _MIN_HOLDERS)
+    kind_col = fill_kind_column(_OWNERSHIP)
+    carried = before[kind_col] == FILL_CARRY if kind_col in before.columns else pd.Series(False, index=before.index)
+    counts = {
+        "insider_ownership_pct: ESTIMATED from director/officer holder rows": fills,
+        "insider_ownership_pct: estimate REFUSED (ticker ever flagged dual-class)": candidate & ever_dual,
+        f"insider_ownership_pct: estimate REFUSED (< {_MIN_HOLDERS} director/officer holders)": candidate & ~ever_dual & (n_holders < _MIN_HOLDERS),
+        "insider_ownership_pct: estimate REFUSED (no point-in-time shares outstanding)": eligible & estimate.isna(),
+        "insider_ownership_pct: estimate REJECTED (outside (0, 1])": eligible & estimate.notna() & ~((estimate > 0) & (estimate <= 1.0)),
+        "insider_ownership_pct: carried value KEPT over a same-filing estimate": carried & usable,
+    }
+    tally.update({key: int(mask.sum()) for key, mask in counts.items() if int(mask.sum())})
 
 
 def repair_ownership_basis(def14a_hist: pd.DataFrame, tally: dict[str, int] | None = None) -> pd.DataFrame:

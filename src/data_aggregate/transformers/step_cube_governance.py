@@ -26,6 +26,7 @@ from src.data_store.schema import Tables
 from src.utils.step import Step
 
 _PRICE_FIELDS = ("close_split", "close_total")
+_OWNERSHIP_COLUMNS = ("ticker", "accession_number", "holder_type", "shares")
 
 
 class StepCubeGovernance(Step):
@@ -128,6 +129,14 @@ class StepCubeGovernance(Step):
             return None
         return df
 
+    def _load_ownership(self) -> pd.DataFrame | None:
+        """Load the per-holder beneficial-ownership rows the insider-ownership estimate sums."""
+        df = self._store.load(Tables.def14a_ownership, columns=_OWNERSHIP_COLUMNS, optional=True)
+        if df is None or df.empty:
+            self._log.warning("No %s -> insider ownership is not estimated from the holder rows.", Tables.def14a_ownership.name)
+            return None
+        return df
+
     def _load_fundamentals(self) -> pd.DataFrame | None:
         """Load revenue and point-in-time shares used by governance features."""
         df = self._store.load(Tables.fundamentals_history, optional=True)
@@ -149,6 +158,7 @@ class StepCubeGovernance(Step):
             directors=self._load_directors(),
             director_comp=self._load_director_comp(),
             votes=self._load_votes(),
+            ownership=self._load_ownership(),
         )
         fundamentals = self._load_fundamentals()
         inputs, stats = clean_governance_inputs(raw, fundamentals)

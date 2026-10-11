@@ -315,6 +315,7 @@ FILL_IDENTITY = "identity"
 FILL_CARRY = "carry"
 FILL_PERSON = "person"
 FILL_CROSS_SOURCE = "cross_source"
+FILL_ESTIMATE = "estimate"
 
 #: Every parent column `impute_def14a` can write; each gets `<col>_source_as_of` and `<col>_fill`.
 WRITTEN_COLUMNS: tuple[str, ...] = tuple(

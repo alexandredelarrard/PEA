@@ -9,9 +9,18 @@ from typing import cast
 import pandas as pd
 
 from src.data_aggregate.utils.common.typing import frame_column
-from src.data_aggregate.utils.governance.def14a_impute import impute_def14a, impute_exec_comp
+from src.data_aggregate.utils.governance.def14a_impute import (
+    FILL_CROSS_SOURCE,
+    ensure_provenance,
+    fill_kind_column,
+    impute_def14a,
+    impute_exec_comp,
+    write_with_provenance,
+)
 from src.data_aggregate.utils.governance.director_comp import impute_director_comp
 from src.data_aggregate.utils.governance.directors import (
+    DERIVED_AGGREGATES,
+    SOURCE_DERIVED,
     board_aggregates,
     fill_director_attributes,
     finalize_board_source,
@@ -69,6 +78,7 @@ def clean_governance_inputs(raw: GovernanceInputs, fundamentals: pd.DataFrame | 
         if _present(directors):
             frame, part = merge_board_aggregates(frame, board_aggregates(cast(pd.DataFrame, directors)))
             _record(stats, "board_merge", part)
+            _board_fill_kinds(frame)
         frame, part = impute_def14a(frame)
         _record(stats, "impute_def14a", part)
         frame, part = finalize_board_source(frame)
@@ -83,6 +93,14 @@ def clean_governance_inputs(raw: GovernanceInputs, fundamentals: pd.DataFrame | 
 
     cleaned = replace(raw, def14a=df, exec_comp=exec_comp, directors=directors, director_comp=director_comp, cleaned=True)
     return cleaned, stats
+
+
+def _board_fill_kinds(frame: pd.DataFrame) -> None:
+    """Board averages derived from the director rows are a cross-source fill."""
+    for field in DERIVED_AGGREGATES:
+        if field in frame.columns and f"{field}_source" in frame.columns:
+            ensure_provenance(frame, field)
+            frame.loc[frame[f"{field}_source"] == SOURCE_DERIVED, fill_kind_column(field)] = FILL_CROSS_SOURCE
 
 
 # The denominator must be point-in-time at the proxy date.
@@ -144,7 +162,9 @@ def economic_ownership(def14a_hist: pd.DataFrame, fundamentals: pd.DataFrame | N
     fills = filled.notna() & disclosed.isna()
     n = int(fills.sum())
     if n:
-        out["insider_ownership_pct"] = disclosed.where(~fills, filled)
+        out["insider_ownership_pct"] = disclosed
+        # dated at the proxy that disclosed the share count
+        write_with_provenance(out, fills, "insider_ownership_pct", filled, FILL_CROSS_SOURCE, pd.to_datetime(out["as_of"], errors="coerce"))
         if tally is not None:
             tally["insider_ownership_pct: COMPUTED (no disclosed combined percentage)"] = n
     if tally is not None:
@@ -172,11 +192,11 @@ def repair_ownership_basis(def14a_hist: pd.DataFrame, tally: dict[str, int] | No
 
     n = int(per_class.sum())
     if n:
-        out.loc[per_class, "insider_ownership_pct"] = pd.NA
+        write_with_provenance(out, per_class, "insider_ownership_pct", None, None, None)
         if "ceo_ownership_pct" in out.columns:
             # the CEO leg was read off the SAME table and the same columns, so it inherits the
             # basis error on those filings whether or not its own pair is comparable
-            out.loc[per_class, "ceo_ownership_pct"] = pd.NA
+            write_with_provenance(out, per_class, "ceo_ownership_pct", None, None, None)
         if tally is not None:
             tally["insider_ownership_pct: blanked (per-class basis, own > vote)"] = n
             tally["insider_ownership_pct: blanked (per-class basis) — tickers"] = (

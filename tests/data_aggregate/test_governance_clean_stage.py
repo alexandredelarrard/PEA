@@ -10,11 +10,15 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pandas as pd
 
+from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 from src.data_aggregate.utils.governance.clean import GovernanceInputs, clean_governance_inputs
+from src.data_aggregate.utils.governance.def14a_impute import fill_kind_column
+from src.data_aggregate.utils.governance.staleness import LEVEL_MAX_AGE_DAYS, expire_stale, source_date_column
 
 _ROOT = Path(__file__).resolve().parents[2]
 _GOV = _ROOT / "src" / "data_aggregate" / "utils" / "governance"
@@ -176,3 +180,83 @@ def test_clean_is_idempotent() -> None:
 
     print("\n=== SANITY CHECK: the cleaning stage is idempotent ===")
     print(f"  first pass: {len(stats)} stats keys; second pass: {len(again)} keys and every frame identical. Validated.")
+
+
+def _expired_daily(def14a: pd.DataFrame, col: str, days: list[str]) -> pd.Series:
+    """`col` for the one fixture ticker on `days`, through the panel's real expiry path."""
+    idx = pd.bdate_range("2015-01-01", "2019-12-31")
+    daily = expire_stale(fundamentals_to_daily(def14a, col, idx), def14a, col, max_age_days=LEVEL_MAX_AGE_DAYS, feature=col)
+    return daily.iloc[:, 0].reindex(pd.DatetimeIndex(days))
+
+
+def test_carried_value_expires_at_its_true_age() -> None:
+    """Filed 2015-03-01, carried onto the 2016 and 2017 proxies, then silence: gone by 2018-06-01."""
+    raw = pd.DataFrame(
+        {
+            "ticker": ["CCC"] * 3,
+            "accession_number": ["C-0", "C-1", "C-2"],
+            "as_of": ["2015-03-01", "2016-03-01", "2017-03-01"],
+            "ceo_name_proxy": ["Ann Chief"] * 3,
+            "insider_ownership_pct": [0.05, np.nan, np.nan],
+        }
+    )
+    cleaned, _ = clean_governance_inputs(GovernanceInputs(def14a=raw), None)
+    d = cast(pd.DataFrame, cleaned.def14a)
+
+    carried = d["insider_ownership_pct"].tolist()
+    stamp = pd.to_datetime(d[source_date_column("insider_ownership_pct")]).tolist()
+    kinds = d[fill_kind_column("insider_ownership_pct")].tolist()
+    cells = _expired_daily(d, "insider_ownership_pct", ["2017-06-01", "2018-06-01"])
+
+    assert carried == [0.05, 0.05, 0.05], carried
+    assert stamp == [pd.Timestamp("2015-03-01")] * 3, f"a carried value keeps its source date: {stamp}"
+    assert kinds == ["filed", "carry", "carry"], kinds
+    assert cells.iloc[0] == 0.05, "inside 1,095 days of the true source the value is served"
+    assert np.isnan(cells.iloc[1]), "1,188 days after its true source the carried value must expire"
+
+    print("\n=== SANITY CHECK: a carried value ages from the filing that disclosed it ===")
+    print(f"  2017-06-01 -> {cells.iloc[0]} (823 d old); 2018-06-01 -> {cells.iloc[1]} (1,188 d old, expired). Validated.")
+
+
+def test_derived_value_takes_its_oldest_leg_date() -> None:
+    """A total summed from a carried salary is dated at the salary's source filing."""
+    comps = {"ceo_bonus": 1.0e6, "ceo_stock_awards": 2.0e6, "ceo_option_awards": 0.0, "ceo_non_equity_incentive": 5.0e5, "ceo_all_other_comp": 1.0e5}
+    raw = pd.DataFrame(
+        {
+            "ticker": ["DDD"] * 2,
+            "accession_number": ["D-0", "D-1"],
+            "as_of": ["2020-03-01", "2021-03-01"],
+            "ceo_name_proxy": ["Bo Lead"] * 2,
+            "ceo_salary": [1.0e6, np.nan],
+            "ceo_total_comp": [4.6e6, np.nan],
+            **{c: [v, v] for c, v in comps.items()},
+        }
+    )
+    cleaned, _ = clean_governance_inputs(GovernanceInputs(def14a=raw), None)
+    d = cast(pd.DataFrame, cleaned.def14a)
+    total_stamp = pd.to_datetime(d[source_date_column("ceo_total_comp")]).tolist()
+
+    assert d["ceo_total_comp"].tolist() == [4.6e6, 4.6e6]
+    assert d[fill_kind_column("ceo_salary")].tolist() == ["filed", "carry"]
+    assert d[fill_kind_column("ceo_total_comp")].tolist() == ["filed", "identity"]
+    assert total_stamp == [pd.Timestamp("2020-03-01")] * 2, f"the identity inherits the carried leg's date: {total_stamp}"
+
+    print("\n=== SANITY CHECK: a derived value is as old as its oldest leg ===")
+    print(f"  2021 total = salary carried from 2020 + filed components -> stamped {total_stamp[1].date()}, kind identity. Validated.")
+
+
+def test_ownership_writes_reset_provenance() -> None:
+    """The ownership blank clears the stamp and kind; the computed value is stamped at its proxy."""
+    raw, fundamentals = _bundle()
+    cleaned, _ = clean_governance_inputs(raw, fundamentals)
+    d = cast(pd.DataFrame, cleaned.def14a).set_index("accession_number")
+    src, kind = source_date_column("insider_ownership_pct"), fill_kind_column("insider_ownership_pct")
+
+    blanked, computed, carried = d.loc["B-0"], d.loc["A-0"], d.loc["A-2"]
+    assert pd.isna(blanked["insider_ownership_pct"]) and pd.isna(blanked[src]) and pd.isna(blanked[kind])
+    assert computed["insider_ownership_pct"] == 0.01 and computed[kind] == "cross_source"
+    assert pd.Timestamp(computed[src]) == pd.Timestamp("2021-03-01")
+    assert carried[kind] == "carry" and pd.Timestamp(carried[src]) == pd.Timestamp("2022-03-01")
+
+    print("\n=== SANITY CHECK: every ownership write resets its provenance ===")
+    print("  B-0 blanked -> value, stamp and kind all empty; A-0 computed -> cross_source @ 2021-03-01; A-2 carry @ 2022-03-01. Validated.")

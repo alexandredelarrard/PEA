@@ -43,10 +43,10 @@ side, so **every intermediate value was computed from a filing that did not exis
 built that way, 46% of everything `f_board_busyness` shipped, and `03_pit` cannot see any of it
 because the future value is laundered onto a row whose own `as_of` is legitimately in the past.
 
-⚠ **A CARRY IS BOUNDED, AT `CARRY_MAX_DAYS` (1,095 days).** Not a taste question: `expire_stale`
-dates a cell by the last filing that carried the field, so anything written here is dated to the
-row it lands on and reads as age 0 downstream. An unbounded `ffill` would push 10,400 cells —
-some copying a 30-year-old observation — straight through the level horizon.
+⚠ **A CARRY IS BOUNDED, AT `CARRY_MAX_DAYS` (1,095 days).** Every written value also carries
+`<col>_source_as_of` (the observation it came from; for an identity, its oldest leg) and
+`<col>_fill` (its fill kind), and `expire_stale` ages the daily cell from that stamp, so a carry
+never reads as a fresh disclosure downstream.
 
 ⚠ **NEVER CARRY A LEVEL WHOSE YoY CHANGE IS ITSELF A FEATURE** without recording it, because the
 fill *is* the change: a carried segment has a first difference of exactly zero, so the delta
@@ -151,6 +151,7 @@ governance events in the archive. `test_def14a_say_on_pay.py` pins that those va
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.governance.accrual import accrual_anchor, accrue
@@ -165,16 +166,8 @@ CEO_COMP = ["ceo_salary", "ceo_bonus", "ceo_stock_awards", "ceo_option_awards", 
 
 #: How far a forward carry may reach, in days, measured from the `as_of` of the observation it
 #: copies. **NOT a free parameter** -- it is `LEVEL_MAX_AGE_DAYS`, the same 1,095 days the daily
-#: panel expires a level on, and it has to be, for a reason that is easy to miss:
-#:
-#: `staleness.expire_stale` drops NULL rows before it dates a cell, so it ages a value against
-#: the last filing that CARRIED that field. A value written here onto a 2026 filing row is
-#: therefore dated 2026 downstream -- age 0, indistinguishable from a real disclosure. An
-#: unbounded `ffill` would launder stale values straight through the horizon phase 3 built:
-#: measured 2026-09-09 on the live table, 21,518 carryable cells of which **10,400 (48%) copy an
-#: observation more than 1,095 days old**, the worst reaching 10,984 days (30.1 years, on
-#: `ceo_ownership_pct`). This is the last place the true age is still knowable, so it is the only
-#: place the bound can be applied.
+#: panel expires a level on: a carry older than the horizon would be expired downstream anyway,
+#: since `expire_stale` ages each cell from its `<col>_source_as_of` stamp.
 #:
 #: ⚠ THE LINEAR INTERPOLATION THIS REPLACED LAUNDERED TOO, and that was recorded nowhere: its
 #: interior gaps reach 10,593 days on `avg_other_public_boards`. The cap is therefore not a cost
@@ -310,6 +303,23 @@ FLAGS = [
 CARRY_FORBIDDEN = frozenset({"ceo_name_proxy"})
 INT_COLS = ["n_directors", "board_size", "ceo_age", "n_five_percent_holders", "n_neos", "ceo_since_year"]
 
+#: Fill kinds stamped in `<col>_fill` beside every value the cleaning stage writes.
+FILL_FILED = "filed"
+FILL_IDENTITY = "identity"
+FILL_CARRY = "carry"
+FILL_PERSON = "person"
+FILL_CROSS_SOURCE = "cross_source"
+
+#: Every parent column `impute_def14a` can write; each gets `<col>_source_as_of` and `<col>_fill`.
+WRITTEN_COLUMNS: tuple[str, ...] = tuple(
+    dict.fromkeys(
+        [*CEO_COMP, "ceo_total_comp", "n_directors", "board_size", "median_employee_pay", "ceo_pay_ratio", "ceo_age"]
+        + CARRY_LEVELS
+        + sorted(IDENTITY_GATED_CARRY)
+        + [c for c in FLAGS if c not in CARRY_FORBIDDEN]
+    )
+)
+
 #: The seven Item 402(c) components, in `def14a_executive_comp`'s flat column vocabulary.
 #: ⚠ SEVEN, against `CEO_COMP`'s six: the child table carries `pension_change`, which the
 #: parent's schema omits. That is why the parent's identity has to tolerate a deduced
@@ -317,33 +327,65 @@ INT_COLS = ["n_directors", "board_size", "ceo_age", "n_five_percent_holders", "n
 EXEC_COMPONENTS = ["salary", "bonus", "stock_awards", "option_awards", "non_equity_incentive", "pension_change", "other_compensation"]
 
 
-def _fill(df: pd.DataFrame, col: str, cond: pd.Series, values, stats: dict, tag: str) -> None:
-    """Set df[col] = values ONLY where col is currently NaN AND `cond` AND value is finite."""
+def fill_kind_column(field: str) -> str:
+    """Provenance column holding the fill kind of each `field` value."""
+    return f"{field}_fill"
+
+
+def ensure_provenance(df: pd.DataFrame, col: str) -> None:
+    """Create `<col>_source_as_of` and `<col>_fill` where absent; a present value reads as filed on its row."""
     if col not in df.columns:
         return
-    vals = values if isinstance(values, pd.Series) else pd.Series(values, index=df.index)
-    m = df[col].isna() & cond.fillna(False) & vals.notna()
+    source_col, kind_col = source_date_column(col), fill_kind_column(col)
+    if source_col not in df.columns:
+        df[source_col] = ultimate_source_dates(df, col)
+    if kind_col not in df.columns:
+        df[kind_col] = pd.Series(np.where(df[col].notna(), FILL_FILED, None), index=df.index, dtype="object")
+
+
+def write_with_provenance(df: pd.DataFrame, mask: pd.Series, col: str, values: pd.Series | None, kind: str | None, source: pd.Series | None) -> None:
+    """Write `values` (None blanks) into `col` where `mask`, resetting its source date and fill kind together."""
+    ensure_provenance(df, col)
+    df.loc[mask, col] = values[mask] if values is not None else np.nan
+    df.loc[mask, source_date_column(col)] = source[mask] if source is not None else pd.NaT
+    df.loc[mask, fill_kind_column(col)] = kind
+
+
+def _oldest_leg(df: pd.DataFrame, legs: list[str]) -> pd.Series:
+    """Row-wise oldest source date over the legs a derived value was computed from."""
+    return pd.concat([ultimate_source_dates(df, leg) for leg in legs], axis=1).min(axis=1)
+
+
+def _fill(df: pd.DataFrame, col: str, cond: pd.Series, values: pd.Series, legs: list[str], stats: dict, tag: str) -> None:
+    """Set df[col] = values ONLY where col is currently NaN AND `cond` AND value is finite.
+
+    The written value is an identity, dated at the oldest source date of its `legs`.
+    """
+    if col not in df.columns:
+        return
+    m = df[col].isna() & cond.fillna(False) & values.notna()
     n = int(m.sum())
     if n:
-        df.loc[m, col] = vals[m]
+        write_with_provenance(df, m, col, values, FILL_IDENTITY, _oldest_leg(df, legs))
         stats[tag] = stats.get(tag, 0) + n
 
 
 def _reconcile_rows(df: pd.DataFrame, stats: dict) -> None:
     comps = [c for c in CEO_COMP if c in df.columns]
     if "ceo_total_comp" in df.columns and len(comps) == 6:
-        _fill(df, "ceo_total_comp", df[comps].notna().all(axis=1), df[comps].sum(axis=1), stats, "ceo_total_comp = sum(components)")
+        _fill(df, "ceo_total_comp", df[comps].notna().all(axis=1), df[comps].sum(axis=1), comps, stats, "ceo_total_comp = sum(components)")
         for c in comps:
             others = [x for x in comps if x != c]
             cond = df["ceo_total_comp"].notna() & df[others].notna().all(axis=1)
-            _fill(df, c, cond, (df["ceo_total_comp"] - df[others].sum(axis=1)).clip(lower=0), stats, "ceo component = total - others")
+            value = (df["ceo_total_comp"] - df[others].sum(axis=1)).clip(lower=0)
+            _fill(df, c, cond, value, ["ceo_total_comp", *others], stats, "ceo component = total - others")
     if {"n_directors", "board_size"} <= set(df.columns):
-        _fill(df, "n_directors", df["board_size"].notna(), df["board_size"], stats, "n_directors = board_size")
-        _fill(df, "board_size", df["n_directors"].notna(), df["n_directors"], stats, "board_size = n_directors")
+        _fill(df, "n_directors", df["board_size"].notna(), df["board_size"], ["board_size"], stats, "n_directors = board_size")
+        _fill(df, "board_size", df["n_directors"].notna(), df["n_directors"], ["n_directors"], stats, "board_size = n_directors")
     if {"ceo_pay_ratio", "median_employee_pay", "ceo_total_comp"} <= set(df.columns):
         r, med, tot = df["ceo_pay_ratio"], df["median_employee_pay"], df["ceo_total_comp"]
-        _fill(df, "median_employee_pay", (r > 0) & tot.notna(), tot / r, stats, "median_pay = total / ratio")
-        _fill(df, "ceo_pay_ratio", (med > 0) & tot.notna(), tot / med, stats, "pay_ratio = total / median")
+        _fill(df, "median_employee_pay", (r > 0) & tot.notna(), tot / r, ["ceo_pay_ratio", "ceo_total_comp"], stats, "median_pay = total / ratio")
+        _fill(df, "ceo_pay_ratio", (med > 0) & tot.notna(), tot / med, ["median_employee_pay", "ceo_total_comp"], stats, "pay_ratio = total / median")
 
 
 def _carry(df: pd.DataFrame, col: str, gk: pd.Series) -> tuple[pd.Series, pd.Series]:
@@ -423,7 +465,8 @@ def _accrue_ceo_age(df: pd.DataFrame, stats: dict) -> pd.Series:
     newly = df["ceo_age"].isna() & implied.notna()
     n = int(newly.sum())
     if n:
-        df.loc[newly, "ceo_age"] = implied[newly]
+        # A birth year is time-invariant, so the accrued age is dated at its own row.
+        write_with_provenance(df, newly, "ceo_age", implied, FILL_PERSON, df["as_of"])
         stats["accrue: ceo_age"] = n
     return newly
 
@@ -481,10 +524,7 @@ def _carry_one(df: pd.DataFrame, col: str, gk: pd.Series, stats: dict) -> None:
         newly &= same_ceo
     n = int(newly.sum())
     if n:
-        df.loc[newly, col] = fwd[newly]
-        source_col = source_date_column(col)
-        if source_col in df.columns:
-            df.loc[newly, source_col] = source[newly]
+        write_with_provenance(df, newly, col, fwd, FILL_CARRY, source)
         stats[f"carry: {col}"] = n
 
 
@@ -497,6 +537,8 @@ def impute_def14a(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     df["as_of"] = pd.to_datetime(df["as_of"], format="%Y-%m-%d", errors="coerce")
     was_na = {c: df[c].isna() for c in INT_COLS if c in df.columns}  # to round ONLY what we fill
     stats: dict[str, int] = {}
+    for col in WRITTEN_COLUMNS:
+        ensure_provenance(df, col)
     _reconcile_rows(df, stats)  # within-row identities
 
     # PROVENANCE for D31: which `ceo_total_comp` cells were derived from an INTERPOLATED

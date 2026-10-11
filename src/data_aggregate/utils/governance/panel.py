@@ -41,7 +41,12 @@ from src.data_aggregate.utils.governance.provisions_features import (
 from src.data_aggregate.utils.governance.provisions_features import (
     provision_fields,
 )
-from src.data_aggregate.utils.governance.staleness import LEVEL_MAX_AGE_DAYS, expire_stale
+from src.data_aggregate.utils.governance.staleness import (
+    LEVEL_MAX_AGE_DAYS,
+    expire_stale,
+    source_date_column,
+    ultimate_source_dates,
+)
 from src.data_aggregate.utils.governance.vote_dissent_features import (
     PEER_RELATIVE_FIELDS,
     vote_dissent_fields,
@@ -156,10 +161,12 @@ def _ceo_pay_growth(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dic
     """Expand filing pay growth point-in-time and null CEO-transition comparisons."""
     if "ceo_total_comp" not in def14a_hist.columns or "as_of" not in def14a_hist.columns:
         return pd.DataFrame(index=idx)
-    keep = [c for c in ("ticker", "as_of", "ceo_total_comp", "ceo_name_proxy") if c in def14a_hist.columns]
+    keep = [c for c in ("ticker", "as_of", "ceo_total_comp", source_date_column("ceo_total_comp"), "ceo_name_proxy") if c in def14a_hist.columns]
     d = cast(pd.DataFrame, def14a_hist[keep].copy())
     d["as_of"] = pd.to_datetime(d["as_of"], errors="coerce")
     d["ceo_total_comp"] = pd.to_numeric(d["ceo_total_comp"], errors="coerce")
+    # The growth is knowable at the later filing, dated by the source of that filing's total.
+    d[source_date_column("chg")] = ultimate_source_dates(d, "ceo_total_comp")
     d = d.dropna(subset=["ticker", "as_of", "ceo_total_comp"]).sort_values(["ticker", "as_of"])
     if d.empty:
         return pd.DataFrame(index=idx)
@@ -180,7 +187,7 @@ def _ceo_pay_growth(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dic
         tally["ceo_pay_growth: tickers with a nulled transition"] = int(bad.any(axis=0).sum())
         tally["ceo_pay_growth: kept on an UNKNOWN CEO identity (filings)"] = int(changed.reindex(sub.index).isna().sum())
     # A growth rate becomes knowable at the later filing, represented by `sub`.
-    return _expire(growth.mask(bad), sub[["ticker", "as_of", "chg"]], "chg", "ceo_pay_growth", tally)
+    return _expire(growth.mask(bad), sub[["ticker", "as_of", "chg", source_date_column("chg")]], "chg", "ceo_pay_growth", tally)
 
 
 def _control_wedge(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dict[str, int] | None = None) -> pd.DataFrame:
@@ -201,6 +208,10 @@ def _control_wedge(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dict
     lo, hi, _ = _DOMAIN["insider_ownership_pct"]
     own = own.where((own >= 0.0) & ((own <= hi) | (dual == 0)) & (own <= 1.0))
     vote = vote.where(vote.between(0.0, 1.0))
+    # The wedge is as old as its oldest leg; the voting leg counts only where it was disclosed.
+    legs = [ultimate_source_dates(def14a_hist, c) for c in ("insider_ownership_pct", "dual_class_shares")]
+    legs.append(ultimate_source_dates(def14a_hist, "insider_voting_pct").where(vote.notna()))
+    sub[source_date_column("control_wedge")] = pd.concat(legs, axis=1).min(axis=1)
 
     # single class -> voting equals ownership; unknown structure -> unknown wedge
     vote = vote.where(vote.notna(), own.where(dual == 0))
@@ -215,7 +226,7 @@ def _control_wedge(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dict
 
     daily = fundamentals_to_daily(sub, "control_wedge", idx)
     # Control structure is a level, aged from the filing that supplied both legs.
-    return _expire(daily, sub[["ticker", "as_of", "control_wedge"]], "control_wedge", "control_wedge", tally)
+    return _expire(daily, sub[["ticker", "as_of", "control_wedge", source_date_column("control_wedge")]], "control_wedge", "control_wedge", tally)
 
 
 def _def14a_raw_fields(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dict[str, int] | None = None) -> dict[str, pd.DataFrame]:

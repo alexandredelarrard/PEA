@@ -304,3 +304,4 @@ Append-only audit trail. Add one dated entry per generation or refresh run, reco
 - Pages: [Cube aggregation](./modules/data-aggregate.md), [TODO](./TODO.md)
 - Evidence: `reports/validate/2026-10-10-governance-fill-review/` (`03-implementation.md`, `04-handoff.md`)
 - Operational boundary: no database write; the user's `build-governance -F` and `assemble-cube` apply it.
+- Validation fixes (same day): CEO-person daily values end at a successor's first proxy (`staleness.stint_to_daily`); the stint start year is the majority disclosed value; the ownership estimate drops entity-named holder rows and estimates above 3x the filed maximum; the pay-backfill by-year profile is stated on the module page. Evidence: `defects.md` F-001..F-004.

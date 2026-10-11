@@ -51,12 +51,17 @@ _MIN_HOLDERS = 5
 #: total) is a 5% holder or a total mis-tagged by the extraction, never one person's holding
 _ENTITY_HOLDER = re.compile(
     r"\b(?:inc|incorporated|corp|corporation|company|llc|l\.l\.c|lp|l\.p|llp|ltd|limited|plc|trust|funds?|foundation|bancorp|"
-    r"group|holdings?|capital|management|partners|partnership|advisors|advisers|investors|investments?|associates|securities|"
+    r"partners|partnership|advisors|advisers|investors|associates|"
     r"bank of|vanguard|blackrock|state street|fmr|fidelity|t\.? ?rowe|mufg|mitsubishi ufj|primecap|"
     r"dodge & cox|invesco|geode|barclays|northern trust|jp ?morgan|"
     r"goldman,? sachs|morgan stanley|alliancebernstein|norges|berkshire hathaway)\b",
     re.IGNORECASE,
 )
+#: entity words that also appear in an executive's title ("..., Data Center Group"), so they are
+#: tested on the holder's name before its first comma only
+_ENTITY_NAME_WORD = re.compile(r"\b(?:group|holdings?|capital|management|investments?|securities)\b", re.IGNORECASE)
+#: a block the board holds as a body, not any director in person (MetLife's Policyholder Trust)
+_BOARD_HOLDER = re.compile(r"^(?:the\s+)?(?:company\s+)?board of directors\b|\bnot in (?:\w+\W+){0,4}individual capacit", re.IGNORECASE)
 #: an estimate above this multiple of the ticker's largest filed value is refused
 _MAX_FILED_MULTIPLE = 3.0
 _SOP_SUPPORT = "say_on_pay_support_pct"
@@ -294,11 +299,7 @@ def estimate_insider_ownership(
         return def14a_hist
 
     named = ownership.loc[(ownership["holder_type"] == _DIRECTOR_OFFICER) & ownership["shares"].notna()]
-    entity = (
-        named["holder_name"].fillna("").astype(str).str.contains(_ENTITY_HOLDER)
-        if "holder_name" in named.columns
-        else pd.Series(False, index=named.index)
-    )
+    entity = _entity_holder(named["holder_name"]) if "holder_name" in named.columns else pd.Series(False, index=named.index)
     named = named.loc[~entity]
     holders = named.groupby(["ticker", "accession_number"])["shares"].agg(["sum", "count"])
     keys = pd.MultiIndex.from_frame(def14a_hist[["ticker", "accession_number"]])
@@ -328,6 +329,12 @@ def estimate_insider_ownership(
         if int(entity.sum()):
             tally["insider_ownership_pct: director/officer holder rows EXCLUDED (entity name)"] = int(entity.sum())
     return out
+
+
+def _entity_holder(names: pd.Series) -> pd.Series:
+    """True where a holder cell names an entity, a total or a board-held block rather than a person."""
+    text = names.fillna("").astype(str)
+    return text.str.contains(_ENTITY_HOLDER) | text.str.split(",").str[0].str.contains(_ENTITY_NAME_WORD) | text.str.contains(_BOARD_HOLDER)
 
 
 def _tally_estimate(
@@ -618,7 +625,7 @@ def backfill_ceo_pay(def14a_hist: pd.DataFrame, exec_comp: pd.DataFrame, tally: 
     out["_t"] = _proxy_dates(out)
     order = out.sort_values(["ticker", "_t"], kind="stable").index
     view = out.loc[order]
-    stint = ceo_stint_ids(view["ceo_name_proxy"], view["ticker"])
+    stint = ceo_stint_ids(view["ceo_name_proxy"], view["ticker"], view["_t"])
     components = [c for c in CEO_COMP if c in out.columns]
     carried = _carried_total(out)
     replaced_leg = pd.Series(False, index=out.index)

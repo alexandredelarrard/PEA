@@ -143,3 +143,34 @@ def test_entity_holders_and_implausible_estimates_are_excluded() -> None:
         f"  TXN T-1 {d.loc['T-1', _COL]:.4f} (Vanguard, BlackRock and the group row excluded) | GGG G-1 {d.loc['G-1', _COL]} (6x filed max refused)"
     )
     print("  CONCLUSION: the estimate sums people only and cannot jump far above what the ticker ever filed.")
+
+
+def test_board_trust_row_excluded_and_titles_not_tested() -> None:
+    """MET 2014: the Policyholder Trust row "Board of Directors of MetLife, but not in each
+    Director's individual capacity" is not a person; an INTC executive whose TITLE names a
+    "Group" is one, and so is a director whose title names "the Board of Directors"."""
+    def14a = pd.DataFrame(
+        [("MET", "M-0", "2014-03-25", np.nan, np.nan, 0.0), ("INT", "I-0", "2014-03-25", np.nan, np.nan, 0.0)],
+        columns=["ticker", "accession_number", "as_of", _COL, "insider_shares", "dual_class_shares"],
+    )
+    def14a["ceo_name_proxy"] = "Jane Doe"
+    def14a["insider_voting_pct"] = np.nan
+    people = [f"Director {c}. Smith" for c in "ABCDE"]
+
+    def holder(t: str, a: str, name: str, shares: float) -> dict[str, object]:
+        return {"ticker": t, "accession_number": a, "holder_type": "director_officer", "holder_name": name, "shares": shares}
+
+    rows = [holder("MET", "M-0", n, 2.0e5) for n in people]
+    rows.append(holder("MET", "M-0", "Board of Directors of MetLife, but not in each Director's individual capacity", 1.9e8))
+    rows += [holder("INT", "I-0", n, 2.0e5) for n in people]
+    rows.append(holder("INT", "I-0", "Navin Shenoy, Executive Vice President and General Manager, Data Center Group", 1.0e6))
+    rows.append(holder("INT", "I-0", "Aart J. de Geus Chief Executive Officer and Chairperson of the Board of Directors", 1.0e6))
+    fundamentals = pd.DataFrame({"ticker": ["MET", "INT"], "as_of": pd.to_datetime(["2013-12-31"] * 2), "sharesOutstandingPit": [1.0e9] * 2})
+    cleaned, stats = clean_governance_inputs(GovernanceInputs(def14a=def14a, ownership=pd.DataFrame(rows)), fundamentals)
+    d = cast(pd.DataFrame, cleaned.def14a).set_index("accession_number")
+    assert np.isclose(d.loc["M-0", _COL], 1.0e-3), f"MET must sum the five people only: {d.loc['M-0', _COL]}"
+    assert np.isclose(d.loc["I-0", _COL], 3.0e-3), f"INT must keep both executives: {d.loc['I-0', _COL]}"
+    assert stats["ownership_estimate|insider_ownership_pct: director/officer holder rows EXCLUDED (entity name)"] == 1
+    print("\n=== SANITY CHECK: board trust row and executive titles ===")
+    print(f"  MET {d.loc['M-0', _COL]:.4f} (trust row excluded) | INT {d.loc['I-0', _COL]:.4f} (Group / Board titles kept)")
+    print("  CONCLUSION: only the holder's name is tested for an entity, and the board-held trust is not a person's holding.")

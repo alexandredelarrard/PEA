@@ -378,3 +378,13 @@ Updated only the [insider aggregate contract](./modules/data-aggregate.md#inside
 - Page: [Cube aggregation](./modules/data-aggregate.md)
 - Sources: [Insider cleaner](../src/data_aggregate/utils/institutionals/insider_quality.py), [Insider features](../src/data_aggregate/utils/institutionals/insider_features.py)
 - Evidence: 124 focused tests, overlapping final-tree 29-test check, full 2,044,497-row paired census, independent correctness/Ponytail and exact final identity checks; conditional source completeness and generic failures retained in the local insider audit report.
+
+## 2026-10-11: scoped refresh — insider branch merged into dev
+
+- Profile: internal/standard
+- source_commit: d4ebd98ffe561aee3f51f2c0b910fd2a627ae4f0 (previous overview anchor: 415528a38162966b7646243cc7dbf2a6bd1c8efd)
+- Insider branch commit: 0284541fc009a0270f034682c7c6773a8cf72f94. The sole conflict was the explicit loop binding required by Ruff; newer governance code and incremental tests are preserved.
+- Coverage: insider aggregate contract and backlog only. Removed completed insider in-memory replay requirements and stale decay wording; retained unresolved extraction/amendment/copy/snapshot tasks and the pending full stored-history rebuild.
+- Pages: [Overview](./OVERVIEW.md), [Cube aggregation](./modules/data-aggregate.md#insider-canonical-cleaning-and-feature-contract), [TODO](./TODO.md#insider-transactions-follow-ups)
+- Validation: 34 post-merge tests pass in 12.56s, zero live-write attempts, six app sources match the committed branch and tested hashes are stable. Commit hooks including Ruff/formatting pass. Original numerical/independent evidence remains frozen.
+- Boundary: scoped refresh only; no production data writes, model run or remote push. Unrelated backlog items are preserved.

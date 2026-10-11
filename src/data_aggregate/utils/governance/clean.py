@@ -39,6 +39,7 @@ from src.data_aggregate.utils.governance.directors import (
 )
 from src.data_aggregate.utils.governance.names import ceo_identity_series, ceo_stint_ids, given_names
 from src.data_aggregate.utils.governance.pay_features import SCT_GROWTH
+from src.data_aggregate.utils.governance.staleness import source_date_column
 from src.utils.names import person_key
 
 _SHARES_OUTSTANDING = "sharesOutstandingPit"
@@ -206,6 +207,21 @@ def _pit_shares_outstanding(def14a_hist: pd.DataFrame, fundamentals: pd.DataFram
 
 def _proxy_dates(df: pd.DataFrame) -> pd.Series:
     return pd.to_datetime(df["as_of"], errors="coerce")
+
+
+def _carried_total(df: pd.DataFrame) -> pd.Series:
+    """True where `ceo_total_comp` is an identity built with a leg older than its own proxy (a
+    carried salary): an exact SCT total, or the identity re-derived from exact legs, replaces it."""
+    kind_col, source_col = fill_kind_column(_TOTAL), source_date_column(_TOTAL)
+    if kind_col not in df.columns or source_col not in df.columns:
+        return pd.Series(False, index=df.index)
+    return (df[kind_col] == FILL_IDENTITY) & (pd.to_datetime(df[source_col], errors="coerce") < _proxy_dates(df))
+
+
+def _clear_comp_imputed(df: pd.DataFrame, mask: pd.Series) -> None:
+    """A total replaced by exact values no longer uses a carried component."""
+    if "comp_imputed" in df.columns:
+        df.loc[mask, "comp_imputed"] = 0.0
 
 
 # The denominator must be point-in-time at the proxy date.
@@ -480,18 +496,21 @@ def sct_pay_growth(def14a_hist: pd.DataFrame, exec_comp: pd.DataFrame, tally: di
     total = (
         cast(pd.Series, pd.to_numeric(frame_column(out, _TOTAL), errors="coerce")) if _TOTAL in out.columns else pd.Series(np.nan, index=out.index)
     )
-    fill = total.isna() & sct["t1"].notna()
+    carried = _carried_total(out)
+    fill = (total.isna() | carried) & sct["t1"].notna()
     if int(fill.sum()):
         out[_TOTAL] = total
         # same filing, so the value is as old as the proxy itself
         write_with_provenance(out, fill, _TOTAL, sct["t1"], FILL_IDENTITY, _proxy_dates(out))
+        _clear_comp_imputed(out, fill & carried)
 
     tally["growth from the filing's own SCT (FY vs FY-1, named CEO)"] = int(pair.sum())
     tally["growth refused: an SCT total is a sum of components, not filer-stated"] = int((disclosed & ~pair).sum())
     tally["growth refused: CEO has no FY-1 SCT row (FY-2 only)"] = int((sct["t1"].notna() & sct["t0"].isna() & sct["t2"].notna()).sum())
     tally["growth refused: CEO has FY only"] = int((sct["t1"].notna() & sct["t0"].isna() & sct["t2"].isna()).sum())
     tally["CEO not matched in the filing's own SCT (filing has SCT rows)"] = int((sct["fy"].notna() & sct["t1"].isna()).sum())
-    tally["ceo_total_comp filled from the filing's own SCT row"] = int(fill.sum())
+    tally["ceo_total_comp filled from the filing's own SCT row"] = int((fill & ~carried).sum())
+    tally["ceo_total_comp built with a carried leg REPLACED by the filing's own SCT row"] = int((fill & carried).sum())
     tally["CEO ambiguous in the filing's SCT (relatives share the key)"] = ambiguous
     return out
 
@@ -601,13 +620,19 @@ def backfill_ceo_pay(def14a_hist: pd.DataFrame, exec_comp: pd.DataFrame, tally: 
     view = out.loc[order]
     stint = ceo_stint_ids(view["ceo_name_proxy"], view["ticker"])
     components = [c for c in CEO_COMP if c in out.columns]
+    carried = _carried_total(out)
+    replaced_leg = pd.Series(False, index=out.index)
     for col in components:
-        _backfill_then_bridge(out, exec_comp, col, order, stint, tally, backfill=_SCT_COLUMN[col] in exec_comp.columns)
+        replaced_leg |= _backfill_then_bridge(out, exec_comp, col, order, stint, tally, backfill=_SCT_COLUMN[col] in exec_comp.columns)
     if _TOTAL in out.columns:
-        _backfill_then_bridge(out, exec_comp, _TOTAL, order, stint, tally, backfill="total" in exec_comp.columns, bridge=False)
+        replaced = _backfill_then_bridge(
+            out, exec_comp, _TOTAL, order, stint, tally, backfill="total" in exec_comp.columns, bridge=False, also=carried
+        )
+        rederive = carried & replaced_leg & ~replaced
         if len(components) == len(CEO_COMP):
-            _total_identity(out, components, tally)
+            _total_identity(out, components, tally, rederive)
         _backfill_then_bridge(out, exec_comp, _TOTAL, order, stint, tally, backfill=False)
+        _clear_comp_imputed(out, replaced | rederive)
         bridged = bridged_total(out)
         out["comp_imputed"] = (pd.to_numeric(out.get("comp_imputed", 0.0), errors="coerce").fillna(0.0).astype(bool) | bridged).astype("float64")
     return out.drop(columns="_t")
@@ -622,17 +647,27 @@ def _backfill_then_bridge(
     tally: dict[str, int],
     backfill: bool = True,
     bridge: bool = True,
-) -> None:
-    """Write the later-SCT value, then the in-stint bridge, into the NULL cells of `col`."""
+    also: pd.Series | None = None,
+) -> pd.Series:
+    """Write the later-SCT value into the NULL and carried cells of `col` (and the `also` cells),
+    then the in-stint bridge into the NULL cells. Returns the valued cells the backfill replaced."""
     out[col] = pd.to_numeric(out[col], errors="coerce")
+    replaced = pd.Series(False, index=out.index)
     if backfill:
         value, later = later_sct_values(out, exec_comp, col)
-        fill = out[col].isna() & value.notna()
+        kind_col = fill_kind_column(col)
+        stale = (out[kind_col] == FILL_CARRY) if kind_col in out.columns else pd.Series(False, index=out.index)
+        if also is not None:
+            stale |= also
+        fill = (out[col].isna() | stale) & value.notna()
+        replaced = fill & out[col].notna()
         if int(fill.sum()):
             write_with_provenance(out, fill, col, value, FILL_BACKFILL, out["_t"], later)
-            tally[f"backfill (later SCT, same CEO and FY): {col}"] = int(fill.sum())
+            tally[f"backfill (later SCT, same CEO and FY): {col}"] = int((fill & ~replaced).sum())
+        if int(replaced.sum()):
+            tally[f"backfill REPLACED a carried value (later SCT, same CEO and FY): {col}"] = int(replaced.sum())
     if not bridge:
-        return
+        return replaced
     ev_col = evidence_date_column(col)
     evidence = pd.to_datetime(out[ev_col], errors="coerce").fillna(out["_t"]) if ev_col in out.columns else out["_t"]
     value, later, refused = interpolate_in_stint(out.loc[order, col], out.loc[order, "_t"], stint, evidence.loc[order])
@@ -643,12 +678,14 @@ def _backfill_then_bridge(
         tally[f"interp (same stint, <= {_INTERP_MAX_GAP} missing proxies): {col}"] = int(fill.sum())
     if int(refused.sum()):
         tally[f"interp refused (one zero and one positive neighbour): {col}"] = int(refused.sum())
+    return replaced
 
 
-def _total_identity(out: pd.DataFrame, components: list[str], tally: dict[str, int]) -> None:
-    """A NULL total becomes the sum of its six components, with their latest evidence date."""
+def _total_identity(out: pd.DataFrame, components: list[str], tally: dict[str, int], rederive: pd.Series) -> None:
+    """A NULL total, or a `rederive` one whose carried leg was replaced, becomes the sum of its
+    six components, with their latest evidence date."""
     legs = out[components].apply(pd.to_numeric, errors="coerce")
-    fill = out[_TOTAL].isna() & legs.notna().all(axis=1)
+    fill = (out[_TOTAL].isna() | rederive) & legs.notna().all(axis=1)
     if not int(fill.sum()):
         return
     dates = [pd.to_datetime(out[evidence_date_column(c)], errors="coerce") for c in components if evidence_date_column(c) in out.columns]

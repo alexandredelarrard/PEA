@@ -299,3 +299,51 @@ def test_bridged_totals_feed_no_cross_filing_growth() -> None:
     print(
         f"SANITY: bridged 2017 total {d.loc[2017, 'ceo_total_comp'] / 1e6:.0f}M flagged comp_imputed; growth 2017/2018 {g[[2017, 2018]].tolist()}, 2019 {g[2019]:.3f} -> PASS"
     )
+
+
+def test_exact_sct_values_beat_a_carried_salary() -> None:
+    """Ledger P3 order: an exact SCT value wins over the past-only carry ($M; each 2017 salary (FY2016) is
+    carried from 2016 and its total is the sum with the carried salary).
+
+    AAC  the 2018 SCT discloses FY2016 salary 1.2 and total 6.2 -> both replace
+    BBC  the 2017 filing's own SCT states the FY2016 total 6.3 -> replaces the derived total
+    CCC  the 2018 SCT discloses the FY2016 salary 1.2 only -> the total is re-derived as 6.2
+    """
+    comps = {"ceo_bonus": 1.0, "ceo_stock_awards": 2.0, "ceo_option_awards": 1.0, "ceo_non_equity_incentive": 0.5, "ceo_all_other_comp": 0.5}
+    parent = []
+    for t in ("AAC", "BBC", "CCC"):
+        for y, sal in ((2016, 1.0), (2017, np.nan), (2018, 1.3)):
+            parent.append(
+                {"ticker": t, "accession_number": f"{t}-{y}", "as_of": f"{y}-04-01", "fiscal_year_extract": y - 1, "ceo_name_proxy": "Cy Carr"}
+                | {"ceo_salary": sal * 1e6 if sal == sal else np.nan}
+                | {c: v * 1e6 for c, v in comps.items()}
+                | {"ceo_total_comp": (sal + 5.0) * 1e6 if sal == sal else np.nan}
+            )
+    child = [
+        ("AAC", "AAC-2018", "2018-04-01", 2016, 1.2, 6.2),
+        ("BBC", "BBC-2017", "2017-04-01", 2015, np.nan, 6.0),
+        ("BBC", "BBC-2017", "2017-04-01", 2016, np.nan, 6.3),
+        ("CCC", "CCC-2018", "2018-04-01", 2016, 1.2, np.nan),
+    ]
+    exec_comp = pd.DataFrame(
+        [
+            {"ticker": t, "accession_number": a, "as_of": d, "name": "Cy Carr", "fiscal_year": fy, "salary": s * 1e6, "total": tot * 1e6}
+            for t, a, d, fy, s, tot in child
+        ]
+    )
+    cleaned, stats = clean_governance_inputs(GovernanceInputs(def14a=pd.DataFrame(parent), exec_comp=exec_comp), None)
+    d = cleaned.def14a
+    assert d is not None
+    d = d.set_index("accession_number")
+    sal, tot = d["ceo_salary"] / 1e6, d["ceo_total_comp"] / 1e6
+    kind = d[fill_kind_column("ceo_total_comp")]
+    assert np.isclose(sal["AAC-2017"], 1.2) and d.loc["AAC-2017", fill_kind_column("ceo_salary")] == FILL_BACKFILL
+    assert np.isclose(tot["AAC-2017"], 6.2) and kind["AAC-2017"] == FILL_BACKFILL
+    assert np.isclose(tot["BBC-2017"], 6.3) and np.isclose(sal["BBC-2017"], 1.0), "the own SCT total replaces; the salary stays carried"
+    assert pd.Timestamp(d.loc["BBC-2017", source_date_column("ceo_total_comp")]) == pd.Timestamp("2017-04-01")
+    assert np.isclose(sal["CCC-2017"], 1.2) and np.isclose(tot["CCC-2017"], 6.2) and kind["CCC-2017"] == FILL_IDENTITY
+    assert d.loc[["AAC-2017", "BBC-2017", "CCC-2017"], "comp_imputed"].eq(0.0).all()
+    print(
+        f"SANITY: carried salary 1.0 replaced by the later SCT's 1.2 (AAC, CCC); totals {tot['AAC-2017']:.1f} (later SCT), "
+        f"{tot['BBC-2017']:.1f} (own SCT), {tot['CCC-2017']:.1f} (re-derived) -> PASS"
+    )

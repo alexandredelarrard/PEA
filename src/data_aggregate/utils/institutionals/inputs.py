@@ -232,7 +232,7 @@ def load_insider_role_evidence(store: DataStore, insider: pd.DataFrame) -> pd.Da
         first = identities.loc[tuple(group.iloc[0][identity])]["identity_from"]
         if isinstance(first, pd.Timestamp):
             continue
-        ambiguous = group["role_as_of"].map(lambda day: first.le(day).sum() > 1)
+        ambiguous = group["role_as_of"].map(lambda day, first=first: first.le(day).sum() > 1)
         df_proxy.loc[group.index[ambiguous], "role"] = OTHER_OFFICER
     df_proxy["role_source"] = "explicit_proxy_title"
     conflicted = df_proxy.groupby(["ticker", "issuer_cik", "owner_cik", "role_as_of"])["role"].transform("nunique").gt(1)

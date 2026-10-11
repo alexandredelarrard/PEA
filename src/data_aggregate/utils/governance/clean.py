@@ -36,7 +36,7 @@ from src.data_aggregate.utils.governance.directors import (
     finalize_board_source,
     merge_board_aggregates,
 )
-from src.data_aggregate.utils.governance.names import ceo_identity_series, ceo_stint_ids
+from src.data_aggregate.utils.governance.names import ceo_identity_series, ceo_stint_ids, given_names
 from src.data_aggregate.utils.governance.pay_features import SCT_GROWTH
 from src.utils.names import person_key
 
@@ -374,47 +374,88 @@ def repair_ownership_basis(def14a_hist: pd.DataFrame, tally: dict[str, int] | No
     return out
 
 
-def _ceo_sct_totals(def14a: pd.DataFrame, exec_comp: pd.DataFrame) -> pd.DataFrame:
+def _given_parts(names: pd.Series, prefix: str = "") -> pd.DataFrame:
+    """`<prefix>first` and `<prefix>initials` of each name cell (None when it names no given name)."""
+    given = names.astype(object).map(given_names)
+    return pd.DataFrame(
+        {f"{prefix}first": given.map(lambda g: g[0] if g else None), f"{prefix}initials": given.map(lambda g: g[1] if g else None)},
+        index=names.index,
+    )
+
+
+def _named_ceo(hit: pd.DataFrame, by: list[str]) -> pd.Series:
+    """True on the SCT rows of `hit` that belong to the proxy's named CEO.
+
+    Where relatives share the CEO's `person_key` within one `by` group, only the rows whose first
+    name equals the CEO cell's are kept, else the rows whose initials single out one name; else none.
+    """
+    keys = [hit[c] for c in by]
+    sig = (hit["first"] + "|" + hit["initials"]).where(hit["first"].notna())
+    shared = sig.groupby(keys).transform("nunique") > 1
+    first_eq = (hit["first"] == hit["ceo_first"]) & hit["first"].notna()
+    init_eq = (hit["initials"] == hit["ceo_initials"]) & hit["initials"].notna()
+    any_first = first_eq.groupby(keys).transform("any")
+    init_names = sig.where(init_eq).groupby(keys).transform("nunique")
+    keep = first_eq.where(any_first, init_eq & (init_names == 1))
+    return ~shared | keep.astype(bool)
+
+
+def _ceo_sct_totals(def14a: pd.DataFrame, exec_comp: pd.DataFrame) -> tuple[pd.DataFrame, int]:
     """The named CEO's positive SCT totals per proxy row, from the proxy's own filing:
     columns `fy` (the filing's latest fiscal year), `t1` (CEO total for `fy`), `t0` (for
     `fy - 1`), `t2` (for `fy - 2`) and `s1` / `s0` (True where `t1` / `t0` is filer-stated
-    rather than a sum of components), indexed like `def14a`."""
+    rather than a sum of components), indexed like `def14a`; plus the number of proxies whose
+    CEO cannot be told apart from a relative sharing the key."""
     imputed = (
         pd.to_numeric(exec_comp["total_imputed"], errors="coerce").fillna(0.0)
         if "total_imputed" in exec_comp.columns
         else pd.Series(0.0, index=exec_comp.index)
     )
-    child = pd.DataFrame(
-        {
-            "accession_number": exec_comp["accession_number"],
-            "person": exec_comp["name"].astype(object).map(person_key),
-            "fiscal_year": pd.to_numeric(exec_comp["fiscal_year"], errors="coerce"),
-            "total": pd.to_numeric(exec_comp["total"], errors="coerce"),
-            "stated": imputed.to_numpy() == 0.0,
-        }
+    child = pd.concat(
+        [
+            pd.DataFrame(
+                {
+                    "accession_number": exec_comp["accession_number"],
+                    "person": exec_comp["name"].astype(object).map(person_key),
+                    "fiscal_year": pd.to_numeric(exec_comp["fiscal_year"], errors="coerce"),
+                    "total": pd.to_numeric(exec_comp["total"], errors="coerce"),
+                    "stated": imputed.to_numpy() == 0.0,
+                }
+            ),
+            _given_parts(exec_comp["name"]),
+        ],
+        axis=1,
     ).dropna(subset=["accession_number", "fiscal_year"])
     filing_fy = child.groupby("accession_number")["fiscal_year"].max()
-    ceo = pd.DataFrame(
-        {
-            "_row": np.arange(len(def14a)),
-            "accession_number": def14a["accession_number"].to_numpy(),
-            "person": ceo_identity_series(def14a["ceo_name_proxy"]).to_numpy(),
-        }
+    ceo = pd.concat(
+        [
+            pd.DataFrame(
+                {
+                    "_row": np.arange(len(def14a)),
+                    "accession_number": def14a["accession_number"].to_numpy(),
+                    "person": ceo_identity_series(def14a["ceo_name_proxy"]).to_numpy(),
+                }
+            ),
+            _given_parts(def14a["ceo_name_proxy"], "ceo_").reset_index(drop=True),
+        ],
+        axis=1,
     )
     ceo["fy"] = ceo["accession_number"].map(filing_fy)
+    hit = ceo.dropna(subset=["person", "fy"]).merge(child, on=["accession_number", "person"])
+    named = _named_ceo(hit, ["_row"])
+    ambiguous = int((~named.groupby(hit["_row"]).any()).sum())
     paid = (
-        child.loc[child["total"] > 0]
-        .groupby(["accession_number", "person", "fiscal_year"], as_index=False)
+        hit.loc[named & (hit["total"] > 0)]
+        .groupby(["_row", "fy", "fiscal_year"], as_index=False)
         .agg(total=("total", "max"), stated=("stated", "min"))
     )
-    rows = ceo.dropna(subset=["person", "fy"]).merge(paid, on=["accession_number", "person"])
     out = pd.DataFrame({"fy": ceo["fy"].to_numpy()}, index=def14a.index)
     for col, lag in (("t1", 0), ("t0", 1), ("t2", 2)):
-        hit = rows.loc[rows["fiscal_year"] == rows["fy"] - lag].set_index("_row")
-        out[col] = hit["total"].reindex(np.arange(len(def14a))).to_numpy()
+        rows = paid.loc[paid["fiscal_year"] == paid["fy"] - lag].set_index("_row")
+        out[col] = rows["total"].reindex(np.arange(len(def14a))).to_numpy()
         if lag < 2:
-            out[f"s{1 - lag}"] = hit["stated"].reindex(np.arange(len(def14a))).fillna(False).astype(bool).to_numpy()
-    return out
+            out[f"s{1 - lag}"] = rows["stated"].reindex(np.arange(len(def14a))).fillna(False).astype(bool).to_numpy()
+    return out, ambiguous
 
 
 def sct_pay_growth(def14a_hist: pd.DataFrame, exec_comp: pd.DataFrame, tally: dict[str, int]) -> pd.DataFrame:
@@ -429,7 +470,7 @@ def sct_pay_growth(def14a_hist: pd.DataFrame, exec_comp: pd.DataFrame, tally: di
         return def14a_hist
     if not {"accession_number", "name", "fiscal_year", "total"}.issubset(exec_comp.columns):
         return def14a_hist
-    sct = _ceo_sct_totals(def14a_hist, exec_comp)
+    sct, ambiguous = _ceo_sct_totals(def14a_hist, exec_comp)
     out = def14a_hist.copy()
     disclosed = sct["t1"].notna() & sct["t0"].notna()
     pair = disclosed & sct["s1"] & sct["s0"]
@@ -450,6 +491,7 @@ def sct_pay_growth(def14a_hist: pd.DataFrame, exec_comp: pd.DataFrame, tally: di
     tally["growth refused: CEO has FY only"] = int((sct["t1"].notna() & sct["t0"].isna() & sct["t2"].isna()).sum())
     tally["CEO not matched in the filing's own SCT (filing has SCT rows)"] = int((sct["fy"].notna() & sct["t1"].isna()).sum())
     tally["ceo_total_comp filled from the filing's own SCT row"] = int(fill.sum())
+    tally["CEO ambiguous in the filing's SCT (relatives share the key)"] = ambiguous
     return out
 
 
@@ -465,29 +507,46 @@ def _row_fiscal_year(def14a: pd.DataFrame, exec_comp: pd.DataFrame) -> pd.Series
 def later_sct_values(def14a: pd.DataFrame, exec_comp: pd.DataFrame, col: str) -> tuple[pd.Series, pd.Series]:
     """`(value, filing date)` of `col` for each proxy row's CEO and fiscal year, as disclosed by
     the EARLIEST later proxy of the same ticker whose SCT carries it. NaN where none does. A
-    total is taken only where the filer stated it."""
+    total is taken only where the filer stated it; relatives sharing the key are told apart as
+    in `_named_ceo`."""
     stated = pd.to_numeric(exec_comp["total_imputed"], errors="coerce").fillna(0.0) == 0.0 if "total_imputed" in exec_comp.columns else True
-    child = pd.DataFrame(
-        {
-            "ticker": exec_comp["ticker"].astype(str),
-            "person": exec_comp["name"].astype(object).map(person_key),
-            "fiscal_year": pd.to_numeric(exec_comp["fiscal_year"], errors="coerce"),
-            "_later": pd.to_datetime(exec_comp["as_of"], errors="coerce"),
-            "_value": pd.to_numeric(exec_comp[_SCT_COLUMN[col]], errors="coerce"),
-        }
-    ).dropna()
-    child = child.loc[(child["_value"] > 0) & stated] if col == _TOTAL else child.loc[child["_value"] >= 0]
-    rows = pd.DataFrame(
-        {
-            "_row": np.arange(len(def14a)),
-            "ticker": def14a["ticker"].astype(str).to_numpy(),
-            "person": ceo_identity_series(def14a["ceo_name_proxy"]).to_numpy(),
-            "fiscal_year": _row_fiscal_year(def14a, exec_comp).to_numpy(),
-            "_as_of": _proxy_dates(def14a).to_numpy(),
-        }
-    ).dropna()
+    child = pd.concat(
+        [
+            pd.DataFrame(
+                {
+                    "ticker": exec_comp["ticker"].astype(str),
+                    "accession_number": exec_comp["accession_number"],
+                    "person": exec_comp["name"].astype(object).map(person_key),
+                    "fiscal_year": pd.to_numeric(exec_comp["fiscal_year"], errors="coerce"),
+                    "_later": pd.to_datetime(exec_comp["as_of"], errors="coerce"),
+                    "_value": pd.to_numeric(exec_comp[_SCT_COLUMN[col]], errors="coerce"),
+                    "_stated": stated,
+                }
+            ),
+            _given_parts(exec_comp["name"]),
+        ],
+        axis=1,
+    ).dropna(subset=["ticker", "accession_number", "person", "fiscal_year", "_later"])
+    rows = pd.concat(
+        [
+            pd.DataFrame(
+                {
+                    "_row": np.arange(len(def14a)),
+                    "ticker": def14a["ticker"].astype(str).to_numpy(),
+                    "person": ceo_identity_series(def14a["ceo_name_proxy"]).to_numpy(),
+                    "fiscal_year": _row_fiscal_year(def14a, exec_comp).to_numpy(),
+                    "_as_of": _proxy_dates(def14a).to_numpy(),
+                }
+            ),
+            _given_parts(def14a["ceo_name_proxy"], "ceo_").reset_index(drop=True),
+        ],
+        axis=1,
+    ).dropna(subset=["ticker", "person", "fiscal_year", "_as_of"])
     hit = rows.merge(child, on=["ticker", "person", "fiscal_year"])
-    hit = hit.loc[hit["_later"] > hit["_as_of"]].sort_values(["_row", "_later"]).drop_duplicates("_row").set_index("_row")
+    hit = hit.loc[hit["_later"] > hit["_as_of"]]
+    hit = hit.loc[_named_ceo(hit, ["_row", "accession_number"])]
+    usable = (hit["_value"] > 0) & hit["_stated"] if col == _TOTAL else hit["_value"] >= 0
+    hit = hit.loc[usable].sort_values(["_row", "_later"]).drop_duplicates("_row").set_index("_row")
     positions = np.arange(len(def14a))
     value = pd.Series(hit["_value"].reindex(positions).to_numpy(), index=def14a.index)
     later = pd.Series(hit["_later"].reindex(positions).to_numpy(), index=def14a.index)

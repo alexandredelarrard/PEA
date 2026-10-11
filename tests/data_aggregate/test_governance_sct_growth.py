@@ -210,3 +210,61 @@ def test_historical_backfill_and_bridge_rules() -> None:
         "SANITY: 2016 bonus backfilled 0.25M (evidence 2017) and total recomputed 4.15M; 2018 stock bridged 2.0M; "
         "3-proxy gap, stint boundary and latest row left NULL -> PASS"
     )
+
+
+def _relatives_bundle() -> GovernanceInputs:
+    """Relatives who share the CEO's `person_key` in one filing (pay in $M, FY = proxy year).
+
+    STZ  CEO Robert Sands; Richard Sands (higher pay) is listed first in the same SCT
+    SMCI CEO Charles Liang; "Chiu-Chu (Sara) Liu Liang" keys `liang|c` too
+    LLL  CEO James S. Tisch; the SCT prints initials only, "J.M. Tisch" and "J.S. Tisch"
+    RRR  CEO "Rob Rex"; "Robert Rex" and "Richard Rex" both have the initial r -> refused
+    The 2008 rows have no salary; the 2009 SCT discloses both relatives' FY2008 salary.
+    """
+    ceo = {"STZ": "Robert Sands", "SMCI": "Charles Liang", "LLL": "James S. Tisch", "RRR": "Rob Rex"}
+    relatives = {
+        "STZ": [("Richard Sands", 5.0, 3.5, 0.9), ("Robert Sands", 4.0, 3.0, 0.8)],
+        "SMCI": [("Chiu-Chu (Sara) Liu Liang", 2.0, 1.0, 0.4), ("Charles Liang", 3.0, 2.4, 0.5)],
+        "LLL": [("J.M. Tisch", 9.0, 3.0, 0.9), ("J.S. Tisch", 6.0, 5.0, 0.7)],
+        "RRR": [("Robert Rex", 2.0, 1.0, 0.3), ("Richard Rex", 3.0, 2.0, 0.6)],
+    }
+    parent = [
+        {"ticker": t, "accession_number": f"{t}-{y}", "as_of": f"{y}-04-01", "fiscal_year_extract": y, "ceo_name_proxy": n, "ceo_total_comp": np.nan}
+        for t, n in ceo.items()
+        for y in (2008, 2009)
+    ]
+    child = [
+        {
+            "ticker": t,
+            "accession_number": f"{t}-2009",
+            "as_of": "2009-04-01",
+            "name": name,
+            "fiscal_year": fy,
+            "total": tot * 1e6,
+            "salary": sal * 1e6 if fy == 2008 else 1e6,
+        }
+        for t, rows in relatives.items()
+        for name, t1, t0, sal in rows
+        for fy, tot in ((2009, t1), (2008, t0))
+    ]
+    return GovernanceInputs(def14a=pd.DataFrame(parent).assign(ceo_salary=np.nan), exec_comp=pd.DataFrame(child))
+
+
+def test_relatives_sharing_the_key_are_told_apart_by_first_name() -> None:
+    cleaned, stats = clean_governance_inputs(_relatives_bundle(), None)
+    d = cleaned.def14a
+    assert d is not None
+    d = d.assign(_y=pd.to_datetime(d["as_of"]).dt.year).set_index(["ticker", "_y"])
+    growth, total, salary = d[SCT_GROWTH], d["ceo_total_comp"], d["ceo_salary"]
+    assert np.isclose(growth[("STZ", 2009)], np.log(4.0 / 3.0)) and total[("STZ", 2009)] == 4.0e6, "Robert's own rows, not Richard's"
+    assert np.isclose(growth[("SMCI", 2009)], np.log(3.0 / 2.4)) and total[("SMCI", 2009)] == 3.0e6
+    assert np.isclose(growth[("LLL", 2009)], np.log(6.0 / 5.0)), "the initials J.S. single out James S."
+    assert np.isnan(growth[("RRR", 2009)]) and np.isnan(total[("RRR", 2009)]), "two relatives fit 'Rob': refused"
+    # the later-SCT backfill of the 2008 salary reads the named CEO's row too
+    assert salary[("STZ", 2008)] == 0.8e6 and salary[("SMCI", 2008)] == 0.5e6 and salary[("LLL", 2008)] == 0.7e6
+    assert np.isnan(salary[("RRR", 2008)])
+    assert stats["sct_growth|CEO ambiguous in the filing's SCT (relatives share the key)"] == 1
+    print(
+        f"SANITY: STZ growth {growth[('STZ', 2009)]:.3f} = log(4/3) (Robert), SMCI {growth[('SMCI', 2009)]:.3f} (Charles), "
+        f"LLL {growth[('LLL', 2009)]:.3f} (J.S.), RRR refused; 2008 salaries backfilled from the named CEO's rows -> PASS"
+    )

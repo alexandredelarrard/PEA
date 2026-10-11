@@ -28,7 +28,7 @@ import re
 import numpy as np
 import pandas as pd
 
-from src.utils.names import person_key
+from src.utils.names import clean_person_name, person_key
 
 #: A cell naming more than one person. Co-CEOs are printed as `A. Jayson Adair; Jeffrey Liaw`
 #: (CPRT) or joined by a standalone " and " / " & ". `\s+and\s+` needs the surrounding
@@ -108,6 +108,31 @@ def ceo_identity_changed(names: pd.Series, groups: pd.Series) -> pd.Series:
     idents = ceo_identity_series(names)
     prev = idents.groupby(groups, sort=False).shift(1)
     return (idents != prev).astype("float64").where(idents.notna() & prev.notna())
+
+
+#: Leading honorifics; `person_key` keeps them as the first initial (`Dr. Sehat Sutardja` -> `sutardja|d`).
+_HONORIFIC_RE = re.compile(r"^\s*(?:(?:dr|mr|mrs|ms|miss|mx|prof|professor|sir|dame|hon|rev)\.?\s+)+", re.I)
+_GIVEN_DROP = frozenset({"jr", "sr", "ii", "iii", "iv"})
+
+
+def strip_honorific(name: str) -> str:
+    """`name` without its leading honorifics (Dr., Mr., Ms., Prof., Sir, ...)."""
+    return _HONORIFIC_RE.sub("", name)
+
+
+def given_names(value: object) -> tuple[str, str] | None:
+    """`(first name, initials of the given names)` of the first person named in a cell, honorifics,
+    post-nominals and generational suffixes dropped: `J.S. Tisch` -> `("j", "js")`. None when the
+    cell names no given name. Tells apart relatives who share one `person_key`."""
+    names = split_co_names(value)
+    cleaned = clean_person_name(strip_honorific(names[0])) if names else None
+    if not cleaned:
+        return None
+    tokens = [t for t in re.sub(r"[^a-z]+", " ", cleaned.split(",")[0].lower()).split() if t not in _GIVEN_DROP]
+    given = tokens[:-1]
+    if not given:
+        return None
+    return given[0], "".join(t[0] for t in given)
 
 
 #: A generational suffix on a person cell. `person_key` strips it, so father and son

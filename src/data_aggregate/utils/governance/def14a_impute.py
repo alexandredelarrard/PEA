@@ -576,11 +576,14 @@ def _filed_values(df: pd.DataFrame, col: str) -> pd.Series:
 
 
 def _since_year_by_stint(df: pd.DataFrame, stint: pd.Series, filed: pd.Series, stats: dict) -> tuple[pd.Series, pd.Series]:
-    """`(value, evidence date)` per row for `ceo_since_year`: the largest disclosed start year <=
-    the stint's first proxy year. A stint with no such value is left as filed."""
+    """`(value, evidence date)` per row for `ceo_since_year`: the start year <= the stint's first
+    proxy year that the most filings of the stint disclose, ties to the largest. A stint with no
+    such value is left as filed."""
     year0 = df["as_of"].groupby(stint).transform("min").dt.year
     eligible = stint.notna() & filed.notna() & (filed <= year0)
-    best = filed.where(eligible).groupby(stint).transform("max")
+    votes = pd.DataFrame({"stint": stint[eligible], "value": filed[eligible]}).value_counts().rename("n").reset_index()
+    chosen = votes.sort_values(["stint", "n", "value"]).drop_duplicates("stint", keep="last").set_index("stint")["value"]
+    best = stint.map(chosen)
     evidence = df["as_of"].where(eligible & (filed == best)).groupby(stint).transform("min")
     declined = int((stint.notna() & best.isna()).sum())
     if declined:

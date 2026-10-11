@@ -3,8 +3,8 @@ CEO stints and stint-constant completion (REQ-003/004).
 
   * `names.ceo_stint_ids`: a stint breaks on a change of CEO identity or of generational suffix;
     an unknown name belongs to no stint and breaks none;
-  * `impute_def14a`: `ceo_since_year` = the largest disclosed value <= the stint's first proxy
-    year (no value when none qualifies), `ceo_is_founder`
+  * `impute_def14a`: `ceo_since_year` = the most often disclosed value <= the stint's first
+    proxy year, ties to the largest (no value when none qualifies), `ceo_is_founder`
     = the stint mode, `ceo_is_board_chair` carried only within a stint; the filed value stays in
     `<col>_raw`.
 """
@@ -137,7 +137,7 @@ def test_stint_ids_split_on_identity_and_suffix() -> None:
 
 
 def test_since_year_rule_and_no_cross_stint_carry() -> None:
-    """Largest disclosed <= first proxy year; never the predecessor's value."""
+    """Most disclosed (ties: largest) <= first proxy year; never the predecessor's value."""
     out, stats = _out()
     since = out["ceo_since_year"]
     # WRB: the son never inherits the father's 1967
@@ -160,7 +160,22 @@ def test_since_year_rule_and_no_cross_stint_carry() -> None:
     print("\n=== SANITY CHECK: since_year per stint ===")
     print(f"  VLO {since.loc['VLO'].tolist()} | AFL {since.loc['AFL'].tolist()} | SBUX {since.loc['SBUX'].tolist()}")
     print(f"  stats: { {k: v for k, v in stats.items() if 'since' in k or 'founder' in k or 'chair' in k} }")
-    print("  CONCLUSION: one start year per stint, chosen by the largest-disclosed-<=-first-year rule, no predecessor value crosses.")
+    print("  CONCLUSION: one start year per stint, chosen by the majority-disclosed-<=-first-year rule, no predecessor value crosses.")
+
+
+def test_since_year_majority_beats_a_later_minority_value() -> None:
+    """The start year most of the stint's filings disclose wins; a tie goes to the largest."""
+    greehey = _rows(
+        "VLO", [(y, "William E. Greehey", s, 0.0, 1.0) for y, s in ((2000, 1979.0), (2002, 1997.0), (2003, 1979.0), (2004, 1979.0), (2005, 1979.0))]
+    )
+    tie = _rows("TIE", [(y, "Tia Tie", s, 0.0, 1.0) for y, s in ((2010, 1995.0), (2011, 1987.0), (2012, 1995.0), (2013, 1987.0))])
+    out, _ = impute_def14a(pd.DataFrame(greehey + tie))
+    since = out.set_index(["ticker", out["as_of"].dt.year])["ceo_since_year"]
+    assert (since.loc["VLO"] == 1979).all(), f"Greehey's majority 1979 must win over one filed 1997: {since.loc['VLO'].tolist()}"
+    assert (since.loc["TIE"] == 1995).all()
+    print("\n=== SANITY CHECK: since_year majority rule ===")
+    print(f"  VLO Greehey {since.loc['VLO'].tolist()} | tie {since.loc['TIE'].tolist()}")
+    print("  CONCLUSION: a one-off later value (a re-formation or chair date) no longer overrides the start the filer repeats.")
 
 
 def test_no_disclosed_start_leaves_the_stint_as_filed() -> None:

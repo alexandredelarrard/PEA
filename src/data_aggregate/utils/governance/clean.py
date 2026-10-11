@@ -14,6 +14,7 @@ from src.data_aggregate.utils.governance.def14a_impute import (
     FILL_CARRY,
     FILL_CROSS_SOURCE,
     FILL_ESTIMATE,
+    FILL_IDENTITY,
     ensure_provenance,
     fill_kind_column,
     impute_def14a,
@@ -29,6 +30,9 @@ from src.data_aggregate.utils.governance.directors import (
     finalize_board_source,
     merge_board_aggregates,
 )
+from src.data_aggregate.utils.governance.names import ceo_identity_series
+from src.data_aggregate.utils.governance.pay_features import SCT_GROWTH
+from src.utils.names import person_key
 
 _SHARES_OUTSTANDING = "sharesOutstandingPit"
 _OWNERSHIP = "insider_ownership_pct"
@@ -41,6 +45,7 @@ _SAY_ON_PAY = "say_on_pay"
 _SOP_WINDOW_DAYS = 450
 VOTE_SOURCE_8K = "8k"
 VOTE_SOURCE_PROXY = "proxy"
+_TOTAL = "ceo_total_comp"
 
 
 @dataclass(frozen=True)
@@ -68,7 +73,7 @@ def clean_governance_inputs(raw: GovernanceInputs, fundamentals: pd.DataFrame | 
     """Clean the raw governance inputs. Returns `(cleaned bundle, stats keyed "<stage>|<rule>")`.
 
     Order: child fills, board merge, `impute_def14a`, board provenance, ownership basis repair,
-    economic ownership, ownership estimate, say-on-pay votes fallback. A bundle already cleaned
+    economic ownership, ownership estimate, same-filing SCT pay growth, say-on-pay votes fallback. A bundle already cleaned
     is returned unchanged with empty stats.
     """
     if raw.cleaned:
@@ -107,6 +112,10 @@ def clean_governance_inputs(raw: GovernanceInputs, fundamentals: pd.DataFrame | 
                 tally = {}
                 frame = estimate_insider_ownership(frame, cast(pd.DataFrame, raw.ownership), fundamentals, tally)
                 _record(stats, "ownership_estimate", tally)
+        if _present(exec_comp):
+            tally = {}
+            frame = sct_pay_growth(frame, cast(pd.DataFrame, exec_comp), tally)
+            _record(stats, "sct_growth", tally)
         df = frame
 
     votes = raw.votes
@@ -301,6 +310,85 @@ def repair_ownership_basis(def14a_hist: pd.DataFrame, tally: dict[str, int] | No
             tally["insider_ownership_pct: blanked (per-class basis) — tickers"] = (
                 int(out.loc[per_class, "ticker"].nunique()) if "ticker" in out.columns else 0
             )
+    return out
+
+
+def _ceo_sct_totals(def14a: pd.DataFrame, exec_comp: pd.DataFrame) -> pd.DataFrame:
+    """The named CEO's positive SCT totals per proxy row, from the proxy's own filing:
+    columns `fy` (the filing's latest fiscal year), `t1` (CEO total for `fy`), `t0` (for
+    `fy - 1`), `t2` (for `fy - 2`) and `s1` / `s0` (True where `t1` / `t0` is filer-stated
+    rather than a sum of components), indexed like `def14a`."""
+    imputed = (
+        pd.to_numeric(exec_comp["total_imputed"], errors="coerce").fillna(0.0)
+        if "total_imputed" in exec_comp.columns
+        else pd.Series(0.0, index=exec_comp.index)
+    )
+    child = pd.DataFrame(
+        {
+            "accession_number": exec_comp["accession_number"],
+            "person": exec_comp["name"].astype(object).map(person_key),
+            "fiscal_year": pd.to_numeric(exec_comp["fiscal_year"], errors="coerce"),
+            "total": pd.to_numeric(exec_comp["total"], errors="coerce"),
+            "stated": imputed.to_numpy() == 0.0,
+        }
+    ).dropna(subset=["accession_number", "fiscal_year"])
+    filing_fy = child.groupby("accession_number")["fiscal_year"].max()
+    ceo = pd.DataFrame(
+        {
+            "_row": np.arange(len(def14a)),
+            "accession_number": def14a["accession_number"].to_numpy(),
+            "person": ceo_identity_series(def14a["ceo_name_proxy"]).to_numpy(),
+        }
+    )
+    ceo["fy"] = ceo["accession_number"].map(filing_fy)
+    paid = (
+        child.loc[child["total"] > 0]
+        .groupby(["accession_number", "person", "fiscal_year"], as_index=False)
+        .agg(total=("total", "max"), stated=("stated", "min"))
+    )
+    rows = ceo.dropna(subset=["person", "fy"]).merge(paid, on=["accession_number", "person"])
+    out = pd.DataFrame({"fy": ceo["fy"].to_numpy()}, index=def14a.index)
+    for col, lag in (("t1", 0), ("t0", 1), ("t2", 2)):
+        hit = rows.loc[rows["fiscal_year"] == rows["fy"] - lag].set_index("_row")
+        out[col] = hit["total"].reindex(np.arange(len(def14a))).to_numpy()
+        if lag < 2:
+            out[f"s{1 - lag}"] = hit["stated"].reindex(np.arange(len(def14a))).fillna(False).astype(bool).to_numpy()
+    return out
+
+
+def sct_pay_growth(def14a_hist: pd.DataFrame, exec_comp: pd.DataFrame, tally: dict[str, int]) -> pd.DataFrame:
+    """Write `ceo_comp_growth_sct` = log(total FY / total FY-1) of the named CEO from the proxy's
+    own Summary Compensation Table, and fill a NULL `ceo_total_comp` from the same-FY SCT row.
+
+    The CEO is matched on `ceo_identity(ceo_name_proxy) == person_key(name)`; FY is the filing's
+    latest SCT year, FY-1 must be disclosed (a two-year step is refused) and both totals must be
+    filer-stated. The total fill also takes a total summed from the SCT components.
+    """
+    if not {"accession_number", "ceo_name_proxy", "as_of"}.issubset(def14a_hist.columns):
+        return def14a_hist
+    if not {"accession_number", "name", "fiscal_year", "total"}.issubset(exec_comp.columns):
+        return def14a_hist
+    sct = _ceo_sct_totals(def14a_hist, exec_comp)
+    out = def14a_hist.copy()
+    disclosed = sct["t1"].notna() & sct["t0"].notna()
+    pair = disclosed & sct["s1"] & sct["s0"]
+    out[SCT_GROWTH] = np.log(sct["t1"] / sct["t0"]).where(pair)
+
+    total = (
+        cast(pd.Series, pd.to_numeric(frame_column(out, _TOTAL), errors="coerce")) if _TOTAL in out.columns else pd.Series(np.nan, index=out.index)
+    )
+    fill = total.isna() & sct["t1"].notna()
+    if int(fill.sum()):
+        out[_TOTAL] = total
+        # same filing, so the value is as old as the proxy itself
+        write_with_provenance(out, fill, _TOTAL, sct["t1"], FILL_IDENTITY, _proxy_dates(out))
+
+    tally["growth from the filing's own SCT (FY vs FY-1, named CEO)"] = int(pair.sum())
+    tally["growth refused: an SCT total is a sum of components, not filer-stated"] = int((disclosed & ~pair).sum())
+    tally["growth refused: CEO has no FY-1 SCT row (FY-2 only)"] = int((sct["t1"].notna() & sct["t0"].isna() & sct["t2"].notna()).sum())
+    tally["growth refused: CEO has FY only"] = int((sct["t1"].notna() & sct["t0"].isna() & sct["t2"].isna()).sum())
+    tally["CEO not matched in the filing's own SCT (filing has SCT rows)"] = int((sct["fy"].notna() & sct["t1"].isna()).sum())
+    tally["ceo_total_comp filled from the filing's own SCT row"] = int(fill.sum())
     return out
 
 

@@ -33,6 +33,7 @@ from src.data_aggregate.utils.governance.pay_features import (
     PEER_RELATIVE_FIELDS as PAY_PEER_FIELDS,
 )
 from src.data_aggregate.utils.governance.pay_features import (
+    SCT_GROWTH,
     pay_fields,
 )
 from src.data_aggregate.utils.governance.provisions_features import (
@@ -159,7 +160,11 @@ def _ceo_pay_growth(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dic
     """Expand filing pay growth point-in-time and null CEO-transition comparisons."""
     if "ceo_total_comp" not in def14a_hist.columns or "as_of" not in def14a_hist.columns:
         return pd.DataFrame(index=idx)
-    keep = [c for c in ("ticker", "as_of", "ceo_total_comp", source_date_column("ceo_total_comp"), "ceo_name_proxy") if c in def14a_hist.columns]
+    keep = [
+        c
+        for c in ("ticker", "as_of", "ceo_total_comp", source_date_column("ceo_total_comp"), "ceo_name_proxy", SCT_GROWTH)
+        if c in def14a_hist.columns
+    ]
     d = cast(pd.DataFrame, def14a_hist[keep].copy())
     d["as_of"] = pd.to_datetime(d["as_of"], errors="coerce")
     d["ceo_total_comp"] = pd.to_numeric(d["ceo_total_comp"], errors="coerce")
@@ -171,6 +176,10 @@ def _ceo_pay_growth(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dic
     # `replace` on the infinities reproduces `fiscal_change_to_daily` exactly: a prior year
     # filed as $0 makes `pct_change` infinite, and an infinity is not a growth rate.
     d["chg"] = d.groupby("ticker", sort=False)["ceo_total_comp"].pct_change(periods=1).replace([np.inf, -np.inf], np.nan)
+    if SCT_GROWTH in d.columns:
+        # The filing's own FY vs FY-1 pair wins over the cross-filing change.
+        sct = cast(pd.Series, pd.to_numeric(d[SCT_GROWTH], errors="coerce"))
+        d["chg"] = np.expm1(sct).where(sct.notna(), d["chg"])
     names = d["ceo_name_proxy"] if "ceo_name_proxy" in d.columns else pd.Series(None, index=d.index, dtype="object")
     changed = ceo_identity_changed(names, d["ticker"])
     # Unknown identity does not prove a change, so it does not mask the growth rate.

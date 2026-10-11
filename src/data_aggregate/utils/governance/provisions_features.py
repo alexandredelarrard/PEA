@@ -51,6 +51,7 @@ from src.data_aggregate.utils.governance.staleness import (
     LEVEL_MAX_AGE_DAYS,
     expire_event_fields,
     expire_level_fields,
+    stint_to_daily,
 )
 
 #: The seven tri-state / boolean provision columns the transition detector runs over. Every one
@@ -753,7 +754,7 @@ def provision_fields(
     # independent" and "does the CEO hold the chair" are different questions, and only the
     # second is the entrenchment leg the dropped interaction needed. Coverage 99.3% after
     # impute, 99.7% in the modern era.
-    duality = fundamentals_to_daily(def14a, "ceo_is_board_chair", idx)
+    duality = stint_to_daily(def14a, "ceo_is_board_chair", idx)
     if not duality.empty and duality.notna().any().any():
         # Filed under its own name, so it needs no `sources` mapping -- and it is on the LEVEL
         # horizon like the other four: whether the CEO holds the chair is a standing fact, but

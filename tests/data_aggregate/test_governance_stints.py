@@ -21,6 +21,8 @@ from src.data_aggregate.utils.governance.def14a_impute import (
     impute_def14a,
 )
 from src.data_aggregate.utils.governance.names import ceo_stint_ids
+from src.data_aggregate.utils.governance.panel import _def14a_raw_fields, _governance_fields
+from src.data_aggregate.utils.governance.provisions_features import provision_fields
 from src.data_aggregate.utils.governance.staleness import source_date_column
 
 
@@ -202,3 +204,35 @@ def test_completion_is_idempotent_and_keeps_raw() -> None:
         pd.testing.assert_series_equal(raw, filed, check_names=False)
     print("\n=== SANITY CHECK: idempotent completion ===")
     print("  CONCLUSION: a second pass reads the filed values from `_raw` and reproduces the first pass exactly.")
+
+
+def test_daily_projection_ends_the_previous_stint() -> None:
+    """A new CEO's proxy without a value blanks the daily cell instead of serving the predecessor's."""
+    rows = _rows(
+        "CAT",
+        [
+            (1999, "D. V. Fites", 1990.0, 0.0, 1.0),
+            (2000, "Glen A. Barton", NA, NA, NA),
+            (2001, "Glen A. Barton", NA, NA, NA),
+            (2003, "Glen A. Barton", 1999.0, 0.0, 1.0),
+            (2004, None, NA, NA, NA),
+            (2005, "Glen A. Barton", NA, NA, NA),
+        ],
+    )
+    hist = pd.DataFrame(rows)
+    hist["as_of"] = pd.to_datetime(hist["as_of"])
+    idx = pd.DatetimeIndex(pd.date_range("1999-01-01", "2006-01-01", freq="ME"))
+    tenure = _governance_fields(hist, idx, None, {})["ceo_tenure"]["CAT"]
+    founder = _def14a_raw_fields(hist, idx, {})["founder_ceo"]["CAT"]
+    chair = provision_fields(hist, idx)[0]["ceo_is_board_chair"]["CAT"]
+    barton = slice("2000-04-30", "2003-03-31")
+    assert tenure.loc[barton].isna().all(), f"Barton's empty proxies must not serve Fites's 1990: {tenure.loc[barton].dropna().tolist()}"
+    assert founder.loc[barton].isna().all() and chair.loc[barton].isna().all()
+    assert tenure.loc["1999-12-31"] == 9 and chair.loc["1999-12-31"] == 1.0
+    # within one stint (and across an unknown-CEO row) the value still bridges
+    assert tenure.loc["2004-06-30"] == 5 and tenure.loc["2005-06-30"] == 6
+    print("\n=== SANITY CHECK: daily projection at a stint boundary ===")
+    print(
+        f"  tenure 1999-12 {tenure.loc['1999-12-31']} | Barton 2000-04..2003-03 non-null {int(tenure.loc[barton].notna().sum())} | 2005-06 {tenure.loc['2005-06-30']}"
+    )
+    print("  CONCLUSION: the predecessor's start year, founder and chair flag end at the successor's first proxy.")

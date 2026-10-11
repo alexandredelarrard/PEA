@@ -46,6 +46,7 @@ from src.data_aggregate.utils.governance.staleness import (
     LEVEL_MAX_AGE_DAYS,
     expire_stale,
     source_date_column,
+    stint_to_daily,
     ultimate_source_dates,
 )
 from src.data_aggregate.utils.governance.vote_dissent_features import (
@@ -240,7 +241,7 @@ def _def14a_raw_fields(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: 
     """Build raw-only DEF 14A fields."""
     out: dict[str, pd.DataFrame] = {}
     for src, name in _RAW_DEF14A_FIELDS:
-        f = _gate(fundamentals_to_daily(def14a_hist, src, idx), src, tally, _domain_condition(def14a_hist, src, idx, tally))
+        f = _gate(stint_to_daily(def14a_hist, src, idx), src, tally, _domain_condition(def14a_hist, src, idx, tally))
         f = _expire(f, def14a_hist, src, name, tally)
         if not f.empty and f.notna().any().any():
             out[name] = f
@@ -263,7 +264,7 @@ def _governance_fields(
             f_dict[name] = f
 
     # Tenure accrues daily but still expires from the filing that disclosed `ceo_since_year`.
-    since = fundamentals_to_daily(def14a_hist, "ceo_since_year", idx)
+    since = stint_to_daily(def14a_hist, "ceo_since_year", idx)
     if not since.empty and since.notna().any().any():
         years = pd.Series([stamp.year for stamp in idx], index=idx, dtype="float64")
         tenure = since.rsub(years, axis=0).where(lambda t: t >= 0)

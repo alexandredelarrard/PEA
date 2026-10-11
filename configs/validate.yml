@@ -162,13 +162,12 @@ validate:
       # horizon would turn the whole part green or the whole part red, and neither is a result.
       cadence: quarterly
       # Shares of a total, measured 0 -> 1 across the part (independent 0 -> 1.0,
-      # female 0 -> 0.778, insider_ownership 1.7e-05 -> 0.91, say_on_pay 0.034 -> 1.0,
+      # female 0 -> 0.778, insider_ownership 1.7e-05 -> 0.91,
       # sop_dissent 0 -> 0.913, board_dissent_mean 0 -> 0.733). Fractions, not percents.
       bounds:
         f_pct_independent_directors: [0.0, 1.0]
         f_pct_female_directors:      [0.0, 1.0]
         f_insider_ownership_pct:     [0.0, 1.0]
-        f_say_on_pay_support:        [0.0, 1.0]
         f_sop_dissent:               [0.0, 1.0]
         f_board_dissent_mean:        [0.0, 1.0]
 

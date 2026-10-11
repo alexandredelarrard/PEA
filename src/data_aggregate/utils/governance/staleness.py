@@ -30,6 +30,10 @@ from __future__ import annotations
 import pandas as pd
 
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
+from src.data_aggregate.utils.governance.names import ceo_stint_ids, key_at_last_value
+
+#: Marks a proxy that ends the previous CEO stint's value in `stint_to_daily`; never a real value.
+_STINT_ENDED = float("-inf")
 
 #: How long a governance EVENT stays informative after the filing that disclosed it.
 #:
@@ -118,7 +122,6 @@ LEVEL_HORIZON_FIELDS: frozenset[str] = frozenset(
         "pct_female_directors",
         "board_size",
         "avg_board_tenure",
-        "say_on_pay_support",
         "insider_ownership_pct",
     }
 )
@@ -163,7 +166,7 @@ def expire_stale(daily: pd.DataFrame, history: pd.DataFrame, field: str, max_age
     recovered downstream and has to be carried in alongside.
 
     `field` names the column in `history`; `feature` names the emitted feature when the two
-    differ (`say_on_pay_support_pct` -> `say_on_pay_support`), and it is `feature` that picks
+    differ (`ceo_is_founder` -> `founder_ceo`), and it is `feature` that picks
     the horizon.
 
     `max_age_days=None` means "ask `horizon_for`", which is the two-tier rule: a level gets
@@ -203,6 +206,31 @@ def expire_stale(daily: pd.DataFrame, history: pd.DataFrame, field: str, max_age
     # `> max_age` is False wherever the age is NaN (no filing yet), which is the right
     # answer: those cells are already NaN in `daily` and masking them changes nothing.
     return daily.mask((age < 0) | (age > float(max_age_days)))
+
+
+def stint_to_daily(history: pd.DataFrame, field: str, trading_index: pd.DatetimeIndex) -> pd.DataFrame:
+    """`fundamentals_to_daily` for a CEO-person field (start year, founder, chair).
+
+    A proxy that names a different CEO stint than the last valued proxy, and has no value of its
+    own, ends the previous CEO's value: the daily cell goes blank instead of being bridged. Rows
+    with an unknown CEO break no stint, as in `ceo_stint_ids`.
+    """
+    if field not in history.columns or "ceo_name_proxy" not in history.columns:
+        return fundamentals_to_daily(history, field, trading_index)
+    h = history[["ticker", "as_of", "ceo_name_proxy", field]].copy()
+    h["as_of"] = pd.to_datetime(h["as_of"], errors="coerce")
+    h = h.dropna(subset=["ticker", "as_of"]).sort_values(["ticker", "as_of"], kind="stable").reset_index(drop=True)
+    value = pd.to_numeric(h[field], errors="coerce")
+    stint = ceo_stint_ids(h["ceo_name_proxy"], h["ticker"], h["as_of"])
+    current = stint.groupby(h["ticker"], sort=False).ffill()
+    source = key_at_last_value(current, value, h["ticker"])
+    ends = value.isna() & stint.notna() & source.notna() & (stint != source)
+    # A same-day row that carries a value wins over the terminator.
+    keys = pd.MultiIndex.from_frame(h[["ticker", "as_of"]])
+    ends &= ~keys.isin(keys[value.notna().to_numpy()])
+    h[field] = value.mask(ends, _STINT_ENDED)
+    daily = fundamentals_to_daily(h, field, trading_index)
+    return daily.mask(daily == _STINT_ENDED)
 
 
 def _expire_family(

@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.governance.def14a_impute import impute_def14a
+from src.data_aggregate.utils.governance.def14a_impute import STINT_CONSTANTS, impute_def14a
 
 
 def _row(ticker: str, as_of: str, **kw) -> dict:
@@ -76,16 +76,17 @@ def test_impute_rules_synthetic():
             # --- pay ratio: total + ratio present, median missing -> deduce median
             _row("BBB", "2021-04-01", board_size=12, ceo_total_comp=12_000_000, ceo_pay_ratio=200, median_employee_pay=np.nan),
             # --- temporal gap: CCC board_size 9 -> NaN -> 11. The gap CARRIES 9, it does not
-            # interpolate to 10: the 11 is not knowable on 2020-04-01. ceo_is_founder carries too.
-            _row("CCC", "2019-04-01", board_size=9, ceo_is_founder=1.0),
-            _row("CCC", "2020-04-01", board_size=np.nan, ceo_is_founder=np.nan),
-            _row("CCC", "2021-04-01", board_size=11, ceo_is_founder=1.0),
+            # interpolate to 10: the 11 is not knowable on 2020-04-01. ceo_is_founder is a constant
+            # of the CEO stint (REQ-004), completed from the stint's filed values.
+            _row("CCC", "2019-04-01", board_size=9, ceo_is_founder=1.0, ceo_name_proxy="Cy Cole"),
+            _row("CCC", "2020-04-01", board_size=np.nan, ceo_is_founder=np.nan, ceo_name_proxy="Cy Cole"),
+            _row("CCC", "2021-04-01", board_size=11, ceo_is_founder=1.0, ceo_name_proxy="Cy Cole"),
             # --- the TRAILING gap is now filled, from 2021 and within the carry cap. The old
             # interior-only rule left it NaN, which is the live/backtest asymmetry this closed.
-            _row("CCC", "2022-04-01", board_size=np.nan, ceo_is_founder=np.nan),
-            # --- a LEADING gap stays NaN: there is nothing behind it to carry
-            _row("DDD", "2019-04-01", board_size=np.nan, ceo_is_founder=np.nan),
-            _row("DDD", "2020-04-01", board_size=7, ceo_is_founder=0.0),
+            _row("CCC", "2022-04-01", board_size=np.nan, ceo_is_founder=np.nan, ceo_name_proxy="Cy Cole"),
+            # --- a LEADING gap stays NaN for a carried level; the stint constant is completed (D1)
+            _row("DDD", "2019-04-01", board_size=np.nan, ceo_is_founder=np.nan, ceo_name_proxy="Di Dunn"),
+            _row("DDD", "2020-04-01", board_size=7, ceo_is_founder=0.0, ceo_name_proxy="Di Dunn"),
         ]
     )
     raw = df.copy()
@@ -116,14 +117,16 @@ def test_impute_rules_synthetic():
     assert out.loc[("CCC", pd.Timestamp("2022-04-01")), "ceo_is_founder"] == 1.0
     # 4. a LEADING gap is still NaN -- a carry has nothing behind it to read
     assert pd.isna(out.loc[("DDD", pd.Timestamp("2019-04-01")), "board_size"])
-    assert pd.isna(out.loc[("DDD", pd.Timestamp("2019-04-01")), "ceo_is_founder"])
+    # ... but the founder flag is a constant of Dunn's stint (D1), completed as kind `person`
+    assert out.loc[("DDD", pd.Timestamp("2019-04-01")), "ceo_is_founder"] == 0.0
+    assert out.loc[("DDD", pd.Timestamp("2019-04-01")), "ceo_is_founder_fill"] == "person"
 
     # global non-destructiveness: every originally-present cell is byte-for-byte unchanged
     r = raw.set_index(["ticker", "as_of"])
     assert isinstance(r.index, pd.MultiIndex)
     r.index = r.index.set_levels(pd.to_datetime(r.index.levels[1]).tolist(), level=1)
     changed = 0
-    for c in [x for x in r.columns if x != "accession_number"]:
+    for c in [x for x in r.columns if x not in ("accession_number", "ceo_name_proxy")]:
         pres = r[c].notna()
         if pres.any():
             a, b = r.loc[pres, c].astype(float), out.loc[r.index[pres], c].astype(float)
@@ -136,7 +139,7 @@ def test_impute_rules_synthetic():
     print("  total (99M pension-gap row) PRESERVED; pct_tech=n_tech/board; n_directors=board_size;")
     print("  median_pay=total/ratio (60k); interior board_size gap CARRIES 9, not the 10 a")
     print("  linear interpolation between 9 and 11 would invent from a 2021 filing; founder flag")
-    print("  carried; TRAILING edge now filled (11); LEADING edge left NaN; 0 present cells changed.")
+    print("  completed per CEO stint; TRAILING edge filled (11); LEADING level edge left NaN; 0 present cells changed.")
 
 
 def test_impute_real_data_nondestructive():
@@ -156,7 +159,17 @@ def test_impute_real_data_nondestructive():
     a = raw.set_index(key).sort_index()
     b = imp.set_index(key).sort_index().reindex(a.index)
 
-    num = a.select_dtypes("number").columns
+    # REQ-004 unifies a stint's start year / founder flag: those are the only overwrites allowed,
+    # and the filed value must survive in `<col>_raw`.
+    stint_cols = list(STINT_CONSTANTS)
+    raw_kept = 0
+    for c in stint_cols:
+        pres = a[c].notna()
+        kept = b.loc[pres, f"{c}_raw"].to_numpy(dtype=float)
+        assert np.array_equal(a.loc[pres, c].to_numpy(dtype=float), kept), f"{c}_raw does not hold the filed value"
+        raw_kept += int(pres.sum())
+    unified = sum(int((a[c].notna() & ~np.isclose(a[c].to_numpy(dtype=float), b[c].to_numpy(dtype=float), equal_nan=True)).sum()) for c in stint_cols)
+    num = [c for c in a.select_dtypes("number").columns if c not in stint_cols]
     overwritten, filled = 0, 0
     for c in num:
         pres = a[c].notna()
@@ -171,6 +184,7 @@ def test_impute_real_data_nondestructive():
     print("\n=== SANITY CHECK: DEF 14A imputation (real def14a_llm) ===")
     print(f"  rows={len(raw)}  tickers={raw['ticker'].nunique()}  numeric cols={len(num)}")
     print(f"  cells filled = {filled}  |  present cells overwritten = {overwritten}")
+    print(f"  stint constants unified (REQ-004) = {unified}  |  filed values kept in _raw = {raw_kept}")
     print(f"  mean numeric-missing: {miss_before:.1f}% -> {miss_after:.1f}%")
     print(f"  top rules: {top}")
     print(

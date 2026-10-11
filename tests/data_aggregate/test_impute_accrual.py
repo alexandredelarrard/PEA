@@ -307,7 +307,9 @@ def test_twelve_legacy_features_are_bit_identical(monkeypatch):
     assert not diffs, f"phase 2 moved cells in live features: {diffs}"
     # every emitted feature is one of the twelve, and every one of the twelve is exempt
     assert set(after) <= LEGACY_EXEMPT_FROM_EXPIRY, set(after) - LEGACY_EXEMPT_FROM_EXPIRY
-    assert len(after) == 12, f"expected all twelve legacy features, built {len(after)}: {sorted(LEGACY_EXEMPT_FROM_EXPIRY - set(after))} missing"
+    assert len(after) == len(LEGACY_EXEMPT_FROM_EXPIRY), (
+        f"expected all {len(LEGACY_EXEMPT_FROM_EXPIRY)} legacy features (say_on_pay_support dropped), built {len(after)}: {sorted(LEGACY_EXEMPT_FROM_EXPIRY - set(after))} missing"
+    )
 
     print("\n=== SANITY CHECK: the twelve legacy features, zero-diff (§3.4 / D3) ===")
     print(f"  daily grid {idx[0].date()}..{idx[-1].date()} ({len(idx)} days)")

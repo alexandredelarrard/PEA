@@ -8,7 +8,9 @@ fully parse). Applied clean-on-read in `StepCubeGovernance` — the raw extracti
 never mutated.
 
 STRICTLY non-destructive: a value is only ever written where it is currently NaN — a real
-extracted number is never overwritten.
+extracted number is never overwritten. The one exception is the CEO stint constants
+(`ceo_since_year`, `ceo_is_founder`), unified to one value per stint; the filed value stays in
+`<col>_raw`.
 
 THREE KINDS OF MISSING, THREE TREATMENTS. Every fill in this module belongs to exactly one
 of these, and no other kind of fill is allowed anywhere in the governance package:
@@ -28,11 +30,13 @@ point-in-time feature.
 
 ⚠ **NEVER READ A LATER FILING TO FILL AN EARLIER ROW.** Every temporal fill here is a FORWARD
 carry: the value comes from the most recent observation at or before the row it lands on, and
-nothing else. **The one exception is `_accrue_ceo_age`**, which fits a per-CEO birth year over
+nothing else. **The exceptions are `_accrue_ceo_age` and `_complete_stint_constants`** (decision
+D1: a start year and a founder status are constants of a CEO stint). `_accrue_ceo_age` fits a per-CEO birth year over
 all of that person's disclosed ages, later ones included — admissible because a birth year is
 TIME-INVARIANT, so a 2020 disclosure pins the same constant a 2015 one would and the 2015 age it
 implies was knowable in 2015. That argument works for a constant and for nothing else; it is not
-a licence to fit anything else across time.
+a licence to fit anything else across time. Both write kind `person` dated at the row's own
+`as_of`; the stint constants also record the disclosing filing in `<col>_evidence_as_of`.
 
 This rule replaced linear interpolation on 2026-09-09, and the defect it closes was not subtle:
 `limit_area="inside"` fills a gap by drawing a line between the observations either
@@ -43,10 +47,10 @@ side, so **every intermediate value was computed from a filing that did not exis
 built that way, 46% of everything `f_board_busyness` shipped, and `03_pit` cannot see any of it
 because the future value is laundered onto a row whose own `as_of` is legitimately in the past.
 
-⚠ **A CARRY IS BOUNDED, AT `CARRY_MAX_DAYS` (1,095 days).** Not a taste question: `expire_stale`
-dates a cell by the last filing that carried the field, so anything written here is dated to the
-row it lands on and reads as age 0 downstream. An unbounded `ffill` would push 10,400 cells —
-some copying a 30-year-old observation — straight through the level horizon.
+⚠ **A CARRY IS BOUNDED, AT `CARRY_MAX_DAYS` (1,095 days).** Every written value also carries
+`<col>_source_as_of` (the observation it came from; for an identity, its oldest leg) and
+`<col>_fill` (its fill kind), and `expire_stale` ages the daily cell from that stamp, so a carry
+never reads as a fresh disclosure downstream.
 
 ⚠ **NEVER CARRY A LEVEL WHOSE YoY CHANGE IS ITSELF A FEATURE** without recording it, because the
 fill *is* the change: a carried segment has a first difference of exactly zero, so the delta
@@ -151,10 +155,11 @@ governance events in the archive. `test_def14a_say_on_pay.py` pins that those va
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.governance.accrual import accrual_anchor, accrue
-from src.data_aggregate.utils.governance.names import ceo_identity_series
+from src.data_aggregate.utils.governance.names import ceo_identity_series, ceo_stint_ids, key_at_last_value
 from src.data_aggregate.utils.governance.staleness import (
     LEVEL_MAX_AGE_DAYS,
     source_date_column,
@@ -165,16 +170,8 @@ CEO_COMP = ["ceo_salary", "ceo_bonus", "ceo_stock_awards", "ceo_option_awards", 
 
 #: How far a forward carry may reach, in days, measured from the `as_of` of the observation it
 #: copies. **NOT a free parameter** -- it is `LEVEL_MAX_AGE_DAYS`, the same 1,095 days the daily
-#: panel expires a level on, and it has to be, for a reason that is easy to miss:
-#:
-#: `staleness.expire_stale` drops NULL rows before it dates a cell, so it ages a value against
-#: the last filing that CARRIED that field. A value written here onto a 2026 filing row is
-#: therefore dated 2026 downstream -- age 0, indistinguishable from a real disclosure. An
-#: unbounded `ffill` would launder stale values straight through the horizon phase 3 built:
-#: measured 2026-09-09 on the live table, 21,518 carryable cells of which **10,400 (48%) copy an
-#: observation more than 1,095 days old**, the worst reaching 10,984 days (30.1 years, on
-#: `ceo_ownership_pct`). This is the last place the true age is still knowable, so it is the only
-#: place the bound can be applied.
+#: panel expires a level on: a carry older than the horizon would be expired downstream anyway,
+#: since `expire_stale` ages each cell from its `<col>_source_as_of` stamp.
 #:
 #: ⚠ THE LINEAR INTERPOLATION THIS REPLACED LAUNDERED TOO, and that was recorded nowhere: its
 #: interior gaps reach 10,593 days on `avg_other_public_boards`. The cap is therefore not a cost
@@ -213,7 +210,6 @@ CARRY_LEVELS = [
     "insider_ownership_pct",
     "ceo_ownership_pct",
     "n_five_percent_holders",
-    "say_on_pay_support_pct",
     "median_employee_pay",
     "ceo_pay_ratio",
 ]
@@ -272,7 +268,6 @@ DELTA_PROVENANCE_COLUMNS: tuple[str, ...] = ("avg_other_public_boards", "pct_ind
 # silent), so a carry-forward here fills a genuine gap rather than propagating a fabricated
 # FALSE -- which is what made `majority_voting` flip 21.2% year-over-year before.
 FLAGS = [
-    "ceo_is_founder",
     "ceo_is_board_chair",
     "independent_chair",
     "lead_independent_director",
@@ -280,9 +275,12 @@ FLAGS = [
     "dual_class_shares",
     "poison_pill",
     "majority_voting",
-    "ceo_since_year",
     "ceo_name_proxy",
 ]
+#: Constants of one CEO stint, completed per stint by `_complete_stint_constants` and never carried.
+STINT_CONSTANTS: tuple[str, ...] = ("ceo_since_year", "ceo_is_founder")
+#: Carried only when the source row and this row belong to the same CEO stint (REQ-003).
+STINT_GATED_CARRY = frozenset({"ceo_is_board_chair"})
 #: Columns a forward carry must NOT touch at all, because the carry cannot be validated without
 #: reading a LATER filing -- which is the thing this module stopped doing on 2026-09-09.
 #:
@@ -310,6 +308,28 @@ FLAGS = [
 CARRY_FORBIDDEN = frozenset({"ceo_name_proxy"})
 INT_COLS = ["n_directors", "board_size", "ceo_age", "n_five_percent_holders", "n_neos", "ceo_since_year"]
 
+#: Fill kinds stamped in `<col>_fill` beside every value the cleaning stage writes.
+FILL_FILED = "filed"
+FILL_IDENTITY = "identity"
+FILL_CARRY = "carry"
+FILL_PERSON = "person"
+FILL_CROSS_SOURCE = "cross_source"
+FILL_ESTIMATE = "estimate"
+#: Written from a LATER filing (accepted lookahead): an exact later SCT value, or interpolated.
+FILL_BACKFILL = "backfill"
+FILL_INTERP = "interp"
+
+#: Every parent column `impute_def14a` can write; each gets `<col>_source_as_of` and `<col>_fill`.
+WRITTEN_COLUMNS: tuple[str, ...] = tuple(
+    dict.fromkeys(
+        [*CEO_COMP, "ceo_total_comp", "n_directors", "board_size", "median_employee_pay", "ceo_pay_ratio", "ceo_age"]
+        + CARRY_LEVELS
+        + sorted(IDENTITY_GATED_CARRY)
+        + [c for c in FLAGS if c not in CARRY_FORBIDDEN]
+        + list(STINT_CONSTANTS)
+    )
+)
+
 #: The seven Item 402(c) components, in `def14a_executive_comp`'s flat column vocabulary.
 #: ⚠ SEVEN, against `CEO_COMP`'s six: the child table carries `pension_change`, which the
 #: parent's schema omits. That is why the parent's identity has to tolerate a deduced
@@ -317,33 +337,93 @@ INT_COLS = ["n_directors", "board_size", "ceo_age", "n_five_percent_holders", "n
 EXEC_COMPONENTS = ["salary", "bonus", "stock_awards", "option_awards", "non_equity_incentive", "pension_change", "other_compensation"]
 
 
-def _fill(df: pd.DataFrame, col: str, cond: pd.Series, values, stats: dict, tag: str) -> None:
-    """Set df[col] = values ONLY where col is currently NaN AND `cond` AND value is finite."""
+def fill_kind_column(field: str) -> str:
+    """Provenance column holding the fill kind of each `field` value."""
+    return f"{field}_fill"
+
+
+def evidence_date_column(field: str) -> str:
+    """Date of the filing that disclosed a `person` stint value written on another row."""
+    return f"{field}_evidence_as_of"
+
+
+def bridged_total(df: pd.DataFrame) -> pd.Series:
+    """True where `ceo_total_comp` is an in-stint bridge (kind `interp`), directly or summed from a
+    bridged component: its change against a neighbouring filing is the fill's slope, not data."""
+    kind_col = fill_kind_column("ceo_total_comp")
+    if kind_col not in df.columns:
+        return pd.Series(False, index=df.index)
+    return (df[kind_col] == FILL_INTERP).fillna(False).astype(bool)
+
+
+def ensure_provenance(df: pd.DataFrame, col: str) -> None:
+    """Create `<col>_source_as_of` and `<col>_fill` where absent; a present value reads as filed on its row."""
     if col not in df.columns:
         return
-    vals = values if isinstance(values, pd.Series) else pd.Series(values, index=df.index)
-    m = df[col].isna() & cond.fillna(False) & vals.notna()
+    source_col, kind_col = source_date_column(col), fill_kind_column(col)
+    if source_col not in df.columns:
+        df[source_col] = ultimate_source_dates(df, col)
+    if kind_col not in df.columns:
+        df[kind_col] = pd.Series(np.where(df[col].notna(), FILL_FILED, None), index=df.index, dtype="object")
+
+
+def write_with_provenance(
+    df: pd.DataFrame,
+    mask: pd.Series,
+    col: str,
+    values: pd.Series | None,
+    kind: str | None,
+    source: pd.Series | None,
+    evidence: pd.Series | None = None,
+) -> None:
+    """Write `values` (None blanks) into `col` where `mask`, resetting its source date, fill kind
+    and (when tracked) evidence date together."""
+    ensure_provenance(df, col)
+    df.loc[mask, col] = values[mask] if values is not None else np.nan
+    df.loc[mask, source_date_column(col)] = source[mask] if source is not None else pd.NaT
+    df.loc[mask, fill_kind_column(col)] = kind
+    ev_col = evidence_date_column(col)
+    if evidence is not None and ev_col not in df.columns:
+        df[ev_col] = pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns]")
+    if ev_col in df.columns:
+        df.loc[mask, ev_col] = evidence[mask] if evidence is not None else pd.NaT
+
+
+def _oldest_leg(df: pd.DataFrame, legs: list[str]) -> pd.Series:
+    """Row-wise oldest source date over the legs a derived value was computed from."""
+    return pd.concat([ultimate_source_dates(df, leg) for leg in legs], axis=1).min(axis=1)
+
+
+def _fill(df: pd.DataFrame, col: str, cond: pd.Series, values: pd.Series, legs: list[str], stats: dict, tag: str) -> None:
+    """Set df[col] = values ONLY where col is currently NaN AND `cond` AND value is finite.
+
+    The written value is an identity, dated at the oldest source date of its `legs`.
+    """
+    if col not in df.columns:
+        return
+    m = df[col].isna() & cond.fillna(False) & values.notna()
     n = int(m.sum())
     if n:
-        df.loc[m, col] = vals[m]
+        write_with_provenance(df, m, col, values, FILL_IDENTITY, _oldest_leg(df, legs))
         stats[tag] = stats.get(tag, 0) + n
 
 
 def _reconcile_rows(df: pd.DataFrame, stats: dict) -> None:
     comps = [c for c in CEO_COMP if c in df.columns]
     if "ceo_total_comp" in df.columns and len(comps) == 6:
-        _fill(df, "ceo_total_comp", df[comps].notna().all(axis=1), df[comps].sum(axis=1), stats, "ceo_total_comp = sum(components)")
+        _fill(df, "ceo_total_comp", df[comps].notna().all(axis=1), df[comps].sum(axis=1), comps, stats, "ceo_total_comp = sum(components)")
         for c in comps:
             others = [x for x in comps if x != c]
             cond = df["ceo_total_comp"].notna() & df[others].notna().all(axis=1)
-            _fill(df, c, cond, (df["ceo_total_comp"] - df[others].sum(axis=1)).clip(lower=0), stats, "ceo component = total - others")
+            value = (df["ceo_total_comp"] - df[others].sum(axis=1)).clip(lower=0)
+            _fill(df, c, cond, value, ["ceo_total_comp", *others], stats, "ceo component = total - others")
     if {"n_directors", "board_size"} <= set(df.columns):
-        _fill(df, "n_directors", df["board_size"].notna(), df["board_size"], stats, "n_directors = board_size")
-        _fill(df, "board_size", df["n_directors"].notna(), df["n_directors"], stats, "board_size = n_directors")
+        _fill(df, "n_directors", df["board_size"].notna(), df["board_size"], ["board_size"], stats, "n_directors = board_size")
+        _fill(df, "board_size", df["n_directors"].notna(), df["n_directors"], ["n_directors"], stats, "board_size = n_directors")
     if {"ceo_pay_ratio", "median_employee_pay", "ceo_total_comp"} <= set(df.columns):
         r, med, tot = df["ceo_pay_ratio"], df["median_employee_pay"], df["ceo_total_comp"]
-        _fill(df, "median_employee_pay", (r > 0) & tot.notna(), tot / r, stats, "median_pay = total / ratio")
-        _fill(df, "ceo_pay_ratio", (med > 0) & tot.notna(), tot / med, stats, "pay_ratio = total / median")
+        _fill(df, "median_employee_pay", (r > 0) & tot.notna(), tot / r, ["ceo_pay_ratio", "ceo_total_comp"], stats, "median_pay = total / ratio")
+        _fill(df, "ceo_pay_ratio", (med > 0) & tot.notna(), tot / med, ["median_employee_pay", "ceo_total_comp"], stats, "pay_ratio = total / median")
 
 
 def _carry(df: pd.DataFrame, col: str, gk: pd.Series) -> tuple[pd.Series, pd.Series]:
@@ -363,7 +443,7 @@ def _carry(df: pd.DataFrame, col: str, gk: pd.Series) -> tuple[pd.Series, pd.Ser
     return fwd, (df["as_of"] - src).dt.days
 
 
-def _same_ceo_as_source(df: pd.DataFrame, col: str, gk: pd.Series) -> pd.Series:
+def _same_ceo_as_source(df: pd.DataFrame, col: str, gk: pd.Series, key: pd.Series) -> pd.Series:
     """True where the CEO named on THIS row is the CEO named on the row sourcing `col`'s carry.
 
     Both legs are at or before the row being filled, which is what makes the gate PIT. It
@@ -377,12 +457,11 @@ def _same_ceo_as_source(df: pd.DataFrame, col: str, gk: pd.Series) -> pd.Series:
 
     ⚠ STRICTER THAN ITS PREDECESSOR, deliberately: a row that does not name its CEO now fails
     the gate, where the old `bfill` leg handed it an identity it does not have.
+
+    `key` is the CEO identity (`IDENTITY_GATED_CARRY`) or the CEO stint (`STINT_GATED_CARRY`).
     """
-    if "ceo_name_proxy" not in df.columns:
-        return pd.Series(False, index=df.index)
-    ident = ceo_identity_series(df["ceo_name_proxy"])
-    at_source = ident.where(df[col].notna()).groupby(gk, sort=False).ffill()
-    return ident.notna() & at_source.notna() & (ident == at_source)
+    at_source = key_at_last_value(key, df[col], gk)
+    return key.notna() & at_source.notna() & (key == at_source)
 
 
 def _accrue_ceo_age(df: pd.DataFrame, stats: dict) -> pd.Series:
@@ -423,7 +502,8 @@ def _accrue_ceo_age(df: pd.DataFrame, stats: dict) -> pd.Series:
     newly = df["ceo_age"].isna() & implied.notna()
     n = int(newly.sum())
     if n:
-        df.loc[newly, "ceo_age"] = implied[newly]
+        # A birth year is time-invariant, so the accrued age is dated at its own row.
+        write_with_provenance(df, newly, "ceo_age", implied, FILL_PERSON, df["as_of"])
         stats["accrue: ceo_age"] = n
     return newly
 
@@ -439,18 +519,24 @@ def _temporal_fill(df: pd.DataFrame, stats: dict) -> None:
 
     Order matters and is unchanged: the levels first, then the `ceo_age` accrual, then the flags.
     `ceo_name_proxy` is carried LAST (and, being in `CARRY_FORBIDDEN`, not at all) so every
-    identity gate above it is judged on the raw disclosed name.
+    identity gate above it is judged on the raw disclosed name. The stint constants are completed
+    last, per stint rather than by carry.
     """
     df.sort_values(["ticker", "as_of"], inplace=True)
     gk = df["ticker"]
+    named = "ceo_name_proxy" in df.columns
+    stint = ceo_stint_ids(df["ceo_name_proxy"], gk, df["as_of"]) if named else pd.Series(np.nan, index=df.index)
+    ident = ceo_identity_series(df["ceo_name_proxy"]) if named else pd.Series(None, index=df.index, dtype="object")
+    gates = ((IDENTITY_GATED_CARRY, ident, "identity changed"), (STINT_GATED_CARRY, stint, "stint boundary"))
     for col in CARRY_LEVELS + sorted(IDENTITY_GATED_CARRY):
-        _carry_one(df, col, gk, stats)
+        _carry_one(df, col, gk, gates, stats)
     _accrue_ceo_age(df, stats)
     for col in FLAGS:
-        _carry_one(df, col, gk, stats)
+        _carry_one(df, col, gk, gates, stats)
+    _complete_stint_constants(df, stint, stats)
 
 
-def _carry_one(df: pd.DataFrame, col: str, gk: pd.Series, stats: dict) -> None:
+def _carry_one(df: pd.DataFrame, col: str, gk: pd.Series, gates: tuple[tuple[frozenset[str], pd.Series, str], ...], stats: dict) -> None:
     """Carry `col` forward into its gaps, bounded and gated, and record what was declined.
 
     Every reason a candidate cell is NOT filled gets its own counter, because a fill count on
@@ -473,19 +559,85 @@ def _carry_one(df: pd.DataFrame, col: str, gk: pd.Series, stats: dict) -> None:
     if stale:
         stats[f"declined (>{CARRY_MAX_DAYS}d stale): {col}"] = stale
     newly = candidate & within
-    if col in IDENTITY_GATED_CARRY:
-        same_ceo = _same_ceo_as_source(df, col, gk)
-        declined = int((newly & ~same_ceo).sum())
-        if declined:
-            stats[f"declined (identity changed): {col}"] = declined
-        newly &= same_ceo
+    for gated, key, reason in gates:
+        if col in gated:
+            same = _same_ceo_as_source(df, col, gk, key)
+            declined = int((newly & ~same).sum())
+            if declined:
+                stats[f"declined ({reason}): {col}"] = declined
+            newly &= same
     n = int(newly.sum())
     if n:
-        df.loc[newly, col] = fwd[newly]
-        source_col = source_date_column(col)
-        if source_col in df.columns:
-            df.loc[newly, source_col] = source[newly]
+        write_with_provenance(df, newly, col, fwd, FILL_CARRY, source)
         stats[f"carry: {col}"] = n
+
+
+def _filed_values(df: pd.DataFrame, col: str) -> pd.Series:
+    """The filed values of a stint constant, snapshotted once into `<col>_raw`."""
+    raw_col = f"{col}_raw"
+    if raw_col not in df.columns:
+        df[raw_col] = df[col].copy()
+    return pd.to_numeric(df[raw_col], errors="coerce")
+
+
+def _since_year_by_stint(df: pd.DataFrame, stint: pd.Series, filed: pd.Series, stats: dict) -> tuple[pd.Series, pd.Series]:
+    """`(value, evidence date)` per row for `ceo_since_year`: the start year <= the stint's first
+    proxy year that the most filings of the stint disclose, ties to the largest. A stint with no
+    such value is left as filed."""
+    year0 = df["as_of"].groupby(stint).transform("min").dt.year
+    eligible = stint.notna() & filed.notna() & (filed <= year0)
+    votes = pd.DataFrame({"stint": stint[eligible], "value": filed[eligible]}).value_counts().rename("n").reset_index()
+    chosen = votes.sort_values(["stint", "n", "value"]).drop_duplicates("stint", keep="last").set_index("stint")["value"]
+    best = stint.map(chosen)
+    evidence = df["as_of"].where(eligible & (filed == best)).groupby(stint).transform("min")
+    declined = int((stint.notna() & best.isna()).sum())
+    if declined:
+        stats["declined (no disclosed start <= stint's first proxy year): ceo_since_year"] = declined
+    return best, evidence
+
+
+def _founder_by_stint(df: pd.DataFrame, stint: pd.Series, filed: pd.Series, stats: dict) -> tuple[pd.Series, pd.Series]:
+    """`(stint mode of the filed founder flag, evidence date)`; a tied stint is left as filed."""
+    ones = (filed == 1).groupby(stint).transform("sum")
+    zeros = (filed == 0).groupby(stint).transform("sum")
+    mode = pd.Series(np.select([ones > zeros, zeros > ones], [1.0, 0.0], np.nan), index=df.index).where(stint.notna())
+    tied = int((stint.notna() & (ones == zeros) & (ones > 0)).sum())
+    if tied:
+        stats["declined (founder tie in stint): ceo_is_founder"] = tied
+    evidence = df["as_of"].where(filed == mode).groupby(stint).transform("min")
+    return mode, evidence
+
+
+def _complete_stint_constants(df: pd.DataFrame, stint: pd.Series, stats: dict) -> None:
+    """One `ceo_since_year` and one `ceo_is_founder` per CEO stint (REQ-004, decision D1).
+
+    A start year and a founder status are constants of the stint, so a later filing of the same
+    stint may complete an earlier row: kind `person`, dated at the row's own
+    `as_of`, with the disclosing filing in `<col>_evidence_as_of`. Rows outside any stint are
+    left as filed.
+    """
+    if "ceo_since_year" in df.columns:
+        filed = _filed_values(df, "ceo_since_year")
+        value, evidence = _since_year_by_stint(df, stint, filed, stats)
+        _write_stint_value(df, "ceo_since_year", filed, value, evidence, stats)
+    if "ceo_is_founder" in df.columns:
+        filed = _filed_values(df, "ceo_is_founder")
+        mode, evidence = _founder_by_stint(df, stint, filed, stats)
+        _write_stint_value(df, "ceo_is_founder", filed, mode, evidence, stats)
+
+
+def _write_stint_value(df: pd.DataFrame, col: str, filed: pd.Series, value: pd.Series, evidence: pd.Series, stats: dict) -> None:
+    """Write the stint value where the filed value is missing or differs, with its provenance."""
+    write = value.notna() & (filed.isna() | (filed != value))
+    if not write.any():
+        return
+    write_with_provenance(df, write, col, value, FILL_PERSON, df["as_of"], evidence)
+    filled = int((write & filed.isna()).sum())
+    if filled:
+        stats[f"person: {col}"] = filled
+    overridden = int((write & filed.notna()).sum())
+    if overridden:
+        stats[f"person overrides a filed value: {col}"] = overridden
 
 
 def impute_def14a(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
@@ -497,6 +649,8 @@ def impute_def14a(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     df["as_of"] = pd.to_datetime(df["as_of"], format="%Y-%m-%d", errors="coerce")
     was_na = {c: df[c].isna() for c in INT_COLS if c in df.columns}  # to round ONLY what we fill
     stats: dict[str, int] = {}
+    for col in WRITTEN_COLUMNS:
+        ensure_provenance(df, col)
     _reconcile_rows(df, stats)  # within-row identities
 
     # PROVENANCE for D31: which `ceo_total_comp` cells were derived from an INTERPOLATED

@@ -271,6 +271,16 @@ from tests.data_aggregate.aggregate_fingerprint import BASELINE, compute
 # history row through a same-day join, the new path reproduced all four old feature frames exactly;
 # the pinned fixture (`employee_rows`) adds `full_part` rows, a basis switch and status-only rows,
 # and the diff read 37 outputs, 36 BYTE-IDENTICAL, `panel.employee` rows 43,010 and cols 7 unchanged.
+#
+# Regenerated a TWELFTH time, 2026-10-11, when the fingerprint's governance path started running the
+# whole cleaning stage (`clean_governance_inputs`, run 2026-10-10-governance-fill-review). 37 outputs,
+# 36 BYTE-IDENTICAL; `panel.governance` rows 41,404 unchanged, cols 66 -> 72, 23 columns moved, each
+# attributed by replaying the fingerprint at every phase commit:
+#   base cleaning now digested: f_board_busyness(+_delta_1y) (board merge), f_majority_voting_removed
+#     (impute_def14a carries the NULL year);
+#   CEO stints: f_founder_ceo (stint mode);
+#   say-on-pay: f_say_on_pay_support removed, the seven f_sop_dissent* added (proxy fallback rows);
+#   same-filing SCT growth: f_ceo_comp_growth_1y, f_ceo_pay_growth and the nine pay-vs-performance legs.
 DECLARED_DRIFT: frozenset[str] = frozenset()
 
 

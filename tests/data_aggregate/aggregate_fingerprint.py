@@ -290,7 +290,7 @@ def synthetic_def14a(tickers: list[str], idx: pd.DatetimeIndex, rng: np.random.G
                     "say_on_pay_support_pct": float(rng.uniform(0.60, 0.99)),
                     # ⚠ THE OWNERSHIP BLOCK EXERCISES FOUR CODE PATHS AND USED TO EXERCISE NONE.
                     # Without `insider_shares` and `insider_voting_pct` this fixture made
-                    # `panel.economic_ownership`, `panel.repair_ownership_basis` and
+                    # `clean.economic_ownership`, `clean.repair_ownership_basis` and
                     # `panel._control_wedge` all return early on their first guard, so the whole
                     # phase-5 ownership rework was absent from the digest -- and regenerating the
                     # baseline over that would have frozen `f_control_wedge` as permanently
@@ -427,7 +427,7 @@ def synthetic_exec_comp(proxies: pd.DataFrame, rng: np.random.Generator) -> pd.D
                 rows.append(
                     {
                         "ticker": r.ticker,
-                        "accession_number": f"{r.ticker}-{fy}",
+                        "accession_number": r.accession_number,
                         "as_of": r.as_of,
                         "name": name,
                         "fiscal_year": year,
@@ -750,6 +750,43 @@ def primitive_fixtures(rng: np.random.Generator) -> dict[str, pd.DataFrame]:
 # --------------------------------------------------------------------------- #
 # the fingerprint                                                              #
 # --------------------------------------------------------------------------- #
+def governance_panel(
+    tickers: list[str], fund: pd.DataFrame, peers: dict[str, dict[str, float]], idx: pd.DatetimeIndex, close: pd.DataFrame
+) -> pd.DataFrame:
+    """The governance panel exactly as `StepCubeGovernance` builds it: RAW synthetic frames
+    through `clean_governance_inputs`, then the builder on the cleaned bundle.
+
+    `exec_comp` and `close_total` make the executive-pay families exist; `close` stands in for
+    `close_total`, as for the dividend panel (the synthetic series carries no dividends). The
+    fixture has no `sec_8k_votes` and no `def14a_ownership`, so the vote families come only
+    from the proxy say-on-pay fallback rows the stage appends, and the holder-table ownership
+    estimate is not digested (`test_governance_ownership_estimate.py` guards it).
+    """
+    from src.data_aggregate.utils.governance.clean import GovernanceInputs, clean_governance_inputs
+    from src.data_aggregate.utils.governance.panel import build_governance_feature_panel
+
+    proxies = synthetic_def14a(tickers, idx, rng_for("def14a"))
+    board = synthetic_directors(proxies, rng_for("directors"))
+    raw = GovernanceInputs(
+        def14a=proxies,
+        exec_comp=synthetic_exec_comp(proxies, rng_for("exec_comp")),
+        directors=board,
+        director_comp=synthetic_director_comp(board, rng_for("director_comp")),
+    )
+    inputs, _ = clean_governance_inputs(raw, fund)
+    return build_governance_feature_panel(
+        inputs.def14a,
+        peers,
+        idx,
+        fundamentals_history=fund,
+        votes=inputs.votes,
+        exec_comp=inputs.exec_comp,
+        directors=inputs.directors,
+        director_comp=inputs.director_comp,
+        close_total=close,
+    )[0]
+
+
 def compute() -> dict:
     from src.data_aggregate.utils.common.frames import ratio, safe_div, sanitize
     from src.data_aggregate.utils.common.panel import build_peer_relative_panel
@@ -771,9 +808,6 @@ def compute() -> dict:
     from src.data_aggregate.utils.fundamentals.employee_features import build_employee_feature_panel
     from src.data_aggregate.utils.fundamentals.fundamental_features import build_fundamental_feature_panel
     from src.data_aggregate.utils.fundamentals.sector_features import build_sector_feature_panel
-    from src.data_aggregate.utils.governance.director_comp import impute_director_comp
-    from src.data_aggregate.utils.governance.directors import fill_director_attributes
-    from src.data_aggregate.utils.governance.panel import build_governance_feature_panel
     from src.data_aggregate.utils.institutionals.cross_source_features import (
         build_cross_source_panel,
     )
@@ -827,11 +861,6 @@ def compute() -> dict:
     # that spacer has no job, so it is gone.
     div = synthetic_dividends(tickers, idx, rng_for("dividends"))
     earn = synthetic_earnings(tickers, idx, rng_for("earnings"))
-    proxies = synthetic_def14a(tickers, idx, rng_for("def14a"))
-    neo_comp = synthetic_exec_comp(proxies, rng_for("exec_comp"))
-    board = synthetic_directors(proxies, rng_for("directors"))
-    board_filled, _ = fill_director_attributes(board)
-    board_pay, _ = impute_director_comp(synthetic_director_comp(board, rng_for("director_comp")))
     short_hist, ftd = synthetic_short_flow(tickers, idx, rng_for("short_flow"))
     splits = synthetic_splits(tickers, idx, rng_for("splits"))
     class_volume, _ = secondary_class_volume(*synthetic_share_classes(tickers, idx, rng_for("share_classes")), idx)
@@ -873,21 +902,7 @@ def compute() -> dict:
     out["panel.earnings"] = frame_digest(build_earnings_feature_panel(earn, peers, idx, stock_close=close))
     out["panel.employee"] = frame_digest(build_employee_feature_panel(fund, employee_rows(fund), peers, idx, part_time_weight=0.5))
     out["panel.dividend"] = frame_digest(build_dividend_feature_panel(div, peers, idx, stock_close=close, fundamentals_history=fund))
-    # `exec_comp` and `close_total` are what make the three EXECUTIVE-PAY families exist:
-    # without the child table there is no CPS denominator, and without a total-return series no
-    # pay-vs-performance leg. `close` stands in for `close_total` here, as it does for the
-    # dividend panel -- the synthetic series carries no dividends, so the two bases coincide.
-    # ⚠ `directors` / `director_comp` are passed CLEANED, as the step passes them: the child
-    # fill and the 402(k) identity are the caller's job (`StepCubeGovernance`), so digesting the
-    # raw children would freeze a different contract than the one that ships. The board-average
-    # REPAIR (D35) is deliberately NOT in this digest -- `merge_board_aggregates` runs in the
-    # step, before `impute_def14a`, and is guarded by `test_governance_directors.py` plus the D3
-    # twelve-feature guard.
-    out["panel.governance"] = frame_digest(
-        build_governance_feature_panel(
-            proxies, peers, idx, fundamentals_history=fund, exec_comp=neo_comp, directors=board_filled, director_comp=board_pay, close_total=close
-        )[0]
-    )
+    out["panel.governance"] = frame_digest(governance_panel(tickers, fund, peers, idx, close))
     # ⚠ THE SINK IS THREADED THROUGH ALL FOUR SOURCE PANELS, because the two DERIVED panels
     # (`ic_sig_*`, `ic_xs_*`) are functions of what the source panels hand it -- their event
     # dates and their declared availability masks. Digesting the derived

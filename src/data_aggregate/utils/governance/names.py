@@ -8,11 +8,12 @@ The key itself is deliberately NOT redefined here. `person_key` is shared with t
 that wrote `sec_8k_votes`' role-category columns, so this module only decides what STRING to
 hand it -- which for a CEO cell means splitting a co-CEO listing first.
 
-Used at exactly four places, and nowhere else a name is compared:
+Used at exactly five places, and nowhere else a name is compared:
   * the CEO-turnover guard, comparing a filing's identity against the previous filing's;
   * `def14a_impute`'s identity gap fill, comparing the value before a gap against the one after;
   * the CEO<->NEO cross-check against `def14a_executive_comp.name`;
-  * the election-nominee lookup against `sec_8k_votes.nominee_votes_json[].name` (diagnostic).
+  * the election-nominee lookup against `sec_8k_votes.nominee_votes_json[].name` (diagnostic);
+  * `ceo_stint_ids`, the CEO stints `def14a_impute` completes the start year and founder flag over.
 
 ⚠ `None` means UNKNOWN, never a value. Two `None`s must never compare equal in a turnover or
 agreement test, because "we do not know who ran this company either year" is not evidence that
@@ -24,9 +25,10 @@ from __future__ import annotations
 
 import re
 
+import numpy as np
 import pandas as pd
 
-from src.utils.names import person_key
+from src.utils.names import clean_person_name, person_key
 
 #: A cell naming more than one person. Co-CEOs are printed as `A. Jayson Adair; Jeffrey Liaw`
 #: (CPRT) or joined by a standalone " and " / " & ". `\s+and\s+` needs the surrounding
@@ -106,3 +108,92 @@ def ceo_identity_changed(names: pd.Series, groups: pd.Series) -> pd.Series:
     idents = ceo_identity_series(names)
     prev = idents.groupby(groups, sort=False).shift(1)
     return (idents != prev).astype("float64").where(idents.notna() & prev.notna())
+
+
+def key_at_last_value(keys: pd.Series, values: pd.Series, groups: pd.Series) -> pd.Series:
+    """The key of the last row of each group, at or before each row, whose `values` is present
+    (the CEO identity or stint that SOURCED a carried value). The caller sorts within `groups`."""
+    return keys.where(values.notna()).groupby(groups, sort=False).ffill()
+
+
+#: Leading honorifics; `person_key` keeps them as the first initial (`Dr. Sehat Sutardja` -> `sutardja|d`).
+_HONORIFIC_RE = re.compile(r"^\s*(?:(?:dr|mr|mrs|ms|miss|mx|prof|professor|sir|dame|hon|rev)\.?\s+)+", re.I)
+_GIVEN_DROP = frozenset({"jr", "sr", "ii", "iii", "iv"})
+
+
+def strip_honorific(name: str) -> str:
+    """`name` without its leading honorifics (Dr., Mr., Ms., Prof., Sir, ...)."""
+    return _HONORIFIC_RE.sub("", name)
+
+
+def given_names(value: object) -> tuple[str, str] | None:
+    """`(first name, initials of the given names)` of the first person named in a cell, honorifics,
+    post-nominals and generational suffixes dropped: `J.S. Tisch` -> `("j", "js")`. None when the
+    cell names no given name. Tells apart relatives who share one `person_key`."""
+    names = split_co_names(value)
+    cleaned = clean_person_name(strip_honorific(names[0])) if names else None
+    if not cleaned:
+        return None
+    tokens = [t for t in re.sub(r"[^a-z]+", " ", cleaned.split(",")[0].lower()).split() if t not in _GIVEN_DROP]
+    given = tokens[:-1]
+    if not given:
+        return None
+    return given[0], "".join(t[0] for t in given)
+
+
+#: A generational suffix on a person cell. `person_key` strips it, so father and son
+#: (`William R. Berkley` / `W. Robert Berkley, Jr.`) share one key; the stint reads it back.
+_GENERATIONAL_RE = re.compile(r"(?:^|[\s,])(jr|sr|ii|iii|iv)\.?(?=$|[\s,])", re.I)
+
+
+def generational_suffix(value: object) -> str:
+    """The generational suffix of the first person named in a cell (`jr`, `iii`, ...), or ""."""
+    names = split_co_names(value)
+    if not names:
+        return ""
+    found = _GENERATIONAL_RE.findall(names[0])
+    return found[-1].lower() if found else ""
+
+
+#: the two proxies around a one-off foreign proxy are at most this far apart (one annual cycle)
+_OFF_CYCLE_DAYS = 400
+
+
+def _stint_person(value: object) -> tuple[str, str, str | None] | None:
+    """`(key, generational suffix, first name)` of the first CEO named, honorifics stripped. None
+    when no first name or initial is left (`Mr. Cherkasky`): a bare surname is an unknown CEO."""
+    names = split_co_names(value)
+    key = person_key(strip_honorific(names[0])) if names else None
+    if key is None or "|" not in key:
+        return None
+    given = given_names(value)
+    return key, generational_suffix(value), given[0] if given else None
+
+
+def ceo_stint_ids(names: pd.Series, tickers: pd.Series, dates: pd.Series | None = None) -> pd.Series:
+    """A stint number per row: consecutive rows of one ticker naming the same CEO. NaN where the
+    CEO is UNKNOWN; such a row breaks no stint.
+
+    The CEO is the honorific-stripped `person_key` of the first person named. A generational
+    suffix change splits the stint only with a change of first name (`William R. Berkley` /
+    `W. Robert Berkley, Jr.`). With `dates`, a single off-cycle proxy naming a CEO seen nowhere
+    else in the ticker, between two proxies of one CEO, belongs to no stint (another company's
+    proxy filed under the ticker). The caller sorts chronologically within `tickers`.
+    """
+    parts = names.astype(object).map(_stint_person)
+    known = parts.notna()
+    p = pd.DataFrame(parts[known].tolist(), index=parts.index[known], columns=["key", "suffix", "first"])
+    tick = tickers[known].astype(str)
+    if dates is not None and len(p):
+        g = p["key"].groupby(tick, sort=False)
+        t = pd.Series(pd.to_datetime(dates[known], errors="coerce"), index=p.index)
+        span = (t.groupby(tick, sort=False).shift(-1) - t.groupby(tick, sort=False).shift(1)).dt.days
+        once = p["key"].groupby([tick, p["key"]], sort=False).transform("size") == 1
+        foreign = once & (g.shift(1) == g.shift(-1)) & (p["key"] != g.shift(1)) & (span <= _OFF_CYCLE_DAYS)
+        p, tick = p.loc[~foreign], tick.loc[~foreign]
+    prev = p.groupby(tick, sort=False).shift(1)
+    renamed = (p["suffix"] != prev["suffix"]) & p["first"].notna() & prev["first"].notna() & (p["first"] != prev["first"])
+    starts = (tick != tick.shift(1)) | (p["key"] != prev["key"]) | renamed
+    stint = pd.Series(np.nan, index=names.index, dtype="float64")
+    stint[p.index] = starts.cumsum().astype("float64")
+    return stint

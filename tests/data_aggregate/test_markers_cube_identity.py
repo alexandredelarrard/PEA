@@ -16,8 +16,7 @@ from typing import Any, cast
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.governance.def14a_impute import impute_def14a
-from src.data_aggregate.utils.governance.directors import finalize_board_source
+from src.data_aggregate.utils.governance.clean import GovernanceInputs, clean_governance_inputs
 from src.data_aggregate.utils.governance.panel import build_governance_feature_panel
 from src.data_aggregate.utils.institutionals.frontiers import schedule_complete_through
 from src.data_aggregate.utils.institutionals.inputs import load_source
@@ -112,10 +111,10 @@ def _builders(prices: pd.DataFrame) -> dict[str, Callable[[DataStore], pd.DataFr
         return build_insider_feature_panel(frames, store.load(Tables.insider_transactions, project=True), complete_through=complete_through)
 
     def governance(store: DataStore) -> pd.DataFrame:
-        proxies, _ = impute_def14a(cast(pd.DataFrame, store.load(Tables.def14a_llm)))
-        proxies, _ = finalize_board_source(proxies)
+        raw = GovernanceInputs(def14a=cast(pd.DataFrame, store.load(Tables.def14a_llm)), votes=store.load(Tables.sec_8k_votes))
+        inputs, _ = clean_governance_inputs(raw, None)
         panel, _ = build_governance_feature_panel(
-            proxies, peers, frames.trading_index, votes=store.load(Tables.sec_8k_votes), close_total=close_total, availability=frames.availability
+            inputs.def14a, peers, frames.trading_index, votes=inputs.votes, close_total=close_total, availability=frames.availability
         )
         return panel
 

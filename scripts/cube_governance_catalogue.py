@@ -188,19 +188,6 @@ add(
     "standardise against. Founder-led firms behave differently (long-termism, skin in the "
     "game) and the raw indicator says so directly.",
 )
-add(
-    "say_on_pay_support",
-    "proxy levels",
-    "Most recent say-on-pay approval share AS THE PROXY REPORTS IT.",
-    "A FRACTION with an absolute meaning -- 0.60 is a near-revolt at any firm in any sector -- "
-    "so it ships raw and is never re-ranked per day. Sector share 2.8%, the lowest in the "
-    "panel. Domain-gated to [0, 1]; that gate is inert on the live archive (0 of 4,675 values) "
-    "and its first catch was a test fixture generating the column in percent.",
-    "⚠ NOT independent of `sop_dissent`. The proxy reports the PRIOR year's meeting, so this "
-    "is a one-year-lagged near-complement of the 8-K-sourced dissent figure, not a second "
-    "measurement of it. Live range 0.034 .. 1.0 with a median of 0.94: the mass sits at "
-    "near-unanimous approval and the whole signal is in the thin low tail.",
-)
 
 # --------------------------------------------------- exec pay, phase 4 (pay_features.py) #
 add(
@@ -711,7 +698,9 @@ add(
 add(
     "sop_dissent",
     "say-on-pay dissent",
-    "(against + abstain) / valid votes on the say-on-pay proposal, from the Item 5.07 8-K.",
+    "(against + abstain) / valid votes on the say-on-pay proposal, from the Item 5.07 8-K; "
+    "where no 8-K tally exists in the 450 days before a proxy, the proxy's filed support is "
+    "used instead (1 - support, dated at the proxy).",
     "The only numbers in EDGAR certified by the OWNERS rather than reported by the company. "
     "ABSTENTION IS OPPOSITION on an advisory vote -- an abstention is a deliberate withholding "
     "-- which is why ISS reads against + abstain and why the `against / valid` twin was "

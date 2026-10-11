@@ -25,7 +25,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.governance.def14a_impute import CARRY_LEVELS, impute_def14a
+from src.data_aggregate.utils.governance.def14a_impute import CARRY_LEVELS, STINT_CONSTANTS, fill_kind_column, impute_def14a
 
 #: The fields §1.2 tabulates — the ones the governance families read, plus the three whose
 #: coverage is a REGIME staircase rather than an extraction gap (kind A).
@@ -49,8 +49,8 @@ _REPORTED = [
     "ceo_pay_ratio",
     "board_size",
 ]
-#: The two fields whose DELTA is a feature and whose level is filled anyway (D23).
-_DELTA_SOURCES = ["avg_other_public_boards", "say_on_pay_support_pct"]
+#: The field whose DELTA is a feature and whose level is filled anyway (D23).
+_DELTA_SOURCES = ["avg_other_public_boards"]
 
 
 def _load():
@@ -95,6 +95,15 @@ def test_impute_coverage_table():
     print(f"  {'field':<28} {'raw':>7} {'imputed':>8} {'recovered':>10} {'modern':>7} {'holes':>7}")
     for f, b, a, rec, m, holes in sorted(rows, key=lambda r: -r[3]):
         print(f"  {f:<28} {b:>6.1%} {a:>8.1%} {rec:>+10,} {m:>7.1%} {holes:>7,}")
+    # REQ-004: the stint constants are unified per stint; the filed value survives in `_raw`
+    # and every cell the completion wrote is labelled `person`.
+    for f in STINT_CONSTANTS:
+        if f not in raw.columns:
+            continue
+        kept = imp.set_index("accession_number")[f"{f}_raw"].reindex(raw["accession_number"]).to_numpy(dtype=float)
+        assert pd.Series(kept).equals(pd.Series(raw[f].to_numpy(dtype=float))), f"{f}_raw is not the filed column"
+        kinds = imp[fill_kind_column(f)].value_counts(dropna=False).to_dict()
+        print(f"  {f} fill kinds: {kinds}")
     top = sorted(stats.items(), key=lambda kv: -kv[1])[:9]
     print("  top rules: " + " · ".join(f"{k} {v}" for k, v in top))
     print("  CONCLUSION: in the MODERN era (>=2011) the fields the governance families need")

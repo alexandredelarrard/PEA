@@ -282,11 +282,10 @@ def test_governance_fields_pay_growth_and_misalignment():
     # `_def14a_raw_fields`, because both peer encodings were degenerate on a binary (the peer z
     # of a Bernoulli draw over ~7 peers survived on 239 tickers / 32% of cells).
     assert "founder_ceo" not in f, "a binary must not be peer-panelled"
-    # `say_on_pay_support` left with it, for the same reason in a different shape: 0.60 support
-    # is a near-revolt at any firm in any sector, so the absolute fraction IS the signal.
-    assert "say_on_pay_support" not in f, "an absolute fraction must not be peer-panelled"
+    # `say_on_pay_support` is gone: the 8-K vote series is the single say-on-pay source.
+    assert "say_on_pay_support" not in f
     r = _def14a_raw_fields(_def14a(), idx)
-    assert r["say_on_pay_support"]["AAA"].dropna().iloc[-1] == pytest.approx(0.92)
+    assert "say_on_pay_support" not in r
     assert r["founder_ceo"]["AAA"].dropna().iloc[-1] == 1.0
     assert r["founder_ceo"]["BBB"].dropna().iloc[-1] == 0.0
 
@@ -349,9 +348,9 @@ def test_governance_panel_encoding_and_empty_guard():
     for name in ("f_ceo_pay_vs_revenue_growth", "f_ceo_pay_growth"):
         assert name in cols
         assert f"{name}_vs_peers" not in cols
-    # 3. a binary and an absolute fraction likewise
+    # 3. a binary likewise; the proxy say-on-pay feature is dropped (8-K series only)
     assert "f_founder_ceo" in cols and "f_founder_ceo_vs_peers" not in cols
-    assert "f_say_on_pay_support" in cols and "f_say_on_pay_support_vs_peers" not in cols
+    assert "f_say_on_pay_support" not in cols and "f_say_on_pay_support_vs_peers" not in cols
     # 4. the two features whose IC flips sign under every encoding ship raw only, and their
     #    monotone constraints were removed from configs/models/lgbm_modelling.yml with them
     for name in ("f_ceo_tenure", "f_pct_female_directors"):

@@ -16,6 +16,7 @@ from src.data_aggregate.utils.common.pit import (
 )
 from src.data_aggregate.utils.common.typing import frame_column
 from src.data_aggregate.utils.common.xs import self_history_z, winsorize_xs
+from src.data_aggregate.utils.governance.def14a_impute import bridged_total
 from src.data_aggregate.utils.governance.director_comp import (
     PEER_RELATIVE_FIELDS as DIRECTOR_PAY_PEER_FIELDS,
 )
@@ -33,6 +34,7 @@ from src.data_aggregate.utils.governance.pay_features import (
     PEER_RELATIVE_FIELDS as PAY_PEER_FIELDS,
 )
 from src.data_aggregate.utils.governance.pay_features import (
+    SCT_GROWTH,
     pay_fields,
 )
 from src.data_aggregate.utils.governance.provisions_features import (
@@ -41,13 +43,17 @@ from src.data_aggregate.utils.governance.provisions_features import (
 from src.data_aggregate.utils.governance.provisions_features import (
     provision_fields,
 )
-from src.data_aggregate.utils.governance.staleness import LEVEL_MAX_AGE_DAYS, expire_stale
+from src.data_aggregate.utils.governance.staleness import (
+    LEVEL_MAX_AGE_DAYS,
+    expire_stale,
+    source_date_column,
+    stint_to_daily,
+    ultimate_source_dates,
+)
 from src.data_aggregate.utils.governance.vote_dissent_features import (
     PEER_RELATIVE_FIELDS,
     vote_dissent_fields,
 )
-
-_SHARES_OUTSTANDING = "sharesOutstandingPit"
 
 # def14a_llm level columns read off the proxy row. HOW each is ENCODED is decided by the three
 # sets below, not by membership here.
@@ -67,7 +73,6 @@ _DOMAIN: dict[str, tuple[float, float, bool]] = {
     "ceo_equity_pay_pct": (0.0, 1.0, True),
     "pct_independent_directors": (0.0, 1.0, True),
     "pct_female_directors": (0.0, 1.0, True),
-    "say_on_pay_support_pct": (0.0, 1.0, True),
     "board_size": (3.0, 60.0, True),
     "ceo_pay_ratio": (0.0, 1e5, True),  # Zero is valid for genuinely unpaid CEOs.
     "insider_ownership_pct": (0.0, 0.90, True),
@@ -78,7 +83,6 @@ _DOMAIN: dict[str, tuple[float, float, bool]] = {
 _DOMAIN_ONLY_WHERE: dict[str, str] = {"insider_ownership_pct": "dual_class_shares"}
 _RAW_DEF14A_FIELDS: list[tuple[str, str]] = [
     ("ceo_is_founder", "founder_ceo"),
-    ("say_on_pay_support_pct", "say_on_pay_support"),
 ]
 _PEER_LEGACY = frozenset(
     {
@@ -157,16 +161,29 @@ def _ceo_pay_growth(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dic
     """Expand filing pay growth point-in-time and null CEO-transition comparisons."""
     if "ceo_total_comp" not in def14a_hist.columns or "as_of" not in def14a_hist.columns:
         return pd.DataFrame(index=idx)
-    keep = [c for c in ("ticker", "as_of", "ceo_total_comp", "ceo_name_proxy") if c in def14a_hist.columns]
+    keep = [
+        c
+        for c in ("ticker", "as_of", "ceo_total_comp", source_date_column("ceo_total_comp"), "ceo_name_proxy", SCT_GROWTH)
+        if c in def14a_hist.columns
+    ]
     d = cast(pd.DataFrame, def14a_hist[keep].copy())
+    d["_bridged"] = bridged_total(def14a_hist)
     d["as_of"] = pd.to_datetime(d["as_of"], errors="coerce")
     d["ceo_total_comp"] = pd.to_numeric(d["ceo_total_comp"], errors="coerce")
+    # The growth is knowable at the later filing, dated by the source of that filing's total.
+    d[source_date_column("chg")] = ultimate_source_dates(d, "ceo_total_comp")
     d = d.dropna(subset=["ticker", "as_of", "ceo_total_comp"]).sort_values(["ticker", "as_of"])
     if d.empty:
         return pd.DataFrame(index=idx)
     # `replace` on the infinities reproduces `fiscal_change_to_daily` exactly: a prior year
     # filed as $0 makes `pct_change` infinite, and an infinity is not a growth rate.
     d["chg"] = d.groupby("ticker", sort=False)["ceo_total_comp"].pct_change(periods=1).replace([np.inf, -np.inf], np.nan)
+    # a bridged total's change is the bridge's slope, so neither change touching it is data
+    d["chg"] = d["chg"].mask(d["_bridged"] | d.groupby("ticker", sort=False)["_bridged"].shift(1, fill_value=False).astype(bool))
+    if SCT_GROWTH in d.columns:
+        # The filing's own FY vs FY-1 pair wins over the cross-filing change.
+        sct = cast(pd.Series, pd.to_numeric(d[SCT_GROWTH], errors="coerce"))
+        d["chg"] = np.expm1(sct).where(sct.notna(), d["chg"])
     names = d["ceo_name_proxy"] if "ceo_name_proxy" in d.columns else pd.Series(None, index=d.index, dtype="object")
     changed = ceo_identity_changed(names, d["ticker"])
     # Unknown identity does not prove a change, so it does not mask the growth rate.
@@ -181,107 +198,7 @@ def _ceo_pay_growth(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dic
         tally["ceo_pay_growth: tickers with a nulled transition"] = int(bad.any(axis=0).sum())
         tally["ceo_pay_growth: kept on an UNKNOWN CEO identity (filings)"] = int(changed.reindex(sub.index).isna().sum())
     # A growth rate becomes knowable at the later filing, represented by `sub`.
-    return _expire(growth.mask(bad), sub[["ticker", "as_of", "chg"]], "chg", "ceo_pay_growth", tally)
-
-
-# The denominator must be point-in-time at the proxy date.
-def economic_ownership(def14a_hist: pd.DataFrame, fundamentals: pd.DataFrame | None, tally: dict[str, int] | None = None) -> pd.DataFrame:
-    """Replace ownership with same-filing shares/outstanding where both are available."""
-    if fundamentals is None or fundamentals.empty:
-        return def14a_hist
-    need = {"ticker", "as_of", "insider_shares"}
-    if not need.issubset(def14a_hist.columns):
-        return def14a_hist
-    if not {"ticker", "as_of", _SHARES_OUTSTANDING}.issubset(fundamentals.columns):
-        if tally is not None:
-            tally[f"⚠ economic ownership not computed: {_SHARES_OUTSTANDING} absent"] = 1
-        return def14a_hist
-
-    # merge_asof requires identical datetime resolution across the two sources.
-    left = def14a_hist.copy()
-    left["_as_of"] = pd.to_datetime(left["as_of"], errors="coerce").astype("datetime64[ns]")
-    right = cast(
-        pd.DataFrame,
-        fundamentals[["ticker", "as_of", _SHARES_OUTSTANDING]]
-        .copy()
-        .assign(_as_of=lambda d: pd.to_datetime(d["as_of"], errors="coerce").astype("datetime64[ns]"))
-        .drop(columns="as_of")
-        .dropna(subset=["_as_of"]),
-    )
-    right = cast(pd.DataFrame, right.loc[frame_column(right, _SHARES_OUTSTANDING) > 0])
-    if right.empty:
-        return def14a_hist
-
-    # Preserve row identity because merge_asof resets the index.
-    left["_key"] = range(len(left))
-    dated_left = cast(pd.DataFrame, left.dropna(subset=["_as_of"])).sort_values("_as_of")
-    merged = pd.merge_asof(dated_left, right.sort_values("_as_of"), on="_as_of", by="ticker", direction="backward")
-
-    shares_out = cast(pd.Series, pd.to_numeric(frame_column(merged, _SHARES_OUTSTANDING), errors="coerce"))
-    insider = cast(pd.Series, pd.to_numeric(frame_column(merged, "insider_shares"), errors="coerce"))
-    computed = insider / shares_out
-    # a share of a whole: anything outside (0, 1] means the two counts are on different bases
-    # (one class's shares over the total, or a count in thousands) and is not usable
-    computed = computed.where((shares_out > 0) & (computed > 0) & (computed <= 1.0))
-
-    # Economic ownership cannot exceed the disclosed voting share on a comparable basis.
-    if "insider_voting_pct" in merged.columns:
-        vote = cast(pd.Series, pd.to_numeric(frame_column(merged, "insider_voting_pct"), errors="coerce"))
-        bad = computed.notna() & vote.notna() & (computed > vote + 1e-9)
-        if tally is not None and int(bad.sum()):
-            tally["insider_ownership_pct: computed value REJECTED (exceeds voting power)"] = int(bad.sum())
-        computed = computed.where(~bad)
-
-    by_key = pd.Series(computed.to_numpy(), index=frame_column(merged, "_key").to_numpy())
-    filled = by_key.reindex(frame_column(left, "_key").to_numpy())
-    filled.index = left.index
-
-    out = left.drop(columns=["_as_of", "_key"])
-    disclosed = cast(pd.Series, pd.to_numeric(frame_column(out, "insider_ownership_pct"), errors="coerce"))
-
-    # Filed evidence wins; the computed percentage only fills a missing disclosure.
-    fills = filled.notna() & disclosed.isna()
-    n = int(fills.sum())
-    if n:
-        out["insider_ownership_pct"] = disclosed.where(~fills, filled)
-        if tally is not None:
-            tally["insider_ownership_pct: COMPUTED (no disclosed combined percentage)"] = n
-    if tally is not None:
-        kept = int((filled.notna() & disclosed.notna()).sum())
-        if kept:
-            tally["insider_ownership_pct: disclosed value PREFERRED over the computed one"] = kept
-    return out
-
-
-def repair_ownership_basis(def14a_hist: pd.DataFrame, tally: dict[str, int] | None = None) -> pd.DataFrame:
-    """Blank dual-class ownership percentages that use a per-class denominator."""
-    need = {"insider_ownership_pct", "insider_voting_pct", "dual_class_shares"}
-    if not need.issubset(def14a_hist.columns):
-        return def14a_hist
-
-    out = def14a_hist.copy()
-    dual_values = cast(pd.Series, pd.to_numeric(frame_column(out, "dual_class_shares"), errors="coerce"))
-    dual = dual_values > 0
-    if "ticker" in out.columns:
-        # One missed flag can accompany the bad value, so corroborate structure across history.
-        dual = dual | out["ticker"].map(dual.groupby(out["ticker"]).max()).fillna(False).astype(bool)
-    vote = pd.to_numeric(out["insider_voting_pct"], errors="coerce")
-    own = pd.to_numeric(out["insider_ownership_pct"], errors="coerce")
-    per_class = dual & vote.notna() & own.notna() & (own > vote + 1e-9)
-
-    n = int(per_class.sum())
-    if n:
-        out.loc[per_class, "insider_ownership_pct"] = pd.NA
-        if "ceo_ownership_pct" in out.columns:
-            # the CEO leg was read off the SAME table and the same columns, so it inherits the
-            # basis error on those filings whether or not its own pair is comparable
-            out.loc[per_class, "ceo_ownership_pct"] = pd.NA
-        if tally is not None:
-            tally["insider_ownership_pct: blanked (per-class basis, own > vote)"] = n
-            tally["insider_ownership_pct: blanked (per-class basis) — tickers"] = (
-                int(out.loc[per_class, "ticker"].nunique()) if "ticker" in out.columns else 0
-            )
-    return out
+    return _expire(growth.mask(bad), sub[["ticker", "as_of", "chg", source_date_column("chg")]], "chg", "ceo_pay_growth", tally)
 
 
 def _control_wedge(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dict[str, int] | None = None) -> pd.DataFrame:
@@ -302,6 +219,10 @@ def _control_wedge(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dict
     lo, hi, _ = _DOMAIN["insider_ownership_pct"]
     own = own.where((own >= 0.0) & ((own <= hi) | (dual == 0)) & (own <= 1.0))
     vote = vote.where(vote.between(0.0, 1.0))
+    # The wedge is as old as its oldest leg; the voting leg counts only where it was disclosed.
+    legs = [ultimate_source_dates(def14a_hist, c) for c in ("insider_ownership_pct", "dual_class_shares")]
+    legs.append(ultimate_source_dates(def14a_hist, "insider_voting_pct").where(vote.notna()))
+    sub[source_date_column("control_wedge")] = pd.concat(legs, axis=1).min(axis=1)
 
     # single class -> voting equals ownership; unknown structure -> unknown wedge
     vote = vote.where(vote.notna(), own.where(dual == 0))
@@ -316,14 +237,14 @@ def _control_wedge(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dict
 
     daily = fundamentals_to_daily(sub, "control_wedge", idx)
     # Control structure is a level, aged from the filing that supplied both legs.
-    return _expire(daily, sub[["ticker", "as_of", "control_wedge"]], "control_wedge", "control_wedge", tally)
+    return _expire(daily, sub[["ticker", "as_of", "control_wedge", source_date_column("control_wedge")]], "control_wedge", "control_wedge", tally)
 
 
 def _def14a_raw_fields(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dict[str, int] | None = None) -> dict[str, pd.DataFrame]:
     """Build raw-only DEF 14A fields."""
     out: dict[str, pd.DataFrame] = {}
     for src, name in _RAW_DEF14A_FIELDS:
-        f = _gate(fundamentals_to_daily(def14a_hist, src, idx), src, tally, _domain_condition(def14a_hist, src, idx, tally))
+        f = _gate(stint_to_daily(def14a_hist, src, idx), src, tally, _domain_condition(def14a_hist, src, idx, tally))
         f = _expire(f, def14a_hist, src, name, tally)
         if not f.empty and f.notna().any().any():
             out[name] = f
@@ -346,7 +267,7 @@ def _governance_fields(
             f_dict[name] = f
 
     # Tenure accrues daily but still expires from the filing that disclosed `ceo_since_year`.
-    since = fundamentals_to_daily(def14a_hist, "ceo_since_year", idx)
+    since = stint_to_daily(def14a_hist, "ceo_since_year", idx)
     if not since.empty and since.notna().any().any():
         years = pd.Series([stamp.year for stamp in idx], index=idx, dtype="float64")
         tenure = since.rsub(years, axis=0).where(lambda t: t >= 0)
@@ -429,16 +350,16 @@ def build_governance_feature_panel(
     close_total: pd.DataFrame | None = None,
     availability: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, dict[str, int]]:
-    """Build the long governance panel and per-family data-quality tallies."""
+    """Build the long governance panel and per-family data-quality tallies.
+
+    Every input is expected to have been through `clean.clean_governance_inputs`.
+    """
     # `_gate` writes before any feature family, so the tally is owned here.
     tally: dict[str, int] = {}
     legacy_peers: dict[str, pd.DataFrame] = {}
     legacy_hist: dict[str, pd.DataFrame] = {}
     raw: dict[str, pd.DataFrame] = {}
     if def14a_history is not None and not def14a_history.empty and "as_of" in def14a_history.columns:
-        # Blank per-class ownership before computed economic ownership fills the gap.
-        def14a_history = repair_ownership_basis(def14a_history, tally)
-        def14a_history = economic_ownership(def14a_history, fundamentals_history, tally)
         computed = _governance_fields(def14a_history, trading_index, fundamentals_history, tally)
         computed.update(_def14a_raw_fields(def14a_history, trading_index, tally))
         # Raw is canonical; selected encodings are additive.

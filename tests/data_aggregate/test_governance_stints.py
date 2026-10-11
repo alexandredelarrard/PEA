@@ -1,0 +1,305 @@
+"""
+CEO stints and stint-constant completion (REQ-003/004).
+
+  * `names.ceo_stint_ids`: a stint breaks on a change of CEO identity or of generational suffix;
+    an unknown name belongs to no stint and breaks none;
+  * `impute_def14a`: `ceo_since_year` = the most often disclosed value <= the stint's first
+    proxy year, ties to the largest (no value when none qualifies), `ceo_is_founder`
+    = the stint mode, `ceo_is_board_chair` carried only within a stint; the filed value stays in
+    `<col>_raw`.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+
+from src.data_aggregate.utils.governance.def14a_impute import (
+    FILL_PERSON,
+    evidence_date_column,
+    fill_kind_column,
+    impute_def14a,
+)
+from src.data_aggregate.utils.governance.names import ceo_stint_ids
+from src.data_aggregate.utils.governance.panel import _def14a_raw_fields, _governance_fields
+from src.data_aggregate.utils.governance.provisions_features import provision_fields
+from src.data_aggregate.utils.governance.staleness import source_date_column
+
+
+def _rows(ticker: str, spec: list[tuple]) -> list[dict]:
+    """`spec` items: (year, ceo name, since_year, founder, chair); proxies dated April 1st."""
+    out = []
+    for year, name, since, founder, chair in spec:
+        out.append(
+            {
+                "ticker": ticker,
+                "accession_number": f"{ticker}-{year}",
+                "as_of": f"{year}-04-01",
+                "ceo_name_proxy": name,
+                "ceo_since_year": since,
+                "ceo_is_founder": founder,
+                "ceo_is_board_chair": chair,
+            }
+        )
+    return out
+
+
+NA = np.nan
+_FIXTURE = pd.DataFrame(
+    _rows(
+        "WRB",
+        [
+            (2016, "William R. Berkley", 1967.0, 1.0, 1.0),
+            (2017, "William R. Berkley", 1967.0, 1.0, 1.0),
+            (2018, "William R. Berkley", NA, 1.0, 1.0),
+            (2019, "W. Robert Berkley, Jr.", NA, NA, NA),
+            (2020, "W. Robert Berkley, Jr.", 2019.0, 0.0, 0.0),
+        ],
+    )
+    + _rows(
+        "SBUX",
+        [
+            (1998, "Howard Schultz", 1987.0, 1.0, 1.0),
+            (2000, "Howard Schultz", 1987.0, 1.0, 1.0),
+            (2001, "Orin C. Smith", 2000.0, 0.0, 0.0),
+            (2008, "Howard Schultz", 1987.0, 1.0, 1.0),
+            (2009, "Howard D. Schultz", 2008.0, NA, 1.0),
+            (2018, "Kevin Johnson", 2017.0, 0.0, 0.0),
+            (2023, "Howard Schultz", 2022.0, 1.0, 0.0),
+            (2024, "Laxman Narasimhan", 2023.0, 0.0, 0.0),
+        ],
+    )
+    + _rows(
+        "VLO",
+        [
+            (2004, "William E. Greehey", 1979.0, 0.0, 1.0),
+            (2005, "William E. Greehey", 1979.0, 0.0, 1.0),
+            (2006, "William R. Klesse", NA, NA, NA),
+            (2007, "William R. Klesse", NA, 0.0, 1.0),
+            (2008, "William R. Klesse", 2005.0, 0.0, NA),
+            (2009, "William R. Klesse", 1981.0, 0.0, 1.0),
+            (2015, "Joseph W. Gorder", 2003.0, 0.0, 1.0),
+            (2016, "Joseph W. Gorder", 2014.0, 0.0, 1.0),
+            (2017, "Joe Gorder", NA, NA, 1.0),
+            (2024, "R. Lane Riggs", 2023.0, 0.0, 0.0),
+        ],
+    )
+    + _rows(
+        "AFL",
+        [
+            (1996, "Daniel P. Amos", 1983.0, 0.0, 0.0),
+            (1997, "Daniel P. Amos", 2001.0, 0.0, 0.0),
+            (1998, "Daniel P. Amos", 1990.0, 0.0, 0.0),
+            (1999, "Daniel P. Amos", NA, 0.0, 0.0),
+        ],
+    )
+    + _rows(
+        "CENS",
+        [
+            (2010, "Alice Archer", NA, NA, 1.0),
+            (2011, "Alice Archer", NA, NA, NA),
+            (2012, None, NA, NA, NA),
+            (2013, "Bob Baker", NA, NA, 1.0),
+            (2014, "Bob Baker", 2016.0, NA, NA),
+        ],
+    )
+)
+
+
+def _out() -> tuple[pd.DataFrame, dict]:
+    out, stats = impute_def14a(_FIXTURE.copy())
+    out["year"] = out["as_of"].dt.year
+    return out.set_index(["ticker", "year"]), stats
+
+
+def test_stint_ids_split_on_identity_and_suffix() -> None:
+    """WRB father/son share `berkley|w` but split on the suffix; SBUX Schultz has 3 stints."""
+    df = _FIXTURE.sort_values(["ticker", "as_of"]).reset_index(drop=True)
+    stint = ceo_stint_ids(df["ceo_name_proxy"], df["ticker"])
+    df["stint"] = stint
+    wrb = df.loc[df["ticker"] == "WRB", "stint"]
+    assert wrb.nunique() == 2, f"WRB father and son must be two stints, got {wrb.tolist()}"
+    sbux = df[df["ticker"] == "SBUX"]
+    schultz = sbux.loc[sbux["ceo_name_proxy"].str.contains("Schultz"), "stint"]
+    assert schultz.nunique() == 3, f"SBUX Schultz must have 3 stints, got {schultz.tolist()}"
+    cens = df[df["ticker"] == "CENS"]
+    assert cens["stint"].isna().sum() == 1, "the unknown CEO row must belong to no stint"
+    assert cens["stint"].dropna().nunique() == 2
+    # an unknown row breaks no stint
+    gap = pd.DataFrame({"t": ["X"] * 3, "n": ["Ann Ash", None, "Ann Ash"]})
+    g = ceo_stint_ids(gap["n"], gap["t"])
+    assert g.iloc[0] == g.iloc[2] and pd.isna(g.iloc[1])
+    # stints never span tickers
+    assert df.groupby("stint")["ticker"].nunique().max() == 1
+    print("\n=== SANITY CHECK: stint identification ===")
+    print(f"  WRB stints {wrb.tolist()} | SBUX Schultz stints {sorted(schultz.unique())} | gap row {g.tolist()}")
+    print("  CONCLUSION: the suffix separates father and son, a returning CEO opens a new stint, an unknown row joins none.")
+
+
+def test_since_year_rule_and_no_cross_stint_carry() -> None:
+    """Most disclosed (ties: largest) <= first proxy year; never the predecessor's value."""
+    out, stats = _out()
+    since = out["ceo_since_year"]
+    # WRB: the son never inherits the father's 1967
+    assert since[("WRB", 2018)] == 1967 and since[("WRB", 2019)] == 2019 and since[("WRB", 2020)] == 2019
+    # SBUX: stint 1 -> 1987, stint 2 (2008) -> 2008, stint 3 (2023) -> 2022
+    assert [since[("SBUX", y)] for y in (1998, 2000, 2008, 2009, 2023)] == [1987, 1987, 2008, 2008, 2022]
+    # VLO: Greehey 1979 never reaches Klesse; Klesse 2005; Gorder 2014; Riggs 2023
+    assert [since[("VLO", y)] for y in (2006, 2007, 2008, 2009)] == [2005] * 4
+    assert [since[("VLO", y)] for y in (2015, 2016, 2017)] == [2014] * 3
+    assert since[("VLO", 2024)] == 2023
+    # AFL: 1983 / 2001 / 1990 with first proxy 1996 -> 1990, and the filed values stay in _raw
+    assert (since.loc["AFL"] == 1990).all()
+    assert out.loc[("AFL", 1997), "ceo_since_year_raw"] == 2001
+    assert out.loc[("AFL", 1997), fill_kind_column("ceo_since_year")] == FILL_PERSON
+    assert out.loc[("AFL", 1998), fill_kind_column("ceo_since_year")] == "filed"
+    # person fills are dated at their own row; the evidence date is the disclosing filing
+    vlo06 = out.loc[("VLO", 2006)]
+    assert vlo06[source_date_column("ceo_since_year")] == pd.Timestamp("2006-04-01")
+    assert vlo06[evidence_date_column("ceo_since_year")] == pd.Timestamp("2008-04-01")
+    print("\n=== SANITY CHECK: since_year per stint ===")
+    print(f"  VLO {since.loc['VLO'].tolist()} | AFL {since.loc['AFL'].tolist()} | SBUX {since.loc['SBUX'].tolist()}")
+    print(f"  stats: { {k: v for k, v in stats.items() if 'since' in k or 'founder' in k or 'chair' in k} }")
+    print("  CONCLUSION: one start year per stint, chosen by the majority-disclosed-<=-first-year rule, no predecessor value crosses.")
+
+
+def test_since_year_majority_beats_a_later_minority_value() -> None:
+    """The start year most of the stint's filings disclose wins; a tie goes to the largest."""
+    greehey = _rows(
+        "VLO", [(y, "William E. Greehey", s, 0.0, 1.0) for y, s in ((2000, 1979.0), (2002, 1997.0), (2003, 1979.0), (2004, 1979.0), (2005, 1979.0))]
+    )
+    tie = _rows("TIE", [(y, "Tia Tie", s, 0.0, 1.0) for y, s in ((2010, 1995.0), (2011, 1987.0), (2012, 1995.0), (2013, 1987.0))])
+    out, _ = impute_def14a(pd.DataFrame(greehey + tie))
+    since = out.set_index(["ticker", out["as_of"].dt.year])["ceo_since_year"]
+    assert (since.loc["VLO"] == 1979).all(), f"Greehey's majority 1979 must win over one filed 1997: {since.loc['VLO'].tolist()}"
+    assert (since.loc["TIE"] == 1995).all()
+    print("\n=== SANITY CHECK: since_year majority rule ===")
+    print(f"  VLO Greehey {since.loc['VLO'].tolist()} | tie {since.loc['TIE'].tolist()}")
+    print("  CONCLUSION: a one-off later value (a re-formation or chair date) no longer overrides the start the filer repeats.")
+
+
+def test_no_disclosed_start_leaves_the_stint_as_filed() -> None:
+    """No censored fallback: a stint without a disclosed start <= its first proxy year stays as filed."""
+    out, stats = _out()
+    since, kind = out["ceo_since_year"], out[fill_kind_column("ceo_since_year")]
+    assert since.loc["CENS"].loc[[2010, 2011, 2012, 2013]].isna().all()
+    # Bob's only disclosed value (2016) is after his first proxy year: kept as filed, never copied
+    assert since[("CENS", 2014)] == 2016 and kind[("CENS", 2014)] == "filed"
+    assert "censored" not in set(out[fill_kind_column("ceo_since_year")].dropna())
+    assert stats.get("declined (no disclosed start <= stint's first proxy year): ceo_since_year", 0) >= 4
+    print("\n=== SANITY CHECK: no censored fallback ===")
+    print(f"  CENS since {since.loc['CENS'].tolist()} kinds {kind.loc['CENS'].tolist()}")
+    print("  CONCLUSION: without a qualifying disclosure the start year stays unknown rather than guessed.")
+
+
+def test_founder_mode_and_chair_stint_gate() -> None:
+    out, stats = _out()
+    founder, chair = out["ceo_is_founder"], out["ceo_is_board_chair"]
+    assert founder[("WRB", 2019)] == 0.0, "the son must not inherit the father's founder flag"
+    assert founder[("SBUX", 2009)] == 1.0 and founder[("VLO", 2006)] == 0.0 and founder[("VLO", 2017)] == 0.0
+    assert out.loc[("SBUX", 2009), fill_kind_column("ceo_is_founder")] == FILL_PERSON
+    # chair: never across a stint boundary, still within a stint
+    assert pd.isna(chair[("WRB", 2019)]) and pd.isna(chair[("VLO", 2006)])
+    assert chair[("VLO", 2008)] == 1.0
+    assert pd.isna(chair[("CENS", 2012)]), "an unknown-CEO row belongs to no stint and takes no chair carry"
+    assert stats.get("declined (stint boundary): ceo_is_board_chair", 0) >= 2
+    print("\n=== SANITY CHECK: founder mode and chair gate ===")
+    print(f"  founder WRB {founder.loc['WRB'].tolist()} | chair VLO {chair.loc['VLO'].tolist()}")
+    print("  CONCLUSION: founder is a stint constant, chair is carried only inside the stint.")
+
+
+def test_completion_is_idempotent_and_keeps_raw() -> None:
+    once, _ = impute_def14a(_FIXTURE.copy())
+    twice, _ = impute_def14a(once.copy())
+    for col in ("ceo_since_year", "ceo_is_founder"):
+        pd.testing.assert_series_equal(once[col], twice[col])
+        pd.testing.assert_series_equal(once[f"{col}_raw"], twice[f"{col}_raw"])
+        filed = _FIXTURE.set_index("accession_number")[col]
+        raw = once.set_index("accession_number")[f"{col}_raw"].reindex(filed.index)
+        pd.testing.assert_series_equal(raw, filed, check_names=False)
+    print("\n=== SANITY CHECK: idempotent completion ===")
+    print("  CONCLUSION: a second pass reads the filed values from `_raw` and reproduces the first pass exactly.")
+
+
+def test_daily_projection_ends_the_previous_stint() -> None:
+    """A new CEO's proxy without a value blanks the daily cell instead of serving the predecessor's."""
+    rows = _rows(
+        "CAT",
+        [
+            (1999, "D. V. Fites", 1990.0, 0.0, 1.0),
+            (2000, "Glen A. Barton", NA, NA, NA),
+            (2001, "Glen A. Barton", NA, NA, NA),
+            (2003, "Glen A. Barton", 1999.0, 0.0, 1.0),
+            (2004, None, NA, NA, NA),
+            (2005, "Glen A. Barton", NA, NA, NA),
+        ],
+    )
+    hist = pd.DataFrame(rows)
+    hist["as_of"] = pd.to_datetime(hist["as_of"])
+    idx = pd.DatetimeIndex(pd.date_range("1999-01-01", "2006-01-01", freq="ME"))
+    tenure = _governance_fields(hist, idx, None, {})["ceo_tenure"]["CAT"]
+    founder = _def14a_raw_fields(hist, idx, {})["founder_ceo"]["CAT"]
+    chair = provision_fields(hist, idx)[0]["ceo_is_board_chair"]["CAT"]
+    barton = slice("2000-04-30", "2003-03-31")
+    assert tenure.loc[barton].isna().all(), f"Barton's empty proxies must not serve Fites's 1990: {tenure.loc[barton].dropna().tolist()}"
+    assert founder.loc[barton].isna().all() and chair.loc[barton].isna().all()
+    assert tenure.loc["1999-12-31"] == 9 and chair.loc["1999-12-31"] == 1.0
+    # within one stint (and across an unknown-CEO row) the value still bridges
+    assert tenure.loc["2004-06-30"] == 5 and tenure.loc["2005-06-30"] == 6
+    print("\n=== SANITY CHECK: daily projection at a stint boundary ===")
+    print(
+        f"  tenure 1999-12 {tenure.loc['1999-12-31']} | Barton 2000-04..2003-03 non-null {int(tenure.loc[barton].notna().sum())} | 2005-06 {tenure.loc['2005-06-30']}"
+    )
+    print("  CONCLUSION: the predecessor's start year, founder and chair flag end at the successor's first proxy.")
+
+
+def test_name_variants_and_a_foreign_proxy_keep_one_stint() -> None:
+    """An honorific (`Dr.`), a generational suffix toggled under one first name, and one off-cycle
+    proxy of another company (APD's 2010 Airgas proxy) do not split a CEO's stint; a co-CEO who
+    becomes the first-listed CEO opens his own stint (the co-CEO rows carry the first-listed
+    CEO's values)."""
+
+    def row(t: str, d: str, n: str | None, since: float, founder: float = 0.0) -> dict:
+        return {"ticker": t, "accession_number": f"{t}-{d}", "as_of": d, "ceo_name_proxy": n, "ceo_since_year": since, "ceo_is_founder": founder}
+
+    hist = pd.DataFrame(
+        [row("MRVL", f"{y}-05-01", "Sehat Sutardja", 1995.0, 1.0) for y in (2008, 2009, 2010)]
+        + [row("MRVL", f"{y}-05-01", "Dr. Sehat Sutardja", NA, NA) for y in (2011, 2012, 2013)]
+        + [
+            row("ECL", f"{y}-03-30", n, s)
+            for y, n, s in ((2005, "Douglas M. Baker, Jr.", 2004.0), (2006, "Douglas M. Baker", NA), (2007, "Douglas M. Baker, Jr.", NA))
+        ]
+        + [
+            row("APD", "2008-12-12", "John E. McGlade", 2007.0),
+            row("APD", "2009-12-10", "John E. McGlade", 2007.0),
+            row("APD", "2010-07-29", "Peter McCausland", NA),
+            row("APD", "2010-12-15", "John E. McGlade", NA),
+            row("APD", "2011-12-14", "John E. McGlade", NA),
+        ]
+        + [
+            row("NFX", "2022-04-22", "Reed Hastings", 1997.0, 1.0),
+            row("NFX", "2023-04-21", "Reed Hastings; Ted Sarandos", NA, NA),
+            row("NFX", "2024-04-18", "Ted Sarandos; Greg Peters", NA, 0.0),
+        ]
+    )
+    hist["as_of"] = pd.to_datetime(hist["as_of"])
+    hist = hist.sort_values(["ticker", "as_of"]).reset_index(drop=True)
+    stint = ceo_stint_ids(hist["ceo_name_proxy"], hist["ticker"], hist["as_of"])
+    by = hist.assign(stint=stint).groupby("ticker")["stint"]
+    assert by.get_group("MRVL").nunique() == 1 and by.get_group("ECL").nunique() == 1
+    apd = hist.assign(stint=stint).loc[hist["ticker"] == "APD"]
+    assert apd["stint"].nunique() == 1 and apd.loc[apd["ceo_name_proxy"] == "Peter McCausland", "stint"].isna().all()
+    assert by.get_group("NFX").nunique() == 2, "Sarandos as first-listed CEO is his own stint"
+
+    out, _ = impute_def14a(hist.copy())
+    since = out.set_index(["ticker", out["as_of"].dt.year])["ceo_since_year"]
+    assert (since.loc["MRVL"] == 1995).all() and (since.loc["ECL"] == 2004).all()
+    idx = pd.DatetimeIndex(pd.date_range("2008-01-01", "2024-12-31", freq="ME"))
+    tenure = _governance_fields(out, idx, None, {})["ceo_tenure"]
+    assert tenure.loc["2012-06-30", "MRVL"] == 17 and tenure.loc["2011-06-30", "APD"] == 4
+    assert pd.isna(tenure.loc["2024-06-30", "NFX"]), "Hastings' 1997 must not reach Sarandos"
+    print("\n=== SANITY CHECK: name variants, foreign proxy, co-CEO ===")
+    print(
+        f"  MRVL since {sorted(set(since.loc['MRVL']))} tenure 2012-06 {tenure.loc['2012-06-30', 'MRVL']} | APD tenure 2011-06 {tenure.loc['2011-06-30', 'APD']}"
+    )
+    print("  CONCLUSION: Dr./Jr. variants and one foreign proxy no longer end a CEO's stint; a new first-listed co-CEO still does.")

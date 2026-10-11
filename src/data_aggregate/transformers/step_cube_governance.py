@@ -9,6 +9,7 @@ from src.context import Context
 from src.data_aggregate.utils.common.incremental import (
     COLUMNS_CHANGED,
     PART_REFRESH_TRADING_DAYS,
+    PartWindow,
     plan_window,
     write_part,
 )
@@ -20,22 +21,19 @@ from src.data_aggregate.utils.common.price_frames import (
     load_price_frames,
     load_trading_calendar,
 )
-from src.data_aggregate.utils.governance.def14a_impute import (
-    impute_def14a,
-    impute_exec_comp,
-)
-from src.data_aggregate.utils.governance.director_comp import impute_director_comp
-from src.data_aggregate.utils.governance.directors import (
-    board_aggregates,
-    fill_director_attributes,
-    finalize_board_source,
-    merge_board_aggregates,
-)
+from src.data_aggregate.utils.governance.clean import PAY_BACKFILL_STAGE, PAY_BACKFILL_WARNING, GovernanceInputs, clean_governance_inputs
 from src.data_aggregate.utils.governance.panel import build_governance_feature_panel
 from src.data_store.schema import Tables
 from src.utils.step import Step
 
 _PRICE_FIELDS = ("close_split", "close_total")
+_OWNERSHIP_COLUMNS = ("ticker", "accession_number", "holder_type", "holder_name", "shares")
+#: the cleaning stage reads later proxies (stint constants, the historical pay backfill), so an
+#: incremental run cannot restate the rows it does not rewrite
+_INCREMENTAL_WARNING = (
+    "Incremental governance build rewrites from %s only: a new proxy can restate cleaned values on older rows "
+    "(CEO stint constants, the historical pay backfill), which keep their last-built values -> run build-governance -F after each proxy season."
+)
 
 
 class StepCubeGovernance(Step):
@@ -57,7 +55,9 @@ class StepCubeGovernance(Step):
 
         merger = PanelMerger(self._log, anchor=frames.skeleton())
         merger.add(
-            self._governance_panel(frames), "governance", "No governance features built (def14a_llm empty — accrues as fetch_def14a_llm runs)."
+            self._governance_panel(frames, window),
+            "governance",
+            "No governance features built (def14a_llm empty — accrues as fetch_def14a_llm runs).",
         )
 
         panel = merger.to_long()
@@ -109,18 +109,15 @@ class StepCubeGovernance(Step):
         return df
 
     def _load_exec_comp(self) -> pd.DataFrame | None:
-        """Load and clean optional executive-compensation rows."""
+        """Load optional executive-compensation rows."""
         df = self._store.load(Tables.def14a_executive_comp, optional=True)
         if df is None or df.empty:
             self._log.warning("No %s -> the exact CEO Pay Slice family is skipped.", Tables.def14a_executive_comp.name)
             return None
-        df, stats = impute_exec_comp(df)
-        if stats:
-            self._log.info("NEO comp clean-on-read: %s", ", ".join(f"{k}={v:,}" for k, v in stats.items()))
         return df
 
     def _load_directors(self) -> pd.DataFrame | None:
-        """Load projected director rows and preserve source-aware fills."""
+        """Load projected director rows."""
         table = Tables.def14a_directors
         if not self._store.exists(table):
             self._log.warning("No %s -> the board averages stay on the parent scalar and the board-quality family is skipped.", table.name)
@@ -128,13 +125,10 @@ class StepCubeGovernance(Step):
         df = self._store.load(table, project=True, optional=True)
         if df is None or df.empty:
             return None
-        df, stats = fill_director_attributes(df)
-        if stats:
-            self._log.info("Director clean-on-read: %s", ", ".join(f"{k}={v:,}" for k, v in stats.items()))
         return df
 
     def _load_director_comp(self) -> pd.DataFrame | None:
-        """Load and clean optional Item 402(k) director compensation."""
+        """Load optional Item 402(k) director compensation."""
         table = Tables.def14a_director_comp
         if not self._store.exists(table):
             self._log.warning("No %s -> the four director-pay features are skipped.", table.name)
@@ -142,9 +136,14 @@ class StepCubeGovernance(Step):
         df = self._store.load(table, project=True, optional=True)
         if df is None or df.empty:
             return None
-        df, stats = impute_director_comp(df)
-        if stats:
-            self._log.info("Director-comp clean-on-read: %s", ", ".join(f"{k}={v:,}" for k, v in stats.items()))
+        return df
+
+    def _load_ownership(self) -> pd.DataFrame | None:
+        """Load the per-holder beneficial-ownership rows the insider-ownership estimate sums."""
+        df = self._store.load(Tables.def14a_ownership, columns=_OWNERSHIP_COLUMNS, optional=True)
+        if df is None or df.empty:
+            self._log.warning("No %s -> insider ownership is not estimated from the holder rows.", Tables.def14a_ownership.name)
+            return None
         return df
 
     def _load_fundamentals(self) -> pd.DataFrame | None:
@@ -156,38 +155,40 @@ class StepCubeGovernance(Step):
         return df
 
     # ---- panels ---- #
-    def _governance_panel(self, frames: PriceFrames) -> pd.DataFrame | None:
-        """Build governance features without mutating raw extraction tables."""
-
+    def _governance_panel(self, frames: PriceFrames, window: PartWindow) -> pd.DataFrame | None:
+        """Load the raw governance frames, clean them once, then build the features."""
         df = self._load_def14a()
         if df is None:
             return None
+        if not window.is_full:
+            self._log.warning(_INCREMENTAL_WARNING, pd.Timestamp(window.refresh_from or window.last).date())
 
-        directors = self._load_directors()
-        if directors is not None:
-            df, mstats = merge_board_aggregates(df, board_aggregates(directors))
-            for k, v in mstats.items():
-                self._log.info("  board aggregate | %s: %s", k, f"{v:,}")
-
-        df, stats = impute_def14a(df)
-        if stats:
-            self._log.info("DEF 14A clean-on-read: deduced %d missing cells across %d rules (raw table untouched).", sum(stats.values()), len(stats))
-
-        # Step 4 of the precedence chain has now run, so the three-valued provenance can be
-        # completed and said out loud: how much of each board average is EVIDENCE.
-        df, sstats = finalize_board_source(df)
-        for k, v in sstats.items():
-            self._log.info("  board aggregate provenance | %s: %s", k, f"{v:,}")
+        raw = GovernanceInputs(
+            def14a=df,
+            exec_comp=self._load_exec_comp(),
+            directors=self._load_directors(),
+            director_comp=self._load_director_comp(),
+            votes=self._load_votes(),
+            ownership=self._load_ownership(),
+        )
+        fundamentals = self._load_fundamentals()
+        inputs, stats = clean_governance_inputs(raw, fundamentals)
+        lookahead = {k.split("|", 1)[1]: v for k, v in stats.items() if k.startswith(f"{PAY_BACKFILL_STAGE}|")}
+        for key, value in stats.items():
+            if not key.startswith(f"{PAY_BACKFILL_STAGE}|"):
+                self._log.info("  governance clean | %s: %s", key, f"{value:,}")
+        if lookahead:
+            self._log.warning(PAY_BACKFILL_WARNING, "; ".join(f"{k}: {v:,}" for k, v in lookahead.items()))
 
         panel, tally = build_governance_feature_panel(
-            df,
+            inputs.def14a,
             frames.peers,
             frames.trading_index,
-            fundamentals_history=self._load_fundamentals(),
-            votes=self._load_votes(),
-            exec_comp=self._load_exec_comp(),
-            directors=directors,
-            director_comp=self._load_director_comp(),
+            fundamentals_history=fundamentals,
+            votes=inputs.votes,
+            exec_comp=inputs.exec_comp,
+            directors=inputs.directors,
+            director_comp=inputs.director_comp,
             close_total=frames.close_total,
             availability=frames.availability,
         )

@@ -20,6 +20,7 @@ from src.data_aggregate.utils.governance.def14a_impute import (
     FILL_FILED,
     FILL_IDENTITY,
     FILL_INTERP,
+    bridged_total,
     ensure_provenance,
     evidence_date_column,
     fill_kind_column,
@@ -607,6 +608,8 @@ def backfill_ceo_pay(def14a_hist: pd.DataFrame, exec_comp: pd.DataFrame, tally: 
         if len(components) == len(CEO_COMP):
             _total_identity(out, components, tally)
         _backfill_then_bridge(out, exec_comp, _TOTAL, order, stint, tally, backfill=False)
+        bridged = bridged_total(out)
+        out["comp_imputed"] = (pd.to_numeric(out.get("comp_imputed", 0.0), errors="coerce").fillna(0.0).astype(bool) | bridged).astype("float64")
     return out.drop(columns="_t")
 
 
@@ -650,8 +653,11 @@ def _total_identity(out: pd.DataFrame, components: list[str], tally: dict[str, i
         return
     dates = [pd.to_datetime(out[evidence_date_column(c)], errors="coerce") for c in components if evidence_date_column(c) in out.columns]
     later = pd.concat(dates, axis=1).max(axis=1) if dates else pd.Series(pd.NaT, index=out.index)
-    write_with_provenance(out, fill, _TOTAL, legs.sum(axis=1), FILL_IDENTITY, out["_t"], later)
-    tally["identity: ceo_total_comp = sum of backfilled/bridged components"] = int(fill.sum())
+    bridged = pd.concat([out[fill_kind_column(c)] == FILL_INTERP for c in components if fill_kind_column(c) in out.columns], axis=1).any(axis=1)
+    for kind, mask in ((FILL_IDENTITY, fill & ~bridged), (FILL_INTERP, fill & bridged)):
+        if int(mask.sum()):
+            write_with_provenance(out, mask, _TOTAL, legs.sum(axis=1), kind, out["_t"], later)
+            tally[f"{kind}: ceo_total_comp = sum of components, {'one bridged' if kind == FILL_INTERP else 'none bridged'}"] = int(mask.sum())
 
 
 def say_on_pay_fallback(def14a_raw: pd.DataFrame, votes: pd.DataFrame | None, tally: dict[str, int]) -> pd.DataFrame | None:

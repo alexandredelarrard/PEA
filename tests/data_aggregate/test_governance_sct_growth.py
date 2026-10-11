@@ -268,3 +268,34 @@ def test_relatives_sharing_the_key_are_told_apart_by_first_name() -> None:
         f"SANITY: STZ growth {growth[('STZ', 2009)]:.3f} = log(4/3) (Robert), SMCI {growth[('SMCI', 2009)]:.3f} (Charles), "
         f"LLL {growth[('LLL', 2009)]:.3f} (J.S.), RRR refused; 2008 salaries backfilled from the named CEO's rows -> PASS"
     )
+
+
+def test_bridged_totals_feed_no_cross_filing_growth() -> None:
+    """A bridged (`interp`) total is the fill's slope: neither growth that touches it is kept, and
+    `comp_imputed` marks it. The 2016 / 2019 pair around it is unaffected (not ~1y apart)."""
+    rows = [(2016, 10e6), (2017, np.nan), (2018, 40e6), (2019, 44e6)]
+    def14a = pd.DataFrame(
+        [
+            {"ticker": "BRG", "accession_number": f"B-{y}", "as_of": f"{y}-04-01", "ceo_name_proxy": "Bea Ridge", "ceo_total_comp": tot}
+            for y, tot in rows
+        ]
+    )
+    other = pd.DataFrame(
+        [{"ticker": "BRG", "accession_number": "B-2016", "as_of": "2016-04-01", "name": "Zed Other", "fiscal_year": 2015, "total": 1e6}]
+    )
+    cleaned, _ = clean_governance_inputs(GovernanceInputs(def14a=def14a, exec_comp=other), None)
+    d = cleaned.def14a
+    assert d is not None
+    d = d.assign(_y=pd.to_datetime(d["as_of"]).dt.year).set_index("_y")
+    assert np.isclose(d.loc[2017, "ceo_total_comp"], 20e6) and d.loc[2017, fill_kind_column("ceo_total_comp")] == FILL_INTERP
+    assert d.loc[2017, "comp_imputed"] == 1.0 and d.loc[[2016, 2018, 2019], "comp_imputed"].eq(0.0).all()
+    hist = _comp_history(d.reset_index(drop=True), {})
+    assert hist is not None
+    g = hist.assign(_y=pd.to_datetime(hist["as_of"]).dt.year).set_index("_y")["ceo_comp_growth_1y"]
+    assert g[[2017, 2018]].isna().all(), f"growth touching the bridged 2017 total must be NaN: {g.tolist()}"
+    assert np.isclose(g[2019], np.log(1.1))
+    daily = _ceo_pay_growth(d.reset_index(drop=True), pd.bdate_range("2016-01-04", "2019-12-31"))["BRG"]
+    assert daily.loc["2017-06-01":"2019-03-29"].isna().all() and np.isclose(daily.loc["2019-06-03"], 0.1)
+    print(
+        f"SANITY: bridged 2017 total {d.loc[2017, 'ceo_total_comp'] / 1e6:.0f}M flagged comp_imputed; growth 2017/2018 {g[[2017, 2018]].tolist()}, 2019 {g[2019]:.3f} -> PASS"
+    )

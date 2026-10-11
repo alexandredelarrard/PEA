@@ -347,6 +347,15 @@ def evidence_date_column(field: str) -> str:
     return f"{field}_evidence_as_of"
 
 
+def bridged_total(df: pd.DataFrame) -> pd.Series:
+    """True where `ceo_total_comp` is an in-stint bridge (kind `interp`), directly or summed from a
+    bridged component: its change against a neighbouring filing is the fill's slope, not data."""
+    kind_col = fill_kind_column("ceo_total_comp")
+    if kind_col not in df.columns:
+        return pd.Series(False, index=df.index)
+    return (df[kind_col] == FILL_INTERP).fillna(False).astype(bool)
+
+
 def ensure_provenance(df: pd.DataFrame, col: str) -> None:
     """Create `<col>_source_as_of` and `<col>_fill` where absent; a present value reads as filed on its row."""
     if col not in df.columns:

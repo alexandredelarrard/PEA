@@ -16,6 +16,7 @@ from src.data_aggregate.utils.common.pit import (
 )
 from src.data_aggregate.utils.common.typing import frame_column
 from src.data_aggregate.utils.common.xs import self_history_z, winsorize_xs
+from src.data_aggregate.utils.governance.def14a_impute import bridged_total
 from src.data_aggregate.utils.governance.director_comp import (
     PEER_RELATIVE_FIELDS as DIRECTOR_PAY_PEER_FIELDS,
 )
@@ -167,6 +168,7 @@ def _ceo_pay_growth(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dic
         if c in def14a_hist.columns
     ]
     d = cast(pd.DataFrame, def14a_hist[keep].copy())
+    d["_bridged"] = bridged_total(def14a_hist)
     d["as_of"] = pd.to_datetime(d["as_of"], errors="coerce")
     d["ceo_total_comp"] = pd.to_numeric(d["ceo_total_comp"], errors="coerce")
     # The growth is knowable at the later filing, dated by the source of that filing's total.
@@ -177,6 +179,8 @@ def _ceo_pay_growth(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dic
     # `replace` on the infinities reproduces `fiscal_change_to_daily` exactly: a prior year
     # filed as $0 makes `pct_change` infinite, and an infinity is not a growth rate.
     d["chg"] = d.groupby("ticker", sort=False)["ceo_total_comp"].pct_change(periods=1).replace([np.inf, -np.inf], np.nan)
+    # a bridged total's change is the bridge's slope, so neither change touching it is data
+    d["chg"] = d["chg"].mask(d["_bridged"] | d.groupby("ticker", sort=False)["_bridged"].shift(1, fill_value=False).astype(bool))
     if SCT_GROWTH in d.columns:
         # The filing's own FY vs FY-1 pair wins over the cross-filing change.
         sct = cast(pd.Series, pd.to_numeric(d[SCT_GROWTH], errors="coerce"))

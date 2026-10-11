@@ -59,6 +59,7 @@ from src.data_aggregate.utils.common.pit import (
     infer_yoy_periods,
 )
 from src.data_aggregate.utils.common.xs import winsorize_xs
+from src.data_aggregate.utils.governance.def14a_impute import bridged_total
 from src.data_aggregate.utils.governance.names import (
     ceo_identity_changed,
     ceo_identity_series,
@@ -252,6 +253,7 @@ def _comp_history(def14a: pd.DataFrame | None, tally: dict[str, int]) -> pd.Data
             "as_of": pd.to_datetime(def14a["as_of"], errors="coerce"),
             "comp": _num(def14a, "ceo_total_comp"),
             "sct": _num(def14a, SCT_GROWTH),
+            "bridged": bridged_total(def14a).astype("float64"),
         }
     )
     raw_names = def14a["ceo_name_proxy"] if "ceo_name_proxy" in def14a.columns else pd.Series(None, index=def14a.index, dtype="object")
@@ -278,7 +280,9 @@ def _comp_history(def14a: pd.DataFrame | None, tally: dict[str, int]) -> pd.Data
 
     out = h[["ticker", "as_of"]].copy()
     out["log_ceo_total_comp"] = np.log1p(h["comp"].where(h["comp"] > 0))
-    cross = np.log((h["comp"] / prev_comp).where(positive & unchanged))
+    # a bridged total's change is the bridge's slope, so neither growth touching it is data
+    bridged = (h["bridged"] == 1.0) | (prior_annual_leg(h, "bridged") == 1.0)
+    cross = np.log((h["comp"] / prev_comp).where(positive & unchanged & ~bridged))
     # The filing's own FY vs FY-1 pair wins; the change guard masks it all the same.
     same_filing = h["sct"].where(h["sct"].notna() & (changed != 1.0))
     out["ceo_comp_growth_1y"] = same_filing.where(h["sct"].notna(), cross)

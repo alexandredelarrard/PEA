@@ -9,6 +9,7 @@ unverifiable text book is a deterministic read failure, and no F-001 garbage sha
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 
 import pandas as pd
@@ -840,3 +841,39 @@ def test_short_source_cusip_cannot_be_replaced_by_a_valid_numeric_value() -> Non
     assert row.CUSIP == "46626V20"
     assert row.VALUE == 464287655000 and row.SSHPRNAMT == 19399
     print("SANITY: a checksum-valid monetary token cannot replace the literal short source identifier.")
+
+
+@pytest.mark.parametrize("location", ["before-table", "after-table", "before-header", "before-marker"])
+def test_unconsumed_holdings_cannot_complete_either_destination(location: str, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    raw = _table(_HEADER, _AFLAC).replace("Form 13F Information Table Entry Total: 1", "")
+    if location == "before-table":
+        raw = _HEADER + "\n" + _AMGEN + "\n" + raw
+    elif location == "after-table":
+        raw += "\n" + _HEADER + "\n" + _AMGEN
+    elif location == "before-header":
+        raw = raw.replace("<TABLE>\n", "<TABLE>\n" + _AMGEN + "\n")
+    else:
+        raw = raw.replace(_HEADER + "\n<S>", _HEADER + "\n" + _AMGEN + "\n<S>")
+    raw = "<DOCUMENT>\n<TEXT>\n" + raw + "\n</TEXT>\n</DOCUMENT>"
+    filing = _Filing(_Report(None, txt=raw))
+    monkeypatch.setattr(filing, "full_text_submission", lambda: raw, raising=False)
+    packet = f13.read_filing_vintage(FilingStamp.of(filing, filing.cik))
+    assert isinstance(packet, f13.ReadFailure) and not packet.transient
+    saver = f13._Saver(SimpleNamespace(store=sqlite_store), {"AFL", "AMGN"}, {filing.cik}, 600)
+    saver.add(f13._Read(FilingStamp.of(filing, filing.cik), packet))
+    for table in (f13.Tables.sec13f_hr, f13.Tables.sec13f_manager_holdings):
+        assert not sqlite_store.exists(table)
+    print(f"SANITY: economic rows {location} cannot self-certify a surviving subset or produce a completion marker in either destination.")
+
+
+@pytest.mark.parametrize(
+    "label", ["GRAND TOTALS 145462000 3362515", "FINAL TOTALS FOR 1 RECORDS 145462000", "S REPORT SUMMARY 1 DATA RECORDS 145462000 0 OTHER MANAGERS"]
+)
+def test_genuine_summary_outside_table_does_not_hide_or_add_positions(label: str) -> None:
+    raw = _table(_HEADER, _AFLAC).replace("Form 13F Information Table Entry Total: 1", "")
+    raw += "\n" + label
+    filing = _Filing(_Report(None, txt=raw))
+    manifest, rows = f13.text_filing_vintage(raw, FilingStamp.of(filing, filing.cik))
+    assert manifest.iloc[0].source_row_count == 1 and pd.isna(manifest.iloc[0].declared_row_count)
+    assert rows.iloc[0].cusip == "001055102" and rows.iloc[0].shares == 3362515
+    print("SANITY: explicit summary/footer outside the tagged table remains non-economic; the intact missing-count book retains its exact holding.")

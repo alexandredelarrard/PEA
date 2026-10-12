@@ -28,6 +28,13 @@ _VALUE_TOTAL = re.compile(
     re.I,
 )
 _FOOTER_TOTAL = re.compile(r"REPORT SUMMARY\s+\d+\s+DATA RECORDS\s+([\d,]+)", re.I)
+_NON_HOLDING_LINE = re.compile(
+    r"\s*(?:(?:GRAND|FINAL)\s+TOTALS?\b|(?:S\s+)?REPORT SUMMARY\b)"
+    r"|\s{2,}(?:SOLE|DEFINED|SHARED|OTHER)\s+\d"
+    r"|(?:\s*COLUMN\s+\d+)+\s*$"
+    r"|\s*FORM\s*13\s*F\b.*\bPAGE\s+\d+\s*$",
+    re.I,
+)
 
 
 def _valid_cusip(token: str) -> bool:
@@ -49,6 +56,8 @@ def _source_rows(raw: str) -> list[tuple[str, str, str]]:
     header = ""
     columns: list[int] = []
     blocks = _TABLE.findall(raw)
+    if blocks and any(_holding_shaped(line) for line in _TABLE.sub("\n", raw).splitlines()):
+        raise ValueError("Unaccounted legacy holdings outside tagged tables")
     if not blocks and re.search(r"<TEXT>", raw, re.I):
         blocks = [raw]
     for block in blocks:
@@ -66,6 +75,8 @@ def _source_rows(raw: str) -> list[tuple[str, str, str]]:
             continue
         else:
             start = markers[0] + 1
+        if any(_holding_shaped(line) for line in lines[:start]):
+            raise ValueError("Unaccounted legacy holdings before the table header/column marker")
         pending = ""
         i = start
         while i < len(lines):
@@ -75,11 +86,7 @@ def _source_rows(raw: str) -> list[tuple[str, str, str]]:
             if "CUSIP" in upper:
                 header = line
                 continue
-            if re.match(r"\s*(?:(?:GRAND|FINAL)\s+TOTALS?\b|(?:S\s+)?REPORT SUMMARY\b)", upper) or re.match(
-                r"\s{2,}(?:SOLE|DEFINED|SHARED|OTHER)\s+\d", upper
-            ):
-                continue
-            if re.fullmatch(r"(?:\s*COLUMN\s+\d+)+\s*", upper) or re.match(r"\s*FORM\s*13\s*F\b.*\bPAGE\s+\d+\s*$", upper):
+            if _NON_HOLDING_LINE.match(line):
                 continue
             if "<" in line:
                 if _holding_shaped(line):
@@ -116,6 +123,8 @@ def _source_rows(raw: str) -> list[tuple[str, str, str]]:
 def _holding_shaped(line: str) -> bool:
     """Economic-looking content cannot disappear because its page/header was unsupported."""
     plain = re.sub(r"<[^>]*>", " ", line)
+    if _NON_HOLDING_LINE.match(plain):
+        return False
     if not _CUSIP.search(plain) or len(_NUMBER.findall(plain)) < 2:
         return False
     if re.search(r"\b(?:SH|SHS|PRN|SHARES|PRINCIPAL|CALL|PUT)\b", plain, re.I):

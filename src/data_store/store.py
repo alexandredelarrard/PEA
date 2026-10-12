@@ -27,6 +27,7 @@ from sqlalchemy import types as sqltypes
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
+from src.constants.constants import SEC_13F_SOURCE_ACCOUNTED
 from src.data_store import ddl
 from src.data_store.errors import TableEmptyError, TableMissingError
 from src.data_store.schema import (
@@ -568,7 +569,11 @@ class DataStore:
         if int(row["parsed_row_count"]) != len(holdings) or int(row["source_row_count"]) < len(holdings):
             raise ValueError("13F source row count does not reconcile")
         reconcile_13f_source(
-            int(row["source_row_count"]), int(row["declared_row_count"]), float(row["source_value_total"]), float(row["declared_value_total"])
+            int(row["source_row_count"]),
+            row["declared_row_count"],
+            float(row["source_value_total"]),
+            row["declared_value_total"],
+            source_accounted=str(row.get("value_unit_evidence", "")).startswith(SEC_13F_SOURCE_ACCOUNTED),
         )
         if holdings.duplicated(["cik", "accession_number", "cusip"]).any() or holdings.cusip.eq(table.empty_marker[1]).any():
             raise ValueError("Duplicate or reserved CUSIP within an immutable filing")
@@ -636,10 +641,12 @@ class DataStore:
                 .one_or_none()
             )
             if existing is not None:
+                declared_count = None if pd.isna(row["declared_row_count"]) else int(row["declared_row_count"])
+                declared_total = None if pd.isna(row["declared_value_total"]) else float(row["declared_value_total"])
                 if (
                     existing["content_checksum"] != checksum
-                    or existing["declared_row_count"] != row["declared_row_count"]
-                    or existing["declared_value_total"] != row["declared_value_total"]
+                    or existing["declared_row_count"] != declared_count
+                    or existing["declared_value_total"] != declared_total
                 ):
                     raise ValueError(f"13F checksum conflict for {row['accession_number']}")
                 return 0

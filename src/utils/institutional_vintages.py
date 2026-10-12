@@ -4,29 +4,58 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from collections.abc import Iterator
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
-from src.constants.constants import F13_SETTLE_TRADING_DAYS, SEC_13F_FILING_LAG_DAYS, SEC_13F_SOURCE_RATIO_BOUNDS
+from src.constants.constants import F13_SETTLE_TRADING_DAYS, SEC_13F_FILING_LAG_DAYS, SEC_13F_INFERRED_HOLDINGS_REPORT, SEC_13F_SOURCE_RATIO_BOUNDS
 
 
-def reconcile_13f_source(source_rows: int, declared_rows: int | None, source_value: float, declared_value: float | None) -> float:
+def literal_13f_cusip(value: Any) -> str | None:
+    """Keep a source identifier literal; missing check digits are not leading zeros."""
+    if pd.isna(value):
+        return None
+    token = str(value).strip().upper()
+    if re.fullmatch(r"[A-Z0-9*@#]{6}-[A-Z0-9*@#]{2}-[0-9]", token):
+        token = token.replace("-", "")
+    return token or None
+
+
+def full_13f_report(value: Any) -> bool:
+    """Checked and explicitly inferred HR reporting scopes both support normal exits."""
+    return str(value) in {"13F HOLDINGS REPORT", SEC_13F_INFERRED_HOLDINGS_REPORT}
+
+
+def reconcile_13f_source(
+    source_rows: int, declared_rows: int | None, source_value: float, declared_value: float | None, *, source_accounted: bool = False
+) -> float:
     """Validate source totals after any finite power-of-ten cover-to-row alignment."""
     lower, upper = SEC_13F_SOURCE_RATIO_BOUNDS
+    declared_rows = None if pd.isna(declared_rows) else int(declared_rows)
+    declared_value = None if pd.isna(declared_value) else float(declared_value)
     if (
-        declared_rows is None
-        or declared_rows < 0
-        or source_rows < 0
-        or (source_rows != 0 if declared_rows == 0 else not lower <= source_rows / declared_rows <= upper)
+        source_rows < 0
+        or (declared_rows is None and not source_accounted)
+        or (
+            declared_rows is not None
+            and (declared_rows < 0 or (source_rows != 0 if declared_rows == 0 else not lower <= source_rows / declared_rows <= upper))
+        )
     ):
         raise ValueError(
             f"13F source row count does not reconcile: received={source_rows}, declared={declared_rows}; accepted ratio={lower:.0%}-{upper:.0%}"
         )
-    if declared_value is None or not math.isfinite(declared_value) or declared_value < 0 or not math.isfinite(source_value) or source_value < 0:
+    if (
+        not math.isfinite(source_value)
+        or source_value < 0
+        or (declared_value is None and not source_accounted)
+        or (declared_value is not None and (not math.isfinite(declared_value) or declared_value < 0))
+    ):
         raise ValueError(f"13F source VALUE total does not reconcile: rows={source_value:g}, declared={declared_value!r}")
+    if declared_value is None:
+        return 1.0
     if source_rows == 0 and (source_value != 0 or declared_value != 0):
         raise ValueError("13F empty source has a positive declared VALUE total")
     if math.isclose(source_value, declared_value, rel_tol=0.005, abs_tol=1.0):
@@ -176,7 +205,7 @@ def public_books(
             if version.amendment_type in {"original", "restatement"}:
                 book, known, restricted = incoming, True, bool(version.restricted)
                 uncertain_absence = False
-                full_report = version.report_type == "13F HOLDINGS REPORT"
+                full_report = full_13f_report(version.report_type)
                 level_public_at = version.public_at
                 resolution_status = "resolved"
             elif version.amendment_type == "additions":
@@ -210,7 +239,7 @@ def public_books(
                         uncertain_absence = not omitted.empty
                         omitted[amounts] = np.nan
                         book = pd.concat([omitted, incoming], ignore_index=True).reindex(columns=holdings.columns)
-                        full_report = full_report and version.report_type == "13F HOLDINGS REPORT"
+                        full_report = full_report and full_13f_report(version.report_type)
                         restricted = restricted or bool(version.restricted)
                         level_public_at = version.public_at
                         resolution_status = "inferred_position_patch"
@@ -227,7 +256,7 @@ def public_books(
                     )
                     book = metadata.join(numeric).reset_index().reindex(columns=holdings.columns)
                     # A new-holdings supplement alone cannot prove confidential positions are exhausted.
-                    full_report = full_report and version.report_type == "13F HOLDINGS REPORT"
+                    full_report = full_report and full_13f_report(version.report_type)
                     restricted = restricted or bool(version.restricted)
                     level_public_at = version.public_at
                     if resolution_status != "inferred_position_patch":

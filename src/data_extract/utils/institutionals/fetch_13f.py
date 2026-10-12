@@ -21,7 +21,7 @@ import math
 import re
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, cast
 from xml.etree import ElementTree
 
@@ -31,14 +31,15 @@ from edgar import Filings, get_filings
 from edgar.thirteenf.parsers.infotable_xml import parse_infotable_xml
 from tqdm import tqdm
 
-from src.constants.constants import SEC_13F_FORMS
+from src.constants.constants import SEC_13F_FORMS, SEC_13F_INFERRED_HOLDINGS_REPORT, SEC_13F_SOURCE_ACCOUNTED
 from src.context import Context
 from src.data_extract.utils.common.edgar_driver import FilingStamp, RetryRounds
 from src.data_extract.utils.common.empty_markers import marker_mask
 from src.data_extract.utils.common.resume import DONE_PER_KEY, document_floor, stored_accessions
 from src.data_extract.utils.common.sec_io import TransientReadError, configure, filing_obj, sec_call
-from src.data_extract.utils.institutionals.fetch_cusip_map import build_cusip_ticker_map, normalize_cusip
+from src.data_extract.utils.institutionals.fetch_cusip_map import build_cusip_ticker_map
 from src.data_extract.utils.institutionals.legacy_13f_fallback import (
+    _ENTRY_COUNT,
     _FOOTER_TOTAL,
     _VALUE_TOTAL,
     _value_total_error,
@@ -47,12 +48,13 @@ from src.data_extract.utils.institutionals.legacy_13f_fallback import (
 )
 from src.data_extract.utils.institutionals.value_units import ValueUnits, normalize_information_values, resolve_value_units
 from src.data_store.schema import Resume, Tables
-from src.utils.institutional_vintages import reconcile_13f_source
+from src.utils.institutional_vintages import literal_13f_cusip, reconcile_13f_source
 from src.utils.string import pad_cik, pad_cik_series
 from src.utils.superinvestor_roster import roster_cik_union
 from src.utils.universe import load_universe_tickers
 
 logger = logging.getLogger(__name__)
+_CHECKED = r"(?:\[\s*[xX]\s*\]|\{\s*[xX]\s*\}|\(\s*[xX]\s*\))"
 
 #: The sleeper between retry rounds; tests replace it.
 _sleep: Callable[[float], None] = time.sleep
@@ -179,8 +181,7 @@ def _classify_holdings(infotable: pd.DataFrame) -> pd.DataFrame:
 
     return pd.DataFrame(
         {
-            # canonical 9-char CUSIP so the map lookup and the ticker merge use ONE form
-            "cusip": _pick(infotable, "CUSIP").map(normalize_cusip),
+            "cusip": _pick(infotable, "CUSIP").map(literal_13f_cusip),
             "shares": amt.where(is_stock, 0.0),
             "value_usd": val.where(is_stock, 0.0),
             "call_shares": amt.where(is_call, 0.0),
@@ -220,7 +221,7 @@ def _book_frame(cik: str, filing_date: Any, period: Any, infotable: pd.DataFrame
         for column in _VALUE_BY_TYPE.values():
             out[column] = out[column].mask(out["cusip"].map(invalid[column]))
         source_types = position_type(infotable)
-        source_cusips = _pick(infotable, "CUSIP").map(normalize_cusip)
+        source_cusips = _pick(infotable, "CUSIP").map(literal_13f_cusip)
         for name in reversed(POSITION_TYPES):
             present = set(source_cusips[source_types.eq(name)].dropna())
             out.loc[out["cusip"].isin(present), "position_type"] = name
@@ -603,6 +604,7 @@ def filing_vintage(
     units: ValueUnits | None = None,
     accepted_at: object = None,
     source_checksum: str | None = None,
+    source_accounted: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Prepare one complete accession; raw typed dollars never lose their source basis."""
     kind = amendment_type.strip().lower().replace("new holdings", "additions")
@@ -611,14 +613,26 @@ def filing_vintage(
     if not accession_number or pd.isna(pd.Timestamp(period)) or pd.isna(pd.Timestamp(filing_date)):
         raise ValueError("13F accession, report period and filing date are required")
     units = units or resolve_value_units(filing_date)
+    declared_rows = None if pd.isna(declared_rows) else int(declared_rows)
+    declared_value = None if pd.isna(declared_value) else float(declared_value)
+    if source_accounted:
+        units = replace(units, evidence=SEC_13F_SOURCE_ACCOUNTED + units.evidence)
     raw = information_table.copy()
     raw["VALUE"] = pd.to_numeric(_pick(raw, "VALUE"), errors="coerce")
     amounts = pd.to_numeric(_pick(raw, "SSHPRNAMT", "SharesPrnAmount"), errors="coerce")
     if not amounts.map(math.isfinite).all() or amounts.lt(0).any() or not raw["VALUE"].map(math.isfinite).all() or raw["VALUE"].lt(0).any():
         raise ValueError("13F source quantities/values are incomplete or negative")
     total = float(raw["VALUE"].sum())
-    cover_factor = reconcile_13f_source(len(raw), declared_rows, total, declared_value)
-    if len(raw) != declared_rows:
+    cover_factor = reconcile_13f_source(len(raw), declared_rows, total, declared_value, source_accounted=source_accounted)
+    if declared_rows is None or declared_value is None:
+        logger.warning(
+            "13F %s: source accounted for %s position rows; cover count=%s, VALUE total=%s; missing declarations retained as unknown, market checks remain active",
+            accession_number,
+            len(raw),
+            declared_rows,
+            declared_value,
+        )
+    if declared_rows is not None and len(raw) != declared_rows:
         logger.warning(
             "13F %s: accepted %s/%s source position rows (%.2f%%); within source count tolerance; book participates normally in exits",
             accession_number,
@@ -637,14 +651,14 @@ def filing_vintage(
         )
     raw["raw_value"] = raw["VALUE"]
     book = _book_frame(cik, filing_date, period, raw)
-    if len(raw) and _pick(raw, "CUSIP").map(normalize_cusip).isna().any():
+    if len(raw) and _pick(raw, "CUSIP").map(literal_13f_cusip).isna().any():
         raise ValueError("13F source CUSIP identity is missing")
     for column in _VALUE_BY_TYPE.values():
         book["raw_" + column] = book[column]
         book[column] = book[column] * units.factor if units.factor is not None else book[column].where(book[column].eq(0))
     identities = pd.DataFrame(
         {
-            "cusip": _pick(raw, "CUSIP").map(normalize_cusip),
+            "cusip": _pick(raw, "CUSIP").map(literal_13f_cusip),
             "class": _pick(raw, "TITLEOFCLASS", "Class").fillna("").astype(str).str.strip().str.replace(r"\s+", " ", regex=True),
         }
     )
@@ -661,7 +675,7 @@ def filing_vintage(
         "restricted": restricted,
         "report_type": report_type,
         "amendment_number": amendment_number,
-        "declared_rows": int(declared_rows),
+        "declared_rows": declared_rows,
         "declared_value": declared_value,
         "unit_factor": units.factor,
         "unit_evidence": units.evidence,
@@ -692,9 +706,9 @@ def filing_vintage(
                 "value_unit_factor": units.factor,
                 "value_unit_evidence": units.evidence,
                 "source_row_count": len(raw),
-                "declared_row_count": int(declared_rows),
+                "declared_row_count": declared_rows,
                 "source_value_total": total,
-                "declared_value_total": float(declared_value),
+                "declared_value_total": declared_value,
                 "parsed_row_count": len(book),
                 "parse_status": "complete",
                 "completed_at": pd.Timestamp.now(tz="UTC").tz_localize(None),
@@ -702,7 +716,8 @@ def filing_vintage(
         ]
     )
     # Stable dtypes also when an empty or unknown-unit book is the first saved accession.
-    for column in ("expected_unit_factor", "stated_unit_factor", "value_unit_factor"):
+    manifest["declared_row_count"] = pd.to_numeric(manifest["declared_row_count"], errors="coerce").astype("Int64")
+    for column in ("expected_unit_factor", "stated_unit_factor", "value_unit_factor", "declared_value_total"):
         manifest[column] = pd.to_numeric(manifest[column], errors="coerce").astype(float)
     manifest["accepted_at"] = pd.to_datetime(manifest["accepted_at"], utc=True).dt.tz_localize(None)
     for column in (*_VALUE_BY_TYPE.values(), *("raw_" + c for c in _VALUE_BY_TYPE.values()), "shares", "call_shares", "put_shares", "debt_prn"):
@@ -751,21 +766,22 @@ def read_filing_vintage(stamp: FilingStamp) -> tuple[pd.DataFrame, pd.DataFrame]
 def text_filing_vintage(raw: str, stamp: FilingStamp) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Reuse the source-reconciled pre-XML parser; unsupported cover semantics remain explicit."""
     units = resolve_value_units(stamp.filed, information_table_text=raw)
-    if units.factor is None or not (_VALUE_TOTAL.search(raw) or _FOOTER_TOTAL.search(raw)):
-        raise ValueError("13F legacy VALUE unit/cover total is unverifiable")
-    verified = parse_legacy_information_table(raw, value_factor=units.factor)
-    info = verified.copy()
-    info["VALUE"] /= units.factor
+    info = parse_legacy_information_table(raw, value_factor=1.0, verify_values=False)
+    count = _ENTRY_COUNT.search(raw)
+    total = _VALUE_TOTAL.search(raw) or _FOOTER_TOTAL.search(raw)
     kind = "original"
     if stamp.is_amendment:
-        restated = re.search(r"\[\s*[xX]\s*\]\s*(?:is\s+a\s+)?restatement", raw, re.I)
-        added = re.search(r"\[\s*[xX]\s*\]\s*(?:adds?\s+)?new\s+holdings", raw, re.I)
+        restated = re.search(_CHECKED + r"\s*(?:is\s+a\s+)?restatement", raw, re.I)
+        added = re.search(_CHECKED + r"\s*(?:adds?\s+)?new\s+holdings", raw, re.I)
         if bool(restated) == bool(added):
             raise ValueError("13F legacy amendment type is unverifiable")
         kind = "restatement" if restated else "additions"
-    report = re.search(r"\[\s*[xX]\s*\]\s*(13F\s+(?:HOLDINGS|COMBINATION|NOTICE)\s+REPORT)", raw, re.I)
-    if report is None:
-        raise ValueError("13F legacy report type is unverifiable")
+    reports = re.findall(_CHECKED + r"\s*(13\s*F\s+(?:HOLDINGS|COMBINATION|NOTICE)\s+REPORT)", raw, re.I)
+    if len(set(reports)) > 1:
+        raise ValueError("Conflicting checked legacy report types")
+    report_type = re.sub(r"13\s*F", "13F", re.sub(r"\s+", " ", reports[0])).upper() if reports else SEC_13F_INFERRED_HOLDINGS_REPORT
+    if not reports:
+        logger.warning("13F %s: intact HR information table with no checked report type; inferred holdings-report scope", stamp.accession_number)
     return filing_vintage(
         info,
         cik=stamp.cik,
@@ -774,13 +790,14 @@ def text_filing_vintage(raw: str, stamp: FilingStamp) -> tuple[pd.DataFrame, pd.
         filing_date=stamp.filed,
         amendment_type=kind,
         source=stamp.doc_url or "SEC legacy text",
-        declared_rows=len(info),
-        declared_value=float(info.VALUE.sum()),
-        report_type=re.sub(r"\s+", " ", report.group(1)).upper(),
+        declared_rows=int(count.group(1).replace(",", "")) if count else None,
+        declared_value=float(total.group(1).replace(",", "")) if total else None,
+        report_type=report_type,
         restricted=bool(re.search(r"confidential\s+information\s+has\s+been\s+omitted", raw, re.I)),
         accepted_at=getattr(stamp.filing, "acceptance_datetime", None),
         units=units,
         source_checksum=hashlib.sha256(raw.encode()).hexdigest(),
+        source_accounted=bool(info.attrs.get("source_accounted")),
     )
 
 

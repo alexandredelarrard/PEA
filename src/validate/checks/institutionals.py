@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from src.constants.constants import SEC_13F_SOURCE_ACCOUNTED
 from src.context import Context
 from src.data_store.schema import Table, Tables
 from src.utils.institutional_vintages import filing_public_dates, public_books, reconcile_13f_source
@@ -41,6 +42,7 @@ def check_institutionals(
         "declared_row_count",
         "source_value_total",
         "declared_value_total",
+        "value_unit_evidence",
         "source_checksum",
     ]
     scope: dict[str, Any] = {
@@ -119,7 +121,11 @@ def check_institutionals(
     for index, row in enumerate(m.itertuples()):
         try:
             reconcile_13f_source(
-                int(row.source_row_count), int(row.declared_row_count), float(row.source_value_total), float(row.declared_value_total)
+                int(row.source_row_count),
+                row.declared_row_count,
+                float(row.source_value_total),
+                row.declared_value_total,
+                source_accounted=str(row.value_unit_evidence).startswith(SEC_13F_SOURCE_ACCOUNTED),
             )
         except ValueError:
             cover_failures[index] = True

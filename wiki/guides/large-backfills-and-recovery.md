@@ -174,7 +174,9 @@ The nightly `thirteen-f` walk starts at the newest stored `filing_date` minus th
 rtk "$PY" -m src data_extract thirteen-f --filing-window 2024-01-01:2024-03-01
 ~~~
 
-`thirteen-f-backfill` fills the history of a ticker added within the last 7 days from the SEC 13F data sets, then one EDGAR walk over the filings after the newest cached data set. Only a completed walk saves the ticker's `sec13f_hr` marker (`cusip` = `_empty`), which stops the walk on later nights; an interrupted walk is redone in full. `-t X -F` walks X's gap again whatever its marker. `-t X` narrows the new tickers (an established X does nothing); `-t X -F` re-reads every data set for X. Run a first manual backfill outside 01:00 and read its unit-check log lines. The value unit of each filing comes from edgartools' private `_detect_value_in_thousands`: an edgartools upgrade that renames it breaks the `data_extract` CLI import, which `test_13f_backfill_zip.py` catches.
+`thirteen-f-backfill` fills the history of tickers added within the last 7 days from the eligible SEC ZIP windows, then runs the existing EDGAR gap walk after the newest cached window. `-t X` narrows recent additions; an established X requires `-t X -F`. ZIP discovery retains all relevant managers across history. Ordinary reruns skip only verified complete accessions, requiring both destinations for roster managers; missing/failed/legacy packets remain pending. A completed archive needs no second information-table read, but the first discovery scan remains necessary to find unpreserved holders. Explicit `-F` revalidates source and immutable checksums. Cached downloads alone do not eliminate decompression/scanning.
+
+The backfill writes full source books to `sec13f_hr` and copies roster managers into `sec13f_manager_holdings`; it reads the roster created by `superinvestors`. One full CUSIP map and saver are reused across archives. Writer preparation is cached per DataStore lifecycle; atomic per-accession writes and integrity checks remain. Source-unit admission uses declared units and the shared count/value reconciliation, with the aggregate market check retained. Run the first historical backfill outside the scheduled extraction window and inspect pending-accession errors. No source-table or cube rebuild is needed solely to adopt this performance refactor; restart the running extraction process to load the changed code. Recovery of older overwritten versions is a separate source reload.
 
 ## Insider reparse and full rebuild
 
@@ -250,22 +252,22 @@ Finish with the project’s required sanity conclusion and the appropriate [vali
 - [Testing and validation](./testing.md)
 - [TODO](../TODO.md)
 
-## Candidate bounded 13F vintage recovery
+## Bounded 13F vintage recovery
 
-The approved P3 branch `harness/institutional-13f-pit-20261009` extends the existing manager command with `--vintages`; legacy invocation is unchanged. Work from the candidate worktree. Require explicit manager CIKs, report-period bounds, filing cutoff and accession cap. Preview source cost and back up the new ledgers' prestate before any approved bounded live append. Never use a marketwide filing-window command as a manager recovery shortcut.
+The existing `thirteen-f-managers --vintages` command recovers verified accessions into the two declared holdings tables. Require explicit manager CIKs, report-period bounds, filing cutoff and accession cap. Preview source cost and back up the existing destination prestate before an authorized bounded live append. A complete manager copy alone cannot certify a missing broad copy. Run the following examples from the repository root.
 
 Example preview for the verified Morgan Q2 pair (replace `<PY>` with the configured Python 3.13 executable):
 
 ~~~powershell
-rtk "<PY>" -m src data_extract thirteen-f-managers --vintages --cik 0000895421 --period-start 2024-06-30 --period-end 2024-06-30 --filed-through 2025-05-14 --max-filings 2 --accession 0000895421-24-000408 --accession 0000895421-25-000378 --archive "../../data/sec_13f_datasets/01jun2024-31aug2024_form13f.zip" --archive "../../data/sec_13f_datasets/01mar2025-31may2025_form13f.zip" --dry-run -c ../../configs
+rtk "<PY>" -m src data_extract thirteen-f-managers --vintages --cik 0000895421 --period-start 2024-06-30 --period-end 2024-06-30 --filed-through 2025-05-14 --max-filings 2 --accession 0000895421-24-000408 --accession 0000895421-25-000378 --archive "./data/sec_13f_datasets/01jun2024-31aug2024_form13f.zip" --archive "./data/sec_13f_datasets/01mar2025-31may2025_form13f.zip" --dry-run -c ./configs
 ~~~
 
-Paths are relative to the candidate worktree: existing source archives live at the repository root, so use their resolved absolute paths or `../../data/...` for `--archive`. Archives stay read-only. The actual scoped CLI, original-gap resume, cap, dry-run and replay were tested; the real bounded append wrote only the two approved new ledgers. Failed source reconciliation stops recovery; it does not remove or relabel existing versions.
+Use resolved absolute archive/configuration paths when working outside the repository root. Archives stay read-only. The scoped CLI, missing-original resume, cap, dry-run and immutable replay have bounded controls. Failed source reconciliation stops recovery without removing or relabeling existing versions. The cached-backfill performance refactor does not itself run this recovery or modify production sources.
 
 Run the candidate read-only validator after a completed batch:
 
 ~~~powershell
-rtk "<PY>" -m src validate institutionals --cik 0000895421 --period-start 2013-03-31 --period-end 2026-06-30 --filed-through 2026-10-08 -o ../../reports/validate/2026-10-09-institutional-13f-audit/_validate/p3-manual -c ../../configs
+rtk "<PY>" -m src validate institutionals --cik 0000895421 --period-start 2013-03-31 --period-end 2026-06-30 --filed-through 2026-10-08 -o ./reports/validate/2026-10-09-institutional-13f-audit/_validate/p3-manual -c ./configs
 ~~~
 
 A passing source/version validator does not certify full-universe coverage, dollar-unit economics, split flows or production adoption. Bounded recovery evidence is saved in the local ignored artifact `reports/validate/2026-10-09-institutional-13f-audit/p3-amendments.html`.

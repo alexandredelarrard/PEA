@@ -397,3 +397,11 @@ Updated only the [insider aggregate contract](./modules/data-aggregate.md#inside
 - Pages: [Overview](./OVERVIEW.md), [Data sources](./reference/data-sources.md), [Table catalog](./reference/table-catalog.md).
 - Validation: 114 self-regression tests and 72 overlapping independent focused tests pass, with zero live-write attempts. Actual accession `0002112884-26-000003` has 14/14 rows and a 9.99997 cover ratio; factor 10 is accepted. Both existing-table in-memory fixture validators pass, and the cached ZIP is unchanged.
 - Boundary: no production extraction, source-table write, cube rebuild or remote push. Cached-backfill performance measurements and proposals are a separate read-only review, frozen against the prior dev baseline.
+
+## 2026-10-12: refresh
+
+- Profile: internal/standard
+- source_commit: 5f8cc3d43f6e71c2acc549b2a80ea3aeabe8e073 (was 0ef13cfe8bfc0d2c4c5fb8d917d76eb3060e2971)
+- Coverage: approved cached13F backfill CPU/cache/preparation/resume refactor; immutable existing-table source books, CUSIP scope and ordinary versus forced recovery; targeted parser/writer controls and discovery I/O limits. No production source/cube rebuild was performed.
+- Pages: [Overview](./OVERVIEW.md), [Data sources](./reference/data-sources.md), [Recovery](./guides/large-backfills-and-recovery.md), [Testing](./guides/testing.md).
+- Evidence: local ignored reports/validate/2026-10-11-13f-backfill-performance/ contains original research, approval, RED/GREEN, actual-source/fixture timings, read-only validation and independent correctness/Ponytail reviews. Cached-download and source-rejection behavior remain disclosed limits.

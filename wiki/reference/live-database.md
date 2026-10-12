@@ -80,6 +80,10 @@ The older warning that Sharadar data reflected a free-tier subset became stale a
 - The run manifest and the 4 bulk sidecars are retired to `data/_retired/2026-10/`.
 - There is no `cube` table, and every `cube_part_*` ends on 2026-09-04.
 
+## 13F version adoption check — 11 October 2026
+
+Read-only closure inventory found 23,835,822 rows in `sec13f_hr` and 607,537 in `sec13f_manager_holdings`, both still on their legacy schemas. Neither contains verified accession/completion metadata. There are therefore no persisted confidentiality flags from the new design to recertify. The approved code's migration preserves these rows as unverified legacy accessions; original source replay is required before historical versioned cube use. Audit fixtures and fresh source validation are separate from this live state. No production source or cube write occurred during closure validation.
+
 ## Institutional and identity snapshot
 
 Important measured state:

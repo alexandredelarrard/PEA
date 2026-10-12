@@ -47,6 +47,14 @@ The [financial-statements fetcher](../../src/data_extract/utils/fundamentals/fet
 
 Secrets live only in the ignored root `.env`, loaded by [Context](../../src/context.py). Never copy credentials into config, logs, reports, or wiki content. `SEC_USER_AGENT` must identify a real contact.
 
+## 13F source versions and confidentiality
+
+The approved [existing-table contract](./table-catalog.md#existing-table-13f-versions--approved-storage-correction) stores verified accessions in `sec13f_hr` and, for roster managers, `sec13f_manager_holdings`. ZIP and ordinary XML/text extraction preserve source dates, available acceptance clocks, raw typed amounts and declared units. Reconciled positions and a hidden completion record commit atomically.
+
+Both decoders treat absent/blank/N/false/zero confidentiality metadata as ordinary public disclosure. Only an affirmative true/one/Y flag restricts inferred absences; legacy text also recognizes positive omission statements. Large portfolio moves do not imply confidentiality. A complete source packet may still have an unsupported reporting perimeter; that remains in [TODO](../TODO.md#13f-deferred-issues-from-the-october-2026-audit).
+
+Latest-only quarter upserts cannot recreate overwritten source versions. Historical adoption requires original-accession replay, preferably from cached ZIPs, then source validation before cube rebuild. The latest bounded independent replay accepted 307 originals/357,727 grouped positions, including eighty blank-flag books. These are scoped source counts, not an overall-cube error estimate. The code review did not rewrite production sources.
+
 ## Shared transport and extraction plumbing
 
 - [polite_http.py](../../src/utils/polite_http.py) supplies rate limiting and TLS impersonation for sources that reject ordinary clients.
@@ -301,6 +309,6 @@ On `harness/institutional-13f-pit-20261009`, the normal SEC walk, roster catch-u
 
 A missing original can be recovered even if a later amendment is already stored. Consumers resolve report-quarter versions as of each daily observation; old-quarter corrections cannot replace newer-quarter holdings or change earlier features. The bounded self-validation replays 21 real accessions and 98,297 grouped positions per table on a disposable PostgreSQL fixture; full production recovery and cube rebuilding were not run.
 
-Both ordinary XML and legacy-text readers pass `CompanyFiling.acceptance_datetime` to the manifest. Aware clocks and edgartools' Arrow-stripped naive UTC clocks retain UTC provenance; unavailable clocks stay date-only. `public_books()` in [institutional_vintages.py](../../.worktrees/institutional-13f-pit/src/utils/institutional_vintages.py) orders same-day versions by acceptance time when all relevant clocks exist, otherwise by amendment metadata and accession. Time orders changes; original/restatement replaces, NEW HOLDINGS adds, and a strict exact copied-majority NEW packet is inferred as a correction patch. Omitted patch positions remain unknown. A wrongly flagged sparse RESTATEMENT remains a classification limit.
+Both ordinary XML and legacy-text readers pass `CompanyFiling.acceptance_datetime` to the manifest. Aware clocks and edgartools' Arrow-stripped naive UTC clocks retain UTC provenance; unavailable clocks stay date-only. `public_books()` in `reports/worktrees/institutional-13f-pit/src/utils/institutional_vintages.py` orders same-day versions by acceptance time when all relevant clocks exist, otherwise by amendment metadata and accession. Time orders changes; original/restatement replaces, NEW HOLDINGS adds, and a strict exact copied-majority NEW packet is inferred as a correction patch. Omitted patch positions remain unknown. A wrongly flagged sparse RESTATEMENT remains a classification limit.
 
 Features remain daily. Usability is the later of the session after the effective local SEC filing day and the quarter deadline snapped to the calendar plus the existing three-session buffer. One daily manager-quarter book feeds comparisons against the latest public previous-quarter book on the same eligible cohort. No intraday purchases/sales are inferred. This source proof covers the tested XML, ZIP and legacy-text paths, not universal 1995 compatibility or full historical adoption.

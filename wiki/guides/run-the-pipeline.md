@@ -106,6 +106,23 @@ Every fetcher derives its work list from its own table's rows, its `Resume` cont
 - **DEF 14A LLM.** A stored row, an evidence-free answer included, counts as done; only `-F` sends the proxy again.
 - **13F.** A hole older than the 7-day overlap needs `thirteen-f --filing-window START:END`.
 
+### 13F version adoption before a historical cube rebuild
+
+The approved code stores original/amendment accessions in the two existing 13F tables, preserving legacy rows. A cube rerun cannot recreate overwritten source versions. The 11 October live check found no completed accessions, so first replay the required original source scope and pass the read-only validator. Use cached archives where available; broad recovery is a separate bounded operational task.
+
+For the existing historical universe, run the source reloads sequentially from merged dev:
+
+```powershell
+rtk "$PY" -m src data_extract thirteen-f-backfill -F -c ./configs
+rtk "$PY" -m src data_extract thirteen-f-managers --years 31 -c ./configs
+```
+
+The first rereads all published ZIP datasets from the configured source start (2013Q2), preserves each complete original/amendment accession for relevant managers and also fills roster-manager books. The second catches up missing EDGAR accessions for roster managers within the explicit 31-year report-period window; it has no `-F`. Existing-table migration and metadata columns are installed by the writer, preserving old rows as unverified `_legacy` accessions. These commands do not delete either table. Pre-2013 broad history and unavailable source files are not automatically certified by a successful run.
+
+For bounded verification or targeted recovery, use `data_extract thirteen-f-managers --vintages` with both repeated `--cik` and `--accession`, plus required `--period-start`, `--period-end`, `--filed-through`, `--max-filings`. Optional repeated `--archive` selects cached source transport; it does not replace CIK/accession scope. Review `--dry-run` first. The [CLI](../../src/data_extract/cli.py) writes both existing destinations; it creates no auxiliary business table. Validate the same named scope with `validate institutionals --cik ... --period-start ... --period-end ... --filed-through ...`.
+
+After source adoption and the user's price refresh, run `data_aggregate build-institutionals -F`, then `data_aggregate assemble-cube`. The full institutional rebuild is necessary for historical corrections; deleting all cube tables is unnecessary. These recovery/rebuild operations were not run by closure validation. Code merge/check status lives in the local audit `06-final.md`.
+
 ### Source-specific notes
 
 `fundamentals-employees` owns the 10-K/10-K/A/10-K405 headcount walk and uses GPT-6 Luna on filing text. It stores one row per filing date at the SEC filing date (the guarded components with their basis, status and quotes, or a status-only row for a filing with no usable count) and can run without replaying SEC XBRL facts or `fundamentals_history_sec`. A normal run lists the whole history window and skips filing dates that already have a row. Delete a row to have that filing re-decided. `--full` re-decides every filing in the window and upserts the rows. A full run uses SEC and OpenAI APIs and writes the employee table. One process grows with every ticker it reads, so run large sets in sequential batches ([runbook](./large-backfills-and-recovery.md#employee-headcount-universe-run)). Exact current names and options are defined in [data_extract/cli.py](../../src/data_extract/cli.py).
@@ -123,7 +140,7 @@ rtk proxy "$PY" -m src data_extract superinvestors -c ./configs
 rtk proxy "$PY" -m src data_extract thirteen-f-managers --years 31 -c ./configs
 ```
 
-`--years 31` sets the report-period history depth for this run; it does not force a reread. `thirteen-f-managers` has no `-F` option. Its [pending-book planner](../../src/data_extract/utils/institutionals/fetch_13f_managers.py) skips a stored `(period, filing_date)` even when the book's amounts are NULL. `superinvestors -F` rebuilds roster dates and CIK resolutions; it does not repair holdings.
+`--years 31` sets the report-period history depth for this run; it does not force a reread. `thirteen-f-managers` has no `-F` option. Its [pending-book planner](../../src/data_extract/utils/institutionals/fetch_13f_managers.py) skips only verified completed accession packets. Legacy latest-only rows do not mark an original or amendment complete. `superinvestors -F` rebuilds roster dates and CIK resolutions; it does not repair holdings.
 
 After a parser fix, repair existing holdings with a backed-up, source-verified whole-book proposal and an atomic scoped application, rather than relying on catch-up upserts to remove stale CUSIPs. The parser fix is merged into `dev`, and the 2026-10-07 historical repair was applied on 2026-10-08 (4 replaced books, 62 NULL-amount books); priorities and exact remaining gaps are in [TODO](../TODO.md#superinvestor-roster-follow-ups). After that repair, build `cube_part_prices` if absent, run `data_aggregate build-institutionals -F`, then `data_aggregate assemble-cube` and the relevant read-only [validation](./validate-a-change.md). The latter assembly command has no `-F` option; see [aggregate CLI](../../src/data_aggregate/cli.py).
 

@@ -129,6 +129,9 @@ def _holding_shaped(line: str) -> bool:
         return False
     if re.search(r"\b(?:SH|SHS|PRN|SHARES|PRINCIPAL|CALL|PUT)\b", plain, re.I):
         return True
+    first = _NUMBER.search(plain)
+    if first and re.search(r"[A-Z]", plain[: first.start()], re.I) and _NUMBER.match(plain[first.end() :].lstrip()):
+        return True
     identifiers = [match for match in _CUSIP.finditer(plain) if re.search(r"[0-9*@#]", match.group(1))]
     return any(re.search(r"[A-Z]", plain[: m.start()], re.I) and _NUMBER.match(plain[m.end() :].lstrip()) for m in identifiers)
 

@@ -853,11 +853,25 @@ def test_signer_address_is_not_an_unconsumed_holding() -> None:
 
 
 @pytest.mark.parametrize(
-    "location", ["before-table", "after-table", "before-header", "before-marker", "after-table-missing-cusip", "before-marker-missing-cusip"]
+    "location",
+    [
+        "before-table",
+        "after-table",
+        "before-header",
+        "before-marker",
+        "after-table-missing-cusip",
+        "before-marker-missing-cusip",
+        "after-table-untyped-missing-cusip",
+        "before-marker-untyped-missing-cusip",
+    ],
 )
 def test_unconsumed_holdings_cannot_complete_either_destination(location: str, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     raw = _table(_HEADER, _AFLAC).replace("Form 13F Information Table Entry Total: 1", "")
-    extra = _AMGEN.replace("031162100", "         ").replace("100,000", "100,000 SH") if location.endswith("missing-cusip") else _AMGEN
+    extra = _AMGEN
+    if location.endswith("missing-cusip"):
+        extra = extra.replace("031162100", "         ")
+        if "untyped" not in location:
+            extra = extra.replace("100,000", "100,000 SH")
     if location == "before-table":
         raw = _HEADER + "\n" + extra + "\n" + raw
     elif location.startswith("after-table"):

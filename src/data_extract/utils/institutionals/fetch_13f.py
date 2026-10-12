@@ -216,7 +216,7 @@ def _book_frame(cik: str, filing_date: Any, period: Any, infotable: pd.DataFrame
     out["position_type"] = _dominant_type(out)
     if "raw_value" in infotable:
         # Unknown dollars cannot become zero through the CUSIP sum (including mixed legs).
-        invalid = typed.groupby("cusip")[list(_VALUE_BY_TYPE.values())].agg(lambda values: values.isna().any())
+        invalid = typed[list(_VALUE_BY_TYPE.values())].isna().groupby(typed["cusip"]).any()
         for column in _VALUE_BY_TYPE.values():
             out[column] = out[column].mask(out["cusip"].map(invalid[column]))
         source_types = position_type(infotable)
@@ -353,12 +353,11 @@ def _save_book(context: Context, book: pd.DataFrame) -> tuple[int, int]:
 
 
 def _ticker_map(context: Context, book: pd.DataFrame, walk: _WalkState) -> pd.DataFrame:
-    """The CUSIP->ticker map, rebuilt only when the book carries a CUSIP not looked up yet
-    (`build_cusip_ticker_map` re-reads the whole map table)."""
-    new_cusips = set(book["cusip"]) - walk.looked_up
+    """Reuse the full per-walk cache, including misses; failed lookups stay unknown and retryable."""
+    new_cusips = set(book["cusip"].dropna()) - walk.looked_up
     if new_cusips or walk.cmap is None:
-        walk.cmap = build_cusip_ticker_map(context, sorted(new_cusips))
-        walk.looked_up |= new_cusips
+        walk.cmap = build_cusip_ticker_map(context, sorted(new_cusips), cached=walk.cmap, include_misses=True)
+        walk.looked_up.update(walk.cmap["cusip"])
     return walk.cmap
 
 

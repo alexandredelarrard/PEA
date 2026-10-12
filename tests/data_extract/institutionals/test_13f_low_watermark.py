@@ -61,7 +61,7 @@ def _patch(monkeypatch: pytest.MonkeyPatch, filings: list[_FakeFiling]) -> tuple
 
     monkeypatch.setattr(f13, "Filings", _Filings)
     monkeypatch.setattr(f13, "get_filings", _get_filings)
-    monkeypatch.setattr(f13, "build_cusip_ticker_map", lambda context, cusips: CMAP)
+    monkeypatch.setattr(f13, "build_cusip_ticker_map", lambda context, cusips, **kwargs: CMAP)
     monkeypatch.setattr(f13, "_sleep", waits.append)
     return windows, waits
 

@@ -25,7 +25,7 @@ def _book(cik: str) -> pd.DataFrame:
 
 
 def test_the_walk_batch_save_pads_the_cik_in_both_tables(sqlite_store, monkeypatch):
-    monkeypatch.setattr(f13, "build_cusip_ticker_map", lambda context, cusips: CMAP)
+    monkeypatch.setattr(f13, "build_cusip_ticker_map", lambda context, cusips, **kwargs: CMAP)
     ctx: Any = SimpleNamespace(store=sqlite_store)
 
     f13._save_batch(ctx, _book(_UNPADDED), {"AAPL"}, {ROSTER}, f13._WalkState())

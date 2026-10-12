@@ -63,17 +63,21 @@ def _mapped_only(df: pd.DataFrame) -> pd.DataFrame:
     return df[df["ticker"].notna() & (df["ticker"].astype("string").str.strip() != "")]
 
 
-def build_cusip_ticker_map(context: Context, cusips: list[str], pause: float = 6.0) -> pd.DataFrame:
+def build_cusip_ticker_map(
+    context: Context, cusips: list[str], pause: float = 6.0, *, cached: pd.DataFrame | None = None, include_misses: bool = False
+) -> pd.DataFrame:
     """Return the mapped [cusip, ticker] rows, looking up only CUSIPs absent from the cache.
-    Responded batches are persisted (misses as NULL); failed batches are left to retry."""
+    Reuse a previously normalized full cache when supplied. Responded misses remain NULL;
+    failed batches stay retryable. Ordinary callers receive mapped rows only."""
 
     api_key = os.getenv("OPENFIGI_API_KEY")
-    cached = context.store.load(Tables.cusip_ticker_map, columns=["cusip", "ticker"], optional=True)
-    cached = (
-        pd.DataFrame(columns=["cusip", "ticker"])
-        if cached is None
-        else cached.assign(cusip=cached["cusip"].map(normalize_cusip)).dropna(subset=["cusip"]).drop_duplicates("cusip", keep="last")
-    )
+    if cached is None:
+        cached = context.store.load(Tables.cusip_ticker_map, columns=["cusip", "ticker"], optional=True)
+        cached = (
+            pd.DataFrame(columns=["cusip", "ticker"])
+            if cached is None
+            else cached.assign(cusip=cached["cusip"].map(normalize_cusip)).dropna(subset=["cusip"]).drop_duplicates("cusip", keep="last")
+        )
 
     # Overrides apply before the early return, since a cached miss is never retried; keep="last" makes them win.
     overrides = pd.DataFrame({"cusip": [normalize_cusip(c) for c in CUSIP_TICKER_OVERRIDES], "ticker": list(CUSIP_TICKER_OVERRIDES.values())})
@@ -89,7 +93,7 @@ def build_cusip_ticker_map(context: Context, cusips: list[str], pause: float = 6
     known = set(cached["cusip"])
     todo = sorted({n for c in cusips if (n := normalize_cusip(c)) and n not in known})
     if not todo:
-        return _mapped_only(cached)
+        return cached if include_misses else _mapped_only(cached)
 
     mapped: dict[str, str] = {}
     attempted: list[str] = []  # cusips whose OpenFIGI batch RESPONDED (a miss is permanent)
@@ -117,4 +121,4 @@ def build_cusip_ticker_map(context: Context, cusips: list[str], pause: float = 6
         f"CUSIP->ticker map: {n_mapped} mapped / {len(out)} attempted "
         f"({len(mapped)} newly mapped of {len(attempted)} attempted) -> DB 'cusip_ticker_map'"
     )
-    return _mapped_only(out)
+    return out if include_misses else _mapped_only(out)

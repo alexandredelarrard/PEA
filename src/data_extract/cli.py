@@ -305,7 +305,7 @@ def thirteen_f(config_path: str, tickers: str | None, filing_window: str | None,
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 @AS_OF_OPTION
 def thirteen_f_backfill(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
-    """Tickers added inside `sec13f_hr`'s overlap, each from its own earliest stored period back to 2013 Q2.
+    """Tickers added inside `sec13f_hr`'s overlap: discover from 2013 Q2, skipping verified completed accessions.
     `-t X` narrows the new tickers (an established X does nothing); `-t X -F` re-reads every data set for X."""
     _, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_13f_backfill(context, tickers=_tickers(context, tickers) if tickers else None, as_of=_run_date(as_of), full=full)

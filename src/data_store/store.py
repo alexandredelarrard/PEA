@@ -17,6 +17,7 @@ import json
 import logging
 import threading
 from collections.abc import Iterator, Sequence
+from contextlib import nullcontext
 from typing import Any, cast
 
 import numpy as np
@@ -377,8 +378,10 @@ class DataStore:
     None for the few genuinely optional reads.
     """
 
-    def __init__(self, engine: Engine):
+    def __init__(self, engine: Engine) -> None:
         self.engine = engine
+        self._13f_tables: dict[str, Table] = {}
+        self._13f_lock = threading.RLock()
 
     # so callers write `store.NOT_NULL` without importing it
     NOT_NULL = NOT_NULL
@@ -502,29 +505,52 @@ class DataStore:
             values = [r[0] for r in conn.execute(stmt).all()]
         return [v for v in values if v is not None] if dropna else values
 
+    def _migrate_13f_table(self, spec: SchemaTable) -> bool:
+        """Verify one source key or migrate its existing legacy key atomically."""
+        with self.engine.begin() as conn:
+            if self.engine.dialect.name == "postgresql":
+                conn.execute(text("SELECT pg_advisory_xact_lock(hashtext(:scope))"), {"scope": spec.name})
+            old = inspect(conn).get_pk_constraint(spec.name)
+            if tuple(old["constrained_columns"]) == spec.pk:
+                return False
+            expected = tuple(key for key in spec.pk if key != "accession_number")
+            if tuple(old["constrained_columns"]) != expected:
+                raise ValueError(f"Unexpected 13F primary key: {spec.name}: {old}")
+            if self.engine.dialect.name != "postgresql":
+                raise ValueError("Legacy 13F primary-key migration requires PostgreSQL")
+            conn.execute(text(f"ALTER TABLE {ddl.quote(spec.name)} ADD COLUMN IF NOT EXISTS accession_number TEXT NOT NULL DEFAULT '_legacy'"))
+            conn.execute(text(f"ALTER TABLE {ddl.quote(spec.name)} DROP CONSTRAINT {ddl.quote(old['name'])}"))
+            conn.execute(text(f"ALTER TABLE {ddl.quote(spec.name)} ADD PRIMARY KEY ({', '.join(ddl.quote(key) for key in spec.pk)})"))
+        return True
+
     def migrate_13f_tables(self) -> list[str]:
-        """Rekey the two existing PostgreSQL tables, retaining every unverified legacy row."""
+        """Rekey existing PostgreSQL tables, retaining every unverified legacy row."""
         changed: list[str] = []
-        for spec in (Tables.sec13f_hr, Tables.sec13f_manager_holdings):
-            if not self.exists(spec):
-                continue
-            with self.engine.begin() as conn:
-                if self.engine.dialect.name == "postgresql":
-                    conn.execute(text("SELECT pg_advisory_xact_lock(hashtext(:scope))"), {"scope": spec.name})
-                old = inspect(conn).get_pk_constraint(spec.name)
-                if tuple(old["constrained_columns"]) == spec.pk:
+        with self._13f_lock:
+            for spec in (Tables.sec13f_hr, Tables.sec13f_manager_holdings):
+                prepared = self._13f_tables.get(spec.name)
+                if prepared is not None and tuple(prepared.primary_key.columns.keys()) == spec.pk:
                     continue
-                expected = tuple(key for key in spec.pk if key != "accession_number")
-                if tuple(old["constrained_columns"]) != expected:
-                    raise ValueError(f"Unexpected 13F primary key: {spec.name}: {old}")
-                if self.engine.dialect.name != "postgresql":
-                    raise ValueError("Legacy 13F primary-key migration requires PostgreSQL")
-                conn.execute(text(f"ALTER TABLE {ddl.quote(spec.name)} ADD COLUMN IF NOT EXISTS accession_number TEXT NOT NULL DEFAULT '_legacy'"))
-                conn.execute(text(f"ALTER TABLE {ddl.quote(spec.name)} DROP CONSTRAINT {ddl.quote(old['name'])}"))
-                conn.execute(text(f"ALTER TABLE {ddl.quote(spec.name)} ADD PRIMARY KEY ({', '.join(ddl.quote(key) for key in spec.pk)})"))
-            changed.append(spec.name)
-            logger.warning("%s: accession primary key installed; legacy rows retained as unverified _legacy.", spec.name)
+                if not self.exists(spec):
+                    continue
+                if self._migrate_13f_table(spec):
+                    self._13f_tables.pop(spec.name, None)
+                    changed.append(spec.name)
+                    logger.warning("%s: accession primary key installed; legacy rows retained as unverified _legacy.", spec.name)
         return changed
+
+    def _prepare_13f_table(self, table: SchemaTable, frame: pd.DataFrame) -> Table:
+        """Reuse verified schema until incoming columns or a store schema operation changes it."""
+        with self._13f_lock:
+            prepared = self._13f_tables.get(table.name)
+            if prepared is not None and tuple(prepared.primary_key.columns.keys()) == table.pk and set(frame.columns) <= set(prepared.c.keys()):
+                return prepared
+            ensure_table(self.engine, table.name, frame)
+            self.migrate_13f_tables()
+            ensure_columns(self.engine, table.name, frame)
+            prepared = _reflect(self.engine, table.name)
+            self._13f_tables[table.name] = prepared
+            return prepared
 
     def save_13f_filing(
         self,
@@ -593,10 +619,7 @@ class DataStore:
                 dtype = manifest[column].dtype
                 dtype = "Int64" if pd.api.types.is_integer_dtype(dtype) else ("boolean" if pd.api.types.is_bool_dtype(dtype) else dtype)
                 frame[column] = frame[column].astype(dtype)
-        ensure_table(self.engine, table.name, frame)
-        self.migrate_13f_tables()
-        ensure_columns(self.engine, table.name, frame)
-        books = _reflect(self.engine, table.name)
+        books = self._prepare_13f_table(table, frame)
         with self.engine.begin() as conn:
             if self.engine.dialect.name == "postgresql":
                 conn.execute(text("SELECT pg_advisory_xact_lock(hashtext(:scope))"), {"scope": f"{table.name}:{row['accession_number']}"})
@@ -761,7 +784,7 @@ class DataStore:
         return cols
 
     # -- writes ------------------------------------------------------------ #
-    def save(self, table, df: pd.DataFrame, pk: list[str] | None = None) -> int:
+    def save(self, table: SchemaTable | str, df: pd.DataFrame, pk: list[str] | None = None) -> int:
         """Upsert `df` into `table` on its PK, creating the table if needed."""
         name = name_of(table)
         if df is None or df.empty:
@@ -769,13 +792,15 @@ class DataStore:
             return 0
         if pk is None:
             pk = list(resolve(table).pk)
-        if name in (Tables.sec13f_hr.name, Tables.sec13f_manager_holdings.name):
-            if "accession_number" not in df:
-                df = df.assign(accession_number="_legacy")
-            self.migrate_13f_tables()
-        ensure_table(self.engine, name, df)
-        ensure_columns(self.engine, name, df)  # evolve schema for new columns
-        return upsert_dataframe(self.engine, df, name, pk)
+        with self._13f_lock if name in (Tables.sec13f_hr.name, Tables.sec13f_manager_holdings.name) else nullcontext():
+            self._13f_tables.pop(name, None)
+            if name in (Tables.sec13f_hr.name, Tables.sec13f_manager_holdings.name):
+                if "accession_number" not in df:
+                    df = df.assign(accession_number="_legacy")
+                self.migrate_13f_tables()
+            ensure_table(self.engine, name, df)
+            ensure_columns(self.engine, name, df)  # evolve schema for new columns
+            return upsert_dataframe(self.engine, df, name, pk)
 
     def bulk_seed(self, table, df: pd.DataFrame) -> int:
         """Fast COPY append onto a schema `replace` already established (the cube's streaming
@@ -835,7 +860,7 @@ class DataStore:
         with self.engine.begin() as conn:
             return int(conn.execute(stmt).rowcount)
 
-    def replace(self, table, df: pd.DataFrame, chunksize: int = 200_000) -> int:
+    def replace(self, table: SchemaTable | str, df: pd.DataFrame, chunksize: int = 200_000) -> int:
         """Full rebuild: empty the table, fast-COPY the frame back in chunks.
 
         Managed tables are DELETEd (keeping their sql/schema.sql DDL); unmanaged
@@ -847,29 +872,37 @@ class DataStore:
         if df is None or df.empty:
             return 0
         name = name_of(table)
-        if resolve(table).is_unmanaged:
-            self.drop(name)
-        if name in (Tables.sec13f_hr.name, Tables.sec13f_manager_holdings.name):
-            if "accession_number" not in df:
-                df = df.assign(accession_number="_legacy")
-            self.migrate_13f_tables()
-        ensure_table(self.engine, name, df)
-        ensure_columns(self.engine, name, df)  # evolve schema for new columns
-        with self.engine.begin() as conn:
-            conn.execute(text(f'DELETE FROM "{name}"'))
-        for i in range(0, len(df), chunksize):
-            copy_load(self.engine, df.iloc[i : i + chunksize], name)
-        return len(df)
+        with self._13f_lock if name in (Tables.sec13f_hr.name, Tables.sec13f_manager_holdings.name) else nullcontext():
+            self._13f_tables.pop(name, None)
+            if resolve(table).is_unmanaged:
+                self.drop(name)
+            if name in (Tables.sec13f_hr.name, Tables.sec13f_manager_holdings.name):
+                if "accession_number" not in df:
+                    df = df.assign(accession_number="_legacy")
+                self.migrate_13f_tables()
+            ensure_table(self.engine, name, df)
+            ensure_columns(self.engine, name, df)  # evolve schema for new columns
+            with self.engine.begin() as conn:
+                conn.execute(text(f'DELETE FROM "{name}"'))
+            for i in range(0, len(df), chunksize):
+                copy_load(self.engine, df.iloc[i : i + chunksize], name)
+            return len(df)
 
-    def ensure_columns(self, table, df: pd.DataFrame) -> list[str]:
-        """ADD COLUMN for any frame column the table lacks; returns the columns added."""
-        return ensure_columns(self.engine, name_of(table), df)
+    def ensure_columns(self, table: SchemaTable | str, df: pd.DataFrame) -> list[str]:
+        """ADD COLUMN for missing frame columns and invalidate prepared 13F metadata."""
+        name = name_of(table)
+        with self._13f_lock if name in (Tables.sec13f_hr.name, Tables.sec13f_manager_holdings.name) else nullcontext():
+            self._13f_tables.pop(name, None)
+            return ensure_columns(self.engine, name, df)
 
-    def drop(self, table) -> None:
+    def drop(self, table: SchemaTable | str) -> None:
         """Drop a table if it exists (unmanaged-part rebuilds, superseded-table cleanup).
 
         Takes a bare name as well as a `Table`, since the thing being dropped is sometimes a
         table that has already been removed from the registry.
         """
-        with self.engine.begin() as conn:
-            conn.execute(text(f'DROP TABLE IF EXISTS "{name_of(table)}"'))
+        name = name_of(table)
+        with self._13f_lock if name in (Tables.sec13f_hr.name, Tables.sec13f_manager_holdings.name) else nullcontext():
+            self._13f_tables.pop(name, None)
+            with self.engine.begin() as conn:
+                conn.execute(text(f'DROP TABLE IF EXISTS "{name}"'))

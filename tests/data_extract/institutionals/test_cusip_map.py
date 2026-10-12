@@ -11,12 +11,18 @@ from __future__ import annotations
 import types
 from typing import Any
 
+import pandas as pd
+import pytest
+
 import src.data_extract.utils.institutionals.fetch_cusip_map as cm
 from src.constants.constants import CUSIP_TICKER_OVERRIDES
+from src.data_extract.utils.institutionals import fetch_13f as f13
 from src.data_extract.utils.institutionals.fetch_cusip_map import (
     build_cusip_ticker_map,
     normalize_cusip,
 )
+from src.data_store.schema import Tables
+from src.data_store.store import DataStore
 from tests.conftest import FakeStore  # the ONE shared store double -- ABSOLUTE, see its docstring
 
 # `build_cusip_ticker_map` now always merges the curated CINS overrides
@@ -105,3 +111,50 @@ def test_unmapped_cusip_recorded_not_requeried(monkeypatch):
         "  '999999999' (no OpenFIGI match) recorded as attempted -> run2 makes 0 new calls; "
         "only real mappings feed the merge. The rate-limited tail no longer re-runs. Validated."
     )
+
+
+def test_walk_reuses_cache_including_known_misses(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cm, "CUSIP_TICKER_OVERRIDES", {})
+    sqlite_store.save(Tables.cusip_ticker_map, pd.DataFrame({"cusip": ["037833100", "999999999"], "ticker": ["AAPL", None]}))
+    context = types.SimpleNamespace(store=sqlite_store)
+    loads = []
+    original = sqlite_store.load
+
+    def counted(table: Any, *args: Any, **kwargs: Any) -> Any:
+        if table == Tables.cusip_ticker_map:
+            loads.append(table)
+        return original(table, *args, **kwargs)
+
+    monkeypatch.setattr(sqlite_store, "load", counted)
+    monkeypatch.setattr(cm, "_openfigi_request", lambda *args: pytest.fail("Known cached miss must not hit provider"))
+    walk = f13._WalkState()
+    for cusip in ("037833100", "999999999", "037833100"):
+        f13._ticker_map(context, pd.DataFrame({"cusip": [cusip]}), walk)
+    assert len(loads) == 1
+    assert "999999999" in walk.looked_up
+    print("SANITY: successive books reuse one cache read, including permanent NULL misses, without provider requests.")
+
+
+def test_walk_retries_transport_failure_without_caching_a_miss(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cm, "CUSIP_TICKER_OVERRIDES", {})
+    monkeypatch.setattr(cm.time, "sleep", lambda _: None)
+    context = types.SimpleNamespace(store=sqlite_store)
+    calls = []
+
+    def request(cusips: list[str], api_key: str | None) -> list[dict[str, Any]]:
+        calls.append(cusips)
+        if len(calls) == 1:
+            raise ConnectionError("fixture transport failure")
+        return [{"data": [{"ticker": "FIXED"}]} for _ in cusips]
+
+    monkeypatch.setattr(cm, "_openfigi_request", request)
+    walk = f13._WalkState()
+    book = pd.DataFrame({"cusip": ["999999999"]})
+    f13._ticker_map(context, book, walk)
+    assert "999999999" not in walk.looked_up
+    assert sqlite_store.load(Tables.cusip_ticker_map, optional=True) is None
+    second = f13._ticker_map(context, book, walk)
+    assert len(calls) == 2 and second.set_index("cusip").loc["999999999", "ticker"] == "FIXED"
+    f13._ticker_map(context, book, walk)
+    assert len(calls) == 2
+    print("SANITY: a transport failure remains absent from cache and known IDs; a later book retries and successful results are reused.")

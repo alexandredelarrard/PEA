@@ -36,6 +36,7 @@ from src.constants.constants import SEC_13F_FORMS
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import ZipRead, cache_dir, ensure_zip, is_cached, read_zip_tables
 from src.data_extract.utils.common.empty_markers import marker_frame
+from src.data_extract.utils.common.resume import DONE_PER_KEY, stored_accessions
 from src.data_extract.utils.common.sec_io import TransientReadError, sec_get
 from src.data_extract.utils.institutionals.fetch_13f import (
     _HR_COLS,
@@ -43,6 +44,7 @@ from src.data_extract.utils.institutionals.fetch_13f import (
     _latest_per_key,
     _pick,
     _Saver,
+    _WalkState,
     fetch_13f,
     filing_vintage,
     save_hr,
@@ -134,23 +136,23 @@ def backfill_targets(context: Context, tickers: list[str] | None, as_of: pd.Time
     return sorted(new if asked is None else new & asked)
 
 
-def resume_points(context: Context, tickers: list[str]) -> dict[str, pd.Timestamp | None]:
-    """Each ticker's earliest stored `sec13f_hr.period` (None without a row), from one `key_stats` read."""
-    df_stats = context.store.key_stats(Tables.sec13f_hr, "ticker", "period", where={"ticker": tickers})
-    first = {str(key).upper(): pd.Timestamp(day) for key, day in zip(df_stats["key"], df_stats["first"], strict=True)}
-    return {ticker: first.get(ticker) for ticker in tickers}
-
-
-def backfill_work(data_sets: list[DataSet], points: dict[str, pd.Timestamp | None], full: bool) -> list[tuple[DataSet, list[str]]]:
-    """`(data set, tickers)` newest first: a data set from the table's source start is read for the
-    tickers whose resume point is after its window start (every ticker under `full`)."""
+def backfill_work(data_sets: list[DataSet], tickers: list[str]) -> list[tuple[DataSet, list[str]]]:
+    """Discover every eligible window; completed accessions, not an earliest quarter, skip decoding."""
     source_start = pd.Timestamp(cast(str, cast(Resume, Tables.sec13f_hr.resume).source_start))
-    work: list[tuple[DataSet, list[str]]] = []
-    for data_set in sorted(data_sets, key=lambda d: d.start, reverse=True):
-        due = sorted(t for t, first in points.items() if full or first is None or data_set.start < first)
-        if due and data_set.start >= source_start:
-            work.append((data_set, due))
-    return work
+    return [
+        (data_set, sorted(tickers))
+        for data_set in sorted(data_sets, key=lambda item: item.start, reverse=True)
+        if tickers and data_set.start >= source_start
+    ]
+
+
+def _completed_accessions(context: Context, ciks: set[str], roster_ciks: set[str]) -> frozenset[str]:
+    """Only a complete broad destination and any required roster destination certify an accession."""
+    broad = stored_accessions(context, Tables.sec13f_hr, sorted(ciks), DONE_PER_KEY, where={"parse_status": "complete"})
+    managers = stored_accessions(context, Tables.sec13f_manager_holdings, sorted(roster_ciks), DONE_PER_KEY, where={"parse_status": "complete"})
+    return frozenset(
+        accession for cik, accessions in broad.items() for accession in accessions if cik not in roster_ciks or accession in managers.get(cik, set())
+    )
 
 
 def _holds(chunk: pd.DataFrame, cusips: frozenset[str]) -> pd.Series:
@@ -341,6 +343,9 @@ def _backfill_data_set(
     cmap: pd.DataFrame,
     roster_ciks: set[str],
     submissions: pd.DataFrame | None = None,
+    *,
+    saver: _Saver | None = None,
+    completed: frozenset[str] = frozenset(),
 ) -> int:
     """Preserve full source accessions for a scope fixed across all recovery archives."""
     if submissions is None:
@@ -351,7 +356,11 @@ def _backfill_data_set(
         submissions, holders = scope
         roster_ciks = roster_ciks | holders
     selected = submissions.loc[submissions.cik.isin(roster_ciks)]
-    saver = _Saver(context, set(tickers), roster_cik_union(context), 1)
+    selected = selected.loc[~selected.accession.isin(completed)]
+    if selected.empty:
+        logger.info("13F backfill %s: no pending accession; second source read skipped", data_set.name)
+        return 0
+    saver = saver or _Saver(context, set(tickers), roster_cik_union(context), 1, _WalkState(looked_up=set(cmap.cusip), cmap=cmap))
     saved_before = saver.walk.hr_saved
     for manifest, holdings in cached_filing_vintages(
         path,
@@ -421,13 +430,14 @@ def _walk_gap(context: Context, data_sets: list[DataSet], cache: Path, tickers: 
 
 def fetch_13f_backfill(context: Context, tickers: list[str] | None, as_of: pd.Timestamp, *, full: bool = False) -> int:
     """Fill `sec13f_hr` from the 13F data sets for the tickers `backfill_targets` selects, then walk
-    EDGAR over their gap after the newest data set; returns rows saved from the data sets. With no
+    EDGAR over their gap after the newest data set. Full roster books also enter their destination.
+    Returns broad rows saved from the data sets. With no
     ticker due it reads nothing but the universe and downloads nothing."""
     targets = backfill_targets(context, tickers, as_of, full)
     if not targets:
         logger.info("13F backfill: no new ticker; nothing to do")
         return 0
-    cmap = build_cusip_ticker_map(context, [])
+    cmap = build_cusip_ticker_map(context, [], include_misses=True)
     unmapped = sorted(set(targets) - set(cmap["ticker"]))
     if unmapped:
         logger.warning("13F backfill: no CUSIP in %s maps to %s; skipped", Tables.cusip_ticker_map, ", ".join(unmapped))
@@ -435,12 +445,12 @@ def fetch_13f_backfill(context: Context, tickers: list[str] | None, as_of: pd.Ti
     data_sets = published_data_sets(context) if targets else None
     if not data_sets:
         return 0
-    work = backfill_work(data_sets, resume_points(context, targets), full)
+    work = backfill_work(data_sets, targets)
     roster_ciks = roster_cik_union(context)
     cache = cache_dir(context, str(context.config.local.paths.sec_13f_datasets))
     archived: list[tuple[DataSet, list[str], Path, pd.DataFrame]] = []
-    relevant_ciks = roster_ciks | set(context.store.distinct(Tables.sec13f_hr, "cik", where={"ticker": targets}))
     cusips = frozenset(cmap.loc[cmap.ticker.isin(targets), "cusip"])
+    relevant_ciks = roster_ciks | set(context.store.distinct(Tables.sec13f_hr, "cik", where={"cusip": sorted(cusips)}))
     for data_set, due in tqdm(work, desc="13F source scope"):
         path = ensure_zip(context, cache / data_set.filename, data_set.urls, label=f"13F {data_set.name}", timeout=_DOWNLOAD_TIMEOUT, log=logger)
         if path is None:
@@ -452,9 +462,11 @@ def fetch_13f_backfill(context: Context, tickers: list[str] | None, as_of: pd.Ti
         submissions, holders = scope
         relevant_ciks |= holders
         archived.append((data_set, due, path, submissions))
+    completed = frozenset() if full else _completed_accessions(context, relevant_ciks, roster_ciks)
     saved = 0
+    saver = _Saver(context, set(targets), roster_ciks, 1, _WalkState(looked_up=set(cmap.cusip), cmap=cmap))
     for data_set, due, path, submissions in tqdm(archived, desc="13F filing versions"):
-        saved += _backfill_data_set(context, path, data_set, due, cmap, relevant_ciks, submissions)
+        saved += _backfill_data_set(context, path, data_set, due, cmap, relevant_ciks, submissions, saver=saver, completed=completed)
     logger.info("13F backfill: saved %d row(s) for %d ticker(s) from %d data set(s)", saved, len(targets), len(work))
     _walk_gap(context, data_sets, cache, targets, as_of, full)
     return saved
@@ -464,6 +476,8 @@ def cached_filing_vintages(
     path: Path, accessions: list[str], *, on_invalid: Callable[[str, ValueError], None] | None = None
 ) -> list[tuple[pd.DataFrame, pd.DataFrame]]:
     """Read selected complete accessions before any latest-only filtering; archives stay read-only."""
+    if not accessions:
+        return []
     wanted = frozenset(accessions)
     tables = read_zip_tables(
         path,
@@ -486,13 +500,15 @@ def cached_filing_vintages(
     submissions = _submissions(tables["SUBMISSION.tsv"], tables["COVERPAGE.tsv"]).set_index("accession")
     covers = tables["COVERPAGE.tsv"].set_index("ACCESSION_NUMBER")
     summaries = tables["SUMMARYPAGE.tsv"].set_index("ACCESSION_NUMBER")
+    info_table = tables["INFOTABLE.tsv"]
+    groups = info_table.groupby("ACCESSION_NUMBER", sort=False).indices
     packets: list[tuple[pd.DataFrame, pd.DataFrame]] = []
     for accession in accessions:
         try:
             if accession not in submissions.index or accession not in covers.index or accession not in summaries.index:
                 raise ValueError(f"Incomplete SEC cover metadata: {accession}")
             submission, cover, summary = submissions.loc[accession], covers.loc[accession], summaries.loc[accession]
-            info = tables["INFOTABLE.tsv"].loc[tables["INFOTABLE.tsv"]["ACCESSION_NUMBER"].eq(accession)]
+            info = info_table.iloc[groups.get(accession, [])]
             kind = str(cover["AMENDMENTTYPE"]) if submission.is_amendment else "original"
             restricted = str(summary.get("ISCONFIDENTIALOMITTED")).strip().lower() in {"true", "1", "y"}
             packets.append(

@@ -35,7 +35,7 @@ from src.data_extract.utils.institutionals.fetch_13f import filing_vintage
 from src.data_extract.utils.institutionals.fetch_13f_managers import pending_vintages
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
-from src.utils.institutional_vintages import iter_public_books
+from src.utils.institutional_vintages import iter_public_books, reconcile_13f_source
 
 GRID = pd.bdate_range("2024-01-01", "2025-12-31")
 
@@ -108,6 +108,155 @@ def packet(
 
 def combine(*packets: tuple[pd.DataFrame, pd.DataFrame]) -> tuple[pd.DataFrame, pd.DataFrame]:
     return pd.concat([p[0] for p in packets], ignore_index=True), pd.concat([p[1] for p in packets], ignore_index=True)
+
+
+@pytest.mark.parametrize(("received", "declared", "accepted"), [(17, 20, True), (16, 20, False), (22, 20, True), (23, 20, False), (20, 20, True)])
+def test_source_row_coverage_boundary_and_idempotent_save(
+    sqlite_store: DataStore, caplog: pytest.LogCaptureFixture, received: int, declared: int, accepted: bool
+) -> None:
+    info = pd.DataFrame(
+        [
+            {"CUSIP": f"{number:09d}", "TITLEOFCLASS": "COM", "SSHPRNAMT": 100, "SSHPRNAMTTYPE": "SH", "VALUE": 1000}
+            for number in range(1, received + 1)
+        ]
+    )
+    kwargs = dict(
+        cik="1",
+        accession_number=f"coverage-{received}-{declared}",
+        period="2024-06-30",
+        filing_date="2024-08-14",
+        amendment_type="original",
+        source="known-truth",
+        declared_rows=declared,
+        declared_value=declared * 1000,
+    )
+    with caplog.at_level(logging.WARNING):
+        if not accepted:
+            with pytest.raises(ValueError, match="accepted ratio=85%-110%"):
+                filing_vintage(info, **kwargs)
+        else:
+            manifest, rows = filing_vintage(info, **kwargs)
+            assert manifest.source_row_count.iloc[0] == received and manifest.declared_row_count.iloc[0] == declared
+            for table in (Tables.sec13f_manager_holdings, Tables.sec13f_hr):
+                positions = rows.assign(ticker="AAA") if table == Tables.sec13f_hr else rows
+                assert sqlite_store.save_13f_filing(manifest, positions, table=table) == received
+                assert sqlite_store.save_13f_filing(manifest, positions, table=table) == 0
+            _, state = public_books(manifest, rows, "2024-08-21", GRID)
+            assert state.iloc[0].book_known and state.iloc[0].comparison_eligible and state.iloc[0].zero_eligible
+    if accepted and declared != received:
+        assert any(f"accepted {received}/{declared}" in record.getMessage() for record in caplog.records)
+    print(
+        f"SANITY: received{received}/declared{declared}, accepted={accepted};85?110% bounds, both destinations and normal exit eligibility validated."
+    )
+
+
+@pytest.mark.parametrize(("filed", "cover_factor", "usd_factor"), [("2022-08-14", 0.001, 1000), ("2024-08-14", 1000, 1), ("2024-08-14", 0.001, 1)])
+def test_cover_unit_mismatch_preserves_raw_rows_and_own_unit_basis(
+    sqlite_store: DataStore, caplog: pytest.LogCaptureFixture, filed: str, cover_factor: float, usd_factor: float
+) -> None:
+    info = pd.DataFrame([{"CUSIP": "111111111", "TITLEOFCLASS": "COM", "SSHPRNAMT": 100, "SSHPRNAMTTYPE": "SH", "VALUE": 1000}])
+    with caplog.at_level(logging.WARNING):
+        manifest, rows = filing_vintage(
+            info,
+            cik="1",
+            accession_number="cover-units",
+            period="2022-06-30",
+            filing_date=filed,
+            amendment_type="original",
+            source="known-truth",
+            declared_rows=1,
+            declared_value=1000 / cover_factor,
+        )
+    assert rows.raw_value_usd.iloc[0] == 1000 and rows.shares.iloc[0] == 100
+    assert rows.value_usd.iloc[0] == 1000 * usd_factor
+    assert manifest.declared_value_total.iloc[0] == 1000 / cover_factor and manifest.source_value_total.iloc[0] == 1000
+    assert sqlite_store.save_13f_filing(manifest, rows) == 1
+    assert sqlite_store.save_13f_filing(manifest, rows) == 0
+    assert any("cover-to-row factor" in record.getMessage() for record in caplog.records)
+    print(
+        f"SANITY: cover-to-row{cover_factor:g} aligns the source summary without another multiplication of row dollars; raw values, shares and replay preserved."
+    )
+
+
+def test_unexplained_value_mismatch_still_rejected_with_exact_source_count() -> None:
+    info = pd.DataFrame([{"CUSIP": "111111111", "SSHPRNAMT": 100, "SSHPRNAMTTYPE": "SH", "VALUE": 1250}])
+    with pytest.raises(ValueError, match="VALUE total"):
+        filing_vintage(
+            info,
+            cik="1",
+            accession_number="bad-value",
+            period="2024-06-30",
+            filing_date="2024-08-14",
+            amendment_type="original",
+            source="known-truth",
+            declared_rows=1,
+            declared_value=1000,
+        )
+    print("SANITY: a 25% monetary contradiction is not reclassified as a clean thousand-unit discrepancy.")
+
+
+@pytest.mark.parametrize("factor", [1.0, 0.001, 1000.0])
+@pytest.mark.parametrize("ratio,accepted", [(0.85, True), (1.10, True), (0.84, False), (1.11, False)])
+def test_source_value_ratio_boundaries(factor: float, ratio: float, accepted: bool) -> None:
+    source_value = 1_000_000 * factor * ratio
+    if accepted:
+        assert reconcile_13f_source(100, 100, source_value, 1_000_000) == factor
+    else:
+        with pytest.raises(ValueError, match="VALUE total"):
+            reconcile_13f_source(100, 100, source_value, 1_000_000)
+    print(
+        f"SANITY: monetary ratio={ratio:g}, cover-to-row factor={factor:g}, accepted={accepted}; count tolerance cannot mask a money contradiction."
+    )
+
+
+def test_empty_source_requires_zero_values() -> None:
+    assert reconcile_13f_source(0, 0, 0, 0) == 1.0
+    for source_value, declared_value in ((0, 1), (1, 0), (1, 1)):
+        with pytest.raises(ValueError, match="empty source"):
+            reconcile_13f_source(0, 0, source_value, declared_value)
+    print("SANITY: a completed empty book must have zero raw and cover value; inconsistent emptiness cannot create exits.")
+
+
+def test_tolerated_count_discrepancy_participates_in_normal_exits() -> None:
+    prior = packet("prior-full", "2024-08-14", {f"{number:09d}": 100 for number in range(1, 8)})
+    info = pd.DataFrame(
+        [{"CUSIP": f"{number:09d}", "TITLEOFCLASS": "COM", "SSHPRNAMT": 110, "SSHPRNAMTTYPE": "SH", "VALUE": 1100} for number in range(2, 8)]
+    )
+    current = filing_vintage(
+        info,
+        cik="1",
+        accession_number="current-tolerated",
+        period="2024-09-30",
+        filing_date="2024-11-14",
+        amendment_type="original",
+        source="known-truth",
+        declared_rows=7,
+        declared_value=7700,
+    )
+    manifests, holdings = combine(prior, current)
+    out = vintage_changes(manifests, holdings, "2024-11-21", GRID).set_index("cusip")
+    missing = out.loc["000000001"]
+    assert missing.reported_exit and missing.comparison_known and missing.shares_change == -100
+    assert out.loc["000000002", "shares_change"] == 10
+    control = vintage_changes(*prior, "2024-08-21", GRID)
+    pd.testing.assert_frame_equal(vintage_changes(manifests, holdings, "2024-08-21", GRID), control)
+    print(
+        "SANITY: tolerated6/7 row count is trusted for exits; the disappeared position exits, supported sibling grows and earlier public states remain unchanged."
+    )
+
+
+@pytest.mark.parametrize("column,new_value", [("declared_row_count", 21), ("declared_value_total", 20)])
+def test_replay_rejects_changed_cover_metadata(sqlite_store: DataStore, column: str, new_value: float) -> None:
+    manifest, rows = packet("fixed-cover", "2024-08-14", {f"{number:09d}": 100 for number in range(1, 21)})
+    assert sqlite_store.save_13f_filing(manifest, rows) == 20
+    changed = manifest.copy()
+    changed.loc[0, column] = new_value
+    with pytest.raises(ValueError, match="checksum conflict"):
+        sqlite_store.save_13f_filing(changed, rows)
+    assert sqlite_store.save_13f_filing(manifest, rows) == 0
+    print(
+        f"SANITY: changing accepted{column} cannot silently replay an immutable accession; original compatible checksum and repeat save remain valid."
+    )
 
 
 def test_prospective_replacement_additions_and_future_invariance() -> None:
@@ -193,7 +342,7 @@ def test_atomic_save_replay_conflict_and_accession_resume(sqlite_store: DataStor
 def test_source_completion_and_amendment_identity_are_validated(sqlite_store: DataStore) -> None:
     manifest, rows = packet("valid", "2024-08-14", {"111111111": 100})
     bad = manifest.copy()
-    bad.loc[0, "source_row_count"] = 2
+    bad.loc[0, "source_row_count"] = 0
     with pytest.raises(ValueError, match="source row count"):
         sqlite_store.save_13f_filing(bad, rows)
     with pytest.raises(ValueError, match="amendment"):
@@ -920,6 +1069,21 @@ def normal_panels(step: StepCubeInstitutionals, frames: PriceFrames) -> tuple[pd
         step._institutional_panel(frames, None, pd.DataFrame(), frames.close_split).set_index(["date", "ticker"]),
         step._superinvestor_panel(frames, None, pd.DataFrame(), None, frames.close_split).set_index(["date", "ticker"]),
     )
+
+
+def test_normal_builders_tolerated_count_discrepancy_keeps_exits(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    prior = packet("prior-full", "2024-08-14", {"111111111": 100, "222222222": 100, **{f"{number:09d}": 100 for number in range(3, 8)}})
+    current = packet("current-six", "2024-11-14", {"222222222": 110, **{f"{number:09d}": 110 for number in range(3, 8)}}, period="2024-09-30")
+    current[0]["declared_row_count"] = 7
+    current[0]["declared_value_total"] = 7700.0
+    step, frames = ordinary_step(sqlite_store, monkeypatch, (prior, current))
+    broad, elite = normal_panels(step, frames)
+    day = pd.Timestamp("2024-11-21")
+    for panel, family in ((broad, "inst"), (elite, "super")):
+        assert panel.loc[(day, "AAA"), f"f_ic_{family}_shares_chg"] == -1
+        assert panel.loc[(day, "BBB"), f"f_ic_{family}_shares_chg"] == pytest.approx(0.1)
+    assert elite.loc[(day, "AAA"), "f_ic_super_full_exits"] > 0
+    print("SANITY: actual broad and elite builders trust the accepted6/7-row book; absent stock exits and the retained stock grows10%.")
 
 
 @pytest.mark.parametrize("mode", ["off", "top_k"])

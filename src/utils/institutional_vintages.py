@@ -3,13 +3,42 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Iterator
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
-from src.constants.constants import F13_SETTLE_TRADING_DAYS, SEC_13F_FILING_LAG_DAYS
+from src.constants.constants import F13_SETTLE_TRADING_DAYS, SEC_13F_FILING_LAG_DAYS, SEC_13F_SOURCE_RATIO_BOUNDS, SEC_13F_VALUE_FACTORS
+
+
+def reconcile_13f_source(source_rows: int, declared_rows: int | None, source_value: float, declared_value: float | None) -> float:
+    """Validate count/value tolerances and return the cover-to-row value-unit factor."""
+    lower, upper = SEC_13F_SOURCE_RATIO_BOUNDS
+    if (
+        declared_rows is None
+        or declared_rows < 0
+        or source_rows < 0
+        or (source_rows != 0 if declared_rows == 0 else not lower <= source_rows / declared_rows <= upper)
+    ):
+        raise ValueError(
+            f"13F source row count does not reconcile: received={source_rows}, declared={declared_rows}; accepted ratio={lower:.0%}-{upper:.0%}"
+        )
+    if declared_value is None or not math.isfinite(declared_value) or declared_value < 0 or not math.isfinite(source_value) or source_value < 0:
+        raise ValueError(f"13F source VALUE total does not reconcile: rows={source_value:g}, declared={declared_value!r}")
+    if source_rows == 0 and (source_value != 0 or declared_value != 0):
+        raise ValueError("13F empty source has a positive declared VALUE total")
+    for factor in SEC_13F_VALUE_FACTORS:
+        if factor != 1.0 and (source_value == 0 or declared_value == 0):
+            continue
+        if math.isclose(source_value, declared_value * factor, rel_tol=0.005, abs_tol=1.0):
+            return factor
+        if declared_value > 0:
+            ratio = source_value / (declared_value * factor)
+            if lower <= ratio <= upper or math.isclose(ratio, lower, rel_tol=0.005) or math.isclose(ratio, upper, rel_tol=0.005):
+                return factor
+    raise ValueError(f"13F source VALUE total does not reconcile: rows={source_value:g}, declared={declared_value!r}")
 
 
 def availability_date(

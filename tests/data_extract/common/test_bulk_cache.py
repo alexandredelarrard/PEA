@@ -16,10 +16,12 @@ import pytest
 from src.data_extract.utils.common.bulk_cache import (
     ZipRead,
     cached_periods,
+    ensure_zip,
     period_end,
     read_zip_tables,
     stored_period_clock,
 )
+from src.data_extract.utils.common.sec_io import TransientReadError
 from src.data_store.schema import Tables
 
 LOG = logging.getLogger("test_bulk_cache")
@@ -49,6 +51,40 @@ def _zip(path: Path, members: dict[str, str]) -> Path:
         for name, text in members.items():
             archive.writestr(name, text)
     return path
+
+
+@pytest.mark.parametrize("first", [404, "transient"])
+@pytest.mark.parametrize("second", [200, 404, "transient"])
+def test_zip_fallback_warns_only_when_every_url_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, first: int | str, second: int | str
+) -> None:
+    urls = ("https://example.test/first.zip", "https://example.test/second.zip")
+    calls: list[str] = []
+    path = tmp_path / "source.zip"
+
+    def download(context: Any, url: str, target: Path, **kwargs: Any) -> int:
+        calls.append(url)
+        status = (first, second)[len(calls) - 1]
+        if status == "transient":
+            raise TransientReadError("transport failure")
+        if status == 200:
+            target.write_bytes(b"source archive")
+        return int(status)
+
+    monkeypatch.setattr("src.data_extract.utils.common.bulk_cache.download", download)
+    with caplog.at_level(logging.WARNING, logger=LOG.name):
+        result = ensure_zip(SimpleNamespace(), path, urls, label="13F source", log=LOG)
+    assert calls == list(urls)
+    warnings = [record.getMessage() for record in caplog.records if record.name == LOG.name and record.levelno >= logging.WARNING]
+    if second == 200:
+        assert result == path and path.read_bytes() == b"source archive"
+        assert not warnings
+        assert ensure_zip(SimpleNamespace(), path, urls, label="13F source", log=LOG) == path
+        assert calls == list(urls)
+    else:
+        assert result is None and not path.exists()
+        assert len(warnings) == 1 and all(url in warnings[0] for url in urls)
+    print(f"SANITY: first={first}, second={second}; ordered fallback, cache reuse and warning only after total failure validated.")
 
 
 @pytest.mark.parametrize(("policy", "kept"), [("delete", False), ("skip", True)])

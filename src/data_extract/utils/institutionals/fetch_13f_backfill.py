@@ -57,7 +57,7 @@ from src.utils.universe import added_on_dates, load_universe_tickers, new_ticker
 logger = logging.getLogger(__name__)
 
 _LANDING_URL = "https://www.sec.gov/data-research/sec-markets-data/form-13f-data-sets"
-_ZIP_URL = "https://www.sec.gov/files/structureddata/data/form-13f-data-sets/{name}_form13f.zip"
+_ZIP_URL = "https://www.sec.gov/files/{section}/data/form-13f-data-sets/{name}_form13f.zip"
 # Quarterly names through 2023 ("2013q2"), then rolling windows ("01jun2024-31aug2024").
 _ZIP_NAME = re.compile(r"(\d{4}q[1-4]|\d{2}[a-z]{3}\d{4}-\d{2}[a-z]{3}\d{4})_form13f\.zip", re.IGNORECASE)
 _DOWNLOAD_TIMEOUT = 600  # seconds; each ZIP is 73-100 MB
@@ -91,7 +91,11 @@ class DataSet:
 
     @property
     def url(self) -> str:
-        return _ZIP_URL.format(name=self.name)
+        return self.urls[0]
+
+    @property
+    def urls(self) -> tuple[str, ...]:
+        return tuple(_ZIP_URL.format(section=section, name=self.name) for section in ("structureddata", "datastandardsinnovation"))
 
     @property
     def filename(self) -> str:
@@ -438,7 +442,7 @@ def fetch_13f_backfill(context: Context, tickers: list[str] | None, as_of: pd.Ti
     relevant_ciks = roster_ciks | set(context.store.distinct(Tables.sec13f_hr, "cik", where={"ticker": targets}))
     cusips = frozenset(cmap.loc[cmap.ticker.isin(targets), "cusip"])
     for data_set, due in tqdm(work, desc="13F source scope"):
-        path = ensure_zip(context, cache / data_set.filename, data_set.url, label=f"13F {data_set.name}", timeout=_DOWNLOAD_TIMEOUT, log=logger)
+        path = ensure_zip(context, cache / data_set.filename, data_set.urls, label=f"13F {data_set.name}", timeout=_DOWNLOAD_TIMEOUT, log=logger)
         if path is None:
             continue
         scope = _archive_scope(path, cusips)

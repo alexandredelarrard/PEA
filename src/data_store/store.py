@@ -38,6 +38,7 @@ from src.data_store.schema import (
 from src.data_store.schema import (
     Table as SchemaTable,
 )
+from src.utils.institutional_vintages import reconcile_13f_source
 
 _CHUNK = 10_000
 _CREATE_LOCK = threading.Lock()
@@ -538,10 +539,11 @@ class DataStore:
         if len(manifest) != 1 or manifest.iloc[0]["parse_status"] != "complete":
             raise ValueError("13F save requires one complete filing manifest")
         row = manifest.iloc[0]
-        if int(row["source_row_count"]) != int(row["declared_row_count"]) or int(row["parsed_row_count"]) != len(holdings):
+        if int(row["parsed_row_count"]) != len(holdings) or int(row["source_row_count"]) < len(holdings):
             raise ValueError("13F source row count does not reconcile")
-        if not np.isclose(float(row["source_value_total"]), float(row["declared_value_total"]), rtol=0.005, atol=1):
-            raise ValueError("13F source value total does not reconcile")
+        reconcile_13f_source(
+            int(row["source_row_count"]), int(row["declared_row_count"]), float(row["source_value_total"]), float(row["declared_value_total"])
+        )
         if holdings.duplicated(["cik", "accession_number", "cusip"]).any() or holdings.cusip.eq(table.empty_marker[1]).any():
             raise ValueError("Duplicate or reserved CUSIP within an immutable filing")
         for key in ("cik", "accession_number", "period", "filing_date"):
@@ -598,16 +600,24 @@ class DataStore:
         with self.engine.begin() as conn:
             if self.engine.dialect.name == "postgresql":
                 conn.execute(text("SELECT pg_advisory_xact_lock(hashtext(:scope))"), {"scope": f"{table.name}:{row['accession_number']}"})
-            existing = conn.execute(
-                select(books.c.content_checksum).where(
-                    books.c.cik == row["cik"],
-                    books.c.period == _bind_date(books.c.period, pd.Timestamp(row["period"])),
-                    books.c.accession_number == row["accession_number"],
-                    books.c.cusip == table.empty_marker[1],
+            existing = (
+                conn.execute(
+                    select(books.c.content_checksum, books.c.declared_row_count, books.c.declared_value_total).where(
+                        books.c.cik == row["cik"],
+                        books.c.period == _bind_date(books.c.period, pd.Timestamp(row["period"])),
+                        books.c.accession_number == row["accession_number"],
+                        books.c.cusip == table.empty_marker[1],
+                    )
                 )
-            ).scalar_one_or_none()
+                .mappings()
+                .one_or_none()
+            )
             if existing is not None:
-                if existing != checksum:
+                if (
+                    existing["content_checksum"] != checksum
+                    or existing["declared_row_count"] != row["declared_row_count"]
+                    or existing["declared_value_total"] != row["declared_value_total"]
+                ):
                     raise ValueError(f"13F checksum conflict for {row['accession_number']}")
                 return 0
             records = _records(_coerce_temporal(positions.reindex(columns=frame.columns), books))

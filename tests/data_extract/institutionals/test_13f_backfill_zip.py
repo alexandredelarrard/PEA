@@ -62,6 +62,17 @@ def _dmy(day: str) -> str:
     return pd.Timestamp(day).strftime("%d-%b-%Y").upper()
 
 
+@pytest.mark.parametrize("name", ["2013q2", "01jun2026-31aug2026"])
+def test_data_set_urls_keep_both_sec_locations(name: str) -> None:
+    data_set = fb.DataSet.parse(name)
+    assert data_set.urls == (
+        f"https://www.sec.gov/files/structureddata/data/form-13f-data-sets/{name}_form13f.zip",
+        f"https://www.sec.gov/files/datastandardsinnovation/data/form-13f-data-sets/{name}_form13f.zip",
+    )
+    assert data_set.url == data_set.urls[0]
+    print(f"SANITY: {name} keeps structureddata first and datastandardsinnovation as fallback; the existing primary URL is unchanged.")
+
+
 def _write_zip(path: Any, filings: list[tuple], *, confidential: str | None = "N", omit_confidential: bool = False) -> None:
     """A data-set ZIP with the SEC member names and upper-case headers."""
     sub = pd.DataFrame(
@@ -376,7 +387,7 @@ def test_the_gap_starts_after_the_newest_data_set_read_not_the_newest_listed(tmp
 
     fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF)
 
-    assert [u.rsplit("/", 1)[-1] for u in asked] == ["01sep2024-30nov2024_form13f.zip"]
+    assert asked == list(fb.DataSet.parse("01sep2024-30nov2024").urls)
     assert len(walks) == 1 and walks[0]["filing_window"] == ("2024-09-01", "2026-09-28"), walks
     print("\n=== SANITY: 13F gap start after a missing data set ===")
     print(f"  01sep2024-30nov2024 listed but HTTP 404 -> the walk starts after 01jun2024-31aug2024: {walks[0]['filing_window']}. Validated.")

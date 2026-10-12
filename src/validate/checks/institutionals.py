@@ -10,7 +10,7 @@ import pandas as pd
 
 from src.context import Context
 from src.data_store.schema import Table, Tables
-from src.utils.institutional_vintages import filing_public_dates, public_books
+from src.utils.institutional_vintages import filing_public_dates, public_books, reconcile_13f_source
 from src.validate.result import CheckResult, Finding
 
 
@@ -115,12 +115,20 @@ def check_institutionals(
     counts = h.groupby("accession_number").size().reindex(m.accession_number, fill_value=0).to_numpy()
     raw_columns = [column for column in columns if column.startswith("raw_")]
     totals = h.groupby("accession_number")[raw_columns].sum().sum(axis=1).reindex(m.accession_number, fill_value=0).to_numpy()
+    cover_failures = np.zeros(len(m), dtype=bool)
+    for index, row in enumerate(m.itertuples()):
+        try:
+            reconcile_13f_source(
+                int(row.source_row_count), int(row.declared_row_count), float(row.source_value_total), float(row.declared_value_total)
+            )
+        except ValueError:
+            cover_failures[index] = True
     broken = int(
         (
             (counts != m.parsed_row_count.to_numpy())
-            | (m.source_row_count.to_numpy() != m.declared_row_count.to_numpy())
+            | cover_failures
+            | (m.source_row_count.to_numpy() < counts)
             | ~np.isclose(totals, m.source_value_total.to_numpy(dtype=float), rtol=0.005, atol=1)
-            | ~np.isclose(m.source_value_total.to_numpy(dtype=float), m.declared_value_total.to_numpy(dtype=float), rtol=0.005, atol=1)
         ).sum()
     )
     if broken:

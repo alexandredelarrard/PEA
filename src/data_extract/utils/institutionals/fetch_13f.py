@@ -47,6 +47,7 @@ from src.data_extract.utils.institutionals.legacy_13f_fallback import (
 )
 from src.data_extract.utils.institutionals.value_units import ValueUnits, normalize_information_values, resolve_value_units
 from src.data_store.schema import Resume, Tables
+from src.utils.institutional_vintages import reconcile_13f_source
 from src.utils.string import pad_cik, pad_cik_series
 from src.utils.superinvestor_roster import roster_cik_union
 from src.utils.universe import load_universe_tickers
@@ -616,15 +617,25 @@ def filing_vintage(
     amounts = pd.to_numeric(_pick(raw, "SSHPRNAMT", "SharesPrnAmount"), errors="coerce")
     if not amounts.map(math.isfinite).all() or amounts.lt(0).any() or not raw["VALUE"].map(math.isfinite).all() or raw["VALUE"].lt(0).any():
         raise ValueError("13F source quantities/values are incomplete or negative")
-    if declared_rows is None or int(declared_rows) != len(raw):
-        raise ValueError("13F source row count does not reconcile")
     total = float(raw["VALUE"].sum())
-    if (
-        declared_value is None
-        or not math.isfinite(float(declared_value))
-        or not math.isclose(total, float(declared_value), rel_tol=0.005, abs_tol=1.0)
-    ):
-        raise ValueError(f"13F source VALUE total does not reconcile: rows={total:g}, declared={declared_value!r}")
+    cover_factor = reconcile_13f_source(len(raw), declared_rows, total, declared_value)
+    if len(raw) != declared_rows:
+        logger.warning(
+            "13F %s: accepted %s/%s source position rows (%.2f%%); within source count tolerance; book participates normally in exits",
+            accession_number,
+            len(raw),
+            declared_rows,
+            100 * len(raw) / declared_rows,
+        )
+    if cover_factor != 1.0:
+        logger.warning(
+            "13F %s: source VALUE sum=%s, cover total=%s, cover-to-row factor=%s; raw values retained; row USD units=%s, aggregate market check remains active",
+            accession_number,
+            total,
+            declared_value,
+            cover_factor,
+            units.factor,
+        )
     raw["raw_value"] = raw["VALUE"]
     book = _book_frame(cik, filing_date, period, raw)
     if len(raw) and _pick(raw, "CUSIP").map(normalize_cusip).isna().any():

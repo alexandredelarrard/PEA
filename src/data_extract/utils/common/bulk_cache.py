@@ -90,22 +90,26 @@ def ensure_zip(
     Downloads through `sec_io.download` (retried, rate-limited, `.part` renamed only on success).
     `urls` may be several candidates tried in order. Returns None when no candidate serves the
     archive (normal for the newest period) or every candidate failed after the retry policy.
+    Warn only when all candidates fail, retaining each failure's URL and reason.
     """
     if is_cached(path):
         return path
     candidates = [urls] if isinstance(urls, str) else [u for u in urls if u]
     log = log or logger
+    failures: list[str] = []
 
     for url in candidates:
         try:
             status = download(context, url, path, timeout=timeout)
         except TransientReadError as exc:
-            log.warning("%s: download failed after retries (%s): %s", label, url, exc)
+            failures.append(f"{url}: failed after retries ({exc})")
             continue
         if status != 200:
-            log.warning("%s: not available at %s (HTTP %s)", label, url, status)
+            failures.append(f"{url}: HTTP {status}")
             continue
         return path
+    if failures:
+        log.warning("%s: ZIP unavailable at every download location (%s)", label, "; ".join(failures))
     return None
 
 

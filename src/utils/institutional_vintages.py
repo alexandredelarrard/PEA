@@ -10,11 +10,11 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from src.constants.constants import F13_SETTLE_TRADING_DAYS, SEC_13F_FILING_LAG_DAYS, SEC_13F_SOURCE_RATIO_BOUNDS, SEC_13F_VALUE_FACTORS
+from src.constants.constants import F13_SETTLE_TRADING_DAYS, SEC_13F_FILING_LAG_DAYS, SEC_13F_SOURCE_RATIO_BOUNDS
 
 
 def reconcile_13f_source(source_rows: int, declared_rows: int | None, source_value: float, declared_value: float | None) -> float:
-    """Validate count/value tolerances and return the cover-to-row value-unit factor."""
+    """Validate source totals after any finite power-of-ten cover-to-row alignment."""
     lower, upper = SEC_13F_SOURCE_RATIO_BOUNDS
     if (
         declared_rows is None
@@ -29,15 +29,25 @@ def reconcile_13f_source(source_rows: int, declared_rows: int | None, source_val
         raise ValueError(f"13F source VALUE total does not reconcile: rows={source_value:g}, declared={declared_value!r}")
     if source_rows == 0 and (source_value != 0 or declared_value != 0):
         raise ValueError("13F empty source has a positive declared VALUE total")
-    for factor in SEC_13F_VALUE_FACTORS:
-        if factor != 1.0 and (source_value == 0 or declared_value == 0):
-            continue
-        if math.isclose(source_value, declared_value * factor, rel_tol=0.005, abs_tol=1.0):
-            return factor
-        if declared_value > 0:
-            ratio = source_value / (declared_value * factor)
-            if lower <= ratio <= upper or math.isclose(ratio, lower, rel_tol=0.005) or math.isclose(ratio, upper, rel_tol=0.005):
-                return factor
+    if math.isclose(source_value, declared_value, rel_tol=0.005, abs_tol=1.0):
+        return 1.0
+    if source_value > 0 and declared_value > 0:
+        exponent = round(math.log10(source_value) - math.log10(declared_value))
+        try:
+            factor = 10.0**exponent
+        except OverflowError as error:
+            raise ValueError("13F cover-to-row factor exceeds finite numeric range") from error
+        if factor > 0 and math.isfinite(factor):
+            aligned = declared_value * factor
+            if aligned > 0 and math.isfinite(aligned):
+                ratio = source_value / aligned
+                if (
+                    math.isclose(source_value, aligned, rel_tol=0.005, abs_tol=1.0)
+                    or lower <= ratio <= upper
+                    or math.isclose(ratio, lower, rel_tol=0.005)
+                    or math.isclose(ratio, upper, rel_tol=0.005)
+                ):
+                    return factor
     raise ValueError(f"13F source VALUE total does not reconcile: rows={source_value:g}, declared={declared_value!r}")
 
 

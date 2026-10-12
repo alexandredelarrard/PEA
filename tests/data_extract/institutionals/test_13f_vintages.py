@@ -150,7 +150,20 @@ def test_source_row_coverage_boundary_and_idempotent_save(
     )
 
 
-@pytest.mark.parametrize(("filed", "cover_factor", "usd_factor"), [("2022-08-14", 0.001, 1000), ("2024-08-14", 1000, 1), ("2024-08-14", 0.001, 1)])
+@pytest.mark.parametrize(
+    ("filed", "cover_factor", "usd_factor"),
+    [
+        ("2022-08-14", 0.001, 1000),
+        ("2024-08-14", 1000, 1),
+        ("2024-08-14", 0.001, 1),
+        ("2024-08-14", 10, 1),
+        ("2024-08-14", 0.1, 1),
+        ("2024-08-14", 100, 1),
+        ("2024-08-14", 0.01, 1),
+        ("2024-08-14", 10000, 1),
+        ("2024-08-14", 0.0001, 1),
+    ],
+)
 def test_cover_unit_mismatch_preserves_raw_rows_and_own_unit_basis(
     sqlite_store: DataStore, caplog: pytest.LogCaptureFixture, filed: str, cover_factor: float, usd_factor: float
 ) -> None:
@@ -195,15 +208,15 @@ def test_unexplained_value_mismatch_still_rejected_with_exact_source_count() -> 
     print("SANITY: a 25% monetary contradiction is not reclassified as a clean thousand-unit discrepancy.")
 
 
-@pytest.mark.parametrize("factor", [1.0, 0.001, 1000.0])
+@pytest.mark.parametrize("factor", [0.000001, 0.0001, 0.001, 0.01, 0.1, 1.0, 10.0, 100.0, 1000.0, 10000.0, 1000000.0])
 @pytest.mark.parametrize("ratio,accepted", [(0.85, True), (1.10, True), (0.84, False), (1.11, False)])
 def test_source_value_ratio_boundaries(factor: float, ratio: float, accepted: bool) -> None:
-    source_value = 1_000_000 * factor * ratio
+    source_value = 1_000_000_000_000 * factor * ratio
     if accepted:
-        assert reconcile_13f_source(100, 100, source_value, 1_000_000) == factor
+        assert reconcile_13f_source(100, 100, source_value, 1_000_000_000_000) == factor
     else:
         with pytest.raises(ValueError, match="VALUE total"):
-            reconcile_13f_source(100, 100, source_value, 1_000_000)
+            reconcile_13f_source(100, 100, source_value, 1_000_000_000_000)
     print(
         f"SANITY: monetary ratio={ratio:g}, cover-to-row factor={factor:g}, accepted={accepted}; count tolerance cannot mask a money contradiction."
     )
@@ -215,6 +228,20 @@ def test_empty_source_requires_zero_values() -> None:
         with pytest.raises(ValueError, match="empty source"):
             reconcile_13f_source(0, 0, source_value, declared_value)
     print("SANITY: a completed empty book must have zero raw and cover value; inconsistent emptiness cannot create exits.")
+
+
+@pytest.mark.parametrize("ratio", [2.0, 20.0, 200.0, 2000.0])
+def test_decimal_alignment_does_not_accept_arbitrary_multiples(ratio: float) -> None:
+    with pytest.raises(ValueError, match="VALUE total"):
+        reconcile_13f_source(1, 1, 1000 * ratio, 1000)
+    print(f"SANITY: ratio{ratio:g} is not a power-of-ten alignment and remains rejected.")
+
+
+@pytest.mark.parametrize(("source_value", "declared_value"), [(0.0, 1e6), (1e6, 0.0), (1e300, 1e-300), (1e-300, 1e300)])
+def test_decimal_alignment_rejects_zero_or_unrepresentable_factors(source_value: float, declared_value: float) -> None:
+    with pytest.raises(ValueError):
+        reconcile_13f_source(1, 1, source_value, declared_value)
+    print("SANITY: zero or unrepresentable decimal alignment cannot certify a nonempty filing or crash outside ValueError.")
 
 
 def test_tolerated_count_discrepancy_participates_in_normal_exits() -> None:

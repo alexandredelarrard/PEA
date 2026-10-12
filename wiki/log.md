@@ -388,3 +388,12 @@ Updated only the [insider aggregate contract](./modules/data-aggregate.md#inside
 - Pages: [Overview](./OVERVIEW.md), [Cube aggregation](./modules/data-aggregate.md#insider-canonical-cleaning-and-feature-contract), [TODO](./TODO.md#insider-transactions-follow-ups)
 - Validation: 34 post-merge tests pass in 12.56s, zero live-write attempts, six app sources match the committed branch and tested hashes are stable. Commit hooks including Ruff/formatting pass. Original numerical/independent evidence remains frozen.
 - Boundary: scoped refresh only; no production data writes, model run or remote push. Unrelated backlog items are preserved.
+
+## 2026-10-11: refresh — generic 13F cover-total alignment
+
+- Profile: internal/standard
+- source_commit: 0ef13cfe8bfc0d2c4c5fb8d917d76eb3060e2971 (previous overview anchor: 27e4f723f2e61a4dffd54d11f4785cee89e2b9ee)
+- Coverage: source admission in the shared `reconcile_13f_source` helper. Any finite power of ten may align the cover to raw rows; existing 85–110% count and aligned-money checks remain. Raw values and declared row USD units are unchanged; market-based P1 corrections remain separate.
+- Pages: [Overview](./OVERVIEW.md), [Data sources](./reference/data-sources.md), [Table catalog](./reference/table-catalog.md).
+- Validation: 114 self-regression tests and 72 overlapping independent focused tests pass, with zero live-write attempts. Actual accession `0002112884-26-000003` has 14/14 rows and a 9.99997 cover ratio; factor 10 is accepted. Both existing-table in-memory fixture validators pass, and the cached ZIP is unchanged.
+- Boundary: no production extraction, source-table write, cube rebuild or remote push. Cached-backfill performance measurements and proposals are a separate read-only review, frozen against the prior dev baseline.

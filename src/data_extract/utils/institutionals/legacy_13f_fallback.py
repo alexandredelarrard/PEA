@@ -125,11 +125,12 @@ def _holding_shaped(line: str) -> bool:
     plain = re.sub(r"<[^>]*>", " ", line)
     if _NON_HOLDING_LINE.match(plain):
         return False
-    if not _CUSIP.search(plain) or len(_NUMBER.findall(plain)) < 2:
+    if len(_NUMBER.findall(plain)) < 2:
         return False
     if re.search(r"\b(?:SH|SHS|PRN|SHARES|PRINCIPAL|CALL|PUT)\b", plain, re.I):
         return True
-    return any(re.search(r"[A-Z]", plain[: m.start()], re.I) and _NUMBER.match(plain[m.end() :].lstrip()) for m in _CUSIP.finditer(plain))
+    identifiers = [match for match in _CUSIP.finditer(plain) if re.search(r"[0-9*@#]", match.group(1))]
+    return any(re.search(r"[A-Z]", plain[: m.start()], re.I) and _NUMBER.match(plain[m.end() :].lstrip()) for m in identifiers)
 
 
 def _check_boundaries(raw: str) -> None:

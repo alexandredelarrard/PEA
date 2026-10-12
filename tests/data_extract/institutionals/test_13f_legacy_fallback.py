@@ -843,17 +843,29 @@ def test_short_source_cusip_cannot_be_replaced_by_a_valid_numeric_value() -> Non
     print("SANITY: a checksum-valid monetary token cannot replace the literal short source identifier.")
 
 
-@pytest.mark.parametrize("location", ["before-table", "after-table", "before-header", "before-marker"])
+def test_signer_address_is_not_an_unconsumed_holding() -> None:
+    # Exact outside-table signature from SEC 0001387131-13-001376.
+    signature = " /s/ Lisa Leonardo  121 E. Seneca Street, Ithaca, NY  14851        04/18/2013"
+    raw = "Signature, Place, and Date of Signing:\n" + signature + "\n" + _table(_HEADER, _AFLAC)
+    rows = parse_legacy_information_table(raw)
+    assert len(rows) == 1 and rows.iloc[0].CUSIP == "001055102" and rows.iloc[0].SSHPRNAMT == 3362515
+    print("SANITY: an eight-letter signer surname plus street/postcode cannot become a source identifier; exact holdings remain complete.")
+
+
+@pytest.mark.parametrize(
+    "location", ["before-table", "after-table", "before-header", "before-marker", "after-table-missing-cusip", "before-marker-missing-cusip"]
+)
 def test_unconsumed_holdings_cannot_complete_either_destination(location: str, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     raw = _table(_HEADER, _AFLAC).replace("Form 13F Information Table Entry Total: 1", "")
+    extra = _AMGEN.replace("031162100", "         ").replace("100,000", "100,000 SH") if location.endswith("missing-cusip") else _AMGEN
     if location == "before-table":
-        raw = _HEADER + "\n" + _AMGEN + "\n" + raw
-    elif location == "after-table":
-        raw += "\n" + _HEADER + "\n" + _AMGEN
+        raw = _HEADER + "\n" + extra + "\n" + raw
+    elif location.startswith("after-table"):
+        raw += "\n" + _HEADER + "\n" + extra
     elif location == "before-header":
-        raw = raw.replace("<TABLE>\n", "<TABLE>\n" + _AMGEN + "\n")
+        raw = raw.replace("<TABLE>\n", "<TABLE>\n" + extra + "\n")
     else:
-        raw = raw.replace(_HEADER + "\n<S>", _HEADER + "\n" + _AMGEN + "\n<S>")
+        raw = raw.replace(_HEADER + "\n<S>", _HEADER + "\n" + extra + "\n<S>")
     raw = "<DOCUMENT>\n<TEXT>\n" + raw + "\n</TEXT>\n</DOCUMENT>"
     filing = _Filing(_Report(None, txt=raw))
     monkeypatch.setattr(filing, "full_text_submission", lambda: raw, raising=False)

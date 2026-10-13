@@ -919,9 +919,21 @@ def test_genuine_summary_outside_table_does_not_hide_or_add_positions(label: str
 
 
 @pytest.mark.parametrize("title", ["Ord", "CL A"])
-def test_missing_identifier_does_not_hide_other_supported_security_classes(title: str) -> None:
-    extra = _AMGEN.replace("031162100", "         ").replace("Com", title)
-    raw = _table(_HEADER, _AFLAC).replace("Form 13F Information Table Entry Total: 1", "") + "\n" + _HEADER + "\n" + extra
+@pytest.mark.parametrize("spacing", [" ", "  "])
+@pytest.mark.parametrize("location", ["outside_table", "before_marker"])
+def test_missing_identifier_does_not_hide_other_supported_security_classes(title: str, spacing: str, location: str) -> None:
+    extra = f"Amgen Inc.{spacing}{title}{spacing}12,000 100,000"
+    raw = _table(_HEADER, _AFLAC).replace("Form 13F Information Table Entry Total: 1", "")
+    raw = raw + "\n" + extra if location == "outside_table" else raw.replace("<S>", extra + "\n<S>")
     with pytest.raises(ValueError, match="Unaccounted"):
         parse_legacy_information_table(raw)
-    print("SANITY: existing fixed-column security classes remain economic evidence without a CUSIP or explicit quantity type.")
+    print("SANITY: compact and fixed-column security classes remain economic evidence without a CUSIP or explicit quantity type.")
+
+
+@pytest.mark.parametrize("title", ["Ord", "CL A"])
+def test_compact_class_keeps_the_identified_source_holding(title: str) -> None:
+    raw = _table(_HEADER, f"Amgen Inc. {title} 031162100 12,000 100,000 SH")
+    rows = parse_legacy_information_table(raw)
+    assert rows.CUSIP.tolist() == ["031162100"] and rows.VALUE.tolist() == [12000000] and rows.SSHPRNAMT.tolist() == [100000]
+    assert rows.NAMEOFISSUER.tolist() == ["Amgen Inc."] and rows.TITLEOFCLASS.tolist() == [title]
+    print("SANITY: compact source class belongs to its issuer and preserves exact CUSIP/value/quantity facts.")

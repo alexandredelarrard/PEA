@@ -188,7 +188,7 @@ def _name_and_class(prefix: str) -> tuple[str, str]:
     parts = [part.strip() for part in re.split(r"\s{2,}|\t+", prefix) if part.strip()]
     if len(parts) >= 2:
         return " ".join(parts[:-1]), parts[-1]
-    match = re.match(r"(.+?)\s+(COM|ADR|CS|CONV|WTS|COMMON STOCK)\s*$", prefix, re.I)
+    match = re.match(r"(.+?)\s+(COM|ADR|CS|CONV|WTS|COMMON STOCK|ORD|CL\s+[A-Z])\s*$", prefix, re.I)
     return (match.group(1), match.group(2)) if match else (prefix, "")
 
 

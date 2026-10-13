@@ -42,7 +42,7 @@ from src.data_extract.utils.institutionals.legacy_13f_fallback import (
     _ENTRY_COUNT,
     _FOOTER_TOTAL,
     _VALUE_TOTAL,
-    _source_rows,
+    _genuine_holding_lines,
     _value_total_error,
     needs_legacy_fallback,
     parse_legacy_information_table,
@@ -776,7 +776,7 @@ def _cover_ratio_units(raw: str, units: ValueUnits, cell_total: float) -> ValueU
 def text_filing_vintage(raw: str, stamp: FilingStamp) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Reuse the source-reconciled pre-XML parser; unsupported cover semantics remain explicit.
     A cover declaring no entries (or a zero total and no count) is a complete empty book, not parsed,
-    unless the text holds holding lines: that contradiction fails."""
+    unless the text holds a holding (a valid CUSIP or a non-zero amount): that contradiction fails."""
     units = resolve_value_units(stamp.filed, information_table_text=raw)
     count = _ENTRY_COUNT.search(raw)
     total = _VALUE_TOTAL.search(raw) or _FOOTER_TOTAL.search(raw)
@@ -784,7 +784,7 @@ def text_filing_vintage(raw: str, stamp: FilingStamp) -> tuple[pd.DataFrame, pd.
     declared_value = float(total.group(1).replace(",", "")) if total else None
     empty = declared_rows == 0 or (declared_rows is None and declared_value == 0)
     if empty:
-        if holding_lines := len(_source_rows(raw)):
+        if holding_lines := _genuine_holding_lines(raw):
             raise ValueError(f"13F cover declares an empty book but the text holds {holding_lines} holding line(s)")
         info = pd.DataFrame(columns=_LEGACY_INFO_COLS)
         declared_rows, declared_value = 0, 0.0

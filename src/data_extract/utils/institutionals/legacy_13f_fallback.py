@@ -142,6 +142,18 @@ def _holding_shaped(line: str) -> bool:
     return any(re.search(r"[A-Z]", plain[: m.start()], re.I) and _NUMBER.match(plain[m.end() :].lstrip()) for m in identifiers)
 
 
+def _genuine_holding_lines(raw: str) -> int:
+    """Holding-shaped lines with a valid CUSIP or a non-zero amount; zero totals and placeholders are not holdings."""
+    count = 0
+    for line in raw.splitlines():
+        if not _holding_shaped(line):
+            continue
+        plain = re.sub(r"<[^>]*>", " ", line)
+        cusip = any(_valid_cusip(literal_13f_cusip(match.group(1)) or "") for match in _CUSIP.finditer(plain.upper()))
+        count += cusip or any(Decimal(match.group("number").replace(",", "")) != 0 for match in _NUMBER.finditer(plain))
+    return count
+
+
 def _check_boundaries(raw: str) -> None:
     """Reject cut source tables/documents before their surviving rows can self-certify."""
     for tag in ("TABLE", "TEXT", "DOCUMENT", "SEC-DOCUMENT"):

@@ -715,10 +715,30 @@ class _DeclaredXmlFiling(_FakeFiling):
         return cover.replace(f"<tableValueTotal>{sum(r['VALUE'] for r in self.lines)}<", f"<tableValueTotal>{self.value:g}<")
 
 
+_ZERO_TOTAL_KINDS = ("synthetic_table_total_0_0", "synthetic_bare_zero_row", "synthetic_total_outside_table")
+
+
+def _zero_total_raw(kind: str, body: str | None = None) -> str:
+    """SYNTHETIC: the real 0001082481-05-000006 0/0 cover and table layout, its 67 holdings replaced by
+    a zero total row (`body`, when given, replaces that row)."""
+    raw = (Path(__file__).parent / "fixtures" / "legacy_13f" / "0001082481-05-000006.sgml").read_text(encoding="utf-8")
+    head, tail = raw[: raw.index("Abbott Laboratories")], raw[raw.index("</TABLE>") :]
+    zero = " " * 38 + "0       0\n"
+    if body is not None:
+        return head + body + tail
+    if kind == "synthetic_table_total_0_0":
+        return head + "TOTAL" + zero[5:] + tail
+    if kind == "synthetic_bare_zero_row":
+        return head + zero + tail
+    return head + tail.replace("</TABLE>\n", "</TABLE>\nTotal" + zero[5:], 1)
+
+
 def _empty_cover_filing(kind: str) -> _FakeFiling:
     accession = "0000000001-01-000123"
     if kind == "xml_0_0":
         return _FakeFiling(ROSTER, "2026-05-15", "2026-03-31", [], accession=accession)
+    if kind in _ZERO_TOTAL_KINDS:
+        return _TextFiling(ROSTER, "2005-10-31", "2005-09-30", [], accession=accession, raw=_zero_total_raw(kind))
     covers = {"text_count_0": ("0", "0"), "text_count_0_no_total": ("0", None), "text_total_0_no_count": (None, "0")}
     return _TextFiling(ROSTER, "2001-05-15", "2001-03-31", [], accession=accession, raw=_legacy_cover(*covers[kind]))
 
@@ -728,8 +748,9 @@ def _markers(store: Any, table: Any, accession: str) -> pd.DataFrame:
     return pd.DataFrame() if df is None else df.loc[df.accession_number.eq(accession)]
 
 
-@pytest.mark.parametrize("kind", ["xml_0_0", "text_count_0", "text_count_0_no_total", "text_total_0_no_count"])
+@pytest.mark.parametrize("kind", ["xml_0_0", "text_count_0", "text_count_0_no_total", "text_total_0_no_count", *_ZERO_TOTAL_KINDS])
 def test_empty_cover_is_silent_and_marked_once(sqlite_store, monkeypatch, caplog, kind):
+    """`synthetic_*`: SYNTHETIC zero total rows (no CUSIP, every amount 0) under a real 0/0 cover."""
     filing = _empty_cover_filing(kind)
     _seed_roster(sqlite_store, [ROSTER])
     _patch_walk(monkeypatch, [filing])
@@ -758,7 +779,7 @@ def test_empty_cover_is_silent_and_marked_once(sqlite_store, monkeypatch, caplog
         counts[table.name] = len(marker)
     assert first_reads == 1 and len(obj_calls) == 1, obj_calls  # the second walk never reads it
     print(
-        f"SANITY: empty cover ({kind}) -> markers {counts}, 0 WARNING/ERROR, filing_obj calls {first_reads} then 0; recorded once, never refetched."
+        f"SANITY: {'SYNTHETIC ' if kind in _ZERO_TOTAL_KINDS else ''}empty cover ({kind}) -> markers {counts}, 0 WARNING/ERROR, filing_obj calls {first_reads} then 0; recorded once, never refetched."
     )
 
 
@@ -805,6 +826,15 @@ def test_empty_cover_over_real_holding_rows_fails_loudly(sqlite_store, monkeypat
         stored = sqlite_store.load(table, optional=True)
         assert stored is None or not stored.accession_number.eq(accession).any()
     print(f"SANITY: real {accession} (0/0 cover, 67 holding lines) -> ReadFailure {failure.reason[:90]!r}, one ERROR, nothing saved.")
+
+
+def test_empty_cover_over_a_zero_valued_cusip_line_fails():
+    """SYNTHETIC: a valid CUSIP contradicts a 0/0 cover even when its amounts are all zero."""
+    row = "Abbott Laboratories   Common  002824100         0       0      0      0None  None        0None       0\n"
+    filing = _TextFiling(ROSTER, "2005-10-31", "2005-09-30", [], accession="0000000001-05-000789", raw=_zero_total_raw("", row))
+    failure = f13.read_filing_vintage(FilingStamp.of(filing, ""))
+    assert isinstance(failure, f13.ReadFailure) and "cover declares an empty book" in failure.reason, failure
+    print(f"SANITY: SYNTHETIC 0/0 cover over one zero-valued 002824100 line -> ReadFailure {failure.reason[:80]!r}; a CUSIP is a holding.")
 
 
 def test_catch_up_original_gap_cannot_overwrite_a_completed_amendment(sqlite_store, monkeypatch, tmp_path):

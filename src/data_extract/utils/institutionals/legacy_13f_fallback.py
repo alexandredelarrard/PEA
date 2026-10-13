@@ -32,7 +32,9 @@ _NON_HOLDING_LINE = re.compile(
     r"\s*(?:(?:GRAND|FINAL)\s+TOTALS?\b|(?:S\s+)?REPORT SUMMARY\b)"
     r"|\s{2,}(?:SOLE|DEFINED|SHARED|OTHER)\s+\d"
     r"|\s*COLUMN\s+\d+(?:\s+(?:COLUMN\s+)?\d+)*\s*$"
-    r"|\s*FORM\s*13\s*F\b.*\bPAGE\s+\d+\s*$",
+    r"|\s*F\s*O\s*R\s*M\s*1\s*3\s*F(?:\b.*\bPAGE\s+\d+)?\s*$"
+    r"|\s*(?:BUSINESS\s+)?(?:PHONE|TEL(?:EPHONE)?|FAX)(?:\s+NUMBER)?\s*:?\s*\+?\(?\d{1,6}\)?(?:[ \t.-]+\(?\d{1,6}\)?)+\s*$"
+    r"|\s*SK\s+\d{5}\s+\d{4}\s+\d{7}\s*$",
     re.I,
 )
 
@@ -53,6 +55,8 @@ def _source_rows(raw: str) -> list[tuple[str, str, str]]:
     """Logical holding lines, carrying a layout only across compatible continuation pages."""
     rows: list[tuple[str, str, str]] = []
     _check_boundaries(raw)
+    # A split caption needs its preceding labels; bare numbers can be a holding.
+    raw = re.sub(r"^[ \t]*(?:COLUMN[ \t]+)+COLUMN[ \t]*\r?\n(?=[ \t]*1[ \t]+2(?:[ \t]|$))", "COLUMN ", raw, flags=re.I | re.M)
     header = ""
     columns: list[int] = []
     blocks = _TABLE.findall(raw)
@@ -131,8 +135,8 @@ def _holding_shaped(line: str) -> bool:
     if re.search(r"\b(?:SH|SHS|PRN|SHARES|PRINCIPAL|CALL|PUT)\b", plain, re.I):
         return True
     for token in amounts:
-        _, title = _name_and_class(plain[: token.start()])
-        if re.search(r"[A-Z]", title, re.I) and _NUMBER.match(plain[token.end() :].lstrip()):
+        prefix, tail = plain[: token.start()], plain[token.end() :]
+        if tail[:1].isspace() and _NUMBER.match(tail.lstrip()) and (not prefix.strip() or re.search(r"[A-Z]", prefix, re.I)):
             return True
     identifiers = [match for match in _CUSIP.finditer(plain) if re.search(r"[0-9*@#]", match.group(1))]
     return any(re.search(r"[A-Z]", plain[: m.start()], re.I) and _NUMBER.match(plain[m.end() :].lstrip()) for m in identifiers)
@@ -188,7 +192,7 @@ def _name_and_class(prefix: str) -> tuple[str, str]:
     parts = [part.strip() for part in re.split(r"\s{2,}|\t+", prefix) if part.strip()]
     if len(parts) >= 2:
         return " ".join(parts[:-1]), parts[-1]
-    match = re.match(r"(.+?)\s+(COM|ADR|CS|CONV|WTS|COMMON STOCK|ORD|CL\s+[A-Z])\s*$", prefix, re.I)
+    match = re.match(r"(.+?)\s+(COM|ADR|CS|CONV|WTS|COMMON STOCK)\s*$", prefix, re.I)
     return (match.group(1), match.group(2)) if match else (prefix, "")
 
 

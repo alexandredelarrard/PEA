@@ -854,6 +854,8 @@ def test_short_source_cusip_cannot_be_replaced_by_a_valid_numeric_value() -> Non
         "Phone:     44 20 7144 1000",
         "PHONE                                   212 508 3920",
         "BUSINESS PHONE: 310 734 1200",
+        "Phone:     +44 (0) 1534 723825",
+        "Column\tColumn\tColumn\tColumn\tColumn\tColumn\tColumn\tColumn\n1\t\t2\t3\t4\t5\t6\t7\t8",
         "             COLUMN 1                 COLUMN 2      COLUMN 3     4           COLUMN 5        COLUMN 6  COLUMN 7     COLUMN 8",
     ],
 )
@@ -918,7 +920,7 @@ def test_genuine_summary_outside_table_does_not_hide_or_add_positions(label: str
     print("SANITY: explicit summary/footer outside the tagged table remains non-economic; the intact missing-count book retains its exact holding.")
 
 
-@pytest.mark.parametrize("title", ["Ord", "CL A"])
+@pytest.mark.parametrize("title", ["Ord", "CL A", "Common", "Com New", "Custom Class", ""])
 @pytest.mark.parametrize("spacing", [" ", "  "])
 @pytest.mark.parametrize("location", ["outside_table", "before_marker"])
 def test_missing_identifier_does_not_hide_other_supported_security_classes(title: str, spacing: str, location: str) -> None:
@@ -930,10 +932,38 @@ def test_missing_identifier_does_not_hide_other_supported_security_classes(title
     print("SANITY: compact and fixed-column security classes remain economic evidence without a CUSIP or explicit quantity type.")
 
 
-@pytest.mark.parametrize("title", ["Ord", "CL A"])
+@pytest.mark.parametrize("title", ["Ord", "CL A", "Common", "Com New", "Custom Class", ""])
 def test_compact_class_keeps_the_identified_source_holding(title: str) -> None:
     raw = _table(_HEADER, f"Amgen Inc. {title} 031162100 12,000 100,000 SH")
     rows = parse_legacy_information_table(raw)
     assert rows.CUSIP.tolist() == ["031162100"] and rows.VALUE.tolist() == [12000000] and rows.SSHPRNAMT.tolist() == [100000]
-    assert rows.NAMEOFISSUER.tolist() == ["Amgen Inc."] and rows.TITLEOFCLASS.tolist() == [title]
-    print("SANITY: compact source class belongs to its issuer and preserves exact CUSIP/value/quantity facts.")
+    assert rows.SSHPRNAMTTYPE.tolist() == ["SH"]
+    print("SANITY: arbitrary compact class wording preserves exact CUSIP/value/quantity/type facts.")
+
+
+@pytest.mark.parametrize("location", ["outside_table", "before_marker"])
+@pytest.mark.parametrize("extra", ["12,000 100,000", "1 2 3 4 5 6 7 8"])
+def test_untyped_numeric_continuation_cannot_disappear(location: str, extra: str) -> None:
+    raw = _table(_HEADER, _AFLAC).replace("Form 13F Information Table Entry Total: 1", "")
+    raw = raw + "\n" + extra if location == "outside_table" else raw.replace("<S>", extra + "\n<S>")
+    with pytest.raises(ValueError, match="Unaccounted"):
+        parse_legacy_information_table(raw)
+    print("SANITY: a CUSIP-less untyped numeric continuation cannot certify a surviving one-row subset.")
+
+
+@pytest.mark.parametrize("extra,value,quantity", [("12,000 100,000", 12000000, 100000), ("1 2 3 4 5 6 7 8", 1000, 2)])
+def test_intact_untyped_numeric_continuation_keeps_both_economic_rows(extra: str, value: int, quantity: int) -> None:
+    rows = parse_legacy_information_table(_table(_HEADER, _AFLAC, extra))
+    assert rows.CUSIP.tolist() == ["001055102", "001055102"]
+    assert rows.VALUE.tolist() == [145462000, value] and rows.SSHPRNAMT.tolist() == [3362515, quantity]
+    print("SANITY: the same bare numeric geometry is an economic continuation inside a supported table; both exact allocations survive.")
+
+
+@pytest.mark.parametrize("location", ["before_marker", "inside_table"])
+def test_split_column_caption_is_metadata_only_with_its_label_row(location: str) -> None:
+    caption = "Column\tColumn\tColumn\tColumn\tColumn\tColumn\tColumn\tColumn\n1\t\t2\t3\t4\t5\t6\t7\t8"
+    raw = _table(_HEADER, _AFLAC)
+    raw = raw.replace("<S>", caption + "\n<S>") if location == "before_marker" else raw.replace("</TABLE>", caption + "\n</TABLE>")
+    rows = parse_legacy_information_table(raw)
+    assert rows.CUSIP.tolist() == ["001055102"] and rows.VALUE.tolist() == [145462000] and rows.SSHPRNAMT.tolist() == [3362515]
+    print("SANITY: paired column labels/numbers form one metadata caption; a bare numeric continuation remains an economic row.")

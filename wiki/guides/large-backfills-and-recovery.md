@@ -8,6 +8,7 @@ tags:
   - operations
   - backfill
   - recovery
+source_commit: 8f3ffae075aa9dec4f7427dc8a8f1f960688f4c3
 ---
 
 # Large backfills and recovery operations
@@ -177,6 +178,16 @@ rtk "$PY" -m src data_extract thirteen-f --filing-window 2024-01-01:2024-03-01
 `thirteen-f-backfill` fills the history of tickers added within the last 7 days from the eligible SEC ZIP windows, then runs the existing EDGAR gap walk after the newest cached window. `-t X` narrows recent additions; an established X requires `-t X -F`. ZIP discovery retains all relevant managers across history. Ordinary reruns skip only verified complete accessions, requiring both destinations for roster managers; missing/failed/legacy packets remain pending. A completed archive needs no second information-table read, but the first discovery scan remains necessary to find unpreserved holders. Explicit `-F` revalidates source and immutable checksums. Cached downloads alone do not eliminate decompression/scanning.
 
 The backfill writes full source books to `sec13f_hr` and copies roster managers into `sec13f_manager_holdings`; it reads the roster created by `superinvestors`. One full CUSIP map and saver are reused across archives. Writer preparation is cached per DataStore lifecycle; atomic per-accession writes and integrity checks remain. Source-unit admission uses declared units and the shared count/value reconciliation, with the aggregate market check retained. Run the first historical backfill outside the scheduled extraction window and inspect pending-accession errors. No source-table or cube rebuild is needed solely to adopt this performance refactor; restart the running extraction process to load the changed code. Recovery of older overwritten versions is a separate source reload.
+
+The material legacy-parser fixes recover formerly rejected intact books through the same thirteen-f reader and saver. Rebuilding only a cube cannot recover a source filing that extraction skipped. For the named early-2013 failures, the bounded existing recovery command is:
+
+~~~bash
+rtk "$PY" -m src data_extract thirteen-f --filing-window 2013-04-01:2013-05-19
+~~~
+
+Run one SEC walk at a time and inspect accession failures; successful complete accessions are skipped normally, and failed sources create no empty book. No source-table deletion is required merely to revisit these skipped accessions. A source replay writes tables and is a separate user operation; the parser validation used only disposable stores. Do not infer marketwide completion from its samples.
+
+**Planned, not implemented:** default HR/HR-A history from filing date 1999-04-01, individual EDGAR submissions before the May 2013 XML/ZIP transition, and normal completion of old internal gaps even behind a later frontier. This includes a dataset currently ending in 2005 and missing roster-table copies. The reviewed plan requires completion-first metadata selection, bounded old-failure retries and unchanged immutable versions. Current default source floor/overlap behavior above remains until that phase is implemented; an explicit old filing window still bypasses the floor. Form 13F-E and other forms are excluded from this planned policy. [SEC's historical Form 13F FAQ](https://www.sec.gov/rules-regulations/staff-guidance/frequently-asked-questions-about-form-13f) explains the April 1999 transition and May 2013 XML requirement.
 
 ## Insider reparse and full rebuild
 

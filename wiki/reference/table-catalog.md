@@ -7,6 +7,7 @@ tags:
   - reference
   - database
   - schema
+source_commit: 8f3ffae075aa9dec4f7427dc8a8f1f960688f4c3
 ---
 # Table catalog
 
@@ -162,5 +163,7 @@ The latest user instruction supersedes the additive-ledger design described in t
 The DataStore migration retains existing rows as unverified `_legacy` accessions and changes only the existing primary keys. Equivalent ZIP/EDGAR content replay is idempotent; altered source content conflicts; positions and completion commit in one transaction. Normal broad and elite consumers read their respective existing tables and require verified completion, with no legacy substitution. Legacy history requires source-accession replay before a historical cube rebuild. Bounded PostgreSQL 16 migration/replay tests pass: 21 real cached ZIP/EDGAR accessions, 98,297 grouped positions per destination, both read-only source validators PASS and twelve actual broad/elite sample builder calls PASS. Sample guard/roster overrides prove mechanics, not marketwide coverage. No production migration or cube write has occurred in this extra step; earlier physical auxiliary tables were not deleted.
 
 The 11 October source-admission follow-up on `dev` accepts raw row-count/cover ratios of 85–110%, with warnings, and uses accepted books normally for exits. Declared monetary totals are checked independently after cover-to-row alignment by any finite power of ten; this does not multiply row USD values a second time. The writer still verifies actual parsed rows and raw typed totals against the manifest. Replay additionally checks unchanged declared count/value metadata while preserving compatibility with existing content checksums. Both destination tables use the same [source reconciliation helper](../../src/utils/institutional_vintages.py).
+
+The legacy parser follow-up permits genuinely absent cover declarations in the existing completion metadata, with nullable numeric types. This requires the reader's positive source-accounting evidence in the existing value_unit_evidence field, including a check of economic content outside parsed table spans and before their headers/column markers; null fields alone cannot waive reconciliation. The writer still verifies actual source rows/typed values and atomic completion. None, NaN and pandas.NA replay consistently; a changed real declaration or source checksum remains an immutable conflict. Literal 13F identifiers and original filing/acceptance clocks survive both destinations. The explicitly inferred holdings-report scope is distinct from a checked source checkbox and supports ordinary exits unless affirmative restrictions or amendment safeguards apply. No table, column, key or DDL change is required for this parser fix.
 
 Historical auxiliary-ledger proposals are superseded and retained only in the local audit history. They are not registered or used by this implementation.

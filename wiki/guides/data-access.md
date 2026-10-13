@@ -7,6 +7,7 @@ tags:
   - guide
   - database
   - point-in-time
+source_commit: 8f3ffae075aa9dec4f7427dc8a8f1f960688f4c3
 ---
 # Data access and storage
 
@@ -181,7 +182,7 @@ Before merging a data-path change:
 
 ## Candidate 13F accession persistence and causal reads
 
-P3's `context.store.save_13f_filing(manifest, holdings)` is the bounded atomic entry point: one complete accession, declared source totals and actual typed payload reconciled, unique CIK/accession/CUSIP grain. Holdings and completion manifest commit together. Failed parsing or a rolled-back transaction cannot establish an empty public book. Exact replay returns zero; a changed checksum for an existing accession raises visibly. Resume is by completed accession, so a stored amendment cannot hide a missing original.
+`context.store.save_13f_filing(manifest, holdings)` is the bounded atomic entry point: one complete accession, any observed cover declarations and the actual typed source payload reconciled, unique CIK/accession/CUSIP grain. A legacy source may omit cover count/total only after the reader positively accounts for its structure and economic rows; missing declarations stay null and cannot be replaced by parsed totals. The existing unit-evidence field carries the source-accounting conclusion; callers cannot waive checks by supplying nulls alone. Holdings and completion manifest commit together. Failed parsing or a rolled-back transaction cannot establish an empty public book. Exact replay returns zero; a changed checksum for an existing accession raises visibly. Resume is by completed accession, so a stored amendment cannot hide a missing original.
 
 Project and bound the manifest by CIK/report period/filing cutoff, then stream its accession-selected holdings through `context.store.iter_load`. The shared candidate resolver `src/utils/institutional_vintages.py` filters public, complete source versions before resolving each CIK/report quarter. Current levels come from the greatest usable report quarter. Comparison inputs use the **latest public resolved version of the adjacent preceding report quarter at the target as-of**, not a fixed 90-day-old snapshot. A prior amendment updates that baseline prospectively; an older irrelevant amendment stays in audit history. Unknown adjacent-quarter coverage remains unknown rather than silently widening the comparison interval.
 

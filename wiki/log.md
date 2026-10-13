@@ -405,3 +405,13 @@ Updated only the [insider aggregate contract](./modules/data-aggregate.md#inside
 - Coverage: approved cached13F backfill CPU/cache/preparation/resume refactor; immutable existing-table source books, CUSIP scope and ordinary versus forced recovery; targeted parser/writer controls and discovery I/O limits. No production source/cube rebuild was performed.
 - Pages: [Overview](./OVERVIEW.md), [Data sources](./reference/data-sources.md), [Recovery](./guides/large-backfills-and-recovery.md), [Testing](./guides/testing.md).
 - Evidence: local ignored reports/validate/2026-10-11-13f-backfill-performance/ contains original research, approval, RED/GREEN, actual-source/fixture timings, read-only validation and independent correctness/Ponytail reviews. Cached-download and source-rejection behavior remain disclosed limits.
+
+## 2026-10-12: refresh — material legacy 13F parser repairs
+
+- Profile: internal/standard
+- source_commit: 8f3ffae075aa9dec4f7427dc8a8f1f960688f4c3
+- Coverage: truthful nullable legacy declarations, literal security identifiers, header/quantity/voting/subtotal parsing and positive complete-source accounting in the existing two holdings destinations. Shared generic economic and metadata rules prevent omitted pages from certifying partial books. The final parser preserves all 99 accepted full payloads across 126 source decisions.
+- Pages: [Overview](./OVERVIEW.md), [Data sources](./reference/data-sources.md), [Table catalog](./reference/table-catalog.md), [Data access](./guides/data-access.md), [Recovery guide](./guides/large-backfills-and-recovery.md).
+- Evidence: local ignored reports/validate/2026-10-12-13f-legacy-parser-errors/ records 431 passing regression tests, four optional skips, 178 focused independent checks, 74 ordinary saver controls and independent domain validation of 111 accessions/47,259 positions per destination with fourteen causal prefixes and zero findings. Exact pinned checks pass. Failed source-accounting iterations remain preserved.
+- Limits: production validation abstains because the scoped old holdings lack verified accessions; no production source or cube rebuild occurred. The five-book cached benchmark adds about 0.052s of source checking and does not establish full-history throughput. Minor unsupported text layouts and independent-oracle gaps remain explicit.
+- Planned only: filing-date history from 1999-04-01, HR/HR-A only, EDGAR before ZIP/XML coverage and normal completion of old gaps, missing originals and missing roster copies behind later frontiers. Runtime starts in 2013 until that separate phase is implemented.

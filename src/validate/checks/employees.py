@@ -13,7 +13,7 @@ import json
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 import pyarrow as pa
@@ -21,7 +21,7 @@ import pyarrow.compute as pc
 import pyarrow.dataset as ds
 
 from src.context import Context
-from src.data_store.schema import Tables
+from src.data_store.schema import Resume, Tables
 from src.utils.filer_tables import PURGE_TABLES_BY_NAME, ListedWindow
 from src.utils.string import normalise_ticker, pad_cik_series
 from src.validate.checks.identity import _entity_ciks, _foreign_in_table, _from_old_shape, _lineage, _listed_windows
@@ -29,8 +29,7 @@ from src.validate.result import CheckResult, Finding
 
 CHECK = "employees"
 #: The fetcher's annual forms; a date with an original form is an original filing date.
-ANNUAL_FORMS = ("10-K", "10-K/A", "10-K405")
-ORIGINAL_FORMS = frozenset({"10-K", "10-K405"})
+ORIGINAL_FORMS = frozenset(form for form in cast(Resume, Tables.fundamentals_employees.resume).forms if not form.endswith("/A"))
 #: Mirrors the fetcher's decided statuses and bases (`fundamentals_employees.py`).
 DECIDED_STATUSES = ("found", "not_disclosed", "image_only", "incorporated", "ambiguous", "unsupported")
 BASES = ("total", "full_part", "full_time_only", "fte", "total_incl_contractors")
@@ -64,12 +63,12 @@ def index_dir(context: Context) -> Path:
 
 
 def index_entries(directory: Path, ciks: Collection[str], since: pd.Timestamp | None) -> pd.DataFrame:
-    """Cached index rows of `ANNUAL_FORMS` for `ciks` filed on or after `since`; `cik` padded, `filed` a Timestamp."""
+    """Cached index rows of the employee table's registered forms for `ciks` since the given date."""
     columns = ["cik", "company", "form", "filed", "accession"]
     files = sorted(directory.glob("*.parquet")) if directory.exists() else []
     if not files or not ciks:
         return pd.DataFrame(columns=columns)
-    expression = pc.field("cik").isin([int(c) for c in ciks]) & pc.field("form").isin(list(ANNUAL_FORMS))
+    expression = pc.field("cik").isin([int(c) for c in ciks]) & pc.field("form").isin(list(cast(Resume, Tables.fundamentals_employees.resume).forms))
     if since is not None:
         expression &= pc.field("filed") >= pa.scalar(since.date(), pa.date32())
     frame = ds.dataset([str(path) for path in files], format="parquet", schema=_INDEX_SCHEMA).to_table(filter=expression).to_pandas()
@@ -352,7 +351,7 @@ def check_employees(
         "since": start.strftime("%Y-%m-%d"),
         "index_dir": str(directory),
         "index_last_filed": entries["filed"].max().date().isoformat() if not entries.empty else None,
-        "forms": list(ANNUAL_FORMS),
+        "forms": list(cast(Resume, Tables.fundamentals_employees.resume).forms),
     }
     result = CheckResult.measured(CHECK, table, findings, scope=scope_info, metrics=metrics)
     return EmployeesReport(result, per_ticker, missing, stale, jumps, switches)

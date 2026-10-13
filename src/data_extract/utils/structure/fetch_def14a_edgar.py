@@ -9,17 +9,14 @@ proxy carries ECD facts; a proxy without ECD facts becomes an empty-filing marke
 from __future__ import annotations
 
 from functools import partial
+from typing import cast
 
 import pandas as pd
 
-from src.constants.constants import DEF14A_FORMS
 from src.data_extract.utils.common.edgar_driver import EdgarFetch, FilingStamp, parse_filing_rows
 from src.data_extract.utils.structure.def14a.ecd import ecd_facts, ecd_row, has_ecd_block
 from src.data_extract.utils.structure.def14a.validate import repair_main_row
-from src.data_store.schema import Tables
-
-#: Item 402(v) (Pay versus Performance) covers fiscal years ending on or after this date, so no proxy filed earlier carries ECD facts.
-_PVP_EFFECTIVE = pd.Timestamp("2022-12-16")
+from src.data_store.schema import Resume, Tables
 
 _MAIN_COLS = [
     "ticker",
@@ -111,6 +108,6 @@ def _filing_row(ticker: str, stamp: FilingStamp) -> list[dict]:
 DEF14A_EDGAR_FETCH = EdgarFetch(
     desc="DEF 14A (ECD XBRL)",
     tables=(Tables.def14a_edgar,),
-    forms=tuple(DEF14A_FORMS),
+    forms=cast(Resume, Tables.def14a_edgar.resume).forms,
     parse=partial(parse_filing_rows, table=Tables.def14a_edgar, columns=_MAIN_COLS, row_fn=_filing_row, numeric=_NUMERIC_COLS),
 )

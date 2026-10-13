@@ -51,8 +51,6 @@ INDEX_COLUMNS = ("symbol", "fiscal_year", "fiscal_quarter", "report_date", "tran
 TRANSCRIPTS_COLUMN = "transcripts"
 PARAGRAPH_FIELDS = ("paragraph_number", "speaker", "content")
 FIRST_PARAGRAPH = 1
-# Full history (the dataset's first call is 2005-10-11).
-HISTORY_START = "2005-01-01"
 _BLOCK_SIZE = 1 << 20
 _RETRIES = 4
 _RETRY_WAIT_SECONDS = 10.0

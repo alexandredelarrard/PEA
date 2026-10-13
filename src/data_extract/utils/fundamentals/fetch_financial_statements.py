@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 from datetime import date
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 from tqdm import tqdm
@@ -32,7 +33,7 @@ from src.data_extract.utils.common.bulk_cache import (
 )
 from src.data_extract.utils.common.identity import Identity, load_identity, tickers_for_ciks
 from src.data_extract.utils.common.resume import archive_worklist
-from src.data_store.schema import Tables
+from src.data_store.schema import Resume, Tables
 from src.utils.string import pad_cik_series
 
 logger = logging.getLogger(__name__)
@@ -60,9 +61,6 @@ _ZIP_SPECS = {
 _OUT_COLS = ["cik", "ticker", "tag", "ddate", "qtrs", "uom", "value", "adsh", "filed", "form", "fy", "fp", "quarter", "available_at"]
 
 SEC_FINSTMT_URL_TEMPLATE = "https://www.sec.gov/files/dera/data/financial-statement-data-sets/{quarter}.zip"
-SEC_FINSTMT_FIRST_YEAR = 2009
-# Archives covering September 2026 onward carry an observed availability clock, older ones an estimate.
-_OBSERVED_FROM = date(2026, 9, 1)
 
 
 # --------------------------------------------------------------------------- #
@@ -144,7 +142,9 @@ def fetch_financial_statements(
     cache = cache_dir(context, context.config.local.paths.financial_statements)
 
     run_date = pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize()
-    periods = quarter_periods(years_history + 1, SEC_FINSTMT_FIRST_YEAR, run_date)
+    first_year = pd.Timestamp(cast(str, cast(Resume, Tables.pension_facts.resume).source_start)).year
+    periods = quarter_periods(years_history + 1, first_year, run_date)
+    observed_from = date.fromisoformat(cast(str, cast(Resume, Tables.pension_facts.resume).observed_from))
     work = archive_worklist(context, (Tables.pension_facts,), periods, cached_periods(cache), tickers, run_date, full=reparse)
 
     saved = 0
@@ -156,8 +156,8 @@ def fetch_financial_statements(
             continue
         stored = stored_period_clock(context, (Tables.pension_facts,), q, column="quarter")
         end = period_end(q)
-        clock = archive_available_at(end, path, observed_from=_OBSERVED_FROM, downloaded=downloaded)
-        available_at = clock if end < _OBSERVED_FROM else stored or clock
+        clock = archive_available_at(end, path, observed_from=observed_from, downloaded=downloaded)
+        available_at = clock if end < observed_from else stored or clock
         if available_at is None:
             logger.warning("finstmt %s: archive clock unavailable -> leaving quarter un-ingested", q)
             continue
@@ -174,14 +174,14 @@ def reparse_financial_statements(context: Context, tickers: list[str]) -> int:
     """
     identity = load_identity(context)
     cache = cache_dir(context, context.config.local.paths.financial_statements)
-    quarters = [
-        q for q in quarter_periods(pd.Timestamp.today().year - SEC_FINSTMT_FIRST_YEAR + 1, SEC_FINSTMT_FIRST_YEAR) if is_cached(cache / f"{q}.zip")
-    ]
+    first_year = pd.Timestamp(cast(str, cast(Resume, Tables.pension_facts.resume).source_start)).year
+    quarters = [q for q in quarter_periods(pd.Timestamp.today().year - first_year + 1, first_year) if is_cached(cache / f"{q}.zip")]
+    observed_from = date.fromisoformat(cast(str, cast(Resume, Tables.pension_facts.resume).observed_from))
     saved = 0
     for q in quarters:
         path = cache / f"{q}.zip"
         available_at = stored_period_clock(context, (Tables.pension_facts,), q, column="quarter") or archive_available_at(
-            period_end(q), path, observed_from=_OBSERVED_FROM, downloaded=False
+            period_end(q), path, observed_from=observed_from, downloaded=False
         )
         if available_at is None:
             logger.warning("finstmt %s: archive clock unavailable -> not re-parsed", q)

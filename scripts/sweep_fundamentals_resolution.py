@@ -37,21 +37,22 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, cast
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
 import pandas as pd  # noqa: E402
 from dotenv import load_dotenv  # noqa: E402
 
-ROOT = Path(__file__).resolve().parents[1]
-load_dotenv(ROOT / ".env")
-
-from src.constants.constants import FUNDAMENTALS_CATALOGUE_SUBDIR, FUNDAMENTALS_FORMS, FUNDAMENTALS_ROSTERS_FILENAME  # noqa: E402
+from src.constants.constants import FUNDAMENTALS_CATALOGUE_SUBDIR, FUNDAMENTALS_ROSTERS_FILENAME  # noqa: E402
 from src.context import get_config_context  # noqa: E402
 from src.data_extract.utils.common.edgar_driver import FilingStamp  # noqa: E402
 from src.data_extract.utils.common.identity import FilingScope, load_identity  # noqa: E402
 from src.data_extract.utils.common.registrant import resolve_registrant_filings  # noqa: E402
 from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import rows_from_xbrl  # noqa: E402
 from src.data_extract.utils.fundamentals.kpi_catalogue import load_catalogue  # noqa: E402
+from src.data_store.schema import Resume, Tables
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(ROOT / ".env")
 
 #: Where the ledgers land. Under `data/` because it is a cache of a paid-for network walk,
 #: not a source: deleting it costs wall-clock and nothing else.
@@ -105,7 +106,7 @@ def sweep_ticker(ticker: str, catalogue, gics: dict | None, scope: FilingScope) 
     so a ticker with a registrant chain (APA) arrives with its predecessor's filings.
     """
     cik = scope.roster_cik
-    filings = resolve_registrant_filings(scope, FUNDAMENTALS_FORMS, since=None, done_accessions=frozenset())
+    filings = resolve_registrant_filings(scope, cast(Resume, Tables.fundamentals_facts.resume).forms, since=None, done_accessions=frozenset())
     frames: list[pd.DataFrame] = []
     for filing in filings:
         try:

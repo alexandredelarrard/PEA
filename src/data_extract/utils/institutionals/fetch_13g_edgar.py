@@ -10,16 +10,15 @@ from __future__ import annotations
 
 import re
 from functools import partial
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 
-from src.constants.constants import SEC_13G_FORMS
 from src.data_extract.utils.common.edgar_driver import EdgarFetch
 from src.data_extract.utils.common.resume import DONE_PER_KEY
 from src.data_extract.utils.common.sec_io import TransientReadError, filing_header
 from src.data_extract.utils.institutionals.schedule_rows import ScheduleSpec, parse_schedule, schedule_is_subject
-from src.data_store.schema import Tables
+from src.data_store.schema import Resume, Tables
 
 # `sec_13d`'s columns minus the four Item narratives, plus `rule_designation`.
 _COLS = [
@@ -145,7 +144,7 @@ def _trust_disclosed(rp: Any, has_structured: bool) -> bool:
 
 SCHEDULE_13G = ScheduleSpec(
     label="SC 13G",
-    forms=tuple(SEC_13G_FORMS),
+    forms=cast(Resume, Tables.sec_13g.resume).forms,
     columns=tuple(_COLS),
     extra_base=_rule_designation,
     trust_numerics=_trust_disclosed,
@@ -159,7 +158,7 @@ SCHEDULE_13G = ScheduleSpec(
 SEC_13G_FETCH = EdgarFetch(
     desc="SC 13G (edgartools)",
     tables=(Tables.sec_13g,),
-    forms=tuple(SEC_13G_FORMS),
+    forms=cast(Resume, Tables.sec_13g.resume).forms,
     parse=partial(parse_schedule, spec=SCHEDULE_13G, table=Tables.sec_13g),
     is_subject=schedule_is_subject,
     done_scope=DONE_PER_KEY,

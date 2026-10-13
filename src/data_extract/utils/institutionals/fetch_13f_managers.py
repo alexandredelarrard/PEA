@@ -12,11 +12,11 @@ import json
 import logging
 from functools import partial
 from pathlib import Path
+from typing import cast
 from zipfile import ZipFile
 
 import pandas as pd
 
-from src.constants.constants import SEC_13F_FORMS
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import ZipRead, read_zip_tables
 from src.data_extract.utils.common.edgar_driver import FilingStamp
@@ -25,7 +25,7 @@ from src.data_extract.utils.common.resume import DONE_PER_KEY, stored_accessions
 from src.data_extract.utils.common.sec_io import company, company_filings, configure
 from src.data_extract.utils.institutionals.fetch_13f import _IMPLIED_PRICE_BAND, ReadFailure, _suspect_prices, read_filing_vintage
 from src.data_extract.utils.institutionals.fetch_13f_backfill import _submissions, cached_filing_vintages
-from src.data_store.schema import Tables
+from src.data_store.schema import Resume, Tables
 from src.utils.string import pad_cik
 from src.utils.superinvestor_roster import roster_cik_union, roster_map_as_of
 
@@ -40,7 +40,7 @@ def _listed_filings(cik: str, since: pd.Timestamp) -> list[tuple[FilingStamp, pd
     """`(stamp, period)` for the CIK's 13F-HR filings whose period is on/after `since`, oldest
     first by (filed, amendment last, accession) -- edgartools lists newest first; a null or
     unparseable period is skipped."""
-    listing = company_filings(company(cik), SEC_13F_FORMS) or []
+    listing = company_filings(company(cik), cast(Resume, Tables.sec13f_manager_holdings.resume).forms) or []
     stamps = sorted((FilingStamp.of(f, cik) for f in listing), key=lambda s: (s.filed, s.is_amendment, s.accession_number))
     periods = [pd.to_datetime(s.period_of_report, errors="coerce") for s in stamps]
     return [(s, period.normalize()) for s, period in zip(stamps, periods, strict=True) if pd.notna(period) and period >= since]

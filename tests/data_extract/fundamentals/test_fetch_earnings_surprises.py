@@ -9,14 +9,15 @@ the refetch window) get a small top-up pull, and up-to-date tickers are skipped.
 from __future__ import annotations
 
 import types
-from typing import Any
+from dataclasses import replace
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
 
 from src.data_extract.utils.fundamentals import fetch_earnings_surprises as surprises
 from src.data_extract.utils.fundamentals.fetch_earnings_surprises import _RECENT_LIMIT, _plan_fetch, _resume_dates
-from src.data_store.schema import Tables
+from src.data_store.schema import Resume, Tables
 
 
 def test_plan_fetch_incremental(sqlite_store):
@@ -121,10 +122,11 @@ def test_a_new_ticker_full_pull_stays_within_the_yahoo_cap(sqlite_store, monkeyp
     assert not any("failed" in w for w in warnings), warnings
     saved = sqlite_store.load(Tables.earnings_surprises)
     assert set(saved["ticker"]) == {"HOG"} and len(saved) > 0
-    assert pd.to_datetime(saved["earnings_date"]).min() >= pd.Timestamp(surprises.MIGRATION_DATE)
+    source_start = cast(str, cast(Resume, Tables.earnings_surprises.resume).source_start)
+    assert pd.to_datetime(saved["earnings_date"]).min() >= pd.Timestamp(source_start)
     print("\n=== SANITY CHECK: new-ticker full pull under the Yahoo cap ===")
     print(f"  years_history=31 (128 quarters wanted) -> calls (limit, offset)={_CappedYahooTicker.calls}, no failure,")
-    print(f"  saved {len(saved)} HOG rows from {pd.to_datetime(saved['earnings_date']).min().date()} (cutoff {surprises.MIGRATION_DATE}).")
+    print(f"  saved {len(saved)} HOG rows from {pd.to_datetime(saved['earnings_date']).min().date()} (cutoff {source_start}).")
 
 
 def test_a_full_pull_longer_than_one_yahoo_page_is_read_page_by_page(sqlite_store, monkeypatch):
@@ -134,7 +136,8 @@ def test_a_full_pull_longer_than_one_yahoo_page_is_read_page_by_page(sqlite_stor
     context: Any = types.SimpleNamespace(store=sqlite_store, log=types.SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None))
     _CappedYahooTicker.calls = []
     monkeypatch.setattr(surprises.yf, "Ticker", _CappedYahooTicker)
-    monkeypatch.setattr(surprises, "MIGRATION_DATE", "1990-01-01")
+    resume = replace(cast(Resume, Tables.earnings_surprises.resume), source_start="1990-01-01")
+    monkeypatch.setattr(Tables, "earnings_surprises", replace(Tables.earnings_surprises, resume=resume))
 
     surprises.fetch_earnings_surprises(context, ["HOG"], years_history=31, pause=0.0)
 

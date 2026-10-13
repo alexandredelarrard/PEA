@@ -278,7 +278,7 @@ def _stored_days(context: Context) -> set[pd.Timestamp]:
 
 
 def _full_days(context: Context, today: pd.Timestamp) -> tuple[list[pd.Timestamp], set[pd.Timestamp]]:
-    """`(days to fetch, stored days)`: every business day from `FIRST_SERVED_DAY`, the extra served files, and every
+    """`(days to fetch, stored days)`: every business day from the table's source start, and every
     day stored in either table."""
     stored = _stored_days(context)
     days = set(pd.bdate_range(cast(Resume, Tables.short_interest.resume).source_start, today)) | stored

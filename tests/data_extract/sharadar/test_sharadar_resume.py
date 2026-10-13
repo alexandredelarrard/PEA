@@ -8,7 +8,8 @@ nothing partial is saved.
 
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import replace
+from typing import Any, cast
 
 import pandas as pd
 import pytest
@@ -16,7 +17,7 @@ import pytest
 from src.data_extract.utils.fundamentals_sharadar import client as client_mod
 from src.data_extract.utils.fundamentals_sharadar import fetch_sharadar as fetch_mod
 from src.data_extract.utils.fundamentals_sharadar.client import SharadarRequestError
-from src.data_store.schema import Tables
+from src.data_store.schema import Resume, Tables
 from tests.data_extract.edgar_fixtures import fake_context
 
 _AS_OF = pd.Timestamp("2026-09-30")
@@ -119,6 +120,18 @@ def test_the_market_wide_tables_resume_from_their_last_date_minus_seven_days(tmp
     fetch_mod.fetch_sharadar_sp500(ctx)
     fetch_mod.fetch_sharadar_actions(ctx, years_history=10, as_of=_AS_OF, full=True)
 
-    assert [day for _, day in fake.requests] == ["2026-09-22", fetch_mod.SHARADAR_SP500_FIRST_DATE, "2016-09-30"]
+    assert [day for _, day in fake.requests] == ["2026-09-22", cast(Resume, Tables.sharadar_sp500.resume).source_start, "2016-09-30"]
     print("\n=== SANITY CHECK: market-wide windows ===")
     print("  actions last 2026-09-29 -> 2026-09-22; cold sp500 -> 1990-01-01; actions --full -> as_of - 10y.")
+
+
+def test_membership_requests_follow_the_registered_source_start(monkeypatch, tmp_path, sqlite_store, fake):
+    resume = replace(cast(Resume, Tables.sharadar_sp500.resume), source_start="2001-04-01")
+    monkeypatch.setattr(Tables, "sharadar_sp500", replace(Tables.sharadar_sp500, resume=resume))
+    ctx = _context(tmp_path, sqlite_store, ["AAA"])
+    fetch_mod.fetch_sharadar_sp500(ctx)
+    sqlite_store.save(Tables.sharadar_sp500, pd.DataFrame({"date": [pd.Timestamp("2026-09-29")], "ticker": "AAA", "action": "added"}))
+    fetch_mod.fetch_sharadar_sp500(ctx)
+    fetch_mod.fetch_sharadar_sp500(ctx, full=True)
+    assert [day for _, day in fake.requests] == ["2001-04-01", "2026-09-22", "2001-04-01"]
+    print("SANITY: changing the membership contract moves cold/full requests to 2001-04-01 and preserves the seven-day incremental overlap.")

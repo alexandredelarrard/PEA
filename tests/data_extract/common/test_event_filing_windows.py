@@ -9,14 +9,16 @@ Offline: a real `Identity` over hand-written lineage rows (CB, MRK, TMUS) and a 
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import pandas as pd
 import pytest
 
 from scripts import identity_regression_gate as gate
-from src.constants.constants import CANONICAL_CURRENT, CANONICAL_PREDECESSOR, SEC_8K_FORMS, SEC_13D_FORMS, SEC_13G_FORMS, SEC_INSIDER_FORMS
+from src.constants.constants import CANONICAL_CURRENT, CANONICAL_PREDECESSOR
 from src.data_extract import identity_propagate as prop
 from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp
 from src.data_extract.utils.common.identity import Identity, build_identity
@@ -24,7 +26,7 @@ from src.data_extract.utils.common.registrant import Combine, combine_for, resol
 from src.data_extract.utils.common.security_master import ACQUIRED_CONSTITUENT
 from src.data_extract.utils.institutionals import schedule_rows
 from src.data_extract.utils.institutionals.fetch_13g_edgar import SCHEDULE_13G
-from src.data_store.schema import Tables
+from src.data_store.schema import Resume, Tables
 from src.validate.checks.identity import pending_removals
 
 SENTINEL = "1900-01-01"
@@ -93,7 +95,7 @@ def _index(rows: list[tuple[str, str, str, str]]) -> pd.DataFrame:
     return pd.DataFrame([{"cik": c, "company": "x", "form": f, "filed": d, "accession": a} for c, f, d, a in rows])
 
 
-def _listed(identity: Identity, ticker: str, df_index: pd.DataFrame, forms: list[str]) -> list[str]:
+def _listed(identity: Identity, ticker: str, df_index: pd.DataFrame, forms: Sequence[str]) -> list[str]:
     return resolve_registrant_entries(identity.filing_scope(ticker), df_index, forms)["accession"].tolist()
 
 
@@ -101,9 +103,11 @@ def _listed(identity: Identity, ticker: str, df_index: pd.DataFrame, forms: list
 
 
 def test_event_forms_are_date_limited_and_insider_forms_still_union() -> None:
-    for forms in (SEC_8K_FORMS, SEC_13D_FORMS, SEC_13G_FORMS, ["8-K12B"]):
+    for forms in (cast(Resume, Tables.sec_8k.resume).forms, cast(Resume, Tables.sec_13d.resume).forms, cast(Resume, Tables.sec_13g.resume).forms):
         assert combine_for(forms) is Combine.SPLIT, forms
-    assert combine_for(SEC_INSIDER_FORMS) is Combine.UNION
+    with pytest.raises(ValueError, match="8-K12B"):
+        combine_for(["8-K12B"])
+    assert combine_for(cast(Resume, Tables.insider_transactions.resume).forms) is Combine.UNION
     print("\nsanity: 8-K, 13D and 13G list by dated CIK window (SPLIT); Forms 3/4/5 still union over every CIK of the entity")
 
 
@@ -117,7 +121,7 @@ def test_old_chubbs_8ks_are_not_cbs_on_any_date() -> None:
             (ACE, "8-K/A", "2016-02-01", "ace-2016"),
         ]
     )
-    assert _listed(_identity(), "CB", df, SEC_8K_FORMS) == ["ace-2015", "ace-2016"]
+    assert _listed(_identity(), "CB", df, cast(Resume, Tables.sec_8k.resume).forms) == ["ace-2015", "ace-2016"]
     print("\nsanity: CB lists ACE's 8-Ks only; old Chubb's 2015 and post-close 8-Ks are not CB's")
 
 
@@ -134,7 +138,7 @@ def test_mrks_8ks_follow_schering_plough_and_old_merck_windows() -> None:
             (OLD_MERCK, "8-K", "2010-06-01", "merck-late"),
         ]
     )
-    got = _listed(_identity(), "MRK", df, SEC_8K_FORMS)
+    got = _listed(_identity(), "MRK", df, cast(Resume, Tables.sec_8k.resume).forms)
     assert got == ["merck-2008", "sgp-margin", "merck-margin", "mrk-2010"], got
     print("\nsanity: SGP's 8-Ks before the seam margin and old Merck's after it are not MRK's; each CIK's 8-Ks inside its widened window are")
 
@@ -151,9 +155,9 @@ def test_an_acquired_targets_schedule_filings_are_not_the_acquirers(monkeypatch:
             (OLD_MERCK, "SC 13G", "2008-02-11", "g-merck"),
         ]
     )
-    assert _listed(identity, "CB", df, SEC_13G_FORMS) == ["g-ace"]
-    assert _listed(identity, "CB", df, SEC_13D_FORMS) == []
-    assert _listed(identity, "MRK", df, SEC_13G_FORMS) == ["g-merck"]
+    assert _listed(identity, "CB", df, cast(Resume, Tables.sec_13g.resume).forms) == ["g-ace"]
+    assert _listed(identity, "CB", df, cast(Resume, Tables.sec_13d.resume).forms) == []
+    assert _listed(identity, "MRK", df, cast(Resume, Tables.sec_13g.resume).forms) == ["g-merck"]
     scope = EdgarScope(identity)
     stamp = FilingStamp("g-joint", "SC 13G", ACE, pd.Timestamp("2015-02-10"), False, None, filing=SimpleNamespace())
     monkeypatch.setattr(schedule_rows, "header_subject_ciks", lambda filing: frozenset({OLD_CHUBB}))
@@ -170,7 +174,7 @@ def test_an_acquired_targets_schedule_filings_are_not_the_acquirers(monkeypatch:
 def test_insider_forms_of_an_event_only_cik_are_still_listed_with_the_acquired_role() -> None:
     identity = _identity()
     df = _index([(OLD_CHUBB, "4", "2015-07-01", "f4-chubb"), (ACE, "4", "2015-07-02", "f4-ace")])
-    assert _listed(identity, "CB", df, SEC_INSIDER_FORMS) == ["f4-chubb", "f4-ace"]
+    assert _listed(identity, "CB", df, cast(Resume, Tables.insider_transactions.resume).forms) == ["f4-chubb", "f4-ace"]
     assert identity.lineage_role(OLD_CHUBB, pd.Timestamp("2015-07-01")) == ACQUIRED_CONSTITUENT
     assert identity.lineage_role(OLD_MERCK, pd.Timestamp("2008-05-01")) == CANONICAL_PREDECESSOR
     assert identity.lineage_role(MRK, pd.Timestamp("2010-02-01")) == CANONICAL_CURRENT

@@ -15,16 +15,15 @@ import logging
 import re
 import warnings
 from functools import partial
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 
-from src.constants.constants import SEC_8K_FORMS
 from src.data_extract.utils.common import sec_io
 from src.data_extract.utils.common.edgar_driver import EdgarFetch, FilingStamp, parse_filing_rows
 from src.data_extract.utils.common.sec_io import TransientReadError, filing_obj, filing_text
 from src.data_extract.utils.structure.votes.guard import has_vote_table
-from src.data_store.schema import Tables
+from src.data_store.schema import Resume, Tables
 
 logger = logging.getLogger(__name__)
 
@@ -196,7 +195,13 @@ def submission_filings(ticker: str, df_units: pd.DataFrame) -> dict[str, Any]:
         except Exception as exc:  # noqa: BLE001 -- a dead CIK, not a bug
             logger.warning("8-K: %s CIK %s could not be resolved (%s)", ticker, cik, exc)
             continue
-        out.update({str(f.accession_number): f for f in sec_io.company_filings(company, SEC_8K_FORMS) if str(f.accession_number) in wanted})
+        out.update(
+            {
+                str(f.accession_number): f
+                for f in sec_io.company_filings(company, cast(Resume, Tables.sec_8k.resume).forms)
+                if str(f.accession_number) in wanted
+            }
+        )
     if missing := sorted(wanted - out.keys()):
         logger.warning(
             "8-K: %s %d indexed filing(s) absent from the submissions listing, read without item codes: %s",
@@ -211,7 +216,7 @@ def submission_filings(ticker: str, df_units: pd.DataFrame) -> dict[str, Any]:
 SEC_8K_FETCH = EdgarFetch(
     desc="8-K (edgartools)",
     tables=(Tables.sec_8k,),
-    forms=tuple(SEC_8K_FORMS),
+    forms=cast(Resume, Tables.sec_8k.resume).forms,
     parse=partial(parse_filing_rows, table=Tables.sec_8k, columns=_COLS, row_fn=_filing_row),
     filings=submission_filings,
 )

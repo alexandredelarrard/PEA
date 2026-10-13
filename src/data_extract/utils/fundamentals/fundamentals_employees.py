@@ -22,12 +22,11 @@ from src.data_extract.utils.common.identity import Identity, load_identity
 from src.data_extract.utils.common.parallel_fetch import run_per_ticker
 from src.data_extract.utils.common.sec_io import configure, filing_attachments, forget_sgml, sec_call
 from src.data_extract.utils.common.sec_utils import load_cik_mapping
-from src.data_store.schema import Tables
+from src.data_store.schema import Resume, Tables
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 from src.gpt_extract.transformers.step_gpt_extracter import with_gpt_overrides
 from src.gpt_extract.utils.schemas_gpt import LlmResult, LlmTask
 
-HEADCOUNT_FORMS = ("10-K", "10-K/A", "10-K405")
 # The stored row: filer identity, the guarded components, their basis and status, and where they were read.
 FRAME_COLUMNS = [
     "ticker",
@@ -738,7 +737,7 @@ def build_ticker_employees(
     identity = scope.identity
     if identity is None:
         raise ValueError(f"{ticker}: employee extraction needs an identity-aware EdgarScope")
-    listed = scope.list_filings(ticker, cik, HEADCOUNT_FORMS, since=since, done_accessions=frozenset())
+    listed = scope.list_filings(ticker, cik, cast(Resume, Tables.fundamentals_employees.resume).forms, since=since, done_accessions=frozenset())
     owned = [filing for filing in listed if _owned(context, identity, ticker, filing)]
     scope.guard.add(len(listed) - len(owned))
     stamps = sorted(

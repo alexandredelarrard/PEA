@@ -33,13 +33,15 @@ def test_periods_semimonthly_bounded():
     assert ps[:2] == ["202301a", "202301b"]  # a=1-15, b=16-end
     assert ps[-2:] == ["202403a", "202403b"]  # up to the current month only
     assert "202312b" in ps
-    assert all(int(p[:4]) >= ftd.SEC_FTD_FIRST_YEAR for p in ftd._periods(50, today=pd.Timestamp("2024-03-10")))
-    # 15y reaches into the legacy era (FIRST_YEAR=2009) -> full history, not just 2017+
+    full = ftd._periods(50, today=pd.Timestamp("2024-03-10"))
+    assert full[:2] == ["200907a", "200907b"]
+    assert "200906b" not in full
+    # 15y reaches into the legacy era -> full history, not just 2017+
     assert "201001a" in ftd._periods(15, today=pd.Timestamp("2024-03-10"))
     print("\n=== SANITY: FTD semi-monthly periods ===")
     print(
         f"  years_history=1 @2024-03 -> {len(ps)} files 202301a..202403b; 15y reaches back to 2010 "
-        f"(legacy era, FIRST_YEAR={ftd.SEC_FTD_FIRST_YEAR}). Validated."
+        "(legacy era); full history starts at 200907a and skips unavailable January-June 2009 files. Validated."
     )
 
 

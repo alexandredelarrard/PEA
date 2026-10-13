@@ -38,11 +38,13 @@ from src.data_extract.utils.fundamentals.periods import (
     fiscal_year_ends,
     load_guards,
 )
-from src.data_store.schema import Tables
+from src.data_store.schema import Resume, Tables
 from src.utils.string import normalise_ticker, pad_cik_series
 
 #: Form precedence for a same-day collapse; keeps `publication_form` a scalar.
-FORM_PRECEDENCE: tuple[str, ...] = ("10-K", "10-K/A", "10-Q", "10-Q/A")
+FORM_PRECEDENCE = tuple(
+    sorted(cast(Resume, Tables.fundamentals_facts.resume).forms, key=lambda form: (not form.startswith("10-K"), form.endswith("/A")))
+)
 
 #: Structural, not tunable: a restated quarter stays inside some live TTM window for twelve months.
 MAX_AMENDMENT_LAG_DAYS = 365

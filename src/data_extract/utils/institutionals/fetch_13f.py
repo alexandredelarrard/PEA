@@ -809,7 +809,7 @@ def xml_filing_vintage(
         raise ValueError("13F cover amendment flag is missing or invalid")
     is_amendment = flag in {"true", "1"}
     cover_form = fields.get("submissionType")
-    if cover_form is not None and (cover_form not in {"13F-HR", "13F-HR/A"} or is_amendment != cover_form.endswith("/A")):
+    if cover_form is not None and (cover_form not in cast(Resume, Tables.sec13f_hr.resume).forms or is_amendment != cover_form.endswith("/A")):
         raise ValueError("13F cover amendment flag disagrees with cover form")
     if expected_form is not None and is_amendment != expected_form.endswith("/A"):
         raise ValueError("13F cover amendment flag disagrees with filing form")

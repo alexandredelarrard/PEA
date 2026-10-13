@@ -10,11 +10,12 @@ False there would be an assertion the SEC never made. That is why the column is 
 the pre-2023 case has its own test.
 """
 
+from typing import cast
+
 import pandas as pd
 
 from src.data_extract.utils.common.bulk_cache import quarter_periods
 from src.data_extract.utils.institutionals.fetch_insider_transactions import (
-    SEC_INSIDER_FIRST_YEAR,
     _footnote_strings,
     extract_bulk_strings,
 )
@@ -25,6 +26,7 @@ from src.data_extract.utils.institutionals.insider_common import (
     filter_footnotes,
     normalize_flag,
 )
+from src.data_store.schema import Resume, Tables
 
 #: A submission + owner row the transaction-only fixtures below are joined to.
 _SUB_ROW = {
@@ -249,9 +251,10 @@ def test_reparse_reaches_further_back_than_the_routine_window():
     carrying the OLD column set for ever -- new fields NULL on the oldest data and populated on
     the rest, which is indistinguishable downstream from a real coverage cliff."""
     today_year = pd.Timestamp.today().year
-    routine = quarter_periods(15 + 1, SEC_INSIDER_FIRST_YEAR)
-    reparse = quarter_periods(today_year - SEC_INSIDER_FIRST_YEAR + 1, SEC_INSIDER_FIRST_YEAR)
-    assert reparse[0] == f"{SEC_INSIDER_FIRST_YEAR}q1"
+    first_year = pd.Timestamp(cast(str, cast(Resume, Tables.insider_transactions.resume).source_start)).year
+    routine = quarter_periods(15 + 1, first_year)
+    reparse = quarter_periods(today_year - first_year + 1, first_year)
+    assert reparse[0] == f"{first_year}q1"
     assert set(routine) <= set(reparse), "the reparse window must contain the routine one"
     missed = sorted(set(reparse) - set(routine))
     assert missed, "expected the reparse window to reach quarters the routine one cannot"

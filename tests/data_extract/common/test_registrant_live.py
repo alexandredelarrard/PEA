@@ -22,12 +22,13 @@ invariants over the old two-CIK register and is deleted rather than left beside 
 from __future__ import annotations
 
 import os
+from typing import cast
 
 import pandas as pd
 import pytest
 
-from src.constants.constants import FUNDAMENTALS_FORMS
 from src.data_extract.utils.common.registrant import Registrant, load_registrants
+from src.data_store.schema import Resume, Tables
 
 CONFIG_DIR = "./configs"
 
@@ -71,7 +72,7 @@ def consolidating(edgar_ready, registrants) -> dict[str, dict[str, dict]]:
         per_cik: dict[str, dict] = {}
         for cik in reg.all_ciks():
             try:
-                filings = list(Company(int(cik)).get_filings(form=list(FUNDAMENTALS_FORMS)))
+                filings = list(Company(int(cik)).get_filings(form=list(cast(Resume, Tables.fundamentals_facts.resume).forms)))
             except Exception as exc:  # noqa: BLE001
                 pytest.skip(f"EDGAR unreachable for {ticker} CIK {cik}: {exc}")
             # (date, accession) PAIRS, never two independently sorted lists -- the date
@@ -281,12 +282,12 @@ def test_the_register_recovers_history_the_ticker_walk_cannot_reach(edgar_ready,
     gained_total = 0
     for ticker, reg in sorted(registrants.items()):
         try:
-            plain = {f.accession_number for f in Company(ticker).get_filings(form=list(FUNDAMENTALS_FORMS))}
+            plain = {f.accession_number for f in Company(ticker).get_filings(form=list(cast(Resume, Tables.fundamentals_facts.resume).forms))}
             walked: set[str] = set()
             for segment in reg.segments:
                 walked |= {
                     f.accession_number
-                    for f in Company(int(segment.cik)).get_filings(form=list(FUNDAMENTALS_FORMS))
+                    for f in Company(int(segment.cik)).get_filings(form=list(cast(Resume, Tables.fundamentals_facts.resume).forms))
                     if segment.covers(pd.Timestamp(f.filing_date))
                 }
         except Exception as exc:  # noqa: BLE001

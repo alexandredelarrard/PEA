@@ -3,7 +3,7 @@ fetch_13d_edgar.py (src/data_extract/utils/institutionals/fetch_13d_edgar.py)
 ---------------------------------------------------------------------------
 SC 13D/13D-A filings via edgartools into `sec_13d` (one row per ticker, accession, 0-based
 `rp_seq`; co-filers keyed by position since a reporting person often has no CIK) and
-`sec_13d_transactions` (one row per Item 5(c) trade). `SEC_13D_FORMS` must list both the
+`sec_13d_transactions` (one row per Item 5(c) trade). The table's `Resume.forms` lists both the
 "SC 13D" and "SCHEDULE 13D" form strings (exact match). Numerics are trusted only from structured
 XML without placeholder zeros, so the table never claims an undisclosed 0% stake; pre-XML item
 prose is regex-carved from the filing text and normalized for encoding/whitespace only. SEC reads go
@@ -20,14 +20,13 @@ from typing import Any, cast
 import pandas as pd
 from bs4 import BeautifulSoup
 
-from src.constants.constants import SEC_13D_FORMS
 from src.data_extract.utils.common.edgar_driver import EdgarFetch, EdgarScope, FilingStamp
 from src.data_extract.utils.common.item_carve import ITEM_SEP, carve_spans, item_heading
 from src.data_extract.utils.common.parallel_fetch import PROGRAMMING_ERRORS
 from src.data_extract.utils.common.resume import DONE_PER_KEY
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, filing_attachments, filing_text
 from src.data_extract.utils.institutionals.schedule_rows import SCHEDULE_NUMERIC_COLS, ScheduleSpec, schedule_is_subject, schedule_ticker_rows
-from src.data_store.schema import Table, Tables
+from src.data_store.schema import Resume, Table, Tables
 
 _COLS = [
     "ticker",
@@ -135,6 +134,21 @@ _CHAR_NORMALIZATION = _CP1252_C1_BLOCK | {
 #: Box-drawing / rule runs of 3+ characters, so hyphenated words and negative numbers are untouched.
 _RULE_RUN_RE = re.compile(r"[\u2500-\u257f=_]{3,}|(?<![\w-])-{3,}(?![\w-])")
 
+# --- Item 5(c) 60-day transaction-log exhibit parser -------------------------- #
+# Cells are consumed in header order so a currency column split into ("$", "36.70") is absorbed generically.
+_TRADE_HEADER_CUE = re.compile(r"trade\s*date", re.I)
+_ROLE_KEYWORDS = [
+    ("reporting_person_name", ("name",)),
+    ("trade_date", ("trade date",)),
+    ("transaction_type", ("buy", "sell", "exercise")),
+    ("quantity", ("shares", "quantity")),
+    ("price_per_share", ("unit cost", "price", "cost")),
+]
+# "Shares Purchased (Sold)" header: quantity plus per-row direction (parenthesized value = sell).
+_SIGNED_QUANTITY_RE = re.compile(r"(purchased|acquired|bought).{0,20}\(\s*(sold|disposed)\s*\)", re.I)
+
+_NUMERIC_RE = re.compile(r"-?[\d,]+(?:\.\d+)?")
+
 
 def _normalize_item_text(body: str) -> str:
     """Normalize encoding and whitespace only; no sentence is ever removed."""
@@ -186,20 +200,6 @@ def _extract_13d_item_sections(text: str) -> dict[str, str]:
     return out
 
 
-# --- Item 5(c) 60-day transaction-log exhibit parser -------------------------- #
-# Cells are consumed in header order so a currency column split into ("$", "36.70") is absorbed generically.
-_TRADE_HEADER_CUE = re.compile(r"trade\s*date", re.I)
-_ROLE_KEYWORDS = [
-    ("reporting_person_name", ("name",)),
-    ("trade_date", ("trade date",)),
-    ("transaction_type", ("buy", "sell", "exercise")),
-    ("quantity", ("shares", "quantity")),
-    ("price_per_share", ("unit cost", "price", "cost")),
-]
-# "Shares Purchased (Sold)" header: quantity plus per-row direction (parenthesized value = sell).
-_SIGNED_QUANTITY_RE = re.compile(r"(purchased|acquired|bought).{0,20}\(\s*(sold|disposed)\s*\)", re.I)
-
-
 def _cell_role(low: str, used: set[str]) -> str | None:
     """The first still-free role a lower-cased header cell names, recorded in `used`; None when
     it names none. A signed "Purchased (Sold)" quantity header claims the quantity role."""
@@ -237,9 +237,6 @@ def _row_values(cells: list[str], roles: list[str | None]) -> dict[str, str]:
         else:
             out[role] = val
     return out
-
-
-_NUMERIC_RE = re.compile(r"-?[\d,]+(?:\.\d+)?")
 
 
 def _clean_transaction_row(values: dict[str, str], filing_date: pd.Timestamp | None = None) -> dict:
@@ -396,7 +393,7 @@ def _filing_transactions(ticker: str, cik: str, stamp: FilingStamp, filing_rows:
 
 SCHEDULE_13D = ScheduleSpec(
     label="SC 13D",
-    forms=tuple(SEC_13D_FORMS),
+    forms=cast(Resume, Tables.sec_13d.resume).forms,
     columns=tuple(_COLS),
     extra_base=_item_texts,
     trust_numerics=_trust_numerics,
@@ -418,7 +415,7 @@ def parse_13d(ticker: str, cik: str, stamp: FilingStamp, scope: EdgarScope) -> d
 SEC_13D_FETCH = EdgarFetch(
     desc="SC 13D (edgartools)",
     tables=(Tables.sec_13d_transactions, Tables.sec_13d),
-    forms=tuple(SEC_13D_FORMS),
+    forms=cast(Resume, Tables.sec_13d.resume).forms,
     parse=parse_13d,
     done_table=Tables.sec_13d,
     is_subject=schedule_is_subject,

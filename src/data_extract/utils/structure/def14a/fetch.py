@@ -21,7 +21,6 @@ from edgar import Filing
 from omegaconf import DictConfig
 from tqdm import tqdm
 
-from src.constants.constants import DEF14A_FORMS
 from src.context import Context
 from src.data_extract.utils.common.edgar_extract import html_to_text
 from src.data_extract.utils.common.edgar_fillings import list_filings
@@ -45,7 +44,7 @@ from src.data_extract.utils.structure.def14a.gender import (
     log_consensus,
     recompute_parent_gender,
 )
-from src.data_store.schema import Table, Tables
+from src.data_store.schema import Resume, Table, Tables
 
 # `gpt_extract` is a shared service like `src/utils/`, the sanctioned cross-import (model, keys, prompts, thread pool).
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
@@ -143,13 +142,13 @@ def _list_scope_windows(
 ) -> pd.DataFrame:
     """That ticker's DEF 14A filings, listed by CIK for each window of its filing scope.
 
-    A dated SPLIT (`DEF14A_FORMS` is SPLIT in `registrant.FORM_POLICY`): each CIK contributes only
+    A dated SPLIT (the table's registered proxy forms use SPLIT in `registrant.FORM_POLICY`): each CIK contributes only
     filings its seam-widened window admits, so a company-year never blends two registrants' boards.
     Each row's `cik` is the CIK that filed it.
     """
     frames = []
     for window in scope.windows:
-        part = list_filings(context, window.cik, DEF14A_FORMS, years, company, since=since)
+        part = list_filings(context, window.cik, cast(Resume, Tables.def14a_llm.resume).forms, years, company, since=since)
         if part is None or part.empty:
             continue
         part = part[pd.to_datetime(part["filing_date"]).map(window.admits)]

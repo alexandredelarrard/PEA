@@ -32,7 +32,6 @@ import requests
 from edgar.thirteenf.models import _detect_value_in_thousands
 from tqdm import tqdm
 
-from src.constants.constants import SEC_13F_FORMS
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import ZipRead, cache_dir, ensure_zip, is_cached, read_zip_tables
 from src.data_extract.utils.common.empty_markers import marker_frame
@@ -175,7 +174,7 @@ def _submissions(df_sub: pd.DataFrame, df_cover: pd.DataFrame) -> pd.DataFrame:
             "period": pd.to_datetime(_pick(df_sub, "PERIODOFREPORT"), format="mixed", errors="coerce").dt.normalize(),
             "is_amendment": form.str.endswith("/A").fillna(False).astype(bool),
         }
-    )[form.isin(SEC_13F_FORMS).to_numpy()]
+    )[form.isin(cast(Resume, Tables.sec13f_hr.resume).forms).to_numpy()]
     report = pd.Series(dtype="datetime64[ns]")
     if not df_cover.empty:
         dates = pd.to_datetime(_pick(df_cover, "REPORTCALENDARORQUARTER"), format="mixed", errors="coerce").dt.normalize()

@@ -10,7 +10,7 @@ tags:
 
 ## Summary
 
-Configuration is an OmegaConf tree assembled from every YAML file under `configs/`. Tunable values belong in YAML; stable source facts such as URLs, form vocabularies, date formats, market-series names, and plausibility bounds belong in `src/constants/`. The ownership map is documented in [configuration reference](../reference/configuration.md).
+Configuration is an OmegaConf tree assembled from every YAML file under `configs/`. Tunable values belong in YAML; stable source facts such as URLs, date formats, market-series names, and plausibility bounds belong in `src/constants/`. Extracted SEC form lists belong only in each table's `Resume.forms` in [schema.py](../../src/data_store/schema.py); fetchers, derived form subsets, the EDGAR index, registrant policy and validation read those contracts. The ownership map is documented in [configuration reference](../reference/configuration.md).
 
 ## Responsibilities
 
@@ -23,7 +23,7 @@ Configuration is an OmegaConf tree assembled from every YAML file under `configs
 
 - `read_config(path)` in [utils/config.py](../../src/utils/config.py).
 - `get_config_context()` in [context.py](../../src/context.py).
-- Shared Click option specifications in [command_line_interface.py](../../src/constants/command_line_interface.py). Every extraction option uses `@click.option(*NAME_ARGS, **NAME_KWARGS)` directly; heterogeneous keyword dictionaries are typed there, with no aliases or casts in the extraction CLI. `-F` / `--full` selects complete input processing; `fundamentals --rebuild` separately deletes stored facts before refetching. Gap-check reports use `--report`.
+- Shared Click option specifications in [command_line_interface.py](../../src/constants/command_line_interface.py). Every extraction and aggregation option uses `@click.option(*NAME_ARGS, **NAME_KWARGS)` directly; heterogeneous keyword dictionaries are typed there, with no local copies or casts in those CLIs. `-F` / `--full` selects complete input processing; `fundamentals --rebuild` separately deletes stored facts before refetching. Gap-check reports use `--report`.
 - Named market-series registries such as `MACRO_MARKET_SERIES` in [constants_price.py](../../src/constants/constants_price.py).
 
 ## Key files

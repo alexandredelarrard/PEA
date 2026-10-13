@@ -15,6 +15,7 @@ import os
 from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 import edgar
 import pandas as pd
@@ -26,16 +27,14 @@ import pyarrow.parquet as pq
 from src.context import Context
 from src.data_extract.utils.common import sec_io
 from src.data_extract.utils.common.bulk_cache import cache_dir
-from src.data_extract.utils.common.registrant import FORM_POLICY
+from src.data_store.schema import Resume, resume_tables
 from src.utils.string import pad_cik_series
 
 logger = logging.getLogger(__name__)
 
 INDEX_URL = "https://www.sec.gov/Archives/edgar/full-index/{year}/QTR{quarter}/master.gz"
-#: The forms kept from the index: every form a document fetcher lists, plus the 13F family.
-INDEX_FORMS: frozenset[str] = frozenset(FORM_POLICY) | {"13F-HR", "13F-HR/A"}
-#: EDGAR's full index starts in 1993 Q1.
-FIRST_INDEX_YEAR = 1993
+#: The forms kept from the index: exactly the union of the registered extraction contracts.
+INDEX_FORMS: frozenset[str] = frozenset(form for table in resume_tables() for form in cast(Resume, table.resume).forms)
 #: Days into a quarter during which the previous quarter is downloaded again (late index lines).
 _PREVIOUS_QUARTER_DAYS = 10
 _ENCODING = "latin-1"
@@ -75,8 +74,9 @@ class Quarter:
 
 
 def quarters_between(first: pd.Timestamp, last: pd.Timestamp) -> list[Quarter]:
-    """Every quarter from `first`'s to `last`'s, inclusive, never before `FIRST_INDEX_YEAR`."""
-    quarter = max(Quarter.of(first), Quarter(FIRST_INDEX_YEAR, 1))
+    """Every quarter in the window, floored at the earliest registered EDGAR source start."""
+    source_start = min(cast(str, cast(Resume, table.resume).source_start) for table in resume_tables() if cast(Resume, table.resume).forms)
+    quarter = max(Quarter.of(first), Quarter.of(pd.Timestamp(source_start)))
     out: list[Quarter] = []
     while quarter <= Quarter.of(last):
         out.append(quarter)

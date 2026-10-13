@@ -40,16 +40,6 @@ RESUME_ARCHIVE = "archive"
 RESUME_MARKET = "market"
 RESUME_SNAPSHOT = "snapshot"
 
-# Columns that are zero-padded string identifiers, never numeric -- forcing them to TEXT
-# preserves leading zeros (SEC CIK "0000320193" would lose them as BIGINT).
-_TEXT_IDENTIFIER_COLS = {"cik"}
-
-# EDGAR form spellings shared by more than one contract below.
-_FORMS_13D = ("SC 13D", "SC 13D/A", "SCHEDULE 13D", "SCHEDULE 13D/A")
-_FORMS_13G = ("SC 13G", "SC 13G/A", "SCHEDULE 13G", "SCHEDULE 13G/A")
-_FORMS_345 = ("3", "4", "5", "3/A", "4/A", "5/A")
-_FORMS_DEF14A = ("DEF 14A", "DEF 14C", "DEFC14A")
-_FORMS_13F = ("13F-HR", "13F-HR/A")
 # The sentinel a child-sequence or label column takes on an empty-filing marker row.
 _EMPTY = "_empty"
 
@@ -70,6 +60,10 @@ class Resume:
     period_col: str | None = None
     # Earliest date the source serves (ISO); the work list never starts before it.
     source_start: str | None = None
+    # First period with broad coverage; earlier, sparse source history can still exist.
+    coverage_start: str | None = None
+    # Archive periods on/after this date use an observed availability clock, earlier ones an estimate.
+    observed_from: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,31 +133,8 @@ class Tables:
     # ----------------------------------------------------------------- #
     # Reference / dimension                                             #
     # ----------------------------------------------------------------- #
-    # The ticker universe: ticker, name, cik and GICS sector / industry_group /
-    # sub_industry. Also the single source of truth for ticker->CIK resolution (see
-    # sec_utils.load_cik_mapping); the old separate `cik_mapping` table was dropped as a
-    # redundant duplicate.
-    # `added_on` is the date a ticker entered the table; a NULL reads as an established ticker.
     sp500_tickers = Table("sp500_tickers", ("ticker",), KIND_REFERENCE, date_type_cols=("added_on",))
 
-    # Dataroma's curated "superinvestors" roster, ONE ROW PER (snapshot, manager). Seeded
-    # from 13 web.archive.org captures (2013 -> 2026, 879 manager-rows, 104 distinct codes)
-    # and appended to by every live scrape, so membership is a queryable fact over time:
-    # `utils/superinvestor_roster.roster_as_of(q)` answers "who was a superinvestor at q",
-    # which the flat `{cik: name}` JSON it replaces structurally could not.
-    # Columns: snapshot_date, dataroma_code, manager_name, cik (padded, NULL while
-    # unresolved), resolution (`edgar` | `override` | `unresolved`), source_url.
-    #
-    # PK is `dataroma_code`, NOT `cik`. `cik` is NULL for a manager EDGAR cannot resolve and
-    # a nullable column cannot be a PK member; it is also not unique, because the same
-    # manager legitimately appears under two codes (`brk` and `BRK` both resolve to
-    # 0001067983). It carries a non-unique index instead (hand-spliced into sql/schema.sql).
-    #
-    # Roster CHURN is counted on the RESOLVED CIK, never on the code or the name: the
-    # code-based count says 23 managers were lost between 2013 and 2026 and the
-    # name-normalised count says 32, and both are wrong -- codes are re-cased and names are
-    # rewritten (`SEQUX` carries 7 distinct names across the 13 snapshots) while the CIK is
-    # the manager.
     superinvestor_roster = Table(
         "superinvestor_roster",
         ("snapshot_date", "dataroma_code"),
@@ -171,43 +142,11 @@ class Tables:
         date_col="snapshot_date",
         ticker_col=None,
         date_type_cols=("snapshot_date",),
+        freshness="daily",
+        resume=Resume(RESUME_SNAPSHOT, None, None, source_start="2012-01-01"),
         read_columns=("snapshot_date", "dataroma_code", "manager_name", "cik", "resolution", "source_url"),
     )
 
-    # Which issuer CIK held a trading SYMBOL, and WHEN -- axis B of the identity problem
-    # (`entity_lineage` is axis A). Derived from `ISSUERTRADINGSYMBOL` + `ISSUERCIK` +
-    # `FILING_DATE` in the Form 345 bulk data sets: a PRIMARY-SOURCE, free, offline oracle
-    # over 81 cached quarters (2006q1 -> 2026q1), 4.3M filings, ~27.4k distinct symbols.
-    # ~9% of symbols have had more than one issuer CIK and those carry ~20% of all Form
-    # 3/4/5 filings, so symbol reuse is not a long-tail problem.
-    #
-    # ⚠ THE SEC PUBLISHES NO HISTORICAL TICKER->CIK DATASET. `company_tickers.json` is a
-    # current snapshot with no dates; `data.sec.gov/submissions` carries `formerNames` but
-    # no `formerTickers` (Meta's CIK 1326801 returns only `META` -- the string `FB` appears
-    # nowhere). The fact is published only INSIDE the filings, which is why this table is
-    # DERIVED rather than fetched.
-    #
-    # ⚠ TENURES ARE NOT ALWAYS DISJOINT: ~1/3 of adjacent pairs overlap in time (`COR` has
-    # Cortex Pharmaceuticals and CoreSite Realty both filing 2010-2012). `valid_to` is the
-    # OBSERVED end of that CIK's own filing window, not the start of the next CIK's, so a
-    # "last writer wins" collapse would be wrong. Resolution is a MEMBERSHIP test ("did this
-    # CIK hold X at d"), never a lookup expecting one answer.
-    #
-    # `symbol` is the filer's typed string in roster spelling (`symbol_tenure.parse_symbol_field`:
-    # quotes, brackets and exchange prefixes removed, lists such as 'BFA, BFB' split, `.`/`/`
-    # class separators -> `-`, placeholders dropped). It is not validated against any exchange
-    # listing; a filer typo becomes a one-filing tenure, visible as `n_filings=1`.
-    #
-    # One row per evidence SOURCE: `form345` and `manual` (written by the identity build) and
-    # `dei` (Notes cover-page symbols, one row per Notes zip period in `evidence_period`).
-    # `evidence_period` is '' (never NULL) for `form345` and `manual`. Each source rewrites only
-    # its own partition, so the same (symbol, issuer_cik, valid_from) can hold one row per source.
-    #
-    # `valid_from` is an OBSERVATION (first Form 3/4/5 filed), not a listing date -- a
-    # company can have traded under the symbol for years before its first insider filing.
-    # Coverage starts 2006q1 because the bulk sets do, while `insider_transactions` holds
-    # rows from 1990, so tenure is NULL for 16 years of it. That costs nothing: the `owns()`
-    # predicate is ENTITY-based and does not read this table (D7).
     symbol_tenure = Table(
         "symbol_tenure",
         ("symbol", "issuer_cik", "valid_from", "source", "evidence_period"),
@@ -217,35 +156,6 @@ class Tables:
         read_columns=("symbol", "issuer_cik", "valid_from", "valid_to", "n_filings", "source", "evidence_period", "evidence"),
     )
 
-    # WHICH CIKs AND SYMBOLS ARE ONE ECONOMIC COMPANY, AND WHEN -- the dated identity verdict and
-    # the only identity input of the fetchers (`symbol_tenure` is its evidence). `entity_id` is
-    # `"E" + the oldest CIK in the group`: a natural key with no allocation state, so a full
-    # re-derive reproduces the same ids.
-    #
-    # Rows by `role`: `cik_window` (that CIK's consolidating filings belong to the entity over
-    # `[valid_from, valid_to)`), `cik_event` (event forms only: co-registrant subsidiaries, CIKs with
-    # no dated window) and `symbol` (a dated symbol interval; `symbol` is '' on the CIK rows).
-    # `status` in {curated, corroborated, single_source, noise, conflict}; `sources` names the
-    # evidence (register, manual, form345, dei, roster); `oracle` the membership oracle (register,
-    # manual, symbol_handoff, owner_overlap, roster). `confidence` holds the owner-overlap jaccard and
-    # is RECORDED, NEVER READ.
-    #
-    # ⚠ AN OPEN START IS STORED AS 1900-01-01 (`valid_from` is a PK column); an open end is NULL.
-    # "Current" = `role='symbol'` and `valid_to` IS NULL. One CIK belongs to one entity: the PK no
-    # longer guarantees it, the build asserts it (`CikInTwoEntitiesError`).
-    #
-    # Only universe entities and hand-adjudicated CIKs are stored. A CIK with no row IS its own
-    # entity (`E{cik}`), which is why `owns()` correctly DROPS a symbol reuse it has never seen.
-    # `scope_changed_at` (per ticker) is the build time at which that ticker's rows last changed, kept
-    # apart for the two row kinds: CIK rows carry the stamp of their last CIK change (EDGAR relist),
-    # symbol rows their own stamp of their last tape-readable symbol change (FTD re-resolution).
-    #
-    # ISSUER grain, not share class: `GOOG` and `GOOGL` are one entity, because Forms 3/4/5 carry an
-    # issuer CIK and no class.
-    #
-    # ⚠ `sharadar_permaticker` IS NOT A SOURCE HERE, AND THAT IS A MEASURED RESULT: Sharadar mints a
-    # NEW permaticker for a delisted predecessor, so it cannot join two CIKs. The table carries no
-    # Sharadar-licensed content.
     entity_lineage = Table(
         "entity_lineage",
         ("cik", "role", "symbol", "valid_from"),
@@ -270,23 +180,6 @@ class Tables:
         ),
     )
 
-    # WHICH SECURITY a market-tape line is, its issuer CIK, class and lineage role, and WHEN -- the
-    # security grain under `entity_lineage`'s issuer grain. One row per (security, source symbol
-    # interval, role interval); `security_id` is `"C" + CUSIP-9` (a natural key, so a full re-derive
-    # reproduces it). Derived offline by `identity-tables` from the stored FTD lines, the lineage, the
-    # roster, `sec_company_tickers` and `configs/sec/security_master_manual.json`.
-    #
-    # `lineage_role` in {canonical_predecessor, canonical_current, secondary_class,
-    # acquired_constituent, excluded}; an `excluded` row names its reason in `lineage_reason`
-    # (preferred, debt, warrant, unit, right, transition_placeholder, unclassified, superseded,
-    # cancelled_security). Classes need POSITIVE evidence: a line with none is `unclassified`.
-    # Securities of co-registrant subsidiaries are not stored.
-    #
-    # `valid_from`/`valid_to` are half-open TRADE dates (FTD settlement dates converted by the
-    # settlement cycle). `conversion_ratio` is the dated number of canonical-class shares one share
-    # of the line is worth (BRK-A 30, then 1,500; 1 elsewhere) and applies only when share counts
-    # of several classes are summed. `exchange` is known only for current lines (SEC snapshot).
-    # `scope_changed_at` (per canonical company) is the build time at which its rows last changed.
     security_master = Table(
         "security_master",
         ("security_id", "source", "source_symbol", "valid_from"),
@@ -632,7 +525,7 @@ class Tables:
         date_col="as_of",
         date_type_cols=("as_of",),
         freshness="quarterly",
-        resume=Resume(RESUME_DOCUMENTS, "ticker", "as_of", 95, forms=("10-K", "10-K/A", "10-K405")),
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "as_of", 95, forms=("10-K", "10-K/A", "10-K405"), source_start="1993-01-01"),
     )
     # Accession-grain, amendment-aware fundamentals facts: one row per catalogue FIELD per
     # period per filing, resolved from the filer's own XBRL calculation linkbase (see
@@ -676,7 +569,7 @@ class Tables:
         ("ticker", "earnings_date"),
         date_col="earnings_date",
         freshness="quarterly",
-        resume=Resume(RESUME_DOCUMENTS, "ticker", "earnings_date", 95),
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "earnings_date", 95, source_start="2002-10-01"),
     )
     # SEC Financial Statement Data Sets (num/sub): curated pension facts per
     # company/tag/period-end (`ddate`) / duration (`qtrs`) / ZIP quarter vintage.
@@ -687,7 +580,7 @@ class Tables:
         date_type_cols=("ddate", "filed", "available_at"),
         freshness="quarterly",
         freshness_date_col="available_at",
-        resume=Resume(RESUME_ARCHIVE, "ticker", "quarter", 95, period_col="quarter", source_start="2009-01-01"),
+        resume=Resume(RESUME_ARCHIVE, "ticker", "quarter", 95, period_col="quarter", source_start="2009-01-01", observed_from="2026-09-01"),
     )
     # SEC Financial Statement AND NOTES Data Sets -- footnote NUMERIC facts (consolidated /
     # undimensioned, curated tag set: PBO, plan assets, funded status, service cost,
@@ -700,7 +593,7 @@ class Tables:
         date_type_cols=("ddate", "filed", "available_at"),
         freshness="monthly",
         freshness_date_col="available_at",
-        resume=Resume(RESUME_ARCHIVE, "ticker", "period", 62, period_col="period", source_start="2009-01-01"),
+        resume=Resume(RESUME_ARCHIVE, "ticker", "period", 62, period_col="period", source_start="2009-01-01", observed_from="2026-09-01"),
     )
     # SEC notes NARRATIVE TEXT blocks (high-signal notes only), stored raw for later
     # embedding / sentiment. Same grain as notes_num; `value` is the text.
@@ -711,7 +604,7 @@ class Tables:
         date_type_cols=("ddate", "filed", "available_at"),
         freshness="monthly",
         freshness_date_col="available_at",
-        resume=Resume(RESUME_ARCHIVE, "ticker", "period", 62, period_col="period", source_start="2009-01-01"),
+        resume=Resume(RESUME_ARCHIVE, "ticker", "period", 62, period_col="period", source_start="2009-01-01", observed_from="2026-09-01"),
     )
     # NOTE: `employees_history` was RETIRED, and so was the `fundamentals_history_sec."employees"`
     # column that briefly replaced it. Headcount now has its own `fundamentals_employees`
@@ -897,7 +790,7 @@ class Tables:
         date_type_cols=("date",),
         freshness="daily",
         read_columns=("date", "action", "ticker", "name", "contraticker", "contraname", "note"),
-        resume=Resume(RESUME_SERIES, None, "date", 7),
+        resume=Resume(RESUME_SERIES, None, "date", 7, source_start="1990-01-01"),
     )
 
     # ----------------------------------------------------------------- #
@@ -938,7 +831,7 @@ class Tables:
         # Option quantities are optional for older sources; never synthesize them.
         optional_columns=frozenset({"accession_number", "call_shares", "call_value", "put_shares", "put_value", "filing_date"}),
         # Market-wide nightly walk; a new ticker is backfilled per ticker from `source_start`.
-        resume=Resume(RESUME_MARKET, "cik", "filing_date", 7, forms=_FORMS_13F, source_start="1999-07-01"),
+        resume=Resume(RESUME_MARKET, "cik", "filing_date", 7, forms=("13F-HR", "13F-HR/A"), source_start="1999-07-01", coverage_start="2013-06-30"),
         # A completed new-ticker EDGAR gap walk (`fetch_13f_backfill`) saves one marker per ticker,
         # cik and cusip '_empty', period = filing_date = the gap start. That day follows every
         # data-set row and precedes the nightly frontier, so neither max(filing_date) nor a
@@ -976,7 +869,7 @@ class Tables:
             "other_value",
         ),
         optional_columns=frozenset({"accession_number"}),
-        resume=Resume(RESUME_MARKET, "cik", "filing_date", 95, forms=_FORMS_13F),
+        resume=Resume(RESUME_MARKET, "cik", "filing_date", 95, forms=("13F-HR", "13F-HR/A"), source_start="1993-01-01"),
         empty_marker=("cusip", _EMPTY),
     )
     # Forms 3/4/5 transactions, one row per (accession, nonderiv/deriv table, 1-based row in
@@ -1040,7 +933,9 @@ class Tables:
         # Two legs resume from these rows. EDGAR: the local index's Forms 3/4/5 filed after the last
         # stored zip quarter, minus the accessions stored from EDGAR under the key (markers
         # included). Zip: the quarters no row carries yet. A marker takes `row_sequence` = 0.
-        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 7, forms=_FORMS_345, period_col="quarter", source_start="2006-01-01"),
+        resume=Resume(
+            RESUME_DOCUMENTS, "ticker", "filing_date", 7, forms=("3", "4", "5", "3/A", "4/A", "5/A"), period_col="quarter", source_start="2006-01-01"
+        ),
         empty_marker=("security_type", _EMPTY),
     )
     # Form 3/4/5 footnote prose, one row per (accession, footnote id). Free -- already inside the
@@ -1079,7 +974,9 @@ class Tables:
             "item4_purpose_of_transaction",
         ),
         freshness="daily",
-        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 7, forms=_FORMS_13D),
+        resume=Resume(
+            RESUME_DOCUMENTS, "ticker", "filing_date", 7, forms=("SC 13D", "SC 13D/A", "SCHEDULE 13D", "SCHEDULE 13D/A"), source_start="1993-01-01"
+        ),
         # rp_seq counts from 0, so the sentinel is negative
         empty_marker=("rp_seq", -1),
     )
@@ -1126,7 +1023,9 @@ class Tables:
         # columns above.
         read_columns=("ticker", "accession_number", "cusip", "filing_date", "percent_of_class", "reporting_person_cik", "reporting_person_name"),
         freshness="daily",
-        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 7, forms=_FORMS_13G),
+        resume=Resume(
+            RESUME_DOCUMENTS, "ticker", "filing_date", 7, forms=("SC 13G", "SC 13G/A", "SCHEDULE 13G", "SCHEDULE 13G/A"), source_start="1993-01-01"
+        ),
         empty_marker=("rp_seq", -1),
     )
 
@@ -1138,7 +1037,7 @@ class Tables:
         ("ticker", "accession_number"),
         date_col="as_of",
         freshness="yearly",
-        resume=Resume(RESUME_DOCUMENTS, "ticker", "as_of", 95, forms=_FORMS_DEF14A),
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "as_of", 95, forms=("DEF 14A", "DEF 14C", "DEFC14A"), source_start="1993-01-01"),
         empty_marker=("def14a_json", _EMPTY),
     )
     # ---- the four LLM-side child tables, flattened out of `def14a_llm.def14a_json` ----
@@ -1167,11 +1066,6 @@ class Tables:
         # stays on the parent scalar (D36).
         read_columns=("ticker", "accession_number", "as_of", "name", "age", "tenure_years", "is_independent", "other_public_company_boards"),
     )
-    # Summary Compensation Table rows (Item 402(c)): one row per NEO per fiscal year, ~3 years
-    # per filing. 34,741 such rows already sat inside the JSON against the retired edgar table's
-    # 2,378, and better on every axis: title 100% vs 45.4%, stock awards 93.8% vs 45.4%, and
-    # 2 rows above $1e9 vs 109. `reconciles` = 1 when the seven components sum to `total` within
-    # $10 -- a FLAG, not a filter; the values are kept either way.
     def14a_executive_comp = Table(
         "def14a_executive_comp",
         ("ticker", "accession_number", "name", "fiscal_year"),
@@ -1179,10 +1073,6 @@ class Tables:
         date_type_cols=("as_of",),
         freshness="yearly",
     )
-    # Non-employee Director Compensation Table (Item 402(k)): one row per director per filing.
-    # Single-year BY REGULATION -- 402(k) requires the last completed fiscal year only -- and
-    # membership here IS the definition of an outside director, which the 8-K vote role map
-    # depends on. Exists only from the 2008 proxy season (Reg S-K 2006, FY ending >= 2006-12-15).
     def14a_director_comp = Table(
         "def14a_director_comp",
         ("ticker", "accession_number", "name"),
@@ -1206,10 +1096,6 @@ class Tables:
             "other_compensation",
         ),
     )
-    # Beneficial-ownership rows (Item 403). KNOWINGLY redundant with 13F / SC 13D-G /
-    # Forms 3-4-5, which are the preferred sources and whose as-of dates these never align with;
-    # the proxy-only figure is the directors-and-officers GROUP aggregate, which is the
-    # `insider_ownership_pct` scalar on `def14a_llm`, not a row here.
     def14a_ownership = Table(
         "def14a_ownership",
         ("ticker", "accession_number", "holder_name", "holder_type"),
@@ -1217,54 +1103,24 @@ class Tables:
         date_type_cols=("as_of",),
         freshness="yearly",
     )
-    # The Pay-versus-Performance / ECD inline-XBRL block of a proxy, and nothing else -- facts
-    # the FILER tagged, which is the only part of a DEF 14A worth reading deterministically.
-    # 2023+ BY REGULATION (Item 402(v) applies to fiscal years ending >= 2022-12-16): a proxy
-    # covering an earlier year carries no `ecd:` facts and gets NO ROW, which is why `has_xbrl`
-    # was dropped as degenerate. The inventory of which proxies exist is `def14a_llm`'s job.
-    # `ecd_period_end` is the fiscal year the PVP facts describe -- NOT derivable from
-    # `period_of_report`, which for a proxy is the meeting date.
-    # The four HTML-parsed child tables (`sec_def14a_executive_comp` / `_director_comp` /
-    # `_ownership` / `_votes`) were DELETED: edgartools' proxy HTML parser returns values that
-    # are silently wrong rather than absent, and the LLM path's own child tables replaced them
-    # on every measurable axis (title 100% vs 45.4%, 0 rows > $1e9 vs 109).
     def14a_edgar = Table(
         "sec_def14a",
         ("ticker", "accession_number"),
         date_col="filing_date",
         date_type_cols=("filing_date", "period_of_report", "ecd_period_end"),
         freshness="yearly",
-        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 95, forms=_FORMS_DEF14A, source_start="2022-12-16"),
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 95, forms=("DEF 14A", "DEF 14C", "DEFC14A"), source_start="2022-12-16"),
         empty_marker=("form", _EMPTY),
     )
-    # 8-K events: one row per ITEM CODE of a filing, keyed (ticker, accession, item) -- an
-    # 8-K reports 1..n items and ~75% report more than one. `item` is in the PK because
-    # keying on the accession alone made every extra item upsert onto the same row, silently
-    # keeping only the last (95,785 accessions stored for 196,875 item rows built).
-    # `has_earnings`/`has_press_release` come from edgartools' typed `CurrentReport`
-    # (best-effort -- NaN, not False, when that parse fails).
     sec_8k = Table(
         "sec_8k",
         ("ticker", "accession_number", "item"),
         date_col="filing_date",
         date_type_cols=("filing_date", "period_of_report"),
         freshness="daily",
-        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 7, forms=("8-K", "8-K/A")),
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 7, forms=("8-K", "8-K/A"), source_start="1993-01-01"),
         empty_marker=("item", _EMPTY),
     )
-    # Shareholder-meeting vote tallies parsed out of the ALREADY-STORED `sec_8k` Item 5.07
-    # narratives -- one row per proposal. Item 5.07 is the ONLY source of certified vote
-    # counts (Rel. 33-9089 moved the disclosure out of 10-Q Part II Item 4, so it begins
-    # 2010-03): no XBRL tag carries a vote number, the SEC publishes no data set, and no
-    # vendor publishes a free parse. Free by construction -- `fetch_8k_edgar` already stores
-    # the narrative (6,657 rows, 405 tickers), so nothing is re-downloaded.
-    # A director election collapses to ONE row whose per-role-category columns are summed
-    # across nominees; the raw per-nominee tallies stay in `nominee_votes_json`, which is
-    # what makes a recategorisation free. The 20 category columns are NULL on the ~85% of
-    # rows that are not elections.
-    # Amendments are stored as their own rows and UNIONED by the reader on
-    # (ticker, period_of_report): of 190 multi-filing meetings, "latest wins" is correct on
-    # 17% and "union the group" on 91%, because 71% of amendments carry no vote numbers.
     sec_8k_votes = Table(
         "sec_8k_votes",
         ("ticker", "accession_number", "proposal_seq"),
@@ -1283,20 +1139,13 @@ class Tables:
         date_col="filed",
         date_type_cols=("filed", "period_of_report"),
         freshness="quarterly",
-        resume=Resume(RESUME_DOCUMENTS, "ticker", "filed", 95, forms=("10-K", "10-Q")),
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "filed", 95, forms=("10-K", "10-Q"), source_start="1993-01-01"),
         empty_marker=("section", _EMPTY),
     )
 
     # ----------------------------------------------------------------- #
     # Extract -- behavioral / text / embeddings                         #
     # ----------------------------------------------------------------- #
-    # RAW defeatbeta earnings-call transcripts, ONE ROW PER SOURCE PARAGRAPH, keyed
-    # (ticker, fiscal `quarter` label e.g. '2026Q2', `paragraph` = the source
-    # paragraph_number). Columns: `as_of` (the real call date, NOT NULL), `transcript_id`,
-    # `speaker`, `content`. Nothing is split here: prepared remarks / Q&A are cut at
-    # aggregate time in data_aggregate via `src/utils/earnings_call_split.py`, so a
-    # splitter fix needs no refetch. NOT projected: `content` IS the payload.
-    # Not index-diffed: units are calls in the source parquet.
     earnings_call_sections = Table(
         "earnings_call_sections",
         ("ticker", "quarter", "paragraph"),
@@ -1305,17 +1154,7 @@ class Tables:
         freshness="quarterly",
         resume=Resume(RESUME_DOCUMENTS, "ticker", "as_of", 95, source_start="2005-01-01"),
     )
-    # Per-call sentiment / text-metrics cache (FinBERT-tone + LM lexicon), one row per
-    # ticker / fiscal quarter / section. Holds the EXPENSIVE, call-intrinsic scores (tone
-    # probs, word count, uncertainty ratio) so the GPU pass runs once; the cross-call KPIs
-    # are derived cheaply at cube-build time. Same grain as sections.
     earnings_call_sentiment = Table("earnings_call_sentiment", ("ticker", "quarter", "tag"), date_col="as_of", date_type_cols=("as_of",))
-    # OpenAI earnings-call embeddings: one row PER SPEAKER TURN, each with its own
-    # float8[] `embedding` + raw `text` + `person` + `tag` + `exchange_idx` (links a
-    # question to its answer turns) + model/run stamp + `as_of` (call date). The
-    # Q&A-coherence + QoQ-distance cube features are DERIVED from these turns at build
-    # time. The projection omits `text` -- the KPI pass never reads it, and it is the bulk
-    # of the table.
     earning_calls_embedding = Table(
         "earning_calls_embedding",
         ("ticker", "quarter", "seq"),
@@ -1324,11 +1163,6 @@ class Tables:
         vector_prefix="e",
         read_columns=("ticker", "quarter", "as_of", "section", "tag", "exchange_idx", "embedding"),
     )
-    # OpenAI embeddings of SEC footnote NARRATIVE (`notes_text`): one mean-pooled vector
-    # PER (ticker, filing `adsh`, TextBlock `tag`), with its `theme`, `filed`/`ddate` for
-    # point-in-time ordering, `txtlen` and chunk count. Populated by extraction but NOT yet
-    # consumed by the cube: the narrative-drift builder was never wired into a panel, so
-    # these rows currently have no downstream reader.
     notes_embedding = Table(
         "notes_embedding", ("ticker", "adsh", "tag"), date_col=None, date_type_cols=("as_of", "ddate"), vector_col="embedding", vector_prefix="e"
     )
@@ -1338,28 +1172,13 @@ class Tables:
     # ----------------------------------------------------------------- #
     # Aggregate -- pipeline outputs                                     #
     # ----------------------------------------------------------------- #
-    # ("ticker","date") since the wide rebuild: the targets part carries one column per
-    # (label, horizon), so a (date, ticker) appears exactly once instead of once per horizon.
     cube = Table("cube", ("ticker", "date"), KIND_AGGREGATE, date_col="date")
     cube_signal = Table("cube_signal", ("ticker", "date"), KIND_AGGREGATE, date_col="date")
     predictions = Table("predictions", ("ticker", "date"), KIND_AGGREGATE, date_col="date")
-    # LIVE predictions in LONG form, one row per (as-of date, ticker, horizon, model): each
-    # row carries its OWN `predicts_for` (as-of + horizon business days), because the h30
-    # and h90 predictions made on the same day are about different future dates. `model` is
-    # an ensemble member name, or 'ensemble' (that horizon's member average) / 'blended'
-    # (the IR-weighted blend across horizons). `predicted_at` is when the run produced the
-    # row -- deliberately distinct from `date`, the as-of date of the features.
     predictions_latest = Table(
         "predictions_latest", ("date", "ticker", "horizon", "model"), KIND_AGGREGATE, date_col="date", date_type_cols=("date", "predicts_for")
     )
-    # Multi-asset trend sleeve daily NET returns (one row per date, no ticker) -- a
-    # directional cross-asset time-series-momentum book blended with the equity alpha +
-    # SPY in the backtest.
     trend_asset_returns = Table("trend_asset_returns", ("date",), KIND_AGGREGATE, date_col="date", ticker_col=None)
-    # The TRADING LEDGER: one row per (trading day, sleeve, ticker) move the portfolio
-    # would place, with its FIFO-matched entry/exit price and realized P&L. Upserted (not
-    # replaced) so a BUY row written weeks ago gains its `price_sold` / `pnl` on the day
-    # its position closes.
     strategy = Table(
         "strategy", ("trading_day", "sleeve", "ticker"), KIND_AGGREGATE, date_col="trading_day", date_type_cols=("trading_day", "closed_on")
     )
@@ -1367,42 +1186,13 @@ class Tables:
     # ----------------------------------------------------------------- #
     # Parts -- private plumbing between the cube sub-steps               #
     # ----------------------------------------------------------------- #
-    # Rebuilt wholesale by their owning step, so each carries its OWN DDL inferred from the
-    # frame it writes and is excluded from sql/schema.sql (`managed=False`). The pk and
-    # date_col are still DECLARED: `date_col` is what `since=` and `max_date()` resolve
-    # against, and the pk is the append/dedup grain.
-    #
-    # The BUILD-ORCHESTRATION facet of these tables -- CLI sub-command, warm-up trading
-    # days, per-group binding look-backs -- deliberately stays in
-    # `data_aggregate/utils/common/parts.py`. That is aggregation policy, not schema.
-    # NO cube_part_market: it existed only to keep the market/commodity/FX tickers out of
-    # the equity frame the cross-sectional ranks are computed on. Once those series live in
-    # `prices_macro` and never in `prices`, there is nothing to separate -- StepCubeTarget
-    # reads them straight from `prices_macro`, and the trading calendar (which this part
-    # used to define) comes off cube_part_prices' own dates.
     cube_part_prices = Table("cube_part_prices", ("date", "ticker"), KIND_PART, date_col="date", managed=False)
-    # ("date","ticker") since the wide rebuild: `labels_to_wide` (utils/assemble/cube.py) emits
-    # one column per (label, horizon) instead of stamping `target_horizon` and concatenating.
-    # The narrower key is now the true grain, which also removes a real hazard -- `copy_load`
-    # falls back to an upsert on the registry PK for frames with list-valued cells, and under
-    # the old 3-part declaration `write_part` was writing this part on the 2-part PANEL_KEYS
-    # anyway.
     cube_part_targets = Table("cube_part_targets", ("date", "ticker"), KIND_PART, date_col="date", managed=False)
     cube_part_betas = Table("cube_part_betas", ("date", "ticker"), KIND_PART, date_col="date", managed=False)
     cube_part_fundamentals = Table("cube_part_fundamentals", ("date", "ticker"), KIND_PART, date_col="date", managed=False)
     cube_part_momentum = Table("cube_part_momentum", ("date", "ticker"), KIND_PART, date_col="date", managed=False)
     cube_part_text = Table("cube_part_text", ("date", "ticker"), KIND_PART, date_col="date", managed=False)
-    # Every panel here is a MOVE BY A DISCLOSING CAPITAL ALLOCATOR: all-filer 13F, elite-manager
-    # 13F, corporate insiders (Forms 3/4/5), activists and passive 5% holders (13D/13G), and
-    # short sellers. It was called `extras`, which named no shared property and invited unrelated
-    # panels in -- retail attention lived here until it was deleted as dead code. The name is now
-    # the membership rule: a panel belongs iff its source is a filing somebody was REQUIRED to
-    # make. Never existed in the DB under the old name, so the rename cost no migration.
     cube_part_institutionals = Table("cube_part_institutionals", ("date", "ticker"), KIND_PART, date_col="date", managed=False)
-    # DEF 14A + Item 5.07 governance alpha. Its own part rather than a sixth institutionals
-    # panel: it reads five filing-space tables (the proxy archive, its per-NEO and per-director
-    # children, the certified 8-K vote record, fundamentals) where every other panel there
-    # reads one, and it is the only part needing a trailing RETURN.
     cube_part_governance = Table("cube_part_governance", ("date", "ticker"), KIND_PART, date_col="date", managed=False)
 
 

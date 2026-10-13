@@ -16,6 +16,7 @@ import re
 from datetime import date
 from functools import partial
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 from tqdm import tqdm
@@ -38,15 +39,13 @@ from src.data_extract.utils.common.incremental import stored_values
 from src.data_extract.utils.common.resume import archive_worklist
 from src.data_extract.utils.common.sec_io import sec_get
 from src.data_extract.utils.common.symbol_tenure import DEI_SOURCE, aggregate_dei_symbols, save_dei_period
-from src.data_store.schema import Table, Tables
+from src.data_store.schema import Resume, Table, Tables
 from src.utils.string import pad_cik_series
 
 logger = logging.getLogger(__name__)
 
 _CHUNK = 500_000
 _LANDING_URL = "https://www.sec.gov/data-research/sec-markets-data/financial-statement-notes-data-sets"
-# Archives covering September 2026 onward carry an observed availability clock, older ones an estimate.
-_OBSERVED_FROM = date(2026, 9, 1)
 _NOTES_TABLES = (Tables.notes_num, Tables.notes_text)
 
 # Curated footnote pension tags (undimensioned totals); discount-rate tags are percentages, not USD.
@@ -125,7 +124,6 @@ _TXT_OUT = [
 ]
 
 SEC_FINNOTES_URL_TEMPLATE = "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/{period}_notes.zip"
-SEC_FINNOTES_FIRST_YEAR = 2009  # earliest notes data set (2009q1)
 
 
 # --------------------------------------------------------------------------- #
@@ -149,7 +147,8 @@ def _scrape_available_periods(context: Context) -> list[str] | None:
 def _generate_periods(years_history: int, today: pd.Timestamp | None = None) -> list[str]:
     """Candidate tags: quarterly over the window plus the last 14 months as monthly (404s are skipped downstream)."""
     today = (today or pd.Timestamp.today()).normalize()
-    quarterly = quarter_periods(years_history, SEC_FINNOTES_FIRST_YEAR, today)
+    first_year = min(pd.Timestamp(cast(str, cast(Resume, table.resume).source_start)).year for table in _NOTES_TABLES)
+    quarterly = quarter_periods(years_history, first_year, today)
     monthly = [f"{month.year}_{month.month:02d}" for month in pd.period_range(end=today, periods=14, freq="M")]
     return sorted(set(quarterly + monthly))
 
@@ -157,7 +156,8 @@ def _generate_periods(years_history: int, today: pd.Timestamp | None = None) -> 
 def _notes_periods(context: Context, years_history: int, today: pd.Timestamp | None = None) -> list[str]:
     """Period tags to fetch, newest last, filtered to the year window."""
     today = (today or pd.Timestamp.today()).normalize()
-    start_year = max(SEC_FINNOTES_FIRST_YEAR, today.year - years_history)
+    first_year = min(pd.Timestamp(cast(str, cast(Resume, table.resume).source_start)).year for table in _NOTES_TABLES)
+    start_year = max(first_year, today.year - years_history)
     avail = _scrape_available_periods(context)
     tags = avail if avail is not None else _generate_periods(years_history, today)
     return sorted(t for t in tags if _period_year(t) >= start_year)
@@ -294,10 +294,11 @@ def _repair_stored_clocks(context: Context, cache: Path, overwrite: bool) -> dic
     if overwrite:
         periods |= stored_values(context, _NOTES_TABLES, "period")
     clocks: dict[str, date] = {}
+    observed_from = date.fromisoformat(cast(str, cast(Resume, Tables.notes_num.resume).observed_from))
     for period in sorted(periods):
         end = period_end(period)
-        inferred = archive_available_at(end, cache / f"{period}_notes.zip", observed_from=_OBSERVED_FROM, downloaded=False)
-        available_at = inferred if end < _OBSERVED_FROM or overwrite else stored_period_clock(context, _NOTES_TABLES, period) or inferred
+        inferred = archive_available_at(end, cache / f"{period}_notes.zip", observed_from=observed_from, downloaded=False)
+        available_at = inferred if end < observed_from or overwrite else stored_period_clock(context, _NOTES_TABLES, period) or inferred
         if available_at is None:
             logger.warning("notes %s: no archive availability metadata -> leaving rows unavailable", period)
             continue
@@ -422,6 +423,7 @@ def fetch_financial_notes(
     work = archive_worklist(context, _NOTES_TABLES, periods, cached_periods(cache, suffix="_notes.zip"), tickers, run_date, full=reparse)
     units = dict(work.units())
     n_num = n_txt = 0
+    observed_from = date.fromisoformat(cast(str, cast(Resume, Tables.notes_num.resume).observed_from))
     for period in tqdm(periods, desc="SEC financial-statement notes"):
         # every stored period validates its immutable clock, including those skipped below
         available_at = period_clocks.get(period) or stored_period_clock(context, _NOTES_TABLES, period)
@@ -433,7 +435,7 @@ def fetch_financial_notes(
         path = ensure_zip(context, archive_path, SEC_FINNOTES_URL_TEMPLATE.format(period=period), label=f"notes {period}", timeout=600, log=logger)
         if path is None:
             continue
-        available_at = available_at or archive_available_at(period_end(period), path, observed_from=_OBSERVED_FROM, downloaded=downloaded)
+        available_at = available_at or archive_available_at(period_end(period), path, observed_from=observed_from, downloaded=downloaded)
         if available_at is None:
             logger.warning("notes %s: archive clock unavailable -> skipping rows until a later retry", period)
             continue
@@ -454,10 +456,11 @@ def reparse_financial_notes(context: Context, tickers: list[str]) -> int:
     cache = cache_dir(context, context.config.local.paths.financial_notes)
     identity = load_identity(context)
     saved = 0
+    observed_from = date.fromisoformat(cast(str, cast(Resume, Tables.notes_num.resume).observed_from))
     for period in _cached_notes_periods(cache):
         path = cache / f"{period}_notes.zip"
         available_at = stored_period_clock(context, _NOTES_TABLES, period) or archive_available_at(
-            period_end(period), path, observed_from=_OBSERVED_FROM, downloaded=False
+            period_end(period), path, observed_from=observed_from, downloaded=False
         )
         if available_at is None:
             logger.warning("notes %s: archive clock unavailable -> not re-parsed", period)

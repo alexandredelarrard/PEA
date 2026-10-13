@@ -7,6 +7,7 @@ so long histories are not truncated. On-demand filing discovery for the structur
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
 
 import pandas as pd
@@ -72,7 +73,7 @@ def _cache_json(cache_dir: Path | None, name: str, payload: dict) -> None:
 def list_filings(
     context: Context,
     cik: str,
-    forms: list[str],
+    forms: Sequence[str],
     years: int,
     company_name: str = "",
     since: pd.Timestamp | str | None = None,

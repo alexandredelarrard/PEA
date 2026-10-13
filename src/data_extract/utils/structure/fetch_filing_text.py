@@ -11,14 +11,13 @@ from __future__ import annotations
 
 import re
 from functools import partial
-from typing import Any
+from typing import Any, cast
 
 from src.data_extract.utils.common.edgar_driver import EdgarFetch, FilingStamp, parse_filing_rows
 from src.data_extract.utils.common.item_carve import ITEM_SEP, CrossRefCues, carve_spans, item_heading
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, filing_obj, filing_text
-from src.data_store.schema import Tables
+from src.data_store.schema import Resume, Tables
 
-FILING_TEXT_FORMS = ["10-K", "10-Q"]
 FILING_SECTION_RISK = "risk_factors"  # 10-K Item 1A
 FILING_SECTION_MDA = "mda"  # 10-K Item 7 / 10-Q Item 2
 FILING_TEXT_MIN_CHARS = 1500  # below this a "section" is a TOC/cross-ref stub
@@ -140,7 +139,7 @@ def _filing_rows(ticker: str, stamp: FilingStamp) -> list[dict]:
     filed = stamp.filed.normalize()
     return [
         {
-            # The CIK that filed it: `FILING_TEXT_FORMS` is SPLIT, so each row's registrant is unambiguous.
+            # The table's registered forms use SPLIT, so each row's registrant is unambiguous.
             "ticker": ticker,
             "cik": stamp.cik,
             "accession_number": stamp.accession_number,
@@ -158,6 +157,6 @@ def _filing_rows(ticker: str, stamp: FilingStamp) -> list[dict]:
 FILING_TEXT_FETCH = EdgarFetch(
     desc="10-K/10-Q text (edgartools)",
     tables=(Tables.filing_risk_text,),
-    forms=tuple(FILING_TEXT_FORMS),
+    forms=cast(Resume, Tables.filing_risk_text.resume).forms,
     parse=partial(parse_filing_rows, table=Tables.filing_risk_text, columns=_COLS, row_fn=_filing_rows),
 )

@@ -19,6 +19,7 @@ import io
 import logging
 from collections.abc import Collection, Sequence
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 from tqdm import tqdm
@@ -47,7 +48,7 @@ from src.data_extract.utils.institutionals.security_tape import (
     summed_lines,
     warn_lost_rows,
 )
-from src.data_store.schema import Tables
+from src.data_store.schema import Resume, Tables
 from src.utils.batching import batched_tuples
 from src.utils.string import normalise_ticker
 
@@ -92,18 +93,18 @@ _FAR = pd.Timestamp("2262-01-01")
 SEC_FTD_URL_TEMPLATE = "https://www.sec.gov/files/data/fails-deliver-data/cnsfails{period}.zip"
 SEC_FTD_LEGACY_URL_TEMPLATE = "https://www.sec.gov/files/data/frequently-requested-foia-document-fails-deliver-data/cnsfails{period}.zip"
 SEC_FTD_LEGACY_LAST_PERIOD = "201706a"  # last period on the legacy path
-SEC_FTD_FIRST_YEAR = 2009  # earliest FTD file (2009-07)
 SEC_FTD_ZIP_PREFIX = "cnsfails"  # a cached archive is named `{prefix}{period}.zip`
 
 
 def _periods(years_history: int, today: pd.Timestamp | None = None) -> list[str]:
     """Semi-monthly file tags ('YYYYMMa'/'YYYYMMb') from the data-set era to now."""
     today = (today or pd.Timestamp.today()).normalize()
+    source_start = pd.Timestamp(cast(str, cast(Resume, Tables.sec_fails_to_deliver_security.resume).source_start))
     out: list[str] = []
-    for y in range(today.year - years_history, today.year + 1):
-        if y < SEC_FTD_FIRST_YEAR:
-            continue
+    for y in range(max(today.year - years_history, source_start.year), today.year + 1):
         for m in range(1, 13):
+            if (y, m) < (source_start.year, source_start.month):
+                continue
             if (y, m) > (today.year, today.month):
                 break
             out += [f"{y}{m:02d}a", f"{y}{m:02d}b"]

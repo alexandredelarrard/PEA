@@ -8,14 +8,14 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 from edgar import Company
 
-from src.constants.constants import SEC_8K_FORMS
 from src.context import Context, get_config_context
 from src.data_extract.utils.institutionals.fetch_8k_edgar import _recover_item_507_from_primary
-from src.data_store.schema import Tables
+from src.data_store.schema import Resume, Tables
 
 
 def _split(value: str | None) -> list[str]:
@@ -49,7 +49,7 @@ def _filings_by_accession(context: Context, source: pd.DataFrame) -> dict[str, o
     wanted = set(source["accession_number"].astype(str))
     resolved: dict[str, object] = {}
     for cik in source["cik"].dropna().astype(str).unique():
-        for filing in Company(cik.zfill(10)).get_filings(form=SEC_8K_FORMS):
+        for filing in Company(cik.zfill(10)).get_filings(form=list(cast(Resume, Tables.sec_8k.resume).forms)):
             if filing.accession_number in wanted:
                 resolved[filing.accession_number] = filing
     return resolved

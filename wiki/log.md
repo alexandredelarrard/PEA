@@ -423,3 +423,20 @@ Updated only the [insider aggregate contract](./modules/data-aggregate.md#inside
 - Coverage: every extraction option is declared in the shared constants module and applied directly as an ARGS/KWARGS pair. Full input processing uses `-F` / `--full`; destructive facts recovery retains `fundamentals --rebuild`. ZIP-only insider replay uses `insider-zip -F`; gap-check output uses `--report`. Source operations retain their existing behavior.
 - Pages: [Constants and configuration](./modules/constants-and-configuration.md), [Run the pipeline](./guides/run-the-pipeline.md), [Recovery guide](./guides/large-backfills-and-recovery.md), [Data extraction](./modules/data-extract.md), [Configuration](./reference/configuration.md), [Data sources](./reference/data-sources.md), and [TODO](./TODO.md).
 - Validation: 39 focused CLI and DAG tests pass, with zero live-write attempts. All 165 option decorators use the shared declarations; all 43 command help pages render and their option names match callback signatures. Pyright reports zero errors. Ruff is not installed; no production fetch, source-table write or backfill ran.
+
+## 2026-10-13: refresh — aggregation CLI options
+
+- Profile: internal/standard
+- source_commit: 639bcbf3656e51783733b341b54d342f73755c4a (working-tree aggregation CLI refactor)
+- Coverage: all 18 aggregation option decorators consume shared CONFIG and FULL declarations directly; local dictionary copies and their Any import are removed. Command names, flags, build dispatch, assembly and status behavior remain the same.
+- Pages: [Cube aggregation](./modules/data-aggregate.md) and [Constants and configuration](./modules/constants-and-configuration.md).
+- Validation: four focused CLI/registry/DAG tests pass, with zero live-write attempts. All ten help pages render; offline dispatch checks preserve default/full modes, config paths, assembly calls and status exit codes. Pyright reports zero errors. Ruff was not run; no cube build or production data write ran.
+
+## 2026-10-13: refresh — SEC extraction form registry
+
+- Profile: internal/standard
+- source_commit: 639bcbf3656e51783733b341b54d342f73755c4a (working-tree SEC form refactor)
+- Coverage: seven constants form lists, employee and filing-text lists, and every active consumer now read the owning table's Resume.forms. Registrant policy, the EDGAR index, annual subsets, facts-history precedence, employee validation and continuity filters derive from the registry. All former constants forms were already registered. Unregistered 8-K12B is no longer retained during index parsing; transitional 10-KT forms are outside the registered facts continuity filter. Existing cached index files were not rewritten.
+- Pages: [Table catalog](./reference/table-catalog.md), [Data sources](./reference/data-sources.md), [Data extraction](./modules/data-extract.md), [Constants and configuration](./modules/constants-and-configuration.md), and [Configuration](./reference/configuration.md).
+- Validation: 421 focused extraction/parser/contract/validator/continuity checks pass; three optional 13F integration checks skip (two disposable PostgreSQL checks and one live-source amendment check). No live-write attempt. A 22-file Pyright comparison introduces zero diagnostics against HEAD; its 72 existing diagnostics remain. The employee validator and shared continuity helper pass Pyright. Additional historical-script and employee-test checks expose existing unrelated typing debt. Ruff is unavailable. The first 29 assertions passed but system-temp cleanup failed; the workspace-temp rerun completed normally.
+- Evidence: the ignored [registry audit](../reports/validate/2026-10-13-sec-form-registry/registry.json) records 11 form-declaring contracts and 26 distinct forms. The main typing baseline/current diagnostics are in `.cache/sec-form-types/`. No production extraction, source request, data write, DDL application or backfill ran.

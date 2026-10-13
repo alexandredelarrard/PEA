@@ -19,12 +19,13 @@ from enum import StrEnum
 from functools import cache
 from operator import itemgetter
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import pandas as pd
 
 from src.data_extract.utils.common import sec_io
 from src.data_extract.utils.common.config_paths import resolve_config_dir
+from src.data_store.schema import Resume, Tables
 from src.utils.string import pad_cik
 
 if TYPE_CHECKING:  # identity -> entity_lineage -> registrant: annotation-only import breaks the cycle
@@ -216,36 +217,19 @@ class Combine(StrEnum):
 #: Insider forms UNION (an acquired company's rows are kept with their role); 8-Ks, schedules, periodic reports
 #: and the proxy family SPLIT, since a CIK speaks for the company only on the dates it is the company.
 FORM_POLICY: dict[str, Combine] = {
-    # events -- 8-K
-    "8-K": Combine.SPLIT,
-    "8-K/A": Combine.SPLIT,
-    "8-K12B": Combine.SPLIT,
-    # events -- beneficial ownership, by subject company; both spellings, since EDGAR renamed the form types and matching is exact.
-    "SC 13D": Combine.SPLIT,
-    "SC 13D/A": Combine.SPLIT,
-    "SCHEDULE 13D": Combine.SPLIT,
-    "SCHEDULE 13D/A": Combine.SPLIT,
-    "SC 13G": Combine.SPLIT,
-    "SC 13G/A": Combine.SPLIT,
-    "SCHEDULE 13G": Combine.SPLIT,
-    "SCHEDULE 13G/A": Combine.SPLIT,
-    # events -- insider transactions
-    "3": Combine.UNION,
-    "4": Combine.UNION,
-    "5": Combine.UNION,
-    "3/A": Combine.UNION,
-    "4/A": Combine.UNION,
-    "5/A": Combine.UNION,
-    # consolidating -- periodic reports and the narrative carved out of them
-    "10-K": Combine.SPLIT,
-    "10-K/A": Combine.SPLIT,
-    "10-K405": Combine.SPLIT,
-    "10-Q": Combine.SPLIT,
-    "10-Q/A": Combine.SPLIT,
-    # consolidating -- the proxy family
-    "DEF 14A": Combine.SPLIT,
-    "DEF 14C": Combine.SPLIT,
-    "DEFC14A": Combine.SPLIT,
+    form: policy
+    for table, policy in (
+        (Tables.sec_8k, Combine.SPLIT),
+        (Tables.sec_13d, Combine.SPLIT),
+        (Tables.sec_13g, Combine.SPLIT),
+        (Tables.insider_transactions, Combine.UNION),
+        (Tables.fundamentals_facts, Combine.SPLIT),
+        (Tables.fundamentals_employees, Combine.SPLIT),
+        (Tables.filing_risk_text, Combine.SPLIT),
+        (Tables.def14a_edgar, Combine.SPLIT),
+        (Tables.def14a_llm, Combine.SPLIT),
+    )
+    for form in cast(Resume, table.resume).forms
 }
 
 
@@ -255,7 +239,8 @@ def combine_for(forms: Sequence[str]) -> Combine:
     if unknown:
         raise ValueError(
             f"no registrant-combination policy declared for form(s) {unknown}. Add them to "
-            "`FORM_POLICY` as UNION (every CIK of the entity, role stamped per row) or SPLIT "
+            "the owning table's Resume.forms and declare that table in `FORM_POLICY` as UNION "
+            "(every CIK of the entity, role stamped per row) or SPLIT "
             "(one registrant owns each date). This RAISES rather "
             "than defaulting because a silent default is how the registrant-cutover defect "
             "stayed invisible for a year."

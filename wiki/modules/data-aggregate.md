@@ -27,7 +27,7 @@ source_commit: d4ebd98ffe561aee3f51f2c0b910fd2a627ae4f0
 ## Public API / entry points
 
 - `StepBuildCube.run()` and `cube_parts_status()` in [step_build_cube.py](../../src/data_aggregate/step_build_cube.py).
-- Eight part commands plus status in [data_aggregate/cli.py](../../src/data_aggregate/cli.py).
+- Eight part commands plus status in [data_aggregate/cli.py](../../src/data_aggregate/cli.py). Every option directly consumes the shared `CONFIG_ARGS` / `CONFIG_KWARGS` and, for builders, `FULL_ARGS` / `FULL_KWARGS` from [command_line_interface.py](../../src/constants/command_line_interface.py). `-F` / `--full` retains the existing complete-rebuild behavior.
 - Domain sub-step classes live under `src/data_aggregate/transformers`; [step_cube_prices.py](../../src/data_aggregate/transformers/step_cube_prices.py) and [step_cube_institutionals.py](../../src/data_aggregate/transformers/step_cube_institutionals.py) show the shared orchestration contract.
 - `StepCubeInstitutionals.run()` and `build_panel()` in [step_cube_institutionals.py](../../src/data_aggregate/transformers/step_cube_institutionals.py) are the institutional part's persistence and in-memory panel entry points.
 

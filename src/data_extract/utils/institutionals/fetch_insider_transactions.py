@@ -20,12 +20,12 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 from tqdm import tqdm
 
 from src.constants.constants import (
-    SEC_INSIDER_FIRST_YEAR,
     SEC_INSIDER_SWAP_YEAR,
     SEC_INSIDER_URL_NEW_TEMPLATE,
     SEC_INSIDER_URL_TEMPLATE,
@@ -60,7 +60,7 @@ from src.data_extract.utils.institutionals.insider_common import (
     stamp_lineage,
     top_counts,
 )
-from src.data_store.schema import Tables
+from src.data_store.schema import Resume, Tables
 from src.utils.filer_tables import FilerTable, removal_records
 from src.utils.string import normalise_ticker, pad_cik_series
 from src.utils.universe import load_universe_tickers
@@ -354,12 +354,13 @@ def zip_urls(quarter: str) -> tuple[str, str]:
 
 
 def download_insider_transactions(context: Context) -> list[str]:
-    """Cache every quarterly Form 3/4/5 zip since `SEC_INSIDER_FIRST_YEAR`; returns the quarters cached.
+    """Cache every quarterly Form 3/4/5 zip since the table's source start; returns the quarters cached.
 
     A cached zip is never re-downloaded, and an unpublished quarter is skipped. No parse, no identity.
     """
     cache = cache_dir(context, context.config.local.paths.insider_transactions)
-    quarters = quarter_periods(pd.Timestamp.today().year - SEC_INSIDER_FIRST_YEAR + 1, SEC_INSIDER_FIRST_YEAR)
+    first_year = pd.Timestamp(cast(str, cast(Resume, Tables.insider_transactions.resume).source_start)).year
+    quarters = quarter_periods(pd.Timestamp.today().year - first_year + 1, first_year)
     cached = [
         quarter
         for quarter in tqdm(quarters, desc="insider data sets (download)")
@@ -388,14 +389,15 @@ def fetch_insider_transactions(
     footnotes, log one identity-exclusion summary for the run, then, on a full-universe run only, sweep
     stored rows against the loaded universe. Returns the zip rows saved.
 
-    `reparse` re-reads every quarter the source has back to `SEC_INSIDER_FIRST_YEAR`, even those
+    `reparse` re-reads every quarter the source has back to the table's source start, even those
     already stored, so a parse change reaches the oldest rows too.
     """
     identity = load_identity(context)
     cache = cache_dir(context, context.config.local.paths.insider_transactions)
     run_date = pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize()
-    span = (run_date.year - SEC_INSIDER_FIRST_YEAR + 1) if reparse else years_history + 1
-    quarters = quarter_periods(span, SEC_INSIDER_FIRST_YEAR, run_date)
+    first_year = pd.Timestamp(cast(str, cast(Resume, Tables.insider_transactions.resume).source_start)).year
+    span = (run_date.year - first_year + 1) if reparse else years_history + 1
+    quarters = quarter_periods(span, first_year, run_date)
     work = archive_worklist(context, (Tables.insider_transactions,), quarters, cached_periods(cache), tickers, run_date, full=reparse)
 
     rescanned = set(work.rescan)
@@ -444,7 +446,8 @@ def reparse_insider_transactions(context: Context, tickers: list[str]) -> int:
     identity = load_identity(context)
     cache = cache_dir(context, context.config.local.paths.insider_transactions)
     on_disk = cached_periods(cache)
-    quarters = [q for q in quarter_periods(pd.Timestamp.today().year - SEC_INSIDER_FIRST_YEAR + 1, SEC_INSIDER_FIRST_YEAR) if q in on_disk]
+    first_year = pd.Timestamp(cast(str, cast(Resume, Tables.insider_transactions.resume).source_start)).year
+    quarters = [q for q in quarter_periods(pd.Timestamp.today().year - first_year + 1, first_year) if q in on_disk]
     saved = 0
     fetched_at = pd.Timestamp.now(tz="UTC").tz_localize(None)
     for quarter in quarters:

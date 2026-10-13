@@ -42,6 +42,7 @@ from src.data_extract.utils.institutionals.legacy_13f_fallback import (
     _ENTRY_COUNT,
     _FOOTER_TOTAL,
     _VALUE_TOTAL,
+    _source_rows,
     _value_total_error,
     needs_legacy_fallback,
     parse_legacy_information_table,
@@ -752,9 +753,30 @@ def read_filing_vintage(stamp: FilingStamp) -> tuple[pd.DataFrame, pd.DataFrame]
         return ReadFailure(isinstance(exc, TransientReadError), f"{type(exc).__name__}: {exc}")
 
 
+def _cover_ratio_units(raw: str, units: ValueUnits, cell_total: float) -> ValueUnits:
+    """Cell units from the cover total over the VALUE-cell sum. A ratio of 1000 or 1e6 is a dollar cover
+    over $1000s or $millions cells; 0.001 is a $1000s cover over dollar cells. A Million/Billion cover
+    states its own unit. Any other ratio, including 1, keeps `units`; a disagreeing caption withholds dollars."""
+    summary = _VALUE_TOTAL.search(raw) or _FOOTER_TOTAL.search(raw)
+    total = float(summary.group(1).replace(",", "")) if summary else 0.0
+    if total <= 0 or cell_total <= 0:
+        return units
+    label = (summary.group(2) or "").lower() if summary.re is _VALUE_TOTAL else ""
+    if label in ("billion", "million"):
+        factor = {0: 1.0, 3: 1000.0, 6: 1e6}.get(round(math.log10(total * (1e9 if label == "billion" else 1e6) / cell_total)))
+    else:
+        factor = {-3: 1.0, 3: 1000.0, 6: 1e6}.get(round(math.log10(total / cell_total)))
+    if factor is None or factor == units.factor or (units.factor is None and units.stated_factor is None):
+        return units
+    if units.stated_factor is not None and units.stated_factor != factor:
+        return ValueUnits(units.expected_factor, units.stated_factor, None, "conflicting_cover_total")
+    return ValueUnits(units.expected_factor, units.stated_factor, factor, "cover_total_ratio")
+
+
 def text_filing_vintage(raw: str, stamp: FilingStamp) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Reuse the source-reconciled pre-XML parser; unsupported cover semantics remain explicit.
-    A cover declaring no entries (or a zero total and no count) is a complete empty book, not parsed."""
+    A cover declaring no entries (or a zero total and no count) is a complete empty book, not parsed,
+    unless the text holds holding lines: that contradiction fails."""
     units = resolve_value_units(stamp.filed, information_table_text=raw)
     count = _ENTRY_COUNT.search(raw)
     total = _VALUE_TOTAL.search(raw) or _FOOTER_TOTAL.search(raw)
@@ -762,10 +784,13 @@ def text_filing_vintage(raw: str, stamp: FilingStamp) -> tuple[pd.DataFrame, pd.
     declared_value = float(total.group(1).replace(",", "")) if total else None
     empty = declared_rows == 0 or (declared_rows is None and declared_value == 0)
     if empty:
+        if holding_lines := len(_source_rows(raw)):
+            raise ValueError(f"13F cover declares an empty book but the text holds {holding_lines} holding line(s)")
         info = pd.DataFrame(columns=_LEGACY_INFO_COLS)
         declared_rows, declared_value = 0, 0.0
     else:
         info = parse_legacy_information_table(raw, value_factor=1.0, verify_values=False)
+        units = _cover_ratio_units(raw, units, float(info["VALUE"].sum()))
     kind = "original"
     if stamp.is_amendment:
         restated = re.search(_CHECKED + r"\s*(?:is\s+a\s+)?restatement", raw, re.I)

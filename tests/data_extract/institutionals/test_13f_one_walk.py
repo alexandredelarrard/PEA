@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import date
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from xml.etree import ElementTree
@@ -781,6 +782,29 @@ def test_nonzero_cover_zero_lines_fails_loudly(sqlite_store, monkeypatch, caplog
     for table in (Tables.sec13f_hr, Tables.sec13f_manager_holdings):
         assert _markers(sqlite_store, table, accession).empty
     print(f"SANITY: non-zero cover with zero lines ({kind}) -> ReadFailure {failure.reason[:70]!r}, one ERROR, nothing saved.")
+
+
+def test_empty_cover_over_real_holding_rows_fails_loudly(sqlite_store, monkeypatch, caplog):
+    """Real 0001082481-05-000006: its cover declares 0 entries / 0 value over 67 typed holding lines."""
+    accession = "0001082481-05-000006"
+    raw = (Path(__file__).parent / "fixtures" / "legacy_13f" / f"{accession}.sgml").read_text(encoding="utf-8")
+    filing = _TextFiling(ROSTER, "2005-10-31", "2005-09-30", [], accession=accession, raw=raw)
+    _seed_roster(sqlite_store, [ROSTER])
+    _patch_walk(monkeypatch, [filing])
+
+    failure = f13.read_filing_vintage(FilingStamp.of(filing, ""))
+    with caplog.at_level(logging.WARNING):
+        f13.fetch_13f(_ctx(sqlite_store), tickers=UNIVERSE, years_history=30, as_of=pd.Timestamp("2026-06-30"))
+
+    assert isinstance(failure, f13.ReadFailure) and not failure.transient, failure
+    assert "cover declares an empty book" in failure.reason and "67" in failure.reason, failure.reason
+    errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR and accession in r.getMessage()]
+    assert len(errors) == 1, errors
+    for table in (Tables.sec13f_hr, Tables.sec13f_manager_holdings):
+        assert _markers(sqlite_store, table, accession).empty
+        stored = sqlite_store.load(table, optional=True)
+        assert stored is None or not stored.accession_number.eq(accession).any()
+    print(f"SANITY: real {accession} (0/0 cover, 67 holding lines) -> ReadFailure {failure.reason[:90]!r}, one ERROR, nothing saved.")
 
 
 def test_catch_up_original_gap_cannot_overwrite_a_completed_amendment(sqlite_store, monkeypatch, tmp_path):

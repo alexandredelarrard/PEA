@@ -1096,3 +1096,52 @@ def test_synthetic_cover_ratios_without_a_total_row(ratio: float, accepted: bool
             f13.text_filing_vintage(raw, FilingStamp.of(filing, filing.cik))
     verdict = "accepted (power of ten, A-1)" if accepted else "rejected"
     print(f"SANITY: SYNTHETIC cover/sum ratio {ratio:g} with rows == declared is {verdict}; no row is dropped.")
+
+
+@pytest.mark.parametrize(
+    ("accession", "cusip", "factor", "band", "shape"),
+    [
+        ("0001568235-13-000005", "166764100", 1.0, (100.0, 140.0), "Chevron; cells in dollars, cover in $1000s; CVX closed near $119 on 2013-03-28"),
+        ("0001056868-13-000004", "031162100", 1000.0, (90.0, 115.0), "Amgen; cover in dollars, cells (x$1000); AMGN closed near $102 on 2013-03-28"),
+        ("0001144204-13-029112", "143658300", 1000.0, (30.0, 40.0), "Carnival; cover and cells (x1000); CCL closed near $34 on 2013-03-28"),
+    ],
+)
+def test_cover_ratio_sets_the_cell_unit_on_real_sources(accession: str, cusip: str, factor: float, band: tuple[float, float], shape: str) -> None:
+    raw, stamp = _cached_source(accession)
+    source = _holding_rows(raw, _source_rows(raw), 1.0)
+    manifest, rows = f13.text_filing_vintage(raw, stamp)
+    ratio = _assert_values_unchanged(manifest, rows, source)
+    assert manifest.iloc[0].value_unit_factor == factor, (ratio, manifest.iloc[0].value_unit_factor)
+    holding = rows.set_index("cusip").loc[cusip]
+    price = holding.value_usd / holding.shares
+    assert band[0] < price < band[1], price
+    print(
+        f"SANITY: real {accession} at cover/sum ratio {ratio:.6g} stores cells x{factor:g}; {cusip} value_usd {holding.value_usd:,.0f} / "
+        f"{holding.shares:,.0f} sh = ${price:.2f} ({shape})."
+    )
+
+
+@pytest.mark.parametrize(
+    ("cover", "header", "factor", "shape"),
+    [
+        ("$157,462", _HEADER, 1000.0, "ratio 1, both on the default $1000 basis"),
+        ("$1,574,620", _HEADER, 1000.0, "ratio 10, a non-1000 power of ten keeps the default (A-1)"),
+        ("$157,462,000", _HEADER, 1000.0, "ratio 1000, cover in dollars over cells in $1000s"),
+        ("$157,462,000,000", _HEADER, 1e6, "ratio 1e6, cover in dollars over cells in $millions"),
+        ("$157 (thousands)", _HEADER, 1.0, "ratio 0.001, cover in $1000s over cells in dollars"),
+        ("$157.462 Million", _HEADER, 1000.0, "Million cover over cells in $1000s"),
+        ("$0.157462 Million", _HEADER, 1.0, "Million cover over cells in dollars"),
+        ("$157 (thousands)", _HEADER.replace("VALUE    ", "VALUE(x$1000)"), None, "ratio 0.001 against an (x$1000) caption: conflict, no dollars"),
+    ],
+)
+def test_synthetic_cover_ratio_sets_the_cell_unit(cover: str, header: str, factor: float | None, shape: str) -> None:
+    raw = f"[X] 13F HOLDINGS REPORT\nForm 13F Information Table Value Total: {cover}\n" + _table(header, _AFLAC, _AMGEN)
+    filing = _Filing(_Report(None, txt=raw))
+    manifest, rows = f13.text_filing_vintage(raw, FilingStamp.of(filing, filing.cik))
+    assert sorted(rows.raw_value_usd.tolist()) == [12000.0, 145462.0]
+    stored = manifest.iloc[0].value_unit_factor
+    if factor is None:
+        assert math.isnan(stored) and rows.value_usd.isna().all(), (stored, rows.value_usd.tolist())
+    else:
+        assert stored == factor and (rows.value_usd == rows.raw_value_usd * factor).all(), stored
+    print(f"SANITY: SYNTHETIC cover {cover!r} ({shape}) -> cell factor {stored:g}; raw cells unchanged.")

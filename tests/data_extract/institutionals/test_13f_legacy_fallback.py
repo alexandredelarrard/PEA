@@ -15,8 +15,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pandas as pd
 import pytest
+from edgar import Filing
 
 from src.data_extract.utils.common.edgar_driver import FilingStamp
 from src.data_extract.utils.institutionals import fetch_13f as f13
@@ -1145,3 +1147,39 @@ def test_synthetic_cover_ratio_sets_the_cell_unit(cover: str, header: str, facto
     else:
         assert stored == factor and (rows.value_usd == rows.raw_value_usd * factor).all(), stored
     print(f"SANITY: SYNTHETIC cover {cover!r} ({shape}) -> cell factor {stored:g}; raw cells unchanged.")
+
+
+@pytest.mark.parametrize(
+    ("accession", "outcome"),
+    [
+        ("0000950159-05-001336", "ok"),
+        ("0001082481-05-000006", "cover declares an empty book"),
+    ],
+)
+def test_legacy_read_makes_no_homepage_index_request(monkeypatch: pytest.MonkeyPatch, accession: str, outcome: str) -> None:
+    """Real 2005 submissions as EdgarTools `Filing`s: no primary XML, so `Filing.xml()` would fetch the
+    `-index.html` homepage, which EDGAR answers 403. The read must come from the submission alone."""
+    requested: list[str] = []
+
+    def _blocked(_client: httpx.Client, request: httpx.Request, **_kw: Any) -> httpx.Response:
+        requested.append(str(request.url))
+        raise RuntimeError(f"network blocked: {request.url}")
+
+    monkeypatch.setenv("EDGAR_IDENTITY", "Test Runner test@example.com")  # so a request reaches the blocked send
+    monkeypatch.setattr(httpx.Client, "send", _blocked)
+    filing = Filing.from_sgml(_LEGACY_SOURCES / f"{accession}.sgml")
+    assert not filing.sgml().xml()
+
+    packet = f13.read_filing_vintage(FilingStamp.of(filing, ""))
+
+    assert not [url for url in requested if url.endswith("-index.html")], requested
+    assert requested == [], requested
+    if outcome == "ok":
+        assert not isinstance(packet, f13.ReadFailure), packet
+        manifest, holdings = packet
+        assert manifest.iloc[0].parse_status == "complete" and len(holdings) > 0
+        result = f"complete, {len(holdings)} holdings"
+    else:
+        assert isinstance(packet, f13.ReadFailure) and not packet.transient and outcome in packet.reason, packet
+        result = f"deterministic failure {packet.reason[:60]!r}"
+    print(f"SANITY: real legacy {accession} read from its SGML alone -> {result}; 0 -index.html requests, 0 network sends.")

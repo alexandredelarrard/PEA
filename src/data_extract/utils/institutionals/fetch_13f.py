@@ -31,7 +31,7 @@ from edgar import Filings, get_filings
 from edgar.thirteenf.parsers.infotable_xml import parse_infotable_xml
 from tqdm import tqdm
 
-from src.constants.constants import SEC_13F_FORMS, SEC_13F_INFERRED_HOLDINGS_REPORT, SEC_13F_SOURCE_ACCOUNTED
+from src.constants.constants import SEC_13F_INFERRED_HOLDINGS_REPORT, SEC_13F_SOURCE_ACCOUNTED
 from src.context import Context
 from src.data_extract.utils.common.edgar_driver import FilingStamp, RetryRounds
 from src.data_extract.utils.common.empty_markers import marker_mask
@@ -362,6 +362,7 @@ def _ticker_map(context: Context, book: pd.DataFrame, walk: _WalkState) -> pd.Da
     return walk.cmap
 
 
+## for test
 def _save_batch(context: Context, book: pd.DataFrame, universe: set[str], roster_ciks: set[str], walk: _WalkState) -> None:
     """Upsert one batch of books: the universe slice to `sec13f_hr`, roster managers' rows to
     `sec13f_manager_holdings`; the last filed wins per (cik, period, cusip). Counts accumulate on
@@ -389,36 +390,19 @@ def _resolve_window(
             raise ValueError(f"filing_window is inverted: {since:%Y-%m-%d} > {until:%Y-%m-%d}")
         logger.warning(f"13F BACKFILL of filing window {since:%Y-%m-%d}:{until:%Y-%m-%d} -- the watermark is neither read nor advanced by this run")
         return since, until, None
+
     overlap = pd.Timedelta(days=cast(Resume, Tables.sec13f_hr.resume).overlap_days)
     hold_from = as_of - overlap
-    completed = (
-        context.store.load(
-            Tables.sec13f_hr,
-            columns=["filing_date"],
-            where={"parse_status": "complete"},
-            markers=True,
-            limit=1,
-            order_by="filing_date",
-            descending=True,
-            optional=True,
-        )
-        if "parse_status" in context.store.columns(Tables.sec13f_hr)
-        else None
-    )
-    vintage_frontier = pd.Timestamp(completed.iloc[0].filing_date) if completed is not None else None
     legacy_frontier = context.store.max_date(Tables.sec13f_hr, "filing_date")
-    frontiers = [date for date in (vintage_frontier, legacy_frontier) if date is not None]
-    watermark = max(frontiers) if frontiers else None
-    if vintage_frontier is None and legacy_frontier is not None:
+    if legacy_frontier is not None:
         context.log.warning("13F: filing versions start at the legacy frontier; older source versions need historical recovery.")
-    if watermark is None:
+    else:
         since = document_floor(Tables.sec13f_hr, as_of, years_history)
         logger.warning(f"{Tables.sec13f_hr} has no stored filing_date -- full history from {since:%Y-%m-%d}")
         return since, as_of, hold_from
-    watermark = watermark.normalize()
     if scoped:
-        logger.info(f"13F: scoped run reads up to the stored frontier {watermark:%Y-%m-%d} only, so the next window is unchanged")
-    return watermark - overlap, min(as_of, watermark) if scoped else as_of, hold_from
+        logger.info(f"13F: scoped run reads up to the stored frontier {legacy_frontier:%Y-%m-%d} only, so the next window is unchanged")
+    return legacy_frontier - overlap, min(as_of, legacy_frontier) if scoped else as_of, hold_from
 
 
 def _oldest_first(listing: Filings) -> Filings:
@@ -553,7 +537,7 @@ def fetch_13f(
     context: Context,
     tickers: list[str],
     years_history: int,
-    save_every: int = 600,
+    save_every: int = 1000,
     filing_window: tuple[str, str] | None = None,
     as_of: pd.Timestamp | None = None,
 ) -> int:
@@ -568,11 +552,13 @@ def fetch_13f(
     universe = {str(t).upper() for t in tickers}
     scoped = bool(set(load_universe_tickers(context)) - universe)
     since, until, hold_from = _resolve_window(context, years_history, filing_window, run_date, scoped)
+
+    # load CIKs of super investors
     roster_ciks = roster_cik_union(context)
     if not roster_ciks:
         logger.warning(f"13F: superinvestor_roster holds no CIK -- writing {Tables.sec13f_hr} only, no manager books")
 
-    listing = get_filings(form=cast(Any, SEC_13F_FORMS), filing_date=f"{since:%Y-%m-%d}:{until:%Y-%m-%d}")
+    listing = get_filings(form=list(cast(Resume, Tables.sec13f_hr.resume).forms), filing_date=f"{since:%Y-%m-%d}:{until:%Y-%m-%d}")
     filings = _oldest_first(listing) if listing else []
     total = len(filings)
     logger.info(f"13F: {total} filing(s) to read in {since:%Y-%m-%d}:{until:%Y-%m-%d}")

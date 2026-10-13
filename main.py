@@ -1,10 +1,11 @@
 from src.context import get_config_context
 from src.data_aggregate.step_build_cube import StepBuildCube
+from src.data_extract.step_extract_all_data import StepExtractAllData
 
 if __name__ == "__main__":
     config, context = get_config_context("./configs", use_cache=False, save=True)
 
-    # self = StepExtractAllData(context=context, config=config)
+    self = StepExtractAllData(context=context, config=config)
     # self.run()
 
     self = StepBuildCube(context=context, config=config)
@@ -16,7 +17,7 @@ if __name__ == "__main__":
     # self = StepPortfolio(context=context, config=config)
     # self.run()
 
-# docker run --rm -v database_pgdata:/volume alpine tar czf - -C /volume . > D:/database_pgdata.tar.gz
+# docker run --rm -v stock_pick_strat_pgdata:/volume alpine tar czf - -C /volume . > 'C:/Users/de larrard alexandre/Downloads/stock_pick_strat_pgdata.tar.gz'
 
 ##### timeline
 

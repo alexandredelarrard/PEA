@@ -189,16 +189,14 @@ def _chain(path: Path, manager_id: str, entries: list[dict[str, Any]]) -> tuple[
     return chain
 
 
-def _load(context: Context) -> pd.DataFrame | None:
+def _load_superinvestor_roster(context: Context) -> pd.DataFrame | None:
     """The whole roster table (the capture-dated history plus each changed live snapshot) with
     `snapshot_date` coerced to Timestamp. None when the table has never been written.
 
     `snapshot_date` is a SQL DATE, so psycopg2 hands back `datetime.date` objects that
     compare unequal to the `Timestamp` every caller holds -- coerce once, here."""
     df = context.store.load(Tables.superinvestor_roster, columns=_COLS, optional=True)
-    if df is None or df.empty:
-        return None
-    df = df.copy()
+    assert df is not None
     df["snapshot_date"] = pd.to_datetime(df["snapshot_date"])
     return df
 
@@ -207,7 +205,7 @@ def _snapshot(context: Context, as_of=None) -> pd.DataFrame | None:
     """The rows of the most recent snapshot at or before `as_of` (the latest snapshot when
     `as_of` is None). None before the first snapshot -- an honest "Dataroma published no
     roster yet", not an empty roster to be silently ffilled backwards."""
-    df = _load(context)
+    df = _load_superinvestor_roster(context)
     if df is None:
         logger.warning("`%s` is empty -- run `data_extract superinvestors -F`.", Tables.superinvestor_roster)
         return None
@@ -261,10 +259,10 @@ def first_snapshot_date(context: Context) -> pd.Timestamp | None:
     Callers floor their lookup at this date: extrapolating the oldest roster backwards is a
     compromise, but the alternative is today's roster, which is the survivorship bias this
     table exists to remove."""
-    df = _load(context)
+    df = _load_superinvestor_roster(context)
     if df is None:
         return None
-    snapshot_dates = cast(pd.Series, df["snapshot_date"])
+    snapshot_dates = df["snapshot_date"]
     return cast(pd.Timestamp, pd.Timestamp(snapshot_dates.min()))
 
 
@@ -275,7 +273,7 @@ def roster_cik_union(context: Context) -> set[str]:
     SCOPE. Fetching only today's roster is what makes a dropped manager unrecoverable
     later, so the walk covers the union and the selector narrows it per quarter. A chain
     contributes every member, whichever one the snapshots stored."""
-    df = _load(context)
+    df = _load_superinvestor_roster(context)
     if df is None:
         return set()
     return filer_ciks(df["cik"].dropna(), config_dir_of(context))

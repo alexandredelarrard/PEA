@@ -959,7 +959,7 @@ class Tables:
         # Option quantities are optional for older sources; never synthesize them.
         optional_columns=frozenset({"accession_number", "call_shares", "call_value", "put_shares", "put_value", "filing_date"}),
         # Market-wide nightly walk; a new ticker is backfilled per ticker from `source_start`.
-        resume=Resume(RESUME_MARKET, "cik", "filing_date", 7, forms=_FORMS_13F, source_start="2013-04-01"),
+        resume=Resume(RESUME_MARKET, "cik", "filing_date", 7, forms=_FORMS_13F, source_start="1999-07-01"),
         # A completed new-ticker EDGAR gap walk (`fetch_13f_backfill`) saves one marker per ticker,
         # cik and cusip '_empty', period = filing_date = the gap start. That day follows every
         # data-set row and precedes the nightly frontier, so neither max(filing_date) nor a

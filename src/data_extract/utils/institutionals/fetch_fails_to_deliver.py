@@ -26,7 +26,7 @@ from tqdm import tqdm
 
 from src.constants.constants import FTD_ZIP_NAME_TEMPLATE
 from src.context import Context
-from src.data_extract.utils.common.bulk_cache import cache_dir, cached_periods, ensure_zip, read_zip_text
+from src.data_extract.utils.common.bulk_cache import cache_dir, cached_periods, ensure_zip, period_end, read_zip_text
 from src.data_extract.utils.common.resume import archive_periods, recently_changed
 from src.data_extract.utils.common.security_master import (
     SOURCE_FTD,
@@ -107,7 +107,7 @@ def _periods(years_history: int, today: pd.Timestamp | None = None) -> list[str]
                 continue
             if (y, m) > (today.year, today.month):
                 break
-            out += [f"{y}{m:02d}a", f"{y}{m:02d}b"]
+            out += [period for half in ("a", "b") if period_end(period := f"{y}{m:02d}{half}") >= source_start.date()]
     return out
 
 
@@ -529,7 +529,7 @@ def _read_period(context: Context, cache: Path, period: str, *, download: bool) 
     return None if raw is None else _parse_ftd_lines(raw).assign(period=period)
 
 
-def download_fails_to_deliver(context: Context, years_history: int = 15, full: bool = False, as_of: pd.Timestamp | None = None) -> int:
+def download_fails_to_deliver(context: Context, years_history: int = 31, full: bool = False, as_of: pd.Timestamp | None = None) -> int:
     """Cache the FTD ZIPs and store their in-scope source lines raw in `sec_fails_to_deliver_security`.
 
     Scope: lineage symbols plus the CUSIP-6 of the master's securities. The periods read are those no stored line

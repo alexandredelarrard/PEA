@@ -75,7 +75,9 @@ class Quarter:
 
 def quarters_between(first: pd.Timestamp, last: pd.Timestamp) -> list[Quarter]:
     """Every quarter in the window, floored at the earliest registered EDGAR source start."""
-    source_start = min(cast(str, cast(Resume, table.resume).source_start) for table in resume_tables() if cast(Resume, table.resume).forms)
+    source_start = min(
+        resume.source_start for table in resume_tables() if (resume := cast(Resume, table.resume)).forms and resume.source_start is not None
+    )
     quarter = max(Quarter.of(first), Quarter.of(pd.Timestamp(source_start)))
     out: list[Quarter] = []
     while quarter <= Quarter.of(last):

@@ -84,8 +84,8 @@ def test_every_extract_table_resumes_or_is_a_side_table() -> None:
     print(f"  {len(extract)} extract tables = {len(with_contract)} with a contract + {len(extract - with_contract)} side tables. Validated.")
 
 
-def test_every_resumed_table_has_a_cadence() -> None:
-    missing = sorted(t.name for t in resume_tables() if t.freshness is None)
+def test_every_resumed_extract_table_has_a_cadence() -> None:
+    missing = sorted(t.name for t in resume_tables() if t.kind == KIND_EXTRACT and t.freshness is None)
     assert not missing, f"resumed tables with no freshness cadence: {missing}"
     for table in (
         Tables.dividends,
@@ -102,7 +102,7 @@ def test_every_resumed_table_has_a_cadence() -> None:
     assert Tables.def14a_edgar.freshness == "yearly"
 
     print("\n=== SANITY CHECK: cadences ===")
-    print(f"  all {len(resume_tables())} resumed tables carry a freshness cadence (10 newly declared). Validated.")
+    print("  every resumed extract table carries a freshness cadence; change-only reference snapshots do not claim a daily publication. Validated.")
 
 
 def test_contract_and_marker_columns_exist_with_compatible_types() -> None:

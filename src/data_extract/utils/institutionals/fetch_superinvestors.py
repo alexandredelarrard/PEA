@@ -91,7 +91,6 @@ DATAROMA_HOME_URL = "https://www.dataroma.com/m/home.php"
 WAYBACK_CDX_URL = "https://web.archive.org/cdx/search/cdx?url=dataroma.com/m/home.php&fl=timestamp,statuscode,original"
 # A capture's archived bytes as served (`id_`: no Wayback rewrite).
 _WAYBACK_RAW_URL = "https://web.archive.org/web/{timestamp}id_/{original}"
-# First day of the committed roster history.
 # A capture is valid only if it lists at least this share of the previous accepted snapshot's managers.
 ROSTER_CAPTURE_MIN_RATIO = 0.8
 ROSTER_HISTORY_README = [

@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+from typing import cast
+
 import pandas as pd
+import pytest
 
 from src.data_extract.utils.common.registrant import FORM_POLICY
-from src.data_store.schema import RESUME_DOCUMENTS, Table, Tables, resume_tables
+from src.data_extract.utils.institutionals import fetch_fails_to_deliver as ftd
+from src.data_extract.utils.institutionals import fetch_superinvestors as roster
+from src.data_store.schema import RESUME_DOCUMENTS, Resume, Table, Tables, resume_tables
 
 
 def _start(table: Table) -> pd.Timestamp:
@@ -24,6 +30,27 @@ def test_document_forms_are_in_the_form_policy() -> None:
 
     print("\n=== SANITY CHECK: document forms ===")
     print(f"  {len(index_diffed)} index-diffed tables, every declared form is a FORM_POLICY form: {index_diffed}. Validated.")
+
+
+def test_changed_source_dates_reach_archive_and_roster_planning(monkeypatch: pytest.MonkeyPatch) -> None:
+    table = Tables.sec_fails_to_deliver_security
+    resume = replace(cast(Resume, table.resume), source_start="2011-06-16")
+    monkeypatch.setattr(Tables, "sec_fails_to_deliver_security", replace(table, resume=resume))
+    periods = ftd._periods(50, pd.Timestamp("2011-07-01"))
+    assert periods == ["201106b", "201107a", "201107b"]
+    table = Tables.superinvestor_roster
+    resume = replace(cast(Resume, table.resume), source_start="2013-01-01")
+    monkeypatch.setattr(Tables, "superinvestor_roster", replace(table, resume=resume))
+    captures = roster.quarterly_capture_candidates("20121231000000 200 home\n20130401000000 200 home")
+    assert list(captures) == ["2013Q2"]
+    table = Tables.sec13f_hr
+    resume = replace(cast(Resume, table.resume), coverage_start="2014-09-30")
+    monkeypatch.setattr(Tables, "sec13f_hr", replace(table, resume=resume))
+    end = roster.activity_window("2012-03-07").end
+    assert end is not None and end.isoformat() == "2014-09-30"
+    print(
+        "SANITY: registry changes move the first FTD half-month, the roster capture floor and the pre-XML activity window without fetcher constants."
+    )
 
 
 def test_registered_source_starts_preserve_the_source_boundaries() -> None:
@@ -46,7 +73,7 @@ def test_registered_source_starts_preserve_the_source_boundaries() -> None:
     assert Tables.sec13f_hr.resume is not None and Tables.sec13f_hr.resume.coverage_start == "2013-06-30"
     for table in (Tables.pension_facts, Tables.notes_num, Tables.notes_text):
         assert table.resume is not None and table.resume.observed_from == "2026-09-01", table.name
-    indexed = [t for t in resume_tables() if t.resume is not None and t.resume.forms]
+    indexed = [t for t in resume_tables() if t.resume is not None and t.resume.mode == RESUME_DOCUMENTS and t.resume.forms]
     assert all(t.resume is not None and t.resume.source_start is not None for t in indexed)
     assert min(_start(t) for t in indexed) == pd.Timestamp("1993-01-01")
 

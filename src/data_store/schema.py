@@ -62,7 +62,7 @@ class Resume:
     source_start: str | None = None
     # First period with broad coverage; earlier, sparse source history can still exist.
     coverage_start: str | None = None
-    # Archive periods on/after this date use an observed availability clock, earlier ones an estimate.
+    # Archive periods ending on/after this date use an observed availability clock, earlier ones an estimate.
     observed_from: str | None = None
 
 
@@ -142,7 +142,6 @@ class Tables:
         date_col="snapshot_date",
         ticker_col=None,
         date_type_cols=("snapshot_date",),
-        freshness="daily",
         resume=Resume(RESUME_SNAPSHOT, None, None, source_start="2012-01-01"),
         read_columns=("snapshot_date", "dataroma_code", "manager_name", "cik", "resolution", "source_url"),
     )
@@ -869,7 +868,7 @@ class Tables:
             "other_value",
         ),
         optional_columns=frozenset({"accession_number"}),
-        resume=Resume(RESUME_MARKET, "cik", "filing_date", 95, forms=("13F-HR", "13F-HR/A"), source_start="1993-01-01"),
+        resume=Resume(RESUME_MARKET, "cik", "filing_date", 95, forms=("13F-HR", "13F-HR/A")),
         empty_marker=("cusip", _EMPTY),
     )
     # Forms 3/4/5 transactions, one row per (accession, nonderiv/deriv table, 1-based row in

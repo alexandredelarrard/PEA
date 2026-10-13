@@ -9,6 +9,7 @@ nothing partial is saved.
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 from typing import Any, cast
 
 import pandas as pd
@@ -125,7 +126,9 @@ def test_the_market_wide_tables_resume_from_their_last_date_minus_seven_days(tmp
     print("  actions last 2026-09-29 -> 2026-09-22; cold sp500 -> 1990-01-01; actions --full -> as_of - 10y.")
 
 
-def test_membership_requests_follow_the_registered_source_start(monkeypatch, tmp_path, sqlite_store, fake):
+def test_membership_requests_follow_the_registered_source_start(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, sqlite_store: Any, fake: FakeSharadar
+) -> None:
     resume = replace(cast(Resume, Tables.sharadar_sp500.resume), source_start="2001-04-01")
     monkeypatch.setattr(Tables, "sharadar_sp500", replace(Tables.sharadar_sp500, resume=resume))
     ctx = _context(tmp_path, sqlite_store, ["AAA"])

@@ -549,7 +549,7 @@ def fetch_13f(
     context.ensure_edgar_identity()
     configure(context)
     run_date = cast(pd.Timestamp, pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize())
-    universe = {str(t).upper() for t in tickers}
+    universe = set(tickers)
     scoped = bool(set(load_universe_tickers(context)) - universe)
     since, until, hold_from = _resolve_window(context, years_history, filing_window, run_date, scoped)
 

@@ -16,6 +16,7 @@ from src.constants.constants import INSUFFICIENT_HISTORY_TICKERS
 from src.context import Context
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.string import normalise_ticker
 
 
 def load_universe_tickers(context: Context) -> list[str]:
@@ -28,8 +29,8 @@ def load_universe_tickers(context: Context) -> list[str]:
     if df is None or "ticker" not in df.columns:
         return []
     # Exclude after normalising, so a lower-cased "goog" is dropped like "GOOG".
-    excluded = INSUFFICIENT_HISTORY_TICKERS | {str(t).strip().upper() for t in context.config.data_extract.redundant_ticks}
-    return sorted({t for raw in df["ticker"].dropna() if (t := str(raw).strip().upper()) and t not in excluded})
+    excluded = INSUFFICIENT_HISTORY_TICKERS | {normalise_ticker(t) for t in context.config.data_extract.redundant_ticks}
+    return sorted({t for raw in df["ticker"].dropna() if (t := normalise_ticker(raw)) and t not in excluded})
 
 
 def new_tickers(store: DataStore, overlap_days: int, as_of: pd.Timestamp) -> set[str]:

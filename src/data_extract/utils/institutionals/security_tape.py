@@ -19,7 +19,6 @@ from src.data_extract.utils.common.resume import recently_changed
 from src.data_store.schema import Table
 from src.utils.batching import batched_tuples
 from src.utils.filer_tables import filing_window
-from src.utils.string import normalise_ticker
 from src.utils.universe import load_universe_tickers
 
 #: The four columns stamped from the security master on every stored tape line.
@@ -43,7 +42,7 @@ def restamp_targets(
 
 def outside_scope(context: Context, scope: Collection[str]) -> frozenset[str]:
     """The universe companies outside `scope`: a scoped run neither deletes nor re-stamps their rows (empty when unscoped)."""
-    return frozenset(normalise_ticker(t) for t in load_universe_tickers(context)) - frozenset(scope)
+    return frozenset(load_universe_tickers(context)) - frozenset(scope)
 
 
 def nullable(values: pd.Series) -> pd.Series:

@@ -124,6 +124,16 @@ def _recover_item_507_from_primary(filing: Any, item_text: str) -> str:
     return item_text
 
 
+def _item_text(obj: Any, item_code: str) -> Any:
+    """The parsed report's text for one item code; None without a parsed report or when the lookup fails."""
+    if obj is None:
+        return None
+    try:
+        return obj["Item " + item_code]
+    except Exception:  # noqa: BLE001 -- best-effort only
+        return None
+
+
 def _filing_row(ticker: str, stamp: FilingStamp) -> list[dict]:
     """One 8-K -> one row per item code. A failed parse keeps the item rows with both flags NaN
     (not None, so a cold table never infers the column as TEXT); a transient read raises."""
@@ -169,16 +179,6 @@ def _filing_row(ticker: str, stamp: FilingStamp) -> list[dict]:
             {**base, "item": item_code, "item_tag": _HIGH_SIGNAL_ITEMS.get(item_code, "other_unclassified_item"), "item_text": item_text or ""}
         )
     return rows
-
-
-def _item_text(obj: Any, item_code: str) -> Any:
-    """The parsed report's text for one item code; None without a parsed report or when the lookup fails."""
-    if obj is None:
-        return None
-    try:
-        return obj["Item " + item_code]
-    except Exception:  # noqa: BLE001 -- best-effort only
-        return None
 
 
 def submission_filings(ticker: str, df_units: pd.DataFrame) -> dict[str, Any]:

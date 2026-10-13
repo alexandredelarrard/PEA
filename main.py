@@ -1,5 +1,4 @@
 from src.context import get_config_context
-from src.data_aggregate.step_build_cube import StepBuildCube
 from src.data_extract.step_extract_all_data import StepExtractAllData
 
 if __name__ == "__main__":
@@ -8,7 +7,7 @@ if __name__ == "__main__":
     self = StepExtractAllData(context=context, config=config)
     # self.run()
 
-    self = StepBuildCube(context=context, config=config)
+    # self = StepBuildCube(context=context, config=config)
     # self.run(full=True)
 
     # self = StepModelling(context=context, config=config)

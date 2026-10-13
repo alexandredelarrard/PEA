@@ -12,7 +12,6 @@ per row. An unknown CIK is its own singleton entity `E{cik}`.
 from __future__ import annotations
 
 import logging
-import weakref
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -69,10 +68,6 @@ class AmbiguousSymbolTenureError(IdentityError):
 
 #: One axis-B tenure: (entity_id, valid_from, valid_to or None when open, n_filings).
 TenureRow = tuple[str, pd.Timestamp, pd.Timestamp | None, int]
-
-
-#: Per-context cache (weak keys) so one database's identity never leaks into another context.
-_CACHE: weakref.WeakKeyDictionary[Context, Identity] = weakref.WeakKeyDictionary()
 
 
 def _as_timestamp(value) -> pd.Timestamp | None:
@@ -667,9 +662,6 @@ def _log_identity(identity: Identity) -> None:
 
 def load_identity(context: Context, refresh: bool = False) -> Identity:
     """The resolver for this run, built once per context and cached on it (`refresh` rebuilds)."""
-    cached = None if refresh else _CACHE.get(context)
-    if cached is not None:
-        return cached
     lineage = context.store.load(Tables.entity_lineage, project=True)
     tenure = context.store.load(Tables.symbol_tenure, project=True, where={"source": list(TENURE_SOURCES)})
     roster = context.store.load(Tables.sp500_tickers, columns=list(ROSTER_COLUMNS))
@@ -691,5 +683,4 @@ def load_identity(context: Context, refresh: bool = False) -> Identity:
         co_registrant_ciks=co_registrant_ciks(lineage, evidence, manual.co_registrants),
         mergers=merger_boundaries(manual),
     )
-    _CACHE[context] = identity
     return identity

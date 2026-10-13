@@ -25,7 +25,6 @@ from collections.abc import Collection, Mapping, Sequence
 
 import pandas as pd
 import requests
-from src.utils.batching import batched_tuples
 from tqdm import tqdm
 
 from src.constants.constants import BROWSER_HEADERS, CANONICAL_CURRENT, CANONICAL_PREDECESSOR, DATE_FORMAT_COMPACT
@@ -49,6 +48,7 @@ from src.data_extract.utils.institutionals.security_tape import (
     warn_lost_rows,
 )
 from src.data_store.schema import Tables
+from src.utils.batching import batched_tuples
 from src.utils.string import normalise_ticker, squash
 
 _URL = "https://cdn.finra.org/equity/regsho/daily/CNMSshvol{yyyymmdd}.txt"
@@ -127,32 +127,27 @@ def _class_letter(symbol: str) -> str | None:
     return parts[1] if len(parts) == 2 and _CLASS_SUFFIX.match(parts[1]) else None
 
 
-def _market_symbol(symbol: str) -> str:
-    return normalise_market_symbol(str(symbol).upper().replace("/", "-"))
-
-
 # --------------------------------------------------------------------------- #
 # Stamp through the security master, aggregate to the ticker grain (pure)        #
 # --------------------------------------------------------------------------- #
 def master_keys(identity: Identity, universe: Collection[str]) -> frozenset[str]:
     """FTD keys of the master securities of `universe` companies."""
-    requested = frozenset(normalise_ticker(t) for t in universe)
     return frozenset(
         key
         for (source, key), intervals in identity.securities_by_symbol.items()
-        if source == SOURCE_FTD and any(hit.canonical_company in requested for _, _, hit in intervals)
+        if source == SOURCE_FTD and any(hit.canonical_company in universe for _, _, hit in intervals)
     )
 
 
 def _fallback(identity: Identity, symbol: str, day: pd.Timestamp) -> SecurityHit | None:
     """P21: the lineage tape interval of a window CIK inside its window, as an `S<cik>:<symbol>` security."""
-    interval = identity.tape_interval(_market_symbol(symbol), day)
+    interval = identity.tape_interval(normalise_market_symbol(symbol), day)
     company = None if interval is None else identity.ticker_by_entity.get(interval.entity)
     if interval is None or company is None:
         return None
     role = CANONICAL_CURRENT if identity.roster_cik.get(company) == interval.cik else CANONICAL_PREDECESSOR
     letter = _class_letter(symbol)
-    return SecurityHit(f"S{interval.cik}:{_market_symbol(symbol)}", company, role, f"class_{letter}" if letter else "common", 1.0)
+    return SecurityHit(f"S{interval.cik}:{normalise_market_symbol(symbol)}", company, role, f"class_{letter}" if letter else "common", 1.0)
 
 
 def _hit_column(hits: Sequence[SecurityHit | None], field: str, index: pd.Index) -> pd.Series:
@@ -427,7 +422,7 @@ def fetch_short_interest(
             continue
         successful.append(day)
         lines = _parse_regsho(text)
-        in_scope = lines["source_symbol"].map(finra_key).isin(known) | lines["source_symbol"].map(_market_symbol).isin(fallback)
+        in_scope = lines["source_symbol"].map(finra_key).isin(known) | lines["source_symbol"].map(normalise_market_symbol).isin(fallback)
         if in_scope.any():
             frames.append(lines[in_scope])
         time.sleep(pause)

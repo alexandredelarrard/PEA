@@ -843,13 +843,26 @@ def test_short_source_cusip_cannot_be_replaced_by_a_valid_numeric_value() -> Non
     print("SANITY: a checksum-valid monetary token cannot replace the literal short source identifier.")
 
 
-def test_signer_address_is_not_an_unconsumed_holding() -> None:
-    # Exact outside-table signature from SEC 0001387131-13-001376.
-    signature = " /s/ Lisa Leonardo  121 E. Seneca Street, Ithaca, NY  14851        04/18/2013"
-    raw = "Signature, Place, and Date of Signing:\n" + signature + "\n" + _table(_HEADER, _AFLAC)
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        " /s/ Lisa Leonardo  121 E. Seneca Street, Ithaca, NY  14851        04/18/2013",
+        "Phone:     212 856 4722",
+        "Phone:     (415) 247 5300",
+        "F o r m  1 3 F",
+        "SK 01864 0005 1382043",
+        "Phone:     44 20 7144 1000",
+        "PHONE                                   212 508 3920",
+        "BUSINESS PHONE: 310 734 1200",
+        "             COLUMN 1                 COLUMN 2      COLUMN 3     4           COLUMN 5        COLUMN 6  COLUMN 7     COLUMN 8",
+    ],
+)
+def test_signer_address_is_not_an_unconsumed_holding(metadata: str) -> None:
+    # Exact outside-table metadata from the independently reviewed SEC sources.
+    raw = metadata + "\n" + _table(_HEADER, _AFLAC)
     rows = parse_legacy_information_table(raw)
     assert len(rows) == 1 and rows.iloc[0].CUSIP == "001055102" and rows.iloc[0].SSHPRNAMT == 3362515
-    print("SANITY: an eight-letter signer surname plus street/postcode cannot become a source identifier; exact holdings remain complete.")
+    print("SANITY: signature, contact and form metadata cannot become economic rows; exact holdings remain complete.")
 
 
 @pytest.mark.parametrize(
@@ -903,3 +916,12 @@ def test_genuine_summary_outside_table_does_not_hide_or_add_positions(label: str
     assert manifest.iloc[0].source_row_count == 1 and pd.isna(manifest.iloc[0].declared_row_count)
     assert rows.iloc[0].cusip == "001055102" and rows.iloc[0].shares == 3362515
     print("SANITY: explicit summary/footer outside the tagged table remains non-economic; the intact missing-count book retains its exact holding.")
+
+
+@pytest.mark.parametrize("title", ["Ord", "CL A"])
+def test_missing_identifier_does_not_hide_other_supported_security_classes(title: str) -> None:
+    extra = _AMGEN.replace("031162100", "         ").replace("Com", title)
+    raw = _table(_HEADER, _AFLAC).replace("Form 13F Information Table Entry Total: 1", "") + "\n" + _HEADER + "\n" + extra
+    with pytest.raises(ValueError, match="Unaccounted"):
+        parse_legacy_information_table(raw)
+    print("SANITY: existing fixed-column security classes remain economic evidence without a CUSIP or explicit quantity type.")

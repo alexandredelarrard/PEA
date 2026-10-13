@@ -31,7 +31,7 @@ _FOOTER_TOTAL = re.compile(r"REPORT SUMMARY\s+\d+\s+DATA RECORDS\s+([\d,]+)", re
 _NON_HOLDING_LINE = re.compile(
     r"\s*(?:(?:GRAND|FINAL)\s+TOTALS?\b|(?:S\s+)?REPORT SUMMARY\b)"
     r"|\s{2,}(?:SOLE|DEFINED|SHARED|OTHER)\s+\d"
-    r"|(?:\s*COLUMN\s+\d+)+\s*$"
+    r"|\s*COLUMN\s+\d+(?:\s+(?:COLUMN\s+)?\d+)*\s*$"
     r"|\s*FORM\s*13\s*F\b.*\bPAGE\s+\d+\s*$",
     re.I,
 )
@@ -125,13 +125,15 @@ def _holding_shaped(line: str) -> bool:
     plain = re.sub(r"<[^>]*>", " ", line)
     if _NON_HOLDING_LINE.match(plain):
         return False
-    if len(_NUMBER.findall(plain)) < 2:
+    amounts = list(_NUMBER.finditer(plain))
+    if len(amounts) < 2:
         return False
     if re.search(r"\b(?:SH|SHS|PRN|SHARES|PRINCIPAL|CALL|PUT)\b", plain, re.I):
         return True
-    first = _NUMBER.search(plain)
-    if first and re.search(r"[A-Z]", plain[: first.start()], re.I) and _NUMBER.match(plain[first.end() :].lstrip()):
-        return True
+    for token in amounts:
+        _, title = _name_and_class(plain[: token.start()])
+        if re.search(r"[A-Z]", title, re.I) and _NUMBER.match(plain[token.end() :].lstrip()):
+            return True
     identifiers = [match for match in _CUSIP.finditer(plain) if re.search(r"[0-9*@#]", match.group(1))]
     return any(re.search(r"[A-Z]", plain[: m.start()], re.I) and _NUMBER.match(plain[m.end() :].lstrip()) for m in identifiers)
 

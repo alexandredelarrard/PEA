@@ -35,7 +35,7 @@ from src.constants.constants import SEC_13F_INFERRED_HOLDINGS_REPORT, SEC_13F_SO
 from src.context import Context
 from src.data_extract.utils.common.edgar_driver import FilingStamp, RetryRounds
 from src.data_extract.utils.common.empty_markers import marker_mask
-from src.data_extract.utils.common.resume import DONE_PER_KEY, document_floor, stored_accessions
+from src.data_extract.utils.common.resume import DONE_PER_KEY, DONE_TABLE, document_floor, stored_accessions
 from src.data_extract.utils.common.sec_io import TransientReadError, configure, filing_obj, sec_call
 from src.data_extract.utils.institutionals.fetch_cusip_map import build_cusip_ticker_map
 from src.data_extract.utils.institutionals.legacy_13f_fallback import (
@@ -48,7 +48,7 @@ from src.data_extract.utils.institutionals.legacy_13f_fallback import (
     parse_legacy_information_table,
 )
 from src.data_extract.utils.institutionals.value_units import ValueUnits, normalize_information_values, resolve_value_units
-from src.data_store.schema import Resume, Tables
+from src.data_store.schema import Resume, Table, Tables
 from src.utils.institutional_vintages import literal_13f_cusip, reconcile_13f_source
 from src.utils.string import pad_cik, pad_cik_series
 from src.utils.superinvestor_roster import roster_cik_union
@@ -56,6 +56,8 @@ from src.utils.universe import load_universe_tickers
 
 logger = logging.getLogger(__name__)
 _CHECKED = r"(?:\[\s*[xX]\s*\]|\{\s*[xX]\s*\}|\(\s*[xX]\s*\))"
+#: A checked legacy report-type box; its group is the report type as printed.
+_CHECKED_REPORT = re.compile(_CHECKED + r"\s*(13\s*F\s+(?:HOLDINGS|COMBINATION|NOTICE)\s+REPORT)", re.I)
 
 #: The sleeper between retry rounds; tests replace it.
 _sleep: Callable[[float], None] = time.sleep
@@ -463,27 +465,31 @@ class _Saver:
             self.walk.book_suspect += _suspect_prices(book)
 
 
+def _done_in(context: Context, table: Table, joint_ciks: set[str]) -> Callable[[FilingStamp], bool]:
+    """Whether a listed filing is complete in `table` (markers count): one table-wide read, plus one
+    per-CIK read for the filers of an accession listed under several CIKs, stored once per filer."""
+    where = {"parse_status": "complete"}
+    everywhere = stored_accessions(context, table, [""], DONE_TABLE, where=where)[""]
+    per_cik = stored_accessions(context, table, sorted(joint_ciks), DONE_PER_KEY, where=where) if joint_ciks else {}
+    return lambda stamp: stamp.accession_number in per_cik.get(stamp.cik, everywhere)
+
+
 def _first_pass(filings: Filings | list[Any], saver: _Saver) -> list[_Read]:
     """Read every filing in order, saving books until the first transient failure; from that
-    filing on, the reads are returned unsaved for the retry rounds."""
+    filing on, the reads are returned unsaved for the retry rounds. A filing is skipped when it is
+    complete in `sec13f_hr` and, for a roster CIK, in the manager table."""
     held: list[_Read] = []
-    completed: dict[str, set[str]] = {}
+    filers: dict[str, set[str]] = {}
+    for filing in filings:
+        stamp = FilingStamp.of(filing, "")
+        filers.setdefault(stamp.accession_number, set()).add(stamp.cik)
+    joint = {cik for ciks in filers.values() if len(ciks) > 1 for cik in ciks}
+    roster = saver.roster_ciks & set().union(*filers.values())
+    hr_done = _done_in(saver.context, Tables.sec13f_hr, joint)
+    manager_done = _done_in(saver.context, Tables.sec13f_manager_holdings, joint & roster) if roster else hr_done
     for filing in tqdm(filings, total=len(filings), desc="13F-HR"):
         stamp = FilingStamp.of(filing, "")
-        if stamp.cik not in completed:
-            completed[stamp.cik] = stored_accessions(
-                saver.context,
-                Tables.sec13f_hr,
-                [stamp.cik],
-                DONE_PER_KEY,
-                where={"parse_status": "complete"},
-            )[stamp.cik]
-            if stamp.cik in saver.roster_ciks:
-                manager_done = stored_accessions(
-                    saver.context, Tables.sec13f_manager_holdings, [stamp.cik], DONE_PER_KEY, where={"parse_status": "complete"}
-                )[stamp.cik]
-                completed[stamp.cik] &= manager_done
-        if stamp.accession_number in completed[stamp.cik]:
+        if hr_done(stamp) and (stamp.cik not in roster or manager_done(stamp)):
             continue
         read = _Read(stamp, read_filing_vintage(stamp))
         if held or read.transient:
@@ -658,23 +664,25 @@ def filing_vintage(
     evidence = identities.groupby("cusip")["class"].agg(lambda s: json.dumps(sorted(set(s))))
     book["class_evidence"] = book["cusip"].map(evidence)
     book["accession_number"] = accession_number
-    # Include cover semantics in the canonical checksum: changed amendment meaning is a conflict.
-    canonical = {
-        "cik": pad_cik(cik),
-        "accession": accession_number,
-        "period": str(pd.Timestamp(period).date()),
-        "filed": str(pd.Timestamp(filing_date).date()),
-        "kind": kind,
-        "restricted": restricted,
-        "report_type": report_type,
-        "amendment_number": amendment_number,
-        "declared_rows": declared_rows,
-        "declared_value": declared_value,
-        "unit_factor": units.factor,
-        "unit_evidence": units.evidence,
-        "rows": raw.fillna("").astype(str).sort_values(list(raw.columns), kind="stable").to_dict("records"),
-    }
-    checksum = source_checksum or hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest()
+    checksum = source_checksum
+    if not checksum:
+        # Include cover semantics in the canonical checksum: changed amendment meaning is a conflict.
+        canonical = {
+            "cik": pad_cik(cik),
+            "accession": accession_number,
+            "period": str(pd.Timestamp(period).date()),
+            "filed": str(pd.Timestamp(filing_date).date()),
+            "kind": kind,
+            "restricted": restricted,
+            "report_type": report_type,
+            "amendment_number": amendment_number,
+            "declared_rows": declared_rows,
+            "declared_value": declared_value,
+            "unit_factor": units.factor,
+            "unit_evidence": units.evidence,
+            "rows": raw.fillna("").astype(str).sort_values(list(raw.columns), kind="stable").to_dict("records"),
+        }
+        checksum = hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest()
     accepted = pd.to_datetime(accepted_at, utc=True) if accepted_at is not None else pd.NaT
     manifest = pd.DataFrame(
         [
@@ -729,15 +737,8 @@ def read_filing_vintage(stamp: FilingStamp) -> tuple[pd.DataFrame, pd.DataFrame]
             return _empty_xml_vintage(stamp, sec_call(stamp.filing.xml, label=f"{stamp.accession_number} cover XML"))
         if not xml:
             raw = sec_call(getattr, report, "infotable_txt", None, label=f"{stamp.accession_number} infotable_txt")
-            if (
-                not raw
-                or not (_VALUE_TOTAL.search(raw) or _FOOTER_TOTAL.search(raw))
-                or not re.search(
-                    r"\[\s*[xX]\s*\]\s*13F\s+(?:HOLDINGS|COMBINATION|NOTICE)\s+REPORT",
-                    raw,
-                    re.I,
-                )
-            ):
+            # The information-table text alone serves when it carries the cover total and a checked report type.
+            if not raw or not (_VALUE_TOTAL.search(raw) or _FOOTER_TOTAL.search(raw)) or not _CHECKED_REPORT.search(raw):
                 raw = sec_call(stamp.filing.full_text_submission, label=f"{stamp.accession_number} full legacy submission")
             if not raw:
                 raise ValueError("13F legacy information table is missing")
@@ -805,7 +806,7 @@ def text_filing_vintage(raw: str, stamp: FilingStamp) -> tuple[pd.DataFrame, pd.
         if bool(restated) == bool(added):
             raise ValueError("13F legacy amendment type is unverifiable")
         kind = "restatement" if restated else "additions"
-    reports = re.findall(_CHECKED + r"\s*(13\s*F\s+(?:HOLDINGS|COMBINATION|NOTICE)\s+REPORT)", raw, re.I)
+    reports = _CHECKED_REPORT.findall(raw)
     if len(set(reports)) > 1:
         raise ValueError("Conflicting checked legacy report types")
     report_type = re.sub(r"13\s*F", "13F", re.sub(r"\s+", " ", reports[0])).upper() if reports else SEC_13F_INFERRED_HOLDINGS_REPORT

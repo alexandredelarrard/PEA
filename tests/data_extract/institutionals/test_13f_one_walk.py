@@ -872,3 +872,156 @@ def test_catch_up_original_gap_cannot_overwrite_a_completed_amendment(sqlite_sto
     assert len(sqlite_store.load(Tables.sec13f_manager_holdings, where={"cusip": "_empty", "parse_status": "complete"}, markers=True)) == 2
     assert len(original.reads) == 1 and amendment.reads == []
     print("SANITY: accession catch-up restores missing original without overwriting the already-preserved amended150 version.")
+
+
+def _spy_done_reads(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str, int]]:
+    """Every `stored_accessions` read `fetch_13f` issues, as (table, scope, number of keys)."""
+    calls: list[tuple[str, str, int]] = []
+    real = f13.stored_accessions
+
+    def _spy(context: Any, table: Any, keys: Any, scope: str, where: dict[str, object] | None = None) -> dict[str, set[str]]:
+        calls.append((table.name, scope, len(keys)))
+        return real(context, table, keys, scope, where=where)
+
+    monkeypatch.setattr(f13, "stored_accessions", _spy)
+    return calls
+
+
+def _walk_filing(cik: str, day: int, accession: str, lines: list[dict[str, Any]] | None = None) -> _FakeFiling:
+    lines = [_line("037833100", "APPLE INC", 1_000.0 * day, 10 * day)] if lines is None else lines
+    return _FakeFiling(cik, f"2026-05-{day:02d}", "2026-03-31", lines, accession=accession)
+
+
+def _store_in(store: Any, filing: _FakeFiling, tables: tuple[Any, ...]) -> None:
+    """Preserve `filing` as complete in only the given destinations (as an earlier walk may have)."""
+    manifest, book = f13.read_filing_vintage(FilingStamp.of(filing, ""))
+    filing.reads.clear()
+    for table in tables:
+        packet = book.assign(ticker=Tables.sec13f_hr.empty_marker[1]) if table == Tables.sec13f_hr else book
+        store.save_13f_filing(manifest, packet, table=table)
+
+
+def test_first_pass_reads_each_done_set_once_per_destination(sqlite_store, monkeypatch):
+    """N = 18 filings of M = 6 CIKs, 2 of them roster CIKs: one done read per destination, not M + 2."""
+    monkeypatch.setattr(f13, "build_cusip_ticker_map", lambda context, cusips, **kwargs: CMAP)
+    ciks = [f"{i:010d}" for i in range(1, 7)]
+    filings = [_walk_filing(cik, 10 + q, f"{cik}-26-{q:06d}") for cik in ciks for q in range(3)]
+    calls = _spy_done_reads(monkeypatch)
+    saver = f13._Saver(_ctx(sqlite_store), set(UNIVERSE), set(ciks[:2]), save_every=1)
+
+    held = f13._first_pass(filings, saver)
+
+    assert not held and all(len(f.reads) == 1 for f in filings)
+    destinations = sorted((table, scope) for table, scope, _ in calls)
+    assert destinations == [(Tables.sec13f_hr.name, "table"), (Tables.sec13f_manager_holdings.name, "table")], calls
+    calls.clear()
+    f13._first_pass(filings, f13._Saver(_ctx(sqlite_store), set(UNIVERSE), set(), save_every=1))
+    assert [(table, scope) for table, scope, _ in calls] == [(Tables.sec13f_hr.name, "table")], calls
+    assert all(len(f.reads) == 1 for f in filings)  # the second walk reads nothing
+    print(
+        f"SANITY: {len(filings)} filings of {len(ciks)} CIKs (2 roster) -> 1 sec13f_hr + 1 manager done read, not {len(ciks)} + 2; "
+        "no roster CIK -> 1 read; a re-walk reads 0 filings."
+    )
+
+
+def test_first_pass_done_semantics_match_the_per_cik_sets(sqlite_store, monkeypatch):
+    """Done = complete in sec13f_hr and, for a roster CIK, in the manager table; markers count, failures
+    do not; an accession listed under two filers is done per filer."""
+    monkeypatch.setattr(f13, "build_cusip_ticker_map", lambda context, cusips, **kwargs: CMAP)
+    hr, mgr = Tables.sec13f_hr, Tables.sec13f_manager_holdings
+    cases = {
+        "roster_hr_only": (_walk_filing(ROSTER, 10, "0000000001-26-000010"), (hr,), True),
+        "roster_both": (_walk_filing(ROSTER, 11, "0000000001-26-000011"), (hr, mgr), False),
+        "other_hr": (_walk_filing(OTHER, 12, "0000000001-26-000012"), (hr,), False),
+        "other_manager_only": (_walk_filing(OTHER, 13, "0000000001-26-000013"), (mgr,), True),
+        "other_empty_marker": (_walk_filing(OTHER, 14, "0000000001-26-000014", lines=[]), (hr,), False),
+        "never_stored": (_walk_filing(OTHER, 15, "0000000001-26-000015"), (), True),
+        "joint_stored_filer": (_walk_filing(OTHER, 16, "0000000001-26-000016"), (hr,), False),
+        "joint_unstored_filer": (_walk_filing("0000888888", 16, "0000000001-26-000016"), (), True),
+    }
+    for filing, tables, _ in cases.values():
+        _store_in(sqlite_store, filing, tables)
+    failed = _FakeFiling(OTHER, "2026-05-17", "2026-03-31", [], accession="0000000001-26-000017", unparseable=True)
+    listing = [filing for filing, _, _ in cases.values()] + [failed]
+    calls = _spy_done_reads(monkeypatch)
+    saver = f13._Saver(_ctx(sqlite_store), set(UNIVERSE), {ROSTER}, save_every=1)
+
+    f13._first_pass(listing, saver)
+    f13._first_pass(listing, saver)
+
+    reread = {name: len(filing.reads) for name, (filing, _, _) in cases.items()}
+    assert reread == {name: int(expected) for name, (_, _, expected) in cases.items()}, reread
+    assert len(failed.reads) == 2  # a failure is never done
+    hr_reads = [(scope, n) for table, scope, n in calls if table == hr.name]
+    assert hr_reads == [("table", 1), ("key", 2)] * 2, calls  # the per-filer read covers only the joint accession's 2 filers
+    print(
+        f"SANITY: re-read once {sorted(k for k, v in reread.items() if v)}; skipped {sorted(k for k, v in reread.items() if not v)}; "
+        "the failure is re-read on both walks; per walk 1 table-wide read per destination + 1 per-filer read for the joint accession."
+    )
+
+
+def test_filing_vintage_builds_the_canonical_checksum_only_without_a_source_checksum(monkeypatch):
+    """Spies: the canonical json (`sort_keys`) and its row records (`to_dict('records')`)."""
+    real_dumps, real_to_dict, canonical = f13.json.dumps, pd.DataFrame.to_dict, []
+
+    def _spy_dumps(obj: Any, **kwargs: Any) -> str:
+        if kwargs.get("sort_keys"):
+            canonical.append("json")
+        return real_dumps(obj, **kwargs)
+
+    def _spy_to_dict(self: pd.DataFrame, orient: str = "dict", *args: Any, **kwargs: Any) -> Any:
+        if orient == "records":
+            canonical.append("records")
+        return real_to_dict(self, orient, *args, **kwargs)
+
+    monkeypatch.setattr(f13, "json", SimpleNamespace(dumps=_spy_dumps))
+    monkeypatch.setattr(pd.DataFrame, "to_dict", _spy_to_dict)
+    info = pd.DataFrame([_line("037833100", "APPLE INC", 600.0, 3), _line("594918104", "MICROSOFT", 400.0, 2)])
+    cover = {"cik": ROSTER, "accession_number": "0000000001-26-000001", "period": "2026-03-31", "filing_date": "2026-05-15"}
+    cover |= {"amendment_type": "original", "source": "test", "declared_rows": 2, "declared_value": 1000.0}
+
+    supplied_manifest, supplied_book = f13.filing_vintage(info, source_checksum="a" * 64, **cover)
+    assert canonical == [] and supplied_manifest.iloc[0].source_checksum == "a" * 64
+    built_manifest, built_book = f13.filing_vintage(info, **cover)
+    assert canonical == ["records", "json"] and len(built_manifest.iloc[0].source_checksum) == 64
+    pd.testing.assert_frame_equal(supplied_book, built_book)
+    print("SANITY: a supplied source_checksum builds no canonical json (0 calls); without one it is built once; books identical.")
+
+
+@dataclass
+class _CountingTextFiling(_TextFiling):
+    """A text filing whose full submission is `full`; counts how often it is fetched."""
+
+    full: str = ""
+    full_calls: int = 0
+
+    def full_text_submission(self) -> str:
+        self.full_calls += 1
+        return self.full
+
+
+@pytest.mark.parametrize(
+    ("case", "marker", "value_total", "fetches"),
+    [
+        ("bracket", "[X]", "0", 0),
+        ("paren", "(X)", "0", 0),
+        ("brace", "{x}", "0", 0),
+        ("no_total", "[X]", None, 1),
+        ("no_checked_report", "[ ]", "0", 1),
+    ],
+)
+def test_text_path_fetches_the_full_submission_only_without_cover_and_checked_report(case, marker, value_total, fetches):
+    raw = _legacy_cover("0", value_total).replace("[X] 13F HOLDINGS REPORT", f"{marker} 13F HOLDINGS REPORT")
+    full = _legacy_cover("0", "0")
+    filing = _CountingTextFiling(ROSTER, "2001-05-15", "2001-03-31", [], accession="0000000001-01-000321", raw=raw, full=full)
+
+    result = f13.read_filing_vintage(FilingStamp.of(filing, ""))
+
+    assert filing.full_calls == fetches, (case, filing.full_calls)
+    assert not isinstance(result, f13.ReadFailure), result
+    used = full if fetches else raw
+    assert result[0].iloc[0].source_checksum == f13.hashlib.sha256(used.encode()).hexdigest()
+    print(
+        f"SANITY: infotable_txt {case} ({marker!r}, value total {value_total!r}) -> {filing.full_calls} full-submission request(s); "
+        f"vintage built from the {'full submission' if fetches else 'information-table text'}."
+    )

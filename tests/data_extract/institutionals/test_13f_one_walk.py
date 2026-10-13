@@ -1004,13 +1004,13 @@ class _CountingTextFiling(_TextFiling):
     ("case", "marker", "value_total", "fetches"),
     [
         ("bracket", "[X]", "0", 0),
-        ("paren", "(X)", "0", 0),
-        ("brace", "{x}", "0", 0),
+        ("paren", "(X)", "0", 1),
+        ("brace", "{x}", "0", 1),
         ("no_total", "[X]", None, 1),
         ("no_checked_report", "[ ]", "0", 1),
     ],
 )
-def test_text_path_fetches_the_full_submission_only_without_cover_and_checked_report(case, marker, value_total, fetches):
+def test_text_path_fetches_the_full_submission_only_without_cover_and_bracket_checked_report(case, marker, value_total, fetches):
     raw = _legacy_cover("0", value_total).replace("[X] 13F HOLDINGS REPORT", f"{marker} 13F HOLDINGS REPORT")
     full = _legacy_cover("0", "0")
     filing = _CountingTextFiling(ROSTER, "2001-05-15", "2001-03-31", [], accession="0000000001-01-000321", raw=raw, full=full)

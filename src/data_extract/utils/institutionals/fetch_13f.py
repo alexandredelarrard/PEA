@@ -25,6 +25,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, cast
 from xml.etree import ElementTree
 
+import numpy as np
 import pandas as pd
 import pyarrow.compute as pc
 from edgar import Filings, get_filings
@@ -58,6 +59,8 @@ logger = logging.getLogger(__name__)
 _CHECKED = r"(?:\[\s*[xX]\s*\]|\{\s*[xX]\s*\}|\(\s*[xX]\s*\))"
 #: A checked legacy report-type box; its group is the report type as printed.
 _CHECKED_REPORT = re.compile(_CHECKED + r"\s*(13\s*F\s+(?:HOLDINGS|COMBINATION|NOTICE)\s+REPORT)", re.I)
+#: The checked report type that lets the information-table text stand in for the full submission.
+_BRACKET_CHECKED_REPORT = re.compile(r"\[\s*[xX]\s*\]\s*13F\s+(?:HOLDINGS|COMBINATION|NOTICE)\s+REPORT", re.I)
 
 #: The sleeper between retry rounds; tests replace it.
 _sleep: Callable[[float], None] = time.sleep
@@ -184,7 +187,11 @@ def position_type(infotable: pd.DataFrame) -> pd.Series:
 def _classify_holdings(infotable: pd.DataFrame) -> pd.DataFrame:
     """One typed row per holding line: value/shares land in exactly one bucket keyed on put/call
     and amount type (SH/PRN or Shares/Principal); a blank type with no put/call is long stock."""
-    masks, amt, val = _holding_masks(infotable)
+    return _typed_lines(infotable, *_holding_masks(infotable))
+
+
+def _typed_lines(infotable: pd.DataFrame, masks: dict[str, pd.Series], amt: pd.Series, val: pd.Series) -> pd.DataFrame:
+    """`_classify_holdings` from already computed `_holding_masks`."""
     is_stock, is_call = masks["common"], masks["call"]
     is_put, is_debt, is_other = masks["put"], masks["debt"], masks["other"]
 
@@ -214,26 +221,32 @@ def _book_frame(cik: str, filing_date: Any, period: Any, infotable: pd.DataFrame
     """One filing's info table -> one `_BOOK_COLS` row per CUSIP, no universe filter. Pure.
     Numerics are summed over a CUSIP's lines; `issuer_name` / `title_of_class` take the first
     non-null; `position_type` is the dominant class. Rows without a period are dropped."""
-    typed = _classify_holdings(infotable)
+    masks, amt, val = _holding_masks(infotable)
+    typed = _typed_lines(infotable, masks, amt, val)
+    numeric = list(typed.columns.drop("cusip"))
     typed["issuer_name"] = _pick(infotable, "NAMEOFISSUER", "Issuer").astype("string")
     typed["title_of_class"] = _pick(infotable, "TITLEOFCLASS", "Class").astype("string")
+    aggregations = {**{c: "sum" for c in numeric}, "issuer_name": "first", "title_of_class": "first"}
+    source = "raw_value" in infotable
+    if source:
+        # A source book keeps the first class in POSITION_TYPES order among a CUSIP's lines, and unknown
+        # dollars cannot become zero through the CUSIP sum (including mixed legs).
+        typed["_rank"] = np.select([masks[name].to_numpy(dtype=bool) for name in POSITION_TYPES], list(range(len(POSITION_TYPES))))
+        aggregations["_rank"] = "min"
+        for column in _VALUE_BY_TYPE.values():
+            typed["_unknown_" + column] = typed[column].isna()
+            aggregations["_unknown_" + column] = "any"
     typed = typed.dropna(subset=["cusip"])
     if typed.empty:
         return pd.DataFrame(columns=_BOOK_COLS)
 
-    numeric = [c for c in typed.columns if c not in ("cusip", "issuer_name", "title_of_class")]
-    out = typed.groupby("cusip", as_index=False).agg({**{c: "sum" for c in numeric}, "issuer_name": "first", "title_of_class": "first"})
-    out["position_type"] = _dominant_type(out)
-    if "raw_value" in infotable:
-        # Unknown dollars cannot become zero through the CUSIP sum (including mixed legs).
-        invalid = typed[list(_VALUE_BY_TYPE.values())].isna().groupby(typed["cusip"]).any()
+    out = typed.groupby("cusip", as_index=False).agg(aggregations)
+    if source:
+        out["position_type"] = np.asarray(POSITION_TYPES, dtype=object)[out["_rank"].to_numpy()]
         for column in _VALUE_BY_TYPE.values():
-            out[column] = out[column].mask(out["cusip"].map(invalid[column]))
-        source_types = position_type(infotable)
-        source_cusips = _pick(infotable, "CUSIP").map(literal_13f_cusip)
-        for name in reversed(POSITION_TYPES):
-            present = set(source_cusips[source_types.eq(name)].dropna())
-            out.loc[out["cusip"].isin(present), "position_type"] = name
+            out[column] = out[column].mask(out["_unknown_" + column])
+    else:
+        out["position_type"] = _dominant_type(out)
     out["cik"] = pad_cik(cik)  # the stored form; the PK join depends on matching it
     out["period"] = pd.Timestamp(period)
     out["filing_date"] = pd.Timestamp(filing_date)
@@ -650,19 +663,17 @@ def filing_vintage(
         )
     raw["raw_value"] = raw["VALUE"]
     book = _book_frame(cik, filing_date, period, raw)
-    if len(raw) and _pick(raw, "CUSIP").map(literal_13f_cusip).isna().any():
+    cusips = _pick(raw, "CUSIP").map(literal_13f_cusip)
+    if cusips.isna().any():
         raise ValueError("13F source CUSIP identity is missing")
     for column in _VALUE_BY_TYPE.values():
         book["raw_" + column] = book[column]
         book[column] = book[column] * units.factor if units.factor is not None else book[column].where(book[column].eq(0))
-    identities = pd.DataFrame(
-        {
-            "cusip": _pick(raw, "CUSIP").map(literal_13f_cusip),
-            "class": _pick(raw, "TITLEOFCLASS", "Class").fillna("").astype(str).str.strip().str.replace(r"\s+", " ", regex=True),
-        }
-    )
-    evidence = identities.groupby("cusip")["class"].agg(lambda s: json.dumps(sorted(set(s))))
-    book["class_evidence"] = book["cusip"].map(evidence)
+    classes: dict[str, set[str]] = {}
+    titles = _pick(raw, "TITLEOFCLASS", "Class").fillna("").astype(str).str.strip().str.replace(r"\s+", " ", regex=True)
+    for cusip, title in zip(cusips, titles, strict=True):
+        classes.setdefault(cusip, set()).add(title)
+    book["class_evidence"] = book["cusip"].map({cusip: json.dumps(sorted(seen)) for cusip, seen in classes.items()})
     book["accession_number"] = accession_number
     checksum = source_checksum
     if not checksum:
@@ -737,8 +748,8 @@ def read_filing_vintage(stamp: FilingStamp) -> tuple[pd.DataFrame, pd.DataFrame]
             return _empty_xml_vintage(stamp, sec_call(stamp.filing.xml, label=f"{stamp.accession_number} cover XML"))
         if not xml:
             raw = sec_call(getattr, report, "infotable_txt", None, label=f"{stamp.accession_number} infotable_txt")
-            # The information-table text alone serves when it carries the cover total and a checked report type.
-            if not raw or not (_VALUE_TOTAL.search(raw) or _FOOTER_TOTAL.search(raw)) or not _CHECKED_REPORT.search(raw):
+            # The information-table text alone serves when it carries the cover total and a [x]-checked report type.
+            if not raw or not (_VALUE_TOTAL.search(raw) or _FOOTER_TOTAL.search(raw)) or not _BRACKET_CHECKED_REPORT.search(raw):
                 raw = sec_call(stamp.filing.full_text_submission, label=f"{stamp.accession_number} full legacy submission")
             if not raw:
                 raise ValueError("13F legacy information table is missing")

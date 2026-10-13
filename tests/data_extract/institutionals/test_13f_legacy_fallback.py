@@ -8,7 +8,10 @@ unverifiable text book is a deterministic read failure, and no F-001 garbage sha
 
 from __future__ import annotations
 
+import math
+import re
 from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -17,7 +20,12 @@ import pytest
 
 from src.data_extract.utils.common.edgar_driver import FilingStamp
 from src.data_extract.utils.institutionals import fetch_13f as f13
-from src.data_extract.utils.institutionals.legacy_13f_fallback import needs_legacy_fallback, parse_legacy_information_table
+from src.data_extract.utils.institutionals.legacy_13f_fallback import (
+    _holding_rows,
+    _source_rows,
+    needs_legacy_fallback,
+    parse_legacy_information_table,
+)
 from src.utils.institutional_vintages import public_books
 
 _HEADER = "ISSUER                 TYPE           CUSIP     VALUE     SHS      INVEST"
@@ -967,3 +975,124 @@ def test_split_column_caption_is_metadata_only_with_its_label_row(location: str)
     rows = parse_legacy_information_table(raw)
     assert rows.CUSIP.tolist() == ["001055102"] and rows.VALUE.tolist() == [145462000] and rows.SSHPRNAMT.tolist() == [3362515]
     print("SANITY: paired column labels/numbers form one metadata caption; a bare numeric continuation remains an economic row.")
+
+
+# ---- cover-total / VALUE-sum ratio rule ----------------------------------------------------------
+
+_LEGACY_SOURCES = Path(__file__).parent / "fixtures" / "legacy_13f"
+_VALUE_COLUMNS = list(f13._VALUE_BY_TYPE.values())
+
+
+def _cached_source(accession: str) -> tuple[str, FilingStamp]:
+    """A real SEC legacy submission and the stamp its own header declares."""
+    raw = (_LEGACY_SOURCES / f"{accession}.sgml").read_text(encoding="utf-8")
+
+    def header(label: str) -> str:
+        match = re.search(rf"{label}:\s*(\S+)", raw)
+        assert match, label
+        return match.group(1)
+
+    filing = _Filing(
+        _Report(None, txt=raw),
+        cik=header("CENTRAL INDEX KEY"),
+        filing_date=header("FILED AS OF DATE"),
+        period_of_report=header("CONFORMED PERIOD OF REPORT"),
+        accession_number=accession,
+    )
+    return raw, FilingStamp.of(filing, filing.cik)
+
+
+def _assert_values_unchanged(manifest: pd.DataFrame, rows: pd.DataFrame, source: list[dict[str, Any]]) -> float:
+    """Raw cells survive per CUSIP as typed; USD columns move only by the filing's ValueUnits factor. Returns cover/sum."""
+    expected = pd.DataFrame(source).groupby("CUSIP")["VALUE"].sum().astype(float)
+    stored = rows.set_index("cusip")[["raw_" + column for column in _VALUE_COLUMNS]].sum(axis=1).sort_index()
+    pd.testing.assert_series_equal(stored, expected, check_names=False, check_index_type=False, rtol=1e-12)
+    factor = manifest.iloc[0].value_unit_factor
+    for column in _VALUE_COLUMNS:
+        assert (rows[column] == rows["raw_" + column] * factor).all(), column
+    assert math.isclose(manifest.iloc[0].source_value_total, sum(row["VALUE"] for row in source), rel_tol=1e-12)
+    return float(manifest.iloc[0].declared_value_total / manifest.iloc[0].source_value_total)
+
+
+_SYNTHETIC_BOOK = [{"CUSIP": "001055102", "VALUE": 145462.0}, {"CUSIP": "031162100", "VALUE": 12000.0}]
+
+
+@pytest.mark.parametrize(
+    ("accession", "expected", "shape"),
+    [
+        ("0001144204-13-029112", 1.0, "cover and cells both in $1000s"),
+        ("0001056868-13-000004", 1000.0, "cover in dollars, cells in $1000s"),
+        ("0001568235-13-000005", 0.001, "cells in dollars, cover in $1000s"),
+        ("0000950159-05-001336", 1.0, "one row above the cover count, no row equals the total"),
+        ("0000902664-13-002273", 1.0, "single holding equal to the total, count matches"),
+    ],
+)
+def test_ratio_rule_cached_sources(accession: str, expected: float, shape: str) -> None:
+    raw, stamp = _cached_source(accession)
+    source = _holding_rows(raw, _source_rows(raw), 1.0)
+    manifest, rows = f13.text_filing_vintage(raw, stamp)
+    ratio = _assert_values_unchanged(manifest, rows, source)
+    assert manifest.iloc[0].source_row_count == len(source)
+    assert math.isclose(ratio, expected, rel_tol=0.03), ratio
+    factor = manifest.iloc[0].value_unit_factor
+    print(
+        f"SANITY: real {accession} ({shape}) accepted at cover/sum ratio {ratio:.6g}; all {len(source)} rows kept, raw values unchanged, USD only by ValueUnits x{factor:g}."
+    )
+
+
+def test_ratio_16_36_cached_source_is_rejected() -> None:
+    raw, stamp = _cached_source("0001387131-13-001589")
+    ratio = 29161518 / sum(row["VALUE"] for row in _holding_rows(raw, _source_rows(raw), 1.0))
+    with pytest.raises(ValueError, match="does not reconcile"):
+        f13.text_filing_vintage(raw, stamp)
+    with pytest.raises(ValueError, match="differs materially"):
+        parse_legacy_information_table(raw)
+    print(f"SANITY: real 0001387131-13-001589 at cover/sum ratio {ratio:.4g} is rejected on the live and the verified path.")
+
+
+def _synthetic_double_counted(groups: int) -> str:
+    """SYNTHETIC: `groups` x (Aflac, Amgen) and an unlabelled table-total line read as a continuation."""
+    value, shares = 157462 * groups, (3362515 + 100000) * groups
+    raw = _table(_HEADER, *([_AFLAC, _AMGEN] * groups), " " * 45 + f"{value:,}  {shares:,}")
+    raw = raw.replace(f"Entry Total: {2 * groups + 1}", f"Entry Total: {2 * groups}")
+    return f"[X] 13F HOLDINGS REPORT\nForm 13F Information Table Value Total: ${value:,}\n" + raw
+
+
+@pytest.mark.parametrize("groups", [1, 10])
+def test_synthetic_ratio_2_total_line_is_dropped_without_changing_values(groups: int) -> None:
+    raw = _synthetic_double_counted(groups)
+    parsed = _holding_rows(raw, _source_rows(raw), 1.0)
+    assert len(parsed) == 2 * groups + 1 and sum(row["VALUE"] for row in parsed) == 2 * 157462 * groups
+    for verify_values in (True, False):
+        rows = parse_legacy_information_table(raw, value_factor=1.0, verify_values=verify_values)
+        assert rows.VALUE.tolist() == [145462, 12000] * groups and rows.SSHPRNAMT.tolist() == [3362515, 100000] * groups
+    filing = _Filing(_Report(None, txt=raw))
+    manifest, rows = f13.text_filing_vintage(raw, FilingStamp.of(filing, filing.cik))
+    ratio = _assert_values_unchanged(manifest, rows, _SYNTHETIC_BOOK * groups)
+    assert manifest.iloc[0].source_row_count == manifest.iloc[0].declared_row_count == 2 * groups and ratio == 1.0
+    print(
+        f"SANITY: SYNTHETIC ratio-2 book ({2 * groups}+1 rows, ratio 2 before the drop) keeps its {2 * groups} declared rows with unchanged values."
+    )
+
+
+def test_synthetic_ratio_2_with_two_rows_equal_to_the_total_is_rejected() -> None:
+    raw = _table(_HEADER, _AFLAC, _AMGEN, " " * 45 + "145,462  3,362,515").replace("Entry Total: 3", "Entry Total: 2")
+    raw = "[X] 13F HOLDINGS REPORT\nForm 13F Information Table Value Total: $145,462\n" + raw
+    assert [row["VALUE"] for row in _holding_rows(raw, _source_rows(raw), 1.0)] == [145462, 12000, 145462]
+    with pytest.raises(ValueError, match="does not reconcile"):
+        parse_legacy_information_table(raw, value_factor=1.0, verify_values=False)
+    print("SANITY: SYNTHETIC extra row is kept when two rows equal the cover total, so the count mismatch still rejects the book.")
+
+
+@pytest.mark.parametrize(("ratio", "accepted"), [(2.0, False), (0.5, False), (3.0, False), (1.5, False), (10.0, True), (100.0, True), (1000.0, True)])
+def test_synthetic_cover_ratios_without_a_total_row(ratio: float, accepted: bool) -> None:
+    raw = f"[X] 13F HOLDINGS REPORT\nForm 13F Information Table Value Total: {int(157462 * ratio):,}\n" + _table(_HEADER, _AFLAC, _AMGEN)
+    filing = _Filing(_Report(None, txt=raw))
+    if accepted:
+        manifest, rows = f13.text_filing_vintage(raw, FilingStamp.of(filing, filing.cik))
+        assert _assert_values_unchanged(manifest, rows, _SYNTHETIC_BOOK) == ratio
+    else:
+        with pytest.raises(ValueError, match="does not reconcile"):
+            f13.text_filing_vintage(raw, FilingStamp.of(filing, filing.cik))
+    verdict = "accepted (power of ten, A-1)" if accepted else "rejected"
+    print(f"SANITY: SYNTHETIC cover/sum ratio {ratio:g} with rows == declared is {verdict}; no row is dropped.")

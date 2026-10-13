@@ -300,6 +300,20 @@ def _holding_rows(raw: str, source_rows: list[tuple[str, str, str]], value_facto
     return rows
 
 
+def _double_counted_total_row(raw: str, rows: list[dict[str, Any]], value_factor: float) -> list[dict[str, Any]]:
+    """Drop a table total read as a holding: one row above the cover count and exactly one row equal to
+    the cover total on the cells' printed basis. Every value stays as typed."""
+    count = _ENTRY_COUNT.search(raw)
+    summary = _VALUE_TOTAL.search(raw) or _FOOTER_TOTAL.search(raw)
+    if count is None or summary is None or len(rows) != int(count.group(1).replace(",", "")) + 1:
+        return rows
+    if summary.re is _VALUE_TOTAL and (summary.group(2) or "").lower() in ("billion", "million"):
+        return rows
+    total = float(Decimal(summary.group(1).replace(",", "")) * Decimal(str(value_factor)))
+    matches = [i for i, row in enumerate(rows) if row["VALUE"] == total]
+    return [row for i, row in enumerate(rows) if i != matches[0]] if len(matches) == 1 else rows
+
+
 def _value_total_error(raw: str, values_usd: list[Any], *, default_factor: float = 1000.0) -> str | None:
     """Compare USD to explicit cover magnitude/precision; unlabelled legacy covers are $1000s."""
     summary = _VALUE_TOTAL.search(raw) or _FOOTER_TOTAL.search(raw)
@@ -372,7 +386,7 @@ def needs_legacy_fallback(raw: str, parsed: pd.DataFrame | None) -> bool:
     parsed_options = parsed_options.astype("string").str.strip().str.upper().fillna("")
     source_facts = []
     try:
-        for row in _holding_rows(raw, _source_rows(raw), 1000.0):
+        for row in _double_counted_total_row(raw, _holding_rows(raw, _source_rows(raw), 1000.0), 1000.0):
             source_facts.append((row["CUSIP"], row["VALUE"], row["SSHPRNAMT"], row["SSHPRNAMTTYPE"], row["PUTCALL"]))
     except ValueError:
         return True
@@ -384,7 +398,7 @@ def parse_legacy_information_table(raw: str, *, value_factor: float = 1000.0, ve
     source_rows = _source_rows(raw)
     if not source_rows:
         raise ValueError("No legacy 13F information-table lines")
-    rows = _holding_rows(raw, source_rows, value_factor)
+    rows = _double_counted_total_row(raw, _holding_rows(raw, source_rows, value_factor), value_factor)
     _check_totals(raw, rows, value_factor=value_factor, verify_values=verify_values)
     frame = pd.DataFrame(rows)
     frame.attrs["source_accounted"] = True

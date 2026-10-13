@@ -1,0 +1,219 @@
+-----BEGIN PRIVACY-ENHANCED MESSAGE-----
+Proc-Type: 2001,MIC-CLEAR
+Originator-Name: webmaster@www.sec.gov
+Originator-Key-Asymmetric:
+ MFgwCgYEVQgBAQICAf8DSgAwRwJAW2sNKK9AVtBzYZmr6aGjlWyK3XmZv3dTINen
+ TWSM7vrzLADbmYQaionwg5sDW3P6oaM5D3tdezXMm7z1T+B+twIDAQAB
+MIC-Info: RSA-MD5,RSA,
+ BEsHeg6cGNM0LN4yVXG2D2GG1vt+gOLKdqnfdkj47FApiDk79t6Aa3kbkcNFUhTj
+ UWbLMU3quLsuM2873kBxGg==
+
+<SEC-DOCUMENT>0000950159-05-001336.txt : 20051114
+<SEC-HEADER>0000950159-05-001336.hdr.sgml : 20051111
+<ACCEPTANCE-DATETIME>20051114154423
+ACCESSION NUMBER:		0000950159-05-001336
+CONFORMED SUBMISSION TYPE:	13F-HR
+PUBLIC DOCUMENT COUNT:		1
+CONFORMED PERIOD OF REPORT:	20050930
+FILED AS OF DATE:		20051114
+DATE AS OF CHANGE:		20051114
+EFFECTIVENESS DATE:		20051114
+
+FILER:
+
+	COMPANY DATA:	
+		COMPANY CONFORMED NAME:			PROMETHEAN ASSET MANAGEMENT LLC
+		CENTRAL INDEX KEY:			0001166736
+		IRS NUMBER:				000000000
+
+	FILING VALUES:
+		FORM TYPE:		13F-HR
+		SEC ACT:		1934 Act
+		SEC FILE NUMBER:	028-10097
+		FILM NUMBER:		051201216
+
+	BUSINESS ADDRESS:	
+		STREET 1:		750 LEXINGTON AVE
+		STREET 2:		C/O PROMETHEAN INVESTMENT GROUP LLC
+		CITY:			NEW YORK
+		STATE:			NY
+		ZIP:			10022
+		BUSINESS PHONE:		2127025200
+
+	MAIL ADDRESS:	
+		STREET 1:		C/O PROMETHEAN INVESTMENT GROUP LLC
+		STREET 2:		750 LEXINGTON AVE
+		CITY:			NEW YORK
+		STATE:			NY
+		ZIP:			10022
+</SEC-HEADER>
+<DOCUMENT>
+<TYPE>13F-HR
+<SEQUENCE>1
+<FILENAME>promethean13fhr.txt
+<TEXT>
+
+                                  UNITED STATES
+                       SECURITIES AND EXCHANGE COMMISSION
+                             Washington, D.C. 20549
+
+                                    Form 13F
+
+                               FORM 13F COVER PAGE
+
+Report for the Calendar Year or Quarter Ended: September 30, 2005
+
+Check here if Amendment [ ]; Amendment Number:
+                                                -----------
+  This Amendment (Check only one.):    [ ] is a restatement.
+                                       [ ]adds new holdings entries.
+
+Institutional Investment Manager Filing this Report:
+
+Name:          Promethean Asset Management, LLC
+Address:       750 Lexington Avenue, 22nd Floor
+               New York, NY 10022
+
+Form 13F File Number: 28-10097
+
+The institutional  investment  manager filing this report and the person by whom
+it is signed hereby  represent  that the person signing the report is authorized
+to  submit  it,  that all  information  contained  herein is true,  correct  and
+complete,  and  that it is  understood  that  all  required  items,  statements,
+schedules, lists, and tables, are considered integral parts of this form.
+
+Person Signing this Report on Behalf of Reporting Manager:
+
+Name:          Stephen Miller
+Title:         Chief Financial Officer
+Phone:         212-702-5200
+
+Signature, Place, and Date of Signing:
+
+/s/ Stephen Miller                 New York, NY                11/14/05
+- --------------------              ---------------             ----------
+   [Signature]                     [City, State]                [Date]
+
+
+Report Type (Check only one.):
+
+[X]  13F HOLDINGS REPORT.  (Check here if all holdings of this reporting manager
+     are reported in this report.)
+
+[ ]  13F NOTICE. (Check here if no holdings reported are in this report, and all
+     holdings are reported by other reporting manager(s).)
+
+[ ]  13F COMBINATION  REPORT.  (Check here if a portion of the holdings for this
+     reporting  manager is  reported in this report and a portion is reported by
+     other reporting manager(s).)
+
+<PAGE>
+<TABLE>
+<CAPTION>
+
+<C>                                            <C>          <C>         <C>                            <C>  <C>
+                                                            Value                SH/   PUT/   Inv    Other
+Issuer                        Class            CUSIP      (x$1000)    SH/PRN AMT PRN   CALL   Discr   Mgr    SOLE   SHARED   NONE
+
+3COM CORP                     COM              885535104    2,732       669,500  SH          DEFINED   01   669,500
+4 KIDS ENTMT INC              COM              350865101    1,304        75,000  SH          DEFINED   01    75,000
+ADAPTEC INC                   NOTE  0.750%12/2 00651FAG3    3,327     4,101,000  PRN         DEFINED   01                  4,101,000
+ANADIGICS INC                 NOTE  5.000%11/1 032515AB4    1,960     2,000,000  PRN         DEFINED   01                  2,000,000
+APPLIED MATLS INC             COM              038222105    1,179        69,500       PUT    DEFINED   01    69,500
+AVANIR PHARMACEUTICALS        CL A             05348P104       96        31,024  SH          DEFINED   01    31,024
+BEA SYS INC                   COM              073325102    1,753       195,000  SH          DEFINED   01   195,000
+BORLAND SOFTWARE CORP         COM              099849101      786       135,000  SH          DEFINED   01   135,000
+BOWATER INC                   COM              102183100    3,449       122,000       PUT    DEFINED   01   122,000
+BROCADE COMMUNICATIONS SYS I  COM              111621108      664       162,700  SH          DEFINED   01   162,700
+CAPITAL ONE FINL CORP         COM              14040H105    3,221        40,500       PUT    DEFINED   01    40,500
+CARNIVAL CORP                 PAIRED CTF       143658300    3,749        75,000       PUT    DEFINED   01    75,000
+CARNIVAL CORP                 PAIRED CTF       143658300    3,749        75,000  SH          DEFINED   01    75,000
+CASTLE ENERGY CORP            COM PAR$0.50N    148449309      579        27,900  SH          DEFINED   01    27,900
+CASUAL MALE RETAIL GRP INC    NOTE  5.000% 1/0 148711AB0    2,693     3,000,000  PRN         DEFINED   01                  3,000,000
+CENTURY ALUM CO               NOTE  1.750% 8/0 156431AE8    4,270     4,500,000  PRN         DEFINED   01                  4,500,000
+CIENA CORP                    NOTE  3.750% 2/0 171779AA9    3,640     4,000,000  PRN         DEFINED   01                  4,000,000
+COMMSCOPE INC                 SDCV  1.000% 3/1 203372AD9    2,899     3,000,000  PRN         DEFINED   01                  3,000,000
+CORGENTECH INC                COM              21872P105      118        50,000  SH          DEFINED   01    50,000
+CURAGEN CORP                  SDCV  6.000% 2/0 23126RAC5   10,215    10,450,000  PRN         DEFINED   01                 10,450,000
+CURAGEN CORP                  NOTE  4.000% 2/1 23126RAE1    1,210     1,583,000  PRN         DEFINED   01                  1,583,000
+DELL INC                      COM              24702R101    2,822        82,500       PUT    DEFINED   01    82,500
+ENZON PHARMACEUTICALS INC     NOTE  4.500% 7/0 293904AB4    8,873     9,777,000  PRN         DEFINED   01                  9,777,000
+E TRADE FINANCIAL CORP        NOTE  6.000% 2/0 269246AB0    3,633     3,597,000  PRN         DEFINED   01                  3,597,000
+FREEPORT-MCMORAN COPPER & GO  NOTE  7.000% 2/1 35671DAK1   13,340     8,000,000  PRN         DEFINED   01                  8,000,000
+GLOBESPAN INC                 NOTE  5.250% 5/1 379571AB8    2,959     3,000,000  PRN         DEFINED   01                  3,000,000
+INCYTE CORP                   NOTE  5.500% 2/0 45337CAC6    6,787     6,925,000  PRN         DEFINED   01                  6,925,000
+INTEL CORP                    COM              458140100    1,627        66,000       PUT    DEFINED   01    66,000
+JDS UNIPHASE CORP             NOTE        11/1 46612JAB7    5,055     6,000,000  PRN         DEFINED   01                  6,000,000
+LEVEL 3 COMMUNICATIONS INC    COM              52729N100      116        50,000       PUT    DEFINED   01    50,000
+LEXMARK INTL NEW              CL A             529771107    1,221        20,000  SH          DEFINED   01    20,000
+LIBERTY MEDIA CORP NEW        COM SER A        530718105       97        12,000  SH          DEFINED   01    12,000
+LYONDELL CHEMICAL CO          COM              552078107    3,005       105,000       PUT    DEFINED   01   105,000
+MAXIM INTEGRATED PRODS INC    COM              57772K101    2,303        54,000       PUT    DEFINED   01    54,000
+MAXXAM INC                    COM              577913106      376        11,200  SH          DEFINED   01    11,200
+MBIA INC                      COM              55262C100      303         5,000       PUT    DEFINED   01     5,000
+MERIDIAN RESOURCE CORP        COM              58977Q109    1,055       253,000  SH          DEFINED   01   253,000
+NASDAQ 100 TR                 COM              631100104  134,164     3,400,000       CALL   DEFINED   01 3,400,000
+NEWMONT MINING CORP           COM              651639106    2,359        50,000       CALL   DEFINED   01    50,000
+NEWMONT MINING CORP           COM              651639106       71         1,500  SH          DEFINED   01     1,500
+PDI INC                       COM              69329V100    1,072        70,000  SH          DEFINED   01    70,000
+PHOTRONICS INC                NOTE  2.250% 4/1 719405AE2    1,326     1,000,000  PRN         DEFINED   01                  1,000,000
+PIONEER NAT RES CO            COM              723787107      824        15,000  SH          DEFINED   01    15,000
+PIXELWORKS INC                SDCV  1.750% 5/1 72581MAB3    3,482     5,000,000  PRN         DEFINED   01                  5,000,000
+PMI GROUP INC                 COM              69344M101    1,096        27,500       PUT    DEFINED   01    27,500
+POWERWAVE TECHNOLOGIES INC    NOTE  1.250% 7/1 739363AB5    3,908     3,000,000  PRN         DEFINED   01                  3,000,000
+QUALCOMM INC                  COM              747525103    3,625        81,000       PUT    DEFINED   01    81,000
+QUANTA SVCS INC               NOTE  4.000% 7/0 74762EAA0    3,378     3,500,000  PRN         DEFINED   01                  3,500,000
+QUANTA SVCS INC               SDCV  4.500%10/0 74762EAC6    3,844     3,000,000  PRN         DEFINED   01                  3,000,000
+RADIAN GROUP INC              COM              750236101    1,460        27,500       PUT    DEFINED   01    27,500
+REALNETWORKS INC              NOTE         7/0 75605LAB0    1,775     2,000,000  PRN         DEFINED   01                  2,000,000
+RED HAT INC                   DBCV  0.500% 1/1 756577AB8    1,502     1,500,000  PRN         DEFINED   01                  1,500,000
+RESEARCH IN MOTION LTD        COM              760975102    3,278        48,000       PUT    DEFINED   01    48,000
+SIEBEL SYS INC                COM              826170102    1,188       115,000  SH          DEFINED   01   115,000
+SUNTERRA CORP                 NOTE  3.750% 3/2 86787DAC3    7,154     7,150,000  PRN         DEFINED   01                  7,150,000
+TEKELEC                       NOTE  2.250% 6/1 879101AE3    1,159     1,000,000  PRN         DEFINED   01                  1,000,000
+TEXAS INSTRS INC              COM              882508104    1,237        36,500       PUT    DEFINED   01    36,500
+TYCO INTL LTD NEW             COM              902124106      836        30,000  SH          DEFINED   01    30,000
+XCYTE THERAPIES INC           PFD CV EXCH      98389F408       77        20,772  SH          DEFINED   01    20,772
+
+                                 59                       285,974
+
+</TABLE>
+
+
+
+
+<PAGE>
+
+
+                              FORM 13F SUMMARY PAGE
+
+Report Summary:
+
+Number of Other Included Managers:              1
+Form 13F Information Table Entry Total:         59
+Form 13F Information Table Value Total:         $285,974
+                                                (thousands)
+
+List of Other Included Managers:
+
+Provide a numbered list of the name(s) and Form 13F file number(s) of all
+institutional investment managers with respect to which this report is filed,
+other than the manager filing this report.
+
+[If there are no entries in this list, state "NONE" and omit the column headings
+and list entries.]
+
+     No.      Form 13F File Number           Name
+
+     01       28-10099                        Promethean Investment Group, LLC
+
+
+
+
+
+
+
+</TEXT>
+</DOCUMENT>
+</SEC-DOCUMENT>
+-----END PRIVACY-ENHANCED MESSAGE-----

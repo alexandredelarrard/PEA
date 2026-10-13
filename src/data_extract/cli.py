@@ -9,28 +9,66 @@ fetcher. Fetchers resume from the DB, so a nightly rerun pulls only new data. `s
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 import click
 import pandas as pd
 
 from src.constants.command_line_interface import (
+    ACCESSION_ARGS,
+    ACCESSION_KWARGS,
+    APPROVE_REKEY_ARGS,
+    APPROVE_REKEY_KWARGS,
+    ARCHIVE_ARGS,
+    ARCHIVE_KWARGS,
+    AS_OF_ARGS,
+    AS_OF_KWARGS,
+    CIK_ARGS,
+    CIK_KWARGS,
     CONFIG_ARGS,
+    CONFIG_KWARGS,
+    COUNT_ARGS,
+    COUNT_KWARGS,
+    DELETE_ARGS,
+    DELETE_KWARGS,
+    DRY_RUN_ARGS,
+    DRY_RUN_KWARGS,
+    FILED_THROUGH_ARGS,
+    FILED_THROUGH_KWARGS,
+    FILING_WINDOW_ARGS,
+    FILING_WINDOW_KWARGS,
     FULL_ARGS,
+    FULL_KWARGS,
+    MAX_FILINGS_ARGS,
+    MAX_FILINGS_KWARGS,
+    NO_CAP_ARGS,
+    NO_CAP_KWARGS,
+    PERIOD_END_ARGS,
+    PERIOD_END_KWARGS,
+    PERIOD_START_ARGS,
+    PERIOD_START_KWARGS,
+    PROPOSE_ARGS,
+    PROPOSE_KWARGS,
+    REBUILD_ARGS,
+    REBUILD_KWARGS,
+    REPAIR_AVAILABILITY_ARGS,
+    REPAIR_AVAILABILITY_KWARGS,
+    REPAIR_GAPS_ARGS,
+    REPAIR_GAPS_KWARGS,
+    REPORT_PATH_ARGS,
+    REPORT_PATH_KWARGS,
+    TABLE_ARGS,
+    TABLE_KWARGS,
     TICKERS_ARGS,
+    TICKERS_KWARGS,
+    TIMINGS_ARGS,
+    TIMINGS_KWARGS,
+    VERIFY_HISTORY_ARGS,
+    VERIFY_HISTORY_KWARGS,
+    VINTAGES_ARGS,
+    VINTAGES_KWARGS,
     YEARS_ARGS,
-)
-from src.constants.command_line_interface import (
-    CONFIG_KWARGS as _CONFIG_KWARGS,
-)
-from src.constants.command_line_interface import (
-    FULL_KWARGS as _FULL_KWARGS,
-)
-from src.constants.command_line_interface import (
-    TICKERS_KWARGS as _TICKERS_KWARGS,
-)
-from src.constants.command_line_interface import (
-    YEARS_KWARGS as _YEARS_KWARGS,
+    YEARS_KWARGS,
 )
 from src.context import Context, get_config_context
 from src.data_extract.identity_propagate import propagate_identity
@@ -88,24 +126,6 @@ from src.data_store.schema import Table, Tables, freshness_tables, marker_tables
 from src.utils.cli_helper import SpecialHelpOrder
 from src.utils.freshness import PREDICTION_INPUTS, fresh_share, last_dates_by_key, max_age_days, table_freshness
 from src.utils.universe import load_universe_tickers, unverified_ciks
-
-CONFIG_KWARGS = cast(dict[str, Any], _CONFIG_KWARGS)
-TICKERS_KWARGS = cast(dict[str, Any], _TICKERS_KWARGS)
-FULL_KWARGS = cast(dict[str, Any], _FULL_KWARGS)
-YEARS_KWARGS = cast(dict[str, Any], _YEARS_KWARGS)
-# Hidden run date: what a command treats as "today", so a run can be replayed on an injected date.
-AS_OF_OPTION = click.option(
-    "--as-of", "as_of", type=click.DateTime(formats=["%Y-%m-%d"]), default=None, hidden=True, help="Run date YYYY-MM-DD (default: today)."
-)
-# The one-time EDGAR backlog run lifts `data_extract.max_documents_per_run`; nightly runs keep it.
-NO_CAP_OPTION = click.option("--no-cap", "no_cap", is_flag=True, default=False, help="Lift the per-run document cap (one-time backlog runs only).")
-VERIFY_HISTORY_OPTION = click.option(
-    "--verify-history",
-    is_flag=True,
-    help="Replay every ticker's fundamentals_history_sec in full and refuse (append-only) if a stored row "
-    "would change, instead of the incremental triage. Writes only new events. Use after a standalone "
-    "`fundamentals-facts -F`.",
-)
 
 
 @click.group(cls=SpecialHelpOrder)
@@ -178,7 +198,7 @@ def _extraction_status_report(context: Context, *, as_of: pd.Timestamp | None = 
 
 @cli.command(name="extraction-status", help="Report every schema-declared extraction table's freshness (JSON); RED tables warn, the exit code is 0.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@AS_OF_OPTION
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 def extraction_status(config_path: str, as_of: datetime | None) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
     report = _extraction_status_report(context, as_of=_run_date(as_of))
@@ -186,14 +206,14 @@ def extraction_status(config_path: str, as_of: datetime | None) -> None:
 
 
 # --- Universe seed (must run first; everything else resolves the universe from it) ---
-@cli.command(help="Seed the sp500_tickers universe (idempotent; scrapes only if empty or --refresh).", help_priority=1)
+@cli.command(help="Seed the sp500_tickers universe (idempotent; scrapes only if empty or --full).", help_priority=1)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option("--refresh", is_flag=True, default=False, help="Re-scrape the S&P 500 even if populated.")
-@AS_OF_OPTION
-def seed_universe(config_path: str, refresh: bool, as_of: datetime | None) -> None:
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+def seed_universe(config_path: str, full: bool, as_of: datetime | None) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
-    if refresh or context.store.row_count(Tables.sp500_tickers) == 0:
-        context.log.info(f"Seeding {Tables.sp500_tickers} via the S&P 500 scraper (refresh={refresh})")
+    if full or context.store.row_count(Tables.sp500_tickers) == 0:
+        context.log.info(f"Seeding {Tables.sp500_tickers} via the S&P 500 scraper (full={full})")
         get_sp500_tickers(context, as_of=_run_date(as_of))
     context.log.info("Universe ready: %d tickers.", len(load_universe_tickers(context)))
     # A wrong CIK is invisible downstream (prices key on the ticker), so it is reported here; warned, not raised,
@@ -217,7 +237,7 @@ def seed_universe(config_path: str, refresh: bool, as_of: datetime | None) -> No
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-@AS_OF_OPTION
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 def price_history(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
     """`--full` re-pulls the whole window for every requested ticker; new tickers, holes and splits need no flag."""
     _, context = get_config_context(config_path, use_cache=False, save=False)
@@ -235,8 +255,8 @@ def price_history(config_path: str, tickers: str | None, full: bool, as_of: date
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-@click.option("--repair-gaps", "repair", is_flag=True, default=False, help="Also re-read every day a key misses inside its stored span (one-time).")
-@AS_OF_OPTION
+@click.option(*REPAIR_GAPS_ARGS, **REPAIR_GAPS_KWARGS)
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 def short_interest(config_path: str, tickers: str | None, full: bool, repair: bool, as_of: datetime | None) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
     years_history = int(context.config.data_extract.years_history)
@@ -251,7 +271,7 @@ def short_interest(config_path: str, tickers: str | None, full: bool, repair: bo
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-@AS_OF_OPTION
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 def fails_to_deliver(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_fails_to_deliver(context, tickers=_tickers(context, tickers), full=full, as_of=_run_date(as_of))
@@ -268,15 +288,8 @@ def macro(config_path: str) -> None:
 @cli.command(help="13F institutional holdings (EDGAR by filing date + OpenFIGI cusip map). HEAVY.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option(
-    "--filing-window",
-    default=None,
-    metavar="FROM:TO",
-    help="BACKFILL a lost filing season, e.g. 2024-01-01:2024-03-01. Replaces the "
-    "watermark and advances nothing -- a gap BEHIND max(filing_date) is "
-    "unreachable by the normal 7-day lookback. ONE EDGAR WALK AT A TIME.",
-)
-@AS_OF_OPTION
+@click.option(*FILING_WINDOW_ARGS, **FILING_WINDOW_KWARGS)
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 def thirteen_f(config_path: str, tickers: str | None, filing_window: str | None, as_of: datetime | None) -> None:
     """`tickers` is the universe the CUSIP map is resolved against, so it is always passed (never None).
     A `-t` run reads no filing past the stored frontier, so it leaves the next window unchanged."""
@@ -303,7 +316,7 @@ def thirteen_f(config_path: str, tickers: str | None, filing_window: str | None,
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-@AS_OF_OPTION
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 def thirteen_f_backfill(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
     """Tickers added inside `sec13f_hr`'s overlap: discover from 2013 Q2, skipping verified completed accessions.
     `-t X` narrows the new tickers (an established X does nothing); `-t X -F` re-reads every data set for X."""
@@ -314,15 +327,15 @@ def thirteen_f_backfill(config_path: str, tickers: str | None, full: bool, as_of
 @cli.command(name="thirteen-f-managers", help="FULL 13F portfolios of the superinvestor roster (all securities, CUSIP grain).")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*YEARS_ARGS, **YEARS_KWARGS)
-@click.option("--vintages", is_flag=True, help="Preserve explicit accession versions; legacy sinks are untouched.")
-@click.option("--cik", "ciks", multiple=True)
-@click.option("--accession", "accessions", multiple=True)
-@click.option("--period-start", type=str)
-@click.option("--period-end", type=str)
-@click.option("--filed-through", type=str)
-@click.option("--max-filings", type=int)
-@click.option("--archive", "archives", multiple=True, type=click.Path(exists=True, path_type=Path))
-@click.option("--dry-run", is_flag=True)
+@click.option(*VINTAGES_ARGS, **VINTAGES_KWARGS)
+@click.option(*CIK_ARGS, **CIK_KWARGS)
+@click.option(*ACCESSION_ARGS, **ACCESSION_KWARGS)
+@click.option(*PERIOD_START_ARGS, **PERIOD_START_KWARGS)
+@click.option(*PERIOD_END_ARGS, **PERIOD_END_KWARGS)
+@click.option(*FILED_THROUGH_ARGS, **FILED_THROUGH_KWARGS)
+@click.option(*MAX_FILINGS_ARGS, **MAX_FILINGS_KWARGS)
+@click.option(*ARCHIVE_ARGS, **ARCHIVE_KWARGS)
+@click.option(*DRY_RUN_ARGS, **DRY_RUN_KWARGS)
 def thirteen_f_managers(
     config_path: str,
     years: int | None,
@@ -385,8 +398,8 @@ def superinvestors(config_path: str, full: bool) -> None:
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-@AS_OF_OPTION
-@NO_CAP_OPTION
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+@click.option(*NO_CAP_ARGS, **NO_CAP_KWARGS)
 def fundamentals_facts(config_path: str, tickers: str | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
     config, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_fundamentals_sec(
@@ -422,21 +435,15 @@ def fundamentals_employees(config_path: str, tickers: str | None, full: bool) ->
     name="fundamentals-history-sec",
     help="fundamentals_facts -> fundamentals_history_sec + _reason_codes, on the "
     "publication-event grain. No network. Append-only: refuses to overwrite "
-    "an already-published row unless --rebuild-history is passed.",
+    "an already-published row unless --full deletes the requested tickers' history and reason codes first. Stored facts are unchanged; use `fundamentals --rebuild` for a facts-resolution bug.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option(
-    "--rebuild-history",
-    is_flag=True,
-    help="Delete these tickers' fundamentals_history_sec / _reason_codes rows and "
-    "rebuild from the facts ALREADY STORED. For a bug in the history layer; "
-    "costs no network. (Use `fundamentals --rebuild` for a resolution bug.)",
-)
-@VERIFY_HISTORY_OPTION
-def fundamentals_history_sec(config_path: str, tickers: str | None, rebuild_history: bool, verify_history: bool) -> None:
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+@click.option(*VERIFY_HISTORY_ARGS, **VERIFY_HISTORY_KWARGS)
+def fundamentals_history_sec(config_path: str, tickers: str | None, full: bool, verify_history: bool) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
-    build_fundamentals_history(context, tickers=_tickers(context, tickers), rebuild_history=rebuild_history, verify_history=verify_history)
+    build_fundamentals_history(context, tickers=_tickers(context, tickers), rebuild_history=full, verify_history=verify_history)
 
 
 def _delete_fundamentals_layers(context: Context, names: list[str]) -> None:
@@ -454,19 +461,11 @@ def _delete_fundamentals_layers(context: Context, names: list[str]) -> None:
 @cli.command(help="Both fundamentals layers in order: facts (network) then history (replay).")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option(
-    "--rebuild",
-    is_flag=True,
-    help="Delete these tickers' rows from BOTH layers and refetch every filing. "
-    "For a bug in the RESOLUTION layer, where the stored facts are themselves "
-    "wrong. A deleted ticker looks exactly like a never-fetched one to the "
-    "fetcher's accession-set resume, so there is no third state to reason "
-    "about. There is no build_version column: the rebuild IS the version.",
-)
+@click.option(*REBUILD_ARGS, **REBUILD_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-@VERIFY_HISTORY_OPTION
-@AS_OF_OPTION
-@NO_CAP_OPTION
+@click.option(*VERIFY_HISTORY_ARGS, **VERIFY_HISTORY_KWARGS)
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+@click.option(*NO_CAP_ARGS, **NO_CAP_KWARGS)
 def fundamentals(
     config_path: str, tickers: str | None, rebuild: bool, full: bool, verify_history: bool, as_of: datetime | None, no_cap: bool
 ) -> None:
@@ -498,7 +497,7 @@ def fundamentals(
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-@AS_OF_OPTION
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 def fundamentals_sharadar(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
     """Delegates to `StepExtractFundamentalsSharadar` so the dependency order, ending with the merge, lives in one place."""
     config, context = get_config_context(config_path, use_cache=False, save=False)
@@ -519,7 +518,7 @@ def sharadar_tickers(config_path: str) -> None:
 @cli.command(name="sharadar-actions", help="Sharadar corporate actions (dividends, splits, spinoffs, acquisitions, relations) -> sharadar_actions.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-@AS_OF_OPTION
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 def sharadar_actions(config_path: str, full: bool, as_of: datetime | None) -> None:
     config, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_sharadar_actions(context, full=full, years_history=int(config.data_extract.sharadar_years_history), as_of=_run_date(as_of))
@@ -563,22 +562,16 @@ def fundamentals_history_merged(config_path: str, tickers: str | None, full: boo
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option("--out", "report_path", default=GAP_REPORT_PATH, show_default=True, help="Where to write the findings markdown.")
-@click.option(
-    "--propose",
-    is_flag=True,
-    help="Merge candidate entries into sharadar_source_overrides.json with "
-    "`approved: null`. They change NOTHING until a human adjudicates them, "
-    "and an entry that already exists is never touched.",
-)
-def sharadar_gap_check(config_path: str, tickers: str | None, report_path: str, propose: bool) -> None:
+@click.option(*REPORT_PATH_ARGS, **REPORT_PATH_KWARGS)
+@click.option(*PROPOSE_ARGS, **PROPOSE_KWARGS)
+def sharadar_gap_check(config_path: str, tickers: str | None, report_path: str | None, propose: bool) -> None:
     """Read-only Sharadar-vs-SEC disagreement report; reason codes stay with the SEC table and do not gate `fundamentals_history`.
 
     `--tickers` defaults to every stored ticker, not the sp500 universe. Never imports `src/validate/`.
     """
     _, context = get_config_context(config_path, use_cache=False, save=False)
     names = [t.strip().upper() for t in tickers.split(",") if t.strip()] if tickers else None
-    run_gap_check(context, tickers=names, report_path=report_path, propose_overrides=propose, config_dir=config_path)
+    run_gap_check(context, tickers=names, report_path=report_path or GAP_REPORT_PATH, propose_overrides=propose, config_dir=config_path)
 
 
 @cli.command(help="Earnings surprises -> historical forward P/E.")
@@ -589,20 +582,15 @@ def earnings_surprises(config_path: str, tickers: str | None) -> None:
     fetch_earnings_surprises(context, tickers=_tickers(context, tickers), years_history=int(config.data_extract.years_history))
 
 
-@cli.command(help="SEC Financial Statement Data Sets -> pension_facts (num/sub XBRL). SEC-bulk.")
+@cli.command(help="SEC Financial Statement Data Sets -> pension_facts (num/sub XBRL). SEC-bulk. --full re-parses every cached period.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option(
-    "--reparse",
-    is_flag=True,
-    default=False,
-    help="Re-read every cached period even when already ingested. For a PARSE change -- a new column, or a registrant-resolution change -- not a data change. Nothing is re-downloaded.",
-)
-@AS_OF_OPTION
-def financial_statements(config_path: str, tickers: str | None, reparse: bool, as_of: datetime | None) -> None:
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+def financial_statements(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
     config, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_financial_statements(
-        context, tickers=_tickers(context, tickers), years_history=int(config.data_extract.years_history), reparse=reparse, as_of=_run_date(as_of)
+        context, tickers=_tickers(context, tickers), years_history=int(config.data_extract.years_history), reparse=full, as_of=_run_date(as_of)
     )
 
 
@@ -615,36 +603,30 @@ def financial_statements(config_path: str, tickers: str | None, reparse: bool, a
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option(
-    "--reparse",
-    is_flag=True,
-    default=False,
-    help="Re-read every cached quarter even when already ingested (implied by -F). For a PARSE change (a new column), not a data change -- nothing is re-downloaded.",
-)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-@AS_OF_OPTION
-@NO_CAP_OPTION
-def insider_transactions(config_path: str, tickers: str | None, reparse: bool, full: bool, as_of: datetime | None, no_cap: bool) -> None:
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+@click.option(*NO_CAP_ARGS, **NO_CAP_KWARGS)
+def insider_transactions(config_path: str, tickers: str | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
     config, context = get_config_context(config_path, use_cache=False, save=False)
     names = _tickers(context, tickers)
     years_history = int(config.data_extract.years_history)
-    _insider_zip(context, names, years_history, reparse=reparse or full, as_of=as_of)
+    _insider_zip(context, names, years_history, reparse=full, as_of=as_of)
     _insider_edgar(context, names, years_history, full=full, as_of=as_of, no_cap=no_cap)
 
 
 @cli.command(
     name="insider-zip",
     help="The zip half of `insider-transactions` alone: the pending quarterly Forms 3/4/5 zips (a new ticker also re-parses "
-    "the cached zips). The DAG runs it in the sec_bulk pool, after `identity-propagate` and before `insider-edgar`.",
+    "the cached zips). --full re-parses every cached quarter without an EDGAR walk. "
+    "The DAG runs it in the sec_bulk pool, after `identity-propagate` and before `insider-edgar`.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option("--reparse", is_flag=True, default=False, help="Re-read every cached quarter even when already ingested (implied by -F).")
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-@AS_OF_OPTION
-def insider_zip(config_path: str, tickers: str | None, reparse: bool, full: bool, as_of: datetime | None) -> None:
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+def insider_zip(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
     config, context = get_config_context(config_path, use_cache=False, save=False)
-    _insider_zip(context, _tickers(context, tickers), int(config.data_extract.years_history), reparse=reparse or full, as_of=as_of)
+    _insider_zip(context, _tickers(context, tickers), int(config.data_extract.years_history), reparse=full, as_of=as_of)
 
 
 @cli.command(
@@ -655,8 +637,8 @@ def insider_zip(config_path: str, tickers: str | None, reparse: bool, full: bool
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-@AS_OF_OPTION
-@NO_CAP_OPTION
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+@click.option(*NO_CAP_ARGS, **NO_CAP_KWARGS)
 def insider_edgar(config_path: str, tickers: str | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
     config, context = get_config_context(config_path, use_cache=False, save=False)
     _insider_edgar(context, _tickers(context, tickers), int(config.data_extract.years_history), full=full, as_of=as_of, no_cap=no_cap)
@@ -687,7 +669,7 @@ def insider_download(config_path: str) -> None:
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-@AS_OF_OPTION
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 def ftd_download(config_path: str, full: bool, as_of: datetime | None) -> None:
     """`--full` re-reads every listed period and replaces the raw table; the default reads the periods no stored line
     carries, plus every cached period for the symbols and CUSIP-6 prefixes whose lineage or master rows changed recently."""
@@ -709,13 +691,7 @@ def sec_tickers(config_path: str) -> None:
     "and the DB, no network. Run after `insider-download`, `notes-download`, `ftd-download` and `sec-tickers`.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option(
-    "--approve-rekey",
-    "approved_rekeys",
-    multiple=True,
-    metavar="OLD_ENTITY_ID:NEW_ENTITY_ID",
-    help="Apply one exact older-CIK entity-id change that the build excluded and backlogged (WARNING log).",
-)
+@click.option(*APPROVE_REKEY_ARGS, **APPROVE_REKEY_KWARGS)
 def identity_tables(config_path: str, approved_rekeys: tuple[str, ...]) -> None:
     """Builds `symbol_tenure`, `entity_lineage` then `security_master` together: lineage candidates are read off
     tenure and the master's issuers off the lineage, so a stale input silently narrows the next. Market-wide:
@@ -751,48 +727,34 @@ def identity_tables(config_path: str, approved_rekeys: tuple[str, ...]) -> None:
     "ticker's entity (one WARNING per table), re-parse notes, pension and insider bulk from cache, "
     "re-stamp the FTD and short-volume rows of companies whose security_master rows changed, rebuild purged "
     "tickers' history -- for the tickers whose lineage changed in the last 7 days (the re-check window). OFFLINE. "
+    "--full re-checks every requested ticker regardless of its lineage stamp and re-stamps every company's tape rows. "
     "Run after `identity-tables`; EDGAR tables list a new CIK's filings in their own fetchers.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option("--dry-run", is_flag=True, help="List the pending removals (table, ticker, cik, window, rows); delete, re-parse and rebuild nothing.")
-@click.option(
-    "--every-ticker",
-    is_flag=True,
-    help="Re-check every ticker whatever its lineage stamp, and re-stamp every company's tape rows: for a config-only "
-    "identity change (a deferral, a co-registrant, a form policy) that moves no stamp.",
-)
-@AS_OF_OPTION
-def identity_propagate(config_path: str, tickers: str | None, dry_run: bool, every_ticker: bool, as_of: datetime | None) -> None:
+@click.option(*DRY_RUN_ARGS, **DRY_RUN_KWARGS)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+def identity_propagate(config_path: str, tickers: str | None, dry_run: bool, full: bool, as_of: datetime | None) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
-    result = propagate_identity(context, _tickers(context, tickers), dry_run=dry_run, every_ticker=every_ticker, as_of=_run_date(as_of))
+    result = propagate_identity(context, _tickers(context, tickers), dry_run=dry_run, every_ticker=full, as_of=_run_date(as_of))
     if dry_run:
         click.echo(result.removals.to_string(index=False) if not result.removals.empty else "identity-propagate: no pending removals")
 
 
-@cli.command(help="SEC Financial Statement & NOTES sets -> notes_num / notes_text. VERY HEAVY.")
+@cli.command(help="SEC Financial Statement & NOTES sets -> notes_num / notes_text. VERY HEAVY. --full re-parses every cached period.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option(
-    "--reparse",
-    is_flag=True,
-    default=False,
-    help="Re-read every cached period even when already ingested. For a PARSE change -- a new column, or a registrant-resolution change -- not a data change. Nothing is re-downloaded.",
-)
-@click.option(
-    "--repair-availability",
-    is_flag=True,
-    default=False,
-    help="Rewrite notes available_at metadata using the historical estimate or cached download date; do not reparse ZIPs.",
-)
-@AS_OF_OPTION
-def financial_notes(config_path: str, tickers: str | None, reparse: bool, repair_availability: bool, as_of: datetime | None) -> None:
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+@click.option(*REPAIR_AVAILABILITY_ARGS, **REPAIR_AVAILABILITY_KWARGS)
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+def financial_notes(config_path: str, tickers: str | None, full: bool, repair_availability: bool, as_of: datetime | None) -> None:
     config, context = get_config_context(config_path, use_cache=False, save=False)
     fetch_financial_notes(
         context,
         tickers=_tickers(context, tickers),
         years_history=int(config.data_extract.years_history),
-        reparse=reparse,
+        reparse=full,
         repair_availability=repair_availability,
         as_of=_run_date(as_of),
     )
@@ -827,8 +789,8 @@ def def14a(config_path: str, tickers: str | None, full: bool) -> None:
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*YEARS_ARGS, **YEARS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-@AS_OF_OPTION
-@NO_CAP_OPTION
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+@click.option(*NO_CAP_ARGS, **NO_CAP_KWARGS)
 def sec_8k_items(config_path: str, tickers: str | None, years: int | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
     _run_document_command(config_path, tickers, years, SEC_8K_FETCH, full=full, as_of=as_of, no_cap=no_cap)
 
@@ -846,8 +808,8 @@ def sec_8k_votes(config_path: str, tickers: str | None) -> None:
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*YEARS_ARGS, **YEARS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-@AS_OF_OPTION
-@NO_CAP_OPTION
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+@click.option(*NO_CAP_ARGS, **NO_CAP_KWARGS)
 def sec_13d(config_path: str, tickers: str | None, years: int | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
     _run_document_command(config_path, tickers, years, SEC_13D_FETCH, full=full, as_of=as_of, no_cap=no_cap)
 
@@ -857,8 +819,8 @@ def sec_13d(config_path: str, tickers: str | None, years: int | None, full: bool
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*YEARS_ARGS, **YEARS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-@AS_OF_OPTION
-@NO_CAP_OPTION
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+@click.option(*NO_CAP_ARGS, **NO_CAP_KWARGS)
 def sec_13g(config_path: str, tickers: str | None, years: int | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
     """Passive counterpart of `sec-13d`. A schedule a universe company only FILED is stored as an empty-filing marker under it."""
     _run_document_command(config_path, tickers, years, SEC_13G_FETCH, full=full, as_of=as_of, no_cap=no_cap)
@@ -869,8 +831,8 @@ def sec_13g(config_path: str, tickers: str | None, years: int | None, full: bool
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*YEARS_ARGS, **YEARS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-@AS_OF_OPTION
-@NO_CAP_OPTION
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+@click.option(*NO_CAP_ARGS, **NO_CAP_KWARGS)
 def filing_text(config_path: str, tickers: str | None, years: int | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
     _run_document_command(config_path, tickers, years, FILING_TEXT_FETCH, full=full, as_of=as_of, no_cap=no_cap)
 
@@ -880,8 +842,8 @@ def filing_text(config_path: str, tickers: str | None, years: int | None, full: 
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*YEARS_ARGS, **YEARS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-@AS_OF_OPTION
-@NO_CAP_OPTION
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+@click.option(*NO_CAP_ARGS, **NO_CAP_KWARGS)
 def def14a_edgar(config_path: str, tickers: str | None, years: int | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
     _run_document_command(config_path, tickers, years, DEF14A_EDGAR_FETCH, full=full, as_of=as_of, no_cap=no_cap)
 
@@ -904,16 +866,18 @@ def _run_document_command(
 
 # --- EDGAR index, work-list dry run and empty-filing markers ---
 @cli.command(
-    name="edgar-index", help="Download the local EDGAR filing index (closed quarters once, the current quarter again) and print rows per quarter."
+    name="edgar-index",
+    help="Download the local EDGAR filing index (closed quarters once, the current quarter again) and print rows per quarter. "
+    "--full downloads every quarter again.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option("--build", is_flag=True, default=False, help="Download every quarter of the window again, closed ones included.")
-@AS_OF_OPTION
-def edgar_index_command(config_path: str, build: bool, as_of: datetime | None) -> None:
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+def edgar_index_command(config_path: str, full: bool, as_of: datetime | None) -> None:
     """One EDGAR walk: run it alone. The first build fetches about 128 quarters."""
     config, context = get_config_context(config_path, use_cache=False, save=False)
     context.ensure_edgar_identity()
-    edgar_index.refresh(context, _run_date(as_of), int(config.data_extract.years_history), rebuild=build)
+    edgar_index.refresh(context, _run_date(as_of), int(config.data_extract.years_history), rebuild=full)
     for quarter, n_rows in edgar_index.quarter_counts(context).items():
         click.echo(f"{quarter}\t{n_rows}")
 
@@ -935,9 +899,9 @@ def _document_fetches(context: Context, tickers: list[str]) -> dict[str, EdgarFe
 @cli.command(name="resume-plan", help="READ-ONLY: each EDGAR document table's work list for the run date, by key class, from the cached index.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option("--table", "table_name", default=None, help="One done table (e.g. sec_8k); default: every document table.")
-@click.option("--timings", is_flag=True, default=False, help="Also print the plan-read timings.")
-@AS_OF_OPTION
+@click.option(*TABLE_ARGS, **TABLE_KWARGS)
+@click.option(*TIMINGS_ARGS, **TIMINGS_KWARGS)
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 def resume_plan(config_path: str, tickers: str | None, table_name: str | None, timings: bool, as_of: datetime | None) -> None:
     config, context = get_config_context(config_path, use_cache=False, save=False)
     names = _tickers(context, tickers)
@@ -964,9 +928,9 @@ def resume_plan(config_path: str, tickers: str | None, table_name: str | None, t
 
 @cli.command(help="Count (or, for a rollback only, delete) empty-filing marker rows by their declared sentinel.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option("--table", "table_name", default=None, help="One marker table; default: every table that declares a marker.")
-@click.option("--count", "count_only", is_flag=True, default=False, help="Count only (the default without --delete).")
-@click.option("--delete", "delete", is_flag=True, default=False, help="Delete the marker rows (rollback only).")
+@click.option(*TABLE_ARGS, **TABLE_KWARGS)
+@click.option(*COUNT_ARGS, **COUNT_KWARGS)
+@click.option(*DELETE_ARGS, **DELETE_KWARGS)
 def markers(config_path: str, table_name: str | None, count_only: bool, delete: bool) -> None:
     if count_only and delete:
         raise click.UsageError("--count and --delete are exclusive")

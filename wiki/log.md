@@ -415,3 +415,11 @@ Updated only the [insider aggregate contract](./modules/data-aggregate.md#inside
 - Evidence: local ignored reports/validate/2026-10-12-13f-legacy-parser-errors/ records 431 passing regression tests, four optional skips, 178 focused independent checks, 74 ordinary saver controls and independent domain validation of 111 accessions/47,259 positions per destination with fourteen causal prefixes and zero findings. Exact pinned checks pass. Failed source-accounting iterations remain preserved.
 - Limits: production validation abstains because the scoped old holdings lack verified accessions; no production source or cube rebuild occurred. The five-book cached benchmark adds about 0.052s of source checking and does not establish full-history throughput. Minor unsupported text layouts and independent-oracle gaps remain explicit.
 - Planned only: filing-date history from 1999-04-01, HR/HR-A only, EDGAR before ZIP/XML coverage and normal completion of old gaps, missing originals and missing roster copies behind later frontiers. Runtime starts in 2013 until that separate phase is implemented.
+
+## 2026-10-13: refresh — extraction CLI options
+
+- Profile: internal/standard
+- source_commit: 95cc128343f1124f8bd7c8d68e9f26c2ee2868f5 (working-tree CLI refactor)
+- Coverage: every extraction option is declared in the shared constants module and applied directly as an ARGS/KWARGS pair. Full input processing uses `-F` / `--full`; destructive facts recovery retains `fundamentals --rebuild`. ZIP-only insider replay uses `insider-zip -F`; gap-check output uses `--report`. Source operations retain their existing behavior.
+- Pages: [Constants and configuration](./modules/constants-and-configuration.md), [Run the pipeline](./guides/run-the-pipeline.md), [Recovery guide](./guides/large-backfills-and-recovery.md), [Data extraction](./modules/data-extract.md), [Configuration](./reference/configuration.md), [Data sources](./reference/data-sources.md), and [TODO](./TODO.md).
+- Validation: 39 focused CLI and DAG tests pass, with zero live-write attempts. All 165 option decorators use the shared declarations; all 43 command help pages render and their option names match callback signatures. Pyright reports zero errors. Ruff is not installed; no production fetch, source-table write or backfill ran.

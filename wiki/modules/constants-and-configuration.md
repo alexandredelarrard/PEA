@@ -23,7 +23,7 @@ Configuration is an OmegaConf tree assembled from every YAML file under `configs
 
 - `read_config(path)` in [utils/config.py](../../src/utils/config.py).
 - `get_config_context()` in [context.py](../../src/context.py).
-- Shared Click option tuples in [command_line_interface.py](../../src/constants/command_line_interface.py).
+- Shared Click option specifications in [command_line_interface.py](../../src/constants/command_line_interface.py). Every extraction option uses `@click.option(*NAME_ARGS, **NAME_KWARGS)` directly; heterogeneous keyword dictionaries are typed there, with no aliases or casts in the extraction CLI. `-F` / `--full` selects complete input processing; `fundamentals --rebuild` separately deletes stored facts before refetching. Gap-check reports use `--report`.
 - Named market-series registries such as `MACRO_MARKET_SERIES` in [constants_price.py](../../src/constants/constants_price.py).
 
 ## Key files

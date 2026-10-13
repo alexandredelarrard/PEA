@@ -49,7 +49,7 @@ Curated evidence registers under [configs/sec](../../configs/sec/) are versioned
 - [vendor_coverage_exceptions.json](../../configs/sec/vendor_coverage_exceptions.json): `exceptions`, one accession-exact row per Sharadar quarter missing at a CIK cutover while the SEC filing exists (`ticker`, `quarter`, `period_end`, `cik`, `accession`, `filed`, `label`). An unrecorded missing quarter fails the continuity check, and so does a row whose quarter is present again (healed): delete it.
 - [expected_lineage_changes.json](../../configs/sec/expected_lineage_changes.json): `hypotheses` the identity regression gate checks against the rows it computes at a cutover.
 
-Runtime readers consume their validated/materialized representation where available; do not merge these concepts into one register. Every identity edit needs SEC evidence with an accession, then `identity-tables` and `identity-propagate` (`--every-ticker` when the edit moves no lineage stamp; see the [run guide](../guides/run-the-pipeline.md#registrant-boundaries)).
+Runtime readers consume their validated/materialized representation where available; do not merge these concepts into one register. Every identity edit needs SEC evidence with an accession, then `identity-tables` and `identity-propagate` (`--full` when the edit moves no lineage stamp; see the [run guide](../guides/run-the-pipeline.md#registrant-boundaries)).
 
 Identity rules that live in code, not YAML:
 

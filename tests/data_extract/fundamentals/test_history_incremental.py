@@ -399,7 +399,7 @@ def test_rebuild_history_deletes_and_replays_in_full(sqlite_store: Any, snapshot
     restored = history.loc[pd.to_datetime(history["as_of"]) == pd.Timestamp("2023-08-01"), "totalAssets"].iloc[0]
     assert len(snapshots) == 4 and restored == 1001.0 and len(history) == 4, (len(snapshots), restored)
     assert "TST REBUILT -- 4 row(s) deleted and recomputed" in caplog.text
-    print("\n=== SANITY CHECK: --rebuild-history ===")
+    print("\n=== SANITY CHECK: fundamentals-history-sec --full ===")
     print(f"  tampered 999 -> {restored} after delete + {len(snapshots)}-event replay; the REBUILT warning is logged. Validated.")
 
 

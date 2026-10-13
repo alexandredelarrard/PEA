@@ -185,10 +185,10 @@ def test_f109_f115_identity_propagate_every_ticker_and_notes_download_years_reac
     )
     monkeypatch.setattr(cli_mod, "download_financial_notes", lambda context, **kwargs: calls.append(("notes", kwargs)) or 0)
 
-    assert CliRunner().invoke(cli_mod.cli, ["identity-propagate", "--every-ticker", "--dry-run"]).exit_code == 0
+    assert CliRunner().invoke(cli_mod.cli, ["identity-propagate", "--full", "--dry-run"]).exit_code == 0
     assert CliRunner().invoke(cli_mod.cli, ["identity-propagate"]).exit_code == 0
     assert CliRunner().invoke(cli_mod.cli, ["notes-download"]).exit_code == 0
     assert [kwargs.get("every_ticker") for name, kwargs in calls if name == "propagate"] == [True, False]
     assert [kwargs for name, kwargs in calls if name == "notes"] == [{"years_history": 31, "full": False}]
     print("\n=== SANITY CHECK: F-109 / F-115 CLI wiring ===")
-    print("  identity-propagate --every-ticker reaches propagate_identity(every_ticker=True); notes-download passes years_history 31")
+    print("  identity-propagate --full reaches propagate_identity(every_ticker=True); notes-download passes years_history 31")

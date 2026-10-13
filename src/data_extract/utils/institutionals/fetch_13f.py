@@ -57,10 +57,9 @@ from src.utils.universe import load_universe_tickers
 
 logger = logging.getLogger(__name__)
 _CHECKED = r"(?:\[\s*[xX]\s*\]|\{\s*[xX]\s*\}|\(\s*[xX]\s*\))"
-#: A checked legacy report-type box; its group is the report type as printed.
+#: A checked legacy report-type box; its group is the report type as printed. Its presence with the cover total lets
+#: the information-table text stand in for the full submission.
 _CHECKED_REPORT = re.compile(_CHECKED + r"\s*(13\s*F\s+(?:HOLDINGS|COMBINATION|NOTICE)\s+REPORT)", re.I)
-#: The checked report type that lets the information-table text stand in for the full submission.
-_BRACKET_CHECKED_REPORT = re.compile(r"\[\s*[xX]\s*\]\s*13F\s+(?:HOLDINGS|COMBINATION|NOTICE)\s+REPORT", re.I)
 
 #: The sleeper between retry rounds; tests replace it.
 _sleep: Callable[[float], None] = time.sleep
@@ -748,8 +747,8 @@ def read_filing_vintage(stamp: FilingStamp) -> tuple[pd.DataFrame, pd.DataFrame]
             return _empty_xml_vintage(stamp, sec_call(stamp.filing.xml, label=f"{stamp.accession_number} cover XML"))
         if not xml:
             raw = sec_call(getattr, report, "infotable_txt", None, label=f"{stamp.accession_number} infotable_txt")
-            # The information-table text alone serves when it carries the cover total and a [x]-checked report type.
-            if not raw or not (_VALUE_TOTAL.search(raw) or _FOOTER_TOTAL.search(raw)) or not _BRACKET_CHECKED_REPORT.search(raw):
+            # The information-table text alone serves when it carries the cover total and a checked report type.
+            if not raw or not (_VALUE_TOTAL.search(raw) or _FOOTER_TOTAL.search(raw)) or not _CHECKED_REPORT.search(raw):
                 raw = sec_call(stamp.filing.full_text_submission, label=f"{stamp.accession_number} full legacy submission")
             if not raw:
                 raise ValueError("13F legacy information table is missing")

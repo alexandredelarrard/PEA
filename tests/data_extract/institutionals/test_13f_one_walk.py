@@ -715,6 +715,19 @@ class _DeclaredXmlFiling(_FakeFiling):
         return cover.replace(f"<tableValueTotal>{sum(r['VALUE'] for r in self.lines)}<", f"<tableValueTotal>{self.value:g}<")
 
 
+@dataclass
+class _NoInfoTableXmlFiling(_DeclaredXmlFiling):
+    """An XML-era filing with a cover XML but no information-table attachment; the full submission
+    carries only the cover XML, which the legacy text regexes cannot read."""
+
+    def obj(self) -> Any:
+        self.reads.append(self.accession_number)
+        return SimpleNamespace(infotable=None, infotable_xml=None, infotable_txt=None, primary_form_information=object(), total_holdings=self.entries)
+
+    def full_text_submission(self) -> str:
+        return "<SEC-DOCUMENT>\n<TYPE>13F-HR\n<XML>\n" + self.xml() + "\n</XML>\n</SEC-DOCUMENT>"
+
+
 _ZERO_TOTAL_KINDS = ("synthetic_table_total_0_0", "synthetic_bare_zero_row", "synthetic_total_outside_table")
 
 
@@ -737,6 +750,8 @@ def _empty_cover_filing(kind: str) -> _FakeFiling:
     accession = "0000000001-01-000123"
     if kind == "xml_0_0":
         return _FakeFiling(ROSTER, "2026-05-15", "2026-03-31", [], accession=accession)
+    if kind == "xml_no_information_table":
+        return _NoInfoTableXmlFiling(ROSTER, "2026-05-15", "2026-03-31", [], accession=accession)
     if kind in _ZERO_TOTAL_KINDS:
         return _TextFiling(ROSTER, "2005-10-31", "2005-09-30", [], accession=accession, raw=_zero_total_raw(kind))
     covers = {"text_count_0": ("0", "0"), "text_count_0_no_total": ("0", None), "text_total_0_no_count": (None, "0")}
@@ -748,7 +763,9 @@ def _markers(store: Any, table: Any, accession: str) -> pd.DataFrame:
     return pd.DataFrame() if df is None else df.loc[df.accession_number.eq(accession)]
 
 
-@pytest.mark.parametrize("kind", ["xml_0_0", "text_count_0", "text_count_0_no_total", "text_total_0_no_count", *_ZERO_TOTAL_KINDS])
+@pytest.mark.parametrize(
+    "kind", ["xml_0_0", "xml_no_information_table", "text_count_0", "text_count_0_no_total", "text_total_0_no_count", *_ZERO_TOTAL_KINDS]
+)
 def test_empty_cover_is_silent_and_marked_once(sqlite_store, monkeypatch, caplog, kind):
     """`synthetic_*`: SYNTHETIC zero total rows (no CUSIP, every amount 0) under a real 0/0 cover."""
     filing = _empty_cover_filing(kind)
@@ -783,13 +800,16 @@ def test_empty_cover_is_silent_and_marked_once(sqlite_store, monkeypatch, caplog
     )
 
 
-@pytest.mark.parametrize("kind", ["text", "xml"])
+@pytest.mark.parametrize("kind", ["text", "xml", "xml_no_information_table", "xml_no_information_table_count_0_value"])
 def test_nonzero_cover_zero_lines_fails_loudly(sqlite_store, monkeypatch, caplog, kind):
     accession = "0000000001-01-000456"
     if kind == "text":
         filing: _FakeFiling = _TextFiling(ROSTER, "2001-05-15", "2001-03-31", [], accession=accession, raw=_legacy_cover("2", "1,500"))
-    else:
+    elif kind == "xml":
         filing = _DeclaredXmlFiling(ROSTER, "2026-05-15", "2026-03-31", [], accession=accession, entries=2, value=1_500.0)
+    else:
+        entries = 2 if kind == "xml_no_information_table" else 0
+        filing = _NoInfoTableXmlFiling(ROSTER, "2026-05-15", "2026-03-31", [], accession=accession, entries=entries, value=1_500.0)
     _seed_roster(sqlite_store, [ROSTER])
     _patch_walk(monkeypatch, [filing])
 

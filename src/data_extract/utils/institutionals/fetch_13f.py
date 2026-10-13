@@ -110,6 +110,9 @@ _IMPLIED_PRICE_BAND = (1.0, 5000.0)
 _MAX_POSITION_USD = 1e12
 _TABLE_TEXT_IN_NAME = r"\bSH\b.*\bSOLE\b|\d{1,3},\d{3} SH"
 
+#: An EdgarTools VALUE sum within this relative distance of the cover total skips the strict XML re-parse.
+_FAST_VALUE_TOLERANCE = 0.005
+
 #: The five mutually exclusive holding classes, in tie-break order (`common` wins).
 POSITION_TYPES = ("common", "call", "put", "debt", "other")
 
@@ -722,6 +725,8 @@ def read_filing_vintage(stamp: FilingStamp) -> tuple[pd.DataFrame, pd.DataFrame]
     try:
         report = filing_obj(stamp.filing)
         xml = sec_call(getattr, report, "infotable_xml", None, label=f"{stamp.accession_number} infotable_xml")
+        if not xml and getattr(report, "primary_form_information", None) is not None and getattr(report, "total_holdings", None) == 0:
+            return _empty_xml_vintage(stamp, sec_call(stamp.filing.xml, label=f"{stamp.accession_number} cover XML"))
         if not xml:
             raw = sec_call(getattr, report, "infotable_txt", None, label=f"{stamp.accession_number} infotable_txt")
             if (
@@ -738,6 +743,8 @@ def read_filing_vintage(stamp: FilingStamp) -> tuple[pd.DataFrame, pd.DataFrame]
                 raise ValueError("13F legacy information table is missing")
             return text_filing_vintage(raw, stamp)
         primary = sec_call(stamp.filing.xml, label=f"{stamp.accession_number} cover XML")
+        if (fast := _fast_xml_vintage(report, stamp, primary, xml)) is not None:
+            return fast
         return xml_filing_vintage(
             primary,
             xml,
@@ -823,19 +830,8 @@ def text_filing_vintage(raw: str, stamp: FilingStamp) -> tuple[pd.DataFrame, pd.
     )
 
 
-def xml_filing_vintage(
-    primary_xml: str,
-    information_xml: str,
-    *,
-    cik: str,
-    accession_number: str,
-    period: object,
-    filing_date: object,
-    source: str,
-    accepted_at: object = None,
-    expected_form: str | None = None,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Exact original documents, using the same completion and unit contract as bulk sources."""
+def _xml_cover(primary_xml: str, *, period: object, expected_form: str | None) -> tuple[dict[str, Any], str | None]:
+    """The validated cover XML as `filing_vintage` cover keywords, and its `schemaVersion`."""
     root = ElementTree.fromstring(primary_xml)
     fields = {element.tag.rsplit("}", 1)[-1]: (element.text or "").strip() for element in root.iter()}
     # Original SEC XML may omit the false checkbox; only its cover form can establish that default.
@@ -852,27 +848,105 @@ def xml_filing_vintage(
     reported = pd.to_datetime(fields.get("reportCalendarOrQuarter", ""), errors="coerce")
     if pd.isna(reported) or reported.normalize() != pd.Timestamp(period).normalize():
         raise ValueError("13F cover report period disagrees with accession report period")
+    cover = {
+        "amendment_type": fields.get("amendmentType", "") if is_amendment else "original",
+        "declared_rows": int(fields["tableEntryTotal"]),
+        "declared_value": float(fields["tableValueTotal"]),
+        "restricted": fields.get("isConfidentialOmitted", "false").strip().lower() in {"true", "1", "y"},
+        "report_type": fields.get("reportType", ""),
+        "amendment_number": int(fields.get("amendmentNo", "0")),
+    }
+    return cover, fields.get("schemaVersion")
+
+
+def _xml_checksum(primary_xml: str, information_xml: str) -> str:
+    """The source checksum of an XML accession: both original documents, byte for byte."""
+    return hashlib.sha256((primary_xml + "\n" + information_xml).encode()).hexdigest()
+
+
+def xml_filing_vintage(
+    primary_xml: str,
+    information_xml: str,
+    *,
+    cik: str,
+    accession_number: str,
+    period: object,
+    filing_date: object,
+    source: str,
+    accepted_at: object = None,
+    expected_form: str | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Exact original documents, using the same completion and unit contract as bulk sources."""
+    cover, schema = _xml_cover(primary_xml, period=period, expected_form=expected_form)
     info_root = ElementTree.fromstring(information_xml)
     source_count = sum(element.tag.rsplit("}", 1)[-1] == "infoTable" for element in info_root.iter())
     info = parse_infotable_xml(information_xml)
     if source_count != len(info):
         raise ValueError("13F raw XML row count differs from parsed information table")
-    units = resolve_value_units(filing_date, schema_version=fields.get("schemaVersion"))
-    kind = fields.get("amendmentType", "") if is_amendment else "original"
     return filing_vintage(
         info,
         cik=cik,
         accession_number=accession_number,
         period=period,
         filing_date=filing_date,
-        amendment_type=kind,
         source=source,
-        declared_rows=int(fields["tableEntryTotal"]),
-        declared_value=float(fields["tableValueTotal"]),
-        restricted=fields.get("isConfidentialOmitted", "false").strip().lower() in {"true", "1", "y"},
-        report_type=fields.get("reportType", ""),
-        amendment_number=int(fields.get("amendmentNo", "0")),
         accepted_at=accepted_at,
+        units=resolve_value_units(filing_date, schema_version=schema),
+        source_checksum=_xml_checksum(primary_xml, information_xml),
+        **cover,
+    )
+
+
+def _fast_xml_vintage(report: Any, stamp: FilingStamp, primary_xml: str, information_xml: str) -> tuple[pd.DataFrame, pd.DataFrame] | None:
+    """The vintage from EdgarTools' parsed information table, skipping the strict re-parse, when it
+    agrees with the cover: exactly the declared row count, and a VALUE sum within 0.5% of the cover total
+    at exactly one scale f in {1, 1000}, which must be EdgarTools' own scale (its `total_value` over the
+    cover total) and this repo's unit factor. None falls back to the strict parse."""
+    if getattr(report, "primary_form_information", None) is None:
+        return None
+    try:
+        infotable = sec_call(getattr, report, "infotable", None, label=f"{stamp.accession_number} infotable")
+        declared, scaled_total = getattr(report, "total_holdings", None), getattr(report, "total_value", None)
+    except TransientReadError:
+        raise
+    except Exception:  # noqa: BLE001 -- the strict parse reports the source's own error
+        return None
+    cover, schema = _xml_cover(primary_xml, period=stamp.period_of_report, expected_form=stamp.form)
+    if not isinstance(infotable, pd.DataFrame) or "Value" not in infotable or not len(infotable) == declared == cover["declared_rows"]:
+        return None
+    values, cover_total = pd.to_numeric(infotable["Value"], errors="coerce"), cover["declared_value"]
+    scales = [f for f in (1.0, 1000.0) if math.isclose(float(values.sum()) / f, cover_total, rel_tol=_FAST_VALUE_TOLERANCE)]
+    edgar_scale = float(scaled_total) / cover_total if scaled_total is not None and cover_total > 0 else None
+    units = resolve_value_units(stamp.filed, schema_version=schema)
+    if values.isna().any() or scales != [edgar_scale] or edgar_scale != units.factor:
+        return None
+    raw = values / scales[0]
+    if not raw.map(float.is_integer).all():
+        return None
+    return _stamp_vintage(infotable.assign(Value=raw.astype("int64")), stamp, cover, units, _xml_checksum(primary_xml, information_xml))
+
+
+def _empty_xml_vintage(stamp: FilingStamp, primary_xml: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """An XML cover declaring no entries, filed without an information table: a complete empty book."""
+    cover, schema = _xml_cover(primary_xml, period=stamp.period_of_report, expected_form=stamp.form)
+    if cover["declared_rows"] != 0:
+        raise ValueError("13F cover XML entry count disagrees with the parsed summary page")
+    return _stamp_vintage(pd.DataFrame(), stamp, cover, resolve_value_units(stamp.filed, schema_version=schema), _xml_checksum(primary_xml, ""))
+
+
+def _stamp_vintage(
+    info: pd.DataFrame, stamp: FilingStamp, cover: dict[str, Any], units: ValueUnits, checksum: str
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """`filing_vintage` for one listed XML-era filing, from its stamp and validated cover."""
+    return filing_vintage(
+        info,
+        cik=stamp.cik,
+        accession_number=stamp.accession_number,
+        period=stamp.period_of_report,
+        filing_date=stamp.filed,
+        source=stamp.doc_url,
+        accepted_at=getattr(stamp.filing, "acceptance_datetime", None),
         units=units,
-        source_checksum=hashlib.sha256((primary_xml + "\n" + information_xml).encode()).hexdigest(),
+        source_checksum=checksum,
+        **cover,
     )

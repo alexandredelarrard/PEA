@@ -179,7 +179,7 @@ def test_a_deterministic_failure_skips_only_its_filing(tmp_path, sqlite_store, m
 # --------------------------------------------------------------------------- #
 # AC-002, M4 cases                                                             #
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize(("years_history", "since"), [(5, "2021-09-30"), (31, "2013-04-01")])
+@pytest.mark.parametrize(("years_history", "since"), [(5, "2021-09-30"), (31, "1999-07-01")])
 def test_m4_1_absent_table_reads_from_the_history_floor(tmp_path, sqlite_store, monkeypatch, years_history, since):
     ctx = _ctx(tmp_path, sqlite_store)
     windows, _ = _patch(monkeypatch, [_filing(1, "2026-09-29")])
@@ -188,7 +188,7 @@ def test_m4_1_absent_table_reads_from_the_history_floor(tmp_path, sqlite_store, 
 
     assert windows == [(pd.Timestamp(since), _AS_OF)]
     print(f"\n=== SANITY: M4-1 absent table (years_history={years_history}) ===")
-    print(f"  window {since}:{_AS_OF:%Y-%m-%d}: as_of - years_history, never before the 2013-04-01 source start. Validated.")
+    print(f"  window {since}:{_AS_OF:%Y-%m-%d}: as_of - years_history, never before the 1999-07-01 source start. Validated.")
 
 
 def test_m4_3_forward_window_is_the_frontier_minus_the_overlap(tmp_path, sqlite_store, monkeypatch):

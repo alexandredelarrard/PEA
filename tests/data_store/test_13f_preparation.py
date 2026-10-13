@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import datetime as dt
+import math
 import os
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import pytest
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import make_url
 
+from src.data_store import store as store_module
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from tests.data_extract.institutionals.test_13f_vintages import packet
@@ -63,6 +67,55 @@ def test_filing_preparation_refreshes_after_store_changes(sqlite_store: DataStor
     assert sqlite_store.save_13f_filing(newer, extra) == 1
     assert "incoming_note" in sqlite_store.columns(table)
     print(f"SANITY: {operation} invalidates preparation, incoming columns refresh it, and source/replay integrity survives.")
+
+
+@pytest.mark.parametrize("table", [Tables.sec13f_hr, Tables.sec13f_manager_holdings])
+def test_prepared_filing_builds_no_typed_frame(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, table: Any) -> None:
+    ticker = {"ticker": "AAA"} if table == Tables.sec13f_hr else {}
+    first, rows = packet("typed-cold", "2024-08-14", {"111111111": 100})
+    second, more = packet("typed-warm", "2024-08-20", {"111111111": 90, "222222222": 5}, kind="restatement")
+    calls = {"concat": 0}
+    real_concat = store_module.pd.concat
+
+    def counting_concat(*args: Any, **kwargs: Any) -> pd.DataFrame:
+        calls["concat"] += 1
+        return real_concat(*args, **kwargs)
+
+    monkeypatch.setattr(store_module.pd, "concat", counting_concat)
+    assert sqlite_store.save_13f_filing(first, rows.assign(**ticker), table=table) == 1
+    cold = calls["concat"]
+    assert sqlite_store.save_13f_filing(second, more.assign(**ticker), table=table) == 2
+    warm = calls["concat"] - cold
+    stored = sqlite_store.load(table, where={"accession_number": "typed-warm"}, markers=True)
+    assert (cold, warm) == (1, 0)
+    assert sorted(stored.parse_status) == ["complete", "position", "position"]
+    print(
+        f"SANITY: {table.name}: the typed DDL frame is built {cold}x on the cold save and {warm}x on a prepared save; 2 positions + 1 marker stored."
+    )
+
+
+def test_records_match_the_to_dict_binding() -> None:
+    frame = pd.DataFrame(
+        {
+            "i": np.array([1, 2, 3], dtype="int64"),
+            "f": [1.5, np.nan, 3.0],
+            "I": pd.array([1, None, 3], dtype="Int64"),
+            "B": pd.array([True, None, False], dtype="boolean"),
+            "s": pd.Series(["a", None, "c"], dtype="str"),
+            "o": pd.Series([np.int64(4), None, "x"], dtype=object),
+            "t": pd.to_datetime(["2024-01-01", None, "2024-03-01"]),
+            "d": pd.Series([dt.date(2024, 1, 1), None, pd.NaT], dtype=object),
+            "ci": pd.Categorical([1, None, 2]),
+            "l": pd.Series([[1, 2], None, (3,)], dtype=object),
+        }
+    )
+    expected = frame.astype(object).where(pd.notna(frame), None).to_dict("records")
+    got = store_module._records(frame)
+    pairs = [(a[k], b[k]) for a, b in zip(expected, got, strict=True) for k in frame.columns]
+    assert [list(r) for r in got] == [list(r) for r in expected]
+    assert all(type(a) is type(b) and (a is None or (isinstance(a, float) and math.isnan(a)) or a == b) for a, b in pairs)
+    assert store_module._records(pd.DataFrame(index=range(2))) == []
+    print(f"SANITY: _records binds the same Python type and value as to_dict on {len(pairs)} cells over {frame.shape[1]} dtypes; NaN/NaT/NA -> None.")
 
 
 @pytest.mark.live

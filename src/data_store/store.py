@@ -16,12 +16,13 @@ import io
 import json
 import logging
 import threading
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import nullcontext
 from typing import Any, cast
 
 import numpy as np
 import pandas as pd
+from pandas.core.dtypes.cast import maybe_box_native
 from sqlalchemy import Engine, MetaData, Select, Table, false, func, inspect, select, text, tuple_
 from sqlalchemy import types as sqltypes
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -286,8 +287,23 @@ def row_count(engine: Engine, name: str) -> int:
 
 def _records(df: pd.DataFrame) -> list[dict]:
     """DataFrame -> list of dicts with pandas NaN/NaT coerced to None so the
-    driver binds SQL NULL rather than a float nan."""
-    return df.astype(object).where(pd.notna(df), None).to_dict("records")
+    driver binds SQL NULL rather than a float nan.
+
+    One object array for the whole frame: a numpy or string column already yields native
+    scalars, so only the other columns are boxed element-wise as `to_dict` would box them."""
+    names = list(df.columns)
+    if not names:
+        return []
+    values = df.astype(object).to_numpy(copy=True)
+    values[df.isna().to_numpy()] = None
+    rows = values.tolist()
+    boxed = [
+        i for i, dtype in enumerate(df.dtypes) if not (isinstance(dtype, pd.StringDtype) or (isinstance(dtype, np.dtype) and dtype.kind in "biufcmM"))
+    ]
+    for row in rows if boxed else ():
+        for i in boxed:
+            row[i] = maybe_box_native(row[i])
+    return [dict(zip(names, row, strict=True)) for row in rows]
 
 
 def _coerce_temporal(df: pd.DataFrame, tbl: Table) -> pd.DataFrame:
@@ -540,12 +556,14 @@ class DataStore:
                     logger.warning("%s: accession primary key installed; legacy rows retained as unverified _legacy.", spec.name)
         return changed
 
-    def _prepare_13f_table(self, table: SchemaTable, frame: pd.DataFrame) -> Table:
-        """Reuse verified schema until incoming columns or a store schema operation changes it."""
+    def _prepare_13f_table(self, table: SchemaTable, columns: list[str], build: Callable[[], pd.DataFrame]) -> Table:
+        """Reuse verified schema until incoming columns or a store schema operation changes it;
+        `build` makes the typed frame for DDL only when the schema must be prepared."""
         with self._13f_lock:
             prepared = self._13f_tables.get(table.name)
-            if prepared is not None and tuple(prepared.primary_key.columns.keys()) == table.pk and set(frame.columns) <= set(prepared.c.keys()):
+            if prepared is not None and tuple(prepared.primary_key.columns.keys()) == table.pk and set(columns) <= set(prepared.c.keys()):
                 return prepared
+            frame = build()
             ensure_table(self.engine, table.name, frame)
             self.migrate_13f_tables()
             ensure_columns(self.engine, table.name, frame)
@@ -610,7 +628,10 @@ class DataStore:
         )
         canonical = {key: str(row[key]) for key in keys}
         payload_cols = ["cusip", "shares", "call_shares", "put_shares", "debt_prn", *raw_columns, "class_evidence"]
-        canonical["positions"] = holdings.sort_values("cusip")[payload_cols].fillna("").astype(str).to_dict("records")
+        payload = holdings[payload_cols].sort_values("cusip").fillna("").astype(str)
+        canonical["positions"] = [
+            dict(zip(payload_cols, values, strict=True)) for values in zip(*(payload[c].tolist() for c in payload_cols), strict=True)
+        ]
         checksum = hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest()
         marker = manifest.assign(cusip=table.empty_marker[1], content_checksum=checksum)
         if table == Tables.sec13f_hr:
@@ -618,13 +639,18 @@ class DataStore:
                 raise ValueError("13F broad holdings require ticker or the unmapped sentinel")
             marker["ticker"] = table.empty_marker[1]
         positions = holdings.assign(parse_status="position")
-        frame = pd.concat([positions, marker], ignore_index=True)
-        for column in manifest:
-            if column not in holdings:
-                dtype = manifest[column].dtype
-                dtype = "Int64" if pd.api.types.is_integer_dtype(dtype) else ("boolean" if pd.api.types.is_bool_dtype(dtype) else dtype)
-                frame[column] = frame[column].astype(dtype)
-        books = self._prepare_13f_table(table, frame)
+        columns = list(dict.fromkeys([*positions.columns, *marker.columns]))
+
+        def typed_frame() -> pd.DataFrame:
+            frame = pd.concat([positions, marker], ignore_index=True)
+            for column in manifest:
+                if column not in holdings:
+                    dtype = manifest[column].dtype
+                    dtype = "Int64" if pd.api.types.is_integer_dtype(dtype) else ("boolean" if pd.api.types.is_bool_dtype(dtype) else dtype)
+                    frame[column] = frame[column].astype(dtype)
+            return frame
+
+        books = self._prepare_13f_table(table, columns, typed_frame)
         with self.engine.begin() as conn:
             if self.engine.dialect.name == "postgresql":
                 conn.execute(text("SELECT pg_advisory_xact_lock(hashtext(:scope))"), {"scope": f"{table.name}:{row['accession_number']}"})
@@ -650,10 +676,10 @@ class DataStore:
                 ):
                     raise ValueError(f"13F checksum conflict for {row['accession_number']}")
                 return 0
-            records = _records(_coerce_temporal(positions.reindex(columns=frame.columns), books))
+            records = _records(_coerce_temporal(positions.reindex(columns=columns), books))
             for offset in range(0, len(records), _CHUNK):
                 conn.execute(books.insert(), records[offset : offset + _CHUNK])
-            conn.execute(books.insert(), _records(_coerce_temporal(marker.reindex(columns=frame.columns), books)))
+            conn.execute(books.insert(), _records(_coerce_temporal(marker.reindex(columns=columns), books)))
         return len(holdings)
 
     def load(

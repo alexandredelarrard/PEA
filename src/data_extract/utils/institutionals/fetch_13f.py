@@ -96,6 +96,9 @@ _BOOK_COLS = [
     "other_value",
 ]
 
+#: The columns `parse_legacy_information_table` emits; an empty-cover book carries them with no rows.
+_LEGACY_INFO_COLS = ["CUSIP", "NAMEOFISSUER", "TITLEOFCLASS", "VALUE", "SSHPRNAMT", "SSHPRNAMTTYPE", "PUTCALL"]
+
 #: Legacy diagnostic reduction key; immutable source storage also keys by accession.
 _BOOK_KEY = ["cik", "period", "cusip"]
 
@@ -750,11 +753,19 @@ def read_filing_vintage(stamp: FilingStamp) -> tuple[pd.DataFrame, pd.DataFrame]
 
 
 def text_filing_vintage(raw: str, stamp: FilingStamp) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Reuse the source-reconciled pre-XML parser; unsupported cover semantics remain explicit."""
+    """Reuse the source-reconciled pre-XML parser; unsupported cover semantics remain explicit.
+    A cover declaring no entries (or a zero total and no count) is a complete empty book, not parsed."""
     units = resolve_value_units(stamp.filed, information_table_text=raw)
-    info = parse_legacy_information_table(raw, value_factor=1.0, verify_values=False)
     count = _ENTRY_COUNT.search(raw)
     total = _VALUE_TOTAL.search(raw) or _FOOTER_TOTAL.search(raw)
+    declared_rows = int(count.group(1).replace(",", "")) if count else None
+    declared_value = float(total.group(1).replace(",", "")) if total else None
+    empty = declared_rows == 0 or (declared_rows is None and declared_value == 0)
+    if empty:
+        info = pd.DataFrame(columns=_LEGACY_INFO_COLS)
+        declared_rows, declared_value = 0, 0.0
+    else:
+        info = parse_legacy_information_table(raw, value_factor=1.0, verify_values=False)
     kind = "original"
     if stamp.is_amendment:
         restated = re.search(_CHECKED + r"\s*(?:is\s+a\s+)?restatement", raw, re.I)
@@ -766,7 +777,7 @@ def text_filing_vintage(raw: str, stamp: FilingStamp) -> tuple[pd.DataFrame, pd.
     if len(set(reports)) > 1:
         raise ValueError("Conflicting checked legacy report types")
     report_type = re.sub(r"13\s*F", "13F", re.sub(r"\s+", " ", reports[0])).upper() if reports else SEC_13F_INFERRED_HOLDINGS_REPORT
-    if not reports:
+    if not reports and not empty:
         logger.warning("13F %s: intact HR information table with no checked report type; inferred holdings-report scope", stamp.accession_number)
     return filing_vintage(
         info,
@@ -776,8 +787,8 @@ def text_filing_vintage(raw: str, stamp: FilingStamp) -> tuple[pd.DataFrame, pd.
         filing_date=stamp.filed,
         amendment_type=kind,
         source=stamp.doc_url or "SEC legacy text",
-        declared_rows=int(count.group(1).replace(",", "")) if count else None,
-        declared_value=float(total.group(1).replace(",", "")) if total else None,
+        declared_rows=declared_rows,
+        declared_value=declared_value,
         report_type=report_type,
         restricted=bool(re.search(r"confidential\s+information\s+has\s+been\s+omitted", raw, re.I)),
         accepted_at=getattr(stamp.filing, "acceptance_datetime", None),

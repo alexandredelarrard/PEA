@@ -405,11 +405,11 @@ def test_stored_accession_and_verified_empty_book_are_never_reread(sqlite_store,
         saved = [f13m.fetch_13f_managers(_ctx(sqlite_store), years_history=15) for _ in range(2)]
 
     assert stored.reads == []  # the old frontier re-read the newest stored filing on every run
-    assert len(empty.reads) == 1 and saved == [0, 0]  # one cheap re-check per run, nothing saved, no loop
+    assert len(empty.reads) == 1 and saved == [0, 0]  # read once, stored as a complete empty marker, never re-read
     assert not any("read(s) failed" in r.getMessage() for r in caplog.records)  # empty is not a failure
     print("\n=== SANITY: done-set cost ===")
     print(
-        f"  stored filing reads {len(stored.reads)}; empty-info-table filing read once per run ({len(empty.reads)} over 2 runs), not a failure. Validated."
+        f"  stored filing reads {len(stored.reads)}; empty-info-table filing read once ({len(empty.reads)} over 2 runs), marked complete, not a failure. Validated."
     )
 
 
@@ -674,6 +674,113 @@ def test_ordinary_walk_preserves_original_and_amendment_accessions(sqlite_store,
     print(
         "SANITY: ordinary extraction retains all three complete accessions; originals survive amendments; completed-accession replay skips parsing."
     )
+
+
+def _legacy_cover(entry_total: str | None, value_total: str | None) -> str:
+    """A pre-XML 13F-HR text submission with a Summary Page and no information-table lines."""
+    lines = ["<DOCUMENT>", "<TYPE>13F-HR", "<TEXT>", "                    FORM 13F", "[X] 13F HOLDINGS REPORT", "Report Summary:"]
+    lines.append("Number of Other Included Managers: 0")
+    if entry_total is not None:
+        lines.append(f"Form 13F Information Table Entry Total: {entry_total}")
+    if value_total is not None:
+        lines.append(f"Form 13F Information Table Value Total: ${value_total}")
+    return "\n".join([*lines, "</TEXT>", "</DOCUMENT>"])
+
+
+@dataclass
+class _TextFiling(_FakeFiling):
+    """A pre-XML filing: no information-table XML, the text submission instead."""
+
+    raw: str = ""
+
+    def obj(self) -> Any:
+        self.reads.append(self.accession_number)
+        return SimpleNamespace(infotable=pd.DataFrame(), infotable_xml=None, infotable_txt=self.raw)
+
+    def full_text_submission(self) -> str:
+        return self.raw
+
+
+@dataclass
+class _DeclaredXmlFiling(_FakeFiling):
+    """An XML filing whose cover declares `entries` rows worth `value`, whatever its lines."""
+
+    entries: int = 0
+    value: float = 0.0
+
+    def xml(self) -> str:
+        cover = super().xml()
+        cover = cover.replace(f"<tableEntryTotal>{len(self.lines)}<", f"<tableEntryTotal>{self.entries}<")
+        return cover.replace(f"<tableValueTotal>{sum(r['VALUE'] for r in self.lines)}<", f"<tableValueTotal>{self.value:g}<")
+
+
+def _empty_cover_filing(kind: str) -> _FakeFiling:
+    accession = "0000000001-01-000123"
+    if kind == "xml_0_0":
+        return _FakeFiling(ROSTER, "2026-05-15", "2026-03-31", [], accession=accession)
+    covers = {"text_count_0": ("0", "0"), "text_count_0_no_total": ("0", None), "text_total_0_no_count": (None, "0")}
+    return _TextFiling(ROSTER, "2001-05-15", "2001-03-31", [], accession=accession, raw=_legacy_cover(*covers[kind]))
+
+
+def _markers(store: Any, table: Any, accession: str) -> pd.DataFrame:
+    df = store.load(table, where={"cusip": "_empty", "parse_status": "complete"}, markers=True, optional=True)
+    return pd.DataFrame() if df is None else df.loc[df.accession_number.eq(accession)]
+
+
+@pytest.mark.parametrize("kind", ["xml_0_0", "text_count_0", "text_count_0_no_total", "text_total_0_no_count"])
+def test_empty_cover_is_silent_and_marked_once(sqlite_store, monkeypatch, caplog, kind):
+    filing = _empty_cover_filing(kind)
+    _seed_roster(sqlite_store, [ROSTER])
+    _patch_walk(monkeypatch, [filing])
+    real_obj, obj_calls = f13.filing_obj, []
+
+    def _spy_obj(f: Any) -> Any:
+        obj_calls.append(f.accession_number)
+        return real_obj(f)
+
+    monkeypatch.setattr(f13, "filing_obj", _spy_obj)
+    saver = f13._Saver(_ctx(sqlite_store), set(UNIVERSE), {ROSTER}, save_every=1)
+
+    with caplog.at_level(logging.WARNING):
+        held = f13._first_pass([filing], saver)
+        first_reads = len(obj_calls)
+        held += f13._first_pass([filing], saver)  # the next walk over the same listing
+
+    loud = [f"{r.levelname}: {r.getMessage()}" for r in caplog.records if r.levelno >= logging.WARNING]
+    assert not loud and not held, (loud, held)
+    counts = {}
+    for table in (Tables.sec13f_hr, Tables.sec13f_manager_holdings):
+        marker = _markers(sqlite_store, table, filing.accession_number)
+        assert len(marker) == 1 and int(marker.iloc[0].source_row_count) == 0 and int(marker.iloc[0].declared_row_count) == 0, marker
+        positions = sqlite_store.load(table, optional=True)
+        assert positions is None or not positions.accession_number.eq(filing.accession_number).any()
+        counts[table.name] = len(marker)
+    assert first_reads == 1 and len(obj_calls) == 1, obj_calls  # the second walk never reads it
+    print(
+        f"SANITY: empty cover ({kind}) -> markers {counts}, 0 WARNING/ERROR, filing_obj calls {first_reads} then 0; recorded once, never refetched."
+    )
+
+
+@pytest.mark.parametrize("kind", ["text", "xml"])
+def test_nonzero_cover_zero_lines_fails_loudly(sqlite_store, monkeypatch, caplog, kind):
+    accession = "0000000001-01-000456"
+    if kind == "text":
+        filing: _FakeFiling = _TextFiling(ROSTER, "2001-05-15", "2001-03-31", [], accession=accession, raw=_legacy_cover("2", "1,500"))
+    else:
+        filing = _DeclaredXmlFiling(ROSTER, "2026-05-15", "2026-03-31", [], accession=accession, entries=2, value=1_500.0)
+    _seed_roster(sqlite_store, [ROSTER])
+    _patch_walk(monkeypatch, [filing])
+
+    failure = f13.read_filing_vintage(FilingStamp.of(filing, ""))
+    with caplog.at_level(logging.WARNING):
+        f13.fetch_13f(_ctx(sqlite_store), tickers=UNIVERSE, years_history=30, as_of=pd.Timestamp("2026-06-30"))
+
+    assert isinstance(failure, f13.ReadFailure) and not failure.transient, failure
+    errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR and accession in r.getMessage()]
+    assert len(errors) == 1, errors
+    for table in (Tables.sec13f_hr, Tables.sec13f_manager_holdings):
+        assert _markers(sqlite_store, table, accession).empty
+    print(f"SANITY: non-zero cover with zero lines ({kind}) -> ReadFailure {failure.reason[:70]!r}, one ERROR, nothing saved.")
 
 
 def test_catch_up_original_gap_cannot_overwrite_a_completed_amendment(sqlite_store, monkeypatch, tmp_path):

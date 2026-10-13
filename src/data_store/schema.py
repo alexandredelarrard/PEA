@@ -329,10 +329,6 @@ class Tables:
     # ----------------------------------------------------------------- #
     # Extract -- prices & market data                                   #
     # ----------------------------------------------------------------- #
-    # Equities only: the universe AND its companies' current secondary share classes (the
-    # `security_master` rows with role `secondary_class` and an open end: BRK-A, GOOG, LEN-B, ...),
-    # each under its own Yahoo symbol. ⚠ Every reader filters on the universe
-    # (`load_universe_tickers`); an unfiltered read mixes the classes into the cross-section.
     prices = Table("prices", ("ticker", "date"), date_col="date", freshness="daily", resume=Resume(RESUME_SERIES, "ticker", "date", 7))
     dividends = Table("prices_dividends", ("ticker", "date"), date_col="date", freshness="daily", resume=Resume(RESUME_SERIES, "ticker", "date", 7))
     # Share-split ex-dates, yfinance-sourced and unioned with `sharadar_actions` (which has
@@ -342,28 +338,11 @@ class Tables:
     # its own frontier rather than the price one.
     # NOT a market-cap input -- see the table comment in sql/schema.sql.
     prices_splits = Table("prices_splits", ("ticker", "date"), date_col="date", freshness="daily", resume=Resume(RESUME_SERIES, "ticker", "date", 7))
-    # ⚠ FIRST USABLE DATE 2018-08-01, and it MOVES FORWARD. FINRA serves the RegSHO daily
-    # files from a rolling ~8-year CDN window (probed 2026-09-08: last 403 2018-07-31, first
-    # 200 2018-08-01, ~8.10 years deep). The stored min(date) of 2017-12-29 is one anomalous
-    # file that survives outside the window, not a history start -- see
-    # `fetch_short_interest`'s docstring for the full probe. Rows below the boundary cannot be
-    # re-fetched if lost.
-    # NAME IS A MISNOMER: this holds short-sale VOLUME, not reported short interest. Kept
-    # because the table is live with consumers; corrected at the feature level.
     short_interest = Table(
         "sec_short_interest",
         ("ticker", "date"),
         date_col="date",
         freshness="daily",
-        # Read by `institutionals/short_flow_features.py` (the old `short_interest_features`
-        # module is gone) for the RegSHO short/total volume legs.
-        # `short_interest` and `avg_daily_volume` are OPTIONAL and no live consumer reads
-        # them: they backed `ic_shortvol_days_to_cover`, a feature REMOVED BY DESIGN -- days
-        # -to-cover needs reported bi-monthly short interest, which this table does not hold
-        # and the fetcher does not collect. They stay declared-and-optional so that a future
-        # fetch of the FINRA short-interest file can land in the same table without a schema
-        # change; they are not a pending column. Keeping them non-optional is what killed the
-        # read instead of degrading it, back when the projection demanded them unconditionally.
         read_columns=("date", "ticker", "short_volume", "total_volume", "short_interest", "avg_daily_volume"),
         optional_columns=frozenset({"short_interest", "avg_daily_volume"}),
         # The first day FINRA serves; earlier never-stored days are not requested.

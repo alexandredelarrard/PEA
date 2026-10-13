@@ -22,6 +22,7 @@ import logging
 import re
 import time
 from collections.abc import Collection, Mapping, Sequence
+from typing import cast
 
 import pandas as pd
 import requests
@@ -47,14 +48,11 @@ from src.data_extract.utils.institutionals.security_tape import (
     summed_lines,
     warn_lost_rows,
 )
-from src.data_store.schema import Tables
+from src.data_store.schema import Resume, Tables
 from src.utils.batching import batched_tuples
 from src.utils.string import normalise_ticker, squash
 
 _URL = "https://cdn.finra.org/equity/regsho/daily/CNMSshvol{yyyymmdd}.txt"
-#: The CDN's first served date (a rolling window) and the one older file it still serves.
-FIRST_SERVED_DAY = pd.Timestamp("2018-08-01")
-EXTRA_SERVED_DAYS = (pd.Timestamp("2017-12-29"),)
 
 RAW_COLUMNS = ("date", "source_symbol", "market", "short_volume", "short_exempt_volume", "total_volume")
 #: Column order of `sec_short_volume_security`; the last four are stamped from the security master.
@@ -283,7 +281,7 @@ def _full_days(context: Context, today: pd.Timestamp) -> tuple[list[pd.Timestamp
     """`(days to fetch, stored days)`: every business day from `FIRST_SERVED_DAY`, the extra served files, and every
     day stored in either table."""
     stored = _stored_days(context)
-    days = set(pd.bdate_range(FIRST_SERVED_DAY, today)) | set(EXTRA_SERVED_DAYS) | stored
+    days = set(pd.bdate_range(cast(Resume, Tables.short_interest.resume).source_start, today)) | stored
     return sorted(day for day in days if day <= today), stored
 
 
@@ -380,7 +378,7 @@ def _log_stamps(stamped: pd.DataFrame) -> None:
 def fetch_short_interest(
     context: Context,
     tickers: list[str],
-    years_history: int = 15,
+    years_history: int = 31,
     pause: float = 0.05,
     full: bool = False,
     identity: Identity | None = None,
@@ -458,5 +456,6 @@ def fetch_short_interest(
             context.store.delete(Tables.short_interest, where={"ticker": chunk, "date": successful})
     if not grain.empty:
         written = context.store.save(Tables.short_interest, grain)
+
     logger.info(f"Saved {written} short-volume ticker row(s) over {len(successful)} day(s) to '{Tables.short_interest}'")
     warn_lost_rows(logger, "RegSHO", restamp_short_volume(context, None, universe, identity=resolver, as_of=as_of))

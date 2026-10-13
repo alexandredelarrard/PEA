@@ -663,20 +663,19 @@ def _log_identity(identity: Identity) -> None:
 def load_identity(context: Context, refresh: bool = False) -> Identity:
     """The resolver for this run, built once per context and cached on it (`refresh` rebuilds)."""
     lineage = context.store.load(Tables.entity_lineage, project=True)
-    tenure = context.store.load(Tables.symbol_tenure, project=True, where={"source": list(TENURE_SOURCES)})
+    tenure = context.store.load(
+        Tables.symbol_tenure,
+        columns=["symbol", "issuer_cik", "valid_from", "valid_to", "n_filings", "source"],
+        where={"source": [*TENURE_SOURCES, DEI_SOURCE]},
+    )
     roster = context.store.load(Tables.sp500_tickers, columns=list(ROSTER_COLUMNS))
     master = context.store.load(Tables.security_master, project=True, optional=True)
-    evidence = context.store.load(
-        Tables.symbol_tenure,
-        columns=["issuer_cik", "source", "valid_from", "valid_to"],
-        where={"source": [FORM345_SOURCE, DEI_SOURCE]},
-        optional=True,
-    )
     assert lineage is not None and tenure is not None and roster is not None
+    evidence = tenure.loc[tenure["source"].isin((FORM345_SOURCE, DEI_SOURCE)), ["issuer_cik", "source", "valid_from", "valid_to"]]
     manual = load_security_manual(str(context.config_dir))
     identity = build_identity(
         lineage=lineage,
-        tenure=tenure,
+        tenure=tenure[tenure["source"].isin(TENURE_SOURCES)],
         roster=roster,
         redundant_symbols=frozenset(context.config.data_extract.redundant_ticks),
         master=master,

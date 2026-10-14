@@ -22,6 +22,7 @@ from src.data_extract.utils.institutionals.fetch_13f_backfill import data_set_bo
 from src.data_extract.utils.institutionals.legacy_13f_fallback import parse_legacy_information_table
 from src.data_extract.utils.institutionals.value_units import (
     FEW_ROWS_PRICE,
+    MILLIONS_PRICE,
     NO_EVIDENCE,
     caption_factor,
     normalize_information_values,
@@ -482,3 +483,60 @@ def test_value_total_mismatch_is_saved_with_a_warning(sqlite_store: Any, caplog:
     assert manifest.iloc[0].declared_value_total == 777.0 and manifest.iloc[0].source_value_total == 1_050_000
     assert sqlite_store.save_13f_filing(manifest, book) == len(cells)
     print("SANITY: XML cover total 777 against a 1,050,000 VALUE column -> WARNING, filing kept and saved, cover stored as filed.")
+
+
+# ---- $millions cells from the implied price alone ----------------------------------------------------
+
+
+def test_millions_cells_are_read_from_the_implied_price(caplog: pytest.LogCaptureFixture) -> None:
+    raw, stamp = _legacy("0000909012-99-000441")
+    with caplog.at_level(logging.WARNING, logger=_EVIDENCE_LOGGER):
+        manifest, rows = f13.text_filing_vintage(raw, stamp)
+    row = manifest.iloc[0]
+    assert row.value_unit_factor == 1e6 and row.value_unit_evidence == SEC_13F_SOURCE_ACCOUNTED + MILLIONS_PRICE, row.value_unit_evidence
+    assert (rows.value_usd == rows.raw_value_usd * 1e6).all()
+    spx = rows.set_index("cusip").loc["784635104"]
+    price = spx.value_usd / spx.shares
+    assert 75 < price < 95, price
+    assert "stated_caption says x1000" in _messages(caplog)
+    print(
+        f"SANITY: real 0000909012-99-000441 ((X$1000) caption over $millions cells, cover $330.3211) -> x1e6; SPX ${price:.2f}/sh (near $83.5 in 1999-06)."
+    )
+
+
+@pytest.mark.parametrize(
+    ("cells", "factor", "evidence", "shape"),
+    [
+        (
+            [(30, 1_000_000), (60, 2_000_000), (90, 3_000_000), (120, 4_000_000)],
+            1.0,
+            NO_EVIDENCE,
+            "4 rows at $30/sh only at x1e6: too few rows for millions",
+        ),
+        (
+            [(15, 10_000), (30, 20_000), (45, 30_000), (60, 40_000), (75, 50_000), (90, 60_000)],
+            1000.0,
+            "implied_price",
+            "6 rows at $1.50/sh at x1000 stay $1000s",
+        ),
+        ([(30, 1_000_000), (60, 2_000_000), (90, 3_000_000), (120, 4_000_000), (150, 5_000_000)], 1e6, MILLIONS_PRICE, "5 rows at $30/sh at x1e6"),
+    ],
+)
+def test_millions_need_five_rows_and_a_sub_dollar_thousands_median(cells: list[tuple[int, int]], factor: float, evidence: str, shape: str) -> None:
+    book = [(cusip, value, shares) for cusip, (value, shares) in zip(_CUSIPS, cells, strict=False)]
+    primary, info = _xml(None, book, sum(value for _, value, _ in book))
+    manifest, rows = f13.xml_filing_vintage(
+        primary, info, cik="1", accession_number="millions", period="2016-03-31", filing_date="2016-05-13", source="known_truth"
+    )
+    row = manifest.iloc[0]
+    assert row.value_unit_factor == factor and row.value_unit_evidence == evidence, (row.value_unit_factor, row.value_unit_evidence)
+    print(f"SANITY: SYNTHETIC {shape} -> x{factor:g} ({evidence}).")
+
+
+def test_real_thousands_book_never_reads_as_millions() -> None:
+    raw, stamp = _legacy("0000812295-05-000069")
+    manifest, rows = f13.text_filing_vintage(raw, stamp)
+    common = rows[(rows.position_type == "common") & (rows.shares > 0)]
+    median_thousands = float((common.raw_value_usd / common.shares).median() * 1000)
+    assert median_thousands > 1 and manifest.iloc[0].value_unit_factor == 1000
+    print(f"SANITY: real 0000812295-05-000069 ($1000s cells, median ${median_thousands:.2f}/sh at x1000) stays x1000, never x1e6.")

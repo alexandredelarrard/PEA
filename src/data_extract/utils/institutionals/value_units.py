@@ -24,6 +24,10 @@ _PRICE_BAND = (1.0, 1000.0)
 _MIN_PRICE_ROWS = 3
 #: Evidence label of a unique price fit over fewer than `_MIN_PRICE_ROWS` share rows.
 FEW_ROWS_PRICE = "implied_price:few_rows"
+#: Fewest share rows whose median may read $millions cells from the price alone.
+_MIN_MILLIONS_ROWS = 5
+#: Evidence label of $millions cells read from the implied price alone.
+MILLIONS_PRICE = "implied_price:millions"
 #: Cell units the implied price chooses between; $millions only when another source says so.
 _PRICE_FACTORS = (1.0, 1000.0)
 _MILLIONS = 1e6
@@ -171,7 +175,8 @@ def decide_value_units(
     accession: str = "",
 ) -> ValueUnits:
     """The cell-to-USD factor from per-filing evidence: the median implied share price over at least
-    `_MIN_PRICE_ROWS` share rows, then the stated unit (caption or schema, and a stated-unit cover), then the
+    `_MIN_PRICE_ROWS` share rows (x1e6 from the price alone needs `_MIN_MILLIONS_ROWS` and a sub-dollar median at
+    x1000), then the stated unit (caption or schema, and a stated-unit cover), then the
     unlabelled cover ratio, then a price fit over fewer rows, else x1 with a WARNING. Disagreeing evidence is
     logged and the price wins; the filing date never decides."""
     statements: dict[str, float] = {}
@@ -187,6 +192,12 @@ def decide_value_units(
     agreed = set(statements.values())
     stated = next(iter(agreed)) if len(agreed) == 1 and not conflicting else None
     factor, median, rows = implied_price_factor(prices, millions=_MILLIONS in {*agreed, ratio})
+    price_evidence = "implied_price"
+    if factor is None and rows >= _MIN_MILLIONS_ROWS and median is not None and median * 1000 < _PRICE_BAND[0]:
+        # Sub-dollar at x1000 over enough rows: $millions cells when x1e6 is the one fit.
+        factor = implied_price_factor(prices, millions=True)[0]
+        price_evidence = MILLIONS_PRICE if factor == _MILLIONS else price_evidence
+        factor = factor if factor == _MILLIONS else None
     recorded = declared.stated_factor if declared.stated_factor is not None and not math.isnan(declared.stated_factor) else stated
 
     if factor is not None and rows >= _MIN_PRICE_ROWS:
@@ -194,7 +205,7 @@ def decide_value_units(
         for label, other in others.items():
             if other != factor:
                 logger.warning("13F %s: %s says x%g but the median implied price %.4g/share picks x%g", accession, label, other, median, factor)
-        return ValueUnits(declared.expected_factor, recorded, factor, "implied_price")
+        return ValueUnits(declared.expected_factor, recorded, factor, price_evidence)
     if factor is None and rows >= _MIN_PRICE_ROWS:
         logger.warning("13F %s: median raw VALUE/share %.4g over %s share rows fits no unit in %s", accession, median, rows, _PRICE_BAND)
     if stated is not None:

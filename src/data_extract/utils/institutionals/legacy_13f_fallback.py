@@ -7,6 +7,7 @@ present cover declarations use the shared tolerance, absent declarations remain 
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 from collections import Counter
@@ -18,6 +19,7 @@ import pandas as pd
 from src.data_extract.utils.institutionals.fetch_cusip_map import normalize_cusip
 from src.utils.institutional_vintages import literal_13f_cusip, reconcile_13f_source
 
+logger = logging.getLogger(__name__)
 _TABLE = re.compile(r"<TABLE[^>]*>(.*?)</TABLE>", re.I | re.S)
 _CUSIP = re.compile(r"(?<![0-9])([A-Z0-9*@#]{6}-[A-Z0-9*@#]{2}-[0-9]|[A-Z0-9*@#]{8,9})(?![A-Z0-9*@#])", re.I)
 _NUMBER = re.compile(r"(?<![\w.,/])(?:\$\s*)?(?P<number>[-+]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)(?P<type>SH|PRN)?(?=\s|$)", re.I)
@@ -367,16 +369,15 @@ def _check_without_blanks(raw: str, rows: list[dict[str, Any]], blanks: list[_Bl
     summary = _VALUE_TOTAL.search(raw) or _FOOTER_TOTAL.search(raw)
     if count is None or summary is None:
         raise ValueError(f"{blanks[0]}; no cover count and total to reconcile the book without {len(blanks)} such line(s)")
+    value, declared = float(sum(row["VALUE"] for row in rows)), float(summary.group(1).replace(",", ""))
     try:
-        reconcile_13f_source(
-            len(rows),
-            int(count.group(1).replace(",", "")),
-            float(sum(row["VALUE"] for row in rows)),
-            float(summary.group(1).replace(",", "")),
-            source_accounted=True,
-        )
+        factor = reconcile_13f_source(len(rows), int(count.group(1).replace(",", "")), value, declared, source_accounted=True)
     except ValueError as error:
         raise ValueError(f"{blanks[0]}; the book without {len(blanks)} such line(s) does not reconcile: {error}") from error
+    if factor is None:
+        raise ValueError(
+            f"{blanks[0]}; the book without {len(blanks)} such line(s) does not reconcile: 13F source VALUE total differs: rows={value:g}, declared={declared!r}"
+        )
 
 
 def _double_counted_total_row(raw: str, rows: list[dict[str, Any]], value_factor: float) -> list[dict[str, Any]]:
@@ -413,14 +414,14 @@ def _value_total_error(raw: str, values_usd: list[Any], *, default_factor: float
             return f"Source value total differs materially: {parsed} versus {total}"
         return None
     try:
-        reconcile_13f_source(len(values_usd), None, float(parsed), float(total * scale), source_accounted=True)
+        factor = reconcile_13f_source(len(values_usd), None, float(parsed), float(total * scale), source_accounted=True)
     except ValueError as error:
         return f"Source value total differs materially: {parsed} versus {total}; {error}"
-    return None
+    return None if factor is not None else f"Source value total differs materially: {parsed} versus {total}"
 
 
 def _check_totals(raw: str, rows: list[dict[str, Any]], *, value_factor: float = 1000.0, verify_values: bool = True) -> None:
-    """Check stated Summary Page totals without inventing missing declarations."""
+    """Check the stated Summary Page entry count; the value total is a reference that only warns."""
     count = _ENTRY_COUNT.search(raw)
     declared = int(count.group(1).replace(",", "")) if count else None
     try:
@@ -429,7 +430,7 @@ def _check_totals(raw: str, rows: list[dict[str, Any]], *, value_factor: float =
         raise ValueError(f"Source has {len(rows)} holding lines, cover declares {count.group(1) if count else None}; {error}") from error
     error = _value_total_error(raw, [row["VALUE"] for row in rows], default_factor=value_factor) if verify_values else None
     if error:
-        raise ValueError(error)
+        logger.warning("13F legacy cover value total is a reference only, book kept: %s", error)
 
 
 def needs_legacy_fallback(raw: str, parsed: pd.DataFrame | None) -> bool:

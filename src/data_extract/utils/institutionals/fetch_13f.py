@@ -61,6 +61,13 @@ _CHECKED = r"(?:\[\s*[xX]\s*\]|\{\s*[xX]\s*\}|\(\s*[xX]\s*\))"
 #: A checked legacy report-type box; its group is the report type as printed. Its presence with the cover total lets
 #: the information-table text stand in for the full submission.
 _CHECKED_REPORT = re.compile(_CHECKED + r"\s*(13\s*F\s+(?:HOLDINGS|COMBINATION|NOTICE)\s+REPORT)", re.I)
+#: Unit words a legacy cover value-total line may state, each with its dollars-per-unit; "dollars" counts only alone.
+_COVER_UNITS = (
+    (re.compile(r"\bbillions?\b", re.I), 1e9),
+    (re.compile(r"\bmillions?\b", re.I), 1e6),
+    (re.compile(r"\bthou(?:sands?)?\b|\(\s*0{3}'?s\s*\)|\b1,?000'?s\b|x\s*\$?\s*1,?000\b|\(\s*\$\s*1,?000\s*\)", re.I), 1e3),
+)
+_COVER_DOLLARS = re.compile(r"\bdollars?\b", re.I)
 
 #: The sleeper between retry rounds; tests replace it.
 _sleep: Callable[[float], None] = time.sleep
@@ -814,20 +821,36 @@ def read_filing_vintage(stamp: FilingStamp) -> tuple[pd.DataFrame, pd.DataFrame]
         return ReadFailure(isinstance(exc, TransientReadError), f"{type(exc).__name__}: {exc}")
 
 
+def _stated_cover_unit(raw: str, summary: re.Match[str]) -> float | None:
+    """Dollars per unit stated on the cover value-total line (caption to end of line); NaN when it states
+    two different units, None when it states none."""
+    end = raw.find("\n", summary.end())
+    line = raw[summary.start() : end if end >= 0 else len(raw)]
+    stated = {factor for pattern, factor in _COVER_UNITS if pattern.search(line)}
+    if not stated and _COVER_DOLLARS.search(line):
+        stated = {1.0}
+    return None if not stated else stated.pop() if len(stated) == 1 else math.nan
+
+
 def _cover_ratio_units(raw: str, units: ValueUnits, cell_total: float) -> ValueUnits:
-    """Cell units from the cover total over the VALUE-cell sum. A ratio of 1000 or 1e6 is a dollar cover
-    over $1000s or $millions cells; 0.001 is a $1000s cover over dollar cells. A Million/Billion cover
-    states its own unit. Any other ratio, including 1, keeps `units`; a disagreeing caption withholds dollars."""
+    """Cell units from the cover total over the VALUE-cell sum. A unit stated on the cover line wins: the
+    cover in dollars over the cell sum must be 1, 1000 or 1e6, else dollars are withheld. Unlabelled, a ratio
+    of 1000 or 1e6 is a dollar cover over $1000s or $millions cells and 0.001 a $1000s cover over dollar
+    cells; any other ratio, including 1, keeps `units`. A disagreeing caption withholds dollars."""
     summary = _VALUE_TOTAL.search(raw) or _FOOTER_TOTAL.search(raw)
     total = float(summary.group(1).replace(",", "")) if summary else 0.0
     if total <= 0 or cell_total <= 0:
         return units
-    label = (summary.group(2) or "").lower() if summary.re is _VALUE_TOTAL else ""
-    if label in ("billion", "million"):
-        factor = {0: 1.0, 3: 1000.0, 6: 1e6}.get(round(math.log10(total * (1e9 if label == "billion" else 1e6) / cell_total)))
+    if units.factor is None and units.stated_factor is None:
+        return units
+    stated = _stated_cover_unit(raw, summary) if summary.re is _VALUE_TOTAL else None
+    if stated is not None:
+        factor = None if math.isnan(stated) else {0: 1.0, 3: 1000.0, 6: 1e6}.get(round(math.log10(total * stated / cell_total)))
+        if factor is None:
+            return ValueUnits(units.expected_factor, units.stated_factor, None, "conflicting_cover_total")
     else:
         factor = {-3: 1.0, 3: 1000.0, 6: 1e6}.get(round(math.log10(total / cell_total)))
-    if factor is None or factor == units.factor or (units.factor is None and units.stated_factor is None):
+    if factor is None or factor == units.factor:
         return units
     if units.stated_factor is not None and units.stated_factor != factor:
         return ValueUnits(units.expected_factor, units.stated_factor, None, "conflicting_cover_total")

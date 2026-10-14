@@ -21,9 +21,9 @@ from src.utils.institutional_vintages import literal_13f_cusip, reconcile_13f_so
 _TABLE = re.compile(r"<TABLE[^>]*>(.*?)</TABLE>", re.I | re.S)
 _CUSIP = re.compile(r"(?<![0-9])([A-Z0-9*@#]{6}-[A-Z0-9*@#]{2}-[0-9]|[A-Z0-9*@#]{8,9})(?![A-Z0-9*@#])", re.I)
 _NUMBER = re.compile(r"(?<![\w.,/])(?:\$\s*)?(?P<number>[-+]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)(?P<type>SH|PRN)?(?=\s|$)", re.I)
-_ENTRY_COUNT = re.compile(r"Form\s*13\s*F\s+(?:Information\s+)?Table\s+Entry\s+Total\s*:?\s*([\d,]+)\b", re.I)
+_ENTRY_COUNT = re.compile(r"Form\s*13\s*F\s+(?:Information\s+)?Table\s+Entry\s+Total\s*:?\.?\s*([\d,]+)\b", re.I)
 _VALUE_TOTAL = re.compile(
-    r"Form\s*13\s*F\s+(?:Information\s+)?Table\s+Value\s+Total(?:\s*\([^)]*\)|\s*x\s*\$?\s*1000)?\s*:\s*(?:\([^)]*\)\s*)?\$?\s*([\d,]+(?:\.\d+)?)"
+    r"Form\s*13\s*F\s+(?:Information\s+)?Table\s+Value\s+Total(?:\s*\([^)]*\)|\s*x\s*\$?\s*1000)?\s*:\.?\s*(?:\([^)]*\)\s*)?\$?\s*([\d,]+(?:\.\d+)?)"
     r"(?:\s*(Billion|Million|\(?(?:in\s+)?thousands?\)?|dollars?))?",
     re.I,
 )
@@ -34,7 +34,7 @@ _NON_HOLDING_LINE = re.compile(
     r"|\s*COLUMN\s+\d+(?:\s+(?:COLUMN\s+)?\d+)*\s*$"
     r"|\s*F\s*O\s*R\s*M\s*1\s*3\s*F(?:\b.*\bPAGE\s+\d+)?\s*$"
     r"|\s*(?:BUSINESS\s+)?(?:PHONE|TEL(?:EPHONE)?|FAX)(?:\s+NUMBER)?\s*:?\s*\+?\(?\d{1,6}\)?(?:[ \t.-]+\(?\d{1,6}\)?)+\s*$"
-    r"|\s*SK\s+\d{5}\s+\d{4}\s+\d{7}\s*$",
+    r"|\s*SK\s+\d{5}\s+\d{4}\s+\d{6,7}\s*$",
     re.I,
 )
 
@@ -58,6 +58,7 @@ def _source_rows(raw: str) -> list[tuple[str, str, str]]:
     # A split caption needs its preceding labels; bare numbers can be a holding.
     raw = re.sub(r"^[ \t]*(?:COLUMN[ \t]+)+COLUMN[ \t]*\r?\n(?=[ \t]*1[ \t]+2(?:[ \t]|$))", "COLUMN ", raw, flags=re.I | re.M)
     header = ""
+    layout: list[int] = []
     columns: list[int] = []
     blocks = _TABLE.findall(raw)
     if blocks and any(_holding_shaped(line) for line in _TABLE.sub("\n", raw).splitlines()):
@@ -71,13 +72,18 @@ def _source_rows(raw: str) -> list[tuple[str, str, str]]:
         positions = [match.start() for match in re.finditer(r"<[SC]>", lines[markers[0]], re.I)] if markers else []
         if headers:
             header = lines[headers[0]]
-            columns = positions
+            layout = columns = positions
             start = max(headers[0], markers[0] if markers else 0) + 1
-        elif not header or not positions or positions[:5] != columns[:5]:
-            if any(_holding_shaped(line) for line in lines):
+        elif not header or not positions or positions[:5] != layout[:5]:
+            if not any(_holding_shaped(line) for line in lines):
+                continue
+            # A continuation page may set its markers a column or two off the header page's.
+            if not header or len(positions) < 5 or len(layout) < 5 or any(abs(a - b) > 2 for a, b in zip(positions[:5], layout[:5], strict=False)):
                 raise ValueError("Unaccounted legacy holding page: missing or incompatible columns")
-            continue
+            columns = positions
+            start = markers[0] + 1
         else:
+            columns = layout
             start = markers[0] + 1
         if any(_holding_shaped(line) for line in lines[:start]):
             raise ValueError("Unaccounted legacy holdings before the table header/column marker")
@@ -226,6 +232,12 @@ def _holding(
             raise ValueError(f"Continuation without a prior CUSIP: {line[:100]}")
         cusip, issuer, title = prior
         tail = line.lstrip()
+        if _NUMBER.match(tail) is None:
+            # Not a continuation of `prior`: a named line whose own identifier or amounts are unreadable.
+            own = [m.group(1) for m in _CUSIP.finditer(line.upper()) if _valid_cusip(literal_13f_cusip(m.group(1)) or "")]
+            if own:
+                raise ValueError(f"Unreadable source value/shares for {own[0]}: {line[:120]}")
+            raise ValueError(f"Holding line without a source CUSIP: {line[:120]}")
     tail = _separate_adjacent_amounts(tail)
     numbers = []
     offset = len(tail) - len(tail.lstrip())

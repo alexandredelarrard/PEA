@@ -1183,3 +1183,98 @@ def test_legacy_read_makes_no_homepage_index_request(monkeypatch: pytest.MonkeyP
         assert isinstance(packet, f13.ReadFailure) and not packet.transient and outcome in packet.reason, packet
         result = f"deterministic failure {packet.reason[:60]!r}"
     print(f"SANITY: real legacy {accession} read from its SGML alone -> {result}; 0 -index.html requests, 0 network sends.")
+
+
+def _sample_source(accession: str, cik: str, filed: str, period: str) -> tuple[str, FilingStamp]:
+    """A real SEC information-table text as `read_filing_vintage` hands it over, with the sample's own stamp."""
+    raw = (_LEGACY_SOURCES / f"{accession}.sgml").read_text(encoding="utf-8")
+    filing = _Filing(_Report(None, txt=raw), cik=cik, filing_date=filed, period_of_report=period, accession_number=accession)
+    return raw, FilingStamp.of(filing, filing.cik)
+
+
+@pytest.mark.parametrize(
+    ("accession", "cik", "filed", "period", "rows", "raw_total", "checks", "shape"),
+    [
+        (
+            "0000919574-08-002711",
+            "0001387674",
+            "2008-05-02",
+            "2008-03-31",
+            52,
+            19012,
+            {"037833100": (140.0, 147.0), "20854P109": (66.0, 72.0)},
+            "a 'SK 03653 0001 874432' law-firm document number below the table; AAPL near $143.50 and CNX near $69 on 2008-03-31",
+        ),
+        (
+            "0001193125-12-233096",
+            "0001166309",
+            "2012-05-15",
+            "2012-03-31",
+            51,
+            1441565,
+            {"40412C101": (23.0, 26.5), "911363109": (40.0, 46.0)},
+            "a headerless second page whose <C> markers sit one column right; HCA near $24.7 and URI near $42.9 on 2012-03-30",
+        ),
+    ],
+)
+def test_sample_legacy_sources_parse_and_reconcile(
+    accession: str, cik: str, filed: str, period: str, rows: int, raw_total: int, checks: dict[str, tuple[float, float]], shape: str
+) -> None:
+    raw, stamp = _sample_source(accession, cik, filed, period)
+    manifest, book = f13.text_filing_vintage(raw, stamp)
+    header = manifest.iloc[0]
+    assert header.source_row_count == header.declared_row_count == rows, (header.source_row_count, header.declared_row_count)
+    assert header.source_value_total == header.declared_value_total == raw_total, (header.source_value_total, header.declared_value_total)
+    assert header.value_unit_factor == 1000.0
+    prices = {}
+    for cusip, (low, high) in checks.items():
+        holding = book.set_index("cusip").loc[cusip]
+        prices[cusip] = holding.value_usd / holding.shares
+        assert low < prices[cusip] < high, (cusip, prices[cusip])
+    quoted = ", ".join(f"{cusip} ${price:.2f}" for cusip, price in prices.items())
+    print(f"SANITY: real {accession} ({shape}) parses {rows}/{rows} rows, raw total {raw_total:,} equals the cover; {quoted}.")
+
+
+@pytest.mark.parametrize(
+    ("accession", "cik", "filed", "period", "reason", "shape"),
+    [
+        ("0000892712-01-500072", "0001123570", "2001-05-14", "2001-03-31", "Invalid source CUSIP '999000020'", "Flextronics under an internal code"),
+        (
+            "0001039565-01-500004",
+            "0001039565",
+            "2001-04-27",
+            "2001-03-31",
+            "Invalid source CUSIP '022609107'",
+            "American Home Products typo of 026609107",
+        ),
+        (
+            "0001137065-01-500009",
+            "0001137065",
+            "2001-04-26",
+            "1999-03-31",
+            "Holding line without a source CUSIP: Blake Barrows & Brown",
+            "blank CUSIP cell, not Berkley's 084423102 above it",
+        ),
+        (
+            "0000950144-08-003876",
+            "0001409775",
+            "2008-05-09",
+            "2008-03-31",
+            "Holding line without a source CUSIP: Altium FX LTD",
+            "blank CUSIP cell, not Altera's 021441100 above it",
+        ),
+        (
+            "0000948985-12-000005",
+            "0000948985",
+            "2012-05-15",
+            "2012-03-31",
+            "Unreadable source value/shares for 168628105: Chief Consolidated Mining",
+            "a '?' VALUE cell under its own CUSIP, not Chevron's 166764100 above it",
+        ),
+    ],
+)
+def test_sample_legacy_sources_keep_failing_with_the_right_reason(accession: str, cik: str, filed: str, period: str, reason: str, shape: str) -> None:
+    raw, stamp = _sample_source(accession, cik, filed, period)
+    with pytest.raises(ValueError, match=re.escape(reason)):
+        f13.text_filing_vintage(raw, stamp)
+    print(f"SANITY: real {accession} ({shape}) still fails loudly: {reason!r}.")

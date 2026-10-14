@@ -12,7 +12,7 @@ import os
 from datetime import UTC, date, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 import pytest
@@ -26,7 +26,7 @@ from src.data_extract.utils.common.identity import build_identity
 from src.data_extract.utils.fundamentals import fetch_financial_statements as fin
 from src.data_extract.utils.institutionals import fetch_insider_transactions as ins
 from src.data_extract.utils.institutionals.insider_common import BULK_DATE_FORMATS, build_insider_frame, screen_insider_rows
-from src.data_store.schema import Tables
+from src.data_store.schema import Resume, Tables
 from src.data_store.store import DataStore
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
 
@@ -53,7 +53,9 @@ def test_bulk_quarter_periods_are_deterministic_and_bounded():
     single place."""
     from src.data_extract.utils.common.bulk_cache import quarter_periods
 
-    qs = quarter_periods(3, ins.SEC_INSIDER_FIRST_YEAR, today=pd.Timestamp("2024-05-01"))
+    insider_first_year = pd.Timestamp(cast(str, cast(Resume, Tables.insider_transactions.resume).source_start)).year
+    statement_first_year = pd.Timestamp(cast(str, cast(Resume, Tables.pension_facts.resume).source_start)).year
+    qs = quarter_periods(3, insider_first_year, today=pd.Timestamp("2024-05-01"))
     assert qs == [
         "2021q1",
         "2021q2",
@@ -73,13 +75,13 @@ def test_bulk_quarter_periods_are_deterministic_and_bounded():
         "2024q4",
     ]
     # never emits before the data set exists, whichever data set asks
-    for first_year in (ins.SEC_INSIDER_FIRST_YEAR, fin.SEC_FINSTMT_FIRST_YEAR):
+    for first_year in (insider_first_year, statement_first_year):
         assert all(int(q[:4]) >= first_year for q in quarter_periods(50, first_year, today=pd.Timestamp("2024-05-01")))
     print("\n=== SANITY: shared quarter_periods bounded to each data-set era ===")
     print(
         f"  years_history=3 @2024 -> {len(qs)} quarters 2021q1..2024q4; "
-        f"first-year floor honoured for insider ({ins.SEC_INSIDER_FIRST_YEAR}) and "
-        f"finstmt ({fin.SEC_FINSTMT_FIRST_YEAR}). Validated."
+        f"first-year floor honoured for insider ({insider_first_year}) and "
+        f"finstmt ({statement_first_year}). Validated."
     )
 
 
@@ -207,10 +209,11 @@ def test_insider_work_list_comes_from_the_stored_quarters_alone(tmp_path):
 
 
 def test_insider_download_caches_every_quarter_from_the_first_year_and_parses_nothing(tmp_path, monkeypatch):
-    """The download step the identity build depends on: every quarter since `SEC_INSIDER_FIRST_YEAR`, old and new URL
+    """The download step the identity build depends on: every quarter since the table's source start, old and new URL
     templates, an unpublished quarter skipped, no store access and no identity load."""
     requested: list[tuple[str, tuple[str, str]]] = []
     spans: list[tuple[int, int]] = []
+    insider_first_year = pd.Timestamp(cast(str, cast(Resume, Tables.insider_transactions.resume).source_start)).year
 
     def _ensure(context, path, url, **kwargs):
         requested.append((path.name, url))
@@ -231,13 +234,13 @@ def test_insider_download_caches_every_quarter_from_the_first_year_and_parses_no
 
     assert ins.download_insider_transactions(context) == ["2006q1", "2026q2"]
     assert [name for name, _ in requested] == ["2006q1.zip", "2026q2.zip", "2026q3.zip"]
-    assert spans == [(pd.Timestamp.today().year - ins.SEC_INSIDER_FIRST_YEAR + 1, ins.SEC_INSIDER_FIRST_YEAR)]
+    assert spans == [(pd.Timestamp.today().year - insider_first_year + 1, insider_first_year)]
     assert requested[0][1] == ins.zip_urls("2006q1") and requested[0][1][0] == ins.SEC_INSIDER_URL_TEMPLATE.format(quarter="2006q1")
     assert requested[1][1] == ins.zip_urls("2026q2") and requested[1][1][0] == ins.SEC_INSIDER_URL_NEW_TEMPLATE.format(quarter="2026q2")
 
     print("\n=== SANITY CHECK: insider download step ===")
     print(
-        f"  {len(requested)} quarter(s) requested from {ins.SEC_INSIDER_FIRST_YEAR}, both SEC paths each, likelier first; 2 cached, the unpublished one skipped; no parse. Validated."
+        f"  {len(requested)} quarter(s) requested from {insider_first_year}, both SEC paths each, likelier first; 2 cached, the unpublished one skipped; no parse. Validated."
     )
 
 
@@ -295,7 +298,10 @@ def test_pension_join_filters_segments_and_coreg():
 def test_pension_historical_zip_available_after_quarter_end_plus_twelve_days(quarter: str, expected: date, tmp_path: Path) -> None:
     assert (
         bulk_cache.archive_available_at(
-            bulk_cache.period_end(quarter), tmp_path / f"{quarter}.zip", observed_from=fin._OBSERVED_FROM, downloaded=False
+            bulk_cache.period_end(quarter),
+            tmp_path / f"{quarter}.zip",
+            observed_from=date.fromisoformat(cast(str, cast(Resume, Tables.pension_facts.resume).observed_from)),
+            downloaded=False,
         )
         == expected
     )
@@ -309,11 +315,19 @@ def test_pension_future_cached_zip_uses_new_york_file_date(tmp_path: Path) -> No
     downloaded = datetime(2026, 10, 16, 0, 30, tzinfo=UTC)  # Still October 15 in New York.
     os.utime(path, (downloaded.timestamp(), downloaded.timestamp()))
 
-    assert bulk_cache.archive_available_at(bulk_cache.period_end("2026q3"), path, observed_from=fin._OBSERVED_FROM, downloaded=False) == date(
-        2026, 10, 15
-    )
+    assert bulk_cache.archive_available_at(
+        bulk_cache.period_end("2026q3"),
+        path,
+        observed_from=date.fromisoformat(cast(str, cast(Resume, Tables.pension_facts.resume).observed_from)),
+        downloaded=False,
+    ) == date(2026, 10, 15)
     assert (
-        bulk_cache.archive_available_at(bulk_cache.period_end("2026q3"), tmp_path / "missing.zip", observed_from=fin._OBSERVED_FROM, downloaded=False)
+        bulk_cache.archive_available_at(
+            bulk_cache.period_end("2026q3"),
+            tmp_path / "missing.zip",
+            observed_from=date.fromisoformat(cast(str, cast(Resume, Tables.pension_facts.resume).observed_from)),
+            downloaded=False,
+        )
         is None
     )
     print("\n=== SANITY CHECK: cached future pension ZIP clock ===")

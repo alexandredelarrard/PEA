@@ -38,11 +38,13 @@ from src.data_extract.utils.fundamentals.periods import (
     fiscal_year_ends,
     load_guards,
 )
-from src.data_store.schema import Tables
+from src.data_store.schema import Resume, Tables
 from src.utils.string import normalise_ticker, pad_cik_series
 
 #: Form precedence for a same-day collapse; keeps `publication_form` a scalar.
-FORM_PRECEDENCE: tuple[str, ...] = ("10-K", "10-K/A", "10-Q", "10-Q/A")
+FORM_PRECEDENCE = tuple(
+    sorted(cast(Resume, Tables.fundamentals_facts.resume).forms, key=lambda form: (not form.startswith("10-K"), form.endswith("/A")))
+)
 
 #: Structural, not tunable: a restated quarter stays inside some live TTM window for twelve months.
 MAX_AMENDMENT_LAG_DAYS = 365
@@ -901,14 +903,15 @@ def _unpublished_events(context, ticker: str, stored: pd.DataFrame, history: pd.
         context.log.error(
             "history: %s would CHANGE %d already-published cell(s) "
             "across %d row(s) -- refusing to overwrite. Re-run with "
-            "--rebuild-history to accept:\n%s",
+            "fundamentals-history-sec --full to accept:\n%s",
             ticker,
             len(drift),
             drift["as_of"].nunique(),
             drift.head(20).to_string(),
         )
         raise ValueError(
-            f"{ticker}: {len(drift)} stored fundamentals_history_sec cell(s) would change; history is append-only (pass --rebuild-history to rebuild)"
+            f"{ticker}: {len(drift)} stored fundamentals_history_sec cell(s) would change; history is append-only "
+            "(run fundamentals-history-sec --full to rebuild)"
         )
     known = set(pd.to_datetime(stored["as_of"]))
     new = ~pd.to_datetime(history["as_of"]).isin(known)
@@ -1184,7 +1187,7 @@ def build_fundamentals_history(
     filings snapshots its new events only, and the rest replay in full. Append-only: a full replay saves only new
     `as_of` events, and a stored row that would change raises ValueError after logging the diff.
     `verify_history=True` replays every ticker in full under that guard. `rebuild_history=True` (CLI
-    `--rebuild-history`) deletes the ticker's rows from both tables and rebuilds from stored facts, with no network;
+    `fundamentals-history-sec --full`) deletes the ticker's rows from both tables and rebuilds from stored facts, with no network;
     so does a ticker whose lineage scope changed recently (`resume.recently_changed` on `as_of`) when its recomputed
     history differs from the stored one. `fetched` (filing dates a same-process fetch read, per ticker) and
     `full_fetch` (that fetch ran with `-F`) route back-dated reads to the full replay. A ticker whose facts come from

@@ -452,7 +452,7 @@ def build_merged_history(context: Context, tickers: list[str], *, full: bool = F
 
     field_map = load_field_map(config_dir)
     overrides = load_overrides(config_dir)
-    names = sorted({t.strip().upper() for t in tickers if t and t.strip()})
+    names = sorted(set(tickers))
 
     vendor = context.store.load(Tables.sharadar_fundamentals, project=True, where={"ticker": names, "dimension": ARQ}, optional=True)
     if vendor is None or vendor.empty:

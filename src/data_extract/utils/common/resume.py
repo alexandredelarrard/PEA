@@ -33,6 +33,7 @@ from src.data_extract.utils.common.identity import FilingScope, Identity
 from src.data_extract.utils.common.incremental import stored_values
 from src.data_extract.utils.common.registrant import listing_ciks, resolve_registrant_entries
 from src.data_store.schema import Resume, Table, Tables
+from src.utils.string import normalise_ticker
 from src.utils.universe import load_universe_tickers, new_tickers
 
 logger = logging.getLogger(__name__)
@@ -335,6 +336,7 @@ class ArchiveWork:
     screen: list[str]
     scoped: bool
     held: list[str] = field(default_factory=list)
+    universe: list[str] = field(default_factory=list)
 
     def units(self) -> Iterator[tuple[str, list[str]]]:
         """`(period, keys to keep)` in period order; a period is never in both lists."""
@@ -373,7 +375,7 @@ def _new_rowless_keys(context: Context, tables: Sequence[Table], keys: Collectio
         key_col = cast(str, cast(Resume, table.resume).key)
         if {key_col, _period_column(table)} <= set(context.store.columns(table)):
             where = {key_col: sorted(new), _period_column(table): context.store.NOT_NULL}
-            new -= {str(k).upper() for k in context.store.distinct(table, key_col, where=where)}
+            new -= {normalise_ticker(k) for k in context.store.distinct(table, key_col, where=where)}
     return new
 
 
@@ -386,16 +388,17 @@ def archive_worklist(
     as_of: pd.Timestamp,
     *,
     full: bool = False,
+    all_tickers: Collection[str] | None = None,
 ) -> ArchiveWork:
     """Which archive periods to parse, and for which keys, from the stored periods of `tables` alone.
 
     Pending = listed periods missing from any table. Rescan = listed periods stored in every table and
     cached on disk (any stored period under `full`), for the new rowless keys, or every key under `full`.
     """
-    keys = sorted({str(k).strip().upper() for k in keys})
+    keys = sorted(set(keys))
     listed, stored = archive_periods(context, tables, published)
     missing = [p for p in listed if p not in stored]
-    universe = set(load_universe_tickers(context))
+    universe = set(load_universe_tickers(context) if all_tickers is None else all_tickers)
     scoped = bool(universe - set(keys))
     rescan_keys = keys if full else sorted(_new_rowless_keys(context, tables, keys, as_of))
     on_disk = set(cached)
@@ -418,4 +421,5 @@ def archive_worklist(
         screen=sorted(universe | set(keys)),
         scoped=scoped,
         held=held,
+        universe=sorted(universe),
     )

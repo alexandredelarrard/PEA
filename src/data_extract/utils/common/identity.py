@@ -12,7 +12,6 @@ per row. An unknown CIK is its own singleton entity `E{cik}`.
 from __future__ import annotations
 
 import logging
-import weakref
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -46,10 +45,10 @@ from src.data_extract.utils.common.security_master import (
     merger_boundaries,
     squash,
 )
-from src.data_extract.utils.common.symbol_tenure import DEI_SOURCE, normalise_market_symbol
+from src.data_extract.utils.common.symbol_tenure import DEI_SOURCE
 from src.data_store.schema import Tables
 from src.utils.cik_windows import widen_seams
-from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
+from src.utils.string import normalise_ticker, pad_cik, pad_cik_series, yahoo_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -69,10 +68,6 @@ class AmbiguousSymbolTenureError(IdentityError):
 
 #: One axis-B tenure: (entity_id, valid_from, valid_to or None when open, n_filings).
 TenureRow = tuple[str, pd.Timestamp, pd.Timestamp | None, int]
-
-
-#: Per-context cache (weak keys) so one database's identity never leaks into another context.
-_CACHE: weakref.WeakKeyDictionary[Context, Identity] = weakref.WeakKeyDictionary()
 
 
 def _as_timestamp(value) -> pd.Timestamp | None:
@@ -217,21 +212,24 @@ class Identity:
         """The entity a CIK belongs to. A CIK with no stored row IS its own entity."""
         return entity_or_singleton(self.entity_by_cik, pad_cik(cik))
 
-    def universe_entity(self, ticker: str) -> str:
-        """The entity of a universe ticker via its roster CIK; raises `UnknownUniverseTickerError` rather than returning None."""
-        key = normalise_ticker(ticker)
+    def _roster_cik(self, key: str) -> str:
+        """Look up a normalized universe ticker, raising for missing roster CIKs."""
         if key not in self.roster_cik:
             raise UnknownUniverseTickerError(
                 f"identity: {key!r} is not a universe ticker in sp500_tickers (or its roster "
                 f"row carries no CIK). {len(self.roster_cik)} ticker(s) are resolvable."
             )
-        return self.entity_of(self.roster_cik[key])
+        return self.roster_cik[key]
+
+    def universe_entity(self, ticker: str) -> str:
+        """The entity of a universe ticker via its roster CIK; raises `UnknownUniverseTickerError` rather than returning None."""
+        return self.entity_of(self._roster_cik(normalise_ticker(ticker)))
 
     def filing_scope(self, ticker: str) -> FilingScope:
         """The ticker's event CIKs, seam-widened consolidating windows and scope timestamp."""
         key = normalise_ticker(ticker)
-        entity = self.universe_entity(key)
-        roster_cik = self.roster_cik[key]
+        roster_cik = self._roster_cik(key)
+        entity = self.entity_of(roster_cik)
         return FilingScope(
             ticker=key,
             entity=entity,
@@ -280,13 +278,13 @@ class Identity:
         stamp = _as_timestamp(on)
         if stamp is None:
             return []
-        rows = self.symbol_intervals.get(normalise_market_symbol(symbol), ())
+        rows = self.symbol_intervals.get(yahoo_symbol(symbol), ())
         hits = [row for row in rows if row.status != "noise" and row.covers(stamp) and row.tape_symbol and self._windowed(row, stamp)]
         return [] if any(row.status == "conflict" for row in hits) else hits
 
     def universe_symbols(self, universe: Collection[str]) -> frozenset[str]:
         """The universe tickers plus every symbol a non-`noise` tape interval of a window CIK dates to one of their entities."""
-        requested = frozenset(normalise_ticker(ticker) for ticker in universe)
+        requested = frozenset(universe)
         entities = {entity for entity, ticker in self.ticker_by_entity.items() if ticker in requested}
         dated = {
             symbol
@@ -370,7 +368,7 @@ class Identity:
         An active manual tenure wins. Ambiguity is judged at entity grain, not CIK grain, and raises
         `AmbiguousSymbolTenureError`; without `as_of` it raises when more than one entity ever held it.
         """
-        key = normalise_market_symbol(symbol)
+        key = yahoo_symbol(symbol)
         rows = self.tenure_by_symbol.get(key)
         if not rows:
             return None
@@ -445,7 +443,7 @@ def build_identity(
         ticker_by_entity=ticker_by_entity,
         tenure_by_symbol=tenure_by_symbol,
         manual_tenure_by_symbol=manual_tenure_by_symbol,
-        redundant_symbols=frozenset(normalise_market_symbol(symbol) for symbol in (redundant_symbols or frozenset())),
+        redundant_symbols=frozenset(yahoo_symbol(symbol) for symbol in (redundant_symbols or frozenset())),
         event_ciks_by_entity=event_ciks,
         windows_by_entity=windows,
         symbol_intervals=_symbol_intervals(lineage),
@@ -523,7 +521,7 @@ def _tenure_maps(tenure: pd.DataFrame, entity_by_cik: Mapping[str, str]) -> tupl
         if start is pd.NaT:
             continue
         row = (entity_or_singleton(entity_by_cik, cik), start, None if end is pd.NaT else end, int(n))
-        normalized_symbol = normalise_market_symbol(symbol)
+        normalized_symbol = yahoo_symbol(symbol)
         tenure_by_symbol.setdefault(normalized_symbol, []).append(row)
         if source.strip().lower() == "manual":
             manual_tenure_by_symbol.setdefault(normalized_symbol, []).append(row)
@@ -605,7 +603,7 @@ def _symbol_intervals(lineage: pd.DataFrame) -> dict[str, tuple[SymbolInterval, 
     ):
         evidence = frozenset(part.strip().lower() for part in sources.split(",") if part.strip())
         interval = SymbolInterval(entity, _bound(start), _as_timestamp(end), status, evidence, str(cik))
-        out.setdefault(normalise_market_symbol(symbol), []).append(interval)
+        out.setdefault(yahoo_symbol(symbol), []).append(interval)
     return {symbol: tuple(values) for symbol, values in out.items()}
 
 
@@ -667,29 +665,28 @@ def _log_identity(identity: Identity) -> None:
 
 def load_identity(context: Context, refresh: bool = False) -> Identity:
     """The resolver for this run, built once per context and cached on it (`refresh` rebuilds)."""
-    cached = None if refresh else _CACHE.get(context)
-    if cached is not None:
+    cached = getattr(context, "_identity_resolver", None)
+    if not refresh and isinstance(cached, Identity):
         return cached
     lineage = context.store.load(Tables.entity_lineage, project=True)
-    tenure = context.store.load(Tables.symbol_tenure, project=True, where={"source": list(TENURE_SOURCES)})
+    tenure = context.store.load(
+        Tables.symbol_tenure,
+        columns=["symbol", "issuer_cik", "valid_from", "valid_to", "n_filings", "source"],
+        where={"source": [*TENURE_SOURCES, DEI_SOURCE]},
+    )
     roster = context.store.load(Tables.sp500_tickers, columns=list(ROSTER_COLUMNS))
     master = context.store.load(Tables.security_master, project=True, optional=True)
-    evidence = context.store.load(
-        Tables.symbol_tenure,
-        columns=["issuer_cik", "source", "valid_from", "valid_to"],
-        where={"source": [FORM345_SOURCE, DEI_SOURCE]},
-        optional=True,
-    )
     assert lineage is not None and tenure is not None and roster is not None
+    evidence = tenure.loc[tenure["source"].isin((FORM345_SOURCE, DEI_SOURCE)), ["issuer_cik", "source", "valid_from", "valid_to"]]
     manual = load_security_manual(str(context.config_dir))
     identity = build_identity(
         lineage=lineage,
-        tenure=tenure,
+        tenure=tenure[tenure["source"].isin(TENURE_SOURCES)],
         roster=roster,
         redundant_symbols=frozenset(context.config.data_extract.redundant_ticks),
         master=master,
         co_registrant_ciks=co_registrant_ciks(lineage, evidence, manual.co_registrants),
         mergers=merger_boundaries(manual),
     )
-    _CACHE[context] = identity
+    context._identity_resolver = identity
     return identity

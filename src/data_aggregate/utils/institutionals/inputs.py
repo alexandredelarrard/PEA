@@ -55,7 +55,7 @@ def load_source(
     """
     filters: dict[str, Any] = dict(where or {})
     if universe is not None and table.ticker_col:
-        filters[table.ticker_col] = sorted(set(map(str, universe)))
+        filters[table.ticker_col] = sorted(set(universe))
         _report_off_universe(store, log, table, universe)
 
     frame = store.load(table, project=True, where=filters or None, optional=True)
@@ -77,7 +77,7 @@ def _report_off_universe(
     if not column:
         return
     present = {str(ticker) for ticker in store.distinct(table, column)}
-    off_universe = sorted(present - set(map(str, universe)))
+    off_universe = sorted(present - set(universe))
     if not off_universe:
         return
     log.info(
@@ -109,7 +109,7 @@ def load_symbol_lineage(
     universe: Sequence[str],
 ) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
     """Load the issuer lineage (`form345`/`manual` tenure on the roster CIKs) used to validate already-canonical source rows."""
-    tickers = sorted(set(map(str, universe)))
+    tickers = sorted(set(universe))
     ticker_ciks = store.load(
         Tables.sp500_tickers,
         columns=("ticker", "cik"),
@@ -148,7 +148,7 @@ def load_secondary_classes(
     lines = store.load(
         Tables.security_master,
         columns=list(CLASS_LINE_COLUMNS),
-        where={"lineage_role": SECONDARY_CLASS, "canonical_company": sorted(set(map(str, universe)))},
+        where={"lineage_role": SECONDARY_CLASS, "canonical_company": sorted(set(universe))},
         optional=True,
     )
     if lines is None or lines.empty:
@@ -181,7 +181,7 @@ def load_insider_transactions(store: DataStore, log: logging.Logger, universe: S
     columns = [column for column in dict.fromkeys((*table.read_columns, "issuer_cik")) if column in present]
     where: dict[str, Any] = {"lineage_role": list(CANONICAL_ROLES)}
     if universe is not None:
-        where["ticker"] = sorted(set(map(str, universe)))
+        where["ticker"] = sorted(set(universe))
         _report_off_universe(store, log, table, universe)
     chunks = list(store.iter_load(table, columns=columns, where=where))
     if not chunks:

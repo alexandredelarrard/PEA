@@ -12,10 +12,11 @@ import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 
+from src.data_store.schema import Resume, Tables
 from src.utils.identity_flags import MARGIN
 from src.utils.quarters import quarter_label, quarter_ordinal
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
@@ -29,7 +30,7 @@ VENDOR_SERIES_OTHER_COMPANY = "vendor_series_other_company"
 CUTOVER_WINDOW_YEARS = 2
 
 #: The periodic forms whose period of report is a fiscal quarter or year end.
-PERIODIC_FORMS = ("10-Q", "10-Q/A", "10-K", "10-K/A", "10-KT", "10-KT/A")
+PERIODIC_FORMS = cast(Resume, Tables.fundamentals_facts.resume).forms
 
 EXCEPTIONS_FILE = Path("sec") / "vendor_coverage_exceptions.json"
 FILING_COLUMNS = ("ticker", "cik", "accession_number", "form", "filing_date", "period_of_report")

@@ -16,6 +16,7 @@ import src.data_extract.utils.fundamentals.fundamentals_employees as mod
 from src.data_extract.utils.common import edgar_driver
 from src.data_extract.utils.common.identity import FilingScope
 from src.data_extract.utils.common.registrant import Combine, combine_for
+from src.data_store.schema import Tables
 from src.gpt_extract.utils.schemas_gpt import LlmResult
 
 
@@ -678,7 +679,8 @@ def test_prompt_states_the_component_rules():
 
 
 def test_legacy_annual_form_uses_dated_registrant_scope():
-    assert combine_for(mod.HEADCOUNT_FORMS) is Combine.SPLIT
+    assert Tables.fundamentals_employees.resume is not None
+    assert combine_for(Tables.fundamentals_employees.resume.forms) is Combine.SPLIT
     print("\nSANITY: 10-K405 joins the dated annual registrant scope used with entity lineage and symbol tenure.")
 
 

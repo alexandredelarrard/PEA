@@ -74,15 +74,15 @@ class StepExtractAllData(Step):
             redundant_symbols=frozenset(self._config.data_extract.redundant_ticks),
         )
         build_security_master(self._context, lineage, str(self._context.config_dir))
-        propagate_identity(self._context, tickers, identity=load_identity(self._context, refresh=True))
+        propagate_identity(self._context, tickers, identity=load_identity(self._context, refresh=True), all_tickers=tickers)
 
     def run(self) -> None:
         tickers = self._resolve_tickers()
 
         self._refresh_identity(tickers)
         self._prices.run(tickers=tickers)
-        self._institutionals.run(tickers=tickers)
+        self._institutionals.run(tickers=tickers, all_tickers=tickers)
         self._fundamentals_sharadar.run(tickers=tickers, full=False)
-        self._fundamentals.run(tickers=tickers, full=False)
+        self._fundamentals.run(tickers=tickers, full=False, all_tickers=tickers)
         self._structure.run(tickers=tickers)
         self._behavioral.run(tickers=tickers)

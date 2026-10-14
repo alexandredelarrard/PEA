@@ -79,16 +79,17 @@ from src.data_aggregate.utils.institutionals.availability import availability_da
 from src.data_aggregate.utils.institutionals.holdings_clean import clean_holdings
 from src.data_aggregate.utils.institutionals.split_basis import future_split_factor, split_cum_product
 from src.data_aggregate.utils.institutionals.value_basis import log_register, nullable_value_to_daily, repair_value_basis
+from src.data_store.schema import Resume, Tables
 from src.utils.institutional_vintages import iter_public_books
 
 logger = logging.getLogger(__name__)
 
 #: The first period whose all-filer coverage describes the market rather than the fetch
 #: (measured above: 63 -> 2,938 in-universe filers, post-band).
-INST_LEVEL_FLOOR_PERIOD = pd.Timestamp("2013-06-30")
+INST_LEVEL_FLOOR_PERIOD = pd.Timestamp(cast(str, cast(Resume, Tables.sec13f_hr.resume).coverage_start))
 
 #: The first period whose PREDECESSOR is also post-break, so a QoQ delta is meaningful.
-INST_DELTA_FLOOR_PERIOD = pd.Timestamp("2013-09-30")
+INST_DELTA_FLOOR_PERIOD = INST_LEVEL_FLOOR_PERIOD + pd.offsets.QuarterEnd(1)
 
 #: D17. A quarter-on-quarter move in the universe-wide filer count larger than this is a
 #: coverage discontinuity, not a market event. A research parameter, so the step passes the

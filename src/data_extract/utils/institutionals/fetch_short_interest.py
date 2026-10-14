@@ -22,10 +22,10 @@ import logging
 import re
 import time
 from collections.abc import Collection, Mapping, Sequence
+from typing import cast
 
 import pandas as pd
 import requests
-from src.utils.batching import batched_tuples
 from tqdm import tqdm
 
 from src.constants.constants import BROWSER_HEADERS, CANONICAL_CURRENT, CANONICAL_PREDECESSOR, DATE_FORMAT_COMPACT
@@ -34,7 +34,6 @@ from src.data_extract.utils.common.identity import Identity, SecurityHit, load_i
 from src.data_extract.utils.common.resume import document_floor, series_windows, session_dates, trading_calendar
 from src.data_extract.utils.common.security_master import EXCLUDED, SOURCE_FTD
 from src.data_extract.utils.common.sessions import last_completed_session
-from src.data_extract.utils.common.symbol_tenure import normalise_market_symbol
 from src.data_extract.utils.institutionals.fetch_fails_to_deliver import load_fails_master, master_stamps
 from src.data_extract.utils.institutionals.security_tape import (
     KEY_CHUNK,
@@ -48,13 +47,11 @@ from src.data_extract.utils.institutionals.security_tape import (
     summed_lines,
     warn_lost_rows,
 )
-from src.data_store.schema import Tables
-from src.utils.string import normalise_ticker, squash
+from src.data_store.schema import Resume, Tables
+from src.utils.batching import batched_tuples
+from src.utils.string import squash, yahoo_symbol
 
 _URL = "https://cdn.finra.org/equity/regsho/daily/CNMSshvol{yyyymmdd}.txt"
-#: The CDN's first served date (a rolling window) and the one older file it still serves.
-FIRST_SERVED_DAY = pd.Timestamp("2018-08-01")
-EXTRA_SERVED_DAYS = (pd.Timestamp("2017-12-29"),)
 
 RAW_COLUMNS = ("date", "source_symbol", "market", "short_volume", "short_exempt_volume", "total_volume")
 #: Column order of `sec_short_volume_security`; the last four are stamped from the security master.
@@ -127,32 +124,27 @@ def _class_letter(symbol: str) -> str | None:
     return parts[1] if len(parts) == 2 and _CLASS_SUFFIX.match(parts[1]) else None
 
 
-def _market_symbol(symbol: str) -> str:
-    return normalise_market_symbol(str(symbol).upper().replace("/", "-"))
-
-
 # --------------------------------------------------------------------------- #
 # Stamp through the security master, aggregate to the ticker grain (pure)        #
 # --------------------------------------------------------------------------- #
 def master_keys(identity: Identity, universe: Collection[str]) -> frozenset[str]:
     """FTD keys of the master securities of `universe` companies."""
-    requested = frozenset(normalise_ticker(t) for t in universe)
     return frozenset(
         key
         for (source, key), intervals in identity.securities_by_symbol.items()
-        if source == SOURCE_FTD and any(hit.canonical_company in requested for _, _, hit in intervals)
+        if source == SOURCE_FTD and any(hit.canonical_company in universe for _, _, hit in intervals)
     )
 
 
 def _fallback(identity: Identity, symbol: str, day: pd.Timestamp) -> SecurityHit | None:
     """P21: the lineage tape interval of a window CIK inside its window, as an `S<cik>:<symbol>` security."""
-    interval = identity.tape_interval(_market_symbol(symbol), day)
+    interval = identity.tape_interval(symbol, day)
     company = None if interval is None else identity.ticker_by_entity.get(interval.entity)
     if interval is None or company is None:
         return None
     role = CANONICAL_CURRENT if identity.roster_cik.get(company) == interval.cik else CANONICAL_PREDECESSOR
     letter = _class_letter(symbol)
-    return SecurityHit(f"S{interval.cik}:{_market_symbol(symbol)}", company, role, f"class_{letter}" if letter else "common", 1.0)
+    return SecurityHit(f"S{interval.cik}:{yahoo_symbol(symbol)}", company, role, f"class_{letter}" if letter else "common", 1.0)
 
 
 def _hit_column(hits: Sequence[SecurityHit | None], field: str, index: pd.Index) -> pd.Series:
@@ -168,7 +160,7 @@ def stamp_short_volume(lines: pd.DataFrame, identity: Identity, universe: Collec
     never seen in FTD is kept only through the P21 fallback; any other line is dropped. A line marked non-common by
     its own FINRA symbology is never summed.
     """
-    requested = frozenset(normalise_ticker(t) for t in universe)
+    requested = frozenset(universe)
     known = master_keys(identity, requested)
     rows = lines.reset_index(drop=True).copy()
     rows["date"] = pd.to_datetime(rows["date"]).dt.normalize()
@@ -285,10 +277,10 @@ def _stored_days(context: Context) -> set[pd.Timestamp]:
 
 
 def _full_days(context: Context, today: pd.Timestamp) -> tuple[list[pd.Timestamp], set[pd.Timestamp]]:
-    """`(days to fetch, stored days)`: every business day from `FIRST_SERVED_DAY`, the extra served files, and every
+    """`(days to fetch, stored days)`: every business day from the table's source start, and every
     day stored in either table."""
     stored = _stored_days(context)
-    days = set(pd.bdate_range(FIRST_SERVED_DAY, today)) | set(EXTRA_SERVED_DAYS) | stored
+    days = set(pd.bdate_range(cast(Resume, Tables.short_interest.resume).source_start, today)) | stored
     return sorted(day for day in days if day <= today), stored
 
 
@@ -321,6 +313,7 @@ def restamp_short_volume(
     stamps: Mapping[str, pd.Timestamp] | None = None,
     dry_run: bool = False,
     as_of: pd.Timestamp | None = None,
+    others: frozenset[str] | None = None,
 ) -> list[dict]:
     """Re-stamp the stored rows of `companies` and rebuild their ticker rows, writing only what changed.
 
@@ -339,8 +332,8 @@ def restamp_short_volume(
         companies = restamp_targets(context, table, stamps, as_of)
     if not companies:
         return []
-    universe = frozenset(normalise_ticker(t) for t in tickers)
-    others = outside_scope(context, universe)
+    universe = frozenset(tickers)
+    others = outside_scope(context, universe) if others is None else others
     names = sorted(set(companies) - others)
     if not names:
         return []
@@ -385,12 +378,14 @@ def _log_stamps(stamped: pd.DataFrame) -> None:
 def fetch_short_interest(
     context: Context,
     tickers: list[str],
-    years_history: int = 15,
+    years_history: int = 31,
     pause: float = 0.05,
     full: bool = False,
     identity: Identity | None = None,
     as_of: pd.Timestamp | None = None,
     repair: bool = False,
+    *,
+    all_tickers: Collection[str] | None = None,
 ) -> None:
     """Fetch the RegSHO day files, store their in-scope lines stamped, and rebuild `short_interest` for those days.
 
@@ -399,8 +394,8 @@ def fetch_short_interest(
     one); unscoped, any stored day not served or any fetch error aborts before the two tables are replaced;
     scoped (`-t`), the tickers' rows are upserted and no other key is touched.
     """
-    universe = frozenset(normalise_ticker(ticker) for ticker in tickers)
-    others = outside_scope(context, universe)
+    universe = frozenset(tickers)
+    others = outside_scope(context, universe, all_tickers)
     scoped = bool(others)
     if full:
         days, stored_days = _full_days(context, pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize())
@@ -427,7 +422,7 @@ def fetch_short_interest(
             continue
         successful.append(day)
         lines = _parse_regsho(text)
-        in_scope = lines["source_symbol"].map(finra_key).isin(known) | lines["source_symbol"].map(_market_symbol).isin(fallback)
+        in_scope = lines["source_symbol"].map(finra_key).isin(known) | lines["source_symbol"].map(yahoo_symbol).isin(fallback)
         if in_scope.any():
             frames.append(lines[in_scope])
         time.sleep(pause)
@@ -463,5 +458,6 @@ def fetch_short_interest(
             context.store.delete(Tables.short_interest, where={"ticker": chunk, "date": successful})
     if not grain.empty:
         written = context.store.save(Tables.short_interest, grain)
+
     logger.info(f"Saved {written} short-volume ticker row(s) over {len(successful)} day(s) to '{Tables.short_interest}'")
-    warn_lost_rows(logger, "RegSHO", restamp_short_volume(context, None, universe, identity=resolver, as_of=as_of))
+    warn_lost_rows(logger, "RegSHO", restamp_short_volume(context, None, universe, identity=resolver, as_of=as_of, others=others))

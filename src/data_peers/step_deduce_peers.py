@@ -50,7 +50,8 @@ class StepDeducePeers(Step):
 
     def load_prices(self):
         self._log.info("Loading prices from DB table 'prices'")
-        self.prices_long = self._context.store.load(Tables.prices, where={"ticker": load_universe_tickers(self._context)})
+        self._tickers = load_universe_tickers(self._context)
+        self.prices_long = self._context.store.load(Tables.prices, where={"ticker": self._tickers})
 
     def load_pre_computed_peers(self, peers_path):
         self.peers = load_peer_dict(peers_path)
@@ -83,7 +84,7 @@ class StepDeducePeers(Step):
         self.stock_ret = self.returns
         # restrict to the authoritative universe (sp500_tickers) so peers are built
         # ONLY among analysed names — swap that table and the peer graph reroutes.
-        universe = [t for t in load_universe_tickers(self._context) if t in self.stock_ret.columns]
+        universe = [t for t in self._tickers if t in self.stock_ret.columns]
         if universe:
             self.stock_ret = self.stock_ret[universe]
         else:

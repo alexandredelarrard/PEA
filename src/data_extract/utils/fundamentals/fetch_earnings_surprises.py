@@ -7,6 +7,7 @@ actual; the upsert on `(ticker, earnings_date)` overwrites it once the actual is
 from __future__ import annotations
 
 import time
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -15,7 +16,7 @@ from tqdm import tqdm
 
 from src.context import Context
 from src.data_extract.utils.common.rate_limit import call_with_retries
-from src.data_store.schema import Tables
+from src.data_store.schema import Resume, Tables
 
 _RENAME = {
     "EPS Estimate": "eps_estimate",
@@ -29,9 +30,6 @@ _RECENT_LIMIT = 8
 
 # yfinance's `get_earnings_dates` refuses a larger limit ("Yahoo caps limit at 100"), so a longer pull is paged
 _YAHOO_MAX_LIMIT = 100
-
-# rows before this date are sporadic and almost always missing, so they are dropped
-MIGRATION_DATE = "2002-10-01"
 
 
 def _download_page(ticker: str, limit: int, offset: int) -> pd.DataFrame | None:
@@ -60,16 +58,17 @@ def _download_page(ticker: str, limit: int, offset: int) -> pd.DataFrame | None:
 def _download_one(ticker: str, limit: int) -> pd.DataFrame | None:
     """The newest `limit` earnings dates of one ticker, read in Yahoo pages of at most `_YAHOO_MAX_LIMIT` rows.
 
-    Paging stops once `limit` rows are asked for, Yahoo has no more rows, or a page reaches `MIGRATION_DATE`;
+    Paging stops once `limit` rows are asked for, Yahoo has no more rows, or a page reaches the table's source start;
     retried with backoff on 429; None if empty.
     """
     pages: list[pd.DataFrame] = []
+    source_start = pd.Timestamp(cast(str, cast(Resume, Tables.earnings_surprises.resume).source_start))
     for offset in range(0, limit, _YAHOO_MAX_LIMIT):
         page = _download_page(ticker, min(limit - offset, _YAHOO_MAX_LIMIT), offset)
         if page is None:
             break
         pages.append(page)
-        if page["earnings_date"].min() < pd.Timestamp(MIGRATION_DATE):
+        if page["earnings_date"].min() < source_start:
             break
     if not pages:
         return None
@@ -119,8 +118,8 @@ def fetch_earnings_surprises(context: Context, tickers: list[str], years_history
     The plan comes from per-ticker stored dates (`key_stats`), never a table read; the staleness
     window is the table's contract overlap.
     """
-    resume = Tables.earnings_surprises.resume
-    refetch_window_days = resume.overlap_days if resume is not None else 95
+    resume = cast(Resume, Tables.earnings_surprises.resume)
+    refetch_window_days = resume.overlap_days
     last_reported, next_expected = _resume_dates(context)
     full_limit = (years_history + 1) * 4
     plan = _plan_fetch(tickers, last_reported, next_expected, full_limit, refetch_window_days)
@@ -155,6 +154,6 @@ def fetch_earnings_surprises(context: Context, tickers: list[str], years_history
 
     # upsert on (ticker, earnings_date): a now-filled actual overwrites its forward-estimate row
     new = pd.concat(new_frames, ignore_index=True)[_COLUMNS]
-    new = new.loc[new["earnings_date"] >= MIGRATION_DATE].reset_index(drop=True)
+    new = new.loc[new["earnings_date"] >= pd.Timestamp(cast(str, resume.source_start))].reset_index(drop=True)
     context.store.save(Tables.earnings_surprises, new)
     context.log.info(f"Saved {len(new)} new earnings rows: {new['ticker'].unique()} tickers to DB")

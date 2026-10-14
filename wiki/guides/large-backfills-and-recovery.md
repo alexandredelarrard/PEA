@@ -25,7 +25,7 @@ Run expensive or destructive historical repairs without defeating resume logic, 
 - Run from the repository root with the explicit Python 3.13 virtual-environment executable described in [run the pipeline](./run-the-pipeline.md).
 - Prefix every shell command with `rtk`.
 - Chunk edgartools workloads into separate processes. Process exit is the reliable way to release its per-filing caches.
-- Use `-F`, `--rebuild`, `--rebuild-history`, or `--reparse` only for the behavior named by that command. They are not interchangeable.
+- Use `-F` / `--full` to process the command's complete input window. `fundamentals --rebuild` additionally deletes stored facts before refetching. Read command help for the source and write behavior.
 - Stop a long-running process by PID. Never terminate every `python.exe` process.
 - Capture a before/after artifact and run validation. A larger table can still contain a coverage cliff, duplicated identity history, or stale cube rows.
 
@@ -53,9 +53,9 @@ rtk "$PY" scripts/registrant_impact.py --snapshot baseline_YYYY-MM-DD
 Then apply the approved register change and recover each source according to its storage model:
 
 ~~~bash
-rtk "$PY" -m src data_extract insider-transactions --reparse
-rtk "$PY" -m src data_extract financial-notes --reparse
-rtk "$PY" -m src data_extract financial-statements --reparse
+rtk "$PY" -m src data_extract insider-zip -F
+rtk "$PY" -m src data_extract financial-notes --full
+rtk "$PY" -m src data_extract financial-statements --full
 rtk "$PY" -m src data_extract fundamentals-facts -t TICKER1,TICKER2
 rtk "$PY" -m src data_extract fundamentals-employees -t TICKER1,TICKER2
 rtk "$PY" -m src data_extract sec-8k-items -t TICKER1,TICKER2
@@ -88,7 +88,7 @@ The SEC history build sorts each ticker before any replay:
 | no filing newer than its newest stored row | skipped; facts not read |
 | filings only after its newest stored row | snapshots of the new events only |
 | no stored history, a back-dated or `-F` re-read handed over by `fundamentals`, an event list that disagrees with the stored rows, or `--verify-history` | full replay with the append-only guard |
-| `--rebuild-history` | delete, then full replay |
+| `--full` | delete, then full replay |
 
 Full replays run in a process pool of `fundamentals_workers`. The combined `fundamentals` command hands its fetched filings to the history build; a standalone `fundamentals-facts -F` does not, so follow it with `--verify-history` as above.
 
@@ -98,7 +98,7 @@ Choose the narrowest repair:
 
 | Defect | Command |
 | --- | --- |
-| Stored facts are correct; replay/history logic changed | `fundamentals-history-sec --rebuild-history -t ...` |
+| Stored facts are correct; replay/history logic changed | `fundamentals-history-sec --full -t ...` |
 | Fact resolution itself is wrong | `fundamentals --rebuild -t ...` |
 | Employee parser missed or rejected headcount | `fundamentals-employees -F -t ...` |
 | Vendor inputs changed; rebuild merged consumer history | `fundamentals-history-merged -F -t ...` |
@@ -165,7 +165,7 @@ rtk "$PY" -m src data_extract edgar-index
 rtk "$PY" -m src data_extract resume-plan --table sec_13g --timings
 ~~~
 
-`edgar-index --build` downloads every quarter of the index again. A filing that was read and holds no data for its key is stored once as an empty-filing marker. `markers --count` counts them per table; `markers --delete` removes every marker by its sentinel and is a rollback tool only, because the next run lists those filings again.
+`edgar-index --full` downloads every quarter of the index again. A filing that was read and holds no data for its key is stored once as an empty-filing marker. `markers --count` counts them per table; `markers --delete` removes every marker by its sentinel and is a rollback tool only, because the next run lists those filings again.
 
 ## 13F holes and new tickers
 
@@ -193,13 +193,13 @@ The registry source start is 1999-07-01, so a walk over an empty `sec13f_hr` rea
 
 `insider_transactions` is one table for both sources (see [data sources](../reference/data-sources.md)). A run ingests pending zip quarters first, then reads from EDGAR every indexed Form 3/4/5 of each ticker's lineage filed from the earlier of the day after the last stored zip quarter and the run date minus 7 days, except the accessions already stored from EDGAR.
 
-- **Zip parse change** (a new column, an identity change): `--reparse` re-reads every cached quarter. Filings EDGAR already holds only get their `quarter` stamped; every other filing is re-saved from the zip. Nothing is re-downloaded. Run it without `-t`: only a full-universe run sweeps stored rows that the identity screen now rejects.
+- **Zip parse change** (a new column, an identity change): `insider-zip -F` re-reads every cached quarter without an EDGAR walk. Filings EDGAR already holds only get their `quarter` stamped; every other filing is re-saved from the zip. Nothing is re-downloaded. Run it without `-t`: only a full-universe run sweeps stored rows that the identity screen now rejects.
 
   ~~~bash
-  rtk "$PY" -m src data_extract insider-transactions --reparse
+  rtk "$PY" -m src data_extract insider-zip -F
   ~~~
 
-- **Full rebuild** (an EDGAR parser change, a key or encoding change): drop the table, then run with `-F`. `-F` implies `--reparse`: every cached zip is re-parsed into the empty table, then EDGAR re-reads its whole window, including filings already stored from EDGAR.
+- **Full rebuild** (an EDGAR parser change, a key or encoding change): drop the table, then run with `-F`. `insider-transactions -F` re-parses every cached zip into the empty table, then EDGAR re-reads its whole window, including filings already stored from EDGAR.
 
   ~~~bash
   rtk docker exec pea_db psql -U alexandre -d pea -c "DROP TABLE insider_transactions"

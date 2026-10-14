@@ -56,13 +56,10 @@ import pandas as pd
 from src.context import get_config_context
 from src.data_extract.utils.common.entity_lineage import load_d19_allowlist
 from src.data_extract.utils.common.identity import AmbiguousSymbolTenureError, load_identity
-from src.data_store.schema import Tables
+from src.data_store.schema import Resume, Tables
 
 CONFIG_DIR = "./configs"
 OUT = Path("reports") / pd.Timestamp.today().strftime("%Y-%m-%d")
-#: `symbol_tenure` is derived from the Form 345 bulk sets, whose own first quarter is 2006q1.
-#: Every row below this date is structurally unresolvable, not evidence of anything (D7).
-TENURE_FLOOR = pd.Timestamp("2006-01-01")
 
 #: ⚠ The attribute name is `short_interest` while the TABLE is `sec_short_interest` -- one of
 #: the five registry entries whose two names differ.
@@ -100,8 +97,9 @@ def measure(store, identity, table, name: str, blind: frozenset[str]) -> pd.Data
     df["date"] = pd.to_datetime(df["date"])
     print(f"\n=== {name} ===")
     print(f"  {len(df):,} rows, {df['ticker'].nunique()} ticker(s), {df['date'].min().date()} -> {df['date'].max().date()}")
-    below = int((df["date"] < TENURE_FLOOR).sum())
-    print(f"  {below:,} row(s) ({below / len(df):.2%}) fall below the {TENURE_FLOOR.date()} tenure floor and are structurally unresolvable (D7)")
+    tenure_floor = pd.Timestamp(cast(str, cast(Resume, Tables.insider_transactions.resume).source_start))
+    below = int((df["date"] < tenure_floor).sum())
+    print(f"  {below:,} row(s) ({below / len(df):.2%}) fall below the {tenure_floor.date()} tenure floor and are structurally unresolvable (D7)")
 
     # One verdict per (ticker, date) is still ~1M lookups; the tape is one row per pair
     # already, so this is the grain and there is nothing to dedupe.
@@ -152,7 +150,7 @@ def main() -> None:
             "tickers": df["ticker"].nunique(),
             "first": df["date"].min().date(),
             "last": df["date"].max().date(),
-            "below_tenure_floor": int((df["date"] < TENURE_FLOOR).sum()),
+            "below_tenure_floor": int((df["date"] < pd.Timestamp(cast(str, cast(Resume, Tables.insider_transactions.resume).source_start))).sum()),
         }
         row.update(cast(dict[str, int], df["verdict"].value_counts().to_dict()))
         summary.append(row)

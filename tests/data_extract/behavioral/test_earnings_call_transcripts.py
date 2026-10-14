@@ -11,7 +11,7 @@ import datetime as dt
 import logging
 import types
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 import pyarrow as pa
@@ -21,7 +21,7 @@ from omegaconf import OmegaConf
 
 from src.constants.constants import EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL
 from src.data_extract.utils.behavioral import fetch_earnings_call_transcripts as ect
-from src.data_store.schema import Tables
+from src.data_store.schema import Resume, Tables
 
 _PARAGRAPH = pa.struct([("paragraph_number", pa.int32()), ("speaker", pa.string()), ("content", pa.string())])
 _SCHEMA = pa.schema(
@@ -497,7 +497,7 @@ def test_live_defeatbeta_smoke_two_tickers(tmp_path: Path, sqlite_store: Any) ->
 
     assert set(per_ticker.index) == {"AAPL", "MSFT"} and per_ticker.min() >= 40
     assert rows["quarter"].str.fullmatch(r"\d{4}Q[1-4]").all() and (first == 1).all()
-    assert pd.to_datetime(rows["as_of"]).min() >= pd.Timestamp(ect.HISTORY_START)
+    assert pd.to_datetime(rows["as_of"]).min() >= pd.Timestamp(cast(str, cast(Resume, Tables.earnings_call_sections.resume).source_start))
     assert again.rows_written == 0
 
     print("\n=== SANITY CHECK: live defeatbeta smoke (test store) ===")

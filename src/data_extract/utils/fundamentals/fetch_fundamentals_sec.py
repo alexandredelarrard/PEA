@@ -19,7 +19,6 @@ from typing import Any, cast
 
 import pandas as pd
 
-from src.constants.constants import FUNDAMENTALS_FORMS
 from src.context import Context
 from src.data_extract.utils.common.edgar_driver import (
     EdgarFetch,
@@ -50,7 +49,7 @@ from src.data_extract.utils.fundamentals.xbrl_linkbase import (
     segment_only_concepts,
     statement_arcs,
 )
-from src.data_store.schema import Table, Tables
+from src.data_store.schema import Resume, Table, Tables
 
 logger = logging.getLogger(__name__)
 
@@ -82,9 +81,6 @@ _COLS = [
     "is_extension",
     "dc_code",
 ]
-
-#: Fiscal period recorded when the filer tagged none (a named state rather than an empty string or NULL).
-UNLABELLED_PERIOD = "NA"
 
 
 def _period_frame(facts: pd.DataFrame) -> pd.DataFrame:
@@ -172,7 +168,7 @@ def _values_by_period(facts: pd.DataFrame, concept: str) -> dict[tuple, dict]:
 
 
 #: Forms whose statement periods are all annual, so any quarterly fact in them comes from a note. Matched exactly.
-_ANNUAL_FORMS: tuple[str, ...] = ("10-K", "10-K/A")
+_ANNUAL_FORMS = tuple(form for form in cast(Resume, Tables.fundamentals_facts.resume).forms if form.startswith("10-K"))
 
 
 _Window = tuple[tuple, pd.Timestamp, pd.Timestamp]
@@ -458,7 +454,7 @@ def _row(
         "accession_number": stamp.accession_number,
         "field": field,
         "fiscal_year": int(period["fiscal_year"]) if period and pd.notna(period.get("fiscal_year")) else stamp.filed.year,
-        "fiscal_period": (str(period["fiscal_period"]) if period and pd.notna(period.get("fiscal_period")) else UNLABELLED_PERIOD),
+        "fiscal_period": (str(period["fiscal_period"]) if period and pd.notna(period.get("fiscal_period")) else "NA"),
         "duration_type": period["duration_type"] if period else OTHER_SHAPE,
         "form": stamp.form,
         "filing_date": stamp.filed,
@@ -638,7 +634,7 @@ def fundamentals_fetch(context: Context, cik_map: pd.DataFrame) -> EdgarFetch:
     return EdgarFetch(
         desc="fundamentals (linkbase)",
         tables=(Tables.fundamentals_facts,),
-        forms=tuple(FUNDAMENTALS_FORMS),
+        forms=cast(Resume, Tables.fundamentals_facts.resume).forms,
         parse=partial(parse_fundamentals, catalogue=catalogue, gics_by_ticker=gics),
     )
 

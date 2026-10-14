@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import dataclasses
 import types
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 import pytest
@@ -21,7 +21,7 @@ from src.data_extract.utils.common.identity import FilingScope
 from src.data_extract.utils.common.registrant import resolve_registrant_filings
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError
 from src.data_store import schema
-from src.data_store.schema import RESUME_DOCUMENTS, Resume, Table
+from src.data_store.schema import RESUME_DOCUMENTS, Resume, Table, Tables
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
 from tests.data_extract.edgar_fixtures import fake_context, fake_filing, seed_index
 
@@ -141,15 +141,14 @@ def test_def14a_forms_covers_contested_proxies_but_not_revised_ones():
     were invisible to every governance feature. DEFR14A is excluded on measurement, not taste:
     220 of its 232 ticker-years already hold the DEF 14A, so it is a duplicate far more often
     than a recovery."""
-    from src.constants.constants import DEF14A_FORMS
 
-    assert "DEFC14A" in DEF14A_FORMS
-    assert "DEFR14A" not in DEF14A_FORMS
+    assert "DEFC14A" in cast(Resume, Tables.def14a_llm.resume).forms
+    assert "DEFR14A" not in cast(Resume, Tables.def14a_llm.resume).forms
     for not_an_annual_meeting in ("DEFM14A", "DEFS14A", "DEFN14A"):
-        assert not_an_annual_meeting not in DEF14A_FORMS
+        assert not_an_annual_meeting not in cast(Resume, Tables.def14a_llm.resume).forms
 
-    print("\n=== SANITY CHECK: DEF14A_FORMS scope ===")
-    print(f"  {DEF14A_FORMS} -- contested in, revised and non-annual out. Validated.")
+    print("\n=== SANITY CHECK: DEF 14A resume forms scope ===")
+    print(f"  {cast(Resume, Tables.def14a_llm.resume).forms} -- contested in, revised and non-annual out. Validated.")
 
 
 # --------------------------------------------------------------------------- #

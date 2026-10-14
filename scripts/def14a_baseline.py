@@ -27,6 +27,7 @@ import random
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 
@@ -37,12 +38,12 @@ if str(ROOT) not in sys.path:
 # Project imports intentionally follow the repository-root path bootstrap.
 # ruff: noqa: E402
 
-from src.constants.constants import DEF14A_FORMS, SEC_ARCHIVES_BASE_URL
+from src.constants.constants import SEC_ARCHIVES_BASE_URL
 from src.context import get_config_context
 from src.data_extract.utils.common.edgar_fillings import list_filings
 from src.data_extract.utils.common.sec_io import sec_get
 from src.data_extract.utils.common.sec_utils import load_cik_mapping
-from src.data_store.schema import Tables
+from src.data_store.schema import Resume, Tables
 
 #: NEVER change -- the baseline is keyed to it. Phase 6 must resolve the identical 23 tickers
 #: even though `def14a_llm` will have grown, which is why the resolved list is also persisted
@@ -162,7 +163,7 @@ def cache_filings(context, tickers: list[str], years: int, out_dir: Path) -> pd.
     for _, r in cik_map.iterrows():
         ticker, cik = r["ticker"], r["cik"]
         try:
-            filings = list_filings(context, cik, DEF14A_FORMS, years, r.get("name", ""))
+            filings = list_filings(context, cik, cast(Resume, Tables.def14a_llm.resume).forms, years, r.get("name", ""))
         except Exception as e:  # a dead CIK must not stop the snapshot
             print(f"  ! {ticker}: filing list failed ({e})")
             continue

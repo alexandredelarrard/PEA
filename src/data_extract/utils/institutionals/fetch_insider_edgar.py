@@ -18,7 +18,6 @@ from typing import Any, cast
 
 import pandas as pd
 
-from src.constants.constants import SEC_INSIDER_FORMS
 from src.context import Context
 from src.data_extract.utils.common import edgar_index
 from src.data_extract.utils.common.edgar_driver import EdgarFetch, EdgarScope, FilingStamp, run_edgar_fetch
@@ -38,7 +37,7 @@ from src.data_extract.utils.institutionals.insider_common import (
     screen_insider_rows,
 )
 from src.data_extract.utils.institutionals.insider_edgar_parser import extract_xml_strings
-from src.data_store.schema import Table, Tables
+from src.data_store.schema import Resume, Table, Tables
 from src.utils.string import pad_cik
 
 #: EDGAR rows carry the whole contract except `quarter`, so the merge-upsert keeps a stored zip quarter.
@@ -59,8 +58,8 @@ def insider_filings(
 ) -> list[Any]:
     """`ticker`'s Forms 3/4/5 in the local EDGAR index filed in `[since, through]`, oldest first (issuer and owner roles)."""
     filing_scope = scope.filing_scope(ticker, cik)
-    df_index = edgar_index.entries(context, set(listing_ciks(filing_scope)), SEC_INSIDER_FORMS, since=since)
-    df_rows = resolve_registrant_entries(filing_scope, df_index, SEC_INSIDER_FORMS)
+    df_index = edgar_index.entries(context, set(listing_ciks(filing_scope)), cast(Resume, Tables.insider_transactions.resume).forms, since=since)
+    df_rows = resolve_registrant_entries(filing_scope, df_index, cast(Resume, Tables.insider_transactions.resume).forms)
     df_rows = df_rows[df_rows["filed"] <= pd.Timestamp(through).normalize()]
     return [edgar_index.index_filing(r.cik, r.company, r.form, r.filed, r.accession) for r in df_rows.itertuples(index=False)]
 
@@ -158,7 +157,7 @@ def insider_fetch(tickers: Sequence[str], excluded: list[pd.DataFrame] | None = 
     return EdgarFetch(
         desc="insider Forms 3/4/5 (EDGAR)",
         tables=(Tables.insider_footnotes, Tables.insider_transactions),
-        forms=tuple(SEC_INSIDER_FORMS),
+        forms=cast(Resume, Tables.insider_transactions.resume).forms,
         parse=partial(parse_insider, universe=list(tickers), excluded=excluded if excluded is not None else []),
         done_table=Tables.insider_transactions,
         done_scope=DONE_PER_KEY,

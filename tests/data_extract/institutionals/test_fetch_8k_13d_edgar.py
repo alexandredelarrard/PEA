@@ -16,7 +16,6 @@ from typing import Any, cast
 import pandas as pd
 import pytest
 
-from src.constants.constants import SEC_8K_FORMS, SEC_13D_FORMS
 from src.data_extract.transformers.step_extract_institutionals import StepExtractInstitutionals
 from src.data_extract.transformers.step_extract_structure import StepExtractStructure
 from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp, parse_filing_rows, run_edgar_fetch
@@ -34,7 +33,7 @@ from src.data_extract.utils.institutionals.fetch_13d_edgar import (
     parse_13d,
 )
 from src.data_extract.utils.institutionals.schedule_rows import schedule_filing_rows
-from src.data_store.schema import Tables
+from src.data_store.schema import Resume, Tables
 from src.utils.string import pad_cik
 
 
@@ -90,14 +89,16 @@ def test_sec_8k_fetch_declares_its_driver_settings():
     assert SEC_8K_FETCH.tables == (Tables.sec_8k,) and SEC_8K_FETCH.done == Tables.sec_8k
     assert SEC_8K_FETCH.desc == "8-K (edgartools)"
     assert SEC_8K_FETCH.identity_aware is True
-    assert SEC_8K_FETCH.forms == tuple(SEC_8K_FORMS)
+    assert SEC_8K_FETCH.forms == cast(Resume, Tables.sec_8k.resume).forms
     parse = cast(Any, SEC_8K_FETCH.parse)
     assert parse.func is parse_filing_rows
     assert parse.keywords["table"] == Tables.sec_8k
     assert parse.keywords["row_fn"] is _filing_row
     assert SEC_8K_FETCH.filings is submission_filings
     print("\n=== SANITY: 8-K fetch declaration ===")
-    print("  SEC_8K_FETCH -> sec_8k over SEC_8K_FORMS, identity_aware, parse_filing_rows with the 8-K row function, item codes from submissions.")
+    print(
+        "  SEC_8K_FETCH -> sec_8k over its registered forms, identity_aware, parse_filing_rows with the 8-K row function, item codes from submissions."
+    )
 
 
 def test_8k_item_codes_come_from_the_submissions_listing_of_listed_units(monkeypatch):
@@ -504,7 +505,7 @@ def test_13d_forms_cover_both_edgar_form_eras():
     `get_filings(form=...)` matches EXACTLY, so listing only one pair silently
     truncates the table at the changeover (measured: 461 filings across 91 S&P 500
     tickers were invisible, and `sec_13d` stopped dead on 2024-12-16)."""
-    assert {"SC 13D", "SC 13D/A", "SCHEDULE 13D", "SCHEDULE 13D/A"} <= set(SEC_13D_FORMS)
+    assert {"SC 13D", "SC 13D/A", "SCHEDULE 13D", "SCHEDULE 13D/A"} <= set(cast(Resume, Tables.sec_13d.resume).forms)
 
 
 def test_item4_anchor_matches_purpose_of_the_transaction():
@@ -1005,7 +1006,7 @@ def test_sanity_check_prints_conclusion():
     print("  year; unit-suffixed quantities ('760 Shares') now parse to a real float.")
     print("  FORM ERAS: EDGAR renamed the form at the 2024-12-17 structured-XML mandate")
     print("  ('SC 13D' -> 'SCHEDULE 13D'), and get_filings(form=...) matches EXACTLY, so")
-    print("  SEC_13D_FORMS lists BOTH pairs -- listing one silently truncated the table on")
+    print("  sec_13d.resume.forms lists BOTH pairs -- listing one silently truncated the table on")
     print("  2024-12-16 and hid 461 filings across 91 tickers.")
     print("  ITEM CARVE: the union of a line-anchored and an anywhere-matching anchor set.")
     print("  Each reads filings the other cannot -- line-anchoring rejects mid-prose cross-")

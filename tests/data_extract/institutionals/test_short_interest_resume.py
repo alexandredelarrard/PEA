@@ -266,7 +266,7 @@ def test_full_refetches_every_served_day_and_keeps_no_legacy_row(sqlite_store, m
     )
     sqlite_store.save(Tables.sec_short_volume_security, _raw([("LEN", "2015-01-02", 9.0, 9.0)]))
     monkeypatch.setattr(pd.Timestamp, "today", classmethod(lambda cls, tz=None: pd.Timestamp("2018-08-03")))
-    files = {"20171229": [("LEN", 1.0, 2.0)], "20180801": [("LEN", 3.0, 4.0)], "20180802": [("LEN", 5.0, 6.0)], "20180803": [("LEN", 7.0, 8.0)]}
+    files = {"20180801": [("LEN", 3.0, 4.0)], "20180802": [("LEN", 5.0, 6.0)], "20180803": [("LEN", 7.0, 8.0)]}
     asked = _serve(monkeypatch, files)
 
     with pytest.raises(RuntimeError, match="2015-01-02"):
@@ -284,12 +284,12 @@ def test_full_refetches_every_served_day_and_keeps_no_legacy_row(sqlite_store, m
     asked.clear()
     si.fetch_short_interest(_context(sqlite_store), UNIVERSE, pause=0.0, full=True, identity=_identity())
 
-    assert {d.date().isoformat() for d in asked} >= {"2017-12-29", "2018-08-01", "2018-08-02", "2018-08-03"}
-    assert min(asked) == pd.Timestamp("2017-12-29") and pd.Timestamp("2018-07-31") not in asked
-    assert _grain(sqlite_store) == {("LEN", "2017-12-29"): 1.0, ("LEN", "2018-08-01"): 3.0, ("LEN", "2018-08-02"): 5.0, ("LEN", "2018-08-03"): 7.0}
+    assert {d.date().isoformat() for d in asked} == {"2018-08-01", "2018-08-02", "2018-08-03"}
+    assert min(asked) == pd.Timestamp("2018-08-01") and pd.Timestamp("2018-07-31") not in asked
+    assert _grain(sqlite_store) == {("LEN", "2018-08-01"): 3.0, ("LEN", "2018-08-02"): 5.0, ("LEN", "2018-08-03"): 7.0}
     print("\n=== SANITY CHECK: RegSHO full ===")
     print("  a stored 2015 date the source no longer serves aborts the run with both tables intact, read from the raw table or,")
-    print("  when it is empty (cold start), from the ticker table; without it, full re-fetches 2017-12-29 plus 2018-08-01 on")
+    print("  when it is empty (cold start), from the ticker table; without it, full re-fetches from the registered 2018-08-01 floor")
     print("  and the legacy 2018-08-02 ticker value 99 is replaced")
 
 

@@ -22,7 +22,7 @@ import re
 import pandas as pd
 from pandas.api import types as ptypes
 
-from src.data_store.schema import _TEXT_IDENTIFIER_COLS, MANAGED, Table
+from src.data_store.schema import MANAGED, Table
 
 # The SQL type a `vector_col` always gets, whether its columns were inferred from a frame
 # or reflected from the live DB. See item 2 in the module docstring.
@@ -36,7 +36,7 @@ def sql_type(col: str, dtype, spec: Table | None = None) -> str:
     """The SQL type for one column, from its pandas dtype."""
     if spec is not None and col in spec.date_type_cols:
         return "DATE"
-    if col.lower() in _TEXT_IDENTIFIER_COLS:
+    if col.lower() in {"cik"}:
         return "TEXT"
     if ptypes.is_datetime64_any_dtype(dtype):
         return "TIMESTAMP"

@@ -28,7 +28,7 @@ def parse_company_tickers_exchange(payload: Mapping[str, Any], *, fetched_at: pd
     out = pd.DataFrame(
         {
             "cik": pad_cik_series(frame["cik"]),
-            "ticker": frame["ticker"].astype(str).map(normalise_ticker),
+            "ticker": frame["ticker"].map(normalise_ticker),
             "name": frame["name"].astype(str),
             "exchange": frame["exchange"].astype(object).where(frame["exchange"].notna(), None),
         }

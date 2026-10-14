@@ -36,6 +36,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 
@@ -57,7 +58,7 @@ from src.data_extract.utils.structure.votes.flatten import _prepare_frame as _pr
 from src.data_extract.utils.structure.votes.flatten import _proposal_rows
 from src.data_extract.utils.structure.votes.guard import rejection_reason
 from src.data_extract.utils.structure.votes.roles import _role_map
-from src.data_store.schema import Tables
+from src.data_store.schema import Resume, Tables
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 from src.gpt_extract.transformers.step_gpt_extracter import with_gpt_overrides
 
@@ -192,7 +193,6 @@ def run_ecd(context, limit: int | None, dry: bool) -> None:
     """Reuses the production builder verbatim rather than re-implementing it, so what the gate
     measures is what the pipeline will write. 2023+ only: an earlier proxy carries no `ecd:`
     facts (Item 402(v), FY ending >= 2022-12-16) and correctly gets no row."""
-    from src.constants.constants import DEF14A_FORMS
     from src.data_extract.utils.common.edgar_driver import FilingStamp, load_edgar_scope
     from src.data_extract.utils.common.sec_utils import load_cik_mapping
     from src.data_extract.utils.structure.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
@@ -225,7 +225,7 @@ def run_ecd(context, limit: int | None, dry: bool) -> None:
         try:
             # returns {Table: DataFrame}, keyed by the registry object -- one entry since
             # Phase 4 slimmed this path to `sec_def14a` alone
-            filings = scope.list_filings(t, cik, DEF14A_FORMS, since=cutoff, done_accessions=frozenset())
+            filings = scope.list_filings(t, cik, cast(Resume, Tables.def14a_edgar.resume).forms, since=cutoff, done_accessions=frozenset())
             frames = [DEF14A_EDGAR_FETCH.parse(t, cik, FilingStamp.of(f, cik), scope)[Tables.def14a_edgar] for f in filings]
             df = pd.concat(frames, ignore_index=True) if frames else None
         except Exception as e:

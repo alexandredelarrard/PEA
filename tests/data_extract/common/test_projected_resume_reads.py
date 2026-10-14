@@ -13,6 +13,7 @@ from typing import Any
 import pandas as pd
 
 from src.constants.constants import CUSIP_TICKER_OVERRIDES
+from src.data_extract.utils.common import identity as identity_module
 from src.data_extract.utils.common.entity_lineage import ROSTER_COLUMNS
 from src.data_extract.utils.common.identity import build_identity, load_identity
 from src.data_extract.utils.fundamentals import fetch_earnings_surprises as surprises
@@ -85,7 +86,7 @@ def test_earnings_surprise_plan_is_unchanged_by_the_projected_read(sqlite_store:
     print("  OK: identical fetch plan with no table read")
 
 
-def test_load_identity_with_the_projected_roster_matches_the_full_roster(sqlite_store: Any) -> None:
+def test_load_identity_with_the_projected_roster_matches_the_full_roster(sqlite_store: Any, monkeypatch: Any) -> None:
     sqlite_store.save(
         Tables.entity_lineage,
         pd.DataFrame(
@@ -144,6 +145,26 @@ def test_load_identity_with_the_projected_roster_matches_the_full_roster(sqlite_
                     "evidence_period": "",
                     "evidence": "",
                 },
+                {
+                    "symbol": "AAA",
+                    "issuer_cik": "0000000100",
+                    "valid_from": "2000-01-01",
+                    "valid_to": None,
+                    "n_filings": 1,
+                    "source": "manual",
+                    "evidence_period": "",
+                    "evidence": "",
+                },
+                {
+                    "symbol": "AAA",
+                    "issuer_cik": "0000000900",
+                    "valid_from": "2000-01-01",
+                    "valid_to": None,
+                    "n_filings": 1,
+                    "source": "dei",
+                    "evidence_period": "2026_09",
+                    "evidence": "",
+                },
             ]
         ),
     )
@@ -159,7 +180,20 @@ def test_load_identity_with_the_projected_roster_matches_the_full_roster(sqlite_
     )
     sqlite_store.save(Tables.sp500_tickers, roster)
 
+    evidence_reads: list[pd.DataFrame] = []
+    original_co_registrants = identity_module.co_registrant_ciks
+
+    def co_registrants(lineage: pd.DataFrame, evidence: pd.DataFrame, declared: Any) -> frozenset[str]:
+        evidence_reads.append(evidence.copy())
+        return original_co_registrants(lineage, evidence, declared)
+
+    monkeypatch.setattr(identity_module, "co_registrant_ciks", co_registrants)
+    loads = _spy_loads(monkeypatch, sqlite_store, Tables.symbol_tenure.name)
     projected = load_identity(_context(sqlite_store), refresh=True)
+    assert len(loads) == 1, "symbol resolution and co-registrant evidence must share one tenure read"
+    assert loads[0]["columns"] == ["symbol", "issuer_cik", "valid_from", "valid_to", "n_filings", "source"]
+    assert set(loads[0]["where"]["source"]) == {"form345", "manual", "dei"}
+    assert len(evidence_reads) == 1 and set(evidence_reads[0]["source"]) == {"form345", "dei"}
     full = build_identity(
         lineage=sqlite_store.load(Tables.entity_lineage, project=True),
         tenure=sqlite_store.load(Tables.symbol_tenure, project=True),
@@ -170,9 +204,13 @@ def test_load_identity_with_the_projected_roster_matches_the_full_roster(sqlite_
     assert ROSTER_COLUMNS == ("ticker", "cik")
     assert projected.roster_cik == full.roster_cik == {"AAA": "0000000100", "BBB": "0000000900"}
     assert projected.ticker_by_entity == full.ticker_by_entity
+    assert projected.tenure_by_symbol == full.tenure_by_symbol
+    assert projected.manual_tenure_by_symbol == full.manual_tenure_by_symbol
+    assert projected.entity_for("AAA", "2001-01-01") == "E0000000100", "manual tenure resolves; DEI is not direct symbol evidence"
     print("\n=== SANITY CHECK: projected sp500_tickers roster ===")
     print(f"  roster_cik {dict(projected.roster_cik)}; ticker_by_entity {dict(projected.ticker_by_entity)}")
     print("  OK: identity built from ('ticker', 'cik') equals the one built from the full roster")
+    print("  OK: one tenure read; form345/manual resolve symbols, form345/dei supply co-registrant evidence")
 
 
 def test_cusip_map_projected_cache_read_returns_the_full_cache(sqlite_store: Any, monkeypatch: Any) -> None:

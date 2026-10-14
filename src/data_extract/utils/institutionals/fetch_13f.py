@@ -612,6 +612,8 @@ def fetch_13f(
     save_every: int = 1000,
     filing_window: tuple[str, str] | None = None,
     as_of: pd.Timestamp | None = None,
+    *,
+    all_tickers: list[str] | None = None,
 ) -> int:
     """Save verified original/amendment accessions separately, oldest first in the resume window.
 
@@ -621,8 +623,8 @@ def fetch_13f(
     context.ensure_edgar_identity()
     configure(context)
     run_date = cast(pd.Timestamp, pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize())
-    universe = {str(t).upper() for t in tickers}
-    scoped = bool(set(load_universe_tickers(context)) - universe)
+    universe = set(tickers)
+    scoped = bool(set(load_universe_tickers(context) if all_tickers is None else all_tickers) - universe)
     since, until, hold_from = _resolve_window(context, years_history, filing_window, run_date, scoped)
 
     # load CIKs of super investors
@@ -915,7 +917,7 @@ def _xml_cover(primary_xml: str, *, period: object, expected_form: str | None) -
         raise ValueError("13F cover amendment flag is missing or invalid")
     is_amendment = flag in {"true", "1"}
     cover_form = fields.get("submissionType")
-    if cover_form is not None and (cover_form not in {"13F-HR", "13F-HR/A"} or is_amendment != cover_form.endswith("/A")):
+    if cover_form is not None and (cover_form not in cast(Resume, Tables.sec13f_hr.resume).forms or is_amendment != cover_form.endswith("/A")):
         raise ValueError("13F cover amendment flag disagrees with cover form")
     if expected_form is not None and is_amendment != expected_form.endswith("/A"):
         raise ValueError("13F cover amendment flag disagrees with filing form")

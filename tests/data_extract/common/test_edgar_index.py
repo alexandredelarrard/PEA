@@ -46,21 +46,21 @@ _LINES = [
     (777777, "Société Générale", "DEF 14C", "2026-09-04", "0000777777-26-000004"),
     (777777, "Société Générale", "13F-HR/A", "2026-09-05", "0000777777-26-000005"),
 ]
-_DROPPED_FORMS = {"424B2", "S-8", "FWP", "N-PX", "D", "6-K"}
+_DROPPED_FORMS = {"424B2", "S-8", "FWP", "N-PX", "D", "6-K", "8-K12B"}
 
 
 def test_master_idx_parses_to_typed_policy_rows():
     raw = gzip.compress(master_text(_LINES).encode("latin-1"))
     df = edgar_index.parse_master(raw)
 
-    assert len(_LINES) == 30 and len(df) == 30 - 6
+    assert len(_LINES) == 30 and len(df) == 30 - 7
     assert not set(df["form"]) & _DROPPED_FORMS
     assert df["cik"].dtype == "int64"
     first = df[df["accession"] == "0000320193-26-000071"].iloc[0]
     assert first["cik"] == 320193 and first["form"] == "8-K" and str(first["filed"]) == "2026-07-01"
     assert "Société Générale" in set(df["company"])  # latin-1 company names survive
     print("\n=== SANITY CHECK: master.idx parse ===")
-    print(f"  30 lines -> {len(df)} rows of policy/13F forms; 6 other forms dropped; accession from the filename; CIK int64. Validated.")
+    print(f"  30 lines -> {len(df)} rows of registered forms; 7 undeclared forms dropped; accession from the filename; CIK int64. Validated.")
 
 
 @pytest.fixture
@@ -92,7 +92,7 @@ def test_a_closed_quarter_is_downloaded_once_and_the_current_quarter_every_run(t
     assert list(second) == ["2026Q4"]  # closed quarters are cached, the current one is not
     assert sorted(early) == ["2026Q4", "2027Q1"]  # day 5 of 2027Q1: the previous quarter again
     assert _quarters(served) == ["2025Q4", "2026Q1", "2026Q2", "2026Q3", "2026Q4", "2026Q4", "2026Q4", "2027Q1"]
-    assert edgar_index.quarter_counts(ctx)["2026Q3"] == 24
+    assert edgar_index.quarter_counts(ctx)["2026Q3"] == 23
     assert not list(edgar_index.index_dir(ctx).glob("*.gz")) and not list(edgar_index.index_dir(ctx).glob("*.part"))
     print("\n=== SANITY CHECK: index refresh rule ===")
     print(f"  run 1 downloads {len(first)} quarters; run 2 only the current one; on 2027-01-05 the previous quarter too: {sorted(early)}.")

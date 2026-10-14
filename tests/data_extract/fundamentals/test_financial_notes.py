@@ -25,6 +25,7 @@ import src.data_extract.utils.fundamentals.fetch_financial_notes as fn
 from src.constants.constants import MARKET_TIMEZONE
 from src.data_extract.utils.common import bulk_cache
 from src.data_extract.utils.common.resume import ArchiveWork
+from src.data_store.schema import Resume, Tables
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
 
 # --------------------------------------------------------------------------- #
@@ -263,7 +264,10 @@ def test_notes_periods_falls_back_to_generator(monkeypatch):
 def test_historical_archive_available_at_is_next_month_twelfth_or_monday(period: str, expected: date, tmp_path: Path) -> None:
     assert (
         bulk_cache.archive_available_at(
-            bulk_cache.period_end(period), tmp_path / f"{period}_notes.zip", observed_from=fn._OBSERVED_FROM, downloaded=False
+            bulk_cache.period_end(period),
+            tmp_path / f"{period}_notes.zip",
+            observed_from=date.fromisoformat(cast(str, cast(Resume, Tables.notes_num.resume).observed_from)),
+            downloaded=False,
         )
         == expected
     )
@@ -277,11 +281,19 @@ def test_future_archive_available_at_is_cached_download_date(tmp_path: Path) -> 
     downloaded = datetime(2026, 10, 16, 0, 30, tzinfo=UTC)  # Still October 15 in New York.
     os.utime(path, (downloaded.timestamp(), downloaded.timestamp()))
 
-    assert bulk_cache.archive_available_at(bulk_cache.period_end("2026_09"), path, observed_from=fn._OBSERVED_FROM, downloaded=False) == date(
-        2026, 10, 15
-    )
+    assert bulk_cache.archive_available_at(
+        bulk_cache.period_end("2026_09"),
+        path,
+        observed_from=date.fromisoformat(cast(str, cast(Resume, Tables.notes_num.resume).observed_from)),
+        downloaded=False,
+    ) == date(2026, 10, 15)
     assert (
-        bulk_cache.archive_available_at(bulk_cache.period_end("2026_09"), tmp_path / "missing.zip", observed_from=fn._OBSERVED_FROM, downloaded=False)
+        bulk_cache.archive_available_at(
+            bulk_cache.period_end("2026_09"),
+            tmp_path / "missing.zip",
+            observed_from=date.fromisoformat(cast(str, cast(Resume, Tables.notes_num.resume).observed_from)),
+            downloaded=False,
+        )
         is None
     )
     print("\n=== SANITY CHECK: observed future notes availability ===")
@@ -467,7 +479,7 @@ def test_fetch_stamps_one_archive_clock_on_numeric_and_text_rows(tmp_path, monke
 
     monkeypatch.setattr(fn, "load_identity", lambda context: IDENTITY)
     monkeypatch.setattr(fn, "cache_dir", lambda context, key: tmp_path)
-    monkeypatch.setattr(fn, "archive_worklist", lambda context, tables, periods, cached, keys, as_of, full: _work(list(periods)))
+    monkeypatch.setattr(fn, "archive_worklist", lambda context, tables, periods, cached, keys, as_of, full, all_tickers=None: _work(list(periods)))
     monkeypatch.setattr(fn, "_periods_missing_available_at", lambda context: set())
     monkeypatch.setattr(fn, "_notes_periods", lambda context, years_history, today=None: [period])
     monkeypatch.setattr(fn, "ensure_zip", lambda *args, **kwargs: path)
@@ -524,7 +536,7 @@ def test_fetch_stamps_new_zip_with_successful_download_date(tmp_path: Path, monk
     monkeypatch.setattr(bulk_cache, "datetime", Clock)
     monkeypatch.setattr(fn, "load_identity", lambda context: IDENTITY)
     monkeypatch.setattr(fn, "cache_dir", lambda context, key: tmp_path)
-    monkeypatch.setattr(fn, "archive_worklist", lambda context, tables, periods, cached, keys, as_of, full: _work(list(periods)))
+    monkeypatch.setattr(fn, "archive_worklist", lambda context, tables, periods, cached, keys, as_of, full, all_tickers=None: _work(list(periods)))
     monkeypatch.setattr(fn, "_periods_missing_available_at", lambda context: set())
     monkeypatch.setattr(fn, "_notes_periods", lambda context, years_history, today=None: [period])
     monkeypatch.setattr(fn, "stored_period_clock", lambda context, tables, period: None)

@@ -10,21 +10,21 @@ from __future__ import annotations
 import json
 import logging
 import types
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 import pytest
 
 from scripts import identity_regression_gate as gate
-from src.constants.constants import SEC_8K_FORMS, SEC_13G_FORMS
 from src.data_extract import identity_propagate as prop
 from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp
 from src.data_extract.utils.common.identity import Identity, build_identity
 from src.data_extract.utils.common.registrant import resolve_registrant_entries
 from src.data_extract.utils.institutionals import schedule_rows
 from src.data_extract.utils.institutionals.fetch_13g_edgar import SCHEDULE_13G
-from src.data_store.schema import Tables
+from src.data_store.schema import Resume, Tables
 from src.validate.checks.identity import pending_removals
 
 SENTINEL = "1900-01-01"
@@ -97,7 +97,7 @@ def _index(rows: list[tuple[str, str, str, str]]) -> pd.DataFrame:
     return pd.DataFrame([{"cik": c, "company": "x", "form": f, "filed": d, "accession": a} for c, f, d, a in rows])
 
 
-def _listed(identity: Identity, ticker: str, df_index: pd.DataFrame, forms: list[str]) -> list[str]:
+def _listed(identity: Identity, ticker: str, df_index: pd.DataFrame, forms: Sequence[str]) -> list[str]:
     return resolve_registrant_entries(identity.filing_scope(ticker), df_index, forms)["accession"].tolist()
 
 
@@ -142,9 +142,9 @@ def test_jci_lists_tycos_event_filings_by_window_and_drops_old_jcis() -> None:
         ]
     )
     jci_8k, jci_10k, mrk_8k = (
-        _listed(identity, "JCI", df, SEC_8K_FORMS),
+        _listed(identity, "JCI", df, cast(Resume, Tables.sec_8k.resume).forms),
         _listed(identity, "JCI", df, ["10-K"]),
-        _listed(identity, "MRK", df, SEC_8K_FORMS),
+        _listed(identity, "MRK", df, cast(Resume, Tables.sec_8k.resume).forms),
     )
     print("\n=== SANITY CHECK: JCI listing under the traded view ===")
     print(f"  JCI 8-K {jci_8k}; JCI 10-K {jci_10k}; MRK 8-K {mrk_8k}")
@@ -163,8 +163,8 @@ def test_jcis_schedule_guards_accept_a_tyco_subject_and_refuse_old_jci(monkeypat
             (OLD_MERCK, "SC 13G", "2011-02-11", "g-merck-late"),
         ]
     )
-    assert _listed(identity, "JCI", df, SEC_13G_FORMS) == ["g-tyco"]
-    assert _listed(identity, "MRK", df, SEC_13G_FORMS) == []
+    assert _listed(identity, "JCI", df, cast(Resume, Tables.sec_13g.resume).forms) == ["g-tyco"]
+    assert _listed(identity, "MRK", df, cast(Resume, Tables.sec_13g.resume).forms) == []
     scope = EdgarScope(identity)
     stamp = FilingStamp("g-tyco", "SC 13G", TYCO, pd.Timestamp("2013-02-10"), False, None, filing=types.SimpleNamespace())
     monkeypatch.setattr(schedule_rows, "header_subject_ciks", lambda filing: frozenset({TYCO}))

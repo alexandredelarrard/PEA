@@ -138,22 +138,10 @@ SEC_EDGAR_COMPANY_SEARCH_URL = (
 
 # Insider ownership events. Daily EDGAR filings of these forms are authoritative; the
 # quarterly ZIPs fill filings EDGAR does not return.
-SEC_INSIDER_FORMS = ["3", "3/A", "4", "4/A", "5", "5/A"]
 SEC_INSIDER_URL_TEMPLATE = "https://www.sec.gov/files/structureddata/data/insider-transactions-data-sets/{quarter}_form345.zip"
 SEC_INSIDER_URL_NEW_TEMPLATE = "https://www.sec.gov/files/datastandardsinnovation/data/insider-transactions-data-sets/{quarter}_form345.zip"
-SEC_INSIDER_FIRST_YEAR = 2006
 SEC_INSIDER_SWAP_YEAR = 2026
 
-# SEC FORMS
-SEC_8K_FORMS = ["8-K", "8-K/A"]
-SEC_13D_FORMS = [
-    "SC 13D",
-    "SC 13D/A",  # activist; the passive 13G channel is SEC_13G_FORMS
-    "SCHEDULE 13D",
-    "SCHEDULE 13D/A",
-]
-SEC_13G_FORMS = ["SC 13G", "SC 13G/A", "SCHEDULE 13G", "SCHEDULE 13G/A"]
-SEC_13F_FORMS = ["13F-HR", "13F-HR/A"]
 # SEC Form 13F v1.7 changed VALUE units on the filing date, including old-quarter amendments.
 SEC_13F_DOLLAR_UNITS_FROM = "2023-01-03"
 SEC_13F_VALUE_FACTORS = (1.0, 0.001, 1000.0)
@@ -161,8 +149,6 @@ SEC_13F_SOURCE_RATIO_BOUNDS = (0.85, 1.10)
 SEC_13F_SOURCE_ACCOUNTED = "source_accounted:"
 SEC_13F_INFERRED_HOLDINGS_REPORT = "13F HOLDINGS REPORT (inferred)"
 SEC_13F_SCHEMA_VALUE_FACTORS: dict[str, float] = {"X0101": 1000.0, "X0102": 1000.0, "X0202": 1.0}
-FUNDAMENTALS_FORMS = ["10-K", "10-K/A", "10-Q", "10-Q/A"]
-DEF14A_FORMS = ["DEF 14A", "DEF 14C", "DEFC14A"]
 
 # The three JSON files that ARE the fundamentals contract -- one entry per KPI (tier, kind,
 # sign, unit, definition, primary-source authority, and how to resolve it), the regime ->

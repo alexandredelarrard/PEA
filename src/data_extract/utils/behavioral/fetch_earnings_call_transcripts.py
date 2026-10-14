@@ -38,7 +38,6 @@ from src.data_extract.utils.behavioral.utils_earnings_call_cache import (
 )
 from src.data_extract.utils.common.rate_limit import call_with_retries
 from src.data_store.schema import Tables
-from src.utils.string import normalise_ticker
 from src.utils.universe import load_universe_tickers, new_tickers
 
 logger = logging.getLogger(__name__)
@@ -51,8 +50,6 @@ INDEX_COLUMNS = ("symbol", "fiscal_year", "fiscal_quarter", "report_date", "tran
 TRANSCRIPTS_COLUMN = "transcripts"
 PARAGRAPH_FIELDS = ("paragraph_number", "speaker", "content")
 FIRST_PARAGRAPH = 1
-# Full history (the dataset's first call is 2005-10-11).
-HISTORY_START = "2005-01-01"
 _BLOCK_SIZE = 1 << 20
 _RETRIES = 4
 _RETRY_WAIT_SECONDS = 10.0
@@ -344,7 +341,7 @@ def _ordered_parallel(groups: list[int], work: Callable[[int], pd.DataFrame], wo
 
 def _scope(context: Context, tickers: list[str] | None) -> list[str]:
     names = tickers if tickers is not None else load_universe_tickers(context)
-    return sorted({normalise_ticker(t) for t in names if str(t).strip()} - NO_EARNINGS_CALL_TICKERS)
+    return sorted(set(names) - NO_EARNINGS_CALL_TICKERS)
 
 
 def _window(context: Context, scope: list[str], frontier: pd.Timestamp | None, as_of: pd.Timestamp) -> tuple[str | None, frozenset[str]]:

@@ -202,7 +202,7 @@ def test_a_quarter_with_no_covering_annual_is_not_judged():
 
 
 def test_an_unfetched_form_is_not_gated():
-    """The gate is an EXACT match over `FUNDAMENTALS_FORMS`, not a `10-K` prefix.
+    """The gate matches the registered annual forms exactly; an unregistered `10-K` variant is untouched.
 
     Only four forms are ever fetched, so nothing reaches this code as `10-KT`; pinning it
     keeps the tuple honest about what it was actually reasoned over.

@@ -25,10 +25,10 @@ import requests
 from bs4 import BeautifulSoup
 from urllib3.exceptions import InsecureRequestWarning
 
-from src.constants.constants import BROWSER_HEADERS, SEC_13F_FORMS, SEC_EDGAR_COMPANY_SEARCH_URL
+from src.constants.constants import BROWSER_HEADERS, SEC_EDGAR_COMPANY_SEARCH_URL
 from src.context import Context
 from src.data_extract.utils.common.sec_io import company, company_filings, configure, sec_get
-from src.data_store.schema import Tables
+from src.data_store.schema import Resume, Tables
 from src.utils.string import pad_cik, pad_cik_series
 from src.utils.superinvestor_roster import (
     OVERRIDES_CONFIG_FILENAME,
@@ -91,8 +91,6 @@ DATAROMA_HOME_URL = "https://www.dataroma.com/m/home.php"
 WAYBACK_CDX_URL = "https://web.archive.org/cdx/search/cdx?url=dataroma.com/m/home.php&fl=timestamp,statuscode,original"
 # A capture's archived bytes as served (`id_`: no Wayback rewrite).
 _WAYBACK_RAW_URL = "https://web.archive.org/web/{timestamp}id_/{original}"
-# First day of the committed roster history.
-ROSTER_HISTORY_START = date(2012, 1, 1)
 # A capture is valid only if it lists at least this share of the previous accepted snapshot's managers.
 ROSTER_CAPTURE_MIN_RATIO = 0.8
 ROSTER_HISTORY_README = [
@@ -113,8 +111,6 @@ RESOLUTION_UNRESOLVED = "unresolved"
 # Activity gate window around Q(snapshot), in quarters.
 GATE_QUARTERS_BEFORE = 4
 GATE_QUARTERS_AFTER = 2
-# First quarter with broad XML 13F coverage in the local tables; a pre-XML window extends to it.
-SEC13F_XML_ERA_START = date(2013, 6, 30)
 
 #: (padded cik, period) pairs of 13F activity.
 Evidence = set[tuple[str, date]]
@@ -265,11 +261,12 @@ def assert_fully_resolved(rows: list[dict], unresolvable: Mapping[str, str]) -> 
 
 def activity_window(snapshot_date: date | pd.Timestamp | str) -> PeriodRange:
     """The gate window [Q - GATE_QUARTERS_BEFORE, Q + GATE_QUARTERS_AFTER] around Q = `snapshot_quarter`. The local
-    tables are sparse before `SEC13F_XML_ERA_START`, so a window ending earlier extends to that quarter."""
+    tables are sparse before the 13F contract's coverage start, so a window ending earlier extends to that quarter."""
     q = pd.Timestamp(snapshot_quarter(snapshot_date))
     start = (q - pd.offsets.QuarterEnd(GATE_QUARTERS_BEFORE)).date()
     end = (q + pd.offsets.QuarterEnd(GATE_QUARTERS_AFTER)).date()
-    return PeriodRange(start, max(end, SEC13F_XML_ERA_START))
+    coverage_start = date.fromisoformat(cast(str, cast(Resume, Tables.sec13f_hr.resume).coverage_start))
+    return PeriodRange(start, max(end, coverage_start))
 
 
 def _nearest(periods: Iterable[date], target: date) -> str:
@@ -319,9 +316,10 @@ def assert_active(rows: list[dict], evidence: Evidence, inactive: Mapping[str, I
     return sorted(skipped)
 
 
-def quarterly_capture_candidates(cdx: str, since: date = ROSTER_HISTORY_START, until: date | None = None) -> dict[str, list[WaybackCapture]]:
+def quarterly_capture_candidates(cdx: str, since: date | None = None, until: date | None = None) -> dict[str, list[WaybackCapture]]:
     """`{"YYYYQn": [capture, newest first]}` in chronological quarter order, over the status-200 lines of a
     `timestamp status original` CDX captured on days in [since, until]; a repeated timestamp counts once."""
+    since = since if since is not None else date.fromisoformat(cast(str, cast(Resume, Tables.superinvestor_roster.resume).source_start))
     by_quarter: dict[str, list[WaybackCapture]] = {}
     seen: set[str] = set()
     for line in filter(None, (raw.strip() for raw in cdx.splitlines())):
@@ -484,7 +482,7 @@ def edgar_13f_report_dates(context: Context, cik: str) -> set[date]:
     context.ensure_edgar_identity()
     configure(context)
     try:
-        listing = company_filings(company(int(cik)), SEC_13F_FORMS)
+        listing = company_filings(company(int(cik)), cast(Resume, Tables.sec13f_manager_holdings.resume).forms)
         frame = listing.to_pandas() if listing else pd.DataFrame(columns=["reportDate"])
     except Exception as e:
         raise EdgarListingError(

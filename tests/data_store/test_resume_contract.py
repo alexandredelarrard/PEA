@@ -2,20 +2,23 @@
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
 
-from src.constants.constants import (
-    DEF14A_FORMS,
-    FUNDAMENTALS_FORMS,
-    SEC_8K_FORMS,
-    SEC_13D_FORMS,
-    SEC_13F_FORMS,
-    SEC_13G_FORMS,
-    SEC_INSIDER_FORMS,
-)
-from src.data_extract.utils.fundamentals.fundamentals_employees import HEADCOUNT_FORMS
-from src.data_extract.utils.structure.fetch_filing_text import FILING_TEXT_FORMS
+import pandas as pd
+
+from src.context import Context
+from src.data_extract.utils.common.edgar_index import INDEX_FORMS
+from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import fundamentals_fetch
+from src.data_extract.utils.institutionals.fetch_8k_edgar import SEC_8K_FETCH
+from src.data_extract.utils.institutionals.fetch_13d_edgar import SEC_13D_FETCH
+from src.data_extract.utils.institutionals.fetch_13g_edgar import SEC_13G_FETCH
+from src.data_extract.utils.institutionals.fetch_insider_edgar import insider_fetch
+from src.data_extract.utils.structure.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
+from src.data_extract.utils.structure.fetch_filing_text import FILING_TEXT_FETCH
 from src.data_store import ddl
 from src.data_store.schema import (
     KIND_EXTRACT,
@@ -24,6 +27,7 @@ from src.data_store.schema import (
     RESUME_MARKET,
     RESUME_SERIES,
     RESUME_SNAPSHOT,
+    Resume,
     Tables,
     by_kind,
     marker_tables,
@@ -68,7 +72,7 @@ def _column_types() -> dict[str, dict[str, str]]:
 
 def test_every_extract_table_resumes_or_is_a_side_table() -> None:
     extract = {t.name for t in by_kind(KIND_EXTRACT)}
-    with_contract = {t.name for t in resume_tables()}
+    with_contract = {t.name for t in resume_tables() if t.kind == KIND_EXTRACT}
     uncovered = extract - with_contract - SIDE_TABLES
     stale_side = SIDE_TABLES & with_contract
     assert not uncovered, f"extract tables with neither a Resume contract nor a side-table entry: {sorted(uncovered)}"
@@ -80,8 +84,8 @@ def test_every_extract_table_resumes_or_is_a_side_table() -> None:
     print(f"  {len(extract)} extract tables = {len(with_contract)} with a contract + {len(extract - with_contract)} side tables. Validated.")
 
 
-def test_every_resumed_table_has_a_cadence() -> None:
-    missing = sorted(t.name for t in resume_tables() if t.freshness is None)
+def test_every_resumed_extract_table_has_a_cadence() -> None:
+    missing = sorted(t.name for t in resume_tables() if t.kind == KIND_EXTRACT and t.freshness is None)
     assert not missing, f"resumed tables with no freshness cadence: {missing}"
     for table in (
         Tables.dividends,
@@ -98,7 +102,7 @@ def test_every_resumed_table_has_a_cadence() -> None:
     assert Tables.def14a_edgar.freshness == "yearly"
 
     print("\n=== SANITY CHECK: cadences ===")
-    print(f"  all {len(resume_tables())} resumed tables carry a freshness cadence (10 newly declared). Validated.")
+    print("  every resumed extract table carries a freshness cadence; change-only reference snapshots do not claim a daily publication. Validated.")
 
 
 def test_contract_and_marker_columns_exist_with_compatible_types() -> None:
@@ -144,24 +148,38 @@ def test_sequence_sentinels_cannot_collide_with_real_rows() -> None:
 
 
 def test_document_contract_forms_are_the_forms_each_fetcher_lists() -> None:
-    fetched = {
-        Tables.sec_8k: SEC_8K_FORMS,
-        Tables.sec_13d: SEC_13D_FORMS,
-        Tables.sec_13g: SEC_13G_FORMS,
-        Tables.insider_transactions: SEC_INSIDER_FORMS,
-        Tables.def14a_edgar: DEF14A_FORMS,
-        Tables.def14a_llm: DEF14A_FORMS,
-        Tables.fundamentals_facts: FUNDAMENTALS_FORMS,
-        Tables.fundamentals_employees: HEADCOUNT_FORMS,
-        Tables.filing_risk_text: FILING_TEXT_FORMS,
-        Tables.sec13f_hr: SEC_13F_FORMS,
-        Tables.sec13f_manager_holdings: SEC_13F_FORMS,
-    }
-    declared = {t.name for t in resume_tables() if t.resume is not None and t.resume.forms}
-    assert declared == {t.name for t in fetched}, f"tables declaring forms differ: {sorted(declared ^ {t.name for t in fetched})}"
-    for table, forms in fetched.items():
-        assert table.resume is not None
-        assert set(table.resume.forms) == set(forms), f"{table.name}: contract {table.resume.forms} vs fetched {tuple(forms)}"
+    context = cast(Context, SimpleNamespace(config_dir="configs"))
+    cik_map = pd.DataFrame({"ticker": ["AAA"], "sector": [None], "industry_group": [None], "sub_industry": [None]})
+    fetched = (
+        SEC_8K_FETCH,
+        SEC_13D_FETCH,
+        SEC_13G_FETCH,
+        insider_fetch(["AAA"]),
+        DEF14A_EDGAR_FETCH,
+        FILING_TEXT_FETCH,
+        fundamentals_fetch(context, cik_map),
+    )
+    for fetch in fetched:
+        assert fetch.forms is cast(Resume, fetch.done.resume).forms, fetch.done.name
+    declared = {form for table in resume_tables() for form in cast(Resume, table.resume).forms}
+    assert INDEX_FORMS == declared
 
     print("\n=== SANITY CHECK: contract forms = fetched forms ===")
-    print(f"  {len(fetched)} form-declaring contracts match the forms their fetchers list (8-K without 8-K12B; DEF 14A/14C/DEFC14A). Validated.")
+    print(
+        f"  {len(fetched)} actual EDGAR fetches use their owning table's exact forms tuple; the index keeps all {len(declared)} registered forms. Validated."
+    )
+
+
+def test_extraction_form_lists_are_declared_only_in_schema() -> None:
+    root = _SCHEMA_SQL.parents[1]
+    pattern = re.compile(r"(?:10-[KQ](?:405)?|8-K|DEF 14[AC]|DEFC14A|SC 13[DG]|SCHEDULE 13[DG]|13F-HR|[345])(?:/A)?")
+    duplicates: list[str] = []
+    for package in ("constants", "data_extract", "data_aggregate"):
+        for path in (root / "src" / package).rglob("*.py"):
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                if not isinstance(node, ast.List | ast.Tuple | ast.Set) or not node.elts:
+                    continue
+                if all(isinstance(value, ast.Constant) and isinstance(value.value, str) and pattern.fullmatch(value.value) for value in node.elts):
+                    duplicates.append(f"{path.relative_to(root)}:{node.lineno}")
+    assert not duplicates, f"SEC form lists outside schema.py: {duplicates}"
+    print("SANITY: constants, extraction and aggregation contain no independently declared SEC form lists; schema owns the extraction scope.")

@@ -16,6 +16,7 @@ from src.constants.constants import INSUFFICIENT_HISTORY_TICKERS
 from src.context import Context
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.string import normalise_ticker
 
 
 def load_universe_tickers(context: Context) -> list[str]:
@@ -28,8 +29,8 @@ def load_universe_tickers(context: Context) -> list[str]:
     if df is None or "ticker" not in df.columns:
         return []
     # Exclude after normalising, so a lower-cased "goog" is dropped like "GOOG".
-    excluded = INSUFFICIENT_HISTORY_TICKERS | {str(t).strip().upper() for t in context.config.data_extract.redundant_ticks}
-    return sorted({t for raw in df["ticker"].dropna() if (t := str(raw).strip().upper()) and t not in excluded})
+    excluded = INSUFFICIENT_HISTORY_TICKERS | {normalise_ticker(t) for t in context.config.data_extract.redundant_ticks}
+    return sorted({t for raw in df["ticker"].dropna() if (t := normalise_ticker(raw)) and t not in excluded})
 
 
 def new_tickers(store: DataStore, overlap_days: int, as_of: pd.Timestamp) -> set[str]:
@@ -45,7 +46,7 @@ def new_tickers(store: DataStore, overlap_days: int, as_of: pd.Timestamp) -> set
     df = store.load(Tables.sp500_tickers, columns=["ticker"], date_col="added_on", since=cutoff, until=day, optional=True)
     if df is None:
         return set()
-    return {t for raw in df["ticker"].dropna() if (t := str(raw).strip().upper())}
+    return {t for raw in df["ticker"].dropna() if (t := normalise_ticker(raw))}
 
 
 #: The filing tables a company keyed by CIK must appear in if its CIK is the right one. Kept
@@ -66,7 +67,7 @@ def added_on_dates(store: DataStore, tickers: Sequence[str], as_of: pd.Timestamp
     if df is None:
         return {}
     df = df.dropna(subset=["added_on"])
-    return {str(t).strip().upper(): pd.Timestamp(d).normalize() for t, d in zip(df["ticker"], df["added_on"], strict=True)}
+    return {normalise_ticker(t): pd.Timestamp(d).normalize() for t, d in zip(df["ticker"], df["added_on"], strict=True)}
 
 
 def unverified_ciks(context: Context) -> list[dict]:
@@ -112,11 +113,11 @@ def unverified_ciks(context: Context) -> list[dict]:
 
     # ONE `distinct` per table, not one count per (ticker, table): the universe is ~500 names
     # and five tables, and a per-cell count is 2,500 round trips on a check that runs at seed.
-    roster = [str(t).strip().upper() for t in df["ticker"].dropna()]
+    roster = [normalise_ticker(t) for t in df["ticker"].dropna()]
 
     def _tickers(table: str) -> set[str]:
         try:
-            return {str(t).strip().upper() for t in context.store.distinct(table, "ticker", where={"ticker": roster}) if t}
+            return {normalise_ticker(t) for t in context.store.distinct(table, "ticker", where={"ticker": roster}) if t}
         except Exception:  # noqa: BLE001 -- a table may not exist yet
             return set()
 
@@ -126,7 +127,7 @@ def unverified_ciks(context: Context) -> list[dict]:
 
     out: list[dict] = []
     for raw_t, raw_c in zip(df["ticker"], df["cik"], strict=False):
-        ticker = str(raw_t).strip().upper()
+        ticker = normalise_ticker(raw_t)
         if not ticker or ticker in filed:
             continue
         out.append(

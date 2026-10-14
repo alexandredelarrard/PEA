@@ -12,13 +12,14 @@ per-PROCESS, so it must NOT run beside another walk.
 
 from __future__ import annotations
 
+from typing import cast
+
 import pandas as pd
 
-from src.constants.constants import DEF14A_FORMS
 from src.context import get_config_context
 from src.data_extract.utils.common.edgar_fillings import list_filings
 from src.data_extract.utils.common.registrant import load_registrants
-from src.data_store.schema import Tables
+from src.data_store.schema import Resume, Tables
 
 #: Measured 2026-09-05 over a full run: ~$0.023 a filing, of which output tokens are ~87%.
 USD_PER_FILING = 0.023
@@ -39,7 +40,7 @@ def main() -> None:
     per_ticker: dict[str, int] = {}
     for ticker, entry in sorted(regs.items()):
         for segment in entry.segments:
-            part = list_filings(context, segment.cik, list(DEF14A_FORMS), years, ticker)
+            part = list_filings(context, segment.cik, list(cast(Resume, Tables.def14a_llm.resume).forms), years, ticker)
             if part is None or part.empty:
                 listed = new = 0
             else:

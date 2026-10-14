@@ -24,6 +24,7 @@ from src.context import Context
 from src.data_store.schema import Table, Tables, resolve
 from src.utils.earnings_call_split import split_call
 from src.utils.text_metrics import assess_earnings_call_sections, word_count
+from src.utils.universe import load_universe_tickers
 from src.validate.result import CheckResult, Finding, full_table_only
 
 CHECK = "earnings_calls"
@@ -395,7 +396,7 @@ def _coverage_summary(roster_tickers: list[str], measured_tickers: list[str], sc
 
 def _coverage(context: Context) -> tuple[dict[str, Any], dict[str, float], dict[str, list[pd.Timestamp]]]:
     """(coverage summary, coverage ratio per roster ticker, valid call dates per roster ticker)."""
-    roster = context.store.load(Tables.sp500_tickers, columns=["ticker"])
+    roster_tickers = load_universe_tickers(context)
     releases = context.store.load(Tables.earnings_surprises, columns=["ticker", "earnings_date"], optional=True)
     tenure = context.store.load(
         Tables.symbol_tenure,
@@ -405,8 +406,6 @@ def _coverage(context: Context) -> tuple[dict[str, Any], dict[str, float], dict[
     )
     lineage = context.store.load(Tables.entity_lineage, columns=["cik", "entity_id"], optional=True)
     lineage = None if lineage is None else lineage.drop_duplicates(ignore_index=True)
-    assert roster is not None
-    roster_tickers = roster["ticker"].astype(str).tolist()
     measured_tickers = [ticker for ticker in roster_tickers if ticker not in NO_EARNINGS_CALL_TICKERS]
     identity = _identity(tenure, lineage, measured_tickers)
     analysis_symbols = sorted(

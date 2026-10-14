@@ -19,13 +19,14 @@ import io
 import logging
 from collections.abc import Collection, Sequence
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 from tqdm import tqdm
 
 from src.constants.constants import FTD_ZIP_NAME_TEMPLATE
 from src.context import Context
-from src.data_extract.utils.common.bulk_cache import cache_dir, cached_periods, ensure_zip, read_zip_text
+from src.data_extract.utils.common.bulk_cache import cache_dir, cached_periods, ensure_zip, period_end, read_zip_text
 from src.data_extract.utils.common.resume import archive_periods, recently_changed
 from src.data_extract.utils.common.security_master import (
     SOURCE_FTD,
@@ -47,7 +48,7 @@ from src.data_extract.utils.institutionals.security_tape import (
     summed_lines,
     warn_lost_rows,
 )
-from src.data_store.schema import Tables
+from src.data_store.schema import Resume, Tables
 from src.utils.batching import batched_tuples
 from src.utils.string import normalise_ticker
 
@@ -92,21 +93,21 @@ _FAR = pd.Timestamp("2262-01-01")
 SEC_FTD_URL_TEMPLATE = "https://www.sec.gov/files/data/fails-deliver-data/cnsfails{period}.zip"
 SEC_FTD_LEGACY_URL_TEMPLATE = "https://www.sec.gov/files/data/frequently-requested-foia-document-fails-deliver-data/cnsfails{period}.zip"
 SEC_FTD_LEGACY_LAST_PERIOD = "201706a"  # last period on the legacy path
-SEC_FTD_FIRST_YEAR = 2009  # earliest FTD file (2009-07)
 SEC_FTD_ZIP_PREFIX = "cnsfails"  # a cached archive is named `{prefix}{period}.zip`
 
 
 def _periods(years_history: int, today: pd.Timestamp | None = None) -> list[str]:
     """Semi-monthly file tags ('YYYYMMa'/'YYYYMMb') from the data-set era to now."""
     today = (today or pd.Timestamp.today()).normalize()
+    source_start = pd.Timestamp(cast(str, cast(Resume, Tables.sec_fails_to_deliver_security.resume).source_start))
     out: list[str] = []
-    for y in range(today.year - years_history, today.year + 1):
-        if y < SEC_FTD_FIRST_YEAR:
-            continue
+    for y in range(max(today.year - years_history, source_start.year), today.year + 1):
         for m in range(1, 13):
+            if (y, m) < (source_start.year, source_start.month):
+                continue
             if (y, m) > (today.year, today.month):
                 break
-            out += [f"{y}{m:02d}a", f"{y}{m:02d}b"]
+            out += [period for half in ("a", "b") if period_end(period := f"{y}{m:02d}{half}") >= source_start.date()]
     return out
 
 
@@ -134,7 +135,7 @@ def _parse_ftd_lines(raw: str) -> pd.DataFrame:
         {
             "date": pd.to_datetime(_ftd_column(df, cols, "SETTLEMENT DATE"), format="%Y%m%d", errors="coerce"),
             "cusip": _ftd_column(df, cols, "CUSIP").str.upper(),
-            "source_symbol": _ftd_column(df, cols, "SYMBOL").str.upper(),
+            "source_symbol": _ftd_column(df, cols, "SYMBOL").map(normalise_ticker),
             "description": _ftd_column(df, cols, "DESCRIPTION"),
             "price": price,
             "fails_quantity": qty,
@@ -175,7 +176,7 @@ def prepare_master(master: pd.DataFrame) -> pd.DataFrame:
     rows = master[master["source"].eq(SOURCE_FTD)] if "source" in master.columns else master
     out = rows[_MASTER_COLUMNS].copy()
     out["cusip"] = out["cusip"].astype(str).str.strip().str.upper()
-    out["source_symbol"] = out["source_symbol"].fillna("").astype(str).str.strip().str.upper()
+    out["source_symbol"] = out["source_symbol"].fillna("").map(normalise_ticker)
     out["valid_from"] = pd.to_datetime(out["valid_from"])
     out["valid_to"] = pd.to_datetime(out["valid_to"]).fillna(_FAR)
     out["conversion_ratio"] = pd.to_numeric(out["conversion_ratio"]).fillna(1.0).astype("float64")
@@ -209,7 +210,7 @@ def stamp_lines(lines: pd.DataFrame, master: pd.DataFrame) -> pd.DataFrame:
         {
             "_row": out.index,
             "cusip": out["cusip"].astype(str).str.strip().str.upper(),
-            "source_symbol": out["source_symbol"].fillna("").astype(str).str.strip().str.upper(),
+            "source_symbol": out["source_symbol"].fillna("").map(normalise_ticker),
             "trade_date": out["trade_date"],
         }
     )
@@ -417,6 +418,7 @@ def restamp_fails(
     master: pd.DataFrame | None = None,
     dry_run: bool = False,
     as_of: pd.Timestamp | None = None,
+    others: frozenset[str] | None = None,
 ) -> list[dict]:
     """Re-stamp the stored lines of `companies` from the master and rebuild their ticker rows, writing only what changed.
 
@@ -433,8 +435,8 @@ def restamp_fails(
         companies = restamp_targets(context, Tables.sec_fails_to_deliver_security, master_stamps(master), as_of)
     if not companies:
         return []
-    universe = frozenset(normalise_ticker(ticker) for ticker in tickers)
-    others = outside_scope(context, universe)
+    universe = frozenset(tickers)
+    others = outside_scope(context, universe) if others is None else others
     names = sorted(set(companies) - others)
     if not names:
         return []
@@ -459,24 +461,31 @@ def restamp_fails(
     return records
 
 
-def fetch_fails_to_deliver(context: Context, tickers: Sequence[str], full: bool = False, as_of: pd.Timestamp | None = None) -> int:
+def fetch_fails_to_deliver(
+    context: Context,
+    tickers: Sequence[str],
+    full: bool = False,
+    as_of: pd.Timestamp | None = None,
+    *,
+    all_tickers: Collection[str] | None = None,
+) -> int:
     """Stamp the stored raw FTD lines from `security_master` and rebuild `sec_fails_to_deliver`; returns ticker rows written.
 
     Incremental: the NULL-stamped lines (new from `ftd-download`) and the lines of companies whose master rows changed
     recently; no ZIP is read. `full` rebuilds both tables from every cached ZIP; a scoped (`-t`) `full` upserts only
     its tickers' lines and rows.
     """
-    universe = frozenset(normalise_ticker(ticker) for ticker in tickers)
+    universe = frozenset(tickers)
     master = load_fails_master(context)
     if master is None or master.empty:
         logger.warning("FTD: no security_master yet (run identity-tables first); nothing stamped")
         return 0
-    others = outside_scope(context, universe)
+    others = outside_scope(context, universe, all_tickers)
     if full:
         _, saved = _rebuild_from_cache(context, master, universe, others)
     else:
         saved = _stamp_new(context, master, universe, others)
-        warn_lost_rows(logger, "FTD", restamp_fails(context, None, universe, master=master, as_of=as_of))
+        warn_lost_rows(logger, "FTD", restamp_fails(context, None, universe, master=master, as_of=as_of, others=others))
     return saved
 
 
@@ -528,7 +537,7 @@ def _read_period(context: Context, cache: Path, period: str, *, download: bool) 
     return None if raw is None else _parse_ftd_lines(raw).assign(period=period)
 
 
-def download_fails_to_deliver(context: Context, years_history: int = 15, full: bool = False, as_of: pd.Timestamp | None = None) -> int:
+def download_fails_to_deliver(context: Context, years_history: int = 31, full: bool = False, as_of: pd.Timestamp | None = None) -> int:
     """Cache the FTD ZIPs and store their in-scope source lines raw in `sec_fails_to_deliver_security`.
 
     Scope: lineage symbols plus the CUSIP-6 of the master's securities. The periods read are those no stored line

@@ -28,15 +28,12 @@ from src.data_extract.utils.fundamentals_sharadar.client import (
     sharadar_get,
     vendor_symbol,
 )
-from src.data_store.schema import Table, Tables
+from src.data_store.schema import Resume, Table, Tables
 from src.utils.polite_http import sleep_pace
 from src.utils.predecessor_series import load_predecessor_series
 
 # As-reported dimensions only: point-in-time and immutable (MR* rows restate in place).
 SHARADAR_DIMENSIONS = ("ARQ", "ARY", "ART")
-
-# History floor for `sharadar_sp500`; membership is always pulled at full depth.
-SHARADAR_SP500_FIRST_DATE = "1990-01-01"
 
 
 def _pace(context: Context) -> float:
@@ -241,6 +238,6 @@ def fetch_sharadar_actions(context: Context, *, years_history: int, full: bool =
 
 
 def fetch_sharadar_sp500(context: Context, *, full: bool = False) -> None:
-    """S&P 500 membership events -> `sharadar_sp500`; cold or `full` pulls from `SHARADAR_SP500_FIRST_DATE`."""
-    floor = pd.Timestamp(SHARADAR_SP500_FIRST_DATE)
+    """S&P 500 membership events; cold or `full` pulls from the table's source start."""
+    floor = pd.Timestamp(cast(str, cast(Resume, Tables.sharadar_sp500.resume).source_start))
     _fetch_dated_table(context, Tables.sharadar_sp500, "sp500", _table_since(context, Tables.sharadar_sp500, floor, full))

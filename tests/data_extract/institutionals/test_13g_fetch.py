@@ -19,7 +19,6 @@ import pytest
 from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp
 from src.data_extract.utils.common.sec_io import ParseFailureError
 from src.data_extract.utils.institutionals.fetch_13g_edgar import (
-    _COLS,
     SCHEDULE_13G,
     SEC_13G_FETCH,
     _norm_entity,
@@ -232,7 +231,7 @@ def test_guard_drops_filings_where_the_ticker_is_the_filer():
     frame = _parse_all("JNJ", "0000200406", [own, other])
     assert len(frame) == 1
     assert frame.iloc[0]["issuer_name"] == "JOHNSON & JOHNSON"
-    assert list(frame.columns) == _COLS
+    assert tuple(frame.columns) == Tables.sec_13g.retrieval_columns
     print("\n=== SANITY: 13G issuer/filer guard ===")
     print("  2 listed filings -> 1 kept; the one naming another issuer is dropped. Validated.")
 

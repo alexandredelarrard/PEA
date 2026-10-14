@@ -53,35 +53,6 @@ from src.data_store.schema import Resume, Table, Tables
 
 logger = logging.getLogger(__name__)
 
-_COLS = [
-    "ticker",
-    "accession_number",
-    "field",
-    "fiscal_year",
-    "fiscal_period",
-    "duration_type",
-    "cik",
-    "form",
-    "filing_date",
-    "is_amendment",
-    "period_of_report",
-    "regime",
-    "period_start",
-    "period_end",
-    "period_days",
-    "value",
-    "unit",
-    "decimals",
-    "resolution_method",
-    "source_concept",
-    "roll_up_children",
-    "root_anchor",
-    "adjustment",
-    "role_uri",
-    "is_extension",
-    "dc_code",
-]
-
 
 def _period_frame(facts: pd.DataFrame) -> pd.DataFrame:
     """Facts with `duration_type`, `period_days` and `period_end` normalised (instants take `period_instant`)."""
@@ -621,7 +592,7 @@ def parse_fundamentals(
     gics_by_ticker: dict[str, dict],
 ) -> dict[Table, pd.DataFrame]:
     """One filing's `fundamentals_facts` rows, one per primary key (a filing can tag one field on one window twice)."""
-    df = pd.DataFrame(filing_rows(ticker, stamp, catalogue, gics_by_ticker.get(ticker)), columns=_COLS)
+    df = pd.DataFrame(filing_rows(ticker, stamp, catalogue, gics_by_ticker.get(ticker)), columns=Tables.fundamentals_facts.retrieval_columns)
     return {Tables.fundamentals_facts: df.drop_duplicates(subset=list(Tables.fundamentals_facts.pk), keep="last")}
 
 
@@ -632,9 +603,7 @@ def fundamentals_fetch(context: Context, cik_map: pd.DataFrame) -> EdgarFetch:
     df_gics = cik_map[levels].set_index(cik_map["ticker"].map(str))
     gics = cast(dict[str, dict], df_gics[~df_gics.index.duplicated(keep="last")].to_dict("index"))
     return EdgarFetch(
-        desc="fundamentals (linkbase)",
         tables=(Tables.fundamentals_facts,),
-        forms=cast(Resume, Tables.fundamentals_facts.resume).forms,
         parse=partial(parse_fundamentals, catalogue=catalogue, gics_by_ticker=gics),
     )
 

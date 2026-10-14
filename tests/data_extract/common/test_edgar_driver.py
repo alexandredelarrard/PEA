@@ -31,6 +31,7 @@ _T_DOC = Table(
     date_col="filing_date",
     resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 7, forms=("8-K",)),
     empty_marker=("item", "_empty"),
+    desc="driver test",
 )
 _T_CHILD = Table("driver_child", ("ticker", "accession_number"), date_col="filing_date")
 _AS_OF = pd.Timestamp("2026-09-30")
@@ -95,7 +96,7 @@ class _Source:
 
 
 def _fetch(source: _Source) -> EdgarFetch:
-    return EdgarFetch(desc="driver test", tables=(_T_CHILD, _T_DOC), forms=("8-K",), parse=source.parse, done_table=_T_DOC, identity_aware=False)
+    return EdgarFetch(tables=(_T_CHILD, _T_DOC), parse=source.parse, done_table=_T_DOC, identity_aware=False)
 
 
 def _run(ctx, source: _Source, tickers: list[str], as_of: pd.Timestamp = _AS_OF, **kwargs: Any):
@@ -104,6 +105,20 @@ def _run(ctx, source: _Source, tickers: list[str], as_of: pd.Timestamp = _AS_OF,
 
 def _stored(store, table: Table = _T_DOC) -> set[str]:
     return set(store.distinct(table, "accession_number"))
+
+
+def test_marker_stamps_follow_table_metadata() -> None:
+    table = dataclasses.replace(Tables.insider_transactions, name="renamed_insider_table")
+    stamp = FilingStamp.of(fake_filing("a-1", 320193, "2024-01-02", form="4"), "0000320193")
+
+    row = edgar_driver.marker_row(table, "AAPL", stamp).iloc[0]
+
+    assert row["security_type"] == "_empty"
+    assert row["row_sequence"] == 0
+    assert row["document_type"] == "4"
+    assert row["source"] == "edgar"
+    assert "cik" not in row.index
+    print("SANITY: insider marker stamps follow the table contract, including after a table rename; the owner's CIK is never stamped as issuer.")
 
 
 # --------------------------------------------------------------------------- #
@@ -356,10 +371,11 @@ def test_parse_filing_rows_dedups_on_pk_and_coerces_after_dedup(monkeypatch):
         ]
 
     stamp = FilingStamp.of(fake_filing("a-1", 320193, "2024-01-02"), "0000320193")
-    columns = ["ticker", "accession_number", "item", "cik", "value"]
-    out = parse_filing_rows("AAPL", "0000320193", stamp, EdgarScope(), table=_T_DOC, columns=columns, row_fn=row_fn, numeric=("value",))[_T_DOC]
+    table = dataclasses.replace(_T_DOC, retrieval_columns=("ticker", "accession_number", "item", "cik", "value"))
+    out = parse_filing_rows("AAPL", "0000320193", stamp, EdgarScope(), table=table, row_fn=row_fn, numeric=("value",))[table]
 
     assert list(out["value"]) == [7.0] and coerced_lengths == [1]
     assert list(out["cik"]) == ["0000320193"]
+    assert tuple(out.columns) == table.retrieval_columns
     print("\n=== SANITY CHECK: parse_filing_rows ===")
     print(f"  2 rows on one PK -> {len(out)} after dedup; to_numeric ran on {coerced_lengths[0]} row (after dedup). Validated.")

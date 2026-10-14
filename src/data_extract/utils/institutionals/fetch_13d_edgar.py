@@ -26,53 +26,7 @@ from src.data_extract.utils.common.parallel_fetch import PROGRAMMING_ERRORS
 from src.data_extract.utils.common.resume import DONE_PER_KEY
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, filing_attachments, filing_text
 from src.data_extract.utils.institutionals.schedule_rows import SCHEDULE_NUMERIC_COLS, ScheduleSpec, schedule_is_subject, schedule_ticker_rows
-from src.data_store.schema import Resume, Table, Tables
-
-_COLS = [
-    "ticker",
-    "cik",
-    "accession_number",
-    "form",
-    "filing_date",
-    "rp_seq",
-    "is_amendment",
-    "amendment_number",
-    "cusip",
-    "issuer_name",
-    "date_of_event",
-    "has_structured_data",
-    "reporting_person_name",
-    "reporting_person_cik",
-    "reporting_person_citizenship",
-    "type_of_reporting_person",
-    "reporting_person_comment",
-    "is_group_member",
-    "sole_voting_power",
-    "shared_voting_power",
-    "sole_dispositive_power",
-    "shared_dispositive_power",
-    "aggregate_amount",
-    "percent_of_class",
-    "item3_source_of_funds",
-    "item4_purpose_of_transaction",
-    "item5_interest_in_securities",
-    "item6_contracts_understandings",
-    "primary_document",
-    "doc_url",
-]
-
-_TRANSACTION_COLS = [
-    "ticker",
-    "cik",
-    "accession_number",
-    "filing_date",
-    "trade_seq",
-    "reporting_person_name",
-    "trade_date",
-    "transaction_type",
-    "quantity",
-    "price_per_share",
-]
+from src.data_store.schema import Table, Tables
 
 # --- Item narrative fallback -------------------------------------------------- #
 # Caption-anywhere anchors: the only set that reads a filing rendered without newlines.
@@ -393,8 +347,6 @@ def _filing_transactions(ticker: str, cik: str, stamp: FilingStamp, filing_rows:
 
 SCHEDULE_13D = ScheduleSpec(
     label="SC 13D",
-    forms=cast(Resume, Tables.sec_13d.resume).forms,
-    columns=tuple(_COLS),
     extra_base=_item_texts,
     trust_numerics=_trust_numerics,
     reporting_person_ciks=_reporting_person_ciks,
@@ -408,14 +360,15 @@ def parse_13d(ticker: str, cik: str, stamp: FilingStamp, scope: EdgarScope) -> d
     `sec_13d_transactions`; both empty when the parsed issuer is another company."""
     rows = schedule_ticker_rows(ticker, cik, stamp, scope, SCHEDULE_13D)
     trades = _filing_transactions(ticker, cik, stamp, rows) if rows else []
-    return {Tables.sec_13d: pd.DataFrame(rows, columns=_COLS), Tables.sec_13d_transactions: pd.DataFrame(trades, columns=_TRANSACTION_COLS)}
+    return {
+        Tables.sec_13d: pd.DataFrame(rows, columns=Tables.sec_13d.retrieval_columns),
+        Tables.sec_13d_transactions: pd.DataFrame(trades, columns=Tables.sec_13d_transactions.retrieval_columns),
+    }
 
 
 #: `sec_13d` is the done table, saved after `sec_13d_transactions`; done per key, as for 13G.
 SEC_13D_FETCH = EdgarFetch(
-    desc="SC 13D (edgartools)",
     tables=(Tables.sec_13d_transactions, Tables.sec_13d),
-    forms=cast(Resume, Tables.sec_13d.resume).forms,
     parse=parse_13d,
     done_table=Tables.sec_13d,
     is_subject=schedule_is_subject,

@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import ast
 import re
+from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pandas as pd
+import pytest
 
 from src.context import Context
+from src.data_extract.utils.common import edgar_driver
+from src.data_extract.utils.common.edgar_driver import EdgarScope, plan_fetch
 from src.data_extract.utils.common.edgar_index import INDEX_FORMS
 from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import fundamentals_fetch
 from src.data_extract.utils.institutionals.fetch_8k_edgar import SEC_8K_FETCH
@@ -28,11 +32,13 @@ from src.data_store.schema import (
     RESUME_SERIES,
     RESUME_SNAPSHOT,
     Resume,
+    Table,
     Tables,
     by_kind,
     marker_tables,
     resume_tables,
 )
+from src.data_store.store import DataStore
 
 _SCHEMA_SQL = Path(__file__).resolve().parents[2] / "sql" / "schema.sql"
 
@@ -147,8 +153,8 @@ def test_sequence_sentinels_cannot_collide_with_real_rows() -> None:
     print("  rp_seq -> -1 (sequence starts at 0), proposal_seq -> 0 (starts at 1): no marker can overwrite a real row. Validated.")
 
 
-def test_document_contract_forms_are_the_forms_each_fetcher_lists() -> None:
-    context = cast(Context, SimpleNamespace(config_dir="configs"))
+def test_document_contract_forms_are_the_forms_each_fetcher_lists(monkeypatch: pytest.MonkeyPatch, sqlite_store: DataStore) -> None:
+    context = cast(Context, SimpleNamespace(config_dir="configs", store=sqlite_store))
     cik_map = pd.DataFrame({"ticker": ["AAA"], "sector": [None], "industry_group": [None], "sub_industry": [None]})
     fetched = (
         SEC_8K_FETCH,
@@ -159,8 +165,22 @@ def test_document_contract_forms_are_the_forms_each_fetcher_lists() -> None:
         FILING_TEXT_FETCH,
         fundamentals_fetch(context, cik_map),
     )
+    planned: list[tuple[Table, Sequence[str]]] = []
+
+    def capture_worklist(context: Context, table: Table, keys: pd.DataFrame, run_date: pd.Timestamp, *, forms: Sequence[str], **kwargs: Any) -> None:
+        planned.append((table, forms))
+
+    monkeypatch.setattr(edgar_driver, "document_worklist", capture_worklist)
+    column_types = _column_types()
     for fetch in fetched:
-        assert fetch.forms is cast(Resume, fetch.done.resume).forms, fetch.done.name
+        plan_fetch(context, fetch, cik_map.assign(cik="1"), EdgarScope(), pd.Timestamp("2026-10-13"), 10)
+        assert planned[-1][0] is fetch.done
+        assert planned[-1][1] is cast(Resume, fetch.done.resume).forms
+        assert fetch.done.desc
+        for table in fetch.tables:
+            assert set(table.pk) <= set(table.retrieval_columns)
+            assert len(table.retrieval_columns) == len(set(table.retrieval_columns))
+            assert set(table.retrieval_columns) <= set(column_types[table.name])
     declared = {form for table in resume_tables() for form in cast(Resume, table.resume).forms}
     assert INDEX_FORMS == declared
 

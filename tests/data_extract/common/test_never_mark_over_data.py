@@ -131,7 +131,7 @@ def test_a_full_refetch_that_parses_nothing_leaves_the_stored_proxy_untouched(tm
     ctx = fake_context(tmp_path, sqlite_store, ["AAA"], ["1"])
     seed_index(ctx, [(1, "Fixture Co", "DEF 14A", "2026-04-01", _KEPT), (1, "Fixture Co", "DEF 14A", "2026-04-02", _NEW)])
     sqlite_store.save(Tables.def14a_edgar, _real_proxy())
-    fetch = EdgarFetch(desc="proxy test", tables=(Tables.def14a_edgar,), forms=("DEF 14A",), parse=_parse_nothing, identity_aware=False)
+    fetch = EdgarFetch(tables=(Tables.def14a_edgar,), parse=_parse_nothing, identity_aware=False)
 
     run_edgar_fetch(ctx, ["AAA"], 15, fetch, full=True, as_of=_AS_OF, refresh_index=False, max_workers=1)
 

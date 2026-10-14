@@ -114,6 +114,15 @@ class Table:
     # count them.
     empty_marker: tuple[str, object] | None = None
 
+    # Extraction label and complete output layout; distinct from the narrower read projection.
+    desc: str = ""
+    retrieval_columns: tuple[str, ...] = ()
+    # EDGAR marker stamps; an insider's listing CIK may be an owner's, not the issuer's.
+    marker_cik_col: str | None = "cik"
+    marker_form_col: str = "form"
+    marker_key_fill: tuple[tuple[str, object], ...] = ()
+    marker_extra: tuple[tuple[str, object], ...] = ()
+
     def __str__(self) -> str:  # so f"{Tables.prices}" is the name
         return self.name
 
@@ -561,6 +570,35 @@ class Tables:
         freshness="quarterly",
         resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 95, forms=("10-K", "10-K/A", "10-Q", "10-Q/A"), source_start="2009-04-15"),
         empty_marker=("field", _EMPTY),
+        desc="fundamentals (linkbase)",
+        retrieval_columns=(
+            "ticker",
+            "accession_number",
+            "field",
+            "fiscal_year",
+            "fiscal_period",
+            "duration_type",
+            "cik",
+            "form",
+            "filing_date",
+            "is_amendment",
+            "period_of_report",
+            "regime",
+            "period_start",
+            "period_end",
+            "period_days",
+            "value",
+            "unit",
+            "decimals",
+            "resolution_method",
+            "source_concept",
+            "roll_up_children",
+            "root_anchor",
+            "adjustment",
+            "role_uri",
+            "is_extension",
+            "dc_code",
+        ),
     )
     # Not index-diffed: the source lists no documents, so its units come from the stored dates.
     earnings_surprises = Table(
@@ -936,6 +974,61 @@ class Tables:
             RESUME_DOCUMENTS, "ticker", "filing_date", 7, forms=("3", "4", "5", "3/A", "4/A", "5/A"), period_col="quarter", source_start="2006-01-01"
         ),
         empty_marker=("security_type", _EMPTY),
+        desc="insider Forms 3/4/5 (EDGAR)",
+        retrieval_columns=(
+            "accession_number",
+            "security_type",
+            "row_sequence",
+            "source",
+            "ticker",
+            "issuer_cik",
+            "issuer_name",
+            "owner_cik",
+            "owner_name",
+            "owner_ciks",
+            "n_reporting_owners",
+            "is_director",
+            "is_officer",
+            "is_ten_pct_owner",
+            "is_other",
+            "officer_title",
+            "document_type",
+            "original_submission_date",
+            "transaction_date",
+            "filing_date",
+            "period_of_report",
+            "security_title",
+            "transaction_code",
+            "acquired_disposed",
+            "shares",
+            "price_per_share",
+            "value_usd",
+            "shares_owned_after",
+            "direct_indirect",
+            "quarter",
+            "is_10b5_1",
+            "transaction_form_type",
+            "equity_swap_involved",
+            "deemed_execution_date",
+            "nature_of_ownership",
+            "transaction_timeliness",
+            "exercise_price",
+            "exercise_date",
+            "expiration_date",
+            "underlying_security_title",
+            "underlying_shares",
+            "underlying_value",
+            "footnote_ids",
+            "acceptance_datetime",
+            "fetched_at",
+            "source_symbol",
+            "economic_date",
+            "lineage_role",
+        ),
+        marker_cik_col=None,
+        marker_form_col="document_type",
+        marker_key_fill=(("row_sequence", 0),),
+        marker_extra=(("source", "edgar"),),
     )
     # Form 3/4/5 footnote prose, one row per (accession, footnote id). Free -- already inside the
     # cached zips, and the PK holds without dedup (0 duplicate (accession, id) pairs measured on
@@ -943,7 +1036,14 @@ class Tables:
     # a discretionary open-market sale, and what carries 10b5-1 plan language on the 68 quarters
     # that predate the `AFF10B5ONE` field. Stored only for accessions whose issuer is in the
     # universe -- the raw file is ~167k rows per quarter for all filers.
-    insider_footnotes = Table("insider_footnotes", ("accession_number", "footnote_id"), date_col=None, ticker_col=None)
+    insider_footnotes = Table(
+        "insider_footnotes",
+        ("accession_number", "footnote_id"),
+        date_col=None,
+        ticker_col=None,
+        desc="insider Form 3/4/5 footnotes",
+        retrieval_columns=("accession_number", "footnote_id", "footnote_text"),
+    )
     # SC 13D activist filings + amendments: one row PER REPORTING PERSON per filing, keyed
     # (ticker, accession, rp_seq) -- a single 13D can have multiple co-filers (e.g. a fund
     # + its GP), and `rp_seq` is used rather than CIK since a reporting person without an
@@ -978,13 +1078,62 @@ class Tables:
         ),
         # rp_seq counts from 0, so the sentinel is negative
         empty_marker=("rp_seq", -1),
+        desc="SC 13D (edgartools)",
+        retrieval_columns=(
+            "ticker",
+            "cik",
+            "accession_number",
+            "form",
+            "filing_date",
+            "rp_seq",
+            "is_amendment",
+            "amendment_number",
+            "cusip",
+            "issuer_name",
+            "date_of_event",
+            "has_structured_data",
+            "reporting_person_name",
+            "reporting_person_cik",
+            "reporting_person_citizenship",
+            "type_of_reporting_person",
+            "reporting_person_comment",
+            "is_group_member",
+            "sole_voting_power",
+            "shared_voting_power",
+            "sole_dispositive_power",
+            "shared_dispositive_power",
+            "aggregate_amount",
+            "percent_of_class",
+            "item3_source_of_funds",
+            "item4_purpose_of_transaction",
+            "item5_interest_in_securities",
+            "item6_contracts_understandings",
+            "primary_document",
+            "doc_url",
+        ),
     )
     # Item 5(c) 60-day transaction log: one row PER DISCLOSED TRADE, keyed (ticker,
     # accession, trade_seq) -- an independent grain from `sec_13d` (no rp_seq
     # relationship). Parsed from each filing's "TRADING DATA" exhibit; the exhibit number
     # varies by filer so it is identified by table content ("Trade Date" header).
     sec_13d_transactions = Table(
-        "sec_13d_transactions", ("ticker", "accession_number", "trade_seq"), date_col="filing_date", date_type_cols=("filing_date", "trade_date")
+        "sec_13d_transactions",
+        ("ticker", "accession_number", "trade_seq"),
+        date_col="filing_date",
+        date_type_cols=("filing_date", "trade_date"),
+        desc="SC 13D Item 5(c) trades",
+        retrieval_columns=(
+            "ticker",
+            "cik",
+            "accession_number",
+            "filing_date",
+            "trade_seq",
+            "reporting_person_name",
+            "trade_date",
+            "transaction_type",
+            "quantity",
+            "price_per_share",
+        ),
     )
     # Schedule 13G: the PASSIVE >5% beneficial-ownership channel. One row PER REPORTING PERSON
     # per filing, mirroring `sec_13d`'s grain and column names wherever they overlap so the
@@ -1026,6 +1175,36 @@ class Tables:
             RESUME_DOCUMENTS, "ticker", "filing_date", 7, forms=("SC 13G", "SC 13G/A", "SCHEDULE 13G", "SCHEDULE 13G/A"), source_start="1993-01-01"
         ),
         empty_marker=("rp_seq", -1),
+        desc="SC 13G (edgartools)",
+        retrieval_columns=(
+            "ticker",
+            "cik",
+            "accession_number",
+            "form",
+            "filing_date",
+            "rp_seq",
+            "is_amendment",
+            "amendment_number",
+            "cusip",
+            "issuer_name",
+            "date_of_event",
+            "has_structured_data",
+            "rule_designation",
+            "reporting_person_name",
+            "reporting_person_cik",
+            "reporting_person_citizenship",
+            "type_of_reporting_person",
+            "reporting_person_comment",
+            "is_group_member",
+            "sole_voting_power",
+            "shared_voting_power",
+            "sole_dispositive_power",
+            "shared_dispositive_power",
+            "aggregate_amount",
+            "percent_of_class",
+            "primary_document",
+            "doc_url",
+        ),
     )
 
     # ----------------------------------------------------------------- #
@@ -1110,6 +1289,35 @@ class Tables:
         freshness="yearly",
         resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 95, forms=("DEF 14A", "DEF 14C", "DEFC14A"), source_start="2022-12-16"),
         empty_marker=("form", _EMPTY),
+        desc="DEF 14A (ECD XBRL)",
+        retrieval_columns=(
+            "ticker",
+            "cik",
+            "accession_number",
+            "form",
+            "filing_date",
+            "period_of_report",
+            "company_name",
+            "has_individual_executive_data",
+            # The facts' fiscal year; period_of_report is the proxy meeting date.
+            "ecd_period_end",
+            "peo_name",
+            "peo_total_comp",
+            "peo_actually_paid_comp",
+            "n_peos",
+            "peo_names_all",
+            "neo_avg_total_comp",
+            "neo_avg_actually_paid_comp",
+            "total_shareholder_return",
+            "peer_group_tsr",
+            "net_income",
+            "company_selected_measure_name",
+            "company_selected_measure_value",
+            "insider_trading_policy_adopted",
+            "award_timing_mnpi_considered",
+            "award_dates_predetermined",
+            "mnpi_disclosure_timed_for_comp_value",
+        ),
     )
     sec_8k = Table(
         "sec_8k",
@@ -1119,6 +1327,23 @@ class Tables:
         freshness="daily",
         resume=Resume(RESUME_DOCUMENTS, "ticker", "filing_date", 7, forms=("8-K", "8-K/A"), source_start="1993-01-01"),
         empty_marker=("item", _EMPTY),
+        desc="8-K (edgartools)",
+        retrieval_columns=(
+            "ticker",
+            "cik",
+            "accession_number",
+            "form",
+            "filing_date",
+            "period_of_report",
+            "n_items",
+            "is_amendment",
+            "has_earnings",
+            "has_press_release",
+            "primary_document",
+            "item",
+            "item_tag",
+            "item_text",
+        ),
     )
     sec_8k_votes = Table(
         "sec_8k_votes",
@@ -1140,6 +1365,18 @@ class Tables:
         freshness="quarterly",
         resume=Resume(RESUME_DOCUMENTS, "ticker", "filed", 95, forms=("10-K", "10-Q"), source_start="1993-01-01"),
         empty_marker=("section", _EMPTY),
+        desc="10-K/10-Q text (edgartools)",
+        retrieval_columns=(
+            "ticker",
+            "cik",
+            "accession_number",
+            "form",
+            "filed",
+            "period_of_report",
+            "section",
+            "text",
+            "n_words",
+        ),
     )
 
     # ----------------------------------------------------------------- #

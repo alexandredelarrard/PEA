@@ -83,13 +83,12 @@ def test_filing_fetchers_take_years_history_as_an_argument():
 
 
 def test_sec_8k_fetch_declares_its_driver_settings():
-    """The 8-K fetch is one declaration: its table, description, forms and identity settings, the
+    """The 8-K fetch references its table metadata and declares identity settings, the
     generic per-filing row parse bound to the 8-K row function, and the submissions metadata source.
     (`full` reaching the driver is covered by tests/data_extract/test_cli_edgar_commands.py.)"""
     assert SEC_8K_FETCH.tables == (Tables.sec_8k,) and SEC_8K_FETCH.done == Tables.sec_8k
-    assert SEC_8K_FETCH.desc == "8-K (edgartools)"
+    assert SEC_8K_FETCH.done.desc == "8-K (edgartools)"
     assert SEC_8K_FETCH.identity_aware is True
-    assert SEC_8K_FETCH.forms == cast(Resume, Tables.sec_8k.resume).forms
     parse = cast(Any, SEC_8K_FETCH.parse)
     assert parse.func is parse_filing_rows
     assert parse.keywords["table"] == Tables.sec_8k

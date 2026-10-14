@@ -11,19 +11,18 @@ from __future__ import annotations
 
 import re
 from functools import partial
-from typing import Any, cast
+from typing import Any
 
 from src.data_extract.utils.common.edgar_driver import EdgarFetch, FilingStamp, parse_filing_rows
 from src.data_extract.utils.common.item_carve import ITEM_SEP, CrossRefCues, carve_spans, item_heading
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, filing_obj, filing_text
-from src.data_store.schema import Resume, Tables
+from src.data_store.schema import Tables
 
 FILING_SECTION_RISK = "risk_factors"  # 10-K Item 1A
 FILING_SECTION_MDA = "mda"  # 10-K Item 7 / 10-Q Item 2
 FILING_TEXT_MIN_CHARS = 1500  # below this a "section" is a TOC/cross-ref stub
 
 _MAX_CHARS = 300_000  # cap a stored section (risk factors can be enormous)
-_COLS = ["ticker", "cik", "accession_number", "form", "filed", "period_of_report", "section", "text", "n_words"]
 
 # Item markers are content-anchored; the "management's" apostrophe is matched with \W because EDGAR encodes it several ways.
 # Risk Factors (10-K Item 1A) ends at Item 1B, Item 1C (for filers that omit 1B) or Item 2 (Properties).
@@ -155,8 +154,6 @@ def _filing_rows(ticker: str, stamp: FilingStamp) -> list[dict]:
 
 
 FILING_TEXT_FETCH = EdgarFetch(
-    desc="10-K/10-Q text (edgartools)",
     tables=(Tables.filing_risk_text,),
-    forms=cast(Resume, Tables.filing_risk_text.resume).forms,
-    parse=partial(parse_filing_rows, table=Tables.filing_risk_text, columns=_COLS, row_fn=_filing_rows),
+    parse=partial(parse_filing_rows, table=Tables.filing_risk_text, row_fn=_filing_rows),
 )

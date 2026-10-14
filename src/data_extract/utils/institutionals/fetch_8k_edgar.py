@@ -32,22 +32,6 @@ logger = logging.getLogger(__name__)
 # because `warnings.catch_warnings` is not thread-safe and the fetch runs threaded.
 warnings.filterwarnings("ignore", message=r"CurrentReport\[.*found no such item in this filing", category=FutureWarning)
 
-_COLS = [
-    "ticker",
-    "cik",
-    "accession_number",
-    "form",
-    "filing_date",
-    "period_of_report",
-    "n_items",
-    "is_amendment",
-    "has_earnings",
-    "has_press_release",
-    "primary_document",
-    "item",
-    "item_tag",
-    "item_text",
-]
 
 # Curated leading distress/governance codes for the feature layer; any other code is
 # tagged `other_unclassified_item` rather than dropped.
@@ -214,9 +198,7 @@ def submission_filings(ticker: str, df_units: pd.DataFrame) -> dict[str, Any]:
 
 #: `parse_filing_rows` collapses a repeated item code ("5.02,5.02") into one PK row.
 SEC_8K_FETCH = EdgarFetch(
-    desc="8-K (edgartools)",
     tables=(Tables.sec_8k,),
-    forms=cast(Resume, Tables.sec_8k.resume).forms,
-    parse=partial(parse_filing_rows, table=Tables.sec_8k, columns=_COLS, row_fn=_filing_row),
+    parse=partial(parse_filing_rows, table=Tables.sec_8k, row_fn=_filing_row),
     filings=submission_filings,
 )

@@ -24,7 +24,7 @@ tags:
 
 `DataStore` in [store.py](../../src/data_store/store.py) exposes `exists`, `columns`, `row_count`, `bounds`, `max_date`, `max_date_by`, `distinct`, `load`, `iter_load`, `save`, `bulk_seed`, `append_tail`, `delete`, `replace`, and `ensure_columns`.
 
-`Tables` and the frozen `Table` dataclass live in [schema.py](../../src/data_store/schema.py). Missing and empty reads use explicit errors from [errors.py](../../src/data_store/errors.py).
+`Tables` and the frozen `Table` dataclass live in [schema.py](../../src/data_store/schema.py). EDGAR tables declare `desc`, their complete ordered `retrieval_columns`, and empty-marker stamps there; `Resume.forms` owns their filing scope. The extraction driver and frame builders consume this metadata without repeating it in fetch declarations. `read_columns` remains the separate bounded consumer projection. Missing and empty reads use explicit errors from [errors.py](../../src/data_store/errors.py).
 
 ## Key files
 

@@ -27,59 +27,10 @@ INSIDER_KEY = list(Tables.insider_transactions.pk)
 #: Accessions per `IN` list when stored rows are read or deleted by accession.
 ACCESSION_BATCH = 2_000
 #: The `insider_transactions` column contract.
-INSIDER_COLUMNS = [
-    "accession_number",
-    "security_type",
-    "row_sequence",
-    "source",
-    "ticker",
-    "issuer_cik",
-    "issuer_name",
-    "owner_cik",
-    "owner_name",
-    "owner_ciks",
-    "n_reporting_owners",
-    "is_director",
-    "is_officer",
-    "is_ten_pct_owner",
-    "is_other",
-    "officer_title",
-    "document_type",
-    "original_submission_date",
-    "transaction_date",
-    "filing_date",
-    "period_of_report",
-    "security_title",
-    "transaction_code",
-    "acquired_disposed",
-    "shares",
-    "price_per_share",
-    "value_usd",
-    "shares_owned_after",
-    "direct_indirect",
-    "quarter",
-    "is_10b5_1",
-    "transaction_form_type",
-    "equity_swap_involved",
-    "deemed_execution_date",
-    "nature_of_ownership",
-    "transaction_timeliness",
-    "exercise_price",
-    "exercise_date",
-    "expiration_date",
-    "underlying_security_title",
-    "underlying_shares",
-    "underlying_value",
-    "footnote_ids",
-    "acceptance_datetime",
-    "fetched_at",
-    "source_symbol",
-    "economic_date",
-    "lineage_role",
-]
+INSIDER_COLUMNS = list(Tables.insider_transactions.retrieval_columns)
 #: The lineage stamp `stamp_lineage` adds and a re-stamp rewrites.
 LINEAGE_COLUMNS = ["source_symbol", "economic_date", "lineage_role"]
-FOOTNOTE_COLUMNS = ["accession_number", "footnote_id", "footnote_text"]
+FOOTNOTE_COLUMNS = list(Tables.insider_footnotes.retrieval_columns)
 #: The columns of a rejected in-scope row that the identity-exclusion warning reads.
 EXCLUSION_COLUMNS = ["accession_number", "transaction_code", "claimed_ticker", "reject_reason"]
 #: Reject reasons in warning order, and the transaction codes counted as open-market trades.

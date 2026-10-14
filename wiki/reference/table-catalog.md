@@ -28,6 +28,8 @@ This is the canonical map of PostgreSQL table grain, ownership, temporal key, an
 | `ticker_col` | Ticker-grain column, or none for market-wide series. |
 | `date_type_cols` | Columns forced to SQL `DATE`. |
 | `read_columns`, `optional_columns` | The one declaration behind `project=True`; optional fields may be absent in an older live table. |
+| `desc`, `retrieval_columns` | Extraction label and ordered output layout for the per-filing EDGAR tables and their children. Fetchers build frames from this contract; narrower consumer projections remain in `read_columns` or explicit `columns=`. |
+| `marker_cik_col`, `marker_form_col`, `marker_key_fill`, `marker_extra` | EDGAR marker stamp policy. Insider markers omit the listing CIK, stamp `document_type`, fill `row_sequence=0` and carry `source='edgar'`; the shared driver reads these values from the table. |
 | `freshness`, `freshness_date_col` | Expected cadence and, when different, the actual publication clock. |
 | `vector_col`, `vector_prefix` | Wide embedding columns collapsed to a PostgreSQL `float8[]`. |
 | `managed` | Managed tables retain generated DDL on replacement; unmanaged cube parts are dropped and recreated so removed features disappear. |

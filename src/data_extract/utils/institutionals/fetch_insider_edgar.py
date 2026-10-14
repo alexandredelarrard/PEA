@@ -25,7 +25,6 @@ from src.data_extract.utils.common.registrant import listing_ciks, resolve_regis
 from src.data_extract.utils.common.resume import DONE_PER_KEY
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, filing_header, filing_xml
 from src.data_extract.utils.institutionals.insider_common import (
-    INSIDER_COLUMNS,
     INSIDER_KEY,
     XML_DATE_FORMATS,
     accession_batches,
@@ -41,7 +40,7 @@ from src.data_store.schema import Resume, Table, Tables
 from src.utils.string import pad_cik
 
 #: EDGAR rows carry the whole contract except `quarter`, so the merge-upsert keeps a stored zip quarter.
-_EDGAR_COLUMNS = tuple(column for column in INSIDER_COLUMNS if column != "quarter")
+_EDGAR_COLUMNS = tuple(column for column in Tables.insider_transactions.retrieval_columns if column != "quarter")
 #: The stored rows whose accessions count as read by EDGAR (markers carry `source='edgar'` too).
 _EDGAR_DONE: dict[str, object] = {"source": "edgar"}
 _LOG = logging.getLogger(__name__)
@@ -155,9 +154,7 @@ def insider_fetch(tickers: Sequence[str], excluded: list[pd.DataFrame] | None = 
     owner-role marker under one company never hides the filing from its issuer, and a zip row never
     makes a filing look read. Rejected rows are appended to `excluded`."""
     return EdgarFetch(
-        desc="insider Forms 3/4/5 (EDGAR)",
         tables=(Tables.insider_footnotes, Tables.insider_transactions),
-        forms=cast(Resume, Tables.insider_transactions.resume).forms,
         parse=partial(parse_insider, universe=list(tickers), excluded=excluded if excluded is not None else []),
         done_table=Tables.insider_transactions,
         done_scope=DONE_PER_KEY,

@@ -9,48 +9,18 @@ proxy carries ECD facts; a proxy without ECD facts becomes an empty-filing marke
 from __future__ import annotations
 
 from functools import partial
-from typing import cast
 
 import pandas as pd
 
 from src.data_extract.utils.common.edgar_driver import EdgarFetch, FilingStamp, parse_filing_rows
 from src.data_extract.utils.structure.def14a.ecd import ecd_facts, ecd_row, has_ecd_block
 from src.data_extract.utils.structure.def14a.validate import repair_main_row
-from src.data_store.schema import Resume, Tables
-
-_MAIN_COLS = [
-    "ticker",
-    "cik",
-    "accession_number",
-    "form",
-    "filing_date",
-    "period_of_report",
-    "company_name",
-    "has_individual_executive_data",
-    # Fiscal year the PVP facts describe; a proxy's `period_of_report` is the meeting date.
-    "ecd_period_end",
-    "peo_name",
-    "peo_total_comp",
-    "peo_actually_paid_comp",
-    "n_peos",
-    "peo_names_all",
-    "neo_avg_total_comp",
-    "neo_avg_actually_paid_comp",
-    "total_shareholder_return",
-    "peer_group_tsr",
-    "net_income",
-    "company_selected_measure_name",
-    "company_selected_measure_value",
-    "insider_trading_policy_adopted",
-    "award_timing_mnpi_considered",
-    "award_dates_predetermined",
-    "mnpi_disclosure_timed_for_comp_value",
-]
+from src.data_store.schema import Tables
 
 #: `sec_def14a`'s numeric columns, coerced after the PK dedup.
 _NUMERIC_COLS = tuple(
     c
-    for c in _MAIN_COLS
+    for c in Tables.def14a_edgar.retrieval_columns
     if c
     not in (
         "ticker",
@@ -106,8 +76,6 @@ def _filing_row(ticker: str, stamp: FilingStamp) -> list[dict]:
 
 
 DEF14A_EDGAR_FETCH = EdgarFetch(
-    desc="DEF 14A (ECD XBRL)",
     tables=(Tables.def14a_edgar,),
-    forms=cast(Resume, Tables.def14a_edgar.resume).forms,
-    parse=partial(parse_filing_rows, table=Tables.def14a_edgar, columns=_MAIN_COLS, row_fn=_filing_row, numeric=_NUMERIC_COLS),
+    parse=partial(parse_filing_rows, table=Tables.def14a_edgar, row_fn=_filing_row, numeric=_NUMERIC_COLS),
 )

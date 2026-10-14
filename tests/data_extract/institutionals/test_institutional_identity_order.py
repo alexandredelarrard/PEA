@@ -44,7 +44,7 @@ def test_institutionals_consume_the_upstream_identity_in_one_resolver(monkeypatc
     ):
         monkeypatch.setattr(module, name, mark(name))
     # 13D, 13G and 8-K run through the shared driver, one EdgarFetch declaration each
-    monkeypatch.setattr(module, "run_edgar_fetch", lambda *args, **kwargs: order.append(kwargs["fetch"].desc))
+    monkeypatch.setattr(module, "run_edgar_fetch", lambda *args, **kwargs: order.append(kwargs["fetch"].done.desc))
 
     def load(*args, **kwargs):
         assert not kwargs.get("refresh"), "the identity is refreshed once, by the identity stage"

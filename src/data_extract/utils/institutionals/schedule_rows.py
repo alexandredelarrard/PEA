@@ -2,7 +2,7 @@
 schedule_rows.py (src/data_extract/utils/institutionals/schedule_rows.py)
 -------------------------------------------------------------------------
 One Schedule 13D/13G row builder, the subject test and the issuer-guarded per-filing parse. A
-`ScheduleSpec` carries what differs between the two forms (columns, form-specific filing fields,
+`ScheduleSpec` carries what differs between the two forms (form-specific filing fields,
 numeric trust, reporting-person CIK, event-date parse, blank normalisation); each form module
 declares one spec. The local index lists a schedule under every party, so a schedule on which the
 ticker is only a filer is rejected (an empty-filing marker) before its document is parsed.
@@ -46,8 +46,6 @@ class ScheduleSpec:
     """
 
     label: str
-    forms: tuple[str, ...]
-    columns: tuple[str, ...]
     extra_base: Callable[[Any, Any, bool], dict[str, Any]]
     trust_numerics: Callable[[Any, bool], bool]
     reporting_person_ciks: Callable[[Any, list[Any]], list[str | None]]
@@ -155,4 +153,4 @@ def schedule_ticker_rows(ticker: str, cik: str, stamp: FilingStamp, scope: Edgar
 
 def parse_schedule(ticker: str, cik: str, stamp: FilingStamp, scope: EdgarScope, *, spec: ScheduleSpec, table: Table) -> dict[Table, pd.DataFrame]:
     """A schedule fetch's `parse`: one `table` frame finalised by `finalise_frame`."""
-    return {table: finalise_frame(table, schedule_ticker_rows(ticker, cik, stamp, scope, spec), columns=spec.columns)}
+    return {table: finalise_frame(table, schedule_ticker_rows(ticker, cik, stamp, scope, spec))}

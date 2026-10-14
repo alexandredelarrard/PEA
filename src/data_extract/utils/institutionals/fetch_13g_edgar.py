@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 from functools import partial
-from typing import Any, cast
+from typing import Any
 
 import pandas as pd
 
@@ -18,38 +18,7 @@ from src.data_extract.utils.common.edgar_driver import EdgarFetch
 from src.data_extract.utils.common.resume import DONE_PER_KEY
 from src.data_extract.utils.common.sec_io import TransientReadError, filing_header
 from src.data_extract.utils.institutionals.schedule_rows import ScheduleSpec, parse_schedule, schedule_is_subject
-from src.data_store.schema import Resume, Tables
-
-# `sec_13d`'s columns minus the four Item narratives, plus `rule_designation`.
-_COLS = [
-    "ticker",
-    "cik",
-    "accession_number",
-    "form",
-    "filing_date",
-    "rp_seq",
-    "is_amendment",
-    "amendment_number",
-    "cusip",
-    "issuer_name",
-    "date_of_event",
-    "has_structured_data",
-    "rule_designation",
-    "reporting_person_name",
-    "reporting_person_cik",
-    "reporting_person_citizenship",
-    "type_of_reporting_person",
-    "reporting_person_comment",
-    "is_group_member",
-    "sole_voting_power",
-    "shared_voting_power",
-    "sole_dispositive_power",
-    "shared_dispositive_power",
-    "aggregate_amount",
-    "percent_of_class",
-    "primary_document",
-    "doc_url",
-]
+from src.data_store.schema import Tables
 
 # Explicit cover-page format so an ambiguous date is never inferred day-first.
 _EVENT_DATE_FORMAT = "%m/%d/%Y"
@@ -144,8 +113,6 @@ def _trust_disclosed(rp: Any, has_structured: bool) -> bool:
 
 SCHEDULE_13G = ScheduleSpec(
     label="SC 13G",
-    forms=cast(Resume, Tables.sec_13g.resume).forms,
-    columns=tuple(_COLS),
     extra_base=_rule_designation,
     trust_numerics=_trust_disclosed,
     reporting_person_ciks=_reporting_person_ciks,
@@ -156,9 +123,7 @@ SCHEDULE_13G = ScheduleSpec(
 #: Done per key: a schedule a universe company FILED is a marker under that company, never a reason
 #: to skip it for the universe company it is about.
 SEC_13G_FETCH = EdgarFetch(
-    desc="SC 13G (edgartools)",
     tables=(Tables.sec_13g,),
-    forms=cast(Resume, Tables.sec_13g.resume).forms,
     parse=partial(parse_schedule, spec=SCHEDULE_13G, table=Tables.sec_13g),
     is_subject=schedule_is_subject,
     done_scope=DONE_PER_KEY,

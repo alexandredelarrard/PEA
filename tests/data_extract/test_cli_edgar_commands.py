@@ -65,7 +65,7 @@ def test_edgar_command_dispatches_its_fetch_declaration(command: str, recorded: 
     assert call["years_history"] == 7
     assert call.get("full", False) is takes_full
     print(f"\n=== SANITY: `{command}` dispatch ===")
-    print(f"  {args} -> run_edgar_fetch(fetch={fetch.desc!r}, tickers={call['tickers']}, years=7, full={call.get('full', False)}).")
+    print(f"  {args} -> run_edgar_fetch(fetch={fetch.done.desc!r}, tickers={call['tickers']}, years=7, full={call.get('full', False)}).")
 
 
 def test_edgar_command_without_years_uses_the_configured_window(recorded: list[dict[str, Any]]) -> None:

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pandas as pd
@@ -29,8 +30,8 @@ _AAPL = [_line("037833100", "APPLE INC", 1_000.0, 10)]
 
 
 def _patch(monkeypatch: pytest.MonkeyPatch, filings: list[_FakeFiling]) -> tuple[list[tuple[pd.Timestamp, pd.Timestamp]], list[float]]:
-    """`get_filings` over the fakes, behind the edgartools `Filings` surface `fetch_13f` uses: each call
-    records its `filing_date` window and lists only the fakes filed inside it. Returns (windows, waits)."""
+    """`_listing` over the fakes, behind the edgartools `Filings` surface `fetch_13f` uses: each walk
+    records its filing-date window and lists only the fakes filed inside it. Returns (windows, waits)."""
     by_accession = {f.accession_number: f for f in filings}
     windows: list[tuple[pd.Timestamp, pd.Timestamp]] = []
     waits: list[float] = []
@@ -45,8 +46,7 @@ def _patch(monkeypatch: pytest.MonkeyPatch, filings: list[_FakeFiling]) -> tuple
         def __iter__(self) -> Any:
             return (by_accession[a] for a in self.data.column("accession_number").to_pylist())
 
-    def _get_filings(**kwargs: Any) -> _Filings:
-        since, until = (pd.Timestamp(d) for d in kwargs["filing_date"].split(":"))
+    def _listing(forms: list[str], since: pd.Timestamp, until: pd.Timestamp) -> _Filings:
         windows.append((since, until))
         inside = [f for f in filings if since <= pd.Timestamp(f.filing_date) <= until]
         return _Filings(
@@ -60,7 +60,7 @@ def _patch(monkeypatch: pytest.MonkeyPatch, filings: list[_FakeFiling]) -> tuple
         )
 
     monkeypatch.setattr(f13, "Filings", _Filings)
-    monkeypatch.setattr(f13, "get_filings", _get_filings)
+    monkeypatch.setattr(f13, "_listing", _listing)
     monkeypatch.setattr(f13, "build_cusip_ticker_map", lambda context, cusips, **kwargs: CMAP)
     monkeypatch.setattr(f13, "_sleep", waits.append)
     return windows, waits
@@ -270,3 +270,28 @@ def test_m4_8_a_scoped_run_leaves_the_next_window_unchanged(tmp_path, sqlite_sto
     assert _saved_ciks(sqlite_store) == ["0000000001", "0000000002", "0000000009"]
     print("\n=== SANITY: M4-8 -t then full run ===")
     print("  -t AAPL read 2026-09-13:2026-09-20 only and left the frontier at 2026-09-20; the full run then read 2026-09-13:2026-09-30. Validated.")
+
+
+def test_listing_reads_one_quarterly_index_at_a_time(monkeypatch):
+    """A multi-year window is listed quarter by quarter, each request clipped to the window, in order;
+    quarters with no filing are skipped and the parts are concatenated."""
+    calls: list[str] = []
+
+    def _get_filings(form: Any, filing_date: str) -> Any:
+        calls.append(filing_date)
+        if filing_date.startswith("2000-04-01"):
+            return None
+        return SimpleNamespace(data=pa.table({"accession_number": [filing_date]}))
+
+    monkeypatch.setattr(f13, "get_filings", _get_filings)
+    monkeypatch.setattr(f13, "Filings", lambda data: SimpleNamespace(data=data))
+    listing = f13._listing(["13F-HR"], pd.Timestamp("1999-07-01"), pd.Timestamp("2000-08-15"))
+
+    expected = ["1999-07-01:1999-09-30", "1999-10-01:1999-12-31", "2000-01-01:2000-03-31", "2000-04-01:2000-06-30", "2000-07-01:2000-08-15"]
+    assert calls == expected
+    assert listing.data.column("accession_number").to_pylist() == [w for w in expected if not w.startswith("2000-04-01")]
+    assert f13._listing(["13F-HR"], pd.Timestamp("2026-01-05"), pd.Timestamp("2026-01-05")) is not None
+    print("\n=== SANITY: quarterly listing ===")
+    print(
+        f"  1999-07-01:2000-08-15 -> {len(calls)} sequential single-quarter requests, clipped at both ends; an empty quarter is skipped. Validated."
+    )

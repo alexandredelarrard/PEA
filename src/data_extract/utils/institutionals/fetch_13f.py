@@ -27,6 +27,7 @@ from xml.etree import ElementTree
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 import pyarrow.compute as pc
 from edgar import Filing, Filings, get_filings
 from edgar import obj as data_object
@@ -473,6 +474,18 @@ def _resolve_window(
     return legacy_frontier - overlap, min(as_of, legacy_frontier) if scoped else as_of, hold_from
 
 
+def _listing(forms: list[str], since: pd.Timestamp, until: pd.Timestamp) -> Filings | None:
+    """The 13F listing filed in `since:until`, one quarterly index at a time: a multi-quarter request
+    makes edgartools download every quarter's index at once and exhausts its HTTP connection pool."""
+    parts = []
+    for quarter in pd.period_range(since, until, freq="Q"):
+        start, end = max(since, quarter.start_time), min(until, quarter.end_time.normalize())
+        part = get_filings(form=forms, filing_date=f"{start:%Y-%m-%d}:{end:%Y-%m-%d}")
+        if part:
+            parts.append(part.data)
+    return Filings(pa.concat_tables(parts)) if parts else None
+
+
 def _oldest_first(listing: Filings) -> Filings:
     """The listing ordered by (filing_date, amendment last, accession): a same-day 13F-HR/A
     follows its original whatever the filer agents' accession prefixes."""
@@ -632,7 +645,7 @@ def fetch_13f(
     if not roster_ciks:
         logger.warning(f"13F: superinvestor_roster holds no CIK -- writing {Tables.sec13f_hr} only, no manager books")
 
-    listing = get_filings(form=list(cast(Resume, Tables.sec13f_hr.resume).forms), filing_date=f"{since:%Y-%m-%d}:{until:%Y-%m-%d}")
+    listing = _listing(list(cast(Resume, Tables.sec13f_hr.resume).forms), since, until)
     filings = _oldest_first(listing) if listing else []
     total = len(filings)
     logger.info(f"13F: {total} filing(s) to read in {since:%Y-%m-%d}:{until:%Y-%m-%d}")

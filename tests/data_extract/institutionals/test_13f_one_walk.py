@@ -128,7 +128,7 @@ def _seed_roster(store: Any, ciks: list[str]) -> None:
 
 
 def _patch_walk(monkeypatch: pytest.MonkeyPatch, filings: list[_FakeFiling]) -> None:
-    """`get_filings` returns the fakes in the given order behind the edgartools `Filings` surface
+    """`_listing` returns the fakes in the given order behind the edgartools `Filings` surface
     `fetch_13f` touches: a pyarrow `data` index, `len`, iteration, construction from an index."""
     by_accession = {f.accession_number: f for f in filings}
 
@@ -150,7 +150,7 @@ def _patch_walk(monkeypatch: pytest.MonkeyPatch, filings: list[_FakeFiling]) -> 
         }
     )
     monkeypatch.setattr(f13, "Filings", _FakeFilings)
-    monkeypatch.setattr(f13, "get_filings", lambda **kwargs: _FakeFilings(index))
+    monkeypatch.setattr(f13, "_listing", lambda forms, since, until: _FakeFilings(index))
     monkeypatch.setattr(f13, "build_cusip_ticker_map", lambda context, cusips, **kwargs: CMAP)
 
 

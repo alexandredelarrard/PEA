@@ -1152,6 +1152,40 @@ def test_synthetic_cover_ratio_sets_the_cell_unit(cover: str, header: str, facto
 
 
 @pytest.mark.parametrize(
+    ("cover_line", "factor", "shape"),
+    [
+        ("Value Total: $157.462 (in millions)", 1000.0, "(in millions) after the number, cells in $1000s"),
+        ("Value Total (in millions): $157.462", 1000.0, "(in millions) in the caption, cells in $1000s"),
+        ("Value Total: $0.157462 (in millions)", 1.0, "(in millions) after the number, cells in dollars"),
+        ("Value Total: $157.462 Million", 1000.0, "Million word, cells in $1000s"),
+        ("Value Total: $0.157462 in billions", 1000.0, "in billions, cells in $1000s"),
+        ("Value Total: $0.000157462 in billions", 1.0, "in billions, cells in dollars"),
+        ("Value Total: $157,462 (in thousands)", 1000.0, "(in thousands), cells in $1000s"),
+        ("Value Total: $157 (in thousands)", 1.0, "(in thousands), cells in dollars"),
+        ("Value Total: $157,462 (000s)", 1000.0, "(000s), cells in $1000s"),
+        ("Value Total: $157,462,000 dollars", 1000.0, "dollars, cells in $1000s"),
+        ("Value Total: $157", 1.0, "unlabelled ratio 0.001"),
+        ("Value Total: $157,462,000", 1000.0, "unlabelled ratio 1000"),
+        ("Value Total: $157,462", 1000.0, "unlabelled ratio 1"),
+        ("Value Total: $157,462,000,000 (in millions)", None, "millions label at ratio 1e6 implies cells x1e9: conflict, no dollars"),
+    ],
+)
+def test_stated_cover_unit_wins_over_the_cover_ratio(cover_line: str, factor: float | None, shape: str) -> None:
+    raw = f"[X] 13F HOLDINGS REPORT\nForm 13F Information Table {cover_line}\n" + _table(_HEADER, _AFLAC, _AMGEN)
+    filing = _Filing(_Report(None, txt=raw))
+    manifest, rows = f13.text_filing_vintage(raw, FilingStamp.of(filing, filing.cik))
+    assert sorted(rows.raw_value_usd.tolist()) == [12000.0, 145462.0]
+    aflac = rows.set_index("cusip").loc["001055102"]
+    stored = manifest.iloc[0].value_unit_factor
+    if factor is None:
+        assert math.isnan(stored) and math.isnan(aflac.value_usd), (stored, aflac.value_usd)
+        assert manifest.iloc[0].value_unit_evidence.endswith("conflicting_cover_total"), manifest.iloc[0].value_unit_evidence
+    else:
+        assert stored == factor and aflac.value_usd == 145462.0 * factor, (stored, aflac.value_usd)
+    print(f"SANITY: SYNTHETIC {cover_line!r} ({shape}) -> cell factor {stored:g}; Aflac value_usd {aflac.value_usd:,.0f} from raw 145,462.")
+
+
+@pytest.mark.parametrize(
     ("accession", "outcome"),
     [
         ("0000950159-05-001336", "ok"),

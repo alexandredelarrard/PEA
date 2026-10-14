@@ -273,9 +273,10 @@ def test_m4_8_a_scoped_run_leaves_the_next_window_unchanged(tmp_path, sqlite_sto
 
 
 def test_listing_reads_one_quarterly_index_at_a_time(monkeypatch):
-    """A multi-year window is listed quarter by quarter, each request clipped to the window, in order;
-    quarters with no filing are skipped and the parts are concatenated."""
+    """A multi-year window is listed quarter by quarter, each request clipped to the window, in order and
+    on a fresh HTTP client (edgartools leaks a pooled connection per 304); empty quarters are skipped."""
     calls: list[str] = []
+    resets: list[int] = []
 
     def _get_filings(form: Any, filing_date: str) -> Any:
         calls.append(filing_date)
@@ -284,11 +285,13 @@ def test_listing_reads_one_quarterly_index_at_a_time(monkeypatch):
         return SimpleNamespace(data=pa.table({"accession_number": [filing_date]}))
 
     monkeypatch.setattr(f13, "get_filings", _get_filings)
+    monkeypatch.setattr(f13, "close_clients", lambda: resets.append(len(calls)))
     monkeypatch.setattr(f13, "Filings", lambda data: SimpleNamespace(data=data))
     listing = f13._listing(["13F-HR"], pd.Timestamp("1999-07-01"), pd.Timestamp("2000-08-15"))
 
     expected = ["1999-07-01:1999-09-30", "1999-10-01:1999-12-31", "2000-01-01:2000-03-31", "2000-04-01:2000-06-30", "2000-07-01:2000-08-15"]
     assert calls == expected
+    assert resets == list(range(len(expected)))  # a fresh client before every quarterly request
     assert listing.data.column("accession_number").to_pylist() == [w for w in expected if not w.startswith("2000-04-01")]
     assert f13._listing(["13F-HR"], pd.Timestamp("2026-01-05"), pd.Timestamp("2026-01-05")) is not None
     print("\n=== SANITY: quarterly listing ===")

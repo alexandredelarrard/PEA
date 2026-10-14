@@ -31,6 +31,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 from edgar import Filing, Filings, get_filings
 from edgar import obj as data_object
+from edgar.httpclient import close_clients
 from edgar.thirteenf.parsers.infotable_xml import parse_infotable_xml
 from tqdm import tqdm
 
@@ -475,10 +476,12 @@ def _resolve_window(
 
 
 def _listing(forms: list[str], since: pd.Timestamp, until: pd.Timestamp) -> Filings | None:
-    """The 13F listing filed in `since:until`, one quarterly index at a time: a multi-quarter request
-    makes edgartools download every quarter's index at once and exhausts its HTTP connection pool."""
+    """The 13F listing filed in `since:until`, one quarterly index at a time on a fresh HTTP client:
+    edgartools' file cache never closes a 304 revalidation, so each cached index leaks a pooled
+    connection and a long history exhausts the pool (httpx.PoolTimeout)."""
     parts = []
     for quarter in pd.period_range(since, until, freq="Q"):
+        close_clients()
         start, end = max(since, quarter.start_time), min(until, quarter.end_time.normalize())
         part = get_filings(form=forms, filing_date=f"{start:%Y-%m-%d}:{end:%Y-%m-%d}")
         if part:

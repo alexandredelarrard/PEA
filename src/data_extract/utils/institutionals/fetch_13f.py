@@ -122,9 +122,6 @@ _IMPLIED_PRICE_BAND = (1.0, 5000.0)
 _MAX_POSITION_USD = 1e12
 _TABLE_TEXT_IN_NAME = r"\bSH\b.*\bSOLE\b|\d{1,3},\d{3} SH"
 
-#: An EdgarTools VALUE sum within this relative distance of the cover total skips the strict XML re-parse.
-_FAST_VALUE_TOLERANCE = 0.005
-
 #: The five mutually exclusive holding classes, in tie-break order (`common` wins).
 POSITION_TYPES = ("common", "call", "put", "debt", "other")
 
@@ -804,8 +801,6 @@ def read_filing_vintage(stamp: FilingStamp) -> tuple[pd.DataFrame, pd.DataFrame]
                 raise ValueError("13F legacy information table is missing")
             return text_filing_vintage(raw, stamp)
         primary = sec_call(stamp.filing.xml, label=f"{stamp.accession_number} cover XML")
-        if (fast := _fast_xml_vintage(report, stamp, primary, xml)) is not None:
-            return fast
         return xml_filing_vintage(
             primary,
             xml,
@@ -974,35 +969,6 @@ def xml_filing_vintage(
         source_checksum=_xml_checksum(primary_xml, information_xml),
         **cover,
     )
-
-
-def _fast_xml_vintage(report: Any, stamp: FilingStamp, primary_xml: str, information_xml: str) -> tuple[pd.DataFrame, pd.DataFrame] | None:
-    """The vintage from EdgarTools' parsed information table, skipping the strict re-parse, when it
-    agrees with the cover: exactly the declared row count, and a VALUE sum within 0.5% of the cover total
-    at exactly one scale f in {1, 1000}, which must be EdgarTools' own scale (its `total_value` over the
-    cover total) and this repo's unit factor. None falls back to the strict parse."""
-    if getattr(report, "primary_form_information", None) is None:
-        return None
-    try:
-        infotable = sec_call(getattr, report, "infotable", None, label=f"{stamp.accession_number} infotable")
-        declared, scaled_total = getattr(report, "total_holdings", None), getattr(report, "total_value", None)
-    except TransientReadError:
-        raise
-    except Exception:  # noqa: BLE001 -- the strict parse reports the source's own error
-        return None
-    cover, schema = _xml_cover(primary_xml, period=stamp.period_of_report, expected_form=stamp.form)
-    if not isinstance(infotable, pd.DataFrame) or "Value" not in infotable or not len(infotable) == declared == cover["declared_rows"]:
-        return None
-    values, cover_total = pd.to_numeric(infotable["Value"], errors="coerce"), cover["declared_value"]
-    scales = [f for f in (1.0, 1000.0) if math.isclose(float(values.sum()) / f, cover_total, rel_tol=_FAST_VALUE_TOLERANCE)]
-    edgar_scale = float(scaled_total) / cover_total if scaled_total is not None and cover_total > 0 else None
-    units = resolve_value_units(stamp.filed, schema_version=schema)
-    if values.isna().any() or scales != [edgar_scale] or edgar_scale != units.factor:
-        return None
-    raw = values / scales[0]
-    if not raw.map(float.is_integer).all():
-        return None
-    return _stamp_vintage(infotable.assign(Value=raw.astype("int64")), stamp, cover, units, _xml_checksum(primary_xml, information_xml))
 
 
 def _empty_xml_vintage(stamp: FilingStamp, primary_xml: str) -> tuple[pd.DataFrame, pd.DataFrame]:

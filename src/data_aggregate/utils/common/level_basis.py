@@ -500,6 +500,46 @@ def _vintage_multiplier(series: pd.Series, anchor: pd.Timestamp, ratio: float) -
     return pd.Series(out, index=series.index), flips
 
 
+def _total_seam_step(frame: pd.DataFrame | None, ticker: str, when: pd.Timestamp) -> float | None:
+    """Measure an applicable adjacent pair, refusing holes inside an affected prefix."""
+    if frame is None or ticker not in frame.columns or frame.empty:
+        return None
+    series = frame[ticker]
+    if when < series.index.min() or when > series.index.max() or not series.loc[series.index < when].notna().any():
+        return None
+    if when not in series.index:
+        raise ValueError(f"{ticker} {when.date()}: total-return repair REFUSED; missing interior event bar")
+    position = int(series.index.get_loc(when))
+    prior, here = float(series.iloc[position - 1]), float(series.iloc[position])
+    if not np.isfinite([prior, here]).all() or prior <= 0 or here <= 0:
+        raise ValueError(f"{ticker} {when.date()}: total-return repair REFUSED; unusable adjacent pair")
+    return here / prior
+
+
+def _apply_total_seam(wide: dict[str, pd.DataFrame], ticker: str, entry: dict, log: Callable[..., None]) -> int:
+    when = pd.Timestamp(entry["date"])
+    expected, target = float(entry["expect_step"]), float(entry["target_step"])
+    if entry["fields"] != ["close_total"] or "step" in entry or not np.isfinite([expected, target]).all() or min(expected, target) <= 0:
+        raise ValueError(f"{ticker}: invalid total-return repair fields or steps")
+    frame = wide.get("close_total")
+    scope = frame if frame is not None else wide.get("close_split")
+    observed = _total_seam_step(scope, ticker, when)
+    if observed is None:
+        log("price bugfix: %s %s total-return NOT_APPLICABLE -- no affected prefix/pair in this window", ticker, when.date())
+        return 0
+    if frame is None:
+        raise ValueError(f"{ticker}: total-return repair REFUSED; close_total unavailable")
+    if abs(observed / target - 1.0) <= LEVEL_SNAP_TOL:
+        log("price bugfix: %s %s total-return ALREADY_VERIFIED at gross %.12g", ticker, when.date(), observed)
+        return 0
+    if abs(observed / expected - 1.0) > BUGFIX_STEP_TOL:
+        raise ValueError(f"{ticker} {when.date()}: total-return repair REFUSED; observed gross {observed:.12g}, expected {expected:.12g}; remeasure")
+    multiplier = observed / target
+    frame.loc[frame.index < when, ticker] *= multiplier
+    log("price bugfix: %s %s close_total-only APPLIED; prefix x%.12g, event gross %.12g -> %.12g", ticker, when.date(), multiplier, observed, target)
+    return 1
+
+
 def apply_return_seams(wide: dict[str, pd.DataFrame], bugfix: dict, log: Callable[..., None]) -> int:
     """Repair a discontinuity that is not a price move. Returns the number applied.
 
@@ -521,6 +561,9 @@ def apply_return_seams(wide: dict[str, pd.DataFrame], bugfix: dict, log: Callabl
     applied = 0
     for ticker, entries in (bugfix.get("return_seams") or {}).items():
         for entry in entries:
+            if "fields" in entry:
+                applied += _apply_total_seam(wide, ticker, entry, log)
+                continue
             when, expected = pd.Timestamp(entry["date"]), float(entry["step"])
             frame = wide.get("close_split")
             if frame is None or ticker not in frame.columns or when not in frame.index:
@@ -636,6 +679,15 @@ def measure_seams(close_total: pd.DataFrame, bugfix: dict, log: Callable[..., No
     rather than masked on faith. A stale register can therefore stop masking, but it cannot
     mask the wrong window.
     """
+    for ticker, entries in bugfix.get("return_seams", {}).items():
+        for entry in entries:
+            if "fields" not in entry:
+                continue
+            observed = _total_seam_step(close_total, ticker, pd.Timestamp(entry["date"]))
+            if observed is not None and abs(observed / entry["target_step"] - 1.0) > LEVEL_SNAP_TOL:
+                raise ValueError(
+                    f"{ticker}: close_total repair is not verified in the persisted input; rebuild historical prices before consuming returns"
+                )
     seams: dict[str, list[pd.Timestamp]] = {}
     for ticker, entries in (bugfix.get("null_ret") or {}).items():
         for entry in entries:
@@ -671,6 +723,19 @@ def measure_seams(close_total: pd.DataFrame, bugfix: dict, log: Callable[..., No
                 observed * 100,
             )
     return seams
+
+
+def measure_quote_seams(close_split: pd.DataFrame, bugfix: dict, log: Callable[..., None]) -> dict[str, list[pd.Timestamp]]:
+    """Independently retain quote discontinuities after a close_total-only correction."""
+    entries = {
+        ticker: [
+            {"date": entry["date"], "expect_ret": float(entry["expect_quote_step"]) - 1.0}
+            for entry in values
+            if "fields" in entry and "expect_quote_step" in entry
+        ]
+        for ticker, values in bugfix.get("return_seams", {}).items()
+    }
+    return measure_seams(close_split, {"null_ret": entries}, log)
 
 
 def mask_seam_windows(frame: pd.DataFrame, seams: dict[str, list[pd.Timestamp]], back: int, skip: int = 0) -> pd.DataFrame:

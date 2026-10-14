@@ -204,6 +204,7 @@ def compute_raw_features(
     returns: pd.DataFrame | None = None,
     level_factor: pd.DataFrame | None = None,
     seams: dict[str, list[pd.Timestamp]] | None = None,
+    split_seams: dict[str, list[pd.Timestamp]] | None = None,
 ) -> dict:
     """
     Compute raw (un-standardized) feature frames. Returns dict:
@@ -393,10 +394,10 @@ def compute_raw_features(
     # `mom_12_1` is in `SEAM_WINDOWS` for the spec table and was already masked above by
     # `momentum_characteristic` with the same window, so re-masking it here is exactly
     # idempotent.
-    if seams:
-        for name, (back, skip) in SEAM_WINDOWS.items():
-            if name in feats:
-                feats[name] = mask_seam_windows(feats[name], seams, back, skip)
+    for name, (back, skip) in SEAM_WINDOWS.items():
+        selected = (split_seams if split_seams is not None else seams) if name in {"atr_14", "gap_21", "range_21"} else seams
+        if selected and name in feats:
+            feats[name] = mask_seam_windows(feats[name], selected, back, skip)
 
     return feats
 
@@ -464,6 +465,7 @@ def build_feature_panel(
     close_split: pd.DataFrame | None = None,
     level_factor: pd.DataFrame | None = None,
     seams: dict[str, list[pd.Timestamp]] | None = None,
+    split_seams: dict[str, list[pd.Timestamp]] | None = None,
 ) -> pd.DataFrame:
     """
     Build a long-format feature panel ready for modeling.
@@ -496,6 +498,7 @@ def build_feature_panel(
         returns=returns,
         level_factor=level_factor,
         seams=seams,
+        split_seams=split_seams,
     )
     availability = (close_split if close_split is not None else close_total).notna()
     raw = {name: mask_to_availability(frame, availability) for name, frame in raw.items()}

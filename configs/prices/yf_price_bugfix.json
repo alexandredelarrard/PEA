@@ -450,11 +450,34 @@
         "step": 0.394789,
         "expect_ret": -0.60521,
         "evidence": "JCI's prices before 2016-09-02 are Tyco International's (TYC; JCI plc is the renamed Tyco, which acquired old Johnson Controls). On 2007-07-02 Tyco did a 1-for-4 reverse split and, the same day, spun off Covidien (COV) and TE Connectivity (TEL): Sharadar's TYC actions for that date are split 0.25, spinoff COV and spinoff TEL (spinoffdividend 46 and 42.53). Yahoo's feed states the 0.25 and close_split applies it, but neither adjusts the two distributions, so close_split falls 70.354 -> 27.775 in one bar (x0.3948): a -60.52% return that holders never had, since the value moved into their COV and TEL shares. Old Johnson Controls' own 3-for-1 of 2007-10-03 is another company's event and does not belong to these prices.",
-        "note": "⚠ This repairs the fabricated RETURN, which is what reaches momentum, vol, betas and every JCI label. The LEVEL basis is separate: inside the JCI <- TYC vendor-series window the cube's level factor reads TYC's own corporate actions (security_master_manual.json vendor_series_overrides), and this seam does not change it."
+        "note": "\u26a0 This repairs the fabricated RETURN, which is what reaches momentum, vol, betas and every JCI label. The LEVEL basis is separate: inside the JCI <- TYC vendor-series window the cube's level factor reads TYC's own corporate actions (security_master_manual.json vendor_series_overrides), and this seam does not change it."
+      }
+    ],
+    "VTR": [
+      {
+        "date": "2015-08-18",
+        "fields": [
+          "close_total"
+        ],
+        "expect_step": 0.7642565875608247,
+        "target_step": 1.0025540368759251,
+        "expect_quote_step": 0.764256586675944,
+        "evidence": "Holder wealth return: (VTR59.80 + CCP35.58/4) / prior restored68.519997. One CCP per4VTR; full-precision target+0.255403688%. Correct total return only; original OHLC and quotes retain their basis. https://s203.q4cdn.com/581756553/files/doc_downloads/Form8937/Form-8937-Ventas-Inc-2015-Tax-Free-Spin-Off-of-Care-Capital-Properties.pdf"
+      }
+    ],
+    "SJM": [
+      {
+        "date": "2002-06-03",
+        "fields": [
+          "close_total"
+        ],
+        "expect_step": 1.1006007177335617,
+        "target_step": 1.0401776947657886,
+        "expect_quote_step": 1.1006006716387562,
+        "evidence": "Old holders receive0.9451 new ordinary shares effectiveJune1, first quotedJune3. Holder gross=.9451*36.650001525878906/33.29999923706055; preserve+4.017769477%, not raw+10.0601% or zero. Vendor share factor.945 remains separate. https://investors.jmsmucker.com/resources/investor-faqs/default.aspx ; original issuer2002-06-03 trading release (research S-SJM)."
       }
     ]
-  }
-,
+  },
 
   "null_ret": {
     "DHR": [
@@ -469,13 +492,6 @@
         "date": "2001-01-02",
         "expect_ret": 0.22886,
         "evidence": "close_total steps +22.89% in one bar and level_factor steps 1.152472 -> 1.000000, EXACTLY the 1.152472 ratio yfinance publishes in prices_splits on that date. sharadar_actions has no event row for ETN anywhere in 2000-2002 (dividends only), so the ratio is uncorroborated in either direction and a rescale would be guessing. Mean |epsilon| over the 60d before/after is 2.96 -> 0.16, an 18x swing against a control median 0.986x."
-      }
-    ],
-    "VTR": [
-      {
-        "date": "2015-08-18",
-        "expect_ret": -0.23574,
-        "evidence": "close_total steps -23.57% in one bar and level_factor steps 0.875700 -> 1.000000. sharadar_actions carries a spinoff 0.25 -> CCP with an 8.51 spinoff dividend on exactly that date while prices_splits has NO row, so the two feeds disagree on whether the price leg should have moved at all. Mean |epsilon| over the 60d before/after is 2.95 -> 0.44, a 7x swing against a control median 0.986x."
       }
     ],
     "LDOS": [

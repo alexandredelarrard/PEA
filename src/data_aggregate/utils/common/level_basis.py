@@ -77,9 +77,7 @@ left alone.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable, Mapping, Sequence
-from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
@@ -87,28 +85,24 @@ import pandas as pd
 
 from src.constants.constants import SHARADAR_ACTION_SPINOFF, SHARADAR_ACTION_SPLIT
 from src.context import Context
-from src.data_extract.utils.fundamentals_sharadar.field_map import split_events as genuine_splits
 from src.data_store.schema import Tables
 from src.utils.cutover_continuity import predecessor_actions
 from src.utils.predecessor_series import load_predecessor_series
+from src.utils.price_adjustments import (
+    BUGFIX_FILENAME as BUGFIX_FILENAME,
+)
+from src.utils.price_adjustments import (
+    load_bugfix as load_bugfix,
+)
+from src.utils.price_adjustments import (
+    split_events as genuine_splits,
+)
+from src.utils.price_adjustments import (
+    suffix_factor as suffix_factor,
+)
 from src.utils.string import normalise_ticker
 
 __all__ = ["genuine_splits"]
-
-# ⚠ THE ONE PLACE `data_aggregate` REACHES INTO `data_extract`, and it is deliberate.
-#
-# AGENTS.md forbids cross-imports between `src/` subfolders, and the escape hatch is normally
-# `src/utils/`. It is not taken here because the thing being shared is not a utility, it is a
-# DECISION: which `prices_splits` rows are genuine share events. That decision has to be
-# IDENTICAL on both sides or `S` is wrong -- the extract layer divides `sharesOutstandingPit`
-# by exactly the events this module puts in the denominator, and a fork would let the two
-# drift apart silently, which is the failure mode `S` exists to close.
-#
-# So the rule is bent ONCE, here, rather than in each of the consumers: `StepCubePrices`
-# imports `genuine_splits` from this module and never names `data_extract` itself. Moving
-# `split_events` to `src/utils/` would satisfy the letter of the rule, but it would drag
-# `TranslationReport`, both registers and the whole corroboration rule with it -- a refactor
-# of the extract layer that this plan has no mandate for.
 
 #: |S - 1| below which the two event sets are the SAME set and the factor is exactly 1.0.
 #: Float noise from multiplying and then dividing the same ratios is ~1e-16; the smallest
@@ -116,39 +110,6 @@ __all__ = ["genuine_splits"]
 #: out BIT-IDENTICAL to the pre-fix build -- a control ticker at 1.0000000000000002 would move
 #: every downstream digest and make the "this change is targeted" claim unprovable.
 LEVEL_SNAP_TOL = 1e-12
-
-
-def suffix_factor(events: pd.DataFrame | None, tickers: Sequence[str], stamps: np.ndarray) -> dict[str, np.ndarray]:
-    """Per ticker, `PROD(value : event date > d)` evaluated at every `d` in `stamps`.
-
-    A suffix product plus a `searchsorted`, not a loop over events: the products are formed
-    RIGHT-TO-LEFT over dates sorted ascending, so two identical event lists produce
-    bit-identical floats in `level_factor`'s division and cancel to exactly 1.0. A left-to-
-    right accumulation would not guarantee that.
-    """
-    out: dict[str, np.ndarray] = {}
-    if events is None or events.empty:
-        return out
-
-    frame = events.copy()
-    frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
-    frame = frame.dropna(subset=["date", "value"])
-    frame = frame[np.isfinite(frame["value"]) & (frame["value"] > 0)]
-    wanted = set(map(str, tickers))
-
-    for ticker, group in frame.groupby(frame["ticker"].astype(str), sort=False):
-        if ticker not in wanted:
-            continue
-        group = group.sort_values("date")
-        values = group["value"].to_numpy(dtype="float64")
-        # suffix[i] = prod(values[i:]), with suffix[n] = 1.0 for a date after every event.
-        suffix = np.ones(values.size + 1, dtype="float64")
-        suffix[:-1] = np.cumprod(values[::-1])[::-1]
-        # `right`: an event dated exactly d restates the bars BEFORE d and leaves d itself
-        # alone, matching `field_map.forward_split_factor`'s strict `<`.
-        pos = np.searchsorted(group["date"].to_numpy(dtype="datetime64[ns]"), stamps, side="right")
-        out[ticker] = suffix[pos]
-    return out
 
 
 def level_factor(
@@ -255,7 +216,6 @@ def describe(factor: pd.DataFrame, top: int = 10) -> str:
 # --------------------------------------------------------------------------- #
 #: Where the register lives, relative to `Context.config_dir`. One consumer
 #: (`StepCubePrices`), so the name stays here rather than in `constants.py`.
-BUGFIX_FILENAME = "prices/yf_price_bugfix.json"
 #: How far the OBSERVED wedge may sit from a registered `factor` before the entry is REFUSED.
 #: The registered values were measured with <=0.06% spread inside every segment, so 2% is
 #: ~30x the measurement noise and still tight enough that a genuinely changed vendor series --
@@ -302,25 +262,6 @@ def _rescale(wide: dict[str, pd.DataFrame], ticker: str, factor) -> None:
         else:
             mask = factor[0]
             target.loc[mask, ticker] = target.loc[mask, ticker] * factor[1]
-
-
-def load_bugfix(config_dir: str | Path) -> dict:
-    """Read `configs/prices/yf_price_bugfix.json`. Returns `{}` when it is absent, so a
-    checkout without the register builds normally instead of failing.
-
-    ⚠ REFUSED WITHOUT AN `_APPROVED` BLOCK, exactly as the two Sharadar registers are and for
-    the same reason: a regenerated proposal is byte-identical to a reviewed decision, so
-    without the check "human-approved" is a sentence in a docstring. These entries rewrite
-    prices, which is the strongest case in the repo for demanding the block."""
-    path = Path(config_dir) / BUGFIX_FILENAME
-    if not path.exists():
-        return {}
-    blob = json.loads(path.read_text(encoding="utf-8"))
-    if "_APPROVED" not in blob:
-        raise ValueError(
-            f"{path} has no `_APPROVED` block -- refusing to apply a price repair nobody signed off. Add one stating who measured it and how."
-        )
-    return blob
 
 
 #: How far the observed volume jump across a `volume_scale` boundary may sit from `expect_jump`,

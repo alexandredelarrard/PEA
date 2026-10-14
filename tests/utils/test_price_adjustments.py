@@ -7,7 +7,7 @@ from copy import deepcopy
 import pandas as pd
 import pytest
 
-from src.utils.price_adjustments import resolve_share_events, validate_bugfix
+from src.utils.price_adjustments import ShareBasis, resolve_share_events, validate_bugfix
 
 
 def _frames() -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -166,12 +166,20 @@ def test_price_date_can_heal_independently_and_competing_rows_refuse(healed: boo
         {"date": "2020-05-15", "ordinary_shares": 100.0, "rtol": 0.0002, "source": "share count between vendor dates"}
     )
     blob["share_events"]["TEST"]["anchors"].append(
-        {"date": "2020-06-15", "ordinary_shares": 100.0, "quoted_price": 10.0, "rtol": 0.0002, "source": "quote between old/new dates"}
+        {"date": "2020-06-15", "quoted_price": 10.0, "rtol": 0.0002, "source": "independent quote without an SF1 filing"}
+    )
+    blob["share_events"]["TEST"]["anchors"].append(
+        {"date": "2020-06-20", "ordinary_shares": 100.0, "rtol": 0.0002, "source": "share count before the healed price date"}
     )
     shares = pd.DataFrame(
-        {"ticker": ["TEST", "TEST", "TEST"], "date": pd.to_datetime(["2020-01-02", "2020-05-15", "2020-06-15"]), "sharesbas": [200.0, 200.0, 100.0]}
+        {
+            "ticker": ["TEST"] * 4,
+            "date": pd.to_datetime(["2020-01-02", "2020-05-15", "2020-06-15", "2020-06-20"]),
+            "sharesbas": [200.0, 200.0, 100.0, 100.0],
+        }
     )
     quotes = shares[["ticker", "date"]].assign(close_split=5.0)
+    shares = shares.loc[shares["date"].ne(pd.Timestamp("2020-06-15"))]
     basis = resolve_share_events(actions, yahoo, blob, shares=shares, quotes=quotes)
     assert _factor(basis, "price", ["2020-06-15", "2020-07-01"]) == [2.0, 1.0]
     assert _factor(basis, "actual", ["2020-06-15"]) == [1.0]
@@ -179,3 +187,31 @@ def test_price_date_can_heal_independently_and_competing_rows_refuse(healed: boo
     with pytest.raises(ValueError, match="changed yahoo"):
         resolve_share_events(actions, competing, blob, shares=shares, quotes=quotes)
     print("SANITY: independent price dates replace/heal once; competing old/new feed rows refuse.")
+
+
+def test_declared_quote_units_need_positive_title_evidence() -> None:
+    events = pd.DataFrame(columns=["ticker", "date", "value"])
+    basis = ShareBasis(
+        events,
+        events,
+        events,
+        {
+            "TEST": {
+                "quote_units": {
+                    "date": "2020-06-01",
+                    "before": 2.0,
+                    "after": 1.0,
+                    "quoted_titles": ["American Depositary Shares"],
+                    "ordinary_titles": ["Ordinary Shares"],
+                }
+            }
+        },
+    )
+    tickers = pd.Series(["TEST"] * 4)
+    dates = pd.Series(pd.to_datetime(["2020-05-01"] * 3 + ["2020-06-01"]))
+    titles = pd.Series([" american   depositary SHARES ", "Ordinary Shares", "Common Stock", "Common Stock"])
+    units = basis.declared_units(tickers, dates, titles)
+    assert units.iloc[:2].tolist() == [2.0, 1.0]
+    assert pd.isna(units.iloc[2])
+    assert units.iloc[3] == 1.0
+    print("SANITY: ADS/ordinary titles resolve explicitly; generic common class cannot establish a nonunitary title's units.")

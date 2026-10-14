@@ -44,6 +44,7 @@ from src.data_aggregate.utils.institutionals.insider_positions import cumulative
 from src.data_aggregate.utils.institutionals.insider_quality import FLAG_PCT_SHARES_OUTSTANDING, clean_transactions, report_oversized, security_class
 from src.data_aggregate.utils.institutionals.sink import ConditioningSink
 from src.data_store.schema import Tables
+from src.utils.price_adjustments import ShareBasis
 
 
 def _absent(df: pd.DataFrame | None, need: set[str] | None = None) -> bool:
@@ -109,6 +110,7 @@ def build_insider_feature_panel(
     sink: ConditioningSink | None = None,
     as_traded_quotes: pd.DataFrame | None = None,
     role_evidence: pd.DataFrame | None = None,
+    share_basis: ShareBasis | None = None,
 ) -> pd.DataFrame:
     """Long-format insider feature panel (`f_<name>` per `EMISSION`) from the cleaned open-market trades.
 
@@ -122,7 +124,7 @@ def build_insider_feature_panel(
     if insider is None or insider.empty or not need.issubset(insider.columns):
         return _empty_panel()
 
-    df_trades, diag = clean_transactions(insider, as_traded_quotes=as_traded_quotes, role_evidence=role_evidence)
+    df_trades, diag = clean_transactions(insider, as_traded_quotes=as_traded_quotes, role_evidence=role_evidence, share_basis=share_basis)
     df_unpriced = diag.get("unpriced_events", pd.DataFrame(columns=["ticker", "day", "code"]))
     idx = pd.DatetimeIndex(frames.trading_index).normalize().unique().sort_values()
     if idx.empty:
@@ -131,7 +133,7 @@ def build_insider_feature_panel(
     stock_close = frames.close_split
     mcap = _market_cap(shares_out_history, stock_close, frames.level_factor)
     df_shares_out = (
-        fundamentals_to_daily(shares_out_history, "sharesOutstandingPit", idx)
+        fundamentals_to_daily(shares_out_history, "sharesOutstandingPit", idx, share_basis=share_basis)
         if shares_out_history is not None and not shares_out_history.empty
         else pd.DataFrame(index=idx)
     )
@@ -140,7 +142,7 @@ def build_insider_feature_panel(
     df_buys = df_trades[df_trades["code"].eq("P")].copy()
     df_sells = df_trades[df_trades["code"].eq("S")].copy()
     # Missing dollars do not invalidate disclosed shares or post-trade holdings.
-    df_position_trades = position_units(pd.concat([df_trades, df_unpriced], ignore_index=True), frames, as_traded_quotes)
+    df_position_trades = position_units(pd.concat([df_trades, df_unpriced], ignore_index=True), frames, as_traded_quotes, share_basis)
     other_flows = diag.get("other_flows", pd.DataFrame())
     df_positions = _daily_positions(df_position_trades, other_flows)
 

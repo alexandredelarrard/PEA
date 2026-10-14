@@ -92,6 +92,10 @@ from src.utils.price_adjustments import (
     BUGFIX_FILENAME as BUGFIX_FILENAME,
 )
 from src.utils.price_adjustments import (
+    ShareBasis,
+    resolve_share_events,
+)
+from src.utils.price_adjustments import (
     load_bugfix as load_bugfix,
 )
 from src.utils.price_adjustments import (
@@ -116,7 +120,7 @@ def level_factor(
     index: pd.DatetimeIndex,
     universe: Sequence[str],
     yf_splits: pd.DataFrame | None,
-    genuine_splits: pd.DataFrame,
+    genuine_splits: pd.DataFrame | ShareBasis,
 ) -> pd.DataFrame:
     """`S(d)` as a wide (date x ticker) frame of MULTIPLIERS, 1.0 where nothing applies.
 
@@ -129,6 +133,13 @@ def level_factor(
     aligns with the other price frames without a reindex at the call site. A ticker with no
     events, or with two agreeing event sets, is exactly `1.0` -- see `LEVEL_SNAP_TOL`.
     """
+    if isinstance(genuine_splits, ShareBasis):
+        basis = genuine_splits
+        events = basis.vendor
+        yf_splits = basis.price
+    else:
+        basis = None
+        events = genuine_splits
     columns = sorted(set(map(str, universe)))
     idx = pd.DatetimeIndex(index)
     frame = pd.DataFrame(1.0, index=idx, columns=columns, dtype="float64")
@@ -138,7 +149,7 @@ def level_factor(
     numerator = suffix_factor(
         (yf_splits.rename(columns={"ratio": "value"}) if yf_splits is not None and "ratio" in yf_splits.columns else yf_splits), columns, stamps
     )
-    denominator = suffix_factor(genuine_splits, columns, stamps)
+    denominator = suffix_factor(events, columns, stamps)
 
     for ticker in set(numerator) | set(denominator):
         up = numerator.get(ticker)
@@ -150,6 +161,11 @@ def level_factor(
             frame[ticker] = up
         else:
             frame[ticker] = up / down
+
+    if basis is not None:
+        for ticker in basis.policies.keys() & set(columns):
+            units = basis.factor(pd.Series(ticker, index=idx), pd.Series(idx, index=idx), "units")
+            frame[ticker] = frame[ticker] / units
 
     # `copy=True`: pandas hands back a READ-ONLY view of a single-block frame, so writing the
     # snap into it raises rather than silently doing nothing.
@@ -189,6 +205,46 @@ def level_actions(context: Context, tickers: Sequence[str]) -> pd.DataFrame | No
                 s.valid_to.date() if s.valid_to is not None else "-",
             )
     return predecessor_actions(actions, owners, series)
+
+
+def load_share_basis(
+    context: Context,
+    tickers: Sequence[str],
+    bugfix: dict,
+    actions: pd.DataFrame | None,
+    yf_splits: pd.DataFrame | None,
+    *,
+    shares: pd.DataFrame | None = None,
+    quotes: pd.DataFrame | None = None,
+    base_events: pd.DataFrame | None = None,
+) -> ShareBasis:
+    """Load only the scoped sources/anchors required to resolve a policy, even for a tail build."""
+    names = list(tickers)
+    policies = {ticker: policy for ticker, policy in bugfix.get("share_events", {}).items() if ticker in names}
+    anchors = [(ticker, anchor) for ticker, policy in policies.items() for anchor in policy["anchors"]]
+    share_anchors = [(ticker, anchor) for ticker, anchor in anchors if "ordinary_shares" in anchor]
+    if share_anchors and shares is None:
+        dates = [anchor["date"] for _, anchor in share_anchors]
+        shares = context.store.load(
+            Tables.sharadar_fundamentals,
+            columns=["ticker", "date", "sharesbas"],
+            where={"ticker": list(policies), "dimension": "ARQ"},
+            since=min(dates),
+            until=max(dates),
+            optional=True,
+        )
+    price_anchors = [(ticker, anchor) for ticker, anchor in anchors if "quoted_price" in anchor]
+    if price_anchors and quotes is None:
+        dates = [anchor["date"] for _, anchor in price_anchors]
+        quotes = context.store.load(
+            Tables.prices,
+            columns=["ticker", "date", "close_split"],
+            where={"ticker": sorted({ticker for ticker, _ in price_anchors})},
+            since=min(dates),
+            until=max(dates),
+            optional=True,
+        )
+    return resolve_share_events(actions, yf_splits, bugfix, shares=shares, quotes=quotes, tickers=names, base_events=base_events)
 
 
 def describe(factor: pd.DataFrame, top: int = 10) -> str:

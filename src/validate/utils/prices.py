@@ -32,10 +32,10 @@ from src.data_aggregate.utils.common.level_basis import (
     apply_level_bugfix,
     apply_return_seams,
     apply_split_vintage,
-    genuine_splits,
     level_actions,
     level_factor,
     load_bugfix,
+    load_share_basis,
 )
 from src.data_store.schema import Tables
 from src.utils.universe import load_universe_tickers
@@ -275,16 +275,16 @@ def _level_factor_for(context: Context, panel: pd.DataFrame, where: dict | None)
     idx = pd.DatetimeIndex(sorted(panel["date"].dropna().unique()), name="date")
     if idx.empty:
         return pd.Series(1.0, index=panel.index)
-    wide = level_factor(idx, tickers, yf_splits, genuine_splits(actions, yf_splits))
+    bugfix = load_bugfix(context.config_dir)
+    basis = load_share_basis(context, tickers, bugfix, actions, yf_splits)
+    wide = level_factor(idx, tickers, basis.price, basis)
     # The registered LEVEL wedges are the cases `S` is structurally blind to -- Yahoo adjusted
     # the price and its splits feed never said so. ⚠ For those tickers invariant 2 is partly
     # SELF-REFERENTIAL, because the wedge was measured against the same `sharadar.price` the
     # invariant scores against. It is 8 tickers and it is stated in every one of their
     # register entries; the alternative is scoring a basis the cube does not use.
     close_wide = panel.pivot_table(index="date", columns="ticker", values="close_split")
-    wide = apply_level_bugfix(
-        wide, load_bugfix(context.config_dir), panel[["ticker", "date", "price"]], close_wide.reindex(index=idx, columns=tickers), logger.info
-    )
+    wide = apply_level_bugfix(wide, bugfix, panel[["ticker", "date", "price"]], close_wide.reindex(index=idx, columns=tickers), logger.info)
 
     flat = cast(pd.Series, wide.stack(future_stack=True)).rename("level_factor")
     flat.index = flat.index.set_names(["date", "ticker"])

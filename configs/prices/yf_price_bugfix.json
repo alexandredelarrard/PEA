@@ -156,6 +156,239 @@
     "note": "Every `factor` is the measured median of sharadar.price / close_split over the segment, with spread <= 0.06% within each. Every `step` is the observed one-bar ratio in `prices`."
   },
 
+  "share_events": {
+    "HBAN": {
+      "anchors": [
+        {
+          "date": "1996-02-22",
+          "ordinary_shares": 137192253,
+          "rtol": 0.0002,
+          "source": "https://ir.huntington.com/regulatory-sec-filings/all-sec-filings/content/0000950152-96-000605/10-K.txt"
+        },
+        {
+          "date": "1996-05-15",
+          "ordinary_shares": 132891485,
+          "rtol": 0.0002,
+          "source": "https://ir.huntington.com/regulatory-sec-filings/all-sec-filings/content/0000950152-96-002524/10-Q.txt"
+        }
+      ],
+      "events": [
+        {
+          "expect": {
+            "yahoo": {
+              "date": "1996-07-12",
+              "ratio": 1.1
+            },
+            "sharadar": null
+          },
+          "actual": {
+            "date": "1996-07-12",
+            "ratio": 1.1
+          },
+          "evidence": "10% stock dividend changes actual ordinary shares; original covers equal raw SF1, so the vendor did not restate this factor. Yahoo date is the effective quoted-unit date, distinct from payment/distribution. Original Huntington covers: https://ir.huntington.com/regulatory-sec-filings/all-sec-filings/content/0000950152-96-000605/10-K.txt",
+          "vendor": {
+            "date": "1996-07-12",
+            "ratio": 1.0
+          }
+        },
+        {
+          "expect": {
+            "yahoo": {
+              "date": "1997-07-11",
+              "ratio": 1.1
+            },
+            "sharadar": null
+          },
+          "actual": {
+            "date": "1997-07-11",
+            "ratio": 1.1
+          },
+          "evidence": "10% stock dividend changes actual ordinary shares; original covers equal raw SF1, so the vendor did not restate this factor. Yahoo date is the effective quoted-unit date, distinct from payment/distribution. Original Huntington covers: https://ir.huntington.com/regulatory-sec-filings/all-sec-filings/content/0000950152-96-000605/10-K.txt",
+          "vendor": {
+            "date": "1997-07-11",
+            "ratio": 1.0
+          }
+        },
+        {
+          "expect": {
+            "yahoo": {
+              "date": "1998-07-13",
+              "ratio": 1.1
+            },
+            "sharadar": null
+          },
+          "actual": {
+            "date": "1998-07-13",
+            "ratio": 1.1
+          },
+          "evidence": "10% stock dividend changes actual ordinary shares; original covers equal raw SF1, so the vendor did not restate this factor. Yahoo date is the effective quoted-unit date, distinct from payment/distribution. Original Huntington covers: https://ir.huntington.com/regulatory-sec-filings/all-sec-filings/content/0000950152-96-000605/10-K.txt",
+          "vendor": {
+            "date": "1998-07-13",
+            "ratio": 1.0
+          }
+        },
+        {
+          "expect": {
+            "yahoo": {
+              "date": "1999-07-12",
+              "ratio": 1.1
+            },
+            "sharadar": null
+          },
+          "actual": {
+            "date": "1999-07-12",
+            "ratio": 1.1
+          },
+          "evidence": "10% stock dividend changes actual ordinary shares; original covers equal raw SF1, so the vendor did not restate this factor. Yahoo date is the effective quoted-unit date, distinct from payment/distribution. Original Huntington covers: https://ir.huntington.com/regulatory-sec-filings/all-sec-filings/content/0000950152-96-000605/10-K.txt",
+          "vendor": {
+            "date": "1999-07-12",
+            "ratio": 1.0
+          }
+        },
+        {
+          "expect": {
+            "yahoo": {
+              "date": "2000-07-12",
+              "ratio": 1.1
+            },
+            "sharadar": null
+          },
+          "actual": {
+            "date": "2000-07-12",
+            "ratio": 1.1
+          },
+          "evidence": "10% stock dividend changes actual ordinary shares; original covers equal raw SF1, so the vendor did not restate this factor. Yahoo date is the effective quoted-unit date, distinct from payment/distribution. Original Huntington covers: https://ir.huntington.com/regulatory-sec-filings/all-sec-filings/content/0000950152-96-000605/10-K.txt",
+          "vendor": {
+            "date": "2000-07-12",
+            "ratio": 1.0
+          }
+        }
+      ]
+    },
+    "APA": {
+      "anchors": [
+        {
+          "date": "2001-11-13",
+          "ordinary_shares": 124627521,
+          "rtol": 0.0002,
+          "source": "https://investor.apacorp.com/static-files/b2379081-60e8-4af0-878d-97c8c2d318c7"
+        }
+      ],
+      "events": [
+        {
+          "expect": {
+            "yahoo": {
+              "date": "2001-12-27",
+              "ratio": 1.1
+            },
+            "sharadar": null
+          },
+          "actual": {
+            "date": "2001-12-27",
+            "ratio": 1.1
+          },
+          "evidence": "Stock dividend is absent from SF1 retrospective shares; preserve the separately incorporated ordinary 2-for-1. Original cover124627521 versus raw249255042; ex-dates https://investor.apacorp.com/stock-information/dividend-history ; https://investor.apacorp.com/static-files/b2379081-60e8-4af0-878d-97c8c2d318c7",
+          "vendor": {
+            "date": "2001-12-27",
+            "ratio": 1.0
+          }
+        },
+        {
+          "expect": {
+            "yahoo": {
+              "date": "2003-03-10",
+              "ratio": 1.05
+            },
+            "sharadar": null
+          },
+          "actual": {
+            "date": "2003-03-10",
+            "ratio": 1.05
+          },
+          "evidence": "Stock dividend is absent from SF1 retrospective shares; preserve the separately incorporated ordinary 2-for-1. Original cover124627521 versus raw249255042; ex-dates https://investor.apacorp.com/stock-information/dividend-history ; https://investor.apacorp.com/static-files/b2379081-60e8-4af0-878d-97c8c2d318c7",
+          "vendor": {
+            "date": "2003-03-10",
+            "ratio": 1.0
+          }
+        }
+      ]
+    },
+    "SJM": {
+      "anchors": [
+        {
+          "date": "2002-03-11",
+          "ordinary_shares": 24858003,
+          "rtol": 0.0002,
+          "source": "https://www.sec.gov/Archives/edgar/data/91419/000095015202001666/l93221ae10-q.htm"
+        }
+      ],
+      "events": [
+        {
+          "expect": {
+            "yahoo": null,
+            "sharadar": {
+              "date": "2002-05-30",
+              "ratio": 0.945
+            }
+          },
+          "actual": {
+            "date": "2002-06-01",
+            "ratio": 0.9451
+          },
+          "evidence": "Old common shares convert0.9451 effectiveJune1; first new quoteJune3. SF1 rounds the conversion to0.945 and Yahoo old-share Close is unadjusted. Original24858003 versus raw23490813; https://investors.jmsmucker.com/resources/investor-faqs/default.aspx ; https://www.sec.gov/Archives/edgar/data/91419/000095015202001666/l93221ae10-q.htm",
+          "vendor": {
+            "date": "2002-06-01",
+            "ratio": 0.945
+          }
+        }
+      ]
+    },
+    "IVZ": {
+      "anchors": [
+        {
+          "date": "2006-06-23",
+          "ordinary_shares": 818106899,
+          "rtol": 0.0002,
+          "source": "https://www.sec.gov/Archives/edgar/data/914208/000119312506135020/d20f.htm"
+        },
+        {
+          "date": "2007-11-09",
+          "ordinary_shares": 836680132,
+          "rtol": 0.0002,
+          "source": "Implied old ordinary count: raw418340066 divided by documented0.5 restatement; the December4 legal cutoff is documented in https://www.sec.gov/Archives/edgar/data/914208/000095014408001518/g11915e10vk.htm"
+        }
+      ],
+      "events": [
+        {
+          "expect": {
+            "yahoo": null,
+            "sharadar": {
+              "date": "2007-11-01",
+              "ratio": 0.5
+            }
+          },
+          "actual": {
+            "date": "2007-12-04",
+            "ratio": 0.5
+          },
+          "evidence": "December4 ordinary consolidation, not November1. Each preconversion US ADS represents two old ordinary shares and becomes one new common share; no US quote split. Original2005 ordinary count independently verifies the vendor half-basis. https://www.sec.gov/Archives/edgar/data/914208/000119312506135020/d20f.htm ; https://www.sec.gov/Archives/edgar/data/914208/000095014408001518/g11915e10vk.htm"
+        }
+      ],
+      "quote_units": {
+        "date": "2007-12-04",
+        "before": 2.0,
+        "after": 1.0,
+        "quoted_titles": [
+          "American Depositary Shares"
+        ],
+        "ordinary_titles": [
+          "Ordinary Shares",
+          "Common Shares"
+        ]
+      }
+    }
+  },
+
   "level_factor": {
     "IP": {
       "evidence": "Two spinoffs Yahoo back-adjusted the whole history for and published NO prices_splits row for. Returns around both dates are <3%, so the adjustment is smooth and correct FOR RETURNS -- it is only the LEVEL that is left short. 107 of 127 filing rows fail invariant 1 without this.",
@@ -164,37 +397,6 @@
          "event": "Veritiv (VRTV) spinoff, 2014-07-01 -- xpedx/Unisource"},
         {"before": "2021-10-01", "factor": 1.05600, "rows": 29, "spread": 0.0000,
          "event": "Sylvamo (SLVM) spinoff -- sharadar_actions 2021-10-01 value 0.09091"}
-      ]
-    },
-    "SJM": {
-      "evidence": "The 0.945 factor on 2002-05-30 IS in sharadar_actions and IS applied by Yahoo to prices, but it is a merger share-issuance factor, not a split, so `_is_split_shaped` rejects it (0.945 vs 17/18 = 5.6e-4) and it never reaches the denominator of S. 1/0.945 = 1.05820, which is the measured wedge to five decimal places.",
-      "segments": [
-        {"before": "2002-05-30", "factor": 1.05820, "rows": 27, "spread": 0.0006,
-         "event": "sharadar_actions 2002-05-30 value 0.945 -- 1/0.945 = 1.05820"}
-      ]
-    },
-    "HBAN": {
-      "evidence": "Five consecutive annual 10% STOCK DIVIDENDS. Each is genuinely split-shaped (11/10), so `split_events` keeps all five and they cancel out of S -- correctly, because they DO change the share count. But Sharadar's `price` does not reflect them while Yahoo's `close_split` does, so the level wedge is 1.1^n and compounds. The measured ladder reproduces 1.1^5..1.1^1 to five decimal places.",
-      "segments": [
-        {"before": "1996-07-12", "factor": 1.61051, "rows": 2, "spread": 0.0000,
-         "event": "1.1^5 -- five 10% stock dividends still ahead"},
-        {"before": "1997-07-11", "factor": 1.46410, "rows": 3, "spread": 0.0000,
-         "event": "1.1^4"},
-        {"before": "1998-07-13", "factor": 1.33100, "rows": 4, "spread": 0.0000,
-         "event": "1.1^3"},
-        {"before": "1999-07-12", "factor": 1.21000, "rows": 5, "spread": 0.0002,
-         "event": "1.1^2"},
-        {"before": "2000-07-12", "factor": 1.10000, "rows": 4, "spread": 0.0003,
-         "event": "1.1^1 -- the last one, ex-date 2000-07-12"}
-      ]
-    },
-    "APA": {
-      "evidence": "The same stock-dividend mechanism as HBAN: a 10% (2001-12-27) and a 5% (2003-03-10), both split-shaped, both cancelling out of S, neither reflected in Sharadar's `price`. 1.1 x 1.05 = 1.155, which is the measured wedge exactly.",
-      "segments": [
-        {"before": "2001-12-27", "factor": 1.15500, "rows": 20, "spread": 0.0003,
-         "event": "1.1 x 1.05 -- both stock dividends still ahead"},
-        {"before": "2003-03-10", "factor": 1.05000, "rows": 4, "spread": 0.0000,
-         "event": "the 5% stock dividend alone"}
       ]
     },
     "HWM": {
@@ -214,15 +416,15 @@
     "BLDR": {
       "evidence": "A flat 18.9% wedge across all 18 pre-2010 filing rows, spread 0.00%. ⚠ NO corroborating corporate action was found in sharadar_actions -- the shape is unambiguous (a perfect plateau that ends), the CAUSE is not. Builders FirstSource ran a rights offering and a debt exchange through 2009-2010, either of which would do this.",
       "segments": [
-        {"before": "2009-12-31", "factor": 1.18900, "rows": 18, "spread": 0.0000,
-         "event": "UNEXPLAINED -- boundary is the midpoint of 2009-10-28..2010-03-04"}
+        {"before": "2009-12-17", "factor": 1.18900, "rows": 18, "spread": 0.0000,
+         "event": "Measured quote-basis boundary2009-12-17; corporate cause remains unverified"}
       ]
     },
     "CCI": {
       "evidence": "A flat 3.1% wedge across 17 filing rows to mid-2002, spread 0.04%. ⚠ NO corroborating corporate action found. Crown Castle restructured heavily in 2002. The single 2020-07-31 row at 0.97938 is NOT included -- one row is a blip, not a plateau.",
       "segments": [
-        {"before": "2002-06-30", "factor": 1.03100, "rows": 17, "spread": 0.0004,
-         "event": "UNEXPLAINED -- boundary is the midpoint of 2002-05-14..2002-08-13"}
+        {"before": "2002-05-29", "factor": 1.03100, "rows": 17, "spread": 0.0004,
+         "event": "Measured quote-basis boundary2002-05-29; issuer June28 closing quote3.93; corporate cause unverified"}
       ]
     }
   },

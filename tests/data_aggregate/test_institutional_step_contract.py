@@ -26,6 +26,7 @@ from src.data_store.schema import Tables
 def _bare_step() -> StepCubeInstitutionals:
     step = object.__new__(StepCubeInstitutionals)
     cast(Any, step)._log = logging.getLogger(__name__)
+    cast(Any, step)._bugfix = {}
     return step
 
 
@@ -278,6 +279,7 @@ def test_insider_panel_reads_one_table_and_the_db_frontier(monkeypatch: pytest.M
     assert loads == [(Tables.insider_transactions, ("BBB", "AAA"))]
     assert frontiers == [(Tables.insider_transactions, pd.Timestamp("2026-10-01"))]
     assert built.pop("as_traded_quotes") is None
+    assert not built.pop("share_basis").policies
     assert built.pop("role_evidence").empty
     assert built == {
         "frames": frames,
@@ -387,7 +389,7 @@ def test_build_panel_preserves_order_sink_and_output_contract(monkeypatch: pytes
     monkeypatch.setattr(
         step,
         "_institutional_panel",
-        lambda actual_frames, actual_shares, actual_splits, valuation_close: (
+        lambda actual_frames, actual_shares, actual_splits, valuation_close, share_basis: (
             emit("institutional")
             if (actual_frames is frames and actual_shares is shares and actual_splits.equals(share_splits))
             else pytest.fail("institutional inputs changed")
@@ -402,11 +404,11 @@ def test_build_panel_preserves_order_sink_and_output_contract(monkeypatch: pytes
             else pytest.fail("superinvestor inputs changed")
         ),
     )
-    monkeypatch.setattr(step, "_insider_panel", lambda actual_frames, actual_shares, sink, actual_splits: emit("insider", sink))
+    monkeypatch.setattr(step, "_insider_panel", lambda actual_frames, actual_shares, sink, actual_splits, **kwargs: emit("insider", sink))
     monkeypatch.setattr(
         step,
         "_short_flow_panel",
-        lambda actual_frames, actual_shares, actual_splits, sink: emit("short", sink),
+        lambda actual_frames, actual_shares, actual_splits, sink, **kwargs: emit("short", sink),
     )
     monkeypatch.setattr(step, "_ownership_panel", lambda actual_frames, sink: emit("ownership", sink))
     monkeypatch.setattr(step, "_conditioning_panel", lambda actual_frames, actual_splits, sink: emit("conditioning", sink))
@@ -557,12 +559,12 @@ def test_share_panels_receive_genuine_splits_without_spinoff_factors(monkeypatch
         received[name] = events
 
     monkeypatch.setattr(step_module, "level_actions", lambda *args: actions)
-    monkeypatch.setattr(step_module, "as_traded_close", lambda close, factor, events: capture("valuation", events))
-    monkeypatch.setattr(step, "_institutional_panel", lambda frames, shares, events, close: capture("institutional", events))
+    monkeypatch.setattr(step_module, "as_traded_close", lambda close, factor, basis: capture("valuation", basis.vendor))
+    monkeypatch.setattr(step, "_institutional_panel", lambda frames, shares, events, close, **kwargs: capture("institutional", events))
     monkeypatch.setattr(step, "_superinvestor_panel", lambda frames, shares, events, sink, close: capture("elite", events))
-    monkeypatch.setattr(step, "_short_flow_panel", lambda frames, shares, events, sink: capture("short", events))
+    monkeypatch.setattr(step, "_short_flow_panel", lambda frames, shares, events, sink, **kwargs: capture("short", events))
     monkeypatch.setattr(step, "_conditioning_panel", lambda frames, events, sink: capture("conditioning", events))
-    monkeypatch.setattr(step, "_insider_panel", lambda *args: None)
+    monkeypatch.setattr(step, "_insider_panel", lambda *args, **kwargs: None)
     monkeypatch.setattr(step, "_ownership_panel", lambda *args: None)
     monkeypatch.setattr(step, "_cross_source_panel", lambda *args: None)
 

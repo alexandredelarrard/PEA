@@ -35,10 +35,10 @@ from src.data_aggregate.utils.common.level_basis import (
     apply_split_vintage,
     apply_volume_scale,
     describe,
-    genuine_splits,
     level_actions,
     level_factor,
     load_bugfix,
+    load_share_basis,
 )
 from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers
@@ -273,10 +273,11 @@ class StepCubePrices(Step):
         value is NULL" a no-op and materialise a row for every (date, ticker) pair in the
         grid -- including years before a ticker listed.
         """
-        yf_splits = self._store.load(Tables.prices_splits, columns=["ticker", "date", "ratio"], optional=True)
-        actions = level_actions(self._context, list(close_split.columns))
-        genuine = genuine_splits(actions, yf_splits)
-        factor = level_factor(idx, list(close_split.columns), yf_splits, genuine)
+        names = list(close_split.columns)
+        actions = level_actions(self._context, names)
+        yf_splits = self._store.load(Tables.prices_splits, columns=["ticker", "date", "ratio"], where={"ticker": names}, optional=True)
+        basis = load_share_basis(self._context, names, self._bugfix, actions, yf_splits)
+        factor = level_factor(idx, list(close_split.columns), basis.price, basis)
         # The registered wedges are cases `S` is structurally BLIND to -- Yahoo adjusted the
         # price and its splits feed never said so -- so they multiply `S` rather than
         # replacing it, and land in the same stored column.

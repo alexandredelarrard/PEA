@@ -40,6 +40,7 @@ from src.data_aggregate.utils.common.xs import self_history_z
 from src.data_aggregate.utils.institutionals.availability import InstitutionalAvailability
 from src.data_aggregate.utils.institutionals.split_basis import split_adjust_frame
 from src.data_store.schema import Tables
+from src.utils.price_adjustments import ShareBasis
 from src.utils.string import pad_cik, yahoo_symbol
 
 
@@ -470,6 +471,7 @@ def build_short_flow_feature_panel(
     availability: InstitutionalAvailability | None = None,
     sink=None,
     class_volume: pd.DataFrame | None = None,
+    share_basis: ShareBasis | None = None,
 ) -> pd.DataFrame:
     """Long-format short-flow panel (`f_<name>` per `EMISSION`); empty if neither source is available.
 
@@ -492,7 +494,7 @@ def build_short_flow_feature_panel(
     shares_out = None
     if shares_out_history is not None and not shares_out_history.empty:
         # Point-in-time share count, matching the as-traded basis of fails and short sales.
-        shares_out = fundamentals_to_daily(shares_out_history, "sharesOutstandingPit", idx)
+        shares_out = fundamentals_to_daily(shares_out_history, "sharesOutstandingPit", idx, share_basis=share_basis)
         if shares_out.empty or not shares_out.notna().any().any():
             shares_out = None
 

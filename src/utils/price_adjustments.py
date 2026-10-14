@@ -37,6 +37,23 @@ class ShareBasis:
     price: pd.DataFrame
     policies: dict[str, dict]
 
+    def declared_units(self, tickers: pd.Series, dates: pd.Series, titles: pd.Series) -> pd.Series:
+        """Ordinary shares per explicitly titled security; ambiguous nonunitary titles stay unknown."""
+        result = pd.Series(1.0, index=dates.index)
+        units = self.factor(tickers, dates, "units")
+        cleaned = titles.fillna("").astype(str).str.replace(r"\s+", " ", regex=True).str.strip().str.casefold()
+        for ticker, policy in self.policies.items():
+            convention = policy.get("quote_units")
+            if convention is None:
+                continue
+            hit = tickers.eq(ticker) & units.ne(1.0)
+            quoted = {" ".join(title.split()).casefold() for title in convention["quoted_titles"]}
+            ordinary = {" ".join(title.split()).casefold() for title in convention.get("ordinary_titles", [])}
+            result.loc[hit] = np.nan
+            result.loc[hit & cleaned.isin(quoted)] = units.loc[hit & cleaned.isin(quoted)]
+            result.loc[hit & cleaned.isin(ordinary)] = 1.0
+        return result
+
     def factor(self, tickers: pd.Series, dates: pd.Series, kind: str) -> pd.Series:
         """Strict future-event product, or ordinary shares per quoted security for units."""
         if kind != "units":
@@ -85,7 +102,9 @@ def _validate_policy(ticker: str, value: object) -> None:
     if not isinstance(policy["anchors"], list) or not policy["anchors"] or not isinstance(policy["events"], list) or not policy["events"]:
         raise ValueError(f"{ticker}: nonempty anchors and events are required")
     for anchor in policy["anchors"]:
-        _closed(anchor, {"date", "ordinary_shares", "quoted_price", "rtol", "source"}, {"date", "ordinary_shares", "rtol", "source"}, "anchor")
+        _closed(anchor, {"date", "ordinary_shares", "quoted_price", "rtol", "source"}, {"date", "rtol", "source"}, "anchor")
+        if not {"ordinary_shares", "quoted_price"} & anchor.keys():
+            raise ValueError("Anchor needs an original share count or traded quote")
         _date(anchor["date"], "anchor")
         for key in ("ordinary_shares", "rtol", "quoted_price"):
             if key in anchor:
@@ -197,17 +216,23 @@ def _replace_event(frame: pd.DataFrame, ticker: str, event: dict, leg: dict) -> 
     return added if retained.empty else pd.concat([retained, added], ignore_index=True)
 
 
+def _check_share_anchor(ticker: str, anchor: dict, basis: ShareBasis, shares: pd.DataFrame | None) -> None:
+    if shares is None:
+        raise ValueError(f"{ticker}: share anchor evidence unavailable")
+    stamp = pd.Timestamp(anchor["date"])
+    rows = shares.loc[shares["ticker"].eq(ticker) & pd.to_datetime(shares["date"]).eq(stamp)]
+    factor = basis.factor(pd.Series([ticker]), pd.Series([stamp]), "vendor").iloc[0]
+    values = pd.to_numeric(rows["sharesbas"], errors="coerce").dropna()
+    if values.empty or not np.isclose(values / factor, anchor["ordinary_shares"], rtol=anchor["rtol"], atol=0).all():
+        raise ValueError(f"{ticker}: share anchor {stamp.date()} conflicts with vendor restatement; remeasure")
+
+
 def _check_anchors(basis: ShareBasis, shares: pd.DataFrame | None, quotes: pd.DataFrame | None) -> None:
     for ticker, policy in basis.policies.items():
         for anchor in policy["anchors"]:
             stamp = pd.Timestamp(anchor["date"])
-            if shares is None:
-                raise ValueError(f"{ticker}: share anchor evidence unavailable")
-            rows = shares.loc[shares["ticker"].eq(ticker) & pd.to_datetime(shares["date"]).eq(stamp)]
-            factor = basis.factor(pd.Series([ticker]), pd.Series([stamp]), "vendor").iloc[0]
-            values = pd.to_numeric(rows["sharesbas"], errors="coerce").dropna()
-            if values.empty or not np.isclose(values / factor, anchor["ordinary_shares"], rtol=anchor["rtol"], atol=0).all():
-                raise ValueError(f"{ticker}: share anchor {stamp.date()} conflicts with vendor restatement; remeasure")
+            if "ordinary_shares" in anchor:
+                _check_share_anchor(ticker, anchor, basis, shares)
             if "quoted_price" not in anchor:
                 continue
             if quotes is None:
@@ -234,10 +259,26 @@ def _check_quantity_coverage(original: pd.DataFrame, basis: ShareBasis) -> None:
         changed = forward_split_factor(names, probes, old).ne(forward_split_factor(names, probes, new)).any()
         if not changed:
             continue
-        dates = pd.Series(pd.to_datetime([anchor["date"] for anchor in policy["anchors"]]))
+        dates = pd.Series(pd.to_datetime([anchor["date"] for anchor in policy["anchors"] if "ordinary_shares" in anchor]))
         names = pd.Series(ticker, index=dates.index)
         if forward_split_factor(names, dates, old).eq(forward_split_factor(names, dates, new)).all():
             raise ValueError(f"{ticker}: share anchor required in the affected vendor interval")
+
+
+def _anchor_quotes(quotes: pd.DataFrame | None, bugfix: dict) -> pd.DataFrame | None:
+    if quotes is None:
+        return None
+    df_quotes = quotes.copy()
+    df_quotes["hidden_factor"] = 1.0
+    dates = pd.to_datetime(df_quotes["date"])
+    for ticker, policy in bugfix.get("level_factor", {}).items():
+        lower = pd.Timestamp.min
+        for segment in sorted(policy["segments"], key=lambda item: item["before"]):
+            upper = pd.Timestamp(segment["before"])
+            hit = df_quotes["ticker"].eq(ticker) & dates.ge(lower) & dates.lt(upper)
+            df_quotes.loc[hit, "hidden_factor"] = segment["factor"]
+            lower = upper
+    return df_quotes
 
 
 def resolve_share_events(
@@ -287,7 +328,7 @@ def resolve_share_events(
         policies,
     )
     _check_quantity_coverage(original, basis)
-    _check_anchors(basis, shares, quotes)
+    _check_anchors(basis, shares, _anchor_quotes(quotes, bugfix))
     return basis
 
 

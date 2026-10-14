@@ -250,14 +250,15 @@ def test_zip_preserves_raw_units_and_complete_source_books(tmp_path, sqlite_stor
     got = _stored_hr(sqlite_store, _NEW)
     assert saved == 5 and len(got) == 3
     a1 = got.loc[got.cik.eq("0000000001") & got.period.eq(pd.Timestamp("2023-03-31"))].iloc[0]
-    assert a1.raw_value_usd == a1.value_usd == 1500
-    assert a1.raw_put_value == a1.put_value == 50
+    # One share row at 1500 / 10,000 sh: only the few-rows implied price decides ($150/sh at x1000, $0.15 at x1).
+    assert a1.raw_value_usd == 1500 and a1.value_usd == 1_500_000
+    assert a1.raw_put_value == 50 and a1.put_value == 50_000
     assert a1.shares == 10000 and a1.put_shares == 100
     a2 = got.loc[got.cik.eq(ROSTER)].iloc[0]
     assert a2.value_usd == 3000000 and a2.shares == 20000
     assert not _stored_hr(sqlite_store, "AAPL").empty
     assert not _stored_hr(sqlite_store, "MSFT").empty
-    print("SANITY: complete ZIP books keep source quantities/raw values; filing-date unit evidence stays distinct from later P1 market corrections.")
+    print("SANITY: complete ZIP books keep source quantities/raw values; units come from per-filing evidence, never the filing date.")
 
 
 def test_earliest_stored_period_does_not_hide_missing_source_filings(tmp_path, sqlite_store, monkeypatch):
@@ -322,7 +323,7 @@ def test_a_stored_row_filed_later_is_kept(tmp_path, sqlite_store, monkeypatch):
     assert len(legacy) == 1 and legacy.iloc[0].value_usd == 9
     original = got.loc[got.accession_number.eq(_B1[1])]
     assert len(original) == 1 and original.iloc[0].value_usd == 4000000
-    assert got.loc[got.accession_number.eq(_A1[1]), "value_usd"].iloc[0] == 1500
+    assert got.loc[got.accession_number.eq(_A1[1]), "value_usd"].iloc[0] == 1_500_000  # few-rows implied price, x1000
     print("SANITY: historical source replay preserves the later legacy row and separately restores the original accession.")
 
 

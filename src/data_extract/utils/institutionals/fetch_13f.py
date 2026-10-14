@@ -27,9 +27,11 @@ from xml.etree import ElementTree
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 import pyarrow.compute as pc
 from edgar import Filing, Filings, get_filings
 from edgar import obj as data_object
+from edgar.httpclient import close_clients
 from edgar.thirteenf.parsers.infotable_xml import parse_infotable_xml
 from tqdm import tqdm
 
@@ -49,7 +51,13 @@ from src.data_extract.utils.institutionals.legacy_13f_fallback import (
     needs_legacy_fallback,
     parse_legacy_information_table,
 )
-from src.data_extract.utils.institutionals.value_units import ValueUnits, normalize_information_values, resolve_value_units
+from src.data_extract.utils.institutionals.value_units import (
+    ValueUnits,
+    decide_value_units,
+    declared_units,
+    normalize_information_values,
+    resolve_value_units,
+)
 from src.data_store.schema import Resume, Table, Tables
 from src.utils.institutional_vintages import literal_13f_cusip, reconcile_13f_source
 from src.utils.string import pad_cik, pad_cik_series
@@ -194,6 +202,13 @@ def _classify_holdings(infotable: pd.DataFrame) -> pd.DataFrame:
     return _typed_lines(infotable, *_holding_masks(infotable))
 
 
+def _share_prices(infotable: pd.DataFrame) -> pd.Series:
+    """Raw VALUE per share of each long-stock line with shares (no put/call, no principal)."""
+    masks, amt, val = _holding_masks(infotable)
+    shares = masks["common"] & amt.gt(0)
+    return (val[shares] / amt[shares]).astype(float)
+
+
 def _typed_lines(infotable: pd.DataFrame, masks: dict[str, pd.Series], amt: pd.Series, val: pd.Series) -> pd.DataFrame:
     """`_classify_holdings` from already computed `_holding_masks`."""
     is_stock, is_call = masks["common"], masks["call"]
@@ -313,10 +328,8 @@ def _source_information_table(report: Any, stamp: FilingStamp, xml: str | None, 
     normalized = normalize_information_values(table, units)
     if raw and units.factor is not None:
         value_column = next(column for column in normalized if column.lower() == "value")
-        error = _value_total_error(raw, normalized[value_column].tolist(), default_factor=units.factor)
-        if error:
-            units = ValueUnits(units.expected_factor, units.stated_factor, None, "conflicting_cover_total")
-            normalized = normalize_information_values(table, units)
+        if error := _value_total_error(raw, normalized[value_column].tolist(), default_factor=units.factor):
+            logger.warning("13F %s: cover value total is a reference only, book kept: %s", stamp.accession_number, error)
     return normalized, units
 
 
@@ -473,6 +486,20 @@ def _resolve_window(
     return legacy_frontier - overlap, min(as_of, legacy_frontier) if scoped else as_of, hold_from
 
 
+def _listing(forms: list[str], since: pd.Timestamp, until: pd.Timestamp) -> Filings | None:
+    """The 13F listing filed in `since:until`, one quarterly index at a time on a fresh HTTP client:
+    edgartools' file cache never closes a 304 revalidation, so each cached index leaks a pooled
+    connection and a long history exhausts the pool (httpx.PoolTimeout)."""
+    parts = []
+    for quarter in pd.period_range(since, until, freq="Q"):
+        close_clients()
+        start, end = max(since, quarter.start_time), min(until, quarter.end_time.normalize())
+        part = get_filings(form=forms, filing_date=f"{start:%Y-%m-%d}:{end:%Y-%m-%d}")
+        if part:
+            parts.append(part.data)
+    return Filings(pa.concat_tables(parts)) if parts else None
+
+
 def _oldest_first(listing: Filings) -> Filings:
     """The listing ordered by (filing_date, amendment last, accession): a same-day 13F-HR/A
     follows its original whatever the filer agents' accession prefixes."""
@@ -496,20 +523,33 @@ class _Read:
 
 @dataclass
 class _Saver:
-    """Save each accession atomically and accumulate walk diagnostics."""
+    """Save each accession atomically, in read order, `save_every` books at a time, and accumulate walk
+    diagnostics. A ticker is part of the key, so the pending books' unseen CUSIPs are mapped first in
+    one OpenFIGI pass; an unflushed book is not stored and is read again on the next run."""
 
     context: Context
     universe: set[str]
     roster_ciks: set[str]
     save_every: int
     walk: _WalkState = field(default_factory=_WalkState)
+    pending: list[tuple[pd.DataFrame, pd.DataFrame]] = field(default_factory=list)
 
     def add(self, read: _Read) -> None:
-        """Save a verified filing; report an unreadable source without certifying completion."""
+        """Queue a verified filing; report an unreadable source without certifying completion."""
         if isinstance(read.result, ReadFailure):
             logger.error(f"13F {read.stamp.accession_number} (filed {read.stamp.filed:%Y-%m-%d}) is unreadable ({read.result.reason}); skipped")
-        else:
-            manifest, book = read.result
+            return
+        self.pending.append(read.result)
+        if len(self.pending) >= self.save_every:
+            self.flush()
+
+    def flush(self) -> None:
+        """Map every pending book's unseen CUSIPs in one pass, then save the books in read order."""
+        if not self.pending:
+            return
+        pending, self.pending = self.pending, []
+        _ticker_map(self.context, pd.DataFrame({"cusip": pd.concat([book["cusip"] for _, book in pending], ignore_index=True)}), self.walk)
+        for manifest, book in pending:
             self.save_packet(manifest, book)
 
     def save_packet(self, manifest: pd.DataFrame, book: pd.DataFrame) -> None:
@@ -555,6 +595,7 @@ def _first_pass(filings: Filings | list[Any], saver: _Saver) -> list[_Read]:
             held.append(read)
         else:
             saver.add(read)
+    saver.flush()
     return held
 
 
@@ -609,7 +650,7 @@ def fetch_13f(
     context: Context,
     tickers: list[str],
     years_history: int,
-    save_every: int = 1000,
+    save_every: int = 100,
     filing_window: tuple[str, str] | None = None,
     as_of: pd.Timestamp | None = None,
     *,
@@ -632,7 +673,7 @@ def fetch_13f(
     if not roster_ciks:
         logger.warning(f"13F: superinvestor_roster holds no CIK -- writing {Tables.sec13f_hr} only, no manager books")
 
-    listing = get_filings(form=list(cast(Resume, Tables.sec13f_hr.resume).forms), filing_date=f"{since:%Y-%m-%d}:{until:%Y-%m-%d}")
+    listing = _listing(list(cast(Resume, Tables.sec13f_hr.resume).forms), since, until)
     filings = _oldest_first(listing) if listing else []
     total = len(filings)
     logger.info(f"13F: {total} filing(s) to read in {since:%Y-%m-%d}:{until:%Y-%m-%d}")
@@ -643,6 +684,7 @@ def fetch_13f(
     held = _first_pass(filings, saver)
     _retry_rounds(context, held)
     n_held = _save_held(held, hold_from, saver)
+    saver.flush()
     _log_walk(saver.walk, total - n_held)
     return sum(1 for read in held if read.transient)
 
@@ -665,18 +707,19 @@ def filing_vintage(
     accepted_at: object = None,
     source_checksum: str | None = None,
     source_accounted: bool = False,
+    cover_unit: float | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Prepare one complete accession; raw typed dollars never lose their source basis."""
+    """Prepare one complete accession; raw typed dollars never lose their source basis. `units` carries the
+    source declarations and `cover_unit` the dollars per unit stated on a text cover total (NaN for two);
+    the cell factor is decided from per-filing evidence (`decide_value_units`)."""
     kind = amendment_type.strip().lower().replace("new holdings", "additions")
     if kind not in {"original", "restatement", "additions"}:
         raise ValueError(f"Unknown 13F amendment type: {amendment_type!r}")
     if not accession_number or pd.isna(pd.Timestamp(period)) or pd.isna(pd.Timestamp(filing_date)):
         raise ValueError("13F accession, report period and filing date are required")
-    units = units or resolve_value_units(filing_date)
+    declared = units or declared_units(filing_date)
     declared_rows = None if pd.isna(declared_rows) else int(declared_rows)
     declared_value = None if pd.isna(declared_value) else float(declared_value)
-    if source_accounted:
-        units = replace(units, evidence=SEC_13F_SOURCE_ACCOUNTED + units.evidence)
     raw = information_table.copy()
     raw["VALUE"] = pd.to_numeric(_pick(raw, "VALUE"), errors="coerce")
     amounts = pd.to_numeric(_pick(raw, "SSHPRNAMT", "SharesPrnAmount"), errors="coerce")
@@ -684,6 +727,11 @@ def filing_vintage(
         raise ValueError("13F source quantities/values are incomplete or negative")
     total = float(raw["VALUE"].sum())
     cover_factor = reconcile_13f_source(len(raw), declared_rows, total, declared_value, source_accounted=source_accounted)
+    units = decide_value_units(
+        _share_prices(raw), declared, cell_total=total, cover_total=declared_value, cover_unit=cover_unit, accession=accession_number
+    )
+    if source_accounted:
+        units = replace(units, evidence=SEC_13F_SOURCE_ACCOUNTED + units.evidence)
     if declared_rows is None or declared_value is None:
         logger.warning(
             "13F %s: source accounted for %s position rows; cover count=%s, VALUE total=%s; missing declarations retained as unknown, market checks remain active",
@@ -700,7 +748,14 @@ def filing_vintage(
             declared_rows,
             100 * len(raw) / declared_rows,
         )
-    if cover_factor != 1.0:
+    if cover_factor is None:
+        logger.warning(
+            "13F %s: cover VALUE total %s does not match the VALUE column total %s; the cover is a reference only, filing kept",
+            accession_number,
+            declared_value,
+            total,
+        )
+    elif cover_factor != 1.0:
         logger.warning(
             "13F %s: source VALUE sum=%s, cover total=%s, cover-to-row factor=%s; raw values retained; row USD units=%s, aggregate market check remains active",
             accession_number,
@@ -829,39 +884,15 @@ def _stated_cover_unit(raw: str, summary: re.Match[str]) -> float | None:
     return None if not stated else stated.pop() if len(stated) == 1 else math.nan
 
 
-def _cover_ratio_units(raw: str, units: ValueUnits, cell_total: float) -> ValueUnits:
-    """Cell units from the cover total over the VALUE-cell sum. A unit stated on the cover line wins: the
-    cover in dollars over the cell sum must be 1, 1000 or 1e6, else dollars are withheld. Unlabelled, a ratio
-    of 1000 or 1e6 is a dollar cover over $1000s or $millions cells and 0.001 a $1000s cover over dollar
-    cells; any other ratio, including 1, keeps `units`. A disagreeing caption withholds dollars."""
-    summary = _VALUE_TOTAL.search(raw) or _FOOTER_TOTAL.search(raw)
-    total = float(summary.group(1).replace(",", "")) if summary else 0.0
-    if total <= 0 or cell_total <= 0:
-        return units
-    if units.factor is None and units.stated_factor is None:
-        return units
-    stated = _stated_cover_unit(raw, summary) if summary.re is _VALUE_TOTAL else None
-    if stated is not None:
-        factor = None if math.isnan(stated) else {0: 1.0, 3: 1000.0, 6: 1e6}.get(round(math.log10(total * stated / cell_total)))
-        if factor is None:
-            return ValueUnits(units.expected_factor, units.stated_factor, None, "conflicting_cover_total")
-    else:
-        factor = {-3: 1.0, 3: 1000.0, 6: 1e6}.get(round(math.log10(total / cell_total)))
-    if factor is None or factor == units.factor:
-        return units
-    if units.stated_factor is not None and units.stated_factor != factor:
-        return ValueUnits(units.expected_factor, units.stated_factor, None, "conflicting_cover_total")
-    return ValueUnits(units.expected_factor, units.stated_factor, factor, "cover_total_ratio")
-
-
 def text_filing_vintage(raw: str, stamp: FilingStamp) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Reuse the source-reconciled pre-XML parser; unsupported cover semantics remain explicit.
     A cover declaring no entries (or a zero total and no count) is a complete empty book that keeps
     its filed total, not parsed, unless the text holds a holding (a valid CUSIP or a non-zero
     amount): that contradiction fails."""
-    units = resolve_value_units(stamp.filed, information_table_text=raw)
+    units = declared_units(stamp.filed, information_table_text=raw)
     count = _ENTRY_COUNT.search(raw)
     total = _VALUE_TOTAL.search(raw) or _FOOTER_TOTAL.search(raw)
+    cover_unit = _stated_cover_unit(raw, total) if total is not None and total.re is _VALUE_TOTAL else None
     declared_rows = int(count.group(1).replace(",", "")) if count else None
     declared_value = float(total.group(1).replace(",", "")) if total else None
     empty = declared_rows == 0 or (declared_rows is None and declared_value == 0)
@@ -873,7 +904,6 @@ def text_filing_vintage(raw: str, stamp: FilingStamp) -> tuple[pd.DataFrame, pd.
     else:
         info = parse_legacy_information_table(raw, value_factor=1.0, verify_values=False)
         _warn_blank_cusip_lines(stamp.accession_number, info)
-        units = _cover_ratio_units(raw, units, float(info["VALUE"].sum()))
     kind = "original"
     if stamp.is_amendment:
         restated = re.search(_CHECKED + r"\s*(?:is\s+a\s+)?restatement", raw, re.I)
@@ -903,6 +933,7 @@ def text_filing_vintage(raw: str, stamp: FilingStamp) -> tuple[pd.DataFrame, pd.
         units=units,
         source_checksum=hashlib.sha256(raw.encode()).hexdigest(),
         source_accounted=bool(info.attrs.get("source_accounted")),
+        cover_unit=cover_unit,
     )
 
 
@@ -967,7 +998,7 @@ def xml_filing_vintage(
         filing_date=filing_date,
         source=source,
         accepted_at=accepted_at,
-        units=resolve_value_units(filing_date, schema_version=schema),
+        units=declared_units(filing_date, schema_version=schema),
         source_checksum=_xml_checksum(primary_xml, information_xml),
         **cover,
     )
@@ -978,7 +1009,7 @@ def _empty_xml_vintage(stamp: FilingStamp, primary_xml: str) -> tuple[pd.DataFra
     cover, schema = _xml_cover(primary_xml, period=stamp.period_of_report, expected_form=stamp.form)
     if cover["declared_rows"] != 0:
         raise ValueError("13F cover XML entry count disagrees with the parsed summary page")
-    return _stamp_vintage(pd.DataFrame(), stamp, cover, resolve_value_units(stamp.filed, schema_version=schema), _xml_checksum(primary_xml, ""))
+    return _stamp_vintage(pd.DataFrame(), stamp, cover, declared_units(stamp.filed, schema_version=schema), _xml_checksum(primary_xml, ""))
 
 
 def _stamp_vintage(

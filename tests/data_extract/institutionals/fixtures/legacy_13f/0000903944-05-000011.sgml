@@ -1,0 +1,172 @@
+-----BEGIN PRIVACY-ENHANCED MESSAGE-----
+Proc-Type: 2001,MIC-CLEAR
+Originator-Name: webmaster@www.sec.gov
+Originator-Key-Asymmetric:
+ MFgwCgYEVQgBAQICAf8DSgAwRwJAW2sNKK9AVtBzYZmr6aGjlWyK3XmZv3dTINen
+ TWSM7vrzLADbmYQaionwg5sDW3P6oaM5D3tdezXMm7z1T+B+twIDAQAB
+MIC-Info: RSA-MD5,RSA,
+ Dxf+vbAz+oicc2fOv59vEg69vAimBLT44RGzgpCfrTekdMCQkdU2AWAEppWMjjgh
+ axGTlvAjiJhGzTaSdcIZMQ==
+
+<SEC-DOCUMENT>0000903944-05-000011.txt : 20051027
+<SEC-HEADER>0000903944-05-000011.hdr.sgml : 20051027
+<ACCEPTANCE-DATETIME>20051027164628
+ACCESSION NUMBER:		0000903944-05-000011
+CONFORMED SUBMISSION TYPE:	13F-HR/A
+PUBLIC DOCUMENT COUNT:		1
+CONFORMED PERIOD OF REPORT:	20050930
+FILED AS OF DATE:		20051027
+DATE AS OF CHANGE:		20051027
+EFFECTIVENESS DATE:		20051027
+
+FILER:
+
+	COMPANY DATA:	
+		COMPANY CONFORMED NAME:			CAMDEN ASSET MANAGEMENT L P /CA
+		CENTRAL INDEX KEY:			0000903944
+		IRS NUMBER:				954319164
+		STATE OF INCORPORATION:			CA
+		FISCAL YEAR END:			1231
+
+	FILING VALUES:
+		FORM TYPE:		13F-HR/A
+		SEC ACT:		1934 Act
+		SEC FILE NUMBER:	028-03694
+		FILM NUMBER:		051160521
+
+	BUSINESS ADDRESS:	
+		STREET 1:		2049 CENTURY PARK EAST
+		STREET 2:		SUITE 330
+		CITY:			LOS ANGELES
+		STATE:			CA
+		ZIP:			90067
+		BUSINESS PHONE:		310-785-9755
+
+	MAIL ADDRESS:	
+		STREET 1:		2049 CENTURY PARK EAST
+		STREET 2:		SUITE 330
+		CITY:			LOS ANGELES
+		STATE:			CA
+		ZIP:			90067-4007
+</SEC-HEADER>
+<DOCUMENT>
+<TYPE>13F-HR/A
+<SEQUENCE>1
+<FILENAME>inftable.txt
+<TEXT>
+Form 13F
+Form 13F Cover Page
+
+Report for the Calendar Year or Quarter Ended:  September 30, 2005
+
+Check here if Amendment [x]; Amendment Number:  1
+This Amendment (Check only one.): [x] is a restatement.
+                                  [ ] adds new holdings entries.
+
+Institutional Investment Manager Filing this Report:
+
+Name:		Camden Asset Management, L.P.
+Address:	2049 Century Park East, Suite 330
+		Los Angeles, CA  90067
+
+13F File Number: 28-3694
+
+The institutional investment manager filing this report and the
+person by whom it is signed hereby represent that the person
+signing the report is authorized to submit it, that all
+information contained herein is true, correct and complete, and
+that it is understood that all required items, statements,
+schedules, lists, and tables, are considered intergral parts of
+this form.
+
+Person Signing this Report on Behalf of Reporting Manager:
+
+Name:		John B. Wagner
+Title:		Managing Partner
+Phone:		310-785-1630
+
+Signature, Place and Date of Signing:
+
+John B. Wagner, Los Angeles, CA 10/27/2005
+
+Report Type (Check only one):
+
+[X]	13F Holdings Report.
+[ ]	13F Notice
+[ ]	13F Combination Report.
+
+List of Other Manager Reporting for this Manager:
+
+I am signing this report as required by the Securities Exchange Act of 1934.
+
+<TABLE>
+                                                                  FORM 13F INFORMATION TABLE
+                                                           VALUE   SHARES/    SH/ PUT/ INVSTMT    OTHER          VOTING AUTHORITY
+        NAME OF ISSUER          TITLE OF CLASS    CUSIP   (x$1000) PRN AMT    PRN CALL DSCRETN   MANAGERS     SOLE SHARED   NONE
+- ------------------------------ ---------------- --------- -------- ---------- --- ---- ------- ------------ ------ ------ ----------
+<S>                            <C>              <C>       <C>      <C>        <C> <C>  <C>     <C>          <C>    <C>    <C>
+ALLIED WASTE INDS INC          COM              019589308     3009     356100 SH       SOLE                                   356100
+AMYLIN PHARMACEUTICALS INC     COM              032346108     1065      30600 SH       SOLE                                    30600
+CALPINE CORP                   COM              131347106      706     272500 SH       SOLE                                   272500
+DELPHI CORP                    COM              247126105      207      75000 SH       SOLE                                    75000
+GREAT PLAINS ENERGY INC        COM              391164100     7938     265400 SH       SOLE                                   265400
+NORTHROP GRUMMAN CORP          COM              666807102     2859      52600 SH       SOLE                                    52600
+ARCH COAL INC                  PFD CV           039380209    13206      85000 SH       SOLE                                    85000
+GENERAL  MTRS CORP             PFD CV           370442717   198600    7944000 SH       SOLE                                  7944000
+SIMON PPTY GROUP INC NEW       PFD CV           828806802   137033    2673813 SH       SOLE                                  2673813
+STATE STR CORP                 PFD CV           857477202    23680     114155 SH       SOLE                                   114155
+AMERICAN  EXPRESS CO           CONV             025816AS8    36610   35000000 PRN      SOLE                                 35000000
+AMERICAN  FINL GROUP INC OHIO  CONV             025932AD6    27765   67000000 PRN      SOLE                                 67000000
+AMERICAN  TOWER CORP           CONV             029912AK8    21102   10000000 PRN      SOLE                                 10000000
+AMR CORP                       CONV             001765BB1      766    1000000 PRN      SOLE                                  1000000
+AMYLIN PHARMACEUTICALS INC     CONV             032346AD0     6995    7350000 PRN      SOLE                                  7350000
+AON CORP                       CONV             037389AT0   132077  104723000 PRN      SOLE                                104723000
+APOGENT TECHNOLOGIES INC       CONV             03760AAK7    52675   43000000 PRN      SOLE                                 43000000
+CALPINE CORP                   CONV             131347BM7    22632   26975000 PRN      SOLE                                 26975000
+CALPINE CORP                   CONV             131347BJ4      820    1000000 PRN      SOLE                                  1000000
+CARNIVAL CORP                  CONV             143658AN2   178869  167167000 PRN      SOLE                                167167000
+CENTERPOINT ENERGY INC         CONV             15189TAL1    64349   61000000 PRN      SOLE                                 61000000
+CENTERPOINT ENERGY INC         CONV             15189TAM9    15506   12405000 PRN      SOLE                                 12405000
+CMS ENERGY CORP                CONV             125896AY6     7826    5650000 PRN      SOLE                                  5650000
+CMS ENERGY CORP                CONV             125896AW0    56800   56800000 PRN      SOLE                                 56800000
+COMPUTER ASSOC INTL INC        CONV             204912AQ2   187874  125191000 PRN      SOLE                                125191000
+CONNETICS CORP                 CONV             208192AD6     4214    5000000 PRN      SOLE                                  5000000
+DST SYS INC DEL                CONV             233326AB3    54866   43369000 PRN      SOLE                                 43369000
+DUKE ENERGY CORP               CONV             264399EJ1   171405  171405000 PRN      SOLE                                171405000
+EASTMAN KODAK CO               CONV             277461BE8    16202   14415000 PRN      SOLE                                 14415000
+EDO CORP                       CONV             281347AD6    10223    9520000 PRN      SOLE                                  9520000
+ELECTRONIC DATA SYS NEW        CONV             285661AF1    43208   41002000 PRN      SOLE                                 41002000
+FLEETWOOD ENTERPRISES INC      CONV             339099AD5    28303   19004000 PRN      SOLE                                 19004000
+GREY GLOBAL GROUP INC          CONV             39787MAB4     2488    2000000 PRN      SOLE                                  2000000
+HASBRO INC                     CONV             418056AN7    30894   29000000 PRN      SOLE                                 29000000
+ICOS CORP                      CONV             449295AB0    18623   19500000 PRN      SOLE                                 19500000
+INCO LTD                       CONV             453258AR6    35040   25000000 PRN      SOLE                                 25000000
+INTERMUNE INC                  CONV             45884XAC7    25330   30500000 PRN      SOLE                                 30500000
+INTERPUBLIC GROUP COS INC      CONV             460690AT7   220954  151442000 PRN      SOLE                                151442000
+LIBERTY  MEDIA CORP            CONV             530715AG6    33985   46000000 PRN      SOLE                                 46000000
+LIBERTY  MEDIA CORP NEW        CONV             530718AF2    22564   20825000 PRN      SOLE                                 20825000
+LUCENT TECHNOLOGIES INC        CONV             549463AH0    15643   15643000 PRN      SOLE                                 15643000
+MEDICIS PHARMACEUTICAL CORP    CONV             584690AB7     8348    8784000 PRN      SOLE                                  8784000
+NEW  PLAN EXCEL RLTY TR INC    CONV             648053AB2    16619   15000000 PRN      SOLE                                 15000000
+ODYSSEY RE HLDGS CORP          CONV             67612WAB4    15585   13100000 PRN      SOLE                                 13100000
+PPL ENERGY SUPPLY LLC          CONV             69352JAE7    32115   26000000 PRN      SOLE                                 26000000
+QUANTA SVCS INC                CONV             74762EAA0     2693    3000000 PRN      SOLE                                  3000000
+QUANTA SVCS INC                CONV             74762EAC6    12836   11500000 PRN      SOLE                                 11500000
+RECKSON OPER PARTNERSHIP L P   CONV             75621LAJ3    14700   15000000 PRN      SOLE                                 15000000
+STARWOOD HOTELS&RESORTS WRLD   CONV             85590AAJ3     6875    6000000 PRN      SOLE                                  6000000
+TYCO INTL GROUP S A            CONV             902118BF4    12325   11379000 PRN      SOLE                                 11379000
+TYCO INTL GROUP S A            CONV             902118BG2    68555   41700000 PRN      SOLE                                 41700000
+WESTERN WIRELESS CORP          CONV             95988EAF2   127562   82800000 PRN      SOLE                                 82800000
+WYETH                          CONV             983024AD2    15378   15000000 PRN      SOLE                                 15000000
+XCEL ENERGY INC                CONV             98389BAB6    99079   68406000 PRN      SOLE                                 68406000
+CADENCE DESIGN SYSTEM INC                       127387AB4    42853   40500000 PRN      SOLE                                 40500000
+CEPHALON INC                                    156708AL3     3068    3500000 PRN      SOLE                                  3500000
+INTERNATIONAL  GAME TECHNOLOG                   459902AL6    40157   57000000 PRN      SOLE                                 57000000
+MASCO CORP                                      574599BB1   206864  206864000 PRN      SOLE                                206864000
+MERRILL LYNCH & CO INC                          590188W46    10059   10000000 PRN      SOLE                                 10000000
+TYCO INTL LTD NEW                               902124AC0      335     430000 PRN      SOLE                                   430000
+</TABLE>
+</TEXT>
+</DOCUMENT>
+</SEC-DOCUMENT>
+-----END PRIVACY-ENHANCED MESSAGE-----

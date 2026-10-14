@@ -128,7 +128,7 @@ def _seed_roster(store: Any, ciks: list[str]) -> None:
 
 
 def _patch_walk(monkeypatch: pytest.MonkeyPatch, filings: list[_FakeFiling]) -> None:
-    """`get_filings` returns the fakes in the given order behind the edgartools `Filings` surface
+    """`_listing` returns the fakes in the given order behind the edgartools `Filings` surface
     `fetch_13f` touches: a pyarrow `data` index, `len`, iteration, construction from an index."""
     by_accession = {f.accession_number: f for f in filings}
 
@@ -150,7 +150,7 @@ def _patch_walk(monkeypatch: pytest.MonkeyPatch, filings: list[_FakeFiling]) -> 
         }
     )
     monkeypatch.setattr(f13, "Filings", _FakeFilings)
-    monkeypatch.setattr(f13, "get_filings", lambda **kwargs: _FakeFilings(index))
+    monkeypatch.setattr(f13, "_listing", lambda forms, since, until: _FakeFilings(index))
     monkeypatch.setattr(f13, "build_cusip_ticker_map", lambda context, cusips, **kwargs: CMAP)
 
 
@@ -250,6 +250,35 @@ def test_amendment_wins_in_both_tables_whatever_the_listing_order(sqlite_store, 
     print(
         f"SANITY: both tables retain original and restatement ({order}, save_every={save_every}); omissions become exits only after amendment publication."
     )
+
+
+@pytest.mark.parametrize(("save_every", "n_lookups"), [(2, 1), (1, 2)])
+def test_cusips_are_mapped_once_per_batch_of_books_saved_in_read_order(sqlite_store, monkeypatch, save_every, n_lookups):
+    """The unseen CUSIPs of `save_every` books are looked up in one call, then the books are saved oldest
+    first; a book whose CUSIPs are all known makes no lookup, and the tail batch is flushed."""
+    filings = [_roster_amendment(), _other_filer(), _roster_original()]
+    _seed_roster(sqlite_store, [ROSTER])
+    _patch_walk(monkeypatch, filings)
+    lookups: list[list[str]] = []
+    saved: list[str] = []
+    real_save = f13._Saver.save_packet
+
+    def _lookup(context: Any, cusips: list[str], *, cached: pd.DataFrame | None = None, **kwargs: Any) -> pd.DataFrame:
+        lookups.append(cusips)
+        return pd.concat([cached, CMAP[CMAP["cusip"].isin(cusips)]], ignore_index=True)
+
+    monkeypatch.setattr(f13, "build_cusip_ticker_map", _lookup)
+    monkeypatch.setattr(
+        f13._Saver, "save_packet", lambda self, manifest, book: saved.append(manifest.iloc[0].accession_number) or real_save(self, manifest, book)
+    )
+
+    f13.fetch_13f(_ctx(sqlite_store), tickers=UNIVERSE, years_history=15, save_every=save_every)
+
+    assert len(lookups) == n_lookups
+    assert sorted(c for batch in lookups for c in batch) == sorted({line["CUSIP"] for f in filings for line in f.lines})
+    assert saved == [f.accession_number for f in sorted(filings, key=lambda f: f.filing_date)]
+    assert len(_stored(sqlite_store, Tables.sec13f_hr)) == 5
+    print(f"SANITY: save_every={save_every} -> {len(lookups)} CUSIP lookup(s) {lookups}, books saved oldest first. Validated.")
 
 
 def test_crash_mid_walk_leaves_the_watermark_at_the_oldest_saved_batch(sqlite_store, monkeypatch):

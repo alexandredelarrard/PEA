@@ -1,0 +1,544 @@
+-----BEGIN PRIVACY-ENHANCED MESSAGE-----
+Proc-Type: 2001,MIC-CLEAR
+Originator-Name: webmaster@www.sec.gov
+Originator-Key-Asymmetric:
+ MFgwCgYEVQgBAQICAf8DSgAwRwJAW2sNKK9AVtBzYZmr6aGjlWyK3XmZv3dTINen
+ TWSM7vrzLADbmYQaionwg5sDW3P6oaM5D3tdezXMm7z1T+B+twIDAQAB
+MIC-Info: RSA-MD5,RSA,
+ OOmLdmUAugUy1Xhcva+mJ+62+ZmnUeWx/J4Mnop6w4uOP6u03nAC6aM6y8azYSn3
+ gU2lt412Ucyz8hprUu9BMw==
+
+<SEC-DOCUMENT>0000315498-99-000011.txt : 19990809
+<SEC-HEADER>0000315498-99-000011.hdr.sgml : 19990809
+ACCESSION NUMBER:		0000315498-99-000011
+CONFORMED SUBMISSION TYPE:	13F-HR
+CONFIRMING COPY:	
+PUBLIC DOCUMENT COUNT:		1
+CONFORMED PERIOD OF REPORT:	19990630
+FILED AS OF DATE:		19990802
+
+FILER:
+
+	COMPANY DATA:	
+		COMPANY CONFORMED NAME:			GOFEN & GLOSSBERG LLC /IL/
+		CENTRAL INDEX KEY:			0000315498
+		STANDARD INDUSTRIAL CLASSIFICATION:	 []
+		IRS NUMBER:				364143109
+		STATE OF INCORPORATION:			IL
+		FISCAL YEAR END:			1231
+
+	FILING VALUES:
+		FORM TYPE:		13F-HR
+		SEC ACT:		
+		SEC FILE NUMBER:	028-01240
+		FILM NUMBER:		00000000
+
+	BUSINESS ADDRESS:	
+		STREET 1:		455 CITYFRONT PLAZA STE 3000
+		CITY:			CHICAGO
+		STATE:			IL
+		ZIP:			60611
+		BUSINESS PHONE:		3128281100
+
+	MAIL ADDRESS:	
+		STREET 1:		455 CITYFRONT STE 3000
+		CITY:			CHICAGO
+		STATE:			IL
+		ZIP:			60611
+
+	FORMER COMPANY:	
+		FORMER CONFORMED NAME:	GOFEN & GLOSSBERG INC /IL/
+		DATE OF NAME CHANGE:	19970206
+</SEC-HEADER>
+<DOCUMENT>
+<TYPE>13F-HR
+<SEQUENCE>1
+<TEXT>
+
+
+
+
+                                      UNITED STATES
+                           SECURITIES AND EXCHANGE COMMISION
+                                 WASHINGTON, D.C. 20549
+
+                                       FORM 13F
+
+                                  FORM 13F COVER PAGE
+
+
+       REPORT FOR CALENDAR YEAR OR QUARTER ENDED: JUNE 30, 1999
+
+       CHECK HERE IF AMENDMENT [ ]; AMENDMENT NUMBER:
+       THIS AMENDMENT (CHECK ONLY ONE.): [ ] IS A RESTATEMENT.
+                                         [ ] ADD NEW HOLDINGS ENTRIES
+
+       INSTITUTIONAL INVESMENT MANAGER FILING THIS REPORT:
+
+       GOFEN AND GLOSSBERG, L.L.C.
+       455 CITYFRONT PLAZA
+       SUITE 3000
+       CHICAGO, IL 60611
+
+       13F FILE NUMBER: 28-1240
+
+       THE INSTITUTIONAL INVESTMENT MANAGER FILING THIS REPORT AND THE
+       PERSON BY WHOM IT IS SIGNED HEREBY REPRESENT THAT THE PERSON
+       SIGNING THE REPORT IS AUTHORIZED TO SUBMIT IT, THAT ALL
+       INFORMATION CONTAINED HEREIN IS TRUE, CORRECT AND COMPLETE, AND
+       THAT IT IS UNDERSTOOD THAT ALL REQUIRED ITEMS, STATEMENTS,
+       SCHEDULES, LISTS, AND TABLES, ARE CONSIDERED INTEGRAL PARTS OF
+       THIS FORM.
+
+       PERSON SIGNING THIS REPORT ON BEHALF OF REPORTING MANAGER:
+
+       NAME :      TOM DESKE
+       TITLE :     COMPLIANCE OFFICER
+       PHONE :     312-832-1530
+       SIGNATURE, PLACE, AND DATE OF SIGNING:
+
+       TOM DESKE     CHICAGO, ILLINOIS     JUNE 30, 1999
+
+       REPORT TYPE (CHECK ONLY ONE.) :
+
+       [X]         13F HOLDINGS REPORT.
+       [ ]         13F NOTICE.
+       [ ]         13 COMBINATION REPORT.
+
+       LIST OF OTHER MANAGERS REPORTING FOR THIS MANAGER :
+       I AM SIGNING THIS REPORT AS REQUIRED BY THE SECURITIES EXCHANGE
+
+       ACT OF 1934.
+
+       <PAGE>
+
+                              FORM 13F SUMMARY PAGE
+
+       REPORT SUMMARY:
+
+       NUMBER OF OTHER INCLUDED MANAGERS:          0
+
+       FORM 13F INFORMATION TABLE ENTRY TOTAL:     407
+
+       FORM 13F INFORMATION TABLE VALUE TOTAL:     1,976,772,00
+
+
+       LIST OF OTHER INCLUDED MANAGERS:
+       <PAGE>
+<TABLE>
+                                                        VALUE      SHARES/  SH/  PUT/INVSTMT   OTHER      VOTING AUTHORITY
+NAME OF ISSUER            TITLE OF CLASS   CUSIP      (x$1000)    PRN AMT   PRN  CALL  DSCRETN MANAGERS   SOLE  SHARED  NONE
+- ------------------------  -------------    --------   -------     -------   --   ----  ------- ----------  ------  ------  -------
+       <S>                <C>              <C>        <C>       <C>         <C>  <C>   <C>     <C>        <C>        <C>   <C>
+       ALZA CORP DEL      SUB DB CONV 5%06 022615AD0   1,357,000    985,000 SH         SOLE                  985,000
+       AUTOMATIC DATA PROCLYON SUB ZERO 12 053015AC7     727,000    645,000 SH         SOLE                  645,000
+       CHIRON CORP        SB CV ADJ 144A00 170040AB5     476,000    495,000 SH         SOLE                  495,000
+       DATA GENERAL CORP  SUB NT CONV 6%04 237688AG1     174,000    200,000 SH         SOLE                  200,000
+       DURA PHARMACEUTICALSUB NT CV 3.5%02 26632SAA7   1,338,000  1,778,000 SH         SOLE                1,778,000
+       JACOR COMMUNICATIONLYON ZERO CPN 11 469858AA2     412,000    385,000 SH         SOLE                  385,000
+       OAK INDS INC       SB NT CV4.875%08 671400AL3     256,000    200,000 SH         SOLE                  200,000
+       OFFICE DEPOT INC   LYON SUB ZERO 08 676220AB2     238,000    290,000 SH         SOLE                  290,000
+       SEAGRAM JOSEPH E & LYON CV  ZERO 06 811845AH9     457,000    500,000 SH         SOLE                  500,000
+       SYSTEMS & COMPUTER SUB DB CONV 5%04 871873AB1   1,386,000  1,765,000 SH         SOLE                1,765,000
+       UNITED STATES CELLULYON ZERO    15  911684AA6     428,000    815,000 SH         SOLE                  815,000
+       VALHI INC NEW      LYON ZERO CPN 07 918905AC4     520,000    825,000 SH         SOLE                  825,000
+       PROLOGIS TR        PFD CV SBI B     743410300   1,025,000     39,500 SH         SOLE                   39,500
+       PSINET INC         PFD C CV 6 3/4   74437C309     502,000     10,400 SH         SOLE                   10,400
+       SEALED AIR CORP    PFD CV A $2      81211K209   3,480,000     55,674 SH         SOLE                   55,674
+       LORAL SPACE & COMMUPFD CONV C 6%    G56462149     256,000      5,085 SH         SOLE                    5,085
+       BOEING CO          COM              097023105   5,732,000    130,267 SH         SOLE                  130,267
+       LOCKHEED MARTIN CORCOM              539830109   8,632,000    231,728 SH         SOLE                  231,728
+       RAYTHEON CO        CL B             755111408     335,000      4,755 SH         SOLE                    4,755
+       LORAL SPACE & COMMUCOM              G56462107   6,384,000    354,666 SH         SOLE                  354,666
+       FORD MTR CO DEL    COM              345370100     451,000      7,996 SH         SOLE                    7,996
+       GENERAL MTRS CORP  COM              370442105     875,000     13,256 SH         SOLE                   13,256
+       MIDAS GROUP INC    COM              595626102   1,115,000     39,287 SH         SOLE                   39,287
+       ASSOCIATED BANC CORCOM              045487105   2,103,000     50,680 SH         SOLE                   50,680
+       BANK OF AMERICA CORCOM              060505104  12,399,000    169,131 SH         SOLE                  169,131
+       BANK NEW YORK INC  COM              064057102   4,710,000    128,384 SH         SOLE                  128,384
+       BANK ONE CORP      COM              06423A103   8,214,000    137,913 SH         SOLE                  137,913
+       BANKBOSTON CORP    COM              06605R106     542,000     10,600 SH         SOLE                   10,600
+       CHASE MANHATTAN CORCOM              16161A108  23,683,000    273,794 SH         SOLE                  273,794
+       COMERICA INC       COM              200340107   5,158,000     86,775 SH         SOLE                   86,775
+       FIRST UN CORP      COM              337358105     249,000      5,284 SH         SOLE                    5,284
+       FIRSTAR CORP NEW WICOM              33763V109   4,872,000    173,988 SH         SOLE                  173,988
+       FLEET FINL GROUP INCOM              338915101     492,000     11,090 SH         SOLE                   11,090
+       FLEET FINL GROUP INWT EXP 012701    338915119     937,000     20,824 SH         SOLE                   20,824
+       GOLDEN ST BANCORP IWT EXP   082100  381197128     260,000     21,000 SH         SOLE                   21,000
+       HUNTINGTON BANCSHARCOM              446150104   3,518,000    100,504 SH         SOLE                  100,504
+       MARSHALL & ILSLEY CCOM              571834100     315,000      4,891 SH         SOLE                    4,891
+       MELLON BK CORP     COM              585509102   1,044,000     28,700 SH         SOLE                   28,700
+       MERCANTILE BANCORPOCOM              587342106     429,000      7,517 SH         SOLE                    7,517
+       MORGAN J P & CO INCCOM              616880100   9,151,000     65,130 SH         SOLE                   65,130
+       NORTH FORK BANCORPOCOM              659424105     727,000     34,000 SH         SOLE                   34,000
+       NORTHERN TR CORP   COM              665859104  19,244,000    198,395 SH         SOLE                  198,395
+       OLD KENT FINL CORP COM              679833103   1,119,000     26,724 SH         SOLE                   26,724
+       PNC BK CORP        COM              693475105   4,201,000     72,904 SH         SOLE                   72,904
+       SUNTRUST BKS INC   COM              867914103     504,000      7,264 SH         SOLE                    7,264
+       US BANCORP DEL     COM              902973106   1,193,000     35,736 SH         SOLE                   35,736
+       U S TR CORP NEW    COM              91288L105   2,547,000     27,532 SH         SOLE                   27,532
+       WELLS FARGO & CO NECOM              949746101   4,863,000    113,760 SH         SOLE                  113,760
+       AMGEN INC          COM              031162100   3,120,000     51,260 SH         SOLE                   51,260
+       DELTA & PINE LD CO COM              247357106     789,000     25,033 SH         SOLE                   25,033
+       MONSANTO CO        COM              611662107   3,277,000     82,844 SH         SOLE                   82,844
+       NORTH AMERN VACCINECOM              657201109     115,000     23,574 SH         SOLE                   23,574
+       NORTHFIELD LABS INCCOM              666135108     828,000     67,950 SH         SOLE                   67,950
+       DOVER CORP         COM              260003108     420,000     12,000 SH         SOLE                   12,000
+       MASCO CORP         COM              574599106   2,943,000    101,916 SH         SOLE                  101,916
+       PPG INDS INC       COM              693506107     584,000      9,883 SH         SOLE                    9,883
+       SHERWIN WILLIAMS COCOM              824348106   4,652,000    167,632 SH         SOLE                  167,632
+       SOUTHDOWN INC      COM              841297104     398,000      6,198 SH         SOLE                    6,198
+       WEYERHAEUSER CO    COM              962166104   1,130,000     16,435 SH         SOLE                   16,435
+       CONCORD EFS INC    COM              206197105   1,187,000     28,063 SH         SOLE                   28,063
+       DUN & BRADSTREET COCOM              26483B106     213,000      6,000 SH         SOLE                    6,000
+       OMNICOM GROUP INC  COM              681919106   4,667,000     58,340 SH         SOLE                   58,340
+       DOW CHEM CO        COM              260543103     888,000      6,997 SH         SOLE                    6,997
+       DU PONT E I DE NEMOCOM              263534109  16,137,000    236,218 SH         SOLE                  236,218
+       LYONDELL CHEMICAL CCOM              552078107     413,000     20,000 SH         SOLE                   20,000
+       AMERICAN TOWER CORPCL A             029912201   2,122,000     88,400 SH         SOLE                   88,400
+       ANICOM INC         COM              035250109     127,000     12,100 SH         SOLE                   12,100
+       GENERAL INSTR CORP COM              370120107   2,516,000     59,200 SH         SOLE                   59,200
+       HARRIS CORP DEL    COM              413875105     357,000      9,100 SH         SOLE                    9,100
+       L-3 COMMUNICATIONS COM              502424104   6,208,000    128,490 SH         SOLE                  128,490
+       NOKIA CORP         SPONSORED ADR    654902204     256,000      2,800 SH         SOLE                    2,800
+       NORTEL NETWORKS CORCOM              656569100   7,529,000     86,731 SH         SOLE                   86,731
+       PLANTRONICS INC NEWCOM              727493108   8,645,000    132,748 SH         SOLE                  132,748
+       COMDISCO INC       COM              200336105     314,000     12,254 SH         SOLE                   12,254
+       COMPAQ COMPUTER CORCOM              204493100   8,155,000    344,288 SH         SOLE                  344,288
+       DELL COMPUTER CORP COM              247025109   2,207,000     59,660 SH         SOLE                   59,660
+       DIEBOLD INC        COM              253651103   3,451,000    120,046 SH         SOLE                  120,046
+       EMC CORP MASS      COM              268648102     501,000      9,100 SH         SOLE                    9,100
+       HEWLETT PACKARD CO COM              428236103   2,368,000     23,566 SH         SOLE                   23,566
+       INTERNATIONAL BUSINCOM              459200101  90,444,000    699,763 SH         SOLE                  699,763
+       SUN MICROSYSTEMS INCOM              866810104     945,000     13,720 SH         SOLE                   13,720
+       3COM CORP          COM              885535104     693,000     25,951 SH         SOLE                   25,951
+       AMERICA ONLINE INC COM              02364J104     732,000      6,656 SH         SOLE                    6,656
+       AUTOMATIC DATA PROCCOM              053015103     933,000     21,200 SH         SOLE                   21,200
+       BELL & HOWELL CO NECOM              077852101   2,455,000     64,934 SH         SOLE                   64,934
+       CISCO SYS INC      COM              17275R102   2,486,000     38,536 SH         SOLE                   38,536
+       COMPUTER ASSOC INTLCOM              204912109   4,208,000     76,859 SH         SOLE                   76,859
+       COMPUTER SCIENCES CCOM              205363104   2,045,000     29,552 SH         SOLE                   29,552
+       DST SYS INC DEL    COM              233326107     282,000      4,484 SH         SOLE                    4,484
+       ELECTRONIC DATA SYSCOM              285661104   1,955,000     34,532 SH         SOLE                   34,532
+       FISERV INC         COM              337738108     429,000     13,688 SH         SOLE                   13,688
+       IMS HEALTH INC     COM              449934108  17,191,000    550,127 SH         SOLE                  550,127
+       MEDIA METRIX INC   COM              58440X103   1,014,000     19,040 SH         SOLE                   19,040
+       MICROSOFT CORP     COM              594918104  43,376,000    480,954 SH         SOLE                  480,954
+       NETWORK ASSOCS INC COM              640938106     223,000     15,150 SH         SOLE                   15,150
+       ORACLE CORP        COM              68389X105   1,222,000     32,927 SH         SOLE                   32,927
+       PEOPLESOFT INC     COM              712713106     622,000     36,041 SH         SOLE                   36,041
+       PSINET INC         COM              74437C101     875,000     20,000 SH         SOLE                   20,000
+       TRO LEARNING INC   COM              87263R109      80,000     13,000 SH         SOLE                   13,000
+       YAHOO INC          COM              984332106     205,000      1,188 SH         SOLE                    1,188
+       ALLIEDSIGNAL INC   COM              019512102   1,082,000     17,174 SH         SOLE                   17,174
+       BERKSHIRE HATHAWAY CL A             084670108   1,171,000         17 SH         SOLE                       17
+       BERKSHIRE HATHAWAY CL B             084670207     578,000        258 SH         SOLE                      258
+       CORNING INC        COM              219350105     278,000      3,966 SH         SOLE                    3,966
+       FORTUNE BRANDS INC COM              349631101     241,000      5,832 SH         SOLE                    5,832
+       TYCO INTL LTD NEW  COM              902124106   1,615,000     17,041 SH         SOLE                   17,041
+       UNITED TECHNOLOGIESCOM              913017109   2,036,000     28,280 SH         SOLE                   28,280
+       AVIS RENT A CAR INCCOM              053790101   1,561,000     53,600 SH         SOLE                   53,600
+       CENDANT CORP       COM              151313103   8,960,000    437,061 SH         SOLE                  437,061
+       HILLENBRAND INDS INCOM              431573104     208,000      4,800 SH         SOLE                    4,800
+       PAYCHEX INC        COM              704326107   2,557,000     80,209 SH         SOLE                   80,209
+       SERVICE CORP INTL  COM              817565104   1,272,000     66,063 SH         SOLE                   66,063
+       APTARGROUP INC     COM              038336103   1,964,000     65,450 SH         SOLE                   65,450
+       BALL CORP          COM              058498106   3,861,000     91,375 SH         SOLE                   91,375
+       GAYLORD CONTAINER CWT EXP  110202   368145116     138,000     18,751 SH         SOLE                   18,751
+       SEALED AIR CORP NEWCOM              81211K100   3,485,000     53,724 SH         SOLE                   53,724
+       KEMPER INTER GOVT TSH BEN INT       488413105     133,000     18,775 SH         SOLE                   18,775
+       AVON PRODS INC     COM              054303102   3,502,000     63,100 SH         SOLE                   63,100
+       GILLETTE CO        COM              375766102  17,608,000    429,474 SH         SOLE                  429,474
+       COMVERSE TECHNOLOGYCOM PAR $0.10    205862402   1,877,000     24,865 SH         SOLE                   24,865
+       EMERSON ELEC CO    COM              291011104   1,569,000     24,930 SH         SOLE                   24,930
+       GENERAL CABLE CORP COM              369300108     640,000     40,000 SH         SOLE                   40,000
+       GENERAL ELEC CO    COM              369604103  64,087,000    567,139 SH         SOLE                  567,139
+       GRAINGER W W INC   COM              384802104  12,432,000    231,028 SH         SOLE                  231,028
+       HOLOPHANE CORP     COM              43645B106   3,532,000     92,650 SH         SOLE                   92,650
+       HUSSMANN INTL INC  COM              448110106   2,312,000    139,585 SH         SOLE                  139,585
+       KONINKLIJKE PHILIPSSPNSRD ADR NEW   500472204  11,755,000    116,527 SH         SOLE                  116,527
+       MATSUSHITA ELEC INDADR              576879209     271,000      1,368 SH         SOLE                    1,368
+       ATMI INC           COM              00207R101   1,101,000     37,000 SH         SOLE                   37,000
+       AMERICAN XTAL TECHNCOM              030514103     548,000     23,000 SH         SOLE                   23,000
+       BECKMAN COULTER INCCOM              075811109   4,676,000     96,156 SH         SOLE                   96,156
+       HONEYWELL INC      COM              438506107  15,627,000    134,860 SH         SOLE                  134,860
+       INTEL CORP         COM              458140100  28,616,000    480,939 SH         SOLE                  480,939
+       KEMET CORP         COM              488360108     264,000     11,500 SH         SOLE                   11,500
+       MOTOROLA INC       COM              620076109  27,922,000    294,695 SH         SOLE                  294,695
+       QLOGIC CORP        COM              747277101     964,000      7,300 SH         SOLE                    7,300
+       SOLECTRON CORP     COM              834182107   2,888,000     43,306 SH         SOLE                   43,306
+       TEXAS INSTRS INC   COM              882508104     245,000      1,700 SH         SOLE                    1,700
+       ATLANTIC RICHFIELD COM              048825103   3,645,000     43,626 SH         SOLE                   43,626
+       BP AMOCO PLC       SPONSORED ADR    055622104  16,287,000    150,114 SH         SOLE                  150,114
+       BURLINGTON RES INC COM              122014103   3,630,000     83,922 SH         SOLE                   83,922
+       CHEVRON CORPORATIONCOM              166751107   3,010,000     31,666 SH         SOLE                   31,666
+       COTTON VALLEY RESOUCOM              221905102       4,000     15,000 SH         SOLE                   15,000
+       ENI S P A          SPONSORED ADR    26874R108   5,493,000     91,550 SH         SOLE                   91,550
+       EXXON CORP         COM              302290101  28,972,000    375,655 SH         SOLE                  375,655
+       MOBIL CORP         COM              607059102   6,529,000     66,115 SH         SOLE                   66,115
+       MURPHY OIL CORP    COM              626717102     445,000      9,125 SH         SOLE                    9,125
+       PHILLIPS PETE CO   COM              718507106     224,000      4,446 SH         SOLE                    4,446
+       R & B FALCON CORP  COM              74912E101     730,000     77,863 SH         SOLE                   77,863
+       ROYAL DUTCH PETE CONY  REG GLDR 1.2 780257804   9,889,000    164,134 SH         SOLE                  164,134
+       SAN JUAN BASIN RTY UNIT BEN INT     798241105     228,000     28,000 SH         SOLE                   28,000
+       TEXACO INC         COM              881694103   3,728,000     59,774 SH         SOLE                   59,774
+       UNOCAL CORP        COM              915289102     809,000     20,425 SH         SOLE                   20,425
+       AT&T CORP.         COM LIB GRP A    001957208  30,212,000    822,095 SH         SOLE                  822,095
+       CBS CORP           COM              12490K107  17,186,000    394,520 SH         SOLE                  394,520
+       CD RADIO INC       COM              125127100     212,000      6,960 SH         SOLE                    6,960
+       CABLEVISION SYS CORCL A             12686C109     889,000     12,704 SH         SOLE                   12,704
+       CARMIKE CINEMAS INCCL A             143436103     622,000     39,038 SH         SOLE                   39,038
+       CARNIVAL CORP      COM              143658102     395,000      8,150 SH         SOLE                    8,150
+       CENTURY COMMUNICATICL A             156503104     208,000      4,524 SH         SOLE                    4,524
+       CHANCELLOR MEDIA COCOM              158915108   4,099,000     74,354 SH         SOLE                   74,354
+       COX COMMUNICATIONS CL A             224044107   2,563,000     69,620 SH         SOLE                   69,620
+       DISNEY WALT CO     COM              254687106  16,152,000    524,218 SH         SOLE                  524,218
+       EMMIS COMMUNICATIONCL A             291525103   3,236,000     65,530 SH         SOLE                   65,530
+       FOX ENTMT GROUP INCCL A             35138T107   7,222,000    268,103 SH         SOLE                  268,103
+       INFINITY BROADCASTICL A             45662S102   1,245,000     42,100 SH         SOLE                   42,100
+       METRO GOLDWYN MAYERCOM              591610100     683,000     37,400 SH         SOLE                   37,400
+       TBA ENTMT CORP     COM              872173109      43,000     10,000 SH         SOLE                   10,000
+       TV GUIDE INC       CL A             87307Q109   5,924,000    161,750 SH         SOLE                  161,750
+       TIME WARNER INC    COM              887315109  45,165,000    621,894 SH         SOLE                  621,894
+       USA NETWORKS INC   COM              902984103   1,745,000     43,500 SH         SOLE                   43,500
+       VALUEVISION INTL INCL A             92047K107   2,810,000    141,400 SH         SOLE                  141,400
+       VIACOM INC         CL B             925524308     992,000     22,538 SH         SOLE                   22,538
+       WESTWOOD ONE INC   COM              961815107   3,815,000    106,900 SH         SOLE                  106,900
+       YOUNG BROADCASTING CL A             987434107   1,183,000     27,800 SH         SOLE                   27,800
+       AFFILIATED MANAGERSCOM              008252108     272,000      9,000 SH         SOLE                    9,000
+       AMERICAN EXPRESS COCOM              025816109  22,982,000    176,611 SH         SOLE                  176,611
+       ASSOCIATES FIRST CACL A             046008108     436,000      9,883 SH         SOLE                    9,883
+       CITIGROUP INC      COM              172967101   9,610,000    202,326 SH         SOLE                  202,326
+       FEDERAL AGRIC MTG CCL C             313148306  10,850,000    158,100 SH         SOLE                  158,100
+       FEDERAL HOME LN MTGCOM              313400301     631,000     10,876 SH         SOLE                   10,876
+       FEDERAL NATL MTG ASCOM              313586109  20,385,000    298,683 SH         SOLE                  298,683
+       HOUSEHOLD INTL INC COM              441815107  24,514,000    517,456 SH         SOLE                  517,456
+       JOHN NUVEEN CO     CL A             478035108     777,000     18,200 SH         SOLE                   18,200
+       LEHMAN BROS HLDGS ICOM              524908100     204,000      3,282 SH         SOLE                    3,282
+       MBNA CORP          COM              55262L100   2,230,000     72,824 SH         SOLE                   72,824
+       MGIC INVT CORP WIS COM              552848103   2,844,000     58,491 SH         SOLE                   58,491
+       MORGAN STANLEY DEANCOM NEW          617446448   1,739,000     16,946 SH         SOLE                   16,946
+       RADIAN GROUP INC   COM              750236101   1,013,000     20,750 SH         SOLE                   20,750
+       FOOD LION INC      CL A             344775200     162,000     13,670 SH         SOLE                   13,670
+       KROGER CO          COM              501044101   2,894,000    103,602 SH         SOLE                  103,602
+       SAFEWAY INC        COM NEW          786514208  13,579,000    274,320 SH         SOLE                  274,320
+       SUPERVALU INC      COM              868536103     332,000     12,816 SH         SOLE                   12,816
+       ANHEUSER BUSCH COS COM              035229103     702,000      9,900 SH         SOLE                    9,900
+       BESTFOODS          COM              08658U101     810,000     16,365 SH         SOLE                   16,365
+       CAMPBELL SOUP CO   COM              134429109   1,969,000     42,458 SH         SOLE                   42,458
+       COCA COLA CO       COM              191216100  13,034,000    210,220 SH         SOLE                  210,220
+       CONAGRA INC        COM              205887102     206,000      7,740 SH         SOLE                    7,740
+       DEAN FOODS CO      COM              242361103     249,000      6,000 SH         SOLE                    6,000
+       GENERAL MLS INC    COM              370334104     508,000      6,320 SH         SOLE                    6,320
+       HEINZ H J CO       COM              423074103   6,547,000    130,623 SH         SOLE                  130,623
+       HERSHEY FOODS CORP COM              427866108   1,442,000     24,280 SH         SOLE                   24,280
+       LINCOLN SNACKS CO  COM              534744107     196,000    196,250 SH         SOLE                  196,250
+       MCCORMICK & CO INC COM NON VTG      579780206   3,816,000    120,898 SH         SOLE                  120,898
+       NABISCO GROUP HLDG COM              62952P102   1,568,000     80,130 SH         SOLE                   80,130
+       PEPSICO INC        COM              713448108  22,747,000    587,976 SH         SOLE                  587,976
+       QUAKER OATS CO     COM              747402105   1,758,000     26,483 SH         SOLE                   26,483
+       RICHFOOD HLDGS INC COM              763408101     564,000     32,000 SH         SOLE                   32,000
+       SARA LEE CORP      COM              803111103   3,453,000    152,215 SH         SOLE                  152,215
+       SEAGRAM LTD        COM              811850106   1,147,000     22,770 SH         SOLE                   22,770
+       SUIZA FOODS CORP   COM              865077101     460,000     10,985 SH         SOLE                   10,985
+       SYSCO CORP         COM              871829107     277,000      9,280 SH         SOLE                    9,280
+       UNILEVER NV        N Y SHS NEW      904784709     218,000      3,124 SH         SOLE                    3,124
+       UNIVERSAL FOODS CORCOM              913538104     880,000     41,656 SH         SOLE                   41,656
+       WHITMAN CORP NEW   COM              96647R107   4,425,000    245,821 SH         SOLE                  245,821
+       WRIGLEY WM JR CO   COM              982526105   5,185,000     58,133 SH         SOLE                   58,133
+       PANAMERICAN BEVERAGCL A             P74823108     379,000     15,900 SH         SOLE                   15,900
+       ABBOTT LABS        COM              002824100  25,647,000    565,228 SH         SOLE                  565,228
+       ALLERGAN INC       COM              018490102   1,636,000     14,740 SH         SOLE                   14,740
+       BAXTER INTL INC    COM              071813109     866,000     14,291 SH         SOLE                   14,291
+       BECTON DICKINSON & COM              075887109     848,000     28,279 SH         SOLE                   28,279
+       CLOSURE MED CORP   COM              189093107     300,000     10,000 SH         SOLE                   10,000
+       EPIX MEDICAL INC   COM              26881Q101     672,000    122,200 SH         SOLE                  122,200
+       JOHNSON & JOHNSON  COM              478160104  40,375,000    411,988 SH         SOLE                  411,988
+       MEDTRONIC INC      COM              585055106   1,007,000     12,933 SH         SOLE                   12,933
+       PATTERSON DENTAL COCOM              703412106     591,000     17,000 SH         SOLE                   17,000
+       TENET HEALTHCARE COCOM              88033G100     458,000     24,650 SH         SOLE                   24,650
+       VASOMEDICAL INC    COM              922321104      33,000     20,000 SH         SOLE                   20,000
+       VISX INC DEL       COM              92844S105     238,000      3,000 SH         SOLE                    3,000
+       LEGGETT & PLATT INCCOM              524660107     563,000     20,248 SH         SOLE                   20,248
+       MAYTAG CORP        COM              578592107   6,761,000     96,839 SH         SOLE                   96,839
+       BLYTH INDS INC     COM              09643P108     444,000     13,050 SH         SOLE                   13,050
+       CLOROX CO DEL      COM              189054109   2,864,000     26,811 SH         SOLE                   26,811
+       COLGATE PALMOLIVE CCOM              194162103   4,811,000     48,840 SH         SOLE                   48,840
+       KIMBERLY CLARK CORPCOM              494368103   4,288,000     75,234 SH         SOLE                   75,234
+       NEWELL RUBBERMAID ICOM              651229106   8,852,000    190,885 SH         SOLE                  190,885
+       PROCTER & GAMBLE COCOM              742718109  40,293,000    451,464 SH         SOLE                  451,464
+       AETNA              COM              008117103     243,000      2,718 SH         SOLE                    2,718
+       ALLSTATE CORP      COM              020002101   2,706,000     75,424 SH         SOLE                   75,424
+       AMERICAN GENERAL COCOM              026351106     598,000      7,933 SH         SOLE                    7,933
+       AMERICAN INTL GROUPCOM              026874107   8,734,000     74,487 SH         SOLE                   74,487
+       AON CORP           COM              037389103     649,000     15,739 SH         SOLE                   15,739
+       CIGNA CORP         COM              125509109   1,507,000     16,938 SH         SOLE                   16,938
+       CHUBB CORP         COM              171232101   2,835,000     40,798 SH         SOLE                   40,798
+       EVEREST REINS HLDGSCOM              299808105   7,943,000    243,455 SH         SOLE                  243,455
+       HSB GROUP INC      COM              40428N109     793,000     19,250 SH         SOLE                   19,250
+       HARTFORD FINL SVCS COM              416515104     535,000      9,178 SH         SOLE                    9,178
+       LINCOLN NATL CORP ICOM              534187109     597,000     11,420 SH         SOLE                   11,420
+       MBIA INC           COM              55262C100  18,536,000    286,265 SH         SOLE                  286,265
+       MARSH & MCLENNAN COCOM              571748102     409,000      5,400 SH         SOLE                    5,400
+       MONY GROUP INC     COM              615337102     934,000     28,625 SH         SOLE                   28,625
+       OLD REP INTL CORP  COM              680223104   6,072,000    350,725 SH         SOLE                  350,725
+       UNITRIN INC        COM              913275103     209,000      5,100 SH         SOLE                    5,100
+       ANNUITY AND LIFE REORD              G03910109   2,547,000    113,500 SH         SOLE                  113,500
+       STARWOOD HOTELS & RPAIRED CTF       85590A203     461,000     15,069 SH         SOLE                   15,069
+       CATERPILLAR INC DELCOM              149123101     210,000      3,500 SH         SOLE                    3,500
+       DEERE & CO         COM              244199105   5,036,000    128,520 SH         SOLE                  128,520
+       IDEX CORP          COM              45167R104   4,322,000    131,462 SH         SOLE                  131,462
+       ILLINOIS TOOL WKS ICOM              452308109   4,169,000     51,000 SH         SOLE                   51,000
+       ALCOA INC          COM              013817101     337,000      5,440 SH         SOLE                    5,440
+       COMTREX SYS CORP   COM              205920101     139,000    123,638 SH         SOLE                  123,638
+       PITNEY BOWES INC   COM              724479100   4,902,000     76,290 SH         SOLE                   76,290
+       XEROX CORP         COM              984121103  33,252,000    562,996 SH         SOLE                  562,996
+       MINNESOTA MNG & MFGCOM              604059105   1,460,000     16,795 SH         SOLE                   16,795
+       BAKER HUGHES INC   COM              057224107     203,000      6,050 SH         SOLE                    6,050
+       HALLIBURTON CO     COM              406216101     238,000      5,250 SH         SOLE                    5,250
+       PETROLEUM GEO-SVCS SPONSORED ADR    716597109     774,000     52,000 SH         SOLE                   52,000
+       SCHLUMBERGER LTD   COM              806857108  25,815,000    405,337 SH         SOLE                  405,337
+       FORT JAMES CORP    COM              347471104   2,746,000     72,495 SH         SOLE                   72,495
+       GEORGIA PACIFIC CORCOM GA PAC GRP   373298108     213,000      4,490 SH         SOLE                    4,490
+       INTL PAPER CO      COM              460146103     288,000      5,724 SH         SOLE                    5,724
+       PLUM CREEK TIMBER CDEPOSITARY UNT   729237107     455,000     14,600 SH         SOLE                   14,600
+       AKORN INC          COM              009728106      40,000     10,000 SH         SOLE                   10,000
+       AMERICAN HOME PRODSCOM              026609107  12,893,000    224,712 SH         SOLE                  224,712
+       BERGEN BRUNSWIG CORCL A             083739102   4,121,000    238,899 SH         SOLE                  238,899
+       BRISTOL MYERS SQUIBCOM              110122108   9,425,000    133,809 SH         SOLE                  133,809
+       CARDINAL HEALTH INCCOM              14149Y108   5,827,000     90,874 SH         SOLE                   90,874
+       ELAN PLC           ADR              284131208  19,820,000    714,224 SH         SOLE                  714,224
+       ELAN CORP PLC      WT EXP 123101    284131703   3,211,000    101,950 SH         SOLE                  101,950
+       GLAXO WELLCOME PLC SPONSORED ADR    37733W105   1,235,000     21,808 SH         SOLE                   21,808
+       LILLY ELI & CO     COM              532457108   3,652,000     50,991 SH         SOLE                   50,991
+       MERCK & CO INC     COM              589331107  58,176,000    790,172 SH         SOLE                  790,172
+       MYLAN LABS INC     COM              628530107   4,234,000    159,769 SH         SOLE                  159,769
+       PHARMACIA & UPJOHN COM              716941109     640,000     11,272 SH         SOLE                   11,272
+       PFIZER INC         COM              717081103  23,717,000    217,588 SH         SOLE                  217,588
+       SCHERING PLOUGH CORCOM              806605101  15,166,000    288,867 SH         SOLE                  288,867
+       SMITHKLINE BEECHAM ADR REP ORD      832378301   1,919,000     29,044 SH         SOLE                   29,044
+       WARNER LAMBERT CO  COM              934488107   2,648,000     38,310 SH         SOLE                   38,310
+       AXOGEN LTD         COM              G0690R108   3,246,000    103,458 SH         SOLE                  103,458
+       EASTMAN KODAK CO   COM              277461109     363,000      5,365 SH         SOLE                    5,365
+       WASTE MGMT INC DEL COM              94106L109   1,743,000     32,424 SH         SOLE                   32,424
+       DELUXE CORP        COM              248019101   1,961,000     50,532 SH         SOLE                   50,532
+       DONNELLEY R R & SONCOM              257867101     717,000     19,351 SH         SOLE                   19,351
+       HARLAND JOHN H CO  COM              412693103     616,000     30,881 SH         SOLE                   30,881
+       CENTRAL NEWSPAPERS CL A             154647101   1,290,000     34,400 SH         SOLE                   34,400
+       GANNETT INC        COM              364730101   3,344,000     46,850 SH         SOLE                   46,850
+       KNIGHT RIDDER INC  COM              499040103     253,000      4,600 SH         SOLE                    4,600
+       MCGRAW HILL COS INCCOM              580645109     744,000     13,800 SH         SOLE                   13,800
+       NEW YORK TIMES CO  CL A             650111107   1,024,000     27,811 SH         SOLE                   27,811
+       SCRIPPS E W CO OHIOCL A             811054204   2,680,000     56,350 SH         SOLE                   56,350
+       TRIBUNE CO NEW     COM              896047107  16,050,000    184,219 SH         SOLE                  184,219
+       WASHINGTON POST CO CL B             939640108   2,060,000      3,830 SH         SOLE                    3,830
+       BURLINGTON NORTHN SCOM              12189T104     977,000     31,514 SH         SOLE                   31,514
+       NORFOLK SOUTHERN COCOM              655844108     261,000      8,655 SH         SOLE                    8,655
+       UNION PAC CORP     COM              907818108     517,000      8,873 SH         SOLE                    8,873
+       WISCONSIN CENT TRANCOM              976592105   1,586,000     84,000 SH         SOLE                   84,000
+       AMLI RESIDENTIAL PPSH BEN INT       001735109     432,000     19,325 SH         SOLE                   19,325
+       APARTMENT INVT & MGCL A             03748R101   3,620,000     84,680 SH         SOLE                   84,680
+       ARCHSTONE CMNTYS TRSH BEN INT       039581103   1,088,000     49,618 SH         SOLE                   49,618
+       CARRAMERICA RLTY COCOM              144418100     574,000     22,950 SH         SOLE                   22,950
+       CORNERSTONE PPTYS ICOM              21922H103     648,000     40,800 SH         SOLE                   40,800
+       CRESCENT REAL ESTATCOM              225756105     654,000     27,530 SH         SOLE                   27,530
+       EQUITY OFFICE PROPECOM              294741103     760,000     29,675 SH         SOLE                   29,675
+       EQUITY RESIDENTIAL SH BEN INT       29476L107   3,840,000     85,225 SH         SOLE                   85,225
+       GENERAL GROWTH PPTYCOM              370021107     648,000     18,250 SH         SOLE                   18,250
+       GLENBOROUGH RLTY TRCOM              37803P105     389,000     22,225 SH         SOLE                   22,225
+       GOLF TR AMER INC   COM              38168B103   6,173,000    252,600 SH         SOLE                  252,600
+       HEALTH CARE PPTY INCOM              421915109     590,000     20,450 SH         SOLE                   20,450
+       LEXFORD RESIDENTIALSH BEN INT       528933104     239,000     10,000 SH         SOLE                   10,000
+       MANUFACTURED HOME CCOM              564682102     616,000     23,675 SH         SOLE                   23,675
+       MEDITRUST CORP     PAIRED CTF NEW   58501T306   2,574,000    197,064 SH         SOLE                  197,064
+       NEWHALL LAND & FARMDEPOSITARY REC   651426108     412,000     16,734 SH         SOLE                   16,734
+       PS BUSINESS PKS INCCOM              69360J107     244,000     10,000 SH         SOLE                   10,000
+       PATRIOT AMERN HOSPIPAIRED CTF       703352203      85,000     20,000 SH         SOLE                   20,000
+       PROLOGIS TR        SH BEN INT       743410102   3,357,000    165,781 SH         SOLE                  165,781
+       PUBLIC STORAGE INC COM              74460D109   5,398,000    192,800 SH         SOLE                  192,800
+       REDWOOD TR INC     COM              758075402     308,000     18,600 SH         SOLE                   18,600
+       URBAN SHOPPING CTRSCOM              917060105     233,000      7,400 SH         SOLE                    7,400
+       VORNADO RLTY TR    SH BEN INT       929042109     254,000      7,187 SH         SOLE                    7,187
+       WEEKS CORP         COM              94856P102     210,000      6,900 SH         SOLE                    6,900
+       CEDAR FAIR L P     DEPOSITRY UNIT   150185106  12,415,000    497,860 SH         SOLE                  497,860
+       PREMIER PKS INC    COM NEW          740540208   4,815,000    131,010 SH         SOLE                  131,010
+       BRINKER INTL INC   COM              109641100     830,000     30,178 SH         SOLE                   30,178
+       CBRL GROUP INC     COM              12489V106     746,000     43,112 SH         SOLE                   43,112
+       MCDONALDS CORP     COM              580135101  42,211,000  1,026,417 SH         SOLE                1,026,417
+       STARBUCKS CORP     COM              855244109  13,637,000    363,048 SH         SOLE                  363,048
+       TRICON GLOBAL RESTACOM              895953107   1,845,000     34,088 SH         SOLE                   34,088
+       AUTONATION INC     COM              05329W102     388,000     21,800 SH         SOLE                   21,800
+       CVS CORP           COM              126650100     484,000      9,542 SH         SOLE                    9,542
+       COSTCO COMPANIES INCOM              22160Q102     588,000      7,340 SH         SOLE                    7,340
+       DAYTON HUDSON CORP COM              239753106     724,000     11,136 SH         SOLE                   11,136
+       FEDERATED DEPT STORCOM              31410H101   8,997,000    169,964 SH         SOLE                  169,964
+       GAP INC DEL        COM              364760108   1,163,000     23,081 SH         SOLE                   23,081
+       HOME DEPOT INC     COM              437076102   6,311,000     97,943 SH         SOLE                   97,943
+       LOWES COS INC      COM              548661107     522,000      9,200 SH         SOLE                    9,200
+       MAY DEPT STORES CO COM              577778103   1,515,000     37,062 SH         SOLE                   37,062
+       RITE AID CORP      COM              767754104   2,003,000     81,325 SH         SOLE                   81,325
+       SAKS INC           COM              79377W108   4,190,000    145,100 SH         SOLE                  145,100
+       SEARS ROEBUCK & CO COM              812387108   1,119,000     25,100 SH         SOLE                   25,100
+       TIFFANY & CO NEW   COM              886547108   4,687,000     48,573 SH         SOLE                   48,573
+       WAL MART STORES INCCOM              931142103  13,851,000    287,070 SH         SOLE                  287,070
+       WALGREEN CO        COM              931422109   7,775,000    264,667 SH         SOLE                  264,667
+       WILLIAMS SONOMA INCCOM              969904101   1,503,000     43,165 SH         SOLE                   43,165
+       MAF BANCORP INC    COM              55261R108     321,000     13,227 SH         SOLE                   13,227
+       MB FINL INC        COM              55263D107   1,013,000     76,840 SH         SOLE                   76,840
+       OLYMPIC STEEL INC  COM              68162K106     225,000     34,000 SH         SOLE                   34,000
+       AT&T CORP          COM              001957109  34,978,000    626,704 SH         SOLE                  626,704
+       BCE INC            COM              05534B109   5,009,000    101,575 SH         SOLE                  101,575
+       COMCAST CORP       CL A             200300101   1,945,000     54,307 SH         SOLE                   54,307
+       COMCAST CORP       CL A SPL         200300200  14,950,000    388,955 SH         SOLE                  388,955
+       ERICSSON L M TEL COADR CL B SEK10   294821400     608,000     18,462 SH         SOLE                   18,462
+       GTE CORP           COM              362320103  13,974,000    185,091 SH         SOLE                  185,091
+       LUCENT TECHNOLOGIESCOM              549463107  42,931,000    636,602 SH         SOLE                  636,602
+       MCI WORLDCOM INC   COM              55268B106  26,746,000    310,774 SH         SOLE                  310,774
+       MEDIAONE GROUP INC COM              58440J104   4,966,000     66,772 SH         SOLE                   66,772
+       SPRINT CORP        PCS COM SER 1    852061506     435,000      7,638 SH         SOLE                    7,638
+       TELLABS INC        COM              879664100   6,204,000     91,830 SH         SOLE                   91,830
+       UNITED STATES CELLUCOM              911684108     375,000      7,000 SH         SOLE                    7,000
+       VODAFONE GROUP PLC SPONSORED ADR    92857T107  25,336,000    128,609 SH         SOLE                  128,609
+       PHILIP MORRIS COS ICOM              718154107   9,355,000    232,795 SH         SOLE                  232,795
+       MATTEL INC         COM              577081102   8,950,000    342,593 SH         SOLE                  342,593
+       MORGAN STANLEY DEA GOVT INCOME TR   61745P106      84,000     10,000 SH         SOLE                   10,000
+       AMEREN CORP        COM              023608102     210,000      5,471 SH         SOLE                    5,471
+       AMERICAN ELEC PWR ICOM              025537101   1,461,000     38,888 SH         SOLE                   38,888
+       CONSOLIDATED EDISONCOM              209115104     572,000     12,638 SH         SOLE                   12,638
+       DOMINION RES INC VACOM              257470104     256,000      5,911 SH         SOLE                    5,911
+       DUFF & PHELPS UTILSCOM              264324104     248,000     23,317 SH         SOLE                   23,317
+       DUKE ENERGY CORP   COM              264399106     470,000      8,635 SH         SOLE                    8,635
+       EDISON INTL        COM              281020107     287,000     10,712 SH         SOLE                   10,712
+       ENERGY EAST CORP   COM              29266M109     265,000     10,203 SH         SOLE                   10,203
+       ENRON CORP         COM              293561106     533,000      6,519 SH         SOLE                    6,519
+       FPL GROUP INC      COM              302571104     288,000      5,277 SH         SOLE                    5,277
+       FLORIDA PROGRESS COCOM              341109106     350,000      8,473 SH         SOLE                    8,473
+       LG&E ENERGY CORP   COM              501917108     248,000     11,821 SH         SOLE                   11,821
+       MONTANA POWER CO   COM              612085100     233,000      3,302 SH         SOLE                    3,302
+       NEW CENTURY ENERGIECOM              64352U103     830,000     21,388 SH         SOLE                   21,388
+       NICOR INC          COM              654086107     492,000     12,937 SH         SOLE                   12,937
+       NORTHWESTERN CORP  COM              668074107   1,182,000     48,875 SH         SOLE                   48,875
+       PENNSYLVANIA ENTERPCOM              708720107   1,008,000     32,833 SH         SOLE                   32,833
+       PEOPLES ENERGY CORPCOM              711030106   1,119,000     29,680 SH         SOLE                   29,680
+       PUGET SOUND ENERGY COM              745332106   1,857,000     77,357 SH         SOLE                   77,357
+       RELIANT ENERGY INC COM              75952J108     377,000     13,650 SH         SOLE                   13,650
+       SOUTHERN CO        COM              842587107     546,000     20,620 SH         SOLE                   20,620
+       SOUTHWEST GAS CORP COM              844895102     236,000      8,261 SH         SOLE                    8,261
+       TEXAS UTILS CO     COM              882848104     841,000     20,290 SH         SOLE                   20,290
+       UNICOM CORP        COM              904911104     499,000     12,937 SH         SOLE                   12,937
+       WISCONSIN ENERGY COCOM              976657106     281,000     11,200 SH         SOLE                   11,200
+       ALLTEL CORP        COM              020039103     949,000     13,270 SH         SOLE                   13,270
+       AMERITECH CORP NEW COM              030954101  19,816,000    269,607 SH         SOLE                  269,607
+       BELL ATLANTIC CORP COM              077853109   3,737,000     57,160 SH         SOLE                   57,160
+       BELLSOUTH CORP     COM              079860102   4,890,000    106,018 SH         SOLE                  106,018
+       SBC COMMUNICATIONS COM              78387G103  11,157,000    192,359 SH         SOLE                  192,359
+       SPRINT CORP        COM FON GROUP    852061100   1,866,000     35,204 SH         SOLE                   35,204
+       TELEFONICA S A     SPONSORED ADR    879382208   2,617,000     17,791 SH         SOLE                   17,791
+       TELEFONOS DE MEXICOSP ADR REP ORD L 879403780   1,762,000     21,808 SH         SOLE                   21,808
+       U S WEST INC NEW   COM              91273H101   2,580,000     43,919 SH         SOLE                   43,919
+       KEYSPAN            COM NEW          49337W100     313,000     11,871 SH         SOLE                   11,871
+</TABLE>
+</TEXT>
+</DOCUMENT>
+</SEC-DOCUMENT>
+-----END PRIVACY-ENHANCED MESSAGE-----

@@ -30,6 +30,7 @@ from src.data_extract.utils.institutionals.legacy_13f_fallback import (
     needs_legacy_fallback,
     parse_legacy_information_table,
 )
+from src.data_extract.utils.institutionals.value_units import FEW_ROWS_PRICE, NO_EVIDENCE
 from src.utils.institutional_vintages import public_books
 
 _HEADER = "ISSUER                 TYPE           CUSIP     VALUE     SHS      INVEST"
@@ -113,7 +114,9 @@ def test_legacy_edgar_preserves_accession_and_reconciled_book(sqlite_store: Any)
     assert not isinstance(packet, f13.ReadFailure), packet
     manifest, holdings = packet
     assert manifest.iloc[0].accession_number == filing.accession_number
+    # Two share rows, no caption and a ratio-1 cover: only the few-rows implied price ($43 and $120 at x1000) decides.
     assert len(holdings) == 2 and holdings.value_usd.sum() == 157462000
+    assert manifest.iloc[0].value_unit_evidence.endswith(FEW_ROWS_PRICE)
     sqlite_store.save_13f_filing(manifest, holdings)
     assert len(sqlite_store.load(f13.Tables.sec13f_manager_holdings)) == 2
     amendment = _Filing(_Report(None, txt=raw), form="13F-HR/A", accession_number="missing-type")
@@ -226,13 +229,15 @@ def test_multiline_header_and_separator_do_not_become_issuer() -> None:
     print("\n=== SANITY: multiline headers and separators never enter the first issuer name. Validated.")
 
 
-def test_summary_value_discrepancy_uses_approved_shared_tolerance() -> None:
+def test_summary_value_discrepancy_uses_approved_shared_tolerance(caplog: pytest.LogCaptureFixture) -> None:
     aflac = "Aflac, Inc.             Com         001055102 100,000  2,000,000   DEFINED      1   SOLE"
     raw = _table(_HEADER, aflac) + "\nForm 13F Information Table Value Total: 100,500"
-    assert parse_legacy_information_table(raw).iloc[0].VALUE == 100000000
-    with pytest.raises(ValueError, match="value total differs"):
-        parse_legacy_information_table(raw.replace("100,500", "150,000"))
-    print("SANITY: modest cover discrepancy is accepted under the shared rule; an unexplained material mismatch still fails.")
+    with caplog.at_level(logging.WARNING):
+        assert parse_legacy_information_table(raw).iloc[0].VALUE == 100000000
+        assert not caplog.records
+        assert parse_legacy_information_table(raw.replace("100,500", "150,000")).iloc[0].VALUE == 100000000
+    assert any("value total differs" in record.getMessage() for record in caplog.records)
+    print("SANITY: modest cover discrepancy is silent; a material mismatch keeps the book with a WARNING (the cover is a reference).")
 
 
 def test_eight_character_source_cusip_remains_literal_without_identity_evidence() -> None:
@@ -292,14 +297,15 @@ def test_complete_attached_amount_tokens(line: str, cusip: str, amount: float, k
     print(f"\n=== SANITY: complete attached {kind} amount is {amount}, without partial numeric matching. Validated.")
 
 
-def test_explicit_billion_cover_uses_displayed_precision() -> None:
+def test_explicit_billion_cover_uses_displayed_precision(caplog: pytest.LogCaptureFixture) -> None:
     # SEC 0001036325-12-000004: $45.864729bn rounds to its $45.9bn cover.
     raw = _table(_HEADER, _AFLAC.replace("145,462", "45,864,729"))
     raw += "\nForm 13F Information Table Value Total: $45.9 Billion"
     assert parse_legacy_information_table(raw).iloc[0]["VALUE"] == 45_864_729_000
-    with pytest.raises(ValueError, match="value total differs"):
-        parse_legacy_information_table(raw.replace("45,864,729", "45,840,000"))
-    print("\n=== SANITY: explicit Billion precision admits $45.864729bn and rejects $45.84bn. Validated.")
+    with caplog.at_level(logging.WARNING):
+        assert parse_legacy_information_table(raw.replace("45,864,729", "45,840,000")).iloc[0]["VALUE"] == 45_840_000_000
+    assert any("value total differs" in record.getMessage() for record in caplog.records)
+    print("\n=== SANITY: explicit Billion precision admits $45.864729bn silently and keeps $45.84bn with a WARNING. Validated.")
 
 
 def test_wrapped_pabrai_value_and_class_do_not_use_voting_or_date() -> None:
@@ -567,7 +573,9 @@ def test_legacy_separate_cover_and_zero_quantity_reach_p1(monkeypatch: pytest.Mo
     assert not isinstance(packet, f13.ReadFailure), packet
     manifest, rows = packet
     assert manifest.iloc[0].source_row_count == 1
-    assert rows.iloc[0].shares == 0 and rows.iloc[0].value_usd == 145462000
+    # One zero-share row and a ratio-1 cover carry no unit evidence: the cell is stored as dollars.
+    assert rows.iloc[0].shares == 0 and rows.iloc[0].value_usd == 145462
+    assert manifest.iloc[0].value_unit_evidence.endswith(NO_EVIDENCE)
     print("SANITY: separate legacy cover/table reconciles; zero quantity and positive source value survive for inverse P1 price fallback.")
 
 
@@ -1044,14 +1052,21 @@ def test_ratio_rule_cached_sources(accession: str, expected: float, shape: str) 
     )
 
 
-def test_ratio_16_36_cached_source_is_rejected() -> None:
+def test_ratio_16_36_cached_source_is_kept_with_a_warning(caplog: pytest.LogCaptureFixture) -> None:
     raw, stamp = _cached_source("0001387131-13-001589")
-    ratio = 29161518 / sum(row["VALUE"] for row in _holding_rows(raw, _source_rows(raw), 1.0)[0])
-    with pytest.raises(ValueError, match="does not reconcile"):
-        f13.text_filing_vintage(raw, stamp)
-    with pytest.raises(ValueError, match="differs materially"):
-        parse_legacy_information_table(raw)
-    print(f"SANITY: real 0001387131-13-001589 at cover/sum ratio {ratio:.4g} is rejected on the live and the verified path.")
+    source = _holding_rows(raw, _source_rows(raw), 1.0)[0]
+    ratio = 29161518 / sum(row["VALUE"] for row in source)
+    with caplog.at_level(logging.WARNING):
+        manifest, rows = f13.text_filing_vintage(raw, stamp)
+        assert len(parse_legacy_information_table(raw)) == len(source)
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("the cover is a reference only, filing kept" in message for message in messages)
+    assert any("differs materially" in message for message in messages)
+    assert manifest.iloc[0].declared_value_total == 29161518 and manifest.iloc[0].value_unit_factor == 1000
+    print(
+        f"SANITY: real 0001387131-13-001589 at cover/sum ratio {ratio:.4g} is kept with a WARNING on the live and the verified path; "
+        f"cover stored as filed, {len(rows)} rows, units x1000 by implied price."
+    )
 
 
 def _synthetic_double_counted(groups: int) -> str:
@@ -1088,17 +1103,16 @@ def test_synthetic_ratio_2_with_two_rows_equal_to_the_total_is_rejected() -> Non
     print("SANITY: SYNTHETIC extra row is kept when two rows equal the cover total, so the count mismatch still rejects the book.")
 
 
-@pytest.mark.parametrize(("ratio", "accepted"), [(2.0, False), (0.5, False), (3.0, False), (1.5, False), (10.0, True), (100.0, True), (1000.0, True)])
-def test_synthetic_cover_ratios_without_a_total_row(ratio: float, accepted: bool) -> None:
+@pytest.mark.parametrize(("ratio", "aligned"), [(2.0, False), (0.5, False), (3.0, False), (1.5, False), (10.0, True), (100.0, True), (1000.0, True)])
+def test_synthetic_cover_ratios_without_a_total_row(caplog: pytest.LogCaptureFixture, ratio: float, aligned: bool) -> None:
     raw = f"[X] 13F HOLDINGS REPORT\nForm 13F Information Table Value Total: {int(157462 * ratio):,}\n" + _table(_HEADER, _AFLAC, _AMGEN)
     filing = _Filing(_Report(None, txt=raw))
-    if accepted:
+    with caplog.at_level(logging.WARNING):
         manifest, rows = f13.text_filing_vintage(raw, FilingStamp.of(filing, filing.cik))
-        assert _assert_values_unchanged(manifest, rows, _SYNTHETIC_BOOK) == ratio
-    else:
-        with pytest.raises(ValueError, match="does not reconcile"):
-            f13.text_filing_vintage(raw, FilingStamp.of(filing, filing.cik))
-    verdict = "accepted (power of ten, A-1)" if accepted else "rejected"
+    assert _assert_values_unchanged(manifest, rows, _SYNTHETIC_BOOK) == ratio
+    warned = any("the cover is a reference only, filing kept" in record.getMessage() for record in caplog.records)
+    assert warned is not aligned
+    verdict = "aligned (power of ten, A-1)" if aligned else "kept with a WARNING"
     print(f"SANITY: SYNTHETIC cover/sum ratio {ratio:g} with rows == declared is {verdict}; no row is dropped.")
 
 
@@ -1128,14 +1142,19 @@ def test_cover_ratio_sets_the_cell_unit_on_real_sources(accession: str, cusip: s
 @pytest.mark.parametrize(
     ("cover", "header", "factor", "shape"),
     [
-        ("$157,462", _HEADER, 1000.0, "ratio 1, both on the default $1000 basis"),
-        ("$1,574,620", _HEADER, 1000.0, "ratio 10, a non-1000 power of ten keeps the default (A-1)"),
+        ("$157,462", _HEADER, 1000.0, "ratio 1 and 2 share rows: the few-rows implied price decides"),
+        ("$1,574,620", _HEADER, 1000.0, "ratio 10 is no unit evidence: the few-rows implied price decides"),
         ("$157,462,000", _HEADER, 1000.0, "ratio 1000, cover in dollars over cells in $1000s"),
         ("$157,462,000,000", _HEADER, 1e6, "ratio 1e6, cover in dollars over cells in $millions"),
         ("$157 (thousands)", _HEADER, 1.0, "ratio 0.001, cover in $1000s over cells in dollars"),
         ("$157.462 Million", _HEADER, 1000.0, "Million cover over cells in $1000s"),
         ("$0.157462 Million", _HEADER, 1.0, "Million cover over cells in dollars"),
-        ("$157 (thousands)", _HEADER.replace("VALUE    ", "VALUE(x$1000)"), None, "ratio 0.001 against an (x$1000) caption: conflict, no dollars"),
+        (
+            "$157 (thousands)",
+            _HEADER.replace("VALUE    ", "VALUE(x$1000)"),
+            1000.0,
+            "stated cover against an (x$1000) caption: conflict, the few-rows price decides",
+        ),
     ],
 )
 def test_synthetic_cover_ratio_sets_the_cell_unit(cover: str, header: str, factor: float | None, shape: str) -> None:
@@ -1166,8 +1185,8 @@ def test_synthetic_cover_ratio_sets_the_cell_unit(cover: str, header: str, facto
         ("Value Total: $157,462,000 dollars", 1000.0, "dollars, cells in $1000s"),
         ("Value Total: $157", 1.0, "unlabelled ratio 0.001"),
         ("Value Total: $157,462,000", 1000.0, "unlabelled ratio 1000"),
-        ("Value Total: $157,462", 1000.0, "unlabelled ratio 1"),
-        ("Value Total: $157,462,000,000 (in millions)", None, "millions label at ratio 1e6 implies cells x1e9: conflict, no dollars"),
+        ("Value Total: $157,462", 1000.0, "unlabelled ratio 1: the few-rows implied price decides"),
+        ("Value Total: $157,462,000,000 (in millions)", 1000.0, "millions label at ratio 1e6 implies cells x1e9: the few-rows price decides"),
     ],
 )
 def test_stated_cover_unit_wins_over_the_cover_ratio(cover_line: str, factor: float | None, shape: str) -> None:

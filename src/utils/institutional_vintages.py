@@ -31,8 +31,10 @@ def full_13f_report(value: Any) -> bool:
 
 def reconcile_13f_source(
     source_rows: int, declared_rows: int | None, source_value: float, declared_value: float | None, *, source_accounted: bool = False
-) -> float:
-    """Validate source totals after any finite power-of-ten cover-to-row alignment."""
+) -> float | None:
+    """Validate source totals after any finite power-of-ten cover-to-row alignment. The row count and the
+    empty-book rules raise; a non-empty book whose cover VALUE total does not align returns None, because
+    that total is a reference only and the caller warns."""
     lower, upper = SEC_13F_SOURCE_RATIO_BOUNDS
     declared_rows = None if pd.isna(declared_rows) else int(declared_rows)
     declared_value = None if pd.isna(declared_value) else float(declared_value)
@@ -67,8 +69,8 @@ def reconcile_13f_source(
         exponent = round(math.log10(source_value) - math.log10(declared_value))
         try:
             factor = 10.0**exponent
-        except OverflowError as error:
-            raise ValueError("13F cover-to-row factor exceeds finite numeric range") from error
+        except OverflowError:
+            return None
         if factor > 0 and math.isfinite(factor):
             aligned = declared_value * factor
             if aligned > 0 and math.isfinite(aligned):
@@ -80,7 +82,7 @@ def reconcile_13f_source(
                     or math.isclose(ratio, upper, rel_tol=0.005)
                 ):
                     return factor
-    raise ValueError(f"13F source VALUE total does not reconcile: rows={source_value:g}, declared={declared_value!r}")
+    return None
 
 
 def availability_date(

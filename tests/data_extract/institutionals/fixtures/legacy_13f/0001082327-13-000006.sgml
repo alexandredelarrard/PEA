@@ -1,0 +1,779 @@
+<SEC-DOCUMENT>0001082327-13-000006.txt : 20130510
+<SEC-HEADER>0001082327-13-000006.hdr.sgml : 20130510
+<ACCEPTANCE-DATETIME>20130510170838
+ACCESSION NUMBER:		0001082327-13-000006
+CONFORMED SUBMISSION TYPE:	13F-HR
+PUBLIC DOCUMENT COUNT:		1
+CONFORMED PERIOD OF REPORT:	20130331
+FILED AS OF DATE:		20130510
+DATE AS OF CHANGE:		20130510
+EFFECTIVENESS DATE:		20130510
+
+FILER:
+
+	COMPANY DATA:	
+		COMPANY CONFORMED NAME:			FULLER & THALER ASSET MANAGEMENT, INC.
+		CENTRAL INDEX KEY:			0001082327
+		IRS NUMBER:				943176968
+		FISCAL YEAR END:			1231
+
+	FILING VALUES:
+		FORM TYPE:		13F-HR
+		SEC ACT:		1934 Act
+		SEC FILE NUMBER:	028-04007
+		FILM NUMBER:		13834452
+
+	BUSINESS ADDRESS:	
+		STREET 1:		411 BOREL AVENUE, SUITE 300
+		CITY:			SAN MATEO
+		STATE:			CA
+		ZIP:			94402
+		BUSINESS PHONE:		6509311500
+
+	MAIL ADDRESS:	
+		STREET 1:		411 BOREL AVENUE, SUITE 300
+		CITY:			SAN MATEO
+		STATE:			CA
+		ZIP:			94402
+
+	FORMER COMPANY:	
+		FORMER CONFORMED NAME:	FULLER & THALER ASSET MANAGEMENT /CA
+		DATE OF NAME CHANGE:	19990322
+</SEC-HEADER>
+<DOCUMENT>
+<TYPE>13F-HR
+<SEQUENCE>1
+<FILENAME>r13f-03312013.txt
+<TEXT>
+
+UNITED STATES
+SECURITIES AND EXCHANGE COMMISSION
+Washington, D.C. 20549
+
+
+FORM 13F/A
+FORM 13F COVER PAGE
+Report for the Calendar Quarter Ended: March 31, 2013
+
+Institutional Investment Manager Filing this Report:
+
+ Name:Fuller & Thaler Asset Management, Inc.
+ Address:411 Borel Avenue
+ Suite 300
+ San Mateo, CA 94402
+
+13F File Number:  28-04007
+
+The institutional investment manager filing this report
+and the person by whom it is signed hereby represent that
+the person signing the report is authorized to submit it,
+that all information contained herein is true, correct and
+complete,and that it is understood that all required items,
+statements, schedules, lists, and tables, are considerd
+integral parts of this form.
+
+Person Singing this Report on Behalf of Reporting Manager:
+
+Name:	Hanna Zanoni
+Title:	Chief Compliance Officer
+Phone:	650-931-1512
+Signature, Place, and Date of Signing:
+/s/ Hanna Zanoni, San Mateo, California, May 10,2013
+
+Report Type(Eheck only one.):
+[XX]13F Holdings Report
+[  ]13F Notice
+[  ]13F Combination Report
+
+List of Other Managers Reporting for this Manager:
+Form 13F File Number	    Name
+None
+
+I AM SIGNING THIS REPORT AS REQUIRED BY THE SECURITIES EXCHANGE ACT OF 1934.
+<PAGE>
+
+FORM 13F SUMMARY PAGE
+Report Summary:
+Number of Other Included managers:None
+Form 13F Information Table Entry Total:	669
+Form 13F Information Table Value Total:	1,324,266,091
+
+<TABLE>			              <c>                               <c>
+
+                                                                                                Voting Authority
+NAME OF ISSUER                  Titl  CUSIP   Value($1k)        SH Amount SH/PR Dscre 2nd Mg     SOLE   SHARE     NONE
+3M Co                           Com 88579Y101   733,539           6,900.00 SH   SOLE           6,900.00            0.00
+ACE Ltd                         Com H0023R105   133,455           1,500.00 SH   SOLE           1,500.00            0.00
+ACI Worldwide Inc               Com 004498101 3,943,002          80,700.00 SH   SOLE          57,600.00       23,100.00
+AMC Networks Inc                Com 00164V103    56,898             900.00 SH   SOLE             900.00            0.00
+AMERCO                          Com 023586100    86,770             500.00 SH   SOLE             500.00            0.00
+AMTrust Financial Services      Com 032359309   135,135           3,900.00 SH   SOLE           3,900.00            0.00
+AOL Timer Warner                Com 00184X105 8,833,455         229,500.00 SH   SOLE         229,500.00            0.00
+AT&T Corp                       Com 00206R102 2,157,409          58,801.00 SH   SOLE          58,801.00            0.00
+Abbott Labs                     Com 002824100   480,635          13,608.00 SH   SOLE          13,608.00            0.00
+Accenture Plc                   Com G1151C101   425,432           5,600.00 SH   SOLE           5,600.00            0.00
+Acorda Therapeutics Inc         Com 00484M106    67,263           2,100.00 SH   SOLE           2,100.00            0.00
+Activision Inc                  Com 00507V109   201,066          13,800.00 SH   SOLE          13,800.00            0.00
+Acxiom Corp                     Com 005125109    46,920           2,300.00 SH   SOLE           2,300.00            0.00
+Adobe Systems Inc               Com 00724F101   171,884           3,950.00 SH   SOLE           3,950.00            0.00
+Advance Auto Parts              Com 00751Y106    49,590             600.00 SH   SOLE             600.00            0.00
+Aecom Technology Corp           Com 00766T100    91,840           2,800.00 SH   SOLE           2,800.00            0.00
+Aeropostale Inc                 Com 007865108 6,065,600         446,000.00 SH   SOLE         318,500.00      127,500.00
+Aes Corp                        Com 00130H105    28,911           2,300.00 SH   SOLE           2,300.00            0.00
+Aetna Inc                       Com 00817Y108    97,147           1,900.00 SH   SOLE           1,900.00            0.00
+Affiliated Managers Group       Com 008252108    92,142             600.00 SH   SOLE             600.00            0.00
+Aflac Inc                       Com 001055102   488,988           9,400.00 SH   SOLE           9,400.00            0.00
+Agco Corp                       Com 001084102    57,332           1,100.00 SH   SOLE           1,100.00            0.00
+Air Methods Corp                Com 009128307    48,240           1,000.00 SH   SOLE           1,000.00            0.00
+Akami Technologies              Com 00971T101 9,515,208         269,400.00 SH   SOLE         269,400.00            0.00
+Alaska Air Group                Com 011659109   127,920           2,000.00 SH   SOLE           2,000.00            0.00
+Albany Molecular Research       Com 012423109 3,788,330         360,450.00 SH   SOLE         211,550.00      148,900.00
+AllState Corp                   Com 020002101   390,107           7,950.00 SH   SOLE           7,950.00            0.00
+Allegiant Travel Co             Com 01748X102    62,146             700.00 SH   SOLE             700.00            0.00
+Allergan Inc                    Com 018490102   362,798           3,250.00 SH   SOLE           3,250.00            0.00
+Alliant Techsystems             Com 018804104    50,701             700.00 SH   SOLE             700.00            0.00
+Allied World Assrnc Co Hldgs    Com H01531104    74,176             800.00 SH   SOLE             800.00            0.00
+Alon USA Energy Inc             Com 020520102    57,150           3,000.00 SH   SOLE           3,000.00            0.00
+Altria Group Inc                Com 02209S103 1,017,944          29,600.00 SH   SOLE          29,600.00            0.00
+Amazon Com Inc                  Com 023135106   959,364           3,600.00 SH   SOLE           3,600.00            0.00
+Amdocs Ltd                      Com G02602103    99,688           2,750.00 SH   SOLE           2,750.00            0.00
+Ameren corp                     Com 023608102    56,032           1,600.00 SH   SOLE           1,600.00            0.00
+American Apparel Inc            Com 023850100   960,442         442,600.00 SH   SOLE         259,900.00      182,700.00
+American Cap Strategies         Com 02503Y103    52,542           3,600.00 SH   SOLE           3,600.00            0.00
+American Eagle Outfitters Inc   Com 02553E106    71,060           3,800.00 SH   SOLE           3,800.00            0.00
+American Electric Power Co      Com 025537101   141,027           2,900.00 SH   SOLE           2,900.00            0.00
+American Express Co             Com 025816109   878,397          13,021.00 SH   SOLE          13,021.00            0.00
+American Financial Grp          Com 025932104   104,236           2,200.00 SH   SOLE           2,200.00            0.00
+American Int'l Group            Com 026874784 7,701,888         198,400.00 SH   SOLE         198,400.00            0.00
+American National Insurance     Com 028591105    43,435             500.00 SH   SOLE             500.00            0.00
+American Tower Corp             Com 03027X100   196,146           2,550.00 SH   SOLE           2,550.00            0.00
+American Water Works Co Inc     Com 030420103    72,520           1,750.00 SH   SOLE           1,750.00            0.00
+Ameriprise Financial Inc        Com 03076C106   231,998           3,150.00 SH   SOLE           3,150.00            0.00
+Amerisourcebergen Corp          Com 03073E105   406,455           7,900.00 SH   SOLE           7,900.00            0.00
+Ameritrade Holdings             Com 87236Y108    59,798           2,900.00 SH   SOLE           2,900.00            0.00
+Ametek Inc                      Com 031100100   147,424           3,400.00 SH   SOLE           3,400.00            0.00
+Amgen Inc                       Com 031162100   771,900           7,530.00 SH   SOLE           7,530.00            0.00
+Amphenol Corp -Cl A             Com 032095101   130,638           1,750.00 SH   SOLE           1,750.00            0.00
+Anadarko Petroleum Corp         Com 032511107   271,095           3,100.00 SH   SOLE           3,100.00            0.00
+Analog Devices                  Com 032654105   181,311           3,900.00 SH   SOLE           3,900.00            0.00
+Angie's List Inc                Com 034754101 8,218,184         415,900.00 SH   SOLE         300,600.00      115,300.00
+Ansys Inc                       Com 03662Q105    93,633           1,150.00 SH   SOLE           1,150.00            0.00
+Aon PLC                         Com G0408V102 8,400,900         136,600.00 SH   SOLE         136,600.00            0.00
+Apollo Commercial Re Fin Inc    Com 03762U105 3,480,568         197,872.00 SH   SOLE         141,270.00       56,602.00
+Apollo Investment Corp          Com 03761U106 3,528,296         422,045.00 SH   SOLE         301,345.00      120,700.00
+Apple Inc                       Com 037833100 9,561,456          21,600.00 SH   SOLE          21,600.00            0.00
+Applied Materials               Com 038222105 7,910,064         586,800.00 SH   SOLE         586,800.00            0.00
+Aqua America Inc                Com 03836W103    66,024           2,100.00 SH   SOLE           2,100.00            0.00
+Arbor Realty Trust Inc          Com 038923108 1,989,008         253,700.00 SH   SOLE         149,100.00      104,600.00
+Arch Capital Group Ltd          Com G0450A105   152,453           2,900.00 SH   SOLE           2,900.00            0.00
+Archer-Daniels-Midland          Com 039483102   151,785           4,500.00 SH   SOLE           4,500.00            0.00
+Arrow Electronics Inc           Com 042735100    64,992           1,600.00 SH   SOLE           1,600.00            0.00
+Arthur J Gallagher + Co         Com 363576109    53,703           1,300.00 SH   SOLE           1,300.00            0.00
+Aspen Insurance Holdings Ltd    Com G05384105    54,012           1,400.00 SH   SOLE           1,400.00            0.00
+Aspen Technology Inc            Com 045327103    66,195           2,050.00 SH   SOLE           2,050.00            0.00
+Atmel Corp                      Com 049513104 7,651,421        1,099,500.0 SH   SOLE         651,700.00      447,800.00
+Audience Inc                    Com 05070J102 4,000,075         262,300.00 SH   SOLE         153,900.00      108,400.00
+Autodesk Inc                    Com 052769106    53,625           1,300.00 SH   SOLE           1,300.00            0.00
+Automatic Data Processing       Com 053015103   338,156           5,200.00 SH   SOLE           5,200.00            0.00
+Autonation Inc                  Com 05329W102    43,750           1,000.00 SH   SOLE           1,000.00            0.00
+Autozone Inc                    Com 053332102    29,758              75.00 SH   SOLE              75.00            0.00
+Auxilium Pharma Inc             Com 05334D107 4,827,368         279,200.00 SH   SOLE         279,200.00            0.00
+Avery Dennison Corp             Com 053611109    90,447           2,100.00 SH   SOLE           2,100.00            0.00
+Avistar Communications          Com 05379X208    43,704         728,400.00 SH   SOLE         364,300.00      364,100.00
+Avnet Inc                       Com 053807103 8,644,560         238,800.00 SH   SOLE         238,800.00            0.00
+Avon Products                   Com 054303102   196,935           9,500.00 SH   SOLE           9,500.00            0.00
+Axiall Corp                     Com 05463D100   170,691           2,746.00 SH   SOLE           2,746.00            0.00
+Axis Capital Holdings Ltd       Com G0692U109   112,374           2,700.00 SH   SOLE           2,700.00            0.00
+B/E Aerospace Inc               Com 073302101 8,734,572         144,900.00 SH   SOLE         103,400.00       41,500.00
+BBCN Bancorp Inc                Com 073295107 7,124,883         545,550.00 SH   SOLE         378,050.00      167,500.00
+BMC Software Inc                Com 055921100    60,229           1,300.00 SH   SOLE           1,300.00            0.00
+Ball Corp                       Com 058498106    49,959           1,050.00 SH   SOLE           1,050.00            0.00
+Bank Of America Corp            Com 060505104   824,586          67,700.00 SH   SOLE          67,700.00            0.00
+Bank of New York Co             Com 064058100   375,066          13,400.00 SH   SOLE          13,400.00            0.00
+Bard (C.R.) Inc                 Com 067383109    50,390             500.00 SH   SOLE             500.00            0.00
+Baxter International Inc        Com 071813109   272,400           3,750.00 SH   SOLE           3,750.00            0.00
+Beam Inc                        Com 073730103 10,306,188        162,200.00 SH   SOLE         162,200.00            0.00
+Becton Dickinson & Co           Com 075887109 10,612,710        111,000.00 SH   SOLE         111,000.00            0.00
+Bemis Co                        Com 081437105    48,432           1,200.00 SH   SOLE           1,200.00            0.00
+Berkshire Hathaway Inc Cl B     Com 084670702 10,451,260        100,300.00 SH   SOLE         100,300.00            0.00
+Best Buy Co                     Com 086516101   152,835           6,900.00 SH   SOLE           6,900.00            0.00
+Big 5 Sporting Goods Corp       Com 08915P101 4,266,213         273,300.00 SH   SOLE         160,500.00      112,800.00
+Biogen Idec Inc                 Com 09062X103   712,687           3,700.00 SH   SOLE           3,700.00            0.00
+Black Hills Corp                Com 092113109    66,060           1,500.00 SH   SOLE           1,500.00            0.00
+Blackrock Inc                   Com 09247X101 9,221,992          35,900.00 SH   SOLE          35,900.00            0.00
+Bloomin' Brands Inc             Com 094235108    94,658           5,300.00 SH   SOLE           5,300.00            0.00
+Boeing Co                       Com 097023105   618,120           7,200.00 SH   SOLE           7,200.00            0.00
+Boston Scient Corp              Com 101137107    96,063          12,300.00 SH   SOLE          12,300.00            0.00
+Briggs & Stratton               Com 109043109    39,680           1,600.00 SH   SOLE           1,600.00            0.00
+Brink's Co                      Com 109696104 1,438,434          50,900.00 SH   SOLE          36,341.00       14,559.00
+Brinker Intl Inc                Com 109641100 12,597,690        334,600.00 SH   SOLE         311,500.00       23,100.00
+Bristol Myers Squibb            Com 110122108   677,576          16,450.00 SH   SOLE          16,450.00            0.00
+Broadridge Financial Solutions  Com 11133T103 18,123,264        729,600.00 SH   SOLE         594,400.00      135,200.00
+Brookdale Senior Living Inc     Com 112463104    44,608           1,600.00 SH   SOLE           1,600.00            0.00
+Brown Forman Corp               Com 115637209   146,370           2,050.00 SH   SOLE           2,050.00            0.00
+Bruker Biosciences Corp         Com 116794108 6,551,300         343,000.00 SH   SOLE         203,400.00      139,600.00
+Brunswick Corp                  Com 117043109    99,238           2,900.00 SH   SOLE           2,900.00            0.00
+Builders Firstsource            Com 12008R107   762,386         130,100.00 SH   SOLE          77,300.00       52,800.00
+CBOE Holdings Inc               Com 12503M108   151,454           4,100.00 SH   SOLE           4,100.00            0.00
+CBS                             Com 124857202   352,510           7,550.00 SH   SOLE           7,550.00            0.00
+CEC Entertainment               Com 125137109 3,425,519         104,596.00 SH   SOLE          74,629.00       29,967.00
+CF Industrials Holdings Inc     Com 125269100    57,111             300.00 SH   SOLE             300.00            0.00
+CIT Group Inc                   Com 125581801 9,609,080         221,000.00 SH   SOLE         221,000.00            0.00
+CNA Financial Corp              Com 126117100   114,415           3,500.00 SH   SOLE           3,500.00            0.00
+CNO Financial Group Inc         Com 12621E103 6,521,233         569,540.00 SH   SOLE         405,940.00      163,600.00
+CSX Corp                        Com 126408103    51,723           2,100.00 SH   SOLE           2,100.00            0.00
+CVS Corp                        Com 126650100   780,858          14,200.00 SH   SOLE          14,200.00            0.00
+Cabot Oil + Gas Corp            Com 127097103   202,830           3,000.00 SH   SOLE           3,000.00            0.00
+Cadence Design Systems          Com 127387108    45,969           3,300.00 SH   SOLE           3,300.00            0.00
+Cal Dive International Inc      Com 12802T101 1,963,440        1,090,800.0 SH   SOLE         640,600.00      450,200.00
+CalAmp Corp                     Com 128126109 3,855,407         351,450.00 SH   SOLE         207,750.00      143,700.00
+Calgon Carbon Corp              Com 129603106 6,628,220         366,200.00 SH   SOLE         217,000.00      149,200.00
+Cambrex Corp                    Com 132011107 1,946,638         152,200.00 SH   SOLE          89,400.00       62,800.00
+Campbell Soup Co                Com 134429109   122,472           2,700.00 SH   SOLE           2,700.00            0.00
+CapLease Inc                    Com 140288101 4,599,777         722,100.00 SH   SOLE         515,600.00      206,500.00
+Capital Senior Living Corp      Com 140475104 6,066,346         229,525.00 SH   SOLE         134,825.00       94,700.00
+Cardinal Health Inc             Com 14149Y108   258,044           6,200.00 SH   SOLE           6,200.00            0.00
+Carefusion Corp                 Com 14170T101    69,980           2,000.00 SH   SOLE           2,000.00            0.00
+Carlisle Companies Inc          Com 142339100    67,790           1,000.00 SH   SOLE           1,000.00            0.00
+Carnival Corp                   Com 143658300    68,600           2,000.00 SH   SOLE           2,000.00            0.00
+Carter's Inc                    Com 146229109    48,680             850.00 SH   SOLE             850.00            0.00
+Case Corp                       Com 14055X102    57,720           6,000.00 SH   SOLE           6,000.00            0.00
+Celanese Corp                   Com 150870103 6,501,780         147,600.00 SH   SOLE         105,400.00       42,200.00
+Celgene Corp                    Com 151020104   585,346           5,050.00 SH   SOLE           5,050.00            0.00
+Centene Corp.                   Com 15135B101    92,484           2,100.00 SH   SOLE           2,100.00            0.00
+Cenveo Inc                      Com 15670S105 1,605,620         746,800.00 SH   SOLE         438,600.00      308,200.00
+Cerner Corp                     Com 156782104   146,847           1,550.00 SH   SOLE           1,550.00            0.00
+Cerus Corp                      Com 157085101 1,305,226         295,300.00 SH   SOLE         173,500.00      121,800.00
+Charles & Colvard Ltd           Com 159765106 1,750,703         453,550.00 SH   SOLE         266,450.00      187,100.00
+Chatham Lodging Trust           Com 16208T102 9,138,304         518,927.00 SH   SOLE         370,527.00      148,400.00
+Chemtura Corp                   Com 163893209    49,703           2,300.00 SH   SOLE           2,300.00            0.00
+Chesapeake Energy Corp          Com 165167107   249,002          12,200.00 SH   SOLE          12,200.00            0.00
+Chevron Texaco Corp             Com 166764100 1,809,629          15,230.00 SH   SOLE          15,230.00            0.00
+Chipotle Mexican Grill Inc      Com 169656105    81,468             250.00 SH   SOLE             250.00            0.00
+Chiquita Brands Int'l           Com 170032809 5,653,160         728,500.00 SH   SOLE         556,500.00      172,000.00
+Choice Hotels Intl Inc          Com 169905106    86,736           2,050.00 SH   SOLE           2,050.00            0.00
+Christopher & Banks Corp        Com 171046105 4,150,565         645,500.00 SH   SOLE         379,200.00      266,300.00
+Chubb Corp                      Com 171232101   253,837           2,900.00 SH   SOLE           2,900.00            0.00
+Church + Dwight Inc             Com 171340102   129,260           2,000.00 SH   SOLE           2,000.00            0.00
+Churchill Downs Inc             Com 171484108    42,024             600.00 SH   SOLE             600.00            0.00
+Ciber Inc                       Com 17163B102 2,173,750         462,500.00 SH   SOLE         271,700.00      190,800.00
+Cigna Corp                      Com 125509109    87,318           1,400.00 SH   SOLE           1,400.00            0.00
+Cintas Corp                     Com 172908105 9,540,906         216,200.00 SH   SOLE         216,200.00            0.00
+Cirrus Logic Inc                Com 172755100 9,404,850         413,400.00 SH   SOLE         266,700.00      146,700.00
+Cisco Systems Inc               Com 17275R102   747,581          35,778.00 SH   SOLE          35,778.00            0.00
+Citigroup Inc                   Com 172967424   199,080           4,500.00 SH   SOLE           4,500.00            0.00
+Clorox CO/DE                    Com 189054109   172,634           1,950.00 SH   SOLE           1,950.00            0.00
+Cms Energy Corp                 Com 125896100    81,026           2,900.00 SH   SOLE           2,900.00            0.00
+Coca-Cola Co                    Com 191216100   234,552           5,800.00 SH   SOLE           5,800.00            0.00
+Coca-Cola Enterprises           Com 19122T109   129,220           3,500.00 SH   SOLE           3,500.00            0.00
+Codexis Inc                     Com 192005106   407,615         170,550.00 SH   SOLE         100,450.00       70,100.00
+Cognizant Tech Solutions        Com 192446102   206,877           2,700.00 SH   SOLE           2,700.00            0.00
+Coldwater Creek Inc             Com 193068202   815,280         258,000.00 SH   SOLE         151,550.00      106,450.00
+Colgate-Palmolive Co            Com 194162103   749,491           6,350.00 SH   SOLE           6,350.00            0.00
+Colony Financial Inc            Com 19624R106 11,789,865        531,075.00 SH   SOLE         371,175.00      159,900.00
+Columbia Sportswear Co          Com 198516106 2,037,376          35,200.00 SH   SOLE          25,000.00       10,200.00
+Comcast Corp - Cl A             Com 20030N101   889,976          21,200.00 SH   SOLE          21,200.00            0.00
+Commercial Metals               Com 201723103 5,289,145         333,700.00 SH   SOLE         238,300.00       95,400.00
+Commvault Systems Inc           Com 204166102 18,130,200        221,100.00 SH   SOLE         174,000.00       47,100.00
+Computer Programs & Systems     Com 205306103 3,614,548          66,800.00 SH   SOLE          47,600.00       19,200.00
+Computer Sciences Corp          Com 205363104 8,669,403         176,100.00 SH   SOLE         176,100.00            0.00
+Conoco Phillips                 Com 20825C104   648,479          10,790.00 SH   SOLE          10,790.00            0.00
+Convergys Corp                  Com 212485106 14,198,081        833,710.00 SH   SOLE         677,110.00      156,600.00
+Cooper Tire + Rubber            Com 216831107    66,716           2,600.00 SH   SOLE           2,600.00            0.00
+Copart Inc                      Com 217204106    71,967           2,100.00 SH   SOLE           2,100.00            0.00
+Corelogic Inc                   Com 21871D103 8,536,386         330,100.00 SH   SOLE         265,100.00       65,000.00
+Corning Inc                     Com 219350105 9,053,736         679,200.00 SH   SOLE         679,200.00            0.00
+Corporate Executive BRD Co      Com 21988R102    46,528             800.00 SH   SOLE             800.00            0.00
+Corrections Corp of Am          Com 22025Y407    58,605           1,500.00 SH   SOLE           1,500.00            0.00
+Costco Wholesale Corp           Com 22160K105   657,882           6,200.00 SH   SOLE           6,200.00            0.00
+Covance Inc                     Com 222816100    66,888             900.00 SH   SOLE             900.00            0.00
+Covidien PLC                    Com G2554F113   308,672           4,550.00 SH   SOLE           4,550.00            0.00
+Cracker Barrel Old Country StoreCom 22410J106 7,721,175          95,500.00 SH   SOLE          56,600.00       38,900.00
+Cray Inc                        Com 225223304 6,310,799         271,900.00 SH   SOLE         159,800.00      112,100.00
+Credit Acceptance Corp          Com 225310101    61,070             500.00 SH   SOLE             500.00            0.00
+Cree Research Inc               Com 225447101 8,616,825         157,500.00 SH   SOLE         157,500.00            0.00
+Crown Cork & Seal Co            Com 228368106    54,093           1,300.00 SH   SOLE           1,300.00            0.00
+Cutera Inc                      Com 232109108 1,970,800         151,600.00 SH   SOLE          89,000.00       62,600.00
+Cvr Energy Inc                  Com 12662P108   129,050           2,500.00 SH   SOLE           2,500.00            0.00
+Cynosure Inc -Cls A             Com 232577205 3,675,577         140,450.00 SH   SOLE          82,550.00       57,900.00
+DIRECTV                         Com 25490A309 10,092,827        178,350.00 SH   SOLE         178,350.00            0.00
+DISH Network Corp               Com 25470M109   147,810           3,900.00 SH   SOLE           3,900.00            0.00
+DST Systems Inc                 Com 233326107    64,143             900.00 SH   SOLE             900.00            0.00
+DSW Inc -Cls A                  Com 23334L102    38,280             600.00 SH   SOLE             600.00            0.00
+DTE Energy Co                   Com 233331107   157,182           2,300.00 SH   SOLE           2,300.00            0.00
+Danaher Corp                    Com 235851102   242,385           3,900.00 SH   SOLE           3,900.00            0.00
+Dean Foods Co                   Com 242370104 5,687,381         313,700.00 SH   SOLE         188,900.00      124,800.00
+Delek US Holdings Inc           Com 246647101    71,028           1,800.00 SH   SOLE           1,800.00            0.00
+Delphi Automotive PLC           Com G27823106   155,400           3,500.00 SH   SOLE           3,500.00            0.00
+Delta Air Lines Inc             Com 247361702   388,811          23,550.00 SH   SOLE          23,550.00            0.00
+Deluxe Corporation              Com 248019101    74,520           1,800.00 SH   SOLE           1,800.00            0.00
+Demand Media Inc                Com 24802N109 5,507,666         638,200.00 SH   SOLE         378,200.00      260,000.00
+Depomed Inc                     Com 249908104 2,112,026         359,800.00 SH   SOLE         211,300.00      148,500.00
+DigitalGlobe Inc                Com 25389M877    60,711           2,100.00 SH   SOLE           2,100.00            0.00
+Dillards Inc - CL A             Com 254067101    86,405           1,100.00 SH   SOLE           1,100.00            0.00
+Dineequity Inc                  Com 254423106    48,153             700.00 SH   SOLE             700.00            0.00
+Discover Financial Svcs Inc     Com 254709108   190,570           4,250.00 SH   SOLE           4,250.00            0.00
+Disney (Walt) Co                Com 254687106   269,800           4,750.00 SH   SOLE           4,750.00            0.00
+Domino's Pizza Inc              Com 25754A201   110,596           2,150.00 SH   SOLE           2,150.00            0.00
+Donaldson Co Inc                Com 257651109    61,523           1,700.00 SH   SOLE           1,700.00            0.00
+Dover Corporation               Com 260003108    72,880           1,000.00 SH   SOLE           1,000.00            0.00
+Dreamworks Animation Inc        Com 26153C103 1,279,800          67,500.00 SH   SOLE          48,200.00       19,300.00
+Du Pont (E I) De Nemours        Com 263534109    93,404           1,900.00 SH   SOLE           1,900.00            0.00
+Dun & Bradstreet Corp           Com 26483E100   104,563           1,250.00 SH   SOLE           1,250.00            0.00
+Dycom Industries Inc            Com 267475101 1,598,828          81,200.00 SH   SOLE          58,100.00       23,100.00
+EOG Resources Inc               Com 26875P101   115,263             900.00 SH   SOLE             900.00            0.00
+Eagle Materials Inc             Com 26969P108 6,549,729          98,300.00 SH   SOLE          58,200.00       40,100.00
+East West Bancorp Inc           Com 27579R104    61,608           2,400.00 SH   SOLE           2,400.00            0.00
+Ebay Inc                        Com 278642103   623,530          11,500.00 SH   SOLE          11,500.00            0.00
+Ecolab Inc                      Com 278865100    56,126             700.00 SH   SOLE             700.00            0.00
+Edison International            Com 281020107 10,813,768        214,900.00 SH   SOLE         214,900.00            0.00
+El Paso Electric Co             Com 283677854 4,276,915         127,100.00 SH   SOLE          90,800.00       36,300.00
+Ellie Mae Inc                   Com 28849P100 4,581,525         190,500.00 SH   SOLE         113,400.00       77,100.00
+Emcore Corp                     Com 290846203 1,759,968         302,400.00 SH   SOLE         177,500.00      124,900.00
+Emerson Electric Co             Com 291011104 9,428,063         168,750.00 SH   SOLE         168,750.00            0.00
+Emmis Broadcasting              Com 291525103   690,394         415,900.00 SH   SOLE         244,200.00      171,700.00
+EnerSys Inc                     Com 29275Y102 10,243,467        224,736.00 SH   SOLE         142,200.00       82,536.00
+Energizer Holdings Inc          Com 29266R108    69,811             700.00 SH   SOLE             700.00            0.00
+Energy Recovery Inc             Com 29270J100 2,437,190         658,700.00 SH   SOLE         386,900.00      271,800.00
+Enphase Energy Inc              Com 29355A107 1,489,172         240,189.00 SH   SOLE         141,100.00       99,089.00
+Equinix Inc                     Com 29444U502    54,078             250.00 SH   SOLE             250.00            0.00
+Erie Lackawanna                 Com 29530P102    45,318             600.00 SH   SOLE             600.00            0.00
+Estee Lauder Cos Inc (The)      Com 518439104    80,038           1,250.00 SH   SOLE           1,250.00            0.00
+Everest Reinsurance Hldgs       Com G3223R108    77,916             600.00 SH   SOLE             600.00            0.00
+Expedia Inc -Cl A               Com 30212P303   153,038           2,550.00 SH   SOLE           2,550.00            0.00
+Expeditors Intl                 Com 302130109    53,595           1,500.00 SH   SOLE           1,500.00            0.00
+Exxon Mobil Corp                Com 30231G102 1,925,020          21,363.00 SH   SOLE          21,363.00            0.00
+Fedex Corp                      Com 31428X106   196,400           2,000.00 SH   SOLE           2,000.00            0.00
+Fifth Third Bancorp             Com 316773100    76,657           4,700.00 SH   SOLE           4,700.00            0.00
+Financial Engines Inc           Com 317485100    47,086           1,300.00 SH   SOLE           1,300.00            0.00
+First American Finl Corp        Com 31847R102    58,811           2,300.00 SH   SOLE           2,300.00            0.00
+First Horizon National Corp     Com 320517105 5,467,060         511,897.00 SH   SOLE         365,511.00      146,386.00
+First Niagara Finl Grp          Com 33582V108 12,668,028       1,429,800.0 SH   SOLE        1,020,900.00     408,900.00
+Fiserv Inc                      Com 337738108   149,362           1,700.00 SH   SOLE           1,700.00            0.00
+FleetCor Technologies           Com 339041105    61,336             800.00 SH   SOLE             800.00            0.00
+Flowers Food Inc                Com 343498101    79,056           2,400.00 SH   SOLE           2,400.00            0.00
+Flowserve Corp                  Com 34354P105   100,626             600.00 SH   SOLE             600.00            0.00
+Fluor Corp                      Com 343412102    46,431             700.00 SH   SOLE             700.00            0.00
+Foot Locker Inc                 Com 344849104    42,800           1,250.00 SH   SOLE           1,250.00            0.00
+Fortinet Inc                    Com 34959E109    63,936           2,700.00 SH   SOLE           2,700.00            0.00
+Fortune Brands Home & Security ICom 34964C106    48,659           1,300.00 SH   SOLE           1,300.00            0.00
+Forum Energy Tech Inc           Com 34984V100    43,140           1,500.00 SH   SOLE           1,500.00            0.00
+Francescas Holdings Corp        Com 351793104 6,792,280         236,500.00 SH   SOLE         140,200.00       96,300.00
+Franklin Resources Inc          Com 354613101   399,647           2,650.00 SH   SOLE           2,650.00            0.00
+Franklin Street Properties C    Com 35471R106 2,647,682         181,100.00 SH   SOLE         129,000.00       52,100.00
+Gannett Co                      Com 364730101   102,789           4,700.00 SH   SOLE           4,700.00            0.00
+Gap Stores                      Com 364760108   438,960          12,400.00 SH   SOLE          12,400.00            0.00
+Gartner Inc                     Com 366651107   217,640           4,000.00 SH   SOLE           4,000.00            0.00
+General Electric Co             Com 369604103 1,714,348          74,150.00 SH   SOLE          74,150.00            0.00
+General Mills Inc               Com 370334104   128,206           2,600.00 SH   SOLE           2,600.00            0.00
+General Motors Corp             Com 37045V100 9,600,682         345,100.00 SH   SOLE         345,100.00            0.00
+Genesco Inc                     Com 371532102 5,305,947          88,300.00 SH   SOLE          52,700.00       35,600.00
+Genuine Parts Co                Com 372460105   105,300           1,350.00 SH   SOLE           1,350.00            0.00
+Genworth Financial Inc -Cl A    Com 37247D106 3,886,000         388,600.00 SH   SOLE         277,400.00      111,200.00
+Gilead Sciences Inc             Com 375558103   543,234          11,100.00 SH   SOLE          11,100.00            0.00
+Glatfelter (P.H.) Co            Com 377316104 5,335,316         228,200.00 SH   SOLE         162,900.00       65,300.00
+Global Payments Inc             Com 37940X102 5,502,328         110,800.00 SH   SOLE          79,100.00       31,700.00
+Glu Mobile Inc                  Com 379890106 2,695,800         898,600.00 SH   SOLE         527,700.00      370,900.00
+Goldman Sachs Group             Com 38141G104   765,180           5,200.00 SH   SOLE           5,200.00            0.00
+Goodyear Tire & Rubber          Com 382550101   113,445           9,000.00 SH   SOLE           9,000.00            0.00
+Google Inc Class A              Com 38259P508 1,123,776           1,415.00 SH   SOLE           1,415.00            0.00
+Graco Inc                       Com 384109104    34,818             600.00 SH   SOLE             600.00            0.00
+Grainger Inc                    Com 384802104    84,368             375.00 SH   SOLE             375.00            0.00
+Graphic Packaging Holding Co    Com 388689101    92,127          12,300.00 SH   SOLE          12,300.00            0.00
+Greenhill & Co Inc              Com 395259104    32,028             600.00 SH   SOLE             600.00            0.00
+Guess? Inc                      Com 401617105 4,032,392         162,400.00 SH   SOLE         116,000.00       46,400.00
+Guidewire Software Inc          Com 40171V100   119,164           3,100.00 SH   SOLE           3,100.00            0.00
+H+R Block                       Com 093671105   157,397           5,350.00 SH   SOLE           5,350.00            0.00
+HCA Holdings Inc.               Com 40412C101   197,056           4,850.00 SH   SOLE           4,850.00            0.00
+HCC Insurance Hldgs             Com 404132102 8,027,730         191,000.00 SH   SOLE         136,800.00       54,200.00
+HSN Inc                         Com 404303109    60,346           1,100.00 SH   SOLE           1,100.00            0.00
+Halliburton Company             Com 406216101    80,820           2,000.00 SH   SOLE           2,000.00            0.00
+HanesBrands Inc                 Com 410345102   118,456           2,600.00 SH   SOLE           2,600.00            0.00
+Harley Davidson Inc             Com 412822108   127,920           2,400.00 SH   SOLE           2,400.00            0.00
+Harmonic Inc                    Com 413160102 3,843,402         663,800.00 SH   SOLE         474,000.00      189,800.00
+Harris Corp                     Com 413875105    92,680           2,000.00 SH   SOLE           2,000.00            0.00
+Hartford Finl Svcs Grp          Com 416515104    49,020           1,900.00 SH   SOLE           1,900.00            0.00
+Headwaters Inc                  Com 42210P102 6,865,910         629,900.00 SH   SOLE         370,000.00      259,900.00
+Health Management Assoc         Com 421933102 5,099,094         396,200.00 SH   SOLE         284,100.00      112,100.00
+Health Net Inc CL A             Com 42222G108 5,884,272         205,600.00 SH   SOLE         146,800.00       58,800.00
+Healthsouth Corp                Com 421924309 6,703,254         254,200.00 SH   SOLE         254,200.00            0.00
+Henry (Jack) & Associates       Com 426281101    83,178           1,800.00 SH   SOLE           1,800.00            0.00
+Henry Schein                    Com 806407102    50,903             550.00 SH   SOLE             550.00            0.00
+Hercules Tech Growth Capital    Com 427096508 1,722,044         140,575.00 SH   SOLE          82,575.00       58,000.00
+Hershey Foods Corp              Com 427866108   280,096           3,200.00 SH   SOLE           3,200.00            0.00
+Hertz Global Holdings Inc       Com 42805T105    71,232           3,200.00 SH   SOLE           3,200.00            0.00
+Hess Corp                       Com 42809H107 9,151,758         127,800.00 SH   SOLE         127,800.00            0.00
+Hewlett-Packard Co              Com 428236103 1,134,784          47,600.00 SH   SOLE          47,600.00            0.00
+Hillshire Brands Company        Com 432589109   172,235           4,900.00 SH   SOLE           4,900.00            0.00
+Hittite Microwave Corp          Com 43365Y104    36,336             600.00 SH   SOLE             600.00            0.00
+HollyFrontier Corp              Com 436106108   221,235           4,300.00 SH   SOLE           4,300.00            0.00
+Home Depot Inc                  Com 437076102 1,618,896          23,200.00 SH   SOLE          23,200.00            0.00
+Honeywell International         Com 438516106   482,240           6,400.00 SH   SOLE           6,400.00            0.00
+Hormel Foods Corp               Com 440452100   175,610           4,250.00 SH   SOLE           4,250.00            0.00
+Hornbeck Offshore Svcs Inc      Com 440543106 7,935,368         170,800.00 SH   SOLE         101,200.00       69,600.00
+Hubbell Inc -Cl B               Com 443510201    63,122             650.00 SH   SOLE             650.00            0.00
+Humana Inc                      Com 444859102   345,550           5,000.00 SH   SOLE           5,000.00            0.00
+Hunt (JB) Transp Svcs           Com 445658107   160,132           2,150.00 SH   SOLE           2,150.00            0.00
+Huntsman Corp                   Com 447011107    55,770           3,000.00 SH   SOLE           3,000.00            0.00
+Hutchinson Tech                 Com 448407106   966,075         351,300.00 SH   SOLE         206,300.00      145,000.00
+ITT Corp                        Com 450911201   233,126           8,200.00 SH   SOLE           8,200.00            0.00
+Idexx Labs Inc                  Com 45168D104    55,434             600.00 SH   SOLE             600.00            0.00
+Illinois Tool Works             Com 452308109   298,606           4,900.00 SH   SOLE           4,900.00            0.00
+Immersion Corp                  Com 452521107 4,307,113         366,875.00 SH   SOLE         215,475.00      151,400.00
+Infoblox Inc                    Com 45672H104 9,767,170         450,100.00 SH   SOLE         335,000.00      115,100.00
+Ingersoll-Rand Co -Cl A         Com G47791101   178,783           3,250.00 SH   SOLE           3,250.00            0.00
+Ingredion Inc                   Com 457187102    57,856             800.00 SH   SOLE             800.00            0.00
+Inland Real Estate Corp         Com 457461200 1,482,221         146,900.00 SH   SOLE         104,900.00       42,000.00
+Inphi Corp                      Com 45772F107 1,875,775         179,500.00 SH   SOLE         105,600.00       73,900.00
+Int'l Flavors + Fragrances      Com 459506101    76,670           1,000.00 SH   SOLE           1,000.00            0.00
+Intel Corp                      Com 458140100   127,735           5,850.00 SH   SOLE           5,850.00            0.00
+IntercontnentalExchange         Com 45865V100   130,456             800.00 SH   SOLE             800.00            0.00
+International Paper             Com 460146103   163,030           3,500.00 SH   SOLE           3,500.00            0.00
+Intersil Corp -CL A             Com 46069S109 4,731,272         543,200.00 SH   SOLE         387,900.00      155,300.00
+Interval Leisure Group          Com 46113M108    41,306           1,900.00 SH   SOLE           1,900.00            0.00
+Intevac Inc                     Com 461148108   953,440         202,000.00 SH   SOLE         118,100.00       83,900.00
+Intl Business Mach              Com 459200101 1,279,800           6,000.00 SH   SOLE           6,000.00            0.00
+Intl Rectifier Corp             Com 460254105 2,552,805         120,700.00 SH   SOLE          86,200.00       34,500.00
+Intuit Inc                      Com 461202103   170,716           2,600.00 SH   SOLE           2,600.00        2,600.00
+Intuitive Surgical Inc          Com 46120E602    34,383              70.00 SH   SOLE              70.00            0.00
+Investment Technology Group     Com 46145F105 4,217,280         382,000.00 SH   SOLE         255,850.00      126,150.00
+Investors Bancorp Inc           Com 46146P102 10,190,028        542,600.00 SH   SOLE         442,700.00       99,900.00
+Ipass Inc                       Com 46261V108 1,163,547         587,650.00 SH   SOLE         345,200.00      242,450.00
+Isle of Capri Casino            Com 464592104 1,017,408         161,750.00 SH   SOLE          96,150.00       65,600.00
+J & J Snack Foods Corp          Com 466032109    46,134             600.00 SH   SOLE             600.00            0.00
+JDS Uniphase Corp               Com 46612J507 5,758,979         430,900.00 SH   SOLE         255,400.00      175,500.00
+JM Smucker Co                   Com 832696405   109,076           1,100.00 SH   SOLE           1,100.00            0.00
+JP Morgan Chase + Co            Com 46625H100 9,174,018         193,300.00 SH   SOLE         193,300.00            0.00
+Janus Capital Group Inc         Com 47102X105 4,164,200         443,000.00 SH   SOLE         316,300.00      126,700.00
+Jarden Corp                     Com 471109108    57,848           1,350.00 SH   SOLE           1,350.00            0.00
+Johnson & Johnson               Com 478160104 1,510,588          18,528.00 SH   SOLE          18,528.00            0.00
+KLA-Tencor Corp                 Com 482480100    58,014           1,100.00 SH   SOLE           1,100.00            0.00
+Kansas City Southern            Com 485170302 11,622,320        104,800.00 SH   SOLE         104,800.00            0.00
+Kellogg Co                      Com 487836108   161,075           2,500.00 SH   SOLE           2,500.00            0.00
+Kimberly-Clark Corp             Com 494368103   475,203           4,850.00 SH   SOLE           4,850.00            0.00
+Kratos Defense & Security       Com 50077B207 1,750,943         348,100.00 SH   SOLE         204,400.00      143,700.00
+Krispy Kreme Doughnuts          Com 501014104 7,866,912         544,800.00 SH   SOLE         323,200.00      221,600.00
+Kroger Co                       Com 501044101   251,864           7,600.00 SH   SOLE           7,600.00            0.00
+L-3 Communications Holdings     Com 502424104   465,290           5,750.00 SH   SOLE           5,750.00            0.00
+Lamar Advertising Co-Cl A       Com 512815101    53,438           1,100.00 SH   SOLE           1,100.00            0.00
+Lancaster Colony                Com 513847103    46,200             600.00 SH   SOLE             600.00            0.00
+Layne Christensen Co            Com 521050104 2,764,434         129,300.00 SH   SOLE          75,900.00       53,400.00
+Lear Corp                       Com 521865204   104,253           1,900.00 SH   SOLE           1,900.00            0.00
+Lender Processing Services      Com 52602E102 7,004,046         275,100.00 SH   SOLE         196,400.00       78,700.00
+Lennox International Inc        Com 526107107    69,839           1,100.00 SH   SOLE           1,100.00            0.00
+Liberty Interactive Corp        Com 53071M104   312,002          14,600.00 SH   SOLE          14,600.00            0.00
+Life Technologies Corporation   Com 53217V109   103,408           1,600.00 SH   SOLE           1,600.00            0.00
+Lilly (Eli) + Co                Com 532457108 1,294,812          22,800.00 SH   SOLE          22,800.00            0.00
+Lincoln Electric Inc            Com 533900106    86,688           1,600.00 SH   SOLE           1,600.00            0.00
+Linear Technology               Com 535678106   260,916           6,800.00 SH   SOLE           6,800.00            0.00
+Linkedin Corp                   Com 53578A108   580,998           3,300.00 SH   SOLE           3,300.00            0.00
+Lockheed Martin Corp            Com 539830109   188,214           1,950.00 SH   SOLE           1,950.00            0.00
+Loews Corp                      Com 540424108   220,350           5,000.00 SH   SOLE           5,000.00            0.00
+Loral Space & Communications    Com 543881106    55,692             900.00 SH   SOLE             900.00            0.00
+Louisiana-Pacific Corp          Com 546347105    43,200           2,000.00 SH   SOLE           2,000.00            0.00
+Lowes Corp                      Com 548661107   743,232          19,600.00 SH   SOLE          19,600.00            0.00
+Lumber Liquidators Inc          Com 55003T107 11,726,740        167,000.00 SH   SOLE         123,100.00       43,900.00
+Lyondellbasell Industries Nv    Com N53745100   531,636           8,400.00 SH   SOLE           8,400.00            0.00
+MRC Global Inc                  Com 55345K103    75,739           2,300.00 SH   SOLE           2,300.00            0.00
+MTS Systems Corp                Com 553777103 9,995,985         171,900.00 SH   SOLE         132,700.00       39,200.00
+Macy's Group Inc                Com 55616P104    29,288             700.00 SH   SOLE             700.00            0.00
+Madison Square Garden Co        Com 55826P100    86,400           1,500.00 SH   SOLE           1,500.00            0.00
+Manhattan Associates            Com 562750109    74,290           1,000.00 SH   SOLE           1,000.00            0.00
+Manpower Inc                    Com 56418H100    51,048             900.00 SH   SOLE             900.00            0.00
+Marathon Petroleum Corp         Com 56585A102   958,720          10,700.00 SH   SOLE          10,700.00            0.00
+Marchex Inc                     Com 56624R108 2,179,096         517,600.00 SH   SOLE         303,700.00      213,900.00
+Marriott International          Com 571903202   154,140           3,650.00 SH   SOLE           3,650.00            0.00
+Marsh & McLennan Cos            Com 571748102   104,418           2,750.00 SH   SOLE           2,750.00            0.00
+Masco Corp                      Com 574599106 7,316,325         361,300.00 SH   SOLE         361,300.00            0.00
+Masimo Corp                     Com 574795100 9,015,390         459,500.00 SH   SOLE         378,500.00       81,000.00
+Mastec Inc                      Com 576323109    61,215           2,100.00 SH   SOLE           2,100.00            0.00
+Mastercard Inc                  Com 57636Q104 1,244,599           2,300.00 SH   SOLE           2,300.00            0.00
+Matson Inc                      Com 57686G105    46,740           1,900.00 SH   SOLE           1,900.00            0.00
+Mattel Inc                      Com 577081102   115,991           2,650.00 SH   SOLE           2,650.00            0.00
+Maxim Intergrated Products      Com 57772K101    65,280           2,000.00 SH   SOLE           2,000.00            0.00
+Maximus Inc                     Com 577933104    79,970           1,000.00 SH   SOLE           1,000.00            0.00
+Maxygen Inc                     Com 577776107   728,302         302,200.00 SH   SOLE         177,500.00      124,700.00
+McCormick + Company Inc         Com 579780206    66,195             900.00 SH   SOLE             900.00            0.00
+McDonalds Corp                  Com 580135101   366,859           3,680.00 SH   SOLE           3,680.00            0.00
+McGraw Hill Financial Inc       Com 580645109   249,984           4,800.00 SH   SOLE           4,800.00            0.00
+McKesson HBOC Inc               Com 58155Q103   377,860           3,500.00 SH   SOLE           3,500.00            0.00
+Mead Johnson Nutrition Co       Com 582839106   166,518           2,150.00 SH   SOLE           2,150.00            0.00
+Medidata Solutions Inc          Com 58471A105    63,778           1,100.00 SH   SOLE           1,100.00            0.00
+Medtronic Inc                   Com 585055106   464,904           9,900.00 SH   SOLE           9,900.00            0.00
+Mercantile Bank Corp            Com 587376104 1,166,187          70,678.00 SH   SOLE          40,729.00       29,949.00
+Merck + Co                      Com 58933Y105 4,329,390          97,950.00 SH   SOLE          97,950.00            0.00
+Meru Networks Inc               Com 59047Q103 1,873,800         277,600.00 SH   SOLE         163,000.00      114,600.00
+MetLife Inc                     Com 59156R108   608,320          16,000.00 SH   SOLE          16,000.00            0.00
+Metalico Inc                    Com 591176102   748,764         462,200.00 SH   SOLE         271,400.00      190,800.00
+Mettler-Toledo Intl Inc         Com 592688105   138,593             650.00 SH   SOLE             650.00            0.00
+Michael Kors Holdings Ltd       Com G60754101 5,378,013          94,700.00 SH   SOLE          94,700.00            0.00
+Microsoft Corp                  Com 594918104 1,039,248          36,331.00 SH   SOLE          36,331.00            0.00
+Middleby Corp                   Com 596278101    60,860             400.00 SH   SOLE             400.00            0.00
+Mine Safety Appliances          Com 602720104    44,658             900.00 SH   SOLE             900.00            0.00
+Mohawk Industry                 Com 608190104    67,872             600.00 SH   SOLE             600.00            0.00
+Mondelez International Inc      Com 609207105    61,230           2,000.00 SH   SOLE           2,000.00            0.00
+Monsanto Co                     Com 61166W101   966,515           9,150.00 SH   SOLE           9,150.00            0.00
+Moody's Corp                    Com 615369105   530,534           9,950.00 SH   SOLE           9,950.00            0.00
+Morgan Stanley                  Com 617446448   250,572          11,400.00 SH   SOLE          11,400.00            0.00
+Morningstar Inc                 Com 617700109    87,400           1,250.00 SH   SOLE           1,250.00            0.00
+Mosaic Co                       Com 61945C103    83,454           1,400.00 SH   SOLE           1,400.00            0.00
+Mosys Inc                       Com 619718109 1,771,196         376,050.00 SH   SOLE         220,850.00      155,200.00
+Motorola Solutions Inc          Com 620076307 10,030,748        156,657.00 SH   SOLE         156,657.00            0.00
+Mueller Industries              Com 624756102    79,935           1,500.00 SH   SOLE           1,500.00            0.00
+Multimedia Games Inc            Com 625453105 5,694,380         272,850.00 SH   SOLE         160,250.00      112,600.00
+Mylan Laboratories              Com 628530107    83,970           2,900.00 SH   SOLE           2,900.00            0.00
+NVR Inc                         Com 62944T105   129,613             120.00 SH   SOLE             120.00            0.00
+Nanosphere Inc                  Com 63009F105 1,077,042         491,800.00 SH   SOLE         288,900.00      202,900.00
+National Fuel Gas               Com 636180101    67,485           1,100.00 SH   SOLE           1,100.00            0.00
+National Instruments Corp       Com 636518102    49,125           1,500.00 SH   SOLE           1,500.00            0.00
+Navistar Internationl           Com 63934E108    55,312           1,600.00 SH   SOLE           1,600.00            0.00
+NetApp Inc                      Com 64110D104   406,504          11,900.00 SH   SOLE          11,900.00            0.00
+Neustar Inc. Class A            Com 64126X201    51,183           1,100.00 SH   SOLE           1,100.00            0.00
+Neutral Tandem Inc              Com 64128B108 3,153,261         964,300.00 SH   SOLE         566,300.00      398,000.00
+New York + Company Inc          Com 649295102 2,276,494         556,600.00 SH   SOLE         326,900.00      229,700.00
+NewMarket Corp                  Com 651587107    65,090             250.00 SH   SOLE             250.00            0.00
+Newell Rubbermaid Inc           Com 651229106   112,230           4,300.00 SH   SOLE           4,300.00            0.00
+News Corp                       Com 65248E104   617,828          20,250.00 SH   SOLE          20,250.00            0.00
+Nic Inc                         Com 62914B100    57,480           3,000.00 SH   SOLE           3,000.00            0.00
+Nike Inc                        Com 654106103   407,169           6,900.00 SH   SOLE           6,900.00            0.00
+Nisource Inc                    Com 65473P105 11,319,372        385,800.00 SH   SOLE         385,800.00            0.00
+Noble Energy Inc                Com 655044105   185,056           1,600.00 SH   SOLE           1,600.00            0.00
+Nordson Corp                    Com 655663102    92,330           1,400.00 SH   SOLE           1,400.00            0.00
+Nordstrom Inc                   Com 655664100   115,983           2,100.00 SH   SOLE           2,100.00            0.00
+Norfolk Southern Corp           Com 655844108    53,956             700.00 SH   SOLE             700.00            0.00
+Nortek                          Com 656559309    57,088             800.00 SH   SOLE             800.00            0.00
+Northern Trust Corp             Com 665859104   114,574           2,100.00 SH   SOLE           2,100.00            0.00
+Northrop Grumman Corp           Com 666807102 10,911,833        155,550.00 SH   SOLE         155,550.00            0.00
+Novatel Wireless Inc            Com 66987M604 1,301,460         654,000.00 SH   SOLE         384,100.00      269,900.00
+Nvidia Corp                     Com 67066G104    93,659           7,300.00 SH   SOLE           7,300.00            0.00
+O'Reilly Automotive             Com 67103H107   240,732           2,350.00 SH   SOLE           2,350.00            0.00
+Oceaneering Intl Inc            Com 675232102    56,449             850.00 SH   SOLE             850.00            0.00
+Ocwen Financial Corp            Com 675746309    87,216           2,300.00 SH   SOLE           2,300.00            0.00
+Odyssey Marine Exploration      Com 676118102 2,004,900         615,000.00 SH   SOLE         361,300.00      253,700.00
+Officemax Inc                   Com 67622P101 3,806,919         327,900.00 SH   SOLE         192,600.00      135,300.00
+Oge Energy Corp                 Com 670837103    97,972           1,400.00 SH   SOLE           1,400.00            0.00
+Old Republic Intl Corp          Com 680223104    80,073           6,300.00 SH   SOLE           6,300.00            0.00
+Omnicell Inc                    Com 68213N109 6,020,832         318,900.00 SH   SOLE         189,400.00      129,500.00
+Omnicom Group                   Com 681919106    120,745          2,050.00 SH   SOLE           2,050.00            0.00
+Onyx Pharmaceuticals Inc        Com 683399109  6,780,018         76,300.00 SH   SOLE          45,400.00       30,900.00
+Oracle Systems                  Com 68389X105  2,004,460         62,000.00 SH   SOLE          62,000.00            0.00
+Orion Marine Group Inc          Com 68628V308  1,067,059        107,350.00 SH   SOLE          63,050.00       44,300.00
+Oshkosh Truck Corp              Com 688239201 9,152,346         215,400.00 SH   SOLE         151,600.00       63,800.00
+Owens-Illinois Inc              Com 690768403 6,830,395         256,300.00 SH   SOLE         256,300.00            0.00
+PAREXEL International Corp      Com 699462107    47,448           1,200.00 SH   SOLE           1,200.00            0.00
+PHM Corp                        Com 745867101   165,968           8,200.00 SH   SOLE           8,200.00            0.00
+PLX Technology Inc              Com 693417107 1,951,680         428,000.00 SH   SOLE         251,300.00      176,700.00
+PPG Industries Inc              Com 693506107   281,006           2,098.00 SH   SOLE           2,098.00            0.00
+Pacer International Inc         Com 69373H106 2,104,552         418,400.00 SH   SOLE         245,800.00      172,600.00
+Pacific Biosciences Of Calif    Com 69404D108 1,607,544         645,600.00 SH   SOLE         379,316.00      266,284.00
+Packaging Corp                  Com 695156109    53,844           1,200.00 SH   SOLE           1,200.00            0.00
+Pall Corp                       Com 696429307   112,811           1,650.00 SH   SOLE           1,650.00            0.00
+Panera Bread Company            Com 69840W108    99,144             600.00 SH   SOLE             600.00            0.00
+Papa John's Int'l Inc           Com 698813102    55,635             900.00 SH   SOLE             900.00            0.00
+Parker-Hannifin Corp            Com 701094104 6,502,180          71,000.00 SH   SOLE          71,000.00            0.00
+PartnerRE Ltd                   Com G6852T105    93,110           1,000.00 SH   SOLE           1,000.00            0.00
+Patterson Dental Company        Com 703395103    53,256           1,400.00 SH   SOLE           1,400.00            0.00
+Paychex Inc                     Com 704326107   113,945           3,250.00 SH   SOLE           3,250.00            0.00
+Pebblebrook Hotel Trust         Com 70509V100 6,901,404         267,600.00 SH   SOLE         191,100.00       76,500.00
+Penn National Gaming            Com 707569109 9,753,856         179,200.00 SH   SOLE         179,200.00            0.00
+Pepsico Inc                     Com 713448108 1,198,517          15,150.00 SH   SOLE          15,150.00            0.00
+Petsmart Inc                    Com 716768106    43,470             700.00 SH   SOLE             700.00            0.00
+Pfizer Inc                      Com 717081103 1,878,786          65,100.00 SH   SOLE          65,100.00            0.00
+PharMerica Corp                 Com 71714F104 6,996,892         499,778.00 SH   SOLE         347,800.00      151,978.00
+Pharmacyclics Inc               Com 716933106 8,914,253         110,860.00 SH   SOLE          65,907.00       44,953.00
+Phillip Morris International IncCom 718172109 1,220,991          13,170.00 SH   SOLE          13,170.00            0.00
+Phillips 66                     Com 718546104 1,147,508          16,400.00 SH   SOLE          16,400.00            0.00
+Piedmont Natural Gas Co         Com 720186105 6,138,696         186,700.00 SH   SOLE         133,300.00       53,400.00
+Pier 1 Imports Inc              Com 720279108    42,550           1,850.00 SH   SOLE           1,850.00            0.00
+Pinnacle West Capital Cor       Com 723484101   138,936           2,400.00 SH   SOLE           2,400.00            0.00
+Pioneer Energy Services Corp    Com 723664108 3,990,525         483,700.00 SH   SOLE         329,500.00      154,200.00
+Pioneer Natural Resources Co    Com 723787107   186,375           1,500.00 SH   SOLE           1,500.00            0.00
+Pixelworks Inc                  Com 72581M305 1,178,110         530,680.00 SH   SOLE         311,680.00      219,000.00
+Plantronics Inc                 Com 727493108    46,400           1,050.00 SH   SOLE           1,050.00            0.00
+Plum Creek Timber Co Inc        Com 729251108    52,200           1,000.00 SH   SOLE           1,000.00            0.00
+Polaris Industries Inc          Com 731068102   120,237           1,300.00 SH   SOLE           1,300.00            0.00
+Portfolio Recovery Assoc        Com 73640Q105    50,768             400.00 SH   SOLE             400.00            0.00
+Praxair Inc                     Com 74005P104   128,271           1,150.00 SH   SOLE           1,150.00            0.00
+Prestige Brands Holdings Inc    Com 74112D101 4,086,714         159,078.00 SH   SOLE         113,578.00       45,500.00
+Priceline.com Inc               Com 741503403   344,081             500.00 SH   SOLE             500.00            0.00
+Principal Financial Group       Com 74251V102   159,941           4,700.00 SH   SOLE           4,700.00            0.00
+Privatebancorp Inc              Com 742962103 4,677,164         247,600.00 SH   SOLE         176,700.00       70,900.00
+Procter & Gamble Co             Com 742718109 1,269,564          16,475.00 SH   SOLE          16,475.00            0.00
+Progressive Corp-Ohio           Com 743315103   175,627           6,950.00 SH   SOLE           6,950.00            0.00
+Prudential Financial Inc        Com 744320102   371,637           6,300.00 SH   SOLE           6,300.00            0.00
+Public Service Enterprises      Com 744573106   120,190           3,500.00 SH   SOLE           3,500.00            0.00
+Public Storage                  Com 74460D109   175,168           1,150.00 SH   SOLE           1,150.00            0.00
+Qualcomm Inc                    Com 747525103   328,006           4,900.00 SH   SOLE           4,900.00            0.00
+Quality Distribution Inc        Com 74756M102 3,255,511         387,100.00 SH   SOLE         227,300.00      159,800.00
+Quantum Corp                    Com 747906204 1,701,824        1,329,550.0 SH   SOLE         780,750.00      548,800.00
+Quest Diagnostics Inc           Com 74834L100    67,753           1,200.00 SH   SOLE           1,200.00            0.00
+RF Micro Devices                Com 749941100 5,634,412        1,059,100.0 SH   SOLE         630,000.00      429,100.00
+RTI Intl Metals Inc             Com 74973W107 1,742,950          55,000.00 SH   SOLE          39,200.00       15,800.00
+Rackspace Hosting Inc           Com 750086100    45,432             900.00 SH   SOLE             900.00            0.00
+Ralph Lauren Corp               Com 751212101   177,776           1,050.00 SH   SOLE           1,050.00            0.00
+Raymond James Fin               Com 754730109    69,150           1,500.00 SH   SOLE           1,500.00            0.00
+Rayonier Inc                    Com 754907103    68,621           1,150.00 SH   SOLE           1,150.00            0.00
+Raytheon Co                     Com 755111507   152,854           2,600.00 SH   SOLE           2,600.00            0.00
+Reachlocal Inc                  Com 75525F104 4,784,208         319,800.00 SH   SOLE         187,900.00      131,900.00
+RealNetworks Inc                Com 75605L708 1,783,323         231,300.00 SH   SOLE         135,800.00       95,500.00
+Red Hat Inc                     Com 756577102   101,120           2,000.00 SH   SOLE           2,000.00            0.00
+Regeneron Pharmaceuticals       Com 75886F107 6,773,875          38,400.00 SH   SOLE          38,400.00            0.00
+RenTrak Corp                    Com 760174102 2,534,294         115,300.00 SH   SOLE          67,700.00       47,600.00
+Renaissancere Holdings Ltd      Com G7496G103   101,189           1,100.00 SH   SOLE           1,100.00            0.00
+Republic Airways Hldgs Inc      Com 760276105 6,951,119         602,350.00 SH   SOLE         353,750.00      248,600.00
+Resmed Inc                      Com 761152107   143,716           3,100.00 SH   SOLE           3,100.00            0.00
+Reynolds American Inc           Com 761713106   146,817           3,300.00 SH   SOLE           3,300.00            0.00
+Robert Half Int'l Inc           Com 770323103    78,813           2,100.00 SH   SOLE           2,100.00            0.00
+Rockwell Collins Inc            Com 774341101    85,212           1,350.00 SH   SOLE           1,350.00            0.00
+Rockwell Int'l Corp             Com 773903109   181,335           2,100.00 SH   SOLE           2,100.00            0.00
+Rollins Inc                     Com 775711104    78,560           3,200.00 SH   SOLE           3,200.00            0.00
+Ross Stores Inc                 Com 778296103   175,798           2,900.00 SH   SOLE           2,900.00            0.00
+Rovi Corp                       Com 779376102 7,013,916         327,600.00 SH   SOLE         194,400.00      133,200.00
+SCP Pool Corp                   Com 73278L105    52,800           1,100.00 SH   SOLE           1,100.00            0.00
+Salesforce.com Inc              Com 79466L302   160,947             900.00 SH   SOLE             900.00            0.00
+Salix Pharmaceuticals Ltd       Com 795435106 5,854,992         114,400.00 SH   SOLE          68,100.00       46,300.00
+Sally Beauty Holdings Inc       Com 79546E104 6,886,672         234,400.00 SH   SOLE         166,800.00       67,600.00
+Schlumberger Limited            Com 806857108   262,115           3,500.00 SH   SOLE           3,500.00            0.00
+Schwab (Charles) Corp           Com 808513105    76,067           4,300.00 SH   SOLE           4,300.00            0.00
+Scripps Networks Interactive    Com 811065101   109,378           1,700.00 SH   SOLE           1,700.00            0.00
+Seaboard Corp                   Com 811543107    98,000              35.00 SH   SOLE              35.00            0.00
+Seachange International         Com 811699107 2,782,260         234,000.00 SH   SOLE         137,400.00       96,600.00
+Sealed Air Corporation          Com 81211K100   106,084           4,400.00 SH   SOLE           4,400.00            0.00
+Sei Investments Co              Com 784117103   125,498           4,350.00 SH   SOLE           4,350.00            0.00
+Semgroup Corp                   Com 81663A105    46,548             900.00 SH   SOLE             900.00            0.00
+Semtech Corp                    Com 816850101 6,432,180         181,700.00 SH   SOLE         107,700.00       74,000.00
+Service Corp Int'l              Com 817565104    53,536           3,200.00 SH   SOLE           3,200.00            0.00
+Sharps Compliance Corp          Com 820017101   985,546         367,741.00 SH   SOLE         217,180.00      150,561.00
+Sherwin-Williams Co             Com 824348106   270,224           1,600.00 SH   SOLE           1,600.00            0.00
+ShoreTel Inc.                   Com 825211105 2,000,493         551,100.00 SH   SOLE         323,700.00      227,400.00
+Shutterfly Inc                  Com 82568P304 14,501,011        328,300.00 SH   SOLE         266,900.00       61,400.00
+Sigma Designs                   Com 826565103 2,916,643         598,900.00 SH   SOLE         351,700.00      247,200.00
+Sigma-Aldrich                   Com 826552101    54,355             700.00 SH   SOLE             700.00            0.00
+Signet Jewelers Ltd             Com G81276100   100,500           1,500.00 SH   SOLE           1,500.00            0.00
+Silgan Holdings Inc             Com 827048109   113,448           2,400.00 SH   SOLE           2,400.00            0.00
+Silicon Graphics                Com 82706L108 3,876,125         281,900.00 SH   SOLE         165,600.00      116,300.00
+Silicon Laboratories Inc        Com 826919102 5,066,600         122,500.00 SH   SOLE          72,600.00       49,900.00
+Sirius Satellite Radio          Com 82967N108   144,298          46,850.00 SH   SOLE          46,850.00            0.00
+Sirona Dental Systems Inc       Com 82966C103    73,730           1,000.00 SH   SOLE           1,000.00            0.00
+Six Entertainment Corp          Com 83001A102    57,984             800.00 SH   SOLE             800.00            0.00
+Skechers USA Inc -Cl A          Com 830566105 6,256,170         295,800.00 SH   SOLE         175,000.00      120,800.00
+Smith (A 0) Corp                Com 831865209    58,856             800.00 SH   SOLE             800.00            0.00
+Solarwinds Inc                  Com 83416B109    94,560           1,600.00 SH   SOLE           1,600.00            0.00
+Solera Holdings Inc             Com 83421A104    52,497             900.00 SH   SOLE             900.00            0.00
+Sourcefire Inc                  Com 83616T108 10,922,012        184,400.00 SH   SOLE         110,000.00       74,400.00
+Southern Peru Copper            Com 84265V105   602,999          16,050.00 SH   SOLE          16,050.00            0.00
+Southwest Airlines Co           Com 844741108   272,296          20,200.00 SH   SOLE          20,200.00            0.00
+Southwestern Energy Co          Com 845467109    52,164           1,400.00 SH   SOLE           1,400.00            0.00
+Stancorp Finl Group Inc         Com 852891100 6,037,712         141,200.00 SH   SOLE         100,800.00       40,400.00
+Starbucks Corp                  Com 855244109   558,110           9,800.00 SH   SOLE           9,800.00            0.00
+Starwood Hotels & Resorts       Com 85590A401   184,817           2,900.00 SH   SOLE           2,900.00            0.00
+Starwood Property Trust Inc     Com 85571B105 5,887,896         212,100.00 SH   SOLE         151,500.00       60,600.00
+State Street Corp               Com 857477103   431,357           7,300.00 SH   SOLE           7,300.00            0.00
+Steelcase Inc -Cl A             Com 858155203    44,190           3,000.00 SH   SOLE           3,000.00            0.00
+Stepan Co                       Com 858586100    37,860             600.00 SH   SOLE             600.00            0.00
+Steris Corp                     Com 859152100    41,610           1,000.00 SH   SOLE           1,000.00            0.00
+Stillwater Mining Co            Com 86074Q102 6,143,043         475,100.00 SH   SOLE         281,600.00      193,500.00
+Stryker Corp                    Com 863667101   264,222           4,050.00 SH   SOLE           4,050.00            0.00
+SunPower Corp                   Com 867652406 6,984,008         605,200.00 SH   SOLE         358,900.00      246,300.00
+Sunstone Hotel Investors Inc    Com 867892101 4,735,657         384,700.00 SH   SOLE         274,200.00      110,500.00
+Support.com Inc                 Com 86858W101 2,059,904         492,800.00 SH   SOLE         289,400.00      203,400.00
+Surmodics Inc                   Com 868873100 3,084,700         113,200.00 SH   SOLE          66,500.00       46,700.00
+Swift Transportation Co         Com 87074U101 8,960,342         631,900.00 SH   SOLE         474,900.00      157,000.00
+Swifth Energy Co                Com 870738101 5,935,848         400,800.00 SH   SOLE         286,200.00      114,600.00
+Sykes Enterprises Inc           Com 871237103 2,829,995         177,318.00 SH   SOLE         126,518.00       50,800.00
+Symantec Corp                   Com 871503108   162,888           6,600.00 SH   SOLE           6,600.00            0.00
+Symetra Financial Corp          Com 87151Q106 9,124,164         680,400.00 SH   SOLE         485,800.00      194,600.00
+Synaptics Inc                   Com 87157D109 6,929,507         170,300.00 SH   SOLE         100,900.00       69,400.00
+Synergy Resources Corp          Com 87164P103 2,219,896         323,600.00 SH   SOLE         190,100.00      133,500.00
+Synopsys Inc                    Com 871607107    46,644           1,300.00 SH   SOLE           1,300.00            0.00
+Syntel Inc                      Com 87162H103    67,520           1,000.00 SH   SOLE           1,000.00            0.00
+Sysco Corp                      Com 871829107    52,755           1,500.00 SH   SOLE           1,500.00            0.00
+T. Rowe Price Group Inc         Com 74144T108   164,714           2,200.00 SH   SOLE           2,200.00            0.00
+TASER International Inc         Com 87651B104 2,825,430         355,400.00 SH   SOLE         208,800.00      146,600.00
+TJX Companies Inc               Com 872540109   906,950          19,400.00 SH   SOLE          19,400.00            0.00
+TRW Automotive Hldgs            Com 87264S106   104,500           1,900.00 SH   SOLE           1,900.00            0.00
+Targa Resources Corp            Com 87612G101    67,960           1,000.00 SH   SOLE           1,000.00            0.00
+Target Corp                     Com 87612E106   205,350           3,000.00 SH   SOLE           3,000.00            0.00
+Terex Corp                      Com 880779103 3,565,912         103,600.00 SH   SOLE          74,000.00       29,600.00
+Tesoro Corporation              Com 881609101 5,146,545          87,900.00 SH   SOLE          63,950.00       23,950.00
+Tetra Technologies Inc          Com 88162F105 6,942,942         676,700.00 SH   SOLE         459,000.00      217,700.00
+Texas Instruments Inc           Com 882508104   102,892           2,900.00 SH   SOLE           2,900.00            0.00
+Textron Inc                     Com 883203101    77,506           2,600.00 SH   SOLE           2,600.00            0.00
+The Bancorp Inc                 Com 05969A105 5,620,150         405,787.00 SH   SOLE         272,602.00      133,185.00
+Thermo Fisher Scientific Inc    Com 883556102   114,735           1,500.00 SH   SOLE           1,500.00            0.00
+Thomson Reuters Corp            Com 884903105   328,048          10,100.00 SH   SOLE          10,100.00            0.00
+Time Warner Cable Inc           Com 88732J207    91,257             950.00 SH   SOLE             950.00            0.00
+Time Warner Inc                 Com 887317303 11,322,330        196,500.00 SH   SOLE         196,500.00            0.00
+Torchmark Corp                  Com 891027104    86,710           1,450.00 SH   SOLE           1,450.00            0.00
+Toro Company                    Com 891092108    69,060           1,500.00 SH   SOLE           1,500.00            0.00
+Tractor Supply Co               Com 892356106   109,337           1,050.00 SH   SOLE           1,050.00            0.00
+Travelers Companies Inc         Com 89417E109 8,263,249          98,150.00 SH   SOLE          98,150.00            0.00
+Trex Co Inc                     Com 89531P105 5,655,700         115,000.00 SH   SOLE          68,200.00       46,800.00
+Triumph Group Inc               Com 896818101 6,813,800          86,800.00 SH   SOLE          51,700.00       35,100.00
+True Religion Apparel Inc       Com 89784N104 5,715,479         218,900.00 SH   SOLE         129,700.00       89,200.00
+Tuesday Morning Corp            Com 899035505 2,936,384         378,400.00 SH   SOLE         222,300.00      156,100.00
+Tupperware Brands               Com 899896104 4,577,440          56,000.00 SH   SOLE          40,150.00       15,850.00
+Tyco Int'l                      Com H89128104   451,200          14,100.00 SH   SOLE          14,100.00            0.00
+Tyler Technologies Inc          Com 902252105    45,945             750.00 SH   SOLE             750.00            0.00
+Tyson Foods Inc -Cl A           Com 902494103   116,654           4,700.00 SH   SOLE           4,700.00            0.00
+U.S. Bancorp                    Com 902973304    96,701           2,850.00 SH   SOLE           2,850.00            0.00
+UIL Holdings                    Com 902748102    59,385           1,500.00 SH   SOLE           1,500.00            0.00
+Ultimate Software Group Inc     Com 90385D107    57,288             550.00 SH   SOLE             550.00            0.00
+Ultratech Stepper Inc           Com 904034105    43,483           1,100.00 SH   SOLE           1,100.00            0.00
+Union Pacific Corp              Com 907818108   797,496           5,600.00 SH   SOLE           5,600.00            0.00
+United Continental Hldgs Inc    Com 910047109 9,001,212         281,200.00 SH   SOLE         281,200.00            0.00
+United Parcel Service           Com 911312106   188,980           2,200.00 SH   SOLE           2,200.00            0.00
+Universal Health Svcs -B        Com 913903100    44,709             700.00 SH   SOLE             700.00            0.00
+Unum Group                      Com 91529Y106    64,975           2,300.00 SH   SOLE           2,300.00            0.00
+Urban Outfitters Inc            Com 917047102 4,362,124         112,600.00 SH   SOLE         112,600.00            0.00
+VF Corp                         Com 918204108   100,650             600.00 SH   SOLE             600.00            0.00
+VISA Inc                        Com 92826C839   322,696           1,900.00 SH   SOLE           1,900.00            0.00
+Valero Energy Corp              Com 91913Y100   791,526          17,400.00 SH   SOLE          17,400.00            0.00
+Valmont Industries Inc          Com 920253101    62,908             400.00 SH   SOLE             400.00            0.00
+Valspar Corp                    Com 920355104    62,250           1,000.00 SH   SOLE           1,000.00            0.00
+ValueVision Media Inc           Com 92047K107 2,840,487         820,950.00 SH   SOLE         482,150.00      338,800.00
+Varian Medical Sys Inc          Com 92220P105   104,400           1,450.00 SH   SOLE           1,450.00            0.00
+Verisign Inc                    Com 92343E102 10,536,483        222,900.00 SH   SOLE         222,900.00            0.00
+Verisk Analytics Inc            Com 92345Y106   172,536           2,800.00 SH   SOLE           2,800.00            0.00
+Verizon Communications          Com 92343V104 1,894,733          38,550.00 SH   SOLE          38,550.00            0.00
+Vertex Pharmeceuticals          Com 92532F100   456,251           8,300.00 SH   SOLE           8,300.00            0.00
+Viacom Inc New Cl-B             Com 92553P201   421,138           6,850.00 SH   SOLE           6,850.00            0.00
+Viasat Inc                      Com 92552V100 9,106,720         188,000.00 SH   SOLE         188,000.00            0.00
+ViRIGHT Investment Partners Inc Com 92828Q109    55,884             300.00 SH   SOLE             300.00            0.00
+Vitesse Semiconductor           Com 928497304   863,568         399,800.00 SH   SOLE         234,800.00      165,000.00
+Vocus Inc                       Com 92858J108 1,938,550         137,000.00 SH   SOLE          80,400.00       56,600.00
+WMS Industries                  Com 929297109 4,222,675         167,500.00 SH   SOLE         119,600.00       47,900.00
+Wabtec Corp                     Com 929740108    61,266             600.00 SH   SOLE             600.00            0.00
+Waddell & Reed Financial        Com 930059100   131,340           3,000.00 SH   SOLE           3,000.00            0.00
+Wal-Mart Stores                 Com 931142103 2,594,132          34,667.00 SH   SOLE          34,667.00            0.00
+Walgreen Co                     Com 931422109   295,616           6,200.00 SH   SOLE           6,200.00            0.00
+Warren Resources Inc            Com 93564A100 1,546,897         481,150.00 SH   SOLE         282,650.00      198,500.00
+Waters Corp                     Com 941848103    75,128             800.00 SH   SOLE             800.00            0.00
+Watts Water Technologies Inc    Com 942749102    43,191             900.00 SH   SOLE             900.00            0.00
+WebMD Health Corp               Com 94770V102 6,026,496         247,800.00 SH   SOLE         146,800.00      101,000.00
+Wells Fargo & Co                Com 949746101 1,032,021          27,900.00 SH   SOLE          27,900.00            0.00
+West Pharmaceutical Svsc Inc    Com 955306105    58,446             900.00 SH   SOLE             900.00            0.00
+Western Digital Corp            Com 958102105   158,414           3,150.00 SH   SOLE           3,150.00            0.00
+Western Refining Inc            Com 959319104   102,689           2,900.00 SH   SOLE           2,900.00            0.00
+Westlake Chemical Corp          Com 960413102    84,150             900.00 SH   SOLE             900.00            0.00
+Wet Seal Inc -Cl A              Com 961840105 2,050,580         679,000.00 SH   SOLE         398,800.00      280,200.00
+Whirlpool Corp                  Com 963320106   165,844           1,400.00 SH   SOLE           1,400.00            0.00
+White Mtns Ins Group Ltd        Com G9618E107    68,054             120.00 SH   SOLE             120.00            0.00
+Williams Cos Inc                Com 969457100   116,126           3,100.00 SH   SOLE           3,100.00            0.00
+Williams-Sonoma Inc             Com 969904101    61,824           1,200.00 SH   SOLE           1,200.00            0.00
+Wilshire Bancorp Inc            Com 97186T108 1,901,112         280,400.00 SH   SOLE         164,700.00      115,700.00
+Wisconsin Energy Corp           Com 976657106    94,358           2,200.00 SH   SOLE           2,200.00            0.00
+Worthington Industries          Com 981811102    71,254           2,300.00 SH   SOLE           2,300.00            0.00
+Wyndham Worldwide Corp          Com 98310W108 2,559,856          39,700.00 SH   SOLE          28,700.00       11,000.00
+XL Group Ltd                    Com G98290102   242,400           8,000.00 SH   SOLE           8,000.00            0.00
+Xerox Corp                      Com 984121103   106,640          12,400.00 SH   SOLE          12,400.00            0.00
+Zebra Technologies Corp         Com 989207105    51,843           1,100.00 SH   SOLE           1,100.00            0.00
+Zeltiq Aesthetics Inc           Com 98933Q108 1,014,825         265,661.00 SH   SOLE         155,961.00      109,700.00
+Zimmer Holdings Inc             Com 98956P102   157,962           2,100.00 SH   SOLE           2,100.00            0.00
+Zion Bancorporation             Com 989701107   187,425           7,500.00 SH   SOLE           7,500.00            0.00
+
+
+</TABLE>
+</TEXT>
+</DOCUMENT>
+</SEC-DOCUMENT>

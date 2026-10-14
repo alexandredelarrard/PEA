@@ -800,7 +800,66 @@ def test_empty_cover_is_silent_and_marked_once(sqlite_store, monkeypatch, caplog
     )
 
 
-@pytest.mark.parametrize("kind", ["text", "xml", "xml_no_information_table", "xml_no_information_table_count_0_value"])
+def _positive_total_empty_cover_filing(kind: str) -> _FakeFiling:
+    """A cover declaring 0 entries worth 1,234 (an all-exits book) with no holding lines."""
+    accession = "0000000001-01-000321"
+    if kind == "text":
+        return _TextFiling(ROSTER, "2001-05-15", "2001-03-31", [], accession=accession, raw=_legacy_cover("0", "1,234"))
+    if kind == "xml":
+        return _DeclaredXmlFiling(ROSTER, "2026-05-15", "2026-03-31", [], accession=accession, entries=0, value=1_234.0)
+    return _NoInfoTableXmlFiling(ROSTER, "2026-05-15", "2026-03-31", [], accession=accession, entries=0, value=1_234.0)
+
+
+@pytest.mark.parametrize("kind", ["text", "xml", "xml_no_information_table"])
+def test_zero_count_cover_with_a_positive_total_is_marked_once_keeping_the_total(sqlite_store, monkeypatch, caplog, kind):
+    filing = _positive_total_empty_cover_filing(kind)
+    _seed_roster(sqlite_store, [ROSTER])
+    _patch_walk(monkeypatch, [filing])
+    real_obj, obj_calls = f13.filing_obj, []
+
+    def _spy_obj(f: Any) -> Any:
+        obj_calls.append(f.accession_number)
+        return real_obj(f)
+
+    monkeypatch.setattr(f13, "filing_obj", _spy_obj)
+    saver = f13._Saver(_ctx(sqlite_store), set(UNIVERSE), {ROSTER}, save_every=1)
+
+    with caplog.at_level(logging.WARNING):
+        held = f13._first_pass([filing], saver)
+        first_reads = len(obj_calls)
+        held += f13._first_pass([filing], saver)
+
+    loud = [f"{r.levelname}: {r.getMessage()}" for r in caplog.records if r.levelno >= logging.WARNING]
+    assert not loud and not held, (loud, held)
+    totals = {}
+    for table in (Tables.sec13f_hr, Tables.sec13f_manager_holdings):
+        marker = _markers(sqlite_store, table, filing.accession_number)
+        assert len(marker) == 1, marker
+        row = marker.iloc[0]
+        assert int(row.source_row_count) == 0 and int(row.declared_row_count) == 0 and float(row.source_value_total) == 0.0, row
+        assert float(row.declared_value_total) == 1234.0, row.declared_value_total
+        positions = sqlite_store.load(table, optional=True)
+        assert positions is None or not positions.accession_number.eq(filing.accession_number).any()
+        totals[table.name] = float(row.declared_value_total)
+    assert first_reads == 1 and len(obj_calls) == 1, obj_calls
+    print(
+        f"SANITY: 0-entry cover worth 1,234 ({kind}) -> one complete marker per table, declared_value_total {totals} as filed, "
+        f"0 WARNING/ERROR, filing_obj calls {first_reads} then 0; an all-exits book, never refetched."
+    )
+
+
+def test_zero_count_positive_total_cover_over_a_holding_line_fails():
+    """SYNTHETIC: a 0-entry cover worth 1,234 over one real-looking holding line is a contradiction."""
+    row = "Abbott Laboratories   Common  002824100       946   26775      0      0None  None    26775None       0\n"
+    raw = _zero_total_raw("", row).replace("Value Total:\t0", "Value Total:\t1,234")
+    assert "Value Total:\t1,234" in raw
+    filing = _TextFiling(ROSTER, "2005-10-31", "2005-09-30", [], accession="0000000001-05-000790", raw=raw)
+    failure = f13.read_filing_vintage(FilingStamp.of(filing, ""))
+    assert isinstance(failure, f13.ReadFailure) and "cover declares an empty book" in failure.reason, failure
+    print(f"SANITY: SYNTHETIC 0 / 1,234 cover over one 002824100 line -> ReadFailure {failure.reason[:80]!r}; the holding still wins.")
+
+
+@pytest.mark.parametrize("kind", ["text", "xml", "xml_no_information_table"])
 def test_nonzero_cover_zero_lines_fails_loudly(sqlite_store, monkeypatch, caplog, kind):
     accession = "0000000001-01-000456"
     if kind == "text":
@@ -808,8 +867,7 @@ def test_nonzero_cover_zero_lines_fails_loudly(sqlite_store, monkeypatch, caplog
     elif kind == "xml":
         filing = _DeclaredXmlFiling(ROSTER, "2026-05-15", "2026-03-31", [], accession=accession, entries=2, value=1_500.0)
     else:
-        entries = 2 if kind == "xml_no_information_table" else 0
-        filing = _NoInfoTableXmlFiling(ROSTER, "2026-05-15", "2026-03-31", [], accession=accession, entries=entries, value=1_500.0)
+        filing = _NoInfoTableXmlFiling(ROSTER, "2026-05-15", "2026-03-31", [], accession=accession, entries=2, value=1_500.0)
     _seed_roster(sqlite_store, [ROSTER])
     _patch_walk(monkeypatch, [filing])
 

@@ -859,8 +859,9 @@ def _cover_ratio_units(raw: str, units: ValueUnits, cell_total: float) -> ValueU
 
 def text_filing_vintage(raw: str, stamp: FilingStamp) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Reuse the source-reconciled pre-XML parser; unsupported cover semantics remain explicit.
-    A cover declaring no entries (or a zero total and no count) is a complete empty book, not parsed,
-    unless the text holds a holding (a valid CUSIP or a non-zero amount): that contradiction fails."""
+    A cover declaring no entries (or a zero total and no count) is a complete empty book that keeps
+    its filed total, not parsed, unless the text holds a holding (a valid CUSIP or a non-zero
+    amount): that contradiction fails."""
     units = resolve_value_units(stamp.filed, information_table_text=raw)
     count = _ENTRY_COUNT.search(raw)
     total = _VALUE_TOTAL.search(raw) or _FOOTER_TOTAL.search(raw)
@@ -871,7 +872,7 @@ def text_filing_vintage(raw: str, stamp: FilingStamp) -> tuple[pd.DataFrame, pd.
         if holding_lines := _genuine_holding_lines(raw):
             raise ValueError(f"13F cover declares an empty book but the text holds {holding_lines} holding line(s)")
         info = pd.DataFrame(columns=_LEGACY_INFO_COLS)
-        declared_rows, declared_value = 0, 0.0
+        declared_rows, declared_value = 0, declared_value or 0.0
     else:
         info = parse_legacy_information_table(raw, value_factor=1.0, verify_values=False)
         _warn_blank_cusip_lines(stamp.accession_number, info)

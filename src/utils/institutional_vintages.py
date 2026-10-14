@@ -56,8 +56,11 @@ def reconcile_13f_source(
         raise ValueError(f"13F source VALUE total does not reconcile: rows={source_value:g}, declared={declared_value!r}")
     if declared_value is None:
         return 1.0
-    if source_rows == 0 and (source_value != 0 or declared_value != 0):
-        raise ValueError("13F empty source has a positive declared VALUE total")
+    if source_rows == 0:
+        # A cover declaring 0 entries with a positive total is an all-exits book; the total stays as filed.
+        if source_value != 0 or (declared_value != 0 and (declared_rows != 0 or source_accounted)):
+            raise ValueError("13F empty source has a positive declared VALUE total")
+        return 1.0
     if math.isclose(source_value, declared_value, rel_tol=0.005, abs_tol=1.0):
         return 1.0
     if source_value > 0 and declared_value > 0:

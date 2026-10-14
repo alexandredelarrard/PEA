@@ -224,10 +224,43 @@ def test_source_value_ratio_boundaries(factor: float, ratio: float, accepted: bo
 
 def test_empty_source_requires_zero_values() -> None:
     assert reconcile_13f_source(0, 0, 0, 0) == 1.0
-    for source_value, declared_value in ((0, 1), (1, 0), (1, 1)):
+    for source_value, declared_value in ((1, 0), (1, 1)):
         with pytest.raises(ValueError, match="empty source"):
             reconcile_13f_source(0, 0, source_value, declared_value)
-    print("SANITY: a completed empty book must have zero raw and cover value; inconsistent emptiness cannot create exits.")
+    print("SANITY: a completed empty book must have zero raw value; inconsistent emptiness cannot create exits.")
+
+
+def test_zero_count_cover_keeps_its_positive_total_as_a_complete_empty_book() -> None:
+    assert reconcile_13f_source(0, 0, 0.0, 1234.0) == 1.0
+    with pytest.raises(ValueError, match="row count"):
+        reconcile_13f_source(0, 2, 0.0, 1234.0)
+    for declared_rows, accounted in ((None, True), (0, True)):
+        with pytest.raises(ValueError, match="empty source"):
+            reconcile_13f_source(0, declared_rows, 0.0, 1234.0, source_accounted=accounted)
+    with pytest.raises(ValueError, match="row count"):
+        reconcile_13f_source(3, 0, 1234.0, 1234.0)
+    print(
+        "SANITY: cover 0 entries / 1,234 over 0 rows -> factor 1.0 (an all-exits book keeps its filed total); "
+        "count 2 over 0 rows, a count-less or source-accounted empty source, and 0 entries over 3 rows still fail."
+    )
+
+
+def test_filing_vintage_stores_a_zero_count_cover_total_as_filed() -> None:
+    manifest, book = filing_vintage(
+        pd.DataFrame(columns=["CUSIP", "VALUE", "SSHPRNAMT", "SSHPRNAMTTYPE"]),
+        cik="1",
+        accession_number="all-exits",
+        period="2001-03-31",
+        filing_date="2001-05-15",
+        amendment_type="original",
+        source="known-truth",
+        declared_rows=0,
+        declared_value=1234.0,
+    )
+    row = manifest.iloc[0]
+    assert book.empty and row.source_row_count == 0 and row.declared_row_count == 0
+    assert row.source_value_total == 0.0 and row.declared_value_total == 1234.0 and row.parse_status == "complete"
+    print(f"SANITY: 0-entry cover worth 1,234 -> complete manifest, 0 rows, declared_value_total {row.declared_value_total:g} kept raw as filed.")
 
 
 @pytest.mark.parametrize("ratio", [2.0, 20.0, 200.0, 2000.0])

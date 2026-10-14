@@ -142,7 +142,7 @@ def insider_calls(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict[str, 
     calls: list[tuple[str, dict[str, Any]]] = []
     config = SimpleNamespace(data_extract=SimpleNamespace(years_history=15))
     monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, SimpleNamespace(name="ctx")))
-    monkeypatch.setattr(cli_mod, "_tickers", lambda ctx, names: [t.strip().upper() for t in names.split(",")] if names else ["ALL"])
+    monkeypatch.setattr(cli_mod, "load_universe_tickers", lambda ctx: ["ALL"])
     monkeypatch.setattr(cli_mod, "fetch_insider_transactions", lambda context, **kwargs: calls.append(("bulk", kwargs)))
     monkeypatch.setattr(cli_mod, "fetch_insider_edgar", lambda context, **kwargs: calls.append(("edgar", kwargs)))
     return calls
@@ -178,6 +178,7 @@ def test_f109_f115_identity_propagate_every_ticker_and_notes_download_years_reac
     calls: list[tuple[str, dict[str, Any]]] = []
     monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, SimpleNamespace(name="ctx")))
     monkeypatch.setattr(cli_mod, "_tickers", lambda ctx, names: ["AAA"])
+    monkeypatch.setattr(cli_mod, "load_universe_tickers", lambda ctx: ["AAA"])
     monkeypatch.setattr(
         cli_mod,
         "propagate_identity",

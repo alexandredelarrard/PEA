@@ -123,13 +123,15 @@ def published_data_sets(context: Context) -> list[DataSet] | None:
     return sorted((DataSet.parse(name) for name in names), key=lambda d: d.start)
 
 
-def backfill_targets(context: Context, tickers: list[str] | None, as_of: pd.Timestamp, full: bool) -> list[str]:
+def backfill_targets(
+    context: Context, tickers: list[str] | None, as_of: pd.Timestamp, full: bool, *, all_tickers: list[str] | None = None
+) -> list[str]:
     """The tickers to backfill: universe tickers added inside `sec13f_hr`'s overlap (narrowed to `tickers`
     when given); under `full`, `tickers` or else the whole universe, whatever their age."""
-    universe = set(load_universe_tickers(context))
-    asked = None if tickers is None else {str(t).strip().upper() for t in tickers}
     if full:
-        return sorted(asked if asked is not None else universe)
+        return sorted(set(tickers)) if tickers is not None else (load_universe_tickers(context) if all_tickers is None else all_tickers)
+    universe = set(load_universe_tickers(context) if all_tickers is None else all_tickers)
+    asked = None if tickers is None else set(tickers)
     overlap = cast(Resume, Tables.sec13f_hr.resume).overlap_days
     new = new_tickers(context.store, overlap, as_of) & universe
     return sorted(new if asked is None else new & asked)
@@ -402,7 +404,9 @@ def mark_gap_walked(context: Context, tickers: list[str], since: pd.Timestamp) -
     return save_hr(context, pd.concat(markers, ignore_index=True)) if markers else 0
 
 
-def _walk_gap(context: Context, data_sets: list[DataSet], cache: Path, tickers: list[str], as_of: pd.Timestamp, full: bool) -> None:
+def _walk_gap(
+    context: Context, data_sets: list[DataSet], cache: Path, tickers: list[str], as_of: pd.Timestamp, full: bool, *, all_tickers: list[str]
+) -> None:
     """One EDGAR walk from the day after the newest cached data set ends to the latest join date, for
     the gap tickers only, then one marker per ticker. A listed data set whose ZIP is not cached (not
     published yet) is no coverage; with none cached the walk waits for the next run. A walk that raises
@@ -418,7 +422,13 @@ def _walk_gap(context: Context, data_sets: list[DataSet], cache: Path, tickers: 
     until = max(due.values())
     logger.info("13F backfill: EDGAR walk %s:%s for %s (after the newest data set)", f"{since:%Y-%m-%d}", f"{until:%Y-%m-%d}", ", ".join(sorted(due)))
     years_history = int(context.config.data_extract.years_history)
-    unread = fetch_13f(context, tickers=sorted(due), years_history=years_history, filing_window=(f"{since:%Y-%m-%d}", f"{until:%Y-%m-%d}"))
+    unread = fetch_13f(
+        context,
+        tickers=sorted(due),
+        years_history=years_history,
+        filing_window=(f"{since:%Y-%m-%d}", f"{until:%Y-%m-%d}"),
+        all_tickers=all_tickers,
+    )
     if unread:
         logger.warning(
             "13F backfill: %d filing(s) of the gap walk stayed unread; no ticker is marked walked, so the gap is walked again next run", unread
@@ -427,12 +437,15 @@ def _walk_gap(context: Context, data_sets: list[DataSet], cache: Path, tickers: 
     mark_gap_walked(context, sorted(due), since)
 
 
-def fetch_13f_backfill(context: Context, tickers: list[str] | None, as_of: pd.Timestamp, *, full: bool = False) -> int:
+def fetch_13f_backfill(
+    context: Context, tickers: list[str] | None, as_of: pd.Timestamp, *, full: bool = False, all_tickers: list[str] | None = None
+) -> int:
     """Fill `sec13f_hr` from the 13F data sets for the tickers `backfill_targets` selects, then walk
     EDGAR over their gap after the newest data set. Full roster books also enter their destination.
     Returns broad rows saved from the data sets. With no
     ticker due it reads nothing but the universe and downloads nothing."""
-    targets = backfill_targets(context, tickers, as_of, full)
+    universe = load_universe_tickers(context) if all_tickers is None else all_tickers
+    targets = backfill_targets(context, tickers, as_of, full, all_tickers=universe)
     if not targets:
         logger.info("13F backfill: no new ticker; nothing to do")
         return 0
@@ -467,7 +480,7 @@ def fetch_13f_backfill(context: Context, tickers: list[str] | None, as_of: pd.Ti
     for data_set, due, path, submissions in tqdm(archived, desc="13F filing versions"):
         saved += _backfill_data_set(context, path, data_set, due, cmap, relevant_ciks, submissions, saver=saver, completed=completed)
     logger.info("13F backfill: saved %d row(s) for %d ticker(s) from %d data set(s)", saved, len(targets), len(work))
-    _walk_gap(context, data_sets, cache, targets, as_of, full)
+    _walk_gap(context, data_sets, cache, targets, as_of, full, all_tickers=universe)
     return saved
 
 

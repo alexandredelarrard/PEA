@@ -11,6 +11,7 @@ comes from `fetch_financial_notes.py`.
 from __future__ import annotations
 
 import logging
+from collections.abc import Collection
 from datetime import date
 from pathlib import Path
 from typing import cast
@@ -129,7 +130,13 @@ def _save_pension_quarter(context: Context, identity: Identity, path: Path, quar
 
 
 def fetch_financial_statements(
-    context: Context, tickers: list[str], years_history: int, reparse: bool = False, as_of: pd.Timestamp | None = None
+    context: Context,
+    tickers: list[str],
+    years_history: int,
+    reparse: bool = False,
+    as_of: pd.Timestamp | None = None,
+    *,
+    all_tickers: Collection[str] | None = None,
 ) -> int:
     """Extract universe pension facts over `years_history` into `pension_facts`; returns rows upserted.
 
@@ -145,7 +152,9 @@ def fetch_financial_statements(
     first_year = pd.Timestamp(cast(str, cast(Resume, Tables.pension_facts.resume).source_start)).year
     periods = quarter_periods(years_history + 1, first_year, run_date)
     observed_from = date.fromisoformat(cast(str, cast(Resume, Tables.pension_facts.resume).observed_from))
-    work = archive_worklist(context, (Tables.pension_facts,), periods, cached_periods(cache), tickers, run_date, full=reparse)
+    work = archive_worklist(
+        context, (Tables.pension_facts,), periods, cached_periods(cache), tickers, run_date, full=reparse, all_tickers=all_tickers
+    )
 
     saved = 0
     for q, keys in tqdm(list(work.units()), desc="financial-statement data sets"):

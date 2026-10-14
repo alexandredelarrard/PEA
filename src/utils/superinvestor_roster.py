@@ -196,7 +196,8 @@ def _load_superinvestor_roster(context: Context) -> pd.DataFrame | None:
     `snapshot_date` is a SQL DATE, so psycopg2 hands back `datetime.date` objects that
     compare unequal to the `Timestamp` every caller holds -- coerce once, here."""
     df = context.store.load(Tables.superinvestor_roster, columns=_COLS, optional=True)
-    assert df is not None
+    if df is None:
+        return None
     df["snapshot_date"] = pd.to_datetime(df["snapshot_date"])
     return df
 

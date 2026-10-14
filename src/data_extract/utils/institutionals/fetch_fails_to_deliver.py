@@ -135,7 +135,7 @@ def _parse_ftd_lines(raw: str) -> pd.DataFrame:
         {
             "date": pd.to_datetime(_ftd_column(df, cols, "SETTLEMENT DATE"), format="%Y%m%d", errors="coerce"),
             "cusip": _ftd_column(df, cols, "CUSIP").str.upper(),
-            "source_symbol": _ftd_column(df, cols, "SYMBOL").str.upper(),
+            "source_symbol": _ftd_column(df, cols, "SYMBOL").map(normalise_ticker),
             "description": _ftd_column(df, cols, "DESCRIPTION"),
             "price": price,
             "fails_quantity": qty,
@@ -176,7 +176,7 @@ def prepare_master(master: pd.DataFrame) -> pd.DataFrame:
     rows = master[master["source"].eq(SOURCE_FTD)] if "source" in master.columns else master
     out = rows[_MASTER_COLUMNS].copy()
     out["cusip"] = out["cusip"].astype(str).str.strip().str.upper()
-    out["source_symbol"] = out["source_symbol"].fillna("").astype(str).str.strip().str.upper()
+    out["source_symbol"] = out["source_symbol"].fillna("").map(normalise_ticker)
     out["valid_from"] = pd.to_datetime(out["valid_from"])
     out["valid_to"] = pd.to_datetime(out["valid_to"]).fillna(_FAR)
     out["conversion_ratio"] = pd.to_numeric(out["conversion_ratio"]).fillna(1.0).astype("float64")
@@ -210,7 +210,7 @@ def stamp_lines(lines: pd.DataFrame, master: pd.DataFrame) -> pd.DataFrame:
         {
             "_row": out.index,
             "cusip": out["cusip"].astype(str).str.strip().str.upper(),
-            "source_symbol": out["source_symbol"].fillna("").astype(str).str.strip().str.upper(),
+            "source_symbol": out["source_symbol"].fillna("").map(normalise_ticker),
             "trade_date": out["trade_date"],
         }
     )
@@ -418,6 +418,7 @@ def restamp_fails(
     master: pd.DataFrame | None = None,
     dry_run: bool = False,
     as_of: pd.Timestamp | None = None,
+    others: frozenset[str] | None = None,
 ) -> list[dict]:
     """Re-stamp the stored lines of `companies` from the master and rebuild their ticker rows, writing only what changed.
 
@@ -434,8 +435,8 @@ def restamp_fails(
         companies = restamp_targets(context, Tables.sec_fails_to_deliver_security, master_stamps(master), as_of)
     if not companies:
         return []
-    universe = frozenset(normalise_ticker(ticker) for ticker in tickers)
-    others = outside_scope(context, universe)
+    universe = frozenset(tickers)
+    others = outside_scope(context, universe) if others is None else others
     names = sorted(set(companies) - others)
     if not names:
         return []
@@ -460,24 +461,31 @@ def restamp_fails(
     return records
 
 
-def fetch_fails_to_deliver(context: Context, tickers: Sequence[str], full: bool = False, as_of: pd.Timestamp | None = None) -> int:
+def fetch_fails_to_deliver(
+    context: Context,
+    tickers: Sequence[str],
+    full: bool = False,
+    as_of: pd.Timestamp | None = None,
+    *,
+    all_tickers: Collection[str] | None = None,
+) -> int:
     """Stamp the stored raw FTD lines from `security_master` and rebuild `sec_fails_to_deliver`; returns ticker rows written.
 
     Incremental: the NULL-stamped lines (new from `ftd-download`) and the lines of companies whose master rows changed
     recently; no ZIP is read. `full` rebuilds both tables from every cached ZIP; a scoped (`-t`) `full` upserts only
     its tickers' lines and rows.
     """
-    universe = frozenset(normalise_ticker(ticker) for ticker in tickers)
+    universe = frozenset(tickers)
     master = load_fails_master(context)
     if master is None or master.empty:
         logger.warning("FTD: no security_master yet (run identity-tables first); nothing stamped")
         return 0
-    others = outside_scope(context, universe)
+    others = outside_scope(context, universe, all_tickers)
     if full:
         _, saved = _rebuild_from_cache(context, master, universe, others)
     else:
         saved = _stamp_new(context, master, universe, others)
-        warn_lost_rows(logger, "FTD", restamp_fails(context, None, universe, master=master, as_of=as_of))
+        warn_lost_rows(logger, "FTD", restamp_fails(context, None, universe, master=master, as_of=as_of, others=others))
     return saved
 
 

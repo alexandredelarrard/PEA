@@ -23,7 +23,8 @@ import pytest
 from sqlalchemy import text
 
 from src.data_aggregate.utils.institutionals.frontiers import schedule_complete_through
-from src.data_extract.utils.common import edgar_driver, edgar_index
+from src.data_extract import cli as cli_mod
+from src.data_extract.utils.common import edgar_driver, edgar_index, resume
 from src.data_extract.utils.common.identity import Identity, build_identity
 from src.data_extract.utils.common.sec_utils import CIK_MAPPING_COLS
 from src.data_extract.utils.institutionals import fetch_insider_edgar as edgar
@@ -391,8 +392,10 @@ def test_edgar_replaces_a_zip_filing_wholesale_and_keeps_its_quarter(tmp_path, s
     assert list(rows_a["shares"]) == [30.0, 31.0], "EDGAR's values replace the zip's"
     rows_b = _rows_of(df_after, B.accession)
     assert len(rows_b) == 2 and set(rows_b["source"]) == {"edgar"} and list(rows_b["quarter"]) == ["2026q2", "2026q2"]
-    # NULL-normalised: a column all-NULL on zip rows (e.g. `acceptance_datetime`) reads back typed once EDGAR rows fill it
-    pd.testing.assert_frame_equal(_nulls_as_none(_rows_of(df_after, C.accession)), _nulls_as_none(_rows_of(df_zip, C.accession)))
+    # EDGAR can add nullable columns to SQLite; the untouched ZIP row must still agree over the complete schema.
+    pd.testing.assert_frame_equal(
+        _nulls_as_none(_rows_of(df_after, C.accession)), _nulls_as_none(_rows_of(df_zip, C.accession).reindex(columns=df_after.columns))
+    )
     rows_n = _rows_of(df_after, N.accession)
     assert list(rows_n["source"]) == ["edgar"] and rows_n["quarter"].isna().all()
     assert X.accession not in set(df_after["accession_number"])
@@ -474,9 +477,8 @@ def test_a_ticker_subset_run_never_deletes_another_universe_company(tmp_path, sq
     )
 
 
-def test_un_normalised_universe_tickers_sweep_against_the_loaded_universe(tmp_path, sqlite_store, monkeypatch, identity_two, caplog):
-    """F-002: `[" bbb ", "aaa"]` equals the universe once normalised, so the sweep runs, and it must
-    adjudicate against the loaded universe, not the raw spelling, so every universe company's rows survive."""
+def test_cli_csv_tickers_sweep_against_the_loaded_universe(tmp_path, sqlite_store, monkeypatch, identity_two, caplog):
+    """CSV spelling is normalized at the CLI boundary; the full-universe sweep keeps both companies."""
     caplog.set_level(logging.INFO)
     sec = _FakeSec(monkeypatch, identity_two, tmp_path)
     context = _context(tmp_path, sqlite_store, universe=("AAA", "BBB"))
@@ -487,13 +489,19 @@ def test_un_normalised_universe_tickers_sweep_against_the_loaded_universe(tmp_pa
     df_before = _table(sqlite_store)
 
     caplog.clear()
-    ins.fetch_insider_transactions(context, tickers=[" bbb ", "aaa"], years_history=1)
+    names, universe = cli_mod._ticker_scope(context, " bbb ,aaa")
+
+    def unexpected_universe_read(context):
+        raise AssertionError("The archive planner and sweep must reuse the CLI universe snapshot.")
+
+    monkeypatch.setattr(resume, "load_universe_tickers", unexpected_universe_read)
+    ins.fetch_insider_transactions(context, tickers=names, all_tickers=universe, years_history=1)
     df_after = _table(sqlite_store)
 
     sweep = next(message for message in _messages(caplog, logging.INFO) if message.startswith("insider: stored-row sweep -- "))
     assert "0 of" in sweep, sweep
     pd.testing.assert_frame_equal(df_after, df_before)
-    print(f"\nSANITY: tickers [' bbb ', 'aaa'] ran the sweep against the loaded universe and kept all {len(df_after)} rows; log: '{sweep}'.")
+    print(f"\nSANITY: CLI CSV ' bbb ,aaa' ran the sweep against the loaded universe and kept all {len(df_after)} rows; log: '{sweep}'.")
 
 
 def test_a_ticker_subset_edgar_run_never_hides_another_tickers_filing(tmp_path, sqlite_store, monkeypatch, identity_two):

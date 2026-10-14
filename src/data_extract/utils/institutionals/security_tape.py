@@ -40,9 +40,9 @@ def restamp_targets(
     return sorted(changed | (stored - set(stamps)))
 
 
-def outside_scope(context: Context, scope: Collection[str]) -> frozenset[str]:
+def outside_scope(context: Context, scope: Collection[str], all_tickers: Collection[str] | None = None) -> frozenset[str]:
     """The universe companies outside `scope`: a scoped run neither deletes nor re-stamps their rows (empty when unscoped)."""
-    return frozenset(load_universe_tickers(context)) - frozenset(scope)
+    return frozenset(load_universe_tickers(context) if all_tickers is None else all_tickers) - frozenset(scope)
 
 
 def nullable(values: pd.Series) -> pd.Series:

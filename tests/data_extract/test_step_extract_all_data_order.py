@@ -70,7 +70,7 @@ def _step(monkeypatch, order: list[str], *, boom: str | None = None) -> Any:
         return mark("identity_refresh", identity)()
 
     def propagate(context, tickers, **kwargs):
-        assert list(tickers) == ["AAA", "BBB"] and kwargs == {"identity": identity}
+        assert list(tickers) == ["AAA", "BBB"] and kwargs == {"identity": identity, "all_tickers": tickers}
         return mark("propagate")()
 
     monkeypatch.setattr(module, "scan_form345_cache", form345_scan)

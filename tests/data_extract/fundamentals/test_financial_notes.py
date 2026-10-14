@@ -479,7 +479,7 @@ def test_fetch_stamps_one_archive_clock_on_numeric_and_text_rows(tmp_path, monke
 
     monkeypatch.setattr(fn, "load_identity", lambda context: IDENTITY)
     monkeypatch.setattr(fn, "cache_dir", lambda context, key: tmp_path)
-    monkeypatch.setattr(fn, "archive_worklist", lambda context, tables, periods, cached, keys, as_of, full: _work(list(periods)))
+    monkeypatch.setattr(fn, "archive_worklist", lambda context, tables, periods, cached, keys, as_of, full, all_tickers=None: _work(list(periods)))
     monkeypatch.setattr(fn, "_periods_missing_available_at", lambda context: set())
     monkeypatch.setattr(fn, "_notes_periods", lambda context, years_history, today=None: [period])
     monkeypatch.setattr(fn, "ensure_zip", lambda *args, **kwargs: path)
@@ -536,7 +536,7 @@ def test_fetch_stamps_new_zip_with_successful_download_date(tmp_path: Path, monk
     monkeypatch.setattr(bulk_cache, "datetime", Clock)
     monkeypatch.setattr(fn, "load_identity", lambda context: IDENTITY)
     monkeypatch.setattr(fn, "cache_dir", lambda context, key: tmp_path)
-    monkeypatch.setattr(fn, "archive_worklist", lambda context, tables, periods, cached, keys, as_of, full: _work(list(periods)))
+    monkeypatch.setattr(fn, "archive_worklist", lambda context, tables, periods, cached, keys, as_of, full, all_tickers=None: _work(list(periods)))
     monkeypatch.setattr(fn, "_periods_missing_available_at", lambda context: set())
     monkeypatch.setattr(fn, "_notes_periods", lambda context, years_history, today=None: [period])
     monkeypatch.setattr(fn, "stored_period_clock", lambda context, tables, period: None)

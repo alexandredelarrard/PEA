@@ -18,7 +18,7 @@ no EDGAR filing.
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from pathlib import Path
 from typing import cast
 
@@ -62,8 +62,7 @@ from src.data_extract.utils.institutionals.insider_common import (
 )
 from src.data_store.schema import Resume, Tables
 from src.utils.filer_tables import FilerTable, removal_records
-from src.utils.string import normalise_ticker, pad_cik_series
-from src.utils.universe import load_universe_tickers
+from src.utils.string import pad_cik_series
 
 logger = logging.getLogger(__name__)
 
@@ -211,12 +210,11 @@ def _rejected_stored_accessions(context: Context, universe: Sequence[str], ident
     )
 
 
-def _sweep_universe(context: Context, tickers: Sequence[str]) -> list[str]:
-    """The loaded analysis universe when the normalised `tickers` equal it, else `[]` (sweep skipped).
+def _sweep_universe(universe: list[str], tickers: Sequence[str]) -> list[str]:
+    """The already-loaded analysis universe when `tickers` equal it, else `[]` (sweep skipped).
     The sweep adjudicates against that loaded list, never the raw run tickers: on a `--tickers`
     subset every other company's rows would read as rejects."""
-    universe = load_universe_tickers(context)
-    if universe and {normalise_ticker(ticker) for ticker in tickers} == set(universe):
+    if universe and set(tickers) == set(universe):
         return universe
     logger.info("insider: stored-row sweep skipped -- the run's %d ticker(s) are not the %d-ticker universe", len(tickers), len(universe))
     return []
@@ -382,7 +380,13 @@ def _keep_keys(parsed: tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame], keys: Se
 
 
 def fetch_insider_transactions(
-    context: Context, tickers: list[str], years_history: int, reparse: bool = False, as_of: pd.Timestamp | None = None
+    context: Context,
+    tickers: list[str],
+    years_history: int,
+    reparse: bool = False,
+    as_of: pd.Timestamp | None = None,
+    *,
+    all_tickers: Collection[str] | None = None,
 ) -> int:
     """Download (cached) the insider data sets and ingest each quarter of the work list with
     `store_zip_quarter` (a pending quarter also logs its `report_zip_quarter` lines), save the kept
@@ -398,7 +402,9 @@ def fetch_insider_transactions(
     first_year = pd.Timestamp(cast(str, cast(Resume, Tables.insider_transactions.resume).source_start)).year
     span = (run_date.year - first_year + 1) if reparse else years_history + 1
     quarters = quarter_periods(span, first_year, run_date)
-    work = archive_worklist(context, (Tables.insider_transactions,), quarters, cached_periods(cache), tickers, run_date, full=reparse)
+    work = archive_worklist(
+        context, (Tables.insider_transactions,), quarters, cached_periods(cache), tickers, run_date, full=reparse, all_tickers=all_tickers
+    )
 
     rescanned = set(work.rescan)
     units = list(work.units())
@@ -422,7 +428,7 @@ def fetch_insider_transactions(
             notes_saved += context.store.save(Tables.insider_footnotes, df_notes)
     log_exclusions(logger, f"zip run ({len(units)} quarter(s))", excluded)
 
-    sweep_universe = _sweep_universe(context, tickers)
+    sweep_universe = _sweep_universe(work.universe, work.keys)
     deleted = _screen_stored_rows(context, sweep_universe, identity) if sweep_universe else 0
     logger.info(
         "insider_transactions: saved %d zip row(s) (+%d footnotes) over %d pending + %d rescanned quarter(s) of %s -> %s; sweep deleted %d",

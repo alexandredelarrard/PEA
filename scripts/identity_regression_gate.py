@@ -30,7 +30,6 @@ from src.constants.constants import CANONICAL_ROLES, SECONDARY_CLASS  # noqa: E4
 from src.data_extract.utils.common.entity_lineage import entity_by_cik_map, entity_or_singleton, load_d19_allowlist, roster_cik_map  # noqa: E402
 from src.data_extract.utils.common.identity import FilingScope, Identity, UnknownUniverseTickerError, load_identity  # noqa: E402
 from src.data_extract.utils.common.registrant import FORM_POLICY, Combine  # noqa: E402
-from src.data_extract.utils.common.symbol_tenure import normalise_market_symbol  # noqa: E402
 from src.data_extract.utils.fundamentals.build_history import keep_window_owner_filings  # noqa: E402
 from src.data_extract.utils.fundamentals_sharadar.field_map import load_field_map  # noqa: E402
 from src.data_extract.utils.institutionals.fetch_short_interest import finra_key  # noqa: E402
@@ -192,7 +191,7 @@ class LegacyTapeResolver:
             if pd.isna(symbol) or pd.isna(start):
                 continue
             row = (entity_or_singleton(self.entity_by_cik, cik), pd.Timestamp(start), None if pd.isna(end) else pd.Timestamp(end), int(n))
-            key = normalise_market_symbol(symbol)
+            key = yahoo_symbol(symbol)
             self.tenure.setdefault(key, []).append(row)
             if source.strip().lower() == "manual":
                 self.manual.setdefault(key, []).append(row)
@@ -204,7 +203,7 @@ class LegacyTapeResolver:
             rows = [row for symbol in sorted(self.tenure) if any(r[0] == entity for r in self.tenure[symbol]) for row in self.tenure[symbol]]
             if rows:
                 self.proxies[ticker] = rows
-        self.redundant = frozenset(normalise_market_symbol(symbol) for symbol in redundant)
+        self.redundant = frozenset(yahoo_symbol(symbol) for symbol in redundant)
 
     def candidate_symbols(self, universe: Collection[str]) -> frozenset[str]:
         """The universe tickers plus every tenure symbol one of their entities held."""
@@ -590,7 +589,7 @@ def filing_diff(
     frontier = pd.to_datetime(before["filed"], errors="coerce").max() if not before.empty else None
     out["consolidating"] = _consolidating(table, out["form"])
     # the same accession leaving one spelling of a ticker for its normalised spelling
-    moved = out.groupby("accession")["canonical_company"].transform(lambda s: s.map(normalise_market_symbol).nunique() == 1 and s.nunique() > 1)
+    moved = out.groupby("accession")["canonical_company"].transform(lambda s: s.map(yahoo_symbol).nunique() == 1 and s.nunique() > 1)
     dated = table in _DATED_TABLES
     co = {pad_cik(c) for c in co_registrants} if dated or table == Tables.insider_transactions.name else set()
     reasons = []
@@ -738,7 +737,7 @@ def _insider_reason(
         return "foreign_filer_purge" if cik not in own_ciks.get(normalise_ticker(ticker), frozenset()) else ""
     if state == "right_only":
         return "new_filing" if frontier is not None and not pd.isna(filed) and filed > frontier else ""
-    if ticker != ticker_after and normalise_market_symbol(ticker) == normalise_market_symbol(ticker_after):
+    if ticker != ticker_after and yahoo_symbol(ticker) == yahoo_symbol(ticker_after):
         return "symbol_normalisation"
     if ticker != ticker_after and cik in own_ciks.get(normalise_ticker(ticker_after), ()) and cik not in own_ciks.get(normalise_ticker(ticker), ()):
         return "entity_moved"

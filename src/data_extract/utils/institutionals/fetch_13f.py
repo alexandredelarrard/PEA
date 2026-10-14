@@ -540,6 +540,8 @@ def fetch_13f(
     save_every: int = 1000,
     filing_window: tuple[str, str] | None = None,
     as_of: pd.Timestamp | None = None,
+    *,
+    all_tickers: list[str] | None = None,
 ) -> int:
     """Save verified original/amendment accessions separately, oldest first in the resume window.
 
@@ -550,7 +552,7 @@ def fetch_13f(
     configure(context)
     run_date = cast(pd.Timestamp, pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize())
     universe = set(tickers)
-    scoped = bool(set(load_universe_tickers(context)) - universe)
+    scoped = bool(set(load_universe_tickers(context) if all_tickers is None else all_tickers) - universe)
     since, until, hold_from = _resolve_window(context, years_history, filing_window, run_date, scoped)
 
     # load CIKs of super investors

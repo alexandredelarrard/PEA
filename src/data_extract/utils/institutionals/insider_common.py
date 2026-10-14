@@ -20,7 +20,7 @@ from src.constants.constants import CANONICAL_CURRENT, CANONICAL_PREDECESSOR
 from src.data_extract.utils.common.identity import Identity
 from src.data_extract.utils.common.security_master import ACQUIRED_CONSTITUENT, MergerBoundary
 from src.data_store.schema import Tables
-from src.utils.string import pad_cik, pad_cik_series
+from src.utils.string import normalise_ticker, pad_cik, pad_cik_series
 
 #: The `insider_transactions` row key.
 INSIDER_KEY = list(Tables.insider_transactions.pk)
@@ -271,7 +271,7 @@ def build_insider_frame(df_str: pd.DataFrame, df_owners: pd.DataFrame, *, date_f
 
 def _symbol_text(s: pd.Series) -> pd.Series:
     """A claimed trading symbol: stripped and upper-cased; blank is missing."""
-    text = s.astype("string").str.strip().str.upper()
+    text = s.astype("string").map(normalise_ticker, na_action="ignore").astype("string")
     return text.mask(text.eq("").fillna(False))
 
 
@@ -428,7 +428,7 @@ def _boundary_role(boundary: MergerBoundary, cik: str, symbol: object, code: obj
 
     Open-market trades count as before the completion unless the merger closed before the open.
     """
-    if isinstance(symbol, str) and symbol.strip().upper() == boundary.acquired_symbol:
+    if isinstance(symbol, str) and normalise_ticker(symbol) == boundary.acquired_symbol:
         return ACQUIRED_CONSTITUENT
     if cik == boundary.legal_acquirer_cik:
         letter = code.strip().upper() if isinstance(code, str) else ""

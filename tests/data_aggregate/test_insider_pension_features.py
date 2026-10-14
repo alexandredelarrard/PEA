@@ -188,7 +188,9 @@ def test_insider_buy_value_is_scaled_by_market_cap():
         }
     )
     close = pd.DataFrame({t: 50.0 for t in ("BULL", "BEAR", "MIX")}, index=idx)
-    panel = build_insider_feature_panel(make_frames(idx, peers, close_split=close), _insider_txns(), shares_out_history=shares)
+    panel = build_insider_feature_panel(
+        make_frames(idx, peers, close_split=close), _insider_txns(), shares_out_history=shares, complete_through=idx[-1]
+    )
     assert "f_ic_insider_buy_value_mcap_180d" in panel.columns
     d = pd.Timestamp("2024-04-01")
     row = panel[panel["date"] == d].set_index("ticker")

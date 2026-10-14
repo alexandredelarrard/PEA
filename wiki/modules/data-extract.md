@@ -28,6 +28,10 @@ tags:
 - The flat source-command group in [data_extract/cli.py](../../src/data_extract/cli.py).
 - Sub-steps under `src/data_extract/transformers/`.
 
+The CLI receives `-t "aapl,msft"` as a comma-separated string: `_tickers` splits it and applies [normalise_ticker](../../src/utils/string.py) to each nonempty symbol once. Without `-t`, [load_universe_tickers](../../src/utils/universe.py) supplies the normalized analysis list unchanged. Fetchers and nested planners receive lists and reuse them. Commands and stages that protect writes outside a subset also pass the same complete universe as `all_tickers`; archive planners retain it for the insider sweep, and FTD/RegSHO restamps reuse the computed outside-scope set. A subset full run cannot sweep or replace another ticker's rows.
+
+Scope remains source-specific: `sharadar-gap-check` defaults to all stored names, `thirteen-f-backfill` without `-t` selects newly added names, and global downloads/manager portfolios have no equity subset. Metadata reads needing CIK, GICS, lineage or entry dates still read their projected roster fields. Raw provider/config symbols use `normalise_ticker`; [yahoo_symbol](../../src/utils/string.py) additionally adapts share-class separators. FINRA's case-sensitive security markers and Sharadar's narrower provider spelling retain their own adapters.
+
 ## Key files
 
 - [step_extract_prices.py](../../src/data_extract/transformers/step_extract_prices.py) writes equity prices, dividends, splits, and named macro series.
@@ -45,7 +49,7 @@ tags:
   - [sec_io.py](../../src/data_extract/utils/common/sec_io.py): the one SEC retry policy (`sec_retry`) and the shared per-process limiter for every SEC request; an exhausted retry raises `TransientReadError`.
   - [edgar_driver.py](../../src/data_extract/utils/common/edgar_driver.py): `EdgarFetch` declares one per-ticker EDGAR document fetch (8-K, 13D, 13G, DEF 14A ECD, filing text, SEC fundamentals, EDGAR insider) and `run_edgar_fetch` walks it: refresh the index, plan the work list, read each filing as one unit, re-read failed units in `retry_rounds`, log coverage and return. `runtime_floor` raises the listing floor (the insider zip floor) and `done_where` filters the done set (the insider fetch counts only `source='edgar'` rows); `FilingStamp` reads filing CIK, filing date, guarded `period_of_report`, and document URL once per filing.
   - [empty_markers.py](../../src/data_extract/utils/common/empty_markers.py): `marker_frame` builds an empty-filing marker; `drop_markers_over_data` drops any marker whose key already holds a real row, so a marker never replaces data.
-  - [identity.py](../../src/data_extract/utils/common/identity.py): `Identity.filing_scope(ticker)` returns the precomputed `FilingScope` (entity, roster CIK, every entity CIK, symbols, same-CIK aliases) used for registrant resolution.
+  - [identity.py](../../src/data_extract/utils/common/identity.py): `load_identity(context)` caches the resolver on that context only; repeated calls do no table reads, and `refresh=True` replaces the cached resolver after the identity build. `Identity.filing_scope(ticker)` returns the precomputed `FilingScope` (entity, roster CIK, every entity CIK, symbols, same-CIK aliases) used for registrant resolution.
   - [registrant.py](../../src/data_extract/utils/common/registrant.py): one registrant walk for index rows and `Company` listings, and the filing-header subject check that tells a 13D/13G subject from its filer.
   - [bulk_cache.py](../../src/data_extract/utils/common/bulk_cache.py): `read_zip_tables` for every SEC bulk zip, the cached-archive listing, and archive availability dates.
   - [symbol_tenure.py](../../src/data_extract/utils/common/symbol_tenure.py): `scan_form345_cache` reads the Form 3/4/5 cache once for both `symbol_tenure` and [entity_lineage](../../src/data_extract/utils/common/entity_lineage.py).

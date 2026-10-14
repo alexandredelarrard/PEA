@@ -23,7 +23,7 @@ from src.context import Context
 from src.data_extract.utils.common.bulk_cache import ZipRead, read_zip_tables
 from src.data_extract.utils.common.incremental import matches_stored
 from src.data_store.schema import Tables
-from src.utils.string import normalise_ticker, pad_cik_series
+from src.utils.string import normalise_ticker, pad_cik_series, yahoo_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -92,11 +92,6 @@ class ManualSymbolTenureError(ValueError):
     """The manual symbol-tenure config is unsafe or cannot be audited."""
 
 
-def normalise_market_symbol(value: object) -> str:
-    """Use the roster's hyphen spelling for market share-class separators."""
-    return str(value).strip().upper().replace(".", "-").replace("/", "-")
-
-
 def parse_symbol_field(value: object) -> tuple[str, ...] | None:
     """The market symbols one filer-typed symbol field names, in roster spelling.
 
@@ -106,7 +101,7 @@ def parse_symbol_field(value: object) -> tuple[str, ...] | None:
     """
     if not isinstance(value, str):
         return None
-    text = _SYMBOL_BRACKETS.sub(" ", _SYMBOL_QUOTES.sub("", value)).strip().upper()
+    text = normalise_ticker(_SYMBOL_BRACKETS.sub(" ", _SYMBOL_QUOTES.sub("", value)))
     text = _STATE_MARKER.sub("", _SLASH_SPACES.sub("/", " ".join(text.split())))
     if text in _PLACEHOLDER_SYMBOLS or not any(char.isalnum() for char in text):
         return None
@@ -125,11 +120,11 @@ def _join_item(words: list[str]) -> str | None:
     hyphenate (`HBC PR A`); anything else (`OWL ROCK T`) is None."""
     words = [_VENUE_SUFFIX.sub("", word) for word in words]
     if len(words) == 1:
-        return normalise_market_symbol(words[0])
+        return yahoo_symbol(words[0])
     if all(len(word) == 1 for word in words):
         return "".join(words)
     if len(words[0]) >= 2 and all(len(word) <= 2 for word in words[1:]):
-        return normalise_market_symbol("-".join(words))
+        return yahoo_symbol("-".join(words))
     return None
 
 
@@ -506,7 +501,7 @@ def changed_tenure_symbols(
 
     def signatures(frame: pd.DataFrame) -> dict[str, tuple[tuple[str, ...], ...]]:
         normal = frame[columns].copy()
-        normal["symbol"] = normal["symbol"].astype(str).str.upper().str.strip()
+        normal["symbol"] = normal["symbol"].map(normalise_ticker)
         for column in ("valid_from", "valid_to"):
             normal[column] = pd.to_datetime(normal[column], errors="coerce").astype("string")
         signature_columns = [column for column in columns if column != "symbol"]

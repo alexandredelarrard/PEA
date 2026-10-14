@@ -12,14 +12,14 @@ from __future__ import annotations
 
 import logging
 from datetime import date
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 import pyarrow as pa
 import pytest
 
 from src.data_extract.utils.institutionals import fetch_13f as f13
-from src.data_store.schema import Tables
+from src.data_store.schema import Resume, Tables
 from tests.data_extract.edgar_fixtures import fake_context
 from tests.data_extract.institutionals.test_13f_one_walk import CMAP, ROSTER, _FakeFiling, _line, _seed_roster
 
@@ -179,16 +179,18 @@ def test_a_deterministic_failure_skips_only_its_filing(tmp_path, sqlite_store, m
 # --------------------------------------------------------------------------- #
 # AC-002, M4 cases                                                             #
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize(("years_history", "since"), [(5, "2021-09-30"), (31, "2013-04-01")])
+@pytest.mark.parametrize(("years_history", "since"), [(5, "2021-09-30"), (31, None)])
 def test_m4_1_absent_table_reads_from_the_history_floor(tmp_path, sqlite_store, monkeypatch, years_history, since):
     ctx = _ctx(tmp_path, sqlite_store)
     windows, _ = _patch(monkeypatch, [_filing(1, "2026-09-29")])
 
     _run(ctx, years_history=years_history)
 
+    source_start = cast(Resume, Tables.sec13f_hr.resume).source_start
+    since = source_start if since is None else since
     assert windows == [(pd.Timestamp(since), _AS_OF)]
     print(f"\n=== SANITY: M4-1 absent table (years_history={years_history}) ===")
-    print(f"  window {since}:{_AS_OF:%Y-%m-%d}: as_of - years_history, never before the 2013-04-01 source start. Validated.")
+    print(f"  window {since}:{_AS_OF:%Y-%m-%d}: as_of - years_history, never before the table's {source_start} source start. Validated.")
 
 
 def test_m4_3_forward_window_is_the_frontier_minus_the_overlap(tmp_path, sqlite_store, monkeypatch):

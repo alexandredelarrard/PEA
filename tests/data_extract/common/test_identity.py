@@ -534,9 +534,11 @@ def test_load_identity_caches_per_context_and_not_across_them():
     class _Store:
         def __init__(self, frames):
             self._frames = frames
+            self.reads = []
 
         def load(self, table, **kwargs):
             name = getattr(table, "name", str(table))
+            self.reads.append(name)
             return self._frames.get(name) if kwargs.get("optional") else self._frames[name]
 
     class _Ctx:
@@ -556,14 +558,22 @@ def test_load_identity_caches_per_context_and_not_across_them():
     second: Any = _Ctx(frames("0000000900", "BBB"))
     a, b = load_identity(first), load_identity(second)
     assert load_identity(first) is a  # same context -> cached instance
+    assert len(first.store.reads) == 4, "A cached lookup must not read any identity table again."
     refreshed = load_identity(first, refresh=True)
     assert refreshed is not a and refreshed.roster_cik == a.roster_cik
+    assert load_identity(first) is refreshed and len(first.store.reads) == 8
     assert a is not b
     assert set(a.roster_cik) == {"AAA"} and set(b.roster_cik) == {"BBB"}
 
+    first.store._frames = frames("0000000500", "CCC")
+    assert load_identity(first) is refreshed
+    updated = load_identity(first, refresh=True)
+    assert set(updated.roster_cik) == {"CCC"} and load_identity(first) is updated
+    assert load_identity(second) is b and len(first.store.reads) == 12 and len(second.store.reads) == 4
+
     print("\n=== SANITY CHECK: per-context caching ===")
     print(f"  context 1 -> {sorted(a.roster_cik)}; context 2 -> {sorted(b.roster_cik)}")
-    print("  OK: one read per context, and no leakage between two databases")
+    print("  OK: four table reads per build, none for cached lookups; refresh sees changed tables and never leaks across contexts")
     print("  -> load_registrants may use @cache only because its key is a config directory.")
 
 

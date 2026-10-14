@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Collection
 from datetime import date
 from functools import partial
 from pathlib import Path
@@ -403,6 +404,8 @@ def fetch_financial_notes(
     reparse: bool = False,
     repair_availability: bool = False,
     as_of: pd.Timestamp | None = None,
+    *,
+    all_tickers: Collection[str] | None = None,
 ) -> int:
     """Fetch the notes data sets over `years_history` into `notes_num` and `notes_text`; returns rows upserted.
 
@@ -420,7 +423,9 @@ def fetch_financial_notes(
     identity = load_identity(context)
     run_date = pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize()
     periods = _notes_periods(context, years_history + 1, run_date)
-    work = archive_worklist(context, _NOTES_TABLES, periods, cached_periods(cache, suffix="_notes.zip"), tickers, run_date, full=reparse)
+    work = archive_worklist(
+        context, _NOTES_TABLES, periods, cached_periods(cache, suffix="_notes.zip"), tickers, run_date, full=reparse, all_tickers=all_tickers
+    )
     units = dict(work.units())
     n_num = n_txt = 0
     observed_from = date.fromisoformat(cast(str, cast(Resume, Tables.notes_num.resume).observed_from))

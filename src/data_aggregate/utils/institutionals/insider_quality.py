@@ -28,7 +28,7 @@ import pandas as pd
 from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.institutionals.value_basis import _period_close
 from src.utils.names import clean_person_name
-from src.utils.string import pad_cik
+from src.utils.string import normalise_ticker, pad_cik
 
 _log = logging.getLogger(__name__)
 
@@ -138,7 +138,7 @@ def owner_name_key(value: object) -> str:
 def _canonical_inputs(df_rows: pd.DataFrame, role_evidence: pd.DataFrame | None) -> pd.DataFrame:
     """Clean shared downstream fields and enrich blank titles from prior public identity evidence."""
     df_rows = df_rows.copy().reset_index(drop=True)
-    df_rows["ticker"] = df_rows["ticker"].fillna("").astype(str).str.upper().str.strip()
+    df_rows["ticker"] = df_rows["ticker"].fillna("").map(normalise_ticker)
     df_rows["source_row"] = np.arange(len(df_rows))
     for column in ("officer_title", "owner_name", "owner_cik", "issuer_cik", "direct_indirect", "security_title"):
         if column not in df_rows:
@@ -352,7 +352,6 @@ def clean_transactions(
         return pd.DataFrame(), diag
 
     df_trades = _canonical_inputs(insider, role_evidence)
-    df_trades["ticker"] = df_trades["ticker"].astype(str).str.upper().str.strip()
     df_trades["code"] = df_trades["transaction_code"].astype(str).str.upper().str.strip()
     df_trades["day"] = to_day(df_trades["filing_date"])
     df_trades["shares_n"] = pd.to_numeric(df_trades["shares"], errors="coerce")

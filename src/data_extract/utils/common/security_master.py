@@ -161,7 +161,7 @@ def is_placeholder(symbol: str) -> bool:
 
 def non_common_kind(description: str, symbol: str = "") -> str | None:
     """`warrant`, `right`, `unit`, `debt` or `preferred` from word-bounded description or symbol evidence; None otherwise."""
-    text, sym = str(description or ""), str(symbol or "").upper()
+    text, sym = str(description or ""), normalise_ticker(symbol or "")
     if _WARRANT.search(text) or _WARRANT_SYMBOL.search(sym):
         return "warrant"
     if _RIGHT.search(text):
@@ -297,7 +297,7 @@ def _exchanges(rows: pd.DataFrame) -> tuple[ShareExchange, ...]:
         ratio = pd.to_numeric(row.ratio, errors="coerce")
         if pd.isna(ratio) or float(ratio) <= 0:
             raise SecurityManualError(f"security_master_manual.json: exchange ratio {row} is not a positive number")
-        out.append(ShareExchange(normalise_ticker(str(row.ticker)), pad_cik(row.predecessor_cik), pd.Timestamp(str(row.seam_date)), float(ratio)))
+        out.append(ShareExchange(normalise_ticker(row.ticker), pad_cik(row.predecessor_cik), pd.Timestamp(str(row.seam_date)), float(ratio)))
     return tuple(out)
 
 
@@ -305,7 +305,7 @@ def _reverse_acquisitions(rows: pd.DataFrame) -> tuple[ReverseAcquisition, ...]:
     """The `reverse_acquisitions` entries, CIKs padded and seams as Timestamps."""
     return tuple(
         ReverseAcquisition(
-            ticker=normalise_ticker(str(row.ticker)),
+            ticker=normalise_ticker(row.ticker),
             seam_date=pd.Timestamp(str(row.seam_date)),
             accounting_acquirer_cik=pad_cik(row.accounting_acquirer_cik),
             legal_acquirer_cik=pad_cik(row.legal_acquirer_cik),
@@ -334,12 +334,12 @@ def merger_boundaries(manual: SecurityManual) -> tuple[MergerBoundary, ...]:
         closing = str(entry.get("closing_time") or "").strip().lower()
         out.append(
             MergerBoundary(
-                ticker=normalise_ticker(str(entry["ticker"])),
+                ticker=normalise_ticker(entry["ticker"]),
                 seam_date=pd.Timestamp(entry["seam_date"]),
                 after_close=("after" in closing) if closing else None,
                 legal_acquirer_cik=pad_cik(entry["legal_acquirer_cik"]),
                 accounting_predecessor_cik=pad_cik(entry["accounting_predecessor_cik"]),
-                acquired_symbol=str(entry["acquired_symbol"]).strip().upper(),
+                acquired_symbol=normalise_ticker(entry["acquired_symbol"]),
             )
         )
     return tuple(out)
@@ -456,7 +456,7 @@ def _prepare(observations: pd.DataFrame) -> pd.DataFrame:
     obs["date"] = pd.to_datetime(obs["date"])
     obs["trade_date"] = pd.to_datetime(obs["trade_date"]) if "trade_date" in obs.columns else trade_dates(obs["date"])
     obs["cusip"] = obs["cusip"].astype(str).str.strip().str.upper()
-    obs["source_symbol"] = obs["source_symbol"].fillna("").astype(str).str.strip().str.upper()
+    obs["source_symbol"] = obs["source_symbol"].fillna("").map(normalise_ticker)
     obs["description"] = obs["description"].fillna("").astype(str).str.strip()
     obs["key"] = obs["source_symbol"].map(squash)
     obs["price"] = pd.to_numeric(obs["price"], errors="coerce") if "price" in obs.columns else float("nan")

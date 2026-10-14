@@ -51,6 +51,8 @@ def _patched_step(monkeypatch, calls: list[str], *, boom: str | None = None):
     `boom` names the label whose recorder raises after recording, for the no-isolation test."""
     import src.data_extract.transformers.step_extract_fundamentals as mod
 
+    monkeypatch.setattr(mod, "load_universe_tickers", lambda context: ["AAPL"])
+
     def _recorder(label: str):
         def _fn(*args, **kwargs):
             calls.append(label)

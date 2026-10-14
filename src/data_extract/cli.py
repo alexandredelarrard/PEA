@@ -125,6 +125,7 @@ from src.data_extract.utils.structure.votes import fetch_8k_votes_llm
 from src.data_store.schema import Table, Tables, freshness_tables, marker_tables, resolve
 from src.utils.cli_helper import SpecialHelpOrder
 from src.utils.freshness import PREDICTION_INPUTS, fresh_share, last_dates_by_key, max_age_days, table_freshness
+from src.utils.string import normalise_ticker
 from src.utils.universe import load_universe_tickers, unverified_ciks
 
 
@@ -136,13 +137,19 @@ def cli() -> None:
 def _tickers(context: Context, tickers: str | None) -> list[str]:
     """The --tickers subset if given, else the full sp500_tickers universe."""
     if tickers:
-        return [t.strip().upper() for t in tickers.split(",") if t.strip()]
+        return list(dict.fromkeys(ticker for raw in tickers.split(",") if (ticker := normalise_ticker(raw))))
     return load_universe_tickers(context)
 
 
 def _run_date(as_of: datetime | None) -> pd.Timestamp:
     """The `--as-of` date at midnight, or today."""
     return cast(pd.Timestamp, pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today())).normalize()
+
+
+def _ticker_scope(context: Context, tickers: str | None) -> tuple[list[str], list[str]]:
+    """CLI selection and the full analysis universe, read once for scoped-write guards."""
+    universe = load_universe_tickers(context)
+    return (_tickers(context, tickers) if tickers else universe), universe
 
 
 def _market_as_of(as_of: datetime | None) -> pd.Timestamp | None:
@@ -260,8 +267,10 @@ def price_history(config_path: str, tickers: str | None, full: bool, as_of: date
 def short_interest(config_path: str, tickers: str | None, full: bool, repair: bool, as_of: datetime | None) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
     years_history = int(context.config.data_extract.years_history)
-    universe = _tickers(context, tickers)
-    fetch_short_interest(context, tickers=universe, years_history=years_history, full=full, as_of=_market_as_of(as_of), repair=repair)
+    names, universe = _ticker_scope(context, tickers)
+    fetch_short_interest(
+        context, tickers=names, years_history=years_history, full=full, as_of=_market_as_of(as_of), repair=repair, all_tickers=universe
+    )
 
 
 @cli.command(
@@ -274,7 +283,8 @@ def short_interest(config_path: str, tickers: str | None, full: bool, repair: bo
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 def fails_to_deliver(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
-    fetch_fails_to_deliver(context, tickers=_tickers(context, tickers), full=full, as_of=_run_date(as_of))
+    names, universe = _ticker_scope(context, tickers)
+    fetch_fails_to_deliver(context, tickers=names, full=full, as_of=_run_date(as_of), all_tickers=universe)
 
 
 @cli.command(help="ALL macro / market series -> prices_macro (yfinance + FRED). Light.")
@@ -300,12 +310,14 @@ def thirteen_f(config_path: str, tickers: str | None, filing_window: str | None,
         if len(parts) != 2 or not all(parts):
             raise click.BadParameter("--filing-window must be FROM:TO, e.g. 2024-01-01:2024-03-01")
         window = (parts[0], parts[1])
+    names, universe = _ticker_scope(context, tickers)
     fetch_13f(
         context,
-        tickers=_tickers(context, tickers),
+        tickers=names,
         years_history=int(config.data_extract.years_history),
         filing_window=window,
         as_of=_run_date(as_of),
+        all_tickers=universe,
     )
 
 
@@ -321,7 +333,8 @@ def thirteen_f_backfill(config_path: str, tickers: str | None, full: bool, as_of
     """Tickers added inside `sec13f_hr`'s overlap: discover from 2013 Q2, skipping verified completed accessions.
     `-t X` narrows the new tickers (an established X does nothing); `-t X -F` re-reads every data set for X."""
     _, context = get_config_context(config_path, use_cache=False, save=False)
-    fetch_13f_backfill(context, tickers=_tickers(context, tickers) if tickers else None, as_of=_run_date(as_of), full=full)
+    names, universe = _ticker_scope(context, tickers)
+    fetch_13f_backfill(context, tickers=names if tickers else None, as_of=_run_date(as_of), full=full, all_tickers=universe)
 
 
 @cli.command(name="thirteen-f-managers", help="FULL 13F portfolios of the superinvestor roster (all securities, CUSIP grain).")
@@ -570,7 +583,7 @@ def sharadar_gap_check(config_path: str, tickers: str | None, report_path: str |
     `--tickers` defaults to every stored ticker, not the sp500 universe. Never imports `src/validate/`.
     """
     _, context = get_config_context(config_path, use_cache=False, save=False)
-    names = [t.strip().upper() for t in tickers.split(",") if t.strip()] if tickers else None
+    names = _tickers(context, tickers) if tickers else None
     run_gap_check(context, tickers=names, report_path=report_path or GAP_REPORT_PATH, propose_overrides=propose, config_dir=config_path)
 
 
@@ -589,8 +602,9 @@ def earnings_surprises(config_path: str, tickers: str | None) -> None:
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 def financial_statements(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
     config, context = get_config_context(config_path, use_cache=False, save=False)
+    names, universe = _ticker_scope(context, tickers)
     fetch_financial_statements(
-        context, tickers=_tickers(context, tickers), years_history=int(config.data_extract.years_history), reparse=full, as_of=_run_date(as_of)
+        context, tickers=names, years_history=int(config.data_extract.years_history), reparse=full, as_of=_run_date(as_of), all_tickers=universe
     )
 
 
@@ -608,9 +622,9 @@ def financial_statements(config_path: str, tickers: str | None, full: bool, as_o
 @click.option(*NO_CAP_ARGS, **NO_CAP_KWARGS)
 def insider_transactions(config_path: str, tickers: str | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
     config, context = get_config_context(config_path, use_cache=False, save=False)
-    names = _tickers(context, tickers)
+    names, universe = _ticker_scope(context, tickers)
     years_history = int(config.data_extract.years_history)
-    _insider_zip(context, names, years_history, reparse=full, as_of=as_of)
+    _insider_zip(context, names, years_history, reparse=full, as_of=as_of, all_tickers=universe)
     _insider_edgar(context, names, years_history, full=full, as_of=as_of, no_cap=no_cap)
 
 
@@ -626,7 +640,8 @@ def insider_transactions(config_path: str, tickers: str | None, full: bool, as_o
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 def insider_zip(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
     config, context = get_config_context(config_path, use_cache=False, save=False)
-    _insider_zip(context, _tickers(context, tickers), int(config.data_extract.years_history), reparse=full, as_of=as_of)
+    names, universe = _ticker_scope(context, tickers)
+    _insider_zip(context, names, int(config.data_extract.years_history), reparse=full, as_of=as_of, all_tickers=universe)
 
 
 @cli.command(
@@ -644,8 +659,8 @@ def insider_edgar(config_path: str, tickers: str | None, full: bool, as_of: date
     _insider_edgar(context, _tickers(context, tickers), int(config.data_extract.years_history), full=full, as_of=as_of, no_cap=no_cap)
 
 
-def _insider_zip(context: Context, names: list[str], years_history: int, *, reparse: bool, as_of: datetime | None) -> None:
-    fetch_insider_transactions(context, tickers=names, years_history=years_history, reparse=reparse, as_of=_run_date(as_of))
+def _insider_zip(context: Context, names: list[str], years_history: int, *, reparse: bool, as_of: datetime | None, all_tickers: list[str]) -> None:
+    fetch_insider_transactions(context, tickers=names, years_history=years_history, reparse=reparse, as_of=_run_date(as_of), all_tickers=all_tickers)
 
 
 def _insider_edgar(context: Context, names: list[str], years_history: int, *, full: bool, as_of: datetime | None, no_cap: bool) -> None:
@@ -737,7 +752,8 @@ def identity_tables(config_path: str, approved_rekeys: tuple[str, ...]) -> None:
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 def identity_propagate(config_path: str, tickers: str | None, dry_run: bool, full: bool, as_of: datetime | None) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
-    result = propagate_identity(context, _tickers(context, tickers), dry_run=dry_run, every_ticker=full, as_of=_run_date(as_of))
+    names, universe = _ticker_scope(context, tickers)
+    result = propagate_identity(context, names, dry_run=dry_run, every_ticker=full, as_of=_run_date(as_of), all_tickers=universe)
     if dry_run:
         click.echo(result.removals.to_string(index=False) if not result.removals.empty else "identity-propagate: no pending removals")
 
@@ -750,12 +766,14 @@ def identity_propagate(config_path: str, tickers: str | None, dry_run: bool, ful
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 def financial_notes(config_path: str, tickers: str | None, full: bool, repair_availability: bool, as_of: datetime | None) -> None:
     config, context = get_config_context(config_path, use_cache=False, save=False)
+    names, universe = _ticker_scope(context, tickers)
     fetch_financial_notes(
         context,
-        tickers=_tickers(context, tickers),
+        tickers=names,
         years_history=int(config.data_extract.years_history),
         reparse=full,
         repair_availability=repair_availability,
+        all_tickers=universe,
         as_of=_run_date(as_of),
     )
 

@@ -34,7 +34,6 @@ from src.data_extract.utils.common.identity import Identity, SecurityHit, load_i
 from src.data_extract.utils.common.resume import document_floor, series_windows, session_dates, trading_calendar
 from src.data_extract.utils.common.security_master import EXCLUDED, SOURCE_FTD
 from src.data_extract.utils.common.sessions import last_completed_session
-from src.data_extract.utils.common.symbol_tenure import normalise_market_symbol
 from src.data_extract.utils.institutionals.fetch_fails_to_deliver import load_fails_master, master_stamps
 from src.data_extract.utils.institutionals.security_tape import (
     KEY_CHUNK,
@@ -50,7 +49,7 @@ from src.data_extract.utils.institutionals.security_tape import (
 )
 from src.data_store.schema import Resume, Tables
 from src.utils.batching import batched_tuples
-from src.utils.string import normalise_ticker, squash
+from src.utils.string import squash, yahoo_symbol
 
 _URL = "https://cdn.finra.org/equity/regsho/daily/CNMSshvol{yyyymmdd}.txt"
 
@@ -139,13 +138,13 @@ def master_keys(identity: Identity, universe: Collection[str]) -> frozenset[str]
 
 def _fallback(identity: Identity, symbol: str, day: pd.Timestamp) -> SecurityHit | None:
     """P21: the lineage tape interval of a window CIK inside its window, as an `S<cik>:<symbol>` security."""
-    interval = identity.tape_interval(normalise_market_symbol(symbol), day)
+    interval = identity.tape_interval(symbol, day)
     company = None if interval is None else identity.ticker_by_entity.get(interval.entity)
     if interval is None or company is None:
         return None
     role = CANONICAL_CURRENT if identity.roster_cik.get(company) == interval.cik else CANONICAL_PREDECESSOR
     letter = _class_letter(symbol)
-    return SecurityHit(f"S{interval.cik}:{normalise_market_symbol(symbol)}", company, role, f"class_{letter}" if letter else "common", 1.0)
+    return SecurityHit(f"S{interval.cik}:{yahoo_symbol(symbol)}", company, role, f"class_{letter}" if letter else "common", 1.0)
 
 
 def _hit_column(hits: Sequence[SecurityHit | None], field: str, index: pd.Index) -> pd.Series:
@@ -161,7 +160,7 @@ def stamp_short_volume(lines: pd.DataFrame, identity: Identity, universe: Collec
     never seen in FTD is kept only through the P21 fallback; any other line is dropped. A line marked non-common by
     its own FINRA symbology is never summed.
     """
-    requested = frozenset(normalise_ticker(t) for t in universe)
+    requested = frozenset(universe)
     known = master_keys(identity, requested)
     rows = lines.reset_index(drop=True).copy()
     rows["date"] = pd.to_datetime(rows["date"]).dt.normalize()
@@ -314,6 +313,7 @@ def restamp_short_volume(
     stamps: Mapping[str, pd.Timestamp] | None = None,
     dry_run: bool = False,
     as_of: pd.Timestamp | None = None,
+    others: frozenset[str] | None = None,
 ) -> list[dict]:
     """Re-stamp the stored rows of `companies` and rebuild their ticker rows, writing only what changed.
 
@@ -332,8 +332,8 @@ def restamp_short_volume(
         companies = restamp_targets(context, table, stamps, as_of)
     if not companies:
         return []
-    universe = frozenset(normalise_ticker(t) for t in tickers)
-    others = outside_scope(context, universe)
+    universe = frozenset(tickers)
+    others = outside_scope(context, universe) if others is None else others
     names = sorted(set(companies) - others)
     if not names:
         return []
@@ -384,6 +384,8 @@ def fetch_short_interest(
     identity: Identity | None = None,
     as_of: pd.Timestamp | None = None,
     repair: bool = False,
+    *,
+    all_tickers: Collection[str] | None = None,
 ) -> None:
     """Fetch the RegSHO day files, store their in-scope lines stamped, and rebuild `short_interest` for those days.
 
@@ -392,8 +394,8 @@ def fetch_short_interest(
     one); unscoped, any stored day not served or any fetch error aborts before the two tables are replaced;
     scoped (`-t`), the tickers' rows are upserted and no other key is touched.
     """
-    universe = frozenset(normalise_ticker(ticker) for ticker in tickers)
-    others = outside_scope(context, universe)
+    universe = frozenset(tickers)
+    others = outside_scope(context, universe, all_tickers)
     scoped = bool(others)
     if full:
         days, stored_days = _full_days(context, pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize())
@@ -420,7 +422,7 @@ def fetch_short_interest(
             continue
         successful.append(day)
         lines = _parse_regsho(text)
-        in_scope = lines["source_symbol"].map(finra_key).isin(known) | lines["source_symbol"].map(normalise_market_symbol).isin(fallback)
+        in_scope = lines["source_symbol"].map(finra_key).isin(known) | lines["source_symbol"].map(yahoo_symbol).isin(fallback)
         if in_scope.any():
             frames.append(lines[in_scope])
         time.sleep(pause)
@@ -458,4 +460,4 @@ def fetch_short_interest(
         written = context.store.save(Tables.short_interest, grain)
 
     logger.info(f"Saved {written} short-volume ticker row(s) over {len(successful)} day(s) to '{Tables.short_interest}'")
-    warn_lost_rows(logger, "RegSHO", restamp_short_volume(context, None, universe, identity=resolver, as_of=as_of))
+    warn_lost_rows(logger, "RegSHO", restamp_short_volume(context, None, universe, identity=resolver, as_of=as_of, others=others))

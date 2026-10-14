@@ -20,6 +20,7 @@ from src.data_extract.utils.institutionals.fetch_insider_transactions import fet
 from src.data_extract.utils.institutionals.fetch_short_interest import fetch_short_interest
 from src.data_extract.utils.institutionals.fetch_superinvestors import upsert_roster_snapshot
 from src.utils.step import Step
+from src.utils.universe import load_universe_tickers
 
 
 class StepExtractInstitutionals(Step):
@@ -27,11 +28,12 @@ class StepExtractInstitutionals(Step):
         super().__init__(context=context, config=config)
         self.config = self._context.config
 
-    def run(self, tickers: list[str]) -> None:
+    def run(self, tickers: list[str], *, all_tickers: list[str] | None = None) -> None:
         years_history = int(self.config.data_extract.years_history)
+        universe = load_universe_tickers(self._context) if all_tickers is None else all_tickers
 
         # One walk over every 13F-HR since the stored frontier: the S&P 500 slice and the roster managers' complete books.
-        fetch_13f(self._context, tickers=tickers, years_history=years_history)
+        fetch_13f(self._context, tickers=tickers, years_history=years_history, all_tickers=universe)
 
         # Point-in-time roster snapshot, written only on change; after the 13F pull, whose filings are the activity gate's evidence.
         upsert_roster_snapshot(self._context)
@@ -40,7 +42,7 @@ class StepExtractInstitutionals(Step):
         fetch_13f_managers(self._context, years_history=years_history)
 
         # Quarterly zips first (they add only the filings EDGAR lacks), then EDGAR reads the indexed filings after the last zip quarter.
-        fetch_insider_transactions(self._context, tickers=tickers, years_history=years_history)
+        fetch_insider_transactions(self._context, tickers=tickers, years_history=years_history, all_tickers=universe)
         fetch_insider_edgar(self._context, tickers=tickers, years_history=years_history)
 
         # Activist (SC 13D) then passive (SC 13G) stakes; same grain and column names, so they union.
@@ -54,5 +56,5 @@ class StepExtractInstitutionals(Step):
         identity = load_identity(self._context)
 
         # The short side: FINRA RegSHO short volume, then SEC settlement fails (mid-2009 on), stamped from the security master.
-        fetch_short_interest(self._context, tickers=tickers, years_history=years_history, identity=identity)
-        fetch_fails_to_deliver(self._context, tickers=tickers)
+        fetch_short_interest(self._context, tickers=tickers, years_history=years_history, identity=identity, all_tickers=universe)
+        fetch_fails_to_deliver(self._context, tickers=tickers, all_tickers=universe)

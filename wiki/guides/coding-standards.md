@@ -42,6 +42,7 @@ Do not cross-import between sibling `src/` packages. Shared logic belongs in the
 - No pass-through functions: a function whose body only calls another function is removed, and callers call the target directly.
 - Functions doing the same thing are declared once. Logic repeated in two or more places, including across fetchers, is extracted to the closest shared utils module (package `utils/` for one package, `src/utils/` across packages) and called from every dependent; speculative one-use abstractions remain discouraged.
 - Pass a value computed in one function to the next; never re-declare or recompute it elsewhere.
+- Default assessed ticker lists come from [load_universe_tickers](../../src/utils/universe.py) and are already normalized. CLI `-t` input is a comma-separated string: split it first and call [normalise_ticker](../../src/utils/string.py) once per symbol. Downstream lists need no repeated normalization; reuse the complete universe snapshot when guarding subset writes. Normalize raw source/config symbols with the shared helper, preserving source-specific security-marker semantics.
 - Data flows in the golden-standard order: load → clean → compute features or steps → post-process → save → log, report, and sanity checks.
 
 A static scan of function length, nesting depth, and pass-throughs is part of refactor validation.

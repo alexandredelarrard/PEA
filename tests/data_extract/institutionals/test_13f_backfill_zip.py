@@ -366,6 +366,7 @@ def test_the_gap_after_the_newest_data_set_is_walked_once_per_ticker(tmp_path, s
 
     assert len(walks) == 1, walks  # the completed walk's marker marks it done
     assert walks[0]["tickers"] == [_NEW] and walks[0]["filing_window"] == ("2024-09-01", "2026-09-28")
+    assert set(walks[0]["all_tickers"]) == {"AAPL", "MSFT", _NEW}, "The gap walk reuses the complete universe, not its new-name subset."
     print("\n=== SANITY: 13F gap walk ===")
     print(f"  NEWCO joined 2026-09-28, newest data set ends 2024-08-31 -> one EDGAR walk {walks[0]['filing_window']};")
     print("  night 2 finds the walk's NEWCO marker and walks nothing. Validated.")

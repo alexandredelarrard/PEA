@@ -65,7 +65,7 @@ def test_earnings_call_validator_reports_coverage_schema_and_quality(sqlite_stor
     sqlite_store.save(Tables.earnings_call_sections, paragraphs)
     sqlite_store.save(Tables.cube_part_text, _cube(["AAA", "BBB"]))
 
-    context = cast(Context, SimpleNamespace(store=sqlite_store))
+    context = cast(Context, SimpleNamespace(store=sqlite_store, config=SimpleNamespace(data_extract=SimpleNamespace(redundant_ticks=[]))))
     result = check_earnings_calls(context, Tables.cube_part_text, config=_config())
     coverage = cast(dict, result.metrics["coverage"])
     assert result.status == "pass", result.findings
@@ -102,7 +102,11 @@ def test_grain_and_split_defects_fail_the_validator(sqlite_store) -> None:
     sqlite_store.save(Tables.earnings_call_sections, pd.concat([undated, no_qa, gap], ignore_index=True))
     sqlite_store.save(Tables.cube_part_text, _cube(["AAA", "BBB", "CCC"]))
 
-    result = check_earnings_calls(cast(Context, SimpleNamespace(store=sqlite_store)), Tables.cube_part_text, config=_config())
+    result = check_earnings_calls(
+        cast(Context, SimpleNamespace(store=sqlite_store, config=SimpleNamespace(data_extract=SimpleNamespace(redundant_ticks=[])))),
+        Tables.cube_part_text,
+        config=_config(),
+    )
     coverage = cast(dict, result.metrics["coverage"])
     fields = {finding.field: finding.score for finding in result.findings}
     assert result.status == "fail"
@@ -134,7 +138,11 @@ def test_two_calls_on_one_ticker_date_fail_the_validator(sqlite_store) -> None:
     sqlite_store.save(Tables.earnings_call_sections, paragraphs)
     sqlite_store.save(Tables.cube_part_text, _cube(["AAA", "BBB"]))
 
-    result = check_earnings_calls(cast(Context, SimpleNamespace(store=sqlite_store)), Tables.cube_part_text, config=_config())
+    result = check_earnings_calls(
+        cast(Context, SimpleNamespace(store=sqlite_store, config=SimpleNamespace(data_extract=SimpleNamespace(redundant_ticks=[])))),
+        Tables.cube_part_text,
+        config=_config(),
+    )
     coverage = cast(dict, result.metrics["coverage"])
     fields = {finding.field: finding.score for finding in result.findings}
 
@@ -181,7 +189,9 @@ def test_coverage_uses_point_in_time_lineage_and_separates_no_call_names(sqlite_
         pd.concat([_valid_call(ticker, quarter, date) for ticker, date, quarter in events], ignore_index=True),
     )
 
-    summary, ratios, valid_dates = _coverage(cast(Context, SimpleNamespace(store=sqlite_store)))
+    summary, ratios, valid_dates = _coverage(
+        cast(Context, SimpleNamespace(store=sqlite_store, config=SimpleNamespace(data_extract=SimpleNamespace(redundant_ticks=[]))))
+    )
 
     assert summary["roster_tickers"] == 2
     assert summary["structural_no_call_tickers"] == ["BRK-B"]
@@ -235,7 +245,9 @@ def test_coverage_reads_distinct_lineage_pairs_and_only_form345_manual_tenure(sq
         pd.concat([_valid_call(ticker, quarter, date) for ticker, date, quarter in events], ignore_index=True),
     )
 
-    summary, ratios, valid_dates = _coverage(cast(Context, SimpleNamespace(store=sqlite_store)))
+    summary, ratios, valid_dates = _coverage(
+        cast(Context, SimpleNamespace(store=sqlite_store, config=SimpleNamespace(data_extract=SimpleNamespace(redundant_ticks=[]))))
+    )
 
     assert summary["tickers_measured"] == 1
     assert ratios["NEW"] == 1.0

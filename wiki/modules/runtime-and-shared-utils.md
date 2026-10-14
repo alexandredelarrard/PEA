@@ -31,7 +31,7 @@ This module supplies the process-wide runtime used by every extraction, aggregat
 - [src/context.py](../../src/context.py) assembles the runtime and exposes `context.store`, `context.log`, and `context.paths`.
 - [src/utils/step.py](../../src/utils/step.py) implements the [Step pattern](../concepts/step-pattern.md).
 - [src/utils/db.py](../../src/utils/db.py) creates the SQLAlchemy engine handed to [DataStore](./data-store.md).
-- [src/utils/universe.py](../../src/utils/universe.py) resolves the current equity universe.
+- [src/utils/universe.py](../../src/utils/universe.py) resolves the current equity universe. `load_universe_tickers(context)` returns the normalized analysis list after configured exclusions; callers reuse it unchanged. CLI CSV text is split before [normalise_ticker](../../src/utils/string.py) is applied to individual symbols. Scope guards share the loaded complete list across nested source calls; CIK, GICS and entry-date metadata reads keep their projected roster columns.
 - [src/utils/macro.py](../../src/utils/macro.py) reads named market and macro series.
 
 ## Dependencies

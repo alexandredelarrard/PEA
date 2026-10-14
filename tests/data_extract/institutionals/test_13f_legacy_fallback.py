@@ -1419,3 +1419,88 @@ def test_altium_blank_lines_are_set_aside_and_its_invalid_cusip_still_fails() ->
     with pytest.raises(ValueError, match=re.escape("Invalid source CUSIP '869004995'")):
         f13.text_filing_vintage(raw, stamp)
     print("SANITY: real 0000950144-08-003876 sets aside 4 blank-CUSIP lines (VALUE 3,671 of a 1,962,677 cover) but still fails on 869004995.")
+
+
+@pytest.mark.parametrize(
+    ("accession", "cik", "filed", "form", "period", "lines", "checks", "shape"),
+    [
+        (
+            "0001087767-08-000003",
+            "0001087767",
+            "2008-05-14",
+            "13F-HR",
+            "2008-03-31",
+            66,
+            {"291011104": (49.0, 54.0), "30231G102": (82.0, 87.0)},
+            "voting cells wrapped onto their own 'X 42,540 2,106' line; EMR near $51.5 and XOM near $84.6 on 2008-03-31",
+        ),
+        (
+            "0000950123-01-001193",
+            "0000020171",
+            "2001-02-13",
+            "13F-HR",
+            "2000-12-31",
+            192,
+            {"369550108": (75.0, 81.0), "071813109": (85.0, 91.0)},
+            "a '01  28 - 6866  Chubb Asset Managers' other-manager table before the holdings; GD near $78 and BAX near $88.3 on 2000-12-29",
+        ),
+        (
+            "0001384042-10-000008",
+            "0001384042",
+            "2010-11-12",
+            "13F-HR",
+            "2010-09-30",
+            68,
+            {"693718108": (46.0, 50.0), "87612E106": (51.0, 56.0)},
+            "an 'ITEM 1  ITEM 2 ... ITEM 8' caption row inside the table; PCAR near $48.2 and TGT near $53.4 on 2010-09-30",
+        ),
+        (
+            "0001015308-09-000004",
+            "0001015308",
+            "2009-10-30",
+            "13F-HR",
+            "2009-09-30",
+            428,
+            {"020002101": (29.0, 32.0), "46625H100": (42.0, 46.0)},
+            "a 'LINE COUNT: 428  $ 7,100,040' total row at the table foot; ALL near $30.6 and JPM near $43.8 on 2009-09-30",
+        ),
+        (
+            "0001169232-06-000117",
+            "0001135307",
+            "2006-01-13",
+            "13F-HR/A",
+            "2005-12-31",
+            20,
+            {"747525103": (41.0, 45.0), "615369105": (59.0, 64.0)},
+            "spaced CUSIPs like '025816 10 9' and a '|X|' amendment box; QCOM near $43.1 and MCO near $61.4 on 2005-12-30",
+        ),
+        (
+            "0001144204-07-024525",
+            "0001283718",
+            "2007-05-11",
+            "13F-HR/A",
+            "2007-03-31",
+            57,
+            {"30231G102": (73.0, 78.0), "060505104": (49.0, 53.0)},
+            "a '|X| is a restatement.' amendment box; XOM near $75.5 and BAC near $51.0 on 2007-03-30",
+        ),
+    ],
+)
+def test_yearly_sample_legacy_sources_parse_and_reconcile(
+    accession: str, cik: str, filed: str, form: str, period: str, lines: int, checks: dict[str, tuple[float, float]], shape: str
+) -> None:
+    """Real books the yearly sample could not read: each source line is a holding, the count equals the cover and
+    two positions sit at their period-end close at the chosen x1000."""
+    raw = (_LEGACY_SOURCES / f"{accession}.sgml").read_text(encoding="utf-8")
+    filing = _Filing(_Report(None, txt=raw), cik=cik, filing_date=filed, period_of_report=period, form=form, accession_number=accession)
+    manifest, book = f13.text_filing_vintage(raw, FilingStamp.of(filing, filing.cik))
+    header = manifest.iloc[0]
+    assert header.source_row_count == header.declared_row_count == lines, (header.source_row_count, header.declared_row_count)
+    assert header.value_unit_factor == 1000.0
+    prices = {}
+    for cusip, (low, high) in checks.items():
+        holding = book[book.cusip == cusip]
+        prices[cusip] = holding.value_usd.sum() / holding.shares.sum()
+        assert low < prices[cusip] < high, (cusip, prices[cusip])
+    quoted = ", ".join(f"{cusip} ${price:.2f}" for cusip, price in prices.items())
+    print(f"SANITY: real {accession} ({shape}) parses {lines}/{lines} lines into {len(book)} positions at x1000; {quoted}.")

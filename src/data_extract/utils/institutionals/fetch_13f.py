@@ -69,6 +69,8 @@ _CHECKED = r"(?:\[\s*[xX]\s*\]|\{\s*[xX]\s*\}|\(\s*[xX]\s*\))"
 #: A checked legacy report-type box; its group is the report type as printed. Its presence with the cover total lets
 #: the information-table text stand in for the full submission.
 _CHECKED_REPORT = re.compile(_CHECKED + r"\s*(13\s*F\s+(?:HOLDINGS|COMBINATION|NOTICE)\s+REPORT)", re.I)
+#: A checked amendment-type box, which some filers also draw as `|X|` or `/X/`.
+_CHECKED_AMENDMENT = r"(?:" + _CHECKED + r"|\|\s*[xX]\s*\||/\s*[xX]\s*/)"
 #: Unit words a legacy cover value-total line may state, each with its dollars-per-unit; "dollars" counts only alone.
 _COVER_UNITS = (
     (re.compile(r"\bbillions?\b", re.I), 1e9),
@@ -906,8 +908,8 @@ def text_filing_vintage(raw: str, stamp: FilingStamp) -> tuple[pd.DataFrame, pd.
         _warn_blank_cusip_lines(stamp.accession_number, info)
     kind = "original"
     if stamp.is_amendment:
-        restated = re.search(_CHECKED + r"\s*(?:is\s+a\s+)?restatement", raw, re.I)
-        added = re.search(_CHECKED + r"\s*(?:adds?\s+)?new\s+holdings", raw, re.I)
+        restated = re.search(_CHECKED_AMENDMENT + r"\s*(?:is\s+a\s+)?restatement", raw, re.I)
+        added = re.search(_CHECKED_AMENDMENT + r"\s*(?:adds?\s+)?new\s+holdings?\b", raw, re.I)
         if bool(restated) == bool(added):
             raise ValueError("13F legacy amendment type is unverifiable")
         kind = "restatement" if restated else "additions"

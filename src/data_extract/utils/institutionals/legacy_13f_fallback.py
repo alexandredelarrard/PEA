@@ -29,6 +29,7 @@ _VALUE_TOTAL = re.compile(
     r"(?:\s*(Billion|Million|\(?(?:in\s+)?thousands?\)?|dollars?))?",
     re.I,
 )
+_SPACED_CUSIP = re.compile(r"(?<![A-Z0-9*@#])([A-Z0-9*@#]{6}) ([A-Z0-9*@#]{2}) ([0-9])(?![A-Z0-9*@#])", re.I)
 _FOOTER_TOTAL = re.compile(r"REPORT SUMMARY\s+\d+\s+DATA RECORDS\s+([\d,]+)", re.I)
 _NON_HOLDING_LINE = re.compile(
     r"\s*(?:(?:GRAND|FINAL)\s+TOTALS?\b|(?:S\s+)?REPORT SUMMARY\b)"
@@ -36,7 +37,22 @@ _NON_HOLDING_LINE = re.compile(
     r"|\s*COLUMN\s+\d+(?:\s+(?:COLUMN\s+)?\d+)*\s*$"
     r"|\s*F\s*O\s*R\s*M\s*1\s*3\s*F(?:\b.*\bPAGE\s+\d+)?\s*$"
     r"|\s*(?:BUSINESS\s+)?(?:PHONE|TEL(?:EPHONE)?|FAX)(?:\s+NUMBER)?\s*:?\s*\+?\(?\d{1,6}\)?(?:[ \t.-]+\(?\d{1,6}\)?)+\s*$"
-    r"|\s*SK\s+\d{5}\s+\d{4}\s+\d{6,7}\s*$",
+    r"|\s*SK\s+\d{5}\s+\d{4}\s+\d{6,7}\s*$"
+    # Column captions: ITEM/COLUMN labels with their column numbers.
+    r"|[\s(\-]*(?:ITEM|COLUMN|COL)\s*\d{1,2}\b(?:[^\d\n]|\b\d{1,2}\b)*$"
+    # Page and report headings, 13F file-number lists, labelled totals and summary counts.
+    r"|\s*PAGE\s*:?\s*\d+\s+(?:OF\s+\d+\s+)?.*\b(?:FORM\s*13F|REPORTING\s+MANAGER)\b"
+    r"|\s*REPORT\s+FOR\s+(?:THE\s+)?CALENDAR\s+YEAR\b"
+    r"|(?:\s*\d{1,3}\s+|\s*\d{1,2}-[A-Z]{3}-\d{2}\s+)?\s*0?28\s*-\s*\d{3,6}\b[^\d\n]*$"
+    r"|\s*TOTALS?\s*(?::|\s+IN\b|\s+\$?\s*\d)"
+    r"|\s*(?:REPORT\s+)?SUMMARY\s*:?\s*\d+\s+DATA\s+RECORDS\b"
+    r"|\s*LINE\s+COUNT\s*:"
+    r"|\s*FORM\s*13\s*F\s+(?:INFORMATION\s+)?TABLE\s+(?:ENTRY|VALUE)\s+TOTAL\b"
+    # Voting cells wrapped onto their own line: a discretion word and vote counts only.
+    r"|\s*(?:(?:SH|PRN)\s+)?(?:SOLE|DEFINED|SHARED|OTHER|X)(?:\s+(?:\d{1,3}(?:,\d{3})*|\d+)(?:\.\d+)?)*\s*$"
+    # Telephone numbers in international form.
+    r"|.*?\+\+?\s?\d{1,3}(?:[ \t.-]+\(?\d{1,4}\)?){2,5}\s*$"
+    r"|\s*(?:BUSINESS\s+)?(?:PHONE|TEL(?:EPHONE)?)\s*:?\s*\(\d{1,4}\)(?:[ \t.-]*\(?\d{1,4}\)?)+\s*$",
     re.I,
 )
 
@@ -118,6 +134,7 @@ def _source_rows(raw: str) -> list[tuple[str, str, str]]:
                 has_identifier = any(re.search(r"[0-9*@#]", m.group(1)) for m in _CUSIP.finditer(line[: columns[3]]))
                 if not has_identifier and line[columns[5] :].strip():
                     continue  # Class/voting subdivisions have no economic cells or new identifier.
+            line = _hyphenated_cusip(line)
             match = _cusip_match(header, line)
             # A blank value cell with a populated shares cell may wrap onto the next
             # physical line. Read only that value column; a warrant date stays in class.
@@ -138,6 +155,22 @@ def _source_rows(raw: str) -> list[tuple[str, str, str]]:
             rows.append((header, line, pending))
             pending = ""
     return rows
+
+
+def _hyphenated_cusip(line: str) -> str:
+    """Print a CUSIP written in its spaced `issuer issue check` form as the hyphenated form, when it is the
+    line's only CUSIP, its check digit verifies, a name precedes it and VALUE and shares follow it."""
+    spaced = [m for m in _SPACED_CUSIP.finditer(line) if _valid_cusip("".join(m.groups()).upper())]
+    if len(spaced) != 1 or any(_valid_cusip(literal_13f_cusip(m.group(1)) or "") for m in _CUSIP.finditer(line.upper())):
+        return line
+    match = spaced[0]
+    if (
+        not re.search(r"[A-Z]", line[: match.start()], re.I)
+        or len(_NUMBER.findall(line[match.end() :])) < 2
+        or not _NUMBER.match(line[match.end() :].lstrip())
+    ):
+        return line
+    return f"{line[: match.start()]}{'-'.join(match.groups())}{line[match.end() :]}"
 
 
 def _holding_shaped(line: str) -> bool:

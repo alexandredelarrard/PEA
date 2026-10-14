@@ -1,0 +1,202 @@
+-----BEGIN PRIVACY-ENHANCED MESSAGE-----
+Proc-Type: 2001,MIC-CLEAR
+Originator-Name: webmaster@www.sec.gov
+Originator-Key-Asymmetric:
+ MFgwCgYEVQgBAQICAf8DSgAwRwJAW2sNKK9AVtBzYZmr6aGjlWyK3XmZv3dTINen
+ TWSM7vrzLADbmYQaionwg5sDW3P6oaM5D3tdezXMm7z1T+B+twIDAQAB
+MIC-Info: RSA-MD5,RSA,
+ P1wIi2aQPjWqnficpJXRzKdPFdZNzIah7gQMjngbTRpW45yOKZjSLulnNKGkVI9t
+ bK4buvVQMM9zZZcrCWu1sw==
+
+<SEC-DOCUMENT>0001087767-08-000003.txt : 20080514
+<SEC-HEADER>0001087767-08-000003.hdr.sgml : 20080514
+<ACCEPTANCE-DATETIME>20080514103639
+ACCESSION NUMBER:		0001087767-08-000003
+CONFORMED SUBMISSION TYPE:	13F-HR
+PUBLIC DOCUMENT COUNT:		1
+CONFORMED PERIOD OF REPORT:	20080331
+FILED AS OF DATE:		20080514
+DATE AS OF CHANGE:		20080514
+EFFECTIVENESS DATE:		20080514
+
+FILER:
+
+	COMPANY DATA:	
+		COMPANY CONFORMED NAME:			LORAIN NATIONAL BANK/OH
+		CENTRAL INDEX KEY:			0001087767
+		IRS NUMBER:				346517553
+		STATE OF INCORPORATION:			OH
+		FISCAL YEAR END:			1231
+
+	FILING VALUES:
+		FORM TYPE:		13F-HR
+		SEC ACT:		1934 Act
+		SEC FILE NUMBER:	028-04827
+		FILM NUMBER:		08829965
+
+	BUSINESS ADDRESS:	
+		STREET 1:		457 BROADWAY
+		CITY:			LORAIN
+		STATE:			OH
+		ZIP:			44052
+		BUSINESS PHONE:		4402447263
+</SEC-HEADER>
+<DOCUMENT>
+<TYPE>13F-HR
+<SEQUENCE>1
+<FILENAME>hr-13f033108.txt
+<TEXT>
+LORAIN NATIONAL BANK              SECURITIES AND EXCHANGE COMMISSION FORM 13F
+ASSETS AS OF 03/31/08
+
+
+  - - - - COL1 - - - - - - - - - - COL2 - - - - - COL3 - - - COL4 - - - COL5 - -
+ - - - COL6 - - COL7 - - - - - - - COL8 - - - - - - -
+
+    INVESTMENT
+                                                            MARKET
+    DISCRETION               VOTING AUTHORITY
+                                                             VALUE     SHS OR
+ SOLE SHR OTHER OTHR    SOLE      SHARED      NONE
+ NAME OF ISSUER               TITLE OF CLASS     CUSIP    (X$1000)    PRN AMT
+  (A)  (B)  (C) MGRS     (A)        (B)        (C)
+ AFLAC INC                    COM              001055102       292      4,500 SH
+   X                      4,500
+ A T & T INC                  COM              00206R102     1,710     44,646 SH
+   X                     42,540                 2,106
+ ABBOTT LABS                  COM              002824100     1,108     20,084 SH
+   X                     18,684                 1,400
+ ABERDEEN ASIA PACIFIC INCOM  COM              003009107        93     15,034 SH
+   X                     15,034
+ AMERICAN ELECTRIC POWER CO   COM              025537101       404      9,700 SH
+   X                      8,800                   900
+ AMERICAN INTL GROUP INC      COM              026874107       525     12,141 SH
+   X                     10,620                 1,521
+ ANADARKP PETE CORP           COM              032511107       206      3,270 SH
+   X                      3,270
+ APACHE CORP                  COM              037411105       254      2,100 SH
+   X                      2,100
+ AUTOMATIC DATA PROCESSING    COM              053015103       301      7,100 SH
+   X                      7,100
+ AVON PRODUCTS INC            COM              054303102       605     15,298 SH
+   X                     13,098                 2,200
+ BP AMOCO PLC                 SPONSORED ADR    055622104       811     13,367 SH
+   X                     12,817                   550
+ BANK OF AMERICA CORPORATION  COM              060505104     1,100     29,021 SH
+   X                     26,708                 2,313
+ BERKSHIRE HATHAWAY INC DEL   CL B             084670207     1,552        347 SH
+   X                        347
+ BRISTOL MYERS SQUIBB CO      COM              110122108       667     31,316 SH
+   X                     28,848                 2,468
+ CATERPILLAR INC              COM              149123101       204      2,600 SH
+   X                      2,600
+ CHEVRON CORP                 COM              166764100     2,115     24,782 SH
+   X                     22,448                 2,334
+ CISCO SYS INC                COM              17275R102       837     34,734 SH
+   X                     32,450                 2,284
+ COCA COLA CO                 COM              191216100       473      7,763 SH
+   X                      6,963                   800
+ COLGATE PALMOLIVE CO         COM              194162103       308      3,950 SH
+   X                      3,950
+ DANAHER CORP DEL             COM              235851102       574      7,550 SH
+   X                      7,150                   400
+ DOMINION RESOURCES INC       COM              25746U109       540     13,230 SH
+   X                     11,750                 1,480
+ DOW CHEMICAL INC             COM              260543103       743     20,150 SH
+   X                     18,850                 1,300
+ DU PONT E I DE NEMOURS & CO  COM              263534109       320      6,838 SH
+   X                      6,838
+ DUKE ENERGY CORP             COM              26441C105       665     37,236 SH
+   X                     34,586                 2,650
+ EATON CORP                   COM              278058102       281      3,525 SH
+   X                      2,375                 1,150
+ EMERSON ELEC CO              COM              291011104     7,490    145,543 SH
+   X                    144,487                 1,056
+ EXELON CORP                  COM              30161N101     1,871     23,025 SH
+   X                     20,525                 2,500
+ EXXON MOBIL CORP             COM              30231G102     5,174     61,168 SH
+   X                     55,797                 5,371
+ FIRSTMERIT CORP              COM              337915102       707     34,225 SH
+   X                     30,764                 3,461
+ GENERAL ELEC CO              COM              369604103     4,787    129,354 SH
+   X                    122,954                 6,400
+ HARTFORD FINL SVCS GROUP INC COM              416515104     1,581     20,860 SH
+   X                     18,260                 2,600
+ HEINZ H J CO                 COM              423074103       242      5,150 SH
+   X                      4,550                   600
+ HOME DEPOT INC               COM              437076102       443     15,848 SH
+   X                     14,898                   950
+ INTEL CORP                   COM              458140100     1,827     86,276 SH
+   X                     74,342                11,934
+ INTERNATIONAL BUSINESS MACHS COM              459200101     2,834      2,463 SH
+   X                      2,363                   100
+ ISHARES TR                   RUSSELL1000VAL   464287598     2,258     30,738 SH
+   X                     30,738
+ ISHARES TR                   RUSSELL1000GRW   464287614     2,052     37,699 SH
+   X                     37,699
+ JOHNSON & JOHNSON            COM              478160104     1,333     20,554 SH
+   X                     19,054                 1,500
+ KIMBERLY CLARK CORP          COM              494368103       200      3,100 SH
+   X                      3,100
+ LNB BANCORP INC              COM              502100100     5,994    481,454 SH
+   X                     31,659               449,795
+ LILLY ELI & CO               COM              532457108       921     17,846 SH
+   X                     16,846                 1,000
+ LOWES COS INC                COM              548661107       900     39,250 SH
+   X                     33,450                 5,800
+ MEDTRONIC INC                COM              585055106       569     11,766 SH
+   X                      9,600                 2,166
+ MICROSOFT CORP               COM              594918104     2,464     86,835 SH
+   X                     74,085                12,750
+ NORDSON CORPORATION          COM              655663102       711     13,205 SH
+   X                     13,205
+ ORACLE CORP                  COM              68389X105       889     45,474 SH
+   X                     35,724                 9,750
+ PEPSICO INC                  COM              713448108       819     11,350 SH
+   X                     10,300                 1,050
+ PFIZER INC                   COM              717081103     1,067     50,999 SH
+   X                     46,449                 4,550
+ PRAXAIR INC                  COM              74005P104       236      2,800 SH
+   X                      2,800
+ PROCTER & GAMBLE CO          COM              742718109     2,938     41,929 SH
+   X                     38,564                 3,365
+ PROGRESSIVE CORP OHIO        COM              743315103       331     20,620 SH
+   X                     18,170                 2,450
+ ROYAL DUTCH SHELL PLC        SPONS ADR A      780259206       981     14,216 SH
+   X                     11,750                 2,466
+ SPDR TR                      UNIT SER 1       78462F103     2,789     21,132 SH
+   X                     21,132
+ SARA LEE CORP                COM              803111103       421     30,132 SH
+   X                     27,200                 2,932
+ SOUTHERN COMPANY             COM              842587107       329      9,250 SH
+   X                      9,050                   200
+ SPECTRA ENERGY               COM              847560109       435     19,141 SH
+   X                     17,591                 1,550
+ STATE STR CORP               COM              857477103     1,311     16,598 SH
+   X                     13,573                 3,025
+ SUNTRUST BKS INC             COM              867914103       375      6,800 SH
+   X                      6,100                   700
+ TARGET CORP                  COM              87612E106       923     18,208 SH
+   X                     15,608                 2,600
+ 3M CO                        COM              88579Y101       432      5,461 SH
+   X                      5,361                   100
+ VALERO ENERGY CORP           COM              91913Y100       219      4,450 SH
+   X                      3,950                   500
+ VERIZON COMMUNICATIONS       COM              92343V104       977     26,813 SH
+   X                     25,249                 1,564
+ WACHOVIA CORP                COM              929903102       251      9,296 SH
+   X                      7,924                 1,362
+ WAL MART STORES INC          COM              931142103       361      6,850 SH
+   X                      6,600                   250
+ WELLS FARGO & CO NEW         COM              949746101     2,190     75,254 SH
+   X                     68,978                 6,276
+ WYETH                        COM              983024100     1,087     26,018 SH
+   X                     23,518                 2,500
+
+ FINAL TOTALS                                               80,407
+
+ FORM 13F INFORMATION TABLE ENTRY TOTAL       66
+</TEXT>
+</DOCUMENT>
+</SEC-DOCUMENT>
+-----END PRIVACY-ENHANCED MESSAGE-----

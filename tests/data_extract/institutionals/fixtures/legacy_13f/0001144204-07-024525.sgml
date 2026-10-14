@@ -1,0 +1,197 @@
+-----BEGIN PRIVACY-ENHANCED MESSAGE-----
+Proc-Type: 2001,MIC-CLEAR
+Originator-Name: webmaster@www.sec.gov
+Originator-Key-Asymmetric:
+ MFgwCgYEVQgBAQICAf8DSgAwRwJAW2sNKK9AVtBzYZmr6aGjlWyK3XmZv3dTINen
+ TWSM7vrzLADbmYQaionwg5sDW3P6oaM5D3tdezXMm7z1T+B+twIDAQAB
+MIC-Info: RSA-MD5,RSA,
+ TtSaTzr/EHdwnpxUfo0+TXyJnSwFayvQ9ZKESjXUNlpdIGDAmDKcFe8/MMRNUold
+ 14tERSbco7r9qHQcLR6BaQ==
+
+<SEC-DOCUMENT>0001144204-07-024525.txt : 20070511
+<SEC-HEADER>0001144204-07-024525.hdr.sgml : 20070511
+<ACCEPTANCE-DATETIME>20070511160534
+ACCESSION NUMBER:		0001144204-07-024525
+CONFORMED SUBMISSION TYPE:	13F-HR/A
+PUBLIC DOCUMENT COUNT:		1
+CONFORMED PERIOD OF REPORT:	20070331
+FILED AS OF DATE:		20070511
+DATE AS OF CHANGE:		20070511
+EFFECTIVENESS DATE:		20070511
+
+FILER:
+
+	COMPANY DATA:	
+		COMPANY CONFORMED NAME:			CANADA PENSION PLAN INVESTMENT BOARD
+		CENTRAL INDEX KEY:			0001283718
+		IRS NUMBER:				980361334
+		STATE OF INCORPORATION:			A6
+		FISCAL YEAR END:			0331
+
+	FILING VALUES:
+		FORM TYPE:		13F-HR/A
+		SEC ACT:		1934 Act
+		SEC FILE NUMBER:	028-12303
+		FILM NUMBER:		07842421
+
+	MAIL ADDRESS:	
+		STREET 1:		ONE QUEEN STREET EAST
+		STREET 2:		STE 2700
+		CITY:			TORONTO ONTARIO
+		STATE:			A6
+		ZIP:			0000
+</SEC-HEADER>
+<DOCUMENT>
+<TYPE>13F-HR/A
+<SEQUENCE>1
+<FILENAME>v074697_13f-hr.txt
+<TEXT>
+                                  UNITED STATES
+            SECURITIES AND EXCHANGE COMMISSION Washington, D.C. 20549
+
+                                    Form 13F
+
+                               FORM 13F COVER PAGE
+
+Report for the Calendar Year or Quarter Ended:    March 31, 2007
+                                                  --------------
+
+Check here if Amendment [X]; Amendment Number:   001
+                                                 ---
+This Amendment (Check only one.):    |X| is a restatement.
+                                     |_| adds new holdings entries.
+
+ Institutional Investment Manager Filing this Report:
+
+Name:      Canada Pension Plan Investment Board
+Address:   One Queen Street East, Suite 2600
+           Toronto, Ontario, M5C 2W5
+           Canada
+
+Form 13F File Number:  28-12303
+
+The institutional investment manager filing this report and the person by whom
+it is signed hereby represent that the person signing the report is authorized
+to submit it, that all information contained herein is true, correct and
+complete, and that it is understood that all required items, statements,
+schedules, lists, and tables, are considered integral parts of this form.
+
+Person Signing this Report on Behalf of Reporting Manager:
+
+Name:       John Butler
+Title:      Senior Vice President - General Counsel and Corporate Secretary
+Phone:      416-868-1171
+
+Signature, Place, and Date of signing:
+
+   /s/ John Butler                    Toronto, Ontario          May 10, 2007
+   --------------------------       --------------------        ------------
+        [Signature]                    [City, State]               [Date]
+
+Report Type (Check only one.):
+
+|X|   13F HOLDINGS REPORT. (Check here if all holdings of this reporting manager
+      are reported in this report.)
+
+|_|   13F NOTICE. (Check here if no holdings reported are in this report, and
+      all holdings are reported by other reporting manager(s).)
+
+|_|   13F COMBINATION REPORT. (Check here if a portion of the holdings for this
+      reporting manager are reported in this report and a portion are reported
+      by other reporting manager(s).)
+
+<PAGE>
+
+                      FORM 13F SUMMARY PAGE Report Summary:
+
+Number of Other Included Managers:                 0
+                                        --------------------
+Form 13F Information Table Entry Total:           57
+                                        --------------------
+Form 13F Information Table Value Total:       $10,018,924
+                                        --------------------
+                                             (thousands)
+
+ List of Other Included Managers:
+
+
+ Provide a numbered list of the name(s) and Form 13F file number(s) of all
+ institutional investment managers with respect to which this report is filed,
+ other than the manager filing this report. NONE.
+
+
+<PAGE>
+
+<TABLE>
+<CAPTION>
+- --------------------------------------------------------------------------------------------------------------------------------
+                                           Title of                Value                  Investment    Other   Voting Authority
+Name of Issuer                              Class      CUSIP      (x$1000)      SHRS      Discretion   Managers        Sole
+- --------------------------------------------------------------------------------------------------------------------------------
+
+<S>                                         <C>       <C>         <C>         <C>           <C>          <C>         <C>
+
+ABBOTT LABS                                 Common    002824100   103,293     1,851,122     Sole         N/A          1,851,122
+ALCAN INC COM                               Common    013716105   178,011     3,412,475     Sole         N/A          3,412,475
+ALTRIA GROUP INC                            Common    02209S103   252,130     2,871,316     Sole         N/A          2,871,316
+AMERICAN INTL GROUP INC                     Common    026874107   238,788     3,552,336     Sole         N/A          3,552,336
+AMGEN INC                                   Common    031162100    79,446     1,421,719     Sole         N/A          1,421,719
+BANK AMERERICA CORPORATION                  Common    060505104   305,332     5,984,561     Sole         N/A          5,984,561
+BARRICK GOLD CORP                           Common    067901108   240,966     8,439,311     Sole         N/A          8,439,311
+BROOKFIELD ASSET MGMT INC CL A LTD VT SH    Common    112585104   134,898     2,579,131     Sole         N/A          2,579,131
+BROOKFIELD PPTYS CORP                       Common    112900105   110,648     2,720,917     Sole         N/A          2,720,917
+CAMECO CORP COM                             Common    13321L108   112,333     2,739,806     Sole         N/A          2,739,806
+CANADIAN NATL RY CO                         Common    136375102   170,332     3,859,068     Sole         N/A          3,859,068
+CDN IMPERIAL BK OF COMMERCE                 Common    136069101   116,097     1,336,818     Sole         N/A          1,336,818
+CHEVRON CORP NEW                            Common    166764100   227,559     3,076,784     Sole         N/A          3,076,784
+CISCO SYS INC                               Common    17275R102   186,410     7,301,601     Sole         N/A          7,301,601
+CITIGROUP INC                               Common    172967101   353,008     6,875,885     Sole         N/A          6,875,885
+COCA COLA CO                                Common    191216100   127,163     2,649,230     Sole         N/A          2,649,230
+COMCAST CORP NEW                            Common    20030N200    79,034     3,065,404     Sole         N/A          3,065,404
+CONOCOPHILLIPS                              Common    20825C104   161,411     2,361,541     Sole         N/A          2,361,541
+DEUTSCHE BANK AG NAMEN                      Common    D18190898   116,208       865,718     Sole         N/A            865,718
+ENCANA CORP                                 Common    292505104   376,055     7,428,691     Sole         N/A          7,428,691
+EXXON MOBIL CORP                            Common    30231G102   601,522     7,972,465     Sole         N/A          7,972,465
+GENERAL ELECTRIC CO                         Common    369604103   275,990     7,805,141     Sole         N/A          7,805,141
+GOLDCORP INC NEW                            Common    380956409   156,502     6,515,627     Sole         N/A          6,515,627
+GOLDMAN SACHS GROUP INC                     Common    38141G104   127,490       616,998     Sole         N/A            616,998
+GOOGLE INC                                  Common    38259P508   115,411       251,900     Sole         N/A            251,900
+HEWLETT PACKARD CO                          Common    428236103   132,411     3,298,723     Sole         N/A          3,298,723
+HONDA MOTOR LTD AMERN                       Common    438128308    91,894     2,640,000     Sole         N/A          2,640,000
+IMPERIAL OIL LTD COM NEW                    Common    453038408   111,705     3,010,956     Sole         N/A          3,010,956
+INTEL CORP                                  Common    458140100   135,230     7,068,992     Sole         N/A          7,068,992
+INTERNATIONAL BUSINESS MACHS                Common    459200101   171,612     1,820,629     Sole         N/A          1,820,629
+JOHNSON & JOHNSON                           Common    478160104   219,031     3,634,759     Sole         N/A          3,634,759
+JP MORGAN CHASE & CO                        Common    46625H100   244,229     5,048,146     Sole         N/A          5,048,146
+MANULIFE FINL CORP                          Common    56501R106   245,261     7,122,409     Sole         N/A          7,122,409
+MERCK & CO INC                              Common    589331107   129,846     2,939,698     Sole         N/A          2,939,698
+MERRILL LYNCH & CO INC                      Common    590188108    97,788     1,197,351     Sole         N/A          1,197,351
+MICROSOFT CORP                              Common    594918104   287,958    10,332,175     Sole         N/A         10,332,175
+MORGAN STANLEY COM NEW                      Common    617446448   122,846     1,559,757     Sole         N/A          1,559,757
+NEXEN INC                                   Common    65334H102   146,688     2,392,910     Sole         N/A          2,392,910
+NORTEL NETWORKS CORP NEW                    Common    656568102    73,646     3,070,539     Sole         N/A          3,070,539
+PEPSICO INC                                 Common    713448108   137,525     2,163,699     Sole         N/A          2,163,699
+PETRO-CDA                                   Common    71644E102   194,744     4,976,002     Sole         N/A          4,976,002
+PFIZER INC                                  Common    717081103   230,248     9,115,137     Sole         N/A          9,115,137
+POTASH CORP SASK INC                        Common    73755L107   149,629       937,639     Sole         N/A            937,639
+PROCTER & GAMBLE CO                         Common    742718109   263,102     4,165,649     Sole         N/A          4,165,649
+RESEARCH IN MOTION LTD                      Common    760975102   182,063     1,333,567     Sole         N/A          1,333,567
+ROGERS COMMUNICATIONS INC CL B              Common    775109200   137,009     4,182,586     Sole         N/A          4,182,586
+ROYAL BK CDA MONTREAL QUE                   Common    780087102    43,293       868,608     Sole         N/A            868,608
+SCHLUMBERGER LTD                            Common    806857108   111,358     1,611,554     Sole         N/A          1,611,554
+SUN LIFE FINL INC                           Common    866796105   111,353     2,445,980     Sole         N/A          2,445,980
+SUNCOR ENERGY INC                           Common    867229106   323,967     4,254,345     Sole         N/A          4,254,345
+TALISMAN ENERGY INC                         Common    87425E103   173,149     9,859,516     Sole         N/A          9,859,516
+TESCO CORP                                  Common    88157K101   105,797    12,141,968     Sole         N/A         12,141,968
+TORONTO DOMINION BK ONT COM NEW             Common    891160509   106,476     1,769,454     Sole         N/A          1,769,454
+TRANSCANADA CORP                            Common    89353D107   132,036     3,971,919     Sole         N/A          3,971,919
+ULTRA PETROLEUM CORP                        Common    903914109   162,358     3,055,866     Sole         N/A          3,055,866
+WACHOVIA CORP 2ND NEW                       Common    929903102   135,931     2,469,221     Sole         N/A          2,469,221
+WELLS FARGO & CO NEW                        Common    949746101   162,703     4,725,618     Sole         N/A          4,725,618
+</TABLE>
+
+
+</TEXT>
+</DOCUMENT>
+</SEC-DOCUMENT>
+-----END PRIVACY-ENHANCED MESSAGE-----

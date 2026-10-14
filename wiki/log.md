@@ -469,3 +469,12 @@ Updated only the [insider aggregate contract](./modules/data-aggregate.md#inside
 - Pages: [Data extraction](./modules/data-extract.md), [Data store](./modules/data-store.md), and [Table catalog](./reference/table-catalog.md).
 - Validation: 258 targeted checks passed; 20 live-source checks were deselected and the live tripwire blocked zero attempts. The checks cover planning from table forms, marker stamps after a table rename, retries, done-table save order, parser outputs, CLI wiring, insider row contracts and DDL compatibility. Pyright reports zero errors or warnings across the 12 changed source files; all 19 changed Python files compile. The read-only AST audit confirms all 64 pre-existing table contracts, nine exact column orders and seven fetch descriptions are preserved. git diff --check passes. Touched documentation links resolve; only link validation is enabled in the wiki audit.
 - Evidence: `.cache/edgar-metadata-audit.json`, `.cache/edgar-metadata-pyright.json` and `.cache/edgar-metadata-tests-2.log`. No production downloads, table writes or DDL changes ran. Ruff is unavailable.
+
+## 2026-10-14: refresh — generic price and PIT share basis
+
+- Profile: internal/standard.
+- source_commit: c1443763db6fd8d109817fdf035b6e91e84893d4 (global overview anchor was b329a555107a951ae80549949d2dcbc5d4b0b28b).
+- Coverage: scoped price/share adjustment contract, JSON maintenance and validation guidance; unrelated earlier changes since the overview anchor were not re-audited in this refresh.
+- Pages: [Overview](./OVERVIEW.md), [Configuration](./reference/configuration.md), [Data sources](./reference/data-sources.md), [Testing and validation](./guides/testing.md).
+- One approved price register separates actual G, vendor F, represented price Y, quoted units U and hidden H; native total-only returns preserve supported nonzero event returns and independent OHLC masks. Source guards distinguish available empty event feeds from missing tables through the existing store facade.
+- Evidence:303 full regression tests,71 fresh post-facade controls, independent named economic/return/guard audits and scoped link checks. Existing configuration-page link to an older ignored report remains an advisory; Markdown lint families were not selected. Production historical tables were not rebuilt.

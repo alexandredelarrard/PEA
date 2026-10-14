@@ -7,7 +7,7 @@ tags:
   - reference
   - data-sources
   - extraction
-source_commit: 8f3ffae075aa9dec4f7427dc8a8f1f960688f4c3
+source_commit: c1443763db6fd8d109817fdf035b6e91e84893d4
 ---
 # Data sources
 
@@ -81,7 +81,15 @@ Latest-only quarter upserts cannot recreate overwritten source versions. Histori
 
 `prices` contains equities only. Market and macro series are named rows in `prices_macro`, preventing benchmark symbols from contaminating wide cross-sectional ranks.
 
-Use `close_split` for levels such as market capitalization, execution price, enterprise value, yields, and ATR inputs. Use `close_total` for returns, momentum, volatility, betas, and labels. Split/spinoff corrections that affect cube levels are applied when building `cube_part_prices`; the raw vendor table remains auditable. See [cube build](../flows/cube-build.md).
+Use `close_split` with its stored level factor for levels, and reconstruct traded quoted units for execution/value checks. Use `close_total` for returns, momentum, volatility, betas and labels. Yahoo's ordinary cash-dividend treatment belongs to `close_total`; a Yahoo split row can also represent a spinoff price factor and does not by itself prove share growth or retrospective count adjustment. Raw vendor tables remain auditable. See [cube build](../flows/cube-build.md).
+
+The approved [price register](../../configs/prices/yf_price_bugfix.json) separates actual ordinary-share growth G, vendor-incorporated quantity restatements F, represented Yahoo price factors Y, ordinary shares per quoted security U and verified hidden price wedges H. The level multiplier is `S=Y*H/(F*U)`, filing PIT shares are `sharesbas/F`, and reconstructed traded quoted price is `close_split*S*F*U`. Returns never use S. The shared [resolver](../../src/utils/price_adjustments.py) supplies these distinct views after existing predecessor ownership selection; [anchor loading](../../src/utils/price_basis.py) uses repaired close_split and bounded historical reads. Never infer F from an action's dividend/spinoff label alone.
+
+HBAN's five stock dividends and APA's two distributions remain actual growth G but are excluded from F because original filings show no corresponding vendor restatement. SJM uses legal conversion0.9451 and vendor rounding0.945 independently, with a June1,2002 unit cutoff and June3 first new quote. IVZ uses a December4,2007 ordinary consolidation and quoted ADS conversion: before it, one ADS represents two ordinary shares. Explicit source-title aliases establish security units; ambiguous titles preserve filed values and abstain. Configured daily PIT/ownership carry rebases actual G while retaining publication dates and freshness age.
+
+VTR and SJM have independently supported nonzero total-only return targets. [Pure repairs](../../src/utils/price_repairs.py) change only the close_total prefix; OHLC/volume and post-event totals are preserved. Applicable changed/missing event pairs stop the price builder. Return consumers verify that persisted totals reached the target, so an unrebuilt historical part cannot silently lose protection. The five unresolved DHR/ETN/LDOS/DD/CNP returns remain nulled and masked; ETN's Axcelis distribution is corroborated but its exact holder return is still unsupported. Momentum independently retains residual quote masks for ATR/gap/range after total-return recovery.
+
+A hidden-level repair logs actual nonnull quote bars, excluding prelisting grid cells. A predecessor warning about no selected split/spinoff rows says nothing about whether that predecessor's fundamentals are stored. Missing source history, unverified hidden-level/price-anchor composition and unsupported security units remain explicit limits.
 
 One basis per ticker: every stored `close_split` bar of a ticker must sit on Yahoo's current adjustment basis. The incremental window restates only its own tail, so a split or spinoff that Yahoo registers late leaves older bars on the previous basis. Two triggers re-pull a ticker's full history:
 

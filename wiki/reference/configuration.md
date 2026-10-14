@@ -6,6 +6,7 @@ tags:
   - wiki
   - reference
   - configuration
+source_commit: c1443763db6fd8d109817fdf035b6e91e84893d4
 ---
 # Configuration
 
@@ -38,7 +39,13 @@ Callers use attribute access such as `self._config.build_cube.targets.horizons`.
 | `data_availability`, `source_freshness`, `earnings_calls` | [data.yml](../../configs/data.yml) | Institutional availability boundaries, field/derived overrides, the insider frontier lag, and the earnings-call extractor knobs. |
 | validation keys | [validate.yml](../../configs/validate.yml) | Point-in-time publication clocks, observed-zero exceptions, and validation policy. |
 
-[yf_price_bugfix.json](../../configs/prices/yf_price_bugfix.json) registers Yahoo price defects (needs an `_APPROVED` block). Keys: `level_factor`, `split_vintage`, `return_seams`, `null_ret` and `volume_scale` repair data when `cube_part_prices` is built; `seam_reviewed` (`ticker` to `[{date, why}]`) declares a reviewed genuine move to the `unrebased_seam` validator and changes no data. See the [price-basis contract](data-sources.md#price-basis-contract).
+[yf_price_bugfix.json](../../configs/prices/yf_price_bugfix.json) is the approved register for both price defects and vendor share-basis exceptions. `share_events` declares exact source expectations, sourced original-share/quote anchors, actual ordinary-share events, independently incorporated vendor restatements, optional represented price factors and explicit quoted-security units. `level_factor` retains hidden price-only wedges; `split_vintage`, `return_seams`, `null_ret` and `volume_scale` retain their repair roles. `seam_reviewed` (`ticker` to `[{date, why}]`) declares a reviewed genuine move to the validator and changes no data. See the [price-basis contract](data-sources.md#price-basis-contract).
+
+For future supported missing/moved events or differing vendor treatment, edit this existing price register. An event's `actual` block has `date`/`ratio`; omitted `vendor` defaults to actual, while vendor ratio1 explicitly means no retrospective restatement. Omitted `price` preserves Yahoo's represented date/factor; a price override requires an independent `quoted_price` anchor in the affected interval. Source selectors describe observed rows, not replacement dates. `quote_units` carries the conversion date, before/after ordinary shares per quoted security and explicit title aliases. Generic common-stock labels do not prove ADS units.
+
+The shared resolver in [price_adjustments.py](../../src/utils/price_adjustments.py) validates metadata and source/anchor evidence before a write. The scoped loader in [price_basis.py](../../src/utils/price_basis.py) verifies old anchors even during tail builds, using the same pure quote repairs as the price builder. Changed or unavailable evidence refuses an applicable new policy; verified empty sources differ from unavailable sources. A price anchor overlapping a nonunit hidden-level segment is explicitly refused until that combined basis can be independently verified.
+
+A `return_seams` entry with `fields: ["close_total"]` must supply `expect_step`, `target_step`, `expect_quote_step` and evidence. Only the strict pre-event total-return prefix changes; a precise verified target is idempotent. Changed or incomplete applicable input refuses the build. Legacy entries without `fields` retain the all-price, target-one behavior. Supported total-only repairs recover total-return windows while residual quote seams keep OHLC windows masked. Historical JSON edits require the affected historical derived tables and consumers to be rebuilt; a default tail build cannot adopt an old prefix correction.
 
 Curated evidence registers under [configs/sec](../../configs/sec/) are versioned data contracts rather than tuning knobs:
 

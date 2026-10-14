@@ -8,6 +8,7 @@ unverifiable text book is a deterministic read failure, and no F-001 garbage sha
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ from edgar import Filing
 from src.data_extract.utils.common.edgar_driver import FilingStamp
 from src.data_extract.utils.institutionals import fetch_13f as f13
 from src.data_extract.utils.institutionals.legacy_13f_fallback import (
+    _blank_cusip_value,
     _holding_rows,
     _source_rows,
     needs_legacy_fallback,
@@ -1031,7 +1033,7 @@ _SYNTHETIC_BOOK = [{"CUSIP": "001055102", "VALUE": 145462.0}, {"CUSIP": "0311621
 )
 def test_ratio_rule_cached_sources(accession: str, expected: float, shape: str) -> None:
     raw, stamp = _cached_source(accession)
-    source = _holding_rows(raw, _source_rows(raw), 1.0)
+    source = _holding_rows(raw, _source_rows(raw), 1.0)[0]
     manifest, rows = f13.text_filing_vintage(raw, stamp)
     ratio = _assert_values_unchanged(manifest, rows, source)
     assert manifest.iloc[0].source_row_count == len(source)
@@ -1044,7 +1046,7 @@ def test_ratio_rule_cached_sources(accession: str, expected: float, shape: str) 
 
 def test_ratio_16_36_cached_source_is_rejected() -> None:
     raw, stamp = _cached_source("0001387131-13-001589")
-    ratio = 29161518 / sum(row["VALUE"] for row in _holding_rows(raw, _source_rows(raw), 1.0))
+    ratio = 29161518 / sum(row["VALUE"] for row in _holding_rows(raw, _source_rows(raw), 1.0)[0])
     with pytest.raises(ValueError, match="does not reconcile"):
         f13.text_filing_vintage(raw, stamp)
     with pytest.raises(ValueError, match="differs materially"):
@@ -1063,7 +1065,7 @@ def _synthetic_double_counted(groups: int) -> str:
 @pytest.mark.parametrize("groups", [1, 10])
 def test_synthetic_ratio_2_total_line_is_dropped_without_changing_values(groups: int) -> None:
     raw = _synthetic_double_counted(groups)
-    parsed = _holding_rows(raw, _source_rows(raw), 1.0)
+    parsed = _holding_rows(raw, _source_rows(raw), 1.0)[0]
     assert len(parsed) == 2 * groups + 1 and sum(row["VALUE"] for row in parsed) == 2 * 157462 * groups
     for verify_values in (True, False):
         rows = parse_legacy_information_table(raw, value_factor=1.0, verify_values=verify_values)
@@ -1080,7 +1082,7 @@ def test_synthetic_ratio_2_total_line_is_dropped_without_changing_values(groups:
 def test_synthetic_ratio_2_with_two_rows_equal_to_the_total_is_rejected() -> None:
     raw = _table(_HEADER, _AFLAC, _AMGEN, " " * 45 + "145,462  3,362,515").replace("Entry Total: 3", "Entry Total: 2")
     raw = "[X] 13F HOLDINGS REPORT\nForm 13F Information Table Value Total: $145,462\n" + raw
-    assert [row["VALUE"] for row in _holding_rows(raw, _source_rows(raw), 1.0)] == [145462, 12000, 145462]
+    assert [row["VALUE"] for row in _holding_rows(raw, _source_rows(raw), 1.0)[0]] == [145462, 12000, 145462]
     with pytest.raises(ValueError, match="does not reconcile"):
         parse_legacy_information_table(raw, value_factor=1.0, verify_values=False)
     print("SANITY: SYNTHETIC extra row is kept when two rows equal the cover total, so the count mismatch still rejects the book.")
@@ -1110,7 +1112,7 @@ def test_synthetic_cover_ratios_without_a_total_row(ratio: float, accepted: bool
 )
 def test_cover_ratio_sets_the_cell_unit_on_real_sources(accession: str, cusip: str, factor: float, band: tuple[float, float], shape: str) -> None:
     raw, stamp = _cached_source(accession)
-    source = _holding_rows(raw, _source_rows(raw), 1.0)
+    source = _holding_rows(raw, _source_rows(raw), 1.0)[0]
     manifest, rows = f13.text_filing_vintage(raw, stamp)
     ratio = _assert_values_unchanged(manifest, rows, source)
     assert manifest.iloc[0].value_unit_factor == factor, (ratio, manifest.iloc[0].value_unit_factor)
@@ -1252,16 +1254,17 @@ def test_sample_legacy_sources_parse_and_reconcile(
             "0001137065",
             "2001-04-26",
             "1999-03-31",
-            "Holding line without a source CUSIP: Blake Barrows & Brown",
-            "blank CUSIP cell, not Berkley's 084423102 above it",
+            "Holding line without a source CUSIP: Blake Barrows & Brown          COM                             348      208 SH       SOLE"
+            "                               ; no cover count and total to reconcile the book without 2 such line(s)",
+            "2 blank CUSIP cells (Blake Barrows & Brown, Promus Hotel) and no cover count or total to reconcile without them",
         ),
         (
             "0000950144-08-003876",
             "0001409775",
             "2008-05-09",
             "2008-03-31",
-            "Holding line without a source CUSIP: Altium FX LTD",
-            "blank CUSIP cell, not Altera's 021441100 above it",
+            "Invalid source CUSIP '869004995'",
+            "its 4 blank CUSIP cells are set aside; the next line, a present CUSIP failing its check digit, still fails",
         ),
         (
             "0000948985-12-000005",
@@ -1278,3 +1281,88 @@ def test_sample_legacy_sources_keep_failing_with_the_right_reason(accession: str
     with pytest.raises(ValueError, match=re.escape(reason)):
         f13.text_filing_vintage(raw, stamp)
     print(f"SANITY: real {accession} ({shape}) still fails loudly: {reason!r}.")
+
+
+_CREF = "0001007399-13-000002"
+
+
+def test_blank_cusip_line_is_excluded_when_the_rest_reconciles(caplog: pytest.LogCaptureFixture) -> None:
+    """Real 2013Q1 book: a TIAA-CREF annuity account line has no CUSIP. The cover counts it (300 lines);
+    the other 299 lines and their VALUE sum reconcile with the cover, so the book is stored without it."""
+    raw, stamp = _cached_source(_CREF)
+    with caplog.at_level(logging.WARNING, logger=f13.__name__):
+        manifest, book = f13.text_filing_vintage(raw, stamp)
+    header = manifest.iloc[0]
+    assert (header.source_row_count, header.declared_row_count) == (299, 300)
+    assert (header.source_value_total, header.declared_value_total, header.value_unit_factor) == (654519.0, 654689.0, 1000.0)
+    assert len(book) == 281 and book.raw_value_usd.sum() == 654519.0
+    assert not book.issuer_name.str.contains("CREF").any()
+    warnings = [r.getMessage() for r in caplog.records if "without a source CUSIP" in r.getMessage()]
+    assert warnings == [
+        f"13F {_CREF}: excluded 1 holding line(s) without a source CUSIP, VALUE 169.0 in source cells; the other 299 row(s) reconcile with the cover"
+    ]
+    positions = book.set_index("cusip")
+    prices = {cusip: positions.loc[cusip].value_usd / positions.loc[cusip].shares for cusip in ("88579Y101", "002824100")}
+    assert 100.0 < prices["88579Y101"] < 112.0 and 33.0 < prices["002824100"] < 38.0, prices
+    print(
+        f"SANITY: real {_CREF} stores 299/300 lines (281 positions), raw total 654,519 vs cover 654,689 (excluded 169 + 1 rounding); "
+        f"one WARNING names 1 line, VALUE 169; MMM ${prices['88579Y101']:.2f} (closed near $106.3), "
+        f"ABT ${prices['002824100']:.2f} (near $35.3) on 2013-03-28."
+    )
+
+
+def test_synthetic_blank_cusip_value_that_breaks_the_cover_still_fails() -> None:
+    """SYNTHETIC from the real CREF source: the blank line's VALUE is raised to 169,000 and the cover with it,
+    so the 299 kept lines hold 79% of the cover total, outside the existing source band."""
+    raw, stamp = _cached_source(_CREF)
+    line = next(line for line in raw.splitlines() if line.startswith("CREF Growth"))
+    raw = raw.replace(line, line.replace("     169    15157", "  169000    15157")).replace("Value Total: $ 654689", "Value Total: $ 823520")
+    with pytest.raises(ValueError, match=r"^Holding line without a source CUSIP: CREF Growth .*does not reconcile: 13F source VALUE total"):
+        f13.text_filing_vintage(raw, stamp)
+    print("SANITY: SYNTHETIC CREF line at 169,000 of an 823,520 cover leaves 654,519 (79%) kept, so the book still fails loudly.")
+
+
+@pytest.mark.parametrize(
+    ("line", "value", "shape"),
+    [
+        (
+            "Altium FX LTD             COMMON STOCK                    5     12000   SH        SOLE       01, 02, 04     12000      0      0",
+            5,
+            "empty cell",
+        ),
+        (
+            "MetLife, Inc.             COMMON STOCK   (blank)       1475    24,477   SH        SOLE       01, 02, 03     24477      0      0",
+            1475,
+            "(blank)",
+        ),
+        (
+            "   Growth                 COMMON STOCK   (blank)        928    12,837   SH        SOLE       01, 02, 03     12837      0      0",
+            928,
+            "wrapped name",
+        ),
+        (
+            "Target Corporation        COMMON STOCK   8.7612E+110   2278    44,958   SH        SOLE       01, 02, 03     44958      0      0",
+            None,
+            "garbled CUSIP",
+        ),
+        ("Column Totals                            4,018,843 84,153,226                                  72,239,393    -", None, "column totals"),
+        ("ABBOTT LABS              Common Stock      2824100       97,520.00      2,300      2,300     -       ALL      2,300", None, "short CUSIP"),
+    ],
+)
+def test_blank_cusip_cell_is_told_from_other_cusipless_lines(line: str, value: int | None, shape: str) -> None:
+    header = "    NAME OF ISSUER      TITLE OF CLASS     CUSIP    (X1000)  PRIN AMT  PRIN  CALL DISCRETION  MANAGERS     SOLE   SHARED  NONE"
+    found = _blank_cusip_value(header, line)
+    assert found == value, (found, value)
+    print(f"SANITY: {shape} line -> blank-CUSIP VALUE {found}; only an empty or (blank) cell with VALUE, shares and SH/PRN is set aside.")
+
+
+def test_altium_blank_lines_are_set_aside_and_its_invalid_cusip_still_fails() -> None:
+    """Real 2008Q1 book (cover 917 = every line, blanks included): the 4 blank-CUSIP lines are recognised;
+    the first present-but-invalid CUSIP, 869004995, still fails the book."""
+    raw, stamp = _sample_source("0000950144-08-003876", "0001409775", "2008-05-09", "2008-03-31")
+    header = next(line for line in raw.splitlines() if "CUSIP" in line and "ISSUER" in line)
+    blanks = [_blank_cusip_value(header, line) for line in raw.splitlines() if "(blank)" in line or line.startswith("Altium FX")]
+    assert blanks == [5, 928, 1475, 1263], blanks
+    with pytest.raises(ValueError, match=re.escape("Invalid source CUSIP '869004995'")):
+        f13.text_filing_vintage(raw, stamp)
+    print("SANITY: real 0000950144-08-003876 sets aside 4 blank-CUSIP lines (VALUE 3,671 of a 1,962,677 cover) but still fails on 869004995.")

@@ -261,13 +261,27 @@ def _garbage_rows(book: pd.DataFrame) -> pd.Series:
     return zero_shares | (book["value_usd"] > _MAX_POSITION_USD) | (book["shares"] < 0) | (book["value_usd"] < 0) | table_text
 
 
+def _warn_blank_cusip_lines(accession_number: str, info: pd.DataFrame) -> None:
+    """Name the holding lines the legacy parser set aside for a blank CUSIP; the log is their record."""
+    if lines := info.attrs.get("blank_cusip_lines"):
+        logger.warning(
+            "13F %s: excluded %s holding line(s) without a source CUSIP, VALUE %s in source cells; the other %s row(s) reconcile with the cover",
+            accession_number,
+            lines,
+            info.attrs.get("blank_cusip_value"),
+            len(info),
+        )
+
+
 def _legacy_book(stamp: FilingStamp, raw: str) -> pd.DataFrame:
     """The book from the source-checked text parse. Raises `ValueError` when the text cannot be
     verified against its SEC cover totals or still yields a garbage row: never a partial book."""
     try:
-        book = _book_frame(stamp.cik, stamp.filed, stamp.period_of_report, parse_legacy_information_table(raw))
+        info = parse_legacy_information_table(raw)
+        book = _book_frame(stamp.cik, stamp.filed, stamp.period_of_report, info)
     except ValueError as e:
         raise ValueError(f"legacy text table unverifiable against its SEC cover totals: {e}") from e
+    _warn_blank_cusip_lines(stamp.accession_number, info)
     n_garbage = int(_garbage_rows(book).sum())
     if n_garbage:
         raise ValueError(f"legacy text table unverifiable: {n_garbage} source row(s) carry zero shares, a negative or >$1tn value, or table text")
@@ -287,6 +301,7 @@ def _source_information_table(report: Any, stamp: FilingStamp, xml: str | None, 
             raise ValueError("13F raw XML row count differs from parsed information table")
     elif raw:
         table = parse_legacy_information_table(raw, value_factor=1.0, verify_values=False)
+        _warn_blank_cusip_lines(stamp.accession_number, table)
     else:
         return pd.DataFrame(), units
     if table.empty:
@@ -836,6 +851,7 @@ def text_filing_vintage(raw: str, stamp: FilingStamp) -> tuple[pd.DataFrame, pd.
         declared_rows, declared_value = 0, 0.0
     else:
         info = parse_legacy_information_table(raw, value_factor=1.0, verify_values=False)
+        _warn_blank_cusip_lines(stamp.accession_number, info)
         units = _cover_ratio_units(raw, units, float(info["VALUE"].sum()))
     kind = "original"
     if stamp.is_amendment:

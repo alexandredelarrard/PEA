@@ -39,6 +39,14 @@ _NON_HOLDING_LINE = re.compile(
 )
 
 
+class _BlankCusipLineError(ValueError):
+    """A named holding line whose CUSIP cell is empty or `(blank)`; it carries the line's VALUE."""
+
+    def __init__(self, line: str, value: float) -> None:
+        super().__init__(f"Holding line without a source CUSIP: {line[:120]}")
+        self.value = value
+
+
 def _valid_cusip(token: str) -> bool:
     """True for a 9-character CUSIP whose check digit verifies."""
     if len(token) != 9 or not token[-1].isdigit():
@@ -228,16 +236,19 @@ def _holding(
             raise ValueError(f"Missing issuer for {cusip}")
         tail = line[match.end() :]
     else:
-        if prior is None:
-            raise ValueError(f"Continuation without a prior CUSIP: {line[:100]}")
-        cusip, issuer, title = prior
         tail = line.lstrip()
         if _NUMBER.match(tail) is None:
-            # Not a continuation of `prior`: a named line whose own identifier or amounts are unreadable.
+            # Not a continuation: a named line whose own identifier or amounts are unreadable.
             own = [m.group(1) for m in _CUSIP.finditer(line.upper()) if _valid_cusip(literal_13f_cusip(m.group(1)) or "")]
             if own:
                 raise ValueError(f"Unreadable source value/shares for {own[0]}: {line[:120]}")
+            value = _blank_cusip_value(header, line)
+            if value is not None:
+                raise _BlankCusipLineError(line, float(value * Decimal(str(value_factor))))
             raise ValueError(f"Holding line without a source CUSIP: {line[:120]}")
+        if prior is None:
+            raise ValueError(f"Continuation without a prior CUSIP: {line[:100]}")
+        cusip, issuer, title = prior
     tail = _separate_adjacent_amounts(tail)
     numbers = []
     offset = len(tail) - len(tail.lstrip())
@@ -268,6 +279,22 @@ def _holding(
     return row, (cusip, issuer, title), match is not None
 
 
+def _blank_cusip_value(header: str, line: str) -> Decimal | None:
+    """VALUE of a named line whose CUSIP cell (under the header's `CUSIP`) is empty or `(blank)` and
+    which carries VALUE, shares and an SH/PRN type; None for any other line."""
+    hint = re.search("CUSIP", header, re.I)
+    if hint is None:
+        return None
+    left = max(0, hint.start() - 2)
+    value = next((m for m in _NUMBER.finditer(line) if m.start() >= left), None)
+    if value is None or not re.search(r"[A-Z]", line[:left], re.I) or not re.fullmatch(r"\s*(?:\(blank\))?\s*", line[left : value.start()], re.I):
+        return None
+    shares = _NUMBER.match(line, value.end() + len(line[value.end() :]) - len(line[value.end() :].lstrip()))
+    if value.group("type") or shares is None or not (shares.group("type") or re.match(r"\s+(?:SH|PRN)\b", line[shares.end() :], re.I)):
+        return None
+    return Decimal(value.group("number").replace(",", ""))
+
+
 def _separate_adjacent_amounts(tail: str) -> str:
     """Split touching digits only when the three voting cells independently prove quantity."""
     first = _NUMBER.match(tail.lstrip())
@@ -288,15 +315,24 @@ def _separate_adjacent_amounts(tail: str) -> str:
     return f"{digits[: -len(suffix)]} {suffix}{rest}"
 
 
-def _holding_rows(raw: str, source_rows: list[tuple[str, str, str]], value_factor: float) -> list[dict[str, Any]]:
-    """Keep economic continuations; remove unlabelled subtotals only with exact source count proof."""
+def _holding_rows(raw: str, source_rows: list[tuple[str, str, str]], value_factor: float) -> tuple[list[dict[str, Any]], list[_BlankCusipLineError]]:
+    """Keep economic continuations; remove unlabelled subtotals only with exact source count proof.
+    Blank-CUSIP lines are set aside, and a continuation of one has no prior."""
     rows: list[dict[str, Any]] = []
+    blanks: list[_BlankCusipLineError] = []
     subtotals: set[int] = set()
     prior: tuple[str, str, str] | None = None
     value_sum = amount_sum = 0.0
     group_rows = 0
     for header, line, pending in source_rows:
-        row, prior, named = _holding(header, line, pending, prior, value_factor)
+        try:
+            row, prior, named = _holding(header, line, pending, prior, value_factor)
+        except _BlankCusipLineError as blank:
+            blanks.append(blank)
+            prior = None
+            value_sum = amount_sum = 0.0
+            group_rows = 0
+            continue
         if named:
             value_sum = amount_sum = 0.0
             group_rows = 0
@@ -321,7 +357,26 @@ def _holding_rows(raw: str, source_rows: list[tuple[str, str, str]], value_facto
             raise ValueError("Ambiguous unlabelled subtotal/continuation without source entry count")
         if len(rows) - len(subtotals) == int(count.group(1).replace(",", "")):
             rows = [row for i, row in enumerate(rows) if i not in subtotals]
-    return rows
+    return rows, blanks
+
+
+def _check_without_blanks(raw: str, rows: list[dict[str, Any]], blanks: list[_BlankCusipLineError]) -> None:
+    """The book stands without its blank-CUSIP lines only when the remaining rows reconcile
+    with both the cover count and the cover total."""
+    count = _ENTRY_COUNT.search(raw)
+    summary = _VALUE_TOTAL.search(raw) or _FOOTER_TOTAL.search(raw)
+    if count is None or summary is None:
+        raise ValueError(f"{blanks[0]}; no cover count and total to reconcile the book without {len(blanks)} such line(s)")
+    try:
+        reconcile_13f_source(
+            len(rows),
+            int(count.group(1).replace(",", "")),
+            float(sum(row["VALUE"] for row in rows)),
+            float(summary.group(1).replace(",", "")),
+            source_accounted=True,
+        )
+    except ValueError as error:
+        raise ValueError(f"{blanks[0]}; the book without {len(blanks)} such line(s) does not reconcile: {error}") from error
 
 
 def _double_counted_total_row(raw: str, rows: list[dict[str, Any]], value_factor: float) -> list[dict[str, Any]]:
@@ -410,20 +465,29 @@ def needs_legacy_fallback(raw: str, parsed: pd.DataFrame | None) -> bool:
     parsed_options = parsed_options.astype("string").str.strip().str.upper().fillna("")
     source_facts = []
     try:
-        for row in _double_counted_total_row(raw, _holding_rows(raw, _source_rows(raw), 1000.0), 1000.0):
+        rows, blanks = _holding_rows(raw, _source_rows(raw), 1000.0)
+        for row in _double_counted_total_row(raw, rows, 1000.0):
             source_facts.append((row["CUSIP"], row["VALUE"], row["SSHPRNAMT"], row["SSHPRNAMTTYPE"], row["PUTCALL"]))
     except ValueError:
+        return True
+    if blanks:
         return True
     return Counter(source_facts) != Counter(zip(parsed_cusips, parsed_values, parsed_amounts, parsed_types, parsed_options, strict=True))
 
 
 def parse_legacy_information_table(raw: str, *, value_factor: float = 1000.0, verify_values: bool = True) -> pd.DataFrame:
-    """Return source-supported rows in the shape consumed by the existing 13F classifier."""
+    """Return source-supported rows in the shape consumed by the existing 13F classifier. Lines set
+    aside for a blank CUSIP are counted in `attrs["blank_cusip_lines"]` and `attrs["blank_cusip_value"]`."""
     source_rows = _source_rows(raw)
     if not source_rows:
         raise ValueError("No legacy 13F information-table lines")
-    rows = _double_counted_total_row(raw, _holding_rows(raw, source_rows, value_factor), value_factor)
+    rows, blanks = _holding_rows(raw, source_rows, value_factor)
+    rows = _double_counted_total_row(raw, rows, value_factor)
+    if blanks:
+        _check_without_blanks(raw, rows, blanks)
     _check_totals(raw, rows, value_factor=value_factor, verify_values=verify_values)
     frame = pd.DataFrame(rows)
     frame.attrs["source_accounted"] = True
+    frame.attrs["blank_cusip_lines"] = len(blanks)
+    frame.attrs["blank_cusip_value"] = sum(blank.value for blank in blanks)
     return frame

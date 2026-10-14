@@ -512,20 +512,33 @@ class _Read:
 
 @dataclass
 class _Saver:
-    """Save each accession atomically and accumulate walk diagnostics."""
+    """Save each accession atomically, in read order, `save_every` books at a time, and accumulate walk
+    diagnostics. A ticker is part of the key, so the pending books' unseen CUSIPs are mapped first in
+    one OpenFIGI pass; an unflushed book is not stored and is read again on the next run."""
 
     context: Context
     universe: set[str]
     roster_ciks: set[str]
     save_every: int
     walk: _WalkState = field(default_factory=_WalkState)
+    pending: list[tuple[pd.DataFrame, pd.DataFrame]] = field(default_factory=list)
 
     def add(self, read: _Read) -> None:
-        """Save a verified filing; report an unreadable source without certifying completion."""
+        """Queue a verified filing; report an unreadable source without certifying completion."""
         if isinstance(read.result, ReadFailure):
             logger.error(f"13F {read.stamp.accession_number} (filed {read.stamp.filed:%Y-%m-%d}) is unreadable ({read.result.reason}); skipped")
-        else:
-            manifest, book = read.result
+            return
+        self.pending.append(read.result)
+        if len(self.pending) >= self.save_every:
+            self.flush()
+
+    def flush(self) -> None:
+        """Map every pending book's unseen CUSIPs in one pass, then save the books in read order."""
+        if not self.pending:
+            return
+        pending, self.pending = self.pending, []
+        _ticker_map(self.context, pd.DataFrame({"cusip": pd.concat([book["cusip"] for _, book in pending], ignore_index=True)}), self.walk)
+        for manifest, book in pending:
             self.save_packet(manifest, book)
 
     def save_packet(self, manifest: pd.DataFrame, book: pd.DataFrame) -> None:
@@ -571,6 +584,7 @@ def _first_pass(filings: Filings | list[Any], saver: _Saver) -> list[_Read]:
             held.append(read)
         else:
             saver.add(read)
+    saver.flush()
     return held
 
 
@@ -625,7 +639,7 @@ def fetch_13f(
     context: Context,
     tickers: list[str],
     years_history: int,
-    save_every: int = 1000,
+    save_every: int = 100,
     filing_window: tuple[str, str] | None = None,
     as_of: pd.Timestamp | None = None,
     *,
@@ -659,6 +673,7 @@ def fetch_13f(
     held = _first_pass(filings, saver)
     _retry_rounds(context, held)
     n_held = _save_held(held, hold_from, saver)
+    saver.flush()
     _log_walk(saver.walk, total - n_held)
     return sum(1 for read in held if read.transient)
 

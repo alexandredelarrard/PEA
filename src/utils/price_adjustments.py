@@ -239,7 +239,7 @@ def _check_anchors(basis: ShareBasis, shares: pd.DataFrame | None, quotes: pd.Da
                 raise ValueError(f"{ticker}: price anchor evidence unavailable")
             quoted = quotes.loc[quotes["ticker"].eq(ticker) & pd.to_datetime(quotes["date"]).eq(stamp)]
             price_factor = basis.factor(pd.Series([ticker]), pd.Series([stamp]), "price").iloc[0]
-            restored = quoted["close_split"] * price_factor * quoted.get("hidden_factor", 1.0)
+            restored = quoted["close_split"] * price_factor
             if (
                 restored.empty
                 or not np.isfinite(restored).all()
@@ -265,20 +265,23 @@ def _check_quantity_coverage(original: pd.DataFrame, basis: ShareBasis) -> None:
             raise ValueError(f"{ticker}: share anchor required in the affected vendor interval")
 
 
-def _anchor_quotes(quotes: pd.DataFrame | None, bugfix: dict) -> pd.DataFrame | None:
+def _anchor_quotes(quotes: pd.DataFrame | None, bugfix: dict, policies: dict[str, dict]) -> pd.DataFrame | None:
     if quotes is None:
         return None
-    df_quotes = quotes.copy()
-    df_quotes["hidden_factor"] = 1.0
-    dates = pd.to_datetime(df_quotes["date"])
     for ticker, policy in bugfix.get("level_factor", {}).items():
+        if ticker not in policies:
+            continue
         lower = pd.Timestamp.min
         for segment in sorted(policy["segments"], key=lambda item: item["before"]):
             upper = pd.Timestamp(segment["before"])
-            hit = df_quotes["ticker"].eq(ticker) & dates.ge(lower) & dates.lt(upper)
-            df_quotes.loc[hit, "hidden_factor"] = segment["factor"]
+            anchors = policies[ticker]["anchors"]
+            if segment["factor"] != 1 and any("quoted_price" in anchor and lower <= pd.Timestamp(anchor["date"]) < upper for anchor in anchors):
+                # shortcut: overlapping hidden wedges need their own independent verification before price overrides can compose.
+                raise ValueError(
+                    f"{ticker}: price anchor overlaps an unverified hidden level segment; verify the combined basis before configuring it"
+                )
             lower = upper
-    return df_quotes
+    return quotes
 
 
 def resolve_share_events(
@@ -328,7 +331,19 @@ def resolve_share_events(
         policies,
     )
     _check_quantity_coverage(original, basis)
-    _check_anchors(basis, shares, _anchor_quotes(quotes, bugfix))
+    _check_anchors(basis, shares, _anchor_quotes(quotes, bugfix, basis.policies))
+    for ticker, policy in policies.items():
+        actual_legs = [event["actual"] for event in policy["events"]]
+        vendor_legs = [event.get("vendor", event["actual"]) for event in policy["events"]]
+        price_legs = [event.get("price", "Yahoo source unchanged") for event in policy["events"]]
+        log.info(
+            "share basis: %s VERIFIED configured overrides; actual=%s vendor=%s price=%s quote_units=%s",
+            ticker,
+            actual_legs,
+            vendor_legs,
+            price_legs,
+            policy.get("quote_units", 1),
+        )
     return basis
 
 
@@ -455,8 +470,7 @@ def _resolve_ratio_conflict(yf_row: pd.Series, near: pd.DataFrame) -> tuple[floa
             return sh_value, (
                 f"{label}: yfinance x{yf_value} vs sharadar x{sh_value} "
                 f"-> KEPT x{sh_value} (only the sharadar ratio is "
-                f"split-shaped; the yfinance one is the spinoff's PRICE "
-                f"factor)"
+                f"split-shaped; yfinance supplies a different price-adjustment factor)"
             )
         return yf_value, (
             f"{label}: yfinance x{yf_value} vs sharadar x{sh_value} "

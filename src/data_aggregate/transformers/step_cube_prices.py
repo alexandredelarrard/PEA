@@ -21,6 +21,8 @@ frame is LOCAL to `run()`. Nothing is stashed on `self`, so when `run()` returns
 locals are collected and the next sub-step starts from a clean slate.
 """
 
+from typing import cast
+
 import pandas as pd
 from omegaconf import DictConfig
 
@@ -276,7 +278,20 @@ class StepCubePrices(Step):
         names = list(close_split.columns)
         actions = level_actions(self._context, names)
         yf_splits = self._store.load(Tables.prices_splits, columns=["ticker", "date", "ratio"], where={"ticker": names}, optional=True)
-        basis = load_share_basis(self._context, names, self._bugfix, actions, yf_splits)
+        anchors = [
+            (ticker, anchor)
+            for ticker, policy in self._bugfix.get("share_events", {}).items()
+            if ticker in names
+            for anchor in policy["anchors"]
+            if "quoted_price" in anchor
+        ]
+        quote_anchors = None
+        if anchors:
+            dates = pd.DatetimeIndex([anchor["date"] for _, anchor in anchors])
+            covered = close_split.loc[close_split.index.isin(dates), sorted({ticker for ticker, _ in anchors})]
+            stacked = cast(pd.Series, covered.rename_axis(index="date", columns="ticker").stack(future_stack=True))
+            quote_anchors = stacked.dropna().rename("close_split").reset_index()
+        basis = load_share_basis(self._context, names, self._bugfix, actions, yf_splits, quotes=quote_anchors)
         factor = level_factor(idx, list(close_split.columns), basis.price, basis)
         # The registered wedges are cases `S` is structurally BLIND to -- Yahoo adjusted the
         # price and its splits feed never said so -- so they multiply `S` rather than

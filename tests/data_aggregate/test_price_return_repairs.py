@@ -45,7 +45,7 @@ def test_real_total_return_target_and_price_isolation(
     assert apply_return_seams(wide, blob, lambda *args: None) == 1
     returns = wide["close_total"].pct_change(fill_method=None)
     original = before["close_total"].pct_change(fill_method=None)
-    assert returns.at[when, ticker] + 1 == pytest.approx(target, rel=1e-12)
+    assert cast(float, returns.at[when, ticker]) + 1 == pytest.approx(target, rel=1e-12)
     other = returns.index != when
     np.testing.assert_allclose(returns.loc[other], original.loc[other], atol=5e-16, rtol=0, equal_nan=True)
     for date in cash_dates:
@@ -107,7 +107,7 @@ def test_refused_return_repair_cannot_emit_unprotected_returns(
         step.run(full=True)
         assert len(writes) == 1
         emitted = writes[0].set_index("date")
-        assert emitted.at[when, "ret"] + 1 == pytest.approx(blob["return_seams"]["VTR"][0]["target_step"], rel=1e-12)
+        assert cast(float, emitted.at[when, "ret"]) + 1 == pytest.approx(blob["return_seams"]["VTR"][0]["target_step"], rel=1e-12)
     else:
         with pytest.raises(ValueError, match="REFUSED"):
             step.run(full=True)

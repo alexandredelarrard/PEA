@@ -7,14 +7,15 @@ Shared by the Sharadar fetch and merge, the cube's level factor and the validate
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 
 import pandas as pd
 
+from src.constants.constants import SHARADAR_ACTION_SPINOFF, SHARADAR_ACTION_SPLIT
 from src.context import Context
 from src.data_store.schema import Tables
-from src.utils.cutover_continuity import PredecessorSeries, predecessor_series, register_windows, vendor_series_overrides
+from src.utils.cutover_continuity import PredecessorSeries, predecessor_actions, predecessor_series, register_windows, vendor_series_overrides
 from src.utils.string import normalise_ticker
 
 #: The security master's cited manual config, relative to the config directory.
@@ -64,3 +65,38 @@ def _register_series(context: Context, tickers: list[str]) -> tuple[PredecessorS
     if lineage is None or vendor is None:
         return ()
     return predecessor_series(vendor, register_windows(lineage), tickers)
+
+
+def load_level_actions(context: Context, tickers: Sequence[str], *, config_dir: str | Path | None = None) -> pd.DataFrame | None:
+    """The `sharadar_actions` rows feeding S(d)'s denominator for `tickers`.
+
+    Inside a predecessor vendor series window the ticker's prices follow the window owner, so its own actions there
+    are replaced by the owner's (`cutover_continuity.predecessor_actions`), as the merged history does for shares; an
+    owner with no stored action is logged and the ticker's own actions are kept."""
+    kinds = {"action": [SHARADAR_ACTION_SPLIT, SHARADAR_ACTION_SPINOFF]}
+    names = list(map(str, tickers))
+    actions = context.store.load(
+        Tables.sharadar_actions, columns=["ticker", "date", "action", "value"], where={"ticker": names, **kinds}, optional=True
+    )
+    if actions is None and context.store.exists(Tables.sharadar_actions):
+        actions = pd.DataFrame(columns=["ticker", "date", "action", "value"])
+    series = load_predecessor_series(context, names, config_dir)
+    if actions is None or not series:
+        return actions
+    owners = context.store.load(
+        Tables.sharadar_actions,
+        columns=["ticker", "date", "action", "value"],
+        where={"ticker": sorted({s.vendor_ticker for s in series}), **kinds},
+        optional=True,
+    )
+    stored = set(owners["ticker"].map(normalise_ticker)) if owners is not None else set()
+    for s in series:
+        if s.vendor_ticker not in stored:
+            context.log.warning(
+                "level factor: no selected predecessor split/spinoff rows for %s of %s (CIK %s); actions before %s are kept as fetched",
+                s.vendor_ticker,
+                s.ticker,
+                s.cik,
+                s.valid_to.date() if s.valid_to is not None else "-",
+            )
+    return predecessor_actions(actions, owners, series)

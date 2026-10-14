@@ -11,7 +11,7 @@ import pytest
 
 from src.context import Context, get_config_context
 from src.data_aggregate.transformers import step_cube_prices as price_step
-from src.data_aggregate.utils.common.level_basis import apply_level_bugfix, level_factor
+from src.data_aggregate.utils.common.level_basis import apply_level_bugfix, level_actions, level_factor, load_share_basis
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 from src.data_aggregate.utils.institutionals.insider_positions import position_units
 from src.data_aggregate.utils.institutionals.institutional_features import _daily_owned_shares
@@ -157,7 +157,7 @@ def test_ordinary_price_builder_refuses_changed_share_policy_before_write(source
     writes: list[object] = []
 
     class GuardStore:
-        def load(self, table: object, **kwargs: object) -> pd.DataFrame:
+        def load(self, table: Any, **kwargs: Any) -> pd.DataFrame:
             return inputs[table].copy()
 
     step = price_step.StepCubePrices.__new__(price_step.StepCubePrices)
@@ -195,3 +195,26 @@ def test_carried_ownership_rebases_both_quantity_legs() -> None:
     assert (owned / outstanding)["TEST"].iloc[1:].tolist() == [0.1, 0.1, 0.1]
     assert book["as_of"].iloc[0] == pd.Timestamp("2020-05-29")
     print("SANITY: a configured reverse split halves both carried ownership legs; ownership stays10% and the book never appears before publication.")
+
+
+def test_level_diagnostic_counts_only_observed_quote_bars() -> None:
+    index = pd.bdate_range("2020-01-01", periods=4)
+    close = pd.DataFrame({"TEST": [float("nan"), float("nan"), 5.0, 5.0]}, index=index)
+    vendor = pd.DataFrame({"ticker": ["TEST"], "date": [index[-1]], "price": [10.0]})
+    blob = {"level_factor": {"TEST": {"segments": [{"before": "2020-02-01", "factor": 2.0}]}}}
+    messages: list[str] = []
+    factor = apply_level_bugfix(close * 0 + 1, blob, vendor, close, lambda msg, *args: messages.append(msg % args))
+    assert "APPLIED to 2 bar(s)" in messages[-1]
+    assert factor["TEST"].dropna().eq(2.0).all()
+    print("SANITY: a hidden wedge logs two observed quotes, excluding two prelisting NaN grid positions.")
+
+
+def test_single_ticker_sjm_accepts_verified_empty_yahoo_source(source_case: tuple) -> None:
+    context, _, _, blob = source_case
+    actions = level_actions(context, ["SJM"])
+    yahoo = context.store.load(Tables.prices_splits, columns=["ticker", "date", "ratio"], where={"ticker": ["SJM"]}, optional=True)
+    assert yahoo is None and context.store.exists(Tables.prices_splits)
+    basis = load_share_basis(context, ["SJM"], blob, actions, yahoo)
+    value = basis.factor(pd.Series(["SJM"]), pd.Series(pd.to_datetime(["2002-03-11"])), "vendor").iloc[0]
+    assert value == 0.945
+    print("SANITY: real single-ticker SJM resolves its verified empty Yahoo feed; available table/absent rows is distinct from unavailable source.")

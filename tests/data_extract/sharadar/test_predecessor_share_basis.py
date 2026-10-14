@@ -11,13 +11,13 @@ import logging
 import shutil
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.common.level_basis import genuine_splits, level_factor
+from src.data_aggregate.utils.common.level_basis import genuine_splits, level_actions, level_factor, load_share_basis
 from src.data_extract.utils.common import security_master as sm
 from src.data_extract.utils.fundamentals_sharadar import fetch_sharadar, gap_check, merge_history
 from src.data_extract.utils.fundamentals_sharadar.field_map import load_field_map
@@ -379,6 +379,43 @@ def _tyco_genuine_events() -> pd.DataFrame:
     )
     yf = pd.DataFrame([{"ticker": t, "date": pd.Timestamp(d), "ratio": v} for t, d, v in JCI_YF])
     return genuine_splits(actions, yf)
+
+
+def test_configured_guard_uses_the_same_owner_actions_in_both_consumers(tmp_path: Path) -> None:
+    directory = Path(_config(tmp_path, [JCI_EXCHANGE], [JCI_OVERRIDE]))
+    policy = {
+        "_APPROVED": {"date": "2026-10-14"},
+        "share_events": {
+            "JCI": {
+                "anchors": [{"date": "2008-01-02", "ordinary_shares": 1000.0, "rtol": 0.0002, "source": "known-truth quantity"}],
+                "events": [
+                    {
+                        "expect": {"yahoo": {"date": "2007-07-02", "ratio": 0.25}, "sharadar": {"date": "2007-07-02", "ratio": 0.25}},
+                        "actual": {"date": "2007-07-02", "ratio": 0.25},
+                        "evidence": "selected Tyco action, not old JCI",
+                    }
+                ],
+            }
+        },
+    }
+    (directory / "prices").mkdir()
+    (directory / "prices" / "yf_price_bugfix.json").write_text(json.dumps(policy), encoding="utf-8")
+    store = _jci_store()
+    context = cast(Any, SimpleNamespace(store=store, log=logging.getLogger(LOGGER), config_dir=str(directory)))
+    canonical = store.load(Tables.sharadar_actions, where={"ticker": ["JCI"]})
+    yahoo = store.load(Tables.prices_splits, where={"ticker": ["JCI"]})
+    selected = level_actions(context, ["JCI"])
+    assert selected is not None and canonical is not None
+    assert not ((canonical["date"] == pd.Timestamp("2007-07-02")) & canonical["action"].eq("split")).any()
+    shares = pd.DataFrame({"ticker": ["JCI"], "date": pd.to_datetime(["2008-01-02"]), "sharesbas": [1000.0]})
+    default = genuine_splits(selected, yahoo)
+    aggregate = load_share_basis(context, ["JCI"], policy, selected, yahoo, shares=shares, base_events=default)
+    extract = merge_history.vendor_share_basis(context, shares, ["JCI"], yahoo, default, str(directory))
+    pd.testing.assert_frame_equal(aggregate.vendor, extract.vendor)
+    pd.testing.assert_frame_equal(aggregate.actual, extract.actual)
+    print(
+        "SANITY: configured extraction and aggregate guards both verify Tyco's selected action; old JCI's different history cannot authorize the policy."
+    )
 
 
 def test_jci_rows_before_the_seam_are_tyco_and_agree_with_the_cube_level_factor(

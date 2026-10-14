@@ -1,78 +1,7 @@
-"""
-level_basis.py  (src/data_aggregate/utils/common/level_basis.py)
----------------------------------------------------------------
-`S(d)` -- the price adjustment Yahoo applied to its own history that the SHARE COUNT did not,
-so that a LEVEL built from the two can be put back on one basis.
+"""Price levels, legacy correction guards and independent return/quote seam masks.
 
-## Why anything is needed at all
-
-`close_split` and `sharesOutstanding` already cancel for SPLITS, and that cancellation is the
-whole design of `pit.daily_market_cap`: the vendor back-fills `sharesbas` to today's basis and
-Yahoo restates `Close` to the same one, so the future-split factor divides out of the product
-exactly. A SPINOFF breaks the symmetry, because only one leg moves:
-
-  * Yahoo back-adjusts `Close` across a spinoff -- correct for RETURNS, because it keeps the
-    series continuous through an event that hands shareholders value in another security.
-  * Sharadar's `price` does not -- correct for LEVELS, because it is what the stock traded at.
-  * A spinoff does NOT change the parent's share count. Verified on the SEC cover page across
-    8 events: `sharesbas` / SEC reads 1.0000 on BOTH sides of every one.
-
-So the price leg carries a factor the share leg does not and nothing cancels.
-`close_split x sharesOutstanding` UNDERSTATES market cap by exactly that factor -- FDX on
-2020-12-17 reads $62.4bn against a true $77.5bn, 19.4% low, and GE reads 40% low.
-
-## The definition
-
-    S(d)  =  PROD{ prices_splits.ratio    : date > d }
-           /  PROD{ split_events(...).value : date > d }
-
-A RATIO OF TWO PRODUCTS, not a set subtraction, and the distinction is load-bearing: HON
-carries an event on 2026-06-29 in BOTH sources with DIFFERENT values -- yfinance 0.9535 (the
-Solstice spinoff's price factor) and Sharadar 0.5 (the co-dated 1:2 reverse split) -- and only
-the ratio gives the right answer. Worked, for a 1996 HON row:
-
-    PROD(yfinance)  = 2 x 1.00533 x 1.011 x 1.032 x 1.061 x 0.9535 = 2.12228
-    PROD(genuine)   = 2 x 0.5                                      = 1.00000
-    S               = 2.12228        (measured price leg 0.4712 = 1/2.1223)
-
-The denominator is `field_map.split_events` -- THE SAME FUNCTION the extract layer de-adjusts
-share counts with. That is deliberate and is what stops the numerator and denominator drifting
-apart: a row that counts as a genuine split there has already cancelled against `sharesbas`
-here, so it must not be counted twice.
-
-## ⚠ S MULTIPLIES A LEVEL, NEVER A RETURN
-
-A return computed from `close_split x S` would be wrong at the spinoff date -- by the entire
-factor, on that one bar -- which is precisely what Yahoo's back-adjustment exists to prevent.
-Market cap, enterprise value and every yield built on one are levels and want `S`; `ret`,
-momentum, betas and every label are returns and must never see it.
-
-## What S does NOT fix
-
-MNST. Yahoo PUBLISHES the 2026-08-11 x2 in its own splits feed but never applied it to the
-quote, so the event appears in both products and cancels to 1.0. That is a stale price
-VINTAGE, not a basis difference, and it needs a per-bar repair rather than a factor.
-
-## Which LEG each repair in the register moves
-
-`level_factor` moves the LEVEL only (it is folded into `S`, never into a return).
-`split_vintage` and `return_seams` move the PRICE LEGS in `REPAIRED_PRICE_FIELDS`, and `ret`
-follows because it is recomputed downstream from them. `null_ret` (`apply_null_ret`) is the one
-repair that moves `ret` and NO price leg -- deliberately, because unlike the other three it
-does not claim to know what the correct return or level is, only that the observed one is
-fabricated. So it deletes the number instead of restating it, and every price leg on that bar
-is left exactly as the vendor published it.
-
-`null_ret` also MASKS, and that is a second consequence of the same decision. Leaving the price
-legs as published means `close_total` is on two DIFFERENT BASES either side of the bar, so the
-defect is not a bad number in one cell -- it is a basis change in the level. Any rolling window
-that STRADDLES the bar therefore mixes bases and fabricates a value even though no single bar
-it reads is wrong: `DHR`'s `mom_12_1` sits at rank 0.67 the day before 2016-07-05, jumps to
-0.9934 the day `t-21` clears the seam, holds top-decile for 231 trading days and craters to
-0.29 the day the window rolls past. `measure_seams` + `mask_seam_windows` null each
-`close_total`-derived feature, and the target's momentum exposure, over that feature's OWN
-lookback -- a window sitting entirely on one side of the seam is internally consistent and is
-left alone.
+S=Y*H/(F*U) reconciles adjusted prices with vendor counts. It never enters returns.
+Shared pure price repairs and event resolution retain compatibility imports here.
 """
 
 from __future__ import annotations
@@ -83,17 +12,12 @@ from typing import Any, cast
 import numpy as np
 import pandas as pd
 
-from src.constants.constants import SHARADAR_ACTION_SPINOFF, SHARADAR_ACTION_SPLIT
-from src.context import Context
-from src.data_store.schema import Tables
-from src.utils.cutover_continuity import predecessor_actions
-from src.utils.predecessor_series import load_predecessor_series
+from src.utils.predecessor_series import load_level_actions as level_actions
 from src.utils.price_adjustments import (
     BUGFIX_FILENAME as BUGFIX_FILENAME,
 )
 from src.utils.price_adjustments import (
     ShareBasis,
-    resolve_share_events,
 )
 from src.utils.price_adjustments import (
     load_bugfix as load_bugfix,
@@ -104,16 +28,38 @@ from src.utils.price_adjustments import (
 from src.utils.price_adjustments import (
     suffix_factor as suffix_factor,
 )
-from src.utils.string import normalise_ticker
+from src.utils.price_basis import load_share_basis as load_share_basis
+from src.utils.price_repairs import (
+    BUGFIX_STEP_TOL,
+    BUGFIX_WEDGE_TOL,
+    LEVEL_SNAP_TOL,
+    REPAIRED_PRICE_FIELDS,
+    VINTAGE_FLIP_TOL,
+    _apply_total_seam,
+    _rescale,
+    _total_seam_step,
+    _vintage_multiplier,
+    apply_return_seams,
+    apply_split_vintage,
+    observed_wedge,
+)
 
-__all__ = ["genuine_splits"]
-
-#: |S - 1| below which the two event sets are the SAME set and the factor is exactly 1.0.
-#: Float noise from multiplying and then dividing the same ratios is ~1e-16; the smallest
-#: genuine factor in the universe is 1.00533. Snapping matters because ~89% of rows must come
-#: out BIT-IDENTICAL to the pre-fix build -- a control ticker at 1.0000000000000002 would move
-#: every downstream digest and make the "this change is targeted" claim unprovable.
-LEVEL_SNAP_TOL = 1e-12
+__all__ = [
+    "genuine_splits",
+    "level_actions",
+    "BUGFIX_STEP_TOL",
+    "BUGFIX_WEDGE_TOL",
+    "LEVEL_SNAP_TOL",
+    "REPAIRED_PRICE_FIELDS",
+    "VINTAGE_FLIP_TOL",
+    "_apply_total_seam",
+    "_rescale",
+    "_total_seam_step",
+    "_vintage_multiplier",
+    "apply_return_seams",
+    "apply_split_vintage",
+    "observed_wedge",
+]
 
 
 def level_factor(
@@ -122,16 +68,10 @@ def level_factor(
     yf_splits: pd.DataFrame | None,
     genuine_splits: pd.DataFrame | ShareBasis,
 ) -> pd.DataFrame:
-    """`S(d)` as a wide (date x ticker) frame of MULTIPLIERS, 1.0 where nothing applies.
+    """Return S=Y/(F*U), before hidden wedges, aligned to the requested date/ticker grid.
 
-    `yf_splits` is `prices_splits` (`ticker`, `date`, `ratio`) -- every factor Yahoo applied
-    to its own series, spinoff factors included, which is exactly what has to be undone.
-    `genuine_splits` is `field_map.split_events(...)` (`ticker`, `date`, `value`) -- the
-    subset that is a real share event and has therefore already cancelled against the count.
-
-    Every ticker in `universe` gets a column and every date in `index` a row, so the result
-    aligns with the other price frames without a reindex at the call site. A ticker with no
-    events, or with two agreeing event sets, is exactly `1.0` -- see `LEVEL_SNAP_TOL`.
+    A ShareBasis supplies separately verified price, vendor-count and quoted-unit views.
+    The legacy DataFrame argument preserves the default event-product behavior.
     """
     if isinstance(genuine_splits, ShareBasis):
         basis = genuine_splits
@@ -174,79 +114,6 @@ def level_factor(
     return pd.DataFrame(values, index=frame.index, columns=frame.columns)
 
 
-#: The `sharadar_actions` columns and kinds `split_events` reads; the table is market-wide, so the read is filtered to them.
-LEVEL_ACTION_COLUMNS = ["ticker", "date", "action", "value"]
-LEVEL_ACTION_KINDS = [SHARADAR_ACTION_SPLIT, SHARADAR_ACTION_SPINOFF]
-
-
-def level_actions(context: Context, tickers: Sequence[str]) -> pd.DataFrame | None:
-    """The `sharadar_actions` rows feeding S(d)'s denominator for `tickers`.
-
-    Inside a predecessor vendor series window the ticker's prices follow the window owner, so its own actions there
-    are replaced by the owner's (`cutover_continuity.predecessor_actions`), as the merged history does for shares; an
-    owner with no stored action is logged and the ticker's own actions are kept."""
-    kinds = {"action": LEVEL_ACTION_KINDS}
-    names = list(map(str, tickers))
-    actions = context.store.load(Tables.sharadar_actions, columns=LEVEL_ACTION_COLUMNS, where={"ticker": names, **kinds}, optional=True)
-    series = load_predecessor_series(context, names)
-    if actions is None or not series:
-        return actions
-    owners = context.store.load(
-        Tables.sharadar_actions, columns=LEVEL_ACTION_COLUMNS, where={"ticker": sorted({s.vendor_ticker for s in series}), **kinds}, optional=True
-    )
-    stored = set(owners["ticker"].map(normalise_ticker)) if owners is not None else set()
-    for s in series:
-        if s.vendor_ticker not in stored:
-            context.log.warning(
-                "level factor: the predecessor vendor series %s of %s (CIK %s) is not stored; actions before %s are kept as fetched",
-                s.vendor_ticker,
-                s.ticker,
-                s.cik,
-                s.valid_to.date() if s.valid_to is not None else "-",
-            )
-    return predecessor_actions(actions, owners, series)
-
-
-def load_share_basis(
-    context: Context,
-    tickers: Sequence[str],
-    bugfix: dict,
-    actions: pd.DataFrame | None,
-    yf_splits: pd.DataFrame | None,
-    *,
-    shares: pd.DataFrame | None = None,
-    quotes: pd.DataFrame | None = None,
-    base_events: pd.DataFrame | None = None,
-) -> ShareBasis:
-    """Load only the scoped sources/anchors required to resolve a policy, even for a tail build."""
-    names = list(tickers)
-    policies = {ticker: policy for ticker, policy in bugfix.get("share_events", {}).items() if ticker in names}
-    anchors = [(ticker, anchor) for ticker, policy in policies.items() for anchor in policy["anchors"]]
-    share_anchors = [(ticker, anchor) for ticker, anchor in anchors if "ordinary_shares" in anchor]
-    if share_anchors and shares is None:
-        dates = [anchor["date"] for _, anchor in share_anchors]
-        shares = context.store.load(
-            Tables.sharadar_fundamentals,
-            columns=["ticker", "date", "sharesbas"],
-            where={"ticker": list(policies), "dimension": "ARQ"},
-            since=min(dates),
-            until=max(dates),
-            optional=True,
-        )
-    price_anchors = [(ticker, anchor) for ticker, anchor in anchors if "quoted_price" in anchor]
-    if price_anchors and quotes is None:
-        dates = [anchor["date"] for _, anchor in price_anchors]
-        quotes = context.store.load(
-            Tables.prices,
-            columns=["ticker", "date", "close_split"],
-            where={"ticker": sorted({ticker for ticker, _ in price_anchors})},
-            since=min(dates),
-            until=max(dates),
-            optional=True,
-        )
-    return resolve_share_events(actions, yf_splits, bugfix, shares=shares, quotes=quotes, tickers=names, base_events=base_events)
-
-
 def describe(factor: pd.DataFrame, top: int = 10) -> str:
     """One log line's worth of "what did S actually do", for `StepCubePrices`.
 
@@ -267,64 +134,10 @@ def describe(factor: pd.DataFrame, top: int = 10) -> str:
     )
 
 
-# --------------------------------------------------------------------------- #
-# the Yahoo bug register                                                       #
-# --------------------------------------------------------------------------- #
-#: Where the register lives, relative to `Context.config_dir`. One consumer
-#: (`StepCubePrices`), so the name stays here rather than in `constants.py`.
-#: How far the OBSERVED wedge may sit from a registered `factor` before the entry is REFUSED.
-#: The registered values were measured with <=0.06% spread inside every segment, so 2% is
-#: ~30x the measurement noise and still tight enough that a genuinely changed vendor series --
-#: Yahoo re-adjusting, or a new action compounding into the wedge -- falls outside it.
-BUGFIX_WEDGE_TOL = 0.02
-#: The same idea for a return seam, against the observed one-bar step. Tighter, because a bar
-#: ratio is one division of two stored numbers with no join and no median in between.
-BUGFIX_STEP_TOL = 0.005
-#: The re-measurement band for a `null_ret` entry, applied to the one-bar STEP `1 + ret` rather
-#: than to `ret` itself -- the same quantity, and therefore the same relative meaning, as
-#: `BUGFIX_STEP_TOL` above, which is why it reuses that constant instead of inventing a second
-#: number. On the registered entries (returns of +15% to +61%) 0.5% of the step is a band of
-#: 0.0006 to 0.008 on the return: far wider than any float noise in `close_total.pct_change()`,
-#: far narrower than the move itself, so an upstream re-adjustment cannot slip through as a
-#: match. Stated separately from `BUGFIX_STEP_TOL` only so the two can diverge without a silent
-#: coupling; they are equal today by argument, not by accident.
 NULL_RET_STEP_TOL = BUGFIX_STEP_TOL
-#: How near a one-bar step must sit to a split ratio to count as a VINTAGE FLIP. Much looser
-#: than the two above, and it has to be: a flip is the ratio TIMES that day's real move, and
-#: MNST's five are 1.9559, 1.9413, 1.9193, 0.4895 and 0.4935 -- up to 4% off 2.0 or 0.5.
-VINTAGE_FLIP_TOL = 0.10
-#: The price legs a repair rescales, all by the SAME multiplier on the same bar.
-#:
-#: ⚠ `open`/`high`/`low` ARE IN HERE and must stay in. `_atr` takes `high - low` and
-#: `high - close.shift(1)`, so repairing the close and not the range would not merely leave
-#: those bars stale -- it would make them incoherent, and MNST's would read a ~47 close inside
-#: a ~95 high/low band. Anything not listed here is deliberately untouched: `volume`, because
-#: the two MNST vintages show comparable volume (10.8M on the last stale bar, 10.1M on the
-#: next adjusted one) and inventing a factor for a leg with no measured defect is how a
-#: register starts lying (a MEASURED volume unit defect is its own shape, `volume_scale`);
-#: `ret`, because it is recomputed downstream FROM these.
-REPAIRED_PRICE_FIELDS = ("close_split", "close_total", "open", "high", "low")
 
 
-def _rescale(wide: dict[str, pd.DataFrame], ticker: str, factor) -> None:
-    """Multiply every stored price leg of one ticker by `factor`, which is either a scalar or
-    a per-bar Series. Legs absent from this build's `wide` are skipped."""
-    for field in REPAIRED_PRICE_FIELDS:
-        target = wide.get(field)
-        if target is None or ticker not in target.columns:
-            continue
-        if isinstance(factor, pd.Series):
-            target[ticker] = target[ticker] * factor.reindex(target.index).fillna(1.0)
-        else:
-            mask = factor[0]
-            target.loc[mask, ticker] = target.loc[mask, ticker] * factor[1]
-
-
-#: How far the observed volume jump across a `volume_scale` boundary may sit from `expect_jump`,
-#: as a ratio band either way. Daily volume is noisy (a 20-bar median still moves 2x between
-#: quiet and busy months); a unit defect is a 100x step, so a 3x band refuses a fixed series.
 VOLUME_JUMP_TOL = 3.0
-#: Bars on each side of a `volume_scale` boundary whose median volumes form the observed jump.
 VOLUME_JUMP_BARS = 20
 
 
@@ -380,254 +193,11 @@ def apply_volume_scale(bars: pd.DataFrame, bugfix: Mapping[str, Any], log: Calla
     return out
 
 
-def apply_split_vintage(wide: dict[str, pd.DataFrame], bugfix: dict, vendor_price: pd.DataFrame | None, log: Callable[..., None]) -> int:
-    """Put a series back on ONE split basis when the vendor left it on two. Returns the
-    number of entries applied.
-
-    THE DEFECT. Yahoo published MNST's 2026-08-11 two-for-one, back-adjusted five scattered
-    bars for it and left every other bar in thirty years of history unadjusted. The result is
-    not a wedge and not a seam -- it is a series that alternates between two bases inside the
-    same three weeks: 97.65, then 48.19, then 93.55, then 47.08, then 90.36, then 45.53. That
-    sequence was re-fetched live from Yahoo, so it is upstream and a re-extract does not
-    touch it.
-
-    THE REPAIR. Anchor on the first bar AT OR AFTER the split date -- that one is on the new
-    basis by definition, because it is the split itself -- and walk BACKWARDS holding a
-    multiplier. A one-bar step within `VINTAGE_FLIP_TOL` of the ratio or its reciprocal is not
-    a price move, it is the basis changing underneath, so the multiplier flips there. Every
-    other step is left alone. `close_split` and `close_total` are rescaled together.
-
-    ⚠ THIS MOVES RETURNS, and it must: the island edges are fabricated moves of -51% and +96%
-    that otherwise reach momentum, vol, betas and every MNST label. It is also the only repair
-    here that is direction-aware PER BAR, which is exactly why it cannot be written as a
-    `factor` -- half the affected bars need no correction at all.
-
-    Every leg in `REPAIRED_PRICE_FIELDS` moves together, `open`/`high`/`low` included; see
-    that constant for what is deliberately left alone and why.
-
-    Verified from BOTH ends against Sharadar's independent `price`:
-      * before -- the observed wedge must still sit near `expect_wedge` (0.5 for MNST, flat to
-        five decimals across every filing row back to 1996). If Yahoo has fixed its data the
-        wedge reads 1.0, the entry is SKIPPED and the skip is logged.
-      * after -- the wedge is re-measured on the repaired frame and should land near 1.0. A
-        repair that does not reach parity is reported rather than quietly trusted.
-    """
-    applied = 0
-    for ticker, entries in (bugfix.get("split_vintage") or {}).items():
-        for entry in entries:
-            when = pd.Timestamp(entry["before"])
-            ratio, expect = float(entry["ratio"]), float(entry["expect_wedge"])
-            close = wide.get("close_split")
-            if close is None or ticker not in close.columns:
-                continue
-            series = close[ticker].dropna()
-            ahead = series.index[series.index >= when]
-            behind = series.index[series.index < when]
-            if not len(ahead) or not len(behind):
-                log(
-                    "price bugfix: %s split-vintage SKIPPED -- this build's window does not straddle %s, so there is no anchor bar to walk back from",
-                    ticker,
-                    when.date(),
-                )
-                continue
-
-            was = observed_wedge(ticker, when, vendor_price, close)
-            if was is None:
-                log("price bugfix: %s split-vintage SKIPPED -- no vendor price before %s, so the defect cannot be re-verified", ticker, when.date())
-                continue
-            if abs(was / expect - 1.0) > BUGFIX_WEDGE_TOL:
-                log(
-                    "price bugfix: %s split-vintage SKIPPED at %s -- the defect is GONE or CHANGED: "
-                    "observed wedge %.5f, register expects %.5f. Re-measure the entry.",
-                    ticker,
-                    when.date(),
-                    was,
-                    expect,
-                )
-                continue
-
-            multiplier, flips = _vintage_multiplier(series, ahead[0], ratio)
-            _rescale(wide, ticker, multiplier)
-
-            applied += 1
-            now = observed_wedge(ticker, when, vendor_price, wide["close_split"])
-            log(
-                "price bugfix: %s split-vintage REPAIRED across %s (ratio %g) -- %d flip(s), %d of %d bar(s) rescaled; wedge %.5f -> %s",
-                ticker,
-                when.date(),
-                ratio,
-                flips,
-                int((multiplier != 1.0).sum()),
-                len(series),
-                was,
-                f"{now:.5f}" if now is not None else "unmeasurable",
-            )
-            if now is not None and abs(now - 1.0) > BUGFIX_WEDGE_TOL:
-                log(
-                    "price bugfix: %s split-vintage did NOT reach parity -- wedge %.5f after "
-                    "the walk. The repair ran; treat the residual as unexplained.",
-                    ticker,
-                    now,
-                )
-    return applied
-
-
-def _vintage_multiplier(series: pd.Series, anchor: pd.Timestamp, ratio: float) -> tuple[pd.Series, int]:
-    """The per-bar rescaling that puts `series` back on the basis its `anchor` bar is on.
-
-    Walking BACKWARDS is what makes this well-posed: the newest bar is the one whose basis we
-    know, and every flip found going back compounds onto the bars before it. Walking forwards
-    would need the basis of the OLDEST bar, which is the thing in question.
-
-    Only bars strictly before `anchor` can move -- it and everything after it are the
-    reference -- so a build whose window starts after the split is a no-op rather than a
-    second correction."""
-    values = series.to_numpy(dtype="float64")
-    out = np.ones(values.size, dtype="float64")
-    flips = 0
-    for i in range(int(cast(int, series.index.get_loc(anchor))) - 1, -1, -1):
-        here = values[i] * out[i + 1]
-        if not np.isfinite(here) or here <= 0:
-            out[i] = out[i + 1]
-            continue
-        step = (values[i + 1] * out[i + 1]) / here
-        if abs(step * ratio - 1.0) < VINTAGE_FLIP_TOL:  # this bar reads `ratio` too HIGH
-            out[i], flips = out[i + 1] / ratio, flips + 1
-        elif abs(step / ratio - 1.0) < VINTAGE_FLIP_TOL:  # ... or `ratio` too LOW
-            out[i], flips = out[i + 1] * ratio, flips + 1
-        else:
-            out[i] = out[i + 1]
-    return pd.Series(out, index=series.index), flips
-
-
-def _total_seam_step(frame: pd.DataFrame | None, ticker: str, when: pd.Timestamp) -> float | None:
-    """Measure an applicable adjacent pair, refusing holes inside an affected prefix."""
-    if frame is None or ticker not in frame.columns or frame.empty:
-        return None
-    series = frame[ticker]
-    if when < series.index.min() or when > series.index.max() or not series.loc[series.index < when].notna().any():
-        return None
-    if when not in series.index:
-        raise ValueError(f"{ticker} {when.date()}: total-return repair REFUSED; missing interior event bar")
-    position = int(series.index.get_loc(when))
-    prior, here = float(series.iloc[position - 1]), float(series.iloc[position])
-    if not np.isfinite([prior, here]).all() or prior <= 0 or here <= 0:
-        raise ValueError(f"{ticker} {when.date()}: total-return repair REFUSED; unusable adjacent pair")
-    return here / prior
-
-
-def _apply_total_seam(wide: dict[str, pd.DataFrame], ticker: str, entry: dict, log: Callable[..., None]) -> int:
-    when = pd.Timestamp(entry["date"])
-    expected, target = float(entry["expect_step"]), float(entry["target_step"])
-    if entry["fields"] != ["close_total"] or "step" in entry or not np.isfinite([expected, target]).all() or min(expected, target) <= 0:
-        raise ValueError(f"{ticker}: invalid total-return repair fields or steps")
-    frame = wide.get("close_total")
-    scope = frame if frame is not None else wide.get("close_split")
-    observed = _total_seam_step(scope, ticker, when)
-    if observed is None:
-        log("price bugfix: %s %s total-return NOT_APPLICABLE -- no affected prefix/pair in this window", ticker, when.date())
-        return 0
-    if frame is None:
-        raise ValueError(f"{ticker}: total-return repair REFUSED; close_total unavailable")
-    if abs(observed / target - 1.0) <= LEVEL_SNAP_TOL:
-        log("price bugfix: %s %s total-return ALREADY_VERIFIED at gross %.12g", ticker, when.date(), observed)
-        return 0
-    if abs(observed / expected - 1.0) > BUGFIX_STEP_TOL:
-        raise ValueError(f"{ticker} {when.date()}: total-return repair REFUSED; observed gross {observed:.12g}, expected {expected:.12g}; remeasure")
-    multiplier = observed / target
-    frame.loc[frame.index < when, ticker] *= multiplier
-    log("price bugfix: %s %s close_total-only APPLIED; prefix x%.12g, event gross %.12g -> %.12g", ticker, when.date(), multiplier, observed, target)
-    return 1
-
-
-def apply_return_seams(wide: dict[str, pd.DataFrame], bugfix: dict, log: Callable[..., None]) -> int:
-    """Repair a discontinuity that is not a price move. Returns the number applied.
-
-    A seam is a one-bar ratio the market did not produce -- Yahoo applying an adjustment on
-    the wrong date, or with the wrong factor. Every bar STRICTLY BEFORE the seam date is
-    multiplied by the observed step, which makes the series continuous and removes the
-    fabricated return.
-
-    Unlike `apply_split_vintage` this is a SINGLE boundary with no islands behind it, so the
-    whole prefix moves together and no per-bar decision is needed. JCI is the case: on Tyco's
-    2007-07-02 reverse split `close_split` applies the split but not the Covidien and TE
-    Connectivity spin-offs of the same day.
-
-    ⚠ It moves `ret`, and that is the point -- a fabricated -60.52% bar is a LABEL defect
-    first and a level defect second. Every leg in `REPAIRED_PRICE_FIELDS` moves by the same
-    factor, so the dividend leg between `close_split` and `close_total`, and the range between
-    `high` and `low`, both survive it unchanged.
-    """
-    applied = 0
-    for ticker, entries in (bugfix.get("return_seams") or {}).items():
-        for entry in entries:
-            if "fields" in entry:
-                applied += _apply_total_seam(wide, ticker, entry, log)
-                continue
-            when, expected = pd.Timestamp(entry["date"]), float(entry["step"])
-            frame = wide.get("close_split")
-            if frame is None or ticker not in frame.columns or when not in frame.index:
-                log("price bugfix: %s %s seam SKIPPED -- outside this build's window", ticker, when.date())
-                continue
-            series = frame[ticker]
-            position = int(series.index.get_loc(when))
-            if position == 0:
-                log("price bugfix: %s %s seam SKIPPED -- first bar, no step to measure", ticker, when.date())
-                continue
-            prior = float(cast(float, series.iloc[position - 1]))
-            here = float(cast(float, series.iloc[position]))
-            if not (np.isfinite(prior) and np.isfinite(here)) or prior <= 0:
-                log("price bugfix: %s %s seam SKIPPED -- no usable bar pair", ticker, when.date())
-                continue
-            observed = here / prior
-            if abs(observed / expected - 1.0) > BUGFIX_STEP_TOL:
-                log(
-                    "price bugfix: %s %s seam SKIPPED -- the defect is GONE or CHANGED: "
-                    "observed step %.6f, register says %.6f. Re-measure the entry.",
-                    ticker,
-                    when.date(),
-                    observed,
-                    expected,
-                )
-                continue
-            _rescale(wide, ticker, (frame.index < when, observed))
-            applied += 1
-            log(
-                "price bugfix: %s %s seam REPAIRED -- every bar before it rescaled by %.6f (it was a %+.2f%% one-bar 'return' that never happened)",
-                ticker,
-                when.date(),
-                observed,
-                (observed - 1) * 100,
-            )
-    return applied
-
-
 def apply_null_ret(ret: pd.DataFrame, bugfix: dict, log: Callable[..., None]) -> int:
-    """Delete a one-bar return that is fabricated but whose CORRECT value is unknown. Mutates
-    `ret` in place and returns the number of entries applied.
+    """Null an evidenced but unresolved one-bar return, preserving every price leg.
 
-    THE DEFECT. `close_total` re-bases itself at a spinoff -- the level Yahoo publishes before
-    the event and the level it publishes after sit on different bases -- and `pct_change()`
-    reads the seam between them as a return. Six are registered, each a >15% one-bar move
-    landing exactly on a `level_factor` step, and the tell is what happens to the label across
-    the boundary rather than the size of the move: mean |epsilon| over the 60 days before vs
-    after measures 4.591x at these six against a random-date control median of 0.986x. DHR's
-    2016-07-05 alone runs 8.94 -> 0.39, a 23x swing on a quantity that sits near 1 once
-    vol-standardized.
-
-    ⚠ WHY A NULL AND NOT A RESCALE. `apply_return_seams` repairs the same SHAPE by multiplying
-    the whole prefix by the observed step, which asserts that the post-seam basis is the right
-    one. That assertion needs the per-ticker corroboration JCI got -- the feed's factor, the
-    applied factor and the traded company's own corporate actions on that date checked against
-    each other. None of the six has it. Nulling makes the weaker, provable claim: this
-    number is not a return. It leaves `close_split`, `close_total` and the OHLC range exactly as
-    published, so anything reading a LEVEL is untouched, and it costs only the <=2h forward and
-    trailing windows that span the bar -- the same, already-accepted mechanism that nulls a
-    window around any missing daily return.
-
-    Like every other entry in the register, each states the value it EXPECTS TO OBSERVE and is
-    re-measured against this build's own frame first. An entry whose defect has gone or moved is
-    SKIPPED and logged, never applied on faith.
+    The five retained events have no supported economic target. A changed expectation
+    is skipped with a diagnostic; rolling consumers independently mask their windows.
     """
     applied = 0
     for ticker, entries in (bugfix.get("null_ret") or {}).items():
@@ -663,21 +233,10 @@ def apply_null_ret(ret: pd.DataFrame, bugfix: dict, log: Callable[..., None]) ->
 
 
 def measure_seams(close_total: pd.DataFrame, bugfix: dict, log: Callable[..., None]) -> dict[str, list[pd.Timestamp]]:
-    """The registered `null_ret` dates, RE-MEASURED against this build's own `close_total`, as
-    `{ticker: [seam dates]}` for the feature steps to mask their lookback windows over.
+    """Verify repaired totals, then measure unresolved seams on close_total.
 
-    ⚠ MEASURED ON `close_total`, NEVER ON `ret`. By the time a feature step runs,
-    `apply_null_ret` has already set the seam cell of `ret` to NaN, so a re-measure there would
-    find "already not a number" and SKIP every entry -- the mask would silently never apply and
-    the whole repair would be a no-op that still passed its tests. `close_total` is the leg
-    `null_ret` promises to leave exactly as the vendor published it, which is what makes a
-    second, independent measurement possible at all.
-
-    Same contract as every other applier, and it must stay that way: the entry states the
-    one-bar step it EXPECTS TO OBSERVE, that step is re-measured here as `1 + ret` within
-    `NULL_RET_STEP_TOL`, and an entry whose defect has gone or moved is SKIPPED and logged
-    rather than masked on faith. A stale register can therefore stop masking, but it cannot
-    mask the wrong window.
+    Consumers refuse an applicable unrebuilt total-only repair. Remaining null_ret
+    seams are measured independently of the already-nulled daily return.
     """
     for ticker, entries in bugfix.get("return_seams", {}).items():
         for entry in entries:
@@ -828,46 +387,15 @@ def apply_level_bugfix(
                     claimed,
                 )
                 continue
-            out.loc[window, ticker] = out.loc[window, ticker] * claimed
+            eligible = window & close_split[ticker].reindex(out.index).notna()
+            out.loc[eligible, ticker] = out.loc[eligible, ticker] * claimed
             log(
                 "price bugfix: %s < %s level x%.5f APPLIED to %d bar(s) -- observed wedge %.5f (%s)",
                 ticker,
                 before.date(),
                 claimed,
-                int(window.sum()),
+                int(eligible.sum()),
                 observed,
                 segment.get("event", "no event recorded"),
             )
     return out
-
-
-def observed_wedge(
-    ticker: str, before: pd.Timestamp, vendor_price: pd.DataFrame | None, close_split: pd.DataFrame, *, since: pd.Timestamp = pd.Timestamp.min
-) -> float | None:
-    """`median(sharadar.price / close_split)` over `[since, before)`, or None if unmeasurable.
-
-    The MEDIAN, not the mean: one filing row landing on a stale bar would drag a mean, and
-    every registered segment is a plateau with <=0.06% spread, so the median IS the plateau.
-
-    ⚠ `since` IS NOT OPTIONAL IN SPIRIT. Leave it open and a multi-segment ticker measures the
-    era BEFORE the one being checked, because the older rows outnumber the newer ones and the
-    median follows them: HBAN's second window read 1.46410 where the truth is 1.33100. It
-    defaults to open only because the split-vintage repair genuinely means "all history".
-
-    The price a filing row sees is the last bar AT OR BEFORE it -- a filing date is often a
-    weekend or a holiday, and that is the same rule `daily_market_cap`'s forward-fill applies.
-    """
-    if vendor_price is None or vendor_price.empty or ticker not in close_split.columns:
-        return None
-    rows = vendor_price[(vendor_price["ticker"] == ticker) & (vendor_price["date"] >= since) & (vendor_price["date"] < before)]
-    rows = rows[rows["price"] > 0]
-    series = close_split[ticker].dropna()
-    if rows.empty or series.empty:
-        return None
-    positions = series.index.searchsorted(rows["date"].to_numpy(), side="right") - 1
-    keep = positions >= 0
-    if not keep.any():
-        return None
-    wedge = rows["price"].to_numpy()[keep] / series.to_numpy()[positions[keep]]
-    wedge = wedge[np.isfinite(wedge) & (wedge > 0)]
-    return float(np.median(wedge)) if wedge.size else None

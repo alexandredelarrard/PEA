@@ -113,7 +113,7 @@ def measure_gaps(context: Context, tickers: Sequence[str] | None = None, *, conf
     names = sorted(set(vendor["ticker"].astype(str)))
     yf_splits = context.store.load(Tables.prices_splits, columns=["ticker", "date", "ratio"], where={"ticker": names}, optional=True)
     vendor, splits = with_predecessor_series(context, vendor, names, split_events(actions, yf_splits), config_dir=config_dir)
-    splits = vendor_share_basis(context, vendor, names, actions, yf_splits, splits, config_dir).vendor
+    splits = vendor_share_basis(context, vendor, names, yf_splits, splits, config_dir).vendor
     fields = comparable_fields(field_map)
     sec = context.store.load(Tables.fundamentals_history_sec, columns=["ticker", "as_of", *fields], where=where or None, optional=True)
     if sec is None:

@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pandas as pd
 import pytest
 
+from src.data_store.schema import Tables
+from src.data_store.store import DataStore
+from src.utils.predecessor_series import load_level_actions
 from src.utils.price_adjustments import ShareBasis, resolve_share_events, validate_bugfix
+from src.utils.price_basis import load_share_basis
 
 
 def _frames() -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -27,8 +33,104 @@ def _policy(event: dict, shares: float = 100.0, **extra: object) -> dict:
     }
 
 
-def _factor(basis: object, kind: str, dates: list[str]) -> list[float]:
+def _factor(basis: ShareBasis, kind: str, dates: list[str]) -> list[float]:
     return basis.factor(pd.Series(["TEST"] * len(dates)), pd.Series(pd.to_datetime(dates)), kind).tolist()
+
+
+@pytest.mark.parametrize("missing", [None, "yahoo", "sharadar"])
+def test_actual_facade_distinguishes_absent_rows_from_missing_sources(sqlite_store: DataStore, missing: str | None) -> None:
+    other = pd.DataFrame({"ticker": ["OTHER"], "date": pd.to_datetime(["2020-06-01"])})
+    if missing != "sharadar":
+        sqlite_store.save(Tables.sharadar_actions, other.assign(action="split", value=2.0, contraticker="OTHER2"))
+    if missing != "yahoo":
+        sqlite_store.save(Tables.prices_splits, other.assign(ratio=2.0))
+    context = cast(Any, SimpleNamespace(store=sqlite_store, config_dir="./configs", log=SimpleNamespace(info=lambda *args: None)))
+    actions = load_level_actions(context, ["TEST"])
+    yahoo = sqlite_store.load(Tables.prices_splits, columns=["ticker", "date", "ratio"], where={"ticker": ["TEST"]}, optional=True)
+    assert yahoo is None
+    event = {
+        "expect": {"yahoo": None, "sharadar": None},
+        "actual": {"date": "2020-06-01", "ratio": 2.0},
+        "price": {"date": "2020-06-01", "ratio": 2.0},
+        "evidence": "known-truth absent feed rows",
+    }
+    blob = _policy(event)
+    blob["share_events"]["TEST"]["anchors"][0]["quoted_price"] = 10.0
+    shares = pd.DataFrame({"ticker": ["TEST"], "date": pd.to_datetime(["2020-01-02"]), "sharesbas": [200.0]})
+    quotes = shares[["ticker", "date"]].assign(close_split=5.0)
+    if missing is None:
+        basis = load_share_basis(context, ["TEST"], blob, actions, yahoo, shares=shares, quotes=quotes)
+        assert _factor(basis, "vendor", ["2020-01-02"]) == [2.0]
+        assert _factor(basis, "price", ["2020-01-02"]) == [2.0]
+    else:
+        with pytest.raises(ValueError, match=f"{missing} evidence unavailable"):
+            load_share_basis(context, ["TEST"], blob, actions, yahoo, shares=shares, quotes=quotes)
+    print(
+        f"SANITY: actual isolated DataStore facade: missing={missing}; verified row absence can authorize an anchored event, missing tables refuse."
+    )
+
+
+@pytest.mark.parametrize("repair", ["legacy", "vintage"])
+def test_quote_anchor_loader_uses_repaired_close_and_bounded_history(repair: str) -> None:
+    actions, yahoo = _frames()
+    event = {
+        "expect": {"yahoo": None, "sharadar": None},
+        "actual": {"date": "2020-06-01", "ratio": 2.0},
+        "price": {"date": "2020-06-01", "ratio": 2.0},
+        "evidence": "known-truth missing factor on a separately repaired quote series",
+    }
+    blob = _policy(event)
+    blob["share_events"]["TEST"]["anchors"][0]["quoted_price"] = 10.0
+    blob["return_seams"] = {"TEST": [{"date": "2020-01-06", "step": 0.5, "evidence": "known-truth legacy seam"}]}
+    if repair == "vintage":
+        blob.pop("return_seams")
+        blob["split_vintage"] = {"TEST": [{"before": "2020-01-06", "ratio": 2.0, "expect_wedge": 1.0}]}
+    dates = pd.bdate_range("2020-01-01", "2020-01-10")
+    prices = pd.DataFrame({"ticker": "TEST", "date": dates, "close_split": [10.0 if stamp < pd.Timestamp("2020-01-06") else 5.0 for stamp in dates]})
+    shares = pd.DataFrame({"ticker": ["TEST"], "date": pd.to_datetime(["2020-01-02"]), "sharesbas": [200.0]})
+    reads: list[dict[str, Any]] = []
+
+    class AnchorStore:
+        def load(self, table: Any, **kwargs: Any) -> pd.DataFrame:
+            reads.append(kwargs)
+            assert kwargs["where"]["ticker"] == ["TEST"]
+            if table == Tables.prices:
+                assert pd.Timestamp(kwargs["until"]) >= pd.Timestamp("2020-01-06")
+                return prices.copy()
+            assert table == Tables.sharadar_fundamentals
+            return pd.DataFrame({"ticker": ["TEST"], "date": pd.to_datetime(["2020-01-02"]), "price": [10.0]})
+
+    context = cast(Any, SimpleNamespace(store=AnchorStore(), log=SimpleNamespace(info=lambda *args: None)))
+    first = load_share_basis(context, ["TEST"], blob, actions, yahoo, shares=shares)
+    assert _factor(first, "price", ["2020-01-02"]) == [2.0]
+    covered = prices.loc[prices["date"].eq(pd.Timestamp("2020-01-02"))].assign(close_split=5.0)
+    second = load_share_basis(context, ["TEST"], blob, actions, yahoo, shares=shares, quotes=covered)
+    pd.testing.assert_frame_equal(first.price, second.price)
+    assert len(reads) == (2 if repair == "vintage" else 1)
+    print(f"SANITY: {repair}: fetched and covered anchors verify the repaired quote; a tail build reads named history through its repair boundary.")
+
+
+def test_unverified_hidden_wedge_cannot_authorize_a_price_override() -> None:
+    actions, yahoo = _frames()
+    event = {
+        "expect": {"yahoo": None, "sharadar": None},
+        "actual": {"date": "2020-06-01", "ratio": 2.0},
+        "price": {"date": "2020-06-01", "ratio": 2.0},
+        "evidence": "known truth",
+    }
+    blob = _policy(event)
+    blob["share_events"]["TEST"]["anchors"][0]["quoted_price"] = 10.0
+    blob["level_factor"] = {"TEST": {"segments": [{"before": "2020-03-01", "factor": 2.0}]}}
+    shares = pd.DataFrame({"ticker": ["TEST"], "date": pd.to_datetime(["2020-01-02"]), "sharesbas": [200.0]})
+    quotes = shares[["ticker", "date"]].assign(close_split=2.5)
+    with pytest.raises(ValueError, match="hidden level"):
+        resolve_share_events(actions, yahoo, blob, shares=shares, quotes=quotes)
+    blob["share_events"]["CONTROL"] = deepcopy(blob["share_events"]["TEST"])
+    included_shares = shares.assign(ticker="CONTROL")
+    included_quotes = quotes.assign(ticker="CONTROL", close_split=5.0)
+    accepted = resolve_share_events(actions, yahoo, blob, shares=included_shares, quotes=included_quotes, tickers=["CONTROL"])
+    assert set(accepted.policies) == {"CONTROL"}
+    print("SANITY: a declared hidden wedge cannot self-authorize a price-factor override without independent verification.")
 
 
 def test_missing_adjusted_event_is_inserted_once() -> None:
@@ -53,7 +155,7 @@ def test_missing_adjusted_event_is_inserted_once() -> None:
     print("SANITY: missing feed rows on adjusted bars resolve once; unadjusted bars fail the independent quote anchor.")
 
 
-def test_vendor_exclusion_keeps_actual_stock_dividend() -> None:
+def test_vendor_exclusion_keeps_actual_stock_dividend(caplog: pytest.LogCaptureFixture) -> None:
     actions, _ = _frames()
     yahoo = pd.DataFrame({"ticker": ["TEST"], "date": pd.to_datetime(["2020-06-01"]), "ratio": [1.1]})
     event = {
@@ -64,7 +166,9 @@ def test_vendor_exclusion_keeps_actual_stock_dividend() -> None:
     }
     shares = pd.DataFrame({"ticker": ["TEST"], "date": pd.to_datetime(["2020-01-02"]), "sharesbas": [100.0]})
     snapshot = yahoo.copy(deep=True)
-    basis = resolve_share_events(actions, yahoo, _policy(event), shares=shares, tickers=["TEST"])
+    with caplog.at_level("INFO", logger="src.utils.price_adjustments"):
+        basis = resolve_share_events(actions, yahoo, _policy(event), shares=shares, tickers=["TEST"])
+    assert "TEST VERIFIED configured overrides" in caplog.text
     assert _factor(basis, "actual", ["2020-01-02"]) == [1.1]
     assert _factor(basis, "vendor", ["2020-01-02"]) == [1.0]
     pd.testing.assert_frame_equal(yahoo, snapshot)

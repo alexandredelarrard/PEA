@@ -16,9 +16,10 @@
     "BLDR and CCI boundaries use observed daily quote discontinuities (2009-12-17 and2002-05-29), not filing-gap midpoints. Their precise corporate causes remain unproven.",
     "HBAN/APA/SJM legacy ladders were removed atomically; their levels derive from F/U and must not be multiplied a second time.",
     "split_vintage repairs alternating old/new split vintages across all five price legs, preserving volume.",
-    "Legacy return_seams without fields retain all-price/close_split-guard/target-one behavior (JCI).",
+    "Legacy return_seams without fields retain all-price/close_split-guard/target-one compatibility; JCI uses the total-only contract.",
     "Total-only return_seams require fields=[close_total], expect_step, target_step, expect_quote_step, evidence. Only the strict pre-event close_total prefix moves by observed_step/target_step.",
     "VTR target gross1.0025540368759251 includes one CCP per four VTR; SJM target gross1.0401776947657886 uses legal0.9451 ordinary-share conversion, independently of vendor0.945 rounding.",
+    "JCI target gross1.0116898490677717 values the July2,2007 Tyco/Covidien/Tyco Electronics holder basket. Raw total and quote steps differ; guard them separately and preserve quoted prices/OHLC.",
     "APPLIED and precise ALREADY_VERIFIED total states recover total-return windows. REFUSED/UNKNOWN (including interior missing/nonpositive adjacent prices) stops the builder.",
     "Residual quote seams are measured independently on unchanged close_split and keep ATR/gap/range windows masked even after total-return recovery.",
     "null_ret retains five unresolved returns: DHR, ETN, LDOS, DD, CNP. VTR was removed only with the supported total-only repair.",
@@ -351,10 +352,13 @@
     "JCI": [
       {
         "date": "2007-07-02",
-        "step": 0.394789,
-        "expect_ret": -0.60521,
-        "evidence": "JCI's prices before 2016-09-02 are Tyco International's (TYC; JCI plc is the renamed Tyco, which acquired old Johnson Controls). On 2007-07-02 Tyco did a 1-for-4 reverse split and, the same day, spun off Covidien (COV) and TE Connectivity (TEL): Sharadar's TYC actions for that date are split 0.25, spinoff COV and spinoff TEL (spinoffdividend 46 and 42.53). Yahoo's feed states the 0.25 and close_split applies it, but neither adjusts the two distributions, so close_split falls 70.354 -> 27.775 in one bar (x0.3948): a -60.52% return that holders never had, since the value moved into their COV and TEL shares. Old Johnson Controls' own 3-for-1 of 2007-10-03 is another company's event and does not belong to these prices.",
-        "note": "⚠ This repairs the fabricated RETURN, which is what reaches momentum, vol, betas and every JCI label. The LEVEL basis is separate: inside the JCI <- TYC vendor-series window the cube's level factor reads TYC's own corporate actions (security_master_manual.json vendor_series_overrides), and this seam does not change it."
+        "fields": [
+          "close_total"
+        ],
+        "expect_step": 0.46553796862415453,
+        "target_step": 1.0116898490677717,
+        "expect_quote_step": 0.39479134755057105,
+        "evidence": "JCI's tape before2016-09-02 belongs to Tyco International (TYC), not old Johnson Controls. Ex-distribution2007-07-02: each old TYC share becomes0.25TYC plus0.25COV and0.25TEL. Original issuer July3 tax notice gives July2 closes TYC53.36,COV43.41,TEL39.97; SKAGEN's June29 portfolio independently gives old TYC33.79. Holder gross=(53.36+43.41+39.97)/(4*33.79)=1.0116898490677717, preserving+1.168984907%. Source prices are published cents. https://www.sec.gov/Archives/edgar/data/833444/000110465907052190/a07-17393_3ex99d1.htm ; https://www.nasdaqtrader.com/content/phlxmemos/2007/jun/1561-07.pdf ; https://www.globenewswire.com/news-release/2007/07/10/91849/0/da/files/192757/0/skagen_global_porteflje_juni_2007.pdf . Raw close_total35.34253692626953->16.453292846679688 already contains partial distribution treatment, so its guard differs from close_split70.35396575927734->27.775136947631836. July2 vendor dividends10.691554 is not extra cash to add again; the basket already includes the distributed children. Sharadar spinoffdividend46/42.53 are not these closing quotes. Scale only the strict pre-event close_total prefix by observed_step/target_step; preserve every quote/OHLC/volume, level/share factor and later total. Residual quote discontinuity keeps OHLC masks."
       }
     ],
     "VTR": [

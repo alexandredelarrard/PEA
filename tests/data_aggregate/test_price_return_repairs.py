@@ -20,7 +20,9 @@ from src.utils.price_adjustments import load_bugfix
 @pytest.fixture(scope="module")
 def return_sources() -> tuple[Context, dict[str, Any], pd.DataFrame]:
     _, context = get_config_context("./configs", use_cache=False, save=False)
-    raw = context.store.load(Tables.prices, columns=price_step.PRICE_COLS, where={"ticker": ["VTR", "SJM"]}, since="2001-12-01", until="2016-02-18")
+    raw = context.store.load(
+        Tables.prices, columns=price_step.PRICE_COLS, where={"ticker": ["VTR", "SJM", "JCI"]}, since="2001-12-01", until="2016-02-18"
+    )
     assert raw is not None
     raw["date"] = pd.to_datetime(raw["date"])
     return context, load_bugfix(context.config_dir), raw
@@ -31,6 +33,7 @@ def return_sources() -> tuple[Context, dict[str, Any], pd.DataFrame]:
     [
         ("VTR", "2015-08-18", (59.80 + 35.58 / 4) / (78.2459716796875 * 0.8757), ["2015-03-04", "2015-06-03", "2015-09-11", "2015-12-17"]),
         ("SJM", "2002-06-03", 0.9451 * 36.650001525878906 / 33.29999923706055, ["2002-02-13", "2002-05-16", "2002-08-16", "2002-11-14"]),
+        ("JCI", "2007-07-02", (53.36 + 39.97 + 43.41) / (4 * 33.79), []),
     ],
 )
 def test_real_total_return_target_and_price_isolation(
@@ -48,6 +51,14 @@ def test_real_total_return_target_and_price_isolation(
     assert cast(float, returns.at[when, ticker]) + 1 == pytest.approx(target, rel=1e-12)
     other = returns.index != when
     np.testing.assert_allclose(returns.loc[other], original.loc[other], atol=5e-16, rtol=0, equal_nan=True)
+    if ticker == "JCI":
+        context = return_sources[0]
+        dividends = context.store.load(
+            Tables.dividends, columns=["date", "dividends"], where={"ticker": ticker}, since=rows["date"].min(), until=rows["date"].max()
+        )
+        assert dividends is not None
+        cash_dates = dividends.loc[dividends["dividends"].ne(0) & pd.to_datetime(dividends["date"]).ne(when), "date"].astype(str).tolist()
+        assert len(cash_dates) >= 3
     for date in cash_dates:
         assert returns.at[pd.Timestamp(date), ticker] == pytest.approx(original.at[pd.Timestamp(date), ticker], abs=5e-16)
     pd.testing.assert_frame_equal(wide["close_total"].loc[when:], before["close_total"].loc[when:], check_exact=True)
@@ -65,13 +76,14 @@ def test_real_total_return_target_and_price_isolation(
     )
 
 
+@pytest.mark.parametrize(("ticker", "stamp"), [("VTR", "2015-08-18"), ("JCI", "2007-07-02")])
 @pytest.mark.parametrize("state", ["changed", "missing", "nan", "healed"])
 def test_refused_return_repair_cannot_emit_unprotected_returns(
-    return_sources: tuple[Context, dict[str, Any], pd.DataFrame], monkeypatch: pytest.MonkeyPatch, state: str
+    return_sources: tuple[Context, dict[str, Any], pd.DataFrame], monkeypatch: pytest.MonkeyPatch, state: str, ticker: str, stamp: str
 ) -> None:
     context, blob, raw = return_sources
-    when = pd.Timestamp("2015-08-18")
-    rows = raw.loc[raw["ticker"].eq("VTR") & raw["date"].between("2015-08-10", "2015-08-25")].copy()
+    when = pd.Timestamp(stamp)
+    rows = raw.loc[raw["ticker"].eq(ticker) & raw["date"].between(when - pd.Timedelta(days=8), when + pd.Timedelta(days=7))].copy()
     if state == "missing":
         rows = rows.loc[rows["date"].ne(when)]
     elif state == "nan":
@@ -79,7 +91,7 @@ def test_refused_return_repair_cannot_emit_unprotected_returns(
     elif state == "changed":
         rows.loc[rows["date"].eq(when), "close_total"] *= 1.10
     else:
-        item = blob["return_seams"]["VTR"][0]
+        item = blob["return_seams"][ticker][0]
         pair = rows.set_index("date")["close_total"]
         step = pair.loc[when] / pair.loc[pair.index < when].iloc[-1]
         rows.loc[rows["date"].lt(when), "close_total"] *= step / item["target_step"]
@@ -93,7 +105,7 @@ def test_refused_return_repair_cannot_emit_unprotected_returns(
     actual = cast(Any, step)
     actual._store = CaptureStore()
     actual._bugfix = blob
-    actual._tickers = ["VTR"]
+    actual._tickers = [ticker]
     actual._log = logging.getLogger(__name__)
     writes: list[pd.DataFrame] = []
     monkeypatch.setattr(step, "_plan_window", lambda full: SimpleNamespace(since=None))
@@ -107,12 +119,12 @@ def test_refused_return_repair_cannot_emit_unprotected_returns(
         step.run(full=True)
         assert len(writes) == 1
         emitted = writes[0].set_index("date")
-        assert cast(float, emitted.at[when, "ret"]) + 1 == pytest.approx(blob["return_seams"]["VTR"][0]["target_step"], rel=1e-12)
+        assert cast(float, emitted.at[when, "ret"]) + 1 == pytest.approx(blob["return_seams"][ticker][0]["target_step"], rel=1e-12)
     else:
         with pytest.raises(ValueError, match="REFUSED"):
             step.run(full=True)
         assert not writes
-    print(f"SANITY: ordinary builder state={state}: {'verified return emitted once' if writes else 'refusal before any write'}.")
+    print(f"SANITY: {ticker} ordinary builder state={state}: {'verified return emitted once' if writes else 'refusal before any write'}.")
 
 
 def test_small_total_repair_applies_once_inside_defect_tolerance() -> None:

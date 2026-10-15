@@ -49,7 +49,8 @@ from omegaconf import DictConfig
 from src.constants.constants import F13_REVISION_MIN_MOVE, F13_SETTLE_TRADING_DAYS
 from src.context import Context
 from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_REFRESH_TRADING_DAYS, plan_window, write_part
-from src.data_aggregate.utils.common.level_basis import genuine_splits, level_actions, load_bugfix
+from src.data_aggregate.utils.common.level_basis import genuine_splits as genuine_splits
+from src.data_aggregate.utils.common.level_basis import level_actions, load_bugfix, load_share_basis
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
 from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.price_frames import (
@@ -91,6 +92,7 @@ from src.data_aggregate.utils.institutionals.superinvestor_features import (
 )
 from src.data_aggregate.utils.institutionals.value_basis import as_traded_close
 from src.data_store.schema import Table, Tables
+from src.utils.price_adjustments import ShareBasis
 from src.utils.step import Step
 from src.utils.superinvestor_roster import (
     first_snapshot_date,
@@ -115,6 +117,7 @@ class StepCubeInstitutionals(Step):
         self._cfg = config.build_cube
         self._part = part_for(Tables.cube_part_institutionals)
         self._store = context.store
+        self._bugfix = load_bugfix(context.config_dir)
         availability_config = config.get("data_availability")
         self._availability = InstitutionalAvailability.from_config(availability_config) if availability_config is not None else None
 
@@ -148,9 +151,10 @@ class StepCubeInstitutionals(Step):
         # Read actions once. 13F quantities use genuine share splits: a vendor's
         # spinoff price factor does not change the parent's reported share count.
         splits = self._load_source(Tables.prices_splits)
-        value_splits = genuine_splits(level_actions(self._context, price_frames.universe), splits)
-        share_splits = value_splits.rename(columns={"value": "ratio"})
-        valuation_close = as_traded_close(price_frames.close_split, price_frames.level_factor, value_splits)
+        actions = level_actions(self._context, price_frames.universe)
+        basis = load_share_basis(self._context, price_frames.universe, self._bugfix, actions, splits)
+        share_splits = basis.actual.rename(columns={"value": "ratio"})
+        valuation_close = as_traded_close(price_frames.close_split, price_frames.level_factor, basis)
 
         # What the two DERIVED panels consume. Filled by the source panels as they run,
         # so nothing here re-reads a source -- see `sink.py`.
@@ -158,7 +162,7 @@ class StepCubeInstitutionals(Step):
 
         merger = PanelMerger(self._log, anchor=price_frames.skeleton())
         merger.add(
-            self._institutional_panel(price_frames, shares, share_splits, valuation_close),
+            self._institutional_panel(price_frames, shares, share_splits, valuation_close, share_basis=basis),
             "institutional (13F)",
             "No institutional (13F) features built.",
         )
@@ -167,8 +171,12 @@ class StepCubeInstitutionals(Step):
             "superinvestor (elite 13F)",
             "No superinvestor (elite 13F) features built.",
         )
-        merger.add(self._insider_panel(price_frames, shares, sink, splits), "insider-trading", "No insider-trading features built.")
-        merger.add(self._short_flow_panel(price_frames, shares, splits, sink), "short-flow", "No short-flow features built.")
+        merger.add(
+            self._insider_panel(price_frames, shares, sink, splits, share_basis=basis, valuation_close=valuation_close),
+            "insider-trading",
+            "No insider-trading features built.",
+        )
+        merger.add(self._short_flow_panel(price_frames, shares, splits, sink, share_basis=basis), "short-flow", "No short-flow features built.")
         merger.add(self._ownership_panel(price_frames, sink), "beneficial-ownership", "No beneficial-ownership features built.")
         merger.add(self._conditioning_panel(price_frames, splits, sink), "price-conditioning", "No price-conditioning features built.")
         merger.add(self._cross_source_panel(price_frames, sink), "cross-source", "No cross-source features built.")
@@ -201,7 +209,13 @@ class StepCubeInstitutionals(Step):
 
     # ---- panels ---- #
     def _institutional_panel(
-        self, price_frames: PriceFrames, shares: pd.DataFrame | None, splits: pd.DataFrame | None, valuation_close: pd.DataFrame | None = None
+        self,
+        price_frames: PriceFrames,
+        shares: pd.DataFrame | None,
+        splits: pd.DataFrame | None,
+        valuation_close: pd.DataFrame | None = None,
+        *,
+        share_basis: ShareBasis | None = None,
     ) -> pd.DataFrame | None:
         """The registry's eleven `ic_inst_*`: breadth SHARE (D28), split-restated share
         accumulation, new-buyer / exit ratios, cluster buying, Herfindahl concentration, net
@@ -222,6 +236,7 @@ class StepCubeInstitutionals(Step):
             holdings,
             shares_out_history=shares,
             splits=splits,
+            share_basis=share_basis,
             valuation_close=valuation_close,
             value_basis=cfg.get("value_basis"),
             filings=filings,
@@ -375,7 +390,14 @@ class StepCubeInstitutionals(Step):
         return float(cfg.get(family, 63))
 
     def _insider_panel(
-        self, frames: PriceFrames, shares: pd.DataFrame | None, sink: ConditioningSink, splits: pd.DataFrame | None = None
+        self,
+        frames: PriceFrames,
+        shares: pd.DataFrame | None,
+        sink: ConditioningSink,
+        splits: pd.DataFrame | None = None,
+        *,
+        share_basis: ShareBasis | None = None,
+        valuation_close: pd.DataFrame | None = None,
     ) -> pd.DataFrame | None:
         """Fourteen Form 3/4/5 features: size-scaled open-market buying, cluster breadth,
         CEO/CFO/director legs, the buyer's own-history surprise, and the 10b5-1 split of
@@ -390,8 +412,10 @@ class StepCubeInstitutionals(Step):
             return None
         last_session = pd.DatetimeIndex(frames.trading_index).max() if len(frames.trading_index) else None
         complete_through = institutional_frontiers.schedule_complete_through(self._store, Tables.insider_transactions, last_session)
-        actions = level_actions(self._context, frames.universe)
-        restored_quotes = as_traded_close(frames.close_split, frames.level_factor, genuine_splits(actions, splits))
+        if share_basis is None:
+            actions = level_actions(self._context, frames.universe)
+            share_basis = load_share_basis(self._context, frames.universe, self._bugfix, actions, splits)
+            valuation_close = as_traded_close(frames.close_split, frames.level_factor, share_basis)
         roles = institutional_inputs.load_insider_role_evidence(self._store, insider)
         return build_insider_feature_panel(
             frames,
@@ -401,12 +425,19 @@ class StepCubeInstitutionals(Step):
             availability=self._availability,
             complete_through=complete_through,
             sink=sink,
-            as_traded_quotes=restored_quotes,
+            as_traded_quotes=valuation_close,
             role_evidence=roles,
+            share_basis=share_basis,
         )
 
     def _short_flow_panel(
-        self, frames: PriceFrames, shares: pd.DataFrame | None, splits: pd.DataFrame | None, sink: ConditioningSink
+        self,
+        frames: PriceFrames,
+        shares: pd.DataFrame | None,
+        splits: pd.DataFrame | None,
+        sink: ConditioningSink,
+        *,
+        share_basis: ShareBasis | None = None,
     ) -> pd.DataFrame | None:
         """Volume-weighted RegSHO short-VOLUME ratios (5/20/60d), their self-history z, the
         two price-conditional interactions and short turnover, plus SEC fails-to-deliver
@@ -438,6 +469,7 @@ class StepCubeInstitutionals(Step):
             availability=self._availability,
             sink=sink,
             class_volume=class_volume,
+            share_basis=share_basis,
         )
 
     def _ownership_panel(self, frames: PriceFrames, sink: ConditioningSink) -> pd.DataFrame | None:

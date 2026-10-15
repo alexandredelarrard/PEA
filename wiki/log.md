@@ -478,3 +478,12 @@ Updated only the [insider aggregate contract](./modules/data-aggregate.md#inside
 - Pages: [Data sources](./reference/data-sources.md) and the [Overview freshness anchor](./OVERVIEW.md).
 - Validation: both new regressions fail on unchanged dev with zero books committed at the 100/200 checkpoints and no saved books before retries. The corrected three-file walk/resume/backfill suite passes 115 checks; four focused retry checks pass after final memory cleanup. Known-truth source packets persisted through the real SQLite DataStore pass the read-only source validator, with two complete accessions and no completion for the exhausted failure. Ruff lint/format and git diff --check pass. The two-file Pyright comparison preserves all 23 baseline diagnostics and introduces none. Live-write tripwires record zero blocked attempts. No production source request or database write ran.
 - Evidence: [retry evidence](../reports/validate/2026-10-14-13f-save-retries/evidence.json); the final source SHA-256 is `28c986e40184ab3eeb0263c3d8c5b9c55ea1008ca2cfba21b51d7ce0c324dc2b`. The separate ABANCO split-CUSIP parser issue is outside this change.
+
+## 2026-10-14: refresh — generic price and PIT share basis
+
+- Profile: internal/standard.
+- source_commit: c1443763db6fd8d109817fdf035b6e91e84893d4 (global overview anchor was b329a555107a951ae80549949d2dcbc5d4b0b28b).
+- Coverage: scoped price/share adjustment contract, JSON maintenance and validation guidance; unrelated earlier changes since the overview anchor were not re-audited in this refresh.
+- Pages: [Overview](./OVERVIEW.md), [Configuration](./reference/configuration.md), [Data sources](./reference/data-sources.md), [Testing and validation](./guides/testing.md).
+- One approved price register separates actual G, vendor F, represented price Y, quoted units U and hidden H; native total-only returns preserve supported nonzero event returns and independent OHLC masks. Source guards distinguish available empty event feeds from missing tables through the existing store facade.
+- Evidence:303 full regression tests,71 fresh post-facade controls, independent named economic/return/guard audits and scoped link checks. Existing configuration-page link to an older ignored report remains an advisory; Markdown lint families were not selected. Production historical tables were not rebuilt.

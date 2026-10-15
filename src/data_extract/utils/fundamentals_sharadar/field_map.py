@@ -13,17 +13,14 @@ import json
 import logging
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
-from fractions import Fraction
 from functools import cache, cached_property
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 import numpy as np
 import pandas as pd
 
 from src.constants.constants import (
-    SHARADAR_ACTION_SPINOFF,
-    SHARADAR_ACTION_SPLIT,
     SHARADAR_APPROVAL_KEY,
     SHARADAR_CONFIG_SUBDIR,
     SHARADAR_CORRECTION_ACTIONS,
@@ -45,6 +42,33 @@ from src.data_extract.utils.fundamentals.kpi_catalogue import (
     HISTORY_STATEMENT_ORDER,
     Catalogue,
     load_catalogue,
+)
+from src.utils.price_adjustments import (
+    SPLIT_INTEGER_TOL as SPLIT_INTEGER_TOL,
+)
+from src.utils.price_adjustments import (
+    SPLIT_MATCH_DAYS as SPLIT_MATCH_DAYS,
+)
+from src.utils.price_adjustments import (
+    SPLIT_MAX_DENOMINATOR as SPLIT_MAX_DENOMINATOR,
+)
+from src.utils.price_adjustments import (
+    SPLIT_RATIO_CONFLICT_TOL as SPLIT_RATIO_CONFLICT_TOL,
+)
+from src.utils.price_adjustments import (
+    _is_simple_split as _is_simple_split,
+)
+from src.utils.price_adjustments import (
+    _is_split_shaped as _is_split_shaped,
+)
+from src.utils.price_adjustments import (
+    forward_split_factor as forward_split_factor,
+)
+from src.utils.price_adjustments import (
+    split_events as split_events,
+)
+from src.utils.price_adjustments import (
+    union_split_sources as union_split_sources,
 )
 
 log = logging.getLogger(__name__)
@@ -399,226 +423,6 @@ def _correction_hit(column: pd.Series, rows: pd.Series, action: str) -> pd.Serie
 # --------------------------------------------------------------------------- #
 # the split de-adjustment                                                      #
 # --------------------------------------------------------------------------- #
-#: Calendar days within which a Sharadar and a yfinance split are the same event.
-SPLIT_MATCH_DAYS = 7
-#: Max distance from a small-integer fraction to read as a split; admits 5-dp rounding, rejects spinoff factors.
-SPLIT_INTEGER_TOL = 1e-4
-#: Relative ratio gap above which two vendors on one date describe different events (price vs share factor).
-SPLIT_RATIO_CONFLICT_TOL = 0.01
-#: Largest denominator a genuine split ratio may have (2:1, 3:2, 1:20, 21/20 stock dividend, ...).
-SPLIT_MAX_DENOMINATOR = 20
-
-
-def _is_split_shaped(ratio: float) -> bool:
-    """Whether `ratio` is a fraction of small integers (a split or stock dividend), not a spinoff/merger price factor.
-
-    Applied to both vendors: yfinance's `Stock Splits` also carries spinoff factors.
-    """
-    if not ratio or ratio <= 0 or not np.isfinite(ratio):
-        return False
-    frac = Fraction(float(ratio)).limit_denominator(SPLIT_MAX_DENOMINATOR)
-    return abs(float(frac) - ratio) < SPLIT_INTEGER_TOL
-
-
-def _is_simple_split(ratio: float) -> bool:
-    """Whether `ratio` is split-shaped AND `n:1` or `1:n`; used only to decide what to flag for review."""
-    if not _is_split_shaped(ratio):
-        return False
-    frac = Fraction(float(ratio)).limit_denominator(SPLIT_MAX_DENOMINATOR)
-    return frac.denominator == 1 or frac.numerator == 1
-
-
-def split_events(actions: pd.DataFrame | None, yf_splits: pd.DataFrame | None = None, *, report: TranslationReport | None = None) -> pd.DataFrame:
-    """The genuine share splits from both vendors, as `(ticker, date, value)`.
-
-    `sharadar_actions` is incomplete per ticker, so it is cross-validated against yfinance (`prices_splits`) by
-    `union_split_sources`. A Sharadar `split` co-dated with a `spinoff` is still a split; the spinoff's price
-    factor is separated by the ratio-conflict rule, not by dropping the row. `yf_splits=None` uses Sharadar alone.
-    """
-    # the empty frame needs a datetime `date`, or the union's date subtraction raises TypeError
-    empty = pd.DataFrame(
-        {
-            "ticker": pd.Series(dtype="object"),
-            "date": pd.Series(dtype="datetime64[ns]"),
-            "value": pd.Series(dtype="float64"),
-            "label": pd.Series(dtype="object"),
-        }
-    )
-    codated: set[tuple] = set()
-    if actions is None or actions.empty:
-        sharadar = empty
-    else:
-        frame = actions.copy()
-        frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
-        candidates = frame[frame["action"] == SHARADAR_ACTION_SPLIT]
-        kept = [
-            {
-                "ticker": row["ticker"],
-                "date": row["date"],
-                "value": float(row["value"]),
-                "label": f"{row['ticker']} {pd.Timestamp(row['date']).date()} x{row['value']}",
-            }
-            for _, row in candidates.iterrows()
-        ]
-        sharadar = pd.DataFrame(kept, columns=["ticker", "date", "value", "label"]) if kept else empty
-        # `spinoff` rows veto nothing; they only name co-dated splits for review
-        codated = set(map(tuple, frame.loc[frame["action"] == SHARADAR_ACTION_SPINOFF, ["ticker", "date"]].to_numpy()))
-
-    yf = pd.DataFrame(columns=["ticker", "date", "value"])
-    if yf_splits is not None and not yf_splits.empty:
-        yf = yf_splits.rename(columns={"ratio": "value"})[["ticker", "date", "value"]].copy()
-        yf["date"] = pd.to_datetime(yf["date"], errors="coerce")
-        yf = yf.dropna(subset=["date", "value"])
-        yf = yf[yf["value"] != 0.0]
-
-    out = union_split_sources(sharadar, yf, report=report)
-    _log_codated(out, codated)
-    return out
-
-
-def _log_codated(out: pd.DataFrame, codated: set[tuple]) -> None:
-    """Warn on kept splits co-dated with a spinoff, and separately on those that are not `n:1` / `1:n`."""
-    if out.empty or not codated:
-        return
-    hit = [
-        f"{r.ticker} {pd.Timestamp(cast(Any, r.date)).date()} x{r.value}"
-        for r in out.itertuples()
-        if (r.ticker, pd.Timestamp(cast(Any, r.date))) in codated
-    ]
-    if not hit:
-        return
-    log.warning(
-        "%d split(s) co-dated with a spinoff are now KEPT (the veto that dropped them was wrong -- see `split_events`): %s",
-        len(hit),
-        ", ".join(sorted(hit)),
-    )
-    odd = [h for h in hit if not _is_simple_split(float(h.rsplit("x", 1)[1]))]
-    if odd:
-        log.warning(
-            "of those, %d is/are split-shaped but NOT n:1 or 1:n -- the shape test "
-            "is the only filter left, so confirm each against the filer's own "
-            "disclosure: %s",
-            len(odd),
-            ", ".join(odd),
-        )
-
-
-def _resolve_ratio_conflict(yf_row: pd.Series, near: pd.DataFrame) -> tuple[float, str | None]:
-    """`(ratio to keep, warning line or None)` for one corroborated event.
-
-    yfinance's ratio unless the vendors differ by more than `SPLIT_RATIO_CONFLICT_TOL` and only Sharadar's is
-    split-shaped; any material disagreement yields a warning line.
-    """
-    yf_value = float(yf_row["value"])
-    label = f"{yf_row['ticker']} {pd.Timestamp(yf_row['date']).date()}"
-    for _, other in near.iterrows():
-        sh_value = float(other["value"])
-        if not np.isfinite(sh_value) or sh_value <= 0:
-            continue
-        if abs(yf_value / sh_value - 1.0) <= SPLIT_RATIO_CONFLICT_TOL:
-            continue
-        yf_ok, sh_ok = _is_split_shaped(yf_value), _is_split_shaped(sh_value)
-        if sh_ok and not yf_ok:
-            return sh_value, (
-                f"{label}: yfinance x{yf_value} vs sharadar x{sh_value} "
-                f"-> KEPT x{sh_value} (only the sharadar ratio is "
-                f"split-shaped; the yfinance one is the spinoff's PRICE "
-                f"factor)"
-            )
-        return yf_value, (
-            f"{label}: yfinance x{yf_value} vs sharadar x{sh_value} "
-            f"-> KEPT x{yf_value} (yfinance, "
-            f"{'both' if yf_ok and sh_ok else 'neither'} split-shaped -- "
-            f"no evidence to prefer the other)"
-        )
-    return yf_value, None
-
-
-def _reject_yfinance_only(row: pd.Series, report: TranslationReport | None) -> None:
-    """Record an uncorroborated, non-split-shaped yfinance event as rejected on `report`, if any."""
-    if report is not None:
-        report.splits_rejected.append(f"{row['ticker']} {pd.Timestamp(row['date']).date()} x{row['value']} (yfinance-only, not split-shaped)")
-
-
-def union_split_sources(sharadar: pd.DataFrame, yf: pd.DataFrame, *, report: TranslationReport | None = None) -> pd.DataFrame:
-    """Merge two cleaned split lists into one, sorted by `(ticker, date)`.
-
-    In both (within `SPLIT_MATCH_DAYS`): kept on the yfinance DATE (so it steps with `close_split`), ratio per
-    `_resolve_ratio_conflict`. One vendor only: kept iff split-shaped (Sharadar-only kept with a warning).
-    """
-    matched_sharadar: set[int] = set()
-    events: list[dict] = []
-    conflicts: list[str] = []
-    kept_both = kept_yf = kept_sharadar = 0
-
-    for _, row in yf.iterrows():
-        near = sharadar.index[(sharadar["ticker"] == row["ticker"]) & ((sharadar["date"] - row["date"]).abs() <= pd.Timedelta(days=SPLIT_MATCH_DAYS))]
-        matched_sharadar.update(near)
-        value = float(row["value"])
-        # corroboration overrides shape; uncorroborated, the shape test decides
-        if len(near):
-            kept_both += 1
-            value, note = _resolve_ratio_conflict(row, sharadar.loc[near])
-            if note:
-                conflicts.append(note)
-        elif _is_split_shaped(value):
-            kept_yf += 1
-        else:
-            _reject_yfinance_only(row, report)
-            continue
-        events.append({"ticker": row["ticker"], "date": row["date"], "value": value})
-
-    uncorroborated = []
-    for idx, row in sharadar.iterrows():
-        if idx in matched_sharadar:
-            continue
-        label = row["label"] if "label" in row else (f"{row['ticker']} {pd.Timestamp(row['date']).date()} x{row['value']}")
-        if _is_split_shaped(float(row["value"])):
-            events.append({"ticker": row["ticker"], "date": row["date"], "value": float(row["value"])})
-            uncorroborated.append(label)
-            kept_sharadar += 1
-        elif report is not None:
-            report.splits_rejected.append(f"{label} (uncorroborated, not split-shaped)")
-
-    if uncorroborated:
-        log.warning(
-            "%d split event(s) in sharadar_actions but NOT in yfinance, kept because the ratio is split-shaped -- review: %s",
-            len(uncorroborated),
-            ", ".join(uncorroborated),
-        )
-    if conflicts:
-        log.warning("%d date(s) where the two vendors report DIFFERENT ratios -- resolved: %s", len(conflicts), "; ".join(conflicts))
-        if report is not None:
-            report.splits_rejected.extend(conflicts)
-
-    out = (
-        pd.DataFrame(events, columns=["ticker", "date", "value"])
-        .drop_duplicates(subset=["ticker", "date"])
-        .sort_values(["ticker", "date"])
-        .reset_index(drop=True)
-    )
-    log.info("split events: %d corroborated, %d yfinance-only, %d sharadar-only -> %d total", kept_both, kept_yf, kept_sharadar, len(out))
-    if report is not None:
-        report.splits_applied.extend(f"{r.ticker} {pd.Timestamp(cast(Any, r.date)).date()} x{r.value}" for r in out.itertuples())
-    return out
-
-
-def forward_split_factor(tickers: pd.Series, dates: pd.Series, splits: pd.DataFrame) -> pd.Series:
-    """Product of every split dated STRICTLY AFTER each row's filing date (1.0 if none).
-
-    This is the factor Sharadar applied retroactively: divide a count (multiply a per-share figure) by it to
-    recover the as-filed basis.
-    """
-    factor = pd.Series(1.0, index=dates.index)
-    if splits.empty:
-        return factor
-    stamps = pd.to_datetime(dates, errors="coerce")
-    for _, split in splits.iterrows():
-        hit = (tickers == split["ticker"]) & (stamps < split["date"])
-        factor.loc[hit] = factor.loc[hit] * float(split["value"])
-    return factor
-
-
 def deadjust_splits(
     frame: pd.DataFrame,
     field_map: FieldMap,

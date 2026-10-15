@@ -640,7 +640,14 @@ def test_the_shipped_register_is_loadable_and_states_its_evidence():
             assert entry["evidence"] and entry["corroboration"], ticker
     for ticker, entries in blob["return_seams"].items():
         for entry in entries:
-            assert entry["step"] > 0 and entry["evidence"], ticker
+            assert entry["evidence"], ticker
+            if "fields" in entry:
+                assert entry["fields"] == ["close_total"], ticker
+                assert min(entry["expect_step"], entry["target_step"], entry["expect_quote_step"]) > 0, ticker
+                assert entry["target_step"] != 1.0, ticker
+            else:
+                assert entry["step"] > 0, ticker
+    assert set(blob["null_ret"]) == {"DHR", "ETN", "LDOS", "DD", "CNP"}
     for ticker, entries in blob["null_ret"].items():
         for entry in entries:
             # a NULL states no factor, so `expect_ret` is the ONLY thing that makes it

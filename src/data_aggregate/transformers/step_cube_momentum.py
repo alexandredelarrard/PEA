@@ -22,7 +22,7 @@ from omegaconf import DictConfig
 
 from src.context import Context
 from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_REFRESH_TRADING_DAYS, plan_window, write_part
-from src.data_aggregate.utils.common.level_basis import load_bugfix, measure_seams
+from src.data_aggregate.utils.common.level_basis import load_bugfix, measure_quote_seams, measure_seams
 from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
 from src.data_aggregate.utils.common.price_frames import (
@@ -87,6 +87,9 @@ class StepCubeMomentum(Step):
         assert frames.open is not None
         assert frames.sector_ret is not None
         seams = measure_seams(frames.close_total, self._bugfix, self._log.info)
+        assert frames.close_split is not None
+        quote_seams = measure_quote_seams(frames.close_split, self._bugfix, self._log.info)
+        split_seams = {ticker: sorted(set(seams.get(ticker, [])) | set(quote_seams.get(ticker, []))) for ticker in seams.keys() | quote_seams.keys()}
         listed = sum(len(v) for v in (self._bugfix.get("null_ret") or {}).values())
         # a SKIP here is not cosmetic: it means the register no longer matches this build's
         # `close_total`, so the window that would have been masked is being emitted fabricated.
@@ -109,6 +112,7 @@ class StepCubeMomentum(Step):
             close_split=frames.close_split,
             level_factor=frames.level_factor,
             seams=seams,
+            split_seams=split_seams,
         )
         self._log.info(
             "Price feature panel: %s rows, %s features (volume liquidity: %s)",

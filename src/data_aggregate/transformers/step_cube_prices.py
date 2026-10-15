@@ -21,6 +21,8 @@ frame is LOCAL to `run()`. Nothing is stashed on `self`, so when `run()` returns
 locals are collected and the next sub-step starts from a clean slate.
 """
 
+from typing import cast
+
 import pandas as pd
 from omegaconf import DictConfig
 
@@ -35,10 +37,10 @@ from src.data_aggregate.utils.common.level_basis import (
     apply_split_vintage,
     apply_volume_scale,
     describe,
-    genuine_splits,
     level_actions,
     level_factor,
     load_bugfix,
+    load_share_basis,
 )
 from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers
@@ -273,10 +275,24 @@ class StepCubePrices(Step):
         value is NULL" a no-op and materialise a row for every (date, ticker) pair in the
         grid -- including years before a ticker listed.
         """
-        yf_splits = self._store.load(Tables.prices_splits, columns=["ticker", "date", "ratio"], optional=True)
-        actions = level_actions(self._context, list(close_split.columns))
-        genuine = genuine_splits(actions, yf_splits)
-        factor = level_factor(idx, list(close_split.columns), yf_splits, genuine)
+        names = list(close_split.columns)
+        actions = level_actions(self._context, names)
+        yf_splits = self._store.load(Tables.prices_splits, columns=["ticker", "date", "ratio"], where={"ticker": names}, optional=True)
+        anchors = [
+            (ticker, anchor)
+            for ticker, policy in self._bugfix.get("share_events", {}).items()
+            if ticker in names
+            for anchor in policy["anchors"]
+            if "quoted_price" in anchor
+        ]
+        quote_anchors = None
+        if anchors:
+            dates = pd.DatetimeIndex([anchor["date"] for _, anchor in anchors])
+            covered = close_split.loc[close_split.index.isin(dates), sorted({ticker for ticker, _ in anchors})]
+            stacked = cast(pd.Series, covered.rename_axis(index="date", columns="ticker").stack(future_stack=True))
+            quote_anchors = stacked.dropna().rename("close_split").reset_index()
+        basis = load_share_basis(self._context, names, self._bugfix, actions, yf_splits, quotes=quote_anchors)
+        factor = level_factor(idx, list(close_split.columns), basis.price, basis)
         # The registered wedges are cases `S` is structurally BLIND to -- Yahoo adjusted the
         # price and its splits feed never said so -- so they multiply `S` rather than
         # replacing it, and land in the same stored column.

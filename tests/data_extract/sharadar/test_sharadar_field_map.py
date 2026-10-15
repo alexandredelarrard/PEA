@@ -109,15 +109,20 @@ def context():
 
 
 @pytest.fixture(scope="module")
-def vendor_arq(context):
+def vendor_arq(context) -> pd.DataFrame:
     """Every stored ARQ row, as delivered."""
-    frame = context.store.load(Tables.sharadar_fundamentals, project=True)
-    return frame[frame["dimension"] == "ARQ"].copy()
+    frame = context.store.load(Tables.sharadar_fundamentals, project=True, where={"dimension": "ARQ"})
+    assert frame is not None
+    return frame
 
 
 @pytest.fixture(scope="module")
-def actions(context):
-    return context.store.load(Tables.sharadar_actions, project=True)
+def actions(context, vendor_arq: pd.DataFrame) -> pd.DataFrame:
+    frame = context.store.load(
+        Tables.sharadar_actions, project=True, where={"ticker": sorted(vendor_arq["ticker"].unique()), "action": ["split", "spinoff"]}
+    )
+    assert frame is not None
+    return frame
 
 
 @pytest.fixture(scope="module")
@@ -189,7 +194,10 @@ def test_every_history_column_is_mapped(field_map):
     print(f"SEC-owned (D18)  : {len(field_map.sec_owned)} -> {field_map.sec_owned}")
     print(f"permanently NULL : {sorted(n for n, s in field_map.columns.items() if s.kind == 'null')}")
     assert not unmapped
-    assert len(field_map.sec_owned) == 15, "D18 declares exactly 15 SEC-owned columns"
+    assert len(field_map.sec_owned) == 14, "The current merged contract declares 14 SEC-owned columns"
+    assert field_map.outputs["sharesOutstanding"].source == "sharesbas"
+    assert field_map.outputs["sharesOutstanding"].split_basis is None
+    assert field_map.outputs["sharesOutstandingPit"].split_basis == "count"
 
 
 def test_every_sf1_column_is_accounted_for(field_map):
@@ -400,12 +408,16 @@ def test_share_block_is_deadjusted_against_the_sec_cover_page(context, ttm, tran
             f"UNVERIFIABLE here, not verified"
         )
     sec["as_of"] = pd.to_datetime(sec["as_of"])
-    mine = frame[frame["ticker"].isin(["NVDA", "WMT"])][["ticker", "date", "sharesOutstanding"]].copy()
+    mine = (
+        frame[frame["ticker"].isin(["NVDA", "WMT"])][["ticker", "date", "sharesOutstandingPit"]]
+        .rename(columns={"sharesOutstandingPit": "sharesOutstanding"})
+        .copy()
+    )
     mine["date"] = pd.to_datetime(mine["date"])
     joined = mine.merge(sec, left_on=["ticker", "date"], right_on=["ticker", "as_of"], suffixes=("_repo", "_sec")).dropna()
     joined["ratio"] = joined["sharesOutstanding_repo"] / joined["sharesOutstanding_sec"]
-    print(f"\nsplits applied : {report.splits_applied}")
-    print(f"splits rejected: {report.splits_rejected}")
+    print(f"\nsplits applied : {len(report.splits_applied)} events; first8 {report.splits_applied[:8]}")
+    print(f"splits rejected: {len(report.splits_rejected)} events; first8 {report.splits_rejected[:8]}")
     print(f"cells de-adjusted: {report.split_deadjusted}")
     print(joined.head(8).to_string(index=False))
     print(f"ratio to the SEC cover page over {len(joined)} row(s): min {joined['ratio'].min():.5f}, max {joined['ratio'].max():.5f}")

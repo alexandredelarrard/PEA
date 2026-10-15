@@ -47,7 +47,9 @@ from src.data_extract.utils.fundamentals_sharadar.field_map import (
 )
 from src.data_store.schema import Tables
 from src.utils.cutover_continuity import PredecessorSeries, ShareExchange, apply_predecessor_series, rebase_split_events
-from src.utils.predecessor_series import load_predecessor_series
+from src.utils.predecessor_series import load_level_actions, load_predecessor_series
+from src.utils.price_adjustments import ShareBasis, load_bugfix
+from src.utils.price_basis import load_share_basis
 
 log = logging.getLogger(__name__)
 
@@ -443,6 +445,20 @@ def with_predecessor_series(
     return merged, rebase_split_events(splits, split_events(owner_actions, None), converted)
 
 
+def vendor_share_basis(
+    context: Context,
+    vendor: pd.DataFrame,
+    names: list[str],
+    yf_splits: pd.DataFrame | None,
+    splits: pd.DataFrame,
+    config_dir: str,
+) -> ShareBasis:
+    """Resolve on the selected owner actions and the same repaired anchors as prices."""
+    bugfix = load_bugfix(config_dir)
+    selected = load_level_actions(context, names, config_dir=config_dir)
+    return load_share_basis(context, names, bugfix, selected, yf_splits, shares=vendor, base_events=splits)
+
+
 def build_merged_history(context: Context, tickers: list[str], *, full: bool = False, config_dir: str = DEFAULT_CONFIG_DIR) -> None:
     """Build `fundamentals_history` from `fundamentals_sharadar` + `fundamentals_history_sec` for `tickers`.
 
@@ -467,6 +483,8 @@ def build_merged_history(context: Context, tickers: list[str], *, full: bool = F
     yf_splits = context.store.load(Tables.prices_splits, columns=["ticker", "date", "ratio"], where={"ticker": names}, optional=True)
     report = TranslationReport()
     vendor, splits = with_predecessor_series(context, vendor, names, split_events(actions, yf_splits, report=report), config_dir=config_dir)
+    basis = vendor_share_basis(context, vendor, names, yf_splits, splits, config_dir)
+    splits = basis.vendor
 
     # projection built from the register, so every override column is loaded
     sec_columns = ["ticker", "as_of", *field_map.sec_owned]

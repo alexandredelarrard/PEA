@@ -7,9 +7,10 @@ import pandas as pd
 
 from src.data_aggregate.utils.common.price_frames import PriceFrames
 from src.data_aggregate.utils.institutionals.insider_quality import security_class
+from src.utils.price_adjustments import ShareBasis
 
 
-def position_units(trades: pd.DataFrame, frames: PriceFrames, quotes: pd.DataFrame | None) -> pd.DataFrame:
+def position_units(trades: pd.DataFrame, frames: PriceFrames, quotes: pd.DataFrame | None, share_basis: ShareBasis | None = None) -> pd.DataFrame:
     """Normalize quantities and holdings together using genuine splits, never level actions.
 
     A single economic day needs no cross-day conversion. Multi-day balances require a
@@ -28,6 +29,11 @@ def position_units(trades: pd.DataFrame, frames: PriceFrames, quotes: pd.DataFra
         known = (row >= 0) & (col >= 0)
         factor.iloc[known] = factors.to_numpy()[row[known], col[known]]
         factor = factor.where(rows["klass"].eq("COMMON"))
+    if share_basis is not None:
+        configured = rows["ticker"].isin(share_basis.policies)
+        declared = share_basis.declared_units(rows["ticker"], rows["transaction_day"], rows["security_title"])
+        actual = share_basis.factor(rows["ticker"], rows["transaction_day"], "actual")
+        factor.loc[configured] = (actual * declared).loc[configured].where(rows.loc[configured, "klass"].eq("COMMON"))
     rows["units_known"] = factor.gt(0) & np.isfinite(factor)
     for column in ("shares_n", "shares_owned_after"):
         rows[column] = rows[column] * factor.where(rows["units_known"], 1.0)

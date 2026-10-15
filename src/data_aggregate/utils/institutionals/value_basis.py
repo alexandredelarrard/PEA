@@ -15,6 +15,7 @@ import pandas as pd
 from src.constants.constants import SEC_13F_VALUE_FACTORS
 from src.data_aggregate.utils.common.level_basis import suffix_factor
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
+from src.utils.price_adjustments import ShareBasis
 
 logger = logging.getLogger(__name__)
 KEPT, DIVIDED, MULTIPLIED, ABSTAINED = 0, 1, -1, 9
@@ -24,15 +25,24 @@ _VALUE_COLUMNS = ("value_usd", "call_value", "put_value", "debt_value", "other_v
 def as_traded_close(
     close_split: pd.DataFrame | None,
     level_factor: pd.DataFrame | None,
-    split_events: pd.DataFrame,
+    split_events: pd.DataFrame | ShareBasis,
 ) -> pd.DataFrame | None:
-    """Undo the repaired quote's level adjustment and genuine future share splits."""
+    """Restore quoted-security prices using vendor restatements and evidenced quote units."""
     if close_split is None or level_factor is None:
         return None
     df_close = close_split * level_factor.reindex_like(close_split)
-    factors = suffix_factor(split_events, list(df_close.columns), df_close.index.to_numpy(dtype="datetime64[ns]"))
+    if isinstance(split_events, ShareBasis):
+        basis = split_events
+        events = basis.vendor
+    else:
+        basis = None
+        events = split_events
+    factors = suffix_factor(events, list(df_close.columns), df_close.index.to_numpy(dtype="datetime64[ns]"))
     for ticker, factor in factors.items():
         df_close[ticker] *= factor
+    if basis is not None:
+        for ticker in basis.policies.keys() & set(df_close.columns):
+            df_close[ticker] *= basis.factor(pd.Series(ticker, index=df_close.index), pd.Series(df_close.index, index=df_close.index), "units")
     return df_close.where(np.isfinite(df_close) & df_close.gt(0))
 
 

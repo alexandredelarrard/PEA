@@ -389,6 +389,7 @@ def _run_institutionals(monkeypatch, store: _StatefulGovernanceStore, calendar: 
     monkeypatch.setattr(step_cube_institutionals, "load_trading_calendar", lambda _store: calendar)
     step = cast(Any, object.__new__(StepCubeInstitutionals))
     step._store, step._log, step._cfg = store, logging.getLogger("test"), {}
+    step._bugfix = {}
     step._context = SimpleNamespace(store=store, log=step._log, config_dir=Path(__file__).resolve().parents[2] / "configs")
     step._part = PART_BY_NAME["cube_part_institutionals"]
     step._load_frames = lambda: frames
@@ -403,7 +404,9 @@ def _run_institutionals(monkeypatch, store: _StatefulGovernanceStore, calendar: 
         "_cross_source_panel",
     ):
         setattr(step, panel, lambda *args, **kwargs: None)
-    step._insider_panel = lambda f, s, sink, splits=None: build_insider_feature_panel(f, insider, shares_out_history=s, sink=sink)
+    step._insider_panel = lambda f, s, sink, splits=None, share_basis=None, valuation_close=None: build_insider_feature_panel(
+        f, insider, shares_out_history=s, sink=sink, share_basis=share_basis
+    )
     step.run(full=full)
 
 

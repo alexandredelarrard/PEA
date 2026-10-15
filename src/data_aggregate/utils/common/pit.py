@@ -34,6 +34,8 @@ from typing import Literal, Protocol
 import numpy as np
 import pandas as pd
 
+from src.utils.price_adjustments import ShareBasis
+
 
 class FieldGetter(Protocol):
     """field name -> the field's values.
@@ -77,6 +79,8 @@ def fundamentals_to_daily(
     field: str,
     trading_index: pd.DatetimeIndex,
     max_age_days: int | None = None,
+    *,
+    share_basis: ShareBasis | None = None,
 ) -> pd.DataFrame:
     """
     Turn a (ticker, as_of, <fields>) history into a daily wide frame for one
@@ -86,7 +90,14 @@ def fundamentals_to_daily(
     if field not in fundamentals_history.columns:
         return pd.DataFrame(index=trading_index)
     df = fundamentals_history[["ticker", "as_of", field]].copy()
-    return _observations_to_daily(df, field, trading_index, max_age_days=max_age_days)
+    if share_basis is None or field != "sharesOutstandingPit":
+        return _observations_to_daily(df, field, trading_index, max_age_days=max_age_days)
+    configured = df["ticker"].isin(share_basis.policies)
+    df.loc[configured, field] = df.loc[configured, field] * share_basis.factor(df.loc[configured, "ticker"], df.loc[configured, "as_of"], "actual")
+    daily = _observations_to_daily(df, field, trading_index, max_age_days=max_age_days)
+    for ticker in share_basis.policies.keys() & set(daily.columns):
+        daily[ticker] /= share_basis.factor(pd.Series(ticker, index=trading_index), pd.Series(trading_index, index=trading_index), "actual")
+    return daily
 
 
 def _observations_to_daily(

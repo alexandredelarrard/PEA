@@ -81,6 +81,7 @@ from src.data_aggregate.utils.institutionals.split_basis import future_split_fac
 from src.data_aggregate.utils.institutionals.value_basis import log_register, nullable_value_to_daily, repair_value_basis
 from src.data_store.schema import Resume, Tables
 from src.utils.institutional_vintages import iter_public_books
+from src.utils.price_adjustments import ShareBasis
 
 logger = logging.getLogger(__name__)
 
@@ -716,6 +717,27 @@ def _quarter_features(
     return qf.drop(columns=["_prev_holders"])
 
 
+def _daily_owned_shares(qf: pd.DataFrame, trading_index: pd.DatetimeIndex, share_basis: ShareBasis | None) -> pd.DataFrame:
+    """Carry reported quantities in actual units without changing their publication clock."""
+    if share_basis is None or not share_basis.policies:
+        return nullable_value_to_daily(qf, "inst_shares", trading_index)
+    df_owned = qf.copy()
+    configured = df_owned["ticker"].isin(share_basis.policies)
+    periods = pd.to_datetime(df_owned["period"])
+    factor = share_basis.factor(df_owned["ticker"], periods, "actual")
+    df_owned.loc[configured, "inst_shares"] *= factor.loc[configured]
+    # Aggregated books without an explicit security title cannot establish ADS units.
+    units = share_basis.factor(df_owned["ticker"], periods, "units")
+    df_owned.loc[configured & units.ne(1.0), "inst_shares"] = np.nan
+    daily = nullable_value_to_daily(df_owned, "inst_shares", trading_index)
+    for ticker in share_basis.policies.keys() & set(daily.columns):
+        names = pd.Series(ticker, index=trading_index)
+        dates = pd.Series(trading_index, index=trading_index)
+        daily[ticker] /= share_basis.factor(names, dates, "actual")
+        daily[ticker] = daily[ticker].where(share_basis.factor(names, dates, "units").eq(1.0))
+    return daily
+
+
 def build_institutional_feature_panel(
     frames: PriceFrames,
     holdings: pd.DataFrame | None,
@@ -729,6 +751,7 @@ def build_institutional_feature_panel(
     valuation_close: pd.DataFrame | None = None,
     value_basis: Mapping[str, float] | None = None,
     filings: pd.DataFrame | None = None,
+    share_basis: ShareBasis | None = None,
 ) -> pd.DataFrame:
     """Long-format 13F feature panel (`f_<name>` per `EMISSION`). Empty if no holdings.
 
@@ -809,10 +832,10 @@ def build_institutional_feature_panel(
 
     if shares_out_history is not None and not shares_out_history.empty:
         # ownership % by SHARES (aggregate 13F shares / shares outstanding)
-        inst_sh = nullable_value_to_daily(qf, "inst_shares", trading_index)
+        inst_sh = _daily_owned_shares(qf, trading_index, share_basis)
 
         # ⚠ `sharesOutstandingPit`, NOT `sharesOutstanding`.
-        shares = fundamentals_to_daily(shares_out_history, "sharesOutstandingPit", trading_index)
+        shares = fundamentals_to_daily(shares_out_history, "sharesOutstandingPit", trading_index, share_basis=share_basis)
         if not shares.empty and shares.notna().any().any():
             fields["ic_inst_ownership_pct"] = _capped_ownership((inst_sh / shares.where(shares > 0)).replace([np.inf, -np.inf], np.nan))
 

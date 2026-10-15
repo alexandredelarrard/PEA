@@ -28,6 +28,7 @@ import pandas as pd
 from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.institutionals.value_basis import _period_close
 from src.utils.names import clean_person_name
+from src.utils.price_adjustments import ShareBasis
 from src.utils.string import normalise_ticker, pad_cik
 
 _log = logging.getLogger(__name__)
@@ -336,6 +337,7 @@ def clean_transactions(
     role_evidence: pd.DataFrame | None = None,
     max_price_age_days: int = 7,
     assessments: tuple[dict[str, object], ...] | None = None,
+    share_basis: ShareBasis | None = None,
 ) -> tuple[pd.DataFrame, dict]:
     """Scope to priced common-stock open-market trades and repair the mispriced ones.
 
@@ -396,6 +398,10 @@ def clean_transactions(
         ref[:] = quotes.reindex(lookup).to_numpy()
         # An explicit non-primary class needs its own quote; the canonical ticker cannot certify it.
         ref = ref.where(security_class(df_trades["security_title"]).eq("COMMON"))
+        if share_basis is not None:
+            units = share_basis.factor(df_trades["ticker"], df_trades["transaction_day"], "units")
+            declared = share_basis.declared_units(df_trades["ticker"], df_trades["transaction_day"], df_trades["security_title"])
+            ref *= declared / units
     ratio = pps / ref.where(ref.gt(0))
     bad = ratio.gt(price_tolerance)
     low = ratio.lt(1.0 / price_tolerance)

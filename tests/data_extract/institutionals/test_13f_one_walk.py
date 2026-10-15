@@ -152,6 +152,7 @@ def _patch_walk(monkeypatch: pytest.MonkeyPatch, filings: list[_FakeFiling]) -> 
     monkeypatch.setattr(f13, "Filings", _FakeFilings)
     monkeypatch.setattr(f13, "_listing", lambda forms, since, until: _FakeFilings(index))
     monkeypatch.setattr(f13, "build_cusip_ticker_map", lambda context, cusips, **kwargs: CMAP)
+    monkeypatch.setattr(f13, "_sleep", lambda wait: None)
 
 
 def _stored(store: Any, table: Any) -> pd.DataFrame:

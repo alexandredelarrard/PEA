@@ -2,9 +2,8 @@
 test_13f_low_watermark.py (tests/data_extract/institutionals/test_13f_low_watermark.py)
 ---------------------------------------------------------------------------------------
 The nightly 13F walk (M4) on a real SQLite `DataStore` with fake filings (no network): the resume
-window is `max(sec13f_hr.filing_date)` minus the overlap to the run date, transient failures get
-in-task retry rounds, and a filing filed inside the overlap that still fails holds back every
-filing after it (AC-012). M4 case 2 (a new ticker) is the data-set backfill, in
+window is `max(sec13f_hr.filing_date)` minus the overlap to the run date. Successful books save
+in batches while failed reads alone get retry rounds after the first pass. M4 case 2 (a new ticker) is the data-set backfill, in
 `test_13f_backfill_zip.py`.
 """
 
@@ -12,6 +11,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -21,6 +21,8 @@ import pytest
 
 from src.data_extract.utils.institutionals import fetch_13f as f13
 from src.data_store.schema import Resume, Tables
+from src.data_store.store import DataStore
+from src.validate.checks.institutionals import check_institutionals
 from tests.data_extract.edgar_fixtures import fake_context
 from tests.data_extract.institutionals.test_13f_one_walk import CMAP, ROSTER, _FakeFiling, _line, _seed_roster
 
@@ -81,8 +83,15 @@ def _saved_ciks(store: Any) -> list[str]:
     return [] if df is None else sorted(df["cik"].unique())
 
 
-def _run(ctx: Any, as_of: pd.Timestamp = _AS_OF, **kwargs: Any) -> None:
-    f13.fetch_13f(ctx, tickers=kwargs.pop("tickers", _UNIVERSE), years_history=kwargs.pop("years_history", 15), save_every=1, as_of=as_of, **kwargs)
+def _run(ctx: Any, as_of: pd.Timestamp = _AS_OF, **kwargs: Any) -> int:
+    return f13.fetch_13f(
+        ctx,
+        tickers=kwargs.pop("tickers", _UNIVERSE),
+        years_history=kwargs.pop("years_history", 15),
+        save_every=kwargs.pop("save_every", 1),
+        as_of=as_of,
+        **kwargs,
+    )
 
 
 def _stored_watermark(store: Any) -> pd.Timestamp:
@@ -108,29 +117,99 @@ def _seed_hr(store: Any, cik: str, filed: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# AC-012: low watermark and retry rounds                                      #
+# Batch persistence and retry rounds                                         #
 # --------------------------------------------------------------------------- #
-def test_filings_after_a_recent_failure_are_held_back(tmp_path, sqlite_store, monkeypatch, caplog):
+def test_first_pass_keeps_saving_every_100_after_failures(tmp_path: Path, sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    transient = _filing(1, "2026-09-28", fail_reads=1)
+    malformed = _filing(2, "2026-09-28", unparseable=True)
+    filings = [transient, malformed, *[_filing(n, "2026-09-29") for n in range(3, 204)]]
+    ctx = _ctx(tmp_path, sqlite_store)
+    _patch(monkeypatch, filings)
+    saver = f13._Saver(ctx, set(_UNIVERSE), set(), save_every=100)
+    read_filing = f13.read_filing_vintage
+    saved_during_walk: list[int] = []
+
+    def observed_read(stamp: f13.FilingStamp) -> Any:
+        if stamp.cik in {"0000000103", "0000000203"}:
+            saved_during_walk.append(len(_saved_ciks(sqlite_store)))
+            assert len(saver.pending) == 0
+        return read_filing(stamp)
+
+    monkeypatch.setattr(f13, "read_filing_vintage", observed_read)
+    failures = f13._first_pass(filings, saver)
+
+    assert saved_during_walk == [100, 200]
+    assert [read.stamp.accession_number for read in failures] == [transient.accession_number, malformed.accession_number]
+    assert all(isinstance(read.result, f13.ReadFailure) for read in failures)
+    assert len(_saved_ciks(sqlite_store)) == 201 and saver.pending == []
+    print(
+        "SANITY: failures before the first batch do not block saves: 100/200 books committed during parsing, final 1 flushed; only 2 failures queued."
+    )
+
+
+def test_retry_saves_recovered_filings_while_another_failure_persists(
+    tmp_path: Path, sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    persistent = _filing(1, "2026-09-27", fail_reads=99)
+    recovered = _filing(2, "2026-09-28", fail_reads=1)
+    later = _filing(3, "2026-09-29")
+    ctx = _ctx(tmp_path, sqlite_store)
+    _, waits = _patch(monkeypatch, [persistent, recovered, later])
+    saved_before_rounds: list[list[str]] = []
+
+    def observe_wait(wait: float) -> None:
+        waits.append(wait)
+        saved_before_rounds.append(_saved_ciks(sqlite_store))
+
+    monkeypatch.setattr(f13, "_sleep", observe_wait)
+    assert _run(ctx) == 1
+
+    assert saved_before_rounds == [["0000000003"], ["0000000002", "0000000003"], ["0000000002", "0000000003"]]
+    assert waits == [60.0, 120.0, 240.0]
+    assert [len(filing.reads) for filing in (persistent, recovered, later)] == [4, 2, 1]
+    assert _saved_ciks(sqlite_store) == ["0000000002", "0000000003"]
+    validation = check_institutionals(
+        ctx,
+        ciks=[filing.cik for filing in (persistent, recovered, later)],
+        start_period="2026-06-30",
+        end_period="2026-06-30",
+        filed_through="2026-10-01",
+        trading_index=pd.bdate_range("2026-06-01", "2026-10-01"),
+        table=Tables.sec13f_hr,
+    )
+    assert validation.status == "pass", validation.summary()
+    assert validation.metrics["accessions"] == 2 and validation.metrics["holding_rows"] == 2
+    print(
+        "SANITY: later book is saved before retries; a recovered book is saved after round 1 while another accession keeps failing; successes are not reread."
+    )
+    print("SANITY: read-only source validator passes both saved accessions; the exhausted failure has no completed book.")
+
+
+def test_filings_after_a_recent_failure_save_and_the_failure_retries_next_run(
+    tmp_path: Path, sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     first, failing, after = _filing(1, "2026-09-27"), _filing(2, "2026-09-28", fail_reads=4), _filing(3, "2026-09-29")
     ctx = _ctx(tmp_path, sqlite_store)
     _seed_hr(sqlite_store, "0000000009", "2026-09-26")
     windows, waits = _patch(monkeypatch, [first, failing, after])
 
     with caplog.at_level(logging.WARNING):
-        _run(ctx)
+        assert _run(ctx) == 1
     night1 = _saved_ciks(sqlite_store)
     watermark1 = _stored_watermark(sqlite_store)
     _run(ctx, as_of=_AS_OF + pd.Timedelta(days=1))  # the failure is over (4 reads used up)
 
-    assert night1 == ["0000000001", "0000000009"]  # the filing after the failure is held back
+    assert night1 == ["0000000001", "0000000003", "0000000009"]
+    assert watermark1 == pd.Timestamp(after.filing_date)
     assert len(failing.reads) == 5 and waits == [60.0, 120.0, 240.0]  # pass + 3 rounds, then the next night
     assert windows[1][0] <= pd.Timestamp(failing.filing_date)  # the next window includes the failed filing
     assert _saved_ciks(sqlite_store) == ["0000000001", "0000000002", "0000000003", "0000000009"]
-    held = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING and failing.accession_number in r.getMessage()]
-    assert held and "held back" in held[0], held
-    print("\n=== SANITY: 13F low watermark (AC-012) ===")
+    errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR and failing.accession_number in r.getMessage()]
+    assert len(errors) == 1 and "skipped" in errors[0], errors
+    assert not any("held back" in r.getMessage() for r in caplog.records)
+    print("\n=== SANITY: 13F recent failure ===")
     print(f"  night 1: the 2026-09-28 filing failed after 3 rounds {waits}; saved {night1}, watermark {watermark1:%Y-%m-%d};")
-    print(f"  night 2 window starts {windows[1][0]:%Y-%m-%d} <= 2026-09-28 and stored both held filings. Validated.")
+    print(f"  night 2 window starts {windows[1][0]:%Y-%m-%d} <= 2026-09-28 and retries the failed accession only. Validated.")
 
 
 def test_a_failure_recovered_in_a_round_saves_every_filing(tmp_path, sqlite_store, monkeypatch):
@@ -146,34 +225,38 @@ def test_a_failure_recovered_in_a_round_saves_every_filing(tmp_path, sqlite_stor
     print(f"  one transient failure recovered in round 1 (waits {waits}); all 3 filings saved in order. Validated.")
 
 
-def test_a_failure_older_than_the_overlap_is_skipped_with_an_error(tmp_path, sqlite_store, monkeypatch, caplog):
+def test_a_failure_older_than_the_overlap_is_skipped_with_an_error(
+    tmp_path: Path, sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     old, later = _filing(1, "2026-09-15", fail_reads=99), _filing(2, "2026-09-29")
     ctx = _ctx(tmp_path, sqlite_store)
     _seed_hr(sqlite_store, "0000000009", "2026-09-18")  # window from 2026-09-11; the overlap edge is 2026-09-23
     _patch(monkeypatch, [old, later])
 
     with caplog.at_level(logging.WARNING):
-        _run(ctx)
+        assert _run(ctx) == 1
 
     assert _saved_ciks(sqlite_store) == ["0000000002", "0000000009"]
     errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
-    assert len(errors) == 1 and old.accession_number in errors[0] and "older than the overlap" in errors[0], errors
+    assert len(errors) == 1 and old.accession_number in errors[0] and "skipped" in errors[0], errors
     print("\n=== SANITY: 13F failure older than the overlap ===")
     print(f"  2026-09-15 still fails at as_of 2026-09-30 -> ERROR {errors[0][:80]!r}; the 2026-09-29 filing saved. Validated.")
 
 
-def test_a_deterministic_failure_skips_only_its_filing(tmp_path, sqlite_store, monkeypatch, caplog):
+def test_a_deterministic_failure_retries_without_blocking_other_filings(
+    tmp_path: Path, sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     broken, later = _filing(1, "2026-09-28", unparseable=True), _filing(2, "2026-09-29")
     ctx = _ctx(tmp_path, sqlite_store)
     _, waits = _patch(monkeypatch, [broken, later])
 
     with caplog.at_level(logging.WARNING):
-        _run(ctx)
+        assert _run(ctx) == 1
 
-    assert _saved_ciks(sqlite_store) == ["0000000002"] and waits == [] and len(broken.reads) == 1
+    assert _saved_ciks(sqlite_store) == ["0000000002"] and waits == [60.0, 120.0, 240.0] and len(broken.reads) == 4
     assert any(r.levelno == logging.ERROR and broken.accession_number in r.getMessage() for r in caplog.records)
     print("\n=== SANITY: 13F unparseable filing ===")
-    print("  a parse failure is not retried and holds nothing back: ERROR, skipped, the next filing saved. Validated.")
+    print("  a parse failure gets the configured retries and is reported unread; the next filing saves normally. Validated.")
 
 
 # --------------------------------------------------------------------------- #

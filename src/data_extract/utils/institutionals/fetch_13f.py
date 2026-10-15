@@ -6,10 +6,10 @@ complete CUSIP book -> `sec13f_hr`, and roster managers also -> `sec13f_manager_
 Originals and amendments have separate accession keys. Tickers come from the
 CUSIP map (OpenFIGI), never from issuer names.
 
-The window runs from `max(sec13f_hr.filing_date)` minus the table's overlap to the run date. Transient read
-failures get in-task retry rounds; a filing filed inside the overlap that still fails holds back every
-filing after it (low watermark), so the next window starts at or before it. An older one is skipped with
-an ERROR naming its accession. A scoped (`-t`) run never reads past the stored frontier.
+The window runs from `max(sec13f_hr.filing_date)` minus the table's overlap to the run date. Successful
+filings are saved in batches while failed reads alone are queued for retry rounds after the listing.
+Exhausted failures are logged by accession and remain incomplete; holes older than the overlap require
+an explicit filing window. A scoped (`-t`) run never reads past the stored frontier.
 """
 
 from __future__ import annotations
@@ -462,30 +462,27 @@ def _save_batch(context: Context, book: pd.DataFrame, universe: set[str], roster
 
 def _resolve_window(
     context: Context, years_history: int, filing_window: tuple[str, str] | None, as_of: pd.Timestamp, scoped: bool
-) -> tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp | None]:
-    """`(since, until, hold_from)` filing dates. A `filing_window` is read as given and never holds the
-    walk back. Otherwise `max(filing_date)` minus the overlap (the history floor on an empty table) to
-    `as_of`, capped at the stored frontier on a scoped run; a filing filed on or after `hold_from` that
-    still fails holds back every filing after it."""
+) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """Filing-date window: explicit bounds, else the stored frontier minus overlap to `as_of`.
+    An empty table starts at the history floor; a scoped run ends at the stored frontier."""
     if filing_window is not None:
         since, until = (cast(pd.Timestamp, pd.Timestamp(d).normalize()) for d in filing_window)
         if since > until:
             raise ValueError(f"filing_window is inverted: {since:%Y-%m-%d} > {until:%Y-%m-%d}")
         logger.warning(f"13F BACKFILL of filing window {since:%Y-%m-%d}:{until:%Y-%m-%d} -- the watermark is neither read nor advanced by this run")
-        return since, until, None
+        return since, until
 
     overlap = pd.Timedelta(days=cast(Resume, Tables.sec13f_hr.resume).overlap_days)
-    hold_from = as_of - overlap
     legacy_frontier = context.store.max_date(Tables.sec13f_hr, "filing_date")
     if legacy_frontier is not None:
         context.log.warning("13F: filing versions start at the legacy frontier; older source versions need historical recovery.")
     else:
         since = document_floor(Tables.sec13f_hr, as_of, years_history)
         logger.warning(f"{Tables.sec13f_hr} has no stored filing_date -- full history from {since:%Y-%m-%d}")
-        return since, as_of, hold_from
+        return since, as_of
     if scoped:
         logger.info(f"13F: scoped run reads up to the stored frontier {legacy_frontier:%Y-%m-%d} only, so the next window is unchanged")
-    return legacy_frontier - overlap, min(as_of, legacy_frontier) if scoped else as_of, hold_from
+    return legacy_frontier - overlap, min(as_of, legacy_frontier) if scoped else as_of
 
 
 def _listing(forms: list[str], since: pd.Timestamp, until: pd.Timestamp) -> Filings | None:
@@ -517,10 +514,6 @@ class _Read:
 
     stamp: FilingStamp
     result: tuple[pd.DataFrame, pd.DataFrame] | ReadFailure
-
-    @property
-    def transient(self) -> bool:
-        return isinstance(self.result, ReadFailure) and self.result.transient
 
 
 @dataclass
@@ -576,10 +569,9 @@ def _done_in(context: Context, table: Table, joint_ciks: set[str]) -> Callable[[
 
 
 def _first_pass(filings: Filings | list[Any], saver: _Saver) -> list[_Read]:
-    """Read every filing in order, saving books until the first transient failure; from that
-    filing on, the reads are returned unsaved for the retry rounds. A filing is skipped when it is
-    complete in `sec13f_hr` and, for a roster CIK, in the manager table."""
-    held: list[_Read] = []
+    """Save successful filings in batches and return only failed reads for retry.
+    Skip accessions complete in every required destination."""
+    failed: list[_Read] = []
     filers: dict[str, set[str]] = {}
     for filing in filings:
         stamp = FilingStamp.of(filing, "")
@@ -593,44 +585,33 @@ def _first_pass(filings: Filings | list[Any], saver: _Saver) -> list[_Read]:
         if hr_done(stamp) and (stamp.cik not in roster or manager_done(stamp)):
             continue
         read = _Read(stamp, read_filing_vintage(stamp))
-        if held or read.transient:
-            held.append(read)
+        if isinstance(read.result, ReadFailure):
+            failed.append(read)
         else:
             saver.add(read)
     saver.flush()
-    return held
+    return failed
 
 
-def _retry_rounds(context: Context, held: list[_Read]) -> None:
-    """Re-read the transiently failed filings in up to `data_extract.retry_rounds.rounds` rounds, in place."""
+def _retry_rounds(context: Context, failed: list[_Read], saver: _Saver) -> None:
+    """Retry only failed reads, saving recoveries each round and leaving exhausted failures in place."""
     policy = RetryRounds.from_config(getattr(context, "config", None))
     for round_no in range(1, policy.rounds + 1):
-        failed = [read for read in held if read.transient]
         if not failed:
             return
         wait = policy.waits[min(round_no - 1, len(policy.waits) - 1)]
-        logger.info(f"13F: retry round {round_no}/{policy.rounds} for {len(failed)} filing(s) after {wait:.0f}s")
+        context.log.info(f"13F: retry round {round_no}/{policy.rounds} for {len(failed)} filing(s) after {wait:.0f}s")
         _sleep(wait)
+        remaining: list[_Read] = []
         for read in failed:
-            read.result = read_filing_vintage(read.stamp)
-
-
-def _save_held(held: list[_Read], hold_from: pd.Timestamp | None, saver: _Saver) -> int:
-    """Save the held reads in order, stopping at the first one still failing that was filed on or after
-    `hold_from`; an older failure is skipped with an ERROR. Returns the number of filings held back."""
-    for i, read in enumerate(held):
-        if not read.transient:
-            saver.add(read)
-            continue
-        reason, filed = cast(ReadFailure, read.result).reason, read.stamp.filed.normalize()
-        if hold_from is not None and filed >= hold_from:
-            logger.warning(
-                f"13F: {read.stamp.accession_number} (filed {filed:%Y-%m-%d}) still fails ({reason}); it and the "
-                f"{len(held) - i - 1} filing(s) after it are held back, so the next run starts at or before it"
-            )
-            return len(held) - i
-        logger.error(f"13F: {read.stamp.accession_number} (filed {filed:%Y-%m-%d}) still fails ({reason}) and is older than the overlap; skipped")
-    return 0
+            result = read_filing_vintage(read.stamp)
+            if isinstance(result, ReadFailure):
+                read.result = result
+                remaining.append(read)
+            else:
+                saver.add(_Read(read.stamp, result))
+        saver.flush()
+        failed[:] = remaining
 
 
 def _log_walk(walk: _WalkState, total: int) -> None:
@@ -660,15 +641,15 @@ def fetch_13f(
 ) -> int:
     """Save verified original/amendment accessions separately, oldest first in the resume window.
 
-    Latest-only compatibility tables are still batched. Completed accession packets are not re-read.
-    Returns transiently unread filings; explicit filing windows leave the regular frontier unchanged.
+    Successful reads save in batches; only failures are retried after the first pass.
+    Returns the number of exhausted failures; completed accession packets are not re-read.
     """
     context.ensure_edgar_identity()
     configure(context)
     run_date = cast(pd.Timestamp, pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize())
     universe = set(tickers)
     scoped = bool(set(load_universe_tickers(context) if all_tickers is None else all_tickers) - universe)
-    since, until, hold_from = _resolve_window(context, years_history, filing_window, run_date, scoped)
+    since, until = _resolve_window(context, years_history, filing_window, run_date, scoped)
 
     # load CIKs of super investors
     roster_ciks = roster_cik_union(context)
@@ -683,12 +664,12 @@ def fetch_13f(
         return 0
 
     saver = _Saver(context, universe, roster_ciks, save_every)
-    held = _first_pass(filings, saver)
-    _retry_rounds(context, held)
-    n_held = _save_held(held, hold_from, saver)
-    saver.flush()
-    _log_walk(saver.walk, total - n_held)
-    return sum(1 for read in held if read.transient)
+    failed = _first_pass(filings, saver)
+    _retry_rounds(context, failed, saver)
+    for read in failed:
+        saver.add(read)
+    _log_walk(saver.walk, total - len(failed))
+    return len(failed)
 
 
 def filing_vintage(

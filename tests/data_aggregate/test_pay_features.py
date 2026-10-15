@@ -213,7 +213,7 @@ def test_gaps_are_log_on_both_legs_and_severity_is_one_sided():
 
 
 def test_the_encoding_and_expiry_contracts():
-    """EVERY pay field ships raw, and only the two LEVELS survive the 548-day expiry.
+    """Every pay field ships raw and expires after 395 calendar days.
 
     ⚠ THE EMPTY PEER SET IS THE TEST. Phase 4 was planned with `log_ceo_total_comp` and
     `ceo_pay_slice` peer-panelled, and both failed their own precondition on two independent
@@ -243,17 +243,15 @@ def test_the_encoding_and_expiry_contracts():
     # name outside it -- otherwise a field ships unclassified and un-expired
     assert built <= ALL_FIELDS, f"unclassified field(s): {sorted(built - ALL_FIELDS)}"
     assert "ceo_pay_slice" in built and "log_ceo_total_comp" in built
-    # ⚠ the level is NOT expired: a package is a standing fact between proxies. AAA's last
-    # proxy (2023-04-01) is 821 days before the end of the index, so the 548-day horizon is
-    # genuinely crossed -- an expiring level would read NaN here and the growth must.
-    assert pd.notna(f["log_ceo_total_comp"].loc[IDX[-1], "AAA"])
-    assert pd.isna(f["ceo_comp_growth_1y"].loc[IDX[-1], "AAA"]), "growth must expire at 548d"
+    # The final date crosses the annual horizon for both levels and growth measurements.
+    assert pd.isna(f["log_ceo_total_comp"].loc[IDX[-1], "AAA"])
+    assert pd.isna(f["ceo_pay_slice"].loc[IDX[-1], "AAA"])
+    assert pd.isna(f["ceo_comp_growth_1y"].loc[IDX[-1], "AAA"])
 
-    print("\n=== SANITY CHECK: encoding + 548-day expiry ===")
+    print("\n=== SANITY CHECK: encoding + 395-day expiry ===")
     print(
         f"  {len(PEER_RELATIVE_FIELDS)} peer-encoded fields (the plan expected 2; both "
         f"failed at 2.4% / 4.1% peer R^2 against a 7.7% floor), {len(RAW_FLAG_FIELDS)} raw "
         f"flags, {len(EVENT_FIELDS)} event fields."
     )
-    print("  the pay LEVEL survives past 548d (a standing fact); the GROWTH expires.")
-    print("  CONCLUSION: every pay field ships raw; only standing facts outlive 548d.")
+    print("  CONCLUSION: every pay field ships raw; annual levels and growth both expire.")

@@ -228,7 +228,7 @@ def test_the_counts_are_min_count_and_the_net_signs_correctly():
 
     # 5. the counts INHERIT their components' expiry rather than being aged separately: past
     #    the horizon on the last proxy every component is NaN, so the count must be too
-    late = pd.Timestamp("2023-05-01") + pd.Timedelta(days=GOVERNANCE_EVENT_MAX_AGE_DAYS + 30)
+    late = pd.Timestamp("2023-05-01") + pd.Timedelta(days=GOVERNANCE_EVENT_MAX_AGE_DAYS + 30) + pd.offsets.BDay(0)
     comp = [frame for name, frame in f.items() if name in DETERIORATION_FLAGS]
     assert all(np.isnan(float(cast(float, c.loc[late, "AAA"]))) for c in comp)
     assert np.isnan(float(cast(float, det.loc[late, "AAA"]))), "the count outlived its own components"
@@ -294,15 +294,8 @@ def test_a_delta_across_an_interpolated_leg_is_rejected():
     assert t_clean[rejected] == 0
     assert t_dirty[rejected] == 2, "one interpolated value invalidates the two deltas it touches"
 
-    # ⚠ WHAT A REJECTED PAIR READS AS, and it is not NaN. The rejected filing contributes no
-    # row, so `fundamentals_to_daily` forward-fills the last DISCLOSED change -- the standing
-    # convention for every fiscal change in this codebase ("the latest known YoY change as of
-    # d"). The +0.3 is never computed, which is the point; the reader sees the +0.2 that was
-    # actually observed, and the 548-day horizon is what bounds how stale that can get.
-    assert _at(dirty_d, "2021-05-03", "AAA") == pytest.approx(0.2)
-    assert _at(dirty_d, "2021-05-03", "AAA") != pytest.approx(0.3)
-    # and once that last real change ages out (2020-05-04 + 548d = 2021-11-03) it is NaN, rather
-    # than sitting on the panel for the remaining four years of the fixture
+    # Rejected measurements immediately end the prior change, before its age limit.
+    assert np.isnan(_at(dirty_d, "2021-05-03", "AAA"))
     assert np.isnan(_at(dirty_d, "2022-05-02", "AAA"))
     # the LEVEL keeps the fill either way -- it is the first difference that is unsound, not the
     # value: a carried board average is a defensible estimate of a standing fact
@@ -311,8 +304,7 @@ def test_a_delta_across_an_interpolated_leg_is_rejected():
     print("\n=== SANITY CHECK: the delta provenance gate ===")
     print("  AAA busyness 1.0, 1.2, 1.5, 1.5, 1.5 -> deltas +0.2, +0.3, 0.0 when every leg is")
     print("  disclosed. Marking the 2021 value INTERPOLATED rejects the 2 deltas touching it.")
-    print("  The 2021 filing then reads +0.2 -- the last DISCLOSED change, ffilled -- and never")
-    print("  the +0.3 the fill's own slope would have produced; by 2022 even that has aged out.")
+    print("  The 2021 filing immediately reads NaN; the prior +0.2 cannot bridge a rejected pair.")
     print("  The LEVEL stays 1.5: the fill is a fair estimate of a standing fact, its first")
     print("  difference is not.")
     print("  CONCLUSION: a delta is only ever computed between two DISCLOSED legs. Validated.")
@@ -397,8 +389,8 @@ def test_the_encoding_expiry_and_no_interaction_contracts():
     assert levels == {"board_busyness", "ceo_is_board_chair", "auditor_tenure", "auditor_tenure_censored", "auditor_is_big4"}, sorted(levels)
     # `ceo_is_board_chair` is X05's left leg, shipped as a plain level now the product is gone
     assert "ceo_is_board_chair" in f
-    late = pd.Timestamp("2023-05-01") + pd.Timedelta(days=GOVERNANCE_EVENT_MAX_AGE_DAYS + 30)
-    assert float(cast(float, f["ceo_is_board_chair"].loc[late, "AAA"])) == 1.0, "a level was expired"
+    late = pd.Timestamp("2023-05-01") + pd.Timedelta(days=GOVERNANCE_EVENT_MAX_AGE_DAYS + 30) + pd.offsets.BDay(0)
+    assert pd.isna(f["ceo_is_board_chair"].loc[late, "AAA"]), "an annual level survived its expiry"
     assert np.isnan(float(cast(float, f["ceo_became_board_chair"].loc[late, "AAA"]))), "an event survived"
 
     # 4. NOTHING here gets a peer leg -- measured, not assumed (see PEER_RELATIVE_FIELDS)
@@ -422,7 +414,7 @@ def test_the_encoding_expiry_and_no_interaction_contracts():
         f"deterioration + {len(IMPROVEMENT_FLAGS)} improvement, disjoint and exhaustive."
     )
     print("  ZERO columns contain `_x_`: GPT §13's five products are not built (D16).")
-    print(f"  {len(built)} built on the fixture; a level survives the {GOVERNANCE_EVENT_MAX_AGE_DAYS}d horizon and an event does not.")
+    print(f"  {len(built)} built on the fixture; both levels and events expire after {GOVERNANCE_EVENT_MAX_AGE_DAYS}d.")
     print("  0 peer legs, and a never-firing flag is dropped from the panel but kept in the count.")
     print("  CONCLUSION: what is declared is what is built. Validated.")
 

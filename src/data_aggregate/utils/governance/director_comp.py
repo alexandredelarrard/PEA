@@ -46,11 +46,11 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 from src.data_aggregate.utils.governance.def14a_impute import fill_total_from_components
 from src.data_aggregate.utils.governance.staleness import (
     LEVEL_MAX_AGE_DAYS,
     expire_level_fields,
+    measurement_to_daily,
 )
 
 #: ⚠ The COLUMN PROJECTION for `def14a_director_comp` lives on its registry entry
@@ -134,7 +134,7 @@ ALL_FIELDS: frozenset[str] = frozenset(
 
 #: ⚠ NONE OF THESE IS AN EVENT (D21), and that claim STILL HOLDS. Director pay is a LEVEL — a
 #: retainer structure persists between proxies, exactly as `ceo_pay_slice` and
-#: `log_ceo_total_comp` do — so none of it belongs on the 548-day event clock. `EVENT_FIELDS` is
+#: `log_ceo_total_comp` do — so none of it belongs on the annual event clock. `EVENT_FIELDS` is
 #: declared empty rather than omitted so the next reader can see the decision was taken.
 #:
 #: ⚠ WHAT DID NOT HOLD is the conclusion drawn from it: "not an event" was read as "nothing here
@@ -145,7 +145,7 @@ ALL_FIELDS: frozenset[str] = frozenset(
 #: leg extracted as 0 welded to a director leg that then vanished for ten years.
 #:
 #: Phase 3 supplies `LEVEL_MAX_AGE_DAYS`, so the family now declares its levels AS levels and
-#: expires them on the 1,095-day clock. Every field is one, which is the same statement
+#: expires them on the 395-day clock. Every field is one, which is the same statement
 #: `ALL_FIELDS` makes — hence the alias rather than a second hand-maintained set that could
 #: drift from it.
 LEVEL_FIELDS: frozenset[str] = ALL_FIELDS
@@ -324,7 +324,7 @@ def director_pay_fields(
         if not h[name].notna().any():
             tally[f"skipped: {name} all null"] = 1
             continue
-        daily = fundamentals_to_daily(h, name, idx)
+        daily = measurement_to_daily(h, name, idx)
         if daily.empty or not daily.notna().any().any():
             tally[f"skipped: {name} empty on the daily grid"] = 1
             continue

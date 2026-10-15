@@ -215,7 +215,7 @@ def _expired_daily(def14a: pd.DataFrame, col: str, days: list[str]) -> pd.Series
 
 
 def test_carried_value_expires_at_its_true_age() -> None:
-    """Filed 2015-03-01, carried onto the 2016 and 2017 proxies, then silence: gone by 2018-06-01."""
+    """A 2016 carry retains the 2015 source clock; the 2017 proxy cannot carry it again."""
     raw = pd.DataFrame(
         {
             "ticker": ["CCC"] * 3,
@@ -231,16 +231,16 @@ def test_carried_value_expires_at_its_true_age() -> None:
     carried = d["insider_ownership_pct"].tolist()
     stamp = pd.to_datetime(d[source_date_column("insider_ownership_pct")]).tolist()
     kinds = d[fill_kind_column("insider_ownership_pct")].tolist()
-    cells = _expired_daily(d, "insider_ownership_pct", ["2017-06-01", "2018-06-01"])
+    cells = _expired_daily(d, "insider_ownership_pct", ["2016-03-30", "2016-03-31", "2017-06-01"])
 
-    assert carried == [0.05, 0.05, 0.05], carried
-    assert stamp == [pd.Timestamp("2015-03-01")] * 3, f"a carried value keeps its source date: {stamp}"
-    assert kinds == ["filed", "carry", "carry"], kinds
-    assert cells.iloc[0] == 0.05, "inside 1,095 days of the true source the value is served"
-    assert np.isnan(cells.iloc[1]), "1,188 days after its true source the carried value must expire"
+    assert carried[:2] == [0.05, 0.05] and np.isnan(carried[2]), carried
+    assert stamp[:2] == [pd.Timestamp("2015-03-01")] * 2 and pd.isna(stamp[2]), stamp
+    assert kinds[:2] == ["filed", "carry"], kinds
+    assert cells.iloc[0] == 0.05, "day 395 of the original source remains current"
+    assert cells.iloc[1:].isna().all(), "a carry cannot extend the source clock beyond day 395"
 
     print("\n=== SANITY CHECK: a carried value ages from the filing that disclosed it ===")
-    print(f"  2017-06-01 -> {cells.iloc[0]} (823 d old); 2018-06-01 -> {cells.iloc[1]} (1,188 d old, expired). Validated.")
+    print(f"  day 395 -> {cells.iloc[0]}; day 396 -> {cells.iloc[1]}; 2017 proxy -> {carried[2]}. Validated.")
 
 
 def test_derived_value_takes_its_oldest_leg_date() -> None:

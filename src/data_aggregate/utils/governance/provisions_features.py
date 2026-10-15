@@ -48,9 +48,11 @@ from src.data_aggregate.utils.governance.auditors import (
 )
 from src.data_aggregate.utils.governance.def14a_impute import DELTA_PROVENANCE_COLUMNS
 from src.data_aggregate.utils.governance.staleness import (
+    GOVERNANCE_EVENT_MAX_AGE_DAYS,
     LEVEL_MAX_AGE_DAYS,
     expire_event_fields,
     expire_level_fields,
+    measurement_to_daily,
     stint_to_daily,
 )
 
@@ -250,7 +252,7 @@ RAW_FLAG_FIELDS: frozenset[str] = frozenset(
     set(TRANSITION_FLAGS) | {"board_independence_drop_10pp", "auditor_changed", "auditor_is_big4", "auditor_tenure_censored", "ceo_is_board_chair"}
 )
 
-#: Fields describing an EVENT, which expire 548 days after the filing that disclosed them (D21).
+#: Fields describing an EVENT, which expire 395 days after the filing that disclosed them.
 #:
 #: The five LEVELS are excluded and each for a stated reason: `board_busyness` and
 #: `ceo_is_board_chair` are standing facts between proxies; `auditor_tenure` ACCRUES daily off a
@@ -295,7 +297,7 @@ ALL_FIELDS: frozenset[str] = frozenset(
     }
 )
 
-#: The five structural LEVELS, on `LEVEL_MAX_AGE_DAYS` (1,095 days) rather than on no horizon.
+#: The five structural LEVELS, on `LEVEL_MAX_AGE_DAYS` (395 days) rather than on no horizon.
 #:
 #: ⚠ DEFINED AS THE COMPLEMENT so the two horizons are EXHAUSTIVE by construction. Every field
 #: this module emits is now in exactly one of `EVENT_FIELDS` / `LEVEL_FIELDS`, which is what
@@ -416,7 +418,7 @@ def _annual_delta(hist: pd.DataFrame, field: str, tally: dict[str, int]) -> pd.D
     if not bool(keep.any()):
         return None
     out = pd.DataFrame({"ticker": h["ticker"], "as_of": h["as_of"], field: (h[field] - prev).where(keep)})
-    return out[keep.to_numpy()].reset_index(drop=True)
+    return out.reset_index(drop=True)
 
 
 def _sum_min_count(frames: list[pd.DataFrame]) -> pd.DataFrame:
@@ -461,7 +463,7 @@ def _expire(
 
     ⚠ THE LEVEL PASS IS NOT OPTIONAL AND IT IS WHY THIS IS ONE FUNCTION. Five fields here are
     structural levels (`auditor_is_big4`, `auditor_tenure`, `auditor_tenure_censored`,
-    `board_busyness`, `ceo_is_board_chair`), correctly kept off the 548-day event clock and
+    `board_busyness`, `ceo_is_board_chair`), correctly kept off the annual event clock and
     then, until this pass existed, forward-filled with NO cutoff -- so a single parsed proxy
     was asserted as current for as long as the trading index ran. "Not an event" is not the
     same statement as "never expires"; see `directors.LEVEL_FIELDS` for the measured size.
@@ -473,7 +475,7 @@ def _expire(
     capped, stats = expire_event_fields(frames, hist, EVENT_FIELDS, sources=sources)
     for name, (expired, before) in stats.items():
         if expired:
-            tally[f"expired >548d: {name}"] = expired
+            tally[f"expired >{GOVERNANCE_EVENT_MAX_AGE_DAYS}d: {name}"] = expired
             tally[f"non-null before expiry: {name}"] = before
     capped, lvl = expire_level_fields(capped, hist, LEVEL_FIELDS, sources=sources)
     for name, (expired, before) in lvl.items():
@@ -559,7 +561,7 @@ def _independence_delta(hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dict[s
         tally["skipped: no disclosed annual pair of pct_independent_directors"] = 1
         return {}
     h = d.rename(columns={field: "board_independence_delta_1y"})
-    daily = fundamentals_to_daily(h, "board_independence_delta_1y", idx)
+    daily = measurement_to_daily(h, "board_independence_delta_1y", idx)
     if daily.empty or not daily.notna().any().any():
         return {}
     # NaN-preserving: `daily <= x` is False on NaN, which would turn "unknown" into "no drop".
@@ -601,7 +603,7 @@ def _busyness(hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dict[str, int]) 
         tally["skipped: no disclosed annual pair of avg_other_public_boards"] = 1
         return out
     h = d.rename(columns={field: "board_busyness_delta_1y"})
-    delta = fundamentals_to_daily(h, "board_busyness_delta_1y", idx)
+    delta = measurement_to_daily(h, "board_busyness_delta_1y", idx)
     if delta.empty or not delta.notna().any().any():
         return out
     out["board_busyness_delta_1y"] = _expire({"board_busyness_delta_1y": delta}, h, tally)["board_busyness_delta_1y"]

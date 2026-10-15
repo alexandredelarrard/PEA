@@ -198,68 +198,27 @@ def test_a_dispersion_is_computed_on_the_filed_column():
     )
 
 
-def test_the_encoding_and_expiry_contracts():
-    """The encoding + expiry contracts that keep this family honest, asserted not described.
-
-    ⚠ TWO CLOCKS, NOT ONE -- and this test asserted there was only one until phase 3 landed.
-    `board_turnover` is a one-year CHANGE, the same shape as `board_busyness_delta_1y`, so
-    ffilling "this board replaced a fifth of its seats" past a missed cycle asserts churn nobody
-    disclosed: it ages out at `GOVERNANCE_EVENT_MAX_AGE_DAYS` (548d). The five standing LEVELS
-    are not events -- but **"not an event" is not the same statement as "never expires"**, which
-    is exactly the reasoning error phase 3 fixed. They age out at `LEVEL_MAX_AGE_DAYS` (1,095d =
-    two whole missed annual meetings). `directors.LEVEL_FIELDS` carries the measured bite on the
-    live part: 1,161-1,209 cells per field, 0.04%, max age 1,822 days.
-
-    The load-bearing assertion is the MIDDLE pair, at +612 days: the event is gone and the level
-    is still there. That is the only probe that fails if the two horizons ever collapse into one,
-    in either direction -- every other date passes under a single shared clock.
-    """
-    assert PEER_RELATIVE_FIELDS == frozenset(), "a peer leg was added without the measured precondition"
+def test_the_encoding_and_expiry_contracts() -> None:
+    """All annual board measurements expire at their own last source plus 395 days."""
+    assert PEER_RELATIVE_FIELDS == frozenset()
     assert set(BOARD_QUALITY_FIELDS) == ALL_FIELDS
     assert EVENT_FIELDS == {"board_turnover"}
-    assert EVENT_FIELDS < ALL_FIELDS
-    assert LEVEL_FIELDS == ALL_FIELDS - EVENT_FIELDS, "a field sits on neither clock"
-    assert GOVERNANCE_EVENT_MAX_AGE_DAYS < LEVEL_MAX_AGE_DAYS, "the two clocks are inverted"
-
-    # One filing in 2019, one in 2020, then five years of silence -- so every probe below ages
-    # against 2020-05-01, and the two horizons land on 2021-10-31 and 2023-05-01.
+    assert LEVEL_FIELDS == ALL_FIELDS - EVENT_FIELDS
+    assert GOVERNANCE_EVENT_MAX_AGE_DAYS == LEVEL_MAX_AGE_DAYS == 395
     people = [
-        {"name": ["Pat Poplar", "Pam Pine", "Pete Plane", "Pia Palm"][i], "age": 60, "tenure_years": 10, "other_public_company_boards": 1.0}
-        for i in range(4)
+        {"name": name, "age": 60, "tenure_years": 10, "other_public_company_boards": 1.0}
+        for name in ("Pat Poplar", "Pam Pine", "Pete Plane", "Pia Palm")
     ]
     rows = _board("XXX", 0, people)
     rows += _board("XXX", 1, people[:3] + [{"name": "New", "age": 50, "tenure_years": 1, "other_public_company_boards": 1.0}])
     frames, tally = board_quality_fields(pd.DataFrame(rows), IDX)
-    t, lvl = frames["board_turnover"], frames["pct_long_tenured"]
     last = pd.Timestamp(_YEARS[1])
-
-    assert not np.isnan(_at(t, "2020-06-01", "XXX")), "a fresh event was expired"
-    assert not np.isnan(_at(t, "2021-10-29", "XXX")), "an event died inside its own horizon"
-    assert np.isnan(_at(t, "2022-01-03", "XXX")), "an event survived past 548 days"
-    assert not np.isnan(_at(lvl, "2022-01-03", "XXX")), "a standing LEVEL was expired on the EVENT clock"
-    assert not np.isnan(_at(lvl, "2023-05-01", "XXX")), "a level died inside its own horizon"
-    assert np.isnan(_at(lvl, "2024-06-03", "XXX")), "a level survived past 1,095 days"
-
-    # ...and both caps REPORTED their bite. A silent cap is the failure mode phase 3 found.
-    expired = [k for k in tally if k.startswith("expired >")]
-    assert any("board_turnover" in k for k in expired), "the event cap did not report its bite"
-    assert any("pct_long_tenured" in k for k in expired), "the level cap did not report its bite"
-
-    print("\n=== SANITY CHECK: the encoding + two-clock expiry contracts ===")
-    print(f"  PEER_RELATIVE_FIELDS = {set(PEER_RELATIVE_FIELDS) or '{} (raw only, measured)'}")
-    print(f"  EVENT_FIELDS {sorted(EVENT_FIELDS)} on {GOVERNANCE_EVENT_MAX_AGE_DAYS}d; {len(LEVEL_FIELDS)} LEVEL_FIELDS on {LEVEL_MAX_AGE_DAYS}d")
-    print(
-        f"  last filing {last.date()} -> event horizon ends "
-        f"{(last + pd.Timedelta(days=GOVERNANCE_EVENT_MAX_AGE_DAYS)).date()}, level horizon "
-        f"{(last + pd.Timedelta(days=LEVEL_MAX_AGE_DAYS)).date()}"
-    )
-    for d in ("2020-06-01", "2021-10-29", "2022-01-03", "2023-05-01", "2024-06-03"):
-        print(f"  {d} (+{(pd.Timestamp(d) - last).days:>4}d)  board_turnover={_at(t, d, 'XXX')!s:<8} pct_long_tenured={_at(lvl, d, 'XXX')}")
-    print(
-        "  CONCLUSION: no peer leg is emitted, the one CHANGE ages out at 548 days, and the "
-        "five standing levels outlive it by 547 more days before ageing out themselves -- "
-        "two clocks, both biting, both reported. Validated."
-    )
+    for name, frame in frames.items():
+        age = (frame.index - last).days
+        assert frame.loc[(age >= 0) & (age <= 395), "XXX"].notna().all(), name
+        assert frame.loc[age > 395, "XXX"].isna().all(), name
+        assert any(k.startswith("expired >395d:") and name in k for k in tally), name
+    print("SANITY: all six board-quality measurements share the 395-day limit and report their expiry counts.")
 
 
 def test_the_real_board_quality_readout():

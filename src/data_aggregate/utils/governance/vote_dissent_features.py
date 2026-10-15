@@ -48,10 +48,11 @@ import json
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.common.pit import fiscal_change_to_daily, fundamentals_to_daily
 from src.data_aggregate.utils.governance.staleness import (
     GOVERNANCE_EVENT_MAX_AGE_DAYS,
     expire_event_fields,
+    measurement_change_to_daily,
+    measurement_to_daily,
 )
 
 #: Fields that are already 0/1 indicators and must NOT be peer-z-scored or percentile-ranked:
@@ -556,12 +557,12 @@ def _family_frames(
     frames: dict[str, pd.DataFrame] = {}
     sources: dict[str, str] = {}
     for name in levels:
-        f = fundamentals_to_daily(hist, name, idx)
+        f = measurement_to_daily(hist, name, idx)
         if not f.empty and f.notna().any().any():
             frames[name] = f
             sources[name] = name
     for name, src in deltas.items():
-        f = fiscal_change_to_daily(hist, src, idx, kind="diff", periods=1)
+        f = measurement_change_to_daily(hist, src, idx)
         if not f.empty and f.notna().any().any():
             frames[name] = f
             # The delta's provenance is the LEVEL's filing -- the later leg is what made the

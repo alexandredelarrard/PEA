@@ -1,27 +1,4 @@
-"""
-test_staleness.py  (tests/data_aggregate/test_staleness.py)
-----------------------------------------------------------
-The governance staleness horizons — `expire_stale`, on both of its two tiers: the 548-day
-EVENT horizon (D21) and the 1,095-day LEVEL horizon (`LEVEL_MAX_AGE_DAYS`, phase 3).
-
-Properties, most of them synthetic because they are about the boundary:
-
-  * 17 months old SURVIVES, 19 months old EXPIRES — 548 days sits between them on purpose;
-  * a LEVEL field expires at 1,095 days — not at 548, and not never. ⚠ This file asserted
-    the opposite until 2026-09-08: the D3 guard required the twelve legacy features to be
-    returned BY IDENTITY at any age, and phase 3 overrides that. See `LEVEL_MAX_AGE_DAYS` for
-    what the exemption cost (JNJ: 7,671 cells over 30.5 years built on 2 of 31 proxies);
-  * a field with two filings expires only once the LATER one has aged out — the age is
-    measured against the filing that produced the cell, not the first one ever seen;
-  * a NULL-carrying filing does not reset the clock: the age belongs to the last filing that
-    actually disclosed a value, which is the one `fundamentals_to_daily` took the cell from.
-
-Then the real-data BITE: what share of each def14a field's non-null daily cells the cap would
-null, measured with the tier deliberately forced so the table reports a HORIZON rather than a
-routing decision. On the real panel the level horizon removes 3.37% of cells overall, spread
-0.11% (`pct_independent_directors`) to 18.89% (`insider_ownership_pct`) -- a factor of 172,
-which is why `LEVEL_MAX_AGE_DAYS` records the per-field figures instead of one headline.
-"""
+"""Annual governance expiry, source provenance and bounded real-data controls."""
 
 from __future__ import annotations
 
@@ -62,57 +39,20 @@ def _asof_value(frame: pd.DataFrame, when: pd.Timestamp, ticker: str) -> Scalar:
     return value
 
 
-def test_expiry_boundary_on_both_tiers():
-    """17 months lives, 19 months dies -- and a LEVEL lives to 1,095 days, then dies."""
-    idx = pd.bdate_range("2020-01-01", "2024-12-31")
-    hist = pd.DataFrame([{"ticker": "AAA", "as_of": "2020-06-01", "sop_dissent": 0.11, "ceo_pay_growth": 0.11}])
-
-    daily = _daily(hist, "sop_dissent", idx)
-    capped = expire_stale(daily, hist, "sop_dissent")
-
+def test_expiry_boundary_on_both_tiers() -> None:
+    """Annual events and levels share the 395-day source-age limit."""
     filed = pd.Timestamp("2020-06-01")
-    d17 = filed + pd.Timedelta(days=int(30.4 * 17))  # ~517 days -> inside the horizon
-    d19 = filed + pd.Timedelta(days=int(30.4 * 19))  # ~577 days -> outside it
-    assert (d17 - filed).days <= GOVERNANCE_EVENT_MAX_AGE_DAYS < (d19 - filed).days
-
-    v17 = _asof_value(capped, d17, "AAA")
-    v19 = _asof_value(capped, d19, "AAA")
-    assert v17 == pytest.approx(0.11), "a 17-month-old event was expired"
-    assert pd.isna(v19), "a 19-month-old event survived"
-
-    # the exact boundary: still alive on day 548, gone on day 549
-    assert capped.loc[capped.index.asof(filed + pd.Timedelta(days=548)), "AAA"] == pytest.approx(0.11)
-    assert pd.isna(capped.loc[capped.index.asof(filed + pd.Timedelta(days=549)), "AAA"])
-
-    # --- the LEVEL tier: a legacy field is on 1,095 days, NOT exempt and NOT on 548 ---
-    # ⚠ This block asserted the opposite until 2026-09-08. It required `expire_stale` to return
-    # a legacy field BY IDENTITY (`kept is legacy`) -- the D3 guard, which phase 3 overrides on
-    # the user's explicit authorisation. The test is inverted rather than deleted because the
-    # boundary it guards is still the thing worth guarding; only the number moved.
-    legacy = _daily(hist, "ceo_pay_growth", idx)
-    kept = expire_stale(legacy, hist, "ceo_pay_growth")
-    assert "ceo_pay_growth" in LEVEL_HORIZON_FIELDS
-    assert len(LEVEL_HORIZON_FIELDS) == 11, "the eleven legacy features are the LEVEL tier (say_on_pay_support dropped)"
-    assert LEGACY_EXEMPT_FROM_EXPIRY is LEVEL_HORIZON_FIELDS, "the alias drifted from the set"
-    assert horizon_for("ceo_pay_growth") == LEVEL_MAX_AGE_DAYS == 1095
-    assert horizon_for("sop_dissent") == GOVERNANCE_EVENT_MAX_AGE_DAYS == 548
-
-    def at(frame, days):
-        return _asof_value(frame, filed + pd.Timedelta(days=days), "AAA")
-
-    # survives where an EVENT would already be dead -- that is what the second tier buys
-    assert at(kept, 549) == pytest.approx(0.11), "a level expired on the EVENT horizon"
-    assert at(kept, 1095) == pytest.approx(0.11), "a level died before its own horizon"
-    assert pd.isna(at(kept, 1096)), "a level never expired at all (the pre-phase-3 defect)"
-
-    print("\n=== SANITY CHECK: governance expiry, both tiers (boundary) ===")
-    print(f"  EVENT horizon = {GOVERNANCE_EVENT_MAX_AGE_DAYS} days   LEVEL horizon = {LEVEL_MAX_AGE_DAYS} days")
-    print(f"  filed 2020-06-01: +17mo ({(d17 - filed).days}d) = {v17}  (survives)")
-    print(f"                    +19mo ({(d19 - filed).days}d) = NaN   (expired)")
-    print("  event boundary: alive on day 548, NaN on day 549.")
-    print("  level boundary: `ceo_pay_growth` alive on day 549 AND on day 1095, NaN on 1096.")
-    print(f"  the {len(LEVEL_HORIZON_FIELDS)} legacy features are the LEVEL tier. Before")
-    print("  2026-09-08 they were EXEMPT — returned by identity, never expiring at any age.")
+    idx = pd.date_range(filed, periods=397)
+    hist = pd.DataFrame([{"ticker": "AAA", "as_of": filed, "sop_dissent": 0.11, "ceo_pay_growth": 0.11}])
+    assert GOVERNANCE_EVENT_MAX_AGE_DAYS == LEVEL_MAX_AGE_DAYS == 395
+    assert len(LEVEL_HORIZON_FIELDS) == 11
+    assert LEGACY_EXEMPT_FROM_EXPIRY is LEVEL_HORIZON_FIELDS
+    for field in ("sop_dissent", "ceo_pay_growth"):
+        capped = expire_stale(_daily(hist, field, idx), hist, field)
+        assert horizon_for(field) == 395
+        assert capped.iloc[395, 0] == pytest.approx(0.11)
+        assert pd.isna(capped.iloc[396, 0])
+    print("SANITY: annual vote and pay observations survive day 395 and expire on day 396.")
 
 
 def test_expiry_uses_the_filing_that_produced_the_cell():
@@ -136,11 +76,9 @@ def test_expiry_uses_the_filing_that_produced_the_cell():
 
     # 2020-06-01 is 396d after the 2019 filing but only 31d after the 2020 one -> alive at 0.09
     assert at("2020-06-01", "AAA") == pytest.approx(0.09)
-    # 2021-10-01 is 518d after the 2020-05-01 filing that produced the cell -> still alive,
-    # even though a 2021-05-01 filing exists: that filing carried no value, so it is not the
-    # cell's producer and must not have restarted the clock.
-    assert at("2021-10-01", "AAA") == pytest.approx(0.09)
-    # 2022-01-01 is 611d after it -> expired
+    # Disclosure silence does not restart the source clock: the old observation expires.
+    assert at("2021-05-31", "AAA") == pytest.approx(0.09)
+    assert pd.isna(at("2021-06-01", "AAA"))
     assert pd.isna(at("2022-01-01", "AAA"))
     # BBB's single 2018 filing is dead everywhere after its horizon
     assert at("2018-06-01", "BBB") == pytest.approx(0.42)
@@ -151,8 +89,7 @@ def test_expiry_uses_the_filing_that_produced_the_cell():
 
     print("\n=== SANITY CHECK: governance event expiry (provenance) ===")
     print("  AAA filed 2019-05-01 (0.05), 2020-05-01 (0.09), 2021-05-01 (NULL).")
-    print("   2020-06-01 -> 0.09 (31d old)   2021-10-01 -> 0.09 (518d old, the NULL filing")
-    print("   did NOT restart the clock)     2022-01-01 -> NaN (611d old)")
+    print("   2020-06-01 -> 0.09; 2021-05-31 -> 0.09 (395d); 2021-06-01 -> NaN (396d).")
     print("  BBB's lone 2018 filing is alive at +3mo and dead by 2021.")
     print(f"  expire_event_fields bite: {expired} of {before} non-null cells ({expired / before:.1%})")
     print("  CONCLUSION: the age is measured against the filing that PRODUCED the cell,")
@@ -198,7 +135,7 @@ def test_chained_carries_do_not_restart_the_ultimate_source_clock():
     assert capped.loc[t2, "BBB"] == pytest.approx(3.0)
     assert pd.isna(capped.loc[t2 + pd.Timedelta(days=1), "BBB"])
     print("\n=== SANITY CHECK: ultimate-source freshness across chained carry ===")
-    print("  AAA's t0 value survives exactly through t0+1095, then expires despite child,")
+    print(f"  AAA's t0 value survives exactly through t0+{LEVEL_MAX_AGE_DAYS}, then expires despite child,")
     print("  aggregate and parent carry. BBB's genuine t1 filing reopens the same window.")
     print("  CONCLUSION: transformations preserve provenance; only observations restart freshness.")
 
@@ -283,7 +220,7 @@ def test_expiry_bite_on_real_def14a():
 # --------------------------------------------------------------------------------------------
 
 
-def test_a_jnj_shaped_history_expires_at_the_level_horizon_not_the_event_one():
+def test_a_jnj_shaped_history_expires_at_the_annual_horizon():
     """JNJ: two early filings carry a value, 29 later ones carry NULL.
 
     This is the case the exemption cost the most. Measured on the live archive,
@@ -291,9 +228,7 @@ def test_a_jnj_shaped_history_expires_at_the_level_horizon_not_the_event_one():
     its 31 proxies (1996 and 1997, both 0.01) -- so 29 of 31 proxies said nothing and the panel
     reported an insider-ownership level for three decades anyway.
 
-    The assertion that matters most is the NEGATIVE one: alive well past 548 days. A level must
-    not be dragged onto the event clock as the price of expiring at all, or every annual filer
-    who skips a single proxy loses a year of otherwise-good structure.
+    Annual freshness now expires this level after 395 days, despite later empty proxies.
     """
     idx = pd.bdate_range("1996-01-01", "2026-09-04")
     rows = [
@@ -311,8 +246,8 @@ def test_a_jnj_shaped_history_expires_at_the_level_horizon_not_the_event_one():
         return _asof_value(capped, second + pd.Timedelta(days=days), "JNJ")
 
     assert daily["JNJ"].notna().sum() > 7_000, "the unbounded ffill shape is not reproduced"
-    assert at(548) == pytest.approx(0.01), "expired on the EVENT horizon -- wrong tier"
-    assert at(1000) == pytest.approx(0.01), "expired before its own horizon"
+    assert at(395) == pytest.approx(0.01), "expired before the annual horizon"
+    assert pd.isna(at(1000)), "an old annual observation survived"
     # the boundary, partitioned over the whole index by age -- see the routing test for why a
     # two-point `index.asof` probe is not enough near a weekend
     capped_index = pd.DatetimeIndex(capped.index)
@@ -329,7 +264,7 @@ def test_a_jnj_shaped_history_expires_at_the_level_horizon_not_the_event_one():
     print("\n=== SANITY CHECK: the JNJ shape (2 of 31 proxies carry a value) ===")
     print(f"  unbounded ffill: {before:,} daily cells from 2 filings, 30.5 years")
     print(f"  level horizon:   {kept:,} kept, {before - kept:,} expired ({(before - kept) / before:.1%})")
-    print(f"  alive at +548d and +1000d, NaN at +{LEVEL_MAX_AGE_DAYS + 1}d after the 1997 filing")
+    print(f"  alive at +395d, expired at +1000d and +{LEVEL_MAX_AGE_DAYS + 1}d after the 1997 filing")
     print("  CONCLUSION: what is removed is fiction, not information -- there was never a")
     print("  measurement of JNJ insider ownership in 2020 to lose.")
 
@@ -360,15 +295,16 @@ def test_a_ford_shaped_history_expires_the_zero_and_reopens_on_the_new_filing():
 
     filed = pd.Timestamp("2011-04-01")
     horizon = filed + pd.Timedelta(days=LEVEL_MAX_AGE_DAYS)
-    assert horizon == pd.Timestamp("2014-03-31"), horizon
+    assert horizon == pd.Timestamp("2012-04-30"), horizon
 
     # A ZERO IS A VALUE, so every check here is on `isna`, never on truthiness.
-    assert at("2014-03-31") == 0.0, "the zero expired before its horizon"
-    assert pd.isna(at("2014-04-01")), "the zero outlived its horizon"
+    assert at("2012-04-30") == 0.0, "the zero expired before its horizon"
+    assert pd.isna(at("2012-05-01")), "the zero outlived its horizon"
     assert pd.isna(at("2021-12-31")), "the ten NULL years did not stay NULL"
     # the second half: the new filing reopens the series on its own date, at its own value
     assert at("2022-04-01") == pytest.approx(62.4)
-    assert at("2024-01-02") == pytest.approx(62.4), "the 2022 value expired too early"
+    assert at("2023-05-01") == pytest.approx(62.4), "the 2022 value expired too early"
+    assert pd.isna(at("2023-05-02")), "the replacement value must also expire"
 
     zeros_before = int((daily["F"] == 0.0).sum())
     zeros_after = int((capped["F"] == 0.0).sum())
@@ -376,8 +312,7 @@ def test_a_ford_shaped_history_expires_the_zero_and_reopens_on_the_new_filing():
     print("\n=== SANITY CHECK: the Ford shape (a 0, ten NULL years, then a real value) ===")
     print(f"  unbounded ffill: {zeros_before:,} consecutive trading days at exactly 0")
     print(f"  level horizon:   {zeros_after:,} days, the last of them {horizon.date()}")
-    print("  measured the same way on the LIVE archive: 2,769 -> 753 days, last zero")
-    print("  2014-03-31 -- and the 2022-04-01 filing reopens the series at 62.4 that day.")
+    print("  CONCLUSION: the zero ends after 395 days; the 2022-04-01 filing reopens at 62.4.")
 
 
 def test_a_normal_annual_filer_is_bit_identical():
@@ -404,15 +339,14 @@ def test_a_normal_annual_filer_is_bit_identical():
     print("  equal in count. THIS is what makes the D3 override narrow: only stale cells move.")
 
 
-def test_the_event_tier_is_unperturbed_and_the_two_wrappers_route_correctly():
-    """548 still means 548, and neither wrapper can put a field on the other's clock."""
+def test_the_two_family_wrappers_enforce_annual_freshness():
+    """Both family wrappers retain routing and apply the same annual source-age policy."""
     idx = pd.bdate_range("2018-01-01", "2026-09-04")
     hist = pd.DataFrame([{"ticker": "AAA", "as_of": "2019-05-01", "sop_dissent": 0.11, "board_size": 9.0}])
     event = _daily(hist, "sop_dissent", idx)
     level = _daily(hist, "board_size", idx)
 
-    # The EVENT wrapper refuses to expire a level, so a family that mis-declares one in its
-    # `EVENT_FIELDS` cannot silently downgrade it from 1,095 days to 548.
+    # The event wrapper still skips legacy levels; their owning level pass must handle them.
     frames, stats = expire_event_fields({"sop_dissent": event, "board_size": level}, hist, {"sop_dissent", "board_size"})
     assert "sop_dissent" in stats and "board_size" not in stats
     assert frames["board_size"] is level, "a level was expired on the event clock"
@@ -424,11 +358,8 @@ def test_the_event_tier_is_unperturbed_and_the_two_wrappers_route_correctly():
     assert expired > 0 and before == int(level.notna().to_numpy().sum())
     assert int(lframes["board_size"].notna().sum().sum()) == before - expired
 
-    # and the event horizon itself is untouched by phase 3. Partitioned over the WHOLE index
-    # by age rather than probed at two dates: `index.asof(filed + 549d)` walks back to the
-    # previous business day, so on a horizon that lands near a weekend a two-point check can
-    # test day 548 twice and pass while saying nothing.
-    assert GOVERNANCE_EVENT_MAX_AGE_DAYS == 548
+    # Partition by age across the full index so a weekend cannot weaken the boundary check.
+    assert GOVERNANCE_EVENT_MAX_AGE_DAYS == 395
     filed = pd.Timestamp("2019-05-01")
     ev = frames["sop_dissent"]
     ev_index = pd.DatetimeIndex(ev.index)
@@ -443,7 +374,7 @@ def test_the_event_tier_is_unperturbed_and_the_two_wrappers_route_correctly():
     print(f"  expire_event_fields  -> {GOVERNANCE_EVENT_MAX_AGE_DAYS}d, and SKIPS a level")
     print(f"  expire_level_fields  -> {LEVEL_MAX_AGE_DAYS}d, with no skip set")
     print(f"  board_size on the level clock: {expired:,} of {before:,} cells expired")
-    print("  the 548-day boundary is bit-for-bit where it was before phase 3.")
+    print("  both wrappers enforce the 395-day annual policy.")
 
 
 def test_the_director_pay_family_declares_its_levels():

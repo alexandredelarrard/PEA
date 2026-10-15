@@ -47,7 +47,7 @@ side, so **every intermediate value was computed from a filing that did not exis
 built that way, 46% of everything `f_board_busyness` shipped, and `03_pit` cannot see any of it
 because the future value is laundered onto a row whose own `as_of` is legitimately in the past.
 
-⚠ **A CARRY IS BOUNDED, AT `CARRY_MAX_DAYS` (1,095 days).** Every written value also carries
+⚠ **A CARRY IS BOUNDED, AT `CARRY_MAX_DAYS` (395 days).** Every written value also carries
 `<col>_source_as_of` (the observation it came from; for an identity, its oldest leg) and
 `<col>_fill` (its fill kind), and `expire_stale` ages the daily cell from that stamp, so a carry
 never reads as a fresh disclosure downstream.
@@ -169,7 +169,7 @@ from src.data_aggregate.utils.governance.staleness import (
 CEO_COMP = ["ceo_salary", "ceo_bonus", "ceo_stock_awards", "ceo_option_awards", "ceo_non_equity_incentive", "ceo_all_other_comp"]
 
 #: How far a forward carry may reach, in days, measured from the `as_of` of the observation it
-#: copies. **NOT a free parameter** -- it is `LEVEL_MAX_AGE_DAYS`, the same 1,095 days the daily
+#: copies. **NOT a free parameter** -- it is `LEVEL_MAX_AGE_DAYS`, the same 395 days the daily
 #: panel expires a level on: a carry older than the horizon would be expired downstream anyway,
 #: since `expire_stale` ages each cell from its `<col>_source_as_of` stamp.
 #:

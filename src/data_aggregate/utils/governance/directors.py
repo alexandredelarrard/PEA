@@ -69,7 +69,6 @@ from typing import cast
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 from src.data_aggregate.utils.common.typing import frame_column
 from src.data_aggregate.utils.governance.accrual import (
     accrual_anchor,
@@ -81,6 +80,7 @@ from src.data_aggregate.utils.governance.staleness import (
     LEVEL_MAX_AGE_DAYS,
     expire_event_fields,
     expire_level_fields,
+    measurement_to_daily,
     source_date_column,
     ultimate_source_dates,
 )
@@ -208,10 +208,10 @@ BOARD_QUALITY_FIELDS: tuple[str, ...] = (
 )
 EVENT_FIELDS: frozenset[str] = frozenset({"board_turnover"})
 
-#: The five structural LEVELS, on `LEVEL_MAX_AGE_DAYS` (1,095 days) rather than on NO horizon.
+#: The five structural LEVELS, on `LEVEL_MAX_AGE_DAYS` (395 days) rather than on NO horizon.
 #:
 #: ⚠ "NOT AN EVENT" IS NOT THE SAME STATEMENT AS "NEVER EXPIRES", and until this set existed
-#: these five made it so: correctly kept off the 548-day event clock, then forward-filled with
+#: these five made it so: correctly kept off the annual event clock, then forward-filled with
 #: no cutoff at all, so one parsed proxy was asserted as current for as long as the trading
 #: index ran. That is the identical reasoning error phase 3 fixed for the twelve fields in
 #: `LEVEL_HORIZON_FIELDS`; these are the residue it did not reach.
@@ -668,13 +668,13 @@ def board_quality_fields(
             tally[f"skipped: no data for {name}"] = 1
             continue
         h = cast(pd.DataFrame, pf.rename(columns={"value": name})[["ticker", "as_of", name]])
-        daily = fundamentals_to_daily(h, name, idx)
+        daily = measurement_to_daily(h, name, idx)
         if daily.empty or not daily.notna().any().any():
             tally[f"skipped: {name} empty on the daily grid"] = 1
             continue
         frames[name] = daily
         # EVERY field needs its history now, not just the event members: the five levels are
-        # on the 1,095-day LEVEL horizon rather than on no horizon at all, and `_expire_family`
+        # on the 395-day annual horizon rather than on no horizon at all, and `_expire_family`
         # ages a cell against the `as_of` of the filing that produced it, which it can only
         # read from this frame.
         hist[name] = h
@@ -690,7 +690,7 @@ def board_quality_fields(
         capped, stats = expire_event_fields(frames, merged_hist, EVENT_FIELDS)
         for name, (expired, before) in stats.items():
             if expired:
-                tally[f"expired >548d: {name}"] = expired
+                tally[f"expired >{LEVEL_MAX_AGE_DAYS}d: {name}"] = expired
                 tally[f"non-null before expiry: {name}"] = before
         capped, lvl_stats = expire_level_fields(capped, merged_hist, LEVEL_FIELDS)
         for name, (expired, before) in lvl_stats.items():

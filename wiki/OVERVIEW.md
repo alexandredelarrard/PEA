@@ -2,7 +2,7 @@
 title: Codebase Wiki — Overview
 description: Canonical internal hub for architecture, modules, flows, concepts, guides, references, and backlog.
 profile: internal/standard
-source_commit: 2e83deba1aaaaef82f673b96d1e0029ec7d00f35
+source_commit: 3153dca5dbb7
 tags:
   - wiki
   - overview

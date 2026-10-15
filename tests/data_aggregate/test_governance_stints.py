@@ -244,8 +244,9 @@ def test_daily_projection_ends_the_previous_stint() -> None:
     assert tenure.loc[barton].isna().all(), f"Barton's empty proxies must not serve Fites's 1990: {tenure.loc[barton].dropna().tolist()}"
     assert founder.loc[barton].isna().all() and chair.loc[barton].isna().all()
     assert tenure.loc["1999-12-31"] == 9 and chair.loc["1999-12-31"] == 1.0
-    # within one stint (and across an unknown-CEO row) the value still bridges
-    assert tenure.loc["2004-06-30"] == 5 and tenure.loc["2005-06-30"] == 6
+    # Within one stint an unknown-CEO row bridges only while the source remains fresh.
+    assert tenure.loc["2004-04-30"] == 5
+    assert pd.isna(tenure.loc["2004-06-30"]) and pd.isna(tenure.loc["2005-06-30"])
     print("\n=== SANITY CHECK: daily projection at a stint boundary ===")
     print(
         f"  tenure 1999-12 {tenure.loc['1999-12-31']} | Barton 2000-04..2003-03 non-null {int(tenure.loc[barton].notna().sum())} | 2005-06 {tenure.loc['2005-06-30']}"

@@ -46,6 +46,7 @@ from src.data_aggregate.utils.governance.provisions_features import (
 from src.data_aggregate.utils.governance.staleness import (
     LEVEL_MAX_AGE_DAYS,
     expire_stale,
+    measurement_to_daily,
     source_date_column,
     stint_to_daily,
     ultimate_source_dates,
@@ -172,7 +173,7 @@ def _ceo_pay_growth(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dic
     d["ceo_total_comp"] = pd.to_numeric(d["ceo_total_comp"], errors="coerce")
     # The growth is knowable at the later filing, dated by the source of that filing's total.
     d[source_date_column("chg")] = ultimate_source_dates(d, "ceo_total_comp")
-    d = d.dropna(subset=["ticker", "as_of", "ceo_total_comp"]).sort_values(["ticker", "as_of"])
+    d = d.dropna(subset=["ticker", "as_of"]).sort_values(["ticker", "as_of"])
     if d.empty:
         return pd.DataFrame(index=idx)
     # `replace` on the infinities reproduces `fiscal_change_to_daily` exactly: a prior year
@@ -187,16 +188,16 @@ def _ceo_pay_growth(def14a_hist: pd.DataFrame, idx: pd.DatetimeIndex, tally: dic
     names = d["ceo_name_proxy"] if "ceo_name_proxy" in d.columns else pd.Series(None, index=d.index, dtype="object")
     changed = ceo_identity_changed(names, d["ticker"])
     # Unknown identity does not prove a change, so it does not mask the growth rate.
-    sub = d.loc[d["chg"].notna()].assign(_turn=changed.fillna(0.0))
+    sub = d.assign(_turn=changed.fillna(0.0))
     if sub.empty:
         return pd.DataFrame(index=idx)
-    growth = fundamentals_to_daily(sub, "chg", idx)
+    growth = measurement_to_daily(sub, "chg", idx)
     turn = fundamentals_to_daily(sub, "_turn", idx)
     bad = growth.notna() & (turn.reindex(index=growth.index, columns=growth.columns) == 1.0)
     if tally is not None:
         tally["ceo_pay_growth: nulled across a CEO change"] = int(bad.to_numpy().sum())
         tally["ceo_pay_growth: tickers with a nulled transition"] = int(bad.any(axis=0).sum())
-        tally["ceo_pay_growth: kept on an UNKNOWN CEO identity (filings)"] = int(changed.reindex(sub.index).isna().sum())
+        tally["ceo_pay_growth: kept on an UNKNOWN CEO identity (filings)"] = int((changed.reindex(sub.index).isna() & sub["chg"].notna()).sum())
     # A growth rate becomes knowable at the later filing, represented by `sub`.
     return _expire(growth.mask(bad), sub[["ticker", "as_of", "chg", source_date_column("chg")]], "chg", "ceo_pay_growth", tally)
 
@@ -261,7 +262,8 @@ def _governance_fields(
     f_dict: dict[str, pd.DataFrame] = {}
 
     for src, name in _LEVEL_FIELDS:
-        f = _gate(fundamentals_to_daily(def14a_hist, src, idx), src, tally, _domain_condition(def14a_hist, src, idx, tally))
+        daily = stint_to_daily(def14a_hist, src, idx) if src.startswith("ceo_") else fundamentals_to_daily(def14a_hist, src, idx)
+        f = _gate(daily, src, tally, _domain_condition(def14a_hist, src, idx, tally))
         f = _expire(f, def14a_hist, src, name, tally)
         if not f.empty and f.notna().any().any():
             f_dict[name] = f

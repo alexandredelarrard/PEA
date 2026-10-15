@@ -55,7 +55,6 @@ import pandas as pd
 from src.data_aggregate.utils.common.panel import mask_to_availability, peer_relative
 from src.data_aggregate.utils.common.pit import (
     fiscal_change_to_daily,
-    fundamentals_to_daily,
     infer_yoy_periods,
 )
 from src.data_aggregate.utils.common.xs import winsorize_xs
@@ -69,6 +68,8 @@ from src.data_aggregate.utils.governance.staleness import (
     LEVEL_MAX_AGE_DAYS,
     expire_event_fields,
     expire_level_fields,
+    measurement_change_to_daily,
+    measurement_to_daily,
 )
 from src.utils.names import person_key
 
@@ -111,7 +112,7 @@ RAW_FLAG_FIELDS: frozenset[str] = frozenset(
 #: been `f_log_ceo_total_comp_vs_peers` and nothing measurable stood behind them.
 PEER_RELATIVE_FIELDS: frozenset[str] = frozenset()
 
-#: Fields that describe an EVENT and expire 548 days after the filing that produced them
+#: Fields that describe an EVENT and expire 395 days after the filing that produced them
 #: (D21). The two pay LEVELS are excluded: a CEO's package and their share of the top five are
 #: standing facts between proxies, where "pay grew 40% last year" stops being true about today.
 EVENT_FIELDS: frozenset[str] = frozenset(
@@ -157,12 +158,11 @@ ALL_FIELDS: frozenset[str] = frozenset(
     | {f"pay_up_{lab}_down_severity" for lab in ("revenue", "return")}
 )
 
-#: The two pay LEVELS, on `LEVEL_MAX_AGE_DAYS` (1,095 days) rather than on no horizon at all.
+#: The two pay LEVELS, on `LEVEL_MAX_AGE_DAYS` (395 days) rather than on no horizon at all.
 #:
 #: ⚠ The `EVENT_FIELDS` note above says these two are "standing facts between proxies", and
 #: that is right -- it just is not an argument for keeping them forever. A package set in 2014
-#: is no more evidence about today than a 2019 say-on-pay vote is; the two claims differ in
-#: HALF-LIFE, which is what two horizons express and what excluding them from both did not.
+#: is no more evidence about today than a 2019 say-on-pay vote is. Both now use the annual cap.
 #: Defined as the complement of `EVENT_FIELDS` so the two are exhaustive over `ALL_FIELDS`.
 #:
 #: These two carry the largest measured exposure of the twelve fields this change reaches:
@@ -577,13 +577,11 @@ def pay_fields(
     # ---- family 5: level, guarded growth, turnover ---- #
     family5: dict[str, pd.DataFrame] = {}
     for name in ("log_ceo_total_comp", "ceo_comp_growth_1y", "ceo_turnover_flag"):
-        f = fundamentals_to_daily(comp_hist, name, idx)
+        f = measurement_to_daily(comp_hist, name, idx)
         if not f.empty and f.notna().any().any():
             family5[name] = f
     family5, expiry5 = expire_event_fields(family5, comp_hist, EVENT_FIELDS)
-    # `log_ceo_total_comp` is a LEVEL: a CEO's package is a standing fact between proxies, so it
-    # is correctly off the 548-day event clock -- but "not an event" was allowed to mean "never
-    # expires", and a 2014 package is not evidence about today either. 1,095 days.
+    # Levels retain their separate family routing but share the annual freshness limit.
     family5, expiry_lvl = expire_level_fields(family5, comp_hist, LEVEL_FIELDS)
 
     # ---- family 6: the exact CEO Pay Slice ---- #
@@ -595,10 +593,11 @@ def pay_fields(
         _ceo_inside_own_denominator(def14a, exec_comp, tally)
         slices = _slice_history(def14a, top5, tally)
         if slices is not None:
-            level = fundamentals_to_daily(slices, "ceo_pay_slice", idx)
+            slices = comp_hist[["ticker", "as_of"]].merge(slices, on=["ticker", "as_of"], how="left")
+            level = measurement_to_daily(slices, "ceo_pay_slice", idx)
             if not level.empty and level.notna().any().any():
                 family6["ceo_pay_slice"] = level
-            delta = fiscal_change_to_daily(slices, "ceo_pay_slice", idx, kind="diff", periods=1)
+            delta = measurement_change_to_daily(slices, "ceo_pay_slice", idx)
             if not delta.empty and delta.notna().any().any():
                 family6["ceo_pay_slice_delta_1y"] = delta
             # The delta's provenance is the LEVEL's filing -- the later leg is what made the
@@ -635,16 +634,15 @@ def pay_fields(
 
         # Family 7 is a DIFFERENCE of a pay leg against a performance leg, so its provenance is
         # the pay leg's filing: the return moves daily but the package it is measured against
-        # was set at the proxy, and that is the date the 548-day horizon has to age.
+        # was set at the proxy, and that is the date the annual horizon has to age.
         family7, expiry7 = expire_event_fields(family7, comp_hist, EVENT_FIELDS, sources={k: "ceo_comp_growth_1y" for k in family7})
         expiry5.update(expiry7)
 
     for name, (expired, before) in expiry5.items():
         if expired:
-            tally[f"expired >548d: {name}"] = expired
+            tally[f"expired >{LEVEL_MAX_AGE_DAYS}d: {name}"] = expired
             tally[f"non-null before expiry: {name}"] = before
-    # Tallied under their OWN horizon, not folded into the 548-day lines: a reader comparing
-    # two counts has to be able to see which clock each was measured on.
+    # Level and event families both use the same source-aged annual horizon.
     for name, (expired, before) in expiry_lvl.items():
         if expired:
             tally[f"expired >{LEVEL_MAX_AGE_DAYS}d: {name}"] = expired

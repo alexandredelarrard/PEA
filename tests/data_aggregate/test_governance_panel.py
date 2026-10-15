@@ -297,7 +297,7 @@ def test_governance_fields_pay_growth_and_misalignment():
     aaa_2026 = ten.loc[ten.index.year == 2026, "AAA"].dropna()
     assert aaa_2025.iloc[-1] == pytest.approx(2025 - 2010)  # 15
     assert aaa_2026.iloc[-1] == pytest.approx(2026 - 2010)  # 16 -> grows with the calendar
-    last = idx[-1]
+    last = ten[["CCC", "DDD"]].dropna().index[-1]
     assert ten.loc[last, "CCC"] > ten.loc[last, "DDD"]  # 2005 vs 2022 start
 
     # CEO pay grew ~20%/yr; the latest observed pay_growth should be ~0.20

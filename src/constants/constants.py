@@ -15,6 +15,9 @@ from zoneinfo import ZoneInfo
 DATE_FORMAT = "%Y-%m-%d"  # ISO day — as_of / filing / query dates
 DATE_FORMAT_COMPACT = "%Y%m%d"  # SEC / FINRA daily-file name stamps
 
+# Annual governance observations remain current for one year plus 30 calendar days.
+GOVERNANCE_ANNUAL_MAX_AGE_DAYS = 395
+
 # SEC fails-to-deliver ZIP publication policy. The cache timestamp is only a
 # short-lived observation for the newest stored period; older ZIPs use the estimate.
 FTD_ZIP_NAME_TEMPLATE = "cnsfails{period}.zip"

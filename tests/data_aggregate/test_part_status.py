@@ -242,4 +242,7 @@ def test_stored_session_reference_and_missing_source(source_date: str | None) ->
     assert report["reference_price_date"] == source_date
     if source_date is None:
         assert Tables.prices.name in report["behind"]
-    print("SANITY: stored preceding-session date is enough regardless of wall clock; unknown source reference fails closed.")
+        assert report["sources"][Tables.prices.name]["refresh_command"] == "price-history (seed-universe if universe is absent)"
+    print(
+        "SANITY: stored preceding-session date is enough regardless of wall clock; unknown source reference fails closed and names seed-universe recovery."
+    )

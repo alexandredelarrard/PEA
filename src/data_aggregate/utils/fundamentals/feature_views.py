@@ -1,16 +1,15 @@
 """Approved output views for ``cube_part_fundamentals``.
 
 The raw characteristic is the common economic contract. Self-history is retained only for
-the approved characteristics below; peer and universe cross-sectional views are deliberately
-absent so the complete part stays at the 200-column cap.
+the approved characteristics below, with two explicit peer comparisons.
 """
 
 from __future__ import annotations
 
 import pandas as pd
 
-from src.data_aggregate.utils.common.panel import build_peer_relative_panel
-from src.data_aggregate.utils.common.xs import HIST_MIN_PERIODS, HIST_WINDOW
+from src.data_aggregate.utils.common.panel import build_peer_relative_panel, peer_relative
+from src.data_aggregate.utils.common.xs import HIST_MIN_PERIODS, HIST_WINDOW, winsorize_xs
 
 RAW_FEATURES: frozenset[str] = frozenset(
     {
@@ -61,7 +60,7 @@ RAW_FEATURES: frozenset[str] = frozenset(
         "ebitda_to_ev",
         "effective_tax_rate",
         "employee_growth",
-        "eps_expectation_growth",
+        "reported_expected_eps_growth_qoq",
         "eps_surprise_4q_avg",
         "eps_surprise_last",
         "eps_yield",
@@ -74,8 +73,8 @@ RAW_FEATURES: frozenset[str] = frozenset(
         "ffo_payout",
         "ffo_yield",
         "fixed_cost_coverage_margin",
-        "forward_earnings_yield",
-        "fwd_eps_yield",
+        "reported_expected_ttm_yield",
+        "reported_expected_eps_yield",
         "gmroi",
         "grossMargins",
         "gross_margin_chg",
@@ -138,6 +137,21 @@ RAW_FEATURES: frozenset[str] = frozenset(
     }
 )
 
+RAW_FEATURES |= frozenset(
+    {
+        *[f"earnings_sue_lag{lag}" for lag in range(8)],
+        "earnings_improvement_streak",
+        "earnings_abret_3d",
+        "earnings_abret_since_report",
+        "profit_improvement_to_assets",
+        "roa_vol_8q",
+        "fcf_positive_fraction_8q",
+        "ocf_yield",
+    }
+)
+
+PEER_FEATURES: frozenset[str] = frozenset({"fcf_to_ev", "roic_incl_intangibles"})
+
 HISTORY_FEATURES: frozenset[str] = frozenset(
     {
         "accruals",
@@ -180,8 +194,8 @@ HISTORY_FEATURES: frozenset[str] = frozenset(
         "ffo_payout",
         "ffo_yield",
         "fixed_cost_coverage_margin",
-        "forward_earnings_yield",
-        "fwd_eps_yield",
+        "reported_expected_ttm_yield",
+        "reported_expected_eps_yield",
         "gmroi",
         "grossMargins",
         "gross_profitability",
@@ -224,7 +238,11 @@ HISTORY_FEATURES: frozenset[str] = frozenset(
 
 EXCLUDED_FEATURES: frozenset[str] = frozenset({"q_rev_growth", "revenueGrowth"})
 
-FEATURE_COLUMNS: tuple[str, ...] = tuple([f"f_{name}" for name in sorted(RAW_FEATURES)] + [f"f_{name}_vs_hist" for name in sorted(HISTORY_FEATURES)])
+FEATURE_COLUMNS: tuple[str, ...] = tuple(
+    [f"f_{name}" for name in sorted(RAW_FEATURES)]
+    + [f"f_{name}_vs_hist" for name in sorted(HISTORY_FEATURES)]
+    + [f"f_{name}_vs_peers" for name in sorted(PEER_FEATURES)]
+)
 
 
 def build_fundamental_views(
@@ -245,7 +263,7 @@ def build_fundamental_views(
     retained = {name: frame for name, frame in fields.items() if name in RAW_FEATURES}
     retained_semantics = {name: mode for name, mode in (semantics or {}).items() if name in retained}
     emission = {name: "raw+hist" if name in HISTORY_FEATURES else "raw" for name in retained}
-    return build_peer_relative_panel(
+    panel = build_peer_relative_panel(
         retained,
         peer_dict,
         emission=emission,
@@ -255,3 +273,17 @@ def build_fundamental_views(
         history_fields=history_fields,
         output_since=output_since,
     )
+    selected_peers = PEER_FEATURES & retained.keys()
+    if not selected_peers:
+        return panel
+    peer_columns: dict[str, pd.Series] = {}
+    keys = pd.MultiIndex.from_frame(panel[["date", "ticker"]])
+    for name in sorted(selected_peers):
+        relative = winsorize_xs(peer_relative(retained[name], peer_dict))
+        if output_since is not None:
+            relative = relative.loc[relative.index >= pd.Timestamp(output_since)]
+        column = relative.stack().astype("float32")
+        assert isinstance(column, pd.Series)
+        column.index.set_names(["date", "ticker"], inplace=True)
+        peer_columns[f"f_{name}_vs_peers"] = column.reindex(keys).reset_index(drop=True)
+    return pd.concat([panel, pd.DataFrame(peer_columns, index=panel.index)], axis=1)

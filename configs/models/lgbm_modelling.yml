@@ -70,7 +70,6 @@ lgbm:
     - f_nii_growth_xs: 1
     - f_ic_super_initiations: 1
     - f_q_margin_vs_ttm: 1
-    - f_eps_expectation_growth: 1
     - f_intrinsic_yield: 1
     - f_goodwill_intangibles_to_assets_vs_peers: -1
     - f_fcf_to_ev: 1
@@ -81,6 +80,23 @@ lgbm:
     # constraint asserts a direction the data does not hold. They now ship raw as
     # f_ceo_tenure / f_pct_female_directors; re-add on SHAP evidence, not on priors.
   columns:
+  - f_earnings_sue_lag0
+  - f_earnings_sue_lag1
+  - f_earnings_sue_lag2
+  - f_earnings_sue_lag3
+  - f_earnings_sue_lag4
+  - f_earnings_sue_lag5
+  - f_earnings_sue_lag6
+  - f_earnings_sue_lag7
+  - f_earnings_improvement_streak
+  - f_earnings_abret_3d
+  - f_earnings_abret_since_report
+  - f_fcf_to_ev_vs_peers
+  - f_roic_incl_intangibles_vs_peers
+  - f_profit_improvement_to_assets
+  - f_roa_vol_8q
+  - f_fcf_positive_fraction_8q
+  - f_ocf_yield
   - mom_12_1
   - rev_21
   - vol_63
@@ -105,7 +121,7 @@ lgbm:
   - f_pegy
   - f_core_earnings_yield_xs
   - f_nonrecurring_pretax_share_xs
-  - f_eps_expectation_growth
+  - f_reported_expected_eps_growth_qoq
   - f_days_since_earnings          # raw PEAD-timing counter (0->180); monotone-free (tree interaction)
   - f_intrinsic_yield
   - f_gross_profitability

@@ -14,13 +14,12 @@ on ALL history so the production model has learnt from every available observati
                         artifacts + metadata.json (the backtest reads them back), the
                         `predictions` / `cube_signal` tables and the per-run diagnostics
                         (per horizon: SHAP values, PDPs and kpis.json per booster member).
-  * backtest_portfolio — `python -m src portfolio backtest` : blends the configured sleeves
-                        (portfolio.yml; the L/S sleeve is OOS from the model's train_end),
+  * backtest_portfolio — `python -m src portfolio backtest` :  the L/S sleeve is OOS from the model's train_end),
                         risk-parity/ERC-weights them to the global vol target, reports
                         per-strategy vs global Sharpe and saves the backtest pictures
                         (equity vs SP500, dynamic sleeve weights, per-sleeve analysis) + tables
                         under data/output/portfolio/.
-  * full_train        — `python -m src modelling full-train` : PRODUCTION refit on ALL history up
+  * full_train        — `python -m src modelling full-train` : PRODUCTION refit with saved fold-median rounds (no repeated CV) on ALL history up
                         to the latest cube date (NO train_end cutoff, NO holdout), so nothing is
                         withheld from the model that actually trades. This is the artifact the
                         daily prediction reads back.
@@ -84,7 +83,7 @@ train_model = run("modelling train", task_id="train_model")
 # 2) backtest the sleeve blend over that out-of-sample window (reads the model artifacts)
 backtest_portfolio = run("portfolio backtest", task_id="backtest_portfolio")
 
-# 3) PRODUCTION refit on ALL history up to the latest cube date — no holdout, nothing withheld.
+# 3) PRODUCTION refit with saved fold-median rounds (no repeated CV) on ALL history up to the latest cube date — no holdout, nothing withheld.
 #    The daily `strat_prediction` DAG scores with these artifacts.
 full_train = run("modelling full-train", task_id="full_train")
 

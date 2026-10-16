@@ -142,7 +142,7 @@ def test_substep_price_fields_are_declared_and_valid():
         )
     for name in ("StepCubeFundamentals", "StepCubeText", "StepCubeInstitutionals"):
         assert not ({"open", "high", "low"} & set(declared[name])), f"{name} does not build bars, so materialising the OHLC range is pure memory"
-    assert set(StepCubeFundamentals._FIELDS) == {"close_split", "level_factor"}
+    assert set(StepCubeFundamentals._FIELDS) == {"close_split", "level_factor", "ret", "sector_ret"}
     # ⚠ INSTITUTIONALS NOW TAKES BOTH BASES, and it is the second step (with momentum) that
     # legitimately needs them -- the price-conditioning layer added in Phase 2.6 is a family of
     # RETURNS measured from a disclosure date (`ic_sig_*_ret_since` and the two excursions),
@@ -170,7 +170,7 @@ def test_substep_price_fields_are_declared_and_valid():
         print(f"  {name:<24} {len(fields)} field(s): {', '.join(fields)}")
     print(
         "  CONCLUSION: only the momentum step materialises full OHLCV; fundamentals and text "
-        "read close alone, governance the return series alone, institutionals both bases "
+        "read projected fields; fundamentals adds persisted disclosure returns, governance the return series, institutionals both bases "
         "(levels on close_split, ic_sig_* returns on close_total). Validated."
     )
 

@@ -21,6 +21,23 @@ random_forest:
   # now 44 distinct columns after removed fundamentals views collapse to raw.
   # Used for ANY horizon that has no entry under columns_by_horizon.
   columns:
+  - f_earnings_sue_lag0
+  - f_earnings_sue_lag1
+  - f_earnings_sue_lag2
+  - f_earnings_sue_lag3
+  - f_earnings_sue_lag4
+  - f_earnings_sue_lag5
+  - f_earnings_sue_lag6
+  - f_earnings_sue_lag7
+  - f_earnings_improvement_streak
+  - f_earnings_abret_3d
+  - f_earnings_abret_since_report
+  - f_fcf_to_ev_vs_peers
+  - f_roic_incl_intangibles_vs_peers
+  - f_profit_improvement_to_assets
+  - f_roa_vol_8q
+  - f_fcf_positive_fraction_8q
+  - f_ocf_yield
   - f_pegy
   - f_ic_inst_new_buyer_ratio
   - f_goodwill_intangibles_to_assets_vs_peers
@@ -33,7 +50,7 @@ random_forest:
   - f_ic_inst_value_to_mcap
   - f_intrinsic_yield
   - f_intangible_amortization_share_vs_peers
-  - f_fwd_eps_yield
+  - f_reported_expected_eps_yield
   - f_da_to_capex
   - f_sbc_intensity
   - f_implied_useful_life_vs_peers
@@ -69,6 +86,23 @@ random_forest:
   # (its `target_<label>_h<horizon>` cube column) if present here, else `columns` above.
   columns_by_horizon:
     30:   # 30-day RF set, now 46 distinct columns after fundamentals-view migration.
+    - f_earnings_sue_lag0
+    - f_earnings_sue_lag1
+    - f_earnings_sue_lag2
+    - f_earnings_sue_lag3
+    - f_earnings_sue_lag4
+    - f_earnings_sue_lag5
+    - f_earnings_sue_lag6
+    - f_earnings_sue_lag7
+    - f_earnings_improvement_streak
+    - f_earnings_abret_3d
+    - f_earnings_abret_since_report
+    - f_fcf_to_ev_vs_peers
+    - f_roic_incl_intangibles_vs_peers
+    - f_profit_improvement_to_assets
+    - f_roa_vol_8q
+    - f_fcf_positive_fraction_8q
+    - f_ocf_yield
     - f_pegy
     - f_ic_inst_net_options_ratio
     - f_refinancing_risk
@@ -87,10 +121,10 @@ random_forest:
     - f_sga_intensity
     - f_ic_inst_exit_ratio
     - f_employee_growth
-    - f_fwd_eps_yield
+    - f_reported_expected_eps_yield
     - f_gmroi
     - f_ic_insider_distinct_buyers_120d
-    - f_eps_expectation_growth
+    - f_reported_expected_eps_growth_qoq
     - volume_trend_63
     - f_q_margin_vs_ttm
     - f_y_earnings_growth

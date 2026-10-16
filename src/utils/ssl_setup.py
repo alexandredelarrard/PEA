@@ -79,12 +79,15 @@ def configure_corporate_ca(dest: Path | None = None, force: bool = False) -> str
     """Point the CA env vars at a combined certifi + OS-store bundle so every HTTPS
     client trusts the corporate proxy CA.
 
-    No-op (returns the existing value) when a CA env var is already set, unless `force=True`. Windows builds the
+    An existing CA env var fills unset/empty CA vars without replacing explicit overrides, unless `force=True`. Windows builds the
     bundle; elsewhere an existing usable bundle (the Airflow bind mount) is reused, else certifi stays the default.
     Returns the bundle path in effect, or None.
     """
     already = next((os.environ[v] for v in CA_ENV_VARS if os.environ.get(v)), None)
     if already and not force:
+        for var in CA_ENV_VARS:
+            if not os.environ.get(var):
+                os.environ[var] = already
         return already
     target = Path(dest) if dest else DEFAULT_BUNDLE
     if sys.platform != "win32" and not force:

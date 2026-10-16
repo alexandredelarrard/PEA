@@ -50,6 +50,14 @@ def purged_wf_splits(dates: pd.Series, n_splits: int = 5, embargo: int = 20) -> 
         yield unique_days[:train_end], unique_days[test_start:test_end]
 
 
+def label_end_dates(calendar: pd.DatetimeIndex, horizon: int) -> pd.Series:
+    """Map feature sessions to their final forward-label session on the complete tape."""
+    if horizon <= 0:
+        raise ValueError("horizon must be positive")
+    sessions = pd.DatetimeIndex(calendar).normalize().drop_duplicates().sort_values()
+    return pd.Series(sessions, index=sessions).shift(-horizon)
+
+
 def temporal_valid_split(panel: pd.DataFrame, train_frac: float = 0.9) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Hold out the last `1 - train_frac` of the dates (chronologically) for early stopping."""
     dates = np.sort(panel["date"].unique())
@@ -58,4 +66,8 @@ def temporal_valid_split(panel: pd.DataFrame, train_frac: float = 0.9) -> tuple[
         cut = len(dates) - 1
     train = panel[panel["date"].isin(dates[:cut])]
     valid = panel[panel["date"].isin(dates[cut:])]
+    if "label_end" in train:
+        train = train.loc[train["label_end"] < valid["date"].min()]
+    if train.empty or valid.empty:
+        raise ValueError("Not enough matured dates for a purged early-stopping split")
     return train, valid

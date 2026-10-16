@@ -8,7 +8,7 @@ portfolio:
   # (long-only top-N, no shorts — retail-viable).
   sleeves: [ls_equity, eq_long_only]
   # window applied to ALL sub-strategies (L/S is additionally OOS from its model train_end)
-  start: "2022-01-01"
+  start: "2022-06-01"           # after train.end_date + max target horizon (90 observed sessions)
   end: null                    # null -> last common date
   # capital / risk handed down to each sleeve
   starting_capital: 1000

@@ -10,15 +10,17 @@ in the metadata names the pickle layout, so artifacts from an older layout fail 
 
 from __future__ import annotations
 
+import hashlib
 import json
 import pickle
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
 ARTIFACT_FORMAT = "transformer-pickle-v1"
+TRAINING_CONTRACT = "matured-fold-es-v1"
 METADATA_FILE = "metadata.json"
 
 
@@ -52,7 +54,7 @@ def write_metadata(directory: Path, meta: dict) -> Path:
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / METADATA_FILE
-    path.write_text(json.dumps({**meta, "artifact_format": ARTIFACT_FORMAT}, indent=2))
+    path.write_text(json.dumps({**meta, "artifact_format": ARTIFACT_FORMAT, "training_contract": TRAINING_CONTRACT}, indent=2))
     return path
 
 
@@ -69,7 +71,25 @@ def read_metadata(directory: Path) -> dict:
             f"Model artifacts in {directory} use artifact_format={found!r}, this code reads {ARTIFACT_FORMAT!r}: "
             "retrain with `python -m src modelling train` / `full-train` before predicting."
         )
+    if meta.get("training_contract") != TRAINING_CONTRACT:
+        raise RuntimeError("Obsolete training/input contract; retrain with `modelling train` before predicting or full-train.")
     return meta
+
+
+def selection_signature(config: DictConfig, features: list[str], horizons: list[int]) -> str:
+    """Identify the fixed training inputs/parameters whose fold rounds may be reused."""
+    shared = config.model
+    payload = {
+        "features": features,
+        "horizons": horizons,
+        "blocks": {key: OmegaConf.to_container(config[key], resolve=True) for key in ("linear", "lgbm", "random_forest", "train") if key in config},
+        "shared": {
+            key: OmegaConf.to_container(shared[key], resolve=True) if OmegaConf.is_config(shared.get(key)) else shared.get(key)
+            for key in ("ensemble", "cv", "weight_decay", "target_type", "label_column")
+        },
+        "seed": config.get("seed"),
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
 
 
 def save_member(model: Any, path: Path) -> Path:

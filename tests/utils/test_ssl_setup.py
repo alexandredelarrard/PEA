@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 
 import certifi
+import pytest
+from curl_cffi import requests as curl_requests
 
 from src.utils import ssl_setup
 
@@ -51,6 +53,29 @@ def test_configure_sets_env_then_respects_user_override(tmp_path, monkeypatch):
 
     print("\n=== SANITY CHECK: configure_corporate_ca ===")
     print("  sets SSL_CERT_FILE/CURL_CA_BUNDLE/REQUESTS_CA_BUNDLE; respects a pre-set value (user override wins). Validated.")
+
+
+@pytest.mark.parametrize("override_var", ssl_setup.CA_ENV_VARS)
+def test_single_ca_override_reaches_curl_sessions(override_var: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An inherited CA override must reach curl sessions even when curl was imported before configuration."""
+    bundle = ssl_setup.build_corporate_ca_bundle(tmp_path / "selected.pem")
+    for var in ssl_setup.CA_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("CURL_CA_BUNDLE", "")
+    monkeypatch.setenv(override_var, str(bundle))
+
+    assert ssl_setup.configure_corporate_ca() == str(bundle)
+    with curl_requests.Session(impersonate="chrome") as session:
+        assert session.verify == str(bundle), f"{override_var} must reach curl's session trust settings"
+    assert all(os.environ[var] == str(bundle) for var in ssl_setup.CA_ENV_VARS)
+
+    # A separately specified bundle must keep its own trust policy.
+    monkeypatch.setenv("REQUESTS_CA_BUNDLE", certifi.where())
+    ssl_setup.configure_corporate_ca()
+    with curl_requests.Session() as session:
+        assert session.verify == certifi.where()
+
+    print(f"SANITY: {override_var} alone configures curl certificate verification; explicit per-client CA overrides remain intact.")
 
 
 def test_airflow_reuses_host_bundle_and_writable_yfinance_cache(tmp_path, monkeypatch):

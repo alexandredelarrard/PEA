@@ -499,3 +499,29 @@ Updated only the [insider aggregate contract](./modules/data-aggregate.md#inside
 - Evidence: [validation report](../reports/validate/2026-10-15-governance-freshness/report.html), local logs and comparison JSONs in the same directory. Production sources and cube rows were not written. Full governance rebuild plus cube assembly is required for historical adoption; the existing incremental window is 756 trading days.
 
 - Scoped type comparison: all seven changed governance source files were analyzed before and after; the same eight existing Pyright errors remain, with zero new diagnostics. Temporary source copies were removed after the check.
+
+## 2026-10-16: maintenance — earnings-surprise HTTPS certificate setup
+
+- Coverage: [configure_corporate_ca](../src/utils/ssl_setup.py) propagates an inherited CA override to missing or empty client CA environment variables while preserving explicit nonempty values. Certificate verification remains enabled. This is a scoped documentation correction; the overall wiki freshness anchor is unchanged.
+- Pages: [Data sources](./reference/data-sources.md).
+- Validation: the three [CA propagation regressions](../tests/utils/test_ssl_setup.py) fail before the fix. The targeted SSL, HTTP, earnings extraction and retry suite passes 24 tests; the final three-case rerun also covers an empty CA variable. Ruff lint/format and git diff --check pass. A read-only live probe reproduces curl error 60 at Yahoo's cookie endpoint before the fix, completes TLS after it, and fetches 25 WFC earnings rows with curl imported before the partial CA setup. No application database writes or full-universe refresh ran.
+
+## 2026-10-16: maintenance — PEGY from reported actual earnings
+
+- Coverage: `_pegy_fields` uses latest reported quarterly actual EPS versus the actual four reports earlier, requiring four calendar quarters between them. The date-only release enters growth on the next trading session; invalid EPS bases, missing quarters and expired observations are unknown. Estimates have no role. The existing realized fiscal-income fallback remains for an absent earnings archive.
+- Pages: [Modelling and portfolio](./reference/modelling-and-portfolio.md). Bounded working-tree change on dev `260c2b71eefe`; the overall wiki freshness anchor is unchanged.
+- Validation: the new exact release/forecast-invariance regression fails on the previous calculation and passes after the change. The feature, earnings, views, incremental and registry suite passes 57 checks; two broad live-panel tests were deselected in favor of a bounded real-source replay. That read-only validator passes estimate perturbation, future-actual perturbation, truncated-prefix equality and MSFT arithmetic across 507 dates for MSFT/AAPL/JPM/XOM. Source and cube tables were not written.
+- Fingerprint gate: four checks pass; the unchanged-output check reports the intended two changed columns, `f_pegy` and `f_pegy_vs_hist`, plus the previously documented unrelated insider mismatch (one added field and 11 moved columns). The protected baseline was not edited. Full fundamentals rebuild and cube assembly are required for historical adoption; predictive strength has not been re-evaluated.
+- Evidence: local report artifacts `reports/validate/2026-10-15-fundamentals-feature-analysis/_out/pegy_actuals_validation.json` and `_scripts/validate_pegy_actuals.py`. Other forecast-based earnings features retain their separate estimate-vintage issue.
+
+### Earnings TLS follow-up: inherited Miniconda CA selection
+
+The user's failing terminal had only `SSL_CERT_FILE` set, pointing into Miniconda's `trading/Library/ssl/` directory. A read-only probe using that environment's actual `cacert.pem` reproduces curl error 60 against Yahoo's cookie endpoint. The propagation fix preserves this explicit selection and cannot add its missing corporate roots. Selecting the existing repository Windows CA bundle in the terminal resolves the separate trust-anchor problem. [Run the pipeline](./guides/run-the-pipeline.md) now documents the current-session PowerShell correction; the Miniconda certificate file and persistent user environment were not edited. The live WFC request remains read-only with respect to application tables.
+
+## 2026-10-16: maintenance — report-time EPS, six feature families and saved-count training
+
+- Coverage: candidate fundamentals now declares 217 columns; report-time EPS replaces backward-filled final consensus, six families add 17 outputs, and training uses one early-stopped LGBM per outer fold plus median-count final refits. The existing weekly DAG order is retained and production full-train reuses saved selection without repeating CV.
+- Pages: [Modelling and portfolio](./reference/modelling-and-portfolio.md), [Training flow](./flows/model-training-and-prediction.md), [Aggregation](./modules/data-aggregate.md). Bounded working-tree maintenance from dev260c2b71eefe on harness/fundamentals-pit-training-20261016; the overall wiki freshness anchor is unchanged.
+- Validation:14EPS and25feature tests pass; independent modelling86pass/1skip, plus real five-fold process smoke and full-universe EPS support measurements. Refactor replay reproduces12real frames exactly. Three page link audits pass; only links were selected.
+- Gates: protected aggregation fingerprint changes remain unapproved; known unrelated insider drift is separate. No application-table, active artifact, source, governance or peer replacement occurred. Full historical derived rebuild and retraining are required before adoption; no predictive superiority or portfolio performance claim is made.
+- Evidence: local ignored run artifacts reports/validate/2026-10-16-fundamentals-pit-training/.

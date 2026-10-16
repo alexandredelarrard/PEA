@@ -27,6 +27,7 @@ from src.data_aggregate.utils.fundamentals.fundamental_features import (
     _FN_PBO_TAG,
     _FN_PLAN_ASSETS_TAG,
     _derived_fields,
+    _pegy_fields,
     _self_history_z,
     build_fundamental_feature_panel,
     load_notes_num_scoped,
@@ -381,26 +382,21 @@ def test_real_panel_wellformed_and_bounded(fundamental_panel):
 
     vp = [c for c in panel.columns if c.endswith("_vs_peers")]
     xs = [c for c in panel.columns if c.endswith("_xs")]
-    assert len(vp) >= 8 and len(xs) >= 8
+    assert set(vp) == {"f_fcf_to_ev_vs_peers", "f_roic_incl_intangibles_vs_peers"}
+    assert not xs
 
-    # vs_peers winsorized to +-8; xs is a percentile in [0,1]
+    # The two explicit peer views retain the established +/-8 policy.
     vp_vals = panel[vp].to_numpy()
     assert np.nanmax(np.abs(vp_vals)) <= 8.0 + 1e-6, "vs_peers not winsorized"
-    xs_vals = panel[xs].to_numpy()
-    assert np.nanmin(xs_vals) >= 0.0 and np.nanmax(xs_vals) <= 1.0
-
-    # Cross-sectional (_xs) coverage is universe-wide and robust to subsetting;
-    # vs_peers is lower in a small test universe because a stock's peer basket
-    # (from the full universe) may have <3 members inside the sample.
-    covered_xs = [c for c in ["f_profitMargins_xs", "f_revenueGrowth_xs", "f_returnOnEquity_xs"] if c in panel.columns]
-    assert covered_xs, "expected core fundamental features to be present"
-    cov_xs = panel[covered_xs].notna().mean().max()
-    assert cov_xs > 0.3, f"core fundamental xs-coverage too low ({cov_xs:.1%})"
+    covered_raw = [c for c in ["f_profitMargins", "f_sales_yield", "f_returnOnEquity"] if c in panel.columns]
+    assert covered_raw, "expected core raw fundamental features to be present"
+    coverage = panel[covered_raw].notna().mean().max()
+    assert coverage > 0.3, f"core raw feature coverage too low ({coverage:.1%})"
     assert panel[vp].notna().mean().max() > 0.02, "vs_peers has no coverage at all"
 
     print("\n=== SANITY CHECK: real fundamental panel ===")
-    print(f"  {len(vp)} vs_peers + {len(xs)} xs features; |vs_peers| max={np.nanmax(np.abs(vp_vals)):.2f} (<=8), xs in [0,1].")
-    print(f"  core feature xs-coverage = {cov_xs:.0%}. Panel is well-formed.")
+    print(f"  Exactly two approved peer views, no XS copies; |vs_peers| max={np.nanmax(np.abs(vp_vals)):.2f} (<=8).")
+    print(f"  Core raw feature coverage = {coverage:.0%}. Panel is well-formed.")
 
 
 # --------------------------------------------------------------------------- #
@@ -676,11 +672,14 @@ def test_panel_emits_vs_hist_columns():
     assert "f_fcf_yield_vs_hist" in panel.columns, f"no vs_hist columns: {list(panel.columns)}"
     assert panel["f_fcf_yield_vs_hist"].notna().any(), "vs_hist column is entirely NaN"
     assert "f_earnings_yield_vs_hist" not in panel.columns
-    assert not any(column.endswith(("_vs_peers", "_xs")) for column in panel.columns)
+    expected_peers = {f"{raw}_vs_peers" for raw in ("f_fcf_to_ev", "f_roic_incl_intangibles") if raw in panel.columns}
+    assert "f_fcf_to_ev_vs_peers" in expected_peers
+    assert {column for column in panel.columns if column.endswith("_vs_peers")} == expected_peers
+    assert not any(column.endswith("_xs") for column in panel.columns)
 
     print("\n=== SANITY CHECK: panel self-history columns ===")
     print(f"  emitted {len(hist_cols)} f_*_vs_hist columns: {sorted(hist_cols)}")
-    print("  approved f_fcf_yield history is populated; capped earnings-yield history and all peer/XS legs are absent.")
+    print(f"  Approved FCF-yield history is populated; source-supported peer views are exactly {sorted(expected_peers)} and XS copies remain absent.")
 
 
 # --------------------------------------------------------------------------- #
@@ -920,33 +919,72 @@ def test_valuation_engine_kpis_exact():
     )
 
 
-def test_pegy_uses_projected_eps_growth():
-    """PEGY's growth term prefers PROJECTED EPS growth (NTM/TTM-1 from the earnings
-    archive) when earnings_history is supplied, and falls back to TTM otherwise."""
+def test_pegy_uses_reported_eps_growth_after_release() -> None:
+    """Latest quarterly actual versus last year's quarter, visible after release."""
     fund = pd.DataFrame(
-        [dict(ticker="A", as_of="2025-11-05", totalRevenue=100.0, netIncome=50.0, sharesOutstanding=10.0, dividendsPaid=2.0, totalAssets=200.0)]
+        [dict(ticker="A", as_of="2025-10-01", totalRevenue=100.0, netIncome=50.0, sharesOutstanding=10.0, dividendsPaid=2.0, totalAssets=200.0)]
     )
     earn = pd.DataFrame(
         {
-            "ticker": ["A"] * 5,
-            "earnings_date": ["2025-02-01", "2025-05-01", "2025-08-01", "2025-11-01", "2026-02-15"],
-            "eps_estimate": [1.0, 1.0, 1.0, 1.0, 1.5],
-            "eps_actual": [1.1, 1.2, 1.3, 1.4, np.nan],
+            "ticker": ["A"] * 6,
+            "earnings_date": ["2024-11-01", "2025-02-03", "2025-05-01", "2025-08-01", "2025-11-03", "2026-02-16"],
+            "eps_estimate": [1.0, 1.0, 1.0, 1.0, 1.0, 1.5],
+            "eps_actual": [1.0, 1.1, 1.2, 1.3, 1.4, np.nan],
         }
     )
-    idx = pd.bdate_range("2026-01-05", "2026-01-30")
+    idx = pd.bdate_range("2025-10-30", "2026-01-30")
     close = pd.DataFrame({"A": 100.0}, index=idx)
     d = idx[-1]
 
-    # with projected growth: PE = mcap(1000)/NI(50)=20; growth = 5.4/5.0-1 = 8%; div yield 0.2%
-    F_proj = _derived_fields(fund, idx, close, yoy_periods=4, earnings_history=earn)
-    assert F_proj["pegy"].loc[d, "A"] == pytest.approx(20 / (8 + 0.2), rel=1e-3)
+    # PE=20; reported quarterly EPS growth=1.4/1.0-1=40%; dividend yield=0.2%.
+    actual = _derived_fields(fund, idx, close, yoy_periods=4, earnings_history=earn)
+    assert actual["pegy"].loc[d, "A"] == pytest.approx(20 / (40 + 0.2), rel=1e-6)
+    assert actual["pegy"].loc[:"2025-11-03", "A"].isna().all()
+    assert actual["pegy"].loc["2025-11-04", "A"] == pytest.approx(20 / (40 + 0.2))
+
+    changed = earn.copy()
+    changed["eps_estimate"] = 999.0
+    changed.loc[changed["earnings_date"].eq("2026-02-16"), "eps_actual"] = 100.0
+    changed_result = _derived_fields(fund, idx, close, yoy_periods=4, earnings_history=changed)
+    pd.testing.assert_frame_equal(actual["pegy"], changed_result["pegy"])
+    without_future = _derived_fields(fund, idx, close, yoy_periods=4, earnings_history=earn.iloc[:-1])
+    pd.testing.assert_frame_equal(actual["pegy"], without_future["pegy"])
     # without earnings: single fundamentals row -> TTM growth undefined -> PEGY NaN (fallback path)
     F_ttm = _derived_fields(fund, idx, close, yoy_periods=4)
     assert "pegy" not in F_ttm or np.isnan(F_ttm["pegy"].loc[d, "A"])
 
-    print("\n=== SANITY CHECK: PEGY uses projected EPS growth ===")
-    print(f"  projected growth 8% -> PEGY = 20/(8+0.2) = {F_proj['pegy'].loc[d, 'A']:.3f}; TTM fallback undefined here (single filing). Validated.")
+    print("\n=== SANITY CHECK: PEGY uses reported EPS growth ===")
+    print(
+        f"  Reported growth 40% -> PEGY={actual['pegy'].loc[d, 'A']:.3f} from the next session; estimates and future actuals cannot alter its prefix."
+    )
+
+
+@pytest.mark.parametrize("prior_eps", [0.0, -1.0])
+def test_pegy_masks_invalid_latest_growth_and_missing_quarters(prior_eps: float) -> None:
+    """Losses, invalid bases and absent quarters cannot create a cheap PEGY."""
+    reports = pd.DataFrame(
+        {
+            "ticker": ["A"] * 6,
+            "earnings_date": pd.to_datetime(["2024-11-01", "2025-02-03", "2025-05-01", "2025-08-01", "2025-11-03", "2026-02-02"]),
+            "eps_actual": [prior_eps, 1.1, 1.2, 1.3, 1.4, -0.5],
+        }
+    )
+    idx = pd.bdate_range("2025-11-03", "2026-02-06")
+    mcap = pd.DataFrame({"A": 1000.0}, index=idx)
+    income = pd.DataFrame({"A": 50.0}, index=idx)
+    dividends = pd.DataFrame({"A": 2.0}, index=idx)
+
+    def calculate(history: pd.DataFrame) -> dict[str, pd.DataFrame]:
+        return _pegy_fields(lambda field: dividends, pd.DataFrame(), idx, mcap, income, 4, history)
+
+    assert "pegy" not in calculate(reports)
+    reports.loc[0, "eps_actual"] = 1.0
+    valid_then_loss = calculate(reports)["pegy"]["A"]
+    assert np.isfinite(valid_then_loss.loc["2026-02-02"])
+    assert valid_then_loss.loc["2026-02-03":].isna().all()
+    assert "pegy" not in calculate(reports.drop(index=2))
+    print("\n=== SANITY CHECK: PEGY invalid growth ===")
+    print("  Zero/negative prior EPS and a missing quarter stay undefined; a newly reported loss clears the preceding PEGY after release.")
 
 
 def test_true_enterprise_value_fully_diluted():

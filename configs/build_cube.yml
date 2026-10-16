@@ -60,6 +60,12 @@ build_cube:
   workforce:                 # headcount proxy of the workforce features
     part_time_weight: 0.65   # α in FT + α·PT; must lie in [0.5, 1]
 
+  fundamentals_features:
+    earnings_lags: 8           # changing this requires a feature-schema migration
+    earnings_scale_quarters: 8 # supported 2..8 within the six-year source window
+    persistence_quarters: 8    # pinned by the _8q feature schema
+    reaction_sessions: 3      # pinned by the _3d feature schema
+
   institutionals:            # informed-capital panels (13F, insider, 13D/G, short flow)
     value_basis:
       min_securities: 15      # distinct priced common securities for a unit-changing override

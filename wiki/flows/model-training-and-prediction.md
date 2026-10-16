@@ -40,10 +40,10 @@ sequenceDiagram
 ## Steps
 
 1. `StepLongShort.run_train()` in [step_long_short.py](../../src/modelling/steps/step_long_short.py) resolves cube columns and horizons without loading the full cube.
-2. It loads one labelled horizon panel at a time, cross-validates, trains each configured family, and frees the panel.
+2. It streams one projected, labelled horizon panel at a time. Five outer chronological folds use one early-stopped LightGBM each; a purged latest-10% tail inside the training period selects its rounds. That same model scores the untouched outer test. Linear/RF use all outer-training rows. The median selected count drives a fresh all-eligible-row cutoff fit; no second fit occurs inside a fold.
 3. It saves one pickle per member, `metadata.json`, predictions, signals, the `Monitor` diagnostics (IC and drawdown, SHAP, PDPs), a label-only quantile backtest per horizon, and run KPIs.
 4. The portfolio backtest uses the holdout artifacts before production refitting.
-5. `run_train(full_history=True)` trains the production ensemble on all history.
+5. `run_train(full_history=True)` consumes the saved fold selection and fits all label-matured rows through the latest complete cube/price session, without repeating cross-validation. Missing or incompatible selection metadata requires `modelling train` first.
 6. `run_predict()` first raises `StaleInputsError` and scores nothing when the share of universe tickers with a fresh own latest date in `prices`, `fundamentals_sharadar` or `fundamentals_history` is below `prediction_fresh_share`, or when the cube ends before `prices` ([freshness.py](../../src/utils/freshness.py)). It then loads only latest feature rows and writes member, horizon-ensemble, and blended predictions in long form.
 
 ## Failure modes

@@ -39,6 +39,7 @@ model:
     pdp_grid: 30               # partial-dependence grid resolution
 
   backtest:                    # label-only quantile backtest of each horizon's OOS CV predictions,
+    enabled: false            # training-only checks; portfolio backtest remains a separate DAG task
                                # the last stage of training (diagnostics/<run_stamp>/h<H>/backtest_*)
     n_quantiles: 10            # buckets per date; top-minus-bottom = the dollar-neutral spread
 

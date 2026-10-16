@@ -1,32 +1,7 @@
-"""
-step_long_short.py  (src/modelling/steps/step_long_short.py)
--------------------------------------------------------------
-`StepLongShort`: the cross-sectional long/short ensemble, trained and scored through the
-transformers.
+"""Train cutoff ensembles with purged fold-local early stopping, then refit from saved counts.
 
-`run_train(full_history=False)`
-  1. resolves horizons, per-family feature lists and the cube projection from the SCHEMA only;
-  2. per horizon, loads ONLY that horizon's labelled rows (union projection, `label IS NOT NULL`
-     pushed into SQL, float32, train window) -- one horizon resident at a time;
-  3. purged walk-forward CV (embargo >= horizon): every `model.ensemble` family is fitted on the
-     first 90 % of each training fold (LightGBM early-stops on the last 10 %), the members' per-day
-     z-scores are averaged, and the fold's daily IC is recorded for the ensemble and per member;
-  4. fits the final members on the whole panel, scores it, and hands the panel to the `Monitor`
-     (SHAP / PDP / IC curve / KPIs) before freeing it;
-  5. blends the horizons by CV IC_IR (floored at 0), persists the members + `metadata.json`, the
-     `predictions` / `cube_signal` tables and the CV results, then runs the label-only `Backtest`
-     on each horizon's out-of-sample CV predictions and writes the run-level KPIs.
-`full_history=True` is the production refit: no train-window end, metadata records the actual
-last trained date.
-
-`run_predict(n_dates=1)` loads the saved members, refuses to score (`StaleInputsError`) when a
-prediction input is stale per universe key or the cube ends before `prices`, then scores the newest
-cube dates for every horizon from a FEATURE-ONLY float64 read (their forward labels have not matured, so a labelled read would
-drop them), and writes `predictions_latest` in long form: each member, each horizon's ensemble, and
-the IR-weighted blend across horizons.
-
-Exposes `run_train` / `run_predict` (with `run()` = `run_train()`) rather than a single `run`:
-training and prediction are separate DAG tasks on different cadences.
+Production refits consume all matured labels without repeating CV. Latest prediction uses
+a separate feature-only load so unlabelled current rows remain scoreable.
 """
 
 from __future__ import annotations
@@ -34,7 +9,6 @@ from __future__ import annotations
 import gc
 import platform
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
 from importlib.metadata import version
 
 import numpy as np
@@ -49,8 +23,17 @@ from src.modelling.transformers import BaseModel, LightGBMModel, LinearRegressio
 from src.modelling.transformers.backtest import Backtest
 from src.modelling.transformers.base import half_life_years
 from src.modelling.transformers.monitor import Monitor
-from src.modelling.utils.artifacts import clear_members, load_ensemble, member_path, models_dir, read_metadata, save_member, write_metadata
-from src.modelling.utils.cv import purged_wf_splits, temporal_valid_split
+from src.modelling.utils.artifacts import (
+    clear_members,
+    load_ensemble,
+    member_path,
+    models_dir,
+    read_metadata,
+    save_member,
+    selection_signature,
+    write_metadata,
+)
+from src.modelling.utils.cv import label_end_dates, purged_wf_splits, temporal_valid_split
 from src.modelling.utils.ensemble import blend_horizons, ensemble_predict, ir_horizon_weights, prediction_rows
 from src.modelling.utils.metrics import daily_ic, per_day_zscore
 from src.modelling.utils.panel import load_frame
@@ -84,6 +67,10 @@ class HorizonCV:
     oos_members: pd.DataFrame | None = None  # date, ticker, <member z> ...
     ic: dict[str, float] = field(default_factory=dict)  # mean over folds: mean_ic, ic_ir
     member_ic: dict[str, dict[str, float]] = field(default_factory=dict)
+    rounds: list[int] = field(default_factory=list)
+    audit: dict = field(default_factory=dict)
+    diagnostic_models: dict[str, BaseModel] | None = None
+    diagnostic_panel: pd.DataFrame | None = None
 
 
 @dataclass
@@ -128,6 +115,7 @@ class StepLongShort(Step):
         self._classes = {fam: model_class(fam) for fam in self.families}  # validates every name
         self._monitor = Monitor(context, config)
         self._backtest = Backtest(config)
+        self._eligibility: dict[int, dict[str, int]] = {}
 
     def run(self) -> TrainResult:
         return self.run_train()
@@ -138,6 +126,29 @@ class StepLongShort(Step):
     def run_train(self, full_history: bool = False) -> TrainResult:
         """Train, evaluate, persist and backtest the per-horizon ensemble (see module docstring)."""
         schema = self._resolve_schema()
+        store = self._context.store
+        calendar = pd.DatetimeIndex(store.distinct(Tables.cube_part_prices, "date")).normalize().sort_values().drop_duplicates()
+        cube_dates = store.distinct(Tables.cube, "date", order="desc", limit=1)
+        if calendar.empty or not cube_dates:
+            raise ValueError("Training requires the complete price-part calendar and a populated cube")
+        latest = min(calendar[-1], pd.Timestamp(cube_dates[0]))
+        self._calendar = calendar[calendar <= latest]
+        self._training_as_of = latest
+        if not full_history and self._config.train.end_date:
+            cutoff = pd.Timestamp(self._config.train.end_date)
+            sessions = calendar[calendar <= cutoff]
+            if sessions.empty:
+                raise ValueError("Training cutoff precedes the price calendar")
+            endpoint = label_end_dates(calendar, max(schema.horizons)).get(sessions[-1])
+            if pd.notna(endpoint):
+                self._training_as_of = min(latest, endpoint)
+        signature = selection_signature(self._config, schema.feature_cols + schema.categorical_cols, schema.horizons)
+        prior = read_metadata(models_dir(self._context, self._config)) if full_history else None
+        if prior is not None and not isinstance(prior.get("selection"), dict):
+            raise ValueError("Saved model has no fold selection; run modelling train before full-train")
+        if prior is not None and (prior.get("selection_signature") != signature or pd.Timestamp(prior["selection_as_of"]) > self._training_as_of):
+            raise ValueError("Saved fold selection is incompatible or not yet observable; run modelling train first")
+        self._selection_as_of = prior["selection_as_of"] if prior else str(self._training_as_of.date())
         self._monitor.start_run()
         half_life = half_life_years(self._config)
         if half_life is not None:
@@ -154,15 +165,50 @@ class StepLongShort(Step):
                 continue
             self._log.info("horizon %s: %s rows, %s tickers, %s days", h, len(panel), panel["ticker"].nunique(), panel["date"].nunique())
             train_ends.append(panel["date"].max())
-            cvs[h] = self._cross_validate(h, panel)
-            models[h] = self._fit_final(h, panel)
+            if prior is None:
+                cvs[h] = self._cross_validate(h, panel)
+            else:
+                selected = prior["selection"][str(h)]
+                cvs[h] = HorizonCV(folds=selected["folds"], rounds=selected["rounds"], ic=selected["ic"], member_ic=selected["member_ic"])
+            if "lgbm" in self.families and len(cvs[h].rounds) != int(self._config.model.cv.n_splits):
+                raise ValueError(f"h{h}: require all configured fold iteration counts before final fitting")
+            models[h] = self._fit_final(h, panel, cvs[h].rounds)
+            cvs[h].audit.update(
+                {
+                    **self._eligibility[h],
+                    "training_as_of": str(self._training_as_of.date()),
+                    "fitted_rows": len(panel),
+                    "feature_min": str(panel["date"].min().date()),
+                    "feature_max": str(panel["date"].max().date()),
+                    "label_end_max": str(panel["label_end"].max().date()),
+                    "requested_rounds": int(np.median(cvs[h].rounds)) if cvs[h].rounds else None,
+                    "achieved_rounds": models[h]["lgbm"].model.current_iteration() if "lgbm" in models[h] else None,
+                }
+            )
             score_frames.append(self._score(h, models[h], panel))
-            self._monitor.horizon_report(h, panel, cvs[h].oos, models[h], self._horizon_kpis(cvs[h], full_history), self.label_column)
+            if not full_history:
+                df_diagnostic = cvs[h].diagnostic_panel
+                if df_diagnostic is None:
+                    df_diagnostic = panel
+                self._monitor.horizon_report(
+                    h,
+                    df_diagnostic,
+                    cvs[h].oos,
+                    cvs[h].diagnostic_models or models[h],
+                    {**self._horizon_kpis(cvs[h], full_history), "diagnostic_population": "last_outer_test"},
+                    self.label_column,
+                )
+            cvs[h].diagnostic_models = None
+            cvs[h].diagnostic_panel = None
             panel = None
             gc.collect()  # hand this horizon's panel back before the next load
 
         if not models:
             raise RuntimeError("No horizon produced a model (empty cube / train window?).")
+        if not full_history and self._config.get("portfolio", {}).get("start"):
+            last_label = max(pd.Timestamp(cv.audit["label_end_max"]) for cv in cvs.values())
+            if pd.Timestamp(self._config.portfolio.start) <= last_label:
+                raise ValueError(f"portfolio.start must be strictly after training label end {last_label.date()}")
         train_end_effective = max(train_ends, default=None)
         self._log.info("Trained %s horizons x %s (%s)", len(models), len(self.families), self.families)
 
@@ -174,7 +220,7 @@ class StepLongShort(Step):
         self._save_outputs(predictions, cvs, signal, signal_date)
 
         backtests = {}
-        for h, cv in cvs.items():  # last stage: label-only backtest of the OOS CV predictions
+        for h, cv in cvs.items() if self._config.model.get("backtest", {}).get("enabled", True) and not full_history else []:
             if cv.oos is None:
                 continue
             result = self._backtest.run(cv.oos, label_col=self.label_column, horizon=h)
@@ -188,6 +234,8 @@ class StepLongShort(Step):
     # ---- schema (no data read) ---------------------------------------- #
     def _resolve_schema(self) -> Schema:
         cube_cols = set(self._context.store.columns(Tables.cube))
+        if {"f_fwd_eps_yield", "f_forward_earnings_yield", "f_eps_expectation_growth"} & cube_cols:
+            raise RuntimeError("Obsolete fundamentals cube; rebuild full fundamentals and assemble the cube before training.")
         load_cols, dropped = self._select_load_columns(cube_cols)
         horizons = horizons_in(cube_cols, self.target_type)
         if not horizons:
@@ -246,11 +294,21 @@ class StepLongShort(Step):
         """This horizon's labelled rows -> modelling panel (float32) within the train window."""
         store = self._context.store
         tcol = target_column(self.target_type, horizon)
-        raw = load_frame(store, Tables.cube, columns=self._load_cols_for(schema, tcol), where={tcol: store.NOT_NULL})
+        start_date = self._config.train.start_date
+        end_date = None if full_history else self._config.train.end_date
+        raw = load_frame(
+            store, Tables.cube, columns=self._load_cols_for(schema, tcol), where={tcol: store.NOT_NULL}, since=start_date, until=end_date, stream=True
+        )
         if raw is None:
             return None
         panel = panel_from_cube(raw, horizon=horizon, label_name=self.label_column, feature_cols=schema.panel_cols, target_type=self.target_type)
         raw = None
+        panel["label_end"] = panel["date"].map(label_end_dates(self._calendar, horizon))
+        unknown = int(panel["label_end"].isna().sum())
+        immature = int((panel["label_end"] > self._training_as_of).sum())
+        self._eligibility[horizon] = {"source_labelled_rows": len(panel), "unknown_label_end_rows": unknown, "immature_rows": immature}
+        self._log.info("h%s maturity: %s unknown endpoints, %s outcomes beyond %s excluded", horizon, unknown, immature, self._training_as_of.date())
+        panel = panel.loc[panel["label_end"].notna() & (panel["label_end"] <= self._training_as_of)]
         tr = self._config.get("train", None)
         if tr:
             start_date = tr.start_date
@@ -261,9 +319,18 @@ class StepLongShort(Step):
                 panel = panel.loc[panel["date"] <= end_date]
         return panel if not panel.empty else None
 
-    def _fit_members(self, horizon: int, train: pd.DataFrame, valid: pd.DataFrame | None) -> dict[str, BaseModel]:
+    def _fit_members(self, horizon: int, train: pd.DataFrame, valid: pd.DataFrame | None, rounds: int | None = None) -> dict[str, BaseModel]:
         """Fresh members of every family, in `model.ensemble` order."""
-        return {fam: cls(self._context, self._config, fam, horizon).fit(train, valid) for fam, cls in self._classes.items()}
+        members: dict[str, BaseModel] = {}
+        for fam, cls in self._classes.items():
+            model = cls(self._context, self._config, fam, horizon)
+            if cls is LightGBMModel and rounds is not None:
+                assert isinstance(model, LightGBMModel)
+                model.fit_fixed_rounds(train, rounds)
+            else:
+                model.fit(train, valid)
+            members[fam] = model
+        return members
 
     def _cross_validate(self, horizon: int, panel: pd.DataFrame) -> HorizonCV:
         """Purged walk-forward CV: per-fold ensemble + member daily IC, and the OOS predictions."""
@@ -271,23 +338,59 @@ class StepLongShort(Step):
         embargo = cfg.cv.embargo or horizon  # embargo must be >= horizon
         cv = HorizonCV()
         oos_frames, member_frames = [], []
-        for train_days, test_days in purged_wf_splits(panel["date"], cfg.cv.n_splits, embargo):
+        for fold_no, (train_days, test_days) in enumerate(purged_wf_splits(panel["date"], cfg.cv.n_splits, embargo), start=1):
             train = panel[panel["date"].isin(train_days)]
             test = panel[panel["date"].isin(test_days)]
             if train.empty or test.empty:
                 continue
-            sub_tr, sub_val = temporal_valid_split(train)
-            preds, members = ensemble_predict(self._fit_members(horizon, sub_tr, sub_val), test)
+            if "label_end" in train:
+                train = train.loc[train["label_end"] < test["date"].min()]
+            sub_tr, sub_val = temporal_valid_split(train) if LightGBMModel in self._classes.values() else (train, train.iloc[:0])
+            fitted: dict[str, BaseModel] = {}
+            for fam, cls in self._classes.items():
+                model = cls(self._context, self._config, fam, horizon)
+                fitted[fam] = model.fit(sub_tr, sub_val) if cls is LightGBMModel else model.fit(train)
+            if "lgbm" in fitted:
+                booster = fitted["lgbm"].model
+                count = int(booster.best_iteration or booster.current_iteration())
+                cv.rounds.append(count)
+                if booster.training_iterations >= int(self._config.lgbm.num_boost_round):
+                    self._log.warning("h%s: selected rounds hit configured cap (%s)", horizon, count)
+            preds, members = ensemble_predict(fitted, test)
             # IC IR annualised by the horizon (overlapping labels), else inflated ~sqrt(horizon)
             cv.folds.append(daily_ic(test, preds, self.label_column, horizon=horizon))
+            cv.folds[-1].update(
+                {
+                    "train_rows": len(sub_tr),
+                    "validation_rows": len(sub_val),
+                    "outer_rows": len(train),
+                    "test_start": str(test["date"].min().date()),
+                    "test_end": str(test["date"].max().date()),
+                    "inner_train_end": str(sub_tr["date"].max().date()),
+                    "validation_start": str(sub_val["date"].min().date()) if not sub_val.empty else None,
+                    "inner_train_label_end_max": str(sub_tr["label_end"].max().date()),
+                    "validation_end": str(sub_val["date"].max().date()) if not sub_val.empty else None,
+                    "validation_label_end_max": str(sub_val["label_end"].max().date()) if not sub_val.empty else None,
+                    "outer_train_label_end_max": str(train["label_end"].max().date()),
+                    "selected_rounds": cv.rounds[-1] if cv.rounds else None,
+                    "executed_rounds": fitted["lgbm"].model.training_iterations if cv.rounds else None,
+                    "round_cap_hit": fitted["lgbm"].model.training_iterations >= int(self._config.lgbm.num_boost_round) if cv.rounds else False,
+                }
+            )
             for name, mpred in members.items():
                 cv.member_folds.setdefault(name, []).append(daily_ic(test, mpred, self.label_column, horizon=horizon))
             keys = {"date": test["date"].to_numpy(), "ticker": test["ticker"].to_numpy()}
             oos_frames.append(pd.DataFrame({**keys, "pred": preds.to_numpy(), self.label_column: test[self.label_column].to_numpy()}))
             member_frames.append(pd.DataFrame({**keys, **{name: z.to_numpy() for name, z in members.items()}}))
+            if self._monitor.active and fold_no == int(cfg.cv.n_splits):
+                sample = int(cfg.get("diagnostics", {}).get("shap_sample", 2000))
+                cv.diagnostic_models = fitted
+                cv.diagnostic_panel = test.sample(n=min(sample or len(test), len(test)), random_state=int(self._config.get("seed", 42))).copy()
         if oos_frames:
             cv.oos = pd.concat(oos_frames, ignore_index=True)
             cv.oos_members = pd.concat(member_frames, ignore_index=True)
+        if not cv.folds or len(cv.folds) != int(cfg.cv.n_splits):
+            raise ValueError("Insufficient usable walk-forward folds")
         cv.ic = {
             "mean_ic": float(np.nanmean([r["mean_ic"] for r in cv.folds])) if cv.folds else np.nan,
             "ic_ir": float(np.nanmean([r["ic_ir"] for r in cv.folds])) if cv.folds else np.nan,
@@ -303,9 +406,11 @@ class StepLongShort(Step):
             )
         return cv
 
-    def _fit_final(self, horizon: int, panel: pd.DataFrame) -> dict[str, BaseModel]:
-        sub_tr, sub_val = temporal_valid_split(panel, train_frac=0.9)
-        return self._fit_members(horizon, sub_tr, sub_val)
+    def _fit_final(self, horizon: int, panel: pd.DataFrame, counts: list[int]) -> dict[str, BaseModel]:
+        """Fresh all-row members, with fold-selected boosting rounds and no validation."""
+        if "lgbm" in self.families and (not counts or any(n < 1 for n in counts)):
+            raise ValueError("Final LightGBM fit requires positive fold-selected counts")
+        return self._fit_members(horizon, panel, None, int(np.median(counts)) if counts else None)
 
     def _score(self, horizon: int, models: dict[str, BaseModel], panel: pd.DataFrame) -> pd.DataFrame:
         """Small blend input (date, ticker, z_<h>, pred_<member>_h<h>), so the wide panel can be
@@ -323,7 +428,7 @@ class StepLongShort(Step):
 
     def _horizon_kpis(self, cv: HorizonCV, full_history: bool) -> dict:
         """CV KPIs only the step knows, merged into the horizon's diagnostics summary."""
-        train_end = (datetime.today() - timedelta(days=30 + 30)).strftime("%Y-%m-%d") if full_history else self._config.train.end_date
+        train_end = cv.audit.get("feature_max", self._config.train.end_date)
         self._log.info("Train from %s to %s", self._config.train.start_date, train_end)
         return {
             "cv_mean_ic": cv.ic.get("mean_ic"),
@@ -333,6 +438,7 @@ class StepLongShort(Step):
             "train_start": self._config.train.start_date,
             "train_end": train_end,
             "full_history": bool(full_history),
+            **cv.audit,
             "members": {name: {"cv_mean_ic": m.get("mean_ic"), "cv_ic_ir": m.get("ic_ir")} for name, m in cv.member_ic.items()},
         }
 
@@ -393,6 +499,11 @@ class StepLongShort(Step):
                 else self._config.train.end_date
             ),
             "full_history": bool(full_history),
+            "training_as_of": str(self._training_as_of.date()),
+            "selection_as_of": self._selection_as_of,
+            "selection_signature": selection_signature(self._config, schema.feature_cols + schema.categorical_cols, schema.horizons),
+            "selection": {int(h): {"folds": cv.folds, "rounds": cv.rounds, "ic": cv.ic, "member_ic": cv.member_ic} for h, cv in cvs.items()},
+            "fit_audit": {int(h): cv.audit for h, cv in cvs.items()},
             "train_ic_ir": {int(h): (float(cvs[h].ic["ic_ir"]) if np.isfinite(cvs[h].ic["ic_ir"]) else 0.0) for h in models},
             "library_versions": {"python": platform.python_version(), "lightgbm": version("lightgbm"), "numpy": version("numpy")},
         }
@@ -437,17 +548,16 @@ class StepLongShort(Step):
             raise RuntimeError("cube is empty -> nothing to predict.")
         start = min(dates)
         cube_cols = set(store.columns(Tables.cube))
+        missing_inputs = set(feat_cols + cat_cols) - cube_cols
+        if missing_inputs:
+            raise RuntimeError(f"Model inputs absent from cube: {sorted(missing_inputs)}; rebuild the cube and retrain.")
         want = [c for c in dict.fromkeys(feat_cols + cat_cols) if c in cube_cols]
         # feature-only, float64: the newest rows have no matured label, and the linear member
         # scores in float64
         df_cube = load_frame(store, Tables.cube, columns=list(dict.fromkeys(["date", "ticker"] + want)), since=start, downcast=False)
         if df_cube is None or df_cube.empty:
             raise RuntimeError(f"No cube rows on/after {start.date()}.")
-        present = [c for c in (feat_cols + cat_cols) if c in df_cube.columns]
-        missing = [c for c in (feat_cols + cat_cols) if c not in df_cube.columns]
-        df_panel = df_cube[["date", "ticker"] + present].copy()
-        if missing:  # an absent model feature scores as NaN
-            df_panel = pd.concat([df_panel, pd.DataFrame(np.nan, index=df_panel.index, columns=missing)], axis=1)
+        df_panel = df_cube[["date", "ticker", *dict.fromkeys(feat_cols + cat_cols)]].copy()
         df_keys = df_panel[["date", "ticker"]]
 
         long_rows: list[pd.DataFrame] = []

@@ -145,6 +145,7 @@ def train_booster(
     train_set = _build_dataset(default, panel, feats, label_name, train_w, categorical_features=categorical_features)
     valid_sets = []
     callbacks = []
+    evaluation: dict = {}
     feval = None
     if valid_panel is not None and not valid_panel.empty:
         valid_sets = [_build_dataset(default, valid_panel, feats, label_name, categorical_features=categorical_features)]
@@ -152,9 +153,13 @@ def train_booster(
             default["metric"] = "None"  # early stopping keys on the custom IC only
             feval = _ic_eval_factory(valid_panel["date"].to_numpy(), valid_panel[label_name].to_numpy())
         callbacks.append(lgb.early_stopping(stopping_rounds=early_stopping_rounds))
+        callbacks.append(lgb.record_evaluation(evaluation))
 
     booster = lgb.train(default, train_set, num_boost_round=num_boost_round, valid_sets=valid_sets or None, feval=feval, callbacks=callbacks or None)
     cast(Any, booster).feature_names = feats
+    cast(Any, booster).training_iterations = max(
+        (len(values) for metrics in evaluation.values() for values in metrics.values()), default=booster.current_iteration()
+    )
     return booster
 
 
@@ -163,6 +168,14 @@ class LightGBMModel(BaseModel):
 
     config_key = "lgbm"
     supports_shap = True
+
+    def fit_fixed_rounds(self, train: pd.DataFrame, rounds: int) -> LightGBMModel:
+        """Fit all supplied rows with selected rounds, without validation or config mutation."""
+        if rounds < 1:
+            raise ValueError("fixed boosting rounds must be positive")
+        self._fixed_rounds = int(rounds)
+        self.fit(train, None)
+        return self
 
     @classmethod
     def lgbm_block(cls, config: DictConfig) -> Any:
@@ -220,7 +233,7 @@ class LightGBMModel(BaseModel):
         }
         kw: dict[str, Any] = {
             "params": self._objective(params),
-            "num_boost_round": c.get("num_boost_round"),
+            "num_boost_round": self.__dict__.pop("_fixed_rounds", c.get("num_boost_round")),
             "early_stopping_rounds": int(c.get("early_stopping_rounds", EARLY_STOPPING_ROUNDS)),
             "eval_metric": c.get("eval_metric") or "rmse",
         }

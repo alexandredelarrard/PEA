@@ -26,10 +26,17 @@ def load_frame(
     until: object = None,
     downcast: bool = True,
     optional: bool = True,
+    stream: bool = False,
 ) -> pd.DataFrame | None:
     """Projected, row-scoped `store.load`; float64 -> float32 when `downcast`. None for an absent
     or empty table when `optional` (otherwise the store raises)."""
-    frame = store.load(table, columns=columns, where=where, since=since, until=until, optional=optional)
+    if stream:
+        chunks = [
+            downcast_f32(chunk) if downcast else chunk for chunk in store.iter_load(table, columns=columns, where=where, since=since, until=until)
+        ]
+        frame = pd.concat(chunks, ignore_index=True) if chunks else None
+    else:
+        frame = store.load(table, columns=columns, where=where, since=since, until=until, optional=optional)
     if frame is None:
         return None
-    return downcast_f32(frame) if downcast else frame
+    return downcast_f32(frame) if downcast and not stream else frame

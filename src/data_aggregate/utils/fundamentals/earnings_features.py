@@ -1,191 +1,140 @@
-"""
-earnings_features.py  (src/data_aggregate/utils/earnings_features.py)
----------------------------------------------------------------------
-Peer-relative features built from the HISTORICAL earnings-surprise archive
-(fetch_earnings_surprises: per quarter, the consensus EPS estimate, the reported
-EPS, and the surprise). These finally give a genuinely historical, backtestable
-view of "what did the market expect, and did the company beat or miss?".
+"""Report-associated EPS expectations and surprises, observable from the next session.
 
-Point-in-time discipline (two directions):
-  * FORWARD expectation (`fwd_eps`): the consensus estimate for the NEXT, not-yet
-    reported quarter, back-filled only into the ~quarter of trading days leading
-    up to that report (`FWD_FILL_LIMIT`). It is an estimate of a FUTURE outcome,
-    so it never leaks the reported number. (We cannot reconstruct how the
-    estimate was revised intra-quarter -- yfinance gives one consensus per date
-    -- so this is the final pre-report consensus, applied within its own quarter.)
-  * REALIZED (`eps_surprise_*`, `last_actual`): forward-filled only FROM the
-    earnings date onward, i.e. once the number is public. No look-ahead.
-
-Characteristics
-    fwd_eps_yield          next-quarter consensus EPS / price (forward E/P)
-    forward_earnings_yield NTM (annual, forward-rolled) EPS / price = 1 / forward P/E
-                           -- the historical, backtestable replacement for the
-                           yfinance forwardPE snapshot. NTM EPS = next-quarter
-                           consensus estimate + trailing 3 reported actuals (only
-                           the newest quarter is an estimate -> leak-free).
-    eps_expectation_growth next-quarter estimate vs last reported EPS
-                           (high => market pricing in aggressive growth)
-    eps_surprise_last      most recent reported surprise % (beat > 0 / miss < 0)
-    eps_surprise_4q_avg    trailing 4-quarter mean surprise (consistency of beats)
-
-Also exposes `ntm_ttm_eps()` (NTM & TTM annual EPS) for PEGY's projected-growth term.
+The archive has one terminal consensus per report, not historical forecast vintages.
+Unknown split units are masked; PEGY uses reported actuals independently.
 """
 
 from __future__ import annotations
+
+import logging
+from typing import cast
 
 import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.common.frames import ratio
 from src.data_aggregate.utils.fundamentals.feature_views import build_fundamental_views
+from src.utils.price_adjustments import ShareBasis
 
-# how many trading days before a report the forward estimate is allowed to apply
-FWD_FILL_LIMIT = 95
+logger = logging.getLogger(__name__)
 SURPRISE_WINDOW = 4
+_QUARTERLY_MAX_AGE_DAYS = 185
 
 
-def _prep(hist: pd.DataFrame) -> pd.DataFrame:
-    df = hist.copy()
-    df["earnings_date"] = pd.to_datetime(df["earnings_date"]).dt.normalize()
-    for c in ("eps_estimate", "eps_actual", "surprise_pct"):
-        if c not in df.columns:
-            df[c] = np.nan
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-    return df.sort_values(["ticker", "earnings_date"])
+def reported_events(hist: pd.DataFrame, trading_index: pd.DatetimeIndex) -> pd.DataFrame:
+    """Return finite actual-bearing reports, with next-session availability in `as_of`."""
+    df_reports = hist.copy()
+    df_reports["earnings_date"] = pd.to_datetime(df_reports["earnings_date"], errors="coerce").dt.normalize()
+    for field in ("eps_estimate", "eps_actual", "surprise_pct"):
+        values = df_reports[field] if field in df_reports else pd.Series(np.nan, index=df_reports.index)
+        df_reports[field] = pd.to_numeric(values, errors="coerce").replace([np.inf, -np.inf], np.nan)
+    df_reports = df_reports.dropna(subset=["ticker", "earnings_date", "eps_actual"])
+    df_reports = df_reports.sort_values(["ticker", "earnings_date"], kind="stable").drop_duplicates(["ticker", "earnings_date"], keep="last")
+    positions = trading_index.searchsorted(df_reports["earnings_date"], side="right")
+    df_reports = df_reports.loc[positions < len(trading_index)].copy()
+    df_reports["as_of"] = trading_index.take(positions[positions < len(trading_index)])
+    return df_reports.reset_index(drop=True)
 
 
-def _forward_to_daily(df: pd.DataFrame, value_col: str, idx: pd.DatetimeIndex) -> pd.DataFrame:
-    """Value keyed on a FUTURE earnings date, back-filled into the trading days
-    leading up to it (bounded to one quarter)."""
-    sub = df.dropna(subset=[value_col])
-    if sub.empty:
-        return pd.DataFrame(index=idx)
-    wide = sub.pivot_table(index="earnings_date", columns="ticker", values=value_col, aggfunc="last").sort_index()
-    return wide.reindex(wide.index.union(idx)).bfill(limit=FWD_FILL_LIMIT).reindex(idx)
+def _report_state_to_daily(
+    df_reports: pd.DataFrame,
+    value_fields: list[str],
+    idx: pd.DatetimeIndex,
+    *,
+    max_age_days: int | None = _QUARTERLY_MAX_AGE_DAYS,
+) -> dict[str, pd.DataFrame]:
+    """Select entire report states, preserving invalid cells rather than reviving older values."""
+    fields = {field: pd.DataFrame(index=idx, columns=df_reports["ticker"].unique(), dtype="float64") for field in value_fields}
+    for ticker, df_ticker in df_reports.groupby("ticker", sort=False):
+        reports = df_ticker["earnings_date"].to_numpy(dtype="datetime64[ns]")
+        positions = reports.searchsorted(idx.to_numpy(), side="left") - 1
+        selected = positions.clip(min=0)
+        valid = positions >= 0
+        if max_age_days is not None:
+            valid &= (idx.to_numpy() - reports[selected]) <= pd.Timedelta(days=max_age_days)
+        for field in value_fields:
+            fields[field][ticker] = np.where(valid, df_ticker[field].to_numpy(dtype="float64")[selected], np.nan)
+    return fields
 
 
-def _realized_to_daily(df: pd.DataFrame, value_col: str, idx: pd.DatetimeIndex) -> pd.DataFrame:
-    """Value keyed on a PAST earnings date, forward-filled from the day it was
-    reported (point-in-time, no look-ahead)."""
-    sub = df.dropna(subset=[value_col])
-    if sub.empty:
-        return pd.DataFrame(index=idx)
-    wide = sub.pivot_table(index="earnings_date", columns="ticker", values=value_col, aggfunc="last").sort_index()
-    return wide.reindex(wide.index.union(idx)).ffill().reindex(idx)
-
-
-def _reported_rolling_to_daily(df: pd.DataFrame, value_col: str, idx: pd.DatetimeIndex, window: int) -> pd.DataFrame:
-    """Trailing mean over the last `window` REPORTED quarters, forward-filled."""
-    sub = df.dropna(subset=[value_col]).copy()
-    if sub.empty:
-        return pd.DataFrame(index=idx)
-    sub["v"] = sub.groupby("ticker")[value_col].transform(lambda s: s.rolling(window, min_periods=1).mean())
-    wide = sub.pivot_table(index="earnings_date", columns="ticker", values="v", aggfunc="last").sort_index()
-    return wide.reindex(wide.index.union(idx)).ffill().reindex(idx)
-
-
-def _trailing_actual_sum(df: pd.DataFrame, idx: pd.DatetimeIndex, window: int) -> pd.DataFrame:
-    """Trailing `window`-quarter SUM of REPORTED eps_actual, forward-filled from each
-    report date (point-in-time; requires a full `window` of reported quarters)."""
-    sub = df.dropna(subset=["eps_actual"]).copy()
-    if sub.empty:
-        return pd.DataFrame(index=idx)
-    sub["v"] = sub.groupby("ticker")["eps_actual"].transform(lambda s: s.rolling(window, min_periods=window).sum())
-    wide = sub.pivot_table(index="earnings_date", columns="ticker", values="v", aggfunc="last").sort_index()
-    return wide.reindex(wide.index.union(idx)).ffill().reindex(idx)
-
-
-def _ntm_ttm_from_prepped(df: pd.DataFrame, idx: pd.DatetimeIndex) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """(ntm_eps, ttm_eps) daily wide frames from a prepped earnings frame.
-
-    ttm_eps = trailing 4 REPORTED quarterly actuals (annual trailing EPS).
-    ntm_eps = next-quarter consensus estimate + trailing 3 reported actuals -- a
-    leak-free, forward-ROLLED annual EPS: only the newest quarter is an estimate
-    (the same near-report consensus used by fwd_eps_yield), the other three are
-    reported actuals. A true 4-quarter-ahead consensus is NOT reconstructable
-    leak-free here (yfinance stores one estimate per quarter, so q+2..q+4 would use
-    values not known at the as-of date)."""
-    fwd_eps = _forward_to_daily(df, "eps_estimate", idx)  # next quarter (est), PIT window
-    ttm4 = _trailing_actual_sum(df, idx, 4)
-    ttm3 = _trailing_actual_sum(df, idx, 3)
-    ntm = fwd_eps + ttm3 if not fwd_eps.empty and not ttm3.empty else pd.DataFrame(index=idx)
-    return ntm, ttm4
-
-
-def ntm_ttm_eps(earnings_history: pd.DataFrame | None, idx: pd.DatetimeIndex) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Public helper: forward-rolled annual EPS (NTM) and trailing annual EPS (TTM)
-    from the earnings-surprise archive. Reused by fundamental_features for PEGY's
-    projected-growth term. Empty frames when the archive is unavailable."""
-    if earnings_history is None or earnings_history.empty or "earnings_date" not in earnings_history.columns:
-        return pd.DataFrame(index=idx), pd.DataFrame(index=idx)
-    return _ntm_ttm_from_prepped(_prep(earnings_history), idx)
-
-
-_EPOCH = pd.Timestamp("1970-01-01")
+def _supported_eps_basis(df_reports: pd.DataFrame, share_basis: ShareBasis | None) -> pd.Series:
+    """Reject report EPS whose split vintage or quoted-security units are unsupported."""
+    if share_basis is None:
+        return pd.Series(False, index=df_reports.index)
+    dates = df_reports["earnings_date"]
+    units = share_basis.factor(df_reports["ticker"], dates, "units")
+    df_splits = share_basis.actual
+    if df_splits.empty:
+        return units.eq(1.0)
+    df_splits = df_splits.loc[pd.to_numeric(df_splits["value"], errors="coerce").ne(1.0)]
+    if df_splits.empty:
+        return units.eq(1.0)
+    last_split = pd.to_datetime(df_splits["date"]).groupby(df_splits["ticker"]).max()
+    boundary = pd.to_datetime(df_reports["ticker"].map(last_split))
+    # shortcut: the archive has no EPS split-vintage evidence; retain only post-last-split reports.
+    return units.eq(1.0) & (boundary.isna() | dates.ge(boundary))
 
 
 def days_since_earnings(df: pd.DataFrame, idx: pd.DatetimeIndex, cap_days: int = 180) -> pd.DataFrame:
-    """Wide [date x ticker] CALENDAR days since the most recent PAST earnings report
-    (0 on the report day, rising to ~90+ as the next report approaches, then resetting).
-
-    Leak-free / point-in-time: on date t it uses only earnings dates on/before t (the
-    last report's date is public). NaN before a ticker's first report; clipped to
-    [0, cap_days] so a late/skipped quarter or data gap can't produce an outlier.
-    A near-zero value flags the post-earnings-announcement-drift (PEAD) window."""
-    sub = df.dropna(subset=["earnings_date"])[["ticker", "earnings_date"]].copy()
-    if sub.empty:
-        return pd.DataFrame(index=idx)
-    # numeric ordinal (days since epoch) so the pivot/ffill stays a clean float path
-    sub["ord"] = (sub["earnings_date"] - _EPOCH).dt.days
-    wide = sub.pivot_table(index="earnings_date", columns="ticker", values="ord", aggfunc="last").sort_index()
-    # last report ordinal known on/before each trading day (forward-fill the date)
-    wide = wide.reindex(wide.index.union(idx)).ffill().reindex(idx)
-    idx_ord = pd.Series((idx - _EPOCH).days, index=idx)
-    days = wide.rsub(idx_ord, axis=0)  # idx_ord - last_report_ord
-    return days.clip(lower=0, upper=cap_days)
+    """Calendar age of the latest actual-bearing report, visible next session and capped."""
+    df_reports = reported_events(df, idx)
+    df_reports["report_ordinal"] = (df_reports["earnings_date"] - pd.Timestamp("1970-01-01")).dt.days
+    daily = _report_state_to_daily(df_reports, ["report_ordinal"], idx, max_age_days=None)["report_ordinal"]
+    current = pd.Series((idx - pd.Timestamp("1970-01-01")).days, index=idx)
+    return daily.rsub(current, axis=0).clip(lower=0, upper=cap_days)
 
 
-def _derived_earnings_fields(hist: pd.DataFrame, idx: pd.DatetimeIndex, close: pd.DataFrame, level_factor: pd.DataFrame | None = None) -> dict:
-    """⚠ THE PRICE LEG IS PUT BACK ON THE LEVEL BASIS BEFORE ANY YIELD IS TAKEN.
-
-    Every yield here is `eps / price`, and the two legs do NOT sit on the same basis by
-    default: Yahoo back-adjusts `close_split` across a spinoff, while an EPS figure -- an
-    estimate or a reported actual -- is whatever was published at the time and is never
-    restated for one. So the yield comes out `S` times too high.
-
-    MEASURED, not assumed (`2026-09-01-spinoff-level-basis/before.md`): on the 1,422 rows
-    with `|S-1| > 10%`, `(eps/close_split) / (sharadar.epsdil/sharadar.price)` has median
-    1.3831 against a median `S` of 1.275 -- 3.5x closer to `S` than to 1.0. The same
-    measurement on the DIVIDEND leg came out at exactly 1.0, which is why
-    `dividend_features` does NOT get this treatment: Yahoo restates `Dividends` for a
-    spinoff and the legs there really do cancel.
-    """
-    df = _prep(hist)
-    fields: dict[str, pd.DataFrame] = {}
-
-    fwd_eps = _forward_to_daily(df, "eps_estimate", idx)
-    last_actual = _realized_to_daily(df, "eps_actual", idx)
+def _derived_earnings_fields(
+    hist: pd.DataFrame,
+    idx: pd.DatetimeIndex,
+    close: pd.DataFrame,
+    level_factor: pd.DataFrame | None = None,
+    *,
+    share_basis: ShareBasis | None = None,
+) -> dict[str, pd.DataFrame]:
+    """Build observed report expectations; unsupported EPS bases never enter price ratios."""
+    df_reports = reported_events(hist, idx)
+    safe = _supported_eps_basis(df_reports, share_basis)
+    logger.info("Report EPS share basis: supported=%s, masked_unknown_units=%s", int(safe.sum()), int((~safe).sum()))
+    df_reports["reported_expected_eps_yield"] = df_reports["eps_estimate"].where(safe)
+    grouped = df_reports.groupby("ticker", sort=False)
+    prior = grouped["eps_actual"].shift()
+    prior_safe = safe.groupby(df_reports["ticker"]).shift().fillna(False).astype(bool)
+    # shortcut: report calendar quarters proxy fiscal keys until the archive exposes fiscal periods.
+    quarter = df_reports["earnings_date"].dt.to_period("Q").astype("int64")
+    adjacent = quarter.sub(quarter.groupby(df_reports["ticker"]).shift()).eq(1)
+    df_reports["reported_expected_eps_growth_qoq"] = (df_reports["eps_estimate"] / prior.where(prior.gt(0)) - 1).where(safe & prior_safe & adjacent)
+    trailing = pd.Series(0.0, index=df_reports.index)
+    complete = safe.copy()
+    for lag in range(1, 4):
+        preceding = grouped["eps_actual"].shift(lag)
+        trailing += preceding
+        complete &= safe.groupby(df_reports["ticker"]).shift(lag).fillna(False).astype(bool)
+        complete &= quarter.sub(quarter.groupby(df_reports["ticker"]).shift(lag)).eq(lag)
+    df_reports["reported_expected_ttm_yield"] = (df_reports["eps_estimate"] + trailing).where(complete)
+    df_reports["eps_surprise_last"] = df_reports["surprise_pct"]
+    df_surprises = df_reports.dropna(subset=["surprise_pct"])
+    df_reports["eps_surprise_4q_avg"] = df_surprises.groupby("ticker", sort=False)["surprise_pct"].transform(
+        lambda values: values.rolling(SURPRISE_WINDOW, min_periods=1).mean()
+    )
+    names = [
+        "reported_expected_eps_yield",
+        "reported_expected_ttm_yield",
+        "reported_expected_eps_growth_qoq",
+        "eps_surprise_last",
+        "eps_surprise_4q_avg",
+    ]
+    df_reports[names] = df_reports[names].replace([np.inf, -np.inf], np.nan)
+    fields = {name: values.reindex(columns=close.columns) for name, values in _report_state_to_daily(df_reports, names, idx).items()}
     price = close.reindex(idx)
-    if level_factor is not None and not level_factor.empty:
-        price = price.mul(level_factor.reindex_like(price).fillna(1.0))
-
-    if not fwd_eps.empty:
-        fields["fwd_eps_yield"] = ratio(fwd_eps, price)  # next-quarter forward E/P
-        if not last_actual.empty:
-            fields["eps_expectation_growth"] = ratio(fwd_eps, last_actual, positive_den=True) - 1.0
-
-    # NTM (annual, forward-rolled) forward-earnings yield = 1 / forward P/E -- the
-    # historical, backtestable replacement for the yfinance forwardPE snapshot.
-    ntm_eps, _ = _ntm_ttm_from_prepped(df, idx)
-    if not ntm_eps.empty and ntm_eps.notna().any().any():
-        fields["forward_earnings_yield"] = ratio(ntm_eps, price)  # NTM E/P (higher = cheaper)
-
-    last_surprise = _realized_to_daily(df, "surprise_pct", idx)
-    if not last_surprise.empty:
-        fields["eps_surprise_last"] = last_surprise
-    avg_surprise = _reported_rolling_to_daily(df, "surprise_pct", idx, SURPRISE_WINDOW)
-    if not avg_surprise.empty:
-        fields["eps_surprise_4q_avg"] = avg_surprise
+    if level_factor is not None:
+        price = price.mul(level_factor.reindex_like(price))
+    if share_basis is not None:
+        for ticker in share_basis.policies.keys() & set(price.columns):
+            units = share_basis.factor(pd.Series(ticker, index=idx), pd.Series(idx, index=idx), "units")
+            price[ticker] = price[ticker].where(units.eq(1.0))
+    for name in ("reported_expected_eps_yield", "reported_expected_ttm_yield"):
+        fields[name] = ratio(fields[name], price, positive_den=True)
     return fields
 
 
@@ -197,32 +146,20 @@ def build_earnings_feature_panel(
     level_factor: pd.DataFrame | None = None,
     history_fields: dict[str, pd.DataFrame] | None = None,
     output_since: pd.Timestamp | None = None,
+    *,
+    share_basis: ShareBasis | None = None,
 ) -> pd.DataFrame:
-    """Long-format earnings panel using the approved raw/self-history view contract.
-
-    Empty if the earnings history or prices are unavailable.
-    """
+    """Long-format report features using the approved raw/self-history view contract."""
     if earnings_history is None or earnings_history.empty or stock_close is None or "earnings_date" not in earnings_history.columns:
         return pd.DataFrame(columns=["date", "ticker"])
-
-    prepped = _prep(earnings_history)
-    fields = _derived_earnings_fields(earnings_history, trading_index, stock_close, level_factor)
-    panel = build_fundamental_views(
-        fields,
-        peer_dict,
-        history_fields=history_fields,
-        output_since=output_since,
-    )
-
-    # RAW calendar signal: days since the most recent earnings.
-    # Same meaning for every name, so it is emitted as a plain `f_days_since_earnings`
-    # (the model splits/loads on the raw value; PEAD decays as this rises).
-    dse = days_since_earnings(prepped, trading_index)
+    fields = _derived_earnings_fields(earnings_history, trading_index, stock_close, level_factor, share_basis=share_basis)
+    panel = build_fundamental_views(fields, peer_dict, history_fields=history_fields, output_since=output_since)
+    days = days_since_earnings(earnings_history, trading_index)
     if output_since is not None:
-        dse = dse.loc[dse.index >= pd.Timestamp(output_since)]
-    if not dse.empty and dse.notna().any().any():
-        long = dse.stack()
-        long.index.set_names(["date", "ticker"], inplace=True)
-        long = long.rename("f_days_since_earnings").reset_index()
-        panel = long if (panel is None or panel.empty) else panel.merge(long, on=["date", "ticker"], how="outer")
+        days = days.loc[days.index >= pd.Timestamp(output_since)]
+    if not days.empty and days.notna().any().any():
+        values = cast(pd.Series, days.stack(future_stack=True)).dropna()
+        values.index = values.index.set_names(["date", "ticker"])
+        df_long = values.rename("f_days_since_earnings").reset_index()
+        panel = df_long if panel.empty else panel.merge(df_long, on=["date", "ticker"], how="outer")
     return panel

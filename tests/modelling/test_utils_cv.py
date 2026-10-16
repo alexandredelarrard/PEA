@@ -6,7 +6,19 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.modelling.utils.cv import CALENDAR_DAYS_PER_YEAR, purged_wf_splits, temporal_valid_split, time_decay_weights
+from src.modelling.utils.cv import CALENDAR_DAYS_PER_YEAR, label_end_dates, purged_wf_splits, temporal_valid_split, time_decay_weights
+
+
+def test_label_end_uses_complete_session_calendar_and_purges_inner_overlap() -> None:
+    calendar = pd.DatetimeIndex(["2024-07-01", "2024-07-02", "2024-07-03", "2024-07-05", "2024-07-08", "2024-07-09"])
+    ends = label_end_dates(calendar, 2)
+    assert ends.loc["2024-07-02"] == pd.Timestamp("2024-07-05")
+    assert pd.isna(ends.iloc[-1])
+    df_panel = pd.DataFrame({"date": calendar[:4], "label_end": ends.iloc[:4].to_numpy()})
+    train, valid = temporal_valid_split(df_panel, train_frac=0.75)
+    assert train["date"].tolist() == [pd.Timestamp("2024-07-01")]
+    assert (train["label_end"] < valid["date"].min()).all()
+    print("SANITY: actual July holiday calendar maps horizon ends; inner labels ending on validation are purged.")
 
 
 def test_purged_wf_splits_is_deterministic_and_embargoed() -> None:

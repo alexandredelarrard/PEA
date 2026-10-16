@@ -25,9 +25,9 @@ The three layers have separate contracts:
 
 | Layer | Location | Responsibility |
 | --- | --- | --- |
-| Signal engines | [src/modelling](../../src/modelling/) | Train cross-sectional ensembles, report diagnostics and a label-only backtest, and produce scores. |
-| Strategy sleeves | [src/strategies](../../src/strategies/) | Convert one engine/data contract into a self-contained return stream and tradeable book. |
-| Portfolio and execution | [src/portfolio](../../src/portfolio/) | Align sleeves, allocate risk, target portfolio volatility, and persist trade moves. |
+| Signal engines | [src/modelling](../modules/modelling.md) | Train cross-sectional ensembles, report diagnostics and a label-only backtest, and produce scores. |
+| Strategy sleeves | [src/strategies](../modules/strategies.md) | Convert one engine/data contract into a self-contained return stream and tradeable book. |
+| Portfolio and execution | [src/portfolio](../modules/portfolio.md) | Align sleeves, allocate risk, target portfolio volatility, and persist trade moves. |
 
 A sleeve never depends on another sleeve. The portfolio is the only component that sees and blends all sleeve return streams.
 
@@ -59,7 +59,9 @@ The book panels are essential. Portfolio allocation varies through time, and sha
 | Production refit | `run_train(full_history=True)` | Fit through the latest eligible cube date with no holdout. Daily prediction reads these artifacts. |
 | Latest prediction | `run_predict(n_dates=...)` | Load production artifacts, score the newest unlabelled cube rows, and write `predictions_latest` without retraining. |
 
-The weekly order is deliberate: holdout training → portfolio backtest → full-history refit. Reversing it makes evaluation and horizon-blend weights in-sample.
+The weekly order remains holdout training → portfolio backtest → full-history refit in [dag_modelling.py](../../src/dags/dag_modelling.py). Holdout training runs five folds once, saves per-horizon selected LightGBM iteration counts and OOF metrics, and fits the cutoff artifact using median counts. Production full-train reuses that saved selection without CV, fitting every eligible matured row with unchanged learning rate and parameters. Linear/RF receive all eligible rows. Last-outer-test rows and their original fold models supply validation SHAP/PDP; final fitted-row explanations are not OOF evidence.
+
+The requested training end is a feature ceiling X; the observation cutoff includes its longest label endpoint, capped by available complete sessions. Label ends use distinct observed price-part sessions before labelled-row filtering. Inner training labels end strictly before validation; outer training labels end strictly before test. Portfolio evaluation must begin after the latest fitted label end. The current configuration uses X=2022-01-01, maximum horizon90 sessions and portfolio start2022-06-01. Actual fitted feature/label endpoints and dropped rows are recorded separately.
 
 ## Model completion criteria
 
@@ -71,6 +73,14 @@ A model family is not complete until it has:
 4. persisted artifacts that round-trip through the production prediction path.
 
 Every member, of any family, serializes as one pickle of its fitted transformer (`model_h<h>_<family>.pkl`, without context, config or logger), so a new family round-trips with no extra persistence code.
+
+## PEGY from reported earnings
+
+`_pegy_fields` in [fundamental_features.py](../../src/data_aggregate/utils/fundamentals/fundamental_features.py) calculates trailing P/E divided by reported quarterly EPS growth plus dividend yield, with both denominator inputs expressed in percentage points. The growth input is the latest published `eps_actual` divided by the actual four reports earlier, minus one. Both EPS values must be positive; report dates must span four calendar quarters because the archive has no fiscal-period key. Incomplete comparisons and a nonpositive combined denominator are undefined. Date-only earnings releases enter the growth input on the next trading session, and observations expire after the existing 185-day quarterly freshness window. A newly reported invalid growth value clears the preceding value.
+
+PEGY never reads `eps_estimate`. When the entire earnings archive is absent, its existing fallback uses realized fiscal net-income growth from the merged fundamentals history. [PEGY regressions](../../tests/data_aggregate/test_fundamental_features.py) check arithmetic, next-session visibility, estimate/future-actual invariance, missing quarters and invalid EPS bases. Historical actuals can still be revised or change accounting basis; this change removes the estimate-vintage dependency rather than certifying those source histories.
+
+Rebuild the full fundamentals cube part and assemble the cube before using the changed `f_pegy` and its derived views historically. An incremental tail would leave the old definition in earlier rows and self-history inputs. The [earnings builder](../../src/data_aggregate/utils/fundamentals/earnings_features.py) now exposes report-associated expectations only after an actual-bearing event, on the next trading session. f_reported_expected_eps_yield, f_reported_expected_ttm_yield and f_reported_expected_eps_growth_qoq replace the old forward-labelled names; the firsttwo retain their history views. Expected TTM uses the current report's estimate plus three preceding actual quarters. Unknown share bases are masked, invalid new reports clear prior state, and the existing185day freshness cap applies. These are archived report-time expectations, not historical forward-consensus vintages. Full derived-history rebuild remains necessary before adoption.
 
 ## Workforce features
 

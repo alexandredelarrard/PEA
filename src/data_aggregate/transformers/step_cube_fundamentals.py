@@ -35,6 +35,7 @@ from src.data_aggregate.utils.common.incremental import (
     plan_window,
     write_part,
 )
+from src.data_aggregate.utils.common.level_basis import level_actions, load_bugfix, load_share_basis
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
 from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
@@ -44,6 +45,7 @@ from src.data_aggregate.utils.common.price_frames import (
     load_price_frames,
     load_trading_calendar,
 )
+from src.data_aggregate.utils.fundamentals.disclosure_features import disclosure_return_fields
 from src.data_aggregate.utils.fundamentals.dividend_features import build_dividend_feature_panel
 from src.data_aggregate.utils.fundamentals.earnings_features import build_earnings_feature_panel
 from src.data_aggregate.utils.fundamentals.employee_features import (
@@ -51,7 +53,7 @@ from src.data_aggregate.utils.fundamentals.employee_features import (
     build_employee_feature_panel,
     part_time_weight,
 )
-from src.data_aggregate.utils.fundamentals.feature_views import FEATURE_COLUMNS, HISTORY_FEATURES
+from src.data_aggregate.utils.fundamentals.feature_views import FEATURE_COLUMNS, HISTORY_FEATURES, build_fundamental_views
 from src.data_aggregate.utils.fundamentals.fundamental_features import (
     build_fundamental_feature_panel,
     load_notes_num_scoped,
@@ -69,8 +71,8 @@ _EMPLOYEE_LOOKBACK_YEARS = 2
 
 class StepCubeFundamentals(Step):
     # The price fields this step projects, declared like every sibling sub-step so the
-    # projection stays visible and testable (valuation ratios need the close only).
-    _FIELDS = ("close_split", "level_factor")
+    # Levels value the business; persisted total returns measure disclosure responses.
+    _FIELDS = ("close_split", "level_factor", "ret", "sector_ret")
 
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
@@ -146,6 +148,7 @@ class StepCubeFundamentals(Step):
             "earnings-expectation",
             "No earnings-expectation features built.",
         )
+        merger.add(self._disclosure_panel(dividend_frames, earnings, output_since), "disclosure response")
 
         # employees
         merger.add(
@@ -164,8 +167,7 @@ class StepCubeFundamentals(Step):
 
         panel = merger.to_long().drop(columns=["_grid"], errors="ignore")
         panel = self._restrict_to_skeleton(panel, frames.skeleton())
-        if not window.is_full:
-            panel = panel.reindex(columns=["date", "ticker", *FEATURE_COLUMNS])
+        panel = panel.reindex(columns=["date", "ticker", *FEATURE_COLUMNS])
         del frames, fundamentals, earnings, employees, pit
 
         n = write_part(self._store, Tables.cube_part_fundamentals, panel, window, drop_empty=True)
@@ -333,7 +335,7 @@ class StepCubeFundamentals(Step):
             intrinsic_cfg=self._cfg.get("intrinsic", {}),
             hist_window=int(hist.get("window", 1260)),
             hist_min_periods=int(hist.get("min_periods", 252)),
-            earnings_history=earnings,  # PEGY projected-growth term
+            earnings_history=earnings,
             pension_facts=load_pension_facts_scoped(
                 self._context,
                 tickers=frames.universe,
@@ -346,6 +348,10 @@ class StepCubeFundamentals(Step):
             ),
             history_fields=history_fields,
             output_since=output_since,
+            feature_cfg={
+                key: int(self._cfg.get("fundamentals_features", {}).get(key, 8))
+                for key in ("earnings_lags", "earnings_scale_quarters", "persistence_quarters")
+            },
         )
 
     def _sector_kpi_panel(
@@ -376,11 +382,13 @@ class StepCubeFundamentals(Step):
         history_fields: dict[str, pd.DataFrame] | None,
         output_since: pd.Timestamp | None,
     ) -> pd.DataFrame | None:
-        """Forward EPS yield, expected EPS growth and realized surprise. Genuinely historical
-        and point-in-time: the forward estimate applies only within its own quarter, the
-        actual only after the report."""
+        """Report-associated expectations and surprises on their observed publication clock."""
         if earnings is None:
             return None
+        names = list(frames.universe)
+        actions = level_actions(self._context, names)
+        splits = self._store.load(Tables.prices_splits, columns=["ticker", "date", "ratio"], where={"ticker": names}, optional=True)
+        basis = load_share_basis(self._context, names, load_bugfix(self._context.config_dir), actions, splits)
         return build_earnings_feature_panel(
             earnings,
             frames.peers,
@@ -389,7 +397,27 @@ class StepCubeFundamentals(Step):
             level_factor=frames.level_factor,
             history_fields=history_fields,
             output_since=output_since,
+            share_basis=basis,
         )
+
+    def _disclosure_panel(
+        self,
+        frames: PriceFrames,
+        earnings: pd.DataFrame | None,
+        output_since: pd.Timestamp | None,
+    ) -> pd.DataFrame | None:
+        """Use the warmed return grid so incremental event windows retain their anchor."""
+        if earnings is None:
+            return None
+        frames.require("ret", "sector_ret")
+        assert frames.ret is not None and frames.sector_ret is not None
+        fields = disclosure_return_fields(
+            earnings,
+            frames.ret,
+            frames.sector_ret,
+            reaction_sessions=int(self._cfg.get("fundamentals_features", {}).get("reaction_sessions", 3)),
+        )
+        return build_fundamental_views(fields, frames.peers, output_since=output_since)
 
     def _employee_panel(
         self,

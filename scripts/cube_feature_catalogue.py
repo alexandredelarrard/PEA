@@ -127,7 +127,7 @@ add(
     "pegy",
     "value",
     "Trailing P/E divided by (EPS growth% + dividend yield%) -- growth- and income-adjusted P/E.",
-    "The growth term PREFERS projected NTM/TTM EPS growth from the analyst archive and falls back to realised TTM net-income growth. The denominator is masked to > 0, so a shrinking, non-paying firm is null rather than negative -- PEGY is undefined there, not 'attractive'.",
+    "The growth term uses realised TTM net-income growth only. The denominator is masked to > 0, so a shrinking, non-paying firm is null rather than negative -- PEGY is undefined there, not 'attractive'.",
     "Low = cheap for the growth bought. The masked denominator is what stops the classic PEG sign flip that makes a collapsing company look like the cheapest name in the universe.",
 )
 add(
@@ -874,25 +874,25 @@ add(
 
 # ------------------------------------------------------------ expectations #
 add(
-    "fwd_eps_yield",
+    "reported_expected_eps_yield",
     "expectations",
-    "Next-quarter consensus EPS / price.",
-    "Point-in-time: a forward estimate applies only within its own quarter and the actual only after the report.",
-    "The forward analogue of E/P; disagreement with the trailing version is the re-rating signal.",
+    "Archived consensus for the just-reported quarter / current compatible-basis price.",
+    "Available only after the actual-bearing report, from the next session. Unknown historical EPS split units are masked.",
+    "High = a large reported-quarter expectation per dollar of equity; this is not a forward consensus vintage.",
 )
 add(
-    "forward_earnings_yield",
+    "reported_expected_ttm_yield",
     "expectations",
-    "NTM (next-twelve-months) consensus EPS / price.",
-    "Built from the analyst-estimate archive with the same PIT discipline.",
-    "Higher = cheaper on forward earnings.",
+    "Just-reported-quarter archived consensus plus three preceding actual EPS values / current compatible-basis price.",
+    "Observed from the report's next session with complete, compatible component support; no historical NTM forecast is inferred.",
+    "Higher = cheaper relative to report-associated expected trailing-year earnings.",
 )
 add(
-    "eps_expectation_growth",
+    "reported_expected_eps_growth_qoq",
     "expectations",
-    "Next-quarter estimate / last actual - 1.",
-    "The denominator is masked to > 0, so a loss quarter does not produce a sign-flipped growth rate.",
-    "The expectations ramp; large positives are recovery stories.",
+    "Just-reported-quarter archived consensus / the preceding reported actual - 1.",
+    "Available only after the report; positive, compatible prior EPS is required and the current actual is excluded from the denominator.",
+    "Large positives describe a strong expectation relative to the preceding reported quarter; seasonality can dominate.",
 )
 add(
     "eps_surprise_last",
@@ -911,9 +911,67 @@ add(
 add(
     "days_since_earnings",
     "expectations",
-    "Calendar days since the most recent PAST earnings report, clipped to [0, 180].",
-    "Leak-free: on date t it uses only report dates on or before t. NaN before a ticker's first report -- not 0, which would read as 'reported today'. The clip stops a late or skipped quarter producing an outlier.",
+    "Calendar days since the most recent actual-bearing report, clipped to [0, 180].",
+    "Observed from the next trading session; actual-null scheduled events never reset it. NaN before a ticker's first report. The clip stops a late or skipped quarter producing an outlier.",
     "A near-zero value flags the post-earnings-announcement-drift window, which is the whole reason the feature exists; the 180 ceiling is the clip, not a real gap.",
+)
+
+for lag in range(8):
+    add(
+        f"earnings_sue_lag{lag}",
+        "earnings_history",
+        f"Seasonal single-quarter net-income change, standardized by eight preceding changes; fiscal lag {lag}.",
+        "Uses distinct contiguous fiscal quarters and only amendments public at the feature date. Current change is excluded from its scale; zero or incomplete scale stays null.",
+        "Both signs are valid; near-zero historical earnings variability can amplify the ratio and requires raw-leg inspection.",
+    )
+add(
+    "earnings_improvement_streak",
+    "earnings_history",
+    "Consecutive positive seasonal quarterly earnings changes, capped at eight.",
+    "Missing quarters or changes never count as improvements and cannot bridge a streak.",
+    "Bounded 0 to 8; eight means at least eight consecutive improvements.",
+)
+add(
+    "earnings_abret_3d",
+    "disclosure_response",
+    "Stock total return minus existing-peer-basket total return over three sessions after report availability.",
+    "Both legs compound separately. Actual-bearing reports become available next session; three complete sessions are required and new reports reset the warmup.",
+    "Signed compounded-return difference; it can be below -100% when the peer basket rises strongly.",
+)
+add(
+    "earnings_abret_since_report",
+    "disclosure_response",
+    "Stock compounded total return minus peer-basket compounded total return since report availability.",
+    "Uses the existing persisted daily peer basket; no missing return is converted to zero. The current event's return window evolves through each close.",
+    "Both signs valid; the difference has no -100% floor. A missing leg makes the cumulative window unknown.",
+)
+add(
+    "profit_improvement_to_assets",
+    "profit_improvement",
+    "Change in TTM net income versus four quarters earlier / mean positive ex-lease assets at both dates.",
+    "Uses an asset denominator, so a narrowing loss is positive without a negative-earnings division or sign reversal.",
+    "Signed; large values can reflect impairments, recoveries or a small asset base and require source inspection.",
+)
+add(
+    "roa_vol_8q",
+    "persistence",
+    "Sample standard deviation of eight quarterly observations of TTM net income / positive ex-lease assets.",
+    "Requires eight complete contiguous fiscal quarters, rather than eight repeated daily observations.",
+    "Nonnegative; large values describe unstable profitability or require inspection of the asset denominator.",
+)
+add(
+    "fcf_positive_fraction_8q",
+    "persistence",
+    "Fraction of eight consecutive quarterly TTM free-cash-flow observations strictly above zero.",
+    "All eight observations must exist; missing cash flow is never classified as negative.",
+    "Bounded 0 to 1, in steps of one eighth; zero cash flow counts as nonpositive.",
+)
+add(
+    "ocf_yield",
+    "value",
+    "Signed TTM operating cash flow / current positive market cap, before capex.",
+    "Uses the same split/spinoff-consistent market-cap basis as existing valuation yields. Negative operating cash flow remains informative.",
+    "Both signs are valid; compare to FCF yield to identify capex demands, and inspect unusually small market caps.",
 )
 
 # ------------------------------------------------------------- state flags #

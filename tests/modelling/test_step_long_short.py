@@ -73,8 +73,12 @@ class _SpyStore:
         )
         return out
 
+    def iter_load(self, table: Any, columns: list[str] | None = None, **kwargs: Any) -> Any:
+        self.loads.append({"table": str(table), "columns": list(columns or []), "where": kwargs.get("where"), "dtypes": {}})
+        yield from self._store.iter_load(table, columns=columns, **kwargs)
 
-def _cube(n_days: int = 260, n_tickers: int = 40) -> pd.DataFrame:
+
+def _cube(n_days: int = 620, n_tickers: int = 40) -> pd.DataFrame:
     panel = signal_panel(n_days=n_days, n_tickers=n_tickers)
     rng = np.random.default_rng(9)
     cube = panel.rename(columns={"y": target_column("rank", 30)})
@@ -94,6 +98,7 @@ def _setup(
             tcol = target_column("rank", h)
             cube[tcol] = (cube[tcol] > 0.5).astype(float).where(cube[tcol].notna())
     sqlite_store.replace(Tables.cube, cube)
+    sqlite_store.replace(Tables.cube_part_prices, cube[["date", "ticker"]])
     spy = _SpyStore(sqlite_store)
     dates = sorted(cube["date"].unique())
     base = {
@@ -135,6 +140,15 @@ def test_schema_projection_is_present_columns_and_never_a_target() -> None:
     print(f"  load cols {load_cols}; dropped {dropped}; a configured target is never loaded as a feature; horizons from the schema. Validated.")
 
 
+@pytest.mark.parametrize("legacy", ["f_fwd_eps_yield", "f_forward_earnings_yield", "f_eps_expectation_growth"])
+def test_training_refuses_obsolete_fundamentals_cube(legacy: str) -> None:
+    step: Any = object.__new__(StepLongShort)
+    step._context = SimpleNamespace(store=SimpleNamespace(columns=lambda table: ["date", "ticker", legacy]))
+    with pytest.raises(RuntimeError, match="rebuild full fundamentals"):
+        step._resolve_schema()
+    print(f"SANITY: old input {legacy} fails before training or writes; full schema migration is explicit.")
+
+
 def test_real_config_resolves_rf_h30_vs_default() -> None:
     cfg = read_config("./configs")
     rf = {h: RandomForestModel.configured_columns(cfg, h) for h in (30, 60, 90)}
@@ -152,6 +166,17 @@ def test_real_config_resolves_rf_h30_vs_default() -> None:
 def test_run_train_streams_one_horizon_at_a_time_and_persists_everything(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     step, spy, cfg = _setup(tmp_path, sqlite_store)
     loaded: list[dict[str, str]] = []  # dtypes AFTER load_frame (the store itself returns float64)
+    fitted: list[tuple[int, int | None, float]] = []
+    original_fit = LightGBMModel.fit
+
+    def recording_fit(self: Any, train: pd.DataFrame, valid: pd.DataFrame | None = None) -> Any:
+        if self.family == "lgbm":
+            fitted.append((len(train), None if valid is None else len(valid), float(self._config.lgbm.learning_rate)))
+        if valid is not None:
+            assert train["label_end"].max() < valid["date"].min()
+        return original_fit(self, train, valid)
+
+    monkeypatch.setattr(LightGBMModel, "fit", recording_fit)
 
     def _recording_load_frame(*args: Any, **kwargs: Any) -> pd.DataFrame | None:
         out = real_load_frame(*args, **kwargs)
@@ -179,6 +204,16 @@ def test_run_train_streams_one_horizon_at_a_time_and_persists_everything(tmp_pat
 
     meta = json.loads((tmp_path / "models" / "metadata.json").read_text())
     assert META_KEYS <= set(meta) and meta["artifact_format"] == ARTIFACT_FORMAT
+    assert len(fitted) == len(HORIZONS) * 3, "two fold fits plus one cutoff fit per horizon; no per-fold refit"
+    assert sum(v is None for _, v, _ in fitted) == len(HORIZONS)
+    assert all(lr == cfg.lgbm.learning_rate for _, _, lr in fitted)
+    for h in HORIZONS:
+        audit = meta["fit_audit"][str(h)]
+        assert len(res.cv[h].rounds) == 2
+        assert audit["requested_rounds"] == int(np.median(res.cv[h].rounds))
+        assert audit["achieved_rounds"] > 0 and audit["achieved_rounds"] <= audit["requested_rounds"]
+        assert pd.Timestamp(audit["label_end_max"]) <= pd.Timestamp(meta["training_as_of"])
+        assert audit["fitted_rows"] == len(res.predictions.loc[res.predictions[f"z_{h}"].notna()])
     assert meta["train_end"] == cfg.train.end_date and meta["full_history"] is False and meta["categorical_cols"] == ["sector"]
     for h in HORIZONS:
         for fam in cfg.model.ensemble:
@@ -199,6 +234,10 @@ def test_run_train_streams_one_horizon_at_a_time_and_persists_everything(tmp_pat
 def test_run_predict_scores_the_newest_unlabelled_date(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     step, spy, cfg = _setup(tmp_path, sqlite_store, save=False)
     step.run_train()
+    with pytest.raises(ValueError, match="incompatible"):
+        cfg.lgbm.learning_rate *= 2
+        step.run_train(full_history=True)
+    cfg.lgbm.learning_rate /= 2
     # the synthetic cube is dated in the past, so the input guard (test_predict_freshness.py) is stubbed out
     monkeypatch.setattr("src.modelling.steps.step_long_short.check_prediction_inputs", lambda *args, **kwargs: {})
     spy.loads.clear()
@@ -224,6 +263,11 @@ def test_run_predict_scores_the_newest_unlabelled_date(tmp_path: Path, sqlite_st
         f"  newest date {pd.Timestamp(newest).date()} has NO label yet and is scored for 40 names x {len(HORIZONS)} horizons x {last['model'].nunique()} models;"
     )
     print(f"  one feature-only float64 read; blended stamped h~{blend_h}; {len(out)} long rows persisted. Validated.")
+    df_incomplete = sqlite_store.load(Tables.cube).drop(columns=["f0"])
+    sqlite_store.drop(Tables.cube)
+    sqlite_store.replace(Tables.cube, df_incomplete)
+    with pytest.raises(RuntimeError, match="inputs absent"):
+        step.run_predict()
 
 
 def test_classification_ensemble_gets_finite_cv_metrics_and_ir_weights(tmp_path: Path, sqlite_store: Any) -> None:
@@ -252,6 +296,8 @@ def test_classification_ensemble_gets_finite_cv_metrics_and_ir_weights(tmp_path:
 
 def test_full_history_records_the_effective_train_end(tmp_path: Path, sqlite_store: Any) -> None:
     step, _, cfg = _setup(tmp_path, sqlite_store, save=False)
+    step.run_train()
+    step._cross_validate = lambda *args: pytest.fail("production refit must reuse saved CV counts")
     res = step.run_train(full_history=True)
     meta = json.loads((tmp_path / "models" / "metadata.json").read_text())
     assert res.train_end_effective is not None, "a full-history refit records the last labelled date"
@@ -274,6 +320,23 @@ def test_run_delegates_and_guards(tmp_path: Path, sqlite_store: Any, monkeypatch
         old_step.run_predict()
     print("\n=== SANITY CHECK: run / guards ===")
     print("  run() == run_train(); an unknown family is refused at construction; pre-refactor artifacts -> 'retrain' error. Validated.")
+
+
+def test_immature_target_mutation_cannot_change_training_panel(tmp_path: Path, sqlite_store: Any) -> None:
+    step, _, _ = _setup(tmp_path, sqlite_store, save=False)
+    step._calendar = pd.DatetimeIndex(sqlite_store.distinct(Tables.cube_part_prices, "date")).sort_values()
+    step._training_as_of = step._calendar[-100]
+    schema = step._resolve_schema()
+    before = step._load_horizon(60, schema, full_history=False)
+    assert before is not None and before["label_end"].max() <= step._training_as_of
+    df_cube = sqlite_store.load(Tables.cube)
+    future = df_cube["date"] > before["date"].max()
+    df_cube.loc[future, target_column("rank", 60)] = 1e9
+    sqlite_store.replace(Tables.cube, df_cube)
+    after = step._load_horizon(60, schema, full_history=False)
+    pd.testing.assert_frame_equal(before, after)
+    assert step._eligibility[60]["immature_rows"] > 0
+    print("SANITY: unavailable future target values cannot change training rows, values or date boundaries.")
 
 
 def test_run_predict_on_the_real_database_makes_sense(monkeypatch: pytest.MonkeyPatch) -> None:

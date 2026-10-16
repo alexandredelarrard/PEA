@@ -4,9 +4,8 @@ fundamental_features.py  (src/data_aggregate/utils/fundamental_features.py)
 ---------------------------------------------------------------------------
 Point-in-time fundamental signals for the modelling cube. Every approved
 characteristic is emitted in raw economic units; the selected characteristics
-also receive a trailing self-history z-score. Peer and whole-universe
-cross-sectional encodings are deliberately omitted from this part under its
-200-column contract.
+also receive a trailing self-history z-score. Two explicit existing-peer
+comparisons complete the 217-column fundamentals contract.
 
 CHARACTERISTICS
 ===============
@@ -101,6 +100,8 @@ skipped automatically.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import numpy as np
 import pandas as pd
 
@@ -125,8 +126,9 @@ from src.data_aggregate.utils.common.xs import (
     HIST_WINDOW,
     self_history_z,
 )
-from src.data_aggregate.utils.fundamentals.earnings_features import ntm_ttm_eps
+from src.data_aggregate.utils.fundamentals.earnings_features import reported_events
 from src.data_aggregate.utils.fundamentals.feature_views import build_fundamental_views
+from src.data_aggregate.utils.fundamentals.history_features import reported_history_fields
 from src.data_aggregate.utils.fundamentals.intrinsic import intrinsic_value_daily
 
 _PENSION_FACTS_TABLE = "pension_facts"  # bulk Financial-Statement-Data-Sets pension facts (literal)
@@ -941,18 +943,20 @@ def _altman_z_fields(daily, mcap: pd.DataFrame, revenue: pd.DataFrame) -> dict:
 
 
 def _pegy_fields(
-    daily,
+    daily: Callable[[str], pd.DataFrame],
     fund_hist: pd.DataFrame,
     idx: pd.DatetimeIndex,
     mcap: pd.DataFrame,
     net_income: pd.DataFrame,
     yoy_periods: int,
     earnings_history: pd.DataFrame | None,
-) -> dict:
+) -> dict[str, pd.DataFrame]:
     """PEGY = P/E / (EPS growth% + dividend yield%).
 
-    Trailing P/E; the growth term PREFERS PROJECTED EPS growth (NTM/TTM-1 from the
-    analyst-estimate archive) and falls back to TTM realized net-income growth.
+    Trailing P/E; growth is the latest reported quarterly actual EPS versus four
+    reports earlier, requiring the report dates to span four calendar quarters.
+    Date-only releases become visible on the next trading session. Estimates are
+    never used. Without an earnings archive, retain realized fiscal income growth.
 
     The dividend yield fills to 0 for non-payers, but GROWTH must be known or PEGY is
     undefined (don't silently treat unknown growth as 0). This is the SEC cash-flow
@@ -960,14 +964,25 @@ def _pegy_fields(
     per-share/ex-date version is the standalone `dividend_yield` feature in
     dividend_features.py (both agree; see its reconciliation note)."""
     pe = ratio(mcap, net_income.where(net_income > 0), positive_den=True)
-    growth_pct = None
     if earnings_history is not None and not earnings_history.empty:
-        ntm_e, ttm_e = ntm_ttm_eps(earnings_history, idx)
-        if not ntm_e.empty and not ttm_e.empty:
-            proj = ratio(ntm_e, ttm_e.where(ttm_e > 0)) - 1.0  # projected EPS growth
-            if proj.notna().any().any():
-                growth_pct = proj * 100.0
-    if growth_pct is None:
+        df_reported = reported_events(earnings_history, idx)
+        growth_pct = pd.DataFrame(index=idx, columns=mcap.columns, dtype="float64")
+        for ticker, df_ticker in df_reported.groupby("ticker", sort=False):
+            if ticker not in growth_pct.columns:
+                continue
+            current = df_ticker["eps_actual"]
+            prior = current.shift(4)
+            # shortcut: report quarters proxy fiscal quarters until the archive supplies fiscal-period keys.
+            quarters = df_ticker["earnings_date"].dt.to_period("Q").astype("int64")
+            # A missing quarter must not turn four older observations into a false YoY comparison.
+            valid_growth = current.gt(0) & prior.gt(0) & quarters.sub(quarters.shift(4)).eq(4)
+            growth = ((current / prior - 1.0) * 100.0).where(valid_growth).to_numpy()
+            reports = df_ticker["earnings_date"].to_numpy(dtype="datetime64[ns]")
+            positions = reports.searchsorted(idx.to_numpy(), side="left") - 1
+            selected = positions.clip(min=0)
+            fresh = (idx.to_numpy() - reports[selected]) <= pd.Timedelta(days=_QUARTERLY_MAX_AGE_DAYS)
+            growth_pct[ticker] = np.where((positions >= 0) & fresh, growth[selected], np.nan)
+    else:
         growth_pct = (
             fiscal_change_to_daily(fund_hist, "netIncome", idx, kind="pct", periods=yoy_periods, years=1, max_age_days=_QUARTERLY_MAX_AGE_DAYS)
             * 100.0
@@ -1507,36 +1522,17 @@ def _intrinsic_fields(
 # --------------------------------------------------------------------------- #
 # Characteristics                                                              #
 # --------------------------------------------------------------------------- #
-def _derived_fields(
+def _fiscal_accessors(
     fund_hist: pd.DataFrame,
     idx: pd.DatetimeIndex,
-    close: pd.DataFrame | None,
-    yoy_periods: int = 1,
-    intrinsic_cfg: dict | None = None,
-    earnings_history: pd.DataFrame | None = None,
-    pension_facts: pd.DataFrame | None = None,
-    notes_num: pd.DataFrame | None = None,
-    level_factor: pd.DataFrame | None = None,
-) -> dict:
-    """Build daily wide frames (date x ticker) for every characteristic.
-
-    A thin composition of the per-block builders above: this function owns only the
-    frames that are genuinely SHARED between blocks (the memoized `daily` accessor, the
-    handful of hoisted balance-sheet levels, the market cap, the pension pool and the
-    enterprise value) and the order the blocks run in.
-
-    `yoy_periods` is how many filings span a year (4 for quarterly history, 1 for
-    annual); growth/trend features use it for a true YoY comparison. `intrinsic_cfg`
-    overrides the DCF parameters for the intrinsic-value yield.
-    """
-
-    fund_hist = null_invalid_gross_profit_sentinels(fund_hist)
-    F: dict[str, pd.DataFrame] = {}
+    yoy_periods: int,
+) -> tuple[Callable[[str], pd.DataFrame], Callable[..., pd.DataFrame]]:
+    """Memoize daily observations and then-public fiscal predecessors for one build."""
     _daily_cache: dict[str, pd.DataFrame] = {}
     _prior_cache: dict[tuple[str, int, int], pd.DataFrame] = {}
     _match_cache: dict[tuple[int, int], pd.Series] = {}
 
-    def daily(field):
+    def daily(field: str) -> pd.DataFrame:
         # memoized: several fields are reused across blocks (and the business-quality
         # helpers), so cache the pivot+ffill instead of recomputing it.
         if field not in _daily_cache:
@@ -1590,6 +1586,25 @@ def _derived_fields(
                     positions=_match_cache[match_key],
                 )
         return _prior_cache[key]
+
+    return daily, prior
+
+
+def _derived_fields(
+    fund_hist: pd.DataFrame,
+    idx: pd.DatetimeIndex,
+    close: pd.DataFrame | None,
+    yoy_periods: int = 1,
+    intrinsic_cfg: dict | None = None,
+    earnings_history: pd.DataFrame | None = None,
+    pension_facts: pd.DataFrame | None = None,
+    notes_num: pd.DataFrame | None = None,
+    level_factor: pd.DataFrame | None = None,
+) -> dict:
+    """Compose daily characteristics from shared fiscal accessors and capital bases."""
+    fund_hist = null_invalid_gross_profit_sentinels(fund_hist)
+    F: dict[str, pd.DataFrame] = {}
+    daily, prior = _fiscal_accessors(fund_hist, idx, yoy_periods)
 
     # ---- frames shared by MORE THAN ONE block (hoisted once) ---- #
     revenue = daily("totalRevenue")
@@ -1658,6 +1673,7 @@ def _derived_fields(
     # yield" instead of "there was no price to compute one" -- the same distinction
     # `_intrinsic_fields` already makes by returning `{}` when `close is None`.
     if not mcap.empty:
+        F["ocf_yield"] = ratio(daily("operatingCashFlow"), mcap, positive_den=True)
         ev = _enterprise_value_frame(daily, close, mcap, equity, d2e, cash, pension_ret, operating_cash)
         F.update(
             _valuation_yield_fields(
@@ -1723,11 +1739,12 @@ def build_fundamental_feature_panel(
     level_factor: pd.DataFrame | None = None,
     history_fields: dict[str, pd.DataFrame] | None = None,
     output_since: pd.Timestamp | None = None,
+    feature_cfg: dict | None = None,
 ) -> pd.DataFrame:
     """
     Long-format panel with a raw ``f_<characteristic>`` column for every approved
     characteristic and ``f_<characteristic>_vs_hist`` only for the approved history set.
-    The compact contract deliberately emits no peer or universe-percentile legs.
+    Two explicitly selected characteristics also retain their existing-peer comparison.
 
     `stock_close` is required for the valuation features (daily market cap);
     without it valuation is skipped but every other feature is still built.
@@ -1749,6 +1766,7 @@ def build_fundamental_feature_panel(
         notes_num=notes_num,
         level_factor=level_factor,
     )
+    fields.update(reported_history_fields(fundamentals_history, trading_index, **(feature_cfg or {})))
 
     # float32 halves storage while retaining ample precision for ratios and z-scores.
     fields = {k: (v.astype("float32") if isinstance(v, pd.DataFrame) and not v.empty else v) for k, v in fields.items()}

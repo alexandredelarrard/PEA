@@ -1,4 +1,17 @@
 build_cube:
+  assembly:
+    optional_parts:
+      - cube_part_text
+      - cube_part_institutionals
+    columns:
+      cube_part_fundamentals: null  # null, empty or omitted: all columns
+      cube_part_governance: null
+      cube_part_institutionals: null
+      # To restrict a part, replace null with a block list, for example:
+      # cube_part_fundamentals:
+      #   - f_earnings_yield
+      #   - f_ocf_yield
+
   # No market_ticker: the market reference is a SERIES in `prices_macro`, identified by name
   # (constants.MACRO_MARKET_SERIES), not a configurable ticker symbol in `prices`.
 

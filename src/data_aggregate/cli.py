@@ -120,7 +120,10 @@ def build_governance(config_path: str, full: bool) -> None:
     _step(StepCubeGovernance, config_path).run(full=full)
 
 
-@cli.command(help="Read all persisted parts -> features + betas + peers + targets -> save the `cube` table.", help_priority=8)
+@cli.command(
+    help="Read configured columns from required/populated optional parts onto price keys; save the cube including unlabelled prediction rows.",
+    help_priority=8,
+)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 def assemble_cube(config_path: str) -> None:
     _step(StepAssembleCube, config_path).run()
@@ -141,7 +144,7 @@ def build_cube(config_path: str, full: bool) -> None:
 @cli.command(
     help="Report the latest date + row count of every cube_part_* (+ cube / "
     "predictions) as a JSON last line (the DAG pushes it to XCom); exits "
-    "non-zero if any part is behind.",
+    "non-zero if required or populated optional parts/cube differ from the latest stored universe price date.",
     help_priority=10,
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)

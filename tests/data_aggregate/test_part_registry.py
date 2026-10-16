@@ -216,16 +216,15 @@ def test_feature_parts_cover_every_group_exactly_once():
 
 
 def test_assemble_reads_only_registered_feature_parts():
-    """The assemble step iterates FEATURE_PARTS, so a newly registered part is picked up with
-    no edit there -- and the betas/targets parts are read explicitly, not as features."""
+    """Every part participates through the shared registry, including price/beta/targets."""
     import inspect
 
     src = inspect.getsource(StepAssembleCube)
-    assert "FEATURE_PARTS" in src, "assemble must enumerate the registry, not a literal list"
+    assert "CUBE_PARTS" in src, "assemble must enumerate the registry, not a literal list"
     for part in FEATURE_PARTS:
         assert part.name not in src, f"{part.name} is hard-coded in the assemble step; it should come from the registry"
     print("\n=== SANITY CHECK: assemble is registry-driven ===")
-    print(f"  iterates FEATURE_PARTS ({len(FEATURE_PARTS)} parts), no part name hard-coded")
+    print(f"  iterates CUBE_PARTS ({len(CUBE_PARTS)} parts), no feature part name hard-coded")
     print("  CONCLUSION: adding a feature part needs a registry entry only. Validated.")
 
 

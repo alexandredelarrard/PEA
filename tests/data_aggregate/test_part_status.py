@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pandas as pd
+import pytest
 
 from src.context import Context
 from src.data_aggregate.utils.common.part_status import (
@@ -23,7 +24,10 @@ SOURCE = "cube_part_institutionals:insider_transactions"
 
 
 def _context(store: Any) -> Any:
-    return SimpleNamespace(store=store, config=extract_config(source_freshness={"insider_max_lag_days": 4}))
+    config = extract_config(source_freshness={"insider_max_lag_days": 4})
+    config.data_extract = {"redundant_ticks": []}
+    config.build_cube = {"assembly": {"optional_parts": [Tables.cube_part_text.name, Tables.cube_part_institutionals.name]}}
+    return SimpleNamespace(store=store, config=config, log=LOG)
 
 
 def _seed_prices(sqlite_store) -> None:
@@ -93,20 +97,43 @@ def test_a_stale_insider_table_fails_the_lag_gate(sqlite_store):
 
 
 class _ReportStore:
-    def __init__(self, *, max_dates=None, missing=()):
+    def __init__(
+        self,
+        *,
+        max_dates: dict[str, pd.Timestamp] | None = None,
+        missing: tuple[str, ...] = (),
+        empty: tuple[str, ...] = (),
+        source_date: str | None = "2026-09-04",
+    ) -> None:
         self.max_dates = max_dates or {}
         self.missing = set(missing)
+        self.empty = set(empty)
+        self.source_date = source_date
+
+    def columns(self, table) -> list[str]:
+        return ["date", "ticker"]
+
+    def load(self, table, **kwargs):
+        if not self.exists(table) or getattr(table, "name", table) in self.empty:
+            return None
+        return pd.DataFrame({"ticker": ["AAA", "BBB"]})
+
+    def max_date_by(self, table, key_col):
+        if not self.exists(table) or self.source_date is None:
+            return {}
+        return {"AAA": pd.Timestamp(self.source_date), "EXCLUDED": pd.Timestamp("2030-01-01")}
 
     def exists(self, table) -> bool:
         return getattr(table, "name", table) not in self.missing
 
     def max_date(self, table, column=None):
         name = getattr(table, "name", table)
+        if name in self.empty:
+            return None
         return self.max_dates.get(name, pd.Timestamp("2026-09-04"))
 
-    @staticmethod
-    def row_count(table) -> int:
-        return 1
+    def row_count(self, table) -> int:
+        return 0 if getattr(table, "name", table) in self.empty else 1
 
     @staticmethod
     def distinct(table, column, where=None):
@@ -125,21 +152,21 @@ def test_cube_part_edges_require_exact_price_alignment():
         missing=(missing,),
     )
 
-    edge: Any = cube_part_edge_report(cast(Any, store))
+    edge: Any = cube_part_edge_report(cast(Any, _context(store)))
 
     assert edge["price_max_date"] == "2026-09-04"
-    assert edge["parts"][one_day_behind] == {
+    assert {k: edge["parts"][one_day_behind][k] for k in ("status", "max_date", "delta_days")} == {
         "status": "behind",
         "max_date": "2026-09-03",
         "delta_days": -1,
     }
     assert edge["parts"][one_day_ahead]["status"] == "ahead"
     assert edge["parts"][one_day_ahead]["delta_days"] == 1
-    assert edge["parts"][missing]["status"] == "missing"
-    assert set(edge["misaligned"]) == {one_day_behind, one_day_ahead, missing}
+    assert edge["parts"][missing]["status"] == "skipped"
+    assert set(edge["misaligned"]) == {one_day_behind, one_day_ahead}
     print("\n=== SANITY CHECK: exact cube-part price-edge alignment ===")
     print(
-        "  a one-day lag fails, a one-day lead fails, and an absent part fails; the shared "
+        "  a one-day lag fails, a one-day lead fails, and an absent optional part skips; the shared "
         "four-day source-freshness tolerance is not applied to cube parts. Validated."
     )
 
@@ -184,3 +211,35 @@ def test_status_fails_closed_for_missing_cube_and_part_edge_mismatch():
     assert set(report["misaligned"]) == {lagging, Tables.cube.name}
     print("\n=== SANITY CHECK: cube status fails closed ===")
     print("  the missing final cube and the one-day fundamentals lag are both named in `behind`; the current insider source is not. Validated.")
+
+
+@pytest.mark.parametrize("empty", [False, True])
+def test_optional_absence_skips_dependent_source_gate(empty: bool) -> None:
+    optional = (Tables.cube_part_text.name, Tables.cube_part_institutionals.name)
+    store = _ReportStore(empty=optional) if empty else _ReportStore(missing=optional)
+    report = part_status_report(_context(store))
+    assert report["ok"] and report["behind"] == []
+    assert all(report["parts"][name]["edge_status"] == "skipped" for name in optional)
+    assert report["sources"][Tables.cube_part_institutionals.name]["insider_transactions"]["status"] == "skipped"
+    print("SANITY: absent/empty optional parts and their inapplicable insider check cannot make readiness red.")
+
+
+def test_source_price_frontier_exposes_lagging_price_part() -> None:
+    report = part_status_report(_context(_ReportStore(source_date="2026-09-08")))
+    assert not report["ok"]
+    assert report["reference_price_date"] == "2026-09-08"
+    assert report["price_max_date"] == "2026-09-04"
+    assert Tables.cube_part_prices.name in report["behind"]
+    info = report["parts"][Tables.cube_part_prices.name]
+    assert info["refresh_command"] == "build-prices" and info["expected_date"] == "2026-09-08"
+    print("SANITY: source prices expose a lagging price part and name build-prices; excluded ticker cannot move reference.")
+
+
+@pytest.mark.parametrize("source_date", [None, "2026-09-04"])
+def test_stored_session_reference_and_missing_source(source_date: str | None) -> None:
+    report = part_status_report(_context(_ReportStore(source_date=source_date)))
+    assert report["ok"] == (source_date is not None)
+    assert report["reference_price_date"] == source_date
+    if source_date is None:
+        assert Tables.prices.name in report["behind"]
+    print("SANITY: stored preceding-session date is enough regardless of wall clock; unknown source reference fails closed.")

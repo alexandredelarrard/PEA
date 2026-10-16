@@ -80,6 +80,8 @@ class StepAssembleCube(Step):
 
     def _validate_keys(self, frame: pd.DataFrame, part: CubePart) -> None:
         frame["date"] = pd.to_datetime(frame["date"], errors="coerce", format="mixed").dt.normalize()
+        if not frame.empty and pd.api.types.infer_dtype(frame["ticker"], skipna=True) != "string":
+            raise ValueError(f"{part.name} has null or invalid date/ticker keys; run {part.command}")
         ticker = frame["ticker"].str.strip()
         if frame["date"].isna().any() or ticker.isna().any() or ticker.eq("").any() or ticker.ne(frame["ticker"]).any():
             raise ValueError(f"{part.name} has null or invalid date/ticker keys; run {part.command}")

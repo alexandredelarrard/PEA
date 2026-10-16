@@ -236,7 +236,19 @@ def test_invalid_policy(monkeypatch: pytest.MonkeyPatch, policy: Any) -> None:
 
 @pytest.mark.parametrize(
     "defect",
-    ["duplicate", "null_date", "bad_date", "null_ticker", "blank_ticker", "collision", "metadata", "missing_column", "long_target", "read_error"],
+    [
+        "duplicate",
+        "null_date",
+        "bad_date",
+        "null_ticker",
+        "blank_ticker",
+        "numeric_ticker",
+        "collision",
+        "metadata",
+        "missing_column",
+        "long_target",
+        "read_error",
+    ],
 )
 def test_broken_present_inputs(monkeypatch: pytest.MonkeyPatch, defect: str) -> None:
     tables = _parts()
@@ -249,6 +261,8 @@ def test_broken_present_inputs(monkeypatch: pytest.MonkeyPatch, defect: str) -> 
         frame.loc[0, "date"] = None if defect == "null_date" else "bad"
     elif defect in ("null_ticker", "blank_ticker"):
         frame.loc[0, "ticker"] = None if defect == "null_ticker" else " "
+    elif defect == "numeric_ticker":
+        frame["ticker"] = [123, 456]
     elif defect == "collision":
         frame["target_zscore_h60"] = 7.0
     elif defect == "metadata":
@@ -258,6 +272,7 @@ def test_broken_present_inputs(monkeypatch: pytest.MonkeyPatch, defect: str) -> 
     cfg = _config(columns={part.name: ["missing"]}) if defect == "missing_column" else _config()
     if defect == "long_target":
         cfg = _config(columns={part.name: ["target_zscore_h60"]})
+    tables[Tables.cube.name] = pd.DataFrame({"preserved": [1.0]})
     store = _SpyStore(tables)
     if defect == "read_error":
         original = store.iter_load
@@ -268,9 +283,12 @@ def test_broken_present_inputs(monkeypatch: pytest.MonkeyPatch, defect: str) -> 
             yield from original(table, **kwargs)
 
         monkeypatch.setattr(store, "iter_load", failing)
-    with pytest.raises((ValueError, RuntimeError), match="cube_part|peers|target_horizon"):
+    error_type = ValueError if defect == "numeric_ticker" else (ValueError, RuntimeError)
+    match = f"{part.name}.*build-text" if defect == "numeric_ticker" else "cube_part|peers|target_horizon"
+    with pytest.raises(error_type, match=match):
         _step(store, monkeypatch, cfg).run()
     assert not store.writes
+    pd.testing.assert_frame_equal(store.tables[Tables.cube.name], tables[Tables.cube.name])
     print(f"SANITY: populated {defect} fails before replacement, including projected-out legacy target schema.")
 
 

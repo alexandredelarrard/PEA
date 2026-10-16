@@ -100,7 +100,7 @@ def part_status_report(context: Context, log: logging.Logger | None = None) -> d
         Tables.prices.name: {
             "max_date": reference,
             "ok": reference is not None,
-            "refresh_command": "price-history (seed-tickers if universe is absent)",
+            "refresh_command": "price-history (seed-universe if universe is absent)",
         },
         Tables.cube_part_institutionals.name: {"insider_transactions": insider_status},
     }

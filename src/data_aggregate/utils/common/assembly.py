@@ -35,7 +35,8 @@ class AssemblyPolicy:
         selections = raw.get("columns", {})
         if not isinstance(selections, Mapping):
             raise ValueError("assembly.columns must be a YAML mapping")
-        unknown = (set(optional) | set(selections)) - PART_BY_NAME.keys()
+        column_parts = _names(list(selections), "assembly.columns")
+        unknown = (set(optional) | set(column_parts)) - PART_BY_NAME.keys()
         if unknown:
             raise ValueError(f"assembly contains unknown cube parts: {sorted(unknown)}")
         columns = {name: () if values is None else _names(values, f"assembly.columns.{name}") for name, values in selections.items()}

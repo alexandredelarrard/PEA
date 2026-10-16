@@ -214,6 +214,7 @@ def test_optional_absent_or_empty_skips_before_selection(monkeypatch: pytest.Mon
     "policy",
     [
         {"columns": {"unknown": ["x"]}},
+        pytest.param({"columns": {1: [], "unknown": []}}, id="mixed-columns-keys"),
         {"columns": []},
         {"optional_parts": "bad"},
         {"optional_parts": ["unknown"]},
@@ -224,10 +225,13 @@ def test_optional_absent_or_empty_skips_before_selection(monkeypatch: pytest.Mon
 )
 def test_invalid_policy(monkeypatch: pytest.MonkeyPatch, policy: Any) -> None:
     store = _SpyStore(_parts())
-    with pytest.raises(ValueError):
+    original_cube = pd.DataFrame({"preserved": [1.0]})
+    store.tables[Tables.cube.name] = original_cube.copy()
+    with pytest.raises(ValueError, match="assembly"):
         _step(store, monkeypatch, _config(**policy)).run()
     assert not store.writes
-    print("SANITY: malformed policy fails before output writes.")
+    pd.testing.assert_frame_equal(store.tables[Tables.cube.name], original_cube)
+    print("SANITY: malformed policy names assembly, makes zero writes and preserves existing output.")
 
 
 @pytest.mark.parametrize(

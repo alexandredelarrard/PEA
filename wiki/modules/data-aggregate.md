@@ -5,13 +5,13 @@ type: module
 tags:
   - wiki
   - module
-source_commit: aeec0c07960406176590f358bae9d123bf59ac51
+source_commit: 5fb2fa5e192b2997762a26756c3cd68ab63c0312
 ---
 # Cube aggregation
 
 ## Summary
 
-`src/data_aggregate` converts normalized extract tables into a wide, point-in-time modelling cube. Seven domain sub-steps persist eight intermediate parts through the price maximum date, and a final assembler reports any part-edge mismatch before merging features, betas, peers, and wide targets at one row per date and ticker.
+`src/data_aggregate` converts normalized extract tables into a wide modelling cube. Seven domain sub-steps persist eight registered parts. The [assembler](../../src/data_aggregate/transformers/step_assemble_cube.py) reads YAML-selected columns onto the full persisted price grid, preserves latest rows with null targets for prediction, and checks output schema and row count.
 
 ## Responsibilities
 
@@ -21,7 +21,7 @@ source_commit: aeec0c07960406176590f358bae9d123bf59ac51
 - Apply peer-relative and cross-sectional transformations without future leakage, preserving binary states and structural zeros.
 - Match financial changes by fiscal period, enforce publication-time visibility, and expire stale point-in-time values by source cadence.
 - Recompute guarded trailing windows and detect schema drift.
-- Warn on every missing, behind, or ahead registered part during assembly, while `cube-status` fails closed on any non-exact price-edge alignment.
+- Refuse missing compulsory or broken populated inputs; skip absent/empty configured optional parts. Readiness names required refreshes against the analysis universe's latest stored source-price date through [part_status.py](../../src/data_aggregate/utils/common/part_status.py).
 - Stream the final cube to the store without materializing all output chunks twice.
 
 ## Public API / entry points
@@ -37,7 +37,7 @@ source_commit: aeec0c07960406176590f358bae9d123bf59ac51
 - [incremental.py](../../src/data_aggregate/utils/common/incremental.py) plans refresh windows and writes inclusive tails.
 - [price_frames.py](../../src/data_aggregate/utils/common/price_frames.py), [pit.py](../../src/data_aggregate/utils/common/pit.py), [panel.py](../../src/data_aggregate/utils/common/panel.py), and [xs.py](../../src/data_aggregate/utils/common/xs.py) hold shared contracts. `pit.py` owns fiscal-period matching and source-age projection; `panel.py` applies declared continuous, binary, and structural-zero transform semantics.
 - [step_cube_institutionals.py](../../src/data_aggregate/transformers/step_cube_institutionals.py) keeps the ordered institutional merge and persistence contract; [inputs.py](../../src/data_aggregate/utils/institutionals/inputs.py) owns projected and universe-scoped reads, reusing the price-frame universe supplied by its caller without ticker string conversion or normalization, [frontiers.py](../../src/data_aggregate/utils/institutionals/frontiers.py) resolves completeness boundaries, and [sink.py](../../src/data_aggregate/utils/institutionals/sink.py) carries source events and availability into the two derived panels.
-- [step_assemble_cube.py](../../src/data_aggregate/transformers/step_assemble_cube.py) logs registry-wide part-versus-price edge warnings, left-joins wide targets onto the feature-led base, and writes chunks. [part_status.py](../../src/data_aggregate/utils/common/part_status.py) is the exact-alignment readiness gate.
+- [assembly.py](../../src/data_aggregate/utils/common/assembly.py) resolves exact column lists and optionality for assembler/readiness. [step_assemble_cube.py](../../src/data_aggregate/transformers/step_assemble_cube.py) preflights all selected inputs, left-aligns to price keys, attaches existing metadata and wide targets, and writes bounded chunks. Narrowing or skipped optional sources physically remove old output columns through existing store operations. [part_status.py](../../src/data_aggregate/utils/common/part_status.py) is the source-price alignment gate.
 - [short_flow_features.py](../../src/data_aggregate/utils/institutionals/short_flow_features.py) publishes FTD values atomically by the persisted source ZIP period, deriving availability from period end plus 15 days or a fresh latest-ZIP cache timestamp. It advances weekend/holiday availability to the next trading session and preserves unavailable `NaN` cells.
 
 - [configs/build_cube.yml](../../configs/build_cube.yml) owns windows, targets, feature settings, and output switches.

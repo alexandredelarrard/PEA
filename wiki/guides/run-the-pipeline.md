@@ -7,6 +7,7 @@ tags:
   - guide
   - runbook
   - operations
+source_commit: 5fb2fa5e192b2997762a26756c3cd68ab63c0312
 ---
 # Run the pipeline
 
@@ -179,6 +180,16 @@ rtk "$PY" -m src data_aggregate cube-status
 ```
 
 The same eight part objects are driven by the composite build, individual CLI commands, and the Airflow chain. The command list and warm-ups come from [parts.py](../../src/data_aggregate/utils/common/parts.py).
+
+### Assemble selected inputs and check readiness
+
+Edit `build_cube.assembly` in [build_cube.yml](../../configs/build_cube.yml) using the [column selection contract](../reference/configuration.md#cube-assembly-selection), then run `rtk "$PY" -m src data_aggregate assemble-cube -c ./configs` followed by `rtk "$PY" -m src data_aggregate cube-status -c ./configs`. Assembly has no `-F` option. This rebuilds the derived cube from persisted parts; it does not rebuild feature parts.
+
+The [assembler](../../src/data_aggregate/transformers/step_assemble_cube.py) requires prices, targets, betas, fundamentals, momentum and governance. Text/institutionals can be absent or empty; populated broken inputs stop the build. Every price date/ticker remains, including the newest session with null future labels. Selected names are projected before payload reads. Removing selected columns or skipping a former optional source physically removes its old cube columns; confirm model-input compatibility before using narrower output.
+
+The [status gate](../../src/data_aggregate/utils/common/part_status.py) reports `reference_price_date`, each participating part's expected/actual edge and `refresh_command`. Use the named command to refresh stale/missing parts, then reassemble. At 03:00, the latest stored preceding price session is sufficient. This gate compares table edges, not each ticker/feature's coverage or source prices against a market calendar; existing source/prediction freshness checks remain responsible for those source-age checks.
+
+Input preflight finishes before output changes. The streamed replacement remains non-atomic: a later interruption can leave a partial cube. Resolve the reported failure and rerun assembly from preserved parts. No source part is removed.
 
 Parts are incremental by default: each rewrites at least its last 7 sessions (45 for fundamentals), so a source correction older than that needs `-F`, which forces a rebuild. A changed target label/horizon set changes physical columns; the target step detects this and rebuilds, after which the cube must be assembled again.
 

@@ -5,12 +5,13 @@ type: flow
 tags:
   - wiki
   - flow
+source_commit: 5fb2fa5e192b2997762a26756c3cd68ab63c0312
 ---
 # Cube build
 
 ## Summary
 
-The cube build converts extract tables into independently persisted price, target, beta, fundamental, momentum, text, institutional, and governance parts. Each builder uses one registry-defined incremental window, every registered output is expected to end exactly at the price-part maximum date, and the assembler streams a feature-led left join into the final wide cube.
+The cube build converts extract tables into eight registered parts. The assembler reads the configured columns, uses every persisted price date/ticker as its row grid, and left-attaches features and wide targets. Readiness compares compulsory and populated optional parts with the latest stored source-price date for the analysis universe. See the shared [assembly policy](../../src/data_aggregate/utils/common/assembly.py) and [readiness report](../../src/data_aggregate/utils/common/part_status.py).
 
 ## Trigger
 
@@ -42,12 +43,13 @@ sequenceDiagram
 2. [parts.py](../../src/data_aggregate/utils/common/parts.py) supplies each part's table, command, kind, warm-up, and binding look-backs.
 3. [incremental.py](../../src/data_aggregate/utils/common/incremental.py) plans a full build or an inclusive trailing refresh: at least 7 sessions for every part, institutionals included (45 for fundamentals, the longest horizon for targets). A source correction older than that tail needs `--full`.
 4. Domain builders load projected source columns and emit one panel at the date/ticker grain. Fundamentals are restricted to the price-supported universe, fiscal changes match the prior fiscal period rather than a fixed daily lag, and quarterly/TTM versus annual-only values expire after their declared source-age limits. The institutional builder reads through [inputs.py](../../src/data_aggregate/utils/institutionals/inputs.py), resolves observed-zero boundaries through [frontiers.py](../../src/data_aggregate/utils/institutionals/frontiers.py), and runs 13F, superinvestor, insider, short-flow, ownership, conditioning, then cross-source panels in that explicit order with one shared [conditioning sink](../../src/data_aggregate/utils/institutionals/sink.py). The insider panel loads the one `insider_transactions` table; its observed-zero frontier, like 13D's and 13G's, is read from the table itself (see [source availability](../concepts/source-availability.md)). [insider_quality.py](../../src/data_aggregate/utils/institutionals/insider_quality.py) drops later repeat copies of a trade and supersedes amended Form 4/A cells point in time before the aggregators run.
-5. Before joining, [step_assemble_cube.py](../../src/data_aggregate/transformers/step_assemble_cube.py) compares every registered part maximum with `cube_part_prices.max_date` and emits an explicit missing, behind, or ahead warning for each mismatch. Assembly then merges feature parts, betas, peers, and GICS metadata and left-joins wide targets.
-6. The first output chunk replaces the cube and later chunks use `bulk_seed`. `cube-status` reports readiness: every registered part and the final cube must exist at exactly the price edge, and the insider source must be within `insider_max_lag_days` of the institutional part. A red status fails its own task; the prediction trigger still runs (`ALL_DONE`), and `predict` refuses a cube that ends before `prices`.
+5. [StepAssembleCube](../../src/data_aggregate/transformers/step_assemble_cube.py) resolves `build_cube.assembly` from [build_cube.yml](../../configs/build_cube.yml). Prices, targets, betas, fundamentals, momentum and governance are compulsory. Text and institutionals skip only when absent or empty; populated broken inputs fail. Payload reads are projected and price-scoped; a separate key scan prevents hidden key corruption. All price rows survive, including latest unlabelled prediction rows.
+6. All selected-column, key, collision, target-schema and metadata checks finish before output mutation. Old output columns are physically removed through the existing store facade after the first chunk is ready; `replace` writes the first chunk and `bulk_seed` later chunks. Final schema and row count are checked.
+7. [cube-status](../../src/data_aggregate/utils/common/part_status.py) compares compulsory parts, populated optional parts and cube with the latest stored `prices` date for the analysis universe. Diagnostics name expected/actual edges and refresh commands. Skipped institutionals skip the dependent insider check; populated institutionals retain its existing completeness rule. A red status fails its own task; the prediction trigger still runs (`ALL_DONE`).
 
 ## Failure modes
 
-A missing price-basis gate can propagate adjustment seams into returns, betas, and labels. A look-back longer than its declared warm-up makes incremental and full tails diverge; the fundamentals part therefore rewrites an inclusive recent tail rather than strict-appending. Feature-name collisions or duplicate date/ticker keys are rejected by the merge layer, and long or duplicate targets are refused before they can multiply rows. Assembly warnings do not abort the write by themselves, so `cube-status` must pass before the cube is treated as ready.
+A missing price-basis gate can propagate adjustment seams into returns, betas, and labels. A look-back longer than its declared warm-up makes incremental and full tails diverge. Assembly refuses missing compulsory parts, invalid keys, selected-column collisions and legacy long targets before changing output. Date-edge mismatches remain warnings during assembly and failures at readiness. Streamed replacement is non-atomic: an interruption can leave a partial cube; resolve the failure and rerun assembly from the preserved parts. Existing source/prediction freshness checks detect market-age staleness; aligned tables alone cannot establish that source prices are current.
 
 ## Related
 

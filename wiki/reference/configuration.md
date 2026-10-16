@@ -6,7 +6,7 @@ tags:
   - wiki
   - reference
   - configuration
-source_commit: aeec0c07960406176590f358bae9d123bf59ac51
+source_commit: 5fb2fa5e192b2997762a26756c3cd68ab63c0312
 ---
 # Configuration
 
@@ -102,6 +102,32 @@ Runtime eligibility is the intersection of:
 5. family-specific completeness rules.
 
 `source_freshness.insider_max_lag_days` is the only insider freshness knob: `cube-status` names the insider source behind when its completeness frontier (the last price session while the newest `insider_transactions` filing, markers included, lies within the table's 7-day overlap of it, else that filing date) is unknown or lags the institutionals part by more than this many days. There is no reviewed cutover date and no insider parity threshold; the zip and EDGAR sources share one table and EDGAR always wins.
+
+## Cube assembly selection
+
+[build_cube.yml](../../configs/build_cube.yml) supplies `build_cube.assembly` to the existing [assembler](../../src/data_aggregate/transformers/step_assemble_cube.py) and shared [policy](../../src/data_aggregate/utils/common/assembly.py). All registered parts participate. Prices, targets, betas, fundamentals, momentum and governance are compulsory; the committed optional list contains text and institutionals. Optional skips apply only to absent/physically empty tables; a populated broken input fails.
+
+```yaml
+build_cube:
+  assembly:
+    optional_parts:
+      - cube_part_text
+      - cube_part_institutionals
+    columns:
+      cube_part_fundamentals: null
+      cube_part_governance: null
+      cube_part_institutionals: null
+```
+
+A missing `columns` mapping, omitted part entry, null or empty list includes all actual columns. Nonempty lists select exact payload names, one YAML bullet per line; date and ticker are included automatically. For example, replace a null value with:
+
+```yaml
+      cube_part_fundamentals:
+        - f_earnings_yield
+        - f_ocf_yield
+```
+
+Unknown parts, malformed or duplicate lists, missing selected columns and selected-name collisions fail before changing output. Selection controls both the store read and the physical output schema; reassembly removes old deselected columns. It does not change producer tasks. Later removal of model inputs requires compatible model configuration/artifacts and retraining; the existing prediction input guard remains active.
 
 ## Cube settings
 

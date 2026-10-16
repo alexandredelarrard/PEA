@@ -5,7 +5,7 @@ type: module
 tags:
   - wiki
   - module
-source_commit: d4ebd98ffe561aee3f51f2c0b910fd2a627ae4f0
+source_commit: aeec0c07960406176590f358bae9d123bf59ac51
 ---
 # Cube aggregation
 
@@ -123,6 +123,6 @@ Merged into `dev` in commit `d4ebd98ffe561aee3f51f2c0b910fd2a627ae4f0` from insi
 
 ## Fundamental feature expansion and report clocks
 
-The [fundamentals view contract](../../src/data_aggregate/utils/fundamentals/feature_views.py) now declares217columns:136raw,79self-history and2explicit existing-peer views. Seventeen additions cover eight seasonal standardized earnings-change lags plus an improvement streak, two report-response total-return differences, peer-relative FCF/EV and ROIC, loss-safe earnings improvement/assets, eight-quarter ROAvolatility and positive-FCFfrequency, and signed operating-cash-flow/market-cap yield. Existing peers are consumed unchanged.
+The [fundamentals view contract](../../src/data_aggregate/utils/fundamentals/feature_views.py) declares 217 columns: 136 raw, 79 self-history and two explicit existing-peer views. Seventeen additions cover eight seasonal standardized earnings-change lags plus an improvement streak, two report-response total-return differences, peer-relative FCF/EV and ROIC, loss-safe earnings improvement/assets, eight-quarter ROA volatility and positive-FCF frequency, and signed operating-cash-flow/market-cap yield. Existing peers are consumed unchanged. The [feature definitions and migration instructions](../reference/modelling-and-portfolio.md#six-additional-fundamental-feature-families) describe names, units, support and required historical rebuild.
 
 [history_features.py](../../src/data_aggregate/utils/fundamentals/history_features.py) replays distinct fiscal quarters at filing events, preserving missing-quarter gaps and prospective amendments. [disclosure_features.py](../../src/data_aggregate/utils/fundamentals/disclosure_features.py) shares actual-bearing next-session report timing with [earnings_features.py](../../src/data_aggregate/utils/fundamentals/earnings_features.py); the three-session reaction is unknown until its window completes. Required return fields and existing ShareBasis are projected by [StepCubeFundamentals](../../src/data_aggregate/transformers/step_cube_fundamentals.py). The four window declarations live in [build_cube.yml](../../configs/build_cube.yml); the eight lag slots are a pinned schema contract. See [modelling and portfolio](../reference/modelling-and-portfolio.md) for the renamed expectation fields and migration requirement. Governance filling and peer construction are unchanged by this work.

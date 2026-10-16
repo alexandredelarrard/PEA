@@ -6,7 +6,7 @@ tags:
   - wiki
   - reference
   - configuration
-source_commit: c1443763db6fd8d109817fdf035b6e91e84893d4
+source_commit: aeec0c07960406176590f358bae9d123bf59ac51
 ---
 # Configuration
 
@@ -33,8 +33,8 @@ Callers use attribute access such as `self._config.build_cube.targets.horizons`.
 | `peers` | [peers.yml](../../configs/peers.yml) | Business-similarity and return-correlation peer construction. |
 | `build_cube` | [build_cube.yml](../../configs/build_cube.yml) | Betas, targets, feature transforms, intrinsic value, historical comparisons, institutional policies, and output switches. |
 | `model`, `train` | [modellling.yml](../../configs/modellling.yml) | Ensemble composition, target choice, CV, diagnostics, decay, `models_dir` (artifact folder under the data store), `backtest.n_quantiles` (label-only backtest buckets), and train/holdout boundaries. Each family YAML under `configs/models/` (e.g. [lgbm_modelling.yml](../../configs/models/lgbm_modelling.yml)) also sets `task: regression \| classification`. The filename intentionally contains three “l” characters. |
-| `linear`, `lgbm`, `random_forest` | [configs/models](../../configs/models/) | Family hyperparameters and family-specific feature columns. |
-| `strategy_ls`, `strategy_eq_long_only` | [configs/strategy](../../configs/strategy/) | Sleeve construction only. |
+| `linear`, `lgbm`, `random_forest` | [lgbm_modelling.yml](../../configs/models/lgbm_modelling.yml) and sibling family files | Family hyperparameters and family-specific feature columns. |
+| `strategy_ls`, `strategy_eq_long_only` | `configs/strategy/` | Sleeve construction only. |
 | `portfolio` | [portfolio.yml](../../configs/portfolio.yml) | Sleeve selection, dates, global costs, risk targeting, leverage, capital, blend, and analysis output. |
 | `data_availability`, `source_freshness`, `earnings_calls` | [data.yml](../../configs/data.yml) | Institutional availability boundaries, field/derived overrides, the insider frontier lag, and the earnings-call extractor knobs. |
 | validation keys | [validate.yml](../../configs/validate.yml) | Point-in-time publication clocks, observed-zero exceptions, and validation policy. |
@@ -47,7 +47,7 @@ The shared resolver in [price_adjustments.py](../../src/utils/price_adjustments.
 
 A `return_seams` entry with `fields: ["close_total"]` must supply `expect_step`, `target_step`, `expect_quote_step` and evidence. Only the strict pre-event total-return prefix changes; a precise verified target is idempotent. Changed or incomplete applicable input refuses the build. Legacy entries without `fields` retain the all-price, target-one behavior. Supported total-only repairs recover total-return windows while residual quote seams keep OHLC windows masked. Historical JSON edits require the affected historical derived tables and consumers to be rebuilt; a default tail build cannot adopt an old prefix correction.
 
-Curated evidence registers under [configs/sec](../../configs/sec/) are versioned data contracts rather than tuning knobs:
+Curated evidence registers under `configs/sec/` are versioned data contracts rather than tuning knobs:
 
 - [registrant_cutover.json](../../configs/sec/registrant_cutover.json): the register, dated legal-filer chains. One key per ticker with `kind` (`reorganisation`, `domestication`), optional `basis` (e.g. `reverse_merger_accounting_predecessor` for MRK) and `segments` (`cik`, `valid_to`, `evidence` citing the accession); the open last segment is the roster CIK. The highest-priority membership oracle; an entry always overrides an automatic window. The register follows the **traded security**: a ticker's pre-merger history is the security whose prices it carries. DD is Dow Chemical (0000029915) before 2017-08-31; PLD (AMB before 2011-06-03) and JCI (Tyco before 2016-09-02) have no entry, because the legal survivor's own CIK carries those prices; DOW has no entry and starts at 2019-04-01. A `fresh_start` entry (one segment with `valid_from`, no `valid_to`) dates a ticker's only CIK: its filings and tape count from that day, earlier ones belong to a cancelled predecessor security. EXE (Chesapeake, CIK 0000895126) starts at its 2021-02-10 emergence; the fundamentals history then keeps the comparatives of its post-emergence filings, like Sharadar.
 - [entity_lineage_manual.json](../../configs/sec/entity_lineage_manual.json): CIK-to-economic-entity adjudications, one key per `<ticker>/<slug>` with `same_entity` or `own_entity` CIKs, `evidence` and `decided`. A `same_entity` entry also declares a merger's acquired target as an event-only CIK of the survivor (old ProLogis 0000899881 under PLD, old Johnson Controls 0000053669 under JCI, old DuPont 0000030554 under DD): its Forms 3/4/5 and FTD lines are kept as `acquired_constituent`, and it contributes no consolidating or event-filing row. `_d19_allowlist` holds the roster-CIK cross-check's exceptions.
@@ -117,6 +117,7 @@ Important blocks:
 | `intrinsic` | Two-stage DCF parameters; terminal growth must remain below discount rate. |
 | `hist` | Five-year-style self-history comparison window and minimum observations. |
 | `institutionals` | Decay, manager selection/staleness, coverage-break policy, conditioning windows, and source-family behavior. |
+| `fundamentals_features` | Fixed eight earnings-lag slots, eight-quarter persistence and three-session report response; prior SUE scale uses eight quarters. Changing fixed schema windows requires a feature-contract update. |
 | `workforce` | `part_time_weight`: α of the workforce headcount proxy FT + α·PT (0.65; must lie in [0.5, 1]). See [workforce features](./modelling-and-portfolio.md#workforce-features). |
 | `output` | Persistence switches for cube, signals, CV results, predictions, diagnostics, and artifacts. |
 
@@ -128,7 +129,7 @@ Every numerical value in [build_cube.yml](../../configs/build_cube.yml) carries 
 
 Each family owns its feature list. LightGBM additionally owns categorical features and monotonic constraints. The earnings-call contract in `configs/models/lgbm_modelling.yml` is exactly 12 raw/issuer-history columns; `_xs` and `_vs_peers` earnings-call variants are intentionally excluded. Directional constraints apply only where the economic sign is unambiguous: positive call tone and negative uncertainty. Q&A gap (management-answer tone minus prepared-remarks tone), coherence, embedding distance, and disclosure-length change are unconstrained. `configs/validate.yml` owns their quarterly cadence, raw plausibility bounds, 66-session lifetime, Spearman redundancy thresholds, PSI and missingness-delta limits, latest-20-session audit window, and the split-quality floors (`split_ok_rate_min: 0.985`, `prepared_share_q05_min: 0.15`). Train-versus-recent checks use the canonical `train.end_date` from `configs/modellling.yml`; the validation config does not duplicate that boundary. The dedicated validator reads these settings rather than duplicating them in Python. When a new feature has an economically unambiguous direction, add the constraint alongside the column and run the monotonic-contract tests.
 
-Training boundaries describe the holdout evaluation run. Production `full-train` intentionally ignores the configured end date and fits through the latest eligible cube row.
+Training end X is the last eligible feature date; its label outcomes require additional observed sessions. Inner and outer fitting explicitly filter label endpoints before the next validation/test feature date, rather than relying on the feature-date cutoff alone. Portfolio evaluation starts strictly after the latest fitted label endpoint: the configured 2022-01-01 feature ceiling has a 90-session endpoint on 2022-05-11, before the 2022-06-01 portfolio start. Production `full-train` reuses saved fold-selected rounds, ignores the old feature ceiling and fits all rows whose labels have matured by the latest complete cube/price session. See [the training lifecycle](./modelling-and-portfolio.md#longshort-training-lifecycle).
 
 ## Strategies and portfolio
 
@@ -168,4 +169,4 @@ Use configuration for research choices and operational tuning. Use [constants.py
 
 The tested P1 candidate in .worktrees/institutional-13f-pit adds build_cube.institutionals.value_basis: min_securities=15, min_agreement=0.8, price_tolerance=0.1 and max_price_age_days=7. These knobs govern a common filing-wide monetary factor against reconstructed report-quarter-end as-traded prices, independently per quarter/filing. They do not represent the separate P2 minimum of 15 managers holding the same security. Shares are unchanged; explicit shares==value reconstruction and source-only/abstained statuses are distinguishable.
 
-The candidate is not activated. The later user-approved fallback estimates uncertain common dollars as valid reported shares × the eligible restored quarter-end price, after the raw unit decision; estimated rows cannot vote for a factor. Source zeros remain zero. The subsequent typed-option extension uses call_shares/put_shares × the same eligible reference for uncertain underlying exposure; options never vote for the common filing factor. Nonzero unresolved debt values still require a debt-instrument quote and remain unknown. Common-dollar completeness is now 457/461, 472/476 and 436/482 ticker totals in the three tested first-publication cohorts; option/value coverage and immutable filing versions remain pending. [Candidate evidence](../../reports/validate/2026-10-09-institutional-13f-audit/06-final.md).
+The candidate is not activated. The later user-approved fallback estimates uncertain common dollars as valid reported shares × the eligible restored quarter-end price, after the raw unit decision; estimated rows cannot vote for a factor. Source zeros remain zero. The subsequent typed-option extension uses call_shares/put_shares × the same eligible reference for uncertain underlying exposure; options never vote for the common filing factor. Nonzero unresolved debt values still require a debt-instrument quote and remain unknown. Common-dollar completeness is now 457/461, 472/476 and 436/482 ticker totals in the three tested first-publication cohorts; option/value coverage and immutable filing versions remain pending. Local candidate evidence: `reports/validate/2026-10-09-institutional-13f-audit/06-final.md`.

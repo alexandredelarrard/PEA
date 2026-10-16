@@ -7,6 +7,7 @@ tags:
   - reference
   - modelling
   - portfolio
+source_commit: aeec0c07960406176590f358bae9d123bf59ac51
 ---
 # Modelling, strategies, and portfolio
 
@@ -81,6 +82,37 @@ Every member, of any family, serializes as one pickle of its fitted transformer 
 PEGY never reads `eps_estimate`. When the entire earnings archive is absent, its existing fallback uses realized fiscal net-income growth from the merged fundamentals history. [PEGY regressions](../../tests/data_aggregate/test_fundamental_features.py) check arithmetic, next-session visibility, estimate/future-actual invariance, missing quarters and invalid EPS bases. Historical actuals can still be revised or change accounting basis; this change removes the estimate-vintage dependency rather than certifying those source histories.
 
 Rebuild the full fundamentals cube part and assemble the cube before using the changed `f_pegy` and its derived views historically. An incremental tail would leave the old definition in earlier rows and self-history inputs. The [earnings builder](../../src/data_aggregate/utils/fundamentals/earnings_features.py) now exposes report-associated expectations only after an actual-bearing event, on the next trading session. f_reported_expected_eps_yield, f_reported_expected_ttm_yield and f_reported_expected_eps_growth_qoq replace the old forward-labelled names; the firsttwo retain their history views. Expected TTM uses the current report's estimate plus three preceding actual quarters. Unknown share bases are masked, invalid new reports clear prior state, and the existing185day freshness cap applies. These are archived report-time expectations, not historical forward-consensus vintages. Full derived-history rebuild remains necessary before adoption.
+
+## Report-time EPS observations
+
+[earnings_features.py](../../src/data_aggregate/utils/fundamentals/earnings_features.py) exposes the consensus stored with a completed report, rather than treating it as a historical forecast of the next report:
+
+| Old name | Replacement | Meaning |
+| --- | --- | --- |
+| `f_fwd_eps_yield` | `f_reported_expected_eps_yield` | Reported-quarter consensus EPS divided by the current compatible share price. |
+| `f_forward_earnings_yield` | `f_reported_expected_ttm_yield` | That consensus plus the three preceding actual quarters, divided by current compatible price. |
+| `f_eps_expectation_growth` | `f_reported_expected_eps_growth_qoq` | That consensus relative to the immediately preceding positive actual EPS, minus one. |
+
+The first two retain their `_vs_hist` views. An event requires a non-null actual (zero is valid), appears on the next observed trading session and expires after 185 calendar days. A scheduled event without an actual is not an observation. An invalid replacement clears earlier state. Comparisons without supported EPS/share units remain unknown; the archive does not certify historical estimate revisions or split-adjustment vintages. These are report-time observations, not next-quarter forecasts.
+
+## Six additional fundamental feature families
+
+The fixed output schema in [feature_views.py](../../src/data_aggregate/utils/fundamentals/feature_views.py) contains 217 columns: 136 raw, 79 self-history and two explicit peer views. Seventeen additions are:
+
+| Family | Columns | Calculation and interpretation |
+| --- | --- | --- |
+| Earnings history | `f_earnings_sue_lag0` through `f_earnings_sue_lag7`; `f_earnings_improvement_streak` | Seasonal quarterly net-income change, standardized by the sample deviation of eight prior seasonal changes; eight lag slots and a positive-change streak capped at eight. The current change is excluded from its scale. |
+| Price response to reports | `f_earnings_abret_3d`; `f_earnings_abret_since_report` | Separately compounded stock and existing sector-basket total returns, then their difference, anchored before report availability. The three-session value appears only after all three sessions complete. |
+| Peer comparisons | `f_fcf_to_ev_vs_peers`; `f_roic_incl_intangibles_vs_peers` | The existing peer comparison and support policy applied to these two raw characteristics. Peer construction is unchanged. |
+| Loss-safe improvement | `f_profit_improvement_to_assets` | Change in trailing-year net income against four fiscal quarters earlier, divided by mean positive assets excluding leases at the two endpoints. It supports loss-to-profit transitions. |
+| Persistence | `f_roa_vol_8q`; `f_fcf_positive_fraction_8q` | ROA volatility and fraction of positive free-cash-flow observations across eight contiguous fiscal quarters. |
+| Operating-cash-flow yield | `f_ocf_yield` | Signed trailing operating cash flow divided by current positive market capitalization. This is cash before capital expenditure, unlike free-cash-flow yield. |
+
+Fiscal histories use distinct quarters and then-public filings; later amendments change subsequent observations only. Missing quarters are not bridged, missing returns are not zero-filled, and zero scale is undefined. Calculations are owned by [history_features.py](../../src/data_aggregate/utils/fundamentals/history_features.py), [disclosure_features.py](../../src/data_aggregate/utils/fundamentals/disclosure_features.py), and [fundamental_features.py](../../src/data_aggregate/utils/fundamentals/fundamental_features.py). Existing raw eligibility leaves some sector comparisons unsupported: the measured FCF/EV peer snapshots have no Utilities coverage. Missingness is retained.
+
+## Historical adoption
+
+After this definition/schema change, fully rebuild fundamentals and assemble the cube before training. A tail refresh leaves mixed historical definitions. Existing earnings-related names in the persisted cube are explicitly rejected, and prediction rejects absent artifact inputs. Run holdout `modelling train` first to create compatible fold-selection metadata; then `modelling full-train` can reuse it. The operational command sequence is in [run the pipeline](../guides/run-the-pipeline.md); the training process is in [the training flow](../flows/model-training-and-prediction.md).
 
 ## Workforce features
 

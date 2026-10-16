@@ -5,6 +5,7 @@ type: module
 tags:
   - wiki
   - module
+source_commit: aeec0c07960406176590f358bae9d123bf59ac51
 ---
 # Modelling
 
@@ -19,7 +20,8 @@ horizon from the cube, then blends the horizons into one signal.
 
 - Select configured feature families and target columns from the cube schema.
 - Load and train one horizon at a time to bound memory (one projected load per horizon, float32).
-- Use purged walk-forward cross-validation with an embargo of at least the horizon.
+- Use purged walk-forward cross-validation; training label endpoints must precede the validation/test feature dates, in addition to the configured embargo.
+- Fit one early-stopped LightGBM per outer fold; use the median selected count for final all-eligible-row fits, and reuse saved fold selection in production without repeating CV.
 - Train ElasticNet / ridge, LightGBM and LightGBM random-forest members (`model.ensemble`).
 - Report CV and OOS IC (with cumulative-IC drawdown), SHAP, dependence plots, PDPs and importance.
 - Run a label-only quantile backtest of each horizon's OOS predictions as the last training stage.
@@ -63,14 +65,14 @@ The layout and the layering are pinned by
 - [utils/artifacts.py](../../src/modelling/utils/artifacts.py) owns `models_dir`, member paths and
   `metadata.json`.
 - [configs/modellling.yml](../../configs/modellling.yml) owns shared model and training settings;
-  [configs/models](../../configs/models/) owns family-specific features, hyperparameters and `task`.
+  [LightGBM settings](../../configs/models/lgbm_modelling.yml) and the other family YAML files own features, hyperparameters and `task`.
 
 ## Artifacts
 
 `model.models_dir` (default `output/models`, relative to the data store) holds one pickle per member,
 `model_h<h>_<family>.pkl` (the fitted transformer without its context, config or logger), and
 `metadata.json`, stamped `artifact_format: transformer-pickle-v1`. Metadata without that stamp (models
-trained before the 2026-10 refactor) raises a "retrain" error: run `modelling train` or `full-train`.
+trained before the 2026-10 refactor) raises a "retrain" error. The additional training contract is `matured-fold-es-v1`; saved per-horizon fold counts, dates, metrics and resolved input/parameter signatures must match. Run `modelling train` first, then `full-train` can reuse that selection on all matured rows. See [the lifecycle and schema migration](../reference/modelling-and-portfolio.md).
 
 ## Dependencies
 

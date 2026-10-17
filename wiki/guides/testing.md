@@ -56,6 +56,16 @@ Prefer `sqlite_store` for store behavior. It exercises a real second SQL dialect
 
 Both test stores preserve the production rule that an absent or empty table raises unless `optional=True`.
 
+## Cube assembly source replay
+
+[The real-source replay](../../tests/data_aggregate/test_assemble_cube_real.py) reads a bounded AAPL/MSFT/JPM source window and runs the ordinary assembler against disposable SQLite. It checks exact price keys, source values and nulls under the existing precision policy, physical column removal, retained-value equality and latest feature-only reads. It does not write the production cube or rebuild peers. From an isolated worktree, set ROOT_PATH to the original repository containing the existing data/output/sector_peers.json; an unavailable peer artifact is an abstention, not permission to recompute it.
+
+On 2026-10-16, candidate1c2bc428 passed the independent replay over111 sessions/333rows and120,213source cells/nulls, narrowing366physical columns to67. All nine targets remained null on the three latest prediction rows. Two fixture-only corrections supply the existing Step config_dir contract and plain-string column names for synthetic OmegaConf selections; no application calculation or assertion was weakened.
+
+The captured actual candidate's validator returns pull/grain/timeseries0, profile1 and six explicit ABSTAIN3 results. The profile flag is a neutral level_factor constant1, explained by [the price/share basis](../../src/data_aggregate/utils/common/level_basis.py); it is not changed to satisfy a generic variance check. Timeseries has informational findings and abstains on its frozen component without a daily_legs declaration. Subset population checks and undeclared bounds/catalogue do not become passes. Exact commands, raw JSON/logs and independent reviews are kept in the local ignored run reports/validate/2026-10-16-cube-assembly-selection/.
+
+Separate the proof of assembly from [live feature coverage](../reference/live-database.md#cube-frontier-snapshot-2026-10-16) and [table readiness](./run-the-pipeline.md#assemble-selected-inputs-and-check-readiness). A part's maximum date does not prove every ticker/feature cell is present. [Assembly/status fixtures](../../tests/data_aggregate/test_assemble_cube.py) and [readiness fixtures](../../tests/data_aggregate/test_part_status.py) cover required/optional policy, projected reads and malformed-input refusals.
+
 ## Integration skips
 
 Real-data fixtures skip when the local database, source table, or required macro leg is unavailable. This is intentional for an integration layer, but a green suite with skipped price-dependent fixtures is reduced evidence.
@@ -137,7 +147,7 @@ For strategies, include exposure residuals, position counts, gross/net constrain
 
 ## Validation subsystem
 
-Unit/integration tests prove code behavior. [src/validate](../../src/validate/) evaluates persisted or rebuilt data quality through explicit checks, result gates, scopes, and reports.
+Unit/integration tests prove code behavior. [validation CLI](../../src/validate/cli.py) evaluates persisted or rebuilt data quality through explicit checks, result gates, scopes, and reports.
 
 Use the validator that matches the changed domain. Validation may abstain when a contract is not applicable; abstention is not a pass. Read check-health diagnostics before ranked findings because a miscalibrated threshold can inflate or hide clusters.
 

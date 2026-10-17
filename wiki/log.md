@@ -545,3 +545,13 @@ The user's failing terminal had only `SSL_CERT_FILE` set, pointing into Minicond
 - Pages: [Overview](./OVERVIEW.md), [Aggregation](./modules/data-aggregate.md), [Cube build](./flows/cube-build.md), [Configuration](./reference/configuration.md), and [Run the pipeline](./guides/run-the-pipeline.md).
 - Evidence: local ignored run reports/validate/2026-10-16-cube-assembly-selection/. Real-source replay currently abstains because compulsory momentum is absent. Existing peer-availability and insider-fingerprint failures remain separately visible; no baseline or live application table was changed. Final review/verdict belongs to this run's report.
 - Final source integration: 5fb2fa5e192b2997762a26756c3cd68ab63c0312 includes isolated F-001/F-002/F-003 diagnostic corrections. Only named malformed-input errors and the universe recovery hint changed; financial calculations and source data are unchanged.
+
+## 2026-10-16: refresh — cube assembly actual-source validation
+
+- Profile: internal/standard.
+- source_commit: 1c2bc4283136bddddb5d61260543964a334a549c (previous overview anchor5fb2fa5e192b2997762a26756c3cd68ab63c0312). Two follow-up fixture lines changed; application/configuration code is unchanged.
+- Coverage: completed the previously unavailable real replay after the user's momentum rebuild; distinguished table-edge readiness, per-feature support and source-age/coverage limitations. No automated drift task was added.
+- Pages: [Overview](./OVERVIEW.md), [Testing and validation](./guides/testing.md), [Live database](./reference/live-database.md).
+- Validation: independent actual-source replay1passed/42.27s;333rows/120,213exact source cells and nulls;366-to-67physical columns; latest3rows retain9null targets each. Generic grain/timeseries pass; neutral adjustment metadata profile flag and six abstentions remain visible. Existing peer-availability and insider-fingerprint failures remain unchanged.
+- Dated frontier: all6compulsoryparts aligned at2026-10-08;490latest-price names; all352non-target columns have some current support, with WBD raw-price and BX governance coverage gaps. Sector eligibility and full financial/PIT/drift correctness were not certified by this audit.
+- Evidence: local ignored reports/validate/2026-10-16-cube-assembly-selection/04-validation-03.md,04-validation-04.md,05-review-04.md and report.html. Production cube assembly, source writes, peer rebuilds, model/backtest changes and push are outside this refresh.

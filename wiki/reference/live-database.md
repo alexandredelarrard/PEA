@@ -8,6 +8,8 @@ tags:
   - reference
   - database
   - operations
+cube_snapshot: 2026-10-16
+source_commit: 1c2bc4283136bddddb5d61260543964a334a549c
 ---
 # Live database
 
@@ -29,6 +31,26 @@ MSYS_NO_PATHCONV=1 docker exec pea_db psql -U alexandre -d pea -c "SELECT curren
 ```
 
 Prefer catalog queries that return table presence, row estimates, physical size, columns, distinct tickers, and min/max dates in one captured report. Keep the measurement date beside every result. Connection and container details are in [run the pipeline](../guides/run-the-pipeline.md).
+
+## Cube frontier snapshot (2026-10-16)
+
+This is a bounded cube-state observation after the momentum rebuild, not a refresh of every older database count below. The [readiness implementation](../../src/data_aggregate/utils/common/part_status.py) references the latest stored analysis-universe price day. At this capture it was2026-10-08, with490latest-priced names from491declared names. All six compulsory part maxima matched that day; optional text/institutionals were absent. The live derived cube was absent during capture, so cube-status correctly remained unsuccessful for that reason.
+
+| Part | Latest rows | Non-target columns with some latest support | Columns complete across490 latest-priced names |
+| --- | --- | --- | --- |
+| Prices |490 |9/9 |9 |
+| Betas |491; unmatched WBD excluded by the price anchor |14/14 |14 |
+| Fundamentals |490 |200/200 |11 |
+| Momentum |490 |28/28 |17 |
+| Governance |489; BX absent |101/101 |0 |
+
+All352non-target payload columns had some support and none of361payload columns had a latest infinity. This does not mean all ticker/feature cells were filled. Bank/REIT/energy-specific fundamentals are deliberately conditional; their whole-universe missingness does not measure eligible-population coverage. Forward targets are expected null until their horizons mature.
+
+Named source gaps: WBD raw prices ended2026-10-06; BX governance ended2017-07-20 and its stored proxy support was one2014-07-21record. Source expiry/all-null-row removal explain the latter missing part row; the [price-anchored assembler](../../src/data_aggregate/transformers/step_assemble_cube.py) retains BX with null governance cells. External price-provider causes and newer eligible proxy coverage were not established; no repair, fill or source-policy change was applied.
+
+Evidence is in the local ignored run reports/validate/2026-10-16-cube-assembly-selection/: _out/feature_edge_after_momentum.csv/.json, _out/frontier_gap_diagnosis.json, _out/cube_status_after_momentum.json and04-validation-04.md. The21-session audit used the fixed latest-price cohort and stable initial/final date edges; that does not establish immutable same-date cells or full-history source freshness. [Real-source assembly validation](../guides/testing.md#cube-assembly-source-replay) is a separate bounded pass.
+
+A general post-assembly drift monitor remains proposed, not implemented. The current [aggregation DAG](../../src/dags/dag_data_aggregation.py) has max_active_tasks=1 and ALL_DONE downstream triggers; a future parallel quality task must address concurrency and downstream gating explicitly.
 
 ## Largest observed datasets
 

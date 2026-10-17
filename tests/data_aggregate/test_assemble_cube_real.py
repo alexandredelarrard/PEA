@@ -92,7 +92,7 @@ def test_real_source_assembly_replay(sqlite_store: Any, monkeypatch: pytest.Monk
         if frame is not None and not frame.empty:
             sqlite_store.replace(part.table, frame)
     sqlite_store.replace(Tables.prices, snapshot[Tables.cube_part_prices.name][["date", "ticker"]])
-    context = cast(Context, SimpleNamespace(store=sqlite_store, config=config, log=logging.getLogger(__name__)))
+    context = cast(Context, SimpleNamespace(store=sqlite_store, config=config, log=logging.getLogger(__name__), config_dir=Path("configs").resolve()))
     StepAssembleCube(context, config).run()
     cube = sqlite_store.load(Tables.cube, columns=sqlite_store.columns(Tables.cube))
     assert cube is not None

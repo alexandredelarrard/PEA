@@ -663,15 +663,23 @@ class StepAssessLongShort(Step):
                 raise ValueError("Evaluation exists; use explicit --resume for the same frozen models")
             return
         output.mkdir(parents=True, exist_ok=True)
-        write_json(
-            output / "started.json",
-            {
-                "frozen_at": ledger["frozen_at"],
-                "models": actual,
-                "started_at": pd.Timestamp.now(),
-                "policy": "cohorts committed before outcome reads; no further fitting or feature selection",
-            },
-        )
+        started_path = output / "started.json"
+        if started_path.exists():
+            if not self._options.get("resume", False):
+                raise ValueError("Partial evaluation exists; use explicit --resume for the same frozen models")
+            started = json.loads(started_path.read_text(encoding="utf-8"))
+            if started.get("frozen_at") != ledger["frozen_at"] or started.get("models") != actual:
+                raise ValueError("Partial evaluation freeze/model identity mismatch")
+        else:
+            write_json(
+                started_path,
+                {
+                    "frozen_at": ledger["frozen_at"],
+                    "models": actual,
+                    "started_at": pd.Timestamp.now(),
+                    "policy": "cohorts committed before outcome reads; no further fitting or feature selection",
+                },
+            )
         scores, cohorts, calendar = self._score_universes(ledger, output)
         self._attach_outcomes(scores, cohorts, calendar, output)
         from_result = pd.read_parquet(output / "predictions.parquet")
@@ -730,6 +738,16 @@ class StepAssessLongShort(Step):
             for i, start, stop in windows
         ]
         windows.append((0, pd.Timestamp(self._options.evaluation_start), end))
+        calendar_digest = hashlib.sha256(calendar.to_numpy(dtype="datetime64[ns]").tobytes()).hexdigest()
+        manifest_path = output / "feature_prediction_manifest.json"
+        previous = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else None
+        if previous is not None and (
+            previous.get("calendar_digest") != calendar_digest
+            or [(row["fold"], row["feature_min"], row["feature_max"]) for row in previous["windows"]]
+            != [(fold, str(start), str(stop)) for fold, start, stop in windows]
+        ):
+            raise ValueError("Evaluation calendar/window snapshot identity mismatch")
+        prior_windows = {row["fold"]: row for row in previous["windows"]} if previous is not None else {}
         final = self._output / "_out" / "final"
         features = list(dict.fromkeys([name for candidate in ledger["selected"].values() for name in candidate["features"]]))
         categories = list(dict.fromkeys([name for candidate in ledger["selected"].values() for name in candidate["categoricals"]]))
@@ -755,6 +773,9 @@ class StepAssessLongShort(Step):
             )
             if panel is None or panel.empty:
                 raise ValueError(f"No feature-only assessment universe for fold {fold}")
+            digest = frame_digest(panel, [*features, "sector"])
+            if fold in prior_windows and (prior_windows[fold]["rows"] != len(panel) or prior_windows[fold]["digest"] != digest):
+                raise ValueError(f"Evaluation fold {fold} feature/universe snapshot identity mismatch")
             scores, member_scores = ensemble_predict(members, panel)
             frame = panel[["date", "ticker", "sector"]].copy()
             for family, prediction in member_scores.items():
@@ -784,7 +805,7 @@ class StepAssessLongShort(Step):
                     "rows": len(panel),
                     "feature_min": start,
                     "feature_max": stop,
-                    "digest": frame_digest(panel, features),
+                    "digest": digest,
                     "sample_rows": len(positions),
                     "future_outcome_predicates": False,
                 }
@@ -797,8 +818,9 @@ class StepAssessLongShort(Step):
         combined.to_parquet(output / "scores.parquet", index=False)
         cohorts.to_parquet(output / "cohorts.parquet", index=False)
         write_json(
-            output / "feature_prediction_manifest.json",
+            manifest_path,
             {
+                "calendar_digest": calendar_digest,
                 "windows": identities,
                 "cohort_assignment_complete": True,
                 "future_labels_read": False,

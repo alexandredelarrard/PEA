@@ -32,6 +32,7 @@ from typing import Any, cast
 
 import click
 
+from src import context as context_module
 from src.constants.command_line_interface import CONFIG_ARGS, CONFIG_KWARGS, TICKERS_ARGS, TICKERS_KWARGS
 from src.context import get_config_context
 from src.data_store.schema import resolve
@@ -80,7 +81,7 @@ def cli() -> None:
 @click.option(*OUT_ARGS, **cast(dict[str, Any], OUT_KWARGS))
 @click.option(*CONFIG_ARGS, **cast(dict[str, Any], CONFIG_KWARGS))
 def modelling(out: str, config_path: str) -> None:
-    worktree = Path(__file__).resolve().parents[2]
+    worktree = Path(context_module.__file__).resolve().parents[1]
     git_file = worktree / ".git"
     if git_file.is_file() and "ROOT_PATH" not in os.environ:
         raw = git_file.read_text(encoding="utf-8").removeprefix("gitdir:").strip()

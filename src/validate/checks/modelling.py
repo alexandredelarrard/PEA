@@ -16,7 +16,7 @@ from typing import Any, cast
 
 import numpy as np
 import pandas as pd
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from scipy.stats import spearmanr
 
 from src.context import Context
@@ -71,6 +71,73 @@ def _read(path: Path) -> Any:
 def _finding(findings: list[Finding], condition: bool, observed: str, expected: str, **evidence: Any) -> None:
     if not condition:
         findings.append(Finding.at(8, observed, expected, **evidence))
+
+
+def _configured_h60(block: dict, kind: str) -> list[str] | None:
+    """Resolve a declared h60 list or its default; None permits the RF family fallback."""
+    for horizon, value in (block.get(f"{kind}_by_horizon") or {}).items():
+        try:
+            matches = int(horizon) == 60
+        except (TypeError, ValueError):
+            continue
+        if matches:
+            if value is not None:
+                return list(value)
+            break
+    return list(block[kind]) if block.get(kind) is not None else None
+
+
+def _reconcile_configuration(config: DictConfig, ledger: dict, findings: list[Finding]) -> None:
+    """Independently compare effective YAML pools and original controls with the frozen experiment."""
+    current = cast(dict, OmegaConf.to_container(config, resolve=True))
+    ignored = {"columns", "columns_by_horizon", "categoricals", "categoricals_by_horizon"}
+    for family, key in [("lgbm", "lgbm"), ("random_forest", "random_forest"), ("elasticnet", "linear")]:
+        block, selected = current.get(key, {}), ledger["selected"][family]
+        categoricals = selected["categoricals"]
+        for kind, frozen in [("columns", [name for name in selected["features"] if name not in categoricals]), ("categoricals", categoricals)]:
+            configured = [] if family == "elasticnet" and kind == "categoricals" else _configured_h60(block, kind)
+            if configured is None and family == "random_forest":
+                configured = _configured_h60(current.get("lgbm", {}), kind)
+            _finding(
+                findings,
+                (configured or []) == frozen,
+                f"{family}: configured h60 {kind} differ",
+                "Current h60 pool equals the frozen selected pool",
+                field=f"{key}.{kind}_h60",
+                configured=configured or [],
+                frozen=frozen,
+            )
+        fixed = {name: value for name, value in block.items() if name not in ignored}
+        _finding(
+            findings,
+            fixed == ledger["fixed_parameters"][key],
+            f"{family}: fixed non-feature parameters differ",
+            "Every family parameter, including monotonic directions, remains frozen",
+            field=f"{key}.fixed_parameters",
+            configured=fixed,
+            frozen=ledger["fixed_parameters"][key],
+        )
+    controls, model = ledger["controls"], current["model"]
+    comparisons = [("seed", current.get("seed"), controls["seed"])]
+    for key in ["weight_decay", "label_column", "target_type", "ensemble"]:
+        comparisons.append((f"model.{key}", model.get(key), controls["shared"][key]))
+    # These CV keys are forced by assessment execution rather than frozen raw YAML.
+    forced = {"test_windows", "retain_models", "input_digest"}
+    cv = {key: value for key, value in model.get("cv", {}).items() if key not in forced}
+    frozen_cv = {key: value for key, value in controls["shared"]["cv"].items() if key not in forced}
+    comparisons.append(("model.cv", cv, frozen_cv))
+    for key, frozen in controls["assessment"].items():
+        comparisons.append((f"model.assessment.{key}", model.get("assessment", {}).get(key), frozen))
+    for field, configured, frozen in comparisons:
+        _finding(
+            findings,
+            configured == frozen,
+            f"{field}: experiment control differs",
+            "Original experiment control equals the frozen ledger",
+            field=field,
+            configured=configured,
+            frozen=frozen,
+        )
 
 
 def _reconcile_metrics(output: Path, evaluation: dict, models: list[str], findings: list[Finding]) -> dict:
@@ -319,11 +386,13 @@ def check_modelling(context: Context, *, out: str | Path, config: DictConfig) ->
     if missing:
         return CheckResult.abstained("modelling", "ensemble_h60", "Frozen evaluation/report is incomplete", missing=missing)
     ledger, fitted, evaluation = (_read(path) for path in required[:3])
-    models = list(config.model.ensemble) + ["ensemble"]
+    _reconcile_configuration(config, ledger, findings)
+    configuration_agrees = not findings
+    models = list(ledger["controls"]["shared"]["ensemble"]) + ["ensemble"]
     _reconcile_selection(output, ledger, fitted, findings)
     metrics = _reconcile_metrics(output, evaluation, models, findings)
     cohorts = _reconcile_cohorts(output, models, findings)
-    windows = _live_path_checks(context, output, findings, int(config.model.assessment.read_chunksize))
+    windows = _live_path_checks(context, output, findings, int(config.model.assessment.read_chunksize)) if configuration_agrees else 0
     report = _read(output / "report_manifest.json")
     digest = hashlib.sha256((run / "report.html").read_bytes()).hexdigest()
     _finding(findings, digest == report["report_sha256"], "HTML bytes differ from manifest", "Current report identity verified")
@@ -340,10 +409,11 @@ def check_modelling(context: Context, *, out: str | Path, config: DictConfig) ->
         "ensemble_h60",
         findings,
         scope={
-            "source": "frozen local predictions and scoped context.store returns; independent SciPy and prefix-path implementations",
+            "source": "resolved config, frozen local predictions and scoped context.store returns; independent SciPy and prefix-path implementations",
             "out": str(run),
             "writes_to_application": False,
             "model_fitting": False,
+            "configuration_agrees": configuration_agrees,
             "cohort_windows": cohorts,
             "source_windows": windows,
         },

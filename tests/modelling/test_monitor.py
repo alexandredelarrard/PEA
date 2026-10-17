@@ -9,6 +9,7 @@ import logging
 from pathlib import Path
 from types import SimpleNamespace
 
+import lightgbm as lgb
 import numpy as np
 import pandas as pd
 import pytest
@@ -22,6 +23,7 @@ from src.modelling.transformers.monitor import (
     save_shap_values,
     shap_importance_from_values,
     shap_row_values,
+    shap_score_scale,
 )
 from src.modelling.utils.cv import temporal_valid_split
 from src.modelling.utils.ensemble import ensemble_predict
@@ -170,3 +172,44 @@ def test_shap_values_are_signed_and_pdp_and_importance(tmp_path: Path) -> None:
     print("\n=== SANITY CHECK: SHAP / PDP / importance ===")
     print(f"  SHAP signed, mean|SHAP| == ranking, rows keyed by date+ticker; PDP of f0 rises {means[0]:.3f} -> {means[-1]:.3f};")
     print(f"  aggregated importance sums to 1, top feature {agg.index[0]}. Validated.")
+
+
+@pytest.mark.parametrize(
+    "boosting,objective,n_trees", [("rf", "regression", 3), ("rf", "regression", 11), ("gbdt", "regression", 7), ("rf", "binary", 5)]
+)
+def test_shap_contributions_reconcile_in_model_score_units(boosting: str, objective: str, n_trees: int) -> None:
+    x = np.random.default_rng(12).normal(size=(120, 3))
+    y = (x[:, 0] > 0).astype(float) if objective == "binary" else 1.25 + 0.7 * x[:, 0] - 0.4 * x[:, 1]
+    trained = lgb.train(
+        {
+            "boosting_type": boosting,
+            "objective": objective,
+            "verbosity": -1,
+            "bagging_fraction": 0.8,
+            "bagging_freq": 1,
+            "feature_fraction": 0.8,
+            "num_leaves": 7,
+            "min_data_in_leaf": 3,
+            "num_threads": 1,
+            "seed": 7,
+        },
+        lgb.Dataset(x, label=y, feature_name=["f0", "f1", "f2"]),
+        num_boost_round=n_trees,
+    )
+    booster = lgb.Booster(model_str=trained.model_to_string())
+    assert booster.num_trees() == n_trees
+    predictions = np.asarray(booster.predict(x, raw_score=objective == "binary"))
+    got = shap_row_values(booster, x, booster.feature_name(), sample=31)
+    assert got is not None, "the declared SHAP dependency must explain this supported fixture"
+    values, idx = got
+    assert values.shape == (31, 3) and len(np.unique(idx)) == 31
+    native = np.asarray(booster.predict(x[idx], pred_contrib=True))
+    scale = 1.0 / n_trees if boosting == "rf" and objective == "regression" else 1.0
+    assert shap_score_scale(booster) == scale
+    np.testing.assert_allclose(native.sum(axis=1) * scale, predictions[idx], atol=1e-12)
+    np.testing.assert_allclose(values, native[:, :-1] * scale, atol=1e-12)
+    np.testing.assert_allclose(values.sum(axis=1) + native[:, -1] * scale, predictions[idx], atol=1e-12)
+    assert np.array_equal(predictions, np.asarray(booster.predict(x, raw_score=objective == "binary")))
+    if objective == "binary":
+        assert not np.allclose(predictions, np.asarray(booster.predict(x))), "classification SHAP explains raw margins, not probabilities"
+    print(f"SANITY: {boosting}/{objective}, {n_trees} trees: sampled SHAP plus base reconstructs model scores; scale={scale:g}.")

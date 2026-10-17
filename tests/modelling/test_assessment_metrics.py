@@ -7,6 +7,37 @@ import pytest
 from src.modelling.utils.assessment_metrics import formation_cohorts, forward_returns, matched_cohort_returns, temporal_diagnostics, trend_summary
 
 
+def test_daily_diagnostics_preserve_dates_and_model_row_alignment() -> None:
+    dates = pd.to_datetime(["2000-01-03 09:30", "2000-01-04 10:45", "2000-01-05 15:00"])
+    predictions = pd.DataFrame(
+        {
+            "date": np.repeat(dates, [5, 4, 6]),
+            "ticker": list("ABCDEABCDABCDEF"),
+            "y": [0, 1, 2, 3, np.nan, 0, 1, 2, 3, 0, 1, 2, 3, np.nan, np.nan],
+            "member": [0, 1, 2, 3, 4, 3, 2, 1, 0, 0, 2, 1, 3, 4, 5],
+            "fold": np.repeat([1, 1, 2], [5, 4, 6]),
+        }
+    ).iloc[::-1]
+    predictions["inverse"] = -predictions.member
+    stats, daily = temporal_diagnostics(predictions, ["member", "inverse"], 60, 2, 0, 0.95, 4325)
+    assert "date" in daily.columns
+    assert "index" not in daily.columns
+    expected = pd.DataFrame(
+        {
+            "date": np.tile(dates, 2),
+            "model": ["member"] * 3 + ["inverse"] * 3,
+            "fold": [1, 1, 2] * 2,
+            "universe": [5, 4, 6] * 2,
+            "paired": [4] * 6,
+        }
+    )
+    pd.testing.assert_frame_equal(daily[expected.columns], expected)
+    assert daily.ic.to_numpy() == pytest.approx([1.0, -1.0, 0.8, -1.0, 1.0, -0.8])
+    assert stats["member"]["mean_ic"] == pytest.approx(0.8 / 3)
+    assert stats["inverse"]["mean_ic"] == pytest.approx(-0.8 / 3)
+    print("SANITY: both models retain exact formation timestamps, fold/count alignment and known ICs; no anonymous index column is exported.")
+
+
 def test_weak_window_minimizes_mean_ic_instead_of_ir() -> None:
     dates = pd.bdate_range("2000-01-03", periods=253)
     predictions = pd.DataFrame(

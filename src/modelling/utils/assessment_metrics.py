@@ -155,7 +155,7 @@ def temporal_diagnostics(
             "excluded_label_rows": len(predictions) - len(target),
         }
         daily["model"] = model
-        frames.append(daily.reset_index())
+        frames.append(daily.rename_axis("date").reset_index())
     return stats, pd.concat(frames, ignore_index=True)
 
 

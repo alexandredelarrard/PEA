@@ -132,3 +132,6 @@ plots/
 _scripts/
 
 .codegraph/
+
+# Local Graphify index and visualization (rebuild from source)
+graphify-out/

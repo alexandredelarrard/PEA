@@ -555,3 +555,11 @@ The user's failing terminal had only `SSL_CERT_FILE` set, pointing into Minicond
 - Validation: independent actual-source replay1passed/42.27s;333rows/120,213exact source cells and nulls;366-to-67physical columns; latest3rows retain9null targets each. Generic grain/timeseries pass; neutral adjustment metadata profile flag and six abstentions remain visible. Existing peer-availability and insider-fingerprint failures remain unchanged.
 - Dated frontier: all6compulsoryparts aligned at2026-10-08;490latest-price names; all352non-target columns have some current support, with WBD raw-price and BX governance coverage gaps. Sector eligibility and full financial/PIT/drift correctness were not certified by this audit.
 - Evidence: local ignored reports/validate/2026-10-16-cube-assembly-selection/04-validation-03.md,04-validation-04.md,05-review-04.md and report.html. Production cube assembly, source writes, peer rebuilds, model/backtest changes and push are outside this refresh.
+## 2026-10-16: refresh — Graphify source navigation
+
+- Profile: internal/standard.
+- source_commit: `d1e41b6` (bounded navigation setup; the overview freshness anchor is unchanged).
+- Coverage: installed isolated Windows Graphify 0.9.92 with SQL parsing and user-global Codex, Claude, and generic agent skills; added graph-first queries after the canonical wiki read and source verification after each query.
+- Pages: [Agent rules](../AGENTS.md), [Claude instructions](../CLAUDE.md), [Overview](./OVERVIEW.md), [Graphify guide](./guides/query-the-codebase.md), [Run the pipeline](./guides/run-the-pipeline.md).
+- Evidence: [Local graph verification](../graphify-out/verification.json) records 15,389 nodes, 47,050 edges, 400 communities and 81 SQL nodes; query/explain/path smoke checks pass, with no missing endpoints or duplicate edges. Twenty-one self-loops are retained for source interpretation. The ignored outputs include graph.json, GRAPH_REPORT.md and an HTML overview of 400 communities.
+- Boundary: repository Markdown remains in OpenKnowledge; source Markdown, data, reports and worktrees are excluded from the Graphify scan. No application source, pipeline configuration, stored data or PostgreSQL state changed. Application tests were not needed. Link audits selected the links family only.

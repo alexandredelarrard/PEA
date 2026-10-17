@@ -14,7 +14,7 @@ tags:
 
 `stock_pick_strat` is an internal quantitative research and production pipeline for S&P 500 equities. It extracts market, fundamental, ownership, governance, and alternative data into PostgreSQL; turns those sources into a point-in-time, peer-relative feature cube; trains cross-sectional models; and blends independent strategy sleeves into a tradeable portfolio.
 
-This wiki is the canonical documentation surface for code navigation, data contracts, operations, testing, and deferred work. Start with the task map below, then inspect the linked source before changing code. Package metadata lives in [pyproject.toml](../pyproject.toml); [docker-compose.yml](../docker-compose.yml) defines PostgreSQL and Airflow services.
+This wiki is the canonical documentation surface for code navigation, data contracts, operations, testing, and deferred work. Start with the task map below, use the [Graphify guide](./guides/query-the-codebase.md) to query source relationships, then inspect the linked source before changing code. Package metadata lives in [pyproject.toml](../pyproject.toml); [docker-compose.yml](../docker-compose.yml) defines PostgreSQL and Airflow services.
 
 ## Architecture at a glance
 

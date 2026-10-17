@@ -4,7 +4,7 @@ peer-relative feature cube; train cross-sectional models; blend sleeves into one
 Package at the repo root. Python 3.13, OmegaConf, pandas, SQLAlchemy 2 + PostgreSQL 16,
 LightGBM/SHAP, OpenAI, pytest; Airflow uses an isolated Python 3.12 environment.
 
-## Read the wiki for your task first, then the code
+## Read the wiki, query Graphify, then inspect code
 
 | Task | Canonical page |
 | --- | --- |
@@ -24,6 +24,7 @@ LightGBM/SHAP, OpenAI, pytest; Airflow uses an isolated Python 3.12 environment.
 ## Hard rules
 
 - Prefix every shell command with `rtk`.
+- After the wiki, run `rtk proxy graphify query "<question>" --budget 1500` before raw code searches; refresh missing/stale graphs per the [Graphify guide](wiki/guides/query-the-codebase.md).
 - Read/write in-scope Markdown only through OpenKnowledge MCP; source code uses native tools.
 - All tabular I/O goes through `context.store`; SQL exists only in `src/data_store/`.
 - Project and scope every large read; use `iter_load` for cube-sized data.

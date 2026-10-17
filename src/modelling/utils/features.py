@@ -44,9 +44,9 @@ def prepare_features(frame: pd.DataFrame, categorical_features: list[str] | None
     return out
 
 
-def design_matrix(panel: pd.DataFrame, feats: list[str], categorical_features: list[str] | None = None) -> np.ndarray:
-    """Float32 explanation matrix in fitted order; only explicitly declared categories use missing codes."""
-    return prepare_features(panel[feats], categorical_features, downcast=True).to_numpy(dtype="float32")
+def design_matrix(panel: pd.DataFrame, feats: list[str], categorical_features: list[str] | None = None, *, downcast: bool = True) -> np.ndarray:
+    """Explanation matrix in fitted order; float64 scoring precision is available without changing category codes."""
+    return prepare_features(panel[feats], categorical_features, downcast=downcast).to_numpy(dtype="float32" if downcast else "float64")
 
 
 def parse_monotone_feature_map(features_cfg: dict | ListConfig | None) -> dict[str, int]:

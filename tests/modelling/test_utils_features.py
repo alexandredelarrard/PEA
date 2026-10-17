@@ -58,6 +58,9 @@ def test_numeric_text_preserves_missingness_and_rejects_bad_values() -> None:
     encoded = design_matrix(panel, ["f_affo", "sector"], ["sector"])
     assert np.array_equal(encoded[:, 0], [1.25, np.nan, -0.75], equal_nan=True)
     assert np.array_equal(encoded[:, 1], [3, -1, 8])
+    panel.loc[0, "f_affo"] = "1.0000000001"
+    precise = design_matrix(panel, ["f_affo", "sector"], ["sector"], downcast=False)
+    assert precise.dtype == np.dtype("float64") and precise[0, 0] == 1.0000000001
     panel.loc[0, "f_affo"] = "bad input"
     with pytest.raises(ValueError, match="f_affo"):
         design_matrix(panel, ["f_affo", "sector"], ["sector"])

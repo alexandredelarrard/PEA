@@ -333,7 +333,7 @@ def save_member_diagnostics(
     encoding the model was fitted on (categoricals -> numeric codes)."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    x = design_matrix(panel, feature_cols, categorical_features)
+    x = design_matrix(panel, feature_cols, categorical_features, downcast=False)
     gain_imp = pd.Series(dict(zip(feature_cols, booster.feature_importance(importance_type="gain"), strict=False))).sort_values(ascending=False)
 
     shap_imp, n_shap = None, 0

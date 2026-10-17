@@ -17,6 +17,10 @@ Execute a source, cube, model, portfolio, or validation stage from the repositor
 > [!IMPORTANT]
 > Prefix every shell command with `rtk`. The examples below show the underlying command shape; retain the prefix in actual use.
 
+## Codebase navigation
+
+For source questions, follow [Query the codebase with Graphify](./query-the-codebase.md): read the relevant wiki page, query the local graph, then inspect returned source locations. The guide includes the local AST-only refresh command and preserves OpenKnowledge Markdown handling.
+
 ## Python environment
 
 The project requires Python 3.13. `python`, `python3`, Poetry, and Conda are not usable from the host `PATH`; call the Poetry virtual-environment executable directly:

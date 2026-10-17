@@ -1,0 +1,14 @@
+# Documentation stays in OpenKnowledge; Graphify indexes source code locally.
+*.md
+*.mdx
+.ok/
+.claude/
+.codex/
+.agents/
+.github/skills/
+.worktrees/
+reports/
+data/
+graphify-out/
+.env
+.env.*

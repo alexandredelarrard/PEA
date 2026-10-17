@@ -18,6 +18,8 @@ def _report_artifacts(root: Path) -> None:
         family: {"id": "b0", "features": ["x", "z"], "categoricals": [], "metrics": {"ic_ir": 0.2, "mean_ic": 0.1, "eligible": True}}
         for family in ["elasticnet", "lgbm", "random_forest"]
     }
+    for family in ["lgbm", "random_forest"]:
+        selected[family]["categoricals"] = ["z"]
     families = {}
     for family, candidate in selected.items():
         identifier = {"elasticnet": "e0", "lgbm": "l0", "random_forest": "r0"}[family]
@@ -49,6 +51,7 @@ def _report_artifacts(root: Path) -> None:
     write_json(out / "eval" / "linear.json", {"features": ["x", "z"], "coefficient": [0.2, -0.1], "mean": [0, 0], "std": [1, 1], "intercept": 0})
     write_json(out / "eval" / "market_calendar_years.json", {"2022": -0.1, "2023": 0.2})
     write_json(out / "eligibility.json", {"rows": 20, "features": [{"feature": "x", "role": "numeric"}]})
+    write_json(out / "category_labels.json", {"status": "verified", "labels": {"z": {"0": "Category A", "1": "Category B"}}})
     dates = pd.to_datetime(["2022-01-03", "2023-01-03"])
     for fold in range(6):
         quality = pd.DataFrame({"year": [2022, 2023], "sector": 0, "feature": ["x", "x"], "observed": [8, 9], "rows": [10, 10]})
@@ -63,13 +66,13 @@ def _report_artifacts(root: Path) -> None:
                             "importance": 0.123 if name == "x" else 0.05,
                             "observed": 2,
                             "sample_rows": 2,
-                            "categorical": False,
+                            "categorical": name == "z",
                             "constraint": 0,
                             "scatter": {"x": [0, 1], "shap": [0, 0.2]},
                             "binned": {"x": [0, 1], "mean": [0, 0.2]},
-                            "shap_trend": {"shape": "increasing", "rho": 1},
+                            "shap_trend": {"shape": "unordered categorical" if name == "z" else "increasing", "rho": None if name == "z" else 1},
                             "missing_shap_mean": None,
-                            "pdp": {"x": [0, 1], "mean": [0, 0.2], "trend": {"shape": "increasing"}},
+                            "pdp": {"x": [0, 1], "mean": [0, 0.2], "trend": {"shape": "unordered categorical" if name == "z" else "increasing"}},
                         }
                         for name in ["x", "z"]
                     },

@@ -19,6 +19,7 @@ from typing import Any, cast
 
 import click
 
+from src import context as context_module
 from src.constants.command_line_interface import CONFIG_ARGS, CONFIG_KWARGS
 from src.context import get_config_context
 from src.modelling.steps.step_assess_long_short import StepAssessLongShort
@@ -81,7 +82,7 @@ def predict(config_path: str, n_dates: int) -> None:
 @click.option("--stage", type=click.Choice(["development", "evaluation", "report", "all"]), default="development", show_default=True)
 @click.option("--resume", is_flag=True, help="Reuse completed candidates only after checking unchanged input and experiment identities.")
 def assess(config_path: str, output: Path, stage: str, resume: bool) -> None:
-    worktree = Path(__file__).resolve().parents[2]
+    worktree = Path(context_module.__file__).resolve().parents[1]
     git_file = worktree / ".git"
     if git_file.is_file() and "ROOT_PATH" not in os.environ:
         raw = git_file.read_text(encoding="utf-8").removeprefix("gitdir:").strip()

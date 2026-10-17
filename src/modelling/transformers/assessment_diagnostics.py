@@ -12,9 +12,10 @@ from omegaconf import DictConfig
 
 from src.modelling.transformers.base import BaseModel
 from src.modelling.transformers.monitor import partial_dependence, shap_row_values, shap_score_scale
-from src.modelling.utils.assessment import balanced_sample_positions, write_json
+from src.modelling.utils.assessment import balanced_sample_positions, summarize_ic, write_json
 from src.modelling.utils.assessment_metrics import trend_summary
 from src.modelling.utils.features import design_matrix
+from src.modelling.utils.metrics import daily_ic_series
 
 
 def explain_tree(member: BaseModel, panel: pd.DataFrame, output: Path, config: DictConfig, logger: logging.Logger, *, pdp: bool) -> dict[str, Any]:
@@ -103,3 +104,63 @@ def _binned_dependence(x: np.ndarray, phi: np.ndarray, categorical: bool) -> dic
     bins = frame.x if categorical else pd.qcut(frame.x, min(10, frame.x.nunique()), duplicates="drop")
     grouped = frame.groupby(bins, observed=True).agg(x=("x", "median"), mean=("phi", "mean"), count=("phi", "size"))
     return {key: grouped[key].to_numpy() for key in ["x", "mean", "count"]}
+
+
+def _summaries(frame: pd.DataFrame, models: list[str], horizon: int) -> dict[str, Any]:
+    paired = frame.loc[np.isfinite(frame.y)]
+    return {name: summarize_ic(daily_ic_series(paired, "y", name), horizon) for name in models}
+
+
+def period_evidence(
+    predictions: pd.DataFrame,
+    models: list[str],
+    periods: dict[str, list[str]],
+    comparison_years: list[int],
+    prior_scores: pd.DataFrame | None = None,
+    *,
+    horizon: int = 60,
+) -> dict[str, Any]:
+    """Diagnose fixed predictions; future-observed support is never a ranking or selection rule."""
+    years = predictions.date.dt.year
+    comparison = predictions.loc[years.isin(comparison_years)]
+    supported = comparison.loc[np.isfinite(comparison.y)]
+    n_dates = comparison.date.nunique()
+    complete = supported.groupby("ticker").date.nunique()
+    tickers = sorted(complete.index[complete == n_dates].astype(str)) if n_dates else []
+    fixed = supported.loc[supported.ticker.isin(tickers)]
+    cohorts = {str(year): _summaries(fixed.loc[fixed.date.dt.year == year], models, horizon) for year in comparison_years}
+    population = {}
+    sectors = []
+    for year, frame in predictions.groupby(years):
+        population[str(year)] = {
+            "score_rows": len(frame),
+            "label_rows": int(np.isfinite(frame.y).sum()),
+            "dates": frame.date.nunique(),
+            "tickers": frame.ticker.nunique(),
+        }
+        for sector, group in frame.groupby("sector", dropna=False):
+            for model, stats in _summaries(group, models, horizon).items():
+                sectors.append({"year": year, "sector": sector, "model": model, "rows": len(group), "tickers": group.ticker.nunique(), **stats})
+    earlier = {}
+    if prior_scores is not None and not prior_scores.empty:
+        paired = prior_scores.merge(predictions[["date", "ticker", "y"]], on=["date", "ticker"], how="left", validate="one_to_one")
+        earlier = _summaries(paired, models, horizon)
+    return {
+        "periods": {
+            name: _summaries(predictions.loc[predictions.date.between(pd.Timestamp(bounds[0]), pd.Timestamp(bounds[1]))], models, horizon)
+            for name, bounds in periods.items()
+        },
+        "year_population": population,
+        "sector_year": sectors,
+        "fixed_cohort": {
+            "years": cohorts,
+            "comparison_years": comparison_years,
+            "tickers": tickers,
+            "n_dates": n_dates,
+            "rows": len(fixed),
+            "policy": "Retrospective diagnostic: identical names with finite labels on every compared formation date; no model refitting or ranking change.",
+        },
+        "earlier_model": earlier,
+        "earlier_model_policy": "The preceding original fold model scores the later comparison year without refitting; this diagnoses refresh sensitivity, not a selected alternative model.",
+        "attribution_limit": "Coverage, distribution, sector and fixed-cohort comparisons are diagnostic associations. A causal source-defect claim requires dated source evidence.",
+    }

@@ -57,6 +57,14 @@ model:
     read_chunksize: 25000      # I/O batching only; no change to fitting rows or model parameters.
     categorical_features: [sector, industry_group]
     excluded_columns: [open, high, low, close, close_split, close_total, level_factor, volume]
+    diagnostic_periods:
+      dotcom_2000_2002: [2000-01-01, 2002-12-31]
+      gfc_2007_2009: [2007-01-01, 2009-12-31]
+      '2019': [2019-01-01, 2019-12-31]
+      covid_2020: [2020-01-01, 2020-12-31]
+      '2022': [2022-01-01, 2022-12-31]
+      '2023': [2023-01-01, 2023-12-31]
+    comparison_years: [2018, 2019]
 
   backtest:                    # label-only quantile backtest of each horizon's OOS CV predictions,
     enabled: false            # training-only checks; portfolio backtest remains a separate DAG task

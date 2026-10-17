@@ -21,7 +21,7 @@ from src.context import Context
 from src.data_store.schema import Tables
 from src.modelling.steps.step_long_short import StepLongShort
 from src.modelling.transformers import BaseModel, model_class
-from src.modelling.transformers.assessment_diagnostics import explain_tree
+from src.modelling.transformers.assessment_diagnostics import explain_tree, period_evidence
 from src.modelling.transformers.assessment_report import render_assessment
 from src.modelling.transformers.monitor import shap_row_values, shap_score_scale
 from src.modelling.utils.artifacts import load_member, member_path, save_member
@@ -689,6 +689,15 @@ class StepAssessLongShort(Step):
                 int(self._config.seed),
             )
             daily.to_parquet(output / f"daily_{name}.parquet", index=False)
+        prior_path = output / "earlier_scores.parquet"
+        periods = period_evidence(
+            from_result,
+            [str(name) for name in models],
+            cast(dict, OmegaConf.to_container(self._options.diagnostic_periods, resolve=True)),
+            list(self._options.comparison_years),
+            pd.read_parquet(prior_path) if prior_path.exists() else None,
+        )
+        write_json(output / "period_diagnostics.json", periods)
         self._explanations(output)
         write_json(
             output / "result.json",
@@ -747,11 +756,22 @@ class StepAssessLongShort(Step):
             if panel is None or panel.empty:
                 raise ValueError(f"No feature-only assessment universe for fold {fold}")
             scores, member_scores = ensemble_predict(members, panel)
-            frame = panel[["date", "ticker"]].copy()
+            frame = panel[["date", "ticker", "sector"]].copy()
             for family, prediction in member_scores.items():
                 frame[family] = prediction.to_numpy()
             frame["ensemble"], frame["fold"] = scores.to_numpy(), fold
             score_frames.append(frame)
+            comparison_year = int(self._options.comparison_years[-1])
+            comparison = panel.loc[panel.date.dt.year == comparison_year]
+            if fold > 1 and not comparison.empty:
+                earlier_members = {str(name): load_member(final / f"f{fold - 1}_{name}.pkl") for name in self._config.model.ensemble}
+                earlier_ensemble, earlier = ensemble_predict(earlier_members, comparison)
+                old_scores = comparison[["date", "ticker"]].copy()
+                for name, values in earlier.items():
+                    old_scores[name] = values.to_numpy()
+                old_scores["ensemble"] = earlier_ensemble.to_numpy()
+                old_scores.to_parquet(output / "earlier_scores.parquet", index=False)
+                del earlier_members
             budget = int(self._config.model.diagnostics.shap_sample)
             if fold:
                 budget = max(1, round(budget * panel.date.nunique() / total_development_dates))
@@ -791,12 +811,22 @@ class StepAssessLongShort(Step):
         values = panel[features].notna()
         for category in categories:
             values[category] &= panel[category].ge(0)
-        identifiers = [panel.date.dt.year.rename("year"), panel.sector.rename("sector")]
+        identifiers = [panel.date.dt.year.rename("year"), panel.sector.rename("_sector_group")]
         observed = (
-            values.groupby(identifiers, dropna=False).sum().reset_index().melt(id_vars=["year", "sector"], var_name="feature", value_name="observed")
+            values.groupby(identifiers, dropna=False)
+            .sum()
+            .reset_index()
+            .melt(id_vars=["year", "_sector_group"], var_name="feature", value_name="observed")
+            .rename(columns={"_sector_group": "sector"})
         )
-        population = panel.groupby(identifiers, dropna=False).size().rename("rows").reset_index()
-        return observed.merge(population, on=["year", "sector"], validate="many_to_one")
+        population = panel.groupby(identifiers, dropna=False).size().rename("rows").reset_index().rename(columns={"_sector_group": "sector"})
+        result = observed.merge(population, on=["year", "sector"], validate="many_to_one")
+        numeric = [name for name in features if name not in categories]
+        if numeric:
+            distribution = panel.groupby(identifiers, dropna=False)[numeric].agg(["mean", "std", "median"])
+            distribution = distribution.stack(level=0, future_stack=True).rename_axis(index=["year", "sector", "feature"]).reset_index()
+            result = result.merge(distribution, on=["year", "sector", "feature"], how="left", validate="one_to_one")
+        return result
 
     def _attach_outcomes(self, scores: pd.DataFrame, cohorts: pd.DataFrame, calendar: pd.DatetimeIndex, output: Path) -> None:
         if not (output / "feature_prediction_manifest.json").exists() or not (output / "cohorts.parquet").exists():

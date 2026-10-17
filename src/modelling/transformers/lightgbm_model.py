@@ -25,7 +25,7 @@ from omegaconf import DictConfig
 
 from src.modelling.transformers.base import TASK_CLASSIFICATION, BaseModel
 from src.modelling.utils.cv import time_decay_weights
-from src.modelling.utils.features import build_monotone_constraints, coerce_categoricals, parse_monotone_feature_map
+from src.modelling.utils.features import build_monotone_constraints, parse_monotone_feature_map, prepare_features
 
 EARLY_STOPPING_ROUNDS = 40
 DEFAULT_SEED = 42  # overridden by the pipeline's global `seed`
@@ -50,17 +50,12 @@ def _build_dataset(
 ) -> lgb.Dataset:
     # With categoricals, a DataFrame keeps the int category codes as int (native categorical
     # splits); otherwise the fast all-float numpy path.
+    prepared = prepare_features(panel[feats], categorical_features, downcast=True)
     if categorical_features:
-        cat = set(categorical_features)
-        x = coerce_categoricals(panel[feats], categorical_features)
-        num = [f for f in feats if f not in cat]
-        if num:
-            x[num] = x[num].astype("float32")
-        for c in categorical_features:
-            x[c] = x[c].astype("int32")
+        x = prepared
         kw: dict = {"feature_name": feats, "categorical_feature": list(categorical_features)}
     else:
-        x = panel[feats].to_numpy(dtype="float32")
+        x = prepared.to_numpy(dtype="float32")
         kw = {"feature_name": feats}
     if weights is not None:
         kw["weight"] = weights
@@ -245,9 +240,7 @@ class LightGBMModel(BaseModel):
         return train_booster(train, self.features, self.label_column, valid_panel=valid, categorical_features=self.categoricals or None, **kw)
 
     def _predict(self, panel: pd.DataFrame) -> np.ndarray:
-        # the frame as-is (not a float32 array): integer category codes keep the categorical
-        # bins learned at training time
-        return np.asarray(self.model.predict(panel[self.features]))
+        return np.asarray(self.model.predict(prepare_features(panel[self.features], self.categoricals)))
 
     def importance(self) -> pd.Series:
         """LightGBM gain importance, in trained-feature order."""

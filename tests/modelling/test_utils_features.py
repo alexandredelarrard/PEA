@@ -45,9 +45,23 @@ def test_design_matrix_matches_training_encoding_for_categoricals() -> None:
     assert set(np.unique(x[:, 2])) == {3.0, 8.0}
     coerced = coerce_categoricals(cast(pd.DataFrame, panel[feats]), ["sector", "industry_group"])
     assert (coerced["industry_group"].to_numpy() == panel["industry_group"].to_numpy()).all()
-    assert design_matrix(panel, feats).dtype == np.dtype("float32"), "a text column is coerced even when not declared"
+    with pytest.raises(ValueError, match="sector"):
+        design_matrix(panel, feats)
     print("\n=== SANITY CHECK: one categorical encoding ===")
-    print(f"  text 'sector' -> code {CATEGORICAL_NA_CODE}; numeric industry_group passes through {{3, 8}}; never raises on text. Validated.")
+    print(
+        f"  declared text 'sector' -> code {CATEGORICAL_NA_CODE}; numeric industry_group passes through {{3, 8}}; undeclared text refused. Validated."
+    )
+
+
+def test_numeric_text_preserves_missingness_and_rejects_bad_values() -> None:
+    panel = pd.DataFrame({"f_affo": pd.Series(["1.25", None, "-0.75"], dtype="str"), "sector": [3, None, 8]})
+    encoded = design_matrix(panel, ["f_affo", "sector"], ["sector"])
+    assert np.array_equal(encoded[:, 0], [1.25, np.nan, -0.75], equal_nan=True)
+    assert np.array_equal(encoded[:, 1], [3, -1, 8])
+    panel.loc[0, "f_affo"] = "bad input"
+    with pytest.raises(ValueError, match="f_affo"):
+        design_matrix(panel, ["f_affo", "sector"], ["sector"])
+    print("SANITY: numeric text preserves NaNs; only declared categories use -1; malformed numeric values name their feature.")
 
 
 def test_columns_for_horizon_override_and_fallback() -> None:

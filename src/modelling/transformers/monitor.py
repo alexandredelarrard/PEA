@@ -327,12 +327,13 @@ def save_member_diagnostics(
     shap_sample: int = 2000,
     pdp_grid: int = 30,
     logger: logging.Logger | None = None,
+    categorical_features: list[str] | None = None,
 ) -> dict:
     """PDP + SHAP (raw values, ranking, plots) + gain table for ONE booster member, on the SAME
     encoding the model was fitted on (categoricals -> numeric codes)."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    x = design_matrix(panel, feature_cols)
+    x = design_matrix(panel, feature_cols, categorical_features)
     gain_imp = pd.Series(dict(zip(feature_cols, booster.feature_importance(importance_type="gain"), strict=False))).sort_values(ascending=False)
 
     shap_imp, n_shap = None, 0
@@ -483,6 +484,7 @@ class Monitor:
                 booster=m.model,
                 panel=panel,
                 feature_cols=list(m.model.feature_name()),
+                categorical_features=m.categoricals,
                 out_dir=out_dir if flat else out_dir / _UNSAFE_FILENAME_CHARS.sub("_", name),
                 top_n=self.top_n,
                 shap_sample=self.shap_sample,

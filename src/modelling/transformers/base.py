@@ -113,7 +113,7 @@ class BaseModel:
         families that do not early-stop)."""
         numeric = [c for c in self.configured_columns(self._config, self.horizon) if self._usable(c, train)]
         self.categoricals = [c for c in self.configured_categoricals(self._config) if self._usable(c, train)]
-        self.features = numeric + self.categoricals
+        self.features = list(dict.fromkeys(numeric + self.categoricals))
         if self.task == TASK_CLASSIFICATION:
             self._check_binary_label(train)
         self.model = self._fit(train, valid)

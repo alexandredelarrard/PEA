@@ -31,19 +31,21 @@ _FITTED_ARRAYS = ("coef_", "mean_", "std_")
 
 def _standardize(features: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Column-standardise, tolerant of ALL-NaN columns (no coverage in a fold) without
-    np.nanmean / np.nanstd warnings. An all-NaN or constant column gets mean 0, std 1 and becomes
-    all zeros after imputation, i.e. contributes nothing."""
-    features = np.asarray(features, dtype=float)
-    finite = np.isfinite(features)
-    n = finite.sum(axis=0)
-    safe_n = np.where(n > 0, n, 1)
-    filled = np.where(finite, features, 0.0)
-    mean = filled.sum(axis=0) / safe_n
-    mean = np.where(n > 0, mean, 0.0)
-    var = np.where(finite, (features - mean) ** 2, 0.0).sum(axis=0) / safe_n
-    std = np.sqrt(var)
-    std = np.where(np.isfinite(std) & (std > 0), std, 1.0)
-    standardized = np.nan_to_num((features - mean) / std, nan=0.0)
+    np.nanmean / np.nanstd warnings. All-NaN columns get mean 0; constant and all-NaN columns
+    get std 1 and become zeros after imputation, contributing nothing."""
+    # Own one float64 matrix; column-sized scratch avoids several cube-sized temporaries.
+    standardized = np.array(features, dtype=float, copy=True, order="F")
+    mean, std = np.zeros(standardized.shape[1]), np.ones(standardized.shape[1])
+    for index in range(standardized.shape[1]):
+        column = standardized[:, index]
+        finite = np.isfinite(column)
+        count = max(int(finite.sum()), 1)
+        mean[index] = np.where(finite, column, 0.0).sum() / count
+        scale = np.sqrt(np.where(finite, (column - mean[index]) ** 2, 0.0).sum() / count)
+        std[index] = scale if np.isfinite(scale) and scale > 0 else 1.0
+        column -= mean[index]
+        column /= std[index]
+        np.nan_to_num(column, copy=False, nan=0.0)
     return standardized, mean, std
 
 
@@ -94,7 +96,7 @@ def fit_ridge(
 ) -> tuple[np.ndarray, float, np.ndarray, np.ndarray]:
     """Closed-form (optionally time-decay weighted) ridge on standardised features:
     coef = (Xs' W Xs + alpha I)^-1 Xs' W (y - y_bar). Returns (coef, intercept, mean, std)."""
-    features = panel[feats].to_numpy(dtype=float)
+    features = panel[feats].to_numpy()
     y = panel[label_name].to_numpy(dtype=float)
     standardized, mean, std = _standardize(features)
     w = _sample_weights(panel, len(y), half_life_years)
@@ -112,7 +114,7 @@ def fit_elasticnet(
     (glmnet scale, ~1e-4..1e-1), `l1_ratio` the L1 share (0 = ridge, 1 = lasso). WARNs when every
     coefficient is zero: `alpha` is then too high for the target's scale and the member predicts
     a constant. Returns (coef, intercept, mean, std)."""
-    features = panel[feats].to_numpy(dtype=float)
+    features = panel[feats].to_numpy()
     y = panel[label_name].to_numpy(dtype=float)
     standardized, mean, std = _standardize(features)
     w = _sample_weights(panel, len(y), half_life_years)

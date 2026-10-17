@@ -5,6 +5,7 @@ ensemble beating its members' average, the degenerate-alpha warning, and its gua
 from __future__ import annotations
 
 import logging
+import tracemalloc
 import warnings
 from collections.abc import Callable
 from pathlib import Path
@@ -30,6 +31,32 @@ def test_standardize_no_warning_on_all_nan_column() -> None:
     assert np.allclose(xs[:, 1], 0.0) and mean[1] == 0.0 and std[1] == 1.0 and np.isfinite(xs).all()
     print("\n=== SANITY CHECK: standardize ===")
     print("  all-NaN feature -> no RuntimeWarning, mean 0 / std 1, contributes zeros. Validated.")
+
+
+def test_standardize_preserves_float64_math_and_bounds_peak_allocation() -> None:
+    features = np.random.default_rng(17).normal(size=(10000, 24)).astype("float32")
+    features[::7, 0] = np.nan
+    features[:, 1] = np.nan
+    features[:, 2] = 3.0
+    original = features.copy()
+    numeric = features.astype(float)
+    finite = np.isfinite(numeric)
+    counts = np.maximum(finite.sum(axis=0), 1)
+    means = np.where(finite, numeric, 0.0).sum(axis=0) / counts
+    variances = np.where(finite, (numeric - means) ** 2, 0.0).sum(axis=0) / counts
+    scales = np.sqrt(variances)
+    scales = np.where(np.isfinite(scales) & (scales > 0), scales, 1.0)
+    expected = np.nan_to_num((numeric - means) / scales, nan=0.0)
+    tracemalloc.start()
+    standardized, actual_means, actual_scales = _standardize(features)
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    assert np.array_equal(features, original, equal_nan=True), "caller-owned data must remain untouched"
+    assert np.allclose(actual_means, means, rtol=1e-12, atol=1e-12)
+    assert np.allclose(actual_scales, scales, rtol=1e-12, atol=1e-12)
+    assert np.allclose(standardized, expected, rtol=1e-12, atol=1e-12)
+    assert peak < 2 * numeric.nbytes, f"multiple full-size temporaries: peak={peak}, matrix={numeric.nbytes}"
+    print(f"SANITY: float64 standardization equations agree within 1e-12, input unchanged; peak {peak / numeric.nbytes:.2f} matrices.")
 
 
 def _collinear_panel() -> tuple[pd.DataFrame, list[str]]:

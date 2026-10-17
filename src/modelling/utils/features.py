@@ -13,7 +13,6 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from omegaconf import ListConfig, OmegaConf
-from pandas.api.types import is_numeric_dtype
 
 VALID_MONOTONE_DIRECTIONS = frozenset({-1, 0, 1})
 CATEGORICAL_NA_CODE = -1  # LightGBM categorical code standing for "missing"
@@ -26,16 +25,28 @@ def coerce_categoricals(frame: pd.DataFrame, categorical_features: list[str] | N
     out = frame.copy()
     for c in categorical_features or []:
         if c in out.columns:
-            out[c] = pd.to_numeric(out[c], errors="coerce").fillna(CATEGORICAL_NA_CODE)
+            out[c] = pd.to_numeric(out[c], errors="coerce").fillna(CATEGORICAL_NA_CODE).astype("int32")
+    return out
+
+
+def prepare_features(frame: pd.DataFrame, categorical_features: list[str] | None = None, *, downcast: bool = False) -> pd.DataFrame:
+    """Strict numeric parsing with the same declared category codes at fit, score and explanation boundaries."""
+    out = coerce_categoricals(frame, categorical_features)
+    categorical = set(categorical_features or [])
+    for column in out.columns:
+        if column in categorical:
+            continue
+        try:
+            numeric = pd.to_numeric(out[column], errors="raise")
+        except (ValueError, TypeError) as exc:
+            raise ValueError(f"Invalid numeric feature {column!r}: {exc}") from exc
+        out[column] = numeric.astype("float32") if downcast else numeric
     return out
 
 
 def design_matrix(panel: pd.DataFrame, feats: list[str], categorical_features: list[str] | None = None) -> np.ndarray:
-    """`panel[feats]` as a float32 matrix in `feats` order, categoricals coerced to their numeric
-    codes. Any non-numeric column is treated as a categorical, so text can never raise here."""
-    cats = list(categorical_features or [])
-    non_numeric = [c for c in feats if c in panel.columns and not is_numeric_dtype(panel[c])]
-    return coerce_categoricals(panel[feats], list(dict.fromkeys(cats + non_numeric))).to_numpy(dtype="float32")
+    """Float32 explanation matrix in fitted order; only explicitly declared categories use missing codes."""
+    return prepare_features(panel[feats], categorical_features, downcast=True).to_numpy(dtype="float32")
 
 
 def parse_monotone_feature_map(features_cfg: dict | ListConfig | None) -> dict[str, int]:

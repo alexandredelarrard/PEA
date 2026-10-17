@@ -47,3 +47,20 @@ def test_load_frame_absent_table_is_none_when_optional(sqlite_store) -> None:
     assert load_frame(sqlite_store, Tables.cube, columns=["date", "ticker"]) is None
     print("\n=== SANITY CHECK: absent table ===")
     print("  optional read of a missing cube -> None (the caller decides how loud to be). Validated.")
+
+
+def test_streamed_preparation_preserves_store_values_and_precision(sqlite_store) -> None:
+    cube = _seed(sqlite_store)
+    cube.loc[0, "f_a"] = np.nan
+    cube["f_a"] = cube["f_a"].astype("str")
+    sqlite_store.replace(Tables.cube, cube)
+    loaded = load_frame(sqlite_store, Tables.cube, columns=["date", "ticker", "f_a"], feature_cols=["f_a"], stream=True)
+    precise = load_frame(sqlite_store, Tables.cube, columns=["date", "ticker", "f_a"], feature_cols=["f_a"], stream=True, downcast=False)
+    assert loaded is not None and precise is not None
+    stored = sqlite_store.load(Tables.cube, columns=["date", "ticker", "f_a"])
+    assert stored is not None
+    expected = pd.to_numeric(stored["f_a"], errors="raise").to_numpy(dtype=float)
+    assert loaded["f_a"].dtype == np.dtype("float32") and precise["f_a"].dtype == np.dtype("float64")
+    assert np.array_equal(loaded["f_a"], expected.astype("float32"), equal_nan=True)
+    assert np.array_equal(precise["f_a"], expected, equal_nan=True)
+    print("SANITY: streamed preparation preserves actual stored values and NaNs, with float64 retained when requested.")

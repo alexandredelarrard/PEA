@@ -38,13 +38,15 @@ def load_frame(
     stream: bool = False,
     feature_cols: list[str] | None = None,
     categorical_features: list[str] | None = None,
+    chunksize: int | None = None,
 ) -> pd.DataFrame | None:
     """Projected, row-scoped `store.load`; float64 -> float32 when `downcast`. None for an absent
     or empty table when `optional` (otherwise the store raises)."""
     if stream:
+        batch = {"chunksize": chunksize} if chunksize is not None else {}
         chunks = [
             _prepare_loaded_frame(chunk, feature_cols, categorical_features, downcast)
-            for chunk in store.iter_load(table, columns=columns, where=where, since=since, until=until)
+            for chunk in store.iter_load(table, columns=columns, where=where, since=since, until=until, **batch)
         ]
         frame = pd.concat(chunks, ignore_index=True) if chunks else None
     else:

@@ -66,16 +66,18 @@ def _sample_idx(n_rows: int, sample: int, seed: int = 42) -> np.ndarray:
     return np.arange(n_rows)
 
 
-def partial_dependence(booster: Any, x: np.ndarray, feat_idx: int, grid_points: int = 30, sample: int = 2000) -> tuple:
+def partial_dependence(
+    booster: Any, x: np.ndarray, feat_idx: int, grid_points: int = 30, sample: int = 2000, *, categorical: bool = False, seed: int = 42
+) -> tuple:
     """1-D partial dependence: mean model score as `feat_idx` sweeps its own 2-98 % quantile grid,
     every other feature held at its real value."""
-    x = x[_sample_idx(len(x), sample)]
+    x = x[_sample_idx(len(x), sample, seed)]
     col = x[:, feat_idx]
-    finite = col[np.isfinite(col)]
+    finite = col[np.isfinite(col) & ((col >= 0) if categorical else True)]
     if finite.size == 0:
         return None, None
-    grid = np.unique(np.quantile(finite, np.linspace(0.02, 0.98, grid_points)))
-    if grid.size < 2:
+    grid = np.unique(finite) if categorical else np.unique(np.quantile(finite, np.linspace(0.02, 0.98, grid_points)))
+    if not grid.size:
         return None, None
     means = np.empty(grid.size, dtype=float)
     work = x.copy()
@@ -361,7 +363,7 @@ def save_member_diagnostics(
     n_pdp = 0
     for rank, feat in enumerate(top_feats, 1):
         j = feature_cols.index(feat)
-        grid, means = partial_dependence(booster, x, j, grid_points=pdp_grid, sample=shap_sample)
+        grid, means = partial_dependence(booster, x, j, grid_points=pdp_grid, sample=shap_sample, categorical=feat in (categorical_features or []))
         if grid is None:
             continue
         _save_pdp_plot(grid, means, feat, pdp_dir / f"pdp_{rank:02d}_{_UNSAFE_FILENAME_CHARS.sub('_', feat)}.png", horizon, x[:, j])

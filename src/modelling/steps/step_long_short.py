@@ -10,6 +10,7 @@ import gc
 import platform
 from dataclasses import dataclass, field
 from importlib.metadata import version
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -33,6 +34,7 @@ from src.modelling.utils.artifacts import (
     selection_signature,
     write_metadata,
 )
+from src.modelling.utils.assessment import frame_digest
 from src.modelling.utils.cv import label_end_dates, purged_wf_splits, temporal_valid_split
 from src.modelling.utils.ensemble import blend_horizons, ensemble_predict, ir_horizon_weights, prediction_rows
 from src.modelling.utils.metrics import daily_ic, per_day_zscore
@@ -116,7 +118,7 @@ class StepLongShort(Step):
         self._classes = {fam: model_class(fam) for fam in self.families}  # validates every name
         self._monitor = Monitor(context, config)
         self._backtest = Backtest(config)
-        self._eligibility: dict[int, dict[str, int]] = {}
+        self._eligibility: dict[int, dict[str, Any]] = {}
 
     def run(self) -> TrainResult:
         return self.run_train()
@@ -267,7 +269,9 @@ class StepLongShort(Step):
             dict.fromkeys(c for cls in self._classes.values() for h in horizons for c in cls.configured_categoricals(self._config, h) if c in avail)
         )
         allcols: set[str] = set()
-        for by_h in family_cols_by_h.values():
+        for key, by_h in family_cols_by_h.items():
+            if _FAMILY_BLOCKS[key].config_key not in {cls.config_key for cls in self._classes.values()}:
+                continue
             for cols in by_h.values():
                 allcols |= set(cols)
         feature_cols = sorted(allcols)
@@ -331,6 +335,7 @@ class StepLongShort(Step):
             stream=True,
             feature_cols=schema.panel_cols,
             categorical_features=schema.categorical_cols,
+            chunksize=self._config.model.get("read_chunksize"),
         )
         if raw is None:
             return None
@@ -350,6 +355,9 @@ class StepLongShort(Step):
                 panel = panel.loc[panel["date"] >= start_date]
             if end_date:
                 panel = panel.loc[panel["date"] <= end_date]
+        if self._config.model.cv.get("input_digest", False):
+            columns = [*schema.panel_cols, self.label_column, "label_end"]
+            self._eligibility[horizon].update({"input_digest": frame_digest(panel, columns), "input_digest_columns": columns})
         return panel if not panel.empty else None
 
     def _fit_members(self, horizon: int, train: pd.DataFrame, valid: pd.DataFrame | None, rounds: int | None = None) -> dict[str, BaseModel]:

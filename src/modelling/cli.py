@@ -13,12 +13,15 @@ for this run (leaving them out uses the config as-is). It trains one per-horizon
 back), the `predictions` / `cube_signal` tables, and the per-run diagnostics + backtest report.
 """
 
+import os
+from pathlib import Path
 from typing import Any, cast
 
 import click
 
 from src.constants.command_line_interface import CONFIG_ARGS, CONFIG_KWARGS
 from src.context import get_config_context
+from src.modelling.steps.step_assess_long_short import StepAssessLongShort
 from src.modelling.steps.step_long_short import StepLongShort
 from src.utils.cli_helper import SpecialHelpOrder
 
@@ -70,3 +73,23 @@ def full_train(config_path: str) -> None:
 def predict(config_path: str, n_dates: int) -> None:
     config, context = get_config_context(config_path, use_cache=False, save=True)
     StepLongShort(context=context, config=config).run_predict(n_dates=n_dates)
+
+
+@cli.command(help="Isolated h60 feature selection, sealed evaluation and offline assessment report.", help_priority=4)
+@click.option(*CONFIG_ARGS, **cast(dict[str, Any], CONFIG_KWARGS))
+@click.option("--output", "-o", required=True, type=click.Path(file_okay=False, path_type=Path))
+@click.option("--stage", type=click.Choice(["development", "evaluation", "report", "all"]), default="development", show_default=True)
+@click.option("--resume", is_flag=True, help="Reuse completed candidates only after checking unchanged input and experiment identities.")
+def assess(config_path: str, output: Path, stage: str, resume: bool) -> None:
+    worktree = Path(__file__).resolve().parents[2]
+    git_file = worktree / ".git"
+    if git_file.is_file() and "ROOT_PATH" not in os.environ:
+        raw = git_file.read_text(encoding="utf-8").removeprefix("gitdir:").strip()
+        git_dir = (worktree / raw).resolve()
+        os.environ["ROOT_PATH"] = str(git_dir.parents[2])
+    config, context = get_config_context(config_path, use_cache=False, save=False)
+    config.model.assessment.output_dir = str(output.resolve())
+    config.model.assessment.stage = stage
+    config.model.assessment.resume = resume
+    result = StepAssessLongShort(context=context, config=config).run()
+    context.log.info("Assessment %s complete: %s", stage, result)

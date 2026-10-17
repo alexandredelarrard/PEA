@@ -54,7 +54,7 @@ def test_streamed_preparation_preserves_store_values_and_precision(sqlite_store)
     cube.loc[0, "f_a"] = np.nan
     cube["f_a"] = cube["f_a"].astype("str")
     sqlite_store.replace(Tables.cube, cube)
-    loaded = load_frame(sqlite_store, Tables.cube, columns=["date", "ticker", "f_a"], feature_cols=["f_a"], stream=True)
+    loaded = load_frame(sqlite_store, Tables.cube, columns=["date", "ticker", "f_a"], feature_cols=["f_a"], stream=True, chunksize=2)
     precise = load_frame(sqlite_store, Tables.cube, columns=["date", "ticker", "f_a"], feature_cols=["f_a"], stream=True, downcast=False)
     assert loaded is not None and precise is not None
     stored = sqlite_store.load(Tables.cube, columns=["date", "ticker", "f_a"])

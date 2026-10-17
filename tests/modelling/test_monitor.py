@@ -213,3 +213,18 @@ def test_shap_contributions_reconcile_in_model_score_units(boosting: str, object
     if objective == "binary":
         assert not np.allclose(predictions, np.asarray(booster.predict(x))), "classification SHAP explains raw margins, not probabilities"
     print(f"SANITY: {boosting}/{objective}, {n_trees} trees: sampled SHAP plus base reconstructs model scores; scale={scale:g}.")
+
+
+def test_categorical_pdp_uses_only_observed_valid_codes() -> None:
+    class Scorer:
+        def predict(self, values: np.ndarray) -> np.ndarray:
+            assert set(values[:, 0]) <= {2, 7}
+            return values[:, 0] + values[:, 1]
+
+    matrix = np.array([[-1.0, 3.0], [2.0, 4.0], [7.0, 5.0]])
+    original = matrix.copy()
+    grid, means = partial_dependence(Scorer(), matrix, 0, categorical=True)
+    np.testing.assert_array_equal(grid, [2, 7])
+    np.testing.assert_allclose(means, [6, 11])
+    np.testing.assert_array_equal(matrix, original)
+    print("SANITY: categorical PDP uses observed integer codes, excludes missing -1 and leaves the background unchanged.")

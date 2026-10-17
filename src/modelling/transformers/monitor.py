@@ -103,11 +103,18 @@ def _save_pdp_plot(grid: np.ndarray, means: np.ndarray, feat: str, path: Path, h
 # --------------------------------------------------------------------------- #
 # SHAP                                                                        #
 # --------------------------------------------------------------------------- #
+def shap_score_scale(booster: Any) -> float:
+    """Convert squared-error forest SHAP sums to prediction units; other objectives retain
+    native TreeSHAP units, including raw classification margins."""
+    model = booster.dump_model(num_iteration=1)
+    return 1.0 / booster.num_trees() if model["average_output"] and model["objective"] == "regression" else 1.0
+
+
 def shap_row_values(
     booster: Any, x: np.ndarray, feature_cols: list[str], sample: int = 2000, seed: int = 42, logger: logging.Logger | None = None
 ) -> tuple[np.ndarray, np.ndarray] | None:
-    """`(shap_matrix, row_idx)` for a sampled subset of `x`, or None when unavailable; computed
-    once and shared by the persisted matrix, the ranking, the dependence plot and the PDP choice."""
+    """`(shap_matrix, row_idx)` for a sampled subset of `x`, or None when unavailable; squared-error
+    forests use prediction units, other objectives retain native TreeSHAP units."""
     if shap is None:
         if logger is not None:
             logger.warning(
@@ -122,7 +129,7 @@ def shap_row_values(
         values = np.asarray(values)
         if values.shape[1] == len(feature_cols) + 1:  # trailing base-value column
             values = values[:, :-1]
-        return values, idx
+        return values * shap_score_scale(booster), idx
     except Exception as exc:  # noqa: BLE001 - SHAP is a reporting library boundary
         if logger is not None:
             logger.warning("SHAP computation failed (%s: %s) -> SHAP artifacts skipped", type(exc).__name__, exc)

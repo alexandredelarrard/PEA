@@ -123,7 +123,7 @@ def test_real_source_assembly_replay(sqlite_store: Any, monkeypatch: pytest.Monk
     wide_columns = set(sqlite_store.columns(Tables.cube))
     selected: dict[str, list[str]] = {}
     for table in (Tables.cube_part_fundamentals, Tables.cube_part_governance, Tables.cube_part_institutionals):
-        payload = [col for col in sqlite_store.columns(table) if col not in keys]
+        payload = [str(col) for col in sqlite_store.columns(table) if col not in keys]
         if payload:
             selected[table.name] = payload[:1]
     config.build_cube.assembly.columns = selected

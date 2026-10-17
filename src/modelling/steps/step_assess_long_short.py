@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import ast
 import gc
 import hashlib
+import inspect
 import json
+import textwrap
 import time
+from importlib.metadata import version
 from pathlib import Path
 from typing import Any, cast
 
@@ -28,6 +32,7 @@ from src.modelling.utils.assessment import (
     frame_digest,
     prune_pool,
     set_horizon_features,
+    summarize_ic,
     write_json,
 )
 from src.modelling.utils.assessment_metrics import formation_cohorts, forward_returns, matched_cohort_returns, temporal_diagnostics
@@ -151,6 +156,7 @@ class StepAssessLongShort(Step):
         if frame_digest(panel, original_columns) != baseline["audit"]["input_digest"]:
             raise ValueError("Current baseline and wide development inputs differ; refuse mixed-snapshot comparison")
         input_id = frame_digest(panel, [*eligible, step.label_column, "label_end"])
+        self._development_input_digest = input_id
         ledger = (
             json.loads(ledger_path.read_text(encoding="utf-8"))
             if ledger_path.exists()
@@ -214,6 +220,7 @@ class StepAssessLongShort(Step):
         return {
             "seed": int(config.seed),
             "source_hashes": self._fit_source_identity(),
+            "selection_identity": self._selection_identity(),
             "shared": {
                 key: OmegaConf.to_container(config.model[key], resolve=True) if OmegaConf.is_config(config.model[key]) else config.model[key]
                 for key in ["cv", "weight_decay", "label_column", "target_type", "ensemble"]
@@ -222,6 +229,58 @@ class StepAssessLongShort(Step):
                 key: OmegaConf.to_container(self._options[key], resolve=True) if OmegaConf.is_config(self._options[key]) else self._options[key]
                 for key in ["horizon", "outcome_cutoff", "evaluation_start", "test_windows", "prune_fraction", "max_rounds", "patience"]
             },
+        }
+
+    def _selection_identity(self) -> dict[str, Any]:
+        """Identify selection algorithms and controls independently of baseline fitting and reports."""
+        functions = {
+            f"controller.{name}": getattr(self, name)
+            for name in [
+                "_runtime_config",
+                "_development_panel",
+                "_development",
+                "_fixed_parameters",
+                "_controls",
+                "_selection_identity",
+                "_audit",
+                "_expected_oof",
+                "_search",
+                "_candidate",
+                "_importance",
+            ]
+        }
+        functions.update(
+            {
+                "assessment.audit_features": audit_features,
+                "assessment.assess_candidate": assess_candidate,
+                "assessment.summarize_ic": summarize_ic,
+                "assessment.prune_pool": prune_pool,
+                "assessment.balanced_sample_positions": balanced_sample_positions,
+                "assessment.frame_digest": frame_digest,
+                "monitor.shap_row_values": shap_row_values,
+                "monitor.shap_score_scale": shap_score_scale,
+            }
+        )
+        return {
+            "shap_sample": int(self._config.model.diagnostics.shap_sample),
+            "assessment": {
+                key: OmegaConf.to_container(self._options[key], resolve=True) if OmegaConf.is_config(self._options[key]) else self._options[key]
+                for key in [
+                    "horizon",
+                    "outcome_cutoff",
+                    "test_windows",
+                    "categorical_features",
+                    "excluded_columns",
+                    "prune_fraction",
+                    "max_rounds",
+                    "patience",
+                ]
+            },
+            "source_hashes": {
+                name: hashlib.sha256(ast.dump(ast.parse(textwrap.dedent(inspect.getsource(function))), include_attributes=False).encode()).hexdigest()
+                for name, function in functions.items()
+            },
+            "versions": {name: version(name) for name in ["numpy", "pandas", "scipy", "lightgbm", "shap", "scikit-learn"]},
         }
 
     def _check_baseline_controls(self, output: Path) -> None:
@@ -383,15 +442,26 @@ class StepAssessLongShort(Step):
     def _candidate(self, identifier: str, family: str, names: list[str], categorical: list[str], panel: pd.DataFrame, expected: pd.DataFrame) -> dict:
         output = self._output / "_out" / identifier
         completed = output / "result.json"
+        cats = [name for name in names if name in categorical] if family != "elasticnet" else []
+        identity = {
+            "development_input_digest": self._development_input_digest,
+            "controls": self._controls(),
+            "fixed_parameters": self._fixed_parameters(),
+        }
         if completed.exists():
             if not self._options.get("resume", False):
                 raise ValueError("Candidate exists without explicit resume")
             result = json.loads(completed.read_text(encoding="utf-8"))
-            if result["features"] != names:
-                raise ValueError("Candidate resume feature identity mismatch")
+            if (
+                result.get("features") != names
+                or result.get("categoricals") != cats
+                or result.get("family") != family
+                or result.get("id") != identifier
+                or result.get("identity") != identity
+            ):
+                raise ValueError("Candidate resume selection/development identity mismatch")
             return result
         output.mkdir(parents=True, exist_ok=True)
-        cats = [name for name in names if name in categorical] if family != "elasticnet" else []
         config = self._runtime_config(family, [name for name in names if name not in cats], cats)
         step = StepLongShort(context=self._context, config=config)
         step._prepare_training()
@@ -410,6 +480,7 @@ class StepAssessLongShort(Step):
             "family": family,
             "features": names,
             "categoricals": cats,
+            "identity": identity,
             "metrics": stats,
             "folds": cv.folds,
             "rounds": cv.rounds,

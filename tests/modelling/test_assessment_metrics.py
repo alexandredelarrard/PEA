@@ -4,7 +4,65 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.modelling.utils.assessment_metrics import formation_cohorts, forward_returns, matched_cohort_returns, trend_summary
+from src.modelling.utils.assessment_metrics import formation_cohorts, forward_returns, matched_cohort_returns, temporal_diagnostics, trend_summary
+
+
+def test_weak_window_minimizes_mean_ic_instead_of_ir() -> None:
+    dates = pd.bdate_range("2000-01-03", periods=253)
+    predictions = pd.DataFrame(
+        {
+            "date": np.repeat(dates, 4),
+            "ticker": list("ABCD") * len(dates),
+            "y": [0.0, 1.0, 2.0, 3.0] * len(dates),
+            "member": [3.0, 2.0, 1.0, 0.0] + [1.0, 2.0, 3.0, 0.0, 2.0, 1.0, 3.0, 0.0] * 126,
+            "fold": 1,
+        }
+    )
+    expected_ic = np.asarray([-1.0] + [-0.2, -0.4] * 126)
+    stats, daily = temporal_diagnostics(predictions, ["member"], 60, 252, 2, 0.95, 4325)
+    assert daily.ic.to_numpy() == pytest.approx(expected_ic)
+    assert daily.rolling_ic.idxmin() == 251
+    assert daily.rolling_ir.idxmin() == 252
+    weakest = stats["member"]
+    assert weakest["worst_rolling_end"] == dates[251]
+    assert weakest["worst_rolling_start"] == dates[0]
+    assert weakest["worst_rolling_mean_ic"] == pytest.approx(expected_ic[:252].mean())
+    assert weakest["worst_rolling_ic_ir"] == pytest.approx(expected_ic[:252].mean() / expected_ic[:252].std() * np.sqrt(252 / 60))
+    assert weakest["worst_rolling_n_days"] == 252
+    assert weakest["mean_ic"] == pytest.approx(expected_ic.mean())
+    print("SANITY: the weakest full 252-session window minimizes mean IC, despite a different IR minimum; its dates, mean, IR and count reconcile.")
+
+
+@pytest.mark.parametrize("sessions", [251, 252])
+def test_weak_window_requires_a_full_window_but_not_finite_ir(sessions: int) -> None:
+    dates = pd.bdate_range("2000-01-03", periods=sessions)
+    predictions = pd.DataFrame(
+        {
+            "date": np.repeat(dates, 4),
+            "ticker": list("ABCD") * sessions,
+            "y": [0.0, 1.0, 2.0, 3.0] * sessions,
+            "member": [3.0, 2.0, 1.0, 0.0] * sessions,
+            "fold": 1,
+        }
+    )
+    stats, daily = temporal_diagnostics(predictions, ["member"], 60, 252, 0, 0.95, 4325)
+    weakest = stats["member"]
+    if sessions < 252:
+        assert daily.rolling_ic.isna().all()
+        assert weakest["worst_rolling_end"] is None
+        assert weakest["worst_rolling_start"] is None
+        assert weakest["worst_rolling_mean_ic"] is None
+        assert weakest["worst_rolling_ic_ir"] is None
+        assert weakest["worst_rolling_n_days"] == 0
+    else:
+        assert weakest["worst_rolling_end"] == dates[-1]
+        assert weakest["worst_rolling_start"] == dates[0]
+        assert weakest["worst_rolling_mean_ic"] == pytest.approx(-1.0)
+        assert weakest["worst_rolling_n_days"] == 252
+        assert np.isneginf(weakest["worst_rolling_ic_ir"])
+    print(
+        "SANITY: fewer than 252 valid daily ICs leave the weak period unsupported; a full constant-IC window remains identifiable with undefined IR."
+    )
 
 
 def test_cohorts_are_fixed_before_future_outcomes() -> None:

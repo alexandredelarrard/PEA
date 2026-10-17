@@ -137,13 +137,18 @@ def temporal_diagnostics(
         daily["rolling_ir"] = daily.rolling_ic / daily.ic.rolling(window, min_periods=window).std(ddof=0) * np.sqrt(252 / horizon)
         years = {str(year): summarize_ic(group.ic, horizon) for year, group in daily.groupby(pd.DatetimeIndex(daily.index).year)}
         folds = {str(fold): summarize_ic(group.ic, horizon) for fold, group in daily.groupby("fold")}
-        worst = daily.rolling_ir.dropna().idxmin() if daily.rolling_ir.notna().any() else None
+        worst = daily.rolling_ic.dropna().idxmin() if daily.rolling_ic.notna().any() else None
+        weakest = daily.ic.loc[:worst].tail(window) if worst is not None else daily.ic.iloc[:0]
         stats[model] = {
             **summarize_ic(series, horizon),
             "years": years,
             "folds": folds,
             "intervals": moving_block_intervals(daily, horizon, repetitions, confidence, seed),
             "worst_rolling_end": worst,
+            "worst_rolling_start": weakest.index[0] if worst is not None else None,
+            "worst_rolling_mean_ic": daily.at[worst, "rolling_ic"] if worst is not None else None,
+            "worst_rolling_ic_ir": daily.at[worst, "rolling_ir"] if worst is not None else None,
+            "worst_rolling_n_days": len(weakest),
             "rolling_window": window,
             "label_rows": len(target),
             "scored_rows": len(predictions),

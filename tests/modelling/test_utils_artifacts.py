@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
 
 from src.modelling.utils.artifacts import (
     ARTIFACT_FORMAT,
@@ -18,6 +18,7 @@ from src.modelling.utils.artifacts import (
     models_dir,
     read_metadata,
     save_member,
+    selection_signature,
     write_metadata,
 )
 
@@ -25,6 +26,22 @@ from src.modelling.utils.artifacts import (
 class _Member:
     def __init__(self, tag: str) -> None:
         self.tag = tag
+
+
+def test_selection_identity_covers_new_cutoff_fold_and_feature_controls() -> None:
+    base = OmegaConf.create({"model": {"cv": {"n_splits": 5}}, "train": {"start_date": "1999-01-01"}, "random_forest": {"columns": ["a"]}})
+    original = selection_signature(base, ["a"], [60])
+    for patch in [
+        {"train": {"outcome_cutoff": "2021-12-31"}},
+        {"model": {"cv": {"test_windows": [["2000-01-01", "2002-12-31"]]}}},
+        {"random_forest": {"categoricals_by_horizon": {60: ["industry_group"]}}},
+        {"random_forest": {"columns_by_horizon": {60: []}}},
+    ]:
+        changed = OmegaConf.merge(base, OmegaConf.create(patch))
+        assert isinstance(changed, DictConfig)
+        assert selection_signature(changed, ["a"], [60]) != original
+    assert selection_signature(base, ["a"], [30]) != original
+    print("SANITY: existing compatibility identity rejects changed outcome cutoffs, crisis windows, horizons and family/category pools.")
 
 
 def test_models_dir_resolution(tmp_path: Path) -> None:

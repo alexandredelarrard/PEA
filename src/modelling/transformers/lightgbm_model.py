@@ -25,7 +25,7 @@ from omegaconf import DictConfig
 
 from src.modelling.transformers.base import TASK_CLASSIFICATION, BaseModel
 from src.modelling.utils.cv import time_decay_weights
-from src.modelling.utils.features import build_monotone_constraints, parse_monotone_feature_map, prepare_features
+from src.modelling.utils.features import build_monotone_constraints, columns_for_horizon, parse_monotone_feature_map, prepare_features
 
 EARLY_STOPPING_ROUNDS = 40
 DEFAULT_SEED = 42  # overridden by the pipeline's global `seed`
@@ -179,8 +179,11 @@ class LightGBMModel(BaseModel):
         return config.get("lgbm") or {}
 
     @classmethod
-    def configured_categoricals(cls, config: DictConfig) -> list[str]:
+    def configured_categoricals(cls, config: DictConfig, horizon: int | None = None) -> list[str]:
         block = cls.lgbm_block(config)
+        override = columns_for_horizon(block, horizon, kind="categoricals")
+        if override is not None:
+            return override
         return list(block.categoricals) if (block and block.get("categoricals") is not None) else []
 
     def _monotone_constraints(self, feats: list[str]) -> list[int] | None:

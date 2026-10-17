@@ -74,12 +74,12 @@ class BaseModel:
         """Numeric feature names for `horizon`: `columns_by_horizon[h]`, else `columns`."""
         block = cls.block(config)
         override = columns_for_horizon(block, horizon)
-        if override:
+        if override is not None:
             return override
         return list(block.columns) if (block and block.get("columns")) else []
 
     @classmethod
-    def configured_categoricals(cls, config: DictConfig) -> list[str]:
+    def configured_categoricals(cls, config: DictConfig, horizon: int | None = None) -> list[str]:
         """Categorical feature names; none for families without native categoricals."""
         return []
 
@@ -100,9 +100,23 @@ class BaseModel:
         store = self._context.store
         if columns is None:
             present = set(store.columns(table))
-            wanted = ["date", "ticker"] + self.configured_columns(self._config, self.horizon) + self.configured_categoricals(self._config)
+            wanted = (
+                ["date", "ticker"] + self.configured_columns(self._config, self.horizon) + self.configured_categoricals(self._config, self.horizon)
+            )
             columns = [c for c in dict.fromkeys(wanted) if c in present]
-        return load_frame(store, table, columns=columns, where=where, since=since, until=until, downcast=downcast)
+        numeric = self.configured_columns(self._config, self.horizon)
+        categoricals = self.configured_categoricals(self._config, self.horizon)
+        return load_frame(
+            store,
+            table,
+            columns=columns,
+            where=where,
+            since=since,
+            until=until,
+            downcast=downcast,
+            feature_cols=list(dict.fromkeys(numeric + categoricals)),
+            categorical_features=categoricals,
+        )
 
     def _usable(self, column: str, frame: pd.DataFrame) -> bool:
         return column in frame.columns and not is_meta_column(column) and column != self.label_column
@@ -112,7 +126,7 @@ class BaseModel:
         """Fit on `train`; `valid` is the chronological early-stopping tail (ignored by
         families that do not early-stop)."""
         numeric = [c for c in self.configured_columns(self._config, self.horizon) if self._usable(c, train)]
-        self.categoricals = [c for c in self.configured_categoricals(self._config) if self._usable(c, train)]
+        self.categoricals = [c for c in self.configured_categoricals(self._config, self.horizon) if self._usable(c, train)]
         self.features = list(dict.fromkeys(numeric + self.categoricals))
         if self.task == TASK_CLASSIFICATION:
             self._check_binary_label(train)

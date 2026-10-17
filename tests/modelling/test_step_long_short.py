@@ -68,13 +68,16 @@ class _SpyStore:
                 "table": str(table),
                 "columns": list(columns or []),
                 "where": kwargs.get("where"),
+                "until": kwargs.get("until"),
                 "dtypes": None if out is None else dict(out.dtypes.astype(str)),
             }
         )
         return out
 
     def iter_load(self, table: Any, columns: list[str] | None = None, **kwargs: Any) -> Any:
-        self.loads.append({"table": str(table), "columns": list(columns or []), "where": kwargs.get("where"), "dtypes": {}})
+        self.loads.append(
+            {"table": str(table), "columns": list(columns or []), "where": kwargs.get("where"), "until": kwargs.get("until"), "dtypes": {}}
+        )
         yield from self._store.iter_load(table, columns=columns, **kwargs)
 
 
@@ -294,10 +297,10 @@ def test_classification_ensemble_gets_finite_cv_metrics_and_ir_weights(tmp_path:
     print(f"  blend weights { ({h: round(w, 3) for h, w in res.weights.items()}) }; probabilities in [0, 1]. Validated.")
 
 
-def test_full_history_records_the_effective_train_end(tmp_path: Path, sqlite_store: Any) -> None:
+def test_full_history_records_the_effective_train_end(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     step, _, cfg = _setup(tmp_path, sqlite_store, save=False)
     step.run_train()
-    step._cross_validate = lambda *args: pytest.fail("production refit must reuse saved CV counts")
+    monkeypatch.setattr(step, "_cross_validate", lambda *args, **kwargs: pytest.fail("production refit must reuse saved CV counts"))
     res = step.run_train(full_history=True)
     meta = json.loads((tmp_path / "models" / "metadata.json").read_text())
     assert res.train_end_effective is not None, "a full-history refit records the last labelled date"
@@ -334,9 +337,56 @@ def test_immature_target_mutation_cannot_change_training_panel(tmp_path: Path, s
     df_cube.loc[future, target_column("rank", 60)] = 1e9
     sqlite_store.replace(Tables.cube, df_cube)
     after = step._load_horizon(60, schema, full_history=False)
+    assert after is not None
     pd.testing.assert_frame_equal(before, after)
     assert step._eligibility[60]["immature_rows"] > 0
     print("SANITY: unavailable future target values cannot change training rows, values or date boundaries.")
+
+
+def test_explicit_horizon_restriction(tmp_path: Path, sqlite_store: Any) -> None:
+    step, _, _ = _setup(tmp_path, sqlite_store, save=False, model={"horizons": [60]})
+    assert step._resolve_schema().horizons == [60]
+    print("SANITY: explicit h60 restriction resolves only the requested stored horizon.")
+
+
+def test_explicit_outcome_cutoff_precedes_every_used_label(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    cutoff = pd.Timestamp("2017-06-30")
+    step, spy, _ = _setup(tmp_path, sqlite_store, save=False, train={"outcome_cutoff": str(cutoff.date())})
+
+    def inspect_panel(horizon: int, panel: pd.DataFrame) -> None:
+        assert panel["label_end"].max() <= cutoff
+        raise RuntimeError("cutoff checked before fitting")
+
+    monkeypatch.setattr(step, "_cross_validate", inspect_panel)
+    with pytest.raises(RuntimeError, match="cutoff checked"):
+        step.run()
+    reads = [read for read in spy.loads if read["where"]]
+    assert reads and all(pd.Timestamp(read["until"]) < cutoff for read in reads), "unavailable targets are excluded in the source read"
+    print("SANITY: the explicit observation cutoff wins over a later feature ceiling before any fitting or writes.")
+
+
+def test_disabled_application_outputs_attempt_no_mutation(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    step, spy, _ = _setup(tmp_path, sqlite_store, save=False, build_cube={"output": {"save_predictions": False, "save_signal": False}})
+    monkeypatch.setattr(spy, "replace", lambda *args, **kwargs: pytest.fail("application mutation attempted"), raising=False)
+    step._save_outputs(pd.DataFrame(), {}, pd.Series(dtype=float), pd.Timestamp("2020-01-01"))
+    print("SANITY: disabled prediction/signal outputs attempt no application-table replacement.")
+
+
+def test_horizon_only_rf_features_and_categories_are_projected(tmp_path: Path, sqlite_store: Any) -> None:
+    step, _, _ = _setup(
+        tmp_path,
+        sqlite_store,
+        save=False,
+        model={"ensemble": ["random_forest"], "horizons": [60]},
+        linear={"columns": []},
+        lgbm={"columns": [], "categoricals": []},
+        random_forest={"columns": [], "columns_by_horizon": {60: ["f0"]}, "categoricals_by_horizon": {60: ["f3"]}},
+    )
+    schema = step._resolve_schema()
+    assert schema.horizons == [60] and {"f0", "f3"} <= set(schema.load_cols)
+    assert schema.categorical_cols == ["f3"]
+    assert RandomForestModel.configured_categoricals(step._config, 60) == ["f3"]
+    print("SANITY: family/horizon-only numeric and categorical features survive schema resolution without default input lists.")
 
 
 def test_run_predict_on_the_real_database_makes_sense(monkeypatch: pytest.MonkeyPatch) -> None:

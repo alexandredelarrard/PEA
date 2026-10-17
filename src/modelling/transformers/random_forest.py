@@ -26,11 +26,21 @@ class RandomForestModel(LightGBMModel):
         """`random_forest.columns_by_horizon[h]` → `random_forest.columns` → the LightGBM set."""
         block = cls.block(config)
         override = columns_for_horizon(block, horizon)
-        if override:
+        if override is not None:
             return override
-        if block and block.get("columns"):
+        if block and block.get("columns") is not None:
             return list(block.columns)
         return LightGBMModel.configured_columns(config, horizon)
+
+    @classmethod
+    def configured_categoricals(cls, config: DictConfig, horizon: int | None = None) -> list[str]:
+        block = cls.block(config)
+        override = columns_for_horizon(block, horizon, kind="categoricals")
+        if override is not None:
+            return override
+        if block and block.get("categoricals") is not None:
+            return list(block.categoricals)
+        return LightGBMModel.configured_categoricals(config, horizon)
 
     def _fit(self, train: pd.DataFrame, valid: pd.DataFrame | None) -> lgb.Booster:
         rf = self.block(self._config)

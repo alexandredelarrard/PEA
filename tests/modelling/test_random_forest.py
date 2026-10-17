@@ -59,6 +59,14 @@ def test_column_chain_rf_override_then_rf_then_lgbm() -> None:
     print("  rf.columns_by_horizon -> rf.columns -> lgbm.columns_by_horizon -> lgbm.columns; categoricals from lgbm. Validated.")
 
 
+def test_explicit_empty_family_horizon_lists_do_not_fall_back() -> None:
+    cfg = make_config(random_forest={"columns_by_horizon": {60: []}, "categoricals_by_horizon": {60: []}})
+    assert RandomForestModel.configured_columns(cfg, 60) == []
+    assert RandomForestModel.configured_categoricals(cfg, 60) == []
+    assert RandomForestModel.configured_categoricals(cfg, 30) == ["sector"]
+    print("SANITY: explicit empty h60 pools stay empty; a missing override retains legacy categorical fallback.")
+
+
 def test_random_forest_member_saves_and_reloads_into_the_ensemble(tmp_path: Path) -> None:
     cfg = make_config()
     panel = signal_panel()

@@ -24,7 +24,7 @@ from src.modelling.transformers import BaseModel, model_class
 from src.modelling.transformers.assessment_diagnostics import explain_tree
 from src.modelling.transformers.assessment_report import render_assessment
 from src.modelling.transformers.monitor import shap_row_values, shap_score_scale
-from src.modelling.utils.artifacts import load_member, save_member
+from src.modelling.utils.artifacts import load_member, member_path, save_member
 from src.modelling.utils.assessment import (
     assess_candidate,
     audit_features,
@@ -134,14 +134,17 @@ class StepAssessLongShort(Step):
             raise ValueError("Sealed evaluation has started; development is permanently closed for this run")
         audit_path = self._output / "_out" / "eligibility.json"
         baseline_path = self._output / "_out" / "b0" / "result.json"
-        if not audit_path.exists():
-            self._audit()
-        if not baseline_path.exists():
-            self._baseline()
         ledger_path = self._output / "_out" / "selection.json"
         resume = bool(self._options.get("resume", False))
         if ledger_path.exists() and not resume:
             raise ValueError("Selection already exists; explicit --resume is required")
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8")) if ledger_path.exists() else None
+        if ledger is not None and ledger["frozen"] and (not audit_path.exists() or not baseline_path.exists()):
+            raise ValueError("Frozen selection has incomplete development artifacts; preserve this run and investigate")
+        if not audit_path.exists():
+            self._audit()
+        if not baseline_path.exists():
+            self._baseline()
         audit = json.loads(audit_path.read_text(encoding="utf-8"))
         baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
         if baseline["source_hashes"] != self._fit_source_identity() or baseline["seed"] != int(self._config.seed):
@@ -158,8 +161,8 @@ class StepAssessLongShort(Step):
         input_id = frame_digest(panel, [*eligible, step.label_column, "label_end"])
         self._development_input_digest = input_id
         ledger = (
-            json.loads(ledger_path.read_text(encoding="utf-8"))
-            if ledger_path.exists()
+            ledger
+            if ledger is not None
             else {
                 "input_digest": input_id,
                 "features": eligible,
@@ -174,6 +177,25 @@ class StepAssessLongShort(Step):
         )
         if ledger["input_digest"] != input_id or ledger["fixed_parameters"] != self._fixed_parameters() or ledger["controls"] != self._controls():
             raise ValueError("Resume input/fixed-parameter identity mismatch")
+        if ledger["frozen"]:
+            if (
+                set(ledger["families"]) != {"lgbm", "random_forest", "elasticnet"}
+                or ledger.get("selected") != {family: state["best"] for family, state in ledger["families"].items()}
+                or ledger["features"] != eligible
+                or ledger["categoricals"] != categorical
+            ):
+                raise ValueError("Frozen selection pool identity mismatch")
+            final_columns = list(dict.fromkeys([name for candidate in ledger["selected"].values() for name in candidate["features"]]))
+            if not ledger.get("frozen_at") or ledger.get("final_input_digest") != frame_digest(
+                panel, [*final_columns, step.label_column, "label_end"]
+            ):
+                raise ValueError("Frozen selection input identity mismatch")
+            if not (self._output / "_out" / "final" / "result.json").exists():
+                raise ValueError("Frozen selection has incomplete final artifacts; preserve this run and investigate")
+            del panel
+            gc.collect()
+            self._fit_selected(ledger)
+            return
         write_json(ledger_path, ledger)
         expected = self._expected_oof(panel)
         for family in ["lgbm", "random_forest", "elasticnet"]:
@@ -558,8 +580,26 @@ class StepAssessLongShort(Step):
         final = self._output / "_out" / "final"
         if (final / "result.json").exists() and self._options.get("resume", False):
             result = json.loads((final / "result.json").read_text(encoding="utf-8"))
-            if result["input_digest"] != ledger["final_input_digest"]:
-                raise ValueError("Final artifact input identity mismatch")
+            if result["input_digest"] != ledger["final_input_digest"] or result["selection_frozen_at"] != ledger["frozen_at"]:
+                raise ValueError("Final artifact input/freeze identity mismatch")
+            actual = {str(path.relative_to(final)): hashlib.sha256(path.read_bytes()).hexdigest() for path in final.rglob("*.pkl")}
+            if not actual or actual != result["artifacts"]:
+                raise ValueError("Frozen model artifact identity mismatch")
+            for family, candidate in ledger["selected"].items():
+                path = member_path(final / "m", 60, family)
+                if str(path.relative_to(final)) not in actual:
+                    raise ValueError(f"{family}: frozen cutoff model artifact is missing")
+                member = load_member(path)
+                cats = candidate["categoricals"]
+                features = [name for name in candidate["features"] if name not in cats] + cats
+                if (
+                    any(name not in candidate["features"] for name in cats)
+                    or member.family != family
+                    or member.horizon != 60
+                    or member.features != features
+                    or member.categoricals != cats
+                ):
+                    raise ValueError(f"{family}: frozen model selection pool identity mismatch")
             return
         config = self._runtime_config()
         config.model.models_dir = str(final / "m")

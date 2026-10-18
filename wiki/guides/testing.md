@@ -7,7 +7,7 @@ tags:
   - guide
   - testing
   - validation
-source_commit: 800be024be975942df7dbf542f807a09af103933
+source_commit: 78f87d838cc2ef03809db3dc47b9f425c7f289ab
 ---
 # Testing and validation
 
@@ -230,3 +230,5 @@ Run the relevant existing split-union, level/value, predecessor, insider/institu
 The assessment tests cover numeric-text/category parity, strict temporal purges, the fixed pooled objective, deterministic pruning, dynamic CLI loading, input/selection cache identity, frozen resume and refused application writes. Known-truth fixtures in [test_assessment_metrics.py](../../tests/modelling/test_assessment_metrics.py) verify fixed cohorts/weights, complete return paths, dated daily exports and the declared minimum-mean-IC window. [test_assessment_periods.py](../../tests/modelling/test_assessment_periods.py) checks retrospective same-name populations and exact year/sector moments. [test_assessment_report.py](../../tests/modelling/test_assessment_report.py) verifies offline output, all retained-feature coverage and original candidate importance provenance.
 
 Financial acceptance additionally requires real projected development data, actual original-fold models, SHAP/base additivity, selected cutoff reload equality and sealed outcome replay. The [read-only modelling validator](../../src/validate/checks/modelling.py) independently recomputes rank IC, pooled dispersion/IR, top-decile membership, matched return paths and report identity; incomplete evidence abstains before DB access. Browser checks must exercise both populations, models and first/last feature choices. Synthetic parser/math/UI tests alone do not establish predictive performance. On Windows, use a fresh verified short scratch directory rather than deleting a shared pytest temporary root.
+
+The temporal regressions retain a missing first, middle or last IC slot in a253-session population; only genuinely complete252-session windows are supported. Bootstrap tests check gap retention and all-finite seeded parity. Benchmark validation binds each matched model/date return and validity to `market_windows.parquet`, whose price paths are independently replayed against the store. The coordinated market/excess mutation in [test_modelling.py](../../tests/validate/test_modelling.py) prevents arithmetic consistency alone from passing a corrupted benchmark comparison. These checks strengthen diagnostic proof; they do not remove upstream retrospective source vintages.

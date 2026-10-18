@@ -578,3 +578,10 @@ The user's failing terminal had only `SSL_CERT_FILE` set, pointing into Minicond
 - Profile: internal/standard; bounded source anchor35625a35f273825265e361d706d41fee0f2bfb61. No whole-wiki freshness claim.
 - Page: [Configuration](./reference/configuration.md). The user reduced the search to three total pools per family, including the initial wide pool (`max_rounds=2`); two-failure patience remains. RF inherits the LightGBM monotonic map, so directional PDPs can reflect imposed priors.
 - Evidence: current modelling YAML and random_forest.py; local ignored reports/validate/2026-10-17-ensemble-validation/03-implementation.md. LGBM selection has completed, RF is active, and final financial validation/report remain pending. This refresh changes documentation only; no new model parameter or data change.
+
+## 2026-10-18: refresh — assessment diagnostic support and provenance
+
+- Profile: internal/standard; source_commit78f87d838cc2ef03809db3dc47b9f425c7f289ab (overview anchor previously1c2bc4283136bddddb5d61260543964a334a549c). Inspected the complete incremental path/stat inventory: changes concern modelling/validation and the already documented graph navigation setup, with no unrelated application subsystem changes.
+- Coverage: observed-session gaps in rolling/bootstrap statistics; matched benchmark/source proof linkage; truthful user-fixed linear policy and separate h60 overrides. Previously added assessment module/flow/configuration/run instructions remain applicable. No fitted-result or historical point-in-time certification.
+- Pages: [Overview](./OVERVIEW.md), [Modelling and portfolio](./reference/modelling-and-portfolio.md), [Testing](./guides/testing.md).
+- Evidence: parent affected87tests pass/0skips/0live; broad scoped Ruff/format/Pyright and unchanged fit/selection contract proof pass. Original configured baseline and all six tree candidates independently reconcile. Actual cutoff completion, sealed financial/artifact validation and final HTML/reviews remain pending in local ignored reports/validate/2026-10-17-ensemble-validation/.

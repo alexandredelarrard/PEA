@@ -7,7 +7,7 @@ tags:
   - reference
   - modelling
   - portfolio
-source_commit: 800be024be975942df7dbf542f807a09af103933
+source_commit: 78f87d838cc2ef03809db3dc47b9f425c7f289ab
 ---
 # Modelling, strategies, and portfolio
 
@@ -217,3 +217,7 @@ Historical benchmark metrics are sanity bars, not acceptance targets; data cover
 Each family can retain its own numeric and categorical pool. Development optimizes pooled daily Spearman IC-IR, defined as mean daily IC divided by population IC dispersion times sqrt(252/60); it is not portfolio-return IR. Repeated pruning makes development results selection-biased. Evaluation cannot choose another pool. Benchmark cohorts are fixed highest-prediction ceil(N/10) equal-weight names before outcomes; every h60 price path and matched SPY window must be supported. Missing selected outcomes retain their original missing weights. Overlapping gross windows are not compounded into a portfolio curve.
 
 SHAP and genuine PDP show fitted-model relationships, with original fold provenance and imposed directions disclosed. Research interpretation may propose a separate future constraint experiment; it cannot change current directions after evaluation. Retrospective classifications/peer vintages and current-roster coverage limit historical/generalization claims. See [configuration](./configuration.md) and [testing](../guides/testing.md).
+
+Temporal diagnostics retain every observed scoring session, including dates with undefined IC. A rolling statistic requires finite IC across its entire configured window; pooled summaries count only finite IC dates. Moving-block uncertainty draws across the original observed slots within each fold and filters unsupported observations only when calculating the sampled statistic. See `temporal_diagnostics` and `moving_block_intervals` in [assessment_metrics.py](../../src/modelling/utils/assessment_metrics.py).
+
+The report reads each family's persisted `selection_policy`: a user-fixed configured pool may have no search candidates. Its coefficient table describes the fitted linear member and does not imply a coefficient-pruning search occurred. Selected h60 YAML overrides remain distinct from the preserved default and other-horizon lists.

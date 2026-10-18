@@ -147,11 +147,13 @@ def _reconcile_metrics(output: Path, evaluation: dict, models: list[str], findin
     for period, rows in [("development", predictions.loc[predictions.fold > 0]), ("sealed", predictions.loc[predictions.fold == 0])]:
         stored = pd.read_parquet(output / "eval" / f"daily_{period}.parquet")
         computed[period] = {}
+        sessions = pd.DatetimeIndex(rows.date.unique()).as_unit("ns").sort_values()
         for model in models:
             daily = independent_daily(rows, model)
+            aligned = daily.reindex(sessions)
             claimed = stored.loc[stored.model == model].set_index("date").ic.sort_index()
             claimed.index = pd.DatetimeIndex(claimed.index).as_unit("ns")
-            same = daily.index.equals(claimed.index) and np.allclose(daily, claimed, rtol=1e-10, atol=1e-12)
+            same = aligned.index.equals(claimed.index) and np.allclose(aligned, claimed, equal_nan=True, rtol=1e-10, atol=1e-12)
             _finding(findings, same, f"{period}/{model}: saved daily IC differs", "Independent finite-paired Spearman series agrees")
             average, std = float(daily.mean()), float(daily.std(ddof=0))
             ratio = average / std * np.sqrt(252 / 60) if std > 0 else np.nan

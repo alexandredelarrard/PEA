@@ -12,7 +12,14 @@ import pytest
 from omegaconf import DictConfig, OmegaConf
 
 from src.context import Context
-from src.validate.checks.modelling import _live_path_checks, _reconcile_cohorts, check_modelling, independent_daily, independent_paths
+from src.validate.checks.modelling import (
+    _live_path_checks,
+    _reconcile_cohorts,
+    _reconcile_metrics,
+    check_modelling,
+    independent_daily,
+    independent_paths,
+)
 from src.validate.result import Finding
 
 
@@ -147,3 +154,71 @@ def test_source_market_replay_reports_duplicate_keys(cohort_artifacts: Path, dup
     print(
         f"SANITY: source replay completes with duplicate={duplicate}; malformed benchmark keys become a finding rather than an uncaught merge error."
     )
+
+
+@pytest.fixture
+def daily_metric_artifacts(tmp_path: Path) -> tuple[Path, dict]:
+    output = tmp_path / "eval"
+    output.mkdir()
+    frames, metrics = [], {}
+    for period, start, fold in [("development", "2001-01-01", 1), ("sealed", "2022-01-03", 0)]:
+        dates = pd.bdate_range(start, periods=5)
+        values = [-1.5, -0.5, 0.5, 1.5]
+        rows = pd.DataFrame(
+            {
+                "date": dates.repeat(4),
+                "ticker": list("ABCD") * 5,
+                "fold": fold,
+                "lgbm": values * 2 + [0.0] * 4 + values * 2,
+                "y": values + [np.nan] * 4 + values + values[::-1] + [-1.5, 0.5, -0.5, 1.5],
+            }
+        )
+        rows["ensemble"] = rows.lgbm
+        frames.append(rows)
+        daily = pd.DataFrame({"date": dates, "ic": [1.0, np.nan, np.nan, -1.0, 0.8]})
+        pd.concat([daily.assign(model=model) for model in ["lgbm", "ensemble"]], ignore_index=True).to_parquet(
+            output / f"daily_{period}.parquet", index=False
+        )
+        finite = np.array([1.0, -1.0, 0.8])
+        metrics[period] = {
+            model: {"mean_ic": finite.mean(), "ic_ir": finite.mean() / finite.std() * np.sqrt(252 / 60)} for model in ["lgbm", "ensemble"]
+        }
+    pd.concat(frames, ignore_index=True).to_parquet(output / "predictions.parquet", index=False)
+    return tmp_path, {"metrics": metrics}
+
+
+@pytest.mark.parametrize(
+    ("period", "mutation"),
+    [("development", "none"), ("development", "ensemble_arithmetic")]
+    + [(period, mutation) for period in ["development", "sealed"] for mutation in ["removed_date", "extra_date", "filled_gap", "supported_ic"]],
+)
+def test_metric_reconciliation_preserves_undefined_observed_sessions(daily_metric_artifacts: tuple[Path, dict], period: str, mutation: str) -> None:
+    output, evaluation = daily_metric_artifacts
+    daily_path = output / "eval" / f"daily_{period}.parquet"
+    daily = pd.read_parquet(daily_path)
+    if mutation == "removed_date":
+        daily = daily.drop(index=1)
+    elif mutation == "extra_date":
+        daily = pd.concat([daily, daily.iloc[[0]].assign(date=daily.date.max() + pd.offsets.BDay())], ignore_index=True)
+    elif mutation == "filled_gap":
+        daily.loc[1, "ic"] = 0.0
+    elif mutation == "supported_ic":
+        daily.loc[0, "ic"] = 0.5
+    elif mutation == "ensemble_arithmetic":
+        predictions_path = output / "eval" / "predictions.parquet"
+        predictions = pd.read_parquet(predictions_path)
+        predictions["ensemble"] += 0.01
+        predictions.to_parquet(predictions_path, index=False)
+    daily.to_parquet(daily_path, index=False)
+    findings: list[Finding] = []
+    computed = _reconcile_metrics(output, evaluation, ["lgbm", "ensemble"], findings)
+    expected = (
+        [] if mutation == "none" else ["Ensemble blend differs"] if mutation == "ensemble_arithmetic" else [f"{period}/lgbm: saved daily IC differs"]
+    )
+    assert [finding.observed for finding in findings] == expected
+    for period, members in computed.items():
+        for model, metrics in members.items():
+            assert metrics["n_days"] == 3
+            assert metrics["mean_ic"] == pytest.approx(evaluation["metrics"][period][model]["mean_ic"])
+            assert metrics["ic_ir"] == pytest.approx(evaluation["metrics"][period][model]["ic_ir"])
+    print(f"SANITY: {mutation} preserves observed-session gaps while pooled IC/IR and n_days use only the three supported sessions.")

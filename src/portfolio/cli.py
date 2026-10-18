@@ -3,13 +3,14 @@ cli.py  (src/portfolio/cli.py)
 ------------------------------
 PORTFOLIO command-line interface — two commands over the same sleeve blend:
 
-    python -m src portfolio backtest        [-c ./configs]   # weekly `modelling` DAG
-    python -m src portfolio strategy-moves  [-c ./configs]   # daily `strat_prediction` DAG
+    python -m src portfolio backtest --run-id <same-id> [-c ./configs]  # weekly `modelling` DAG
+    python -m src portfolio strategy-moves [-c ./configs]              # daily `strat_prediction` DAG
 
 `backtest` (StepPortfolio) reads `configs/portfolio.yml`, runs each sleeve OOS, risk-parity/ERC-
 blends them to the global vol target, reports per-strategy vs global Sharpe, and saves the backtest
 pictures (equity curve vs SP500, dynamic sleeve weights, per-sleeve analysis plots) + tables under
-data/output/portfolio/.
+<configured modelling assessment root>/<run_id>/portfolio/
+(default: data/output/modelling_backtest/<run_id>/portfolio/).
 
 `strategy-moves` (StepStrategyMoves) runs the SAME blend but reports it as a tradeable LEDGER: each
 sleeve's book re-sized to its dynamic ERC allocation x leverage, turned into per-day share-accurate
@@ -40,7 +41,8 @@ def cli() -> None:
 @cli.command(
     help="Run the portfolio backtest: blend the configured sleeves (portfolio.yml), "
     "report per-strategy vs global Sharpe, and save the equity/weights/analysis "
-    "pictures + tables under data/output/portfolio/.",
+    "pictures + tables under <configured modelling assessment root>/<run_id>/portfolio/ "
+    "(default: data/output/modelling_backtest/<run_id>/portfolio/).",
     help_priority=1,
 )
 @click.option(*CONFIG_ARGS, **cast(dict[str, Any], CONFIG_KWARGS))

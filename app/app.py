@@ -13,7 +13,14 @@ Layout:
     market-neutrality for the L/S book, IC / beta for the long-only book), so you can check how
     accurate / well-behaved each sleeve is.
 
-The models are assumed pre-trained (`python -m src modelling train`). L/S is out-of-sample from the model train_end.
+The app reads production models published by `modelling full-train`.
+Weekly sequence (use one run ID throughout):
+    python -m src modelling train --run-id <same-id>
+    python -m src modelling assess --run-id <same-id>
+    python -m src portfolio backtest --run-id <same-id>
+    python -m src modelling full-train --run-id <same-id>
+Cutoff training leaves production unchanged; full-train fits all eligible mature history
+and ignores `train.end_date`. The app's backtest start must match the production model train_end.
 """
 
 from __future__ import annotations
@@ -119,7 +126,10 @@ with st.sidebar:
         st.caption(f"⚙ Model **train-end = {TRAIN_END}** — the L/S sleeve is out-of-sample from this date. Keep Start = this for a clean OOS L/S.")
     else:
         st.error(
-            "No trained L/S model found (metadata.json). Run `python -m src modelling train` first, otherwise the `ls_equity` sleeve will be dropped from the blend."
+            "No production L/S model found (metadata.json). Complete the weekly chain with one run ID: "
+            "`modelling train --run-id <same-id>` → `modelling assess --run-id <same-id>` → "
+            "`portfolio backtest --run-id <same-id>` → `modelling full-train --run-id <same-id>`. "
+            "Only full-train publishes the production models read by this app."
         )
     # start defaults to the model train-end so L/S is OOS-aligned and always present
     start = st.text_input("Start date (YYYY-MM-DD)", value=TRAIN_END or str(_PB.get("start", "2023-01-01")))
@@ -264,16 +274,17 @@ _model_sel = [s for s in MODEL_SLEEVES if s in sleeves]
 if _model_sel and not _ls_ready:
     if TRAIN_END is None:
         st.warning(
-            f"⚠ No trained equity model found. Train it for this period first "
-            f"(`train.end_date = {_start}`, then `modelling train`), or deselect {_model_sel}. "
+            f"⚠ No production equity model found. Complete the same-run weekly chain shown above, "
+            f"ending with `modelling full-train --run-id <same-id>`, or deselect {_model_sel}. "
             f"**The backtest will not run with a missing model.**"
         )
     else:
         st.warning(
-            f"⚠ The equity model is trained to **train_end = {TRAIN_END}**, but the backtest "
-            f"starts **{_start}** — not trained for this period. Retrain with "
-            f"`train.end_date = {_start}` (then `modelling train`), set Start = {TRAIN_END}, or "
-            f"deselect {_model_sel}. **The backtest will not run with a misaligned model.**"
+            f"⚠ The production equity model has **train_end = {TRAIN_END}**, but the backtest "
+            f"starts **{_start}**. Set Start = {TRAIN_END} or deselect {_model_sel}. "
+            f"To refresh production, complete the same-run weekly chain ending "
+            f"`modelling full-train --run-id <same-id>`; full-train fits all eligible mature history "
+            f"and ignores `train.end_date`. **The backtest will not run with a misaligned model.**"
         )
 
 if run_btn:

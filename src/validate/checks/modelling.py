@@ -229,6 +229,48 @@ def _raw_prediction(member: Any, matrix: np.ndarray) -> np.ndarray:
     return np.asarray(member.model.predict(matrix))
 
 
+def _linear_signed_checks(member: Any, matrix: np.ndarray, phi: np.ndarray, curves: dict, config: DictConfig, findings: list[Finding]) -> None:
+    """Replay chart coordinates from raw rows and each member's saved training scaler."""
+    budget = int(config.model.diagnostics.dependence_sample)
+    expected_rows = budget if 0 < budget < len(matrix) else len(matrix)
+    for index, feature in enumerate(member.features):
+        values = curves["features"][feature]
+        scatter = values.get("scatter", {})
+        rows = np.asarray(scatter.get("row", []))
+        valid_rows = (
+            rows.ndim == 1
+            and rows.dtype.kind in "iu"
+            and len(rows) == expected_rows
+            and bool(((rows >= 0) & (rows < len(matrix))).all())
+            and bool((np.diff(rows) > 0).all())
+        )
+        _finding(findings, valid_rows, "Invalid linear scatter row provenance", "Ordered sampled positions in saved raw inputs", feature=feature)
+        if not valid_rows:
+            continue
+        column = matrix[:, index]
+        signed_x = (column - member.mean_[index]) / member.std_[index]
+        frame = pd.DataFrame({"x": signed_x, "raw_x": column, "mean": phi[:, index]})
+        frame = frame.loc[np.isfinite(column)]
+        bins = frame.x if frame.x.nunique() <= 10 else pd.qcut(frame.x, 10, duplicates="drop")
+        expected = frame.groupby(bins, observed=True).agg(x=("x", "median"), raw_x=("raw_x", "median"), mean=("mean", "mean"), count=("mean", "size"))
+        comparisons = [(scatter, {"x": signed_x[rows], "raw_x": column[rows], "shap": phi[rows, index]})]
+        comparisons.append((values.get("binned", {}), {key: expected[key].to_numpy() for key in expected.columns}))
+        valid = values.get("coefficient") == member.coef_[index]
+        for actual, wanted in comparisons:
+            for key, array in wanted.items():
+                saved = np.asarray(actual.get(key, []), dtype=float)
+                valid &= saved.shape == array.shape and np.allclose(saved, array, equal_nan=True, atol=1e-10, rtol=1e-8)
+        _finding(
+            findings,
+            bool(valid),
+            "Linear signed chart coordinates/hover differ from saved scaling",
+            "Per-member training-standardized scatter/bin x, native contributions, raw hover and signed beta; missing raw states excluded from bins",
+            feature=feature,
+            family=member.family,
+            horizon=member.horizon,
+        )
+
+
 def _effect_checks(folder: Path, member: Any, config: DictConfig, cutoff: bool, findings: list[Finding]) -> int:
     features = member.features
     x = pd.read_parquet(folder / "x.parquet")
@@ -249,6 +291,7 @@ def _effect_checks(folder: Path, member: Any, config: DictConfig, cutoff: bool, 
     prediction = _raw_prediction(member, matrix)
     if linear:
         phi = np.nan_to_num((matrix - member.mean_) / member.std_, nan=0.0) * member.coef_
+        _linear_signed_checks(member, matrix, phi, curves, config, findings)
         base = np.full(len(matrix), member.intercept_)
         importance = np.abs(member.coef_)
         coefficients = pd.read_parquet(folder / "coefficients.parquet")
@@ -553,7 +596,7 @@ def _report_checks(run: Path, training: dict, state: dict, findings: list[Findin
                 expected = _read(run / f"assessment/h{horizon}/fold{fold}/{family}/curves.json")
                 for values in expected["features"].values():
                     if fold == "0":
-                        values["scatter"] = {key: values["scatter"][key] for key in ("x", "shap")}
+                        values["scatter"] = {key: values["scatter"][key] for key in ("x", "shap", "raw_x") if key in values["scatter"]}
                     else:
                         values.pop("scatter", None)
                 _finding(

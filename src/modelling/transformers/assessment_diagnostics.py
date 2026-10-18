@@ -124,6 +124,9 @@ def explain_linear(
     for index, feature in enumerate(features):
         col = matrix[:, index]
         valid = np.isfinite(col)
+        signed_x = (col - member.mean_[index]) / member.std_[index]
+        binned = _binned_dependence(signed_x, phi[:, index], False)
+        binned["raw_x"] = np.asarray(binned["x"]) * member.std_[index] + member.mean_[index]
         grid, means = None, None
         if pdp and valid.any():
             grid = np.unique(col[valid])
@@ -138,8 +141,14 @@ def explain_linear(
             "observed": int(valid.sum()),
             "sample_rows": len(panel),
             "categorical": False,
-            "scatter": {"x": col[chosen], "shap": phi[chosen, index], "date": panel.date.iloc[chosen].astype(str).tolist()},
-            "binned": _binned_dependence(col, phi[:, index], False),
+            "scatter": {
+                "x": signed_x[chosen],
+                "raw_x": col[chosen],
+                "row": chosen,
+                "shap": phi[chosen, index],
+                "date": panel.date.iloc[chosen].astype(str).tolist(),
+            },
+            "binned": binned,
             "pdp": {"x": grid, "mean": means},
             "missing_shap_mean": float(np.mean(phi[~valid, index])) if (~valid).any() else None,
         }
@@ -150,7 +159,7 @@ def explain_linear(
         "rows": len(panel),
         "background_rows": len(background),
         "intercept": float(member.intercept_),
-        "interpretation": "Signed linear contribution is saved beta times training-standardized input (missing input contributes zero); importance is abs(beta). PDP holds the other sampled inputs fixed. These are model responses, not causal effects.",
+        "interpretation": "Signed linear x uses the saved training mean/std; contribution is saved beta times that input. Missing input contributes zero and has no observed x/bin. Raw inputs remain in hover and PDP; importance is abs(beta). These are model responses, not causal effects.",
     }
     write_json(output / "curves.json", result)
     logger.info("Linear contributions: %s rows, %s retained variables", len(panel), len(features))

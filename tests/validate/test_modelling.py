@@ -59,7 +59,24 @@ def test_independent_inventory_rejects_changed_bytes(tmp_path: Path) -> None:
     print("SANITY: same-sized artifact corruption fails independent SHA256 reconciliation.")
 
 
-@pytest.mark.parametrize("mutation", ["none", "coefficient_order", "signed_values", "importance", "pdp_response", "pdp_grid"])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "none",
+        "coefficient_order",
+        "signed_values",
+        "importance",
+        "pdp_response",
+        "pdp_grid",
+        "scatter_x",
+        "bin_x",
+        "raw_hover",
+        "beta_sign",
+        "bin_mean",
+        "bin_count",
+        "row",
+    ],
+)
 def test_independent_linear_effect_reconciliation(tmp_path: Path, mutation: str) -> None:
     member = SimpleNamespace(
         family="elasticnet",
@@ -91,6 +108,15 @@ def test_independent_linear_effect_reconciliation(tmp_path: Path, mutation: str)
             "zero": {"importance": 0.0, "pdp": {"x": [0.0, 1.0, 2.0, 3.0], "mean": [0.5] * 4}},
         }
     }
+    for feature, signed_x, raw_x, binned_x, binned_raw, means, counts in [
+        ("x", [-1.0, 0.0, 1.0, None], [0.0, 1.0, 2.0, None], [-1.0, 0.0, 1.0], [0.0, 1.0, 2.0], [-2.0, 0.0, 2.0], [1, 1, 1]),
+        ("negative", [-1.0, 0.0, 1.0, -1.0], [0.0, 2.0, 4.0, 0.0], [-1.0, 0.0, 1.0], [0.0, 2.0, 4.0], [1.0, 0.0, -1.0], [2, 1, 1]),
+        ("zero", [0.0, 1.0, 2.0, 3.0], [0.0, 1.0, 2.0, 3.0], [0.0, 1.0, 2.0, 3.0], [0.0, 1.0, 2.0, 3.0], [0.0] * 4, [1] * 4),
+    ]:
+        curve = curves["features"][feature]
+        curve["coefficient"] = member.coef_[member.features.index(feature)]
+        curve["scatter"] = {"x": signed_x, "raw_x": raw_x, "row": [0, 1, 2, 3], "shap": raw[feature].tolist()}
+        curve["binned"] = {"x": binned_x, "raw_x": binned_raw, "mean": means, "count": counts}
     if mutation == "coefficient_order":
         coefficients = coefficients.iloc[::-1]
     elif mutation == "signed_values":
@@ -101,16 +127,27 @@ def test_independent_linear_effect_reconciliation(tmp_path: Path, mutation: str)
         curves["features"]["negative"]["pdp"]["mean"][0] = 10.0
     elif mutation == "pdp_grid":
         curves["features"]["x"]["pdp"]["x"][0] = -100.0
+    elif mutation in {"scatter_x", "bin_x"}:
+        key = "scatter" if mutation == "scatter_x" else "binned"
+        curves["features"]["x"][key]["x"] = [0.0, 1.0, 2.0, None] if key == "scatter" else [0.0, 1.0, 2.0]
+    elif mutation == "raw_hover":
+        curves["features"]["x"]["scatter"]["raw_x"][0] = -1.0
+    elif mutation == "beta_sign":
+        curves["features"]["negative"]["coefficient"] = 1.0
+    elif mutation in {"bin_mean", "bin_count"}:
+        curves["features"]["x"]["binned"][mutation.removeprefix("bin_")][0] = 99
+    elif mutation == "row":
+        curves["features"]["x"]["scatter"]["row"][0] = -1
     x.to_parquet(tmp_path / "x.parquet", index=False)
     raw.to_parquet(tmp_path / "contributions.parquet", index=False)
     coefficients.to_parquet(tmp_path / "coefficients.parquet", index=False)
     write_json(tmp_path / "curves.json", curves)
-    config = OmegaConf.create({"seed": 7, "model": {"diagnostics": {"pdp_grid": 30, "pdp_background": 4}}})
+    config = OmegaConf.create({"seed": 7, "model": {"diagnostics": {"dependence_sample": 4, "pdp_grid": 30, "pdp_background": 4}}})
     findings = []
     modelling._effect_checks(tmp_path, member, config, True, findings)
     assert bool(findings) is (mutation != "none")
     print(
-        f"SANITY: independent saved-beta/linear additivity/abs-importance/native PDP checks detect mutation={mutation}, including a true zero coefficient and missing input."
+        f"SANITY: independent signed coordinates/raw hover/beta/bin support/additivity/importance/PDP checks detect mutation={mutation}, including zero beta and missing input."
     )
 
 

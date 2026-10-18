@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import logging
+import pickle
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
 import pytest
 from omegaconf import OmegaConf
 
-from src.modelling.transformers import assessment_diagnostics
+from src.modelling.transformers import assessment_diagnostics, linear_regression
 from src.modelling.transformers.assessment_diagnostics import _binned_dependence
 from src.modelling.transformers.linear_regression import LinearRegression
+from src.validate.checks.modelling import _effect_checks
 
 
 def test_saved_linear_coefficients_reconstruct_signed_effects_and_pdp(tmp_path: Path) -> None:
@@ -36,21 +39,65 @@ def test_saved_linear_coefficients_reconstruct_signed_effects_and_pdp(tmp_path: 
     config = OmegaConf.create({"seed": 7, "model": {"diagnostics": {"dependence_sample": 4, "pdp_grid": 30, "pdp_background": 4}}})
     result = assessment_diagnostics.explain_linear(member, panel, tmp_path, config, logging.getLogger(__name__), pdp=True)
     values = pd.read_parquet(tmp_path / "contributions.parquet")
-    expected = np.nan_to_num((panel[member.features].to_numpy() - member.mean_) / member.std_, nan=0.0) * member.coef_
+    scaled = (panel[member.features].to_numpy() - member.mean_) / member.std_
+    expected = np.nan_to_num(scaled, nan=0.0) * member.coef_
     np.testing.assert_allclose(values[member.features], expected)
     np.testing.assert_allclose(values[member.features].sum(axis=1) + values.base, member.predict(panel), atol=1e-12)
+    pd.testing.assert_frame_equal(pd.read_parquet(tmp_path / "x.parquet"), panel)
     for index, feature in enumerate(member.features):
         curve = result["features"][feature]
         assert curve["importance"] == abs(member.coef_[index])
         assert curve["coefficient"] == member.coef_[index]
+        np.testing.assert_allclose(curve["scatter"]["x"], scaled[:, index])
+        np.testing.assert_array_equal(curve["scatter"]["raw_x"], panel[feature])
+        np.testing.assert_array_equal(curve["scatter"]["row"], np.arange(len(panel)))
+        finite = np.isfinite(panel[feature])
+        np.testing.assert_allclose(curve["binned"]["x"], np.unique(scaled[finite, index]))
+        np.testing.assert_allclose(curve["binned"]["raw_x"], np.unique(panel.loc[finite, feature]))
         if curve["pdp"]["x"] is not None:
             for grid, mean in zip(curve["pdp"]["x"], curve["pdp"]["mean"], strict=True):
                 assert mean == pytest.approx(member.predict(panel.assign(**{feature: grid})).mean(), abs=1e-12)
     assert result["kind"] == "linear" and result["additivity_max_error"] < 1e-12
     assert result["features"]["missing"]["pdp"]["x"] is None
+    assert len(result["features"]["missing"]["binned"]["x"]) == 0
+    assert result["features"]["constant"]["binned"]["x"] == pytest.approx([0.0])
     assert result["features"]["constant"]["binned"]["mean"] == pytest.approx([0.0])
     print(
-        "SANITY: saved standardized beta, intercept and scaling exactly reconstruct positive/negative/zero/missing/constant contributions and direct-predict PDP; importance is abs(beta)."
+        "SANITY: signed x uses saved training scaling while raw hover/PDP stay raw; positive/negative/zero/missing/constant contributions reconstruct predictions and importance is abs(beta)."
+    )
+
+
+def test_original_fold_and_cutoff_signed_axes_use_each_serialized_scaler_without_fit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def forbidden_fit(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("Saved-model explanations must never fit or estimate held-out scaling")
+
+    monkeypatch.setattr(LinearRegression, "fit", forbidden_fit)
+    monkeypatch.setattr(LinearRegression, "_fit", forbidden_fit)
+    monkeypatch.setattr(linear_regression, "_standardize", forbidden_fit)
+    panel = pd.DataFrame({"date": pd.to_datetime(["2022-01-03"] * 33), "ticker": [f"T{i}" for i in range(33)], "x": [*np.arange(8.0, 40.0), np.nan]})
+    config = OmegaConf.create({"seed": 7, "model": {"diagnostics": {"dependence_sample": 9, "pdp_grid": 30, "pdp_background": 11}}})
+    for fold in range(6):
+        member = object.__new__(LinearRegression)
+        member.features, member.categoricals = ["x"], []
+        member.family, member.horizon, member.task = "ridge" if fold % 2 else "elasticnet", 60, "regression"
+        member.mean_, member.std_, member.coef_ = np.array([10.0 + 2 * fold]), np.array([2.0 + fold]), np.array([-3.0 if fold % 2 else 3.0])
+        member.intercept_, member.model = 0.5, "fitted"
+        model_file = tmp_path / f"model-fold{fold}.pkl"
+        model_file.write_bytes(pickle.dumps(member))
+        saved = LinearRegression.load(model_file)
+        folder = tmp_path / f"fold{fold}"
+        result = assessment_diagnostics.explain_linear(saved, panel, folder, config, logging.getLogger(__name__), pdp=fold == 0)
+        curve = result["features"]["x"]
+        rows = curve["scatter"]["row"]
+        np.testing.assert_allclose(curve["scatter"]["x"], (panel.x.to_numpy()[rows] - member.mean_[0]) / member.std_[0])
+        np.testing.assert_allclose(curve["binned"]["x"], (curve["binned"]["raw_x"] - member.mean_[0]) / member.std_[0])
+        np.testing.assert_allclose(pd.read_parquet(folder / "contributions.parquet").prediction, saved.predict(panel))
+        pd.testing.assert_frame_equal(pd.read_parquet(folder / "x.parquet"), panel)
+        findings = []
+        _effect_checks(folder, saved, config, fold == 0, findings)
+        assert not findings
+    print(
+        "SANITY: five original serialized folds and cutoff retain distinct saved scales/beta signs, sampled signed x and raw PDP/hover; independent validation passes with fitting/scaling estimation forbidden."
     )
 
 

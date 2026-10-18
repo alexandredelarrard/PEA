@@ -107,7 +107,7 @@ def render_assessment(run: Path, config: DictConfig) -> Path:
     if maximum_path >= 260:
         raise ValueError(f"Artifact path exceeds the portable Windows path budget: {maximum_path}")
     document = _TEMPLATE.replace("__PLOTLY__", get_plotlyjs()).replace("__PAYLOAD__", encoded)
-    output.write_text(document, encoding="utf-8")
+    output.write_text(document, encoding="utf-8", newline="\n")
     write_json(
         artifacts / "report_manifest.json",
         {

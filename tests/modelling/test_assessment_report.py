@@ -52,6 +52,26 @@ def _report_artifacts(root: Path) -> None:
     write_json(out / "eval" / "market_calendar_years.json", {"2022": -0.1, "2023": 0.2})
     write_json(out / "eligibility.json", {"rows": 20, "features": [{"feature": "x", "role": "numeric"}]})
     write_json(out / "category_labels.json", {"status": "verified", "labels": {"z": {"0": "Category A", "1": "Category B"}}})
+    write_json(
+        out / "readiness.json",
+        {
+            "verdict": "CONDITIONAL",
+            "summary": "Known-truth conditional research assessment",
+            "scope": "h60",
+            "base": "base-sha",
+            "candidate": "candidate-sha",
+            "branch": "harness/fixture",
+            "validated_at": "2026-10-17",
+            "reviews": "Two independent fixture reviews",
+            "limitations": "Retrospective classifications; no investment claim",
+            "stages": [["Spec", "Approved", "fixture"]],
+            "criteria": [["AC-001", "PASS", "fixture", "known truth", "conditional"]],
+            "commands": [["rtk check", 0, "PASS", "fixture"]],
+            "findings": [["F-004", "HIGH", "Accepted conditional", "not applicable", "fixture"]],
+            "commits": [["candidate-sha", "candidate", "fixture"]],
+            "index": [{"path": "_out/selection.json", "label": "Frozen selection"}],
+        },
+    )
     dates = pd.to_datetime(["2022-01-03", "2023-01-03"])
     for fold in range(6):
         quality = pd.DataFrame({"year": [2022, 2023], "sector": 0, "feature": ["x", "x"], "observed": [8, 9], "rows": [10, 10]})
@@ -113,6 +133,8 @@ def test_report_is_offline_and_covers_exact_frozen_feature_pool(tmp_path: Path) 
     assert payload["explanations"]["lgbm"]["0"]["features"]["x"]["importance"] == 0.123
     assert payload["selection_importance"]["lgbm"]["l0"]["z"] == 0
     assert payload["market"][0]["mean_excess"] == pytest.approx(0.05)
+    assert payload["readiness"]["verdict"] == "CONDITIONAL" and payload["readiness"]["candidate"] == "candidate-sha"
+    assert 'id="acceptanceMatrix"' in text and 'id="findingMatrix"' in text and 'id="reportIndex"' in text
     assert not re.search(r'<(?:script|link|img)[^>]+(?:src|href)=["\']https?://', text)
     assert 'id="family"' in text and 'id="feature"' in text
     assert text.index('id="diagnosis"') < text.index('id="research"')
@@ -131,3 +153,12 @@ def test_report_refuses_missing_retained_variable(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="coverage"):
         render_assessment(tmp_path, OmegaConf.create({"model": {"target_type": "zscore"}}))
     print("SANITY: a missing original-fold explanation cannot silently disappear from the variable selector.")
+
+
+@pytest.mark.parametrize("path", ["../outside.json", "_out/absent.json"])
+def test_report_refuses_invalid_readiness_link(path: str, tmp_path: Path) -> None:
+    _report_artifacts(tmp_path)
+    write_json(tmp_path / "_out/readiness.json", {"index": [{"path": path}]})
+    with pytest.raises(ValueError, match="inside the run"):
+        render_assessment(tmp_path, OmegaConf.create({"model": {"target_type": "zscore"}}))
+    print("SANITY: readiness evidence links cannot escape the run or silently point to a missing artifact.")

@@ -7,6 +7,7 @@ tags:
   - guide
   - testing
   - validation
+source_commit: 800be024be975942df7dbf542f807a09af103933
 ---
 # Testing and validation
 
@@ -223,3 +224,9 @@ The price register's generic event contract is covered by [resolver controls](..
 Always test ordinary-builder refusal with a captured isolated write seam: changed source/anchor evidence or unusable total-return event prices must cause zero writes. An already-correct target must pass without a second adjustment. Test full and incremental windows, unchanged controls, ordinary cash dividends, and separate return versus OHLC masks. Configured carried ownership rebases both quantity legs using actual G while preserving filing/publication clocks and freshness.
 
 Run the relevant existing split-union, level/value, predecessor, insider/institutional, seam-mask, target-factor, price-part roundtrip, incremental and store-boundary siblings. Keep `PEA_LIVE_TESTS` unset. The independent read-only price validator's historical level failures must be inspected individually; its recent-seam gate alone does not certify historical levels. Generic CLI exit3 is ABSTAINED, not a pass. Source/raw and production-derived tables remain unchanged during candidate validation; historical adoption is a separately scoped operation.
+
+## Assessment contracts and financial replay
+
+The assessment tests cover numeric-text/category parity, strict temporal purges, the fixed pooled objective, deterministic pruning, dynamic CLI loading, input/selection cache identity, frozen resume and refused application writes. Known-truth fixtures in [test_assessment_metrics.py](../../tests/modelling/test_assessment_metrics.py) verify fixed cohorts/weights, complete return paths, dated daily exports and the declared minimum-mean-IC window. [test_assessment_periods.py](../../tests/modelling/test_assessment_periods.py) checks retrospective same-name populations and exact year/sector moments. [test_assessment_report.py](../../tests/modelling/test_assessment_report.py) verifies offline output, all retained-feature coverage and original candidate importance provenance.
+
+Financial acceptance additionally requires real projected development data, actual original-fold models, SHAP/base additivity, selected cutoff reload equality and sealed outcome replay. The [read-only modelling validator](../../src/validate/checks/modelling.py) independently recomputes rank IC, pooled dispersion/IR, top-decile membership, matched return paths and report identity; incomplete evidence abstains before DB access. Browser checks must exercise both populations, models and first/last feature choices. Synthetic parser/math/UI tests alone do not establish predictive performance. On Windows, use a fresh verified short scratch directory rather than deleting a shared pytest temporary root.

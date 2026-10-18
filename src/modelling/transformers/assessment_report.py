@@ -72,7 +72,13 @@ def render_assessment(run: Path, config: DictConfig) -> Path:
     }
     coverage = coverage.groupby(["year", "feature"], as_index=False)[["observed", "rows"]].sum()
     coverage["coverage"] = coverage.observed / coverage.rows
+    readiness = _optional_json(artifacts / "readiness.json")
+    for entry in readiness.get("index", []):
+        target = (run / entry["path"]).resolve()
+        if not target.is_relative_to(run.resolve()) or not target.is_file():
+            raise ValueError("Readiness evidence link must name an existing file inside the run")
     payload = {
+        "readiness": readiness,
         "selection": ledger,
         "selection_importance": selection_importance,
         "baseline": _read_json(artifacts / "b0" / "result.json"),
@@ -133,6 +139,7 @@ main{max-width:1450px;margin:auto;padding:48px 32px}h1{font-size:clamp(30px,4vw,
 <p class="sub">Separate feature selection for LightGBM, LightGBM RF and elastic-net; a frozen cutoff ensemble evaluated from January 2022.</p>
 <nav class="nav" aria-label="Report sections"><a href="#protocol">Protocol</a><a href="#selection">Selection</a><a href="#temporal">IC / IR</a><a href="#market">Market</a><a href="#explanation">Effects</a><a href="#diagnosis">Diagnosis</a><a href="#research">Interpretation versus research</a></nav>
 <section id="protocol"><h2>1. What the evidence measures</h2><div id="protocolTags"></div>
+<div id="readiness" hidden><div id="readinessVerdict" class="callout warning"></div><p id="readinessSummary"></p><pre id="candidateIdentity"></pre><details><summary>Audit: acceptance criteria, validation, reviews and provenance</summary><h3>Stage timeline and approvals</h3><div id="stageMatrix" class="wide"></div><h3>Acceptance criteria</h3><div id="acceptanceMatrix" class="wide"></div><h3>Validation commands</h3><div id="commandMatrix" class="wide"></div><h3>Finding dispositions</h3><div id="findingMatrix" class="wide"></div><h3>Independent reviews</h3><pre id="readinessReviews"></pre><h3>Limitations, abstentions and actions not taken</h3><pre id="readinessLimits"></pre><h3>Commit and merge ledger</h3><div id="commitMatrix" class="wide"></div><h3>Complete local evidence index</h3><div id="reportIndex"></div></details></div>
 <p>Models learn the magnitude-preserving cross-sectional <b>z-score target at 60 sessions</b>. IC is daily cross-sectional Spearman correlation. IC-IR is pooled mean daily IC divided by its population standard deviation, multiplied by √(252/60). It is not a portfolio return information ratio.</p>
 <p class="note">The target producer defines a standardized residual after forward factor-return subtraction and cross-sectional neutralization against loadings, momentum, size and industry groups. IC measures this residual label. Actual top-decile total return versus SPY is a separate assessment.</p><div id="upstreamRisk" class="callout warning"></div>
 <div class="callout">Development begins in 1999. Five forward validation windows cover 2000–02, 2003–06, 2007–12, 2013–18 and 2019–21; every used training outcome is observable by 31 December 2021. Selection uses development only. The latest period is sealed until all pools and cutoff models are frozen.</div>
@@ -155,6 +162,9 @@ function text(id,value){$(id).textContent=value}
 function table(id,headers,rows){const el=$(id);el.replaceChildren();const t=document.createElement('table'),head=t.createTHead().insertRow();headers.forEach(h=>{const th=document.createElement('th');th.textContent=h;head.append(th)});const body=t.createTBody();rows.forEach(row=>{const tr=body.insertRow();row.forEach(v=>{tr.insertCell().textContent=v??'—'})});el.append(t)}
 function plot(id,traces,title,ytitle,extra={}){Plotly.react(id,traces,{paper_bgcolor:'#112135',plot_bgcolor:'#112135',font:{color:'#c9d7e6'},title:{text:title,font:{size:16}},margin:{t:60,l:70,r:25,b:70},legend:{orientation:'h'},xaxis:{gridcolor:'#2b4058',automargin:true},yaxis:{title:ytitle,gridcolor:'#2b4058',zerolinecolor:'#66829d',automargin:true},...extra},{responsive:true,displaylogo:false})}
 function initialize(){
+ const A=D.readiness;if(A.verdict){$('readiness').hidden=false;text('readinessVerdict',A.verdict);text('readinessSummary',A.summary);text('candidateIdentity','Scope: '+A.scope+'\nBase: '+A.base+'\nCandidate: '+A.candidate+'\nBranch: '+A.branch+'\nValidated: '+A.validated_at);text('readinessReviews',A.reviews);text('readinessLimits',A.limitations);
+  table('stageMatrix',['Stage','Approval / completion','Evidence'],A.stages);table('acceptanceMatrix',['Criterion','Status','Implementation','Validation','Limitation'],A.criteria);table('commandMatrix',['Command','Exit','Observation','Artifact'],A.commands);table('findingMatrix',['Finding','Severity','Disposition','Fix / merge','Verification'],A.findings);table('commitMatrix',['Commit','Role','Scope'],A.commits);
+  $('commandMatrix').querySelectorAll('tbody tr td:first-child').forEach(cell=>{const code=document.createElement('code');code.textContent=cell.textContent;cell.replaceChildren(code)});A.index.forEach(entry=>{const p=document.createElement('p'),a=document.createElement('a');a.href=entry.path;a.textContent=entry.label||entry.path;p.append(a);$('reportIndex').append(p)});}
  const tags=[D.eligibility.rows.toLocaleString()+' development rows',D.selection.features.length+' eligible predictors','Outcomes known by '+D.selection.outcome_cutoff,'Sealed formation end '+D.evaluation.formation_end];tags.forEach(v=>{const s=document.createElement('span');s.className='tag';s.textContent=v;$('protocolTags').append(s)});
   text('validationStatus',D.validation.verdict?'Independent technical validation: '+D.validation.verdict+' · Historical conclusions remain conditional on current cube vintages. '+(D.validation.summary||'See diagnostic evidence.'):'Independent validation is pending; model and report completeness are not yet a readiness verdict.');
  text('upstreamRisk',(D.upstream_quality.paragraphs||['Historical vintage assessment has not been recorded. A time split alone does not certify point-in-time inputs or an investable historical universe.']).join('\n'));

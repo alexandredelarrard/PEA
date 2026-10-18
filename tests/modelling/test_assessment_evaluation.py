@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 import pytest
@@ -13,6 +13,7 @@ from src.modelling.steps import step_assess_long_short as assessment
 from src.modelling.steps.step_assess_long_short import StepAssessLongShort
 from src.modelling.steps.step_long_short import StepLongShort
 from src.modelling.transformers import BaseModel, LightGBMModel
+from src.validate.checks.modelling import check_modelling
 from tests.modelling.test_step_long_short import _setup
 
 
@@ -41,6 +42,7 @@ def test_assessment_reads_original_folds_without_fitting(tmp_path: Path, sqlite_
     config.model.assessment.evaluation_start = str(pd.Timestamp(dates[-88]).date())
     result = trainer.run()
     assert result.run_dir is not None
+    trainer.run_train(full_history=True)
     before = {path: path.read_bytes() for path in result.run_dir.rglob("*.pkl")}
 
     def forbidden(*args: Any, **kwargs: Any) -> Any:
@@ -51,12 +53,6 @@ def test_assessment_reads_original_folds_without_fitting(tmp_path: Path, sqlite_
     monkeypatch.setattr(BaseModel, "fit", forbidden)
     monkeypatch.setattr(LightGBMModel, "fit_fixed_rounds", forbidden)
 
-    def renderer(run: Path, cfg: Any) -> Path:
-        path = run / "report.html"
-        path.write_text("<html>renderer contract stub</html>", encoding="utf-8")
-        return path
-
-    monkeypatch.setattr(assessment, "render_assessment", renderer)
     spy.loads.clear()
     report = StepAssessLongShort(context=trainer._context, config=config).run()
     assert report == result.run_dir / "report.html"
@@ -70,7 +66,20 @@ def test_assessment_reads_original_folds_without_fitting(tmp_path: Path, sqlite_
     first_label = next(i for i, row in enumerate(spy.loads) if any(c.startswith("target_") for c in row["columns"]))
     assert first_label == 6, "all six complete feature-only universes must be scored before any target read"
     assert all(not row["where"] for row in spy.loads[:first_label])
-    assert not (tmp_path / "models").exists()
+    assert (tmp_path / "models/metadata.json").is_file()
+    checked = check_modelling(trainer._context, out=result.run_dir, config=config)
+    assert checked.status == "pass", checked.to_json()
+    frozen = {path: path.read_bytes() for path in result.run_dir.rglob("*") if path.is_file()}
+
+    class NoData:
+        def __getattr__(self, name: str) -> Any:
+            pytest.fail("Offline rerender must not access the database")
+
+    trainer._context.store = cast(Any, NoData())
+    config.model.assessment.report_only = True
+    monkeypatch.setattr(assessment, "load_ensemble", forbidden)
+    assert StepAssessLongShort(context=trainer._context, config=config).run() == report
+    assert frozen == {path: path.read_bytes() for path in result.run_dir.rglob("*") if path.is_file()}
     print(
-        "SANITY: assessment loads five original folds plus cutoff, scores feature-only before labels, persists every family effect and never fits or changes model bytes; HTML rendering tested separately."
+        "SANITY: original-fold/cutoff assessment never fits; the independent source/native/metric/full-refit validator passes; actual HTML rerenders byte-identically with database/model loading forbidden."
     )

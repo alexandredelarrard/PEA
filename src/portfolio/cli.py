@@ -17,6 +17,10 @@ moves, FIFO-matched into round trips, and upserted to the `strategy` table with 
 entry price, exit price and realized P&L.
 """
 
+import hashlib
+import json
+import re
+from pathlib import Path
 from typing import Any, cast
 
 import click
@@ -40,9 +44,33 @@ def cli() -> None:
     help_priority=1,
 )
 @click.option(*CONFIG_ARGS, **cast(dict[str, Any], CONFIG_KWARGS))
-def backtest(config_path: str) -> None:
-    # save=True so the analysis pictures + tables are written to data/output/portfolio/
+@click.option("--run-id", required=True, help="Exact completed modelling assessment run; uses its cutoff models.")
+def backtest(config_path: str, run_id: str) -> None:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,95}", run_id) or re.fullmatch(r"CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9]", run_id.upper()):
+        raise click.BadParameter("Use one safe dated run ID", param_hint="--run-id")
     config, context = get_config_context(config_path, use_cache=False, save=True)
+    root = Path(str(config.model.assessment.output_dir))
+    root = (root if root.is_absolute() else Path(context.paths["DATA_STORE"]) / root).resolve()
+    run = (root / run_id).resolve()
+    if run.parent != root:
+        raise ValueError("Modelling run must stay inside its configured output folder")
+    training = json.loads((run / "metadata.json").read_text(encoding="utf-8"))
+    assessed = json.loads((run / "assessment/metadata.json").read_text(encoding="utf-8"))
+    if (
+        training.get("run_id") != run_id
+        or assessed.get("run_id") != run_id
+        or training.get("training_complete") is not True
+        or assessed.get("complete") is not True
+    ):
+        raise ValueError("Portfolio requires this exact run's completed training and assessment")
+    path = run / "cutoff/metadata.json"
+    if training["cutoff_metadata"] != {"bytes": path.stat().st_size, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}:
+        raise ValueError("Assessed cutoff metadata changed")
+    cutoff = json.loads(path.read_text(encoding="utf-8"))
+    if cutoff.get("run_id") != run_id or cutoff.get("full_history") is not False:
+        raise ValueError("Portfolio backtest requires the named cutoff models")
+    config.model.models_dir = str(run / "cutoff")
+    context.paths = {**context.paths, "OUTPUT_DIR": run / "portfolio"}
     StepPortfolio(context=context, config=config).run()
 
 

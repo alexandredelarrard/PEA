@@ -1,4 +1,6 @@
-"""Artifact-only HTML rendering: complete retained pools, offline assets and strict evidence JSON."""
+"""The report contains only three offline plot areas and all retained effects at every horizon."""
+
+from __future__ import annotations
 
 import hashlib
 import json
@@ -10,170 +12,111 @@ import pytest
 from omegaconf import OmegaConf
 
 from src.modelling.transformers.assessment_report import render_assessment
+from src.modelling.utils.artifacts import file_identity
 from src.modelling.utils.assessment import write_json
 
 
-def _report_artifacts(root: Path) -> None:
-    out = root / "_out"
-    selected = {
-        family: {"id": "b0", "features": ["x", "z"], "categoricals": [], "metrics": {"ic_ir": 0.2, "mean_ic": 0.1, "eligible": True}}
-        for family in ["elasticnet", "lgbm", "random_forest"]
-    }
-    for family in ["lgbm", "random_forest"]:
-        selected[family]["categoricals"] = ["z"]
-    families = {}
-    for family, candidate in selected.items():
-        identifier = {"elasticnet": "e0", "lgbm": "l0", "random_forest": "r0"}[family]
-        families[family] = {"best": candidate, "candidates": [{**candidate, "id": identifier, "pruning": {"removed": ["z"]}}]}
-        write_json(out / identifier / "importance.json", {"x": 0.123, "z": 0})
+def _report_artifacts(run: Path) -> None:
+    families = ["elasticnet", "lgbm", "random_forest"]
     write_json(
-        out / "selection.json",
+        run / "metadata.json",
         {
-            "frozen": True,
-            "frozen_at": "2026-10-17",
-            "selected": selected,
-            "features": ["x", "z"],
-            "outcome_cutoff": "2021-12-31",
-            "controls": {},
-            "families": families,
+            "run_id": run.name,
+            "horizons": [30, 60, 90],
+            "model_types": families,
+            "training_complete": True,
+            "observation_frontier": "2023-12-29",
+            "training_as_of": "2021-12-31",
+            "folds": {str(h): {str(f): {} for f in range(1, 6)} for h in (30, 60, 90)},
         },
     )
-    write_json(
-        out / "b0" / "result.json",
-        {"features": {family: ["x", "z"] for family in selected}, "metrics": {family: item["metrics"] for family, item in selected.items()}},
-    )
-    write_json(out / "final" / "result.json", {})
-    summary = {"mean_ic": 0.1, "ic_ir": 0.2, "n_days": 2, "years": {"2022": {"mean_ic": 0.1, "ic_ir": None, "n_days": 1}}}
-    metrics = {name: summary for name in [*selected, "ensemble"]}
-    write_json(
-        out / "eval" / "result.json",
-        {"frozen_at": "2026-10-17", "formation_end": "2023-01-03", "metrics": {p: metrics for p in ["development", "sealed"]}},
-    )
-    write_json(out / "eval" / "linear.json", {"features": ["x", "z"], "coefficient": [0.2, -0.1], "mean": [0, 0], "std": [1, 1], "intercept": 0})
-    write_json(out / "eval" / "market_calendar_years.json", {"2022": -0.1, "2023": 0.2})
-    write_json(out / "eligibility.json", {"rows": 20, "features": [{"feature": "x", "role": "numeric"}]})
-    write_json(out / "category_labels.json", {"status": "verified", "labels": {"z": {"0": "Category A", "1": "Category B"}}})
-    write_json(
-        out / "readiness.json",
-        {
-            "verdict": "CONDITIONAL",
-            "summary": "Known-truth conditional research assessment",
-            "scope": "h60",
-            "base": "base-sha",
-            "candidate": "candidate-sha",
-            "branch": "harness/fixture",
-            "validated_at": "2026-10-17",
-            "reviews": "Two independent fixture reviews",
-            "limitations": "Retrospective classifications; no investment claim",
-            "stages": [["Spec", "Approved", "fixture"]],
-            "criteria": [["AC-001", "PASS", "fixture", "known truth", "conditional"]],
-            "commands": [["rtk check", 0, "PASS", "fixture"]],
-            "findings": [["F-004", "HIGH", "Accepted conditional", "not applicable", "fixture"]],
-            "commits": [["candidate-sha", "candidate", "fixture"]],
-            "index": [{"path": "_out/selection.json", "label": "Frozen selection"}],
-        },
-    )
-    dates = pd.to_datetime(["2022-01-03", "2023-01-03"])
-    for fold in range(6):
-        quality = pd.DataFrame({"year": [2022, 2023], "sector": 0, "feature": ["x", "x"], "observed": [8, 9], "rows": [10, 10]})
-        quality.to_parquet(out / "eval" / f"q{fold}.parquet", index=False)
-        for family in ["lgbm", "random_forest"]:
-            write_json(
-                out / "eval" / f"{family}_{fold}" / "curves.json",
-                {
-                    "additivity_max_error": 1e-15,
-                    "features": {
-                        name: {
-                            "importance": 0.123 if name == "x" else 0.05,
-                            "observed": 2,
-                            "sample_rows": 2,
-                            "categorical": name == "z",
-                            "constraint": 0,
-                            "scatter": {"x": [0, 1], "shap": [0, 0.2], "date": ["2022-01-03", "2023-01-03"]},
-                            "binned": {"x": [0, 1], "mean": [0, 0.2]},
-                            "shap_trend": {"shape": "unordered categorical" if name == "z" else "increasing", "rho": None if name == "z" else 1},
-                            "missing_shap_mean": None,
-                            "pdp": {"x": [0, 1], "mean": [0, 0.2], "trend": {"shape": "unordered categorical" if name == "z" else "increasing"}},
+    state = {"run_id": run.name, "horizons": {}, "windows": {}, "complete": True}
+    for horizon in (30, 60, 90):
+        output = run / f"assessment/h{horizon}"
+        frames = []
+        for population in ("validation", "backtest"):
+            for model in [*families, "ensemble"]:
+                frames.append(
+                    pd.DataFrame(
+                        {
+                            "date": pd.to_datetime(["2022-01-03", "2022-01-04"]),
+                            "model": model,
+                            "population": population,
+                            "horizon": horizon,
+                            "ic": [0.1, 0.2],
+                            "rolling_ic": [None, 0.15],
+                            "rolling_ir": [None, 0.3],
+                            "paired": 4,
+                            "universe": 5,
                         }
-                        for name in ["x", "z"]
-                    },
-                },
-            )
-    daily = pd.concat(
-        [
-            pd.DataFrame({"date": dates, "model": model, "ic": [0.1, 0.2], "rolling_ic": [None, 0.15], "rolling_ir": [None, 0.2]})
-            for model in [*selected, "ensemble"]
-        ],
-        ignore_index=True,
-    )
-    for name in ["development", "sealed"]:
-        daily.to_parquet(out / "eval" / f"daily_{name}.parquet", index=False)
-    returns = pd.DataFrame(
-        {
-            "date": dates,
-            "model": "ensemble",
-            "period": "sealed",
-            "selected": 2,
-            "supported": 2,
-            "cohort_return": [0.1, 0.2],
-            "market_return": [0.05, 0.15],
-            "excess_return": [0.05, 0.05],
-        }
-    )
-    returns.to_parquet(out / "eval" / "matched_returns.parquet", index=False)
+                    )
+                )
+        output.mkdir(parents=True, exist_ok=True)
+        pd.concat(frames, ignore_index=True).to_parquet(output / "daily.parquet", index=False)
+        state["horizons"][str(horizon)] = {"files": {"daily.parquet": file_identity(output / "daily.parquet")}}
+        state["windows"][str(horizon)] = {}
+        for fold in range(6):
+            folder = output / f"fold{fold}"
+            files = {}
+            for family in families:
+                curves = {"kind": "linear" if family == "elasticnet" else "tree", "rows": 2, "features": {}}
+                for feature, importance in [("x", 0.123), ("zero", 0.0), ("category", 0.5)]:
+                    curves["features"][feature] = {
+                        "importance": importance,
+                        "coefficient": -importance,
+                        "categorical": feature == "category" and family != "elasticnet",
+                        "observed": 2,
+                        "sample_rows": 2,
+                        "scatter": {"x": [0, 1], "shap": [0, 0.2], "date": ["2022-01-03", "2022-01-04"]},
+                        "binned": {"x": [0, 1], "mean": [0, 0.2], "count": [1, 1]},
+                        "pdp": {"x": [0, 1] if fold == 0 else None, "mean": [0.1, 0.2] if fold == 0 else None},
+                    }
+                target = folder / family / "curves.json"
+                write_json(target, curves)
+                files[f"{family}/curves.json"] = file_identity(target)
+            write_json(folder / "metadata.json", {"files": files})
+            state["windows"][str(horizon)][str(fold)] = file_identity(folder / "metadata.json")
+    write_json(run / "assessment/metadata.json", state)
 
 
-def test_report_is_offline_and_covers_exact_frozen_feature_pool(tmp_path: Path) -> None:
+def test_report_is_offline_and_covers_every_horizon_family_fold_and_zero_feature(tmp_path: Path) -> None:
     _report_artifacts(tmp_path)
-    raw_curves = {path: path.read_bytes() for path in (tmp_path / "_out" / "eval").glob("*/curves.json")}
-    assert len(raw_curves) == 12
+    before = {path: path.read_bytes() for path in (tmp_path / "assessment").rglob("curves.json")}
     config = OmegaConf.create({"model": {"target_type": "zscore"}})
     output = render_assessment(tmp_path, config)
-    manifest = json.loads((tmp_path / "_out" / "report_manifest.json").read_text(encoding="utf-8"))
-    assert hashlib.sha256(output.read_bytes()).hexdigest() == manifest["report_sha256"]
     text = output.read_text(encoding="utf-8")
     raw = re.search(r'<script id="assessment-data" type="application/json">(.*?)</script>', text, re.S)
     assert raw is not None
     payload = json.loads(raw.group(1), parse_constant=lambda token: pytest.fail(f"Non-standard JSON {token}"))
-    for path, original in raw_curves.items():
-        family, fold = path.parent.name.rsplit("_", 1)
-        expected = json.loads(original)
-        for values in expected["features"].values():
-            if fold == "0":
-                values["scatter"] = {"x": [0, 1], "shap": [0, 0.2]}
-            else:
-                del values["scatter"]
-        assert payload["explanations"][family][fold] == expected
-    assert payload["explanations"]["lgbm"]["0"]["features"]["x"]["importance"] == 0.123
-    assert payload["selection_importance"]["lgbm"]["l0"]["z"] == 0
-    assert payload["market"][0]["mean_excess"] == pytest.approx(0.05)
-    assert payload["readiness"]["verdict"] == "CONDITIONAL" and payload["readiness"]["candidate"] == "candidate-sha"
-    assert 'id="acceptanceMatrix"' in text and 'id="findingMatrix"' in text and 'id="reportIndex"' in text
-    assert not re.search(r'<(?:script|link|img)[^>]+(?:src|href)=["\']https?://', text)
-    assert 'id="family"' in text and 'id="feature"' in text
-    assert text.index('id="diagnosis"') < text.index('id="research"')
-    assert 'id="nextExperiments"' in text and 'id="cohortTable"' in text
-    assert "document.documentElement.dataset.reportReady" in text
-    again = render_assessment(tmp_path, config)
-    assert again.read_text(encoding="utf-8") == text
-    assert {path: path.read_bytes() for path in raw_curves} == raw_curves
+    assert payload["horizons"] == [30, 60, 90]
+    assert set(payload["analysis"]) == {"30", "60", "90"}
+    for horizon in payload["analysis"].values():
+        assert set(horizon["temporal"]) == {"validation", "backtest"}
+        assert set(horizon["effects"]) == {"elasticnet", "lgbm", "random_forest"}
+        for family in horizon["effects"].values():
+            assert set(family) == {str(fold) for fold in range(6)}
+            for fold, curve in family.items():
+                assert set(curve["features"]) == {"x", "zero", "category"}
+                assert curve["features"]["zero"]["importance"] == 0
+                assert ("scatter" in curve["features"]["x"]) is (fold == "0")
+    assert text.count("<section ") == 2 and 'id="importance"' in text and 'id="effect"' in text and 'id="temporal"' in text
+    assert "<table" not in text and 'id="research"' not in text
+    assert "Signed linear contribution" in text and "Signed SHAP dependence" in text and "fixed cutoff model" in text
+    assert not re.search(r"<(?:script|link)\b[^>]*(?:src|href)=[\x22\x27](?:https?:)?//", text)
+    assert before == {path: path.read_bytes() for path in (tmp_path / "assessment").rglob("curves.json")}
+    first = hashlib.sha256(output.read_bytes()).hexdigest()
+    render_assessment(tmp_path, config)
+    assert hashlib.sha256(output.read_bytes()).hexdigest() == first
     print(
-        "SANITY: unused scatter/date fields are omitted; raw curve bytes and all visible inputs remain unchanged, with deterministic offline HTML and matching SHA."
+        "SANITY: two sections/three chart areas cover all horizons, original folds, tree and linear effects including zero importance; embedded data/assets rerender deterministically without changing evidence."
     )
 
 
-def test_report_refuses_missing_retained_variable(tmp_path: Path) -> None:
+@pytest.mark.parametrize("missing", ["assessment/h90/daily.parquet", "assessment/h60/fold4/lgbm/curves.json"])
+def test_report_refuses_incomplete_required_chart_evidence(tmp_path: Path, missing: str) -> None:
     _report_artifacts(tmp_path)
-    write_json(tmp_path / "_out" / "eval" / "lgbm_5" / "curves.json", {"features": {}})
-    with pytest.raises(ValueError, match="coverage"):
-        render_assessment(tmp_path, OmegaConf.create({"model": {"target_type": "zscore"}}))
-    print("SANITY: a missing original-fold explanation cannot silently disappear from the variable selector.")
-
-
-@pytest.mark.parametrize("path", ["../outside.json", "_out/absent.json"])
-def test_report_refuses_invalid_readiness_link(path: str, tmp_path: Path) -> None:
-    _report_artifacts(tmp_path)
-    write_json(tmp_path / "_out/readiness.json", {"index": [{"path": path}]})
-    with pytest.raises(ValueError, match="inside the run"):
-        render_assessment(tmp_path, OmegaConf.create({"model": {"target_type": "zscore"}}))
-    print("SANITY: readiness evidence links cannot escape the run or silently point to a missing artifact.")
+    (tmp_path / missing).unlink()
+    with pytest.raises((FileNotFoundError, ValueError)):
+        render_assessment(tmp_path, OmegaConf.create({}))
+    assert not (tmp_path / "report.html").exists()
+    print(f"SANITY: required missing chart artifact {missing} cannot produce a complete report.")

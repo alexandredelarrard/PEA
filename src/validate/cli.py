@@ -77,7 +77,7 @@ def cli() -> None:
     """VALIDATE — table-agnostic data checks. 0 pass · 1 finding · 3 ABSTAINED."""
 
 
-@cli.command(help="Independently reconcile frozen modelling IC/IR, cohorts, source return paths and report identities.")
+@cli.command(help="Independently reconcile saved-fold modelling IC/IR, native contributions/PDP, source chronology and report identities.")
 @click.option(*OUT_ARGS, **cast(dict[str, Any], OUT_KWARGS))
 @click.option(*CONFIG_ARGS, **cast(dict[str, Any], CONFIG_KWARGS))
 def modelling(out: str, config_path: str) -> None:

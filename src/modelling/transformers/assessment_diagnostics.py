@@ -101,7 +101,7 @@ def _binned_dependence(x: np.ndarray, phi: np.ndarray, categorical: bool) -> dic
     if not good.any():
         return {"x": [], "mean": [], "count": []}
     frame = pd.DataFrame({"x": x[good], "phi": phi[good]})
-    bins = frame.x if categorical else pd.qcut(frame.x, min(10, frame.x.nunique()), duplicates="drop")
+    bins = frame.x if categorical or frame.x.nunique() <= 10 else pd.qcut(frame.x, 10, duplicates="drop")
     grouped = frame.groupby(bins, observed=True).agg(x=("x", "median"), mean=("phi", "mean"), count=("phi", "size"))
     return {key: grouped[key].to_numpy() for key in ["x", "mean", "count"]}
 

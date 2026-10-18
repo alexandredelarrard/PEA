@@ -10,6 +10,7 @@ import gc
 import platform
 from dataclasses import dataclass, field
 from importlib.metadata import version
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -33,6 +34,7 @@ from src.modelling.utils.artifacts import (
     selection_signature,
     write_metadata,
 )
+from src.modelling.utils.assessment import frame_digest
 from src.modelling.utils.cv import label_end_dates, purged_wf_splits, temporal_valid_split
 from src.modelling.utils.ensemble import blend_horizons, ensemble_predict, ir_horizon_weights, prediction_rows
 from src.modelling.utils.metrics import daily_ic, per_day_zscore
@@ -71,6 +73,7 @@ class HorizonCV:
     audit: dict = field(default_factory=dict)
     diagnostic_models: dict[str, BaseModel] | None = None
     diagnostic_panel: pd.DataFrame | None = None
+    fold_models: list[dict[str, BaseModel]] = field(default_factory=list)
 
 
 @dataclass
@@ -95,10 +98,10 @@ def union_all_columns(config: DictConfig) -> list[str]:
         block = config.get(key)
         if not block:
             continue
-        if block.get("columns"):
-            out += list(block.columns)
-        for cols in (block.get("columns_by_horizon") or {}).values():
-            out += list(cols) if cols else []
+        for kind in ("columns", "categoricals"):
+            out += list(block.get(kind) or [])
+            for cols in (block.get(f"{kind}_by_horizon") or {}).values():
+                out += list(cols) if cols else []
     return list(dict.fromkeys(out))
 
 
@@ -115,7 +118,7 @@ class StepLongShort(Step):
         self._classes = {fam: model_class(fam) for fam in self.families}  # validates every name
         self._monitor = Monitor(context, config)
         self._backtest = Backtest(config)
-        self._eligibility: dict[int, dict[str, int]] = {}
+        self._eligibility: dict[int, dict[str, Any]] = {}
 
     def run(self) -> TrainResult:
         return self.run_train()
@@ -123,8 +126,8 @@ class StepLongShort(Step):
     # ================================================================== #
     # Training                                                           #
     # ================================================================== #
-    def run_train(self, full_history: bool = False) -> TrainResult:
-        """Train, evaluate, persist and backtest the per-horizon ensemble (see module docstring)."""
+    def _prepare_training(self, full_history: bool = False) -> tuple[Schema, dict | None]:
+        """Resolve inputs and the observation cutoff without fitting or writing artifacts."""
         schema = self._resolve_schema()
         store = self._context.store
         calendar = pd.DatetimeIndex(store.distinct(Tables.cube_part_prices, "date")).normalize().sort_values().drop_duplicates()
@@ -142,6 +145,9 @@ class StepLongShort(Step):
             endpoint = label_end_dates(calendar, max(schema.horizons)).get(sessions[-1])
             if pd.notna(endpoint):
                 self._training_as_of = min(latest, endpoint)
+        explicit_cutoff = self._config.train.get("outcome_cutoff")
+        if explicit_cutoff is not None and not full_history:
+            self._training_as_of = min(latest, pd.Timestamp(explicit_cutoff))
         signature = selection_signature(self._config, schema.feature_cols + schema.categorical_cols, schema.horizons)
         prior = read_metadata(models_dir(self._context, self._config)) if full_history else None
         if prior is not None and not isinstance(prior.get("selection"), dict):
@@ -149,6 +155,11 @@ class StepLongShort(Step):
         if prior is not None and (prior.get("selection_signature") != signature or pd.Timestamp(prior["selection_as_of"]) > self._training_as_of):
             raise ValueError("Saved fold selection is incompatible or not yet observable; run modelling train first")
         self._selection_as_of = prior["selection_as_of"] if prior else str(self._training_as_of.date())
+        return schema, prior
+
+    def run_train(self, full_history: bool = False) -> TrainResult:
+        """Train, evaluate, persist and backtest the per-horizon ensemble (see module docstring)."""
+        schema, prior = self._prepare_training(full_history)
         self._monitor.start_run()
         half_life = half_life_years(self._config)
         if half_life is not None:
@@ -243,19 +254,31 @@ class StepLongShort(Step):
                 f"The cube carries no 'target_{self.target_type}_h*' column at all. Run StepBuildCube first "
                 f"(and confirm build_cube.targets.labels includes '{self.target_type}')."
             )
+        restriction = self._config.model.get("horizons")
+        if restriction is not None:
+            requested = sorted(set(int(horizon) for horizon in restriction))
+            if not requested or not set(requested) <= set(horizons):
+                raise ValueError("Requested horizons must be non-empty and present in the cube")
+            horizons = requested
         avail = {c for c in cube_cols if not is_meta_column(c) and c != self.label_column}
         family_cols = {key: [c for c in cls.configured_columns(self._config, None) if c in avail] for key, cls in _FAMILY_BLOCKS.items()}
         family_cols_by_h = {
             key: {h: [c for c in cls.configured_columns(self._config, h) if c in avail] for h in horizons} for key, cls in _FAMILY_BLOCKS.items()
         }
-        categorical_cols = [c for c in LightGBMModel.configured_categoricals(self._config) if c in avail]
-        allcols = set().union(*family_cols.values())
-        for by_h in family_cols_by_h.values():
+        categorical_cols = list(
+            dict.fromkeys(c for cls in self._classes.values() for h in horizons for c in cls.configured_categoricals(self._config, h) if c in avail)
+        )
+        allcols: set[str] = set()
+        for key, by_h in family_cols_by_h.items():
+            if _FAMILY_BLOCKS[key].config_key not in {cls.config_key for cls in self._classes.values()}:
+                continue
             for cols in by_h.values():
                 allcols |= set(cols)
         feature_cols = sorted(allcols)
-        if not family_cols["linear"] and not family_cols["lgbm"]:
+        if not feature_cols and not categorical_cols:
             raise ValueError("No configured features present in the cube; check linear_modelling.yml / lgbm_modelling.yml `columns`.")
+        active = {"date", "ticker", *feature_cols, *categorical_cols}
+        load_cols = [column for column in load_cols if column in active]
         schema = Schema(
             horizons, load_cols, feature_cols, categorical_cols, list(dict.fromkeys(feature_cols + categorical_cols)), family_cols, family_cols_by_h
         )
@@ -279,7 +302,7 @@ class StepLongShort(Step):
     def _select_load_columns(self, cube_cols: set[str]) -> tuple[list[str], list[str]]:
         """Horizon-independent projection: date, ticker + every configured feature / categorical
         present in the cube (never a meta / target column). Returns (load_cols, dropped)."""
-        requested = union_all_columns(self._config) + LightGBMModel.configured_categoricals(self._config)
+        requested = union_all_columns(self._config)
         feats = [c for c in requested if c in cube_cols and not is_meta_column(c)]
         dropped = [c for c in requested if c not in cube_cols]
         return list(dict.fromkeys(["date", "ticker"] + feats)), dropped
@@ -296,14 +319,29 @@ class StepLongShort(Step):
         tcol = target_column(self.target_type, horizon)
         start_date = self._config.train.start_date
         end_date = None if full_history else self._config.train.end_date
+        ends = label_end_dates(self._calendar, horizon)
+        if self._config.train.get("outcome_cutoff") is not None and not full_history:
+            mature = ends.index[ends.notna() & (ends <= self._training_as_of)]
+            if mature.empty:
+                return None
+            end_date = min(pd.Timestamp(end_date) if end_date else mature[-1], mature[-1])
         raw = load_frame(
-            store, Tables.cube, columns=self._load_cols_for(schema, tcol), where={tcol: store.NOT_NULL}, since=start_date, until=end_date, stream=True
+            store,
+            Tables.cube,
+            columns=self._load_cols_for(schema, tcol),
+            where={tcol: store.NOT_NULL},
+            since=start_date,
+            until=end_date,
+            stream=True,
+            feature_cols=schema.panel_cols,
+            categorical_features=schema.categorical_cols,
+            chunksize=self._config.model.get("read_chunksize"),
         )
         if raw is None:
             return None
         panel = panel_from_cube(raw, horizon=horizon, label_name=self.label_column, feature_cols=schema.panel_cols, target_type=self.target_type)
         raw = None
-        panel["label_end"] = panel["date"].map(label_end_dates(self._calendar, horizon))
+        panel["label_end"] = panel["date"].map(ends)
         unknown = int(panel["label_end"].isna().sum())
         immature = int((panel["label_end"] > self._training_as_of).sum())
         self._eligibility[horizon] = {"source_labelled_rows": len(panel), "unknown_label_end_rows": unknown, "immature_rows": immature}
@@ -317,6 +355,9 @@ class StepLongShort(Step):
                 panel = panel.loc[panel["date"] >= start_date]
             if end_date:
                 panel = panel.loc[panel["date"] <= end_date]
+        if self._config.model.cv.get("input_digest", False):
+            columns = [*schema.panel_cols, self.label_column, "label_end"]
+            self._eligibility[horizon].update({"input_digest": frame_digest(panel, columns), "input_digest_columns": columns})
         return panel if not panel.empty else None
 
     def _fit_members(self, horizon: int, train: pd.DataFrame, valid: pd.DataFrame | None, rounds: int | None = None) -> dict[str, BaseModel]:
@@ -332,13 +373,20 @@ class StepLongShort(Step):
             members[fam] = model
         return members
 
-    def _cross_validate(self, horizon: int, panel: pd.DataFrame) -> HorizonCV:
+    def _cross_validate(self, horizon: int, panel: pd.DataFrame, *, retain_models: bool = False) -> HorizonCV:
         """Purged walk-forward CV: per-fold ensemble + member daily IC, and the OOS predictions."""
         cfg = self._config.model
+        retain_models = retain_models or bool(cfg.cv.get("retain_models", False))
         embargo = cfg.cv.embargo or horizon  # embargo must be >= horizon
+        windows = cfg.cv.get("test_windows")
+        if windows is not None and int(embargo) < horizon:
+            raise ValueError("Explicit assessment embargo must be at least the horizon")
         cv = HorizonCV()
         oos_frames, member_frames = [], []
-        for fold_no, (train_days, test_days) in enumerate(purged_wf_splits(panel["date"], cfg.cv.n_splits, embargo), start=1):
+        splits = purged_wf_splits(
+            panel["date"], cfg.cv.n_splits, embargo, test_windows=windows, calendar=self._calendar if windows is not None else None
+        )
+        for fold_no, (train_days, test_days) in enumerate(splits, start=1):
             train = panel[panel["date"].isin(train_days)]
             test = panel[panel["date"].isin(test_days)]
             if train.empty or test.empty:
@@ -380,6 +428,9 @@ class StepLongShort(Step):
             for name, mpred in members.items():
                 cv.member_folds.setdefault(name, []).append(daily_ic(test, mpred, self.label_column, horizon=horizon))
             keys = {"date": test["date"].to_numpy(), "ticker": test["ticker"].to_numpy()}
+            if retain_models:
+                cv.fold_models.append(fitted)
+                keys["fold"] = np.full(len(test), fold_no)
             oos_frames.append(pd.DataFrame({**keys, "pred": preds.to_numpy(), self.label_column: test[self.label_column].to_numpy()}))
             member_frames.append(pd.DataFrame({**keys, **{name: z.to_numpy() for name, z in members.items()}}))
             if self._monitor.active and fold_no == int(cfg.cv.n_splits):
@@ -489,6 +540,7 @@ class StepLongShort(Step):
             "lgbm_cols_by_h": {int(h): v for h, v in schema.family_cols_by_h["lgbm"].items()},
             "rf_cols_by_h": {int(h): v for h, v in schema.family_cols_by_h["rf"].items()},
             "categorical_cols": list(schema.categorical_cols),
+            "categorical_cols_by_model_h": {int(h): {name: member.categoricals for name, member in members.items()} for h, members in models.items()},
             "label_column": self.label_column,
             "target_type": self.target_type,
             "model_types": list(self.families),
@@ -512,8 +564,9 @@ class StepLongShort(Step):
 
     def _save_outputs(self, predictions: pd.DataFrame, cvs: dict[int, HorizonCV], signal: pd.Series, signal_date: pd.Timestamp) -> None:
         out = self._cfg.output
-        self._context.store.replace(Tables.predictions, predictions)  # full rebuild each run
-        self._log.info("Saved predictions to DB table '%s'", Tables.predictions)
+        if out.get("save_predictions", True):
+            self._context.store.replace(Tables.predictions, predictions)
+            self._log.info("Saved predictions to DB table '%s'", Tables.predictions)
         if not self._context.save:
             return
         if out.save_cv_results:

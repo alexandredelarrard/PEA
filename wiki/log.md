@@ -564,6 +564,28 @@ The user's failing terminal had only `SSL_CERT_FILE` set, pointing into Minicond
 - Evidence: [Local graph verification](../graphify-out/verification.json) records 15,389 nodes, 47,050 edges, 400 communities and 81 SQL nodes; query/explain/path smoke checks pass, with no missing endpoints or duplicate edges. Twenty-one self-loops are retained for source interpretation. The ignored outputs include graph.json, GRAPH_REPORT.md and an HTML overview of 400 communities.
 - Boundary: repository Markdown remains in OpenKnowledge; source Markdown, data, reports and worktrees are excluded from the Graphify scan. No application source, pipeline configuration, stored data or PostgreSQL state changed. Application tests were not needed. Link audits selected the links family only.
 
+## 2026-10-17: refresh — isolated h60 model assessment
+
+- Profile: internal/standard. Bounded source anchor800be024be975942df7dbf542f807a09af103933; the overview freshness anchor is unchanged because this is not a whole-wiki refresh.
+- Coverage: shared numeric-text preparation; separate fixed-parameter h60 z-score feature pools; development outcomes known by2021-12-31; frozen selection before January2022-onward evaluation; output isolation, original-fold explanations, conditional historical claims, offline report and independent read-only validator commands. No upstream producer repair or investable portfolio backtest is implied.
+- Pages: [Modelling](./modules/modelling.md), [Modelling and portfolio](./reference/modelling-and-portfolio.md), [Configuration](./reference/configuration.md), [Training and prediction](./flows/model-training-and-prediction.md), [Run the pipeline](./guides/run-the-pipeline.md), and [Testing](./guides/testing.md).
+- Dated evidence: local ignored reports/validate/2026-10-17-ensemble-validation/03-implementation.md. The full current-config baseline completed; the first364-input LGBM candidate has pooled developmentIC0.0369041/IC-IR1.2691274 over5,476dates, with no missing predictions or undefined dates. It is not a final selected or sealed result. Development pruning continues; final evaluation/report/readiness remain pending.
+- Validation: new report metadata/links4unit checks and installed-Chrome38offline checks pass; category labels are independently matched to stored cube codes. F-008/009/010 isolated corrections have targeted evidence and normal hooks; full integrated and financial validation remain required. The actual CLI explicitly reports incomplete evidence. RTK maps a known child exit3 to wrapper exit1, so audit status and wrapper exit are recorded separately.
+- Limitations: retrospective current GICS, static peer vintages and current-roster coverage remain accepted conditions. No historical point-in-time or investability certification, active model promotion, application table write, dependency installation, dev merge or push. The user's original main.py and cube-assembly edits remain outside this isolated branch.
+
+## 2026-10-17: refresh — assessment search budget and RF constraints
+
+- Profile: internal/standard; bounded source anchor35625a35f273825265e361d706d41fee0f2bfb61. No whole-wiki freshness claim.
+- Page: [Configuration](./reference/configuration.md). The user reduced the search to three total pools per family, including the initial wide pool (`max_rounds=2`); two-failure patience remains. RF inherits the LightGBM monotonic map, so directional PDPs can reflect imposed priors.
+- Evidence: current modelling YAML and random_forest.py; local ignored reports/validate/2026-10-17-ensemble-validation/03-implementation.md. LGBM selection has completed, RF is active, and final financial validation/report remain pending. This refresh changes documentation only; no new model parameter or data change.
+
+## 2026-10-18: refresh — assessment diagnostic support and provenance
+
+- Profile: internal/standard; source_commit78f87d838cc2ef03809db3dc47b9f425c7f289ab (overview anchor previously1c2bc4283136bddddb5d61260543964a334a549c). Inspected the complete incremental path/stat inventory: changes concern modelling/validation and the already documented graph navigation setup, with no unrelated application subsystem changes.
+- Coverage: observed-session gaps in rolling/bootstrap statistics; matched benchmark/source proof linkage; truthful user-fixed linear policy and separate h60 overrides. Previously added assessment module/flow/configuration/run instructions remain applicable. No fitted-result or historical point-in-time certification.
+- Pages: [Overview](./OVERVIEW.md), [Modelling and portfolio](./reference/modelling-and-portfolio.md), [Testing](./guides/testing.md).
+- Evidence: parent affected87tests pass/0skips/0live; broad scoped Ruff/format/Pyright and unchanged fit/selection contract proof pass. Original configured baseline and all six tree candidates independently reconcile. Actual cutoff completion, sealed financial/artifact validation and final HTML/reviews remain pending in local ignored reports/validate/2026-10-17-ensemble-validation/.
+
 ## 2026-10-18: EPS split-exclusion contract update
 
 - Source base: `ff4bbe62e3a9b49ca787ee46086f096cfdaf9f43`; bounded uncommitted EPS helper/test change. This synchronizes the affected contract rather than refreshing the whole wiki.

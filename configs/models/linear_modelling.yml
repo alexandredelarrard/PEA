@@ -40,3 +40,25 @@ linear:
   - volume_cv_63
   - f_ic_insider_buy_value_mcap_180d
   - f_ic_super_initiations
+  columns_by_horizon:
+    60:
+      - "f_rd_capitalized_roic"
+      - "f_current_ratio"
+      - "f_pegy"
+      - "f_negative_equity"
+      - "f_pension_overhang_leverage"
+      - "volume_trend_63"
+      - "f_nwc_elasticity"
+      - "f_dio"
+      - "f_gross_profitability"
+      - "f_gmroi"
+      - "f_deferred_rev_intensity"
+      - "f_debtToEquity"
+      - "f_dividend_growth"
+      - "f_fcf_yield"
+      - "f_acquisition_intensity"
+      - "f_refinancing_risk"
+      - "f_fixed_cost_coverage_margin"
+      - "f_gross_margin_chg"
+      - "f_diluted_shares_growth"
+      - "volume_cv_63"

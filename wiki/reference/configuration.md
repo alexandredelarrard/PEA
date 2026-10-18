@@ -6,7 +6,7 @@ tags:
   - wiki
   - reference
   - configuration
-source_commit: 5fb2fa5e192b2997762a26756c3cd68ab63c0312
+source_commit: 35625a35f273825265e361d706d41fee0f2bfb61
 ---
 # Configuration
 
@@ -196,3 +196,9 @@ Use configuration for research choices and operational tuning. Use [constants.py
 The tested P1 candidate in .worktrees/institutional-13f-pit adds build_cube.institutionals.value_basis: min_securities=15, min_agreement=0.8, price_tolerance=0.1 and max_price_age_days=7. These knobs govern a common filing-wide monetary factor against reconstructed report-quarter-end as-traded prices, independently per quarter/filing. They do not represent the separate P2 minimum of 15 managers holding the same security. Shares are unchanged; explicit shares==value reconstruction and source-only/abstained statuses are distinguishable.
 
 The candidate is not activated. The later user-approved fallback estimates uncertain common dollars as valid reported shares × the eligible restored quarter-end price, after the raw unit decision; estimated rows cannot vote for a factor. Source zeros remain zero. The subsequent typed-option extension uses call_shares/put_shares × the same eligible reference for uncertain underlying exposure; options never vote for the common filing factor. Nonzero unresolved debt values still require a debt-instrument quote and remain unknown. Common-dollar completeness is now 457/461, 472/476 and 436/482 ticker totals in the three tested first-publication cohorts; option/value coverage and immutable filing versions remain pending. Local candidate evidence: `reports/validate/2026-10-09-institutional-13f-audit/06-final.md`.
+
+## Assessment-only modelling controls
+
+[modellling.yml](../../configs/modellling.yml) owns `model.assessment`: h60, pre-2022 outcome cutoff, evaluation start, five test windows, zero-first/20% pruning, at most three tested pools including the initial pool (`max_rounds=2`), two-failure patience, read batching, declared categories and explicit exclusions. Its diagnostic periods cover the dot-com crisis, 2007–2009, 2019, 2020, 2022 and 2023; comparison years define the retrospective cohort and earlier-model checks. Diagnostics own SHAP/display samples, PDP grid/background, rolling window and fixed moving-block interval controls. RF inherits LightGBM's monotonic map; a directional PDP for either family can reflect an imposed prior.
+
+The three [model family YAML files](../../configs/models/lgbm_modelling.yml) retain separate `columns_by_horizon[60]` and tree `categoricals_by_horizon[60]` overrides. Missing overrides retain defaults; explicit empty lists remove that horizon's inputs. Feature pruning preserves default/h30 lists, all family hyperparameters, existing monotonic directions, seed and blend. The assessment's runtime clone disables normal application outputs and sends models into the run. `stage`, `output_dir` and explicit `resume` come from [the CLI](../../src/modelling/cli.py). See [the modelling lifecycle](./modelling-and-portfolio.md).

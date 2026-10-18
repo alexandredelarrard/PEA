@@ -8,13 +8,38 @@ import pickle
 from pathlib import Path
 
 import numpy as np
+import pytest
 from omegaconf import OmegaConf
 
 from src.modelling.transformers import LinearRegression, RandomForestModel, model_class
 from src.modelling.utils.artifacts import load_ensemble, member_path, save_member
 from src.modelling.utils.cv import temporal_valid_split
 from src.modelling.utils.ensemble import ensemble_predict
+from src.modelling.utils.features import design_matrix
 from tests.modelling.model_fixtures import ctx, make_config, signal_panel
+
+
+@pytest.mark.parametrize("family", ["lgbm", "random_forest"])
+def test_numeric_text_prediction_and_explanation_parity(family: str, tmp_path: Path) -> None:
+    panel = signal_panel(n_days=40, n_tickers=20)
+    panel.loc[panel.index[::13], "f0"] = np.nan
+    member = model_class(family)(ctx(), make_config(), family, 60).fit(panel)
+    text_panel = panel.copy()
+    text_panel["f0"] = panel["f0"].astype("str")
+    assert np.array_equal(member.predict(panel), member.predict(text_panel))
+    assert np.array_equal(
+        design_matrix(panel, member.features, member.categoricals),
+        design_matrix(text_panel, member.features, member.categoricals),
+        equal_nan=True,
+    )
+    loaded = type(member).load(save_member(member, tmp_path / "m.pkl"))
+    assert np.array_equal(loaded.predict(text_panel), member.predict(panel))
+    bad = text_panel.copy()
+    bad.loc[bad.index[0], "f0"] = "unparseable"
+    with pytest.raises(ValueError, match="f0"):
+        loaded.predict(bad)
+    assert text_panel["f0"].isna().iloc[0]
+    print(f"SANITY: {family} numeric/text predictions, SHAP inputs and reloaded predictions agree; missingness preserved.")
 
 
 def test_column_chain_rf_override_then_rf_then_lgbm() -> None:
@@ -32,6 +57,14 @@ def test_column_chain_rf_override_then_rf_then_lgbm() -> None:
     assert RandomForestModel.configured_categoricals(OmegaConf.create({"lgbm": {"categoricals": ["sector"]}, "random_forest": {}})) == ["sector"]
     print("\n=== SANITY CHECK: RF column chain ===")
     print("  rf.columns_by_horizon -> rf.columns -> lgbm.columns_by_horizon -> lgbm.columns; categoricals from lgbm. Validated.")
+
+
+def test_explicit_empty_family_horizon_lists_do_not_fall_back() -> None:
+    cfg = make_config(random_forest={"columns_by_horizon": {60: []}, "categoricals_by_horizon": {60: []}})
+    assert RandomForestModel.configured_columns(cfg, 60) == []
+    assert RandomForestModel.configured_categoricals(cfg, 60) == []
+    assert RandomForestModel.configured_categoricals(cfg, 30) == ["sector"]
+    print("SANITY: explicit empty h60 pools stay empty; a missing override retains legacy categorical fallback.")
 
 
 def test_random_forest_member_saves_and_reloads_into_the_ensemble(tmp_path: Path) -> None:

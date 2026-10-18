@@ -5,8 +5,24 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from src.modelling.utils.cv import CALENDAR_DAYS_PER_YEAR, label_end_dates, purged_wf_splits, temporal_valid_split, time_decay_weights
+
+
+def test_explicit_test_windows_use_observed_calendar_and_refuse_overlap() -> None:
+    calendar = pd.bdate_range("1999-01-01", "2003-12-31")
+    dates = pd.Series(calendar)
+    windows = [("2000-01-01", "2001-12-31"), ("2002-01-01", "2003-12-31")]
+    splits = list(purged_wf_splits(dates, 2, 60, test_windows=windows, calendar=calendar))
+    assert len(splits) == 2
+    ends = label_end_dates(calendar, 60)
+    for (train, test), (start, end) in zip(splits, windows, strict=True):
+        assert test.min() >= np.datetime64(start) and test.max() <= np.datetime64(end)
+        assert ends.loc[train].max() < pd.Timestamp(test.min())
+    with pytest.raises(ValueError, match="overlap|ordered"):
+        list(purged_wf_splits(dates, 2, 60, test_windows=[windows[0], windows[0]], calendar=calendar))
+    print("SANITY: explicit crisis windows retain all test sessions and purge training endpoints on the observed calendar.")
 
 
 def test_label_end_uses_complete_session_calendar_and_purges_inner_overlap() -> None:

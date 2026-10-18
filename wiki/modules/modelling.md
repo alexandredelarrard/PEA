@@ -5,7 +5,7 @@ type: module
 tags:
   - wiki
   - module
-source_commit: aeec0c07960406176590f358bae9d123bf59ac51
+source_commit: 800be024be975942df7dbf542f807a09af103933
 ---
 # Modelling
 
@@ -90,3 +90,11 @@ The step consumes [cube aggregation](./data-aggregate.md) output through [DataSt
 - [Modelling, strategies, and portfolio](../reference/modelling-and-portfolio.md)
 - [Strategy sleeves](../concepts/strategy-sleeves.md)
 - [Tests module](./tests.md)
+
+## Isolated horizon-60 assessment
+
+`StepAssessLongShort` in [step_assess_long_short.py](../../src/modelling/steps/step_assess_long_short.py) runs the explicit `modelling assess` command. It reuses `StepLongShort.run()` for the current-config baseline and selected cutoff fit, and the original cross-validation path for each fixed-parameter candidate. Numeric strings use the shared strict preparation in [features.py](../../src/modelling/utils/features.py); only declared categoricals receive missing code -1.
+
+Development selects separate LGBM, LightGBM RF and elastic-net pools using five purged forward folds and pooled daily h60 IC-IR. Candidate, input, fixed-control, selection-source and library identities gate explicit resume. Frozen pools and cutoff artifacts precede sealed outcomes. The run owns all models, OOF/member predictions, SHAP/PDP and report evidence; its store wrapper refuses application mutations. Normal weekly training does not implicitly run feature search.
+
+[assessment_diagnostics.py](../../src/modelling/transformers/assessment_diagnostics.py) supplies original-fold explanations and retrospective cohort/sector checks. [assessment_report.py](../../src/modelling/transformers/assessment_report.py) renders one offline HTML file from artifacts. A report rerender performs no fit or application read. See [assessment operations](../guides/run-the-pipeline.md) and [validation evidence](../guides/testing.md). Historical classification, peer-vintage and universe limitations must accompany claims; a temporal split alone does not certify point-in-time inputs.

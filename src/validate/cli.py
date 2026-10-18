@@ -23,6 +23,7 @@ error surfaces only as a bare "Command not found".
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from collections.abc import Callable
@@ -31,6 +32,7 @@ from typing import Any, cast
 
 import click
 
+from src import context as context_module
 from src.constants.command_line_interface import CONFIG_ARGS, CONFIG_KWARGS, TICKERS_ARGS, TICKERS_KWARGS
 from src.context import get_config_context
 from src.data_store.schema import resolve
@@ -39,6 +41,7 @@ from src.validate import checks
 from src.validate.checks.employees import check_employees
 from src.validate.checks.identity import check_identity
 from src.validate.checks.institutionals import check_institutionals
+from src.validate.checks.modelling import check_modelling
 from src.validate.io import OUT_DIR, run_dir, write_result
 from src.validate.io import pull as pull_snapshot
 from src.validate.result import EXIT, CheckResult
@@ -72,6 +75,23 @@ def _shared(fn: Callable) -> Callable:
 @click.group(cls=SpecialHelpOrder)
 def cli() -> None:
     """VALIDATE — table-agnostic data checks. 0 pass · 1 finding · 3 ABSTAINED."""
+
+
+@cli.command(help="Independently reconcile frozen modelling IC/IR, cohorts, source return paths and report identities.")
+@click.option(*OUT_ARGS, **cast(dict[str, Any], OUT_KWARGS))
+@click.option(*CONFIG_ARGS, **cast(dict[str, Any], CONFIG_KWARGS))
+def modelling(out: str, config_path: str) -> None:
+    worktree = Path(context_module.__file__).resolve().parents[1]
+    git_file = worktree / ".git"
+    if git_file.is_file() and "ROOT_PATH" not in os.environ:
+        raw = git_file.read_text(encoding="utf-8").removeprefix("gitdir:").strip()
+        os.environ["ROOT_PATH"] = str((worktree / raw).resolve().parents[2])
+    config, context = get_config_context(config_path, use_cache=False, save=False)
+    result = check_modelling(context, out=out, config=config)
+    path = write_result(out, result)
+    click.echo(result.summary())
+    click.echo(f"  -> {path}")
+    sys.exit(EXIT[result.status])
 
 
 @cli.command(help="Stream one table into <out>/_cache/<table>.parquet, reused by every check.")

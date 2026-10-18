@@ -7,7 +7,7 @@ tags:
   - guide
   - runbook
   - operations
-source_commit: 5fb2fa5e192b2997762a26756c3cd68ab63c0312
+source_commit: 800be024be975942df7dbf542f807a09af103933
 ---
 # Run the pipeline
 
@@ -386,3 +386,16 @@ Regenerate managed DDL through [generate_schema_sql.py](../../scripts/generate_s
 - [Testing and validation](./testing.md)
 - [Validate a change](./validate-a-change.md)
 - [Large backfills and recovery](./large-backfills-and-recovery.md)
+
+## Run an isolated h60 assessment
+
+Use [the assessment CLI](../../src/modelling/cli.py) with an absolute output under the original repository's `reports/validate` directory. From an ignored `reports/worktrees/<branch>` checkout, `../../validate/<run>` resolves there. The launcher derives the original root from the worktree marker and preserves an explicit `ROOT_PATH` override.
+
+```bash
+rtk "$PY" -m src modelling assess -c ./configs -o ../../validate/<run> --stage development
+rtk "$PY" -m src modelling assess -c ./configs -o ../../validate/<run> --stage evaluation
+rtk "$PY" -m src modelling assess -c ./configs -o ../../validate/<run> --stage report
+rtk "$PY" -m src validate modelling -c ./configs -o ../../validate/<run>
+```
+
+Use a fresh run for a new experiment. `--resume` requires matching inputs and experiment identities; completed frozen state preserves its timestamp and cutoff provenance. Incomplete frozen artifacts fail for investigation. Evaluation permanently closes development for that run. Report-only repetition does not retrain. The read-only [validator](../../src/validate/checks/modelling.py) abstains on incomplete evidence and independently checks completed metrics, return paths, frozen artifacts and report consistency. Run artifacts never promote active models or write application tables. Preserve upstream vintage limitations and actual attrition in the final interpretation.

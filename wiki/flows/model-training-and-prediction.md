@@ -5,7 +5,7 @@ type: flow
 tags:
   - wiki
   - flow
-source_commit: aeec0c07960406176590f358bae9d123bf59ac51
+source_commit: 800be024be975942df7dbf542f807a09af103933
 ---
 # Model training and daily prediction
 
@@ -57,3 +57,9 @@ Random cross-validation leaks future information, so the code uses time-series f
 - [Portfolio](../modules/portfolio.md)
 - [Portfolio to trade ledger](./portfolio-to-trade-ledger.md)
 - [Add a model or sleeve](../guides/add-a-model-or-sleeve.md)
+
+## Explicit assessment branch of the lifecycle
+
+The [assessment Step](../../src/modelling/steps/step_assess_long_short.py) adds a deliberate research command without changing the weekly DAG cadence. It audits eligible development predictors, runs the current-config baseline through `StepLongShort.run()`, then fits LGBM, RF and elastic-net candidates separately through the original five-fold path. The same labelled OOF population and fixed controls determine pooled IC-IR; held-out SHAP or standardized coefficients determine removal order.
+
+After feature pools freeze, the selected ordinary training path must reproduce winning fold scores and rounds and save cutoff artifacts. Evaluation scores a feature-only universe, commits top-decile membership, then attaches labels and complete future return paths. Original winning fold models explain development; frozen cutoff models explain sealed evaluation. Offline HTML rerender consumes saved diagnostics without fitting. Input/source/selection identities gate resume; attempted application mutators are refused. See [run commands](../guides/run-the-pipeline.md) and [independent validation](../guides/testing.md).

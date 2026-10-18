@@ -66,17 +66,21 @@ def _sample_idx(n_rows: int, sample: int, seed: int = 42) -> np.ndarray:
     return np.arange(n_rows)
 
 
-def partial_dependence(booster: Any, x: np.ndarray, feat_idx: int, grid_points: int = 30, sample: int = 2000) -> tuple:
-    """1-D partial dependence: mean model score as `feat_idx` sweeps its own 2-98 % quantile grid,
-    every other feature held at its real value."""
-    x = x[_sample_idx(len(x), sample)]
+def partial_dependence(
+    booster: Any, x: np.ndarray, feat_idx: int, grid_points: int = 30, sample: int = 2000, *, categorical: bool = False, seed: int = 42
+) -> tuple:
+    """Mean model score over observed categorical/low-cardinality states or a 2-98 % quantile grid.
+    Derive the grid from all valid feature values; other features keep their sampled real values."""
     col = x[:, feat_idx]
-    finite = col[np.isfinite(col)]
+    finite = col[np.isfinite(col) & ((col >= 0) if categorical else True)]
     if finite.size == 0:
         return None, None
-    grid = np.unique(np.quantile(finite, np.linspace(0.02, 0.98, grid_points)))
-    if grid.size < 2:
+    grid = np.unique(finite)
+    if not categorical and grid.size > grid_points:
+        grid = np.unique(np.quantile(finite, np.linspace(0.02, 0.98, grid_points)))
+    if not grid.size:
         return None, None
+    x = x[_sample_idx(len(x), sample, seed)]
     means = np.empty(grid.size, dtype=float)
     work = x.copy()
     for i, g in enumerate(grid):
@@ -103,11 +107,18 @@ def _save_pdp_plot(grid: np.ndarray, means: np.ndarray, feat: str, path: Path, h
 # --------------------------------------------------------------------------- #
 # SHAP                                                                        #
 # --------------------------------------------------------------------------- #
+def shap_score_scale(booster: Any) -> float:
+    """Convert squared-error forest SHAP sums to prediction units; other objectives retain
+    native TreeSHAP units, including raw classification margins."""
+    model = booster.dump_model(num_iteration=1)
+    return 1.0 / booster.num_trees() if model["average_output"] and model["objective"] == "regression" else 1.0
+
+
 def shap_row_values(
     booster: Any, x: np.ndarray, feature_cols: list[str], sample: int = 2000, seed: int = 42, logger: logging.Logger | None = None
 ) -> tuple[np.ndarray, np.ndarray] | None:
-    """`(shap_matrix, row_idx)` for a sampled subset of `x`, or None when unavailable; computed
-    once and shared by the persisted matrix, the ranking, the dependence plot and the PDP choice."""
+    """`(shap_matrix, row_idx)` for a sampled subset of `x`, or None when unavailable; squared-error
+    forests use prediction units, other objectives retain native TreeSHAP units."""
     if shap is None:
         if logger is not None:
             logger.warning(
@@ -122,7 +133,7 @@ def shap_row_values(
         values = np.asarray(values)
         if values.shape[1] == len(feature_cols) + 1:  # trailing base-value column
             values = values[:, :-1]
-        return values, idx
+        return values * shap_score_scale(booster), idx
     except Exception as exc:  # noqa: BLE001 - SHAP is a reporting library boundary
         if logger is not None:
             logger.warning("SHAP computation failed (%s: %s) -> SHAP artifacts skipped", type(exc).__name__, exc)
@@ -327,12 +338,13 @@ def save_member_diagnostics(
     shap_sample: int = 2000,
     pdp_grid: int = 30,
     logger: logging.Logger | None = None,
+    categorical_features: list[str] | None = None,
 ) -> dict:
     """PDP + SHAP (raw values, ranking, plots) + gain table for ONE booster member, on the SAME
     encoding the model was fitted on (categoricals -> numeric codes)."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    x = design_matrix(panel, feature_cols)
+    x = design_matrix(panel, feature_cols, categorical_features, downcast=False)
     gain_imp = pd.Series(dict(zip(feature_cols, booster.feature_importance(importance_type="gain"), strict=False))).sort_values(ascending=False)
 
     shap_imp, n_shap = None, 0
@@ -353,7 +365,7 @@ def save_member_diagnostics(
     n_pdp = 0
     for rank, feat in enumerate(top_feats, 1):
         j = feature_cols.index(feat)
-        grid, means = partial_dependence(booster, x, j, grid_points=pdp_grid, sample=shap_sample)
+        grid, means = partial_dependence(booster, x, j, grid_points=pdp_grid, sample=shap_sample, categorical=feat in (categorical_features or []))
         if grid is None:
             continue
         _save_pdp_plot(grid, means, feat, pdp_dir / f"pdp_{rank:02d}_{_UNSAFE_FILENAME_CHARS.sub('_', feat)}.png", horizon, x[:, j])
@@ -483,6 +495,7 @@ class Monitor:
                 booster=m.model,
                 panel=panel,
                 feature_cols=list(m.model.feature_name()),
+                categorical_features=m.categoricals,
                 out_dir=out_dir if flat else out_dir / _UNSAFE_FILENAME_CHARS.sub("_", name),
                 top_n=self.top_n,
                 shap_sample=self.shap_sample,

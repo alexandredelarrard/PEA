@@ -228,3 +228,76 @@ def test_categorical_pdp_uses_only_observed_valid_codes() -> None:
     np.testing.assert_allclose(means, [6, 11])
     np.testing.assert_array_equal(matrix, original)
     print("SANITY: categorical PDP uses observed integer codes, excludes missing -1 and leaves the background unchanged.")
+
+
+@pytest.mark.parametrize("categorical,rare_count,sample", [(False, 10, 0), (False, 10, 20), (True, 1, 20)])
+def test_pdp_preserves_rare_observed_states(categorical: bool, rare_count: int, sample: int) -> None:
+    matrix = np.zeros((1000, 1))
+    matrix[-rare_count:, 0] = 1
+    original = matrix.copy()
+
+    def predict(values: np.ndarray) -> np.ndarray:
+        assert len(values) == (sample or len(matrix))
+        return values[:, 0]
+
+    grid, means = partial_dependence(SimpleNamespace(predict=predict), matrix, 0, sample=sample, categorical=categorical)
+    np.testing.assert_array_equal(grid, [0, 1])
+    np.testing.assert_array_equal(means, [0, 1])
+    np.testing.assert_array_equal(matrix, original)
+    print(
+        f"SANITY: categorical={categorical}, rare rows={rare_count}, background={sample or len(matrix)}: both states retain their known score effect 1."
+    )
+
+
+@pytest.mark.parametrize("categorical,grid_points,expected", [(False, 4, [-7, -1, 0, 3]), (True, 1, [0, 3])])
+def test_pdp_discrete_domain_filters_only_invalid_states(categorical: bool, grid_points: int, expected: list[int]) -> None:
+    matrix = np.array([[-7.0], [-1.0], [0.0], [3.0], [np.nan], [np.inf], [-np.inf]])
+    original = matrix.copy()
+
+    def predict(values: np.ndarray) -> np.ndarray:
+        return values[:, 0]
+
+    grid, means = partial_dependence(SimpleNamespace(predict=predict), matrix, 0, grid_points=grid_points, categorical=categorical)
+    np.testing.assert_array_equal(grid, expected)
+    np.testing.assert_array_equal(means, expected)
+    np.testing.assert_array_equal(matrix, original)
+    print(f"SANITY: categorical={categorical}: observed grid {expected} excludes nonfinite values and preserves numeric negatives only.")
+
+
+@pytest.mark.parametrize("categorical,values", [(False, [np.nan, np.inf, -np.inf]), (True, [-7, -1, np.nan, np.inf]), (False, []), (True, [])])
+def test_pdp_empty_valid_domain_skips_prediction(categorical: bool, values: list[float]) -> None:
+    matrix = np.asarray(values, dtype=float).reshape(-1, 1)
+    original = matrix.copy()
+
+    def predict(values: np.ndarray) -> np.ndarray:
+        raise AssertionError("an empty valid domain must not be scored")
+
+    assert partial_dependence(SimpleNamespace(predict=predict), matrix, 0, categorical=categorical) == (None, None)
+    np.testing.assert_array_equal(matrix, original)
+    print(f"SANITY: categorical={categorical}, rows={len(values)}: empty valid domain returns (None, None) without scoring or input mutation.")
+
+
+@pytest.mark.parametrize("sample,seed", [(0, 42), (17, 42), (17, 7)])
+def test_pdp_continuous_grid_preserves_background_and_score_units(sample: int, seed: int) -> None:
+    feature = np.concatenate([np.linspace(-10, 10, 101), [np.nan, np.inf, -np.inf]])
+    matrix = np.column_stack([np.arange(len(feature)), feature])
+    original = matrix.copy()
+    idx = np.random.default_rng(seed).choice(len(matrix), sample, replace=False) if sample else np.arange(len(matrix))
+    background = matrix[idx, 0].copy()
+    calls = 0
+
+    def predict(values: np.ndarray) -> np.ndarray:
+        nonlocal calls
+        calls += 1
+        np.testing.assert_array_equal(values[:, 0], background)
+        return 7 + 3 * values[:, 1] + values[:, 0]
+
+    grid, means = partial_dependence(SimpleNamespace(predict=predict), matrix, 1, grid_points=8, sample=sample, seed=seed)
+    expected = np.quantile(feature[np.isfinite(feature)], np.linspace(0.02, 0.98, 8))
+    np.testing.assert_allclose(grid, expected)
+    np.testing.assert_allclose(means, 7 + 3 * expected + background.mean())
+    assert calls == 8
+    np.testing.assert_array_equal(matrix, original)
+    print(
+        f"SANITY: continuous PDP retains the full-domain 2-98% grid and native score units; seed={seed}, background={len(background)}, input unchanged."
+    )

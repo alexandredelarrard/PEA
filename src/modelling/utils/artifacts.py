@@ -72,7 +72,43 @@ def read_run(directory: Path, *, training_required: bool = True) -> dict[str, An
         raise ValueError("Invalid or wrong-run modelling manifest")
     if training_required and state.get("training_complete") is not True:
         raise ValueError("Training artifacts are incomplete for this run")
+    if "configuration_file" not in state:
+        raise ValueError("Missing saved run configuration identity")
+    verify_inventory(directory, {"training/configuration.json": state["configuration_file"]})
+    snapshot = json.loads((directory / "training/configuration.json").read_text(encoding="utf-8"))
+    if (
+        not isinstance(snapshot, dict)
+        or set(snapshot) != {"seed", "train", "model", "linear", "lgbm", "random_forest", "application_outputs"}
+        or not isinstance(snapshot["model"], dict)
+        or any(snapshot[key] is not None and not isinstance(snapshot[key], dict) for key in ("train", "linear", "lgbm", "random_forest"))
+        or not isinstance(snapshot["application_outputs"], dict)
+        or set(snapshot["application_outputs"]) != {"save_predictions", "save_signal", "save_cv_results"}
+    ):
+        raise ValueError("Malformed saved run configuration")
+    config = OmegaConf.create({key: value for key, value in snapshot.items() if key != "application_outputs" and value is not None})
+    assert isinstance(config, DictConfig)
+    if (
+        selection_signature(config, state["feature_cols"] + state["categorical_cols"], state["horizons"]) != state["selection_signature"]
+        or list(config.model.ensemble) != state["model_types"]
+        or list(config.model.get("horizons", state["horizons"])) != state["horizons"]
+        or str(config.model.get("target_type", "rank")) != state["target_type"]
+        or str(config.model.label_column) != state["label_column"]
+    ):
+        raise ValueError("Saved run configuration differs from fitting identity")
     return state
+
+
+def configuration_snapshot(config: DictConfig) -> dict[str, Any]:
+    """Resolve only the modelling controls owned by this run, excluding provider/local state."""
+    snapshot = {
+        key: OmegaConf.to_container(config[key], resolve=True) if OmegaConf.is_config(config.get(key)) else config.get(key)
+        for key in ("seed", "train", "model", "linear", "lgbm", "random_forest")
+    }
+    snapshot["application_outputs"] = {
+        key: OmegaConf.select(config, f"build_cube.output.{key}", default=True if key == "save_predictions" else None)
+        for key in ("save_predictions", "save_signal", "save_cv_results")
+    }
+    return snapshot
 
 
 def fitting_source_identity() -> dict[str, str]:

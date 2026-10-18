@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
 
 import pytest
 from omegaconf import DictConfig, OmegaConf
 
-from src.modelling.utils.artifacts import selection_signature
+from src.modelling.utils.artifacts import configuration_snapshot, selection_signature
 from src.validate.checks import modelling
 from tests.modelling.model_fixtures import make_config
 
@@ -32,12 +33,31 @@ def test_changed_fitting_control_is_rejected(field: str, value: Any) -> None:
     )
     assert isinstance(config, DictConfig)
     signature = selection_signature(config, ["f0", "f1", "sector"], [30, 60, 90])
-    training = {"selection_signature": signature, "horizons": [30, 60, 90], "model_types": list(config.model.ensemble)}
-    cutoff = {"selection_signature": signature, "feature_cols": ["f0", "f1"], "categorical_cols": ["sector"]}
+    training = {
+        "selection_signature": signature,
+        "horizons": [30, 60, 90],
+        "model_types": list(config.model.ensemble),
+        "feature_cols": ["f0", "f1"],
+        "categorical_cols": ["sector"],
+        "target_type": config.model.target_type,
+        "label_column": config.model.label_column,
+    }
+    cutoff = {
+        **training,
+        "target_type": config.model.target_type,
+        "label_column": config.model.label_column,
+    }
+    snapshot = configuration_snapshot(config)
     findings = []
-    modelling._reconcile_configuration(config, training, cutoff, findings)
+    modelling._reconcile_configuration(config, training, cutoff, findings, snapshot=snapshot)
     assert not findings
     OmegaConf.update(config, field, value, merge=False, force_add=True)
-    modelling._reconcile_configuration(config, training, cutoff, findings)
+    modelling._reconcile_configuration(config, training, cutoff, findings, snapshot=snapshot)
     assert findings
+    findings.clear()
+    changed = configuration_snapshot(config)
+    unchanged = OmegaConf.create(deepcopy(snapshot))
+    assert isinstance(unchanged, DictConfig)
+    modelling._reconcile_configuration(unchanged, training, cutoff, findings, snapshot=changed)
+    assert findings, "the frozen snapshot must reproduce the signature even when current controls match"
     print(f"SANITY: independent training-configuration reconciliation rejects changed {field}, before any model or source replay.")

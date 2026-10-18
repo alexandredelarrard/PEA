@@ -10,8 +10,10 @@ import pandas as pd
 import pytest
 from omegaconf import OmegaConf
 
+from src.modelling.steps.step_long_short import Schema, StepLongShort
 from src.modelling.utils import artifacts
 from src.modelling.utils.assessment import frame_digest, write_json
+from tests.modelling.model_fixtures import make_config
 
 FAMILIES = ["elasticnet", "lgbm", "random_forest"]
 
@@ -19,6 +21,96 @@ FAMILIES = ["elasticnet", "lgbm", "random_forest"]
 class _Member:
     def __init__(self, tag: str) -> None:
         self.tag = tag
+
+
+def _open_fixture_run(tmp_path: Path, *, omit_train: bool = False) -> StepLongShort:
+    step = object.__new__(StepLongShort)
+    step._config = make_config(
+        model={"horizons": [60], "target_type": "zscore", "assessment": {"run_id": "20261018_fixture"}},
+        train={"start_date": "1999-01-01", "outcome_cutoff": "2021-12-31"},
+        build_cube={"output": {"save_predictions": False, "save_signal": False, "save_cv_results": True}},
+        local={"password": "must-not-persist"},
+        data_extract={"api_key": "must-not-persist"},
+        environment={"secret": "must-not-persist"},
+    )
+    step._config.linear.alpha = "${lgbm.lambda_l1}"
+    if omit_train:
+        del step._config.train
+    step.families = list(step._config.model.ensemble)
+    step._calendar = pd.bdate_range("2021-01-04", periods=10)
+    step._training_as_of = step._calendar[-1]
+    step._run_id = "20261018_fixture"
+    step._run_path = tmp_path / step._run_id
+    step.target_type, step.label_column = "zscore", "y"
+    step._open_run(Schema([60], ["date", "ticker", "f0", "sector"], ["f0"], ["sector"], ["f0", "sector"], {}, {}), False)
+    return step
+
+
+def test_omitted_optional_configuration_block_keeps_existing_fitting_signature(tmp_path: Path) -> None:
+    step = _open_fixture_run(tmp_path, omit_train=True)
+    assert step._run_path is not None
+    saved = json.loads((step._run_path / "training/configuration.json").read_text(encoding="utf-8"))
+    assert saved["train"] is None
+    artifacts.read_run(step._run_path, training_required=False)
+    print("SANITY: an omitted fixture training block remains null and reconstructs its original fitting signature without adding train:{}.")
+
+
+def test_producer_saves_resolved_allowlisted_configuration_without_fitting(tmp_path: Path) -> None:
+    step = _open_fixture_run(tmp_path)
+    assert step._run_path is not None
+    path = step._run_path / "training/configuration.json"
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert set(saved) == {"seed", "train", "model", "linear", "lgbm", "random_forest", "application_outputs"}
+    for key in ("train", "model", "linear", "lgbm", "random_forest"):
+        assert saved[key] == OmegaConf.to_container(step._config[key], resolve=True)
+    assert saved["seed"] == step._config.seed and saved["linear"]["alpha"] == 1.0
+    assert saved["application_outputs"] == {"save_predictions": False, "save_signal": False, "save_cv_results": True}
+    assert "must-not-persist" not in path.read_text(encoding="utf-8") and "${" not in path.read_text(encoding="utf-8")
+    state = artifacts.read_run(step._run_path, training_required=False)
+    assert state["configuration_file"] == artifacts.file_identity(path)
+    before = path.read_bytes()
+    step._config.model.assessment.resume = True
+    step._config.model.assessment.report_only = True
+    step._config.model.assessment.output_dir = "another-benign-routing-root"
+    step._config.model.models_dir = "another-production-root"
+    step._config.build_cube.output.save_predictions = True
+    schema = Schema([60], ["date", "ticker", "f0", "sector"], ["f0"], ["sector"], ["f0", "sector"], {}, {})
+    step._open_run(schema, False)
+    assert path.read_bytes() == before
+    step._config.seed += 1
+    with pytest.raises(ValueError, match="configuration"):
+        step._open_run(schema, False)
+    assert path.read_bytes() == before
+    print(
+        "SANITY: actual producer freezes exact resolved controls before any fitting, excludes unrelated secrets, accepts benign resume/routing changes and refuses changed fitting controls."
+    )
+
+
+@pytest.mark.parametrize("mutation", ["missing", "same-size", "wrong-controls", "wrong-shape", "missing-identity"])
+def test_dated_run_refuses_missing_or_corrupt_configuration_before_consumption(tmp_path: Path, mutation: str) -> None:
+    step = _open_fixture_run(tmp_path)
+    assert step._run_path is not None
+    path = step._run_path / "training/configuration.json"
+    state = json.loads((step._run_path / "metadata.json").read_text(encoding="utf-8"))
+    if mutation == "missing":
+        path.unlink()
+    elif mutation == "same-size":
+        path.write_bytes(path.read_bytes().replace(b"4325", b"4326"))
+    elif mutation == "missing-identity":
+        del state["configuration_file"]
+        write_json(step._run_path / "metadata.json", state)
+    else:
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        if mutation == "wrong-controls":
+            saved["seed"] += 1
+        else:
+            saved["unrelated"] = {}
+        write_json(path, saved)
+        state["configuration_file"] = artifacts.file_identity(path)
+        write_json(step._run_path / "metadata.json", state)
+    with pytest.raises((ValueError, FileNotFoundError)):
+        artifacts.read_run(step._run_path, training_required=False)
+    print(f"SANITY: {mutation} frozen configuration fails before dated-run consumers can load a model.")
 
 
 def _snapshot(parent: Path, name: str, tag: str) -> Path:

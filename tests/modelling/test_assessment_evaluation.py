@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, cast
 
@@ -13,6 +14,8 @@ from src.modelling.steps import step_assess_long_short as assessment
 from src.modelling.steps.step_assess_long_short import StepAssessLongShort
 from src.modelling.steps.step_long_short import StepLongShort
 from src.modelling.transformers import BaseModel, LightGBMModel
+from src.modelling.utils.artifacts import file_identity
+from src.modelling.utils.assessment import write_json
 from src.validate.checks.modelling import check_modelling
 from tests.modelling.test_step_long_short import _setup
 
@@ -80,6 +83,28 @@ def test_assessment_reads_original_folds_without_fitting(tmp_path: Path, sqlite_
     monkeypatch.setattr(assessment, "load_ensemble", forbidden)
     assert StepAssessLongShort(context=trainer._context, config=config).run() == report
     assert frozen == {path: path.read_bytes() for path in result.run_dir.rglob("*") if path.is_file()}
+    configuration = result.run_dir / "training/configuration.json"
+    metadata = result.run_dir / "metadata.json"
+    for mutation in ("missing", "same-size", "wrong-controls", "wrong-shape"):
+        if mutation == "missing":
+            configuration.unlink()
+        elif mutation == "same-size":
+            configuration.write_bytes(frozen[configuration].replace(b"4325", b"4326"))
+        else:
+            saved = json.loads(frozen[configuration])
+            if mutation == "wrong-controls":
+                saved["seed"] += 1
+            else:
+                saved["data_extract"] = {}
+            write_json(configuration, saved)
+            training = json.loads(frozen[metadata])
+            training["configuration_file"] = file_identity(configuration)
+            write_json(metadata, training)
+        rejected = check_modelling(trainer._context, out=result.run_dir, config=config)
+        assert rejected.status == "fail", rejected.to_json()
+        assert rejected.scope.get("rows", 0) == 0
+        configuration.write_bytes(frozen[configuration])
+        metadata.write_bytes(frozen[metadata])
     print(
-        "SANITY: original-fold/cutoff assessment never fits; the independent source/native/metric/full-refit validator passes; actual HTML rerenders byte-identically with database/model loading forbidden."
+        "SANITY: original-fold/cutoff assessment never fits; independent source/native/metric/full-refit validation passes; HTML rerenders byte-identically offline; missing, tampered, wrong-control and malformed snapshots fail before source reads."
     )

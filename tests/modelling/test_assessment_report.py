@@ -12,12 +12,15 @@ import pytest
 from omegaconf import OmegaConf
 
 from src.modelling.transformers.assessment_report import render_assessment
-from src.modelling.utils.artifacts import file_identity
+from src.modelling.utils.artifacts import configuration_snapshot, file_identity, selection_signature
 from src.modelling.utils.assessment import write_json
+from tests.modelling.model_fixtures import make_config
 
 
 def _report_artifacts(run: Path) -> None:
     families = ["elasticnet", "lgbm", "random_forest"]
+    config = make_config(model={"horizons": [30, 60, 90], "target_type": "zscore"})
+    write_json(run / "training/configuration.json", configuration_snapshot(config))
     write_json(
         run / "metadata.json",
         {
@@ -27,6 +30,12 @@ def _report_artifacts(run: Path) -> None:
             "training_complete": True,
             "observation_frontier": "2023-12-29",
             "training_as_of": "2021-12-31",
+            "feature_cols": ["x", "zero"],
+            "categorical_cols": ["category"],
+            "target_type": "zscore",
+            "label_column": "y",
+            "selection_signature": selection_signature(config, ["x", "zero", "category"], [30, 60, 90]),
+            "configuration_file": file_identity(run / "training/configuration.json"),
             "folds": {str(h): {str(f): {} for f in range(1, 6)} for h in (30, 60, 90)},
         },
     )
@@ -117,7 +126,7 @@ def test_report_is_offline_and_covers_every_horizon_family_fold_and_zero_feature
     )
 
 
-@pytest.mark.parametrize("missing", ["assessment/h90/daily.parquet", "assessment/h60/fold4/lgbm/curves.json"])
+@pytest.mark.parametrize("missing", ["training/configuration.json", "assessment/h90/daily.parquet", "assessment/h60/fold4/lgbm/curves.json"])
 def test_report_refuses_incomplete_required_chart_evidence(tmp_path: Path, missing: str) -> None:
     _report_artifacts(tmp_path)
     (tmp_path / missing).unlink()

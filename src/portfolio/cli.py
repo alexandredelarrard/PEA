@@ -65,9 +65,11 @@ def backtest(config_path: str, run_id: str) -> None:
         or assessed.get("complete") is not True
     ):
         raise ValueError("Portfolio requires this exact run's completed training and assessment")
+    for relative, identity in (("cutoff/metadata.json", "cutoff_metadata"), ("training/configuration.json", "configuration_file")):
+        path = run / relative
+        if training[identity] != {"bytes": path.stat().st_size, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}:
+            raise ValueError(f"Assessed run artifact changed: {relative}")
     path = run / "cutoff/metadata.json"
-    if training["cutoff_metadata"] != {"bytes": path.stat().st_size, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}:
-        raise ValueError("Assessed cutoff metadata changed")
     cutoff = json.loads(path.read_text(encoding="utf-8"))
     if cutoff.get("run_id") != run_id or cutoff.get("full_history") is not False:
         raise ValueError("Portfolio backtest requires the named cutoff models")

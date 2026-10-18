@@ -123,12 +123,25 @@ def test_retired_modes_and_unsafe_ids_fail_before_context(args: list[str], monke
     print(f"SANITY: invalid or retired CLI controls {args} cannot open data or invoke fitting.")
 
 
-@pytest.mark.parametrize("complete", [True, False])
-def test_portfolio_cli_uses_only_the_named_assessed_cutoff(complete: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("state", ["complete", "incomplete", "missing-configuration", "tampered-configuration"])
+def test_portfolio_cli_uses_only_the_named_assessed_cutoff(state: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     run = tmp_path / "output/modelling_backtest/20261018_42"
     write_json(run / "cutoff/metadata.json", {"run_id": run.name, "full_history": False})
-    write_json(run / "metadata.json", {"run_id": run.name, "training_complete": True, "cutoff_metadata": file_identity(run / "cutoff/metadata.json")})
-    write_json(run / "assessment/metadata.json", {"run_id": run.name, "complete": complete})
+    write_json(run / "training/configuration.json", {"seed": 7})
+    write_json(
+        run / "metadata.json",
+        {
+            "run_id": run.name,
+            "training_complete": True,
+            "cutoff_metadata": file_identity(run / "cutoff/metadata.json"),
+            "configuration_file": file_identity(run / "training/configuration.json"),
+        },
+    )
+    write_json(run / "assessment/metadata.json", {"run_id": run.name, "complete": state != "incomplete"})
+    if state == "missing-configuration":
+        (run / "training/configuration.json").unlink()
+    elif state == "tampered-configuration":
+        write_json(run / "training/configuration.json", {"seed": 8})
     config = OmegaConf.create(
         {
             "model": {"models_dir": "output/models", "assessment": {"output_dir": "output/modelling_backtest"}},
@@ -141,7 +154,7 @@ def test_portfolio_cli_uses_only_the_named_assessed_cutoff(complete: bool, tmp_p
     monkeypatch.setattr(portfolio_module, "StepPortfolio", constructor)
     monkeypatch.chdir(Path(__file__).resolve().parents[2])
     result = CliRunner().invoke(main, ["portfolio", "backtest", "-c", "./configs", "--run-id", run.name])
-    if complete:
+    if state == "complete":
         assert result.exit_code == 0, repr(result.exception)
         assert config.model.models_dir == str(run / "cutoff")
         assert context.paths["OUTPUT_DIR"] == run / "portfolio"
@@ -150,4 +163,4 @@ def test_portfolio_cli_uses_only_the_named_assessed_cutoff(complete: bool, tmp_p
     else:
         assert result.exit_code != 0
         constructor.assert_not_called()
-    print(f"SANITY: portfolio reads only the named cutoff after completed assessment={complete}, with dated outputs and unchanged dates/costs.")
+    print(f"SANITY: portfolio snapshot state={state} is checked before construction, with dated outputs and unchanged dates/costs.")

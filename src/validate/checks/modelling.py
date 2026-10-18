@@ -62,26 +62,44 @@ def independent_daily(predictions: pd.DataFrame, model: str) -> pd.Series:
     return result
 
 
-def _reconcile_configuration(config: DictConfig, training: dict, cutoff: dict, findings: list[Finding]) -> None:
-    shared = config.model
-    payload = {
-        "features": cutoff["feature_cols"] + cutoff["categorical_cols"],
-        "horizons": training["horizons"],
-        "blocks": {key: OmegaConf.to_container(config[key], resolve=True) for key in ("linear", "lgbm", "random_forest", "train") if key in config},
-        "shared": {
-            key: OmegaConf.to_container(shared[key], resolve=True) if OmegaConf.is_config(shared.get(key)) else shared.get(key)
-            for key in ("ensemble", "cv", "weight_decay", "target_type", "label_column")
-        },
-        "seed": config.get("seed"),
-    }
-    signature = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
-    valid = signature == training["selection_signature"] == cutoff["selection_signature"]
-    valid &= list(config.model.horizons) == training["horizons"] and list(config.model.ensemble) == training["model_types"]
+def _reconcile_configuration(config: DictConfig, training: dict, cutoff: dict, findings: list[Finding], *, snapshot: dict) -> None:
+    if (
+        not isinstance(snapshot, dict)
+        or set(snapshot) != {"seed", "train", "model", "linear", "lgbm", "random_forest", "application_outputs"}
+        or not isinstance(snapshot["model"], dict)
+        or any(snapshot[key] is not None and not isinstance(snapshot[key], dict) for key in ("train", "linear", "lgbm", "random_forest"))
+        or not isinstance(snapshot["application_outputs"], dict)
+        or set(snapshot["application_outputs"]) != {"save_predictions", "save_signal", "save_cv_results"}
+    ):
+        raise ValueError("Malformed saved training configuration")
+    saved = OmegaConf.create({key: value for key, value in snapshot.items() if key != "application_outputs" and value is not None})
+    assert isinstance(saved, DictConfig)
+    valid = True
+    for controls in (saved, config):
+        shared = controls.model
+        payload = {
+            "features": cutoff["feature_cols"] + cutoff["categorical_cols"],
+            "horizons": training["horizons"],
+            "blocks": {
+                key: OmegaConf.to_container(controls[key], resolve=True) for key in ("linear", "lgbm", "random_forest", "train") if key in controls
+            },
+            "shared": {
+                key: OmegaConf.to_container(shared[key], resolve=True) if OmegaConf.is_config(shared.get(key)) else shared.get(key)
+                for key in ("ensemble", "cv", "weight_decay", "target_type", "label_column")
+            },
+            "seed": controls.get("seed"),
+        }
+        signature = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+        valid &= signature == training["selection_signature"] == cutoff["selection_signature"]
+        valid &= list(shared.get("horizons", training["horizons"])) == training["horizons"] and list(shared.ensemble) == training["model_types"]
+        valid &= str(shared.get("target_type", "rank")) == cutoff["target_type"] and str(shared.label_column) == cutoff["label_column"]
+        valid &= cutoff["target_type"] == training["target_type"] and cutoff["label_column"] == training["label_column"]
+    valid &= training["feature_cols"] == cutoff["feature_cols"] and training["categorical_cols"] == cutoff["categorical_cols"]
     _finding(
         findings,
         valid,
-        "Current fitting configuration differs from saved run",
-        "Identical features, horizons, parameters, cutoff, folds and seed",
+        "Saved or current fitting configuration differs from run identity",
+        "Readable frozen controls reproduce identical features, horizons, parameters, cutoff, folds and seed",
         field="configuration",
     )
 
@@ -656,8 +674,15 @@ def check_modelling(context: Context, *, out: str | Path, config: DictConfig) ->
             return CheckResult.abstained("modelling", "saved_ensemble", "Training or assessment stage is incomplete")
         if training["run_id"] != run.name or cutoff["run_id"] != run.name or state["run_id"] != run.name:
             raise ValueError("Wrong-run model/assessment identity")
-        _inventory(run, {"cutoff/metadata.json": training["cutoff_metadata"], "training/calendar.parquet": training["calendar_file"]})
-        _reconcile_configuration(config, training, cutoff, findings)
+        _inventory(
+            run,
+            {
+                "cutoff/metadata.json": training["cutoff_metadata"],
+                "training/calendar.parquet": training["calendar_file"],
+                "training/configuration.json": training["configuration_file"],
+            },
+        )
+        _reconcile_configuration(config, training, cutoff, findings, snapshot=_read(run / "training/configuration.json"))
         if findings:
             return CheckResult.measured("modelling", "saved_ensemble", findings, scope={"run": str(run), "source_reads": 0}, metrics={})
         source_root = Path(__file__).resolve().parents[3]

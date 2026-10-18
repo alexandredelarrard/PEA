@@ -361,17 +361,25 @@ def test_classification_ensemble_gets_finite_cv_metrics_and_ir_weights(tmp_path:
 
 def test_full_history_records_the_effective_train_end(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     step, _, cfg = _setup(tmp_path, sqlite_store, save=False)
-    step.run_train()
+    initial = step.run_train()
+    assert initial.run_dir is not None
+    frozen = (initial.run_dir / "training/configuration.json").read_bytes()
+    production = tmp_path / "separate-production"
+    cfg.model.models_dir = str(production)
     monkeypatch.setattr(step, "_cross_validate", lambda *args, **kwargs: pytest.fail("production refit must reuse saved CV counts"))
     res = step.run_train(full_history=True)
-    meta = json.loads((tmp_path / "models" / "metadata.json").read_text())
+    meta = json.loads((production / "metadata.json").read_text())
     assert res.train_end_effective is not None, "a full-history refit records the last labelled date"
     assert meta["full_history"] is True and meta["train_end"] == pd.Timestamp(res.train_end_effective).strftime("%Y-%m-%d") > cfg.train.end_date
-    before = (tmp_path / "models/metadata.json").read_bytes()
+    before = (production / "metadata.json").read_bytes()
     cfg.model.assessment.resume = True
     monkeypatch.setattr(step, "_fit_final", lambda *args, **kwargs: pytest.fail("completed full-history resume must not fit"))
     step.run_train(full_history=True)
-    assert (tmp_path / "models/metadata.json").read_bytes() == before
+    assert (production / "metadata.json").read_bytes() == before
+    assert (initial.run_dir / "training/configuration.json").read_bytes() == frozen
+    state = json.loads((initial.run_dir / "metadata.json").read_text())
+    assert state["full_history"]["published_root"] == str(production.resolve())
+    assert json.loads(frozen)["model"]["models_dir"] == str(tmp_path / "models")
     print("\n=== SANITY CHECK: full-history refit ===")
     print(
         f"  train_end {meta['train_end']} = last labelled date (config end {cfg.train.end_date} ignored); completed resume neither fits nor republishes. Validated."

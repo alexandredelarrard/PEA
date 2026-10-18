@@ -30,6 +30,7 @@ from src.modelling.transformers.base import half_life_years
 from src.modelling.transformers.monitor import Monitor
 from src.modelling.utils.artifacts import (
     METADATA_FILE,
+    configuration_snapshot,
     contained_path,
     file_identity,
     fitting_source_identity,
@@ -174,6 +175,7 @@ class StepLongShort(Step):
         if full_history:
             if self._run_path is None:
                 raise ValueError("Full-history training requires an explicit saved run ID")
+            read_run(self._run_path)
             prior = read_metadata(self._run_path / "cutoff")
             if prior.get("full_history") is not False or prior.get("run_id") != self._run_id:
                 raise ValueError("Full-history training requires this run's completed cutoff selection")
@@ -312,6 +314,8 @@ class StepLongShort(Step):
             "run_id": self._run_id,
             "horizons": schema.horizons,
             "model_types": self.families,
+            "feature_cols": schema.feature_cols,
+            "categorical_cols": schema.categorical_cols,
             "selection_signature": selection_signature(self._config, schema.feature_cols + schema.categorical_cols, schema.horizons),
             "source_hashes": fitting_source_identity(),
             "library_versions": {
@@ -337,10 +341,13 @@ class StepLongShort(Step):
             calendar_path = self._run_path / "training/calendar.parquet"
             calendar_path.parent.mkdir(parents=True, exist_ok=True)
             pd.DataFrame({"date": self._calendar}).to_parquet(calendar_path, index=False)
+            configuration_path = self._run_path / "training/configuration.json"
+            write_json(configuration_path, configuration_snapshot(self._config))
             self._run_state = {
                 **identity,
                 "calendar_digest": calendar_digest,
                 "calendar_file": file_identity(calendar_path),
+                "configuration_file": file_identity(configuration_path),
                 "observation_frontier": str(self._calendar[-1].date()),
                 "training_as_of": str(self._training_as_of.date()),
                 "target_type": self.target_type,

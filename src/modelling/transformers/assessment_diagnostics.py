@@ -56,7 +56,7 @@ def explain_tree(member: BaseModel, panel: pd.DataFrame, output: Path, config: D
         binned = _binned_dependence(col, phi[:, index], categorical)
         grid, means = (
             partial_dependence(
-                member.model, matrix, index, int(options.pdp_grid_points), int(options.pdp_background), categorical=categorical, seed=int(config.seed)
+                member.model, matrix, index, int(options.pdp_grid), int(options.pdp_background), categorical=categorical, seed=int(config.seed)
             )
             if pdp
             else (None, None)

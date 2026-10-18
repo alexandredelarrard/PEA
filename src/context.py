@@ -44,7 +44,7 @@ def check_path_exist(path):
         path.mkdir(parents=True, exist_ok=True)
 
 
-def define_global_paths(config: DictConfig):
+def define_global_paths(config: DictConfig) -> dict[str, Path]:
     """Filesystem paths for NON-tabular artifacts only. All tabular data
     (prices, fundamentals, cube, predictions, ...) now lives in the database
     and is accessed via `context.store`; the parquet/CSV paths were removed
@@ -59,7 +59,8 @@ def define_global_paths(config: DictConfig):
     # Pipeline output artifacts (models, diagnostics, peer dict, CV results)
     global_paths["OUTPUT_DIR"] = global_paths["DATA_STORE"] / "output"
     global_paths["MODELS_DIR"] = global_paths["OUTPUT_DIR"] / "models"
-    global_paths["SECTOR_PEERS_PATH"] = global_paths["OUTPUT_DIR"] / "sector_peers.json"
+    peers_dir = Path(config.local.paths.get("peers_dir", "output/peers"))
+    global_paths["SECTOR_PEERS_PATH"] = global_paths["DATA_STORE"] / peers_dir / "sector_peers.json"
     global_paths["CUBE_CV_RESULTS_PATH"] = global_paths["OUTPUT_DIR"] / "cube_cv_results.parquet"
 
     for _, path in global_paths.items():

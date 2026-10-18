@@ -2,6 +2,7 @@ local:
   paths:
     root: ./
     data_store: data
+    peers_dir: output/peers
     logs: .log
     insider_transactions: "sec_insider_transactions"
     fails_deliver: "sec_fails_to_deliver"

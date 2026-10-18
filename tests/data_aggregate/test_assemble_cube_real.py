@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,7 +14,7 @@ import pandas as pd
 import pytest
 from dotenv import find_dotenv, load_dotenv
 
-from src.context import Context
+from src.context import Context, define_global_paths
 from src.data_aggregate.transformers.step_assemble_cube import StepAssembleCube
 from src.data_aggregate.utils.common.parts import CUBE_PARTS
 from src.data_store.schema import Tables
@@ -27,8 +26,8 @@ from src.validate.result import jsonable
 from tests.conftest import _store
 
 
-def _record(root: Path, result: dict[str, Any]) -> None:
-    out = root / "reports/validate/2026-10-16-cube-assembly-selection/_out/real_replay.json"
+def _record(out_dir: Path, result: dict[str, Any]) -> None:
+    out = out_dir / "real_replay.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(jsonable(result), indent=2) + "\n", encoding="utf-8")
 
@@ -37,10 +36,8 @@ def _metadata(store: Any) -> dict[str, Any]:
     return {part.name: {"columns": store.columns(part.table), "max_date": str(store.max_date(part.table))} for part in CUBE_PARTS}
 
 
-def test_real_source_assembly_replay(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    env_path = find_dotenv(usecwd=True)
-    load_dotenv(env_path)
-    root = Path(env_path).parent if env_path else Path.cwd()
+def test_real_source_assembly_replay(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    load_dotenv(find_dotenv(usecwd=True))
     config = read_config("configs")
     source = _store()
     optional = set(config.build_cube.assembly.optional_parts)
@@ -48,7 +45,7 @@ def test_real_source_assembly_replay(sqlite_store: Any, monkeypatch: pytest.Monk
         part.name for part in CUBE_PARTS if part.name not in optional and (not source.exists(part.table) or source.max_date(part.table) is None)
     ]
     if missing:
-        _record(root, {"status": "abstain", "reason": "missing compulsory sources", "parts": missing, "metadata": _metadata(source)})
+        _record(tmp_path, {"status": "abstain", "reason": "missing compulsory sources", "parts": missing, "metadata": _metadata(source)})
         pytest.skip(f"real candidate replay incomplete: compulsory parts absent/empty: {missing}")
     live_context = SimpleNamespace(store=source, config=config)
     universe = set(load_universe_tickers(cast(Context, live_context)))
@@ -74,13 +71,11 @@ def test_real_source_assembly_replay(sqlite_store: Any, monkeypatch: pytest.Monk
         if before == after:
             break
     else:
-        _record(root, {"status": "abstain", "reason": "source metadata changed during both bounded captures", "before": before, "after": after})
+        _record(tmp_path, {"status": "abstain", "reason": "source metadata changed during both bounded captures", "before": before, "after": after})
         pytest.skip("real candidate replay incomplete: concurrent source rebuild")
-    peers_path = (
-        Path(os.getenv("ROOT_PATH", config.local.paths.root)) / config.local.paths.get("data_store", "data_store") / "output/sector_peers.json"
-    )
+    peers_path = define_global_paths(config)["SECTOR_PEERS_PATH"]
     if not peers_path.exists():
-        _record(root, {"status": "abstain", "reason": "existing peer artifact absent; recomputation blocked", "metadata": after})
+        _record(tmp_path, {"status": "abstain", "reason": "existing peer artifact absent; recomputation blocked", "metadata": after})
         pytest.skip("existing peer artifact unavailable; no production peer recomputation allowed")
     peers = json.loads(peers_path.read_text(encoding="utf-8"))
     monkeypatch.setattr("src.data_aggregate.transformers.step_assemble_cube.load_peers_or_raise", lambda *_: peers)
@@ -138,7 +133,7 @@ def test_real_source_assembly_replay(sqlite_store: Any, monkeypatch: pytest.Monk
     grain = check_grain(context, Tables.cube)
     assert grain.status == "pass", grain
     _record(
-        root,
+        tmp_path,
         {
             "status": "pass",
             "scope": "bounded real-source candidate replay, not production adoption",

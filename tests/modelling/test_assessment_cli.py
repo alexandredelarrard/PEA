@@ -16,7 +16,26 @@ from omegaconf import DictConfig, OmegaConf
 from src import context as context_module
 from src.cli import CLI, main
 from src.context import Context
-from src.modelling.steps import step_assess_long_short
+from src.modelling.steps import step_assess_long_short, step_long_short
+
+
+@pytest.mark.parametrize("command,full_history", [("train", False), ("full-train", True)])
+def test_training_cli_passes_explicit_run_and_resume(command: str, full_history: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = cast(DictConfig, OmegaConf.create({"model": {"assessment": {}}, "train": {"start_date": "1999-01-01", "end_date": "2022-01-01"}}))
+    context = SimpleNamespace(log=Mock())
+    factory = Mock(return_value=(config, context))
+    fitted = Mock()
+    constructor = Mock(return_value=fitted)
+    monkeypatch.setattr(context_module, "get_config_context", factory)
+    monkeypatch.setattr(step_long_short, "StepLongShort", constructor)
+    monkeypatch.chdir(Path(__file__).resolve().parents[2])
+    result = CliRunner().invoke(main, ["modelling", command, "-c", "./configs", "--run-id", "20261018_42", "--resume"])
+    assert result.exit_code == 0, repr(result.exception)
+    assert config.model.assessment.run_id == "20261018_42" and config.model.assessment.resume is True
+    factory.assert_called_once_with("./configs", use_cache=False, save=True)
+    constructor.assert_called_once_with(context=context, config=config)
+    fitted.run_train.assert_called_once_with(**({"full_history": True} if full_history else {}))
+    print(f"SANITY: {command} passes the explicit common run ID and resume to the existing trainer; full_history={full_history}.")
 
 
 @pytest.mark.parametrize(

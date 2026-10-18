@@ -65,6 +65,30 @@ def run_directory(context: Any, config: DictConfig, run_id: str | None = None) -
     return contained_path(directory, identity)
 
 
+def read_run(directory: Path, *, training_required: bool = True) -> dict[str, Any]:
+    """Read this exact run, refusing incomplete training as an assessment/refit input."""
+    state = json.loads((directory / METADATA_FILE).read_text(encoding="utf-8"))
+    if state.get("run_id") != directory.name or not state.get("horizons") or not state.get("model_types"):
+        raise ValueError("Invalid or wrong-run modelling manifest")
+    if training_required and state.get("training_complete") is not True:
+        raise ValueError("Training artifacts are incomplete for this run")
+    return state
+
+
+def fitting_source_identity() -> dict[str, str]:
+    """Hash the fitting/scoring implementation without requiring Git in a task container."""
+    root = Path(__file__).resolve().parents[3]
+    relative = [
+        *[
+            f"src/modelling/transformers/{name}"
+            for name in ("__init__.py", "base.py", "lightgbm_model.py", "random_forest.py", "linear_regression.py")
+        ],
+        *[f"src/modelling/utils/{name}" for name in ("features.py", "panel.py", "cv.py", "ensemble.py", "metrics.py", "artifacts.py")],
+        "src/modelling/steps/step_long_short.py",
+    ]
+    return {name: file_identity(root / name)["sha256"] for name in relative}
+
+
 def file_identity(path: Path) -> dict[str, Any]:
     """Exact non-tabular artifact size and SHA-256."""
     with path.open("rb") as handle:

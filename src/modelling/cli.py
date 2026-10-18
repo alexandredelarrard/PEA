@@ -24,7 +24,17 @@ from src.constants.command_line_interface import CONFIG_ARGS, CONFIG_KWARGS
 from src.context import get_config_context
 from src.modelling.steps.step_assess_long_short import StepAssessLongShort
 from src.modelling.steps.step_long_short import StepLongShort
+from src.modelling.utils.artifacts import validate_run_id
 from src.utils.cli_helper import SpecialHelpOrder
+
+
+def _set_data_root() -> None:
+    """A linked checkout uses the original repository's data unless explicitly overridden."""
+    worktree = Path(context_module.__file__).resolve().parents[1]
+    git_file = worktree / ".git"
+    if git_file.is_file() and "ROOT_PATH" not in os.environ:
+        raw = git_file.read_text(encoding="utf-8").removeprefix("gitdir:").strip()
+        os.environ["ROOT_PATH"] = str((worktree / raw).resolve().parents[2])
 
 
 @click.group(cls=SpecialHelpOrder)
@@ -35,15 +45,24 @@ def cli() -> None:
 @cli.command(
     help="Train the per-horizon ensemble on the cube for the configured training window "
     "(modellling.yml train.start_date/end_date; override with --train-start/--train-end). "
-    "Saves model artifacts + metadata.json + predictions + diagnostics.",
+    "Saves five original folds and fresh cutoff models in a dated run.",
     help_priority=1,
 )
 @click.option(*CONFIG_ARGS, **cast(dict[str, Any], CONFIG_KWARGS))
 @click.option("--train-start", default=None, help="Override train.start_date (YYYY-MM-DD).")
 @click.option("--train-end", default=None, help="Override train.end_date (YYYY-MM-DD).")
-def train(config_path: str, train_start: str | None, train_end: str | None) -> None:
-    # save=True so the model artifacts, metadata.json and diagnostics pictures are written to disk
+@click.option(
+    "--run-id",
+    default=None,
+    callback=lambda ctx, param, value: validate_run_id(value) if value else None,
+    help="Common dated run ID; generated when absent.",
+)
+@click.option("--resume", is_flag=True, help="Reuse only verified matching original folds and cutoff models.")
+def train(config_path: str, train_start: str | None, train_end: str | None, run_id: str | None, resume: bool) -> None:
+    _set_data_root()
     config, context = get_config_context(config_path, use_cache=False, save=True)
+    config.model.assessment.run_id = run_id or config.model.assessment.get("run_id")
+    config.model.assessment.resume = resume
     if train_start:
         config.train.start_date = train_start
     if train_end:
@@ -58,8 +77,18 @@ def train(config_path: str, train_start: str | None, train_end: str | None) -> N
     help_priority=2,
 )
 @click.option(*CONFIG_ARGS, **cast(dict[str, Any], CONFIG_KWARGS))
-def full_train(config_path: str) -> None:
+@click.option(
+    "--run-id",
+    default=None,
+    callback=lambda ctx, param, value: validate_run_id(value) if value else None,
+    help="Completed cutoff run whose fold-selected rounds must be reused.",
+)
+@click.option("--resume", is_flag=True, help="Verify and reuse a completed publication without refitting.")
+def full_train(config_path: str, run_id: str | None, resume: bool) -> None:
+    _set_data_root()
     config, context = get_config_context(config_path, use_cache=False, save=True)
+    config.model.assessment.run_id = run_id or config.model.assessment.get("run_id")
+    config.model.assessment.resume = resume
     StepLongShort(context=context, config=config).run_train(full_history=True)
 
 
@@ -72,6 +101,7 @@ def full_train(config_path: str) -> None:
 @click.option(*CONFIG_ARGS, **cast(dict[str, Any], CONFIG_KWARGS))
 @click.option("--n-dates", default=1, show_default=True, type=int, help="How many of the most recent cube dates to predict.")
 def predict(config_path: str, n_dates: int) -> None:
+    _set_data_root()
     config, context = get_config_context(config_path, use_cache=False, save=True)
     StepLongShort(context=context, config=config).run_predict(n_dates=n_dates)
 
@@ -82,12 +112,7 @@ def predict(config_path: str, n_dates: int) -> None:
 @click.option("--stage", type=click.Choice(["development", "evaluation", "report", "all"]), default="development", show_default=True)
 @click.option("--resume", is_flag=True, help="Reuse completed candidates only after checking unchanged input and experiment identities.")
 def assess(config_path: str, output: Path, stage: str, resume: bool) -> None:
-    worktree = Path(context_module.__file__).resolve().parents[1]
-    git_file = worktree / ".git"
-    if git_file.is_file() and "ROOT_PATH" not in os.environ:
-        raw = git_file.read_text(encoding="utf-8").removeprefix("gitdir:").strip()
-        git_dir = (worktree / raw).resolve()
-        os.environ["ROOT_PATH"] = str(git_dir.parents[2])
+    _set_data_root()
     config, context = get_config_context(config_path, use_cache=False, save=False)
     config.model.assessment.output_dir = str(output.resolve())
     config.model.assessment.stage = stage

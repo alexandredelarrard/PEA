@@ -27,6 +27,8 @@ MODELLING = "src/modelling"
 EXPECTED_STEPS = {"__init__.py", "step_long_short.py", "step_assess_long_short.py"}
 EXPECTED_TRANSFORMERS = {
     "__init__.py",
+    "assessment_diagnostics.py",
+    "assessment_report.py",
     "base.py",
     "lightgbm_model.py",
     "random_forest.py",

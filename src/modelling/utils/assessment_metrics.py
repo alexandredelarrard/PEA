@@ -94,9 +94,9 @@ def matched_cohort_returns(cohorts: pd.DataFrame, outcomes: pd.DataFrame, market
 
 
 def moving_block_intervals(daily: pd.DataFrame, horizon: int, repetitions: int, confidence: float, seed: int) -> dict[str, Any]:
-    """Resample contiguous blocks within each original fold; do not bridge fit boundaries."""
+    """Resample contiguous observed sessions within folds, retaining undefined IC until summary."""
     rng = np.random.default_rng(seed)
-    groups = [group.ic.dropna().to_numpy(dtype=float) for _, group in daily.groupby("fold")]
+    groups = [group.ic.to_numpy(dtype=float) for _, group in daily.groupby("fold")]
     groups = [group for group in groups if len(group)]
     answer = {}
     for block in [horizon, 2 * horizon]:
@@ -125,14 +125,15 @@ def moving_block_intervals(daily: pd.DataFrame, horizon: int, repetitions: int, 
 def temporal_diagnostics(
     predictions: pd.DataFrame, models: list[str], horizon: int, window: int, repetitions: int, confidence: float, seed: int
 ) -> tuple[dict[str, Any], pd.DataFrame]:
-    """Daily, year, fold and full-window rolling metrics on finite paired labels."""
+    """Retain all observed sessions; rolling windows require a full set of finite daily ICs."""
     stats, frames = {}, []
     target = predictions.loc[np.isfinite(predictions.y)].copy()
+    sessions = predictions.groupby("date").agg(fold=("fold", "first"), universe=("ticker", "size"))
     for model in models:
         scored = target[["date", "ticker", "y", model]].rename(columns={model: "pred"})
         series = daily_ic_series(scored, "y")
-        daily = series.rename("ic").to_frame().join(predictions.groupby("date").agg(fold=("fold", "first"), universe=("ticker", "size")))
-        daily["paired"] = target.groupby("date").size()
+        daily = series.rename("ic").reindex(sessions.index).to_frame().join(sessions)
+        daily["paired"] = target.groupby("date").size().reindex(daily.index, fill_value=0)
         daily["rolling_ic"] = daily.ic.rolling(window, min_periods=window).mean()
         daily["rolling_ir"] = daily.rolling_ic / daily.ic.rolling(window, min_periods=window).std(ddof=0) * np.sqrt(252 / horizon)
         years = {str(year): summarize_ic(group.ic, horizon) for year, group in daily.groupby(pd.DatetimeIndex(daily.index).year)}

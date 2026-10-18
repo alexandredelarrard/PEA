@@ -32,6 +32,14 @@ tags:
 - [src/data_peers/utils/embeddings.py](../../src/data_peers/utils/embeddings.py) caches descriptions and embeddings.
 - [configs/peers.yml](../../configs/peers.yml) selects basket size, observations, weighting, and correlation/embedding blend.
 
+## Artifact paths
+
+[paths.yml](../../configs/paths.yml) owns `local.paths.peers_dir`, defaulting to `output/peers` relative to the configured data store. An absolute configured directory remains absolute. [define_global_paths](../../src/context.py) exposes the active filename as `context.paths["SECTOR_PEERS_PATH"]`; producers and the shared [cube peer loader](../../src/data_aggregate/utils/common/peers_io.py) use that path, including explicitly injected frozen/test paths.
+
+The shared output folder contains `sector_peers.json` and its retained `sector_peers.BEFORE.json.bak` backup. They belong outside dated modelling runs. Relocation preserves both files' bytes and names; it does not rebuild or reserialize baskets. Stage and verify matching destination copies before activating a changed path, then retire unchanged legacy copies after the ordinary cache loaders succeed. A differing destination is an error requiring reconciliation. No permanent fallback to the old output root is used.
+
+`StepDeducePeers.run()` returns the existing cache before loading prices or calling embedding providers. Description and embedding caches remain in PostgreSQL; see its [orchestrator](../../src/data_peers/step_deduce_peers.py).
+
 ## Dependencies
 
 The module reads prices and the universe through [DataStore](./data-store.md), uses shared market-series utilities, and consumes the embedding client exposed by [GPT extraction](./gpt-extract.md).

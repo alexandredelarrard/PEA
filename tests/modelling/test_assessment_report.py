@@ -1,5 +1,6 @@
 """Artifact-only HTML rendering: complete retained pools, offline assets and strict evidence JSON."""
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -126,6 +127,8 @@ def test_report_is_offline_and_covers_exact_frozen_feature_pool(tmp_path: Path) 
     _report_artifacts(tmp_path)
     config = OmegaConf.create({"model": {"target_type": "zscore"}})
     output = render_assessment(tmp_path, config)
+    manifest = json.loads((tmp_path / "_out" / "report_manifest.json").read_text(encoding="utf-8"))
+    assert hashlib.sha256(output.read_bytes()).hexdigest() == manifest["report_sha256"]
     text = output.read_text(encoding="utf-8")
     raw = re.search(r'<script id="assessment-data" type="application/json">(.*?)</script>', text, re.S)
     assert raw is not None
@@ -143,7 +146,7 @@ def test_report_is_offline_and_covers_exact_frozen_feature_pool(tmp_path: Path) 
     again = render_assessment(tmp_path, config)
     assert again.read_text(encoding="utf-8") == text
     print(
-        "SANITY: offline HTML contains exact retained-feature evidence, matched metrics, selectors and final research step; rerender is deterministic and artifact-only."
+        "SANITY: physical HTML SHA matches its manifest; offline evidence, selectors and final research step remain deterministic and artifact-only."
     )
 
 

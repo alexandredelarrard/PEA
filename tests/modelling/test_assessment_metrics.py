@@ -134,3 +134,93 @@ def test_trend_assessment_distinguishes_flat_and_reversing_curves() -> None:
     assert trend_summary(np.arange(5), -np.arange(5))["shape"] == "decreasing"
     assert trend_summary(np.arange(5), [0, 2, 3, 2, 0])["shape"] == "nonmonotonic"
     print("SANITY: measured flat, directional and reversing PDP shapes have separate interpretations; direction alone is not causal evidence.")
+
+
+@pytest.mark.parametrize(
+    ("levels", "shape", "increasing", "decreasing"),
+    [
+        ([0, 1], "increasing", 1.0, 0.0),
+        ([1, 0], "decreasing", 0.0, 1.0),
+        ([0, 1, 0], "nonmonotonic", 0.5, 0.5),
+        ([1, 0, 1], "nonmonotonic", 0.5, 0.5),
+    ],
+)
+@pytest.mark.parametrize("jitter", [0.0, 1e-8])
+def test_trend_plateaus_cannot_outvote_directional_moves(levels: list[int], shape: str, increasing: float, decreasing: float, jitter: float) -> None:
+    values = np.repeat(levels, 15).astype(float)
+    values += np.resize([0.0, jitter, -jitter], len(values))
+    result = trend_summary(np.arange(len(values)), values)
+    assert result["shape"] == shape
+    assert result["increasing_fraction"] == increasing
+    assert result["decreasing_fraction"] == decreasing
+    assert result["points"] == len(values)
+    assert result["span"] == pytest.approx(np.ptp(values))
+    if shape != "nonmonotonic":
+        assert np.sign(result["rho"]) == (1 if shape == "increasing" else -1)
+    print(f"SANITY: {levels} plateaus with jitter {jitter:g} remain {shape}; only material directional moves vote.")
+
+
+@pytest.mark.parametrize(("direction", "shape"), [(1, "increasing"), (-1, "decreasing")])
+def test_trend_preserves_gentle_cumulative_direction(direction: int, shape: str) -> None:
+    values = 1 + direction * np.linspace(0, 4e-6, 30)
+    tolerance = np.max(np.abs(values)) * 1e-6
+    assert np.max(np.abs(np.diff(values))) < tolerance < np.ptp(values)
+    result = trend_summary(np.arange(len(values)), values)
+    assert result["shape"] == shape
+    assert result["increasing_fraction"] == (1 if direction > 0 else 0)
+    assert result["decreasing_fraction"] == (1 if direction < 0 else 0)
+    assert result["rho"] == pytest.approx(direction)
+    print(f"SANITY: individually sub-tolerance steps retain their meaningful cumulative {shape} direction.")
+
+
+def test_trend_retains_gentle_moves_alongside_a_material_reversal() -> None:
+    values = np.r_[1 + np.linspace(0, 4e-6, 30), 1 + 2e-6]
+    result = trend_summary(np.arange(len(values)), values)
+    assert result["shape"] == "nonmonotonic"
+    assert 0 < result["increasing_fraction"] < 0.9
+    assert 0 < result["decreasing_fraction"] < 0.9
+    print("SANITY: cumulative gentle increases and a material reversal both count; neither can disappear behind the tolerance.")
+
+
+def test_trend_retains_directional_threshold_and_flat_tolerance() -> None:
+    directional = trend_summary(np.arange(11), [0, 1, 2, 3, 2, 3, 4, 5, 6, 7, 8])
+    assert directional["shape"] == "increasing"
+    assert directional["increasing_fraction"] == pytest.approx(0.9)
+    assert directional["decreasing_fraction"] == pytest.approx(0.1)
+    for values in [np.asarray([0, 1e-9, -1e-9]), 1 + np.asarray([0, 1e-7, -1e-7])]:
+        flat = trend_summary(np.arange(len(values)), values)
+        assert flat == {"shape": "flat", "points": len(values), "rho": None, "span": float(np.ptp(values))}
+    print("SANITY: the existing 90% directional threshold and absolute/relative flat tolerances remain intact.")
+
+
+def test_trend_without_a_material_anchor_move_has_no_direction_votes() -> None:
+    values = 1 + np.asarray([0, 0.75e-6, -0.75e-6])
+    assert np.ptp(values) > np.max(np.abs(values)) * 1e-6
+    result = trend_summary(np.arange(len(values)), values)
+    assert result["shape"] == "nonmonotonic"
+    assert result["increasing_fraction"] == result["decreasing_fraction"] == 0.0
+    print(
+        "SANITY: a centered reversing curve can span the tolerance without leaving its first anchor; zero material moves cast zero direction votes."
+    )
+
+
+@pytest.mark.parametrize(
+    ("x", "y", "points"),
+    [([], [], 0), ([0], [1], 1), ([1, 1], [0, 1], 2), ([0, 1], [np.nan, np.inf], 0), ([0, np.inf], [1, 2], 1)],
+)
+def test_trend_requires_two_finite_pairs_with_distinct_x(x: list[float], y: list[float], points: int) -> None:
+    assert trend_summary(x, y) == {"shape": "unsupported", "points": points, "rho": None, "span": None}
+    print(f"SANITY: {points} usable pairs without distinct supported x values retain the unsupported artifact shape.")
+
+
+def test_trend_sorts_and_filters_only_finite_pairs() -> None:
+    result = trend_summary([3, np.nan, 1, 2, 4, 5, 6], [0, 8, 1, 1, np.nan, np.inf, 0])
+    assert result == {
+        "shape": "decreasing",
+        "points": 4,
+        "rho": pytest.approx(-2 / np.sqrt(5)),
+        "span": 1.0,
+        "increasing_fraction": 0.0,
+        "decreasing_fraction": 1.0,
+    }
+    print("SANITY: unsorted/nonfinite observations leave four sorted finite pairs and the same decreasing plateau direction.")

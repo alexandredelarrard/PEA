@@ -160,7 +160,11 @@ def temporal_diagnostics(
 
 
 def trend_summary(x: Any, y: Any) -> dict[str, Any]:
-    """Describe measured curve shape with numerical tolerance, without making a causal claim."""
+    """Describe measured curve shape without making a causal claim.
+
+    Direction fractions count moves beyond tolerance from the last retained level;
+    intervening plateaus cast no votes, gentle steps accumulate, and no moves gives zero fractions.
+    """
     x, y = np.asarray(x, dtype=float), np.asarray(y, dtype=float)
     good = np.isfinite(x) & np.isfinite(y)
     x, y = x[good], y[good]
@@ -172,8 +176,13 @@ def trend_summary(x: Any, y: Any) -> dict[str, Any]:
     tolerance = max(1e-8, float(np.max(np.abs(y))) * 1e-6)
     if span <= tolerance:
         return {"shape": "flat", "points": len(x), "rho": None, "span": span}
-    changes = np.diff(y)
-    increasing, decreasing = float(np.mean(changes >= -tolerance)), float(np.mean(changes <= tolerance))
+    levels = [y[0]]
+    for value in y[1:]:
+        if abs(value - levels[-1]) > tolerance:
+            levels.append(value)
+    changes = np.diff(levels)
+    count = max(1, len(changes))
+    increasing, decreasing = float(np.sum(changes > 0) / count), float(np.sum(changes < 0) / count)
     rho = float(pd.Series(x).corr(pd.Series(y), method="spearman"))
     shape = "increasing" if increasing >= 0.9 else "decreasing" if decreasing >= 0.9 else "nonmonotonic"
     return {"shape": shape, "points": len(x), "rho": rho, "span": span, "increasing_fraction": increasing, "decreasing_fraction": decreasing}

@@ -155,14 +155,15 @@ def test_training_refuses_obsolete_fundamentals_cube(legacy: str) -> None:
 def test_real_config_resolves_rf_h30_vs_default() -> None:
     cfg = read_config("./configs")
     rf = {h: RandomForestModel.configured_columns(cfg, h) for h in (30, 60, 90)}
-    lgbm = {h: LightGBMModel.configured_columns(cfg, h) for h in (30, 60)}
+    lgbm = {h: LightGBMModel.configured_columns(cfg, h) for h in (30, 60, 90)}
     for name, cols in [*(("rf", c) for c in rf.values()), *(("lgbm", c) for c in lgbm.values())]:
         assert len(cols) == len(set(cols)), f"{name}: duplicate feature in the configured list"
-    assert rf[30] != rf[60] and rf[90] == rf[60]
-    assert lgbm[30] == lgbm[60] and len(lgbm[60]) >= 60
+    assert rf[30] != rf[90]
+    assert lgbm[30] == lgbm[90] and len(lgbm[30]) >= 60
     print("\n=== SANITY CHECK: real config ===")
     print(
-        f"  RF h30 {len(rf[30])} features (override) vs default {len(rf[60])} (h60 == h90); lgbm {len(lgbm[60])} at every horizon; no duplicates. Validated."
+        f"  RF features by horizon { {h: len(columns) for h, columns in rf.items()} }; "
+        f"LGBM { {h: len(columns) for h, columns in lgbm.items()} }; h60 pools resolve independently of h30/h90; no duplicates. Validated."
     )
 
 

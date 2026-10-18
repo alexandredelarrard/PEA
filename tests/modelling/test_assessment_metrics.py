@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.modelling.utils import assessment_metrics
 from src.modelling.utils.assessment_metrics import formation_cohorts, forward_returns, matched_cohort_returns, temporal_diagnostics, trend_summary
 
 
@@ -93,6 +94,86 @@ def test_weak_window_requires_a_full_window_but_not_finite_ir(sessions: int) -> 
         assert np.isneginf(weakest["worst_rolling_ic_ir"])
     print(
         "SANITY: fewer than 252 valid daily ICs leave the weak period unsupported; a full constant-IC window remains identifiable with undefined IR."
+    )
+
+
+@pytest.mark.parametrize(("gap", "missing_labels"), [(0, True), (126, True), (252, True), (126, False)])
+def test_rolling_windows_preserve_undefined_observed_sessions(gap: int, missing_labels: bool) -> None:
+    dates = pd.bdate_range("2000-01-03", periods=253)
+    predictions = pd.DataFrame(
+        {
+            "date": np.repeat(dates, 4),
+            "ticker": list("ABCD") * len(dates),
+            "y": [0.0, 1.0, 2.0, 3.0] * len(dates),
+            "member": np.tile([0.0, 1.0, 2.0, 3.0, 3.0, 2.0, 1.0, 0.0], 127)[: 4 * len(dates)],
+            "fold": 1,
+        }
+    )
+    predictions.loc[predictions.date == dates[gap], "y" if missing_labels else "member"] = np.nan if missing_labels else 0.0
+    stats, daily = temporal_diagnostics(predictions.iloc[::-1], ["member"], 60, 252, 0, 0.95, 4325)
+    assert daily.date.tolist() == dates.tolist()
+    assert daily.loc[gap, "paired"] == (0 if missing_labels else 4)
+    expected_ic = (-1.0) ** np.arange(len(dates))
+    expected_ic[gap] = np.nan
+    np.testing.assert_allclose(daily.ic, expected_ic, equal_nan=True)
+    supported = [end for end in (251, 252) if not end - 251 <= gap <= end]
+    assert daily.loc[daily.rolling_ic.notna(), "date"].tolist() == [dates[end] for end in supported]
+    assert daily.loc[daily.rolling_ir.notna(), "date"].tolist() == [dates[end] for end in supported]
+    np.testing.assert_allclose(daily.rolling_ic.dropna(), 0.0)
+    np.testing.assert_allclose(daily.rolling_ir.dropna(), 0.0)
+    summary = stats["member"]
+    assert summary["n_days"] == summary["years"]["2000"]["n_days"] == summary["folds"]["1"]["n_days"] == 252
+    assert summary["worst_rolling_n_days"] == (252 if supported else 0)
+    assert summary["worst_rolling_start"] == (dates[supported[0] - 251] if supported else None)
+    assert summary["worst_rolling_end"] == (dates[supported[0]] if supported else None)
+    assert summary["worst_rolling_mean_ic"] == (0.0 if supported else None)
+    assert summary["worst_rolling_ic_ir"] == (0.0 if supported else None)
+    print(f"SANITY: undefined session {gap} stays in all 253 observed slots; only {len(supported)} genuinely consecutive full windows are supported.")
+
+
+def test_bootstrap_preserves_undefined_slots_until_sampled_statistics(monkeypatch: pytest.MonkeyPatch) -> None:
+    daily = pd.DataFrame({"fold": [1] * 4 + [2] * 4, "ic": [0.1, np.nan, 0.3, np.nan, 0.5, np.nan, 0.7, np.nan]})
+    original = assessment_metrics.summarize_ic
+    sampled: list[np.ndarray] = []
+
+    def capture(values: pd.Series, horizon: int) -> dict:
+        sampled.append(values.to_numpy(dtype=float))
+        return original(values, horizon)
+
+    monkeypatch.setattr(assessment_metrics, "summarize_ic", capture)
+    result = assessment_metrics.moving_block_intervals(daily, 2, 1, 0.95, 4325)
+    assert len(sampled) == 2
+    for values in sampled:
+        assert len(values) == 8 and np.isnan(values).sum() == 4
+        assert np.isnan(values[:4]).sum() == np.isnan(values[4:]).sum() == 2
+        assert set(values[:4][np.isfinite(values[:4])]) <= {0.1, 0.3}
+        assert set(values[4:][np.isfinite(values[4:])]) <= {0.5, 0.7}
+    assert all(np.isfinite(result[block]["mean_ic"]).all() for block in ("2", "4"))
+    print(
+        "SANITY: bootstrap blocks retain all eight fold-local slots and four gaps; unsupported observations are filtered only inside the sampled statistic."
+    )
+
+
+def test_all_finite_bootstrap_retains_seeded_blocks_and_interval_values() -> None:
+    daily = pd.DataFrame({"fold": [1] * 4 + [2] * 4, "ic": np.arange(1, 9) / 10})
+    result = assessment_metrics.moving_block_intervals(daily, 2, 4, 0.5, 4325)
+    samples = np.asarray(
+        [
+            [0.3, 0.4, 0.1, 0.2, 0.5, 0.6, 0.7, 0.8],
+            [0.2, 0.3, 0.2, 0.3, 0.5, 0.6, 0.5, 0.6],
+            [0.1, 0.2, 0.3, 0.4, 0.6, 0.7, 0.5, 0.6],
+            [0.3, 0.4, 0.2, 0.3, 0.6, 0.7, 0.7, 0.8],
+        ]
+    )
+    for block, values in [(2, samples), (4, np.tile(daily.ic.to_numpy(), (4, 1)))]:
+        means = values.mean(axis=1)
+        ratios = means / values.std(axis=1) * np.sqrt(252 / 2)
+        np.testing.assert_allclose(result[str(block)]["mean_ic"], np.quantile(means, [0.25, 0.75]), rtol=0, atol=1e-14)
+        np.testing.assert_allclose(result[str(block)]["ic_ir"], np.quantile(ratios, [0.25, 0.75]), rtol=0, atol=1e-12)
+        assert result[str(block)]["block_sessions"] == block
+        assert result[str(block)]["repetitions"] == 4 and result[str(block)]["confidence"] == 0.5
+    print(
+        "SANITY: all-finite intervals match the original seed-4325 enumerated blocks and independent population-std arithmetic for both block lengths."
     )
 
 

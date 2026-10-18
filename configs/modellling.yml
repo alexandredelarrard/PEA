@@ -52,7 +52,7 @@ model:
     - [2013-01-01, 2018-12-31]
     - [2019-01-01, 2021-12-31]
     prune_fraction: 0.20
-    max_rounds: 10
+    max_rounds: 2             # Two pruning rounds plus initial pool: three tested pools per family.
     patience: 2
     read_chunksize: 25000      # I/O batching only; no change to fitting rows or model parameters.
     categorical_features: [sector, industry_group]

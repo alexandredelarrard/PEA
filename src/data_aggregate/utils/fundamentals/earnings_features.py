@@ -58,21 +58,10 @@ def _report_state_to_daily(
 
 
 def _supported_eps_basis(df_reports: pd.DataFrame, share_basis: ShareBasis | None) -> pd.Series:
-    """Reject report EPS whose split vintage or quoted-security units are unsupported."""
+    """Retain report EPS with compatible quoted-security units, irrespective of later splits."""
     if share_basis is None:
         return pd.Series(False, index=df_reports.index)
-    dates = df_reports["earnings_date"]
-    units = share_basis.factor(df_reports["ticker"], dates, "units")
-    df_splits = share_basis.actual
-    if df_splits.empty:
-        return units.eq(1.0)
-    df_splits = df_splits.loc[pd.to_numeric(df_splits["value"], errors="coerce").ne(1.0)]
-    if df_splits.empty:
-        return units.eq(1.0)
-    last_split = pd.to_datetime(df_splits["date"]).groupby(df_splits["ticker"]).max()
-    boundary = pd.to_datetime(df_reports["ticker"].map(last_split))
-    # shortcut: the archive has no EPS split-vintage evidence; retain only post-last-split reports.
-    return units.eq(1.0) & (boundary.isna() | dates.ge(boundary))
+    return share_basis.factor(df_reports["ticker"], df_reports["earnings_date"], "units").eq(1.0)
 
 
 def days_since_earnings(df: pd.DataFrame, idx: pd.DatetimeIndex, cap_days: int = 180) -> pd.DataFrame:

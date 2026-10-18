@@ -105,15 +105,18 @@ def test_invalid_new_state_clears_old_values_and_report_state_expires() -> None:
 
 
 @pytest.mark.parametrize("split_ratio", [4.0, 0.1])
-def test_unknown_eps_units_across_true_or_reverse_splits_are_masked(split_ratio: float) -> None:
+def test_future_splits_do_not_change_report_consensus_fields(split_ratio: float) -> None:
     idx = pd.bdate_range("2024-10-30", "2025-02-07")
+    baseline = _fields(_history(), idx)
     fields = _fields(_history(), idx, _basis([("A", "2025-01-15", split_ratio)]))
-    assert pd.isna(fields["reported_expected_eps_yield"].loc["2024-11-04", "A"])
+    for name in baseline:
+        pd.testing.assert_frame_equal(fields[name], baseline[name])
+    assert fields["reported_expected_eps_yield"].loc["2024-11-04", "A"] == pytest.approx(0.015)
     assert fields["reported_expected_eps_yield"].loc["2025-02-03", "A"] == pytest.approx(0.02)
-    assert pd.isna(fields["reported_expected_ttm_yield"].loc["2025-02-03", "A"])
-    assert pd.isna(fields["reported_expected_eps_growth_qoq"].loc["2025-02-03", "A"])
+    assert fields["reported_expected_ttm_yield"].loc["2025-02-03", "A"] == pytest.approx((2.0 + 1.1 + 1.2 + 1.4) / 100.0)
+    assert fields["reported_expected_eps_growth_qoq"].loc["2025-02-03", "A"] == pytest.approx(2.0 / 1.4 - 1)
     assert fields["eps_surprise_last"].loc["2024-11-04", "A"] == -7.0
-    print(f"Sanity: unresolved EPS units before a genuine {split_ratio:g} split are masked; safe post-split quarterly yields resume.")
+    print(f"Sanity: adding a later {split_ratio:g} split leaves every report feature unchanged, including cross-split TTM and growth.")
 
 
 def test_spinoff_restores_price_level_without_rebasing_eps_and_requires_basis() -> None:
@@ -146,6 +149,17 @@ def test_nonunitary_quote_convention_masks_price_ratios() -> None:
     assert pd.isna(fields["reported_expected_eps_yield"].loc["2024-11-06", "A"])
     assert fields["eps_surprise_last"].loc["2024-11-06", "A"] == -7.0
     print("Sanity: a later nonunitary quoted-security conversion cannot silently change the EPS/price units.")
+
+
+def test_nonunitary_report_units_keep_eps_comparisons_unknown() -> None:
+    idx = pd.bdate_range("2024-10-30", "2024-11-08")
+    basis = _basis()
+    basis.policies["A"] = {"quote_units": {"date": "2024-11-06", "before": 2.0, "after": 1.0}}
+    fields = _fields(_history(), idx, basis)
+    for name in ("reported_expected_eps_yield", "reported_expected_ttm_yield", "reported_expected_eps_growth_qoq"):
+        assert fields[name].isna().all().all()
+    assert fields["eps_surprise_last"].loc["2024-11-06", "A"] == -7.0
+    print("Sanity: incompatible units at report time still block EPS comparisons after quote units become compatible.")
 
 
 def test_negative_estimate_is_signed_and_nonpositive_prior_growth_is_unknown() -> None:

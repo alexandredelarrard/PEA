@@ -7,7 +7,7 @@ tags:
   - reference
   - modelling
   - portfolio
-source_commit: 78f87d838cc2ef03809db3dc47b9f425c7f289ab
+source_commit: 91e9a964a921d58c2728380c7dc4c540e5b384cd
 ---
 # Modelling, strategies, and portfolio
 
@@ -213,6 +213,10 @@ Historical benchmark metrics are sanity bars, not acceptance targets; data cover
 ## Explicit development and sealed assessment
 
 [StepAssessLongShort](../../src/modelling/steps/step_assess_long_short.py) provides `modelling assess` with development, evaluation and artifact-only report stages. The h60 z-score protocol develops from 1999 using five forward crisis-aware folds; every fitted outcome ends by 2021-12-31. The frozen cutoff models evaluate formation dates from 2022-01-03. These clocks differ from ordinary training's feature ceiling and production full-history refit.
+
+An outcome cutoff limits each training label's forward-return endpoint: `label_end <= outcome_cutoff`. A December 2021 feature whose h60 label requires 2022 returns is excluded. After five-fold selection, `StepLongShort._fit_final()` fits fresh family members on all eligible development rows, with LightGBM using the median fold-selected boosting count and no sealed-sample early stopping. These cutoff models remain fixed throughout evaluation.
+
+The sealed binned mean summarizes the cutoff model's signed SHAP contributions on sampled sealed observations. Continuous inputs use up to ten quantile groups with median feature value and mean contribution; low-cardinality and categorical inputs retain observed states. Original-fold lines use their own development validation periods. The separate PDP varies one input and averages cutoff predictions over background rows. See [assessment diagnostics](../../src/modelling/transformers/assessment_diagnostics.py) and [final fitting](../../src/modelling/steps/step_long_short.py).
 
 Each family can retain its own numeric and categorical pool. Development optimizes pooled daily Spearman IC-IR, defined as mean daily IC divided by population IC dispersion times sqrt(252/60); it is not portfolio-return IR. Repeated pruning makes development results selection-biased. Evaluation cannot choose another pool. Benchmark cohorts are fixed highest-prediction ceil(N/10) equal-weight names before outcomes; every h60 price path and matched SPY window must be supported. Missing selected outcomes retain their original missing weights. Overlapping gross windows are not compounded into a portfolio curve.
 

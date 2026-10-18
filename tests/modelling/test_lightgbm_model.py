@@ -49,7 +49,7 @@ def test_fit_save_load_predict_roundtrip_and_evaluate(tmp_path: Path) -> None:
 def test_features_are_configured_order_present_and_never_meta() -> None:
     panel = signal_panel()
     panel["target_rank_h60"] = 0.5  # a target column can never become a feature
-    cfg_cols = ["f3", "target_rank_h60", "missing_col", "f0"]
+    cfg_cols = ["f3", "target_rank_h60", "missing_col", "f0", "sector"]
     model, _, _ = _fit({"lgbm": {"columns": cfg_cols}}, panel=panel)
     assert model.features == ["f3", "f0", "sector"], model.features
     assert model.categoricals == ["sector"]
@@ -137,7 +137,7 @@ def test_load_data_projects_configured_columns(sqlite_store: Any) -> None:
     panel = signal_panel(n_days=5, n_tickers=4)
     panel["unused"] = 1.0
     sqlite_store.replace(Tables.cube, panel)
-    model = LightGBMModel(ctx(sqlite_store), make_config(lgbm={"columns": ["f1", "f0", "not_in_table"]}), "lgbm", 30)
+    model = LightGBMModel(ctx(sqlite_store), make_config(lgbm={"columns": ["f1", "f0", "not_in_table", "sector"]}), "lgbm", 30)
     frame = model.load_data(Tables.cube)
     assert frame is not None
     assert list(frame.columns) == ["date", "ticker", "f1", "f0", "sector"]

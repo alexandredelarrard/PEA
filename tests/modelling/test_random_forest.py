@@ -54,17 +54,19 @@ def test_column_chain_rf_override_then_rf_then_lgbm() -> None:
     cfg_no_rf = OmegaConf.create({"lgbm": cfg.lgbm, "random_forest": {"columns_by_horizon": {30: ["r30"]}}})
     assert RandomForestModel.configured_columns(cfg_no_rf, 60) == ["l1", "l2"]
     assert RandomForestModel.configured_columns(cfg_no_rf, 90) == ["l90"]
-    assert RandomForestModel.configured_categoricals(OmegaConf.create({"lgbm": {"categoricals": ["sector"]}, "random_forest": {}})) == ["sector"]
+    assert RandomForestModel.configured_categoricals(
+        OmegaConf.create({"lgbm": {"columns": ["sector"], "categoricals": ["sector"]}, "random_forest": {}})
+    ) == ["sector"]
     print("\n=== SANITY CHECK: RF column chain ===")
     print("  rf.columns_by_horizon -> rf.columns -> lgbm.columns_by_horizon -> lgbm.columns; categoricals from lgbm. Validated.")
 
 
 def test_explicit_empty_family_horizon_lists_do_not_fall_back() -> None:
-    cfg = make_config(random_forest={"columns_by_horizon": {60: []}, "categoricals_by_horizon": {60: []}})
+    cfg = make_config(random_forest={"columns_by_horizon": {60: []}})
     assert RandomForestModel.configured_columns(cfg, 60) == []
     assert RandomForestModel.configured_categoricals(cfg, 60) == []
     assert RandomForestModel.configured_categoricals(cfg, 30) == ["sector"]
-    print("SANITY: explicit empty h60 pools stay empty; a missing override retains legacy categorical fallback.")
+    print("SANITY: explicit empty h60 pools stay empty; missing overrides use the default feature list and shared category registry.")
 
 
 def test_random_forest_member_saves_and_reloads_into_the_ensemble(tmp_path: Path) -> None:

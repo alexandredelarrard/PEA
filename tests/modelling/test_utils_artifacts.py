@@ -34,7 +34,7 @@ def test_selection_identity_covers_new_cutoff_fold_and_feature_controls() -> Non
     for patch in [
         {"train": {"outcome_cutoff": "2021-12-31"}},
         {"model": {"cv": {"test_windows": [["2000-01-01", "2002-12-31"]]}}},
-        {"random_forest": {"categoricals_by_horizon": {60: ["industry_group"]}}},
+        {"lgbm": {"categoricals": ["industry_group"]}},
         {"random_forest": {"columns_by_horizon": {60: []}}},
     ]:
         changed = OmegaConf.merge(base, OmegaConf.create(patch))

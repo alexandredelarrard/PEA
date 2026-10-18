@@ -98,7 +98,8 @@ def _reconcile_configuration(config: DictConfig, ledger: dict, findings: list[Fi
         if columns is None and family == "random_forest":
             columns = _configured_h60(current.get("lgbm", {}))
         columns = columns or []
-        categories = [] if family == "elasticnet" else [name for name in current.get("lgbm", {}).get("categoricals", []) if name in columns]
+        registry = current.get("lgbm", {}).get("categoricals") or []
+        categories = [] if family == "elasticnet" else [name for name in columns if name in registry]
         for kind, configured, frozen in [("columns", columns, selected["features"]), ("categoricals", categories, categoricals)]:
             _finding(
                 findings,

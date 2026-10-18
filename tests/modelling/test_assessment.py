@@ -114,12 +114,10 @@ def test_input_identity_is_row_order_independent_and_value_sensitive() -> None:
 @pytest.mark.parametrize("old_override", ["", "  columns_by_horizon:\n    30: [keep]\n", "  columns_by_horizon:\n    30: [keep]\n    60: []\n"])
 def test_h60_yaml_edit_preserves_other_horizons_parameters_and_comments(old_override: str) -> None:
     original = "# preserve comment\nlgbm:\n  learning_rate: 0.01\n" + old_override + "  monotonic:\n    enabled: true\n    features: {old: 1}\n"
-    updated = set_horizon_features(original, "lgbm", "columns_by_horizon", ["beta_USD/EUR 1", 'quoted"feature'])
-    updated = set_horizon_features(updated, "lgbm", "categoricals_by_horizon", [])
+    updated = set_horizon_features(original, "lgbm", "columns_by_horizon", ["beta_USD/EUR 1", 'quoted"feature', "sector"])
     before, after = yaml.safe_load(original)["lgbm"], yaml.safe_load(updated)["lgbm"]
     assert after["learning_rate"] == before["learning_rate"] and after["monotonic"] == before["monotonic"]
-    assert after["columns_by_horizon"][60] == ["beta_USD/EUR 1", 'quoted"feature']
-    assert after["categoricals_by_horizon"][60] == []
+    assert after["columns_by_horizon"][60] == ["beta_USD/EUR 1", 'quoted"feature', "sector"]
     if old_override:
         assert after["columns_by_horizon"][30] == ["keep"]
     assert "# preserve comment" in updated

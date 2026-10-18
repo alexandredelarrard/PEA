@@ -125,6 +125,8 @@ lgbm:
   - f_log_ceo_total_comp # to normalize to market cap or revenue of firm
   - f_avg_board_tenure_vs_hist
   - f_insider_ownership_pct # what is that ?
+  - "industry_group"
+  - "sector"
 
   columns_by_horizon:
     60:
@@ -458,7 +460,5 @@ lgbm:
       - "f_ceo_dissent_delta_1y"
       - "f_auditor_vote_dissent"
       - "f_auditor_vote_dissent_delta_1y"
-  categoricals_by_horizon:
-    60:
       - "sector"
       - "industry_group"

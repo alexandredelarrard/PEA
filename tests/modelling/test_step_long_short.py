@@ -131,7 +131,8 @@ def _setup(
 def test_schema_projection_is_present_columns_and_never_a_target() -> None:
     step: Any = object.__new__(StepLongShort)
     step._config = make_config(
-        lgbm={"columns": ["f0", "f_absent", "target_rank_h30", "f1"], "categoricals": ["sector"]}, random_forest={"columns_by_horizon": {30: ["f3"]}}
+        lgbm={"columns": ["f0", "f_absent", "target_rank_h30", "f1", "sector"], "categoricals": ["sector"]},
+        random_forest={"columns_by_horizon": {30: ["f3"]}},
     )
     cube_cols = {"date", "ticker", "f0", "f1", "f2", "f3", "sector", "target_rank_h30", "target_rank_h60", "target_zscore_h60"}
     load_cols, dropped = step._select_load_columns(cube_cols)
@@ -390,8 +391,8 @@ def test_horizon_only_rf_features_and_categories_are_projected(tmp_path: Path, s
         save=False,
         model={"ensemble": ["random_forest"], "horizons": [60]},
         linear={"columns": []},
-        lgbm={"columns": [], "categoricals": []},
-        random_forest={"columns": [], "columns_by_horizon": {60: ["f0"]}, "categoricals_by_horizon": {60: ["f3"]}},
+        lgbm={"columns": [], "categoricals": ["f3"]},
+        random_forest={"columns": [], "columns_by_horizon": {60: ["f0", "f3"]}},
     )
     schema = step._resolve_schema()
     assert schema.horizons == [60] and {"f0", "f3"} <= set(schema.load_cols)

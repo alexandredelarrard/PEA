@@ -42,16 +42,14 @@ def completed_assessment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tup
                 },
                 "lgbm": {
                     "columns": ["legacy_tree"],
-                    "columns_by_horizon": {60: ["tree_signal"]},
-                    "categoricals": ["legacy_category"],
-                    "categoricals_by_horizon": {60: ["industry"]},
+                    "columns_by_horizon": {60: ["tree_signal", "industry"]},
+                    "categoricals": ["industry"],
                     "learning_rate": 0.01,
                     "monotonic": {"enabled": True, "features": [{"tree_signal": 1}]},
                 },
                 "random_forest": {
                     "columns": ["legacy_rf"],
                     "columns_by_horizon": {60: ["rf_signal"]},
-                    "categoricals_by_horizon": {60: []},
                     "num_boost_round": 500,
                 },
                 "linear": {"columns": ["legacy_linear"], "columns_by_horizon": {60: ["linear_signal"]}, "alpha": 0.001},
@@ -66,7 +64,7 @@ def completed_assessment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tup
     ledger = {
         "selected": selected,
         "fixed_parameters": {
-            "lgbm": {"learning_rate": 0.01, "monotonic": {"enabled": True, "features": [{"tree_signal": 1}]}},
+            "lgbm": {"categoricals": ["industry"], "learning_rate": 0.01, "monotonic": {"enabled": True, "features": [{"tree_signal": 1}]}},
             "random_forest": {"num_boost_round": 500},
             "linear": {"alpha": 0.001},
         },
@@ -130,7 +128,13 @@ def test_changed_selected_pool_fails_before_source_replay(
     completed_assessment: tuple[Context, DictConfig, Path, Mock], block: str, kind: str, values: list[str]
 ) -> None:
     context, config, run, replay = completed_assessment
-    config[block][f"{kind}_by_horizon"][60] = values
+    if kind == "categoricals":
+        if block == "lgbm":
+            config.lgbm.categoricals = values
+        else:
+            config[block].columns_by_horizon[60] = ["rf_signal", *values]
+    else:
+        config[block].columns_by_horizon[60] = values
     result = modelling.check_modelling(context, out=run, config=config)
     assert result.status == "fail", result.summary()
     assert any(finding.field == f"{block}.{kind}_h60" for finding in result.findings)
@@ -177,16 +181,15 @@ def test_matching_configuration_respects_empty_pools_and_runtime_cv(
     ledger["selected"]["elasticnet"]["features"] = []
     ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
     for block in ["lgbm", "random_forest"]:
-        for kind in ["columns", "categoricals"]:
-            values = list(config[block][f"{kind}_by_horizon"][60])
-            config[block][f"{kind}_by_horizon"] = {"60" if string_key else 60: values}
+        values = list(config[block].columns_by_horizon[60])
+        config[block].columns_by_horizon = {"60" if string_key else 60: values}
     result = modelling.check_modelling(context, out=run, config=config)
     assert result.status == "pass", result.summary()
     replay.assert_called_once()
     print("SANITY: separate family pools, explicit numeric/category empties and int/string h60 keys agree; forced runtime CV keys do not flag YAML.")
 
 
-@pytest.mark.parametrize("kind", ["columns", "categoricals"])
+@pytest.mark.parametrize("kind", ["columns"])
 def test_missing_horizon_override_uses_actual_fallback(completed_assessment: tuple[Context, DictConfig, Path, Mock], kind: str) -> None:
     context, config, run, replay = completed_assessment
     del config.lgbm[f"{kind}_by_horizon"]
@@ -202,7 +205,6 @@ def test_rf_fallback_is_checked_independently(completed_assessment: tuple[Contex
     context, config, run, replay = completed_assessment
     del config.random_forest.columns_by_horizon
     del config.random_forest.columns
-    del config.random_forest.categoricals_by_horizon
     ledger_path = run / "_out" / "selection.json"
     ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
     ledger["selected"]["random_forest"] = ledger["selected"]["lgbm"]

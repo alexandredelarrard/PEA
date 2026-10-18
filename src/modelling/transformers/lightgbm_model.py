@@ -182,8 +182,8 @@ class LightGBMModel(BaseModel):
     def configured_categoricals(cls, config: DictConfig, horizon: int | None = None) -> list[str]:
         """Selected inputs typed by the shared `lgbm.categoricals` registry."""
         block = cls.lgbm_block(config)
-        selected = set(cls.configured_columns(config, horizon))
-        return [name for name in block.get("categoricals", []) if name in selected]
+        categorical = set(block.get("categoricals") or [])
+        return [name for name in cls.configured_columns(config, horizon) if name in categorical]
 
     def _monotone_constraints(self, feats: list[str]) -> list[int] | None:
         """Shared monotonic directions aligned to this family's fitted horizon inputs."""

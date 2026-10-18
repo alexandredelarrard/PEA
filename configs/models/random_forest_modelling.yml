@@ -84,6 +84,8 @@ random_forest:
   - f_revenue_cagr_3y
   - f_cash_runway_months
   - f_diluted_shares_growth
+  - "industry_group"
+  - "sector"
   # Per-horizon OVERRIDES: the model uses the list for the horizon it is training
   # (its `target_<label>_h<horizon>` cube column) if present here, else `columns` above.
   columns_by_horizon:
@@ -150,6 +152,8 @@ random_forest:
     - f_asset_growth
     - f_sbc_to_buyback
     - f_dso_change
+    - "industry_group"
+    - "sector"
     60:
       - "ret"
       - "sector_ret"
@@ -514,7 +518,5 @@ random_forest:
       - "f_auditor_dissent_gt_05"
       - "f_auditor_dissent_gt_10"
       - "f_auditor_vote_dissent_delta_1y"
-  categoricals_by_horizon:
-    60:
       - "sector"
       - "industry_group"

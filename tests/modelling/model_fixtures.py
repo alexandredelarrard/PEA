@@ -36,7 +36,7 @@ def make_config(**overrides: Any) -> DictConfig:
             "eval_metric": "rmse",
             "categoricals": ["sector"],
             "monotonic": {"enabled": True, "features": [{"f0": 1}, {"f2": -1}]},
-            "columns": list(NUMERIC),
+            "columns": [*NUMERIC, "sector"],
         },
         "random_forest": {
             "task": "regression",

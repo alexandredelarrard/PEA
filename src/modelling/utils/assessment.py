@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import tempfile
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from math import ceil
@@ -38,20 +39,26 @@ def json_value(value: Any) -> Any:
 def write_json(path: Path, payload: Any) -> None:
     """Atomically replace one run-owned evidence file."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(json_value(payload), indent=2, allow_nan=False), encoding="utf-8")
-    temporary.replace(path)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False) as handle:
+            temporary = Path(handle.name)
+            json.dump(json_value(payload), handle, indent=2, allow_nan=False)
+        temporary.replace(path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
-def frame_digest(frame: pd.DataFrame, columns: list[str]) -> str:
-    """Order-independent normalized row-hash SHA256; detects data changes before reusing fits."""
+def frame_digest(frame: pd.DataFrame, columns: list[str], *, downcast: bool = True) -> str:
+    """Order-independent input identity; scoring can retain prediction-relevant float64 values."""
     names = list(dict.fromkeys(["date", "ticker", *sorted(columns)]))
     normalized = frame[names].copy(deep=False)
     for column in names:
         if pd.api.types.is_datetime64_any_dtype(normalized[column]):
             normalized[column] = normalized[column].astype("datetime64[ns]")
-        elif column != "ticker" and str(normalized[column].dtype) != "float32":
-            normalized[column] = pd.to_numeric(normalized[column], errors="raise").astype("float32")
+        elif column != "ticker":
+            normalized[column] = pd.to_numeric(normalized[column], errors="raise").astype("float32" if downcast else "float64")
     rows = pd.util.hash_pandas_object(normalized, index=False).to_numpy(dtype="uint64")
     digest = hashlib.sha256(json.dumps(names).encode())
     digest.update(np.sort(rows).tobytes())

@@ -46,7 +46,7 @@ class SignalBundle:
 
 def _load_models(context: Context, config: DictConfig) -> tuple[dict, dict[int, dict[str, Any]], str, list[int]]:
     """metadata.json + every saved member of the horizons that run trained, among the configured
-    cube horizons (missing members skipped). A member file of a horizon the metadata does not list
+    cube horizons (legacy optional members or verified complete manifests). A horizon the metadata does not list
     belongs to an older run and is never loaded. Raises when nothing is trained or the artifacts
     predate the current pickle layout."""
     directory = models_dir(context, config)
@@ -55,7 +55,7 @@ def _load_models(context: Context, config: DictConfig) -> tuple[dict, dict[int, 
     model_types = list(meta.get("model_types") or [])
     trained = {int(h) for h in meta.get("horizons", [])}
     horizons = [int(h) for h in config.build_cube.targets.horizons if int(h) in trained]
-    return meta, load_ensemble(directory, horizons, model_types), target_type, horizons
+    return meta, load_ensemble(directory, horizons, model_types, metadata=meta), target_type, horizons
 
 
 def _project_cube(context: Context, meta: dict, models: dict, target_type: str, start: pd.Timestamp, end) -> pd.DataFrame:

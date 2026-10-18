@@ -586,7 +586,7 @@ class StepLongShort(Step):
         (predicted_at | date | ticker | horizon | model | predicts_for | pred | rank)."""
         directory = models_dir(self._context, self._config)
         meta = read_metadata(directory)
-        models = load_ensemble(directory, [int(h) for h in meta["horizons"]], list(meta.get("model_types") or self.families))
+        models = load_ensemble(directory, [int(h) for h in meta["horizons"]], list(meta.get("model_types") or self.families), metadata=meta)
         feat_cols = list(meta["feature_cols"])
         cat_cols = list(meta.get("categorical_cols", []))
         train_ic = {int(k): float(v) for k, v in meta.get("train_ic_ir", {}).items()}

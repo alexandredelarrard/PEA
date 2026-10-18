@@ -63,6 +63,11 @@ def render_assessment(run: Path, config: DictConfig) -> Path:
         required = set(ledger["selected"][family]["features"])
         if any(set(item["features"]) != required for item in explanations[family].values()):
             raise ValueError(f"{family}: explanation coverage does not match retained features")
+        for fold in range(1, 6):
+            for values in explanations[family][str(fold)]["features"].values():
+                values.pop("scatter", None)
+        for values in explanations[family]["0"]["features"].values():
+            values["scatter"].pop("date", None)
     daily = {name: pd.read_parquet(artifacts / "eval" / f"daily_{name}.parquet").to_dict("records") for name in ["development", "sealed"]}
     coverage = pd.concat([pd.read_parquet(artifacts / "eval" / f"q{fold}.parquet") for fold in range(6)], ignore_index=True)
     feature_quality = coverage.to_dict("records")

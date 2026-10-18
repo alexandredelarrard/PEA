@@ -89,7 +89,7 @@ def _report_artifacts(root: Path) -> None:
                             "sample_rows": 2,
                             "categorical": name == "z",
                             "constraint": 0,
-                            "scatter": {"x": [0, 1], "shap": [0, 0.2]},
+                            "scatter": {"x": [0, 1], "shap": [0, 0.2], "date": ["2022-01-03", "2023-01-03"]},
                             "binned": {"x": [0, 1], "mean": [0, 0.2]},
                             "shap_trend": {"shape": "unordered categorical" if name == "z" else "increasing", "rho": None if name == "z" else 1},
                             "missing_shap_mean": None,
@@ -125,6 +125,8 @@ def _report_artifacts(root: Path) -> None:
 
 def test_report_is_offline_and_covers_exact_frozen_feature_pool(tmp_path: Path) -> None:
     _report_artifacts(tmp_path)
+    raw_curves = {path: path.read_bytes() for path in (tmp_path / "_out" / "eval").glob("*/curves.json")}
+    assert len(raw_curves) == 12
     config = OmegaConf.create({"model": {"target_type": "zscore"}})
     output = render_assessment(tmp_path, config)
     manifest = json.loads((tmp_path / "_out" / "report_manifest.json").read_text(encoding="utf-8"))
@@ -133,6 +135,15 @@ def test_report_is_offline_and_covers_exact_frozen_feature_pool(tmp_path: Path) 
     raw = re.search(r'<script id="assessment-data" type="application/json">(.*?)</script>', text, re.S)
     assert raw is not None
     payload = json.loads(raw.group(1), parse_constant=lambda token: pytest.fail(f"Non-standard JSON {token}"))
+    for path, original in raw_curves.items():
+        family, fold = path.parent.name.rsplit("_", 1)
+        expected = json.loads(original)
+        for values in expected["features"].values():
+            if fold == "0":
+                values["scatter"] = {"x": [0, 1], "shap": [0, 0.2]}
+            else:
+                del values["scatter"]
+        assert payload["explanations"][family][fold] == expected
     assert payload["explanations"]["lgbm"]["0"]["features"]["x"]["importance"] == 0.123
     assert payload["selection_importance"]["lgbm"]["l0"]["z"] == 0
     assert payload["market"][0]["mean_excess"] == pytest.approx(0.05)
@@ -145,8 +156,9 @@ def test_report_is_offline_and_covers_exact_frozen_feature_pool(tmp_path: Path) 
     assert "document.documentElement.dataset.reportReady" in text
     again = render_assessment(tmp_path, config)
     assert again.read_text(encoding="utf-8") == text
+    assert {path: path.read_bytes() for path in raw_curves} == raw_curves
     print(
-        "SANITY: physical HTML SHA matches its manifest; offline evidence, selectors and final research step remain deterministic and artifact-only."
+        "SANITY: unused scatter/date fields are omitted; raw curve bytes and all visible inputs remain unchanged, with deterministic offline HTML and matching SHA."
     )
 
 

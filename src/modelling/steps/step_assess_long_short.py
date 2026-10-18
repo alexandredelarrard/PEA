@@ -1,44 +1,39 @@
-"""Run isolated fixed-parameter feature selection, then sealed h60 evaluation and reporting."""
+"""Assess saved original folds and a fixed cutoff ensemble; fitting belongs to StepLongShort."""
 
 from __future__ import annotations
 
-import ast
 import gc
-import hashlib
-import inspect
 import json
-import textwrap
-import time
+import platform
 from importlib.metadata import version
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import numpy as np
 import pandas as pd
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 
 from src.context import Context
+from src.data_aggregate.utils.assemble.cube import target_column
 from src.data_store.schema import Tables
-from src.modelling.steps.step_long_short import StepLongShort
-from src.modelling.transformers import BaseModel, model_class
-from src.modelling.transformers.assessment_diagnostics import explain_tree, period_evidence
+from src.modelling.transformers import BaseModel, LinearRegression
+from src.modelling.transformers.assessment_diagnostics import explain_linear, explain_tree
 from src.modelling.transformers.assessment_report import render_assessment
-from src.modelling.transformers.monitor import shap_row_values, shap_score_scale
-from src.modelling.utils.artifacts import load_member, member_path, save_member
-from src.modelling.utils.assessment import (
-    assess_candidate,
-    audit_features,
-    balanced_sample_positions,
-    frame_digest,
-    prune_pool,
-    set_horizon_features,
-    summarize_ic,
-    write_json,
+from src.modelling.utils.artifacts import (
+    METADATA_FILE,
+    file_identity,
+    fitting_source_identity,
+    load_ensemble,
+    read_metadata,
+    read_run,
+    run_directory,
+    selection_signature,
+    verify_inventory,
 )
-from src.modelling.utils.assessment_metrics import formation_cohorts, forward_returns, matched_cohort_returns, temporal_diagnostics
+from src.modelling.utils.assessment import balanced_sample_positions, frame_digest, write_json
+from src.modelling.utils.assessment_metrics import temporal_diagnostics
 from src.modelling.utils.cv import label_end_dates
 from src.modelling.utils.ensemble import ensemble_predict
-from src.modelling.utils.features import design_matrix
 from src.modelling.utils.panel import load_frame
 from src.utils.step import Step
 
@@ -59,883 +54,299 @@ class StepAssessLongShort(Step):
     def __init__(self, context: Context, config: DictConfig) -> None:
         super().__init__(context=context, config=config)
         self._options = config.model.assessment
-        self._output = Path(str(self._options.output_dir)).resolve()
-        root = Path(context.paths["ROOT"]).resolve()
-        if not self._output.is_relative_to(root / "reports" / "validate"):
-            raise ValueError("Assessment output must stay under the project's reports/validate directory")
-        if int(self._options.horizon) != 60 or str(config.model.target_type) != "zscore":
-            raise ValueError("This assessment requires the approved h60 z-score target")
+        self._output = run_directory(context, config)
+        self._store = _ReadOnlyStore(context.store)
 
     def run(self) -> Path:
-        """Keep application state isolated even if a candidate or diagnostic fails."""
-        original_store, original_paths = self._context.store, self._context.paths
-        store = _ReadOnlyStore(original_store)
-        self._output.mkdir(parents=True, exist_ok=True)
-        try:
-            self._context.store = cast(Any, store)
-            self._context.paths = dict(original_paths)
-            self._context.paths["OUTPUT_DIR"] = self._output / "_out"
-            stage = str(self._options.get("stage", "development"))
-            if stage in {"all", "development"}:
-                self._development()
-            if stage in {"all", "evaluation"}:
-                self._evaluation()
-            if stage in {"all", "report"}:
-                self._report()
-            if stage not in {"all", "development", "evaluation", "report"}:
-                raise ValueError(f"Unknown assessment stage: {stage}")
-            if store.attempted_mutations:
-                raise RuntimeError("Application mutation attempted during assessment")
-        finally:
-            self._context.store = original_store
-            self._context.paths = original_paths
-            write_json(self._output / "_out" / "isolation.json", {"attempted_mutations": store.attempted_mutations})
-        return self._output
+        """Read this exact run, produce required analysis and publish only a complete report."""
+        training = read_run(self._output)
+        verify_inventory(self._output, {"cutoff/metadata.json": training["cutoff_metadata"], "training/calendar.parquet": training["calendar_file"]})
+        cutoff = read_metadata(self._output / "cutoff")
+        self._check_training(training, cutoff)
+        identity = self._identity(training)
+        state_path = self._output / "assessment/metadata.json"
+        if state_path.exists():
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            if state["identity"] != identity:
+                raise ValueError("Assessment configuration, model or diagnostic source identity changed")
+            if not self._options.get("resume", False) and not self._options.get("report_only", False):
+                raise FileExistsError("Assessment exists; use matching --resume or --report-only")
+        else:
+            if self._options.get("report_only", False):
+                raise ValueError("Report-only requires a completed saved assessment")
+            state = {"run_id": training["run_id"], "identity": identity, "horizons": {}, "windows": {}, "complete": False}
+            write_json(state_path, state)
+        if self._options.get("report_only", False):
+            if state.get("complete") is not True:
+                raise ValueError("Report-only requires every horizon's completed analysis")
+            self._verify_analysis(state, training)
+            return self._publish_report(state)
 
-    def _runtime_config(self, family: str | None = None, features: list[str] | None = None, categoricals: list[str] | None = None) -> DictConfig:
-        config = cast(DictConfig, OmegaConf.create(OmegaConf.to_container(self._config, resolve=True)))
-        config.model.horizons = [60]
-        config.model.read_chunksize = int(self._options.read_chunksize)
-        config.model.cv.test_windows = self._options.test_windows
-        config.model.cv.retain_models = True
-        config.model.cv.input_digest = True
-        config.model.diagnostics.enabled = False
-        config.model.backtest.enabled = False
-        config.train.start_date = "1999-01-01"
-        config.train.end_date = "2022-01-01"
-        config.train.outcome_cutoff = str(self._options.outcome_cutoff)
-        config.build_cube.output.save_predictions = False
-        config.build_cube.output.save_signal = False
-        config.build_cube.output.save_cv_results = False
-        if family is not None:
-            config.model.ensemble = [family]
-            block = config[model_class(family).config_key]
-            block.columns_by_horizon = {**(block.get("columns_by_horizon") or {}), 60: features or []}
-            if family != "elasticnet":
-                block.categoricals_by_horizon = {**(block.get("categoricals_by_horizon") or {}), 60: categoricals or []}
-        return config
+        calendar = pd.DatetimeIndex(pd.read_parquet(self._output / "training/calendar.parquet").date)
+        current = pd.DatetimeIndex(self._store.distinct(Tables.cube_part_prices, "date")).normalize().sort_values().drop_duplicates()
+        cube_dates = self._store.distinct(Tables.cube, "date", order="desc", limit=1)
+        if not cube_dates:
+            raise ValueError("Assessment requires a populated cube")
+        current = current[current <= pd.Timestamp(cube_dates[0])]
+        if not np.array_equal(calendar.to_numpy(dtype="datetime64[ns]"), current.to_numpy(dtype="datetime64[ns]")):
+            raise ValueError("Observed calendar/frontier changed; start a new modelling run")
+        for horizon in training["horizons"]:
+            self._assess_horizon(int(horizon), training, cutoff, calendar, state)
+            write_json(state_path, state)
+        self._verify_analysis(state, training)
+        return self._publish_report(state)
 
-    def _development_panel(self, eligible: list[str], categoricals: list[str]) -> tuple[StepLongShort, pd.DataFrame]:
-        config = self._runtime_config()
-        for family in config.model.ensemble:
-            block = config[model_class(str(family)).config_key]
-            block.columns_by_horizon = {60: [name for name in eligible if name not in categoricals]}
-            if str(family) != "elasticnet":
-                block.categoricals_by_horizon = {60: categoricals}
-        step = StepLongShort(context=self._context, config=config)
-        schema, _ = step._prepare_training()
-        panel = step._load_horizon(60, schema, False)
-        if panel is None or panel.empty or not np.isfinite(panel[step.label_column].to_numpy(dtype=float)).all():
-            raise ValueError("Development requires finite matured target rows")
-        return step, panel
-
-    def _development(self) -> None:
-        if (self._output / "_out" / "eval" / "started.json").exists():
-            raise ValueError("Sealed evaluation has started; development is permanently closed for this run")
-        audit_path = self._output / "_out" / "eligibility.json"
-        baseline_path = self._output / "_out" / "b0" / "result.json"
-        ledger_path = self._output / "_out" / "selection.json"
-        resume = bool(self._options.get("resume", False))
-        if ledger_path.exists() and not resume:
-            raise ValueError("Selection already exists; explicit --resume is required")
-        ledger = json.loads(ledger_path.read_text(encoding="utf-8")) if ledger_path.exists() else None
-        if ledger is not None and ledger["frozen"] and (not audit_path.exists() or not baseline_path.exists()):
-            raise ValueError("Frozen selection has incomplete development artifacts; preserve this run and investigate")
-        if not audit_path.exists():
-            self._audit()
-        if not baseline_path.exists():
-            self._baseline()
-        audit = json.loads(audit_path.read_text(encoding="utf-8"))
-        baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
-        if baseline["source_hashes"] != self._fit_source_identity() or baseline["seed"] != int(self._config.seed):
-            raise ValueError("Baseline fit source or seed changed; refuse mixed-experiment comparison")
-        self._check_baseline_controls(baseline_path.parent)
-        eligible = [row["feature"] for row in audit["features"] if row["role"] != "excluded"]
-        categorical = [row["feature"] for row in audit["features"] if row["role"] == "categorical"]
-        original_columns = baseline["audit"]["input_digest_columns"]
-        extra = [name for name in original_columns if name not in {"date", "ticker", "y", "label_end"}]
-        load_columns = list(dict.fromkeys(eligible + extra))
-        step, panel = self._development_panel(load_columns, categorical)
-        if frame_digest(panel, original_columns) != baseline["audit"]["input_digest"]:
-            raise ValueError("Current baseline and wide development inputs differ; refuse mixed-snapshot comparison")
-        input_id = frame_digest(panel, [*eligible, step.label_column, "label_end"])
-        self._development_input_digest = input_id
-        ledger = (
-            ledger
-            if ledger is not None
-            else {
-                "input_digest": input_id,
-                "features": eligible,
-                "categoricals": categorical,
-                "families": {},
-                "frozen": False,
-                "fixed_parameters": self._fixed_parameters(),
-                "controls": self._controls(),
-                "target": "target_zscore_h60",
-                "outcome_cutoff": str(self._options.outcome_cutoff),
-            }
+    def _publish_report(self, state: dict[str, Any]) -> Path:
+        """Publish the successful reference only after the required HTML is written."""
+        report = render_assessment(self._output, self._config)
+        state.update({"complete": True, "report_file": file_identity(report), "no_fitting": True})
+        state_path = self._output / "assessment/metadata.json"
+        write_json(state_path, state)
+        write_json(
+            self._output.parent / "latest.json",
+            {
+                "run_id": state["run_id"],
+                "directory": self._output.name,
+                "assessment_metadata": file_identity(state_path),
+                "report_file": state["report_file"],
+            },
         )
-        if ledger["input_digest"] != input_id or ledger["fixed_parameters"] != self._fixed_parameters() or ledger["controls"] != self._controls():
-            raise ValueError("Resume input/fixed-parameter identity mismatch")
-        if ledger["frozen"]:
-            if (
-                set(ledger["families"]) != {"lgbm", "random_forest", "elasticnet"}
-                or ledger.get("selected") != {family: state["best"] for family, state in ledger["families"].items()}
-                or ledger["features"] != eligible
-                or ledger["categoricals"] != categorical
-            ):
-                raise ValueError("Frozen selection pool identity mismatch")
-            final_columns = list(dict.fromkeys([name for candidate in ledger["selected"].values() for name in candidate["features"]]))
-            if not ledger.get("frozen_at") or ledger.get("final_input_digest") != frame_digest(
-                panel, [*final_columns, step.label_column, "label_end"]
-            ):
-                raise ValueError("Frozen selection input identity mismatch")
-            if not (self._output / "_out" / "final" / "result.json").exists():
-                raise ValueError("Frozen selection has incomplete final artifacts; preserve this run and investigate")
-            del panel
-            gc.collect()
-            self._fit_selected(ledger)
-            return
-        write_json(ledger_path, ledger)
-        expected = self._expected_oof(panel)
-        for family in ["lgbm", "random_forest", "elasticnet"]:
-            if family not in ledger["families"]:
-                ledger["families"][family] = self._search(family, panel, expected, eligible, categorical, baseline)
-                write_json(ledger_path, ledger)
-        ledger["frozen"] = True
-        ledger["frozen_at"] = str(pd.Timestamp.now())
-        selected = {family: state["best"] for family, state in ledger["families"].items()}
-        ledger["selected"] = selected
-        write_json(ledger_path, ledger)
-        self._write_selected_config(selected)
-        final_columns = list(dict.fromkeys([name for candidate in selected.values() for name in candidate["features"]]))
-        ledger["final_input_digest"] = frame_digest(panel, [*final_columns, step.label_column, "label_end"])
-        write_json(ledger_path, ledger)
-        del panel
-        gc.collect()
-        self._fit_selected(ledger)
+        self._log.info("Saved-model assessment complete: %s", report)
+        return report
 
-    def _fixed_parameters(self) -> dict[str, Any]:
-        ignored = {"columns", "columns_by_horizon", "categoricals", "categoricals_by_horizon"}
-        return {
-            key: {name: value for name, value in cast(dict, OmegaConf.to_container(self._config[key], resolve=True)).items() if name not in ignored}
-            for key in ["linear", "lgbm", "random_forest"]
-        }
+    def _check_training(self, training: dict[str, Any], cutoff: dict[str, Any]) -> None:
+        if cutoff.get("run_id") != training["run_id"] or cutoff.get("full_history") is not False:
+            raise ValueError("Assessment requires this run's cutoff models")
+        if training["source_hashes"] != fitting_source_identity():
+            raise ValueError("Saved fitting/scoring implementation changed")
+        versions = {"python": platform.python_version(), **{name: version(name) for name in ("lightgbm", "numpy", "pandas")}}
+        if training["library_versions"] != versions:
+            raise ValueError("Saved training library identity changed")
+        if training["target_type"] != "zscore" or self._config.model.target_type != "zscore":
+            raise ValueError("Saved-model assessment requires zscore targets")
+        if list(self._config.model.horizons) != training["horizons"] or list(self._config.model.ensemble) != training["model_types"]:
+            raise ValueError("Configured horizons or families differ from the saved run")
+        signature = selection_signature(self._config, cutoff["feature_cols"] + cutoff["categorical_cols"], training["horizons"])
+        if signature != training["selection_signature"] or cutoff["selection_signature"] != signature:
+            raise ValueError("Configured fitting inputs differ from the saved run")
+        if pd.Timestamp(self._options.evaluation_start) <= pd.Timestamp(cutoff["training_as_of"]):
+            raise ValueError("Backtest must start after every cutoff training outcome")
+        verify_inventory(self._output / "cutoff", cutoff["member_files"])
+        for horizon in training["horizons"]:
+            folds = training["folds"].get(str(horizon), {})
+            if set(folds) != {str(i) for i in range(1, int(self._config.model.cv.n_splits) + 1)}:
+                raise ValueError(f"h{horizon}: incomplete original fold inventory")
+            for fold, expected in folds.items():
+                directory = self._output / f"folds/h{horizon}/fold{fold}"
+                verify_inventory(directory, {METADATA_FILE: expected})
+                meta = read_metadata(directory)
+                if (
+                    meta["run_id"] != training["run_id"]
+                    or meta["horizons"] != [horizon]
+                    or meta["fold"] != int(fold)
+                    or meta["model_types"] != training["model_types"]
+                    or meta["role"] != "fold"
+                ):
+                    raise ValueError("Wrong-run/horizon/fold model metadata")
+                verify_inventory(directory, meta["member_files"])
+                verify_inventory(directory, meta["evidence_files"])
 
-    def _fit_source_identity(self) -> dict[str, str]:
-        root = Path(__file__).resolve().parents[3]
-        paths = [
-            *[
-                root / "src" / "modelling" / "transformers" / name
-                for name in ["__init__.py", "base.py", "lightgbm_model.py", "random_forest.py", "linear_regression.py"]
-            ],
-            *[
-                root / "src" / "modelling" / "utils" / name
-                for name in ["features.py", "panel.py", "cv.py", "ensemble.py", "metrics.py", "artifacts.py"]
-            ],
-            root / "src" / "modelling" / "steps" / "step_long_short.py",
+    def _identity(self, training: dict[str, Any]) -> dict[str, Any]:
+        source_root = Path(__file__).resolve().parents[3]
+        sources = [
+            "steps/step_assess_long_short.py",
+            "transformers/assessment_diagnostics.py",
+            "transformers/monitor.py",
+            "utils/assessment.py",
+            "utils/assessment_metrics.py",
         ]
-        return {str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest() for path in paths}
-
-    def _controls(self) -> dict[str, Any]:
-        config = self._runtime_config()
+        diagnostics = self._config.model.diagnostics
         return {
-            "seed": int(config.seed),
-            "source_hashes": self._fit_source_identity(),
-            "selection_identity": self._selection_identity(),
-            "shared": {
-                key: OmegaConf.to_container(config.model[key], resolve=True) if OmegaConf.is_config(config.model[key]) else config.model[key]
-                for key in ["cv", "weight_decay", "label_column", "target_type", "ensemble"]
-            },
-            "assessment": {
-                key: OmegaConf.to_container(self._options[key], resolve=True) if OmegaConf.is_config(self._options[key]) else self._options[key]
-                for key in ["horizon", "outcome_cutoff", "evaluation_start", "test_windows", "prune_fraction", "max_rounds", "patience"]
-            },
+            "run_id": training["run_id"],
+            "cutoff_metadata": training["cutoff_metadata"],
+            "folds": training["folds"],
+            "calendar_file": training["calendar_file"],
+            "evaluation_start": str(self._options.evaluation_start),
+            "seed": int(self._config.seed),
+            "diagnostics": {key: diagnostics[key] for key in ("shap_sample", "dependence_sample", "pdp_grid", "pdp_background", "rolling_window")},
+            "source_hashes": {name: file_identity(source_root / "src/modelling" / name)["sha256"] for name in sources},
+            "library_versions": {name: version(name) for name in ("numpy", "pandas", "lightgbm", "shap")},
         }
 
-    def _selection_identity(self) -> dict[str, Any]:
-        """Identify selection algorithms and controls independently of baseline fitting and reports."""
-        functions = {
-            f"controller.{name}": getattr(self, name)
-            for name in [
-                "_runtime_config",
-                "_development_panel",
-                "_development",
-                "_fixed_parameters",
-                "_controls",
-                "_selection_identity",
-                "_audit",
-                "_expected_oof",
-                "_search",
-                "_candidate",
-                "_importance",
-            ]
-        }
-        functions.update(
-            {
-                "assessment.audit_features": audit_features,
-                "assessment.assess_candidate": assess_candidate,
-                "assessment.summarize_ic": summarize_ic,
-                "assessment.prune_pool": prune_pool,
-                "assessment.balanced_sample_positions": balanced_sample_positions,
-                "assessment.frame_digest": frame_digest,
-                "monitor.shap_row_values": shap_row_values,
-                "monitor.shap_score_scale": shap_score_scale,
-            }
+    def _windows(self, horizon: int, cutoff: dict[str, Any], calendar: pd.DatetimeIndex) -> list[tuple[int, pd.Timestamp, pd.Timestamp, int]]:
+        end_dates = label_end_dates(calendar, horizon)
+        mature = end_dates.index[end_dates.notna() & (end_dates <= pd.Timestamp(cutoff["training_as_of"]))]
+        windows = []
+        configured = self._config.model.cv.get("test_windows")
+        for number, fold in enumerate(cutoff["selection"][str(horizon)]["folds"], 1):
+            start, stop = configured[number - 1] if configured is not None else (fold["test_start"], fold["test_end"])
+            stop = min(pd.Timestamp(stop), mature[-1], pd.Timestamp(cutoff["train_end"]))
+            windows.append((number, pd.Timestamp(start), stop))
+        counts = np.array([int(((calendar >= start) & (calendar <= stop)).sum()) for _, start, stop in windows])
+        budget = int(self._config.model.diagnostics.shap_sample)
+        if not counts.all() or budget < len(windows):
+            raise ValueError("Each fold needs observed dates and a positive share of the diagnostic sample")
+        quotas = np.maximum(1, np.floor(budget * counts / counts.sum()).astype(int))
+        while quotas.sum() > budget:
+            quotas[np.argmax(quotas)] -= 1
+        for index in np.argsort(-(budget * counts / counts.sum() - quotas))[: budget - int(quotas.sum())]:
+            quotas[index] += 1
+        result = [(number, start, stop, int(quota)) for (number, start, stop), quota in zip(windows, quotas, strict=True)]
+        evaluation_start, evaluation_end = pd.Timestamp(self._options.evaluation_start), calendar[-horizon - 1]
+        if evaluation_end < evaluation_start:
+            raise ValueError(f"h{horizon}: no mature fixed-cutoff evaluation")
+        return [*result, (0, evaluation_start, evaluation_end, budget)]
+
+    def _assess_horizon(
+        self, horizon: int, training: dict[str, Any], cutoff: dict[str, Any], calendar: pd.DatetimeIndex, state: dict[str, Any]
+    ) -> None:
+        output = self._output / f"assessment/h{horizon}"
+        output.mkdir(parents=True, exist_ok=True)
+        frames = [
+            self._score_window(horizon, fold, start, stop, budget, training, state)
+            for fold, start, stop, budget in self._windows(horizon, cutoff, calendar)
+        ]
+        scores = pd.concat(frames, ignore_index=True)
+        # All cross-sections are scored and saved before reading a single future outcome.
+        target = target_column(training["target_type"], horizon)
+        labels = load_frame(
+            self._store,
+            Tables.cube,
+            columns=["date", "ticker", target],
+            since=scores.date.min(),
+            until=scores.date.max(),
+            downcast=False,
+            stream=True,
+            optional=False,
+            chunksize=int(self._options.read_chunksize),
         )
-        return {
-            "shap_sample": int(self._config.model.diagnostics.shap_sample),
-            "assessment": {
-                key: OmegaConf.to_container(self._options[key], resolve=True) if OmegaConf.is_config(self._options[key]) else self._options[key]
-                for key in [
-                    "horizon",
-                    "outcome_cutoff",
-                    "test_windows",
-                    "categorical_features",
-                    "excluded_columns",
-                    "prune_fraction",
-                    "max_rounds",
-                    "patience",
-                ]
-            },
-            "source_hashes": {
-                name: hashlib.sha256(ast.dump(ast.parse(textwrap.dedent(inspect.getsource(function))), include_attributes=False).encode()).hexdigest()
-                for name, function in functions.items()
-            },
-            "versions": {name: version(name) for name in ["numpy", "pandas", "scipy", "lightgbm", "shap", "scikit-learn"]},
+        if labels is None:
+            raise ValueError(f"h{horizon}: missing evaluation targets")
+        labels = labels.rename(columns={target: "y"})
+        predictions = scores.merge(labels, on=["date", "ticker"], how="left", validate="one_to_one")
+        predictions["label_end"] = predictions.date.map(label_end_dates(calendar, horizon))
+        known = predictions.label_end.notna() & ((predictions.fold == 0) | (predictions.label_end <= pd.Timestamp(cutoff["training_as_of"])))
+        predictions.loc[~known | ~np.isfinite(predictions.y), "y"] = np.nan
+        digest = frame_digest(predictions, ["y", "label_end"], downcast=False)
+        previous = state["horizons"].get(str(horizon))
+        if previous is not None:
+            if previous["label_digest"] != digest:
+                raise ValueError("Historical evaluation outcomes changed; refuse stale assessment reuse")
+            verify_inventory(output, previous["files"])
+            return
+        predictions.to_parquet(output / "predictions.parquet", index=False)
+        models = [*training["model_types"], "ensemble"]
+        metrics, daily_frames = {}, []
+        for population, mask in [("validation", predictions.fold > 0), ("backtest", predictions.fold == 0)]:
+            metrics[population], daily = temporal_diagnostics(
+                predictions.loc[mask], models, horizon, int(self._config.model.diagnostics.rolling_window)
+            )
+            daily["population"], daily["horizon"] = population, horizon
+            daily_frames.append(daily)
+        pd.concat(daily_frames, ignore_index=True).to_parquet(output / "daily.parquet", index=False)
+        write_json(output / "metrics.json", metrics)
+        state["horizons"][str(horizon)] = {
+            "label_digest": digest,
+            "files": {name: file_identity(output / name) for name in ("predictions.parquet", "daily.parquet", "metrics.json")},
         }
+        self._log.info("h%s saved validation/backtest IC and IC-IR for %s", horizon, models)
 
-    def _check_baseline_controls(self, output: Path) -> None:
-        started = json.loads((output / "started.json").read_text(encoding="utf-8"))
-        original = started["config"]
-        ignored = {"columns", "columns_by_horizon", "categoricals", "categoricals_by_horizon"}
-        original_parameters = {
-            key: {name: value for name, value in original[key].items() if name not in ignored} for key in ["linear", "lgbm", "random_forest"]
-        }
-        if original_parameters != self._fixed_parameters():
-            raise ValueError("Current-config baseline used different fixed family parameters")
-        current = self._controls()["shared"]
-        if any(original["model"][key] != value for key, value in current.items()):
-            raise ValueError("Current-config baseline used different shared model controls")
-
-    def _audit(self) -> None:
-        config = self._runtime_config()
-        columns = [str(column) for column in self._context.store.columns(Tables.cube)]
-        config.lgbm.columns_by_horizon = {60: columns}
-        step = StepLongShort(context=self._context, config=config)
-        projected, _ = step._select_load_columns(set(columns))
-        excluded = {
-            name: "key" if name in {"date", "ticker"} else "target" if name.startswith("target_") else "operational metadata"
-            for name in columns
-            if name not in projected[2:]
-        }
-        excluded.update(
-            {
-                str(name): "raw/adjusted level or share-unit control; historical adjustment vintage not certified"
-                for name in self._options.excluded_columns
-                if name in columns
-            }
-        )
-        features = [name for name in projected[2:] if name not in excluded]
-        step._prepare_training()
-        ends = label_end_dates(step._calendar, 60)
-        mature = ends.index[ends.notna() & (ends <= step._training_as_of)]
-        if mature.empty:
-            raise ValueError("No mature development dates")
-        chunks = self._context.store.iter_load(
+    def _score_window(
+        self, horizon: int, fold: int, start: pd.Timestamp, stop: pd.Timestamp, budget: int, training: dict[str, Any], state: dict[str, Any]
+    ) -> pd.DataFrame:
+        directory = self._output / (f"folds/h{horizon}/fold{fold}" if fold else "cutoff")
+        meta = read_metadata(directory)
+        members = load_ensemble(directory, [horizon], training["model_types"], metadata=meta)[horizon]
+        for name, member in members.items():
+            if member.family != name or member.horizon != horizon or member.task != "regression":
+                raise ValueError("Saved member identity/task differs from the requested assessment")
+        features = list(dict.fromkeys(feature for member in members.values() for feature in member.features))
+        categories = list(dict.fromkeys(feature for member in members.values() for feature in member.categoricals))
+        panel = load_frame(
+            self._store,
             Tables.cube,
             columns=["date", "ticker", *features],
-            since="1999-01-01",
-            until=mature[-1],
-            where={"target_zscore_h60": self._context.store.NOT_NULL},
-            chunksize=int(self._options.read_chunksize),
-        )
-        self._log.info("Audit %d predictors on full development population through %s", len(features), mature[-1])
-        report, sample = audit_features(
-            chunks, features, columns, list(self._options.categorical_features), excluded, int(config.model.diagnostics.shap_sample), int(config.seed)
-        )
-        report.update(
-            {
-                "feature_end": str(mature[-1].date()),
-                "label_end_cutoff": str(self._options.outcome_cutoff),
-                "population": "mature labelled development rows",
-                "application_writes": 0,
-                "fitting": False,
-                "sealed_outcomes_read": False,
-            }
-        )
-        write_json(self._output / "_out" / "eligibility.json", report)
-        sample.to_parquet(self._output / "_out" / "eligibility_sample.parquet", index=False)
-
-    def _baseline(self) -> None:
-        output = self._output / "_out" / "b0"
-        if output.exists():
-            raise ValueError("Incomplete baseline directory exists; preserve it and use a fresh assessment run")
-        output.mkdir()
-        config = self._runtime_config()
-        config.model.models_dir = str(output / "m")
-        write_json(
-            output / "started.json",
-            {
-                "seed": int(config.seed),
-                "source_hashes": self._fit_source_identity(),
-                "config": {key: OmegaConf.to_container(config[key], resolve=True) for key in ["model", "linear", "lgbm", "random_forest", "train"]},
-            },
-        )
-        started = time.perf_counter()
-        fitted = StepLongShort(context=self._context, config=config).run()
-        cv = fitted.cv[60]
-        assert cv.oos is not None and cv.oos_members is not None
-        oof = cv.oos.rename(columns={"pred": "ensemble"}).merge(cv.oos_members, on=["date", "ticker", "fold"], validate="one_to_one")
-        oof.to_parquet(output / "oof.parquet", index=False)
-        metrics = {}
-        for name in [*fitted.models[60], "ensemble"]:
-            metrics[name], series = assess_candidate(oof[["date", "ticker", "y"]], oof[["date", "ticker", name]].rename(columns={name: "pred"}), 60)
-            series.rename("ic").to_frame().to_parquet(output / f"ic_{name}.parquet")
-        for index, members in enumerate(cv.fold_models, 1):
-            for family, member in members.items():
-                save_member(member, output / f"f{index}_{family}.pkl")
-        write_json(
-            output / "result.json",
-            {
-                "duration_seconds": time.perf_counter() - started,
-                "metrics": metrics,
-                "folds": cv.folds,
-                "member_folds": cv.member_folds,
-                "rounds": cv.rounds,
-                "audit": cv.audit,
-                "features": {name: member.features for name, member in fitted.models[60].items()},
-                "categoricals": {name: member.categoricals for name, member in fitted.models[60].items()},
-                "source_hashes": self._fit_source_identity(),
-                "seed": int(config.seed),
-                "attempted_mutations": [],
-            },
-        )
-
-    def _expected_oof(self, panel: pd.DataFrame) -> pd.DataFrame:
-        dates = pd.to_datetime(panel["date"])
-        keep = np.zeros(len(panel), dtype=bool)
-        for start, end in self._options.test_windows:
-            keep |= ((dates >= pd.Timestamp(start)) & (dates <= pd.Timestamp(end))).to_numpy()
-        return panel.loc[keep, ["date", "ticker", self._config.model.label_column]].copy()
-
-    def _search(self, family: str, panel: pd.DataFrame, expected: pd.DataFrame, eligible: list[str], categorical: list[str], baseline: dict) -> dict:
-        names = [name for name in eligible if family != "elasticnet" or name not in categorical]
-        old = baseline["metrics"][family]
-        best = (
-            {"id": "b0", "family": family, "features": baseline["features"][family], "categoricals": baseline["categoricals"][family], "metrics": old}
-            if old["eligible"]
-            else None
-        )
-        candidates, failures = [], 0
-        prefix = {"lgbm": "l", "random_forest": "r", "elasticnet": "e"}[family]
-        for round_no in range(int(self._options.max_rounds) + 1):
-            identifier = f"{prefix}{round_no}"
-            candidate = self._candidate(identifier, family, names, categorical, panel, expected)
-            candidates.append(candidate)
-            objective = candidate["metrics"]["objective"]
-            improved = objective is not None and (best is None or objective > best["metrics"]["objective"])
-            tie = objective is not None and best is not None and objective == best["metrics"]["objective"] and len(names) < len(best["features"])
-            if improved or tie:
-                best = candidate
-            if round_no:
-                failures = 0 if improved else failures + 1
-            self._log.info(
-                "%s round %d: %d inputs, pooled IC=%s IR=%s, eligible=%s, failures=%d",
-                family,
-                round_no,
-                len(names),
-                candidate["metrics"]["mean_ic"],
-                candidate["metrics"]["ic_ir"],
-                candidate["metrics"]["eligible"],
-                failures,
-            )
-            if failures >= int(self._options.patience) or round_no == int(self._options.max_rounds):
-                break
-            importance = json.loads((self._output / "_out" / identifier / "importance.json").read_text(encoding="utf-8"))
-            names, removed, reason = prune_pool(names, importance, float(self._options.prune_fraction))
-            candidate["pruning"] = {"removed": removed, "reason": reason}
-            if not removed:
-                break
-        if best is None:
-            raise ValueError(f"{family}: no candidate has a finite complete-population objective; no hyperparameter fallback permitted")
-        return {"best": best, "candidates": candidates, "non_improving_rounds": failures}
-
-    def _candidate(self, identifier: str, family: str, names: list[str], categorical: list[str], panel: pd.DataFrame, expected: pd.DataFrame) -> dict:
-        output = self._output / "_out" / identifier
-        completed = output / "result.json"
-        cats = [name for name in names if name in categorical] if family != "elasticnet" else []
-        identity = {
-            "development_input_digest": self._development_input_digest,
-            "controls": self._controls(),
-            "fixed_parameters": self._fixed_parameters(),
-        }
-        if completed.exists():
-            if not self._options.get("resume", False):
-                raise ValueError("Candidate exists without explicit resume")
-            result = json.loads(completed.read_text(encoding="utf-8"))
-            if (
-                result.get("features") != names
-                or result.get("categoricals") != cats
-                or result.get("family") != family
-                or result.get("id") != identifier
-                or result.get("identity") != identity
-            ):
-                raise ValueError("Candidate resume selection/development identity mismatch")
-            return result
-        output.mkdir(parents=True, exist_ok=True)
-        config = self._runtime_config(family, [name for name in names if name not in cats], cats)
-        step = StepLongShort(context=self._context, config=config)
-        step._prepare_training()
-        started = time.perf_counter()
-        cv = step._cross_validate(60, panel, retain_models=True)
-        assert cv.oos is not None
-        stats, series = assess_candidate(expected, cv.oos, 60, str(config.model.label_column))
-        cv.oos.to_parquet(output / "oof.parquet", index=False)
-        series.rename("ic").to_frame().to_parquet(output / "ic.parquet")
-        for index, members in enumerate(cv.fold_models, 1):
-            save_member(members[family], output / f"f{index}.pkl")
-        importance = self._importance(cv.oos, cv.fold_models, family, panel, output)
-        write_json(output / "importance.json", importance)
-        result = {
-            "id": identifier,
-            "family": family,
-            "features": names,
-            "categoricals": cats,
-            "identity": identity,
-            "metrics": stats,
-            "folds": cv.folds,
-            "rounds": cv.rounds,
-            "duration_seconds": time.perf_counter() - started,
-        }
-        write_json(completed, result)
-        return result
-
-    def _importance(self, oof: pd.DataFrame, folds: list[dict[str, BaseModel]], family: str, panel: pd.DataFrame, output: Path) -> dict[str, float]:
-        sampled = oof.iloc[balanced_sample_positions(oof, int(self._config.model.diagnostics.shap_sample), int(self._config.seed))]
-        features = folds[0][family].features
-        totals = pd.Series(0.0, index=features)
-        n_dates = oof["date"].nunique()
-        values_frames, feature_frames = [], []
-        for index, members in enumerate(folds, 1):
-            member = members[family]
-            dates = oof.loc[oof["fold"] == index, "date"].nunique()
-            if not member.supports_shap:
-                totals += member.importance().reindex(features) * dates / n_dates
-                continue
-            keys = sampled.loc[sampled["fold"] == index, ["date", "ticker", "fold"]]
-            rows = keys.merge(panel[["date", "ticker", *features]], on=["date", "ticker"], validate="one_to_one")
-            matrix = design_matrix(rows, features, member.categoricals, downcast=False)
-            got = shap_row_values(member.model, matrix, features, sample=0, logger=self._log)
-            if got is None:
-                raise RuntimeError("Required held-out SHAP failed")
-            values, positions = got
-            native = np.asarray(member.model.predict(matrix, pred_contrib=True)) * shap_score_scale(member.model)
-            predictions = member.predict(rows).to_numpy()
-            if (
-                not np.array_equal(positions, np.arange(len(rows)))
-                or not np.allclose(native.sum(axis=1), predictions, rtol=1e-6, atol=1e-7)
-                or not np.allclose(values, native[:, :-1], rtol=1e-6, atol=1e-7)
-            ):
-                raise ValueError("SHAP/scoring additivity or input parity failed")
-            df_values = pd.DataFrame(values, columns=features)
-            df_values["date"] = rows["date"].to_numpy()
-            totals += df_values.groupby("date")[features].apply(lambda group: group.abs().mean()).sum() / n_dates
-            df_values.insert(1, "ticker", rows["ticker"].to_numpy())
-            df_values["fold"] = index
-            df_values["base"] = native[:, -1]
-            values_frames.append(df_values)
-            feature_frames.append(rows)
-        if values_frames:
-            pd.concat(values_frames, ignore_index=True).to_parquet(output / "shap.parquet", index=False)
-            pd.concat(feature_frames, ignore_index=True).to_parquet(output / "x.parquet", index=False)
-        return {str(name): float(value) for name, value in totals.items()}
-
-    def _write_selected_config(self, selected: dict) -> None:
-        before = self._fixed_parameters()
-        for family, candidate in selected.items():
-            key = model_class(family).config_key
-            path = self._config_dir / "models" / f"{key}_modelling.yml"
-            original = path.read_text(encoding="utf-8")
-            cats = candidate["categoricals"]
-            numeric = [name for name in candidate["features"] if name not in cats]
-            updated = set_horizon_features(original, key, "columns_by_horizon", numeric)
-            if family != "elasticnet":
-                updated = set_horizon_features(updated, key, "categoricals_by_horizon", cats)
-            block = cast(DictConfig, OmegaConf.create(updated))[key]
-            ignored = {"columns", "columns_by_horizon", "categoricals", "categoricals_by_horizon"}
-            fixed = {name: value for name, value in cast(dict, OmegaConf.to_container(block, resolve=True)).items() if name not in ignored}
-            if fixed != before[key]:
-                raise ValueError("Feature YAML edit changed fixed model parameters")
-            path.write_text(updated, encoding="utf-8")
-
-    def _winning_oof(self, candidate: dict) -> pd.DataFrame:
-        path = self._output / "_out" / candidate["id"] / "oof.parquet"
-        frame = pd.read_parquet(path)
-        if candidate["id"] == "b0":
-            frame = frame[["date", "ticker", "fold", "y", candidate["family"]]].rename(columns={candidate["family"]: "pred"})
-        return frame
-
-    def _fit_selected(self, ledger: dict) -> None:
-        final = self._output / "_out" / "final"
-        if (final / "result.json").exists() and self._options.get("resume", False):
-            result = json.loads((final / "result.json").read_text(encoding="utf-8"))
-            if result["input_digest"] != ledger["final_input_digest"] or result["selection_frozen_at"] != ledger["frozen_at"]:
-                raise ValueError("Final artifact input/freeze identity mismatch")
-            actual = {str(path.relative_to(final)): hashlib.sha256(path.read_bytes()).hexdigest() for path in final.rglob("*.pkl")}
-            if not actual or actual != result["artifacts"]:
-                raise ValueError("Frozen model artifact identity mismatch")
-            for family, candidate in ledger["selected"].items():
-                path = member_path(final / "m", 60, family)
-                if str(path.relative_to(final)) not in actual:
-                    raise ValueError(f"{family}: frozen cutoff model artifact is missing")
-                member = load_member(path)
-                cats = candidate["categoricals"]
-                features = [name for name in candidate["features"] if name not in cats] + cats
-                if (
-                    any(name not in candidate["features"] for name in cats)
-                    or member.family != family
-                    or member.horizon != 60
-                    or member.features != features
-                    or member.categoricals != cats
-                ):
-                    raise ValueError(f"{family}: frozen model selection pool identity mismatch")
-            return
-        config = self._runtime_config()
-        config.model.models_dir = str(final / "m")
-        for family, candidate in ledger["selected"].items():
-            block = config[model_class(family).config_key]
-            cats = candidate["categoricals"]
-            block.columns_by_horizon = {60: [name for name in candidate["features"] if name not in cats]}
-            if family != "elasticnet":
-                block.categoricals_by_horizon = {60: cats}
-        fitted = StepLongShort(context=self._context, config=config).run()
-        cv = fitted.cv[60]
-        if cv.audit["input_digest"] != ledger["final_input_digest"]:
-            raise ValueError("Final training data changed after selection froze")
-        assert cv.oos is not None and cv.oos_members is not None
-        combined = cv.oos.rename(columns={"pred": "ensemble"}).merge(cv.oos_members, on=["date", "ticker", "fold"], validate="one_to_one")
-        for family, candidate in ledger["selected"].items():
-            original = self._winning_oof(candidate)
-            compared = combined[["date", "ticker", family]].merge(original[["date", "ticker", "pred"]], on=["date", "ticker"], validate="one_to_one")
-            if len(compared) != len(combined) or not np.array_equal(compared[family], compared["pred"], equal_nan=True):
-                raise ValueError(f"{family}: frozen winning-fold predictions did not reproduce")
-        lgbm_rounds = ledger["selected"]["lgbm"].get("rounds")
-        if lgbm_rounds is None:
-            lgbm_rounds = json.loads((self._output / "_out" / "b0" / "result.json").read_text(encoding="utf-8"))["rounds"]
-        if cv.rounds != lgbm_rounds:
-            raise ValueError("Frozen LGBM fold round counts changed")
-        combined.to_parquet(final / "oof.parquet", index=False)
-        for index, members in enumerate(cv.fold_models, 1):
-            for family, member in members.items():
-                save_member(member, final / f"f{index}_{family}.pkl")
-        metrics = {}
-        expected = combined[["date", "ticker", "y"]]
-        for name in [*fitted.models[60], "ensemble"]:
-            metrics[name], _ = assess_candidate(expected, combined[["date", "ticker", name]].rename(columns={name: "pred"}), 60)
-        artifacts = {str(path.relative_to(final)): hashlib.sha256(path.read_bytes()).hexdigest() for path in final.rglob("*.pkl")}
-        write_json(
-            final / "result.json",
-            {
-                "input_digest": ledger["final_input_digest"],
-                "metrics": metrics,
-                "rounds": cv.rounds,
-                "artifacts": artifacts,
-                "audit": cv.audit,
-                "selection_frozen_at": ledger["frozen_at"],
-            },
-        )
-
-    def _evaluation(self) -> None:
-        output = self._output / "_out" / "eval"
-        ledger = json.loads((self._output / "_out" / "selection.json").read_text(encoding="utf-8"))
-        final = self._output / "_out" / "final"
-        fitted = json.loads((final / "result.json").read_text(encoding="utf-8"))
-        if not ledger["frozen"] or fitted["selection_frozen_at"] != ledger["frozen_at"]:
-            raise ValueError("Evaluation requires the frozen selection and matching cutoff artifacts")
-        if ledger["controls"] != self._controls() or ledger["fixed_parameters"] != self._fixed_parameters():
-            raise ValueError("Evaluation experiment controls changed after development")
-        actual = {str(path.relative_to(final)): hashlib.sha256(path.read_bytes()).hexdigest() for path in final.rglob("*.pkl")}
-        if actual != fitted["artifacts"]:
-            raise ValueError("Frozen model artifacts changed before evaluation")
-        if (output / "result.json").exists():
-            if not self._options.get("resume", False):
-                raise ValueError("Evaluation exists; use explicit --resume for the same frozen models")
-            return
-        output.mkdir(parents=True, exist_ok=True)
-        started_path = output / "started.json"
-        if started_path.exists():
-            if not self._options.get("resume", False):
-                raise ValueError("Partial evaluation exists; use explicit --resume for the same frozen models")
-            started = json.loads(started_path.read_text(encoding="utf-8"))
-            if started.get("frozen_at") != ledger["frozen_at"] or started.get("models") != actual:
-                raise ValueError("Partial evaluation freeze/model identity mismatch")
-        else:
-            write_json(
-                started_path,
-                {
-                    "frozen_at": ledger["frozen_at"],
-                    "models": actual,
-                    "started_at": pd.Timestamp.now(),
-                    "policy": "cohorts committed before outcome reads; no further fitting or feature selection",
-                },
-            )
-        scores, cohorts, calendar = self._score_universes(ledger, output)
-        self._attach_outcomes(scores, cohorts, calendar, output)
-        from_result = pd.read_parquet(output / "predictions.parquet")
-        models = [*self._config.model.ensemble, "ensemble"]
-        metrics = {}
-        diagnostic = self._config.model.diagnostics
-        for name, population in [("development", from_result.loc[from_result.fold > 0]), ("sealed", from_result.loc[from_result.fold == 0])]:
-            metrics[name], daily = temporal_diagnostics(
-                population,
-                models,
-                60,
-                int(diagnostic.rolling_window),
-                int(diagnostic.bootstrap_repetitions),
-                float(diagnostic.confidence),
-                int(self._config.seed),
-            )
-            daily.to_parquet(output / f"daily_{name}.parquet", index=False)
-        prior_path = output / "earlier_scores.parquet"
-        periods = period_evidence(
-            from_result,
-            [str(name) for name in models],
-            cast(dict, OmegaConf.to_container(self._options.diagnostic_periods, resolve=True)),
-            list(self._options.comparison_years),
-            pd.read_parquet(prior_path) if prior_path.exists() else None,
-        )
-        write_json(output / "period_diagnostics.json", periods)
-        self._explanations(output)
-        write_json(
-            output / "result.json",
-            {
-                "metrics": metrics,
-                "frozen_at": ledger["frozen_at"],
-                "model_artifacts": actual,
-                "formation_end": str(scores.date.max().date()),
-                "calendar_end": str(calendar[-1].date()),
-                "score_rows": len(scores),
-                "cohort_rows": len(cohorts),
-                "no_refitting": True,
-            },
-        )
-
-    def _score_universes(self, ledger: dict, output: Path) -> tuple[pd.DataFrame, pd.DataFrame, pd.DatetimeIndex]:
-        calendar = pd.DatetimeIndex(self._context.store.distinct(Tables.cube_part_prices, "date")).normalize().sort_values().unique()
-        cube_latest = pd.Timestamp(self._context.store.distinct(Tables.cube, "date", order="desc", limit=1)[0])
-        calendar = calendar[calendar <= cube_latest]
-        if len(calendar) <= 60:
-            raise ValueError("Insufficient observed calendar for mature evaluation")
-        end = calendar[-61]
-        windows = [
-            (i, pd.Timestamp(start), min(pd.Timestamp(stop), pd.Timestamp(ledger["outcome_cutoff"])))
-            for i, (start, stop) in enumerate(self._options.test_windows, 1)
-        ]
-        development_end = label_end_dates(calendar, 60)
-        windows = [
-            (i, start, min(stop, development_end.index[(development_end <= pd.Timestamp(ledger["outcome_cutoff"])) & development_end.notna()][-1]))
-            for i, start, stop in windows
-        ]
-        windows.append((0, pd.Timestamp(self._options.evaluation_start), end))
-        calendar_digest = hashlib.sha256(calendar.to_numpy(dtype="datetime64[ns]").tobytes()).hexdigest()
-        manifest_path = output / "feature_prediction_manifest.json"
-        previous = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else None
-        if previous is not None and (
-            previous.get("calendar_digest") != calendar_digest
-            or [(row["fold"], row["feature_min"], row["feature_max"]) for row in previous["windows"]]
-            != [(fold, str(start), str(stop)) for fold, start, stop in windows]
-        ):
-            raise ValueError("Evaluation calendar/window snapshot identity mismatch")
-        prior_windows = {row["fold"]: row for row in previous["windows"]} if previous is not None else {}
-        final = self._output / "_out" / "final"
-        features = list(dict.fromkeys([name for candidate in ledger["selected"].values() for name in candidate["features"]]))
-        categories = list(dict.fromkeys([name for candidate in ledger["selected"].values() for name in candidate["categoricals"]]))
-        projections = list(dict.fromkeys(["date", "ticker", "sector", *features]))
-        score_frames, identities = [], []
-        total_development_dates = sum(int(((calendar >= start) & (calendar <= stop)).sum()) for fold, start, stop in windows if fold)
-        for fold, start, stop in windows:
-            members = {
-                str(name): load_member(final / (f"f{fold}_{name}.pkl" if fold else f"m/model_h60_{name}.pkl")) for name in self._config.model.ensemble
-            }
-            panel = load_frame(
-                self._context.store,
-                Tables.cube,
-                columns=projections,
-                since=start,
-                until=stop,
-                downcast=bool(fold),
-                stream=True,
-                feature_cols=features,
-                categorical_features=categories,
-                chunksize=int(self._options.read_chunksize),
-                optional=False,
-            )
-            if panel is None or panel.empty:
-                raise ValueError(f"No feature-only assessment universe for fold {fold}")
-            digest = frame_digest(panel, [*features, "sector"])
-            if fold in prior_windows and (prior_windows[fold]["rows"] != len(panel) or prior_windows[fold]["digest"] != digest):
-                raise ValueError(f"Evaluation fold {fold} feature/universe snapshot identity mismatch")
-            scores, member_scores = ensemble_predict(members, panel)
-            frame = panel[["date", "ticker", "sector"]].copy()
-            for family, prediction in member_scores.items():
-                frame[family] = prediction.to_numpy()
-            frame["ensemble"], frame["fold"] = scores.to_numpy(), fold
-            score_frames.append(frame)
-            comparison_year = int(self._options.comparison_years[-1])
-            comparison = panel.loc[panel.date.dt.year == comparison_year]
-            if fold > 1 and not comparison.empty:
-                earlier_members = {str(name): load_member(final / f"f{fold - 1}_{name}.pkl") for name in self._config.model.ensemble}
-                earlier_ensemble, earlier = ensemble_predict(earlier_members, comparison)
-                old_scores = comparison[["date", "ticker"]].copy()
-                for name, values in earlier.items():
-                    old_scores[name] = values.to_numpy()
-                old_scores["ensemble"] = earlier_ensemble.to_numpy()
-                old_scores.to_parquet(output / "earlier_scores.parquet", index=False)
-                del earlier_members
-            budget = int(self._config.model.diagnostics.shap_sample)
-            if fold:
-                budget = max(1, round(budget * panel.date.nunique() / total_development_dates))
-            positions = balanced_sample_positions(panel, budget, int(self._config.seed))
-            panel.iloc[positions].to_parquet(output / f"s{fold}.parquet", index=False)
-            self._coverage(panel, features, categories).to_parquet(output / f"q{fold}.parquet", index=False)
-            identities.append(
-                {
-                    "fold": fold,
-                    "rows": len(panel),
-                    "feature_min": start,
-                    "feature_max": stop,
-                    "digest": digest,
-                    "sample_rows": len(positions),
-                    "future_outcome_predicates": False,
-                }
-            )
-            self._log.info("Feature-only scoring fold %d: %d rows, %d dates; no outcome filter", fold, len(panel), panel.date.nunique())
-            del panel, members
-            gc.collect()
-        combined = pd.concat(score_frames, ignore_index=True)
-        cohorts = formation_cohorts(combined, [*self._config.model.ensemble, "ensemble"])
-        combined.to_parquet(output / "scores.parquet", index=False)
-        cohorts.to_parquet(output / "cohorts.parquet", index=False)
-        write_json(
-            manifest_path,
-            {
-                "calendar_digest": calendar_digest,
-                "windows": identities,
-                "cohort_assignment_complete": True,
-                "future_labels_read": False,
-                "policy": "highest predicted ceil(N/10), equal weights, ticker tie-break",
-            },
-        )
-        return combined, cohorts, calendar
-
-    def _coverage(self, panel: pd.DataFrame, features: list[str], categories: list[str]) -> pd.DataFrame:
-        values = panel[features].notna()
-        for category in categories:
-            values[category] &= panel[category].ge(0)
-        identifiers = [panel.date.dt.year.rename("year"), panel.sector.rename("_sector_group")]
-        observed = (
-            values.groupby(identifiers, dropna=False)
-            .sum()
-            .reset_index()
-            .melt(id_vars=["year", "_sector_group"], var_name="feature", value_name="observed")
-            .rename(columns={"_sector_group": "sector"})
-        )
-        population = panel.groupby(identifiers, dropna=False).size().rename("rows").reset_index().rename(columns={"_sector_group": "sector"})
-        result = observed.merge(population, on=["year", "sector"], validate="many_to_one")
-        numeric = [name for name in features if name not in categories]
-        if numeric:
-            distribution = panel.groupby(identifiers, dropna=False)[numeric].agg(["mean", "std", "median"])
-            distribution = distribution.stack(level=0, future_stack=True).rename_axis(index=["year", "sector", "feature"]).reset_index()
-            result = result.merge(distribution, on=["year", "sector", "feature"], how="left", validate="one_to_one")
-        return result
-
-    def _attach_outcomes(self, scores: pd.DataFrame, cohorts: pd.DataFrame, calendar: pd.DatetimeIndex, output: Path) -> None:
-        if not (output / "feature_prediction_manifest.json").exists() or not (output / "cohorts.parquet").exists():
-            raise ValueError("Commit feature-only cohorts before loading outcomes")
-        start, stop = scores.date.min(), scores.date.max()
-        labels = load_frame(
-            self._context.store,
-            Tables.cube,
-            columns=["date", "ticker", "target_zscore_h60"],
             since=start,
             until=stop,
+            downcast=bool(fold),
             stream=True,
-            downcast=False,
+            feature_cols=features,
+            categorical_features=categories,
             chunksize=int(self._options.read_chunksize),
             optional=False,
         )
-        assert labels is not None
-        labels = labels.rename(columns={"target_zscore_h60": "y"})
-        labels["label_end"] = labels.date.map(label_end_dates(calendar, 60))
-        predictions = scores.merge(labels, on=["date", "ticker"], how="left", validate="one_to_one")
-        predictions.to_parquet(output / "predictions.parquet", index=False)
-        price_stop = label_end_dates(calendar, 60).loc[stop]
-        prices = load_frame(
-            self._context.store,
-            Tables.cube_part_prices,
-            columns=["date", "ticker", "ret", "close_total"],
-            since=start,
-            until=price_stop,
-            stream=True,
-            downcast=False,
-            chunksize=int(self._options.read_chunksize),
-            optional=False,
-        )
-        assert prices is not None
-        scoped_calendar = calendar[(calendar >= start) & (calendar <= price_stop)]
-        outcomes = forward_returns(prices, scoped_calendar, 60)
-        outcomes.to_parquet(output / "return_windows.parquet", index=False)
-        macro = load_frame(
-            self._context.store,
-            Tables.prices_macro,
-            columns=["date", "ticker", "close"],
-            where={"ticker": "equity_tr"},
-            since=start,
-            until=price_stop,
-            downcast=False,
-            optional=False,
-        )
-        assert macro is not None
-        macro = macro.set_index("date").reindex(scoped_calendar)
-        year_ends = macro.close.groupby(pd.DatetimeIndex(macro.index).year).last()
-        write_json(output / "market_calendar_years.json", {str(year): float(value) for year, value in year_ends.pct_change(fill_method=None).items()})
-        macro["ret"] = macro.close.pct_change(fill_method=None)
-        macro["ticker"] = "equity_tr"
-        market = forward_returns(macro.rename(columns={"close": "close_total"}).reset_index(names="date"), scoped_calendar, 60)
-        market.to_parquet(output / "market_windows.parquet", index=False)
-        market = market[["date", "realized_return", "valid"]].rename(columns={"realized_return": "market_return", "valid": "market_valid"})
-        matched = matched_cohort_returns(cohorts, outcomes, market)
-        matched["period"] = np.where(matched.date >= pd.Timestamp(self._options.evaluation_start), "sealed", "development")
-        matched.to_parquet(output / "matched_returns.parquet", index=False)
+        if panel is None or panel.empty or panel.duplicated(["date", "ticker"]).any():
+            raise ValueError(f"h{horizon} fold{fold}: missing or duplicate feature-only population")
+        panel = panel.sort_values(["date", "ticker"]).reset_index(drop=True)
+        identity = {
+            "input_digest": frame_digest(panel, features, downcast=False),
+            "rows": len(panel),
+            "start": str(start),
+            "stop": str(stop),
+            "budget": budget,
+            "model_metadata": file_identity(directory / METADATA_FILE),
+        }
+        output = self._output / f"assessment/h{horizon}/fold{fold}"
+        output.mkdir(parents=True, exist_ok=True)
+        previous = state["windows"].get(str(horizon), {}).get(str(fold))
+        if previous is not None:
+            verify_inventory(output, {METADATA_FILE: previous})
+            saved = json.loads((output / METADATA_FILE).read_text(encoding="utf-8"))
+            if saved["identity"] != identity:
+                raise ValueError("Prepared feature/universe inputs changed; refuse stale scoring reuse")
+            verify_inventory(output, saved["files"])
+            return pd.read_parquet(output / "scores.parquet")
+        score, member_scores = ensemble_predict(members, panel)
+        frame = panel[["date", "ticker"]].copy()
+        for name, prediction in member_scores.items():
+            frame[name] = prediction.to_numpy()
+        frame["ensemble"], frame["fold"] = score.to_numpy(), fold
+        frame.to_parquet(output / "scores.parquet", index=False)
+        sample = panel.iloc[balanced_sample_positions(panel, budget, int(self._config.seed))]
+        sample.to_parquet(output / "sample.parquet", index=False)
+        for name, member in members.items():
+            self._explain_member(member, sample, output / name, identity, pdp=fold == 0)
+        files = {
+            str(path.relative_to(output)).replace("\\", "/"): file_identity(path)
+            for path in output.rglob("*")
+            if path.is_file() and path != output / METADATA_FILE
+        }
+        write_json(output / METADATA_FILE, {"identity": identity, "files": files, "future_outcomes_read": False})
+        state["windows"].setdefault(str(horizon), {})[str(fold)] = file_identity(output / METADATA_FILE)
+        write_json(self._output / "assessment/metadata.json", state)
+        self._log.info("h%s fold%s: scored %s feature-only rows; explained %s rows", horizon, fold, len(panel), len(sample))
+        del members, panel
+        gc.collect()
+        return frame
 
-    def _explanations(self, output: Path) -> None:
-        final = self._output / "_out" / "final"
-        for fold in range(6):
-            panel = pd.read_parquet(output / f"s{fold}.parquet")
-            for family in ["lgbm", "random_forest"]:
-                member = load_member(final / (f"f{fold}_{family}.pkl" if fold else f"m/model_h60_{family}.pkl"))
-                destination = output / f"{family}_{fold}"
-                digest = frame_digest(panel, member.features)
-                if (destination / "curves.json").exists() and self._options.get("resume", False):
-                    saved = json.loads((destination / "identity.json").read_text(encoding="utf-8"))
-                    if saved["input_digest"] != digest:
-                        raise ValueError("Explanation sample changed on resume")
-                    continue
-                explain_tree(member, panel, destination, self._config, self._log, pdp=fold == 0)
-                write_json(destination / "identity.json", {"input_digest": digest, "fold": fold, "family": family})
-        linear = load_member(final / "m/model_h60_elasticnet.pkl")
-        write_json(
-            output / "linear.json",
-            {
-                "features": linear.features,
-                "coefficient": linear.coef_,
-                "mean": linear.mean_,
-                "std": linear.std_,
-                "intercept": linear.intercept_,
-                "policy": "coefficient per training-standardized feature; missing imputed to training mean",
-            },
-        )
+    def _explain_member(self, member: BaseModel, sample: pd.DataFrame, output: Path, identity: dict[str, Any], *, pdp: bool) -> None:
+        marker = output / "complete.json"
+        if marker.exists():
+            saved = json.loads(marker.read_text(encoding="utf-8"))
+            if saved["identity"] != identity:
+                raise ValueError("Saved explanation has changed model/sample inputs")
+            verify_inventory(output, saved["files"])
+            return
+        if isinstance(member, LinearRegression):
+            explain_linear(member, sample, output, self._config, self._log, pdp=pdp)
+        elif member.supports_shap:
+            explain_tree(member, sample, output, self._config, self._log, pdp=pdp)
+        else:
+            raise ValueError(f"Required explanations unavailable for {member.family}")
+        files = {path.name: file_identity(path) for path in output.iterdir() if path.is_file() and path != marker}
+        write_json(marker, {"identity": identity, "files": files})
 
-    def _report(self) -> None:
-        render_assessment(self._output, self._config)
+    def _verify_analysis(self, state: dict[str, Any], training: dict[str, Any]) -> None:
+        for horizon in training["horizons"]:
+            if str(horizon) not in state["horizons"]:
+                raise ValueError("Every requested horizon must complete before reporting")
+            output = self._output / f"assessment/h{horizon}"
+            verify_inventory(output, state["horizons"][str(horizon)]["files"])
+            windows = state["windows"].get(str(horizon), {})
+            if set(windows) != {"0", *training["folds"][str(horizon)]}:
+                raise ValueError("Every original fold and cutoff explanation must complete")
+            for fold, expected in windows.items():
+                folder = output / f"fold{fold}"
+                verify_inventory(folder, {METADATA_FILE: expected})
+                saved = json.loads((folder / METADATA_FILE).read_text(encoding="utf-8"))
+                verify_inventory(folder, saved["files"])

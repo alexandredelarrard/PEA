@@ -2,10 +2,56 @@
 
 from __future__ import annotations
 
-import numpy as np
-import pytest
+import logging
+from pathlib import Path
 
+import numpy as np
+import pandas as pd
+import pytest
+from omegaconf import OmegaConf
+
+from src.modelling.transformers import assessment_diagnostics
 from src.modelling.transformers.assessment_diagnostics import _binned_dependence
+from src.modelling.transformers.linear_regression import LinearRegression
+
+
+def test_saved_linear_coefficients_reconstruct_signed_effects_and_pdp(tmp_path: Path) -> None:
+    member = object.__new__(LinearRegression)
+    member.features = ["positive", "negative", "zero", "constant", "missing"]
+    member.categoricals, member.family, member.horizon = [], "elasticnet", 60
+    member.coef_ = np.array([2.0, -3.0, 0.0, 5.0, 0.5])
+    member.mean_, member.std_ = np.array([1.0, 5.0, 0.0, 7.0, 0.0]), np.array([2.0, 4.0, 1.0, 1.0, 1.0])
+    member.intercept_, member.model = 0.25, "fitted"
+    panel = pd.DataFrame(
+        {
+            "date": pd.bdate_range("2022-01-03", periods=4),
+            "ticker": list("ABCD"),
+            "positive": [1.0, 3.0, np.nan, 5.0],
+            "negative": [1.0, 5.0, 9.0, np.nan],
+            "zero": [1.0, 2.0, 3.0, 4.0],
+            "constant": 7.0,
+            "missing": np.nan,
+        }
+    )
+    config = OmegaConf.create({"seed": 7, "model": {"diagnostics": {"dependence_sample": 4, "pdp_grid": 30, "pdp_background": 4}}})
+    result = assessment_diagnostics.explain_linear(member, panel, tmp_path, config, logging.getLogger(__name__), pdp=True)
+    values = pd.read_parquet(tmp_path / "contributions.parquet")
+    expected = np.nan_to_num((panel[member.features].to_numpy() - member.mean_) / member.std_, nan=0.0) * member.coef_
+    np.testing.assert_allclose(values[member.features], expected)
+    np.testing.assert_allclose(values[member.features].sum(axis=1) + values.base, member.predict(panel), atol=1e-12)
+    for index, feature in enumerate(member.features):
+        curve = result["features"][feature]
+        assert curve["importance"] == abs(member.coef_[index])
+        assert curve["coefficient"] == member.coef_[index]
+        if curve["pdp"]["x"] is not None:
+            for grid, mean in zip(curve["pdp"]["x"], curve["pdp"]["mean"], strict=True):
+                assert mean == pytest.approx(member.predict(panel.assign(**{feature: grid})).mean(), abs=1e-12)
+    assert result["kind"] == "linear" and result["additivity_max_error"] < 1e-12
+    assert result["features"]["missing"]["pdp"]["x"] is None
+    assert result["features"]["constant"]["binned"]["mean"] == pytest.approx([0.0])
+    print(
+        "SANITY: saved standardized beta, intercept and scaling exactly reconstruct positive/negative/zero/missing/constant contributions and direct-predict PDP; importance is abs(beta)."
+    )
 
 
 @pytest.mark.parametrize(

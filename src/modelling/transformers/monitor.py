@@ -69,16 +69,18 @@ def _sample_idx(n_rows: int, sample: int, seed: int = 42) -> np.ndarray:
 def partial_dependence(
     booster: Any, x: np.ndarray, feat_idx: int, grid_points: int = 30, sample: int = 2000, *, categorical: bool = False, seed: int = 42
 ) -> tuple:
-    """1-D partial dependence: mean model score as `feat_idx` sweeps its own 2-98 % quantile grid,
-    every other feature held at its real value."""
-    x = x[_sample_idx(len(x), sample, seed)]
+    """Mean model score over observed categorical/low-cardinality states or a 2-98 % quantile grid.
+    Derive the grid from all valid feature values; other features keep their sampled real values."""
     col = x[:, feat_idx]
     finite = col[np.isfinite(col) & ((col >= 0) if categorical else True)]
     if finite.size == 0:
         return None, None
-    grid = np.unique(finite) if categorical else np.unique(np.quantile(finite, np.linspace(0.02, 0.98, grid_points)))
+    grid = np.unique(finite)
+    if not categorical and grid.size > grid_points:
+        grid = np.unique(np.quantile(finite, np.linspace(0.02, 0.98, grid_points)))
     if not grid.size:
         return None, None
+    x = x[_sample_idx(len(x), sample, seed)]
     means = np.empty(grid.size, dtype=float)
     work = x.copy()
     for i, g in enumerate(grid):

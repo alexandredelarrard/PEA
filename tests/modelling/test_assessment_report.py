@@ -67,8 +67,8 @@ def _report_artifacts(run: Path) -> None:
                         "categorical": feature == "category" and family != "elasticnet",
                         "observed": 2,
                         "sample_rows": 2,
-                        "scatter": {"x": [0, 1], "shap": [0, 0.2], "date": ["2022-01-03", "2022-01-04"]},
-                        "binned": {"x": [0, 1], "mean": [0, 0.2], "count": [1, 1]},
+                        "scatter": {"x": [0, 1], "raw_x": [10, 12], "row": [0, 1], "shap": [0, 0.2], "date": ["2022-01-03", "2022-01-04"]},
+                        "binned": {"x": [0, 1], "raw_x": [10, 12], "mean": [0, 0.2], "count": [1, 1]},
                         "pdp": {"x": [0, 1] if fold == 0 else None, "mean": [0.1, 0.2] if fold == 0 else None},
                     }
                 target = folder / family / "curves.json"
@@ -99,9 +99,14 @@ def test_report_is_offline_and_covers_every_horizon_family_fold_and_zero_feature
                 assert set(curve["features"]) == {"x", "zero", "category"}
                 assert curve["features"]["zero"]["importance"] == 0
                 assert ("scatter" in curve["features"]["x"]) is (fold == "0")
+                if fold == "0":
+                    assert curve["features"]["x"]["scatter"] == {"x": [0, 1], "shap": [0, 0.2], "raw_x": [10, 12]}
     assert text.count("<section ") == 2 and 'id="importance"' in text and 'id="effect"' in text and 'id="temporal"' in text
     assert "<table" not in text and 'id="research"' not in text
     assert "Signed linear contribution" in text and "Signed SHAP dependence" in text and "fixed cutoff model" in text
+    assert " (training-standardized)" in text and " (raw input)" in text
+    assert "Raw input %{customdata[0]" in text and "Raw input median %{customdata[0]" in text
+    assert "Saved beta %{customdata:+.6g}" in text and "Saved beta %{customdata[1]:+.6g}" in text
     assert not re.search(r"<(?:script|link)\b[^>]*(?:src|href)=[\x22\x27](?:https?:)?//", text)
     assert before == {path: path.read_bytes() for path in (tmp_path / "assessment").rglob("curves.json")}
     first = hashlib.sha256(output.read_bytes()).hexdigest()

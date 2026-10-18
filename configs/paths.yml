@@ -11,9 +11,3 @@ local:
     sec_edgar_index: "sec_edgar_index"
     sec_13f_datasets: "sec_13f_datasets"
     fundamentals_catalogue_subdir: "fundamentals"
-  filename:
-    fundamentals_kpis_filename : "fundamentals_kpis.json"
-    fundamentals_regimes_filename : "fundamentals_regimes.json"
-    fundamentals_exceptions_filename : "fundamentals_exceptions.json"
-    registrant_cutover_filename : "sec/registrant_cutover.json"
-    fundamentals_rosters_filename : "fundamentals_rosters.json"

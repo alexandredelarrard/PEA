@@ -32,6 +32,7 @@ RAW_FEATURES: frozenset[str] = frozenset(
         "capex_to_rate_base",
         "cash_conversion_cycle",
         "cash_to_debt",
+        "cash_runway_months",
         "current_ratio",
         "da_minus_capex_growth",
         "da_to_capex",
@@ -52,7 +53,6 @@ RAW_FEATURES: frozenset[str] = frozenset(
         "dps_growth",
         "dso",
         "dso_change",
-        "earningsGrowth",
         "earnings_quality",
         "earnings_yield",
         "ebit_interest_coverage",
@@ -130,7 +130,8 @@ RAW_FEATURES: frozenset[str] = frozenset(
         "shareholder_yield",
         "shares_growth",
         "sustainable_growth_rate",
-        "y_earnings_growth",
+        "y_earnings_growth_signed",
+        "revenue_cagr_3y",
         "y_margin_vs_ttm",
         "y_rev_growth",
         "y_rev_growth_accel",
@@ -180,7 +181,7 @@ HISTORY_FEATURES: frozenset[str] = frozenset(
         "dpo_change",
         "dso",
         "dso_change",
-        "earningsGrowth",
+        "y_earnings_growth_signed",
         "earnings_quality",
         "ebit_interest_coverage",
         "ebitda_margin",
@@ -236,7 +237,7 @@ HISTORY_FEATURES: frozenset[str] = frozenset(
     }
 )
 
-EXCLUDED_FEATURES: frozenset[str] = frozenset({"q_rev_growth", "revenueGrowth"})
+EXCLUDED_FEATURES: frozenset[str] = frozenset({"q_rev_growth", "revenueGrowth", "earningsGrowth", "y_earnings_growth"})
 
 FEATURE_COLUMNS: tuple[str, ...] = tuple(
     [f"f_{name}" for name in sorted(RAW_FEATURES)]

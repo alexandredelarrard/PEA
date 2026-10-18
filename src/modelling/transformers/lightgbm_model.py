@@ -25,7 +25,7 @@ from omegaconf import DictConfig
 
 from src.modelling.transformers.base import TASK_CLASSIFICATION, BaseModel
 from src.modelling.utils.cv import time_decay_weights
-from src.modelling.utils.features import build_monotone_constraints, columns_for_horizon, parse_monotone_feature_map, prepare_features
+from src.modelling.utils.features import build_monotone_constraints, parse_monotone_feature_map, prepare_features
 
 EARLY_STOPPING_ROUNDS = 40
 DEFAULT_SEED = 42  # overridden by the pipeline's global `seed`
@@ -180,15 +180,13 @@ class LightGBMModel(BaseModel):
 
     @classmethod
     def configured_categoricals(cls, config: DictConfig, horizon: int | None = None) -> list[str]:
+        """Selected inputs typed by the shared `lgbm.categoricals` registry."""
         block = cls.lgbm_block(config)
-        override = columns_for_horizon(block, horizon, kind="categoricals")
-        if override is not None:
-            return override
-        return list(block.categoricals) if (block and block.get("categoricals") is not None) else []
+        selected = set(cls.configured_columns(config, horizon))
+        return [name for name in block.get("categoricals", []) if name in selected]
 
     def _monotone_constraints(self, feats: list[str]) -> list[int] | None:
-        """`lgbm.monotonic` aligned to `feats`. WARNs only for a constrained name that is not
-        even in `lgbm.columns` (a typo); a listed name that is absent from the cube is inactive."""
+        """Shared monotonic directions aligned to this family's fitted horizon inputs."""
         block = self.lgbm_block(self._config)
         mono = block.get("monotonic") if block else None
         if not mono or not mono.get("enabled", False):
@@ -198,13 +196,18 @@ class LightGBMModel(BaseModel):
             self._log.warning("lgbm.monotonic.enabled but no features configured")
             return None
         constraints = build_monotone_constraints(feats, feature_map)
-        allow = set(LightGBMModel.configured_columns(self._config, None))
+        allow = set()
+        for key in ("lgbm", "random_forest"):
+            family_block = self._config.get(key) or {}
+            allow.update(family_block.get("columns") or [])
+            for columns in (family_block.get("columns_by_horizon") or {}).values():
+                allow.update(columns or [])
         absent = [f for f in feature_map if f not in feats]
         typos = [f for f in absent if f not in allow]
         if typos:
-            self._log.warning("Monotone constraint on feature(s) not in inputs.columns (typo?): %s", typos)
+            self._log.warning("Monotone constraint on feature(s) not in any tree feature list (typo?): %s", typos)
         elif absent:
-            self._log.info("%d monotone constraint(s) inactive (feature not in the current cube; applies after a rebuild)", len(absent))
+            self._log.info("%d monotone constraint(s) inactive for this family's fitted horizon inputs", len(absent))
         return constraints
 
     def _objective(self, params: dict) -> dict:

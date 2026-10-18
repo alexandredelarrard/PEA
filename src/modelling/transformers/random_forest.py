@@ -32,16 +32,6 @@ class RandomForestModel(LightGBMModel):
             return list(block.columns)
         return LightGBMModel.configured_columns(config, horizon)
 
-    @classmethod
-    def configured_categoricals(cls, config: DictConfig, horizon: int | None = None) -> list[str]:
-        block = cls.block(config)
-        override = columns_for_horizon(block, horizon, kind="categoricals")
-        if override is not None:
-            return override
-        if block and block.get("categoricals") is not None:
-            return list(block.categoricals)
-        return LightGBMModel.configured_categoricals(config, horizon)
-
     def _fit(self, train: pd.DataFrame, valid: pd.DataFrame | None) -> lgb.Booster:
         rf = self.block(self._config)
         params = {

@@ -7,7 +7,7 @@ tags:
   - reference
   - modelling
   - portfolio
-source_commit: 91e9a964a921d58c2728380c7dc4c540e5b384cd
+source_commit: 1a66369cb52b1164bcc734cc27358d761393d162
 ---
 # Modelling, strategies, and portfolio
 
@@ -97,7 +97,7 @@ The first two retain their `_vs_hist` views. An event requires a non-null actual
 
 ## Six additional fundamental feature families
 
-The fixed output schema in [feature_views.py](../../src/data_aggregate/utils/fundamentals/feature_views.py) contains 217 columns: 136 raw, 79 self-history and two explicit peer views. Seventeen additions are:
+The fixed output schema in [feature_views.py](../../src/data_aggregate/utils/fundamentals/feature_views.py) contains 218 columns: 137 raw, 79 self-history and two explicit peer views. Seventeen additions are:
 
 | Family | Columns | Calculation and interpretation |
 | --- | --- | --- |
@@ -109,6 +109,22 @@ The fixed output schema in [feature_views.py](../../src/data_aggregate/utils/fun
 | Operating-cash-flow yield | `f_ocf_yield` | Signed trailing operating cash flow divided by current positive market capitalization. This is cash before capital expenditure, unlike free-cash-flow yield. |
 
 Fiscal histories use distinct quarters and then-public filings; later amendments change subsequent observations only. Missing quarters are not bridged, missing returns are not zero-filled, and zero scale is undefined. Calculations are owned by [history_features.py](../../src/data_aggregate/utils/fundamentals/history_features.py), [disclosure_features.py](../../src/data_aggregate/utils/fundamentals/disclosure_features.py), and [fundamental_features.py](../../src/data_aggregate/utils/fundamentals/fundamental_features.py). Existing raw eligibility leaves some sector comparisons unsupported: the measured FCF/EV peer snapshots have no Utilities coverage. Missingness is retained.
+
+## Signed income growth, revenue CAGR and cash runway
+
+[fundamental_features.py](../../src/data_aggregate/utils/fundamentals/fundamental_features.py) adds two raw characteristics and consolidates annual income growth into one corrected definition:
+
+| Feature | Calculation | Applicability |
+| --- | --- | --- |
+| `f_revenue_cagr_3y` | `(TTM revenue / TTM revenue three fiscal years earlier)^(1/3) - 1` | Both endpoints finite and strictly positive. Fiscal ends match within the existing 45-day tolerance; missing comparable years stay unknown. |
+| `f_y_earnings_growth_signed` | `(TTM net income - prior-year TTM net income) / abs(prior-year TTM net income)` | Finite inputs and nonzero prior income. A loss narrowing from -20 to -10 is +0.5; a deepening loss is negative. Small nonzero bases may still produce large values. |
+| `f_cash_runway_months` | `12 * cash / (-TTM free cash flow)` | Same-filing finite nonnegative cash and negative FCF, with a known non-Financials sector. Zero cash gives zero months; nonnegative FCF, Financials and missing inputs remain unknown. |
+
+The signed feature replaces both `f_earningsGrowth` and `f_y_earnings_growth`. Its retained history view is `f_y_earnings_growth_signed_vs_hist`, replacing `f_earningsGrowth_vs_hist`. Revenue CAGR and runway have no additional history variants. Quarterly earnings growth and FCF growth keep their existing definitions.
+
+All three are computed from then-public merged fundamentals, visible from `as_of`, and expire after 185 calendar days. Fiscal predecessors admit only amendments already public at the current filing. These three use the opt-in null-state projection in [pit.py](../../src/data_aggregate/utils/common/pit.py): an invalid new filing clears the preceding value instead of carrying it forward. Existing callers retain their previous projection behavior. Cash includes the source short-term-investment component. Runway measures coverage at trailing burn; it does not forecast future funding or spending. Current-roster sector classifications still limit historical sector applicability claims.
+
+The six-year source window already covers the three-year comparison. Use a full historical fundamentals rebuild and assembly before adoption, then recreate compatible model artifacts; an incremental tail cannot migrate earlier earnings-growth definitions. Old annual earnings aliases in a persisted cube are rejected before training. [Feature regressions](../../tests/data_aggregate/test_fundamental_growth_features.py) cover sign transitions, arithmetic, invalid filings, future amendments, fiscal comparability and exact freshness boundaries.
 
 ## Historical adoption
 

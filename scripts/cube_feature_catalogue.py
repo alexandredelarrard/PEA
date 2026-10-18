@@ -279,11 +279,11 @@ add(
 
 # ---------------------------------------------------------- growth / trend #
 add(
-    "earningsGrowth",
+    "revenue_cagr_3y",
     "growth",
-    "YoY net-income growth, using the same prior-fiscal-period point-in-time match as `revenueGrowth`.",
-    "Same construction as `revenueGrowth`. A zero or negative prior is masked, not divided by: a swing from loss to profit has no percentage growth, and dividing by it manufactures a huge number with an arbitrary sign.",
-    "Nulls are higher than for revenue because the prior-period mask bites on every loss year.",
+    "Annualized three-year TTM revenue growth: (revenue / fiscal-comparable revenue three years earlier)^(1/3) - 1.",
+    "Both endpoints must be finite and positive. Fiscal-end matching within 45 days uses only amendments public by the current filing; no row-count substitute.",
+    "Undefined without three years of comparable revenue. An invalid new filing clears state; current filings expire after 185 days.",
 )
 add(
     "y_rev_growth",
@@ -293,11 +293,18 @@ add(
     "Numerically the same as the internal cube-time `revenueGrowth` input; only this public name is emitted, so a model cannot select the same growth signal twice.",
 )
 add(
-    "y_earnings_growth",
+    "y_earnings_growth_signed",
     "growth",
-    "TTM net income vs TTM one year ago, fiscal series.",
-    "As above.",
-    "Sign flips around zero-earnings years are real; the peer-z clip keeps them from dominating.",
+    "Signed annual TTM income improvement: (income - prior-year income) / abs(prior-year income).",
+    "A loss narrowing from -20 to -10 is +50%; a deepening loss is negative. Replaces both annual earnings-growth aliases and retains the self-history view.",
+    "Zero, missing or nonfinite bases stay unknown; small nonzero bases can produce large values. Invalid new filings clear state; source age is capped at 185 days.",
+)
+add(
+    "cash_runway_months",
+    "solvency",
+    "Months of liquidity at trailing FCF burn: 12 * cash / (-TTM free cash flow).",
+    "Requires observed nonnegative cash, negative FCF, and a known non-Financials sector in the same filing. Cash includes source short-term investments; observed zero cash gives zero months.",
+    "Cash-generative firms and Financials are undefined. This trailing-burn proxy has a long right tail when burn is small; invalid new filings clear state and source age is capped at 185 days.",
 )
 add(
     "y_rev_growth_accel",

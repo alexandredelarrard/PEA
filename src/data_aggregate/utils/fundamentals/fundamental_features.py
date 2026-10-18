@@ -5,7 +5,7 @@ fundamental_features.py  (src/data_aggregate/utils/fundamental_features.py)
 Point-in-time fundamental signals for the modelling cube. Every approved
 characteristic is emitted in raw economic units; the selected characteristics
 also receive a trailing self-history z-score. Two explicit existing-peer
-comparisons complete the 217-column fundamentals contract.
+comparisons complete the 218-column fundamentals contract.
 
 CHARACTERISTICS
 ===============
@@ -41,7 +41,7 @@ Profitability / moat:
                       LOW/negative = earnings backed by cash = higher quality)
 
 Growth (TTM, year-over-year):
-    y_rev_growth, earningsGrowth   (YoY, from the fiscal series)
+    y_rev_growth, y_earnings_growth_signed (YoY, from the fiscal series)
     fcf_growth                     (YoY free-cash-flow growth)
     gross_margin_chg               (YoY change in gross margin = margin expansion)
 
@@ -53,7 +53,7 @@ Latest-quarter momentum (discrete single quarter, what TTM smooths away):
 Yearly-TTM momentum (current TTM vs TTM one year ago, less noisy than single quarter):
     y_rev_growth      TTM revenue YoY growth (computed fresh from totalRevenue)
     y_rev_growth_accel change in TTM revenue YoY (trend acceleration over a year)
-    y_earnings_growth TTM net-income YoY growth
+    y_earnings_growth_signed (NI - prior NI) / abs(prior NI)
     y_margin_vs_ttm   YoY change in TTM profit margin (margin expansion/contraction)
 
 Intrinsic value (two-stage DCF on TTM free cash flow, see intrinsic.py):
@@ -120,7 +120,7 @@ from src.data_aggregate.utils.common.pit import (
     infer_yoy_periods,
     null_invalid_gross_profit_sentinels,
 )
-from src.data_aggregate.utils.common.sector_gates import family_tickers, mask_columns
+from src.data_aggregate.utils.common.sector_gates import family_tickers, mask_columns, row_gate
 from src.data_aggregate.utils.common.xs import (
     HIST_MIN_PERIODS,
     HIST_WINDOW,
@@ -1023,7 +1023,7 @@ def _profitability_level_fields(daily, revenue: pd.DataFrame, net_income: pd.Dat
     """Profitability / moat: raw ratios straight from the history, plus FCF margin and
     accruals (the net-income-vs-cash gap)."""
     F: dict[str, pd.DataFrame] = {}
-    for field in ["grossMargins", "operatingMargins", "profitMargins", "returnOnEquity", "debtToEquity", "revenueGrowth", "earningsGrowth"]:
+    for field in ["grossMargins", "operatingMargins", "profitMargins", "returnOnEquity", "debtToEquity", "revenueGrowth"]:
         f = daily(field)
         if not f.empty:
             F[field] = f
@@ -1272,12 +1272,12 @@ def _quarter_momentum_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeInd
 
 
 def _yearly_ttm_momentum_fields(fund_hist: pd.DataFrame, idx: pd.DatetimeIndex, yoy_periods: int) -> dict:
-    """YEARLY-TTM momentum (current TTM vs TTM one year ago).
+    """YEARLY-TTM momentum (current TTM vs TTM one year ago) and three-year revenue CAGR.
 
     Complements the single-quarter features: captures a multi-quarter trend rather than
     the most-recent quarter jolt, which is less noisy and works at longer horizons. Uses
     the fiscal history of level columns so seasonality is removed by construction (same
-    quarter each year -> yoy_periods filings back)."""
+    fiscal quarter each year, matched by fiscal dates)."""
     F: dict[str, pd.DataFrame] = {}
     y_rev_growth = fiscal_change_to_daily(
         fund_hist, "totalRevenue", idx, kind="pct", periods=yoy_periods, years=1, max_age_days=_QUARTERLY_MAX_AGE_DAYS
@@ -1298,11 +1298,15 @@ def _yearly_ttm_momentum_fields(fund_hist: pd.DataFrame, idx: pd.DatetimeIndex, 
             max_age_days=_QUARTERLY_MAX_AGE_DAYS,
         )
 
-    y_earnings_growth = fiscal_change_to_daily(
-        fund_hist, "netIncome", idx, kind="pct", periods=yoy_periods, years=1, max_age_days=_QUARTERLY_MAX_AGE_DAYS
-    )
-    if y_earnings_growth.notna().any().any():
-        F["y_earnings_growth"] = y_earnings_growth
+    signed_growth = fiscal_change_values(fund_hist, "netIncome", kind="signed_pct", periods=yoy_periods, years=1)
+    F["y_earnings_growth_signed"] = fiscal_values_to_daily(fund_hist, signed_growth, idx, max_age_days=_QUARTERLY_MAX_AGE_DAYS, preserve_nulls=True)
+    if "totalRevenue" in fund_hist.columns:
+        revenue = pd.to_numeric(fund_hist["totalRevenue"], errors="coerce").replace([np.inf, -np.inf], np.nan)
+        prior_revenue = fiscal_prior_values(fund_hist, revenue, years=3).replace([np.inf, -np.inf], np.nan)
+        cagr = (revenue.where(revenue > 0) / prior_revenue.where(prior_revenue > 0)).pow(1.0 / 3.0) - 1.0
+        F["revenue_cagr_3y"] = fiscal_values_to_daily(
+            fund_hist, cagr.replace([np.inf, -np.inf], np.nan), idx, max_age_days=_QUARTERLY_MAX_AGE_DAYS, preserve_nulls=True
+        )
 
     # YoY change in TTM profit margin (margin expansion / contraction trend)
     y_margin_chg = fiscal_change_to_daily(
@@ -1311,6 +1315,21 @@ def _yearly_ttm_momentum_fields(fund_hist: pd.DataFrame, idx: pd.DatetimeIndex, 
     if y_margin_chg.notna().any().any():
         F["y_margin_vs_ttm"] = y_margin_chg
     return F
+
+
+def _cash_runway_fields(fund_hist: pd.DataFrame, idx: pd.DatetimeIndex) -> dict[str, pd.DataFrame]:
+    """Months of current liquidity at the trailing FCF burn rate, outside Financials."""
+    if not {"cash", "freeCashflow", "sector"}.issubset(fund_hist.columns):
+        return {}
+    cash = pd.to_numeric(fund_hist["cash"], errors="coerce").replace([np.inf, -np.inf], np.nan)
+    fcf = pd.to_numeric(fund_hist["freeCashflow"], errors="coerce").replace([np.inf, -np.inf], np.nan)
+    nonfinancial = fund_hist["sector"].notna() & fund_hist["sector"].ne("") & ~row_gate(fund_hist, "financials")
+    runway = (12.0 * cash.where(cash >= 0) / -fcf.where(fcf < 0)).where(nonfinancial)
+    return {
+        "cash_runway_months": fiscal_values_to_daily(
+            fund_hist, runway.replace([np.inf, -np.inf], np.nan), idx, max_age_days=_QUARTERLY_MAX_AGE_DAYS, preserve_nulls=True
+        )
+    }
 
 
 def _distress_fields(
@@ -1699,6 +1718,7 @@ def _derived_fields(
     F.update(_state_flag_fields(daily, net_income, fcf, equity))
     F.update(_quarter_momentum_fields(daily, fund_hist, idx, yoy_periods))
     F.update(_yearly_ttm_momentum_fields(fund_hist, idx, yoy_periods))
+    F.update(_cash_runway_fields(fund_hist, idx))
     F.update(_distress_fields(daily, ebitda, cash, fcf, long_debt, short_debt, operating_cash))
     F.update(_sga_efficiency_fields(daily, fund_hist, idx, revenue, yoy_periods))
     F.update(_ma_footprint_fields(daily, fund_hist, idx, revenue, yoy_periods))

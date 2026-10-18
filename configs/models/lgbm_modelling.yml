@@ -11,7 +11,7 @@ lgbm:
   subsample: 0.8
   bagging_freq: 1
   colsample_bytree: 0.8
-  min_child_samples: 100
+  min_child_samples: 120
   lambda_l1: 5.0
   lambda_l2: 5.0
   num_boost_round: 3000
@@ -19,150 +19,113 @@ lgbm:
   eval_metric: rmse
   categoricals:
   - industry_group
+  - sector
   monotonic:
     enabled: true
     features:
-    - amihud_63: 1
-    - vol_63: -1
-    - f_y_rev_growth: 1
-    - f_operating_margin_5y_chg: 1
-    - f_operating_leverage: 1
-    - f_revenue_per_employee_growth: 1
-    - f_acquisition_intensity: -1
-    - f_ebitda_to_ev: 1
-    - f_pegy: -1
-    - f_core_earnings_yield_xs: 1
-    - f_nonrecurring_pretax_share_xs: -1
-    - f_gross_profitability: 1
-    - f_rd_intensity: 1
-    - f_capitalized_software_intensity_vs_peers: 1
+    - f_reported_expected_eps_yield: 1
+    - f_intangibles_to_assets: -1
+    - f_pct_independent_directors: 1
+    - ma_ratio_200: -1
+    - ma_ratio_50: -1
+    - rsi_14: -1
+    - f_ceo_pay_vs_revenue_growth: 1
+    - f_earnings_sue_lag3: -1
+    - f_auditor_vote_dissent: -1
+    - f_y_rev_growth_accel: 1
+    - f_sustainable_growth_rate: 1
+    - f_option_overhang: 1
+    - f_fcf_to_ev_vs_peers: 1
+    - f_returnOnEquity: 1
+    - f_board_dissent_median: 1
+    - f_accruals_ratio: -1
+    - f_reported_expected_eps_growth_qoq: -1
+    - f_diluted_shares_growth: -1
+    - f_director_equity_pay_pct_vs_peers: 1
+    - f_dividend_growth: 1
+    - f_book_yield: -1
+    - f_board_tenure_dispersion: -1
+    - f_payout_ratio: 1
+    - f_board_dissent_breadth_20_vs_peers: 1
+    - f_rd_capitalized_roic: 1
+    - f_days_since_earnings: 1
+    - f_auditor_tenure: 1
     - f_shareholder_yield: 1
-    - f_da_to_capex: -1
-    - f_shares_growth: -1
-    - f_sbc_to_ocf: -1
-    - f_dividend_growth_5y: 1
-    - f_interest_coverage: 1
-    - f_net_debt_to_ebitda: -1
-    - f_refinancing_risk: -1
-    - f_ic_insider_net_buy_ratio_180d: 1
-    - f_tier1_capital_ratio_xs: 1
-    - f_combined_ratio_xs: -1
-    - mom_12_1: 1
-    - max_21: -1
-    - f_ic_inst_value_to_mcap: 1
-    - f_ic_super_conviction_chg: 1
-    - f_ic_shortvol_ratio_20d: -1
-    - f_ic_shortvol_acceleration: -1
-    - f_ic_ftd_to_adv20: -1
-    - f_ec_tone: 1
-    - f_ec_tone_vs_hist: 1
-    - f_ec_tone_delta: 1
-    - f_ec_uncertainty: -1
-    - f_ec_uncertainty_vs_hist: -1
-    - peer_mom_63: 1
-    - f_piotroski_f_score: 1
-    - f_rule_of_40: 1
-    - f_rpo_growth_xs: 1
-    - f_book_value_growth: 1
-    - f_premium_growth_xs: 1
-    - f_float_growth_xs: 1
-    - f_affo_dividend_coverage: 1
-    - f_nii_growth_xs: 1
-    - f_ic_super_initiations: 1
-    - f_q_margin_vs_ttm: 1
+    - f_oldest_director_age: -1
+    - f_log_ceo_total_comp: 1
+    - f_avg_board_tenure_vs_hist: 1
+    - f_dso_vs_hist: 1
+    - f_gmroi_vs_hist: 1
+    - f_fcf_margin_vs_hist: 1
+    - f_capex_to_dep: -1
+    - f_sales_yield_vs_hist: -1
+    - f_insider_ownership_pct: -1
+    - f_ebitda_to_ev_vs_hist: 1
     - f_intrinsic_yield: 1
-    - f_goodwill_intangibles_to_assets_vs_peers: -1
-    - f_fcf_to_ev: 1
-    # ⚠ f_ceo_tenure_vs_peers and f_pct_female_directors_vs_peers REMOVED 2026-09-08,
-    # from this list and from `columns` below. Both were monotone +1, and both features'
-    # information coefficient FLIPS SIGN between halves of the sample under all three
-    # encodings (ceo_tenure peer: -0.0062 in 2011-18, +0.0213 in 2019-26) -- a monotone
-    # constraint asserts a direction the data does not hold. They now ship raw as
-    # f_ceo_tenure / f_pct_female_directors; re-add on SHAP evidence, not on priors.
+    - f_ceo_pay_slice_delta_1y: 1
+    - f_eps_surprise_4q_avg: 1
+    - f_ocf_yield : 1
+
   columns:
-  - f_earnings_sue_lag0
-  - f_earnings_sue_lag1
-  - f_earnings_sue_lag2
-  - f_earnings_sue_lag3
-  - f_earnings_sue_lag4
-  - f_earnings_sue_lag5
-  - f_earnings_sue_lag6
-  - f_earnings_sue_lag7
-  - f_earnings_improvement_streak
-  - f_earnings_abret_3d
-  - f_earnings_abret_since_report
+  # FIN vars
+  - f_revenue_cagr_3y
+  - f_y_earnings_growth_signed
+  - f_cash_runway_months
+  - f_reported_expected_eps_yield
+  - f_intangibles_to_assets
+  - f_earnings_sue_lag4 # delta Net Income vs 4q / std earnings 8q
+  - f_y_rev_growth_accel
+  - f_sustainable_growth_rate
+  - f_option_overhang # to check: why more actions leads to higher value ?
   - f_fcf_to_ev_vs_peers
-  - f_roic_incl_intangibles_vs_peers
-  - f_profit_improvement_to_assets
-  - f_roa_vol_8q
-  - f_fcf_positive_fraction_8q
-  - f_ocf_yield
-  - mom_12_1
-  - rev_21
-  - vol_63
-  - max_21
-  - seasonal_h60
-  - dollar_volume_63
-  - amihud_63
-  - rel_volume_5_63
-  - volume_trend_63
-  - volume_cv_63
-  - peer_mom_63
-  - f_y_rev_growth
-  - f_operating_margin_5y_chg
-  - f_operating_leverage
-  - f_revenue_per_employee_growth
-  - f_acquisition_intensity
-  - f_q_margin_vs_ttm
-  - f_rule_of_40
-  - f_rpo_growth_xs
-  - f_ebitda_to_ev
-  - f_fcf_to_ev
-  - f_pegy
-  - f_core_earnings_yield_xs
-  - f_nonrecurring_pretax_share_xs
-  - f_reported_expected_eps_growth_qoq
-  - f_days_since_earnings          # raw PEAD-timing counter (0->180); monotone-free (tree interaction)
-  - f_intrinsic_yield
+  - f_returnOnEquity
+  - f_accruals_ratio
   - f_gross_profitability
-  - f_piotroski_f_score
-  - f_goodwill_intangibles_to_assets_vs_peers
-  - f_rd_intensity
-  - f_capitalized_software_intensity_vs_peers
+  - f_revenue_per_employee # to normalize to have it as % of revenue per employee
+  - f_reported_expected_eps_growth_qoq # -1 trend , why ?
+  - f_diluted_shares_growth  # significant, but weird N shape ??
+  - f_dividend_growth
+  - f_book_yield
+  - f_payout_ratio
+  - f_rd_capitalized_roic
+  - f_days_since_earnings
   - f_shareholder_yield
-  - f_da_to_capex
-  - f_shares_growth
-  - f_sbc_to_ocf
-  - f_dividend_growth_5y
-  - f_interest_coverage
-  - f_net_debt_to_ebitda
-  - f_refinancing_risk
-  - f_ic_insider_net_buy_ratio_180d
-  - f_ic_super_initiations
-  - f_ic_inst_value_to_mcap
-  - f_ic_super_conviction_chg
-  - f_ic_shortvol_ratio_20d
-  - f_ic_shortvol_acceleration
-  - f_ic_ftd_to_adv20
-  - f_ec_tone
-  - f_ec_tone_vs_hist
-  - f_ec_qa_gap
-  - f_ec_qa_gap_vs_hist
-  - f_ec_uncertainty
-  - f_ec_uncertainty_vs_hist
-  - f_ec_qa_coherence_mean
-  - f_ec_qa_coherence_mean_vs_hist
-  - f_ec_tone_delta
-  - f_ec_length_delta
-  - f_ec_qa_qq_distance
-  - f_ec_prep_qq_distance
-  - f_tier1_capital_ratio_xs
-  - f_combined_ratio_xs
-  - f_nii_growth_xs
-  - f_book_value_growth
-  - f_premium_growth_xs
-  - f_float_growth_xs
-  - f_affo_dividend_coverage
+  - f_dso_vs_hist # kindof regime based 2 regimes.
+  - f_gmroi_vs_hist # what is that ?
+  - f_fcf_margin_vs_hist
+  - f_capex_to_dep
+  - f_sales_yield_vs_hist
+  - f_ebitda_to_ev_vs_hist
+  - f_intrinsic_yield
+  - f_eps_surprise_4q_avg
+  - f_ocf_yield
+  # - f_y_earnings_growth -> 2 regimes again
+  # - f_intangibles_to_equity -> to review because 2 different regimes
+  # - f_sbc_intensity -> 2 regimes ? cut 0.04
+
+  # PRICE VARS
+  - ma_ratio_200
+  - ma_ratio_50 # can be killed, redundant
+  - rsi_14
+  # BETA RES VOL -> excluded even if significant -> weird, to investigate
+
+  # GOV VARS
+  - f_pct_independent_directors
+  - f_ceo_pay_vs_revenue_growth
+  - f_ceo_pay_slice_delta_1y
+  - f_auditor_vote_dissent
+  - f_auditor_vote_dissent_vs_peers
+  - f_board_dissent_median
+  - f_director_equity_pay_pct_vs_peers
+  - f_director_equity_pay_pct
+  - f_board_tenure_dispersion
+  - f_board_dissent_breadth_20_vs_peers # why does it increase chance of gain ?? weird trend
+  - f_auditor_tenure
+  - f_oldest_director_age
+  - f_log_ceo_total_comp # to normalize to market cap or revenue of firm
+  - f_avg_board_tenure_vs_hist
+  - f_insider_ownership_pct # what is that ?
+
   columns_by_horizon:
     60:
       - "beta_market"
@@ -215,7 +178,6 @@ lgbm:
       - "f_dps_growth"
       - "f_dso"
       - "f_dso_change"
-      - "f_earningsGrowth"
       - "f_earnings_abret_3d"
       - "f_earnings_abret_since_report"
       - "f_earnings_improvement_streak"
@@ -306,7 +268,9 @@ lgbm:
       - "f_shareholder_yield"
       - "f_shares_growth"
       - "f_sustainable_growth_rate"
-      - "f_y_earnings_growth"
+      - "f_y_earnings_growth_signed"
+      - "f_revenue_cagr_3y"
+      - "f_cash_runway_months"
       - "f_y_margin_vs_ttm"
       - "f_y_rev_growth"
       - "f_y_rev_growth_accel"
@@ -334,7 +298,7 @@ lgbm:
       - "f_dpo_change_vs_hist"
       - "f_dso_vs_hist"
       - "f_dso_change_vs_hist"
-      - "f_earningsGrowth_vs_hist"
+      - "f_y_earnings_growth_signed_vs_hist"
       - "f_earnings_quality_vs_hist"
       - "f_ebit_interest_coverage_vs_hist"
       - "f_ebitda_margin_vs_hist"

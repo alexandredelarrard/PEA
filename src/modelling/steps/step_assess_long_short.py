@@ -110,18 +110,14 @@ class StepAssessLongShort(Step):
         if family is not None:
             config.model.ensemble = [family]
             block = config[model_class(family).config_key]
-            block.columns_by_horizon = {**(block.get("columns_by_horizon") or {}), 60: features or []}
-            if family != "elasticnet":
-                block.categoricals_by_horizon = {**(block.get("categoricals_by_horizon") or {}), 60: categoricals or []}
+            block.columns_by_horizon = {**(block.get("columns_by_horizon") or {}), 60: list(dict.fromkeys((features or []) + (categoricals or [])))}
         return config
 
     def _development_panel(self, eligible: list[str], categoricals: list[str]) -> tuple[StepLongShort, pd.DataFrame]:
         config = self._runtime_config()
         for family in config.model.ensemble:
             block = config[model_class(str(family)).config_key]
-            block.columns_by_horizon = {60: [name for name in eligible if name not in categoricals]}
-            if str(family) != "elasticnet":
-                block.categoricals_by_horizon = {60: categoricals}
+            block.columns_by_horizon = {60: [name for name in eligible if str(family) != "elasticnet" or name not in categoricals]}
         step = StepLongShort(context=self._context, config=config)
         schema, _ = step._prepare_training()
         panel = step._load_horizon(60, schema, False)
@@ -216,7 +212,7 @@ class StepAssessLongShort(Step):
         self._fit_selected(ledger)
 
     def _fixed_parameters(self) -> dict[str, Any]:
-        ignored = {"columns", "columns_by_horizon", "categoricals", "categoricals_by_horizon"}
+        ignored = {"columns", "columns_by_horizon"}
         return {
             key: {name: value for name, value in cast(dict, OmegaConf.to_container(self._config[key], resolve=True)).items() if name not in ignored}
             for key in ["linear", "lgbm", "random_forest"]
@@ -308,7 +304,7 @@ class StepAssessLongShort(Step):
     def _check_baseline_controls(self, output: Path) -> None:
         started = json.loads((output / "started.json").read_text(encoding="utf-8"))
         original = started["config"]
-        ignored = {"columns", "columns_by_horizon", "categoricals", "categoricals_by_horizon"}
+        ignored = {"columns", "columns_by_horizon"}
         original_parameters = {
             key: {name: value for name, value in original[key].items() if name not in ignored} for key in ["linear", "lgbm", "random_forest"]
         }
@@ -557,13 +553,9 @@ class StepAssessLongShort(Step):
             key = model_class(family).config_key
             path = self._config_dir / "models" / f"{key}_modelling.yml"
             original = path.read_text(encoding="utf-8")
-            cats = candidate["categoricals"]
-            numeric = [name for name in candidate["features"] if name not in cats]
-            updated = set_horizon_features(original, key, "columns_by_horizon", numeric)
-            if family != "elasticnet":
-                updated = set_horizon_features(updated, key, "categoricals_by_horizon", cats)
+            updated = set_horizon_features(original, key, "columns_by_horizon", candidate["features"])
             block = cast(DictConfig, OmegaConf.create(updated))[key]
-            ignored = {"columns", "columns_by_horizon", "categoricals", "categoricals_by_horizon"}
+            ignored = {"columns", "columns_by_horizon"}
             fixed = {name: value for name, value in cast(dict, OmegaConf.to_container(block, resolve=True)).items() if name not in ignored}
             if fixed != before[key]:
                 raise ValueError("Feature YAML edit changed fixed model parameters")
@@ -605,10 +597,7 @@ class StepAssessLongShort(Step):
         config.model.models_dir = str(final / "m")
         for family, candidate in ledger["selected"].items():
             block = config[model_class(family).config_key]
-            cats = candidate["categoricals"]
-            block.columns_by_horizon = {60: [name for name in candidate["features"] if name not in cats]}
-            if family != "elasticnet":
-                block.categoricals_by_horizon = {60: cats}
+            block.columns_by_horizon = {60: candidate["features"]}
         fitted = StepLongShort(context=self._context, config=config).run()
         cv = fitted.cv[60]
         if cv.audit["input_digest"] != ledger["final_input_digest"]:

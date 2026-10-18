@@ -73,9 +73,9 @@ def _finding(findings: list[Finding], condition: bool, observed: str, expected: 
         findings.append(Finding.at(8, observed, expected, **evidence))
 
 
-def _configured_h60(block: dict, kind: str) -> list[str] | None:
+def _configured_h60(block: dict) -> list[str] | None:
     """Resolve a declared h60 list or its default; None permits the RF family fallback."""
-    for horizon, value in (block.get(f"{kind}_by_horizon") or {}).items():
+    for horizon, value in (block.get("columns_by_horizon") or {}).items():
         try:
             matches = int(horizon) == 60
         except (TypeError, ValueError):
@@ -84,20 +84,22 @@ def _configured_h60(block: dict, kind: str) -> list[str] | None:
             if value is not None:
                 return list(value)
             break
-    return list(block[kind]) if block.get(kind) is not None else None
+    return list(block["columns"]) if block.get("columns") is not None else None
 
 
 def _reconcile_configuration(config: DictConfig, ledger: dict, findings: list[Finding]) -> None:
     """Independently compare effective YAML pools and original controls with the frozen experiment."""
     current = cast(dict, OmegaConf.to_container(config, resolve=True))
-    ignored = {"columns", "columns_by_horizon", "categoricals", "categoricals_by_horizon"}
+    ignored = {"columns", "columns_by_horizon"}
     for family, key in [("lgbm", "lgbm"), ("random_forest", "random_forest"), ("elasticnet", "linear")]:
         block, selected = current.get(key, {}), ledger["selected"][family]
         categoricals = selected["categoricals"]
-        for kind, frozen in [("columns", [name for name in selected["features"] if name not in categoricals]), ("categoricals", categoricals)]:
-            configured = [] if family == "elasticnet" and kind == "categoricals" else _configured_h60(block, kind)
-            if configured is None and family == "random_forest":
-                configured = _configured_h60(current.get("lgbm", {}), kind)
+        columns = _configured_h60(block)
+        if columns is None and family == "random_forest":
+            columns = _configured_h60(current.get("lgbm", {}))
+        columns = columns or []
+        categories = [] if family == "elasticnet" else [name for name in current.get("lgbm", {}).get("categoricals", []) if name in columns]
+        for kind, configured, frozen in [("columns", columns, selected["features"]), ("categoricals", categories, categoricals)]:
             _finding(
                 findings,
                 (configured or []) == frozen,

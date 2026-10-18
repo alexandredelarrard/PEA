@@ -608,3 +608,11 @@ The user's failing terminal had only `SSL_CERT_FILE` set, pointing into Minicond
 - Pages: [Overview](./OVERVIEW.md), [Peer deduction](./modules/data-peers.md), [Configuration](./reference/configuration.md).
 - Validation:17scoped tests pass/0skips, including AAPL/MSFT/JPM real-source replay (333rows,125,874checked cells/nulls exact;383→67columns;grainPASS); no live attempts. Three new path assertions have RED/GREEN evidence. Ruff/Pyright pass. The ordinary producer and cube cache loaders use verified destination copies with generation/providers blocked; final dev activation/legacy-file retirement remains a separately recorded implementation action. [Regression evidence](../reports/validate/2026-10-18-modelling-dag-backtest/_out/peer-regression-real.xml).
 - Boundary: no basket regeneration/reserialization, source/cube-table mutation, model training, production-model promotion, push or scheduler deployment.
+
+## 2026-10-18: signed growth and liquidity feature refresh
+
+- Profile: internal/standard.
+- source_commit: 1a66369cb52b1164bcc734cc27358d761393d162 plus the approved uncommitted dev feature implementation.
+- Coverage: three-year revenue CAGR, canonical signed annual earnings growth and cash runway; fiscal/publication/null-state/freshness rules; 218-column fundamentals contract and full-history adoption requirement.
+- Pages: [Modelling and portfolio](./reference/modelling-and-portfolio.md), [Cube aggregation](./modules/data-aggregate.md).
+- Evidence: focused arithmetic/PIT, source replay, incremental/assembly and independent reviews are recorded in reports/validate/2026-10-18-fundamental-growth-features. No production rebuild or training was executed.

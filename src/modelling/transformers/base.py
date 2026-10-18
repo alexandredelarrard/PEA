@@ -71,7 +71,7 @@ class BaseModel:
 
     @classmethod
     def configured_columns(cls, config: DictConfig, horizon: int | None) -> list[str]:
-        """Numeric feature names for `horizon`: `columns_by_horizon[h]`, else `columns`."""
+        """Selected feature names for `horizon`: `columns_by_horizon[h]`, else `columns`."""
         block = cls.block(config)
         override = columns_for_horizon(block, horizon)
         if override is not None:
@@ -125,8 +125,8 @@ class BaseModel:
     def fit(self, train: pd.DataFrame, valid: pd.DataFrame | None = None) -> Self:
         """Fit on `train`; `valid` is the chronological early-stopping tail (ignored by
         families that do not early-stop)."""
-        numeric = [c for c in self.configured_columns(self._config, self.horizon) if self._usable(c, train)]
         self.categoricals = [c for c in self.configured_categoricals(self._config, self.horizon) if self._usable(c, train)]
+        numeric = [c for c in self.configured_columns(self._config, self.horizon) if c not in self.categoricals and self._usable(c, train)]
         self.features = list(dict.fromkeys(numeric + self.categoricals))
         if self.task == TASK_CLASSIFICATION:
             self._check_binary_label(train)

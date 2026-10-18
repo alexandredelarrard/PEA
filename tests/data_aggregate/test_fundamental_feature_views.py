@@ -56,7 +56,7 @@ EXPECTED_HISTORY_FEATURES = frozenset(
         "dpo_change",
         "dso",
         "dso_change",
-        "earningsGrowth",
+        "y_earnings_growth_signed",
         "earnings_quality",
         "ebit_interest_coverage",
         "ebitda_margin",
@@ -113,22 +113,22 @@ EXPECTED_HISTORY_FEATURES = frozenset(
 )
 
 
-def test_approved_feature_view_contract_is_exactly_217_columns() -> None:
-    assert len(RAW_FEATURES) == 136
+def test_approved_feature_view_contract_is_exactly_218_columns() -> None:
+    assert len(RAW_FEATURES) == 137
     assert HISTORY_FEATURES == EXPECTED_HISTORY_FEATURES
     assert len(HISTORY_FEATURES) == 79
     assert HISTORY_FEATURES < RAW_FEATURES
-    assert EXCLUDED_FEATURES == frozenset({"q_rev_growth", "revenueGrowth"})
+    assert EXCLUDED_FEATURES == frozenset({"q_rev_growth", "revenueGrowth", "earningsGrowth", "y_earnings_growth"})
     assert set(CATALOGUE) == set(RAW_FEATURES)
-    assert len(FEATURE_COLUMNS) == 217
+    assert len(FEATURE_COLUMNS) == 218
     assert len(set(FEATURE_COLUMNS)) == len(FEATURE_COLUMNS)
     assert {column for column in FEATURE_COLUMNS if column.endswith("_vs_peers")} == {"f_fcf_to_ev_vs_peers", "f_roic_incl_intangibles_vs_peers"}
     assert PEER_FEATURES == frozenset({"fcf_to_ev", "roic_incl_intangibles"})
     assert not any(column.endswith("_xs") for column in FEATURE_COLUMNS)
 
     print("\n=== SANITY CHECK: approved fundamentals feature views ===")
-    print("  136 raw + 79 self-history + 2 existing-peer comparisons = 217 unique columns.")
-    print("  q_rev_growth and the redundant revenueGrowth alias are explicitly excluded.")
+    print("  137 raw + 79 self-history + 2 existing-peer comparisons = 218 unique columns.")
+    print("  Obsolete annual earnings aliases and redundant revenue growth views are excluded.")
 
 
 def test_fundamental_view_builder_emits_raw_and_selected_history_only() -> None:

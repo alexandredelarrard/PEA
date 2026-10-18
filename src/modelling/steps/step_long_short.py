@@ -98,10 +98,9 @@ def union_all_columns(config: DictConfig) -> list[str]:
         block = config.get(key)
         if not block:
             continue
-        for kind in ("columns", "categoricals"):
-            out += list(block.get(kind) or [])
-            for cols in (block.get(f"{kind}_by_horizon") or {}).values():
-                out += list(cols) if cols else []
+        out += list(block.get("columns") or [])
+        for cols in (block.get("columns_by_horizon") or {}).values():
+            out += list(cols) if cols else []
     return list(dict.fromkeys(out))
 
 
@@ -245,7 +244,14 @@ class StepLongShort(Step):
     # ---- schema (no data read) ---------------------------------------- #
     def _resolve_schema(self) -> Schema:
         cube_cols = set(self._context.store.columns(Tables.cube))
-        if {"f_fwd_eps_yield", "f_forward_earnings_yield", "f_eps_expectation_growth"} & cube_cols:
+        if {
+            "f_fwd_eps_yield",
+            "f_forward_earnings_yield",
+            "f_eps_expectation_growth",
+            "f_earningsGrowth",
+            "f_earningsGrowth_vs_hist",
+            "f_y_earnings_growth",
+        } & cube_cols:
             raise RuntimeError("Obsolete fundamentals cube; rebuild full fundamentals and assemble the cube before training.")
         load_cols, dropped = self._select_load_columns(cube_cols)
         horizons = horizons_in(cube_cols, self.target_type)

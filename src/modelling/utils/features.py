@@ -81,11 +81,11 @@ def build_monotone_constraints(feats: list[str], feature_map: dict[str, int]) ->
     return [int(feature_map.get(f, 0)) for f in feats]
 
 
-def columns_for_horizon(block: Any, horizon: Any, *, kind: str = "columns") -> list[str] | None:
+def columns_for_horizon(block: Any, horizon: Any) -> list[str] | None:
     """`block.columns_by_horizon[<horizon>]` when the family declares a list for this horizon,
     else None (the caller falls back to `block.columns`). Keys compare as ints, so a YAML `30:`
     matches a numpy / int / str horizon."""
-    by_h = block.get(f"{kind}_by_horizon") if block else None
+    by_h = block.get("columns_by_horizon") if block else None
     if not by_h or horizon is None:
         return None
     try:

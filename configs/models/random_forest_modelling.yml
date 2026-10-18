@@ -80,7 +80,9 @@ random_forest:
   - f_dso
   - f_dividend_payer
   - volume_trend_63
-  - f_earningsGrowth
+  - f_y_earnings_growth_signed
+  - f_revenue_cagr_3y
+  - f_cash_runway_months
   - f_diluted_shares_growth
   # Per-horizon OVERRIDES: the model uses the list for the horizon it is training
   # (its `target_<label>_h<horizon>` cube column) if present here, else `columns` above.
@@ -127,7 +129,7 @@ random_forest:
     - f_reported_expected_eps_growth_qoq
     - volume_trend_63
     - f_q_margin_vs_ttm
-    - f_y_earnings_growth
+    - f_y_earnings_growth_signed
     - f_capex_intensity
     - f_effective_tax_rate
     - f_fixed_cost_coverage_margin
@@ -204,7 +206,6 @@ random_forest:
       - "f_dps_growth"
       - "f_dso"
       - "f_dso_change"
-      - "f_earningsGrowth"
       - "f_earnings_abret_3d"
       - "f_earnings_abret_since_report"
       - "f_earnings_improvement_streak"
@@ -297,7 +298,9 @@ random_forest:
       - "f_shareholder_yield"
       - "f_shares_growth"
       - "f_sustainable_growth_rate"
-      - "f_y_earnings_growth"
+      - "f_y_earnings_growth_signed"
+      - "f_revenue_cagr_3y"
+      - "f_cash_runway_months"
       - "f_y_margin_vs_ttm"
       - "f_y_rev_growth"
       - "f_y_rev_growth_accel"
@@ -327,7 +330,7 @@ random_forest:
       - "f_dpo_change_vs_hist"
       - "f_dso_vs_hist"
       - "f_dso_change_vs_hist"
-      - "f_earningsGrowth_vs_hist"
+      - "f_y_earnings_growth_signed_vs_hist"
       - "f_earnings_quality_vs_hist"
       - "f_ebit_interest_coverage_vs_hist"
       - "f_ebitda_margin_vs_hist"

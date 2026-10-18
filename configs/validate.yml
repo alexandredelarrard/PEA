@@ -207,6 +207,8 @@ validate:
       peer_suffix: "_vs_peers"
       clip_peer: 8.0
       bounds:
+        f_revenue_cagr_3y: [-1.0, .inf]
+        f_cash_runway_months: [0.0, .inf]
         f_earnings_improvement_streak: [0.0, 8.0]
         f_fcf_positive_fraction_8q: [0.0, 1.0]
         f_roa_vol_8q: [0.0, .inf]
@@ -221,6 +223,9 @@ validate:
         f_roa_vol_8q: fundamentals_history
         f_fcf_positive_fraction_8q: fundamentals_history
         f_ocf_yield: fundamentals_history
+        f_revenue_cagr_3y: fundamentals_history
+        f_y_earnings_growth_signed: fundamentals_history
+        f_cash_runway_months: fundamentals_history
         f_fcf_to_ev_vs_peers: fundamentals_history
         f_roic_incl_intangibles_vs_peers: fundamentals_history
       # ⚠ QUARTERLY -- SEC filings held flat on a daily grid between filing dates, so a frozen

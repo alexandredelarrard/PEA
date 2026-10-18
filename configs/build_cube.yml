@@ -61,7 +61,7 @@ build_cube:
     vol_standardize: true     # divide epsilon by its own trailing risk
 
   features:
-    standardize_method: rank # rank | zscore
+    standardize_method: zscore # rank | zscore
 
   intrinsic:                 # two-stage DCF for the intrinsic-value features
     discount_rate: 0.10      # equity discount rate r

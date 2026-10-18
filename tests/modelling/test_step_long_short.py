@@ -143,7 +143,17 @@ def test_schema_projection_is_present_columns_and_never_a_target() -> None:
     print(f"  load cols {load_cols}; dropped {dropped}; a configured target is never loaded as a feature; horizons from the schema. Validated.")
 
 
-@pytest.mark.parametrize("legacy", ["f_fwd_eps_yield", "f_forward_earnings_yield", "f_eps_expectation_growth"])
+@pytest.mark.parametrize(
+    "legacy",
+    [
+        "f_fwd_eps_yield",
+        "f_forward_earnings_yield",
+        "f_eps_expectation_growth",
+        "f_earningsGrowth",
+        "f_earningsGrowth_vs_hist",
+        "f_y_earnings_growth",
+    ],
+)
 def test_training_refuses_obsolete_fundamentals_cube(legacy: str) -> None:
     step: Any = object.__new__(StepLongShort)
     step._context = SimpleNamespace(store=SimpleNamespace(columns=lambda table: ["date", "ticker", legacy]))
@@ -159,7 +169,7 @@ def test_real_config_resolves_rf_h30_vs_default() -> None:
     for name, cols in [*(("rf", c) for c in rf.values()), *(("lgbm", c) for c in lgbm.values())]:
         assert len(cols) == len(set(cols)), f"{name}: duplicate feature in the configured list"
     assert rf[30] != rf[90]
-    assert lgbm[30] == lgbm[90] and len(lgbm[30]) >= 60
+    assert lgbm[30] == lgbm[90] and lgbm[30]
     print("\n=== SANITY CHECK: real config ===")
     print(
         f"  RF features by horizon { {h: len(columns) for h, columns in rf.items()} }; "

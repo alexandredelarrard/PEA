@@ -369,11 +369,26 @@ def fiscal_values_to_daily(
     idx: pd.DatetimeIndex,
     *,
     max_age_days: int | None = None,
+    preserve_nulls: bool = False,
 ) -> pd.DataFrame:
-    """Project row-aligned fiscal values from each row's publication date."""
+    """Project fiscal values; optionally let invalid new filings clear prior state."""
     if len(values) != len(fund_hist):
         raise ValueError("fiscal value series must be row-aligned with fund_hist")
     observations = fund_hist[["ticker", "as_of"]].assign(_value=pd.to_numeric(values.to_numpy(), errors="coerce"))
+    if preserve_nulls:
+        observations["as_of"] = pd.to_datetime(observations["as_of"], errors="coerce")
+        observations = observations.dropna(subset=["ticker", "as_of"])
+        observations = observations.sort_values(["ticker", "as_of"]).drop_duplicates(["ticker", "as_of"], keep="last")
+        daily: dict[str, pd.Series] = {}
+        for ticker, rows in observations.groupby("ticker", sort=False):
+            source = rows.set_index("as_of")["_value"]
+            projected = source.reindex(idx, method="ffill")
+            if max_age_days is not None:
+                produced = pd.Series(source.index, index=source.index).reindex(idx, method="ffill")
+                age = pd.Series(idx, index=idx) - produced
+                projected = projected.where(age <= pd.Timedelta(days=int(max_age_days)))
+            daily[str(ticker)] = projected
+        return pd.DataFrame(daily, index=idx).rename_axis(columns="ticker")
     return _observations_to_daily(
         observations,
         "_value",
@@ -392,11 +407,13 @@ def fiscal_change_values(
     tolerance_days: int = 45,
     positions: pd.Series | None = None,
 ) -> pd.Series:
-    """Row-aligned fiscal change, with a filing-count fallback only without fiscal dates."""
+    """Fiscal change; only legacy pct/diff modes permit a filing-count fallback."""
     if field not in fund_hist.columns:
         return pd.Series(np.nan, index=fund_hist.index, dtype="float64")
     current = pd.to_numeric(fund_hist[field], errors="coerce")
     has_fiscal_end = "fiscal_end" in fund_hist.columns and fund_hist["fiscal_end"].notna().any()
+    if kind == "signed_pct" and not has_fiscal_end:
+        return pd.Series(np.nan, index=fund_hist.index, dtype="float64")
     if has_fiscal_end:
         match_years = years
         if match_years is None:
@@ -424,10 +441,14 @@ def fiscal_change_values(
         prior = pd.Series(prior_values, index=fund_hist.index)
     if kind == "pct":
         result = current / prior.where(prior != 0) - 1.0
+    elif kind == "signed_pct":
+        current = current.replace([np.inf, -np.inf], np.nan)
+        prior = prior.replace([np.inf, -np.inf], np.nan)
+        result = (current - prior) / prior.abs().where(prior != 0)
     elif kind == "diff":
         result = current - prior
     else:
-        raise ValueError("kind must be 'pct' or 'diff'")
+        raise ValueError("kind must be 'pct', 'signed_pct' or 'diff'")
     return result.replace([np.inf, -np.inf], np.nan)
 
 

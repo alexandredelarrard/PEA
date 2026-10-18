@@ -248,6 +248,24 @@ def _reconcile_cohorts(output: Path, models: list[str], findings: list[Finding])
         "Matched stock returns differ",
         "Missing selected outcomes retain fixed missing weights",
     )
+    market = pd.read_parquet(output / "eval" / "market_windows.parquet").set_index("date")
+    unique_market = bool(not market.index.hasnans and market.index.is_unique and market.ticker.eq("equity_tr").all())
+    _finding(findings, unique_market, "Market window keys differ", "Unique nonnull dates for the stored equity_tr benchmark")
+    if unique_market:
+        compared = matched.reset_index().merge(
+            market[["realized_return", "valid"]], left_on="date", right_index=True, how="left", validate="many_to_one", indicator=True
+        )
+        market_same = bool(
+            compared._merge.eq("both").all()
+            and compared.market_valid.eq(compared.valid).all()
+            and np.allclose(compared.market_return, compared.realized_return.where(compared.valid.eq(True)), equal_nan=True, rtol=1e-10, atol=1e-12)
+        )
+        _finding(
+            findings,
+            market_same,
+            "Matched SPY returns or validity differ",
+            "Every matched benchmark return equals its source-validated date window, masked when invalid",
+        )
     _finding(
         findings,
         bool(np.allclose(matched.cohort_return - matched.market_return, matched.excess_return, equal_nan=True)),
@@ -319,10 +337,12 @@ def _live_path_checks(context: Context, output: Path, findings: list[Finding], c
     macro["ret"], macro["ticker"] = macro.close.pct_change(fill_method=None), "equity_tr"
     market = independent_paths(macro.rename(columns={"close": "close_total"}).reset_index(names="date"), calendar, 60)
     saved_market = pd.read_parquet(output / "eval" / "market_windows.parquet")
-    compared_market = market.merge(saved_market, on=["date", "ticker"], how="left", suffixes=("_independent", "_saved"), validate="one_to_one")
-    market_same = compared_market.valid_independent.eq(compared_market.valid_saved).all() and np.allclose(
-        compared_market.realized_return_independent, compared_market.realized_return_saved, equal_nan=True, rtol=1e-8, atol=1e-10
-    )
+    market_same = not saved_market.duplicated(["date", "ticker"]).any()
+    if market_same:
+        compared_market = market.merge(saved_market, on=["date", "ticker"], how="left", suffixes=("_independent", "_saved"), validate="one_to_one")
+        market_same = compared_market.valid_independent.eq(compared_market.valid_saved).all() and np.allclose(
+            compared_market.realized_return_independent, compared_market.realized_return_saved, equal_nan=True, rtol=1e-8, atol=1e-10
+        )
     _finding(findings, bool(market_same), "Source SPY path replay differs", "Matching complete market windows on identical dates")
     _LOG.info("Modelling validation replayed %d source windows through context.store", len(expected))
     return len(expected)

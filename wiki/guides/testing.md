@@ -7,7 +7,7 @@ tags:
   - guide
   - testing
   - validation
-source_commit: 48a92a6f4103e57ef4c4b0cfa8f018d13ffca97e
+source_commit: f539ede0d594edcb3d1633444b42f6bba287b2e4
 ---
 # Testing and validation
 
@@ -234,3 +234,22 @@ Run the relevant existing split-union, level/value, predecessor, insider/institu
 Financial acceptance additionally requires the full isolated real-data h30/h60/h90 four-stage run with unchanged settings and no live model/application writes. Run the [independent validator](../../src/validate/checks/modelling.py) through validate modelling -c <isolated-configs> -o <dated-run>. It recomputes finite-pair Spearman/IC-IR, source chronology/inner/outer purges, retained inputs/categories, native predictions/contributions, coefficients/PDP, latest-mature refits and publication/report identities. Incomplete evidence exits3 (ABSTAINED), corrupt complete evidence fails; positive performance is not a correctness gate.
 
 Browser checks must change every horizon/population/statistic/family control and representative first/last/zero/category features, retaining sampled signed points plus five original-fold curves and cutoff. Existing-image checks prove offline Python3.12 imports, real Airflow parsing/rendering and atomic Windows-mount replacement without scheduler deployment. Use fresh verified short Windows scratch/run IDs, never delete a shared pytest root. Fixtures alone do not establish performance; accepted upstream current-roster/GICS/static-peer/vendor limitations remain.
+
+## Modelling DAG acceptance 2026-10-19
+
+The completed h30/h60/h90 run is `20261018_w`. Its measured product revision is `48a92a6f`; the final reviewed documentation candidate is `f539ede0` on `harness/modelling-dag-backtest`. This is a local candidate; the broader modelling change has not been merged into dev. The configured artifacts and current lifecycle are described in [Modelling](../modules/modelling.md).
+
+| Check or review | Completed result | Retained evidence |
+| --- | --- | --- |
+| Scoped regression and static checks | 268 tests pass, zero skips; one explicitly deselected active-production-predictor smoke. Thirty changed Python files pass Ruff, formatting and Pyright. | _out/integrated-v5.json and integrated-v5.xml |
+| Full actual workflow and read-only validator | Training, saved-model assessment, portfolio backtest, isolated full-history refit, validator and offline rerender all succeed. The validator reports zero findings. | _out/chain-20261018_w.json; actual dated run's _out/modelling.json |
+| Independent domain validation | A separate validator examines the outcomes and evidence; final reconciliation passes 147/147 checks. | 04-validation-02.md;_out/independent02-final.json |
+| Independent validation after documentation fixes | 52/52 checks pass; source/configuration and 103 prior artifact identities remain unchanged. This reconciles existing measurements rather than repeating training. | 04-validation-03.md;_out/independent03-final-reconciled.json |
+| Correctness and Ponytail simplification reviews | Independent connected-source passes, then closing reviews: CLEAR and ship. The final passes find no further product-code refactor needed. Two stale documentation issues are corrected and rechecked. | 05-review-01.md through 05-review-04.md |
+| Offline report | 348 actual browser assertions; identical artifact-only model-report rerender; readiness HTML passes 15 integrity checks. | _out/browser-real-w.json;_out/final-report-integrity.json |
+
+Evidence filenames in this table are relative to the retained local audit package `reports/validate/2026-10-18-modelling-dag-backtest/`; the model run is `data/output/modelling_backtest/20261018_w/`. The package's `06-final.md` and `report.html` preserve exact commands, findings, commits, failures and scope. Its frozen candidate remains f539ede0; later wiki-only clarification does not rewrite that review history.
+
+The [read-only modelling validator](../../src/validate/checks/modelling.py) independently reconciles all 8,613,360 scored rows for target/metric arithmetic. Native explanation checks cover 216,000 saved member rows across 54 original/cutoff objects. Source-feature cross-sections, original OOF reload and direct PDP responses are bounded samples; all nine serialized full-history objects were not natively replayed. A simplification pass is a review for unnecessary code, not a promise of additional refactoring.
+
+Historical current-universe/GICS/static-peer/vendor-vintage limitations and 51 unavailable configured feature names remain explicit. The 2022+ period is already inspected, without a new sealed-test or generalization claim. The original strict root user-file audit still exits 1 after separate root-dev edits; its baseline was not reset, while hard candidate/configuration/live-model/peer controls pass. No live production model was promoted. These limits keep the historical interpretation conditional despite passing implementation and workflow checks.

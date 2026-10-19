@@ -5,7 +5,7 @@ type: module
 tags:
   - wiki
   - module
-source_commit: 48a92a6f4103e57ef4c4b0cfa8f018d13ffca97e
+source_commit: f539ede0d594edcb3d1633444b42f6bba287b2e4
 ---
 # Modelling
 
@@ -75,3 +75,5 @@ Historical current-roster/GICS, static-peer and vendor-vintage limitations remai
 All application table reads/writes use [DataStore](./data-store.md). Strategy scoring reaches saved models through utilities. The [independent validator](../../src/validate/checks/modelling.py) reconciles saved predictions, chronology, actual retained inputs, IC/IR, native effects/PDP, publication and report identities; incomplete evidence abstains. See [testing](../guides/testing.md#assessment-contracts-and-financial-replay) and [run commands](../guides/run-the-pipeline.md#dated-modelling-assessment).
 
 The [architecture guard](../../tests/modelling/test_architecture_guard.py) enforces dependency boundaries. [Artifact tests](../../tests/modelling/test_run_artifacts.py) cover complete publication, failure/retry and pinned readers; [assessment integration](../../tests/modelling/test_assessment_evaluation.py) forbids fitting and checks artifact-only rerender.
+
+The completed h30/h60/h90 assessment has separate independent domain validation, correctness and Ponytail simplification reviews. See [the dated acceptance record](../guides/testing.md#modelling-dag-acceptance-2026-10-19) for the measured results, closed findings, exact reviewed revisions and sampling limits. Final reviews found no additional product refactor necessary; the current historical-data limitations remain conditional.

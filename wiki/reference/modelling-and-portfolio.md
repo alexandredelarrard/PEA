@@ -7,7 +7,7 @@ tags:
   - reference
   - modelling
   - portfolio
-source_commit: 9c9ba60704a3c16b32a97eeb728534aae8e319e5
+source_commit: 8e4bd26a0e837b01f0df16e29703dd8918458b77
 ---
 # Modelling, strategies, and portfolio
 

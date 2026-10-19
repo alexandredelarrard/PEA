@@ -100,7 +100,12 @@ def test_monotone_constraints_reach_the_booster() -> None:
 
 
 def test_monotone_warns_only_on_unlisted_typo(caplog: pytest.LogCaptureFixture) -> None:
-    overrides = {"lgbm": {"columns": ["f0", "f_stale"], "monotonic": {"enabled": True, "features": [{"f0": 1}, {"f_stale": -1}, {"f_typo": 1}]}}}
+    overrides = {
+        "lgbm": {
+            "columns": ["f0", "f_stale", "sector"],
+            "monotonic": {"enabled": True, "features": [{"f0": 1}, {"f_stale": -1}, {"f_typo": 1}]},
+        }
+    }
     with caplog.at_level(logging.WARNING, logger="src.modelling.transformers.lightgbm_model"):
         model, _, _ = _fit(overrides)
     msgs = " ".join(r.getMessage() for r in caplog.records)

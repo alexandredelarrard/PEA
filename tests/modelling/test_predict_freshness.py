@@ -61,7 +61,12 @@ def _step(tmp_path: Path, store: Any, monkeypatch: pytest.MonkeyPatch, min_share
     )
     meta = {"horizons": [30], "feature_cols": ["f0"], "categorical_cols": [], "model_types": ["stub"], "train_ic_ir": {"30": 1.0}}
     monkeypatch.setattr(step_long_short, "read_metadata", lambda directory: meta)
-    monkeypatch.setattr(step_long_short, "load_ensemble", lambda directory, horizons, families: {30: {"stub": _Member()}})
+
+    def pinned_members(directory: Path, horizons: list[int], families: list[str], *, metadata: dict[str, Any]) -> dict[int, dict[str, _Member]]:
+        assert metadata is meta
+        return {30: {"stub": _Member()}}
+
+    monkeypatch.setattr(step_long_short, "load_ensemble", pinned_members)
     paths = {"DATA_STORE": tmp_path / "data", "OUTPUT_DIR": tmp_path / "out", "MODELS_DIR": tmp_path / "models"}
     context: Any = SimpleNamespace(
         store=store, save=False, log=logging.getLogger("predict-freshness"), config=cfg, config_dir=Path("configs"), paths=paths

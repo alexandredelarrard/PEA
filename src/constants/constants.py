@@ -831,6 +831,7 @@ CUSIP_TICKER_OVERRIDES: dict[str, str] = {
 # `model` values: one per ensemble member, plus these two aggregates.
 PREDICTION_MODEL_ENSEMBLE = "ensemble"  # the per-horizon average of that horizon's members
 PREDICTION_MODEL_BLENDED = "blended"  # the IR-weighted blend ACROSS horizons
+MODEL_GENERATION_ARTIFACT_FORMAT = "transformer-pickle-generation-v2"
 
 # --------------------------------------------------------------------------- #
 # Data-freshness cadence THRESHOLDS (read by `src/utils/freshness.py`)         #

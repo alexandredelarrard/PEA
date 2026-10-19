@@ -11,11 +11,10 @@ import pandas as pd
 from omegaconf import DictConfig
 
 from src.modelling.transformers.base import BaseModel
-from src.modelling.transformers.monitor import partial_dependence, shap_row_values, shap_score_scale
-from src.modelling.utils.assessment import balanced_sample_positions, summarize_ic, write_json
-from src.modelling.utils.assessment_metrics import trend_summary
+from src.modelling.transformers.linear_regression import LinearRegression
+from src.modelling.transformers.monitor import _sample_idx, partial_dependence, shap_row_values, shap_score_scale
+from src.modelling.utils.assessment import balanced_sample_positions, write_json
 from src.modelling.utils.features import design_matrix
-from src.modelling.utils.metrics import daily_ic_series
 
 
 def explain_tree(member: BaseModel, panel: pd.DataFrame, output: Path, config: DictConfig, logger: logging.Logger, *, pdp: bool) -> dict[str, Any]:
@@ -69,16 +68,7 @@ def explain_tree(member: BaseModel, panel: pd.DataFrame, output: Path, config: D
             "constraint": int(constraints[index]) if constraints else 0,
             "scatter": {"x": col[chosen], "shap": phi[chosen, index], "date": panel.date.iloc[chosen].astype(str).tolist()},
             "binned": binned,
-            "shap_trend": {"shape": "unordered categorical"} if categorical else trend_summary(binned["x"], binned["mean"]),
-            "pdp": {
-                "x": grid,
-                "mean": means,
-                "trend": {"shape": "unordered categorical"}
-                if categorical
-                else trend_summary(grid, means)
-                if grid is not None
-                else {"shape": "unsupported"},
-            },
+            "pdp": {"x": grid, "mean": means},
             "missing_shap_mean": float(np.mean(phi[~valid, index])) if (~valid).any() else None,
         }
         if pdp:
@@ -106,61 +96,71 @@ def _binned_dependence(x: np.ndarray, phi: np.ndarray, categorical: bool) -> dic
     return {key: grouped[key].to_numpy() for key in ["x", "mean", "count"]}
 
 
-def _summaries(frame: pd.DataFrame, models: list[str], horizon: int) -> dict[str, Any]:
-    paired = frame.loc[np.isfinite(frame.y)]
-    return {name: summarize_ic(daily_ic_series(paired, "y", name), horizon) for name in models}
-
-
-def period_evidence(
-    predictions: pd.DataFrame,
-    models: list[str],
-    periods: dict[str, list[str]],
-    comparison_years: list[int],
-    prior_scores: pd.DataFrame | None = None,
-    *,
-    horizon: int = 60,
+def explain_linear(
+    member: LinearRegression, panel: pd.DataFrame, output: Path, config: DictConfig, logger: logging.Logger, *, pdp: bool
 ) -> dict[str, Any]:
-    """Diagnose fixed predictions; future-observed support is never a ranking or selection rule."""
-    years = predictions.date.dt.year
-    comparison = predictions.loc[years.isin(comparison_years)]
-    supported = comparison.loc[np.isfinite(comparison.y)]
-    n_dates = comparison.date.nunique()
-    complete = supported.groupby("ticker").date.nunique()
-    tickers = sorted(complete.index[complete == n_dates].astype(str)) if n_dates else []
-    fixed = supported.loc[supported.ticker.isin(tickers)]
-    cohorts = {str(year): _summaries(fixed.loc[fixed.date.dt.year == year], models, horizon) for year in comparison_years}
-    population = {}
-    sectors = []
-    for year, frame in predictions.groupby(years):
-        population[str(year)] = {
-            "score_rows": len(frame),
-            "label_rows": int(np.isfinite(frame.y).sum()),
-            "dates": frame.date.nunique(),
-            "tickers": frame.ticker.nunique(),
+    """Explain saved standardized coefficients exactly, without fitting or conditional SHAP."""
+    features = member.features
+    matrix = panel[features].to_numpy(dtype=float)
+    standardized = np.nan_to_num((matrix - member.mean_) / member.std_, nan=0.0)
+    phi = standardized * member.coef_
+    predicted = member.predict(panel).to_numpy()
+    reconstructed = phi.sum(axis=1) + member.intercept_
+    if not np.allclose(reconstructed, predicted, atol=1e-10, rtol=1e-10):
+        raise ValueError("Saved coefficients and scaling do not reconstruct linear predictions")
+    output.mkdir(parents=True, exist_ok=True)
+    values = pd.DataFrame(phi, columns=features)
+    values.insert(0, "ticker", panel.ticker.to_numpy())
+    values.insert(0, "date", panel.date.to_numpy())
+    values["base"], values["prediction"] = member.intercept_, predicted
+    values.to_parquet(output / "contributions.parquet", index=False)
+    panel[["date", "ticker", *features]].to_parquet(output / "x.parquet", index=False)
+    coefficients = pd.DataFrame({"feature": features, "coefficient": member.coef_, "mean": member.mean_, "std": member.std_})
+    coefficients.to_parquet(output / "coefficients.parquet", index=False)
+    options = config.model.diagnostics
+    chosen = balanced_sample_positions(panel, int(options.dependence_sample), int(config.seed))
+    background = _sample_idx(len(panel), int(options.pdp_background), int(config.seed))
+    curves = {}
+    for index, feature in enumerate(features):
+        col = matrix[:, index]
+        valid = np.isfinite(col)
+        signed_x = (col - member.mean_[index]) / member.std_[index]
+        binned = _binned_dependence(signed_x, phi[:, index], False)
+        binned["raw_x"] = np.asarray(binned["x"]) * member.std_[index] + member.mean_[index]
+        grid, means = None, None
+        if pdp and valid.any():
+            grid = np.unique(col[valid])
+            if len(grid) > int(options.pdp_grid):
+                grid = np.unique(np.quantile(col[valid], np.linspace(0.02, 0.98, int(options.pdp_grid))))
+            means = (
+                predicted[background].mean() - phi[background, index].mean() + member.coef_[index] * (grid - member.mean_[index]) / member.std_[index]
+            )
+        curves[feature] = {
+            "importance": float(abs(member.coef_[index])),
+            "coefficient": float(member.coef_[index]),
+            "observed": int(valid.sum()),
+            "sample_rows": len(panel),
+            "categorical": False,
+            "scatter": {
+                "x": signed_x[chosen],
+                "raw_x": col[chosen],
+                "row": chosen,
+                "shap": phi[chosen, index],
+                "date": panel.date.iloc[chosen].astype(str).tolist(),
+            },
+            "binned": binned,
+            "pdp": {"x": grid, "mean": means},
+            "missing_shap_mean": float(np.mean(phi[~valid, index])) if (~valid).any() else None,
         }
-        for sector, group in frame.groupby("sector", dropna=False):
-            for model, stats in _summaries(group, models, horizon).items():
-                sectors.append({"year": year, "sector": sector, "model": model, "rows": len(group), "tickers": group.ticker.nunique(), **stats})
-    earlier = {}
-    if prior_scores is not None and not prior_scores.empty:
-        paired = prior_scores.merge(predictions[["date", "ticker", "y"]], on=["date", "ticker"], how="left", validate="one_to_one")
-        earlier = _summaries(paired, models, horizon)
-    return {
-        "periods": {
-            name: _summaries(predictions.loc[predictions.date.between(pd.Timestamp(bounds[0]), pd.Timestamp(bounds[1]))], models, horizon)
-            for name, bounds in periods.items()
-        },
-        "year_population": population,
-        "sector_year": sectors,
-        "fixed_cohort": {
-            "years": cohorts,
-            "comparison_years": comparison_years,
-            "tickers": tickers,
-            "n_dates": n_dates,
-            "rows": len(fixed),
-            "policy": "Retrospective diagnostic: identical names with finite labels on every compared formation date; no model refitting or ranking change.",
-        },
-        "earlier_model": earlier,
-        "earlier_model_policy": "The preceding original fold model scores the later comparison year without refitting; this diagnoses refresh sensitivity, not a selected alternative model.",
-        "attribution_limit": "Coverage, distribution, sector and fixed-cohort comparisons are diagnostic associations. A causal source-defect claim requires dated source evidence.",
+    result = {
+        "kind": "linear",
+        "features": curves,
+        "additivity_max_error": float(np.max(np.abs(reconstructed - predicted))),
+        "rows": len(panel),
+        "background_rows": len(background),
+        "intercept": float(member.intercept_),
+        "interpretation": "Signed linear x uses the saved training mean/std; contribution is saved beta times that input. Missing input contributes zero and has no observed x/bin. Raw inputs remain in hover and PDP; importance is abs(beta). These are model responses, not causal effects.",
     }
+    write_json(output / "curves.json", result)
+    logger.info("Linear contributions: %s rows, %s retained variables", len(panel), len(features))
+    return result

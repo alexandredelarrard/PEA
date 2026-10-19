@@ -11,13 +11,16 @@ if __name__ == "__main__":
     # self.run(full=True)
 
     self = StepLongShort(context=context, config=config)
-    self.run()
+    # self.run()
 
     # self = StepPortfolio(context=context, config=config)
     # self.run()
 
+# load to docker
 # docker run --rm -v stock_pick_strat_pgdata:/volume alpine tar czf - -C /volume . > 'C:/Users/de larrard alexandre/Downloads/stock_pick_strat_pgdata.tar.gz'
-# docker run --rm -v stock_pick_strat_pgdata:/volume -v /c/Users/alarr/Downloads:/backup:ro alpine tar -xzf /backup/stock_pick_strat_pgdata.tar.gz -C /volume
+
+# Save tlocally
+#  docker run --rm -v stock_pick_strat_pgdata:/volume -v "/c/Users/de larrard alexandre/Downloads:/backup" alpine tar -czf /backup/stock_pick_strat_pgdata.tar.gz -C /volume .
 
 ##### timeline
 

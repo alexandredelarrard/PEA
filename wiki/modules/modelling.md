@@ -40,7 +40,7 @@ The weekly sequence is training → model assessment → portfolio backtest → 
 
 ## Dated artifacts and production models
 
-[modellling.yml](../../configs/modellling.yml) owns shared target/horizon/CV/diagnostic controls; YAML files under `configs/models/` own each family's pool, hyperparameters and regression/classification task. Runtime output paths resolve under `DATA_STORE` unless absolute.
+[modellling.yml](../../configs/modellling.yml) owns shared target/horizon/CV/diagnostic controls; YAML files under `configs/models/` own each family's pool, hyperparameters and regression/classification task. Runtime output paths resolve under `DATA_STORE` unless absolute. Both tree families select categorical inputs in their ordinary `columns` / `columns_by_horizon` lists; `lgbm.categoricals` assigns types only to selected inputs. The shared monotonic map applies at every horizon and is filtered to fitted inputs.
 
 `model.assessment.output_dir` defaults to `output/modelling_backtest`. Each `<run_id>` folder holds:
 

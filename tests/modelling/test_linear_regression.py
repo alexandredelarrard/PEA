@@ -99,7 +99,7 @@ def test_linear_baseline_close_to_lightgbm(family: str) -> None:
     panel = signal_panel(n_days=200, n_tickers=60, sparse=False)
     cfg = make_config(
         linear={"columns": NUMERIC, "alpha": 10.0 if family == "ridge" else 0.001},
-        lgbm={"num_boost_round": 300, "eval_metric": "ic", "early_stopping_rounds": 40, "categoricals": []},
+        lgbm={"columns": NUMERIC, "num_boost_round": 300, "eval_metric": "ic", "early_stopping_rounds": 40, "categoricals": []},
     )
     lgb_ic = _cv_ic(panel, lambda: LightGBMModel(ctx(), cfg, "lgbm", 1))
     lin_ic = _cv_ic(panel, lambda: LinearRegression(ctx(), cfg, family, 1))
@@ -112,7 +112,8 @@ def test_linear_baseline_close_to_lightgbm(family: str) -> None:
 def test_ensemble_at_least_matches_average_of_members() -> None:
     panel = signal_panel(n_days=200, n_tickers=60, sparse=False)
     cfg = make_config(
-        linear={"columns": NUMERIC}, lgbm={"num_boost_round": 300, "eval_metric": "ic", "early_stopping_rounds": 40, "categoricals": []}
+        linear={"columns": NUMERIC},
+        lgbm={"columns": NUMERIC, "num_boost_round": 300, "eval_metric": "ic", "early_stopping_rounds": 40, "categoricals": []},
     )
     il, ie, ien = [], [], []
     for tr_d, te_d in purged_wf_splits(pd.Series(panel["date"]), n_splits=4, embargo=5):

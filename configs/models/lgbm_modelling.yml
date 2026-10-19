@@ -17,9 +17,11 @@ lgbm:
   num_boost_round: 3000
   early_stopping_rounds: 100
   eval_metric: rmse
+  # Type registry shared by LGBM and RF; select these names in each feature list.
   categoricals:
   - industry_group
   - sector
+  # Shared by LGBM and RF at all horizons, aligned to selected fitted inputs.
   monotonic:
     enabled: true
     features:

@@ -1,8 +1,8 @@
 # random_forest_modelling.yml -- Random Forest member (merged via read_config, key `random_forest`).
 # Implemented as LightGBM in `boosting: rf` mode: bagged, INDEPENDENT trees (no boosting) --
 # so it handles the cube's NaNs + native categoricals + monotone constraints, unlike sklearn's
-# RandomForest (which needs imputation + one-hot). REUSES the LightGBM feature set, categoricals
-# and monotone map (no `columns:` here) -- add a `columns:` list to give RF its own variables.
+# RandomForest (which needs imputation + one-hot). Select inputs in columns/columns_by_horizon;
+# lgbm.categoricals assigns their types and lgbm.monotonic supplies directions at every horizon.
 # Add "random_forest" to model.ensemble in modellling.yml to include it in the blend.
 random_forest:
   task: regression             # regression | classification (classification needs a {0,1} label)
@@ -17,8 +17,7 @@ random_forest:
   lambda_l1: 0.0
   lambda_l2: 1.0
 
-  # DEFAULT feature list (horizon-agnostic) = the former h60 50-selection RF set,
-  # now 44 distinct columns after removed fundamentals views collapse to raw.
+  # Complete default feature list, including selected categorical inputs.
   # Used for ANY horizon that has no entry under columns_by_horizon.
   columns:
   - f_earnings_sue_lag0

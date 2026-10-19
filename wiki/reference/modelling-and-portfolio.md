@@ -63,7 +63,7 @@ The weekly [DAG](../../src/dags/dag_modelling.py) runs four tasks under one expl
 
 The five forward windows cover 2000–02,2003–06,2007–12,2013–18 and2019–21 with expanding training from 1999. train.end_date is a feature ceiling. train.outcome_cutoff=2021-12-31 additionally requires all development, early-stop and test outcomes to be known by that date. Actual price-calendar label ends purge inner training before validation and outer training before test. Fixed-cutoff assessment begins 3 January 2022; portfolio start remains 1 June 2022. Production fitting ignores the old development ceilings and uses all finite mature labels.
 
-Each original fold supplies its held-out signed-effect curve; a fresh cutoff member supplies the 2022+ curve, sampled tree scatter and PDP. Cutoff refitting uses all eligible development rows, rather than averaging the five folds. Linear importance is absolute standardized beta; signed beta contributions are labelled separately from SHAP. See [report plots](../modules/modelling.md#report-plots).
+Each original fold supplies its held-out signed-effect curve; a fresh cutoff member supplies the 2022+ curve, sampled tree scatter and PDP. Cutoff refitting uses all eligible development rows, rather than averaging the five folds. Linear importance is absolute standardized beta; signed beta contributions are labelled separately from SHAP. The already-inspected 2022+ backtest is not a new sealed evaluation; current-roster coverage, retrospective classifications and static peer vintages remain historical/generalization limits. See [report plots](../modules/modelling.md#report-plots).
 
 [Artifact utilities](../../src/modelling/utils/artifacts.py) retain folds/cutoff/full-history evidence under configured output/modelling_backtest/<run_id>. Production output/models holds immutable generations plus one atomic metadata switch; readers pin one snapshot for all member loads. New readers also accept legacy flat transformer pickles. latest.json denotes assessment success only. Any failed task blocks later tasks and retains previous production. Daily run_predict scores newest feature-only rows without retraining. See [run and retry commands](../guides/run-the-pipeline.md#dated-modelling-assessment).
 
@@ -144,7 +144,7 @@ Latest prediction uses a separate feature-only path. The newest cube rows correc
 
 ## Artifact contract
 
-Model files and metadata live under `model.models_dir` (default `output/models`, relative to the data store; resolved by `utils.artifacts.models_dir`). `metadata.json` is the compatibility contract consumed by the daily predictor, strategies, and Streamlit app; it is stamped `artifact_format: transformer-pickle-v1`, and metadata without that stamp raises a "retrain" error. It records:
+Model files and metadata live under `model.models_dir` (default `output/models`, relative to the data store; resolved by `utils.artifacts.models_dir`). `read_metadata()` in [artifacts.py](../../src/modelling/utils/artifacts.py) accepts legacy flat `transformer-pickle-v1` and generation-aware `transformer-pickle-generation-v2` metadata. Full-history publication verifies a complete immutable generation before atomically switching the root `metadata.json`; prediction and strategy readers pin one metadata snapshot for all member loads. Unsupported formats or training contracts require retraining. Metadata records:
 
 - horizons and target type;
 - global and family/horizon-resolved feature lists;
@@ -152,7 +152,7 @@ Model files and metadata live under `model.models_dir` (default `output/models`,
 - actual training boundaries and full-history status; and
 - non-negative per-horizon training IC-IR weights for blending.
 
-Per-run diagnostics (the `Monitor`) live under a timestamped diagnostics directory and include horizon KPIs with the OOS cumulative-IC drawdown, feature importance, sampled SHAP matrices, dependence plots, PDPs, the label-only quantile backtest (`backtest_*.csv`, `backtest.png`, `bt_*` KPI columns), and a flat comparison table. Database outputs remain in `predictions`, `cube_signal`, and `predictions_latest`.
+Dated original-fold/cutoff members, original OOF scores, resolved configuration, assessment predictions/IC/IR, sampled SHAP or linear contributions, importance and dependence/PDP curves, and `report.html` live under `model.assessment.output_dir/<run_id>` (default `output/modelling_backtest/<run_id>`), for h30/h60/h90. See [dated artifacts](../modules/modelling.md#dated-artifacts-and-production-models). The standalone [Monitor](../../src/modelling/transformers/monitor.py) remains available; operational training uses its feature-importance helper without writing its timestamped reports. Database outputs remain in `predictions`, `cube_signal`, and `predictions_latest`.
 
 ## Long/short construction
 
@@ -212,19 +212,3 @@ Historical benchmark metrics are sanity bars, not acceptance targets; data cover
 - [Model training flow](../flows/model-training-and-prediction.md)
 - [Portfolio-to-ledger flow](../flows/portfolio-to-trade-ledger.md)
 - [Configuration](./configuration.md)
-
-## Explicit development and sealed assessment
-
-[StepAssessLongShort](../../src/modelling/steps/step_assess_long_short.py) provides `modelling assess` with development, evaluation and artifact-only report stages. The h60 z-score protocol develops from 1999 using five forward crisis-aware folds; every fitted outcome ends by 2021-12-31. The frozen cutoff models evaluate formation dates from 2022-01-03. These clocks differ from ordinary training's feature ceiling and production full-history refit.
-
-An outcome cutoff limits each training label's forward-return endpoint: `label_end <= outcome_cutoff`. A December 2021 feature whose h60 label requires 2022 returns is excluded. After five-fold selection, `StepLongShort._fit_final()` fits fresh family members on all eligible development rows, with LightGBM using the median fold-selected boosting count and no sealed-sample early stopping. These cutoff models remain fixed throughout evaluation.
-
-The sealed binned mean summarizes the cutoff model's signed SHAP contributions on sampled sealed observations. Continuous inputs use up to ten quantile groups with median feature value and mean contribution; low-cardinality and categorical inputs retain observed states. Original-fold lines use their own development validation periods. The separate PDP varies one input and averages cutoff predictions over background rows. See [assessment diagnostics](../../src/modelling/transformers/assessment_diagnostics.py) and [final fitting](../../src/modelling/steps/step_long_short.py).
-
-Each family can retain its own numeric and categorical pool. Development optimizes pooled daily Spearman IC-IR, defined as mean daily IC divided by population IC dispersion times sqrt(252/60); it is not portfolio-return IR. Repeated pruning makes development results selection-biased. Evaluation cannot choose another pool. Benchmark cohorts are fixed highest-prediction ceil(N/10) equal-weight names before outcomes; every h60 price path and matched SPY window must be supported. Missing selected outcomes retain their original missing weights. Overlapping gross windows are not compounded into a portfolio curve.
-
-SHAP and genuine PDP show fitted-model relationships, with original fold provenance and imposed directions disclosed. Research interpretation may propose a separate future constraint experiment; it cannot change current directions after evaluation. Retrospective classifications/peer vintages and current-roster coverage limit historical/generalization claims. See [configuration](./configuration.md) and [testing](../guides/testing.md).
-
-Temporal diagnostics retain every observed scoring session, including dates with undefined IC. A rolling statistic requires finite IC across its entire configured window; pooled summaries count only finite IC dates. Moving-block uncertainty draws across the original observed slots within each fold and filters unsupported observations only when calculating the sampled statistic. See `temporal_diagnostics` and `moving_block_intervals` in [assessment_metrics.py](../../src/modelling/utils/assessment_metrics.py).
-
-The report reads each family's persisted `selection_policy`: a user-fixed configured pool may have no search candidates. Its coefficient table describes the fitted linear member and does not imply a coefficient-pruning search occurred. Selected h60 YAML overrides remain distinct from the preserved default and other-horizon lists.

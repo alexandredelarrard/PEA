@@ -201,6 +201,8 @@ Institutional incremental computation intentionally reads full history for expan
 
 ## Modelling and portfolio
 
+From a linked checkout, set `ROOT_PATH` to the original repository's absolute path in the parent shell before this sequence (Bash: `export ROOT_PATH="/absolute/path/to/original/PEA"`; PowerShell: `$env:ROOT_PATH = "C:\absolute\path\to\original\PEA"`). Keep it set for all four weekly commands and validation so they share the same data root.
+
 ~~~bash
 rtk "$PY" -m src modelling train -c ./configs --run-id 20261018_manual
 rtk "$PY" -m src modelling assess -c ./configs --run-id 20261018_manual
@@ -388,7 +390,7 @@ Regenerate managed DDL through [generate_schema_sql.py](../../scripts/generate_s
 
 ## Dated modelling assessment
 
-Run the [four weekly commands](../../src/modelling/cli.py) with the same fresh safe dated ID:
+Run the [four weekly commands](../../src/modelling/cli.py) with the same fresh safe dated ID. In a linked checkout, first [set `ROOT_PATH` in the parent shell](#modelling-and-portfolio) and retain it through validation:
 
 ~~~bash
 rtk "$PY" -m src modelling train -c ./configs --run-id 20261018_manual
@@ -399,7 +401,7 @@ rtk "$PY" -m src modelling full-train -c ./configs --run-id 20261018_manual
 
 Train saves five original folds and fresh cutoff members. Assess only reads them and generates all-horizon scores/IC/IR/effects/report. Portfolio uses that run's cutoff. Full-train reuses saved fold counts and fits all latest mature labels, then publishes a complete immutable production generation. Do not run a later command after a failure.
 
-Output is configured by model.assessment.output_dir (default data/output/modelling_backtest/<run_id>); production uses model.models_dir. For a rehearsal, copy configs and point models_dir into an owned isolated root; disable application prediction/signal writes. A normal full-train publishes production, so isolation must be configured before invoking it. Linked checkouts derive the original data root unless ROOT_PATH is explicit.
+Output is configured by model.assessment.output_dir (default data/output/modelling_backtest/<run_id>); production uses model.models_dir. For a rehearsal, copy configs and point models_dir into an owned isolated root; disable application prediction/signal writes. A normal full-train publishes production, so isolation must be configured before invoking it.
 
 Use --resume on train/assess/full-train only for verified matching checkpoints. New data/configuration/history requires a new run; failed full-history attempts allocate a fresh attempt ID. Render completed saved analysis with:
 

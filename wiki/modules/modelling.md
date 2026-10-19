@@ -1,100 +1,77 @@
 ---
 title: Modelling
-description: "Cross-sectional long/short ensemble: model transformers, the StepLongShort train/predict step, diagnostics and the label-only backtest."
+description: Dated five-fold and cutoff training, saved-model assessment, production generations and daily scoring.
 type: module
 tags:
   - wiki
   - module
-source_commit: 800be024be975942df7dbf542f807a09af103933
+source_commit: 48a92a6f4103e57ef4c4b0cfa8f018d13ffca97e
 ---
 # Modelling
 
 ## Summary
 
-`src/modelling` trains and scores the long/short signal; it does not build portfolios. It has three layers:
-`steps/` (one Step per strategy), `transformers/` (reusable model classes, the Monitor and the Backtest) and
-`utils/` (functions shared by both). The long/short step trains one cross-sectional ensemble per forecast
-horizon from the cube, then blends the horizons into one signal.
+`src/modelling` trains and scores the cross-sectional long/short signal. [StepLongShort](../../src/modelling/steps/step_long_short.py) fits models; [StepAssessLongShort](../../src/modelling/steps/step_assess_long_short.py) reads the saved models and produces diagnostics. [Portfolio](./portfolio.md) converts sleeve books into portfolio returns separately.
+
+The weekly sequence is training → model assessment → portfolio backtest → production refit. All four tasks share one explicit safe run ID. Assessment failure prevents both downstream tasks. The [training flow](../flows/model-training-and-prediction.md) describes the clocks and handoffs.
 
 ## Responsibilities
 
-- Select configured feature families and target columns from the cube schema.
-- Load and train one horizon at a time to bound memory (one projected load per horizon, float32).
-- Use purged walk-forward cross-validation; training label endpoints must precede the validation/test feature dates, in addition to the configured embargo.
-- Fit one early-stopped LightGBM per outer fold; use the median selected count for final all-eligible-row fits, and reuse saved fold selection in production without repeating CV.
-- Train ElasticNet / ridge, LightGBM and LightGBM random-forest members (`model.ensemble`).
-- Report CV and OOS IC (with cumulative-IC drawdown), SHAP, dependence plots, PDPs and importance.
-- Run a label-only quantile backtest of each horizon's OOS predictions as the last training stage.
-- Persist member pickles, metadata, predictions and the blended signal; score the newest cube dates
-  without requiring matured targets (float64 reads).
+- Resolve configured family/horizon pools against actual cube columns, recording unavailable configured names.
+- Stream projected data for one labelled horizon at a time, using numeric-text validation and declared categorical preparation from [features.py](../../src/modelling/utils/features.py).
+- Fit five original expanding chronological folds, purging actual forward-label endpoints before inner validation and outer test dates.
+- Use each fold's early-stopped LightGBM directly on its outer period; fit fresh cutoff members after CV using median selected LightGBM rounds. Linear and RF use all eligible outer-training rows.
+- Save original member pickles, OOF predictions, counts and provenance before releasing each fold. Keep the configured feature pools, parameters, monotonic directions and blending rules.
+- Explain saved original fold/cutoff members without fitting or feature search; report all three families and the ensemble across h30/h60/h90.
+- Refit all latest mature rows for production using the named run's saved counts, without repeating CV. Daily scoring loads a complete production generation and needs features only.
 
-## Layers
+## Layers and public API
 
-| Layer | Files | Rule |
+| Layer | Owning files | Contract |
 | --- | --- | --- |
-| `steps/` | `step_long_short.py` | orchestrates; inherits `Step` |
-| `transformers/` | `base.py`, `lightgbm_model.py`, `random_forest.py`, `linear_regression.py`, `monitor.py`, `backtest.py` | never imports `steps` |
-| `utils/` | `cv.py`, `metrics.py`, `ensemble.py`, `features.py`, `panel.py`, `artifacts.py` | imports neither `transformers` nor `steps` |
+| Steps | [step_long_short.py](../../src/modelling/steps/step_long_short.py), [step_assess_long_short.py](../../src/modelling/steps/step_assess_long_short.py) | Training/prediction and saved-model analysis orchestration; inherit `Step`. |
+| Transformers | [base.py](../../src/modelling/transformers/base.py), [lightgbm_model.py](../../src/modelling/transformers/lightgbm_model.py), [random_forest.py](../../src/modelling/transformers/random_forest.py), [linear_regression.py](../../src/modelling/transformers/linear_regression.py) | Family fit/predict/evaluate/importance and compatible transformer pickles. |
+| Diagnostics | [assessment_diagnostics.py](../../src/modelling/transformers/assessment_diagnostics.py), [assessment_report.py](../../src/modelling/transformers/assessment_report.py) | Sampled effects and the offline artifact-only HTML renderer; never fit. |
+| Utilities | [artifacts.py](../../src/modelling/utils/artifacts.py), [cv.py](../../src/modelling/utils/cv.py), [ensemble.py](../../src/modelling/utils/ensemble.py), [assessment_metrics.py](../../src/modelling/utils/assessment_metrics.py) | Artifact routing/identity, temporal splits, blending and metric arithmetic. No transformer/step imports. |
 
-The layout and the layering are pinned by
-[test_architecture_guard.py](../../tests/modelling/test_architecture_guard.py). Consumers that only score
-(`ls_model`, the app) reach modelling through `utils` only: a pickled member unpickles to its own class.
+`StepLongShort.run()` delegates to `run_train()`. `run_train(full_history=True)` is the same trainer's final production path; `run_predict(n_dates=1)` performs inference only. `StepAssessLongShort.run()` reads an explicitly named completed training run. The [CLI](../../src/modelling/cli.py) exposes `train`, `assess`, `full-train` and `predict`; `assess --report-only` loads completed analysis without database reads or model unpickling.
 
-## Public API / entry points
+[Monitor](../../src/modelling/transformers/monitor.py) retains reusable standalone helpers; operational training no longer writes its legacy report tree or duplicates assessment SHAP/PDP. The optional [label-only backtest](../../src/modelling/transformers/backtest.py) remains separate from the portfolio return backtest.
 
-- `StepLongShort.run_train(full_history=False)` and `run_predict(n_dates=1)` in
-  [step_long_short.py](../../src/modelling/steps/step_long_short.py); `run()` calls `run_train()`. This is
-  the one Step with two public methods besides `run()` (training and prediction share their state).
-- The `train`, `full-train`, and `predict` commands in [modelling/cli.py](../../src/modelling/cli.py).
-- Model families (`model_class(name)` in [transformers/__init__.py](../../src/modelling/transformers/__init__.py)):
-  `BaseModel(context, config, family, horizon)` with `load_data`, `fit`, `predict`, `evaluate`, `importance`,
-  `save` and `load`. Each family reads its own YAML block, including `task: regression | classification`
-  (classification needs a {0, 1} label; the linear family is regression-only).
-- `Monitor` ([monitor.py](../../src/modelling/transformers/monitor.py)) and `Backtest`
-  ([backtest.py](../../src/modelling/transformers/backtest.py)).
+## Dated artifacts and production models
 
-## Key files
+[modellling.yml](../../configs/modellling.yml) owns shared target/horizon/CV/diagnostic controls; YAML files under `configs/models/` own each family's pool, hyperparameters and regression/classification task. Runtime output paths resolve under `DATA_STORE` unless absolute.
 
-- [steps/step_long_short.py](../../src/modelling/steps/step_long_short.py) owns per-horizon training, the
-  horizon blend and latest prediction; it returns a `TrainResult` instead of keeping frames on `self`.
-- [transformers/lightgbm_model.py](../../src/modelling/transformers/lightgbm_model.py) holds `train_booster`
-  and the LightGBM family; [random_forest.py](../../src/modelling/transformers/random_forest.py) borrows
-  its categoricals, monotone map and column fallback from the `lgbm` block.
-- [transformers/linear_regression.py](../../src/modelling/transformers/linear_regression.py) is a pure-numpy
-  ridge / elastic net on standardised features.
-- [utils/artifacts.py](../../src/modelling/utils/artifacts.py) owns `models_dir`, member paths and
-  `metadata.json`.
-- [configs/modellling.yml](../../configs/modellling.yml) owns shared model and training settings;
-  [LightGBM settings](../../configs/models/lgbm_modelling.yml) and the other family YAML files own features, hyperparameters and `task`.
+`model.assessment.output_dir` defaults to `output/modelling_backtest`. Each `<run_id>` folder holds:
 
-## Artifacts
+- `folds/h<h>/fold<n>/`: three original fitted transformers and metadata for each of five folds.
+- `training/`: calendar, original OOF/member scores, fold counts, row/label endpoints, source/library identities and file hashes. Immutable `configuration.json` captures the resolved seed, training/model controls, three family blocks and application-output switches; provider credentials, environment and logging are excluded. Readers verify its bytes and reconstructed modelling signature before consuming the run.
+- `cutoff/`: nine fresh cutoff members and metadata.
+- `assessment/h<h>/fold<n>/`: feature-only scores, deterministic explanation samples, SHAP or linear contributions, importance and curves. Fold 0 is the cutoff backtest.
+- `report.html`: self-contained model diagnostics; `portfolio/` contains that run's portfolio outputs.
+- `full_history/<attempt_id>/`: fresh final members and their effective mature endpoints.
 
-`model.models_dir` (default `output/models`, relative to the data store) holds one pickle per member,
-`model_h<h>_<family>.pkl` (the fitted transformer without its context, config or logger), and
-`metadata.json`, stamped `artifact_format: transformer-pickle-v1`. Metadata without that stamp (models
-trained before the 2026-10 refactor) raises a "retrain" error. The additional training contract is `matured-fold-es-v1`; saved per-horizon fold counts, dates, metrics and resolved input/parameter signatures must match. Run `modelling train` first, then `full-train` can reuse that selection on all matured rows. See [the lifecycle and schema migration](../reference/modelling-and-portfolio.md).
+`latest.json` at the assessment root references the latest completed assessment, not whole-DAG success. Failed/completed dated runs are retained. Resume verifies configuration, source, library, calendar, prepared input and artifact identities; changed historical inputs require a new run.
 
-## Dependencies
+Production `model.models_dir` defaults to `output/models`. Full-history publication copies all required members into immutable `generations/<run_id>/<attempt_id>/` and atomically replaces one root `metadata.json` only after verifying the complete inventory. A failed attempt leaves the prior generation available; retry allocates a new attempt. Readers pin one metadata snapshot for all member loads.
 
-The step consumes [cube aggregation](./data-aggregate.md) output through [DataStore](./data-store.md).
-[Strategy sleeves](./strategies.md) score the saved ensemble through `utils` to build their books.
+Each member remains `model_h<h>_<family>.pkl`, the fitted transformer without context/config/logger. New generation routing is `transformer-pickle-generation-v2`; new readers also accept legacy flat `transformer-pickle-v1`. Old readers reject the new routing. Rollback to old code requires restoring compatible earlier metadata first. The training contract remains `matured-fold-es-v1`.
 
-## Participates in
+## Report plots
 
-- [Model training and daily prediction](../flows/model-training-and-prediction.md)
-- [Feature-to-portfolio architecture](../architecture/feature-to-portfolio.md)
-- [Add a model or sleeve](../guides/add-a-model-or-sleeve.md)
+The HTML has two sections and three plot areas:
 
-## Related
+1. IC/IC-IR through time for linear, LGBM, RF and ensemble, with horizon, Validation/Backtest and Daily IC/Smoothed IC/Smoothed IC-IR controls.
+2. All retained-feature importance and the chosen variable's effect, with independent horizon/family/feature/Signed effect/PDP controls.
 
-- [Modelling, strategies, and portfolio](../reference/modelling-and-portfolio.md)
-- [Strategy sleeves](../concepts/strategy-sleeves.md)
-- [Tests module](./tests.md)
+Signed tree mode retains a cutoff sample scatter (feature value versus signed SHAP) and six binned-mean curves: the five original held-out folds plus cutoff. Original sampled values are saved for every fold. Tree importance is date-balanced mean absolute sampled SHAP. Linear importance is absolute saved standardized beta, with its sign in hover. The signed plot's x-axis uses each member's saved training-standardized input; y is `beta * ((x - mean_train) / std_train)`. Hover retains raw inputs and signed beta. Missing inputs contribute 0 and have no observed x/bin; the intercept is explicit. The view is labelled Signed linear contribution. Zero/all-missing retained features stay selectable. PDP uses only the cutoff member and holds other sampled inputs fixed; correlated inputs limit causal interpretation.
 
-## Isolated horizon-60 assessment
+Daily Spearman IC uses finite prediction/label pairs after complete cross-sections are scored. Rolling statistics require all configured 252 observed sessions; undefined/constant values stay missing. IC-IR scales daily IC dispersion by `sqrt(252 / horizon)` and is not portfolio-return IR.
 
-`StepAssessLongShort` in [step_assess_long_short.py](../../src/modelling/steps/step_assess_long_short.py) runs the explicit `modelling assess` command. It reuses `StepLongShort.run()` for the current-config baseline and selected cutoff fit, and the original cross-validation path for each fixed-parameter candidate. Numeric strings use the shared strict preparation in [features.py](../../src/modelling/utils/features.py); only declared categoricals receive missing code -1.
+Historical current-roster/GICS, static-peer and vendor-vintage limitations remain. Forward folds and outcome cutoffs prevent model/label overlap; they do not certify upstream point-in-time inputs. The previously inspected 2022+ backtest is not a new sealed evaluation.
 
-Development selects separate LGBM, LightGBM RF and elastic-net pools using five purged forward folds and pooled daily h60 IC-IR. Candidate, input, fixed-control, selection-source and library identities gate explicit resume. Frozen pools and cutoff artifacts precede sealed outcomes. The run owns all models, OOF/member predictions, SHAP/PDP and report evidence; its store wrapper refuses application mutations. Normal weekly training does not implicitly run feature search.
+## Dependencies and validation
 
-[assessment_diagnostics.py](../../src/modelling/transformers/assessment_diagnostics.py) supplies original-fold explanations and retrospective cohort/sector checks. [assessment_report.py](../../src/modelling/transformers/assessment_report.py) renders one offline HTML file from artifacts. A report rerender performs no fit or application read. Economic research narratives, upstream-vintage investigations and readiness records are optional supplied artifacts; the renderer does not perform new literature research. The completed October assessment records a user-fixed linear pool in its frozen ledger, whereas a fresh development command currently searches all three families. Development writes selected h60 feature overrides into the supplied configuration directory. See [assessment operations](../guides/run-the-pipeline.md) and [validation evidence](../guides/testing.md). Historical classification, peer-vintage and universe limitations must accompany claims; a temporal split alone does not certify point-in-time inputs.
+All application table reads/writes use [DataStore](./data-store.md). Strategy scoring reaches saved models through utilities. The [independent validator](../../src/validate/checks/modelling.py) reconciles saved predictions, chronology, actual retained inputs, IC/IR, native effects/PDP, publication and report identities; incomplete evidence abstains. See [testing](../guides/testing.md#assessment-contracts-and-financial-replay) and [run commands](../guides/run-the-pipeline.md#dated-modelling-assessment).
+
+The [architecture guard](../../tests/modelling/test_architecture_guard.py) enforces dependency boundaries. [Artifact tests](../../tests/modelling/test_run_artifacts.py) cover complete publication, failure/retry and pinned readers; [assessment integration](../../tests/modelling/test_assessment_evaluation.py) forbids fitting and checks artifact-only rerender.

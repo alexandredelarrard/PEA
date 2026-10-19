@@ -1,65 +1,63 @@
 ---
 title: Model training and daily prediction
-description: Weekly holdout training and production refit, followed by daily artifact-backed scoring.
+description: Five-fold/cutoff training, saved-model diagnostics, portfolio backtest and final production refit.
 type: flow
 tags:
   - wiki
   - flow
-source_commit: 800be024be975942df7dbf542f807a09af103933
+source_commit: 48a92a6f4103e57ef4c4b0cfa8f018d13ffca97e
 ---
 # Model training and daily prediction
 
 ## Summary
 
-Training and prediction have different cadences and data requirements. The weekly DAG first measures a holdout model and portfolio, then refits on all available history for production. The daily DAG loads that full-history artifact and scores the newest cube rows without retraining.
-
-## Trigger
-
-[dag_modelling.py](../../src/dags/dag_modelling.py) schedules weekly training. [dag_strat_prediction.py](../../src/dags/dag_strat_prediction.py) runs daily and is also triggered after cube aggregation.
-
-## Sequence diagram
+The weekly [modelling DAG](../../src/dags/dag_modelling.py) runs four sequential tasks under one dated run ID. The daily [prediction DAG](../../src/dags/dag_strat_prediction.py) reads only a complete production generation and scores current feature rows without retraining.
 
 ~~~mermaid
 sequenceDiagram
   participant Weekly as Weekly DAG
-  participant Model as StepLongShort
-  participant Backtest as StepPortfolio
-  participant Artifacts as Model artifacts
-  participant Daily as Daily prediction DAG
-  participant Cube as Cube table
-  participant Pred as Predictions table
-  Weekly->>Model: train holdout ensembles
-  Model->>Artifacts: save models metadata diagnostics
-  Weekly->>Backtest: run out of sample portfolio
-  Weekly->>Model: full train on all history
-  Model->>Artifacts: replace production artifacts
-  Daily->>Artifacts: load production ensemble
-  Daily->>Cube: load latest feature rows
-  Daily->>Pred: write predictions latest
+  participant Train as StepLongShort
+  participant Files as Dated run artifacts
+  participant Assess as StepAssessLongShort
+  participant Portfolio as StepPortfolio
+  participant Production as Production generation
+  participant Daily as Daily prediction
+  Weekly->>Train: train_model
+  Train->>Files: original five folds, OOF, cutoff members
+  Weekly->>Assess: backtest_modelling
+  Files->>Assess: saved models and provenance
+  Assess->>Files: scores, IC/IR, SHAP/linear/PDP, report.html
+  Weekly->>Portfolio: backtest_portfolio
+  Files->>Portfolio: same run's cutoff members
+  Portfolio->>Files: portfolio outputs
+  Weekly->>Train: full_train, reuse saved fold counts
+  Train->>Files: full-history attempt
+  Train->>Production: complete immutable generation, atomic metadata switch
+  Production->>Daily: pin one metadata snapshot and load members
 ~~~
 
-## Steps
+## Steps and clocks
 
-1. `StepLongShort.run_train()` in [step_long_short.py](../../src/modelling/steps/step_long_short.py) resolves cube columns and horizons without loading the full cube.
-2. It streams one projected, labelled horizon panel at a time. Five outer chronological folds use one early-stopped LightGBM each; a purged latest-10% tail inside the training period selects its rounds. That same model scores the untouched outer test. Linear/RF use all outer-training rows. The median selected count drives a fresh all-eligible-row cutoff fit; no second fit occurs inside a fold.
-3. It saves one pickle per member, `metadata.json` with fold counts and their configuration/input signature, predictions, signals, the `Monitor` diagnostics (IC and drawdown, SHAP, PDPs), and run KPIs. Last-outer-test rows and their original fold models supply validation SHAP/PDP. The label-only quantile backtest runs only when `model.backtest.enabled` is true.
-4. The portfolio backtest uses the holdout artifacts before production refitting.
-5. `run_train(full_history=True)` consumes the saved fold selection and fits all label-matured rows through the latest complete cube/price session, without repeating cross-validation. Missing or incompatible selection metadata requires `modelling train` first.
-6. `run_predict()` first raises `StaleInputsError` and scores nothing when the share of universe tickers with a fresh own latest date in `prices`, `fundamentals_sharadar` or `fundamentals_history` is below `prediction_fresh_share`, or when the cube ends before `prices` ([freshness.py](../../src/utils/freshness.py)). It then loads only latest feature rows and writes member, horizon-ensemble, and blended predictions in long form.
+1. [StepLongShort.run_train()](../../src/modelling/steps/step_long_short.py) resolves configured family/horizon inputs against the cube schema and streams one projected labelled horizon at a time. Configured unavailable names are recorded.
+2. Five expanding forward folds validate 2000–02,2003–06,2007–12,2013–18 and2019–21, training from 1999. Actual observed price sessions define label ends. Outer training labels end strictly before test feature dates; the early-stop training labels end strictly before the inner validation dates. All development/test/early-stop outcomes must be known by `train.outcome_cutoff` (31 December 2021), in addition to the feature ceiling.
+3. Each fold fits three original members. LightGBM uses the purged latest 10% inner tail for early stopping and that same model scores the outer test. Linear/RF use all eligible outer-training rows. Models, row endpoints, selected counts and original OOF predictions are saved before releasing each fold. There is no automatic feature selection or hyperparameter search.
+4. After all five folds, fresh cutoff members fit every eligible development row, using median fold-selected LightGBM rounds. Cutoff files remain in that run, separate from production.
+5. [StepAssessLongShort.run()](../../src/modelling/steps/step_assess_long_short.py) loads those exact saved members. It scores complete cross-sections, including unknown-label rows, before joining future labels. Original folds are evaluated only in their declared outer periods; cutoff members score from 3 January 2022 through each horizon's latest mature feature date. No fitting occurs in assessment.
+6. Assessment saves per-model/ensemble IC and IC-IR, original-fold/cutoff SHAP or linear contributions, importance, cutoff PDP and the offline [two-section report](../modules/modelling.md#report-plots). Sampled tree scatter remains visible alongside five held-out fold curves and cutoff. Completed analysis can rerender with `assess --report-only` without DB reads or unpickling. Only a complete assessment advances `latest.json`.
+7. [Portfolio backtest](../../src/portfolio/cli.py) requires the same completed run ID and uses its cutoff models. Portfolio dates (June 2022 onward), costs and construction remain configured as before. Outputs stay under that run's `portfolio/`.
+8. The final task calls the existing `StepLongShort.run_train(full_history=True)` through `modelling full-train`. It reuses that run's saved CV counts, ignores historical development ceilings, and freshly fits all finite labels mature by the latest complete cube/price session. It never repeats CV. Each attempt and complete production generation is immutable; one atomic metadata replacement publishes the complete set.
+9. Daily `run_predict()` checks source/cube freshness through [freshness.py](../../src/utils/freshness.py), pins one production metadata snapshot, then scores newest feature-only rows and writes member/horizon/blended `predictions_latest`. It does not require current targets.
 
-## Failure modes
+## Failure and recovery
 
-Random cross-validation leaks future information, so the code uses time-series folds and an embargo. Loading all horizons or all cube columns at once can exceed memory. Scoring through a labelled-panel helper would drop the newest dates because their forward targets are still null; the dedicated latest-prediction path avoids target columns entirely.
+Any failed task blocks later tasks. Assessment cannot repair missing models by fitting. Explicit `--resume` accepts only verified matching checkpoints; changed historical inputs or configuration require a new run. Failed full-history attempts are retained, and retry uses a fresh attempt ID. The prior production metadata/generation remains readable until a complete new set is published; readers that pinned it finish on that generation.
+
+Forward splits and horizon purging address label overlap, not current-universe/GICS, static peer or vendor-history look-ahead. Historical claims remain conditional on those accepted upstream limitations. Poor IC is measured rather than used as a reason to alter features or parameters in this DAG.
 
 ## Related
 
-- [Modelling](../modules/modelling.md)
-- [Portfolio](../modules/portfolio.md)
+- [Modelling and artifacts](../modules/modelling.md)
+- [Model and portfolio contracts](../reference/modelling-and-portfolio.md)
+- [Dated run commands](../guides/run-the-pipeline.md#dated-modelling-assessment)
+- [Independent validation](../guides/testing.md#assessment-contracts-and-financial-replay)
 - [Portfolio to trade ledger](./portfolio-to-trade-ledger.md)
-- [Add a model or sleeve](../guides/add-a-model-or-sleeve.md)
-
-## Explicit assessment branch of the lifecycle
-
-The [assessment Step](../../src/modelling/steps/step_assess_long_short.py) adds a deliberate research command without changing the weekly DAG cadence. It audits eligible development predictors, runs the current-config baseline through `StepLongShort.run()`, then fits LGBM, RF and elastic-net candidates separately through the original five-fold path. The same labelled OOF population and fixed controls determine pooled IC-IR; held-out SHAP or standardized coefficients determine removal order.
-
-After feature pools freeze, the selected ordinary training path must reproduce winning fold scores and rounds and save cutoff artifacts. Evaluation scores a feature-only universe, commits top-decile membership, then attaches labels and complete future return paths. Original winning fold models explain development; freshly refitted cutoff models explain sealed evaluation. The cutoff applies to each forward label's end date. Final members fit all eligible development observations after feature selection; the sealed SHAP binned mean summarizes their held-out contributions. Offline HTML rerender consumes saved diagnostics without fitting. Input/source/selection identities gate resume; attempted application mutators are refused. See [run commands](../guides/run-the-pipeline.md) and [independent validation](../guides/testing.md).

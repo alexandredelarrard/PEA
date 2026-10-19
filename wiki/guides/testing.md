@@ -7,7 +7,7 @@ tags:
   - guide
   - testing
   - validation
-source_commit: 78f87d838cc2ef03809db3dc47b9f425c7f289ab
+source_commit: 48a92a6f4103e57ef4c4b0cfa8f018d13ffca97e
 ---
 # Testing and validation
 
@@ -59,7 +59,7 @@ Both test stores preserve the production rule that an absent or empty table rais
 
 ## Cube assembly source replay
 
-[The real-source replay](../../tests/data_aggregate/test_assemble_cube_real.py) reads a bounded AAPL/MSFT/JPM source window and runs the ordinary assembler against disposable SQLite. It checks exact price keys, source values and nulls under the existing precision policy, physical column removal, retained-value equality and latest feature-only reads. It does not write the production cube or rebuild peers. From an isolated worktree, set ROOT_PATH to the original repository containing the existing data/output/sector_peers.json; an unavailable peer artifact is an abstention, not permission to recompute it.
+[The real-source replay](../../tests/data_aggregate/test_assemble_cube_real.py) reads a bounded AAPL/MSFT/JPM source window and runs the ordinary assembler against disposable SQLite. It checks exact price keys, source values and nulls under the existing precision policy, physical column removal, retained-value equality and latest feature-only reads. It does not write the production cube or rebuild peers. From an isolated worktree, set ROOT_PATH to the original repository containing the existing data/output/peers/sector_peers.json; an unavailable peer artifact is an abstention, not permission to recompute it.
 
 On 2026-10-16, candidate1c2bc428 passed the independent replay over111 sessions/333rows and120,213source cells/nulls, narrowing366physical columns to67. All nine targets remained null on the three latest prediction rows. Two fixture-only corrections supply the existing Step config_dir contract and plain-string column names for synthetic OmegaConf selections; no application calculation or assertion was weakened.
 
@@ -98,8 +98,8 @@ Run with `-s` so the conclusion is visible. Useful assertions include shape, dty
 Run from the repository root. The host Python and Poetry commands are not available on `PATH`; use the Poetry virtual-environment executable described in [run the pipeline](./run-the-pipeline.md).
 
 ```bash
-"$PY" -m pytest tests/path/test_file.py -v -s
-"$PY" -m pytest tests/path/test_file.py::test_case -v -s
+rtk "$PY" -m pytest tests/path/test_file.py -v -s
+rtk "$PY" -m pytest tests/path/test_file.py::test_case -v -s
 ```
 
 Naming:
@@ -227,8 +227,10 @@ Run the relevant existing split-union, level/value, predecessor, insider/institu
 
 ## Assessment contracts and financial replay
 
-The assessment tests cover numeric-text/category parity, strict temporal purges, the fixed pooled objective, deterministic pruning, dynamic CLI loading, input/selection cache identity, frozen resume and refused application writes. Known-truth fixtures in [test_assessment_metrics.py](../../tests/modelling/test_assessment_metrics.py) verify fixed cohorts/weights, complete return paths, dated daily exports and the declared minimum-mean-IC window. [test_assessment_periods.py](../../tests/modelling/test_assessment_periods.py) checks retrospective same-name populations and exact year/sector moments. [test_assessment_report.py](../../tests/modelling/test_assessment_report.py) verifies offline output, all retained-feature coverage and original candidate importance provenance.
+[Training tests](../../tests/modelling/test_step_long_short.py) verify original five-fold/cutoff persistence, actual-label-end purging, per-horizon maturity and full-history count reuse without CV. [Artifact tests](../../tests/modelling/test_run_artifacts.py) cover legacy compatibility, complete publication, failure/retry and pinned readers. No operational search/pruning interface remains.
 
-Financial acceptance additionally requires real projected development data, actual original-fold models, SHAP/base additivity, selected cutoff reload equality and sealed outcome replay. The [read-only modelling validator](../../src/validate/checks/modelling.py) independently recomputes rank IC, pooled dispersion/IR, top-decile membership, matched return paths and report identity; incomplete evidence abstains before DB access. Browser checks must exercise both populations, models and first/last feature choices. Synthetic parser/math/UI tests alone do not establish predictive performance. On Windows, use a fresh verified short scratch directory rather than deleting a shared pytest temporary root.
+[Assessment integration](../../tests/modelling/test_assessment_evaluation.py) loads actual prefitted members with every fit/CV entry forbidden, runs the renderer and independent validator, then rerenders with DB/model loading unavailable. [Explanation tests](../../tests/modelling/test_assessment_explanations.py) check native tree SHAP/base additivity, RF scale and linear coefficient reconstruction. [Report tests](../../tests/modelling/test_assessment_report.py) cover all horizons/retained features, sampled scatter, six signed-effect curves, correct units and cutoff PDP. Known-truth [metric tests](../../tests/modelling/test_assessment_metrics.py) retain missing calendar slots and require complete 252-session rolling windows; constant statistics remain undefined.
 
-The temporal regressions retain a missing first, middle or last IC slot in a253-session population; only genuinely complete252-session windows are supported. Bootstrap tests check gap retention and all-finite seeded parity. Benchmark validation binds each matched model/date return and validity to `market_windows.parquet`, whose price paths are independently replayed against the store. The coordinated market/excess mutation in [test_modelling.py](../../tests/validate/test_modelling.py) prevents arithmetic consistency alone from passing a corrupted benchmark comparison. These checks strengthen diagnostic proof; they do not remove upstream retrospective source vintages.
+Financial acceptance additionally requires the full isolated real-data h30/h60/h90 four-stage run with unchanged settings and no live model/application writes. Run the [independent validator](../../src/validate/checks/modelling.py) through validate modelling -c <isolated-configs> -o <dated-run>. It recomputes finite-pair Spearman/IC-IR, source chronology/inner/outer purges, retained inputs/categories, native predictions/contributions, coefficients/PDP, latest-mature refits and publication/report identities. Incomplete evidence exits3 (ABSTAINED), corrupt complete evidence fails; positive performance is not a correctness gate.
+
+Browser checks must change every horizon/population/statistic/family control and representative first/last/zero/category features, retaining sampled signed points plus five original-fold curves and cutoff. Existing-image checks prove offline Python3.12 imports, real Airflow parsing/rendering and atomic Windows-mount replacement without scheduler deployment. Use fresh verified short Windows scratch/run IDs, never delete a shared pytest root. Fixtures alone do not establish performance; accepted upstream current-roster/GICS/static-peer/vendor limitations remain.

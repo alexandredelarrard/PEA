@@ -7,7 +7,7 @@ tags:
   - reference
   - modelling
   - portfolio
-source_commit: 91e9a964a921d58c2728380c7dc4c540e5b384cd
+source_commit: 48a92a6f4103e57ef4c4b0cfa8f018d13ffca97e
 ---
 # Modelling, strategies, and portfolio
 
@@ -52,17 +52,20 @@ The book panels are essential. Portfolio allocation varies through time, and sha
 
 ## Long/short training lifecycle
 
-[StepLongShort](../../src/modelling/steps/step_long_short.py) exposes three behaviors (`run()` is `run_train()`):
+The weekly [DAG](../../src/dags/dag_modelling.py) runs four tasks under one explicit safe run ID:
 
-| CLI behavior | Method | Contract |
+| Task | Method | Contract |
 | --- | --- | --- |
-| Holdout training | `run_train()` | Train between configured boundaries, run time-series CV, diagnostics and the per-horizon label-only backtest, and produce out-of-sample artifacts. |
-| Production refit | `run_train(full_history=True)` | Fit through the latest eligible cube date with no holdout. Daily prediction reads these artifacts. |
-| Latest prediction | `run_predict(n_dates=...)` | Load production artifacts, score the newest unlabelled cube rows, and write `predictions_latest` without retraining. |
+| train_model | [StepLongShort.run_train()](../../src/modelling/steps/step_long_short.py); run() delegates here | Save five original purged folds per model/horizon, then fresh cutoff refits. Fixed pools and parameters; no feature search. |
+| backtest_modelling | [StepAssessLongShort.run()](../../src/modelling/steps/step_assess_long_short.py) | Read saved models only; save per-member/ensemble IC/IR, SHAP or linear contributions, cutoff PDP and the two-section report. |
+| backtest_portfolio | [StepPortfolio.run()](../../src/portfolio/step_portfolio.py) | Use the same run's cutoff members and dated portfolio output. Existing rules, dates and costs remain configured. |
+| full_train | StepLongShort.run_train(full_history=True) | Reuse that run's saved fold counts without CV; refit all latest mature labels and atomically publish a complete production generation. |
 
-The weekly order remains holdout training → portfolio backtest → full-history refit in [dag_modelling.py](../../src/dags/dag_modelling.py). Holdout training runs five folds once, saves per-horizon selected LightGBM iteration counts and OOF metrics, and fits the cutoff artifact using median counts. Production full-train reuses that saved selection without CV, fitting every eligible matured row with unchanged learning rate and parameters. Linear/RF receive all eligible rows. Last-outer-test rows and their original fold models supply validation SHAP/PDP; final fitted-row explanations are not OOF evidence.
+The five forward windows cover 2000–02,2003–06,2007–12,2013–18 and2019–21 with expanding training from 1999. train.end_date is a feature ceiling. train.outcome_cutoff=2021-12-31 additionally requires all development, early-stop and test outcomes to be known by that date. Actual price-calendar label ends purge inner training before validation and outer training before test. Fixed-cutoff assessment begins 3 January 2022; portfolio start remains 1 June 2022. Production fitting ignores the old development ceilings and uses all finite mature labels.
 
-The requested training end is a feature ceiling X; the observation cutoff includes its longest label endpoint, capped by available complete sessions. Label ends use distinct observed price-part sessions before labelled-row filtering. Inner training labels end strictly before validation; outer training labels end strictly before test. Portfolio evaluation must begin after the latest fitted label end. The current configuration uses X=2022-01-01, maximum horizon90 sessions and portfolio start2022-06-01. Actual fitted feature/label endpoints and dropped rows are recorded separately.
+Each original fold supplies its held-out signed-effect curve; a fresh cutoff member supplies the 2022+ curve, sampled tree scatter and PDP. Cutoff refitting uses all eligible development rows, rather than averaging the five folds. Linear importance is absolute standardized beta; signed beta contributions are labelled separately from SHAP. See [report plots](../modules/modelling.md#report-plots).
+
+[Artifact utilities](../../src/modelling/utils/artifacts.py) retain folds/cutoff/full-history evidence under configured output/modelling_backtest/<run_id>. Production output/models holds immutable generations plus one atomic metadata switch; readers pin one snapshot for all member loads. New readers also accept legacy flat transformer pickles. latest.json denotes assessment success only. Any failed task blocks later tasks and retains previous production. Daily run_predict scores newest feature-only rows without retraining. See [run and retry commands](../guides/run-the-pipeline.md#dated-modelling-assessment).
 
 ## Model completion criteria
 

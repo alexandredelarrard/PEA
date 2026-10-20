@@ -71,11 +71,14 @@ def test_dividends_replay_the_same_recent_tail_as_prices(sqlite_store, monkeypat
     captured: list[pd.Timestamp] = []
 
     def _download(tickers, since, until, *args, **kwargs):
+        assert kwargs["actions"] is True
         del tickers, until, args, kwargs
         captured.append(pd.Timestamp(since))
         return pd.DataFrame()
 
     monkeypatch.setattr(prices_fetcher, "download_ohlcv", _download)
+    # Price anchor checks have dedicated controls in test_price_restatement_anchor.py.
+    monkeypatch.setattr(prices_fetcher, "anchor_restated_keys", lambda *args, **kwargs: [])
     prices_fetcher.fetch_prices_and_actions(_context(sqlite_store), ["AAA"], years_history=15, as_of=as_of, pause=0.0)
 
     overlap = pd.Timedelta(days=cast(Resume, Tables.dividends.resume).overlap_days)

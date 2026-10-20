@@ -29,8 +29,7 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.compute as pc
-from edgar import Filing, Filings, get_filings
-from edgar import obj as data_object
+from edgar import Filings, get_filings
 from edgar.httpclient import close_clients
 from edgar.thirteenf.parsers.infotable_xml import parse_infotable_xml
 from tqdm import tqdm
@@ -335,33 +334,6 @@ def _source_information_table(report: Any, stamp: FilingStamp, xml: str | None, 
     return normalized, units
 
 
-class _SgmlXmlFiling:
-    """An EdgarTools `Filing` whose `xml()` reads the SGML submission only.
-
-    `Filing.xml()` falls back to the filing homepage when the submission has no primary XML, which is
-    every pre-2013 13F. EdgarTools builds that URL as `<cik>/<accession>-index.html`, which EDGAR answers
-    403, so the fallback costs one request and returns nothing. Every other attribute is the filing's own.
-    """
-
-    def __init__(self, filing: Filing) -> None:
-        self._filing = filing
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._filing, name)
-
-    def xml(self) -> str | None:
-        return self._filing.sgml().xml()
-
-    def obj(self) -> Any:
-        """The filing's data object; a submission without primary XML is built on this wrapper."""
-        return self._filing.obj() if self.xml() else data_object(self)
-
-
-def _report(filing: Any) -> Any:
-    """`filing_obj` without the pre-XML homepage request (see `_SgmlXmlFiling`)."""
-    return filing_obj(_SgmlXmlFiling(filing) if isinstance(filing, Filing) else filing)
-
-
 def _read_filing(stamp: FilingStamp, *, source_values: bool = False) -> pd.DataFrame | ReadFailure:
     """Fetch and parse one 13F-HR into its book: empty for an empty info table, a `ReadFailure`
     (not logged; the caller decides) when the read failed, so one bad filing never aborts a batch.
@@ -372,7 +344,7 @@ def _read_filing(stamp: FilingStamp, *, source_values: bool = False) -> pd.DataF
     The information-table documents are downloaded under `sec_io` before EdgarTools parses them, so
     a parse error is never read as a throttle."""
     try:
-        report = _report(stamp.filing)
+        report = filing_obj(stamp.filing, sgml_xml_only=True)
         xml = sec_call(getattr, report, "infotable_xml", None, label=f"{stamp.accession_number} infotable_xml")
         raw = None if xml else sec_call(getattr, report, "infotable_txt", None, label=f"{stamp.accession_number} infotable_txt")
         if source_values:
@@ -828,7 +800,7 @@ def filing_vintage(
 def read_filing_vintage(stamp: FilingStamp) -> tuple[pd.DataFrame, pd.DataFrame] | ReadFailure:
     """Strict source parse for accession recovery; never certify an unverified book."""
     try:
-        report = _report(stamp.filing)
+        report = filing_obj(stamp.filing, sgml_xml_only=True)
         xml = sec_call(getattr, report, "infotable_xml", None, label=f"{stamp.accession_number} infotable_xml")
         if not xml and getattr(report, "primary_form_information", None) is not None and getattr(report, "total_holdings", None) == 0:
             return _empty_xml_vintage(stamp, sec_call(stamp.filing.xml, label=f"{stamp.accession_number} cover XML"))

@@ -285,8 +285,33 @@ def _label(filing: Any, what: str) -> str:
     return f"{getattr(filing, 'accession_number', '?')} {what}"
 
 
-def filing_obj(filing: Any) -> Any:
-    """`filing.obj()`; a transient read raises `TransientReadError`, any other failure `ParseFailureError`."""
+class _SgmlXmlFiling:
+    """An EdgarTools filing whose primary XML comes only from its SGML submission.
+
+    A submission without primary XML must not trigger the filing-homepage fallback.
+    """
+
+    def __init__(self, filing: edgar.Filing) -> None:
+        self._filing = filing
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._filing, name)
+
+    def xml(self) -> str | None:
+        return self._filing.sgml().xml()
+
+    def obj(self) -> Any:
+        """Keep the filing's XML parser; build a pre-XML data object on this wrapper."""
+        return self._filing.obj() if self.xml() else edgar.obj(self)
+
+
+def filing_obj(filing: Any, *, sgml_xml_only: bool = False) -> Any:
+    """`filing.obj()`, optionally without the real filing's XML homepage fallback.
+
+    A transient read raises `TransientReadError`, any other failure `ParseFailureError`.
+    """
+    if sgml_xml_only and isinstance(filing, edgar.Filing):
+        filing = _SgmlXmlFiling(filing)
     try:
         return sec_call(filing.obj, label=_label(filing, "obj"))
     except TransientReadError:

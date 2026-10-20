@@ -241,13 +241,12 @@ def call_introduction(paragraphs: Iterable[Mapping[str, object]]) -> str:
             continue
         if spoken == 2:
             break
-        if re.search(r"earnings.*(?:call|conference)|conference call transcript", f"{speaker}: {text}", re.I) and not re.search(
-            r"\bwelcome\b", text, re.I
-        ):
-            # A title may be split between the provider's speaker and content fields.
-            if spoken == 0 and not _is_op(speaker) and not re.search(r"\b(?:I|we|our|you)\b", text):
-                snippets.append(f"{speaker}: {text}")
-                continue
+        event = r"earnings.*(?:call|conference)|conference call transcript"
+        split_title = re.search(r"\([^()]*$", speaker) and re.match(r"^[A-Z0-9./^-]+\)\s*:", text) and re.search(event, text, re.I)
+        if spoken == 0 and (re.search(event, speaker, re.I) or split_title):
+            # A provider title can split at the exchange/ticker colon across fields.
+            snippets.append(f"{speaker}: {text}")
+            continue
         spoken += 1
         welcome = re.search(
             r"\bwelcome\b[^.!?\n]*?\b(?:earnings|conference|results|call|presentation|webcast|investor (?:day|event|meeting))\b",

@@ -62,6 +62,9 @@ TURN_KEYS = {"section", "tag", "person", "text", "exchange_idx", "answer_idx"}
             False,
         ),
         ([{"speaker": "Operator", "content": "Welcome to Acme Company earnings call."}], "", False),
+        ([{"speaker": "CEO", "content": "We compared results with Broadcom Earnings Conference Call material."}], "Broadcom", False),
+        ([{"speaker": "CEO", "content": "we compared results with Broadcom Earnings Conference Call material."}], "Broadcom", False),
+        ([{"speaker": "CEO", "content": "Management compared results with Broadcom Earnings Conference Call material."}], "Broadcom", False),
     ],
 )
 def test_company_matching_uses_only_strict_introduction(paragraphs: list[dict], name: str, expected: bool) -> None:

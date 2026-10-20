@@ -144,5 +144,8 @@ def test_level_actions_warns_when_the_owner_actions_are_not_stored(tmp_path: Pat
     print(out.to_string(index=False))
     print(warnings)
     assert out is not None and sorted(out["date"].dt.strftime("%Y-%m-%d")) == ["2004-01-05", "2007-10-03", "2016-10-31"]
-    assert len(warnings) == 1 and "TYC of JCI (CIK 0000833444) is not stored" in warnings[0]
+    assert warnings == [
+        "level factor: no selected predecessor split/spinoff rows for TYC of JCI (CIK 0000833444); "
+        "actions before 2016-09-02 are kept as fetched"
+    ]
     print("  OK: JCI keeps its 3 own actions and one WARNING names the missing TYC series.")

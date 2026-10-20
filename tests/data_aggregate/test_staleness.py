@@ -25,6 +25,7 @@ from src.data_aggregate.utils.governance.staleness import (
     expire_stale,
     horizon_for,
 )
+from src.data_store.schema import Tables
 
 
 def _daily(history: pd.DataFrame, field: str, idx: pd.DatetimeIndex) -> pd.DataFrame:
@@ -140,23 +141,9 @@ def test_chained_carries_do_not_restart_the_ultimate_source_clock():
     print("  CONCLUSION: transformations preserve provenance; only observations restart freshness.")
 
 
-def test_expiry_bite_on_real_def14a():
-    """How hard does 548 days bite each proxy field, with the tier forced to the event one?"""
-    try:
-        from src.context import get_config_context
-
-        _, ctx = get_config_context("./configs", use_cache=False, save=False)
-        raw = ctx.store.load("def14a_llm")
-    except Exception as e:  # noqa: BLE001
-        pytest.skip(f"def14a_llm not reachable ({e})")
-    if raw is None or raw.empty:
-        pytest.skip("def14a_llm empty")
-
-    from src.data_aggregate.utils.governance.def14a_impute import impute_def14a
-
-    imp, _ = impute_def14a(raw)
-    idx = pd.bdate_range("2011-01-03", "2026-09-04")  # the modern era only
-
+def test_expiry_bite_on_real_def14a() -> None:
+    """Real proxy fields retain fresh cells and expire equally on both annual routes."""
+    idx = pd.bdate_range("2011-01-03", "2026-09-04")
     fields = [
         "say_on_pay_support_pct",
         "ceo_total_comp",
@@ -166,6 +153,23 @@ def test_expiry_bite_on_real_def14a():
         "poison_pill",
         "majority_voting",
     ]
+    try:
+        from src.context import get_config_context
+
+        _, ctx = get_config_context("./configs", use_cache=False, save=False)
+        raw = ctx.store.load(
+            Tables.def14a_llm,
+            columns=["ticker", "as_of", "ceo_name_proxy", *fields],
+            since=idx[0] - pd.Timedelta(days=LEVEL_MAX_AGE_DAYS),
+            until=idx[-1],
+        )
+    except Exception as e:  # noqa: BLE001
+        pytest.skip(f"def14a_llm not reachable ({e})")
+    if raw is None or raw.empty:
+        pytest.skip("def14a_llm empty")
+
+    imp, _ = impute_def14a(raw)
+    assert GOVERNANCE_EVENT_MAX_AGE_DAYS == LEVEL_MAX_AGE_DAYS == 395
     rows = []
     for f in fields:
         if f not in imp.columns:
@@ -174,45 +178,33 @@ def test_expiry_bite_on_real_def14a():
         if daily.empty:
             continue
         before = int(daily.notna().to_numpy().sum())
-        # ⚠ `feature=` is passed a name that is deliberately NOT in the exemption, so this
-        # measures the HORIZON, not the exemption. Two of these fields (`board_size`,
-        # `pct_independent_directors`) share their name with a legacy FEATURE, so calling
-        # `expire_stale(daily, imp, f)` bare would return them untouched and this table would
-        # report 0.0% — reading as "a board size never goes stale" when it means "exempt".
-        capped = expire_stale(daily, imp, f, feature=f"_measure_{f}")
+        capped = expire_stale(daily, imp, f)
+        event = expire_stale(daily, imp, f, feature=f"_measure_{f}")
+        assert horizon_for(f) == horizon_for(f"_measure_{f}") == 395
+        pd.testing.assert_frame_equal(capped, event)
+        pd.testing.assert_frame_equal(capped, daily.where(capped.notna()))
         after = int(capped.notna().to_numpy().sum())
-        exempt = f in LEVEL_HORIZON_FIELDS
-        rows.append((f, before, before - after, (before - after) / before if before else 0.0, exempt))
+        is_level = f in LEVEL_HORIZON_FIELDS
+        rows.append((f, before, before - after, (before - after) / before if before else 0.0, is_level))
 
     assert rows, "no field produced a daily frame"
     # An expiry can only remove cells, never add them.
     assert all(n >= 0 for _, _, n, _, _ in rows)
-    # and a LEVEL name really does route to the looser tier rather than to 548 -- the
-    # assertion that replaced `expire_stale(d, imp, f) is d`, which required exemption.
-    for f, _, _, _, is_level in rows:
-        if not is_level:
-            continue
-        d = fundamentals_to_daily(imp, f, idx)
-        lvl = int(expire_stale(d, imp, f).notna().to_numpy().sum())
-        evt = int(expire_stale(d, imp, f, feature=f"_measure_{f}").notna().to_numpy().sum())
-        full = int(d.notna().to_numpy().sum())
-        assert lvl < full, f"{f} is a level but nothing expired -- the D3 exemption is back"
-        assert lvl > evt, f"{f} expired as hard as an event; the level tier is not applying"
+    assert any(is_level for _, _, _, _, is_level in rows), "no legacy level route was exercised"
+    for f, before, expired, _, is_level in rows:
+        assert before > expired, f"{f}: no fresh real cells survived"
+        if is_level:
+            assert expired > 0, f"{f} is a level but nothing expired"
 
-    print("\n=== SANITY CHECK: what a 548-day horizon would cost each proxy field ===")
+    print("\n=== SANITY CHECK: the 395-day source-age horizon on real proxy fields ===")
     print(f"  daily grid {idx[0].date()}..{idx[-1].date()} ({len(idx)} days), post-impute")
-    print(f"  {'field':<28} {'non-null':>10} {'expired':>10} {'share':>8}  exempt?")
-    for f, before, n, share, exempt in sorted(rows, key=lambda r: -r[3]):
-        print(f"  {f:<28} {before:>10,} {n:>10,} {share:>7.1%}  {'EXEMPT (legacy)' if exempt else ''}")
+    print(f"  {'field':<28} {'non-null':>10} {'expired':>10} {'share':>8}  route")
+    for f, before, n, share, is_level in sorted(rows, key=lambda r: -r[3]):
+        print(f"  {f:<28} {before:>10,} {n:>10,} {share:>7.1%}  {'level' if is_level else 'event'}")
     worst = max(rows, key=lambda r: r[3])
     print(f"  worst: {worst[0]} at {worst[3]:.1%}")
-    print("  CONCLUSION: this is the EVENT horizon's bite, measured with the tier routing")
-    print("  deliberately bypassed via `feature=` — the fields marked LEVEL would otherwise")
-    print("  report their 1,095-day cost here and the column would mix two clocks.")
-    print("  Every one of these IS expired in the tree as of phase 3; on the real panel the")
-    print("  level horizon removes 3.37% of cells, spread 0.11% to 18.89% by field.")
-    print("  Read each as the cost of a MISSED FILING CYCLE: >20% means the horizon is too")
-    print("  tight for that field and belongs in the report, not in a silent retune.")
+    print("  CONCLUSION: both routes produce identical annual expiry, retain the same fresh")
+    print("  source values, and remove stale level cells. Counts describe this scoped readout.")
 
 
 # --------------------------------------------------------------------------------------------

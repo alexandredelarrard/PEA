@@ -30,8 +30,10 @@ roster, hand-off 19/20.
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
+from itertools import groupby
 from typing import Literal, NamedTuple
 
 from src.constants.constants import (
@@ -220,6 +222,51 @@ def split_sentences(text: str) -> list[str]:
     """Sentences of `text` after whitespace collapse; rejoining them with one space is lossless."""
     collapsed = " ".join(str(text).split())
     return _SENT_BOUNDARY.split(collapsed) if collapsed else []
+
+
+def call_introduction(paragraphs: Iterable[Mapping[str, object]]) -> str:
+    """Early document titles and welcome-to-event clauses before Q&A, within two spoken turns."""
+    turns = []
+    for speaker, text in clean_paragraphs(paragraphs):
+        # Keep legal abbreviations inside the identification sentence.
+        text = re.sub(r"(?i)\b(inc|corp|co|ltd|plc)\.", r"\1", text)
+        turns.extend(Turn(speaker, sentence) for sentence in split_sentences(text))
+    boundary = qa_start(turns)
+    prefix = turns if boundary is None else turns[:boundary]
+    snippets: list[str] = []
+    spoken = 0
+    for speaker, group in groupby(prefix, key=lambda turn: turn.speaker):
+        text = " ".join(turn.text for turn in group)
+        if re.fullmatch(r"executives?|analysts?|company representatives|transcript sponsor|ai insights|participants", speaker, re.I):
+            continue
+        if spoken == 2:
+            break
+        event = r"earnings.*(?:call|conference)|conference call transcript"
+        split_title = re.search(r"\([^()]*$", speaker) and re.match(r"^[A-Z0-9./^-]+\)\s*:", text) and re.search(event, text, re.I)
+        if spoken == 0 and (re.search(event, speaker, re.I) or split_title):
+            # A provider title can split at the exchange/ticker colon across fields.
+            snippets.append(f"{speaker}: {text}")
+            continue
+        spoken += 1
+        welcome = re.search(
+            r"\bwelcome\b[^.!?\n]*?\b(?:earnings|conference|results|call|presentation|webcast|investor (?:day|event|meeting))\b",
+            text,
+            re.I,
+        )
+        if welcome:
+            snippets.append(welcome.group())
+    return "\n".join(snippets)
+
+
+def company_in_introduction(paragraphs: Iterable[Mapping[str, object]], name: str) -> bool:
+    """Whole-word current company-name containment in the strict raw call introduction."""
+
+    def normalize(value: str) -> str:
+        value = unicodedata.normalize("NFKC", value).casefold()
+        return " ".join(re.sub(r"[^\w\s]", " ", value).split())
+
+    company = normalize(re.sub(r"(?i)\(?\bclass\s+[a-z]\b\)?", "", name))
+    return bool(company) and f" {company} " in f" {normalize(call_introduction(paragraphs))} "
 
 
 # ---- sentence cleaning: shared vocabulary ------------------------------------------------- #

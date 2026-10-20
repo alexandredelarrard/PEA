@@ -711,3 +711,12 @@ Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/
 - Pages: [Data sources](./reference/data-sources.md), [Overview](./OVERVIEW.md). Full harness evidence: `reports/validate/2026-10-20-insider-edgar-refactor/`. Graphify was refreshed from local code. No production fetch or table write, configuration/schema change, cube/model rebuild, commit or push was performed.
 
 - Integration follow-up (2026-10-20): the user authorized the wiki update and integration into `dev`. Reviewed code/tests are committed as `58606be631a92f9cfa2f3815ae3540ae44da320b`; the [Overview](./OVERVIEW.md) now anchors that source revision, and [Data sources](./reference/data-sources.md) documents the shared runner and retained ZIP path. Commit hooks passed; reviewed code hashes are unchanged. Only this refactor and its scoped wiki changes are being committed; unrelated work remains outside those commits. No push or production fetch was performed.
+
+## 2026-10-20: earnings-call raw recovery refresh
+
+- Profile: internal/standard.
+- source_commit: 1a8d4d4b69441e1ad9232b07962a479368af687a; previous overview anchor: eafd935b9e212204e11cb3ba81f76f0e4ed3698e.
+- Coverage: [data sources](./reference/data-sources.md), [table catalog](./reference/table-catalog.md), [runbook](./guides/run-the-pipeline.md), and [overview freshness](./OVERVIEW.md).
+- Documented the approved raw-only recovery of eligible master symbol/CIK-window rejects: full-universe unique target, early title/welcome company-name evidence, empty provider fiscal quarter, immutable normal-call priority, shared verification/null-ID comparison pass and failure-before-delete ordering. Raw dates and the configured two-calendar-day feature buffer are preserved; feature identity gates remain unchanged.
+- Evidence: independent refactor, final domain validation, correctness and Ponytail reviews completed before this refresh. Frozen/full uncapped provider evidence selects 113 recoveries and preserves all 33,374 normal calls. Source counts are distinct from writes and model eligibility. Detailed local evidence: `reports/validate/2026-10-20-earnings-call-unresolved/`.
+- Existing-data read-only validator completed exit 1 in 3,844.8s: tone PSI 0.3481 and Q&A coherence PSI 0.6050 exceed 0.25. These unresolved existing feature-distribution risks are retained in the conditional local handoff; this refresh does not certify live feature/model readiness or record production extraction.

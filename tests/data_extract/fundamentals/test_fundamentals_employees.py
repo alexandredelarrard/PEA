@@ -74,6 +74,7 @@ def build(
     *,
     done_dates: frozenset[pd.Timestamp] = frozenset(),
     scope: mod.EdgarScope | None = None,
+    stored: pd.DataFrame | None = None,
 ) -> mod.EmployeeTickerResult:
     def listing(filing_scope, forms, **kwargs):
         assert filing_scope.ticker == "AAA" and filing_scope.event_ciks == ("0000000001",)
@@ -107,7 +108,11 @@ def build(
             }
         }
     )
-    context = SimpleNamespace(config=config, log=SimpleNamespace(info=lambda *args: None, warning=lambda *args: None))
+    context = SimpleNamespace(
+        config=config,
+        log=SimpleNamespace(info=lambda *args: None, warning=lambda *args: None),
+        store=SimpleNamespace(load=lambda *args, **kwargs: stored),
+    )
     return mod.build_ticker_employees(
         context,
         "AAA",
@@ -333,6 +338,97 @@ def test_shift_named_before_the_number_is_a_full_time_count():
         "found",
     )
     print("\nSANITY: ADM 2019 'number of full-time employees ... was approximately 38,100' is full_time_only 38,100, not a 38,100 total.")
+
+
+# MRK FY2020/FY2024 10-Ks: 0000310158-21-000004 and 0001628280-25-007732.
+@pytest.mark.parametrize("total,label", [(74000, "full time-employees"), (75000, "full-time employees")])
+def test_mrk_possessive_employee_sentence_keeps_full_time_count(total: int, label: str) -> None:
+    total_quote = f"the Company had approximately {total:,} employees worldwide"
+    full_quote = f"Approximately 73,000 of the Company’s employees are {label}."
+    text = f"As of December 31, 2024, {total_quote}. {full_quote}"
+    decision = mod.decide_employee_answer(answer(total, total_quote, full_time=73000, full_time_quote=full_quote), text)
+    assert components(decision) == (total, 73000, None, "full_part", "found")
+    assert not decision.rejected
+    print(f"\nSANITY: MRK's explicit {total:,} total and 73,000 full-time employees both survive verbatim quote validation.")
+
+
+@pytest.mark.parametrize("value", [90000, 100000, 110000])
+@pytest.mark.parametrize("quote", [None, "Our workforce was approximately this many people."])
+def test_missing_or_paraphrased_quote_recovers_source_count_within_ten_percent(value: int, quote: str | None) -> None:
+    text = f"We employed around {value:,} employees worldwide."
+    decision = mod.decide_employee_answer(answer(value, quote), text, previous={"total": 100000})
+    assert decision.employees_total == value and decision.status == "found" and not decision.rejected
+    assert dict(decision.quotes)["total"] in text
+    print(f"\nSANITY: {value:,} is within inclusive +/-10% of 100,000; a broken quote is replaced with actual filing evidence.")
+
+
+@pytest.mark.parametrize(
+    "text,value,previous",
+    [
+        ("We employed 89,999 employees.", 89999, {"total": 100000}),
+        ("We employed 110,001 employees.", 110001, {"total": 100000}),
+        ("We employed 100,000 employees.", 100000, {}),
+        ("We employed 100,000 employees.", 100000, {"total": 0}),
+        ("We employed 100,000 employees.", 101000, {"total": 100000}),
+        ("Revenue was 100,000 dollars. We employed 500 people.", 100000, {"total": 100000}),
+        ("Revenue was 100,000 dollars.We employed 500 people.", 100000, {"total": 100000}),
+        ("We employed between 90,000 and 100,000 employees.", 100000, {"total": 100000}),
+        ("We employed 100,000 employees and contractors.", 100000, {"total": 100000}),
+    ],
+)
+def test_quote_recovery_retains_numeric_and_workforce_guards(text: str, value: int, previous: dict[str, int]) -> None:
+    decision = mod.decide_employee_answer(answer(value, None), text, previous=previous)
+    assert decision.status == "unsupported" and decision.employees_total is None
+    print("\nSANITY: quote recovery rejects out-of-band, unanchored, absent, non-workforce, ranged and unflagged contractor counts.")
+
+
+@pytest.mark.parametrize("qualifier", ["approximately", "around", "about", "roughly"])
+def test_approximate_counts_keep_the_stated_value(qualifier: str) -> None:
+    text = f"We employed {qualifier} 75,000 employees worldwide."
+    assert decide(text, total=75000).employees_total == 75000
+    print(f"\nSANITY: '{qualifier} 75,000' retains the stated 75,000 employees.")
+
+
+def test_quote_recovery_keeps_component_labels() -> None:
+    text = "Approximately 73,000 of the Company’s employees are full-time employees."
+    reply = answer(None, None, full_time=73000)
+    decision = mod.decide_employee_answer(reply, text, previous={"full_time": 72000})
+    assert components(decision) == (None, 73000, None, "full_time_only", "found")
+    assert dict(decision.quotes)["full_time"] in text
+    assert mod.decide_employee_answer(reply, "We had 73,000 employees.", previous={"full_time": 72000}).status == "unsupported"
+    assert mod.decide_employee_answer(reply, text, previous={"total": 74000}).status == "unsupported"
+    fte = "Approximately 73,000 of the Company's employees were full-time equivalent employees."
+    assert decide(fte, total=73000).basis == "fte"
+    assert decide(fte, full_time=73000).status == "unsupported"
+    print("\nSANITY: a missing full-time quote recovers its explicit label; a total or an earlier total cannot stand in for full-time evidence.")
+
+
+def test_quote_recovery_uses_stored_and_new_counts_only_from_earlier_dates(monkeypatch: pytest.MonkeyPatch) -> None:
+    stored = pd.DataFrame(
+        [
+            {"as_of": pd.Timestamp("2019-03-01"), "employees_total": 100000, "employees_full_time": None, "employees_part_time": None},
+            {"as_of": pd.Timestamp("2025-03-01"), "employees_total": 95000, "employees_full_time": None, "employees_part_time": None},
+        ]
+    )
+    filings = [
+        Filing("before-history", "2018-03-01", "We employed 95,000 employees worldwide."),
+        Filing("stored-prior", "2020-03-01", "We employed around 110,000 employees worldwide."),
+        Filing("new-prior", "2021-03-01", "We employed about 121,000 employees worldwide."),
+        Filing("large-change", "2022-03-01", "We employed 170,000 employees worldwide."),
+    ]
+    answers = {
+        "before-history": answer(95000, None),
+        "stored-prior": answer(110000, None),
+        "new-prior": answer(121000, "The company has approximately 121,000 staff."),
+        "large-change": answer(170000, "We employed 170,000 employees worldwide."),
+    }
+    result = build(monkeypatch, filings, answers, stored=stored)
+    rows = result.frame.set_index("accession_number")
+    assert rows.loc["before-history", "status"] == "unsupported"
+    assert rows.loc[["stored-prior", "new-prior", "large-change"], "employees_total"].tolist() == [110000, 121000, 170000]
+    print(
+        "\nSANITY: recovery uses stored and newly validated earlier counts; future rows cannot justify history, and quoted large changes remain valid."
+    )
 
 
 # ADM FY2023 10-K 0000007084-24-000009: type-by-gender table whose earlier cells are percentages.
@@ -912,12 +1008,12 @@ def test_a_rerun_without_full_makes_no_llm_call_for_decided_dates(monkeypatch, s
     filings = [
         Filing("count", "2023-03-01", "We had 41,000 employees."),
         Filing("quiet", "2024-03-01", "We sell hardware."),
-        Filing("unsupported", "2025-03-01", "We had 42,000 employees."),
+        Filing("unsupported", "2025-03-01", "We had 52,000 employees."),
     ]
     answers = {
         "count": answer(41000, "We had 41,000 employees."),
         "quiet": answer(None, None, status="not_disclosed", measurement_period=None),
-        "unsupported": answer(42000, "The company employs 42,000 people."),
+        "unsupported": answer(52000, "The company employs 52,000 people."),
     }
     tasks: list[str] = []
 

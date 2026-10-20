@@ -85,7 +85,7 @@ _RANGE_AFTER_RE = re.compile(r"^\s*(?:-|–|to)\s*\d", re.I)
 # Prose names a number's shift in lower case after it ("11,040 full-time"); a table names it in a
 # capitalised row label before the row's numbers ("Part-time Associates 97,913 41,184 13 139,110"),
 # so case keeps the next row's label from tagging the number before it. A Total row has no shift.
-_SHIFT_AFTER_RE = re.compile(r"^\W*(?:[a-z]+\s+){0,3}?(full|part)[\s-]*time")
+_SHIFT_AFTER_RE = re.compile(r"^\W*(?:(?:[a-z]+\s+){0,3}?|of\s+(?:the\s+)?[\w’'�]+\s+employees\s+(?:are|were)\s+)(full|part)[\s-]*time")
 _ROW_LABEL_RE = re.compile(
     r"\b(Total|TOTAL|Full|FULL|Part|PART)(?:[\s-]*(?:time|Time|TIME))?\b"
     r"(?:(?!\b(?:Total|TOTAL|Full|FULL|Part|PART)\b)[^\d]){0,40}(?:[\d,.]+(?:\s*%)?(?:\s+|$))*$"
@@ -386,8 +386,12 @@ def _shift(before: str, after: str) -> str | None:
         return "fte"
     if _FULL_AND_PART_RE.search(after[:40]):
         return None
-    if label := _SHIFT_AFTER_RE.match(after) or row:
+    if label := _SHIFT_AFTER_RE.match(after):
+        if label.group(1) == "full" and re.match(r"[\s-]*equivalent\b", after[label.end() :]):
+            return "fte"
         return label.group(1).casefold()
+    if row:
+        return row.group(1).casefold()
     phrase = _PHRASE_STOP_RE.split(before)[-1]
     if not _FULL_AND_PART_RE.search(phrase) and (label := _SHIFT_BEFORE_RE.search(phrase)):
         return label.group(1)
@@ -464,6 +468,18 @@ def _support(component: str, value: int, quote: str | None, source_text: str) ->
     return "range" if any(quantity.in_range for quantity in claimed) else claimed
 
 
+def _recover_employee_quote(component: str, value: int, source_text: str) -> tuple[str, list[_Quantity]] | None:
+    """Recover a verbatim workforce-number span that passes the component's existing numeric guard."""
+    for start, end in _workforce_number_spans(source_text):
+        quote = source_text[start:end]
+        if re.search(r";|\.(?!\d)", quote) or _GAP in quote:
+            continue
+        support = _support(component, value, quote, source_text)
+        if not isinstance(support, str):
+            return quote, support
+    return None
+
+
 def _settle_total(supported: dict[str, list[_Quantity]], quotes: dict[str, str], rejected: list[str], includes_contractors: bool) -> None:
     """Keep a supported total only when it is a total: one that folds in contractors (unflagged) or is only
     part-time is rejected; one stated only as full-time, or as full- plus part-time numbers, becomes those components."""
@@ -498,12 +514,13 @@ def _basis(values: dict[str, int], is_fte: bool, includes_contractors: bool) -> 
     return "full_time_only" if "full_time" in values else None
 
 
-def decide_employee_answer(answer: EmployeeAnswer, source_text: str) -> EmployeeDecision:
+def decide_employee_answer(answer: EmployeeAnswer, source_text: str, *, previous: dict[str, int] | None = None) -> EmployeeDecision:
     """Guard each claimed component against the text sent, then derive the stored total, basis and status.
 
     The total is the stated total, else the sum of stated full- and part-time counts; it is never a total
     less a component. A part-time count with neither a full-time count nor a total supports no basis and
-    is dropped. Open bounds resolve by `_resolve_bound`. Every status is final: the filing is not re-asked.
+    is dropped. A missing or malformed quote can be recovered from workforce text when the component
+    is within 10% of its earlier accepted count. Open bounds resolve by `_resolve_bound`.
     """
     supported: dict[str, list[_Quantity]] = {}
     quotes: dict[str, str] = {}
@@ -513,6 +530,10 @@ def decide_employee_answer(answer: EmployeeAnswer, source_text: str) -> Employee
         if value is None:
             continue
         support = _support(component, value, quote, source_text)
+        prior = (previous or {}).get(component)
+        if isinstance(support, str) and support in {"no_quote", "not_located"} and prior is not None and prior > 0:
+            if abs(value - prior) * 10 <= prior and (recovered := _recover_employee_quote(component, value, source_text)) is not None:
+                quote, support = recovered
         if isinstance(support, str):
             rejected.append(f"{component}: {support}")
         else:
@@ -623,6 +644,12 @@ def _llm_decisions(context: Context, ticker: str, stamps: list[FilingStamp]) -> 
     is listed again next run; only a parsed answer is decided.
     """
     config = with_gpt_overrides(context.config, "employees", provider="open_ai_cheap")
+    columns = ["as_of", *_COUNT_COLUMNS]
+    stored = context.store.load(
+        Tables.fundamentals_employees, columns=columns, where={"ticker": ticker}, until=max(stamp.filed for stamp in stamps), optional=True
+    )
+    history = pd.DataFrame(columns=columns) if stored is None else stored.loc[:, columns].copy()
+    history["as_of"] = pd.to_datetime(history["as_of"])
     decisions: list[_Decision] = []
     failed: list[FilingStamp] = []
     for result in _extract_answers(context, config, ticker, stamps):
@@ -640,8 +667,15 @@ def _llm_decisions(context: Context, ticker: str, stamps: list[FilingStamp]) -> 
         if not isinstance(answer, EmployeeAnswer):
             raise TypeError(f"{ticker}: unexpected employee LLM result {type(answer).__name__}")
         meta = result.task.meta
-        decided = decide_employee_answer(answer, str(meta["source_text"]))
+        prior = history.loc[history["as_of"].lt(stamp.filed.normalize())].sort_values("as_of", kind="stable")
+        previous: dict[str, int] = {}
+        for component, column in zip(COMPONENTS, _COUNT_COLUMNS, strict=True):
+            values = prior[column].dropna()
+            if not values.empty:
+                previous[component] = int(values.iloc[-1])
+        decided = decide_employee_answer(answer, str(meta["source_text"]), previous=previous)
         decisions.append(_Decision(stamp, str(meta["source_document"]), decided))
+        history.loc[len(history)] = [stamp.filed.normalize(), *(getattr(decided, column) for column in _COUNT_COLUMNS)]
     return decisions, failed
 
 
@@ -815,13 +849,13 @@ def fetch_fundamentals_employees(
         raise ValueError(f"Employee extraction has no roster CIK for {', '.join(sorted(missing))}")
     since = pd.Timestamp.today().normalize() - pd.DateOffset(years=years_history)
 
-    # get lineage and key dates 
+    # get lineage and key dates
     scope = EdgarScope(load_identity(context))
 
-    # get what has been done so far per ticker as dates 
+    # get what has been done so far per ticker as dates
     done = {} if full else _done_dates(context, tickers, since)
     context.log.info("fundamentals employees: %d dates * ticker already done (skipped)", sum(map(len, done.values())))
-    
+
     worker = partial(_fetch_ticker_employees, context=context, since=since, done=done, scope=scope)
     results = run_per_ticker(
         cik_map,

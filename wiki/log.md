@@ -661,3 +661,27 @@ Profile: `internal/standard`. Source base: `f2eeb5d32c691354bb2557ef3d7a4d9b6388
 Final validation: 131 passed, one existing live-test skip, one SQLite deprecation warning; scoped Ruff/formatting pass. Read-only frozen provider replay preserves all 50 reviewed histories and 1,231 accepted calls, including ECHO 62, BNY 78, BF-B 13 and TROW 14. No new typing diagnostics; 29 existing errors remain. The local follow-up review does not replace the earlier independent harness reviews or its CONDITIONAL data-readiness status.
 
 Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/table-catalog.md), [Live database](./reference/live-database.md). Detailed function ledger and RED/GREEN evidence: `reports/validate/2026-10-20-earnings-call-function-review/review.md`. Wiki refresh follows final code checks. Existing stored rows were not cleaned; no production extraction, paid scoring, rebuild, training, commit or push was performed.
+
+## 2026-10-20 — Full-universe earnings-call rejection investigation
+
+- Profile: `internal/standard`; inspected source: `eafd935b9e212204e11cb3ba81f76f0e4ed3698e` (previous overview anchor `482dd59a`). Scoped research refresh; unrelated source changes were not revalidated.
+- Reproduced all 897 unresolved source rows across 37 symbols using the actual fetcher's metadata stage, pinned provider revision `d64374b92ac0589ab3972e472f1a4303182b0b84`. Fetched header evidence for every rejected row. Exact rejection tracing matches all 34,759 scoped source rows.
+- Independent issuer review and read-only assertions agree: 354 genuine rows/copies and 543 exclusions. The approved-union hypothesis adds 235 quarter keys and removes one superseded FISV fiscal label (net +234 canonical calls). Current raw DB already holds all candidate quarter keys; five Fiserv dates differ by one day. Feature eligibility and payload quality were not revalidated.
+- A global 1–3-day CIK-window expansion recovers zero; 7–30 days recovers one APO call. Mixed issuers within COR, DD, ES, WTW and other labels prevent a safe blanket symbol fallback. Preserve current economic lineage and separate actual call dates from feature availability.
+- Pages: [Data sources](./reference/data-sources.md), [Overview](./OVERVIEW.md). Evidence: `reports/validate/2026-10-20-earnings-call-unresolved/01-research.md`, `01-spec.md`, `_out/validation.json`, `_out/independent-review.json`.
+- Application source, configuration and tables unchanged; no production write, paid scoring, feature/cube rebuild or training. Proposed correction behavior remains unimplemented.
+
+## 2026-10-20 — Employee count quote validation
+
+- Profile: `internal/standard`; source base and overview anchor: `eafd935b9e212204e11cb3ba81f76f0e4ed3698e`. Scoped validation change in [Data sources](./reference/data-sources.md): missing/paraphrased quotes recover actual workforce text only within inclusive ±10% of the same component's earlier accepted count. Stored and newly validated history supply the reference; same-day and future counts do not. MRK's possessive full-time sentence is recognized, preserving FTE, table-row, range and contractor checks.
+- RED/GREEN parser and extraction evidence covers MRK 74,000/73,000 and 75,000/73,000, both tolerance edges, approximate wording, unavailable evidence, misleading revenue numbers, component labels and historical ordering. The complete employee extraction/validator suite passed 55 tests; the final sentence-boundary refinement passed all 17 affected cases, including the additional no-whitespace boundary. Ruff, formatting and scoped Pyright checks pass. Cached MRK 2021 and 2025 filing excerpts recover both components with actual source quotes; no OpenAI request was made.
+- The read-only MRK employee validator passes for 38 stored rows and reports five existing unsupported originals. Existing rows were not re-extracted. Retry, resume and amendment policies, configuration, schema and application tables were not changed.
+
+## 2026-10-20: refresh — earnings-call introduction name experiment
+
+- Profile: internal/standard
+- source_commit: eafd935b9e212204e11cb3ba81f76f0e4ed3698e (product unchanged)
+- Coverage: tested all 897 rejected source calls against intended current roster names; independently reviewed 205 class rows and corrected 163 to company-level eligible; recomputed all eight matching variants without label leakage.
+- Results: literal matching gives 110 TP / 61 FP / 407 FN / 319 TN. All 61 false positives are branded businesses outside approved consolidation scope; removing class annotations and requiring whole words still gives 101 FP / 320 FN.
+- Pages: [Data sources](./reference/data-sources.md), [Overview](./OVERVIEW.md). Detailed ignored audit artifacts are under `reports/validate/2026-10-20-earnings-call-unresolved/`, including `02-name-matching.md`, the standalone script, complete row outcomes and independent JSON review.
+- Validation: final replay and sanity assertions passed; Ruff passed; independent recomputation matched all 897 rows and eight prediction flags. Wiki updated after independent validation. No fetcher/configuration/application-data writes, NLP or cube rebuild.

@@ -685,3 +685,12 @@ Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/
 - Results: literal matching gives 110 TP / 61 FP / 407 FN / 319 TN. All 61 false positives are branded businesses outside approved consolidation scope; removing class annotations and requiring whole words still gives 101 FP / 320 FN.
 - Pages: [Data sources](./reference/data-sources.md), [Overview](./OVERVIEW.md). Detailed ignored audit artifacts are under `reports/validate/2026-10-20-earnings-call-unresolved/`, including `02-name-matching.md`, the standalone script, complete row outcomes and independent JSON review.
 - Validation: final replay and sanity assertions passed; Ruff passed; independent recomputation matched all 897 rows and eight prediction flags. Wiki updated after independent validation. No fetcher/configuration/application-data writes, NLP or cube rebuild.
+
+## 2026-10-20: earnings-call raw recovery refresh
+
+- Profile: internal/standard.
+- source_commit: 1a8d4d4b69441e1ad9232b07962a479368af687a; previous overview anchor: eafd935b9e212204e11cb3ba81f76f0e4ed3698e.
+- Coverage: [data sources](./reference/data-sources.md), [table catalog](./reference/table-catalog.md), [runbook](./guides/run-the-pipeline.md), and [overview freshness](./OVERVIEW.md).
+- Documented the approved raw-only recovery of eligible master symbol/CIK-window rejects: full-universe unique target, early title/welcome company-name evidence, empty provider fiscal quarter, immutable normal-call priority, shared verification/null-ID comparison pass and failure-before-delete ordering. Raw dates and the configured two-calendar-day feature buffer are preserved; feature identity gates remain unchanged.
+- Evidence: independent refactor, final domain validation, correctness and Ponytail reviews completed before this refresh. Frozen/full uncapped provider evidence selects 113 recoveries and preserves all 33,374 normal calls. Source counts are distinct from writes and model eligibility. Detailed local evidence: `reports/validate/2026-10-20-earnings-call-unresolved/`.
+- Existing-data read-only validator completed exit 1 in 3,844.8s: tone PSI 0.3481 and Q&A coherence PSI 0.6050 exceed 0.25. These unresolved existing feature-distribution risks are retained in the conditional local handoff; this refresh does not certify live feature/model readiness or record production extraction.

@@ -324,7 +324,7 @@ class StepCubeTarget(Step):
     # ---- persist ---- #
     def _persist(self, labels: dict, betas: dict, window, calendar: pd.DatetimeIndex, max_h: int, valid_keys: pd.DataFrame) -> int:
         targets_wide = labels_to_wide(labels, valid_keys=valid_keys)
-        betas_long = _betas_to_long(betas)
+        betas_long = _betas_to_long(betas).merge(valid_keys[["date", "ticker"]], on=["date", "ticker"], how="inner", validate="one_to_one")
 
         # targets: overwrite the trailing max_horizon window so MATURED labels refresh -- the
         # widest refresh in the pipeline (~90 trading days vs the backward-looking parts' 5).

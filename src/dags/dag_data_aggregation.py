@@ -71,7 +71,7 @@ dag = DAG(
     default_args=default_args,
     description="Build the cube from the DB in eight sequential, memory-bounded steps.",
     schedule=None,  # triggered by the extraction DAG when it finishes
-    start_date=datetime(2026, 11, 1),
+    start_date=datetime(2026, 10, 20),
     catchup=False,
     max_active_tasks=1,  # sequential: peak memory = the largest single step
     tags=["pea", "aggregation"],

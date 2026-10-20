@@ -34,7 +34,7 @@ from src.data_extract.utils.common.resume import DONE_TABLE, DocumentWork, docum
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, configure, sec_call
 from src.data_extract.utils.common.sec_utils import load_cik_mapping
 from src.data_store.schema import Resume, Table
-from src.utils.string import pad_cik
+from src.utils.string import pad_cik, run_date
 
 logger = logging.getLogger(__name__)
 
@@ -516,13 +516,13 @@ def run_edgar_fetch(
     """
     context.ensure_edgar_identity()
     configure(context)
-    run_date = pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize()
+    start_date = run_date(as_of)
     if cik_map is None:
         cik_map = load_cik_mapping(context, tickers)
     scope = load_edgar_scope(context, identity_aware=fetch.identity_aware)
     if refresh_index:
-        edgar_index.refresh(context, run_date, years_history)
-    work = plan_fetch(context, fetch, cik_map, scope, run_date, years_history, full=full, no_cap=no_cap)
+        edgar_index.refresh(context, start_date, years_history)
+    work = plan_fetch(context, fetch, cik_map, scope, start_date, years_history, full=full, no_cap=no_cap)
     context.log.info("%s: %d document(s) to read for %d key(s) %s", fetch.done.desc, work.size, len(work.units), work.counts)
     keys = cik_map[cik_map["ticker"].astype(str).isin(work.units)]
     outcomes = _run_pass(context, fetch, scope, keys, work.units, max_workers)

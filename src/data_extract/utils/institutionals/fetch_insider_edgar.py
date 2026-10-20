@@ -37,7 +37,7 @@ from src.data_extract.utils.institutionals.insider_common import (
 )
 from src.data_extract.utils.institutionals.insider_edgar_parser import extract_xml_strings
 from src.data_store.schema import Resume, Table, Tables
-from src.utils.string import pad_cik
+from src.utils.string import pad_cik, run_date
 
 #: EDGAR rows carry the whole contract except `quarter`, so the merge-upsert keeps a stored zip quarter.
 _EDGAR_COLUMNS = tuple(column for column in Tables.insider_transactions.retrieval_columns if column != "quarter")
@@ -208,7 +208,7 @@ def fetch_insider_edgar(
     under `full`); afterwards, even on failure, log the run's exclusions and replace the zip rows of
     every accession EDGAR now holds."""
     excluded: list[pd.DataFrame] = []
-    since = edgar_window_start(context, pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()))
+    since = edgar_window_start(context, run_date(as_of))
     try:
         run_edgar_fetch(context, tickers, years_history, insider_fetch(tickers, excluded), full=full, as_of=as_of, no_cap=no_cap)
     except BaseException:

@@ -8,13 +8,16 @@ emitted `f_*` columns, and the pure extractor parsers (SEC join + OpenFIGI).
 
 from __future__ import annotations
 
+import logging
 from typing import Any, cast
 
 import numpy as np
 import pandas as pd
 import pytest
 
+import src.data_aggregate.transformers.step_cube_institutionals as step_module
 from src.constants.constants import F13_MAX_EARLY_DAYS, F13_MAX_LATE_DAYS, F13_SETTLE_TRADING_DAYS
+from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
 from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.institutionals import institutional_features as _mod
 from src.data_aggregate.utils.institutionals.availability import availability_date
@@ -36,8 +39,10 @@ from src.data_aggregate.utils.institutionals.institutional_features import (
 from src.data_aggregate.utils.institutionals.institutional_features import (
     clean_holdings as _clean_holdings,
 )
-from src.data_extract.utils.institutionals.fetch_13f import _book_frame
+from src.data_extract.utils.institutionals.fetch_13f import _book_frame, filing_vintage
 from src.data_extract.utils.institutionals.fetch_cusip_map import _parse_openfigi
+from src.data_store.schema import Tables
+from src.data_store.store import DataStore
 from tests.conftest import make_frames
 
 LAG = pd.Timedelta(days=45)
@@ -1063,101 +1068,72 @@ def test_the_coverage_diagnostic_is_share_weighted_not_filer_weighted():
     )
 
 
-# --------------------------------------------------------------------------- #
-# Phase 3 -- the first-publication error, on REAL filings                      #
-# --------------------------------------------------------------------------- #
+def test_production_first_publication_uses_immutable_matched_cohorts(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Known-truth packet math through the ordinary builder preserves public cohorts and history."""
 
-#: The measured median absolute error of a first publication's `ic_inst_shares_chg` against
-#: the fully-revised value, in percentage points, and the ceiling this test holds it under.
-#:
-#: MEASURED 2026-09-15 at `F13_SETTLE_TRADING_DAYS = 3` on two DISJOINT ticker samples of the
-#: live `sec13f_hr` (61 tickers / 3.06M filer-rows -> 1.718pp; 122 tickers / 5.25M -> 1.825pp),
-#: against a matched-sample basis that scores 2.012pp on the same rows.
-#:
-#: ⚠ THIS NUMBER IS THE JUSTIFICATION FOR NOT BUILDING THE MATCHED-SAMPLE SELF-JOIN, which is
-#: why it is defended by a test rather than just recorded. The naive difference wins only
-#: because the settle buffer takes the first publication to ~98% completeness; if it regresses
-#: past the matched sample's flat ~2.01pp then the simple design has stopped being the better
-#: one and the self-join is back on the table. The ceiling carries ~35% headroom over the
-#: measured value because this test reads a SMALL ticker sample and the median is noisy on one.
-FIRST_PUBLICATION_ERROR_PP = 1.825
-FIRST_PUBLICATION_ERROR_CEILING_PP = 2.50
+    def save_packet(accession: str, cik: str, period: str, filed: str, shares: float | None, *, kind: str = "original") -> None:
+        columns = ["CUSIP", "TITLEOFCLASS", "SSHPRNAMT", "SSHPRNAMTTYPE", "VALUE"]
+        info = pd.DataFrame([] if shares is None else [["111111111", "COM", shares, "SH", shares * 10]], columns=columns)
+        manifest, holdings = filing_vintage(
+            info,
+            cik=cik,
+            accession_number=accession,
+            period=period,
+            filing_date=filed,
+            amendment_type=kind,
+            source="known_truth",
+            declared_rows=len(info),
+            declared_value=float(info.VALUE.sum()),
+        )
+        sqlite_store.save_13f_filing(manifest, holdings.assign(ticker="AAA"), table=Tables.sec13f_hr)
 
+    def arithmetic(frames: Any, holdings: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
+        # Three known-truth managers prove exact math after checking the production floor below.
+        return _panel(frames, holdings, min_prior_holders=0, **kwargs)
 
-def test_first_publication_shares_chg_error_does_not_regress():
-    """The naive delta basis must stay nearer the revised truth than a matched sample.
+    step = object.__new__(StepCubeInstitutionals)
+    step._store, step._log = sqlite_store, logging.getLogger(__name__)
+    step._cfg = {"institutionals": {"value_basis": {"min_securities": 1}}}
+    grid = pd.bdate_range("2024-08-01", "2024-12-06")
+    quotes = pd.DataFrame(10.0, index=grid, columns=["AAA"])
+    frames = make_frames(grid, {}, close_split=quotes, level_factor=quotes / 10)
+    sqlite_store.save(Tables.cusip_ticker_map, pd.DataFrame({"cusip": ["111111111"], "ticker": ["AAA"]}))
+    assert step._institutional_panel(frames, None, None, quotes) is None
 
-    Reads real `sec13f_hr` filings for a ticker sample and compares, per (ticker, quarter),
-    `ic_inst_shares_chg` as first PUBLISHED against the same quantity once every in-band
-    filing has landed. Skips when the DB is unreachable -- it is an integration test.
-    """
-    from tests.conftest import _store
+    save_packet("a-prior", "1", "2024-06-30", "2024-08-14", 100)
+    save_packet("b-prior", "2", "2024-06-30", "2024-08-14", 900)
+    save_packet("a-current", "1", "2024-09-30", "2024-11-14", 110)
+    guarded = step._institutional_panel(frames, None, None, quotes)
+    assert guarded is not None
+    assert "f_ic_inst_shares_chg" not in guarded
+    assert guarded.f_ic_inst_concentration.notna().any()
+    monkeypatch.setattr(step_module, "build_institutional_feature_panel", arithmetic)
+    prefix = step._institutional_panel(frames, None, None, quotes)
+    assert prefix is not None
+    save_packet("c-new", "3", "2024-09-30", "2024-11-20", 500)
+    save_packet("b-empty", "2", "2024-09-30", "2024-11-25", None)
+    save_packet("a-prior-fix", "1", "2024-06-30", "2024-12-02", 90, kind="restatement")
+    full = step._institutional_panel(frames, None, None, quotes)
+    assert full is not None
+    cutoff = pd.Timestamp("2024-11-20")
+    pd.testing.assert_frame_equal(full.loc[full.date.le(cutoff)].reset_index(drop=True), prefix.loc[prefix.date.le(cutoff)].reset_index(drop=True))
 
-    store = _store()
-    from src.data_store.schema import Tables
-
-    if not store.exists(Tables.sec13f_hr) or not store.exists(Tables.cube_part_prices):
-        pytest.skip("sec13f_hr or cube_part_prices is absent from this DB")
-
-    tickers = sorted(str(t) for t in store.distinct(Tables.cube_part_prices, "ticker"))[::24]
-    grid = pd.DatetimeIndex(sorted(pd.to_datetime(pd.Series(store.distinct(Tables.cube_part_prices, "date"))).dt.normalize().unique()))
-    holdings = store.load(
-        Tables.sec13f_hr,
-        columns=["ticker", "cik", "period", "filing_date", "shares", "value_usd"],
-        where={"ticker": tickers},
-        optional=True,
-    )
-    if holdings is None or holdings.empty:
-        pytest.skip("no 13F holdings for the sampled tickers")
-
-    stamped = _stamp_availability(_clean_holdings(holdings, key=("ticker", "cik", "period")), grid)
-    stamped = stamped[stamped["period"] >= INST_LEVEL_FLOOR_PERIOD]
-
-    # `truth` is every in-band filing for the period; `published` only those public at the
-    # period's own first publication. Both are differenced against a FULLY REVISED q-1, which
-    # is the naive basis the builder uses.
-    total = stamped.groupby(["ticker", "period"], as_index=False).agg(truth=("shares", "sum"))
-    public = stamped[stamped["as_of"] <= stamped["first_pub"]].groupby(["ticker", "period"], as_index=False).agg(published=("shares", "sum"))
-    frame = total.merge(public, on=["ticker", "period"], how="inner").sort_values(["ticker", "period"])
-    frame["prev_truth"] = frame.groupby("ticker")["truth"].shift(1)
-    frame["prev_period"] = frame.groupby("ticker")["period"].shift(1)
-    frame = frame[(frame["prev_truth"] > 0) & ((frame["period"] - frame["prev_period"]).dt.days.between(80, 100))]
-    if len(frame) < 200:
-        pytest.skip(f"only {len(frame)} consecutive ticker-quarter pairs in the sample")
-
-    # The matched sample, for the comparison the design decision turns on: both sides cut to
-    # the filers public at `q`'s first publication.
-    cur = stamped[stamped["as_of"] <= stamped["first_pub"]].groupby(["ticker", "period", "cik"], as_index=False)["shares"].sum()
-    prv = cast(pd.DataFrame, stamped.groupby(["ticker", "period", "cik"], as_index=False)["shares"].sum()).rename(columns={"shares": "prev_shares"})
-    period_map = cast(pd.DataFrame, frame[["ticker", "period", "prev_period"]]).rename(columns={"period": "_q", "prev_period": "period"})
-    prv = prv.merge(period_map, on=["ticker", "period"])
-    matched = cur.merge(prv.rename(columns={"_q": "period", "period": "_prev"}), on=["ticker", "period", "cik"], how="inner")
-    matched = matched.groupby(["ticker", "period"], as_index=False).agg(m_cur=("shares", "sum"), m_prev=("prev_shares", "sum"))
-
-    frame = frame.merge(matched, on=["ticker", "period"], how="left")
-    frame = frame[frame["m_prev"] > 0]
-    truth_chg = frame["truth"] / frame["prev_truth"] - 1.0
-    naive = (frame["published"] / frame["prev_truth"] - 1.0 - truth_chg).abs() * 100.0
-    matched_err = (frame["m_cur"] / frame["m_prev"] - 1.0 - truth_chg).abs() * 100.0
-    completeness = (frame["published"] / frame["truth"]).median()
-
-    assert float(naive.median()) < FIRST_PUBLICATION_ERROR_CEILING_PP, (
-        f"the naive first-publication error regressed to {float(naive.median()):.3f}pp "
-        f"(measured {FIRST_PUBLICATION_ERROR_PP}pp, ceiling {FIRST_PUBLICATION_ERROR_CEILING_PP}pp)"
-    )
-    assert float(naive.median()) < float(matched_err.median()), (
-        f"the matched sample ({float(matched_err.median()):.3f}pp) now beats naive "
-        f"({float(naive.median()):.3f}pp) -- the settle buffer is too short, or the "
-        f"no-self-join decision needs revisiting"
-    )
-
-    print("\n=== SANITY CHECK: first-publication delta error on real 13F filings ===")
+    daily = full.set_index("date")
+    change = daily.f_ic_inst_shares_chg
+    assert pd.isna(change.loc["2024-11-18"])
+    assert change.loc["2024-11-19"] == pytest.approx(110 / 100 - 1)
+    assert change.loc["2024-11-21"] == pytest.approx(110 / 100 - 1)
+    assert daily.loc["2024-11-19", "f_ic_inst_concentration"] == 1
+    assert daily.loc["2024-11-21", "f_ic_inst_concentration"] == pytest.approx((110**2 + 500**2) / 610**2)
+    assert change.loc["2024-11-25"] == pytest.approx(0.1)
+    assert change.loc["2024-11-26"] == pytest.approx(110 / 1000 - 1)
+    assert daily.loc["2024-11-26", "f_ic_inst_exit_ratio"] == 0.5
+    assert change.loc["2024-12-02"] == pytest.approx(110 / 1000 - 1)
+    assert change.loc["2024-12-03"] == pytest.approx(110 / 990 - 1)
     print(
-        f"  {len(frame):,} consecutive (ticker, quarter) pairs over {frame['ticker'].nunique()} "
-        f"tickers, settle {F13_SETTLE_TRADING_DAYS}: median completeness at first publication "
-        f"{completeness * 100:.2f}%; median |error| in `shares_chg` naive "
-        f"{float(naive.median()):.3f}pp vs matched-sample {float(matched_err.median()):.3f}pp. "
-        f"Naive wins, so the per-filer self-join stays unbuilt. Validated."
+        f"SANITY: ordinary immutable builder, settle={F13_SETTLE_TRADING_DAYS}: first flow +10%; new manager changes levels only; "
+        "late complete book supports -89% and 50% exits; prior amendment revises prospectively; historical prefix is exact. "
+        "Known-truth mathematics, not a marketwide first-publication error estimate."
     )
 
 

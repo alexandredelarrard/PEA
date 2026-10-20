@@ -601,12 +601,13 @@ class Tables:
         ),
     )
     # Not index-diffed: the source lists no documents, so its units come from the stored dates.
+    # update earnings surprises every month or so
     earnings_surprises = Table(
         "earnings_surprises",
         ("ticker", "earnings_date"),
         date_col="earnings_date",
         freshness="quarterly",
-        resume=Resume(RESUME_DOCUMENTS, "ticker", "earnings_date", 95, source_start="2002-10-01"),
+        resume=Resume(RESUME_DOCUMENTS, "ticker", "earnings_date", 35, source_start="2002-10-01"),
     )
     # SEC Financial Statement Data Sets (num/sub): curated pension facts per
     # company/tag/period-end (`ddate`) / duration (`qtrs`) / ZIP quarter vintage.

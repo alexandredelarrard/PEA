@@ -50,7 +50,7 @@ from src.data_extract.utils.institutionals.security_tape import (
 )
 from src.data_store.schema import Resume, Tables
 from src.utils.batching import batched_tuples
-from src.utils.string import normalise_ticker
+from src.utils.string import normalise_ticker, run_date
 
 logger = logging.getLogger(__name__)
 
@@ -323,6 +323,8 @@ def _rebuild_from_cache(context: Context, master: pd.DataFrame, universe: frozen
     missing = sorted(set(map(str, context.store.distinct(Tables.sec_fails_to_deliver_security, "period"))) - set(cached))
     if missing:
         raise FileNotFoundError(f"FTD full rebuild cannot reproduce stored period(s) {missing}: not in the cache")
+
+    # 1135 cusips
     cusips = frozenset(master.loc[master["canonical_company"].isin(universe), "cusip"] if upsert else master["cusip"])
     frames: list[pd.DataFrame] = []
     other = 0
@@ -333,11 +335,13 @@ def _rebuild_from_cache(context: Context, master: pd.DataFrame, universe: frozen
         scoped = lines["cusip"].isin(cusips)
         other += int((~scoped).sum())
         frames.append(stamp_lines(lines[scoped], master))
+
     stamped = _unique_keys(pd.concat(frames, ignore_index=True), "FTD rebuild") if frames else pd.DataFrame(columns=list(SECURITY_COLUMNS))
     grain = ticker_rows(stamped, universe)
     if grain.empty and not upsert:
         raise ValueError("FTD full rebuild staged no ticker rows")
     _log_unplaced(stamped)
+    
     if upsert:
         held = _held_keys(context, sorted(cusips), others).assign(_held=True)
         keys = pd.DataFrame({"cusip": stamped["cusip"].astype(str), "date": pd.to_datetime(stamped["date"])})
@@ -367,10 +371,12 @@ def _stamp_new(context: Context, master: pd.DataFrame, universe: frozenset[str],
 
     The stamps are saved after the rebuild, so a failed run leaves the lines pending. With `others` (a `-t` run)
     only the lines of `universe`'s companies are stamped; every other line stays pending for an unscoped run."""
+    
     table = Tables.sec_fails_to_deliver_security
     new = context.store.load(table, columns=list(SECURITY_COLUMNS[:9]), where={"security_id": None}, optional=True)
     if new is None:
         return 0
+    
     stamped = stamp_lines(new, master)
     unowned = stamped[stamped["security_id"].isna()]
     stamped = stamped[stamped["security_id"].notna()]
@@ -383,6 +389,7 @@ def _stamp_new(context: Context, master: pd.DataFrame, universe: frozenset[str],
         return 0
     _log_unplaced(stamped)
     periods = sorted(set(stamped["period"].astype(str)))
+
     lines = context.store.load(table, columns=list(SECURITY_COLUMNS), where={"period": periods}, optional=True)
     grain = ticker_rows(stamp_lines(lines, master), universe) if lines is not None else pd.DataFrame(columns=list(TICKER_COLUMNS))
     for chunk in batched_tuples(sorted(universe), TICKER_CHUNK):
@@ -428,7 +435,9 @@ def restamp_fails(
     deletes or re-stamps a line stamped, before or after, with a universe company outside it; stamps are saved after
     the ticker rows are rebuilt.
     """
-    master = load_fails_master(context) if master is None else master
+
+    if master is None : 
+        master = load_fails_master(context)
     if master is None or master.empty:
         return []
     if companies is None:
@@ -459,34 +468,6 @@ def restamp_fails(
         _purge_out_of_scope(context, fresh[mine], by_key=bool(others))
     logger.info("FTD: %d line(s) of %d company(ies) re-stamped%s", int(changed.sum()), len(names), " (dry run)" if dry_run else "")
     return records
-
-
-def fetch_fails_to_deliver(
-    context: Context,
-    tickers: Sequence[str],
-    full: bool = False,
-    as_of: pd.Timestamp | None = None,
-    *,
-    all_tickers: Collection[str] | None = None,
-) -> int:
-    """Stamp the stored raw FTD lines from `security_master` and rebuild `sec_fails_to_deliver`; returns ticker rows written.
-
-    Incremental: the NULL-stamped lines (new from `ftd-download`) and the lines of companies whose master rows changed
-    recently; no ZIP is read. `full` rebuilds both tables from every cached ZIP; a scoped (`-t`) `full` upserts only
-    its tickers' lines and rows.
-    """
-    universe = frozenset(tickers)
-    master = load_fails_master(context)
-    if master is None or master.empty:
-        logger.warning("FTD: no security_master yet (run identity-tables first); nothing stamped")
-        return 0
-    others = outside_scope(context, universe, all_tickers)
-    if full:
-        _, saved = _rebuild_from_cache(context, master, universe, others)
-    else:
-        saved = _stamp_new(context, master, universe, others)
-        warn_lost_rows(logger, "FTD", restamp_fails(context, None, universe, master=master, as_of=as_of, others=others))
-    return saved
 
 
 def _ingest_scope(context: Context) -> tuple[pd.DataFrame | None, frozenset[str], frozenset[str]]:
@@ -547,9 +528,9 @@ def download_fails_to_deliver(context: Context, years_history: int = 31, full: b
     """
     cache = cache_dir(context, context.config.local.paths.fails_deliver)
     table = Tables.sec_fails_to_deliver_security
-    run_date = pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize()
+    start_date = run_date(as_of)
     lineage, symbols, prefixes = _ingest_scope(context)
-    periods = sorted(_cached_periods(cache) | set(_periods(years_history + 1, run_date)))
+    periods = sorted(_cached_periods(cache) | set(_periods(years_history + 1, start_date)))
     if lineage is None:
         cached = [
             p
@@ -595,3 +576,31 @@ def download_fails_to_deliver(context: Context, years_history: int = 31, full: b
         len(prefixes | added),
     )
     return written
+
+
+def fetch_fails_to_deliver(
+    context: Context,
+    tickers: Sequence[str],
+    full: bool = False,
+    as_of: pd.Timestamp | None = None,
+    *,
+    all_tickers: Collection[str] | None = None,
+) -> int:
+    """Stamp the stored raw FTD lines from `security_master` and rebuild `sec_fails_to_deliver`; returns ticker rows written.
+
+    Incremental: the NULL-stamped lines (new from `ftd-download`) and the lines of companies whose master rows changed
+    recently; no ZIP is read. `full` rebuilds both tables from every cached ZIP; a scoped (`-t`) `full` upserts only
+    its tickers' lines and rows.
+    """
+    universe = frozenset(tickers)
+    master = load_fails_master(context)
+    if master is None or master.empty:
+        logger.warning("FTD: no security_master yet (run identity-tables first); nothing stamped")
+        return 0
+    others = outside_scope(context, universe, all_tickers)
+    if full:
+        _, saved = _rebuild_from_cache(context, master, universe, others)
+    else:
+        saved = _stamp_new(context, master, universe, others)
+        warn_lost_rows(logger, "FTD", restamp_fails(context, None, universe, master=master, as_of=as_of, others=others))
+    return saved

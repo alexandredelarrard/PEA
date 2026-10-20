@@ -35,7 +35,7 @@ from src.data_extract.utils.common.bulk_cache import (
 from src.data_extract.utils.common.identity import Identity, load_identity, tickers_for_ciks
 from src.data_extract.utils.common.resume import archive_worklist
 from src.data_store.schema import Resume, Tables
-from src.utils.string import pad_cik_series
+from src.utils.string import pad_cik_series, run_date
 
 logger = logging.getLogger(__name__)
 
@@ -147,13 +147,12 @@ def fetch_financial_statements(
 
     identity = load_identity(context)
     cache = cache_dir(context, context.config.local.paths.financial_statements)
-
-    run_date = pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize()
+    start_date = run_date(as_of)
     first_year = pd.Timestamp(cast(str, cast(Resume, Tables.pension_facts.resume).source_start)).year
-    periods = quarter_periods(years_history + 1, first_year, run_date)
+    periods = quarter_periods(years_history + 1, first_year, start_date)
     observed_from = date.fromisoformat(cast(str, cast(Resume, Tables.pension_facts.resume).observed_from))
     work = archive_worklist(
-        context, (Tables.pension_facts,), periods, cached_periods(cache), tickers, run_date, full=reparse, all_tickers=all_tickers
+        context, (Tables.pension_facts,), periods, cached_periods(cache), tickers, start_date, full=reparse, all_tickers=all_tickers
     )
 
     saved = 0

@@ -170,6 +170,29 @@ def test_availability_is_applied_before_peer_statistics():
     print("  CONCLUSION: inactive names cannot contaminate active peer z-scores.")
 
 
+@pytest.mark.parametrize("mode", [None, "raw", "raw+xs", "raw+peers", "raw+hist"])
+def test_availability_filters_keys_without_dropping_active_missing_features(mode: str | None) -> None:
+    dates = pd.bdate_range("2024-01-02", periods=3)
+    values = pd.DataFrame(
+        [[0.0, None, 9.0], [1.0, 2.0, 9.0], [3.0, 4.0, 9.0]],
+        index=dates,
+        columns=["ZERO", "MISSING", "OUTSIDE"],
+    )
+    active = pd.DataFrame([[True, True], [False, True]], index=dates[:2], columns=["ZERO", "MISSING"])
+    emission = None if mode is None else {"signal": mode}
+
+    actual = build_peer_relative_panel({"signal": values}, {}, emission=emission, availability=active).set_index(["date", "ticker"])
+
+    assert set(actual.index) == {(dates[0], "ZERO"), (dates[0], "MISSING"), (dates[1], "MISSING")}
+    assert actual.loc[(dates[0], "MISSING")].isna().all()
+    if mode is not None:
+        assert actual.loc[(dates[0], "ZERO"), "f_signal"] == 0.0
+
+    print(f"\n=== SANITY CHECK: availability keys with {mode or 'default'} emission ===")
+    print("  exactly 3 active keys survive, including an all-missing row and the observed zero.")
+    print("  CONCLUSION: inactive and off-grid keys are removed by availability, independently of feature values.")
+
+
 if __name__ == "__main__":
     import sys
 

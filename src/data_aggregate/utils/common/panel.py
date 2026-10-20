@@ -209,6 +209,8 @@ def build_peer_relative_panel(
     This lets an incremental caller recompute a short current window while reusing the raw
     values already persisted by a prior full build. `output_since` then emits only the
     repaired tail; the prefix exists solely as rolling context.
+
+    `availability` constrains both input observations and emitted (date, ticker) keys.
     """
     if not fields:
         return pd.DataFrame(columns=["date", "ticker"])
@@ -320,6 +322,9 @@ def build_peer_relative_panel(
     # Build the two key columns separately instead of inserting them into a 100+ block
     # frame: insertion emits a fragmentation warning, while this concat reuses the blocks.
     feature_frame = pd.concat(long_frames, axis=1)
+    if availability is not None:
+        active = availability.stack().reindex(feature_frame.index, fill_value=False).fillna(False)
+        feature_frame = feature_frame.loc[active]
     keys = feature_frame.index.to_frame(index=False)
     feature_frame.index = keys.index
     return pd.concat([keys, feature_frame], axis=1)

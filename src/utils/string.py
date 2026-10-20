@@ -8,6 +8,7 @@ person key in `src/utils/names.py`.
 
 import re
 from typing import Any, cast
+from datetime import datetime
 
 import pandas as pd
 
@@ -56,3 +57,7 @@ def squash(symbol: object) -> str:
     if symbol is None or (not isinstance(symbol, str) and pd.isna(cast(Any, symbol))):
         return ""
     return re.sub(r"[\s\-./]", "", str(symbol)).upper()
+
+def run_date(as_of: datetime | None) -> pd.Timestamp:
+    """The `--as-of` date at midnight, or today."""
+    return cast(pd.Timestamp, pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today())).normalize()

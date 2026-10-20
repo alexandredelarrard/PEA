@@ -125,7 +125,7 @@ from src.data_extract.utils.structure.votes import fetch_8k_votes_llm
 from src.data_store.schema import Table, Tables, freshness_tables, marker_tables, resolve
 from src.utils.cli_helper import SpecialHelpOrder
 from src.utils.freshness import PREDICTION_INPUTS, fresh_share, last_dates_by_key, max_age_days, table_freshness
-from src.utils.string import normalise_ticker
+from src.utils.string import normalise_ticker, run_date
 from src.utils.universe import load_universe_tickers, unverified_ciks
 
 
@@ -141,11 +141,6 @@ def _tickers(context: Context, tickers: str | None) -> list[str]:
     return load_universe_tickers(context)
 
 
-def _run_date(as_of: datetime | None) -> pd.Timestamp:
-    """The `--as-of` date at midnight, or today."""
-    return cast(pd.Timestamp, pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today())).normalize()
-
-
 def _ticker_scope(context: Context, tickers: str | None) -> tuple[list[str], list[str]]:
     """CLI selection and the full analysis universe, read once for scoped-write guards."""
     universe = load_universe_tickers(context)
@@ -154,7 +149,7 @@ def _ticker_scope(context: Context, tickers: str | None) -> tuple[list[str], lis
 
 def _market_as_of(as_of: datetime | None) -> pd.Timestamp | None:
     """The `--as-of` date for market-data fetchers, or None so they end at the last session completed now."""
-    return None if as_of is None else _run_date(as_of)
+    return None if as_of is None else run_date(as_of)
 
 
 def _table_status(context: Context, table: Table, universe: list[str], as_of: pd.Timestamp, min_share: float) -> dict[str, object]:
@@ -208,7 +203,7 @@ def _extraction_status_report(context: Context, *, as_of: pd.Timestamp | None = 
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 def extraction_status(config_path: str, as_of: datetime | None) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
-    report = _extraction_status_report(context, as_of=_run_date(as_of))
+    report = _extraction_status_report(context, as_of=run_date(as_of))
     click.echo(json.dumps(report, sort_keys=True))
 
 
@@ -221,7 +216,7 @@ def seed_universe(config_path: str, full: bool, as_of: datetime | None) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
     if full or context.store.row_count(Tables.sp500_tickers) == 0:
         context.log.info(f"Seeding {Tables.sp500_tickers} via the S&P 500 scraper (full={full})")
-        get_sp500_tickers(context, as_of=_run_date(as_of))
+        get_sp500_tickers(context, as_of=run_date(as_of))
     context.log.info("Universe ready: %d tickers.", len(load_universe_tickers(context)))
     # A wrong CIK is invisible downstream (prices key on the ticker), so it is reported here; warned, not raised,
     # because a genuine recent spin-off has no filing rows either.
@@ -284,7 +279,7 @@ def short_interest(config_path: str, tickers: str | None, full: bool, repair: bo
 def fails_to_deliver(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
     names, universe = _ticker_scope(context, tickers)
-    fetch_fails_to_deliver(context, tickers=names, full=full, as_of=_run_date(as_of), all_tickers=universe)
+    fetch_fails_to_deliver(context, tickers=names, full=full, as_of=run_date(as_of), all_tickers=universe)
 
 
 @cli.command(help="ALL macro / market series -> prices_macro (yfinance + FRED). Light.")
@@ -316,7 +311,7 @@ def thirteen_f(config_path: str, tickers: str | None, filing_window: str | None,
         tickers=names,
         years_history=int(config.data_extract.years_history),
         filing_window=window,
-        as_of=_run_date(as_of),
+        as_of=run_date(as_of),
         all_tickers=universe,
     )
 
@@ -334,7 +329,7 @@ def thirteen_f_backfill(config_path: str, tickers: str | None, full: bool, as_of
     `-t X` narrows the new tickers (an established X does nothing); `-t X -F` re-reads every data set for X."""
     _, context = get_config_context(config_path, use_cache=False, save=False)
     names, universe = _ticker_scope(context, tickers)
-    fetch_13f_backfill(context, tickers=names if tickers else None, as_of=_run_date(as_of), full=full, all_tickers=universe)
+    fetch_13f_backfill(context, tickers=names if tickers else None, as_of=run_date(as_of), full=full, all_tickers=universe)
 
 
 @cli.command(name="thirteen-f-managers", help="FULL 13F portfolios of the superinvestor roster (all securities, CUSIP grain).")
@@ -420,7 +415,7 @@ def fundamentals_facts(config_path: str, tickers: str | None, full: bool, as_of:
         tickers=_tickers(context, tickers),
         full=full,
         years_history=int(config.data_extract.years_history),
-        as_of=_run_date(as_of),
+        as_of=run_date(as_of),
         no_cap=no_cap,
     )
 
@@ -488,7 +483,7 @@ def fundamentals(
     if rebuild:
         _delete_fundamentals_layers(context, names)
     summary = fetch_fundamentals_sec(
-        context, tickers=names, full=full or rebuild, years_history=int(config.data_extract.years_history), as_of=_run_date(as_of), no_cap=no_cap
+        context, tickers=names, full=full or rebuild, years_history=int(config.data_extract.years_history), as_of=run_date(as_of), no_cap=no_cap
     )
     build_fundamentals_history(
         context,
@@ -515,7 +510,7 @@ def fundamentals_sharadar(config_path: str, tickers: str | None, full: bool, as_
     """Delegates to `StepExtractFundamentalsSharadar` so the dependency order, ending with the merge, lives in one place."""
     config, context = get_config_context(config_path, use_cache=False, save=False)
     step = StepExtractFundamentalsSharadar(context=context, config=config)
-    step.run(tickers=_tickers(context, tickers), full=full, config_dir=config_path, as_of=_run_date(as_of))
+    step.run(tickers=_tickers(context, tickers), full=full, config_dir=config_path, as_of=run_date(as_of))
 
 
 @cli.command(
@@ -534,7 +529,7 @@ def sharadar_tickers(config_path: str) -> None:
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 def sharadar_actions(config_path: str, full: bool, as_of: datetime | None) -> None:
     config, context = get_config_context(config_path, use_cache=False, save=False)
-    fetch_sharadar_actions(context, full=full, years_history=int(config.data_extract.sharadar_years_history), as_of=_run_date(as_of))
+    fetch_sharadar_actions(context, full=full, years_history=int(config.data_extract.sharadar_years_history), as_of=run_date(as_of))
 
 
 @cli.command(
@@ -604,7 +599,7 @@ def financial_statements(config_path: str, tickers: str | None, full: bool, as_o
     config, context = get_config_context(config_path, use_cache=False, save=False)
     names, universe = _ticker_scope(context, tickers)
     fetch_financial_statements(
-        context, tickers=names, years_history=int(config.data_extract.years_history), reparse=full, as_of=_run_date(as_of), all_tickers=universe
+        context, tickers=names, years_history=int(config.data_extract.years_history), reparse=full, as_of=run_date(as_of), all_tickers=universe
     )
 
 
@@ -660,11 +655,11 @@ def insider_edgar(config_path: str, tickers: str | None, full: bool, as_of: date
 
 
 def _insider_zip(context: Context, names: list[str], years_history: int, *, reparse: bool, as_of: datetime | None, all_tickers: list[str]) -> None:
-    fetch_insider_transactions(context, tickers=names, years_history=years_history, reparse=reparse, as_of=_run_date(as_of), all_tickers=all_tickers)
+    fetch_insider_transactions(context, tickers=names, years_history=years_history, reparse=reparse, as_of=run_date(as_of), all_tickers=all_tickers)
 
 
 def _insider_edgar(context: Context, names: list[str], years_history: int, *, full: bool, as_of: datetime | None, no_cap: bool) -> None:
-    fetch_insider_edgar(context, tickers=names, years_history=years_history, full=full, as_of=_run_date(as_of), no_cap=no_cap)
+    fetch_insider_edgar(context, tickers=names, years_history=years_history, full=full, as_of=run_date(as_of), no_cap=no_cap)
 
 
 @cli.command(
@@ -689,7 +684,7 @@ def ftd_download(config_path: str, full: bool, as_of: datetime | None) -> None:
     """`--full` re-reads every listed period and replaces the raw table; the default reads the periods no stored line
     carries, plus every cached period for the symbols and CUSIP-6 prefixes whose lineage or master rows changed recently."""
     config, context = get_config_context(config_path, use_cache=False, save=False)
-    download_fails_to_deliver(context, years_history=int(config.data_extract.years_history), full=full, as_of=_run_date(as_of))
+    download_fails_to_deliver(context, years_history=int(config.data_extract.years_history), full=full, as_of=run_date(as_of))
 
 
 @cli.command(name="sec-tickers", help="Snapshot SEC's current tickers with exchanges (one GET) into sec_company_tickers. SEC-bulk.")
@@ -753,7 +748,7 @@ def identity_tables(config_path: str, approved_rekeys: tuple[str, ...]) -> None:
 def identity_propagate(config_path: str, tickers: str | None, dry_run: bool, full: bool, as_of: datetime | None) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
     names, universe = _ticker_scope(context, tickers)
-    result = propagate_identity(context, names, dry_run=dry_run, every_ticker=full, as_of=_run_date(as_of), all_tickers=universe)
+    result = propagate_identity(context, names, dry_run=dry_run, every_ticker=full, as_of=run_date(as_of), all_tickers=universe)
     if dry_run:
         click.echo(result.removals.to_string(index=False) if not result.removals.empty else "identity-propagate: no pending removals")
 
@@ -774,7 +769,7 @@ def financial_notes(config_path: str, tickers: str | None, full: bool, repair_av
         reparse=full,
         repair_availability=repair_availability,
         all_tickers=universe,
-        as_of=_run_date(as_of),
+        as_of=run_date(as_of),
     )
 
 
@@ -877,7 +872,7 @@ def _run_document_command(
         years_history=years or config.data_extract.years_history,
         fetch=fetch,
         full=full,
-        as_of=_run_date(as_of),
+        as_of=run_date(as_of),
         no_cap=no_cap,
     )
 
@@ -895,7 +890,7 @@ def edgar_index_command(config_path: str, full: bool, as_of: datetime | None) ->
     """One EDGAR walk: run it alone. The first build fetches about 128 quarters."""
     config, context = get_config_context(config_path, use_cache=False, save=False)
     context.ensure_edgar_identity()
-    edgar_index.refresh(context, _run_date(as_of), int(config.data_extract.years_history), rebuild=full)
+    edgar_index.refresh(context, run_date(as_of), int(config.data_extract.years_history), rebuild=full)
     for quarter, n_rows in edgar_index.quarter_counts(context).items():
         click.echo(f"{quarter}\t{n_rows}")
 
@@ -931,7 +926,7 @@ def resume_plan(config_path: str, tickers: str | None, table_name: str | None, t
         if table_name is not None and name != table_name:
             continue
         scope = load_edgar_scope(context, identity_aware=fetch.identity_aware)
-        work = plan_fetch(context, fetch, cik_map, scope, _run_date(as_of), int(config.data_extract.years_history))
+        work = plan_fetch(context, fetch, cik_map, scope, run_date(as_of), int(config.data_extract.years_history))
         report: dict[str, object] = {
             "table": name,
             "documents": work.size,

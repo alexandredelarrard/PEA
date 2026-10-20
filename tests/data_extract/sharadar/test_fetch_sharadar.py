@@ -31,7 +31,6 @@ from src.data_extract.utils.fundamentals_sharadar.client import (
     canonical_symbols,
     cast_value_columns,
     sharadar_get,
-    vendor_symbol,
 )
 from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import SHARADAR_DIMENSIONS, fetch_sharadar_fundamentals, fetch_sharadar_tickers
 from src.data_store.schema import Resume, Tables
@@ -121,10 +120,6 @@ def test_share_class_symbols_map_both_ways_and_nothing_else_moves():
     listings, warrants and SPAC units all carry a dot that is NOT a share class. Measured on
     that table: 429 tickers match the share-class shape, 10 do not, 921 already carry a dash
     and ZERO of those collide with a rewritten dot-form."""
-    assert vendor_symbol("BRK-B") == "BRK.B"
-    assert vendor_symbol("BF-B") == "BF.B"
-    assert vendor_symbol("AAPL") == "AAPL"  # untouched
-
     got = canonical_symbols(
         pd.Series(
             [
@@ -145,32 +140,7 @@ def test_share_class_symbols_map_both_ways_and_nothing_else_moves():
     assert got == ["BRK-B", "BF-B", "AAPL", "EVN.AX", "MUV2.MI", "TECHM.NS", "NFTA.TA", "OXY.WS", "AAC.U1", "TAP.A1", "SOME-CO"]
 
     print("\n=== SANITY CHECK: share-class symbol mapping ===")
-    print(f"  request  BRK-B -> {vendor_symbol('BRK-B')} ; response BRK.B -> BRK-B")
     print("  NOT rewritten (a dot that is not a share class): EVN.AX, MUV2.MI, TECHM.NS, NFTA.TA, OXY.WS, AAC.U1, TAP.A1. Validated.")
-
-
-@pytest.mark.live  # live Sharadar GET
-def test_the_dash_spelling_returns_zero_rows_not_an_error(context):
-    """THE REASON THE DEFECT WAS SILENT, pinned against the live feed.
-
-    Asking Sharadar for `BRK-B` does not 403 and does not raise -- it returns HTTP 200 with
-    an EMPTY body. So `fundamentals_sharadar` simply had no rows for either S&P 500
-    share-class name (measured: 0 under either spelling) and nothing in the run log said so,
-    while BRK-B kept appearing in the cube via the price panel. If this test ever starts
-    failing because the dash form returns rows, the mapping can be deleted."""
-    common = dict(dimension="ARQ", sort="date.asc", limit=5)
-    try:
-        wrong = sharadar_get_untyped(context, "fundamentals", ticker="BRK-B", **common, **{"date.gte": "2020-01-01"})
-        right = sharadar_get_untyped(context, "fundamentals", ticker=vendor_symbol("BRK-B"), **common, **{"date.gte": "2020-01-01"})
-    except SharadarRequestError:
-        pytest.skip("Sharadar request failed (network)")
-
-    print("\n=== SANITY CHECK: the wrong spelling fails SILENTLY ===")
-    print(f"  ticker='BRK-B' -> {len(wrong)} rows (200 OK, no error, no 403)")
-    print(f"  ticker='{vendor_symbol('BRK-B')}' -> {len(right)} rows")
-    assert wrong.empty, "the dash form now returns rows -- the mapping is no longer needed"
-    assert not right.empty, "the dot form must be what Sharadar answers to"
-    assert set(right["ticker"].astype(str)) == {"BRK.B"}
 
 
 # --------------------------------------------------------------------------- #

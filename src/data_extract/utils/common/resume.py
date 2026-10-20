@@ -288,14 +288,20 @@ def series_windows(
     started = time.perf_counter()
     if table.resume is None or table.resume.key is None:
         raise ValueError(f"{table.name} declares no per-key resume contract")
+    
     key_col, date_col = table.resume.key, cast(str, table.resume.frontier_col)
     overlap = pd.Timedelta(days=table.resume.overlap_days)
+
+    # get first date to extract
     floor = document_floor(table, as_of, years_history)
+
+    # get per ticker, first, last date and n count
     df_stats = context.store.key_stats(table, key_col, date_col, where={key_col: list(keys)})
     stats = dict(zip(map(str, df_stats["key"]), zip(df_stats["first"], df_stats["last"], map(int, df_stats["n"]), strict=True), strict=True))
     new = set() if full else new_tickers(context.store, table.resume.overlap_days, as_of)
     table_max = context.store.max_date(table, date_col)
     reach = _listing_floors(context, listing, key_col, [key for key in keys if key in new], floor)
+    
     windows: dict[str, list[tuple[pd.Timestamp, pd.Timestamp]]] = {}
     key_class: dict[str, str] = {}
     holed: dict[str, tuple[pd.Timestamp, pd.Timestamp]] = {}
@@ -308,7 +314,10 @@ def series_windows(
             key_class[key], since = KEY_ESTABLISHED, max(stats[key][1] - overlap, floor)
         if key_class[key] == KEY_ESTABLISHED and _has_holes(calendar, *stats[key]):
             holed[key] = (max(stats[key][0], floor), since)
+
+        # start date to redo is latest day - overlap days 
         windows[key] = [(since, until)] if since <= until else []
+        
     read_stats = time.perf_counter()
     if holed:
         df_dates = cast(pd.DataFrame, context.store.load(table, columns=[key_col, date_col], where={key_col: list(holed)}, markers=True))

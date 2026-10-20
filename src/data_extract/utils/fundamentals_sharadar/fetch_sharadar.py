@@ -26,22 +26,14 @@ from src.data_extract.utils.fundamentals_sharadar.client import (
     cast_value_columns,
     coerce_date_columns,
     sharadar_get,
-    vendor_symbol,
 )
 from src.data_store.schema import Resume, Table, Tables
 from src.utils.polite_http import sleep_pace
 from src.utils.predecessor_series import load_predecessor_series
+from src.utils.string import run_date
 
 # As-reported dimensions only: point-in-time and immutable (MR* rows restate in place).
 SHARADAR_DIMENSIONS = ("ARQ", "ARY", "ART")
-
-
-def _pace(context: Context) -> float:
-    return float(context.config.data_extract.sharadar_request_pace)
-
-
-def _run_date(as_of: pd.Timestamp | None) -> pd.Timestamp:
-    return pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize()
 
 
 def _table_since(context: Context, table: Table, floor: pd.Timestamp, full: bool) -> str:
@@ -132,11 +124,11 @@ def fetch_sharadar_fundamentals(
     fetched again next run from the same window.
     """
     currencies = _usd_roster(context)
-    run_date = _run_date(as_of)
+    start_date = run_date(as_of)
     work = series_windows(
-        context, Tables.sharadar_fundamentals, tickers, run_date, until=run_date, years_history=years_history, full=full, calendar=None
+        context, Tables.sharadar_fundamentals, tickers, start_date, until=start_date, years_history=years_history, full=full, calendar=None
     )
-    pace = _pace(context)
+    pace = float(context.config.data_extract.sharadar_request_pace)
     context.log.info(
         "Sharadar SF1: %d ticker(s) x %d dimension(s); key classes %s (full=%s, window=%dy)",
         len(tickers),
@@ -151,10 +143,9 @@ def fetch_sharadar_fundamentals(
     non_usd: list[str] = []
     failed: list[str] = []
     total_rows = 0
-
     for ticker in tqdm(tickers, desc="Downloading tickers"):
         # vendor spelling (`BRK.B`) for both the request and the roster lookup; the wrong one returns 0 rows
-        symbol = vendor_symbol(ticker)
+        symbol = ticker.replace("-", ".")
         currency = currencies.get(symbol)
         if currency is not None and currency != "USD":
             # refuse to write: only some SF1 columns are USD-converted, so the row would mix units
@@ -233,7 +224,7 @@ def _fetch_dated_table(context: Context, table: Table, endpoint: str, since: str
 
 def fetch_sharadar_actions(context: Context, *, years_history: int, full: bool = False, as_of: pd.Timestamp | None = None) -> None:
     """Corporate actions -> `sharadar_actions`, market-wide, from the table's last date minus the overlap."""
-    floor = document_floor(Tables.sharadar_actions, _run_date(as_of), years_history)
+    floor = document_floor(Tables.sharadar_actions, run_date(as_of), years_history)
     _fetch_dated_table(context, Tables.sharadar_actions, "actions", _table_since(context, Tables.sharadar_actions, floor, full))
 
 

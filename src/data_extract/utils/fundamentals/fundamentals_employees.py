@@ -814,9 +814,14 @@ def fetch_fundamentals_employees(
     if missing:
         raise ValueError(f"Employee extraction has no roster CIK for {', '.join(sorted(missing))}")
     since = pd.Timestamp.today().normalize() - pd.DateOffset(years=years_history)
+
+    # get lineage and key dates 
     scope = EdgarScope(load_identity(context))
+
+    # get what has been done so far per ticker as dates 
     done = {} if full else _done_dates(context, tickers, since)
-    context.log.info("fundamentals employees: %d decided filing date(s) skipped", sum(map(len, done.values())))
+    context.log.info("fundamentals employees: %d dates * ticker already done (skipped)", sum(map(len, done.values())))
+    
     worker = partial(_fetch_ticker_employees, context=context, since=since, done=done, scope=scope)
     results = run_per_ticker(
         cik_map,

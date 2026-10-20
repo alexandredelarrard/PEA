@@ -149,7 +149,9 @@ def _event_entity(tenure_by_symbol: dict[str, pd.DataFrame], symbol: str, date: 
         return None
     candidates = candidates[candidates["valid_from"].le(value)]
     candidates = candidates[candidates["valid_to"].isna() | candidates["valid_to"].gt(value)]
-    identifiers = candidates["entity_id"].dropna().astype(str).unique()
+    if candidates["entity_id"].isna().any():
+        return None
+    identifiers = candidates["entity_id"].astype(str).unique()
     return str(identifiers[0]) if len(identifiers) == 1 else None
 
 
@@ -224,7 +226,7 @@ def _identity(
     window_owners = (
         windows[["cik", "entity_id"]].drop_duplicates().merge(unique_lineage[["cik", "entity_id"]].drop_duplicates(), on=["cik", "entity_id"])
     )
-    own_tenure = tenure.merge(window_owners, on=["cik", "entity_id"], how="inner")
+    own_tenure = tenure.merge(windows[["cik", "entity_id", "valid_from", "valid_to"]], on=["cik", "entity_id"], how="inner", suffixes=("", "_window"))
     identity.tenure_by_entity = {str(entity): group for entity, group in own_tenure.groupby("entity_id", sort=False)}
     for entity_id, group in own_tenure.groupby("entity_id", sort=False):
         identity.aliases_by_entity[str(entity_id)] = set(group["symbol"].astype(str))
@@ -337,7 +339,13 @@ def _canonical_event(identity: _Identity, entity_id: str | None, date: pd.Timest
         return False
     if entity_id not in identity.contested_entities:
         return True
-    return bool((own["valid_from"].le(date) & (own["valid_to"].isna() | own["valid_to"].gt(date))).any())
+    dated = own[
+        own["valid_from"].le(date)
+        & (own["valid_to"].isna() | own["valid_to"].gt(date))
+        & own["valid_from_window"].le(date)
+        & (own["valid_to_window"].isna() | own["valid_to_window"].gt(date))
+    ]
+    return any(_event_entity(identity.tenure_by_symbol, str(symbol), date) == entity_id for symbol in dated["symbol"].unique())
 
 
 def _linked(

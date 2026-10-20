@@ -5,6 +5,7 @@ from typing import cast
 
 import numpy as np
 import pandas as pd
+import pytest
 from omegaconf import OmegaConf
 
 from src.constants.constants import EARNINGS_CALL_FEATURES
@@ -162,6 +163,45 @@ def test_canonical_coverage_excludes_missing_and_contradictory_issuer_identity()
     identity = _identity(tenure.assign(issuer_cik="9"), lineage, ["NEW"], roster)
     assert not _linked({"NEW": [date]}, {"NEW"}, identity.roster_entity.get("NEW"), identity, canonical_ticker="NEW")
     print("SANITY: missing lineage and a null/known contradictory CIK membership cannot certify a canonical call.")
+
+
+@pytest.mark.parametrize(("variant", "expected"), [("overlap", [1, 3]), ("same_entity", [0, 1, 3]), ("alternate", [0, 1, 3]), ("unknown", [1, 3])])
+def test_canonical_validator_requires_unambiguous_alias_inside_its_cik_window(variant: str, expected: list[int]) -> None:
+    roster = pd.DataFrame({"ticker": ["NEW"], "cik": ["2"]})
+    lineage = pd.DataFrame(
+        {
+            "cik": ["1", "2", "3"],
+            "entity_id": ["E1", "E1", "E1" if variant == "same_entity" else "E2"],
+            "valid_from": ["1900-01-01", "2020-01-01", "1900-01-01"],
+            "valid_to": ["2020-01-01", None, None],
+            "role": "cik_window",
+        }
+    )
+    tenure = pd.DataFrame(
+        {
+            "symbol": ["OLD", "OLD", "NEW"],
+            "issuer_cik": ["1", "9" if variant == "unknown" else "3", "2"],
+            "valid_from": ["2000-01-01", "2000-01-01", "2030-01-01"],
+            "valid_to": ["2025-01-01", "2015-01-01", None],
+        }
+    )
+    if variant == "alternate":
+        tenure = pd.concat(
+            [tenure, pd.DataFrame({"symbol": ["SAFE"], "issuer_cik": ["1"], "valid_from": ["2010-01-01"], "valid_to": ["2011-01-01"]})],
+            ignore_index=True,
+        )
+    if variant == "same_entity":
+        tenure = pd.concat(
+            [tenure, pd.DataFrame({"symbol": ["OLD"], "issuer_cik": ["9"], "valid_from": ["1990-01-01"], "valid_to": ["1995-01-01"]})],
+            ignore_index=True,
+        )
+    dates = list(pd.to_datetime(["2010-05-01", "2015-01-01", "2024-05-01", "2030-01-01"]))
+    identity = _identity(tenure, lineage, ["NEW"], roster)
+    linked = _linked({"NEW": dates}, {"NEW"}, identity.roster_entity["NEW"], identity, canonical_ticker="NEW")
+    assert linked == [dates[position] for position in expected]
+    print(
+        f"SANITY: independent {variant} admission rejects ambiguous or wrong-CIK support while retaining half-open and valid alternate-alias dates."
+    )
 
 
 def test_earnings_call_validator_reports_coverage_schema_and_quality(sqlite_store) -> None:

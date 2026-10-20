@@ -388,7 +388,14 @@ def attach_issuer_identity(
     keep &= out["issuer_id"].reset_index(drop=True).isin(aliases["entity_id"])
     ownership = aliases.merge(tenure[["symbol", "entity_id"]], on="symbol", suffixes=("", "_owner"))
     contested = ownership.loc[ownership["entity_id_owner"].isna() | ownership["entity_id"].ne(ownership["entity_id_owner"]), "entity_id"]
-    supported = _dated_call_rows(calls, tenure, "issuer_id", "entity_id")["call_position"]
+    supported = _dated_call_rows(calls, tenure, "issuer_id", "entity_id")[["call_position", "issuer_id", "as_of", "symbol", "cik"]]
+    supported = _dated_call_rows(supported, windows[["cik", "valid_from", "valid_to"]], "cik", "cik")
+    dated_owners = _dated_call_rows(supported[["call_position", "issuer_id", "as_of", "symbol"]].drop_duplicates(), tenure, "symbol", "symbol")
+    ambiguous = dated_owners.loc[
+        dated_owners["entity_id"].isna() | dated_owners["issuer_id"].ne(dated_owners["entity_id"]), ["call_position", "symbol"]
+    ]
+    supported = supported.merge(ambiguous.drop_duplicates(), on=["call_position", "symbol"], how="left", indicator=True)
+    supported = supported.loc[supported["_merge"].eq("left_only"), "call_position"]
     keep &= ~out["issuer_id"].reset_index(drop=True).isin(contested) | pd.Series(np.arange(len(out))).isin(supported)
     return out.iloc[np.flatnonzero(keep)].copy()
 

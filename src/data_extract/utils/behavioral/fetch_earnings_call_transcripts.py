@@ -177,17 +177,23 @@ def dataset_symbols(tickers: list[str]) -> list[str]:
 
 
 def _allows_rebased_call(identity: Identity, entity: str, day: pd.Timestamp) -> bool:
-    """Without dated issuer support, a reused alias cannot justify historical rebasing."""
-    supported = [
-        (symbol, row)
+    """Without unambiguous dated issuer support, a reused alias cannot justify historical rebasing."""
+    aliases = {
+        symbol
         for symbol, rows in identity.symbol_intervals.items()
         for row in rows
         if row.entity == entity and row.status not in {"noise", "conflict"} and row.tape_symbol
-    ]
-    windows = identity.windows_by_entity.get(entity, ())
-    if any(row.covers(day) and any(window.cik == row.cik and window.owns(day) for window in windows) for _, row in supported):
-        return True
-    for alias in {symbol for symbol, _ in supported}:
+    }
+    for alias in aliases:
+        hit = identity.tape_interval(alias, day)
+        if hit is None or hit.entity != entity:
+            continue
+        try:
+            if identity.entity_for(alias, day) == entity:
+                return True
+        except AmbiguousSymbolTenureError:
+            continue
+    for alias in aliases:
         try:
             owner = identity.entity_for(alias)
         except AmbiguousSymbolTenureError:

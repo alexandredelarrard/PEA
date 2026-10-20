@@ -7,7 +7,7 @@ tags:
   - guide
   - runbook
   - operations
-source_commit: 85510fb63970e731dbb4b7eba890fcaea3c7d6a7
+source_commit: 9971929ee9d864f21a2ded87fac8f49472186c13
 ---
 # Run the pipeline
 
@@ -276,31 +276,31 @@ For schedules and triggers, see [DAGs and infrastructure](../modules/dags-and-in
 
 The [Airflow Dockerfile](../../airflow/Dockerfile.airflow) explicitly installs `torch==2.14.0+cu126` from the CUDA 12.6 wheel index and checks `torch.version.cuda == "12.6"` at build time. The same image can run on CPU. [SentimentEngine](../../src/utils/nlp_sentiment.py) selects the device with `torch.cuda.is_available()`, moves both the classifier and input tensors there, and logs the requested device, PyTorch version, compiled CUDA version, availability and GPU name. `FINBERT_DEVICE=cpu` forces CPU. Unset selects CUDA when available; an explicit `cuda` propagates initialization failures rather than silently scoring on CPU or skipping sentiment.
 
-On the Windows NVIDIA machine, use Docker Desktop's WSL2 Linux backend with a compatible NVIDIA driver and GPU passthrough. An installed host CUDA toolkit alone does not expose a GPU to a container. The optional [GPU Compose file](../../docker-compose.gpu.yml) reserves one NVIDIA GPU for the scheduler and sets `FINBERT_DEVICE=cuda`. LocalExecutor runs the pipeline there; the webserver needs no GPU. Include both Compose files whenever recreating Airflow on the GPU host; an ordinary Compose invocation removes the GPU reservation. Keep the ordinary Compose command on machines without a GPU.
+On the Windows NVIDIA machine, use Docker Desktop's WSL2 Linux backend with a compatible NVIDIA driver and GPU passthrough. An installed host CUDA toolkit alone does not expose a GPU to a container. The base [Compose file](../../docker-compose.yml) reserves one NVIDIA GPU and sets `FINBERT_DEVICE=cuda` in the shared Airflow configuration. LocalExecutor runs the pipeline on the scheduler. Use the base Compose file for the commands below.
 
 Build and recreate Airflow on the GPU host:
 
 ~~~powershell
-rtk docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build airflow-scheduler airflow-webserver
+rtk docker compose -f docker-compose.yml up -d --build airflow-scheduler airflow-webserver
 ~~~
 
 On a corporate network, the optional `pip_ca` build secret lets pip use the existing ignored trust bundle for the PyTorch download without including the certificate in the image:
 
 ~~~powershell
 rtk proxy docker build --secret id=pip_ca,src=.cache/corporate_ca_bundle.pem -f airflow/Dockerfile.airflow -t pea-airflow:latest airflow
-rtk docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d airflow-scheduler airflow-webserver
+rtk docker compose -f docker-compose.yml up -d airflow-scheduler airflow-webserver
 ~~~
 
 Before running the DAG, check the **pipeline** interpreter and execute a real CUDA kernel inside its scheduler:
 
 ~~~powershell
-rtk docker compose -f docker-compose.yml -f docker-compose.gpu.yml exec airflow-scheduler /opt/pipeline/bin/python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available()); assert torch.cuda.is_available(), 'GPU is not visible to pipeline PyTorch'; print(torch.cuda.get_device_name()); x=torch.ones(2, device='cuda'); assert (x+x).cpu().tolist()==[2.0,2.0]; print('SANITY: CUDA allocation and kernel passed')"
+rtk docker compose -f docker-compose.yml exec airflow-scheduler /opt/pipeline/bin/python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available()); assert torch.cuda.is_available(), 'GPU is not visible to pipeline PyTorch'; print(torch.cuda.get_device_name()); x=torch.ones(2, device='cuda'); assert (x+x).cpu().tolist()==[2.0,2.0]; print('SANITY: CUDA allocation and kernel passed')"
 ~~~
 
 Then check real FinBERT inference through the same engine used by `build-text` (the first invocation may cache model weights):
 
 ~~~powershell
-rtk docker compose -f docker-compose.yml -f docker-compose.gpu.yml exec -w /opt/airflow/project airflow-scheduler /opt/pipeline/bin/python -c "import logging, math; from src.utils.nlp_sentiment import get_sentiment_engine; logging.basicConfig(level=logging.INFO); e=get_sentiment_engine(); assert e is not None and e.device=='cuda'; p=e.score_texts(['Revenue and operating income increased.'])[0]; assert p and all(math.isfinite(v) and 0<=v<=1 for v in p.values()) and abs(sum(p.values())-1)<1e-5; print('SANITY: FinBERT CUDA inference passed', p)"
+rtk docker compose -f docker-compose.yml exec -w /opt/airflow/project airflow-scheduler /opt/pipeline/bin/python -c "import logging, math; from src.utils.nlp_sentiment import get_sentiment_engine; logging.basicConfig(level=logging.INFO); e=get_sentiment_engine(); assert e is not None and e.device=='cuda'; p=e.score_texts(['Revenue and operating income increased.'])[0]; assert p and all(math.isfinite(v) and 0<=v<=1 for v in p.values()) and abs(sum(p.values())-1)<1e-5; print('SANITY: FinBERT CUDA inference passed', p)"
 ~~~
 
 These checks do not build the cube or write application tables. A successful image build proves CUDA support was installed; only the GPU-host kernel and inference checks prove the driver's runtime and GPU architecture work. The existing score cache is reused; changing device does not require a full text rebuild. The routing/failure checks live in [test_nlp_sentiment.py](../../tests/utils/test_nlp_sentiment.py).

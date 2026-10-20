@@ -218,6 +218,60 @@ def test_rebasing_keeps_dated_support_and_unreused_early_history() -> None:
     print("SANITY: dated support, normal dated resolution and unreused early history survive; actual-source foreign ownership still vetoes.")
 
 
+def test_rebased_support_requires_unambiguous_dated_alias_and_its_own_cik_window() -> None:
+    roster = pd.DataFrame({"ticker": ["NEW", "OTHER"], "cik": ["2", "3"]})
+    lineage = pd.DataFrame(
+        [
+            dict(cik=cik, entity_id=entity, role="cik_window", symbol="", valid_from=start, valid_to=end, status="curated", sources="manual")
+            for cik, entity, start, end in [("1", "E1", "1900-01-01", "2020-01-01"), ("2", "E1", "1900-01-01", None), ("3", "E2", "1900-01-01", None)]
+        ]
+        + [
+            dict(cik=cik, entity_id=entity, role="symbol", symbol=symbol, valid_from=start, valid_to=end, status="curated", sources="manual")
+            for cik, entity, symbol, start, end in [
+                ("1", "E1", "OLD", "2000-01-01", "2020-01-01"),
+                ("3", "E2", "OLD", "2000-01-01", "2015-01-01"),
+                ("2", "E1", "NEW", "2030-01-01", None),
+            ]
+        ]
+    )
+    tenure = pd.DataFrame(
+        {
+            "symbol": ["OLD", "OLD", "NEW"],
+            "issuer_cik": ["1", "3", "2"],
+            "valid_from": ["2000-01-01", "2000-01-01", "2030-01-01"],
+            "valid_to": ["2025-01-01", "2015-01-01", None],
+            "n_filings": 1,
+            "source": "manual",
+        }
+    )
+    identity = build_identity(lineage, tenure, roster)
+    assert ect.ticker_for_call(identity, "OLD", pd.Timestamp("2010-05-01")) is None
+    assert ect.ticker_for_call(identity, "NEW", pd.Timestamp("2010-05-01")) is None
+    assert ect.ticker_for_call(identity, "NEW", pd.Timestamp("2015-01-01")) == "NEW"
+    assert ect.ticker_for_call(identity, "NEW", pd.Timestamp("2024-05-01")) is None
+    assert ect.ticker_for_call(identity, "NEW", pd.Timestamp("2030-01-01")) == "NEW"
+    same_entity = replace(
+        identity,
+        tenure_by_symbol={**identity.tenure_by_symbol, "OLD": tuple(("E1", *row[1:]) for row in identity.tenure_by_symbol["OLD"])},
+        manual_tenure_by_symbol={},
+        symbol_intervals={**identity.symbol_intervals, "OLD": tuple(replace(row, entity="E1") for row in identity.symbol_intervals["OLD"])},
+    )
+    assert ect.ticker_for_call(same_entity, "NEW", pd.Timestamp("2010-05-01")) == "NEW"
+    own = SymbolInterval("E1", pd.Timestamp("2010-01-01"), pd.Timestamp("2011-01-01"), "curated", frozenset({"manual"}), "0000000001")
+    rescued = replace(
+        identity,
+        symbol_intervals={**identity.symbol_intervals, "SAFE": (own,)},
+        tenure_by_symbol={**identity.tenure_by_symbol, "SAFE": (("E1", own.valid_from, own.valid_to, 1),)},
+    )
+    assert ect.ticker_for_call(rescued, "NEW", pd.Timestamp("2010-05-01")) == "NEW"
+    assert ect.ticker_for_call(rescued, "OLD", pd.Timestamp("2010-05-01")) is None
+    conflicted = replace(rescued, symbol_intervals={**rescued.symbol_intervals, "SAFE": (replace(own, status="conflict"),)})
+    assert ect.ticker_for_call(conflicted, "NEW", pd.Timestamp("2010-05-01")) is None
+    print(
+        "SANITY: dated support rejects overlapping owners and wrong-CIK windows, honors half-open ends and same-entity CIKs; another alias rescues only rebased copies."
+    )
+
+
 def _sections(store: Any) -> pd.DataFrame:
     rows = store.load(Tables.earnings_call_sections)
     return rows.sort_values(["ticker", "quarter", "paragraph"]).reset_index(drop=True)

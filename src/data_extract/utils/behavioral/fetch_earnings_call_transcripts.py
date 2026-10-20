@@ -2,8 +2,9 @@
 `earnings_call_sections`, one row per source paragraph; the speaker-turn split runs at aggregate time.
 
 A run reads the parquet footer once, keeps the row groups whose `symbol` statistics meet the lineage scope,
-maps their complete historical index to canonical tickers, diffs the index against the
-stored calls and reads the `transcripts` column only for new or re-issued calls. Only `-F` also
+maps their complete historical index to canonical tickers and verifies raw recovery gaps and
+null-ID payload equality before diffing against stored calls. Projected payloads are read once
+for verification and again only for new or re-issued calls. Only `-F` also
 deletes stored calls absent from the source; a re-issued or removed call has its derivatives
 invalidated and a pending refresh marker written. Reads run on `read_workers` threads; every DB
 write runs on the calling thread, one row group per batch.
@@ -81,7 +82,6 @@ class CallIdentity:
 
     ticker: str | None
     recovery_ticker: str | None = None
-    reason: str = "accepted"
 
 
 def resolve_hf_source() -> TranscriptSource:
@@ -169,15 +169,10 @@ def ticker_for_call(identity: Identity, symbol: str, day: pd.Timestamp) -> CallI
     """Dated symbol ownership, allowing a vendor to retain/rebase a consolidating issuer's alias."""
     key = yahoo_symbol(symbol)
     if key in identity.redundant_symbols or pd.isna(day):
-        return CallIdentity(None, reason="excluded_or_invalid")
+        return CallIdentity(None)
     intervals = identity.symbol_intervals.get(key, ())
-    linked = {
-        row.entity
-        for row in intervals
-        if row.status not in {"noise", "conflict"}
-        and row.tape_symbol
-        and any(window.cik == row.cik for window in identity.windows_by_entity.get(row.entity, ()))
-    }
+    eligible = [row for row in intervals if row.status not in {"noise", "conflict"} and row.tape_symbol]
+    linked = {row.entity for row in eligible if any(window.cik == row.cik for window in identity.windows_by_entity.get(row.entity, ()))}
     if not intervals and key in identity.roster_cik:
         linked.add(identity.universe_entity(key))
     target = identity.ticker_by_entity.get(next(iter(linked))) if len(linked) == 1 else None
@@ -185,21 +180,19 @@ def ticker_for_call(identity: Identity, symbol: str, day: pd.Timestamp) -> CallI
         target = None
     active = [row for row in intervals if row.covers(day) and row.status != "noise" and row.tape_symbol]
     if any(row.status == "conflict" for row in active):
-        return CallIdentity(None, reason="active_conflict")
+        return CallIdentity(None)
     try:
         dated_owner = identity.entity_for(key, day)
     except AmbiguousSymbolTenureError:
-        return CallIdentity(None, target, "ambiguous_dated_tenure")
+        return CallIdentity(None, target)
     hit = identity.tape_interval(key, day)
     candidates = (
         {hit.entity}
         if hit is not None
         else {
             row.entity
-            for row in intervals
-            if row.status not in {"noise", "conflict"}
-            and row.tape_symbol
-            and any(window.cik == row.cik and window.owns(day) for window in identity.windows_by_entity.get(row.entity, ()))
+            for row in eligible
+            if any(window.cik == row.cik and window.owns(day) for window in identity.windows_by_entity.get(row.entity, ()))
         }
     )
     if not intervals and key in identity.roster_cik:
@@ -214,16 +207,16 @@ def ticker_for_call(identity: Identity, symbol: str, day: pd.Timestamp) -> CallI
     if active:
         owners = {row.entity for row in active}
         if len(owners) != 1:
-            return CallIdentity(None, target, "ambiguous_dated_tenure")
+            return CallIdentity(None, target)
         candidates &= owners
     if len(candidates) != 1:
-        return CallIdentity(None, target, "dated_owner_veto" if dated_owner is not None else "outside_consolidating_cik_window")
+        return CallIdentity(None, target)
     entity = next(iter(candidates))
     if hit is None and not _allows_rebased_call(identity, entity, day):
-        return CallIdentity(None, target, "unsupported_rebased_alias")
+        return CallIdentity(None, target)
     ticker = identity.ticker_by_entity.get(entity)
     if ticker is not None and _other_share_class(key, ticker):
-        return CallIdentity(None, reason="excluded_class")
+        return CallIdentity(None)
     return CallIdentity(ticker)
 
 
@@ -242,7 +235,7 @@ def calls_from_index(index: pd.DataFrame, scope: set[str], identity: Identity) -
     decisions = [ticker_for_call(identity, str(symbol), pd.Timestamp(day)) for symbol, day in zip(calls["symbol"], calls["as_of"], strict=True)]
     calls["ticker"] = [decision.ticker or decision.recovery_ticker for decision in decisions]
     calls["recovery"] = pd.Series([decision.ticker is None for decision in decisions], index=calls.index, dtype=bool)
-    rejected = sum(decision.ticker is None for decision in decisions)
+    rejected = int(calls["recovery"].sum())
     calls = calls[calls["ticker"].isin(scope)]
     calls = calls.assign(
         quarter=calls["fiscal_year"].astype(int).astype(str) + "Q" + calls["fiscal_quarter"].astype(int).astype(str),
@@ -460,32 +453,27 @@ def _verify_calls(
     verified: set[tuple[int, int]] = set()
     changed: set[tuple[int, int]] = set()
     by_group = {int(cast(SupportsInt, g)): part.reset_index(drop=True) for g, part in work.groupby("row_group", sort=True)}
-    try:
-        for group, transcripts in _ordered_parallel(list(by_group), lambda g: _read_transcripts(readers, g, by_group[g]), workers):
-            part = by_group[group]
-            null_part = part.loc[[(group, row) in comparisons for row in part["row"]]]
-            signatures = {}
-            if not null_part.empty:
-                rows = context.store.load(
-                    _TABLE,
-                    [*_KEY, "paragraph", "speaker", "content"],
-                    where={"ticker": sorted(null_part["ticker"].unique()), "quarter": sorted(null_part["quarter"].unique())},
-                )
-                assert rows is not None
-                signatures = {key: _paragraph_signature(frame) for key, frame in rows.groupby(_KEY)}
-            for i, call in enumerate(part.itertuples(index=False)):
-                position = (group, int(cast(SupportsInt, call.row)))
-                if call.recovery and company_in_introduction(transcripts[i].as_py() or [], names.get(str(call.ticker), "")):
-                    verified.add(position)
-                if position in comparisons:
-                    source_rows = explode_paragraphs(transcripts.slice(i, 1), part.iloc[[i]].reset_index(drop=True))
-                    if _paragraph_signature(source_rows) != signatures.get((call.ticker, call.quarter)):
-                        changed.add(position)
-    except Exception:
-        context.log.exception(
-            "Earnings calls: source verification/comparison failed; recovery decisions pending, reconciliation aborted before deletion."
-        )
-        raise
+    for group, transcripts in _ordered_parallel(list(by_group), lambda g: _read_transcripts(readers, g, by_group[g]), workers):
+        part = by_group[group]
+        null_part = part.loc[[(group, row) in comparisons for row in part["row"]]]
+        signatures = {}
+        if not null_part.empty:
+            rows = context.store.load(
+                _TABLE,
+                [*_KEY, "paragraph", "speaker", "content"],
+                where={"ticker": sorted(null_part["ticker"].unique()), "quarter": sorted(null_part["quarter"].unique())},
+            )
+            assert rows is not None
+            signatures = {key: _paragraph_signature(frame) for key, frame in rows.groupby(_KEY)}
+        for i, call in enumerate(part.itertuples(index=False)):
+            position = (group, int(cast(SupportsInt, call.row)))
+            if call.recovery and company_in_introduction(transcripts[i].as_py() or [], names.get(str(call.ticker), "")):
+                verified.add(position)
+            if position not in comparisons:
+                continue
+            source_rows = explode_paragraphs(transcripts.slice(i, 1), part.iloc[[i]].reset_index(drop=True))
+            if _paragraph_signature(source_rows) != signatures.get((call.ticker, call.quarter)):
+                changed.add(position)
     matched = unoccupied.loc[
         [(int(group), int(row)) in verified for group, row in unoccupied[["row_group", "row"]].itertuples(index=False, name=None)]
     ]
@@ -569,7 +557,13 @@ def extract_earnings_calls(
         df_index = df_index[df_index["symbol"].map(yahoo_symbol).isin(symbols)]
         df_normal, df_candidates, rejected = calls_from_index(df_index, scope, identity)
         df_stored = _stored_calls(context, pd.concat([df_normal, df_candidates], ignore_index=True), scope, full)
-        df_calls = _verify_calls(context, readers, df_normal, df_candidates, df_stored, rejected, workers)
+        try:
+            df_calls = _verify_calls(context, readers, df_normal, df_candidates, df_stored, rejected, workers)
+        except Exception:
+            log.exception(
+                "Earnings calls: source verification/comparison failed; recovery decisions pending, reconciliation aborted before deletion."
+            )
+            raise
         df_new, df_reissued = diff_calls(df_calls, df_stored)
         df_gone, vanished = stale_calls(df_calls, df_stored if full else None)
         if vanished:

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import date
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import pandas as pd
 import pytest
@@ -14,6 +15,7 @@ from click.testing import CliRunner
 from src.data_extract import cli as extraction_cli
 from src.data_extract.utils.prices import fetch_prices as prices_fetcher
 from src.data_store.schema import Resume, Tables
+from src.utils.freshness import fresh_share, table_freshness
 
 
 def _context(store) -> Any:
@@ -61,6 +63,38 @@ def test_notes_tables_declare_monthly_archive_availability():
 
     print("\n=== SANITY CHECK: financial-notes registry contract ===")
     print("  notes_num and notes_text retain ddate as data time and use date-typed available_at for monthly freshness. Validated.")
+
+
+@pytest.mark.parametrize("unit", ["us", "ns"])
+@pytest.mark.parametrize(
+    "latest, expected_age, expected_ok",
+    [(date.min, 739908, False), (date.max, -2912150, True), (date(3006, 9, 30), -357917, True), (None, None, False)],
+    ids=["ancient", "future", "observed-13f-date", "missing"],
+)
+def test_status_handles_full_calendar_date_range(
+    sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, unit: Literal["us", "ns"], latest: date | None, expected_age: int | None, expected_ok: bool
+) -> None:
+    _prices(sqlite_store, {"AAA": "2026-10-19"})
+    table = Tables.sec13f_hr
+    if latest is not None:
+        sqlite_store.replace(
+            table,
+            pd.DataFrame({"cik": ["0000000001"], "period": [latest], "accession_number": ["a1"], "ticker": ["AAA"], "cusip": ["123456789"]}),
+        )
+    monkeypatch.setattr(extraction_cli, "freshness_tables", lambda: (table,))
+    as_of = pd.Timestamp("2026-10-20").as_unit(unit)
+
+    report = extraction_cli._extraction_status_report(_context(sqlite_store), as_of=as_of)
+    status = cast(dict[str, Any], cast(dict[str, object], report["tables"])[table.name])
+    assert status["max_date"] == (None if latest is None else latest.isoformat())
+    assert status["age_days"] == expected_age and report["ok"] is expected_ok
+    assert status["fresh_share"] == (None if latest is None else float(expected_ok))
+    assert table_freshness(sqlite_store, table, as_of) == expected_age
+    if latest is not None:
+        assert fresh_share({"AAA": pd.Timestamp(latest)}, ["AAA"], as_of, status["max_age_days"]) == float(expected_ok)
+    json.dumps(report)
+
+    print(f"\nSANITY CHECK: latest={latest}, as_of resolution={unit} -> age={expected_age}; status serializes without overflow.")
 
 
 def test_dividends_replay_the_same_recent_tail_as_prices(sqlite_store, monkeypatch):

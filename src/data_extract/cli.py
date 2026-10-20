@@ -7,7 +7,7 @@ fetcher. Fetchers resume from the DB, so a nightly rerun pulls only new data. `s
 """
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import click
@@ -168,7 +168,7 @@ def _table_status(context: Context, table: Table, universe: list[str], as_of: pd
     return {
         "date_column": table.freshness_col,
         "cadence": table.freshness,
-        "max_date": None if age_days is None else (as_of - pd.Timedelta(days=age_days)).date().isoformat(),
+        "max_date": None if age_days is None else (as_of.date() - timedelta(days=age_days)).isoformat(),
         "age_days": age_days,
         "max_age_days": max_age,
         "fresh_share": None if share is None else round(share, 4),

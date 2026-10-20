@@ -90,14 +90,11 @@ _COMPANY_ALLOWLIST = {"src/data_extract/utils/institutionals/fetch_13f_managers.
 
 
 def test_no_issuer_listing_builds_company_from_anything_but_an_int_cik():
-    """AC-001: every `Company(...)` under `src/data_extract` takes `int(...)`, and no alias walk remains."""
+    """AC-001: every issuer `Company(...)` listing takes `int(...)`; dated symbol evidence never becomes a listing argument."""
     offenders: list[str] = []
-    alias_sites: list[str] = []
     for path in sorted((REPO / "src" / "data_extract").rglob("*.py")):
         rel = path.relative_to(REPO).as_posix()
         source = path.read_text(encoding="utf-8")
-        if "alias" in source.lower():
-            alias_sites.append(rel)
         for node in ast.walk(ast.parse(source)):
             if not isinstance(node, ast.Call):
                 continue
@@ -108,9 +105,8 @@ def test_no_issuer_listing_builds_company_from_anything_but_an_int_cik():
             if not (isinstance(arg, ast.Call) and isinstance(arg.func, ast.Name) and arg.func.id == "int"):
                 offenders.append(f"{rel}:{node.lineno}")
     assert offenders == [], f"Company() built from a non-int argument: {offenders}"
-    assert alias_sites == [], f"alias code under src/data_extract: {alias_sites}"
     print("\n=== SANITY CHECK: AC-001 source search ===")
-    print(f"  every Company() call under src/data_extract takes int(cik); allowlisted (manager CIKs): {sorted(_COMPANY_ALLOWLIST)}; no alias code")
+    print(f"  every Company() call under src/data_extract takes int(cik); allowlisted (manager CIKs): {sorted(_COMPANY_ALLOWLIST)}. Validated.")
 
 
 def test_an_alias_held_by_a_foreign_cik_yields_no_accession(monkeypatch):

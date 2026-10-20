@@ -39,7 +39,7 @@ from src.data_extract.utils.common.rate_limit import call_with_retries
 from src.data_store.schema import Tables
 from src.utils.earnings_call_split import company_in_introduction
 from src.utils.string import squash, yahoo_symbol
-from src.utils.universe import load_universe_tickers
+from src.utils.universe import load_universe_names, load_universe_tickers
 
 DATASET_REPO = "defeatbeta/yahoo-finance-data"
 DATASET_FILE = "data/US/stock_earning_call_transcripts.parquet"
@@ -444,11 +444,7 @@ def _verify_calls(
     work = pd.concat([unoccupied, compare], ignore_index=True).drop_duplicates(["row_group", "row"])
     names: dict[str, str] = {}
     if not unoccupied.empty:
-        roster = context.store.load(
-            Tables.sp500_tickers, ["ticker", "name", "cik"], where={"ticker": sorted(unoccupied["ticker"].unique())}, optional=True
-        )
-        if roster is not None:
-            names = {str(ticker): str(name) for ticker, name in roster.dropna(subset=["name"])[["ticker", "name"]].itertuples(index=False, name=None)}
+        names = load_universe_names(context, sorted(unoccupied["ticker"].unique()))
     comparisons = set(compare[["row_group", "row"]].itertuples(index=False, name=None))
     verified: set[tuple[int, int]] = set()
     changed: set[tuple[int, int]] = set()

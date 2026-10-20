@@ -12,8 +12,10 @@ from types import SimpleNamespace
 from typing import Any
 
 import pandas as pd
+import pytest
 
-from src.utils.universe import load_universe_tickers
+from src.data_store.schema import Tables
+from src.utils.universe import load_universe_names, load_universe_tickers
 
 
 def _ctx(store: Any, df: pd.DataFrame | None, redundant: list[str] | None = None) -> Any:
@@ -39,11 +41,30 @@ def test_empty_or_missing_table_returns_empty(sqlite_store):
     # table absent -> [] (the caller falls back and seeds). This is the cold-start path: with a
     # plain `load` the raise-on-empty contract would abort the very run meant to seed the table.
     assert load_universe_tickers(_ctx(sqlite_store, None)) == []
-    sqlite_store.save("sp500_tickers", pd.DataFrame({"ticker": ["AAPL"]}))
+    assert load_universe_names(_ctx(sqlite_store, None), ["AAPL"]) == {}
+    sqlite_store.save("sp500_tickers", pd.DataFrame({"ticker": ["AAPL"], "name": ["Apple Inc."]}))
     sqlite_store.delete("sp500_tickers", {"ticker": "AAPL"})  # created but empty
     assert load_universe_tickers(_ctx(sqlite_store, None)) == []
+    assert load_universe_names(_ctx(sqlite_store, None), ["AAPL"]) == {}
     print("\n=== SANITY CHECK: unseeded universe ===")
     print("  missing AND created-but-empty sp500_tickers -> [] (steps warn + fall back, never crash). Validated on the real store.")
+
+
+def test_names_are_projected_and_scoped_with_null_names_omitted(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    ctx = _ctx(sqlite_store, pd.DataFrame({"ticker": ["AAPL", "MSFT", "XOM"], "name": ["Apple Inc.", None, "Exxon Mobil"]}))
+    reads: list[tuple[Any, dict[str, Any]]] = []
+    load = sqlite_store.load
+
+    def tracked_load(table: Any, **kwargs: Any) -> pd.DataFrame | None:
+        reads.append((table, kwargs))
+        return load(table, **kwargs)
+
+    monkeypatch.setattr(sqlite_store, "load", tracked_load)
+    assert load_universe_names(ctx, ["AAPL", "MSFT"]) == {"AAPL": "Apple Inc."}
+    assert reads == [(Tables.sp500_tickers, {"columns": ["ticker", "name"], "where": {"ticker": ["AAPL", "MSFT"]}, "optional": True})]
+    assert load_universe_names(ctx, []) == {}
+    print("\n=== SANITY CHECK: scoped universe names ===")
+    print("  only ticker/name are read for requested tickers; missing names and empty scope yield no name evidence. Validated on SQLite.")
 
 
 def test_swapping_the_table_swaps_the_universe(sqlite_store):

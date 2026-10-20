@@ -33,6 +33,14 @@ def load_universe_tickers(context: Context) -> list[str]:
     return sorted({t for raw in df["ticker"].dropna() if (t := normalise_ticker(raw)) and t not in excluded})
 
 
+def load_universe_names(context: Context, tickers: Sequence[str]) -> dict[str, str]:
+    """Current roster display names for the requested tickers; dated identity remains the master's responsibility."""
+    df = context.store.load(Tables.sp500_tickers, columns=["ticker", "name"], where={"ticker": list(tickers)}, optional=True)
+    if df is None:
+        return {}
+    return {str(ticker): str(name) for ticker, name in df.dropna(subset=["name"])[["ticker", "name"]].itertuples(index=False, name=None)}
+
+
 def new_tickers(store: DataStore, overlap_days: int, as_of: pd.Timestamp) -> set[str]:
     """Upper-cased `sp500_tickers` rows whose `added_on` is after `as_of - overlap_days` and on or
     before `as_of`.

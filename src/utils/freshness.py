@@ -40,8 +40,8 @@ def fresh_share(last_by_key: Mapping[str, pd.Timestamp], keys: Iterable[str], as
     wanted = set(keys)
     if not wanted:
         return 0.0
-    day = pd.Timestamp(as_of).normalize()
-    fresh = sum(1 for key in wanted if (last := last_by_key.get(key)) is not None and (day - last).days <= max_age)
+    day = pd.Timestamp(as_of).date()
+    fresh = sum(1 for key in wanted if (last := last_by_key.get(key)) is not None and (day - last.date()).days <= max_age)
     return fresh / len(wanted)
 
 
@@ -51,9 +51,9 @@ def key_freshness(store: DataStore, table: Table, keys: Iterable[str], as_of: pd
 
 
 def table_freshness(store: DataStore, table: Table, as_of: pd.Timestamp) -> int | None:
-    """Days between `as_of` and the table-wide latest `freshness_col` date; None when the table is empty."""
+    """Calendar days between `as_of` and the latest `freshness_col` date; None when the table is empty."""
     latest = store.max_date(table, table.freshness_col)
-    return None if latest is None else int((pd.Timestamp(as_of).normalize() - latest).days)
+    return None if latest is None else (pd.Timestamp(as_of).date() - latest.date()).days
 
 
 def check_prediction_inputs(store: DataStore, keys: Iterable[str], as_of: pd.Timestamp, min_share: float) -> dict[str, float]:

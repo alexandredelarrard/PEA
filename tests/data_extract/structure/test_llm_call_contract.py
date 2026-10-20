@@ -10,6 +10,7 @@ failure must not cost its ticker the rest.
 
 from __future__ import annotations
 
+import ast
 import logging
 import types
 from pathlib import Path
@@ -181,16 +182,57 @@ def test_a_failed_filing_does_not_abort_its_ticker():
 # --------------------------------------------------------------------------- #
 # Prompts live in .md, not in the code                                         #
 # --------------------------------------------------------------------------- #
+def _is_field_description_only(tree: ast.Module, name: str) -> bool:
+    """Exempt a constant only when every read is direct Pydantic Field metadata."""
+    field_imported = any(
+        isinstance(node, ast.ImportFrom)
+        and node.module == "pydantic"
+        and node.level == 0
+        and any(alias.name == "Field" and alias.asname in (None, "Field") for alias in node.names)
+        for node in tree.body
+    )
+    if not field_imported:
+        return False
+    reads = {node for node in ast.walk(tree) if isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Load)}
+    descriptions = {
+        keyword.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "Field"
+        for keyword in node.keywords
+        if keyword.arg == "description" and isinstance(keyword.value, ast.Name)
+    }
+    return bool(reads) and reads <= descriptions
+
+
+@pytest.mark.parametrize(
+    "field_import, usage, expected",
+    [
+        ("from pydantic import Field", "class Answer:\n    first = Field(description=TEXT)\n    second = Field(description=TEXT)", True),
+        ("from pydantic import Field", "def prompt():\n    return TEXT", False),
+        ("from pydantic import Field", "class Answer:\n    field = Field(description=TEXT)\nprompt = TEXT", False),
+        ("from pydantic import Field", "", False),
+        ("from pydantic import Field", "class Answer:\n    field = Field(default=TEXT)", False),
+        ("from other_library import Field", "class Answer:\n    field = Field(description=TEXT)", False),
+        ("", "class Answer:\n    field = Field(description=TEXT)", False),
+    ],
+    ids=["description-only", "prompt", "mixed", "unused", "other-keyword", "non-pydantic", "unresolved-field"],
+)
+def test_field_description_exemption_requires_all_reads(field_import: str, usage: str, expected: bool) -> None:
+    tree = ast.parse(f"{field_import}\nTEXT = {'Known-truth extraction instructions. ' * 10!r}\n{usage}")
+
+    assert _is_field_description_only(tree, "TEXT") is expected
+
+    print(f"\nSANITY: description-only exemption={expected}; prompt, mixed, unused and unrelated uses remain guarded.")
+
+
 def test_no_prompt_literals_remain_in_data_extract():
     """The mechanical check for 'prompts live in `.md`'.
 
     Scoped to MODULE-LEVEL constants bound directly to a string, which is exactly the shape
-    the retired `_DEF14A_PROMPT` / `_VOTES_PROMPT` had. Field descriptions and CLI help are
-    keyword arguments and a compiled regex is a `Call`, so none of them is caught -- those are
-    contracts and documentation, not prose for a model.
+    the retired `_DEF14A_PROMPT` / `_VOTES_PROMPT` had. Direct keyword documentation and
+    compiled regex calls are outside that shape. A constant used exclusively as direct
+    Pydantic Field description metadata is also exempt; any other or mixed use stays guarded.
     """
-    import ast
-
     root = Path(__file__).resolve().parents[3] / "src" / "data_extract"
     offenders: list[str] = []
     modules = sorted(root.rglob("*.py"))
@@ -203,9 +245,11 @@ def test_no_prompt_literals_remain_in_data_extract():
             if isinstance(value, ast.Constant) and isinstance(value.value, str) and len(value.value) > 200:
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
                 names = [t.id for t in targets if isinstance(t, ast.Name)]
+                if names and all(_is_field_description_only(tree, name) for name in names):
+                    continue
                 offenders.append(f"{path.relative_to(root)}:{node.lineno} {names} ({len(value.value)} chars)")
 
     assert not offenders, "prompt-sized module constants left in src/data_extract:\n  " + "\n  ".join(offenders)
 
     print("\n=== SANITY: no prompt literals in src/data_extract ===")
-    print(f"  swept {len(modules)} modules; no module-level string constant over 200 chars. Prompts live in prompt_templates/*.md. Validated.")
+    print(f"  swept {len(modules)} modules; no prompt-sized constants outside schema descriptions. Prompts live in prompt_templates/*.md. Validated.")

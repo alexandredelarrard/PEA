@@ -49,6 +49,38 @@ def _cube(tickers: list[str]) -> pd.DataFrame:
     return cube
 
 
+def test_coverage_keeps_ingestion_validated_canonical_history_before_rename(sqlite_store) -> None:
+    sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["ECHO"], "cik": ["1"]}))
+    sqlite_store.save(
+        Tables.entity_lineage, pd.DataFrame({"cik": ["1"], "entity_id": ["E1"], "role": ["cik_window"], "symbol": [""], "valid_from": ["1900-01-01"]})
+    )
+    sqlite_store.save(
+        Tables.symbol_tenure,
+        pd.DataFrame(
+            {
+                "symbol": ["SATS", "ECHO"],
+                "issuer_cik": ["1", "1"],
+                "valid_from": ["2008-01-01", "2026-06-24"],
+                "valid_to": ["2026-06-24", None],
+                "source": ["manual", "manual"],
+                "evidence_period": ["", ""],
+            }
+        ),
+    )
+    dates = ["2008-05-13", "2026-08-03"]
+    sqlite_store.save(Tables.earnings_surprises, pd.DataFrame({"ticker": ["SATS", "ECHO"], "earnings_date": dates}))
+    sqlite_store.save(
+        Tables.earnings_call_sections,
+        pd.concat([_valid_call("ECHO", quarter, date) for quarter, date in zip(["2008Q1", "2026Q2"], dates, strict=True)], ignore_index=True),
+    )
+    summary, _, valid = _coverage(
+        cast(Context, SimpleNamespace(store=sqlite_store, config=SimpleNamespace(data_extract=SimpleNamespace(redundant_ticks=[]))))
+    )
+    assert valid["ECHO"] == list(pd.to_datetime(dates))
+    assert summary["valid_calls"] == 2
+    print("SANITY: validator retains canonical ECHO history before the market rename; raw alias release dates remain dated.")
+
+
 def test_earnings_call_validator_reports_coverage_schema_and_quality(sqlite_store) -> None:
     sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["AAA", "BBB"]}))
     sqlite_store.save(

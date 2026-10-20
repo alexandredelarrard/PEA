@@ -18,6 +18,8 @@ from typing import cast
 
 import numpy as np
 import pandas as pd
+import pytest
+from omegaconf import OmegaConf
 
 import src.data_aggregate.transformers.step_cube_text as step_text
 import src.data_aggregate.utils.text.earnings_call_features as ec
@@ -48,6 +50,63 @@ from src.utils.text_metrics import assess_earnings_call_sections
 from tests.fixtures.earnings_call_rows import synthetic_call
 
 _QDATE = {"2023Q1": "2023-02-01", "2023Q2": "2023-05-01", "2023Q3": "2023-08-01"}
+
+
+def test_canonical_ticker_keeps_calls_before_the_symbol_change() -> None:
+    calls = pd.DataFrame({"ticker": ["ECHO", "ECHO", "UNKNOWN"], "as_of": pd.to_datetime(["2008-05-13", "2026-08-03", "2026-08-03"])})
+    roster = pd.DataFrame({"ticker": ["ECHO"], "cik": ["1"]})
+    lineage = pd.DataFrame({"cik": ["1"], "entity_id": ["E1"]})
+    identified = attach_issuer_identity(calls, roster, lineage)
+    assert identified["issuer_id"].tolist() == ["E1", "E1"]
+    assert identified["as_of"].tolist() == calls["as_of"].iloc[:2].tolist()
+    print("SANITY: validated canonical ECHO keeps pre-rename history; unknown destinations remain excluded; dates unchanged.")
+
+
+@pytest.mark.parametrize(
+    ("call_date", "expected"),
+    [
+        ("2024-05-06", "2024-05-08"),
+        ("2024-05-02", "2024-05-06"),
+        ("2024-05-03", "2024-05-06"),
+        ("2024-05-04", "2024-05-06"),
+        ("2024-05-24", "2024-05-28"),
+        ("2024-05-26", "2024-05-28"),
+    ],
+)
+def test_calendar_day_buffer_applies_once_to_all_twelve_features(call_date: str, expected: str) -> None:
+    calendar = pd.bdate_range("2024-05-01", "2024-10-31").difference(pd.DatetimeIndex(["2024-05-27"]))
+    call = pd.DataFrame({"ticker": ["A"], "as_of": [pd.Timestamp(call_date)], **{name: [float(i)] for i, name in enumerate(ec._KPI_COLS)}})
+    panel = ec._feature_panel_from_prepared(call, calendar, None, availability_lag_days=2)
+    assert len(panel.filter(like="f_ec_").columns) == 12
+    for name in ec._KPI_COLS:
+        live = panel.loc[panel[f"f_{name}"].notna(), "date"]
+        assert live.min() == pd.Timestamp(expected) and len(live) == 66
+    print(f"SANITY: {call_date}+2 calendar days -> {expected}, including holiday/weekend rollover, all12 features for66 sessions.")
+
+
+def test_step_reads_lag_from_build_cube_yaml(monkeypatch: pytest.MonkeyPatch) -> None:
+    step = StepCubeText.__new__(StepCubeText)
+    step._context = cast(Context, SimpleNamespace())
+    step._cfg = OmegaConf.load("configs/build_cube.yml").build_cube
+    calls = pd.DataFrame({"ticker": ["A"], "quarter": ["2024Q1"], "as_of": [pd.Timestamp("2024-05-06")], "ec_tone": [0.2]})
+    roster = pd.DataFrame({"ticker": ["A"], "cik": ["1"]})
+    lineage = pd.DataFrame({"cik": ["1"], "entity_id": ["E1"]})
+    monkeypatch.setattr(step_text, "score_earnings_calls", lambda _ctx: None)
+    monkeypatch.setattr(step_text, "embed_earnings_calls", lambda _ctx: None)
+    monkeypatch.setattr(step_text, "sentiment_kpis_streamed", lambda _ctx: calls)
+    monkeypatch.setattr(step_text, "load_issuer_identity", lambda _ctx: (roster, lineage))
+    monkeypatch.setattr(step_text, "embedding_kpis_streamed", lambda *_args: None)
+    frames = SimpleNamespace(trading_index=pd.bdate_range("2024-05-01", "2024-09-30"), availability=None)
+    panel, _ = step._feature_panel(frames)
+    assert panel.loc[panel["f_ec_tone"].notna(), "date"].min() == pd.Timestamp("2024-05-08")
+    step._cfg.earnings_calls.availability_lag_days = 3
+    shifted, _ = step._feature_panel(frames)
+    assert shifted.loc[shifted["f_ec_tone"].notna(), "date"].min() == pd.Timestamp("2024-05-09")
+    for invalid in (-1, 1.5, True):
+        step._cfg.earnings_calls.availability_lag_days = invalid
+        with pytest.raises(ValueError, match="non-negative integer"):
+            step._feature_panel(frames)
+    print("SANITY: actual Step loads the YAML2-day setting; changing only that value to3 moves eligibility by1 day.")
 
 
 def _number(value: object) -> float:
@@ -342,7 +401,7 @@ def test_malformed_refresh_deletes_stale_tail_even_when_panel_is_empty(sqlite_st
 
 def test_panel_columns_lifetime_and_missingness():
     idx = pd.bdate_range("2023-01-02", "2023-09-29")
-    panel = build_earnings_call_feature_panel(_sentiment_frame(), idx, sections=_sections_frame())
+    panel = build_earnings_call_feature_panel(_sentiment_frame(), idx, sections=_sections_frame(), availability_lag_days=2)
     assert not panel.empty
     expected = {
         "date",
@@ -366,35 +425,33 @@ def test_panel_columns_lifetime_and_missingness():
     panel["date"] = pd.to_datetime(panel["date"])
     a = panel[panel["ticker"] == "A"]
     first_call = pd.Timestamp("2023-02-01")
-    # LEAK-FREE: nothing for A on/before the first call date; signal appears the NEXT day
+    # The raw call date remains unchanged; feature eligibility waits two calendar days.
     a_tone = a[a["f_ec_tone"].notna()]
     assert a_tone["date"].min() > first_call
-    assert a_tone["date"].min() == pd.Timestamp("2023-02-02")
+    assert a_tone["date"].min() == pd.Timestamp("2023-02-03")
     # 66 trading sessions are inclusive; session 67 expires rather than becoming a fake zero.
     one = pd.DataFrame({"ticker": ["A"], "as_of": ["2023-02-01"], "ec_tone": [0.0]})
-    daily = _daily_frame(one, "ec_tone", idx)
+    daily = _daily_frame(one, "ec_tone", idx, availability_lag_days=2)
     live = daily["A"].dropna()
     assert len(live) == 66
     assert (live == 0.0).all(), "a genuine zero must survive"
     assert pd.isna(daily.loc[live.index[-1] + pd.offsets.BDay(1), "A"]), "session 67 must be NaN"
 
     weekend = pd.DataFrame({"ticker": ["A"], "as_of": ["2023-02-04"], "ec_tone": [0.2]})
-    weekend_daily = _daily_frame(weekend, "ec_tone", idx)
+    weekend_daily = _daily_frame(weekend, "ec_tone", idx, availability_lag_days=2)
     assert weekend_daily.loc[pd.Timestamp("2023-02-06"), "A"] == 0.2
 
     print("\n=== SANITY CHECK: earnings-call features ===")
     print(f"  panel {panel.shape[0]} rows; exactly 12 raw/issuer-history EC features and no peer/cross-sectional variants.")
     print(
         f"  leak-free: ticker A first tone signal at {a_tone['date'].min().date()} "
-        "(call 2023-02-01 + 1 trading day); genuine zero survives for 66 sessions and "
+        "(call 2023-02-01 + 2 calendar days); genuine zero survives for 66 sessions and "
         "session 67 is NaN."
     )
 
 
-def test_call_is_invisible_on_its_as_of_session_and_visible_on_the_next(sqlite_store, monkeypatch) -> None:
-    """End to end from stored paragraphs: score -> stream -> daily panel. A call dated D (the real
-    call date, `as_of` of its paragraphs) never reaches session D and first appears on the next
-    trading session -- the day after for a Wednesday call, the Monday for a Friday call."""
+def test_call_is_invisible_until_two_calendar_days_after_as_of(sqlite_store, monkeypatch) -> None:
+    """Stored source dates survive scoring; features start on/after call date plus two calendar days."""
     calls = {"A": "2024-05-01", "B": "2024-05-03"}  # Wednesday, Friday
     paragraphs = pd.concat(
         [
@@ -418,14 +475,14 @@ def test_call_is_invisible_on_its_as_of_session_and_visible_on_the_next(sqlite_s
     per_call = sentiment_kpis_streamed(context)
     assert per_call is not None and len(per_call) == 2
     calendar = pd.bdate_range("2024-04-01", "2024-09-30")
-    panel = build_earnings_call_feature_panel(None, calendar, per_call=per_call)
+    panel = build_earnings_call_feature_panel(None, calendar, per_call=per_call, availability_lag_days=2)
     panel["date"] = pd.to_datetime(panel["date"])
     first_seen = {}
     for tkr, as_of in calls.items():
         live = panel[panel["ticker"].eq(tkr) & panel["f_ec_tone"].notna()]
         call_date = pd.Timestamp(as_of)
         assert not live["date"].le(call_date).any(), f"{tkr}: visible on or before its as_of session"
-        next_session = calendar[calendar.searchsorted(call_date, side="right")]
+        next_session = calendar[calendar.searchsorted(call_date + pd.Timedelta(days=2), side="left")]
         assert live["date"].min() == next_session
         first_seen[tkr] = (as_of, str(next_session.date()))
     assert first_seen["B"][1] == "2024-05-06"
@@ -437,11 +494,11 @@ def test_full_calendar_late_refresh_and_rerun_are_bit_exact() -> None:
     """Exercise the real tail writer against a late correction and unchanged rerun."""
     calendar = pd.bdate_range("2021-01-04", "2023-09-29")
     assert len(calendar) >= 500
-    old = build_earnings_call_feature_panel(_sentiment_frame(), calendar, sections=_sections_frame())
+    old = build_earnings_call_feature_panel(_sentiment_frame(), calendar, sections=_sections_frame(), availability_lag_days=2)
     revised_sentiment = _sentiment_frame()
     mask = (revised_sentiment["ticker"] == "A") & (revised_sentiment["quarter"] == "2023Q1")
     revised_sentiment.loc[mask, "sent_pos"] += 0.05
-    revised = build_earnings_call_feature_panel(revised_sentiment, calendar, sections=_sections_frame())
+    revised = build_earnings_call_feature_panel(revised_sentiment, calendar, sections=_sections_frame(), availability_lag_days=2)
 
     class _Store:
         def __init__(self, rows: pd.DataFrame):
@@ -459,14 +516,15 @@ def test_full_calendar_late_refresh_and_rerun_are_bit_exact() -> None:
             self.rows = pd.concat([self.rows.loc[keep], tail], ignore_index=True)
             return len(tail)
 
-    store = _Store(old)
+    feature_columns = [column for column in old if column.startswith("f_")]
+    store = _Store(old.dropna(subset=feature_columns, how="all"))
     last = pd.Timestamp(old["date"].max())
     default_refresh = calendar[-130]
     late_refresh = pd.Timestamp("2023-02-02")
     window = PartWindow(last=last, since=calendar[0], refresh_from=default_refresh)
     effective_refresh = min(late_refresh, window.refresh_from)
     write_part(cast(DataStore, store), Tables.cube_part_text, revised, window, refresh_from=effective_refresh, drop_empty=True)
-    expected = revised.sort_values(["date", "ticker"]).reset_index(drop=True)
+    expected = revised.dropna(subset=feature_columns, how="all").sort_values(["date", "ticker"]).reset_index(drop=True)
     actual = store.rows.sort_values(["date", "ticker"]).reset_index(drop=True)
     pd.testing.assert_frame_equal(expected, actual, check_dtype=True, check_exact=True)
     first = actual.copy()
@@ -505,22 +563,14 @@ def test_issuer_history_survives_symbol_and_cik_change() -> None:
 
     calls = pd.DataFrame(
         {
-            "ticker": ["OLD"] * 4 + ["NEW"],
+            "ticker": ["NEW"] * 5,
             "as_of": pd.to_datetime(["2020-02-01", "2021-02-01", "2022-02-01", "2023-02-01", "2024-02-01"]),
             "ec_tone": [1.0, 2.0, 3.0, 4.0, 5.0],
         }
     )
-    tenure = pd.DataFrame(
-        {
-            "symbol": ["OLD", "NEW"],
-            "issuer_cik": ["1", "2"],
-            "valid_from": ["2019-01-01", "2024-01-01"],
-            "valid_to": ["2023-12-31", None],
-            "n_filings": [20, 10],
-        }
-    )
     lineage = pd.DataFrame({"cik": ["1", "2"], "entity_id": ["E1", "E1"]})
-    identified = attach_issuer_identity(calls, tenure, lineage)
+    roster = pd.DataFrame({"ticker": ["NEW"], "cik": ["2"]})
+    identified = attach_issuer_identity(calls, roster, lineage)
     score = _issuer_history_zscore(identified, "ec_tone")
     assert identified["issuer_id"].eq("E1").all()
     assert score.iloc[:4].isna().all() and pd.notna(score.iloc[4])
@@ -531,49 +581,43 @@ def test_issuer_history_survives_symbol_and_cik_change() -> None:
 def test_identity_excludes_unknown_and_ambiguous_rows_and_preserves_deltas() -> None:
     calls = pd.DataFrame(
         {
-            "ticker": ["OLD", "NEW"],
+            "ticker": ["NEW", "NEW"],
             "quarter": ["2023Q4", "2024Q1"],
             "as_of": pd.to_datetime(["2023-11-01", "2024-02-01"]),
             "ec_tone": [0.2, 0.5],
             "total_words": [1000.0, 2000.0],
         }
     )
-    tenure = pd.DataFrame(
-        {
-            "symbol": ["OLD", "NEW"],
-            "issuer_cik": ["1", "2"],
-            "valid_from": ["2020-01-01", "2024-01-01"],
-            "valid_to": ["2024-01-01", None],
-        }
-    )
     lineage = pd.DataFrame({"cik": ["1", "2"], "entity_id": ["E1", "E1"]})
-    prepared = prepare_earnings_call_kpis(attach_issuer_identity(calls, tenure, lineage))
-    newest = prepared.loc[prepared["ticker"] == "NEW"].iloc[0]
+    roster = pd.DataFrame({"ticker": ["NEW"], "cik": ["2"]})
+    prepared = prepare_earnings_call_kpis(attach_issuer_identity(calls, roster, lineage))
+    newest = prepared.iloc[-1]
     assert math.isclose(float(newest["ec_tone_delta"]), 0.3)
     assert math.isclose(float(newest["ec_length_delta"]), math.log(2.0))
 
     ambiguous = pd.concat(
         [
-            tenure,
-            pd.DataFrame({"symbol": ["NEW"], "issuer_cik": ["3"], "valid_from": ["2024-01-01"], "valid_to": [None]}),
+            roster,
+            pd.DataFrame({"ticker": ["NEW"], "cik": ["3"]}),
         ],
         ignore_index=True,
     )
     ambiguous_lineage = pd.concat([lineage, pd.DataFrame({"cik": ["3"], "entity_id": ["E2"]})], ignore_index=True)
     assert attach_issuer_identity(calls.tail(1), ambiguous, ambiguous_lineage).empty
     unresolved = pd.concat(
-        [tenure, pd.DataFrame({"symbol": ["NEW"], "issuer_cik": ["9"], "valid_from": ["2024-01-01"], "valid_to": [None]})],
+        [roster, pd.DataFrame({"ticker": ["NEW"], "cik": ["9"]})],
         ignore_index=True,
     )
     assert attach_issuer_identity(calls.tail(1), unresolved, lineage).empty
-    assert attach_issuer_identity(calls.tail(1).assign(ticker="UNKNOWN"), tenure, lineage).empty
+    assert attach_issuer_identity(calls.tail(1).assign(ticker="UNKNOWN"), roster, lineage).empty
     print("\n=== SANITY CHECK: strict issuer identity ===")
     print("  half-open tenures preserve OLD->NEW deltas; unknown or ambiguous mappings are excluded. Validated.")
 
 
-def test_issuer_identity_reads_distinct_lineage_pairs_and_only_form345_manual_tenure(sqlite_store) -> None:
+def test_issuer_identity_reads_roster_and_distinct_lineage_pairs(sqlite_store) -> None:
     """The dated `entity_lineage` has several rows per CIK and `symbol_tenure` gains `dei` rows; the attach must not move."""
-    calls = pd.DataFrame({"ticker": ["OLD", "NEW"], "quarter": ["2023Q4", "2024Q1"], "as_of": pd.to_datetime(["2023-11-01", "2024-02-01"])})
+    calls = pd.DataFrame({"ticker": ["NEW", "NEW"], "quarter": ["2023Q4", "2024Q1"], "as_of": pd.to_datetime(["2023-11-01", "2024-02-01"])})
+    sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["NEW"], "cik": ["2"]}))
     sqlite_store.save(
         Tables.entity_lineage,
         pd.DataFrame(
@@ -601,17 +645,15 @@ def test_issuer_identity_reads_distinct_lineage_pairs_and_only_form345_manual_te
         ),
     )
 
-    tenure, lineage = ec.load_issuer_identity(cast(Context, SimpleNamespace(store=sqlite_store)))
-    identified = attach_issuer_identity(calls, tenure, lineage)
-    unfiltered = attach_issuer_identity(calls, sqlite_store.load(Tables.symbol_tenure), lineage)
+    roster, lineage = ec.load_issuer_identity(cast(Context, SimpleNamespace(store=sqlite_store)))
+    identified = attach_issuer_identity(calls, roster, lineage)
 
-    assert tenure is not None and lineage is not None
-    assert sorted(tenure["issuer_cik"].astype(str)) == ["1", "2"] and len(lineage) == 2
+    assert roster is not None and lineage is not None
+    assert roster["cik"].astype(str).tolist() == ["2"] and len(lineage) == 2
     assert identified["issuer_id"].tolist() == ["E1", "E1"]
-    assert unfiltered["ticker"].tolist() == ["OLD"]  # what a dei row would cost without the source filter
     print("\n=== SANITY CHECK: issuer identity inputs ===")
-    print("  four lineage rows -> two (cik, entity) pairs; the dei NEW row under a foreign CIK is not read,")
-    print("  so both calls keep issuer E1 (read unfiltered, the NEW call would be dropped). Validated.")
+    print("  four lineage rows -> two (cik, entity) pairs; canonical NEW reads roster CIK2 and retains both historical calls.")
+    print("  dated symbol reuse and DEI source rows cannot reinterpret already validated canonical keys. Validated.")
 
 
 def test_new_call_with_missing_kpi_terminates_the_previous_signal() -> None:
@@ -626,7 +668,7 @@ def test_new_call_with_missing_kpi_terminates_the_previous_signal() -> None:
             "total_words": [1000.0, 1100.0],
         }
     )
-    panel = build_earnings_call_feature_panel(None, calendar, per_call=calls)
+    panel = build_earnings_call_feature_panel(None, calendar, per_call=calls, availability_lag_days=2)
     observed = panel[panel["ticker"].eq("AAA")].set_index("date")
     assert observed.loc[pd.Timestamp("2024-02-02"), "f_ec_qa_gap"] == 0.3
     assert pd.isna(observed.loc[pd.Timestamp("2024-02-05"), "f_ec_qa_gap"])

@@ -1,4 +1,6 @@
 build_cube:
+  earnings_calls:
+    availability_lag_days: 2 # Calendar days after the call; roll forward to the first trading session.
   assembly:
     optional_parts:
       - cube_part_text

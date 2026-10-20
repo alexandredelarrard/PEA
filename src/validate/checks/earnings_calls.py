@@ -191,7 +191,9 @@ class _TickerCoverage:
     release_gap_days: list[int | None] = field(default_factory=list)
 
 
-def _identity(tenure: pd.DataFrame | None, lineage: pd.DataFrame | None, measured_tickers: list[str]) -> _Identity:
+def _identity(
+    tenure: pd.DataFrame | None, lineage: pd.DataFrame | None, measured_tickers: list[str], roster: pd.DataFrame | None = None
+) -> _Identity:
     """Attach the lineage entity to every tenure row (CIKs with one entity only) and resolve the
     roster tickers' current entity; an empty identity when either table is missing."""
     if tenure is None or tenure.empty or lineage is None or lineage.empty:
@@ -216,7 +218,11 @@ def _identity(tenure: pd.DataFrame | None, lineage: pd.DataFrame | None, measure
     valid_to = pd.to_datetime(tenure["valid_to"], errors="coerce")
     active = tenure[valid_from.le(today) & (valid_to.isna() | valid_to.gt(today))]
     for ticker in measured_tickers:
-        entities = active.loc[active["symbol"].astype(str).eq(ticker), "entity_id"]
+        if roster is not None:
+            ciks = roster.loc[roster["ticker"].astype(str).eq(ticker), "cik"].astype(str)
+            entities = unique_lineage.set_index("cik")["entity_id"].groupby(level=0).first().reindex(ciks)
+        else:
+            entities = active.loc[active["symbol"].astype(str).eq(ticker), "entity_id"]
         if entities.notna().all() and entities.astype(str).nunique() == 1:
             identity.roster_entity[ticker] = str(entities.iloc[0])
     return identity
@@ -295,13 +301,15 @@ def _scan_calls(context: Context, symbols: list[str]) -> _CallScan:
     return scan
 
 
-def _linked(dates_by_symbol: dict[str, list[pd.Timestamp]], symbols: set[str], entity_id: str | None, identity: _Identity) -> list[pd.Timestamp]:
+def _linked(
+    dates_by_symbol: dict[str, list[pd.Timestamp]], symbols: set[str], entity_id: str | None, identity: _Identity, canonical_ticker: str | None = None
+) -> list[pd.Timestamp]:
     """Event dates of the roster ticker's symbols that belong to its issuer at the event date."""
     return [
         date
         for symbol in symbols
         for date in dates_by_symbol.get(symbol, [])
-        if entity_id is None or _event_entity(identity.tenure_by_symbol, symbol, date) == entity_id
+        if symbol == canonical_ticker or entity_id is None or _event_entity(identity.tenure_by_symbol, symbol, date) == entity_id
     ]
 
 
@@ -335,9 +343,9 @@ def _measure_ticker(
     """Per-quarter presence, release gaps and the three coverage ratios of one roster ticker."""
     entity_id = identity.roster_entity.get(ticker)
     symbols = identity.aliases_by_entity.get(entity_id, {ticker}) if entity_id is not None else {ticker}
-    for date in _linked(scan.call_dates_by_ticker, symbols, entity_id, identity):
+    for date in _linked(scan.call_dates_by_ticker, symbols | {ticker}, entity_id, identity, canonical_ticker=ticker):
         coverage.tickers_by_quarter.setdefault(cast(int, _calendar_quarter_index(date)), set()).add(ticker)
-    ticker_valid_dates = _linked(scan.valid_dates_by_ticker, symbols, entity_id, identity)
+    ticker_valid_dates = _linked(scan.valid_dates_by_ticker, symbols | {ticker}, entity_id, identity, canonical_ticker=ticker)
     for date in ticker_valid_dates:
         coverage.valid_tickers_by_quarter.setdefault(cast(int, _calendar_quarter_index(date)), set()).add(ticker)
     release_dates = _linked(release_dates_by_ticker, symbols, entity_id, identity)
@@ -407,7 +415,12 @@ def _coverage(context: Context) -> tuple[dict[str, Any], dict[str, float], dict[
     lineage = context.store.load(Tables.entity_lineage, columns=["cik", "entity_id"], optional=True)
     lineage = None if lineage is None else lineage.drop_duplicates(ignore_index=True)
     measured_tickers = [ticker for ticker in roster_tickers if ticker not in NO_EARNINGS_CALL_TICKERS]
-    identity = _identity(tenure, lineage, measured_tickers)
+    roster = (
+        context.store.load(Tables.sp500_tickers, columns=["ticker", "cik"], optional=True)
+        if "cik" in context.store.columns(Tables.sp500_tickers)
+        else None
+    )
+    identity = _identity(tenure, lineage, measured_tickers, roster)
     analysis_symbols = sorted(
         set(measured_tickers) | {symbol for entity in identity.roster_entity.values() for symbol in identity.aliases_by_entity.get(entity, set())}
     )

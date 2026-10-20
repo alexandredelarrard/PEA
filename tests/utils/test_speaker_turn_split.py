@@ -14,12 +14,59 @@ from pathlib import Path
 import pytest
 
 from src.constants.constants import EARNINGS_CALL_TAG_ANSWER, EARNINGS_CALL_TAG_PREPARED, EARNINGS_CALL_TAG_QUESTION
-from src.utils.earnings_call_split import CallSplit, Turn, clean_paragraphs, label_turns, qa_start, split_call
+from src.utils.earnings_call_split import CallSplit, Turn, clean_paragraphs, company_in_introduction, label_turns, qa_start, split_call
 from src.utils.text_metrics import assess_earnings_call_sections
 
 FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "earnings_calls"
 FIXTURES = sorted(FIXTURE_DIR.glob("*.json"))
 TURN_KEYS = {"section", "tag", "person", "text", "exchange_idx", "answer_idx"}
+
+
+@pytest.mark.parametrize(
+    ("paragraphs", "name", "expected"),
+    [
+        ([{"speaker": "Operator", "content": "Welcome to Google Inc. Fourth Quarter Earnings Call."}], "Google Inc.", True),
+        ([{"speaker": "Operator", "content": "Welcome to Brown-Forman's quarterly earnings call."}], "Brown–Forman (Class B)", True),
+        (
+            [{"speaker": "Agilent Technologies Incorporated (NYSE", "content": "A): Q1 2006 Earnings Release Conference Call February 13, 2006"}],
+            "Agilent Technologies",
+            True,
+        ),
+        ([{"speaker": "Operator", "content": "Welcome to News Corporation's earnings call."}], "News Corp", False),
+        ([{"speaker": "Analysts", "content": "Acme Company Earnings Conference Call"}], "Acme Company", False),
+        (
+            [
+                {
+                    "speaker": "AI Insights",
+                    "content": "Welcome to Acme Company earnings call. This is a provider-generated summary of a company's results and its future outlook.",
+                }
+            ],
+            "Acme Company",
+            False,
+        ),
+        (
+            [
+                {"speaker": "Operator", "content": "Our first question comes from Jane Smith."},
+                {"speaker": "Jane Smith", "content": "Welcome to Acme Company's earnings call. What changed?"},
+            ],
+            "Acme Company",
+            False,
+        ),
+        (
+            [
+                {"speaker": "CEO", "content": "Our revenue increased."},
+                {"speaker": "CFO", "content": "Our margins improved."},
+                {"speaker": "Host", "content": "Welcome to Acme Company earnings call."},
+            ],
+            "Acme Company",
+            False,
+        ),
+        ([{"speaker": "Operator", "content": "Welcome to Acme Company earnings call."}], "", False),
+    ],
+)
+def test_company_matching_uses_only_strict_introduction(paragraphs: list[dict], name: str, expected: bool) -> None:
+    assert company_in_introduction(paragraphs, name) == expected
+    print(f"SANITY: early-intro match for {name!r} is {expected}; whole-word names, rosters, summaries and Q&A boundaries respected.")
 
 
 def _load(path: Path) -> dict:

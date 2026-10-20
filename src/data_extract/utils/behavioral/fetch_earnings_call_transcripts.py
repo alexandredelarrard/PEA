@@ -11,7 +11,6 @@ write runs on the calling thread, one row group per batch.
 
 from __future__ import annotations
 
-import logging
 import threading
 import time
 from bisect import bisect_left
@@ -37,10 +36,9 @@ from src.data_extract.utils.behavioral.utils_earnings_call_cache import (
 from src.data_extract.utils.common.identity import AmbiguousSymbolTenureError, Identity, load_identity
 from src.data_extract.utils.common.rate_limit import call_with_retries
 from src.data_store.schema import Tables
+from src.utils.earnings_call_split import company_in_introduction
 from src.utils.string import squash, yahoo_symbol
 from src.utils.universe import load_universe_tickers
-
-logger = logging.getLogger(__name__)
 
 DATASET_REPO = "defeatbeta/yahoo-finance-data"
 DATASET_FILE = "data/US/stock_earning_call_transcripts.parquet"
@@ -75,6 +73,15 @@ class ExtractSummary:
     calls_reissued: int
     rows_written: int
     calls_removed: int = 0
+
+
+@dataclass(frozen=True)
+class CallIdentity:
+    """Normal ownership or a unique master target requiring raw introduction verification."""
+
+    ticker: str | None
+    recovery_ticker: str | None = None
+    reason: str = "accepted"
 
 
 def resolve_hf_source() -> TranscriptSource:
@@ -158,19 +165,31 @@ def _allows_rebased_call(identity: Identity, entity: str, day: pd.Timestamp) -> 
     return True
 
 
-def ticker_for_call(identity: Identity, symbol: str, day: pd.Timestamp) -> str | None:
+def ticker_for_call(identity: Identity, symbol: str, day: pd.Timestamp) -> CallIdentity:
     """Dated symbol ownership, allowing a vendor to retain/rebase a consolidating issuer's alias."""
     key = yahoo_symbol(symbol)
     if key in identity.redundant_symbols or pd.isna(day):
-        return None
+        return CallIdentity(None, reason="excluded_or_invalid")
     intervals = identity.symbol_intervals.get(key, ())
+    linked = {
+        row.entity
+        for row in intervals
+        if row.status not in {"noise", "conflict"}
+        and row.tape_symbol
+        and any(window.cik == row.cik for window in identity.windows_by_entity.get(row.entity, ()))
+    }
+    if not intervals and key in identity.roster_cik:
+        linked.add(identity.universe_entity(key))
+    target = identity.ticker_by_entity.get(next(iter(linked))) if len(linked) == 1 else None
+    if target is not None and _other_share_class(key, target):
+        target = None
     active = [row for row in intervals if row.covers(day) and row.status != "noise" and row.tape_symbol]
     if any(row.status == "conflict" for row in active):
-        return None
+        return CallIdentity(None, reason="active_conflict")
     try:
         dated_owner = identity.entity_for(key, day)
     except AmbiguousSymbolTenureError:
-        return None
+        return CallIdentity(None, target, "ambiguous_dated_tenure")
     hit = identity.tape_interval(key, day)
     candidates = (
         {hit.entity}
@@ -195,42 +214,50 @@ def ticker_for_call(identity: Identity, symbol: str, day: pd.Timestamp) -> str |
     if active:
         owners = {row.entity for row in active}
         if len(owners) != 1:
-            return None
+            return CallIdentity(None, target, "ambiguous_dated_tenure")
         candidates &= owners
     if len(candidates) != 1:
-        return None
+        return CallIdentity(None, target, "dated_owner_veto" if dated_owner is not None else "outside_consolidating_cik_window")
     entity = next(iter(candidates))
     if hit is None and not _allows_rebased_call(identity, entity, day):
-        return None
+        return CallIdentity(None, target, "unsupported_rebased_alias")
     ticker = identity.ticker_by_entity.get(entity)
-    if ticker is not None and "-" in ticker:
-        stem, share_class = ticker.rsplit("-", 1)
-        # A separately traded sibling class is not a predecessor symbol.
-        if len(share_class) == 1 and key != ticker and squash(key).startswith(stem) and len(squash(key)) == len(stem) + 1:
-            return None
-    return ticker
+    if ticker is not None and _other_share_class(key, ticker):
+        return CallIdentity(None, reason="excluded_class")
+    return CallIdentity(ticker)
 
 
-def calls_from_index(index: pd.DataFrame, scope: set[str], identity: Identity) -> pd.DataFrame:
+def _other_share_class(symbol: str, ticker: str) -> bool:
+    """A separately traded sibling class is not a predecessor symbol."""
+    stem, separator, share_class = ticker.rpartition("-")
+    return bool(separator and len(share_class) == 1 and symbol != ticker and squash(symbol).startswith(stem) and len(squash(symbol)) == len(stem) + 1)
+
+
+def calls_from_index(index: pd.DataFrame, scope: set[str], identity: Identity) -> tuple[pd.DataFrame, pd.DataFrame, int]:
     """One row per scoped call: ticker, quarter, as_of, transcript_id and its row-group position.
 
     Resolve ownership before narrowing to the requested destination. A (ticker, quarter)
     published twice keeps the latest `report_date`, then the highest `transcripts_id`."""
-    calls = index.assign(as_of=pd.to_datetime(index["report_date"], format="%Y-%m-%d"))
-    calls["ticker"] = [ticker_for_call(identity, str(symbol), pd.Timestamp(day)) for symbol, day in zip(calls["symbol"], calls["as_of"], strict=True)]
-    unresolved = calls["ticker"].isna()
-    if unresolved.any():
-        logger.warning(
-            "Earnings calls: %d unresolved source call(s), symbols %s.", int(unresolved.sum()), sorted(calls.loc[unresolved, "symbol"].unique())
-        )
+    calls = index.assign(as_of=pd.to_datetime(index["report_date"], format="%Y-%m-%d", errors="coerce"))
+    decisions = [ticker_for_call(identity, str(symbol), pd.Timestamp(day)) for symbol, day in zip(calls["symbol"], calls["as_of"], strict=True)]
+    calls["ticker"] = [decision.ticker or decision.recovery_ticker for decision in decisions]
+    calls["recovery"] = pd.Series([decision.ticker is None for decision in decisions], index=calls.index, dtype=bool)
+    rejected = sum(decision.ticker is None for decision in decisions)
     calls = calls[calls["ticker"].isin(scope)]
     calls = calls.assign(
         quarter=calls["fiscal_year"].astype(int).astype(str) + "Q" + calls["fiscal_quarter"].astype(int).astype(str),
         transcript_id=calls["transcripts_id"].astype("Int64"),
+        ordinal=calls["fiscal_year"].astype(int) * 4 + calls["fiscal_quarter"].astype(int),
     )
+    calls = calls[[*_KEY, "as_of", "transcript_id", "row_group", "row", "ordinal", "recovery"]]
+    normal = _select_calls(calls[~calls["recovery"]])
+    return normal, calls[calls["recovery"]].reset_index(drop=True), rejected
+
+
+def _select_calls(calls: pd.DataFrame) -> pd.DataFrame:
+    """Existing fiscal-key and call-date selection, also shared by verified recoveries."""
     calls = calls.sort_values([*_KEY, "as_of", "transcript_id"], na_position="first").drop_duplicates(_KEY, keep="last")
-    calls = one_call_per_date(calls.assign(ordinal=calls["fiscal_year"].astype(int) * 4 + calls["fiscal_quarter"].astype(int)))
-    return calls[[*_KEY, "as_of", "transcript_id", "row_group", "row"]].reset_index(drop=True)
+    return one_call_per_date(calls).reset_index(drop=True)
 
 
 def one_call_per_date(calls: pd.DataFrame) -> pd.DataFrame:
@@ -269,7 +296,8 @@ def diff_calls(calls: pd.DataFrame, stored: pd.DataFrame | None) -> tuple[pd.Dat
     present = merged["_merge"] == "both"
     same_tid = (merged["transcript_id"] == merged["old_tid"]).fillna(False) | (merged["transcript_id"].isna() & merged["old_tid"].isna())
     same_date = merged["as_of"] == merged["old_as_of"]
-    reissued = merged[present & ~(same_tid & same_date)]
+    changed = merged.get("content_changed", pd.Series(False, index=merged.index))
+    reissued = merged[present & (~(same_tid & same_date) | changed)]
     new = merged[~present]
     return new[calls.columns].reset_index(drop=True), reissued[[*calls.columns, "old_as_of"]].reset_index(drop=True)
 
@@ -352,17 +380,16 @@ def _read_index(readers: _Readers, group: int) -> pd.DataFrame:
     return frame.assign(row_group=group, row=np.arange(len(frame)))
 
 
-def _read_transcripts(readers: _Readers, group: int, calls: pd.DataFrame) -> pd.DataFrame:
+def _read_transcripts(readers: _Readers, group: int, calls: pd.DataFrame) -> pa.Array:
     column = readers.read(group, [TRANSCRIPTS_COLUMN]).column(0)
-    taken = column.combine_chunks().take(pa.array(calls["row"].to_numpy()))
-    return explode_paragraphs(taken, calls.reset_index(drop=True))
+    return column.combine_chunks().take(pa.array(calls["row"].to_numpy()))
 
 
-def _ordered_parallel(groups: list[int], work: Callable[[int], pd.DataFrame], workers: int) -> Iterator[tuple[int, pd.DataFrame]]:
+def _ordered_parallel[T](groups: list[int], work: Callable[[int], T], workers: int) -> Iterator[tuple[int, T]]:
     """`work(group)` on `workers` threads, yielded in submission order with at most 2x`workers`
     results in flight, so a slow consumer bounds memory."""
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        pending: deque[tuple[int, Future[pd.DataFrame]]] = deque()
+        pending: deque[tuple[int, Future[T]]] = deque()
         queue = iter(groups)
         for group in queue:
             pending.append((group, pool.submit(work, group)))
@@ -392,7 +419,94 @@ def _stored_calls(context: Context, calls: pd.DataFrame, scope: set[str], full: 
     stored = context.store.load(_TABLE, ["ticker", "quarter", "transcript_id", "as_of"], where=where, optional=True)
     if stored is None or full:
         return stored
-    return stored.merge(calls[_KEY], on=_KEY, how="inner")
+    return stored.merge(calls[_KEY].drop_duplicates(), on=_KEY, how="inner")
+
+
+def _paragraph_signature(rows: pd.DataFrame) -> tuple[tuple[object, ...], ...]:
+    """Retained raw content and speaker order; null speaker spellings compare equally."""
+    columns = ["paragraph", "speaker", "content"]
+    rows = rows.sort_values("paragraph")[columns].astype(object).where(pd.notna(rows[columns]), None)
+    return tuple(rows.itertuples(index=False, name=None))
+
+
+def _verify_calls(
+    context: Context,
+    readers: _Readers,
+    normal: pd.DataFrame,
+    candidates: pd.DataFrame,
+    stored: pd.DataFrame | None,
+    rejected: int,
+    workers: int,
+) -> pd.DataFrame:
+    """Verify raw gaps and null-ID equality before any store mutation; normal winners are immutable."""
+    unoccupied = candidates
+    for columns in (_KEY, ["ticker", "as_of"]):
+        unoccupied = unoccupied[~pd.MultiIndex.from_frame(unoccupied[columns]).isin(pd.MultiIndex.from_frame(normal[columns]))]
+    possible = pd.concat([normal, unoccupied], ignore_index=True)
+    compare = possible.iloc[0:0]
+    if stored is not None and not stored.empty:
+        null_stored = stored[stored["transcript_id"].isna()].copy()
+        null_stored["as_of"] = pd.to_datetime(null_stored["as_of"]).dt.normalize()
+        compare = possible[possible["transcript_id"].isna()].merge(null_stored[[*_KEY, "as_of"]], on=[*_KEY, "as_of"])
+    work = pd.concat([unoccupied, compare], ignore_index=True).drop_duplicates(["row_group", "row"])
+    names: dict[str, str] = {}
+    if not unoccupied.empty:
+        roster = context.store.load(
+            Tables.sp500_tickers, ["ticker", "name", "cik"], where={"ticker": sorted(unoccupied["ticker"].unique())}, optional=True
+        )
+        if roster is not None:
+            names = {str(ticker): str(name) for ticker, name in roster.dropna(subset=["name"])[["ticker", "name"]].itertuples(index=False, name=None)}
+    comparisons = set(compare[["row_group", "row"]].itertuples(index=False, name=None))
+    verified: set[tuple[int, int]] = set()
+    changed: set[tuple[int, int]] = set()
+    by_group = {int(cast(SupportsInt, g)): part.reset_index(drop=True) for g, part in work.groupby("row_group", sort=True)}
+    try:
+        for group, transcripts in _ordered_parallel(list(by_group), lambda g: _read_transcripts(readers, g, by_group[g]), workers):
+            part = by_group[group]
+            null_part = part.loc[[(group, row) in comparisons for row in part["row"]]]
+            signatures = {}
+            if not null_part.empty:
+                rows = context.store.load(
+                    _TABLE,
+                    [*_KEY, "paragraph", "speaker", "content"],
+                    where={"ticker": sorted(null_part["ticker"].unique()), "quarter": sorted(null_part["quarter"].unique())},
+                )
+                assert rows is not None
+                signatures = {key: _paragraph_signature(frame) for key, frame in rows.groupby(_KEY)}
+            for i, call in enumerate(part.itertuples(index=False)):
+                position = (group, int(cast(SupportsInt, call.row)))
+                if call.recovery and company_in_introduction(transcripts[i].as_py() or [], names.get(str(call.ticker), "")):
+                    verified.add(position)
+                if position in comparisons:
+                    source_rows = explode_paragraphs(transcripts.slice(i, 1), part.iloc[[i]].reset_index(drop=True))
+                    if _paragraph_signature(source_rows) != signatures.get((call.ticker, call.quarter)):
+                        changed.add(position)
+    except Exception:
+        context.log.exception(
+            "Earnings calls: source verification/comparison failed; recovery decisions pending, reconciliation aborted before deletion."
+        )
+        raise
+    matched = unoccupied.loc[
+        [(int(group), int(row)) in verified for group, row in unoccupied[["row_group", "row"]].itertuples(index=False, name=None)]
+    ]
+    selected = _select_calls(pd.concat([normal, matched], ignore_index=True))
+    selected["content_changed"] = [
+        (int(group), int(row)) in changed for group, row in selected[["row_group", "row"]].itertuples(index=False, name=None)
+    ]
+    assert set(normal[["row_group", "row"]].itertuples(index=False, name=None)) <= set(
+        selected[["row_group", "row"]].itertuples(index=False, name=None)
+    )
+    context.log.info(
+        "Earnings calls raw recovery: %d initially rejected source rows; %d hard/unlinked/out-of-scope, %d occupied quarter/date, %d intro rejected, %d name-matched rows, %d selected recovery calls; %d payload groups verified, 0 pending read failures.",
+        rejected,
+        rejected - len(candidates),
+        len(candidates) - len(unoccupied),
+        len(unoccupied) - len(matched),
+        len(matched),
+        int(selected["recovery"].sum()),
+        len(by_group),
+    )
+    return selected
 
 
 def _remove_calls(context: Context, calls: pd.DataFrame) -> None:
@@ -453,8 +567,9 @@ def extract_earnings_calls(
         index_frames = [frame for _, frame in _ordered_parallel(groups, lambda g: _read_index(readers, g), workers)]
         df_index = pd.concat(index_frames, ignore_index=True) if index_frames else pd.DataFrame(columns=[*INDEX_COLUMNS, "row_group", "row"])
         df_index = df_index[df_index["symbol"].map(yahoo_symbol).isin(symbols)]
-        df_calls = calls_from_index(df_index, scope, identity)
-        df_stored = _stored_calls(context, df_calls, scope, full)
+        df_normal, df_candidates, rejected = calls_from_index(df_index, scope, identity)
+        df_stored = _stored_calls(context, pd.concat([df_normal, df_candidates], ignore_index=True), scope, full)
+        df_calls = _verify_calls(context, readers, df_normal, df_candidates, df_stored, rejected, workers)
         df_new, df_reissued = diff_calls(df_calls, df_stored)
         df_gone, vanished = stale_calls(df_calls, df_stored if full else None)
         if vanished:
@@ -465,6 +580,14 @@ def extract_earnings_calls(
             len(df_new),
             len(df_reissued),
             len(df_gone),
+        )
+        recovered = int(df_calls["recovery"].sum())
+        recovered_new, recovered_reissued = int(df_new["recovery"].sum()), int(df_reissued["recovery"].sum())
+        log.info(
+            "Earnings calls raw recovery selected: %d new, %d re-issued, %d already stored.",
+            recovered_new,
+            recovered_reissued,
+            recovered - recovered_new - recovered_reissued,
         )
         if not df_gone.empty:
             log.warning(
@@ -481,8 +604,9 @@ def extract_earnings_calls(
         )
         by_group = {int(cast(SupportsInt, g)): df_part for g, df_part in df_needed.groupby("row_group", sort=True)}
         empty_calls = 0
-        for group, df_paragraphs in _ordered_parallel(list(by_group), lambda g: _read_transcripts(readers, g, by_group[g]), workers):
+        for group, transcripts in _ordered_parallel(list(by_group), lambda g: _read_transcripts(readers, g, by_group[g]), workers):
             df_part = by_group[group]
+            df_paragraphs = explode_paragraphs(transcripts, df_part.reset_index(drop=True))
             empty_calls += len(df_part) - df_paragraphs[_KEY].drop_duplicates().shape[0]
             rows_written += _write_batch(context, df_paragraphs, df_part[df_part["is_reissued"]])
         if empty_calls:

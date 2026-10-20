@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import types
+from collections import Counter
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
@@ -126,6 +127,158 @@ def _identity() -> Identity:
     )
 
 
+def _recovery_context(tmp_path: Path, store: Any) -> Any:
+    """Real Broadcom intro with a known-truth dated master boundary."""
+    ctx = _ctx(tmp_path, store)
+    roster = pd.DataFrame({"ticker": ["AVGO"], "name": ["Broadcom"], "cik": ["1730168"]})
+    lineage = pd.DataFrame(
+        [
+            dict(
+                cik="1730168",
+                entity_id="E1730168",
+                role="cik_window",
+                symbol="",
+                valid_from="2016-01-01",
+                valid_to=None,
+                status="curated",
+                sources="manual",
+            ),
+            dict(
+                cik="1730168",
+                entity_id="E1730168",
+                role="symbol",
+                symbol="AVGO",
+                valid_from="2016-01-01",
+                valid_to=None,
+                status="curated",
+                sources="manual",
+            ),
+        ]
+    )
+    tenure = pd.DataFrame([dict(symbol="AVGO", issuer_cik="1730168", valid_from="2016-01-01", valid_to=None, n_filings=1, source="manual")])
+    ctx._identity_resolver = build_identity(lineage, tenure, roster)
+    store.save(Tables.sp500_tickers, roster)
+    return ctx
+
+
+def _broadcom_intro(tid: int | None = 72543, quarter: int = 4) -> dict[str, Any]:
+    call = _call("AVGO", 2005, quarter, "2006-01-31", tid, 2)
+    # Saved defeatbeta AVGO 2005Q4, paragraph 3; the preceding rows are participant rosters.
+    call["transcripts"] = [
+        {"paragraph_number": 1, "speaker": "Executives", "content": "Scott McGregor, President and Chief Executive Officer"},
+        {
+            "paragraph_number": 2,
+            "speaker": "Operator",
+            "content": "Welcome to the Broadcom’s Fourth Quarter Fiscal Year 2005 Earnings Conference Call. During the presentation, all participants will be in a listen-only mode.",
+        },
+    ]
+    return call
+
+
+def test_intro_recovers_raw_gap_and_repeats_without_writes(tmp_path: Path, sqlite_store: Any) -> None:
+    ctx = _recovery_context(tmp_path, sqlite_store)
+    source = _source(_write(tmp_path / "intro.parquet", [[_broadcom_intro()]]), "intro")[0]
+    first = ect.extract_earnings_calls(ctx, _CFG, tickers=["AVGO"], source=source)
+    assert first.calls_new == 1 and first.rows_written == 2
+    rows = _sections(sqlite_store)
+    assert set(rows["quarter"]) == {"2005Q4"} and set(rows["as_of"].astype(str)) == {"2006-01-31"}
+    for full in (False, True, True):
+        assert ect.extract_earnings_calls(ctx, _CFG, tickers=["AVGO"], full=full, source=source).rows_written == 0
+    print("SANITY: an early-name-proven raw gap recovers at its source date; ordinary/full repeats preserve it with zero writes.")
+
+
+@pytest.mark.parametrize("fallback_date", ["2006-01-31", "2026-01-31"])
+def test_normal_provider_call_wins_before_it_is_stored(tmp_path: Path, sqlite_store: Any, fallback_date: str) -> None:
+    ctx = _recovery_context(tmp_path, sqlite_store)
+    identity = ctx._identity_resolver
+    entity = identity.universe_entity("AVGO")
+    ctx._identity_resolver = replace(
+        identity, windows_by_entity={entity: tuple(replace(w, valid_to=pd.Timestamp("2020-01-01")) for w in identity.windows_by_entity[entity])}
+    )
+    normal = _call("AVGO", 2005, 4, "2016-02-01", 9, 3, "canonical")
+    fallback = {**_broadcom_intro(), "report_date": fallback_date}
+    source = _source(_write(tmp_path / "priority.parquet", [[fallback, normal]]), "priority")[0]
+    result = ect.extract_earnings_calls(ctx, _CFG, tickers=["AVGO"], source=source)
+    assert result.calls_new == 1 and set(_sections(sqlite_store)["transcript_id"]) == {9}
+    print("SANITY: complete provider canonical occupancy blocks raw recovery even before the normal winner has been downloaded.")
+
+
+def test_null_id_replacement_compares_content_after_old_source_disappears(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    ctx = _recovery_context(tmp_path, sqlite_store)
+    first = _source(_write(tmp_path / "recovered.parquet", [[_broadcom_intro(None)]]), "recovered")[0]
+    ect.extract_earnings_calls(ctx, _CFG, tickers=["AVGO"], source=first)
+    _seed_derivatives(sqlite_store, [("AVGO", "2005Q4", "2006-01-31")])
+    # Normal ownership becomes available; the former rejected row is gone, with no ID/date signal.
+    entity = ctx._identity_resolver.universe_entity("AVGO")
+    cik = ctx._identity_resolver.roster_cik["AVGO"]
+    ctx._identity_resolver = replace(ctx._identity_resolver, windows_by_entity={entity: (CikWindow(cik, None, None, None, None),)})
+    normal = _call("AVGO", 2005, 4, "2006-01-31", None, 3, "normal replacement")
+    source = _source(_write(tmp_path / "normal.parquet", [[normal]]), "normal")[0]
+    reads: Counter[int] = Counter()
+    read = ect._Readers.read
+
+    def spy(reader: Any, group: int, columns: list[str]) -> pa.Table:
+        if columns == [ect.TRANSCRIPTS_COLUMN]:
+            reads[group] += 1
+        return read(reader, group, columns)
+
+    monkeypatch.setattr(ect._Readers, "read", spy)
+    result = ect.extract_earnings_calls(ctx, _CFG, tickers=["AVGO"], source=source)
+    assert result.calls_reissued == 1 and result.rows_written == 3 and reads == {0: 2}
+    assert _sections(sqlite_store)["content"].str.contains("normal replacement").all()
+    pending = sqlite_store.load(Tables.earnings_call_sentiment)
+    assert set(pending["model"]) == {EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL}
+    reads.clear()
+    assert ect.extract_earnings_calls(ctx, _CFG, tickers=["AVGO"], full=True, source=source).rows_written == 0
+    assert reads == {0: 1}
+    print(
+        "SANITY: null/null same-date replacement is detected after former fallback disappears; 2 reads replace, 1 read verifies unchanged, caches invalidate."
+    )
+
+
+@pytest.mark.parametrize("comparison", [False, True])
+def test_verification_failure_aborts_full_before_deletion(
+    tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, comparison: bool
+) -> None:
+    ctx = _recovery_context(tmp_path, sqlite_store)
+    first = [_broadcom_intro(None), _call("AVGO", 2020, 1, "2020-04-21", 7, 2), _call("AVGO", 2020, 2, "2020-07-21", 8, 2)]
+    ect.extract_earnings_calls(ctx, _CFG, tickers=["AVGO"], source=_source(_write(tmp_path / "first.parquet", [first]), "first")[0])
+    before = _sections(sqlite_store)
+    # A valid normal call remains, so existing vanished-ticker protection alone would not help.
+    second = [first[0], first[2]] if comparison else [_broadcom_intro(9, quarter=3), first[2]]
+    source = _source(_write(tmp_path / "failed.parquet", [second]), "failed")[0]
+    read = ect._Readers.read
+
+    def fail(reader: Any, group: int, columns: list[str]) -> pa.Table:
+        if columns == [ect.TRANSCRIPTS_COLUMN]:
+            raise OSError("required verification unavailable")
+        return read(reader, group, columns)
+
+    monkeypatch.setattr(ect._Readers, "read", fail)
+    with pytest.raises(OSError, match="verification unavailable"):
+        ect.extract_earnings_calls(ctx, _CFG, tickers=["AVGO"], full=True, source=source)
+    pd.testing.assert_frame_equal(before, _sections(sqlite_store))
+    print(f"SANITY: failed {'null-ID comparison' if comparison else 'intro verification'} leaves all old raw rows untouched before full deletion.")
+
+
+def test_ambiguous_master_target_is_not_resolved_by_name_or_subset(tmp_path: Path, sqlite_store: Any) -> None:
+    ctx = _recovery_context(tmp_path, sqlite_store)
+    identity = ctx._identity_resolver
+    rows = identity.symbol_intervals["AVGO"]
+    other = replace(rows[0], entity="OTHER", cik="0000000002")
+    ctx._identity_resolver = replace(
+        identity,
+        ticker_by_entity={**identity.ticker_by_entity, "OTHER": "OTHER"},
+        symbol_intervals={"AVGO": (*rows, other)},
+        windows_by_entity={**identity.windows_by_entity, "OTHER": (CikWindow(other.cik, None, None, None, None),)},
+    )
+    result = ect.extract_earnings_calls(
+        ctx, _CFG, tickers=["AVGO"], source=_source(_write(tmp_path / "ambiguous.parquet", [[_broadcom_intro()]]), "ambiguous")[0]
+    )
+    assert result.rows_written == 0
+    print("SANITY: a matching name and single-ticker scope cannot resolve multiple full-master targets.")
+
+
 def test_symbol_lineage_recovers_old_calls_on_ordinary_resume(tmp_path: Path, sqlite_store: Any) -> None:
     ctx = _ctx(tmp_path, sqlite_store)
     current = [_call("ECHO", 2026, 1, "2026-08-03", 101, 2), _call("BNY", 2026, 1, "2026-07-15", 201, 2)]
@@ -155,9 +308,9 @@ def test_alias_overlap_deduplicates_after_mapping_and_rejects_secondary_class() 
         _call("BFA", 2026, 1, "2026-04-16", 9, 1),
     ]
     index = pd.DataFrame(rows).assign(row_group=0, row=range(len(rows)))
-    calls = ect.calls_from_index(index, {"ECHO", "BNY", "BF-B"}, _identity())
+    calls = ect.calls_from_index(index, {"ECHO", "BNY", "BF-B"}, _identity())[0]
     assert calls.set_index("ticker")["transcript_id"].to_dict() == {"BNY": 3258718, "ECHO": 3278590}
-    assert ect.calls_from_index(index, {"ECHO"}, _identity()).to_dict("records") == calls.query("ticker == 'ECHO'").to_dict("records")
+    assert ect.calls_from_index(index, {"ECHO"}, _identity())[0].to_dict("records") == calls.query("ticker == 'ECHO'").to_dict("records")
     print("SANITY: rebased overlaps keep the non-null ID once; scope and sibling classes cannot change ownership.")
 
 
@@ -176,12 +329,12 @@ def test_call_identity_rejects_conflicts_noise_dei_event_only_and_outside_window
     ]
     for rows in cases:
         altered = replace(identity, symbol_intervals={**identity.symbol_intervals, "OLD": rows})
-        assert ect.ticker_for_call(altered, "OLD", stamp) is None
+        assert ect.ticker_for_call(altered, "OLD", stamp).ticker is None
     outside = replace(
         identity, windows_by_entity={**identity.windows_by_entity, entity: (CikWindow(cik, pd.Timestamp("2027-01-01"), None, None, None),)}
     )
-    assert ect.ticker_for_call(outside, "SATS", stamp) is None
-    assert ect.ticker_for_call(identity, "ECHO", pd.Timestamp("2007-05-13")) is None
+    assert ect.ticker_for_call(outside, "SATS", stamp).ticker is None
+    assert ect.ticker_for_call(identity, "ECHO", pd.Timestamp("2007-05-13")).ticker is None
     print("SANITY: no foreign, ambiguous, conflicted, noise, DEI-only, acquired or outside-window call is attached.")
 
 
@@ -195,7 +348,7 @@ def test_unsupported_rebasing_rejects_reused_alias_ownership(ownership: str) -> 
         identity = replace(identity, tenure_by_symbol={**identity.tenure_by_symbol, "ECHO": (("E0000000999", pd.Timestamp("2000-01-01"), None, 1),)})
 
     assert identity.entity_for("REBASED", pd.Timestamp("1999-01-01")) is None
-    assert ect.ticker_for_call(identity, "REBASED", pd.Timestamp("1999-01-01")) is None
+    assert ect.ticker_for_call(identity, "REBASED", pd.Timestamp("1999-01-01")).ticker is None
     print(f"SANITY: unsupported rebasing cannot bypass a supported alias with {ownership} lifetime ownership.")
 
 
@@ -204,17 +357,17 @@ def test_rebasing_keeps_dated_support_and_unreused_early_history() -> None:
     entity = identity.universe_entity("ECHO")
     alias = SymbolInterval(entity, pd.Timestamp("2027-01-01"), None, "curated", frozenset({"manual"}), identity.roster_cik["ECHO"])
     identity = replace(identity, symbol_intervals={**identity.symbol_intervals, "REBASED": (alias,)})
-    assert ect.ticker_for_call(identity, "REBASED", pd.Timestamp("2010-01-01")) == "ECHO"
+    assert ect.ticker_for_call(identity, "REBASED", pd.Timestamp("2010-01-01")).ticker == "ECHO"
     same_issuer = replace(
         identity,
         tenure_by_symbol={**identity.tenure_by_symbol, "ECHO": tuple(row for row in identity.tenure_by_symbol["ECHO"] if row[0] == entity)},
     )
-    assert ect.ticker_for_call(same_issuer, "REBASED", pd.Timestamp("1999-01-01")) == "ECHO"
-    assert ect.ticker_for_call(identity, "REBASED", pd.Timestamp("2027-01-01")) == "ECHO"
+    assert ect.ticker_for_call(same_issuer, "REBASED", pd.Timestamp("1999-01-01")).ticker == "ECHO"
+    assert ect.ticker_for_call(identity, "REBASED", pd.Timestamp("2027-01-01")).ticker == "ECHO"
     foreign_source = replace(
         identity, symbol_intervals={**identity.symbol_intervals, "REBASED": (replace(alias, valid_from=pd.Timestamp("2006-01-01")),)}
     )
-    assert ect.ticker_for_call(foreign_source, "ECHO", pd.Timestamp("2007-01-01")) is None
+    assert ect.ticker_for_call(foreign_source, "ECHO", pd.Timestamp("2007-01-01")).ticker is None
     print("SANITY: dated support, normal dated resolution and unreused early history survive; actual-source foreign ownership still vetoes.")
 
 
@@ -245,28 +398,28 @@ def test_rebased_support_requires_unambiguous_dated_alias_and_its_own_cik_window
         }
     )
     identity = build_identity(lineage, tenure, roster)
-    assert ect.ticker_for_call(identity, "OLD", pd.Timestamp("2010-05-01")) is None
-    assert ect.ticker_for_call(identity, "NEW", pd.Timestamp("2010-05-01")) is None
-    assert ect.ticker_for_call(identity, "NEW", pd.Timestamp("2015-01-01")) == "NEW"
-    assert ect.ticker_for_call(identity, "NEW", pd.Timestamp("2024-05-01")) is None
-    assert ect.ticker_for_call(identity, "NEW", pd.Timestamp("2030-01-01")) == "NEW"
+    assert ect.ticker_for_call(identity, "OLD", pd.Timestamp("2010-05-01")).ticker is None
+    assert ect.ticker_for_call(identity, "NEW", pd.Timestamp("2010-05-01")).ticker is None
+    assert ect.ticker_for_call(identity, "NEW", pd.Timestamp("2015-01-01")).ticker == "NEW"
+    assert ect.ticker_for_call(identity, "NEW", pd.Timestamp("2024-05-01")).ticker is None
+    assert ect.ticker_for_call(identity, "NEW", pd.Timestamp("2030-01-01")).ticker == "NEW"
     same_entity = replace(
         identity,
         tenure_by_symbol={**identity.tenure_by_symbol, "OLD": tuple(("E1", *row[1:]) for row in identity.tenure_by_symbol["OLD"])},
         manual_tenure_by_symbol={},
         symbol_intervals={**identity.symbol_intervals, "OLD": tuple(replace(row, entity="E1") for row in identity.symbol_intervals["OLD"])},
     )
-    assert ect.ticker_for_call(same_entity, "NEW", pd.Timestamp("2010-05-01")) == "NEW"
+    assert ect.ticker_for_call(same_entity, "NEW", pd.Timestamp("2010-05-01")).ticker == "NEW"
     own = SymbolInterval("E1", pd.Timestamp("2010-01-01"), pd.Timestamp("2011-01-01"), "curated", frozenset({"manual"}), "0000000001")
     rescued = replace(
         identity,
         symbol_intervals={**identity.symbol_intervals, "SAFE": (own,)},
         tenure_by_symbol={**identity.tenure_by_symbol, "SAFE": (("E1", own.valid_from, own.valid_to, 1),)},
     )
-    assert ect.ticker_for_call(rescued, "NEW", pd.Timestamp("2010-05-01")) == "NEW"
-    assert ect.ticker_for_call(rescued, "OLD", pd.Timestamp("2010-05-01")) is None
+    assert ect.ticker_for_call(rescued, "NEW", pd.Timestamp("2010-05-01")).ticker == "NEW"
+    assert ect.ticker_for_call(rescued, "OLD", pd.Timestamp("2010-05-01")).ticker is None
     conflicted = replace(rescued, symbol_intervals={**rescued.symbol_intervals, "SAFE": (replace(own, status="conflict"),)})
-    assert ect.ticker_for_call(conflicted, "NEW", pd.Timestamp("2010-05-01")) is None
+    assert ect.ticker_for_call(conflicted, "NEW", pd.Timestamp("2010-05-01")).ticker is None
     print(
         "SANITY: dated support rejects overlapping owners and wrong-CIK windows, honors half-open ends and same-entity CIKs; another alias rescues only rebased copies."
     )
@@ -715,7 +868,7 @@ def test_duplicate_key_keeps_latest_date_then_highest_id() -> None:
             "row": [0, 1, 0, 1],
         }
     )
-    calls = ect.calls_from_index(index, {"AAA", "BBB"}, _identity())
+    calls = ect.calls_from_index(index, {"AAA", "BBB"}, _identity())[0]
     kept = calls.set_index("ticker")
 
     assert len(calls) == 2

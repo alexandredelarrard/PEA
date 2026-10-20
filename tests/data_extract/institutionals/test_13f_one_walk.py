@@ -803,9 +803,9 @@ def test_empty_cover_is_silent_and_marked_once(sqlite_store, monkeypatch, caplog
     _patch_walk(monkeypatch, [filing])
     real_obj, obj_calls = f13.filing_obj, []
 
-    def _spy_obj(f: Any) -> Any:
+    def _spy_obj(f: Any, *, sgml_xml_only: bool = False) -> Any:
         obj_calls.append(f.accession_number)
-        return real_obj(f)
+        return real_obj(f, sgml_xml_only=sgml_xml_only)
 
     monkeypatch.setattr(f13, "filing_obj", _spy_obj)
     saver = f13._Saver(_ctx(sqlite_store), set(UNIVERSE), {ROSTER}, save_every=1)
@@ -847,9 +847,9 @@ def test_zero_count_cover_with_a_positive_total_is_marked_once_keeping_the_total
     _patch_walk(monkeypatch, [filing])
     real_obj, obj_calls = f13.filing_obj, []
 
-    def _spy_obj(f: Any) -> Any:
+    def _spy_obj(f: Any, *, sgml_xml_only: bool = False) -> Any:
         obj_calls.append(f.accession_number)
-        return real_obj(f)
+        return real_obj(f, sgml_xml_only=sgml_xml_only)
 
     monkeypatch.setattr(f13, "filing_obj", _spy_obj)
     saver = f13._Saver(_ctx(sqlite_store), set(UNIVERSE), {ROSTER}, save_every=1)

@@ -181,6 +181,75 @@ def test_deterministic_errors_pass_through(waits: list[float]) -> None:
     print("  a parse error is raised unchanged by sec_call and as ParseFailureError by filing_obj, never retried.")
 
 
+@pytest.mark.parametrize("primary_xml", [None, "<primary />"])
+def test_filing_obj_sgml_only_preserves_parser_selection(primary_xml: str | None, monkeypatch: pytest.MonkeyPatch) -> None:
+    filing = edgar.Filing(cik=1, company="X", form="13F-HR", filing_date="2024-01-02", accession_no="0001104659-24-000001")
+    parsed = object()
+    parsers: list[str] = []
+
+    def filing_parser(self: edgar.Filing) -> object:
+        assert self is filing
+        parsers.append("filing")
+        return parsed
+
+    def data_parser(wrapped: Any) -> object:
+        assert wrapped._filing is filing and wrapped.xml() is None
+        assert wrapped.accession_number == filing.accession_number
+        parsers.append("wrapped")
+        return parsed
+
+    def homepage(_self: edgar.Filing) -> None:
+        raise AssertionError("the filing-homepage XML fallback must not run")
+
+    monkeypatch.setattr(edgar.Filing, "sgml", lambda _self: SimpleNamespace(xml=lambda: primary_xml))
+    monkeypatch.setattr(edgar.Filing, "xml", homepage)
+    monkeypatch.setattr(edgar.Filing, "obj", filing_parser)
+    monkeypatch.setattr(edgar, "obj", data_parser)
+
+    assert sec_io.filing_obj(filing, sgml_xml_only=True) is parsed
+    assert parsers == (["filing"] if primary_xml else ["wrapped"])
+    print(f"\nSANITY: SGML primary XML {bool(primary_xml)} selects {parsers[0]} parser; no homepage XML call.")
+
+
+@pytest.mark.parametrize("sgml_xml_only", [False, True])
+def test_filing_obj_keeps_fake_filing_contract(sgml_xml_only: bool) -> None:
+    parsed = object()
+    filing = SimpleNamespace(accession_number="fake", obj=lambda: parsed)
+    assert sec_io.filing_obj(filing, sgml_xml_only=sgml_xml_only) is parsed
+    print(f"\nSANITY: fake filing retains its own obj contract with sgml_xml_only={sgml_xml_only}.")
+
+
+def test_filing_obj_default_keeps_real_filing_parser(monkeypatch: pytest.MonkeyPatch) -> None:
+    filing = edgar.Filing(cik=1, company="X", form="13F-HR", filing_date="2024-01-02", accession_no="0001104659-24-000001")
+    parsed = object()
+
+    def forbidden_sgml(_self: edgar.Filing) -> None:
+        raise AssertionError("default filing_obj must not inspect SGML")
+
+    monkeypatch.setattr(edgar.Filing, "sgml", forbidden_sgml)
+    monkeypatch.setattr(edgar.Filing, "obj", lambda _self: parsed)
+    assert sec_io.filing_obj(filing) is parsed
+    print("\nSANITY: default filing_obj keeps the real filing's direct parser without an SGML probe.")
+
+
+@pytest.mark.parametrize("transient", [False, True])
+def test_filing_obj_sgml_only_preserves_retry_labels_and_failures(transient: bool, waits: list[float], monkeypatch: pytest.MonkeyPatch) -> None:
+    accession = "0001104659-24-000001"
+    filing = edgar.Filing(cik=1, company="X", form="13F-HR", filing_date="2024-01-02", accession_no=accession)
+    read, calls = _scripted([_http_status(503) if transient else ValueError("bad SGML XML")])
+    monkeypatch.setattr(edgar.Filing, "sgml", lambda _self: read())
+    failure = TransientReadError if transient else sec_io.ParseFailureError
+    with pytest.raises(failure, match=f"{accession} obj") as caught:
+        sec_io.filing_obj(filing, sgml_xml_only=True)
+    assert len(calls) == (3 if transient else 1)
+    assert waits == ([5.0, 20.0] if transient else [])
+    if transient:
+        assert "after 3 attempt(s)" in str(caught.value)
+    else:
+        assert "ValueError: bad SGML XML" in str(caught.value)
+    print(f"\nSANITY: SGML failure remains {failure.__name__}, {len(calls)} attempt(s), obj label and waits {waits}.")
+
+
 def test_filing_header_retries_an_empty_header_then_raises(waits: list[float], monkeypatch: pytest.MonkeyPatch) -> None:
     """edgartools caches `header` and the submission; an error page yields a header with no text and no party."""
     empty = FilingHeader(text="", filing_metadata={"ACCESSION NUMBER": "0001104659-24-000001"})

@@ -265,7 +265,7 @@ def test_ordinary_reader_retains_acceptance_clock(
     )
     if clock != "missing":
         filing.acceptance_datetime = accepted
-    monkeypatch.setattr(f13, "filing_obj", lambda _: report)
+    monkeypatch.setattr(f13, "filing_obj", lambda _, **_kwargs: report)
     monkeypatch.setattr(f13, "sec_call", lambda fn, *args, **kwargs: fn(*args))
     result = f13.read_filing_vintage(FilingStamp.of(filing, "1"))
     assert isinstance(result, tuple), result

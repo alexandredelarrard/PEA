@@ -30,6 +30,7 @@ from src.data_aggregate.utils.governance.directors import (
     finalize_board_source,
     merge_board_aggregates,
 )
+from src.data_aggregate.utils.governance.staleness import source_date_column
 from src.data_store.schema import Tables
 
 _YEARS = ["2019-05-01", "2020-05-01", "2021-05-01", "2022-05-01", "2023-05-01"]
@@ -112,7 +113,7 @@ def _set(df: pd.DataFrame, ticker: str, i: int, col: str, value: float) -> None:
     df.loc[(df["ticker"] == ticker) & (df["accession_number"] == f"{ticker}-{i}"), col] = value
 
 
-def test_the_forward_carry_fills_a_gap_a_trailing_edge_and_refuses_a_stale_one():
+def test_the_forward_carry_fills_a_gap_a_trailing_edge_and_refuses_a_stale_one() -> None:
     """D37, revised 2026-09-09. The child fill is a BOUNDED FORWARD CARRY, not an agreement gate.
 
     Three behaviours, one per shape, mirroring `def14a_impute`'s
@@ -143,7 +144,9 @@ def test_the_forward_carry_fills_a_gap_a_trailing_edge_and_refuses_a_stale_one()
     )
     assert dis["other_public_company_boards_imputed"].tolist() == [0, 0, 1, 0, 0]
 
-    # a TRAILING gap: silence after the last disclosure still carries
+    # A trailing gap survives day 395, then expires without restarting on the carried row.
+    assert CARRY_MAX_DAYS == 395
+    trailing_dates = [_YEARS[0], _YEARS[1], "2021-05-31", "2021-06-01", "2022-05-01"]
     trailing = pd.DataFrame(
         [
             {
@@ -155,12 +158,18 @@ def test_the_forward_carry_fills_a_gap_a_trailing_edge_and_refuses_a_stale_one()
                 "tenure_years": 5 + i,
                 "other_public_company_boards": 3.0 if i < 2 else None,
             }
-            for i, y in enumerate(_YEARS)
+            for i, y in enumerate(trailing_dates)
         ]
     )
     t_filled, t_stats = fill_director_attributes(trailing)
-    t_vals = t_filled.sort_values("as_of")["other_public_company_boards"].tolist()
-    assert t_vals == [3.0] * 5, f"a trailing gap was not carried: {t_vals}"
+    t_filled = t_filled.sort_values("as_of")
+    t_vals = t_filled["other_public_company_boards"].tolist()
+    assert t_vals[:3] == [3.0] * 3, f"a fresh trailing gap was not carried: {t_vals}"
+    assert t_filled["other_public_company_boards"].iloc[3:].isna().all(), "a stale trailing gap survived"
+    assert t_filled["other_public_company_boards_imputed"].tolist() == [0, 0, 1, 0, 0]
+    assert t_filled[source_date_column("other_public_company_boards")].iloc[2] == pd.Timestamp("2020-05-01")
+    assert t_stats["child carried: other_public_company_boards"] == 1
+    assert t_stats[f"child declined (>{CARRY_MAX_DAYS}d stale): other_public_company_boards"] == 2
 
     # a gap WIDER than the cap: refused
     stale = pd.DataFrame(
@@ -202,11 +211,7 @@ def test_the_forward_carry_fills_a_gap_a_trailing_edge_and_refuses_a_stale_one()
     )
     print("  Ann Agree   2 -> gap -> 2  carries 2.0 (unchanged by the new rule)")
     print("  Dan Disagree 1 -> gap -> 4  carries 1.0, the last KNOWN value (was NaN)")
-    print(
-        f"  Tess Trail  3, 3, then silence -> {t_vals[2:]} "
-        f"({t_stats['child carried: other_public_company_boards']} trailing cells the "
-        "agreement gate could never reach)"
-    )
+    print(f"  Tess Trail  3, 3, then silence -> {t_vals[2:]} (carried at day 395, refused from day 396 on the original source clock)")
     print(f"  Rip Winkle  2010 -> 2019 (3,287 d) REFUSED at the {CARRY_MAX_DAYS}-day cap")
     print(
         "  CONCLUSION: every filled cell is the last value disclosed at or before its own "
@@ -263,7 +268,7 @@ def test_the_derivation_reproduces_the_filers_own_scalar():
     )
 
 
-def test_the_precedence_chain_prefers_a_complete_filed_value_and_overrides_a_thinner_one():
+def test_the_precedence_chain_prefers_a_complete_filed_value_and_overrides_a_thinner_one() -> None:
     """D39, all four steps, and the reason steps 1 and 3 are written apart.
 
     A derived value must NOT displace a complete filer-stated one merely because it exists; it
@@ -303,13 +308,19 @@ def test_the_precedence_chain_prefers_a_complete_filed_value_and_overrides_a_thi
 
     # step 4: an unreachable cell is left to `impute_def14a`, and only THEN labelled
     parent2 = _parent()
-    _set(parent2, "CCC", 0, "avg_director_age", 40.0)
+    _set(parent2, "CCC", 1, "avg_director_age", 40.0)
     _set(parent2, "CCC", 4, "avg_director_age", 60.0)
     m2, _ = merge_board_aggregates(parent2.assign(avg_other_public_boards=np.nan), pd.DataFrame())
     imputed, _ = impute_def14a(m2)
     final, sstats = finalize_board_source(imputed)
     mid = final[(final["ticker"] == "CCC") & (final["accession_number"] == "CCC-2")].iloc[0]
+    assert mid["avg_director_age"] == 40.0, "fallback must carry the earlier value, never blend with the later 60"
     assert mid["avg_director_age_source"] == SOURCE_INTERPOLATED
+    assert mid[source_date_column("avg_director_age")] == pd.Timestamp("2020-05-01")
+    missing = final[(final["ticker"] == "CCC") & final["accession_number"].isin(["CCC-0", "CCC-3"])]
+    assert missing["avg_director_age"].isna().all(), "a future filing or a stale source filled a gap"
+    assert missing["avg_director_age_source"].isna().all()
+    assert missing[source_date_column("avg_director_age")].isna().all()
     assert sstats["avg_director_age source=interpolated"] >= 1
 
     print("\n=== SANITY CHECK: the D39 precedence chain ===")
@@ -319,7 +330,7 @@ def test_the_precedence_chain_prefers_a_complete_filed_value_and_overrides_a_thi
     print(f"  step 4: CCC 2021 avg_director_age -> {mid['avg_director_age']:.2f} labelled {mid['avg_director_age_source']}")
     print(
         "  CONCLUSION: filed-and-complete wins, filed-and-thinner loses to evidence, NULL is "
-        "supplied by evidence, and interpolation is last and says so. Validated."
+        "supplied by evidence, and bounded forward carry is last (legacy label 'interpolated'). Validated."
     )
 
 

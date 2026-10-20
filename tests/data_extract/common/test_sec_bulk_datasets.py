@@ -249,7 +249,7 @@ def test_insider_download_cli_runs_only_the_download(monkeypatch):
     monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (None, SimpleNamespace(name="ctx")))
     monkeypatch.setattr(cli_mod, "download_insider_transactions", lambda context: calls.append("download") or [])
     monkeypatch.setattr(cli_mod, "fetch_insider_transactions", lambda *a, **k: calls.append("parse"))
-    monkeypatch.setattr(cli_mod, "fetch_insider_edgar", lambda *a, **k: calls.append("edgar"))
+    monkeypatch.setattr(cli_mod, "run_edgar_fetch", lambda *a, **k: calls.append("edgar"))
 
     result = CliRunner().invoke(cli_mod.cli, ["insider-download"])
 

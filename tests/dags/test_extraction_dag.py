@@ -415,7 +415,7 @@ def test_every_edgar_walk_runs_in_the_sec_api_pool():
     assert "insider_edgar" in walks and "insider_zip" not in walks
     assert {"insider_zip", "identity_propagate"} <= dag.tasks["insider_edgar"].upstream
     # the manual command still runs both legs
-    assert {"_insider_zip", "_insider_edgar"} <= _command_names("insider-transactions")
+    assert {"fetch_insider_transactions", "INSIDER_EDGAR_FETCH"} <= _command_names("insider-transactions")
 
     print("\n=== SANITY CHECK: one EDGAR walk at a time ===")
     print(f"  {len(walks)} tasks walk EDGAR (derived from the CLI code), all in sec_api: {sorted(walks)}")

@@ -71,7 +71,7 @@ def test_every_indexed_form_4_is_listed_until_stored(ctx, sqlite_store):
     seed_index(ctx, rows)
     cik_map = pd.DataFrame({"ticker": ["JPM"], "cik": ["0000019617"]})
     scope = EdgarScope(edgar_driver.load_identity(ctx), {})
-    fetch = module.insider_fetch(["JPM"])
+    fetch = module.INSIDER_EDGAR_FETCH
 
     night1 = plan_fetch(ctx, fetch, cik_map, scope, _AS_OF, 15)
     stored = [r[4] for r in rows[:5_100]]
@@ -93,7 +93,7 @@ def test_the_listing_starts_after_the_last_stored_zip_quarter(ctx, sqlite_store)
     seed_index(ctx, rows)
     sqlite_store.save(Tables.insider_transactions, _stored(["zip-q2"], "zip").assign(quarter="2026q2"))
     cik_map = pd.DataFrame({"ticker": ["JPM"], "cik": ["0000019617"]})
-    work = plan_fetch(ctx, module.insider_fetch(["JPM"]), cik_map, EdgarScope(), _AS_OF, 15)
+    work = plan_fetch(ctx, module.INSIDER_EDGAR_FETCH, cik_map, EdgarScope(), _AS_OF, 15)
 
     listed = work.units["JPM"]["filed"]
     expected = sum(pd.Timestamp(r[3]) >= pd.Timestamp("2026-07-01") for r in rows)
@@ -120,8 +120,8 @@ def test_the_window_starts_at_the_earlier_of_the_zip_floor_and_seven_days_back(c
     roster = pd.DataFrame({"ticker": ["JPM", "OXY"], "cik": ["0000019617", "0000797468"]})
     scope = EdgarScope(edgar_driver.load_identity(ctx), {})
 
-    universe = plan_fetch(ctx, module.insider_fetch(["JPM", "OXY"]), roster, scope, pd.Timestamp(as_of), 15)
-    subset = plan_fetch(ctx, module.insider_fetch(["JPM"]), roster.iloc[:1], scope, pd.Timestamp(as_of), 15)
+    universe = plan_fetch(ctx, module.INSIDER_EDGAR_FETCH, roster, scope, pd.Timestamp(as_of), 15)
+    subset = plan_fetch(ctx, module.INSIDER_EDGAR_FETCH, roster.iloc[:1], scope, pd.Timestamp(as_of), 15)
 
     first = {key: df["filed"].min() for key, df in universe.units.items()}
     assert first == {"JPM": pd.Timestamp(start), "OXY": pd.Timestamp(start)}
@@ -148,7 +148,7 @@ def test_an_owner_role_form_4_is_a_marker_and_never_hides_the_issuers_filing(ctx
     }
     sqlite_store.save(Tables.insider_transactions, pd.DataFrame(seed))
 
-    first = run_edgar_fetch(ctx, list(_ROSTER), 15, module.insider_fetch(list(_ROSTER)), as_of=_AS_OF, refresh_index=False, max_workers=1)
+    first = run_edgar_fetch(ctx, list(_ROSTER), 15, module.INSIDER_EDGAR_FETCH, as_of=_AS_OF, refresh_index=False, max_workers=1)
 
     shown = sqlite_store.load(Tables.insider_transactions, markers=True, where={"ticker": list(_ROSTER)}).sort_values("ticker")
     assert shown[["ticker", "security_type", "row_sequence", "source"]].to_dict("records") == [
@@ -161,7 +161,7 @@ def test_an_owner_role_form_4_is_a_marker_and_never_hides_the_issuers_filing(ctx
 
     sqlite_store.delete(Tables.insider_transactions, {"ticker": "OXY"})
     again = run_edgar_fetch(
-        ctx, list(_ROSTER), 15, module.insider_fetch(list(_ROSTER)), as_of=_AS_OF + pd.Timedelta(days=1), refresh_index=False, max_workers=1
+        ctx, list(_ROSTER), 15, module.INSIDER_EDGAR_FETCH, as_of=_AS_OF + pd.Timedelta(days=1), refresh_index=False, max_workers=1
     )
     assert list(again.work.units) == ["OXY"]
     print("\n=== SANITY CHECK: owner-role Form 4 ===")
@@ -176,11 +176,11 @@ def test_an_unread_filing_is_stored_nowhere_and_listed_again(ctx, sqlite_store, 
     filing.xml = lambda: (_ for _ in ()).throw(module.TransientReadError("HTTP 503"))
     patch_index_filings(monkeypatch, {accession: filing})
 
-    summary = run_edgar_fetch(ctx, ["OXY"], 15, module.insider_fetch(["OXY"]), as_of=_AS_OF, refresh_index=False, max_workers=1)
+    summary = run_edgar_fetch(ctx, ["OXY"], 15, module.INSIDER_EDGAR_FETCH, as_of=_AS_OF, refresh_index=False, max_workers=1)
 
     assert summary.missing == {"OXY": [accession]}
     assert sqlite_store.load(Tables.insider_transactions, markers=True, optional=True) is None
     cik_map = pd.DataFrame({"ticker": ["OXY"], "cik": ["0000797468"]})
-    again = plan_fetch(ctx, module.insider_fetch(["OXY"]), cik_map, EdgarScope(), _AS_OF, 15)
+    again = plan_fetch(ctx, module.INSIDER_EDGAR_FETCH, cik_map, EdgarScope(), _AS_OF, 15)
     assert again.units["OXY"]["accession"].tolist() == [accession]
     print("\nSANITY: a Form 4 that 503'd is stored nowhere (no row, no marker) and is listed again on the next night.")

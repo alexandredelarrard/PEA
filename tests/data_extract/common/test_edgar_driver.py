@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import dataclasses
 import types
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, cast
 
 import pandas as pd
@@ -105,6 +108,60 @@ def _run(ctx, source: _Source, tickers: list[str], as_of: pd.Timestamp = _AS_OF,
 
 def _stored(store, table: Table = _T_DOC) -> set[str]:
     return set(store.distinct(table, "accession_number"))
+
+
+@pytest.mark.parametrize("stage", ["empty", "success", "setup", "parse", "enter"])
+def test_run_scope_covers_setup_execution_and_empty_work(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, stage: str) -> None:
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
+    accessions = _seed(ctx, 0 if stage == "empty" else 1)
+    source = _Source()
+    events: list[str] = []
+    if stage == "parse":
+        source.kinds[accessions[0]] = "bug"
+
+    @contextmanager
+    def run_scope(context: Any, tickers: Sequence[str], as_of: pd.Timestamp) -> Iterator[EdgarFetch]:
+        assert context is ctx and list(tickers) == ["AAA"] and as_of == _AS_OF
+        events.append("enter")
+        if stage == "enter":
+            raise RuntimeError("scope failed")
+        try:
+            yield _fetch(source)
+        finally:
+            events.append("exit")
+
+    def setup() -> None:
+        events.append("setup")
+        if stage == "setup":
+            raise RuntimeError("setup failed")
+
+    monkeypatch.setattr(ctx, "ensure_edgar_identity", setup)
+    fetch = EdgarFetch(tables=(_T_CHILD, _T_DOC), done_table=_T_DOC, run_scope=run_scope)
+    kwargs = {"as_of": _AS_OF + pd.Timedelta(hours=12), "refresh_index": False, "max_workers": 1}
+    if stage in {"setup", "enter", "parse"}:
+        with pytest.raises(NameError if stage == "parse" else RuntimeError):
+            run_edgar_fetch(ctx, ["AAA"], 15, fetch, **kwargs)
+        assert not sqlite_store.exists(_T_DOC)
+    else:
+        result = run_edgar_fetch(ctx, ["AAA"], 15, fetch, **kwargs)
+        assert result.work.size == len(accessions)
+        assert _stored(sqlite_store) == set(accessions)
+    assert events == (["enter"] if stage == "enter" else ["enter", "setup", "exit"])
+    assert fetch.parse is None, "the declaration is never mutated by preparation"
+    print(f"SANITY: run scope {stage}: {events}; setup is inside the scope and the declaration remains unbound.")
+
+
+def test_an_unprepared_parser_is_rejected_before_setup(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
+
+    def unexpected_setup() -> None:
+        pytest.fail("an invalid descriptor must fail before identity setup or storage")
+
+    monkeypatch.setattr(ctx, "ensure_edgar_identity", unexpected_setup)
+    fetch = EdgarFetch(tables=(_T_DOC,))
+    with pytest.raises(ValueError, match="parser"):
+        run_edgar_fetch(ctx, ["AAA"], 15, fetch, refresh_index=False)
+    print("SANITY: an unprepared descriptor without a parser fails before setup or source reads.")
 
 
 def test_marker_stamps_follow_table_metadata() -> None:

@@ -71,7 +71,7 @@ def test_rejected_rows_go_to_the_run_collector_not_to_a_table(monkeypatch):
 
 
 def test_the_fetch_counts_only_edgar_rows_as_done_per_key():
-    fetch = module.insider_fetch(["AAA"])
+    fetch = module.INSIDER_EDGAR_FETCH
     assert fetch.done == Tables.insider_transactions and fetch.done_where == {"source": "edgar"} and fetch.done_scope == "key"
     assert set(fetch.tables) == {Tables.insider_transactions, Tables.insider_footnotes}
     print("SANITY: the EDGAR leg writes the single table and its done set is per key on source='edgar' rows (markers included).")

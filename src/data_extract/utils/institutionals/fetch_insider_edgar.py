@@ -11,20 +11,20 @@ stored, only summarised once per run.
 
 from __future__ import annotations
 
-import logging
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
+from dataclasses import replace
 from functools import partial
 from typing import Any, cast
 
 import pandas as pd
 
 from src.context import Context
-from src.data_extract.utils.common import edgar_index
-from src.data_extract.utils.common.edgar_driver import EdgarFetch, EdgarScope, FilingStamp, run_edgar_fetch
-from src.data_extract.utils.common.registrant import listing_ciks, resolve_registrant_entries
+from src.data_extract.utils.common.edgar_driver import EdgarFetch, EdgarScope, FilingStamp
 from src.data_extract.utils.common.resume import DONE_PER_KEY
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, filing_header, filing_xml
 from src.data_extract.utils.institutionals.insider_common import (
+    INSIDER_COLUMNS,
     INSIDER_KEY,
     XML_DATE_FORMATS,
     accession_batches,
@@ -36,31 +36,11 @@ from src.data_extract.utils.institutionals.insider_common import (
     screen_insider_rows,
 )
 from src.data_extract.utils.institutionals.insider_edgar_parser import extract_xml_strings
-from src.data_store.schema import Resume, Table, Tables
-from src.utils.string import pad_cik, run_date
+from src.data_store.schema import Table, Tables
+from src.utils.string import pad_cik
 
 #: EDGAR rows carry the whole contract except `quarter`, so the merge-upsert keeps a stored zip quarter.
-_EDGAR_COLUMNS = tuple(column for column in Tables.insider_transactions.retrieval_columns if column != "quarter")
-#: The stored rows whose accessions count as read by EDGAR (markers carry `source='edgar'` too).
-_EDGAR_DONE: dict[str, object] = {"source": "edgar"}
-_LOG = logging.getLogger(__name__)
-
-
-def insider_filings(
-    context: Context,
-    ticker: str,
-    cik: str,
-    *,
-    since: pd.Timestamp | None,
-    through: pd.Timestamp,
-    scope: EdgarScope,
-) -> list[Any]:
-    """`ticker`'s Forms 3/4/5 in the local EDGAR index filed in `[since, through]`, oldest first (issuer and owner roles)."""
-    filing_scope = scope.filing_scope(ticker, cik)
-    df_index = edgar_index.entries(context, set(listing_ciks(filing_scope)), cast(Resume, Tables.insider_transactions.resume).forms, since=since)
-    df_rows = resolve_registrant_entries(filing_scope, df_index, cast(Resume, Tables.insider_transactions.resume).forms)
-    df_rows = df_rows[df_rows["filed"] <= pd.Timestamp(through).normalize()]
-    return [edgar_index.index_filing(r.cik, r.company, r.form, r.filed, r.accession) for r in df_rows.itertuples(index=False)]
+_EDGAR_COLUMNS = tuple(column for column in INSIDER_COLUMNS if column != "quarter")
 
 
 def _acceptance_datetime(filing: object) -> pd.Timestamp:
@@ -77,24 +57,6 @@ def _acceptance_datetime(filing: object) -> pd.Timestamp:
     return value
 
 
-def _filing_strings(filing: Any) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """One ownership filing -> (transaction strings, owner strings, footnotes), keyed on its accession.
-
-    A filing without ownership XML raises `ParseFailureError`."""
-    xml = filing_xml(filing)
-    if not xml:
-        raise ParseFailureError(f"{getattr(filing, 'accession_number', '?')}: no ownership XML")
-    return extract_xml_strings(xml, str(filing.accession_number))
-
-
-def _filing_metadata(filing: Any) -> dict[str, object]:
-    return {
-        "accession_number": str(filing.accession_number),
-        "filing_date": pd.Timestamp(filing.filing_date).normalize(),
-        "acceptance_datetime": _acceptance_datetime(filing),
-    }
-
-
 def _owner_role(df_str: pd.DataFrame, ticker: str, cik: str, scope: EdgarScope) -> bool:
     """True when the XML names an issuer CIK outside the key's lineage (the key is only a reporting owner)."""
     issuer = pad_cik(df_str["issuer_cik"].dropna().iloc[0]) if "issuer_cik" in df_str and df_str["issuer_cik"].notna().any() else ""
@@ -109,11 +71,14 @@ def parse_insider(
     holdings-only filing or one where the key is only an owner. Rejected in-scope rows go to `excluded`."""
     if scope.identity is None:
         raise ValueError("insider EDGAR fetch needs an identity-aware scope")
-    df_str, df_owners, df_notes = _filing_strings(stamp.filing)
+    xml = filing_xml(stamp.filing)
+    if not xml:
+        raise ParseFailureError(f"{stamp.accession_number}: no ownership XML")
+    df_str, df_owners, df_notes = extract_xml_strings(xml, str(stamp.accession_number))
     if df_str.empty or _owner_role(df_str, ticker, cik, scope):
         return {}
     df_built = build_insider_frame(df_str, df_owners, date_formats=XML_DATE_FORMATS)
-    df_built = df_built.merge(pd.DataFrame([_filing_metadata(stamp.filing)]), on="accession_number", how="left")
+    df_built = df_built.assign(filing_date=stamp.filed.normalize(), acceptance_datetime=_acceptance_datetime(stamp.filing))
     df_kept, df_rejected = screen_insider_rows(df_built.assign(source="edgar"), universe, scope.identity)
     if not df_rejected.empty:
         excluded.append(exclusion_rows(df_rejected))
@@ -121,46 +86,25 @@ def parse_insider(
     df_kept_notes = empty_footnotes()
     if not df_kept.empty:
         df_stamped = df_kept.assign(fetched_at=pd.Timestamp.now(tz="UTC").tz_localize(None))
-        df_rows = df_stamped[[c for c in _EDGAR_COLUMNS if c in df_stamped.columns]].drop_duplicates(subset=INSIDER_KEY, keep="last")
+        df_rows = df_stamped[[c for c in _EDGAR_COLUMNS if c in df_stamped.columns]]
         df_kept_notes = filter_footnotes(df_notes, set(df_kept["accession_number"]))
     return {Tables.insider_footnotes: df_kept_notes, Tables.insider_transactions: df_rows}
 
 
-def bulk_frontier_floor(context: Context) -> pd.Timestamp | None:
-    """The day after the last stored zip quarter (EDGAR reads only what follows); None when no quarter is stored."""
+def edgar_window_start(context: Context, as_of: pd.Timestamp) -> pd.Timestamp | None:
+    """Earlier of the day after the last zip quarter and the run date minus the registry overlap;
+    None without a valid stored quarter, so the ordinary history floor applies."""
     if "quarter" not in context.store.columns(Tables.insider_transactions):
         return None
     _, latest_quarter = context.store.bounds(Tables.insider_transactions, "quarter")
     if latest_quarter is None:
         return None
     try:
-        return pd.Period(str(latest_quarter).upper(), freq="Q").end_time.normalize() + pd.Timedelta(days=1)
+        floor = pd.Period(str(latest_quarter).upper(), freq="Q").end_time.normalize() + pd.Timedelta(days=1)
     except (TypeError, ValueError):
-        return None
-
-
-def edgar_window_start(context: Context, as_of: pd.Timestamp) -> pd.Timestamp | None:
-    """The EDGAR window start: the earlier of `bulk_frontier_floor` and `as_of` minus the table's
-    resume overlap (7 days); None when no zip quarter is stored (the history floor applies)."""
-    floor = bulk_frontier_floor(context)
-    if floor is None:
         return None
     overlap = Tables.insider_transactions.resume.overlap_days if Tables.insider_transactions.resume is not None else 0
     return min(floor, pd.Timestamp(as_of).normalize() - pd.Timedelta(days=overlap))
-
-
-def insider_fetch(tickers: Sequence[str], excluded: list[pd.DataFrame] | None = None) -> EdgarFetch:
-    """The EDGAR Forms 3/4/5 fetch for universe `tickers`. Done per key and only on EDGAR rows: an
-    owner-role marker under one company never hides the filing from its issuer, and a zip row never
-    makes a filing look read. Rejected rows are appended to `excluded`."""
-    return EdgarFetch(
-        tables=(Tables.insider_footnotes, Tables.insider_transactions),
-        parse=partial(parse_insider, universe=list(tickers), excluded=excluded if excluded is not None else []),
-        done_table=Tables.insider_transactions,
-        done_scope=DONE_PER_KEY,
-        done_where=_EDGAR_DONE,
-        runtime_floor=edgar_window_start,
-    )
 
 
 def replace_zip_accessions(context: Context, since: pd.Timestamp) -> int:
@@ -195,32 +139,27 @@ def replace_zip_accessions(context: Context, since: pd.Timestamp) -> int:
     return deleted
 
 
-def fetch_insider_edgar(
-    context: Context,
-    tickers: list[str],
-    years_history: int,
-    *,
-    full: bool = False,
-    as_of: pd.Timestamp | None = None,
-    no_cap: bool = False,
-) -> None:
-    """Read every indexed Form 3/4/5 since `edgar_window_start` not yet stored from EDGAR (all of them
-    under `full`); afterwards, even on failure, log the run's exclusions and replace the zip rows of
-    every accession EDGAR now holds."""
+@contextmanager
+def _insider_run_scope(context: Context, tickers: Sequence[str], as_of: pd.Timestamp) -> Iterator[EdgarFetch]:
+    """Bind the run's requested tickers, exclusions and one ZIP floor; reconcile on every exit."""
     excluded: list[pd.DataFrame] = []
-    since = edgar_window_start(context, run_date(as_of))
+    since = edgar_window_start(context, as_of)
+    failed = True
     try:
-        run_edgar_fetch(context, tickers, years_history, insider_fetch(tickers, excluded), full=full, as_of=as_of, no_cap=no_cap)
-    except BaseException:
-        _finish_run(context, since, excluded, after_failure=True)
-        raise
-    _finish_run(context, since, excluded, after_failure=False)
+        yield replace(
+            INSIDER_EDGAR_FETCH,
+            parse=partial(parse_insider, universe=tuple(tickers), excluded=excluded),
+            runtime_floor=lambda _context, _as_of: since,
+        )
+        failed = False
+    finally:
+        _finish_run(context, since, excluded, after_failure=failed)
 
 
 def _finish_run(context: Context, since: pd.Timestamp | None, excluded: list[pd.DataFrame], *, after_failure: bool) -> None:
     """Log the run's exclusions and replace the zip rows it re-read (none without a stored zip
     quarter). After a failed run a reconcile error is logged, never raised, so the run's own error propagates."""
-    log_exclusions(_LOG, "EDGAR run", excluded)
+    log_exclusions(context.log, "EDGAR run", excluded)
     if since is None:
         return
     if not after_failure:
@@ -229,4 +168,14 @@ def _finish_run(context: Context, since: pd.Timestamp | None, excluded: list[pd.
     try:
         replace_zip_accessions(context, since)
     except Exception:
-        _LOG.exception("insider EDGAR: the zip reconcile after a failed run raised; the run's own error follows")
+        context.log.exception("insider EDGAR: the zip reconcile after a failed run raised; the run's own error follows")
+
+
+INSIDER_EDGAR_FETCH = EdgarFetch(
+    tables=(Tables.insider_footnotes, Tables.insider_transactions),
+    done_table=Tables.insider_transactions,
+    done_scope=DONE_PER_KEY,
+    done_where={"source": "edgar"},
+    runtime_floor=edgar_window_start,
+    run_scope=_insider_run_scope,
+)

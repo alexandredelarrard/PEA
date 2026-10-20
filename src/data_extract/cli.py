@@ -110,7 +110,7 @@ from src.data_extract.utils.institutionals.fetch_13f_backfill import fetch_13f_b
 from src.data_extract.utils.institutionals.fetch_13f_managers import fetch_13f_managers, recover_13f_vintages
 from src.data_extract.utils.institutionals.fetch_13g_edgar import SEC_13G_FETCH
 from src.data_extract.utils.institutionals.fetch_fails_to_deliver import download_fails_to_deliver, fetch_fails_to_deliver
-from src.data_extract.utils.institutionals.fetch_insider_edgar import fetch_insider_edgar, insider_fetch
+from src.data_extract.utils.institutionals.fetch_insider_edgar import INSIDER_EDGAR_FETCH
 from src.data_extract.utils.institutionals.fetch_insider_transactions import download_insider_transactions, fetch_insider_transactions
 from src.data_extract.utils.institutionals.fetch_short_interest import fetch_short_interest
 from src.data_extract.utils.institutionals.fetch_superinvestors import rebuild_roster, upsert_roster_snapshot
@@ -618,8 +618,9 @@ def insider_transactions(config_path: str, tickers: str | None, full: bool, as_o
     config, context = get_config_context(config_path, use_cache=False, save=False)
     names, universe = _ticker_scope(context, tickers)
     years_history = int(config.data_extract.years_history)
-    _insider_zip(context, names, years_history, reparse=full, as_of=as_of, all_tickers=universe)
-    _insider_edgar(context, names, years_history, full=full, as_of=as_of, no_cap=no_cap)
+    start_date = run_date(as_of)
+    fetch_insider_transactions(context, tickers=names, years_history=years_history, reparse=full, as_of=start_date, all_tickers=universe)
+    run_edgar_fetch(context, tickers=names, years_history=years_history, fetch=INSIDER_EDGAR_FETCH, full=full, as_of=start_date, no_cap=no_cap)
 
 
 @cli.command(
@@ -635,7 +636,9 @@ def insider_transactions(config_path: str, tickers: str | None, full: bool, as_o
 def insider_zip(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
     config, context = get_config_context(config_path, use_cache=False, save=False)
     names, universe = _ticker_scope(context, tickers)
-    _insider_zip(context, names, int(config.data_extract.years_history), reparse=full, as_of=as_of, all_tickers=universe)
+    fetch_insider_transactions(
+        context, tickers=names, years_history=int(config.data_extract.years_history), reparse=full, as_of=run_date(as_of), all_tickers=universe
+    )
 
 
 @cli.command(
@@ -649,16 +652,7 @@ def insider_zip(config_path: str, tickers: str | None, full: bool, as_of: dateti
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 @click.option(*NO_CAP_ARGS, **NO_CAP_KWARGS)
 def insider_edgar(config_path: str, tickers: str | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
-    config, context = get_config_context(config_path, use_cache=False, save=False)
-    _insider_edgar(context, _tickers(context, tickers), int(config.data_extract.years_history), full=full, as_of=as_of, no_cap=no_cap)
-
-
-def _insider_zip(context: Context, names: list[str], years_history: int, *, reparse: bool, as_of: datetime | None, all_tickers: list[str]) -> None:
-    fetch_insider_transactions(context, tickers=names, years_history=years_history, reparse=reparse, as_of=run_date(as_of), all_tickers=all_tickers)
-
-
-def _insider_edgar(context: Context, names: list[str], years_history: int, *, full: bool, as_of: datetime | None, no_cap: bool) -> None:
-    fetch_insider_edgar(context, tickers=names, years_history=years_history, full=full, as_of=run_date(as_of), no_cap=no_cap)
+    _run_document_command(config_path, tickers, None, INSIDER_EDGAR_FETCH, full=full, as_of=as_of, no_cap=no_cap)
 
 
 @cli.command(
@@ -903,7 +897,7 @@ def _document_fetches(context: Context, tickers: list[str]) -> dict[str, EdgarFe
         FILING_TEXT_FETCH,
         DEF14A_EDGAR_FETCH,
         fundamentals_fetch(context, load_cik_mapping(context, tickers)),
-        insider_fetch(tickers),
+        INSIDER_EDGAR_FETCH,
     )
     return {fetch.done.name: fetch for fetch in fetches}
 

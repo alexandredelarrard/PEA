@@ -116,7 +116,7 @@ def test_full_reaches_the_existing_source_operation(
         monkeypatch.setattr(cli_mod.edgar_index, "quarter_counts", lambda ctx: {})
     else:
         monkeypatch.setattr(cli_mod, target, record)
-    monkeypatch.setattr(cli_mod, "fetch_insider_edgar", lambda ctx, **kwargs: edgar_calls.append(kwargs))
+    monkeypatch.setattr(cli_mod, "run_edgar_fetch", lambda ctx, **kwargs: edgar_calls.append(kwargs))
     runner = CliRunner()
     for flags in ([], ["-F"], ["--full"]):
         calls.clear()

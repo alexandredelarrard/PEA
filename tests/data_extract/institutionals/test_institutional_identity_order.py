@@ -40,10 +40,9 @@ def test_institutionals_consume_the_upstream_identity_in_one_resolver(monkeypatc
         "upsert_roster_snapshot",
         "fetch_13f_managers",
         "fetch_insider_transactions",
-        "fetch_insider_edgar",
     ):
         monkeypatch.setattr(module, name, mark(name))
-    # 13D, 13G and 8-K run through the shared driver, one EdgarFetch declaration each
+    # Insider, 13D, 13G and 8-K run through the shared driver, one EdgarFetch declaration each
     monkeypatch.setattr(module, "run_edgar_fetch", lambda *args, **kwargs: order.append(kwargs["fetch"].done.desc))
 
     def load(*args, **kwargs):
@@ -72,7 +71,13 @@ def test_institutionals_consume_the_upstream_identity_in_one_resolver(monkeypatc
     step.config = config
     step.run(["AAA"])
 
-    assert order[:5] == ["fetch_13f", "upsert_roster_snapshot", "fetch_13f_managers", "fetch_insider_transactions", "fetch_insider_edgar"]
+    assert order[:5] == [
+        "fetch_13f",
+        "upsert_roster_snapshot",
+        "fetch_13f_managers",
+        "fetch_insider_transactions",
+        module.INSIDER_EDGAR_FETCH.done.desc,
+    ]
     assert order[-3:] == ["identity_load", "regsho", "ftd"]
     assert len(order) == 11, order
 

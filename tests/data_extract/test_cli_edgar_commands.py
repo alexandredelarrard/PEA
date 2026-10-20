@@ -23,6 +23,7 @@ from src.data_extract.utils.common.resume import DocumentWork
 from src.data_extract.utils.institutionals.fetch_8k_edgar import SEC_8K_FETCH
 from src.data_extract.utils.institutionals.fetch_13d_edgar import SEC_13D_FETCH
 from src.data_extract.utils.institutionals.fetch_13g_edgar import SEC_13G_FETCH
+from src.data_extract.utils.institutionals.fetch_insider_edgar import INSIDER_EDGAR_FETCH
 from src.data_extract.utils.structure.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
 from src.data_extract.utils.structure.fetch_filing_text import FILING_TEXT_FETCH
 from src.data_store.schema import Tables
@@ -37,6 +38,7 @@ COMMANDS: dict[str, tuple[EdgarFetch, bool]] = {
     "sec-13g": (SEC_13G_FETCH, True),
     "filing-text": (FILING_TEXT_FETCH, True),
     "def14a-edgar": (DEF14A_EDGAR_FETCH, True),
+    "insider-edgar": (INSIDER_EDGAR_FETCH, True),
 }
 
 
@@ -53,7 +55,8 @@ def recorded(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
 @pytest.mark.parametrize("command", sorted(COMMANDS))
 def test_edgar_command_dispatches_its_fetch_declaration(command: str, recorded: list[dict[str, Any]]) -> None:
     fetch, takes_full = COMMANDS[command]
-    args = [command, "-t", "aapl,msft", "-y", "7", *(["-F"] if takes_full else [])]
+    years = 15 if command == "insider-edgar" else 7
+    args = [command, "-t", "aapl,msft", *([] if command == "insider-edgar" else ["-y", "7"]), *(["-F"] if takes_full else [])]
 
     result = CliRunner().invoke(cli_mod.cli, args)
 
@@ -62,10 +65,10 @@ def test_edgar_command_dispatches_its_fetch_declaration(command: str, recorded: 
     call = recorded[0]
     assert call["fetch"] is fetch
     assert call["tickers"] == ["AAPL", "MSFT"]
-    assert call["years_history"] == 7
+    assert call["years_history"] == years
     assert call.get("full", False) is takes_full
     print(f"\n=== SANITY: `{command}` dispatch ===")
-    print(f"  {args} -> run_edgar_fetch(fetch={fetch.done.desc!r}, tickers={call['tickers']}, years=7, full={call.get('full', False)}).")
+    print(f"  {args} -> run_edgar_fetch(fetch={fetch.done.desc!r}, tickers={call['tickers']}, years={years}, full={call.get('full', False)}).")
 
 
 def test_edgar_command_without_years_uses_the_configured_window(recorded: list[dict[str, Any]]) -> None:
@@ -78,8 +81,9 @@ def test_edgar_command_without_years_uses_the_configured_window(recorded: list[d
     print("  no -y -> data_extract.years_history (15) reaches the driver; no -F -> full=False.")
 
 
-def test_as_of_and_no_cap_reach_the_driver(recorded: list[dict[str, Any]]) -> None:
-    result = CliRunner().invoke(cli_mod.cli, ["sec-8k-items", "-t", "AAPL", "--as-of", "2026-09-30", "--no-cap"])
+@pytest.mark.parametrize("command", ["sec-8k-items", "insider-edgar"])
+def test_as_of_and_no_cap_reach_the_driver(command: str, recorded: list[dict[str, Any]]) -> None:
+    result = CliRunner().invoke(cli_mod.cli, [command, "-t", "AAPL", "--as-of", "2026-09-30", "--no-cap"])
 
     assert result.exit_code == 0, result.output
     assert recorded[0]["as_of"] == pd.Timestamp("2026-09-30") and recorded[0]["no_cap"] is True
@@ -144,7 +148,7 @@ def insider_calls(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict[str, 
     monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, SimpleNamespace(name="ctx")))
     monkeypatch.setattr(cli_mod, "load_universe_tickers", lambda ctx: ["ALL"])
     monkeypatch.setattr(cli_mod, "fetch_insider_transactions", lambda context, **kwargs: calls.append(("bulk", kwargs)))
-    monkeypatch.setattr(cli_mod, "fetch_insider_edgar", lambda context, **kwargs: calls.append(("edgar", kwargs)))
+    monkeypatch.setattr(cli_mod, "run_edgar_fetch", lambda context, **kwargs: calls.append(("edgar", kwargs)))
     return calls
 
 
@@ -168,6 +172,7 @@ def test_the_insider_bulk_parse_and_its_live_edgar_tail_run_as_separate_commands
         "no_cap": False,
     }
     assert insider_calls[3][1]["full"] is False and insider_calls[0][1]["tickers"] == ["AAPL"]
+    assert insider_calls[1][1]["fetch"] is INSIDER_EDGAR_FETCH and insider_calls[3][1]["fetch"] is INSIDER_EDGAR_FETCH
     print("\n=== SANITY: insider commands (D-8) ===")
     print("  insider-zip -> bulk parse only; insider-edgar -F -> live walk only (full=True);")
     print("  insider-transactions -> both, as before. OK: the DAG can schedule the walk in its own pool.")

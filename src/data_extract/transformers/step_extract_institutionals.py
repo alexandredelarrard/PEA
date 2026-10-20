@@ -15,7 +15,7 @@ from src.data_extract.utils.institutionals.fetch_13f import fetch_13f
 from src.data_extract.utils.institutionals.fetch_13f_managers import fetch_13f_managers
 from src.data_extract.utils.institutionals.fetch_13g_edgar import SEC_13G_FETCH
 from src.data_extract.utils.institutionals.fetch_fails_to_deliver import fetch_fails_to_deliver
-from src.data_extract.utils.institutionals.fetch_insider_edgar import fetch_insider_edgar
+from src.data_extract.utils.institutionals.fetch_insider_edgar import INSIDER_EDGAR_FETCH
 from src.data_extract.utils.institutionals.fetch_insider_transactions import fetch_insider_transactions
 from src.data_extract.utils.institutionals.fetch_short_interest import fetch_short_interest
 from src.data_extract.utils.institutionals.fetch_superinvestors import upsert_roster_snapshot
@@ -43,7 +43,7 @@ class StepExtractInstitutionals(Step):
 
         # Quarterly zips first (they add only the filings EDGAR lacks), then EDGAR reads the indexed filings after the last zip quarter.
         fetch_insider_transactions(self._context, tickers=tickers, years_history=years_history, all_tickers=universe)
-        fetch_insider_edgar(self._context, tickers=tickers, years_history=years_history)
+        run_edgar_fetch(self._context, tickers=tickers, years_history=years_history, fetch=INSIDER_EDGAR_FETCH)
 
         # Activist (SC 13D) then passive (SC 13G) stakes; same grain and column names, so they union.
         run_edgar_fetch(self._context, tickers=tickers, years_history=years_history, fetch=SEC_13D_FETCH)

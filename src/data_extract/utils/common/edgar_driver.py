@@ -15,6 +15,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable, Sequence
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from functools import cached_property, partial
 from operator import attrgetter
@@ -176,11 +177,13 @@ class EdgarFetch:
     `tables[0]`) holds the stored-accession set and is saved last; `done_scope` reads that set per
     key or table-wide, on the rows matching `done_where` (all rows when None). `filings(ticker,
     df_units)` may supply richer `Filing` objects by accession. `runtime_floor(context, run_date)`
-    floors the listing at run time. The done table owns the description, forms and marker stamps.
+    floors the listing at run time. `run_scope` optionally prepares a run-local descriptor and
+    finalizes it on exit; a planning declaration may omit `parse` when that context supplies it.
+    The done table owns the description, forms and marker stamps.
     """
 
     tables: tuple[Table, ...]
-    parse: ParseFn
+    parse: ParseFn | None = None
     done_table: Table | None = None
     is_subject: SubjectFn | None = None
     identity_aware: bool = True
@@ -188,6 +191,7 @@ class EdgarFetch:
     filings: FilingsFn | None = None
     done_where: dict[str, object] | None = None
     runtime_floor: Callable[[Context, pd.Timestamp], pd.Timestamp | None] | None = None
+    run_scope: Callable[[Context, Sequence[str], pd.Timestamp], AbstractContextManager[EdgarFetch]] | None = None
 
     @property
     def done(self) -> Table:
@@ -283,6 +287,7 @@ def _has_key_rows(df: pd.DataFrame | None, table: Table, ticker: str) -> bool:
 
 def _read_unit(fetch: EdgarFetch, scope: EdgarScope, ticker: str, cik: str, stamp: FilingStamp) -> tuple[dict[Table, pd.DataFrame] | None, bool]:
     """`(frames, is_marker)` for one filing; frames are None when it failed and must be listed again."""
+    assert fetch.parse is not None
     try:
         if fetch.is_subject is not None and not fetch.is_subject(ticker, cik, stamp, scope):
             return {fetch.done: marker_row(fetch.done, ticker, stamp)}, True
@@ -514,18 +519,21 @@ def run_edgar_fetch(
     the run date (default today); `no_cap` lifts `max_documents_per_run`. Never raises for a
     source failure: what could not be read is logged and listed again on the next run.
     """
-    context.ensure_edgar_identity()
-    configure(context)
     start_date = run_date(as_of)
-    if cik_map is None:
-        cik_map = load_cik_mapping(context, tickers)
-    scope = load_edgar_scope(context, identity_aware=fetch.identity_aware)
-    if refresh_index:
-        edgar_index.refresh(context, start_date, years_history)
-    work = plan_fetch(context, fetch, cik_map, scope, start_date, years_history, full=full, no_cap=no_cap)
-    context.log.info("%s: %d document(s) to read for %d key(s) %s", fetch.done.desc, work.size, len(work.units), work.counts)
-    keys = cik_map[cik_map["ticker"].astype(str).isin(work.units)]
-    outcomes = _run_pass(context, fetch, scope, keys, work.units, max_workers)
-    _retry_rounds(context, fetch, scope, keys, outcomes, max_workers)
-    _log_coverage(context, fetch, work, outcomes)
-    return FetchSummary(work=work, outcomes=outcomes)
+    with fetch.run_scope(context, tickers, start_date) if fetch.run_scope is not None else nullcontext(fetch) as prepared:
+        if prepared.parse is None:
+            raise ValueError(f"{prepared.done.desc}: run scope did not supply a parser")
+        context.ensure_edgar_identity()
+        configure(context)
+        if cik_map is None:
+            cik_map = load_cik_mapping(context, tickers)
+        scope = load_edgar_scope(context, identity_aware=prepared.identity_aware)
+        if refresh_index:
+            edgar_index.refresh(context, start_date, years_history)
+        work = plan_fetch(context, prepared, cik_map, scope, start_date, years_history, full=full, no_cap=no_cap)
+        context.log.info("%s: %d document(s) to read for %d key(s) %s", prepared.done.desc, work.size, len(work.units), work.counts)
+        keys = cik_map[cik_map["ticker"].astype(str).isin(work.units)]
+        outcomes = _run_pass(context, prepared, scope, keys, work.units, max_workers)
+        _retry_rounds(context, prepared, scope, keys, outcomes, max_workers)
+        _log_coverage(context, prepared, work, outcomes)
+        return FetchSummary(work=work, outcomes=outcomes)

@@ -17,10 +17,10 @@ Two stages:
 
   2. build_earnings_call_feature_panel(...) — the cheap per-build derivation. From the
      cached per-call scores it builds raw and prior-only issuer-history KPIs, aligns
-     them to the daily trading calendar with a one-session lag, and expires each call
+     them to the daily trading calendar after the configured calendar-day lag, and expires each call
      after 66 trading sessions. Missing calls stay null; genuine zero signals stay zero.
 
-Smart KPIs (all leak-free; a call at date d only affects features on d+1 onward):
+Smart KPIs (eligible on the first session on/after the buffered call date):
     ec_tone            length-weighted call tone  P(pos) − P(neg)      (level)
     ec_tone_delta      Δ tone vs the prior consecutive quarter's call  (tone momentum)
     ec_qa_gap          Q&A tone − prepared-remarks tone   (candor: scripted optimism
@@ -54,6 +54,7 @@ from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.text.earnings_call_embeddings import build_embedding_kpis, call_keys, load_paragraphs, split_calls
 from src.data_store.schema import Tables
 from src.utils.nlp_sentiment import SentimentEngine, get_sentiment_engine
+from src.utils.string import pad_cik_series
 from src.utils.text_metrics import EarningsCallQuality, assess_earnings_call_sections, uncertainty_ratio, word_count
 
 # SENTIMENT KPIs — from the local FinBERT-tone + Loughran-McDonald pass (`score_earnings_calls`).
@@ -69,8 +70,6 @@ _RAW_KPI_COLS = [
 ]
 _HISTORY_BASES = ["ec_tone", "ec_qa_gap", "ec_uncertainty", "ec_qa_coherence_mean"]
 _KPI_COLS = list(EARNINGS_CALL_FEATURES)
-#: `symbol_tenure` sources the issuer attach reads; cover-page `dei` rows stay out so features do not move.
-_TENURE_SOURCES = ("form345", "manual")
 
 
 # --------------------------------------------------------------------------- #
@@ -339,54 +338,69 @@ def _issuer_history_zscore(per_call: pd.DataFrame, value_col: str) -> pd.Series:
     return out
 
 
-def load_issuer_identity(context: Context) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
-    """(`form345`/`manual` tenure rows, distinct `entity_lineage` (cik, entity_id) pairs) for `attach_issuer_identity`."""
+def load_issuer_identity(context: Context) -> tuple[pd.DataFrame | None, pd.DataFrame | None, pd.DataFrame | None]:
+    """Canonical roster, consolidating lineage and trusted symbol ownership for stored calls."""
+    roster = context.store.load(Tables.sp500_tickers, columns=["ticker", "cik"], optional=True)
+    lineage = context.store.load(Tables.entity_lineage, columns=["cik", "entity_id", "role", "valid_from", "valid_to"], optional=True)
     tenure = context.store.load(
-        Tables.symbol_tenure,
-        columns=["symbol", "issuer_cik", "valid_from", "valid_to", "n_filings"],
-        where={"source": list(_TENURE_SOURCES)},
-        optional=True,
+        Tables.symbol_tenure, columns=["symbol", "issuer_cik", "valid_from", "valid_to"], where={"source": ["form345", "manual"]}, optional=True
     )
-    lineage = context.store.load(Tables.entity_lineage, columns=["cik", "entity_id"], optional=True)
-    return tenure, None if lineage is None else lineage.drop_duplicates(ignore_index=True)
+    return roster, None if lineage is None else lineage.drop_duplicates(ignore_index=True), tenure
+
+
+def _dated_call_rows(calls: pd.DataFrame, intervals: pd.DataFrame, left_on: str, right_on: str) -> pd.DataFrame:
+    """Match call dates to half-open issuer or symbol intervals without changing source dates."""
+    matched = calls.merge(intervals, left_on=left_on, right_on=right_on, how="inner")
+    dates = pd.to_datetime(matched["as_of"], errors="coerce")
+    start = pd.to_datetime(matched["valid_from"], errors="coerce")
+    end = pd.to_datetime(matched["valid_to"], errors="coerce")
+    return matched[dates.ge(start) & (end.isna() | dates.lt(end))]
 
 
 def attach_issuer_identity(
     per_call: pd.DataFrame,
-    symbol_tenure: pd.DataFrame | None,
+    roster: pd.DataFrame | None,
     entity_lineage: pd.DataFrame | None,
+    symbol_tenure: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """Attach the point-in-time economic issuer used by the history normalization."""
+    """Attach canonical issuer history, excluding unsupported dates of reused issuer aliases."""
     out = per_call.copy()
     out["issuer_id"] = pd.Series(pd.NA, index=out.index, dtype="string")
-    if symbol_tenure is None or symbol_tenure.empty:
+    if roster is None or roster.empty or entity_lineage is None or entity_lineage.empty or symbol_tenure is None or symbol_tenure.empty:
         return out.iloc[0:0]
-    tenure = symbol_tenure.copy()
-    tenure["valid_from"] = pd.to_datetime(tenure["valid_from"], errors="coerce")
-    tenure["valid_to"] = pd.to_datetime(tenure["valid_to"], errors="coerce")
-    entity: dict[str, str] = {}
-    if entity_lineage is not None and not entity_lineage.empty:
-        for cik, group in entity_lineage.groupby(entity_lineage["cik"].astype(str), sort=False):
-            identifiers = group["entity_id"].dropna().astype(str).unique()
-            if len(identifiers) == 1:
-                entity[str(cik)] = str(identifiers[0])
-    by_symbol = {str(symbol): group for symbol, group in tenure.groupby(tenure["symbol"].astype(str), sort=False)}
-    for row_index, row in out.iterrows():
-        date = pd.to_datetime(row["as_of"], errors="coerce")
-        candidates = by_symbol.get(str(row["ticker"]))
-        if candidates is None:
-            continue
-        candidates = candidates[candidates["valid_from"] <= date]
-        candidates = candidates[candidates["valid_to"].isna() | (date < candidates["valid_to"])]
-        if candidates.empty:
-            continue
-        identifiers = [entity.get(str(cik)) for cik in candidates["issuer_cik"]]
-        if identifiers and all(identifier is not None for identifier in identifiers) and len(set(identifiers)) == 1:
-            out.at[row_index, "issuer_id"] = identifiers[0]
-    return out[out["issuer_id"].notna()].copy()
+    lineage = entity_lineage.assign(cik=pad_cik_series(entity_lineage["cik"]))[["cik", "entity_id"]].drop_duplicates()
+    memberships = lineage.groupby("cik")["entity_id"].agg(["size", "count", "nunique", "first"])
+    valid = memberships[(memberships["size"] == memberships["count"]) & memberships["nunique"].eq(1)]
+    current = roster.assign(cik=pad_cik_series(roster["cik"]))[["ticker", "cik"]].drop_duplicates()
+    current["entity_id"] = current["cik"].map(valid["first"])
+    owners = current.groupby("ticker")["entity_id"].agg(["size", "count", "nunique", "first"])
+    owners = owners[(owners["size"] == owners["count"]) & owners["nunique"].eq(1)]
+    out["issuer_id"] = out["ticker"].map(owners["first"]).astype("string")
+    windows = entity_lineage[entity_lineage["role"].eq("cik_window")].copy()
+    windows["cik"] = pad_cik_series(windows["cik"])
+    calls = out[["issuer_id", "as_of"]].assign(call_position=np.arange(len(out)))
+    admitted = _dated_call_rows(calls, windows[["entity_id", "valid_from", "valid_to"]], "issuer_id", "entity_id")["call_position"]
+    keep = pd.Series(np.arange(len(out))).isin(admitted) & out["issuer_id"].reset_index(drop=True).notna()
+    tenure = symbol_tenure.assign(issuer_cik=pad_cik_series(symbol_tenure["issuer_cik"]))
+    window_owners = windows[windows["entity_id"].eq(windows["cik"].map(valid["first"]))][["cik", "entity_id"]].drop_duplicates()
+    tenure = tenure.merge(window_owners, left_on="issuer_cik", right_on="cik", how="left")
+    aliases = tenure.dropna(subset=["entity_id"])[["entity_id", "symbol"]].drop_duplicates()
+    keep &= out["issuer_id"].reset_index(drop=True).isin(aliases["entity_id"])
+    ownership = aliases.merge(tenure[["symbol", "entity_id"]], on="symbol", suffixes=("", "_owner"))
+    contested = ownership.loc[ownership["entity_id_owner"].isna() | ownership["entity_id"].ne(ownership["entity_id_owner"]), "entity_id"]
+    supported = _dated_call_rows(calls, tenure, "issuer_id", "entity_id")[["call_position", "issuer_id", "as_of", "symbol", "cik"]]
+    supported = _dated_call_rows(supported, windows[["cik", "valid_from", "valid_to"]], "cik", "cik")
+    dated_owners = _dated_call_rows(supported[["call_position", "issuer_id", "as_of", "symbol"]].drop_duplicates(), tenure, "symbol", "symbol")
+    ambiguous = dated_owners.loc[
+        dated_owners["entity_id"].isna() | dated_owners["issuer_id"].ne(dated_owners["entity_id"]), ["call_position", "symbol"]
+    ]
+    supported = supported.merge(ambiguous.drop_duplicates(), on=["call_position", "symbol"], how="left", indicator=True)
+    supported = supported.loc[supported["_merge"].eq("left_only"), "call_position"]
+    keep &= ~out["issuer_id"].reset_index(drop=True).isin(contested) | pd.Series(np.arange(len(out))).isin(supported)
+    return out.iloc[np.flatnonzero(keep)].copy()
 
 
-def _daily_frame(per_call: pd.DataFrame, value_col: str, idx: pd.DatetimeIndex) -> pd.DataFrame:
+def _daily_frame(per_call: pd.DataFrame, value_col: str, idx: pd.DatetimeIndex, availability_lag_days: int) -> pd.DataFrame:
     """Place each KPI after release for 66 sessions on a complete trading calendar.
 
     ``idx`` must span the source calls; a tail-only index would restart an expired call.
@@ -401,7 +415,8 @@ def _daily_frame(per_call: pd.DataFrame, value_col: str, idx: pd.DatetimeIndex) 
     for row in ordered.itertuples(index=False):
         if pd.isna(row.as_of):
             continue
-        start = int(calendar.searchsorted(pd.Timestamp(row.as_of).normalize(), side="right"))
+        eligible = pd.Timestamp(row.as_of).normalize() + pd.Timedelta(days=availability_lag_days)
+        start = int(calendar.searchsorted(eligible, side="left"))
         if start >= len(calendar):
             continue
         stop = min(start + EARNINGS_CALL_SIGNAL_SESSIONS, len(calendar))
@@ -439,6 +454,8 @@ def build_earnings_call_feature_panel(
     embeddings: pd.DataFrame | None = None,
     per_call: pd.DataFrame | None = None,
     availability: pd.DataFrame | None = None,
+    *,
+    availability_lag_days: int,
 ) -> pd.DataFrame:
     """Build the exact 12-column raw/issuer-history daily feature contract.
 
@@ -456,7 +473,7 @@ def build_earnings_call_feature_panel(
     if ekpi is not None and not ekpi.empty:
         per_call = per_call.merge(ekpi, on=["ticker", "quarter"], how="left")
     per_call = prepare_earnings_call_kpis(per_call)
-    return _feature_panel_from_prepared(per_call, trading_index, availability)
+    return _feature_panel_from_prepared(per_call, trading_index, availability, availability_lag_days)
 
 
 def prepare_earnings_call_kpis(per_call: pd.DataFrame) -> pd.DataFrame:
@@ -487,6 +504,7 @@ def _feature_panel_from_prepared(
     per_call: pd.DataFrame,
     trading_index: pd.DatetimeIndex,
     availability: pd.DataFrame | None,
+    availability_lag_days: int,
 ) -> pd.DataFrame:
     fields: dict[str, pd.DataFrame] = {}
     for col in _KPI_COLS:
@@ -495,7 +513,7 @@ def _feature_panel_from_prepared(
         sub = per_call[["as_of", "ticker", col]]
         if sub[col].notna().sum() == 0:
             continue
-        frame = _daily_frame(sub, col, trading_index)
+        frame = _daily_frame(sub, col, trading_index, availability_lag_days)
         if frame is not None and not frame.empty and frame.notna().any().any():
             fields[col] = frame
     if not fields:

@@ -1,9 +1,8 @@
 """Raw earnings-call transcripts from the HuggingFace dataset `defeatbeta/yahoo-finance-data` into
 `earnings_call_sections`, one row per source paragraph; the speaker-turn split runs at aggregate time.
 
-A run reads the parquet footer once, keeps the row groups whose `symbol` statistics meet the scope
-and whose latest call reaches the stored frontier minus the table's contract overlap (a new ticker's
-groups at any date; a cold table or `-F` reads every group), diffs their index columns against the
+A run reads the parquet footer once, keeps the row groups whose `symbol` statistics meet the lineage scope,
+maps their complete historical index to canonical tickers, diffs the index against the
 stored calls and reads the `transcripts` column only for new or re-issued calls. Only `-F` also
 deletes stored calls absent from the source; a re-issued or removed call has its derivatives
 invalidated and a pending refresh marker written. Reads run on `read_workers` threads; every DB
@@ -36,9 +35,11 @@ from src.data_extract.utils.behavioral.utils_earnings_call_cache import (
     invalidate_earnings_call_derivatives,
     pending_refresh_markers,
 )
+from src.data_extract.utils.common.identity import AmbiguousSymbolTenureError, Identity, load_identity
 from src.data_extract.utils.common.rate_limit import call_with_retries
 from src.data_store.schema import Tables
-from src.utils.universe import load_universe_tickers, new_tickers
+from src.utils.string import squash, yahoo_symbol
+from src.utils.universe import load_universe_tickers
 
 logger = logging.getLogger(__name__)
 
@@ -172,18 +173,104 @@ def select_row_groups(stats: list[RowGroupStats], symbols: list[str], since: str
 
 def dataset_symbols(tickers: list[str]) -> list[str]:
     """Repo tickers in every dataset spelling (`BRK-B` and `BRK.B`), sorted for the range test."""
-    return sorted({form for ticker in tickers for form in (ticker, ticker.replace("-", "."))})
+    return sorted({form for ticker in tickers for form in (ticker, ticker.replace("-", "."), ticker.replace("-", "/"))})
 
 
-def calls_from_index(index: pd.DataFrame, scope: set[str], since: str | None, backfill: frozenset[str] = frozenset()) -> pd.DataFrame:
+def _allows_rebased_call(identity: Identity, entity: str, day: pd.Timestamp) -> bool:
+    """Without unambiguous dated issuer support, a reused alias cannot justify historical rebasing."""
+    aliases = {
+        symbol
+        for symbol, rows in identity.symbol_intervals.items()
+        for row in rows
+        if row.entity == entity and row.status not in {"noise", "conflict"} and row.tape_symbol
+    }
+    for alias in aliases:
+        hit = identity.tape_interval(alias, day)
+        if hit is None or hit.entity != entity:
+            continue
+        try:
+            if identity.entity_for(alias, day) == entity:
+                return True
+        except AmbiguousSymbolTenureError:
+            continue
+    for alias in aliases:
+        try:
+            owner = identity.entity_for(alias)
+        except AmbiguousSymbolTenureError:
+            return False
+        if owner is not None and owner != entity:
+            return False
+    return True
+
+
+def ticker_for_call(identity: Identity, symbol: str, day: pd.Timestamp) -> str | None:
+    """Dated symbol ownership, allowing a vendor to retain/rebase a consolidating issuer's alias."""
+    key = yahoo_symbol(symbol)
+    if key in identity.redundant_symbols or pd.isna(day):
+        return None
+    intervals = identity.symbol_intervals.get(key, ())
+    active = [row for row in intervals if row.covers(day) and row.status != "noise" and row.tape_symbol]
+    if any(row.status == "conflict" for row in active):
+        return None
+    try:
+        dated_owner = identity.entity_for(key, day)
+    except AmbiguousSymbolTenureError:
+        return None
+    hit = identity.tape_interval(key, day)
+    candidates = (
+        {hit.entity}
+        if hit is not None
+        else {
+            row.entity
+            for row in intervals
+            if row.status not in {"noise", "conflict"}
+            and row.tape_symbol
+            and any(window.cik == row.cik and window.owns(day) for window in identity.windows_by_entity.get(row.entity, ()))
+        }
+    )
+    if not intervals and key in identity.roster_cik:
+        entity = identity.universe_entity(key)
+        candidates = (
+            {entity}
+            if any(window.cik == identity.roster_cik[key] and window.owns(day) for window in identity.windows_by_entity.get(entity, ()))
+            else set()
+        )
+    if dated_owner is not None:
+        candidates &= {dated_owner}
+    if active:
+        owners = {row.entity for row in active}
+        if len(owners) != 1:
+            return None
+        candidates &= owners
+    if len(candidates) != 1:
+        return None
+    entity = next(iter(candidates))
+    if hit is None and not _allows_rebased_call(identity, entity, day):
+        return None
+    ticker = identity.ticker_by_entity.get(entity)
+    if ticker is not None and "-" in ticker:
+        stem, share_class = ticker.rsplit("-", 1)
+        # A separately traded sibling class is not a predecessor symbol.
+        if len(share_class) == 1 and key != ticker and squash(key).startswith(stem) and len(squash(key)) == len(stem) + 1:
+            return None
+    return ticker
+
+
+def calls_from_index(index: pd.DataFrame, scope: set[str], identity: Identity) -> pd.DataFrame:
     """One row per scoped call: ticker, quarter, as_of, transcript_id and its row-group position.
 
-    Calls dated before `since` are dropped except a `backfill` ticker's. A (ticker, quarter)
+    Resolve ownership before narrowing to the requested destination. A (ticker, quarter)
     published twice keeps the latest `report_date`, then the highest `transcripts_id`."""
-    calls = index.assign(ticker=index["symbol"].astype(str).str.replace(".", "-", regex=False))
+    symbols = index["symbol"].map(yahoo_symbol)
+    calls = index[symbols.isin(identity.universe_symbols(scope))].copy()
+    dates = pd.to_datetime(calls["report_date"], format="%Y-%m-%d")
+    calls["ticker"] = [ticker_for_call(identity, str(symbol), pd.Timestamp(day)) for symbol, day in zip(calls["symbol"], dates, strict=True)]
+    unresolved = calls["ticker"].isna()
+    if unresolved.any():
+        logger.warning(
+            "Earnings calls: %d unresolved source call(s), symbols %s.", int(unresolved.sum()), sorted(calls.loc[unresolved, "symbol"].unique())
+        )
     calls = calls[calls["ticker"].isin(scope)]
-    if since is not None:
-        calls = calls[(calls["report_date"].astype(str) >= since) | calls["ticker"].isin(backfill)]
     calls = calls.assign(
         quarter=calls["fiscal_year"].astype(int).astype(str) + "Q" + calls["fiscal_quarter"].astype(int).astype(str),
         as_of=pd.to_datetime(calls["report_date"], format="%Y-%m-%d"),
@@ -344,16 +431,6 @@ def _scope(context: Context, tickers: list[str] | None) -> list[str]:
     return sorted(set(names) - NO_EARNINGS_CALL_TICKERS)
 
 
-def _window(context: Context, scope: list[str], frontier: pd.Timestamp | None, as_of: pd.Timestamp) -> tuple[str | None, frozenset[str]]:
-    """`(since, backfill)`: `frontier` minus the contract overlap (None for a full read), and the
-    scoped tickers new to the universe inside that overlap, read from the start."""
-    if frontier is None:
-        return None, frozenset()
-    overlap = _TABLE.resume.overlap_days if _TABLE.resume is not None else 0
-    since = (frontier - pd.Timedelta(days=overlap)).strftime("%Y-%m-%d")
-    return since, frozenset(new_tickers(context.store, overlap, as_of) & set(scope))
-
-
 def _stored_calls(context: Context, calls: pd.DataFrame, scope: list[str], full: bool) -> pd.DataFrame | None:
     """Stored (ticker, quarter, transcript_id, as_of), one row per call: every stored call of
     `scope` on a reconcile, else only the candidates' keys.
@@ -412,33 +489,29 @@ def extract_earnings_calls(
 
     `cfg` is the `earnings_calls` config block (`read_workers`). `tickers` narrows the scope
     (default: the analysis universe, minus the names that hold no call). `full` reads every
-    scoped call and deletes stored calls absent from the source. `as_of` is the run date that
-    decides which tickers are new (default today). `source` replaces the HuggingFace file (tests)."""
+    scoped call and deletes stored calls absent from the source. `as_of` is retained for caller
+    compatibility; every run checks complete scoped metadata. `source` replaces the HuggingFace file (tests)."""
     log = context.log
     started = time.monotonic()
     scope = _scope(context, tickers)
+    identity = load_identity(context)
     src = source if source is not None else resolve_hf_source()
     frontier = None if full else context.store.max_date(_TABLE)
     is_full = frontier is None
-    since, backfill = _window(context, scope, frontier, pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize())
 
     with src.opener() as handle:
         footer = pq.ParquetFile(handle)
         metadata = footer.metadata
         check_source_schema(footer.schema_arrow)
     stats = row_group_stats(metadata)
-    groups = sorted(
-        set(select_row_groups(stats, dataset_symbols(scope), since)) | set(select_row_groups(stats, dataset_symbols(sorted(backfill)), None))
-    )
+    groups = select_row_groups(stats, dataset_symbols(sorted(identity.universe_symbols(scope))), None)
     log.info(
-        "Earnings calls: revision %s, %s run over %d tickers, %d/%d row groups%s%s.",
+        "Earnings calls: revision %s, %s run over %d tickers, %d/%d row groups, complete scoped metadata.",
         src.revision[:12],
         "full" if is_full else "incremental",
         len(scope),
         len(groups),
         metadata.num_row_groups,
-        "" if since is None else f" with calls since {since}",
-        f"; full history for new ticker(s) {sorted(backfill)}" if backfill else "",
     )
 
     workers = int(cfg.read_workers)
@@ -447,7 +520,7 @@ def extract_earnings_calls(
     try:
         index_frames = [frame for _, frame in _ordered_parallel(groups, lambda g: _read_index(readers, g), workers)]
         df_index = pd.concat(index_frames, ignore_index=True) if index_frames else pd.DataFrame(columns=[*INDEX_COLUMNS, "row_group", "row"])
-        df_calls = calls_from_index(df_index, set(scope), since, backfill)
+        df_calls = calls_from_index(df_index, set(scope), identity)
         df_stored = _stored_calls(context, df_calls, scope, is_full)
         df_new, df_reissued = diff_calls(df_calls, df_stored)
         df_gone, vanished = stale_calls(df_calls, df_stored if is_full else None)

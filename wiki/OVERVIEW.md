@@ -2,7 +2,7 @@
 title: Codebase Wiki — Overview
 description: Canonical internal hub for architecture, modules, flows, concepts, guides, references, and backlog.
 profile: internal/standard
-source_commit: 8e4bd26a0e837b01f0df16e29703dd8918458b77
+source_commit: 482dd59a3b33609af32baa0900990a667bb48fbb
 tags:
   - wiki
   - overview
@@ -143,3 +143,5 @@ The wiki is structured by intent:
 - reference pages hold dense contracts and dated operational facts.
 
 Every durable claim should link to an inspected source file or another canonical wiki page. When behavior changes, update the narrowest affected pages and append one entry to [the wiki log](./log.md).
+
+The 2026-10-20 refresh is scoped to earnings-call lineage, canonical ownership checks, extraction recovery and the configured two-calendar-day feature buffer. Its inspected product revision is `482dd59a3b33609af32baa0900990a667bb48fbb`; it does not claim a full wiki refresh.

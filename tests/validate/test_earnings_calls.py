@@ -5,12 +5,14 @@ from typing import cast
 
 import numpy as np
 import pandas as pd
+import pytest
 from omegaconf import OmegaConf
 
 from src.constants.constants import EARNINGS_CALL_FEATURES
 from src.context import Context
 from src.data_store.schema import Tables
-from src.validate.checks.earnings_calls import _coverage, check_earnings_calls
+from src.data_store.store import DataStore
+from src.validate.checks.earnings_calls import _coverage, _identity, _linked, check_earnings_calls
 from tests.fixtures.earnings_call_rows import synthetic_call
 
 _USEFUL = "Revenue growth and margin guidance remained strong for customers this quarter. " * 12
@@ -49,8 +51,161 @@ def _cube(tickers: list[str]) -> pd.DataFrame:
     return cube
 
 
+def _seed_identity(store: DataStore, tickers: list[str]) -> None:
+    roster = pd.DataFrame({"ticker": tickers, "cik": [str(i) for i in range(1, len(tickers) + 1)]})
+    store.save(Tables.sp500_tickers, roster)
+    store.save(
+        Tables.entity_lineage,
+        roster[["cik"]].assign(entity_id="E" + roster["cik"], role="cik_window", symbol="", valid_from="1900-01-01", valid_to=None),
+    )
+    store.save(
+        Tables.symbol_tenure,
+        roster.rename(columns={"ticker": "symbol", "cik": "issuer_cik"}).assign(
+            valid_from="1900-01-01", valid_to=None, source="manual", evidence_period=""
+        ),
+    )
+
+
+def test_coverage_keeps_ingestion_validated_canonical_history_before_rename(sqlite_store) -> None:
+    sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["ECHO"], "cik": ["1"]}))
+    sqlite_store.save(
+        Tables.entity_lineage,
+        pd.DataFrame({"cik": ["1"], "entity_id": ["E1"], "role": ["cik_window"], "symbol": [""], "valid_from": ["1900-01-01"], "valid_to": [None]}),
+    )
+    sqlite_store.save(
+        Tables.symbol_tenure,
+        pd.DataFrame(
+            {
+                "symbol": ["SATS", "ECHO"],
+                "issuer_cik": ["1", "1"],
+                "valid_from": ["2008-01-01", "2026-06-24"],
+                "valid_to": ["2026-06-24", None],
+                "source": ["manual", "manual"],
+                "evidence_period": ["", ""],
+            }
+        ),
+    )
+    dates = ["2008-05-13", "2026-08-03"]
+    sqlite_store.save(Tables.earnings_surprises, pd.DataFrame({"ticker": ["SATS", "ECHO"], "earnings_date": dates}))
+    sqlite_store.save(
+        Tables.earnings_call_sections,
+        pd.concat([_valid_call("ECHO", quarter, date) for quarter, date in zip(["2008Q1", "2026Q2"], dates, strict=True)], ignore_index=True),
+    )
+    summary, _, valid = _coverage(
+        cast(Context, SimpleNamespace(store=sqlite_store, config=SimpleNamespace(data_extract=SimpleNamespace(redundant_ticks=[]))))
+    )
+    assert valid["ECHO"] == list(pd.to_datetime(dates))
+    assert summary["valid_calls"] == 2
+    print("SANITY: validator retains canonical ECHO history before the market rename; raw alias release dates remain dated.")
+
+
+def test_coverage_excludes_canonical_calls_outside_consolidating_windows(sqlite_store) -> None:
+    sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["CEG"], "cik": ["1"]}))
+    sqlite_store.save(
+        Tables.entity_lineage,
+        pd.DataFrame({"cik": ["1"], "entity_id": ["E1"], "role": ["cik_window"], "symbol": [""], "valid_from": ["2022-01-01"], "valid_to": [None]}),
+    )
+    sqlite_store.save(
+        Tables.symbol_tenure,
+        pd.DataFrame(
+            {"symbol": ["CEG"], "issuer_cik": ["1"], "valid_from": ["2022-01-01"], "valid_to": [None], "source": ["manual"], "evidence_period": [""]}
+        ),
+    )
+    dates = ["2008-01-30", "2024-05-09"]
+    sqlite_store.save(Tables.earnings_surprises, pd.DataFrame({"ticker": ["CEG"], "earnings_date": [dates[1]]}))
+    sqlite_store.save(
+        Tables.earnings_call_sections,
+        pd.concat([_valid_call("CEG", quarter, date) for quarter, date in zip(["2007Q4", "2024Q1"], dates, strict=True)], ignore_index=True),
+    )
+    summary, _, valid = _coverage(
+        cast(Context, SimpleNamespace(store=sqlite_store, config=SimpleNamespace(data_extract=SimpleNamespace(redundant_ticks=[]))))
+    )
+    assert valid["CEG"] == [pd.Timestamp(dates[1])]
+    assert [row["quarter"] for row in summary["coverage_by_calendar_quarter"]] == ["2024Q2"]
+    print("SANITY: validator excludes stored canonical CEG from2008 before its consolidating window;2024 call remains usable.")
+
+
+def test_canonical_coverage_checks_alias_lifetime_without_rejecting_supported_renames() -> None:
+    roster = pd.DataFrame({"ticker": ["ECHO", "FOXA", "CRH"], "cik": ["1", "2", "3"]})
+    lineage = pd.DataFrame({"cik": ["1", "2", "3"], "entity_id": ["E1", "E2", "E3"]}).assign(
+        role="cik_window", valid_from="1900-01-01", valid_to=None
+    )
+    tenure = pd.DataFrame(
+        {
+            "symbol": ["ECHO", "SATS", "FOX", "FOX", "CRH"],
+            "issuer_cik": ["9", "1", "8", "2", "3"],
+            "valid_from": ["2009-10-01", "2008-01-02", "2013-07-02", "2019-02-05", "2023-09-25"],
+            "valid_to": ["2021-11-24", None, "2019-03-21", None, None],
+        }
+    )
+    identity = _identity(tenure, lineage, roster["ticker"].tolist(), roster)
+    dates = {
+        "ECHO": [pd.Timestamp("2015-05-13")],
+        "FOXA": [pd.Timestamp("2013-04-30"), pd.Timestamp("2024-02-01")],
+        "CRH": [pd.Timestamp("2008-02-01")],
+    }
+    linked = {ticker: _linked(dates, {ticker}, identity.roster_entity[ticker], identity, canonical_ticker=ticker) for ticker in dates}
+    assert linked == {"ECHO": dates["ECHO"], "FOXA": dates["FOXA"][1:], "CRH": dates["CRH"]}
+    print(
+        "SANITY: canonical coverage preserves SATS-supported ECHO and uncontested pre-US CRH; reused FOX excludes even a date before its first foreign filing."
+    )
+
+
+def test_canonical_coverage_excludes_missing_and_contradictory_issuer_identity() -> None:
+    roster = pd.DataFrame({"ticker": ["NEW"], "cik": ["1"]})
+    lineage = pd.DataFrame({"cik": ["1"], "entity_id": ["E1"]}).assign(role="cik_window", valid_from="1900-01-01", valid_to=None)
+    tenure = pd.DataFrame({"symbol": ["NEW"], "issuer_cik": ["1"], "valid_from": ["2020-01-01"], "valid_to": [None]})
+    date = pd.Timestamp("2024-02-01")
+    contradictory = pd.concat([lineage, lineage.assign(entity_id=None)], ignore_index=True)
+    for evidence in (None, contradictory):
+        identity = _identity(tenure, evidence, ["NEW"], roster)
+        assert not _linked({"NEW": [date]}, {"NEW"}, identity.roster_entity.get("NEW"), identity, canonical_ticker="NEW")
+    identity = _identity(tenure.assign(issuer_cik="9"), lineage, ["NEW"], roster)
+    assert not _linked({"NEW": [date]}, {"NEW"}, identity.roster_entity.get("NEW"), identity, canonical_ticker="NEW")
+    print("SANITY: missing lineage and a null/known contradictory CIK membership cannot certify a canonical call.")
+
+
+@pytest.mark.parametrize(("variant", "expected"), [("overlap", [1, 3]), ("same_entity", [0, 1, 3]), ("alternate", [0, 1, 3]), ("unknown", [1, 3])])
+def test_canonical_validator_requires_unambiguous_alias_inside_its_cik_window(variant: str, expected: list[int]) -> None:
+    roster = pd.DataFrame({"ticker": ["NEW"], "cik": ["2"]})
+    lineage = pd.DataFrame(
+        {
+            "cik": ["1", "2", "3"],
+            "entity_id": ["E1", "E1", "E1" if variant == "same_entity" else "E2"],
+            "valid_from": ["1900-01-01", "2020-01-01", "1900-01-01"],
+            "valid_to": ["2020-01-01", None, None],
+            "role": "cik_window",
+        }
+    )
+    tenure = pd.DataFrame(
+        {
+            "symbol": ["OLD", "OLD", "NEW"],
+            "issuer_cik": ["1", "9" if variant == "unknown" else "3", "2"],
+            "valid_from": ["2000-01-01", "2000-01-01", "2030-01-01"],
+            "valid_to": ["2025-01-01", "2015-01-01", None],
+        }
+    )
+    if variant == "alternate":
+        tenure = pd.concat(
+            [tenure, pd.DataFrame({"symbol": ["SAFE"], "issuer_cik": ["1"], "valid_from": ["2010-01-01"], "valid_to": ["2011-01-01"]})],
+            ignore_index=True,
+        )
+    if variant == "same_entity":
+        tenure = pd.concat(
+            [tenure, pd.DataFrame({"symbol": ["OLD"], "issuer_cik": ["9"], "valid_from": ["1990-01-01"], "valid_to": ["1995-01-01"]})],
+            ignore_index=True,
+        )
+    dates = list(pd.to_datetime(["2010-05-01", "2015-01-01", "2024-05-01", "2030-01-01"]))
+    identity = _identity(tenure, lineage, ["NEW"], roster)
+    linked = _linked({"NEW": dates}, {"NEW"}, identity.roster_entity["NEW"], identity, canonical_ticker="NEW")
+    assert linked == [dates[position] for position in expected]
+    print(
+        f"SANITY: independent {variant} admission rejects ambiguous or wrong-CIK support while retaining half-open and valid alternate-alias dates."
+    )
+
+
 def test_earnings_call_validator_reports_coverage_schema_and_quality(sqlite_store) -> None:
-    sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["AAA", "BBB"]}))
+    _seed_identity(sqlite_store, ["AAA", "BBB"])
     sqlite_store.save(
         Tables.earnings_surprises,
         pd.DataFrame(
@@ -91,7 +246,7 @@ def test_earnings_call_validator_reports_coverage_schema_and_quality(sqlite_stor
 
 
 def test_grain_and_split_defects_fail_the_validator(sqlite_store) -> None:
-    sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["AAA", "BBB", "CCC"]}))
+    _seed_identity(sqlite_store, ["AAA", "BBB", "CCC"])
     sqlite_store.save(Tables.earnings_surprises, pd.DataFrame({"ticker": ["AAA"], "earnings_date": pd.to_datetime(["2024-05-15"])}))
     undated = _valid_call("AAA", "2024Q1", "2024-05-15")
     undated.loc[undated["paragraph"] == 5, "as_of"] = None
@@ -122,7 +277,7 @@ def test_grain_and_split_defects_fail_the_validator(sqlite_store) -> None:
 
 
 def test_two_calls_on_one_ticker_date_fail_the_validator(sqlite_store) -> None:
-    sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["AAA", "BBB"]}))
+    _seed_identity(sqlite_store, ["AAA", "BBB"])
     sqlite_store.save(Tables.earnings_surprises, pd.DataFrame({"ticker": ["AAA"], "earnings_date": pd.to_datetime(["2024-05-15"])}))
     # AAA: a fiscal relabel left 2023Q4 and 2024Q4 on the same call date. BBB: two calls, two dates.
     paragraphs = pd.concat(
@@ -159,7 +314,9 @@ def test_coverage_uses_point_in_time_lineage_and_separates_no_call_names(sqlite_
     sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["NEW", "BRK-B"]}))
     sqlite_store.save(
         Tables.entity_lineage,
-        pd.DataFrame({"cik": ["1", "2"], "entity_id": ["E1", "E2"], "role": "cik_window", "symbol": "", "valid_from": "1900-01-01"}),
+        pd.DataFrame(
+            {"cik": ["1", "2"], "entity_id": ["E1", "E2"], "role": "cik_window", "symbol": "", "valid_from": "1900-01-01", "valid_to": None}
+        ),
     )
     sqlite_store.save(
         Tables.symbol_tenure,
@@ -218,6 +375,7 @@ def test_coverage_reads_distinct_lineage_pairs_and_only_form345_manual_tenure(sq
                 "role": ["cik_window", "symbol", "symbol", "cik_window", "symbol"],
                 "symbol": ["", "OLD", "NEW", "", "OLD"],
                 "valid_from": ["1900-01-01", "2020-01-01", "2024-01-01", "1900-01-01", "2024-04-01"],
+                "valid_to": [None] * 5,
             }
         ),
     )

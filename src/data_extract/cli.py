@@ -9,7 +9,6 @@ fetcher. Fetchers resume from the DB, so a nightly rerun pulls only new data. `s
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import cast
 
 import click
 import pandas as pd
@@ -962,7 +961,8 @@ def markers(config_path: str, table_name: str | None, count_only: bool, delete: 
 # --- Behavioral (retail attention) ---
 @cli.command(
     help="Earnings-call transcripts (HuggingFace defeatbeta) -> earnings_call_sections, one row per "
-    "paragraph. Incremental from the stored frontier minus the contract overlap; -F compares every call and removes calls gone from the source."
+    "paragraph. Every run compares complete scoped metadata for current and historical symbols; payloads are read only for missing or reissued calls. "
+    "-F also removes source-absent calls for tickers still present in the source."
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)

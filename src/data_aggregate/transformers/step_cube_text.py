@@ -97,6 +97,9 @@ class StepCubeText(Step):
         return load_price_frames(self._store, peers={}, fields=self._FIELDS, since=since)
 
     def _feature_panel(self, frames: PriceFrames) -> tuple[pd.DataFrame, list[pd.Timestamp]]:
+        lag = self._cfg.earnings_calls.availability_lag_days
+        if not isinstance(lag, int) or isinstance(lag, bool) or lag < 0:
+            raise ValueError("build_cube.earnings_calls.availability_lag_days must be a non-negative integer")
         changed = [date for date in (score_earnings_calls(self._context), embed_earnings_calls(self._context)) if date is not None]
         per_call = sentiment_kpis_streamed(self._context)
         if per_call is None or per_call.empty:
@@ -111,5 +114,6 @@ class StepCubeText(Step):
             frames.trading_index,
             per_call=per_call,
             availability=frames.availability,
+            availability_lag_days=lag,
         )
         return panel, changed

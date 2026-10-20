@@ -125,7 +125,9 @@ The four prose child tables are flattened from the retained `def14a_json` payloa
 | `notes_embedding` | ticker × accession × tag | Mean-pooled footnote embeddings. Currently populated but not consumed by a cube panel. |
 | `ticker_descriptions`, `ticker_embeddings` | ticker | Business descriptions and similarity vectors used by peer deduction. |
 
-Earnings-call `as_of` is stored as the call date with no +1 day. The text aggregate aligns calls to the trading calendar with `searchsorted(as_of, side="right")`, so a call dated D is first visible on the next trading session: a Wednesday call on Thursday, a Friday call on Monday. The source date is date-only, so this one-session lag is the earliest safe visibility.
+Earnings-call `as_of` remains the actual call date in raw paragraphs and NLP caches. The [text aggregate](../../src/data_aggregate/utils/text/earnings_call_features.py) uses `build_cube.earnings_calls.availability_lag_days: 2` from [build_cube.yml](../../configs/build_cube.yml), then the first trading session on or after call date + two calendar days (`searchsorted(..., side="left")`). Monday calls become eligible Wednesday; Thursday/Friday calls become eligible Monday unless that session is a holiday. The buffer applies once to all twelve EC features; the 66-session lifetime is unchanged. The provider has no first-available timestamp, so this buffer is an estimated availability policy.
+
+The [fetcher](../../src/data_extract/utils/behavioral/fetch_earnings_call_transcripts.py) resolves supported historical symbols through the dated identity master and writes the currently traded canonical ticker before call deduplication. Canonical stored rows still undergo consolidating-window and trusted alias checks at feature/validator time: ordinary extraction preserves source-absent legacy keys, so a stored canonical key alone does not establish issuer ownership. See [data sources](./data-sources.md#earnings-call-transcripts-and-attention-data).
 
 ## Aggregate products
 

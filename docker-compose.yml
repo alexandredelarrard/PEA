@@ -17,7 +17,7 @@ x-airflow-common: &airflow-common
         reservations:
           devices:
             - driver: nvidia
-              count: 1
+              count: all
               capabilities: [gpu]
   env_file:
     - .env                                     # pipeline creds (POSTGRES_*) + API keys (FRED/OPENAI/SEC/…)

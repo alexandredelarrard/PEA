@@ -2,15 +2,8 @@ seed: 4325
 
 data_extract:
   years_history: 31
-  # `prices_macro`'s only window. The SERIES LIST is not a config key -- it cannot be
-  # separated from its symbol->name mapping without creating two places to edit, so it lives
-  # in constants.MACRO_PRICE_SERIES / MACRO_FRED_SERIES.
   macro_years_history: 31
-  # Sharadar's OWN history knob, separate from `years_history` because the two sources are
-  # limited by different things: the SEC walk by patience, Sharadar by subscription tier.
-  # Measured 2026-08-26 on the paid tier: SF1's earliest filing date is 1993-12-22, so a
-  # window past ~33 years buys nothing and 31 leaves 1993-12..1995-08 unfetched by choice.
-  sharadar_years_history: 31
+  sharadar_years_history: 31 # SF1's earliest filing date is 1993-12-22
   sharadar_request_pace: 0.35
   redundant_ticks: ["GOOG", "FOX", "NWS", "EA", "BRK-A"] #EA got acquired; BRK-A is a separate class from roster BRK-B
   # The one retry policy for every SEC request (`utils/common/sec_io.py`): HTTP 429/502/503/504

@@ -185,6 +185,39 @@ def test_call_identity_rejects_conflicts_noise_dei_event_only_and_outside_window
     print("SANITY: no foreign, ambiguous, conflicted, noise, DEI-only, acquired or outside-window call is attached.")
 
 
+@pytest.mark.parametrize("ownership", ["ambiguous", "foreign"])
+def test_unsupported_rebasing_rejects_reused_alias_ownership(ownership: str) -> None:
+    identity = _identity()
+    entity = identity.universe_entity("ECHO")
+    alias = SymbolInterval(entity, pd.Timestamp("2027-01-01"), None, "curated", frozenset({"manual"}), identity.roster_cik["ECHO"])
+    identity = replace(identity, symbol_intervals={**identity.symbol_intervals, "REBASED": (alias,)})
+    if ownership == "foreign":
+        identity = replace(identity, tenure_by_symbol={**identity.tenure_by_symbol, "ECHO": (("E0000000999", pd.Timestamp("2000-01-01"), None, 1),)})
+
+    assert identity.entity_for("REBASED", pd.Timestamp("1999-01-01")) is None
+    assert ect.ticker_for_call(identity, "REBASED", pd.Timestamp("1999-01-01")) is None
+    print(f"SANITY: unsupported rebasing cannot bypass a supported alias with {ownership} lifetime ownership.")
+
+
+def test_rebasing_keeps_dated_support_and_unreused_early_history() -> None:
+    identity = _identity()
+    entity = identity.universe_entity("ECHO")
+    alias = SymbolInterval(entity, pd.Timestamp("2027-01-01"), None, "curated", frozenset({"manual"}), identity.roster_cik["ECHO"])
+    identity = replace(identity, symbol_intervals={**identity.symbol_intervals, "REBASED": (alias,)})
+    assert ect.ticker_for_call(identity, "REBASED", pd.Timestamp("2010-01-01")) == "ECHO"
+    same_issuer = replace(
+        identity,
+        tenure_by_symbol={**identity.tenure_by_symbol, "ECHO": tuple(row for row in identity.tenure_by_symbol["ECHO"] if row[0] == entity)},
+    )
+    assert ect.ticker_for_call(same_issuer, "REBASED", pd.Timestamp("1999-01-01")) == "ECHO"
+    assert ect.ticker_for_call(identity, "REBASED", pd.Timestamp("2027-01-01")) == "ECHO"
+    foreign_source = replace(
+        identity, symbol_intervals={**identity.symbol_intervals, "REBASED": (replace(alias, valid_from=pd.Timestamp("2006-01-01")),)}
+    )
+    assert ect.ticker_for_call(foreign_source, "ECHO", pd.Timestamp("2007-01-01")) is None
+    print("SANITY: dated support, normal dated resolution and unreused early history survive; actual-source foreign ownership still vetoes.")
+
+
 def _sections(store: Any) -> pd.DataFrame:
     rows = store.load(Tables.earnings_call_sections)
     return rows.sort_values(["ticker", "quarter", "paragraph"]).reset_index(drop=True)

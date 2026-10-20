@@ -176,6 +176,27 @@ def dataset_symbols(tickers: list[str]) -> list[str]:
     return sorted({form for ticker in tickers for form in (ticker, ticker.replace("-", "."), ticker.replace("-", "/"))})
 
 
+def _allows_rebased_call(identity: Identity, entity: str, day: pd.Timestamp) -> bool:
+    """Without dated issuer support, a reused alias cannot justify historical rebasing."""
+    supported = [
+        (symbol, row)
+        for symbol, rows in identity.symbol_intervals.items()
+        for row in rows
+        if row.entity == entity and row.status not in {"noise", "conflict"} and row.tape_symbol
+    ]
+    windows = identity.windows_by_entity.get(entity, ())
+    if any(row.covers(day) and any(window.cik == row.cik and window.owns(day) for window in windows) for _, row in supported):
+        return True
+    for alias in {symbol for symbol, _ in supported}:
+        try:
+            owner = identity.entity_for(alias)
+        except AmbiguousSymbolTenureError:
+            return False
+        if owner is not None and owner != entity:
+            return False
+    return True
+
+
 def ticker_for_call(identity: Identity, symbol: str, day: pd.Timestamp) -> str | None:
     """Dated symbol ownership, allowing a vendor to retain/rebase a consolidating issuer's alias."""
     key = yahoo_symbol(symbol)
@@ -217,7 +238,10 @@ def ticker_for_call(identity: Identity, symbol: str, day: pd.Timestamp) -> str |
         candidates &= owners
     if len(candidates) != 1:
         return None
-    ticker = identity.ticker_by_entity.get(next(iter(candidates)))
+    entity = next(iter(candidates))
+    if hit is None and not _allows_rebased_call(identity, entity, day):
+        return None
+    ticker = identity.ticker_by_entity.get(entity)
     if ticker is not None and "-" in ticker:
         stem, share_class = ticker.rsplit("-", 1)
         # A separately traded sibling class is not a predecessor symbol.

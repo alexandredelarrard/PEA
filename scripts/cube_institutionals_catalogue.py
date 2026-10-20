@@ -72,6 +72,15 @@ _add_group(
     ),
     "Forms 3/4/5 filing-date history",
 )
+INSTITUTIONALS["ic_insider_management_position_change_60d"] = (
+    "insider",
+    "Trailing 60-calendar-day net open-market P/S shares of supported direct CEO/CFO/COO common-stock accounts "
+    "divided by pooled starting holdings, counted once per active owner/share-class account.",
+    "Scales disclosed management buying and selling by the holdings supporting those trades; each lot keeps its "
+    "original disclosure expiry and public corrections apply prospectively.",
+    "Positive means net accumulation and negative means net reduction. Pooling requires compatible share classes "
+    "and units; unsupported balances and uncertain shares abstain, while corroborated complete quiet windows may be zero.",
+)
 _add_group(
     "beneficial_ownership",
     (

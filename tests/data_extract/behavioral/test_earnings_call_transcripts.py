@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import types
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -21,6 +22,7 @@ from omegaconf import OmegaConf
 
 from src.constants.constants import EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL
 from src.data_extract.utils.behavioral import fetch_earnings_call_transcripts as ect
+from src.data_extract.utils.common.identity import CikWindow, Identity, SymbolInterval, build_identity
 from src.data_store.schema import Resume, Tables
 
 _PARAGRAPH = pa.struct([("paragraph_number", pa.int32()), ("speaker", pa.string()), ("content", pa.string())])
@@ -74,7 +76,113 @@ def _ctx(tmp_path: Path, store: Any) -> Any:
         log=logging.getLogger("test_earnings_call_transcripts"),
         paths={"DATA_STORE": tmp_path},
         config=types.SimpleNamespace(data_extract=types.SimpleNamespace(redundant_ticks=["GOOG"])),
+        _identity_resolver=_identity(),
     )
+
+
+def _identity() -> Identity:
+    names = ["AAA", "BF-B", "BRK-B", "CCC", "DG", "EEE", "RJF", "AAPL", "MSFT", "ECHO", "BNY", "BBB"]
+    roster = pd.DataFrame({"ticker": names, "cik": [str(i + 1).zfill(10) for i in range(len(names))]})
+    rows = []
+    for symbol, ticker, start, end in [
+        ("SATS", "ECHO", "2008-01-01", "2026-06-24"),
+        ("ECHO", "ECHO", "2026-06-24", None),
+        ("BK", "BNY", "2007-01-01", "2026-05-21"),
+        ("BNY", "BNY", "2026-05-21", None),
+        ("BF-A", "BF-B", "2000-01-01", None),
+    ]:
+        cik = roster.set_index("ticker").loc[ticker, "cik"]
+        rows.append(
+            dict(cik=cik, entity_id=f"E{cik}", role="symbol", symbol=symbol, valid_from=start, valid_to=end, status="curated", sources="manual")
+        )
+    rows.append(
+        dict(
+            cik="0000000999",
+            entity_id="E0000000999",
+            role="symbol",
+            symbol="ECHO",
+            valid_from="2000-01-01",
+            valid_to="2008-01-01",
+            status="curated",
+            sources="manual",
+        )
+    )
+    tenure = pd.DataFrame(
+        [
+            dict(symbol=row["symbol"], issuer_cik=row["cik"], valid_from=row["valid_from"], valid_to=row["valid_to"], n_filings=1, source="manual")
+            for row in rows
+        ]
+        + [
+            dict(symbol=row.ticker, issuer_cik=row.cik, valid_from="1900-01-01", valid_to=None, n_filings=1, source="manual")
+            for row in roster.itertuples()
+            if row.ticker not in {"ECHO", "BNY"}
+        ]
+    )
+    return build_identity(
+        lineage=pd.DataFrame(rows),
+        tenure=tenure,
+        roster=roster,
+        redundant_symbols=frozenset({"GOOG", "BFA"}),
+    )
+
+
+def test_symbol_lineage_recovers_old_calls_on_ordinary_resume(tmp_path: Path, sqlite_store: Any) -> None:
+    ctx = _ctx(tmp_path, sqlite_store)
+    current = [_call("ECHO", 2026, 1, "2026-08-03", 101, 2), _call("BNY", 2026, 1, "2026-07-15", 201, 2)]
+    ect.extract_earnings_calls(ctx, _CFG, tickers=["ECHO", "BNY"], source=_source(_write(tmp_path / "current.parquet", [current]), "short")[0])
+    groups = [
+        [_call("BK", 2008, 1, "2008-04-20", 11, 2)],
+        [_call("SATS", 2009, 1, "2009-05-13", 21, 2)],
+        current,
+        [_call("ECHO", 2007, 1, "2007-05-13", 1, 2)],
+    ]
+    source = _source(_write(tmp_path / "history.parquet", groups), "history")[0]
+    result = ect.extract_earnings_calls(ctx, _CFG, tickers=["ECHO", "BNY"], source=source)
+    rows = _sections(sqlite_store)
+    assert result.calls_new == 2 and set(rows["ticker"]) == {"ECHO", "BNY"}
+    assert rows.groupby("ticker")["quarter"].nunique().to_dict() == {"BNY": 2, "ECHO": 2}
+    assert ect.extract_earnings_calls(ctx, _CFG, tickers=["ECHO", "BNY"], source=source).rows_written == 0
+    print("SANITY: ordinary resume recovers old BK/SATS, rejects foreign ECHO and repeats with zero writes.")
+
+
+def test_alias_overlap_deduplicates_after_mapping_and_rejects_secondary_class() -> None:
+    rows = [
+        _call("ECHO", 2025, 4, "2026-03-02", 3278590, 1),
+        _call("SATS", 2025, 4, "2026-03-02", None, 1),
+        _call("BNY", 2026, 1, "2026-04-16", 3258718, 1),
+        _call("BK", 2026, 1, "2026-04-16", None, 1),
+        _call("BF-A", 2026, 1, "2026-04-16", 9, 1),
+        _call("BFA", 2026, 1, "2026-04-16", 9, 1),
+    ]
+    index = pd.DataFrame(rows).assign(row_group=0, row=range(len(rows)))
+    calls = ect.calls_from_index(index, {"ECHO", "BNY", "BF-B"}, _identity())
+    assert calls.set_index("ticker")["transcript_id"].to_dict() == {"BNY": 3258718, "ECHO": 3278590}
+    assert ect.calls_from_index(index, {"ECHO"}, _identity()).to_dict("records") == calls.query("ticker == 'ECHO'").to_dict("records")
+    print("SANITY: rebased overlaps keep the non-null ID once; scope and sibling classes cannot change ownership.")
+
+
+def test_call_identity_rejects_conflicts_noise_dei_event_only_and_outside_windows() -> None:
+    identity = _identity()
+    entity = identity.universe_entity("ECHO")
+    cik = identity.roster_cik["ECHO"]
+    stamp = pd.Timestamp("2026-03-02")
+    interval = SymbolInterval(entity, None, None, "curated", frozenset({"manual"}), cik)
+    cases = [
+        (replace(interval, status="conflict"),),
+        (replace(interval, status="noise"),),
+        (replace(interval, sources=frozenset({"dei"})),),
+        (replace(interval, cik="0000000888"),),
+        (interval, replace(interval, entity=identity.universe_entity("BNY"), cik=identity.roster_cik["BNY"])),
+    ]
+    for rows in cases:
+        altered = replace(identity, symbol_intervals={**identity.symbol_intervals, "OLD": rows})
+        assert ect.ticker_for_call(altered, "OLD", stamp) is None
+    outside = replace(
+        identity, windows_by_entity={**identity.windows_by_entity, entity: (CikWindow(cik, pd.Timestamp("2027-01-01"), None, None, None),)}
+    )
+    assert ect.ticker_for_call(outside, "SATS", stamp) is None
+    assert ect.ticker_for_call(identity, "ECHO", pd.Timestamp("2007-05-13")) is None
+    print("SANITY: no foreign, ambiguous, conflicted, noise, DEI-only, acquired or outside-window call is attached.")
 
 
 def _sections(store: Any) -> pd.DataFrame:
@@ -104,7 +212,7 @@ def test_row_group_pruning_uses_symbol_and_report_date_statistics(tmp_path: Path
         ("CCC", "CCC", "2012-07-02"),
         ("ZZZ", "ZZZ", "2026-08-02"),
     ]
-    assert symbols == ["AAA", "BF-B", "BF.B", "CCC"]
+    assert symbols == ["AAA", "BF-B", "BF.B", "BF/B", "CCC"]
     assert every == [0, 1, 2]  # ZZZ's group holds no scoped symbol
     assert recent == [0, 1]  # CCC's group ends in 2012
 
@@ -152,7 +260,7 @@ def test_incremental_run_writes_only_the_new_call(tmp_path: Path, sqlite_store: 
 
     assert not summary.full and summary.calls_new == 1 and summary.calls_reissued == 0
     assert summary.rows_written == 6 and len(after) == len(before) + 6
-    assert summary.row_groups == 2  # CCC's 2012 group is older than the frontier minus the contract overlap
+    assert summary.row_groups == 3  # complete scoped metadata includes CCC's historical keys
     assert after.merge(before, how="inner").shape[0] == len(before)  # nothing else rewritten
 
     print("\n=== SANITY CHECK: incremental diff ===")
@@ -361,8 +469,8 @@ def test_a_new_and_a_reissued_call_land_without_any_manifest(tmp_path: Path, sql
     print("  OK: the stored calls alone decide what is new; no manifest file is written")
 
 
-@pytest.mark.parametrize(("added_on", "backfilled"), [("2026-09-20", True), ("2000-01-01", False)])
-def test_only_a_new_ticker_is_read_from_the_start(tmp_path: Path, sqlite_store: Any, added_on: str, backfilled: bool) -> None:
+@pytest.mark.parametrize("added_on", ["2026-09-20", "2000-01-01"])
+def test_metadata_scan_recovers_rowless_tickers_regardless_of_added_on(tmp_path: Path, sqlite_store: Any, added_on: str) -> None:
     ctx = _ctx(tmp_path, sqlite_store)
     path = _write(tmp_path / "a.parquet", _BASE)
     ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA", "BF-B"], source=_source(path, "f1")[0])
@@ -377,11 +485,9 @@ def test_only_a_new_ticker_is_read_from_the_start(tmp_path: Path, sqlite_store: 
     ccc = _sections(sqlite_store).query("ticker == 'CCC'")
 
     assert not summary.full
-    assert (len(ccc), summary.calls_new) == ((4, 2) if backfilled else (0, 0))
+    assert (len(ccc), summary.calls_new) == (4, 2)
     print(f"\n=== SANITY CHECK: new-ticker history (added_on {added_on}) ===")
-    print(
-        f"  CCC's 2012 calls {'read from the start' if backfilled else 'left to the window (rowless, not new)'}: {len(ccc)} rows, {summary.row_groups} groups"
-    )
+    print(f"  CCC's 2012 calls recovered for either roster age: {len(ccc)} rows, {summary.row_groups} groups")
 
 
 def test_duplicate_key_keeps_latest_date_then_highest_id() -> None:
@@ -396,7 +502,7 @@ def test_duplicate_key_keeps_latest_date_then_highest_id() -> None:
             "row": [0, 1, 0, 1],
         }
     )
-    calls = ect.calls_from_index(index, {"AAA", "BBB"}, None)
+    calls = ect.calls_from_index(index, {"AAA", "BBB"}, _identity())
     kept = calls.set_index("ticker")
 
     assert len(calls) == 2

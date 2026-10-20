@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -310,25 +310,33 @@ def test_two_calls_on_one_ticker_date_fail_the_validator(sqlite_store) -> None:
     )
 
 
-def test_coverage_uses_point_in_time_lineage_and_separates_no_call_names(sqlite_store) -> None:
+@pytest.mark.parametrize("has_call", [False, True])
+def test_coverage_uses_point_in_time_lineage_and_provider_presence(sqlite_store: Any, has_call: bool) -> None:
     sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["NEW", "BRK-B"]}))
     sqlite_store.save(
         Tables.entity_lineage,
         pd.DataFrame(
-            {"cik": ["1", "2"], "entity_id": ["E1", "E2"], "role": "cik_window", "symbol": "", "valid_from": "1900-01-01", "valid_to": None}
+            {
+                "cik": ["1", "2", "3"],
+                "entity_id": ["E1", "E2", "E3"],
+                "role": "cik_window",
+                "symbol": "",
+                "valid_from": "1900-01-01",
+                "valid_to": None,
+            }
         ),
     )
     sqlite_store.save(
         Tables.symbol_tenure,
         pd.DataFrame(
             {
-                "symbol": ["OLD", "OLD", "NEW"],
-                "issuer_cik": ["1", "2", "1"],
-                "valid_from": ["2020-01-01", "2024-04-01", "2024-01-01"],
-                "valid_to": ["2024-04-01", None, None],
-                "n_filings": [10, 10, 10],
-                "source": ["form345"] * 3,
-                "evidence_period": [""] * 3,
+                "symbol": ["OLD", "OLD", "NEW", "BRK-B"],
+                "issuer_cik": ["1", "2", "1", "3"],
+                "valid_from": ["2020-01-01", "2024-04-01", "2024-01-01", "2020-01-01"],
+                "valid_to": ["2024-04-01", None, None, None],
+                "n_filings": [10] * 4,
+                "source": ["form345"] * 4,
+                "evidence_period": [""] * 4,
             }
         ),
     )
@@ -339,11 +347,15 @@ def test_coverage_uses_point_in_time_lineage_and_separates_no_call_names(sqlite_
     ]
     sqlite_store.save(
         Tables.earnings_surprises,
-        pd.DataFrame({"ticker": [event[0] for event in events], "earnings_date": [event[1] for event in events]}),
+        pd.DataFrame({"ticker": [event[0] for event in events] + ["BRK-B"], "earnings_date": [event[1] for event in events] + ["2024-02-15"]}),
     )
     sqlite_store.save(
         Tables.earnings_call_sections,
-        pd.concat([_valid_call(ticker, quarter, date) for ticker, date, quarter in events], ignore_index=True),
+        pd.concat(
+            [_valid_call(ticker, quarter, date) for ticker, date, quarter in events]
+            + ([_valid_call("BRK-B", "2024Q1", "2024-02-15")] if has_call else []),
+            ignore_index=True,
+        ),
     )
 
     summary, ratios, valid_dates = _coverage(
@@ -351,15 +363,16 @@ def test_coverage_uses_point_in_time_lineage_and_separates_no_call_names(sqlite_
     )
 
     assert summary["roster_tickers"] == 2
-    assert summary["structural_no_call_tickers"] == ["BRK-B"]
-    assert summary["tickers_measured"] == 1
+    assert summary["tickers_measured"] == 2
     assert ratios["NEW"] == 1.0
+    assert ratios["BRK-B"] == float(has_call)
+    assert len(valid_dates["BRK-B"]) == int(has_call)
     assert len(valid_dates["NEW"]) == 2
     assert [row["quarter"] for row in summary["coverage_by_calendar_quarter"]] == ["2023Q4", "2024Q1"]
     print("\n=== SANITY CHECK: point-in-time coverage identity ===")
     print(
         "  OLD history follows E1 into NEW, reused OLD/E2 events are excluded (also from the per-quarter table), "
-        "and BRK-B is structural, not a source failure. Validated."
+        f"and BRK-B is measured from provider presence (coverage={ratios['BRK-B']}). Validated."
     )
 
 

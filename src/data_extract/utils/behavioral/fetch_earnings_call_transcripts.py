@@ -16,7 +16,7 @@ import threading
 import time
 from bisect import bisect_left
 from collections import deque
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Collection, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import IO, Any, SupportsInt, cast
@@ -29,7 +29,6 @@ import pyarrow.parquet as pq
 from huggingface_hub import HfApi, HfFileSystem
 from omegaconf import DictConfig
 
-from src.constants.constants import NO_EARNINGS_CALL_TICKERS
 from src.context import Context
 from src.data_extract.utils.behavioral.utils_earnings_call_cache import (
     invalidate_earnings_call_derivatives,
@@ -49,7 +48,6 @@ SOURCE_KEY = f"{DATASET_REPO}/{DATASET_FILE}"
 
 INDEX_COLUMNS = ("symbol", "fiscal_year", "fiscal_quarter", "report_date", "transcripts_id")
 TRANSCRIPTS_COLUMN = "transcripts"
-PARAGRAPH_FIELDS = ("paragraph_number", "speaker", "content")
 FIRST_PARAGRAPH = 1
 _BLOCK_SIZE = 1 << 20
 _RETRIES = 4
@@ -77,16 +75,6 @@ class ExtractSummary:
     calls_reissued: int
     rows_written: int
     calls_removed: int = 0
-
-
-@dataclass(frozen=True)
-class RowGroupStats:
-    """Footer statistics of one row group; None where the writer stored none."""
-
-    index: int
-    symbol_min: str | None
-    symbol_max: str | None
-    report_date_max: str | None
 
 
 def resolve_hf_source() -> TranscriptSource:
@@ -128,52 +116,19 @@ def check_source_schema(schema: pa.Schema) -> None:
         raise ValueError(f"{SOURCE_KEY} schema drift ({'; '.join(problems)}); got {schema}")
 
 
-def _stat_text(value: Any) -> str | None:
-    if value is None:
-        return None
-    return value.decode("utf-8") if isinstance(value, bytes) else str(value)
-
-
-def row_group_stats(metadata: pq.FileMetaData) -> list[RowGroupStats]:
-    """Per row group `symbol` min/max and `report_date` max from the footer."""
-    paths = [metadata.schema.column(i).path for i in range(metadata.num_columns)]
-    symbol_col, date_col = paths.index("symbol"), paths.index("report_date")
-    out = []
-    for g in range(metadata.num_row_groups):
-        group = metadata.row_group(g)
-        symbol, date = group.column(symbol_col).statistics, group.column(date_col).statistics
-        has_symbol = symbol is not None and symbol.has_min_max
-        has_date = date is not None and date.has_min_max
-        out.append(
-            RowGroupStats(
-                index=g,
-                symbol_min=_stat_text(symbol.min) if has_symbol else None,
-                symbol_max=_stat_text(symbol.max) if has_symbol else None,
-                report_date_max=_stat_text(date.max) if has_date else None,
-            )
-        )
-    return out
-
-
-def select_row_groups(stats: list[RowGroupStats], symbols: list[str], since: str | None) -> list[int]:
-    """Row groups that may hold a call of `symbols` (sorted) dated on or after `since`.
-
-    A group without statistics is kept: pruning may only drop what it can prove irrelevant."""
+def select_row_groups(metadata: pq.FileMetaData, symbols: Collection[str]) -> list[int]:
+    """Footer symbol pruning, including share-class spellings; missing statistics never exclude a group."""
+    spellings = sorted({form for symbol in symbols for form in (symbol, symbol.replace("-", "."), symbol.replace("-", "/"))})
+    symbol_column = [metadata.schema.column(i).path for i in range(metadata.num_columns)].index("symbol")
     keep = []
-    for group in stats:
-        if group.symbol_min is not None and group.symbol_max is not None:
-            i = bisect_left(symbols, group.symbol_min)
-            if i == len(symbols) or symbols[i] > group.symbol_max:
+    for group in range(metadata.num_row_groups):
+        stats = metadata.row_group(group).column(symbol_column).statistics
+        if stats is not None and stats.has_min_max:
+            position = bisect_left(spellings, stats.min)
+            if position == len(spellings) or spellings[position] > stats.max:
                 continue
-        if since is not None and group.report_date_max is not None and group.report_date_max < since:
-            continue
-        keep.append(group.index)
+        keep.append(group)
     return keep
-
-
-def dataset_symbols(tickers: list[str]) -> list[str]:
-    """Repo tickers in every dataset spelling (`BRK-B` and `BRK.B`), sorted for the range test."""
-    return sorted({form for ticker in tickers for form in (ticker, ticker.replace("-", "."), ticker.replace("-", "/"))})
 
 
 def _allows_rebased_call(identity: Identity, entity: str, day: pd.Timestamp) -> bool:
@@ -261,10 +216,8 @@ def calls_from_index(index: pd.DataFrame, scope: set[str], identity: Identity) -
 
     Resolve ownership before narrowing to the requested destination. A (ticker, quarter)
     published twice keeps the latest `report_date`, then the highest `transcripts_id`."""
-    symbols = index["symbol"].map(yahoo_symbol)
-    calls = index[symbols.isin(identity.universe_symbols(scope))].copy()
-    dates = pd.to_datetime(calls["report_date"], format="%Y-%m-%d")
-    calls["ticker"] = [ticker_for_call(identity, str(symbol), pd.Timestamp(day)) for symbol, day in zip(calls["symbol"], dates, strict=True)]
+    calls = index.assign(as_of=pd.to_datetime(index["report_date"], format="%Y-%m-%d"))
+    calls["ticker"] = [ticker_for_call(identity, str(symbol), pd.Timestamp(day)) for symbol, day in zip(calls["symbol"], calls["as_of"], strict=True)]
     unresolved = calls["ticker"].isna()
     if unresolved.any():
         logger.warning(
@@ -273,7 +226,6 @@ def calls_from_index(index: pd.DataFrame, scope: set[str], identity: Identity) -
     calls = calls[calls["ticker"].isin(scope)]
     calls = calls.assign(
         quarter=calls["fiscal_year"].astype(int).astype(str) + "Q" + calls["fiscal_quarter"].astype(int).astype(str),
-        as_of=pd.to_datetime(calls["report_date"], format="%Y-%m-%d"),
         transcript_id=calls["transcripts_id"].astype("Int64"),
     )
     calls = calls.sort_values([*_KEY, "as_of", "transcript_id"], na_position="first").drop_duplicates(_KEY, keep="last")
@@ -287,9 +239,7 @@ def one_call_per_date(calls: pd.DataFrame) -> pd.DataFrame:
     A multi-label date keeps the label whose `ordinal` (fiscal_year*4 + fiscal_quarter) is one
     below the label kept for the next later date, else the highest ordinal. The provider's
     fiscal-year relabels put 23 roster dates of 10 tickers (DG, DLTR, HD, LOW, LULU, TGT, ULTA,
-    WSM, PCAR, RJF) under two labels; both would read as two calls on one date. Every later
-    call of a ticker sits inside any `since` window that holds an earlier one, so an
-    incremental run resolves exactly as a full one."""
+    WSM, PCAR, RJF) under two labels; both would read as two calls on one date."""
     per_date = calls.groupby(["ticker", "as_of"])["ordinal"].transform("size")
     tickers = set(calls.loc[per_date > 1, "ticker"])
     if not tickers:
@@ -342,7 +292,7 @@ def stale_calls(calls: pd.DataFrame, stored: pd.DataFrame | None) -> tuple[pd.Da
 
 
 def explode_paragraphs(transcripts: pa.Array, calls: pd.DataFrame) -> pd.DataFrame:
-    """Paragraph rows for `calls`, whose i-th row owns `transcripts[i]`."""
+    """Retained paragraph rows for `calls`, numbered contiguously after dropping content of length <= 2."""
     flat = pc.list_flatten(transcripts)
     owner = pc.list_parent_indices(transcripts).to_numpy(zero_copy_only=False)
     meta = calls.iloc[owner].reset_index(drop=True)
@@ -357,7 +307,9 @@ def explode_paragraphs(transcripts: pa.Array, calls: pd.DataFrame) -> pd.DataFra
             "content": flat.field("content").to_pandas(),
         }
     )
-    rows = rows[rows["paragraph"].notna()].drop_duplicates([*_KEY, "paragraph"], keep="first")
+    rows = rows.loc[rows["paragraph"].notna() & (rows["content"].str.len() > 2)].drop_duplicates([*_KEY, "paragraph"], keep="first")
+    # Filtering can remove paragraph 1, which identifies a stored call on resume.
+    rows["paragraph"] = rows.groupby(_KEY)["paragraph"].rank(method="dense")
     return rows.astype({"paragraph": "int64"}).reset_index(drop=True)
 
 
@@ -370,15 +322,25 @@ class _Readers:
         self._lock = threading.Lock()
         self._handles: list[IO[bytes]] = []
 
-    def get(self) -> pq.ParquetFile:
-        reader = getattr(self._local, "reader", None)
-        if reader is None:
-            handle = self._source.opener()
-            with self._lock:
-                self._handles.append(handle)
-            reader = pq.ParquetFile(handle, metadata=self._metadata)
-            self._local.reader = reader
-        return reader
+    def read(self, group: int, columns: list[str]) -> pa.Table:
+        """Read projected columns with the same retry policy for metadata and payloads."""
+
+        def read_group() -> pa.Table:
+            reader = getattr(self._local, "reader", None)
+            if reader is None:
+                handle = self._source.opener()
+                with self._lock:
+                    self._handles.append(handle)
+                reader = pq.ParquetFile(handle, metadata=self._metadata)
+                self._local.reader = reader
+            return reader.read_row_group(group, columns=columns)
+
+        return call_with_retries(
+            read_group,
+            retries=_RETRIES,
+            base_wait=_RETRY_WAIT_SECONDS,
+            label=f"defeatbeta {','.join(columns)} rg{group}",
+        )
 
     def close(self) -> None:
         for handle in self._handles:
@@ -386,23 +348,12 @@ class _Readers:
 
 
 def _read_index(readers: _Readers, group: int) -> pd.DataFrame:
-    table = call_with_retries(
-        lambda: readers.get().read_row_group(group, columns=list(INDEX_COLUMNS)),
-        retries=_RETRIES,
-        base_wait=_RETRY_WAIT_SECONDS,
-        label=f"defeatbeta index rg{group}",
-    )
-    frame = table.to_pandas()
+    frame = readers.read(group, list(INDEX_COLUMNS)).to_pandas()
     return frame.assign(row_group=group, row=np.arange(len(frame)))
 
 
 def _read_transcripts(readers: _Readers, group: int, calls: pd.DataFrame) -> pd.DataFrame:
-    column = call_with_retries(
-        lambda: readers.get().read_row_group(group, columns=[TRANSCRIPTS_COLUMN]).column(0),
-        retries=_RETRIES,
-        base_wait=_RETRY_WAIT_SECONDS,
-        label=f"defeatbeta transcripts rg{group}",
-    )
+    column = readers.read(group, [TRANSCRIPTS_COLUMN]).column(0)
     taken = column.combine_chunks().take(pa.array(calls["row"].to_numpy()))
     return explode_paragraphs(taken, calls.reset_index(drop=True))
 
@@ -410,12 +361,12 @@ def _read_transcripts(readers: _Readers, group: int, calls: pd.DataFrame) -> pd.
 def _ordered_parallel(groups: list[int], work: Callable[[int], pd.DataFrame], workers: int) -> Iterator[tuple[int, pd.DataFrame]]:
     """`work(group)` on `workers` threads, yielded in submission order with at most 2x`workers`
     results in flight, so a slow consumer bounds memory."""
-    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+    with ThreadPoolExecutor(max_workers=workers) as pool:
         pending: deque[tuple[int, Future[pd.DataFrame]]] = deque()
         queue = iter(groups)
         for group in queue:
             pending.append((group, pool.submit(work, group)))
-            if len(pending) >= 2 * max(1, workers):
+            if len(pending) >= 2 * workers:
                 break
         while pending:
             group, future = pending.popleft()
@@ -426,19 +377,14 @@ def _ordered_parallel(groups: list[int], work: Callable[[int], pd.DataFrame], wo
             yield group, result
 
 
-def _scope(context: Context, tickers: list[str] | None) -> list[str]:
-    names = tickers if tickers is not None else load_universe_tickers(context)
-    return sorted(set(names) - NO_EARNINGS_CALL_TICKERS)
-
-
-def _stored_calls(context: Context, calls: pd.DataFrame, scope: list[str], full: bool) -> pd.DataFrame | None:
+def _stored_calls(context: Context, calls: pd.DataFrame, scope: set[str], full: bool) -> pd.DataFrame | None:
     """Stored (ticker, quarter, transcript_id, as_of), one row per call: every stored call of
     `scope` on a reconcile, else only the candidates' keys.
 
     Keyed on the candidates' quarters rather than on a date window: a re-issue can move a
     call's date out of any window, and its old paragraphs must still be found."""
     if full:
-        where: dict[str, object] = {"ticker": scope, "paragraph": FIRST_PARAGRAPH}
+        where: dict[str, object] = {"ticker": list(scope), "paragraph": FIRST_PARAGRAPH}
     elif calls.empty:
         return None
     else:
@@ -449,31 +395,20 @@ def _stored_calls(context: Context, calls: pd.DataFrame, scope: list[str], full:
     return stored.merge(calls[_KEY], on=_KEY, how="inner")
 
 
-def _remove_calls(context: Context, gone: pd.DataFrame) -> None:
-    """Delete stored calls that left the source: derivatives, then the refresh marker (it shares
-    the sentiment key the invalidation deletes), then the paragraphs, so a crash at any point
-    leaves the call stored and the next reconcile repeats the removal."""
-    invalidate_earnings_call_derivatives(context, gone)
-    context.store.save(Tables.earnings_call_sentiment, pending_refresh_markers(gone))
-    for ticker, group in gone.groupby("ticker", sort=False):
+def _remove_calls(context: Context, calls: pd.DataFrame) -> None:
+    """Invalidate caches and save refresh markers before deleting old paragraphs so interrupted work can safely retry."""
+    invalidate_earnings_call_derivatives(context, calls)
+    context.store.save(Tables.earnings_call_sentiment, pending_refresh_markers(calls))
+    for ticker, group in calls.groupby("ticker", sort=False):
         context.store.delete(_TABLE, {"ticker": str(ticker), "quarter": group["quarter"].astype(str).tolist()})
 
 
-def _sample_keys(calls: pd.DataFrame, limit: int = 10) -> str:
-    keys = [f"{t} {q}" for t, q in calls[_KEY].head(limit).itertuples(index=False)]
-    return ", ".join(keys) + (f" (+{len(calls) - limit} more)" if len(calls) > limit else "")
-
-
 def _write_batch(context: Context, paragraphs: pd.DataFrame, reissued: pd.DataFrame) -> int:
-    """Replace re-issued calls, invalidate their derivatives, then upsert the batch."""
-    store = context.store
+    """Preserve invalidation and the earliest refresh date before replacing old paragraphs."""
     if not reissued.empty:
-        for ticker, group in reissued.groupby("ticker", sort=False):
-            store.delete(_TABLE, {"ticker": str(ticker), "quarter": group["quarter"].astype(str).tolist()})
-        invalidate_earnings_call_derivatives(context, reissued)
         earliest = reissued[["as_of", "old_as_of"]].min(axis=1)
-        store.save(Tables.earnings_call_sentiment, pending_refresh_markers(reissued.assign(as_of=earliest)))
-    return store.save(_TABLE, paragraphs) if not paragraphs.empty else 0
+        _remove_calls(context, reissued.assign(as_of=earliest))
+    return context.store.save(_TABLE, paragraphs) if not paragraphs.empty else 0
 
 
 def extract_earnings_calls(
@@ -483,47 +418,45 @@ def extract_earnings_calls(
     full: bool = False,
     tickers: list[str] | None = None,
     source: TranscriptSource | None = None,
-    as_of: pd.Timestamp | None = None,
 ) -> ExtractSummary:
     """Bring `earnings_call_sections` up to the current defeatbeta revision.
 
     `cfg` is the `earnings_calls` config block (`read_workers`). `tickers` narrows the scope
-    (default: the analysis universe, minus the names that hold no call). `full` reads every
-    scoped call and deletes stored calls absent from the source. `as_of` is retained for caller
-    compatibility; every run checks complete scoped metadata. `source` replaces the HuggingFace file (tests)."""
+    (default: the analysis universe). Every run checks complete scoped metadata and fetches
+    missing/reissued payloads. `full` additionally reconciles source-absent calls, retaining
+    tickers that vanished entirely. `source` replaces the HuggingFace file (tests)."""
     log = context.log
     started = time.monotonic()
-    scope = _scope(context, tickers)
+    scope = set(load_universe_tickers(context) if tickers is None else tickers)
     identity = load_identity(context)
+    symbols = identity.universe_symbols(scope)
     src = source if source is not None else resolve_hf_source()
-    frontier = None if full else context.store.max_date(_TABLE)
-    is_full = frontier is None
 
     with src.opener() as handle:
         footer = pq.ParquetFile(handle)
         metadata = footer.metadata
         check_source_schema(footer.schema_arrow)
-    stats = row_group_stats(metadata)
-    groups = select_row_groups(stats, dataset_symbols(sorted(identity.universe_symbols(scope))), None)
+    groups = select_row_groups(metadata, symbols)
     log.info(
         "Earnings calls: revision %s, %s run over %d tickers, %d/%d row groups, complete scoped metadata.",
         src.revision[:12],
-        "full" if is_full else "incremental",
+        "full" if full else "incremental",
         len(scope),
         len(groups),
         metadata.num_row_groups,
     )
 
-    workers = int(cfg.read_workers)
+    workers = max(1, int(cfg.read_workers))
     readers = _Readers(src, metadata)
     rows_written = 0
     try:
         index_frames = [frame for _, frame in _ordered_parallel(groups, lambda g: _read_index(readers, g), workers)]
         df_index = pd.concat(index_frames, ignore_index=True) if index_frames else pd.DataFrame(columns=[*INDEX_COLUMNS, "row_group", "row"])
-        df_calls = calls_from_index(df_index, set(scope), identity)
-        df_stored = _stored_calls(context, df_calls, scope, is_full)
+        df_index = df_index[df_index["symbol"].map(yahoo_symbol).isin(symbols)]
+        df_calls = calls_from_index(df_index, scope, identity)
+        df_stored = _stored_calls(context, df_calls, scope, full)
         df_new, df_reissued = diff_calls(df_calls, df_stored)
-        df_gone, vanished = stale_calls(df_calls, df_stored if is_full else None)
+        df_gone, vanished = stale_calls(df_calls, df_stored if full else None)
         if vanished:
             log.warning("Earnings calls: %d stored ticker(s) have no call left in the source, kept as stored: %s", len(vanished), vanished[:20])
         log.info(
@@ -534,18 +467,24 @@ def extract_earnings_calls(
             len(df_gone),
         )
         if not df_gone.empty:
-            log.warning("Earnings calls: deleting %d stored call(s) absent from the source: %s", len(df_gone), _sample_keys(df_gone))
+            log.warning(
+                "Earnings calls: deleting %d stored call(s) absent from the source: %s", len(df_gone), df_gone[_KEY].head(10).to_dict("records")
+            )
             _remove_calls(context, df_gone)
 
         df_needed = pd.concat(
-            [df_new.assign(old_as_of=pd.Series(pd.NaT, index=df_new.index, dtype="datetime64[ns]")), df_reissued], ignore_index=True
+            [
+                df_new.assign(old_as_of=pd.Series(pd.NaT, index=df_new.index, dtype="datetime64[ns]"), is_reissued=False),
+                df_reissued.assign(is_reissued=True),
+            ],
+            ignore_index=True,
         )
         by_group = {int(cast(SupportsInt, g)): df_part for g, df_part in df_needed.groupby("row_group", sort=True)}
         empty_calls = 0
         for group, df_paragraphs in _ordered_parallel(list(by_group), lambda g: _read_transcripts(readers, g, by_group[g]), workers):
             df_part = by_group[group]
             empty_calls += len(df_part) - df_paragraphs[_KEY].drop_duplicates().shape[0]
-            rows_written += _write_batch(context, df_paragraphs, df_part[df_part["old_as_of"].notna()].reset_index(drop=True))
+            rows_written += _write_batch(context, df_paragraphs, df_part[df_part["is_reissued"]])
         if empty_calls:
             log.warning("Earnings calls: %d call(s) carry no paragraph in the source.", empty_calls)
     finally:
@@ -553,7 +492,7 @@ def extract_earnings_calls(
 
     log.info("Earnings calls: +%d paragraph rows in %.1fs.", rows_written, time.monotonic() - started)
     return ExtractSummary(
-        full=is_full,
+        full=full,
         revision=src.revision,
         row_groups=len(groups),
         calls_new=len(df_new),

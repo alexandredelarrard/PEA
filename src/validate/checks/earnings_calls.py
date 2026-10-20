@@ -18,7 +18,6 @@ from src.constants.constants import (
     EARNINGS_CALL_FEATURES,
     EARNINGS_CALL_SIGNAL_SESSIONS,
     EARNINGS_REPORT_TO_QUARTER_LAG_DAYS,
-    NO_EARNINGS_CALL_TICKERS,
 )
 from src.context import Context
 from src.data_store.schema import Table, Tables, resolve
@@ -417,25 +416,22 @@ def _measure_ticker(
     coverage.eligible_ratios[ticker] = present_eligible / len(eligible_quarters) if eligible_quarters else np.nan
 
 
-def _coverage_summary(roster_tickers: list[str], measured_tickers: list[str], scan: _CallScan, coverage: _TickerCoverage) -> dict[str, Any]:
+def _coverage_summary(roster_tickers: list[str], scan: _CallScan, coverage: _TickerCoverage) -> dict[str, Any]:
     """The coverage metrics block of the check."""
-    structural_no_call = sorted(set(roster_tickers) & set(NO_EARNINGS_CALL_TICKERS))
     shares = pd.Series(scan.prepared_shares, dtype="float64")
     by_quarter = [
         {
             "quarter": f"{index // 4}Q{index % 4 + 1}",
             "tickers_with_call": len(coverage.tickers_by_quarter.get(index, set())),
             "tickers_with_valid_call": len(coverage.valid_tickers_by_quarter.get(index, set())),
-            "roster_measured": len(measured_tickers),
-            "share_with_call": len(coverage.tickers_by_quarter.get(index, set())) / len(measured_tickers) if measured_tickers else None,
+            "roster_measured": len(roster_tickers),
+            "share_with_call": len(coverage.tickers_by_quarter.get(index, set())) / len(roster_tickers) if roster_tickers else None,
         }
         for index in sorted(set(coverage.tickers_by_quarter) | set(coverage.valid_tickers_by_quarter))
     ]
     return {
-        "denominator": "current roster tickers with earnings calls; call and release dates mapped to calendar reporting quarters and point-in-time issuer identity; predecessor symbols linked through CIK lineage; future releases excluded; floored at 2006Q1",
+        "denominator": "current analysis universe; coverage ratios require observed releases; call and release dates mapped to calendar reporting quarters and point-in-time issuer identity; predecessor symbols linked through CIK lineage; future releases excluded; floored at 2006Q1",
         "roster_tickers": len(roster_tickers),
-        "structural_no_call_count": len(structural_no_call),
-        "structural_no_call_tickers": structural_no_call,
         **_coverage_buckets(pd.Series(coverage.ratios, dtype="float64")),
         "fixed_since_2006": _coverage_buckets(pd.Series(coverage.fixed_ratios, dtype="float64").dropna()),
         "issuer_linked_insider_filing_tenure_sensitivity": _coverage_buckets(pd.Series(coverage.eligible_ratios, dtype="float64").dropna()),
@@ -465,22 +461,21 @@ def _coverage(context: Context) -> tuple[dict[str, Any], dict[str, float], dict[
     )
     lineage = context.store.load(Tables.entity_lineage, columns=["cik", "entity_id", "role", "valid_from", "valid_to"], optional=True)
     lineage = None if lineage is None else lineage.drop_duplicates(ignore_index=True)
-    measured_tickers = [ticker for ticker in roster_tickers if ticker not in NO_EARNINGS_CALL_TICKERS]
     roster = (
         context.store.load(Tables.sp500_tickers, columns=["ticker", "cik"], optional=True)
         if "cik" in context.store.columns(Tables.sp500_tickers)
         else None
     )
-    identity = _identity(tenure, lineage, measured_tickers, roster)
+    identity = _identity(tenure, lineage, roster_tickers, roster)
     analysis_symbols = sorted(
-        set(measured_tickers) | {symbol for entity in identity.roster_entity.values() for symbol in identity.aliases_by_entity.get(entity, set())}
+        set(roster_tickers) | {symbol for entity in identity.roster_entity.values() for symbol in identity.aliases_by_entity.get(entity, set())}
     )
     release_dates_by_ticker = _release_dates_by_ticker(releases)
     scan = _scan_calls(context, analysis_symbols)
     coverage = _TickerCoverage()
-    for ticker in measured_tickers:
+    for ticker in roster_tickers:
         _measure_ticker(coverage, ticker, identity, scan, release_dates_by_ticker)
-    return _coverage_summary(roster_tickers, measured_tickers, scan, coverage), coverage.ratios, coverage.valid_dates
+    return _coverage_summary(roster_tickers, scan, coverage), coverage.ratios, coverage.valid_dates
 
 
 def _source_findings(coverage: dict[str, Any], settings: Any) -> list[Finding]:

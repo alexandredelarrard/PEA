@@ -130,7 +130,7 @@ Important measured state:
 | `dividends` covers fewer tickers | Correct for non-payers; no row is not automatically missing data. |
 | `earnings_surprises` has future dates | Scheduled calls are present; realized signals require non-null actual EPS. |
 | Row counts include empty-filing markers | Raw SQL counts the marker rows of the tables that declare one; `DataStore.load` drops them. `data_extract markers --count` gives the marker count per table. |
-| Roster names with no earnings-call rows | BRK-B holds no calls; ED, EXPD and NVR are absent from the defeatbeta source. Their `f_ec_*` features are null, not stale. |
+| Roster names with no earnings-call rows | The recorded source snapshot lacks BRK-B, ED, EXPD and NVR; their `f_ec_*` features are null. Every universe ticker uses the normal provider lookup and coverage checks; there is no static no-call exclusion. |
 | Bulk pension maxima, and the latest insider `quarter` tag, lag today | Publication cadence, not automatically failed extraction. Insider rows after the last zip quarter come from EDGAR with a NULL `quarter`. |
 | Short-volume minimum predates the current provider window | The isolated stored date is not proof of continuously recoverable history. |
 | `sec_def14a` code exists but table was removed in an older cutover | Check current table presence before designing a feature around Pay-versus-Performance history. |

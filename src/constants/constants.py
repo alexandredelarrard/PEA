@@ -711,12 +711,6 @@ SHARADAR_GAP_EXPECTED_FIELDS: frozenset[str] = frozenset(
 # it inside the reported quarter (Feb report -> prior Q4, late-Apr report -> Q1). The validator uses
 # it to expect only quarters a ticker has ACTUALLY released, instead of a blanket calendar guess.
 EARNINGS_REPORT_TO_QUARTER_LAG_DAYS = 45
-# Tickers that hold NO earnings call, so no transcript can exist -> excluded from the extraction
-# scope and reported apart from the coverage gap (not flagged as "missing"). Berkshire Hathaway is
-# the classic case (Buffett publishes a letter + holds the annual meeting, but no quarterly call).
-# Extend as other no-call names surface.
-NO_EARNINGS_CALL_TICKERS: frozenset[str] = frozenset({"BRK-B", "BRK-A"})
-
 # per-turn `tag` values in EARNINGS_CALL_EMBEDDING_TABLE
 EARNINGS_CALL_TAG_QUESTION = "question"  # a sell-side analyst turn (asks)
 EARNINGS_CALL_TAG_ANSWER = "answer"  # a management turn answering the current question

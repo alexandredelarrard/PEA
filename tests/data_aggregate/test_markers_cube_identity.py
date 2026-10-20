@@ -173,7 +173,7 @@ def test_13f_gap_markers_never_change_an_institutional_cell(sqlite_store: DataSt
     try:
         holdings = live.load(Tables.sec13f_hr, columns=[*Tables.sec13f_hr.read_columns, "cusip"], where={"ticker": F13_TICKERS}, since=F13_SINCE)
         prices = cast(
-            pd.DataFrame, live.load(Tables.prices, columns=["date", "ticker", "close_split"], where={"ticker": F13_TICKERS}, since=GRID_START)
+            pd.DataFrame, live.load(Tables.prices, columns=["date", "ticker", "close_split"], where={"ticker": F13_TICKERS}, since=F13_SINCE)
         )
     except Exception as exc:  # noqa: BLE001 -- a missing live table means no real data to test on
         pytest.skip(f"live source rows unavailable: {type(exc).__name__}: {exc}")

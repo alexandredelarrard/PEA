@@ -47,6 +47,31 @@ def _at(frame: pd.DataFrame, date: str, ticker: str) -> float:
     return float(cast(float, frame.loc[pd.Timestamp(date), ticker]))
 
 
+def _source_supported_board_counts(raw: pd.DataFrame) -> pd.DataFrame:
+    """Use numeric disclosures at preceding positions in stable source-date order."""
+    col = "other_public_company_boards"
+    work = raw[["ticker", "accession_number", "as_of", "name", col]].copy()
+    work["as_of"] = pd.to_datetime(work["as_of"], errors="coerce")
+    work[col] = pd.to_numeric(work[col], errors="coerce")
+    work = work.dropna(subset=["ticker", "as_of", "name"]).sort_values("as_of", kind="stable")
+    # Filed names are the attribute identity: an initial-only person key can merge two people.
+    # Only actual numeric disclosures update this state. Same-day ties retain raw source order,
+    # so a later sibling accession cannot supply an earlier gap or reset a carried source clock.
+    latest: dict[tuple[str, str], tuple[pd.Timestamp, float]] = {}
+    source_dates = []
+    expected_values = []
+    for ticker, name, date, value in work[["ticker", "name", "as_of", col]].itertuples(index=False, name=None):
+        key = (ticker, name)
+        if pd.notna(value):
+            latest[key] = (date, float(value))
+        source = latest.get(key)
+        source_dates.append(pd.NaT if source is None else source[0])
+        expected_values.append(np.nan if source is None or (date - source[0]).days > 395 else source[1])
+    work["source_as_of"] = source_dates
+    work["expected_seats"] = expected_values
+    return work
+
+
 def _turnover_board() -> pd.DataFrame:
     """TTT: a five-seat board where in 2020 exactly ONE director leaves and ONE arrives, and in
     2021 nothing changes. So turnover must read 1/5 = 0.2 then 0.0 — and 0.0 is the half that
@@ -221,14 +246,78 @@ def test_the_encoding_and_expiry_contracts() -> None:
     print("SANITY: all six board-quality measurements share the 395-day limit and report their expiry counts.")
 
 
-def test_the_real_board_quality_readout():
-    """§1.6 regenerated on the live table, plus `pct_overboarded` before and after the fill."""
+def test_overboarded_support_keeps_zero_through_day_395_without_restarting_the_source_clock() -> None:
+    """Known-truth boundary: prior numeric zero is evidence; a future count is not."""
+    start = pd.Timestamp("2020-01-01")
+    dates = [start + pd.Timedelta(days=offset) for offset in (-1, 0, 200, 395, 396, 500, 895, 896)]
+    raw = pd.DataFrame(
+        [
+            {"ticker": "AAA", "accession_number": f"a{i}", "as_of": date, "name": "Ann Alder", "other_public_company_boards": value}
+            for i, (date, value) in enumerate(zip(dates, [None, 0.0, None, None, None, 3.0, None, None], strict=True))
+        ]
+        + [{"ticker": "BBB", "accession_number": "b0", "as_of": start, "name": "Ann Alder", "other_public_company_boards": None}]
+    )
+    expected_values = pd.Series([np.nan, 0.0, 0.0, 0.0, np.nan, 3.0, 3.0, np.nan], index=[f"a{i}" for i in range(8)], name="seats")
+    oracle = _source_supported_board_counts(raw).set_index("accession_number")
+    filled, _ = fill_director_attributes(raw)
+    actual = filled.set_index("accession_number")
+    for frame, col in ((oracle, "expected_seats"), (actual, "other_public_company_boards")):
+        pd.testing.assert_series_equal(frame.loc[expected_values.index, col].rename("seats"), expected_values, check_index_type=False)
+        assert pd.isna(frame.loc["b0", col]), "another ticker cannot supply this person's missing disclosure"
+    for accession in ("a1", "a2", "a3"):
+        assert oracle.loc[accession, "source_as_of"] == start
+        assert actual.loc[accession, "other_public_company_boards_source_as_of"] == start
+    assert actual.loc["a6", "other_public_company_boards_source_as_of"] == dates[5]
+    idx = pd.DatetimeIndex(dates)
+    frames, tally = board_quality_fields(filled, idx)
+    assert frames["pct_overboarded"].loc[dates[3], "AAA"] == pytest.approx(0.0)
+    assert pd.isna(frames["pct_overboarded"].loc[dates[4], "AAA"])
+    assert frames["pct_overboarded"].loc[dates[6], "AAA"] == pytest.approx(1.0)
+    assert pd.isna(frames["pct_overboarded"].loc[dates[7], "AAA"])
+    assert tally["pct_overboarded: filings"] == 5
+    print(
+        "SANITY: numeric zero and a later genuine disclosure each survive day 395, expire on day 396, and never borrow future or other-ticker evidence."
+    )
+
+
+@pytest.mark.parametrize("numeric_first", [False, True])
+def test_overboarded_same_day_accessions_use_only_preceding_source_records(numeric_first: bool) -> None:
+    """Source order, not the presence of a same-day sibling, determines prior evidence."""
+    date = pd.Timestamp("2020-01-01")
+    rows = [
+        {"ticker": "AAA", "accession_number": "gap", "as_of": date, "name": "Ann Alder", "other_public_company_boards": None},
+        {"ticker": "AAA", "accession_number": "numeric", "as_of": date, "name": "Ann Alder", "other_public_company_boards": 4.0},
+    ]
+    if numeric_first:
+        rows.reverse()
+    rows.append(
+        {"ticker": "AAA", "accession_number": "later", "as_of": date + pd.Timedelta(days=1), "name": "Ann Alder", "other_public_company_boards": None}
+    )
+    raw = pd.DataFrame(rows)
+    expected = pd.Series([4.0 if numeric_first else np.nan, 4.0, 4.0], index=["gap", "numeric", "later"], name="seats")
+    oracle = _source_supported_board_counts(raw).set_index("accession_number")
+    actual, _ = fill_director_attributes(raw)
+    actual = actual.set_index("accession_number")
+    for frame, col in ((oracle, "expected_seats"), (actual, "other_public_company_boards")):
+        pd.testing.assert_series_equal(frame.loc[expected.index, col].rename("seats"), expected, check_index_type=False)
+    print(f"SANITY: numeric-first={numeric_first}; same-day gaps use only preceding raw numeric records and the next day carries the genuine source.")
+
+
+def test_the_real_board_quality_readout() -> None:
+    """Live coverage must match independently reconstructed 395-day numeric-source support."""
     try:
         from src.context import get_config_context
 
         _, ctx = get_config_context("./configs", use_cache=False, save=False)
-        raw = ctx.store.load(Tables.def14a_directors)
-        filings = ctx.store.load(Tables.def14a_llm, columns=["accession_number"])
+        source_start, source_end = ctx.store.bounds(Tables.def14a_directors)
+        parent_start, parent_end = ctx.store.bounds(Tables.def14a_llm)
+        raw = ctx.store.load(
+            Tables.def14a_directors,
+            columns=["ticker", "accession_number", "as_of", "name", "age", "tenure_years", "other_public_company_boards"],
+            since=source_start,
+            until=source_end,
+        )
+        filings = ctx.store.load(Tables.def14a_llm, columns=["accession_number"], since=parent_start, until=parent_end)
         assert filings is not None
         n_filings = filings["accession_number"].nunique()
     except Exception as e:  # noqa: BLE001
@@ -236,9 +325,17 @@ def test_the_real_board_quality_readout():
     if raw is None or raw.empty:
         pytest.skip("def14a_directors empty")
 
+    support = _source_supported_board_counts(raw)
+    keys = ["ticker", "accession_number", "as_of"]
+    observed = support["other_public_company_boards"].notna()
+    supported = support["expected_seats"].notna()
+    n_observed = len(support.loc[observed, keys].drop_duplicates())
+    expected_filings = support.loc[supported, keys].drop_duplicates().sort_values(keys).reset_index(drop=True)
     filled, _ = fill_director_attributes(raw)
+    actual_filings = filled.loc[filled["other_public_company_boards"].notna(), keys].drop_duplicates().sort_values(keys).reset_index(drop=True)
+    pd.testing.assert_frame_equal(actual_filings, expected_filings)
     idx = pd.bdate_range("1995-01-01", "2026-12-31")
-    pre, _ = board_quality_fields(raw, idx)
+    pre, pre_tally = board_quality_fields(raw, idx)
     post, tally = board_quality_fields(filled, idx)
 
     floors = {
@@ -247,7 +344,6 @@ def test_the_real_board_quality_readout():
         "board_tenure_dispersion": 10_500,
         "board_age_dispersion": 10_000,
         "oldest_director_age": 11_500,
-        "pct_overboarded": 8_000,
     }
     print("\n=== SANITY CHECK: §1.6 board quality on the live archive ===")
     print(f"  {n_filings:,} parent filings, {len(raw):,} director rows")
@@ -255,16 +351,27 @@ def test_the_real_board_quality_readout():
         n = int(tally[f"{name}: filings"])
         cells = int(post[name].notna().to_numpy().sum())
         print(f"  {name:26s} {n:6,} filings ({n / n_filings:5.1%})  {cells:10,} daily cells  {int(post[name].notna().any().sum()):3d} tickers")
-        assert n >= floors[name], f"{name} covers only {n:,} filings, floor {floors[name]:,}"
+        if name == "pct_overboarded":
+            assert n == len(expected_filings), f"{name} must cover exactly the raw source-supported filings"
+        else:
+            assert n >= floors[name], f"{name} covers only {n:,} filings, floor {floors[name]:,}"
+    assert pre_tally["pct_overboarded: filings"] == n_observed
+    assert len(expected_filings) > n_observed, "the archive must exercise bounded carry beyond raw disclosures"
+    stale = ~observed & support["source_as_of"].notna() & ~supported
+    no_prior = ~observed & support["source_as_of"].isna()
+    assert stale.any() and no_prior.any(), "the archive must exercise stale and no-prior refusals"
     ob_pre = int(pre["pct_overboarded"].notna().any(axis=0).sum())
     n_pre = int((pre["pct_overboarded"].notna().sum(axis=1) > 0).sum())
     print(
         f"  pct_overboarded coverage: {tally['pct_overboarded: filings']:,} filings AFTER the "
-        f"child fill, against 5,656 before it ({ob_pre} tickers pre-fill, {n_pre:,} dates)"
+        f"child fill, against {n_observed:,} before it ({ob_pre} tickers pre-fill, {n_pre:,} dates)"
     )
     print(
-        "  CONCLUSION: every member covers its measured share of filings, and the ISS "
-        "overboarded share -- the definition the literature uses, which `avg_other_public_"
-        "boards` only proxies -- goes from 45.8% to 70.3% of filings on the child fill. "
-        "Validated."
+        f"  numeric-source support: {int(observed.sum()):,} raw rows, {int((supported & ~observed).sum()):,} carried rows, "
+        f"{int(stale.sum()):,} stale refusals, {int(no_prior.sum()):,} no-prior refusals"
+    )
+    print(
+        f"  CONCLUSION: pct_overboarded covers {n_observed / n_filings:.1%} raw and {len(expected_filings) / n_filings:.1%} "
+        "source-supported filings, exactly matching preceding numeric disclosures within 395 days in source order; "
+        "stale and absent source coverage stays visible. Other board-quality coverage floors remain satisfied."
     )

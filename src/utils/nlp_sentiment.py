@@ -4,8 +4,9 @@
     probs  = engine.score_texts([doc1, doc2, ...])   # -> [{'pos','neg','neu'}|None, ...]
 
 torch/transformers are optional: without them the builder returns None and callers skip. Runs on CUDA when
-available. Documents are split into <=510-token windows whose class probabilities are length-weighted back to
-one distribution; columns are mapped from the model's own `config.id2label`, never hardcoded indices.
+available; FINBERT_DEVICE=cuda requires a working GPU and fails instead of falling back. Documents are split into
+<=510-token windows whose class probabilities are length-weighted back to one distribution; columns are mapped
+from the model's own `config.id2label`, never hardcoded indices.
 """
 
 from __future__ import annotations
@@ -132,10 +133,23 @@ class SentimentEngine:
         self.batch_size = int(batch_size)
 
         device_env = os.getenv("FINBERT_DEVICE", "").strip().lower()
-        if device_env in ("cpu", "cuda"):
-            self.device = device_env if (device_env == "cpu" or torch.cuda.is_available()) else "cpu"
-        else:
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        cuda_available = torch.cuda.is_available()
+        self.device = "cuda" if cuda_available and device_env != "cpu" else "cpu"
+        self._log.info(
+            "FinBERT device=%s (FINBERT_DEVICE=%s, torch=%s, CUDA build=%s, CUDA available=%s)",
+            self.device,
+            device_env or "auto",
+            torch.__version__,
+            torch.version.cuda,
+            cuda_available,
+        )
+        if device_env == "cuda" and not cuda_available:
+            raise RuntimeError(
+                "FINBERT_DEVICE=cuda but CUDA is unavailable. Check the CUDA-enabled PyTorch build, "
+                "NVIDIA driver and Docker GPU reservation (docker-compose.gpu.yml)."
+            )
+        if self.device == "cuda":
+            self._log.info("FinBERT GPU: %s", torch.cuda.get_device_name())
 
         # mirror locally via curl_cffi first (corporate-proxy workaround), else HF client
         resolved = ensure_local_model(model_name, self._log)
@@ -212,7 +226,7 @@ _ENGINE_TRIED = False
 
 def get_sentiment_engine(logger: logging.Logger | None = None, model_name: str = FINBERT_TONE_MODEL) -> SentimentEngine | None:
     """The process-wide SentimentEngine, or None if torch/transformers are missing or the model fails to load.
-    A failed load is not retried in the same process."""
+    A failed load is not retried in the same process, except when CUDA is required: failures propagate."""
     global _ENGINE, _ENGINE_TRIED
     log = logger or logging.getLogger(__name__)
     if _ENGINE is not None:
@@ -221,11 +235,17 @@ def get_sentiment_engine(logger: logging.Logger | None = None, model_name: str =
         return None
     _ENGINE_TRIED = True
     if not ml_stack_available():
+        if os.getenv("FINBERT_DEVICE", "").strip().lower() == "cuda":
+            _ENGINE_TRIED = False
+            raise RuntimeError("FINBERT_DEVICE=cuda requires torch and transformers to be installed.")
         log.warning("torch/transformers not installed -> earnings-call sentiment skipped (pip install torch transformers).")
         return None
     try:
         _ENGINE = SentimentEngine(model_name=model_name, logger=log)
     except Exception as e:  # noqa: BLE001 - model download / GPU OOM
+        if os.getenv("FINBERT_DEVICE", "").strip().lower() == "cuda":
+            _ENGINE_TRIED = False
+            raise
         log.warning("Could not load sentiment model '%s' -> sentiment skipped: %s", model_name, e)
         _ENGINE = None
     return _ENGINE

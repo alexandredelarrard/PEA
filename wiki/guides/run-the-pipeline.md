@@ -7,7 +7,7 @@ tags:
   - guide
   - runbook
   - operations
-source_commit: 8e4bd26a0e837b01f0df16e29703dd8918458b77
+source_commit: 85510fb63970e731dbb4b7eba890fcaea3c7d6a7
 ---
 # Run the pipeline
 
@@ -68,7 +68,7 @@ The ignored root `.env` is loaded by [Context](../../src/context.py). Common key
 | `FRED_API_KEY` | FRED macro series. |
 | `OPENAI_API_KEY` | Structured proxy/vote extraction and embeddings. |
 | `OPENFIGI_API_KEY` | Optional acceleration for CUSIP resolution. |
-| `FINBERT_DEVICE` | `cuda` or `cpu` for earnings-call FinBERT scoring; unset picks CUDA when available. |
+| `FINBERT_DEVICE` | `cuda` requires working CUDA and propagates model/device failures; `cpu` forces CPU; unset selects CUDA when available. See [Airflow GPU setup](#airflow-gpu-setup). |
 | PostgreSQL variables or `DATABASE_URL` | Host database override. |
 | `ROOT_PATH` | Alternate runtime root, notably Airflow. |
 
@@ -271,6 +271,39 @@ The compose stack mounts the repository, persistent `data/`, and DAG directory s
 In the extraction DAG the identity stage comes first: `[insider_download, notes_download, ftd_download, sec_tickers] >> identity_tables >> identity_propagate >>` the identity consumers (the insider zip parse `insider_zip`, then its EDGAR walk `insider_edgar` in `sec_api`, Notes, pension, FTD, short interest, facts, standalone employees, LLM and deterministic DEF 14A, 8-K, 13D, 13G, filing text), and `identity_tables >> price_history` (the fetch list adds the master's current secondary classes). `identity_tables` and `price_history` run on ALL_DONE: a failed download leaves the build on its cached evidence, a failed build leaves prices on the stored master. The derived `sec_8k_votes` and `fundamentals_sharadar` follow their parents; the Sharadar merge waits for SEC facts/history only, and the employee task feeds `extraction_status`. `sharadar_actions` (`sharadar-actions`) is an independent market-wide fetcher; its edges and the DAG schedule are on [DAGs and infrastructure](../modules/dags-and-infrastructure.md). The independent 13F manager chain and the other identity-independent sources run beside the stage. **Hard identity gate:** fetchers → `extraction_status` → `identity_check` → `trigger_data_aggregation`. The first two run on ALL_DONE once every fetcher has finished; `identity_check` (`validate identity`, report under `reports/validate/identity-nightly`) fails on foreign rows or a broken lineage invariant and abstains on an empty lineage, and the trigger runs only on its success. Extraction itself never waits for it. `StepExtractAllData` runs the same stage (downloads, build, propagation) before its domain steps. A standalone consumer command or `StepExtractInstitutionals` run reads the stored lineage and master, so run the identity commands first.
 
 For schedules and triggers, see [DAGs and infrastructure](../modules/dags-and-infrastructure.md) and [nightly refresh](../flows/nightly-data-refresh.md).
+
+### Airflow GPU setup
+
+The [Airflow Dockerfile](../../airflow/Dockerfile.airflow) explicitly installs `torch==2.14.0+cu126` from the CUDA 12.6 wheel index and checks `torch.version.cuda == "12.6"` at build time. The same image can run on CPU. [SentimentEngine](../../src/utils/nlp_sentiment.py) selects the device with `torch.cuda.is_available()`, moves both the classifier and input tensors there, and logs the requested device, PyTorch version, compiled CUDA version, availability and GPU name. `FINBERT_DEVICE=cpu` forces CPU. Unset selects CUDA when available; an explicit `cuda` propagates initialization failures rather than silently scoring on CPU or skipping sentiment.
+
+On the Windows NVIDIA machine, use Docker Desktop's WSL2 Linux backend with a compatible NVIDIA driver and GPU passthrough. An installed host CUDA toolkit alone does not expose a GPU to a container. The optional [GPU Compose file](../../docker-compose.gpu.yml) reserves one NVIDIA GPU for the scheduler and sets `FINBERT_DEVICE=cuda`. LocalExecutor runs the pipeline there; the webserver needs no GPU. Include both Compose files whenever recreating Airflow on the GPU host; an ordinary Compose invocation removes the GPU reservation. Keep the ordinary Compose command on machines without a GPU.
+
+Build and recreate Airflow on the GPU host:
+
+~~~powershell
+rtk docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build airflow-scheduler airflow-webserver
+~~~
+
+On a corporate network, the optional `pip_ca` build secret lets pip use the existing ignored trust bundle for the PyTorch download without including the certificate in the image:
+
+~~~powershell
+rtk proxy docker build --secret id=pip_ca,src=.cache/corporate_ca_bundle.pem -f airflow/Dockerfile.airflow -t pea-airflow:latest airflow
+rtk docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d airflow-scheduler airflow-webserver
+~~~
+
+Before running the DAG, check the **pipeline** interpreter and execute a real CUDA kernel inside its scheduler:
+
+~~~powershell
+rtk docker compose -f docker-compose.yml -f docker-compose.gpu.yml exec airflow-scheduler /opt/pipeline/bin/python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available()); assert torch.cuda.is_available(), 'GPU is not visible to pipeline PyTorch'; print(torch.cuda.get_device_name()); x=torch.ones(2, device='cuda'); assert (x+x).cpu().tolist()==[2.0,2.0]; print('SANITY: CUDA allocation and kernel passed')"
+~~~
+
+Then check real FinBERT inference through the same engine used by `build-text` (the first invocation may cache model weights):
+
+~~~powershell
+rtk docker compose -f docker-compose.yml -f docker-compose.gpu.yml exec -w /opt/airflow/project airflow-scheduler /opt/pipeline/bin/python -c "import logging, math; from src.utils.nlp_sentiment import get_sentiment_engine; logging.basicConfig(level=logging.INFO); e=get_sentiment_engine(); assert e is not None and e.device=='cuda'; p=e.score_texts(['Revenue and operating income increased.'])[0]; assert p and all(math.isfinite(v) and 0<=v<=1 for v in p.values()) and abs(sum(p.values())-1)<1e-5; print('SANITY: FinBERT CUDA inference passed', p)"
+~~~
+
+These checks do not build the cube or write application tables. A successful image build proves CUDA support was installed; only the GPU-host kernel and inference checks prove the driver's runtime and GPU architecture work. The existing score cache is reused; changing device does not require a full text rebuild. The routing/failure checks live in [test_nlp_sentiment.py](../../tests/utils/test_nlp_sentiment.py).
 
 ## Heavy backfills
 

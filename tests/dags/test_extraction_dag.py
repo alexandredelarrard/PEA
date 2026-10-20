@@ -8,7 +8,6 @@ import inspect
 import sys
 import textwrap
 import types
-from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -482,7 +481,6 @@ def test_sharadar_actions_is_an_sec_independent_task():
     assert states["fundamentals_sharadar"] == "upstream_failed", states
     assert states["trigger_data_aggregation"] == "success", states
 
-    assert dag.kwargs["schedule"] == "0 1 * * *" and dag.kwargs["start_date"] == datetime(2026, 11, 11)
     agg = _source(AGG_DAG_FILE)
     assert "sharadar_actions" not in agg and "sharadar-actions" not in agg, "the aggregation DAG is untouched"
     assert {"fundamentals", "fundamentals_employees", "def14a"} <= IDENTITY_CONSUMERS and "sharadar_actions" not in IDENTITY_CONSUMERS

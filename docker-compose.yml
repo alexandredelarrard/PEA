@@ -12,6 +12,13 @@ x-airflow-common: &airflow-common
     context: ./airflow
     dockerfile: Dockerfile.airflow
   image: pea-airflow:latest
+  deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
   env_file:
     - .env                                     # pipeline creds (POSTGRES_*) + API keys (FRED/OPENAI/SEC/…)
   environment: &airflow-common-env
@@ -37,6 +44,7 @@ x-airflow-common: &airflow-common
     # peer dict under output/) are written there, so they SURVIVE the container and are reused
     # (incremental fetchers skip a re-download when the cached zip is found on the host).
     ROOT_PATH: /opt/airflow/project
+    FINBERT_DEVICE: cuda
   volumes:
     - ./src/dags:/opt/airflow/dags             # DAG definitions
     - .:/opt/airflow/project                   # the repo -> `python -m src` runs from here

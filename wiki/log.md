@@ -686,6 +686,22 @@ Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/
 - Pages: [Data sources](./reference/data-sources.md), [Overview](./OVERVIEW.md). Detailed ignored audit artifacts are under `reports/validate/2026-10-20-earnings-call-unresolved/`, including `02-name-matching.md`, the standalone script, complete row outcomes and independent JSON review.
 - Validation: final replay and sanity assertions passed; Ruff passed; independent recomputation matched all 897 rows and eight prediction flags. Wiki updated after independent validation. No fetcher/configuration/application-data writes, NLP or cube rebuild.
 
+## 2026-10-20: refresh — restrict earnings-call matching to opening clauses
+
+- Profile: internal/standard; source_commit: 85510fb63970e731dbb4b7eba890fcaea3c7d6a7.
+- Coverage: corrected the original six-paragraph window description; reused raw speaker/sentence parsing and the detected Q&A boundary to retain only early titles and welcome-to-event clauses, excluding rosters and later remarks.
+- Evidence: 867 opening cues / 30 absent among 897 cached headers. Literal matching gives 103 TP / 57 FP / 414 FN / 323 TN; removing class annotations and requiring whole words gives 190 / 85 / 327 / 295. False positives remain economic-scope exclusions.
+- Validation: parser fixtures and Ruff pass; independent reviewer reproduced every selected evidence object and both predictions on all 897. The detected Q&A boundary and truncated headers remain explicit limits. No production changes.
+- Pages: [Data sources](./reference/data-sources.md); detailed ignored evidence appended to `reports/validate/2026-10-20-earnings-call-unresolved/02-name-matching.md`. Wiki refreshed after independent validation.
+
+## 2026-10-20: refresh — challenge the 57 opening-match exclusions
+
+- Profile: internal/standard; source_commit: 85510fb63970e731dbb4b7eba890fcaea3c7d6a7.
+- Coverage: checked every selected source ID, opening and executive-name corroboration against three corporate histories, with SEC/issuer evidence rather than treating the current lineage roles as truth.
+- Findings: all 57 are genuine related-issuer calls, with zero name-recognition errors found. Recommended canonical exclusions remain 13 old Broadcom/BRCM, 13 old Constellation group and 31 old DuPont because the current series follows Avago, the 2022 generation spin-off and historical Dow, respectively. All 31 old-DuPont quarters already have canonical DOW-source calls. Broader archival retention is a distinct scope; no deletion is recommended.
+- Validation: audit replay and Ruff pass; independent DD corporate review and full 57-row cohort/header/boundary/counterpart verification pass. Existing vendor-price alignment was not freshly replayed; full payloads and exact event dates were not revalidated.
+- Pages: [Data sources](./reference/data-sources.md); complete per-call report and JSON under `reports/validate/2026-10-20-earnings-call-unresolved/03-57-scope-review.md` and `_out/57-scope-review.json`. Wiki refreshed after independent validation. No application source, configuration or database changes.
+
 ## 2026-10-20 — Insider EDGAR shared-runner refactor
 
 - Profile: `internal/standard`; source base: `dc66b417a71b08890545fa3e88eb51b3c51c04b0` plus the approved uncommitted refactor. Four production files and ten test files have reviewed candidate fingerprint `ab9a286082e0f98818a15182c53e763c43b0edd4c2792c3492c9c9cc94581428`.

@@ -19,9 +19,13 @@ RUN apt-get update \
 RUN python -m venv /opt/pipeline
 COPY requirements-airflow.txt /requirements-airflow.txt
 
-# Use the full path to the venv's pip to ensure packages install inside /opt/pipeline
-RUN /opt/pipeline/bin/pip install --upgrade pip && \
-    /opt/pipeline/bin/pip install -r /requirements-airflow.txt
+# Install CUDA PyTorch first so the general requirements cannot select a CPU/different CUDA build.
+RUN --mount=type=secret,id=pip_ca \
+    if [ -f /run/secrets/pip_ca ]; then export PIP_CERT=/run/secrets/pip_ca; fi; \
+    /opt/pipeline/bin/pip install --upgrade pip && \
+    /opt/pipeline/bin/pip install --index-url https://download.pytorch.org/whl/cu126 'torch==2.14.0+cu126' && \
+    /opt/pipeline/bin/pip install -r /requirements-airflow.txt && \
+    /opt/pipeline/bin/python -c "import torch; assert torch.version.cuda == '12.6', torch.__version__"
 
 RUN chmod -R a+rx /opt/pipeline
 

@@ -338,22 +338,35 @@ def _issuer_history_zscore(per_call: pd.DataFrame, value_col: str) -> pd.Series:
     return out
 
 
-def load_issuer_identity(context: Context) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
-    """Current canonical roster and distinct CIK/entity memberships for stored canonical calls."""
+def load_issuer_identity(context: Context) -> tuple[pd.DataFrame | None, pd.DataFrame | None, pd.DataFrame | None]:
+    """Canonical roster, consolidating lineage and trusted symbol ownership for stored calls."""
     roster = context.store.load(Tables.sp500_tickers, columns=["ticker", "cik"], optional=True)
-    lineage = context.store.load(Tables.entity_lineage, columns=["cik", "entity_id"], optional=True)
-    return roster, None if lineage is None else lineage.drop_duplicates(ignore_index=True)
+    lineage = context.store.load(Tables.entity_lineage, columns=["cik", "entity_id", "role", "valid_from", "valid_to"], optional=True)
+    tenure = context.store.load(
+        Tables.symbol_tenure, columns=["symbol", "issuer_cik", "valid_from", "valid_to"], where={"source": ["form345", "manual"]}, optional=True
+    )
+    return roster, None if lineage is None else lineage.drop_duplicates(ignore_index=True), tenure
+
+
+def _dated_call_rows(calls: pd.DataFrame, intervals: pd.DataFrame, left_on: str, right_on: str) -> pd.DataFrame:
+    """Match call dates to half-open issuer or symbol intervals without changing source dates."""
+    matched = calls.merge(intervals, left_on=left_on, right_on=right_on, how="inner")
+    dates = pd.to_datetime(matched["as_of"], errors="coerce")
+    start = pd.to_datetime(matched["valid_from"], errors="coerce")
+    end = pd.to_datetime(matched["valid_to"], errors="coerce")
+    return matched[dates.ge(start) & (end.isna() | dates.lt(end))]
 
 
 def attach_issuer_identity(
     per_call: pd.DataFrame,
     roster: pd.DataFrame | None,
     entity_lineage: pd.DataFrame | None,
+    symbol_tenure: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """Attach the issuer of an ingestion-validated canonical ticker, including pre-rename calls."""
+    """Attach canonical issuer history, excluding unsupported dates of reused issuer aliases."""
     out = per_call.copy()
     out["issuer_id"] = pd.Series(pd.NA, index=out.index, dtype="string")
-    if roster is None or roster.empty or entity_lineage is None or entity_lineage.empty:
+    if roster is None or roster.empty or entity_lineage is None or entity_lineage.empty or symbol_tenure is None or symbol_tenure.empty:
         return out.iloc[0:0]
     lineage = entity_lineage.assign(cik=pad_cik_series(entity_lineage["cik"]))[["cik", "entity_id"]].drop_duplicates()
     memberships = lineage.groupby("cik")["entity_id"].agg(["size", "count", "nunique", "first"])
@@ -363,7 +376,21 @@ def attach_issuer_identity(
     owners = current.groupby("ticker")["entity_id"].agg(["size", "count", "nunique", "first"])
     owners = owners[(owners["size"] == owners["count"]) & owners["nunique"].eq(1)]
     out["issuer_id"] = out["ticker"].map(owners["first"]).astype("string")
-    return out[out["issuer_id"].notna()].copy()
+    windows = entity_lineage[entity_lineage["role"].eq("cik_window")].copy()
+    windows["cik"] = pad_cik_series(windows["cik"])
+    calls = out[["issuer_id", "as_of"]].assign(call_position=np.arange(len(out)))
+    admitted = _dated_call_rows(calls, windows[["entity_id", "valid_from", "valid_to"]], "issuer_id", "entity_id")["call_position"]
+    keep = pd.Series(np.arange(len(out))).isin(admitted) & out["issuer_id"].reset_index(drop=True).notna()
+    tenure = symbol_tenure.assign(issuer_cik=pad_cik_series(symbol_tenure["issuer_cik"]))
+    window_owners = windows[windows["entity_id"].eq(windows["cik"].map(valid["first"]))][["cik", "entity_id"]].drop_duplicates()
+    tenure = tenure.merge(window_owners, left_on="issuer_cik", right_on="cik", how="left")
+    aliases = tenure.dropna(subset=["entity_id"])[["entity_id", "symbol"]].drop_duplicates()
+    keep &= out["issuer_id"].reset_index(drop=True).isin(aliases["entity_id"])
+    ownership = aliases.merge(tenure[["symbol", "entity_id"]], on="symbol", suffixes=("", "_owner"))
+    contested = ownership.loc[ownership["entity_id_owner"].isna() | ownership["entity_id"].ne(ownership["entity_id_owner"]), "entity_id"]
+    supported = _dated_call_rows(calls, tenure, "issuer_id", "entity_id")["call_position"]
+    keep &= ~out["issuer_id"].reset_index(drop=True).isin(contested) | pd.Series(np.arange(len(out))).isin(supported)
+    return out.iloc[np.flatnonzero(keep)].copy()
 
 
 def _daily_frame(per_call: pd.DataFrame, value_col: str, idx: pd.DatetimeIndex, availability_lag_days: int) -> pd.DataFrame:

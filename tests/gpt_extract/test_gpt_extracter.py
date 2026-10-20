@@ -51,19 +51,23 @@ def test_a_reasoning_model_is_never_sent_temperature_or_seed():
     print("  temperature/seed suppressed for the reasoning model. Validated.")
 
 
-def test_employee_cheap_variant_selects_luna_without_reasoning(monkeypatch):
+@pytest.mark.parametrize("base_model", ["gpt-6-sol", "gpt-6-luna"])
+def test_employee_cheap_variant_selects_luna_without_reasoning(monkeypatch: pytest.MonkeyPatch, base_model: str) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "offline-test-key")
     config = OmegaConf.load("configs/gpt.yml")
-    assert config.gpt.llm_model.open_ai == "gpt-6-sol"
+    config.gpt.llm_model.open_ai = base_model
+    original_config = OmegaConf.to_container(config, resolve=True)
     assert config.gpt.llm_model.open_ai_cheap == "gpt-6-luna"
     employee_config = with_gpt_overrides(config, "employees", provider="open_ai_cheap")
+    assert employee_config.gpt.default_api == "open_ai_cheap"
     extractor = GptExtracter(fake_context(), employee_config, action="employees")
     request = extractor.initialize_client().request_kwargs(Answer, "system", "filing text")
     assert request["model"] == "gpt-6-luna"
     assert request["reasoning"] == {"effort": "none"}
     assert "temperature" not in request and "seed" not in request
-    assert extractor.prices_per_million["gpt-6-luna"]["input"] == 0.10
-    print("\nSANITY: default GPT-6 Sol stays expensive; employee calls select Luna with explicit no-reasoning and Luna prices.")
+    assert extractor.prices_per_million["gpt-6-luna"] == {"input": 0.10, "cached_input": 0.01, "output": 0.50}
+    assert OmegaConf.to_container(config, resolve=True) == original_config
+    print(f"\nSANITY: base {base_model} remains unchanged; employee calls select cheap Luna with no reasoning, temperature or seed and Luna prices.")
 
 
 def test_production_factory_never_supplies_seed_even_for_a_plain_model(monkeypatch):

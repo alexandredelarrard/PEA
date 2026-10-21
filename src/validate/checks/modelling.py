@@ -699,9 +699,15 @@ def check_modelling(context: Context, *, out: str | Path, config: DictConfig) ->
         _reconcile_configuration(config, training, cutoff, findings, snapshot=snapshot)
         if findings:
             return CheckResult.measured("modelling", "saved_ensemble", findings, scope={"run": str(run), "source_reads": 0}, metrics={})
-        config = OmegaConf.merge(
-            config,
-            {"seed": state["seed"], "model": {"diagnostics": state["diagnostics"], "assessment": {"evaluation_start": state["evaluation_start"]}}},
+        config = cast(
+            DictConfig,
+            OmegaConf.merge(
+                config,
+                {
+                    "seed": state["seed"],
+                    "model": {"diagnostics": state["diagnostics"], "assessment": {"evaluation_start": state["evaluation_start"]}},
+                },
+            ),
         )
         calendar = pd.DatetimeIndex(context.store.distinct(Tables.cube_part_prices, "date")).normalize().sort_values().drop_duplicates().as_unit("ns")
         calendar = calendar[calendar <= pd.Timestamp(state["observation_frontier"])]

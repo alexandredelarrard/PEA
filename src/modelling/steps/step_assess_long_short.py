@@ -35,11 +35,9 @@ from src.utils.step import Step
 class _ReadOnlyStore:
     def __init__(self, store: Any) -> None:
         self.source = store
-        self.attempted_mutations: list[str] = []
 
     def __getattr__(self, name: str) -> Any:
         if name not in {"columns", "distinct", "NOT_NULL", "load", "iter_load"}:
-            self.attempted_mutations.append(name)
             raise RuntimeError(f"Assessment application operation refused: {name}")
         return getattr(self.source, name)
 
@@ -83,15 +81,15 @@ class StepAssessLongShort(Step):
             "complete": False,
             "no_fitting": True,
         }
-        with assessment_workspace(self._output) as workspace:
+        with assessment_workspace(self._output, self._log) as workspace:
             self._analysis_path = workspace
             for horizon in training["horizons"]:
                 self._assess_horizon(int(horizon), training, cutoff, calendar, state)
             state["assessment_completed_at_utc"] = datetime.now(UTC).isoformat()
             write_json(workspace / METADATA_FILE, state)
-            report = render_assessment(self._output, self._config, assessment_directory=workspace, report_path=workspace / "report.html")
+            report = render_assessment(self._output, assessment_directory=workspace, report_path=workspace / "report.html")
             state["report_file"] = file_identity(report)
-            result = publish_assessment(self._output, workspace, state)
+            result = publish_assessment(self._output, workspace, state, self._log)
         self._log.info("Fresh saved-model assessment complete: %s", result)
         return result
 
@@ -236,7 +234,7 @@ class StepAssessLongShort(Step):
         sample = panel.iloc[balanced_sample_positions(panel, budget, int(self._config.seed))]
         sample.to_parquet(output / "sample.parquet", index=False)
         for name, member in members.items():
-            self._explain_member(member, sample, output / name, identity, pdp=fold == 0)
+            self._explain_member(member, sample, output / name, pdp=fold == 0)
         write_json(output / METADATA_FILE, {**identity, "sample_rows": len(sample), "future_outcomes_read": False})
         state["windows"].setdefault(str(horizon), {})[str(fold)] = identity
         self._log.info("h%s fold%s: scored %s feature-only rows; explained %s rows", horizon, fold, len(panel), len(sample))
@@ -244,7 +242,7 @@ class StepAssessLongShort(Step):
         gc.collect()
         return frame
 
-    def _explain_member(self, member: BaseModel, sample: pd.DataFrame, output: Path, identity: dict[str, Any], *, pdp: bool) -> None:
+    def _explain_member(self, member: BaseModel, sample: pd.DataFrame, output: Path, *, pdp: bool) -> None:
         """Always compute explanations for this newly scored window."""
         if isinstance(member, LinearRegression):
             explain_linear(member, sample, output, self._config, self._log, pdp=pdp)

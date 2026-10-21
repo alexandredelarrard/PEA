@@ -14,6 +14,7 @@ from src.modelling.steps.step_assess_long_short import StepAssessLongShort
 from src.modelling.steps.step_long_short import Schema, StepLongShort
 from src.modelling.utils import artifacts
 from src.modelling.utils.assessment import write_json
+from src.utils.modelling_runs import read_run, run_directory
 from tests.modelling.model_fixtures import make_config
 
 FAMILIES = ["elasticnet", "lgbm", "random_forest"]
@@ -52,7 +53,7 @@ def test_omitted_optional_configuration_block_keeps_existing_fitting_signature(t
     assert step._run_path is not None
     saved = json.loads((step._run_path / "training/configuration.json").read_text(encoding="utf-8"))
     assert saved["train"] is None
-    artifacts.read_run(step._run_path, training_required=False)
+    read_run(step._run_path, training_required=False)
     print("SANITY: an omitted fixture training block remains null and reconstructs its original fitting signature without adding train:{}.")
 
 
@@ -64,7 +65,7 @@ def test_producer_saves_resolved_allowlisted_configuration_without_fitting(tmp_p
     assert saved["seed"] == step._config.seed and saved["linear"]["alpha"] == 1.0
     assert "assessment" not in saved["model"] and "models_dir" not in saved["model"]
     assert "must-not-persist" not in path.read_text(encoding="utf-8") and "${" not in path.read_text(encoding="utf-8")
-    artifacts.read_run(step._run_path, training_required=False)
+    read_run(step._run_path, training_required=False)
     before = path.read_bytes()
     with pytest.raises(FileExistsError):
         step._open_run(Schema([60], ["date", "ticker", "f0"], ["f0"], [], ["f0"], {}, {}), False)
@@ -86,7 +87,7 @@ def test_dated_run_refuses_missing_or_corrupt_configuration_before_consumption(t
             saved["unrelated"] = {}
         write_json(path, saved)
     with pytest.raises((ValueError, FileNotFoundError)):
-        artifacts.read_run(step._run_path, training_required=False)
+        read_run(step._run_path, training_required=False)
     print(f"SANITY: {mutation} configuration is refused before fitted models are consumed.")
 
 
@@ -111,12 +112,12 @@ def _snapshot(parent: Path, name: str, tag: str) -> Path:
 def test_run_paths_resolve_configured_roots_and_reject_unsafe_ids(tmp_path: Path) -> None:
     context = SimpleNamespace(paths={"DATA_STORE": tmp_path / "data"})
     config = OmegaConf.create({"model": {"assessment": {"output_dir": "output/modelling_backtest"}}})
-    assert artifacts.run_directory(context, config, "20261018_test") == tmp_path / "data/output/modelling_backtest/20261018_test"
+    assert run_directory(context, config, "20261018_test") == tmp_path / "data/output/modelling_backtest/20261018_test"
     config.model.assessment.output_dir = str(tmp_path / "alternate")
-    assert artifacts.run_directory(context, config, "20261018_test") == tmp_path / "alternate/20261018_test"
+    assert run_directory(context, config, "20261018_test") == tmp_path / "alternate/20261018_test"
     for bad in ("", "..", "../outside", "nested/run", "nested\\run", " bad", "CON", "run."):
         with pytest.raises(ValueError):
-            artifacts.run_directory(context, config, bad)
+            run_directory(context, config, bad)
     assert not (tmp_path / "alternate").exists(), "consumer path resolution must not create a run"
     print("SANITY: dated run paths honor configured roots and reject traversal, separators and reserved Windows filenames.")
 

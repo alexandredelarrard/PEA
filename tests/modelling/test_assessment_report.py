@@ -9,7 +9,6 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
-from omegaconf import OmegaConf
 
 from src.modelling.transformers.assessment_report import render_assessment
 from src.modelling.utils.artifacts import configuration_snapshot, file_identity
@@ -98,8 +97,7 @@ def _report_artifacts(run: Path) -> None:
 def test_report_is_offline_and_covers_every_horizon_family_fold_and_zero_feature(tmp_path: Path) -> None:
     _report_artifacts(tmp_path)
     before = {path: path.read_bytes() for path in (tmp_path / "assessment").rglob("curves.json")}
-    config = OmegaConf.create({"model": {"target_type": "zscore"}})
-    output = render_assessment(tmp_path, config)
+    output = render_assessment(tmp_path)
     text = output.read_text(encoding="utf-8")
     raw = re.search(r'<script id="assessment-data" type="application/json">(.*?)</script>', text, re.S)
     assert raw is not None
@@ -126,7 +124,7 @@ def test_report_is_offline_and_covers_every_horizon_family_fold_and_zero_feature
     assert not re.search(r"<(?:script|link)\b[^>]*(?:src|href)=[\x22\x27](?:https?:)?//", text)
     assert before == {path: path.read_bytes() for path in (tmp_path / "assessment").rglob("curves.json")}
     first = hashlib.sha256(output.read_bytes()).hexdigest()
-    render_assessment(tmp_path, config)
+    render_assessment(tmp_path)
     assert hashlib.sha256(output.read_bytes()).hexdigest() == first
     print(
         "SANITY: two sections/three chart areas cover all horizons, original folds, tree and linear effects including zero importance; embedded data/assets rerender deterministically without changing evidence."
@@ -138,6 +136,6 @@ def test_report_refuses_incomplete_required_chart_evidence(tmp_path: Path, missi
     _report_artifacts(tmp_path)
     (tmp_path / missing).unlink()
     with pytest.raises((FileNotFoundError, ValueError)):
-        render_assessment(tmp_path, OmegaConf.create({}))
+        render_assessment(tmp_path)
     assert not (tmp_path / "report.html").exists()
     print(f"SANITY: required missing chart artifact {missing} cannot produce a complete report.")

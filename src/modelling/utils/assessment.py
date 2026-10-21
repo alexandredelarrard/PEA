@@ -1,4 +1,4 @@
-"""Shared assessment identities, finite-number summaries and deterministic sampling."""
+"""Assessment evidence serialization, safe publication and deterministic sampling."""
 
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ def write_json(path: Path, payload: Any) -> None:
 
 
 @contextmanager
-def assessment_workspace(run: Path) -> Iterator[Path]:
+def assessment_workspace(run: Path, logger: logging.Logger) -> Iterator[Path]:
     """Serialize same-run refreshes and allocate a fresh same-filesystem analysis directory."""
     lock = run / ".assessment.lock"
     with lock.open("x", encoding="utf-8") as handle:
@@ -60,11 +60,11 @@ def assessment_workspace(run: Path) -> Iterator[Path]:
         yield workspace
     finally:
         if workspace is not None:
-            _discard_assessment_directory(workspace, run)
+            _discard_assessment_directory(workspace, run, logger)
         lock.unlink(missing_ok=True)
 
 
-def _discard_assessment_directory(directory: Path, run: Path) -> None:
+def _discard_assessment_directory(directory: Path, run: Path, logger: logging.Logger) -> None:
     """Remove owned scratch output without turning a completed publication into a failure."""
     if directory.resolve().parent != run.resolve():
         raise ValueError("Assessment scratch directory escaped its run")
@@ -72,7 +72,7 @@ def _discard_assessment_directory(directory: Path, run: Path) -> None:
         try:
             shutil.rmtree(directory)
         except OSError as exc:
-            logging.getLogger(__name__).warning("Assessment scratch cleanup failed; retained %s: %s", directory, exc)
+            logger.warning("Assessment scratch cleanup failed; retained %s: %s", directory, exc)
 
 
 def _replace(source: Path, destination: Path) -> None:
@@ -87,7 +87,7 @@ def _replace(source: Path, destination: Path) -> None:
             time.sleep(0.1 * 2**attempt)
 
 
-def publish_assessment(run: Path, workspace: Path, state: dict[str, Any]) -> Path:
+def publish_assessment(run: Path, workspace: Path, state: dict[str, Any], logger: logging.Logger) -> Path:
     """Replace a complete analysis/report with bounded backup and rollback; mark completion last."""
     backup = run / f".assessment-backup-{uuid4().hex}"
     backup.mkdir()
@@ -119,18 +119,8 @@ def publish_assessment(run: Path, workspace: Path, state: dict[str, Any]) -> Pat
     finally:
         if backup.exists() and not any(backup.iterdir()):
             backup.rmdir()
-    _discard_assessment_directory(backup, run)
+    _discard_assessment_directory(backup, run, logger)
     return report
-
-
-def summarize_ic(values: pd.Series, horizon: int) -> dict[str, Any]:
-    """Summarize a pooled daily IC series using the existing population-std/horizon convention."""
-    finite = values.to_numpy(dtype=float)
-    finite = finite[np.isfinite(finite)]
-    mean = float(finite.mean()) if len(finite) else float("nan")
-    std = float(finite.std()) if len(finite) else float("nan")
-    ratio = mean / std * np.sqrt(252 / horizon) if std > 0 else float("nan")
-    return {"mean_ic": mean, "ic_std": std, "ic_ir": float(ratio), "n_days": len(finite)}
 
 
 def balanced_sample_positions(panel: pd.DataFrame, budget: int, seed: int) -> np.ndarray:

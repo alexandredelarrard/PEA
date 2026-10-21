@@ -9,7 +9,7 @@ because a strongly regularised member legitimately produces a constant predictio
 
 from __future__ import annotations
 
-from typing import cast
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -32,11 +32,17 @@ def daily_ic(panel: pd.DataFrame, preds: pd.Series, label_name: str = "y", horiz
     which reduces to the classic sqrt(252) daily IR at horizon=1."""
     frame = panel[["date", label_name]].copy()
     frame["pred"] = preds.to_numpy()
-    values = daily_ic_series(frame, label_name).to_numpy(dtype=float)
-    mean = float(values.mean()) if len(values) else np.nan
-    std = float(values.std()) if len(values) else np.nan
-    ratio = mean / std * np.sqrt(trading_days_per_year / max(1, int(horizon))) if std > 0 else np.nan
-    return {"mean_ic": mean, "ic_std": std, "ic_ir": float(ratio), "n_days": len(values)}
+    return summarize_ic(daily_ic_series(frame, label_name), horizon, trading_days_per_year)
+
+
+def summarize_ic(values: pd.Series, horizon: int, trading_days_per_year: int = 252) -> dict[str, Any]:
+    """Summarize finite daily ICs using population dispersion and horizon-adjusted annualization."""
+    finite = values.to_numpy(dtype=float)
+    finite = finite[np.isfinite(finite)]
+    mean = float(finite.mean()) if len(finite) else float("nan")
+    std = float(finite.std()) if len(finite) else float("nan")
+    ratio = mean / std * np.sqrt(trading_days_per_year / max(1, int(horizon))) if std > 0 else float("nan")
+    return {"mean_ic": mean, "ic_std": std, "ic_ir": float(ratio), "n_days": len(finite)}
 
 
 def daily_ic_series(oos: pd.DataFrame, label_name: str, pred_col: str = "pred") -> pd.Series:

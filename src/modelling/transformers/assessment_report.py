@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from omegaconf import DictConfig
 from plotly.offline import get_plotlyjs
 
 from src.modelling.utils.artifacts import file_identity
@@ -119,7 +118,7 @@ start().catch(error=>{$("report-status").textContent=error.message;window.__repo
     return document.replace("__PAYLOAD__", encoded).replace("__PLOTLY__", get_plotlyjs())
 
 
-def render_assessment(run: Path, config: DictConfig, *, assessment_directory: Path | None = None, report_path: Path | None = None) -> Path:
+def render_assessment(run: Path, *, assessment_directory: Path | None = None, report_path: Path | None = None) -> Path:
     """Read only saved evidence; no database, fitted-object loading or provider is needed."""
     assessment_directory = assessment_directory or run / "assessment"
     payload = _payload(run, assessment_directory)

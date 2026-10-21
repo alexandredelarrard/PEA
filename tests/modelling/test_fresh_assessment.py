@@ -55,7 +55,7 @@ def test_assessment_always_refreshes_and_accepts_current_config_and_calendar(
         (self._analysis_path / "scores.txt").write_text(str(len(calls)), encoding="utf-8")
         state["horizons"][str(horizon)] = {"effective_fold_test_end": "2021-10-06"}
 
-    def render(directory: Path, config: Any, *, assessment_directory: Path, report_path: Path) -> Path:
+    def render(directory: Path, *, assessment_directory: Path, report_path: Path) -> Path:
         report_path.write_text("new report " + (assessment_directory / "scores.txt").read_text(), encoding="utf-8")
         return report_path
 
@@ -76,6 +76,7 @@ def test_assessment_always_refreshes_and_accepts_current_config_and_calendar(
 @pytest.mark.parametrize("during_publication", [False, True])
 def test_failed_refresh_preserves_previous_analysis_and_report(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, during_publication: bool) -> None:
     run = tmp_path / "run"
+    logger = logging.getLogger("fresh-assessment")
     (run / "assessment").mkdir(parents=True)
     (run / "assessment/scores.txt").write_text("previous", encoding="utf-8")
     (run / "report.html").write_text("previous report", encoding="utf-8")
@@ -87,13 +88,13 @@ def test_failed_refresh_preserves_previous_analysis_and_report(tmp_path: Path, m
         return replace(self, target)
 
     with pytest.raises(OSError, match="injected"):
-        with assessment_workspace(run) as workspace:
+        with assessment_workspace(run, logger) as workspace:
             (workspace / "scores.txt").write_text("new", encoding="utf-8")
             (workspace / "report.html").write_text("new report", encoding="utf-8")
             if not during_publication:
                 raise OSError("injected computation error")
             monkeypatch.setattr(Path, "replace", fail_swap)
-            publish_assessment(run, workspace, {"run_id": "run"})
+            publish_assessment(run, workspace, {"run_id": "run"}, logger)
     assert (run / "assessment/scores.txt").read_text() == "previous"
     assert (run / "report.html").read_text() == "previous report"
     assert not (run / ".assessment.lock").exists()
@@ -101,9 +102,10 @@ def test_failed_refresh_preserves_previous_analysis_and_report(tmp_path: Path, m
 
 
 def test_same_run_refresh_is_serialized(tmp_path: Path) -> None:
-    with assessment_workspace(tmp_path):
+    logger = logging.getLogger("fresh-assessment")
+    with assessment_workspace(tmp_path, logger):
         with pytest.raises(FileExistsError):
-            with assessment_workspace(tmp_path):
+            with assessment_workspace(tmp_path, logger):
                 pytest.fail("Concurrent refresh must not enter the workspace")
     assert not (tmp_path / ".assessment.lock").exists()
     print("SANITY: simultaneous refreshes of the same run are refused before competing publication.")
@@ -113,6 +115,7 @@ def test_backup_cleanup_failure_preserves_successful_publication(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     run = tmp_path / "run"
+    logger = logging.getLogger("fresh-assessment")
     (run / "assessment").mkdir(parents=True)
     (run / "assessment/scores.txt").write_text("previous", encoding="utf-8")
     (run / "report.html").write_text("previous report", encoding="utf-8")
@@ -124,19 +127,21 @@ def test_backup_cleanup_failure_preserves_successful_publication(
         original(path)
 
     monkeypatch.setattr(assessment_utils.shutil, "rmtree", failed_cleanup)
-    with assessment_workspace(run) as workspace:
+    with assessment_workspace(run, logger) as workspace:
         (workspace / "report.html").write_text("new report", encoding="utf-8")
         (workspace / "scores.txt").write_text("new scores", encoding="utf-8")
-        assert publish_assessment(run, workspace, {"run_id": "run"}) == run / "report.html"
+        assert publish_assessment(run, workspace, {"run_id": "run"}, logger) == run / "report.html"
     assert (run / "report.html").read_text() == "new report"
     assert json.loads((run / "assessment/metadata.json").read_text())["complete"]
     assert not (run / ".assessment.lock").exists()
     assert "cleanup failed" in caplog.text
+    assert any(record.name == logger.name and "cleanup failed" in record.message for record in caplog.records)
     print("SANITY: Windows backup-cleanup failure retains the completed new assessment, logs its retained scratch path and releases the lock.")
 
 
 def test_transient_windows_directory_lock_is_retried(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     original = Path.replace
+    logger = logging.getLogger("fresh-assessment")
     attempts = []
 
     def transient(self: Path, target: Any) -> Path:
@@ -147,8 +152,8 @@ def test_transient_windows_directory_lock_is_retried(tmp_path: Path, monkeypatch
         return original(self, target)
 
     monkeypatch.setattr(Path, "replace", transient)
-    with assessment_workspace(tmp_path) as workspace:
+    with assessment_workspace(tmp_path, logger) as workspace:
         (workspace / "report.html").write_text("complete", encoding="utf-8")
-        publish_assessment(tmp_path, workspace, {"run_id": tmp_path.name})
+        publish_assessment(tmp_path, workspace, {"run_id": tmp_path.name}, logger)
     assert len(attempts) == 3 and (tmp_path / "assessment/metadata.json").is_file()
     print("SANITY: temporary Windows directory locks receive a bounded retry before successful publication.")

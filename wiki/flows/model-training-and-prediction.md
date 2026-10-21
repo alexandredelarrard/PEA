@@ -5,7 +5,7 @@ type: flow
 tags:
   - wiki
   - flow
-source_commit: 8e4bd26a0e837b01f0df16e29703dd8918458b77
+source_commit: 65624e71af94a8a0d662b35b975affb7d43016b7
 ---
 # Model training and daily prediction
 

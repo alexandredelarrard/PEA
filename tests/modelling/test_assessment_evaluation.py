@@ -11,6 +11,7 @@ import pandas as pd
 import pytest
 
 from src.data_store.schema import Tables
+from src.modelling.steps import step_assess_long_short as assess_module
 from src.modelling.steps.step_assess_long_short import StepAssessLongShort
 from src.modelling.steps.step_long_short import StepLongShort
 from src.modelling.transformers import BaseModel, LinearRegression
@@ -69,6 +70,26 @@ def test_assessment_reads_original_models_and_recomputes_every_score_without_fit
         return original_predict(self, panel)
 
     monkeypatch.setattr(BaseModel, "predict", record_predict)
+    scoring_calls = []
+    original_ensemble = assess_module.ensemble_predict
+    original_errors = assess_module.native_error_diagnostics
+
+    def scoring(models: Any, panel: pd.DataFrame, **kwargs: Any) -> Any:
+        before = len(calls)
+        returned = original_ensemble(models, panel, **kwargs)
+        assert len(calls) - before == len(models)
+        assert set(kwargs["raw_predictions"]) == set(models)
+        scoring_calls.append(len(panel))
+        return returned
+
+    def errors(panel: pd.DataFrame, models: list[str]) -> pd.DataFrame:
+        before = len(calls)
+        returned = original_errors(panel, models)
+        assert len(calls) == before, "Native errors must not call predict"
+        return returned
+
+    monkeypatch.setattr(assess_module, "ensemble_predict", scoring)
+    monkeypatch.setattr(assess_module, "native_error_diagnostics", errors)
     spy.loads.clear()
     report = StepAssessLongShort(trainer._context, config).run()
     output = result.run_dir / "assessment/h60"
@@ -78,6 +99,11 @@ def test_assessment_reads_original_models_and_recomputes_every_score_without_fit
     assert (predictions.ticker == "T000").any()
     assert predictions.loc[predictions.ticker == "T000", "y"].isna().all()
     assert predictions.loc[predictions.ticker == "T000", "ensemble"].notna().all()
+    assert predictions.loc[predictions.ticker == "T000", "raw_elasticnet"].notna().all()
+    assert len(scoring_calls) == 4
+    native_errors = pd.read_parquet(output / "ticker_errors.parquet")
+    assert native_errors.loc[native_errors.ticker == "T000", "n"].eq(0).all()
+    assert native_errors.loc[native_errors.ticker == "T000", "rmse"].isna().all()
     first_label = next(i for i, row in enumerate(spy.loads) if any(column.startswith("target_") for column in row["columns"]))
     assert first_label == 4 and all(not row["where"] for row in spy.loads[:first_label])
     for fold, audit in enumerate(result.cv[60].folds, 1):
@@ -102,6 +128,7 @@ def test_assessment_reads_original_models_and_recomputes_every_score_without_fit
     count = len(calls)
     corrupted = first_scores.copy()
     corrupted["ensemble"] = 999
+    corrupted["raw_elasticnet"] = 999
     corrupted.to_parquet(output / "fold1/scores.parquet", index=False)
     config.model.ensemble = ["lgbm"]
     config.model.horizons = [30, 90]
@@ -109,6 +136,7 @@ def test_assessment_reads_original_models_and_recomputes_every_score_without_fit
     assert StepAssessLongShort(trainer._context, config, run_id=result.run_id).run() == report
     assert len(calls) > count
     pd.testing.assert_frame_equal(pd.read_parquet(output / "fold1/scores.parquet"), first_scores)
+    assert len(scoring_calls) == 8
     assert before == {path: path.read_bytes() for path in result.run_dir.rglob("*.pkl")}
     assert json.loads((result.run_dir / "assessment/metadata.json").read_text())["complete"]
     print(

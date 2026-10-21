@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,6 +19,7 @@ from src import portfolio as portfolio_module
 from src.cli import CLI, main
 from src.context import Context
 from src.modelling.steps import step_assess_long_short, step_long_short
+from src.modelling.utils.artifacts import member_inventory, member_path, save_member
 from src.modelling.utils.assessment import write_json
 from tests.modelling.model_fixtures import completed_run
 
@@ -130,9 +132,18 @@ def test_retired_modes_and_unsafe_ids_fail_before_context(args: list[str], monke
 
 
 @pytest.mark.parametrize("state", ["complete", "incomplete", "missing-configuration", "malformed-configuration"])
-def test_portfolio_cli_uses_selected_or_latest_assessed_cutoff(state: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("selected", [None, "selected"])
+def test_portfolio_cli_uses_selected_or_latest_assessed_cutoff(
+    state: str, selected: str | None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     run, config = completed_run(tmp_path / "runs", "selected", "2026-10-21T10:00:00+00:00")
     completed_run(tmp_path / "runs", "newer_unassessed", "2026-10-21T11:00:00+00:00")
+    cutoff = run / "cutoff"
+    for family in config.model.ensemble:
+        save_member(family, member_path(cutoff, 60, family))
+    metadata = json.loads((cutoff / "metadata.json").read_text(encoding="utf-8"))
+    metadata["member_files"] = member_inventory(cutoff, [60], config.model.ensemble)
+    write_json(cutoff / "metadata.json", metadata)
     config.model.models_dir = "output/models"
     config.portfolio = {"start": "2022-06-01", "fee_bps": 2.0}
     write_json(run / "assessment/metadata.json", {"run_id": run.name, "complete": state != "incomplete"})
@@ -146,13 +157,47 @@ def test_portfolio_cli_uses_selected_or_latest_assessed_cutoff(state: str, tmp_p
     monkeypatch.setattr(context_module, "get_config_context", Mock(return_value=(config, context)))
     monkeypatch.setattr(portfolio_module, "StepPortfolio", constructor)
     monkeypatch.chdir(Path(__file__).resolve().parents[2])
-    result = CliRunner().invoke(main, ["portfolio", "backtest", "-c", "./configs"])
+    args = ["portfolio", "backtest", "-c", "./configs"] + (["--run-id", selected] if selected else [])
+    result = CliRunner().invoke(main, args)
     if state == "complete":
         assert result.exit_code == 0, repr(result.exception)
         assert config.model.models_dir == str(run / "cutoff") and context.paths["OUTPUT_DIR"] == run / "portfolio"
-        assert config.portfolio.start == "2022-06-01" and config.portfolio.fee_bps == 2.0
+        assert config.portfolio["start"] == "2022-06-01" and config.portfolio["fee_bps"] == 2.0
         constructor.assert_called_once_with(context=context, config=config)
     else:
         assert result.exit_code != 0
         constructor.assert_not_called()
     print(f"SANITY: portfolio state={state} is checked before construction; latest unassessed training cannot change the cutoff or dates/costs.")
+
+
+@pytest.mark.parametrize("state", ["missing-inventory", "null-inventory", "wrong-run", "full-history"])
+def test_portfolio_cli_refuses_invalid_cutoff_before_consuming_members(state: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    run, config = completed_run(tmp_path / "runs", "selected", "2026-10-21T10:00:00+00:00")
+    config.model.models_dir = "output/models"
+    write_json(run / "assessment/metadata.json", {"run_id": run.name, "complete": True})
+    (run / "report.html").write_text("assessed", encoding="utf-8")
+    path = run / "cutoff/metadata.json"
+    cutoff = json.loads(path.read_text(encoding="utf-8"))
+    if state == "null-inventory":
+        cutoff["member_files"] = None
+    elif state == "wrong-run":
+        cutoff["run_id"] = "another"
+    elif state == "full-history":
+        cutoff["full_history"] = True
+    write_json(path, cutoff)
+    context = SimpleNamespace(log=Mock(), paths={"DATA_STORE": tmp_path, "OUTPUT_DIR": tmp_path / "output"})
+    constructor = Mock(side_effect=AssertionError("Invalid cutoff reached StepPortfolio and its member consumers"))
+    monkeypatch.setattr(context_module, "get_config_context", Mock(return_value=(config, context)))
+    monkeypatch.setattr(portfolio_module, "StepPortfolio", constructor)
+    monkeypatch.chdir(Path(__file__).resolve().parents[2])
+
+    result = CliRunner().invoke(main, ["portfolio", "backtest", "--run-id", run.name])
+
+    assert isinstance(result.exception, ValueError), repr(result.exception)
+    message = (
+        "Portfolio backtest requires the named cutoff models" if state in {"wrong-run", "full-history"} else "Missing cutoff model member inventory"
+    )
+    assert str(result.exception) == message
+    constructor.assert_not_called()
+    assert config.model.models_dir == "output/models" and context.paths["OUTPUT_DIR"] == tmp_path / "output"
+    print(f"SANITY: {state} is refused before portfolio construction, member loading, or output routing changes; no fitting or data access occurs.")

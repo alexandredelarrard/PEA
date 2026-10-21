@@ -2,21 +2,26 @@
 
 from __future__ import annotations
 
+import base64
+import gzip
 import hashlib
 import json
 import re
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
 from src.modelling.transformers.assessment_report import render_assessment
 from src.modelling.utils.artifacts import configuration_snapshot, file_identity
 from src.modelling.utils.assessment import write_json
+from src.modelling.utils.assessment_metrics import native_error_diagnostics, temporal_diagnostics, universe_diagnostics
+from src.modelling.utils.metrics import per_day_zscore
 from tests.modelling.model_fixtures import make_config
 
 
-def _report_artifacts(run: Path) -> None:
+def _report_artifacts(run: Path, n_tickers: int = 6) -> None:
     families = ["elasticnet", "lgbm", "random_forest"]
     config = make_config(model={"horizons": [30, 60, 90], "target_type": "zscore", "cv": {"n_splits": 5}})
     write_json(run / "training/configuration.json", configuration_snapshot(config))
@@ -48,26 +53,42 @@ def _report_artifacts(run: Path) -> None:
     }
     for horizon in (30, 60, 90):
         output = run / f"assessment/h{horizon}"
-        frames = []
+        frames, tails, predictions, metrics, universe_metrics = [], [], [], {}, {}
         for population in ("validation", "backtest"):
-            for model in [*families, "ensemble"]:
-                frames.append(
-                    pd.DataFrame(
-                        {
-                            "date": pd.to_datetime(["2022-01-03", "2022-01-04"]),
-                            "model": model,
-                            "population": population,
-                            "horizon": horizon,
-                            "ic": [0.1, 0.2],
-                            "rolling_ic": [None, 0.15],
-                            "rolling_ir": [None, 0.3],
-                            "paired": 4,
-                            "universe": 5,
-                        }
-                    )
-                )
+            dates = pd.to_datetime(
+                ["2001-01-03", "2001-01-04", "2001-06-01"] if population == "validation" else ["2022-01-03", "2022-01-04", "2022-01-05"]
+            )
+            index = np.tile(np.arange(n_tickers), len(dates))
+            panel = pd.DataFrame(
+                {
+                    "date": np.repeat(dates, n_tickers),
+                    "ticker": [f"T{i:03}" for i in index],
+                    "y": (index - n_tickers / 2) / n_tickers,
+                    "fold": np.repeat([1, 1, 2] if population == "validation" else [0, 0, 0], n_tickers),
+                }
+            )
+            for number, model in enumerate(families):
+                shift = horizon // 30 * 13 + number * 71 + (101 if population == "backtest" else 0)
+                residual = ((index + shift) % n_tickers) // 2 / 10.0
+                panel[f"raw_{model}"] = panel.y + residual * np.repeat([1.0, -1.0, 1.0], n_tickers)
+                panel[model] = per_day_zscore(panel[f"raw_{model}"].to_numpy(), panel.date.to_numpy())
+            panel.loc[panel.ticker == f"T{n_tickers - 1:03}", "y"] = np.nan
+            panel["ensemble"] = panel[families].mean(axis=1)
+            metrics[population], daily = temporal_diagnostics(panel, [*families, "ensemble"], horizon, 2)
+            universe_metrics[population], cohort = universe_diagnostics(panel, [*families, "ensemble"], horizon, 2, (10, 50, 100))
+            daily["population"], daily["horizon"] = population, horizon
+            cohort["population"], cohort["horizon"] = population, horizon
+            frames.append(daily)
+            tails.append(cohort)
+            predictions.append(panel)
         output.mkdir(parents=True, exist_ok=True)
         pd.concat(frames, ignore_index=True).to_parquet(output / "daily.parquet", index=False)
+        pd.concat(tails, ignore_index=True).to_parquet(output / "universe_daily.parquet", index=False)
+        full = pd.concat(predictions, ignore_index=True)
+        full.to_parquet(output / "predictions.parquet", index=False)
+        native_error_diagnostics(full, families).to_parquet(output / "ticker_errors.parquet", index=False)
+        write_json(output / "metrics.json", metrics)
+        write_json(output / "universe_metrics.json", universe_metrics)
         state["horizons"][str(horizon)] = {"effective_fold_test_end": "2021-10-06"}
         state["windows"][str(horizon)] = {}
         for fold in range(6):
@@ -115,7 +136,8 @@ def test_report_is_offline_and_covers_every_horizon_family_fold_and_zero_feature
                 assert ("scatter" in curve["features"]["x"]) is (fold == "0")
                 if fold == "0":
                     assert curve["features"]["x"]["scatter"] == {"x": [0, 1], "shap": [0, 0.2], "raw_x": [10, 12]}
-    assert text.count("<section ") == 2 and 'id="importance"' in text and 'id="effect"' in text and 'id="temporal"' in text
+    assert text.count("<section ") == 3
+    assert all(f'id="{chart}"' in text for chart in ("importance", "effect", "temporal", "target_prediction", "ticker_rmse"))
     assert "<table" not in text and 'id="research"' not in text
     assert "Signed linear contribution" in text and "Signed SHAP dependence" in text and "fixed cutoff model" in text
     assert " (training-standardized)" in text and " (raw input)" in text
@@ -127,11 +149,20 @@ def test_report_is_offline_and_covers_every_horizon_family_fold_and_zero_feature
     render_assessment(tmp_path)
     assert hashlib.sha256(output.read_bytes()).hexdigest() == first
     print(
-        "SANITY: two sections/three chart areas cover all horizons, original folds, tree and linear effects including zero importance; embedded data/assets rerender deterministically without changing evidence."
+        "SANITY: three sections/five chart areas cover all horizons, original folds, native errors and retained variable effects; offline rendering is deterministic without changing evidence."
     )
 
 
-@pytest.mark.parametrize("missing", ["training/configuration.json", "assessment/h90/daily.parquet", "assessment/h60/fold4/lgbm/curves.json"])
+@pytest.mark.parametrize(
+    "missing",
+    [
+        "training/configuration.json",
+        "assessment/h90/daily.parquet",
+        "assessment/h60/fold4/lgbm/curves.json",
+        "assessment/h60/universe_daily.parquet",
+        "assessment/h60/ticker_errors.parquet",
+    ],
+)
 def test_report_refuses_incomplete_required_chart_evidence(tmp_path: Path, missing: str) -> None:
     _report_artifacts(tmp_path)
     (tmp_path / missing).unlink()
@@ -139,3 +170,86 @@ def test_report_refuses_incomplete_required_chart_evidence(tmp_path: Path, missi
         render_assessment(tmp_path)
     assert not (tmp_path / "report.html").exists()
     print(f"SANITY: required missing chart artifact {missing} cannot produce a complete report.")
+
+
+def _read_payload(run: Path) -> tuple[dict, str]:
+    text = render_assessment(run).read_text(encoding="utf-8")
+    raw = re.search(r'<script id="assessment-data" type="application/json">(.*?)</script>', text, re.S)
+    assert raw is not None
+    return json.loads(raw.group(1)), text
+
+
+def _native_values(meta: dict, text: str) -> np.ndarray:
+    block = re.search(r'<script id="' + re.escape(meta["block"]) + r'" type="application/octet-stream">(.*?)</script>', text, re.S)
+    assert block is not None
+    return np.frombuffer(gzip.decompress(base64.b64decode(block.group(1))), dtype="<f8").reshape(len(meta["tickers"]), 2, len(meta["date"]))
+
+
+def test_report_filters_cover_tail_universes_and_native_ticker_errors(tmp_path: Path) -> None:
+    _report_artifacts(tmp_path)
+    payload, text = _read_payload(tmp_path)
+    for analysis in payload["analysis"].values():
+        for population in ("validation", "backtest"):
+            assert set(analysis["temporal"][population]) == {"all", "10", "50", "100"}
+            for models in analysis["temporal"][population].values():
+                assert set(models) == {*payload["families"], "ensemble"}
+                assert models["elasticnet"]["summary"]["n_days"] == 3
+            assert set(analysis["native"][population]) == set(payload["families"])
+            assert all(meta["tickers"] for meta in analysis["native"][population].values())
+    assert all(f'<option value="{size}">' in text for size in ("all", "10", "50", "100"))
+    assert '"change"' in text and "async function temporal(" in text
+    assert "async function targetPrediction(" in text and "async function tickerRmse(" in text
+    print(
+        "SANITY: every horizon/sample/cohort has precomputed model curves and summaries; native charts offer individual families only, with separate renderers."
+    )
+
+
+def test_report_preserves_native_history_dates_gaps_and_empty_states(tmp_path: Path) -> None:
+    _report_artifacts(tmp_path)
+    output = tmp_path / "assessment/h60"
+    predictions = pd.read_parquet(output / "predictions.parquet")
+    missing = (predictions.fold == 1) & (predictions.date == predictions.date.min()) & (predictions.ticker == "T000")
+    predictions.loc[missing, "raw_lgbm"] = np.nan
+    predictions.loc[predictions.fold == 0, "raw_elasticnet"] = np.nan
+    predictions.to_parquet(output / "predictions.parquet", index=False)
+    native_error_diagnostics(predictions, ["elasticnet", "lgbm", "random_forest"]).to_parquet(output / "ticker_errors.parquet", index=False)
+    payload, text = _read_payload(tmp_path)
+    meta = payload["analysis"]["60"]["native"]["validation"]["lgbm"]
+    assert pd.to_datetime(meta["date"]).tolist() == sorted(predictions.loc[predictions.fold > 0, "date"].unique())
+    assert meta["fold"] == [1, 1, 2]
+    values = _native_values(meta, text)
+    ticker_index = [row["ticker"] for row in meta["tickers"]].index("T000")
+    assert np.isnan(values[ticker_index, :, 0]).all()
+    assert payload["analysis"]["60"]["native"]["backtest"]["elasticnet"]["tickers"] == []
+    assert "No comparable native predictions" in text and "connectgaps:false" in text
+    print(
+        "SANITY: native histories preserve formation dates, null comparison slots and original fold changes; unsupported selections stay empty, never zero errors."
+    )
+
+
+def test_report_embeds_only_worst100_best50_tickers_per_selection(tmp_path: Path) -> None:
+    _report_artifacts(tmp_path, n_tickers=211)
+    payload, text = _read_payload(tmp_path)
+    selections = []
+    for h, analysis in payload["analysis"].items():
+        evidence = pd.read_parquet(tmp_path / f"assessment/h{h}/ticker_errors.parquet")
+        predictions = pd.read_parquet(tmp_path / f"assessment/h{h}/predictions.parquet")
+        for population, models in analysis["native"].items():
+            for model, meta in models.items():
+                eligible = evidence.loc[(evidence.population == population) & (evidence.model == model) & evidence.rmse.notna()]
+                worst = eligible.sort_values(["rmse", "ticker"], ascending=[False, True]).head(100).ticker.tolist()
+                best = eligible.sort_values(["rmse", "ticker"]).head(50).ticker.tolist()
+                expected = list(dict.fromkeys([*worst, *best]))
+                assert [row["ticker"] for row in meta["tickers"]] == expected and len(expected) == 150
+                assert [row["group"] for row in meta["tickers"]] == ["worst"] * 100 + ["best"] * 50
+                selections.append(tuple(expected))
+                values = _native_values(meta, text)
+                assert values.shape == (150, 2, 3)
+                observed = predictions.loc[(predictions.fold > 0) == (population == "validation")].set_index(["ticker", "date"])
+                row = observed.loc[expected[0]].sort_index()
+                np.testing.assert_allclose(values[0], row[[f"raw_{model}", "y"]].to_numpy().T)
+                assert analysis["temporal"][population]["all"][model]["universe"] == [211] * 3
+    assert len(set(selections)) > 3
+    print(
+        "SANITY: all18model/horizon/sample groups independently export only100worst+50best native histories with deterministic ties; unsupported titles excluded and All IC keeps211titles."
+    )

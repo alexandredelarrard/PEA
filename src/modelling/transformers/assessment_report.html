@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Saved-model assessment</title><style>
+:root{color-scheme:light;--ink:#183042;--muted:#586a78;--line:#d9e3e8;--accent:#007f86}
+*{box-sizing:border-box}body{margin:0;background:#f2f6f8;color:var(--ink);font:15px/1.55 system-ui,sans-serif}
+main{max-width:1480px;margin:auto;padding:32px}header{padding:12px 4px 20px}h1{font-size:30px;letter-spacing:-.7px;margin:4px 0}
+h2{font-size:23px;margin:0 0 18px}h3{font-size:17px;margin:20px 0 10px}.eyebrow{color:var(--accent);font-size:12px;font-weight:750;letter-spacing:1.6px;text-transform:uppercase}
+section{background:white;border:1px solid var(--line);border-radius:12px;padding:25px;margin:16px 0}
+.controls{display:flex;flex-wrap:wrap;gap:14px;margin:12px 0 14px}label{display:flex;flex-direction:column;gap:5px;font-size:12px;font-weight:650;color:var(--muted)}
+select{font:14px system-ui;color:var(--ink);background:white;border:1px solid #b8cbd4;border-radius:5px;padding:9px;min-width:125px;max-width:100%}
+label.wide{flex:1;min-width:220px}.note{color:var(--muted);font-size:13px}.chart{height:480px}
+.importance-scroll{max-height:500px;overflow-y:auto;border:1px solid #e7eef2;border-radius:6px}
+.columns{display:grid;grid-template-columns:1fr 1fr;gap:20px;min-width:0}.columns>div{min-width:0}
+.summary{display:flex;flex-wrap:wrap;gap:10px}.summary-card{border:1px solid var(--line);border-radius:6px;padding:9px 12px;font-size:13px}
+.summary-card strong{display:block}#report-status{min-height:22px;color:var(--muted)}
+@media(max-width:850px){.columns{grid-template-columns:1fr}}@media(max-width:700px){main{padding:12px}section{padding:15px}.chart{height:400px}h1{font-size:24px}}
+</style></head><body><main>
+<header><div class="eyebrow">Saved original models · fixed feature pools</div><h1>Model assessment</h1><p id="scope" class="note"></p><div id="report-status" role="status" aria-live="polite">Loading saved charts…</div></header>
+<section id="time-section"><h2>IC and IC-IR through time</h2><div class="controls">
+<label for="horizon-time">Horizon<select id="horizon-time"></select></label>
+<label for="period">Sample<select id="period"><option value="validation">Fold tests · before 2022</option><option value="backtest">Fixed cutoff · 2022+</option></select></label>
+<label for="universe">Predicted universe<select id="universe"><option value="all">All</option><option value="10">Top 10 + bottom 10</option><option value="50">Top 50 + bottom 50</option><option value="100">Top 100 + bottom 100</option></select></label>
+<label for="stat">Statistic<select id="stat"><option value="ic">Daily IC</option><option value="rolling_ic">Rolling IC</option><option value="rolling_ir">Rolling IC-IR</option></select></label>
+</div><div id="ic-summary" class="summary" aria-live="polite"></div><div id="temporal" class="chart"></div>
+<p class="note">Summary: mean daily IC ± population std and global IC-IR over all valid dates in the selected sample, independent of zoom. IC is finite-pair Spearman correlation. Each day's tails are selected by that model's predictions before outcomes; missing outcomes do not promote other tickers. Overlapping tails are deduplicated. IC-IR = mean(IC) / population std(IC) × √(252 / horizon). Rolling statistics need the full configured observed-session window; unavailable values remain gaps. Ensemble uses normalized member scores.</p></section>
+<section id="native-section"><h2>Target versus native prediction</h2><div class="controls">
+<label for="horizon-native">Horizon<select id="horizon-native"></select></label><label for="native-model">Model<select id="native-model"></select></label>
+<label for="native-period">Sample<select id="native-period"><option value="validation">Fold tests · before 2022</option><option value="backtest">Fixed cutoff · 2022+</option></select></label>
+<label for="ticker">Ticker<select id="ticker"></select></label></div>
+<p id="native-summary" aria-live="polite"></p><div id="target_prediction" class="chart"></div>
+<p class="note">Raw member output and trained target (standardized forward return, not price or percent). Date t is the prediction date; the target covers t → t+h observed sessions. Only finite mature prediction/target pairs are compared. Lines break at original fold changes and missing comparisons. MAE and signed bias use this ticker's comparable dates; positive bias means overprediction. Menus retain 100 worst + 50 best RMSE per model/horizon/sample, deduplicated. This outcome-based display selection never filters IC or strategy universes.</p></section>
+<section id="effects-section"><h2>Variable importance and ticker errors</h2>
+<div class="controls"><label for="horizon-effects">Horizon<select id="horizon-effects"></select></label><label for="family">Model<select id="family"></select></label></div>
+<div class="columns"><div><h3>Fixed cutoff model importance</h3><p id="importance-note" class="note"></p><div class="importance-scroll"><div id="importance"></div></div></div>
+<div><h3>Fixed cutoff · ticker RMSE · 2022+</h3><p id="rmse-note" class="note"></p><div class="importance-scroll"><div id="ticker_rmse"></div></div></div></div>
+<div class="controls"><label for="feature" class="wide">Variable<select id="feature"></select></label><label for="effect-kind">Effect chart<select id="effect-kind"><option value="signed">Signed SHAP dependence</option><option value="pdp">Partial dependence · fixed cutoff model</option></select></label></div>
+<div id="effect" class="chart"></div><p id="effect-note" class="note"></p>
+<p class="note">PDP replaces one variable while keeping the other sampled inputs fixed. Correlated-variable combinations may be unsupported. These are model responses, with conditional historical interpretation because source vintages and classifications are retrospective.</p></section>
+</main><script id="assessment-data" type="application/json">__PAYLOAD__</script>
+__NATIVE_BLOCKS__
+<script>__PLOTLY__</script><script>
+"use strict";
+const D=JSON.parse(document.getElementById("assessment-data").textContent),$=id=>document.getElementById(id);
+const colors=["#007f86","#cc6c32","#7163a8","#162e43","#779957","#b44e77"];
+const names={elasticnet:"Linear (elastic net)",ridge:"Linear (ridge)",lgbm:"LightGBM",random_forest:"Random forest",ensemble:"Ensemble"};
+const settings={responsive:true,displaylogo:false,toImageButtonOptions:{format:"png",scale:2}};
+const fmt=value=>Number.isFinite(value)?value.toFixed(4):"unavailable";
+function options(node,values,label){
+    const old=node.value;
+    node.replaceChildren(...values.map(value=>{const option=document.createElement("option");option.value=value;option.textContent=label(value);return option;}));
+    if(values.includes(old))node.value=old;
+    node.disabled=values.length===0;
+}
+function layout(title,y){
+    return {title:{text:title,font:{size:16}},font:{family:"system-ui,sans-serif",color:"#183042"},paper_bgcolor:"white",plot_bgcolor:"white",
+        margin:{l:80,r:25,t:65,b:65},legend:{orientation:"h",y:-.2},xaxis:{showgrid:false},yaxis:{title:{text:y},zerolinecolor:"#aabdc8"},hovermode:"closest"};
+}
+function selected(){
+    const h=$("horizon-effects").value,m=$("family").value;
+    return {h,m,folds:D.analysis[h].effects[m],linear:["elasticnet","ridge"].includes(m)};
+}
+async function temporal(){
+    const h=$("horizon-time").value,p=$("period").value,s=$("stat").value,u=$("universe").value,series=D.analysis[h].temporal[p][u];
+    $("ic-summary").replaceChildren(...Object.entries(series).map(([model,values])=>{
+        const card=document.createElement("div"),title=document.createElement("strong"),summary=values.summary;
+        card.className="summary-card";title.textContent=names[model]||model;card.append(title);
+        card.append("IC "+fmt(summary.mean_ic)+" ± "+fmt(summary.ic_std)+" · IC-IR "+fmt(summary.ic_ir)+" · "+summary.n_days+" valid days");
+        return card;
+    }));
+    const traces=Object.entries(series).map(([model,values],i)=>({x:values.date,y:values[s],name:names[model]||model,type:"scatter",
+        mode:values[s].filter(Number.isFinite).length===1?"markers":"lines",connectgaps:false,line:{color:colors[i],width:model==="ensemble"?2.4:1.4},
+        customdata:values.paired.map((count,j)=>[count,values.universe[j]]),
+        hovertemplate:"%{x|%Y-%m-%d}<br>%{y:.4f}<br>finite pairs %{customdata[0]} / selected %{customdata[1]}<extra>"+(names[model]||model)+"</extra>"}));
+    return Plotly.react("temporal",traces,layout("h"+h+" · "+(p==="validation"?"Fold tests":"Cutoff 2022+")+" · "+(u==="all"?"All":"Top + bottom "+u),s==="rolling_ir"?"IC-IR":"IC"),settings);
+}
+let nativeCache={key:null,promise:null},nativeRequest=0;
+async function nativeValues(meta){
+    if(nativeCache.key!==meta.block){
+        const compressed=Uint8Array.from(atob($(meta.block).textContent),character=>character.charCodeAt(0));
+        const stream=new Blob([compressed]).stream().pipeThrough(new DecompressionStream("gzip"));
+        nativeCache={key:meta.block,promise:new Response(stream).arrayBuffer()};
+    }
+    return nativeCache.promise;
+}
+async function targetPrediction(){
+    const request=++nativeRequest,h=$("horizon-native").value,p=$("native-period").value,m=$("native-model").value,meta=D.analysis[h].native[p][m];
+    options($("ticker"),meta.tickers.map(row=>row.ticker),ticker=>ticker+" · "+meta.tickers.find(row=>row.ticker===ticker).group);
+    const index=meta.tickers.findIndex(row=>row.ticker===$("ticker").value),view=layout((names[m]||m)+" · h"+h+" · "+($("ticker").value||"no ticker"),"Native prediction / target (z-score)");
+    if(index<0){
+        $("native-summary").textContent="No comparable native predictions";
+        view.annotations=[{text:"No comparable native predictions",xref:"paper",yref:"paper",x:.5,y:.5,showarrow:false}];
+        return Plotly.react("target_prediction",[],view,settings);
+    }
+    const statistics=meta.tickers[index];
+    $("native-summary").textContent="MAE "+fmt(statistics.mae)+" · signed bias "+fmt(statistics.bias)+" · "+statistics.n+" comparable dates · "+meta.tickers.length+" / "+meta.eligible_tickers+" eligible tickers shown";
+    const buffer=await nativeValues(meta);
+    if(request!==nativeRequest)return;
+    const data=new DataView(buffer),dates=meta.date.length,traces=[],folds=[...new Set(meta.fold)];
+    for(let channel=0;channel<2;channel++){
+        const values=meta.date.map((_,j)=>data.getFloat64(((index*2+channel)*dates+j)*8,true));
+        for(const fold of folds){
+            traces.push({x:meta.date,y:values.map((value,j)=>meta.fold[j]===fold&&Number.isFinite(value)?value:null),
+                name:channel===0?"Native prediction":"Target",legendgroup:String(channel),showlegend:fold===folds[0],
+                type:"scatter",mode:"lines+markers",connectgaps:false,line:{color:colors[channel]},marker:{size:3},customdata:meta.fold,
+                hovertemplate:"%{x|%Y-%m-%d}<br>%{y:.5f}<br>original fold %{customdata}<extra>%{fullData.name}</extra>"});
+        }
+    }
+    return Plotly.react("target_prediction",traces,view,settings);
+}
+async function tickerRmse(){
+    const {h,m}=selected(),meta=D.analysis[h].native.backtest[m],rows=meta.tickers,view=layout((names[m]||m)+" · h"+h+" · cutoff 2022+","");
+    view.height=Math.max(360,rows.length*23+80);view.margin={l:95,r:30,t:50,b:50};view.xaxis={title:{text:"Native RMSE (target z-score)"}};view.yaxis={autorange:"reversed"};
+    $("rmse-note").textContent="100 worst (orange), then 50 best (green), without duplicates · "+rows.length+" / "+meta.eligible_tickers+" eligible tickers. Hover shows comparable dates.";
+    if(!rows.length)view.annotations=[{text:"No comparable native predictions",xref:"paper",yref:"paper",x:.5,y:.5,showarrow:false}];
+    return Plotly.react("ticker_rmse",[{x:rows.map(row=>row.rmse),y:rows.map(row=>row.ticker),type:"bar",orientation:"h",
+        marker:{color:rows.map(row=>row.group==="worst"?colors[1]:colors[0])},customdata:rows.map(row=>[row.n,row.group]),
+        hovertemplate:"%{y}<br>RMSE %{x:.5f}<br>%{customdata[0]} comparable dates · %{customdata[1]}<extra></extra>"}],view,settings);
+}
+async function importance(){
+    const {h,m,folds,linear}=selected(),features=folds["0"].features;
+    const sorted=Object.keys(features).sort((a,b)=>features[b].importance-features[a].importance||a.localeCompare(b));
+    options($("feature"),sorted,value=>value);
+    $("effect-kind").options[0].textContent=linear?"Signed linear contribution":"Signed SHAP dependence";
+    $("importance-note").textContent=linear?"Absolute saved coefficient on training-standardized inputs. Hover shows signed beta. Zero coefficients remain selectable.":"Mean absolute SHAP on the deterministic cutoff backtest sample; all retained variables remain selectable.";
+    const view=layout((names[m]||m)+" · h"+h, "");view.height=Math.max(360,sorted.length*23+80);
+    view.margin={l:Math.min(420,Math.max(170,Math.max(...sorted.map(value=>value.length))*6)),r:30,t:50,b:45};
+    view.xaxis={title:{text:linear?"|standardized coefficient|":"Mean |SHAP|"}};view.yaxis={autorange:"reversed"};
+    return Plotly.react("importance",[{x:sorted.map(value=>features[value].importance),y:sorted,type:"bar",orientation:"h",marker:{color:colors[0]},
+        customdata:linear?sorted.map(value=>features[value].coefficient):undefined,
+        hovertemplate:linear?"%{y}<br>|beta| %{x:.6g}<br>Saved beta %{customdata:+.6g}<extra></extra>":"%{y}<br>%{x:.6g}<extra></extra>"}],view,settings);
+}
+async function effect(){
+    const {h,m,folds,linear}=selected(),feature=$("feature").value,kind=$("effect-kind").value,F=folds["0"].features[feature],traces=[];
+    let unit=linear?"Signed linear contribution":"Signed SHAP";
+    if(kind==="pdp"){
+        unit="Mean raw model prediction";traces.push({x:F.pdp.x||[],y:F.pdp.mean||[],name:"Fixed cutoff model",mode:"lines+markers",line:{color:colors[0]}});
+    }else{
+        const scatter=F.scatter||{};
+        traces.push({x:scatter.x||[],y:scatter.shap||[],name:"Cutoff sample",mode:"markers",showlegend:false,marker:{size:4,color:"#7f939e",opacity:.3},
+            customdata:linear?(scatter.raw_x||[]).map(value=>[value,F.coefficient]):undefined,
+            hovertemplate:linear?"Training-standardized input %{x:.6g}<br>Raw input %{customdata[0]:.6g}<br>Saved beta %{customdata[1]:+.6g}<br>Contribution %{y:.6g}<extra>Cutoff sample</extra>":undefined});
+        for(const fold of Object.keys(folds).sort((a,b)=>Number(a)-Number(b))){
+            const values=folds[fold].features[feature],curve=values.binned;
+            traces.push({x:curve.x,y:curve.mean,name:fold==="0"?"Cutoff backtest":"Fold "+fold,mode:"lines+markers",
+                line:{color:colors[Number(fold)],width:fold==="0"?3:1.5,dash:fold==="0"?"solid":"dot"},marker:{size:5},
+                customdata:linear?(curve.raw_x||[]).map(value=>[value,values.coefficient]):undefined,
+                hovertemplate:linear?"Training-standardized median %{x:.6g}<br>Raw input median %{customdata[0]:.6g}<br>Saved beta %{customdata[1]:+.6g}<br>Mean contribution %{y:.6g}<extra>%{fullData.name}</extra>":undefined});
+        }
+    }
+    const view=layout(feature+" · "+(names[m]||m)+" · h"+h,unit);
+    view.xaxis={title:{text:feature+(linear?(kind==="pdp"?" (raw input)":" (training-standardized)"):(F.categorical?" (category code)":""))},type:F.categorical?"category":"linear"};
+    if(!traces.some(trace=>(trace.x||[]).length))view.annotations=[{text:"No finite observed states in this sample",xref:"paper",yref:"paper",x:.5,y:.5,showarrow:false}];
+    $("effect-note").textContent=kind==="pdp"?"Partial dependence uses the saved fixed cutoff model and observed feature grid, in raw prediction units.":linear?"Signed linear contribution = saved coefficient × (value − training mean) / training std. Each curve uses its own saved training scaler. Missing inputs contribute zero and have no observed x/bin. Hover retains raw inputs and signed beta. Curves show the original configured folds and cutoff assessment.":"Signed SHAP in raw member-prediction units. Lines show mean signed SHAP by observed state or quantile bin for each original fold and cutoff backtest.";
+    return Plotly.react("effect",traces,view,settings);
+}
+async function effects(){await Promise.all([importance(),tickerRmse()]);await effect();}
+function failed(error){$("report-status").textContent=error.message;window.__reportError=error.message;}
+function listen(ids,fn){for(const id of ids)$(id).addEventListener("change",()=>fn().catch(failed));}
+async function start(){
+    for(const id of ["horizon-time","horizon-effects","horizon-native"])options($(id),D.horizons.map(String),h=>"h"+h+" · sessions");
+    for(const id of ["family","native-model"]){options($(id),D.families,m=>names[m]||m);if(D.families.includes("lgbm"))$(id).value="lgbm";}
+    $("scope").textContent="Run "+D.run_id+" · outcomes known by "+D.training_as_of+" · observed calendar through "+D.frontier+". Trained at "+D.trained_at_utc+" · assessed at "+D.assessed_at_utc+" · effective fold ends "+JSON.stringify(D.effective_fold_test_ends)+". Fold tests also selected LightGBM rounds by RMSE. No fitting in assessment.";
+    listen(["horizon-time","period","stat","universe"],temporal);
+    listen(["horizon-native","native-model","native-period","ticker"],targetPrediction);
+    listen(["horizon-effects","family"],effects);listen(["feature","effect-kind"],effect);
+    await Promise.all([temporal(),effects()]);document.documentElement.dataset.icReady="true";
+    await targetPrediction();$("report-status").textContent="Saved charts ready · works offline";document.documentElement.dataset.ready="true";
+}
+start().catch(failed);
+</script></body></html>

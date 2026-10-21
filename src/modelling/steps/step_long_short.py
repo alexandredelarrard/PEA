@@ -155,20 +155,28 @@ class StepLongShort(Step):
         cube_dates = store.distinct(Tables.cube, "date", order="desc", limit=1)
         if calendar.empty or not cube_dates:
             raise ValueError("Training requires the complete price-part calendar and a populated cube")
+
+        # what is the latest both in cube and price ? 
         latest = min(calendar[-1], pd.Timestamp(cube_dates[0]))
         self._calendar = calendar[calendar <= latest]
         self._training_as_of = latest
         if not full_history and self._config.train.end_date:
+
+            # get the dates for training
             cutoff = pd.Timestamp(self._config.train.end_date)
             sessions = calendar[calendar <= cutoff]
             if sessions.empty:
                 raise ValueError("Training cutoff precedes the price calendar")
+
+            # get the first date not overlapping with training, in validate
             endpoint = label_end_dates(calendar, max(schema.horizons)).get(sessions[-1])
             if pd.notna(endpoint):
                 self._training_as_of = min(latest, endpoint)
+
         explicit_cutoff = self._config.train.get("outcome_cutoff")
         if explicit_cutoff is not None and not full_history:
             self._training_as_of = min(latest, pd.Timestamp(explicit_cutoff))
+
         signature = selection_signature(self._config, schema.feature_cols + schema.categorical_cols, schema.horizons)
         prior = None
         if full_history:
@@ -188,16 +196,19 @@ class StepLongShort(Step):
 
     def run_train(self, full_history: bool = False) -> TrainResult:
         """Persist original folds/cutoff members, or refit from this run's saved fold counts."""
+
         options = self._config.model.get("assessment", {}) or {}
         chosen = options.get("run_id") or (self._run_id if full_history else None)
         if full_history and not chosen:
             raise ValueError("Full-history training requires an explicit saved run ID")
         if options.get("resume", False) and not chosen:
             raise ValueError("Resume requires an explicit saved run ID")
+        
         self._run_id = chosen or new_run_id()
         self._run_path = run_directory(self._context, self._config, self._run_id)
         schema, prior = self._prepare_training(full_history)
         self._open_run(schema, full_history)
+
         assert self._model_directory is not None and self._run_id is not None
         self._log.info("Training run %s -> %s", self._run_id, self._run_path)
         half_life = half_life_years(self._config)
@@ -209,6 +220,8 @@ class StepLongShort(Step):
         score_frames: list[pd.DataFrame] = []
         train_ends: list[pd.Timestamp] = []
         for h in schema.horizons:
+
+            # load data panel
             panel = self._load_horizon(h, schema, full_history)
             if panel is None or panel.empty:
                 raise ValueError(f"horizon {h}: no finite mature targets in the requested training window")
@@ -219,6 +232,7 @@ class StepLongShort(Step):
             inputs[str(h)] = digest
             write_json(self._run_path / METADATA_FILE, self._run_state)
             self._log.info("horizon %s: %s rows, %s tickers, %s days", h, len(panel), panel["ticker"].nunique(), panel["date"].nunique())
+            
             train_ends.append(panel["date"].max())
             if prior is None:
                 cvs[h] = self._cross_validate(h, panel)
@@ -226,8 +240,10 @@ class StepLongShort(Step):
                 selected = prior["selection"][str(h)]
                 restored_ic = {key: np.nan if value is None else value for key, value in selected["ic"].items()}
                 cvs[h] = HorizonCV(folds=selected["folds"], rounds=selected["rounds"], ic=restored_ic, member_ic=selected["member_ic"])
+            
             if "lgbm" in self.families and len(cvs[h].rounds) != int(self._config.model.cv.n_splits):
                 raise ValueError(f"h{h}: require all configured fold iteration counts before final fitting")
+            
             models[h] = self._final_horizon(h, panel, cvs[h], full_history)
             score_frames.append(self._score(h, models[h], panel))
             cvs[h].diagnostic_models = None
@@ -241,11 +257,14 @@ class StepLongShort(Step):
             last_label = max(pd.Timestamp(cv.audit["label_end_max"]) for cv in cvs.values())
             if pd.Timestamp(self._config.portfolio.start) <= last_label:
                 raise ValueError(f"portfolio.start must be strictly after training label end {last_label.date()}")
+        
         train_end_effective = max(train_ends, default=None)
         self._log.info("Trained %s horizons x %s (%s)", len(models), len(self.families), self.families)
 
+        # weight per horizon for ensembling
         weights = ir_horizon_weights({h: cvs[h].ic["ic_ir"] for h in models})
         self._log.info("Blend weights: %s", {h: round(w, 3) for h, w in weights.items()})
+
         predictions, signal, signal_date = self._blend(score_frames, list(models), weights)
         importance = self._monitor.feature_importance(models)
         self._save_models(models, schema, cvs, full_history, train_end_effective)
@@ -426,16 +445,8 @@ class StepLongShort(Step):
 
     # ---- schema (no data read) ---------------------------------------- #
     def _resolve_schema(self) -> Schema:
+
         cube_cols = set(self._context.store.columns(Tables.cube))
-        if {
-            "f_fwd_eps_yield",
-            "f_forward_earnings_yield",
-            "f_eps_expectation_growth",
-            "f_earningsGrowth",
-            "f_earningsGrowth_vs_hist",
-            "f_y_earnings_growth",
-        } & cube_cols:
-            raise RuntimeError("Obsolete fundamentals cube; rebuild full fundamentals and assemble the cube before training.")
         load_cols, dropped = self._select_load_columns(cube_cols)
         horizons = horizons_in(cube_cols, self.target_type)
         if not horizons:
@@ -594,6 +605,7 @@ class StepLongShort(Step):
                 oos_frames.append(saved[["date", "ticker", "pred", self.label_column]])
                 member_frames.append(saved[["date", "ticker", *self.families]])
                 continue
+
             fitted: dict[str, BaseModel] = {}
             for fam, cls in self._classes.items():
                 model = cls(self._context, self._config, fam, horizon)
@@ -604,7 +616,9 @@ class StepLongShort(Step):
                 cv.rounds.append(count)
                 if booster.training_iterations >= int(self._config.lgbm.num_boost_round):
                     self._log.warning("h%s: selected rounds hit configured cap (%s)", horizon, count)
+
             preds, members = ensemble_predict(fitted, test)
+
             # IC IR annualised by the horizon (overlapping labels), else inflated ~sqrt(horizon)
             cv.folds.append(daily_ic(test, preds, self.label_column, horizon=horizon))
             cv.folds[-1].update(
@@ -627,16 +641,19 @@ class StepLongShort(Step):
             )
             for name, mpred in members.items():
                 cv.member_folds.setdefault(name, []).append(daily_ic(test, mpred, self.label_column, horizon=horizon))
+            
             keys = {"date": test["date"].to_numpy(), "ticker": test["ticker"].to_numpy()}
             if retain_models:
                 cv.fold_models.append(fitted)
                 keys["fold"] = np.full(len(test), fold_no)
+            
             oos_frames.append(pd.DataFrame({**keys, "pred": preds.to_numpy(), self.label_column: test[self.label_column].to_numpy()}))
             member_frames.append(pd.DataFrame({**keys, **{name: z.to_numpy() for name, z in members.items()}}))
             if self._run_path is not None:
                 saved = oos_frames[-1].merge(member_frames[-1], on=["date", "ticker"], validate="one_to_one")
                 saved["fold"], saved["horizon"] = fold_no, horizon
                 self._save_fold(horizon, fold_no, fitted, saved, cv)
+        
         if oos_frames:
             cv.oos = pd.concat(oos_frames, ignore_index=True)
             cv.oos_members = pd.concat(member_frames, ignore_index=True)

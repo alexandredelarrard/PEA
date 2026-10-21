@@ -359,6 +359,7 @@ def _effect_checks(folder: Path, member: Any, config: DictConfig, cutoff: bool, 
         selected.update(features.index(name) for name in member.categoricals)
         if linear and (np.asarray(member.coef_) == 0).any():
             selected.add(int(np.flatnonzero(np.asarray(member.coef_) == 0)[0]))
+            
         for index, feature in enumerate(features):
             column = matrix[:, index]
             good = np.isfinite(column) & ((column >= 0) if feature in member.categoricals else True)

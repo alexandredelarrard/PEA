@@ -549,7 +549,7 @@ def download_fails_to_deliver(context: Context, years_history: int = 31, full: b
     kept = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=list(SECURITY_COLUMNS[:9]))
     voted = cusip_votes(kept, lineage) if not kept.empty else pd.DataFrame(columns=["cusip"])
     added = frozenset(str(c)[:6] for c in voted["cusip"]) - prefixes
-    changed_symbols, changed_prefixes = (frozenset(), frozenset()) if full else _changed_scope(context, lineage, run_date)
+    changed_symbols, changed_prefixes = (frozenset(), frozenset()) if full else _changed_scope(context, lineage, start_date)
     rescan_prefixes = added | changed_prefixes
     if rescan_prefixes or changed_symbols:
         logger.info(

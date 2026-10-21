@@ -14,11 +14,7 @@ model:
   models_dir: output/models    # fitted members (model_h<h>_<family>.pkl) + metadata.json, under the
                                # data store (absolute paths are used as-is)
   weight_decay:
-    enabled: false             # OFF: time-decay up-weighted recent folds and WIDENED the
-                               # cross-fold IC spread. Off lifts fold-IR 1.85 -> 2.50 (tighter,
-                               # all-positive folds) at a small mean-IC cost -- the
-                               # bias-for-consistency trade. Re-enable with ~10y (fold-IR 2.28)
-                               # for a mild recency tilt in live prediction.
+    enabled: false             # OFF: time-decay up-weighted recent folds 
     half_life_years: 10
   cv:
     n_splits: 5
@@ -39,7 +35,6 @@ model:
 
   assessment:
     output_dir: output/modelling_backtest
-    run_id: null
     evaluation_start: 2022-01-03
     read_chunksize: 25000      # I/O batching only; no change to fitting rows or model parameters.
 

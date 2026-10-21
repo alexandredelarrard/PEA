@@ -1,4 +1,4 @@
-"""Train cutoff ensembles with purged fold-local early stopping, then refit from saved counts.
+"""Train purged folds with external-test early stopping, then refit from saved counts.
 
 Production refits consume all matured labels without repeating CV. Latest prediction uses
 a separate feature-only load so unlabelled current rows remain scoreable.
@@ -7,10 +7,9 @@ a separate feature-only load so unlabelled current rows remain scoreable.
 from __future__ import annotations
 
 import gc
-import hashlib
-import json
 import platform
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any
@@ -22,38 +21,29 @@ from omegaconf import DictConfig
 
 from src.constants.constants import PREDICTION_MODEL_BLENDED, PREDICTION_MODEL_ENSEMBLE
 from src.context import Context
-from src.data_aggregate.utils.assemble.cube import horizons_in, is_meta_column, panel_from_cube, target_column
+from src.data_aggregate.utils.assemble.cube import horizons_in, is_meta_column, target_column
 from src.data_store.schema import Tables
 from src.modelling.transformers import BaseModel, LightGBMModel, LinearRegression, RandomForestModel, model_class
-from src.modelling.transformers.backtest import Backtest
 from src.modelling.transformers.base import half_life_years
-from src.modelling.transformers.monitor import Monitor
 from src.modelling.utils.artifacts import (
     METADATA_FILE,
     configuration_snapshot,
-    contained_path,
-    file_identity,
-    fitting_source_identity,
     load_ensemble,
     member_inventory,
     member_path,
     models_dir,
-    new_run_id,
     publish_generation,
     read_metadata,
-    read_run,
-    run_directory,
     save_member,
-    selection_signature,
-    verify_inventory,
     write_metadata,
 )
-from src.modelling.utils.assessment import frame_digest, write_json
-from src.modelling.utils.cv import label_end_dates, purged_wf_splits, temporal_valid_split
+from src.modelling.utils.assessment import write_json
+from src.modelling.utils.cv import label_end_dates, purged_wf_splits
 from src.modelling.utils.ensemble import blend_horizons, ensemble_predict, ir_horizon_weights, prediction_rows
 from src.modelling.utils.metrics import daily_ic, per_day_zscore
 from src.modelling.utils.panel import load_frame
 from src.utils.freshness import check_prediction_inputs
+from src.utils.modelling_runs import contained_path, new_run_id, read_fitting_configuration, run_directory, select_run
 from src.utils.step import Step
 from src.utils.universe import load_universe_tickers
 
@@ -77,17 +67,12 @@ class Schema:
 
 @dataclass
 class HorizonCV:
-    folds: list[dict] = field(default_factory=list)  # ensemble daily_ic per fold
+    folds: list[dict] = field(default_factory=list)
     member_folds: dict[str, list[dict]] = field(default_factory=dict)
-    oos: pd.DataFrame | None = None  # date, ticker, pred (ensemble), label -- every fold's test window
-    oos_members: pd.DataFrame | None = None  # date, ticker, <member z> ...
-    ic: dict[str, float] = field(default_factory=dict)  # mean over folds: mean_ic, ic_ir
+    ic: dict[str, float] = field(default_factory=dict)
     member_ic: dict[str, dict[str, float]] = field(default_factory=dict)
     rounds: list[int] = field(default_factory=list)
     audit: dict = field(default_factory=dict)
-    diagnostic_models: dict[str, BaseModel] | None = None
-    diagnostic_panel: pd.DataFrame | None = None
-    fold_models: list[dict[str, BaseModel]] = field(default_factory=list)
 
 
 @dataclass
@@ -95,15 +80,10 @@ class TrainResult:
     models: dict[int, dict[str, BaseModel]]
     cv: dict[int, HorizonCV]
     weights: dict[int, float]
-    predictions: pd.DataFrame
-    signal: pd.Series
-    signal_date: pd.Timestamp
     train_end_effective: pd.Timestamp | None
-    importance: pd.Series | None
-    backtests: dict[int, dict[str, float]]
     summaries: dict[int, dict]
-    run_id: str = ""
-    run_dir: Path | None = None
+    run_id: str
+    run_dir: Path
 
 
 def union_all_columns(config: DictConfig) -> list[str]:
@@ -123,7 +103,6 @@ def union_all_columns(config: DictConfig) -> list[str]:
 class StepLongShort(Step):
     def __init__(self, context: Context, config: DictConfig) -> None:
         super().__init__(context=context, config=config)
-        self._cfg = config.build_cube
         self.label_column = str(config.model.label_column)
         self.target_type = str(config.model.get("target_type", "rank"))
         ensemble = config.model.get("ensemble")
@@ -131,15 +110,12 @@ class StepLongShort(Step):
             raise ValueError("model.ensemble must list the families to train, e.g. [elasticnet, lgbm, random_forest]")
         self.families = [str(f) for f in ensemble]
         self._classes = {fam: model_class(fam) for fam in self.families}  # validates every name
-        self._monitor = Monitor(context, config)
-        self._backtest = Backtest(config)
         self._eligibility: dict[int, dict[str, Any]] = {}
         self._run_path: Path | None = None
         self._run_id: str | None = None
         self._run_state: dict[str, Any] = {}
         self._model_directory: Path | None = None
         self._final_state: dict[str, Any] = {}
-        self._resume = False
 
     def run(self) -> TrainResult:
         return self.run_train()
@@ -149,19 +125,32 @@ class StepLongShort(Step):
     # ================================================================== #
     def _prepare_training(self, full_history: bool = False) -> tuple[Schema, dict | None]:
         """Resolve inputs and the observation cutoff without fitting or writing artifacts."""
-        schema = self._resolve_schema()
+        prior = read_metadata(self._run_path / "cutoff") if full_history and self._run_path is not None else None
+        if prior is None:
+            schema = self._resolve_schema()
+        else:
+            features, categories = list(prior["feature_cols"]), list(prior["categorical_cols"])
+            columns = list(dict.fromkeys(features + categories))
+            schema = Schema(
+                list(prior["horizons"]),
+                ["date", "ticker", *columns],
+                features,
+                categories,
+                columns,
+                {key: list(prior[f"{key}_cols"]) for key in _FAMILY_BLOCKS},
+                {key: {int(h): list(cols) for h, cols in prior[f"{key}_cols_by_h"].items()} for key in _FAMILY_BLOCKS},
+            )
         store = self._context.store
         calendar = pd.DatetimeIndex(store.distinct(Tables.cube_part_prices, "date")).normalize().sort_values().drop_duplicates()
         cube_dates = store.distinct(Tables.cube, "date", order="desc", limit=1)
         if calendar.empty or not cube_dates:
             raise ValueError("Training requires the complete price-part calendar and a populated cube")
 
-        # what is the latest both in cube and price ? 
+        # what is the latest both in cube and price ?
         latest = min(calendar[-1], pd.Timestamp(cube_dates[0]))
         self._calendar = calendar[calendar <= latest]
         self._training_as_of = latest
         if not full_history and self._config.train.end_date:
-
             # get the dates for training
             cutoff = pd.Timestamp(self._config.train.end_date)
             sessions = calendar[calendar <= cutoff]
@@ -177,273 +166,160 @@ class StepLongShort(Step):
         if explicit_cutoff is not None and not full_history:
             self._training_as_of = min(latest, pd.Timestamp(explicit_cutoff))
 
-        signature = selection_signature(self._config, schema.feature_cols + schema.categorical_cols, schema.horizons)
-        prior = None
         if full_history:
             if self._run_path is None:
                 raise ValueError("Full-history training requires an explicit saved run ID")
-            read_run(self._run_path)
-            prior = read_metadata(self._run_path / "cutoff")
+            assert prior is not None
             if prior.get("full_history") is not False or prior.get("run_id") != self._run_id:
                 raise ValueError("Full-history training requires this run's completed cutoff selection")
-            verify_inventory(self._run_path / "cutoff", prior["member_files"])
         if prior is not None and not isinstance(prior.get("selection"), dict):
             raise ValueError("Saved model has no fold selection; run modelling train before full-train")
-        if prior is not None and (prior.get("selection_signature") != signature or pd.Timestamp(prior["selection_as_of"]) > self._training_as_of):
+        if prior is not None and (pd.Timestamp(prior["selection_as_of"]) > self._training_as_of):
             raise ValueError("Saved fold selection is incompatible or not yet observable; run modelling train first")
         self._selection_as_of = prior["selection_as_of"] if prior else str(self._training_as_of.date())
         return schema, prior
 
-    def run_train(self, full_history: bool = False) -> TrainResult:
-        """Persist original folds/cutoff members, or refit from this run's saved fold counts."""
-
-        options = self._config.model.get("assessment", {}) or {}
-        chosen = options.get("run_id") or (self._run_id if full_history else None)
-        if full_history and not chosen:
-            raise ValueError("Full-history training requires an explicit saved run ID")
-        if options.get("resume", False) and not chosen:
-            raise ValueError("Resume requires an explicit saved run ID")
-        
-        self._run_id = chosen or new_run_id()
-        self._run_path = run_directory(self._context, self._config, self._run_id)
+    def run_train(self, full_history: bool = False, *, run_id: str | None = None) -> TrainResult:
+        """Fit a fresh dated run, or a fresh full-history attempt from saved fitting controls."""
+        self._eligibility = {}
+        if full_history:
+            self._run_path, self._run_state = select_run(self._context, self._config, run_id or self._run_id, assessed=True)
+            self._run_id = self._run_state["run_id"]
+            saved = read_fitting_configuration(self._run_path)
+            restored = self._config.copy()
+            for key in configuration_snapshot(restored)["model"]:
+                del restored.model[key]
+            for key, value in saved.pop("model").items():
+                restored.model[key] = value
+            for key, value in saved.items():
+                restored[key] = value
+            self._config = restored
+            self.label_column = str(self._config.model.label_column)
+            self.target_type = str(self._config.model.get("target_type", "rank"))
+            self.families = list(self._run_state["model_types"])
+            self._classes = {family: model_class(family) for family in self.families}
+            required = set(self._run_state["feature_cols"] + self._run_state["categorical_cols"])
+            if missing := required - set(self._context.store.columns(Tables.cube)):
+                raise ValueError(f"Saved fitting inputs absent from cube: {sorted(missing)}")
+        else:
+            self._run_id = new_run_id()
+            self._run_path = run_directory(self._context, self._config, self._run_id)
         schema, prior = self._prepare_training(full_history)
         self._open_run(schema, full_history)
-
-        assert self._model_directory is not None and self._run_id is not None
+        assert self._model_directory is not None and self._run_id is not None and self._run_path is not None
         self._log.info("Training run %s -> %s", self._run_id, self._run_path)
         half_life = half_life_years(self._config)
         if half_life is not None:
             self._log.info("Time-decay sample weights enabled (half_life=%.1f years)", half_life)
-
-        models: dict[int, dict[str, BaseModel]] = {}
-        cvs: dict[int, HorizonCV] = {}
-        score_frames: list[pd.DataFrame] = []
-        train_ends: list[pd.Timestamp] = []
-        for h in schema.horizons:
-
-            # load data panel
-            panel = self._load_horizon(h, schema, full_history)
+        models, cvs, train_ends = {}, {}, []
+        for horizon in schema.horizons:
+            panel = self._load_horizon(horizon, schema, full_history)
             if panel is None or panel.empty:
-                raise ValueError(f"horizon {h}: no finite mature targets in the requested training window")
-            digest = self._eligibility[h]["input_digest"]
-            inputs = self._final_state.setdefault("horizon_inputs", {}) if full_history else self._run_state.setdefault("horizon_inputs", {})
-            if str(h) in inputs and inputs[str(h)] != digest:
-                raise ValueError(f"h{h}: fitting inputs changed; refuse stale run reuse")
-            inputs[str(h)] = digest
-            write_json(self._run_path / METADATA_FILE, self._run_state)
-            self._log.info("horizon %s: %s rows, %s tickers, %s days", h, len(panel), panel["ticker"].nunique(), panel["date"].nunique())
-            
-            train_ends.append(panel["date"].max())
+                raise ValueError(f"h{horizon}: no mature observations in the training window")
+            fitting = panel.loc[np.isfinite(panel[self.label_column])]
+            if fitting.empty:
+                raise ValueError(f"h{horizon}: no finite mature fitting targets")
+            train_ends.append(fitting.date.max())
+            self._log.info("h%s: %s fitting rows, %s scoring rows, %s days", horizon, len(fitting), len(panel), panel.date.nunique())
             if prior is None:
-                cvs[h] = self._cross_validate(h, panel)
+                cv = self._cross_validate(horizon, panel)
             else:
-                selected = prior["selection"][str(h)]
-                restored_ic = {key: np.nan if value is None else value for key, value in selected["ic"].items()}
-                cvs[h] = HorizonCV(folds=selected["folds"], rounds=selected["rounds"], ic=restored_ic, member_ic=selected["member_ic"])
-            
-            if "lgbm" in self.families and len(cvs[h].rounds) != int(self._config.model.cv.n_splits):
-                raise ValueError(f"h{h}: require all configured fold iteration counts before final fitting")
-            
-            models[h] = self._final_horizon(h, panel, cvs[h], full_history)
-            score_frames.append(self._score(h, models[h], panel))
-            cvs[h].diagnostic_models = None
-            cvs[h].diagnostic_panel = None
-            panel = None
-            gc.collect()  # hand this horizon's panel back before the next load
-
-        if not models:
-            raise RuntimeError("No horizon produced a model (empty cube / train window?).")
+                selected = prior["selection"][str(horizon)]
+                cv = HorizonCV(
+                    folds=selected["folds"],
+                    rounds=selected["rounds"],
+                    member_ic=selected["member_ic"],
+                    ic={key: np.nan if value is None else value for key, value in selected["ic"].items()},
+                )
+            if "lgbm" in self.families and len(cv.rounds) != int(self._config.model.cv.n_splits):
+                raise ValueError(f"h{horizon}: incomplete fold iteration counts")
+            models[horizon] = self._final_horizon(horizon, fitting, cv, full_history)
+            cvs[horizon] = cv
+            del fitting, panel
+            gc.collect()
         if not full_history and self._config.get("portfolio", {}).get("start"):
             last_label = max(pd.Timestamp(cv.audit["label_end_max"]) for cv in cvs.values())
             if pd.Timestamp(self._config.portfolio.start) <= last_label:
                 raise ValueError(f"portfolio.start must be strictly after training label end {last_label.date()}")
-        
-        train_end_effective = max(train_ends, default=None)
-        self._log.info("Trained %s horizons x %s (%s)", len(models), len(self.families), self.families)
-
-        # weight per horizon for ensembling
-        weights = ir_horizon_weights({h: cvs[h].ic["ic_ir"] for h in models})
-        self._log.info("Blend weights: %s", {h: round(w, 3) for h, w in weights.items()})
-
-        predictions, signal, signal_date = self._blend(score_frames, list(models), weights)
-        importance = self._monitor.feature_importance(models)
-        self._save_models(models, schema, cvs, full_history, train_end_effective)
-        self._save_outputs(predictions, cvs, signal, signal_date, full_history=full_history)
-
-        backtests = {}
-        for h, cv in cvs.items() if self._config.model.get("backtest", {}).get("enabled", True) and not full_history else []:
-            if cv.oos is None:
-                continue
-            result = self._backtest.run(cv.oos, label_col=self.label_column, horizon=h)
-            self._log.info("h%s label-only backtest: %s", h, result.summary)
-            backtests[h] = result.summary
+        train_end_effective = max(train_ends)
+        weights = ir_horizon_weights({h: cv.ic["ic_ir"] for h, cv in cvs.items()})
         summaries = {h: self._horizon_kpis(cv, full_history) for h, cv in cvs.items()}
-        completed = self._final_state.get("complete") if full_history else self._run_state.get("training_complete")
-        if not completed:
-            write_json(self._model_directory / "kpis.json", summaries)
+        self._save_models(models, schema, cvs, full_history, train_end_effective)
+        write_json(self._model_directory / "kpis.json", summaries)
+        completed = datetime.now(UTC).isoformat()
         if full_history:
             production = models_dir(self._context, self._config).resolve()
-            if completed:
-                if self._final_state["published_root"] != str(production):
-                    raise ValueError("Completed publication root changed")
-                snapshot_meta = read_metadata(self._model_directory)
-                verify_inventory(contained_path(production, self._final_state["published_directory"]), snapshot_meta["member_files"])
-            else:
-                published = publish_generation(production, self._model_directory, self._run_id, self._attempt_id)
-                self._final_state.update(
-                    {
-                        "complete": True,
-                        "published_root": str(production),
-                        "published_directory": published["member_directory"],
-                        "metadata_file": file_identity(self._model_directory / METADATA_FILE),
-                        "kpis_file": file_identity(self._model_directory / "kpis.json"),
-                    }
-                )
-        else:
-            self._run_state.update(
+            published = publish_generation(production, self._model_directory, self._run_id, self._attempt_id)
+            self._final_state.update(
                 {
-                    "training_complete": True,
-                    "cutoff_metadata": file_identity(self._model_directory / METADATA_FILE),
-                    "cutoff_kpis": file_identity(self._model_directory / "kpis.json"),
+                    "complete": True,
+                    "completed_at_utc": completed,
+                    "published_root": str(production),
+                    "published_directory": published["member_directory"],
                 }
             )
+        else:
+            self._run_state.update({"training_complete": True, "training_completed_at_utc": completed})
         write_json(self._run_path / METADATA_FILE, self._run_state)
-        return TrainResult(
-            models,
-            cvs,
-            weights,
-            predictions,
-            signal,
-            signal_date,
-            train_end_effective,
-            importance,
-            backtests,
-            summaries,
-            self._run_id,
-            self._run_path,
-        )
+        self._log.info("Training complete: run_id=%s completed_at_utc=%s blend_weights=%s", self._run_id, completed, weights)
+        return TrainResult(models, cvs, weights, train_end_effective, summaries, self._run_id, self._run_path)
 
     def _open_run(self, schema: Schema, full_history: bool) -> None:
-        """Validate the run clock/source identity and allocate only its owned stage output."""
+        """Allocate fresh fitting output; existing training is never resumed."""
         assert self._run_path is not None
-        options = self._config.model.get("assessment", {}) or {}
-        self._resume = bool(options.get("resume", False))
-        identity = {
-            "run_id": self._run_id,
-            "horizons": schema.horizons,
-            "model_types": self.families,
-            "feature_cols": schema.feature_cols,
-            "categorical_cols": schema.categorical_cols,
-            "selection_signature": selection_signature(self._config, schema.feature_cols + schema.categorical_cols, schema.horizons),
-            "source_hashes": fitting_source_identity(),
-            "library_versions": {
-                "python": platform.python_version(),
-                "lightgbm": version("lightgbm"),
-                "numpy": version("numpy"),
-                "pandas": pd.__version__,
-            },
-        }
-        calendar_digest = hashlib.sha256(self._calendar.to_numpy(dtype="datetime64[ns]").tobytes()).hexdigest()
-        if self._run_path.exists():
-            if not full_history and not self._resume:
-                raise FileExistsError("Run already exists; use an explicit matching --resume or a new run ID")
-            self._run_state = read_run(self._run_path, training_required=full_history)
-            if any(self._run_state.get(key) != value for key, value in identity.items()):
-                raise ValueError("Run configuration, fitting source or library identity changed")
-            if not full_history and self._run_state["calendar_digest"] != calendar_digest:
-                raise ValueError("Run price calendar changed; use a new run ID")
+        if full_history:
+            self._attempt_id = uuid4().hex
+            self._model_directory = contained_path(self._run_path, f"full_history/{self._attempt_id}")
+            self._model_directory.mkdir(parents=True, exist_ok=False)
+            self._final_state = {"attempt_id": self._attempt_id, "complete": False, "training_as_of": str(self._training_as_of.date())}
+            self._run_state["full_history"] = self._final_state
         else:
-            if full_history:
-                raise FileNotFoundError("Train this run's cutoff models before full-history fitting")
             self._run_path.mkdir(parents=True, exist_ok=False)
-            calendar_path = self._run_path / "training/calendar.parquet"
-            calendar_path.parent.mkdir(parents=True, exist_ok=True)
-            pd.DataFrame({"date": self._calendar}).to_parquet(calendar_path, index=False)
-            configuration_path = self._run_path / "training/configuration.json"
-            write_json(configuration_path, configuration_snapshot(self._config))
+            write_json(self._run_path / "training/configuration.json", configuration_snapshot(self._config))
+            pd.DataFrame({"date": self._calendar}).to_parquet(self._run_path / "training/calendar.parquet", index=False)
             self._run_state = {
-                **identity,
-                "calendar_digest": calendar_digest,
-                "calendar_file": file_identity(calendar_path),
-                "configuration_file": file_identity(configuration_path),
+                "workflow": "fresh-assessment-v1",
+                "run_id": self._run_id,
+                "horizons": schema.horizons,
+                "model_types": self.families,
+                "feature_cols": schema.feature_cols,
+                "categorical_cols": schema.categorical_cols,
                 "observation_frontier": str(self._calendar[-1].date()),
                 "training_as_of": str(self._training_as_of.date()),
                 "target_type": self.target_type,
                 "label_column": self.label_column,
                 "training_complete": False,
                 "folds": {},
-                "finals": {},
             }
-        if full_history:
-            verify_inventory(self._run_path, {"cutoff/metadata.json": self._run_state["cutoff_metadata"]})
-            previous = self._run_state.get("full_history", {})
-            if previous.get("complete") and not self._resume:
-                raise FileExistsError("Full-history stage is complete; use matching --resume or a new run")
-            self._attempt_id = previous["attempt_id"] if previous.get("complete") else uuid4().hex
-            attempts = self._run_state.setdefault("full_history_attempts", {})
-            self._final_state = attempts.setdefault(
-                self._attempt_id,
-                {
-                    "attempt_id": self._attempt_id,
-                    "complete": False,
-                    "finals": {},
-                    "training_as_of": str(self._training_as_of.date()),
-                    "calendar_digest": calendar_digest,
-                },
-            )
-            self._run_state["full_history"] = self._final_state
-            self._model_directory = contained_path(self._run_path, f"full_history/{self._attempt_id}")
-            if not self._final_state["complete"]:
-                self._model_directory.mkdir(parents=True, exist_ok=False)
-        else:
-            self._final_state = self._run_state
             self._model_directory = contained_path(self._run_path, "cutoff")
+            self._final_state = self._run_state
         write_json(self._run_path / METADATA_FILE, self._run_state)
 
     def _final_horizon(self, horizon: int, panel: pd.DataFrame, cv: HorizonCV, full_history: bool) -> dict[str, BaseModel]:
-        """Save one fresh final member set, or verify/reload its completed run-local checkpoint."""
-        assert self._run_path is not None and self._model_directory is not None
-        role = "full_history" if full_history else "cutoff"
-        marker = self._model_directory / f"h{horizon}_complete.json"
-        completed = self._final_state.setdefault("finals", {}).get(str(horizon))
-        if completed is not None:
-            verify_inventory(self._model_directory, {marker.name: completed})
-            state = json.loads(marker.read_text(encoding="utf-8"))
-            if state["input_digest"] != self._eligibility[horizon]["input_digest"] or state["role"] != role or state["run_id"] != self._run_id:
-                raise ValueError("Final-fit checkpoint inputs/role changed")
-            members = load_ensemble(self._model_directory, [horizon], self.families, metadata=state)[horizon]
-            cv.audit.update(state["fit_audit"])
-            return members
+        """Fit all mature labelled rows and save fresh cutoff/full-history members."""
+        assert self._model_directory is not None
         members = self._fit_final(horizon, panel, cv.rounds)
         cv.audit.update(
             {
                 **self._eligibility[horizon],
                 "training_as_of": str(self._training_as_of.date()),
                 "fitted_rows": len(panel),
-                "feature_min": str(panel["date"].min().date()),
-                "feature_max": str(panel["date"].max().date()),
-                "label_end_max": str(panel["label_end"].max().date()),
-                "requested_rounds": int(np.median(cv.rounds)) if cv.rounds else None,
+                "train_days": int(panel.date.nunique()),
+                "feature_min": str(panel.date.min().date()),
+                "feature_max": str(panel.date.max().date()),
+                "label_end_max": str(panel.label_end.max().date()),
+                "round_source_folds": [len(cv.folds) - 1, len(cv.folds)] if cv.rounds else [],
+                "round_source_windows": [fold["test_start"] for fold in cv.folds[-2:]] if cv.rounds else [],
+                "round_source_counts": cv.rounds[-2:],
+                "final_rounds": (sum(cv.rounds[-2:]) + 1) // 2 if cv.rounds else None,
+                "requested_rounds": (sum(cv.rounds[-2:]) + 1) // 2 if cv.rounds else None,
                 "achieved_rounds": members["lgbm"].model.current_iteration() if "lgbm" in members else None,
             }
         )
         for family, model in members.items():
             save_member(model, member_path(self._model_directory, horizon, family))
-        state = {
-            "run_id": self._run_id,
-            "role": role,
-            "horizons": [horizon],
-            "model_types": self.families,
-            "input_digest": self._eligibility[horizon]["input_digest"],
-            "fit_audit": cv.audit,
-            "member_files": member_inventory(self._model_directory, [horizon], self.families),
-        }
-        write_json(marker, state)
-        self._final_state["finals"][str(horizon)] = file_identity(marker)
-        write_json(self._run_path / METADATA_FILE, self._run_state)
         return members
 
-    # ---- schema (no data read) ---------------------------------------- #
     def _resolve_schema(self) -> Schema:
 
         cube_cols = set(self._context.store.columns(Tables.cube))
@@ -529,7 +405,6 @@ class StepLongShort(Step):
             store,
             Tables.cube,
             columns=self._load_cols_for(schema, tcol),
-            where={tcol: store.NOT_NULL},
             since=start_date,
             until=end_date,
             stream=True,
@@ -539,14 +414,18 @@ class StepLongShort(Step):
         )
         if raw is None:
             return None
-        panel = panel_from_cube(raw, horizon=horizon, label_name=self.label_column, feature_cols=schema.panel_cols, target_type=self.target_type)
+        panel = raw.rename(columns={tcol: self.label_column})
         raw = None
         panel["label_end"] = panel["date"].map(ends)
         unknown = int(panel["label_end"].isna().sum())
         immature = int((panel["label_end"] > self._training_as_of).sum())
-        self._eligibility[horizon] = {"source_labelled_rows": len(panel), "unknown_label_end_rows": unknown, "immature_rows": immature}
+        self._eligibility[horizon] = {
+            "source_labelled_rows": int(np.isfinite(panel[self.label_column]).sum()),
+            "unknown_label_end_rows": unknown,
+            "immature_rows": immature,
+        }
         self._log.info("h%s maturity: %s unknown endpoints, %s outcomes beyond %s excluded", horizon, unknown, immature, self._training_as_of.date())
-        panel = panel.loc[panel["label_end"].notna() & (panel["label_end"] <= self._training_as_of) & np.isfinite(panel[self.label_column])]
+        panel = panel.loc[panel["label_end"].notna() & (panel["label_end"] <= self._training_as_of)]
         tr = self._config.get("train", None)
         if tr:
             start_date = tr.start_date
@@ -555,9 +434,6 @@ class StepLongShort(Step):
                 panel = panel.loc[panel["date"] >= start_date]
             if end_date:
                 panel = panel.loc[panel["date"] <= end_date]
-        if self._config.model.cv.get("input_digest", False) or self._run_path is not None:
-            columns = [*schema.panel_cols, self.label_column, "label_end"]
-            self._eligibility[horizon].update({"input_digest": frame_digest(panel, columns), "input_digest_columns": columns})
         return panel if not panel.empty else None
 
     def _fit_members(self, horizon: int, train: pd.DataFrame, valid: pd.DataFrame | None, rounds: int | None = None) -> dict[str, BaseModel]:
@@ -573,175 +449,103 @@ class StepLongShort(Step):
             members[fam] = model
         return members
 
-    def _cross_validate(self, horizon: int, panel: pd.DataFrame, *, retain_models: bool = False) -> HorizonCV:
-        """Purged walk-forward CV: per-fold ensemble + member daily IC, and the OOS predictions."""
-        cfg = self._config.model
-        retain_models = (retain_models or bool(cfg.cv.get("retain_models", False))) and self._run_path is None
-        embargo = cfg.cv.embargo or horizon  # embargo must be >= horizon
-        windows = cfg.cv.get("test_windows")
-        if windows is not None and int(embargo) < horizon:
-            raise ValueError("Explicit assessment embargo must be at least the horizon")
+    def _cross_validate(self, horizon: int, panel: pd.DataFrame) -> HorizonCV:
+        """Fit complete purged folds; external tests select RMSE rounds and supply quick IC."""
+        cfg = self._config.model.cv
+        embargo = cfg.embargo or horizon
+        if int(embargo) < horizon:
+            raise ValueError("Assessment embargo must be at least the horizon")
+        windows = cfg.get("test_windows")
         cv = HorizonCV()
-        oos_frames, member_frames = [], []
         splits = purged_wf_splits(
-            panel["date"], cfg.cv.n_splits, embargo, test_windows=windows, calendar=self._calendar if windows is not None else None
+            panel.date, int(cfg.n_splits), embargo, test_windows=windows, calendar=self._calendar if windows is not None else None
         )
-        for fold_no, (train_days, test_days) in enumerate(splits, start=1):
-            train = panel[panel["date"].isin(train_days)]
-            test = panel[panel["date"].isin(test_days)]
-            if train.empty or test.empty:
-                continue
-            if "label_end" in train:
-                train = train.loc[train["label_end"] < test["date"].min()]
-            sub_tr, sub_val = temporal_valid_split(train) if LightGBMModel in self._classes.values() else (train, train.iloc[:0])
-            cached = self._saved_fold(horizon, fold_no)
-            if cached is not None:
-                metadata, saved = cached
-                cv.folds.append(metadata["fold_audit"])
-                if metadata["selected_rounds"] is not None:
-                    cv.rounds.append(int(metadata["selected_rounds"]))
-                for family in self.families:
-                    cv.member_folds.setdefault(family, []).append(metadata["member_ic"][family])
-                oos_frames.append(saved[["date", "ticker", "pred", self.label_column]])
-                member_frames.append(saved[["date", "ticker", *self.families]])
-                continue
-
-            fitted: dict[str, BaseModel] = {}
-            for fam, cls in self._classes.items():
-                model = cls(self._context, self._config, fam, horizon)
-                fitted[fam] = model.fit(sub_tr, sub_val) if cls is LightGBMModel else model.fit(train)
+        for number, (train_days, test_days) in enumerate(splits, 1):
+            test = panel.loc[panel.date.isin(test_days)]
+            train = panel.loc[panel.date.isin(train_days) & np.isfinite(panel[self.label_column])]
+            train = train.loc[train.label_end < test.date.min()]
+            valid = test.loc[np.isfinite(test[self.label_column])]
+            if train.empty or valid.empty:
+                raise ValueError(f"h{horizon} fold{number}: no eligible fitting/evaluation rows")
+            fitted = self._fit_members(horizon, train, valid)
             if "lgbm" in fitted:
                 booster = fitted["lgbm"].model
-                count = int(booster.best_iteration or booster.current_iteration())
-                cv.rounds.append(count)
-                if booster.training_iterations >= int(self._config.lgbm.num_boost_round):
-                    self._log.warning("h%s: selected rounds hit configured cap (%s)", horizon, count)
-
-            preds, members = ensemble_predict(fitted, test)
-
-            # IC IR annualised by the horizon (overlapping labels), else inflated ~sqrt(horizon)
-            cv.folds.append(daily_ic(test, preds, self.label_column, horizon=horizon))
-            cv.folds[-1].update(
+                cv.rounds.append(int(booster.best_iteration or booster.current_iteration()))
+            prediction, member_scores = ensemble_predict(fitted, test)
+            audit = daily_ic(test, prediction, self.label_column, horizon=horizon)
+            audit["finite_ic_days"] = audit.pop("n_days")
+            audit.update(
                 {
-                    "train_rows": len(sub_tr),
-                    "validation_rows": len(sub_val),
-                    "outer_rows": len(train),
-                    "test_start": str(test["date"].min().date()),
-                    "test_end": str(test["date"].max().date()),
-                    "inner_train_end": str(sub_tr["date"].max().date()),
-                    "validation_start": str(sub_val["date"].min().date()) if not sub_val.empty else None,
-                    "inner_train_label_end_max": str(sub_tr["label_end"].max().date()),
-                    "validation_end": str(sub_val["date"].max().date()) if not sub_val.empty else None,
-                    "validation_label_end_max": str(sub_val["label_end"].max().date()) if not sub_val.empty else None,
-                    "outer_train_label_end_max": str(train["label_end"].max().date()),
+                    "fold": number,
+                    "train_start": str(train.date.min().date()),
+                    "train_end": str(train.date.max().date()),
+                    "train_label_end_max": str(train.label_end.max().date()),
+                    "train_rows": len(train),
+                    "train_days": int(train.date.nunique()),
+                    "test_start": str(test.date.min().date()),
+                    "test_end": str(test.date.max().date()),
+                    "test_label_end_max": str(valid.label_end.max().date()),
+                    "test_scoring_rows": len(test),
+                    "test_days": int(test.date.nunique()),
+                    "test_paired_rows": int((np.isfinite(prediction) & np.isfinite(test[self.label_column])).sum()),
+                    "early_stopping_sample": "external_test" if "lgbm" in fitted else None,
                     "selected_rounds": cv.rounds[-1] if cv.rounds else None,
                     "executed_rounds": fitted["lgbm"].model.training_iterations if cv.rounds else None,
                     "round_cap_hit": fitted["lgbm"].model.training_iterations >= int(self._config.lgbm.num_boost_round) if cv.rounds else False,
                 }
             )
-            for name, mpred in members.items():
-                cv.member_folds.setdefault(name, []).append(daily_ic(test, mpred, self.label_column, horizon=horizon))
-            
-            keys = {"date": test["date"].to_numpy(), "ticker": test["ticker"].to_numpy()}
-            if retain_models:
-                cv.fold_models.append(fitted)
-                keys["fold"] = np.full(len(test), fold_no)
-            
-            oos_frames.append(pd.DataFrame({**keys, "pred": preds.to_numpy(), self.label_column: test[self.label_column].to_numpy()}))
-            member_frames.append(pd.DataFrame({**keys, **{name: z.to_numpy() for name, z in members.items()}}))
+            if windows is not None:
+                audit.update({"configured_test_start": str(windows[number - 1][0]), "configured_test_end": str(windows[number - 1][1])})
+            cv.folds.append(audit)
+            for name, score in member_scores.items():
+                metrics = daily_ic(test, score, self.label_column, horizon=horizon)
+                metrics["finite_ic_days"] = metrics.pop("n_days")
+                metrics["test_paired_rows"] = int((np.isfinite(score) & np.isfinite(test[self.label_column])).sum())
+                cv.member_folds.setdefault(name, []).append(metrics)
+                self._log.info("h%s fold%s [%s] mean_IC=%+.4f IC_IR=%+.2f", horizon, number, name, metrics["mean_ic"], metrics["ic_ir"])
+            self._log.info("h%s fold%s [ensemble] mean_IC=%+.4f IC_IR=%+.2f", horizon, number, audit["mean_ic"], audit["ic_ir"])
             if self._run_path is not None:
-                saved = oos_frames[-1].merge(member_frames[-1], on=["date", "ticker"], validate="one_to_one")
-                saved["fold"], saved["horizon"] = fold_no, horizon
-                self._save_fold(horizon, fold_no, fitted, saved, cv)
-        
-        if oos_frames:
-            cv.oos = pd.concat(oos_frames, ignore_index=True)
-            cv.oos_members = pd.concat(member_frames, ignore_index=True)
-        if not cv.folds or len(cv.folds) != int(cfg.cv.n_splits):
+                self._save_fold(horizon, number, fitted, cv)
+        if len(cv.folds) != int(cfg.n_splits):
             raise ValueError("Insufficient usable walk-forward folds")
-        cv.ic = {
-            "mean_ic": float(np.nanmean(np.asarray([r["mean_ic"] for r in cv.folds], dtype=float))) if cv.folds else np.nan,
-            "ic_ir": float(np.nanmean(np.asarray([r["ic_ir"] for r in cv.folds], dtype=float))) if cv.folds else np.nan,
+        cv.ic = {str(key): float(value) for key, value in pd.DataFrame(cv.folds)[["mean_ic", "ic_ir"]].mean().items()}
+        cv.member_ic = {
+            name: {str(key): float(value) for key, value in pd.DataFrame(rows)[["mean_ic", "ic_ir"]].mean().items()}
+            for name, rows in cv.member_folds.items()
         }
-        self._log.info("horizon %s: [ENSEMBLE] CV mean_IC=%+.4f  IC_IR=%+.2f", horizon, cv.ic["mean_ic"], cv.ic["ic_ir"])
-        for name, folds in cv.member_folds.items():
-            cv.member_ic[name] = {
-                "mean_ic": float(np.nanmean(np.asarray([r["mean_ic"] for r in folds], dtype=float))) if folds else np.nan,
-                "ic_ir": float(np.nanmean(np.asarray([r["ic_ir"] for r in folds], dtype=float))) if folds else np.nan,
-            }
-            self._log.info(
-                "horizon %s:   [%-10s] CV mean_IC=%+.4f  IC_IR=%+.2f", horizon, name, cv.member_ic[name]["mean_ic"], cv.member_ic[name]["ic_ir"]
-            )
+        self._log.info("h%s equal-fold aggregate IC=%+.4f IC_IR=%+.2f", horizon, cv.ic["mean_ic"], cv.ic["ic_ir"])
         return cv
 
-    def _saved_fold(self, horizon: int, fold: int) -> tuple[dict[str, Any], pd.DataFrame] | None:
-        """Reuse only a hash-verified original fold with the same fitting inputs."""
-        if self._run_path is None or not self._resume:
-            return None
-        recorded = self._run_state.get("folds", {}).get(str(horizon), {}).get(str(fold))
-        if recorded is None:
-            return None
-        directory = contained_path(self._run_path, f"folds/h{horizon}/fold{fold}")
-        verify_inventory(directory, {METADATA_FILE: recorded})
-        metadata = read_metadata(directory)
-        if (
-            metadata["run_id"] != self._run_id
-            or metadata["fold"] != fold
-            or metadata["horizons"] != [horizon]
-            or metadata["model_types"] != self.families
-            or metadata["input_digest"] != self._eligibility[horizon]["input_digest"]
-        ):
-            raise ValueError("Saved fold identity or fitting inputs changed")
-        verify_inventory(directory, metadata["member_files"])
-        verify_inventory(directory, metadata["evidence_files"])
-        self._log.info("h%s fold%s: reused the verified original models and OOF evidence", horizon, fold)
-        return metadata, pd.read_parquet(directory / "oof.parquet")
-
-    def _save_fold(self, horizon: int, fold: int, members: dict[str, BaseModel], oof: pd.DataFrame, cv: HorizonCV) -> None:
-        """Commit a complete three-member fold and its original held-out predictions together."""
+    def _save_fold(self, horizon: int, fold: int, members: dict[str, BaseModel], cv: HorizonCV) -> None:
+        """Persist original members and minimal fitting/test metrics, without prediction panels."""
         assert self._run_path is not None
         directory = contained_path(self._run_path, f"folds/h{horizon}/fold{fold}")
         for family, model in members.items():
             save_member(model, member_path(directory, horizon, family))
-        oof.to_parquet(directory / "oof.parquet", index=False)
-        metadata = {
-            "run_id": self._run_id,
-            "role": "fold",
-            "fold": fold,
-            "horizons": [horizon],
-            "model_types": self.families,
-            "target_type": self.target_type,
-            "label_column": self.label_column,
-            "input_digest": self._eligibility[horizon]["input_digest"],
-            "fold_audit": cv.folds[-1],
-            "member_ic": {family: metrics[-1] for family, metrics in cv.member_folds.items()},
-            "selected_rounds": cv.rounds[-1] if cv.rounds else None,
-            "member_files": member_inventory(directory, [horizon], self.families),
-            "evidence_files": {"oof.parquet": file_identity(directory / "oof.parquet")},
-        }
-        write_metadata(directory, metadata)
-        self._run_state.setdefault("folds", {}).setdefault(str(horizon), {})[str(fold)] = file_identity(directory / METADATA_FILE)
+        write_metadata(
+            directory,
+            {
+                "run_id": self._run_id,
+                "role": "fold",
+                "fold": fold,
+                "horizons": [horizon],
+                "model_types": self.families,
+                "target_type": self.target_type,
+                "label_column": self.label_column,
+                "fold_audit": cv.folds[-1],
+                "member_ic": {family: values[-1] for family, values in cv.member_folds.items()},
+                "selected_rounds": cv.rounds[-1] if cv.rounds else None,
+                "member_files": member_inventory(directory, [horizon], self.families),
+            },
+        )
+        self._run_state["folds"].setdefault(str(horizon), []).append(fold)
         write_json(self._run_path / METADATA_FILE, self._run_state)
 
     def _fit_final(self, horizon: int, panel: pd.DataFrame, counts: list[int]) -> dict[str, BaseModel]:
-        """Fresh all-row members, with fold-selected boosting rounds and no validation."""
-        if "lgbm" in self.families and (not counts or any(n < 1 for n in counts)):
-            raise ValueError("Final LightGBM fit requires positive fold-selected counts")
-        return self._fit_members(horizon, panel, None, int(np.median(counts)) if counts else None)
-
-    def _score(self, horizon: int, models: dict[str, BaseModel], panel: pd.DataFrame) -> pd.DataFrame:
-        """Small blend input (date, ticker, z_<h>, pred_<member>_h<h>), so the wide panel can be
-        freed right after."""
-        scores, members = ensemble_predict(models, panel)
-        df = panel[["date", "ticker"]].copy()
-        df["score"] = scores.to_numpy()
-        df["z"] = per_day_zscore(df["score"].to_numpy(), df["date"].to_numpy())  # horizons comparable
-        member_cols = []
-        for name, mz in members.items():
-            col = f"pred_{name}_h{horizon}"
-            df[col] = mz.to_numpy()
-            member_cols.append(col)
-        return df[["date", "ticker", "z"] + member_cols].rename(columns={"z": f"z_{horizon}"})
+        """Fit fresh all-row members using the upward-rounded mean of the last two fold counts."""
+        if "lgbm" in self.families and (len(counts) < 2 or any(n < 1 for n in counts)):
+            raise ValueError("Final LightGBM fit requires at least two positive fold-selected counts")
+        return self._fit_members(horizon, panel, None, (sum(counts[-2:]) + 1) // 2 if counts else None)
 
     def _horizon_kpis(self, cv: HorizonCV, full_history: bool) -> dict:
         """CV KPIs only the step knows, merged into the horizon's diagnostics summary."""
@@ -760,24 +564,6 @@ class StepLongShort(Step):
         }
 
     # ---- blend + persistence ------------------------------------------ #
-    def _blend(
-        self, score_frames: list[pd.DataFrame], horizons: list[int], weights: dict[int, float]
-    ) -> tuple[pd.DataFrame, pd.Series, pd.Timestamp]:
-        """IR-weighted blend of the per-horizon z-scores -> `combined`, its per-day percentile
-        `signal`, and the latest date's signal."""
-        blended = None
-        for df in score_frames:
-            blended = df if blended is None else blended.merge(df, on=["date", "ticker"], how="outer")
-        if blended is None:
-            raise RuntimeError("No horizon score frame was produced")
-        zcols = [f"z_{h}" for h in horizons]
-        blended["combined"] = blend_horizons(blended[zcols].to_numpy(), np.array([weights[h] for h in horizons]))
-        blended["signal"] = blended.groupby("date")["combined"].rank(pct=True)
-        last_date = pd.Timestamp(blended["date"].max())
-        latest = blended[blended["date"] == last_date].sort_values("signal", ascending=False)
-        signal = latest.set_index("ticker")["signal"]
-        self._log.info("Blended signal for %s (%s names)", last_date.date(), signal.notna().sum())
-        return blended, signal, last_date
 
     def _save_models(
         self,
@@ -791,10 +577,6 @@ class StepLongShort(Step):
         `run_predict` read)."""
         assert self._model_directory is not None
         directory = self._model_directory
-        recorded = self._final_state.get("metadata_file") if full_history else self._run_state.get("cutoff_metadata")
-        if recorded is not None:
-            verify_inventory(directory, {METADATA_FILE: recorded})
-            return
         meta = {
             "run_id": self._run_id,
             "role": "full_history" if full_history else "cutoff",
@@ -820,7 +602,6 @@ class StepLongShort(Step):
             "full_history": bool(full_history),
             "training_as_of": str(self._training_as_of.date()),
             "selection_as_of": self._selection_as_of,
-            "selection_signature": selection_signature(self._config, schema.feature_cols + schema.categorical_cols, schema.horizons),
             "selection": {int(h): {"folds": cv.folds, "rounds": cv.rounds, "ic": cv.ic, "member_ic": cv.member_ic} for h, cv in cvs.items()},
             "fit_audit": {int(h): cv.audit for h, cv in cvs.items()},
             "train_ic_ir": {int(h): (float(cvs[h].ic["ic_ir"]) if np.isfinite(cvs[h].ic["ic_ir"]) else 0.0) for h in models},
@@ -831,30 +612,6 @@ class StepLongShort(Step):
         write_metadata(directory, meta)
         self._log.info("Saved %d horizons x %d members + metadata.json to %s", len(models), len(self.families), directory)
 
-    def _save_outputs(
-        self, predictions: pd.DataFrame, cvs: dict[int, HorizonCV], signal: pd.Series, signal_date: pd.Timestamp, *, full_history: bool = False
-    ) -> None:
-        out = self._cfg.output
-        if out.get("save_predictions", True):
-            self._context.store.replace(Tables.predictions, predictions)
-            self._log.info("Saved predictions to DB table '%s'", Tables.predictions)
-        if not self._context.save:
-            return
-        if out.save_cv_results and not full_history:
-            rows = [{"horizon": h, "fold": i, **r} for h, cv in cvs.items() for i, r in enumerate(cv.folds, start=1)]
-            assert self._run_path is not None
-            path = self._run_path / "training/cv.parquet"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            pd.DataFrame(rows).to_parquet(path, index=False)
-        if out.save_signal:
-            sig = signal.rename("signal").reset_index()
-            sig.insert(0, "date", signal_date)
-            self._context.store.replace(Tables.cube_signal, sig)
-            self._log.info("Saved blended signal to DB table '%s'", Tables.cube_signal)
-
-    # ================================================================== #
-    # Production prediction                                              #
-    # ================================================================== #
     def run_predict(self, n_dates: int = 1) -> pd.DataFrame:
         """Score the latest `n_dates` cube dates with the saved members -> `predictions_latest`
         (predicted_at | date | ticker | horizon | model | predicts_for | pred | rank)."""

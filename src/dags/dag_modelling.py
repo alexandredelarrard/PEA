@@ -36,11 +36,12 @@ dag = DAG(
 
 
 def run(pkg_cmd: str, task_id: str) -> BashOperator:
-    """Run one stage with trusted timestamp/numeric ID rather than an arbitrary run label."""
-    resume = " --resume" if pkg_cmd.startswith("modelling ") else ""
+    """Capture the fresh training ID and pin every downstream task to that successful result."""
+    selected_run = "" if task_id == "train_model" else " --run-id '{{ ti.xcom_pull(task_ids=\"train_model\") }}'"
     return BashOperator(
         task_id=task_id,
-        bash_command=f"/opt/pipeline/bin/python -m src {pkg_cmd} -c {CONFIGS} --run-id '{{{{ ts_nodash }}}}_{{{{ dag_run.id }}}}'{resume}",
+        bash_command=f"/opt/pipeline/bin/python -m src {pkg_cmd} -c {CONFIGS}{selected_run}",
+        do_xcom_push=task_id == "train_model",
         cwd=PROJECT,
         dag=dag,
     )

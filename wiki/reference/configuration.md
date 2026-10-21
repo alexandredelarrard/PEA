@@ -6,7 +6,7 @@ tags:
   - wiki
   - reference
   - configuration
-source_commit: 8e4bd26a0e837b01f0df16e29703dd8918458b77
+source_commit: 65624e71af94a8a0d662b35b975affb7d43016b7
 ---
 # Configuration
 
@@ -32,7 +32,7 @@ Callers use attribute access such as `self._config.build_cube.targets.horizons`.
 | `logging` | [logging.yml](../../configs/logging.yml) | Standard-library logging tree and the in-memory log format. |
 | `peers` | [peers.yml](../../configs/peers.yml) | Business-similarity and return-correlation peer construction. |
 | `build_cube` | [build_cube.yml](../../configs/build_cube.yml) | Betas, targets, feature transforms, intrinsic value, historical comparisons, institutional policies, and output switches. |
-| `model`, `train` | [modellling.yml](../../configs/modellling.yml) | Ensemble composition, target choice, CV, diagnostics, decay, `models_dir` (artifact folder under the data store), `backtest.n_quantiles` (label-only backtest buckets), and train/holdout boundaries. Each family YAML under `configs/models/` (e.g. [lgbm_modelling.yml](../../configs/models/lgbm_modelling.yml)) also sets `task: regression \| classification`. The filename intentionally contains three “l” characters. |
+| `model`, `train` | [modellling.yml](../../configs/modellling.yml) | Ensemble composition, target choice, CV, diagnostics, decay, `models_dir` (artifact folder under the data store), fresh assessment controls and train/test boundaries. Each family YAML under `configs/models/` (e.g. [lgbm_modelling.yml](../../configs/models/lgbm_modelling.yml)) also sets `task: regression \| classification`. The filename intentionally contains three “l” characters. |
 | `linear`, `lgbm`, `random_forest` | [lgbm_modelling.yml](../../configs/models/lgbm_modelling.yml) and sibling family files | Family hyperparameters and family-specific feature columns. |
 | `strategy_ls`, `strategy_eq_long_only` | `configs/strategy/` | Sleeve construction only. |
 | `portfolio` | [portfolio.yml](../../configs/portfolio.yml) | Sleeve selection, dates, global costs, risk targeting, leverage, capital, blend, and analysis output. |
@@ -148,7 +148,7 @@ Important blocks:
 | `institutionals` | Decay, manager selection/staleness, coverage-break policy, conditioning windows, and source-family behavior. |
 | `fundamentals_features` | Fixed eight earnings-lag slots, eight-quarter persistence and three-session report response; prior SUE scale uses eight quarters. Changing fixed schema windows requires a feature-contract update. |
 | `workforce` | `part_time_weight`: α of the workforce headcount proxy FT + α·PT (0.65; must lie in [0.5, 1]). See [workforce features](./modelling-and-portfolio.md#workforce-features). |
-| `output` | Persistence switches for cube, signals, CV results, predictions, diagnostics, and artifacts. |
+| `output` | Persistence switches for cube, diagnostics and artifacts; historical modelling prediction/signal/CV writes are removed. |
 
 Every numerical value in [build_cube.yml](../../configs/build_cube.yml) carries an economic or measured justification. Read the adjacent comment before editing. If a feature introduces a longer daily look-back, update the [part registry](../../src/data_aggregate/utils/common/parts.py) as well.
 
@@ -158,7 +158,7 @@ Every numerical value in [build_cube.yml](../../configs/build_cube.yml) carries 
 
 Each family selects all inputs, numeric and categorical, through `columns` and `columns_by_horizon[h]`. For both tree families, `lgbm.categoricals` is the sole type registry: a selected name in that list receives native categorical handling; a registry entry does not add an input. `lgbm.monotonic` supplies the same directions to LightGBM and RF at every horizon, aligned to the actual fitted feature order; unselected directions stay inactive. The earnings-call contract in `configs/models/lgbm_modelling.yml` is exactly 12 raw/issuer-history columns; `_xs` and `_vs_peers` earnings-call variants are intentionally excluded. Directional constraints apply only where the economic sign is unambiguous: positive call tone and negative uncertainty. Q&A gap (management-answer tone minus prepared-remarks tone), coherence, embedding distance, and disclosure-length change are unconstrained. `configs/validate.yml` owns their quarterly cadence, raw plausibility bounds, 66-session lifetime, Spearman redundancy thresholds, PSI and missingness-delta limits, latest-20-session audit window, and the split-quality floors (`split_ok_rate_min: 0.985`, `prepared_share_q05_min: 0.15`). Train-versus-recent checks use the canonical `train.end_date` from `configs/modellling.yml`; the validation config does not duplicate that boundary. The dedicated validator reads these settings rather than duplicating them in Python. When a new feature has an economically unambiguous direction, add the constraint alongside the column and run the monotonic-contract tests.
 
-train.end_date remains a feature ceiling, while train.outcome_cutoff=2021-12-31 limits every development outcome. Actual observed price-calendar label ends purge inner training before validation and outer training before test. Fixed-cutoff assessment starts 3 January 2022; portfolio start remains 1 June 2022. Final full-train reuses that run's saved fold-selected counts without CV and fits all finite labels mature by the latest complete cube/price session. See [the lifecycle](./modelling-and-portfolio.md#longshort-training-lifecycle).
+train.end_date is a feature ceiling; train.outcome_cutoff=2021-12-31 limits every development outcome. Observed price sessions and actual label ends purge training strictly before each external test. LightGBM fits all eligible training rows and uses external-test RMSE for early stopping; there is no inner validation tail. Cutoff/full-train rounds use the upward-rounded mean of best rounds in the last two configured chronological folds. Post-2022 never selects rounds. Fixed-cutoff assessment starts 3 January 2022; portfolio starts 1 June 2022. Full-train restores saved fitting settings/schema and fits all currently mature finite labels without CV. See [the lifecycle](./modelling-and-portfolio.md#longshort-training-lifecycle).
 
 ## Strategies and portfolio
 
@@ -202,8 +202,10 @@ The candidate is not activated. The later user-approved fallback estimates uncer
 
 ## Saved-model assessment controls
 
-[modellling.yml](../../configs/modellling.yml) owns model.assessment.output_dir (output/modelling_backtest), optional configured run_id, evaluation_start (3January2022) and read_chunksize (I/O batching only). model.horizons selects30/60/90; model.cv owns the five crisis-aware windows; train.outcome_cutoff limits all development outcomes to31December2021. The CLI run ID overrides a configured value; every downstream task requires the same named run, without a latest fallback.
+[modellling.yml](../../configs/modellling.yml) owns model.assessment.output_dir (output/modelling_backtest), evaluation_start (2022-01-03) and read_chunksize (I/O batching only). Train generates a fresh ID each time. Assess defaults to the latest completed training; optional CLI --run-id or constructor run_id selects exactly one run. Portfolio/full-train default to the latest assessed training. The DAG pins train's returned ID through XCom.
 
-model.diagnostics owns shap_sample=12000 per development population/horizon (allocated across five original folds) and another12000 cutoff rows, dependence_sample=1000 displayed points, pdp_grid=30, pdp_background=2000 and rolling_window=252. Deterministic sampling affects explanations only, not fitting rows or feature pools. Tree importance uses sampled absolute SHAP; linear uses saved absolute standardized coefficients. RF retains its inherited LightGBM monotonic directions; a constrained response can reflect an imposed prior.
+model.diagnostics controls explanations/display only: shap_sample=12000 per fold-test population/horizon allocated across declared folds plus another12000 cutoff rows; dependence_sample=1000 displayed points; pdp_grid=30 maximum continuous quantile points; pdp_background=2000 averaged rows per PDP point; rolling_window=252 supported observed sessions. IC always uses the complete scoring population. Tree importance is sampled absolute SHAP; linear importance is saved absolute standardized beta. Constrained responses can reflect an imposed prior.
 
-Family columns_by_horizon selects the complete input list, including any categorical variables. A missing override uses columns; an explicit empty list selects no inputs for that horizon. The shared lgbm.categoricals registry assigns types only to selected inputs, and the shared lgbm.monotonic map applies to each tree family's fitted inputs at every horizon. RF keeps its own feature lists; categoricals_by_horizon is retired. No operational feature-pruning/search/YAML-edit parameters remain. Assessment and its report-only mode never fit; explicit resume verifies model, input, source, calendar and settings identities. Production model.models_dir stays separate from dated cutoff artifacts. See [artifact paths and report controls](../modules/modelling.md).
+Family columns_by_horizon selects the complete numeric/categorical input list. Missing overrides use columns; an explicit empty list selects none. lgbm.categoricals assigns types to selected inputs, and lgbm.monotonic supplies shared tree-family directions. No pruning/search/YAML-edit parameters remain.
+
+Assess always recomputes scores, metrics, SHAP/PDP and HTML from saved models and current data. No report-only/resume mode or cache/source/current-YAML equality gate remains. Full-train restores the selected run's saved fitting settings, seed, exact resolved schema and final rounds. Model byte integrity remains checked on load. Production model.models_dir stays separate from dated cutoff artifacts. See [artifact paths and report controls](../modules/modelling.md).

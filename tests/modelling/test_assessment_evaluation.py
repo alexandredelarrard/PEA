@@ -1,112 +1,116 @@
-"""Saved original models are the only source of assessment predictions and explanations."""
+"""Replay serialized known-truth coefficients through fresh assessment without estimator fitting."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
+import numpy as np
 import pandas as pd
 import pytest
 
 from src.data_store.schema import Tables
-from src.modelling.steps import step_assess_long_short as assessment
 from src.modelling.steps.step_assess_long_short import StepAssessLongShort
 from src.modelling.steps.step_long_short import StepLongShort
-from src.modelling.transformers import BaseModel, LightGBMModel
-from src.modelling.utils.artifacts import file_identity
-from src.modelling.utils.assessment import write_json
-from src.validate.checks.modelling import check_modelling
+from src.modelling.transformers import BaseModel, LinearRegression
+from src.modelling.utils.metrics import daily_ic
+from src.validate.checks.modelling import check_modelling, check_training_readiness
 from tests.modelling.test_step_long_short import _setup
 
 
-def test_assessment_reads_original_folds_without_fitting(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_assessment_reads_original_models_and_recomputes_every_score_without_fitting(
+    tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
     trainer, spy, config = _setup(
         tmp_path,
         sqlite_store,
-        save=False,
         model={
             "target_type": "zscore",
-            "horizons": [30],
-            "cv": {"n_splits": 5},
+            "horizons": [60],
+            "ensemble": ["elasticnet"],
+            "cv": {"n_splits": 3},
             "assessment": {"read_chunksize": 5000},
             "diagnostics": {"shap_sample": 20, "dependence_sample": 10, "pdp_grid": 3, "pdp_background": 10, "rolling_window": 3},
         },
-        lgbm={"columns": ["f0", "sector", "f1"], "num_boost_round": 20},
-        random_forest={"columns": ["f0", "sector", "f2"], "num_boost_round": 5},
-        build_cube={"output": {"save_predictions": False, "save_cv_results": False, "save_signal": False}},
     )
-    cube = sqlite_store.load(Tables.cube).rename(columns={"target_rank_h30": "target_zscore_h30"})
+    cube = sqlite_store.load(Tables.cube).rename(columns={"target_rank_h60": "target_zscore_h60"})
+    cube.loc[cube.ticker == "T000", "target_zscore_h60"] = np.nan
     sqlite_store.drop(Tables.cube)
     sqlite_store.replace(Tables.cube, cube)
     dates = sorted(cube.date.unique())
-    config.train.end_date = str(pd.Timestamp(dates[-120]).date())
-    config.train.outcome_cutoff = str(pd.Timestamp(dates[-90]).date())
-    config.model.assessment.evaluation_start = str(pd.Timestamp(dates[-88]).date())
-    result = trainer.run()
-    assert result.run_dir is not None
-    assert result.models[30]["lgbm"].features == ["f0", "f1", "sector"]
-    assert result.models[30]["random_forest"].features == ["f0", "f2", "sector"]
-    trainer.run_train(full_history=True)
+    config.train.end_date = str(pd.Timestamp(dates[-180]).date())
+    config.train.outcome_cutoff = str(pd.Timestamp(dates[-120]).date())
+    config.model.assessment.evaluation_start = str(pd.Timestamp(dates[-118]).date())
+
+    def known_member(horizon: int, train: pd.DataFrame, valid: pd.DataFrame | None, rounds: int | None = None) -> dict:
+        member = LinearRegression(trainer._context, config, "elasticnet", horizon)
+        member.features = ["f2", "f0", "f1"]
+        member.mean_, member.std_, member.coef_ = np.zeros(3), np.ones(3), np.array([-0.2, 0.6, 0.3])
+        member.intercept_, member.model = 0.25, "fitted"
+        return {"elasticnet": member}
+
+    monkeypatch.setattr(trainer, "_fit_members", known_member)
+    result = trainer.run_train()
+    assert check_training_readiness(out=result.run_dir, config=config).status == "pass"
     before = {path: path.read_bytes() for path in result.run_dir.rglob("*.pkl")}
 
     def forbidden(*args: Any, **kwargs: Any) -> Any:
         pytest.fail("Assessment attempted fitting or CV")
 
-    for name in ["run_train", "_fit_members", "_fit_final", "_cross_validate"]:
-        monkeypatch.setattr(StepLongShort, name, forbidden)
     monkeypatch.setattr(BaseModel, "fit", forbidden)
-    monkeypatch.setattr(LightGBMModel, "fit_fixed_rounds", forbidden)
+    monkeypatch.setattr(LinearRegression, "_fit", forbidden)
+    monkeypatch.setattr(StepLongShort, "_cross_validate", forbidden)
+    original_predict = BaseModel.predict
+    calls = []
 
+    def record_predict(self: Any, panel: pd.DataFrame) -> pd.Series:
+        calls.append(len(panel))
+        return original_predict(self, panel)
+
+    monkeypatch.setattr(BaseModel, "predict", record_predict)
     spy.loads.clear()
-    report = StepAssessLongShort(context=trainer._context, config=config).run()
-    assert report == result.run_dir / "report.html"
-    assert before == {path: path.read_bytes() for path in result.run_dir.rglob("*.pkl")}
-    output = result.run_dir / "assessment/h30"
+    report = StepAssessLongShort(trainer._context, config).run()
+    output = result.run_dir / "assessment/h60"
+    first_scores = pd.read_parquet(output / "fold1/scores.parquet")
     predictions = pd.read_parquet(output / "predictions.parquet")
-    assert set(predictions.fold) == {0, 1, 2, 3, 4, 5}
-    assert {"elasticnet", "lgbm", "random_forest", "ensemble", "y", "label_end"} <= set(predictions)
-    assert len(list(output.glob("fold*/elasticnet/curves.json"))) == 6
-    assert len(list(output.glob("fold*/lgbm/shap.parquet"))) == 6
-    first_label = next(i for i, row in enumerate(spy.loads) if any(c.startswith("target_") for c in row["columns"]))
-    assert first_label == 6, "all six complete feature-only universes must be scored before any target read"
-    assert all(not row["where"] for row in spy.loads[:first_label])
-    assert (tmp_path / "models/metadata.json").is_file()
+    assert set(predictions.fold) == {0, 1, 2, 3}
+    assert (predictions.ticker == "T000").any()
+    assert predictions.loc[predictions.ticker == "T000", "y"].isna().all()
+    assert predictions.loc[predictions.ticker == "T000", "ensemble"].notna().all()
+    first_label = next(i for i, row in enumerate(spy.loads) if any(column.startswith("target_") for column in row["columns"]))
+    assert first_label == 4 and all(not row["where"] for row in spy.loads[:first_label])
+    for fold, audit in enumerate(result.cv[60].folds, 1):
+        panel = predictions.loc[predictions.fold == fold]
+        metrics = daily_ic(panel, panel.ensemble, horizon=60)
+        assert metrics["mean_ic"] == pytest.approx(audit["mean_ic"])
+        assert metrics["ic_ir"] == pytest.approx(audit["ic_ir"])
     checked = check_modelling(trainer._context, out=result.run_dir, config=config)
     assert checked.status == "pass", checked.to_json()
-    frozen = {path: path.read_bytes() for path in result.run_dir.rglob("*") if path.is_file()}
-
-    class NoData:
-        def __getattr__(self, name: str) -> Any:
-            pytest.fail("Offline rerender must not access the database")
-
-    trainer._context.store = cast(Any, NoData())
-    config.model.assessment.report_only = True
-    monkeypatch.setattr(assessment, "load_ensemble", forbidden)
-    assert StepAssessLongShort(context=trainer._context, config=config).run() == report
-    assert frozen == {path: path.read_bytes() for path in result.run_dir.rglob("*") if path.is_file()}
-    configuration = result.run_dir / "training/configuration.json"
-    metadata = result.run_dir / "metadata.json"
-    for mutation in ("missing", "same-size", "wrong-controls", "wrong-shape"):
-        if mutation == "missing":
-            configuration.unlink()
-        elif mutation == "same-size":
-            configuration.write_bytes(frozen[configuration].replace(b"4325", b"4326"))
-        else:
-            saved = json.loads(frozen[configuration])
-            if mutation == "wrong-controls":
-                saved["seed"] += 1
-            else:
-                saved["data_extract"] = {}
-            write_json(configuration, saved)
-            training = json.loads(frozen[metadata])
-            training["configuration_file"] = file_identity(configuration)
-            write_json(metadata, training)
-        rejected = check_modelling(trainer._context, out=result.run_dir, config=config)
-        assert rejected.status == "fail", rejected.to_json()
-        assert rejected.scope.get("rows", 0) == 0
-        configuration.write_bytes(frozen[configuration])
-        metadata.write_bytes(frozen[metadata])
+    changed = predictions.copy()
+    changed["elasticnet"] += 1
+    changed.to_parquet(output / "predictions.parquet", index=False)
+    rejected = check_modelling(trainer._context, out=result.run_dir, config=config)
+    assert rejected.status == "fail", "Rank-preserving changes must still disagree with saved native scores"
+    predictions.to_parquet(output / "predictions.parquet", index=False)
+    inputs = pd.read_parquet(output / "fold1/elasticnet/x.parquet")
+    inputs.loc[0, "f0"] += 1
+    inputs.to_parquet(output / "fold1/elasticnet/x.parquet", index=False)
+    rejected = check_modelling(trainer._context, out=result.run_dir, config=config)
+    assert rejected.status == "fail", "Explanations must use the independently source-checked sample"
+    assert any("source-checked sample" in str(finding) for finding in rejected.findings)
+    count = len(calls)
+    corrupted = first_scores.copy()
+    corrupted["ensemble"] = 999
+    corrupted.to_parquet(output / "fold1/scores.parquet", index=False)
+    config.model.ensemble = ["lgbm"]
+    config.model.horizons = [30, 90]
+    config.linear.columns = ["unrelated_current_feature"]
+    assert StepAssessLongShort(trainer._context, config, run_id=result.run_id).run() == report
+    assert len(calls) > count
+    pd.testing.assert_frame_equal(pd.read_parquet(output / "fold1/scores.parquet"), first_scores)
+    assert before == {path: path.read_bytes() for path in result.run_dir.rglob("*.pkl")}
+    assert json.loads((result.run_dir / "assessment/metadata.json").read_text())["complete"]
     print(
-        "SANITY: original-fold/cutoff assessment never fits; selected categories between numerics resolve to saved fitted order; independent source/native/metric/full-refit validation passes; HTML rerenders byte-identically offline; missing, tampered, wrong-control and malformed snapshots fail before source reads."
+        "SANITY: original members score every title before outcomes, reproduce fold IC/IR, pass independent source/native/effect validation and recompute corrupted old scores without fitting."
     )

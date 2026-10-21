@@ -9,7 +9,7 @@ because a strongly regularised member legitimately produces a constant predictio
 
 from __future__ import annotations
 
-from typing import cast
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -30,28 +30,25 @@ def daily_ic(panel: pd.DataFrame, preds: pd.Series, label_name: str = "y", horiz
     annualised by the number of INDEPENDENT windows per year:
         ic_ir = mean(IC) / std(IC) * sqrt(252 / horizon)
     which reduces to the classic sqrt(252) daily IR at horizon=1."""
-    df = panel[["date", label_name]].copy()
-    df["pred"] = preds.to_numpy()
-    min_label = _min_label_values(df[label_name])
-    ics = []
-    for _, g in df.groupby("date", sort=True):
-        if g["pred"].nunique() > 2 and g[label_name].nunique() >= min_label:
-            ic, _ = spearmanr(g["pred"], g[label_name])
-            ic_value = cast(float, ic)
-            if np.isfinite(ic_value):
-                ics.append(ic_value)
-    ics = np.asarray(ics, dtype=float)
-    n = len(ics)
-    periods_per_year = trading_days_per_year / max(1, int(horizon))
-    mean_ic = float(ics.mean()) if n else np.nan
-    std_ic = float(ics.std()) if n else np.nan
-    ic_ir = (mean_ic / std_ic * np.sqrt(periods_per_year)) if (n and std_ic > 0) else np.nan
-    return {"mean_ic": mean_ic, "ic_std": std_ic, "ic_ir": ic_ir, "n_days": n}
+    frame = panel[["date", label_name]].copy()
+    frame["pred"] = preds.to_numpy()
+    return summarize_ic(daily_ic_series(frame, label_name), horizon, trading_days_per_year)
+
+
+def summarize_ic(values: pd.Series, horizon: int, trading_days_per_year: int = 252) -> dict[str, Any]:
+    """Summarize finite daily ICs using population dispersion and horizon-adjusted annualization."""
+    finite = values.to_numpy(dtype=float)
+    finite = finite[np.isfinite(finite)]
+    mean = float(finite.mean()) if len(finite) else float("nan")
+    std = float(finite.std()) if len(finite) else float("nan")
+    ratio = mean / std * np.sqrt(trading_days_per_year / max(1, int(horizon))) if std > 0 else float("nan")
+    return {"mean_ic": mean, "ic_std": std, "ic_ir": float(ratio), "n_days": len(finite)}
 
 
 def daily_ic_series(oos: pd.DataFrame, label_name: str, pred_col: str = "pred") -> pd.Series:
     """Per-day cross-sectional Spearman IC over a (date, pred, label) frame, date-sorted."""
     rows = {}
+    oos = oos.loc[np.isfinite(oos[label_name]) & np.isfinite(oos[pred_col])]
     min_label = _min_label_values(oos[label_name])
     for d, g in oos.groupby("date", sort=True):
         if g[pred_col].nunique() > 2 and g[label_name].nunique() >= min_label:
@@ -67,7 +64,7 @@ def per_day_zscore(values: np.ndarray, dates: np.ndarray) -> np.ndarray:
 
     Days with < 2 names, or zero / undefined dispersion (e.g. a member whose coefficients were
     all shrunk to zero -> a constant prediction), return NaN."""
-    df = pd.DataFrame({"date": np.asarray(dates), "v": np.asarray(values, dtype=float)})
+    df = pd.DataFrame({"date": np.asarray(dates), "v": np.where(np.isfinite(values), values, np.nan)})
 
     def _z(s: pd.Series) -> pd.Series:
         if len(s) < 2:

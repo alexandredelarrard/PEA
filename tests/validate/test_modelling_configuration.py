@@ -1,4 +1,4 @@
-"""Current fixed training configuration must match the exact saved run independently."""
+"""Saved fitted contracts remain independent of the current fitting YAML."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from omegaconf import DictConfig, OmegaConf
 
-from src.modelling.utils.artifacts import configuration_snapshot, selection_signature
+from src.modelling.utils.artifacts import configuration_snapshot
 from src.validate.checks import modelling
 from tests.modelling.model_fixtures import make_config
 
@@ -27,20 +27,23 @@ from tests.modelling.model_fixtures import make_config
         ("seed", 9),
     ],
 )
-def test_changed_fitting_control_is_rejected(field: str, value: Any) -> None:
+def test_current_fitting_changes_do_not_block_saved_models(field: str, value: Any) -> None:
     config = OmegaConf.merge(
-        make_config(), OmegaConf.create({"model": {"target_type": "zscore", "horizons": [30, 60, 90]}, "train": {"outcome_cutoff": "2021-12-31"}})
+        make_config(),
+        OmegaConf.create(
+            {"model": {"target_type": "zscore", "horizons": [30, 60, 90], "cv": {"n_splits": 5}}, "train": {"outcome_cutoff": "2021-12-31"}}
+        ),
     )
     assert isinstance(config, DictConfig)
-    signature = selection_signature(config, ["f0", "f1", "sector"], [30, 60, 90])
     training = {
-        "selection_signature": signature,
+        "workflow": "fresh-assessment-v1",
         "horizons": [30, 60, 90],
         "model_types": list(config.model.ensemble),
         "feature_cols": ["f0", "f1"],
         "categorical_cols": ["sector"],
         "target_type": config.model.target_type,
         "label_column": config.model.label_column,
+        "folds": {str(h): list(range(1, 6)) for h in (30, 60, 90)},
     }
     cutoff = {
         **training,
@@ -53,11 +56,27 @@ def test_changed_fitting_control_is_rejected(field: str, value: Any) -> None:
     assert not findings
     OmegaConf.update(config, field, value, merge=False, force_add=True)
     modelling._reconcile_configuration(config, training, cutoff, findings, snapshot=snapshot)
+    assert not findings
+    print(f"SANITY: changed current fitting control {field} cannot invalidate an assessment of saved fitted models.")
+
+
+@pytest.mark.parametrize("field,value", [("target_type", "rank"), ("horizons", [60]), ("ensemble", ["lgbm"]), ("label_column", "wrong")])
+def test_saved_configuration_must_match_actual_declared_models(field: str, value: Any) -> None:
+    config = make_config(model={"target_type": "zscore", "horizons": [60], "cv": {"n_splits": 3}})
+    training = {
+        "workflow": "fresh-assessment-v1",
+        "horizons": [60],
+        "model_types": list(config.model.ensemble),
+        "feature_cols": ["f0"],
+        "categorical_cols": [],
+        "target_type": "zscore",
+        "label_column": "y",
+        "folds": {"60": [1, 2, 3]},
+    }
+    cutoff = deepcopy(training)
+    snapshot = configuration_snapshot(config)
+    snapshot["model"][field] = [30] if field == "horizons" else value
+    findings = []
+    modelling._reconcile_configuration(config, training, cutoff, findings, snapshot=snapshot)
     assert findings
-    findings.clear()
-    changed = configuration_snapshot(config)
-    unchanged = OmegaConf.create(deepcopy(snapshot))
-    assert isinstance(unchanged, DictConfig)
-    modelling._reconcile_configuration(unchanged, training, cutoff, findings, snapshot=changed)
-    assert findings, "the frozen snapshot must reproduce the signature even when current controls match"
-    print(f"SANITY: independent training-configuration reconciliation rejects changed {field}, before any model or source replay.")
+    print(f"SANITY: saved {field} differs from the actual fitted inventory and is independently rejected.")

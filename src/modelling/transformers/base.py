@@ -123,7 +123,7 @@ class BaseModel:
 
     # ---- sklearn-style surface ----------------------------------------------------------- #
     def fit(self, train: pd.DataFrame, valid: pd.DataFrame | None = None) -> Self:
-        """Fit on `train`; `valid` is the chronological early-stopping tail (ignored by
+        """Fit on `train`; `valid` is the labelled external fold test (ignored by
         families that do not early-stop)."""
         self.categoricals = [c for c in self.configured_categoricals(self._config, self.horizon) if self._usable(c, train)]
         numeric = [c for c in self.configured_columns(self._config, self.horizon) if c not in self.categoricals and self._usable(c, train)]

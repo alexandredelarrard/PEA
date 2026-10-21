@@ -240,8 +240,4 @@ build_cube:
   output:
     save_cube: true
     save_panel: false
-    save_signal: true
-    save_cv_results: false
-    save_predictions: true
     save_shap: true
-    save_models: true

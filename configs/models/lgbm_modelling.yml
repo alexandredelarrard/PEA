@@ -14,7 +14,7 @@ lgbm:
   min_child_samples: 120
   lambda_l1: 5.0
   lambda_l2: 5.0
-  num_boost_round: 3000
+  num_boost_round: 600
   early_stopping_rounds: 100
   eval_metric: rmse
   # Type registry shared by LGBM and RF; select these names in each feature list.

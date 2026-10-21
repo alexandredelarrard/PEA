@@ -9,17 +9,16 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
-from omegaconf import OmegaConf
 
 from src.modelling.transformers.assessment_report import render_assessment
-from src.modelling.utils.artifacts import configuration_snapshot, file_identity, selection_signature
+from src.modelling.utils.artifacts import configuration_snapshot, file_identity
 from src.modelling.utils.assessment import write_json
 from tests.modelling.model_fixtures import make_config
 
 
 def _report_artifacts(run: Path) -> None:
     families = ["elasticnet", "lgbm", "random_forest"]
-    config = make_config(model={"horizons": [30, 60, 90], "target_type": "zscore"})
+    config = make_config(model={"horizons": [30, 60, 90], "target_type": "zscore", "cv": {"n_splits": 5}})
     write_json(run / "training/configuration.json", configuration_snapshot(config))
     write_json(
         run / "metadata.json",
@@ -28,18 +27,25 @@ def _report_artifacts(run: Path) -> None:
             "horizons": [30, 60, 90],
             "model_types": families,
             "training_complete": True,
+            "workflow": "fresh-assessment-v1",
+            "training_completed_at_utc": "2026-10-21T10:00:00+00:00",
             "observation_frontier": "2023-12-29",
             "training_as_of": "2021-12-31",
             "feature_cols": ["x", "zero"],
             "categorical_cols": ["category"],
             "target_type": "zscore",
             "label_column": "y",
-            "selection_signature": selection_signature(config, ["x", "zero", "category"], [30, 60, 90]),
-            "configuration_file": file_identity(run / "training/configuration.json"),
-            "folds": {str(h): {str(f): {} for f in range(1, 6)} for h in (30, 60, 90)},
+            "folds": {str(h): list(range(1, 6)) for h in (30, 60, 90)},
         },
     )
-    state = {"run_id": run.name, "horizons": {}, "windows": {}, "complete": True}
+    state = {
+        "run_id": run.name,
+        "horizons": {},
+        "windows": {},
+        "complete": True,
+        "observation_frontier": "2026-10-20",
+        "assessment_completed_at_utc": "2026-10-21T11:00:00+00:00",
+    }
     for horizon in (30, 60, 90):
         output = run / f"assessment/h{horizon}"
         frames = []
@@ -62,7 +68,7 @@ def _report_artifacts(run: Path) -> None:
                 )
         output.mkdir(parents=True, exist_ok=True)
         pd.concat(frames, ignore_index=True).to_parquet(output / "daily.parquet", index=False)
-        state["horizons"][str(horizon)] = {"files": {"daily.parquet": file_identity(output / "daily.parquet")}}
+        state["horizons"][str(horizon)] = {"effective_fold_test_end": "2021-10-06"}
         state["windows"][str(horizon)] = {}
         for fold in range(6):
             folder = output / f"fold{fold}"
@@ -91,8 +97,7 @@ def _report_artifacts(run: Path) -> None:
 def test_report_is_offline_and_covers_every_horizon_family_fold_and_zero_feature(tmp_path: Path) -> None:
     _report_artifacts(tmp_path)
     before = {path: path.read_bytes() for path in (tmp_path / "assessment").rglob("curves.json")}
-    config = OmegaConf.create({"model": {"target_type": "zscore"}})
-    output = render_assessment(tmp_path, config)
+    output = render_assessment(tmp_path)
     text = output.read_text(encoding="utf-8")
     raw = re.search(r'<script id="assessment-data" type="application/json">(.*?)</script>', text, re.S)
     assert raw is not None
@@ -119,7 +124,7 @@ def test_report_is_offline_and_covers_every_horizon_family_fold_and_zero_feature
     assert not re.search(r"<(?:script|link)\b[^>]*(?:src|href)=[\x22\x27](?:https?:)?//", text)
     assert before == {path: path.read_bytes() for path in (tmp_path / "assessment").rglob("curves.json")}
     first = hashlib.sha256(output.read_bytes()).hexdigest()
-    render_assessment(tmp_path, config)
+    render_assessment(tmp_path)
     assert hashlib.sha256(output.read_bytes()).hexdigest() == first
     print(
         "SANITY: two sections/three chart areas cover all horizons, original folds, tree and linear effects including zero importance; embedded data/assets rerender deterministically without changing evidence."
@@ -131,6 +136,6 @@ def test_report_refuses_incomplete_required_chart_evidence(tmp_path: Path, missi
     _report_artifacts(tmp_path)
     (tmp_path / missing).unlink()
     with pytest.raises((FileNotFoundError, ValueError)):
-        render_assessment(tmp_path, OmegaConf.create({}))
+        render_assessment(tmp_path)
     assert not (tmp_path / "report.html").exists()
     print(f"SANITY: required missing chart artifact {missing} cannot produce a complete report.")

@@ -6,10 +6,16 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
+import numpy as np
+import pandas as pd
+import pytest
 from omegaconf import OmegaConf
 
 from src.modelling.utils.artifacts import member_inventory, member_path, publish_generation, save_member, write_metadata
+from src.modelling.utils.metrics import per_day_zscore
+from src.strategies.utils import ls_model
 from src.strategies.utils.ls_model import _load_models
 
 
@@ -59,3 +65,40 @@ def test_strategy_loads_the_pinned_generation_instead_of_legacy_root_files(tmp_p
     assert metadata["member_directory"] and horizons == [60] and target_type == "zscore"
     assert models[60]["elasticnet"].tag == "current60"
     print("SANITY: the real sleeve loader pins generation metadata and ignores a stale flat-root member at the same horizon.")
+
+
+def test_signal_scores_all_features_before_any_future_target_filter(monkeypatch: pytest.MonkeyPatch) -> None:
+    cube = pd.DataFrame(
+        {"date": np.repeat(pd.to_datetime(["2022-01-03", "2022-01-04"]), 6), "ticker": list("ABCDEF") * 2, "x": [0, 1, 2, 3, 100, np.nan] * 2}
+    )
+    projections = []
+
+    def load(table: Any, *, columns: list[str], **kwargs: Any) -> pd.DataFrame:
+        projections.append(columns)
+        return cube[columns].copy()
+
+    class Member:
+        def predict(self, panel: pd.DataFrame) -> pd.Series:
+            return panel.x
+
+    context: Any = SimpleNamespace(store=SimpleNamespace(columns=lambda table: list(cube), load=load))
+    config = OmegaConf.create({"build_cube": {}, "strategy_ls": {"blend": "equal"}})
+    meta = {"train_end": "2021-12-31", "feature_cols": ["x"], "train_ic_ir": {"60": 1.0}}
+    monkeypatch.setattr(ls_model, "_load_models", lambda *args: (meta, {60: {"elasticnet": Member()}}, "zscore", [60]))
+    returns = cube.assign(value=0).pivot(index="date", columns="ticker", values="value")
+    monkeypatch.setattr(ls_model, "_returns", lambda *args: (returns + 100, returns, returns.A))
+    first = ls_model.build_signal(context, config).signal
+    expected = (
+        cube[["date", "ticker"]]
+        .assign(score=per_day_zscore(cube.x.to_numpy(), cube.date.to_numpy()))
+        .pivot(index="date", columns="ticker", values="score")
+    )
+    np.testing.assert_allclose(first, expected, atol=1e-12, equal_nan=True)
+    cube["target_zscore_h60"] = [0, 1, 2, 3, np.nan, 5] * 2
+    second = ls_model.build_signal(context, config).signal
+    pd.testing.assert_frame_equal(first, second)
+    assert all(columns == ["date", "ticker", "x"] for columns in projections)
+    assert first.E.notna().all() and first.F.isna().all()
+    print(
+        "SANITY: backtest normalizes all finite predictions, including missing-target titles; changing future target availability cannot change rankings."
+    )

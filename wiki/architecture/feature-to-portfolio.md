@@ -5,6 +5,7 @@ type: architecture
 tags:
   - wiki
   - architecture
+source_commit: 2c9504c51e3c1d230d3d3623ff03eb8cffc4d11a
 ---
 # Feature-to-portfolio pipeline
 
@@ -19,10 +20,15 @@ flowchart LR
   Sources[(Extract tables)] --> Parts[Feature and target parts]
   Parts --> Cube[(Wide cube)]
   Cube --> Horizon[One panel per horizon]
-  Horizon --> Ensemble[ElasticNet LightGBM RF]
-  Ensemble --> Predictions[(Predictions)]
-  Predictions --> LSEquity[LS equity sleeve]
-  Predictions --> LongOnly[Equity long-only sleeve]
+  Horizon --> Train[Train ElasticNet LightGBM RF]
+  Train --> Models[(Saved original models)]
+  Models --> Assess[Fresh saved-model assessment]
+  Cube --> Assess
+  Assess --> Report[Run-local metrics effects and HTML]
+  Models --> Inference[Feature-only inference]
+  Cube --> Inference
+  Inference --> LSEquity[LS equity sleeve]
+  Inference --> LongOnly[Equity long-only sleeve]
   LSEquity --> Blend[ERC sleeve blend]
   LongOnly --> Blend
   Blend --> Vol[Global volatility target]
@@ -32,7 +38,8 @@ flowchart LR
 ## Key components
 
 - [step_build_cube.py](../../src/data_aggregate/step_build_cube.py) coordinates the cube-part builders; [parts.py](../../src/data_aggregate/utils/common/parts.py) is their registry.
-- `StepLongShort.run_train` and `run_predict` in [step_long_short.py](../../src/modelling/steps/step_long_short.py) train and score one horizon at a time, using the model transformers, `Monitor` and `Backtest` in `src/modelling/transformers/`.
+- `StepLongShort.run_train` and `run_predict` in [step_long_short.py](../../src/modelling/steps/step_long_short.py) train and score one horizon at a time. Train saves original fold/cutoff members and basic IC/IR; inference loads models directly rather than reading a historical predictions table.
+- `StepAssessLongShort.run` in [step_assess_long_short.py](../../src/modelling/steps/step_assess_long_short.py) always recomputes scores, metrics, explanations and HTML from saved models/current data. Assessment owns [diagnostics](../../src/modelling/transformers/assessment_diagnostics.py); Monitor and the unused label-only Backtest are removed.
 - `PortfolioInputs`, `StrategyResult`, and the abstract `Strategy` contract live in [strategies/base.py](../../src/strategies/base.py).
 - `STRATEGY_REGISTRY` in [strategies/__init__.py](../../src/strategies/__init__.py) maps configured sleeve names to implementations.
 - `StepPortfolio` blends sleeve returns in [step_portfolio.py](../../src/portfolio/step_portfolio.py); `StepStrategyMoves` rebuilds each sleeve's book at its time-varying allocation in [step_strategy_moves.py](../../src/portfolio/step_strategy_moves.py).

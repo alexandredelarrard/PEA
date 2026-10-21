@@ -1,13 +1,17 @@
-"""Shared assessment identities, finite-number summaries and deterministic sampling."""
+"""Assessment evidence serialization, safe publication and deterministic sampling."""
 
 from __future__ import annotations
 
-import hashlib
 import json
+import logging
+import shutil
 import tempfile
-from collections.abc import Mapping
+import time
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import numpy as np
 import pandas as pd
@@ -44,29 +48,79 @@ def write_json(path: Path, payload: Any) -> None:
             temporary.unlink(missing_ok=True)
 
 
-def frame_digest(frame: pd.DataFrame, columns: list[str], *, downcast: bool = True) -> str:
-    """Order-independent input identity; scoring can retain prediction-relevant float64 values."""
-    names = list(dict.fromkeys(["date", "ticker", *sorted(columns)]))
-    normalized = frame[names].copy(deep=False)
-    for column in names:
-        if pd.api.types.is_datetime64_any_dtype(normalized[column]):
-            normalized[column] = normalized[column].astype("datetime64[ns]")
-        elif column != "ticker":
-            normalized[column] = pd.to_numeric(normalized[column], errors="raise").astype("float32" if downcast else "float64")
-    rows = pd.util.hash_pandas_object(normalized, index=False).to_numpy(dtype="uint64")
-    digest = hashlib.sha256(json.dumps(names).encode())
-    digest.update(np.sort(rows).tobytes())
-    return digest.hexdigest()
+@contextmanager
+def assessment_workspace(run: Path, logger: logging.Logger) -> Iterator[Path]:
+    """Serialize same-run refreshes and allocate a fresh same-filesystem analysis directory."""
+    lock = run / ".assessment.lock"
+    with lock.open("x", encoding="utf-8") as handle:
+        handle.write("Assessment in progress; inspect interrupted publication before removing this lock.\n")
+    workspace = None
+    try:
+        workspace = Path(tempfile.mkdtemp(prefix=".assessment-", dir=run))
+        yield workspace
+    finally:
+        if workspace is not None:
+            _discard_assessment_directory(workspace, run, logger)
+        lock.unlink(missing_ok=True)
 
 
-def summarize_ic(values: pd.Series, horizon: int) -> dict[str, Any]:
-    """Summarize a pooled daily IC series using the existing population-std/horizon convention."""
-    finite = values.to_numpy(dtype=float)
-    finite = finite[np.isfinite(finite)]
-    mean = float(finite.mean()) if len(finite) else float("nan")
-    std = float(finite.std()) if len(finite) else float("nan")
-    ratio = mean / std * np.sqrt(252 / horizon) if std > 0 else float("nan")
-    return {"mean_ic": mean, "ic_std": std, "ic_ir": float(ratio), "n_days": len(finite)}
+def _discard_assessment_directory(directory: Path, run: Path, logger: logging.Logger) -> None:
+    """Remove owned scratch output without turning a completed publication into a failure."""
+    if directory.resolve().parent != run.resolve():
+        raise ValueError("Assessment scratch directory escaped its run")
+    if directory.exists():
+        try:
+            shutil.rmtree(directory)
+        except OSError as exc:
+            logger.warning("Assessment scratch cleanup failed; retained %s: %s", directory, exc)
+
+
+def _replace(source: Path, destination: Path) -> None:
+    """Allow a bounded delay for Windows scanners to release a just-written directory."""
+    for attempt in range(5):
+        try:
+            source.replace(destination)
+            return
+        except PermissionError:
+            if attempt == 4:
+                raise
+            time.sleep(0.1 * 2**attempt)
+
+
+def publish_assessment(run: Path, workspace: Path, state: dict[str, Any], logger: logging.Logger) -> Path:
+    """Replace a complete analysis/report with bounded backup and rollback; mark completion last."""
+    backup = run / f".assessment-backup-{uuid4().hex}"
+    backup.mkdir()
+    previous, published = [], []
+    try:
+        for name in ("assessment", "report.html"):
+            destination = run / name
+            if destination.exists():
+                _replace(destination, backup / name)
+                previous.append(name)
+        _replace(workspace / "report.html", run / "report.html")
+        published.append("report.html")
+        _replace(workspace, run / "assessment")
+        published.append("assessment")
+        report = run / "report.html"
+        state["complete"] = True
+        write_json(run / "assessment/metadata.json", state)
+        write_json(run.parent / "latest.json", {"run_id": state["run_id"], "directory": run.name})
+    except BaseException:
+        for name in reversed(published):
+            destination = run / name
+            if destination.is_dir():
+                _replace(destination, run / f".assessment-failed-{uuid4().hex}")
+            else:
+                destination.unlink(missing_ok=True)
+        for name in previous:
+            _replace(backup / name, run / name)
+        raise
+    finally:
+        if backup.exists() and not any(backup.iterdir()):
+            backup.rmdir()
+    _discard_assessment_directory(backup, run, logger)
+    return report
 
 
 def balanced_sample_positions(panel: pd.DataFrame, budget: int, seed: int) -> np.ndarray:

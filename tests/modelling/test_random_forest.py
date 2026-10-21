@@ -13,7 +13,6 @@ from omegaconf import OmegaConf
 
 from src.modelling.transformers import LinearRegression, RandomForestModel, model_class
 from src.modelling.utils.artifacts import load_ensemble, member_path, save_member
-from src.modelling.utils.cv import temporal_valid_split
 from src.modelling.utils.ensemble import ensemble_predict
 from src.modelling.utils.features import design_matrix
 from tests.modelling.model_fixtures import ctx, make_config, signal_panel
@@ -74,7 +73,7 @@ def test_random_forest_member_saves_and_reloads_into_the_ensemble(tmp_path: Path
     panel = signal_panel()
     dates = np.sort(panel["date"].unique())
     train, test = panel[panel["date"] < dates[120]], panel[panel["date"] >= dates[125]]
-    sub_tr, sub_val = temporal_valid_split(train)
+    sub_tr, sub_val = train, test
     members = {fam: model_class(fam)(ctx(), cfg, fam, 60).fit(sub_tr, sub_val) for fam in cfg.model.ensemble}
     rf = members["random_forest"]
     assert isinstance(rf, RandomForestModel) and rf.model.num_trees() == 40, "fixed tree count, no early stopping"
@@ -102,7 +101,7 @@ def test_member_pickles_hold_no_library_objects() -> None:
     panel = signal_panel()
     dates = np.sort(panel["date"].unique())
     train, test = panel[panel["date"] < dates[120]], panel[panel["date"] >= dates[125]]
-    sub_tr, sub_val = temporal_valid_split(train)
+    sub_tr, sub_val = train, test
     referenced = {}
     for fam in cfg.model.ensemble:
         member = model_class(fam)(ctx(), cfg, fam, 60).fit(sub_tr, sub_val)

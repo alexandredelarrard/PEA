@@ -1,8 +1,8 @@
 """
 cv.py  (src/modelling/utils/cv.py)
 ----------------------------------
-Temporal validation primitives: purged + embargoed walk-forward folds, the chronological
-early-stopping tail, and exponential time-decay sample weights. Random folds are never used:
+Temporal primitives: purged/embargoed walk-forward folds, observed label endpoints and
+exponential time-decay sample weights. Random folds are never used:
 cross-sectional forward-return labels overlap in time, so a shuffled split leaks the future.
 """
 
@@ -96,18 +96,3 @@ def label_end_dates(calendar: pd.DatetimeIndex, horizon: int) -> pd.Series:
         raise ValueError("horizon must be positive")
     sessions = pd.DatetimeIndex(calendar).normalize().drop_duplicates().sort_values()
     return pd.Series(sessions, index=sessions).shift(-horizon)
-
-
-def temporal_valid_split(panel: pd.DataFrame, train_frac: float = 0.9) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Hold out the last `1 - train_frac` of the dates (chronologically) for early stopping."""
-    dates = np.sort(panel["date"].unique())
-    cut = max(1, int(len(dates) * train_frac))
-    if cut >= len(dates):
-        cut = len(dates) - 1
-    train = panel[panel["date"].isin(dates[:cut])]
-    valid = panel[panel["date"].isin(dates[cut:])]
-    if "label_end" in train:
-        train = train.loc[train["label_end"] < valid["date"].min()]
-    if train.empty or valid.empty:
-        raise ValueError("Not enough matured dates for a purged early-stopping split")
-    return train, valid

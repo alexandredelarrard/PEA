@@ -15,10 +15,10 @@ Layout:
 
 The app reads production models published by `modelling full-train`.
 Weekly sequence (use one run ID throughout):
-    python -m src modelling train --run-id <same-id>
-    python -m src modelling assess --run-id <same-id>
-    python -m src portfolio backtest --run-id <same-id>
-    python -m src modelling full-train --run-id <same-id>
+    python -m src modelling train
+    python -m src modelling assess
+    python -m src portfolio backtest
+    python -m src modelling full-train
 Cutoff training leaves production unchanged; full-train fits all eligible mature history
 and ignores `train.end_date`. The app's backtest start must match the production model train_end.
 """
@@ -127,8 +127,8 @@ with st.sidebar:
     else:
         st.error(
             "No production L/S model found (metadata.json). Complete the weekly chain with one run ID: "
-            "`modelling train --run-id <same-id>` → `modelling assess --run-id <same-id>` → "
-            "`portfolio backtest --run-id <same-id>` → `modelling full-train --run-id <same-id>`. "
+            "`modelling train` → `modelling assess` → "
+            "`portfolio backtest` → `modelling full-train`. "
             "Only full-train publishes the production models read by this app."
         )
     # start defaults to the model train-end so L/S is OOS-aligned and always present
@@ -275,7 +275,7 @@ if _model_sel and not _ls_ready:
     if TRAIN_END is None:
         st.warning(
             f"⚠ No production equity model found. Complete the same-run weekly chain shown above, "
-            f"ending with `modelling full-train --run-id <same-id>`, or deselect {_model_sel}. "
+            f"ending with `modelling full-train`, or deselect {_model_sel}. "
             f"**The backtest will not run with a missing model.**"
         )
     else:
@@ -283,7 +283,7 @@ if _model_sel and not _ls_ready:
             f"⚠ The production equity model has **train_end = {TRAIN_END}**, but the backtest "
             f"starts **{_start}**. Set Start = {TRAIN_END} or deselect {_model_sel}. "
             f"To refresh production, complete the same-run weekly chain ending "
-            f"`modelling full-train --run-id <same-id>`; full-train fits all eligible mature history "
+            f"`modelling full-train`; full-train fits all eligible mature history "
             f"and ignores `train.end_date`. **The backtest will not run with a misaligned model.**"
         )
 

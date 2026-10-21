@@ -5,6 +5,7 @@ type: module
 tags:
   - wiki
   - module
+source_commit: 2c9504c51e3c1d230d3d3623ff03eb8cffc4d11a
 ---
 # Validation
 
@@ -31,6 +32,7 @@ tags:
 
 - [validate/checks](../../src/validate/checks/) contains the reusable check implementations.
 - [validate/checks/leakage.py](../../src/validate/checks/leakage.py) tests label horizons and publication clocks.
+- [validate/checks/modelling.py](../../src/validate/checks/modelling.py) independently reconciles saved-model scores, finite-pair IC/IR, observed-session purges, source targets/inputs, native contributions/PDP, refits and report evidence. Training readiness is separate from complete assessment validation; incomplete evidence abstains. See [assessment validation](../guides/testing.md#assessment-contracts-and-financial-replay).
 - [validate/checks/timeseries.py](../../src/validate/checks/timeseries.py) detects jumps, holes, and frozen legs per ticker.
 - [validate/checks/insider_edge.py](../../src/validate/checks/insider_edge.py) accepts insider-derived features at the prediction edge. Zip-versus-EDGAR agreement is no longer a validation command: the zip ingest logs it per quarter (see [data sources](../reference/data-sources.md)).
 - [validate/utils/prices.py](../../src/validate/utils/prices.py) implements the price-basis invariants used to gate cube builds.

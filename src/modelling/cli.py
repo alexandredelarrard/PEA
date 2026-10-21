@@ -13,8 +13,8 @@ from src.constants.command_line_interface import CONFIG_ARGS, CONFIG_KWARGS
 from src.context import get_config_context
 from src.modelling.steps.step_assess_long_short import StepAssessLongShort
 from src.modelling.steps.step_long_short import StepLongShort
-from src.modelling.utils.artifacts import validate_run_id
 from src.utils.cli_helper import SpecialHelpOrder
+from src.utils.modelling_runs import validate_run_id
 
 
 def _set_data_root() -> None:
@@ -44,35 +44,27 @@ def cli() -> None:
 @click.option(*CONFIG_ARGS, **cast(dict[str, Any], CONFIG_KWARGS))
 @click.option("--train-start", default=None, help="Override train.start_date (YYYY-MM-DD).")
 @click.option("--train-end", default=None, help="Override train.end_date (YYYY-MM-DD).")
-@click.option("--run-id", default=None, callback=_run_identity, help="Common dated run ID; generated when absent.")
-@click.option("--resume", is_flag=True, help="Reuse only verified matching original folds and cutoff models.")
-def train(config_path: str, train_start: str | None, train_end: str | None, run_id: str | None, resume: bool) -> None:
+def train(config_path: str, train_start: str | None, train_end: str | None) -> None:
     _set_data_root()
     config, context = get_config_context(config_path, use_cache=False, save=True)
-    config.model.assessment.run_id = run_id or config.model.assessment.get("run_id")
-    config.model.assessment.resume = resume
     if train_start:
         config.train.start_date = train_start
     if train_end:
         config.train.end_date = train_end
     context.log.info("Training window: %s -> %s", config.train.start_date, config.train.end_date)
-    StepLongShort(context=context, config=config).run_train()
+    result = StepLongShort(context=context, config=config).run_train()
+    click.echo(result.run_id)
 
 
 @cli.command(
     help="Assess all configured horizons using only the named run's saved original-fold/cutoff models; never fits or searches.", help_priority=2
 )
 @click.option(*CONFIG_ARGS, **cast(dict[str, Any], CONFIG_KWARGS))
-@click.option("--run-id", default=None, callback=_run_identity, help="Exact completed training run, or configured model.assessment.run_id.")
-@click.option("--resume", is_flag=True, help="Reuse completed analysis only after verifying models, prepared inputs and diagnostic identities.")
-@click.option("--report-only", is_flag=True, help="Rerender completed saved analysis without database/model loading or fitting.")
-def assess(config_path: str, run_id: str | None, resume: bool, report_only: bool) -> None:
+@click.option("--run-id", default=None, callback=_run_identity, help="Exact completed training run; defaults to the latest successful training.")
+def assess(config_path: str, run_id: str | None) -> None:
     _set_data_root()
     config, context = get_config_context(config_path, use_cache=False, save=False)
-    config.model.assessment.run_id = run_id or config.model.assessment.get("run_id")
-    config.model.assessment.resume = resume
-    config.model.assessment.report_only = report_only
-    result = StepAssessLongShort(context=context, config=config).run()
+    result = StepAssessLongShort(context=context, config=config, run_id=run_id).run()
     context.log.info("Saved-model assessment complete: %s", result)
 
 
@@ -80,14 +72,11 @@ def assess(config_path: str, run_id: str | None, resume: bool, report_only: bool
     help="Refit all latest mature labels using the named cutoff run's saved fold rounds; publish a complete production generation.", help_priority=3
 )
 @click.option(*CONFIG_ARGS, **cast(dict[str, Any], CONFIG_KWARGS))
-@click.option("--run-id", default=None, callback=_run_identity, help="Completed cutoff run whose fold-selected rounds must be reused.")
-@click.option("--resume", is_flag=True, help="Verify and reuse a completed publication without refitting.")
-def full_train(config_path: str, run_id: str | None, resume: bool) -> None:
+@click.option("--run-id", default=None, callback=_run_identity, help="Assessed cutoff run; defaults to the latest successfully assessed training.")
+def full_train(config_path: str, run_id: str | None) -> None:
     _set_data_root()
     config, context = get_config_context(config_path, use_cache=False, save=True)
-    config.model.assessment.run_id = run_id or config.model.assessment.get("run_id")
-    config.model.assessment.resume = resume
-    StepLongShort(context=context, config=config).run_train(full_history=True)
+    StepLongShort(context=context, config=config).run_train(full_history=True, run_id=run_id)
 
 
 @cli.command(help="Predict latest feature-only cube dates using the complete production generation; no training.", help_priority=4)

@@ -7,7 +7,7 @@ tags:
   - guide
   - testing
   - validation
-source_commit: 8e4bd26a0e837b01f0df16e29703dd8918458b77
+source_commit: 65624e71af94a8a0d662b35b975affb7d43016b7
 ---
 # Testing and validation
 
@@ -227,13 +227,17 @@ Run the relevant existing split-union, level/value, predecessor, insider/institu
 
 ## Assessment contracts and financial replay
 
-[Training tests](../../tests/modelling/test_step_long_short.py) verify original five-fold/cutoff persistence, actual-label-end purging, per-horizon maturity and full-history count reuse without CV. [Artifact tests](../../tests/modelling/test_run_artifacts.py) cover legacy compatibility, complete publication, failure/retry and pinned readers. No operational search/pruning interface remains.
+[Training tests](../../tests/modelling/test_step_long_short.py) verify original folds/cutoff persistence, actual-label-end purging, finite target eligibility and saved full-history fitting settings/schema without repeated CV. Last-two-fold count arithmetic and five-fold/multihorizon routing use no-fit fixtures. [Artifact tests](../../tests/modelling/test_run_artifacts.py) retain production publication, failure/retry and pinned-reader checks.
 
-[Assessment integration](../../tests/modelling/test_assessment_evaluation.py) loads actual prefitted members with every fit/CV entry forbidden, runs the renderer and independent validator, then rerenders with DB/model loading unavailable. [Explanation tests](../../tests/modelling/test_assessment_explanations.py) check native tree SHAP/base additivity, RF scale and linear coefficient reconstruction. [Report tests](../../tests/modelling/test_assessment_report.py) cover all horizons/retained features, sampled scatter, six signed-effect curves, correct units and cutoff PDP. Known-truth [metric tests](../../tests/modelling/test_assessment_metrics.py) retain missing calendar slots and require complete 252-session rolling windows; constant statistics remain undefined.
+[Assessment integration](../../tests/modelling/test_assessment_evaluation.py) loads prefitted known-truth members with fitting/CV forbidden, checks all-title scoring and train/assess IC parity, runs independent source/native/effect validation and refreshes after corrupting old outputs. [Publication tests](../../tests/modelling/test_fresh_assessment.py) cover generation/swap failure, same-run concurrency, exact24hour warning boundaries and Windows file locks. [Explanation tests](../../tests/modelling/test_assessment_explanations.py) retain native additivity, RF scale and linear reconstruction; [report tests](../../tests/modelling/test_assessment_report.py) cover declared folds/horizons/features and cutoff PDP.
 
-Financial acceptance additionally requires the full isolated real-data h30/h60/h90 four-stage run with unchanged settings and no live model/application writes. Run the [independent validator](../../src/validate/checks/modelling.py) through validate modelling -c <isolated-configs> -o <dated-run>. It recomputes finite-pair Spearman/IC-IR, source chronology/inner/outer purges, retained inputs/categories, native predictions/contributions, coefficients/PDP, latest-mature refits and publication/report identities. Incomplete evidence exits3 (ABSTAINED), corrupt complete evidence fails; positive performance is not a correctness gate.
+For the 2026-10-21 train/assess refactor, the user restricts real operational rehearsal to h60, at most three folds and all three families: nine fold fits, three cutoff fits and three full-history fits, plus two fresh assessments, portfolio and one final read-only validator. Use the last three configured windows without changing feature pools, controls or diagnostic budgets. Default production remains five folds and h30/h60/h90. Actual h30/h90 performance is outside this rehearsal.
 
-Browser checks must change every horizon/population/statistic/family control and representative first/last/zero/category features, retaining sampled signed points plus five original-fold curves and cutoff. Existing-image checks prove offline Python3.12 imports, real Airflow parsing/rendering and atomic Windows-mount replacement without scheduler deployment. Use fresh verified short Windows scratch/run IDs, never delete a shared pytest root. Fixtures alone do not establish performance; accepted upstream current-roster/GICS/static-peer/vendor limitations remain.
+Run only exact affected pytest function node IDs; no global suite, whole modelling folder or unrelated sibling suites. Record failures, repairs, execution counts and any accidental extra fixture fits explicitly. No automatic repetition of green groups.
+
+The [independent validator](../../src/validate/checks/modelling.py), invoked with validate modelling -c <isolated-configs> -o <dated-run>, independently reconciles finite-pair Spearman/IC-IR, external-test purges, metric inputs against original scores, source-checked explanation inputs, native predictions/contributions/PDP, mature full-history refits and report content. Incomplete evidence exits3 (ABSTAINED); corrupt complete evidence fails. Positive performance is not a correctness threshold.
+
+Offline report checks exercise every available horizon/population/statistic/family control and representative feature states. Curves reflect every declared fold plus cutoff and preserve unsupported calendar gaps. Known-truth fixtures prove math/control flow, while real scoped data supports population/temporal acceptance. Current-roster/GICS/static-peer/vendor limitations and external-test RMSE selection influence remain explicit.
 
 ## Modelling DAG acceptance 2026-10-19
 

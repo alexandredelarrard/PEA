@@ -7,7 +7,7 @@ tags:
   - reference
   - modelling
   - portfolio
-source_commit: 8e4bd26a0e837b01f0df16e29703dd8918458b77
+source_commit: 65624e71af94a8a0d662b35b975affb7d43016b7
 ---
 # Modelling, strategies, and portfolio
 
@@ -26,7 +26,7 @@ The three layers have separate contracts:
 
 | Layer | Location | Responsibility |
 | --- | --- | --- |
-| Signal engines | [src/modelling](../modules/modelling.md) | Train cross-sectional ensembles, report diagnostics and a label-only backtest, and produce scores. |
+| Signal engines | [src/modelling](../modules/modelling.md) | Train cross-sectional ensembles, recompute saved-model diagnostics in assess, and produce scores. |
 | Strategy sleeves | [src/strategies](../modules/strategies.md) | Convert one engine/data contract into a self-contained return stream and tradeable book. |
 | Portfolio and execution | [src/portfolio](../modules/portfolio.md) | Align sleeves, allocate risk, target portfolio volatility, and persist trade moves. |
 
@@ -52,7 +52,7 @@ The book panels are essential. Portfolio allocation varies through time, and sha
 
 ## Long/short training lifecycle
 
-The weekly [DAG](../../src/dags/dag_modelling.py) runs four tasks under one explicit safe run ID:
+The weekly [DAG](../../src/dags/dag_modelling.py) runs four tasks under the safe run ID generated automatically by train and pinned downstream through XCom:
 
 | Task | Method | Contract |
 | --- | --- | --- |
@@ -61,18 +61,18 @@ The weekly [DAG](../../src/dags/dag_modelling.py) runs four tasks under one expl
 | backtest_portfolio | [StepPortfolio.run()](../../src/portfolio/step_portfolio.py) | Use the same run's cutoff members and dated portfolio output. Existing rules, dates and costs remain configured. |
 | full_train | StepLongShort.run_train(full_history=True) | Reuse that run's saved fold counts without CV; refit all latest mature labels and atomically publish a complete production generation. |
 
-The five forward windows cover 2000–02,2003–06,2007–12,2013–18 and2019–21 with expanding training from 1999. train.end_date is a feature ceiling. train.outcome_cutoff=2021-12-31 additionally requires all development, early-stop and test outcomes to be known by that date. Actual price-calendar label ends purge inner training before validation and outer training before test. Fixed-cutoff assessment begins 3 January 2022; portfolio start remains 1 June 2022. Production fitting ignores the old development ceilings and uses all finite mature labels.
+The five forward windows cover 2000–02,2003–06,2007–12,2013–18 and2019–21 with expanding training from 1999. train.end_date is a feature ceiling. train.outcome_cutoff=2021-12-31 additionally requires all development, early-stop and test outcomes to be known by that date. Actual price-calendar label ends purge training before each external test. LightGBM uses the labelled external test for RMSE early stopping on all eligible training rows; no inner validation tail is withheld. Fold IC/IR therefore includes iteration-selection influence. Cutoff/full-history rounds are the upward-rounded mean of the last two configured chronological folds. Fixed-cutoff assessment begins 3 January 2022; portfolio start remains 1 June 2022. Production fitting ignores the old development ceilings and uses all finite mature labels.
 
 Each original fold supplies its held-out signed-effect curve; a fresh cutoff member supplies the 2022+ curve, sampled tree scatter and PDP. Cutoff refitting uses all eligible development rows, rather than averaging the five folds. Linear importance is absolute standardized beta; signed beta contributions are labelled separately from SHAP. The already-inspected 2022+ backtest is not a new sealed evaluation; current-roster coverage, retrospective classifications and static peer vintages remain historical/generalization limits. See [report plots](../modules/modelling.md#report-plots).
 
-[Artifact utilities](../../src/modelling/utils/artifacts.py) retain folds/cutoff/full-history evidence under configured output/modelling_backtest/<run_id>. Production output/models holds immutable generations plus one atomic metadata switch; readers pin one snapshot for all member loads. New readers also accept legacy flat transformer pickles. latest.json denotes assessment success only. Any failed task blocks later tasks and retains previous production. Daily run_predict scores newest feature-only rows without retraining. See [run and retry commands](../guides/run-the-pipeline.md#dated-modelling-assessment).
+[Artifact utilities](../../src/modelling/utils/artifacts.py) retain folds/cutoff/full-history evidence under configured output/modelling_backtest/<run_id>. Production output/models holds immutable generations plus one atomic metadata switch; readers pin one snapshot for all member loads. Daily production readers also accept legacy flat transformer pickles; dated assessment requires new-workflow training. latest.json denotes assessment success only. Any failed task blocks later tasks and retains previous production. Every train creates a fresh run; assess always recomputes current data/model scores, metrics and explanations. There is no partial resume or report-only mode. Standalone assess selects latest completed training; portfolio/full-train select latest successfully assessed training, with optional exact --run-id. Full-train restores saved fitting settings and exact resolved schema. Daily run_predict scores newest feature-only rows without retraining. See [run and retry commands](../guides/run-the-pipeline.md#dated-modelling-assessment).
 
 ## Model completion criteria
 
 A model family is not complete until it has:
 
 1. time-series cross-validation with an embargo that blocks overlapping forward-label windows;
-2. validation-row diagnostics, including SHAP for booster members;
+2. assessment of original fold-test rows, including SHAP for booster members, owned exclusively by assess;
 3. printed per-fold and aggregate out-of-fold metrics; and
 4. persisted artifacts that round-trip through the production prediction path.
 
@@ -154,9 +154,9 @@ After employee rows change, rebuild `cube_part_fundamentals` with `-F`: the 45-s
 
 ## Cube loading and memory
 
-Training resolves the union of configured family features against the actual cube schema, then loads one target horizon at a time with an explicit projection, labelled-row filter, and float32 downcast. Do not load the full wide cube or all horizons into one frame.
+Training resolves the union of configured family features against the actual cube schema, then loads one target horizon at a time with an explicit projection and float32 downcast. Finite mature labels determine fitting eligibility; feature-only scoring preserves unknown-target titles. Do not load the full wide cube or all horizons into one frame.
 
-Latest prediction uses a separate feature-only path. The newest cube rows correctly have null forward labels; reusing the labelled training loader would silently drop the observations production needs to score.
+Latest prediction uses a separate feature-only path. The newest cube rows correctly have null forward labels. Train, assess and strategy score all eligible features and normalize all finite predictions, then assess IC only where both prediction and realized target are finite.
 
 ## Artifact contract
 
@@ -168,7 +168,7 @@ Model files and metadata live under `model.models_dir` (default `output/models`,
 - actual training boundaries and full-history status; and
 - non-negative per-horizon training IC-IR weights for blending.
 
-Dated original-fold/cutoff members, original OOF scores, resolved configuration, assessment predictions/IC/IR, sampled SHAP or linear contributions, importance and dependence/PDP curves, and `report.html` live under `model.assessment.output_dir/<run_id>` (default `output/modelling_backtest/<run_id>`), for h30/h60/h90. See [dated artifacts](../modules/modelling.md#dated-artifacts-and-production-models). The standalone [Monitor](../../src/modelling/transformers/monitor.py) remains available; operational training uses its feature-importance helper without writing its timestamped reports. Database outputs remain in `predictions`, `cube_signal`, and `predictions_latest`.
+Dated original-fold/cutoff members, minimal fitting summaries and resolved configuration live under model.assessment.output_dir/<run_id> (default output/modelling_backtest/<run_id>). Assess freshly computes its own predictions/IC/IR, sampled SHAP or linear contributions, importance/PDP and report.html in that same run. See [dated artifacts](../modules/modelling.md#dated-artifacts-and-production-models). Monitor and label-only Backtest are removed. Train creates no OOF prediction files or historical predictions/cube_signal writes; daily prediction retains predictions_latest.
 
 ## Long/short construction
 

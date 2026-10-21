@@ -7,7 +7,7 @@ tags:
   - guide
   - runbook
   - operations
-source_commit: 9971929ee9d864f21a2ded87fac8f49472186c13
+source_commit: 65624e71af94a8a0d662b35b975affb7d43016b7
 ---
 # Run the pipeline
 
@@ -204,15 +204,15 @@ Institutional incremental computation intentionally reads full history for expan
 From a linked checkout, set `ROOT_PATH` to the original repository's absolute path in the parent shell before this sequence (Bash: `export ROOT_PATH="/absolute/path/to/original/PEA"`; PowerShell: `$env:ROOT_PATH = "C:\absolute\path\to\original\PEA"`). Keep it set for all four weekly commands and validation so they share the same data root.
 
 ~~~bash
-rtk "$PY" -m src modelling train -c ./configs --run-id 20261018_manual
-rtk "$PY" -m src modelling assess -c ./configs --run-id 20261018_manual
-rtk "$PY" -m src portfolio backtest -c ./configs --run-id 20261018_manual
-rtk "$PY" -m src modelling full-train -c ./configs --run-id 20261018_manual
+rtk "$PY" -m src modelling train -c ./configs
+rtk "$PY" -m src modelling assess -c ./configs
+rtk "$PY" -m src portfolio backtest -c ./configs
+rtk "$PY" -m src modelling full-train -c ./configs
 rtk "$PY" -m src modelling predict --n-dates 1
 rtk "$PY" -m src portfolio strategy-moves
 ~~~
 
-Carry a fresh run ID through all four weekly tasks. Train saves folds/cutoff; assess reads them; portfolio uses that run's cutoff; full-train refits all mature labels and publishes production. A failed task blocks later tasks. Daily prediction never retrains. See [dated assessment and retries](#dated-modelling-assessment) and [the lifecycle](../reference/modelling-and-portfolio.md).
+Train generates a fresh ID. Standalone assess selects latest complete training; portfolio/full-train select latest assessed training. Optional downstream --run-id pins an exact run; the DAG does this automatically through XCom. Train saves folds/cutoff and basic IC/IR; assess recomputes every score and explanation; full-train restores saved fitting controls/schema and fits all currently mature labels. A failed task blocks successors. See [dated assessment](#dated-modelling-assessment) and [the lifecycle](../reference/modelling-and-portfolio.md).
 
 ## Cold start
 
@@ -429,24 +429,26 @@ Regenerate managed DDL through [generate_schema_sql.py](../../scripts/generate_s
 
 ## Dated modelling assessment
 
-Run the [four weekly commands](../../src/modelling/cli.py) with the same fresh safe dated ID. In a linked checkout, first [set `ROOT_PATH` in the parent shell](#modelling-and-portfolio) and retain it through validation:
+Run the [four weekly commands](../../src/modelling/cli.py). In a linked checkout, first [set ROOT_PATH in the parent shell](#modelling-and-portfolio) and retain it through validation:
 
 ~~~bash
-rtk "$PY" -m src modelling train -c ./configs --run-id 20261018_manual
-rtk "$PY" -m src modelling assess -c ./configs --run-id 20261018_manual
-rtk "$PY" -m src portfolio backtest -c ./configs --run-id 20261018_manual
-rtk "$PY" -m src modelling full-train -c ./configs --run-id 20261018_manual
+rtk "$PY" -m src modelling train -c ./configs
+rtk "$PY" -m src modelling assess -c ./configs
+rtk "$PY" -m src portfolio backtest -c ./configs
+rtk "$PY" -m src modelling full-train -c ./configs
 ~~~
 
-Train saves five original folds and fresh cutoff members. Assess only reads them and generates all-horizon scores/IC/IR/effects/report. Portfolio uses that run's cutoff. Full-train reuses saved fold counts and fits all latest mature labels, then publishes a complete immutable production generation. Do not run a later command after a failure.
+Train creates a fresh run ID and emits it as the final successful stdout line. It saves original fold/cutoff models and basic IC/IR summaries. Assess selects the latest completed training and independently recomputes all scores, metrics, explanations and HTML. It logs the original training UTC/ID and warns strictly after24hours. Portfolio/full-train default to the latest successfully assessed training. Do not continue after a failure.
 
-Output is configured by model.assessment.output_dir (default data/output/modelling_backtest/<run_id>); production uses model.models_dir. For a rehearsal, copy configs and point models_dir into an owned isolated root; disable application prediction/signal writes. A normal full-train publishes production, so isolation must be configured before invoking it.
+For concurrent/manual work, pass the exact returned ID to downstream --run-id options. The DAG already pins that exact ID through native XCom, including downstream retries. Train has no --run-id or partial resume; assess/full-train have no --resume, and assess has no --report-only. Every assessment recalculates everything. Every full-train invocation creates a fresh refit attempt using saved fitting settings, resolved schema, seed and mean-last-two-fold rounds.
 
-Use --resume on train/assess/full-train only for verified matching checkpoints. New data/configuration/history requires a new run; failed full-history attempts allocate a fresh attempt ID. Render completed saved analysis with:
+Dated output is model.assessment.output_dir/<run_id> (normally data/output/modelling_backtest/<run_id>). Fresh assessment/ and report.html remain inside that run; portfolio/ and full_history/<attempt_id>/ share its identity. Assessment builds in temporary space, preserves the previous successful result during computation and uses bounded backup/rollback during replacement. Inspect retained backup/lock evidence after interruption; the next assess still starts its calculations anew. latest.json indicates assessment success only.
+
+Production uses model.models_dir. For a rehearsal, copy configs and isolate both assessment.output_dir and models_dir before invoking full-train; a normal full-train publishes production. Training no longer writes historical prediction/signal/CV tables. Daily predict still writes predictions_latest.
 
 ~~~bash
-rtk "$PY" -m src modelling assess -c ./configs --run-id 20261018_manual --report-only
-rtk "$PY" -m src validate modelling -c ./configs -o data/output/modelling_backtest/20261018_manual
+rtk "$PY" -m src modelling assess -c ./configs --run-id <returned-id>
+rtk "$PY" -m src validate modelling -c ./configs -o data/output/modelling_backtest/<returned-id>
 ~~~
 
-Report-only performs no database reads, unpickling, fitting or provider calls. The [read-only validator](../../src/validate/checks/modelling.py) checks source chronology, predictions/IC/IR/effects, complete publication and report hashes; incomplete evidence is ABSTAINED. latest.json means complete assessment, not complete DAG success. Retain the accepted historical-vintage limitations and recorded missing configured inputs. The old --stage development/evaluation/report and assessment -o search interface are retired.
+The [read-only validator](../../src/validate/checks/modelling.py) checks source chronology, predictions/IC/IR/effects, complete publication and report content. Incomplete evidence is ABSTAINED. Retain accepted historical-vintage limitations and missing configured inputs. Old assessments are not migrated.

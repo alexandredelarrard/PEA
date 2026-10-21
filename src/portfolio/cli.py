@@ -52,6 +52,8 @@ def backtest(config_path: str, run_id: str | None) -> None:
     cutoff = json.loads(path.read_text(encoding="utf-8"))
     if cutoff.get("run_id") != training["run_id"] or cutoff.get("full_history") is not False:
         raise ValueError("Portfolio backtest requires the named cutoff models")
+    if cutoff.get("member_files") is None:
+        raise ValueError("Missing cutoff model member inventory")
     config.model.models_dir = str(run / "cutoff")
     context.paths = {**context.paths, "OUTPUT_DIR": run / "portfolio"}
     StepPortfolio(context=context, config=config).run()

@@ -10,25 +10,62 @@ linear:
   max_iter: 1000
   tol: 1.0e-06
   columns:
-  - "f_rd_capitalized_roic"
-  - "f_current_ratio"
-  - "f_pegy"
-  - "f_negative_equity"
-  - "f_pension_overhang_leverage"
-  - "volume_trend_63"
-  - "f_nwc_elasticity"
-  - "f_dio"
-  - "f_gross_profitability"
-  - "f_gmroi"
-  - "f_deferred_rev_intensity"
-  - "f_debtToEquity"
-  - "f_dividend_growth"
-  - "f_fcf_yield"
-  - "f_acquisition_intensity"
-  - "f_refinancing_risk"
-  - "f_fixed_cost_coverage_margin"
-  - "f_gross_margin_chg"
-  - "f_diluted_shares_growth"
-  - "volume_cv_63"
+  - f_revenue_cagr_3y
+  - f_y_earnings_growth_signed
+  - f_cash_runway_months
+  - f_reported_expected_eps_yield
+  - f_intangibles_to_assets
+  - f_earnings_sue_lag4 # delta Net Income vs 4q / std earnings 8q
+  - f_y_rev_growth_accel
+  - f_sustainable_growth_rate
+  - f_option_overhang # to check: why more actions leads to higher value ?
+  - f_fcf_to_ev_vs_peers
+  - f_returnOnEquity
+  - f_accruals_ratio
+  - f_gross_profitability
+  - f_revenue_per_employee # to normalize to have it as % of revenue per employee
+  - f_reported_expected_eps_growth_qoq # -1 trend , why ?
+  - f_diluted_shares_growth  # significant, but weird N shape ??
+  - f_dividend_growth
+  - f_book_yield
+  - f_payout_ratio
+  - f_rd_capitalized_roic
+  - f_days_since_earnings
+  - f_shareholder_yield
+  - f_dso_vs_hist # kindof regime based 2 regimes.
+  - f_gmroi_vs_hist # what is that ?
+  - f_fcf_margin_vs_hist
+  - f_capex_to_dep
+  - f_sales_yield_vs_hist
+  - f_ebitda_to_ev_vs_hist
+  - f_intrinsic_yield
+  - f_eps_surprise_4q_avg
+  - f_ocf_yield
+  # - f_y_earnings_growth -> 2 regimes again
+  # - f_intangibles_to_equity -> to review because 2 different regimes
+  # - f_sbc_intensity -> 2 regimes ? cut 0.04
+
+  # PRICE VARS
+  - ma_ratio_200
+  - ma_ratio_50 # can be killed, redundant
+  - rsi_14
+  # BETA RES VOL -> excluded even if significant -> weird, to investigate
+
+  # GOV VARS
+  - f_pct_independent_directors
+  - f_ceo_pay_vs_revenue_growth
+  - f_ceo_pay_slice_delta_1y
+  - f_auditor_vote_dissent
+  - f_auditor_vote_dissent_vs_peers
+  - f_board_dissent_median
+  - f_director_equity_pay_pct_vs_peers
+  - f_director_equity_pay_pct
+  - f_board_tenure_dispersion
+  - f_board_dissent_breadth_20_vs_peers # why does it increase chance of gain ?? weird trend
+  - f_auditor_tenure
+  - f_oldest_director_age
+  - f_log_ceo_total_comp # to normalize to market cap or revenue of firm
+  - f_avg_board_tenure_vs_hist
+  - f_insider_ownership_pct
   # columns_by_horizon:
   #   60:

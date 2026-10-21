@@ -25,14 +25,17 @@ class Scorer(Protocol):
     def predict(self, panel: pd.DataFrame) -> Any: ...
 
 
-def ensemble_predict(models: Mapping[str, Scorer], panel: pd.DataFrame) -> tuple[pd.Series, dict[str, pd.Series]]:
+def ensemble_predict(
+    models: Mapping[str, Scorer], panel: pd.DataFrame, *, raw_predictions: dict[str, pd.Series] | None = None
+) -> tuple[pd.Series, dict[str, pd.Series]]:
     """Average the per-day z-scored predictions of several members into one score per row.
 
     Each member's raw output is z-scored within each day BEFORE averaging, so members with very
     different output scales (a GBDT and a linear model) share one ranking scale. Members are
     averaged in mapping order with a manual nan-mean, so a row no member can standardise (a
     single-name day) is NaN instead of a 'Mean of empty slice' warning. Returns
-    (blended score, {member name: its per-day z})."""
+    (blended score, {member name: its per-day z}). An optional collector retains native outputs
+    from the same inference calls, including constants that cannot be standardized."""
     if not models:
         raise ValueError("ensemble_predict received no models")
     dates = panel["date"].to_numpy()
@@ -40,6 +43,8 @@ def ensemble_predict(models: Mapping[str, Scorer], panel: pd.DataFrame) -> tuple
     zs = []
     for name, model in models.items():
         raw = np.asarray(model.predict(panel))
+        if raw_predictions is not None:
+            raw_predictions[str(name)] = pd.Series(raw, index=panel.index, name=str(name))
         z = per_day_zscore(raw, dates)
         zs.append(z)
         members[str(name)] = pd.Series(z, index=panel.index, name=str(name))

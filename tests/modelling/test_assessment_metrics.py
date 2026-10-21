@@ -4,7 +4,101 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.modelling.utils.assessment_metrics import temporal_diagnostics
+from src.modelling.utils.assessment_metrics import native_error_diagnostics, tail_universes, temporal_diagnostics, universe_diagnostics
+
+
+def test_tail_universe_is_selected_before_outcomes() -> None:
+    frame = pd.DataFrame(
+        {"date": pd.Timestamp("2021-01-04"), "ticker": list("ABCDEF"), "member": range(6), "y": [0.0, 1.0, 2.0, 3.0, 4.0, np.nan], "fold": 1}
+    )
+    chosen = tail_universes(frame.iloc[::-1], "member", (2,))[2]
+    assert set(chosen.ticker) == set("ABEF") and "D" not in set(chosen.ticker)
+    stats, daily = universe_diagnostics(frame, ["member"], 60, 2, (2,))
+    assert daily.universe.tolist() == [4] and daily.paired.tolist() == [3]
+    assert stats["2"]["member"]["mean_ic"] == pytest.approx(1.0)
+    print("SANITY: missing output on the top prediction does not promote a middle ticker; union4, comparable3, IC1.")
+
+
+def test_tail_universes_handle_ties_overlap_and_distinct_model_rankings() -> None:
+    frame = pd.DataFrame(
+        {
+            "date": pd.Timestamp("2021-01-04"),
+            "ticker": list("ABCDEFG"),
+            "member": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, np.inf],
+            "other": [0.0, 2.0, 3.0, 4.0, 1.0, 5.0, np.nan],
+            "y": np.arange(7.0),
+            "fold": 1,
+        }
+    )
+    sizes = tail_universes(frame.iloc[::-1], "member", (2, 10))
+    assert set(sizes[2].ticker) == set("ABEF")
+    assert len(sizes[10]) == 6 and sizes[10].ticker.is_unique
+    assert set(tail_universes(frame, "other", (2,))[2].ticker) == set("ADEF")
+    stats, daily = universe_diagnostics(frame, ["member", "other"], 60, 2, (2,))
+    assert np.isnan(stats["2"]["member"]["mean_ic"]) and daily.universe.tolist() == [4, 4]
+    print("SANITY: ticker ties are deterministic, nonfinite scores excluded, overlapping tails deduplicated, and each model uses its own ranking.")
+
+
+def test_selected_universe_summary_uses_all_valid_days_and_preserves_rolling_support() -> None:
+    dates = pd.bdate_range("2021-01-04", periods=4)
+    frame = pd.DataFrame(
+        {
+            "date": np.repeat(dates, 4),
+            "ticker": list("ABCD") * 4,
+            "member": [0.0, 1.0, 2.0, 3.0] * 4,
+            "y": [0.0, 1.0, 2.0, 3.0, 3.0, 2.0, 1.0, 0.0, 0.0, 1.0, 3.0, 2.0, np.nan, np.nan, np.nan, np.nan],
+            "fold": [1] * 4 + [2] * 12,
+        }
+    )
+    stats, daily = universe_diagnostics(frame, ["member"], 60, 2, (10,))
+    values = np.array([1.0, -1.0, 0.8])
+    result = stats["10"]["member"]
+    assert result["n_days"] == 3 and result["mean_ic"] == pytest.approx(values.mean())
+    assert result["ic_std"] == pytest.approx(values.std())
+    assert result["ic_ir"] == pytest.approx(values.mean() / values.std() * np.sqrt(252 / 60))
+    assert daily.date.tolist() == dates.tolist() and daily.rolling_ic.iloc[[0, 3]].isna().all()
+    assert result["mean_ic"] != pytest.approx(np.mean([1.0, (-1.0 + 0.8) / 2]))
+    print(
+        "SANITY: summary weights valid dates equally rather than folds; missing daily IC keeps its calendar slot and invalidates the rolling window."
+    )
+
+
+def test_native_errors_use_raw_pairs_independent_of_normalized_scores() -> None:
+    frame = pd.DataFrame(
+        {
+            "date": pd.bdate_range("2022-01-03", periods=5),
+            "ticker": ["A"] * 4 + ["B"],
+            "raw_member": [2.0, 2.0, 2.0, np.inf, 1.0],
+            "member": np.nan,
+            "y": [0.0, 4.0, np.nan, 0.0, np.nan],
+            "fold": 0,
+        }
+    )
+    errors = native_error_diagnostics(frame, ["member"]).set_index("ticker")
+    assert errors.at["A", "n"] == 2 and errors.at["A", "mae"] == 2.0
+    assert errors.at["A", "bias"] == 0.0 and errors.at["A", "rmse"] == 2.0
+    assert errors.at["B", "n"] == 0 and np.isnan(errors.at["B", "rmse"])
+    print(
+        "SANITY: constant native forecasts remain comparable despite undefined normalized scores; missing/nonfinite outcomes never become zero errors."
+    )
+
+
+def test_ticker_rmse_uses_only_cutoff_rows_and_reports_support() -> None:
+    frame = pd.DataFrame(
+        {
+            "date": pd.bdate_range("2021-12-29", periods=5),
+            "ticker": ["A", "A", "A", "A", "B"],
+            "raw_member": [100.0, 100.0, 0.0, 4.0, 0.0],
+            "y": [0.0, 0.0, 0.0, 0.0, 0.0],
+            "fold": [1, 2, 0, 0, 0],
+        }
+    )
+    errors = native_error_diagnostics(frame, ["member"])
+    cutoff = errors.loc[errors.population == "backtest"].set_index("ticker")
+    assert cutoff.at["A", "rmse"] == pytest.approx(np.sqrt(8.0)) and cutoff.at["A", "n"] == 2
+    assert cutoff.at["B", "rmse"] == 0.0 and cutoff.at["B", "n"] == 1
+    assert errors.loc[errors.population == "validation", "rmse"].tolist() == [100.0]
+    print("SANITY: cutoff RMSE excludes fold errors and averages squared residuals over each ticker's own comparable dates, with visible support.")
 
 
 def test_daily_diagnostics_preserve_dates_and_model_row_alignment() -> None:

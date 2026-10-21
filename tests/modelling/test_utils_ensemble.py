@@ -100,6 +100,36 @@ def test_constant_member_contributes_nan_without_warning() -> None:
     print("  constant member -> NaN; ensemble = the live member; single-name day -> NaN; no warning. Validated.")
 
 
+def test_raw_predictions_are_retained_once_without_changing_normalized_outputs() -> None:
+    panel = _panel(t=2, n=4)
+    panel.index = pd.Index([9, 2, 8, 1, 6, 3, 7, 4])
+    values = {"varying": np.array([1.0, 2.0, 4.0, 8.0, 2.0, np.nan, 6.0, 10.0]), "constant": np.full(8, 3.0)}
+    calls: dict[str, int] = dict.fromkeys(values, 0)
+
+    class Member:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def predict(self, panel: pd.DataFrame) -> np.ndarray:
+            calls[self.name] += 1
+            return values[self.name]
+
+    models = {name: Member(name) for name in values}
+    expected, expected_members = ensemble_predict(models, panel)
+    calls.update(dict.fromkeys(values, 0))
+    raw: dict[str, pd.Series] = {}
+    actual, members = ensemble_predict(models, panel, raw_predictions=raw)
+    assert calls == {"varying": 1, "constant": 1}
+    pd.testing.assert_series_equal(actual, expected)
+    for name in values:
+        pd.testing.assert_series_equal(members[name], expected_members[name])
+        pd.testing.assert_series_equal(raw[name], pd.Series(values[name], index=panel.index, name=name))
+    assert members["constant"].isna().all() and raw["constant"].eq(3.0).all()
+    print(
+        "SANITY: native outputs keep their exact row index, nonfinite and constant values; one call per member and unchanged normalized/blended scores."
+    )
+
+
 def test_ir_horizon_weights_floor_and_fallback() -> None:
     assert ir_horizon_weights({30: 2.0, 60: 1.0, 90: -1.0}) == {30: 2 / 3, 60: 1 / 3, 90: 0.0}
     assert ir_horizon_weights({30: float("nan"), 60: 1.0}) == {30: 0.0, 60: 1.0}

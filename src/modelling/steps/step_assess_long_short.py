@@ -24,7 +24,7 @@ from src.modelling.utils.artifacts import (
     read_metadata,
 )
 from src.modelling.utils.assessment import assessment_workspace, balanced_sample_positions, publish_assessment, write_json
-from src.modelling.utils.assessment_metrics import temporal_diagnostics
+from src.modelling.utils.assessment_metrics import native_error_diagnostics, temporal_diagnostics, universe_diagnostics
 from src.modelling.utils.cv import label_end_dates
 from src.modelling.utils.ensemble import ensemble_predict
 from src.modelling.utils.panel import load_frame
@@ -165,15 +165,23 @@ class StepAssessLongShort(Step):
         predictions.loc[predictions.fold > 0, "y"] = predictions.loc[predictions.fold > 0, "y"].astype("float32")
         predictions.to_parquet(output / "predictions.parquet", index=False)
         models = [*training["model_types"], "ensemble"]
-        metrics, daily_frames = {}, []
+        metrics, daily_frames, universe_metrics, universe_frames = {}, [], {}, []
         for population, mask in [("validation", predictions.fold > 0), ("backtest", predictions.fold == 0)]:
             metrics[population], daily = temporal_diagnostics(
                 predictions.loc[mask], models, horizon, int(self._config.model.diagnostics.rolling_window)
             )
             daily["population"], daily["horizon"] = population, horizon
             daily_frames.append(daily)
+            universe_metrics[population], tails = universe_diagnostics(
+                predictions.loc[mask], models, horizon, int(self._config.model.diagnostics.rolling_window), (10, 50, 100)
+            )
+            tails["population"], tails["horizon"] = population, horizon
+            universe_frames.append(tails)
         pd.concat(daily_frames, ignore_index=True).to_parquet(output / "daily.parquet", index=False)
         write_json(output / "metrics.json", metrics)
+        pd.concat(universe_frames, ignore_index=True).to_parquet(output / "universe_daily.parquet", index=False)
+        write_json(output / "universe_metrics.json", universe_metrics)
+        native_error_diagnostics(predictions, training["model_types"]).to_parquet(output / "ticker_errors.parquet", index=False)
         state["horizons"][str(horizon)] = {
             "scoring_rows": len(predictions),
             "paired_rows": int(np.isfinite(predictions.y).sum()),
@@ -225,10 +233,12 @@ class StepAssessLongShort(Step):
         identity = {"rows": len(panel), "start": str(start), "stop": str(stop), "sample_budget": budget}
         output = self._analysis_path / f"h{horizon}/fold{fold}"
         output.mkdir(parents=True, exist_ok=True)
-        score, member_scores = ensemble_predict(members, panel)
+        raw_predictions: dict[str, pd.Series] = {}
+        score, member_scores = ensemble_predict(members, panel, raw_predictions=raw_predictions)
         frame = panel[["date", "ticker"]].copy()
         for name, prediction in member_scores.items():
             frame[name] = prediction.to_numpy()
+            frame[f"raw_{name}"] = raw_predictions[name].to_numpy()
         frame["ensemble"], frame["fold"] = score.to_numpy(), fold
         frame.to_parquet(output / "scores.parquet", index=False)
         sample = panel.iloc[balanced_sample_positions(panel, budget, int(self._config.seed))]

@@ -197,6 +197,8 @@ class StepAssessLongShort(Step):
             or (fold and (meta.get("fold") != fold or meta["horizons"] != [horizon]))
         ):
             raise ValueError("Wrong run/role/horizon/fold model metadata")
+        if meta.get("member_files") is None:
+            raise ValueError("Missing original model member inventory")
         members = load_ensemble(directory, [horizon], training["model_types"], metadata=meta)[horizon]
         for name, member in members.items():
             if member.family != name or member.horizon != horizon or member.task != "regression":

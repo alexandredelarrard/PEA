@@ -10,6 +10,7 @@ import pandas as pd
 import pytest
 from omegaconf import OmegaConf
 
+from src.modelling.steps.step_assess_long_short import StepAssessLongShort
 from src.modelling.steps.step_long_short import Schema, StepLongShort
 from src.modelling.utils import artifacts
 from src.modelling.utils.assessment import write_json
@@ -186,6 +187,30 @@ def test_manifest_rejects_tampering_before_any_unpickle(tmp_path: Path, monkeypa
     with pytest.raises(ValueError, match="directory|escape|relative"):
         artifacts.load_ensemble(production, [60], FAMILIES, metadata={**metadata, "member_directory": "../outside"})
     print("SANITY: changed member bytes and escaping generation references fail before any pickle is opened.")
+
+
+@pytest.mark.parametrize("fold", [0, 1])
+def test_assessment_requires_member_inventory_before_any_unpickle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fold: int) -> None:
+    run = tmp_path / "run"
+    directory = _snapshot(run, f"folds/h60/fold{fold}" if fold else "cutoff", "saved-")
+    metadata = artifacts.read_metadata(directory)
+    del metadata["member_files"]
+    metadata.update(role="fold" if fold else "cutoff", fold=fold, full_history=False)
+    artifacts.write_metadata(directory, metadata)
+    step = object.__new__(StepAssessLongShort)
+    step._output = run
+    calls: list[Path] = []
+
+    def forbidden_unpickle(path: Path) -> None:
+        calls.append(path)
+        raise AssertionError("No unpickle is allowed without the original member inventory")
+
+    monkeypatch.setattr(artifacts, "load_member", forbidden_unpickle)
+    training = {"run_id": metadata["run_id"], "model_types": FAMILIES}
+    with pytest.raises(ValueError, match="inventory"):
+        step._score_window(60, fold, pd.Timestamp("2022-01-03"), pd.Timestamp("2022-01-04"), 3, training, {})
+    assert calls == []
+    print(f"SANITY: {'fold' if fold else 'cutoff'} assessment refuses missing original member inventory before any unpickle.")
 
 
 def test_manifested_flat_snapshot_requires_every_member(tmp_path: Path) -> None:

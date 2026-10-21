@@ -6,7 +6,7 @@ LightGBM training routine both tree families go through.
 
 Training is deterministic (`seed`, `deterministic`, `force_row_wise`): multithreaded LightGBM
 otherwise sums gradients in a nondeterministic order and early stopping flips between rounds.
-Early stopping uses the chronological validation tail, with `eval_metric: rmse` (built-in) or
+Early stopping uses the labelled external fold test, with `eval_metric: rmse` (built-in) or
 `ic` (mean daily cross-sectional Spearman IC, the ranking metric the strategy uses).
 Categoricals are native LightGBM categorical splits on the integer codes of
 `coerce_categoricals`; monotone constraints come from `lgbm.monotonic` aligned to the trained
@@ -159,7 +159,7 @@ def train_booster(
 
 
 class LightGBMModel(BaseModel):
-    """Gradient-boosted trees (`lgbm:` block), early-stopped on the validation tail."""
+    """Gradient-boosted trees (`lgbm:` block), early-stopped on the external fold test."""
 
     config_key = "lgbm"
     supports_shap = True

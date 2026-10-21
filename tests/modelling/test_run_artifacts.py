@@ -12,7 +12,7 @@ from omegaconf import OmegaConf
 
 from src.modelling.steps.step_long_short import Schema, StepLongShort
 from src.modelling.utils import artifacts
-from src.modelling.utils.assessment import frame_digest, write_json
+from src.modelling.utils.assessment import write_json
 from tests.modelling.model_fixtures import make_config
 
 FAMILIES = ["elasticnet", "lgbm", "random_forest"]
@@ -57,60 +57,36 @@ def test_omitted_optional_configuration_block_keeps_existing_fitting_signature(t
 
 def test_producer_saves_resolved_allowlisted_configuration_without_fitting(tmp_path: Path) -> None:
     step = _open_fixture_run(tmp_path)
-    assert step._run_path is not None
     path = step._run_path / "training/configuration.json"
     saved = json.loads(path.read_text(encoding="utf-8"))
-    assert set(saved) == {"seed", "train", "model", "linear", "lgbm", "random_forest", "application_outputs"}
-    for key in ("train", "model", "linear", "lgbm", "random_forest"):
-        assert saved[key] == OmegaConf.to_container(step._config[key], resolve=True)
+    assert set(saved) == {"seed", "train", "model", "linear", "lgbm", "random_forest"}
     assert saved["seed"] == step._config.seed and saved["linear"]["alpha"] == 1.0
-    assert saved["application_outputs"] == {"save_predictions": False, "save_signal": False, "save_cv_results": True}
+    assert "assessment" not in saved["model"] and "models_dir" not in saved["model"]
     assert "must-not-persist" not in path.read_text(encoding="utf-8") and "${" not in path.read_text(encoding="utf-8")
-    state = artifacts.read_run(step._run_path, training_required=False)
-    assert state["configuration_file"] == artifacts.file_identity(path)
+    artifacts.read_run(step._run_path, training_required=False)
     before = path.read_bytes()
-    step._config.model.assessment.resume = True
-    step._config.model.assessment.report_only = True
-    step._config.model.assessment.output_dir = "another-benign-routing-root"
-    step._config.model.models_dir = "another-production-root"
-    step._config.build_cube.output.save_predictions = True
-    schema = Schema([60], ["date", "ticker", "f0", "sector"], ["f0"], ["sector"], ["f0", "sector"], {}, {})
-    step._open_run(schema, False)
+    with pytest.raises(FileExistsError):
+        step._open_run(Schema([60], ["date", "ticker", "f0"], ["f0"], [], ["f0"], {}, {}), False)
     assert path.read_bytes() == before
-    step._config.seed += 1
-    with pytest.raises(ValueError, match="configuration"):
-        step._open_run(schema, False)
-    assert path.read_bytes() == before
-    print(
-        "SANITY: actual producer freezes exact resolved controls before any fitting, excludes unrelated secrets, accepts benign resume/routing changes and refuses changed fitting controls."
-    )
+    print("SANITY: producer saves only resolved fitting controls, excludes secrets/runtime routing and refuses reusing an existing run.")
 
 
-@pytest.mark.parametrize("mutation", ["missing", "same-size", "wrong-controls", "wrong-shape", "missing-identity"])
+@pytest.mark.parametrize("mutation", ["missing", "wrong-controls", "wrong-shape"])
 def test_dated_run_refuses_missing_or_corrupt_configuration_before_consumption(tmp_path: Path, mutation: str) -> None:
     step = _open_fixture_run(tmp_path)
-    assert step._run_path is not None
     path = step._run_path / "training/configuration.json"
-    state = json.loads((step._run_path / "metadata.json").read_text(encoding="utf-8"))
     if mutation == "missing":
         path.unlink()
-    elif mutation == "same-size":
-        path.write_bytes(path.read_bytes().replace(b"4325", b"4326"))
-    elif mutation == "missing-identity":
-        del state["configuration_file"]
-        write_json(step._run_path / "metadata.json", state)
     else:
         saved = json.loads(path.read_text(encoding="utf-8"))
         if mutation == "wrong-controls":
-            saved["seed"] += 1
+            saved["model"]["target_type"] = "rank"
         else:
             saved["unrelated"] = {}
         write_json(path, saved)
-        state["configuration_file"] = artifacts.file_identity(path)
-        write_json(step._run_path / "metadata.json", state)
     with pytest.raises((ValueError, FileNotFoundError)):
         artifacts.read_run(step._run_path, training_required=False)
-    print(f"SANITY: {mutation} frozen configuration fails before dated-run consumers can load a model.")
+    print(f"SANITY: {mutation} configuration is refused before fitted models are consumed.")
 
 
 def _snapshot(parent: Path, name: str, tag: str) -> Path:
@@ -250,12 +226,3 @@ def test_json_replace_uses_unique_closed_temporary_files(tmp_path: Path, monkeyp
     assert json.loads(path.read_text(encoding="utf-8")) == {"value": 2}
     assert not list(tmp_path.glob("*.tmp"))
     print("SANITY: metadata writes replace from different closed files in the same directory and leave no temporary files.")
-
-
-def test_float64_score_identity_detects_prediction_relevant_changes() -> None:
-    first = pd.DataFrame({"date": pd.to_datetime(["2021-01-04"]), "ticker": ["A"], "x": [1.0000000001]})
-    second = first.assign(x=1.0000000002)
-    assert frame_digest(first, ["x"]) == frame_digest(second, ["x"])
-    assert frame_digest(first, ["x"], downcast=False) != frame_digest(second, ["x"], downcast=False)
-    assert frame_digest(first.iloc[::-1], ["x"], downcast=False) == frame_digest(first, ["x"], downcast=False)
-    print("SANITY: scoring provenance preserves float64 changes while the existing normalized training identity remains compatible.")

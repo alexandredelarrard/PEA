@@ -1,8 +1,7 @@
 """Reusable, config-driven modelling transformers.
 
 Model families (`BaseModel` subclasses) are registered by the names `model.ensemble` uses.
-`Monitor` and `Backtest` live in their own modules and are imported from there, so unpickling a
-fitted member never pulls in SHAP / matplotlib.
+Rich diagnostics live in assessment_diagnostics and run only during assessment.
 """
 
 from __future__ import annotations

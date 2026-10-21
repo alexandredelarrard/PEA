@@ -8,13 +8,76 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+import shap
 from omegaconf import DictConfig
 
 from src.modelling.transformers.base import BaseModel
 from src.modelling.transformers.linear_regression import LinearRegression
-from src.modelling.transformers.monitor import _sample_idx, partial_dependence, shap_row_values, shap_score_scale
 from src.modelling.utils.assessment import balanced_sample_positions, write_json
 from src.modelling.utils.features import design_matrix
+
+
+def _sample_idx(n_rows: int, sample: int, seed: int = 42) -> np.ndarray:
+    """Row POSITIONS to diagnose, so the SHAP matrix can be joined back to date/ticker keys."""
+    if sample and n_rows > sample:
+        return np.random.default_rng(seed).choice(n_rows, sample, replace=False)
+    return np.arange(n_rows)
+
+
+def partial_dependence(
+    booster: Any, x: np.ndarray, feat_idx: int, grid_points: int = 30, sample: int = 2000, *, categorical: bool = False, seed: int = 42
+) -> tuple:
+    """Mean model score over observed categorical/low-cardinality states or a 2-98 % quantile grid.
+    Derive the grid from all valid feature values; other features keep their sampled real values."""
+    col = x[:, feat_idx]
+    finite = col[np.isfinite(col) & ((col >= 0) if categorical else True)]
+    if finite.size == 0:
+        return None, None
+    grid = np.unique(finite)
+    if not categorical and grid.size > grid_points:
+        grid = np.unique(np.quantile(finite, np.linspace(0.02, 0.98, grid_points)))
+    if not grid.size:
+        return None, None
+    x = x[_sample_idx(len(x), sample, seed)]
+    means = np.empty(grid.size, dtype=float)
+    work = x.copy()
+    for i, g in enumerate(grid):
+        work[:, feat_idx] = g
+        means[i] = float(booster.predict(work).mean())
+    return grid, means
+
+
+def shap_score_scale(booster: Any) -> float:
+    """Convert squared-error forest SHAP sums to prediction units; other objectives retain
+    native TreeSHAP units, including raw classification margins."""
+    model = booster.dump_model(num_iteration=1)
+    return 1.0 / booster.num_trees() if model["average_output"] and model["objective"] == "regression" else 1.0
+
+
+def shap_row_values(
+    booster: Any, x: np.ndarray, feature_cols: list[str], sample: int = 2000, seed: int = 42, logger: logging.Logger | None = None
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """`(shap_matrix, row_idx)` for a sampled subset of `x`, or None when unavailable; squared-error
+    forests use prediction units, other objectives retain native TreeSHAP units."""
+    if shap is None:
+        if logger is not None:
+            logger.warning(
+                "SHAP artifacts skipped: `shap` is not installed in this environment (declared in pyproject -- reinstall the venv: `poetry install`)."
+            )
+        return None
+    try:
+        idx = _sample_idx(len(x), sample, seed)
+        values = shap.TreeExplainer(booster).shap_values(x[idx])
+        if isinstance(values, list):  # multi-output -> first output
+            values = values[0]
+        values = np.asarray(values)
+        if values.shape[1] == len(feature_cols) + 1:  # trailing base-value column
+            values = values[:, :-1]
+        return values * shap_score_scale(booster), idx
+    except Exception as exc:  # noqa: BLE001 - SHAP is a reporting library boundary
+        if logger is not None:
+            logger.warning("SHAP computation failed (%s: %s) -> SHAP artifacts skipped", type(exc).__name__, exc)
+        return None
 
 
 def explain_tree(member: BaseModel, panel: pd.DataFrame, output: Path, config: DictConfig, logger: logging.Logger, *, pdp: bool) -> dict[str, Any]:
@@ -79,7 +142,7 @@ def explain_tree(member: BaseModel, panel: pd.DataFrame, output: Path, config: D
         "rows": len(panel),
         "unit_scale": shap_score_scale(member.model),
         "background_rows": min(int(options.pdp_background), len(panel)),
-        "raw_shap_artifact": str(output / "shap.parquet"),
+        "raw_shap_artifact": "shap.parquet",
         "interpretation": "PDP replaces one input and averages with other observed inputs fixed; correlated-feature combinations can be unsupported. SHAP allocates model predictions, not causal effects.",
     }
     write_json(output / "curves.json", result)

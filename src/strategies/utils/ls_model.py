@@ -20,11 +20,11 @@ from omegaconf import DictConfig
 
 from src.constants.constants_price import MACRO_MARKET_SERIES
 from src.context import Context
-from src.data_aggregate.utils.assemble.cube import panel_from_cube, target_column
 from src.data_aggregate.utils.common import data_utils as du
 from src.data_store.schema import Tables
 from src.modelling.utils.artifacts import load_ensemble, models_dir, read_metadata
 from src.modelling.utils.ensemble import blend_horizons, ensemble_predict, optimal_forecast_weights
+from src.modelling.utils.metrics import per_day_zscore
 from src.utils.macro import load_macro_series
 from src.utils.universe import load_universe_tickers
 
@@ -58,25 +58,16 @@ def _load_models(context: Context, config: DictConfig) -> tuple[dict, dict[int, 
     return meta, load_ensemble(directory, horizons, model_types, metadata=meta), target_type, horizons
 
 
-def _project_cube(context: Context, meta: dict, models: dict, target_type: str, start: pd.Timestamp, end) -> pd.DataFrame:
-    """Project the cube to the model's features plus ONE label column per trained horizon.
-
-    The cube is one row per (date, ticker) with the targets wide, so the horizons select
-    COLUMNS, not rows -- there is no row filter to apply and the caller resolves each
-    horizon's label with `target_column` as it loops."""
+def _project_cube(context: Context, meta: dict, start: pd.Timestamp, end: str | pd.Timestamp | None) -> pd.DataFrame:
+    """Project feature-only cross-sections; future targets never determine scoring membership."""
     store = context.store
     cube_cols = set(store.columns(Tables.cube))
-    tcols = [target_column(target_type, int(h)) for h in models]
-    missing = [c for c in tcols if c not in cube_cols]
-    if missing:
-        raise KeyError(
-            f"Target columns {missing} not in cube; rebuild it with '{target_type}' "
-            f"in build_cube.targets.labels and those horizons in "
-            f"build_cube.targets.horizons."
-        )
-
     want = list(dict.fromkeys(meta["feature_cols"] + meta.get("categorical_cols", [])))
-    load_cols = list(dict.fromkeys(["date", "ticker"] + tcols + [c for c in want if c in cube_cols]))
+    missing = [c for c in want if c not in cube_cols]
+    if missing:
+        raise KeyError(f"Fitted model inputs absent from cube: {missing}")
+
+    load_cols = ["date", "ticker", *want]
     # bound parameters, not f-string interpolation: `date >= '{start.date()}'` was the one
     # query in the repo pasting a value straight into SQL
     panel = store.load(Tables.cube, columns=load_cols, since=start, until=end)
@@ -109,33 +100,26 @@ def _returns(context: Context, config: DictConfig, cube_cfg: DictConfig, model_c
     return close, rets, mkt_ret
 
 
-def build_signal(context: Context, config: DictConfig, end=None) -> SignalBundle:
+def build_signal(context: Context, config: DictConfig, end: str | pd.Timestamp | None = None) -> SignalBundle:
     """Load the ensemble, project the OOS cube, score + blend horizons -> combined z-signal, and
     load the equity returns/prices. `config.strategy_ls` holds the model windows/blend params."""
     cube_cfg, model_cfg = config.build_cube, config.strategy_ls
-    meta, models, target_type, _ = _load_models(context, config)
+    meta, models, _, _ = _load_models(context, config)
     start = pd.Timestamp(meta["train_end"])
     train_ic = {int(k): float(v) for k, v in meta.get("train_ic_ir", {}).items()}
-    cube = _project_cube(context, meta, models, target_type, start, end)
+    cube = _project_cube(context, meta, start, end)
     close, stock_ret, spy_ret = _returns(context, config, cube_cfg, model_cfg, start)
     end_ts = pd.Timestamp(end) if end is not None else pd.Timestamp(cube["date"].max())
 
     blended = None
     for h, members in models.items():
-        panel = panel_from_cube(
-            cube,
-            horizon=h,
-            label_name=meta["label_column"],
-            feature_cols=meta["feature_cols"] + meta.get("categorical_cols", []),
-            target_type=target_type,
-        )
-        panel = panel[(panel["date"] >= start) & (panel["date"] <= end_ts)]
+        panel = cube.loc[(cube["date"] >= start) & (cube["date"] <= end_ts)]
         if panel.empty:
             continue
         scores, _ = ensemble_predict(members, panel)
         df = panel[["date", "ticker"]].copy()
         df["z"] = pd.Series(scores.to_numpy(), index=panel.index)
-        df["z"] = df.groupby("date")["z"].transform(lambda s: (s - s.mean()) / (s.std() if s.std() > 0 else np.nan))
+        df["z"] = per_day_zscore(df["z"].to_numpy(), df["date"].to_numpy())
         blended = (
             df.rename(columns={"z": f"z_{h}"})
             if blended is None

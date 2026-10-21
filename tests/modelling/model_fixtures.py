@@ -4,12 +4,16 @@ categorical shift and sparse NaNs where a test asks for them)."""
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
 import pandas as pd
 from omegaconf import DictConfig, OmegaConf
+
+from src.modelling.utils.artifacts import configuration_snapshot, write_metadata
+from src.modelling.utils.assessment import write_json
 
 SEED = 4325
 NUMERIC = [f"f{j}" for j in range(6)]
@@ -54,6 +58,53 @@ def make_config(**overrides: Any) -> DictConfig:
 def ctx(store: Any = None) -> Any:
     """The context surface a transformer touches (`store` only), standing in for a `Context`."""
     return SimpleNamespace(store=store)
+
+
+def completed_run(root: Path, run_id: str, completed_at: str, *, folds: int = 3, horizons: list[int] | None = None) -> tuple[Path, DictConfig]:
+    """Build known-truth manifest state without fitting estimators or requiring market data."""
+    horizons = horizons or [60]
+    config = make_config(
+        model={
+            "horizons": horizons,
+            "target_type": "zscore",
+            "cv": {"n_splits": folds, "embargo": None},
+            "assessment": {"output_dir": str(root), "evaluation_start": "2022-01-03", "read_chunksize": 200},
+            "diagnostics": {"shap_sample": 30, "dependence_sample": 10, "pdp_grid": 30, "pdp_background": 20, "rolling_window": 252},
+        },
+        train={"start_date": "1999-01-01", "end_date": "2021-12-31", "outcome_cutoff": "2021-12-31"},
+    )
+    run = root / run_id
+    write_json(run / "training/configuration.json", configuration_snapshot(config))
+    state = {
+        "workflow": "fresh-assessment-v1",
+        "run_id": run_id,
+        "horizons": horizons,
+        "model_types": list(config.model.ensemble),
+        "feature_cols": ["x"],
+        "categorical_cols": [],
+        "target_type": "zscore",
+        "label_column": "y",
+        "training_complete": True,
+        "training_completed_at_utc": completed_at,
+        "training_as_of": "2021-12-31",
+        "observation_frontier": "2024-12-31",
+        "folds": {str(h): list(range(1, folds + 1)) for h in horizons},
+    }
+    write_json(run / "metadata.json", state)
+    write_metadata(
+        run / "cutoff",
+        {
+            "run_id": run_id,
+            "role": "cutoff",
+            "full_history": False,
+            "horizons": horizons,
+            "model_types": state["model_types"],
+            "feature_cols": ["x"],
+            "categorical_cols": [],
+            "training_as_of": "2021-12-31",
+        },
+    )
+    return run, config
 
 
 def signal_panel(n_days: int = 160, n_tickers: int = 60, seed: int = 0, sparse: bool = True) -> pd.DataFrame:

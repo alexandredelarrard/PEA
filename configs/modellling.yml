@@ -14,11 +14,11 @@ model:
   models_dir: output/models    # fitted members (model_h<h>_<family>.pkl) + metadata.json, under the
                                # data store (absolute paths are used as-is)
   weight_decay:
-    enabled: false             # OFF: time-decay up-weighted recent folds 
+    enabled: false             # OFF: time-decay up-weighted recent folds
     half_life_years: 10
   cv:
     n_splits: 5
-    embargo: null              # defaults to primary_horizon when null
+    embargo: null              # defaults to each target horizon when null
     test_windows:
     - [2000-01-01, 2002-12-31]
     - [2003-01-01, 2006-12-31]
@@ -28,7 +28,7 @@ model:
 
   diagnostics:                # Required assessment artifacts under the named dated run.
     dependence_sample: 1000   # Display rows; retain the full sampled contributions separately.
-    shap_sample: 12000        # Development budget across five folds, plus this many cutoff rows.
+    shap_sample: 12000        # Explanation budget across configured fold tests, plus this many cutoff rows.
     pdp_grid: 30               # partial-dependence grid resolution
     pdp_background: 2000
     rolling_window: 252
@@ -37,10 +37,6 @@ model:
     output_dir: output/modelling_backtest
     evaluation_start: 2022-01-03
     read_chunksize: 25000      # I/O batching only; no change to fitting rows or model parameters.
-
-  backtest:                    # label-only quantile backtest of each horizon's OOS CV predictions,
-    enabled: false            # training-only checks; portfolio backtest remains a separate DAG task
-    n_quantiles: 10            # buckets per date; top-minus-bottom = the dollar-neutral spread
 
 train:
   start_date: 1999-01-01

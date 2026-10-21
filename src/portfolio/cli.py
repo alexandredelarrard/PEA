@@ -18,10 +18,7 @@ moves, FIFO-matched into round trips, and upserted to the `strategy` table with 
 entry price, exit price and realized P&L.
 """
 
-import hashlib
 import json
-import re
-from pathlib import Path
 from typing import Any, cast
 
 import click
@@ -31,6 +28,7 @@ from src.context import get_config_context
 from src.portfolio import StepPortfolio
 from src.portfolio.step_strategy_moves import StepStrategyMoves
 from src.utils.cli_helper import SpecialHelpOrder
+from src.utils.modelling_runs import select_run
 
 
 @click.group(cls=SpecialHelpOrder)
@@ -46,32 +44,13 @@ def cli() -> None:
     help_priority=1,
 )
 @click.option(*CONFIG_ARGS, **cast(dict[str, Any], CONFIG_KWARGS))
-@click.option("--run-id", required=True, help="Exact completed modelling assessment run; uses its cutoff models.")
-def backtest(config_path: str, run_id: str) -> None:
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,95}", run_id) or re.fullmatch(r"CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9]", run_id.upper()):
-        raise click.BadParameter("Use one safe dated run ID", param_hint="--run-id")
+@click.option("--run-id", default=None, help="Exact assessed training; defaults to the latest successfully assessed run.")
+def backtest(config_path: str, run_id: str | None) -> None:
     config, context = get_config_context(config_path, use_cache=False, save=True)
-    root = Path(str(config.model.assessment.output_dir))
-    root = (root if root.is_absolute() else Path(context.paths["DATA_STORE"]) / root).resolve()
-    run = (root / run_id).resolve()
-    if run.parent != root:
-        raise ValueError("Modelling run must stay inside its configured output folder")
-    training = json.loads((run / "metadata.json").read_text(encoding="utf-8"))
-    assessed = json.loads((run / "assessment/metadata.json").read_text(encoding="utf-8"))
-    if (
-        training.get("run_id") != run_id
-        or assessed.get("run_id") != run_id
-        or training.get("training_complete") is not True
-        or assessed.get("complete") is not True
-    ):
-        raise ValueError("Portfolio requires this exact run's completed training and assessment")
-    for relative, identity in (("cutoff/metadata.json", "cutoff_metadata"), ("training/configuration.json", "configuration_file")):
-        path = run / relative
-        if training[identity] != {"bytes": path.stat().st_size, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}:
-            raise ValueError(f"Assessed run artifact changed: {relative}")
+    run, training = select_run(context, config, run_id, assessed=True)
     path = run / "cutoff/metadata.json"
     cutoff = json.loads(path.read_text(encoding="utf-8"))
-    if cutoff.get("run_id") != run_id or cutoff.get("full_history") is not False:
+    if cutoff.get("run_id") != training["run_id"] or cutoff.get("full_history") is not False:
         raise ValueError("Portfolio backtest requires the named cutoff models")
     config.model.models_dir = str(run / "cutoff")
     context.paths = {**context.paths, "OUTPUT_DIR": run / "portfolio"}

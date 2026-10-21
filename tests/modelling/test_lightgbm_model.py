@@ -18,7 +18,6 @@ from src.data_store.schema import Tables
 from src.modelling.transformers import LightGBMModel
 from src.modelling.transformers.lightgbm_model import train_booster
 from src.modelling.utils.artifacts import save_member
-from src.modelling.utils.cv import temporal_valid_split
 from src.modelling.utils.metrics import daily_ic
 from tests.modelling.model_fixtures import NUMERIC, ctx, make_config, signal_panel
 
@@ -27,7 +26,7 @@ def _fit(cfg_overrides: dict | None = None, panel: pd.DataFrame | None = None) -
     panel = signal_panel() if panel is None else panel
     dates = np.sort(panel["date"].unique())
     train, test = panel[panel["date"] < dates[120]], panel[panel["date"] >= dates[125]]
-    sub_tr, sub_val = temporal_valid_split(train)
+    sub_tr, sub_val = train, test
     model = LightGBMModel(ctx(), make_config(**(cfg_overrides or {})), "lgbm", 30).fit(sub_tr, sub_val)
     return model, train, test
 

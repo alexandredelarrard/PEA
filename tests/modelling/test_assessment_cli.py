@@ -18,42 +18,48 @@ from src import portfolio as portfolio_module
 from src.cli import CLI, main
 from src.context import Context
 from src.modelling.steps import step_assess_long_short, step_long_short
-from src.modelling.utils.artifacts import file_identity
 from src.modelling.utils.assessment import write_json
+from tests.modelling.model_fixtures import completed_run
 
 
-@pytest.mark.parametrize("command,full_history", [("train", False), ("full-train", True)])
-def test_training_cli_passes_explicit_run_and_resume(command: str, full_history: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("command,selected", [("train", None), ("full-train", None), ("full-train", "chosen")])
+def test_training_cli_uses_automatic_identity_and_optional_full_history_selection(
+    command: str, selected: str | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
     config = cast(DictConfig, OmegaConf.create({"model": {"assessment": {}}, "train": {"start_date": "1999-01-01", "end_date": "2022-01-01"}}))
     context = SimpleNamespace(log=Mock())
     factory = Mock(return_value=(config, context))
     fitted = Mock()
+    fitted.run_train.return_value = SimpleNamespace(run_id="generated")
     constructor = Mock(return_value=fitted)
     monkeypatch.setattr(context_module, "get_config_context", factory)
     monkeypatch.setattr(step_long_short, "StepLongShort", constructor)
     monkeypatch.chdir(Path(__file__).resolve().parents[2])
-    result = CliRunner().invoke(main, ["modelling", command, "-c", "./configs", "--run-id", "20261018_42", "--resume"])
+    args = ["modelling", command, "-c", "./configs"] + (["--run-id", selected] if selected else [])
+    result = CliRunner().invoke(main, args)
     assert result.exit_code == 0, repr(result.exception)
-    assert config.model.assessment.run_id == "20261018_42" and config.model.assessment.resume is True
-    factory.assert_called_once_with("./configs", use_cache=False, save=True)
-    constructor.assert_called_once_with(context=context, config=config)
-    fitted.run_train.assert_called_once_with(**({"full_history": True} if full_history else {}))
-    print(f"SANITY: {command} passes the explicit common run ID and resume to the existing trainer; full_history={full_history}.")
+    fitted.run_train.assert_called_once_with(**({"full_history": True, "run_id": selected} if command == "full-train" else {}))
+    if command == "train":
+        assert result.output.splitlines()[-1] == "generated"
+    assert "run_id" not in config.model.assessment and "resume" not in config.model.assessment
+    print(
+        "SANITY: train returns its automatic ID as final stdout; full-history forwards optional exact selection without persistent identity/resume controls."
+    )
 
 
-@pytest.mark.parametrize(
-    "layout,report_only,resume",
-    [
-        ("worktree-relative", False, True),
-        ("worktree-absolute", False, False),
-        ("explicit-root", True, True),
-        ("checkout", False, False),
-        ("checkout", True, True),
-    ],
-)
-def test_assess_dynamic_loader_preserves_root_and_controls(
-    layout: str, report_only: bool, resume: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_failed_training_emits_no_successful_run_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = OmegaConf.create({"model": {"assessment": {}}, "train": {"start_date": "1999-01-01", "end_date": "2022-01-01"}})
+    monkeypatch.setattr(context_module, "get_config_context", Mock(return_value=(config, SimpleNamespace(log=Mock()))))
+    fitted = Mock()
+    fitted.run_train.side_effect = ValueError("injected fit failure")
+    monkeypatch.setattr(step_long_short, "StepLongShort", Mock(return_value=fitted))
+    result = CliRunner().invoke(main, ["modelling", "train"])
+    assert result.exit_code != 0 and not result.output.strip()
+    print("SANITY: failed training cannot emit the successful final stdout record consumed by DAG XCom.")
+
+
+@pytest.mark.parametrize("layout", ["worktree-relative", "worktree-absolute", "explicit-root", "checkout"])
+def test_assess_dynamic_loader_preserves_root_and_selection(layout: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     source_root = tmp_path / "source"
     source_root.mkdir()
     monkeypatch.setattr(context_module, "__file__", str(source_root / "src" / "context.py"))
@@ -90,28 +96,28 @@ def test_assess_dynamic_loader_preserves_root_and_controls(
     assert callback is not None and "__file__" not in callback.__globals__
 
     args = ["modelling", "assess", "-c", "./configs", "--run-id", "20261018_42"]
-    if report_only:
-        args.append("--report-only")
-    if resume:
-        args.append("--resume")
     result = CliRunner().invoke(main, args)
 
     assert result.exit_code == 0, repr(result.exception)
     assert context_calls == [("./configs", False, False, expected_root)]
     assert os.environ.get("ROOT_PATH") == expected_root
     assert config.model.assessment.output_dir == str(tmp_path / "configured_runs")
-    assert config.model.assessment.run_id == "20261018_42"
-    assert config.model.assessment.report_only is report_only
-    assert config.model.assessment.resume is resume
-    constructor.assert_called_once_with(context=context, config=config)
+    assert "run_id" not in config.model.assessment
+    constructor.assert_called_once_with(context=context, config=config, run_id="20261018_42")
     step.run.assert_called_once_with()
-    print(
-        f"SANITY: dynamic loader without __file__ reaches the explicit saved run; {layout}, report_only={report_only}, resume={resume}, save=False."
-    )
+    print(f"SANITY: dynamic loader keeps {layout} routing and forwards the exact constructor selection with save=False.")
 
 
 @pytest.mark.parametrize(
-    "args", [["assess", "--stage", "all"], ["assess", "--stage", "development"], ["train", "--run-id", "../escape"], ["assess", "--run-id", "CON"]]
+    "args",
+    [
+        ["assess", "--report-only"],
+        ["assess", "--resume"],
+        ["train", "--run-id", "manual"],
+        ["train", "--resume"],
+        ["full-train", "--resume"],
+        ["assess", "--run-id", "CON"],
+    ],
 )
 def test_retired_modes_and_unsafe_ids_fail_before_context(args: list[str], monkeypatch: pytest.MonkeyPatch) -> None:
     factory = Mock(side_effect=AssertionError("Invalid controls must fail before opening context"))
@@ -123,44 +129,30 @@ def test_retired_modes_and_unsafe_ids_fail_before_context(args: list[str], monke
     print(f"SANITY: invalid or retired CLI controls {args} cannot open data or invoke fitting.")
 
 
-@pytest.mark.parametrize("state", ["complete", "incomplete", "missing-configuration", "tampered-configuration"])
-def test_portfolio_cli_uses_only_the_named_assessed_cutoff(state: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    run = tmp_path / "output/modelling_backtest/20261018_42"
-    write_json(run / "cutoff/metadata.json", {"run_id": run.name, "full_history": False})
-    write_json(run / "training/configuration.json", {"seed": 7})
-    write_json(
-        run / "metadata.json",
-        {
-            "run_id": run.name,
-            "training_complete": True,
-            "cutoff_metadata": file_identity(run / "cutoff/metadata.json"),
-            "configuration_file": file_identity(run / "training/configuration.json"),
-        },
-    )
+@pytest.mark.parametrize("state", ["complete", "incomplete", "missing-configuration", "malformed-configuration"])
+def test_portfolio_cli_uses_selected_or_latest_assessed_cutoff(state: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    run, config = completed_run(tmp_path / "runs", "selected", "2026-10-21T10:00:00+00:00")
+    completed_run(tmp_path / "runs", "newer_unassessed", "2026-10-21T11:00:00+00:00")
+    config.model.models_dir = "output/models"
+    config.portfolio = {"start": "2022-06-01", "fee_bps": 2.0}
     write_json(run / "assessment/metadata.json", {"run_id": run.name, "complete": state != "incomplete"})
+    (run / "report.html").write_text("assessed", encoding="utf-8")
     if state == "missing-configuration":
         (run / "training/configuration.json").unlink()
-    elif state == "tampered-configuration":
+    elif state == "malformed-configuration":
         write_json(run / "training/configuration.json", {"seed": 8})
-    config = OmegaConf.create(
-        {
-            "model": {"models_dir": "output/models", "assessment": {"output_dir": "output/modelling_backtest"}},
-            "portfolio": {"start": "2022-06-01", "fee_bps": 2.0},
-        }
-    )
     context = SimpleNamespace(log=Mock(), paths={"DATA_STORE": tmp_path, "OUTPUT_DIR": tmp_path / "output"})
     constructor = Mock(return_value=SimpleNamespace(run=Mock()))
     monkeypatch.setattr(context_module, "get_config_context", Mock(return_value=(config, context)))
     monkeypatch.setattr(portfolio_module, "StepPortfolio", constructor)
     monkeypatch.chdir(Path(__file__).resolve().parents[2])
-    result = CliRunner().invoke(main, ["portfolio", "backtest", "-c", "./configs", "--run-id", run.name])
+    result = CliRunner().invoke(main, ["portfolio", "backtest", "-c", "./configs"])
     if state == "complete":
         assert result.exit_code == 0, repr(result.exception)
-        assert config.model.models_dir == str(run / "cutoff")
-        assert context.paths["OUTPUT_DIR"] == run / "portfolio"
+        assert config.model.models_dir == str(run / "cutoff") and context.paths["OUTPUT_DIR"] == run / "portfolio"
         assert config.portfolio.start == "2022-06-01" and config.portfolio.fee_bps == 2.0
         constructor.assert_called_once_with(context=context, config=config)
     else:
         assert result.exit_code != 0
         constructor.assert_not_called()
-    print(f"SANITY: portfolio snapshot state={state} is checked before construction, with dated outputs and unchanged dates/costs.")
+    print(f"SANITY: portfolio state={state} is checked before construction; latest unassessed training cannot change the cutoff or dates/costs.")

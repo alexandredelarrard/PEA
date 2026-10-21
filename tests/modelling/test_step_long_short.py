@@ -24,9 +24,10 @@ from src.data_aggregate.utils.assemble.cube import horizons_in, target_column
 from src.data_store.schema import Tables
 from src.modelling.steps.step_long_short import StepLongShort, union_all_columns
 from src.modelling.transformers import LightGBMModel, RandomForestModel
-from src.modelling.utils.artifacts import ARTIFACT_FORMAT, load_ensemble, member_path, read_metadata, verify_inventory
+from src.modelling.utils.artifacts import load_ensemble, read_metadata
+from src.modelling.utils.assessment import write_json
 from src.modelling.utils.ensemble import PREDICTION_COLUMNS, ensemble_predict
-from src.modelling.utils.panel import load_frame as real_load_frame
+from src.modelling.utils.metrics import daily_ic
 from src.utils.config import read_config
 from tests.modelling.model_fixtures import make_config, signal_panel
 
@@ -129,6 +130,60 @@ def _setup(
     return StepLongShort(context=context, config=cfg), spy, cfg  # type: ignore[arg-type]
 
 
+class _ScoringMember:
+    """A no-fit scoring stand-in: state/serialization tests do not benchmark an estimator."""
+
+    def __init__(self, family: str, horizon: int, features: list[str], rounds: int, task: str = "regression") -> None:
+        self.family, self.horizon, self.features = family, horizon, features
+        self.categoricals: list[str] = []
+        self.task = task
+        self.model = self
+        self.best_iteration = rounds
+        self.training_iterations = rounds + 1
+
+    def current_iteration(self) -> int:
+        return self.best_iteration
+
+    def predict(self, panel: pd.DataFrame) -> pd.Series:
+        score = panel["f0"] + {"elasticnet": 0.2, "lgbm": 0.4, "random_forest": 0.7}[self.family] * panel["f1"]
+        if self.task == "classification":
+            score = 1 / (1 + np.exp(-score))
+        return score.rename("prediction")
+
+
+def _stub_fits(step: StepLongShort, monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    calls: list[dict] = []
+
+    def fit(horizon: int, train: pd.DataFrame, valid: pd.DataFrame | None, rounds: int | None = None) -> dict:
+        assert np.isfinite(train[step.label_column]).all()
+        if valid is not None:
+            assert train.label_end.max() < valid.date.min() and np.isfinite(valid[step.label_column]).all()
+        calls.append(
+            {
+                "horizon": horizon,
+                "rows": len(train),
+                "valid_rows": None if valid is None else len(valid),
+                "rounds": rounds,
+                "columns": list(train),
+                "seed": step._config.seed,
+            }
+        )
+        count = rounds or 7 + 3 * (sum(call["horizon"] == horizon and call["valid_rows"] is not None for call in calls) - 1)
+        return {
+            family: _ScoringMember(
+                family,
+                horizon,
+                [column for column in cls.configured_columns(step._config, horizon) if column in train],
+                count,
+                str(step._config[cls.config_key].get("task", "regression")),
+            )
+            for family, cls in step._classes.items()
+        }
+
+    monkeypatch.setattr(step, "_fit_members", fit)
+    return calls
+
+
 def test_schema_projection_is_present_columns_and_never_a_target() -> None:
     step: Any = object.__new__(StepLongShort)
     step._config = make_config(
@@ -179,139 +234,61 @@ def test_real_config_resolves_rf_h30_vs_default() -> None:
     )
 
 
-def test_saved_five_fold_run_is_isolated_and_reloads_original_oof(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    step, _, cfg = _setup(
-        tmp_path,
-        sqlite_store,
-        save=False,
-        model={"horizons": [30], "cv": {"n_splits": 5}, "assessment": {"run_id": "20181018_validation", "output_dir": str(tmp_path / "runs")}},
-        build_cube={"output": {"save_predictions": False, "save_signal": False, "save_cv_results": False}},
-    )
+def test_saved_five_fold_run_is_isolated_and_reloads_original_members(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    step, spy, config = _setup(tmp_path, sqlite_store, model={"horizons": [60], "cv": {"n_splits": 5}})
+    _stub_fits(step, monkeypatch)
+    monkeypatch.setattr(spy, "replace", lambda *a, **kw: pytest.fail("Training must not write application tables"), raising=False)
     result = step.run_train()
-    assert not (tmp_path / "models").exists(), "cutoff training must leave the production root untouched"
-    run = result.run_dir
-    assert run is not None
-    manifest = json.loads((run / "metadata.json").read_text(encoding="utf-8"))
-    assert result.run_id == "20181018_validation" and manifest["training_complete"] is True
-    cutoff = read_metadata(run / "cutoff")
-    assert cutoff["run_id"] == result.run_id and cutoff["full_history"] is False
-    assert len(cutoff["selection"]["30"]["rounds"]) == 5 and not result.cv[30].fold_models
+    assert result.run_id != str(config.model.assessment.run_id)
+    assert not (tmp_path / "models").exists()
     schema = step._resolve_schema()
-    panel = step._load_horizon(30, schema, full_history=False)
-    assert panel is not None
-    fingerprints = {family: [] for family in cfg.model.ensemble}
-    for fold in range(1, 6):
-        directory = run / "folds/h30" / f"fold{fold}"
-        metadata = read_metadata(directory)
-        assert metadata["role"] == "fold" and metadata["fold"] == fold and metadata["run_id"] == result.run_id
-        verify_inventory(directory, metadata["evidence_files"])
-        members = load_ensemble(directory, [30], cfg.model.ensemble, metadata=metadata)[30]
-        saved = pd.read_parquet(directory / "oof.parquet").sort_values(["date", "ticker"]).reset_index(drop=True)
-        audit = metadata["fold_audit"]
-        test = panel.loc[panel.date.between(audit["test_start"], audit["test_end"])].sort_values(["date", "ticker"]).reset_index(drop=True)
-        predicted, member_predictions = ensemble_predict(members, test)
-        assert saved["fold"].eq(fold).all() and saved["horizon"].eq(30).all()
-        pd.testing.assert_frame_equal(saved[["date", "ticker"]], test[["date", "ticker"]])
-        np.testing.assert_allclose(saved["pred"], predicted, rtol=1e-12, atol=1e-12)
-        for family in cfg.model.ensemble:
-            np.testing.assert_allclose(saved[family], member_predictions[family], rtol=1e-12, atol=1e-12)
-            fingerprints[family].append(metadata["member_files"][member_path(directory, 30, family).name]["sha256"])
-    assert all(len(set(values)) == 5 for values in fingerprints.values())
-    assert not (tmp_path / "out/diagnostics").exists()
+    panel = step._load_horizon(60, schema, False)
+    for number, audit in enumerate(result.cv[60].folds, 1):
+        directory = result.run_dir / f"folds/h60/fold{number}"
+        meta = read_metadata(directory)
+        assert meta["fold"] == number and meta["run_id"] == result.run_id
+        models = load_ensemble(directory, [60], config.model.ensemble, metadata=meta)[60]
+        test = panel.loc[panel.date.between(audit["test_start"], audit["test_end"])]
+        scores, _ = ensemble_predict(models, test)
+        assert daily_ic(test, scores, horizon=60)["mean_ic"] == pytest.approx(audit["mean_ic"])
+    assert not list(result.run_dir.rglob("oof.parquet"))
+    assert not list(result.run_dir.rglob("shap.parquet")) and not (result.run_dir / "report.html").exists()
+    second = step.run_train()
+    assert second.run_id != result.run_id and result.run_dir.is_dir()
+    print(
+        "SANITY: five-fold no-fit routing saves/reloads original members and reproduces quick IC; training writes no OOF/rich/application outputs and every invocation gets a fresh ID."
+    )
+
+
+def test_run_train_projects_one_horizon_at_a_time_and_saves_minimal_outputs(
+    tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    step, spy, config = _setup(tmp_path, sqlite_store, model={"cv": {"n_splits": 3}})
+    calls = _stub_fits(step, monkeypatch)
+    result = step.run_train()
+    assert len(spy.loads) == len(HORIZONS)
+    assert all(sum(column.startswith("target_") for column in read["columns"]) == 1 for read in spy.loads)
+    assert all(not read["where"] for read in spy.loads), "Prediction population must include missing-target titles"
+    assert len([call for call in calls if call["valid_rows"] is None]) == len(HORIZONS)
+    assert sum(result.weights.values()) == pytest.approx(1)
     assert not sqlite_store.exists(Tables.predictions) and not sqlite_store.exists(Tables.cube_signal)
-    cfg.model.assessment.resume = True
-    with monkeypatch.context() as guards:
-        guards.setattr(StepLongShort, "_fit_final", lambda *args, **kwargs: pytest.fail("completed final models must not refit"))
-        guards.setattr(LightGBMModel, "fit", lambda *args, **kwargs: pytest.fail("completed folds must not refit"))
-        resumed = StepLongShort(step._context, cfg).run_train()
-        assert resumed.run_id == result.run_id and resumed.cv[30].rounds == result.cv[30].rounds
-        changed = sqlite_store.load(Tables.cube)
-        changed.loc[0, "f0"] += 1
-        sqlite_store.replace(Tables.cube, changed)
-        with pytest.raises(ValueError, match="fitting inputs changed"):
-            StepLongShort(step._context, cfg).run_train()
-    print("SANITY: matching completed folds/cutoff resume without fitting; changed historical inputs are refused before fitting.")
-    print(
-        "SANITY: all five original fold members reload to their exact OOF predictions; cutoff files are dated and production/application outputs stay untouched."
-    )
-
-
-def test_run_train_streams_one_horizon_at_a_time_and_persists_everything(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    step, spy, cfg = _setup(tmp_path, sqlite_store)
-    loaded: list[dict[str, str]] = []  # dtypes AFTER load_frame (the store itself returns float64)
-    fitted: list[tuple[int, int | None, float]] = []
-    original_fit = LightGBMModel.fit
-
-    def recording_fit(self: Any, train: pd.DataFrame, valid: pd.DataFrame | None = None) -> Any:
-        if self.family == "lgbm":
-            fitted.append((len(train), None if valid is None else len(valid), float(self._config.lgbm.learning_rate)))
-        if valid is not None:
-            assert train["label_end"].max() < valid["date"].min()
-        return original_fit(self, train, valid)
-
-    monkeypatch.setattr(LightGBMModel, "fit", recording_fit)
-
-    def _recording_load_frame(*args: Any, **kwargs: Any) -> pd.DataFrame | None:
-        out = real_load_frame(*args, **kwargs)
-        if out is not None and kwargs.get("where"):
-            loaded.append(dict(out.dtypes.astype(str)))
-        return out
-
-    monkeypatch.setattr("src.modelling.steps.step_long_short.load_frame", _recording_load_frame)
-    res = step.run_train()
-
-    labelled = [ld for ld in spy.loads if ld["where"]]
-    assert [next(iter(ld["where"])) for ld in labelled] == [target_column("rank", h) for h in HORIZONS], "exactly one labelled load per horizon"
-    assert all(sum(c.startswith("target_") for c in ld["columns"]) == 1 for ld in labelled), "each load reads only its own label"
-    assert len(loaded) == len(HORIZONS) and all(v == "float32" for d in loaded for c, v in d.items() if c.startswith(("f", "target_"))), loaded
-
-    assert list(res.models) == list(HORIZONS) and all(list(m) == list(cfg.model.ensemble) for m in res.models.values())
-    assert abs(sum(res.weights.values()) - 1.0) < 1e-12
-    assert res.cv[30].oos is not None and res.cv[30].oos_members is not None and list(res.cv[30].oos_members.columns[2:]) == list(cfg.model.ensemble)
-    assert set(res.backtests) == set(HORIZONS) and res.backtests[30]["n_quantiles"] == 5.0
-
-    preds = sqlite_store.load(Tables.predictions)
-    assert {"combined", "signal", "z_30", "z_60", "pred_lgbm_h30"} <= set(preds.columns) and preds["signal"].between(0, 1).all()
-    assert len(sqlite_store.load(Tables.cube_signal)) == res.signal.notna().sum()
-    assert res.run_dir is not None
-    assert len(pd.read_parquet(res.run_dir / "training/cv.parquet")) == 2 * len(HORIZONS)
-
-    meta = json.loads((res.run_dir / "cutoff/metadata.json").read_text())
-    assert META_KEYS <= set(meta) and meta["artifact_format"] == ARTIFACT_FORMAT
-    assert len(fitted) == len(HORIZONS) * 3, "two fold fits plus one cutoff fit per horizon; no per-fold refit"
-    assert sum(v is None for _, v, _ in fitted) == len(HORIZONS)
-    assert all(lr == cfg.lgbm.learning_rate for _, _, lr in fitted)
-    for h in HORIZONS:
-        audit = meta["fit_audit"][str(h)]
-        assert len(res.cv[h].rounds) == 2
-        assert audit["requested_rounds"] == int(np.median(res.cv[h].rounds))
-        assert audit["achieved_rounds"] > 0 and audit["achieved_rounds"] <= audit["requested_rounds"]
+    meta = read_metadata(result.run_dir / "cutoff")
+    for horizon in HORIZONS:
+        audit = meta["fit_audit"][str(horizon)]
+        assert audit["round_source_counts"] == [10, 13] and audit["requested_rounds"] == 12
+        assert audit["round_source_folds"] == [2, 3] and audit["fitted_rows"] > 0
         assert pd.Timestamp(audit["label_end_max"]) <= pd.Timestamp(meta["training_as_of"])
-        assert audit["fitted_rows"] == len(res.predictions.loc[res.predictions[f"z_{h}"].notna()])
-    assert meta["train_end"] == cfg.train.end_date and meta["full_history"] is False and meta["categorical_cols"] == ["sector"]
-    for h in HORIZONS:
-        for fam in cfg.model.ensemble:
-            assert member_path(res.run_dir / "cutoff", h, fam).exists()
-    assert (res.run_dir / "cutoff/kpis.json").exists()
-    assert not (tmp_path / "out/diagnostics").exists() and not (tmp_path / "models").exists()
-
-    print("\n=== SANITY CHECK: run_train ===")
-    print(f"  labelled loads: {[next(iter(ld['where'])) for ld in labelled]} (one per horizon, float32)")
     print(
-        f"  CV IC: { ({h: round(cv.ic['mean_ic'], 3) for h, cv in res.cv.items()}) }; blend weights { ({h: round(w, 3) for h, w in res.weights.items()}) }"
-    )
-    print(
-        f"  backtest spread: { ({h: round(b['spread_mean'], 3) for h, b in res.backtests.items()}) }; original folds/cutoff/KPIs/CV saved under {res.run_id}; legacy diagnostics/production untouched. Validated."
+        "SANITY: projected horizon loads include scoring-only titles; cutoff models/minimal JSON preserve maturity and last-two round counts; application tables stay untouched."
     )
 
 
 def test_run_predict_scores_the_newest_unlabelled_date(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     step, spy, cfg = _setup(tmp_path, sqlite_store, save=False)
-    step.run_train()
-    with pytest.raises(ValueError, match="incompatible"):
-        cfg.lgbm.learning_rate *= 2
-        step.run_train(full_history=True)
-    cfg.lgbm.learning_rate /= 2
+    _stub_fits(step, monkeypatch)
+    initial = step.run_train()
+    write_json(initial.run_dir / "assessment/metadata.json", {"run_id": initial.run_id, "complete": True})
+    (initial.run_dir / "report.html").write_text("assessed", encoding="utf-8")
     step.run_train(full_history=True)
     # the synthetic cube is dated in the past, so the input guard (test_predict_freshness.py) is stubbed out
     monkeypatch.setattr("src.modelling.steps.step_long_short.check_prediction_inputs", lambda *args, **kwargs: {})
@@ -359,7 +336,7 @@ def test_classification_ensemble_gets_finite_cv_metrics_and_ir_weights(tmp_path:
     assert res.run_dir is not None
     meta = json.loads((res.run_dir / "cutoff/metadata.json").read_text())
     for h in HORIZONS:
-        assert res.cv[h].folds and all(f["n_days"] > 0 for f in res.cv[h].folds), "binary-label days are counted"
+        assert res.cv[h].folds and all(f["finite_ic_days"] > 0 for f in res.cv[h].folds), "binary-label days are counted"
         assert np.isfinite(res.cv[h].ic["mean_ic"]) and res.cv[h].ic["mean_ic"] > 0
         assert all(np.isfinite(m["mean_ic"]) for m in res.cv[h].member_ic.values())
         assert meta["train_ic_ir"][str(h)] > 0, "the blend weights come from a real CV IR"
@@ -370,30 +347,39 @@ def test_classification_ensemble_gets_finite_cv_metrics_and_ir_weights(tmp_path:
     print(f"  blend weights { ({h: round(w, 3) for h, w in res.weights.items()}) }; probabilities in [0, 1]. Validated.")
 
 
-def test_full_history_records_the_effective_train_end(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    step, _, cfg = _setup(tmp_path, sqlite_store, save=False)
+def test_full_history_records_effective_end_and_restores_saved_fitting_controls(
+    tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    step, _, config = _setup(
+        tmp_path,
+        sqlite_store,
+        model={"horizons": [60], "cv": {"n_splits": 3}},
+        train={"end_date": "2017-06-30"},
+        lgbm={"columns": ["f0", "f1", "new_column"]},
+    )
+    calls = _stub_fits(step, monkeypatch)
     initial = step.run_train()
-    assert initial.run_dir is not None
     frozen = (initial.run_dir / "training/configuration.json").read_bytes()
-    production = tmp_path / "separate-production"
-    cfg.model.models_dir = str(production)
-    monkeypatch.setattr(step, "_cross_validate", lambda *args, **kwargs: pytest.fail("production refit must reuse saved CV counts"))
-    res = step.run_train(full_history=True)
-    meta = json.loads((production / "metadata.json").read_text())
-    assert res.train_end_effective is not None, "a full-history refit records the last labelled date"
-    assert meta["full_history"] is True and meta["train_end"] == pd.Timestamp(res.train_end_effective).strftime("%Y-%m-%d") > cfg.train.end_date
-    before = (production / "metadata.json").read_bytes()
-    cfg.model.assessment.resume = True
-    monkeypatch.setattr(step, "_fit_final", lambda *args, **kwargs: pytest.fail("completed full-history resume must not fit"))
-    step.run_train(full_history=True)
-    assert (production / "metadata.json").read_bytes() == before
+    write_json(initial.run_dir / "assessment/metadata.json", {"run_id": initial.run_id, "complete": True})
+    (initial.run_dir / "report.html").write_text("assessed", encoding="utf-8")
+    cube = sqlite_store.load(Tables.cube).assign(new_column=42.0)
+    sqlite_store.replace(Tables.cube, cube)
+    config.seed += 1
+    config.lgbm.columns = ["new_column"]
+    config.model.ensemble = ["lgbm"]
+    monkeypatch.setattr(step, "_cross_validate", lambda *a, **kw: pytest.fail("Full-history fit must not repeat CV"))
+    result = step.run_train(full_history=True)
+    meta = read_metadata(tmp_path / "models")
+    assert meta["full_history"] and meta["train_end"] > config.train.end_date
+    assert calls[-1]["rounds"] == 12 and calls[-1]["seed"] == json.loads(frozen)["seed"]
+    assert "new_column" not in calls[-1]["columns"] and set(result.models[60]) == {"elasticnet", "lgbm", "random_forest"}
     assert (initial.run_dir / "training/configuration.json").read_bytes() == frozen
-    state = json.loads((initial.run_dir / "metadata.json").read_text())
-    assert state["full_history"]["published_root"] == str(production.resolve())
-    assert json.loads(frozen)["model"]["models_dir"] == str(tmp_path / "models")
-    print("\n=== SANITY CHECK: full-history refit ===")
+    assert meta["feature_cols"] == read_metadata(initial.run_dir / "cutoff")["feature_cols"]
+    first_attempt = meta["full_history_attempt_id"]
+    step.run_train(full_history=True)
+    assert read_metadata(tmp_path / "models")["full_history_attempt_id"] != first_attempt
     print(
-        f"  train_end {meta['train_end']} = last labelled date (config end {cfg.train.end_date} ignored); completed resume neither fits nor republishes. Validated."
+        "SANITY: fresh full-history attempts preserve the original resolved feature pool/seed/families/rounds despite YAML/schema growth, with no repeated CV."
     )
 
 
@@ -448,16 +434,17 @@ def test_explicit_outcome_cutoff_precedes_every_used_label(tmp_path: Path, sqlit
     monkeypatch.setattr(step, "_cross_validate", inspect_panel)
     with pytest.raises(RuntimeError, match="cutoff checked"):
         step.run()
-    reads = [read for read in spy.loads if read["where"]]
+    reads = spy.loads
     assert reads and all(pd.Timestamp(read["until"]) < cutoff for read in reads), "unavailable targets are excluded in the source read"
     print("SANITY: the explicit observation cutoff wins over a later feature ceiling before any fitting or writes.")
 
 
-def test_disabled_application_outputs_attempt_no_mutation(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    step, spy, _ = _setup(tmp_path, sqlite_store, save=False, build_cube={"output": {"save_predictions": False, "save_signal": False}})
+def test_training_never_attempts_application_outputs(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    step, spy, _ = _setup(tmp_path, sqlite_store, model={"horizons": [60], "cv": {"n_splits": 3}})
+    _stub_fits(step, monkeypatch)
     monkeypatch.setattr(spy, "replace", lambda *args, **kwargs: pytest.fail("application mutation attempted"), raising=False)
-    step._save_outputs(pd.DataFrame(), {}, pd.Series(dtype=float), pd.Timestamp("2020-01-01"))
-    print("SANITY: disabled prediction/signal outputs attempt no application-table replacement.")
+    step.run_train()
+    print("SANITY: training makes no application-table write attempts, regardless of legacy output switches.")
 
 
 def test_horizon_only_rf_features_and_categories_are_projected(tmp_path: Path, sqlite_store: Any) -> None:

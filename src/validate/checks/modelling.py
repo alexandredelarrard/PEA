@@ -63,43 +63,32 @@ def independent_daily(predictions: pd.DataFrame, model: str) -> pd.Series:
 
 
 def _reconcile_configuration(config: DictConfig, training: dict, cutoff: dict, findings: list[Finding], *, snapshot: dict) -> None:
+    """Reconcile saved fitting controls/schema independently of current fitting YAML."""
     if (
         not isinstance(snapshot, dict)
-        or set(snapshot) != {"seed", "train", "model", "linear", "lgbm", "random_forest", "application_outputs"}
+        or set(snapshot) != {"seed", "train", "model", "linear", "lgbm", "random_forest"}
         or not isinstance(snapshot["model"], dict)
         or any(snapshot[key] is not None and not isinstance(snapshot[key], dict) for key in ("train", "linear", "lgbm", "random_forest"))
-        or not isinstance(snapshot["application_outputs"], dict)
-        or set(snapshot["application_outputs"]) != {"save_predictions", "save_signal", "save_cv_results"}
     ):
         raise ValueError("Malformed saved training configuration")
-    saved = OmegaConf.create({key: value for key, value in snapshot.items() if key != "application_outputs" and value is not None})
-    assert isinstance(saved, DictConfig)
-    valid = True
-    for controls in (saved, config):
-        shared = controls.model
-        payload = {
-            "features": cutoff["feature_cols"] + cutoff["categorical_cols"],
-            "horizons": training["horizons"],
-            "blocks": {
-                key: OmegaConf.to_container(controls[key], resolve=True) for key in ("linear", "lgbm", "random_forest", "train") if key in controls
-            },
-            "shared": {
-                key: OmegaConf.to_container(shared[key], resolve=True) if OmegaConf.is_config(shared.get(key)) else shared.get(key)
-                for key in ("ensemble", "cv", "weight_decay", "target_type", "label_column")
-            },
-            "seed": controls.get("seed"),
-        }
-        signature = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
-        valid &= signature == training["selection_signature"] == cutoff["selection_signature"]
-        valid &= list(shared.get("horizons", training["horizons"])) == training["horizons"] and list(shared.ensemble) == training["model_types"]
-        valid &= str(shared.get("target_type", "rank")) == cutoff["target_type"] and str(shared.label_column) == cutoff["label_column"]
-        valid &= cutoff["target_type"] == training["target_type"] and cutoff["label_column"] == training["label_column"]
-    valid &= training["feature_cols"] == cutoff["feature_cols"] and training["categorical_cols"] == cutoff["categorical_cols"]
+    shared = snapshot["model"]
+    valid = (
+        training.get("workflow") == "fresh-assessment-v1"
+        and list(shared.get("horizons", training["horizons"])) == training["horizons"] == cutoff["horizons"]
+        and shared["ensemble"] == training["model_types"] == cutoff["model_types"]
+        and shared.get("target_type", "rank") == training["target_type"] == cutoff["target_type"]
+        and shared["label_column"] == training["label_column"] == cutoff["label_column"]
+        and training["feature_cols"] == cutoff["feature_cols"]
+        and training["categorical_cols"] == cutoff["categorical_cols"]
+    )
+    count = int(shared["cv"]["n_splits"])
+    valid &= count >= 2 and set(training["folds"]) == {str(h) for h in training["horizons"]}
+    valid &= all(training["folds"][str(h)] == list(range(1, count + 1)) for h in training["horizons"])
     _finding(
         findings,
-        valid,
-        "Saved or current fitting configuration differs from run identity",
-        "Readable frozen controls reproduce identical features, horizons, parameters, cutoff, folds and seed",
+        bool(valid),
+        "Saved fitting configuration/schema differs",
+        "Declared fitted families, horizons, targets, pools and fold count",
         field="configuration",
     )
 
@@ -201,6 +190,7 @@ def _source_horizon(
     ends = joined.date.map(_calendar_ends(calendar, horizon))
     known = ends.notna() & ((joined.fold == 0) | (ends <= pd.Timestamp(cutoff["training_as_of"])))
     expected = joined.source_y.where(known & np.isfinite(joined.source_y))
+    expected.loc[joined.fold > 0] = expected.loc[joined.fold > 0].astype("float32")
     _finding(
         findings,
         bool((joined["_merge"] == "both").all()) and np.allclose(joined.y, expected, equal_nan=True, atol=1e-12),
@@ -217,14 +207,12 @@ def _source_horizon(
         horizon=horizon,
     )
     for number, audit in enumerate(cutoff["selection"][str(horizon)]["folds"], 1):
-        outer = pd.Timestamp(audit["outer_train_label_end_max"]) < pd.Timestamp(audit["test_start"])
-        inner = audit["validation_start"] is None or pd.Timestamp(audit["inner_train_label_end_max"]) < pd.Timestamp(audit["validation_start"])
-        validation = audit["validation_label_end_max"] is None or pd.Timestamp(audit["validation_label_end_max"]) < pd.Timestamp(audit["test_start"])
+        outer = pd.Timestamp(audit["train_label_end_max"]) < pd.Timestamp(audit["test_start"])
         _finding(
             findings,
-            outer and inner and validation,
-            "Training/early-stop outcomes overlap validation",
-            "Strict inner and outer label-end purges",
+            outer,
+            "Training outcomes overlap the external test",
+            "Strict training label-end purge before the external test",
             horizon=horizon,
             fold=number,
         )
@@ -289,9 +277,19 @@ def _linear_signed_checks(member: Any, matrix: np.ndarray, phi: np.ndarray, curv
         )
 
 
-def _effect_checks(folder: Path, member: Any, config: DictConfig, cutoff: bool, findings: list[Finding]) -> int:
+def _effect_checks(folder: Path, member: Any, config: DictConfig, cutoff: bool, findings: list[Finding], sample: pd.DataFrame | None = None) -> int:
     features = member.features
     x = pd.read_parquet(folder / "x.parquet")
+    if sample is not None:
+        columns = ["date", "ticker", *features]
+        _finding(
+            findings,
+            x[columns].equals(sample[columns].reset_index(drop=True)),
+            "Explanation inputs differ from the source-checked sample",
+            "Exact prepared keys and member features from the independently source-checked sample",
+            family=member.family,
+            horizon=member.horizon,
+        )
     curves = _read(folder / "curves.json")
     linear = member.family in {"elasticnet", "ridge"}
     raw = pd.read_parquet(folder / ("contributions.parquet" if linear else "shap.parquet"))
@@ -359,7 +357,7 @@ def _effect_checks(folder: Path, member: Any, config: DictConfig, cutoff: bool, 
         selected.update(features.index(name) for name in member.categoricals)
         if linear and (np.asarray(member.coef_) == 0).any():
             selected.add(int(np.flatnonzero(np.asarray(member.coef_) == 0)[0]))
-            
+
         for index, feature in enumerate(features):
             column = matrix[:, index]
             good = np.isfinite(column) & ((column >= 0) if feature in member.categoricals else True)
@@ -395,34 +393,57 @@ def _effect_checks(folder: Path, member: Any, config: DictConfig, cutoff: bool, 
 def _model_checks(
     context: Context, run: Path, training: dict, cutoff: dict, horizon: int, state: dict, config: DictConfig, findings: list[Finding]
 ) -> int:
-    explained, hashes = 0, {name: [] for name in training["model_types"]}
-    for fold in range(int(config.model.cv.n_splits) + 1):
+    """Independently replay complete current cross-sections and saved native explanations."""
+    explained = 0
+    predictions = pd.read_parquet(run / f"assessment/h{horizon}/predictions.parquet")
+    declared = [0, *training["folds"][str(horizon)]]
+    if set(predictions.fold) != set(declared):
+        raise ValueError("Metric predictions contain missing or extra scoring windows")
+    for fold in declared:
         fitted = run / (f"folds/h{horizon}/fold{fold}" if fold else "cutoff")
         metadata = _read(fitted / "metadata.json")
         inventory = metadata["member_files"]
-        expected = {f"model_h{horizon}_{name}.pkl" for name in training["model_types"]}
-        _finding(findings, expected <= set(inventory), "Missing fitted member", "All declared family/horizon members", horizon=horizon, fold=fold)
-        _inventory(fitted, inventory)
-        if fold:
-            _inventory(fitted, metadata["evidence_files"])
-            _finding(
-                findings,
-                metadata["run_id"] == training["run_id"] and metadata["horizons"] == [horizon] and metadata["fold"] == fold,
-                "Mixed original model identity",
-                "Named run, horizon and original fold",
-                horizon=horizon,
-                fold=fold,
-            )
+        expected = {f"model_h{h}_{name}.pkl" for h in ([horizon] if fold else training["horizons"]) for name in training["model_types"]}
+        _finding(findings, expected == set(inventory), "Missing/extra fitted member", "Exact declared members", horizon=horizon, fold=fold)
+        requested = {name: identity for name, identity in inventory.items() if name.startswith(f"model_h{horizon}_")}
+        _inventory(fitted, requested)
+        _finding(
+            findings,
+            metadata["run_id"] == training["run_id"]
+            and metadata.get("role") == ("fold" if fold else "cutoff")
+            and (not fold or (metadata["horizons"] == [horizon] and metadata["fold"] == fold)),
+            "Mixed fitted model identity",
+            "Named run, role, horizon and original fold",
+            horizon=horizon,
+            fold=fold,
+        )
         analysis = run / f"assessment/h{horizon}/fold{fold}"
-        _inventory(analysis, {"metadata.json": state["windows"][str(horizon)][str(fold)]})
         window = _read(analysis / "metadata.json")
-        _inventory(analysis, window["files"])
         sample = pd.read_parquet(analysis / "sample.parquet")
+        scores = pd.read_parquet(analysis / "scores.parquet")
+        columns = ["date", "ticker", "fold", *training["model_types"], "ensemble"]
+        final = predictions.loc[predictions.fold == fold, columns].reset_index(drop=True)
+        _finding(
+            findings,
+            final.equals(scores[columns].reset_index(drop=True)),
+            "Metric predictions differ from original model scores",
+            "Exact complete concatenation of declared feature-only scoring windows",
+            horizon=horizon,
+            fold=fold,
+        )
+        _finding(
+            findings,
+            window["rows"] == len(scores) and window["future_outcomes_read"] is False,
+            "Wrong window population/provenance",
+            "Full feature-only scoring before target pairing",
+            horizon=horizon,
+            fold=fold,
+        )
+        categories = set(name for names in cutoff["categorical_cols_by_model_h"][str(horizon)].values() for name in names)
         date = sample.date.min()
         source = context.store.load(Tables.cube, columns=list(sample.columns), since=date, until=date, optional=False)
         if source is None:
             raise ValueError("Missing source diagnostic sample")
-        categories = set(name for names in cutoff["categorical_cols_by_model_h"][str(horizon)].values() for name in names)
         for column in set(sample.columns) - {"date", "ticker"}:
             numeric = pd.to_numeric(source[column], errors="raise")
             source[column] = numeric.fillna(-1).astype("int32") if column in categories else numeric.astype("float32") if fold else numeric
@@ -432,31 +453,27 @@ def _model_checks(
         columns = list(set(sample.columns) - {"date", "ticker"})
         _finding(
             findings,
-            (paired["_merge"] == "both").all()
+            bool((paired["_merge"] == "both").all())
             and np.allclose(paired[columns], paired[[name + "_source" for name in columns]], equal_nan=True, atol=0, rtol=0),
             "Prepared explanation inputs differ from source",
-            "Independent bounded date/key/category/precision replay",
+            "Bounded date/key/category/precision replay",
             horizon=horizon,
             fold=fold,
         )
-        oof = pd.read_parquet(fitted / "oof.parquet") if fold else None
-        if oof is not None:
-            day = oof.date.min()
-            oof = oof.loc[oof.date == day].sort_values(["date", "ticker"])
-            replay = context.store.load(Tables.cube, columns=list(sample.columns), since=day, until=day, optional=False)
-            if replay is None:
-                raise ValueError("Missing original OOF replay inputs")
-            for column in set(sample.columns) - {"date", "ticker"}:
-                numeric = pd.to_numeric(replay[column], errors="raise")
-                replay[column] = numeric.fillna(-1).astype("int32") if column in categories else numeric.astype("float32")
-            replay = oof[["date", "ticker"]].merge(replay, on=["date", "ticker"], how="left", validate="one_to_one")
-        else:
-            replay = None
+        day = scores.date.min()
+        scored = scores.loc[scores.date == day].sort_values(["date", "ticker"]).reset_index(drop=True)
+        replay = context.store.load(Tables.cube, columns=list(sample.columns), since=day, until=day, optional=False)
+        if replay is None:
+            raise ValueError("Missing full scoring cross-section")
+        replay = replay.sort_values(["date", "ticker"]).reset_index(drop=True)
+        if not scored[["date", "ticker"]].equals(replay[["date", "ticker"]]):
+            raise ValueError("Saved scoring universe omits/adds source titles")
+        for column in set(sample.columns) - {"date", "ticker"}:
+            numeric = pd.to_numeric(replay[column], errors="raise")
+            replay[column] = numeric.fillna(-1).astype("int32") if column in categories else numeric.astype("float32") if fold else numeric
         zs = []
         for name in training["model_types"]:
-            path = fitted / f"model_h{horizon}_{name}.pkl"
-            hashes[name].append(inventory[path.name]["sha256"])
-            with path.open("rb") as handle:
+            with (fitted / f"model_h{horizon}_{name}.pkl").open("rb") as handle:
                 member = pickle.load(handle)
             family_key = {"elasticnet": "linear", "ridge": "linear", "lgbm": "lgbm", "random_forest": "rf"}[name]
             declared_categories = cutoff["categorical_cols_by_model_h"][str(horizon)][name]
@@ -469,8 +486,8 @@ def _model_checks(
             _finding(
                 findings,
                 member.features == declared_features and member.categoricals == declared_categories,
-                "Actual fitted pool differs from resolved configuration",
-                "Exact configured retained numeric/category order",
+                "Actual fitted pool differs",
+                "Exact saved retained numeric/category order",
                 horizon=horizon,
                 fold=fold,
                 family=name,
@@ -482,47 +499,40 @@ def _model_checks(
                 "Declared family/horizon regression member",
                 horizon=horizon,
                 fold=fold,
+                family=name,
             )
-            explained += _effect_checks(analysis / name, member, config, fold == 0, findings)
-            if replay is not None and oof is not None:
-                raw = _raw_prediction(member, replay[member.features].to_numpy(dtype=float))
-                std = float(np.std(raw, ddof=1))
-                z = (raw - np.mean(raw)) / std if np.isfinite(std) and std > 0 else np.full(len(raw), np.nan)
-                _finding(
-                    findings,
-                    np.allclose(z, oof[name], equal_nan=True, atol=1e-8),
-                    "Original OOF member fails reloaded native prediction",
-                    "Exact saved original model on its original labelled cross-section",
-                    horizon=horizon,
-                    fold=fold,
-                    family=name,
-                )
-                zs.append(z)
-            del member
-        if oof is not None:
-            values = np.column_stack(zs)
-            count = np.isfinite(values).sum(axis=1)
-            average = np.nansum(values, axis=1) / np.where(count > 0, count, 1)
-            average[count == 0] = np.nan
+            explained += _effect_checks(analysis / name, member, config, fold == 0, findings, sample=sample)
+            raw = _raw_prediction(member, replay[member.features].to_numpy(dtype=float))
+            finite = np.isfinite(raw)
+            z = np.full(len(raw), np.nan)
+            std = float(raw[finite].std(ddof=1)) if finite.sum() >= 2 else np.nan
+            if std > 0:
+                z[finite] = (raw[finite] - raw[finite].mean()) / std
             _finding(
                 findings,
-                np.allclose(average, oof.pred, equal_nan=True, atol=1e-8),
-                "Original OOF ensemble differs",
-                "Independent mean of standardized original members",
+                np.allclose(z, scored[name], equal_nan=True, atol=1e-8),
+                "Saved score differs from reloaded native prediction",
+                "Normalize all finite feature-only predictions before reading targets",
                 horizon=horizon,
                 fold=fold,
+                family=name,
             )
-        del sample, source
-        gc.collect()
-    for name, values in hashes.items():
+            zs.append(z)
+            del member
+        values = np.column_stack(zs)
+        count = np.isfinite(values).sum(axis=1)
+        average = np.nansum(values, axis=1) / np.where(count > 0, count, 1)
+        average[count == 0] = np.nan
         _finding(
             findings,
-            len(set(values)) == len(values),
-            "Repeated fold/cutoff model bytes",
-            "Distinct original fitted objects, not copies of the cutoff model",
+            np.allclose(average, scored.ensemble, equal_nan=True, atol=1e-8),
+            "Saved ensemble differs",
+            "Independent mean of standardized members",
             horizon=horizon,
-            family=name,
+            fold=fold,
         )
+        del sample, source, replay, scores
+        gc.collect()
     return explained
 
 
@@ -534,7 +544,6 @@ def _full_history_checks(context: Context, run: Path, training: dict, cutoff: di
     snapshot = (run / "full_history" / stage["attempt_id"]).resolve()
     if not snapshot.is_relative_to(run.resolve()):
         raise ValueError("Full-history attempt path escapes the run")
-    _inventory(snapshot, {"metadata.json": stage["metadata_file"], "kpis.json": stage["kpis_file"]})
     meta = _read(snapshot / "metadata.json")
     _inventory(snapshot, meta["member_files"])
     root = Path(str(config.model.models_dir))
@@ -574,8 +583,14 @@ def _full_history_checks(context: Context, run: Path, training: dict, cutoff: di
         audit = meta["fit_audit"][str(horizon)]
         counts = cutoff["selection"][str(horizon)]["rounds"]
         valid_counts = meta["selection"][str(horizon)]["rounds"] == counts and (
-            audit["requested_rounds"] == int(np.median(counts)) if counts else audit["requested_rounds"] is None
+            audit["requested_rounds"] == (sum(counts[-2:]) + 1) // 2 if counts else audit["requested_rounds"] is None
         )
+        if counts:
+            valid_counts &= (
+                audit["round_source_counts"] == counts[-2:]
+                and audit["round_source_folds"] == [len(counts) - 1, len(counts)]
+                and audit["final_rounds"] == (sum(counts[-2:]) + 1) // 2
+            )
         _finding(
             findings,
             valid_counts and count == audit["fitted_rows"] and str(last.date()) == audit["feature_max"],
@@ -610,9 +625,9 @@ def _report_checks(run: Path, training: dict, state: dict, findings: list[Findin
         for family in training["model_types"]:
             _finding(
                 findings,
-                set(effects[family]) == {"0", *training["folds"][str(horizon)]},
+                set(effects[family]) == {"0", *map(str, training["folds"][str(horizon)])},
                 "Report dropped an original-fold curve",
-                "All five original fold curves and cutoff curve",
+                "Every declared original fold curve and cutoff curve",
                 horizon=horizon,
                 family=family,
             )
@@ -680,41 +695,25 @@ def check_modelling(context: Context, *, out: str | Path, config: DictConfig) ->
             return CheckResult.abstained("modelling", "saved_ensemble", "Training or assessment stage is incomplete")
         if training["run_id"] != run.name or cutoff["run_id"] != run.name or state["run_id"] != run.name:
             raise ValueError("Wrong-run model/assessment identity")
-        _inventory(
-            run,
-            {
-                "cutoff/metadata.json": training["cutoff_metadata"],
-                "training/calendar.parquet": training["calendar_file"],
-                "training/configuration.json": training["configuration_file"],
-            },
-        )
-        _reconcile_configuration(config, training, cutoff, findings, snapshot=_read(run / "training/configuration.json"))
+        snapshot = _read(run / "training/configuration.json")
+        _reconcile_configuration(config, training, cutoff, findings, snapshot=snapshot)
         if findings:
             return CheckResult.measured("modelling", "saved_ensemble", findings, scope={"run": str(run), "source_reads": 0}, metrics={})
-        source_root = Path(__file__).resolve().parents[3]
-        for name, digest in {
-            **training["source_hashes"],
-            **{f"src/modelling/{name}": value for name, value in state["identity"]["source_hashes"].items()},
-        }.items():
-            source = (source_root / name).resolve()
-            if not source.is_relative_to(source_root) or _file_identity(source)["sha256"] != digest:
-                raise ValueError("Saved implementation source identity changed")
-        if dict(state["identity"]["diagnostics"]) != {key: config.model.diagnostics[key] for key in state["identity"]["diagnostics"]} or state[
-            "identity"
-        ]["evaluation_start"] != str(config.model.assessment.evaluation_start):
-            raise ValueError("Diagnostic/evaluation configuration differs")
-        calendar = pd.DatetimeIndex(pd.read_parquet(run / "training/calendar.parquet").date).as_unit("ns")
+        config = OmegaConf.merge(
+            config,
+            {"seed": state["seed"], "model": {"diagnostics": state["diagnostics"], "assessment": {"evaluation_start": state["evaluation_start"]}}},
+        )
+        calendar = pd.DatetimeIndex(context.store.distinct(Tables.cube_part_prices, "date")).normalize().sort_values().drop_duplicates().as_unit("ns")
+        calendar = calendar[calendar <= pd.Timestamp(state["observation_frontier"])]
         for horizon in training["horizons"]:
             output = run / f"assessment/h{horizon}"
-            _inventory(output, state["horizons"][str(horizon)]["files"])
             models = [*training["model_types"], "ensemble"]
             metrics[str(horizon)] = _reconcile_metrics(output, horizon, models, int(config.model.diagnostics.rolling_window), findings)
             rows += _source_horizon(context, run, training, cutoff, horizon, calendar, int(config.model.assessment.read_chunksize), findings)
-            for fold, identity in training["folds"][str(horizon)].items():
-                _inventory(run / f"folds/h{horizon}/fold{fold}", {"metadata.json": identity})
             explained += _model_checks(context, run, training, cutoff, horizon, state, config, findings)
             context.log.info("Independent h%s reconciliation: metrics, source targets, original models and effects complete", horizon)
-        metrics["full_history"] = _full_history_checks(context, run, training, cutoff, config, findings)
+        if "full_history" in training:
+            metrics["full_history"] = _full_history_checks(context, run, training, cutoff, config, findings)
         _report_checks(run, training, state, findings)
     except (OSError, ValueError, KeyError, TypeError, IndexError, AssertionError, pickle.UnpicklingError) as exc:
         findings.append(
@@ -729,8 +728,68 @@ def check_modelling(context: Context, *, out: str | Path, config: DictConfig) ->
             "rows": rows,
             "explained_rows": explained,
             "no_fitting": True,
-            "source_scope": "All saved target rows; one complete feature cross-section per fold/cutoff and original OOF first date; configured-grid native PDP spot checks",
+            "source_scope": "All saved target rows; one complete feature cross-section per fold/cutoff ; configured-grid native PDP spot checks",
         },
         metrics=metrics,
         reason="Conditional historical assessment: retrospective classifications, peer vintages and current-universe bias remain; no performance threshold or generalization guarantee.",
     )
+
+
+def check_training_readiness(*, out: str | Path, config: DictConfig) -> CheckResult:
+    """Check complete original members and chronology before the assessment stage exists."""
+    run = Path(out).resolve()
+    findings: list[Finding] = []
+    try:
+        training, cutoff = _read(run / "metadata.json"), _read(run / "cutoff/metadata.json")
+        snapshot = _read(run / "training/configuration.json")
+        _reconcile_configuration(config, training, cutoff, findings, snapshot=snapshot)
+        if training.get("training_complete") is not True or training["run_id"] != run.name or cutoff["run_id"] != run.name:
+            raise ValueError("Training is incomplete or belongs to another run")
+        if pd.Timestamp(training["training_completed_at_utc"]).tzinfo is None:
+            raise ValueError("Missing actual UTC training completion time")
+        calendar = pd.DatetimeIndex(pd.read_parquet(run / "training/calendar.parquet").date).as_unit("ns")
+        if calendar.has_duplicates or not calendar.is_monotonic_increasing:
+            raise ValueError("Malformed saved training calendar")
+        _inventory(run / "cutoff", cutoff["member_files"])
+        for horizon in training["horizons"]:
+            ends = _calendar_ends(calendar, horizon)
+            selection = cutoff["selection"][str(horizon)]
+            counts = selection["rounds"]
+            if counts:
+                audit = cutoff["fit_audit"][str(horizon)]
+                _finding(
+                    findings,
+                    len(counts) == len(training["folds"][str(horizon)])
+                    and all(0 < count <= int(snapshot["lgbm"]["num_boost_round"]) for count in counts)
+                    and audit["final_rounds"] == (sum(counts[-2:]) + 1) // 2,
+                    "Cutoff round selection differs",
+                    "Upward-rounded mean of last two configured fold counts",
+                    horizon=horizon,
+                )
+            for fold, audit in zip(training["folds"][str(horizon)], selection["folds"], strict=True):
+                directory = run / f"folds/h{horizon}/fold{fold}"
+                metadata = _read(directory / "metadata.json")
+                _inventory(directory, metadata["member_files"])
+                valid = (
+                    metadata["fold_audit"] == audit
+                    and metadata["run_id"] == run.name
+                    and metadata["fold"] == fold
+                    and metadata["horizons"] == [horizon]
+                    and metadata["model_types"] == training["model_types"]
+                    and pd.Timestamp(audit["train_label_end_max"]) == ends.loc[pd.Timestamp(audit["train_end"])]
+                    and pd.Timestamp(audit["train_label_end_max"]) < pd.Timestamp(audit["test_start"])
+                    and pd.Timestamp(audit["test_label_end_max"]) <= pd.Timestamp(cutoff["training_as_of"])
+                    and audit["train_rows"] > 0
+                    and audit["test_paired_rows"] > 0
+                )
+                _finding(
+                    findings,
+                    bool(valid),
+                    "Original fold identity/chronology differs",
+                    "Declared complete original fold with mature nonoverlapping training targets",
+                    horizon=horizon,
+                    fold=fold,
+                )
+    except (OSError, ValueError, KeyError, TypeError, IndexError) as exc:
+        findings.append(Finding.at(8, f"{type(exc).__name__}: {exc}", "Complete train artifacts with independently verified chronology"))
+    return CheckResult.measured("modelling", "training_readiness", findings, scope={"run": str(run), "no_fitting": True}, metrics={})

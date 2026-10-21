@@ -16,7 +16,6 @@ import pickle
 import re
 import shutil
 from collections.abc import Iterable
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -24,78 +23,11 @@ from omegaconf import DictConfig, OmegaConf
 
 from src.constants.constants import MODEL_GENERATION_ARTIFACT_FORMAT
 from src.modelling.utils.assessment import write_json
+from src.utils.modelling_runs import contained_path, new_run_id, read_run, run_directory, validate_run_id  # noqa: F401
 
 ARTIFACT_FORMAT = "transformer-pickle-v1"
 TRAINING_CONTRACT = "matured-fold-es-v1"
 METADATA_FILE = "metadata.json"
-
-
-def validate_run_id(run_id: str) -> str:
-    """Accept one portable filename component, never a path or reserved Windows name."""
-    if not isinstance(run_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,95}", run_id):
-        raise ValueError("run_id must be one safe alphanumeric filename component")
-    if re.fullmatch(r"CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9]", run_id, flags=re.IGNORECASE):
-        raise ValueError("run_id cannot be a reserved Windows filename")
-    return run_id
-
-
-def new_run_id() -> str:
-    """UTC dated identity for a directly invoked training run."""
-    return datetime.now(UTC).strftime("%Y%m%dT%H%M%S%f")
-
-
-def contained_path(directory: Path, relative: str) -> Path:
-    """Resolve a nonempty relative artifact path within its declared directory."""
-    root = Path(directory).resolve()
-    path = Path(relative)
-    resolved = (root / path).resolve()
-    if path.is_absolute() or resolved == root or not resolved.is_relative_to(root):
-        raise ValueError(f"Artifact directory/path must be relative and cannot escape {root}")
-    return resolved
-
-
-def run_directory(context: Any, config: DictConfig, run_id: str | None = None) -> Path:
-    """Resolve a named assessment run without creating or selecting a different run."""
-    identity = run_id if run_id is not None else OmegaConf.select(config, "model.assessment.run_id")
-    validate_run_id(identity)
-    raw = OmegaConf.select(config, "model.assessment.output_dir", default="output/modelling_backtest")
-    directory = Path(str(raw))
-    if not directory.is_absolute():
-        directory = Path(context.paths["DATA_STORE"]) / directory
-    return contained_path(directory, identity)
-
-
-def read_run(directory: Path, *, training_required: bool = True) -> dict[str, Any]:
-    """Read this exact run, refusing incomplete training as an assessment/refit input."""
-    state = json.loads((directory / METADATA_FILE).read_text(encoding="utf-8"))
-    if state.get("run_id") != directory.name or not state.get("horizons") or not state.get("model_types"):
-        raise ValueError("Invalid or wrong-run modelling manifest")
-    if training_required and state.get("training_complete") is not True:
-        raise ValueError("Training artifacts are incomplete for this run")
-    if "configuration_file" not in state:
-        raise ValueError("Missing saved run configuration identity")
-    verify_inventory(directory, {"training/configuration.json": state["configuration_file"]})
-    snapshot = json.loads((directory / "training/configuration.json").read_text(encoding="utf-8"))
-    if (
-        not isinstance(snapshot, dict)
-        or set(snapshot) != {"seed", "train", "model", "linear", "lgbm", "random_forest", "application_outputs"}
-        or not isinstance(snapshot["model"], dict)
-        or any(snapshot[key] is not None and not isinstance(snapshot[key], dict) for key in ("train", "linear", "lgbm", "random_forest"))
-        or not isinstance(snapshot["application_outputs"], dict)
-        or set(snapshot["application_outputs"]) != {"save_predictions", "save_signal", "save_cv_results"}
-    ):
-        raise ValueError("Malformed saved run configuration")
-    config = OmegaConf.create({key: value for key, value in snapshot.items() if key != "application_outputs" and value is not None})
-    assert isinstance(config, DictConfig)
-    if (
-        selection_signature(config, state["feature_cols"] + state["categorical_cols"], state["horizons"]) != state["selection_signature"]
-        or list(config.model.ensemble) != state["model_types"]
-        or list(config.model.get("horizons", state["horizons"])) != state["horizons"]
-        or str(config.model.get("target_type", "rank")) != state["target_type"]
-        or str(config.model.label_column) != state["label_column"]
-    ):
-        raise ValueError("Saved run configuration differs from fitting identity")
-    return state
 
 
 def configuration_snapshot(config: DictConfig) -> dict[str, Any]:
@@ -104,25 +36,13 @@ def configuration_snapshot(config: DictConfig) -> dict[str, Any]:
         key: OmegaConf.to_container(config[key], resolve=True) if OmegaConf.is_config(config.get(key)) else config.get(key)
         for key in ("seed", "train", "model", "linear", "lgbm", "random_forest")
     }
-    snapshot["application_outputs"] = {
-        key: OmegaConf.select(config, f"build_cube.output.{key}", default=True if key == "save_predictions" else None)
-        for key in ("save_predictions", "save_signal", "save_cv_results")
+    snapshot["model"] = {
+        key: snapshot["model"][key]
+        for key in ("ensemble", "horizons", "cv", "weight_decay", "target_type", "label_column")
+        if key in snapshot["model"]
     }
+    snapshot["model"]["cv"] = {key: value for key, value in snapshot["model"].get("cv", {}).items() if key in {"n_splits", "embargo", "test_windows"}}
     return snapshot
-
-
-def fitting_source_identity() -> dict[str, str]:
-    """Hash the fitting/scoring implementation without requiring Git in a task container."""
-    root = Path(__file__).resolve().parents[3]
-    relative = [
-        *[
-            f"src/modelling/transformers/{name}"
-            for name in ("__init__.py", "base.py", "lightgbm_model.py", "random_forest.py", "linear_regression.py")
-        ],
-        *[f"src/modelling/utils/{name}" for name in ("features.py", "panel.py", "cv.py", "ensemble.py", "metrics.py", "artifacts.py")],
-        "src/modelling/steps/step_long_short.py",
-    ]
-    return {name: file_identity(root / name)["sha256"] for name in relative}
 
 
 def file_identity(path: Path) -> dict[str, Any]:
@@ -218,22 +138,6 @@ def read_metadata(directory: Path) -> dict:
     return meta
 
 
-def selection_signature(config: DictConfig, features: list[str], horizons: list[int]) -> str:
-    """Identify the fixed training inputs/parameters whose fold rounds may be reused."""
-    shared = config.model
-    payload = {
-        "features": features,
-        "horizons": horizons,
-        "blocks": {key: OmegaConf.to_container(config[key], resolve=True) for key in ("linear", "lgbm", "random_forest", "train") if key in config},
-        "shared": {
-            key: OmegaConf.to_container(shared[key], resolve=True) if OmegaConf.is_config(shared.get(key)) else shared.get(key)
-            for key in ("ensemble", "cv", "weight_decay", "target_type", "label_column")
-        },
-        "seed": config.get("seed"),
-    }
-    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
-
-
 def save_member(model: Any, path: Path) -> Path:
     """Pickle one fitted member (its own `__getstate__` drops context / config / logger)."""
     path = Path(path)
@@ -274,7 +178,7 @@ def load_ensemble(
             requested = {member_path(directory, int(h), fam).name for h in horizons for fam in families}
             if not requested or not requested <= set(inventory):
                 raise ValueError("Requested members are absent from the model inventory")
-            verify_inventory(directory, inventory)
+            verify_inventory(directory, {name: inventory[name] for name in requested})
     models: dict[int, dict[str, Any]] = {}
     for h in horizons:
         if any(member_path(directory, int(h), fam).parent.resolve() != directory.resolve() for fam in families):

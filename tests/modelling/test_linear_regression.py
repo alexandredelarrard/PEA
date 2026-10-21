@@ -17,7 +17,7 @@ import pytest
 from src.modelling.transformers import BaseModel, LightGBMModel, LinearRegression
 from src.modelling.transformers.linear_regression import _standardize
 from src.modelling.utils.artifacts import save_member
-from src.modelling.utils.cv import purged_wf_splits, temporal_valid_split
+from src.modelling.utils.cv import purged_wf_splits
 from src.modelling.utils.ensemble import ensemble_predict
 from src.modelling.utils.metrics import daily_ic
 from tests.modelling.model_fixtures import NUMERIC, ctx, make_config, signal_panel
@@ -88,7 +88,7 @@ def _cv_ic(panel: pd.DataFrame, make: Callable[[], BaseModel]) -> float:
     ics = []
     for tr_d, te_d in purged_wf_splits(pd.Series(panel["date"]), n_splits=4, embargo=5):
         tr, te = panel[panel["date"].isin(tr_d)], panel[panel["date"].isin(te_d)]
-        sub_tr, sub_val = temporal_valid_split(tr)
+        sub_tr, sub_val = tr, te
         model = make().fit(sub_tr, sub_val)
         ics.append(daily_ic(te, model.predict(te), "y")["mean_ic"])
     return float(np.nanmean(ics))
@@ -118,7 +118,7 @@ def test_ensemble_at_least_matches_average_of_members() -> None:
     il, ie, ien = [], [], []
     for tr_d, te_d in purged_wf_splits(pd.Series(panel["date"]), n_splits=4, embargo=5):
         tr, te = panel[panel["date"].isin(tr_d)], panel[panel["date"].isin(te_d)]
-        sub_tr, sub_val = temporal_valid_split(tr)
+        sub_tr, sub_val = tr, te
         members = {
             "lgbm": LightGBMModel(ctx(), cfg, "lgbm", 1).fit(sub_tr, sub_val),
             "elasticnet": LinearRegression(ctx(), cfg, "elasticnet", 1).fit(sub_tr, sub_val),

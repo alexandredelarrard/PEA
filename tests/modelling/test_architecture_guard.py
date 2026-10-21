@@ -33,10 +33,10 @@ EXPECTED_TRANSFORMERS = {
     "lightgbm_model.py",
     "random_forest.py",
     "linear_regression.py",
-    "monitor.py",
-    "backtest.py",
 }
 REMOVED_MODULES = (
+    "src.modelling.transformers.monitor",
+    "src.modelling.transformers.backtest",
     "src.modelling.long_short",
     "src.modelling.long_book",
     "src.modelling.trend",

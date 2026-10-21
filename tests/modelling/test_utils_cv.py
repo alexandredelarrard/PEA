@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.modelling.utils.cv import CALENDAR_DAYS_PER_YEAR, label_end_dates, purged_wf_splits, temporal_valid_split, time_decay_weights
+from src.modelling.utils.cv import CALENDAR_DAYS_PER_YEAR, label_end_dates, purged_wf_splits, time_decay_weights
 
 
 def test_explicit_test_windows_use_observed_calendar_and_refuse_overlap() -> None:
@@ -25,16 +25,17 @@ def test_explicit_test_windows_use_observed_calendar_and_refuse_overlap() -> Non
     print("SANITY: explicit crisis windows retain all test sessions and purge training endpoints on the observed calendar.")
 
 
-def test_label_end_uses_complete_session_calendar_and_purges_inner_overlap() -> None:
+def test_label_end_uses_complete_session_calendar_and_purges_target_overlap() -> None:
     calendar = pd.DatetimeIndex(["2024-07-01", "2024-07-02", "2024-07-03", "2024-07-05", "2024-07-08", "2024-07-09"])
     ends = label_end_dates(calendar, 2)
     assert ends.loc["2024-07-02"] == pd.Timestamp("2024-07-05")
     assert pd.isna(ends.iloc[-1])
     df_panel = pd.DataFrame({"date": calendar[:4], "label_end": ends.iloc[:4].to_numpy()})
-    train, valid = temporal_valid_split(df_panel, train_frac=0.75)
+    valid = df_panel.iloc[-1:]
+    train = df_panel.loc[df_panel.label_end < valid.date.min()]
     assert train["date"].tolist() == [pd.Timestamp("2024-07-01")]
     assert (train["label_end"] < valid["date"].min()).all()
-    print("SANITY: actual July holiday calendar maps horizon ends; inner labels ending on validation are purged.")
+    print("SANITY: actual July holiday calendar maps horizon ends; training labels ending on the test are purged.")
 
 
 def test_purged_wf_splits_is_deterministic_and_embargoed() -> None:
@@ -53,15 +54,6 @@ def test_purged_wf_splits_is_deterministic_and_embargoed() -> None:
     print("\n=== SANITY CHECK: purged walk-forward folds ===")
     print(f"  5 folds, identical across calls; train sizes {[len(t) for t, _ in first]}; every fold skips exactly 20 dates before testing.")
     print("  Expanding window, no overlap, deterministic. Validated.")
-
-
-def test_temporal_valid_split_holds_out_the_latest_dates() -> None:
-    panel = pd.DataFrame({"date": np.repeat(pd.bdate_range("2020-01-01", periods=20), 3), "y": 0.0})
-    train, valid = temporal_valid_split(panel, train_frac=0.9)
-    assert train["date"].nunique() == 18 and valid["date"].nunique() == 2
-    assert train["date"].max() < valid["date"].min()
-    print("\n=== SANITY CHECK: early-stopping tail ===")
-    print(f"  20 dates -> train {train['date'].nunique()} / valid {valid['date'].nunique()}; valid is strictly later. Validated.")
 
 
 def test_time_decay_half_life_at_reference_and_two_years_back() -> None:

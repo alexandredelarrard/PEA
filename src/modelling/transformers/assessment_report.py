@@ -46,10 +46,10 @@ def _temporal_payload(output: Path, families: list[str]) -> dict[str, Any]:
 
 
 def _error_display(errors: pd.DataFrame) -> pd.DataFrame:
-    """Outcome-based display cap is applied only after complete native metrics are saved."""
-    eligible = errors.loc[np.isfinite(errors.rmse) & (errors.n > 0)]
-    worst = eligible.sort_values(["rmse", "ticker"], ascending=[False, True]).head(100).assign(group="worst")
-    best = eligible.sort_values(["rmse", "ticker"]).head(50).assign(group="best")
+    """Cap saved native metrics from opposite ends of one ascending RMSE/ticker order."""
+    ordered = errors.loc[np.isfinite(errors.rmse) & (errors.n > 0)].sort_values(["rmse", "ticker"])
+    worst = ordered.iloc[::-1].head(100).assign(group="worst")
+    best = ordered.head(50).assign(group="best")
     return pd.concat([worst, best], ignore_index=True).drop_duplicates("ticker").reset_index(drop=True)
 
 

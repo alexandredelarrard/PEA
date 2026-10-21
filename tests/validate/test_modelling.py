@@ -296,6 +296,70 @@ def test_independent_native_errors_reject_corruption(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.parametrize("eligible_count", [40, 125, 211])
+@pytest.mark.parametrize("mutation", ["none", "legacy_union", "duplicate"])
+def test_independent_report_ties_reject_truncated_population(tmp_path: Path, eligible_count: int, mutation: str) -> None:
+    panels, errors, native, blocks = [], [], {}, []
+    worst = list(range(eligible_count - 1, max(-1, eligible_count - 101), -1))
+    best = list(range(min(50, max(0, eligible_count - 100))))
+    selection = [(i, "worst") for i in worst] + [(i, "best") for i in best]
+    if mutation == "legacy_union":
+        selection = [(i, "worst") for i in range(min(100, eligible_count))]
+    elif mutation == "duplicate":
+        selection[-1] = selection[0]
+    for population, year, fold in [("validation", 2001, 1), ("backtest", 2022, 0)]:
+        dates = pd.bdate_range(f"{year}-01-03", periods=3)
+        panels.append(
+            pd.DataFrame(
+                {
+                    "date": np.repeat(dates, eligible_count),
+                    "ticker": [f"T{i:03}" for i in range(eligible_count)] * 3,
+                    "fold": fold,
+                    "y": 0.0,
+                    "raw_m": 1.0,
+                }
+            )
+        )
+        errors.append(
+            pd.DataFrame(
+                {
+                    "population": population,
+                    "model": "m",
+                    "ticker": [f"T{i:03}" for i in range(eligible_count)],
+                    "n": 3,
+                    "mae": 1.0,
+                    "bias": 1.0,
+                    "rmse": 1.0,
+                }
+            )
+        )
+        block = f"native-60-{population}-m"
+        native[population] = {
+            "m": {
+                "date": dates.tolist(),
+                "fold": [fold] * 3,
+                "eligible_tickers": eligible_count,
+                "tickers": [{"ticker": f"T{i:03}", "group": group, "n": 3, "mae": 1.0, "bias": 1.0, "rmse": 1.0} for i, group in selection],
+                "block": block,
+            }
+        }
+        values = np.tile(np.array([[1.0] * 3, [0.0] * 3], dtype="<f8"), (len(selection), 1, 1))
+        encoded = base64.b64encode(gzip.compress(values.tobytes(), mtime=0)).decode("ascii")
+        blocks.append(f'<script id="{block}" type="application/octet-stream">{encoded}</script>')
+    output = tmp_path / "assessment/h60"
+    output.mkdir(parents=True)
+    pd.concat(panels, ignore_index=True).to_parquet(output / "predictions.parquet", index=False)
+    pd.concat(errors, ignore_index=True).to_parquet(output / "ticker_errors.parquet", index=False)
+    findings = []
+    modelling._native_payload_checks(tmp_path, 60, ["m"], native, "".join(blocks), findings)
+    assert bool(findings) is (mutation != "none")
+    population_failure = mutation == "duplicate" or (mutation == "legacy_union" and eligible_count > 100)
+    assert any(finding.observed == "HTML error-display population size differs" for finding in findings) is population_failure
+    print(
+        f"SANITY: independent tied-RMSE check for{eligible_count} titles accepts the full opposite-end selection and rejects mutation={mutation}; population cardinality is checked separately."
+    )
+
+
 def test_independent_report_rejects_wrong_ticker_series_or_rmse(tmp_path: Path) -> None:
     _report_artifacts(tmp_path, n_tickers=211)
     text = render_assessment(tmp_path).read_text(encoding="utf-8")

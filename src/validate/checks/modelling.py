@@ -240,14 +240,24 @@ def _native_payload_checks(run: Path, horizon: int, families: list[str], native:
         indexed = sample.set_index(["ticker", "date"])
         for model, meta in models.items():
             eligible = errors.loc[(errors.population == population) & (errors.model == model) & np.isfinite(errors.rmse) & (errors.n > 0)]
-            records = eligible.to_dict("records")
-            worst = sorted(records, key=lambda row: (-row["rmse"], row["ticker"]))[:100]
-            best = sorted(records, key=lambda row: (row["rmse"], row["ticker"]))[:50]
+            records = sorted(eligible.to_dict("records"), key=lambda row: (row["rmse"], row["ticker"]))
+            worst = list(reversed(records[-100:]))
+            best = records[:50]
             selection = {row["ticker"]: {**row, "group": "worst"} for row in worst}
             for row in best:
                 selection.setdefault(row["ticker"], {**row, "group": "best"})
             wanted = list(selection.values())
-            membership = [row["ticker"] for row in meta["tickers"]] == list(selection)
+            tickers = [row["ticker"] for row in meta["tickers"]]
+            _finding(
+                findings,
+                len(set(tickers)) == len(tickers) == min(len(eligible), 150),
+                "HTML error-display population size differs",
+                "Exactly min(eligible titles,150) distinct display titles",
+                horizon=horizon,
+                model=model,
+                population=population,
+            )
+            membership = tickers == list(selection)
             _finding(
                 findings,
                 membership,

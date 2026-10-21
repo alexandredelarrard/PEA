@@ -17,7 +17,7 @@ from uuid import uuid4
 
 import numpy as np
 import pandas as pd
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 
 from src.constants.constants import PREDICTION_MODEL_BLENDED, PREDICTION_MODEL_ENSEMBLE
 from src.context import Context
@@ -186,7 +186,14 @@ class StepLongShort(Step):
             self._run_path, self._run_state = select_run(self._context, self._config, run_id or self._run_id, assessed=True)
             self._run_id = self._run_state["run_id"]
             saved = read_fitting_configuration(self._run_path)
-            self._config = OmegaConf.merge(self._config, {key: value for key, value in saved.items() if value is not None})
+            restored = self._config.copy()
+            for key in configuration_snapshot(restored)["model"]:
+                del restored.model[key]
+            for key, value in saved.pop("model").items():
+                restored.model[key] = value
+            for key, value in saved.items():
+                restored[key] = value
+            self._config = restored
             self.label_column = str(self._config.model.label_column)
             self.target_type = str(self._config.model.get("target_type", "rank"))
             self.families = list(self._run_state["model_types"])
@@ -501,8 +508,11 @@ class StepLongShort(Step):
                 self._save_fold(horizon, number, fitted, cv)
         if len(cv.folds) != int(cfg.n_splits):
             raise ValueError("Insufficient usable walk-forward folds")
-        cv.ic = pd.DataFrame(cv.folds)[["mean_ic", "ic_ir"]].mean().to_dict()
-        cv.member_ic = {name: pd.DataFrame(rows)[["mean_ic", "ic_ir"]].mean().to_dict() for name, rows in cv.member_folds.items()}
+        cv.ic = {str(key): float(value) for key, value in pd.DataFrame(cv.folds)[["mean_ic", "ic_ir"]].mean().items()}
+        cv.member_ic = {
+            name: {str(key): float(value) for key, value in pd.DataFrame(rows)[["mean_ic", "ic_ir"]].mean().items()}
+            for name, rows in cv.member_folds.items()
+        }
         self._log.info("h%s equal-fold aggregate IC=%+.4f IC_IR=%+.2f", horizon, cv.ic["mean_ic"], cv.ic["ic_ir"])
         return cv
 

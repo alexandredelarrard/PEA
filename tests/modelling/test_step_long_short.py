@@ -24,7 +24,7 @@ from src.data_aggregate.utils.assemble.cube import horizons_in, target_column
 from src.data_store.schema import Tables
 from src.modelling.steps.step_long_short import StepLongShort, union_all_columns
 from src.modelling.transformers import LightGBMModel, RandomForestModel
-from src.modelling.utils.artifacts import load_ensemble, read_metadata
+from src.modelling.utils.artifacts import configuration_snapshot, load_ensemble, read_metadata
 from src.modelling.utils.assessment import write_json
 from src.modelling.utils.ensemble import PREDICTION_COLUMNS, ensemble_predict
 from src.modelling.utils.metrics import daily_ic
@@ -166,6 +166,7 @@ def _stub_fits(step: StepLongShort, monkeypatch: pytest.MonkeyPatch) -> list[dic
                 "rounds": rounds,
                 "columns": list(train),
                 "seed": step._config.seed,
+                "configuration": configuration_snapshot(step._config),
             }
         )
         count = rounds or 7 + 3 * (sum(call["horizon"] == horizon and call["valid_rows"] is not None for call in calls) - 1)
@@ -380,6 +381,46 @@ def test_full_history_records_effective_end_and_restores_saved_fitting_controls(
     assert read_metadata(tmp_path / "models")["full_history_attempt_id"] != first_attempt
     print(
         "SANITY: fresh full-history attempts preserve the original resolved feature pool/seed/families/rounds despite YAML/schema growth, with no repeated CV."
+    )
+
+
+def test_full_history_removes_current_only_fitting_controls(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    tmp_path = tmp_path.parent / "f001"
+    step, _, config = _setup(
+        tmp_path,
+        sqlite_store,
+        model={"horizons": [60], "cv": {"n_splits": 3}},
+        lgbm={"columns": ["f0", "f1"]},
+    )
+    del config.lgbm.bagging_freq
+    del config.model.weight_decay
+    calls = _stub_fits(step, monkeypatch)
+    initial = step.run_train()
+    frozen = (initial.run_dir / "training/configuration.json").read_bytes()
+    saved = json.loads(frozen)
+    assert "columns_by_horizon" not in saved["lgbm"] and "bagging_freq" not in saved["lgbm"]
+    write_json(initial.run_dir / "assessment/metadata.json", {"run_id": initial.run_id, "complete": True})
+    (initial.run_dir / "report.html").write_text("assessed", encoding="utf-8")
+    config.lgbm.columns_by_horizon = {"60": ["f1"]}
+    config.lgbm.bagging_freq = 7
+    config.model.weight_decay = {"enabled": True, "half_life_years": 1}
+    config.model.models_dir = str(tmp_path / "current-models")
+    config.model.read_chunksize = 2000
+    config.model.diagnostics.shap_sample = 37
+    monkeypatch.setattr(step, "_cross_validate", lambda *a, **kw: pytest.fail("Full-history fit must not repeat CV"))
+    previous_calls = len(calls)
+    result = step.run_train(full_history=True)
+    assert len(calls) == previous_calls + 1 and calls[-1]["horizon"] == 60 and calls[-1]["rounds"] == 12
+    assert result.models[60]["lgbm"].features == ["f0", "f1"]
+    assert calls[-1]["configuration"] == saved, "The actual fit must receive exactly the saved fitting controls"
+    assert step._config.model.read_chunksize == 2000 and step._config.model.diagnostics.shap_sample == 37
+    assert step._config.data_extract == config.data_extract
+    assert read_metadata(tmp_path / "current-models")["feature_cols"] == read_metadata(initial.run_dir / "cutoff")["feature_cols"]
+    assert not (tmp_path / "models").exists()
+    assert (initial.run_dir / "training/configuration.json").read_bytes() == frozen
+    assert config.lgbm.bagging_freq == 7 and config.lgbm.columns_by_horizon["60"] == ["f1"]
+    print(
+        "SANITY: h60/three-fold no-fit refit removes current-only fitting controls, preserves saved pools/rounds/bytes and keeps current runtime/output routing."
     )
 
 

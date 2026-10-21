@@ -241,4 +241,3 @@ build_cube:
     save_cube: true
     save_panel: false
     save_shap: true
-    save_models: true

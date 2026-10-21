@@ -59,12 +59,6 @@ def shap_row_values(
 ) -> tuple[np.ndarray, np.ndarray] | None:
     """`(shap_matrix, row_idx)` for a sampled subset of `x`, or None when unavailable; squared-error
     forests use prediction units, other objectives retain native TreeSHAP units."""
-    if shap is None:
-        if logger is not None:
-            logger.warning(
-                "SHAP artifacts skipped: `shap` is not installed in this environment (declared in pyproject -- reinstall the venv: `poetry install`)."
-            )
-        return None
     try:
         idx = _sample_idx(len(x), sample, seed)
         values = shap.TreeExplainer(booster).shap_values(x[idx])

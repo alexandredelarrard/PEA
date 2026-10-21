@@ -23,7 +23,7 @@ from omegaconf import DictConfig, OmegaConf
 
 from src.constants.constants import MODEL_GENERATION_ARTIFACT_FORMAT
 from src.modelling.utils.assessment import write_json
-from src.utils.modelling_runs import contained_path, new_run_id, read_run, run_directory, validate_run_id  # noqa: F401
+from src.utils.modelling_runs import contained_path, validate_run_id
 
 ARTIFACT_FORMAT = "transformer-pickle-v1"
 TRAINING_CONTRACT = "matured-fold-es-v1"
@@ -32,7 +32,7 @@ METADATA_FILE = "metadata.json"
 
 def configuration_snapshot(config: DictConfig) -> dict[str, Any]:
     """Resolve only the modelling controls owned by this run, excluding provider/local state."""
-    snapshot = {
+    snapshot: dict[str, Any] = {
         key: OmegaConf.to_container(config[key], resolve=True) if OmegaConf.is_config(config.get(key)) else config.get(key)
         for key in ("seed", "train", "model", "linear", "lgbm", "random_forest")
     }
@@ -98,16 +98,6 @@ def models_dir(context: Any, config: DictConfig) -> Path:
 def member_path(directory: Path, horizon: int, family: str) -> Path:
     """File of one ensemble member."""
     return Path(directory) / f"model_h{int(horizon)}_{family}.pkl"
-
-
-def clear_members(directory: Path) -> list[Path]:
-    """Delete every member pickle (`model_h<h>_<family>.pkl`) of a previous run, so a horizon or
-    family this run does not produce can never be loaded next to the new members. Returns the
-    deleted files."""
-    removed = sorted(Path(directory).glob("model_h*_*.pkl"))
-    for path in removed:
-        path.unlink()
-    return removed
 
 
 def write_metadata(directory: Path, meta: dict) -> Path:

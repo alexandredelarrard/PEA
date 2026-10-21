@@ -7,8 +7,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from src.modelling.utils.assessment import summarize_ic
-from src.modelling.utils.metrics import daily_ic_series
+from src.modelling.utils.metrics import daily_ic_series, summarize_ic
 
 
 def temporal_diagnostics(predictions: pd.DataFrame, models: list[str], horizon: int, window: int) -> tuple[dict[str, Any], pd.DataFrame]:

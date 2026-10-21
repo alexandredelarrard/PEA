@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.modelling.transformers.assessment_report import render_assessment
+from src.modelling.transformers.assessment_report import _error_display, render_assessment
 from src.modelling.utils.artifacts import configuration_snapshot, file_identity
 from src.modelling.utils.assessment import write_json
 from src.modelling.utils.assessment_metrics import native_error_diagnostics, temporal_diagnostics, universe_diagnostics
@@ -227,6 +227,36 @@ def test_report_preserves_native_history_dates_gaps_and_empty_states(tmp_path: P
     )
 
 
+@pytest.mark.parametrize("eligible_count", [40, 125, 211])
+def test_error_display_ties_fill_the_available_population(eligible_count: int) -> None:
+    errors = pd.DataFrame({"ticker": [f"T{i:03}" for i in range(eligible_count)], "rmse": 1.0, "n": 3})
+    selected = _error_display(errors.sample(frac=1, random_state=7))
+    worst = [f"T{i:03}" for i in range(eligible_count - 1, max(-1, eligible_count - 101), -1)]
+    best = [f"T{i:03}" for i in range(min(50, max(0, eligible_count - 100)))]
+    print(f"TIED RMSE: eligible={eligible_count}, selected={len(selected)}, required={min(eligible_count, 150)}")
+    assert len(selected) == min(eligible_count, 150)
+    assert selected.ticker.tolist() == [*worst, *best]
+    assert selected.group.tolist() == ["worst"] * len(worst) + ["best"] * len(best)
+    assert selected.ticker.is_unique
+    print("SANITY: tied RMSE uses descending tickers at the worst end and ascending tickers at the best end, retaining the full available cap.")
+
+
+def test_error_display_mixed_ties_exclude_nonfinite_and_missing_support() -> None:
+    errors = pd.DataFrame({"ticker": [f"T{i:03}" for i in range(160)], "rmse": np.arange(160) // 40, "n": 3})
+    unsupported = pd.DataFrame(
+        {
+            "ticker": ["nan", "inf", "negative_inf", "zero_support", "missing_support"],
+            "rmse": [np.nan, np.inf, -np.inf, 999, 999],
+            "n": [3, 3, 3, 0, np.nan],
+        }
+    )
+    selected = _error_display(pd.concat([errors, unsupported], ignore_index=True).sample(frac=1, random_state=7))
+    assert selected.ticker.tolist() == [*[f"T{i:03}" for i in range(159, 59, -1)], *[f"T{i:03}" for i in range(50)]]
+    assert selected.group.tolist() == ["worst"] * 100 + ["best"] * 50
+    assert selected.ticker.is_unique and np.isfinite(selected.rmse).all() and (selected.n > 0).all()
+    print("SANITY: mixed RMSE ties fill150 distinct titles, retain valid zero errors, and exclude nonfinite errors and zero/missing support.")
+
+
 def test_report_embeds_only_worst100_best50_tickers_per_selection(tmp_path: Path) -> None:
     _report_artifacts(tmp_path, n_tickers=211)
     payload, text = _read_payload(tmp_path)
@@ -236,9 +266,11 @@ def test_report_embeds_only_worst100_best50_tickers_per_selection(tmp_path: Path
         predictions = pd.read_parquet(tmp_path / f"assessment/h{h}/predictions.parquet")
         for population, models in analysis["native"].items():
             for model, meta in models.items():
-                eligible = evidence.loc[(evidence.population == population) & (evidence.model == model) & evidence.rmse.notna()]
-                worst = eligible.sort_values(["rmse", "ticker"], ascending=[False, True]).head(100).ticker.tolist()
-                best = eligible.sort_values(["rmse", "ticker"]).head(50).ticker.tolist()
+                eligible = evidence.loc[
+                    (evidence.population == population) & (evidence.model == model) & np.isfinite(evidence.rmse) & (evidence.n > 0)
+                ]
+                order = eligible.sort_values(["rmse", "ticker"]).ticker.tolist()
+                worst, best = order[-100:][::-1], order[:50]
                 expected = list(dict.fromkeys([*worst, *best]))
                 assert [row["ticker"] for row in meta["tickers"]] == expected and len(expected) == 150
                 assert [row["group"] for row in meta["tickers"]] == ["worst"] * 100 + ["best"] * 50
@@ -246,8 +278,8 @@ def test_report_embeds_only_worst100_best50_tickers_per_selection(tmp_path: Path
                 values = _native_values(meta, text)
                 assert values.shape == (150, 2, 3)
                 observed = predictions.loc[(predictions.fold > 0) == (population == "validation")].set_index(["ticker", "date"])
-                row = observed.loc[expected[0]].sort_index()
-                np.testing.assert_allclose(values[0], row[[f"raw_{model}", "y"]].to_numpy().T)
+                histories = np.asarray([observed.loc[ticker].sort_index()[[f"raw_{model}", "y"]].to_numpy().T for ticker in expected])
+                np.testing.assert_allclose(values, histories)
                 assert analysis["temporal"][population]["all"][model]["universe"] == [211] * 3
     assert len(set(selections)) > 3
     print(

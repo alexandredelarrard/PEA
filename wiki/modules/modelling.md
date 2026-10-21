@@ -5,7 +5,7 @@ type: module
 tags:
   - wiki
   - module
-source_commit: 65624e71af94a8a0d662b35b975affb7d43016b7
+source_commit: 2c9504c51e3c1d230d3d3623ff03eb8cffc4d11a
 ---
 # Modelling
 
@@ -52,7 +52,7 @@ Under `model.assessment.output_dir` (normally output/modelling_backtest), each f
 - assessment/metadata.json and report.html: completed assessment provenance and self-contained report.
 - portfolio/: portfolio outputs; full_history/<attempt_id>/: fresh final refit attempts.
 
-There are no replay/source/configuration hashes, analysis caches or historical-run migration requirements. Saved member byte inventories remain verified at their owning load boundary. Current fitting YAML drift does not invalidate saved-model assessment. Full-train restores the exact saved resolved feature schema, so newly appeared cube columns cannot silently enter that refit.
+There are no replay/source/configuration hashes, analysis caches or historical-run migration requirements. Saved member byte inventories remain verified at their owning load boundary. Dated assessment and the [dated portfolio CLI](../../src/portfolio/cli.py) refuse a missing original inventory before any member is consumed; generic daily legacy loading retains its existing optional-member behavior. Current fitting YAML drift does not invalidate saved-model assessment. Full-train restores the exact saved resolved feature schema, so newly appeared cube columns cannot silently enter that refit.
 
 Each assessment builds in fresh run-local scratch space. An exclusive same-run lock prevents competing publication. Successful publication replaces assessment/ and report.html with bounded backup/rollback; completion is written last. A failed calculation preserves the prior complete result. Filesystem replacement is not one atomic transaction; retained backup evidence permits recovery after an interrupted swap. The next assess still recalculates everything. latest.json denotes assessment success only; selectors inspect complete manifests rather than relying on that pointer.
 
@@ -85,4 +85,4 @@ The [independent validator](../../src/validate/checks/modelling.py) reconciles s
 
 [Architecture guards](../../tests/modelling/test_architecture_guard.py) enforce package boundaries. [Artifact tests](../../tests/modelling/test_run_artifacts.py) cover publication and pinned readers. [Assessment integration](../../tests/modelling/test_assessment_evaluation.py) forbids fitting, independently validates outputs and exercises a fresh second assessment after old scores are corrupted.
 
-The [2026-10-19 acceptance record](../guides/testing.md#modelling-dag-acceptance-2026-10-19) describes the prior workflow, not validation of this refactor.
+The [2026-10-21 acceptance record](../guides/testing.md#modelling-workflow-acceptance-2026-10-21) covers this workflow on the user-approved isolated synthetic dataset. The [2026-10-19 record](../guides/testing.md#modelling-dag-acceptance-2026-10-19) describes the prior workflow.

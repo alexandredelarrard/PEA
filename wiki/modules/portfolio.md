@@ -5,6 +5,7 @@ type: module
 tags:
   - wiki
   - module
+source_commit: 2c9504c51e3c1d230d3d3623ff03eb8cffc4d11a
 ---
 # Portfolio
 
@@ -27,6 +28,8 @@ tags:
 - `StepPortfolio.run()` in [step_portfolio.py](../../src/portfolio/step_portfolio.py).
 - `StepStrategyMoves.run()` in [step_strategy_moves.py](../../src/portfolio/step_strategy_moves.py).
 - Portfolio CLI commands in [portfolio/cli.py](../../src/portfolio/cli.py).
+
+`portfolio backtest` defaults to the latest successfully assessed training; optional `--run-id` selects an exact assessed run. It uses that run's cutoff members and writes beneath its `portfolio/` directory. The CLI requires the matching cutoff role/run ID and an original member inventory before invoking `StepPortfolio` or changing output routing. The shared model loader verifies completeness and bytes once. See the [model lifecycle](../flows/model-training-and-prediction.md) and [entrypoint/integrity controls](../../tests/modelling/test_assessment_cli.py).
 - Blend helpers in [portfolio/utils/blend.py](../../src/portfolio/utils/blend.py).
 
 ## Key files

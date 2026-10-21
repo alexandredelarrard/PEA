@@ -7,7 +7,7 @@ tags:
   - guide
   - testing
   - validation
-source_commit: 65624e71af94a8a0d662b35b975affb7d43016b7
+source_commit: 2c9504c51e3c1d230d3d3623ff03eb8cffc4d11a
 ---
 # Testing and validation
 
@@ -231,13 +231,25 @@ Run the relevant existing split-union, level/value, predecessor, insider/institu
 
 [Assessment integration](../../tests/modelling/test_assessment_evaluation.py) loads prefitted known-truth members with fitting/CV forbidden, checks all-title scoring and train/assess IC parity, runs independent source/native/effect validation and refreshes after corrupting old outputs. [Publication tests](../../tests/modelling/test_fresh_assessment.py) cover generation/swap failure, same-run concurrency, exact24hour warning boundaries and Windows file locks. [Explanation tests](../../tests/modelling/test_assessment_explanations.py) retain native additivity, RF scale and linear reconstruction; [report tests](../../tests/modelling/test_assessment_report.py) cover declared folds/horizons/features and cutoff PDP.
 
-For the 2026-10-21 train/assess refactor, the user restricts real operational rehearsal to h60, at most three folds and all three families: nine fold fits, three cutoff fits and three full-history fits, plus two fresh assessments, portfolio and one final read-only validator. Use the last three configured windows without changing feature pools, controls or diagnostic budgets. Default production remains five folds and h30/h60/h90. Actual h30/h90 performance is outside this rehearsal.
+For the 2026-10-21 train/assess refactor, the user explicitly substituted isolated synthetic data because the live cube/targets are absent, and restricts operational rehearsal to h60, at most three folds and all three families: nine fold fits, three cutoff fits and three full-history fits, plus two fresh assessments, portfolio and one final read-only validator. Use the last three configured windows without changing feature pools, controls or diagnostic budgets. Default production remains five folds and h30/h60/h90. Actual h30/h90 performance is outside this rehearsal.
 
 Run only exact affected pytest function node IDs; no global suite, whole modelling folder or unrelated sibling suites. Record failures, repairs, execution counts and any accidental extra fixture fits explicitly. No automatic repetition of green groups.
 
 The [independent validator](../../src/validate/checks/modelling.py), invoked with validate modelling -c <isolated-configs> -o <dated-run>, independently reconciles finite-pair Spearman/IC-IR, external-test purges, metric inputs against original scores, source-checked explanation inputs, native predictions/contributions/PDP, mature full-history refits and report content. Incomplete evidence exits3 (ABSTAINED); corrupt complete evidence fails. Positive performance is not a correctness threshold.
 
 Offline report checks exercise every available horizon/population/statistic/family control and representative feature states. Curves reflect every declared fold plus cutoff and preserve unsupported calendar gaps. Known-truth fixtures prove math/control flow, while real scoped data supports population/temporal acceptance. Current-roster/GICS/static-peer/vendor limitations and external-test RMSE selection influence remain explicit.
+
+## Modelling workflow acceptance 2026-10-21
+
+Executable revision: `2c9504c51e3c1d230d3d3623ff03eb8cffc4d11a`, after isolated correction and independent correctness/simplicity reviews. The user explicitly replaced real-cube acceptance with disposable synthetic data because the live cube and target tables were absent. Normal operation remains five folds and h30/h60/h90.
+
+The bounded functional chain uses h60, the last three configured test windows and all three families: nine original-fold models, three cutoff models and three full-history models, for 15 actual fitted objects. Two complete assessments reload these models and recompute scores/explanations; the original model bytes remain unchanged. The read-only [model validator](../../src/validate/checks/modelling.py) passes with zero findings over 20,560 scored rows. Independent arithmetic reconciles all fold IC/IR and the last-two-round mean. The offline model report passes 127 browser checks.
+
+The integrated correction batch passes 45 exact affected cases. A subsequent 15-case [CLI/integrity batch](../../tests/modelling/test_assessment_cli.py) covers the final dated-portfolio guard and its connected compatibility paths. The guard refuses absent/null original member inventories before portfolio construction or routing changes; the shared loader retains the sole completeness/hash check. Missing-inventory failures were reproduced before correction, including a silent two-of-three member load. The final independent recheck proves the refusal and preserves complete-cutoff and generic legacy controls.
+
+Only the portfolio refusal changes executable code after the main functional chain. Its actual guarded CLI replay passes using the same 15 models with zero additional fits, preserving active production, peer and root-user identities. The audit wrapper subsequently exits 1 while printing a Unicode arrow under Windows cp1252; the successful child result was already persisted. Independent readback passes and retains that output-only failure; the portfolio replay was not repeated.
+
+Evidence is retained under the local ignored `reports/validate/2026-10-21-modelling-train-assess-simplification/`: `06-final.md`, `report.html`, `04-validation-01.md`, `04-validation-02.md`, exact commands/JUnit and both final review reports. Earlier accidental small legacy-fixture h30/h60 fits are explicitly disclosed and that fixture was converted to no-fit. No global/folder-wide pytest suite or additional operational training was run. This is functional/mathematical acceptance, with no real financial performance, upstream PIT, generalization or production-scale claim. The older acceptance record below remains historical.
 
 ## Modelling DAG acceptance 2026-10-19
 

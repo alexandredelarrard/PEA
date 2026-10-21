@@ -2,7 +2,7 @@
 title: Codebase Wiki — Overview
 description: Canonical internal hub for architecture, modules, flows, concepts, guides, references, and backlog.
 profile: internal/standard
-source_commit: f39d9a23d5bf0a8b8774fb96a44938069b790ac5
+source_commit: 2c9504c51e3c1d230d3d3623ff03eb8cffc4d11a
 tags:
   - wiki
   - overview
@@ -41,6 +41,8 @@ flowchart LR
 ~~~
 
 The narrow production boundary is deliberate: all tabular application I/O passes through [DataStore](./modules/data-store.md), while manual and scheduled orchestration invoke the same package-level CLI commands.
+
+The [modelling workflow](./flows/model-training-and-prediction.md) separates training from fresh saved-model assessment. Train retains models and basic fold IC/IR; assess reloads models and current data to produce predictions, explanations and the run-local report. The generated training ID pins all weekly downstream stages. See [model artifacts](./modules/modelling.md) and the [bounded acceptance record](./guides/testing.md#modelling-workflow-acceptance-2026-10-21).
 
 ## Task map
 

@@ -7,7 +7,7 @@ tags:
   - reference
   - modelling
   - portfolio
-source_commit: 65624e71af94a8a0d662b35b975affb7d43016b7
+source_commit: 2c9504c51e3c1d230d3d3623ff03eb8cffc4d11a
 ---
 # Modelling, strategies, and portfolio
 
@@ -65,7 +65,7 @@ The five forward windows cover 2000–02,2003–06,2007–12,2013–18 and2019�
 
 Each original fold supplies its held-out signed-effect curve; a fresh cutoff member supplies the 2022+ curve, sampled tree scatter and PDP. Cutoff refitting uses all eligible development rows, rather than averaging the five folds. Linear importance is absolute standardized beta; signed beta contributions are labelled separately from SHAP. The already-inspected 2022+ backtest is not a new sealed evaluation; current-roster coverage, retrospective classifications and static peer vintages remain historical/generalization limits. See [report plots](../modules/modelling.md#report-plots).
 
-[Artifact utilities](../../src/modelling/utils/artifacts.py) retain folds/cutoff/full-history evidence under configured output/modelling_backtest/<run_id>. Production output/models holds immutable generations plus one atomic metadata switch; readers pin one snapshot for all member loads. Daily production readers also accept legacy flat transformer pickles; dated assessment requires new-workflow training. latest.json denotes assessment success only. Any failed task blocks later tasks and retains previous production. Every train creates a fresh run; assess always recomputes current data/model scores, metrics and explanations. There is no partial resume or report-only mode. Standalone assess selects latest completed training; portfolio/full-train select latest successfully assessed training, with optional exact --run-id. Full-train restores saved fitting settings and exact resolved schema. Daily run_predict scores newest feature-only rows without retraining. See [run and retry commands](../guides/run-the-pipeline.md#dated-modelling-assessment).
+[Artifact utilities](../../src/modelling/utils/artifacts.py) retain folds/cutoff/full-history evidence under configured output/modelling_backtest/<run_id>. Production output/models holds immutable generations plus one atomic metadata switch; readers pin one snapshot for all member loads. Daily production readers also accept legacy flat transformer pickles; dated assessment requires new-workflow training. Dated assessment and [portfolio backtest](../../src/portfolio/cli.py) require the original member inventory before consuming the selected models; completeness and byte verification remain owned by the shared loader. latest.json denotes assessment success only. Any failed task blocks later tasks and retains previous production. Every train creates a fresh run; assess always recomputes current data/model scores, metrics and explanations. There is no partial resume or report-only mode. Standalone assess selects latest completed training; portfolio/full-train select latest successfully assessed training, with optional exact --run-id. Full-train restores saved fitting settings and exact resolved schema. Daily run_predict scores newest feature-only rows without retraining. See [run and retry commands](../guides/run-the-pipeline.md#dated-modelling-assessment).
 
 ## Model completion criteria
 

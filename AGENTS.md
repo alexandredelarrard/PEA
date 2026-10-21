@@ -52,7 +52,7 @@ data_store/    only SQL; registry, facade, DDL
 data_extract/  ordered source fetchers and six domain sub-steps
 data_peers/    business/return peer baskets
 data_aggregate/ eight cube parts plus streamed assembly
-modelling/     steps/ (StepLongShort), transformers/ (models, Monitor, Backtest), utils/
+modelling/     steps/ (train, assess), transformers/ (models, diagnostics), utils/
 strategies/    ls_equity and eq_long_only sleeves
 portfolio/     ERC blend and strategy trade ledger
 validate/      all read-only validation code

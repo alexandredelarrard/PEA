@@ -5,7 +5,7 @@ type: flow
 tags:
   - wiki
   - flow
-source_commit: 65624e71af94a8a0d662b35b975affb7d43016b7
+source_commit: 2c9504c51e3c1d230d3d3623ff03eb8cffc4d11a
 ---
 # Model training and daily prediction
 
@@ -45,7 +45,7 @@ sequenceDiagram
 4. Original models and minimal dates/counts/rounds/IC/IR JSON are saved. Train creates no SHAP/PDP, importance, report, post-2022 analysis, OOF prediction files or historical prediction/signal table writes. Fresh cutoff members fit all eligible development rows. Their LightGBM count is the upward-rounded mean of the last two configured fold best-round counts, separately per horizon.
 5. [StepAssessLongShort.run()](../../src/modelling/steps/step_assess_long_short.py) independently reloads the models and current data on every call. Without an ID it takes the latest successfully completed training; --run-id or constructor run_id pins an exact run. It logs training UTC and ID and warns strictly after 24 hours.
 6. Assessment predicts complete feature-only cross-sections before reading outcomes. Original folds score only their declared tests; curves retain unsupported gaps. Cutoff members score from 2022-01-03 to each horizon's latest mature feature date. It recomputes all metrics, explanations and the [report](../modules/modelling.md#report-plots), without fitting or reusing old analysis. Diagnostic sampling never limits IC scoring.
-7. [Portfolio backtest](../../src/portfolio/cli.py) selects the latest assessed training by default, or an explicit ID, and uses its cutoff members. Feature-only scoring precedes future-return availability. Portfolio start remains June 2022; dates, costs and construction remain configured. Outputs stay in that run's portfolio/.
+7. [Portfolio backtest](../../src/portfolio/cli.py) selects the latest assessed training by default, or an explicit ID, and uses its cutoff members. Feature-only scoring precedes future-return availability. Portfolio start remains June 2022; dates, costs and construction remain configured. Outputs stay in that run's portfolio/. The CLI requires the matching cutoff role/run ID and original member inventory before construction or routing changes; the owning loader then verifies completeness and bytes.
 8. `modelling full-train` uses the same assessed-run selector. It restores the saved fitting settings, seed, exact resolved feature schema and final counts; current data/output routing remains current. It ignores old development ceilings, fits all labels mature by the latest cube/price session and never repeats CV. Every invocation creates a fresh attempt; verified immutable production generations are published by one atomic root metadata switch.
 9. Daily `run_predict()` checks [freshness](../../src/utils/freshness.py), pins production metadata, scores newest feature-only rows and writes member/horizon/blended predictions_latest. It does not require current targets.
 

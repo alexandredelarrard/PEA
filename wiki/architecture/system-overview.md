@@ -1,4 +1,5 @@
 ---
+source_commit: 55d6e2d199fa9a83aca7d5442549eeb66eedd189
 title: System overview
 description: Boundaries and major components of the stock_pick_strat quantitative pipeline.
 type: architecture
@@ -10,7 +11,7 @@ tags:
 
 ## Summary
 
-The system is a staged quantitative pipeline: source-specific extractors persist normalized observations, cube builders create point-in-time feature panels, model code turns the cube into predictions, strategy sleeves turn signals into return streams and holdings, and the portfolio layer blends those sleeves into trades. The package map and production entry points are implemented by the orchestrators under [src](../../src/) and detailed in [orchestration and runtime](./orchestration-and-runtime.md).
+The system is a staged quantitative pipeline: source-specific extractors persist normalized observations, cube builders create point-in-time feature panels, model code turns the cube into predictions, the portfolio layer constructs sector-neutral long/short positions and simulates them alongside S&P 500 and cash. The package map and production entry points are implemented by the orchestrators under [src](../../src/) and detailed in [orchestration and runtime](./orchestration-and-runtime.md).
 
 ## Diagram
 
@@ -24,10 +25,9 @@ flowchart TD
   CubeParts --> Cube[(Wide point in time cube)]
   Cube --> Train[Per horizon ensemble]
   Train --> Predict[Latest predictions]
-  Predict --> Sleeves[Strategy sleeves]
-  DB --> Sleeves
-  Sleeves --> Blend[ERC blend and volatility target]
-  Blend --> Trades[(Strategy ledger)]
+  Train --> Portfolio[Model long short market and cash backtest]
+  DB --> Portfolio
+  Portfolio --> Report[Offline portfolio report]
   Airflow[Airflow] --> Extract
   Airflow --> CubeParts
   Airflow --> Train
@@ -38,12 +38,12 @@ flowchart TD
 - [Data extraction](../modules/data-extract.md) is coordinated by `StepExtractAllData` in [step_extract_all_data.py](../../src/data_extract/step_extract_all_data.py). Its per-ticker EDGAR fetchers each declare one `EdgarFetch` walked by the shared `run_edgar_fetch` in [edgar_driver.py](../../src/data_extract/utils/common/edgar_driver.py); bulk SEC zips go through one reader in [bulk_cache.py](../../src/data_extract/utils/common/bulk_cache.py).
 - [Peer deduction](../modules/data-peers.md) persists business-similarity and return-based peer baskets through `StepDeducePeers` in [step_deduce_peers.py](../../src/data_peers/step_deduce_peers.py).
 - [Cube aggregation](../modules/data-aggregate.md) owns eight persisted parts and the final assembly in [step_build_cube.py](../../src/data_aggregate/step_build_cube.py).
-- [Modelling](../modules/modelling.md), [strategies](../modules/strategies.md), and [portfolio](../modules/portfolio.md) form distinct signal, sleeve, and allocation layers.
+- [Modelling](../modules/modelling.md) supplies saved models; [portfolio construction](../modules/strategies.md) and the quantity engine live inside [portfolio](../modules/portfolio.md).
 - [Validation](../modules/validation.md) is a read-only subsystem with reusable checks and explicit result gates.
 
 ## Design decisions
 
-The repository uses package-level orchestration rather than a single script. Every major stage has a narrow entry point, persists its output, and can be invoked independently by the CLI or Airflow. That separation keeps expensive source work resumable and allows the cube, training, and prediction schedules to run at different cadences; the four schedules are implemented in [src/dags](../../src/dags/).
+The repository uses package-level orchestration rather than a single script. Every major stage has a narrow entry point, persists its output, and can be invoked independently by the CLI or Airflow. That separation keeps expensive source work resumable and allows the cube, training, and prediction schedules to run at different cadences; the four schedules are implemented in [src/dags](../../src/dags/dag_strat_prediction.py).
 
 Tabular state belongs in PostgreSQL, while models, diagnostics, caches, and peer dictionaries are non-tabular artifacts resolved through `Context.paths` in [context.py](../../src/context.py). SQL is isolated behind the [data-store boundary](../concepts/table-registry-and-store-boundary.md).
 

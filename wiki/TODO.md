@@ -6,6 +6,7 @@ tags:
   - wiki
   - todo
   - data-quality
+source_commit: 55d6e2d199fa9a83aca7d5442549eeb66eedd189
 ---
 # TODO
 
@@ -13,15 +14,13 @@ Deferred work that requires new source history, authoritative eligibility eviden
 
 ## L/S point-in-time gates
 
-### P0 — Purge the train-to-holdout label boundary
+### Resolved in code — Train-to-holdout label boundary
 
-The [trainer](../src/modelling/steps/step_long_short.py) filters labelled rows by feature date through `train.end_date`, while the [L/S scorer](../src/strategies/utils/ls_model.py) starts at that same metadata date. The configured boundary is 2022-01-01 in [training](../configs/modellling.yml) and [portfolio](../configs/portfolio.yml). Forward 30/60/90-day labels near the training end can therefore contain returns from the nominal holdout; the per-fold CV embargo does not purge this separate boundary.
-
-Before interpreting any backtest, make the first holdout decision strictly later than the latest return used by every training label (or remove the overlapping training rows). Test the boundary for every horizon and persist the effective label-end and first tradable holdout dates in run diagnostics.
+The [trainer](../src/modelling/steps/step_long_short.py) now records actual label ends and requires development/selection outcomes by2021-12-31. The [portfolio cutoff guard](../src/portfolio/transformers/signals.py) verifies training, selection, fit-audit and fold outcome dates before loading model members. Backtest decisions start2022-01-03 and execute next-session close. Known-truth tests cover eight future-boundary mutations. This closes the implementation item; an actual compatible assessed model run is still required before claiming economic replay of the nine strategies.
 
 ### P0 — Rebuild historical universe and sector membership
 
-The [price-part builder](../src/data_aggregate/transformers/step_cube_prices.py) uses the current S&P 500 roster for its historical grid, and [L/S sector neutralization](../src/strategies/step_ls.py) uses the current ticker-to-sector map. This can exclude former members and apply future classifications to past trades. Use a dated, point-in-time membership and sector history, reconciling the existing `sharadar_sp500` source before relying on it. Validate additions, removals, delistings, symbol changes, and the earliest eligible date per security; compare strategy results with the present survivor-only universe. Do not expand to Russell 1000 until this boundary is sound.
+The [price-part builder](../src/data_aggregate/transformers/step_cube_prices.py) uses the current S&P 500 roster for its historical grid, and [portfolio sector construction](../src/portfolio/transformers/construction.py) uses the current ticker-to-sector map. This can exclude former members and apply future classifications to past trades. Use a dated, point-in-time membership and sector history, reconciling the existing `sharadar_sp500` source before relying on it. Validate additions, removals, delistings, symbol changes, and the earliest eligible date per security; compare strategy results with the present survivor-only universe. Do not expand to Russell 1000 until this boundary is sound.
 
 ## 13F legacy parser follow-ups
 

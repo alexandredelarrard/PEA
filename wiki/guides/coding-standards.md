@@ -6,6 +6,7 @@ tags:
   - wiki
   - guide
   - coding-standards
+source_commit: 55d6e2d199fa9a83aca7d5442549eeb66eedd189
 ---
 # Coding standards
 
@@ -22,7 +23,7 @@ Every major `src/` package owns a `step_*.py` orchestrator. A step:
 3. exposes `run()` as its only public operation; and
 4. keeps implementation in package-local private helpers or composed sub-steps.
 
-Class names use `StepPascalCase`; files use `step_snake_case.py`. Strategies are the deliberate exception and implement [Strategy.run](../../src/strategies/base.py). [StepLongShort](../../src/modelling/steps/step_long_short.py) is the second exception: it lives in `src/modelling/steps/` and exposes `run_train()` and `run_predict()` besides `run()` (which calls `run_train()`), because training and prediction share one step's configuration.
+Class names use `StepPascalCase`; files use `step_snake_case.py`. [StepLongShort](../../src/modelling/steps/step_long_short.py) is the exception: it lives in `src/modelling/steps/` and exposes `run_train()` and `run_predict()` besides `run()` (which calls `run_train()`), because training and prediction share one step's configuration.
 
 Do not cross-import between sibling `src/` packages. Shared logic belongs in the [runtime and shared utilities](../modules/runtime-and-shared-utils.md) package. The sanctioned service exception is [src/gpt_extract](../../src/gpt_extract/), which centralizes LLM clients, prompts, and embeddings.
 
@@ -126,7 +127,7 @@ Before adding code:
 5. add the targeted test with the implementation; and
 6. execute that test with `-v -s`.
 
-Registries such as `Tables`, the cube-part registry, strategy registry, and SEC form policy often reduce a multi-file change to one declaration plus its consumer test.
+Registries such as `Tables`, the cube-part registry and SEC form policy often reduce a multi-file change to one declaration plus its consumer test.
 
 ## Testing expectations
 

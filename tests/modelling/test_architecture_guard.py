@@ -29,6 +29,7 @@ EXPECTED_TRANSFORMERS = {
     "__init__.py",
     "assessment_diagnostics.py",
     "assessment_report.py",
+    "assessment_report.html",
     "base.py",
     "lightgbm_model.py",
     "random_forest.py",
@@ -47,7 +48,7 @@ REMOVED_MODULES = (
     "src.strategies.analysis.trend_analysis",
 )
 REMOVED_NAMES = {"LongBookStrategy", "TrendCTAStrategy", "StepModelling"}
-SCORING_CONSUMERS = ("src/strategies/utils/ls_model.py", "app/app.py")
+SCORING_CONSUMERS = ("src/portfolio/transformers/signals.py",)
 
 
 def _repo_files(*roots: str) -> list[str]:

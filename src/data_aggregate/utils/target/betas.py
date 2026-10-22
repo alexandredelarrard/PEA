@@ -128,9 +128,8 @@ exposure.
 
 A univariate cov/var twin was emitted beside it as `beta_market_simple` for a long
 time and has been REMOVED, because nothing read it: no modelling allow-list mentions
-`beta_*` (features come from explicit `columns:` lists), the L/S optimizer computes
-its own 63-day beta (`strategies_opt.rolling_beta_var`, `strategy_ls.yml
-beta_window`), and `compute_epsilon` never subtracted it -- there is no
+`beta_*` (features come from explicit `columns:` lists), the portfolio backtest
+does not use a beta hedge, and `compute_epsilon` never subtracted it -- there is no
 `market_simple` factor column to multiply. Its ONLY effect was as a regressor in
 `targets.py`'s label projection, where at the current window/alpha it correlated
 0.945 with `beta_market` and carried the same leak (free IC 0.0088 vs 0.0084): a

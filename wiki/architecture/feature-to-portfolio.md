@@ -1,58 +1,53 @@
 ---
+source_commit: 55d6e2d199fa9a83aca7d5442549eeb66eedd189
 title: Feature-to-portfolio pipeline
-description: How cube parts become models, strategy sleeves, portfolio weights, and trade-ledger rows.
+description: Point-in-time features, saved models and an independent portfolio backtest.
 type: architecture
 tags:
   - wiki
   - architecture
-source_commit: 2c9504c51e3c1d230d3d3623ff03eb8cffc4d11a
 ---
 # Feature-to-portfolio pipeline
 
 ## Summary
 
-Downstream processing is split into four layers: cube construction, signal modelling, self-contained strategy sleeves, and portfolio allocation/execution. Each layer persists or returns an explicit contract rather than reaching into another layer's internals. The modelling and portfolio contracts are documented in [modelling, strategies, and portfolio](../reference/modelling-and-portfolio.md).
-
-## Diagram
+Existing source tables feed a point-in-time cube, saved cross-sectional ensembles, and an independent quantity-based portfolio backtest. Training and assessment remain separate from portfolio construction. [Modelling and portfolio contracts](../reference/modelling-and-portfolio.md) describe the data clocks.
 
 ~~~mermaid
 flowchart LR
   Sources[(Extract tables)] --> Parts[Feature and target parts]
-  Parts --> Cube[(Wide cube)]
-  Cube --> Horizon[One panel per horizon]
-  Horizon --> Train[Train ElasticNet LightGBM RF]
-  Train --> Models[(Saved original models)]
+  Parts --> Cube[(Point in time cube)]
+  Cube --> Train[Chronological model training]
+  Train --> Models[(Saved run cutoff members)]
   Models --> Assess[Fresh saved-model assessment]
   Cube --> Assess
-  Assess --> Report[Run-local metrics effects and HTML]
-  Models --> Inference[Feature-only inference]
-  Cube --> Inference
-  Inference --> LSEquity[LS equity sleeve]
-  Inference --> LongOnly[Equity long-only sleeve]
-  LSEquity --> Blend[ERC sleeve blend]
-  LongOnly --> Blend
-  Blend --> Vol[Global volatility target]
-  Vol --> Ledger[(Strategy ledger)]
+  Assess --> ModelReport[Modelling report]
+  Models --> Scores[Feature-only ensemble scoring]
+  Cube --> Scores
+  Scores --> Sector[Sector neutral LS construction]
+  Sources --> Sector
+  Sector --> Engine[LS S and P and cash quantity engine]
+  Engine --> Report[Offline portfolio report]
 ~~~
 
-## Key components
+## Key files and boundaries
 
-- [step_build_cube.py](../../src/data_aggregate/step_build_cube.py) coordinates the cube-part builders; [parts.py](../../src/data_aggregate/utils/common/parts.py) is their registry.
-- `StepLongShort.run_train` and `run_predict` in [step_long_short.py](../../src/modelling/steps/step_long_short.py) train and score one horizon at a time. Train saves original fold/cutoff members and basic IC/IR; inference loads models directly rather than reading a historical predictions table.
-- `StepAssessLongShort.run` in [step_assess_long_short.py](../../src/modelling/steps/step_assess_long_short.py) always recomputes scores, metrics, explanations and HTML from saved models/current data. Assessment owns [diagnostics](../../src/modelling/transformers/assessment_diagnostics.py); Monitor and the unused label-only Backtest are removed.
-- `PortfolioInputs`, `StrategyResult`, and the abstract `Strategy` contract live in [strategies/base.py](../../src/strategies/base.py).
-- `STRATEGY_REGISTRY` in [strategies/__init__.py](../../src/strategies/__init__.py) maps configured sleeve names to implementations.
-- `StepPortfolio` blends sleeve returns in [step_portfolio.py](../../src/portfolio/step_portfolio.py); `StepStrategyMoves` rebuilds each sleeve's book at its time-varying allocation in [step_strategy_moves.py](../../src/portfolio/step_strategy_moves.py).
+- [step_build_cube.py](../../src/data_aggregate/step_build_cube.py) coordinates registered feature/target builders.
+- [StepLongShort](../../src/modelling/steps/step_long_short.py) saves original fold/cutoff members and basic IC/IR; production full-history fitting is a separate command.
+- [StepAssessLongShort](../../src/modelling/steps/step_assess_long_short.py) reloads models and current data to recompute diagnostics and its report.
+- [signals.py](../../src/portfolio/transformers/signals.py) consumes only public modelling utilities, never its steps or transformers.
+- [StepPortfolio](../../src/portfolio/steps/step_portfolio.py) owns the nine simulations and run-local report.
+- [DataStore](../modules/data-store.md) remains the boundary for every tabular read; portfolio writes no source or ledger table.
 
 ## Design decisions
 
-The cube stores targets wide, one row per date and ticker. Training still processes one horizon at a time, and the latest prediction path loads no target columns because forward labels have not matured.
+Labels do not determine scoring membership. Horizon weights use training information only. Signal close J precedes execution close J+1. Fixed capital allocation and LS selection have independent observed-session schedules.
 
-Sleeves are independent and receive portfolio-level inputs rather than reading another sleeve. The portfolio owns ERC or inverse-volatility blending, the global volatility target, leverage, and capital. The ledger recomputes share quantities from scaled weight panels because time-varying capital allocation cannot be reproduced by multiplying an already-rounded blotter.
+The long/short book is dollar-neutral per sector when selection is rebalanced; the S&P pocket remains directional. The separate free cash pocket earns the fixed rate. Actual held quantities, corporate actions, implicit distributions and executed deltas determine P&L and fees. No ERC blend or application adapter remains.
 
 ## Related
 
 - [Cube build](../flows/cube-build.md)
-- [Model training and daily prediction](../flows/model-training-and-prediction.md)
-- [Portfolio to trade ledger](../flows/portfolio-to-trade-ledger.md)
-- [Strategy sleeves](../concepts/strategy-sleeves.md)
+- [Modelling lifecycle](../flows/model-training-and-prediction.md)
+- [Portfolio backtest](../flows/portfolio-to-trade-ledger.md)
+- [Capital budgets](../concepts/strategy-sleeves.md)

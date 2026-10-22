@@ -7,7 +7,7 @@ tags:
   - guide
   - runbook
   - operations
-source_commit: 65624e71af94a8a0d662b35b975affb7d43016b7
+source_commit: 55d6e2d199fa9a83aca7d5442549eeb66eedd189
 ---
 # Run the pipeline
 
@@ -209,7 +209,6 @@ rtk "$PY" -m src modelling assess -c ./configs
 rtk "$PY" -m src portfolio backtest -c ./configs
 rtk "$PY" -m src modelling full-train -c ./configs
 rtk "$PY" -m src modelling predict --n-dates 1
-rtk "$PY" -m src portfolio strategy-moves
 ~~~
 
 Train generates a fresh ID. Standalone assess selects latest complete training; portfolio/full-train select latest assessed training. Optional downstream --run-id pins an exact run; the DAG does this automatically through XCom. Train saves folds/cutoff and basic IC/IR; assess recomputes every score and explanation; full-train restores saved fitting controls/schema and fits all currently mature labels. A failed task blocks successors. See [dated assessment](#dated-modelling-assessment) and [the lifecycle](../reference/modelling-and-portfolio.md).
@@ -225,7 +224,7 @@ Train generates a fresh ID. Standalone assess selects latest complete training; 
 6. Deduce peers.
 7. Build all cube parts and assemble the cube with a full run.
 8. Train the holdout model, backtest it, then full-train production artifacts.
-9. Run portfolio analysis and strategy moves as needed.
+9. Run portfolio backtest on the assessed run and open its backtest_portfolio/report.html.
 10. Validate the populated domains.
 ```
 
@@ -402,9 +401,9 @@ The inspected [validation CLI](../../src/validate/cli.py) also exposes `redundan
 
 For expensive historical repair, rollback, coverage, and retained-evidence procedures, use [large backfills and recovery](./large-backfills-and-recovery.md). Reports remain excluded artifacts; the wiki records the procedure and contracts, not generated results.
 
-## Streamlit and scripts
+## Offline portfolio report and scripts
 
-Run the dashboard with its environment's Streamlit executable and [app.py](../../app/app.py). It assumes model artifacts already exist.
+Run portfolio backtest with the exact assessed --run-id and open <run>/backtest_portfolio/report.html locally. Configure fixed LS/S&P/cash percentages and cash remuneration in [portfolio.yml](../../configs/portfolio.yml); changing them requires a rerun. The report itself filters N/cadence without a server. No Streamlit application or daily ledger command remains.
 
 Regenerate managed DDL through [generate_schema_sql.py](../../scripts/generate_schema_sql.py) after an approved table-registry change. Treat one-off scripts as operational instruments: read their arguments, mutation behavior, and rollback notes before execution.
 

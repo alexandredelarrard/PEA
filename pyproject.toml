@@ -8,7 +8,7 @@ authors = [
 readme = "wiki/OVERVIEW.md"
 requires-python = ">=3.13, <3.15"
 dependencies = [
-    "streamlit (>=1.35)",
+    "click (>=8.1)",
     "yfinance (>=0.2.40)",
     "pandas (>=2.2)",
     "numpy (>=1.26, <2.5)",

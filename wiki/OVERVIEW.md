@@ -1,8 +1,8 @@
 ---
+source_commit: def8db8534d96071d5904c792a16431e8adedd44
 title: Codebase Wiki — Overview
-description: Canonical internal hub for architecture, modules, flows, concepts, guides, references, and backlog.
+description: Canonical internal hub for architecture, modules, flows, concepts, guides, references and backlog.
 profile: internal/standard
-source_commit: 18ae7b6b9cbdb71a7e1c216b7e0e94d02cbab677
 tags:
   - wiki
   - overview
@@ -12,7 +12,7 @@ tags:
 
 ## What this is
 
-`stock_pick_strat` is an internal quantitative research and production pipeline for S&P 500 equities. It extracts market, fundamental, ownership, governance, and alternative data into PostgreSQL; turns those sources into a point-in-time, peer-relative feature cube; trains cross-sectional models; and blends independent strategy sleeves into a tradeable portfolio.
+`stock_pick_strat` is an internal quantitative research and production pipeline for S&P 500 equities. It extracts market, fundamental, ownership, governance, and alternative data into PostgreSQL; turns those sources into a point-in-time, peer-relative feature cube; trains cross-sectional models; and backtests fixed long/short, S&P 500 and cash capital budgets.
 
 This wiki is the canonical documentation surface for code navigation, data contracts, operations, testing, and deferred work. Start with the task map below, use the [Graphify guide](./guides/query-the-codebase.md) to query source relationships, then inspect the linked source before changing code. Package metadata lives in [pyproject.toml](../pyproject.toml); [docker-compose.yml](../docker-compose.yml) defines PostgreSQL and Airflow services.
 
@@ -27,17 +27,15 @@ flowchart LR
   Peers --> Parts
   Parts --> Cube[(Point in time cube)]
   Cube --> Models[Cross sectional ensemble]
-  Models --> Sleeves[Strategy sleeves]
-  Store --> Sleeves
-  Sleeves --> Portfolio[ERC portfolio blend]
-  Portfolio --> Ledger[(Strategy trade ledger)]
+  Models --> Portfolio[Long short market and cash backtest]
+  Store --> Portfolio
+  Portfolio --> Report[Offline portfolio HTML]
   Airflow[Airflow DAGs] --> Extract
   Airflow --> Parts
   Airflow --> Models
   CLI[Dynamic Click CLI] --> Extract
   CLI --> Parts
   CLI --> Models
-  App[Streamlit] --> Portfolio
 ~~~
 
 The narrow production boundary is deliberate: all tabular application I/O passes through [DataStore](./modules/data-store.md), while manual and scheduled orchestration invoke the same package-level CLI commands.
@@ -54,7 +52,7 @@ The [modelling workflow](./flows/model-training-and-prediction.md) separates tra
 | Add or debug a fetcher | [Data sources](./reference/data-sources.md) and [add a data source](./guides/add-a-data-source.md) |
 | Read or write tabular data | [Data access and storage](./guides/data-access.md) |
 | Find or add a configuration knob | [Configuration](./reference/configuration.md) |
-| Change models, sleeves, portfolio allocation, or the ledger | [Modelling, strategies, and portfolio](./reference/modelling-and-portfolio.md) |
+| Change models, construction, or portfolio allocation | [Modelling, strategies, and portfolio](./reference/modelling-and-portfolio.md) |
 | Write Python under `src/` | [Coding standards](./guides/coding-standards.md) |
 | Write or execute tests | [Testing and validation](./guides/testing.md) |
 | Execute the CLI, Docker, Airflow, or routine validators | [Run the pipeline](./guides/run-the-pipeline.md) |
@@ -82,11 +80,11 @@ The [modelling workflow](./flows/model-training-and-prediction.md) separates tra
 - [Peer deduction](./modules/data-peers.md)
 - [Cube aggregation](./modules/data-aggregate.md)
 - [Modelling](./modules/modelling.md)
-- [Strategies](./modules/strategies.md)
+- [Portfolio construction](./modules/strategies.md)
 - [Portfolio](./modules/portfolio.md)
 - [Validation](./modules/validation.md)
 - [DAGs and infrastructure](./modules/dags-and-infrastructure.md)
-- [Application and scripts](./modules/application-and-scripts.md)
+- [Operational scripts](./modules/application-and-scripts.md)
 - [Tests](./modules/tests.md)
 
 ### Flows
@@ -95,7 +93,7 @@ The [modelling workflow](./flows/model-training-and-prediction.md) separates tra
 - [SEC and LLM extraction](./flows/sec-llm-extraction.md)
 - [Cube build](./flows/cube-build.md)
 - [Model training and daily prediction](./flows/model-training-and-prediction.md)
-- [Portfolio to trade ledger](./flows/portfolio-to-trade-ledger.md)
+- [Portfolio backtest](./flows/portfolio-to-trade-ledger.md)
 
 ### Concepts
 
@@ -105,7 +103,7 @@ The [modelling workflow](./flows/model-training-and-prediction.md) separates tra
 - [Cube parts](./concepts/cube-parts.md)
 - [Peer-relative features](./concepts/peer-relative-features.md)
 - [Source availability](./concepts/source-availability.md)
-- [Strategy sleeves](./concepts/strategy-sleeves.md)
+- [Capital budgets](./concepts/strategy-sleeves.md)
 
 ### Guides
 
@@ -116,7 +114,7 @@ The [modelling workflow](./flows/model-training-and-prediction.md) separates tra
 - [Testing and validation](./guides/testing.md)
 - [Add a data source](./guides/add-a-data-source.md)
 - [Add a cube feature](./guides/add-a-cube-feature.md)
-- [Add a model or sleeve](./guides/add-a-model-or-sleeve.md)
+- [Change a model or backtest](./guides/add-a-model-or-sleeve.md)
 - [Validate a change](./guides/validate-a-change.md)
 
 ### Reference

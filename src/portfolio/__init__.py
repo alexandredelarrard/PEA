@@ -1,5 +1,5 @@
-"""Portfolio layer: blends the strategy sleeves into one book with dynamic capital allocation."""
+"""Model-based long/short, S&P 500 and cash backtests."""
 
-from src.portfolio.step_portfolio import StepPortfolio
+from src.portfolio.steps.step_portfolio import StepPortfolio
 
 __all__ = ["StepPortfolio"]

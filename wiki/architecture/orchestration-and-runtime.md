@@ -1,6 +1,7 @@
 ---
+source_commit: 55d6e2d199fa9a83aca7d5442549eeb66eedd189
 title: Orchestration and runtime
-description: How Context, Step classes, the dynamic CLI, Airflow, Docker, and the Streamlit app run the pipeline.
+description: Context, Step, CLI, Airflow and Docker orchestration without an application server.
 type: architecture
 tags:
   - wiki
@@ -24,7 +25,6 @@ flowchart TD
   Airflow[Airflow BashOperator] --> RootCLI
   Compose[Docker Compose] --> Airflow
   Compose --> DB[(PostgreSQL)]
-  Streamlit[Streamlit app] --> Context
 ~~~
 
 ## Key components
@@ -32,9 +32,9 @@ flowchart TD
 - [src/__main__.py](../../src/__main__.py) delegates to the dynamic `CLI` in [src/cli.py](../../src/cli.py).
 - Shared option declarations live in [command_line_interface.py](../../src/constants/command_line_interface.py).
 - `Context` and `get_config_context` live in [context.py](../../src/context.py); the base [Step](../concepts/step-pattern.md) lives in [step.py](../../src/utils/step.py).
-- Four DAG modules under [src/dags](../../src/dags/) schedule extraction, aggregation, weekly training, and daily prediction.
+- Four DAG modules under [src/dags](../../src/dags/dag_strat_prediction.py) schedule extraction, aggregation, weekly training, and daily prediction.
 - [docker-compose.yml](../../docker-compose.yml) defines the pipeline database, Airflow metadata database, initializer, scheduler, and webserver. [Dockerfile.airflow](../../airflow/Dockerfile.airflow) installs the pipeline into `/opt/pipeline` separately from Airflow's own dependencies.
-- [app/app.py](../../app/app.py) is the Streamlit portfolio dashboard. [main.py](../../main.py) is a scratch driver and does not execute a stage unless a `run()` call is explicitly enabled.
+- [main.py](../../main.py) is a scratch driver and does not execute a stage unless a `run()` call is explicitly enabled.
 
 ## Design decisions
 

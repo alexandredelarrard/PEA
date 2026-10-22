@@ -5,6 +5,7 @@ type: concept
 tags:
   - wiki
   - concept
+source_commit: 55d6e2d199fa9a83aca7d5442549eeb66eedd189
 ---
 # Step pattern
 
@@ -16,7 +17,7 @@ A `Step` is a package-level orchestrator with a single public `run()` method (th
 
 The pattern gives the CLI, Airflow, scratch driver, and tests a consistent unit of execution. Super-steps such as `StepExtractAllData` and `StepBuildCube` can compose package-local stages without exposing every helper as public API. It also keeps logging and configuration conventions uniform.
 
-Strategy sleeves deliberately use a different contract: `Strategy.run(PortfolioInputs) -> StrategyResult`, defined in [strategies/base.py](../../src/strategies/base.py).
+Portfolio follows the same Step contract: [StepPortfolio](../../src/portfolio/steps/step_portfolio.py) composes package-local scoring, construction, simulation and report transformations.
 
 ## Where it lives
 

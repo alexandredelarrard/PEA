@@ -1,6 +1,6 @@
 `stock_pick_strat` — quant long/short S&P 500 pipeline: extract market, fundamental,
 governance, ownership, and alternative data into PostgreSQL; build a point-in-time,
-peer-relative feature cube; train cross-sectional models; blend sleeves into one book.
+peer-relative feature cube; train models; backtest long/short, S&P 500 and cash budgets.
 Package at the repo root. Python 3.13, OmegaConf, pandas, SQLAlchemy 2 + PostgreSQL 16,
 LightGBM/SHAP, OpenAI, pytest; Airflow uses an isolated Python 3.12 environment.
 
@@ -45,7 +45,7 @@ LightGBM/SHAP, OpenAI, pytest; Airflow uses an isolated Python 3.12 environment.
 
 Every major `src/` package owns a `step_*.py` orchestrator that inherits `Step`, calls
 `super().__init__(context=context, config=config)`, and exposes `run()` as its public method.
-`StepLongShort` adds `run_train`/`run_predict`; sleeves implement `Strategy.run(inputs) -> StrategyResult`.
+`StepLongShort` adds `run_train`/`run_predict`; portfolio orchestration lives in `steps/`.
 
 ```text
 data_store/    only SQL; registry, facade, DDL
@@ -53,11 +53,10 @@ data_extract/  ordered source fetchers and six domain sub-steps
 data_peers/    business/return peer baskets
 data_aggregate/ eight cube parts plus streamed assembly
 modelling/     steps/ (train, assess), transformers/ (models, diagnostics), utils/
-strategies/    ls_equity and eq_long_only sleeves
-portfolio/     ERC blend and strategy trade ledger
+portfolio/     steps/, transformers/, utils/: long/short, S&P 500 and cash backtests
 validate/      all read-only validation code
 utils/         shared cross-package code
-repo root: configs/ wiki/ tests/ app/ scripts/ sql/ main.py
+repo root: configs/ wiki/ tests/ scripts/ sql/ main.py
 ```
 
 ## Running

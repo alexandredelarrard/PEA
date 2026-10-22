@@ -377,6 +377,30 @@ def test_build_candidate_calls_full_panel_only_and_hashes_cutoff_output(tmp_path
     print("SANITY: candidate build used build_panel(full=True), trimmed the future row, wrote no table, and matched the frozen baseline exactly.")
 
 
+@pytest.mark.parametrize("part", [Tables.cube_part_institutionals, Tables.cube_part_sec_thirteen])
+def test_model_folds_preserve_counts_across_batches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, part: Table) -> None:
+    snapshot = tmp_path / "folds.parquet"
+    frame = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2024-01-02", "2024-01-03", "2024-01-02", "2024-01-03"]),
+            "ticker": ["AAA", "AAA", "BBB", "BBB"],
+            "feature_a": [1.0, 2.0, np.nan, 4.0],
+            "feature_b": [np.nan, 3.0, 5.0, 6.0],
+        }
+    )
+    frame.to_parquet(snapshot, index=False)
+    monkeypatch.setattr(quality, "CHUNK_ROWS", 2)
+
+    folds = quality._model_folds(snapshot, ["feature_a", "feature_b"], part=part)
+
+    assert folds["rows"].tolist() == [2, 2]
+    assert folds["tickers"].tolist() == [2, 2]
+    assert folds["feature_cells"].tolist() == [4, 4]
+    assert folds["feature_nonnull_share"].tolist() == [0.5, 1.0]
+    assert (folds["feature_cells"] * folds["feature_nonnull_share"]).sum() == frame[["feature_a", "feature_b"]].notna().sum().sum()
+    print(f"SANITY: {part.name} folds conserve four rows and six non-null cells across two parquet batches.")
+
+
 def test_taxonomy_reconciles_baseline_and_limits_peer_diagnostics(tmp_path: Path) -> None:
     baseline = tmp_path / "baseline.parquet"
     frame = pd.DataFrame(

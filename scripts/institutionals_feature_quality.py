@@ -1057,11 +1057,11 @@ def _model_folds(snapshot: Path, features: list[str], *, part: Table = Tables.cu
             mask = fold_ids == index
             if not mask.any():
                 continue
-            part = frame.loc[mask]
-            entry["rows"] += len(part)
-            entry["tickers"].update(map(str, part["ticker"].dropna().unique()))
-            entry["nonnull"] += int(part[features].notna().sum().sum()) if features else 0
-            entry["cells"] += len(part) * len(features)
+            fold_frame = frame.loc[mask]
+            entry["rows"] += len(fold_frame)
+            entry["tickers"].update(map(str, fold_frame["ticker"].dropna().unique()))
+            entry["nonnull"] += int(fold_frame[features].notna().sum().sum()) if features else 0
+            entry["cells"] += len(fold_frame) * len(features)
     return pd.DataFrame(
         [
             {

@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+from pathlib import Path
+from types import SimpleNamespace
+
 import numpy as np
 import pandas as pd
 import pytest
 from omegaconf import OmegaConf
 
+from src.portfolio.transformers import signals
 from src.portfolio.transformers.signals import score_panel
 from src.portfolio.utils.calendar import is_due
 from src.portfolio.utils.contracts import Settings
@@ -52,3 +57,56 @@ def test_actual_calendar_and_invalid_allocations() -> None:
     with pytest.raises(ValueError, match="allocations"):
         Settings.from_config(config)
     print("SANITY: calendar weeks/months survive holidays; invalid allocations fail instead of being silently normalized.")
+
+
+@pytest.mark.parametrize(
+    "location,key",
+    [
+        ("metadata", "training_as_of"),
+        ("metadata", "selection_as_of"),
+        ("metadata", "train_end"),
+        ("fit", "feature_max"),
+        ("fit", "label_end_max"),
+        ("fit", "training_as_of"),
+        ("fold", "train_label_end_max"),
+        ("fold", "test_label_end_max"),
+    ],
+)
+def test_future_training_outcomes_fail_before_model_consumption(location: str, key: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    state = {
+        "run_id": "exact",
+        "horizons": [60],
+        "model_types": ["linear"],
+        "feature_cols": ["x"],
+        "categorical_cols": [],
+        "target_type": "zscore",
+        "label_column": "y",
+        "training_as_of": "2021-12-31",
+        "folds": {"60": [1]},
+    }
+    audit = {"feature_max": "2021-12-01", "label_end_max": "2021-12-31", "training_as_of": "2021-12-31"}
+    fold = {
+        "train_end": "2017-01-01",
+        "train_label_end_max": "2017-06-01",
+        "test_start": "2018-01-01",
+        "test_end": "2018-06-01",
+        "test_label_end_max": "2018-12-01",
+    }
+    meta = {
+        **deepcopy(state),
+        "role": "cutoff",
+        "full_history": False,
+        "member_files": {"model": {}},
+        "train_end": "2021-12-31",
+        "selection_as_of": "2021-12-31",
+        "fit_audit": {"60": audit},
+        "selection": {"60": {"folds": [fold]}},
+    }
+    monkeypatch.setattr(signals, "select_run", lambda *args, **kwargs: (Path("exact"), state))
+    monkeypatch.setattr(signals, "read_metadata", lambda _: meta)
+    config = OmegaConf.create({"portfolio": {"start": "2022-01-03", "training_cutoff": "2021-12-31"}})
+    signals.select_cutoff(SimpleNamespace(), config, "exact")
+    {"metadata": meta, "fit": audit, "fold": fold}[location][key] = "2022-01-01"
+    with pytest.raises(ValueError, match="later than"):
+        signals.select_cutoff(SimpleNamespace(), config, "exact")
+    print(f"SANITY: future {location}.{key} is rejected before any model member can be loaded.")

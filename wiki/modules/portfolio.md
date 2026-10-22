@@ -1,5 +1,5 @@
 ---
-source_commit: 55d6e2d199fa9a83aca7d5442549eeb66eedd189
+source_commit: def8db8534d96071d5904c792a16431e8adedd44
 title: Portfolio
 description: Independent model long/short, S&P 500 and cash backtest and offline HTML.
 type: module
@@ -37,7 +37,18 @@ A budget of 50 buys 25 longs and sells 25 shorts; reserved LS cash/collateral an
 
 [portfolio.yml](../../configs/portfolio.yml) owns allocation, dates, cadence, risk/momentum windows, cash rate and cost assumptions. Defaults are 50/25/25, 3.3% effective annual cash, 126-session sector momentum, 63-session variance, 5 bps friction on each side and 0.206 bps additional sell costs. These are research assumptions, not an optimized allocation or exact historical broker tariff.
 
-The offline report compares net/gross base100 curves and drawdowns against S&P, records capital by pocket, fees, monthly position changes, orders, sector drift and model provenance. N/cadence filters select separately simulated books. Incomplete scenarios show their reason and effective period; benchmark metrics use that same period. Changing allocation requires a new Python run. Failed publication preserves the prior complete HTML.
+The offline [report template](../../src/portfolio/transformers/report.html) contains four interactive charts:
+
+| Chart | Diagnostic |
+| --- | --- |
+| Base100 wealth | Compare portfolio and S&P, each net and gross of transaction costs. |
+| Drawdown | Compare the net portfolio and net S&P losses from their running peaks. |
+| Capital by pocket | Follow the monetary value allocated to long/short, S&P and free cash over time. |
+| Cumulative transaction costs | Measure the accumulated cost of executed orders. |
+
+N = 10/50/100 per side and daily/weekly/monthly selection filters choose one of nine separately simulated books. The scenario overview lists effective dates, completion status, returns and Sharpe. The selected comparison adds annualized return, volatility, maximum drawdown, costs, position changes and their monthly average. Additional tables show monthly position changes and, for a selected date, positions, orders and sector long/short/net/gross exposure. These tables support inspection of turnover and sector drift.
+
+Incomplete scenarios show their reason and effective period; benchmark metrics use that same period. The report also records assumptions and model provenance. Changing allocation or the cash rate requires a new Python run. Failed publication preserves the prior complete HTML.
 
 ## Validation and limits
 

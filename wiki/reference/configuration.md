@@ -6,7 +6,7 @@ tags:
   - wiki
   - reference
   - configuration
-source_commit: 55d6e2d199fa9a83aca7d5442549eeb66eedd189
+source_commit: 54882b265efce2bf18c4ff9c40a89c6d8530c589
 ---
 # Configuration
 
@@ -83,7 +83,7 @@ Key distinctions:
 - `refresh_universe` controls replacement of the current roster;
 - redundant class tickers prevent double-counting after the retained class is active;
 - `earnings_calls` in [data.yml](../../configs/data.yml) tunes the defeatbeta transcript extractor: `read_workers: 4` (parallel HuggingFace row-group reads; writes stay on one thread). The dataset repo and file path are module constants of the extractor;
-- `build_cube.earnings_calls.availability_lag_days: 2` in [build_cube.yml](../../configs/build_cube.yml) sets the EC feature buffer in calendar days. [StepCubeText](../../src/data_aggregate/transformers/step_cube_text.py) requires a non-negative integer and passes it explicitly to daily alignment: first trading session on or after call date + buffer. Raw/cache dates stay unchanged, all twelve features share the clock and retain their 66-session lifetime. A historical change needs a full text-part rebuild and cube assembly, rather than the normal 45-session tail;
+- In [build_cube.yml](../../configs/build_cube.yml), build_cube.earnings_calls owns sentiment_model (yiyanghkust/finbert-tone), refresh_calendar_days (30) and availability_lag_days (2). [StepCubeText](../../src/data_aggregate/transformers/step_cube_text.py) validates them once; embeddings use the existing gpt.embedding model/batch_size/max_chars settings in gpt.yml. Feature eligibility is the first session on/after call date plus the calendar-day lag; raw/saved dates stay unchanged and all twelve features retain their 66-session lifetime. Daily feature writes use the stored frontier minus 30 calendar days with bounded required call history. Older changes need a full text-part rebuild and cube assembly; valid model outputs are reused;
 - `sec_retry` (3 attempts, waits of 5 s then 20 s, Retry-After capped at 120 s) is the one retry policy of every SEC request, applied by [sec_io.py](../../src/data_extract/utils/common/sec_io.py);
 - `retry_rounds` (3 rounds, waits of 60, 120 and 240 s, threshold 0.985, `min_failed` 2): a ticker whose EDGAR read rate in a run is below the threshold, with at least `min_failed` failed documents, re-reads only those documents in-task; the rest is listed again on the next run;
 - `max_documents_per_run` (5,000) caps the documents one EDGAR fetch reads per run, newest first; a larger work list logs an ERROR and drains over later runs, and `--no-cap` lifts the cap for a one-time backlog;

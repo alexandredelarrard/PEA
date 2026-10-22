@@ -15,7 +15,7 @@ from __future__ import annotations
 import numpy as np
 
 from src.gpt_extract import EMBEDDING_MAX_CHARS, cosine, embed_texts
-from src.utils.earnings_call_split import _MIN_TURN, _is_informative_question
+from src.utils.text.earnings_call_split import _MIN_TURN, _is_informative_question
 
 
 class _StubClient:

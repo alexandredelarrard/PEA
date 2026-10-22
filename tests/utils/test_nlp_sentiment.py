@@ -4,22 +4,14 @@ from __future__ import annotations
 
 import logging
 import sys
-from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
-from src.utils import nlp_sentiment
-from src.utils.nlp_sentiment import _length_weighted_average, _window_ids
-
-
-@pytest.fixture(autouse=True)
-def clear_engine_cache() -> Iterator[None]:
-    nlp_sentiment.get_sentiment_engine.cache_clear()
-    yield
-    nlp_sentiment.get_sentiment_engine.cache_clear()
+from src.data_aggregate.utils.text import nlp_sentiment
+from src.data_aggregate.utils.text.nlp_sentiment import _length_weighted_average, _window_ids
 
 
 def test_window_ids_splits_long_docs() -> None:
@@ -80,11 +72,11 @@ def test_device_selection_and_tensor_placement(
 
     if expected is None:
         with pytest.raises(RuntimeError, match="CUDA is unavailable"):
-            nlp_sentiment.SentimentEngine()
+            nlp_sentiment.SentimentEngine("fixture/tone")
         mirror.assert_not_called()
     else:
-        engine = nlp_sentiment.SentimentEngine()
-        mirror.assert_called_once_with(nlp_sentiment.FINBERT_TONE_MODEL)
+        engine = nlp_sentiment.SentimentEngine("fixture/tone")
+        mirror.assert_called_once_with("fixture/tone")
         assert engine.device == expected
         model.to.assert_called_once_with(expected)
         assert engine._score_windows(["Revenue increased."]) == [{"pos": 0.7, "neg": 0.2, "neu": 0.1}]
@@ -107,29 +99,29 @@ def test_factory_propagates_required_cuda_failures(
     for _ in range(2):
         if requested == "cuda":
             with pytest.raises(error_type if stack_available else RuntimeError):
-                nlp_sentiment.get_sentiment_engine()
+                nlp_sentiment.get_sentiment_engine("fixture/tone")
         else:
-            assert nlp_sentiment.get_sentiment_engine() is None
+            assert nlp_sentiment.get_sentiment_engine("fixture/tone") is None
     if stack_available:
-        constructor.assert_called_with()
-        assert constructor.call_count == (2 if requested == "cuda" else 1)
+        constructor.assert_called_with("fixture/tone")
+        assert constructor.call_count == 2
     else:
         constructor.assert_not_called()
     print(f"SANITY: device={requested or 'auto'}, stack={stack_available}; CUDA failures propagate on every call; optional CPU loads can skip.")
 
 
-def test_factory_reuses_successful_model(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_factory_loads_requested_model_without_global_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FINBERT_DEVICE", "cpu")
     monkeypatch.setattr(nlp_sentiment, "ml_stack_available", lambda: True)
     constructor = MagicMock()
     monkeypatch.setattr(nlp_sentiment, "SentimentEngine", constructor)
 
-    first = nlp_sentiment.get_sentiment_engine()
+    first = nlp_sentiment.get_sentiment_engine("fixture/tone")
 
     assert first is constructor.return_value
-    assert nlp_sentiment.get_sentiment_engine() is first
-    constructor.assert_called_once()
-    print("SANITY: repeated scoring reuses one successfully initialized sentiment model.")
+    assert nlp_sentiment.get_sentiment_engine("fixture/tone") is first
+    assert constructor.call_count == 2
+    print("SANITY: factories construct their requested model; production reuses one local engine inside the stage.")
 
 
 def test_score_texts_preserves_document_weights_and_shared_batches(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -158,7 +150,7 @@ def test_score_texts_preserves_document_weights_and_shared_batches(monkeypatch: 
     monkeypatch.setitem(sys.modules, "transformers", transformers)
     monkeypatch.setattr(nlp_sentiment, "ensure_local_model", lambda _model: "offline-model")
     monkeypatch.setenv("FINBERT_DEVICE", "cpu")
-    engine = nlp_sentiment.SentimentEngine()
+    engine = nlp_sentiment.SentimentEngine("fixture/tone")
 
     result = engine.score_texts(["", None, "long", *[f"short {i}" for i in range(14)], "   "])
 
@@ -178,7 +170,7 @@ def test_score_texts_preserves_document_weights_and_shared_batches(monkeypatch: 
 
 def test_local_model_cache_avoids_network(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("PEA_MODEL_DIR", str(tmp_path))
-    model_dir = tmp_path / nlp_sentiment.FINBERT_TONE_MODEL.replace("/", "__")
+    model_dir = tmp_path / "fixture/tone".replace("/", "__")
     model_dir.mkdir()
     (model_dir / "config.json").write_text("{}", encoding="utf-8")
     (model_dir / "model.safetensors").write_bytes(b"cached fixture weights")
@@ -186,7 +178,7 @@ def test_local_model_cache_avoids_network(monkeypatch: pytest.MonkeyPatch, tmp_p
     mirror_client = MagicMock()
     monkeypatch.setitem(sys.modules, "curl_cffi", mirror_client)
 
-    assert nlp_sentiment.ensure_local_model(nlp_sentiment.FINBERT_TONE_MODEL) == str(model_dir)
+    assert nlp_sentiment.ensure_local_model("fixture/tone") == str(model_dir)
 
     mirror_client.requests.Session.assert_not_called()
     print("SANITY: existing local model config and weights are reused without a network session.")
@@ -215,7 +207,7 @@ def test_model_mirror_preserves_proxy_and_weight_fallback(monkeypatch: pytest.Mo
     monkeypatch.setitem(sys.modules, "curl_cffi.requests", client)
     caplog.set_level(logging.WARNING, logger=nlp_sentiment.__name__)
 
-    result = Path(nlp_sentiment.ensure_local_model(nlp_sentiment.FINBERT_TONE_MODEL))
+    result = Path(nlp_sentiment.ensure_local_model("fixture/tone"))
 
     assert (result / "config.json").read_bytes() == b"{}"
     assert (result / "pytorch_model.bin").read_bytes() == b"fixture weights"
@@ -233,7 +225,7 @@ def test_factory_propagates_programming_errors(monkeypatch: pytest.MonkeyPatch, 
     monkeypatch.setattr(nlp_sentiment, "SentimentEngine", constructor)
 
     with pytest.raises(error_type, match="programming failure"):
-        nlp_sentiment.get_sentiment_engine()
+        nlp_sentiment.get_sentiment_engine("fixture/tone")
 
     print(f"SANITY: {error_type.__name__} escapes model initialization rather than silently skipping sentiment.")
 
@@ -245,10 +237,10 @@ def test_model_mirror_only_skips_absent_optional_dependency(monkeypatch: pytest.
     monkeypatch.setattr(nlp_sentiment, "import_module", importer)
 
     if missing_name == "curl_cffi":
-        assert nlp_sentiment.ensure_local_model(nlp_sentiment.FINBERT_TONE_MODEL) == nlp_sentiment.FINBERT_TONE_MODEL
+        assert nlp_sentiment.ensure_local_model("fixture/tone") == "fixture/tone"
     else:
         with pytest.raises(ModuleNotFoundError, match="missing fixture dependency"):
-            nlp_sentiment.ensure_local_model(nlp_sentiment.FINBERT_TONE_MODEL)
+            nlp_sentiment.ensure_local_model("fixture/tone")
 
     print(f"SANITY: missing dependency {missing_name} {'falls back to HF' if missing_name == 'curl_cffi' else 'fails visibly'}.")
 
@@ -261,9 +253,9 @@ def test_model_mirror_only_absorbs_network_errors(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setitem(sys.modules, "curl_cffi.requests", client)
 
     if error_type is OSError:
-        assert nlp_sentiment.ensure_local_model(nlp_sentiment.FINBERT_TONE_MODEL) == nlp_sentiment.FINBERT_TONE_MODEL
+        assert nlp_sentiment.ensure_local_model("fixture/tone") == "fixture/tone"
     else:
         with pytest.raises(NameError, match="mirror failure"):
-            nlp_sentiment.ensure_local_model(nlp_sentiment.FINBERT_TONE_MODEL)
+            nlp_sentiment.ensure_local_model("fixture/tone")
 
     print(f"SANITY: mirror {error_type.__name__} {'uses the HF fallback' if error_type is OSError else 'fails visibly'}.")

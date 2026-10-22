@@ -24,7 +24,6 @@ from omegaconf import OmegaConf
 from src.data_extract.utils.behavioral import fetch_earnings_call_transcripts as ect
 from src.data_extract.utils.common.identity import CikWindow, Identity, SymbolInterval, build_identity
 from src.data_store.schema import Resume, Tables
-from src.utils.nlp_sentiment import EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL
 
 _PARAGRAPH = pa.struct([("paragraph_number", pa.int32()), ("speaker", pa.string()), ("content", pa.string())])
 _SCHEMA = pa.schema(
@@ -226,8 +225,7 @@ def test_null_id_replacement_compares_content_after_old_source_disappears(tmp_pa
     result = ect.extract_earnings_calls(ctx, _CFG, tickers=["AVGO"], source=source)
     assert result.calls_reissued == 1 and result.rows_written == 3 and reads == {0: 2}
     assert _sections(sqlite_store)["content"].str.contains("normal replacement").all()
-    pending = sqlite_store.load(Tables.earnings_call_sentiment)
-    assert set(pending["model"]) == {EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL}
+    assert sqlite_store.load(Tables.earnings_call_sentiment, optional=True) is None
     reads.clear()
     assert ect.extract_earnings_calls(ctx, _CFG, tickers=["AVGO"], full=True, source=source).rows_written == 0
     assert reads == {0: 1}
@@ -584,20 +582,17 @@ def test_reissued_call_replaces_paragraphs_and_invalidates_derivatives(tmp_path:
     bfb = rows[(rows["ticker"] == "BF-B") & (rows["quarter"] == "2026Q2")]
     sentiment = sqlite_store.load(Tables.earnings_call_sentiment)
     embedding = sqlite_store.load(Tables.earning_calls_embedding)
-    pending = sentiment[sentiment["model"] == EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL]
 
     assert summary.calls_reissued == 2 and summary.calls_new == 0
     assert aaa["paragraph"].tolist() == [1, 2, 3] and set(aaa["transcript_id"]) == {99}  # no orphan paragraphs 4-5
     assert aaa["content"].str.contains(" v2 ").all() and bfb["content"].str.contains(" v2 ").all()
     assert {pd.Timestamp(d).date() for d in bfb["as_of"]} == {dt.date(2026, 6, 9)}
-    assert set(map(tuple, pending[["ticker", "quarter"]].to_numpy())) == {("AAA", "2026Q1"), ("BF-B", "2026Q2")}
-    assert {pd.Timestamp(d).date() for d in pending.loc[pending["ticker"] == "BF-B", "as_of"]} == {dt.date(2026, 6, 5)}  # the earlier date
     assert set(sentiment.loc[sentiment["model"] == "scored", "quarter"]) == {"2010Q1"}
     assert set(map(tuple, embedding[["ticker", "quarter"]].drop_duplicates().to_numpy())) == {("AAA", "2010Q1")}
 
     print("\n=== SANITY CHECK: re-issued transcript (AC-004) ===")
     print(f"  AAA 2026Q1 id 12 -> 99, 5 -> {len(aaa)} paragraphs; BF-B 2026Q2 (NULL id) date 06-05 -> 06-09")
-    print(f"  sentiment + embedding rows of both calls deleted; {len(pending)} pending markers from the earlier date")
+    print("  reissued call outputs invalidated; unchanged call outputs preserved")
     print("  OK: old paragraphs gone, derivatives invalidated, the untouched AAA 2010Q1 cache survives")
 
 
@@ -618,10 +613,8 @@ def _seed_derivatives(store: Any, calls: list[tuple[str, str, str]]) -> None:
     )
 
 
-@pytest.mark.parametrize("failure", ["invalidation", "refresh_marker", "paragraph_write"])
-def test_reissued_call_failure_preserves_retry_and_earliest_refresh(
-    tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, failure: str
-) -> None:
+@pytest.mark.parametrize("failure", ["invalidation", "paragraph_write"])
+def test_reissued_call_failure_preserves_retry_(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, failure: str) -> None:
     ctx = _ctx(tmp_path, sqlite_store)
     old = _call("AAA", 2010, 1, "2010-04-20", 1, 3)
     ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA"], source=_source(_write(tmp_path / "old.parquet", [[old]]), "old")[0])
@@ -631,9 +624,7 @@ def test_reissued_call_failure_preserves_retry_and_earliest_refresh(
     save, delete = sqlite_store.save, sqlite_store.delete
 
     def fail_save(table: Any, frame: pd.DataFrame, **kwargs: Any) -> int:
-        if (failure == "refresh_marker" and table == Tables.earnings_call_sentiment) or (
-            failure == "paragraph_write" and table == Tables.earnings_call_sections
-        ):
+        if failure == "paragraph_write" and table == Tables.earnings_call_sections:
             raise RuntimeError(f"injected {failure}")
         return save(table, frame, **kwargs)
 
@@ -653,14 +644,13 @@ def test_reissued_call_failure_preserves_retry_and_earliest_refresh(
         assert len(retained) == 3 and set(retained["transcript_id"]) == {1}
     ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA"], source=source)
     rows = _sections(sqlite_store)
-    pending = sqlite_store.load(Tables.earnings_call_sentiment)
+    pending = sqlite_store.load(Tables.earnings_call_sentiment, optional=True)
     embeddings = sqlite_store.load(Tables.earning_calls_embedding, optional=True)
     assert len(rows) == 2 and set(rows["transcript_id"]) == {99} and rows["content"].str.contains(" v2 ").all()
-    assert set(pending["model"]) == {EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL}
-    assert set(pd.to_datetime(pending["as_of"]).dt.date) == {dt.date(2010, 4, 20)}
+    assert pending is None
     assert embeddings is None or embeddings.empty
     assert ect.extract_earnings_calls(ctx, _CFG, tickers=["AAA"], source=source).rows_written == 0
-    print(f"SANITY: {failure} failure retries without stale cache, orphan paragraphs or a lost earliest refresh date.")
+    print(f"SANITY: {failure} failure retries without stale cache, orphan paragraphs or fabricated completion state.")
 
 
 def test_metadata_failure_cannot_remove_stored_calls(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -696,8 +686,7 @@ def test_ordinary_run_never_reconciles_from_a_missing_date_frontier(tmp_path: Pa
     assert set(rows["quarter"]) == {"2010Q1", "2026Q1"}
     current = rows[rows["quarter"].eq("2026Q1")]
     assert len(current) == 2 and set(current["transcript_id"]) == {99}
-    pending = sqlite_store.load(Tables.earnings_call_sentiment)
-    assert set(pending["model"]) == {EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL}
+    assert sqlite_store.load(Tables.earnings_call_sentiment, optional=True) is None
     embeddings = sqlite_store.load(Tables.earning_calls_embedding, optional=True)
     assert embeddings is None or embeddings.empty
     print("SANITY: a missing frontier cannot enable deletion; a reissue with a missing old date still invalidates caches and replaces paragraphs.")
@@ -728,21 +717,16 @@ def test_reconcile_deletes_a_call_removed_from_the_source(tmp_path: Path, sqlite
     calls = set(map(tuple, _sections(sqlite_store)[["ticker", "quarter"]].drop_duplicates().to_numpy()))
     sentiment = sqlite_store.load(Tables.earnings_call_sentiment)
     embedding = sqlite_store.load(Tables.earning_calls_embedding)
-    pending = sentiment[sentiment["model"] == EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL]
 
     assert summary.full and summary.calls_removed == 1 and summary.calls_new == 0 and summary.calls_reissued == 0
     assert calls == {("AAA", "2026Q1"), ("BF-B", "2026Q2"), ("CCC", "2012Q1"), ("CCC", "2012Q2")}
     assert seen == [{("AAA", "2010Q1")}]
-    assert set(map(tuple, pending[["ticker", "quarter"]].to_numpy())) == {("AAA", "2010Q1")}
-    assert {pd.Timestamp(d).date() for d in pending["as_of"]} == {dt.date(2010, 4, 20)}
     assert set(sentiment.loc[sentiment["model"] == "scored", "quarter"]) == {"2026Q1"}
     assert set(embedding["quarter"]) == {"2026Q1"}
 
     print("\n=== SANITY CHECK: call removed from the source (F-001) ===")
     print(f"  reconcile over a source without AAA 2010Q1 -> {summary.calls_removed} call removed, invalidated {seen}")
-    print(
-        f"  pending marker dated {sorted(pending['as_of'].astype(str).unique())}; CCC (no source call left) kept: {sorted(q for t, q in calls if t == 'CCC')}"
-    )
+    print(f"  CCC (no source call left) kept: {sorted(q for t, q in calls if t == 'CCC')}")
     print("  OK: stored table = deduplicated source for every ticker still in the source")
 
 
@@ -759,13 +743,13 @@ def test_reconcile_deletes_the_label_a_relabel_flip_superseded(tmp_path: Path, s
     grown = [[*first, _call("EEE", 2020, 1, "2020-06-01", 23, 2)]]
     summary = ect.extract_earnings_calls(ctx, _CFG, tickers=["EEE"], full=True, source=_source(_write(tmp_path / "b.parquet", grown), "f2")[0])
     rows = _sections(sqlite_store).drop_duplicates(["ticker", "quarter"])
-    sentiment = sqlite_store.load(Tables.earnings_call_sentiment)
+    sentiment = sqlite_store.load(Tables.earnings_call_sentiment, optional=True)
 
     assert before == {"2020Q4"}
     assert summary.calls_new == 2 and summary.calls_removed == 1
     assert set(rows["quarter"]) == {"2019Q4", "2020Q1"} and not rows.duplicated(["ticker", "as_of"]).any()
     assert seen == [{("EEE", "2020Q4")}]
-    assert set(sentiment["model"]) == {EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL}
+    assert sentiment is None
     assert sqlite_store.load(Tables.earning_calls_embedding, optional=True) is None or sqlite_store.load(Tables.earning_calls_embedding).empty
 
     print("\n=== SANITY CHECK: relabel flip (F-001) ===")

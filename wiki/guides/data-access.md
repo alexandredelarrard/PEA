@@ -7,7 +7,7 @@ tags:
   - guide
   - database
   - point-in-time
-source_commit: c2a09cf41e68d0f9addca8c1f02c2b7ce0423c25
+source_commit: 54882b265efce2bf18c4ff9c40a89c6d8530c589
 ---
 # Data access and storage
 
@@ -189,3 +189,7 @@ Project and bound the manifest by CIK/report period/filing cutoff, then stream i
 Candidate per-manager publications include active current/prior changes, including value-only corrections. An unrelated manager's event does not emit another manager's unchanged current rows. The daily DAG dependency lookback/output rewrite remains separately deferred in the refresh TODO (`reports/validate/2026-10-09-institutional-13f-audit/todo-13f-refresh.md`, local ignored audit artifact). No production consumer switch is implied by the scoped ledger proof.
 
 The P3 candidate distinguishes `comparison_eligible` (otherwise comparable public books) from `zero_eligible` (absence supports a zero). Present known quantities can compare without inventing omitted holdings. Inferred position patches mask previously positive or unknown typed common/call/put/debt legs when the incoming leg is merely structural zero; later inferred packets preserve that unknown. `prior_resolution_status` exposes inferred baselines even when the current book is a clean original. Only a clean original/restatement clears inference. Failed/unavailable source histories are outside the verified complete scope, and must not be certified for production by the successful subset.
+
+## Text output windows
+
+[StepCubeText](../../src/data_aggregate/transformers/step_cube_text.py) has independent scopes: compact source/model keys for all missing or failed NLP work, one selected paragraph payload shared by the models, and bounded saved outputs for feature creation. Normal feature writes start at the stored text-part max date minus 30 calendar days. Only required emitter/predecessor/five-year call history is read, while price availability and daily arrays cover the output tail. Text uses ordinary DataFrames as requested; full/cold payload memory remains a deployment consideration. Older source revisions require explicit full feature rebuilding, without repeating valid inference.

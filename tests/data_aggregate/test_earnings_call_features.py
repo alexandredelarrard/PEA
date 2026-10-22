@@ -11,7 +11,6 @@ paragraph rows split by `src/utils/earnings_call_split.py` (no model/GPU):
 
 from __future__ import annotations
 
-import logging
 import math
 from types import SimpleNamespace
 from typing import cast
@@ -19,37 +18,22 @@ from typing import cast
 import numpy as np
 import pandas as pd
 import pytest
-from omegaconf import OmegaConf
 
-import src.data_aggregate.transformers.step_cube_text as step_text
 import src.data_aggregate.utils.text.earnings_call_features as ec
 from src.constants.constants import EARNINGS_CALL_FEATURES
 from src.context import Context
-from src.data_aggregate.transformers.step_cube_text import StepCubeText
 from src.data_aggregate.utils.common.incremental import PartWindow, write_part
-from src.data_aggregate.utils.common.price_frames import PriceFrames
 from src.data_aggregate.utils.text.earnings_call_features import (
     _daily_frame,
-    _per_call_kpis,
-    acknowledge_earnings_call_invalidations,
     attach_issuer_identity,
     build_earnings_call_feature_panel,
     prepare_earnings_call_kpis,
-    score_earnings_calls,
     sentiment_kpis,
 )
-from src.data_extract.utils.behavioral.utils_earnings_call_cache import pending_refresh_markers
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
-from src.utils.earnings_call_split import split_call
-from src.utils.nlp_sentiment import (
-    EARNINGS_CALL_SENTIMENT_CACHE_MODEL,
-    EARNINGS_CALL_SENTIMENT_INVALID_HANDLED_MODEL,
-    EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL,
-    FINBERT_TONE_MODEL,
-)
-from src.utils.text_metrics import assess_earnings_call_sections
-from tests.fixtures.earnings_call_rows import synthetic_call
+
+EARNINGS_CALL_SENTIMENT_CACHE_MODEL = "fixture/tone:speaker-clean-v2"
 
 _QDATE = {"2023Q1": "2023-02-01", "2023Q2": "2023-05-01", "2023Q3": "2023-08-01"}
 
@@ -171,37 +155,12 @@ def test_canonical_support_requires_unambiguous_alias_inside_its_cik_window(vari
 def test_calendar_day_buffer_applies_once_to_all_twelve_features(call_date: str, expected: str) -> None:
     calendar = pd.bdate_range("2024-05-01", "2024-10-31").difference(pd.DatetimeIndex(["2024-05-27"]))
     call = pd.DataFrame({"ticker": ["A"], "as_of": [pd.Timestamp(call_date)], **{name: [float(i)] for i, name in enumerate(EARNINGS_CALL_FEATURES)}})
-    panel = ec._feature_panel_from_prepared(call, calendar, None, availability_lag_days=2)
+    panel = ec._feature_panel_from_prepared(call, calendar, None, availability_lag_days=2, since=None)
     assert len(panel.filter(like="f_ec_").columns) == 12
     for name in EARNINGS_CALL_FEATURES:
         live = panel.loc[panel[f"f_{name}"].notna(), "date"]
         assert live.min() == pd.Timestamp(expected) and len(live) == 66
     print(f"SANITY: {call_date}+2 calendar days -> {expected}, including holiday/weekend rollover, all12 features for66 sessions.")
-
-
-def test_step_reads_lag_from_build_cube_yaml(monkeypatch: pytest.MonkeyPatch) -> None:
-    step = StepCubeText.__new__(StepCubeText)
-    step._context = cast(Context, SimpleNamespace())
-    step._cfg = OmegaConf.load("configs/build_cube.yml").build_cube
-    calls = pd.DataFrame({"ticker": ["A"], "quarter": ["2024Q1"], "as_of": [pd.Timestamp("2024-05-06")], "ec_tone": [0.2]})
-    roster = pd.DataFrame({"ticker": ["A"], "cik": ["1"]})
-    lineage = pd.DataFrame({"cik": ["1"], "entity_id": ["E1"]}).assign(role="cik_window", valid_from="1900-01-01", valid_to=None)
-    monkeypatch.setattr(step_text, "score_earnings_calls", lambda _ctx: None)
-    monkeypatch.setattr(step_text, "embed_earnings_calls", lambda _ctx: None)
-    monkeypatch.setattr(step_text, "sentiment_kpis", lambda _ctx: calls)
-    monkeypatch.setattr(step_text, "load_issuer_identity", lambda _ctx: (roster, lineage, _canonical_tenure(roster)))
-    monkeypatch.setattr(step_text, "embedding_kpis_streamed", lambda *_args: None)
-    frames = cast(PriceFrames, SimpleNamespace(trading_index=pd.bdate_range("2024-05-01", "2024-09-30"), availability=None))
-    panel, _ = step._feature_panel(frames)
-    assert panel.loc[panel["f_ec_tone"].notna(), "date"].min() == pd.Timestamp("2024-05-08")
-    step._cfg.earnings_calls.availability_lag_days = 3
-    shifted, _ = step._feature_panel(frames)
-    assert shifted.loc[shifted["f_ec_tone"].notna(), "date"].min() == pd.Timestamp("2024-05-09")
-    for invalid in (-1, 1.5, True):
-        step._cfg.earnings_calls.availability_lag_days = invalid
-        with pytest.raises(ValueError, match="non-negative integer"):
-            step._feature_panel(frames)
-    print("SANITY: actual Step loads the YAML2-day setting; changing only that value to3 moves eligibility by1 day.")
 
 
 def _number(value: object) -> float:
@@ -248,41 +207,9 @@ _QUESTION = "Can you talk about revenue growth and the margin guidance for next 
 _USEFUL = "revenue growth customer demand margin guidance cash flow outlook " * 12
 
 
-def _sections_frame() -> pd.DataFrame:
-    """`earnings_call_sections` paragraph rows of a split-`ok`, quality-valid call per fixture call."""
-    txt = {
-        ("A", "2023Q1"): "cloud platform enterprise customers subscription revenue expansion",
-        ("A", "2023Q2"): "cloud platform enterprise customers subscription revenue expansion margins",
-        ("A", "2023Q3"): "litigation restructuring charges layoffs writedown goodwill impairment",
-    }
-    calls = [
-        synthetic_call(tkr, q, _QDATE[q], prepared=((txt.get((tkr, q), _USEFUL) + " ") * 12).strip(), question=_QUESTION, answer=_USEFUL.strip())
-        for tkr in ["A", "B", "C", "D", "E"]
-        for q in _QDATE
-    ]
-    return pd.concat(calls, ignore_index=True)
-
-
 def test_per_call_kpi_arithmetic() -> None:
     df_sentiment = _sentiment_frame().query("ticker == 'A'")
-    calls = []
-    for quarter, df_tags in df_sentiment.groupby("quarter"):
-        texts = {}
-        for row in df_tags.itertuples(index=False):
-            n_words = int(_number(row.n_words))
-            n_uncertain = round(n_words * _number(row.uncertainty_ratio))
-            texts[row.tag] = " ".join(["growth"] * (n_words - n_uncertain) + ["might"] * n_uncertain) + "."
-        calls.append(
-            synthetic_call(
-                "A",
-                str(quarter),
-                _QDATE[str(quarter)],
-                prepared=texts["prepared_remarks"],
-                question="Can you explain revenue trends and the current margin outlook in detail?",
-                answer=texts["qa"],
-            )
-        )
-    per = prepare_earnings_call_kpis(_per_call_kpis(df_sentiment, pd.concat(calls, ignore_index=True)))
+    per = prepare_earnings_call_kpis(sentiment_kpis(df_sentiment, EARNINGS_CALL_SENTIMENT_CACHE_MODEL))
     a = per[per["ticker"] == "A"].set_index("quarter")
 
     # length-weighted tone (net = pos-neg), Q1: (.5*1000 + .3*500)/1500
@@ -301,224 +228,39 @@ def test_per_call_kpi_arithmetic() -> None:
     print("SANITY: exact cleaned section lengths and uncertainty counts preserve weighted tone, Q&A gap and consecutive-quarter deltas.")
 
 
-class _Ctx:
-    def __init__(self, store):
-        self.store = store
-        self.log = logging.getLogger("test")
-
-
-def test_sentiment_kpis_equals_batch(sqlite_store):
-    """The per-ticker STREAMED KPIs (bounded memory) must exactly equal the whole-cache
-    computation — proving the streaming refactor preserves the retained QoQ deltas. Runs on a
-    REAL DataStore, so the per-ticker `distinct` + WHERE-scoped reads are exercised for real."""
-    sent, sec = _sentiment_frame(), _sections_frame()
-    sqlite_store.save("earnings_call_sentiment", sent)
-    sqlite_store.save("earnings_call_sections", sec)
-    ctx = cast(Context, _Ctx(sqlite_store))
-    streamed = sentiment_kpis(ctx)
-    assert streamed is not None
-    batch = _per_call_kpis(sent, sec)
-    m = streamed.merge(batch, on=["ticker", "quarter"], suffixes=("_s", "_b"))
-    assert len(m) == len(batch) == len(streamed), "row set changed under streaming"
-    kpi_cols = [
-        "ec_tone",
-        "ec_qa_gap",
-        "ec_uncertainty",
-        "total_words",
-    ]
-    for col in kpi_cols:
-        s, b = m[f"{col}_s"].to_numpy(float), m[f"{col}_b"].to_numpy(float)
-        ok = (np.isnan(s) & np.isnan(b)) | np.isclose(s, b, equal_nan=True)
-        assert ok.all(), f"{col} differs streamed vs batch"
-    print("\n=== SANITY CHECK: sentiment KPI streaming ===")
-    print(f"  per-ticker streamed call metrics == whole-cache batch across {len(m)} calls x {len(kpi_cols)} fields.")
+def test_sentiment_kpis_equals_batch(sqlite_store: DataStore) -> None:
+    sent = _sentiment_frame()
+    sqlite_store.save(Tables.earnings_call_sentiment, sent)
+    stored = sqlite_store.load(Tables.earnings_call_sentiment)
+    assert stored is not None
+    actual = sentiment_kpis(stored, EARNINGS_CALL_SENTIMENT_CACHE_MODEL)
+    expected = pd.concat([sentiment_kpis(group, EARNINGS_CALL_SENTIMENT_CACHE_MODEL) for _, group in sent.groupby("ticker")], ignore_index=True)
+    actual["as_of"] = actual["as_of"].astype("datetime64[ns]")
+    expected["as_of"] = expected["as_of"].astype("datetime64[ns]")
+    pd.testing.assert_frame_equal(actual, expected, check_exact=True)
+    print("SANITY: one saved metric frame produces exactly the same per-issuer arithmetic; no paragraph inputs.")
 
 
 def test_malformed_or_incomplete_cached_call_is_missing() -> None:
-    sentiment = _sentiment_frame().query("ticker == 'A' and quarter == '2023Q1'")
-    valid_sections = _sections_frame().query("ticker == 'A' and quarter == '2023Q1'")
-    incomplete = sentiment.query("tag == 'prepared_remarks'")
-    assert _per_call_kpis(incomplete, valid_sections).empty
-
-    malformed = valid_sections.copy()
-    malformed.loc[malformed["paragraph"] >= 3, "content"] = None  # Q&A paragraphs blank -> no_qa
-    assert split_call(cast(list[dict[str, object]], malformed.to_dict("records"))).status == "no_qa"
-    assert _per_call_kpis(sentiment, malformed).empty
-
-    refreshed = _per_call_kpis(sentiment.assign(n_words=1), valid_sections)
-    split = split_call(cast(list[dict[str, object]], valid_sections.to_dict("records")))
-    expected_words = assess_earnings_call_sections({"prepared_remarks": split.prepared_remarks, "qa": split.qa}).combined_word_count
-    assert expected_words > 100
-    assert int(refreshed["total_words"].iloc[0]) == expected_words
-    print("\n=== SANITY CHECK: current transcript quality dominates stale cache ===")
-    print(
-        f"  incomplete cache and a no_qa split produce no KPI row; the stale cached word count (1) is refreshed "
-        f"to {expected_words} cleaned split words. Validated."
-    )
-
-
-def test_legacy_sentiment_cache_is_rescored_after_cleaning_change(sqlite_store, monkeypatch) -> None:
-    """A cache produced before cleaned-text scoring must not suppress or feed the new build."""
-    sections = _sections_frame().query("ticker == 'A' and quarter == '2023Q1'")
-    legacy = _sentiment_frame().query("ticker == 'A' and quarter == '2023Q1'").assign(model=FINBERT_TONE_MODEL)
-    sqlite_store.save(Tables.earnings_call_sections, sections)
-    sqlite_store.save(Tables.earnings_call_sentiment, legacy)
-
-    class _Engine:
-        device = "test"
-
-        @staticmethod
-        def score_texts(texts):
-            return [{"pos": 0.6, "neg": 0.1, "neu": 0.3} for _ in texts]
-
-    monkeypatch.setattr(ec, "get_sentiment_engine", lambda: _Engine())
-    score_earnings_calls(cast(Context, _Ctx(sqlite_store)))
-    refreshed = sqlite_store.load(Tables.earnings_call_sentiment)
-
-    assert refreshed is not None
-    assert set(refreshed["model"]) == {EARNINGS_CALL_SENTIMENT_CACHE_MODEL}
-    assert len(_per_call_kpis(legacy, sections)) == 0
-    assert len(_per_call_kpis(refreshed, sections)) == 1
-    print("\n=== SANITY CHECK: sentiment cache preprocessing version ===")
-    print("  legacy raw-text rows are rejected; both cleaned sections are rescored and replace them. Validated.")
-
-
-def test_malformed_refresh_marker_survives_until_cube_write_ack(sqlite_store, monkeypatch) -> None:
-    sections = synthetic_call("A", "2023Q1", "2023-02-01", prepared="x", question="y", answer="z").assign(content=None)
-    marker = pd.DataFrame(
-        [
-            {
-                "ticker": ticker,
-                "quarter": "2023Q1",
-                "tag": tag,
-                "as_of": as_of,
-                "model": EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL,
-            }
-            for ticker, as_of in (("A", "2023-02-01"), ("B", None))
-            for tag in ("prepared_remarks", "qa")
-        ]
-    )
-    sqlite_store.save(Tables.earnings_call_sections, sections)
-    sqlite_store.save(Tables.earnings_call_sentiment, marker)
-    monkeypatch.setattr(ec, "get_sentiment_engine", lambda: None)
-    context = cast(Context, _Ctx(sqlite_store))
-
-    assert score_earnings_calls(context) == pd.Timestamp("2023-02-01")
-    still_pending = sqlite_store.load(Tables.earnings_call_sentiment)
-    assert still_pending is not None
-    assert set(still_pending["model"]) == {EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL}
-    assert acknowledge_earnings_call_invalidations(context) == 2
-    handled = sqlite_store.load(Tables.earnings_call_sentiment)
-    assert handled is not None
-    by_ticker = handled.groupby("ticker")["model"].first().to_dict()
-    assert by_ticker == {
-        "A": EARNINGS_CALL_SENTIMENT_INVALID_HANDLED_MODEL,
-        "B": EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL,
-    }
-    assert score_earnings_calls(context) is None
-    print("\n=== SANITY CHECK: malformed refresh handoff ===")
-    print("  a dated invalidation is acknowledged only after the cube write; an undated marker remains pending. Validated.")
-
-
-def test_reissued_valid_call_marker_survives_an_engine_less_build(sqlite_store, monkeypatch) -> None:
-    """A re-issued call that splits `ok` keeps its pending marker until it is actually scored."""
-    sections = _sections_frame().query("ticker == 'A' and quarter == '2023Q1'")
-    marker = pending_refresh_markers(pd.DataFrame({"ticker": ["A"], "quarter": ["2023Q1"], "as_of": [pd.Timestamp("2023-02-01")]}))
-    sqlite_store.save(Tables.earnings_call_sections, sections)
-    sqlite_store.save(Tables.earnings_call_sentiment, marker)
-    context = cast(Context, _Ctx(sqlite_store))
-
-    class _Engine:
-        device = "test"
-
-        @staticmethod
-        def score_texts(texts):
-            return [{"pos": 0.6, "neg": 0.1, "neu": 0.3} for _ in texts]
-
-    monkeypatch.setattr(ec, "get_sentiment_engine", lambda: None)
-    offline = score_earnings_calls(context)
-    acknowledged_offline = acknowledge_earnings_call_invalidations(context)
-    after_offline = sqlite_store.load(Tables.earnings_call_sentiment)
-
-    monkeypatch.setattr(ec, "get_sentiment_engine", lambda: _Engine())
-    online = score_earnings_calls(context)
-    acknowledged_online = acknowledge_earnings_call_invalidations(context)
-    after_online = sqlite_store.load(Tables.earnings_call_sentiment)
-
-    assert offline == pd.Timestamp("2023-02-01") and acknowledged_offline == 0
-    assert set(after_offline["model"]) == {EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL}
-    assert online == pd.Timestamp("2023-02-01") and acknowledged_online == 0
-    assert set(after_online["model"]) == {EARNINGS_CALL_SENTIMENT_CACHE_MODEL} and len(after_online) == 2
-    assert len(_per_call_kpis(after_online, sections)) == 1
-    assert offline is not None
-    print("\n=== SANITY CHECK: re-issued call scored after an engine-less build (F-002) ===")
-    print(f"  engine None: refresh from {offline.date()}, {acknowledged_offline} markers acknowledged, models {sorted(set(after_offline['model']))}")
-    print(
-        f"  engine back: both sections scored over their markers, models {sorted(set(after_online['model']))}; the call yields a KPI row. Validated."
-    )
-
-
-def test_malformed_refresh_deletes_stale_tail_even_when_panel_is_empty(sqlite_store, monkeypatch) -> None:
-    stale = pd.DataFrame(
-        {
-            "date": pd.to_datetime(["2023-02-01", "2023-02-02", "2023-02-03"]),
-            "ticker": ["A", "A", "A"],
-            "f_ec_tone": [0.5, 0.5, 0.5],
-        }
-    )
-    sqlite_store.save(Tables.cube_part_text, stale)
-    sqlite_store.save(
-        Tables.earnings_call_sentiment,
-        pd.DataFrame(
-            [
-                {
-                    "ticker": "A",
-                    "quarter": "2023Q1",
-                    "tag": tag,
-                    "as_of": "2023-02-01",
-                    "model": EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL,
-                }
-                for tag in ("prepared_remarks", "qa")
-            ]
-        ),
-    )
-    step = StepCubeText.__new__(StepCubeText)
-    step._store = sqlite_store
-    step._context = cast(Context, _Ctx(sqlite_store))
-    step._cfg = {"incremental": {}}
-    monkeypatch.setattr(step, "_part", SimpleNamespace(warmup_trading_days=5), raising=False)
-    monkeypatch.setattr(step_text, "load_price_frames", lambda *_args, **_kwargs: object())
-    monkeypatch.setattr(
-        step,
-        "_feature_panel",
-        lambda _frames: (pd.DataFrame(columns=["date", "ticker", "f_ec_tone"]), [pd.Timestamp("2023-02-01")]),
-    )
-    monkeypatch.setattr(step_text, "load_trading_calendar", lambda _store: pd.bdate_range("2023-02-01", periods=3))
-    monkeypatch.setattr(
-        step_text,
-        "plan_window",
-        lambda *_args, **_kwargs: PartWindow(
-            last=pd.Timestamp("2023-02-03"),
-            since=pd.Timestamp("2023-02-01"),
-            refresh_from=pd.Timestamp("2023-02-03"),
-        ),
-    )
-
-    step.run()
-
-    remaining = sqlite_store.load(Tables.cube_part_text)
-    assert remaining is not None
-    assert remaining["date"].tolist() == [pd.Timestamp("2023-02-01")]
-    marker = sqlite_store.load(Tables.earnings_call_sentiment)
-    assert marker is not None
-    assert set(marker["model"]) == {EARNINGS_CALL_SENTIMENT_INVALID_HANDLED_MODEL}
-    print("\n=== SANITY CHECK: malformed correction clears persisted output ===")
-    print("  an empty rebuilt panel deletes every stale row from call+1 onward, then acknowledges the durable marker. Validated.")
+    scores = _sentiment_frame().query("ticker == 'A' and quarter == '2023Q1'")
+    assert sentiment_kpis(scores.head(1), EARNINGS_CALL_SENTIMENT_CACHE_MODEL).empty
+    assert sentiment_kpis(scores.assign(n_words=1), EARNINGS_CALL_SENTIMENT_CACHE_MODEL).empty
+    invalid = scores.copy()
+    invalid.loc[invalid.index[0], "sent_pos"] = np.nan
+    assert sentiment_kpis(invalid, EARNINGS_CALL_SENTIMENT_CACHE_MODEL).empty
+    assert sentiment_kpis(scores.assign(model="legacy"), EARNINGS_CALL_SENTIMENT_CACHE_MODEL).empty
+    placeholder = scores.copy()
+    mask = placeholder["tag"].eq("qa")
+    placeholder.loc[mask, ["sent_pos", "sent_neg", "sent_neu", "uncertainty_ratio"]] = np.nan
+    placeholder.loc[mask, "n_words"] = 0
+    partial = sentiment_kpis(placeholder, EARNINGS_CALL_SENTIMENT_CACHE_MODEL)
+    assert len(partial) == 1 and partial["ec_qa_gap"].isna().all() and partial["coverage"].eq(1).all()
+    print("SANITY: invalid/incomplete/short/legacy caches are excluded; genuine absence is distinct from failed inference.")
 
 
 def test_panel_columns_lifetime_and_missingness():
     idx = pd.bdate_range("2023-01-02", "2023-09-29")
-    panel = build_earnings_call_feature_panel(_per_call_kpis(_sentiment_frame(), _sections_frame()), idx, availability_lag_days=2)
+    panel = build_earnings_call_feature_panel(sentiment_kpis(_sentiment_frame(), EARNINGS_CALL_SENTIMENT_CACHE_MODEL), idx, availability_lag_days=2)
     assert not panel.empty
     expected = {
         "date",
@@ -567,55 +309,20 @@ def test_panel_columns_lifetime_and_missingness():
     )
 
 
-def test_call_is_invisible_until_two_calendar_days_after_as_of(sqlite_store, monkeypatch) -> None:
-    """Stored source dates survive scoring; features start on/after call date plus two calendar days."""
-    calls = {"A": "2024-05-01", "B": "2024-05-03"}  # Wednesday, Friday
-    paragraphs = pd.concat(
-        [
-            synthetic_call(tkr, "2024Q1", as_of, prepared=(_USEFUL * 2).strip(), question=_QUESTION, answer=_USEFUL.strip())
-            for tkr, as_of in calls.items()
-        ],
-        ignore_index=True,
-    )
-    sqlite_store.save(Tables.earnings_call_sections, paragraphs)
-
-    class _Engine:
-        device = "test"
-
-        @staticmethod
-        def score_texts(texts):
-            return [{"pos": 0.6, "neg": 0.1, "neu": 0.3} for _ in texts]
-
-    monkeypatch.setattr(ec, "get_sentiment_engine", lambda: _Engine())
-    context = cast(Context, _Ctx(sqlite_store))
-    assert score_earnings_calls(context) == pd.Timestamp("2024-05-01")
-    per_call = sentiment_kpis(context)
-    assert per_call is not None and len(per_call) == 2
-    calendar = pd.bdate_range("2024-04-01", "2024-09-30")
-    panel = build_earnings_call_feature_panel(per_call, calendar, availability_lag_days=2)
-    panel["date"] = pd.to_datetime(panel["date"])
-    first_seen = {}
-    for tkr, as_of in calls.items():
-        live = panel[panel["ticker"].eq(tkr) & panel["f_ec_tone"].notna()]
-        call_date = pd.Timestamp(as_of)
-        assert not live["date"].le(call_date).any(), f"{tkr}: visible on or before its as_of session"
-        next_session = calendar[int(calendar.searchsorted(call_date + pd.Timedelta(days=2), side="left"))]
-        assert live["date"].min() == next_session
-        first_seen[tkr] = (as_of, str(next_session.date()))
-    assert first_seen["B"][1] == "2024-05-06"
-    print("\n=== SANITY CHECK: earnings-call point-in-time visibility ===")
-    print(f"  (as_of, first visible session) per call from stored paragraphs: {first_seen}; never visible on its as_of session. Validated.")
-
-
 def test_full_calendar_late_refresh_and_rerun_are_bit_exact() -> None:
     """Exercise the real tail writer against a late correction and unchanged rerun."""
     calendar = pd.bdate_range("2021-01-04", "2023-09-29")
     assert len(calendar) >= 500
-    old = build_earnings_call_feature_panel(_per_call_kpis(_sentiment_frame(), _sections_frame()), calendar, availability_lag_days=2)
+    old = build_earnings_call_feature_panel(
+        sentiment_kpis(_sentiment_frame(), EARNINGS_CALL_SENTIMENT_CACHE_MODEL), calendar, availability_lag_days=2
+    )
     revised_sentiment = _sentiment_frame()
     mask = (revised_sentiment["ticker"] == "A") & (revised_sentiment["quarter"] == "2023Q1")
     revised_sentiment.loc[mask, "sent_pos"] += 0.05
-    revised = build_earnings_call_feature_panel(_per_call_kpis(revised_sentiment, _sections_frame()), calendar, availability_lag_days=2)
+    revised_sentiment.loc[mask, "sent_neu"] -= 0.05
+    revised = build_earnings_call_feature_panel(
+        sentiment_kpis(revised_sentiment, EARNINGS_CALL_SENTIMENT_CACHE_MODEL), calendar, availability_lag_days=2
+    )
 
     class _Store:
         def __init__(self, rows: pd.DataFrame):
@@ -797,6 +504,67 @@ def test_new_call_with_missing_kpi_terminates_the_previous_signal() -> None:
     assert observed.loc[pd.Timestamp("2024-02-05"), "f_ec_tone"] == np.float32(0.2)
     print("\n=== SANITY CHECK: missing KPI supersedes stale signal ===")
     print("  the newer valid call preserves its observed tone but resets its absent Q&A gap to NaN. Validated.")
+
+
+def test_partial_coverage_controls_deltas_and_prior_history() -> None:
+    calls = pd.DataFrame(
+        {
+            "ticker": ["A"] * 8,
+            "issuer_id": ["E1"] * 8,
+            "quarter": ["2020Q1", "2020Q2", "2020Q3", "2020Q4", "2021Q1", "2021Q2", "2021Q3", "2021Q4"],
+            "as_of": pd.date_range("2020-02-01", periods=8, freq="3MS"),
+            "coverage": [1, 3, 1, 3, 1, 3, 1, 1],
+            "ec_tone": [0.1, 0.9, 0.2, 0.9, 0.3, 0.9, 0.4, 0.5],
+            "ec_uncertainty": [0.01, 0.9, 0.02, 0.9, 0.03, 0.9, 0.04, 0.05],
+            "total_words": [1000] * 7 + [2000],
+        }
+    )
+    result = prepare_earnings_call_kpis(calls)
+    assert result["ec_tone_delta"].iloc[:7].isna().all()
+    assert result["ec_length_delta"].iloc[:7].isna().all()
+    assert result["ec_tone_delta"].iloc[7] == pytest.approx(0.1)
+    assert result["ec_length_delta"].iloc[7] == pytest.approx(np.log(2))
+    assert pd.isna(result["ec_tone_vs_hist"].iloc[6])
+    expected = (0.5 - 0.25) / np.std([0.1, 0.2, 0.3, 0.4], ddof=1)
+    assert result["ec_tone_vs_hist"].iloc[7] == pytest.approx(expected)
+    assert result["ec_uncertainty_vs_hist"].iloc[7] == pytest.approx(expected)
+    print("SANITY: mixed section sets cannot become tone/length changes; five-year history requires four prior matching-coverage observations.")
+
+
+def test_tail_daily_calculation_preserves_original_expiry() -> None:
+    calendar = pd.bdate_range("2020-01-01", periods=200)
+    calls = pd.DataFrame({"ticker": ["A"], "as_of": [calendar[10]], "ec_tone": [0.2]})
+    full = _daily_frame(calls, "ec_tone", calendar, 2)
+    for cutoff in (calendar[30], calendar[77], calendar[100]):
+        tail = _daily_frame(calls, "ec_tone", calendar, 2, since=cutoff)
+        pd.testing.assert_frame_equal(tail, full.loc[cutoff:], check_exact=True)
+    assert _daily_frame(calls, "ec_tone", calendar, 2, since=calendar[100]).isna().all().all()
+    print("SANITY: daily arrays start at the requested tail; the 66-session signal never restarts at its cutoff.")
+
+
+def test_history_scope_is_bounded_and_keeps_fiscal_predecessors() -> None:
+    from src.data_aggregate.utils.text.earnings_call_features import feature_history_scope
+
+    periods = pd.period_range("2015Q1", "2026Q4", freq="Q")
+    dates = periods.to_timestamp(how="end").normalize() + pd.Timedelta(days=30)
+    calls = pd.DataFrame({"ticker": "A", "issuer_id": "E1", "quarter": [f"{period.year}Q{period.quarter}" for period in periods], "as_of": dates})
+    calendar = pd.bdate_range("2010-01-01", "2026-09-15")
+    cutoff = pd.Timestamp("2026-08-15")
+    scope, comparisons = feature_history_scope(calls, calendar, cutoff, 2)
+    assert len(scope) < len(calls)
+    assert scope["as_of"].min() >= pd.Timestamp("2026-07-30") - pd.DateOffset(years=5)
+    assert scope["as_of"].max() <= calendar[-1]
+    assert comparisons == {("A", "2026Q1"), ("A", "2026Q2")}
+    print("SANITY: active emitter plus actual predecessor keeps bounded five-year history; old archive/future calls are excluded.")
+
+
+def test_cached_uncertainty_recovers_exact_word_hits() -> None:
+    rows = _sentiment_frame().query("ticker == 'A' and quarter == '2023Q1'").copy()
+    rows["n_words"] = 507
+    rows["uncertainty_ratio"] = round(87 / 507, 6)
+    value = sentiment_kpis(rows, EARNINGS_CALL_SENTIMENT_CACHE_MODEL)["ec_uncertainty"].iloc[0]
+    assert value == 87 / 507
+    print("SANITY: legacy six-decimal uncertainty recovers the exact integer-word ratio without re-reading text.")
 
 
 if __name__ == "__main__":

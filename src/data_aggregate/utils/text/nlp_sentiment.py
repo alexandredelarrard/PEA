@@ -10,16 +10,10 @@ import importlib.util
 import logging
 import os
 from collections.abc import Sequence
-from functools import cache
 from importlib import import_module
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
-
-FINBERT_TONE_MODEL = "yiyanghkust/finbert-tone"
-EARNINGS_CALL_SENTIMENT_CACHE_MODEL = f"{FINBERT_TONE_MODEL}:speaker-clean-v2"
-EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL = f"{EARNINGS_CALL_SENTIMENT_CACHE_MODEL}:invalid-pending"
-EARNINGS_CALL_SENTIMENT_INVALID_HANDLED_MODEL = f"{EARNINGS_CALL_SENTIMENT_CACHE_MODEL}:invalid-handled"
 
 
 def ml_stack_available() -> bool:
@@ -111,10 +105,9 @@ def _length_weighted_average(prob_rows: Sequence[Sequence[float]], weights: Sequ
 class SentimentEngine:
     """Thin wrapper over a HuggingFace tone classifier; build it via `get_sentiment_engine`."""
 
-    def __init__(self) -> None:
+    def __init__(self, model_name: str) -> None:
         torch = import_module("torch")
         transformers = import_module("transformers")
-        model_name = FINBERT_TONE_MODEL
         self._torch = torch
         self.max_tokens = 512
         self.batch_size = 16
@@ -205,9 +198,8 @@ class SentimentEngine:
         return out
 
 
-@cache
-def get_sentiment_engine() -> SentimentEngine | None:
-    """Cache one engine or optional load failure; required-CUDA failures always propagate."""
+def get_sentiment_engine(model_name: str) -> SentimentEngine | None:
+    """Load the requested engine; optional failures skip, required-CUDA failures propagate."""
     requires_cuda = os.getenv("FINBERT_DEVICE", "").strip().lower() == "cuda"
     if not ml_stack_available():
         if requires_cuda:
@@ -215,9 +207,9 @@ def get_sentiment_engine() -> SentimentEngine | None:
         logger.warning("torch/transformers not installed -> earnings-call sentiment skipped (pip install torch transformers).")
         return None
     try:
-        return SentimentEngine()
+        return SentimentEngine(model_name)
     except (OSError, RuntimeError) as e:
         if requires_cuda:
             raise
-        logger.warning("Could not load sentiment model '%s' -> sentiment skipped: %s", FINBERT_TONE_MODEL, e)
+        logger.warning("Could not load sentiment model '%s' -> sentiment skipped: %s", model_name, e)
         return None

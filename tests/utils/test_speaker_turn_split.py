@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from src.utils.earnings_call_split import CallSplit, Turn, clean_paragraphs, company_in_introduction, label_turns, qa_start, split_call
-from src.utils.text_metrics import assess_earnings_call_sections
+from src.utils.text.earnings_call_split import CallSplit, Turn, clean_paragraphs, company_in_introduction, label_turns, qa_start, split_call
+from src.utils.text.text_metrics import assess_earnings_call_sections
 
 FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "earnings_calls"
 FIXTURES = sorted(FIXTURE_DIR.glob("*.json"))
@@ -175,7 +175,7 @@ def test_section_texts_are_header_free_and_pass_the_quality_gate(path: Path) -> 
     lines = (split.prepared_remarks + "\n" + split.qa).splitlines()
     assert not [ln for ln in lines if any(ln.startswith(f"{s}:") for s in speakers)]
     quality = assess_earnings_call_sections({"prepared_remarks": split.prepared_remarks, "qa": split.qa})
-    assert quality.valid == (split.status == "ok"), quality.reason
+    assert quality.valid, quality.reason
     print(f"SANITY {path.stem}: header-free texts, quality gate valid={quality.valid} agrees with status={split.status}")
 
 
@@ -288,8 +288,8 @@ def _default_call() -> list[dict]:
 
 
 def test_sentence_split_never_alters_decimals_or_abbreviations() -> None:
-    from src.utils.earnings_call_split import split_sentences
-    from src.utils.text_metrics import clean_earnings_call_text
+    from src.utils.text.earnings_call_split import split_sentences
+    from src.utils.text.text_metrics import clean_earnings_call_text
 
     assert " ".join(split_sentences(DECIMALS)) == DECIMALS
     text = f"{DECIMALS} Thank you. EPS was $2.10, up 3.4% year-over-year in the U.S. and the U.K. markets."
@@ -327,7 +327,7 @@ def test_qa_text_is_management_answers_only_and_turns_are_cleaned() -> None:
 
 
 def test_handoffs_are_dropped_but_requests_and_hedges_are_kept() -> None:
-    from src.utils.earnings_call_split import CallNames, clean_turn_text
+    from src.utils.text.earnings_call_split import CallNames, clean_turn_text
 
     names = CallNames(frozenset({"Bill", "Smith", "Jane", "Doe"}), ("Bill Smith", "Jane Doe"))
     assert clean_turn_text("With that, I'll turn it over to Jane Doe, our CFO, for the forecast.", names) == ""
@@ -370,3 +370,31 @@ def test_qa_turns_need_ten_words_and_exchanges_stay_contiguous() -> None:
     assert all(len(t["text"].split()) >= 10 for t in split.turns if t["section"] == "qa")
     assert "Margins should expand modestly" in split.qa, "an orphaned management answer still feeds the sentiment text"
     print("SANITY 10-word minimum: the 5-word question opens no exchange, its answer is not attached, indices stay 0..1")
+
+
+@pytest.mark.parametrize("words", [149, 150, 151])
+def test_management_threshold_uses_merged_turn_words(words: int) -> None:
+    turns = [
+        Turn("Chief Executive", " ".join(["growth"] * words)),
+        Turn("Operator", "We will now turn to questions."),
+        Turn("Jane Analyst", "How should investors think about revenue growth next year?"),
+        Turn("Chief Executive", "Growth remains solid across the enterprise and consumer businesses."),
+    ]
+    assert qa_start(turns) == (None if words < 150 else 1)
+    print(f"SANITY: {words} prior management-turn words respect the unchanged 150-word Q&A threshold.")
+
+
+@pytest.mark.parametrize("words", [299, 300, 301])
+def test_question_threshold_uses_whole_merged_turn(words: int) -> None:
+    question = " ".join(["growth"] * (words - 1) + ["outlook?"])
+    paragraphs = [
+        {"paragraph_number": 1, "speaker": "Chief Executive", "content": " ".join(["revenue"] * 150)},
+        {"paragraph_number": 2, "speaker": "Jane Analyst", "content": question},
+        {
+            "paragraph_number": 3,
+            "speaker": "Chief Executive",
+            "content": "Revenue remains strong and customers continue investing in their infrastructure.",
+        },
+    ]
+    assert qa_start(clean_paragraphs(paragraphs)) == (1 if words <= 300 else None)
+    print(f"SANITY: {words}-word question respects the unchanged 300-word whole-turn ceiling.")

@@ -5,6 +5,7 @@ type: module
 tags:
   - wiki
   - module
+source_commit: 54882b265efce2bf18c4ff9c40a89c6d8530c589
 ---
 # Runtime and shared utilities
 
@@ -47,3 +48,7 @@ Every CLI command and `Step` uses this module. It is the common entry surface fo
 - [Orchestration and runtime architecture](../architecture/orchestration-and-runtime.md)
 - [Run the pipeline](../guides/run-the-pipeline.md)
 - [Coding standards](../guides/coding-standards.md)
+
+## Text utility ownership
+
+Shared introduction/speaker parsing lives in [earnings_call_split.py](../../src/utils/text/earnings_call_split.py); shared tokenization, cleaning and partial-call quality live in [text_metrics.py](../../src/utils/text/text_metrics.py). Extraction, aggregation and validation use these canonical functions. FinBERT inference and the uncertainty vocabulary have only aggregate production consumers and live in [data_aggregate/utils/text](../../src/data_aggregate/utils/text/nlp_sentiment.py). Model choices come from YAML, with one local engine per sentiment stage.

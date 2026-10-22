@@ -143,9 +143,32 @@ def test_portfolio_cli_uses_selected_or_latest_assessed_cutoff(
         save_member(family, member_path(cutoff, 60, family))
     metadata = json.loads((cutoff / "metadata.json").read_text(encoding="utf-8"))
     metadata["member_files"] = member_inventory(cutoff, [60], config.model.ensemble)
+    metadata.update(
+        {
+            "target_type": config.model.target_type,
+            "label_column": config.model.label_column,
+            "train_end": "2021-12-31",
+            "selection_as_of": "2021-12-31",
+            "fit_audit": {"60": {"feature_max": "2021-12-01", "label_end_max": "2021-12-31", "training_as_of": "2021-12-31"}},
+            "selection": {
+                "60": {
+                    "folds": [
+                        {
+                            "train_end": "2017-01-01",
+                            "train_label_end_max": "2017-06-01",
+                            "test_start": "2018-01-01",
+                            "test_end": "2018-06-01",
+                            "test_label_end_max": "2018-12-01",
+                        }
+                        for _ in range(3)
+                    ]
+                }
+            },
+        }
+    )
     write_json(cutoff / "metadata.json", metadata)
     config.model.models_dir = "output/models"
-    config.portfolio = {"start": "2022-06-01", "fee_bps": 2.0}
+    config.portfolio = {"start": "2022-06-01", "training_cutoff": "2021-12-31", "spread_bps": 2.0}
     write_json(run / "assessment/metadata.json", {"run_id": run.name, "complete": state != "incomplete"})
     (run / "report.html").write_text("assessed", encoding="utf-8")
     if state == "missing-configuration":
@@ -161,8 +184,8 @@ def test_portfolio_cli_uses_selected_or_latest_assessed_cutoff(
     result = CliRunner().invoke(main, args)
     if state == "complete":
         assert result.exit_code == 0, repr(result.exception)
-        assert config.model.models_dir == str(run / "cutoff") and context.paths["OUTPUT_DIR"] == run / "portfolio"
-        assert config.portfolio["start"] == "2022-06-01" and config.portfolio["fee_bps"] == 2.0
+        assert config.model.models_dir == str(run / "cutoff") and context.paths["OUTPUT_DIR"] == run / "backtest_portfolio"
+        assert config.portfolio["start"] == "2022-06-01" and config.portfolio["spread_bps"] == 2.0
         constructor.assert_called_once_with(context=context, config=config)
     else:
         assert result.exit_code != 0

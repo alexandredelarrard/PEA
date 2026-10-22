@@ -1,32 +1,17 @@
-# portfolio.yml -- UNIFIED multi-strategy portfolio (merged as top-level key `portfolio`).
-# Chooses which sleeves to run and applies the portfolio-level parameters. Each sleeve is run via
-# src/strategies (StepPortfolio -> Strategy.run(PortfolioInputs)), then their daily return streams
-# are blended by risk-parity/ERC (= dynamic capital allocation) + one global vol target / leverage.
-# See src/portfolio/step_portfolio.py.
+# Fixed capital budgets; no debt or automatic allocation optimizer.
 portfolio:
-  # subset of strategies to blend. Options: ls_equity (market-neutral L/S), eq_long_only
-  # (long-only top-N, no shorts — retail-viable).
-  sleeves: [ls_equity, eq_long_only]
-  # window applied to ALL sub-strategies (L/S is additionally OOS from its model train_end)
-  start: "2022-06-01"           # after train.end_date + max target horizon (90 observed sessions)
-  end: null                    # null -> last common date
-  # capital / risk handed down to each sleeve
-  starting_capital: 1000
-  sleeve_target_vol: 0.10      # per-sleeve reference vol each sleeve targets before blending
-  fee_bps: 2.0                 # default sleeve trading cost (a sleeve may override in its own file)
-  spread_bps: 8.0
-  risk_free_rate: 0.03
-  # blend across sleeves (this IS the dynamic capital allocation) + global sizing
-  scheme: erc                  # erc (correlation-aware) | inverse_vol
-  cov_mode: ewma               # ewma | std
-  cov_halflife: 63
-  vol_window: 63               # trailing window for the sleeve mix + global vol
-  rebalance_freq: 21           # recompute the sleeve mix every N days
-  portfolio_vol_target: 0.10   # GLOBAL annualized volatility target (adjustable)
-  max_leverage: 2.0            # GLOBAL leverage cap (adjustable)
-  # analysis: each sleeve saves its own IC/Sharpe/neutrality/correlation plots, and the
-  # portfolio saves the sleeve-correlation-evolution plot (data/output/*/analysis/).
-  plot_analysis: true
-  # save a per-day, per-instrument trade blotter (traded $ / fee / spread) to
-  # data/output/portfolio/trades.xlsx — one sheet per sleeve + a summary sheet.
-  save_trades: true
+  training_cutoff: "2021-12-31"
+  start: "2022-01-03"
+  end: null
+  allocation:
+    long_short: 0.50
+    sp500: 0.25
+    cash: 0.25
+  allocation_frequency: weekly
+  cash_rate: 0.033
+  momentum_window: 126
+  risk_window: 63
+  commission_bps: 0.0
+  spread_bps: 5.0
+  sell_fee_bps: 0.206
+  read_chunksize: 100000

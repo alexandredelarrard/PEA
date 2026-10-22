@@ -55,7 +55,7 @@ build_cube:
                                # deliberate 5x over-hedge still leaves t +4.4 while injecting
                                # beta noise. vol_63 stays OUT: it would zero the vol_63 feature.
                                # Unlike the beta/sector tilts, a size tilt is neutralized nowhere
-                               # downstream (strategy_ls.yml enforces beta+sector only), so it
+                               # downstream portfolio construction, so it
                                # would flow straight into the live book.
     vol_standardize: true     # divide epsilon by its own trailing risk
 

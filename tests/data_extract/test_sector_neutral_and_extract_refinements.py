@@ -1,5 +1,5 @@
 """Covers this batch's three changes:
-  1. Sector-neutral portfolio construction -> net weight per group ~ 0.
+  Sector-neutral portfolio checks now live in tests/portfolio.
   2. dual-class dedup (GOOG/FOX/NWS dropped, one per CIK) + GICS industry group.
   3. Google-Trends header rotation (anti-429).
 
@@ -10,7 +10,6 @@ data-set names to build. See tests/data_aggregate/test_institutional_features.py
 
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
 
 
@@ -42,35 +41,7 @@ def test_dedupe_share_classes_and_gics():
 
 
 # ---- 2. sector-neutral portfolio --------------------------------------------
-def test_sector_neutral_weights_sum_to_zero_per_group():
-    from src.strategies.utils.strategies_opt import optimize_day
-
-    rng = np.random.default_rng(0)
-    n = 60
-    alpha = rng.normal(0, 1, n)
-    beta = rng.uniform(0.6, 1.4, n)
-    var = rng.uniform(1e-4, 4e-4, n)
-    groups = np.array(["A", "B", "C"])[rng.integers(0, 3, n)]
-
-    w_plain = optimize_day(alpha, beta, var, beta_neutral=True, pos_cap=0.5)
-    w_sec = optimize_day(alpha, beta, var, beta_neutral=True, pos_cap=0.5, sector_labels=list(groups))
-
-    # plain: only GLOBAL dollar-neutral -> per-group sums are generally NONZERO
-    plain_group_sums = {g: w_plain[groups == g].sum() for g in set(groups)}
-    # sector-neutral: EACH group sum ~ 0
-    sec_group_sums = {g: w_sec[groups == g].sum() for g in set(groups)}
-    assert max(abs(v) for v in sec_group_sums.values()) < 1e-6, sec_group_sums
-    assert max(abs(v) for v in plain_group_sums.values()) > 1e-3, plain_group_sums
-    # still beta-neutral
-    assert abs(float((beta * w_sec).sum())) < 1e-6
-    print("\n=== SANITY CHECK: sector-neutral construction ===")
-    print(
-        f"  per-group net weight: plain max |sum|={max(abs(v) for v in plain_group_sums.values()):.4f} "
-        f"vs sector-neutral max |sum|={max(abs(v) for v in sec_group_sums.values()):.2e} (~0); "
-        f"beta-neutral preserved. Validated."
-    )
 
 
 if __name__ == "__main__":
     test_dedupe_share_classes_and_gics()
-    test_sector_neutral_weights_sum_to_zero_per_group()

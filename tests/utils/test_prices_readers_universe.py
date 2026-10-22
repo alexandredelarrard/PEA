@@ -12,21 +12,16 @@ from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any, cast
 
-import numpy as np
 import pandas as pd
 import pytest
 from omegaconf import DictConfig, OmegaConf
 from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
 
-from src.constants.constants_price import MACRO_MARKET_SERIES
 from src.data_aggregate.transformers.step_cube_prices import StepCubePrices
 from src.data_peers.step_deduce_peers import StepDeducePeers
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
-from src.strategies import step_super_investors
-from src.strategies.step_super_investors import SuperInvestorsStrategy
-from src.strategies.utils import ls_model
 from src.utils.freshness import StaleInputsError, check_prediction_inputs
 from src.utils.universe import unverified_ciks
 from src.validate.checks import check_coverage, check_leakage
@@ -122,40 +117,6 @@ def test_cube_prices_reads_the_universe_only():
         return captured["raw"].sort_values(["ticker", "date"])
 
     assert set(_same(read, "step_cube_prices")["ticker"]) == set(UNIVERSE)
-
-
-def test_super_investors_mark_the_universe_only(monkeypatch):
-    monkeypatch.setattr(step_super_investors, "roster_as_of", lambda context: ["0000000009"])
-
-    def read(context: Any) -> tuple:
-        filings = pd.DataFrame(
-            {
-                "cik": ["0000000009"],
-                "ticker": ["AAA"],
-                "cusip": ["000000001"],
-                "filing_date": [SESSIONS[5]],
-                "period": [SESSIONS[0]],
-                "shares": [10.0],
-                "value_usd": [1000.0],
-            }
-        )
-        context.store.save(Tables.sec13f_hr, filings)
-        step = SuperInvestorsStrategy.__new__(SuperInvestorsStrategy)
-        step._context = context
-        _, prices, end = step.load_raw()
-        return prices.sort_values(["ticker", "date"]), end
-
-    _same(read, "step_super_investors.load_raw")
-
-
-def test_ls_sleeve_returns_cover_the_universe_only():
-    def read(context: Any) -> tuple:
-        macro = pd.DataFrame({"date": SESSIONS.append(pd.DatetimeIndex([SESSIONS[-1] + pd.offsets.BDay(1)])), "ticker": MACRO_MARKET_SERIES})
-        context.store.save(Tables.prices_macro, macro.assign(close=np.linspace(400.0, 440.0, len(macro))))
-        return ls_model._returns(context, cast(Any, None), cast(Any, None), cast(Any, {"beta_window": 5, "vol_window": 5}), SESSIONS[20])
-
-    close, _, _ = _same(read, "ls_model._returns")
-    assert list(close.columns) == UNIVERSE
 
 
 def test_peer_deduction_reads_the_universe_only():

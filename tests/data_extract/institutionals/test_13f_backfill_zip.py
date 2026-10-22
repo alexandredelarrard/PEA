@@ -20,7 +20,7 @@ import pandas as pd
 import pytest
 from edgar.thirteenf.models import ThirteenF
 
-from src.data_aggregate.utils.institutionals.inputs import load_source
+from src.data_aggregate.utils.common.inputs import load_source
 from src.data_extract.utils.common import bulk_cache
 from src.data_extract.utils.common.sec_utils import CIK_MAPPING_COLS
 from src.data_extract.utils.institutionals import fetch_13f as f13
@@ -534,14 +534,13 @@ def test_every_sec13f_hr_consumer_read_hides_the_gap_marker(tmp_path, sqlite_sto
     assert tables is not None
     book = fb.data_set_book(*tables)
     universe = ["AAPL", "MSFT", _NEW]
-    log = logging.getLogger("test")
 
     def _reads() -> dict[str, Any]:
         return {
             "load": sqlite_store.load(Tables.sec13f_hr),
             "load projected": sqlite_store.load(Tables.sec13f_hr, project=True),
             "iter_load": pd.concat(sqlite_store.iter_load(Tables.sec13f_hr, project=True), ignore_index=True),
-            "aggregation load_source": load_source(sqlite_store, log, Tables.sec13f_hr, universe),
+            "aggregation load_source": load_source(sqlite_store, Tables.sec13f_hr, universe),
             "unit check": fb.unit_check(ctx, book, {ROSTER}),
             "superinvestor activity": activity_evidence(ctx, [ROSTER, "1"]),
         }

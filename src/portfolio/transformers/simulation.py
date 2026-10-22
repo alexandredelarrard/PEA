@@ -59,11 +59,15 @@ def simulate(data: MarketInputs, settings: Settings, n: int, frequency: str) -> 
     """Keep quantities between schedules; signal at J, fill at J+1 close."""
     if n < 1 or frequency not in {"daily", "weekly", "monthly"}:
         raise ValueError("Invalid long/short scenario")
-    dates = (
-        data.quotes.index[(data.quotes.index >= settings.start) & (data.quotes.index <= settings.end if settings.end is not None else True)]
-        .sort_values()
-        .unique()
+    # Macro prices can be carried over holidays; require a stock/feature session witness.
+    sessions = data.quotes.index.union(data.returns.index).union(data.share_basis.index).union(data.scores.index).sort_values().unique()
+    data = replace(
+        data,
+        quotes=data.quotes.reindex(sessions),
+        returns=data.returns.reindex(sessions),
+        share_basis=data.share_basis.reindex(sessions),
     )
+    dates = sessions[(sessions >= settings.start) & (sessions <= settings.end if settings.end is not None else True)]
     if len(dates) < 2:
         raise ValueError("Backtest needs at least two observed sessions")
     tickers = data.quotes.columns

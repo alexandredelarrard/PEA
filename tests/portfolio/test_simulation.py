@@ -58,6 +58,59 @@ def test_signal_waits_until_next_close_and_no_fake_trades() -> None:
     print("SANITY: J->J+1 jump belongs to previous holdings; later drift produces no fictitious order.")
 
 
+@pytest.mark.parametrize("levels", [[100, 200, 220], [100, 100, 110]])
+def test_missing_stock_session_does_not_delay_sp_execution(levels: list[int]) -> None:
+    data = market()
+    sessions = pd.to_datetime(["2022-01-03", "2022-01-04", "2022-01-05"])
+    data.market.loc[sessions] = levels
+    data = replace(
+        data,
+        quotes=data.quotes.drop(sessions[1]),
+        returns=data.returns.drop(sessions[1]),
+        share_basis=data.share_basis.drop(sessions[1]),
+    )
+    result = simulate(data, settings(allocation=(0, 1, 0), allocation_frequency="monthly", end=sessions[-1]), 10, "monthly")
+    assert result.status == "complete", result.reason
+    assert result.daily.index.equals(sessions)
+    assert result.orders.iloc[0].date == sessions[1]
+    assert result.daily.nav.to_list() == pytest.approx([100, 100, 110])
+    print("SANITY: a session witnessed by scores retains J+1 execution even when every stock price row is absent and the market is flat.")
+
+
+@pytest.mark.parametrize("missing, field", [("2022-01-04", "execution quote"), ("2022-01-05", "held quote")])
+def test_missing_entire_stock_session_interrupts_selected_or_held_book(missing: str, field: str) -> None:
+    data = market()
+    date = pd.Timestamp(missing)
+    data = replace(data, quotes=data.quotes.drop(date), returns=data.returns.drop(date), share_basis=data.share_basis.drop(date))
+    result = simulate(data, settings(end=pd.Timestamp("2022-01-06")), 2, "monthly")
+    assert result.status == "incomplete"
+    assert f"{missing}: missing/invalid {field}" in str(result.reason)
+    assert all(ticker in str(result.reason) for ticker in data.quotes.columns)
+    assert result.daily.index.max() == date - pd.Timedelta(days=1)
+    assert result.orders.empty or result.orders.date.max() < date
+    print(f"SANITY: the missing {missing} stock session interrupts the {field} with named cells instead of delaying or filling it.")
+
+
+def test_macro_only_weekend_and_holiday_carries_are_not_sessions() -> None:
+    data = market()
+    sessions = pd.to_datetime(["2022-01-14", "2022-01-18", "2022-01-19"])
+    data = replace(
+        data,
+        scores=data.scores.loc[sessions],
+        quotes=data.quotes.loc[sessions[[0, 2]]],
+        returns=data.returns.loc[sessions[[0, 2]]],
+        share_basis=data.share_basis.loc[sessions[[0, 2]]],
+        market=pd.Series([100, 100, 100, 150, 200, 220], index=pd.date_range(sessions[0], sessions[-1])),
+    )
+    result = simulate(data, settings(start=sessions[0], end=sessions[-1], allocation=(0, 1, 0)), 10, "monthly")
+    assert result.status == "complete", result.reason
+    assert result.daily.index.equals(sessions)
+    assert result.orders.iloc[0].signal_date == sessions[0]
+    assert result.orders.iloc[0].date == sessions[1]
+    assert result.daily.nav.to_list() == pytest.approx([100, 100, 110])
+    print("SANITY: macro-only weekend/holiday carries add no sessions; the first witnessed session after the closure remains J+1.")
+
+
 def test_fee_financed_targets_and_both_sides() -> None:
     data = market()
     data.returns.loc[:, :] = 0

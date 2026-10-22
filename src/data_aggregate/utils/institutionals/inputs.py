@@ -253,7 +253,7 @@ def load_filing_vintages(
         "accession_number",
         "cik",
         "period",
-        "filing_date",
+        "filing_date",  
         "accepted_at",
         "amendment_type",
         "amendment_number",

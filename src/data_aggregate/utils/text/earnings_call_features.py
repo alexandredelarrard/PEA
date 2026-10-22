@@ -117,9 +117,11 @@ def _yield_sections_to_score(context: Context, todo_keys: pd.DataFrame, tags: tu
     ticker (projected, ticker pushed down server-side),
     splits each call and keeps only the cleaned sections still absent from the cache. Bounded
     memory: never the whole table."""
+    
     by_tkr: dict[str, dict[str, set[str]]] = {}
     for tkr, q, tag in todo_keys[["ticker", "quarter", "tag"]].to_numpy():
         by_tkr.setdefault(str(tkr), {}).setdefault(str(q), set()).add(str(tag))
+
     for tkr, todo in by_tkr.items():
         g = load_paragraphs(context.store, tkr)
         if g is None:
@@ -142,12 +144,8 @@ def score_earnings_calls(context: Context, tags: tuple[str, ...] = EARNINGS_CALL
     accumulated). An interrupted GPU run keeps its progress; a re-run scores nothing. Returns the
     earliest call date (re)scored or pending refresh, or None."""
     store, log = context.store, context.log
-    # call keys (no text) x tags vs. already-scored keys (no probs) -> only what's left to score
-    calls = call_keys(store)
-    if calls.empty:
-        log.warning("No earnings_call_sections -> sentiment scoring skipped (run extract-earnings-calls).")
-        return None
-    sec_keys = calls.merge(pd.DataFrame({"tag": list(tags)}), how="cross")[["ticker", "quarter", "tag"]]
+
+    # load pending 
     pending = store.load(
         Tables.earnings_call_sentiment,
         where={"model": EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL},
@@ -155,6 +153,8 @@ def score_earnings_calls(context: Context, tags: tuple[str, ...] = EARNINGS_CALL
     )
     pending_dates = pd.to_datetime(pending["as_of"], errors="coerce").dropna() if pending is not None else pd.Series(dtype="datetime64[ns]")
     earliest = pd.Timestamp(pending_dates.min()) if not pending_dates.empty else None
+    
+    # load done 
     done_df = store.load(
         Tables.earnings_call_sentiment,
         ["ticker", "quarter", "tag"],
@@ -162,6 +162,14 @@ def score_earnings_calls(context: Context, tags: tuple[str, ...] = EARNINGS_CALL
         optional=True,
     )
     done = set() if done_df is None else set(map(tuple, done_df.drop_duplicates().to_numpy()))
+    
+    # call keys (no text) x tags vs. already-scored keys (no probs) -> only what's left to score
+    calls = call_keys(store)
+    if calls.empty:
+        log.warning("No earnings_call_sections -> sentiment scoring skipped (run extract-earnings-calls).")
+        return None
+    sec_keys = calls.merge(pd.DataFrame({"tag": list(tags)}), how="cross")[["ticker", "quarter", "tag"]]
+   
     todo_keys = sec_keys[[tuple(k) not in done for k in sec_keys.to_numpy()]]
     if todo_keys.empty:
         log.info("Earnings-call sentiment cache already complete.")
@@ -174,7 +182,7 @@ def score_earnings_calls(context: Context, tags: tuple[str, ...] = EARNINGS_CALL
 
     log.info("Scoring %d earnings-call sections on %s (FinBERT-tone)...", len(todo_keys), engine.device)
     n_new = 0
-    for _tkr, grp in _yield_sections_to_score(context, todo_keys, tags):
+    for _, grp in _yield_sections_to_score(context, todo_keys, tags):
         scored = _score_rows(engine, grp)
         if not scored.empty:
             store.save(Tables.earnings_call_sentiment, scored)  # iterative per-ticker upsert

@@ -110,6 +110,7 @@ async function targetPrediction(){
 async function tickerRmse(){
     const {h,m}=selected(),meta=D.analysis[h].native.backtest[m],rows=meta.tickers,view=layout((names[m]||m)+" · h"+h+" · cutoff 2022+","");
     view.height=Math.max(360,rows.length*23+80);view.margin={l:95,r:30,t:50,b:50};view.xaxis={title:{text:"Native RMSE (target z-score)"}};view.yaxis={autorange:"reversed"};
+    $("ticker_rmse").style.height=view.height+"px";
     $("rmse-note").textContent="100 worst (orange), then 50 best (green), without duplicates · "+rows.length+" / "+meta.eligible_tickers+" eligible tickers. Hover shows comparable dates.";
     if(!rows.length)view.annotations=[{text:"No comparable native predictions",xref:"paper",yref:"paper",x:.5,y:.5,showarrow:false}];
     return Plotly.react("ticker_rmse",[{x:rows.map(row=>row.rmse),y:rows.map(row=>row.ticker),type:"bar",orientation:"h",
@@ -123,6 +124,7 @@ async function importance(){
     $("effect-kind").options[0].textContent=linear?"Signed linear contribution":"Signed SHAP dependence";
     $("importance-note").textContent=linear?"Absolute saved coefficient on training-standardized inputs. Hover shows signed beta. Zero coefficients remain selectable.":"Mean absolute SHAP on the deterministic cutoff backtest sample; all retained variables remain selectable.";
     const view=layout((names[m]||m)+" · h"+h, "");view.height=Math.max(360,sorted.length*23+80);
+    $("importance").style.height=view.height+"px";
     view.margin={l:Math.min(420,Math.max(170,Math.max(...sorted.map(value=>value.length))*6)),r:30,t:50,b:45};
     view.xaxis={title:{text:linear?"|standardized coefficient|":"Mean |SHAP|"}};view.yaxis={autorange:"reversed"};
     return Plotly.react("importance",[{x:sorted.map(value=>features[value].importance),y:sorted,type:"bar",orientation:"h",marker:{color:colors[0]},

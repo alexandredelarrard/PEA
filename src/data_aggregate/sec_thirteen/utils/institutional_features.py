@@ -1,5 +1,5 @@
 """
-institutional_features.py  (src/data_aggregate/utils/institutionals/institutional_features.py)
+institutional_features.py  (src/data_aggregate/sec_thirteen/utils/institutional_features.py)
 --------------------------------------------------------------------------------
 Broad, point-in-time 13F institutional ownership features (`ic_inst_*`).
 

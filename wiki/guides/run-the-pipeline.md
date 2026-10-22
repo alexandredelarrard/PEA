@@ -126,7 +126,7 @@ The first rereads all published ZIP datasets from the configured source start (2
 
 For bounded verification or targeted recovery, use `data_extract thirteen-f-managers --vintages` with both repeated `--cik` and `--accession`, plus required `--period-start`, `--period-end`, `--filed-through`, `--max-filings`. Optional repeated `--archive` selects cached source transport; it does not replace CIK/accession scope. Review `--dry-run` first. The [CLI](../../src/data_extract/cli.py) writes both existing destinations; it creates no auxiliary business table. Validate the same named scope with `validate institutionals --cik ... --period-start ... --period-end ... --filed-through ...`.
 
-After source adoption and the user's price refresh, run `data_aggregate build-institutionals -F`, then `data_aggregate assemble-cube`. The full institutional rebuild is necessary for historical corrections; deleting all cube tables is unnecessary. These recovery/rebuild operations were not run by closure validation. Code merge/check status lives in the local audit `06-final.md`.
+After source adoption and the user's price refresh, run `data_aggregate build-institutionals -F`, then `data_aggregate build-sec-thirteen -F`, then `data_aggregate assemble-cube`. These full rebuilds remove transferred/retired columns from the old part and populate the new part; deleting all cube tables is unnecessary. These recovery/rebuild operations were not run by closure validation. Code merge/check status lives in the local audit `06-final.md`.
 
 ### Source-specific notes
 
@@ -147,7 +147,7 @@ rtk proxy "$PY" -m src data_extract thirteen-f-managers --years 31 -c ./configs
 
 `--years 31` sets the report-period history depth for this run; it does not force a reread. `thirteen-f-managers` has no `-F` option. Its [pending-book planner](../../src/data_extract/utils/institutionals/fetch_13f_managers.py) skips only verified completed accession packets. Legacy latest-only rows do not mark an original or amendment complete. `superinvestors -F` rebuilds roster dates and CIK resolutions; it does not repair holdings.
 
-After a parser fix, repair existing holdings with a backed-up, source-verified whole-book proposal and an atomic scoped application, rather than relying on catch-up upserts to remove stale CUSIPs. The parser fix is merged into `dev`, and the 2026-10-07 historical repair was applied on 2026-10-08 (4 replaced books, 62 NULL-amount books); priorities and exact remaining gaps are in [TODO](../TODO.md#superinvestor-roster-follow-ups). After that repair, build `cube_part_prices` if absent, run `data_aggregate build-institutionals -F`, then `data_aggregate assemble-cube` and the relevant read-only [validation](./validate-a-change.md). The latter assembly command has no `-F` option; see [aggregate CLI](../../src/data_aggregate/cli.py).
+After a parser fix, repair existing holdings with a backed-up, source-verified whole-book proposal and an atomic scoped application, rather than relying on catch-up upserts to remove stale CUSIPs. The parser fix is merged into `dev`, and the 2026-10-07 historical repair was applied on 2026-10-08 (4 replaced books, 62 NULL-amount books); priorities and exact remaining gaps are in [TODO](../TODO.md#superinvestor-roster-follow-ups). After that repair, build `cube_part_prices` if absent, run `data_aggregate build-sec-thirteen -F`, then `data_aggregate assemble-cube` and the relevant read-only [validation](./validate-a-change.md). The latter assembly command has no `-F` option; see [aggregate CLI](../../src/data_aggregate/cli.py).
 
 The daily `superinvestors` command writes a snapshot only when Dataroma's roster changed. Rebuild the whole `superinvestor_roster` table after any change to `configs/superinvestors/` or to the roster code, and on a cold database:
 
@@ -178,18 +178,19 @@ rtk "$PY" -m src data_aggregate build-fundamentals
 rtk "$PY" -m src data_aggregate build-momentum
 rtk "$PY" -m src data_aggregate build-text
 rtk "$PY" -m src data_aggregate build-institutionals
+rtk "$PY" -m src data_aggregate build-sec-thirteen
 rtk "$PY" -m src data_aggregate build-governance
 rtk "$PY" -m src data_aggregate assemble-cube
 rtk "$PY" -m src data_aggregate cube-status
 ```
 
-The same eight part objects are driven by the composite build, individual CLI commands, and the Airflow chain. The command list and warm-ups come from [parts.py](../../src/data_aggregate/utils/common/parts.py).
+The same nine part objects are driven by eight builders in the composite build, individual CLI commands, and the sequential Airflow chain. The command list and warm-ups come from [parts.py](../../src/data_aggregate/utils/common/parts.py).
 
 ### Assemble selected inputs and check readiness
 
 Edit `build_cube.assembly` in [build_cube.yml](../../configs/build_cube.yml) using the [column selection contract](../reference/configuration.md#cube-assembly-selection), then run `rtk "$PY" -m src data_aggregate assemble-cube -c ./configs` followed by `rtk "$PY" -m src data_aggregate cube-status -c ./configs`. Assembly has no `-F` option. This rebuilds the derived cube from persisted parts; it does not rebuild feature parts.
 
-The [assembler](../../src/data_aggregate/transformers/step_assemble_cube.py) requires prices, targets, betas, fundamentals, momentum and governance. Text/institutionals can be absent or empty; populated broken inputs stop the build. Every price date/ticker remains, including the newest session with null future labels. Selected names are projected before payload reads. Removing selected columns or skipping a former optional source physically removes its old cube columns; confirm model-input compatibility before using narrower output.
+The [assembler](../../src/data_aggregate/transformers/step_assemble_cube.py) requires prices, targets, betas, fundamentals, momentum and governance. Text/institutionals/SEC thirteen can be absent or empty; populated broken inputs stop the build. Every price date/ticker remains, including the newest session with null future labels. Selected names are projected before payload reads. Removing selected columns or skipping a former optional source physically removes its old cube columns; confirm model-input compatibility before using narrower output.
 
 The [status gate](../../src/data_aggregate/utils/common/part_status.py) reports `reference_price_date`, each participating part's expected/actual edge and `refresh_command`. Use the named command to refresh stale/missing parts, then reassemble. At 03:00, the latest stored preceding price session is sufficient. This gate compares table edges, not each ticker/feature's coverage or source prices against a market calendar; existing source/prediction freshness checks remain responsible for those source-age checks.
 

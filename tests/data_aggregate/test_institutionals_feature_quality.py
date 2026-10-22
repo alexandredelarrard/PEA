@@ -36,6 +36,18 @@ def _write_peer_cache(path: Path) -> dict[str, object]:
     return quality._peer_metadata(path)
 
 
+@pytest.mark.parametrize("part", [Tables.cube_part_institutionals, Tables.cube_part_sec_thirteen])
+def test_snapshot_metadata_cannot_cross_part_owners(tmp_path: Path, part: Table) -> None:
+    snapshot = tmp_path / "part.parquet"
+    frame = pd.DataFrame({"date": pd.to_datetime(["2024-01-02"]), "ticker": ["AAA"], "f_ic_demo": [1.0]})
+    metadata = _write_snapshot(snapshot, frame, part)
+    wrong_owner = Tables.cube_part_sec_thirteen if part == Tables.cube_part_institutionals else Tables.cube_part_institutionals
+    result = quality._schema_check(snapshot, metadata, metadata["columns"], metadata["dtypes"], len(frame), part=wrong_owner)
+    assert result["status"] == "fail"
+    assert result["metrics"]["comparisons"]["table"] is False
+    print(f"SANITY: {part.name} snapshot metadata is refused for {wrong_owner.name} before any live values are consulted.")
+
+
 class _MetadataOnlyStore:
     def __init__(self) -> None:
         self.calls: list[str] = []

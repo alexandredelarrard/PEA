@@ -30,12 +30,11 @@ trading day >= its date, so on a trimmed grid an event PREDATING the window land
 window's first day: a 2010 13D became a 2025 13D. Measured on `cube_part_institutionals`,
 2026-09-12, over a 567-day incremental window: **76 of 127 columns drifted**, and the drift
 reached the newest row, which is the only row an append writes. `f_ic_bo_new_holder` was wrong
-on 490 of 491 tickers on the last date; `f_ic_sig_insider_age_days` by a median 674 days and up
-to 4,412.
+on 490 of 491 tickers on the last date.
 
-FIXED by `StepCubeInstitutionals._load_frames`, which takes no `since` at all: that part
+FIXED by full-calendar price loading in both institutional builders: each part
 COMPUTES over the full calendar on both paths and lets `write_part` slice the tail. It is
-affordable there precisely because `_load_source` never trimmed the event tables anyway. Any
+affordable there because source loading retains event history. Any
 future part carrying an unbounded look-back needs the same treatment, not a bigger warm-up.
 
 `binding_lookbacks` records, per merged feature group, the look-back that actually binds.

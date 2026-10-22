@@ -157,13 +157,7 @@ def test_substep_price_fields_are_declared_and_valid():
     for name in ("StepCubeFundamentals", "StepCubeText", "StepCubeInstitutionals"):
         assert not ({"open", "high", "low"} & set(declared[name])), f"{name} does not build bars, so materialising the OHLC range is pure memory"
     assert set(StepCubeFundamentals._FIELDS) == {"close_split", "level_factor", "ret", "sector_ret"}
-    # ⚠ INSTITUTIONALS NOW TAKES BOTH BASES, and it is the second step (with momentum) that
-    # legitimately needs them -- the price-conditioning layer added in Phase 2.6 is a family of
-    # while the 13F / insider families still scale dollars by a market cap. The discipline the
-    # blanket ban used to enforce is enforced at the call site instead: `daily_market_cap` is
-    # keyword-only in `level_factor` and documents that `close_total` reintroduces the defect,
-    # and the step passes it `frames.close_split`. `sector_ret` makes the conditioning returns
-    # sector-residual; `ret` is the persisted daily return the realized vol comes from.
+    # Short-flow returns use close_total; market-cap levels use close_split.
     assert set(StepCubeInstitutionals._FIELDS) == {"close_split", "close_total", "volume", "level_factor"}
     # Governance is the third and last step allowed `close_total`: pay-vs-performance
     # differences pay growth against a trailing shareholder RETURN, and a return is exactly
@@ -189,28 +183,7 @@ def test_substep_price_fields_are_declared_and_valid():
 
 
 def test_feature_parts_cover_every_group_exactly_once():
-    """The feature groups of the old exploded DAG map onto the feature parts, each group
-    owned by exactly one part. The count is invariant to WHERE a group lives -- it was 14
-    whether `governance` sat on the old `extras` part or on its own -- so a MOVE must never
-    change it. Only a genuine add or delete may touch this number, and it must say which:
-
-      14 -> 13   `attention` DELETED (dead code: defined, never called from `run()`), with the
-                 `extras` -> `institutionals` rename.
-      13 -> 15   Phase 2.6/2.7 ADDED two derived panels to `cube_part_institutionals` --
-                 `conditioning` (`ic_sig_*`, look-back 252: the excursion cap) and
-                 `cross_source` (`ic_xs_*`, look-back 126: the distinct-ACTOR window). The
-                 same edit RENAMED `short_interest` -> `short_flow`, which is a move and does
-                 not change the count; its look-back moved 103 -> 322 because the family
-                 gained a 252-day self-history z and a 30-day persistence count.
-      15 -> 16   `ownership` DECLARED. ⚠ NOT AN ADD -- the beneficial-ownership panel has been
-                 merged into `cube_part_institutionals` since Phase 2.5 and was simply MISSING
-                 from `binding_lookbacks`, so this test counted 15 while the part merged seven
-                 panels. Its 378 (`ownership_features.HOLDER_ACTIVE_DAYS`, both the 13G holder
-                 ffill limit and the rolling distinct-filer denominator) is the LONGEST bounded
-                 look-back in the part, and the warm-up covering it was luck: 390 vs 378.
-                 A count that can go down when a group is forgotten is the failure this test
-                 exists to catch, and it did not catch this one -- an omission reads as "not
-                 added yet", which is why the entry carries a comment saying otherwise."""
+    """Every retained feature group has exactly one owner across six feature parts."""
     owners: dict[str, list[str]] = {}
     for part in FEATURE_PARTS:
         for group, _ in part.binding_lookbacks:

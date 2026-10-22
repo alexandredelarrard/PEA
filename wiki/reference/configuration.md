@@ -107,7 +107,7 @@ Runtime eligibility is the intersection of:
 
 ## Cube assembly selection
 
-[build_cube.yml](../../configs/build_cube.yml) supplies `build_cube.assembly` to the existing [assembler](../../src/data_aggregate/transformers/step_assemble_cube.py) and shared [policy](../../src/data_aggregate/utils/common/assembly.py). All registered parts participate. Prices, targets, betas, fundamentals, momentum and governance are compulsory; the committed optional list contains text and institutionals. Optional skips apply only to absent/physically empty tables; a populated broken input fails.
+[build_cube.yml](../../configs/build_cube.yml) supplies `build_cube.assembly` to the existing [assembler](../../src/data_aggregate/transformers/step_assemble_cube.py) and shared [policy](../../src/data_aggregate/utils/common/assembly.py). All registered parts participate. Prices, targets, betas, fundamentals, momentum and governance are compulsory; the committed optional list contains text, institutionals and SEC thirteen. Optional skips apply only to absent/physically empty tables; a populated broken input fails.
 
 ```yaml
 build_cube:
@@ -115,10 +115,12 @@ build_cube:
     optional_parts:
       - cube_part_text
       - cube_part_institutionals
+      - cube_part_sec_thirteen
     columns:
       cube_part_fundamentals: null
       cube_part_governance: null
       cube_part_institutionals: null
+      cube_part_sec_thirteen: null
 ```
 
 A missing `columns` mapping, omitted part entry, null or empty list includes all actual columns. Nonempty lists select exact payload names, one YAML bullet per line; date and ticker are included automatically. For example, replace a null value with:
@@ -144,7 +146,7 @@ Important blocks:
 | `features` | Cross-sectional transform policy. |
 | `intrinsic` | Two-stage DCF parameters; terminal growth must remain below discount rate. |
 | `hist` | Five-year-style self-history comparison window and minimum observations. |
-| `institutionals` | Decay, manager selection/staleness, coverage-break policy, conditioning windows, and source-family behavior. |
+| `institutionals` | Decay, manager selection/staleness, coverage-break policy and retained source-family behavior. Both split steps keep this namespace; each reads its owned settings. |
 | `fundamentals_features` | Fixed eight earnings-lag slots, eight-quarter persistence and three-session report response; prior SUE scale uses eight quarters. Changing fixed schema windows requires a feature-contract update. |
 | `workforce` | `part_time_weight`: α of the workforce headcount proxy FT + α·PT (0.65; must lie in [0.5, 1]). See [workforce features](./modelling-and-portfolio.md#workforce-features). |
 | `output` | Persistence switches for cube, diagnostics and artifacts; historical modelling prediction/signal/CV writes are removed. |

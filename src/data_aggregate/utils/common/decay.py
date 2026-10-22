@@ -1,5 +1,5 @@
 """
-decay.py  (src/data_aggregate/utils/institutionals/decay.py)
+decay.py  (src/data_aggregate/utils/common/decay.py)
 -----------------------------------------------------------
 Turn a sparse EVENT LOG into a dense daily state variable by exponential decay:
 

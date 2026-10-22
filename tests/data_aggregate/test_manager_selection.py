@@ -1,6 +1,6 @@
 """
 Point-in-time elite-manager selection
-(src/data_aggregate/utils/institutionals/manager_selection.py).
+(src/data_aggregate/sec_thirteen/utils/manager_selection.py).
 
 Proves the four properties that make this a SELECTOR rather than a filter applied with
 hindsight. Each is a defect the module was written to avoid, not a hypothetical:
@@ -376,12 +376,7 @@ def test_the_step_builds_a_selector_from_config_and_memoises_the_roster():
 
     reads = {"n": 0}
 
-    class _FakeStore:
-        def exists(self, _table):
-            return True
-
     class _FakeContext:
-        store = _FakeStore()
         config_dir = "configs"
 
     step = cast(Any, StepCubeSecThirteen.__new__(StepCubeSecThirteen))
@@ -421,7 +416,7 @@ def test_the_step_builds_a_selector_from_config_and_memoises_the_roster():
             assert selector is not None
             sel = selector(st)
             got[mode] = (sel.nunique(), int(reads["n"]))
-        print(f"distinct weights / roster reads: {got}; distinct periods in the state: {st['period'].nunique()}")
+        print(f"distinct weights / roster lookups: {got}; distinct periods in the state: {st['period'].nunique()}")
     finally:
         mod.roster_as_of, mod.first_snapshot_date = orig_as_of, orig_first
 
@@ -430,5 +425,5 @@ def test_the_step_builds_a_selector_from_config_and_memoises_the_roster():
     assert got["top_k"][1] <= st["period"].nunique(), "the roster lookup was not memoised"
     print(
         "=== 15. the step turns config into a weight for both live modes, treats every "
-        "spelling of `off` as no-selection, and reads the roster once per period ==="
+        "spelling of `off` as no-selection, and looks up the loaded roster once per period ==="
     )

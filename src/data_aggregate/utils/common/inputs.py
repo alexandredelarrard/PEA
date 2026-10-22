@@ -30,9 +30,10 @@ def load_full_price_frames(
     fields: Sequence[str],
 ) -> PriceFrames:
     """Load full-calendar price inputs from the already-persisted peer dependency."""
+    peers = load_peers_or_raise(context)
     return load_price_frames(
         store,
-        peers=load_peers_or_raise(context),
+        peers=peers,
         fields=fields,
         since=None,
     )

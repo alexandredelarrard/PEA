@@ -24,7 +24,7 @@ Configuration dates are only outer bounds; they do not fill missing cells or pro
 - Validation declarations: [configs/validate.yml](../../configs/validate.yml)
 - Availability utilities: [availability.py](../../src/data_aggregate/utils/common/availability.py)
 - Completeness-frontier resolution: [frontiers.py](../../src/data_aggregate/utils/institutionals/frontiers.py), one `schedule_complete_through` rule for insider, 13D and 13G, read from the table alone: absence reads as zero through the last price session while the table's newest `filing_date` (markers included) lies within its 7-day resume overlap of that session, otherwise through that newest filing date; an empty table has no frontier. A late filing therefore reads as zero for at most 7 days, until the 7-session cube tail rewrites it
-- FTD coverage: the [input reader](../../src/data_aggregate/utils/institutionals/inputs.py) retains global date/ZIP coverage while collecting scoped economic rows. A missing ticker on an observed date is zero; an unobserved date remains unknown. No conditioning sink is needed.
+- FTD coverage: the [input reader](../../src/data_aggregate/utils/institutionals/inputs.py) retains global date/ZIP coverage while collecting scoped economic rows. A missing ticker on an observed date is zero; an unobserved date remains unknown.
 - Leakage checks: [validate/checks/leakage.py](../../src/validate/checks/leakage.py)
 - Source constraints: [data sources](../reference/data-sources.md)
 

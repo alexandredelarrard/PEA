@@ -1,5 +1,5 @@
 """
-holdings_clean.py  (src/data_aggregate/utils/institutionals/holdings_clean.py)
+holdings_clean.py  (src/data_aggregate/sec_thirteen/utils/holdings_clean.py)
 -----------------------------------------------------------------------------
 The ONE 13F cleaner, for BOTH holdings tables.
 

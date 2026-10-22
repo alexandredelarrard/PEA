@@ -52,7 +52,7 @@ Every major `src/` package owns a `step_*.py` orchestrator that inherits `Step`,
 data_store/    only SQL; registry, facade, DDL
 data_extract/  ordered source fetchers and six domain sub-steps
 data_peers/    business/return peer baskets
-data_aggregate/ eight cube parts plus streamed assembly
+data_aggregate/ nine cube parts plus streamed assembly
 modelling/     steps/ (train, assess), transformers/ (models, diagnostics), utils/
 portfolio/     steps/, transformers/, utils/: long/short, S&P 500 and cash backtests
 validate/      all read-only validation code

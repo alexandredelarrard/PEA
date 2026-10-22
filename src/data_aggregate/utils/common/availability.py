@@ -1,5 +1,5 @@
 """
-availability.py  (src/data_aggregate/utils/institutionals/availability.py)
+availability.py  (src/data_aggregate/utils/common/availability.py)
 --------------------------------------------------------------------------
 THE ONE DECLARATION OF WHEN A 13F PERIOD BECOMES PUBLIC.
 
@@ -218,19 +218,6 @@ class InstitutionalAvailability:
         mask = self.date_mask(index, columns, self.source_date(table, field))
         return self.combine(mask, *requirements)
 
-    def derived_mask(
-        self,
-        feature: str,
-        index: pd.DatetimeIndex,
-        columns: pd.Index,
-        *,
-        dependencies: Iterable[tuple[Table, str | None]] = (),
-        requirements: Sequence[pd.DataFrame] = (),
-    ) -> pd.DataFrame:
-        start = self.derived_date(feature, dependencies)
-        mask = self.date_mask(index, columns, start)
-        return self.combine(mask, *requirements)
-
     @staticmethod
     def combine(*masks: pd.DataFrame) -> pd.DataFrame:
         """AND aligned boolean requirements without silently reindexing them."""
@@ -249,10 +236,3 @@ class InstitutionalAvailability:
                 raise TypeError("Availability masks must be boolean DataFrames")
             out &= mask
         return out
-
-    @staticmethod
-    def apply(values: pd.DataFrame, available: pd.DataFrame) -> pd.DataFrame:
-        """Mask unavailable cells while preserving zeros inside supported cells."""
-        if not values.index.equals(available.index) or not values.columns.equals(available.columns):
-            raise ValueError("Signal values and availability mask must be aligned")
-        return values.where(available)

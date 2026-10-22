@@ -55,6 +55,69 @@ def _rebalance(
     return funded, quantities, fees
 
 
+def _execution_prices(quotes: pd.Series, date: pd.Timestamp, market_price: float, needs_benchmark: bool) -> pd.Series:
+    """Validate execution quotes and materialize the joint stock/benchmark vector."""
+    prices = _positive(quotes, date, "execution quote").copy()
+    if needs_benchmark and (not np.isfinite(market_price) or market_price <= 0):
+        raise IncompleteScenario(f"{date.date()}: missing S&P execution price")
+    prices["S&P500_TR"] = market_price if np.isfinite(market_price) and market_price > 0 else 1.0
+    return prices
+
+
+def _order_records(
+    date: pd.Timestamp,
+    signal_date: pd.Timestamp,
+    old: pd.Series,
+    quantities: pd.Series,
+    prices: pd.Series,
+    fees: pd.Series,
+    cause: str,
+) -> list[dict]:
+    """Materialize each nonzero net order from the joint stock/benchmark vectors."""
+    delta = quantities - old
+    notionals = delta * prices
+    records = []
+    for ticker in quantities.index:
+        if abs(notionals[ticker]) <= 1e-10:
+            continue
+        before, after = float(old[ticker]), float(quantities[ticker])
+        benchmark = ticker == "S&P500_TR"
+        change = "entry" if abs(before) <= 1e-12 else ("exit" if abs(after) <= 1e-12 else ("inversion" if before * after < 0 else "adjustment"))
+        records.append(
+            {
+                "date": date,
+                "signal_date": signal_date,
+                "ticker": ticker,
+                "pocket": "sp500" if benchmark else "long_short",
+                "cause": "allocation" if benchmark else cause,
+                "change": ("entry" if before == 0 else "adjustment") if benchmark else change,
+                "old_quantity": before,
+                "quantity": after,
+                "delta": float(delta[ticker]),
+                "price": float(prices[ticker]),
+                "notional": float(notionals[ticker]),
+                "fee": float(fees[ticker]),
+            }
+        )
+    return records
+
+
+def _position_records(date: pd.Timestamp, data: MarketInputs, quantities: pd.Series, values: pd.Series, nav: float) -> list[dict]:
+    """Snapshot held stock quantities and their already-computed marked values."""
+    return [
+        {
+            "date": date,
+            "ticker": ticker,
+            "sector": data.sectors[ticker],
+            "quantity": float(quantities[ticker]),
+            "price": float(data.quotes.loc[date, ticker]),
+            "value": float(values[ticker]),
+            "weight": float(values[ticker] / nav),
+        }
+        for ticker in values.index
+    ]
+
+
 def simulate(data: MarketInputs, settings: Settings, n: int, frequency: str) -> Simulation:
     """Keep quantities between schedules; signal at J, fill at J+1 close."""
     if n < 1 or frequency not in {"daily", "weekly", "monthly"}:
@@ -132,10 +195,9 @@ def simulate(data: MarketInputs, settings: Settings, n: int, frequency: str) -> 
             target = construct(data, previous, n, variance, momentum).reindex(tickers, fill_value=0) if inner else None
             if outer or inner:
                 active = q.index[(q != 0) | ((target != 0) if target is not None else False)]
-                execution = _positive(data.quotes.loc[date, active], date, "execution quote")
+                execution_all = _execution_prices(data.quotes.loc[date, active], date, market_now, outer and settings.allocation[1] > 0)
+                execution = execution_all.loc[active]
                 old_q = q.loc[active].copy()
-                if outer and settings.allocation[1] > 0 and (not np.isfinite(market_now) or market_now <= 0):
-                    raise IncompleteScenario(f"{date.date()}: missing S&P execution price")
 
                 multiplier = settings.allocation[0] if outer else 1.0
                 coefficients = (
@@ -146,62 +208,17 @@ def simulate(data: MarketInputs, settings: Settings, n: int, frequency: str) -> 
                 fixed["S&P500_TR"] = 0.0 if outer else sp_q
                 old = old_q.copy()
                 old["S&P500_TR"] = sp_q
-                execution_all = execution.copy()
-                execution_all["S&P500_TR"] = market_now if np.isfinite(market_now) and market_now > 0 else 1.0
                 funded, desired, fees = _rebalance(nav_before if outer else ls_value, coefficients, fixed, old, execution_all, settings)
                 new_q, new_sp = desired.loc[active], float(desired["S&P500_TR"])
-                delta = new_q - old_q
-                notionals = delta * execution
-                ls_fees = fees.loc[active]
-                sp_notional = (new_sp - sp_q) * market_now if new_sp != sp_q else 0.0
                 sp_fee = float(fees["S&P500_TR"])
-                ls_fee = float(ls_fees.sum())
+                ls_fee = float(fees.loc[active].sum())
                 cause = "allocation+selection" if outer and inner else ("allocation" if outer else "selection")
-                for ticker in active:
-                    if abs(notionals[ticker]) <= 1e-10:
-                        continue
-                    old, new = float(old_q[ticker]), float(new_q[ticker])
-                    change = "entry" if abs(old) <= 1e-12 else ("exit" if abs(new) <= 1e-12 else ("inversion" if old * new < 0 else "adjustment"))
-                    orders.append(
-                        {
-                            "date": date,
-                            "signal_date": previous,
-                            "ticker": ticker,
-                            "pocket": "long_short",
-                            "cause": cause,
-                            "change": change,
-                            "old_quantity": old,
-                            "quantity": new,
-                            "delta": float(delta[ticker]),
-                            "price": float(execution[ticker]),
-                            "notional": float(notionals[ticker]),
-                            "fee": float(ls_fees[ticker]),
-                        }
-                    )
-                if abs(sp_notional) > 1e-10:
-                    orders.append(
-                        {
-                            "date": date,
-                            "signal_date": previous,
-                            "ticker": "S&P500_TR",
-                            "pocket": "sp500",
-                            "cause": "allocation",
-                            "change": "entry" if sp_q == 0 else "adjustment",
-                            "old_quantity": sp_q,
-                            "quantity": new_sp,
-                            "delta": new_sp - sp_q,
-                            "price": float(market_now),
-                            "notional": sp_notional,
-                            "fee": sp_fee,
-                        }
-                    )
+                orders.extend(_order_records(date, previous, old, desired, execution_all, fees, cause))
                 q.loc[active] = new_q
-                if outer:
-                    ls_value = funded * settings.allocation[0]
-                    free_cash = funded * settings.allocation[2]
-                    sp_value, sp_idle = funded * settings.allocation[1], 0.0
-                else:
-                    ls_value = funded
+                ls_value = funded * settings.allocation[0] if outer else funded
+                free_cash = funded * settings.allocation[2] if outer else free_cash
+                sp_value = funded * settings.allocation[1] if outer else sp_value
+                sp_idle = 0.0 if outer else sp_idle
                 ls_cash = ls_value - float((new_q * execution).sum())
                 sp_q = new_sp
             else:
@@ -212,18 +229,7 @@ def simulate(data: MarketInputs, settings: Settings, n: int, frequency: str) -> 
                 raise IncompleteScenario(f"{date.date()}: unfunded capital or accounting mismatch")
             held = q.index[q != 0]
             values = q.loc[held] * data.quotes.loc[date, held]
-            for ticker in held:
-                positions.append(
-                    {
-                        "date": date,
-                        "ticker": ticker,
-                        "sector": data.sectors[ticker],
-                        "quantity": float(q[ticker]),
-                        "price": float(data.quotes.loc[date, ticker]),
-                        "value": float(values[ticker]),
-                        "weight": float(values[ticker] / nav),
-                    }
-                )
+            positions.extend(_position_records(date, data, q, values, nav))
             daily.append(
                 {
                     "date": date,

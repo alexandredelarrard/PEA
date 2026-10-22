@@ -7,7 +7,7 @@ tags:
   - guide
   - runbook
   - operations
-source_commit: 96e77f81e5cf184b513b1e9bc4785aa68945654b
+source_commit: 5d13ac4980704564ce57dcbd7a378c73840db148
 ---
 # Run the pipeline
 
@@ -373,7 +373,7 @@ A full text run reuses valid model results and scores only missing or invalid ou
 | Stage | Cost | Resume |
 | --- | --- | --- |
 | `extract-earnings-calls -F` | 18.6 min for 33,591 calls, mostly DB writes | Writes one row group per batch, so a crash loses at most one batch. |
-| FinBERT sentiment | 27–37 s per call on CPU, about 280 h for every call | Historical CPU timing; the current flow saves one completed call at a time under the configured model plus speaker-clean-v2 cache version. |
+| FinBERT sentiment | 27–37 s per call on CPU, about 280 h for every call | Historical CPU timing; the current flow saves one completed call at a time under the configured model plus the speaker-clean-v3 cleaning version. Existing v2 scores/vectors need recomputing; use build-text -F and subsequent cube assembly to adopt the cleaning across historical feature rows. |
 | OpenAI embeddings | about 9,150 tokens per call, about $6 for every call; about 100 calls/min, bound by `float8[]` inserts | Complete calls are skipped on (ticker, quarter, model tag). |
 
 Run FinBERT on a GPU with `FINBERT_DEVICE=cuda`. `build-text` scores sentiment before it embeds and has no `-t` scope; `-F` rebuilds `cube_part_text` for the universe, after which the cube must be assembled again. Then validate the part:

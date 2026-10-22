@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections import Counter
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
 from src.utils.text.earnings_call_split import CALL_SECTIONS, is_pleasantry, split_sentences
@@ -20,6 +21,37 @@ def word_tokens(text: str) -> list[str]:
 
 def word_count(text: str) -> int:
     return len(word_tokens(text))
+
+
+def clean_earnings_call_paragraphs(paragraphs: Iterable[Mapping[str, object]]) -> tuple[list[dict[str, object]], Counter[str]]:
+    """Remove metadata/rosters and balanced parenthetical text; retain Operator split cues."""
+    metadata = re.compile(
+        r"(?:executives|analysts|company representatives|corporate participants|participants|transcript\s+(?:sponsor|operator)|ai\s+insights)", re.I
+    )
+    parenthetical = re.compile(r"\([^()]*\)")
+    cleaned: list[dict[str, object]] = []
+    removed: Counter[str] = Counter()
+    for paragraph in paragraphs:
+        speaker = " ".join(str(paragraph.get("speaker") or "").split())
+        if metadata.fullmatch(speaker):
+            removed["metadata paragraphs"] += 1
+            continue
+        raw = str(paragraph.get("content") or "")
+        text = raw
+        while True:
+            text, matches = parenthetical.subn(" ", text)
+            if not matches:
+                break
+        if text != raw:
+            removed["parenthetical paragraphs"] += 1
+            removed["parenthetical characters"] += len(raw) - len(text)
+            text = re.sub(r"\s+([,.;:!?])", r"\1", text)
+        text = " ".join(text.split())
+        if not text:
+            removed["empty paragraphs"] += 1
+            continue
+        cleaned.append({**paragraph, "content": text})
+    return cleaned, removed
 
 
 def clean_earnings_call_text(text: object) -> str:

@@ -30,7 +30,7 @@ from src.data_store.schema import Tables
 from src.gpt_extract import embed_texts, openai_api_key
 from src.utils.step import Step
 from src.utils.text.earnings_call_split import CALL_SECTIONS, split_call
-from src.utils.text.text_metrics import assess_earnings_call_sections, word_count
+from src.utils.text.text_metrics import assess_earnings_call_sections, clean_earnings_call_paragraphs, word_count
 
 
 class StepCubeText(Step):
@@ -59,7 +59,7 @@ class StepCubeText(Step):
         ):
             if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
                 raise ValueError(f"{name} must be a {'non-negative' if minimum == 0 else 'positive'} integer")
-        cleaning_version = "speaker-clean-v2"
+        cleaning_version = "speaker-clean-v3"
         self._sentiment_cache = f"{self._sentiment_model}:{cleaning_version}"
         self._embedding_cache = f"{self._embedding_model}:{cleaning_version}"
 
@@ -141,6 +141,7 @@ class StepCubeText(Step):
         )
         rows: list[dict[str, object]] = []
         reasons: Counter[str] = Counter()
+        cleaning: Counter[str] = Counter()
         excluded_words = 0
         turn_count = 0
         plan.eligible.difference_update(requested)
@@ -152,6 +153,8 @@ class StepCubeText(Step):
                     reasons["invalid call date"] += 1
                     continue
                 records = cast(list[dict[str, object]], call[["paragraph", "speaker", "content"]].to_dict("records"))
+                records, removed = clean_earnings_call_paragraphs(records)
+                cleaning.update(removed)
                 split = split_call(records)
                 quality = assess_earnings_call_sections(dict(zip(CALL_SECTIONS, (split.prepared_remarks, split.qa), strict=True)))
                 if not quality.valid:
@@ -172,7 +175,7 @@ class StepCubeText(Step):
                 plan.eligible.add((str(ticker), str(quarter)))
         prepared = pd.DataFrame(rows, columns=columns)
         self._log.info(
-            "Text preparation: %d paragraphs, %d accepted calls (%d partial), %d turns; %d excluded calls/%d cleaned words; reasons=%s.",
+            "Text preparation: %d paragraphs, %d accepted calls (%d partial), %d turns; %d excluded calls/%d cleaned words; reasons=%s; cleaning=%s.",
             0 if paragraphs is None else len(paragraphs),
             len(prepared),
             int(prepared["coverage"].ne(3).sum()),
@@ -180,6 +183,7 @@ class StepCubeText(Step):
             sum(reasons.values()),
             excluded_words,
             dict(reasons),
+            dict(cleaning),
         )
         return prepared
 

@@ -36,13 +36,7 @@ from dataclasses import dataclass, field
 from itertools import groupby
 from typing import Literal, NamedTuple
 
-from src.constants.constants import (
-    EARNINGS_CALL_TAG_ANSWER,
-    EARNINGS_CALL_TAG_PREPARED,
-    EARNINGS_CALL_TAG_QUESTION,
-)
-
-_QA_SECTION, _PREP_SECTION = "qa", "prepared_remarks"
+CALL_SECTIONS = ("prepared_remarks", "qa")
 SplitStatus = Literal["ok", "no_qa", "no_prepared", "empty"]
 
 
@@ -761,7 +755,7 @@ def _label_prepared(turns: list[Turn], section: str, names: CallNames) -> list[d
             continue
         body = clean_turn_text(txt, names, prepared=True)
         if len(body) >= _MIN_TURN:
-            prepared.append(_turn(section, EARNINGS_CALL_TAG_PREPARED, per, body, -1, -1))
+            prepared.append(_turn(section, "prepared", per, body, -1, -1))
     return prepared
 
 
@@ -803,7 +797,7 @@ def _label_question(state: _QaState, per: str, perl: str, body: str) -> None:
     if _is_informative_question(body):
         if new or not state.open_ex:  # a new question -> new exchange
             state.ex, state.ans_i, state.cur, state.saw_answer, state.open_ex = state.ex + 1, 0, perl, False, True
-        state.out.append(_turn(_QA_SECTION, EARNINGS_CALL_TAG_QUESTION, per, body, state.ex, 0))
+        state.out.append(_turn(CALL_SECTIONS[1], "question", per, body, state.ex, 0))
     elif new:  # a question too short to embed opens no exchange: its answers are orphaned
         state.cur, state.saw_answer, state.open_ex = perl, False, False
     state.boundary = False
@@ -819,7 +813,7 @@ def _label_answer(state: _QaState, per: str, perl: str, body: str) -> None:
     state.spoken.add(perl)
     if state.open_ex and len(body.split()) >= _MIN_QA_WORDS:
         state.ans_i += 1
-        state.out.append(_turn(_QA_SECTION, EARNINGS_CALL_TAG_ANSWER, per, body, state.ex, state.ans_i))
+        state.out.append(_turn(CALL_SECTIONS[1], "answer", per, body, state.ex, state.ans_i))
 
 
 def _label_qa(turns: list[Turn], mgmt_names: set[str] | None, names: CallNames, announced: set[str] | None = None) -> tuple[list[dict], list[str]]:
@@ -857,7 +851,7 @@ def label_turns(turns: list[Turn], section: str, mgmt_names: set[str] | None = N
       exchange (indices stay contiguous); answer_idx = 0 for the question and 1, 2, ... for the
       answers. A new question too short to keep opens nothing and its answers are not attached."""
     names = names if names is not None else _call_names(turns)
-    if section == _QA_SECTION:
+    if section == CALL_SECTIONS[1]:
         return _label_qa(turns, mgmt_names, names)[0]
     return _label_prepared(turns, section, names)
 
@@ -875,7 +869,7 @@ def split_call(paragraphs: Iterable[Mapping[str, object]]) -> CallSplit:
     head, tail = (turns, []) if k is None else (turns[:k], turns[k:])
     tail_announced = _announced(tail)
     names = _call_names(turns, _announced(head) | tail_announced)
-    prep_turns = _label_prepared(head, _PREP_SECTION, names)
+    prep_turns = _label_prepared(head, CALL_SECTIONS[0], names)
     mgmt = {t["person"].strip().lower() for t in prep_turns if t["person"]}
     qa_turns, answers = _label_qa(tail, mgmt, names, tail_announced)
     prepared = "\n".join(t["text"] for t in prep_turns)

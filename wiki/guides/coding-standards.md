@@ -6,7 +6,7 @@ tags:
   - wiki
   - guide
   - coding-standards
-source_commit: 38ba50b056feb760b874b01cc405ddb435676f36
+source_commit: c2a09cf41e68d0f9addca8c1f02c2b7ce0423c25
 ---
 # Coding standards
 
@@ -82,7 +82,7 @@ Keep comments sparse and explain why a non-obvious choice exists. When changing 
 
 Before adding a URL, field name, format, threshold, taxonomy value, model identifier, or other literal, search [constants.py](../../src/constants/constants.py).
 
-- World facts and stable literals belong in constants.
+- Keep only genuinely shared cross-package contracts in `src/constants/`. Values used by one function stay local to that function; domain-only shared values live with their existing domain owner. Do not add earnings-call-only aliases to the global constants file.
 - Tunable numerical choices belong in [configuration](../reference/configuration.md).
 - Table names and grains belong only in [schema.py](../../src/data_store/schema.py).
 - Module-level constants sit at the top of the module, directly after the imports.

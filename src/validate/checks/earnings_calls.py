@@ -14,16 +14,12 @@ from typing import Any, cast
 import numpy as np
 import pandas as pd
 
-from src.constants.constants import (
-    EARNINGS_CALL_FEATURES,
-    EARNINGS_CALL_SIGNAL_SESSIONS,
-    EARNINGS_REPORT_TO_QUARTER_LAG_DAYS,
-)
+from src.constants.constants import EARNINGS_CALL_FEATURES, EARNINGS_CALL_SIGNAL_SESSIONS
 from src.context import Context
 from src.data_store.schema import Table, Tables, resolve
-from src.utils.earnings_call_split import split_call
 from src.utils.string import pad_cik_series
-from src.utils.text_metrics import assess_earnings_call_sections, word_count
+from src.utils.text.earnings_call_split import split_call
+from src.utils.text.text_metrics import assess_earnings_call_sections
 from src.utils.universe import load_universe_tickers
 from src.validate.result import CheckResult, Finding, full_table_only
 
@@ -63,23 +59,24 @@ def _population_stability_index(history: pd.Series, recent: pd.Series) -> float 
     if len(edges) < 3:
         return None
     edges[0], edges[-1] = -np.inf, np.inf
-    expected = pd.cut(left, edges, include_lowest=True).value_counts(normalize=True, sort=False).to_numpy(float)
-    actual = pd.cut(right, edges, include_lowest=True).value_counts(normalize=True, sort=False).to_numpy(float)
+    expected = pd.cut(left, edges.tolist(), include_lowest=True).value_counts(normalize=True, sort=False).to_numpy(float)
+    actual = pd.cut(right, edges.tolist(), include_lowest=True).value_counts(normalize=True, sort=False).to_numpy(float)
     expected = np.clip(expected, 1e-6, None)
     actual = np.clip(actual, 1e-6, None)
     return float(np.sum((actual - expected) * np.log(actual / expected)))
 
 
 def _quarter_index(date: object) -> int | None:
-    value = pd.to_datetime(date, errors="coerce")
+    value = pd.to_datetime(cast(Any, date), errors="coerce")
     if pd.isna(value):
         return None
-    value -= pd.Timedelta(days=EARNINGS_REPORT_TO_QUARTER_LAG_DAYS)
+    reporting_lag_days = 45
+    value -= pd.Timedelta(days=reporting_lag_days)
     return int(value.year) * 4 + int(value.quarter) - 1
 
 
 def _calendar_quarter_index(date: object) -> int | None:
-    value = pd.to_datetime(date, errors="coerce")
+    value = pd.to_datetime(cast(Any, date), errors="coerce")
     return None if pd.isna(value) else int(value.year) * 4 + int(value.quarter) - 1
 
 
@@ -142,7 +139,7 @@ def _coverage_buckets(values: pd.Series) -> dict[str, Any]:
 
 def _event_entity(tenure_by_symbol: dict[str, pd.DataFrame], symbol: str, date: object) -> str | None:
     """Resolve one event through the same half-open symbol-tenure rule as features."""
-    value = pd.to_datetime(date, errors="coerce")
+    value = pd.to_datetime(cast(Any, date), errors="coerce")
     candidates = tenure_by_symbol.get(symbol)
     if pd.isna(value) or candidates is None:
         return None
@@ -263,20 +260,24 @@ def _release_dates_by_ticker(releases: pd.DataFrame | None) -> dict[str, list[pd
     for ticker, group in releases.groupby("ticker", sort=False):
         dates = pd.to_datetime(group["earnings_date"], errors="coerce").dropna().tolist()
         if dates:
-            dates_by_ticker[str(ticker)] = [pd.Timestamp(date) for date in dates]
+            dates_by_ticker[str(ticker)] = [pd.Timestamp(cast(pd.Timestamp, date)) for date in dates]
     return dates_by_ticker
 
 
 def _rejection_reason(scan: _CallScan, call: pd.DataFrame) -> str | None:
-    """Split one call and apply the quality gate; None when the call is valid."""
-    split = split_call(call[["paragraph", "speaker", "content"]].to_dict("records"))
+    """Apply the shared eligible-call gate while retaining raw parser diagnostics."""
+    split = split_call(cast(list[dict[str, object]], call[["paragraph", "speaker", "content"]].to_dict("records")))
     scan.status_counts[split.status] += 1
-    if split.status != "ok":
-        return f"split status {split.status}"
-    prepared_words, qa_words = word_count(split.prepared_remarks), word_count(split.qa)
-    scan.prepared_shares.append(prepared_words / (prepared_words + qa_words))
+    dates = pd.to_datetime(call["as_of"], errors="coerce")
+    if dates.isna().any() or dates.nunique() != 1:
+        return "invalid call date"
     quality = assess_earnings_call_sections({"prepared_remarks": split.prepared_remarks, "qa": split.qa})
-    return None if quality.valid else quality.reason or "unknown"
+    if not quality.valid:
+        return quality.reason or "unknown"
+    prepared_words, qa_words = quality.section_word_counts["prepared_remarks"], quality.section_word_counts["qa"]
+    if prepared_words and qa_words:
+        scan.prepared_shares.append(prepared_words / (prepared_words + qa_words))
+    return None
 
 
 def _reason_bucket(reason: str) -> str:
@@ -378,7 +379,7 @@ def _eligible_quarters(ticker_tenure: pd.DataFrame, bounds: tuple[int, int]) -> 
     eligible: set[int] = set()
     for row in ticker_tenure.itertuples(index=False):
         start = _calendar_quarter_index(row.valid_from)
-        end_date = pd.to_datetime(row.valid_to, errors="coerce")
+        end_date = pd.to_datetime(cast(Any, row.valid_to), errors="coerce")
         end = bounds[1] if pd.isna(end_date) else _calendar_quarter_index(end_date - pd.Timedelta(days=1))
         if start is not None and end is not None:
             eligible.update(range(max(_FLOOR_QUARTER, start), min(bounds[1], end) + 1))
@@ -442,6 +443,7 @@ def _coverage_summary(roster_tickers: list[str], scan: _CallScan, coverage: _Tic
         "rejected_by_reason": scan.rejected_reasons,
         "split_status_counts": scan.status_counts,
         "split_ok_rate": scan.status_counts["ok"] / scan.observed_calls if scan.observed_calls else None,
+        "usable_call_rate": scan.valid_calls / scan.observed_calls if scan.observed_calls else None,
         "prepared_share_quantiles": {f"q{round(q * 100):02d}": float(shares.quantile(q)) for q in (0.05, 0.5, 0.95)} if len(shares) else {},
         "grain": scan.grain,
         "coverage_by_calendar_quarter": by_quarter,
@@ -493,10 +495,10 @@ def _source_findings(coverage: dict[str, Any], settings: Any) -> list[Finding]:
     ):
         if grain[key]:
             findings.append(Finding.at(score, f"{key}={grain[key]} of {grain['calls']} calls / {grain['rows']} rows", expected, field=key))
-    ok_rate, ok_min = coverage["split_ok_rate"], float(settings.split_ok_rate_min)
+    ok_rate, ok_min = coverage["usable_call_rate"], float(settings.usable_call_rate_min)
     if ok_rate is not None and ok_rate < ok_min:
         findings.append(
-            Finding.at(7, f"split ok rate={ok_rate:.4f}", f">= {ok_min}", field="split_status", status_counts=coverage["split_status_counts"])
+            Finding.at(7, f"usable call rate={ok_rate:.4f}", f">= {ok_min}", field="usable_call_rate", status_counts=coverage["split_status_counts"])
         )
     q05, q05_min = coverage["prepared_share_quantiles"].get("q05"), float(settings.prepared_share_q05_min)
     if q05 is not None and q05 < q05_min:
@@ -588,7 +590,7 @@ def _redundancy(numeric: pd.DataFrame, available: list[str], settings: Any) -> t
     correlation: dict[str, float] = {}
     findings: list[Finding] = []
     for left, right in combinations(available, 2):
-        value = corr.at[left, right]
+        value = cast(float, corr.at[left, right])
         if pd.isna(value) or abs(value) < redundancy_limit:
             continue
         correlation[f"{left}__{right}"] = float(value)
@@ -645,10 +647,10 @@ def _latest_metrics(latest: pd.DataFrame, available: list[str], valid_dates: dic
     metrics: list[dict[str, Any]] = []
     for date, group in latest.groupby("date", sort=True):
         numeric = group[available].apply(pd.to_numeric, errors="coerce")
-        ages = _source_ages(group, numeric, valid_dates, pd.Timestamp(date))
+        ages = _source_ages(group, numeric, valid_dates, pd.Timestamp(cast(pd.Timestamp, date)))
         metrics.append(
             {
-                "date": str(pd.Timestamp(date).date()),
+                "date": str(pd.Timestamp(cast(pd.Timestamp, date)).date()),
                 "rows": int(len(group)),
                 "null_cells": int(numeric.isna().sum().sum()),
                 "zero_cells": int((numeric == 0).sum().sum()),

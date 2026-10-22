@@ -223,7 +223,8 @@ def test_earnings_call_validator_reports_coverage_schema_and_quality(sqlite_stor
     context = cast(Context, SimpleNamespace(store=sqlite_store, config=SimpleNamespace(data_extract=SimpleNamespace(redundant_ticks=[]))))
     result = check_earnings_calls(context, Tables.cube_part_text, config=_config())
     coverage = cast(dict, result.metrics["coverage"])
-    assert result.status == "pass", result.findings
+    assert result.status == "fail"
+    assert any(finding.field == "usable_call_rate" for finding in result.findings)
     assert coverage["coverage_100pct"] == 1
     assert coverage["coverage_lt50pct"] == 1
     assert coverage["malformed_calls"] == 1
@@ -267,12 +268,12 @@ def test_grain_and_split_defects_fail_the_validator(sqlite_store) -> None:
     assert result.status == "fail"
     assert coverage["grain"]["null_as_of_rows"] == 1 and fields["null_as_of_rows"] == 9
     assert coverage["grain"]["calls_missing_first_paragraph"] == 1 and fields["calls_missing_first_paragraph"] == 6
-    assert coverage["split_status_counts"]["no_qa"] == 1 and fields["split_status"] == 7
-    assert coverage["rejected_by_reason"]["split status no_qa"] == 1
+    assert coverage["split_status_counts"]["no_qa"] == 1 and fields["usable_call_rate"] == 7
+    assert "split status no_qa" not in coverage["rejected_by_reason"]
     print("\n=== SANITY CHECK: earnings-call source grain and split quality ===")
     print(
-        f"  a null as_of (score 9), a call without paragraph 1 (score 6) and a no_qa split (ok rate "
-        f"{coverage['split_ok_rate']:.2f} < 0.985, score 7) each file a finding; status={result.status}. Validated."
+        f"  a null as_of (score 9), a call without paragraph 1 (score 6) and insufficient usable coverage (raw full-split rate "
+        f"{coverage['split_ok_rate']:.2f} < 0.985, score 7) are reported; valid partial calls stay accepted; status={result.status}. Validated."
     )
 
 

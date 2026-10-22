@@ -1,5 +1,7 @@
 build_cube:
   earnings_calls:
+    sentiment_model: yiyanghkust/finbert-tone
+    refresh_calendar_days: 30
     availability_lag_days: 2 # Calendar days after the call; roll forward to the first trading session.
   assembly:
     optional_parts:

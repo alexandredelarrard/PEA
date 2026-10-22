@@ -1028,6 +1028,7 @@ def _versioned_super_levels(
     decay_halflife: float,
 ) -> tuple[dict[str, pd.DataFrame], pd.DataFrame, pd.DataFrame]:
     """Freeze each historical observation from its public source prefix, including revisions."""
+    
     holdings = attach_tickers(holdings, cusip_map, frames.universe)
     holdings, register = repair_value_basis(holdings, valuation_close, **dict(value_basis or {}))
     log_register(register, float(holdings.value_usd.sum()), logger)

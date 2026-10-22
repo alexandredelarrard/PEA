@@ -9,10 +9,10 @@ if __name__ == "__main__":
     # self = StepExtractAllData(context=context, config=config)
     # self.run()
 
-    # self = StepBuildCube(context=context, config=config)
+    self = StepBuildCube(context=context, config=config)
     # self.run(full=True)
 
-    self = StepLongShort(context=context, config=config)
+    # self = StepLongShort(context=context, config=config)
     # self.run()
 
     # self = StepPortfolio(context=context, config=config)

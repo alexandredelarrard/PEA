@@ -5,7 +5,7 @@ type: module
 tags:
   - wiki
   - module
-source_commit: 2c9504c51e3c1d230d3d3623ff03eb8cffc4d11a
+source_commit: 54882b265efce2bf18c4ff9c40a89c6d8530c589
 ---
 # Validation
 
@@ -30,7 +30,7 @@ source_commit: 2c9504c51e3c1d230d3d3623ff03eb8cffc4d11a
 
 ## Key files
 
-- [validate/checks](../../src/validate/checks/) contains the reusable check implementations.
+- [validate/checks](../../src/validate/checks/earnings_calls.py) contains the reusable check implementations.
 - [validate/checks/leakage.py](../../src/validate/checks/leakage.py) tests label horizons and publication clocks.
 - [validate/checks/modelling.py](../../src/validate/checks/modelling.py) independently reconciles saved-model scores, finite-pair IC/IR, observed-session purges, source targets/inputs, native contributions/PDP, refits and report evidence. Training readiness is separate from complete assessment validation; incomplete evidence abstains. See [assessment validation](../guides/testing.md#assessment-contracts-and-financial-replay).
 - [validate/checks/timeseries.py](../../src/validate/checks/timeseries.py) detects jumps, holes, and frozen legs per ticker.
@@ -51,3 +51,7 @@ The price-basis gate runs before [cube aggregation](./data-aggregate.md). Valida
 - [Tests](./tests.md)
 - [Source availability](../concepts/source-availability.md)
 - [Testing and validation](../guides/testing.md)
+
+## Earnings-call eligibility
+
+The [earnings-call validator](../../src/validate/checks/earnings_calls.py) shares the canonical parser/quality policy in src/utils/text. Dated prepared-only or management-answer-only calls qualify at 100 combined cleaned words. Raw split status and full-split rate remain diagnostics. The usable_call_rate_min health gate in validate.yml retains the existing 0.985 numeric limit while measuring accepted eligibility; prepared-share health uses eligible both-section calls. Invalid dates, malformed grain and below-floor text remain findings.

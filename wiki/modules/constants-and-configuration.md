@@ -5,19 +5,19 @@ type: module
 tags:
   - wiki
   - module
-source_commit: 55d6e2d199fa9a83aca7d5442549eeb66eedd189
+source_commit: c2a09cf41e68d0f9addca8c1f02c2b7ce0423c25
 ---
 # Constants and configuration
 
 ## Summary
 
-Configuration is an OmegaConf tree assembled from every YAML file under `configs/`. Tunable values belong in YAML; stable source facts such as URLs, date formats, market-series names, and plausibility bounds belong in `src/constants/`. Extracted SEC form lists belong only in each table's `Resume.forms` in [schema.py](../../src/data_store/schema.py); fetchers, derived form subsets, the EDGAR index, registrant policy and validation read those contracts. The ownership map is documented in [configuration reference](../reference/configuration.md).
+Configuration is an OmegaConf tree assembled from every YAML file under `configs/`. Tunable values belong in YAML. Genuinely shared contracts belong in `src/constants/`; values used by one function stay local, and domain-only shared values stay with their existing owner. Extracted SEC form lists belong only in each table's `Resume.forms` in [schema.py](../../src/data_store/schema.py); fetchers, derived form subsets, the EDGAR index, registrant policy and validation read those contracts. The ownership map is documented in [configuration reference](../reference/configuration.md).
 
 ## Responsibilities
 
 - Load `configs/configs.yml` first and merge the remaining YAML files recursively.
 - Separate stage-specific knobs by top-level key.
-- Centralize literal source contracts and shared CLI option declarations.
+- Centralize genuinely shared source contracts and CLI option declarations. Keep single-function values local; keep domain-only shared values with their existing domain owner. Earnings-call scoring/turn tags, quality cutoff and report-to-quarter lag are local. NLP and embedding cache identities live with those utilities; the feature schema and signal lifetime remain shared because the builder and validator both enforce them.
 - Keep structured overrides and evidence in versioned JSON files under `configs/`.
 
 ## Public API / entry points

@@ -131,6 +131,7 @@ def manager_concentration_score(state: pd.DataFrame, eligible: pd.Series | None 
     percentile alone cannot express a fixed-`k` cut, and hard-coding one threshold would
     silently select 15 managers early and 24 late.
     """
+    
     need = set(_KEYS) | {leg for leg, _ in _LEGS}
     if state.empty or not need.issubset(state.columns):
         return pd.DataFrame({"score": _empty("score", "float64"), "n_public": _empty("n_public", "float64")})

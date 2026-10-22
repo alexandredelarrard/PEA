@@ -7,7 +7,7 @@ tags:
   - guide
   - runbook
   - operations
-source_commit: 55d6e2d199fa9a83aca7d5442549eeb66eedd189
+source_commit: 54882b265efce2bf18c4ff9c40a89c6d8530c589
 ---
 # Run the pipeline
 
@@ -273,7 +273,7 @@ For schedules and triggers, see [DAGs and infrastructure](../modules/dags-and-in
 
 ### Airflow GPU setup
 
-The [Airflow Dockerfile](../../airflow/Dockerfile.airflow) explicitly installs `torch==2.14.0+cu126` from the CUDA 12.6 wheel index and checks `torch.version.cuda == "12.6"` at build time. The same image can run on CPU. [SentimentEngine](../../src/utils/nlp_sentiment.py) selects the device with `torch.cuda.is_available()`, moves both the classifier and input tensors there, and logs the requested device, PyTorch version, compiled CUDA version, availability and GPU name. `FINBERT_DEVICE=cpu` forces CPU. Unset selects CUDA when available; an explicit `cuda` propagates initialization failures rather than silently scoring on CPU or skipping sentiment.
+The [Airflow Dockerfile](../../airflow/Dockerfile.airflow) explicitly installs `torch==2.14.0+cu126` from the CUDA 12.6 wheel index and checks `torch.version.cuda == "12.6"` at build time. The same image can run on CPU. [SentimentEngine](../../src/data_aggregate/utils/text/nlp_sentiment.py) selects the device with `torch.cuda.is_available()`, moves both the classifier and input tensors there, and logs the requested device, PyTorch version, compiled CUDA version, availability and GPU name. `FINBERT_DEVICE=cpu` forces CPU. Unset selects CUDA when available; an explicit `cuda` propagates initialization failures rather than silently scoring on CPU or skipping sentiment.
 
 On the Windows NVIDIA machine, use Docker Desktop's WSL2 Linux backend with a compatible NVIDIA driver and GPU passthrough. An installed host CUDA toolkit alone does not expose a GPU to a container. The base [Compose file](../../docker-compose.yml) reserves one NVIDIA GPU and sets `FINBERT_DEVICE=cuda` in the shared Airflow configuration. LocalExecutor runs the pipeline on the scheduler. Use the base Compose file for the commands below.
 
@@ -299,7 +299,7 @@ rtk docker compose -f docker-compose.yml exec airflow-scheduler /opt/pipeline/bi
 Then check real FinBERT inference through the same engine used by `build-text` (the first invocation may cache model weights):
 
 ~~~powershell
-rtk docker compose -f docker-compose.yml exec -w /opt/airflow/project airflow-scheduler /opt/pipeline/bin/python -c "import logging, math; from src.utils.nlp_sentiment import get_sentiment_engine; logging.basicConfig(level=logging.INFO); e=get_sentiment_engine(); assert e is not None and e.device=='cuda'; p=e.score_texts(['Revenue and operating income increased.'])[0]; assert p and all(math.isfinite(v) and 0<=v<=1 for v in p.values()) and abs(sum(p.values())-1)<1e-5; print('SANITY: FinBERT CUDA inference passed', p)"
+rtk docker compose -f docker-compose.yml exec -w /opt/airflow/project airflow-scheduler /opt/pipeline/bin/python -c "import logging, math; from src.data_aggregate.utils.text.nlp_sentiment import get_sentiment_engine; from omegaconf import OmegaConf; logging.basicConfig(level=logging.INFO); c=OmegaConf.load('configs/build_cube.yml'); e=get_sentiment_engine(c.build_cube.earnings_calls.sentiment_model); assert e is not None and e.device=='cuda'; p=e.score_texts(['Revenue and operating income increased.'])[0]; assert p and all(math.isfinite(v) and 0<=v<=1 for v in p.values()) and abs(sum(p.values())-1)<1e-5; print('SANITY: FinBERT CUDA inference passed', p)"
 ~~~
 
 These checks do not build the cube or write application tables. A successful image build proves CUDA support was installed; only the GPU-host kernel and inference checks prove the driver's runtime and GPU architecture work. The existing score cache is reused; changing device does not require a full text rebuild. The routing/failure checks live in [test_nlp_sentiment.py](../../tests/utils/test_nlp_sentiment.py).
@@ -366,14 +366,14 @@ Normal extraction checks the entire scoped provider index and can recover introd
 
 After separate production approval, adopt a lineage/availability change with current identity tables, lineage-aware extraction, a full `data_aggregate build-text -F`, then `data_aggregate assemble-cube`. `build-text` has no ticker scope. Ordinary extraction recovers missing historical aliases but preserves old raw keys; reviewed raw cleanup requires the scoped full reconcile. Runtime issuer checks exclude unsupported legacy calls from features in the meantime. New/reissued calls follow normal sentiment/embedding scoring; valid current-version caches can be reused for a clock-only change. No raw/cache `as_of` is shifted.
 
-The feature clock is owned by `build_cube.earnings_calls.availability_lag_days` in [build_cube.yml](../../configs/build_cube.yml): two calendar days, followed by the first eligible trading session. A normal 45-session tail does not rewrite older feature clocks; a full part rebuild and cube reassembly are necessary for historical adoption. The provider exposes call dates without a first-available timestamp, so two days is an estimated buffer. The 2026-10-19 scoped validation recovered ECHO2→62 and BNY3→78 into an isolated sink, but current-model feature generation abstained because the bounded cache contained only older model versions. Source-format and old-feature drift flags remain documented in `reports/validate/2026-10-19-earnings-call-lineage/`; no production backfill or paid scoring ran in that validation.
+The feature clock is owned by `build_cube.earnings_calls.availability_lag_days` in [build_cube.yml](../../configs/build_cube.yml): two calendar days, followed by the first eligible trading session. A normal 30-calendar-day rewrite does not rewrite older feature clocks; a full part rebuild and cube reassembly are necessary for historical adoption. The provider exposes call dates without a first-available timestamp, so two days is an estimated buffer. The 2026-10-19 scoped validation recovered ECHO2→62 and BNY3→78 into an isolated sink, but current-model feature generation abstained because the bounded cache contained only older model versions. Source-format and old-feature drift flags remain documented in `reports/validate/2026-10-19-earnings-call-lineage/`; no production backfill or paid scoring ran in that validation.
 
 A full text rebuild is dominated by FinBERT. Measured on 2026-10-02 (`reports/validate/2026-10-01-earnings-call-extraction-gaps/03-implementation.md`):
 
 | Stage | Cost | Resume |
 | --- | --- | --- |
 | `extract-earnings-calls -F` | 18.6 min for 33,591 calls, mostly DB writes | Writes one row group per batch, so a crash loses at most one batch. |
-| FinBERT sentiment | 27–37 s per call on CPU, about 280 h for every call | Scores are upserted per ticker under the `speaker-clean-v2` cache version. |
+| FinBERT sentiment | 27–37 s per call on CPU, about 280 h for every call | Historical CPU timing; the current flow saves one completed call at a time under the configured model plus speaker-clean-v2 cache version. |
 | OpenAI embeddings | about 9,150 tokens per call, about $6 for every call; about 100 calls/min, bound by `float8[]` inserts | Complete calls are skipped on (ticker, quarter, model tag). |
 
 Run FinBERT on a GPU with `FINBERT_DEVICE=cuda`. `build-text` scores sentiment before it embeds and has no `-t` scope; `-F` rebuilds `cube_part_text` for the universe, after which the cube must be assembled again. Then validate the part:
@@ -451,3 +451,5 @@ rtk "$PY" -m src validate modelling -c ./configs -o data/output/modelling_backte
 ~~~
 
 The [read-only validator](../../src/validate/checks/modelling.py) checks source chronology, predictions/IC/IR/effects, complete publication and report content. Incomplete evidence is ABSTAINED. Retain accepted historical-vintage limitations and missing configured inputs. Old assessments are not migrated.
+
+Text model stages compare all compact source keys with their own saved model tables, so old missing/failed calls remain eligible for scoring independently of the feature rewrite. Normal text features rewrite 30 calendar days from their stored frontier and read only required predecessor/five-year history. Changes older than that output range require build-text -F followed by assemble-cube. Full feature mode reuses valid model results; it does not force paid embedding or FinBERT work to repeat. Prepared-only/answer-only calls retain supported features, with unavailable sentiment sections recorded as NULL scores and zero words.

@@ -178,8 +178,8 @@ class StepCubeInstitutionals(Step):
         )
         merger.add(self._short_flow_panel(price_frames, shares, splits, sink, share_basis=basis), "short-flow", "No short-flow features built.")
         merger.add(self._ownership_panel(price_frames, sink), "beneficial-ownership", "No beneficial-ownership features built.")
-        merger.add(self._conditioning_panel(price_frames, splits, sink), "price-conditioning", "No price-conditioning features built.")
-        merger.add(self._cross_source_panel(price_frames, sink), "cross-source", "No cross-source features built.")
+        # merger.add(self._conditioning_panel(price_frames, splits, sink), "price-conditioning", "No price-conditioning features built.")
+        # merger.add(self._cross_source_panel(price_frames, sink), "cross-source", "No cross-source features built.")
 
         return merger.to_long()
 
@@ -261,14 +261,7 @@ class StepCubeInstitutionals(Step):
         is a median 47% of positions and swings 8%-100% by manager). `cusip_ticker_map`
         resolves the S&P500 leg for the numerator without touching that denominator, and
         `prices_splits` restates a prior quarter's share count so a 20-for-1 split is not
-        read as a 1,900% purchase.
-
-        ⚠ THE READ SCOPE IS THE EVER-LISTED UNION, NOT TODAY'S ROSTER (D19/D20). Loading
-        today's 83 managers drops the 19 culled managers that have a book -- Arlington
-        Value, Wintergreen, RBS Partners, Tilson among them -- and Dataroma's cull is
-        performance-driven, so it is survivorship correlated with the selection criterion.
-        Narrowing to who was listed at `q` is the selector's job and it can only narrow
-        what was read."""
+        read as a 1,900% purchase."""
 
         roster = roster_cik_union(self._context)  # 106 managers as of 2026-09-08
         if not roster:
@@ -331,6 +324,7 @@ class StepCubeInstitutionals(Step):
         compromise, but the alternative -- today's roster -- is the exact bias D20 exists to
         remove.
         """
+        
         cfg = self._superinvestor_cfg().get("selection", {})
         # ⚠ UNQUOTED `off` IN YAML IS THE BOOLEAN False, not the string -- PyYAML is 1.1 and
         # `off`/`no`/`on` are all booleans there. Accept both spellings rather than let a

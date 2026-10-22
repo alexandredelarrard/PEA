@@ -1,58 +1,42 @@
-"""Local finance-tone scoring of long documents (earnings-call sections) with a HuggingFace classifier (FinBERT-tone).
+"""Optional FinBERT scoring with shared batches and token-weighted 510-token windows.
 
-    engine = get_sentiment_engine()                # None if torch/transformers absent
-    probs  = engine.score_texts([doc1, doc2, ...])   # -> [{'pos','neg','neu'}|None, ...]
-
-torch/transformers are optional: without them the builder returns None and callers skip. Runs on CUDA when
-available; FINBERT_DEVICE=cuda requires a working GPU and fails instead of falling back. Documents are split into
-<=510-token windows whose class probabilities are length-weighted back to one distribution; columns are mapped
-from the model's own `config.id2label`, never hardcoded indices.
+Model labels determine probability columns. CUDA is preferred when available;
+FINBERT_DEVICE=cuda requires a working GPU instead of skipping failures.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 import os
 from collections.abc import Sequence
+from importlib import import_module
 from pathlib import Path
 
-from src.constants.constants import FINBERT_TONE_MODEL
-
 logger = logging.getLogger(__name__)
-
-# BERT's token window; longer sections are chunked and length-weighted.
-FINBERT_MAX_TOKENS = 512
 
 
 def ml_stack_available() -> bool:
     """True if both torch and transformers can be imported (does NOT load a model)."""
-    import importlib.util as u
-
-    return bool(u.find_spec("torch")) and bool(u.find_spec("transformers"))
-
-
-# --- Corporate-proxy model mirror (curl_cffi) ---
-# OpenSSL 3.x rejects some corporate MITM-proxy CAs, so model files are mirrored via curl_cffi and loaded offline.
-_MODEL_META_FILES = ("config.json", "vocab.txt", "tokenizer_config.json", "special_tokens_map.json", "tokenizer.json", "merges.txt", "vocab.json")
-_MODEL_WEIGHT_FILES = ("model.safetensors", "pytorch_model.bin")
-
-
-def _local_model_dir(model_name: str) -> Path:
-    base = os.getenv("PEA_MODEL_DIR") or str(Path.home() / ".cache" / "pea_models")
-    return Path(base) / model_name.replace("/", "__")
+    return bool(importlib.util.find_spec("torch")) and bool(importlib.util.find_spec("transformers"))
 
 
 def ensure_local_model(model_name: str) -> str:
-    """Mirror a HuggingFace model locally via curl_cffi and return the local dir for an offline `from_pretrained`.
+    """Mirror public model files through curl_cffi, falling back to the HF client on I/O failure.
 
-    Tries the CA bundle first, then an unverified fetch (logged) as a last resort for this public, read-only artifact.
-    Returns `model_name` unchanged when curl_cffi is unavailable or the download fails, so the HF client still runs."""
-    dest = _local_model_dir(model_name)
-    if (dest / "config.json").exists() and any((dest / w).exists() for w in _MODEL_WEIGHT_FILES):
+    Try the CA bundle before a logged unverified fetch for corporate proxies.
+    """
+    base = os.getenv("PEA_MODEL_DIR") or str(Path.home() / ".cache" / "pea_models")
+    dest = Path(base) / model_name.replace("/", "__")
+    weight_files = ("model.safetensors", "pytorch_model.bin")
+    meta_files = ("vocab.txt", "tokenizer_config.json", "special_tokens_map.json", "tokenizer.json", "merges.txt", "vocab.json")
+    if (dest / "config.json").exists() and any((dest / w).exists() for w in weight_files):
         return str(dest)  # already mirrored
     try:
-        from curl_cffi import requests as cffi
-    except Exception:  # curl_cffi absent -> let HF try
+        cffi = import_module("curl_cffi.requests")
+    except ModuleNotFoundError as error:
+        if error.name != "curl_cffi":
+            raise
         return model_name
 
     ca = next((os.environ[v] for v in ("REQUESTS_CA_BUNDLE", "SSL_CERT_FILE", "CURL_CA_BUNDLE") if os.environ.get(v)), None)
@@ -65,40 +49,39 @@ def ensure_local_model(model_name: str) -> str:
         for verify in [ca, False] if ca else [True, False]:
             try:
                 r = cffi.Session(impersonate="chrome124", verify=verify, timeout=180).get(base_url + fname)
-            except Exception:
+            except OSError:
                 continue
             if r.status_code == 404:
                 return False  # legitimately absent (e.g. no safetensors)
-            if r.status_code == 200 and r.content:
-                if verify is False:
-                    logger.warning("Fetched %s UNVERIFIED via curl_cffi (public model behind corporate proxy).", fname)
-                dest.mkdir(parents=True, exist_ok=True)
-                out.write_bytes(r.content)
-                return True
+            if r.status_code != 200 or not r.content:
+                continue
+            if verify is False:
+                logger.warning("Fetched %s UNVERIFIED via curl_cffi (public model behind corporate proxy).", fname)
+            dest.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(r.content)
+            return True
         if required:
             raise RuntimeError(f"could not download {fname}")
         return False
 
     try:
         _fetch("config.json", required=True)
-        if not any(_fetch(w, required=False) for w in _MODEL_WEIGHT_FILES):
+        if not any(_fetch(w, required=False) for w in weight_files):
             raise RuntimeError("no weight file (safetensors / pytorch_model.bin) found")
-        for f in _MODEL_META_FILES:
-            if f != "config.json":
-                _fetch(f, required=False)  # tokenizer files, best-effort
-    except Exception as e:  # noqa: BLE001
+        for filename in meta_files:
+            _fetch(filename, required=False)  # tokenizer files, best-effort
+    except (OSError, RuntimeError) as e:
         logger.warning("curl_cffi model mirror failed for %s (%s) -> trying HF client.", model_name, e)
         return model_name
     logger.info("Mirrored %s locally to %s (curl_cffi).", model_name, dest)
     return str(dest)
 
 
-# --- Pure helpers (no torch) ---
 def _window_ids(ids: list[int], stride: int) -> list[list[int]]:
     """Split a token-id list into consecutive non-overlapping windows of <=`stride` tokens; [] for empty input."""
     if stride <= 0:
         raise ValueError("stride must be positive")
-    return [ids[i : i + stride] for i in range(0, len(ids), stride)] if ids else []
+    return [ids[i : i + stride] for i in range(0, len(ids), stride)]
 
 
 def _length_weighted_average(prob_rows: Sequence[Sequence[float]], weights: Sequence[float]) -> list[float]:
@@ -119,17 +102,15 @@ def _length_weighted_average(prob_rows: Sequence[Sequence[float]], weights: Sequ
     return [v / tot for v in out]
 
 
-# --- Engine ---
 class SentimentEngine:
     """Thin wrapper over a HuggingFace tone classifier; build it via `get_sentiment_engine`."""
 
-    def __init__(self, model_name: str = FINBERT_TONE_MODEL, max_tokens: int = FINBERT_MAX_TOKENS, batch_size: int = 16) -> None:
-        import torch  # local import (heavy, optional)
-        from transformers import AutoModelForSequenceClassification, AutoTokenizer
-
+    def __init__(self, model_name: str) -> None:
+        torch = import_module("torch")
+        transformers = import_module("transformers")
         self._torch = torch
-        self.max_tokens = int(max_tokens)
-        self.batch_size = int(batch_size)
+        self.max_tokens = 512
+        self.batch_size = 16
 
         device_env = os.getenv("FINBERT_DEVICE", "").strip().lower()
         cuda_available = torch.cuda.is_available()
@@ -152,13 +133,13 @@ class SentimentEngine:
 
         # mirror locally via curl_cffi first (corporate-proxy workaround), else HF client
         resolved = ensure_local_model(model_name)
-        self._tok = AutoTokenizer.from_pretrained(resolved)
-        self._model = AutoModelForSequenceClassification.from_pretrained(resolved)
+        self._tok = transformers.AutoTokenizer.from_pretrained(resolved)
+        self._model = transformers.AutoModelForSequenceClassification.from_pretrained(resolved)
         self._model.to(self.device).eval()
 
         # map model class indices -> our (pos, neg, neu) columns from id2label names
         id2label = {int(k): str(v).lower() for k, v in self._model.config.id2label.items()}
-        self._col_for = {}
+        self._col_for: dict[int, str] = {}
         for idx, lab in id2label.items():
             if "pos" in lab:
                 self._col_for[idx] = "pos"
@@ -168,8 +149,8 @@ class SentimentEngine:
                 self._col_for[idx] = "neu"
         logger.info("SentimentEngine ready: %s on %s (labels=%s)", model_name, self.device, id2label)
 
-    # -- internal: score a batch of ≤max_len token windows -> list of {pos,neg,neu} --
     def _score_windows(self, windows_text: list[str]) -> list[dict[str, float]]:
+        """Score bounded windows in shared batches, mapping model labels to tone columns."""
         torch = self._torch
         out: list[dict[str, float]] = []
         for i in range(0, len(windows_text), self.batch_size):
@@ -189,7 +170,6 @@ class SentimentEngine:
         """Score each document into a length-weighted {pos, neg, neu} distribution; blank/None docs -> None.
         Windows of every document are scored in shared batches."""
         stride = max(1, self.max_tokens - 2)  # room for [CLS]/[SEP]
-        # 1) tokenize + window each doc, remembering which windows belong to which doc
         all_windows_text: list[str] = []
         owner: list[int] = []
         weights: list[int] = []
@@ -201,9 +181,8 @@ class SentimentEngine:
                 all_windows_text.append(self._tok.decode(w, skip_special_tokens=True))
                 owner.append(di)
                 weights.append(len(w))
-        # 2) one batched forward pass over ALL windows
+
         scored = self._score_windows(all_windows_text) if all_windows_text else []
-        # 3) length-weighted aggregate per doc
         per_doc_rows: dict[int, list[list[float]]] = {}
         per_doc_w: dict[int, list[float]] = {}
         for row, di, wt in zip(scored, owner, weights, strict=False):
@@ -219,31 +198,18 @@ class SentimentEngine:
         return out
 
 
-_ENGINE: SentimentEngine | None = None
-_ENGINE_TRIED = False
-
-
-def get_sentiment_engine(model_name: str = FINBERT_TONE_MODEL) -> SentimentEngine | None:
-    """The process-wide SentimentEngine, or None if torch/transformers are missing or the model fails to load.
-    A failed load is not retried in the same process, except when CUDA is required: failures propagate."""
-    global _ENGINE, _ENGINE_TRIED
-    if _ENGINE is not None:
-        return _ENGINE
-    if _ENGINE_TRIED:  # already failed once — don't retry
-        return None
-    _ENGINE_TRIED = True
+def get_sentiment_engine(model_name: str) -> SentimentEngine | None:
+    """Load the requested engine; optional failures skip, required-CUDA failures propagate."""
+    requires_cuda = os.getenv("FINBERT_DEVICE", "").strip().lower() == "cuda"
     if not ml_stack_available():
-        if os.getenv("FINBERT_DEVICE", "").strip().lower() == "cuda":
-            _ENGINE_TRIED = False
+        if requires_cuda:
             raise RuntimeError("FINBERT_DEVICE=cuda requires torch and transformers to be installed.")
         logger.warning("torch/transformers not installed -> earnings-call sentiment skipped (pip install torch transformers).")
         return None
     try:
-        _ENGINE = SentimentEngine(model_name=model_name)
-    except Exception as e:  # noqa: BLE001 - model download / GPU OOM
-        if os.getenv("FINBERT_DEVICE", "").strip().lower() == "cuda":
-            _ENGINE_TRIED = False
+        return SentimentEngine(model_name)
+    except (OSError, RuntimeError) as e:
+        if requires_cuda:
             raise
         logger.warning("Could not load sentiment model '%s' -> sentiment skipped: %s", model_name, e)
-        _ENGINE = None
-    return _ENGINE
+        return None

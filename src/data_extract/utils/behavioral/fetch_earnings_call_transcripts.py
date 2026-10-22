@@ -32,13 +32,12 @@ from omegaconf import DictConfig
 from src.context import Context
 from src.data_extract.utils.behavioral.utils_earnings_call_cache import (
     invalidate_earnings_call_derivatives,
-    pending_refresh_markers,
 )
 from src.data_extract.utils.common.identity import AmbiguousSymbolTenureError, Identity, load_identity
 from src.data_extract.utils.common.rate_limit import call_with_retries
 from src.data_store.schema import Tables
-from src.utils.earnings_call_split import company_in_introduction
 from src.utils.string import squash, yahoo_symbol
+from src.utils.text.earnings_call_split import company_in_introduction
 from src.utils.universe import load_universe_names, load_universe_tickers
 
 DATASET_REPO = "defeatbeta/yahoo-finance-data"
@@ -272,7 +271,7 @@ def one_call_per_date(calls: pd.DataFrame) -> pd.DataFrame:
             matched = ordinals[ordinals == following - 1] if following is not None else ordinals.iloc[0:0]
             kept = matched.index[0] if len(matched) else ordinals.idxmax()
             drop += [i for i in day.index if i != kept]
-            following = int(ordinals[kept])
+            following = int(ordinals[cast(int, kept)])
     return calls.drop(index=drop)
 
 
@@ -282,7 +281,7 @@ def diff_calls(calls: pd.DataFrame, stored: pd.DataFrame | None) -> tuple[pd.Dat
     if stored is None or stored.empty:
         return calls.copy(), calls.iloc[0:0].assign(old_as_of=pd.Series(dtype="datetime64[ns]"))
     stored = stored.assign(
-        old_tid=pd.array(pd.to_numeric(stored["transcript_id"], errors="coerce"), dtype="Int64"),
+        old_tid=pd.to_numeric(stored["transcript_id"], errors="coerce").astype("Int64"),
         old_as_of=pd.to_datetime(stored["as_of"], errors="coerce").dt.normalize(),
     )[[*_KEY, "old_tid", "old_as_of"]].drop_duplicates(_KEY)
     merged = calls.merge(stored, on=_KEY, how="left", indicator=True)
@@ -314,8 +313,8 @@ def stale_calls(calls: pd.DataFrame, stored: pd.DataFrame | None) -> tuple[pd.Da
 
 def explode_paragraphs(transcripts: pa.Array, calls: pd.DataFrame) -> pd.DataFrame:
     """Retained paragraph rows for `calls`, numbered contiguously after dropping content of length <= 2."""
-    flat = pc.list_flatten(transcripts)
-    owner = pc.list_parent_indices(transcripts).to_numpy(zero_copy_only=False)
+    flat = cast(Any, pc).list_flatten(transcripts)
+    owner = cast(Any, pc).list_parent_indices(transcripts).to_numpy(zero_copy_only=False)
     meta = calls.iloc[owner].reset_index(drop=True)
     rows = pd.DataFrame(
         {
@@ -494,9 +493,8 @@ def _verify_calls(
 
 
 def _remove_calls(context: Context, calls: pd.DataFrame) -> None:
-    """Invalidate caches and save refresh markers before deleting old paragraphs so interrupted work can safely retry."""
+    """Invalidate derived outputs before replacing or deleting source paragraphs."""
     invalidate_earnings_call_derivatives(context, calls)
-    context.store.save(Tables.earnings_call_sentiment, pending_refresh_markers(calls))
     for ticker, group in calls.groupby("ticker", sort=False):
         context.store.delete(_TABLE, {"ticker": str(ticker), "quarter": group["quarter"].astype(str).tolist()})
 
@@ -504,8 +502,7 @@ def _remove_calls(context: Context, calls: pd.DataFrame) -> None:
 def _write_batch(context: Context, paragraphs: pd.DataFrame, reissued: pd.DataFrame) -> int:
     """Preserve invalidation and the earliest refresh date before replacing old paragraphs."""
     if not reissued.empty:
-        earliest = reissued[["as_of", "old_as_of"]].min(axis=1)
-        _remove_calls(context, reissued.assign(as_of=earliest))
+        _remove_calls(context, reissued)
     return context.store.save(_TABLE, paragraphs) if not paragraphs.empty else 0
 
 

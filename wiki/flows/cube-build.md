@@ -5,7 +5,7 @@ type: flow
 tags:
   - wiki
   - flow
-source_commit: 5fb2fa5e192b2997762a26756c3cd68ab63c0312
+source_commit: 54882b265efce2bf18c4ff9c40a89c6d8530c589
 ---
 # Cube build
 
@@ -41,7 +41,7 @@ sequenceDiagram
 
 1. `StepBuildCube` in [step_build_cube.py](../../src/data_aggregate/step_build_cube.py) runs the price-basis gate unless explicitly skipped.
 2. [parts.py](../../src/data_aggregate/utils/common/parts.py) supplies each part's table, command, kind, warm-up, and binding look-backs.
-3. [incremental.py](../../src/data_aggregate/utils/common/incremental.py) plans a full build or an inclusive trailing refresh: at least 7 sessions for every part, institutionals included (45 for fundamentals, the longest horizon for targets). A source correction older than that tail needs `--full`.
+3. [incremental.py](../../src/data_aggregate/utils/common/incremental.py) plans a full build or an inclusive trailing refresh: 7 sessions for ordinary parts, institutionals included (45 for fundamentals, the longest horizon for targets); text has its own 30-calendar-day rewrite from its stored frontier. A source correction older than that tail needs `--full`.
 4. Domain builders load projected source columns and emit one panel at the date/ticker grain. Fundamentals are restricted to the price-supported universe, fiscal changes match the prior fiscal period rather than a fixed daily lag, and quarterly/TTM versus annual-only values expire after their declared source-age limits. The institutional builder reads through [inputs.py](../../src/data_aggregate/utils/institutionals/inputs.py), resolves observed-zero boundaries through [frontiers.py](../../src/data_aggregate/utils/institutionals/frontiers.py), and runs 13F, superinvestor, insider, short-flow, ownership, conditioning, then cross-source panels in that explicit order with one shared [conditioning sink](../../src/data_aggregate/utils/institutionals/sink.py). The insider panel loads the one `insider_transactions` table; its observed-zero frontier, like 13D's and 13G's, is read from the table itself (see [source availability](../concepts/source-availability.md)). [insider_quality.py](../../src/data_aggregate/utils/institutionals/insider_quality.py) drops later repeat copies of a trade and supersedes amended Form 4/A cells point in time before the aggregators run.
 5. [StepAssembleCube](../../src/data_aggregate/transformers/step_assemble_cube.py) resolves `build_cube.assembly` from [build_cube.yml](../../configs/build_cube.yml). Prices, targets, betas, fundamentals, momentum and governance are compulsory. Text and institutionals skip only when absent or empty; populated broken inputs fail. Payload reads are projected and price-scoped; a separate key scan prevents hidden key corruption. All price rows survive, including latest unlabelled prediction rows.
 6. All selected-column, key, collision, target-schema and metadata checks finish before output mutation. Old output columns are physically removed through the existing store facade after the first chunk is ready; `replace` writes the first chunk and `bulk_seed` later chunks. Final schema and row count are checked.
@@ -57,3 +57,7 @@ A missing price-basis gate can propagate adjustment seams into returns, betas, a
 - [Cube parts](../concepts/cube-parts.md)
 - [Point-in-time and quality controls](../architecture/point-in-time-and-quality.md)
 - [Add a cube feature](../guides/add-a-cube-feature.md)
+
+## Text stage sequence
+
+[StepCubeText](../../src/data_aggregate/transformers/step_cube_text.py) runs calendar → plan_window → prepare_sections → run_sentiments → run_embeddings → run_features. Compact source keys are compared independently with each saved model table across history; selected paragraphs are prepared once. Features then read bounded saved metrics/vectors and tail-only price availability. The 30-calendar-day output rewrite is separate from the five-year call history needed by the existing history scores. Old changes require an explicit full feature rebuild; it reuses valid sentiment/embedding outputs.

@@ -26,8 +26,7 @@ Also owns the roster config under `<config_dir>/superinvestors/`: the hand resol
 MANAGER IDENTITY. A manager whose 13F filer CIK changed (Appaloosa, Ruane, Greenlight, Blue
 Ridge) is one manager: its ID is the OLDEST filer CIK of its chain (`manager_ciks` in the
 overrides), a singleton's ID is its own CIK. `roster_as_of` / `roster_map_as_of` return manager
-IDs, `roster_cik_union` returns every filer CIK, and `to_manager_books` relabels a book read by
-filer CIK to the manager ID, keeping each filer's rows only inside its dated window.
+IDs, and `roster_cik_union` returns every filer CIK used to fetch their historical books.
 """
 
 from __future__ import annotations

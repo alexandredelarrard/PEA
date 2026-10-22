@@ -300,7 +300,7 @@ def _assert_emission_windows_ordered(qf: pd.DataFrame) -> None:
     """Every period's LAST emission must precede the next period's FIRST one.
 
     ⚠ ASSERTED RATHER THAN TRUSTED, BECAUSE IT DEPENDS ON THE BAND EDGE. `q-1`'s revisions
-    stop at `q-1 + 105d` (`F13_MAX_LATE_DAYS`) and `q` first publishes at about `q-1 + 141d`,
+    stop at `q-1 + 105d` (the 60-day late tolerance) and `q` first publishes at about `q-1 + 141d`,
     so the clearance is ~36 days and `as_of` is strictly increasing in `period`. That is what
     lets `fundamentals_to_daily`'s `pivot_table(aggfunc="last").ffill()` stay correct with
     several rows per period: no two periods ever compete for one `(ticker, as_of)` cell, so
@@ -323,7 +323,7 @@ def _assert_emission_windows_ordered(qf: pd.DataFrame) -> None:
             "13F emission windows OVERLAP across consecutive periods -- a later quarter's "
             f"first publication is at or before an earlier one's last revision: {overlaps[:6]}. "
             "`fundamentals_to_daily` would resolve the collision with `aggfunc='last'` and the "
-            "panel would step backwards. Narrow `F13_MAX_LATE_DAYS` or widen the settle."
+            "panel would step backwards. Narrow the late filing tolerance or widen the settle."
         )
     duplicated = int(qf.duplicated(["ticker", "as_of"]).sum())
     if duplicated:

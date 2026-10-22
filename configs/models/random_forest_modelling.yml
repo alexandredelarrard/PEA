@@ -15,7 +15,7 @@ random_forest:
   num_leaves: 127
   min_child_samples: 100
   lambda_l1: 2.0
-  lambda_l2: 1.0
+  lambda_l2: 2.0
 
   # Complete default feature list, including selected categorical inputs.
   # Used for ANY horizon that has no entry under columns_by_horizon.
@@ -73,10 +73,10 @@ random_forest:
   # FIN vars
   - f_revenue_cagr_3y
   - f_y_earnings_growth_signed
-  - f_cash_runway_months
+  # - f_cash_runway_months
   - f_reported_expected_eps_yield
   - f_intangibles_to_assets
-  - f_earnings_sue_lag4 # delta Net Income vs 4q / std earnings 8q
+  # - f_earnings_sue_lag4 # delta Net Income vs 4q / std earnings 8q
   - f_y_rev_growth_accel
   - f_sustainable_growth_rate
   - f_option_overhang # to check: why more actions leads to higher value ?
@@ -102,6 +102,7 @@ random_forest:
   - f_intrinsic_yield
   - f_eps_surprise_4q_avg
   - f_ocf_yield
+  - f_earnings_sue_lag3
   # - f_y_earnings_growth -> 2 regimes again
   # - f_intangibles_to_equity -> to review because 2 different regimes
   # - f_sbc_intensity -> 2 regimes ? cut 0.04
@@ -132,21 +133,21 @@ random_forest:
   - "sector"
 
   #### suite pour avoir 100 
-  - f_ec_tone 
-  - f_ec_tone_vs_hist 
+  # - f_ec_tone 
+  # - f_ec_tone_vs_hist 
   - f_ec_qa_gap 
-  - f_ec_qa_gap_vs_hist
-  - f_ec_uncertainty
-  - f_ec_uncertainty_vs_hist
-  - f_ec_qa_coherence_mean
-  - f_ec_qa_coherence_mean_vs_hist
+  # - f_ec_qa_gap_vs_hist
+  # - f_ec_uncertainty
+  # - f_ec_uncertainty_vs_hist
+  # - f_ec_qa_coherence_mean
+  # - f_ec_qa_coherence_mean_vs_hist
   - f_ec_tone_delta
-  - f_ec_length_delta 
-  - f_ec_qa_qq_distance
+  # - f_ec_length_delta 
+  # - f_ec_qa_qq_distance
   - f_ec_prep_qq_distance
 
-  - f_pegy 
-  - f_pegy_vs_hist 
+  # - f_pegy 
+  # - f_pegy_vs_hist 
   - peer_mom_63
   - dollar_volume_63
   - f_cash_conversion_cycle

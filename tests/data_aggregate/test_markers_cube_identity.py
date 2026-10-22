@@ -8,7 +8,6 @@ all-filer 13F panel gets the same check against the new-ticker gap-walk markers.
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any, cast
@@ -17,10 +16,10 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.sec_thirteen.utils.institutional_features import build_institutional_feature_panel
+from src.data_aggregate.utils.common.inputs import load_source
 from src.data_aggregate.utils.governance.clean import GovernanceInputs, clean_governance_inputs
 from src.data_aggregate.utils.governance.panel import build_governance_feature_panel
 from src.data_aggregate.utils.institutionals.frontiers import schedule_complete_through
-from src.data_aggregate.utils.institutionals.inputs import load_source
 from src.data_aggregate.utils.institutionals.insider_features import build_insider_feature_panel
 from src.data_aggregate.utils.institutionals.ownership_features import build_ownership_feature_panel
 from src.data_extract.utils.common.edgar_driver import FilingStamp, marker_row
@@ -180,10 +179,9 @@ def test_13f_gap_markers_never_change_an_institutional_cell(sqlite_store: DataSt
     sqlite_store.save(Tables.sec13f_hr, cast(pd.DataFrame, holdings))
     close = prices.assign(date=pd.to_datetime(prices["date"])).pivot(index="date", columns="ticker", values="close_split").sort_index()
     frames = make_frames(close.index, {t: {p: 1.0 for p in F13_TICKERS if p != t} for t in F13_TICKERS}, close_split=close)
-    log = logging.getLogger(__name__)
 
     def build() -> pd.DataFrame:
-        return build_institutional_feature_panel(frames, load_source(sqlite_store, log, Tables.sec13f_hr, F13_TICKERS))
+        return build_institutional_feature_panel(frames, load_source(sqlite_store, Tables.sec13f_hr, F13_TICKERS))
 
     before = _canonical(build())
     saved = mark_gap_walked(cast(Any, SimpleNamespace(store=sqlite_store)), F13_TICKERS, F13_GAP_START)

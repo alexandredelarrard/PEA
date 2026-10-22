@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
-from typing import Any
 
 import pandas as pd
 
@@ -39,12 +38,10 @@ def load_full_price_frames(
     )
 
 
-def load_source(store: DataStore, table: Table, universe: Sequence[str] | None = None, where: dict[str, Any] | None = None) -> pd.DataFrame | None:
+def load_source(store: DataStore, table: Table, universe: Sequence[str] | None = None) -> pd.DataFrame | None:
     """Stream one projected source payload in its economic scope."""
-    filters = dict(where or {})
-    if universe is not None and table.ticker_col:
-        filters[table.ticker_col] = sorted(set(universe))
-    chunks = list(store.iter_load(table, project=True, where=filters or None))
+    filters = {table.ticker_col: sorted(set(universe))} if universe is not None and table.ticker_col else None
+    chunks = list(store.iter_load(table, project=True, where=filters))
     df = pd.concat(chunks, ignore_index=True) if chunks else None
     if df is None or df.empty:
         logger.warning("%s is absent or empty -> its features are skipped.", table.name)

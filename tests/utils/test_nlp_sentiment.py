@@ -75,6 +75,7 @@ def test_device_selection_and_tensor_placement(
         mirror.assert_not_called()
     else:
         engine = nlp_sentiment.SentimentEngine()
+        mirror.assert_called_once_with(nlp_sentiment.FINBERT_TONE_MODEL)
         assert engine.device == expected
         model.to.assert_called_once_with(expected)
         assert engine._score_windows(["Revenue increased."]) == [{"pos": 0.7, "neg": 0.2, "neu": 0.1}]
@@ -91,13 +92,19 @@ def test_factory_propagates_required_cuda_failures(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(nlp_sentiment, "_ENGINE", None)
     monkeypatch.setattr(nlp_sentiment, "_ENGINE_TRIED", False)
     monkeypatch.setattr(nlp_sentiment, "ml_stack_available", lambda: stack_available)
-    monkeypatch.setattr(nlp_sentiment, "SentimentEngine", MagicMock(side_effect=RuntimeError("GPU/model load failed")))
+    constructor = MagicMock(side_effect=RuntimeError("GPU/model load failed"))
+    monkeypatch.setattr(nlp_sentiment, "SentimentEngine", constructor)
     for _ in range(2):
         if requested == "cuda":
             with pytest.raises(RuntimeError):
                 nlp_sentiment.get_sentiment_engine()
         else:
             assert nlp_sentiment.get_sentiment_engine() is None
+    if stack_available:
+        constructor.assert_called_with(model_name=nlp_sentiment.FINBERT_TONE_MODEL)
+        assert constructor.call_count == (2 if requested == "cuda" else 1)
+    else:
+        constructor.assert_not_called()
     print(f"SANITY: device={requested or 'auto'}, stack={stack_available}; CUDA failures propagate on every call; optional CPU loads can skip.")
 
 

@@ -5,7 +5,7 @@ type: module
 tags:
   - wiki
   - module
-source_commit: 1a66369cb52b1164bcc734cc27358d761393d162
+source_commit: 38ba50b056feb760b874b01cc405ddb435676f36
 ---
 # Cube aggregation
 
@@ -45,6 +45,8 @@ source_commit: 1a66369cb52b1164bcc734cc27358d761393d162
 ## Earnings-call feature contract
 
 `StepCubeText` combines cached sentiment and embedding call-grain metrics into exactly 12 model-facing `f_ec_*` columns in `cube_part_text`: eight raw values and four prior-only issuer-history scores. Earnings-call features deliberately do not use peer or cross-sectional normalization because transcript availability is sparse and non-synchronous. `ec_tone_delta`, `ec_length_delta` and the two embedding distances compare with the prior **consecutive** fiscal quarter and are null when that quarter has no call.
+
+Sentiment scoring and embedding discover stored calls through [`call_keys`](../../src/data_aggregate/utils/text/earnings_call_embeddings.py) in one projected `ticker`/`quarter` read filtered to `paragraph = 1`. [Extraction](../../src/data_extract/utils/behavioral/fetch_earnings_call_transcripts.py) numbers retained paragraphs contiguously from 1 after filtering, so this yields one row per call without reading transcript text. Both passes read their source paragraphs from the store; tests seed their test store.
 
 The text step reads raw paragraphs from `earnings_call_sections` (projected, scoped by ticker, ordered by paragraph) and cuts each call with `src/utils/earnings_call_split.py`, the one split shared by sentiment, embeddings and the validator:
 

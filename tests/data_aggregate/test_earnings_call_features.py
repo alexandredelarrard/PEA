@@ -340,6 +340,7 @@ def test_legacy_sentiment_cache_is_rescored_after_cleaning_change(sqlite_store, 
     """A cache produced before cleaned-text scoring must not suppress or feed the new build."""
     sections = _sections_frame().query("ticker == 'A' and quarter == '2023Q1'")
     legacy = _sentiment_frame().query("ticker == 'A' and quarter == '2023Q1'").assign(model=FINBERT_TONE_MODEL)
+    sqlite_store.save(Tables.earnings_call_sections, sections)
     sqlite_store.save(Tables.earnings_call_sentiment, legacy)
 
     class _Engine:
@@ -349,8 +350,8 @@ def test_legacy_sentiment_cache_is_rescored_after_cleaning_change(sqlite_store, 
         def score_texts(texts):
             return [{"pos": 0.6, "neg": 0.1, "neu": 0.3} for _ in texts]
 
-    monkeypatch.setattr(ec, "get_sentiment_engine", lambda _log: _Engine())
-    score_earnings_calls(cast(Context, _Ctx(sqlite_store)), sections)
+    monkeypatch.setattr(ec, "get_sentiment_engine", lambda: _Engine())
+    score_earnings_calls(cast(Context, _Ctx(sqlite_store)))
     refreshed = sqlite_store.load(Tables.earnings_call_sentiment)
 
     assert refreshed is not None
@@ -378,7 +379,7 @@ def test_malformed_refresh_marker_survives_until_cube_write_ack(sqlite_store, mo
     )
     sqlite_store.save(Tables.earnings_call_sections, sections)
     sqlite_store.save(Tables.earnings_call_sentiment, marker)
-    monkeypatch.setattr(ec, "get_sentiment_engine", lambda _log: None)
+    monkeypatch.setattr(ec, "get_sentiment_engine", lambda: None)
     context = cast(Context, _Ctx(sqlite_store))
 
     assert score_earnings_calls(context) == pd.Timestamp("2023-02-01")
@@ -413,12 +414,12 @@ def test_reissued_valid_call_marker_survives_an_engine_less_build(sqlite_store, 
         def score_texts(texts):
             return [{"pos": 0.6, "neg": 0.1, "neu": 0.3} for _ in texts]
 
-    monkeypatch.setattr(ec, "get_sentiment_engine", lambda _log: None)
+    monkeypatch.setattr(ec, "get_sentiment_engine", lambda: None)
     offline = score_earnings_calls(context)
     acknowledged_offline = acknowledge_earnings_call_invalidations(context)
     after_offline = sqlite_store.load(Tables.earnings_call_sentiment)
 
-    monkeypatch.setattr(ec, "get_sentiment_engine", lambda _log: _Engine())
+    monkeypatch.setattr(ec, "get_sentiment_engine", lambda: _Engine())
     online = score_earnings_calls(context)
     acknowledged_online = acknowledge_earnings_call_invalidations(context)
     after_online = sqlite_store.load(Tables.earnings_call_sentiment)
@@ -562,7 +563,7 @@ def test_call_is_invisible_until_two_calendar_days_after_as_of(sqlite_store, mon
         def score_texts(texts):
             return [{"pos": 0.6, "neg": 0.1, "neu": 0.3} for _ in texts]
 
-    monkeypatch.setattr(ec, "get_sentiment_engine", lambda _log: _Engine())
+    monkeypatch.setattr(ec, "get_sentiment_engine", lambda: _Engine())
     context = cast(Context, _Ctx(sqlite_store))
     assert score_earnings_calls(context) == pd.Timestamp("2024-05-01")
     per_call = sentiment_kpis_streamed(context)

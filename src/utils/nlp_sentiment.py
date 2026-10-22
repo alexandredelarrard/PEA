@@ -1,6 +1,6 @@
 """Local finance-tone scoring of long documents (earnings-call sections) with a HuggingFace classifier (FinBERT-tone).
 
-    engine = get_sentiment_engine(context.log)      # None if torch/transformers absent
+    engine = get_sentiment_engine()                # None if torch/transformers absent
     probs  = engine.score_texts([doc1, doc2, ...])   # -> [{'pos','neg','neu'}|None, ...]
 
 torch/transformers are optional: without them the builder returns None and callers skip. Runs on CUDA when
@@ -17,6 +17,8 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from src.constants.constants import FINBERT_TONE_MODEL
+
+logger = logging.getLogger(__name__)
 
 # BERT's token window; longer sections are chunked and length-weighted.
 FINBERT_MAX_TOKENS = 512
@@ -40,7 +42,7 @@ def _local_model_dir(model_name: str) -> Path:
     return Path(base) / model_name.replace("/", "__")
 
 
-def ensure_local_model(model_name: str, logger: logging.Logger) -> str:
+def ensure_local_model(model_name: str) -> str:
     """Mirror a HuggingFace model locally via curl_cffi and return the local dir for an offline `from_pretrained`.
 
     Tries the CA bundle first, then an unverified fetch (logged) as a last resort for this public, read-only artifact.
@@ -121,21 +123,18 @@ def _length_weighted_average(prob_rows: Sequence[Sequence[float]], weights: Sequ
 class SentimentEngine:
     """Thin wrapper over a HuggingFace tone classifier; build it via `get_sentiment_engine`."""
 
-    def __init__(
-        self, model_name: str = FINBERT_TONE_MODEL, max_tokens: int = FINBERT_MAX_TOKENS, batch_size: int = 16, logger: logging.Logger | None = None
-    ) -> None:
+    def __init__(self, model_name: str = FINBERT_TONE_MODEL, max_tokens: int = FINBERT_MAX_TOKENS, batch_size: int = 16) -> None:
         import torch  # local import (heavy, optional)
         from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
         self._torch = torch
-        self._log = logger or logging.getLogger(__name__)
         self.max_tokens = int(max_tokens)
         self.batch_size = int(batch_size)
 
         device_env = os.getenv("FINBERT_DEVICE", "").strip().lower()
         cuda_available = torch.cuda.is_available()
         self.device = "cuda" if cuda_available and device_env != "cpu" else "cpu"
-        self._log.info(
+        logger.info(
             "FinBERT device=%s (FINBERT_DEVICE=%s, torch=%s, CUDA build=%s, CUDA available=%s)",
             self.device,
             device_env or "auto",
@@ -149,10 +148,10 @@ class SentimentEngine:
                 "NVIDIA driver and Docker GPU reservation (docker-compose.gpu.yml)."
             )
         if self.device == "cuda":
-            self._log.info("FinBERT GPU: %s", torch.cuda.get_device_name())
+            logger.info("FinBERT GPU: %s", torch.cuda.get_device_name())
 
         # mirror locally via curl_cffi first (corporate-proxy workaround), else HF client
-        resolved = ensure_local_model(model_name, self._log)
+        resolved = ensure_local_model(model_name)
         self._tok = AutoTokenizer.from_pretrained(resolved)
         self._model = AutoModelForSequenceClassification.from_pretrained(resolved)
         self._model.to(self.device).eval()
@@ -167,7 +166,7 @@ class SentimentEngine:
                 self._col_for[idx] = "neg"
             else:  # neutral / anything else
                 self._col_for[idx] = "neu"
-        self._log.info("SentimentEngine ready: %s on %s (labels=%s)", model_name, self.device, id2label)
+        logger.info("SentimentEngine ready: %s on %s (labels=%s)", model_name, self.device, id2label)
 
     # -- internal: score a batch of ≤max_len token windows -> list of {pos,neg,neu} --
     def _score_windows(self, windows_text: list[str]) -> list[dict[str, float]]:
@@ -224,11 +223,10 @@ _ENGINE: SentimentEngine | None = None
 _ENGINE_TRIED = False
 
 
-def get_sentiment_engine(logger: logging.Logger | None = None, model_name: str = FINBERT_TONE_MODEL) -> SentimentEngine | None:
+def get_sentiment_engine(model_name: str = FINBERT_TONE_MODEL) -> SentimentEngine | None:
     """The process-wide SentimentEngine, or None if torch/transformers are missing or the model fails to load.
     A failed load is not retried in the same process, except when CUDA is required: failures propagate."""
     global _ENGINE, _ENGINE_TRIED
-    log = logger or logging.getLogger(__name__)
     if _ENGINE is not None:
         return _ENGINE
     if _ENGINE_TRIED:  # already failed once — don't retry
@@ -238,14 +236,14 @@ def get_sentiment_engine(logger: logging.Logger | None = None, model_name: str =
         if os.getenv("FINBERT_DEVICE", "").strip().lower() == "cuda":
             _ENGINE_TRIED = False
             raise RuntimeError("FINBERT_DEVICE=cuda requires torch and transformers to be installed.")
-        log.warning("torch/transformers not installed -> earnings-call sentiment skipped (pip install torch transformers).")
+        logger.warning("torch/transformers not installed -> earnings-call sentiment skipped (pip install torch transformers).")
         return None
     try:
-        _ENGINE = SentimentEngine(model_name=model_name, logger=log)
+        _ENGINE = SentimentEngine(model_name=model_name)
     except Exception as e:  # noqa: BLE001 - model download / GPU OOM
         if os.getenv("FINBERT_DEVICE", "").strip().lower() == "cuda":
             _ENGINE_TRIED = False
             raise
-        log.warning("Could not load sentiment model '%s' -> sentiment skipped: %s", model_name, e)
+        logger.warning("Could not load sentiment model '%s' -> sentiment skipped: %s", model_name, e)
         _ENGINE = None
     return _ENGINE

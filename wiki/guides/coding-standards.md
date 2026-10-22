@@ -6,7 +6,7 @@ tags:
   - wiki
   - guide
   - coding-standards
-source_commit: 55d6e2d199fa9a83aca7d5442549eeb66eedd189
+source_commit: 38ba50b056feb760b874b01cc405ddb435676f36
 ---
 # Coding standards
 
@@ -35,6 +35,15 @@ Do not cross-import between sibling `src/` packages. Shared logic belongs in the
 - Variable names are lowercase (`N806`) and say what they hold: DataFrames carry a `df_` prefix (`df_prices`); scalars and collections use descriptive names (`n_filings`, `missing_tickers`).
 - Functions and methods use lower snake case (`N802`); arguments use lower snake case (`N803`); local variables inside functions use lower snake case (`N806`); exception classes end in `Error` (`N818`). Capitals are reserved for module-level constants and class names.
 - Prefer Python 3.13 syntax. Write unions as `A | B`, including runtime checks such as `isinstance(value, A | B)`. The runtime-check form is a project convention even though Ruff 0.16.9 removed `UP038`.
+
+## Mandatory rules for every coding agent
+
+These rules are compulsory for every future coding change:
+
+- Never add a function parameter whose only callers or non-default values are in tests. Tests must exercise the existing production interface; seed a test store or patch the external dependency instead of adding test-only inputs.
+- Put a function's `store.load`, `store.iter_load`, and other table reads in a visible loading block at the top, before cleaning and computations. Read each table only once per function, including reads hidden behind helpers: combine the required projection and row scope into one read and reuse the result. Stream large results once with `iter_load`; repeated table calls are slow.
+- Never pass a logger as a function or constructor input. Use the logger already available through `self._log` or the existing context (`self._context.log` in this repository); otherwise declare `logger = logging.getLogger(__name__)` once at module scope and use it directly.
+- Do not add unused inputs or speculative options. Every parameter must serve a current production caller and be consumed by the function or its downstream calls. Keep the interface simple and add complexity only when a concrete use case requires it.
 
 ## Function design and data flow
 
@@ -82,6 +91,8 @@ Before adding a URL, field name, format, threshold, taxonomy value, model identi
 Do not introduce `*_TABLE` constants or duplicate registries.
 
 ## Logging and error handling
+
+Never pass a logger as a function or constructor argument. Standalone modules declare `logger = logging.getLogger(__name__)` once and use it directly. Where an object already has context, use its existing `self._log` or context logger; do not add a context parameter just for logging.
 
 Use:
 

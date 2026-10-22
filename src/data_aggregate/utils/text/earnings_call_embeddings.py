@@ -68,16 +68,13 @@ PARAGRAPH_COLS = ["ticker", "quarter", "paragraph", "as_of", "speaker", "content
 _SPLIT_COLS = ["paragraph", "speaker", "content"]
 
 
-def call_keys(store: DataStore, paragraphs: pd.DataFrame | None = None) -> pd.DataFrame:
-    """(ticker, quarter) of every stored call. Read as DISTINCT quarters per ticker, never the
-    text and never one row per paragraph; sliced from `paragraphs` when a frame is supplied."""
-    if paragraphs is not None:
-        return paragraphs[["ticker", "quarter"]].drop_duplicates().reset_index(drop=True)
-    frames = [
-        pd.DataFrame({"ticker": ticker, "quarter": store.distinct(Tables.earnings_call_sections, "quarter", where={"ticker": ticker})})
-        for ticker in store.distinct(Tables.earnings_call_sections, "ticker")
-    ]
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=["ticker", "quarter"])
+def call_keys(store: DataStore) -> pd.DataFrame:
+    """Read every stored (ticker, quarter) once, projecting keys from paragraph 1 of each call.
+
+    Extraction numbers retained paragraphs contiguously from 1, including after filtering.
+    """
+    df_keys = store.load(Tables.earnings_call_sections, ["ticker", "quarter"], where={"paragraph": 1}, optional=True)
+    return df_keys if df_keys is not None else pd.DataFrame(columns=["ticker", "quarter"])
 
 
 def load_paragraphs(store: DataStore, tickers: str | list[str]) -> pd.DataFrame | None:
@@ -148,18 +145,16 @@ def _embedded_calls(store, cache_model: str) -> set[tuple[str, str]]:
     return set(map(tuple, df.drop_duplicates().to_numpy()))
 
 
-def _yield_call_turns(
-    context: Context, remaining: list[tuple[str, str]], paragraphs: pd.DataFrame | None = None
-) -> Iterator[tuple[str, str, list[dict], object]]:
+def _yield_call_turns(context: Context, remaining: list[tuple[str, str]]) -> Iterator[tuple[str, str, list[dict], object]]:
     """GENERATOR yielding (ticker, quarter, turns, as_of) for each remaining call, reading the
-    paragraphs ONE TICKER AT A TIME (bounded memory: never the whole table) or slicing a provided
-    paragraph frame. `turns` is `CallSplit.turns`, whatever the split status: the embedding pass
+    paragraphs ONE TICKER AT A TIME (bounded memory: never the whole table).
+    `turns` is `CallSplit.turns`, whatever the split status: the embedding pass
     has no quality gate, a call's prepared turns still anchor the next quarter's drift."""
     by_tkr: dict[str, set[str]] = {}
     for tkr, q in remaining:
         by_tkr.setdefault(tkr, set()).add(q)
     for tkr, quarters in by_tkr.items():
-        g = paragraphs[paragraphs["ticker"] == tkr] if paragraphs is not None else load_paragraphs(context.store, tkr)
+        g = load_paragraphs(context.store, tkr)
         if g is None:
             continue
         for ticker, quarter, as_of, split in split_calls(g[g["quarter"].isin(quarters)]):
@@ -168,7 +163,6 @@ def _yield_call_turns(
 
 def embed_earnings_calls(
     context: Context,
-    sections: pd.DataFrame | None = None,
     model: str = EARNINGS_CALL_EMBEDDING_MODEL,
     force: bool = False,
     client: Any | None = None,
@@ -178,15 +172,14 @@ def embed_earnings_calls(
     key-column-only reads (stored calls vs. already-embedded — never the vectors or the text), then each
     remaining call's paragraphs are read, split, embedded and SAVED ONE CALL AT A TIME (a generator,
     so nothing is accumulated and flushed at the end). An interrupted (billed) run keeps every saved
-    call and a re-run makes ZERO calls. `sections` optionally supplies `earnings_call_sections`
-    paragraph rows instead of the store; `client` injects a stub embedder for tests. Returns the
+    call and a re-run makes ZERO calls. `client` injects a stub embedder for tests. Returns the
     earliest call date (re)embedded, or None."""
     store, log = context.store, context.log
     if client is None and not openai_api_key():
         log.warning("OPENAI/OPEN_AI_API_KEY not set -> earnings-call embedding skipped.")
         return None
 
-    universe = [(str(t), str(q)) for t, q in call_keys(store, sections).itertuples(index=False, name=None)]
+    universe = [(str(t), str(q)) for t, q in call_keys(store).itertuples(index=False, name=None)]
     if not universe:
         log.warning("No earnings_call_sections -> embedding skipped (run extract-earnings-calls).")
         return None
@@ -200,7 +193,7 @@ def embed_earnings_calls(
     log.info("Embedding %d earnings calls per-turn (OpenAI %s)...", len(remaining), model)
     n_new, counts = 0, {}
     earliest: pd.Timestamp | None = None
-    for tkr, q, turns, aod in tqdm(_yield_call_turns(context, remaining, sections), "EC embeddings", total=len(remaining)):
+    for tkr, q, turns, aod in tqdm(_yield_call_turns(context, remaining), "EC embeddings", total=len(remaining)):
         run_at = dt.datetime.now(dt.UTC).isoformat(timespec="seconds")
         counts[(tkr, q)] = len(turns)
         changed = pd.to_datetime(aod, errors="coerce")

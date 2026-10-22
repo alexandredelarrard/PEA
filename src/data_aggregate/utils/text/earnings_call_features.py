@@ -112,18 +112,16 @@ def _score_rows(engine: SentimentEngine, rows: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(out)
 
 
-def _yield_sections_to_score(
-    context: Context, todo_keys: pd.DataFrame, paragraphs: pd.DataFrame | None, tags: tuple[str, ...]
-) -> Iterator[tuple[str, pd.DataFrame]]:
+def _yield_sections_to_score(context: Context, todo_keys: pd.DataFrame, tags: tuple[str, ...]) -> Iterator[tuple[str, pd.DataFrame]]:
     """GENERATOR yielding (ticker, rows_to_score) ONE TICKER AT A TIME — reads the paragraphs per
-    ticker (projected, ticker pushed down server-side, or sliced from a provided paragraph frame),
+    ticker (projected, ticker pushed down server-side),
     splits each call and keeps only the cleaned sections still absent from the cache. Bounded
     memory: never the whole table."""
     by_tkr: dict[str, dict[str, set[str]]] = {}
     for tkr, q, tag in todo_keys[["ticker", "quarter", "tag"]].to_numpy():
         by_tkr.setdefault(str(tkr), {}).setdefault(str(q), set()).add(str(tag))
     for tkr, todo in by_tkr.items():
-        g = paragraphs[paragraphs["ticker"] == tkr] if paragraphs is not None else load_paragraphs(context.store, tkr)
+        g = load_paragraphs(context.store, tkr)
         if g is None:
             continue
         rows = [
@@ -136,19 +134,16 @@ def _yield_sections_to_score(
             yield tkr, pd.DataFrame(rows)
 
 
-def score_earnings_calls(
-    context: Context, sections: pd.DataFrame | None = None, tags: tuple[str, ...] = EARNINGS_CALL_SCORED_TAGS
-) -> pd.Timestamp | None:
+def score_earnings_calls(context: Context, tags: tuple[str, ...] = EARNINGS_CALL_SCORED_TAGS) -> pd.Timestamp | None:
     """Ensure every high-signal section has a cached FinBERT tone score. MEMORY-SAFE + incremental:
     the REMAINING sections are found by comparing two key-column-only reads (stored call keys x
     `tags` vs. the already-scored keys — never the transcript text), then each remaining ticker's
     paragraphs are read, split, scored and SAVED ONE TICKER AT A TIME (a generator, nothing
-    accumulated). An interrupted GPU run keeps its progress; a re-run scores nothing. `sections`
-    optionally supplies `earnings_call_sections` paragraph rows instead of the store. Returns the
+    accumulated). An interrupted GPU run keeps its progress; a re-run scores nothing. Returns the
     earliest call date (re)scored or pending refresh, or None."""
     store, log = context.store, context.log
     # call keys (no text) x tags vs. already-scored keys (no probs) -> only what's left to score
-    calls = call_keys(store, sections)
+    calls = call_keys(store)
     if calls.empty:
         log.warning("No earnings_call_sections -> sentiment scoring skipped (run extract-earnings-calls).")
         return None
@@ -172,14 +167,14 @@ def score_earnings_calls(
         log.info("Earnings-call sentiment cache already complete.")
         return earliest
 
-    engine = get_sentiment_engine(log)
+    engine = get_sentiment_engine()
     if engine is None:  # torch/transformers/model unavailable
         log.warning("Sentiment model unavailable -> %d sections left unscored; earnings-call features will be skipped.", len(todo_keys))
         return earliest
 
     log.info("Scoring %d earnings-call sections on %s (FinBERT-tone)...", len(todo_keys), engine.device)
     n_new = 0
-    for _tkr, grp in _yield_sections_to_score(context, todo_keys, sections, tags):
+    for _tkr, grp in _yield_sections_to_score(context, todo_keys, tags):
         scored = _score_rows(engine, grp)
         if not scored.empty:
             store.save(Tables.earnings_call_sentiment, scored)  # iterative per-ticker upsert

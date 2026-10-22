@@ -26,12 +26,13 @@ LightGBM/SHAP, OpenAI, pytest; Airflow uses an isolated Python 3.12 environment.
 - Prefix every shell command with `rtk`.
 - After the wiki, run `rtk proxy graphify query "<question>" --budget 1500` before raw code searches; refresh missing/stale graphs per the [Graphify guide](wiki/guides/query-the-codebase.md).
 - Read/write in-scope Markdown only through OpenKnowledge MCP; source code uses native tools.
-- All tabular I/O goes through `context.store`; SQL exists only in `src/data_store/`.
-- Project and scope every large read; use `iter_load` for cube-sized data.
+- All tabular I/O uses `context.store`; SQL only in `src/data_store/`; project/scope reads; `iter_load` for cube-sized data.
+- Put table reads at the top of each function; read each table once and reuse the result.
+- Never add test-only, unused or speculative parameters; tests use the existing production interface.
 - Table names live only in `src/data_store/schema.py`; use `Tables.<name>`.
 - Consumers read merged `fundamentals_history`; validation reads `fundamentals_history_sec`.
 - Stable literals go in `src/constants/constants.py`; tunable values go in `configs/`.
-- Log through `self._log` or `context.log`; never `print()` in application code.
+- Never pass logger arguments; use `self._log`, `context.log`, or a module logger; never `print()` in app code.
 - Fully annotate signatures; imports stay at module top; sibling `src/` packages do not cross-import.
 - Fetchers plan through their `schema.Resume` contract and `resume.py`, never a full read or a file.
 - Feature/economic tests use real data; exact parser/math tests use known-truth fixtures.

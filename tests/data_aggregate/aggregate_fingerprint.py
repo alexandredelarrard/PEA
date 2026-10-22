@@ -802,8 +802,8 @@ def compute() -> dict:
         manager_quarter_state,
         manager_stock_conviction,
     )
-    from src.data_aggregate.sec_thirteen.utils.value_basis import as_traded_close
     from src.data_aggregate.utils.common.frames import ratio, safe_div, sanitize
+    from src.data_aggregate.utils.common.level_basis import as_traded_close
     from src.data_aggregate.utils.common.panel import build_peer_relative_panel
     from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
     from src.data_aggregate.utils.common.prices import (
@@ -920,10 +920,6 @@ def compute() -> dict:
     out["panel.employee"] = frame_digest(build_employee_feature_panel(fund, employee_rows(fund), peers, idx, part_time_weight=0.5))
     out["panel.dividend"] = frame_digest(build_dividend_feature_panel(div, peers, idx, stock_close=close, fundamentals_history=fund))
     out["panel.governance"] = frame_digest(governance_panel(tickers, fund, peers, idx, close))
-    # ⚠ THE SINK IS THREADED THROUGH ALL FOUR SOURCE PANELS, because the two DERIVED panels
-    # (`ic_sig_*`, `ic_xs_*`) are functions of what the source panels hand it -- their event
-    # dates and their declared availability masks. Digesting the derived
-    # panels without it would freeze two empty frames.
     # `splits=` is not decoration: RegSHO volume is AS-TRADED and yfinance `Volume` is
     # retroactively split-scaled, so `ic_shortvol_market_coverage` and `ic_ftd_to_adv20` carry a
     # 1/F(d) factor without it -- which is how a 1-for-8 reverse split printed a "coverage" of
@@ -973,10 +969,6 @@ def compute() -> dict:
     out["panel.superinvestor"] = frame_digest(superinvestor)
     out["panel.insider"] = frame_digest(build_insider_feature_panel(make_frames(idx, peers, close_split=close), insider, shares_out_history=fund))
     out["panel.ownership"] = frame_digest(build_ownership_feature_panel(make_frames(idx, peers), sec_13d, sec_13g))
-    # The two DERIVED panels, in the order the step builds them. `close` stands in for both
-    # price bases here, as it does for the dividend and governance panels -- the synthetic
-    # series carries no dividends, so the split-only and total-return bases coincide.
-
     # ---- betas + the labels the model actually trains on ---- #
     factor_panel = pd.DataFrame(
         {

@@ -72,7 +72,7 @@ class StepCubeSecThirteen(Step):
         splits = basis.actual.rename(columns={"value": "ratio"})
         merger = PanelMerger(anchor=frames.skeleton())
         merger.add(self._institutional_panel(frames, shares, splits, cusip_map, valuation_close, share_basis=basis), "institutional (13F)")
-        merger.add(self._superinvestor_panel(frames, shares, splits, cusip_map, roster, history, valuation_close), "superinvestor (elite 13F)")
+        merger.add(self._superinvestor_panel(frames, splits, cusip_map, roster, history, valuation_close), "superinvestor (elite 13F)")
         return merger.to_long()
 
     def _institutional_panel(
@@ -110,7 +110,6 @@ class StepCubeSecThirteen(Step):
     def _superinvestor_panel(
         self,
         frames: PriceFrames,
-        shares: pd.DataFrame | None,
         splits: pd.DataFrame | None,
         cusip_map: pd.DataFrame | None,
         roster: set[str],
@@ -138,7 +137,6 @@ class StepCubeSecThirteen(Step):
             frames,
             holdings,
             roster,
-            shares_out_history=shares,
             cusip_map=cusip_map,
             splits=splits,
             valuation_close=valuation_close,

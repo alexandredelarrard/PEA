@@ -1121,7 +1121,7 @@ def normal_panels(step: StepCubeSecThirteen, frames: PriceFrames) -> tuple[pd.Da
     history = pd.DataFrame({"snapshot_date": [pd.Timestamp("2023-09-01")], "cik": ["0000000001"]})
     return (
         step._institutional_panel(frames, None, pd.DataFrame(), cusip_map, frames.close_split).set_index(["date", "ticker"]),
-        step._superinvestor_panel(frames, None, pd.DataFrame(), cusip_map, {"0000000001"}, history, frames.close_split).set_index(["date", "ticker"]),
+        step._superinvestor_panel(frames, pd.DataFrame(), cusip_map, {"0000000001"}, history, frames.close_split).set_index(["date", "ticker"]),
     )
 
 
@@ -1171,7 +1171,7 @@ def test_normal_elite_comparisons_keep_unknown_weights_and_zero_pools_safe(
     frames = PriceFrames(grid, ("AAA",), {}, close_split=close, level_factor=pd.DataFrame(1.0, index=grid, columns=["AAA"]))
     cusip_map = sqlite_store.load(Tables.cusip_ticker_map)
     history = pd.DataFrame({"snapshot_date": [pd.Timestamp("2023-09-01")] * 2, "cik": ["0000000001", "0000000002"]})
-    elite = step._superinvestor_panel(frames, None, pd.DataFrame(), cusip_map, set(history.cik), history, close).set_index(["date", "ticker"])
+    elite = step._superinvestor_panel(frames, pd.DataFrame(), cusip_map, set(history.cik), history, close).set_index(["date", "ticker"])
     row = elite.loc[(pd.Timestamp("2024-11-15"), "AAA")]
     changes = row.reindex(["f_ic_super_shares_chg", "f_ic_super_conviction_chg", "f_ic_super_conviction_weight_yoy"])
     if mode == "top_k":

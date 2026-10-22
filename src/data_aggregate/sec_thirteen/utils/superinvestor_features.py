@@ -678,7 +678,6 @@ def build_superinvestor_feature_panel(
     holdings: pd.DataFrame | None,
     roster: Iterable[str] | None,
     *,
-    shares_out_history: pd.DataFrame | None = None,
     cusip_map: pd.DataFrame | None = None,
     splits: pd.DataFrame | None = None,
     selection: pd.Series | Callable | None = None,

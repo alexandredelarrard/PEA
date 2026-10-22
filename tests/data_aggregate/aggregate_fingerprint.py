@@ -960,7 +960,6 @@ def compute() -> dict:
         make_frames(idx, peers, close_split=close, universe=tickers),
         priced_book,
         roster,
-        shares_out_history=fund,
         cusip_map=cusip_map,
         splits=splits,
         valuation_close=valuation_close,

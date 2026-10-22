@@ -228,12 +228,6 @@ build_cube:
                              # LEVELS suppressed as well, because a delta against a hole reads
                              # as the whole universe initiating at once.
 
-                             # `_max_runup_since_buy`: an excursion measured since a purchase
-                             # filed nine years ago describes the decade, not the insider.
-                             # ⚠ THIS IS THE BINDING LOOK-BACK OF THE WHOLE PART -- raising it
-                             # requires raising `cube_part_institutionals.warmup_trading_days`
-                             # in `parts.py` (390 today), which `test_part_registry.py`
-                             # enforces rather than trusting.
 
   hist:                      # self-history (valuation mean-reversion) window for
                              # the f_<yield>_vs_hist features ("cheap vs own past")

@@ -1,14 +1,12 @@
-"""Frame-based point-in-time roster selection and whole-book manager identity."""
+"""Frame-based point-in-time roster selection."""
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import cast
 
-import numpy as np
 import pandas as pd
 
-from src.utils.string import pad_cik_series
 from src.utils.superinvestor_roster import load_superinvestor_overrides, snapshot_as_of
 
 
@@ -40,30 +38,3 @@ def first_snapshot_date(history: pd.DataFrame | None) -> pd.Timestamp | None:
         return None
     snapshot_dates = df["snapshot_date"]
     return cast(pd.Timestamp, pd.Timestamp(snapshot_dates.min()))
-
-
-def to_manager_books(df: pd.DataFrame, config_dir: str | Path | None = None) -> pd.DataFrame:
-    """A book read by filer CIK, keyed by manager ID: each chain member's rows are kept only for
-    periods inside one of its windows and relabelled to the manager ID; other rows are untouched. Padded
-    and unpadded CIK strings both match; `period` may be date, Timestamp or ISO string."""
-    overrides = load_superinvestor_overrides(config_dir)
-    windows = [(mid, w) for mid, chain in overrides.manager_ciks.items() for w in chain]
-    if df.empty or not windows:
-        return df
-    padded = pad_cik_series(df["cik"]).to_numpy()
-    chained = np.isin(padded, [w.cik for _, w in windows])
-    if not chained.any():
-        return df
-    periods = pd.to_datetime(df["period"].where(chained)).to_numpy()
-    label = np.full(len(df), None, dtype=object)
-    for mid, w in windows:  # a returning filer has several windows
-        hit = padded == w.cik
-        if w.window.start is not None:
-            hit &= periods >= np.datetime64(w.window.start)
-        if w.window.end is not None:
-            hit &= periods <= np.datetime64(w.window.end)
-        label[hit] = mid
-    keep = ~chained | pd.notna(label)
-    out = df[keep].copy()
-    out["cik"] = np.where(chained[keep], label[keep], out["cik"].to_numpy(dtype=object))
-    return out

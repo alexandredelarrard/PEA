@@ -338,9 +338,9 @@ def build_targets_multi(
     inside its lookback -- see `_neutralizing_design`.
 
     `market_cap` adds log market cap, i.e. the size CHARACTERISTIC as opposed to the size
-    loading. Unlike the beta and sector tilts, a size tilt is neutralized NOWHERE downstream
-    (`strategy_ls.yml` enforces `beta_neutral` and `sector_neutral` only), so it would flow
-    straight into the live book. See `_neutralizing_design`.
+    loading. The portfolio backtest balances long/short dollars within sectors; it does
+    not neutralize size or beta exposures. A size tilt can therefore remain in its book.
+    See `_neutralizing_design`.
 
     `sector_groups` = {"sector": {ticker: gics_sector}, "industry_group": {...}} -> the group
     indicator block, so sector / industry membership cannot predict the target. `None` means no

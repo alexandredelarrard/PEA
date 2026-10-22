@@ -1,10 +1,11 @@
 ---
 title: Constants and configuration
-description: Ownership of literals, tunable settings, paths, model families, strategies, and validation contracts.
+description: Ownership of literals, tunable settings, model families, portfolio and validation contracts.
 type: module
 tags:
   - wiki
   - module
+source_commit: 55d6e2d199fa9a83aca7d5442549eeb66eedd189
 ---
 # Constants and configuration
 
@@ -30,8 +31,8 @@ Configuration is an OmegaConf tree assembled from every YAML file under `configs
 
 - [configs/configs.yml](../../configs/configs.yml) owns the seed and extraction window.
 - [configs/build_cube.yml](../../configs/build_cube.yml) owns factor, target, feature, and incremental parameters.
-- [configs/modellling.yml](../../configs/modellling.yml) plus [configs/models](../../configs/models/) own training and model-family settings.
-- [configs/strategy](../../configs/strategy/) and [configs/portfolio.yml](../../configs/portfolio.yml) own sleeve construction and portfolio-wide allocation.
+- [configs/modellling.yml](../../configs/modellling.yml) plus [configs/models](../../configs/models/lgbm_modelling.yml) own training and model-family settings.
+- [configs/portfolio.yml](../../configs/portfolio.yml) owns fixed long/short, S&P 500 and cash budgets, schedules, construction windows and simulated costs.
 - [configs/validate.yml](../../configs/validate.yml) declares validation contracts.
 - [configs/gpt.yml](../../configs/gpt.yml) owns model/provider selection, concurrency, budgets, and embedding settings.
 - [constants.py](../../src/constants/constants.py) and [constants_price.py](../../src/constants/constants_price.py) own stable literals.
@@ -42,10 +43,10 @@ OmegaConf performs recursive merges. Consumers access the final `DictConfig` thr
 
 ## Participates in
 
-Configuration controls every stage, including [data extraction](./data-extract.md), [cube aggregation](./data-aggregate.md), [modelling](./modelling.md), [strategy sleeves](./strategies.md), and [validation](./validation.md).
+Configuration controls every stage, including [data extraction](./data-extract.md), [cube aggregation](./data-aggregate.md), [modelling](./modelling.md), [portfolio construction](./strategies.md), and [validation](./validation.md).
 
 ## Related
 
-- [Add a model or sleeve](../guides/add-a-model-or-sleeve.md)
+- [Change a model or backtest](../guides/add-a-model-or-sleeve.md)
 - [Add a cube feature](../guides/add-a-cube-feature.md)
 - [Configuration reference](../reference/configuration.md)

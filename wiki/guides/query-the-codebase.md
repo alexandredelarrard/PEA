@@ -6,6 +6,7 @@ tags:
   - wiki
   - guide
   - graphify
+source_commit: 55d6e2d199fa9a83aca7d5442549eeb66eedd189
 ---
 ## Goal
 
@@ -42,7 +43,7 @@ The graph and HTML live under `graphify-out/`, which is ignored by [Git](../../.
 
 - [.graphifyignore](../../.graphifyignore) defines the local scan boundary: Markdown, agent state, worktrees, reports, data, environment files, and Graphify outputs are excluded.
 - [System overview](../architecture/system-overview.md) describes the pipeline stages.
-- The source directories `src/`, `tests/`, `app/`, and `scripts/` supply the indexed code relationships.
+- The source directories `src/`, `tests/`, and `scripts/` supply the indexed code relationships.
 
 ## Gotchas
 

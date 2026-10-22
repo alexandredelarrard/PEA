@@ -5,6 +5,7 @@ type: module
 tags:
   - wiki
   - module
+source_commit: 55d6e2d199fa9a83aca7d5442549eeb66eedd189
 ---
 # DAGs and infrastructure
 
@@ -26,14 +27,13 @@ Infrastructure combines a PostgreSQL 16 pipeline database with an Airflow deploy
 
 - [dag_data_extraction.py](../../src/dags/dag_data_extraction.py) schedules insiders (two tasks into the one `insider_transactions` table: `insider-zip`, the pending zip quarters, in the `sec_bulk` pool; `insider-edgar`, the EDGAR walk, in the `sec_api` pool after it, so it never runs beside another EDGAR walk; both are identity consumers), after the identity downloads, identity tables and propagation, like every identity-consuming SEC task; its standalone employee task is a sibling of SEC fundamentals rather than a side effect.
 - [dag_data_aggregation.py](../../src/dags/dag_data_aggregation.py) chains peer deduction, registered cube parts, assembly, status, and downstream prediction. The extraction DAG's freshness report and aggregation trigger, and every aggregation task, run on `ALL_DONE`, so a failed source or part never stops the night; `modelling predict` alone refuses stale inputs. The 13F new-ticker backfill is a task of the extraction DAG, after the nightly 13F walk.
-- [dag_modelling.py](../../src/dags/dag_modelling.py) runs holdout training, portfolio backtest, and full-history production training.
-- [dag_strat_prediction.py](../../src/dags/dag_strat_prediction.py) scores the newest cube and writes strategy moves.
+- [dag_modelling.py](../../src/dags/dag_modelling.py) runs training, fresh assessment, portfolio backtest and full-history production fitting with the same generated run ID.
+- [dag_strat_prediction.py](../../src/dags/dag_strat_prediction.py) scores the newest cube; its obsolete ledger task has been removed.
 - [docker-compose.yml](../../docker-compose.yml) is the deployment manifest.
 
 ## Key files
 
 - [airflow/Dockerfile.airflow](../../airflow/Dockerfile.airflow) creates `/opt/pipeline` and installs runtime dependencies.
-- [airflow/requirements-airflow.txt](../../airflow/requirements-airflow.txt) mirrors application dependencies needed by DAG tasks.
 - [docker-compose.yml](../../docker-compose.yml) defines `db`, `airflow-db`, `airflow-init`, `airflow-scheduler`, and `airflow-webserver`.
 - [test_dag_matches_part_registry.py](../../tests/dags/test_dag_matches_part_registry.py) proves that the aggregation chain derives from the cube-part registry.
 

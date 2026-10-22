@@ -6,7 +6,7 @@ tags:
   - wiki
   - reference
   - configuration
-source_commit: 65624e71af94a8a0d662b35b975affb7d43016b7
+source_commit: 55d6e2d199fa9a83aca7d5442549eeb66eedd189
 ---
 # Configuration
 
@@ -34,8 +34,7 @@ Callers use attribute access such as `self._config.build_cube.targets.horizons`.
 | `build_cube` | [build_cube.yml](../../configs/build_cube.yml) | Betas, targets, feature transforms, intrinsic value, historical comparisons, institutional policies, and output switches. |
 | `model`, `train` | [modellling.yml](../../configs/modellling.yml) | Ensemble composition, target choice, CV, diagnostics, decay, `models_dir` (artifact folder under the data store), fresh assessment controls and train/test boundaries. Each family YAML under `configs/models/` (e.g. [lgbm_modelling.yml](../../configs/models/lgbm_modelling.yml)) also sets `task: regression \| classification`. The filename intentionally contains three “l” characters. |
 | `linear`, `lgbm`, `random_forest` | [lgbm_modelling.yml](../../configs/models/lgbm_modelling.yml) and sibling family files | Family hyperparameters and family-specific feature columns. |
-| `strategy_ls`, `strategy_eq_long_only` | `configs/strategy/` | Sleeve construction only. |
-| `portfolio` | [portfolio.yml](../../configs/portfolio.yml) | Sleeve selection, dates, global costs, risk targeting, leverage, capital, blend, and analysis output. |
+| `portfolio` | [portfolio.yml](../../configs/portfolio.yml) | Fixed LS/S&P/cash budgets, dates/cutoff, allocation cadence, momentum/risk windows, cash remuneration, proportional costs and read batch size. |
 | `data_availability`, `source_freshness`, `earnings_calls` | [data.yml](../../configs/data.yml) | Institutional availability boundaries, field/derived overrides, the insider frontier lag, and the earnings-call extractor knobs. |
 | validation keys | [validate.yml](../../configs/validate.yml) | Point-in-time publication clocks, observed-zero exceptions, and validation policy. |
 
@@ -158,15 +157,15 @@ Every numerical value in [build_cube.yml](../../configs/build_cube.yml) carries 
 
 Each family selects all inputs, numeric and categorical, through `columns` and `columns_by_horizon[h]`. For both tree families, `lgbm.categoricals` is the sole type registry: a selected name in that list receives native categorical handling; a registry entry does not add an input. `lgbm.monotonic` supplies the same directions to LightGBM and RF at every horizon, aligned to the actual fitted feature order; unselected directions stay inactive. The earnings-call contract in `configs/models/lgbm_modelling.yml` is exactly 12 raw/issuer-history columns; `_xs` and `_vs_peers` earnings-call variants are intentionally excluded. Directional constraints apply only where the economic sign is unambiguous: positive call tone and negative uncertainty. Q&A gap (management-answer tone minus prepared-remarks tone), coherence, embedding distance, and disclosure-length change are unconstrained. `configs/validate.yml` owns their quarterly cadence, raw plausibility bounds, 66-session lifetime, Spearman redundancy thresholds, PSI and missingness-delta limits, latest-20-session audit window, and the split-quality floors (`split_ok_rate_min: 0.985`, `prepared_share_q05_min: 0.15`). Train-versus-recent checks use the canonical `train.end_date` from `configs/modellling.yml`; the validation config does not duplicate that boundary. The dedicated validator reads these settings rather than duplicating them in Python. When a new feature has an economically unambiguous direction, add the constraint alongside the column and run the monotonic-contract tests.
 
-train.end_date is a feature ceiling; train.outcome_cutoff=2021-12-31 limits every development outcome. Observed price sessions and actual label ends purge training strictly before each external test. LightGBM fits all eligible training rows and uses external-test RMSE for early stopping; there is no inner validation tail. Cutoff/full-train rounds use the upward-rounded mean of best rounds in the last two configured chronological folds. Post-2022 never selects rounds. Fixed-cutoff assessment starts 3 January 2022; portfolio starts 1 June 2022. Full-train restores saved fitting settings/schema and fits all currently mature finite labels without CV. See [the lifecycle](./modelling-and-portfolio.md#longshort-training-lifecycle).
+train.end_date is a feature ceiling; train.outcome_cutoff=2021-12-31 limits every development outcome. Observed price sessions and actual label ends purge training strictly before each external test. LightGBM fits all eligible training rows and uses external-test RMSE for early stopping; there is no inner validation tail. Cutoff/full-train rounds use the upward-rounded mean of best rounds in the last two configured chronological folds. Post-2022 never selects rounds. Fixed-cutoff assessment starts 3 January 2022; portfolio starts 3 January 2022. Full-train restores saved fitting settings/schema and fits all currently mature finite labels without CV. See [the lifecycle](./modelling-and-portfolio.md#longshort-training-lifecycle).
 
-## Strategies and portfolio
+## Portfolio backtest
 
-The portfolio selects `ls_equity` and `eq_long_only`, the only registered sleeves. The portfolio owns capital, global target volatility, costs, risk-free rate, covariance/blending policy, rebalance frequency, leverage, and output switches.
+[portfolio.yml](../../configs/portfolio.yml) is the sole owner. The defaults allocate50% long/short,25% S&P and25% free cash. The three nonnegative shares must sum to one; invalid values are refused rather than renormalized. All paths start at100.
 
-Sleeve YAML owns only sleeve construction. [PortfolioInputs](../../src/strategies/base.py) passes portfolio-level values down. A sleeve can override trading costs where explicitly supported, but must not duplicate capital or global risk settings.
+allocation_frequency defaults to weekly; LS filters independently select daily/weekly/monthly. training_cutoff=2021-12-31 and start=2022-01-03 preserve the intended historical boundary. cash_rate=0.033 compounds only free cash over calendar days. momentum_window=126 and risk_window=63 require full past sessions. commission_bps=0, spread_bps=5 and sell_fee_bps=0.206 are a documented proportional proxy, not exact historical broker fees. read_chunksize controls bounded monthly feature loading.
 
-The long/short sleeve owns neutrality, position and gross caps, turnover controls, covariance shrinkage, horizon blending, and integer-share behavior. Whole-share optimization requires realistic capital; otherwise positions can collapse below one share.
+There are no per-sleeve configs, leverage/target-vol/ERC knobs, Streamlit settings or ledger command. Allocation changes require a fresh Python backtest. See [portfolio](../modules/portfolio.md) for financing, missing-data and output contracts.
 
 ## Validation configuration
 

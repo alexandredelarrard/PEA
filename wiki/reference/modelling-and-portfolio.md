@@ -1,54 +1,30 @@
 ---
-title: Modelling, strategies, and portfolio
-description: Training, artifact, sleeve, blending, and trade-ledger contracts.
+title: Modelling and portfolio
+description: Training, saved ensemble, capital budgets and portfolio backtest contracts.
 type: reference
 tags:
   - wiki
   - reference
   - modelling
   - portfolio
-source_commit: 18ae7b6b9cbdb71a7e1c216b7e0e94d02cbab677
+source_commit: 55d6e2d199fa9a83aca7d5442549eeb66eedd189
 ---
-# Modelling, strategies, and portfolio
+# Modelling and portfolio
 
 ## Layer boundaries
 
-```mermaid
+~~~mermaid
 flowchart LR
-  Cube[(Point in time cube)] --> Engines[Signal engines]
-  Engines --> Sleeves[Strategy sleeves]
-  Sleeves --> Blend[Portfolio ERC blend]
-  Blend --> Risk[Global volatility and leverage]
-  Risk --> Ledger[(Trade ledger)]
-```
+  Cube[(Point in time cube)] --> Models[Saved cross sectional models]
+  Models --> Signals[Feature only ensemble scores]
+  Signals --> Positions[Sector neutral LS construction]
+  Positions --> Engine[LS S and P and cash quantity engine]
+  Engine --> Report[Offline portfolio report]
+~~~
 
-The three layers have separate contracts:
+Modelling owns training and fresh saved-model assessment. [Portfolio](../modules/portfolio.md) consumes only public modelling utilities, reads existing data through DataStore, constructs the long/short book and follows actual quantities. Its [contracts](../../src/portfolio/utils/contracts.py) cover settings, market panels and results. There is no strategy registry or daily ledger writer.
 
-| Layer | Location | Responsibility |
-| --- | --- | --- |
-| Signal engines | [src/modelling](../modules/modelling.md) | Train cross-sectional ensembles, recompute saved-model diagnostics in assess, and produce scores. |
-| Strategy sleeves | [src/strategies](../modules/strategies.md) | Convert one engine/data contract into a self-contained return stream and tradeable book. |
-| Portfolio and execution | [src/portfolio](../modules/portfolio.md) | Align sleeves, allocate risk, target portfolio volatility, and persist trade moves. |
-
-A sleeve never depends on another sleeve. The portfolio is the only component that sees and blends all sleeve return streams.
-
-## Sleeve registry
-
-| Sleeve name | Config key | Engine | Role |
-| --- | --- | --- | --- |
-| `ls_equity` | `strategy_ls` | long/short ensemble | Market-, beta-, and sector-controlled equity alpha, evaluated out of sample. |
-| `eq_long_only` | `strategy_eq_long_only` | long/short ensemble | Top-name long-only expression suitable for accounts without shorting. |
-
-The registry is [STRATEGY_REGISTRY](../../src/strategies/__init__.py). Sleeve names do not map mechanically to YAML keys, so every implementation declares `config_key`.
-
-## Strategy contract
-
-[base.py](../../src/strategies/base.py) defines the shared objects:
-
-- `PortfolioInputs`: capital, target volatility, start/end dates, fee and spread assumptions, risk-free rate, and analysis flags supplied by the portfolio.
-- `StrategyResult`: sleeve name, net daily returns, metrics, positions, trades, extras, and the exact `book_weights` / `book_prices` used to create trades.
-
-The book panels are essential. Portfolio allocation varies through time, and share quantities are a nonlinear function of capital and integer rounding; the ledger must rebuild the blotter from the scaled book rather than multiply already-created trade dollars.
+The three [capital budgets](../concepts/strategy-sleeves.md) are long/short, S&P 500 and free cash. User-set percentages apply to current after-fee NAV at the allocation cadence. Selection cadence is independently daily, weekly or monthly.
 
 ## Long/short training lifecycle
 
@@ -58,10 +34,10 @@ The weekly [DAG](../../src/dags/dag_modelling.py) runs four tasks under the safe
 | --- | --- | --- |
 | train_model | [StepLongShort.run_train()](../../src/modelling/steps/step_long_short.py); run() delegates here | Save five original purged folds per model/horizon, then fresh cutoff refits. Fixed pools and parameters; no feature search. |
 | backtest_modelling | [StepAssessLongShort.run()](../../src/modelling/steps/step_assess_long_short.py) | Read saved models only; save per-member/ensemble IC/IR, SHAP or linear contributions, cutoff PDP and the five-chart offline report. |
-| backtest_portfolio | [StepPortfolio.run()](../../src/portfolio/step_portfolio.py) | Use the same run's cutoff members and dated portfolio output. Existing rules, dates and costs remain configured. |
+| backtest_portfolio | [StepPortfolio.run()](../../src/portfolio/steps/step_portfolio.py) | Use the same run's cutoff members and dated portfolio output. Existing rules, dates and costs remain configured. |
 | full_train | StepLongShort.run_train(full_history=True) | Reuse that run's saved fold counts without CV; refit all latest mature labels and atomically publish a complete production generation. |
 
-The five forward windows cover 2000–02,2003–06,2007–12,2013–18 and2019–21 with expanding training from 1999. train.end_date is a feature ceiling. train.outcome_cutoff=2021-12-31 additionally requires all development, early-stop and test outcomes to be known by that date. Actual price-calendar label ends purge training before each external test. LightGBM uses the labelled external test for RMSE early stopping on all eligible training rows; no inner validation tail is withheld. Fold IC/IR therefore includes iteration-selection influence. Cutoff/full-history rounds are the upward-rounded mean of the last two configured chronological folds. Fixed-cutoff assessment begins 3 January 2022; portfolio start remains 1 June 2022. Production fitting ignores the old development ceilings and uses all finite mature labels.
+The five forward windows cover 2000–02,2003–06,2007–12,2013–18 and2019–21 with expanding training from 1999. train.end_date is a feature ceiling. train.outcome_cutoff=2021-12-31 additionally requires all development, early-stop and test outcomes to be known by that date. Actual price-calendar label ends purge training before each external test. LightGBM uses the labelled external test for RMSE early stopping on all eligible training rows; no inner validation tail is withheld. Fold IC/IR therefore includes iteration-selection influence. Cutoff/full-history rounds are the upward-rounded mean of the last two configured chronological folds. Fixed-cutoff assessment begins 3 January 2022; portfolio starts 3 January 2022. Production fitting ignores the old development ceilings and uses all finite mature labels.
 
 Each original fold supplies its held-out signed-effect curve; a fresh cutoff member supplies the 2022+ curve, sampled tree scatter and PDP. Cutoff refitting uses all eligible development rows, rather than averaging the five folds. Linear importance is absolute standardized beta; signed beta contributions are labelled separately from SHAP. The already-inspected 2022+ backtest is not a new sealed evaluation; current-roster coverage, retrospective classifications and static peer vintages remain historical/generalization limits. See [report plots](../modules/modelling.md#report-plots).
 
@@ -170,41 +146,17 @@ Model files and metadata live under `model.models_dir` (default `output/models`,
 
 Dated original-fold/cutoff members, minimal fitting summaries and resolved configuration live under model.assessment.output_dir/<run_id> (default output/modelling_backtest/<run_id>). Assess freshly computes its own predictions/IC/IR, sampled SHAP or linear contributions, importance/PDP and report.html in that same run. See [dated artifacts](../modules/modelling.md#dated-artifacts-and-production-models). Monitor and label-only Backtest are removed. Train creates no OOF prediction files or historical predictions/cube_signal writes; daily prediction retains predictions_latest.
 
-## Long/short construction
+## Portfolio construction and accounting
 
-The [long/short strategy](../../src/strategies/step_ls.py) transforms scores into a constrained book.
+[Construction](../../src/portfolio/transformers/construction.py) selects N=10/50/100 names per side across sectors. Momentum tilts positive bounded sector budgets, and inverse variance distributes weights within each sector/leg. At dedicated LS rebalances each sector has equal long/short dollars and total LS gross equals that budget. Beta neutrality is not claimed.
 
-- Covariance mode uses shrunk idiosyncratic covariance, reducing duplicated correlated risk. Diagonal mode is inverse variance; full covariance shrinkage toward one becomes the diagonal.
-- Dollar, beta, and sector constraints are applied at construction.
-- Turnover is controlled through partial movement toward target, a no-trade band, and rebalance frequency.
-- Horizon blending uses the training IC-IR weights with configurable shrinkage.
-- Whole-share mode solves an integer projection under exposure and gross constraints. Fractional longs can absorb rounding while shorts remain integer.
-- Size is neutralized in the target, not in the live book; target construction is therefore responsible for preventing a pure size signal.
+[Simulation](../../src/portfolio/transformers/simulation.py) freezes signal close J and executes at the next observed session close J+1. Quantities persist between scheduled changes, with split/quote-unit adjustments and distributions inferred once from total returns. A capital-only allocation scales the existing book; it preserves sector drift until the next LS selection. Missing held/execution data interrupts instead of filling or retrospectively replacing titles.
 
-Small nominal capital can make integer-share portfolios collapse. Validate position count, gross exposure, neutrality residuals, and turnover under the intended capital.
+[portfolio.yml](../../configs/portfolio.yml) owns fixed LS/S&P/cash shares (default50/25/25), weekly allocation, cash remuneration (3.3% effective annual over calendar days),126-session momentum,63-session variance and proportional fees. Only free cash earns interest. Targets solve current capital after actual buy/sell fees; short proceeds are reserved and no loan funds costs.
 
-## Other sleeves
+The [offline report](../../src/portfolio/transformers/report.py) shows nine actual simulations, net/gross NAV from100, drawdowns, exposures, fees, monthly position changes and positions/sector drift. Each scenario receives S&P metrics over its own effective dates, with incomplete states visible. Results belong in the same assessed run under backtest_portfolio/report.html; failed publication preserves prior bytes. Allocation changes require a Python rerun.
 
-The equity long-only sleeve scores the same ensemble and returns the same `StrategyResult` shape. The multi-asset `long_book` and `trend_cta` sleeves were removed in 2026-10; a new sleeve registers in `STRATEGY_REGISTRY` and follows the same contract.
-
-Any sleeve-specific leverage used to create trades must be represented consistently in its returned book panels. Summary `positions` may intentionally show a different diagnostic view.
-
-## Portfolio blend
-
-[StepPortfolio](../../src/portfolio/step_portfolio.py) reads [portfolio.yml](../../configs/portfolio.yml), builds common inputs, runs configured sleeves, aligns their daily net returns, and calls [blend.py](../../src/portfolio/utils/blend.py).
-
-ERC is the dynamic dollar allocation: covariance-aware equal risk contribution determines sleeve weights, followed by one global volatility target and leverage cap. Inverse-volatility mode is available as a simpler alternative. The portfolio reports sleeve metrics alongside global performance and writes analysis artifacts under the configured output path.
-
-## Strategy moves and ledger
-
-[StepStrategyMoves](../../src/portfolio/step_strategy_moves.py) reuses the portfolio blend, then:
-
-1. multiplies each sleeve's original book weights by time-varying ERC allocation and portfolio leverage;
-2. recomputes share-level trades with sleeve prices and trading costs;
-3. FIFO-matches entries and exits through [positions.py](../../src/strategies/utils/positions.py); and
-4. upserts `strategy` rows so an earlier opening trade can gain exit price and realized P&L when closed.
-
-Scaling an existing blotter is incorrect because capital, weights, prices, and integer constraints vary by date.
+The Streamlit application, old sleeve implementations/configs, ERC utility and strategy-moves command were removed. The daily prediction DAG still writes forecasts; historical strategy-table data remains intact. Current-universe/classification bias, fractional/available shorts and simplified fees are disclosed. Macro rules, automatic vol allocation and broker integration are deferred.
 
 ## Reviewing a model or strategy change
 

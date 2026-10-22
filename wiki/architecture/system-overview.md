@@ -1,5 +1,5 @@
 ---
-source_commit: 55d6e2d199fa9a83aca7d5442549eeb66eedd189
+source_commit: aeb931206d78eceb72ae1536988839056a630d1d
 title: System overview
 description: Boundaries and major components of the stock_pick_strat quantitative pipeline.
 type: architecture

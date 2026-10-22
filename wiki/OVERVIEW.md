@@ -1,5 +1,5 @@
 ---
-source_commit: def8db8534d96071d5904c792a16431e8adedd44
+source_commit: aeb931206d78eceb72ae1536988839056a630d1d
 title: Codebase Wiki — Overview
 description: Canonical internal hub for architecture, modules, flows, concepts, guides, references and backlog.
 profile: internal/standard
@@ -39,6 +39,8 @@ flowchart LR
 ~~~
 
 The narrow production boundary is deliberate: all tabular application I/O passes through [DataStore](./modules/data-store.md), while manual and scheduled orchestration invoke the same package-level CLI commands.
+
+[Cube aggregation](./modules/data-aggregate.md) has eight builders and nine persisted parts. Institutionals owns insider, ownership and short-flow features; SEC thirteen owns broad institutional and superinvestor features in its own part. The [cube build flow](./flows/cube-build.md) documents their separate commands, daily overlap and full-rebuild adoption sequence.
 
 The [modelling workflow](./flows/model-training-and-prediction.md) separates training from fresh saved-model assessment. Train retains models and basic fold IC/IR; assess reloads models and current data to produce predictions, explanations and the run-local report. The generated training ID pins all weekly downstream stages. See [model artifacts](./modules/modelling.md) and the [bounded acceptance record](./guides/testing.md#modelling-workflow-acceptance-2026-10-21).
 

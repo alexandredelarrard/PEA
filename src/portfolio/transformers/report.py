@@ -10,7 +10,7 @@ import tempfile
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -72,8 +72,9 @@ def write_report(
     payloads = {}
     for result, gross in results:
         daily = result.daily.copy()
-        benchmark_window = _benchmark_window(benchmark, daily.index)
-        benchmark_gross_window = _benchmark_window(benchmark_gross, daily.index)
+        dates = cast(pd.DatetimeIndex, daily.index)
+        benchmark_window = _benchmark_window(benchmark, dates)
+        benchmark_gross_window = _benchmark_window(benchmark_gross, dates)
         key = f"{result.n}_{result.frequency}"
         manifest["scenarios"][key] = {**metrics(result, settings), "benchmark": metrics(benchmark_window, settings)}
         daily["gross_nav"] = gross.daily.nav.reindex(daily.index)

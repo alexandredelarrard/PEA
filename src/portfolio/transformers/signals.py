@@ -33,8 +33,11 @@ def select_cutoff(context: Context, config: DictConfig, run_id: str | None) -> t
     if pd.isna(cutoff) or cutoff >= pd.Timestamp(config.portfolio.start):
         raise ValueError("Training cutoff must precede the backtest")
 
-    def check_date(record: dict, key: str) -> None:
-        date = pd.Timestamp(record.get(key)) if record.get(key) is not None else pd.NaT
+    def check_date(record: dict[str, Any], key: str) -> None:
+        value = record.get(key)
+        if value is None:
+            raise ValueError(f"Cutoff {key} missing or later than {cutoff.date()}")
+        date = pd.Timestamp(value)
         if pd.isna(date) or date > cutoff:
             raise ValueError(f"Cutoff {key} missing or later than {cutoff.date()}")
 

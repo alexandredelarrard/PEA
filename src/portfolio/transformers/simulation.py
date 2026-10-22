@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -28,7 +29,7 @@ def _fee(notional: np.ndarray, settings: Settings) -> np.ndarray:
 def _funded_capital(capital: float, cost: Callable[[float], float]) -> float:
     """Solve capital_after + costs(capital_after) = capital_before, without credit."""
     try:
-        after = brentq(lambda value: value + cost(value) - capital, 0, capital, xtol=1e-12)
+        after = cast(float, brentq(lambda value: value + cost(value) - capital, 0, capital, xtol=1e-12))
     except ValueError as exc:
         raise IncompleteScenario("Transaction costs cannot be funded by available capital") from exc
     if after <= 0 or not np.isclose(after + cost(after), capital, rtol=1e-10, atol=1e-9):
@@ -110,7 +111,7 @@ def _position_records(date: pd.Timestamp, data: MarketInputs, quantities: pd.Ser
             "ticker": ticker,
             "sector": data.sectors[ticker],
             "quantity": float(quantities[ticker]),
-            "price": float(data.quotes.loc[date, ticker]),
+            "price": float(cast(float, data.quotes.at[date, ticker])),
             "value": float(values[ticker]),
             "weight": float(values[ticker] / nav),
         }
@@ -166,11 +167,11 @@ def simulate(data: MarketInputs, settings: Settings, n: int, frequency: str) -> 
         previous = dates[i - 1]
         try:
             held = q.index[q != 0]
-            before = _positive(data.quotes.loc[previous, held], previous, "held quote")
-            quote = _positive(data.quotes.loc[date, held], date, "held quote")
-            basis_before = _positive(data.share_basis.loc[previous, held], previous, "share basis")
-            basis_now = _positive(data.share_basis.loc[date, held], date, "share basis")
-            returns = data.returns.loc[date, held]
+            before = _positive(cast(pd.Series, data.quotes.loc[previous, held]), previous, "held quote")
+            quote = _positive(cast(pd.Series, data.quotes.loc[date, held]), date, "held quote")
+            basis_before = _positive(cast(pd.Series, data.share_basis.loc[previous, held]), previous, "share basis")
+            basis_now = _positive(cast(pd.Series, data.share_basis.loc[date, held]), date, "share basis")
+            returns = cast(pd.Series, data.returns.loc[date, held])
             if not np.isfinite(returns).all() or (returns <= -1).any():
                 raise IncompleteScenario(f"{date.date()}: missing held total return: {list(returns.index[~np.isfinite(returns)])}")
             old_values = q.loc[held] * before
@@ -195,7 +196,9 @@ def simulate(data: MarketInputs, settings: Settings, n: int, frequency: str) -> 
             target = construct(data, previous, n, variance, momentum).reindex(tickers, fill_value=0) if inner else None
             if outer or inner:
                 active = q.index[(q != 0) | ((target != 0) if target is not None else False)]
-                execution_all = _execution_prices(data.quotes.loc[date, active], date, market_now, outer and settings.allocation[1] > 0)
+                execution_all = _execution_prices(
+                    cast(pd.Series, data.quotes.loc[date, active]), date, market_now, outer and settings.allocation[1] > 0
+                )
                 execution = execution_all.loc[active]
                 old_q = q.loc[active].copy()
 
@@ -228,7 +231,7 @@ def simulate(data: MarketInputs, settings: Settings, n: int, frequency: str) -> 
             if free_cash < -1e-9 or ls_cash < -1e-9 or not np.isclose(nav, previous_nav + ls_pnl + sp_pnl + interest - fee, atol=1e-8):
                 raise IncompleteScenario(f"{date.date()}: unfunded capital or accounting mismatch")
             held = q.index[q != 0]
-            values = q.loc[held] * data.quotes.loc[date, held]
+            values = q.loc[held] * cast(pd.Series, data.quotes.loc[date, held])
             positions.extend(_position_records(date, data, q, values, nav))
             daily.append(
                 {

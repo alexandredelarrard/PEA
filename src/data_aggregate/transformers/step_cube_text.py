@@ -310,8 +310,9 @@ class StepCubeText(Step):
 
         if vectors is not None:
             vectors = vectors[~pd.MultiIndex.from_frame(vectors[["ticker", "quarter"]]).isin(plan.embedding_work)]
+            vectors["as_of"] = pd.to_datetime(vectors["as_of"], format="ISO8601", errors="coerce")
             vectors = vectors.merge(scope[["ticker", "quarter", "as_of", "issuer_id"]], on=["ticker", "quarter"], suffixes=("", "_source"))
-            vectors = vectors[pd.to_datetime(vectors["as_of"]).eq(vectors["as_of_source"])].drop(columns="as_of_source")
+            vectors = vectors[vectors["as_of"].eq(vectors["as_of_source"])].drop(columns="as_of_source")
             per_call = per_call.merge(build_embedding_kpis(vectors, comparisons), on=["ticker", "quarter"], how="left")
         del vectors
         

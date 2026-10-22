@@ -39,9 +39,9 @@ class ReplayStore:
         for column, value in (where or {}).items():
             rows = rows[rows[column].isin(value)] if isinstance(value, list | tuple | set) else rows[rows[column].eq(value)]
         if since is not None:
-            rows = rows[pd.to_datetime(rows.as_of).ge(pd.Timestamp(since))]
+            rows = rows[pd.to_datetime(rows.as_of, format="mixed").ge(pd.Timestamp(since))]
         if until is not None:
-            rows = rows[pd.to_datetime(rows.as_of).lt(pd.Timestamp(until).normalize() + pd.Timedelta(days=1))]
+            rows = rows[pd.to_datetime(rows.as_of, format="mixed").lt(pd.Timestamp(until).normalize() + pd.Timedelta(days=1))]
         return rows
 
     def load(
@@ -164,6 +164,30 @@ def prepare_step(context: Context, config: DictConfig) -> tuple[StepCubeText, An
     calendar = pd.DatetimeIndex(pd.to_datetime(context.store.distinct(Tables.cube_part_prices, "date"))).sort_values()
     plan = step.plan_window(calendar, full=True)
     return step, plan, step.prepare_sections(plan)
+
+
+@pytest.mark.parametrize("date_only", ["ADP", "JPM"])
+def test_mixed_saved_date_formats_do_not_repeat_inference(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, date_only: str) -> None:
+    context, config, store = seeded_case(sqlite_store, ["ADP_2026Q3", "JPM_2024Q3"])
+    factory, _, embedding = configure_models(monkeypatch)
+    StepCubeText(context, config).run(full=True)
+    before = store.load(Tables.cube_part_text)
+    assert before is not None
+    store.vector_rows["as_of"] = pd.to_datetime(store.vector_rows["as_of"]).dt.strftime("%Y-%m-%d")
+    timestamps = store.vector_rows["ticker"].ne(date_only)
+    store.vector_rows.loc[timestamps, "as_of"] = store.vector_rows.loc[timestamps, "as_of"] + " 00:00:00"
+    factory.reset_mock()
+    embedding.reset_mock()
+    step = StepCubeText(context, config)
+    plan = step.plan_window(step_text.load_trading_calendar(store), full=True)
+    assert not plan.embedding_work
+    step.run(full=True)
+    after = store.load(Tables.cube_part_text)
+    assert after is not None and not factory.called and not embedding.called
+    pd.testing.assert_frame_equal(before, after, check_exact=True)
+    print(
+        f"SANITY: real PostgreSQL date-only/timestamp spelling retains complete results, exact features and zero repeated models (date-only={date_only})."
+    )
 
 
 def test_partial_calls_are_complete_and_warm_run_skips_models(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:

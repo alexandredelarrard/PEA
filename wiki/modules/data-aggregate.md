@@ -5,7 +5,7 @@ type: module
 tags:
   - wiki
   - module
-source_commit: 54882b265efce2bf18c4ff9c40a89c6d8530c589
+source_commit: 96e77f81e5cf184b513b1e9bc4785aa68945654b
 ---
 # Cube aggregation
 
@@ -46,7 +46,7 @@ source_commit: 54882b265efce2bf18c4ff9c40a89c6d8530c589
 
 [StepCubeText.run](../../src/data_aggregate/transformers/step_cube_text.py) visibly loads the calendar, plans work, prepares selected text once, runs sentiments, runs embeddings, then reads saved model outputs and prices to build/persist features. Each model stage saves completed calls independently. The existing sentiment and embedding tables are the reusable outputs; there is no additional cache layer.
 
-Planning reads compact ticker/quarter/date keys from paragraph 1 of earnings_call_sections and each model table's compatible completion metadata. Each model has its own missing/failed/stale work set across source history, including old holes. Preparation reads the union's paragraph payload once, with projection/key scope, then loops by ticker/quarter to split, clean and assess. These stages use ordinary DataFrames, with no generator or per-ticker table reads. Full/cold source and vector payloads can still be large; fixture memory measurements do not establish production capacity.
+Planning reads compact ticker/quarter/date keys from paragraph 1 of earnings_call_sections and each model table's compatible completion metadata. Each model has its own missing/failed/stale work set across source history, including old holes. Preparation reads the union's paragraph payload once, with projection/key scope, then loops by ticker/quarter to split, clean and assess. These stages use ordinary DataFrames, with no generator or per-ticker table reads. Completion and feature joins parse stored embedding dates explicitly as ISO8601, accepting both legacy date-only values and new timestamps without repeating completed inference. Full/cold source and vector payloads can still be large; the bounded real-model and PostgreSQL measurements are recorded in [text-cube acceptance](../guides/testing.md#text-cube-acceptance-2026-10-22).
 
 The canonical [parser](../../src/utils/text/earnings_call_split.py), introduction matching and [tokenization/quality checks](../../src/utils/text/text_metrics.py) are shared with extraction/validation. Cube-only [sentiment inference](../../src/data_aggregate/utils/text/nlp_sentiment.py) and [uncertainty/preparation helpers](../../src/data_aggregate/utils/text/earnings_call_preparation.py) belong to aggregation. [Embedding helpers](../../src/data_aggregate/utils/text/earnings_call_embeddings.py) validate vectors and derive coherence/drift; they do not create sections.
 
@@ -58,7 +58,7 @@ Model choices come from build_cube.earnings_calls.sentiment_model and the existi
 
 The output remains exactly 12 f_ec_* columns: eight raw values and four prior-only issuer-history scores, without peer/cross-sectional normalization. Missing sections leave unsupported values NULL. Tone/length deltas require consecutive issuer fiscal quarters with matching section coverage; tone/uncertainty histories also partition by coverage. Q&A gap needs both sections. Coherence needs two mapped Q&A exchanges; section drift needs compatible vectors in the prior consecutive fiscal quarter. Histories use five calendar years, four prior non-null observations and sample standard deviation.
 
-Normal feature writes rewrite inclusively from the stored text-part frontier minus 30 calendar days, covering missed runs. Feature input reads retain the active emitter calls, their actual predecessors and required five-year history; vectors are one scoped projected read without turn text/audit payload. The cheap complete calendar supplies original positions, while daily arrays and close_split availability cover only the output tail. All features first become visible on/after call date plus the configured calendar-day lag (default two), then expire after 66 original trading sessions.
+Normal feature writes rewrite inclusively from the stored text-part frontier minus 30 calendar days, covering missed runs. Feature input reads retain the active emitter calls, their actual fiscal predecessors and required five-year history for those issuers only. Issuers with no call that can emit into the output range are excluded; old symbols of active issuers remain available for comparisons. Vectors use one scoped projected read without turn text/audit payload. The cheap complete calendar supplies original positions, while daily arrays and close_split availability cover only the output tail. All features first become visible on/after call date plus the configured calendar-day lag (default two), then expire after 66 original trading sessions.
 
 Extraction invalidates both saved model outputs when a source call changes. Corrections/deletions/backfills older than the normal feature rewrite require explicit build-text -F and cube assembly. Full/cold/schema-change feature rebuilding reuses valid inference results. No durable repair marker or cross-stage acknowledgement protocol is used.
 
@@ -95,6 +95,10 @@ The module is the core of the [cube-build flow](../flows/cube-build.md). Its out
 - [Add a cube feature](../guides/add-a-cube-feature.md)
 - [Point-in-time and quality controls](../architecture/point-in-time-and-quality.md)
 - [Data access and storage](../guides/data-access.md)
+
+## Current institutional stage wiring
+
+At commit `96e77f81`, `StepCubeInstitutionals.build_panel()` invokes elite/superinvestor, insider, short-flow and beneficial-ownership panels. Calls to the broad institutional 13F panel, price-conditioning panel and cross-source panel are commented out in [step_cube_institutionals.py](../../src/data_aggregate/transformers/step_cube_institutionals.py). Their helper implementations remain in the repository; the contracts below describe those helpers and do not establish that these three families are emitted by the current orchestrator.
 
 ## SEC 13F values and immutable books
 

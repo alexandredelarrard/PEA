@@ -210,7 +210,8 @@ def feature_history_scope(
     consecutive = ordered["quarter"].map(quarter_number).sub(grouped["quarter"].shift().map(quarter_number)).eq(1)
     predecessor_positions = previous[active & consecutive].dropna().astype(int)
     comparisons = pd.concat([emitters[["ticker", "quarter"]], ordered.loc[predecessor_positions, ["ticker", "quarter"]]]).drop_duplicates()
-    keep = pd.to_datetime(ordered["as_of"]).between(history_from, calendar[-1]) | ordered["_position"].isin(predecessor_positions)
+    history = ordered["issuer_id"].isin(emitters["issuer_id"]) & pd.to_datetime(ordered["as_of"]).between(history_from, calendar[-1])
+    keep = history | ordered["_position"].isin(predecessor_positions)
     return ordered.loc[keep].drop(columns="_position"), set(map(tuple, comparisons.to_numpy()))
 
 

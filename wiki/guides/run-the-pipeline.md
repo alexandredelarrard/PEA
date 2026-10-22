@@ -7,7 +7,7 @@ tags:
   - guide
   - runbook
   - operations
-source_commit: 54882b265efce2bf18c4ff9c40a89c6d8530c589
+source_commit: 96e77f81e5cf184b513b1e9bc4785aa68945654b
 ---
 # Run the pipeline
 
@@ -368,7 +368,7 @@ After separate production approval, adopt a lineage/availability change with cur
 
 The feature clock is owned by `build_cube.earnings_calls.availability_lag_days` in [build_cube.yml](../../configs/build_cube.yml): two calendar days, followed by the first eligible trading session. A normal 30-calendar-day rewrite does not rewrite older feature clocks; a full part rebuild and cube reassembly are necessary for historical adoption. The provider exposes call dates without a first-available timestamp, so two days is an estimated buffer. The 2026-10-19 scoped validation recovered ECHO2→62 and BNY3→78 into an isolated sink, but current-model feature generation abstained because the bounded cache contained only older model versions. Source-format and old-feature drift flags remain documented in `reports/validate/2026-10-19-earnings-call-lineage/`; no production backfill or paid scoring ran in that validation.
 
-A full text rebuild is dominated by FinBERT. Measured on 2026-10-02 (`reports/validate/2026-10-01-earnings-call-extraction-gaps/03-implementation.md`):
+A full text run reuses valid model results and scores only missing or invalid outputs. Cold scoring can be dominated by FinBERT. The following measurements are historical, from 2026-10-02 (`reports/validate/2026-10-01-earnings-call-extraction-gaps/03-implementation.md`); they are not a throughput guarantee for the current flow. The later [text-cube acceptance](./testing.md#text-cube-acceptance-2026-10-22) records actual configured-model/PostgreSQL tests on 253 calls, a 10.3-second warm median and zero repeated inference. Whole-universe cold capacity remains unmeasured.
 
 | Stage | Cost | Resume |
 | --- | --- | --- |
@@ -382,7 +382,7 @@ Run FinBERT on a GPU with `FINBERT_DEVICE=cuda`. `build-text` scores sentiment b
 rtk "$PY" -m src validate earnings-calls -T cube_part_text -o reports/validate/YYYY-MM-DD-earnings-calls
 ```
 
-The check reads `earnings_call_sections` itself; `-T earnings_call_sections` is the wrong target. It reports per-ticker and per-calendar-quarter coverage, paragraph-grain checks, split status (`ok` rate at least 0.985, prepared word share q05 at least 0.15, from `configs/validate.yml`), `as_of` against the nearest `earnings_surprises` date, and the 12-column feature schema, bounds, redundancy and drift.
+The check reads `earnings_call_sections` itself; `-T earnings_call_sections` is the wrong target. It reports per-ticker and per-calendar-quarter coverage, paragraph-grain checks, raw split status, usable-call rate (at least 0.985 under `usable_call_rate_min`) and prepared word share among eligible both-section calls (q05 at least 0.15, from `configs/validate.yml`), `as_of` against the nearest `earnings_surprises` date, and the 12-column feature schema, bounds, redundancy and drift.
 
 ## Validation commands
 

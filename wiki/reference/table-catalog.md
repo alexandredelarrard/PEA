@@ -7,7 +7,7 @@ tags:
   - reference
   - database
   - schema
-source_commit: 8f3ffae075aa9dec4f7427dc8a8f1f960688f4c3
+source_commit: 96e77f81e5cf184b513b1e9bc4785aa68945654b
 ---
 # Table catalog
 
@@ -120,8 +120,8 @@ The four prose child tables are flattened from the retained `def14a_json` payloa
 | Table | Primary grain | Contract |
 | --- | --- | --- |
 | `earnings_call_sections` | ticker × quarter × paragraph | Raw defeatbeta transcript paragraphs: `as_of` DATE is the real call date (not null), plus `transcript_id`, `speaker`, `content`. `quarter` is the fiscal label (`2026Q2`). Content must exceed two characters; retained text is unchanged and retained paragraph numbers are contiguous from 1 per call, preserving source order and the resume marker. Speaker-turn splitting and cleaning run downstream; quarterly freshness on `as_of`. `content` is the payload, so reads project the needed columns and scope by ticker. |
-| `earnings_call_sentiment` | ticker × quarter × section tag | Cached call-intrinsic FinBERT and lexicon scores of the cleaned prepared remarks and the management-answer Q&A text; rows carry the cleaned-text cache version in `model`. Also holds the pending refresh markers of re-issued calls. |
-| `earning_calls_embedding` | ticker × quarter × speaker sequence | Speaker-turn embeddings of the split's cleaned turns, with question/answer linkage (`exchange_idx`); `model` is the cache tag `<OpenAI model>:<cleaning version>`. Text is omitted from the default projection. |
+| `earnings_call_sentiment` | ticker × quarter × section tag | Cached call-intrinsic FinBERT and lexicon scores of cleaned prepared remarks and management-answer Q&A text; `model` carries the cleaning version. A completed partial call has both canonical tags: the unavailable section records zero words and NULL scores. Source reissues invalidate derived rows; legacy pending-marker models are excluded, and the active flow creates no repair markers. |
+| `earning_calls_embedding` | ticker × quarter × speaker sequence | Speaker-turn embeddings of the split's cleaned turns, with question/answer linkage (`exchange_idx`); `model` is the cache tag `<OpenAI model>:<cleaning version>`. Text is omitted from the default projection. Readers normalize stored ISO date/timestamp spellings before completion checks and feature joins. |
 | `notes_embedding` | ticker × accession × tag | Mean-pooled footnote embeddings. Currently populated but not consumed by a cube panel. |
 | `ticker_descriptions`, `ticker_embeddings` | ticker | Business descriptions and similarity vectors used by peer deduction. |
 

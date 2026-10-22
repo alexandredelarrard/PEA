@@ -1,5 +1,5 @@
 ---
-source_commit: def8db8534d96071d5904c792a16431e8adedd44
+source_commit: 96e77f81e5cf184b513b1e9bc4785aa68945654b
 title: Portfolio
 description: Independent model long/short, S&P 500 and cash backtest and offline HTML.
 type: module
@@ -29,7 +29,7 @@ The signal is fixed at close J. Transactions occur at close of the next observed
 
 ## Accounting
 
-The [simulation](../../src/portfolio/transformers/simulation.py) holds signed fractional quantities between schedules. It adjusts quantities for actual corporate actions, books distributions implied by total returns once, and charges proportional costs on actual net quantity changes. The stock quote reconstruction in [inputs](../../src/portfolio/utils/inputs.py) reuses the shared vendor/actual share-basis resolver and stored level factors; missing factors are not replaced with one.
+The [simulation](../../src/portfolio/transformers/simulation.py) holds signed fractional quantities between schedules. It adjusts quantities for actual corporate actions, books distributions implied by total returns once, and charges proportional costs on actual net quantity changes. The stock quote reconstruction in `load_market()` in [inputs](../../src/portfolio/utils/inputs.py) reads split/total-return prices from `prices` and level factors directly from `cube_part_prices`, then reuses the shared vendor/actual share-basis resolver. It does not select level factors from the assembled cube. Missing factors are not replaced with one.
 
 A budget of 50 buys 25 longs and sells 25 shorts; reserved LS cash/collateral and blocked short proceeds never become additional free capital. Only the separate cash pocket earns the effective annual rate over calendar days. Targets use current capital after financed costs. Negative capital or missing required held/execution observations explicitly interrupts a scenario.
 

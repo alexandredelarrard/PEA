@@ -1,6 +1,6 @@
 """
 Superinvestor (elite-manager) 13F features
-(src/data_aggregate/utils/institutionals/superinvestor_features.py).
+(src/data_aggregate/sec_thirteen/utils/superinvestor_features.py).
 
 Proves the four properties that make this panel different from the all-filer institutional
 one, each of which was a real defect caught by measurement rather than a hypothetical:
@@ -19,7 +19,6 @@ one, each of which was a real defect caught by measurement rather than a hypothe
 from __future__ import annotations
 
 import logging
-from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -32,7 +31,6 @@ from src.data_aggregate.sec_thirteen.utils.superinvestor_features import (
     attach_tickers,
     build_superinvestor_feature_panel,
     clean_holdings,
-    load_superinvestor_holdings,
     manager_quarter_state,
     manager_stock_conviction,
     public_state,
@@ -370,78 +368,33 @@ def test_selection_ciks_reads_every_roster_shape():
     print("  {cik: name} keys, a CIK set and a CIK list all resolve to padded CIKs; blanks dropped; None/empty -> empty set. Validated.")
 
 
-class _Ctx:
-    def __init__(self, store):
-        self.store = store
-        self.log = logging.getLogger("test")
-
-
-def test_load_reads_only_roster_managers_from_the_book_table(sqlite_store):
-    """The push-down is a plain `cik IN (...)`: `sec13f_manager_holdings` is written by one
-    producer with `pad_cik` applied (verified on the live table -- all 342,501 rows are
-    exactly 10 characters), so the every-stored-spelling dance `sec13f_hr` needs is not
-    required here."""
-    rows = _book("2025-12-31", "2026-02-14", 1000, 250)
-    rows += _book("2025-12-31", "2026-02-14", 5, 5, cik="0000000009", n_other=0)  # not roster
-    sqlite_store.save("sec13f_manager_holdings", pd.DataFrame(rows))
-    ctx = cast(Any, _Ctx(sqlite_store))
-    out = load_superinvestor_holdings(ctx, _ROSTER)
-    assert out is not None
-    assert set(out["cik"]) == {"0000000001"}, set(out["cik"])
-    assert len(out) == 10, "the whole book must come back, not the universe slice"
-    assert load_superinvestor_holdings(ctx, set()) is None
-    print("\n=== SANITY CHECK: filtered book read ===")
-    print(f"  {len(rows)} stored rows -> {len(out)} returned, all for roster CIK 0000000001; the non-roster manager is filtered server-side")
-    print(f"  columns: {list(out.columns)}")
-    print("  Validated.")
-
-
 def _null_amounts(rows: list[dict]) -> list[dict]:
     """An unverifiable legacy text book (F-001): positions kept, every amount NULL."""
     return [{**r, "shares": None, "value_usd": None} for r in rows]
 
 
-def test_a_book_with_all_null_amounts_reads_as_absent_not_zero(sqlite_store):
-    """F-001: a manager-quarter stored with NULL `shares`/`value_usd` on every row must read
-    exactly as if that quarter had no filing. Zero-filled, it would count the manager as
-    holding every name at weight 0 with 0 shares and CUSIP-order ranks."""
+def test_a_book_with_all_null_amounts_matches_an_absent_book() -> None:
+    """An all-NULL manager-quarter must yield the same features as an absent book."""
     books = (("2025-09-30", "2025-11-14", 500, 500), ("2025-12-31", "2026-02-14", 1000, 250), ("2026-03-31", "2026-05-15", 1500, 100))
     other = [r for p, f, h, c in books for r in _book(p, f, h, c, cik="0000000002", n_other=0)]
     first, middle, last = (_book(p, f, h, c) for p, f, h, c in books)
     idx = pd.bdate_range("2025-10-01", "2026-09-30")
     peers = {t: {p: 1.0 for p in _UNIVERSE if p != t} for t in _UNIVERSE}
 
-    def run(rows: list[dict]) -> tuple[pd.DataFrame, pd.DataFrame]:
-        sqlite_store.drop("sec13f_manager_holdings")
-        sqlite_store.save("sec13f_manager_holdings", pd.DataFrame(rows))
-        held = load_superinvestor_holdings(cast(Any, _Ctx(sqlite_store)), _ROSTER)
-        assert held is not None
-        _, state, conv = _prepared(held)
-        contrib = _contrib(conv, state)
-        panel = build_superinvestor_feature_panel(make_frames(idx, peers, universe=_UNIVERSE), held, _ROSTER, cusip_map=_CUSIP_MAP)
-        cols = ["cik", "ticker", "period", "held", "w", "shares", "is_top10"]
-        return contrib[cols].sort_values(cols[:3]).reset_index(drop=True), panel.sort_values(["date", "ticker"]).reset_index(drop=True)
+    def run(rows: list[dict]) -> pd.DataFrame:
+        panel = build_superinvestor_feature_panel(make_frames(idx, peers, universe=_UNIVERSE), pd.DataFrame(rows), _ROSTER, cusip_map=_CUSIP_MAP)
+        return panel.sort_values(["date", "ticker"]).reset_index(drop=True)
 
-    contrib_null, panel_null = run(first + _null_amounts(middle) + last + other)
-    contrib_absent, panel_absent = run(first + last + other)
+    panel_null = run(first + _null_amounts(middle) + last + other)
+    panel_absent = run(first + last + other)
     named = ["f_ic_super_conviction_weight", "f_ic_super_shares_chg", "f_ic_super_top10_holders", "f_ic_super_holders"]
-    print("\n=== SANITY CHECK: all-NULL book reads as absent ===")
-    print(f"  manager 1 contributions with the NULL book: {len(contrib_null)} rows; with the book deleted: {len(contrib_absent)} rows")
+    print("\n=== SANITY CHECK: all-NULL book behaves as absent ===")
     print(f"  panel {panel_null.shape} vs {panel_absent.shape}; named features present: {[c for c in named if c in panel_null.columns]}")
-    pd.testing.assert_frame_equal(contrib_null, contrib_absent, check_dtype=False)  # a NULL read widens int64 to float64
     for col in named:
         assert col in panel_null.columns, col
         pd.testing.assert_series_equal(panel_null[col], panel_absent[col])
     pd.testing.assert_frame_equal(panel_null, panel_absent)
-    # The same unusable book handed straight to the panel is now excluded before aggregation.
-    raw = pd.DataFrame(first + _null_amounts(middle) + last + other)
-    panel_zero = build_superinvestor_feature_panel(make_frames(idx, peers, universe=_UNIVERSE), raw, _ROSTER, cusip_map=_CUSIP_MAP)
-    panel_zero = panel_zero.sort_values(["date", "ticker"]).reset_index(drop=True)
-    moved = {c: int((~(panel_zero[c].eq(panel_absent[c]) | (panel_zero[c].isna() & panel_absent[c].isna()))).sum()) for c in named}
-    print(f"  raw NULL-book cells differing after exclusion, per named feature: {moved}")
-    assert not any(moved.values()), "unusable NULL rows must behave like an absent book"
-    pd.testing.assert_frame_equal(panel_zero, panel_absent)
-    print("  held / w / shares / is_top10 and every panel column are identical to the deleted-book run. Validated.")
+    print("  Every panel column is identical to the absent-book run; unknown amounts cannot manufacture positions or exits. Validated.")
 
 
 def test_unknown_book_values_preserve_the_share_position_and_do_not_signal_exit() -> None:

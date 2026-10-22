@@ -1,5 +1,5 @@
 """
-superinvestor_features.py  (src/data_aggregate/utils/institutionals/superinvestor_features.py)
+superinvestor_features.py  (src/data_aggregate/sec_thirteen/utils/superinvestor_features.py)
 ----------------------------------------------------------------------------------------------
 Elite-manager 13F features for the Dataroma superinvestor roster.
 
@@ -26,9 +26,9 @@ number of positions, top-10 weight, and filing lag are intermediate values,
 not emitted features. They are reduced to the `(ticker, date)` cube grain
 through:
 
-    _manager_quarter_state
-        -> _manager_stock_conviction
-        -> _ticker_quarter_panel
+    manager_quarter_state
+        -> manager_stock_conviction
+        -> _aggregate
 
 Manager selection
 -----------------
@@ -66,10 +66,8 @@ import numpy as np
 import pandas as pd
 
 from src.constants.constants import SEC_13F_FILING_LAG_DAYS
-from src.context import Context
 from src.data_aggregate.sec_thirteen.utils.holdings_clean import clean_holdings
 from src.data_aggregate.sec_thirteen.utils.institutional_vintages import iter_public_books
-from src.data_aggregate.sec_thirteen.utils.superinvestor_roster import to_manager_books
 from src.data_aggregate.sec_thirteen.utils.value_basis import log_register, nullable_value_to_daily, repair_value_basis
 from src.data_aggregate.utils.common.availability import InstitutionalAvailability
 from src.data_aggregate.utils.common.data_utils import to_day
@@ -79,14 +77,8 @@ from src.data_aggregate.utils.common.price_frames import PriceFrames
 from src.data_store.schema import Tables
 from src.utils.institutional_vintages import filing_public_dates
 from src.utils.string import pad_cik
-from src.utils.superinvestor_roster import config_dir_of, filer_ciks
 
 logger = logging.getLogger(__name__)
-
-#: Columns read from the manager-book table. `position_type` is required -- the conviction
-#: denominator is COMMON STOCK only, so the debt / call / put legs must be identifiable and
-#: excluded rather than summed into `total_common_value`.
-_HOLDINGS_COLS = ["cik", "period", "filing_date", "cusip", "position_type", "shares", "value_usd"]
 
 #: Ranks at or below this count as a "top holding" for #17/#18/#22.
 _TOP_N = 10
@@ -128,7 +120,7 @@ EMISSION: dict[str, str] = {
     "ic_super_full_exits": "raw",
 }
 
-#: The five features above marked "decayed intensities" are the SPARSE (class-S) ones. An
+#: The features above marked "decayed intensities" are the SPARSE (class-S) ones. An
 #: event is 0 on almost every ticker-day, so each goes through `decay_events` before the
 #: panel -- see `decay.py` for why an undecayed flag is an ABSENT feature, not a weak one.
 #: They are produced by `_events` and named there; no second list is kept, because two
@@ -136,54 +128,8 @@ EMISSION: dict[str, str] = {
 #: map.
 
 
-def load_superinvestor_holdings(context: Context, roster: Iterable[str] | None) -> pd.DataFrame | None:
-    """The roster managers' COMPLETE quarterly books from `sec13f_manager_holdings`.
-
-    `cik` is written by ONE producer with `pad_cik` already applied -- verified on the live
-    table, where every one of the 342,501 rows is exactly 10 characters -- so this is a plain
-    `where={"cik": [...]}` push-down. The `store.distinct` + every-stored-spelling dance the
-    `sec13f_hr` reader needs exists only because that table takes `cik` straight from the SEC
-    submission and holds the same manager both padded and unpadded; it is not needed here and
-    reintroducing it would be cargo cult.
-
-    Every filer CIK of a chained manager is read and the book comes back keyed by manager ID
-    (`to_manager_books`), so it compares with `roster_as_of`.
-
-    A `(cik, period)` book with both shares and values missing on every row reads as unfiled.
-    Valid share positions survive unknown dollars; their dollar weights remain unknown.
-
-    Returns None when the roster resolves to no manager or the table is not populated.
-    """
-    config_dir = config_dir_of(context)
-    ciks = sorted(filer_ciks(_selection_ciks(roster), config_dir))
-    if not ciks:
-        return None
-
-    holdings = context.store.load(Tables.sec13f_manager_holdings, _HOLDINGS_COLS, where={"cik": ciks}, optional=True)
-    if holdings is None:
-        return None
-    unknown_row = holdings["value_usd"].isna() & pd.to_numeric(holdings["shares"], errors="coerce").isna()
-    unknown = unknown_row.groupby([holdings["cik"], holdings["period"]]).transform("all")
-    if unknown.any():
-        n_books = holdings.loc[unknown, ["cik", "period"]].drop_duplicates().shape[0]
-        logger.info(
-            "superinvestor books: %d (cik, period) book(s) with all-NULL shares and values dropped as unfiled (%d row(s))",
-            n_books,
-            int(unknown.sum()),
-        )
-        holdings = holdings[~unknown]
-    return to_manager_books(holdings, config_dir=config_dir)
-
-
 def _selection_ciks(roster: Iterable[str] | None) -> set[str]:
-    """Padded CIKs from a roster: the keys of the `{cik: manager_name}` map `roster_map_as_of`
-    returns, or an iterable of CIK strings such as the `roster_cik_union` set -- which is
-    what the READ SCOPE must be.
-
-    ⚠ THE READ SCOPE IS THE UNION, NOT TODAY'S ROSTER (plan D19/D20). Loading only today's
-    83 managers drops the 19 culled managers that have a book
-    """
-
+    """Padded CIKs from roster-map keys or an iterable of manager IDs."""
     if not roster:
         return set()
     return {c for m in roster if (c := pad_cik(m))}
@@ -757,7 +703,7 @@ def build_superinvestor_feature_panel(
         return empty
 
     if filings is not None:
-        levels, contrib, state = _versioned_super_levels(
+        levels, state = _versioned_super_levels(
             frames,
             holdings,
             filings,
@@ -774,6 +720,7 @@ def build_superinvestor_feature_panel(
         family_start = min(frame.index.min() for frame in levels.values())
         if availability is not None:
             family_start = max(family_start, availability.source_date(Tables.sec13f_manager_holdings))
+        events = pd.DataFrame()
     else:
         holdings = attach_tickers(holdings, cusip_map, universe)
         h = clean_holdings(holdings, key=("cik", "period", "cusip"), numeric=("shares", "value_usd"), common_only=True, pad_ciks=True)
@@ -803,6 +750,7 @@ def build_superinvestor_feature_panel(
         if availability is not None:
             family_start = max(family_start, availability.source_date(Tables.sec13f_manager_holdings))
         levels, _grid = _aggregate(contrib, st, stale_quarters)
+        events = _events(contrib)
 
     fields = {name: nullable_value_to_daily(_to_long(frame, name), name, trading_index) for name, frame in levels.items()}
 
@@ -814,10 +762,9 @@ def build_superinvestor_feature_panel(
                 age = dates - publication.reindex(trading_index).ffill()
                 fields[name] = fields[name].mul(0.5 ** (age / decay_halflife), axis=0)
 
-    # The five class-S features, decayed onto the trading grid. Already stamped on each
+    # Sparse event features, decayed onto the trading grid. Already stamped on each
     # manager's own availability date -- an event is not tradable before the filing that
     # discloses it.
-    events = _events(contrib) if filings is None else pd.DataFrame()
     if not events.empty:
         for kind, sub in events.groupby("kind"):
             frame = decay_events(sub, trading_index, decay_halflife, magnitude_col="magnitude")
@@ -946,7 +893,7 @@ def _versioned_super_levels(
     value_basis: Mapping[str, float] | None,
     stale_quarters: int,
     decay_halflife: float,
-) -> tuple[dict[str, pd.DataFrame], pd.DataFrame, pd.DataFrame]:
+) -> tuple[dict[str, pd.DataFrame], pd.DataFrame]:
     """Freeze each historical observation from its public source prefix, including revisions."""
     holdings = attach_tickers(holdings, cusip_map, frames.universe)
     holdings, register = repair_value_basis(holdings, valuation_close, **dict(value_basis or {}))
@@ -957,7 +904,6 @@ def _versioned_super_levels(
     first = filings.assign(public_at=public).loc[filings.amendment_type.isin(["original", "restatement"])]
     first_public = first.groupby(["cik", "period"]).public_at.min()
     snapshots: dict[str, list[pd.DataFrame]] = {}
-    contributions: list[pd.DataFrame] = []
     state = pd.DataFrame()
     observed_pairs = pd.DataFrame(columns=["cik", "ticker"])
     for day, books, states in iter_public_books(
@@ -1040,9 +986,7 @@ def _versioned_super_levels(
             levels[feature].loc[:, levels[feature].columns.isin(unknown)] = np.nan
         for name, frame in levels.items():
             snapshots.setdefault(name, []).append(frame)
-        contributions.append(contrib.loc[contrib.public_at.eq(day)])
     return (
         {name: pd.concat(parts).sort_index() for name, parts in snapshots.items()},
-        pd.concat(contributions, ignore_index=True) if contributions else pd.DataFrame(),
         state,
     )

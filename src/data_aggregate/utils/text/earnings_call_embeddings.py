@@ -19,7 +19,7 @@ def completed_embedding_calls(metadata: pd.DataFrame, cache_model: str, source: 
     if metadata.empty:
         return done
     known = metadata.merge(source, on=["ticker", "quarter"], suffixes=("", "_source"))
-    known["as_of"] = pd.to_datetime(known["as_of"], errors="coerce")
+    known["as_of"] = pd.to_datetime(known["as_of"], format="ISO8601", errors="coerce")
     for key, group in known.groupby(["ticker", "quarter"], sort=False):
         seq = pd.to_numeric(group["seq"], errors="coerce")
         compatible = group["model"].eq(cache_model).all() and group["as_of"].eq(group["as_of_source"]).all()

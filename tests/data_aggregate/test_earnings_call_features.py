@@ -27,6 +27,7 @@ from src.data_aggregate.utils.text.earnings_call_features import (
     _daily_frame,
     attach_issuer_identity,
     build_earnings_call_feature_panel,
+    feature_history_scope,
     prepare_earnings_call_kpis,
     sentiment_kpis,
 )
@@ -543,19 +544,21 @@ def test_tail_daily_calculation_preserves_original_expiry() -> None:
 
 
 def test_history_scope_is_bounded_and_keeps_fiscal_predecessors() -> None:
-    from src.data_aggregate.utils.text.earnings_call_features import feature_history_scope
-
     periods = pd.period_range("2015Q1", "2026Q4", freq="Q")
     dates = periods.to_timestamp(how="end").normalize() + pd.Timedelta(days=30)
     calls = pd.DataFrame({"ticker": "A", "issuer_id": "E1", "quarter": [f"{period.year}Q{period.quarter}" for period in periods], "as_of": dates})
+    calls.loc[calls["quarter"].eq("2026Q1"), "ticker"] = "OLD_A"
+    expired = pd.DataFrame({"ticker": ["B"], "issuer_id": ["E2"], "quarter": ["2026Q1"], "as_of": [pd.Timestamp("2026-03-31")]})
+    calls = pd.concat([calls, expired], ignore_index=True)
     calendar = pd.bdate_range("2010-01-01", "2026-09-15")
     cutoff = pd.Timestamp("2026-08-15")
     scope, comparisons = feature_history_scope(calls, calendar, cutoff, 2)
     assert len(scope) < len(calls)
     assert scope["as_of"].min() >= pd.Timestamp("2026-07-30") - pd.DateOffset(years=5)
     assert scope["as_of"].max() <= calendar[-1]
-    assert comparisons == {("A", "2026Q1"), ("A", "2026Q2")}
-    print("SANITY: active emitter plus actual predecessor keeps bounded five-year history; old archive/future calls are excluded.")
+    assert set(scope["issuer_id"]) == {"E1"}
+    assert comparisons == {("OLD_A", "2026Q1"), ("A", "2026Q2")}
+    print("SANITY: bounded history excludes issuers with no active emitter and retains the actual same-issuer predecessor across a symbol change.")
 
 
 def test_cached_uncertainty_recovers_exact_word_hits() -> None:

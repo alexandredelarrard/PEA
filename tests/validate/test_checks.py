@@ -433,45 +433,48 @@ def test_timeseries_separates_a_hole_a_freeze_and_a_jump(sqlite_store, capsys):
     assert "ABSTAINED" in result.scope["frozen_scope"] and "ABSTAINED" in result.reason
 
     # -- the same kernel on a table that DOES declare which legs are rebuilt daily -------- #
+    table_config = context.config.validate.tables.cube_part_institutionals
+    table_config.daily_legs = ["f_daily_"]
     daily = _panel(
         ["AAA"],
-        f_ic_stall_to_mcap=lambda i, t: 0.5,  # flat, interior
-        f_ic_rank_to_mcap=lambda i, t: round(0.5 + 0.01 * i, 4) if i < 8 else 1.0,
-        f_ic_quarterly_holding=lambda i, t: 7.0,
+        f_daily_stall=lambda i, t: 0.5,  # flat, interior
+        f_daily_rank=lambda i, t: round(0.5 + 0.01 * i, 4) if i < 8 else 1.0,
+        f_quarterly_holding=lambda i, t: 7.0,
     )  # flat, NOT a daily leg
     sqlite_store.save(Tables.cube_part_institutionals, daily)
     frozen = check_timeseries(context, Tables.cube_part_institutionals, config=context.config)
 
     scored = {f.field: f for f in frozen.findings}
-    assert set(frozen.metrics["legs_with_frozen"]) == {"f_ic_stall_to_mcap"}, "a leg the builder does not rebuild daily is allowed to hold its value"
-    assert scored["f_ic_stall_to_mcap"].score == 7
+    assert set(frozen.metrics["legs_with_frozen"]) == {"f_daily_stall"}, "a leg the builder does not rebuild daily is allowed to hold its value"
+    assert scored["f_daily_stall"].score == 7
     # A run pinned at the series' own extreme is a saturation, not a stalled input: measured
     # on the live part, AAPL held `dollar_volume_63 == 1.0` for 2,071 sessions because it was
     # the largest dollar volume in the universe on every one of them.
-    assert set(frozen.metrics["legs_saturated"]) == {"f_ic_rank_to_mcap"}
-    assert scored["f_ic_rank_to_mcap"].score == 3
-    assert scored["f_ic_rank_to_mcap"].evidence["worst"]["days"] == len(SESSIONS) - 8
+    assert set(frozen.metrics["legs_saturated"]) == {"f_daily_rank"}
+    assert scored["f_daily_rank"].score == 3
+    assert scored["f_daily_rank"].evidence["worst"]["days"] == len(SESSIONS) - 8
 
     # -- conditional sparsity and one exact source-ineligible interval ----------------- #
     conditional = _panel(
         ["SMCI"],
-        f_ic_sig_insider_age_days=lambda i, t: 200.0 if 6 <= i < 12 else 10.0,
-        f_ic_sig_insider_price_vs_buy=lambda i, t: np.nan if 6 <= i < 12 or 22 <= i < 28 else float(i),
-        f_ic_shortvol_ratio_5d=lambda i, t: np.nan if 15 <= i < 21 else float(i),
-        f_ic_shortvol_ratio_20d=lambda i, t: np.nan if 15 <= i < 24 else float(i),
+        f_anchor_age_days=lambda i, t: 200.0 if 6 <= i < 12 else 10.0,
+        f_price_vs_anchor=lambda i, t: np.nan if 6 <= i < 12 or 22 <= i < 28 else float(i),
+        f_source_ratio_5d=lambda i, t: np.nan if 15 <= i < 21 else float(i),
+        f_source_ratio_20d=lambda i, t: np.nan if 15 <= i < 24 else float(i),
     )
     sqlite_store.replace(Tables.cube_part_institutionals, conditional)
-    context.config.validate.tables.cube_part_institutionals.known_ineligible = [
+    table_config.conditional_holes = {"f_price_vs_anchor": {"active_field": "f_anchor_age_days", "max_value": 125}}
+    table_config.known_ineligible = [
         {
             "ticker": "SMCI",
-            "fields": ["f_ic_shortvol_"],
+            "fields": ["f_source_"],
             "start": str(cast(pd.Timestamp, SESSIONS[15]).date()),
             "end": str(cast(pd.Timestamp, SESSIONS[20]).date()),
             "reason": "known source suspension in this synthetic interval",
         },
         {
             "ticker": "SMCI",
-            "fields": ["f_ic_shortvol_ratio_20d"],
+            "fields": ["f_source_ratio_20d"],
             "start": str(cast(pd.Timestamp, SESSIONS[15]).date()),
             "end": str(cast(pd.Timestamp, SESSIONS[23]).date()),
             "reason": "20-session source gap plus warm-up after the source resumed",
@@ -479,14 +482,14 @@ def test_timeseries_separates_a_hole_a_freeze_and_a_jump(sqlite_store, capsys):
     ]
     classified = check_timeseries(context, Tables.cube_part_institutionals, config=context.config)
     assert classified.status == "fail", "the active-anchor hole must remain actionable"
-    assert classified.metrics["legs_with_holes"] == ["f_ic_sig_insider_price_vs_buy"]
+    assert classified.metrics["legs_with_holes"] == ["f_price_vs_anchor"]
     assert classified.metrics["n_holes"] == 1
     assert classified.metrics["n_explained_holes"] == 3
     explained_fields = {row["leg"] for row in classified.metrics["worst_explained_holes"]}
     assert explained_fields == {
-        "f_ic_sig_insider_price_vs_buy",
-        "f_ic_shortvol_ratio_20d",
-        "f_ic_shortvol_ratio_5d",
+        "f_price_vs_anchor",
+        "f_source_ratio_20d",
+        "f_source_ratio_5d",
     }
     with capsys.disabled():
         worst_jump = by_field["f_jump"].evidence["worst"]
@@ -494,10 +497,10 @@ def test_timeseries_separates_a_hole_a_freeze_and_a_jump(sqlite_store, capsys):
         print(
             f"  timeseries: f_hole 6-row gap (score 6), f_jump z={worst_jump['z']:,.1f} "
             f"at {worst_jump['change_over_span']:.2f}x its p1-p99 span (score 3, info); "
-            f"FROZEN ABSTAINS on momentum (no daily_legs) and on institutionals files "
-            f"f_ic_stall_to_mcap at 7, f_ic_rank_to_mcap (pinned at its own max) at 3, "
+            f"FROZEN ABSTAINS on momentum (no daily_legs) and with local declarations files "
+            f"f_daily_stall at 7, f_daily_rank (pinned at its own max) at 3, "
             f"and the non-daily leg not at all; conditional holes: one anchor-active "
-            f"price_vs_buy gap still fails, while one anchor-free gap and the exact SMCI "
+            f"price_vs_anchor gap still fails, while one anchor-free gap and the exact SMCI "
             f"source interval and its field-specific rolling warm-up are explained "
             f"(never zero-filled)"
         )

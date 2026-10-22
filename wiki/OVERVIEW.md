@@ -1,5 +1,5 @@
 ---
-source_commit: def8db8534d96071d5904c792a16431e8adedd44
+source_commit: 96e77f81e5cf184b513b1e9bc4785aa68945654b
 title: Codebase Wiki — Overview
 description: Canonical internal hub for architecture, modules, flows, concepts, guides, references and backlog.
 profile: internal/standard
@@ -41,6 +41,8 @@ flowchart LR
 The narrow production boundary is deliberate: all tabular application I/O passes through [DataStore](./modules/data-store.md), while manual and scheduled orchestration invoke the same package-level CLI commands.
 
 The [modelling workflow](./flows/model-training-and-prediction.md) separates training from fresh saved-model assessment. Train retains models and basic fold IC/IR; assess reloads models and current data to produce predictions, explanations and the run-local report. The generated training ID pins all weekly downstream stages. See [model artifacts](./modules/modelling.md) and the [bounded acceptance record](./guides/testing.md#modelling-workflow-acceptance-2026-10-21).
+
+The [text-cube flow](./flows/cube-build.md#text-stage-sequence) prepares selected paragraphs once, saves sentiment and embeddings independently, then builds features from bounded saved history and a 30-calendar-day output overlap. [Text-cube acceptance](./guides/testing.md#text-cube-acceptance-2026-10-22) records the committed refactor's passing code/real-model checks separately from remaining data/model and whole-universe capacity limits.
 
 ## Task map
 

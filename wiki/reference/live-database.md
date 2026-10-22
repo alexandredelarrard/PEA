@@ -9,7 +9,8 @@ tags:
   - database
   - operations
 cube_snapshot: 2026-10-16
-source_commit: 1c2bc4283136bddddb5d61260543964a334a549c
+source_commit: 96e77f81e5cf184b513b1e9bc4785aa68945654b
+text_test_snapshot: 2026-10-22
 ---
 # Live database
 
@@ -21,6 +22,12 @@ This page records the latest migrated measurements of the local PostgreSQL volum
 > Most global measurements were taken in August 2026, with targeted institutional and identity updates through September 2026 and the earnings-call cutover on 2026-10-02. Re-query before relying on row counts, byte sizes, date maxima, or table presence. Never turn a historical measurement on this page into a hardcoded application assumption.
 
 The measured environment was PostgreSQL 16 in container `pea_db`, database `pea`, local owner role `alexandre`, backed by volume `stock_pick_strat_pgdata`. At the August snapshot it occupied roughly 19 GB and held 41 physical tables in `public`.
+
+## Disposable text-cube test state (2026-10-22)
+
+At the end of user-authorized real-model validation for commit `96e77f81`, the existing PostgreSQL database was intentionally left as a disposable test database. Only the text source/cube were narrowed: `earnings_call_sections` held 253 real calls/19,210 paragraphs across eight tickers, and `cube_part_text` held 15,639 rebuilt rows across seven output tickers. Existing sentiment/embedding tables remained, with selected calls generated or repaired. Price, issuer-identity and release tables were unchanged by that test.
+
+Before test narrowing, the same run measured 2,833,599 transcript paragraphs/33,897 calls and 1,904,833 text-cube rows. Both counts are dated observations. The user planned to replace the PostgreSQL volume later that day; this page does not establish whether that replacement has occurred. Re-query before relying on the test state or any older global counts below. Test mutations, validation scope and limitations are recorded in [text-cube acceptance](../guides/testing.md#text-cube-acceptance-2026-10-22) and the local ignored `reports/validate/2026-10-22-text-cube-flow/`.
 
 ## How to re-measure
 

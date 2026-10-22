@@ -5,7 +5,7 @@ type: flow
 tags:
   - wiki
   - flow
-source_commit: 54882b265efce2bf18c4ff9c40a89c6d8530c589
+source_commit: 96e77f81e5cf184b513b1e9bc4785aa68945654b
 ---
 # Cube build
 
@@ -60,4 +60,4 @@ A missing price-basis gate can propagate adjustment seams into returns, betas, a
 
 ## Text stage sequence
 
-[StepCubeText](../../src/data_aggregate/transformers/step_cube_text.py) runs calendar → plan_window → prepare_sections → run_sentiments → run_embeddings → run_features. Compact source keys are compared independently with each saved model table across history; selected paragraphs are prepared once. Features then read bounded saved metrics/vectors and tail-only price availability. The 30-calendar-day output rewrite is separate from the five-year call history needed by the existing history scores. Old changes require an explicit full feature rebuild; it reuses valid sentiment/embedding outputs.
+[StepCubeText](../../src/data_aggregate/transformers/step_cube_text.py) runs calendar → plan_window → prepare_sections → run_sentiments → run_embeddings → run_features. Compact source keys are compared independently with each saved model table across history; selected paragraphs are prepared once. Features then read bounded saved metrics/vectors and tail-only price availability. The 30-calendar-day output rewrite is separate from the five-year call history needed by the existing history scores. History is limited to issuers with active output calls, preserving their actual fiscal predecessors across ticker changes. Stored embedding date-only and timestamp forms are normalized before completion and feature joins. See [text-cube acceptance](../guides/testing.md#text-cube-acceptance-2026-10-22) for the measured real-model, retry and full/daily checks. Old changes require an explicit full feature rebuild; it reuses valid sentiment/embedding outputs.

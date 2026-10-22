@@ -7,7 +7,7 @@ tags:
   - guide
   - testing
   - validation
-source_commit: 18ae7b6b9cbdb71a7e1c216b7e0e94d02cbab677
+source_commit: 96e77f81e5cf184b513b1e9bc4785aa68945654b
 ---
 # Testing and validation
 
@@ -279,3 +279,26 @@ Historical current-universe/GICS/static-peer/vendor-vintage limitations and 51 u
 [Independent modelling checks](../../src/validate/checks/modelling.py) reproduce tail membership, finite-pair rank correlation, pooled/rolling summaries and native MAE/bias/RMSE/counts without importing producer helpers. The exact persisted error floats determine display ordering after their arithmetic is independently reconciled, so independent rounding cannot reorder near ties. [Validator corruption tests](../../tests/validate/test_modelling.py) reject early outcome filtering, wrong summaries/counts, missing sessions, wrong ticker groups/order and altered native history bytes. [The known-coefficient integration](../../tests/modelling/test_assessment_evaluation.py) checks original models, one main scoring call/member, zero inference added by errors/reporting, and fresh replacement of corrupted prior scores without estimator fitting.
 
 Validation for this change uses exact affected pytest nodes only. Operational acceptance reuses compatible saved synthetic models at h60 / three folds / all three families, with fitting and live calls denied. Larger multi-horizon/ticker fixtures exercise chart capacity and control coverage without training. These tests establish functional and mathematical behavior; they do not measure live financial performance, upstream PIT correctness or generalization.
+
+## Text-cube acceptance 2026-10-22
+
+The committed refactor is at `96e77f81e5cf184b513b1e9bc4785aa68945654b`. Its source/config/test content matches the reviewed 24-file candidate `b09669091b48c436e96906fe953ee6c621e05316d037a409534b8c2cec92517b`. The [text step](../../src/data_aggregate/transformers/step_cube_text.py) runs shared preparation and independent sentiment/embedding saves before bounded feature creation. The [module contract](../modules/data-aggregate.md#earnings-call-feature-contract) describes eligibility, partial calls and the 30-calendar-day output overlap.
+
+| Check | Measured result |
+| --- | --- |
+| Integrated regression | 358 passed, six skipped, zero failures/errors; five existing numeric warnings and zero live-guard trips. Skips are two unrelated opt-in live tests and four cases requiring the absent assembled cube. All 37 aggregate outputs/1,767 columns stay identical without fingerprint changes. |
+| Real configured models and PostgreSQL | 253 calls/19,210 paragraphs across eight tickers, including complete stored AAPL/ADP/AMZN histories and real partial calls. FinBERT runs on CPU; actual OpenAI embeddings have 1,536 dimensions. No model outputs are mocked in this integration. |
+| Eligibility and output | 251 calls pass shared text quality; two explained rejects remain pending. Dated issuer identity separately excludes one valid-text call, leaving 250 feature-eligible calls and 15,639 daily rows across seven tickers. |
+| Independent formulas and PIT | All 12 features, keys, NULL masks and 180,372 supported values match independently at the existing float32 precision, without rtol/atol. Tests cover prior-only history, fiscal gaps, matching coverage, real prices/calendar, lag and original 66-session expiry. |
+| Recovery and incrementality | Actual cold/full/daily runs, eight missed sessions, incomplete vectors with API unavailable, real embedding retry and missing sentiment-tag repair pass. Valid partner outputs are reused; unavailable sections retain NULL scores/zero words. Full/daily equality uses the same saved model outputs. |
+| Final warm scope and speed | Four active issuers, 62 bounded history calls and one payload read of 2,258 vectors versus 3,806 before the scope fix. Three warm runs take 9.642/10.277/10.525 seconds, with zero model calls; median 10.3 seconds. Shared-machine/cache effects limit timing attribution; the 40.67% row reduction is directly measured. |
+| Process memory | Final same-cache full run: 85.160 seconds, sampled peak working set 2,530,570,240 bytes; OS lifetime peak 2,586,226,688 bytes. Maximum final warm sampled working set is 511,156,224 bytes. These cohort measurements do not certify full-archive capacity. |
+| Reviews and static checks | Correctness and Ponytail reviews clear, no open product finding. All 22 changed Python files pass Ruff/format; ten application modules pass Pyright. |
+
+Production testing found two defects and preserved their RED/GREEN evidence. Mixed stored ISO dates/timestamps could become NaT and repeat completed embeddings; completion and feature joins now parse ISO8601 explicitly. Daily history also included expired unrelated issuers; [feature_history_scope](../../src/data_aggregate/utils/text/earnings_call_features.py) now limits dated history to active issuer IDs while preserving actual fiscal predecessors and old symbols. [Public step regressions](../../tests/data_aggregate/test_step_cube_text.py) cover both date-format orders with exact features and no repeated inference; the [history-scope test](../../tests/data_aggregate/test_earnings_call_features.py) includes an expired second issuer and a renamed predecessor.
+
+Raw DOUBLE transport differences between COPY and append are retained as diagnostics: the declared float32 feature values are exact. A real repeated API request also returned slightly different valid vectors; independently calculated features match the corresponding saved vectors. Neither observation caused a product precision cast, tolerance change, baseline update or recovery abstraction.
+
+The refactor/code result is PASS. Broader data/model readiness remains CONDITIONAL: native validators retain nine high historical/post-2022 PSI alerts and low prepared-share findings, including some mostly administrative AMZN prepared text. Missing-prior-quarter and 66-session expiry gaps are explained, not filled. Generic coverage compares the deliberately narrow cohort with 491 price issuers. Clip and generic leakage checks abstain for missing applicable declarations; independent PIT arithmetic is separate. Full-universe cold backfill capacity and original first-publication timestamps remain unverified; the original full-source domain scan was stopped after 2,074.38 seconds without a result. No threshold was changed to remove these findings.
+
+Exact commands, raw validator exits/findings, source/data hashes, independent calculations and HTML are retained in the local ignored run `reports/validate/2026-10-22-text-cube-flow/`. The user explicitly authorized paid model calls and disposable PostgreSQL mutation for this run. Its final source/cube state is a dated [test-database observation](../reference/live-database.md#disposable-text-cube-test-state-2026-10-22), not a replacement full-universe census.

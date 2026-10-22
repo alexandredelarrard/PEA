@@ -1,7 +1,7 @@
 """Dedicated earnings-call coverage, source-grain, split-quality and feature-quality validation.
 
-Reads `earnings_call_sections` at its paragraph grain (projected, 25 tickers per read), splits
-every call with `src/utils/earnings_call_split.split_call` and applies the shared quality gate,
+Reads `earnings_call_sections` at its paragraph grain (projected, 25 tickers per read), cleans
+metadata and parentheses, splits every call and applies the shared quality gate,
 so the coverage it reports is the coverage the features can use.
 """
 
@@ -19,7 +19,7 @@ from src.context import Context
 from src.data_store.schema import Table, Tables, resolve
 from src.utils.string import pad_cik_series
 from src.utils.text.earnings_call_split import split_call
-from src.utils.text.text_metrics import assess_earnings_call_sections
+from src.utils.text.text_metrics import assess_earnings_call_sections, clean_earnings_call_paragraphs
 from src.utils.universe import load_universe_tickers
 from src.validate.result import CheckResult, Finding, full_table_only
 
@@ -265,8 +265,9 @@ def _release_dates_by_ticker(releases: pd.DataFrame | None) -> dict[str, list[pd
 
 
 def _rejection_reason(scan: _CallScan, call: pd.DataFrame) -> str | None:
-    """Apply the shared eligible-call gate while retaining raw parser diagnostics."""
-    split = split_call(cast(list[dict[str, object]], call[["paragraph", "speaker", "content"]].to_dict("records")))
+    """Apply the shared paragraph cleaning, split diagnostics and eligible-call gate."""
+    paragraphs, _ = clean_earnings_call_paragraphs(cast(list[dict[str, object]], call[["paragraph", "speaker", "content"]].to_dict("records")))
+    split = split_call(paragraphs)
     scan.status_counts[split.status] += 1
     dates = pd.to_datetime(call["as_of"], errors="coerce")
     if dates.isna().any() or dates.nunique() != 1:

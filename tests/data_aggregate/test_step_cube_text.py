@@ -87,7 +87,7 @@ class ReplayStore:
         return [] if rows.empty else rows[column].dropna().unique().tolist()
 
     def columns(self, table: Any) -> list[str]:
-        return list(self.vector_rows) if table == Tables.earning_calls_embedding else self.base.columns(table)
+        return cast(list[str], list(self.vector_rows)) if table == Tables.earning_calls_embedding else self.base.columns(table)
 
     def exists(self, table: Any) -> bool:
         return not self.vector_rows.empty if table == Tables.earning_calls_embedding else self.base.exists(table)
@@ -166,6 +166,58 @@ def prepare_step(context: Context, config: DictConfig) -> tuple[StepCubeText, An
     return step, plan, step.prepare_sections(plan)
 
 
+def test_preparation_cleans_both_model_inputs_and_preserves_financial_text(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    context, config, store = seeded_case(sqlite_store, ["JPM_2024Q3"])
+    _, engine, embedding = configure_models(monkeypatch)
+    _, _, expected = prepare_step(context, config)
+    paragraphs = store.load(Tables.earnings_call_sections)
+    assert paragraphs is not None
+    paragraphs["paragraph"] += 3
+    paragraphs["content"] = paragraphs["content"].str.replace("$12.9 billion", "$12.9 billion (TranscriberNote (nested))", regex=False)
+    metadata = pd.concat([paragraphs.iloc[[0]]] * 3, ignore_index=True)
+    metadata["paragraph"] = [1, 2, 3]
+    metadata["speaker"] = ["TRANSCRIPT SPONSOR", "Executives", "Analysts"]
+    metadata["content"] = ["TranscriptProviderNote", "RosterMarkerName Chief Executive Officer", "AnalystRosterName Big Bank"]
+    store.replace(Tables.earnings_call_sections, pd.concat([metadata, paragraphs], ignore_index=True))
+    with patch.object(store, "load", wraps=store.load) as reads:
+        step, plan, prepared = prepare_step(context, config)
+    pd.testing.assert_frame_equal(expected, prepared, check_exact=True)
+    assert len([read for read in reads.call_args_list if read.args[0] == Tables.earnings_call_sections]) == 2
+    step.run_sentiments(prepared, plan)
+    step.run_embeddings(prepared, plan)
+    model_texts = [text for call in engine.score_texts.call_args_list + embedding.call_args_list for text in call.args[0]]
+    assert model_texts and any("$12.9 billion" in text for text in model_texts)
+    assert all(
+        not any(marker in text for marker in ("TranscriberNote", "RosterMarkerName", "AnalystRosterName", "TranscriptProviderNote"))
+        for text in model_texts
+    )
+    print(
+        "SANITY: one shared paragraph read removes rosters and nested notes before both models; JPM's financial results and section metrics survive exactly."
+    )
+
+
+def test_previous_cleaning_version_retries_both_models(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    context, config, store = seeded_case(sqlite_store, ["JPM_2024Q3"])
+    factory, _, embedding = configure_models(monkeypatch)
+    step = StepCubeText(context, config)
+    step.run(full=True)
+    scores = store.load(Tables.earnings_call_sentiment)
+    assert scores is not None
+    store.save(Tables.earnings_call_sentiment, scores.assign(model="yiyanghkust/finbert-tone:speaker-clean-v2"))
+    store.vector_rows["model"] = "text-embedding-3-small:speaker-clean-v2"
+    plan = StepCubeText(context, config).plan_window(step_text.load_trading_calendar(context.store), full=False)
+    assert plan.sentiment_work == plan.embedding_work == {("JPM", "2024Q3")}
+    assert not plan.eligible
+    factory.reset_mock()
+    embedding.reset_mock()
+    step.run(full=True)
+    assert factory.called and embedding.called
+    scores = store.load(Tables.earnings_call_sentiment)
+    assert scores is not None and scores["model"].str.endswith(":speaker-clean-v3").all()
+    assert store.vector_rows["model"].str.endswith(":speaker-clean-v3").all()
+    print("SANITY: old cleaning results are recomputed independently in both model stages; stale scores/vectors cannot bypass the new text cleaning.")
+
+
 @pytest.mark.parametrize("date_only", ["ADP", "JPM"])
 def test_mixed_saved_date_formats_do_not_repeat_inference(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, date_only: str) -> None:
     context, config, store = seeded_case(sqlite_store, ["ADP_2026Q3", "JPM_2024Q3"])
@@ -179,7 +231,7 @@ def test_mixed_saved_date_formats_do_not_repeat_inference(sqlite_store: DataStor
     factory.reset_mock()
     embedding.reset_mock()
     step = StepCubeText(context, config)
-    plan = step.plan_window(step_text.load_trading_calendar(store), full=True)
+    plan = step.plan_window(step_text.load_trading_calendar(context.store), full=True)
     assert not plan.embedding_work
     step.run(full=True)
     after = store.load(Tables.cube_part_text)
@@ -257,7 +309,7 @@ def test_incomplete_embeddings_stay_pending_without_emitting_features(
     factory.reset_mock()
     embedding.reset_mock()
     step = StepCubeText(context, config)
-    assert ("ADP", "2026Q3") in step.plan_window(step_text.load_trading_calendar(store), full=full).embedding_work
+    assert ("ADP", "2026Q3") in step.plan_window(step_text.load_trading_calendar(context.store), full=full).embedding_work
     step.run(full=full)
     after = store.load(Tables.cube_part_text)
     assert after is not None
@@ -304,8 +356,8 @@ def test_stage_order_and_configured_models(sqlite_store: DataStore, monkeypatch:
     factory.assert_called_once_with("fixture/alternate-tone")
     assert embedding.call_args.kwargs == {"model": "fixture/alternate-embedding", "batch_size": 128, "max_chars": 28000}
     scores = store.load(Tables.earnings_call_sentiment)
-    assert scores is not None and scores["model"].eq("fixture/alternate-tone:speaker-clean-v2").all()
-    assert store.vector_rows["model"].eq("fixture/alternate-embedding:speaker-clean-v2").all()
+    assert scores is not None and scores["model"].eq("fixture/alternate-tone:speaker-clean-v3").all()
+    assert store.vector_rows["model"].eq("fixture/alternate-embedding:speaker-clean-v3").all()
     print("SANITY: direct stage order, late price read and real model YAML values reach their factory/service and cache identities.")
 
 

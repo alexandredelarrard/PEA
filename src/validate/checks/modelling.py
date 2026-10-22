@@ -6,11 +6,15 @@ reads use context.store. The check never fits, writes application tables or prom
 
 from __future__ import annotations
 
+import base64
 import gc
+import gzip
 import hashlib
 import json
 import pickle
 import re
+import zlib
+from itertools import product
 from pathlib import Path
 from typing import Any, cast
 
@@ -93,12 +97,17 @@ def _reconcile_configuration(config: DictConfig, training: dict, cutoff: dict, f
     )
 
 
-def _reconcile_metrics(output: Path, horizon: int, models: list[str], window: int, findings: list[Finding]) -> dict[str, Any]:
+def _reconcile_metrics(
+    output: Path, horizon: int, models: list[str], window: int, findings: list[Finding], *, size: int | None = None
+) -> dict[str, Any]:
     predictions, saved, summaries = (
         pd.read_parquet(output / "predictions.parquet"),
-        pd.read_parquet(output / "daily.parquet"),
-        _read(output / "metrics.json"),
+        pd.read_parquet(output / ("daily.parquet" if size is None else "universe_daily.parquet")),
+        _read(output / ("metrics.json" if size is None else "universe_metrics.json")),
     )
+    if size is not None:
+        saved = saved.loc[saved.universe_size == str(size)]
+        summaries = {population: values[str(size)] for population, values in summaries.items()}
     measured = {}
     _finding(findings, set(saved.horizon) == {horizon}, "Mixed daily metric horizons", "Only the declared horizon", horizon=horizon)
     _finding(
@@ -115,7 +124,12 @@ def _reconcile_metrics(output: Path, horizon: int, models: list[str], window: in
         sessions = pd.DatetimeIndex(sorted(panel.date.unique())).as_unit("ns")
         measured[population] = {}
         for model in models:
-            expected = independent_daily(panel, model).reindex(sessions)
+            selected = panel
+            if size is not None:
+                ordered = panel.loc[np.isfinite(panel[model])].sort_values(["date", model, "ticker"])
+                dates = ordered.groupby("date")
+                selected = pd.concat([dates.head(size), dates.tail(size)]).drop_duplicates(["date", "ticker"])
+            expected = independent_daily(selected, model).reindex(sessions)
             actual = saved.loc[(saved.population == population) & (saved.model == model)].sort_values("date")
             if actual.date.duplicated().any() or not np.array_equal(
                 actual.date.to_numpy(dtype="datetime64[ns]"), sessions.to_numpy(dtype="datetime64[ns]")
@@ -130,8 +144,8 @@ def _reconcile_metrics(output: Path, horizon: int, models: list[str], window: in
                     model=model,
                 )
                 continue
-            finite = np.isfinite(panel.y) & np.isfinite(panel[model])
-            paired = panel.loc[finite]
+            finite = np.isfinite(selected.y) & np.isfinite(selected[model])
+            paired = selected.loc[finite]
             rolling = expected.rolling(window, min_periods=window).mean()
             dispersion = expected.rolling(window, min_periods=window).std(ddof=0)
             ratio = rolling / dispersion.where(dispersion > 0) * np.sqrt(252 / horizon)
@@ -140,7 +154,7 @@ def _reconcile_metrics(output: Path, horizon: int, models: list[str], window: in
                 "rolling_ic": rolling,
                 "rolling_ir": ratio,
                 "paired": paired.groupby("date").size().reindex(sessions, fill_value=0),
-                "universe": panel.groupby("date").size().reindex(sessions, fill_value=0),
+                "universe": selected.groupby("date").size().reindex(sessions, fill_value=0),
                 "prediction_unique": paired.groupby("date")[model].nunique().reindex(sessions, fill_value=0),
                 "target_unique": paired.groupby("date").y.nunique().reindex(sessions, fill_value=0),
             }
@@ -170,6 +184,132 @@ def _reconcile_metrics(output: Path, horizon: int, models: list[str], window: in
                     model=model,
                 )
     return measured
+
+
+def _independent_native_errors(predictions: pd.DataFrame, families: list[str]) -> pd.DataFrame:
+    """Reduce finite native/target residuals directly, without producer error helpers."""
+    rows = []
+    populations = predictions.assign(population=np.where(predictions.fold > 0, "validation", "backtest"))
+    for model in families:
+        for (population, ticker), group in populations.groupby(["population", "ticker"]):
+            raw, target = group[f"raw_{model}"].to_numpy(float), group.y.to_numpy(float)
+            paired = np.isfinite(raw) & np.isfinite(target)
+            residual = raw[paired] - target[paired]
+            count = len(residual)
+            rows.append(
+                {
+                    "population": population,
+                    "ticker": ticker,
+                    "model": model,
+                    "n": count,
+                    "mae": np.abs(residual).sum() / count if count else np.nan,
+                    "bias": residual.sum() / count if count else np.nan,
+                    "rmse": np.sqrt(np.dot(residual, residual) / count) if count else np.nan,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def _native_error_checks(output: Path, families: list[str], findings: list[Finding]) -> None:
+    expected = _independent_native_errors(pd.read_parquet(output / "predictions.parquet"), families)
+    saved = pd.read_parquet(output / "ticker_errors.parquet")
+    keys = ["population", "model", "ticker"]
+    actual = saved.set_index(keys).sort_index()
+    wanted = expected.set_index(keys).sort_index()
+    inventory = actual.index.equals(wanted.index) and actual.index.is_unique
+    _finding(findings, inventory, "Native error ticker/model/sample inventory differs", "Every scored title, including unsupported native errors")
+    if inventory:
+        _finding(
+            findings,
+            np.allclose(actual[["n", "mae", "bias", "rmse"]], wanted[["n", "mae", "bias", "rmse"]], equal_nan=True, atol=1e-10),
+            "Native MAE/bias/RMSE/count differs",
+            "Independent finite raw prediction/mature-target residuals",
+        )
+
+
+def _native_payload_checks(run: Path, horizon: int, families: list[str], native: dict, text: str, findings: list[Finding]) -> None:
+    """Reconcile display membership and lossless histories independently; restore data for manifest hashing."""
+    predictions = pd.read_parquet(run / f"assessment/h{horizon}/predictions.parquet")
+    # Error arithmetic is reconciled first; use its stored floats to avoid changing near ties by independent rounding.
+    errors = pd.read_parquet(run / f"assessment/h{horizon}/ticker_errors.parquet")
+    if set(native) != {"validation", "backtest"} or any(set(models) != set(families) for models in native.values()):
+        raise ValueError("HTML native chart sample/model inventory differs")
+    for population, models in native.items():
+        sample = predictions.loc[(predictions.fold > 0) == (population == "validation")]
+        sessions = sample.groupby("date").fold.first()
+        indexed = sample.set_index(["ticker", "date"])
+        for model, meta in models.items():
+            eligible = errors.loc[(errors.population == population) & (errors.model == model) & np.isfinite(errors.rmse) & (errors.n > 0)]
+            records = sorted(eligible.to_dict("records"), key=lambda row: (row["rmse"], row["ticker"]))
+            worst = list(reversed(records[-100:]))
+            best = records[:50]
+            selection = {row["ticker"]: {**row, "group": "worst"} for row in worst}
+            for row in best:
+                selection.setdefault(row["ticker"], {**row, "group": "best"})
+            wanted = list(selection.values())
+            tickers = [row["ticker"] for row in meta["tickers"]]
+            _finding(
+                findings,
+                len(set(tickers)) == len(tickers) == min(len(eligible), 150),
+                "HTML error-display population size differs",
+                "Exactly min(eligible titles,150) distinct display titles",
+                horizon=horizon,
+                model=model,
+                population=population,
+            )
+            membership = tickers == list(selection)
+            _finding(
+                findings,
+                membership,
+                "HTML error-display selection/order differs",
+                "Independent per-model/horizon/sample100worst then50best, deduplicated",
+                horizon=horizon,
+                model=model,
+                population=population,
+            )
+            if not membership:
+                continue
+            statistics = all(
+                row["group"] == target["group"] and all(np.isclose(row[name], target[name], atol=1e-10) for name in ("n", "mae", "bias", "rmse"))
+                for row, target in zip(meta["tickers"], wanted, strict=True)
+            )
+            dates_match = np.array_equal(
+                pd.to_datetime(meta["date"]).to_numpy(dtype="datetime64[ns]"), sessions.index.to_numpy(dtype="datetime64[ns]")
+            )
+            _finding(
+                findings,
+                statistics and dates_match and meta["fold"] == sessions.tolist() and meta["eligible_tickers"] == len(eligible),
+                "HTML native statistics/dates/folds differ",
+                "Exact comparable-date errors and original scoring sessions",
+                horizon=horizon,
+                model=model,
+                population=population,
+            )
+            block = f"native-{horizon}-{population}-{model}"
+            _finding(findings, meta["block"] == block, "HTML native block identity differs", "One block for the exact model/horizon/sample")
+            match = re.search(r'<script id="' + re.escape(block) + r'" type="application/octet-stream">(.*?)</script>', text, re.S)
+            if match is None:
+                raise ValueError("Missing native history block")
+            encoded = match.group(1)
+            values = np.frombuffer(gzip.decompress(base64.b64decode(encoded, validate=True)), dtype="<f8")
+            expected = []
+            for ticker in selection:
+                rows = indexed.loc[ticker].reindex(sessions.index)
+                raw, target = rows[f"raw_{model}"].to_numpy(float), rows.y.to_numpy(float)
+                paired = np.isfinite(raw) & np.isfinite(target)
+                expected.extend([np.where(paired, raw, np.nan), np.where(paired, target, np.nan)])
+            wanted_values = np.asarray(expected, dtype=float).ravel()
+            _finding(
+                findings,
+                values.shape == wanted_values.shape and np.allclose(values, wanted_values, equal_nan=True, atol=0, rtol=0),
+                "HTML native histories differ",
+                "All daily finite comparisons, missing slots and no unselected ticker histories",
+                horizon=horizon,
+                model=model,
+                population=population,
+            )
+            meta["data"] = encoded
+            meta.pop("block")
 
 
 def _calendar_ends(calendar: pd.DatetimeIndex, horizon: int) -> pd.Series:
@@ -421,7 +561,7 @@ def _model_checks(
         window = _read(analysis / "metadata.json")
         sample = pd.read_parquet(analysis / "sample.parquet")
         scores = pd.read_parquet(analysis / "scores.parquet")
-        columns = ["date", "ticker", "fold", *training["model_types"], "ensemble"]
+        columns = ["date", "ticker", "fold", *training["model_types"], "ensemble", *(f"raw_{name}" for name in training["model_types"])]
         final = predictions.loc[predictions.fold == fold, columns].reset_index(drop=True)
         _finding(
             findings,
@@ -510,8 +650,8 @@ def _model_checks(
                 z[finite] = (raw[finite] - raw[finite].mean()) / std
             _finding(
                 findings,
-                np.allclose(z, scored[name], equal_nan=True, atol=1e-8),
-                "Saved score differs from reloaded native prediction",
+                np.allclose(z, scored[name], equal_nan=True, atol=1e-8) and np.allclose(raw, scored[f"raw_{name}"], equal_nan=True, atol=1e-8),
+                "Saved normalized/native score differs from reloaded native prediction",
                 "Normalize all finite feature-only predictions before reading targets",
                 horizon=horizon,
                 fold=fold,
@@ -603,6 +743,33 @@ def _full_history_checks(context: Context, run: Path, training: dict, cutoff: di
     return coverage
 
 
+def _effect_payload_checks(output: Path, families: list[str], original_folds: list[int], effects: dict, findings: list[Finding]) -> None:
+    folds = {"0", *map(str, original_folds)}
+    for family in families:
+        _finding(
+            findings,
+            set(effects[family]) == folds,
+            "Report dropped an original-fold curve",
+            "Every original and cutoff variable-effect curve",
+            family=family,
+        )
+    for family, fold in product(families, folds):
+        expected = _read(output / f"fold{fold}/{family}/curves.json")
+        for values in expected["features"].values():
+            if fold == "0":
+                values["scatter"] = {key: values["scatter"][key] for key in ("x", "shap", "raw_x") if key in values["scatter"]}
+            else:
+                values.pop("scatter", None)
+        _finding(
+            findings,
+            expected == effects[family][fold],
+            "HTML variable effects differ from saved evidence",
+            "Unmodified retained-variable curves/importance and displayed sample",
+            family=family,
+            fold=fold,
+        )
+
+
 def _report_checks(run: Path, training: dict, state: dict, findings: list[Finding]) -> None:
     _inventory(run, {"report.html": state["report_file"]})
     text = (run / "report.html").read_text(encoding="utf-8")
@@ -615,39 +782,28 @@ def _report_checks(run: Path, training: dict, state: dict, findings: list[Findin
         payload["run_id"] == training["run_id"]
         and payload["horizons"] == training["horizons"]
         and payload["families"] == training["model_types"]
-        and text.count("<section ") == 2,
+        and text.count("<section ") == 3,
         "Report run/chart scope differs",
-        "Named run with every configured horizon/family and exactly two sections",
+        "Named run with every configured horizon/family and exactly three sections",
     )
     for horizon in training["horizons"]:
         _temporal_payload_checks(run, horizon, training["model_types"], payload["analysis"][str(horizon)]["temporal"], findings)
-        effects = payload["analysis"][str(horizon)]["effects"]
-        for family in training["model_types"]:
-            _finding(
-                findings,
-                set(effects[family]) == {"0", *map(str, training["folds"][str(horizon)])},
-                "Report dropped an original-fold curve",
-                "Every declared original fold curve and cutoff curve",
-                horizon=horizon,
-                family=family,
-            )
-            for fold in effects[family]:
-                expected = _read(run / f"assessment/h{horizon}/fold{fold}/{family}/curves.json")
-                for values in expected["features"].values():
-                    if fold == "0":
-                        values["scatter"] = {key: values["scatter"][key] for key in ("x", "shap", "raw_x") if key in values["scatter"]}
-                    else:
-                        values.pop("scatter", None)
-                _finding(
-                    findings,
-                    expected == effects[family][fold],
-                    "HTML variable effects differ from saved evidence",
-                    "Unmodified retained-variable curves/importance and displayed sample",
-                    horizon=horizon,
-                    family=family,
-                    fold=fold,
-                )
+        _native_payload_checks(run, horizon, training["model_types"], payload["analysis"][str(horizon)]["native"], text, findings)
+        _effect_payload_checks(
+            run / f"assessment/h{horizon}",
+            training["model_types"],
+            training["folds"][str(horizon)],
+            payload["analysis"][str(horizon)]["effects"],
+            findings,
+        )
     manifest = _read(run / "assessment/report_manifest.json")
+    charts = ["temporal", "target_prediction", "importance", "ticker_rmse", "effect"]
+    _finding(
+        findings,
+        manifest["plot_areas"] == charts and all(text.count(f'id="{name}"') == 1 for name in charts),
+        "Report chart inventory differs",
+        "Five distinct required chart areas",
+    )
     expected_hash = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
     _finding(
         findings,
@@ -658,26 +814,34 @@ def _report_checks(run: Path, training: dict, state: dict, findings: list[Findin
 
 
 def _temporal_payload_checks(run: Path, horizon: int, families: list[str], temporal: dict, findings: list[Finding]) -> None:
-    daily = pd.read_parquet(run / f"assessment/h{horizon}/daily.parquet")
-    if set(temporal) != {"validation", "backtest"} or any(set(series) != {*families, "ensemble"} for series in temporal.values()):
-        raise ValueError("HTML dropped a temporal population/model")
-    for population, series in temporal.items():
-        for model, values in series.items():
-            rows = daily.loc[(daily.population == population) & (daily.model == model)].sort_values("date")
-            dates_match = np.array_equal(pd.to_datetime(values["date"]).to_numpy(dtype="datetime64[ns]"), rows.date.to_numpy(dtype="datetime64[ns]"))
-            numbers_match = all(
-                np.allclose(np.asarray(values[name], dtype=float), rows[name], equal_nan=True)
-                for name in ("ic", "rolling_ic", "rolling_ir", "paired", "universe")
-            )
-            _finding(
-                findings,
-                dates_match and numbers_match,
-                "HTML temporal series differs from saved evidence",
-                "Every saved date/statistic/support value",
-                horizon=horizon,
-                population=population,
-                model=model,
-            )
+    output = run / f"assessment/h{horizon}"
+    daily = pd.concat(
+        [pd.read_parquet(output / "daily.parquet").assign(universe_size="all"), pd.read_parquet(output / "universe_daily.parquet")], ignore_index=True
+    )
+    summaries, tails = _read(output / "metrics.json"), _read(output / "universe_metrics.json")
+    expected = {(p, u, m) for p in ("validation", "backtest") for u in ("all", "10", "50", "100") for m in [*families, "ensemble"]}
+    actual = {(p, u, m) for p, cohorts in temporal.items() for u, models in cohorts.items() for m in models}
+    if actual != expected or set(daily.groupby(["population", "universe_size", "model"]).groups) != expected:
+        raise ValueError("HTML temporal population/cohort/model inventory differs")
+    for (population, size, model), group in daily.groupby(["population", "universe_size", "model"]):
+        values, rows = temporal[population][size][model], group.sort_values("date")
+        dates_match = np.array_equal(pd.to_datetime(values["date"]).to_numpy(dtype="datetime64[ns]"), rows.date.to_numpy(dtype="datetime64[ns]"))
+        numbers_match = all(
+            np.asarray(values[name]).shape == rows[name].shape and np.allclose(np.asarray(values[name], dtype=float), rows[name], equal_nan=True)
+            for name in ("fold", "ic", "rolling_ic", "rolling_ir", "paired", "universe")
+        )
+        summary = summaries[population][model] if size == "all" else tails[population][size][model]
+        summary_match = values["summary"] == {name: summary[name] for name in ("mean_ic", "ic_std", "ic_ir", "n_days")}
+        _finding(
+            findings,
+            dates_match and numbers_match and summary_match,
+            "HTML temporal series/summary differs from saved evidence",
+            "Every selected cohort's saved date/statistic/support/global summary",
+            horizon=horizon,
+            population=population,
+            universe=size,
+            model=model,
+        )
 
 
 def check_modelling(context: Context, *, out: str | Path, config: DictConfig) -> CheckResult:
@@ -715,13 +879,18 @@ def check_modelling(context: Context, *, out: str | Path, config: DictConfig) ->
             output = run / f"assessment/h{horizon}"
             models = [*training["model_types"], "ensemble"]
             metrics[str(horizon)] = _reconcile_metrics(output, horizon, models, int(config.model.diagnostics.rolling_window), findings)
+            metrics[f"{horizon}_universes"] = {
+                str(size): _reconcile_metrics(output, horizon, models, int(config.model.diagnostics.rolling_window), findings, size=size)
+                for size in (10, 50, 100)
+            }
+            _native_error_checks(output, training["model_types"], findings)
             rows += _source_horizon(context, run, training, cutoff, horizon, calendar, int(config.model.assessment.read_chunksize), findings)
             explained += _model_checks(context, run, training, cutoff, horizon, state, config, findings)
             context.log.info("Independent h%s reconciliation: metrics, source targets, original models and effects complete", horizon)
         if "full_history" in training:
             metrics["full_history"] = _full_history_checks(context, run, training, cutoff, config, findings)
         _report_checks(run, training, state, findings)
-    except (OSError, ValueError, KeyError, TypeError, IndexError, AssertionError, pickle.UnpicklingError) as exc:
+    except (OSError, ValueError, KeyError, TypeError, IndexError, AssertionError, EOFError, zlib.error, pickle.UnpicklingError) as exc:
         findings.append(
             Finding.at(8, f"{type(exc).__name__}: {exc}", "Complete, matching saved-run artifacts and independently reproducible evidence")
         )

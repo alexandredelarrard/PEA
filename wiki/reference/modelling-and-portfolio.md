@@ -7,7 +7,7 @@ tags:
   - reference
   - modelling
   - portfolio
-source_commit: 2c9504c51e3c1d230d3d3623ff03eb8cffc4d11a
+source_commit: 18ae7b6b9cbdb71a7e1c216b7e0e94d02cbab677
 ---
 # Modelling, strategies, and portfolio
 
@@ -57,7 +57,7 @@ The weekly [DAG](../../src/dags/dag_modelling.py) runs four tasks under the safe
 | Task | Method | Contract |
 | --- | --- | --- |
 | train_model | [StepLongShort.run_train()](../../src/modelling/steps/step_long_short.py); run() delegates here | Save five original purged folds per model/horizon, then fresh cutoff refits. Fixed pools and parameters; no feature search. |
-| backtest_modelling | [StepAssessLongShort.run()](../../src/modelling/steps/step_assess_long_short.py) | Read saved models only; save per-member/ensemble IC/IR, SHAP or linear contributions, cutoff PDP and the two-section report. |
+| backtest_modelling | [StepAssessLongShort.run()](../../src/modelling/steps/step_assess_long_short.py) | Read saved models only; save per-member/ensemble IC/IR, SHAP or linear contributions, cutoff PDP and the five-chart offline report. |
 | backtest_portfolio | [StepPortfolio.run()](../../src/portfolio/step_portfolio.py) | Use the same run's cutoff members and dated portfolio output. Existing rules, dates and costs remain configured. |
 | full_train | StepLongShort.run_train(full_history=True) | Reuse that run's saved fold counts without CV; refit all latest mature labels and atomically publish a complete production generation. |
 

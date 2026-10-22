@@ -5,7 +5,7 @@ type: module
 tags:
   - wiki
   - module
-source_commit: 2c9504c51e3c1d230d3d3623ff03eb8cffc4d11a
+source_commit: 18ae7b6b9cbdb71a7e1c216b7e0e94d02cbab677
 ---
 # Modelling
 
@@ -50,6 +50,7 @@ Under `model.assessment.output_dir` (normally output/modelling_backtest), each f
 - folds/h<h>/fold<n>/: original models and minimal fold audit; cutoff/: fresh development models.
 - assessment/h<h>/fold<n>/: newly computed complete scores, explanation samples, SHAP or linear contributions, importance and curves. Fold 0 means cutoff/post-2022.
 - assessment/metadata.json and report.html: completed assessment provenance and self-contained report.
+- assessment/h<h>/: predictions.parquet retains normalized scores, native `raw_<family>`, mature y and label_end; daily.parquet/metrics.json retain All, universe_daily.parquet/universe_metrics.json contain the three tail cohorts, and ticker_errors.parquet stores per-sample/model/ticker support, MAE, bias and RMSE for every scored title. All are rebuilt by assess; no database prediction table is introduced.
 - portfolio/: portfolio outputs; full_history/<attempt_id>/: fresh final refit attempts.
 
 There are no replay/source/configuration hashes, analysis caches or historical-run migration requirements. Saved member byte inventories remain verified at their owning load boundary. Dated assessment and the [dated portfolio CLI](../../src/portfolio/cli.py) refuse a missing original inventory before any member is consumed; generic daily legacy loading retains its existing optional-member behavior. Current fitting YAML drift does not invalidate saved-model assessment. Full-train restores the exact saved resolved feature schema, so newly appeared cube columns cannot silently enter that refit.
@@ -62,16 +63,25 @@ Each member is model_h<h>_<family>.pkl without context/config/logger. Generation
 
 ## Report plots
 
-The HTML contains:
+The offline report has five chart areas, each with its own renderer in [assessment_report.html](../../src/modelling/transformers/assessment_report.html), composed by [assessment_report.py](../../src/modelling/transformers/assessment_report.py):
 
-1. IC/IC-IR through time by model, horizon and Fold tests / Post-2022 population.
-2. All retained-feature importance and signed effect/PDP by horizon, family and feature.
+1. Temporal IC/IC-IR by horizon, fold tests / cutoff 2022+ and predicted universe All / top10+bottom10 / top50+bottom50 / top100+bottom100. Its per-model summary shows mean daily IC ± population std, global IC-IR and valid-day count for the full selected sample, independently of zoom.
+2. Target versus native member prediction below IC, selected by ticker, individual model, horizon and sample. MAE, signed prediction-minus-target bias and comparable-date count use the trained target's standardized-return unit. There is no native ensemble error view.
+3. Fixed-cutoff importance for every retained feature.
+4. Post-2022 native RMSE per ticker beside importance, sharing its horizon/model controls. Bars show 100 worst then 50 best RMSE, with group and comparable-date counts.
+5. Retained signed SHAP / linear-contribution curves and cutoff PDP by feature, horizon and model.
+
+[Assessment metrics](../../src/modelling/utils/assessment_metrics.py) select each model/day's finite predicted tails before filtering mature outcomes, break ties by ticker and deduplicate overlap. Missing outputs never promote other titles. Small universes may use all finite predictions. The four temporal series and summaries are precomputed by assess; the browser only switches the displayed cohort.
+
+Native outputs are captured by the optional collector in [ensemble_predict()](../../src/modelling/utils/ensemble.py) during the existing scoring call. Constant native outputs remain valid for errors even if normalized scores are undefined. Complete scores, native predictions and all-ticker errors remain on disk. The HTML retains at most 150 distinct eligible tickers separately for every model/horizon/sample, selecting 100 largest and 50 smallest native RMSE before deduplication. This outcome-based display cap never restricts ranking IC or strategy populations. Unsupported titles are not ranked as best.
+
+Selected ticker histories retain every observed scoring date and finite mature comparison, with null gaps and separate original-fold segments. Lossless compressed float64 histories are stored in separate inline blocks; only the selected combination is decoded, retaining one buffer. No external asset request, server or extra model inference is needed. The menu sizes are declared directly in HTML, without a constants/configuration knob.
 
 Fold-test curves concatenate only each original fold's configured test dates. They do not fill gaps or average fold models over the entire history. Effective maturity endpoints are shown per horizon. Default five-fold windows cover 2000–2021; a reduced three-fold rehearsal covers 2007–2021.
 
 Signed tree plots retain sampled cutoff scatter and binned-mean curves for every declared original fold plus cutoff. Tree importance is date-balanced mean absolute sampled SHAP. Linear importance is absolute saved standardized beta. Signed linear contributions use each member's saved training scaler; hover retains raw input and signed beta. Missing inputs contribute zero and have no observed x/bin; the intercept is explicit. Zero/all-missing retained features remain selectable. PDP is cutoff-only and varies one input while holding the sampled background fixed; it is not a causal estimate.
 
-Diagnostics settings control assessment only: shap_sample limits explanation rows, dependence_sample limits scatter, pdp_grid is the maximum continuous quantile-grid size, pdp_background limits rows averaged per PDP point, and rolling_window controls smoothing. Defaults remain 12000/1000/30/2000/252. These budgets never limit IC scoring.
+Diagnostics settings control assessment only: shap_sample limits explanation rows, dependence_sample limits scatter, pdp_grid is the maximum continuous quantile-grid size, pdp_background limits rows averaged per PDP point, and rolling_window controls smoothing. Current budgets live in [modellling.yml](../../configs/modellling.yml). These budgets never limit IC scoring.
 
 Daily Spearman IC uses finite prediction/label pairs after normalization over all finite predictions. IC-IR is mean daily IC / population standard deviation × sqrt(252 / horizon), distinct from portfolio-return IR. Rolling statistics require the full configured observed-session support; unsupported and constant values stay missing.
 

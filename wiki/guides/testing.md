@@ -7,7 +7,7 @@ tags:
   - guide
   - testing
   - validation
-source_commit: 2c9504c51e3c1d230d3d3623ff03eb8cffc4d11a
+source_commit: 18ae7b6b9cbdb71a7e1c216b7e0e94d02cbab677
 ---
 # Testing and validation
 
@@ -269,3 +269,13 @@ Evidence filenames in this table are relative to the retained local audit packag
 The [read-only modelling validator](../../src/validate/checks/modelling.py) independently reconciles all 8,613,360 scored rows for target/metric arithmetic. Native explanation checks cover 216,000 saved member rows across 54 original/cutoff objects. Source-feature cross-sections, original OOF reload and direct PDP responses are bounded samples; all nine serialized full-history objects were not natively replayed. A simplification pass is a review for unnecessary code, not a promise of additional refactoring.
 
 Historical current-universe/GICS/static-peer/vendor-vintage limitations and 51 unavailable configured feature names remain explicit. The 2022+ period is already inspected, without a new sealed-test or generalization claim. The original strict root user-file audit still exits 1 after separate root-dev edits; its baseline was not reset, while hard candidate/configuration/live-model/peer controls pass. No live production model was promoted. These limits keep the historical interpretation conditional despite passing implementation and workflow checks.
+
+## Assessment rank and ticker diagnostics
+
+[Assessment metric tests](../../tests/modelling/test_assessment_metrics.py) cover ex-ante top/bottom unions before outcome filtering, deterministic ties/overlap, original scoring-session support, pooled daily IC summaries and native error arithmetic independent of normalized scores. [Ensemble tests](../../tests/modelling/test_utils_ensemble.py) verify native outputs are retained from one call/member with identical normalized/blended scores.
+
+[Offline report tests](../../tests/modelling/test_assessment_report.py) cover all horizons/samples/cohorts, missing evidence, native comparison gaps and unsupported views, and a greater-than-150-title fixture with different rankings by model/horizon/sample. Only each combination's 100 worst / 50 best native-RMSE histories are embedded; All IC retains every scored title. Full daily selected histories are preserved losslessly. Offline browser checks also measure settled bar-container geometry, row density and scroll reach after wide → narrow → wide resizing and model changes; trace-array equality alone does not prove chart visibility. Equal-RMSE populations of 40, 125 and 211 titles pin opposite ends of one ascending RMSE/ticker total order and exactly min(eligible, 150) distinct displayed titles; the independent checker also enforces this cardinality.
+
+[Independent modelling checks](../../src/validate/checks/modelling.py) reproduce tail membership, finite-pair rank correlation, pooled/rolling summaries and native MAE/bias/RMSE/counts without importing producer helpers. The exact persisted error floats determine display ordering after their arithmetic is independently reconciled, so independent rounding cannot reorder near ties. [Validator corruption tests](../../tests/validate/test_modelling.py) reject early outcome filtering, wrong summaries/counts, missing sessions, wrong ticker groups/order and altered native history bytes. [The known-coefficient integration](../../tests/modelling/test_assessment_evaluation.py) checks original models, one main scoring call/member, zero inference added by errors/reporting, and fresh replacement of corrupted prior scores without estimator fitting.
+
+Validation for this change uses exact affected pytest nodes only. Operational acceptance reuses compatible saved synthetic models at h60 / three folds / all three families, with fitting and live calls denied. Larger multi-horizon/ticker fixtures exercise chart capacity and control coverage without training. These tests establish functional and mathematical behavior; they do not measure live financial performance, upstream PIT correctness or generalization.

@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import base64
+import copy
+import gzip
 import hashlib
+import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -13,8 +18,11 @@ import pytest
 from omegaconf import OmegaConf
 
 from src.context import Context
+from src.modelling.transformers.assessment_report import render_assessment
 from src.modelling.utils.assessment import write_json
+from src.modelling.utils.assessment_metrics import native_error_diagnostics, universe_diagnostics
 from src.validate.checks import modelling
+from tests.modelling.test_assessment_report import _report_artifacts
 
 
 def test_independent_rank_ic_skips_undefined_dates() -> None:
@@ -205,4 +213,183 @@ def test_independent_metrics_preserve_undefined_sessions_and_horizon_scaling(tmp
     assert bool(findings) is (mutation != "none")
     print(
         f"SANITY: independent h{horizon} IC/population dispersion/full-window arithmetic detects mutation={mutation}, preserving the undefined fourth session."
+    )
+
+
+def test_independent_tail_metrics_reject_wrong_selection_or_summary(tmp_path: Path) -> None:
+    panels, daily, summaries = [], [], {}
+    for population, year, fold in [("validation", 2001, 1), ("backtest", 2022, 0)]:
+        index = np.tile(np.arange(24), 3)
+        panel = pd.DataFrame(
+            {
+                "date": np.repeat(pd.bdate_range(f"{year}-01-03", periods=3), 24),
+                "ticker": [f"T{i:02}" for i in index],
+                "m": index.astype(float),
+                "y": np.sin(index),
+                "fold": fold,
+            }
+        )
+        panel.loc[panel.ticker == "T23", "y"] = np.nan
+        summaries[population], rows = universe_diagnostics(panel, ["m"], 60, 2, (10, 50, 100))
+        rows["population"], rows["horizon"] = population, 60
+        panels.append(panel)
+        daily.append(rows)
+    predictions, baseline = pd.concat(panels, ignore_index=True), pd.concat(daily, ignore_index=True)
+    predictions.to_parquet(tmp_path / "predictions.parquet", index=False)
+    for mutation in ("none", "early_label_filter", "paired", "universe", "rolling", "global", "drop_day"):
+        changed, stats = baseline.copy(), copy.deepcopy(summaries)
+        if mutation == "early_label_filter":
+            wrong = []
+            for population, panel in zip(("validation", "backtest"), panels, strict=True):
+                _, rows = universe_diagnostics(panel.dropna(subset=["y"]), ["m"], 60, 2, (10, 50, 100))
+                rows["population"], rows["horizon"] = population, 60
+                wrong.append(rows)
+            changed = pd.concat(wrong, ignore_index=True)
+        elif mutation in ("paired", "universe", "rolling"):
+            changed.loc[1, "rolling_ir" if mutation == "rolling" else mutation] = 999.0
+        elif mutation == "global":
+            stats["backtest"]["10"]["m"]["mean_ic"] = 999.0
+        elif mutation == "drop_day":
+            changed = changed.drop(index=0)
+        changed.to_parquet(tmp_path / "universe_daily.parquet", index=False)
+        write_json(tmp_path / "universe_metrics.json", stats)
+        findings = []
+        for size in (10, 50, 100):
+            modelling._reconcile_metrics(tmp_path, 60, ["m"], 2, findings, size=size)
+        assert bool(findings) is (mutation != "none"), mutation
+    print(
+        "SANITY: independent cohort arithmetic rejects prefiltered outcomes, altered counts/rolling/global summaries and dropped sessions; All's calculation contract stays separate."
+    )
+
+
+def test_independent_native_errors_reject_corruption(tmp_path: Path) -> None:
+    frame = pd.DataFrame(
+        {
+            "date": pd.bdate_range("2022-01-03", periods=6),
+            "ticker": ["A", "A", "B", "A", "A", "B"],
+            "fold": [1, 1, 1, 0, 0, 0],
+            "raw_m": [2.0, 2.0, 1.0, 2.0, 2.0, np.inf],
+            "m": np.nan,
+            "y": [0.0, 4.0, np.nan, 0.0, 4.0, 1.0],
+        }
+    )
+    frame.to_parquet(tmp_path / "predictions.parquet", index=False)
+    baseline = native_error_diagnostics(frame, ["m"])
+    measured = modelling._independent_native_errors(frame, ["m"])
+    assert measured.loc[measured.ticker == "A", "rmse"].tolist() == [2.0, 2.0]
+    for mutation in ("none", "n", "mae", "bias", "rmse", "missing", "duplicate", "unsupported"):
+        changed = baseline.copy()
+        if mutation in ("n", "mae", "bias", "rmse"):
+            changed.loc[0, mutation] = 999.0
+        elif mutation == "missing":
+            changed = changed.iloc[1:]
+        elif mutation == "duplicate":
+            changed = pd.concat([changed, changed.iloc[:1]], ignore_index=True)
+        elif mutation == "unsupported":
+            changed.loc[changed.n == 0, "rmse"] = 0.0
+        changed.to_parquet(tmp_path / "ticker_errors.parquet", index=False)
+        findings = []
+        modelling._native_error_checks(tmp_path, ["m"], findings)
+        assert bool(findings) is (mutation != "none"), mutation
+    print(
+        "SANITY: independent native errors preserve constants/zero support and reject arithmetic, missing/duplicated ticker and unsupported-as-zero corruption."
+    )
+
+
+@pytest.mark.parametrize("eligible_count", [40, 125, 211])
+@pytest.mark.parametrize("mutation", ["none", "legacy_union", "duplicate"])
+def test_independent_report_ties_reject_truncated_population(tmp_path: Path, eligible_count: int, mutation: str) -> None:
+    panels, errors, native, blocks = [], [], {}, []
+    worst = list(range(eligible_count - 1, max(-1, eligible_count - 101), -1))
+    best = list(range(min(50, max(0, eligible_count - 100))))
+    selection = [(i, "worst") for i in worst] + [(i, "best") for i in best]
+    if mutation == "legacy_union":
+        selection = [(i, "worst") for i in range(min(100, eligible_count))]
+    elif mutation == "duplicate":
+        selection[-1] = selection[0]
+    for population, year, fold in [("validation", 2001, 1), ("backtest", 2022, 0)]:
+        dates = pd.bdate_range(f"{year}-01-03", periods=3)
+        panels.append(
+            pd.DataFrame(
+                {
+                    "date": np.repeat(dates, eligible_count),
+                    "ticker": [f"T{i:03}" for i in range(eligible_count)] * 3,
+                    "fold": fold,
+                    "y": 0.0,
+                    "raw_m": 1.0,
+                }
+            )
+        )
+        errors.append(
+            pd.DataFrame(
+                {
+                    "population": population,
+                    "model": "m",
+                    "ticker": [f"T{i:03}" for i in range(eligible_count)],
+                    "n": 3,
+                    "mae": 1.0,
+                    "bias": 1.0,
+                    "rmse": 1.0,
+                }
+            )
+        )
+        block = f"native-60-{population}-m"
+        native[population] = {
+            "m": {
+                "date": dates.tolist(),
+                "fold": [fold] * 3,
+                "eligible_tickers": eligible_count,
+                "tickers": [{"ticker": f"T{i:03}", "group": group, "n": 3, "mae": 1.0, "bias": 1.0, "rmse": 1.0} for i, group in selection],
+                "block": block,
+            }
+        }
+        values = np.tile(np.array([[1.0] * 3, [0.0] * 3], dtype="<f8"), (len(selection), 1, 1))
+        encoded = base64.b64encode(gzip.compress(values.tobytes(), mtime=0)).decode("ascii")
+        blocks.append(f'<script id="{block}" type="application/octet-stream">{encoded}</script>')
+    output = tmp_path / "assessment/h60"
+    output.mkdir(parents=True)
+    pd.concat(panels, ignore_index=True).to_parquet(output / "predictions.parquet", index=False)
+    pd.concat(errors, ignore_index=True).to_parquet(output / "ticker_errors.parquet", index=False)
+    findings = []
+    modelling._native_payload_checks(tmp_path, 60, ["m"], native, "".join(blocks), findings)
+    assert bool(findings) is (mutation != "none")
+    population_failure = mutation == "duplicate" or (mutation == "legacy_union" and eligible_count > 100)
+    assert any(finding.observed == "HTML error-display population size differs" for finding in findings) is population_failure
+    print(
+        f"SANITY: independent tied-RMSE check for{eligible_count} titles accepts the full opposite-end selection and rejects mutation={mutation}; population cardinality is checked separately."
+    )
+
+
+def test_independent_report_rejects_wrong_ticker_series_or_rmse(tmp_path: Path) -> None:
+    _report_artifacts(tmp_path, n_tickers=211)
+    text = render_assessment(tmp_path).read_text(encoding="utf-8")
+    match = re.search(r'<script id="assessment-data" type="application/json">(.*?)</script>', text, re.S)
+    assert match is not None
+    baseline = json.loads(match.group(1))["analysis"]["60"]["native"]
+    families = ["elasticnet", "lgbm", "random_forest"]
+    for mutation in ("none", "n", "mae", "bias", "rmse", "group", "order", "membership", "date", "history"):
+        native, document = copy.deepcopy(baseline), text
+        meta = native["backtest"]["lgbm"]
+        if mutation in ("n", "mae", "bias", "rmse"):
+            meta["tickers"][0][mutation] = 999.0
+        elif mutation == "group":
+            meta["tickers"][0]["group"] = "best"
+        elif mutation == "order":
+            meta["tickers"][0], meta["tickers"][1] = meta["tickers"][1], meta["tickers"][0]
+        elif mutation == "membership":
+            meta["tickers"][0]["ticker"] = "unselected"
+        elif mutation == "date":
+            meta["date"][0] = "1999-01-01 00:00:00"
+        elif mutation == "history":
+            block = re.search(r'<script id="' + re.escape(meta["block"]) + r'" type="application/octet-stream">(.*?)</script>', text, re.S)
+            assert block is not None
+            values = np.frombuffer(gzip.decompress(base64.b64decode(block.group(1))), dtype="<f8").copy()
+            values[0] += 1.0
+            encoded = base64.b64encode(gzip.compress(values.tobytes(), mtime=0)).decode("ascii")
+            document = document.replace(block.group(0), block.group(0).replace(block.group(1), encoded))
+        findings = []
+        modelling._native_payload_checks(tmp_path, 60, families, native, document, findings)
+        assert bool(findings) is (mutation != "none"), mutation
+    print(
+        "SANITY: independent report reconciliation rejects wrong100worst/50best membership/order/groups, MAE/bias/RMSE/count, dates and native history bytes; every selected daily value is checked."
     )

@@ -72,7 +72,10 @@ def test_actual_calendar_and_invalid_allocations() -> None:
         ("fold", "test_label_end_max"),
     ],
 )
-def test_future_training_outcomes_fail_before_model_consumption(location: str, key: str, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("invalid_date", ["2022-01-01", None])
+def test_invalid_training_outcomes_fail_before_model_consumption(
+    location: str, key: str, invalid_date: str | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
     state = {
         "run_id": "exact",
         "horizons": [60],
@@ -106,7 +109,7 @@ def test_future_training_outcomes_fail_before_model_consumption(location: str, k
     monkeypatch.setattr(signals, "read_metadata", lambda _: meta)
     config = OmegaConf.create({"portfolio": {"start": "2022-01-03", "training_cutoff": "2021-12-31"}})
     signals.select_cutoff(SimpleNamespace(), config, "exact")
-    {"metadata": meta, "fit": audit, "fold": fold}[location][key] = "2022-01-01"
+    {"metadata": meta, "fit": audit, "fold": fold}[location][key] = invalid_date
     with pytest.raises(ValueError, match="later than"):
         signals.select_cutoff(SimpleNamespace(), config, "exact")
-    print(f"SANITY: future {location}.{key} is rejected before any model member can be loaded.")
+    print(f"SANITY: invalid {location}.{key}={invalid_date!r} is rejected before any model member can be loaded.")

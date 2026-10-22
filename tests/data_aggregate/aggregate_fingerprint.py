@@ -791,6 +791,18 @@ def governance_panel(
 
 
 def compute() -> dict:
+    from src.data_aggregate.sec_thirteen.utils.institutional_features import (
+        _quarter_features,
+        build_institutional_feature_panel,
+    )
+    from src.data_aggregate.sec_thirteen.utils.superinvestor_features import (
+        attach_tickers,
+        build_superinvestor_feature_panel,
+        clean_holdings,
+        manager_quarter_state,
+        manager_stock_conviction,
+    )
+    from src.data_aggregate.sec_thirteen.utils.value_basis import as_traded_close
     from src.data_aggregate.utils.common.frames import ratio, safe_div, sanitize
     from src.data_aggregate.utils.common.panel import build_peer_relative_panel
     from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
@@ -811,14 +823,7 @@ def compute() -> dict:
     from src.data_aggregate.utils.fundamentals.employee_features import build_employee_feature_panel
     from src.data_aggregate.utils.fundamentals.fundamental_features import build_fundamental_feature_panel
     from src.data_aggregate.utils.fundamentals.sector_features import build_sector_feature_panel
-    from src.data_aggregate.utils.institutionals.cross_source_features import (
-        build_cross_source_panel,
-    )
     from src.data_aggregate.utils.institutionals.insider_features import build_insider_feature_panel
-    from src.data_aggregate.utils.institutionals.institutional_features import (
-        _quarter_features,
-        build_institutional_feature_panel,
-    )
     from src.data_aggregate.utils.institutionals.ownership_features import (
         build_ownership_feature_panel,
     )
@@ -826,18 +831,6 @@ def compute() -> dict:
         build_short_flow_feature_panel,
         secondary_class_volume,
     )
-    from src.data_aggregate.utils.institutionals.signal_conditioning import (
-        build_signal_conditioning_panel,
-    )
-    from src.data_aggregate.utils.institutionals.sink import ConditioningSink
-    from src.data_aggregate.utils.institutionals.superinvestor_features import (
-        attach_tickers,
-        build_superinvestor_feature_panel,
-        clean_holdings,
-        manager_quarter_state,
-        manager_stock_conviction,
-    )
-    from src.data_aggregate.utils.institutionals.value_basis import as_traded_close
     from src.data_aggregate.utils.momentum.features import (
         build_feature_panel,
         compute_raw_features,
@@ -931,7 +924,6 @@ def compute() -> dict:
     # (`ic_sig_*`, `ic_xs_*`) are functions of what the source panels hand it -- their event
     # dates and their declared availability masks. Digesting the derived
     # panels without it would freeze two empty frames.
-    sink = ConditioningSink()
     # `splits=` is not decoration: RegSHO volume is AS-TRADED and yfinance `Volume` is
     # retroactively split-scaled, so `ic_shortvol_market_coverage` and `ic_ftd_to_adv20` carry a
     # 1/F(d) factor without it -- which is how a 1-for-8 reverse split printed a "coverage" of
@@ -943,7 +935,6 @@ def compute() -> dict:
             fails_history=ftd,
             shares_out_history=fund,
             splits=splits,
-            sink=sink,
             class_volume=class_volume,
         )
     )
@@ -976,24 +967,15 @@ def compute() -> dict:
         shares_out_history=fund,
         cusip_map=cusip_map,
         splits=splits,
-        sink=sink,
         valuation_close=valuation_close,
     )
     assert superinvestor["f_ic_super_conviction_weight"].nunique() > 1, "Do not freeze unknown whole-book denominators"
     out["panel.superinvestor"] = frame_digest(superinvestor)
-    out["panel.insider"] = frame_digest(
-        build_insider_feature_panel(make_frames(idx, peers, close_split=close), insider, shares_out_history=fund, sink=sink)
-    )
-    out["panel.ownership"] = frame_digest(build_ownership_feature_panel(make_frames(idx, peers), sec_13d, sec_13g, sink=sink))
+    out["panel.insider"] = frame_digest(build_insider_feature_panel(make_frames(idx, peers, close_split=close), insider, shares_out_history=fund))
+    out["panel.ownership"] = frame_digest(build_ownership_feature_panel(make_frames(idx, peers), sec_13d, sec_13g))
     # The two DERIVED panels, in the order the step builds them. `close` stands in for both
     # price bases here, as it does for the dividend and governance panels -- the synthetic
     # series carries no dividends, so the split-only and total-return bases coincide.
-    out["panel.signal_conditioning"] = frame_digest(
-        build_signal_conditioning_panel(
-            make_frames(idx, peers, close_total=close, close_split=close, sector_ret=sector_ret, ret=returns), sink.events, splits=splits
-        )
-    )
-    out["panel.cross_source"] = frame_digest(build_cross_source_panel(make_frames(idx, peers, universe=pd.Index(tickers)), sink))
 
     # ---- betas + the labels the model actually trains on ---- #
     factor_panel = pd.DataFrame(

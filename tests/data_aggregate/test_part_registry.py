@@ -26,6 +26,7 @@ from src.data_aggregate.transformers.step_cube_governance import StepCubeGoverna
 from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
 from src.data_aggregate.transformers.step_cube_momentum import StepCubeMomentum
 from src.data_aggregate.transformers.step_cube_prices import StepCubePrices
+from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecThirteen
 from src.data_aggregate.transformers.step_cube_target import StepCubeTarget
 from src.data_aggregate.transformers.step_cube_text import StepCubeText
 from src.data_aggregate.utils.common.parts import (
@@ -43,6 +44,7 @@ OWNER = {
     "build-momentum": StepCubeMomentum,
     "build-text": StepCubeText,
     "build-institutionals": StepCubeInstitutionals,
+    "build-sec-thirteen": StepCubeSecThirteen,
     "build-governance": StepCubeGovernance,
 }
 
@@ -125,7 +127,15 @@ def test_substep_price_fields_are_declared_and_valid():
     projection meaningful -- a step asking for everything would undo the memory win."""
     declared = {
         cls.__name__: cls._FIELDS
-        for cls in (StepCubeTarget, StepCubeFundamentals, StepCubeMomentum, StepCubeText, StepCubeInstitutionals, StepCubeGovernance)
+        for cls in (
+            StepCubeTarget,
+            StepCubeFundamentals,
+            StepCubeMomentum,
+            StepCubeText,
+            StepCubeInstitutionals,
+            StepCubeSecThirteen,
+            StepCubeGovernance,
+        )
     }
     for name, fields in declared.items():
         assert fields, f"{name} declares no price fields"
@@ -149,13 +159,12 @@ def test_substep_price_fields_are_declared_and_valid():
     assert set(StepCubeFundamentals._FIELDS) == {"close_split", "level_factor", "ret", "sector_ret"}
     # ⚠ INSTITUTIONALS NOW TAKES BOTH BASES, and it is the second step (with momentum) that
     # legitimately needs them -- the price-conditioning layer added in Phase 2.6 is a family of
-    # RETURNS measured from a disclosure date (`ic_sig_*_ret_since` and the two excursions),
     # while the 13F / insider families still scale dollars by a market cap. The discipline the
     # blanket ban used to enforce is enforced at the call site instead: `daily_market_cap` is
     # keyword-only in `level_factor` and documents that `close_total` reintroduces the defect,
     # and the step passes it `frames.close_split`. `sector_ret` makes the conditioning returns
     # sector-residual; `ret` is the persisted daily return the realized vol comes from.
-    assert set(StepCubeInstitutionals._FIELDS) == {"close_split", "close_total", "volume", "level_factor", "sector_ret", "ret"}
+    assert set(StepCubeInstitutionals._FIELDS) == {"close_split", "close_total", "volume", "level_factor"}
     # Governance is the third and last step allowed `close_total`: pay-vs-performance
     # differences pay growth against a trailing shareholder RETURN, and a return is exactly
     # what the total-return series is for. That is why the exemption above stays a named
@@ -175,7 +184,7 @@ def test_substep_price_fields_are_declared_and_valid():
     print(
         "  CONCLUSION: only the momentum step materialises full OHLCV; fundamentals and text "
         "read projected fields; fundamentals adds persisted disclosure returns, governance the return series, institutionals both bases "
-        "(levels on close_split, ic_sig_* returns on close_total). Validated."
+        "(levels on close_split, short-flow returns on close_total). Validated."
     )
 
 
@@ -208,7 +217,7 @@ def test_feature_parts_cover_every_group_exactly_once():
             owners.setdefault(group, []).append(part.name)
     dupes = {g: p for g, p in owners.items() if len(p) > 1}
     assert not dupes, f"feature group(s) claimed by more than one part: {dupes}"
-    assert len(owners) == 16, f"expected 16 feature groups, got {len(owners)}: {sorted(owners)}"
+    assert len(owners) == 14, f"expected 14 feature groups, got {len(owners)}: {sorted(owners)}"
 
     print("\n=== SANITY CHECK: feature groups -> parts ===")
     for part in FEATURE_PARTS:
@@ -255,6 +264,7 @@ def test_monolithic_build_runs_each_registered_command_once_in_order():
     step._momentum = _Runner("build-momentum")
     step._text = _Runner("build-text")
     step._institutionals = _Runner("build-institutionals")
+    step._sec_thirteen = _Runner("build-sec-thirteen")
     step._governance = _Runner("build-governance")
     step._assemble = _Assembler()
 

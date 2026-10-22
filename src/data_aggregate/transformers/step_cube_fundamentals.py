@@ -121,7 +121,7 @@ class StepCubeFundamentals(Step):
         # ONE point-in-time cache for all five builders (see the module docstring)
         pit = PitFrames(fundamentals, frames.trading_index, frames.close_split, frames.level_factor)
 
-        merger = PanelMerger(self._log)
+        merger = PanelMerger()
         merger.add(frames.skeleton().assign(_grid=1.0), "universe-grid")
         merger.add(
             self._fundamental_panel(

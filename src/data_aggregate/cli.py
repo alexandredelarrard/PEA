@@ -40,6 +40,7 @@ from src.data_aggregate.transformers.step_cube_governance import StepCubeGoverna
 from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
 from src.data_aggregate.transformers.step_cube_momentum import StepCubeMomentum
 from src.data_aggregate.transformers.step_cube_prices import StepCubePrices
+from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecThirteen
 from src.data_aggregate.transformers.step_cube_target import StepCubeTarget
 from src.data_aggregate.transformers.step_cube_text import StepCubeText
 from src.utils.cli_helper import SpecialHelpOrder
@@ -101,18 +102,23 @@ def build_text(config_path: str, full: bool) -> None:
     _step(StepCubeText, config_path).run(full=full)
 
 
-@cli.command(
-    help="13F institutional, elite 13F, insider, and short interest / fails-to-deliver features -> cube_part_institutionals.", help_priority=6
-)
+@cli.command(help="Insider, beneficial ownership and short-flow features -> cube_part_institutionals.", help_priority=6)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def build_institutionals(config_path: str, full: bool) -> None:
     _step(StepCubeInstitutionals, config_path).run(full=full)
 
 
+@cli.command(help="Broad institutional and elite-manager 13F features -> cube_part_sec_thirteen.", help_priority=7)
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+def build_sec_thirteen(config_path: str, full: bool) -> None:
+    _step(StepCubeSecThirteen, config_path).run(full=full)
+
+
 @cli.command(
     help="DEF 14A + Item 5.07 governance alpha (shareholder dissent, executive pay, governance provisions) -> cube_part_governance.",
-    help_priority=7,
+    help_priority=8,
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
@@ -122,7 +128,7 @@ def build_governance(config_path: str, full: bool) -> None:
 
 @cli.command(
     help="Read configured columns from required/populated optional parts onto price keys; save the cube including unlabelled prediction rows.",
-    help_priority=8,
+    help_priority=9,
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 def assemble_cube(config_path: str) -> None:
@@ -131,9 +137,9 @@ def assemble_cube(config_path: str) -> None:
 
 @cli.command(
     help="Run all eight sub-steps in ONE process (what main.py does): prices -> "
-    "target -> fundamentals -> momentum -> text -> institutionals -> governance -> "
+    "target -> fundamentals -> momentum -> text -> institutionals -> sec-thirteen -> governance -> "
     "assemble.",
-    help_priority=9,
+    help_priority=10,
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
@@ -145,7 +151,7 @@ def build_cube(config_path: str, full: bool) -> None:
     help="Report the latest date + row count of every cube_part_* (+ cube / "
     "predictions) as a JSON last line (the DAG pushes it to XCom); exits "
     "non-zero if required or populated optional parts/cube differ from the latest stored universe price date.",
-    help_priority=10,
+    help_priority=11,
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 def cube_status(config_path: str) -> None:

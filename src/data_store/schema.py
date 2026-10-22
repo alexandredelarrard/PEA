@@ -1430,6 +1430,9 @@ class Tables:
     cube_part_momentum = Table("cube_part_momentum", ("date", "ticker"), KIND_PART, date_col="date", managed=False)
     cube_part_text = Table("cube_part_text", ("date", "ticker"), KIND_PART, date_col="date", managed=False)
     cube_part_institutionals = Table("cube_part_institutionals", ("date", "ticker"), KIND_PART, date_col="date", managed=False)
+    cube_part_sec_thirteen = Table(
+        name="cube_part_sec_thirteen", pk=("date", "ticker"), kind=KIND_PART, date_col="date", ticker_col="ticker", managed=False
+    )
     cube_part_governance = Table("cube_part_governance", ("date", "ticker"), KIND_PART, date_col="date", managed=False)
 
 

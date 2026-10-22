@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from src.constants.constants import PANEL_KEYS
+from src.data_aggregate.utils.common.panel_merge import PANEL_KEYS
 from src.data_aggregate.utils.common.parts import PART_BY_NAME, CubePart
 from src.data_store.store import DataStore
 

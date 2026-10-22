@@ -66,89 +66,111 @@ validate:
     # 129 columns, 2,644,212 rows. Standardised views carry both suffixes; the peer clip is
     # xs.XS_CLIP_PEER.
     cube_part_institutionals:
-      xs_suffix: "_xs"
-      peer_suffix: "_vs_peers"
+      xs_suffix: _xs
+      peer_suffix: _vs_peers
       clip_peer: 8.0
       cadence: daily
-      # Legs the builder re-computes EVERY session, so a flat run is a defect rather than a
-      # between-deadline hold: `_to_mcap` legs divide a filed quantity by a daily market cap,
-      # and every `sig_*` return/excursion leg reads that day's close. A quarterly 13F leg
-      # holding its value between deadlines is CORRECT and is not in this list.
-      # (check_08.DAILY_SUFFIXES, matched as prefix or suffix.)
-      # Cross-source ratios update when an underlying filing/event family updates. A ticker can
-      # legitimately hold the same discrete vote for months, so their edge behavior is checked
-      # cross-sectionally by the institutionals stability report, not by the per-ticker DAILY gate.
-      # Returns-since-event legitimately remain 0 when a new filing resets age to 0 each
-      # session (measured for TPL/RSG); cumulative extrema move only at new highs/lows.
-      daily_legs: ["_to_mcap", "_price_vs_buy"]
-      # `price_vs_buy` exists only while a qualifying purchase remains in its 126-session
-      # value-weighted cost window. A gap while age <= 125 is actionable; anchor-free NaNs are
-      # economically undefined and are reported as explained rather than zero-filled.
-      conditional_holes:
-        f_ic_sig_insider_price_vs_buy:
-          active_field: f_ic_sig_insider_age_days
-          max_value: 125
-      # Measured source exception, not a general ticker/source allowlist. SMCI was suspended
-      # from Nasdaq on 2018-08-23 and relisted on 2020-01-14; the feature interval includes the
-      # rolling warm-up on each edge. Gaps outside this exact interval still fail.
       known_ineligible:
-        - ticker: SMCI
-          fields: ["f_ic_shortvol_"]
-          start: "2018-08-28"
-          end: "2020-01-16"
-          reason: "Nasdaq suspension/delisting; CNMS RegSHO did not cover the OTC interval"
-        - ticker: SMCI
-          fields: ["f_ic_shortvol_ratio_20d", "f_ic_shortvol_turnover_20d", "f_ic_shortvol_market_coverage"]
-          start: "2018-09-10"
-          end: "2020-01-28"
-          reason: "20-session RegSHO gap spans the Nasdaq suspension and post-relisting warm-up"
-      # Feature prefix -> the source table whose PUBLICATION clock bounds it (check_07). The
-      # check reads `resolve(src).freshness_col`, so the four tables publishing on a different
-      # clock than the period they describe are handled by the registry, not by a copy here.
+      - ticker: SMCI
+        fields:
+        - f_ic_shortvol_
+        start: '2018-08-28'
+        end: '2020-01-16'
+        reason: Nasdaq suspension/delisting; CNMS RegSHO did not cover the OTC interval
+      - ticker: SMCI
+        fields:
+        - f_ic_shortvol_ratio_20d
+        - f_ic_shortvol_turnover_20d
+        - f_ic_shortvol_market_coverage
+        start: '2018-09-10'
+        end: '2020-01-28'
+        reason: 20-session RegSHO gap spans the Nasdaq suspension and post-relisting warm-up
       pit_sources:
-        f_ic_insider_:     insider_transactions
-        f_ic_sig_insider_: insider_transactions
-        f_ic_act_:         sec_13d
-        f_ic_sig_act_:     sec_13d
-        f_ic_shortvol_:    sec_short_interest
-        f_ic_ftd_:         sec_fails_to_deliver
-        f_ic_bo_:          [sec_13d, sec_13g]
-      # These families deliberately encode an observed absence as zero. Their first value is
-      # therefore bounded by the source's GLOBAL publication onset, not by the first event for
-      # that individual ticker. Multi-source legs require every named source to have started.
-      # All other PIT families retain the stricter per-ticker first-event comparison above.
+        f_ic_insider_: insider_transactions
+        f_ic_act_: sec_13d
+        f_ic_shortvol_: sec_short_interest
+        f_ic_ftd_: sec_fails_to_deliver
+        f_ic_bo_:
+        - sec_13d
+        - sec_13g
       pit_observed_zero_sources:
-        f_ic_ftd_:                          sec_fails_to_deliver
-        f_ic_insider_net_buy_ratio_180d:    insider_transactions
-      # Only physical/economic bounds live here. Heavy-tailed one-sided fields are reviewed
-      # through robust distribution and traced-outlier evidence rather than arbitrary clips.
+        f_ic_ftd_: sec_fails_to_deliver
+        f_ic_insider_net_buy_ratio_180d: insider_transactions
       bounds:
-        f_ic_inst_holders:                    [0.0, 1.0]
-        f_ic_inst_breadth_chg:               [-1.0, 1.0]
-        f_ic_inst_new_buyer_ratio:            [0.0, 1.0]
-        f_ic_inst_exit_ratio:                 [0.0, 1.0]
-        f_ic_inst_cluster_buying:            [-1.0, 1.0]
-        f_ic_inst_concentration:              [0.0, 1.0]
-        f_ic_inst_net_options_ratio:         [-1.0, 1.0]
-        f_ic_inst_ownership_pct:              [0.0, 2.0]
-        f_ic_super_holders:                   [0.0, 1.0]
-        f_ic_super_conviction_weight:         [0.0, 1.0]
-        f_ic_super_max_conviction:            [0.0, 1.0]
-        f_ic_super_breadth_chg:              [-1.0, 1.0]
-        f_ic_super_conviction_chg:           [-1.0, 1.0]
-        f_ic_super_sp500_share:               [0.0, 1.0]
-        f_ic_super_selection_score:           [0.0, 1.0]
-        f_ic_insider_net_buy_ratio_180d:     [-1.0, 1.0]
-        f_ic_insider_owner_surprise_120d:     [0.0, 1.0]
-        f_ic_shortvol_ratio_5d:               [0.0, 1.0]
-        f_ic_shortvol_ratio_20d:              [0.0, 1.0]
-        f_ic_shortvol_ratio_60d:              [0.0, 1.0]
-        f_ic_shortvol_acceleration:          [-1.0, 1.0]
-        f_ic_shortvol_market_coverage:        [0.0, 1.0]
-        f_ic_ftd_persistence_30d:             [0.0, 30.0]
-        f_ic_sig_insider_max_dd_since_buy:   [-1.0, 0.0]
-        f_ic_xs_bullish_available_family_count: [0.0, 4.0]
-        f_ic_xs_bearish_available_family_count: [0.0, 3.0]
+        f_ic_insider_net_buy_ratio_180d:
+        - -1.0
+        - 1.0
+        f_ic_insider_owner_surprise_120d:
+        - 0.0
+        - 1.0
+        f_ic_shortvol_ratio_5d:
+        - 0.0
+        - 1.0
+        f_ic_shortvol_ratio_20d:
+        - 0.0
+        - 1.0
+        f_ic_shortvol_ratio_60d:
+        - 0.0
+        - 1.0
+        f_ic_shortvol_acceleration:
+        - -1.0
+        - 1.0
+        f_ic_shortvol_market_coverage:
+        - 0.0
+        - 1.0
+        f_ic_ftd_persistence_30d:
+        - 0.0
+        - 30.0
+    cube_part_sec_thirteen:
+      cadence: quarterly
+      bounds:
+        f_ic_inst_holders:
+        - 0.0
+        - 1.0
+        f_ic_inst_breadth_chg:
+        - -1.0
+        - 1.0
+        f_ic_inst_new_buyer_ratio:
+        - 0.0
+        - 1.0
+        f_ic_inst_exit_ratio:
+        - 0.0
+        - 1.0
+        f_ic_inst_cluster_buying:
+        - -1.0
+        - 1.0
+        f_ic_inst_concentration:
+        - 0.0
+        - 1.0
+        f_ic_inst_net_options_ratio:
+        - -1.0
+        - 1.0
+        f_ic_inst_ownership_pct:
+        - 0.0
+        - 2.0
+        f_ic_super_holders:
+        - 0.0
+        - 1.0
+        f_ic_super_conviction_weight:
+        - 0.0
+        - 1.0
+        f_ic_super_max_conviction:
+        - 0.0
+        - 1.0
+        f_ic_super_breadth_chg:
+        - -1.0
+        - 1.0
+        f_ic_super_conviction_chg:
+        - -1.0
+        - 1.0
+        f_ic_super_sp500_share:
+        - 0.0
+        - 1.0
+        f_ic_super_selection_score:
+        - 0.0
+        - 1.0
+      daily_legs:
+      - _to_mcap
 
     # 105 columns, 3,045,028 rows. Peer-z views only -- there is no `_xs` leg in this part, so
     # declaring one would make `clip` measure tie mass over an empty set and call it a pass.

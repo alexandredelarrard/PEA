@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 import pandas as pd
@@ -63,8 +62,8 @@ def _insider_source_status(context: Context, part_max_date: str | None, toleranc
     }
 
 
-def part_status_report(context: Context, log: logging.Logger | None = None) -> dict[str, Any]:
-    log = log or context.log
+def part_status_report(context: Context) -> dict[str, Any]:
+    log = context.log
     store = context.store
     edge = cube_part_edge_report(context)
     parts: dict[str, dict[str, Any]] = {}

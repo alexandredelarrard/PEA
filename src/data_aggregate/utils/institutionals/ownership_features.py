@@ -15,11 +15,11 @@ from __future__ import annotations
 
 import pandas as pd
 
+from src.data_aggregate.utils.common.availability import InstitutionalAvailability
+from src.data_aggregate.utils.common.decay import decay_events
 from src.data_aggregate.utils.common.errors import _empty_panel
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.price_frames import PriceFrames
-from src.data_aggregate.utils.institutionals.availability import InstitutionalAvailability
-from src.data_aggregate.utils.institutionals.decay import decay_events
 from src.data_store.schema import Tables
 
 #: The columns `_canonicalize` reads off EITHER schedule without checking first. The
@@ -193,29 +193,8 @@ def build_ownership_feature_panel(
     availability: InstitutionalAvailability | None = None,
     complete_through_13d: pd.Timestamp | None = None,
     complete_through_13g: pd.Timestamp | None = None,
-    sink=None,
 ) -> pd.DataFrame:
-    """Long-format beneficial-ownership panel (`f_<name>` per `EMISSION`). Empty when neither
-    source has usable rows.
-
-    `sink` is the optional `ConditioningSink`. The `act` family hands it EVERY 13D filing as
-    its event dates (an amendment restates a live campaign, so it is news and the conditioning
-    clock should restart on it) but only the INITIAL filings as bullish acts, since an
-    amendment can as easily disclose a sale.
-
-    ⚠ `frames` RATHER THAN TWO UNPACKED FIELDS. `peer_dict` and `trading_index` were all read
-    off one `PriceFrames` at the call site. Collapsing them is not about the basis here -- this
-    builder reads no wide price frame -- but about arity: three of the old parameters were one
-    object at every call site, and unpacking them at 39 of those is what let them drift apart.
-
-    ⚠ NO `frames.require(...)`: this builder dereferences no optional wide frame at all.
-    `trading_index` and `peers` are non-Optional fields of `PriceFrames`, so requiring them
-    would assert something the type already guarantees.
-
-    The non-frame arguments are KEYWORD-ONLY. A positional slip between two same-typed
-    `pd.DataFrame | None` neighbours is a silent wrong-frame bug that reads as a plausible
-    call; the keyword form makes it unrepresentable.
-    """
+    """Point-in-time 13D/13G event features, masked by source coverage and holder identity."""
 
     peer_dict = frames.peers
     trading_index = frames.trading_index
@@ -267,7 +246,6 @@ def build_ownership_feature_panel(
     )
     bo_identity = _known_13g_identity_mask(canon_13g, idx, columns)
     bo_mask = InstitutionalAvailability.combine(bo_source_coverage, bo_identity) if bo_source_coverage is not None else bo_identity
-    cross_complete = act_coverage is not None and bo_source_coverage is not None
 
     fields: dict[str, pd.DataFrame] = {}
     fields.update(_act_fields(canon_13d, idx, decay_halflife_act))
@@ -295,27 +273,6 @@ def build_ownership_feature_panel(
             fields.pop(name)
     if not fields:
         return pd.DataFrame(columns=["date", "ticker"])
-
-    if sink is not None and not canon_13d.empty:
-        sink.set_frontier("act", complete_through_13d)
-        observed_13d = canon_13d
-        if complete_through_13d is not None and pd.notna(complete_through_13d):
-            observed_13d = observed_13d[observed_13d["filing_date"] <= pd.Timestamp(complete_through_13d)]
-        sink.add_events("act", observed_13d[["ticker", "filing_date"]].rename(columns={"filing_date": "date"}).drop_duplicates())
-    if sink is not None:
-        signal_fields = dict(fields)
-        signal_masks: dict[str, pd.DataFrame] = {}
-        if "ic_act_initial_13d" in fields:
-            raw = fields["ic_act_initial_13d"].reindex(index=idx, columns=columns)
-            mask = act_coverage if act_coverage is not None else raw.notna()
-            signal_masks["ic_act_initial_13d"] = mask
-            signal_fields["ic_act_initial_13d"] = raw.fillna(0.0).where(mask) if act_coverage is not None else raw
-        if "ic_bo_escalation_13g_to_13d" in fields:
-            raw = fields["ic_bo_escalation_13g_to_13d"].reindex(index=idx, columns=columns)
-            mask = cross_masks["ic_bo_escalation_13g_to_13d"] if cross_complete else raw.notna()
-            signal_masks["ic_bo_escalation_13g_to_13d"] = mask
-            signal_fields["ic_bo_escalation_13g_to_13d"] = raw.fillna(0.0).where(mask) if cross_complete else raw
-        sink.keep_signals(signal_fields, signal_masks)
 
     emission = {name: EMISSION[name] for name in fields}
     return build_peer_relative_panel(fields, peer_dict, emission=emission, availability=frames.availability)

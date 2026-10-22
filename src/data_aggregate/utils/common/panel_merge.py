@@ -37,7 +37,8 @@ from collections.abc import Sequence
 
 import pandas as pd
 
-from src.constants.constants import PANEL_KEYS
+PANEL_KEYS = ["date", "ticker"]
+logger = logging.getLogger(__name__)
 
 
 class FeatureCollisionError(ValueError):
@@ -52,8 +53,8 @@ class DuplicateKeyError(ValueError):
 class PanelMerger:
     """Collect feature panels, then emit one long ['date', 'ticker', <features...>] frame."""
 
-    def __init__(self, log: logging.Logger | None = None, keys: Sequence[str] = tuple(PANEL_KEYS), anchor: pd.DataFrame | None = None) -> None:
-        self._log = log or logging.getLogger(__name__)
+    def __init__(self, keys: Sequence[str] = tuple(PANEL_KEYS), anchor: pd.DataFrame | None = None) -> None:
+        self._log = logger
         self._keys = list(keys)
         self._frames: list[pd.DataFrame] = []
         self._owner: dict[str, str] = {}  # feature name -> the label that produced it

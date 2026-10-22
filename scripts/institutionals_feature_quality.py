@@ -25,11 +25,15 @@ if str(ROOT) not in sys.path:
 # Project imports intentionally follow the repository-root path bootstrap.
 # ruff: noqa: E402
 
-from scripts.cube_institutionals_catalogue import INSTITUTIONALS
+from scripts.cube_institutionals_catalogue import INSTITUTIONALS as NON_THIRTEEN
+from scripts.cube_sec_thirteen_catalogue import SEC_THIRTEEN
+
+INSTITUTIONALS = {**NON_THIRTEEN, **SEC_THIRTEEN}
 from src.context import get_config_context
 from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
-from src.data_aggregate.utils.institutionals.availability import InstitutionalAvailability
-from src.data_store.schema import Table, Tables
+from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecThirteen
+from src.data_aggregate.utils.common.availability import InstitutionalAvailability
+from src.data_store.schema import Table, Tables, resolve
 from src.utils.config import read_config
 from src.validate.checks.catalogue import _load as load_catalogue
 from src.validate.checks.profile import _stats as profile_stats
@@ -42,23 +46,36 @@ from src.validate.utils.outliers import modified_zscore
 
 log = logging.getLogger(__name__)
 
-TABLE = Tables.cube_part_institutionals
-KEYS = list(TABLE.pk)
-SOURCE_TABLES: tuple[Table, ...] = (
-    Tables.cube_part_prices,
-    Tables.prices_splits,
-    Tables.fundamentals_history,
-    Tables.sp500_tickers,
-    Tables.sec13f_hr,
-    Tables.sec13f_manager_holdings,
-    Tables.superinvestor_roster,
-    Tables.cusip_ticker_map,
-    Tables.insider_transactions,
-    Tables.short_interest,
-    Tables.sec_fails_to_deliver,
-    Tables.sec_13d,
-    Tables.sec_13g,
-)
+KEYS = list(Tables.cube_part_institutionals.pk)
+
+
+def _source_tables(part: Table) -> tuple[Table, ...]:
+    common = (
+        Tables.cube_part_prices,
+        Tables.prices_splits,
+        Tables.fundamentals_history,
+        Tables.sharadar_actions,
+        Tables.sharadar_fundamentals,
+        Tables.prices,
+        Tables.entity_lineage,
+        Tables.sharadar_tickers,
+    )
+    if part == Tables.cube_part_sec_thirteen:
+        return (*common, Tables.sec13f_hr, Tables.sec13f_manager_holdings, Tables.superinvestor_roster, Tables.cusip_ticker_map)
+    return (
+        *common,
+        Tables.sp500_tickers,
+        Tables.symbol_tenure,
+        Tables.security_master,
+        Tables.def14a_executive_comp,
+        Tables.insider_transactions,
+        Tables.short_interest,
+        Tables.sec_fails_to_deliver,
+        Tables.sec_13d,
+        Tables.sec_13g,
+    )
+
+
 PEER_CANDIDATES = ("ic_inst_ownership_pct", "ic_shortvol_ratio_20d")
 PROVISIONAL_PEERS: tuple[str, ...] = ()
 SUFFIXES = (("_vs_peers", "peer"), ("_xs", "cross_sectional"), ("_hist", "historical"))
@@ -80,10 +97,6 @@ REMOVED_CHARACTERISTICS: dict[str, tuple[str, str]] = {
     ),
     "ic_act_purpose_board": ("beneficial_ownership", "fragile text-derived purpose flag"),
     "ic_act_purpose_strategic": ("beneficial_ownership", "fragile text-derived purpose flag"),
-    "ic_xs_bullish_family_ratio": ("cross_source", "opaque normalization of raw available-family support"),
-    "ic_xs_bearish_family_ratio": ("cross_source", "opaque normalization of raw available-family support"),
-    "ic_xs_conflict_ratio": ("cross_source", "opaque normalization of raw available-family support"),
-    "ic_xs_bullish_actor_count": ("cross_source", "redundant actor aggregation without stable economic scale"),
 }
 
 # Explicit economics, not name heuristics. Import-time equality makes a newly catalogued
@@ -109,12 +122,9 @@ _COUNT = {
     "ic_super_full_exits",
     "ic_insider_distinct_buyers_120d",
 }
-_AGE = {"ic_sig_super_age_days", "ic_sig_insider_age_days", "ic_sig_act_age_days"}
 _SUPPORT = {
     "ic_super_sp500_share",
     "ic_shortvol_market_coverage",
-    "ic_xs_bullish_available_family_count",
-    "ic_xs_bearish_available_family_count",
 }
 _BOUNDED = {
     "ic_inst_new_buyer_ratio",
@@ -130,6 +140,7 @@ _BOUNDED = {
 }
 _UNSCALED_LEVEL = {"ic_super_selection_score"}
 _NORMALIZED = {
+    "ic_insider_management_position_change_60d",
     "ic_act_amendment_intensity",
     "ic_ftd_to_adv20",
     "ic_insider_buy_value_mcap_180d",
@@ -148,18 +159,6 @@ _NORMALIZED = {
     "ic_shortvol_ratio_5d",
     "ic_shortvol_ratio_60d",
     "ic_shortvol_turnover_20d",
-    "ic_sig_act_resid_ret_since",
-    "ic_sig_act_ret_since",
-    "ic_sig_act_vol_scaled_move",
-    "ic_sig_insider_max_dd_since_buy",
-    "ic_sig_insider_max_runup_since_buy",
-    "ic_sig_insider_price_vs_buy",
-    "ic_sig_insider_resid_ret_since",
-    "ic_sig_insider_ret_since",
-    "ic_sig_insider_vol_scaled_move",
-    "ic_sig_super_resid_ret_since",
-    "ic_sig_super_ret_since",
-    "ic_sig_super_vol_scaled_move",
     "ic_super_breadth_chg",
     "ic_super_conviction_chg",
     "ic_super_conviction_weight_yoy",
@@ -170,13 +169,12 @@ _NORMALIZED = {
 CHARACTERISTIC_KIND = {
     **{name: "event" for name in _EVENT},
     **{name: "count" for name in _COUNT},
-    **{name: "age" for name in _AGE},
     **{name: "support" for name in _SUPPORT},
     **{name: "bounded" for name in _BOUNDED},
     **{name: "unscaled-level" for name in _UNSCALED_LEVEL},
     **{name: "normalized" for name in _NORMALIZED},
 }
-if set(CHARACTERISTIC_KIND) != set(INSTITUTIONALS) or sum(map(len, (_EVENT, _COUNT, _AGE, _SUPPORT, _BOUNDED, _UNSCALED_LEVEL, _NORMALIZED))) != len(
+if set(CHARACTERISTIC_KIND) != set(INSTITUTIONALS) or sum(map(len, (_EVENT, _COUNT, _SUPPORT, _BOUNDED, _UNSCALED_LEVEL, _NORMALIZED))) != len(
     INSTITUTIONALS
 ):
     raise RuntimeError("institutionals taxonomy must explicitly classify every catalogued characteristic")
@@ -187,9 +185,6 @@ FAMILY_WARMUP_SESSIONS = {
     "insider": 126,
     "beneficial_ownership": 0,
     "short_flow": 252,
-    "price_conditioning": 0,
-    "cross_source": 0,
-    "cross_source_control": 0,
 }
 ELIGIBILITY_FORMULA = "configured_source_onset__ticker_price_rows__builder_warmup__candidate_end_v2"
 
@@ -233,8 +228,8 @@ def _schema(path: Path) -> tuple[pq.ParquetFile, list[str], dict[str, str]]:
     return parquet, schema.names, {field.name: str(field.type) for field in schema}
 
 
-def _date_bounds(path: Path) -> tuple[pd.Timestamp | None, pd.Timestamp | None, int]:
-    values = pd.to_datetime(pq.read_table(path, columns=[TABLE.date_col]).column(0).to_pandas(), errors="coerce")
+def _date_bounds(path: Path, *, part: Table = Tables.cube_part_institutionals) -> tuple[pd.Timestamp | None, pd.Timestamp | None, int]:
+    values = pd.to_datetime(pq.read_table(path, columns=[part.date_col]).column(0).to_pandas(), errors="coerce")
     invalid = int(values.isna().sum())
     return (None, None, invalid) if values.empty or values.notna().sum() == 0 else (values.min(), values.max(), invalid)
 
@@ -245,24 +240,26 @@ def _same_date(left: Any, right: pd.Timestamp | None) -> bool:
     return pd.Timestamp(left).normalize() == right.normalize()
 
 
-def _verified_snapshot(path: Path, metadata: dict[str, Any], *, as_of: pd.Timestamp | None = None) -> dict[str, Any]:
+def _verified_snapshot(
+    path: Path, metadata: dict[str, Any], *, as_of: pd.Timestamp | None = None, part: Table = Tables.cube_part_institutionals
+) -> dict[str, Any]:
     if not path.is_file():
         raise FileNotFoundError(path)
     parquet, columns, dtypes = _schema(path)
     rows = int(parquet.metadata.num_rows)
     missing = [key for key in KEYS if key not in columns]
-    first_date, last_date, invalid_dates = _date_bounds(path) if TABLE.date_col in columns else (None, None, rows)
+    first_date, last_date, invalid_dates = _date_bounds(path, part=part) if part.date_col in columns else (None, None, rows)
     errors: list[str] = []
-    if metadata.get("table") != TABLE.name:
-        errors.append(f"metadata table is {metadata.get('table')!r}, expected {TABLE.name!r}")
+    if metadata.get("table") != part.name:
+        errors.append(f"metadata table is {metadata.get('table')!r}, expected {part.name!r}")
     if int(metadata.get("rows", -1)) != rows:
         errors.append(f"metadata rows={metadata.get('rows')!r}, parquet rows={rows}")
     if list(metadata.get("columns") or []) != columns:
         errors.append("metadata columns do not exactly match parquet column order")
     if metadata.get("pk") is not None and list(metadata["pk"]) != KEYS:
         errors.append(f"metadata pk={metadata['pk']!r}, expected {KEYS!r}")
-    if metadata.get("date_col") is not None and metadata["date_col"] != TABLE.date_col:
-        errors.append(f"metadata date_col={metadata['date_col']!r}, expected {TABLE.date_col!r}")
+    if metadata.get("date_col") is not None and metadata["date_col"] != part.date_col:
+        errors.append(f"metadata date_col={metadata['date_col']!r}, expected {part.date_col!r}")
     if missing:
         errors.append(f"parquet is missing keys {missing}")
     if invalid_dates:
@@ -283,12 +280,12 @@ def _verified_snapshot(path: Path, metadata: dict[str, Any], *, as_of: pd.Timest
         raise ValueError("; ".join(errors))
     return {
         **metadata,
-        "table": TABLE.name,
+        "table": part.name,
         "rows": rows,
         "columns": columns,
         "dtypes": dtypes,
         "pk": KEYS,
-        "date_col": TABLE.date_col,
+        "date_col": part.date_col,
         "first_date": first_date,
         "last_date": last_date,
         "snapshot_sha256": actual_hash,
@@ -313,12 +310,12 @@ def _source_metadata(store: Any, table: Table) -> dict[str, Any]:
     }
 
 
-def _load_manifest(path: Path, as_of: str) -> dict[str, Any]:
+def _load_manifest(path: Path, as_of: str, *, part: Table = Tables.cube_part_institutionals) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError(f"manifest is not a JSON object: {path}")
-    if payload.get("table") != TABLE.name:
-        raise ValueError(f"manifest table is {payload.get('table')!r}, expected {TABLE.name!r}")
+    if payload.get("table") != part.name:
+        raise ValueError(f"manifest table is {payload.get('table')!r}, expected {part.name!r}")
     if pd.Timestamp(payload.get("as_of")).normalize() != pd.Timestamp(as_of).normalize():
         raise ValueError(f"manifest as_of={payload.get('as_of')!r} does not match {as_of!r}")
     snapshot = payload.get("snapshot") or {}
@@ -331,12 +328,12 @@ def _load_manifest(path: Path, as_of: str) -> dict[str, Any]:
     return payload
 
 
-def _verify_source_identity(store: Any, manifest: dict[str, Any]) -> list[dict[str, Any]]:
+def _verify_source_identity(store: Any, manifest: dict[str, Any], *, part: Table = Tables.cube_part_institutionals) -> list[dict[str, Any]]:
     recorded = {row.get("table"): row for row in manifest.get("source_tables") or []}
-    expected = {table.name for table in SOURCE_TABLES}
+    expected = {table.name for table in _source_tables(part)}
     if set(recorded) != expected:
         raise ValueError(f"manifest source tables differ: missing={sorted(expected - set(recorded))}, extra={sorted(set(recorded) - expected)}")
-    current = [_source_metadata(store, table) for table in SOURCE_TABLES]
+    current = [_source_metadata(store, table) for table in _source_tables(part)]
     changed = [row["table"] for row in current if jsonable(row) != recorded[row["table"]]]
     if changed:
         raise ValueError(f"source metadata changed since baseline freeze: {changed}")
@@ -363,7 +360,7 @@ def _feature_parts(column: str, *, allow_removed: bool = False) -> tuple[str, st
     return characteristic, suffix
 
 
-def freeze_baseline(config: str, snapshot: Path, as_of: str, out: Path) -> dict[str, Any]:
+def freeze_baseline(config: str, snapshot: Path, as_of: str, out: Path, *, part: Table = Tables.cube_part_institutionals) -> dict[str, Any]:
     meta_path = snapshot.parent / "meta.json"
     if not meta_path.is_file() and snapshot.name == "baseline.parquet":
         meta_path = snapshot.parent / "baseline-meta.json"
@@ -373,7 +370,7 @@ def freeze_baseline(config: str, snapshot: Path, as_of: str, out: Path) -> dict[
     if not isinstance(metadata, dict):
         raise ValueError(f"snapshot metadata is not a JSON object: {meta_path}")
     cutoff = pd.Timestamp(as_of).normalize()
-    verified = _verified_snapshot(snapshot, metadata, as_of=cutoff)
+    verified = _verified_snapshot(snapshot, metadata, as_of=cutoff, part=part)
 
     _, context = get_config_context(config, use_cache=False, save=False)
     out.mkdir(parents=True, exist_ok=True)
@@ -386,14 +383,14 @@ def freeze_baseline(config: str, snapshot: Path, as_of: str, out: Path) -> dict[
         shutil.copy2(peer_source, frozen_peer)
     elif _sha256(peer_source) != _sha256(frozen_peer):
         raise ValueError("live peer cache changed after the baseline peer artifact was frozen")
-    sources = [_source_metadata(context.store, table) for table in SOURCE_TABLES]
+    sources = [_source_metadata(context.store, table) for table in _source_tables(part)]
     if _sha256(frozen_path) != verified["snapshot_sha256"]:
         raise OSError("existing baseline hash differs from source snapshot")
     frozen_meta = {**verified, "as_of": cutoff, "snapshot": frozen_path.name}
     _write_json(out / "baseline-meta.json", frozen_meta)
     manifest = {
         "status": "pass",
-        "table": TABLE.name,
+        "table": part.name,
         "as_of": cutoff,
         "snapshot": {
             "source": str(snapshot.resolve()),
@@ -423,42 +420,45 @@ def build_candidate(
     *,
     compare_to: Path | None = None,
     comparison_out: Path | None = None,
+    part: Table = Tables.cube_part_institutionals,
 ) -> dict[str, Any]:
     cutoff = pd.Timestamp(as_of).normalize()
-    manifest = _load_manifest(manifest_path, as_of)
+    manifest = _load_manifest(manifest_path, as_of, part=part)
     config_node, context = get_config_context(config, use_cache=False, save=False)
     peer_path = _manifest_peer_path(manifest)
     context.paths["SECTOR_PEERS_PATH"] = peer_path
-    sources = _verify_source_identity(context.store, manifest)
-    panel = StepCubeInstitutionals(context=context, config=config_node).build_panel(full=True)
+    sources = _verify_source_identity(context.store, manifest, part=part)
+    panel = (StepCubeSecThirteen if part == Tables.cube_part_sec_thirteen else StepCubeInstitutionals)(
+        context=context, config=config_node
+    ).build_panel(full=True)
     if not set(KEYS).issubset(panel.columns):
         raise ValueError(f"candidate panel is missing keys {sorted(set(KEYS) - set(panel.columns))}")
     panel = panel.copy()
-    panel[TABLE.date_col] = pd.to_datetime(panel[TABLE.date_col], errors="coerce").dt.normalize()
+    panel[part.date_col] = pd.to_datetime(panel[part.date_col], errors="coerce").dt.normalize()
     if panel[KEYS].isna().any(axis=1).any():
         raise ValueError("untrimmed candidate panel contains null keys")
-    panel = panel.loc[panel[TABLE.date_col] <= cutoff].reset_index(drop=True)
+    panel = panel.loc[panel[part.date_col] <= cutoff].reset_index(drop=True)
     null_keys = int(panel[KEYS].isna().any(axis=1).sum())
     duplicate_keys = int(panel.duplicated(KEYS, keep=False).sum())
     if panel.empty or null_keys or duplicate_keys:
         raise ValueError(f"candidate key assertion failed: rows={len(panel)}, null_key_rows={null_keys}, duplicate_key_rows={duplicate_keys}")
-    if panel[TABLE.date_col].max() > cutoff:
+    if panel[part.date_col].max() > cutoff:
         raise ValueError("candidate contains rows after its declared cutoff")
 
     out_cache.parent.mkdir(parents=True, exist_ok=True)
     panel.to_parquet(out_cache, index=False)
     parquet, columns, dtypes = _schema(out_cache)
-    first_date, last_date, invalid_dates = _date_bounds(out_cache)
+    first_date, last_date, invalid_dates = _date_bounds(out_cache, part=part)
     if invalid_dates:
         raise ValueError(f"written candidate contains {invalid_dates} invalid dates")
     metadata = {
-        "table": TABLE.name,
+        "table": part.name,
         "as_of": cutoff,
         "rows": int(parquet.metadata.num_rows),
         "columns": columns,
         "dtypes": dtypes,
         "pk": KEYS,
-        "date_col": TABLE.date_col,
+        "date_col": part.date_col,
         "first_date": first_date,
         "last_date": last_date,
         "snapshot": str(out_cache.resolve()),
@@ -468,8 +468,8 @@ def build_candidate(
         "manifest_sha256": _sha256(manifest_path),
         "source_tables": sources,
         "peer_cache": manifest["peer_cache"],
-        "builder": "StepCubeInstitutionals.build_panel(full=True)",
-        "write_contract": "parquet artifact only; StepCubeInstitutionals.run/write_part not called",
+        "builder": f"{StepCubeSecThirteen.__name__ if part == Tables.cube_part_sec_thirteen else StepCubeInstitutionals.__name__}.build_panel(full=True)",
+        "write_contract": "parquet artifact only; builder run/write_part not called",
     }
     out.mkdir(parents=True, exist_ok=True)
     _write_json(out / "candidate-metadata.json", metadata)
@@ -477,13 +477,13 @@ def build_candidate(
     if compare_to is not None:
         if comparison_out is None:
             raise ValueError("--comparison-out is required with --compare-to")
-        comparison = compare_refactor(compare_to, out_cache, comparison_out)
+        comparison = compare_refactor(compare_to, out_cache, comparison_out, part=part)
     return {"status": "fail" if comparison and comparison["status"] == "fail" else "pass", "metadata": metadata, "comparison": comparison}
 
 
-def _keys(path: Path) -> tuple[pd.DataFrame, np.ndarray, int, int]:
+def _keys(path: Path, *, part: Table = Tables.cube_part_institutionals) -> tuple[pd.DataFrame, np.ndarray, int, int]:
     frame = pq.read_table(path, columns=KEYS).to_pandas()
-    frame[TABLE.date_col] = pd.to_datetime(frame[TABLE.date_col], errors="coerce")
+    frame[part.date_col] = pd.to_datetime(frame[part.date_col], errors="coerce")
     nulls = int(frame[KEYS].isna().any(axis=1).sum())
     duplicates = int(frame.duplicated(KEYS, keep=False).sum())
     ordered = frame.assign(_row=np.arange(len(frame), dtype="int64")).sort_values(KEYS, kind="stable")
@@ -496,14 +496,14 @@ def _column_values(path: Path, column: str, order: np.ndarray) -> tuple[pd.Serie
     return values.to_pandas().iloc[order].reset_index(drop=True), nulls
 
 
-def compare_refactor(before: Path, after: Path, out: Path) -> dict[str, Any]:
+def compare_refactor(before: Path, after: Path, out: Path, *, part: Table = Tables.cube_part_institutionals) -> dict[str, Any]:
     _, before_columns, before_dtypes = _schema(before)
     _, after_columns, after_dtypes = _schema(after)
     missing_keys = {"before": [k for k in KEYS if k not in before_columns], "after": [k for k in KEYS if k not in after_columns]}
     if any(missing_keys.values()):
         report = {
             "status": "fail",
-            "table": TABLE.name,
+            "table": part.name,
             "checks": {
                 "keys": {"pass": False, "missing": missing_keys},
                 "schema": {"pass": set(before_columns) == set(after_columns)},
@@ -517,8 +517,8 @@ def compare_refactor(before: Path, after: Path, out: Path) -> dict[str, Any]:
         _write_json(out, report)
         return report
 
-    before_keys, before_order, before_null_keys, before_duplicate_keys = _keys(before)
-    after_keys, after_order, after_null_keys, after_duplicate_keys = _keys(after)
+    before_keys, before_order, before_null_keys, before_duplicate_keys = _keys(before, part=part)
+    after_keys, after_order, after_null_keys, after_duplicate_keys = _keys(after, part=part)
     keys_equal = before_keys.equals(after_keys)
     schema_equal = set(before_columns) == set(after_columns)
     common = [column for column in before_columns if column in after_columns]
@@ -578,7 +578,7 @@ def compare_refactor(before: Path, after: Path, out: Path) -> dict[str, Any]:
     status = "pass" if all(check["pass"] for check in checks.values()) else "fail"
     report = {
         "status": status,
-        "table": TABLE.name,
+        "table": part.name,
         "before": {"path": str(before.resolve()), "sha256": _sha256(before), "rows": len(before_keys)},
         "after": {"path": str(after.resolve()), "sha256": _sha256(after), "rows": len(after_keys)},
         "checks": checks,
@@ -587,16 +587,18 @@ def compare_refactor(before: Path, after: Path, out: Path) -> dict[str, Any]:
     return report
 
 
-def _result(check: str, status: str, *, scope: dict[str, Any], metrics: dict[str, Any], reason: str = "") -> dict[str, Any]:
-    return {"check": check, "table": TABLE.name, "status": status, "reason": reason, "scope": scope, "metrics": metrics}
+def _result(
+    check: str, status: str, *, scope: dict[str, Any], metrics: dict[str, Any], reason: str = "", part: Table = Tables.cube_part_institutionals
+) -> dict[str, Any]:
+    return {"check": check, "table": part.name, "status": status, "reason": reason, "scope": scope, "metrics": metrics}
 
 
-def _grain(path: Path, columns: list[str]) -> tuple[dict[str, Any], pd.DataFrame | None]:
+def _grain(path: Path, columns: list[str], *, part: Table = Tables.cube_part_institutionals) -> tuple[dict[str, Any], pd.DataFrame | None]:
     missing = [key for key in KEYS if key not in columns]
     if missing:
-        return _result("grain", "fail", scope={"snapshot": str(path)}, metrics={"missing_keys": missing}), None
-    keys, _, null_rows, duplicate_rows = _keys(path)
-    invalid_dates = int(pd.to_datetime(keys[TABLE.date_col], errors="coerce").isna().sum())
+        return _result("grain", "fail", scope={"snapshot": str(path)}, metrics={"missing_keys": missing}, part=part), None
+    keys, _, null_rows, duplicate_rows = _keys(path, part=part)
+    invalid_dates = int(pd.to_datetime(keys[part.date_col], errors="coerce").isna().sum())
     status = "pass" if not null_rows and not duplicate_rows and not invalid_dates else "fail"
     return (
         _result(
@@ -604,22 +606,25 @@ def _grain(path: Path, columns: list[str]) -> tuple[dict[str, Any], pd.DataFrame
             status,
             scope={"rows": len(keys), "keys": KEYS},
             metrics={"null_key_rows": null_rows, "duplicate_key_rows": duplicate_rows, "invalid_date_rows": invalid_dates},
+            part=part,
         ),
         keys,
     )
 
 
-def _schema_check(path: Path, metadata: dict[str, Any], columns: list[str], dtypes: dict[str, str], rows: int) -> dict[str, Any]:
+def _schema_check(
+    path: Path, metadata: dict[str, Any], columns: list[str], dtypes: dict[str, str], rows: int, *, part: Table = Tables.cube_part_institutionals
+) -> dict[str, Any]:
     expected_hash = metadata.get("snapshot_sha256") or metadata.get("sha256")
     actual_hash = _sha256(path)
     comparisons = {
-        "table": metadata.get("table") == TABLE.name,
+        "table": metadata.get("table") == part.name,
         "rows": metadata.get("rows") == rows,
         "columns": metadata.get("columns") == columns,
         "column_order": metadata.get("columns") == columns,
         "dtypes": metadata.get("dtypes") == dtypes,
         "pk": metadata.get("pk") == KEYS,
-        "date_col": metadata.get("date_col") == TABLE.date_col,
+        "date_col": metadata.get("date_col") == part.date_col,
         "snapshot_sha256": expected_hash == actual_hash,
     }
     return _result(
@@ -627,14 +632,15 @@ def _schema_check(path: Path, metadata: dict[str, Any], columns: list[str], dtyp
         "pass" if all(comparisons.values()) else "fail",
         scope={"snapshot": str(path.resolve()), "metadata_hash": expected_hash, "snapshot_hash": actual_hash},
         metrics={"comparisons": comparisons, "columns": columns, "dtypes": dtypes},
+        part=part,
     )
 
 
-def _catalogue_check(path: Path, columns: list[str]) -> dict[str, Any]:
+def _catalogue_check(path: Path, columns: list[str], *, part: Table = Tables.cube_part_institutionals) -> dict[str, Any]:
     try:
-        entries, split = load_catalogue(path, TABLE.name)
+        entries, split = load_catalogue(path, part.name)
     except (OSError, ValueError, SyntaxError, json.JSONDecodeError) as exc:
-        return _result("catalogue", "abstain", scope={"catalogue": str(path)}, metrics={}, reason=str(exc))
+        return _result("catalogue", "abstain", scope={"catalogue": str(path)}, metrics={}, reason=str(exc), part=part)
     live: dict[str, list[str]] = {}
     for column in columns:
         if column in KEYS:
@@ -654,6 +660,7 @@ def _catalogue_check(path: Path, columns: list[str]) -> dict[str, Any]:
             "blank_descriptions": blank,
             "resolved_columns": live,
         },
+        part=part,
     )
 
 
@@ -666,7 +673,7 @@ def _numeric_columns(path: Path) -> list[str]:
     ]
 
 
-def _profile(path: Path, columns: list[str]) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+def _profile(path: Path, columns: list[str], *, part: Table = Tables.cube_part_institutionals) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
     numeric = _numeric_columns(path)
     non_numeric = sorted(set(columns) - set(KEYS) - set(numeric))
     stats: dict[str, dict[str, Any]] = {}
@@ -685,13 +692,16 @@ def _profile(path: Path, columns: list[str]) -> tuple[dict[str, Any], dict[str, 
         scope={"rows": next(iter(stats.values()))["n"] if stats else 0, "numeric_columns": len(numeric)},
         metrics={"dead": dead, "constant": constant, "infinite": infinite, "non_numeric": non_numeric, "stats": stats},
         reason="no numeric feature column" if not numeric else "",
+        part=part,
     )
     return result, stats
 
 
-def _bounds(path: Path, declared: dict[str, tuple[float, float]], columns: list[str]) -> dict[str, Any]:
+def _bounds(
+    path: Path, declared: dict[str, tuple[float, float]], columns: list[str], *, part: Table = Tables.cube_part_institutionals
+) -> dict[str, Any]:
     if not declared:
-        return _result("bounds", "abstain", scope={}, metrics={}, reason="no bounds declared for this table")
+        return _result("bounds", "abstain", scope={}, metrics={}, reason="no bounds declared for this table", part=part)
     missing = sorted(set(declared) - set(columns))
     violations: dict[str, dict[str, Any]] = {}
     observed: dict[str, dict[str, float | None]] = {}
@@ -712,13 +722,18 @@ def _bounds(path: Path, declared: dict[str, tuple[float, float]], columns: list[
         "pass" if not missing and not violations else "fail",
         scope={"declared": len(declared)},
         metrics={"missing_declared_columns": missing, "violations": violations, "observed": observed},
+        part=part,
     )
 
 
-def _redundancy_frame(path: Path, stats: dict[str, dict[str, Any]], threshold: float) -> tuple[dict[str, Any], pd.DataFrame]:
+def _redundancy_frame(
+    path: Path, stats: dict[str, dict[str, Any]], threshold: float, *, part: Table = Tables.cube_part_institutionals
+) -> tuple[dict[str, Any], pd.DataFrame]:
     columns = list(stats)
     if len(columns) < 2:
-        result = _result("redundancy", "abstain", scope={"columns": len(columns)}, metrics={}, reason="fewer than two numeric feature columns")
+        result = _result(
+            "redundancy", "abstain", scope={"columns": len(columns)}, metrics={}, reason="fewer than two numeric feature columns", part=part
+        )
         return result, pd.DataFrame()
     width = len(columns)
     centre = np.array([float(stats[column]["mean"] or 0.0) for column in columns], dtype="float64")
@@ -782,17 +797,20 @@ def _redundancy_frame(path: Path, stats: dict[str, dict[str, Any]], threshold: f
         "fail" if flagged else "pass",
         scope={"rows": rows, "columns": width, "threshold": threshold, "min_pairwise_n": min_pair, "spearman_sample_n": len(sample)},
         metrics={"redundant_pairs": flagged[:40], "n_redundant_pairs": len(flagged)},
+        part=part,
     )
     return result, pd.DataFrame(all_pairs)
 
 
-def _redundancy(path: Path, stats: dict[str, dict[str, Any]], threshold: float) -> dict[str, Any]:
-    return _redundancy_frame(path, stats, threshold)[0]
+def _redundancy(path: Path, stats: dict[str, dict[str, Any]], threshold: float, *, part: Table = Tables.cube_part_institutionals) -> dict[str, Any]:
+    return _redundancy_frame(path, stats, threshold, part=part)[0]
 
 
-def _timeseries(path: Path, stats: dict[str, dict[str, Any]], keys: pd.DataFrame | None, spec: Any) -> dict[str, Any]:
+def _timeseries(
+    path: Path, stats: dict[str, dict[str, Any]], keys: pd.DataFrame | None, spec: Any, *, part: Table = Tables.cube_part_institutionals
+) -> dict[str, Any]:
     if keys is None or keys.empty or not stats:
-        return _result("timeseries", "abstain", scope={}, metrics={}, reason="no candidate time series to measure")
+        return _result("timeseries", "abstain", scope={}, metrics={}, reason="no candidate time series to measure", part=part)
     columns = list(stats)
     frozen_legs, frozen_limit, frozen_scope = _frozen_legs(spec, columns)
     frozen_set = set(frozen_legs)
@@ -803,7 +821,7 @@ def _timeseries(path: Path, stats: dict[str, dict[str, Any]], keys: pd.DataFrame
     missing_conditions: list[dict[str, str]] = []
     series = 0
     for index, column in enumerate(columns, start=1):
-        wanted = [TABLE.date_col, "ticker", column]
+        wanted = [part.date_col, "ticker", column]
         rule = spec.conditional_holes.get(column)
         if rule is not None and rule["active_field"] not in columns:
             missing_conditions.append({"field": column, "active_field": rule["active_field"]})
@@ -811,13 +829,13 @@ def _timeseries(path: Path, stats: dict[str, dict[str, Any]], keys: pd.DataFrame
         if rule is not None and rule["active_field"] != column:
             wanted.append(rule["active_field"])
         frame = pq.read_table(path, columns=wanted).to_pandas()
-        frame[TABLE.date_col] = pd.to_datetime(frame[TABLE.date_col], errors="coerce")
-        frame = frame.sort_values(["ticker", TABLE.date_col], kind="stable")
+        frame[part.date_col] = pd.to_datetime(frame[part.date_col], errors="coerce")
+        frame = frame.sort_values(["ticker", part.date_col], kind="stable")
         for ticker, group in frame.groupby("ticker", sort=False):
             series += 1
             found = _measure(
                 group[column],
-                pd.DatetimeIndex(group[TABLE.date_col]),
+                pd.DatetimeIndex(group[part.date_col]),
                 spec,
                 frozen_limit=frozen_limit if column in frozen_set else None,
                 hole_eligible=_hole_condition(group, column, spec),
@@ -849,7 +867,7 @@ def _timeseries(path: Path, stats: dict[str, dict[str, Any]], keys: pd.DataFrame
         scope={
             "rows": len(keys),
             "tickers": int(keys["ticker"].nunique()),
-            "dates": int(keys[TABLE.date_col].nunique()),
+            "dates": int(keys[part.date_col].nunique()),
             "columns": len(columns),
             "series": series,
             "frozen_scope": frozen_scope,
@@ -869,13 +887,14 @@ def _timeseries(path: Path, stats: dict[str, dict[str, Any]], keys: pd.DataFrame
             "worst_jumps": sorted(jumps, key=lambda row: -row["z"])[:40],
         },
         reason="" if frozen_limit is not None else f"FROZEN {frozen_scope}",
+        part=part,
     )
 
 
-def _leakage(keys: pd.DataFrame | None, metadata: dict[str, Any]) -> dict[str, Any]:
+def _leakage(keys: pd.DataFrame | None, metadata: dict[str, Any], *, part: Table = Tables.cube_part_institutionals) -> dict[str, Any]:
     if keys is None or keys.empty:
-        return _result("leakage", "abstain", scope={}, metrics={}, reason="no candidate dates")
-    last_date = pd.Timestamp(keys[TABLE.date_col].max()).normalize()
+        return _result("leakage", "abstain", scope={}, metrics={}, reason="no candidate dates", part=part)
+    last_date = pd.Timestamp(keys[part.date_col].max()).normalize()
     as_of_raw = metadata.get("as_of")
     if as_of_raw is not None and last_date > pd.Timestamp(as_of_raw).normalize():
         return _result(
@@ -884,6 +903,7 @@ def _leakage(keys: pd.DataFrame | None, metadata: dict[str, Any]) -> dict[str, A
             scope={"last_date": last_date, "as_of": as_of_raw},
             metrics={"future_candidate_dates": True},
             reason="candidate contains observations after its declared as-of date",
+            part=part,
         )
     return _result(
         "leakage",
@@ -891,27 +911,30 @@ def _leakage(keys: pd.DataFrame | None, metadata: dict[str, Any]) -> dict[str, A
         scope={"last_date": last_date, "as_of": as_of_raw},
         metrics={"future_candidate_dates": False if as_of_raw is not None else None},
         reason="a candidate parquet cannot prove source-publication causality or prefix invariance; validate those against frozen source inputs",
+        part=part,
     )
 
 
-def validate_candidate(config: str, snapshot: Path, metadata_path: Path, catalogue: Path, out: Path) -> dict[str, Any]:
+def validate_candidate(
+    config: str, snapshot: Path, metadata_path: Path, catalogue: Path, out: Path, *, part: Table = Tables.cube_part_institutionals
+) -> dict[str, Any]:
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     if not isinstance(metadata, dict):
         raise ValueError(f"metadata is not a JSON object: {metadata_path}")
     parquet, columns, dtypes = _schema(snapshot)
     rows = int(parquet.metadata.num_rows)
     config_node = read_config(config)
-    spec = load_spec(config_node, TABLE)
+    spec = load_spec(config_node, part)
 
     checks: dict[str, dict[str, Any]] = {}
-    checks["grain"], keys = _grain(snapshot, columns)
-    checks["schema"] = _schema_check(snapshot, metadata, columns, dtypes, rows)
-    checks["catalogue"] = _catalogue_check(catalogue, columns)
-    checks["bounds"] = _bounds(snapshot, spec.bounds, columns)
-    checks["profile"], stats = _profile(snapshot, columns)
-    checks["redundancy"] = _redundancy(snapshot, stats, spec.redundancy_r)
-    checks["timeseries"] = _timeseries(snapshot, stats, keys, spec)
-    checks["leakage"] = _leakage(keys, metadata)
+    checks["grain"], keys = _grain(snapshot, columns, part=part)
+    checks["schema"] = _schema_check(snapshot, metadata, columns, dtypes, rows, part=part)
+    checks["catalogue"] = _catalogue_check(catalogue, columns, part=part)
+    checks["bounds"] = _bounds(snapshot, spec.bounds, columns, part=part)
+    checks["profile"], stats = _profile(snapshot, columns, part=part)
+    checks["redundancy"] = _redundancy(snapshot, stats, spec.redundancy_r, part=part)
+    checks["timeseries"] = _timeseries(snapshot, stats, keys, spec, part=part)
+    checks["leakage"] = _leakage(keys, metadata, part=part)
 
     out.mkdir(parents=True, exist_ok=True)
     for name, result in checks.items():
@@ -920,7 +943,7 @@ def validate_candidate(config: str, snapshot: Path, metadata_path: Path, catalog
     abstained = sorted(name for name, result in checks.items() if result["status"] == "abstain")
     summary = {
         "status": "fail" if failed else "pass",
-        "table": TABLE.name,
+        "table": part.name,
         "snapshot": str(snapshot.resolve()),
         "snapshot_sha256": _sha256(snapshot),
         "metadata": str(metadata_path.resolve()),
@@ -1014,8 +1037,8 @@ def _peer_diagnostic(snapshot: Path, characteristic: str, columns: list[str]) ->
     }
 
 
-def _model_folds(snapshot: Path, features: list[str]) -> pd.DataFrame:
-    dates = pd.DatetimeIndex(sorted(_read_projected(snapshot, [TABLE.date_col])[TABLE.date_col].dropna().unique()))
+def _model_folds(snapshot: Path, features: list[str], *, part: Table = Tables.cube_part_institutionals) -> pd.DataFrame:
+    dates = pd.DatetimeIndex(sorted(_read_projected(snapshot, [part.date_col])[part.date_col].dropna().unique()))
     groups = [pd.DatetimeIndex(group) for group in np.array_split(dates, min(5, len(dates))) if len(group)]
     if not groups:
         return pd.DataFrame()
@@ -1028,7 +1051,7 @@ def _model_folds(snapshot: Path, features: list[str]) -> pd.DataFrame:
     wanted = [*KEYS, *features]
     for batch in parquet.iter_batches(batch_size=CHUNK_ROWS, columns=wanted):
         frame = batch.to_pandas()
-        stamps = pd.to_datetime(frame[TABLE.date_col], errors="coerce")
+        stamps = pd.to_datetime(frame[part.date_col], errors="coerce")
         fold_ids = np.searchsorted(ends.to_numpy(), stamps.to_numpy(), side="left")
         for index, entry in enumerate(state):
             mask = fold_ids == index
@@ -1058,11 +1081,13 @@ def _model_folds(snapshot: Path, features: list[str]) -> pd.DataFrame:
     )
 
 
-def taxonomy(config: str, snapshot: Path, manifest_path: Path, as_of: str, out: Path) -> dict[str, Any]:
+def taxonomy(
+    config: str, snapshot: Path, manifest_path: Path, as_of: str, out: Path, *, part: Table = Tables.cube_part_institutionals
+) -> dict[str, Any]:
     read_config(config)
-    manifest = _load_manifest(manifest_path, as_of)
+    manifest = _load_manifest(manifest_path, as_of, part=part)
     _, candidate_columns, candidate_dtypes = _schema(snapshot)
-    first_date, last_date, invalid_dates = _date_bounds(snapshot)
+    first_date, last_date, invalid_dates = _date_bounds(snapshot, part=part)
     if invalid_dates or (last_date is not None and last_date.normalize() > pd.Timestamp(as_of).normalize()):
         raise ValueError("candidate dates are invalid or beyond the taxonomy cutoff")
     baseline = manifest.get("snapshot") or {}
@@ -1103,7 +1128,7 @@ def taxonomy(config: str, snapshot: Path, manifest_path: Path, as_of: str, out: 
         raise ValueError("baseline feature reconciliation is incomplete")
 
     schema_diff = {
-        "table": TABLE.name,
+        "table": part.name,
         "as_of": as_of,
         "baseline_columns": baseline_columns,
         "candidate_columns": candidate_columns,
@@ -1122,7 +1147,7 @@ def taxonomy(config: str, snapshot: Path, manifest_path: Path, as_of: str, out: 
         "reconciled_baseline_features": len(decision_frame),
     }
     peer_frame = pd.DataFrame([_peer_diagnostic(snapshot, characteristic, candidate_columns) for characteristic in PEER_CANDIDATES])
-    fold_frame = _model_folds(snapshot, [column for column in candidate_columns if column not in KEYS])
+    fold_frame = _model_folds(snapshot, [column for column in candidate_columns if column not in KEYS], part=part)
     out.mkdir(parents=True, exist_ok=True)
     decision_frame.to_csv(out / "feature-decisions.csv", index=False)
     _write_json(out / "schema-diff.json", schema_diff)
@@ -1200,24 +1225,6 @@ def _feature_eligibility_start(
         dependencies = ((Tables.sec_fails_to_deliver, None),) if characteristic.startswith("ic_ftd_") else ((Tables.short_interest, None),)
     elif family == "beneficial_ownership":
         dependencies = ((Tables.sec_13d, None),) if characteristic.startswith("ic_act_") else ((Tables.sec_13d, None), (Tables.sec_13g, None))
-    elif family == "price_conditioning":
-        if characteristic.startswith("ic_sig_super_"):
-            dependencies = ((Tables.sec13f_manager_holdings, None),)
-        elif characteristic.startswith("ic_sig_insider_"):
-            dependencies = ((Tables.insider_transactions, None),)
-        else:
-            dependencies = ((Tables.sec_13d, None),)
-    elif family == "cross_source_control":
-        return min(
-            availability.source_date(table)
-            for table in (
-                Tables.sec13f_hr,
-                Tables.sec13f_manager_holdings,
-                Tables.insider_transactions,
-                Tables.short_interest,
-                Tables.sec_13d,
-            )
-        )
     else:
         raise KeyError(f"No coverage dependency declaration for {characteristic!r} ({family!r})")
     starts = [availability.source_date(table, field) for table, field in dependencies]
@@ -1234,10 +1241,12 @@ def _analysis_frames(
     recent_sessions: int,
     spec: Any,
     availability: InstitutionalAvailability,
+    *,
+    part: Table = Tables.cube_part_institutionals,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, dict[str, Any]]]:
-    dates = pd.DatetimeIndex(sorted(keys[TABLE.date_col].dropna().unique()))
+    dates = pd.DatetimeIndex(sorted(keys[part.date_col].dropna().unique()))
     recent_dates = set(dates[-min(recent_sessions, len(dates)) :])
-    recent_mask = keys[TABLE.date_col].isin(recent_dates).to_numpy()
+    recent_mask = keys[part.date_col].isin(recent_dates).to_numpy()
     ticker_positions = {str(ticker): np.asarray(positions, dtype="int64") for ticker, positions in keys.groupby("ticker", sort=False).indices.items()}
     coverage_rows: list[dict[str, Any]] = []
     distribution_rows: list[dict[str, Any]] = []
@@ -1282,7 +1291,7 @@ def _analysis_frames(
                 {
                     "feature": feature,
                     "ticker": keys.iloc[position]["ticker"],
-                    "date": keys.iloc[position][TABLE.date_col],
+                    "date": keys.iloc[position][part.date_col],
                     "value": float(array[position]),
                     "modified_z": float(scores[position]),
                     "family": family,
@@ -1304,12 +1313,12 @@ def _analysis_frames(
                 active &= active_values <= float(rule["max_value"])
 
         for ticker, positions in ticker_positions.items():
-            group_dates = keys.iloc[positions][TABLE.date_col]
+            group_dates = keys.iloc[positions][part.date_col]
             source_eligible = positions[(group_dates >= source_start).to_numpy()]
             warmup = FAMILY_WARMUP_SESSIONS[family]
             eligible = source_eligible[min(warmup, len(source_eligible)) :]
             if len(eligible):
-                eligible_dates = keys.iloc[eligible][TABLE.date_col]
+                eligible_dates = keys.iloc[eligible][part.date_col]
                 keep = _known_ineligible_mask(spec, ticker, feature, eligible_dates)
                 if active is not None:
                     keep &= active[eligible]
@@ -1352,8 +1361,8 @@ def _analysis_frames(
                     "family_warmup_sessions": FAMILY_WARMUP_SESSIONS[family],
                     "configured_source_start": source_start,
                     "warmup_candidate_rows": warmup,
-                    "eligibility_start": keys.iloc[eligible[0]][TABLE.date_col],
-                    "eligibility_end": keys.iloc[eligible[-1]][TABLE.date_col],
+                    "eligibility_start": keys.iloc[eligible[0]][part.date_col],
+                    "eligibility_end": keys.iloc[eligible[-1]][part.date_col],
                     "full_numerator": full_numerator,
                     "full_eligible_denominator": full_denominator,
                     "full_share": full_numerator / full_denominator if full_denominator else None,
@@ -1365,7 +1374,7 @@ def _analysis_frames(
                 }
             )
 
-        key_dates = keys[TABLE.date_col]
+        key_dates = keys[part.date_col]
         for window in sorted({126, recent_sessions}):
             recent_window_dates = dates[-min(window, len(dates)) :]
             recent_window = key_dates.isin(recent_window_dates).to_numpy()
@@ -1443,39 +1452,44 @@ def _coverage_summary(coverage: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def analyze(config: str, table: str, snapshot: Path, manifest_path: Path, as_of: str, recent_sessions: int, out: Path) -> dict[str, Any]:
-    if table != TABLE.name:
-        raise ValueError(f"this driver analyzes {TABLE.name}, not {table!r}")
+def analyze(
+    config: str,
+    table: str,
+    snapshot: Path,
+    manifest_path: Path,
+    as_of: str,
+    recent_sessions: int,
+    out: Path,
+    *,
+    part: Table = Tables.cube_part_institutionals,
+) -> dict[str, Any]:
+    if table != part.name:
+        raise ValueError(f"this driver analyzes {part.name}, not {table!r}")
     if recent_sessions <= 0:
         raise ValueError("--recent-sessions must be positive")
-    manifest = _load_manifest(manifest_path, as_of)
+    manifest = _load_manifest(manifest_path, as_of, part=part)
     config_node = read_config(config)
-    spec = load_spec(config_node, TABLE)
+    spec = load_spec(config_node, part)
     availability = InstitutionalAvailability.from_config(config_node)
     _, columns, _ = _schema(snapshot)
     if not set(KEYS).issubset(columns):
         raise ValueError("candidate snapshot is missing panel keys")
     keys = _read_projected(snapshot, KEYS)
-    keys[TABLE.date_col] = pd.to_datetime(keys[TABLE.date_col], errors="coerce").dt.normalize()
+    keys[part.date_col] = pd.to_datetime(keys[part.date_col], errors="coerce").dt.normalize()
     if keys[KEYS].isna().any(axis=1).any() or keys.duplicated(KEYS).any():
         raise ValueError("candidate keys are null or duplicated")
-    if keys[TABLE.date_col].max() > pd.Timestamp(as_of).normalize():
+    if keys[part.date_col].max() > pd.Timestamp(as_of).normalize():
         raise ValueError("candidate contains dates after --as-of")
     features = _numeric_columns(snapshot)
     if not features:
         raise ValueError("candidate has no numeric institutional feature")
 
     coverage, distributions, outliers, drift, splits, stats = _analysis_frames(
-        snapshot,
-        keys,
-        features,
-        recent_sessions,
-        spec,
-        availability,
+        snapshot, keys, features, recent_sessions, spec, availability, part=part
     )
     coverage_summary = _coverage_summary(coverage)
-    redundancy, redundancy_frame = _redundancy_frame(snapshot, stats, spec.redundancy_r)
-    leakage = _leakage(keys, {"as_of": manifest["as_of"]})
+    redundancy, redundancy_frame = _redundancy_frame(snapshot, stats, spec.redundancy_r, part=part)
+    leakage = _leakage(keys, {"as_of": manifest["as_of"]}, part=part)
     coverage_wide: dict[str, pd.DataFrame] = {}
     for horizon in ("full", "recent"):
         wide = coverage_summary[coverage_summary["horizon"].eq(horizon)].pivot(index="feature", columns="bucket", values="tickers").reset_index()
@@ -1529,7 +1543,7 @@ def analyze(config: str, table: str, snapshot: Path, manifest_path: Path, as_of:
     }
     summary = {
         "status": "pass" if reconciliation["pass"] else "fail",
-        "table": TABLE.name,
+        "table": part.name,
         "as_of": as_of,
         "recent_sessions": recent_sessions,
         "snapshot": str(snapshot.resolve()),
@@ -1596,28 +1610,34 @@ def _parser() -> argparse.ArgumentParser:
 
     analysis = commands.add_parser("analyze")
     analysis.add_argument("--config", required=True)
-    analysis.add_argument("--table", required=True)
     analysis.add_argument("--snapshot", type=Path, required=True)
     analysis.add_argument("--manifest", type=Path, required=True)
     analysis.add_argument("--as-of", required=True)
     analysis.add_argument("--recent-sessions", type=int, required=True)
     analysis.add_argument("--out", type=Path, required=True)
+    for command in (freeze, compare, validate, build, classify, analysis):
+        command.add_argument(
+            "--table",
+            choices=[Tables.cube_part_institutionals.name, Tables.cube_part_sec_thirteen.name],
+            default=Tables.cube_part_institutionals.name,
+        )
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    part = resolve(args.table)
     try:
         if args.command == "freeze-baseline":
-            freeze_baseline(args.config, args.snapshot, args.as_of, args.out)
+            freeze_baseline(args.config, args.snapshot, args.as_of, args.out, part=part)
             log.info("PASS freeze-baseline -> %s", args.out)
             return 0
         if args.command == "compare-refactor":
-            report = compare_refactor(args.before, args.after, args.out)
+            report = compare_refactor(args.before, args.after, args.out, part=part)
             log.info("%s compare-refactor -> %s", report["status"].upper(), args.out)
             return 0 if report["status"] == "pass" else 1
         if args.command == "validate-candidate":
-            summary = validate_candidate(args.config, args.snapshot, args.metadata, args.catalogue, args.out)
+            summary = validate_candidate(args.config, args.snapshot, args.metadata, args.catalogue, args.out, part=part)
         elif args.command == "build-candidate":
             summary = build_candidate(
                 args.config,
@@ -1627,11 +1647,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.out,
                 compare_to=args.compare_to,
                 comparison_out=args.comparison_out,
+                part=part,
             )
         elif args.command == "taxonomy":
-            summary = taxonomy(args.config, args.snapshot, args.manifest, args.as_of, args.out)
+            summary = taxonomy(args.config, args.snapshot, args.manifest, args.as_of, args.out, part=part)
         else:
-            summary = analyze(args.config, args.table, args.snapshot, args.manifest, args.as_of, args.recent_sessions, args.out)
+            summary = analyze(args.config, args.table, args.snapshot, args.manifest, args.as_of, args.recent_sessions, args.out, part=part)
         log.info("%s %s -> %s", summary["status"].upper(), args.command, args.out)
         return 0 if summary["status"] == "pass" else 1
     except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError) as exc:

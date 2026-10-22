@@ -1,0 +1,1 @@
+"""SEC thirteen cube domain."""

@@ -38,8 +38,8 @@ def _config(**assembly: Any) -> Any:
 
 def _step(store: Any, monkeypatch: pytest.MonkeyPatch, config: Any = None) -> StepAssembleCube:
     config = config if config is not None else _config()
-    context = SimpleNamespace(store=store, config=config, log=logging.getLogger(__name__))
-    step = StepAssembleCube.__new__(StepAssembleCube)
+    context = SimpleNamespace(store=store, config=config, log=logging.getLogger(__name__), config_dir="configs")
+    step = StepAssembleCube(context=context, config=config)
     step._context = cast(Context, context)
     step._config = config
     step._cfg = config.build_cube
@@ -308,7 +308,11 @@ def test_physical_schema_narrows(sqlite_store: Any, monkeypatch: pytest.MonkeyPa
 
 def test_committed_config() -> None:
     cfg = read_config("configs")
-    assert set(cfg.build_cube.assembly.optional_parts) == {Tables.cube_part_text.name, Tables.cube_part_institutionals.name}
+    assert set(cfg.build_cube.assembly.optional_parts) == {
+        Tables.cube_part_text.name,
+        Tables.cube_part_institutionals.name,
+        Tables.cube_part_sec_thirteen.name,
+    }
     assert all(value is None or len(value) == 0 for value in cfg.build_cube.assembly.columns.values())
     print("SANITY: ordinary config loader exposes keep-all defaults and exactly two optional parts.")
 

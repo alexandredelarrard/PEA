@@ -247,12 +247,12 @@ def _repair_registered(context: Context, prices: pd.DataFrame, vendor: pd.DataFr
 
     slice_ = prices[prices["ticker"].isin(named)]
     wide = {"close_split": slice_.pivot(index="date", columns="ticker", values="close_split").sort_index()}
-    apply_split_vintage(wide, blob, vendor[["ticker", "date", "price"]], logger.info)
+    apply_split_vintage(wide, blob, vendor[["ticker", "date", "price"]])
     quote_bugfix = {
         **blob,
         "return_seams": {ticker: [entry for entry in entries if "fields" not in entry] for ticker, entries in blob.get("return_seams", {}).items()},
     }
-    apply_return_seams(wide, quote_bugfix, logger.info)
+    apply_return_seams(wide, quote_bugfix)
 
     repaired = cast(pd.Series, wide["close_split"].stack(future_stack=True)).rename("close_split").reset_index().dropna(subset=["close_split"])
     return pd.concat([prices[~prices["ticker"].isin(named)], repaired], ignore_index=True)

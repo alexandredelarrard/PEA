@@ -38,6 +38,7 @@ from src.data_aggregate.transformers.step_cube_governance import StepCubeGoverna
 from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
 from src.data_aggregate.transformers.step_cube_momentum import StepCubeMomentum
 from src.data_aggregate.transformers.step_cube_prices import StepCubePrices
+from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecThirteen
 from src.data_aggregate.transformers.step_cube_target import StepCubeTarget
 from src.data_aggregate.transformers.step_cube_text import StepCubeText
 from src.data_aggregate.utils.common.panel_merge import FeatureCollisionError
@@ -51,6 +52,7 @@ __all__ = ["StepBuildCube", "FeatureCollisionError"]
 class StepBuildCube(Step):
     def __init__(self, context: Context, config: DictConfig):
         super().__init__(context=context, config=config)
+        self._store = context.store
 
         self._prices = StepCubePrices(context=context, config=config)
         self._target = StepCubeTarget(context=context, config=config)
@@ -58,6 +60,7 @@ class StepBuildCube(Step):
         self._momentum = StepCubeMomentum(context=context, config=config)
         self._text = StepCubeText(context=context, config=config)
         self._institutionals = StepCubeInstitutionals(context=context, config=config)
+        self._sec_thirteen = StepCubeSecThirteen(context=context, config=config)
         self._governance = StepCubeGovernance(context=context, config=config)
         self._assemble = StepAssembleCube(context=context, config=config)
 
@@ -71,6 +74,7 @@ class StepBuildCube(Step):
         self._momentum.run(full=full)
         self._text.run(full=full)
         self._institutionals.run(full=full)
+        self._sec_thirteen.run(full=full)
         self._governance.run(full=full)
         self._assemble.run()
 
@@ -97,4 +101,4 @@ class StepBuildCube(Step):
         """Latest date + row count of every cube part (+ the downstream cube / predictions
         tables). The returned shape is a contract with the Airflow status gate -- see
         `utils/common/part_status.py`."""
-        return part_status_report(self._context, self._log)
+        return part_status_report(self._context)

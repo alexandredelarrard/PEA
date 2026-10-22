@@ -16,7 +16,7 @@ Cube parts are persisted intermediate tables, one per price, target, beta, or fe
 
 Parts prevent one process from holding every source and feature frame at once. They let Airflow run builders sequentially, allow targeted retries, and give the status gate a concrete freshness surface. Incremental correctness depends on each part rebuilding enough history to reproduce a full build's tail.
 
-Part tables are unmanaged: replacement drops and recreates them so removed feature columns do not linger. The final cube assembler reads the persisted parts and streams output chunks.
+Part tables are unmanaged: replacement drops and recreates them so removed feature columns do not linger. There are nine parts owned by eight builders. `cube_part_institutionals` contains insider, ownership and short-flow; `cube_part_sec_thirteen` contains broad institutional and superinvestor 13F. Both compute from full history and rewrite from their own last stored session minus seven trading-session intervals, inclusively (eight existing dates). Their 390-session warmup metadata is not an input cutoff. Corrections older than that output tail require a full rebuild. The final cube assembler reads the persisted parts and streams output chunks.
 
 ## Where it lives
 

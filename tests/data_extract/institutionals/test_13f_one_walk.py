@@ -23,7 +23,7 @@ import pandas as pd
 import pyarrow as pa
 import pytest
 
-from src.data_aggregate.utils.institutionals.availability import public_books
+from src.data_aggregate.utils.common.availability import public_books
 from src.data_extract.utils.common import parallel_fetch
 from src.data_extract.utils.common.edgar_driver import FilingStamp
 from src.data_extract.utils.institutionals import fetch_13f as f13

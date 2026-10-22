@@ -15,13 +15,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import src.data_aggregate.transformers.step_cube_institutionals as step_module
-from src.constants.constants import F13_MAX_EARLY_DAYS, F13_MAX_LATE_DAYS, F13_SETTLE_TRADING_DAYS
-from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
-from src.data_aggregate.utils.common.data_utils import to_day
-from src.data_aggregate.utils.institutionals import institutional_features as _mod
-from src.data_aggregate.utils.institutionals.availability import availability_date
-from src.data_aggregate.utils.institutionals.institutional_features import (
+import src.data_aggregate.transformers.step_cube_sec_thirteen as step_module
+from src.constants.constants import F13_SETTLE_TRADING_DAYS
+from src.data_aggregate.sec_thirteen.utils import institutional_features as _mod
+from src.data_aggregate.sec_thirteen.utils.institutional_features import (
     EMISSION,
     INST_DELTA_FLOOR_PERIOD,
     INST_LEVEL_FLOOR_PERIOD,
@@ -30,15 +27,18 @@ from src.data_aggregate.utils.institutionals.institutional_features import (
     _availability_coverage,
     _stamp_availability,
 )
-from src.data_aggregate.utils.institutionals.institutional_features import (
+from src.data_aggregate.sec_thirteen.utils.institutional_features import (
     _quarter_features as _qf,
 )
-from src.data_aggregate.utils.institutionals.institutional_features import (
+from src.data_aggregate.sec_thirteen.utils.institutional_features import (
     build_institutional_feature_panel as _panel,
 )
-from src.data_aggregate.utils.institutionals.institutional_features import (
+from src.data_aggregate.sec_thirteen.utils.institutional_features import (
     clean_holdings as _clean_holdings,
 )
+from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecThirteen
+from src.data_aggregate.utils.common.availability import availability_date
+from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_extract.utils.institutionals.fetch_13f import _book_frame, filing_vintage
 from src.data_extract.utils.institutionals.fetch_cusip_map import _parse_openfigi
 from src.data_store.schema import Tables
@@ -598,7 +598,7 @@ def test_ownership_above_the_ceiling_is_nulled_not_clipped():
         and hand the model a fabricated level;
       * everything below is untouched, to the bit.
     """
-    from src.data_aggregate.utils.institutionals.institutional_features import OWNERSHIP_CEILING, _capped_ownership
+    from src.data_aggregate.sec_thirteen.utils.institutional_features import OWNERSHIP_CEILING, _capped_ownership
 
     idx = pd.DatetimeIndex(pd.bdate_range("2020-01-01", periods=4))
     raw = pd.DataFrame(
@@ -642,7 +642,7 @@ def test_the_shared_cleaner_handles_the_live_dtypes_not_just_strings():
     """
     import datetime as dt
 
-    from src.data_aggregate.utils.institutionals.holdings_clean import clean_holdings
+    from src.data_aggregate.sec_thirteen.utils.holdings_clean import clean_holdings
 
     rows = [
         # the ORIGINAL filing, and its AMENDMENT four days later with a corrected count
@@ -711,8 +711,8 @@ def test_the_shared_cleaner_handles_the_live_dtypes_not_just_strings():
 # --------------------------------------------------------------------------------------- #
 
 
-def _banded(rows: list[dict], band=(F13_MAX_EARLY_DAYS, F13_MAX_LATE_DAYS)) -> pd.DataFrame:
-    from src.data_aggregate.utils.institutionals.holdings_clean import clean_holdings
+def _banded(rows: list[dict], band=(45, 60)) -> pd.DataFrame:
+    from src.data_aggregate.sec_thirteen.utils.holdings_clean import clean_holdings
 
     return clean_holdings(pd.DataFrame(rows), key=("ticker", "cik", "period"), filing_band=band)
 
@@ -1091,29 +1091,29 @@ def test_production_first_publication_uses_immutable_matched_cohorts(sqlite_stor
         # Three known-truth managers prove exact math after checking the production floor below.
         return _panel(frames, holdings, min_prior_holders=0, **kwargs)
 
-    step = object.__new__(StepCubeInstitutionals)
+    step = object.__new__(StepCubeSecThirteen)
     step._store, step._log = sqlite_store, logging.getLogger(__name__)
     step._cfg = {"institutionals": {"value_basis": {"min_securities": 1}}}
     grid = pd.bdate_range("2024-08-01", "2024-12-06")
     quotes = pd.DataFrame(10.0, index=grid, columns=["AAA"])
     frames = make_frames(grid, {}, close_split=quotes, level_factor=quotes / 10)
     sqlite_store.save(Tables.cusip_ticker_map, pd.DataFrame({"cusip": ["111111111"], "ticker": ["AAA"]}))
-    assert step._institutional_panel(frames, None, None, quotes) is None
+    assert step._institutional_panel(frames, None, None, pd.DataFrame({"cusip": ["111111111"], "ticker": ["AAA"]}), quotes) is None
 
     save_packet("a-prior", "1", "2024-06-30", "2024-08-14", 100)
     save_packet("b-prior", "2", "2024-06-30", "2024-08-14", 900)
     save_packet("a-current", "1", "2024-09-30", "2024-11-14", 110)
-    guarded = step._institutional_panel(frames, None, None, quotes)
+    guarded = step._institutional_panel(frames, None, None, pd.DataFrame({"cusip": ["111111111"], "ticker": ["AAA"]}), quotes)
     assert guarded is not None
     assert "f_ic_inst_shares_chg" not in guarded
     assert guarded.f_ic_inst_concentration.notna().any()
     monkeypatch.setattr(step_module, "build_institutional_feature_panel", arithmetic)
-    prefix = step._institutional_panel(frames, None, None, quotes)
+    prefix = step._institutional_panel(frames, None, None, pd.DataFrame({"cusip": ["111111111"], "ticker": ["AAA"]}), quotes)
     assert prefix is not None
     save_packet("c-new", "3", "2024-09-30", "2024-11-20", 500)
     save_packet("b-empty", "2", "2024-09-30", "2024-11-25", None)
     save_packet("a-prior-fix", "1", "2024-06-30", "2024-12-02", 90, kind="restatement")
-    full = step._institutional_panel(frames, None, None, quotes)
+    full = step._institutional_panel(frames, None, None, pd.DataFrame({"cusip": ["111111111"], "ticker": ["AAA"]}), quotes)
     assert full is not None
     cutoff = pd.Timestamp("2024-11-20")
     pd.testing.assert_frame_equal(full.loc[full.date.le(cutoff)].reset_index(drop=True), prefix.loc[prefix.date.le(cutoff)].reset_index(drop=True))

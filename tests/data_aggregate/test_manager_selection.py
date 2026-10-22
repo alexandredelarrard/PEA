@@ -25,8 +25,8 @@ from typing import Any, cast
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.institutionals.holdings_clean import clean_holdings
-from src.data_aggregate.utils.institutionals.manager_selection import (
+from src.data_aggregate.sec_thirteen.utils.holdings_clean import clean_holdings
+from src.data_aggregate.sec_thirteen.utils.manager_selection import (
     eligibility,
     elite_weight,
     manager_concentration_score,
@@ -260,7 +260,7 @@ def _two_manager_book() -> pd.DataFrame:
 
 
 def _panel(holdings, **kw):
-    from src.data_aggregate.utils.institutionals.superinvestor_features import (
+    from src.data_aggregate.sec_thirteen.utils.superinvestor_features import (
         build_superinvestor_feature_panel,
     )
 
@@ -268,7 +268,7 @@ def _panel(holdings, **kw):
 
 
 def _keys(holdings: pd.DataFrame) -> tuple[pd.MultiIndex, pd.DataFrame]:
-    from src.data_aggregate.utils.institutionals.superinvestor_features import (
+    from src.data_aggregate.sec_thirteen.utils.superinvestor_features import (
         attach_tickers,
         manager_quarter_state,
     )
@@ -366,13 +366,12 @@ def test_build_cube_yml_declares_the_selection_block_and_parses_it():
 
 
 def test_the_step_builds_a_selector_from_config_and_memoises_the_roster():
-    """`StepCubeInstitutionals._superinvestor_selector` is the only place config becomes a
-    weight, and until now nothing exercised it. Also pins the memo: `roster_as_of` reloads
-    the whole roster table per call, so an un-cached lookup is one full read per period."""
+    """`StepCubeSecThirteen._superinvestor_selector` is the only place config becomes a
+    weight. Pins the memoized point-in-time lookup over the already-loaded roster history."""
     from omegaconf import OmegaConf
 
-    from src.data_aggregate.transformers.step_cube_institutionals import (
-        StepCubeInstitutionals,
+    from src.data_aggregate.transformers.step_cube_sec_thirteen import (
+        StepCubeSecThirteen,
     )
 
     reads = {"n": 0}
@@ -383,8 +382,9 @@ def test_the_step_builds_a_selector_from_config_and_memoises_the_roster():
 
     class _FakeContext:
         store = _FakeStore()
+        config_dir = "configs"
 
-    step = cast(Any, StepCubeInstitutionals.__new__(StepCubeInstitutionals))
+    step = cast(Any, StepCubeSecThirteen.__new__(StepCubeSecThirteen))
     step._context = _FakeContext()
     step._log = logging.getLogger(__name__)
 
@@ -396,28 +396,28 @@ def test_the_step_builds_a_selector_from_config_and_memoises_the_roster():
     # ---- "off", and YAML 1.1's boolean spelling of it, both mean no selector ----
     for spelling in ("off", False, "OFF", "none"):
         _configure(spelling)
-        assert step._superinvestor_selector() is None, spelling
+        assert step._superinvestor_selector(pd.DataFrame()) is None, spelling
     print(f'"off" spellings that correctly yield no selector: {["off", False, "OFF", "none"]}')
 
     # ---- top_k and continuous both produce a working weight ----
     st = _state({f"m{i}": 5 * (i + 1) for i in range(6)})
-    import src.data_aggregate.transformers.step_cube_institutionals as mod
+    import src.data_aggregate.transformers.step_cube_sec_thirteen as mod
 
     orig_as_of, orig_first = mod.roster_as_of, mod.first_snapshot_date
     try:
 
-        def _counting_as_of(_context, _as_of=None):
+        def _counting_as_of(_history, _as_of=None, *, config_dir=None):
             reads["n"] += 1
             return {f"m{i}" for i in range(6)}
 
         mod.roster_as_of = _counting_as_of
-        mod.first_snapshot_date = lambda _context: pd.Timestamp("2019-01-01")
+        mod.first_snapshot_date = lambda _history: pd.Timestamp("2019-01-01")
 
         got = {}
         for mode in ("top_k", "continuous"):
             _configure(mode)
             reads["n"] = 0
-            selector = step._superinvestor_selector()
+            selector = step._superinvestor_selector(pd.DataFrame())
             assert selector is not None
             sel = selector(st)
             got[mode] = (sel.nunique(), int(reads["n"]))

@@ -7,7 +7,7 @@ days); `ic_shortvol_market_coverage` is RegSHO's measured share of tape volume. 
 denominators (ADV20 and coverage) sum the issuer's secondary share classes, as the class-summed
 numerators do (`secondary_class_volume`). Point-in-time:
 every `ic_shortvol_*` leg is shifted `SHORTVOL_PUB_LAG` trading day; an FTD ZIP becomes knowable as
-a whole at period end plus `FTD_HISTORICAL_LAG_DAYS` past weekends (the fresh latest cached ZIP may
+a whole at period end plus 15 calendar days past weekends (the fresh latest cached ZIP may
 use its mtime in `MARKET_TIMEZONE`), moved to the next session and held until the next ZIP. An
 absent FTD ticker is 0 only on a date the file covers; an uncovered date is NaN.
 """
@@ -24,22 +24,14 @@ from typing import Any, cast
 import numpy as np
 import pandas as pd
 
-from src.constants.constants import (
-    FTD_HISTORICAL_LAG_DAYS,
-    FTD_LATEST_PERIOD_MAX_AGE_DAYS,
-    FTD_RECENT_CACHE_DAYS,
-    FTD_ZIP_NAME_TEMPLATE,
-    MARKET_TIMEZONE,
-)
+from src.constants.constants import FTD_ZIP_NAME_TEMPLATE, MARKET_TIMEZONE
 from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.common.errors import _empty_panel
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 from src.data_aggregate.utils.common.price_frames import PriceFrames
+from src.data_aggregate.utils.common.split_basis import split_adjust_frame
 from src.data_aggregate.utils.common.xs import self_history_z
-from src.data_aggregate.utils.institutionals.availability import InstitutionalAvailability
-from src.data_aggregate.utils.institutionals.split_basis import split_adjust_frame
-from src.data_store.schema import Tables
 from src.utils.price_adjustments import ShareBasis
 from src.utils.string import pad_cik, yahoo_symbol
 
@@ -110,7 +102,7 @@ def _ftd_period_end(period: str) -> pd.Timestamp:
 
 def _ftd_estimated_available_date(period: str) -> pd.Timestamp:
     """Historical ZIP estimate: period end plus 15 calendar days, past weekends."""
-    available = _ftd_period_end(period) + pd.Timedelta(days=FTD_HISTORICAL_LAG_DAYS)
+    available = _ftd_period_end(period) + pd.Timedelta(days=15)
     while available.weekday() >= 5:
         available += pd.Timedelta(days=1)
     return available
@@ -142,7 +134,7 @@ def _ftd_available_dates(
 
     ny_today = pd.Timestamp.now(tz=MARKET_TIMEZONE).date() if today is None else pd.Timestamp(today).date()
     candidate_ends = period_ends if stored_periods is None else {period: _ftd_period_end(period) for period in stored_periods}
-    eligible = [period for period, end in candidate_ends.items() if 0 <= (ny_today - end.date()).days <= FTD_LATEST_PERIOD_MAX_AGE_DAYS]
+    eligible = [period for period, end in candidate_ends.items() if 0 <= (ny_today - end.date()).days <= 60]
     if not eligible:
         return available
     latest = max(eligible)
@@ -151,7 +143,7 @@ def _ftd_available_dates(
     cached = cache_dir / FTD_ZIP_NAME_TEMPLATE.format(period=latest)
     if cached.is_file():
         cache_date = datetime.fromtimestamp(cached.stat().st_mtime, MARKET_TIMEZONE).date()
-        if 0 <= (ny_today - cache_date).days < FTD_RECENT_CACHE_DAYS:
+        if 0 <= (ny_today - cache_date).days < 2:
             available[latest] = pd.Timestamp(cache_date)
     return available
 
@@ -474,8 +466,6 @@ def build_short_flow_feature_panel(
     splits: pd.DataFrame | None = None,
     symbol_tenure: pd.DataFrame | None = None,
     ticker_ciks: pd.DataFrame | None = None,
-    availability: InstitutionalAvailability | None = None,
-    sink=None,
     class_volume: pd.DataFrame | None = None,
     share_basis: ShareBasis | None = None,
 ) -> pd.DataFrame:
@@ -531,31 +521,5 @@ def build_short_flow_feature_panel(
             fields.pop(name)
     if not fields:
         return pd.DataFrame(columns=["date", "ticker"])
-    if sink is not None:
-        # Only the confirmed-short-flow leg feeds the cross-source bearish family count (no actor here).
-        name = "ic_shortvol_high_x_weak_price"
-        signal_fields = dict(fields)
-        signal_masks: dict[str, pd.DataFrame] = {}
-        if name in fields:
-            columns = pd.Index(sorted(map(str, frames.universe)), name="ticker")
-            raw = fields[name].reindex(index=idx, columns=columns)
-            if close_total is not None and not close_total.empty:
-                listed = close_total.reindex(index=idx, columns=columns).notna()
-            else:
-                listed = pd.DataFrame(True, index=idx, columns=columns)
-            mask = (
-                availability.derived_mask(
-                    name,
-                    idx,
-                    columns,
-                    dependencies=((Tables.short_interest, None),),
-                    requirements=(listed, raw.notna()),
-                )
-                if availability is not None
-                else raw.notna()
-            )
-            signal_masks[name] = mask
-            signal_fields[name] = raw.where(mask)
-        sink.keep_signals(signal_fields, signal_masks)
     emission = {name: EMISSION[name] for name in fields}
     return build_peer_relative_panel(fields, peer_dict, emission=emission, availability=frames.availability)

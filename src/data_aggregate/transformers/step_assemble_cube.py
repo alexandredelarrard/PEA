@@ -8,12 +8,11 @@ import json
 import pandas as pd
 from omegaconf import DictConfig
 
-from src.constants.constants import PANEL_KEYS
 from src.context import Context
 from src.data_aggregate.utils.common.assembly import AssemblyPolicy, part_has_rows
 from src.data_aggregate.utils.common.frames import downcast_float32
 from src.data_aggregate.utils.common.gics import GICS_COLUMNS, apply_categorical_codes
-from src.data_aggregate.utils.common.panel_merge import FeatureCollisionError, PanelMerger
+from src.data_aggregate.utils.common.panel_merge import PANEL_KEYS, FeatureCollisionError, PanelMerger
 from src.data_aggregate.utils.common.part_status import cube_part_edge_report
 from src.data_aggregate.utils.common.parts import CUBE_PARTS, PART_BY_NAME, CubePart
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
@@ -27,6 +26,7 @@ _MIN_TARGET_COVERAGE_PCT = 50.0
 class StepAssembleCube(Step):
     def __init__(self, context: Context, config: DictConfig) -> None:
         super().__init__(context=context, config=config)
+        self._store = context.store
         self._cfg = config.build_cube
 
     def run(self) -> None:
@@ -36,7 +36,7 @@ class StepAssembleCube(Step):
         if prices is None:
             raise RuntimeError(f"{Tables.cube_part_prices} is required as the price grid; run build-prices")
         price_index = pd.MultiIndex.from_frame(prices[PANEL_KEYS])
-        merger = PanelMerger(self._log, anchor=prices[PANEL_KEYS])
+        merger = PanelMerger(anchor=prices[PANEL_KEYS])
         owners: dict[str, str] = {name: "metadata" for name in ("peers", *GICS_COLUMNS)}
         base_columns: list[str] = []
         targets = pd.DataFrame(index=price_index[:0])
@@ -90,7 +90,7 @@ class StepAssembleCube(Step):
             raise RuntimeError(f"{part.name} has {duplicates} duplicate (date,ticker) rows; run {part.command}")
 
     def _read_part(self, part: CubePart, policy: AssemblyPolicy, price_keys: pd.DataFrame | None = None) -> pd.DataFrame | None:
-        store = self._context.store
+        store = self._store
         if not part_has_rows(store, part):
             if part.name in policy.optional:
                 self._log.info("Skipping optional %s: absent or empty; refresh with %s", part.name, part.command)
@@ -124,7 +124,7 @@ class StepAssembleCube(Step):
         return panel
 
     def _stream_cube(self, base: pd.DataFrame, targets: pd.DataFrame) -> None:
-        store = self._context.store
+        store = self._store
         total, matched = 0, 0
         labels = list(targets.columns)
         expected = set(PANEL_KEYS) | set(base.columns) | set(labels)

@@ -13,7 +13,6 @@ import pytest
 from src.data_aggregate.utils.institutionals import insider_features
 from src.data_aggregate.utils.institutionals.insider_features import build_insider_feature_panel
 from src.data_aggregate.utils.institutionals.insider_quality import clean_transactions
-from src.data_aggregate.utils.institutionals.sink import ConditioningSink
 from tests.conftest import make_frames
 from tests.data_aggregate.insider_pit_reference import compare, frame, reference_panel, row, sentinel_rows
 
@@ -23,11 +22,11 @@ MCAP = 1_000_000.0 * 100.0
 COMPLETE = pd.Timestamp("2024-12-31")
 
 
-def _build(df_rows: pd.DataFrame, sink: ConditioningSink | None = None) -> pd.DataFrame:
+def _build(df_rows: pd.DataFrame) -> pd.DataFrame:
     close = pd.DataFrame(100.0, index=IDX, columns=TICKERS)
     fh = pd.DataFrame([{"ticker": t, "as_of": pd.Timestamp("2023-01-01"), "sharesOutstanding": 1e6, "sharesOutstandingPit": 1e6} for t in TICKERS])
     frames = make_frames(IDX, {t: {t: 1.0} for t in TICKERS}, close_split=close)
-    return build_insider_feature_panel(frames, df_rows, shares_out_history=fh, complete_through=COMPLETE, sink=sink)
+    return build_insider_feature_panel(frames, df_rows, shares_out_history=fh, complete_through=COMPLETE)
 
 
 def _series(panel: pd.DataFrame, column: str, ticker: str = "AAA") -> pd.Series:
@@ -400,14 +399,3 @@ def test_a_restatement_that_leaves_a_leg_keeps_the_leg_observed():
     print(
         f"SANITY: the CEO leg reads {ceo.loc['2024-03-06']:.6f} until the 4/A, then exactly 0 (observed, emptied), and NaN before the first filing."
     )
-
-
-def test_the_sink_gets_each_trade_once_at_its_first_disclosure():
-    sink = ConditioningSink()
-    _build(frame(mixed_rows()), sink=sink)
-    events = sink.events["insider"]
-    aaa = events[events["ticker"].eq("AAA")]
-    on_a1_day = aaa[aaa["date"].eq(pd.Timestamp("2024-02-08"))]
-    assert len(on_a1_day) == 1 and on_a1_day["shares"].iloc[0] == 150.0  # only the new cell Z
-    assert aaa["date"].eq(pd.Timestamp("2024-06-07")).sum() == 0  # the later copy
-    print(f"SANITY: {len(events)} sink events; the 4/A restatement of cell X adds none, its new cell Z adds one on 2024-02-08, the later copy none.")

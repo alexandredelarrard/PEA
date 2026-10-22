@@ -16,12 +16,12 @@ from typing import Any, cast
 import pandas as pd
 import pytest
 
+from src.data_aggregate.sec_thirteen.utils.institutional_features import build_institutional_feature_panel
 from src.data_aggregate.utils.governance.clean import GovernanceInputs, clean_governance_inputs
 from src.data_aggregate.utils.governance.panel import build_governance_feature_panel
 from src.data_aggregate.utils.institutionals.frontiers import schedule_complete_through
 from src.data_aggregate.utils.institutionals.inputs import load_source
 from src.data_aggregate.utils.institutionals.insider_features import build_insider_feature_panel
-from src.data_aggregate.utils.institutionals.institutional_features import build_institutional_feature_panel
 from src.data_aggregate.utils.institutionals.ownership_features import build_ownership_feature_panel
 from src.data_extract.utils.common.edgar_driver import FilingStamp, marker_row
 from src.data_extract.utils.common.empty_markers import marker_frame

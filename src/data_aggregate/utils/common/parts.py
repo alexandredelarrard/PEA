@@ -117,36 +117,9 @@ CUBE_PARTS: tuple[CubePart, ...] = (
             ("earnings_call_embedding", 0),
         ),
     ),  # QoQ embedding drift
-    # ⚠ 160 -> 390, and the two families that forced it are the ones Phase 2.5/2.6 added:
-    #   * `short_flow` 322 -- a 252-day self-history z, then a 30-day persistence count on top
-    #     of it, with a conservative publication buffer. ZIP availability now comes from the
-    #     per-period vintage date, not a fixed 40-session shift.
-    #   * `conditioning` 252 -- the excursion cap on `ic_sig_insider_max_dd/runup_since_buy`
-    #     (`build_cube.institutionals.excursion_lookback`).
-    # 390 is the same warm-up targets/betas already use, which is not a coincidence: it is one
-    # 252-day look-back plus the ~130-day buffer a trailing recompute needs to reproduce the
-    # rolling statistic at the window's oldest rewritten date. `test_part_registry.py` asserts
-    # every warm-up covers its members, so this is enforced rather than remembered.
-    CubePart(
-        Tables.cube_part_institutionals,
-        "build-institutionals",
-        "features",
-        390,
-        (
-            ("short_flow", 322),  # conservative bound for z252 + persistence(30) + ZIP availability
-            # `ownership_features.HOLDER_ACTIVE_DAYS`: both the 13G holder ffill(limit=)
-            # and the rolling distinct-filer denominator. The LONGEST bounded look-back in
-            # the part, and it was MISSING from this tuple entirely -- which is why
-            # `test_part_registry.py` stayed green while the panel it describes was the one
-            # `f_ic_bo_new_holder` went wrong in.
-            ("ownership", 378),
-            ("conditioning", 252),  # capped max-drawdown / run-up since the last buy
-            ("institutional", 0),  # QoQ vs the prior 13F period
-            ("superinvestor", 0),
-            ("cross_source", 126),  # trailing distinct-ACTOR window
-            ("insider", 0),
-        ),
-    ),  # rolling('180D') over the FULL transaction calendar
+    # Capital-disclosure parts compute on full history; 390 is nominal lifecycle metadata.
+    CubePart(Tables.cube_part_institutionals, "build-institutionals", "features", 390, (("short_flow", 322), ("ownership", 378), ("insider", 0))),
+    CubePart(Tables.cube_part_sec_thirteen, "build-sec-thirteen", "features", 390, (("institutional", 0), ("superinvestor", 0))),
     # Governance sources are all FILING-space (annual proxies, 8-K vote records), so every YoY
     # delta needs no grid warm-up at all. TWO legs bind on the daily grid, and the longer one
     # decides:

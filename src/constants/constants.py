@@ -21,9 +21,6 @@ GOVERNANCE_ANNUAL_MAX_AGE_DAYS = 395
 # SEC fails-to-deliver ZIP publication policy. The cache timestamp is only a
 # short-lived observation for the newest stored period; older ZIPs use the estimate.
 FTD_ZIP_NAME_TEMPLATE = "cnsfails{period}.zip"
-FTD_HISTORICAL_LAG_DAYS = 15
-FTD_LATEST_PERIOD_MAX_AGE_DAYS = 60
-FTD_RECENT_CACHE_DAYS = 2
 
 # `security_master` lineage roles read by the tapes, the insider lineage stamp and the aggregate readers.
 CANONICAL_PREDECESSOR = "canonical_predecessor"
@@ -76,59 +73,8 @@ SEC_COMPANY_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 # `_FILING_LAG_DAYS = 45` in each of them.
 SEC_13F_FILING_LAG_DAYS = 45
 
-# The 13F filing BAND, in days against the deadline (`filing_date - (period + 45d)`). A row
-# outside it is dropped by `holdings_clean.clean_holdings(filing_band=...)`: the position is
-# real, but nobody can say WHEN it became knowable, and a quarter-end snapshot filed three
-# years later is not an observation of that quarter, it is an archive entry.
-#
-# Measured 2026-09-14 on `sec13f_hr` (23,801,899 rows, after the step 2.1 refill), by lag
-# against the deadline:
-#
-#     on time (<= deadline)   20,710,086   87.010%
-#     1-60d late   (KEPT)      2,041,382    8.577%
-#     61-90d late                125,823    0.529%
-#     91-365d late               390,863    1.642%
-#     >365d late                 533,745    2.242%
-#
-# so the band drops 1,050,431 rows (4.413%) across 2,679 filers, carrying 1.052% of as-filed
-# value. It also cuts the per-pair filing-date spread that makes a filing-date emission grid
-# affordable at all.
-#
-# ⚠ THE EARLY HALF IS NON-BINDING AND IS KEPT AS AN ASSERTION, NOT AS WORK. Zero rows in the
-# table have `filing_date < period` at all, let alone 45 days before the deadline, so
-# `F13_MAX_EARLY_DAYS` has never dropped a row. It stays because a future extraction bug that
-# stamps a filing before its own period is exactly the kind of thing that should be caught by
-# a filter rather than ffilled into the panel -- but nobody should read it as doing work today.
-F13_MAX_EARLY_DAYS = 45
-F13_MAX_LATE_DAYS = 60
-
 # The 13F AVAILABILITY DATE, in TRADING days past the snapped deadline.
 F13_SETTLE_TRADING_DAYS = 3
-
-# The materiality gate on a REVISION. A period is first published at its availability date
-# and re-emitted on each later date one of its filings arrives, but only when the new filings
-# move the ticker's aggregate share count by at least this fraction of the last EMITTED
-# aggregate.
-#
-# ⚠ THE GATE IS SAFE ONLY BECAUSE THE AGGREGATE IS CUMULATIVE. Skipping an immaterial
-# revision date DELAYS those filings to the next emitted date; it never drops them, because
-# every emission sums every filing public at its own date. Do not "fix" this into a filter.
-#
-# Measured 2026-09-15 (in-universe, banded, `F13_SETTLE_TRADING_DAYS = 3`). 23,406
-# ticker-quarters carry 312,138 distinct availability dates between them, and 3.34% of shares
-# sit behind their period's first publication:
-#
-#     threshold   emit rows   of which revisions   shares emitted on their own date
-#       0.02%       152,441             129,035        99.967%
-#       0.05%       120,725              97,319        99.924%
-#       0.10%        98,911              75,505        99.866%
-#       0.20%        80,516              57,110        99.771%
-#       1.00%        46,709              23,303        99.285%
-#
-# 0.10% takes the emission from 312k rows to 99k -- against 23.4k under a one-stamp-per-period
-# rule -- and still stamps 99.866% of shares on the date they became public. The 0.13% it
-# defers is deferred by one revision, not lost.
-F13_REVISION_MIN_MOVE = 0.001
 
 SEC_ARCHIVES_BASE_URL = "https://www.sec.gov/Archives/edgar/data"
 # EDGAR company-name search (atom): the authoritative NAME -> CIK lookup. Filtered to
@@ -147,7 +93,6 @@ SEC_INSIDER_SWAP_YEAR = 2026
 
 # SEC Form 13F v1.7 changed VALUE units on the filing date, including old-quarter amendments.
 SEC_13F_DOLLAR_UNITS_FROM = "2023-01-03"
-SEC_13F_VALUE_FACTORS = (1.0, 0.001, 1000.0)
 SEC_13F_SOURCE_RATIO_BOUNDS = (0.85, 1.10)
 SEC_13F_SOURCE_ACCOUNTED = "source_accounted:"
 SEC_13F_INFERRED_HOLDINGS_REPORT = "13F HOLDINGS REPORT (inferred)"
@@ -817,8 +762,6 @@ DATA_FRESHNESS_CADENCE_ORDER: tuple[str, ...] = ("daily", "weekly", "biweekly", 
 # incremental build rewrites a wider bounded tail than the shared five-session price repair.
 FUNDAMENTALS_REFRESH_TRADING_DAYS = 45
 
-# The join keys every feature panel carries; everything else in a panel is a feature column.
-PANEL_KEYS = ["date", "ticker"]
 
 # The cube + the ad-hoc intermediate `cube_part_*` tables the sub-steps hand to each other are
 # declared in src/data_store/schema.py (`Tables.cube`, `Tables.cube_part_*`), the parts with

@@ -24,9 +24,7 @@ from typing import Any, cast
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.institutionals.availability import InstitutionalAvailability
-from src.data_aggregate.utils.institutionals.sink import ConditioningSink
-from src.data_aggregate.utils.institutionals.superinvestor_features import (
+from src.data_aggregate.sec_thirteen.utils.superinvestor_features import (
     EMISSION,
     _selection_ciks,
     _selection_series,
@@ -39,6 +37,7 @@ from src.data_aggregate.utils.institutionals.superinvestor_features import (
     manager_stock_conviction,
     public_state,
 )
+from src.data_aggregate.utils.common.availability import InstitutionalAvailability
 from tests.conftest import make_frames
 
 #: Two roster managers. `BIG` runs a 10-name book of which only 2 are in the universe --
@@ -200,7 +199,7 @@ def test_a_split_is_restated_not_read_as_a_purchase():
 
 def _contrib(conv, state):
     sel = _selection_series(state, None)
-    from src.data_aggregate.utils.institutionals.superinvestor_features import _contributions
+    from src.data_aggregate.sec_thirteen.utils.superinvestor_features import _contributions
 
     return _contributions(conv, state, sel)
 
@@ -304,56 +303,41 @@ def _availability(start: str) -> InstitutionalAvailability:
     )
 
 
-def _assert_super_sink_starts_on_or_after(sink: ConditioningSink, start: pd.Timestamp) -> None:
-    super_frame = sink.events.get("super")
-    assert super_frame is None or super_frame.empty or pd.to_datetime(super_frame["date"]).min() >= start
-    for name, signal in sink.signals.items():
-        if name.startswith("ic_super_"):
-            before = signal.available.index < start
-            assert not signal.available.loc[before].to_numpy().any()
-
-
 def test_declared_source_start_masks_older_public_super_state():
     idx = pd.bdate_range("2012-07-01", "2013-02-15").difference(pd.DatetimeIndex(["2013-01-01"]))
     holdings = pd.DataFrame(_book("2012-06-30", "2012-08-14", 500, 500) + _book("2012-09-30", "2012-11-14", 1000, 0))
-    sink = ConditioningSink()
     panel = build_superinvestor_feature_panel(
         make_frames(idx, universe=_UNIVERSE),
         holdings,
         _ROSTER,
         cusip_map=_CUSIP_MAP,
         availability=_availability("2013-01-01"),
-        sink=sink,
     )
     start = pd.Timestamp("2013-01-02")
     features = panel.filter(like="f_")
     assert panel.loc[panel["date"] < start, features.columns].isna().all().all()
     assert panel.loc[panel["date"] >= start, features.columns].notna().any().any()
     assert panel.loc[panel["date"] < pd.Timestamp("2013-02-14"), "f_ic_super_conviction_chg"].isna().all()
-    _assert_super_sink_starts_on_or_after(sink, start)
     print("\n=== SANITY CHECK: declared elite-13F source start ===")
-    print("  2012 public states remain unavailable until the first 2013 trading session; persisted and sink outputs agree. Validated.")
+    print("  2012 public states remain unavailable until the first 2013 trading session; persisted outputs agree. Validated.")
 
 
 def test_later_first_public_filing_remains_the_super_boundary():
     idx = pd.bdate_range("2013-01-01", "2013-06-01")
     holdings = pd.DataFrame(_book("2012-12-31", "2013-02-14", 500, 500) + _book("2013-03-31", "2013-05-15", 1000, 0))
-    sink = ConditioningSink()
     panel = build_superinvestor_feature_panel(
         make_frames(idx, universe=_UNIVERSE),
         holdings,
         _ROSTER,
         cusip_map=_CUSIP_MAP,
         availability=_availability("2013-01-01"),
-        sink=sink,
     )
     start = pd.Timestamp("2013-02-14")
     features = panel.filter(like="f_")
     assert panel.loc[panel["date"] < start, features.columns].isna().all().all()
     assert panel.loc[panel["date"] >= start, features.columns].notna().any().any()
-    _assert_super_sink_starts_on_or_after(sink, start)
     print("\n=== SANITY CHECK: later elite-13F public filing ===")
-    print("  A 2013-01-01 source declaration does not pull a 2013-02-14 filing backward; persisted and sink outputs start no earlier. Validated.")
+    print("  A 2013-01-01 source declaration does not pull a 2013-02-14 filing backward; persisted outputs start no earlier. Validated.")
 
 
 # --------------------------------------------------------------------------------------- #

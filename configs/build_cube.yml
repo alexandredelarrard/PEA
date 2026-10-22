@@ -7,10 +7,12 @@ build_cube:
     optional_parts:
       - cube_part_text
       - cube_part_institutionals
+      - cube_part_sec_thirteen
     columns:
       cube_part_fundamentals: null  # null, empty or omitted: all columns
       cube_part_governance: null
       cube_part_institutionals: null
+      cube_part_sec_thirteen: null
       # To restrict a part, replace null with a block list, for example:
       # cube_part_fundamentals:
       #   - f_earnings_yield
@@ -226,7 +228,6 @@ build_cube:
                              # LEVELS suppressed as well, because a delta against a hole reads
                              # as the whole universe initiating at once.
 
-    excursion_lookback: 252  # trading days. Caps `ic_sig_insider_max_dd_since_buy` /
                              # `_max_runup_since_buy`: an excursion measured since a purchase
                              # filed nine years ago describes the decade, not the insider.
                              # ⚠ THIS IS THE BINDING LOOK-BACK OF THE WHOLE PART -- raising it

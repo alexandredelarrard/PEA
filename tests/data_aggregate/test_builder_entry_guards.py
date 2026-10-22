@@ -22,14 +22,11 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.institutionals.cross_source_features import build_cross_source_panel
+from src.data_aggregate.sec_thirteen.utils.institutional_features import build_institutional_feature_panel
+from src.data_aggregate.sec_thirteen.utils.superinvestor_features import build_superinvestor_feature_panel
 from src.data_aggregate.utils.institutionals.insider_features import build_insider_feature_panel
-from src.data_aggregate.utils.institutionals.institutional_features import build_institutional_feature_panel
 from src.data_aggregate.utils.institutionals.ownership_features import build_ownership_feature_panel
 from src.data_aggregate.utils.institutionals.short_flow_features import build_short_flow_feature_panel
-from src.data_aggregate.utils.institutionals.signal_conditioning import build_signal_conditioning_panel
-from src.data_aggregate.utils.institutionals.sink import ConditioningSink
-from src.data_aggregate.utils.institutionals.superinvestor_features import build_superinvestor_feature_panel
 from tests.conftest import make_frames
 
 IDX = pd.bdate_range("2024-01-01", "2024-06-28")
@@ -45,7 +42,6 @@ CASES = [
     ("insider", lambda f, src: build_insider_feature_panel(f, src)),
     ("short_flow", lambda f, src: build_short_flow_feature_panel(f, src)),
     ("ownership", lambda f, src: build_ownership_feature_panel(f, src, None)),
-    ("signal_conditioning", lambda f, src: build_signal_conditioning_panel(f, src)),
 ]
 
 
@@ -62,8 +58,7 @@ def _is_empty_panel(panel) -> bool:
 def test_an_absent_source_returns_the_empty_panel_and_does_not_raise(label, build):
     """`None` and an empty frame are the two shapes a cold table actually arrives in."""
     frames = _frames()
-    # `signal_conditioning` takes an event MAP, not a frame; `{}` is its empty
-    empty_src = {} if label == "signal_conditioning" else pd.DataFrame()
+    empty_src = pd.DataFrame()
     got = {}
     for shape, src in (("None", None), ("empty", empty_src)):
         panel = build(frames, src)
@@ -79,16 +74,6 @@ def test_an_absent_source_returns_the_empty_panel_and_does_not_raise(label, buil
     print("    CONCLUSION: the cold-table path returns the empty panel instead of raising, so `PanelMerger.add` reports 'nothing built'. Validated.")
 
 
-def test_the_cross_source_builder_tolerates_an_unfilled_sink():
-    """`build_cross_source_panel` reads a SINK, not a frame, so its empty case is its own."""
-    panel = build_cross_source_panel(_frames(), ConditioningSink())
-    assert _is_empty_panel(panel), list(panel.columns)
-    print()
-    print("=== SANITY: cross-source on an unfilled sink ===")
-    print(f"    empty ConditioningSink -> empty frame, columns {list(panel.columns)}")
-    print("    CONCLUSION: when no source panel contributed a signal or an actor, the derived panel is empty rather than a raise. Validated.")
-
-
 @pytest.mark.parametrize("label,build", CASES, ids=[c[0] for c in CASES])
 def test_a_source_missing_a_required_column_returns_empty_rather_than_raising(label, build):
     """The third leg of the D5 guard, and the one a `None`/`.empty` check alone misses.
@@ -97,8 +82,6 @@ def test_a_source_missing_a_required_column_returns_empty_rather_than_raising(la
     frame that is neither None nor empty — it just cannot be used. Without the `issubset`
     leg that lands as a `KeyError` deep in the arithmetic instead of an empty panel.
     """
-    if label == "signal_conditioning":
-        pytest.skip("takes an event map keyed by family, not a columnar source frame")
     junk = pd.DataFrame({"not_a_column_any_builder_reads": [1, 2, 3]})
     panel = build(_frames(), junk)
     assert _is_empty_panel(panel), f"{label} on a frame with no usable column returned {list(panel.columns)}"
@@ -111,4 +94,3 @@ def test_a_source_missing_a_required_column_returns_empty_rather_than_raising(la
 if __name__ == "__main__":
     for lbl, fn in CASES:
         test_an_absent_source_returns_the_empty_panel_and_does_not_raise(lbl, fn)
-    test_the_cross_source_builder_tolerates_an_unfilled_sink()

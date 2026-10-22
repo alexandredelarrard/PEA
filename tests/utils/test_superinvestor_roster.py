@@ -19,8 +19,9 @@ import pandas as pd
 import pytest
 
 import src.utils.superinvestor_roster as sr
+from src.data_aggregate.sec_thirteen.utils.superinvestor_roster import roster_as_of, to_manager_books
 from src.data_store.schema import Tables
-from src.utils.superinvestor_roster import roster_as_of, roster_cik_union, roster_map_as_of
+from src.utils.superinvestor_roster import _load_superinvestor_roster, roster_cik_union, roster_map_as_of
 from tests.fixtures.superinvestor_config import APPALOOSA_CHAIN, APPALOOSA_NEW, APPALOOSA_OLD, write_roster_config
 
 _AM_OLD, _AM_NEW = APPALOOSA_OLD, APPALOOSA_NEW
@@ -74,18 +75,18 @@ _SEED = (
 
 def test_roster_as_of_reads_the_snapshot_at_or_before_the_date(sqlite_store, tmp_path):
     ctx = _ctx(sqlite_store, _SEED, _config_dir(tmp_path))
-    mid = roster_as_of(ctx, "2016-06-30")
+    mid = roster_as_of(_load_superinvestor_roster(ctx), "2016-06-30")
     assert mid == {"0001067983", "0001568820", "0001360079"}
     # the two managers 2026 dropped ARE in the 2016 pool -- the survivorship fix
     assert {"0001568820", "0001360079"} <= mid
     assert "0001079114" not in mid  # Greenlight joined later: no look-ahead
-    assert roster_as_of(ctx, "2013-06-30") == {"0001067983", "0001568820"}  # 2013 snapshot
-    assert roster_as_of(ctx, "2012-12-31") == set()  # before the first
+    assert roster_as_of(_load_superinvestor_roster(ctx), "2013-06-30") == {"0001067983", "0001568820"}  # 2013 snapshot
+    assert roster_as_of(_load_superinvestor_roster(ctx), "2012-12-31") == set()  # before the first
     print("\n=== SANITY: point-in-time roster ===")
     print(
         f"  as_of 2016-06-30 -> {len(mid)} CIKs including Arlington (0001568820) and "
         f"Wintergreen (0001360079), both absent from today's roster; as_of 2013-06-30 -> "
-        f"{len(roster_as_of(ctx, '2013-06-30'))}; before the first snapshot -> 0. "
+        f"{len(roster_as_of(_load_superinvestor_roster(ctx), '2013-06-30'))}; before the first snapshot -> 0. "
         "Never reads a later snapshot. Validated on the real store."
     )
 
@@ -94,10 +95,10 @@ def test_duplicate_codes_collapse_to_one_manager(sqlite_store, tmp_path):
     ctx = _ctx(sqlite_store, _SEED, _config_dir(tmp_path))
     snap = [r for r in _SEED if r["snapshot_date"] == date(2016, 1, 1)]
     assert sum(r["cik"] == "0001067983" for r in snap) == 2  # two rows, two codes
-    assert sorted(roster_as_of(ctx, "2016-06-30")).count("0001067983") == 1
+    assert sorted(roster_as_of(_load_superinvestor_roster(ctx), "2016-06-30")).count("0001067983") == 1
     names = roster_map_as_of(ctx, "2016-06-30")
     assert names["0001067983"] == "Berkshire Hathaway"  # first in dataroma_code order
-    assert len(names) == len(roster_as_of(ctx, "2016-06-30"))
+    assert len(names) == len(roster_as_of(_load_superinvestor_roster(ctx), "2016-06-30"))
     print("\n=== SANITY: two codes, one manager ===")
     print(
         "  'brk' and 'BRK' are two rows in the 2016 snapshot and one member (0001067983) in the roster set; the name map is 1:1 with it. Validated."
@@ -106,7 +107,7 @@ def test_duplicate_codes_collapse_to_one_manager(sqlite_store, tmp_path):
 
 def test_unresolved_manager_never_becomes_a_cik(sqlite_store, tmp_path):
     ctx = _ctx(sqlite_store, _SEED, _config_dir(tmp_path))
-    latest = roster_as_of(ctx)  # no date -> latest snapshot
+    latest = roster_as_of(_load_superinvestor_roster(ctx))  # no date -> latest snapshot
     assert latest == {"0001067983", "0001079114"}  # CMAFX has a NULL cik
     assert None not in latest and "" not in latest
     print("\n=== SANITY: unresolved manager ===")
@@ -123,10 +124,10 @@ def test_union_is_the_walk_scope_not_a_point_in_time_set(sqlite_store, tmp_path)
     union = roster_cik_union(ctx)
     # Greenlight's successor filer (DME Capital) is walked although no snapshot names it
     assert union == {"0001067983", "0001568820", "0001360079", "0001079114", "0001489933"}
-    assert union > roster_as_of(ctx)  # strictly bigger than today's
+    assert union > roster_as_of(_load_superinvestor_roster(ctx))  # strictly bigger than today's
     print("\n=== SANITY: 13F walk scope ===")
     print(
-        f"  union over all snapshots = {len(union)} CIKs vs {len(roster_as_of(ctx))} on "
+        f"  union over all snapshots = {len(union)} CIKs vs {len(roster_as_of(_load_superinvestor_roster(ctx)))} on "
         "today's roster. Fetching only today's is what makes a dropped manager "
         "unrecoverable later. Validated."
     )
@@ -134,7 +135,7 @@ def test_union_is_the_walk_scope_not_a_point_in_time_set(sqlite_store, tmp_path)
 
 def test_missing_table_returns_empty_not_a_raise(sqlite_store, tmp_path):
     ctx = _ctx(sqlite_store, config_dir=_config_dir(tmp_path))  # table never written
-    assert roster_as_of(ctx) == set() and roster_map_as_of(ctx) == {}
+    assert roster_as_of(_load_superinvestor_roster(ctx)) == set() and roster_map_as_of(ctx) == {}
     assert roster_cik_union(ctx) == set()
     print("\n=== SANITY: cold start ===")
     print(
@@ -151,8 +152,8 @@ def test_manager_identity_across_succession(sqlite_store, tmp_path):
     )
     config_dir = _config_dir(tmp_path, APPALOOSA_CHAIN)
     ctx = _ctx(sqlite_store, rows, config_dir)
-    assert roster_as_of(ctx, "2015-12-31") == {_AM_OLD}
-    assert roster_as_of(ctx, "2016-03-31") == {_AM_OLD, "0001067983"}
+    assert roster_as_of(_load_superinvestor_roster(ctx), "2015-12-31") == {_AM_OLD}
+    assert roster_as_of(_load_superinvestor_roster(ctx), "2016-03-31") == {_AM_OLD, "0001067983"}
     assert roster_map_as_of(ctx, "2016-03-31")[_AM_OLD] == "David Tepper - Appaloosa"
     overrides = sr.load_superinvestor_overrides(config_dir)
     assert overrides.manager_id(_AM_NEW) == _AM_OLD and overrides.manager_id("1067983") == "0001067983"
@@ -173,7 +174,7 @@ def test_manager_identity_across_succession(sqlite_store, tmp_path):
             "value_usd": [1, 2, 99, 98, 3, 4, 5],
         }
     )
-    out = sr.to_manager_books(books, config_dir=config_dir)
+    out = to_manager_books(books, config_dir=config_dir)
     chain = out[out["cik"] == _AM_OLD].sort_values("period")
     assert list(chain["value_usd"]) == [1, 2, 3, 4]  # 99 / 98: a filer outside its own window, dropped
     assert not chain["period"].duplicated().any()  # one book per quarter, never double-counted
@@ -227,7 +228,7 @@ def test_chain_with_returning_filer(tmp_path):
             "value_usd": [1, 99, 2, 3, 4, 98],
         }
     )
-    out = sr.to_manager_books(books, config_dir=config_dir).sort_values("period")
+    out = to_manager_books(books, config_dir=config_dir).sort_values("period")
     assert list(out["value_usd"]) == [1, 2, 3, 4] and set(out["cik"]) == {_COOPERMAN}
     assert not out["period"].duplicated().any()
     print("\n=== SANITY: chain with a returning filer ===")
@@ -281,7 +282,7 @@ def test_production_lmvtx_maps_to_the_value_trust_adviser_book():
             "issuer_name": ["CITIGROUP INC", "MICROSOFT CORP", "UNITEDHEALTH GROUP INC", "COMCAST CORP NEW", "RESIDUAL", "ALPHABET INC"],
         }
     )
-    out = sr.to_manager_books(books, config_dir=_REPO_CONFIGS)
+    out = to_manager_books(books, config_dir=_REPO_CONFIGS)
     q2_2015 = out[out["period"] == date(2015, 6, 30)]
     assert list(q2_2015["issuer_name"]) == ["CITIGROUP INC", "MICROSOFT CORP"] and set(out["cik"]) == {_LMCM}
     assert list(out.loc[out["period"] == date(2018, 9, 30), "issuer_name"]) == ["ALPHABET INC"]

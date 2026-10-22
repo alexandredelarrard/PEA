@@ -28,6 +28,8 @@ from __future__ import annotations
 from scripts.cube_feature_catalogue import CATALOGUE, CATALOGUES, split
 from scripts.cube_governance_catalogue import GOVERNANCE
 from scripts.cube_institutionals_catalogue import INSTITUTIONALS
+from scripts.cube_sec_thirteen_catalogue import SEC_THIRTEEN
+from src.data_aggregate.sec_thirteen.utils import institutional_features, superinvestor_features
 from src.data_aggregate.utils.governance import director_comp as dc
 from src.data_aggregate.utils.governance import directors as dr
 from src.data_aggregate.utils.governance import panel as pn
@@ -35,13 +37,9 @@ from src.data_aggregate.utils.governance import pay_features as pay
 from src.data_aggregate.utils.governance import provisions_features as pv
 from src.data_aggregate.utils.governance import vote_dissent_features as vd
 from src.data_aggregate.utils.institutionals import (
-    cross_source_features,
     insider_features,
-    institutional_features,
     ownership_features,
     short_flow_features,
-    signal_conditioning,
-    superinvestor_features,
 )
 
 #: ⚠ THE ONE ALLOWED DECLARED-BUT-ABSENT FIELD, named rather than filtered.
@@ -164,6 +162,7 @@ def test_the_catalogues_are_separate_and_key_disjoint():
         "cube_part_fundamentals",
         "cube_part_governance",
         "cube_part_institutionals",
+        "cube_part_sec_thirteen",
     }
 
     print("\n=== SANITY CHECK: the per-part registry ===")
@@ -175,13 +174,9 @@ def test_the_catalogues_are_separate_and_key_disjoint():
 
 def test_the_institutionals_catalogue_matches_declared_characteristics_both_ways():
     modules = (
-        institutional_features,
-        superinvestor_features,
         insider_features,
         short_flow_features,
         ownership_features,
-        signal_conditioning,
-        cross_source_features,
     )
     declared = {name for module in modules for name in module.EMISSION}
     catalogued = set(INSTITUTIONALS)
@@ -193,6 +188,14 @@ def test_the_institutionals_catalogue_matches_declared_characteristics_both_ways
     print("\n=== SANITY CHECK: the institutionals catalogue, both directions ===")
     print(f"  {len(declared)} declared characteristics == {len(catalogued)} documented entries")
     print("  retired percent_of_class characteristics are absent; all new ratio controls are documented.")
+
+
+def test_sec_thirteen_catalogue_matches_declared_characteristics() -> None:
+    declared = set(institutional_features.EMISSION) | set(superinvestor_features.EMISSION)
+    assert set(SEC_THIRTEEN) == declared
+    assert CATALOGUES["cube_part_sec_thirteen"] is SEC_THIRTEEN
+    assert set(SEC_THIRTEEN).isdisjoint(INSTITUTIONALS)
+    print("SANITY: every broad and elite 13F characteristic has exactly one catalogue owner.")
 
 
 def test_every_entry_is_a_complete_four_field_record():

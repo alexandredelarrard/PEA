@@ -403,11 +403,16 @@ def _fails_fields(
     tenure_mask: pd.DataFrame | None = None,
     ftd_cache_dir: Path | None = None,
     ftd_stored_periods: Sequence[str] | None = None,
+    ftd_coverage: pd.DataFrame | None = None,
+    columns: pd.Index | None = None,
 ) -> dict[str, pd.DataFrame]:
     """FTD-to-ADV20 and persistence legs, published per ZIP; zero-filled only on dates the FTD file covers."""
-    available_by_period = _ftd_available_dates(fails_hist, ftd_cache_dir, stored_periods=ftd_stored_periods)
-    fails = _pivot(fails_hist, "fails_quantity", idx)
-    covered = pd.DatetimeIndex(to_day(fails_hist["date"]).dropna().unique())
+    coverage = fails_hist if ftd_coverage is None else ftd_coverage
+    available_by_period = _ftd_available_dates(coverage, ftd_cache_dir, stored_periods=ftd_stored_periods)
+    fails = _pivot(fails_hist, "fails_quantity", idx) if not fails_hist.empty else pd.DataFrame(index=idx, dtype="float64")
+    if ftd_coverage is not None and columns is not None:
+        fails = fails.reindex(columns=columns)
+    covered = pd.DatetimeIndex(to_day(coverage["date"]).dropna().unique())
     on_file = pd.Series(idx.isin(covered), index=idx)
     logger.info(
         "FTD file covers %s of %s trading days in the window (%.1f%%); an absent ticker on a covered date is 0 fails, an absent date is NaN",
@@ -434,7 +439,7 @@ def _fails_fields(
         # Restate as-traded fails onto the split-adjusted basis of yfinance volume.
         fails_adj = fails * split_adjust_frame(splits, fails)
         to_adv = (fails_adj / adv.where(adv > 0)).replace([np.inf, -np.inf], np.nan)
-        f_dict["ic_ftd_to_adv20"] = _publish_ftd_zip_states(to_adv, fails_hist, idx, available_by_period)
+        f_dict["ic_ftd_to_adv20"] = _publish_ftd_zip_states(to_adv, coverage, idx, available_by_period)
     # Prefer the shares-outstanding basis; fall back to ADV when fundamentals are absent.
     basis = pct_so if pct_so is not None else to_adv
     if basis is not None:
@@ -450,7 +455,7 @@ def _fails_fields(
         z = z.mask(z.isna() & neutral, 0.0)
         flag = (z > Z_HIGH).astype("float64").where(z.notna())
         persistence = flag.rolling(PERSISTENCE_WINDOW, min_periods=_min_periods(PERSISTENCE_WINDOW)).sum().where(covered_basis)
-        f_dict["ic_ftd_persistence_30d"] = _publish_ftd_zip_states(persistence, fails_hist, idx, available_by_period)
+        f_dict["ic_ftd_persistence_30d"] = _publish_ftd_zip_states(persistence, coverage, idx, available_by_period)
     if tenure_mask is not None:
         for name, frame in f_dict.items():
             f_dict[name] = frame.where(tenure_mask.reindex(index=frame.index, columns=frame.columns, fill_value=False))
@@ -462,6 +467,7 @@ def build_short_flow_feature_panel(
     short_history: pd.DataFrame | None,
     *,
     fails_history: pd.DataFrame | None = None,
+    ftd_coverage: pd.DataFrame | None = None,
     ftd_cache_dir: Path | None = None,
     ftd_stored_periods: Sequence[str] | None = None,
     shares_out_history: pd.DataFrame | None = None,
@@ -479,13 +485,14 @@ def build_short_flow_feature_panel(
     ADV20 and coverage, `shares_out_history` (`sharesOutstandingPit`) the
     share-count-scaled legs, `frames.close_total` the price interactions; each is optional and its
     absence removes only the legs that need it (hence no `frames.require`).
+    `ftd_coverage` retains global date/ZIP pairs when `fails_history` is ticker-scoped.
     """
     peer_dict = frames.peers
     trading_index = frames.trading_index
     volume = with_class_volume(frames.volume, class_volume)
     close_total = frames.close_total
     # Both sources are optional; the panel is empty only when neither arrived.
-    if _absent(short_history) and _absent(fails_history):
+    if _absent(short_history) and _absent(fails_history) and _absent(ftd_coverage):
         return _empty_panel()
 
     idx = pd.DatetimeIndex(trading_index).normalize().unique().sort_values()
@@ -501,8 +508,22 @@ def build_short_flow_feature_panel(
     fields: dict[str, pd.DataFrame] = {}
     if short_history is not None and not short_history.empty and {"short_volume", "total_volume"}.issubset(short_history.columns):
         fields.update(_shortvol_fields(short_history, idx, shares_out, close_total, volume, splits, tenure_mask))
-    if fails_history is not None and not fails_history.empty and "fails_quantity" in fails_history.columns:
-        fields.update(_fails_fields(fails_history, idx, shares_out, volume, splits, tenure_mask, ftd_cache_dir, ftd_stored_periods))
+    if not _absent(ftd_coverage) or not _absent(fails_history, {"fails_quantity"}):
+        fails_hist = fails_history if fails_history is not None else pd.DataFrame()
+        fields.update(
+            _fails_fields(
+                fails_hist,
+                idx,
+                shares_out,
+                volume,
+                splits,
+                tenure_mask,
+                ftd_cache_dir,
+                ftd_stored_periods,
+                ftd_coverage=ftd_coverage,
+                columns=columns,
+            )
+        )
 
     for name in list(fields):
         frame = fields[name]

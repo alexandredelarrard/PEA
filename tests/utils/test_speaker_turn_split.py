@@ -13,7 +13,6 @@ from pathlib import Path
 
 import pytest
 
-from src.constants.constants import EARNINGS_CALL_TAG_ANSWER, EARNINGS_CALL_TAG_PREPARED, EARNINGS_CALL_TAG_QUESTION
 from src.utils.earnings_call_split import CallSplit, Turn, clean_paragraphs, company_in_introduction, label_turns, qa_start, split_call
 from src.utils.text_metrics import assess_earnings_call_sections
 
@@ -130,17 +129,17 @@ def test_roles_match_hand_labels(path: Path) -> None:
     truth = fx["truth"]
     turns = split_call(fx["paragraphs"]).turns
     analysts, mgmt = set(truth["analysts"]), set(truth["management"])
-    wrong_analyst = [(t["person"], t["tag"], t["text"][:60]) for t in turns if t["person"] in analysts and t["tag"] != EARNINGS_CALL_TAG_QUESTION]
-    wrong_mgmt = [(t["person"], t["text"][:60]) for t in turns if t["person"] in mgmt and t["tag"] == EARNINGS_CALL_TAG_QUESTION]
+    wrong_analyst = [(t["person"], t["tag"], t["text"][:60]) for t in turns if t["person"] in analysts and t["tag"] != "question"]
+    wrong_mgmt = [(t["person"], t["text"][:60]) for t in turns if t["person"] in mgmt and t["tag"] == "question"]
     assert not wrong_analyst, wrong_analyst
     assert not wrong_mgmt, wrong_mgmt
     for want in truth["tags"]:
         hits = [t["tag"] for t in turns if t["person"] == want["person"] and want["contains"] in t["text"]]
         assert hits == [want["tag"]], (want, hits)
-    answers = Counter(t["exchange_idx"] for t in turns if t["tag"] == EARNINGS_CALL_TAG_ANSWER)
+    answers = Counter(t["exchange_idx"] for t in turns if t["tag"] == "answer")
     if "max_answers_per_question" in truth:
         assert max(answers.values()) <= truth["max_answers_per_question"], answers.most_common(3)
-    n_q = sum(t["tag"] == EARNINGS_CALL_TAG_QUESTION for t in turns)
+    n_q = sum(t["tag"] == "question" for t in turns)
     print(
         f"SANITY {path.stem}: {n_q} questions, all analyst turns are questions, no management question, "
         f"{len(truth['tags'])} named tags right, max answers per question {max(answers.values(), default=0)}"
@@ -155,12 +154,12 @@ def test_turns_follow_the_embedding_contract(path: Path) -> None:
     for t in split.turns:
         assert set(t) == TURN_KEYS
         assert t["text"] and t["person"] is not None
-        if t["tag"] == EARNINGS_CALL_TAG_PREPARED:
+        if t["tag"] == "prepared":
             assert (t["section"], t["exchange_idx"], t["answer_idx"]) == ("prepared_remarks", -1, -1)
-        elif t["tag"] == EARNINGS_CALL_TAG_QUESTION:
+        elif t["tag"] == "question":
             assert t["section"] == "qa" and t["exchange_idx"] >= 0 and t["answer_idx"] == 0
         else:
-            assert t["tag"] == EARNINGS_CALL_TAG_ANSWER and t["section"] == "qa"
+            assert t["tag"] == "answer" and t["section"] == "qa"
             assert t["answer_idx"] == last_answer.get(t["exchange_idx"], 0) + 1
             last_answer[t["exchange_idx"]] = t["answer_idx"]
     sections = [t["section"] for t in split.turns]
@@ -205,7 +204,7 @@ def test_split_call_terminal_statuses() -> None:
     ]
     split = split_call(straight_to_qa)
     assert split.status == "no_prepared" and split.prepared_remarks == ""
-    assert [t["tag"] for t in split.turns] == [EARNINGS_CALL_TAG_QUESTION, EARNINGS_CALL_TAG_ANSWER]
+    assert [t["tag"] for t in split.turns] == ["question", "answer"]
     print("SANITY statuses: empty input -> empty, Q&A from the first turn -> no_prepared, never an exception")
 
 
@@ -237,8 +236,8 @@ def test_fixture_suite_conclusion() -> None:
         exact += (k is None) if first is None else (k is not None and turns[k].text.startswith(first["starts_with"]))
         labelled = split_call(fx["paragraphs"]).turns
         analyst_turns += sum(t["person"] in truth["analysts"] for t in labelled)
-        analyst_q += sum(t["person"] in truth["analysts"] and t["tag"] == EARNINGS_CALL_TAG_QUESTION for t in labelled)
-        mgmt_q += sum(t["person"] in truth["management"] and t["tag"] == EARNINGS_CALL_TAG_QUESTION for t in labelled)
+        analyst_q += sum(t["person"] in truth["analysts"] and t["tag"] == "question" for t in labelled)
+        mgmt_q += sum(t["person"] in truth["management"] and t["tag"] == "question" for t in labelled)
     assert exact == len(FIXTURES) and analyst_q == analyst_turns and mgmt_q == 0
     print(
         f"SANITY CONCLUSION: exact Q&A start and status on {exact}/{len(FIXTURES)} hand-labelled calls; "
@@ -298,7 +297,7 @@ def test_sentence_split_never_alters_decimals_or_abbreviations() -> None:
     assert clean_earnings_call_text(DECIMALS) == DECIMALS
     split = split_call(_default_call())
     assert DECIMALS in split.prepared_remarks
-    assert any(DECIMALS in t["text"] for t in split.turns if t["tag"] == EARNINGS_CALL_TAG_PREPARED)
+    assert any(DECIMALS in t["text"] for t in split.turns if t["tag"] == "prepared")
     print("SANITY splitter: '3.5%', 'U.S.' and '$1.2' survive byte-identical through every cleaner")
 
 
@@ -319,8 +318,8 @@ def test_qa_text_is_management_answers_only_and_turns_are_cleaned() -> None:
     assert split.qa.startswith("Yes, we expect margins to keep expanding"), split.qa
     assert "forward-looking statements in our filings" in split.qa, "boilerplate is removed from prepared remarks only"
     assert "Thank you." not in split.qa, "a courtesy sentence in the middle of an answer is removed"
-    q = next(t for t in split.turns if t["tag"] == EARNINGS_CALL_TAG_QUESTION)
-    a = next(t for t in split.turns if t["tag"] == EARNINGS_CALL_TAG_ANSWER)
+    q = next(t for t in split.turns if t["tag"] == "question")
+    a = next(t for t in split.turns if t["tag"] == "answer")
     assert q["text"] == "How should we think about the margin trajectory into the second half of next year?", q["text"]
     assert a["text"].startswith("Yes, we expect margins") and "Mary" not in a["text"], a["text"]
     assert (q["exchange_idx"], a["exchange_idx"], a["answer_idx"]) == (0, 0, 1)

@@ -702,25 +702,7 @@ SHARADAR_GAP_EXPECTED_FIELDS: frozenset[str] = frozenset(
     }
 )
 
-# --------------------------------------------------------------------------- #
-# Earnings-call transcripts (HuggingFace defeatbeta dataset, raw paragraphs)   #
-# and local FinBERT-tone sentiment scoring of the split sections.              #
-# --------------------------------------------------------------------------- #
-# Map an earnings REPORT date (from earnings_surprises) back into the fiscal quarter it reports:
-# a report lands ~4-8 weeks after quarter-end, so shifting the report date back this many days puts
-# it inside the reported quarter (Feb report -> prior Q4, late-Apr report -> Q1). The validator uses
-# it to expect only quarters a ticker has ACTUALLY released, instead of a blanket calendar guess.
-EARNINGS_REPORT_TO_QUARTER_LAG_DAYS = 45
-# per-turn `tag` values in EARNINGS_CALL_EMBEDDING_TABLE
-EARNINGS_CALL_TAG_QUESTION = "question"  # a sell-side analyst turn (asks)
-EARNINGS_CALL_TAG_ANSWER = "answer"  # a management turn answering the current question
-EARNINGS_CALL_TAG_PREPARED = "prepared"  # a prepared-remarks (scripted) management turn
-# Sections we score for tone (the high-signal prose); 'participants'/'full' are skipped
-# for KPIs ('full' stays in the sections table as a format-proof fallback).
-EARNINGS_CALL_SCORED_TAGS = ("prepared_remarks", "qa")
-# A usable call needs both scored sections and at least this many words after removing
-# greetings/courtesy boilerplate. Model-facing signals live for one quarter only.
-EARNINGS_CALL_MIN_CLEAN_WORDS = 100
+# Earnings-call output contract shared by the builder and read-only validator.
 EARNINGS_CALL_SIGNAL_SESSIONS = 66
 EARNINGS_CALL_FEATURES = (
     "ec_tone",
@@ -736,22 +718,6 @@ EARNINGS_CALL_FEATURES = (
     "ec_qa_qq_distance",
     "ec_prep_qq_distance",
 )
-
-# SENTIMENT ANALYSIS
-FINBERT_TONE_MODEL = "yiyanghkust/finbert-tone"
-# Bump when transcript preprocessing changes.  The sentiment cache PK does not
-# include the model, so a new label deliberately makes existing rows eligible
-# for one-time rescoring and replacement.
-EARNINGS_CALL_SENTIMENT_CACHE_VERSION = "speaker-clean-v2"
-EARNINGS_CALL_SENTIMENT_CACHE_MODEL = f"{FINBERT_TONE_MODEL}:{EARNINGS_CALL_SENTIMENT_CACHE_VERSION}"
-EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL = f"{EARNINGS_CALL_SENTIMENT_CACHE_MODEL}:invalid-pending"
-EARNINGS_CALL_SENTIMENT_INVALID_HANDLED_MODEL = f"{EARNINGS_CALL_SENTIMENT_CACHE_MODEL}:invalid-handled"
-EARNINGS_CALL_EMBEDDING_MODEL = "text-embedding-3-small"
-# Bump when the embedded turn texts change. The embedding cache PK (ticker, quarter, seq) does not
-# include the model, so the stored `model` tag carries this version: rows under another tag are
-# not complete and are re-embedded and replaced by the normal incremental pass.
-EARNINGS_CALL_EMBEDDING_CACHE_VERSION = "speaker-clean-v2"
-EARNINGS_CALL_EMBEDDING_CACHE_MODEL = f"{EARNINGS_CALL_EMBEDDING_MODEL}:{EARNINGS_CALL_EMBEDDING_CACHE_VERSION}"
 
 # --------------------------------------------------------------------------- #
 # CUSIP / CINS -> ticker overrides for the 13F reconciliation                   #

@@ -14,11 +14,7 @@ from typing import Any, cast
 import numpy as np
 import pandas as pd
 
-from src.constants.constants import (
-    EARNINGS_CALL_FEATURES,
-    EARNINGS_CALL_SIGNAL_SESSIONS,
-    EARNINGS_REPORT_TO_QUARTER_LAG_DAYS,
-)
+from src.constants.constants import EARNINGS_CALL_FEATURES, EARNINGS_CALL_SIGNAL_SESSIONS
 from src.context import Context
 from src.data_store.schema import Table, Tables, resolve
 from src.utils.earnings_call_split import split_call
@@ -74,7 +70,8 @@ def _quarter_index(date: object) -> int | None:
     value = pd.to_datetime(date, errors="coerce")
     if pd.isna(value):
         return None
-    value -= pd.Timedelta(days=EARNINGS_REPORT_TO_QUARTER_LAG_DAYS)
+    reporting_lag_days = 45
+    value -= pd.Timedelta(days=reporting_lag_days)
     return int(value.year) * 4 + int(value.quarter) - 1
 
 

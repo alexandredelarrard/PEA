@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src.constants.constants import EARNINGS_CALL_SCORED_TAGS, EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL
 from src.context import Context
 from src.data_store.schema import Tables
+from src.utils.nlp_sentiment import EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL
 
 
 def invalidate_earnings_call_derivatives(context: Context, calls: pd.DataFrame) -> int:
@@ -44,6 +44,6 @@ def pending_refresh_markers(calls: pd.DataFrame) -> pd.DataFrame:
                 "model": EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL,
             }
             for ticker, quarter, as_of in calls[["ticker", "quarter", "as_of"]].itertuples(index=False)
-            for tag in EARNINGS_CALL_SCORED_TAGS
+            for tag in ("prepared_remarks", "qa")
         ]
     )

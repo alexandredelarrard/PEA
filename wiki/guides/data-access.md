@@ -7,7 +7,7 @@ tags:
   - guide
   - database
   - point-in-time
-source_commit: 8f3ffae075aa9dec4f7427dc8a8f1f960688f4c3
+source_commit: c2a09cf41e68d0f9addca8c1f02c2b7ce0423c25
 ---
 # Data access and storage
 
@@ -17,7 +17,7 @@ Read and write tabular pipeline data without bypassing the SQL boundary, exhaust
 
 ## One SQL boundary
 
-[src/data_store](../../src/data_store/) is the only package that may know SQL exists. Outside it, do not import SQLAlchemy, call pandas SQL methods, reach through `store.engine`, open raw connections, or query `information_schema`. [test_store_boundary.py](../../tests/data_store/test_store_boundary.py) enforces this boundary.
+The [data-store package](../../src/data_store/store.py) is the only package that may know SQL exists. Outside it, do not import SQLAlchemy, call pandas SQL methods, reach through `store.engine`, open raw connections, or query `information_schema`. [test_store_boundary.py](../../tests/data_store/test_store_boundary.py) enforces this boundary.
 
 If [DataStore](../../src/data_store/store.py) cannot express a required operation, extend its API and test both PostgreSQL and SQLite behavior. Do not add a one-off escape hatch.
 

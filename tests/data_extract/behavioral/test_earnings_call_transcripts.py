@@ -21,10 +21,10 @@ import pyarrow.parquet as pq
 import pytest
 from omegaconf import OmegaConf
 
-from src.constants.constants import EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL
 from src.data_extract.utils.behavioral import fetch_earnings_call_transcripts as ect
 from src.data_extract.utils.common.identity import CikWindow, Identity, SymbolInterval, build_identity
 from src.data_store.schema import Resume, Tables
+from src.utils.nlp_sentiment import EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL
 
 _PARAGRAPH = pa.struct([("paragraph_number", pa.int32()), ("speaker", pa.string()), ("content", pa.string())])
 _SCHEMA = pa.schema(

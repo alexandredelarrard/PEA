@@ -23,15 +23,11 @@ from omegaconf import OmegaConf
 
 import src.data_aggregate.transformers.step_cube_text as step_text
 import src.data_aggregate.utils.text.earnings_call_features as ec
-from src.constants.constants import (
-    EARNINGS_CALL_SENTIMENT_CACHE_MODEL,
-    EARNINGS_CALL_SENTIMENT_INVALID_HANDLED_MODEL,
-    EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL,
-    FINBERT_TONE_MODEL,
-)
+from src.constants.constants import EARNINGS_CALL_FEATURES
 from src.context import Context
 from src.data_aggregate.transformers.step_cube_text import StepCubeText
 from src.data_aggregate.utils.common.incremental import PartWindow, write_part
+from src.data_aggregate.utils.common.price_frames import PriceFrames
 from src.data_aggregate.utils.text.earnings_call_features import (
     _daily_frame,
     _per_call_kpis,
@@ -40,12 +36,18 @@ from src.data_aggregate.utils.text.earnings_call_features import (
     build_earnings_call_feature_panel,
     prepare_earnings_call_kpis,
     score_earnings_calls,
-    sentiment_kpis_streamed,
+    sentiment_kpis,
 )
 from src.data_extract.utils.behavioral.utils_earnings_call_cache import pending_refresh_markers
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.earnings_call_split import split_call
+from src.utils.nlp_sentiment import (
+    EARNINGS_CALL_SENTIMENT_CACHE_MODEL,
+    EARNINGS_CALL_SENTIMENT_INVALID_HANDLED_MODEL,
+    EARNINGS_CALL_SENTIMENT_INVALID_PENDING_MODEL,
+    FINBERT_TONE_MODEL,
+)
 from src.utils.text_metrics import assess_earnings_call_sections
 from tests.fixtures.earnings_call_rows import synthetic_call
 
@@ -168,10 +170,10 @@ def test_canonical_support_requires_unambiguous_alias_inside_its_cik_window(vari
 )
 def test_calendar_day_buffer_applies_once_to_all_twelve_features(call_date: str, expected: str) -> None:
     calendar = pd.bdate_range("2024-05-01", "2024-10-31").difference(pd.DatetimeIndex(["2024-05-27"]))
-    call = pd.DataFrame({"ticker": ["A"], "as_of": [pd.Timestamp(call_date)], **{name: [float(i)] for i, name in enumerate(ec._KPI_COLS)}})
+    call = pd.DataFrame({"ticker": ["A"], "as_of": [pd.Timestamp(call_date)], **{name: [float(i)] for i, name in enumerate(EARNINGS_CALL_FEATURES)}})
     panel = ec._feature_panel_from_prepared(call, calendar, None, availability_lag_days=2)
     assert len(panel.filter(like="f_ec_").columns) == 12
-    for name in ec._KPI_COLS:
+    for name in EARNINGS_CALL_FEATURES:
         live = panel.loc[panel[f"f_{name}"].notna(), "date"]
         assert live.min() == pd.Timestamp(expected) and len(live) == 66
     print(f"SANITY: {call_date}+2 calendar days -> {expected}, including holiday/weekend rollover, all12 features for66 sessions.")
@@ -186,10 +188,10 @@ def test_step_reads_lag_from_build_cube_yaml(monkeypatch: pytest.MonkeyPatch) ->
     lineage = pd.DataFrame({"cik": ["1"], "entity_id": ["E1"]}).assign(role="cik_window", valid_from="1900-01-01", valid_to=None)
     monkeypatch.setattr(step_text, "score_earnings_calls", lambda _ctx: None)
     monkeypatch.setattr(step_text, "embed_earnings_calls", lambda _ctx: None)
-    monkeypatch.setattr(step_text, "sentiment_kpis_streamed", lambda _ctx: calls)
+    monkeypatch.setattr(step_text, "sentiment_kpis", lambda _ctx: calls)
     monkeypatch.setattr(step_text, "load_issuer_identity", lambda _ctx: (roster, lineage, _canonical_tenure(roster)))
     monkeypatch.setattr(step_text, "embedding_kpis_streamed", lambda *_args: None)
-    frames = SimpleNamespace(trading_index=pd.bdate_range("2024-05-01", "2024-09-30"), availability=None)
+    frames = cast(PriceFrames, SimpleNamespace(trading_index=pd.bdate_range("2024-05-01", "2024-09-30"), availability=None))
     panel, _ = step._feature_panel(frames)
     assert panel.loc[panel["f_ec_tone"].notna(), "date"].min() == pd.Timestamp("2024-05-08")
     step._cfg.earnings_calls.availability_lag_days = 3
@@ -261,8 +263,26 @@ def _sections_frame() -> pd.DataFrame:
     return pd.concat(calls, ignore_index=True)
 
 
-def test_per_call_kpi_arithmetic():
-    per = prepare_earnings_call_kpis(_per_call_kpis(_sentiment_frame(), None))
+def test_per_call_kpi_arithmetic() -> None:
+    df_sentiment = _sentiment_frame().query("ticker == 'A'")
+    calls = []
+    for quarter, df_tags in df_sentiment.groupby("quarter"):
+        texts = {}
+        for row in df_tags.itertuples(index=False):
+            n_words = int(_number(row.n_words))
+            n_uncertain = round(n_words * _number(row.uncertainty_ratio))
+            texts[row.tag] = " ".join(["growth"] * (n_words - n_uncertain) + ["might"] * n_uncertain) + "."
+        calls.append(
+            synthetic_call(
+                "A",
+                str(quarter),
+                _QDATE[str(quarter)],
+                prepared=texts["prepared_remarks"],
+                question="Can you explain revenue trends and the current margin outlook in detail?",
+                answer=texts["qa"],
+            )
+        )
+    per = prepare_earnings_call_kpis(_per_call_kpis(df_sentiment, pd.concat(calls, ignore_index=True)))
     a = per[per["ticker"] == "A"].set_index("quarter")
 
     # length-weighted tone (net = pos-neg), Q1: (.5*1000 + .3*500)/1500
@@ -278,6 +298,7 @@ def test_per_call_kpi_arithmetic():
     assert math.isnan(_number(a.loc["2023Q1", "ec_tone_delta"]))  # first call -> no prior
     # disclosure-length delta Q2 = log(1800/1500)
     assert abs(_number(a.loc["2023Q2", "ec_length_delta"]) - math.log(1800 / 1500)) < 1e-9
+    print("SANITY: exact cleaned section lengths and uncertainty counts preserve weighted tone, Q&A gap and consecutive-quarter deltas.")
 
 
 class _Ctx:
@@ -286,7 +307,7 @@ class _Ctx:
         self.log = logging.getLogger("test")
 
 
-def test_sentiment_kpis_streamed_equals_batch(sqlite_store):
+def test_sentiment_kpis_equals_batch(sqlite_store):
     """The per-ticker STREAMED KPIs (bounded memory) must exactly equal the whole-cache
     computation — proving the streaming refactor preserves the retained QoQ deltas. Runs on a
     REAL DataStore, so the per-ticker `distinct` + WHERE-scoped reads are exercised for real."""
@@ -294,7 +315,7 @@ def test_sentiment_kpis_streamed_equals_batch(sqlite_store):
     sqlite_store.save("earnings_call_sentiment", sent)
     sqlite_store.save("earnings_call_sections", sec)
     ctx = cast(Context, _Ctx(sqlite_store))
-    streamed = sentiment_kpis_streamed(ctx)
+    streamed = sentiment_kpis(ctx)
     assert streamed is not None
     batch = _per_call_kpis(sent, sec)
     m = streamed.merge(batch, on=["ticker", "quarter"], suffixes=("_s", "_b"))
@@ -321,11 +342,11 @@ def test_malformed_or_incomplete_cached_call_is_missing() -> None:
 
     malformed = valid_sections.copy()
     malformed.loc[malformed["paragraph"] >= 3, "content"] = None  # Q&A paragraphs blank -> no_qa
-    assert split_call(malformed.to_dict("records")).status == "no_qa"
+    assert split_call(cast(list[dict[str, object]], malformed.to_dict("records"))).status == "no_qa"
     assert _per_call_kpis(sentiment, malformed).empty
 
     refreshed = _per_call_kpis(sentiment.assign(n_words=1), valid_sections)
-    split = split_call(valid_sections.to_dict("records"))
+    split = split_call(cast(list[dict[str, object]], valid_sections.to_dict("records")))
     expected_words = assess_earnings_call_sections({"prepared_remarks": split.prepared_remarks, "qa": split.qa}).combined_word_count
     assert expected_words > 100
     assert int(refreshed["total_words"].iloc[0]) == expected_words
@@ -429,6 +450,7 @@ def test_reissued_valid_call_marker_survives_an_engine_less_build(sqlite_store, 
     assert online == pd.Timestamp("2023-02-01") and acknowledged_online == 0
     assert set(after_online["model"]) == {EARNINGS_CALL_SENTIMENT_CACHE_MODEL} and len(after_online) == 2
     assert len(_per_call_kpis(after_online, sections)) == 1
+    assert offline is not None
     print("\n=== SANITY CHECK: re-issued call scored after an engine-less build (F-002) ===")
     print(f"  engine None: refresh from {offline.date()}, {acknowledged_offline} markers acknowledged, models {sorted(set(after_offline['model']))}")
     print(
@@ -464,11 +486,12 @@ def test_malformed_refresh_deletes_stale_tail_even_when_panel_is_empty(sqlite_st
     step._store = sqlite_store
     step._context = cast(Context, _Ctx(sqlite_store))
     step._cfg = {"incremental": {}}
-    step._part = SimpleNamespace(warmup_trading_days=5)
-    step._load_frames = lambda _since: object()
-    step._feature_panel = lambda _frames: (
-        pd.DataFrame(columns=["date", "ticker", "f_ec_tone"]),
-        [pd.Timestamp("2023-02-01")],
+    monkeypatch.setattr(step, "_part", SimpleNamespace(warmup_trading_days=5), raising=False)
+    monkeypatch.setattr(step_text, "load_price_frames", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(
+        step,
+        "_feature_panel",
+        lambda _frames: (pd.DataFrame(columns=["date", "ticker", "f_ec_tone"]), [pd.Timestamp("2023-02-01")]),
     )
     monkeypatch.setattr(step_text, "load_trading_calendar", lambda _store: pd.bdate_range("2023-02-01", periods=3))
     monkeypatch.setattr(
@@ -495,7 +518,7 @@ def test_malformed_refresh_deletes_stale_tail_even_when_panel_is_empty(sqlite_st
 
 def test_panel_columns_lifetime_and_missingness():
     idx = pd.bdate_range("2023-01-02", "2023-09-29")
-    panel = build_earnings_call_feature_panel(_sentiment_frame(), idx, sections=_sections_frame(), availability_lag_days=2)
+    panel = build_earnings_call_feature_panel(_per_call_kpis(_sentiment_frame(), _sections_frame()), idx, availability_lag_days=2)
     assert not panel.empty
     expected = {
         "date",
@@ -529,7 +552,7 @@ def test_panel_columns_lifetime_and_missingness():
     live = daily["A"].dropna()
     assert len(live) == 66
     assert (live == 0.0).all(), "a genuine zero must survive"
-    assert pd.isna(daily.loc[live.index[-1] + pd.offsets.BDay(1), "A"]), "session 67 must be NaN"
+    assert pd.isna(_number(daily.loc[live.index[-1] + pd.offsets.BDay(1), "A"])), "session 67 must be NaN"
 
     weekend = pd.DataFrame({"ticker": ["A"], "as_of": ["2023-02-04"], "ec_tone": [0.2]})
     weekend_daily = _daily_frame(weekend, "ec_tone", idx, availability_lag_days=2)
@@ -566,17 +589,17 @@ def test_call_is_invisible_until_two_calendar_days_after_as_of(sqlite_store, mon
     monkeypatch.setattr(ec, "get_sentiment_engine", lambda: _Engine())
     context = cast(Context, _Ctx(sqlite_store))
     assert score_earnings_calls(context) == pd.Timestamp("2024-05-01")
-    per_call = sentiment_kpis_streamed(context)
+    per_call = sentiment_kpis(context)
     assert per_call is not None and len(per_call) == 2
     calendar = pd.bdate_range("2024-04-01", "2024-09-30")
-    panel = build_earnings_call_feature_panel(None, calendar, per_call=per_call, availability_lag_days=2)
+    panel = build_earnings_call_feature_panel(per_call, calendar, availability_lag_days=2)
     panel["date"] = pd.to_datetime(panel["date"])
     first_seen = {}
     for tkr, as_of in calls.items():
         live = panel[panel["ticker"].eq(tkr) & panel["f_ec_tone"].notna()]
         call_date = pd.Timestamp(as_of)
         assert not live["date"].le(call_date).any(), f"{tkr}: visible on or before its as_of session"
-        next_session = calendar[calendar.searchsorted(call_date + pd.Timedelta(days=2), side="left")]
+        next_session = calendar[int(calendar.searchsorted(call_date + pd.Timedelta(days=2), side="left"))]
         assert live["date"].min() == next_session
         first_seen[tkr] = (as_of, str(next_session.date()))
     assert first_seen["B"][1] == "2024-05-06"
@@ -588,11 +611,11 @@ def test_full_calendar_late_refresh_and_rerun_are_bit_exact() -> None:
     """Exercise the real tail writer against a late correction and unchanged rerun."""
     calendar = pd.bdate_range("2021-01-04", "2023-09-29")
     assert len(calendar) >= 500
-    old = build_earnings_call_feature_panel(_sentiment_frame(), calendar, sections=_sections_frame(), availability_lag_days=2)
+    old = build_earnings_call_feature_panel(_per_call_kpis(_sentiment_frame(), _sections_frame()), calendar, availability_lag_days=2)
     revised_sentiment = _sentiment_frame()
     mask = (revised_sentiment["ticker"] == "A") & (revised_sentiment["quarter"] == "2023Q1")
     revised_sentiment.loc[mask, "sent_pos"] += 0.05
-    revised = build_earnings_call_feature_panel(revised_sentiment, calendar, sections=_sections_frame(), availability_lag_days=2)
+    revised = build_earnings_call_feature_panel(_per_call_kpis(revised_sentiment, _sections_frame()), calendar, availability_lag_days=2)
 
     class _Store:
         def __init__(self, rows: pd.DataFrame):
@@ -610,12 +633,13 @@ def test_full_calendar_late_refresh_and_rerun_are_bit_exact() -> None:
             self.rows = pd.concat([self.rows.loc[keep], tail], ignore_index=True)
             return len(tail)
 
-    feature_columns = [column for column in old if column.startswith("f_")]
+    feature_columns = [column for column in old if str(column).startswith("f_")]
     store = _Store(old.dropna(subset=feature_columns, how="all"))
     last = pd.Timestamp(old["date"].max())
     default_refresh = calendar[-130]
     late_refresh = pd.Timestamp("2023-02-02")
     window = PartWindow(last=last, since=calendar[0], refresh_from=default_refresh)
+    assert window.refresh_from is not None
     effective_refresh = min(late_refresh, window.refresh_from)
     write_part(cast(DataStore, store), Tables.cube_part_text, revised, window, refresh_from=effective_refresh, drop_empty=True)
     expected = revised.dropna(subset=feature_columns, how="all").sort_values(["date", "ticker"]).reset_index(drop=True)
@@ -766,7 +790,7 @@ def test_new_call_with_missing_kpi_terminates_the_previous_signal() -> None:
             "total_words": [1000.0, 1100.0],
         }
     )
-    panel = build_earnings_call_feature_panel(None, calendar, per_call=calls, availability_lag_days=2)
+    panel = build_earnings_call_feature_panel(calls, calendar, availability_lag_days=2)
     observed = panel[panel["ticker"].eq("AAA")].set_index("date")
     assert observed.loc[pd.Timestamp("2024-02-02"), "f_ec_qa_gap"] == 0.3
     assert pd.isna(observed.loc[pd.Timestamp("2024-02-05"), "f_ec_qa_gap"])

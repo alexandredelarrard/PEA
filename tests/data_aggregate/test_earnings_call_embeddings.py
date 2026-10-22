@@ -19,9 +19,9 @@ from typing import cast
 import numpy as np
 import pandas as pd
 
-from src.constants.constants import EARNINGS_CALL_EMBEDDING_CACHE_MODEL, EARNINGS_CALL_EMBEDDING_MODEL, EARNINGS_CALL_TAG_QUESTION
 from src.context import Context
 from src.data_aggregate.utils.text.earnings_call_embeddings import (
+    EARNINGS_CALL_EMBEDDING_CACHE_MODEL,
     build_embedding_kpis,
     embed_earnings_calls,
     embedding_kpis_streamed,
@@ -246,7 +246,7 @@ def test_embedded_turns_are_the_split_turns_on_hand_labelled_calls():
         assert stored[_TURN_KEYS].to_dict("records") == expected, path.stem
         assert stored["seq"].tolist() == list(range(len(expected)))
         analysts, mgmt = set(fx["truth"]["analysts"]), set(fx["truth"]["management"])
-        is_q = stored["tag"].eq(EARNINGS_CALL_TAG_QUESTION)
+        is_q = stored["tag"].eq("question")
         analyst_turns += int(stored["person"].isin(analysts).sum())
         analyst_questions += int((stored["person"].isin(analysts) & is_q).sum())
         mgmt_questions += int((stored["person"].isin(mgmt) & is_q).sum())
@@ -316,16 +316,14 @@ def test_rows_under_the_unversioned_model_tag_are_stale_and_re_embedded() -> Non
     ctx = cast(Context, FakeCtx(store))
     embed_earnings_calls(ctx, client=StubClient())
     n_rows = len(store.t["earning_calls_embedding"])
-    store.t["earning_calls_embedding"]["model"] = EARNINGS_CALL_EMBEDDING_MODEL
+    store.t["earning_calls_embedding"]["model"] = "text-embedding-3-small"
     rerun = StubClient()
     embed_earnings_calls(ctx, client=rerun)
     table = store.t["earning_calls_embedding"]
     assert rerun.n_calls == 4, "every call stored under the unversioned tag is re-embedded"
     assert set(table["model"]) == {EARNINGS_CALL_EMBEDDING_CACHE_MODEL} and len(table) == n_rows
     print("\n=== SANITY CHECK: embedding cache version ===")
-    print(
-        f"  {n_rows} rows tagged {EARNINGS_CALL_EMBEDDING_MODEL!r} were re-embedded as {EARNINGS_CALL_EMBEDDING_CACHE_MODEL!r} (4 calls). Validated."
-    )
+    print(f"  {n_rows} rows tagged {'text-embedding-3-small'!r} were re-embedded as {EARNINGS_CALL_EMBEDDING_CACHE_MODEL!r} (4 calls). Validated.")
 
 
 def test_force_reembed_deletes_every_stale_turn_when_parse_becomes_empty() -> None:

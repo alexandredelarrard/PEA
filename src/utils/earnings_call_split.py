@@ -36,12 +36,6 @@ from dataclasses import dataclass, field
 from itertools import groupby
 from typing import Literal, NamedTuple
 
-from src.constants.constants import (
-    EARNINGS_CALL_TAG_ANSWER,
-    EARNINGS_CALL_TAG_PREPARED,
-    EARNINGS_CALL_TAG_QUESTION,
-)
-
 _QA_SECTION, _PREP_SECTION = "qa", "prepared_remarks"
 SplitStatus = Literal["ok", "no_qa", "no_prepared", "empty"]
 
@@ -761,7 +755,7 @@ def _label_prepared(turns: list[Turn], section: str, names: CallNames) -> list[d
             continue
         body = clean_turn_text(txt, names, prepared=True)
         if len(body) >= _MIN_TURN:
-            prepared.append(_turn(section, EARNINGS_CALL_TAG_PREPARED, per, body, -1, -1))
+            prepared.append(_turn(section, "prepared", per, body, -1, -1))
     return prepared
 
 
@@ -803,7 +797,7 @@ def _label_question(state: _QaState, per: str, perl: str, body: str) -> None:
     if _is_informative_question(body):
         if new or not state.open_ex:  # a new question -> new exchange
             state.ex, state.ans_i, state.cur, state.saw_answer, state.open_ex = state.ex + 1, 0, perl, False, True
-        state.out.append(_turn(_QA_SECTION, EARNINGS_CALL_TAG_QUESTION, per, body, state.ex, 0))
+        state.out.append(_turn(_QA_SECTION, "question", per, body, state.ex, 0))
     elif new:  # a question too short to embed opens no exchange: its answers are orphaned
         state.cur, state.saw_answer, state.open_ex = perl, False, False
     state.boundary = False
@@ -819,7 +813,7 @@ def _label_answer(state: _QaState, per: str, perl: str, body: str) -> None:
     state.spoken.add(perl)
     if state.open_ex and len(body.split()) >= _MIN_QA_WORDS:
         state.ans_i += 1
-        state.out.append(_turn(_QA_SECTION, EARNINGS_CALL_TAG_ANSWER, per, body, state.ex, state.ans_i))
+        state.out.append(_turn(_QA_SECTION, "answer", per, body, state.ex, state.ans_i))
 
 
 def _label_qa(turns: list[Turn], mgmt_names: set[str] | None, names: CallNames, announced: set[str] | None = None) -> tuple[list[dict], list[str]]:

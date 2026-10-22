@@ -5,7 +5,7 @@ type: module
 tags:
   - wiki
   - module
-source_commit: 38ba50b056feb760b874b01cc405ddb435676f36
+source_commit: c2a09cf41e68d0f9addca8c1f02c2b7ce0423c25
 ---
 # Cube aggregation
 
@@ -46,7 +46,11 @@ source_commit: 38ba50b056feb760b874b01cc405ddb435676f36
 
 `StepCubeText` combines cached sentiment and embedding call-grain metrics into exactly 12 model-facing `f_ec_*` columns in `cube_part_text`: eight raw values and four prior-only issuer-history scores. Earnings-call features deliberately do not use peer or cross-sectional normalization because transcript availability is sparse and non-synchronous. `ec_tone_delta`, `ec_length_delta` and the two embedding distances compare with the prior **consecutive** fiscal quarter and are null when that quarter has no call.
 
-Sentiment scoring and embedding discover stored calls through [`call_keys`](../../src/data_aggregate/utils/text/earnings_call_embeddings.py) in one projected `ticker`/`quarter` read filtered to `paragraph = 1`. [Extraction](../../src/data_extract/utils/behavioral/fetch_earnings_call_transcripts.py) numbers retained paragraphs contiguously from 1 after filtering, so this yields one row per call without reading transcript text. Both passes read their source paragraphs from the store; tests seed their test store.
+Embedding discovers stored calls through [`call_keys`](../../src/data_aggregate/utils/text/earnings_call_embeddings.py) in one projected `ticker`/`quarter` read filtered to `paragraph = 1`. [Extraction](../../src/data_extract/utils/behavioral/fetch_earnings_call_transcripts.py) numbers retained paragraphs contiguously from 1 after filtering, so this yields one row per call without reading transcript text. Tests seed their test store.
+
+Sentiment scoring declares its two projected table reads at the start: all source paragraphs and the cache keys/dates for current, pending and handled model rows. It removes completed calls from the local frame, then loops over ticker and quarter. The loop visibly selects/sorts paragraphs, calls `split_call`, cleans prepared remarks and management-answer Q&A with the shared quality gate, calls `engine.score_texts`, constructs score rows, concatenates them and saves each completed ticker. There is no generator or per-ticker table read. The source frame stays in memory for the pass, as explicitly requested; real full-archive memory use must be considered for deployment. `sentiment_kpis` separately reads current cache rows and source paragraphs once, scopes paragraphs to cached tickers, and computes KPIs by ticker.
+
+The feature-panel builder accepts the already-computed per-call KPI frame used by the production step; test-only alternate cache, section and embedding inputs are removed. The zero-argument sentiment-engine factory uses Python's standard cache to reuse successful initialization and optional failure results (`None`); required-CUDA failures propagate and are not cached. Programming errors propagate rather than silently disabling sentiment.
 
 The text step reads raw paragraphs from `earnings_call_sections` (projected, scoped by ticker, ordered by paragraph) and cuts each call with `src/utils/earnings_call_split.py`, the one split shared by sentiment, embeddings and the validator:
 

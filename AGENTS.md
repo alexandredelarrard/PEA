@@ -31,7 +31,7 @@ LightGBM/SHAP, OpenAI, pytest; Airflow uses an isolated Python 3.12 environment.
 - Never add test-only, unused or speculative parameters; tests use the existing production interface.
 - Table names live only in `src/data_store/schema.py`; use `Tables.<name>`.
 - Consumers read merged `fundamentals_history`; validation reads `fundamentals_history_sec`.
-- Stable literals go in `src/constants/constants.py`; tunable values go in `configs/`.
+- Keep single-function values local and domain-only values with their owner; `src/constants/` is for shared contracts; tuning goes in `configs/`.
 - Never pass logger arguments; use `self._log`, `context.log`, or a module logger; never `print()` in app code.
 - Fully annotate signatures; imports stay at module top; sibling `src/` packages do not cross-import.
 - Fetchers plan through their `schema.Resume` contract and `resume.py`, never a full read or a file.

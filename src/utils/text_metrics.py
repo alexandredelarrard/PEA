@@ -29,7 +29,6 @@ from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from src.constants.constants import EARNINGS_CALL_MIN_CLEAN_WORDS, EARNINGS_CALL_SCORED_TAGS
 from src.utils.earnings_call_split import is_pleasantry, split_sentences
 
 # Curated subset of Loughran-McDonald "Uncertainty" + "Weak Modal" words (lowercased).
@@ -570,12 +569,14 @@ class EarningsCallQuality:
 
 def assess_earnings_call_sections(sections: Mapping[str, object]) -> EarningsCallQuality:
     """One shared validity decision for every split call, in the features and the validator."""
-    scored = set(EARNINGS_CALL_SCORED_TAGS)
+    scored_tags = ("prepared_remarks", "qa")
+    minimum_words = 100
+    scored = set(scored_tags)
     cleaned = {str(tag): clean_earnings_call_text(text) if str(tag) in scored else str(text or "") for tag, text in sections.items()}
-    counts = {tag: word_count(cleaned.get(tag, "")) for tag in EARNINGS_CALL_SCORED_TAGS}
+    counts = {tag: word_count(cleaned.get(tag, "")) for tag in scored_tags}
     missing = [tag for tag, count in counts.items() if count == 0]
     total = sum(counts.values())
     reason = f"missing sections: {', '.join(missing)}" if missing else None
-    if reason is None and total < EARNINGS_CALL_MIN_CLEAN_WORDS:
-        reason = f"only {total} cleaned words (<{EARNINGS_CALL_MIN_CLEAN_WORDS})"
+    if reason is None and total < minimum_words:
+        reason = f"only {total} cleaned words (<{minimum_words})"
     return EarningsCallQuality(cleaned, counts, total, reason is None, reason)

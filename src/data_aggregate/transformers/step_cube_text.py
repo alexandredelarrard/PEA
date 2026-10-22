@@ -13,9 +13,8 @@ EMBEDDING   OpenAI embeddings (cached/incremental; a no-op without an API key), 
             contains raw levels plus four prior-only issuer-history scores; peer and
             cross-sectional variants are intentionally absent.
 
-MEMORY: neither pass preloads `earnings_call_sections`. Scoring streams the text per ticker
-and the KPIs stream back per ticker. Loading that table whole is precisely what OOM-killed
-this work before, and it is the only reason the two passes can share one step at all.
+Scoring and sentiment KPI derivation each load source paragraphs once and process the local
+frame by ticker. Embeddings keep their independent cache and source reads.
 """
 
 from __future__ import annotations
@@ -41,7 +40,7 @@ from src.data_aggregate.utils.text.earnings_call_features import (
     build_earnings_call_feature_panel,
     load_issuer_identity,
     score_earnings_calls,
-    sentiment_kpis_streamed,
+    sentiment_kpis,
 )
 from src.data_store.schema import Tables
 from src.utils.step import Step
@@ -52,7 +51,7 @@ class StepCubeText(Step):
     # inlined so the projection stays introspectable (see test_part_registry.py).
     _FIELDS = ("close_split",)
 
-    def __init__(self, context: Context, config: DictConfig):
+    def __init__(self, context: Context, config: DictConfig) -> None:
         super().__init__(context=context, config=config)
 
         self._cfg = config.build_cube
@@ -71,7 +70,7 @@ class StepCubeText(Step):
         )
         # EC histories are sparse and five-year/prior-call based. Compute on the same full
         # calendar for both paths; `write_part` alone slices the incremental tail.
-        frames = self._load_frames(None)
+        frames = load_price_frames(self._store, peers={}, fields=self._FIELDS)
         panel, changed = self._feature_panel(frames)
         del frames
         refresh_from = min(changed) + pd.offsets.BDay(1) if changed else None
@@ -93,15 +92,12 @@ class StepCubeText(Step):
         override = self._cfg.get("incremental", {}).get("warmup_trading_days")
         return int(override) if override is not None else self._part.warmup_trading_days
 
-    def _load_frames(self, since: pd.Timestamp | None) -> PriceFrames:
-        return load_price_frames(self._store, peers={}, fields=self._FIELDS, since=since)
-
     def _feature_panel(self, frames: PriceFrames) -> tuple[pd.DataFrame, list[pd.Timestamp]]:
         lag = self._cfg.earnings_calls.availability_lag_days
         if not isinstance(lag, int) or isinstance(lag, bool) or lag < 0:
             raise ValueError("build_cube.earnings_calls.availability_lag_days must be a non-negative integer")
         changed = [date for date in (score_earnings_calls(self._context), embed_earnings_calls(self._context)) if date is not None]
-        per_call = sentiment_kpis_streamed(self._context)
+        per_call = sentiment_kpis(self._context)
         if per_call is None or per_call.empty:
             return pd.DataFrame(columns=["date", "ticker"]), changed
 
@@ -110,9 +106,8 @@ class StepCubeText(Step):
         if embedding is not None and not embedding.empty:
             per_call = per_call.merge(embedding, on=["ticker", "quarter"], how="left")
         panel = build_earnings_call_feature_panel(
-            None,
+            per_call,
             frames.trading_index,
-            per_call=per_call,
             availability=frames.availability,
             availability_lag_days=lag,
         )

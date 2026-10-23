@@ -650,18 +650,16 @@ SHARADAR_GAP_EXPECTED_FIELDS: frozenset[str] = frozenset(
 # Earnings-call output contract shared by the builder and read-only validator.
 EARNINGS_CALL_SIGNAL_SESSIONS = 66
 EARNINGS_CALL_FEATURES = (
-    "ec_tone",
-    "ec_tone_vs_hist",
-    "ec_qa_gap",
-    "ec_qa_gap_vs_hist",
-    "ec_uncertainty",
-    "ec_uncertainty_vs_hist",
-    "ec_qa_coherence_mean",
-    "ec_qa_coherence_mean_vs_hist",
-    "ec_tone_delta",
-    "ec_length_delta",
+    "ec_prep_tone",
+    "ec_prep_tone_delta",
+    "ec_questions_tone",
+    "ec_questions_tone_delta",
+    "ec_answers_tone",
+    "ec_answers_tone_delta",
     "ec_qa_qq_distance",
     "ec_prep_qq_distance",
+    "ec_questions_only_qq_distance",
+    "ec_qa_coherence_mean",
 )
 
 # --------------------------------------------------------------------------- #

@@ -1,13 +1,14 @@
 ---
 title: Run the pipeline
-description: Interpreter, database, CLI, Airflow, cold-start, backfill, and validation operations.
+description: Interpreter, database, CLI, Airflow, cold-start, backfill, and validation
+  operations.
 type: guide
 tags:
-  - wiki
-  - guide
-  - runbook
-  - operations
-source_commit: 15df4358b2a4ea81c34f02c71076256aed23544a
+- wiki
+- guide
+- runbook
+- operations
+source_commit: 4773469e660ee159f30fbef0e56ea401d019fab2
 ---
 # Run the pipeline
 
@@ -367,6 +368,8 @@ Normal extraction checks the entire scoped provider index and can recover introd
 
 After separate production approval, adopt a lineage/availability change with current identity tables, lineage-aware extraction, a full `data_aggregate build-text -F`, then `data_aggregate assemble-cube`. `build-text` has no ticker scope. Ordinary extraction recovers missing historical aliases but preserves old raw keys; reviewed raw cleanup requires the scoped full reconcile. Runtime issuer checks exclude unsupported legacy calls from features in the meantime. New/reissued calls follow normal sentiment/embedding scoring; valid current-version caches can be reused for a clock-only change. No raw/cache `as_of` is shifted.
 
+The ten-column role/embedding contract uses the same adoption sequence: `data_aggregate build-text -F`, then `data_aggregate assemble-cube`, then read-only validation and fresh training for both tree families. Existing compatible speaker-clean-v3 prepared/legacy-management scores and vectors are reused; only missing question sentiment needs new inference. Saved v2 outputs still require the prior cleaning-version recomputation. The feature-schema change alone needs no extra embeddings or source-date shift. Existing nullable unused sentiment uncertainty storage can remain until database recreation.
+
 The feature clock is owned by `build_cube.earnings_calls.availability_lag_days` in [build_cube.yml](../../configs/build_cube.yml): two calendar days, followed by the first eligible trading session. A normal 30-calendar-day rewrite does not rewrite older feature clocks; a full part rebuild and cube reassembly are necessary for historical adoption. The provider exposes call dates without a first-available timestamp, so two days is an estimated buffer. The 2026-10-19 scoped validation recovered ECHO2→62 and BNY3→78 into an isolated sink, but current-model feature generation abstained because the bounded cache contained only older model versions. Source-format and old-feature drift flags remain documented in `reports/validate/2026-10-19-earnings-call-lineage/`; no production backfill or paid scoring ran in that validation.
 
 A full text run reuses valid model results and scores only missing or invalid outputs. Cold scoring can be dominated by FinBERT. The following measurements are historical, from 2026-10-02 (`reports/validate/2026-10-01-earnings-call-extraction-gaps/03-implementation.md`); they are not a throughput guarantee for the current flow. The later [text-cube acceptance](./testing.md#text-cube-acceptance-2026-10-22) records actual configured-model/PostgreSQL tests on 253 calls, a 10.3-second warm median and zero repeated inference. Whole-universe cold capacity remains unmeasured.
@@ -383,7 +386,7 @@ Run FinBERT on a GPU with `FINBERT_DEVICE=cuda`. `build-text` scores sentiment b
 rtk "$PY" -m src validate earnings-calls -T cube_part_text -o reports/validate/YYYY-MM-DD-earnings-calls
 ```
 
-The check reads `earnings_call_sections` itself; `-T earnings_call_sections` is the wrong target. It reports per-ticker and per-calendar-quarter coverage, paragraph-grain checks, raw split status, usable-call rate (at least 0.985 under `usable_call_rate_min`) and prepared word share among eligible both-section calls (q05 at least 0.15, from `configs/validate.yml`), `as_of` against the nearest `earnings_surprises` date, and the 12-column feature schema, bounds, redundancy and drift.
+The check reads `earnings_call_sections` itself; `-T earnings_call_sections` is the wrong target. It reports per-ticker and per-calendar-quarter coverage, paragraph-grain checks, raw split status, usable-call rate (at least 0.985 under `usable_call_rate_min`) and prepared word share among eligible both-section calls (q05 at least 0.15, from `configs/validate.yml`), `as_of` against the nearest `earnings_surprises` date, and the ten-column feature schema, bounds, redundancy and drift.
 
 ## Validation commands
 
@@ -453,4 +456,4 @@ rtk "$PY" -m src validate modelling -c ./configs -o data/output/modelling_backte
 
 The [read-only validator](../../src/validate/checks/modelling.py) checks source chronology, predictions/IC/IR/effects, complete publication and report content. Incomplete evidence is ABSTAINED. Retain accepted historical-vintage limitations and missing configured inputs. Old assessments are not migrated.
 
-Text model stages compare all compact source keys with their own saved model tables, so old missing/failed calls remain eligible for scoring independently of the feature rewrite. Normal text features rewrite 30 calendar days from their stored frontier and read only required predecessor/five-year history. Changes older than that output range require build-text -F followed by assemble-cube. Full feature mode reuses valid model results; it does not force paid embedding or FinBERT work to repeat. Prepared-only/answer-only calls retain supported features, with unavailable sentiment sections recorded as NULL scores and zero words.
+Text model stages compare all compact source keys with their own saved model tables, so old missing/failed calls remain eligible for scoring independently of the feature rewrite. Normal text features rewrite 30 calendar days from their stored frontier and read only active emitter calls and their actual adjacent fiscal predecessors. Changes older than that output range require build-text -F followed by assemble-cube. Full feature mode reuses valid model results; it does not force paid embedding or FinBERT work to repeat. Prepared-only/answer-only calls retain supported features, with unavailable sentiment roles recorded as NULL scores and zero words.

@@ -539,7 +539,7 @@ def _schema_findings(expected: list[str], live: set[str], settings: Any) -> list
             Finding.at(
                 9,
                 f"missing={missing}; legacy={legacy}",
-                "exactly the 12 approved raw/issuer-history earnings-call columns",
+                "exactly the ten approved sentiment/embedding earnings-call columns",
                 missing=missing,
                 legacy=legacy,
             )

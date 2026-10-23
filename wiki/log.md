@@ -1,6 +1,7 @@
 ---
 title: Wiki Log
 description: Append-only audit trail of wiki generation and refresh runs.
+source_commit: a8b02a3318e4b31e4bfa5b92f80d18874022572d
 ---
 
 # Wiki Log
@@ -879,3 +880,13 @@ Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/
 
 - Integration closure: the split is committed locally on dev at f3723b94cf02a35493f2493c54f96d7743d732f3. F-008 changes two test lines to observe either load or iter_load while preserving every existing behavioral assertion. The final actual-dev check passes all 32 tests (the full 22-test text-step module plus ten two-step contracts), with no skip, failure or live-guard attempt. Application code and fingerprint baseline are unchanged by this test correction. The earlier 169 passing integration cases and 35 exact retained outputs / 1,746 columns remain the wider evidence; the entire 170-test suite was not rerun after it.
 - Final navigation refresh after F-008: Graphify code-only extraction succeeds with15418nodes/48054edges/404communities; source metadata export and graph issues from the isolated handoff are resolved in this checkout. Production adoption and remote push remain separate.
+
+## 2026-10-22: refresh — ten role and embedding features
+
+- Profile: internal/standard.
+- source_commit: a8b02a3318e4b31e4bfa5b92f80d18874022572d (overview anchor was 5d13ac4980704564ce57dcbd7a378c73840db148). Isolated branch harness/text-features-ten is based on the user's committed dev cleaning fix; implementation and protected configuration/fresh-DDL edits were approved.
+- Coverage: exact ten formulas, canonical prepared/questions/answers sentiment, compatible legacy management-qa reuse, partial-role NULLs, active emitters plus adjacent fiscal predecessors instead of five-year history, all ten selected by both tree families, and rebuild/reassembly/fresh-training adoption. The former uncertainty dictionary and history scores are retired; historical validation/log entries remain dated evidence.
+- Evidence: 267 distinct tests pass, all 37 unrelated aggregate outputs/1,767 columns unchanged, Ruff/Pyright clean. Independent real replay scores eight actual offline FinBERT documents and persists 128 AAPL daily rows; twelve per-call sentiment, 768 daily cells/NULLs and forty explicitly v2-only vector arithmetic comparisons reconcile. Three full/daily-equivalent reruns have a 1.524-second warm median and zero further model/API calls; paragraphs still reload for pending v3 embeddings. Model initialization takes 317.11 seconds and inference 162.39 seconds on this CPU host.
+- Reviews/limits: independent correctness and Ponytail reviews clear with no requested product patch. Native validator diagnostics and clip/leakage/catalogue/frozen abstentions remain visible; formal domain verdict stays CONDITIONAL for sparse population evidence, unavailable real v3 vectors and the declared sample/runtime limits. No live database write, paid embedding call, dependency installation, model fitting or adoption occurred. Detailed local ignored evidence: reports/validate/2026-10-22-text-features-ten/report.html.
+- Audit: all ten updated content pages pass configured link checks, and the overview reaches all nine other touched content pages without a new wiki orphan. Markdownlint/frontmatter/OKF checks are not configured. Source references were checked; reserved historical log-link advisories remain outside repair scope.
+- Pages: [Overview](./OVERVIEW.md), [Aggregation](./modules/data-aggregate.md), [Shared utilities](./modules/runtime-and-shared-utils.md), [Cube flow](./flows/cube-build.md), [Table catalog](./reference/table-catalog.md), [Configuration](./reference/configuration.md), [Data sources](./reference/data-sources.md), [Runbook](./guides/run-the-pipeline.md), [Testing](./guides/testing.md#ten-feature-follow-up-2026-10-22), [TODO](./TODO.md).

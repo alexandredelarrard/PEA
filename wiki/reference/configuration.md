@@ -1,12 +1,13 @@
 ---
 title: Configuration
-description: OmegaConf assembly, ownership of every configuration domain, and change rules.
+description: OmegaConf assembly, ownership of every configuration domain, and change
+  rules.
 type: reference
 tags:
-  - wiki
-  - reference
-  - configuration
-source_commit: 15df4358b2a4ea81c34f02c71076256aed23544a
+- wiki
+- reference
+- configuration
+source_commit: 4773469e660ee159f30fbef0e56ea401d019fab2
 ---
 # Configuration
 
@@ -157,7 +158,9 @@ Every numerical value in [build_cube.yml](../../configs/build_cube.yml) carries 
 
 [modellling.yml](../../configs/modellling.yml) selects zscore targets, h30/h60/h90 and ElasticNet, LightGBM and LightGBM random-forest mode. Five expanding crisis-aware windows cover 2000–02,2003–06,2007–12,2013–18 and2019–21; null embargo resolves to the current label horizon. Time weighting is configured by `model.weight_decay` in `modellling.yml` and is currently disabled. Feature pools, family hyperparameters and monotonic directions are owned by the YAML files under `configs/models/`; inspect the current files before fitting. These are configurable inputs rather than invariants of the training workflow.
 
-Each family selects all inputs, numeric and categorical, through `columns` and `columns_by_horizon[h]`. For both tree families, `lgbm.categoricals` is the sole type registry: a selected name in that list receives native categorical handling; a registry entry does not add an input. `lgbm.monotonic` supplies the same directions to LightGBM and RF at every horizon, aligned to the actual fitted feature order; unselected directions stay inactive. The text cube exposes 12 raw/issuer-history columns, while each model family selects its own subset through [lgbm_modelling.yml](../../configs/models/lgbm_modelling.yml), [random_forest_modelling.yml](../../configs/models/random_forest_modelling.yml) and [linear_modelling.yml](../../configs/models/linear_modelling.yml). At commit `96e77f81`, their default lists select seven, three and zero earnings-call columns respectively. `_xs` and `_vs_peers` earnings-call variants are not emitted by the text cube. Directional constraints apply only where the economic sign is unambiguous: positive call tone and negative uncertainty. Q&A gap (management-answer tone minus prepared-remarks tone), coherence, embedding distance, and disclosure-length change are unconstrained. `configs/validate.yml` owns their quarterly cadence, raw plausibility bounds, 66-session lifetime, Spearman redundancy thresholds, PSI and missingness-delta limits, latest-20-session audit window, and the split-quality floors (`usable_call_rate_min: 0.985`, `prepared_share_q05_min: 0.15`); raw split status remains diagnostic, and prepared share is measured on eligible calls with both sections. Train-versus-recent checks use the canonical `train.end_date` from `configs/modellling.yml`; the validation config does not duplicate that boundary. The dedicated validator reads these settings rather than duplicating them in Python. When a new feature has an economically unambiguous direction, add the constraint alongside the column and run the monotonic-contract tests.
+Each family selects all inputs, numeric and categorical, through `columns` and `columns_by_horizon[h]`. For both tree families, `lgbm.categoricals` is the sole type registry: selected names in it receive native categorical handling; a registry entry does not add an input. `lgbm.monotonic` supplies the same directions to LightGBM and RF at every horizon, aligned to the fitted feature order; unselected directions stay inactive. The text cube exposes the [exact ten role/embedding features](../modules/data-aggregate.md#exact-ten-earnings-call-features). Both [LightGBM](../../configs/models/lgbm_modelling.yml) and [random forest](../../configs/models/random_forest_modelling.yml) select all ten once; [linear](../../configs/models/linear_modelling.yml) retains its existing selection. No new earnings-call monotonic directions are assigned. Retired tone/gap/uncertainty/history/length and `_xs`/`_vs_peers` variants are not emitted. Rebuild/reassemble the cube and train fresh models before adoption; old fitted artifacts requiring removed inputs remain incompatible.
+
+[validate.yml](../../configs/validate.yml) declares tone/coherence bounds [-1,1], role-delta bounds [-2,2] and cosine-distance bounds [0,2]. It also owns quarterly cadence, 66-trading-session lifetime, Spearman redundancy thresholds, PSI and missingness limits, the latest-20-session audit window and unchanged quality floors (`usable_call_rate_min: 0.985`, `prepared_share_q05_min: 0.15`). Prepared share is measured only on eligible calls containing both sections; raw split status is diagnostic. Train-versus-recent checks use the canonical train.end_date in [modellling.yml](../../configs/modellling.yml). The dedicated validator reads these settings instead of duplicating them in Python.
 
 train.end_date is a feature ceiling; train.outcome_cutoff=2021-12-31 limits every development outcome. Observed price sessions and actual label ends purge training strictly before each external test. LightGBM fits all eligible training rows and uses external-test RMSE for early stopping; there is no inner validation tail. Cutoff/full-train rounds use the upward-rounded mean of best rounds in the last two configured chronological folds. Post-2022 never selects rounds. Fixed-cutoff assessment starts 3 January 2022; portfolio starts 3 January 2022. Full-train restores saved fitting settings/schema and fits all currently mature finite labels without CV. See [the lifecycle](./modelling-and-portfolio.md#longshort-training-lifecycle).
 

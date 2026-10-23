@@ -132,18 +132,16 @@ lgbm:
   - "sector"
 
   #### suite pour avoir 100
-  # - f_ec_tone
-  # - f_ec_tone_vs_hist
-  - f_ec_qa_gap
-  # - f_ec_qa_gap_vs_hist
-  - f_ec_uncertainty
-  # - f_ec_uncertainty_vs_hist
-  - f_ec_qa_coherence_mean
-  # - f_ec_qa_coherence_mean_vs_hist
-  - f_ec_tone_delta
-  - f_ec_length_delta
+  - f_ec_prep_tone
+  - f_ec_prep_tone_delta
+  - f_ec_questions_tone
+  - f_ec_questions_tone_delta
+  - f_ec_answers_tone
+  - f_ec_answers_tone_delta
   - f_ec_qa_qq_distance
   - f_ec_prep_qq_distance
+  - f_ec_questions_only_qq_distance
+  - f_ec_qa_coherence_mean
 
   # - f_pegy
   # - f_pegy_vs_hist

@@ -1,13 +1,14 @@
 ---
 title: Data sources
-description: External providers, credentials, coverage boundaries, and source-specific failure modes.
+description: External providers, credentials, coverage boundaries, and source-specific
+  failure modes.
 type: reference
 tags:
-  - wiki
-  - reference
-  - data-sources
-  - extraction
-source_commit: 15df4358b2a4ea81c34f02c71076256aed23544a
+- wiki
+- reference
+- data-sources
+- extraction
+source_commit: 4773469e660ee159f30fbef0e56ea401d019fab2
 ---
 # Data sources
 
@@ -40,7 +41,7 @@ This page is the source-facing operating contract: where data comes from, which 
 | Short volume and settlement fails | FINRA RegSHO, SEC | none | `sec_short_volume_security` → `sec_short_interest`, `sec_fails_to_deliver_security` → `sec_fails_to_deliver` | [FTD fetcher](../../src/data_extract/utils/institutionals/fetch_fails_to_deliver.py), [short-volume fetcher](../../src/data_extract/utils/institutionals/fetch_short_interest.py) |
 | Current SEC tickers and exchanges | SEC `company_tickers_exchange.json` | `SEC_USER_AGENT` | `sec_company_tickers` | [sec_tickers.py](../../src/data_extract/utils/common/sec_tickers.py) |
 | Earnings calls | HuggingFace dataset `defeatbeta/yahoo-finance-data` | none | `earnings_call_sections` | `src/data_extract/utils/behavioral/fetch_earnings_call_transcripts.py` |
-| Tone and embeddings | local FinBERT/lexicon and OpenAI | OpenAI only for embeddings | `earnings_call_sentiment`, `earning_calls_embedding` | text aggregation (`src/data_aggregate/utils/text/`) and [gpt_extract](../../src/gpt_extract/) |
+| Tone and embeddings | local FinBERT and OpenAI | OpenAI only for embeddings | `earnings_call_sentiment`, `earning_calls_embedding` | text aggregation (`src/data_aggregate/utils/text/`) and [gpt_extract](../../src/gpt_extract/) |
 
 The [notes fetcher](../../src/data_extract/utils/fundamentals/fetch_financial_notes.py) applies an explicit archive-date policy. The cutoff is declared as `Resume.observed_from` on the notes tables; the pension table declares the same cutoff. It does not change their extraction `source_start`. For periods through August 2026, `available_at` is **estimated** as the 12th of the following month, moved to Monday when the 12th falls on a weekend (`2021_08` → 2021-09-13). For September 2026 archives onward, a new download uses its successful completion date in New York; an already-cached ZIP without a recorded download date falls back to its file modification date. HTTP `Last-Modified` is not used. `financial-notes --repair-availability` corrects existing clocks with primary-key-only updates, without rereading ZIP payloads. The [notes feature builder](../../src/data_aggregate/utils/fundamentals/fundamental_features.py) starts numeric facts at `max(filed, available_at)` and forward-fills the latest eligible annual value for at most 460 calendar days unless replaced sooner. The historical 12th is a modelling assumption, **not a verified SEC publication date**; late releases and corrected archives can still create look-ahead bias.
 

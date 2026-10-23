@@ -195,7 +195,7 @@ def test_clean_paragraphs_known_truth() -> None:
 
 
 def test_split_call_terminal_statuses() -> None:
-    assert split_call([]) == CallSplit("", "", [], "empty")
+    assert split_call([]) == CallSplit("", "", "", [], "empty")
     assert split_call([{"speaker": "AI Insights", "content": ""}]).status == "empty"
     straight_to_qa = [
         {"speaker": "Operator", "content": "Our first question comes from Jane Roe with Big Bank."},

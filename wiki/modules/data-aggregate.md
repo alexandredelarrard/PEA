@@ -1,11 +1,12 @@
 ---
 title: Cube aggregation
-description: Incremental cube-part builders, feature families, target construction, and streamed final assembly.
+description: Incremental cube-part builders, feature families, target construction,
+  and streamed final assembly.
 type: module
 tags:
-  - wiki
-  - module
-source_commit: 15df4358b2a4ea81c34f02c71076256aed23544a
+- wiki
+- module
+source_commit: 4773469e660ee159f30fbef0e56ea401d019fab2
 ---
 # Cube aggregation
 
@@ -44,50 +45,50 @@ source_commit: 15df4358b2a4ea81c34f02c71076256aed23544a
 
 ## Earnings-call feature contract
 
-[StepCubeText.run](../../src/data_aggregate/transformers/step_cube_text.py) visibly loads the calendar, plans work, prepares selected text once, runs sentiments, runs embeddings, then reads saved model outputs and prices to build/persist features. Each model stage saves completed calls independently. The existing sentiment and embedding tables are the reusable outputs; there is no additional cache layer.
+[StepCubeText.run](../../src/data_aggregate/transformers/step_cube_text.py) visibly loads the calendar, plans work, prepares selected text once, runs sentiments, runs embeddings, then reads saved model outputs and prices to build/persist features. Each model stage saves completed calls independently. The existing sentiment and embedding tables are the reusable outputs; no additional cache layer is needed.
 
-Planning reads compact ticker/quarter/date keys from paragraph 1 of earnings_call_sections and each model table's compatible completion metadata. Each model has its own missing/failed/stale work set across source history, including old holes. Preparation reads the union's paragraph payload once, with projection/key scope, then loops by ticker/quarter to split, clean and assess. These stages use ordinary DataFrames, with no generator or per-ticker table reads. Completion and feature joins parse stored embedding dates explicitly as ISO8601, accepting both legacy date-only values and new timestamps without repeating completed inference. Full/cold source and vector payloads can still be large; the bounded real-model and PostgreSQL measurements are recorded in [text-cube acceptance](../guides/testing.md#text-cube-acceptance-2026-10-22).
+Planning compares compact ticker/quarter/date keys from paragraph 1 of earnings_call_sections with each model table's compatible completion metadata. Each model has its own missing/failed/stale work set across source history, including old holes. Preparation reads the union's projected paragraph payload once, then loops by ticker/quarter to split, clean and assess. These stages use ordinary DataFrames, with no generator or per-ticker table reads. Stored embedding dates are normalized explicitly as ISO8601 before completion checks and feature joins.
 
-The canonical [parser](../../src/utils/text/earnings_call_split.py), introduction matching and [tokenization/quality checks](../../src/utils/text/text_metrics.py) are shared with extraction/validation. Cube-only [sentiment inference](../../src/data_aggregate/utils/text/nlp_sentiment.py) and [uncertainty/preparation helpers](../../src/data_aggregate/utils/text/earnings_call_preparation.py) belong to aggregation. [Embedding helpers](../../src/data_aggregate/utils/text/earnings_call_embeddings.py) validate vectors and derive coherence/drift; they do not create sections.
+The canonical [parser](../../src/utils/text/earnings_call_split.py), introduction matching and [tokenization/quality checks](../../src/utils/text/text_metrics.py) are shared with extraction/validation. Cube-only [sentiment inference](../../src/data_aggregate/utils/text/nlp_sentiment.py) and [preparation/persistence helpers](../../src/data_aggregate/utils/text/earnings_call_preparation.py) belong to aggregation. [Embedding helpers](../../src/data_aggregate/utils/text/earnings_call_embeddings.py) validate vectors and derive coherence/drift; they do not create sections.
 
-Same-speaker paragraphs merge before Q&A detection. Keep the 150 management-word and 300 question-word rules on merged turns. Before splitting, `prepare_sections` calls the shared `clean_earnings_call_paragraphs` in [text_metrics.py](../../src/utils/text/text_metrics.py) to discard provider metadata and participant rosters wherever they occur, then remove balanced parenthetical text (including nested annotations). Financial speech is retained regardless of paragraph position. Ordinary Operator turns remain available as Q&A boundary/analyst-name cues, then the splitter excludes them from both model inputs. Empty cleaned paragraphs are dropped, and preparation logs metadata/empty paragraph counts plus the number of paragraphs and characters affected by parentheses. Boilerplate and courtesy cleaning retains hedges and lossless decimal/abbreviation boundaries. The read-only earnings-call validator uses the same paragraph cleaner. A dated usable call needs at least 100 combined cleaned prepared/management-answer words. Prepared-only and answer-only calls qualify. Sentiment Q&A uses management answers; embeddings additionally retain analyst questions for exchange coherence.
+Same-speaker paragraphs merge before Q&A detection. Keep the 150 management-word and 300 question-word rules on merged turns. Before splitting, prepare_sections calls clean_earnings_call_paragraphs to discard provider metadata and participant rosters wherever they occur and remove balanced parenthetical text, including nested annotations. Financial speech is retained regardless of paragraph position. Operator handoffs supply structural cues and never become model text. Empty cleaned paragraphs are dropped; preparation logs exclusions and the paragraphs/characters affected by parentheses. Boilerplate/courtesy cleaning retains hedges and decimal/abbreviation boundaries. The read-only validator uses the same paragraph cleaner.
 
-A completed sentiment call stores both canonical section tags. An unavailable section has zero words and NULL probabilities/uncertainty; present text needs valid model probabilities. A missing/failed present section is incomplete, and an already valid partner score is reused. Embeddings validate and save a complete call's actual turns; stale sequence tails are reconciled. Optional model/API unavailability leaves that family's work retryable while other supported features can still be saved.
+A dated eligible call needs at least 100 combined cleaned prepared/management-answer words; analyst words do not count toward that floor. Prepared-only and answer-only calls qualify. Sentiment scores prepared remarks, substantive analyst questions and management answers separately. The parser exposes all substantive questions, including short questions below the unchanged ten-word embedding floor. Embeddings preserve their existing turn population and question/answer exchange mapping.
 
-Model choices come from build_cube.earnings_calls.sentiment_model and the existing gpt.embedding model/batch_size/max_chars settings. The step validates them at initialization, then loads one local sentiment engine only when eligible text needs scoring. Cache identities retain the configured model plus speaker-clean-v3; no global model/factory cache or configurable section-tag input is used.
+A completed sentiment call has exactly three canonical tags: `prepared_remarks`, `questions`, `answers`. True absence records zero words and NULL probabilities. Existing text with failed/missing inference stays pending; valid partner roles remain usable for their own features. Matching saved prepared scores and legacy management-only `qa` scores can be reused; valid canonical answers take precedence. Canonical rows are saved before scoped legacy-tag deletion, so leftover `qa` never creates false completion or overrides answers. Embeddings validate/save complete actual turn sequences and reconcile stale tails. Optional engine/API unavailability leaves work retryable.
 
-The output remains exactly 12 f_ec_* columns: eight raw values and four prior-only issuer-history scores, without peer/cross-sectional normalization. Missing sections leave unsupported values NULL. Tone/length deltas require consecutive issuer fiscal quarters with matching section coverage; tone/uncertainty histories also partition by coverage. Q&A gap needs both sections. Coherence needs two mapped Q&A exchanges; section drift needs compatible vectors in the prior consecutive fiscal quarter. Histories use five calendar years, four prior non-null observations and sample standard deviation.
+Model choices come from build_cube.earnings_calls.sentiment_model and the existing gpt.embedding model/batch_size/max_chars settings. The step validates them at initialization and loads one local sentiment engine only for missing nonempty documents. Model identities include speaker-clean-v3. No global model/factory cache or configurable tag input is used; the canonical sentiment roles have one declaration in the preparation/persistence owner.
 
-Normal feature writes rewrite inclusively from the stored text-part frontier minus 30 calendar days, covering missed runs. Feature input reads retain the active emitter calls, their actual fiscal predecessors and required five-year history for those issuers only. Issuers with no call that can emit into the output range are excluded; old symbols of active issuers remain available for comparisons. Vectors use one scoped projected read without turn text/audit payload. The cheap complete calendar supplies original positions, while daily arrays and close_split availability cover only the output tail. All features first become visible on/after call date plus the configured calendar-day lag (default two), then expire after 66 original trading sessions.
+The output is exactly ten `f_ec_*` columns: three role tone levels, three role deltas, three embedding distances and Q&A coherence. Dictionary uncertainty, combined tone, Q&A tone gap, length delta and issuer-history z-scores are removed. Missing roles leave only their dependent fields NULL; a prepared delta remains valid when Q&A coverage changes.
 
-Extraction invalidates both saved model outputs when a source call changes. Corrections/deletions/backfills older than the normal feature rewrite require explicit build-text -F and cube assembly. Full/cold/schema-change feature rebuilding reuses valid inference results. No durable repair marker or cross-stage acknowledgement protocol is used.
+Normal feature writes rewrite inclusively from the stored frontier minus 30 calendar days. Saved score/vector payload reads retain active emitter calls and their actual immediately preceding fiscal quarters for those issuers, including older symbols. Five-year history is no longer needed. Vectors use one scoped projected read without turn text/audit payload. Prices load after both model stages. The complete calendar preserves original positions while daily arrays/price availability cover the output tail. Features become visible on/after call date plus the configured lag (default two calendar days), then expire after 66 original trading sessions.
 
-### Exact twelve earnings-call features
+Extraction invalidates saved model outputs when a source call changes. Corrections/deletions/backfills outside the normal tail require explicit build-text -F and cube assembly. Full/cold/schema-change feature rebuilding reuses compatible inference. No durable repair marker or cross-stage acknowledgement protocol is used.
 
-Let `N_p` and `N_a` be cleaned prepared and management-answer word counts. Section tone `T_s = P_s(positive) - P_s(negative)` uses FinBERT probabilities; the engine averages its non-overlapping token windows by token count. Combined tone `T = (N_p T_p + N_a T_a) / (N_p + N_a)` uses only available sections. `U_s` is the fraction of alphabetic word tokens in the fixed uncertainty/weak-modal vocabulary in [earnings_call_preparation.py](../../src/data_aggregate/utils/text/earnings_call_preparation.py).
+### Exact ten earnings-call features
 
-The following are implemented by [sentiment and feature mathematics](../../src/data_aggregate/utils/text/earnings_call_features.py) and [embedding mathematics](../../src/data_aggregate/utils/text/earnings_call_embeddings.py). Persisted names carry the `f_` prefix.
+For each role `r`, `T(r,q) = P(positive) - P(negative)` from its cleaned FinBERT document. The existing engine combines nonoverlapping token windows by token count; no positive/negative word dictionary is involved. `q-1` means the same issuer's immediately preceding fiscal quarter.
 
-| Feature | Exact per-call calculation |
+The formulas live in [sentiment/feature mathematics](../../src/data_aggregate/utils/text/earnings_call_features.py) and [embedding mathematics](../../src/data_aggregate/utils/text/earnings_call_embeddings.py).
+
+| Persisted feature | Exact per-call calculation |
 | --- | --- |
-| `ec_tone` | Combined word-weighted tone `T`. |
-| `ec_tone_vs_hist` | `(T - prior mean(T)) / prior sample std(T)`. |
-| `ec_qa_gap` | `T_a - T_p`; both sections required. |
-| `ec_qa_gap_vs_hist` | Prior-history z-score of `ec_qa_gap`. |
-| `ec_uncertainty` | `(N_p U_p + N_a U_a) / (N_p + N_a)`. |
-| `ec_uncertainty_vs_hist` | Prior-history z-score of `ec_uncertainty`. |
-| `ec_qa_coherence_mean` | For each mapped exchange, mean-pool its question vectors, average the cosine to each individual answer vector, then equally average those exchange scores; at least two usable exchanges. |
-| `ec_qa_coherence_mean_vs_hist` | Prior-history z-score of `ec_qa_coherence_mean`. |
-| `ec_tone_delta` | `T_current - T_previous` for consecutive fiscal quarters with matching section coverage. |
-| `ec_length_delta` | Natural logarithm of `(N_p + N_a)_current / (N_p + N_a)_previous`, under the same consecutive-quarter/coverage rule. |
-| `ec_qa_qq_distance` | `1 - cosine(mean Q&A vector_current, mean Q&A vector_previous)`; Q&A pooling equally weights all retained analyst-question and management-answer turns. |
-| `ec_prep_qq_distance` | `1 - cosine(mean prepared vector_current, mean prepared vector_previous)`; pooling equally weights retained prepared turns. |
+| `f_ec_prep_tone` | `T(prepared,q)`. |
+| `f_ec_prep_tone_delta` | `T(prepared,q) - T(prepared,q-1)`. |
+| `f_ec_questions_tone` | `T(questions,q)`, using all substantive cleaned analyst questions. |
+| `f_ec_questions_tone_delta` | `T(questions,q) - T(questions,q-1)`. |
+| `f_ec_answers_tone` | `T(answers,q)`, using management answers. |
+| `f_ec_answers_tone_delta` | `T(answers,q) - T(answers,q-1)`. |
+| `f_ec_qa_qq_distance` | `1 - cosine(mean Q&A vector_q, mean Q&A vector_q-1)`; equal pooling of retained analyst-question and management-answer turns. |
+| `f_ec_prep_qq_distance` | The same cosine distance on retained prepared turns. |
+| `f_ec_questions_only_qq_distance` | The same cosine distance on existing retained analyst-question vectors only; no additional embeddings. |
+| `f_ec_qa_coherence_mean` | Mean-pool each mapped exchange's question vectors, average cosine to its individual answer vectors, then equally average exchange scores; at least two usable exchanges. |
 
-History z-scores use only earlier non-null observations of the same issuer inside the preceding five calendar years, require at least four, and use sample standard deviation (`ddof=1`); zero variation leaves NULL. Tone and uncertainty histories also require matching available-section coverage. Both distances require the immediately preceding fiscal quarter, matching model identity and vector dimension; distances and coherence are rounded to six decimals. Word counts exclude pure numbers. An unavailable section leaves its dependent features NULL. Dates, identity, price availability and the original 66-session expiry still apply as described above.
+Each role delta requires a valid current and immediately preceding fiscal-quarter score with compatible provenance; it cannot bridge missing quarters or missing role support. Supported issuer aliases remain comparable. Distances require compatible model identity/vector dimension and that same fiscal adjacency; distances/coherence retain six-decimal rounding. Levels/coherence lie in [-1,1], deltas in [-2,2], distances in [0,2]. Dates, issuer identity, price availability and the original 66-session expiry still apply.
 
 A read-only 2026-10-22 follow-up on 253 stored calls/19,210 paragraphs (2005–2026, eight issuers) plus 19 hand-labelled fixtures across 18 issuers removed 275 stored metadata/roster paragraphs and parenthetical content in 239 retained paragraphs. Text changed in 144 stored calls; eligibility (251 accepted), split status and mapped exchange counts did not change. All 19 fixture outputs stayed identical. The public preparation method made one paragraph read, and all accepted call word/turn counts agreed with the shared read-only validator. The focused suite passed 194 tests with zero live-guard attempts. Local ignored evidence: `reports/validate/2026-10-22-text-preparation-cleaning/after.json`, `pytest.xml` and `validation.md`.
 
-The `speaker-clean-v3` adoption invalidates compatibility with saved v2 model results. A normal run recomputes those model outputs; an explicit `build-text -F` and subsequent cube assembly are needed to propagate the changed cleaning across historical feature rows beyond the normal 30-day overlap. No historical model backfill is implied by editing the cleaner.
+The speaker-clean-v3 cleaning change invalidates saved v2 model compatibility. For the ten-column feature contract, run a full text-part rebuild, then cube assembly; compatible v3 prepared/answer scores and vectors are reused, and only missing question sentiment is added. Existing fitted models require fresh training against the new inputs. Fresh DDL omits uncertainty; an existing unused nullable sentiment column may remain until database recreation. No DataStore API/PK change or automatic database-column drop is required.
 
 ## Governance cleaning stage
 

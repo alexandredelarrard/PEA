@@ -49,10 +49,11 @@ class Turn(NamedTuple):
 
 @dataclass(frozen=True)
 class CallSplit:
-    """Split of one call. Texts carry no "Speaker:" headers; `turns` is the embedding contract."""
+    """Clean prepared/management-answer/question documents; `turns` keeps the embedding filters."""
 
     prepared_remarks: str
     qa: str
+    questions: str
     turns: list[dict]
     status: SplitStatus
 
@@ -769,6 +770,7 @@ class _QaState:
     askers: set[str] = field(default_factory=set)
     out: list[dict] = field(default_factory=list)
     answers: list[str] = field(default_factory=list)
+    questions: list[str] = field(default_factory=list)
     ex: int = -1
     ans_i: int = 0
     cur: str | None = None
@@ -792,6 +794,7 @@ def _label_question(state: _QaState, per: str, perl: str, body: str) -> None:
     """A question turn: marks an asker, opens an exchange when informative and new."""
     new = state.boundary or state.saw_answer or perl != state.cur
     if _asks_something(body):
+        state.questions.append(body)
         state.askers.add(perl)
         state.spoken.add(perl)
     if _is_informative_question(body):
@@ -816,8 +819,10 @@ def _label_answer(state: _QaState, per: str, perl: str, body: str) -> None:
         state.out.append(_turn(CALL_SECTIONS[1], "answer", per, body, state.ex, state.ans_i))
 
 
-def _label_qa(turns: list[Turn], mgmt_names: set[str] | None, names: CallNames, announced: set[str] | None = None) -> tuple[list[dict], list[str]]:
-    """(labelled Q&A turns, cleaned management answer texts) of one call; see `label_turns`."""
+def _label_qa(
+    turns: list[Turn], mgmt_names: set[str] | None, names: CallNames, announced: set[str] | None = None
+) -> tuple[list[dict], list[str], list[str]]:
+    """Labelled embedding turns, management answers and all substantive analyst questions."""
     analyst_names = {n.lower() for n in (_announced(turns) if announced is None else announced)}
     management = (mgmt_names or set()) | _qa_management(turns, analyst_names)
     state = _QaState(analyst_names, management, set(management))
@@ -832,7 +837,7 @@ def _label_qa(turns: list[Turn], mgmt_names: set[str] | None, names: CallNames, 
             _label_question(state, per, perl, body)
         else:
             _label_answer(state, per, perl, body)
-    return state.out, state.answers
+    return state.out, state.answers, state.questions
 
 
 def label_turns(turns: list[Turn], section: str, mgmt_names: set[str] | None = None, names: CallNames | None = None) -> list[dict]:
@@ -858,20 +863,21 @@ def label_turns(turns: list[Turn], section: str, mgmt_names: set[str] | None = N
 
 def split_call(paragraphs: Iterable[Mapping[str, object]]) -> CallSplit:
     """Split one call at the Q&A start. prepared_remarks = the cleaned prepared turns, qa = the
-    cleaned MANAGEMENT ANSWER turns (no operator, no analyst text), both newline-joined; turns =
+    cleaned MANAGEMENT ANSWER turns (no operator, no analyst text); questions contains all substantive
+    analyst questions, including turns too short to embed. Documents are newline-joined; turns =
     labelled prepared turns then labelled Q&A turns (management names for the Q&A roles come from the
     prepared speakers). Status: empty (no turn), no_qa (no Q&A start found; the whole call is
     prepared), no_prepared (no cleaned prepared text before the Q&A start), ok."""
     turns = clean_paragraphs(paragraphs)
     if not turns:
-        return CallSplit("", "", [], "empty")
+        return CallSplit("", "", "", [], "empty")
     k = qa_start(turns)
     head, tail = (turns, []) if k is None else (turns[:k], turns[k:])
     tail_announced = _announced(tail)
     names = _call_names(turns, _announced(head) | tail_announced)
     prep_turns = _label_prepared(head, CALL_SECTIONS[0], names)
     mgmt = {t["person"].strip().lower() for t in prep_turns if t["person"]}
-    qa_turns, answers = _label_qa(tail, mgmt, names, tail_announced)
+    qa_turns, answers, questions = _label_qa(tail, mgmt, names, tail_announced)
     prepared = "\n".join(t["text"] for t in prep_turns)
     status: SplitStatus = "no_qa" if k is None else "no_prepared" if not prepared else "ok"
-    return CallSplit(prepared, "\n".join(answers), prep_turns + qa_turns, status)
+    return CallSplit(prepared, "\n".join(answers), "\n".join(questions), prep_turns + qa_turns, status)

@@ -7,8 +7,8 @@ from typing import cast
 import numpy as np
 import pandas as pd
 
-from src.constants.constants import PANEL_KEYS
 from src.data_aggregate.utils.common.panel import mask_to_availability, peer_relative
+from src.data_aggregate.utils.common.panel_merge import PANEL_KEYS
 from src.data_aggregate.utils.common.pit import (
     fiscal_change_to_daily,
     fundamentals_to_daily,

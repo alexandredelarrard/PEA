@@ -1,5 +1,5 @@
 ---
-source_commit: 55d6e2d199fa9a83aca7d5442549eeb66eedd189
+source_commit: 15df4358b2a4ea81c34f02c71076256aed23544a
 title: System overview
 description: Boundaries and major components of the stock_pick_strat quantitative pipeline.
 type: architecture
@@ -37,7 +37,7 @@ flowchart TD
 
 - [Data extraction](../modules/data-extract.md) is coordinated by `StepExtractAllData` in [step_extract_all_data.py](../../src/data_extract/step_extract_all_data.py). Its per-ticker EDGAR fetchers each declare one `EdgarFetch` walked by the shared `run_edgar_fetch` in [edgar_driver.py](../../src/data_extract/utils/common/edgar_driver.py); bulk SEC zips go through one reader in [bulk_cache.py](../../src/data_extract/utils/common/bulk_cache.py).
 - [Peer deduction](../modules/data-peers.md) persists business-similarity and return-based peer baskets through `StepDeducePeers` in [step_deduce_peers.py](../../src/data_peers/step_deduce_peers.py).
-- [Cube aggregation](../modules/data-aggregate.md) owns eight persisted parts and the final assembly in [step_build_cube.py](../../src/data_aggregate/step_build_cube.py).
+- [Cube aggregation](../modules/data-aggregate.md) owns nine persisted parts and the final assembly in [step_build_cube.py](../../src/data_aggregate/step_build_cube.py).
 - [Modelling](../modules/modelling.md) supplies saved models; [portfolio construction](../modules/strategies.md) and the quantity engine live inside [portfolio](../modules/portfolio.md).
 - [Validation](../modules/validation.md) is a read-only subsystem with reusable checks and explicit result gates.
 

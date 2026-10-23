@@ -8,16 +8,18 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
+import pytest
 
 from scripts import institutionals_feature_quality as quality
+from src.data_store.schema import Table, Tables
 
 
-def _write_snapshot(path: Path, frame: pd.DataFrame) -> dict[str, object]:
+def _write_snapshot(path: Path, frame: pd.DataFrame, part: Table = Tables.cube_part_institutionals) -> dict[str, object]:
     path.parent.mkdir(parents=True, exist_ok=True)
     frame.to_parquet(path, index=False)
     parquet = pq.ParquetFile(path)
     return {
-        "table": "cube_part_institutionals",
+        "table": part.name,
         "rows": parquet.metadata.num_rows,
         "columns": parquet.schema_arrow.names,
         "dtypes": {field.name: str(field.type) for field in parquet.schema_arrow},
@@ -32,6 +34,18 @@ def _write_snapshot(path: Path, frame: pd.DataFrame) -> dict[str, object]:
 def _write_peer_cache(path: Path) -> dict[str, object]:
     path.write_text(json.dumps({"AAA": {"BBB": 1.0}, "BBB": {"AAA": 1.0}}), encoding="utf-8")
     return quality._peer_metadata(path)
+
+
+@pytest.mark.parametrize("part", [Tables.cube_part_institutionals, Tables.cube_part_sec_thirteen])
+def test_snapshot_metadata_cannot_cross_part_owners(tmp_path: Path, part: Table) -> None:
+    snapshot = tmp_path / "part.parquet"
+    frame = pd.DataFrame({"date": pd.to_datetime(["2024-01-02"]), "ticker": ["AAA"], "f_ic_demo": [1.0]})
+    metadata = _write_snapshot(snapshot, frame, part)
+    wrong_owner = Tables.cube_part_sec_thirteen if part == Tables.cube_part_institutionals else Tables.cube_part_institutionals
+    result = quality._schema_check(snapshot, metadata, metadata["columns"], metadata["dtypes"], len(frame), part=wrong_owner)
+    assert result["status"] == "fail"
+    assert result["metrics"]["comparisons"]["table"] is False
+    print(f"SANITY: {part.name} snapshot metadata is refused for {wrong_owner.name} before any live values are consulted.")
 
 
 class _MetadataOnlyStore:
@@ -55,8 +69,9 @@ class _MetadataOnlyStore:
         return "2024-01-02", "2024-01-05"
 
 
-def test_freeze_baseline_verifies_and_manifests_metadata_only(tmp_path: Path, monkeypatch: object) -> None:
-    snapshot = tmp_path / "cache" / "cube_part_institutionals.parquet"
+@pytest.mark.parametrize("part", [Tables.cube_part_institutionals, Tables.cube_part_sec_thirteen])
+def test_freeze_baseline_verifies_and_manifests_metadata_only(tmp_path: Path, monkeypatch: object, part: Table) -> None:
+    snapshot = tmp_path / "cache" / f"{part.name}.parquet"
     frame = pd.DataFrame(
         {
             "date": pd.to_datetime(["2024-01-02", "2024-01-03"]),
@@ -64,7 +79,7 @@ def test_freeze_baseline_verifies_and_manifests_metadata_only(tmp_path: Path, mo
             "f_ic_demo": [1.0, 2.0],
         }
     )
-    metadata = _write_snapshot(snapshot, frame)
+    metadata = _write_snapshot(snapshot, frame, part)
     (snapshot.parent / "meta.json").write_text(json.dumps(metadata), encoding="utf-8")
     store = _MetadataOnlyStore()
     peer_cache = tmp_path / "sector-peers.json"
@@ -73,16 +88,18 @@ def test_freeze_baseline_verifies_and_manifests_metadata_only(tmp_path: Path, mo
     monkeypatch.setattr(quality, "get_config_context", lambda *_args, **_kwargs: (None, context))
 
     out = tmp_path / "frozen"
-    assert quality.main(["freeze-baseline", "--config", "configs", "--snapshot", str(snapshot), "--as-of", "2024-01-03", "--out", str(out)]) == 0
+    argv = ["freeze-baseline", "--table", part.name, "--config", "configs", "--snapshot", str(snapshot), "--as-of", "2024-01-03", "--out", str(out)]
+    assert quality.main(argv) == 0
 
     frozen = out / "baseline.parquet"
     manifest = json.loads((out / "input-manifest.json").read_text(encoding="utf-8"))
     assert frozen.read_bytes() == snapshot.read_bytes()
     assert manifest["status"] == "pass"
+    assert manifest["table"] == part.name
     assert manifest["snapshot"]["sha256"] == hashlib.sha256(frozen.read_bytes()).hexdigest()
     assert manifest["peer_cache"]["sha256"] == hashlib.sha256((out / "peer-baskets.json").read_bytes()).hexdigest()
     assert set(store.calls) <= {"exists", "columns", "row_count", "bounds"}
-    assert quality.main(["freeze-baseline", "--config", "configs", "--snapshot", str(snapshot), "--as-of", "2024-01-03", "--out", str(out)]) == 0
+    assert quality.main(argv) == 0
     assert [path.name for path in out.glob("*.parquet")] == ["baseline.parquet"]
     print("SANITY: baseline bytes and hash are frozen, while source provenance used DataStore metadata calls only.")
 
@@ -135,7 +152,7 @@ def test_validate_candidate_is_snapshot_only_and_writes_all_checks(tmp_path: Pat
             "f_ic_demo": [2.0, 1.0, 4.0, 3.0, 1.0, 4.0, 2.0, 5.0],
         }
     )
-    declared_bounds = quality.load_spec(quality.read_config("configs"), quality.TABLE).bounds
+    declared_bounds = quality.load_spec(quality.read_config("configs"), Tables.cube_part_institutionals).bounds
     rng = np.random.default_rng(7)
     for column, (lower, upper) in declared_bounds.items():
         if column not in frame:
@@ -261,7 +278,7 @@ def test_validate_candidate_timeseries_fails_on_an_interior_hole(tmp_path: Path,
 def _write_manifest(path: Path, snapshot: Path, metadata: dict[str, object], store: object, as_of: str) -> None:
     payload = {
         "status": "pass",
-        "table": "cube_part_institutionals",
+        "table": metadata["table"],
         "as_of": as_of,
         "snapshot": {
             "frozen": str(snapshot.resolve()),
@@ -272,13 +289,14 @@ def _write_manifest(path: Path, snapshot: Path, metadata: dict[str, object], sto
             "first_date": metadata["first_date"],
             "last_date": metadata["last_date"],
         },
-        "source_tables": [quality._source_metadata(store, table) for table in quality.SOURCE_TABLES],
+        "source_tables": [quality._source_metadata(store, table) for table in quality._source_tables(quality.resolve(str(metadata["table"])))],
         "peer_cache": _write_peer_cache(path.with_name("peer-baskets.json")),
     }
     path.write_text(json.dumps(quality.jsonable(payload)), encoding="utf-8")
 
 
-def test_build_candidate_calls_full_panel_only_and_hashes_cutoff_output(tmp_path: Path, monkeypatch: object) -> None:
+@pytest.mark.parametrize("part", [Tables.cube_part_institutionals, Tables.cube_part_sec_thirteen])
+def test_build_candidate_calls_full_panel_only_and_hashes_cutoff_output(tmp_path: Path, monkeypatch: object, part: Table) -> None:
     baseline = tmp_path / "baseline.parquet"
     source = pd.DataFrame(
         {
@@ -287,7 +305,7 @@ def test_build_candidate_calls_full_panel_only_and_hashes_cutoff_output(tmp_path
             "f_ic_inst_holders": [1.0, 2.0],
         }
     )
-    baseline_meta = _write_snapshot(baseline, source)
+    baseline_meta = _write_snapshot(baseline, source, part)
     store = _MetadataOnlyStore()
     manifest = tmp_path / "input-manifest.json"
     _write_manifest(manifest, baseline, baseline_meta, store, "2024-01-03")
@@ -307,7 +325,7 @@ def test_build_candidate_calls_full_panel_only_and_hashes_cutoff_output(tmp_path
 
     context = SimpleNamespace(store=store, paths={})
     monkeypatch.setattr(quality, "get_config_context", lambda *_args, **_kwargs: (SimpleNamespace(), context))
-    monkeypatch.setattr(quality, "StepCubeInstitutionals", _Step)
+    monkeypatch.setattr(quality, "StepCubeSecThirteen" if part == Tables.cube_part_sec_thirteen else "StepCubeInstitutionals", _Step)
     candidate = tmp_path / "candidate.parquet"
     out = tmp_path / "build"
 
@@ -315,6 +333,8 @@ def test_build_candidate_calls_full_panel_only_and_hashes_cutoff_output(tmp_path
         quality.main(
             [
                 "build-candidate",
+                "--table",
+                part.name,
                 "--config",
                 "configs",
                 "--manifest",
@@ -335,6 +355,7 @@ def test_build_candidate_calls_full_panel_only_and_hashes_cutoff_output(tmp_path
     )
     metadata = json.loads((out / "candidate-metadata.json").read_text(encoding="utf-8"))
     assert calls == [True]
+    assert metadata["table"] == part.name
     assert pd.read_parquet(candidate)["date"].max() == pd.Timestamp("2024-01-03")
     assert metadata["snapshot_sha256"] == hashlib.sha256(candidate.read_bytes()).hexdigest()
     assert context.paths["SECTOR_PEERS_PATH"] == tmp_path / "peer-baskets.json"
@@ -348,6 +369,8 @@ def test_build_candidate_calls_full_panel_only_and_hashes_cutoff_output(tmp_path
         quality.main(
             [
                 "build-candidate",
+                "--table",
+                part.name,
                 "--config",
                 "configs",
                 "--manifest",
@@ -364,6 +387,30 @@ def test_build_candidate_calls_full_panel_only_and_hashes_cutoff_output(tmp_path
     )
     assert calls == [True]
     print("SANITY: candidate build used build_panel(full=True), trimmed the future row, wrote no table, and matched the frozen baseline exactly.")
+
+
+@pytest.mark.parametrize("part", [Tables.cube_part_institutionals, Tables.cube_part_sec_thirteen])
+def test_model_folds_preserve_counts_across_batches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, part: Table) -> None:
+    snapshot = tmp_path / "folds.parquet"
+    frame = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2024-01-02", "2024-01-03", "2024-01-02", "2024-01-03"]),
+            "ticker": ["AAA", "AAA", "BBB", "BBB"],
+            "feature_a": [1.0, 2.0, np.nan, 4.0],
+            "feature_b": [np.nan, 3.0, 5.0, 6.0],
+        }
+    )
+    frame.to_parquet(snapshot, index=False)
+    monkeypatch.setattr(quality, "CHUNK_ROWS", 2)
+
+    folds = quality._model_folds(snapshot, ["feature_a", "feature_b"], part=part)
+
+    assert folds["rows"].tolist() == [2, 2]
+    assert folds["tickers"].tolist() == [2, 2]
+    assert folds["feature_cells"].tolist() == [4, 4]
+    assert folds["feature_nonnull_share"].tolist() == [0.5, 1.0]
+    assert (folds["feature_cells"] * folds["feature_nonnull_share"]).sum() == frame[["feature_a", "feature_b"]].notna().sum().sum()
+    print(f"SANITY: {part.name} folds conserve four rows and six non-null cells across two parquet batches.")
 
 
 def test_taxonomy_reconciles_baseline_and_limits_peer_diagnostics(tmp_path: Path) -> None:

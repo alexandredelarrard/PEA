@@ -18,13 +18,14 @@ from src.data_aggregate.utils.text.earnings_call_features import (
     SENTIMENT_COLUMNS,
     attach_issuer_identity,
     build_earnings_call_feature_panel,
+    canonical_sentiment_rows,
     completed_sentiment_calls,
     feature_history_scope,
     load_issuer_identity,
     sentiment_kpis,
     valid_sentiment_rows,
 )
-from src.data_aggregate.utils.text.earnings_call_preparation import TextPlan, sentiment_rows, uncertainty_ratio
+from src.data_aggregate.utils.text.earnings_call_preparation import SENTIMENT_TAGS, TextPlan, sentiment_rows
 from src.data_aggregate.utils.text.nlp_sentiment import get_sentiment_engine
 from src.data_store.schema import Tables
 from src.gpt_extract import embed_texts, openai_api_key
@@ -69,9 +70,8 @@ class StepCubeText(Step):
         prepared = self.prepare_sections(plan)
         self.run_sentiments(prepared, plan)
         self.run_embeddings(prepared, plan)
-        eligible_calls = prepared[["ticker", "quarter", "as_of", "coverage"]].copy()
         del prepared
-        self.run_features(calendar, plan, eligible_calls)
+        self.run_features(calendar, plan)
 
     def plan_window(self, calendar: pd.DatetimeIndex, *, full: bool) -> TextPlan:
         """Compare all source keys with each model table; plan the separate cube tail."""
@@ -135,8 +135,8 @@ class StepCubeText(Step):
             "quarter",
             "as_of",
             "coverage",
-            *CALL_SECTIONS,
-            *[f"{tag}_{metric}" for tag in CALL_SECTIONS for metric in ("words", "uncertainty")],
+            *SENTIMENT_TAGS,
+            *[f"{tag}_words" for tag in SENTIMENT_TAGS],
             "turns",
         ]
 
@@ -174,15 +174,11 @@ class StepCubeText(Step):
                     continue
 
                 row: dict[str, object] = {"ticker": ticker, "quarter": quarter, "as_of": dates.iloc[0], "turns": split.turns}
-                coverage = 0
-                for index, tag in enumerate(CALL_SECTIONS):
-                    text = quality.cleaned_sections.get(tag, "")
+                documents = (quality.cleaned_sections[CALL_SECTIONS[0]], split.questions, quality.cleaned_sections[CALL_SECTIONS[1]])
+                for tag, text in zip(SENTIMENT_TAGS, documents, strict=True):
                     row[tag] = text
                     row[f"{tag}_words"] = word_count(text)
-                    row[f"{tag}_uncertainty"] = uncertainty_ratio(text)
-                    coverage += (1 << index) if text else 0
-
-                row["coverage"] = coverage
+                row["coverage"] = int(bool(documents[0])) + 2 * int(bool(documents[2]))
                 rows.append(row)
                 turn_count += len(split.turns)
                 plan.eligible.add((str(ticker), str(quarter)))
@@ -202,24 +198,31 @@ class StepCubeText(Step):
         return prepared
 
     def run_sentiments(self, prepared: pd.DataFrame, plan: TextPlan) -> None:
-        """Score only missing actual sections; persist both tags together per completed call."""
+        """Score missing role documents, reuse valid partners and save three canonical roles."""
         selected = prepared[pd.MultiIndex.from_frame(prepared[["ticker", "quarter"]]).isin(plan.sentiment_work)]
-        existing = {(str(row.ticker), str(row.quarter), str(row.tag)) for row in plan.sentiment.itertuples(index=False)}
+        reusable = canonical_sentiment_rows(plan.sentiment)
+        previous_calls = {key: group for key, group in reusable.groupby(["ticker", "quarter"], sort=False)}
+        empty = reusable.iloc[0:0]
+        legacy_keys = set(map(tuple, plan.sentiment.loc[plan.sentiment["tag"].eq("qa"), ["ticker", "quarter"]].to_numpy()))
+        existing = {(str(row.ticker), str(row.quarter), str(row.tag)) for row in reusable.itertuples(index=False)}
         needs_model = any(
-            row[tag] and (str(row.ticker), str(row.quarter), tag) not in existing for _, row in selected.iterrows() for tag in CALL_SECTIONS
+            row[tag] and (str(row.ticker), str(row.quarter), tag) not in existing for _, row in selected.iterrows() for tag in SENTIMENT_TAGS
         )
         engine = get_sentiment_engine(self._sentiment_model) if needs_model else None
         if needs_model and engine is None:
             self._log.warning("Sentiment engine unavailable; missing scores stay retryable and supported embedding features remain available.")
         completed = inferred = unavailable = 0
         for _, call in selected.iterrows():
-            previous = plan.sentiment[plan.sentiment["ticker"].eq(call.ticker) & plan.sentiment["quarter"].eq(call.quarter)]
-            tags = [tag for tag in CALL_SECTIONS if call[tag] and (str(call.ticker), str(call.quarter), tag) not in existing]
+            key = (str(call.ticker), str(call.quarter))
+            previous = previous_calls.get(key, empty)
+            tags = [tag for tag in SENTIMENT_TAGS if call[tag] and (str(call.ticker), str(call.quarter), tag) not in existing]
             if tags and engine is None:
                 continue
             probabilities = engine.score_texts([str(call[tag]) for tag in tags]) if tags and engine is not None else []
             scored = sentiment_rows(call, previous, probabilities, self._sentiment_cache)
             self._store.save(Tables.earnings_call_sentiment, scored)
+            if key in legacy_keys:
+                self._store.delete(Tables.earnings_call_sentiment, {"ticker": str(call.ticker), "quarter": str(call.quarter), "tag": "qa"})
             completed += 1
             inferred += len(tags)
             unavailable += int(scored["n_words"].eq(0).sum())
@@ -269,7 +272,7 @@ class StepCubeText(Step):
             
         self._log.info("Embedding: %d calls/%d turns saved, %d stale turns removed.", completed, turns, removed)
 
-    def run_features(self, calendar: pd.DatetimeIndex, plan: TextPlan, eligible_calls: pd.DataFrame) -> None:
+    def run_features(self, calendar: pd.DatetimeIndex, plan: TextPlan) -> None:
         """Read only required saved history and tail prices, calculate KPIs and persist output."""
         roster, lineage, tenure = load_issuer_identity(self._context)
         source = plan.source[pd.MultiIndex.from_frame(plan.source[["ticker", "quarter"]]).isin(plan.eligible)]
@@ -319,12 +322,6 @@ class StepCubeText(Step):
             vectors = vectors[vectors["as_of"].eq(vectors["as_of_source"])].drop(columns="as_of_source")
             per_call = per_call.merge(build_embedding_kpis(vectors, comparisons), on=["ticker", "quarter"], how="left")
         del vectors
-        
-        if "coverage" not in per_call:
-            per_call["coverage"] = pd.NA
-        prepared_coverage = eligible_calls[["ticker", "quarter", "coverage"]].rename(columns={"coverage": "prepared_coverage"})
-        per_call = per_call.merge(prepared_coverage, on=["ticker", "quarter"], how="left")
-        per_call["coverage"] = per_call["coverage"].fillna(per_call.pop("prepared_coverage"))
         panel = build_earnings_call_feature_panel(
             per_call, calendar, availability=None if frames is None else frames.availability, availability_lag_days=self._lag, since=plan.window.since
         )

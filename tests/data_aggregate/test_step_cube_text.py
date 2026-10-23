@@ -248,12 +248,15 @@ def test_partial_calls_are_complete_and_warm_run_skips_models(sqlite_store: Data
     step = StepCubeText(context, config)
     step.run(full=True)
     scores = store.load(Tables.earnings_call_sentiment)
-    assert scores is not None and len(scores) == 4
+    assert scores is not None and len(scores) == 6
     absent = scores[scores["n_words"].eq(0)]
-    assert len(absent) == 2 and absent[["sent_pos", "sent_neg", "sent_neu", "uncertainty_ratio"]].isna().all().all()
+    assert len(absent) == 3 and absent[["sent_pos", "sent_neg", "sent_neu"]].isna().all().all()
     panel = store.load(Tables.cube_part_text)
-    assert panel is not None and panel["f_ec_tone"].notna().any()
-    assert panel["f_ec_qa_gap"].isna().all()
+    assert panel is not None and panel["f_ec_prep_tone"].notna().any()
+    prep_only = panel[panel["ticker"].eq("PSKY")]
+    answers_only = panel[panel["ticker"].eq("COIN")]
+    assert prep_only["f_ec_prep_tone"].notna().all() and prep_only["f_ec_answers_tone"].isna().all()
+    assert answers_only["f_ec_prep_tone"].isna().all() and answers_only["f_ec_answers_tone"].notna().all()
     assert engine.score_texts.call_count == 2 and embedding.call_count == 2
     factory.reset_mock()
     engine.reset_mock()
@@ -279,8 +282,8 @@ def test_optional_stage_leaves_other_features_available(sqlite_store: DataStore,
     StepCubeText(context, config).run(full=True)
     panel = store.load(Tables.cube_part_text)
     assert panel is not None
-    assert panel["f_ec_qa_coherence_mean" if missing == "sentiment" else "f_ec_tone"].notna().any()
-    assert panel["f_ec_tone" if missing == "sentiment" else "f_ec_qa_coherence_mean"].isna().all()
+    assert panel["f_ec_qa_coherence_mean" if missing == "sentiment" else "f_ec_prep_tone"].notna().any()
+    assert panel["f_ec_prep_tone" if missing == "sentiment" else "f_ec_qa_coherence_mean"].isna().all()
     step = StepCubeText(context, config)
     plan = step.plan_window(pd.bdate_range("2020-01-01", "2027-03-01"), full=False)
     assert bool(plan.sentiment_work) == (missing == "sentiment")
@@ -315,7 +318,7 @@ def test_incomplete_embeddings_stay_pending_without_emitting_features(
     assert after is not None
     cutoff = pd.to_datetime(before["date"]).max() - pd.Timedelta(days=30)
     rewritten = after if full else after[pd.to_datetime(after["date"]).ge(cutoff)]
-    assert not rewritten.empty and rewritten["f_ec_tone"].notna().all()
+    assert not rewritten.empty and rewritten["f_ec_prep_tone"].notna().all()
     assert rewritten["f_ec_qa_coherence_mean"].isna().all()
     assert not factory.called and not embedding.called
     monkeypatch.setattr(step_text, "openai_api_key", api_key)
@@ -389,7 +392,7 @@ def test_old_correction_needs_explicit_full_features(sqlite_store: DataStore, mo
     cutoff = pd.to_datetime(before["date"]).max() - pd.Timedelta(days=30)
     store.delete(Tables.earnings_call_sentiment, {"ticker": "ADP"})
     engine.score_texts.side_effect = lambda texts: [{"pos": 0.8, "neg": 0.1, "neu": 0.1} for _ in texts]
-    with patch.object(store, "load", wraps=store.load) as reads:
+    with patch.object(store, "load", wraps=store.load) as reads, patch.object(store, "iter_load", wraps=store.iter_load) as streams:
         StepCubeText(context, config).run()
     after = store.load(Tables.cube_part_text)
     assert after is not None
@@ -398,8 +401,8 @@ def test_old_correction_needs_explicit_full_features(sqlite_store: DataStore, mo
         return frame[pd.to_datetime(frame["date"]).lt(cutoff)].reset_index(drop=True)
 
     pd.testing.assert_frame_equal(prefix(before), prefix(after), check_exact=True)
-    assert after.loc[pd.to_datetime(after["date"]).ge(cutoff), "f_ec_tone"].eq(float(np.float32(0.7))).all()
-    price_read = [call for call in reads.call_args_list if call.args[0] == Tables.cube_part_prices]
+    assert after.loc[pd.to_datetime(after["date"]).ge(cutoff), "f_ec_prep_tone"].eq(float(np.float32(0.7))).all()
+    price_read = [call for call in reads.call_args_list + streams.call_args_list if call.args[0] == Tables.cube_part_prices]
     assert len(price_read) == 1 and price_read[0].kwargs["since"] == cutoff
     vector_read = [
         call for call in reads.call_args_list if call.args[0] == Tables.earning_calls_embedding and "embedding" in (call.kwargs.get("columns") or [])
@@ -409,7 +412,7 @@ def test_old_correction_needs_explicit_full_features(sqlite_store: DataStore, mo
     embedding.reset_mock()
     StepCubeText(context, config).run(full=True)
     repaired = store.load(Tables.cube_part_text)
-    assert repaired is not None and repaired["f_ec_tone"].eq(float(np.float32(0.7))).all()
+    assert repaired is not None and repaired["f_ec_prep_tone"].eq(float(np.float32(0.7))).all()
     assert not factory.called and not embedding.called
     print("SANITY: exact 30-calendar-day tail leaves older rows untouched; explicit full repairs them without repeating paid inference.")
 
@@ -492,6 +495,7 @@ def test_unmapped_answer_view_never_calls_embedding_api(sqlite_store: DataStore,
     store.replace(Tables.earnings_call_sections, rows)
     step, plan, prepared = prepare_step(context, config)
     assert len(prepared) == 1 and prepared["turns"].iloc[0] == []
+    assert prepared["questions"].iloc[0] == "Can you explain growth please?"
     step.run_sentiments(prepared, plan)
     step.run_embeddings(prepared, plan)
     assert engine.score_texts.call_count == 1 and not embedding.called

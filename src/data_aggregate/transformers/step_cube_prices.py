@@ -78,7 +78,7 @@ class StepCubePrices(Step):
         raw = self._store.load(Tables.prices, since=since, columns=PRICE_COLS, where={"ticker": self._tickers})
         assert raw is not None
         self._log.info(f"Loading {Tables.prices} since={since if since else 'full'}")
-        raw = apply_volume_scale(raw, self._bugfix, self._log.info)
+        raw = apply_volume_scale(raw, self._bugfix)
 
         # long to wide format
         wide = self._pivot_fields(raw)
@@ -241,8 +241,8 @@ class StepCubePrices(Step):
         no price leg at all."""
         if not self._bugfix:
             return
-        applied = apply_split_vintage(wide, self._bugfix, vendor, self._log.info)
-        applied += apply_return_seams(wide, self._bugfix, self._log.info)
+        applied = apply_split_vintage(wide, self._bugfix, vendor)
+        applied += apply_return_seams(wide, self._bugfix)
         listed = sum(len(v) for v in (self._bugfix.get("split_vintage") or {}).values()) + sum(
             len(v) for v in (self._bugfix.get("return_seams") or {}).values()
         )

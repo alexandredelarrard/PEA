@@ -18,6 +18,7 @@ assert `== 1.0` bit-exactly, not `approx`.
 from __future__ import annotations
 
 import json
+import logging
 from typing import cast
 
 import numpy as np
@@ -426,7 +427,7 @@ def test_a_split_vintage_mixture_is_put_back_on_one_basis():
     the doubled bars and the five it must leave alone."""
     honest, published = _mnst_shaped()
     wide = _wide(published)
-    applied = apply_split_vintage(wide, MNST_ENTRY, _vendor(honest, VENDOR_DATES), lambda *a: None)
+    applied = apply_split_vintage(wide, MNST_ENTRY, _vendor(honest, VENDOR_DATES))
 
     assert applied == 1
     for field in ("close_split", "close_total"):
@@ -462,25 +463,25 @@ def test_the_fabricated_island_returns_disappear():
     honest, published = _mnst_shaped()
     before = published.pct_change().abs().max()
     wide = _wide(published)
-    apply_split_vintage(wide, MNST_ENTRY, _vendor(honest, VENDOR_DATES), lambda *a: None)
+    apply_split_vintage(wide, MNST_ENTRY, _vendor(honest, VENDOR_DATES))
     after = wide["close_split"]["MNST"].pct_change().abs().max()
 
     assert before > 0.45, "the fixture must actually contain the defect"
     assert after < 0.01, f"a fabricated move survived the repair: {after:.2%}"
 
 
-def test_a_vintage_entry_whose_defect_is_gone_is_refused():
+def test_a_vintage_entry_whose_defect_is_gone_is_refused(caplog: pytest.LogCaptureFixture) -> None:
     """⚠ THE PROPERTY THE WHOLE REGISTER RESTS ON. If Yahoo fixes its data the observation
     stops matching and the entry must NOT fire -- otherwise the repair lands on top of the
     vendor's own correction and halves a correct series."""
     honest, published = _mnst_shaped()
     wide = _wide(honest)  # Yahoo has fixed it: published == honest
-    logged: list[str] = []
-    applied = apply_split_vintage(wide, MNST_ENTRY, _vendor(honest, VENDOR_DATES), lambda msg, *a: logged.append(msg % a))
+    caplog.set_level(logging.INFO)
+    applied = apply_split_vintage(wide, MNST_ENTRY, _vendor(honest, VENDOR_DATES))
 
     assert applied == 0
     assert wide["close_split"]["MNST"].to_numpy() == pytest.approx(honest.to_numpy(), rel=0, abs=0)
-    assert any("GONE or CHANGED" in m for m in logged), logged
+    assert any("GONE or CHANGED" in m for m in caplog.messages), caplog.messages
 
 
 def test_a_return_seam_removes_a_move_that_never_happened():
@@ -493,7 +494,7 @@ def test_a_return_seam_removes_a_move_that_never_happened():
     step = 27.775 / 70.354
 
     wide = {"close_split": series.to_frame(), "close_total": series.to_frame()}
-    applied = apply_return_seams(wide, {"return_seams": {"JCI": [{"date": "2007-07-02", "step": step}]}}, lambda *a: None)
+    applied = apply_return_seams(wide, {"return_seams": {"JCI": [{"date": "2007-07-02", "step": step}]}})
 
     assert applied == 1
     repaired = wide["close_split"]["JCI"]
@@ -501,18 +502,18 @@ def test_a_return_seam_removes_a_move_that_never_happened():
     assert repaired.iloc[0] == pytest.approx(27.775, rel=1e-12)
 
 
-def test_a_stale_return_seam_is_skipped_rather_than_applied():
+def test_a_stale_return_seam_is_skipped_rather_than_applied(caplog: pytest.LogCaptureFixture) -> None:
     """A registered step that no longer matches the frame is a register that has gone out of
     date, not a licence to rescale nine years of history."""
     idx = pd.DatetimeIndex(pd.bdate_range("2007-06-01", "2007-08-01"), name="date")
     series = pd.Series(70.354, index=idx, name="JCI")
     wide = {"close_split": series.to_frame(), "close_total": series.to_frame()}
-    logged: list[str] = []
-    applied = apply_return_seams(wide, {"return_seams": {"JCI": [{"date": "2007-07-02", "step": 0.394789}]}}, lambda m, *a: logged.append(m % a))
+    caplog.set_level(logging.INFO)
+    applied = apply_return_seams(wide, {"return_seams": {"JCI": [{"date": "2007-07-02", "step": 0.394789}]}})
 
     assert applied == 0
     assert (wide["close_split"]["JCI"].to_numpy() == 70.354).all()
-    assert any("GONE or CHANGED" in m for m in logged), logged
+    assert any("GONE or CHANGED" in m for m in caplog.messages), caplog.messages
 
 
 def test_a_level_wedge_moves_s_and_only_s():
@@ -782,33 +783,33 @@ def _volume_bars(before: float, after: float) -> pd.DataFrame:
     return pd.concat([pd.DataFrame({"ticker": "BRK-A", "date": days, "volume": volume}), other], ignore_index=True)
 
 
-def test_volume_scale_rescales_only_the_registered_ticker_before_the_boundary():
+def test_volume_scale_rescales_only_the_registered_ticker_before_the_boundary(caplog: pytest.LogCaptureFixture) -> None:
     """Bars before `before` take `factor`; the boundary bar, later bars and every other ticker are untouched."""
     bars = _volume_bars(30_000.0, 300.0)
-    logged: list[str] = []
+    caplog.set_level(logging.INFO)
 
-    out = apply_volume_scale(bars, _VOLUME_ENTRY, lambda m, *a: logged.append(m % a))
+    out = apply_volume_scale(bars, _VOLUME_ENTRY)
 
     brka = out[out["ticker"] == "BRK-A"].set_index("date")["volume"]
     assert brka.loc["2013-07-26"] == pytest.approx(300.0) and brka.loc[:"2013-07-26"].eq(300.0).all()
     assert brka.loc["2013-07-29":].eq(300.0).all()
     pd.testing.assert_series_equal(out.loc[out["ticker"] == "BRK-B", "volume"], bars.loc[bars["ticker"] == "BRK-B", "volume"].astype("float64"))
     assert bars.loc[bars["ticker"] == "BRK-A", "volume"].iloc[0] == 30_000.0, "the input frame is not mutated"
-    assert any("x0.01" in m for m in logged), logged
+    assert any("x0.01" in m for m in caplog.messages), caplog.messages
     print("\n=== SANITY CHECK: volume_scale ===")
     print(
         f"  BRK-A 30,000 -> 300 on {int((brka.index < '2013-07-29').sum())} bars before 2013-07-29; boundary and later bars and BRK-B unchanged. Validated."
     )
 
 
-def test_volume_scale_refuses_a_series_the_vendor_already_fixed():
-    """With no jump left across the boundary the entry is skipped and logged, never applied on faith."""
+def test_volume_scale_refuses_a_series_the_vendor_already_fixed(caplog: pytest.LogCaptureFixture) -> None:
+    """With no jump left across the boundary the entry is skipped and caplog.messages, never applied on faith."""
     bars = _volume_bars(310.0, 300.0)
-    logged: list[str] = []
+    caplog.set_level(logging.INFO)
 
-    out = apply_volume_scale(bars, _VOLUME_ENTRY, lambda m, *a: logged.append(m % a))
+    out = apply_volume_scale(bars, _VOLUME_ENTRY)
 
     assert out is bars
-    assert any("SKIPPED" in m for m in logged), logged
+    assert any("SKIPPED" in m for m in caplog.messages), caplog.messages
     print("\n=== SANITY CHECK: a fixed series is refused ===")
-    print(f"  observed jump ~1.03 against an expected 100 -> skipped: {logged[0]}")
+    print(f"  observed jump ~1.03 against an expected 100 -> skipped: {caplog.messages[0]}")

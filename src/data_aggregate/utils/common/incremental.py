@@ -36,7 +36,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from src.constants.constants import PANEL_KEYS
+from src.data_aggregate.utils.common.panel_merge import PANEL_KEYS
 from src.data_store.schema import Table
 from src.data_store.store import DataStore
 

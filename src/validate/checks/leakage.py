@@ -34,8 +34,8 @@ is exactly the bug class a parquet-cached harness never sees, because parquet ro
 as nanoseconds.
 
 ⚠ BOTH HALVES ARE DECLARED, AND EITHER CAN ABSTAIN ALONE. The PIT half needs `pit_sources`:
-a feature-to-source map cannot be inferred from column names -- `f_ic_bo_` reads two tables and
-`f_ic_sig_insider_` reads the same one as `f_ic_insider_` -- so a guessed map would report a
+a feature-to-source map cannot be inferred from column names -- `f_ic_bo_` reads two tables,
+with their own publication clocks -- so a guessed map would report a
 clean point-in-time result for legs it matched to the wrong clock. The horizon half needs
 `label_pattern`, for the same reason one step removed: `_h30` in a column name does not make it
 a forward label. `cube_part_momentum` carries `seasonal_h30`, `seasonal_h60` and `seasonal_h90`,

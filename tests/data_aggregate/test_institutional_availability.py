@@ -7,11 +7,11 @@ from typing import cast
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.common.incremental import PART_REFRESH_TRADING_DAYS
-from src.data_aggregate.utils.institutionals.availability import (
+from src.data_aggregate.utils.common.availability import (
     InstitutionalAvailability,
     availability_date,
 )
+from src.data_aggregate.utils.common.incremental import PART_REFRESH_TRADING_DAYS
 from src.data_aggregate.utils.institutionals.frontiers import schedule_complete_through
 from src.data_aggregate.utils.institutionals.ownership_features import build_ownership_feature_panel
 from src.data_extract.utils.common.edgar_driver import FilingStamp, marker_row

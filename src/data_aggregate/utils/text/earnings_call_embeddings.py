@@ -169,7 +169,7 @@ def _qa_coherence(turns: pd.DataFrame) -> pd.DataFrame:
 
 def build_embedding_kpis(embeddings: pd.DataFrame, comparison_keys: set[tuple[str, str]]) -> pd.DataFrame:
     """Per (ticker, quarter) earnings-call embedding KPIs derived from the turn rows:
-    Q&A coherence plus consecutive-quarter Q&A/prepared-text distances."""
+    Q&A coherence plus consecutive-quarter Q&A/prepared/question-text distances."""
     prepared_section, qa_section = CALL_SECTIONS
     if embeddings.empty:
         return pd.DataFrame(columns=["ticker", "quarter"])
@@ -179,5 +179,7 @@ def build_embedding_kpis(embeddings: pd.DataFrame, comparison_keys: set[tuple[st
     pooled = comparable[pd.MultiIndex.from_frame(comparable[["ticker", "quarter"]]).isin(comparison_keys)]
     for section, name in ((qa_section, "ec_qa_qq_distance"), (prepared_section, "ec_prep_qq_distance")):
         kpi = kpi.merge(_qq_distance(pooled, section, name), on=["ticker", "quarter"], how="left")
+    questions = pooled[pooled["tag"].eq("question")]
+    kpi = kpi.merge(_qq_distance(questions, qa_section, "ec_questions_only_qq_distance"), on=["ticker", "quarter"], how="left")
     kpi = kpi.drop(columns=["as_of"], errors="ignore")
     return kpi

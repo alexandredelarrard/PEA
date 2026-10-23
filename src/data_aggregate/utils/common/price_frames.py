@@ -172,7 +172,8 @@ def load_price_frames(
     """
 
     cols = ["date", "ticker"] + list(fields)
-    long = store.load(Tables.cube_part_prices, columns=cols, since=since, optional=True)
+    chunks = list(store.iter_load(Tables.cube_part_prices, columns=cols, since=since))
+    long = pd.concat(chunks, ignore_index=True) if chunks else None
     if long is None:
         raise RuntimeError(
             f"{Tables.cube_part_prices} is missing or returned no rows"

@@ -1,13 +1,4 @@
-"""
-Earnings-call sentiment/text FEATURES (src/data_aggregate/utils/earnings_call_features.py).
-
-Validates the pure feature layer on synthetic cache rows and synthetic `earnings_call_sections`
-paragraph rows split by `src/utils/earnings_call_split.py` (no model/GPU):
-  * the smart per-call KPI arithmetic (length-weighted tone, Q&A gap, uncertainty,
-    tone delta vs prior call, disclosure-length delta),
-  * the exact raw and issuer-history feature contract,
-  * POINT-IN-TIME / leak-free alignment with a 66-session signal lifetime.
-"""
+"""Exact role sentiment, fiscal comparisons, identity and daily lifetime mathematics."""
 
 from __future__ import annotations
 
@@ -153,15 +144,15 @@ def test_canonical_support_requires_unambiguous_alias_inside_its_cik_window(vari
         ("2024-05-26", "2024-05-28"),
     ],
 )
-def test_calendar_day_buffer_applies_once_to_all_twelve_features(call_date: str, expected: str) -> None:
+def test_calendar_day_buffer_applies_once_to_all_ten_features(call_date: str, expected: str) -> None:
     calendar = pd.bdate_range("2024-05-01", "2024-10-31").difference(pd.DatetimeIndex(["2024-05-27"]))
     call = pd.DataFrame({"ticker": ["A"], "as_of": [pd.Timestamp(call_date)], **{name: [float(i)] for i, name in enumerate(EARNINGS_CALL_FEATURES)}})
     panel = ec._feature_panel_from_prepared(call, calendar, None, availability_lag_days=2, since=None)
-    assert len(panel.filter(like="f_ec_").columns) == 12
+    assert len(panel.filter(like="f_ec_").columns) == 10
     for name in EARNINGS_CALL_FEATURES:
         live = panel.loc[panel[f"f_{name}"].notna(), "date"]
         assert live.min() == pd.Timestamp(expected) and len(live) == 66
-    print(f"SANITY: {call_date}+2 calendar days -> {expected}, including holiday/weekend rollover, all12 features for66 sessions.")
+    print(f"SANITY: {call_date}+2 calendar days -> {expected}, including holiday/weekend rollover, all10 features for66 sessions.")
 
 
 def _number(value: object) -> float:
@@ -170,37 +161,33 @@ def _number(value: object) -> float:
     return float(cast(float, value))
 
 
-def _row(tkr, q, tag, pos, neg, words, unc):
-    return {
-        "ticker": tkr,
-        "quarter": q,
-        "tag": tag,
-        "as_of": _QDATE[q],
-        "sent_pos": pos,
-        "sent_neg": neg,
-        "sent_neu": round(1 - pos - neg, 6),
-        "n_words": words,
-        "uncertainty_ratio": unc,
-        "model": EARNINGS_CALL_SENTIMENT_CACHE_MODEL,
-    }
+def _row(tkr: str, q: str, tag: str, pos: float, neg: float, words: int) -> dict[str, object]:
+    return dict(
+        ticker=tkr,
+        quarter=q,
+        tag=tag,
+        as_of=_QDATE[q],
+        sent_pos=pos,
+        sent_neg=neg,
+        sent_neu=round(1 - pos - neg, 6),
+        n_words=words,
+        model=EARNINGS_CALL_SENTIMENT_CACHE_MODEL,
+    )
 
 
 def _sentiment_frame() -> pd.DataFrame:
-    rows = [
-        # ticker A — the arithmetic-checked name
-        _row("A", "2023Q1", "prepared_remarks", 0.60, 0.10, 1000, 0.02),
-        _row("A", "2023Q1", "qa", 0.40, 0.10, 500, 0.05),
-        _row("A", "2023Q2", "prepared_remarks", 0.70, 0.05, 1200, 0.01),
-        _row("A", "2023Q2", "qa", 0.50, 0.10, 600, 0.04),
-        _row("A", "2023Q3", "prepared_remarks", 0.55, 0.15, 1100, 0.03),
-        _row("A", "2023Q3", "qa", 0.45, 0.20, 550, 0.06),
-    ]
-    # B..E: distinct tone/uncertainty so the cross-section & peer basket are non-degenerate
-    for i, tkr in enumerate(["B", "C", "D", "E"], start=1):
+    rows = []
+    for q, prep, answer, question in (
+        ("2023Q1", (0.6, 0.1), (0.4, 0.1), (0.2, 0.5)),
+        ("2023Q2", (0.7, 0.05), (0.5, 0.1), (0.3, 0.4)),
+        ("2023Q3", (0.55, 0.15), (0.45, 0.2), (0.1, 0.6)),
+    ):
+        for tag, values in (("prepared_remarks", prep), ("questions", question), ("answers", answer)):
+            rows.append(_row("A", q, tag, *values, 1000 if tag == "prepared_remarks" else 500))
+    for i, ticker in enumerate(("B", "C", "D", "E"), 1):
         for q in _QDATE:
-            base = 0.30 + 0.1 * i
-            rows.append(_row(tkr, q, "prepared_remarks", min(0.9, base), 0.10, 900 + 50 * i, 0.02 + 0.005 * i))
-            rows.append(_row(tkr, q, "qa", min(0.9, base - 0.05), 0.12, 450 + 20 * i, 0.03 + 0.005 * i))
+            for tag, pos, neg in (("prepared_remarks", 0.3 + 0.1 * i, 0.1), ("questions", 0.1, 0.15 + 0.1 * i), ("answers", 0.25 + 0.1 * i, 0.12)):
+                rows.append(_row(ticker, q, tag, pos, neg, 500))
     return pd.DataFrame(rows)
 
 
@@ -208,25 +195,40 @@ _QUESTION = "Can you talk about revenue growth and the margin guidance for next 
 _USEFUL = "revenue growth customer demand margin guidance cash flow outlook " * 12
 
 
-def test_per_call_kpi_arithmetic() -> None:
-    df_sentiment = _sentiment_frame().query("ticker == 'A'")
-    per = prepare_earnings_call_kpis(sentiment_kpis(df_sentiment, EARNINGS_CALL_SENTIMENT_CACHE_MODEL))
-    a = per[per["ticker"] == "A"].set_index("quarter")
+def test_three_role_levels_and_independent_deltas() -> None:
+    rows = []
+    for quarter, date, nets in (("2024Q1", "2024-02-01", (0.5, -0.2, 0.1)), ("2024Q2", "2024-05-01", (0.3, 0.4, -0.3))):
+        for tag, net in zip(("prepared_remarks", "questions", "answers"), nets, strict=True):
+            rows.append(
+                dict(
+                    ticker="A",
+                    quarter=quarter,
+                    as_of=date,
+                    tag=tag,
+                    sent_pos=(1 + net) / 2,
+                    sent_neg=(1 - net) / 2,
+                    sent_neu=0.0,
+                    n_words=200,
+                    model="m:speaker-clean-v3",
+                )
+            )
+    actual = prepare_earnings_call_kpis(sentiment_kpis(pd.DataFrame(rows), "m:speaker-clean-v3")).set_index("quarter")
+    for role, level, delta in (("prep", 0.3, -0.2), ("questions", 0.4, 0.6), ("answers", -0.3, -0.4)):
+        assert actual.loc["2024Q2", f"ec_{role}_tone"] == pytest.approx(level)
+        assert actual.loc["2024Q2", f"ec_{role}_tone_delta"] == pytest.approx(delta)
+        assert pd.isna(actual.loc["2024Q1", f"ec_{role}_tone_delta"])
+    print("SANITY: three role levels and three independent adjacent-quarter deltas match exact positive-minus-negative arithmetic.")
 
-    # length-weighted tone (net = pos-neg), Q1: (.5*1000 + .3*500)/1500
-    assert abs(_number(a.loc["2023Q1", "ec_tone"]) - (0.5 * 1000 + 0.3 * 500) / 1500) < 1e-9
-    # Q&A gap = qa_net - prepared_net = .3 - .5
-    assert abs(_number(a.loc["2023Q1", "ec_qa_gap"]) - (0.3 - 0.5)) < 1e-9
-    # length-weighted uncertainty, Q1: (.02*1000 + .05*500)/1500
-    assert abs(_number(a.loc["2023Q1", "ec_uncertainty"]) - (0.02 * 1000 + 0.05 * 500) / 1500) < 1e-9
-    # tone delta Q2 vs Q1
-    tone_q1 = (0.5 * 1000 + 0.3 * 500) / 1500
-    tone_q2 = (0.65 * 1200 + 0.40 * 600) / 1800
-    assert abs(_number(a.loc["2023Q2", "ec_tone_delta"]) - (tone_q2 - tone_q1)) < 1e-9
-    assert math.isnan(_number(a.loc["2023Q1", "ec_tone_delta"]))  # first call -> no prior
-    # disclosure-length delta Q2 = log(1800/1500)
-    assert abs(_number(a.loc["2023Q2", "ec_length_delta"]) - math.log(1800 / 1500)) < 1e-9
-    print("SANITY: exact cleaned section lengths and uncertainty counts preserve weighted tone, Q&A gap and consecutive-quarter deltas.")
+
+def test_per_call_kpi_arithmetic() -> None:
+    per = prepare_earnings_call_kpis(sentiment_kpis(_sentiment_frame().query("ticker == 'A'"), EARNINGS_CALL_SENTIMENT_CACHE_MODEL)).set_index(
+        "quarter"
+    )
+    for role, first, second in (("prep", 0.5, 0.65), ("questions", -0.3, -0.1), ("answers", 0.3, 0.4)):
+        assert per.loc["2023Q1", f"ec_{role}_tone"] == pytest.approx(first)
+        assert per.loc["2023Q2", f"ec_{role}_tone_delta"] == pytest.approx(second - first)
+        assert pd.isna(per.loc["2023Q1", f"ec_{role}_tone_delta"])
+    print("SANITY: exact FinBERT role levels and adjacent-quarter deltas; word counts do not mix analyst and management tone.")
 
 
 def test_sentiment_kpis_equals_batch(sqlite_store: DataStore) -> None:
@@ -244,41 +246,40 @@ def test_sentiment_kpis_equals_batch(sqlite_store: DataStore) -> None:
 
 def test_malformed_or_incomplete_cached_call_is_missing() -> None:
     scores = _sentiment_frame().query("ticker == 'A' and quarter == '2023Q1'")
-    assert sentiment_kpis(scores.head(1), EARNINGS_CALL_SENTIMENT_CACHE_MODEL).empty
-    assert sentiment_kpis(scores.assign(n_words=1), EARNINGS_CALL_SENTIMENT_CACHE_MODEL).empty
+    valid = ec.valid_sentiment_rows(scores, EARNINGS_CALL_SENTIMENT_CACHE_MODEL)
+    assert ec.completed_sentiment_calls(valid) == {("A", "2023Q1")}
+    assert not ec.completed_sentiment_calls(valid.head(1))
+    assert not ec.completed_sentiment_calls(valid.assign(n_words=1))
     invalid = scores.copy()
-    invalid.loc[invalid.index[0], "sent_pos"] = np.nan
-    assert sentiment_kpis(invalid, EARNINGS_CALL_SENTIMENT_CACHE_MODEL).empty
+    invalid.loc[invalid["tag"].eq("questions"), "sent_pos"] = np.nan
+    partial = sentiment_kpis(invalid, EARNINGS_CALL_SENTIMENT_CACHE_MODEL)
+    assert len(partial) == 1 and partial["ec_questions_tone"].isna().all() and partial["ec_answers_tone"].notna().all()
     assert sentiment_kpis(scores.assign(model="legacy"), EARNINGS_CALL_SENTIMENT_CACHE_MODEL).empty
     placeholder = scores.copy()
-    mask = placeholder["tag"].eq("qa")
-    placeholder.loc[mask, ["sent_pos", "sent_neg", "sent_neu", "uncertainty_ratio"]] = np.nan
+    mask = placeholder["tag"].eq("answers")
+    placeholder.loc[mask, ["sent_pos", "sent_neg", "sent_neu"]] = np.nan
     placeholder.loc[mask, "n_words"] = 0
     partial = sentiment_kpis(placeholder, EARNINGS_CALL_SENTIMENT_CACHE_MODEL)
-    assert len(partial) == 1 and partial["ec_qa_gap"].isna().all() and partial["coverage"].eq(1).all()
-    print("SANITY: invalid/incomplete/short/legacy caches are excluded; genuine absence is distinct from failed inference.")
+    assert len(partial) == 1 and partial["ec_answers_tone"].isna().all() and partial["ec_prep_tone"].notna().all()
+    print("SANITY: incomplete scoring stays pending while valid partner roles remain usable; genuine absence stays null.")
+
+
+def test_question_words_do_not_establish_completion() -> None:
+    rows = _sentiment_frame().query("ticker == 'A' and quarter == '2023Q1'").copy()
+    management = rows["tag"].ne("questions")
+    rows.loc[management, "n_words"] = 0
+    rows.loc[management, ["sent_pos", "sent_neg", "sent_neu"]] = np.nan
+    rows.loc[~management, "n_words"] = 1000
+    valid = ec.valid_sentiment_rows(rows, EARNINGS_CALL_SENTIMENT_CACHE_MODEL)
+    assert len(valid) == 3 and not ec.completed_sentiment_calls(valid)
+    print("SANITY: three valid canonical roles plus 1,000 analyst words cannot satisfy the 100-management-word eligibility floor.")
 
 
 def test_panel_columns_lifetime_and_missingness():
     idx = pd.bdate_range("2023-01-02", "2023-09-29")
     panel = build_earnings_call_feature_panel(sentiment_kpis(_sentiment_frame(), EARNINGS_CALL_SENTIMENT_CACHE_MODEL), idx, availability_lag_days=2)
     assert not panel.empty
-    expected = {
-        "date",
-        "ticker",
-        "f_ec_tone",
-        "f_ec_tone_vs_hist",
-        "f_ec_qa_gap",
-        "f_ec_qa_gap_vs_hist",
-        "f_ec_uncertainty",
-        "f_ec_uncertainty_vs_hist",
-        "f_ec_qa_coherence_mean",
-        "f_ec_qa_coherence_mean_vs_hist",
-        "f_ec_tone_delta",
-        "f_ec_length_delta",
-        "f_ec_qa_qq_distance",
-        "f_ec_prep_qq_distance",
-    }
+    expected = {"date", "ticker", *[f"f_{name}" for name in EARNINGS_CALL_FEATURES]}
     assert set(panel.columns) == expected
     assert not any(c.endswith(("_xs", "_vs_peers")) for c in panel.columns)
 
@@ -286,23 +287,23 @@ def test_panel_columns_lifetime_and_missingness():
     a = panel[panel["ticker"] == "A"]
     first_call = pd.Timestamp("2023-02-01")
     # The raw call date remains unchanged; feature eligibility waits two calendar days.
-    a_tone = a[a["f_ec_tone"].notna()]
+    a_tone = a[a["f_ec_prep_tone"].notna()]
     assert a_tone["date"].min() > first_call
     assert a_tone["date"].min() == pd.Timestamp("2023-02-03")
     # 66 trading sessions are inclusive; session 67 expires rather than becoming a fake zero.
-    one = pd.DataFrame({"ticker": ["A"], "as_of": ["2023-02-01"], "ec_tone": [0.0]})
-    daily = _daily_frame(one, "ec_tone", idx, availability_lag_days=2)
+    one = pd.DataFrame({"ticker": ["A"], "as_of": ["2023-02-01"], "ec_prep_tone": [0.0]})
+    daily = _daily_frame(one, "ec_prep_tone", idx, availability_lag_days=2)
     live = daily["A"].dropna()
     assert len(live) == 66
     assert (live == 0.0).all(), "a genuine zero must survive"
     assert pd.isna(_number(daily.loc[live.index[-1] + pd.offsets.BDay(1), "A"])), "session 67 must be NaN"
 
-    weekend = pd.DataFrame({"ticker": ["A"], "as_of": ["2023-02-04"], "ec_tone": [0.2]})
-    weekend_daily = _daily_frame(weekend, "ec_tone", idx, availability_lag_days=2)
+    weekend = pd.DataFrame({"ticker": ["A"], "as_of": ["2023-02-04"], "ec_prep_tone": [0.2]})
+    weekend_daily = _daily_frame(weekend, "ec_prep_tone", idx, availability_lag_days=2)
     assert weekend_daily.loc[pd.Timestamp("2023-02-06"), "A"] == 0.2
 
     print("\n=== SANITY CHECK: earnings-call features ===")
-    print(f"  panel {panel.shape[0]} rows; exactly 12 raw/issuer-history EC features and no peer/cross-sectional variants.")
+    print(f"  panel {panel.shape[0]} rows; exactly 10 raw EC features and no peer/cross-sectional variants.")
     print(
         f"  leak-free: ticker A first tone signal at {a_tone['date'].min().date()} "
         "(call 2023-02-01 + 2 calendar days); genuine zero survives for 66 sessions and "
@@ -363,54 +364,13 @@ def test_full_calendar_late_refresh_and_rerun_are_bit_exact() -> None:
     )
 
 
-def test_issuer_history_is_prior_only_and_requires_four_observations() -> None:
-    from src.data_aggregate.utils.text import earnings_call_features as ec
-
-    history = getattr(ec, "_issuer_history_zscore", None)
-    assert history is not None, "prior-only issuer-history normalization is missing"
-    calls = pd.DataFrame(
-        {
-            "ticker": ["A"] * 5,
-            "quarter": [f"202{i}Q1" for i in range(5)],
-            "as_of": pd.date_range("2020-01-01", periods=5, freq="365D"),
-            "ec_tone": [1.0, 2.0, 3.0, 4.0, 100.0],
-        }
-    )
-    got = history(calls, "ec_tone")
-    assert got.iloc[:4].isna().all()
-    expected = (100.0 - 2.5) / np.std([1.0, 2.0, 3.0, 4.0], ddof=1)
-    assert math.isclose(float(got.iloc[4]), expected)
-    print("\n=== SANITY CHECK: issuer history ===")
-    print("  first four calls are NaN; fifth uses only the prior four with sample std. Validated.")
-
-
-def test_issuer_history_survives_symbol_and_cik_change() -> None:
-    from src.data_aggregate.utils.text.earnings_call_features import _issuer_history_zscore
-
-    calls = pd.DataFrame(
-        {
-            "ticker": ["NEW"] * 5,
-            "as_of": pd.to_datetime(["2020-02-01", "2021-02-01", "2022-02-01", "2023-02-01", "2024-02-01"]),
-            "ec_tone": [1.0, 2.0, 3.0, 4.0, 5.0],
-        }
-    )
-    lineage = pd.DataFrame({"cik": ["1", "2"], "entity_id": ["E1", "E1"]}).assign(role="cik_window", valid_from="1900-01-01", valid_to=None)
-    roster = pd.DataFrame({"ticker": ["NEW"], "cik": ["2"]})
-    identified = attach_issuer_identity(calls, roster, lineage, _canonical_tenure(roster))
-    score = _issuer_history_zscore(identified, "ec_tone")
-    assert identified["issuer_id"].eq("E1").all()
-    assert score.iloc[:4].isna().all() and pd.notna(score.iloc[4])
-    print("\n=== SANITY CHECK: issuer lineage ===")
-    print("  OLD/CIK1 -> NEW/CIK2 remains one issuer history through symbol and CIK change. Validated.")
-
-
 def test_identity_excludes_unknown_and_ambiguous_rows_and_preserves_deltas() -> None:
     calls = pd.DataFrame(
         {
             "ticker": ["NEW", "NEW"],
             "quarter": ["2023Q4", "2024Q1"],
             "as_of": pd.to_datetime(["2023-11-01", "2024-02-01"]),
-            "ec_tone": [0.2, 0.5],
+            "ec_prep_tone": [0.2, 0.5],
             "total_words": [1000.0, 2000.0],
         }
     )
@@ -418,8 +378,7 @@ def test_identity_excludes_unknown_and_ambiguous_rows_and_preserves_deltas() -> 
     roster = pd.DataFrame({"ticker": ["NEW"], "cik": ["2"]})
     prepared = prepare_earnings_call_kpis(attach_issuer_identity(calls, roster, lineage, _canonical_tenure(roster)))
     newest = prepared.iloc[-1]
-    assert math.isclose(float(newest["ec_tone_delta"]), 0.3)
-    assert math.isclose(float(newest["ec_length_delta"]), math.log(2.0))
+    assert math.isclose(float(newest["ec_prep_tone_delta"]), 0.3)
 
     ambiguous = pd.concat(
         [
@@ -493,53 +452,48 @@ def test_new_call_with_missing_kpi_terminates_the_previous_signal() -> None:
             "ticker": ["AAA", "AAA"],
             "quarter": ["2023Q4", "2024Q1"],
             "as_of": pd.to_datetime(["2024-01-05", "2024-02-02"]),
-            "ec_tone": [0.1, 0.2],
-            "ec_qa_gap": [0.3, np.nan],
+            "ec_prep_tone": [0.1, 0.2],
+            "ec_answers_tone": [0.3, np.nan],
             "total_words": [1000.0, 1100.0],
         }
     )
     panel = build_earnings_call_feature_panel(calls, calendar, availability_lag_days=2)
     observed = panel[panel["ticker"].eq("AAA")].set_index("date")
-    assert observed.loc[pd.Timestamp("2024-02-02"), "f_ec_qa_gap"] == 0.3
-    assert pd.isna(observed.loc[pd.Timestamp("2024-02-05"), "f_ec_qa_gap"])
-    assert observed.loc[pd.Timestamp("2024-02-05"), "f_ec_tone"] == np.float32(0.2)
+    assert observed.loc[pd.Timestamp("2024-02-02"), "f_ec_answers_tone"] == 0.3
+    assert pd.isna(observed.loc[pd.Timestamp("2024-02-05"), "f_ec_answers_tone"])
+    assert observed.loc[pd.Timestamp("2024-02-05"), "f_ec_prep_tone"] == np.float32(0.2)
     print("\n=== SANITY CHECK: missing KPI supersedes stale signal ===")
     print("  the newer valid call preserves its observed tone but resets its absent Q&A gap to NaN. Validated.")
 
 
-def test_partial_coverage_controls_deltas_and_prior_history() -> None:
+def test_each_role_delta_requires_its_own_adjacent_quarter() -> None:
     calls = pd.DataFrame(
-        {
-            "ticker": ["A"] * 8,
-            "issuer_id": ["E1"] * 8,
-            "quarter": ["2020Q1", "2020Q2", "2020Q3", "2020Q4", "2021Q1", "2021Q2", "2021Q3", "2021Q4"],
-            "as_of": pd.date_range("2020-02-01", periods=8, freq="3MS"),
-            "coverage": [1, 3, 1, 3, 1, 3, 1, 1],
-            "ec_tone": [0.1, 0.9, 0.2, 0.9, 0.3, 0.9, 0.4, 0.5],
-            "ec_uncertainty": [0.01, 0.9, 0.02, 0.9, 0.03, 0.9, 0.04, 0.05],
-            "total_words": [1000] * 7 + [2000],
-        }
+        dict(
+            ticker="A",
+            issuer_id="E1",
+            quarter=["2020Q1", "2020Q2", "2020Q3", "2020Q4", "2021Q2"],
+            as_of=pd.date_range("2020-02-01", periods=5, freq="3MS"),
+            ec_prep_tone=[0.1, 0.2, 0.3, 0.5, 0.6],
+            ec_answers_tone=[np.nan, 0.7, np.nan, 0.4, 0.1],
+            ec_questions_tone=[0.1, np.nan, 0.3, 0.6, 0.5],
+        )
     )
     result = prepare_earnings_call_kpis(calls)
-    assert result["ec_tone_delta"].iloc[:7].isna().all()
-    assert result["ec_length_delta"].iloc[:7].isna().all()
-    assert result["ec_tone_delta"].iloc[7] == pytest.approx(0.1)
-    assert result["ec_length_delta"].iloc[7] == pytest.approx(np.log(2))
-    assert pd.isna(result["ec_tone_vs_hist"].iloc[6])
-    expected = (0.5 - 0.25) / np.std([0.1, 0.2, 0.3, 0.4], ddof=1)
-    assert result["ec_tone_vs_hist"].iloc[7] == pytest.approx(expected)
-    assert result["ec_uncertainty_vs_hist"].iloc[7] == pytest.approx(expected)
-    print("SANITY: mixed section sets cannot become tone/length changes; five-year history requires four prior matching-coverage observations.")
+    assert result["ec_prep_tone_delta"].iloc[1:4].tolist() == pytest.approx([0.1, 0.1, 0.2])
+    assert result["ec_answers_tone_delta"].isna().all()
+    assert result["ec_questions_tone_delta"].iloc[3] == pytest.approx(0.3)
+    assert result.filter(like="tone_delta").iloc[4].isna().all()
+    print("SANITY: unrelated missing roles preserve prepared deltas; a missing role or fiscal quarter cannot bridge to an older observation.")
 
 
 def test_tail_daily_calculation_preserves_original_expiry() -> None:
     calendar = pd.bdate_range("2020-01-01", periods=200)
-    calls = pd.DataFrame({"ticker": ["A"], "as_of": [calendar[10]], "ec_tone": [0.2]})
-    full = _daily_frame(calls, "ec_tone", calendar, 2)
+    calls = pd.DataFrame({"ticker": ["A"], "as_of": [calendar[10]], "ec_prep_tone": [0.2]})
+    full = _daily_frame(calls, "ec_prep_tone", calendar, 2)
     for cutoff in (calendar[30], calendar[77], calendar[100]):
-        tail = _daily_frame(calls, "ec_tone", calendar, 2, since=cutoff)
+        tail = _daily_frame(calls, "ec_prep_tone", calendar, 2, since=cutoff)
         pd.testing.assert_frame_equal(tail, full.loc[cutoff:], check_exact=True)
-    assert _daily_frame(calls, "ec_tone", calendar, 2, since=calendar[100]).isna().all().all()
+    assert _daily_frame(calls, "ec_prep_tone", calendar, 2, since=calendar[100]).isna().all().all()
     print("SANITY: daily arrays start at the requested tail; the 66-session signal never restarts at its cutoff.")
 
 
@@ -554,28 +508,8 @@ def test_history_scope_is_bounded_and_keeps_fiscal_predecessors() -> None:
     cutoff = pd.Timestamp("2026-08-15")
     scope, comparisons = feature_history_scope(calls, calendar, cutoff, 2)
     assert len(scope) < len(calls)
-    assert scope["as_of"].min() >= pd.Timestamp("2026-07-30") - pd.DateOffset(years=5)
+    assert len(scope) == 2
     assert scope["as_of"].max() <= calendar[-1]
     assert set(scope["issuer_id"]) == {"E1"}
     assert comparisons == {("OLD_A", "2026Q1"), ("A", "2026Q2")}
     print("SANITY: bounded history excludes issuers with no active emitter and retains the actual same-issuer predecessor across a symbol change.")
-
-
-def test_cached_uncertainty_recovers_exact_word_hits() -> None:
-    rows = _sentiment_frame().query("ticker == 'A' and quarter == '2023Q1'").copy()
-    rows["n_words"] = 507
-    rows["uncertainty_ratio"] = round(87 / 507, 6)
-    value = sentiment_kpis(rows, EARNINGS_CALL_SENTIMENT_CACHE_MODEL)["ec_uncertainty"].iloc[0]
-    assert value == 87 / 507
-    print("SANITY: legacy six-decimal uncertainty recovers the exact integer-word ratio without re-reading text.")
-
-
-if __name__ == "__main__":
-    test_per_call_kpi_arithmetic()
-    test_panel_columns_lifetime_and_missingness()
-    print("\n=== SANITY CHECK: earnings-call features ===")
-    print(
-        "  length-weighted tone / Q&A-gap / uncertainty / tone-delta / length-delta "
-        "arithmetic correct; panel emits exactly 12 raw/history fields without peer/xs variants; "
-        "features are leak-free and expire after 66 trading sessions. Validated."
-    )

@@ -33,26 +33,38 @@ def _quote_anchors(context: Context, anchors: list[tuple[str, dict]], bugfix: di
         until=max([*dates, *boundaries]) + pd.Timedelta(days=7),
         optional=True,
     )
-    if raw is None or raw.empty:
-        return raw
-    raw = raw.copy()
-    raw["date"] = pd.to_datetime(raw["date"])
-    vendor = None
-    if any(vintage.values()):
-        vendor = context.store.load(
+    vendor = (
+        context.store.load(
             Tables.sharadar_fundamentals,
             columns=["ticker", "date", "price"],
             where={"ticker": names, "dimension": "ARQ"},
-            since=raw["date"].min(),
-            until=raw["date"].max(),
+            since=min(dates) - pd.Timedelta(days=7),
+            until=max([*dates, *boundaries]) + pd.Timedelta(days=7),
             optional=True,
         )
-        if vendor is not None:
-            vendor = vendor.assign(date=pd.to_datetime(vendor["date"]))
+        if any(vintage.values())
+        else None
+    )
+    return prepare_quote_anchors(raw, vendor, anchors, bugfix)
+
+
+def prepare_quote_anchors(
+    raw: pd.DataFrame | None, vendor: pd.DataFrame | None, anchors: list[tuple[str, dict]], bugfix: dict
+) -> pd.DataFrame | None:
+    """Prepare already-loaded quote anchors with the existing guarded price repairs."""
+    if raw is None or raw.empty:
+        return raw
+    names = {ticker for ticker, _ in anchors}
+    raw = raw.loc[raw["ticker"].isin(names)].copy()
+    raw["date"] = pd.to_datetime(raw["date"])
+    if vendor is not None:
+        vendor = vendor.assign(date=pd.to_datetime(vendor["date"]))
     wide = {"close_split": raw.pivot(index="date", columns="ticker", values="close_split")}
+    legacy = {ticker: [entry for entry in bugfix.get("return_seams", {}).get(ticker, []) if "fields" not in entry] for ticker in names}
+    vintage = {ticker: bugfix.get("split_vintage", {}).get(ticker, []) for ticker in names}
     repairs = {"split_vintage": vintage, "return_seams": legacy}
-    apply_split_vintage(wide, repairs, vendor, context.log.info)
-    apply_return_seams(wide, repairs, context.log.info)
+    apply_split_vintage(wide, repairs, vendor)
+    apply_return_seams(wide, repairs)
     stacked = cast(pd.Series, wide["close_split"].rename_axis(index="date", columns="ticker").stack(future_stack=True))
     return stacked.rename("close_split").reset_index()
 

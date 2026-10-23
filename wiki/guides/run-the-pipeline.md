@@ -1,13 +1,14 @@
 ---
 title: Run the pipeline
-description: Interpreter, database, CLI, Airflow, cold-start, backfill, and validation operations.
+description: Interpreter, database, CLI, Airflow, cold-start, backfill, and validation
+  operations.
 type: guide
 tags:
-  - wiki
-  - guide
-  - runbook
-  - operations
-source_commit: 5d13ac4980704564ce57dcbd7a378c73840db148
+- wiki
+- guide
+- runbook
+- operations
+source_commit: 4773469e660ee159f30fbef0e56ea401d019fab2
 ---
 # Run the pipeline
 
@@ -126,7 +127,7 @@ The first rereads all published ZIP datasets from the configured source start (2
 
 For bounded verification or targeted recovery, use `data_extract thirteen-f-managers --vintages` with both repeated `--cik` and `--accession`, plus required `--period-start`, `--period-end`, `--filed-through`, `--max-filings`. Optional repeated `--archive` selects cached source transport; it does not replace CIK/accession scope. Review `--dry-run` first. The [CLI](../../src/data_extract/cli.py) writes both existing destinations; it creates no auxiliary business table. Validate the same named scope with `validate institutionals --cik ... --period-start ... --period-end ... --filed-through ...`.
 
-After source adoption and the user's price refresh, run `data_aggregate build-institutionals -F`, then `data_aggregate assemble-cube`. The full institutional rebuild is necessary for historical corrections; deleting all cube tables is unnecessary. These recovery/rebuild operations were not run by closure validation. Code merge/check status lives in the local audit `06-final.md`.
+After source adoption and the user's price refresh, run `data_aggregate build-institutionals -F`, then `data_aggregate build-sec-thirteen -F`, then `data_aggregate assemble-cube`. With nonempty validated output, these full rebuilds remove transferred/retired columns from the old part and populate the new part; deleting all cube tables is unnecessary. A builder returning no rows retains its previous table even on a full run. Verify physical column sets, unique date/ticker keys and readiness for both parts and the assembled cube before use. These recovery/rebuild operations were not run by closure validation. Code merge/check status lives in the local audit `06-final.md`.
 
 ### Source-specific notes
 
@@ -147,7 +148,7 @@ rtk proxy "$PY" -m src data_extract thirteen-f-managers --years 31 -c ./configs
 
 `--years 31` sets the report-period history depth for this run; it does not force a reread. `thirteen-f-managers` has no `-F` option. Its [pending-book planner](../../src/data_extract/utils/institutionals/fetch_13f_managers.py) skips only verified completed accession packets. Legacy latest-only rows do not mark an original or amendment complete. `superinvestors -F` rebuilds roster dates and CIK resolutions; it does not repair holdings.
 
-After a parser fix, repair existing holdings with a backed-up, source-verified whole-book proposal and an atomic scoped application, rather than relying on catch-up upserts to remove stale CUSIPs. The parser fix is merged into `dev`, and the 2026-10-07 historical repair was applied on 2026-10-08 (4 replaced books, 62 NULL-amount books); priorities and exact remaining gaps are in [TODO](../TODO.md#superinvestor-roster-follow-ups). After that repair, build `cube_part_prices` if absent, run `data_aggregate build-institutionals -F`, then `data_aggregate assemble-cube` and the relevant read-only [validation](./validate-a-change.md). The latter assembly command has no `-F` option; see [aggregate CLI](../../src/data_aggregate/cli.py).
+After a parser fix, repair existing holdings with a backed-up, source-verified whole-book proposal and an atomic scoped application, rather than relying on catch-up upserts to remove stale CUSIPs. The parser fix is merged into `dev`, and the 2026-10-07 historical repair was applied on 2026-10-08 (4 replaced books, 62 NULL-amount books); priorities and exact remaining gaps are in [TODO](../TODO.md#superinvestor-roster-follow-ups). After that repair, build `cube_part_prices` if absent, run `data_aggregate build-sec-thirteen -F`, then `data_aggregate assemble-cube` and the relevant read-only [validation](./validate-a-change.md). The latter assembly command has no `-F` option; see [aggregate CLI](../../src/data_aggregate/cli.py).
 
 The daily `superinvestors` command writes a snapshot only when Dataroma's roster changed. Rebuild the whole `superinvestor_roster` table after any change to `configs/superinvestors/` or to the roster code, and on a cold database:
 
@@ -178,18 +179,19 @@ rtk "$PY" -m src data_aggregate build-fundamentals
 rtk "$PY" -m src data_aggregate build-momentum
 rtk "$PY" -m src data_aggregate build-text
 rtk "$PY" -m src data_aggregate build-institutionals
+rtk "$PY" -m src data_aggregate build-sec-thirteen
 rtk "$PY" -m src data_aggregate build-governance
 rtk "$PY" -m src data_aggregate assemble-cube
 rtk "$PY" -m src data_aggregate cube-status
 ```
 
-The same eight part objects are driven by the composite build, individual CLI commands, and the Airflow chain. The command list and warm-ups come from [parts.py](../../src/data_aggregate/utils/common/parts.py).
+The same nine part objects are driven by eight builders in the composite build, individual CLI commands, and the sequential Airflow chain. The command list and warm-ups come from [parts.py](../../src/data_aggregate/utils/common/parts.py).
 
 ### Assemble selected inputs and check readiness
 
 Edit `build_cube.assembly` in [build_cube.yml](../../configs/build_cube.yml) using the [column selection contract](../reference/configuration.md#cube-assembly-selection), then run `rtk "$PY" -m src data_aggregate assemble-cube -c ./configs` followed by `rtk "$PY" -m src data_aggregate cube-status -c ./configs`. Assembly has no `-F` option. This rebuilds the derived cube from persisted parts; it does not rebuild feature parts.
 
-The [assembler](../../src/data_aggregate/transformers/step_assemble_cube.py) requires prices, targets, betas, fundamentals, momentum and governance. Text/institutionals can be absent or empty; populated broken inputs stop the build. Every price date/ticker remains, including the newest session with null future labels. Selected names are projected before payload reads. Removing selected columns or skipping a former optional source physically removes its old cube columns; confirm model-input compatibility before using narrower output.
+The [assembler](../../src/data_aggregate/transformers/step_assemble_cube.py) requires prices, targets, betas, fundamentals, momentum and governance. Text/institutionals/SEC thirteen can be absent or empty; populated broken inputs stop the build. Every price date/ticker remains, including the newest session with null future labels. Selected names are projected before payload reads. Removing selected columns or skipping a former optional source physically removes its old cube columns; confirm model-input compatibility before using narrower output.
 
 The [status gate](../../src/data_aggregate/utils/common/part_status.py) reports `reference_price_date`, each participating part's expected/actual edge and `refresh_command`. Use the named command to refresh stale/missing parts, then reassemble. At 03:00, the latest stored preceding price session is sufficient. This gate compares table edges, not each ticker/feature's coverage or source prices against a market calendar; existing source/prediction freshness checks remain responsible for those source-age checks.
 
@@ -366,6 +368,8 @@ Normal extraction checks the entire scoped provider index and can recover introd
 
 After separate production approval, adopt a lineage/availability change with current identity tables, lineage-aware extraction, a full `data_aggregate build-text -F`, then `data_aggregate assemble-cube`. `build-text` has no ticker scope. Ordinary extraction recovers missing historical aliases but preserves old raw keys; reviewed raw cleanup requires the scoped full reconcile. Runtime issuer checks exclude unsupported legacy calls from features in the meantime. New/reissued calls follow normal sentiment/embedding scoring; valid current-version caches can be reused for a clock-only change. No raw/cache `as_of` is shifted.
 
+The ten-column role/embedding contract uses the same adoption sequence: `data_aggregate build-text -F`, then `data_aggregate assemble-cube`, then read-only validation and fresh training for both tree families. Existing compatible speaker-clean-v3 prepared/legacy-management scores and vectors are reused; only missing question sentiment needs new inference. Saved v2 outputs still require the prior cleaning-version recomputation. The feature-schema change alone needs no extra embeddings or source-date shift. Existing nullable unused sentiment uncertainty storage can remain until database recreation.
+
 The feature clock is owned by `build_cube.earnings_calls.availability_lag_days` in [build_cube.yml](../../configs/build_cube.yml): two calendar days, followed by the first eligible trading session. A normal 30-calendar-day rewrite does not rewrite older feature clocks; a full part rebuild and cube reassembly are necessary for historical adoption. The provider exposes call dates without a first-available timestamp, so two days is an estimated buffer. The 2026-10-19 scoped validation recovered ECHO2→62 and BNY3→78 into an isolated sink, but current-model feature generation abstained because the bounded cache contained only older model versions. Source-format and old-feature drift flags remain documented in `reports/validate/2026-10-19-earnings-call-lineage/`; no production backfill or paid scoring ran in that validation.
 
 A full text run reuses valid model results and scores only missing or invalid outputs. Cold scoring can be dominated by FinBERT. The following measurements are historical, from 2026-10-02 (`reports/validate/2026-10-01-earnings-call-extraction-gaps/03-implementation.md`); they are not a throughput guarantee for the current flow. The later [text-cube acceptance](./testing.md#text-cube-acceptance-2026-10-22) records actual configured-model/PostgreSQL tests on 253 calls, a 10.3-second warm median and zero repeated inference. Whole-universe cold capacity remains unmeasured.
@@ -382,7 +386,7 @@ Run FinBERT on a GPU with `FINBERT_DEVICE=cuda`. `build-text` scores sentiment b
 rtk "$PY" -m src validate earnings-calls -T cube_part_text -o reports/validate/YYYY-MM-DD-earnings-calls
 ```
 
-The check reads `earnings_call_sections` itself; `-T earnings_call_sections` is the wrong target. It reports per-ticker and per-calendar-quarter coverage, paragraph-grain checks, raw split status, usable-call rate (at least 0.985 under `usable_call_rate_min`) and prepared word share among eligible both-section calls (q05 at least 0.15, from `configs/validate.yml`), `as_of` against the nearest `earnings_surprises` date, and the 12-column feature schema, bounds, redundancy and drift.
+The check reads `earnings_call_sections` itself; `-T earnings_call_sections` is the wrong target. It reports per-ticker and per-calendar-quarter coverage, paragraph-grain checks, raw split status, usable-call rate (at least 0.985 under `usable_call_rate_min`) and prepared word share among eligible both-section calls (q05 at least 0.15, from `configs/validate.yml`), `as_of` against the nearest `earnings_surprises` date, and the ten-column feature schema, bounds, redundancy and drift.
 
 ## Validation commands
 
@@ -452,4 +456,4 @@ rtk "$PY" -m src validate modelling -c ./configs -o data/output/modelling_backte
 
 The [read-only validator](../../src/validate/checks/modelling.py) checks source chronology, predictions/IC/IR/effects, complete publication and report content. Incomplete evidence is ABSTAINED. Retain accepted historical-vintage limitations and missing configured inputs. Old assessments are not migrated.
 
-Text model stages compare all compact source keys with their own saved model tables, so old missing/failed calls remain eligible for scoring independently of the feature rewrite. Normal text features rewrite 30 calendar days from their stored frontier and read only required predecessor/five-year history. Changes older than that output range require build-text -F followed by assemble-cube. Full feature mode reuses valid model results; it does not force paid embedding or FinBERT work to repeat. Prepared-only/answer-only calls retain supported features, with unavailable sentiment sections recorded as NULL scores and zero words.
+Text model stages compare all compact source keys with their own saved model tables, so old missing/failed calls remain eligible for scoring independently of the feature rewrite. Normal text features rewrite 30 calendar days from their stored frontier and read only active emitter calls and their actual adjacent fiscal predecessors. Changes older than that output range require build-text -F followed by assemble-cube. Full feature mode reuses valid model results; it does not force paid embedding or FinBERT work to repeat. Prepared-only/answer-only calls retain supported features, with unavailable sentiment roles recorded as NULL scores and zero words.

@@ -7,7 +7,7 @@ tags:
   - guide
   - database
   - point-in-time
-source_commit: 54882b265efce2bf18c4ff9c40a89c6d8530c589
+source_commit: 4773469e660ee159f30fbef0e56ea401d019fab2
 ---
 # Data access and storage
 
@@ -184,7 +184,7 @@ Before merging a data-path change:
 
 `context.store.save_13f_filing(manifest, holdings)` is the bounded atomic entry point: one complete accession, any observed cover declarations and the actual typed source payload reconciled, unique CIK/accession/CUSIP grain. A legacy source may omit cover count/total only after the reader positively accounts for its structure and economic rows; missing declarations stay null and cannot be replaced by parsed totals. The existing unit-evidence field carries the source-accounting conclusion; callers cannot waive checks by supplying nulls alone. Holdings and completion manifest commit together. Failed parsing or a rolled-back transaction cannot establish an empty public book. Exact replay returns zero; a changed checksum for an existing accession raises visibly. Resume is by completed accession, so a stored amendment cannot hide a missing original.
 
-Project and bound the manifest by CIK/report period/filing cutoff, then stream its accession-selected holdings through `context.store.iter_load`. The shared candidate resolver `src/utils/institutional_vintages.py` filters public, complete source versions before resolving each CIK/report quarter. Current levels come from the greatest usable report quarter. Comparison inputs use the **latest public resolved version of the adjacent preceding report quarter at the target as-of**, not a fixed 90-day-old snapshot. A prior amendment updates that baseline prospectively; an older irrelevant amendment stays in audit history. Unknown adjacent-quarter coverage remains unknown rather than silently widening the comparison interval.
+The [13F input reader](../../src/data_aggregate/utils/sec_thirteen/inputs.py) streams each source once through `context.store.iter_load`, with projected union manifest/position columns, complete/position status, markers included, manager scope and filing cutoff. It partitions completion rows and whole-book positions in memory; source-complete empty books remain observable. The shared candidate resolver `src/utils/institutional_vintages.py` filters public, complete source versions before resolving each CIK/report quarter. Current levels come from the greatest usable report quarter. Comparison inputs use the **latest public resolved version of the adjacent preceding report quarter at the target as-of**, not a fixed 90-day-old snapshot. A prior amendment updates that baseline prospectively; an older irrelevant amendment stays in audit history. Unknown adjacent-quarter coverage remains unknown rather than silently widening the comparison interval.
 
 Candidate per-manager publications include active current/prior changes, including value-only corrections. An unrelated manager's event does not emit another manager's unchanged current rows. The daily DAG dependency lookback/output rewrite remains separately deferred in the refresh TODO (`reports/validate/2026-10-09-institutional-13f-audit/todo-13f-refresh.md`, local ignored audit artifact). No production consumer switch is implied by the scoped ledger proof.
 

@@ -367,7 +367,7 @@ def test_the_cube_reads_canonical_insider_rows_only(sqlite_store: Any) -> None:
         ]
     )
     sqlite_store.save(Tables.insider_transactions, rows)
-    got = institutional_inputs.load_insider_transactions(sqlite_store, logging.getLogger("test"), ["MRK"])
+    got = institutional_inputs.load_insider_transactions(sqlite_store, ["MRK"])
     assert got is not None and sorted(got["accession_number"]) == ["a0", "a1"]
     print("\nSANITY: the insider reader keeps canonical_predecessor and canonical_current rows; acquired and unstamped rows are not read")
 

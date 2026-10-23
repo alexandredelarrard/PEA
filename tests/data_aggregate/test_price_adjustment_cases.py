@@ -11,11 +11,10 @@ import pytest
 
 from src.context import Context, get_config_context
 from src.data_aggregate.transformers import step_cube_prices as price_step
-from src.data_aggregate.utils.common.level_basis import apply_level_bugfix, level_actions, level_factor, load_share_basis
+from src.data_aggregate.utils.common.level_basis import apply_level_bugfix, as_traded_close, level_actions, level_factor, load_share_basis
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 from src.data_aggregate.utils.institutionals.insider_positions import position_units
-from src.data_aggregate.utils.institutionals.institutional_features import _daily_owned_shares
-from src.data_aggregate.utils.institutionals.value_basis import as_traded_close
+from src.data_aggregate.utils.sec_thirteen.institutional_features import _daily_owned_shares
 from src.data_store.schema import Tables
 from src.utils.price_adjustments import ShareBasis, load_bugfix, resolve_share_events
 

@@ -1,5 +1,5 @@
 """
-split_basis.py  (src/data_aggregate/utils/institutionals/split_basis.py)
+split_basis.py  (src/data_aggregate/utils/common/split_basis.py)
 ------------------------------------------------------------------------
 ONE primitive: the cumulative split product as of a date, per ticker -- and the
 `future_split_factor` built on it that moves an AS-FILED quantity onto today's basis.

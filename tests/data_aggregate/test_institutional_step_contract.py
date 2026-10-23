@@ -167,7 +167,11 @@ def test_changed_columns_trigger_full_owned_part_replacement(
 
     monkeypatch.setattr(step, "build_panel", build)
     step.run()
-    assert modes == [False, True]
+    expected_modes = [False] if cls is StepCubeSecThirteen else [False, True]
+    assert modes == expected_modes
     assert set(sqlite_store.columns(table)) == set(expected.columns)
     assert sqlite_store.row_count(table) == len(expected)
-    print(f"SANITY: {table.name} replaces its obsolete schema through the ordinary full-rerun path.")
+    saved = sqlite_store.load(table).sort_values(["date", "ticker"]).reset_index(drop=True)
+    pd.testing.assert_frame_equal(saved, expected, check_dtype=False)
+    strategy = "the already-computed full-history panel" if cls is StepCubeSecThirteen else "a full rerun"
+    print(f"SANITY: {table.name} replaces its obsolete schema using {strategy}; all {len(expected)} saved rows match.")

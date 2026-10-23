@@ -389,7 +389,7 @@ def test_old_correction_needs_explicit_full_features(sqlite_store: DataStore, mo
     cutoff = pd.to_datetime(before["date"]).max() - pd.Timedelta(days=30)
     store.delete(Tables.earnings_call_sentiment, {"ticker": "ADP"})
     engine.score_texts.side_effect = lambda texts: [{"pos": 0.8, "neg": 0.1, "neu": 0.1} for _ in texts]
-    with patch.object(store, "load", wraps=store.load) as reads:
+    with patch.object(store, "load", wraps=store.load) as reads, patch.object(store, "iter_load", wraps=store.iter_load) as streams:
         StepCubeText(context, config).run()
     after = store.load(Tables.cube_part_text)
     assert after is not None
@@ -399,7 +399,7 @@ def test_old_correction_needs_explicit_full_features(sqlite_store: DataStore, mo
 
     pd.testing.assert_frame_equal(prefix(before), prefix(after), check_exact=True)
     assert after.loc[pd.to_datetime(after["date"]).ge(cutoff), "f_ec_tone"].eq(float(np.float32(0.7))).all()
-    price_read = [call for call in reads.call_args_list if call.args[0] == Tables.cube_part_prices]
+    price_read = [call for call in reads.call_args_list + streams.call_args_list if call.args[0] == Tables.cube_part_prices]
     assert len(price_read) == 1 and price_read[0].kwargs["since"] == cutoff
     vector_read = [
         call for call in reads.call_args_list if call.args[0] == Tables.earning_calls_embedding and "embedding" in (call.kwargs.get("columns") or [])

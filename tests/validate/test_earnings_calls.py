@@ -44,10 +44,10 @@ def _cube(tickers: list[str]) -> pd.DataFrame:
     cube = pd.DataFrame({"date": np.repeat(dates, len(tickers)), "ticker": tickers * len(dates)})
     for position, name in enumerate(EARNINGS_CALL_FEATURES):
         cube[f"f_{name}"] = np.sin(np.arange(len(cube)) / (7.0 + position))
-    cube["f_ec_uncertainty"] = cube["f_ec_uncertainty"].abs().clip(upper=1)
     cube["f_ec_qa_coherence_mean"] = cube["f_ec_qa_coherence_mean"].clip(-1, 1)
     cube["f_ec_qa_qq_distance"] = cube["f_ec_qa_qq_distance"].abs().clip(upper=2)
     cube["f_ec_prep_qq_distance"] = cube["f_ec_prep_qq_distance"].abs().clip(upper=2)
+    cube["f_ec_questions_only_qq_distance"] = cube["f_ec_questions_only_qq_distance"].abs().clip(upper=2)
     return cube
 
 
@@ -237,10 +237,10 @@ def test_earnings_call_validator_reports_coverage_schema_and_quality(sqlite_stor
         {"quarter": "2024Q2", "tickers_with_call": 2, "tickers_with_valid_call": 1, "roster_measured": 2, "share_with_call": 1.0}
     ]
     assert coverage["as_of_vs_release_days"]["same_day"] == 1
-    assert result.scope["feature_columns"] == 12
+    assert result.scope["feature_columns"] == 10
     print("\n=== SANITY CHECK: dedicated earnings-call validator ===")
     print(
-        "  exact 12-column schema measured from paragraph rows; both calls split ok (rate 1.0, prepared share q05 "
+        "  exact ten-column schema measured from paragraph rows; both calls split ok (rate 1.0, prepared share q05 "
         f"{coverage['prepared_share_quantiles']['q05']:.2f}); the valid call is 100% covered, the short one fails the gate "
         "and stays <50%; 2024Q2 has 2/2 roster tickers with a call, 1 valid; as_of matches the release day. Validated."
     )

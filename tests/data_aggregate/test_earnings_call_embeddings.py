@@ -115,6 +115,18 @@ def test_embedding_kpis_require_consecutive_quarters_and_consistent_provenance()
     print("  missing quarters do not bridge QoQ distance; mixed model provenance yields NaN. Validated.")
 
 
+def test_question_only_distance_ignores_answer_changes() -> None:
+    rows = []
+    for quarter, date, answer in (("2024Q1", "2024-02-01", [0.0, 1.0]), ("2024Q2", "2024-05-01", [-1.0, 1.0])):
+        for tag, vector in (("question", [1.0, 0.0]), ("answer", answer)):
+            rows.append(dict(ticker="A", quarter=quarter, as_of=date, section="qa", tag=tag, exchange_idx=0, embedding=vector, model="m"))
+    actual = build_embedding_kpis(pd.DataFrame(rows), {("A", "2024Q1"), ("A", "2024Q2")}).set_index("quarter")
+    assert actual.loc["2024Q2", "ec_questions_only_qq_distance"] == 0.0
+    assert actual.loc[["2024Q2"], "ec_qa_qq_distance"].gt(0).all()
+    assert pd.isna(actual.loc["2024Q1", "ec_questions_only_qq_distance"])
+    print("SANITY: unchanged questions have zero distance while answer changes move combined Q&A; first quarter remains null.")
+
+
 def test_embedding_distance_continues_across_symbol_change_for_one_issuer() -> None:
     rows = []
     for ticker, quarter, as_of, shift in (

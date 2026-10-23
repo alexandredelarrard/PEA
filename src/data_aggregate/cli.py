@@ -94,7 +94,7 @@ def build_momentum(config_path: str, full: bool) -> None:
     _step(StepCubeMomentum, config_path).run(full=full)
 
 
-@cli.command(help="Earnings-call text features (FinBERT/LM sentiment + OpenAI-embedding coherence & drift) -> cube_part_text.", help_priority=5)
+@cli.command(help="Earnings-call text features (FinBERT role sentiment + embedding coherence & drift) -> cube_part_text.", help_priority=5)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def build_text(config_path: str, full: bool) -> None:

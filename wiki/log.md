@@ -1,7 +1,7 @@
 ---
 title: Wiki Log
 description: Append-only audit trail of wiki generation and refresh runs.
-source_commit: 9677e686d80af4e19461b362049d2c15d69bad62
+source_commit: 6421598d7cfdf2f5005182f47a05a99e30c2b9a8
 ---
 
 # Wiki Log
@@ -909,3 +909,11 @@ Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/
 - Pages: [Aggregation](./modules/data-aggregate.md), [Data access](./guides/data-access.md), [Cube flow](./flows/cube-build.md), [TODO](./TODO.md), [Overview](./OVERVIEW.md), and this log. Local ignored evidence: `reports/validate/2026-10-22-superinvestor-pipeline/report.html`, `04-validation-03.md`, `05-review-01.md` and saved JSON/figures.
 
 - Audit: all six refreshed pages pass configured link checks; the overview directly reaches the other five, and the five non-log pages have no raw unresolved internal links. Fourteen reserved historical log-link findings remain withheld and unchanged. Markdownlint/frontmatter/OKF are not configured. No new page or navigation orphan was introduced.
+
+## 2026-10-23: refresh — SEC 13F integration into dev
+
+- Profile: internal/standard; source_commit: 6421598d7cfdf2f5005182f47a05a99e30c2b9a8 (was 9677e686d80af4e19461b362049d2c15d69bad62). The user approved merging the reviewed harness candidate into dev; dev fast-forwarded from bb8dd2de033aebf10e18efe9e95b0315aaab5c4d to that exact candidate without conflicts.
+- Coverage: all six reviewed refactor wiki updates are now on dev. Corrected the two active aggregation/flow links to the renamed completed-review TODO heading. Source, tests and configuration retain the independently validated candidate trees; this refresh changes documentation only.
+- Pages: [Aggregation](./modules/data-aggregate.md), [Cube flow](./flows/cube-build.md), [TODO handoff](./TODO.md#13f-refactor-follow-ups--completed-review-23-october-2026), [Data access](./guides/data-access.md), [Overview](./OVERVIEW.md), and this log. Historical log entries remain unchanged.
+- Clarifications: 429 means raw CIK/report-quarter keys present only in the manager source, not 429 separate managers or proven CIK handoff failures. The bounded 38-book unit replay retained factor 1 for every book; four thin books had approximately unit price ratios and 34 lacked eligible frozen quotes. No book met the fifteen-security scale quorum, and this was not a full extracted-value unit audit.
+- Evidence and limits: existing independent code/test, three exact frozen replays and conditional data findings carry forward unchanged. Post-merge source/test/config and checkout-byte checks plus scoped wiki audits are recorded in local ignored `reports/validate/2026-10-22-superinvestor-pipeline/merges/dev-merge.md`. No production rebuild, extraction recovery, data mutation, remote push or PR is part of this merge.

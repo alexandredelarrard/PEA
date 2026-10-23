@@ -5,7 +5,7 @@ type: module
 tags:
   - wiki
   - module
-source_commit: 9677e686d80af4e19461b362049d2c15d69bad62
+source_commit: 6421598d7cfdf2f5005182f47a05a99e30c2b9a8
 ---
 # Cube aggregation
 
@@ -161,7 +161,7 @@ Both panel paths in [StepCubeSecThirteen](../../src/data_aggregate/transformers/
 
 Public standalone legacy builders remain supported. A missing manifest cannot certify immutable completion, amendment provenance or absence, so those adapters retain their existing latest-only grain/publication rules instead of fabricating a versioned book. Versioned comparison eligibility still requires supported adjacent books; raw-CIK versus configured-manager continuity remains unchanged. The independent refactor preserves all feature names, values/null masks and support thresholds.
 
-`value_usd` is dollars; books can validly total billions, so size alone does not identify a unit error. Diagnose scale with reported shares and an eligible report-period as-traded quote, never an absolute book-size cap or a different manager's book. The bounded real replay retained a $348.194-billion book without independently certifying all of its dollars; its four thin priced books had ratios approximately one but did not meet the fifteen-security scale quorum. Numerical/selection/continuity/update/storage edges and the dated same-roster source-coverage sample remain explicit [follow-ups](../TODO.md#13f-refactor-follow-ups--accepted-23-october-2026). Local ignored harness evidence is `reports/validate/2026-10-22-superinvestor-pipeline/report.html`; no production source or cube rebuild is part of this refactor.
+`value_usd` is dollars; books can validly total billions, so size alone does not identify a unit error. Diagnose scale with reported shares and an eligible report-period as-traded quote, never an absolute book-size cap or a different manager's book. The bounded real replay retained a $348.194-billion book without independently certifying all of its dollars; its four thin priced books had ratios approximately one but did not meet the fifteen-security scale quorum. Numerical/selection/continuity/update/storage edges and the dated same-roster source-coverage sample remain explicit [follow-ups](../TODO.md#13f-refactor-follow-ups--completed-review-23-october-2026). Local ignored harness evidence is `reports/validate/2026-10-22-superinvestor-pipeline/report.html`; no production source or cube rebuild is part of this refactor.
 
 ## Insider canonical cleaning and feature contract
 

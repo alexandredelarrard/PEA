@@ -5,7 +5,7 @@ type: flow
 tags:
   - wiki
   - flow
-source_commit: 9677e686d80af4e19461b362049d2c15d69bad62
+source_commit: 6421598d7cfdf2f5005182f47a05a99e30c2b9a8
 ---
 # Cube build
 
@@ -64,7 +64,7 @@ A missing price-basis gate can propagate adjustment seams into returns, betas, a
 
 Each panel visibly loads its packet, attaches CUSIPs, calls shared cleaning/value repair, then invokes its prepared feature builder. [The cleaning owner](../../src/data_aggregate/utils/sec_thirteen/holdings_clean.py) also prepares dates/publication and explicit legacy adapters. [The iterator](../../src/data_aggregate/utils/sec_thirteen/institutional_vintages.py) schedules/yields changed reconciled books through the existing raw-filer resolver. Elite [manager selection](../../src/data_aggregate/utils/sec_thirteen/manager_selection.py) and each family's comparison/event/projection stages then read prepared inputs. Off-universe positions stay in book totals.
 
-The existing seven-session output rewrite does not bound source dependencies: both families retain the full calendar/history. Schema fallback reuses that computed panel for full replacement, avoiding a second source read/feature replay. Original/addition/restatement semantics, family-specific comparison cohorts, legacy no-manifest behavior and unknown-versus-zero rules are preserved. This refactor does not fix CIK lineage, missing source books, omitted-feature carries, successful-empty retention or non-atomic tail replacement; see the [accepted follow-up](../TODO.md#13f-refactor-follow-ups--accepted-23-october-2026) and [detailed stages](../modules/data-aggregate.md#sec-13f-build-stages).
+The existing seven-session output rewrite does not bound source dependencies: both families retain the full calendar/history. Schema fallback reuses that computed panel for full replacement, avoiding a second source read/feature replay. Original/addition/restatement semantics, family-specific comparison cohorts, legacy no-manifest behavior and unknown-versus-zero rules are preserved. This refactor does not fix CIK lineage, missing source books, omitted-feature carries, successful-empty retention or non-atomic tail replacement; see the [accepted follow-up](../TODO.md#13f-refactor-follow-ups--completed-review-23-october-2026) and [detailed stages](../modules/data-aggregate.md#sec-13f-build-stages).
 
 ## Text stage sequence
 

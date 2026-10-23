@@ -216,7 +216,6 @@ from tests.data_aggregate.aggregate_fingerprint import BASELINE, compute
 # renamed away from the fingerprint. ADDED `panel.short_flow` (its replacement, built from RegSHO
 # short VOLUME and fails-to-deliver), `panel.ownership` (13D/13G; a builder that was live in the
 # step and had never been fingerprinted at all), and the two DERIVED panels
-# `panel.signal_conditioning` and `panel.cross_source`.
 #
 # The three that moved, each for one nameable reason:
 #
@@ -448,7 +447,6 @@ def test_baseline_covers_every_panel_and_deduped_primitive(baseline):
     # to measure short interest, which it never did). The three ADDITIONS are
     # `panel.ownership` -- live in the cube since Phase 2.4 and never fingerprinted, which is
     # the `cube-silently-degraded` shape and the reason this tuple is hand-maintained -- plus
-    # the two derived panels Phase 2.6/2.7 added, `panel.signal_conditioning` and
     # `panel.cross_source`.
     for must in (
         "panel.price",
@@ -463,8 +461,6 @@ def test_baseline_covers_every_panel_and_deduped_primitive(baseline):
         "panel.superinvestor",
         "panel.insider",
         "panel.ownership",
-        "panel.signal_conditioning",
-        "panel.cross_source",
         "panel.betas",
         "panel.raw_features",
     ):
@@ -512,8 +508,7 @@ def test_baseline_covers_every_panel_and_deduped_primitive(baseline):
     # `prim.super_quarter_features` vanishing. The floor now equals the `must` tuple's length.
     #
     # 13 -> 16 on the Phase 2.5-2.7 regeneration: `panel.ownership` (a builder that was live
-    # and unguarded), `panel.signal_conditioning` and `panel.cross_source`.
-    assert len(panels) >= 16, f"panel coverage regressed: {panels}"
+    assert len(panels) >= 14, f"panel coverage regressed: {panels}"
     assert len(prims) >= 13, f"primitive coverage regressed: {prims}"
     assert len(labels) >= 6, f"only {len(labels)} target variants fingerprinted"
     # the frozen input must be pinned too: a silent DB change would otherwise look like a

@@ -6,6 +6,7 @@ Shared pure price repairs and event resolution retain compatibility imports here
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, cast
 
@@ -43,6 +44,8 @@ from src.utils.price_repairs import (
     apply_split_vintage,
     observed_wedge,
 )
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "genuine_splits",
@@ -151,7 +154,7 @@ def _volume_jump(volume: pd.Series, when: pd.Timestamp) -> float | None:
     return float(before / after)
 
 
-def apply_volume_scale(bars: pd.DataFrame, bugfix: Mapping[str, Any], log: Callable[..., None]) -> pd.DataFrame:
+def apply_volume_scale(bars: pd.DataFrame, bugfix: Mapping[str, Any]) -> pd.DataFrame:
     """Repair a vendor volume UNIT defect: the `volume` of a registered ticker's bars dated before an
     entry's `before` is multiplied by its `factor`. `bars` is long (`ticker`, `date`, `volume`); the
     input is returned untouched when no entry applies, else a copy.
@@ -176,13 +179,13 @@ def apply_volume_scale(bars: pd.DataFrame, bugfix: Mapping[str, Any], log: Calla
             volume = pd.Series(pd.to_numeric(out.loc[mine, "volume"], errors="coerce").to_numpy(), index=dates[mine]).sort_index()
             jump, expect = _volume_jump(volume, when), float(entry["expect_jump"])
             if jump is None or not expect / VOLUME_JUMP_TOL <= jump <= expect * VOLUME_JUMP_TOL:
-                log("price bugfix: volume_scale %s before %s SKIPPED -- observed jump %s, expected %.1f", ticker, when.date(), jump, expect)
+                logger.info("price bugfix: volume_scale %s before %s SKIPPED -- observed jump %s, expected %.1f", ticker, when.date(), jump, expect)
                 continue
             if out is bars:
                 out = bars.copy()
                 out["volume"] = pd.to_numeric(out["volume"], errors="coerce").astype("float64")
             out.loc[target, "volume"] = out.loc[target, "volume"] * float(entry["factor"])
-            log(
+            logger.info(
                 "price bugfix: volume_scale %s x%s on %d bar(s) before %s (observed jump %.1f)",
                 ticker,
                 entry["factor"],
@@ -399,3 +402,42 @@ def apply_level_bugfix(
                 segment.get("event", "no event recorded"),
             )
     return out
+
+
+def as_traded_close(
+    close_split: pd.DataFrame | None,
+    level_factor: pd.DataFrame | None,
+    split_events: pd.DataFrame | ShareBasis,
+) -> pd.DataFrame | None:
+    """Restore quoted-security prices using vendor restatements and evidenced quote units."""
+    if close_split is None or level_factor is None:
+        return None
+    df_close = close_split * level_factor.reindex_like(close_split)
+    if isinstance(split_events, ShareBasis):
+        basis = split_events
+        events = basis.vendor
+    else:
+        basis = None
+        events = split_events
+    factors = suffix_factor(events, list(df_close.columns), df_close.index.to_numpy(dtype="datetime64[ns]"))
+    for ticker, factor in factors.items():
+        df_close[ticker] *= factor
+    if basis is not None:
+        for ticker in basis.policies.keys() & set(df_close.columns):
+            df_close[ticker] *= basis.factor(pd.Series(ticker, index=df_close.index), pd.Series(df_close.index, index=df_close.index), "units")
+    return df_close.where(np.isfinite(df_close) & df_close.gt(0))
+
+
+def _period_close(close: pd.DataFrame, periods: pd.Series, max_age_days: int) -> pd.Series:
+    """Last observed valuation-day quote, bounded by age and never from the future."""
+    wanted = pd.DatetimeIndex(sorted(periods.dropna().unique()))
+    df_quotes = close.sort_index().where(np.isfinite(close) & close.gt(0))
+    union = df_quotes.index.union(wanted)
+    df_asof = df_quotes.reindex(union).ffill().reindex(wanted)
+    for ticker in df_quotes:
+        observed = pd.Series(df_quotes.index, index=df_quotes.index).where(df_quotes[ticker].notna())
+        last = observed.reindex(union).ffill().reindex(wanted)
+        df_asof[ticker] = df_asof[ticker].where((pd.Series(wanted, index=wanted) - last).le(pd.Timedelta(days=max_age_days)))
+    result = cast(pd.Series, df_asof.stack(future_stack=True))
+    result.index = result.index.set_names(["period", "ticker"])
+    return result

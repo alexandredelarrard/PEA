@@ -37,7 +37,7 @@ def test_duplicate_key_raises_and_names_the_panel():
     """The message must name the LABEL, not just the count: with six parts merging ~570
     columns, 'duplicate key' alone does not say which build step to re-run."""
     dup_rows = [(_DATES[0], "AAA"), (_DATES[0], "AAA"), (_DATES[1], "BBB")]
-    merger = PanelMerger(_LOG)
+    merger = PanelMerger()
     merger.add(_panel("f_mom"), "momentum")
 
     with pytest.raises(DuplicateKeyError) as ei:
@@ -69,7 +69,7 @@ def test_the_guard_replaces_an_opaque_pandas_error_and_leaves_no_trace():
     raw_msg = str(raw.value)
     assert "fundamentals" not in raw_msg and "AAA" not in raw_msg  # says nothing useful
 
-    merger = PanelMerger(_LOG)
+    merger = PanelMerger()
     merger.add(clean, "momentum")
     with pytest.raises(DuplicateKeyError) as guarded:
         merger.add(dirty, "fundamentals")
@@ -87,7 +87,7 @@ def test_the_guard_replaces_an_opaque_pandas_error_and_leaves_no_trace():
 
 def test_clean_panels_merge_one_to_one():
     """The positive case, so the guard cannot be satisfied by simply rejecting everything."""
-    merger = PanelMerger(_LOG)
+    merger = PanelMerger()
     assert merger.add(_panel("f_mom"), "momentum") == 1
     assert merger.add(_panel("f_val"), "fundamentals") == 1
 
@@ -104,7 +104,7 @@ def test_clean_panels_merge_one_to_one():
 def test_two_panels_owning_the_same_feature_name_still_raise():
     """The merger's other guarantee, pinned alongside the key guard because both protect the
     same `concat`: a name owned by two parts would become `_x`/`_y` under a bare merge."""
-    merger = PanelMerger(_LOG)
+    merger = PanelMerger()
     merger.add(_panel("f_shared"), "momentum")
 
     with pytest.raises(FeatureCollisionError) as ei:
@@ -129,14 +129,14 @@ def test_anchor_removes_off_grid_zero_and_preserves_active_zero():
         }
     )
 
-    anchored = PanelMerger(_LOG, anchor=anchor)
+    anchored = PanelMerger(anchor=anchor)
     anchored.add(panel, "governance")
     out = anchored.to_long()
 
     assert list(out[["date", "ticker"]].itertuples(index=False, name=None)) == [(_DATES[0], "AAA"), (_DATES[1], "AAA")]
     assert out["f_zero"].eq(0.0).all()
 
-    plain = PanelMerger(_LOG)
+    plain = PanelMerger()
     plain.add(panel, "governance")
     assert len(plain.to_long()) == 3
 

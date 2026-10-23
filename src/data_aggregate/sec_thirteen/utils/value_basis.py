@@ -7,58 +7,16 @@ uncertain common and option values use tagged underlying-share market estimates.
 from __future__ import annotations
 
 import logging
-from typing import cast
 
 import numpy as np
 import pandas as pd
 
-from src.constants.constants import SEC_13F_VALUE_FACTORS
-from src.data_aggregate.utils.common.level_basis import suffix_factor
+from src.data_aggregate.utils.common.level_basis import _period_close
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
-from src.utils.price_adjustments import ShareBasis
 
 logger = logging.getLogger(__name__)
 KEPT, DIVIDED, MULTIPLIED, ABSTAINED = 0, 1, -1, 9
 _VALUE_COLUMNS = ("value_usd", "call_value", "put_value", "debt_value", "other_value")
-
-
-def as_traded_close(
-    close_split: pd.DataFrame | None,
-    level_factor: pd.DataFrame | None,
-    split_events: pd.DataFrame | ShareBasis,
-) -> pd.DataFrame | None:
-    """Restore quoted-security prices using vendor restatements and evidenced quote units."""
-    if close_split is None or level_factor is None:
-        return None
-    df_close = close_split * level_factor.reindex_like(close_split)
-    if isinstance(split_events, ShareBasis):
-        basis = split_events
-        events = basis.vendor
-    else:
-        basis = None
-        events = split_events
-    factors = suffix_factor(events, list(df_close.columns), df_close.index.to_numpy(dtype="datetime64[ns]"))
-    for ticker, factor in factors.items():
-        df_close[ticker] *= factor
-    if basis is not None:
-        for ticker in basis.policies.keys() & set(df_close.columns):
-            df_close[ticker] *= basis.factor(pd.Series(ticker, index=df_close.index), pd.Series(df_close.index, index=df_close.index), "units")
-    return df_close.where(np.isfinite(df_close) & df_close.gt(0))
-
-
-def _period_close(close: pd.DataFrame, periods: pd.Series, max_age_days: int) -> pd.Series:
-    """Last observed valuation-day quote, bounded by age and never from the future."""
-    wanted = pd.DatetimeIndex(sorted(periods.dropna().unique()))
-    df_quotes = close.sort_index().where(np.isfinite(close) & close.gt(0))
-    union = df_quotes.index.union(wanted)
-    df_asof = df_quotes.reindex(union).ffill().reindex(wanted)
-    for ticker in df_quotes:
-        observed = pd.Series(df_quotes.index, index=df_quotes.index).where(df_quotes[ticker].notna())
-        last = observed.reindex(union).ffill().reindex(wanted)
-        df_asof[ticker] = df_asof[ticker].where((pd.Series(wanted, index=wanted) - last).le(pd.Timedelta(days=max_age_days)))
-    result = cast(pd.Series, df_asof.stack(future_stack=True))
-    result.index = result.index.set_names(["period", "ticker"])
-    return result
 
 
 def repair_value_basis(
@@ -110,7 +68,7 @@ def repair_value_basis(
     measured, count = grouped.median(), grouped.count()
     factor = pd.Series(np.nan, index=measured.index, dtype=float)
     agreement = pd.Series(0.0, index=measured.index)
-    for candidate in SEC_13F_VALUE_FACTORS:
+    for candidate in (1.0, 0.001, 1000.0):
         support = (evidence * candidate).between(1 - price_tolerance, 1 + price_tolerance)
         fraction = support.groupby(level=list(range(len(keys))), dropna=False).sum() / count.where(count.gt(0))
         match = (measured * candidate).between(1 - price_tolerance, 1 + price_tolerance)
@@ -291,7 +249,7 @@ def nullable_value_to_daily(history: pd.DataFrame, field: str, trading_index: pd
     return df_daily.where(known.eq(1.0))
 
 
-def log_register(register: pd.DataFrame, value_before_total: float, log: logging.Logger = logger) -> None:
+def log_register(register: pd.DataFrame, value_before_total: float) -> None:
     """Summarize unit decisions; raw dollar shares are not feature-error rates."""
     if register.empty:
         return
@@ -301,7 +259,7 @@ def log_register(register: pd.DataFrame, value_before_total: float, log: logging
         if df_hit.empty:
             continue
         moved = float(df_hit["value_before"].sum())
-        log.warning(
+        logger.warning(
             "13F value basis: %s filing(s) %s -- %s row(s), %.2f%% of raw pre-correction dollars; quantity estimates tagged",
             f"{len(df_hit):,}",
             name,
@@ -311,7 +269,7 @@ def log_register(register: pd.DataFrame, value_before_total: float, log: logging
     for leg, prefix in (("common", ""), ("call", "call_"), ("put", "put_")):
         estimated_rows = int(register[f"estimated_{prefix}rows"].sum())
         if estimated_rows:
-            log.info(
+            logger.info(
                 "13F value basis: %s %s row(s) market-estimated at the report-period close; %.3e estimated underlying dollars; source tables unchanged",
                 f"{estimated_rows:,}",
                 leg,
@@ -325,46 +283,46 @@ def log_register(register: pd.DataFrame, value_before_total: float, log: logging
     sibling_rows = int(register["common_excluded_rows"].sum()) - excluded_rows
     unresolved_rows = int(register["unresolved_price_rows"].sum())
     if missing_values:
-        log.info(
+        logger.info(
             "13F forward fallback: %s common row(s) with missing filed value -> reported shares x eligible as-traded report-period price",
             f"{missing_values:,}",
         )
     if mismatched_values:
-        log.warning(
+        logger.warning(
             "13F position price fallback: %s common row(s) outside +/- %.1f%% of the eligible as-traded report-period price after book scaling -> same forward fallback as missing value; %.3e estimated dollars; reported shares preserved",
             f"{mismatched_values:,}",
             100 * float(register["price_tolerance"].iloc[0]),
             float(register["estimated_price_mismatch_value"].sum()),
         )
     if inverse_rows:
-        log.info(
+        logger.info(
             "13F inverse fallback: %s common row(s) with zero/missing shares -> filed dollars / eligible as-traded report-period price; quantities are estimates",
             f"{inverse_rows:,}",
         )
     if unverified_rows:
-        log.warning(
+        logger.warning(
             "13F inverse fallback: %s row(s) unit unverified -> assumes stored value_usd is dollars; no unit factor inferred, quantities flagged",
             f"{unverified_rows:,}",
         )
     if excluded_rows:
-        log.warning(
+        logger.warning(
             "13F fallback: %s row(s) excluded before feature aggregation (no usable common quantity and no eligible as-traded report-period price); source rows preserved",
             f"{excluded_rows:,}",
         )
     if sibling_rows:
-        log.warning(
+        logger.warning(
             "13F fallback: %s unusable common leg(s) nulled; rows retained for supported option/debt exposures; common totals remain unknown",
             f"{sibling_rows:,}",
         )
     if unresolved_rows:
-        log.warning(
+        logger.warning(
             "13F fallback: %s common value(s) still unknown (positive shares but no eligible as-traded report-period price); reported shares retained",
             f"{unresolved_rows:,}",
         )
     for name in ("source_only_thin", "source_only_no_price"):
         df_hit = register.loc[register["status"].eq(name)]
         if not df_hit.empty:
-            log.info(
+            logger.info(
                 "13F value basis: %s filing(s) / %s row(s) %s (no supported unit override)",
                 f"{len(df_hit):,}",
                 f"{int(df_hit['rows'].sum()):,}",

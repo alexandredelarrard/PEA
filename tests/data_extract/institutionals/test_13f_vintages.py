@@ -17,26 +17,27 @@ from click.testing import CliRunner
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import make_url
 
-import src.data_aggregate.transformers.step_cube_institutionals as step_module
+import src.data_aggregate.transformers.step_cube_sec_thirteen as step_module
 import src.data_store.schema as schema
 from src.context import get_config_context
-from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
-from src.data_aggregate.utils.common.price_frames import PriceFrames
-from src.data_aggregate.utils.institutionals.availability import filing_public_dates, public_books
-from src.data_aggregate.utils.institutionals.institutional_features import (
+from src.data_aggregate.sec_thirteen.utils.institutional_features import (
     build_institutional_feature_panel,
     vintage_changes,
     vintage_cohort_publications,
     vintage_cohort_snapshot,
     vintage_publications,
 )
+from src.data_aggregate.sec_thirteen.utils.institutional_vintages import iter_public_books
+from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecThirteen
+from src.data_aggregate.utils.common.availability import filing_public_dates, public_books
+from src.data_aggregate.utils.common.price_frames import PriceFrames
 from src.data_extract.utils.institutionals import fetch_13f_managers as managers
 from src.data_extract.utils.institutionals.fetch_13f import filing_vintage
 from src.data_extract.utils.institutionals.fetch_13f_managers import pending_vintages
 from src.data_extract.utils.institutionals.value_units import declared_units
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
-from src.utils.institutional_vintages import iter_public_books, reconcile_13f_source
+from src.utils.institutional_vintages import reconcile_13f_source
 
 GRID = pd.bdate_range("2024-01-01", "2025-12-31")
 
@@ -1058,12 +1059,10 @@ def test_ordinary_builders_use_versions_and_keep_prior_corrections_prospective(s
         sqlite_store.save_13f_filing(m, h)
         sqlite_store.save_13f_filing(m, h.assign(ticker="_empty"), table=Tables.sec13f_hr)
     sqlite_store.save(Tables.cusip_ticker_map, pd.DataFrame({"cusip": ["111111111", "222222222"], "ticker": ["AAA", "BBB"]}))
-    step = object.__new__(StepCubeInstitutionals)
+    step = object.__new__(StepCubeSecThirteen)
     step._store, step._log = sqlite_store, logging.getLogger(__name__)
     step._cfg, step._availability = {"institutionals": {"value_basis": {"min_securities": 1}, "f13_settle_trading_days": 0}}, None
-    step._context = SimpleNamespace(store=sqlite_store, log=step._log)
-    monkeypatch.setattr(step_module, "roster_cik_union", lambda ctx: {"0000000001"})
-    monkeypatch.setattr(step_module, "roster_map_as_of", lambda ctx: {"0000000001": "truth"})
+    step._context = SimpleNamespace(store=sqlite_store, log=step._log, config_dir="configs")
 
     def arithmetic(frames: Any, holdings: pd.DataFrame, **kw: Any) -> pd.DataFrame:
         return build_institutional_feature_panel(frames, holdings, min_prior_holders=0, **kw)
@@ -1076,8 +1075,7 @@ def test_ordinary_builders_use_versions_and_keep_prior_corrections_prospective(s
         close_split=pd.DataFrame(10.0, index=GRID, columns=["AAA", "BBB"]),
         level_factor=pd.DataFrame(1.0, index=GRID, columns=["AAA", "BBB"]),
     )
-    broad = step._institutional_panel(frames, None, pd.DataFrame(), frames.close_split).set_index(["date", "ticker"])
-    elite = step._superinvestor_panel(frames, None, pd.DataFrame(), None, frames.close_split).set_index(["date", "ticker"])
+    broad, elite = normal_panels(step, frames)
     before, after = (pd.Timestamp(d) for d in ("2024-11-21", "2024-12-02"))
     assert broad.loc[(before, "AAA"), "f_ic_inst_shares_chg"] == pytest.approx(0.2)
     assert broad.loc[(after, "AAA"), "f_ic_inst_shares_chg"] == pytest.approx(1 / 3)
@@ -1094,17 +1092,15 @@ def ordinary_step(
     sqlite_store: DataStore,
     monkeypatch: pytest.MonkeyPatch,
     packets: tuple[tuple[pd.DataFrame, pd.DataFrame], ...],
-) -> tuple[StepCubeInstitutionals, PriceFrames]:
+) -> tuple[StepCubeSecThirteen, PriceFrames]:
     for manifest, holdings in packets:
         sqlite_store.save_13f_filing(manifest, holdings)
         sqlite_store.save_13f_filing(manifest, holdings.assign(ticker="_empty"), table=Tables.sec13f_hr)
     sqlite_store.save(Tables.cusip_ticker_map, pd.DataFrame({"cusip": ["111111111", "222222222", "333333333"], "ticker": ["AAA", "BBB", "CCC"]}))
-    step = object.__new__(StepCubeInstitutionals)
+    step = object.__new__(StepCubeSecThirteen)
     step._store, step._log = sqlite_store, logging.getLogger(__name__)
     step._cfg, step._availability = {"institutionals": {"value_basis": {"min_securities": 1}, "f13_settle_trading_days": 0}}, None
-    step._context = SimpleNamespace(store=sqlite_store, log=step._log)
-    monkeypatch.setattr(step_module, "roster_cik_union", lambda ctx: {"0000000001"})
-    monkeypatch.setattr(step_module, "roster_map_as_of", lambda ctx: {"0000000001": "truth"})
+    step._context = SimpleNamespace(store=sqlite_store, log=step._log, config_dir="configs")
 
     def arithmetic(frames: Any, holdings: pd.DataFrame, **kw: Any) -> pd.DataFrame:
         return build_institutional_feature_panel(frames, holdings, min_prior_holders=0, **kw)
@@ -1120,10 +1116,12 @@ def ordinary_step(
     return step, frames
 
 
-def normal_panels(step: StepCubeInstitutionals, frames: PriceFrames) -> tuple[pd.DataFrame, pd.DataFrame]:
+def normal_panels(step: StepCubeSecThirteen, frames: PriceFrames) -> tuple[pd.DataFrame, pd.DataFrame]:
+    cusip_map = step._store.load(Tables.cusip_ticker_map)
+    history = pd.DataFrame({"snapshot_date": [pd.Timestamp("2023-09-01")], "cik": ["0000000001"]})
     return (
-        step._institutional_panel(frames, None, pd.DataFrame(), frames.close_split).set_index(["date", "ticker"]),
-        step._superinvestor_panel(frames, None, pd.DataFrame(), None, frames.close_split).set_index(["date", "ticker"]),
+        step._institutional_panel(frames, None, pd.DataFrame(), cusip_map, frames.close_split).set_index(["date", "ticker"]),
+        step._superinvestor_panel(frames, pd.DataFrame(), cusip_map, {"0000000001"}, history, frames.close_split).set_index(["date", "ticker"]),
     )
 
 
@@ -1168,14 +1166,12 @@ def test_normal_elite_comparisons_keep_unknown_weights_and_zero_pools_safe(
     step, _ = ordinary_step(sqlite_store, monkeypatch, tuple(sources))
     step._cfg["institutionals"]["value_basis"] = {}
     step._cfg["institutionals"]["superinvestor"] = {"selection": {"mode": mode, "k": 20, "min_quarters": 4, "min_positions": 0}}
-    monkeypatch.setattr(step_module, "roster_cik_union", lambda ctx: {"0000000001", "0000000002"})
-    monkeypatch.setattr(step_module, "roster_map_as_of", lambda ctx: {"0000000001": "one", "0000000002": "two"})
-    monkeypatch.setattr(step_module, "first_snapshot_date", lambda ctx: pd.Timestamp("2023-09-01"))
-    monkeypatch.setattr(step_module, "roster_as_of", lambda *args, **kwargs: {"0000000001", "0000000002"})
     grid = pd.bdate_range("2023-09-01", "2024-12-02")
     close = pd.DataFrame(10.0, index=grid, columns=["AAA"])
     frames = PriceFrames(grid, ("AAA",), {}, close_split=close, level_factor=pd.DataFrame(1.0, index=grid, columns=["AAA"]))
-    elite = step._superinvestor_panel(frames, None, pd.DataFrame(), None, close).set_index(["date", "ticker"])
+    cusip_map = sqlite_store.load(Tables.cusip_ticker_map)
+    history = pd.DataFrame({"snapshot_date": [pd.Timestamp("2023-09-01")] * 2, "cik": ["0000000001", "0000000002"]})
+    elite = step._superinvestor_panel(frames, pd.DataFrame(), cusip_map, set(history.cik), history, close).set_index(["date", "ticker"])
     row = elite.loc[(pd.Timestamp("2024-11-15"), "AAA")]
     changes = row.reindex(["f_ic_super_shares_chg", "f_ic_super_conviction_chg", "f_ic_super_conviction_weight_yoy"])
     if mode == "top_k":
@@ -1333,7 +1329,8 @@ def test_normal_broad_retains_option_only_names(
         declared_value=1000,
     )
     step, frames = ordinary_step(sqlite_store, monkeypatch, (option,))
-    broad = step._institutional_panel(frames, None, pd.DataFrame(), frames.close_split).set_index(["date", "ticker"])
+    cusip_map = sqlite_store.load(Tables.cusip_ticker_map)
+    broad = step._institutional_panel(frames, None, pd.DataFrame(), cusip_map, frames.close_split).set_index(["date", "ticker"])
     row = broad.loc[(pd.Timestamp("2024-08-21"), "AAA")]
     assert row.f_ic_inst_net_options_ratio == 1
     assert row.f_ic_inst_holders == 0

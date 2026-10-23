@@ -1,5 +1,5 @@
 """
-manager_selection.py  (src/data_aggregate/utils/institutionals/manager_selection.py)
+manager_selection.py  (src/data_aggregate/sec_thirteen/utils/manager_selection.py)
 ----------------------------------------------------------------------------------------------
 WHICH elite managers count, and how much, at every point in time. Produces the `sel(m, q)`
 series `superinvestor_features` multiplies every aggregate by; nothing here is a feature.

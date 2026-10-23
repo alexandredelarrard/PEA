@@ -55,7 +55,7 @@ class StepCubeGovernance(Step):
         )
         frames = self._load_frames(window.since)
 
-        merger = PanelMerger(self._log, anchor=frames.skeleton())
+        merger = PanelMerger(anchor=frames.skeleton())
         merger.add(
             self._governance_panel(frames, window),
             "governance",

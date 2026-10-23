@@ -7,7 +7,7 @@ tags:
   - guide
   - testing
   - validation
-source_commit: 96e77f81e5cf184b513b1e9bc4785aa68945654b
+source_commit: 15df4358b2a4ea81c34f02c71076256aed23544a
 ---
 # Testing and validation
 
@@ -302,3 +302,9 @@ Raw DOUBLE transport differences between COPY and append are retained as diagnos
 The refactor/code result is PASS. Broader data/model readiness remains CONDITIONAL: native validators retain nine high historical/post-2022 PSI alerts and low prepared-share findings, including some mostly administrative AMZN prepared text. Missing-prior-quarter and 66-session expiry gaps are explained, not filled. Generic coverage compares the deliberately narrow cohort with 491 price issuers. Clip and generic leakage checks abstain for missing applicable declarations; independent PIT arithmetic is separate. Full-universe cold backfill capacity and original first-publication timestamps remain unverified; the original full-source domain scan was stopped after 2,074.38 seconds without a result. No threshold was changed to remove these findings.
 
 Exact commands, raw validator exits/findings, source/data hashes, independent calculations and HTML are retained in the local ignored run `reports/validate/2026-10-22-text-cube-flow/`. The user explicitly authorized paid model calls and disposable PostgreSQL mutation for this run. Its final source/cube state is a dated [test-database observation](../reference/live-database.md#disposable-text-cube-test-state-2026-10-22), not a replacement full-universe census.
+
+## Institutional and SEC thirteen split
+
+The current [non-13F contract](../../tests/data_aggregate/test_institutional_step_contract.py) and [SEC thirteen contract](../../tests/data_aggregate/test_sec_thirteen_step_contract.py) use the ordinary constructors/store interfaces to check panel ownership, unique payload reads, the separate inclusive seven-session-interval tails, schema replacement and same-day reruns. [Global FTD coverage](../../tests/data_aggregate/test_ftd_global_coverage.py) compares frozen real sources with known-truth zero/unknown cases; the step-level test preserves coverage even when the selected ticker has no economic row. This is the explicitly approved bounded historical value correction.
+
+The [fingerprint guard](../../tests/data_aggregate/test_aggregate_regression.py) keeps every surviving record unchanged; only `panel.signal_conditioning` and `panel.cross_source` were removed. [Quality controls](../../tests/data_aggregate/test_institutionals_feature_quality.py) verify both table selections, builder/source identity, strict snapshot metadata ownership and multi-batch count conservation. `scripts/institutionals_feature_quality.py --table` selects the physical output on each subcommand. The `validate institutionals` CLI reconciles source accessions, not the new cube output: use per-table validators for each produced part. Bounded replay/support limits and the final candidate identity are recorded in the local harness report; unit passes do not certify full-universe data or production adoption.

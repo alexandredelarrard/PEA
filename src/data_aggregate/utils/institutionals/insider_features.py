@@ -35,14 +35,13 @@ import logging
 import numpy as np
 import pandas as pd
 
+from src.data_aggregate.utils.common.availability import InstitutionalAvailability
 from src.data_aggregate.utils.common.errors import _empty_panel
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
 from src.data_aggregate.utils.common.price_frames import PriceFrames
-from src.data_aggregate.utils.institutionals.availability import InstitutionalAvailability
 from src.data_aggregate.utils.institutionals.insider_positions import cumulative_positions, position_units
 from src.data_aggregate.utils.institutionals.insider_quality import FLAG_PCT_SHARES_OUTSTANDING, clean_transactions, report_oversized, security_class
-from src.data_aggregate.utils.institutionals.sink import ConditioningSink
 from src.data_store.schema import Tables
 from src.utils.price_adjustments import ShareBasis
 
@@ -107,19 +106,11 @@ def build_insider_feature_panel(
     decay_halflife: float = DEFAULT_DECAY_HALFLIFE,
     availability: InstitutionalAvailability | None = None,
     complete_through: pd.Timestamp | None = None,
-    sink: ConditioningSink | None = None,
     as_traded_quotes: pd.DataFrame | None = None,
     role_evidence: pd.DataFrame | None = None,
     share_basis: ShareBasis | None = None,
 ) -> pd.DataFrame:
-    """Long-format insider feature panel (`f_<name>` per `EMISSION`) from the cleaned open-market trades.
-
-    Empty when source data is absent. Complete corroborated quiet windows emit zero.
-    Without `shares_out_history` and `frames.close_split`
-    only the scale-free features are emitted; every wide frame of `frames` may be None. The optional
-    `ConditioningSink` receives the purchases' disclosure events and the cross-source signals with
-    their availability masks. The non-frame arguments are keyword-only.
-    """
+    """Point-in-time insider features, preserving source-complete quiet windows and unit evidence."""
     need = {"ticker", "filing_date", "transaction_code", "shares"}
     if insider is None or insider.empty or not need.issubset(insider.columns):
         return _empty_panel()
@@ -161,9 +152,7 @@ def build_insider_feature_panel(
     listed = _listed(stock_close, idx, columns)
     df_unsupported = diag.get("unsupported_events", pd.DataFrame())
     df_activity = pd.concat([df_trades, df_unpriced, df_unsupported], ignore_index=True)
-    observed_masks = _observe_quiet_windows(
-        fields, df_activity, diag["source_first"], idx, columns, listed, insider_floor, ten_b5_floor, frontier, availability, mcap
-    )
+    _observe_quiet_windows(fields, df_activity, diag["source_first"], idx, columns, listed, insider_floor, ten_b5_floor, frontier, availability, mcap)
 
     df_uncertain = pd.concat([diag.get("uncertain_events", pd.DataFrame()), df_unsupported], ignore_index=True)
     unpriced_masks = _unpriced_masks(pd.concat([df_unpriced, df_uncertain], ignore_index=True), idx)
@@ -205,11 +194,6 @@ def build_insider_feature_panel(
             previous = unpriced_masks.get("ic_insider_owner_surprise_120d", pd.DataFrame())
             unpriced_masks["ic_insider_owner_surprise_120d"] = previous.combine(dep_mask, lambda a, b: a.fillna(False) | b.fillna(False))
     _mask_unknown_windows(fields, unpriced_masks)
-
-    if sink is not None:
-        sink.set_frontier("insider", complete_through)
-        sink.add_events("insider", _disclosure_events(df_buys))
-        _keep_sink_signals(sink, fields, observed_masks)
 
     _log.info("insider panel: %s features from %s scoped transactions (%s buys, %s sells)", len(fields), len(df_trades), len(df_buys), len(df_sells))
     emission = {name: EMISSION[name] for name in fields}
@@ -268,7 +252,7 @@ def _observe_quiet_windows(
     frontier: pd.Timestamp | None,
     availability: InstitutionalAvailability | None,
     mcap: pd.DataFrame | None,
-) -> dict[str, pd.DataFrame]:
+) -> None:
     """Fill only proven inactivity; unsupported active rows never become zero.
 
     Any issuer disclosure corroborates coverage prospectively. A complete frontier, full
@@ -294,7 +278,6 @@ def _observe_quiet_windows(
     }
     seen = pd.DataFrame(True, index=idx, columns=columns)
     corroborated = pd.DataFrame({ticker: idx >= day for ticker, day in source_first.items()}, index=idx).reindex(columns=columns, fill_value=False)
-    masks = {}
     for name, (window, selector) in specifications.items():
         active = _rolling(activity[selector], idx, window, None, seen).fillna(0).gt(0)
         if frontier is None:
@@ -309,7 +292,6 @@ def _observe_quiet_windows(
             observed &= mcap.reindex(index=idx, columns=columns).gt(0)
         frame = fields.get(name, pd.DataFrame(index=idx)).reindex(index=idx, columns=columns)
         fields[name] = frame.mask(observed & ~active, 0.0).where(observed)
-        masks[name] = observed
     unknown_roles = activity[role_unknown & buy]
     for name, days in (("ic_insider_ceo_buy_mcap_180d", WINDOW_180), ("ic_insider_cfo_buy_mcap_180d", WINDOW_180)):
         if name in fields:
@@ -325,30 +307,6 @@ def _observe_quiet_windows(
     ):
         if name in fields:
             fields[name] = fields[name].mask(_rolling(activity[selector], idx, days, None, seen).gt(0))
-    return masks
-
-
-def _disclosure_events(df_buys: pd.DataFrame) -> pd.DataFrame:
-    """One sink event per purchase at its first disclosure (`date` = anchor), with the repaired
-    `value` and the as-filed `shares`. Projected before the rename: the frame also holds the source
-    `shares` column, and the sink rejects a duplicated name."""
-    first_disclosure = df_buys["visible_from"].eq(df_buys["anchor"])
-    return df_buys.loc[first_disclosure, ["ticker", "anchor", "value", "shares_n"]].rename(columns={"anchor": "date", "shares_n": "shares"})
-
-
-def _keep_sink_signals(
-    sink: ConditioningSink,
-    fields: dict[str, pd.DataFrame],
-    observed_masks: dict[str, pd.DataFrame],
-) -> None:
-    """Pass exactly the panel's known, source-complete buy/net signals to conditioning."""
-    signals, masks = {}, {}
-    for name in ("ic_insider_buy_value_mcap_180d", "ic_insider_net_buy_ratio_180d"):
-        if name not in fields or name not in observed_masks:
-            continue
-        masks[name] = observed_masks[name] & fields[name].notna()
-        signals[name] = fields[name].where(masks[name])
-    sink.keep_signals(signals, masks)
 
 
 # --------------------------------------------------------------------------- #

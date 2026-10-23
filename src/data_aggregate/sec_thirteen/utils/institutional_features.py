@@ -1,5 +1,5 @@
 """
-institutional_features.py  (src/data_aggregate/utils/institutionals/institutional_features.py)
+institutional_features.py  (src/data_aggregate/sec_thirteen/utils/institutional_features.py)
 --------------------------------------------------------------------------------
 Broad, point-in-time 13F institutional ownership features (`ic_inst_*`).
 
@@ -64,26 +64,21 @@ from typing import Any, cast
 import numpy as np
 import pandas as pd
 
-from src.constants.constants import (
-    F13_MAX_EARLY_DAYS,
-    F13_MAX_LATE_DAYS,
-    F13_REVISION_MIN_MOVE,
-    F13_SETTLE_TRADING_DAYS,
-    SEC_13F_FILING_LAG_DAYS,
-)
+from src.constants.constants import F13_SETTLE_TRADING_DAYS, SEC_13F_FILING_LAG_DAYS
+from src.data_aggregate.sec_thirteen.utils.holdings_clean import clean_holdings
+from src.data_aggregate.sec_thirteen.utils.institutional_vintages import iter_public_books
+from src.data_aggregate.sec_thirteen.utils.value_basis import log_register, nullable_value_to_daily, repair_value_basis
+from src.data_aggregate.utils.common.availability import availability_date, filing_public_dates, public_books
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
 from src.data_aggregate.utils.common.price_frames import PriceFrames
+from src.data_aggregate.utils.common.split_basis import future_split_factor, split_cum_product
 from src.data_aggregate.utils.common.typing import frame_column
-from src.data_aggregate.utils.institutionals.availability import availability_date, filing_public_dates, public_books
-from src.data_aggregate.utils.institutionals.holdings_clean import clean_holdings
-from src.data_aggregate.utils.institutionals.split_basis import future_split_factor, split_cum_product
-from src.data_aggregate.utils.institutionals.value_basis import log_register, nullable_value_to_daily, repair_value_basis
 from src.data_store.schema import Resume, Tables
-from src.utils.institutional_vintages import iter_public_books
 from src.utils.price_adjustments import ShareBasis
 
 logger = logging.getLogger(__name__)
+F13_REVISION_MIN_MOVE = 0.001
 
 #: The first period whose all-filer coverage describes the market rather than the fetch
 #: (measured above: 63 -> 2,938 in-universe filers, post-band).
@@ -305,7 +300,7 @@ def _assert_emission_windows_ordered(qf: pd.DataFrame) -> None:
     """Every period's LAST emission must precede the next period's FIRST one.
 
     ⚠ ASSERTED RATHER THAN TRUSTED, BECAUSE IT DEPENDS ON THE BAND EDGE. `q-1`'s revisions
-    stop at `q-1 + 105d` (`F13_MAX_LATE_DAYS`) and `q` first publishes at about `q-1 + 141d`,
+    stop at `q-1 + 105d` (the 60-day late tolerance) and `q` first publishes at about `q-1 + 141d`,
     so the clearance is ~36 days and `as_of` is strictly increasing in `period`. That is what
     lets `fundamentals_to_daily`'s `pivot_table(aggfunc="last").ffill()` stay correct with
     several rows per period: no two periods ever compete for one `(ticker, as_of)` cell, so
@@ -328,7 +323,7 @@ def _assert_emission_windows_ordered(qf: pd.DataFrame) -> None:
             "13F emission windows OVERLAP across consecutive periods -- a later quarter's "
             f"first publication is at or before an earlier one's last revision: {overlaps[:6]}. "
             "`fundamentals_to_daily` would resolve the collision with `aggfunc='last'` and the "
-            "panel would step backwards. Narrow `F13_MAX_LATE_DAYS` or widen the settle."
+            "panel would step backwards. Narrow the late filing tolerance or widen the settle."
         )
     duplicated = int(qf.duplicated(["ticker", "as_of"]).sum())
     if duplicated:
@@ -788,7 +783,7 @@ def build_institutional_feature_panel(
 
     if filings is not None:
         holdings, register = repair_value_basis(holdings, valuation_close, **dict(value_basis or {}))
-        log_register(register, float(holdings.value_usd.sum()), logger)
+        log_register(register, float(holdings.value_usd.sum()))
         if "value_basis_excluded" in holdings:
             holdings.loc[holdings.value_basis_excluded, ["shares", "value_usd"]] = np.nan
         qf = _versioned_quarter_features(
@@ -796,7 +791,7 @@ def build_institutional_feature_panel(
         )
     else:
         # clean and report holdings
-        holdings = clean_holdings(holdings, key=("ticker", "cik", "period"), filing_band=(F13_MAX_EARLY_DAYS, F13_MAX_LATE_DAYS))
+        holdings = clean_holdings(holdings, key=("ticker", "cik", "period"), filing_band=(45, 60))
 
         # ⚠ THE UNIT REPAIR RUNS BEFORE ANYTHING READS A VALUE, and that ordering is the whole
         # point: `_quarter_features` sums value into `ic_inst_concentration`,
@@ -807,7 +802,7 @@ def build_institutional_feature_panel(
         # call is a statement about those 2,458 filings.
         value_before = cast(pd.Series, pd.to_numeric(frame_column(holdings, "value_usd"), errors="coerce")).sum()
         holdings, register = repair_value_basis(holdings, valuation_close, **dict(value_basis or {}))
-        log_register(register, float(value_before), logger)
+        log_register(register, float(value_before))
         if "value_basis_excluded" in holdings:
             holdings = holdings.loc[~holdings["value_basis_excluded"]]
         if holdings.empty:

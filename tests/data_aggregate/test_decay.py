@@ -16,8 +16,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.data_aggregate.utils.common.decay import decay_events
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
-from src.data_aggregate.utils.institutionals.decay import decay_events
 
 
 def _grid(n: int = 400, start: str = "2020-01-01") -> pd.DatetimeIndex:

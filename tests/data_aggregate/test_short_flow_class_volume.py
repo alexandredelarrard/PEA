@@ -10,15 +10,19 @@ class bar, a class bar outside its master interval, and a single-class issuer th
 from __future__ import annotations
 
 import logging
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from src.constants.constants import DEFAULT_CONFIG_DIR
-from src.data_aggregate.transformers import step_cube_institutionals as step_module
+from src.constants.constants import DEFAULT_CONFIG_DIR, SECONDARY_CLASS
+from src.data_aggregate.utils.common import inputs as capital_inputs
 from src.data_aggregate.utils.common.level_basis import load_bugfix
+from src.data_aggregate.utils.common.price_frames import PriceFrames
+from src.data_aggregate.utils.institutionals.inputs import CLASS_LINE_COLUMNS
 from src.data_aggregate.utils.institutionals.short_flow_features import (
     _fails_fields,
     _shortvol_fields,
@@ -28,6 +32,19 @@ from src.data_aggregate.utils.institutionals.short_flow_features import (
 )
 from src.data_store.schema import Tables
 from tests.conftest import make_frames
+
+
+def _load_classes(store: Any, universe: list[str], bugfix: dict | None = None) -> tuple[pd.DataFrame, pd.DataFrame] | None:
+    lines = store.load(
+        Tables.security_master, columns=CLASS_LINE_COLUMNS, where={"lineage_role": SECONDARY_CLASS, "canonical_company": universe}, optional=True
+    )
+    if lines is None:
+        return None
+    context = SimpleNamespace(store=store, log=logging.getLogger(__name__), config_dir=Path(DEFAULT_CONFIG_DIR))
+    frames = PriceFrames(trading_index=pd.DatetimeIndex([]), universe=tuple(universe), peers={})
+    _, _, _, _, bars = capital_inputs.load_share_inputs(context, frames, bugfix or {}, lines)
+    return lines, bars
+
 
 OPEN = pd.NaT
 
@@ -215,13 +232,13 @@ def test_loader_reads_universe_secondary_classes_and_only_their_bars(sqlite_stor
         pd.concat([_bars(s, days, 1.0).assign(close_split=1.0, close_total=1.0) for s in ("LEN", "MRK", "LEN-B", "XYZ-B", "BRK-A")]),
     )
 
-    loaded = step_module.institutional_inputs.load_secondary_classes(sqlite_store, logging.getLogger(__name__), ["LEN", "MRK"])
+    loaded = _load_classes(sqlite_store, ["LEN", "MRK"])
 
     assert loaded is not None
     lines, bars = loaded
     assert lines["market_symbol"].tolist() == ["LEN-B"]
     assert sorted(set(bars["ticker"])) == ["LEN-B"] and len(bars) == 3
-    assert step_module.institutional_inputs.load_secondary_classes(sqlite_store, logging.getLogger(__name__), ["MRK"]) is None
+    assert _load_classes(sqlite_store, ["MRK"]) is None
     print("\n=== SANITY CHECK: class loader ===")
     print("  of 4 master lines it kept LEN's secondary class only; of 5 symbols in prices it read LEN-B's 3 bars only. Validated.")
 
@@ -248,10 +265,8 @@ def test_loader_applies_the_registered_brk_a_volume_unit_repair(sqlite_store: An
     days = pd.bdate_range("2013-06-03", "2013-08-30")
     volume = [24_800.0 if day < pd.Timestamp("2013-07-29") else 300.0 for day in days]
     sqlite_store.save(Tables.prices, _bars("BRK-A", days, volume).assign(close_split=170_000.0, close_total=170_000.0))
-    log = logging.getLogger(__name__)
-
-    loaded = step_module.institutional_inputs.load_secondary_classes(sqlite_store, log, ["BRK-B"], bugfix=load_bugfix(DEFAULT_CONFIG_DIR))
-    untouched = step_module.institutional_inputs.load_secondary_classes(sqlite_store, log, ["BRK-B"])
+    loaded = _load_classes(sqlite_store, ["BRK-B"], bugfix=load_bugfix(DEFAULT_CONFIG_DIR))
+    untouched = _load_classes(sqlite_store, ["BRK-B"])
 
     assert loaded is not None and untouched is not None
     fixed = loaded[1].assign(date=lambda f: pd.to_datetime(f["date"])).set_index("date")["volume"]
@@ -264,6 +279,6 @@ def test_loader_applies_the_registered_brk_a_volume_unit_repair(sqlite_store: An
 
 
 def test_loader_without_a_master_returns_none(sqlite_store: Any) -> None:
-    assert step_module.institutional_inputs.load_secondary_classes(sqlite_store, logging.getLogger(__name__), ["LEN"]) is None
+    assert _load_classes(sqlite_store, ["LEN"]) is None
     print("\n=== SANITY CHECK: no master ===")
     print("  before `security_master` exists the class read returns None, so the features keep the canonical tape. Validated.")

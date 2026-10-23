@@ -1,5 +1,5 @@
 """
-superinvestor_features.py  (src/data_aggregate/utils/institutionals/superinvestor_features.py)
+superinvestor_features.py  (src/data_aggregate/sec_thirteen/utils/superinvestor_features.py)
 ----------------------------------------------------------------------------------------------
 Elite-manager 13F features for the Dataroma superinvestor roster.
 
@@ -26,9 +26,9 @@ number of positions, top-10 weight, and filing lag are intermediate values,
 not emitted features. They are reduced to the `(ticker, date)` cube grain
 through:
 
-    _manager_quarter_state
-        -> _manager_stock_conviction
-        -> _ticker_quarter_panel
+    manager_quarter_state
+        -> manager_stock_conviction
+        -> _aggregate
 
 Manager selection
 -----------------
@@ -53,7 +53,7 @@ Availability
 ------------
 The module emits the history supported by `sec13f_manager_holdings`, which
 starts at 2011-09-30. When supplied, `InstitutionalAvailability` sets a later
-family boundary for the persisted panel and every derived sink output.
+family boundary for the persisted panel.
 """
 
 from __future__ import annotations
@@ -66,25 +66,19 @@ import numpy as np
 import pandas as pd
 
 from src.constants.constants import SEC_13F_FILING_LAG_DAYS
-from src.context import Context
+from src.data_aggregate.sec_thirteen.utils.holdings_clean import clean_holdings
+from src.data_aggregate.sec_thirteen.utils.institutional_vintages import iter_public_books
+from src.data_aggregate.sec_thirteen.utils.value_basis import log_register, nullable_value_to_daily, repair_value_basis
+from src.data_aggregate.utils.common.availability import InstitutionalAvailability
 from src.data_aggregate.utils.common.data_utils import to_day
+from src.data_aggregate.utils.common.decay import decay_events
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.price_frames import PriceFrames
-from src.data_aggregate.utils.institutionals.availability import InstitutionalAvailability
-from src.data_aggregate.utils.institutionals.decay import decay_events
-from src.data_aggregate.utils.institutionals.holdings_clean import clean_holdings
-from src.data_aggregate.utils.institutionals.value_basis import log_register, nullable_value_to_daily, repair_value_basis
 from src.data_store.schema import Tables
-from src.utils.institutional_vintages import filing_public_dates, iter_public_books
+from src.utils.institutional_vintages import filing_public_dates
 from src.utils.string import pad_cik
-from src.utils.superinvestor_roster import config_dir_of, filer_ciks, to_manager_books
 
 logger = logging.getLogger(__name__)
-
-#: Columns read from the manager-book table. `position_type` is required -- the conviction
-#: denominator is COMMON STOCK only, so the debt / call / put legs must be identifiable and
-#: excluded rather than summed into `total_common_value`.
-_HOLDINGS_COLS = ["cik", "period", "filing_date", "cusip", "position_type", "shares", "value_usd"]
 
 #: Ranks at or below this count as a "top holding" for #17/#18/#22.
 _TOP_N = 10
@@ -126,7 +120,7 @@ EMISSION: dict[str, str] = {
     "ic_super_full_exits": "raw",
 }
 
-#: The five features above marked "decayed intensities" are the SPARSE (class-S) ones. An
+#: The features above marked "decayed intensities" are the SPARSE (class-S) ones. An
 #: event is 0 on almost every ticker-day, so each goes through `decay_events` before the
 #: panel -- see `decay.py` for why an undecayed flag is an ABSENT feature, not a weak one.
 #: They are produced by `_events` and named there; no second list is kept, because two
@@ -134,54 +128,8 @@ EMISSION: dict[str, str] = {
 #: map.
 
 
-def load_superinvestor_holdings(context: Context, roster: Iterable[str] | None) -> pd.DataFrame | None:
-    """The roster managers' COMPLETE quarterly books from `sec13f_manager_holdings`.
-
-    `cik` is written by ONE producer with `pad_cik` already applied -- verified on the live
-    table, where every one of the 342,501 rows is exactly 10 characters -- so this is a plain
-    `where={"cik": [...]}` push-down. The `store.distinct` + every-stored-spelling dance the
-    `sec13f_hr` reader needs exists only because that table takes `cik` straight from the SEC
-    submission and holds the same manager both padded and unpadded; it is not needed here and
-    reintroducing it would be cargo cult.
-
-    Every filer CIK of a chained manager is read and the book comes back keyed by manager ID
-    (`to_manager_books`), so it compares with `roster_as_of`.
-
-    A `(cik, period)` book with both shares and values missing on every row reads as unfiled.
-    Valid share positions survive unknown dollars; their dollar weights remain unknown.
-
-    Returns None when the roster resolves to no manager or the table is not populated.
-    """
-    config_dir = config_dir_of(context)
-    ciks = sorted(filer_ciks(_selection_ciks(roster), config_dir))
-    if not ciks:
-        return None
-
-    holdings = context.store.load(Tables.sec13f_manager_holdings, _HOLDINGS_COLS, where={"cik": ciks}, optional=True)
-    if holdings is None:
-        return None
-    unknown_row = holdings["value_usd"].isna() & pd.to_numeric(holdings["shares"], errors="coerce").isna()
-    unknown = unknown_row.groupby([holdings["cik"], holdings["period"]]).transform("all")
-    if unknown.any():
-        n_books = holdings.loc[unknown, ["cik", "period"]].drop_duplicates().shape[0]
-        logger.info(
-            "superinvestor books: %d (cik, period) book(s) with all-NULL shares and values dropped as unfiled (%d row(s))",
-            n_books,
-            int(unknown.sum()),
-        )
-        holdings = holdings[~unknown]
-    return to_manager_books(holdings, config_dir=config_dir)
-
-
 def _selection_ciks(roster: Iterable[str] | None) -> set[str]:
-    """Padded CIKs from a roster: the keys of the `{cik: manager_name}` map `roster_map_as_of`
-    returns, or an iterable of CIK strings such as the `roster_cik_union` set -- which is
-    what the READ SCOPE must be.
-
-    ⚠ THE READ SCOPE IS THE UNION, NOT TODAY'S ROSTER (plan D19/D20). Loading only today's
-    83 managers drops the 19 culled managers that have a book
-    """
-
+    """Padded CIKs from roster-map keys or an iterable of manager IDs."""
     if not roster:
         return set()
     return {c for m in roster if (c := pad_cik(m))}
@@ -730,43 +678,17 @@ def build_superinvestor_feature_panel(
     holdings: pd.DataFrame | None,
     roster: Iterable[str] | None,
     *,
-    shares_out_history: pd.DataFrame | None = None,
     cusip_map: pd.DataFrame | None = None,
     splits: pd.DataFrame | None = None,
     selection: pd.Series | Callable | None = None,
     decay_halflife: float = 63.0,
     stale_quarters: int = _STALE_QUARTERS,
     availability: InstitutionalAvailability | None = None,
-    sink=None,
     valuation_close: pd.DataFrame | None = None,
     value_basis: Mapping[str, float] | None = None,
     filings: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """Long-format elite-manager 13F panel -- raw `f_ic_super_*` characteristics.
-
-    `holdings` is the WHOLE-BOOK table from `load_superinvestor_holdings`; `cusip_map` is
-    `cusip_ticker_map` and `universe` the analysis tickers, which together resolve the
-    S&P500 leg without touching the denominator.
-    `selection` is `sel(m, q)` indexed by `(cik, period)` -- None means flat 1.0 (Phase 2.2b
-    supplies the point-in-time concentration score). `splits` is `prices_splits`, used to
-    restate a prior quarter's share count before any QoQ ratio is taken. `sink` is the
-    optional `ConditioningSink` the price-conditioning and cross-source panels read (see
-    `_fill_sink`); passing nothing changes nothing.
-
-    Empty when there are no holdings or the roster resolves to no manager.
-
-    ⚠ `frames` RATHER THAN THREE UNPACKED FIELDS. `peer_dict`, `trading_index`, and `universe`
-    were all read off one `PriceFrames` at the call site. Naming
-    the object makes the basis un-mistakable: there is one `close_split` and one `close_total`
-    on it, and neither can arrive under the other's parameter name.
-
-    ⚠ NO `frames.require(...)`: the optional split frame already has an explicit absence
-    policy in the holdings cleaner.
-
-    The non-frame arguments are KEYWORD-ONLY. A positional slip between two same-typed
-    `pd.DataFrame | None` neighbours is a silent wrong-frame bug that reads as a plausible
-    call; the keyword form makes it unrepresentable.
-    """
+    """Elite-manager conviction on complete public books; whole-book denominators and historical membership stay intact."""
 
     peer_dict = frames.peers
     trading_index = frames.trading_index
@@ -780,7 +702,7 @@ def build_superinvestor_feature_panel(
         return empty
 
     if filings is not None:
-        levels, contrib, state = _versioned_super_levels(
+        levels, state = _versioned_super_levels(
             frames,
             holdings,
             filings,
@@ -797,12 +719,13 @@ def build_superinvestor_feature_panel(
         family_start = min(frame.index.min() for frame in levels.values())
         if availability is not None:
             family_start = max(family_start, availability.source_date(Tables.sec13f_manager_holdings))
+        events = pd.DataFrame()
     else:
         holdings = attach_tickers(holdings, cusip_map, universe)
         h = clean_holdings(holdings, key=("cik", "period", "cusip"), numeric=("shares", "value_usd"), common_only=True, pad_ciks=True)
         value_before = float(h["value_usd"].sum())
         h, register = repair_value_basis(h, valuation_close, **dict(value_basis or {}))
-        log_register(register, value_before, logger)
+        log_register(register, value_before)
         if "value_basis_excluded" in h:
             h = h.loc[~h["value_basis_excluded"]]
         if h.empty:
@@ -826,6 +749,7 @@ def build_superinvestor_feature_panel(
         if availability is not None:
             family_start = max(family_start, availability.source_date(Tables.sec13f_manager_holdings))
         levels, _grid = _aggregate(contrib, st, stale_quarters)
+        events = _events(contrib)
 
     fields = {name: nullable_value_to_daily(_to_long(frame, name), name, trading_index) for name, frame in levels.items()}
 
@@ -837,10 +761,9 @@ def build_superinvestor_feature_panel(
                 age = dates - publication.reindex(trading_index).ffill()
                 fields[name] = fields[name].mul(0.5 ** (age / decay_halflife), axis=0)
 
-    # The five class-S features, decayed onto the trading grid. Already stamped on each
+    # Sparse event features, decayed onto the trading grid. Already stamped on each
     # manager's own availability date -- an event is not tradable before the filing that
     # discloses it.
-    events = _events(contrib) if filings is None else pd.DataFrame()
     if not events.empty:
         for kind, sub in events.groupby("kind"):
             frame = decay_events(sub, trading_index, decay_halflife, magnitude_col="magnitude")
@@ -856,66 +779,9 @@ def build_superinvestor_feature_panel(
             )
         fields[name] = frame.where(pd.Series(frame.index >= feature_start, index=frame.index), axis=0)
     fields = {k: v for k, v in fields.items() if v is not None and not v.empty}
-    _fill_sink(sink, contrib, fields, frames, availability, family_start)
     emission = {name: EMISSION[name] for name in fields}
     logger.info("elite 13F panel: %s features over %s managers / %s quarters", len(fields), state["cik"].nunique(), state["period"].nunique())
     return build_peer_relative_panel(fields, peer_dict, emission=emission, availability=frames.availability)
-
-
-def _fill_sink(
-    sink,
-    contrib: pd.DataFrame,
-    fields: dict[str, pd.DataFrame],
-    frames: PriceFrames,
-    availability: InstitutionalAvailability | None,
-    family_start: pd.Timestamp,
-) -> None:
-    """Hand the derived panels this family's event dates and validated availability masks.
-
-    ⚠ THE TWO EVENT SETS ARE DIFFERENT AND THAT IS THE POINT. `events` is every disclosure by
-    a selected manager who holds the name -- the date the conditioning layer measures its
-    price path FROM, regardless of direction. `actors` is the bullish subset retained as sink
-    metadata: a manager whose portfolio weight in the name ROSE (an initiation counts, since
-    `prev_w` is absent), which is an act rather than a restatement.
-
-    `avail` is already `max(period + 45d, filing_date)` per manager. `family_start` also
-    enforces the configured source boundary without inventing a disclosure on that date.
-    """
-    if sink is None or contrib is None or contrib.empty:
-        return
-    visible = (pd.to_datetime(contrib["avail"]) >= family_start).to_numpy()
-    live = visible & contrib["held"].fillna(False).to_numpy(dtype=bool) & (contrib["sel"] > 0).to_numpy()
-    disclosures = contrib.loc[live, ["ticker", "avail"]].rename(columns={"avail": "date"})
-    sink.add_events("super", disclosures.drop_duplicates())
-    columns = pd.Index(sorted(map(str, frames.universe)), name="ticker")
-    idx = pd.DatetimeIndex(frames.trading_index).normalize().unique().sort_values()
-    if frames.close_split is not None and not frames.close_split.empty:
-        listed = frames.close_split.reindex(index=idx, columns=columns).notna()
-    else:
-        listed = pd.DataFrame(True, index=idx, columns=columns)
-    family_started = InstitutionalAvailability.date_mask(idx, columns, family_start)
-    signal_fields = dict(fields)
-    signal_masks: dict[str, pd.DataFrame] = {}
-    for name in ("ic_super_conviction_chg", "ic_super_full_exits"):
-        if name not in fields:
-            continue
-        raw = fields[name].reindex(index=idx, columns=columns)
-        mask = (
-            availability.derived_mask(
-                name,
-                idx,
-                columns,
-                dependencies=((Tables.sec13f_manager_holdings, None),),
-                requirements=(listed, family_started),
-            )
-            if availability is not None
-            else raw.notna()
-        )
-        if name == "ic_super_conviction_chg":
-            mask &= raw.notna()
-        signal_masks[name] = mask
-        signal_fields[name] = raw.fillna(0.0).where(mask)
-    sink.keep_signals(signal_fields, signal_masks)
 
 
 def _snapshot_super_contributions(
@@ -1026,18 +892,17 @@ def _versioned_super_levels(
     value_basis: Mapping[str, float] | None,
     stale_quarters: int,
     decay_halflife: float,
-) -> tuple[dict[str, pd.DataFrame], pd.DataFrame, pd.DataFrame]:
+) -> tuple[dict[str, pd.DataFrame], pd.DataFrame]:
     """Freeze each historical observation from its public source prefix, including revisions."""
     holdings = attach_tickers(holdings, cusip_map, frames.universe)
     holdings, register = repair_value_basis(holdings, valuation_close, **dict(value_basis or {}))
-    log_register(register, float(holdings.value_usd.sum()), logger)
+    log_register(register, float(holdings.value_usd.sum()))
     if "value_basis_excluded" in holdings:
         holdings.loc[holdings.value_basis_excluded, ["shares", "value_usd"]] = np.nan
     public = filing_public_dates(filings, frames.trading_index, settle_days=0)
     first = filings.assign(public_at=public).loc[filings.amendment_type.isin(["original", "restatement"])]
     first_public = first.groupby(["cik", "period"]).public_at.min()
     snapshots: dict[str, list[pd.DataFrame]] = {}
-    contributions: list[pd.DataFrame] = []
     state = pd.DataFrame()
     observed_pairs = pd.DataFrame(columns=["cik", "ticker"])
     for day, books, states in iter_public_books(
@@ -1120,9 +985,7 @@ def _versioned_super_levels(
             levels[feature].loc[:, levels[feature].columns.isin(unknown)] = np.nan
         for name, frame in levels.items():
             snapshots.setdefault(name, []).append(frame)
-        contributions.append(contrib.loc[contrib.public_at.eq(day)])
     return (
         {name: pd.concat(parts).sort_index() for name, parts in snapshots.items()},
-        pd.concat(contributions, ignore_index=True) if contributions else pd.DataFrame(),
         state,
     )

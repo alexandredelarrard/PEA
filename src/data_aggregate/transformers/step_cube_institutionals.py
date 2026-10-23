@@ -1,128 +1,42 @@
-"""
-step_cube_institutionals.py  (src/data_aggregate/transformers/step_cube_institutionals.py)
------------------------------------------------------------------------------------------
-The INFORMED-CAPITAL panels -> `cube_part_institutionals`. Four read a source, two are derived
-from the first four:
-
-    institutional    all-filer 13F ownership                   `ic_inst_*`   (sec13f_hr)
-    superinvestor    elite-manager 13F conviction              `ic_super_*`  (sec13f_manager_holdings)
-    insider          Forms 3/4/5 open-market trades            `ic_insider_*` (insider_transactions)
-    beneficial-own.  Schedule 13D / 13G                        `ic_act_*` / `ic_bo_*`
-    short-flow       RegSHO short VOLUME + fails-to-deliver    `ic_shortvol_*` / `ic_ftd_*`
-    conditioning     the price path since each family's last   `ic_sig_*`     (derived)
-                     disclosure -- the layer that makes the
-                     panel move on a day with no filing
-    cross-source     how many independent source families are  `ic_xs_*`      (derived)
-                     observable for the name (support metadata)
-
-THE TWO DERIVED PANELS READ A SINK, NOT THE SOURCES AGAIN (`utils/institutionals/sink.py`).
-The insider event dates are the output of a 2M-row scope-and-repair pass and the elite ones of
-the per-manager availability join, so each source panel drops its event dates and a handful
-of declared availability masks into a `ConditioningSink` on the way past.
-Re-deriving either would double the most expensive read in the step.
-
-WHY IT IS NO LONGER `extras`. "Extras" named no shared property, so it accreted whatever had
-nowhere else to go -- a blended retail-attention panel sat here for months, defined but never
-called from `run()`. Every panel that remains is a MOVE BY A DISCLOSING CAPITAL ALLOCATOR,
-which is both the name and the membership rule: a panel belongs here iff its source is a
-filing somebody was legally required to make. The attention panel is deleted, not moved.
-
-THIS IS THE BIGGEST WIN OF THE COARSENING. These were six separate DAG tasks, each
-re-running the whole price prologue, and three of them had to be SERIALIZED behind one
-another (institutional -> superinvestor -> fundamental) purely to keep them off each
-other's memory. Now they are one step reading a 160-day window, and the serialization
-constraint disappears because the sub-steps run sequentially by construction.
-
-MEMORY DISCIPLINE. Each `_*_panel` loads its own source into a LOCAL and returns a panel,
-so the projected `sec13f_hr` read (the ~21.7M-row table, cut to 10 columns) and
-`insider_transactions` are never resident at the same time. Peak is the largest single
-source plus the accumulating panel.
-"""
+"""Insider, beneficial ownership and short-flow features on the full price calendar."""
 
 from __future__ import annotations
-
-from collections.abc import Sequence
 
 import pandas as pd
 from omegaconf import DictConfig
 
-from src.constants.constants import F13_REVISION_MIN_MOVE, F13_SETTLE_TRADING_DAYS
+from src.constants.constants import SECONDARY_CLASS
 from src.context import Context
+from src.data_aggregate.utils.common import inputs as capital_inputs
+from src.data_aggregate.utils.common.availability import InstitutionalAvailability
 from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_REFRESH_TRADING_DAYS, plan_window, write_part
-from src.data_aggregate.utils.common.level_basis import genuine_splits as genuine_splits
-from src.data_aggregate.utils.common.level_basis import level_actions, load_bugfix, load_share_basis
+from src.data_aggregate.utils.common.level_basis import load_bugfix
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
 from src.data_aggregate.utils.common.parts import part_for
-from src.data_aggregate.utils.common.price_frames import (
-    PriceFrames,
-    load_trading_calendar,
-)
+from src.data_aggregate.utils.common.price_frames import PriceFrames, load_trading_calendar
 from src.data_aggregate.utils.institutionals import frontiers as institutional_frontiers
 from src.data_aggregate.utils.institutionals import inputs as institutional_inputs
-from src.data_aggregate.utils.institutionals.availability import InstitutionalAvailability
-from src.data_aggregate.utils.institutionals.cross_source_features import (
-    build_cross_source_panel,
-)
 from src.data_aggregate.utils.institutionals.insider_features import build_insider_feature_panel
-from src.data_aggregate.utils.institutionals.institutional_features import (
-    COVERAGE_BREAK_DEFAULT,
-    build_institutional_feature_panel,
-)
-from src.data_aggregate.utils.institutionals.manager_selection import (
-    eligibility,
-    elite_weight,
-    manager_concentration_score,
-    selection_diagnostics,
-)
-from src.data_aggregate.utils.institutionals.ownership_features import (
-    build_ownership_feature_panel,
-)
-from src.data_aggregate.utils.institutionals.short_flow_features import (
-    build_short_flow_feature_panel,
-    secondary_class_volume,
-)
-from src.data_aggregate.utils.institutionals.signal_conditioning import (
-    EXCURSION_LOOKBACK,
-    build_signal_conditioning_panel,
-)
-from src.data_aggregate.utils.institutionals.sink import ConditioningSink
-from src.data_aggregate.utils.institutionals.superinvestor_features import (
-    attach_tickers,
-    build_superinvestor_feature_panel,
-)
-from src.data_aggregate.utils.institutionals.value_basis import as_traded_close
-from src.data_store.schema import Table, Tables
+from src.data_aggregate.utils.institutionals.ownership_features import build_ownership_feature_panel
+from src.data_aggregate.utils.institutionals.short_flow_features import build_short_flow_feature_panel, secondary_class_volume
+from src.data_store.schema import Tables
 from src.utils.price_adjustments import ShareBasis
 from src.utils.step import Step
-from src.utils.superinvestor_roster import (
-    first_snapshot_date,
-    roster_as_of,
-    roster_cik_union,
-    roster_map_as_of,
-)
 
 
 class StepCubeInstitutionals(Step):
-    #: ⚠ SIX price fields, and each one is load-bearing. `close_split` is the LEVEL basis (market
-    #: cap, and the insider cost anchor's own basis); `close_total` the RETURN basis every
-    #: `ic_sig_*` return and excursion is taken on; `volume` backs ADV20 and the RegSHO coverage
-    #: measurement; `level_factor` is the spinoff `S(d)` a market cap must carry; `sector_ret`
-    #: makes the conditioning returns sector-RESIDUAL; `ret` is the persisted daily return the
-    #: 20-day realized vol comes from (persisted rather than recomputed, so a trimmed
-    #: incremental window reproduces the full build's first row).
-    _FIELDS = ("close_split", "close_total", "volume", "level_factor", "sector_ret", "ret")
+    _FIELDS = ("close_split", "close_total", "volume", "level_factor")
 
-    def __init__(self, context: Context, config: DictConfig):
+    def __init__(self, context: Context, config: DictConfig) -> None:
         super().__init__(context=context, config=config)
+        self._store = context.store
         self._cfg = config.build_cube
         self._part = part_for(Tables.cube_part_institutionals)
-        self._store = context.store
         self._bugfix = load_bugfix(context.config_dir)
-        availability_config = config.get("data_availability")
-        self._availability = InstitutionalAvailability.from_config(availability_config) if availability_config is not None else None
+        cfg = config.get("data_availability")
+        self._availability = InstitutionalAvailability.from_config(cfg) if cfg is not None else None
 
     def run(self, full: bool = False) -> None:
-
         window = plan_window(
             self._store,
             Tables.cube_part_institutionals,
@@ -131,284 +45,43 @@ class StepCubeInstitutionals(Step):
             trading_index=load_trading_calendar(self._store),
             refresh=PART_REFRESH_TRADING_DAYS,
         )
-
         panel = self.build_panel(full=full)
-        n = write_part(self._store, Tables.cube_part_institutionals, panel, window, drop_empty=True)
-
-        if n == COLUMNS_CHANGED:
-            return self.run(full=True)
-
-    def build_panel(self, full: bool = False) -> pd.DataFrame:
-        """The merge chain without the write, so `validate institutionals` scores the same panel
-        this step persists. Returns the merged panel; the source frames are
-        locals, freed on return."""
-
-        price_frames = self._load_frames()
-
-        # shares outstanding for the market-cap scaling shared by 13F / insider panels
-        shares = self._load_shares_out()
-
-        # Read actions once. 13F quantities use genuine share splits: a vendor's
-        # spinoff price factor does not change the parent's reported share count.
-        splits = self._load_source(Tables.prices_splits)
-        actions = level_actions(self._context, price_frames.universe)
-        basis = load_share_basis(self._context, price_frames.universe, self._bugfix, actions, splits)
-        share_splits = basis.actual.rename(columns={"value": "ratio"})
-        valuation_close = as_traded_close(price_frames.close_split, price_frames.level_factor, basis)
-
-        # What the two DERIVED panels consume. Filled by the source panels as they run,
-        # so nothing here re-reads a source -- see `sink.py`.
-        sink = ConditioningSink()
-
-        merger = PanelMerger(self._log, anchor=price_frames.skeleton())
-        # merger.add(
-        #     self._institutional_panel(price_frames, shares, share_splits, valuation_close, share_basis=basis),
-        #     "institutional (13F)",
-        #     "No institutional (13F) features built.",
-        # )
-        merger.add(
-            self._superinvestor_panel(price_frames, shares, share_splits, sink, valuation_close),
-            "superinvestor (elite 13F)",
-            "No superinvestor (elite 13F) features built.",
-        )
-        merger.add(
-            self._insider_panel(price_frames, shares, sink, splits, share_basis=basis, valuation_close=valuation_close),
-            "insider-trading",
-            "No insider-trading features built.",
-        )
-        merger.add(self._short_flow_panel(price_frames, shares, splits, sink, share_basis=basis), "short-flow", "No short-flow features built.")
-        merger.add(self._ownership_panel(price_frames, sink), "beneficial-ownership", "No beneficial-ownership features built.")
-        # merger.add(self._conditioning_panel(price_frames, splits, sink), "price-conditioning", "No price-conditioning features built.")
-        # merger.add(self._cross_source_panel(price_frames, sink), "cross-source", "No cross-source features built.")
-
-        return merger.to_long()
+        if write_part(self._store, Tables.cube_part_institutionals, panel, window, drop_empty=True) == COLUMNS_CHANGED:
+            self.run(full=True)
 
     def _warmup(self) -> int:
         override = self._cfg.get("incremental", {}).get("warmup_trading_days")
         return int(override) if override is not None else self._part.warmup_trading_days
 
-    # ---- inputs ---- #
-    def _load_frames(self) -> PriceFrames:
-        """⚠ NO `since` PARAMETER, unlike every sibling step. This part's grid is the FULL
-        trading calendar on both paths -- see the block in `build_panel`. Taking the argument
-        and always passing `None` would leave the next reader thinking it was a choice."""
-        return institutional_inputs.load_full_price_frames(
-            self._store,
-            self._context,
-            self._FIELDS,
+    def build_panel(self, full: bool = False) -> pd.DataFrame:
+        """Compute with full event history; run controls the independently rewritten tail."""
+        frames = capital_inputs.load_full_price_frames(self._store, self._context, self._FIELDS)
+        lines = self._store.load(
+            Tables.security_master,
+            columns=institutional_inputs.CLASS_LINE_COLUMNS,
+            where={"lineage_role": SECONDARY_CLASS, "canonical_company": list(frames.universe)},
+            optional=True,
         )
-
-    def _load_source(self, table: Table, universe: Sequence[str] | None = None) -> pd.DataFrame | None:
-        return institutional_inputs.load_source(self._store, self._log, table, universe)
-
-    def _load_insider(self, universe: Sequence[str]) -> pd.DataFrame | None:
-        return institutional_inputs.load_insider_transactions(self._store, self._log, universe)
-
-    def _load_shares_out(self) -> pd.DataFrame | None:
-        return institutional_inputs.load_shares_out(self._store, self._log)
-
-    # ---- panels ---- #
-    def _institutional_panel(
-        self,
-        price_frames: PriceFrames,
-        shares: pd.DataFrame | None,
-        splits: pd.DataFrame | None,
-        valuation_close: pd.DataFrame | None = None,
-        *,
-        share_basis: ShareBasis | None = None,
-    ) -> pd.DataFrame | None:
-        """The registry's eleven `ic_inst_*`: breadth SHARE (D28), split-restated share
-        accumulation, new-buyer / exit ratios, cluster buying, Herfindahl concentration, net
-        put/call sentiment, ownership %, value/market-cap weight and net $ flow -- stamped
-        point-in-time on public filing dates plus the configured settlement delay.
-        Daily changes compare eligible managers across adjacent report quarters, using only
-        the versions public by that day's snapshot."""
-
-        packet = institutional_inputs.load_filing_vintages(self._store, self._log, price_frames.trading_index.max())
-        if packet is None:
-            return None
-        filings, holdings = packet
-        holdings = attach_tickers(holdings, self._load_source(Tables.cusip_ticker_map), price_frames.universe)
-
-        cfg = self._institutionals_cfg()
-        return build_institutional_feature_panel(
-            price_frames,
-            holdings,
-            shares_out_history=shares,
-            splits=splits,
-            share_basis=share_basis,
-            valuation_close=valuation_close,
-            value_basis=cfg.get("value_basis"),
-            filings=filings,
-            break_pct=float(cfg.get("coverage_break_pct", COVERAGE_BREAK_DEFAULT)),
-            settle_trading_days=int(cfg.get("f13_settle_trading_days", F13_SETTLE_TRADING_DAYS)),
-            revision_min_move=float(cfg.get("f13_revision_min_move", F13_REVISION_MIN_MOVE)),
-        )
-
-    def _superinvestor_panel(
-        self,
-        frames: PriceFrames,
-        shares: pd.DataFrame | None,
-        splits: pd.DataFrame | None,
-        sink: ConditioningSink,
-        valuation_close: pd.DataFrame | None = None,
-    ) -> pd.DataFrame | None:
-        """Elite-manager 13F conviction (Dataroma superinvestors), layered ON TOP of the
-        all-filer features.
-
-        Reads immutable accession packets for the roster managers' whole books, because a
-        portfolio weight is only comparable across managers when its denominator is the whole book (README Finding 2: the index sleeve
-        is a median 47% of positions and swings 8%-100% by manager). `cusip_ticker_map`
-        resolves the S&P500 leg for the numerator without touching that denominator, and
-        `prices_splits` restates a prior quarter's share count so a 20-for-1 split is not
-        read as a 1,900% purchase."""
-
-        roster = roster_cik_union(self._context)  # 106 managers as of 2026-09-08
-        if not roster:
-            self._log.warning("`superinvestor_roster` has no snapshot -> elite 13F features skipped (run `data_extract superinvestors -F`).")
-            return None
-
-        packet = institutional_inputs.load_filing_vintages(
-            self._store, self._log, frames.trading_index.max(), sorted(roster), table=Tables.sec13f_manager_holdings
-        )
-        if packet is None:
-            self._log.warning("No elite-manager 13F holdings -> superinvestor features skipped.")
-            return None
-        filings, holdings = packet
-        self._log.info(
-            "Elite 13F books: %s rows across %s ever-listed managers (%s on today's roster)",
-            len(holdings),
-            len(roster),
-            len(roster_map_as_of(self._context)),
-        )
-
-        return build_superinvestor_feature_panel(
-            frames,
-            holdings,
-            roster,
-            shares_out_history=shares,
-            cusip_map=self._load_source(Tables.cusip_ticker_map),
-            splits=splits,
-            valuation_close=valuation_close,
-            value_basis=self._institutionals_cfg().get("value_basis"),
-            filings=filings,
-            selection=self._superinvestor_selector(),
-            decay_halflife=float(self._decay_halflife("super")),
-            stale_quarters=int(self._superinvestor_cfg().get("stale_quarters", 4)),
-            availability=self._availability,
-            sink=sink,
-        )
-
-    def _institutionals_cfg(self) -> dict:
-        """`build_cube.institutionals`, or an empty mapping."""
-        return self._cfg.get("institutionals", {})
-
-    def _superinvestor_cfg(self) -> dict:
-        """`build_cube.institutionals.superinvestor`, or an empty mapping."""
-        return self._institutionals_cfg().get("superinvestor", {})
-
-    def _superinvestor_selector(self):
-        """`sel(m, q)` as a callable over the manager state, or None for the flat 1.0.
-
-        A CALLABLE rather than a Series because the selection needs the state the panel
-        builder has just computed AND a roster accessor only this step can close over.
-
-        `build_cube.institutionals.superinvestor.selection` drives it:
-        `{mode: top_k|continuous|off, k, min_quarters, min_positions}`. Defaults are the
-        measured ones -- see `manager_selection`, where the whole-book basis and the absent
-        index-position floor are each worth ~1pp/yr on the corrected top-15 basket.
-
-        ⚠ `roster_as_of` RETURNS THE EMPTY SET BEFORE THE FIRST SNAPSHOT (2013-01-01), which
-        would zero every manager in 2011-2012 and delete two years of panel. Flooring the
-        lookup at the first snapshot extrapolates the oldest roster backwards, which is a
-        compromise, but the alternative -- today's roster -- is the exact bias D20 exists to
-        remove.
-        """
-        cfg = self._superinvestor_cfg().get("selection", {})
-        # ⚠ UNQUOTED `off` IN YAML IS THE BOOLEAN False, not the string -- PyYAML is 1.1 and
-        # `off`/`no`/`on` are all booleans there. Accept both spellings rather than let a
-        # `mode: off` that parsed as False fall through to `str(False) == "False"` and raise
-        # deep inside `elite_weight`.
-        raw = cfg.get("mode", "off")
-        mode = "off" if raw in (False, None, "") else str(raw).lower()
-        if mode in ("off", "none", "flat", "false"):
-            return None
-        first = first_snapshot_date(self._context)
-        if first is None:
-            self._log.warning("No roster snapshot -> selection falls back to flat 1.0.")
-            return None
-        k = int(cfg.get("k", 15))
-        min_quarters = int(cfg.get("min_quarters", 4))
-        min_positions = int(cfg.get("min_positions", 0))
-
-        # ⚠ MEMOISED. `roster_as_of` reloads the WHOLE roster table on every call, and
-        # `eligibility` asks it once per period -- 60 full-table reads per build without
-        # this. The cache is per-selector-call, so a rebuild still re-reads the table once.
-        cache: dict[pd.Timestamp, set[str]] = {}
-
-        def roster_at(q) -> set[str]:
-            key = max(pd.Timestamp(q), first)
-            if key not in cache:
-                cache[key] = roster_as_of(self._context, key)
-            return cache[key]
-
-        def selector(state: pd.DataFrame) -> pd.Series:
-            ok = eligibility(state, roster_at, min_quarters=min_quarters, min_positions=min_positions)
-            scored = manager_concentration_score(state, eligible=ok)
-            sel = elite_weight(scored, mode=mode, k=k)
-            # `avail` is attached by the panel builder before it calls this, so the
-            # diagnostic reads the same availability grid the selection was ranked on.
-            diag = selection_diagnostics(sel, state)
-            if not diag.empty:
-                settled = diag[diag["n_public"] >= k]
-                self._log.info(
-                    "elite selection (%s, k=%s): %s of %s manager-quarters eligible, live set %s-%s managers, median churn %s per filing date",
-                    mode,
-                    k,
-                    int(ok.sum()),
-                    len(ok),
-                    int(settled["n_selected"].min()) if len(settled) else 0,
-                    int(settled["n_selected"].max()) if len(settled) else 0,
-                    int(settled["churn"].median()) if len(settled) else 0,
-                )
-            return sel
-
-        return selector
-
-    def _decay_halflife(self, family: str) -> float:
-        """Trading-day half-life for `family`'s event decay, from
-        `build_cube.institutionals.decay_halflife`. A tunable number, so it lives in the
-        config and not in `constants/`."""
-        cfg = self._cfg.get("institutionals", {}).get("decay_halflife", {})
-        return float(cfg.get(family, 63))
+        shares, splits, basis, valuation_close, bars = capital_inputs.load_share_inputs(self._context, frames, self._bugfix, lines)
+        merger = PanelMerger(anchor=frames.skeleton())
+        merger.add(self._insider_panel(frames, shares, share_basis=basis, valuation_close=valuation_close), "insider-trading")
+        merger.add(self._short_flow_panel(frames, shares, splits, lines, bars, share_basis=basis), "short-flow")
+        merger.add(self._ownership_panel(frames), "beneficial-ownership")
+        return merger.to_long()
 
     def _insider_panel(
         self,
         frames: PriceFrames,
         shares: pd.DataFrame | None,
-        sink: ConditioningSink,
-        splits: pd.DataFrame | None = None,
         *,
         share_basis: ShareBasis | None = None,
         valuation_close: pd.DataFrame | None = None,
     ) -> pd.DataFrame | None:
-        """Fourteen Form 3/4/5 features: size-scaled open-market buying, cluster breadth,
-        CEO/CFO/director legs, the buyer's own-history surprise, and the 10b5-1 split of
-        selling. Point-in-time on the filing date. The dollar figures are scoped and repaired
-        by `insider_quality` before they are summed, never read raw from `value_usd`.
-
-        Absence reads as zero through the table's DB frontier (`schedule_complete_through`), the
-        same rule as 13D/13G; after it absence stays unknown. Only the companies' own history is
-        read: canonical-lineage rows, never an acquired company's."""
-        insider = self._load_insider(frames.universe)
+        insider = institutional_inputs.load_insider_transactions(self._store, frames.universe)
         if insider is None or insider.empty:
             return None
         last_session = pd.DatetimeIndex(frames.trading_index).max() if len(frames.trading_index) else None
         complete_through = institutional_frontiers.schedule_complete_through(self._store, Tables.insider_transactions, last_session)
-        if share_basis is None:
-            actions = level_actions(self._context, frames.universe)
-            share_basis = load_share_basis(self._context, frames.universe, self._bugfix, actions, splits)
-            valuation_close = as_traded_close(frames.close_split, frames.level_factor, share_basis)
         roles = institutional_inputs.load_insider_role_evidence(self._store, insider)
         return build_insider_feature_panel(
             frames,
@@ -417,7 +90,6 @@ class StepCubeInstitutionals(Step):
             decay_halflife=float(self._decay_halflife("insider")),
             availability=self._availability,
             complete_through=complete_through,
-            sink=sink,
             as_traded_quotes=valuation_close,
             role_evidence=roles,
             share_basis=share_basis,
@@ -428,50 +100,36 @@ class StepCubeInstitutionals(Step):
         frames: PriceFrames,
         shares: pd.DataFrame | None,
         splits: pd.DataFrame | None,
-        sink: ConditioningSink,
+        lines: pd.DataFrame | None,
+        bars: pd.DataFrame,
         *,
-        share_basis: ShareBasis | None = None,
+        share_basis: ShareBasis,
     ) -> pd.DataFrame | None:
-        """Volume-weighted RegSHO short-VOLUME ratios (5/20/60d), their self-history z, the
-        two price-conditional interactions and short turnover, plus SEC fails-to-deliver
-        (settlement stress) as a share of shares outstanding and of ADV20. RegSHO is lagged
-        one trading day; each FTD semi-monthly ZIP appears on its derived availability date."""
-        universe = sorted(set(map(str, frames.universe)))
-        symbol_tenure, ticker_ciks = institutional_inputs.load_symbol_lineage(self._store, self._log, universe)
-        # Both extractors resolve historical source symbols to today's canonical universe
-        # ticker before storage. Lineage is therefore a validation mask here, not a second
-        # relabelling pass.
-        short = self._load_source(Tables.short_interest, universe)
-        fails = self._load_source(Tables.sec_fails_to_deliver, universe)
-        ftd_stored_periods = self._store.distinct(Tables.sec_fails_to_deliver, "period") if fails is not None and not fails.empty else None
-        # Both numerators are class sums in reference shares, so the tape denominators sum the same classes.
-        classes = institutional_inputs.load_secondary_classes(self._store, self._log, universe, bugfix=load_bugfix(self._context.config_dir))
-        class_volume = None
-        if classes is not None:
-            class_volume, _ = secondary_class_volume(*classes, frames.trading_index)
+        symbol_tenure, ticker_ciks = institutional_inputs.load_symbol_lineage(self._store, frames.universe)
+        short = capital_inputs.load_source(self._store, Tables.short_interest, frames.universe)
+        fails, coverage = institutional_inputs.load_fails(self._store, frames.universe)
+        class_volume = secondary_class_volume(lines, bars, frames.trading_index)[0] if lines is not None else None
         return build_short_flow_feature_panel(
             frames,
             short,
             fails_history=fails,
+            ftd_coverage=coverage,
             ftd_cache_dir=self._context.paths["DATA_STORE"] / self._context.config.local.paths.fails_deliver,
-            ftd_stored_periods=ftd_stored_periods,
+            ftd_stored_periods=sorted(coverage["period"].unique()) if coverage is not None else None,
             shares_out_history=shares,
             splits=splits,
             symbol_tenure=symbol_tenure,
             ticker_ciks=ticker_ciks,
-            availability=self._availability,
-            sink=sink,
             class_volume=class_volume,
             share_basis=share_basis,
         )
 
-    def _ownership_panel(self, frames: PriceFrames, sink: ConditioningSink) -> pd.DataFrame | None:
-        """Schedule 13D activist (`ic_act_*`) and 13G passive-ownership (`ic_bo_*`) events.
-        `sec_13d_transactions` is deliberately not read -- see `ownership_features`'s module
-        docstring."""
-        sec_13d = self._load_source(Tables.sec_13d, frames.universe)
-        sec_13g = self._load_source(Tables.sec_13g, frames.universe)
+    def _ownership_panel(self, frames: PriceFrames) -> pd.DataFrame | None:
+        sec_13d = capital_inputs.load_source(self._store, Tables.sec_13d, frames.universe)
+        sec_13g = capital_inputs.load_source(self._store, Tables.sec_13g, frames.universe)
         last_session = pd.DatetimeIndex(frames.trading_index).max() if len(frames.trading_index) else None
+        complete_through_13d = institutional_frontiers.schedule_complete_through(self._store, Tables.sec_13d, last_session)
+        complete_through_13g = institutional_frontiers.schedule_complete_through(self._store, Tables.sec_13g, last_session)
         return build_ownership_feature_panel(
             frames,
             sec_13d,
@@ -479,23 +137,10 @@ class StepCubeInstitutionals(Step):
             decay_halflife_act=float(self._decay_halflife("act")),
             decay_halflife_bo=float(self._decay_halflife("bo")),
             availability=self._availability,
-            complete_through_13d=institutional_frontiers.schedule_complete_through(self._store, Tables.sec_13d, last_session),
-            complete_through_13g=institutional_frontiers.schedule_complete_through(self._store, Tables.sec_13g, last_session),
-            sink=sink,
+            complete_through_13d=complete_through_13d,
+            complete_through_13g=complete_through_13g,
         )
 
-    def _conditioning_panel(self, frames: PriceFrames, splits: pd.DataFrame | None, sink: ConditioningSink) -> pd.DataFrame | None:
-        """The `ic_sig_*` layer: days since each family's last disclosure and the price path
-        since, sector-residualized and vol-scaled. THE PANEL'S ONLY DAILY-MOVING FAMILY, and
-        the direct evidence for the two-layer architecture (report acceptance test #13)."""
-        return build_signal_conditioning_panel(
-            frames,
-            sink.events,
-            splits=splits,
-            excursion_lookback=int(self._institutionals_cfg().get("excursion_lookback", EXCURSION_LOOKBACK)),
-            frontiers=sink.frontiers,
-        )
-
-    def _cross_source_panel(self, frames: PriceFrames, sink: ConditioningSink) -> pd.DataFrame | None:
-        """The `ic_xs_*` layer: raw counts of observable independent source families."""
-        return build_cross_source_panel(frames, sink)
+    def _decay_halflife(self, family: str) -> float:
+        cfg = self._cfg.get("institutionals", {}).get("decay_halflife", {})
+        return float(cfg.get(family, 63))

@@ -648,23 +648,6 @@
   },
   "rows": 1955
  },
- "panel.cross_source": {
-  "cols": 4,
-  "columns": [
-   "date",
-   "f_ic_xs_bearish_available_family_count",
-   "f_ic_xs_bullish_available_family_count",
-   "ticker"
-  ],
-  "hash": "4c3256b19d3c0cd50a03fd82544c0ccb",
-  "per_column": {
-   "date": "cbfcfe9a40ab077b",
-   "f_ic_xs_bearish_available_family_count": "5d311807eeb3aabf",
-   "f_ic_xs_bullish_available_family_count": "7344db92a0c05ece",
-   "ticker": "20baf79a52b9d113"
-  },
-  "rows": 43010
- },
  "panel.dividend": {
   "cols": 13,
   "columns": [
@@ -2717,49 +2700,6 @@
    "f_ic_shortvol_ratio_5d": "a211975d2d869e6e",
    "f_ic_shortvol_ratio_60d": "c35df12a89f0637b",
    "f_ic_shortvol_turnover_20d": "9b825b7ecbed6827",
-   "ticker": "20baf79a52b9d113"
-  },
-  "rows": 43010
- },
- "panel.signal_conditioning": {
-  "cols": 17,
-  "columns": [
-   "date",
-   "f_ic_sig_act_age_days",
-   "f_ic_sig_act_resid_ret_since",
-   "f_ic_sig_act_ret_since",
-   "f_ic_sig_act_vol_scaled_move",
-   "f_ic_sig_insider_age_days",
-   "f_ic_sig_insider_max_dd_since_buy",
-   "f_ic_sig_insider_max_runup_since_buy",
-   "f_ic_sig_insider_price_vs_buy",
-   "f_ic_sig_insider_resid_ret_since",
-   "f_ic_sig_insider_ret_since",
-   "f_ic_sig_insider_vol_scaled_move",
-   "f_ic_sig_super_age_days",
-   "f_ic_sig_super_resid_ret_since",
-   "f_ic_sig_super_ret_since",
-   "f_ic_sig_super_vol_scaled_move",
-   "ticker"
-  ],
-  "hash": "4cc551556dfdca785a84f44a4e6eb629",
-  "per_column": {
-   "date": "cbfcfe9a40ab077b",
-   "f_ic_sig_act_age_days": "5221ad71527432cc",
-   "f_ic_sig_act_resid_ret_since": "d8e00af3eae52608",
-   "f_ic_sig_act_ret_since": "5a475d0bfbfed2fb",
-   "f_ic_sig_act_vol_scaled_move": "177f1d83b11c05d4",
-   "f_ic_sig_insider_age_days": "b01c4d2b3c5b5f99",
-   "f_ic_sig_insider_max_dd_since_buy": "4f52b7bb9accef15",
-   "f_ic_sig_insider_max_runup_since_buy": "ccfc33c3e1a11774",
-   "f_ic_sig_insider_price_vs_buy": "2f1d108f3e14c1f2",
-   "f_ic_sig_insider_resid_ret_since": "7f150fb048b05a47",
-   "f_ic_sig_insider_ret_since": "2f9d12cab94a65e7",
-   "f_ic_sig_insider_vol_scaled_move": "d3a9a221ad347d2e",
-   "f_ic_sig_super_age_days": "7ac8ad7fc3d030f9",
-   "f_ic_sig_super_resid_ret_since": "4a92cc921d92b319",
-   "f_ic_sig_super_ret_since": "759de1e996c78ddb",
-   "f_ic_sig_super_vol_scaled_move": "eea5738658b322a4",
    "ticker": "20baf79a52b9d113"
   },
   "rows": 43010

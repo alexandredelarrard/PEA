@@ -1,5 +1,5 @@
 """
-holdings_clean.py  (src/data_aggregate/utils/institutionals/holdings_clean.py)
+holdings_clean.py  (src/data_aggregate/sec_thirteen/utils/holdings_clean.py)
 -----------------------------------------------------------------------------
 The ONE 13F cleaner, for BOTH holdings tables.
 
@@ -118,8 +118,8 @@ def clean_holdings(
 
     `filing_band` is `(max_early_days, max_late_days)` against the deadline, or `None` for no
     band. OPT-IN rather than defaulted, and that is the point of the argument: the band is a
-    measured property of `sec13f_hr` (`F13_MAX_EARLY_DAYS` / `F13_MAX_LATE_DAYS` carry the
-    table), and `sec13f_manager_holdings` is a different population that must be measured on
+    measured property of `sec13f_hr` (45 days early / 60 days late), and
+    `sec13f_manager_holdings` is a different population that must be measured on
     its own terms before it inherits a cut sized on someone else's.
 
     ⚠ THE BAND CANNOT BE APPLIED TO A TABLE WITH HOLE QUARTERS. It is a LATE filter, so it

@@ -45,7 +45,7 @@ def test_real_total_return_target_and_price_isolation(
     assert len(rows) >= 249
     wide = price_step.StepCubePrices._pivot_fields(rows)
     before = {field: frame.copy() for field, frame in wide.items()}
-    assert apply_return_seams(wide, blob, lambda *args: None) == 1
+    assert apply_return_seams(wide, blob) == 1
     returns = wide["close_total"].pct_change(fill_method=None)
     original = before["close_total"].pct_change(fill_method=None)
     assert cast(float, returns.at[when, ticker]) + 1 == pytest.approx(target, rel=1e-12)
@@ -67,7 +67,7 @@ def test_real_total_return_target_and_price_isolation(
     assert measure_seams(wide["close_total"], blob, lambda *args: None) == {}
     assert measure_quote_seams(wide["close_split"], blob, lambda *args: None) == {ticker: [when]}
     healed = wide["close_total"].copy()
-    assert apply_return_seams(wide, blob, lambda *args: None) == 0
+    assert apply_return_seams(wide, blob) == 0
     pd.testing.assert_frame_equal(healed, wide["close_total"], check_exact=True)
     with pytest.raises(ValueError, match="rebuild historical prices"):
         measure_seams(before["close_total"], blob, lambda *args: None)
@@ -132,8 +132,8 @@ def test_small_total_repair_applies_once_inside_defect_tolerance() -> None:
     frame = pd.DataFrame({"TEST": [100.0, 100.0, 100.2, 100.3, 100.4]}, index=index)
     blob = {"return_seams": {"TEST": [{"date": str(index[2].date()), "fields": ["close_total"], "expect_step": 1.002, "target_step": 1.001}]}}
     wide = {"close_total": frame}
-    assert apply_return_seams(wide, blob, lambda *args: None) == 1
+    assert apply_return_seams(wide, blob) == 1
     first = frame.copy()
-    assert apply_return_seams(wide, blob, lambda *args: None) == 0
+    assert apply_return_seams(wide, blob) == 0
     pd.testing.assert_frame_equal(first, frame, check_exact=True)
     print("SANITY: a 0.1% repair inside the 0.5% defect band applies once; precise target recognition makes the second call a no-op.")

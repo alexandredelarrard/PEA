@@ -16,17 +16,16 @@ import logging
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.institutionals.value_basis import (
+from src.data_aggregate.sec_thirteen.utils.value_basis import (
     ABSTAINED,
     DIVIDED,
     KEPT,
     MULTIPLIED,
-    _period_close,
-    as_traded_close,
     log_register,
     nullable_value_to_daily,
     repair_value_basis,
 )
+from src.data_aggregate.utils.common.level_basis import _period_close, as_traded_close
 
 PERIOD = pd.Timestamp("2021-12-31")
 CLOSE = 336.0

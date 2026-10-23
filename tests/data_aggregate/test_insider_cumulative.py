@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.institutionals.availability import InstitutionalAvailability
+from src.data_aggregate.utils.common.availability import InstitutionalAvailability
 from src.data_aggregate.utils.institutionals.insider_features import build_insider_feature_panel
 from src.data_aggregate.utils.institutionals.insider_quality import officer_role
 from src.data_store.schema import Tables

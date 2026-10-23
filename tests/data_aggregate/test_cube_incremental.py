@@ -19,8 +19,6 @@ incremental run able to replace that row.
 from __future__ import annotations
 
 import logging
-from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, cast
 
 import numpy as np
@@ -30,6 +28,7 @@ from src.data_aggregate.transformers import step_cube_institutionals
 from src.data_aggregate.transformers.step_cube_governance import REFRESH_TRADING_DAYS as GOVERNANCE_REFRESH
 from src.data_aggregate.transformers.step_cube_governance import StepCubeGovernance
 from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
+from src.data_aggregate.utils.common import inputs as capital_inputs
 from src.data_aggregate.utils.common.incremental import (
     PART_REFRESH_TRADING_DAYS,
     PartWindow,
@@ -188,8 +187,6 @@ def test_per_part_warmup_covers_binding_lookback():
     # `short_interest` -> `short_flow` is a RENAME, not a loss: the panel now builds from RegSHO
     # daily short VOLUME and fails-to-deliver, and `ic_shortvol_days_to_cover` went with the old
     # name because days-to-cover needs FINRA short-INTEREST positions this repo does not fetch.
-    # `conditioning` and `cross_source` are the two DERIVED panels added in Phase 2.6/2.7; they
-    # read the `ConditioningSink` rather than a source table, but they still own a daily-grid
     # look-back (the 252-day excursion window is one of the two that bind this part's warm-up).
     #
     # `ownership` was ADDED to the set on 2026-09-12 and that is a DECLARATION, not a new panel:
@@ -223,8 +220,6 @@ def test_per_part_warmup_covers_binding_lookback():
         "superinvestor",
         "insider",
         "short_flow",
-        "conditioning",
-        "cross_source",
         "ownership",
         "earnings_call_sentiment",
         "earnings_call_embedding",
@@ -379,7 +374,7 @@ def _purchase(accession: str, ticker: str, owner: str, filed: pd.Timestamp) -> d
 
 
 def _run_institutionals(monkeypatch, store: _StatefulGovernanceStore, calendar: pd.DatetimeIndex, insider: pd.DataFrame, *, full: bool) -> None:
-    """Run the real `StepCubeInstitutionals.run` on `calendar` with only the insider panel fed."""
+    """Exercise the real part lifecycle with the retained insider feature builder."""
     tickers = ["AAA", "BBB"]
     close = pd.DataFrame(100.0, index=calendar, columns=tickers)
     shares = pd.DataFrame(
@@ -389,24 +384,8 @@ def _run_institutionals(monkeypatch, store: _StatefulGovernanceStore, calendar: 
     monkeypatch.setattr(step_cube_institutionals, "load_trading_calendar", lambda _store: calendar)
     step = cast(Any, object.__new__(StepCubeInstitutionals))
     step._store, step._log, step._cfg = store, logging.getLogger("test"), {}
-    step._bugfix = {}
-    step._context = SimpleNamespace(store=store, log=step._log, config_dir=Path(__file__).resolve().parents[2] / "configs")
     step._part = PART_BY_NAME["cube_part_institutionals"]
-    step._load_frames = lambda: frames
-    step._load_shares_out = lambda: shares
-    step._load_source = lambda table, universe=None: None
-    for panel in (
-        "_institutional_panel",
-        "_superinvestor_panel",
-        "_short_flow_panel",
-        "_ownership_panel",
-        "_conditioning_panel",
-        "_cross_source_panel",
-    ):
-        setattr(step, panel, lambda *args, **kwargs: None)
-    step._insider_panel = lambda f, s, sink, splits=None, share_basis=None, valuation_close=None: build_insider_feature_panel(
-        f, insider, shares_out_history=s, sink=sink, share_basis=share_basis
-    )
+    step.build_panel = lambda full=False: build_insider_feature_panel(frames, insider, shares_out_history=shares)
     step.run(full=full)
 
 
@@ -638,128 +617,38 @@ def test_read_projection_covers_builder_needs():
     print("  sec13f_hr (~21.7M rows) drops the cusip-era bloat; a table declaring no read_columns loads in full. Validated.")
 
 
-def test_step_forwards_the_registry_projection_to_the_store():
-    """`_load_source` must hand the store `project=True` and nothing else.
+def test_step_forwards_the_registry_projection_to_the_store() -> None:
+    calls = []
 
-    The step used to resolve the projection itself and pass `columns=`; the registry now owns
-    it, so what this asserts is that the step DELEGATES -- `project=True` and no column list of
-    its own, for a projected table and an unprojected one alike.
+    class Store:
+        def iter_load(self, table, **kwargs):
+            calls.append((table, kwargs))
+            return iter([pd.DataFrame({"ticker": ["AAPL"]})])
 
-    `prices_splits` is the unprojected case ON PURPOSE: it is one of the two tables
-    `_load_source` really reads whole (`cusip_ticker_map` is the other), so this pins that the
-    switch to `project=True` did not narrow them. Every OTHER table the step reads declares
-    `read_columns`, and each one reproduces its pre-switch column list exactly.
-    """
-    step = object.__new__(StepCubeInstitutionals)
-    seen: dict[str, dict] = {}
-    live = {"sec13f_hr": list(Tables.sec13f_hr.read_columns), "prices_splits": ["ticker", "date", "split_ratio"]}
+    capital_inputs.load_source(Store(), Tables.short_interest)
+    assert calls == [(Tables.short_interest, {"project": True, "where": None})]
+    print("SANITY: shared source reader forwards the registry projection through one payload stream.")
 
-    class _Store:
-        """Resolves through `name_of` exactly as `DataStore` does, because the step hands it
-        `Table` objects rather than name strings -- a fake keyed on the attribute name would
-        re-admit the bug this signature change fixed."""
 
-        def exists(self, table):
-            return name_of(table) in live
-
-        def columns(self, table):
-            return live.get(name_of(table), [])
-
-        def distinct(self, table, column, **kw):
-            return []
-
-        def load(self, table, columns=None, *, project=False, where=None, **kw):
-            seen[name_of(table)] = {"columns": columns, "project": project, "where": where}
-            cols = projection(table, self.columns(table)) if project else columns
-            return pd.DataFrame(columns=cols or ["ticker"])
-
-    class _Ctx:
-        store = _Store()
-
-    step._store = cast(DataStore, _Ctx.store)
-    step._log = logging.getLogger("test")
-    step._load_source(Tables.sec13f_hr)
-    step._load_source(Tables.prices_splits)  # declares no read_columns
-
-    for name, call in seen.items():
-        assert call["project"] is True, f"{name}: step must delegate the projection"
-        assert call["columns"] is None, f"{name}: step must not pass its own column list"
-    assert projection(Tables.sec13f_hr, live["sec13f_hr"]) == live["sec13f_hr"]
-    assert projection(Tables.prices_splits, live["prices_splits"]) is None
-
-    print()
-    print("=== SANITY: the step delegates the projection ===")
-    print(f"  calls seen: {seen}")
-    print(
-        "  CONCLUSION: `_load_source` passes `project=True` for every table and resolves no "
-        "column list of its own, so the registry is the single declaration. Validated."
+def test_universe_scope_is_pushed_down_to_the_read(sqlite_store, monkeypatch) -> None:
+    sqlite_store.save(
+        Tables.short_interest,
+        pd.DataFrame(
+            {"date": pd.to_datetime(["2024-01-02"] * 2), "ticker": ["AAPL", "OUTSIDE"], "short_volume": [10.0, 99.0], "total_volume": [100.0, 100.0]}
+        ),
     )
+    calls = []
+    original = sqlite_store.iter_load
 
+    def capture(table, **kwargs):
+        calls.append(kwargs)
+        return original(table, **kwargs)
 
-def test_universe_scope_is_pushed_down_to_the_read():
-    """The universe cut must reach the DATABASE as a `WHERE ticker IN (...)`, not the frame.
-
-    The step used to load every in-DB ticker and discard the off-universe ones in pandas. The
-    cut itself is about `_xs` (D26: a same-day percentile ranks a ticker against every other
-    ticker on that date, and in the cube that set is the universe) -- but doing it after the
-    read meant paying for ~21.7M `sec13f_hr` rows in order to throw some away.
-
-    Three things are pinned here, and the third is the one a refactor breaks silently:
-      (a) a table WITH a ticker column and a universe -> `where` carries the sorted ticker list
-      (b) a table with NO `ticker_col` (`sec13f_manager_holdings`) -> no `where` at all, rather
-          than a `WHERE None IN (...)`. The guard is the REGISTRY's `ticker_col`, because the
-          frame does not exist yet -- `"ticker" in df.columns` has nothing to look at
-      (c) the off-universe DIAGNOSTIC survives, as its own cheap `SELECT DISTINCT ticker`.
-          Once the rows never arrive, the report cannot be taken from the frame, and losing it
-          would mean the S&P 500 membership boundary moves with nothing saying so.
-    """
-    step = object.__new__(StepCubeInstitutionals)
-    calls: dict[str, dict] = {}
-    distincts: list[tuple[str, str]] = []
-    universe = ["AAPL", "MSFT", "NVDA"]
-
-    class _Store:
-        def exists(self, table):
-            return True
-
-        def columns(self, table):
-            return list(resolve(table).read_columns) or ["cik", "period", "cusip"]
-
-        def distinct(self, table, column, **kw):
-            distincts.append((name_of(table), column))
-            return universe + ["DELISTED_A", "DELISTED_B"]
-
-        def load(self, table, columns=None, *, project=False, where=None, **kw):
-            calls[name_of(table)] = {"where": where, "project": project}
-            return pd.DataFrame({"ticker": universe})
-
-    class _Ctx:
-        store = _Store()
-
-    step._store = cast(DataStore, _Ctx.store)
-    step._log = logging.getLogger("test")
-
-    step._load_source(Tables.sec13f_hr, universe)  # (a) has ticker_col
-    step._load_source(Tables.sec13f_manager_holdings, universe)  # (b) ticker_col is None
-    step._load_source(Tables.prices_splits)  # no universe -> no where
-
-    assert calls["sec13f_hr"]["where"] == {"ticker": sorted(universe)}, calls["sec13f_hr"]
-    assert Tables.sec13f_manager_holdings.ticker_col is None
-    assert calls["sec13f_manager_holdings"]["where"] is None
-    assert calls["prices_splits"]["where"] is None
-    # (c) the diagnostic fired for the ticker'd table only, and only once
-    assert distincts == [("sec13f_hr", "ticker")], distincts
-
-    print()
-    print("=== SANITY: the universe cut is a SQL predicate, not a pandas mask ===")
-    for name, call in calls.items():
-        print(f"  {name:<26} where={call['where']}")
-    print(f"  SELECT DISTINCT queries issued: {distincts}")
-    print(
-        "  CONCLUSION: the in-universe read carries `WHERE ticker IN (...)`, the table with "
-        "no ticker column carries none, and the off-universe report survives as one cheap "
-        "DISTINCT instead of a 21.7M-row load-and-discard. Validated."
-    )
+    monkeypatch.setattr(sqlite_store, "iter_load", capture)
+    result = capital_inputs.load_source(sqlite_store, Tables.short_interest, ["AAPL"])
+    assert result is not None and set(result["ticker"]) == {"AAPL"}
+    assert calls == [{"project": True, "where": {"ticker": ["AAPL"]}}]
+    print("SANITY: source universe filter reaches the store once; outside names never enter the panel.")
 
 
 def test_every_projected_table_resolves_to_a_registered_physical_table():

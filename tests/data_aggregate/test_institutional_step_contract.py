@@ -1,582 +1,173 @@
-# pyright: reportMissingImports=false
+"""Separate source ownership, single payload reads and daily persistence contracts."""
+
 from __future__ import annotations
 
 import logging
+from collections import Counter
+from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 
 import pandas as pd
 import pytest
+from omegaconf import OmegaConf
 
-import src.data_aggregate.transformers.step_cube_institutionals as step_module
 from src.constants.constants import DEFAULT_CONFIG_DIR
 from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
-from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PartWindow, write_part
-from src.data_aggregate.utils.institutionals.cross_source_features import EMISSION as CROSS_SOURCE_EMISSION
-from src.data_aggregate.utils.institutionals.insider_features import EMISSION as INSIDER_EMISSION
-from src.data_aggregate.utils.institutionals.institutional_features import EMISSION as INSTITUTIONAL_EMISSION
-from src.data_aggregate.utils.institutionals.ownership_features import EMISSION as OWNERSHIP_EMISSION
-from src.data_aggregate.utils.institutionals.short_flow_features import EMISSION as SHORT_FLOW_EMISSION
-from src.data_aggregate.utils.institutionals.signal_conditioning import EMISSION as CONDITIONING_EMISSION
-from src.data_aggregate.utils.institutionals.sink import ConditioningSink
-from src.data_aggregate.utils.institutionals.superinvestor_features import EMISSION as SUPERINVESTOR_EMISSION
+from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecThirteen
+from src.data_aggregate.utils.common import inputs as capital_inputs
+from src.data_aggregate.utils.common.price_frames import PriceFrames
 from src.data_store.schema import Tables
+from src.utils.price_adjustments import resolve_share_events
 
 
-def _bare_step() -> StepCubeInstitutionals:
-    step = object.__new__(StepCubeInstitutionals)
-    cast(Any, step)._log = logging.getLogger(__name__)
-    cast(Any, step)._bugfix = {}
-    return step
-
-
-def test_final_taxonomy_is_raw_only_without_unproved_peer_legs() -> None:
-    emissions = (
-        CROSS_SOURCE_EMISSION,
-        INSIDER_EMISSION,
-        INSTITUTIONAL_EMISSION,
-        OWNERSHIP_EMISSION,
-        SHORT_FLOW_EMISSION,
-        CONDITIONING_EMISSION,
-        SUPERINVESTOR_EMISSION,
-    )
-    declared = {name: mode for family in emissions for name, mode in family.items()}
-    peer_features = {name for name, mode in declared.items() if mode == "raw+peers"}
-    removed = {
-        "ic_act_campaign_age_days",
-        "ic_act_purpose_board",
-        "ic_act_purpose_strategic",
-        "ic_bo_holder_count",
-        "ic_ftd_pct_so",
-        "ic_ftd_z252",
-        "ic_insider_buy_shares_so_180d",
-        "ic_inst_flow_to_mcap",
-        "ic_shortvol_ratio_z252",
-        "ic_super_flow_to_mcap",
-        "ic_super_exit_after_top10",
-        "ic_xs_bearish_family_ratio",
-        "ic_xs_bullish_actor_count",
-        "ic_xs_bullish_family_ratio",
-        "ic_xs_conflict_ratio",
-    }
-
-    assert len(declared) == sum(map(len, emissions)), "feature names must be unique across institutional families"
-    assert set(declared.values()) == {"raw"}
-    assert peer_features == set()
-    assert removed.isdisjoint(declared)
-    assert len(declared) == 72
-    assert sum(1 if mode == "raw" else 2 for mode in declared.values()) == 72
-    print(
-        "SANITY: the final schema declares 72 unique characteristics / 72 legs, all raw; "
-        "both provisional peer legs were removed because target/OOS evidence was unavailable."
+def context(store: Any, path: Path) -> SimpleNamespace:
+    config = OmegaConf.create({"build_cube": {}, "local": {"paths": {"fails_deliver": "ftd"}}})
+    return SimpleNamespace(
+        store=store, log=logging.getLogger(__name__), config=config, config_dir=Path(DEFAULT_CONFIG_DIR), paths={"DATA_STORE": path}
     )
 
 
-def test_input_loaders_keep_full_price_calendar_and_exact_share_projection(monkeypatch: pytest.MonkeyPatch) -> None:
-    step = _bare_step()
-    config = object()
-    context = object()
-    peers = {"AAA": {"BBB": 1.0}}
-    price_frames = object()
-    shares = pd.DataFrame(
-        {
-            "ticker": ["AAA"],
-            "as_of": [pd.Timestamp("2026-01-02")],
-            "sharesOutstanding": [100.0],
-            "sharesOutstandingPit": [90.0],
-        }
+def seed_prices(store: Any, periods: int = 40) -> pd.DatetimeIndex:
+    days = pd.bdate_range("2024-01-02", periods=periods, name="date")
+    store.replace(
+        Tables.cube_part_prices,
+        pd.DataFrame({"date": days, "ticker": "AAA", "close_split": 100.0, "close_total": 100.0, "volume": 1000.0, "level_factor": 1.0}),
     )
-    calls: dict[str, Any] = {}
-
-    class _Store:
-        def load(self, table: object, columns: list[str], *, optional: bool) -> pd.DataFrame:
-            calls["shares"] = {"table": table, "columns": columns, "optional": optional}
-            return shares
-
-    store = _Store()
-    fake_step = cast(Any, step)
-    fake_step._context = context
-    fake_step._config = config
-    fake_step._store = store
-
-    def load_peers(actual_context: object) -> dict[str, dict[str, float]]:
-        calls["peers"] = {"context": actual_context}
-        return peers
-
-    def load_prices(actual_store: object, *, peers: object, fields: object, since: object) -> object:
-        calls["prices"] = {"store": actual_store, "peers": peers, "fields": fields, "since": since}
-        return price_frames
-
-    monkeypatch.setattr(step_module.institutional_inputs, "load_peers_or_raise", load_peers)
-    monkeypatch.setattr(step_module.institutional_inputs, "load_price_frames", load_prices)
-
-    assert step._load_frames() is price_frames
-    assert step._load_shares_out() is shares
-    assert calls == {
-        "peers": {"context": context},
-        "prices": {
-            "store": store,
-            "peers": peers,
-            "fields": ("close_split", "close_total", "volume", "level_factor", "sector_ret", "ret"),
-            "since": None,
-        },
-        "shares": {
-            "table": Tables.fundamentals_history,
-            "columns": ["ticker", "as_of", "sharesOutstanding", "sharesOutstandingPit"],
-            "optional": True,
-        },
-    }
-    print("SANITY: price loading kept the full calendar and six exact fields; shares loaded both required bases with an optional read.")
+    return days
 
 
-def test_short_flow_step_needs_only_ftd_rows_and_zip_cache(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-    step = _bare_step()
-    fake_step = cast(Any, step)
+def test_institutionals_emits_only_three_source_panels(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    days = seed_prices(sqlite_store)
+    ctx = context(sqlite_store, tmp_path)
+    step = StepCubeInstitutionals(ctx, ctx.config)
+    monkeypatch.setattr(capital_inputs, "load_peers_or_raise", lambda ctx: {})
+    calls: list[str] = []
 
-    class _Store:
-        def distinct(self, table: object, column: str) -> list[str]:
-            assert table is Tables.sec_fails_to_deliver and column == "period"
-            return ["202608b", "202609a"]
+    def panel(name: str) -> pd.DataFrame:
+        calls.append(name)
+        return pd.DataFrame({"date": days, "ticker": "AAA", "f_" + name: 0.0})
 
-    fake_step._store = _Store()
-    fake_step._context = SimpleNamespace(
-        paths={"DATA_STORE": tmp_path},
-        config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(fails_deliver="sec_fails_to_deliver"))),
-        config_dir=DEFAULT_CONFIG_DIR,
-    )
-    fake_step._availability = None
-    calls: list[object] = []
-    fails = pd.DataFrame({"date": [pd.Timestamp("2024-04-15")], "ticker": ["AAPL"], "period": ["202404b"], "fails_quantity": [5.0]})
-
-    def load_source(table: object, universe: object = None) -> pd.DataFrame | None:
-        calls.append(table)
-        return fails if table is Tables.sec_fails_to_deliver else None
-
-    def build_panel(frames: object, short: object, **kwargs: Any) -> pd.DataFrame:
-        assert short is None
-        assert kwargs["fails_history"] is fails
-        assert kwargs["ftd_cache_dir"] == tmp_path / "sec_fails_to_deliver"
-        assert kwargs["ftd_stored_periods"] == ["202608b", "202609a"]
-        assert kwargs["class_volume"]["AAPL"].tolist() == [10.0, 10.0]
-        return pd.DataFrame({"date": [pd.Timestamp("2024-05-15")], "ticker": ["AAPL"]})
-
-    fake_step._load_source = load_source
-    days = pd.DatetimeIndex(["2024-05-14", "2024-05-15"])
-    class_lines = pd.DataFrame(
-        {"canonical_company": ["AAPL"], "market_symbol": ["AAPL-B"], "conversion_ratio": [2.0], "valid_from": ["1900-01-01"], "valid_to": [None]}
-    )
-    class_bars = pd.DataFrame({"ticker": "AAPL-B", "date": days, "volume": 5.0})
-    monkeypatch.setattr(step_module.institutional_inputs, "load_symbol_lineage", lambda *args: (None, None))
-    registers: list[object] = []
-    monkeypatch.setattr(
-        step_module.institutional_inputs,
-        "load_secondary_classes",
-        lambda *args, bugfix=None: registers.append(bugfix) or (class_lines, class_bars),
-    )
-    monkeypatch.setattr(step_module, "build_short_flow_feature_panel", build_panel)
-    out = step._short_flow_panel(SimpleNamespace(universe=["AAPL"], trading_index=days), None, None, cast(Any, object()))
-
-    assert out is not None and len(out) == 1
-    assert calls == [Tables.short_interest, Tables.sec_fails_to_deliver]
-    assert len(registers) == 1 and "BRK-A" in cast(dict, registers[0])["volume_scale"], "the class read gets the shipped price register"
-    print(
-        "SANITY: the institutionals step builds FTD from source rows and the ZIP cache path with no separate metadata read, "
-        "and hands the builder the secondary-class volume (AAPL-B 5 x ratio 2 = 10 a day)."
-    )
+    monkeypatch.setattr(step, "_insider_panel", lambda *args, **kwargs: panel("ic_insider_test"))
+    monkeypatch.setattr(step, "_short_flow_panel", lambda *args, **kwargs: panel("ic_shortvol_test"))
+    monkeypatch.setattr(step, "_ownership_panel", lambda *args, **kwargs: panel("ic_act_test"))
+    result = step.build_panel()
+    assert step._store is sqlite_store
+    assert calls == ["ic_insider_test", "ic_shortvol_test", "ic_act_test"]
+    assert set(result.columns) == {"date", "ticker", *("f_" + name for name in calls)}
+    assert not result.duplicated(["date", "ticker"]).any()
+    print("SANITY: institutionals merges exactly insider, short-flow and ownership on price keys.")
 
 
-def test_symbol_lineage_loader_projects_current_issuers() -> None:
-    calls: list[dict[str, Any]] = []
+@pytest.mark.parametrize(
+    "cls, table", [(StepCubeInstitutionals, Tables.cube_part_institutionals), (StepCubeSecThirteen, Tables.cube_part_sec_thirteen)]
+)
+def test_each_daily_part_rewrites_its_own_inclusive_seven_session_tail(
+    sqlite_store: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    cls: type,
+    table: Any,
+) -> None:
+    days = seed_prices(sqlite_store)
+    ctx = context(sqlite_store, tmp_path)
+    step = cls(ctx, ctx.config)
+    expected = pd.DataFrame({"date": days, "ticker": "AAA", "f_test": pd.Series(range(len(days)), dtype="float32")})
+    initial = expected.iloc[:31].copy()
+    cutoff = days[30 - 7]
+    initial.loc[initial["date"] >= cutoff, "f_test"] = -1.0
+    sqlite_store.replace(table, initial)
+    monkeypatch.setattr(step, "build_panel", lambda full=False: expected.copy())
+    step.run()
+    first = sqlite_store.load(table).sort_values(["date", "ticker"]).reset_index(drop=True)
+    pd.testing.assert_frame_equal(first, expected, check_dtype=False)
+    step.run()
+    second = sqlite_store.load(table).sort_values(["date", "ticker"]).reset_index(drop=True)
+    pd.testing.assert_frame_equal(first, second)
+    assert len(initial.loc[initial["date"] >= cutoff]) == 8
+    other = Tables.cube_part_sec_thirteen if table == Tables.cube_part_institutionals else Tables.cube_part_institutionals
+    assert not sqlite_store.exists(other)
+    print(f"SANITY: {table.name} rewrites last-7 inclusively (8 stored dates), appends and reruns idempotently.")
 
-    class _Store:
-        def load(self, table: object, **kwargs: Any) -> pd.DataFrame:
-            calls.append({"table": table, **kwargs})
-            if table is Tables.sp500_tickers:
-                return pd.DataFrame({"ticker": ["FISV"], "cik": [798354]})
-            return pd.DataFrame(
-                {
-                    "symbol": ["FISV", "FI"],
-                    "issuer_cik": ["0000798354", "0000798354"],
-                    "valid_from": ["2006-01-03", "2023-06-07"],
-                    "valid_to": ["2023-06-07", "2025-11-11"],
-                }
-            )
 
-    tenure, roster = step_module.institutional_inputs.load_symbol_lineage(cast(Any, _Store()), logging.getLogger(__name__), ["FISV"])
+@pytest.mark.parametrize("cls", [StepCubeInstitutionals, StepCubeSecThirteen])
+def test_builder_payload_reads_are_unique_with_optional_sources_absent(
+    sqlite_store: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    cls: type,
+) -> None:
+    seed_prices(sqlite_store)
+    ctx = context(sqlite_store, tmp_path)
+    step = cls(ctx, ctx.config)
+    monkeypatch.setattr(capital_inputs, "load_peers_or_raise", lambda ctx: {})
+    reads: Counter[str] = Counter()
+    for method in ("load", "iter_load"):
+        original = getattr(sqlite_store, method)
 
-    assert tenure is not None and roster is not None
-    assert calls[0]["where"] == {"ticker": ["FISV"]}
-    assert calls[1]["where"] == {"issuer_cik": ["0000798354"], "source": ["form345", "manual"]}
-    print("SANITY: the input layer projected FISV's current CIK and its FI/FISV lineage without relabelling canonical source rows twice.")
+        def capture(table: Any, *args: Any, _original: Any = original, **kwargs: Any) -> Any:
+            reads[table.name] += 1
+            return _original(table, *args, **kwargs)
+
+        monkeypatch.setattr(sqlite_store, method, capture)
+    result = step.build_panel()
+    assert set(result.columns) == {"date", "ticker"}
+    assert reads and max(reads.values()) == 1, reads
+    print(f"SANITY: {cls.__name__} reads each payload once, including absent optional sources.")
 
 
-def test_symbol_lineage_loader_reads_only_form345_and_manual_tenure(sqlite_store: Any) -> None:
-    """E3: cover-page `dei` rows in `symbol_tenure` stay out of the proven-tenure mask, so short-flow features do not move."""
-    sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["FISV"], "cik": ["0000798354"]}))
+def test_ftd_step_retains_global_zip_dates_from_one_stream(sqlite_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    idx = pd.bdate_range("2023-12-01", "2024-02-14", name="date")
     sqlite_store.save(
-        Tables.symbol_tenure,
+        Tables.sec_fails_to_deliver,
         pd.DataFrame(
             {
-                "symbol": ["FISV", "FI", "FI", "FISV"],
-                "issuer_cik": ["0000798354"] * 4,
-                "valid_from": ["2006-01-03", "2023-06-07", "2023-06-01", "2009-01-01"],
-                "valid_to": ["2023-06-07", "2025-11-11", "2025-12-01", "2026-01-01"],
-                "n_filings": [500, 40, 12, 60],
-                "source": ["form345", "manual", "dei", "dei"],
-                "evidence_period": ["", "", "2025q4", "2025q4"],
+                "date": pd.to_datetime(["2024-01-02", "2024-01-12"]),
+                "ticker": ["AAA", "OTHER"],
+                "fails_quantity": [100.0, 50.0],
+                "period": ["202401a", "202401a"],
             }
         ),
     )
+    ctx = context(sqlite_store, tmp_path)
+    step = StepCubeInstitutionals(ctx, ctx.config)
+    frames = PriceFrames(trading_index=idx, universe=("AAA",), peers={}, volume=pd.DataFrame({"AAA": 1000.0}, index=idx))
+    streams = []
+    original = sqlite_store.iter_load
 
-    tenure, roster = step_module.institutional_inputs.load_symbol_lineage(sqlite_store, logging.getLogger(__name__), ["FISV"])
+    def capture(table: Any, **kwargs: Any) -> Any:
+        streams.append(table)
+        return original(table, **kwargs)
 
-    assert tenure is not None and roster is not None
-    assert sorted(zip(tenure["symbol"], pd.to_datetime(tenure["valid_from"]).dt.strftime("%Y-%m-%d"), strict=True)) == [
-        ("FI", "2023-06-07"),
-        ("FISV", "2006-01-03"),
-    ]
-    print("SANITY: of four FISV/FI tenure rows the loader kept the form345 and manual ones; the two dei rows stay out of the mask.")
-
-
-def test_insider_panel_reads_one_table_and_the_db_frontier(monkeypatch: pytest.MonkeyPatch) -> None:
-    step = _bare_step()
-    fake_step = cast(Any, step)
-    fake_step._cfg = {"institutionals": {"decay_halflife": {"insider": 21}}}
-    fake_step._availability = None
-    insider = pd.DataFrame({"ticker": ["AAA"], "filing_date": [pd.Timestamp("2026-09-01")]})
-    shares = pd.DataFrame({"ticker": ["AAA"]})
-    frames = SimpleNamespace(
-        universe=("BBB", "AAA"), trading_index=pd.DatetimeIndex(["2026-09-30", "2026-10-01"]), close_split=None, level_factor=None
-    )
-    sink = ConditioningSink()
-    frontier = pd.Timestamp("2026-10-02")
-    loads: list[tuple[object, object]] = []
-    frontiers: list[tuple[object, object]] = []
-    built: dict[str, Any] = {}
-
-    def load_insider(universe: object) -> pd.DataFrame:
-        loads.append((Tables.insider_transactions, universe))
-        return insider
-
-    def schedule_complete_through(store: object, table: object, last_session: object) -> pd.Timestamp:
-        frontiers.append((table, last_session))
-        return frontier
-
-    def build(actual_frames: object, actual_insider: object, **kwargs: Any) -> pd.DataFrame:
-        built.update(frames=actual_frames, insider=actual_insider, **kwargs)
-        return pd.DataFrame({"date": [frontier], "ticker": ["AAA"]})
-
-    fake_step._load_insider = load_insider
-    fake_step._store = object()
-    fake_step._context = object()
-    monkeypatch.setattr(step_module, "level_actions", lambda context, universe: None)
-    monkeypatch.setattr(step_module.institutional_frontiers, "schedule_complete_through", schedule_complete_through)
-    monkeypatch.setattr(step_module, "build_insider_feature_panel", build)
-
-    out = step._insider_panel(cast(Any, frames), shares, sink)
-
-    assert out is not None and len(out) == 1
-    assert loads == [(Tables.insider_transactions, ("BBB", "AAA"))]
-    assert frontiers == [(Tables.insider_transactions, pd.Timestamp("2026-10-01"))]
-    assert built.pop("as_traded_quotes") is None
-    assert not built.pop("share_basis").policies
-    assert built.pop("role_evidence").empty
-    assert built == {
-        "frames": frames,
-        "insider": insider,
-        "shares_out_history": shares,
-        "decay_halflife": 21.0,
-        "availability": None,
-        "complete_through": frontier,
-        "sink": sink,
-    }
-    print(
-        "SANITY: the insider panel read only insider_transactions (canonical-lineage rows, `load_insider_transactions`), took complete_through from the table's DB frontier at the last session, and passed the builder the same arguments."
-    )
+    monkeypatch.setattr(sqlite_store, "iter_load", capture)
+    result = step._short_flow_panel(frames, None, None, None, pd.DataFrame(), share_basis=resolve_share_events(None, None, {}))
+    ratio = result.set_index(["date", "ticker"])["f_ic_ftd_to_adv20"]
+    assert ratio.loc[(pd.Timestamp("2024-01-30"), "AAA")] == 0
+    assert streams.count(Tables.sec_fails_to_deliver) == 1
+    assert set(result["ticker"]) == {"AAA"}
+    print("SANITY: actual step uses OTHER's observed ZIP date to publish AAA's zero with one FTD stream.")
 
 
-def test_build_panel_preserves_order_sink_and_output_contract(monkeypatch: pytest.MonkeyPatch) -> None:
-    step = _bare_step()
-    store = object()
-    fake_step = cast(Any, step)
-    fake_step._store = store
-    fake_step._cfg = {}
-    fake_step._part = SimpleNamespace(warmup_trading_days=390)
+@pytest.mark.parametrize(
+    "cls, table", [(StepCubeInstitutionals, Tables.cube_part_institutionals), (StepCubeSecThirteen, Tables.cube_part_sec_thirteen)]
+)
+def test_changed_columns_trigger_full_owned_part_replacement(
+    sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, cls: type, table: Any
+) -> None:
+    days = seed_prices(sqlite_store)
+    ctx = context(sqlite_store, tmp_path)
+    step = cls(ctx, ctx.config)
+    sqlite_store.replace(table, pd.DataFrame({"date": days[:3], "ticker": "AAA", "f_old": 9.0}))
+    expected = pd.DataFrame({"date": days, "ticker": "AAA", "f_current": 1.0})
+    modes: list[bool] = []
 
-    first, second = pd.to_datetime(["2026-01-02", "2026-01-05"])
-    trading_index = pd.DatetimeIndex([first, second])
-    grid = pd.DataFrame({"date": [first, second], "ticker": ["AAA", "BBB"]})
+    def build(full: bool = False) -> pd.DataFrame:
+        modes.append(full)
+        return expected.copy()
 
-    class _Frames:
-        universe = ["AAA", "BBB"]
-
-        @staticmethod
-        def skeleton() -> pd.DataFrame:
-            return grid.copy()
-
-    frames = _Frames()
-    fake_step._context = object()
-    monkeypatch.setattr(step_module, "level_actions", lambda *args: None)
-    monkeypatch.setattr(step_module, "as_traded_close", lambda *args: pd.DataFrame())
-    frames.close_split = None
-    frames.level_factor = None
-    shares = pd.DataFrame({"ticker": ["AAA"], "as_of": [first]})
-    splits = pd.DataFrame({"ticker": ["AAA"], "date": [first], "ratio": [2.0]})
-    share_splits = step_module.genuine_splits(None, splits).rename(columns={"value": "ratio"})
-    window = PartWindow(last=first, since=first, refresh_from=second)
-
-    panels = {
-        "institutional": pd.DataFrame(
-            {
-                "date": [first, second],
-                "ticker": ["AAA", "BBB"],
-                "f_inst": pd.Series([1.25, pd.NA], dtype="Float32"),
-            }
-        ),
-        "superinvestor": pd.DataFrame(
-            {
-                "date": [first, second],
-                "ticker": ["AAA", "BBB"],
-                "f_super": pd.Series([0, pd.NA], dtype="Int64"),
-            }
-        ),
-        "insider": pd.DataFrame({"date": [first], "ticker": ["AAA"], "f_insider": [0.0]}),
-        "short": pd.DataFrame({"date": [second], "ticker": ["BBB"], "f_short": [2.5]}),
-        "ownership": pd.DataFrame({"date": [first, second], "ticker": ["AAA", "AAA"], "f_owner": [3.5, 99.0]}),
-        "conditioning": pd.DataFrame({"date": [first], "ticker": ["AAA"], "f_condition": [4.5]}),
-        "cross": pd.DataFrame({"date": [second], "ticker": ["BBB"], "f_cross": [5.5]}),
-    }
-
-    calls: list[str] = []
-    sinks: list[ConditioningSink] = []
-    loads = {"frames": 0, "shares": 0, "splits": 0, "calendar": 0}
-    planned: dict[str, Any] = {}
-
-    def load_calendar(actual_store: object) -> pd.DatetimeIndex:
-        assert actual_store is store
-        loads["calendar"] += 1
-        return trading_index
-
-    def plan(actual_store: object, table: object, **kwargs: Any) -> PartWindow:
-        planned.update(store=actual_store, table=table, **kwargs)
-        return window
-
-    def load_frames() -> _Frames:
-        loads["frames"] += 1
-        return frames
-
-    def load_shares() -> pd.DataFrame:
-        loads["shares"] += 1
-        return shares
-
-    def load_source(table: object, universe: object = None) -> pd.DataFrame:
-        assert table is Tables.prices_splits
-        assert universe is None
-        loads["splits"] += 1
-        return splits
-
-    def emit(name: str, sink: ConditioningSink | None = None) -> pd.DataFrame:
-        calls.append(name)
-        if sink is not None:
-            sinks.append(sink)
-        return panels[name]
-
-    monkeypatch.setattr(step_module, "load_trading_calendar", load_calendar)
-    monkeypatch.setattr(step_module, "plan_window", plan)
-    monkeypatch.setattr(step, "_load_frames", load_frames)
-    monkeypatch.setattr(step, "_load_shares_out", load_shares)
-    monkeypatch.setattr(step, "_load_source", load_source)
-    monkeypatch.setattr(
-        step,
-        "_institutional_panel",
-        lambda actual_frames, actual_shares, actual_splits, valuation_close, share_basis: (
-            emit("institutional")
-            if (actual_frames is frames and actual_shares is shares and actual_splits.equals(share_splits))
-            else pytest.fail("institutional inputs changed")
-        ),
-    )
-    monkeypatch.setattr(
-        step,
-        "_superinvestor_panel",
-        lambda actual_frames, actual_shares, actual_splits, sink, valuation_close: (
-            emit("superinvestor", sink)
-            if (actual_frames is frames and actual_shares is shares and actual_splits.equals(share_splits))
-            else pytest.fail("superinvestor inputs changed")
-        ),
-    )
-    monkeypatch.setattr(step, "_insider_panel", lambda actual_frames, actual_shares, sink, actual_splits, **kwargs: emit("insider", sink))
-    monkeypatch.setattr(
-        step,
-        "_short_flow_panel",
-        lambda actual_frames, actual_shares, actual_splits, sink, **kwargs: emit("short", sink),
-    )
-    monkeypatch.setattr(step, "_ownership_panel", lambda actual_frames, sink: emit("ownership", sink))
-    monkeypatch.setattr(step, "_conditioning_panel", lambda actual_frames, actual_splits, sink: emit("conditioning", sink))
-    monkeypatch.setattr(step, "_cross_source_panel", lambda actual_frames, sink: emit("cross", sink))
-
-    got = step.build_panel(full=True)
-
-    assert planned == {}
-    assert loads == {"frames": 1, "shares": 1, "splits": 1, "calendar": 0}
-    assert calls == ["institutional", "superinvestor", "insider", "short", "ownership", "conditioning", "cross"]
-    assert len(sinks) == 6 and all(sink is sinks[0] for sink in sinks)
-    assert isinstance(sinks[0], ConditioningSink)
-
-    assert list(got.columns) == [
-        "date",
-        "ticker",
-        "f_inst",
-        "f_super",
-        "f_insider",
-        "f_short",
-        "f_owner",
-        "f_condition",
-        "f_cross",
-    ]
-    assert list(got[["date", "ticker"]].itertuples(index=False, name=None)) == [(first, "AAA"), (second, "BBB")]
-    assert not got.duplicated(["date", "ticker"]).any()
-    assert str(got["f_inst"].dtype) == "Float32"
-    assert str(got["f_super"].dtype) == "Int64"
-    assert got.loc[0, "f_inst"] == 1.25
-    assert got.loc[0, "f_super"] == 0
-    assert got.loc[0, "f_insider"] == 0.0
-    assert pd.isna(got.loc[1, "f_inst"])
-    assert pd.isna(got.loc[1, "f_super"])
-    assert got.loc[1, "f_short"] == 2.5
-    assert got.loc[0, "f_owner"] == 3.5
-    assert second not in got.loc[got["ticker"] == "AAA", "date"].tolist()
-    print("SANITY: build_panel kept order, one sink, one input load, exact output schema/dtypes/nulls, and the planned window.")
-
-    incremental_panel = step.build_panel(full=False)
-    incremental_window = window
-    pd.testing.assert_frame_equal(got, incremental_panel)
-
-    class _SeededStore:
-        def __init__(self, rows: pd.DataFrame) -> None:
-            self.rows = rows.copy()
-
-        def columns(self, _table: object) -> list[str]:
-            return list(self.rows.columns)
-
-        def append_tail(self, _table: object, tail: pd.DataFrame, cutoff: pd.Timestamp, *, inclusive: bool) -> int:
-            keep = self.rows["date"] < cutoff if inclusive else self.rows["date"] <= cutoff
-            self.rows = pd.concat([self.rows.loc[keep], tail], ignore_index=True)
-            return len(tail)
-
-    seeded = _SeededStore(got[got["date"] < second])
-    write_part(cast(Any, seeded), Tables.cube_part_institutionals, incremental_panel, incremental_window, drop_empty=True)
-    first_increment = seeded.rows.sort_values(["date", "ticker"]).reset_index(drop=True)
-    pd.testing.assert_frame_equal(got, first_increment)
-    write_part(cast(Any, seeded), Tables.cube_part_institutionals, incremental_panel, incremental_window, drop_empty=True)
-    pd.testing.assert_frame_equal(first_increment, seeded.rows.sort_values(["date", "ticker"]).reset_index(drop=True))
-    assert not seeded.rows.duplicated(["date", "ticker"]).any()
-    print(
-        "SANITY: StepCubeInstitutionals full and seeded-incremental builds match on keys, "
-        "dtypes, null masks and values; the identical second update is idempotent."
-    )
-
-
-def test_insider_loader_includes_issuer_identity_for_proxy_roles() -> None:
-    class Store:
-        def columns(self, table: object) -> list[str]:
-            assert table is Tables.insider_transactions
-            return [*Tables.insider_transactions.read_columns, "issuer_cik"]
-
-        def distinct(self, table: object, column: str) -> list[str]:
-            return ["AAA"]
-
-        def load(self, table: object, **kwargs: Any) -> pd.DataFrame:
-            return pd.DataFrame({"ticker": ["AAA"]})
-
-        def iter_load(self, table: object, *, columns: list[str], where: dict[str, Any]) -> list[pd.DataFrame]:
-            assert table is Tables.insider_transactions
-            assert "issuer_cik" in columns
-            assert where["ticker"] == ["AAA"]
-            return [pd.DataFrame({"ticker": ["AAA"], "issuer_cik": ["0000000123"]})]
-
-    got = step_module.institutional_inputs.load_insider_transactions(cast(Any, Store()), logging.getLogger(__name__), ["AAA"])
-    assert got is not None and got["issuer_cik"].iloc[0] == "0000000123"
-    print("SANITY: scoped insider loader projects issuer identity for same-issuer proxy matching without changing the registry.")
-
-
-def test_run_requests_a_full_rerun_when_columns_change(monkeypatch: pytest.MonkeyPatch) -> None:
-    step = _bare_step()
-    store = object()
-    cast(Any, step)._store = store
-    panel = pd.DataFrame({"date": [pd.Timestamp("2026-01-02")], "ticker": ["AAA"], "f": [1.0]})
-    incremental = PartWindow(
-        last=cast(pd.Timestamp, pd.Timestamp("2026-01-01")),
-        since=cast(pd.Timestamp, pd.Timestamp("2025-01-01")),
-    )
-    full = PartWindow(last=None, since=None)
-    build_calls: list[bool] = []
-    writes: list[tuple[object, object, pd.DataFrame, PartWindow, bool]] = []
-    results = iter([COLUMNS_CHANGED, 1])
-
-    def build_panel(*, full: bool = False) -> pd.DataFrame:
-        build_calls.append(full)
-        return panel
-
-    def write_part(store_arg: object, table: object, rows: pd.DataFrame, window: PartWindow, *, drop_empty: bool) -> int:
-        writes.append((store_arg, table, rows, window, drop_empty))
-        return next(results)
-
-    monkeypatch.setattr(step_module, "load_trading_calendar", lambda actual_store: pd.DatetimeIndex(panel["date"]))
-    monkeypatch.setattr(step_module, "plan_window", lambda actual_store, table, **kwargs: full if kwargs["full"] else incremental)
-    monkeypatch.setattr(step, "_warmup", lambda: 390)
-    monkeypatch.setattr(step, "build_panel", build_panel)
-    monkeypatch.setattr(step_module, "write_part", write_part)
-
-    assert step.run(full=False) is None
-    assert build_calls == [False, True]
-    assert [call[3] for call in writes] == [incremental, full]
-    assert all(call[0] is store for call in writes)
-    assert all(call[1] is Tables.cube_part_institutionals for call in writes)
-    assert all(call[2] is panel for call in writes)
-    assert all(call[4] is True for call in writes)
-    print("SANITY: COLUMNS_CHANGED requested a full rebuild and both writes retained the table, panel, window, and drop-empty contract.")
-
-
-def test_share_panels_receive_genuine_splits_without_spinoff_factors(monkeypatch: pytest.MonkeyPatch) -> None:
-    step = _bare_step()
-    actual = cast(Any, step)
-    day = pd.Timestamp("2024-04-02")
-    raw = pd.DataFrame({"ticker": ["AAA", "BBB"], "date": [day, day], "ratio": [2.0, 1.37]})
-    actions = pd.DataFrame({"ticker": ["AAA", "BBB"], "date": [day, day], "action": ["split", "spinoff"], "value": [2.0, 1.37]})
-    frames = SimpleNamespace(
-        universe=["AAA", "BBB"],
-        close_split=pd.DataFrame(),
-        level_factor=pd.DataFrame(),
-        skeleton=lambda: pd.DataFrame({"date": [day], "ticker": ["AAA"]}),
-    )
-    actual._context = object()
-    actual._load_frames = lambda: frames
-    actual._load_shares_out = lambda: None
-    actual._load_source = lambda table: raw if table is Tables.prices_splits else pytest.fail("unexpected source")
-    received: dict[str, pd.DataFrame] = {}
-
-    def capture(name: str, events: pd.DataFrame) -> None:
-        received[name] = events
-
-    monkeypatch.setattr(step_module, "level_actions", lambda *args: actions)
-    monkeypatch.setattr(step_module, "as_traded_close", lambda close, factor, basis: capture("valuation", basis.vendor))
-    monkeypatch.setattr(step, "_institutional_panel", lambda frames, shares, events, close, **kwargs: capture("institutional", events))
-    monkeypatch.setattr(step, "_superinvestor_panel", lambda frames, shares, events, sink, close: capture("elite", events))
-    monkeypatch.setattr(step, "_short_flow_panel", lambda frames, shares, events, sink, **kwargs: capture("short", events))
-    monkeypatch.setattr(step, "_conditioning_panel", lambda frames, events, sink: capture("conditioning", events))
-    monkeypatch.setattr(step, "_insider_panel", lambda *args, **kwargs: None)
-    monkeypatch.setattr(step, "_ownership_panel", lambda *args: None)
-    monkeypatch.setattr(step, "_cross_source_panel", lambda *args: None)
-
-    step.build_panel()
-    expected = pd.DataFrame({"ticker": ["AAA"], "date": [day], "ratio": [2.0]})
-    for family in ("institutional", "elite"):
-        pd.testing.assert_frame_equal(received[family][["ticker", "date", "ratio"]].reset_index(drop=True), expected)
-    assert received["institutional"] is received["elite"]
-    assert received["short"] is raw and received["conditioning"] is raw
-    pd.testing.assert_frame_equal(
-        received["valuation"][["ticker", "date", "value"]].reset_index(drop=True), expected.rename(columns={"ratio": "value"})
-    )
-    print(
-        "SANITY: both 13F share consumers receive one genuine event frame; parent spinoff factor is excluded, and other families keep their existing basis."
-    )
+    monkeypatch.setattr(step, "build_panel", build)
+    step.run()
+    assert modes == [False, True]
+    assert set(sqlite_store.columns(table)) == set(expected.columns)
+    assert sqlite_store.row_count(table) == len(expected)
+    print(f"SANITY: {table.name} replaces its obsolete schema through the ordinary full-rerun path.")

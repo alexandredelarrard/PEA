@@ -360,13 +360,15 @@ def _current_super_levels(effective: dict[str, pd.DataFrame], tickers: pd.Index,
     return levels
 
 
-def _legacy_super_changes(effective: dict[str, pd.DataFrame], tickers: pd.Index, pool: pd.Series, prev_pool: pd.Series) -> dict[str, pd.DataFrame]:
+def _legacy_super_changes(
+    effective: dict[str, pd.DataFrame], tickers: pd.Index, pool: pd.Series, prev_pool: pd.Series, levels: dict[str, pd.DataFrame]
+) -> dict[str, pd.DataFrame]:
     """Keep the legacy observation-based comparison equations and residual split guard."""
     sel, held, weight = effective["sel"], effective["held"], effective["w"]
     prev_sel, prev_held, prev_weight = effective["prev_sel"], effective["prev_held"], effective["prev_w"]
-    holders = _across_tickers(sel * held, tickers).div(pool, axis=0)
+    holders = levels["ic_super_holders"]
     prev_holders = _across_tickers(prev_sel * prev_held, tickers).div(prev_pool, axis=0)
-    conviction = _across_tickers(sel * weight, tickers).div(pool, axis=0)
+    conviction = levels["ic_super_conviction_weight"]
     prev_conviction = _across_tickers(prev_sel * prev_weight, tickers).div(prev_pool, axis=0)
     conviction4 = _across_tickers(effective["sel4"] * effective["w4"], tickers).div(pool, axis=0)
     holders4 = _across_tickers(effective["sel4"] * effective["held4"], tickers).div(pool, axis=0)
@@ -449,7 +451,7 @@ def _aggregate(
     effective, grid, tickers = _project_positions(contrib, columns, stale_quarters)
     pool = _manager_pool(st, "sel", grid, stale_quarters)
     levels = _current_super_levels(effective, tickers, pool)
-    levels.update(_legacy_super_changes(effective, tickers, pool, _manager_pool(st, "prev_sel", grid, stale_quarters)))
+    levels.update(_legacy_super_changes(effective, tickers, pool, _manager_pool(st, "prev_sel", grid, stale_quarters), levels))
     return _visible_super_levels(levels, seen_tickers), grid
 
 
@@ -806,7 +808,6 @@ def _snapshot_super_levels(
     changes, paired = _matched_super_changes(contrib, day)
     levels.update(changes)
     unknown = contrib.loc[~contrib.quantity_known, "ticker"].unique()
-    _mask_unknown_quantities(levels, unknown)
     levels.update(_annual_super_changes(contrib, day))
     levels.update(_versioned_super_events(contrib, historical, paired, day, trading_index, decay_halflife))
     _mask_unknown_quantities(levels, unknown)

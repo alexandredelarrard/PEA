@@ -5,7 +5,7 @@ type: module
 tags:
   - wiki
   - module
-source_commit: 54882b265efce2bf18c4ff9c40a89c6d8530c589
+source_commit: a8b02a3318e4b31e4bfa5b92f80d18874022572d
 ---
 # Runtime and shared utilities
 
@@ -51,4 +51,4 @@ Every CLI command and `Step` uses this module. It is the common entry surface fo
 
 ## Text utility ownership
 
-Shared introduction/speaker parsing lives in [earnings_call_split.py](../../src/utils/text/earnings_call_split.py); shared tokenization, cleaning and partial-call quality live in [text_metrics.py](../../src/utils/text/text_metrics.py). Extraction, aggregation and validation use these canonical functions. FinBERT inference and the uncertainty vocabulary have only aggregate production consumers and live in [data_aggregate/utils/text](../../src/data_aggregate/utils/text/nlp_sentiment.py). Model choices come from YAML, with one local engine per sentiment stage.
+Shared introduction/speaker parsing lives in [earnings_call_split.py](../../src/utils/text/earnings_call_split.py); shared tokenization, cleaning and partial-call quality live in [text_metrics.py](../../src/utils/text/text_metrics.py). Extraction, aggregation and validation use these canonical functions. FinBERT inference lives in [data_aggregate/utils/text](../../src/data_aggregate/utils/text/nlp_sentiment.py); aggregation-only [preparation/persistence](../../src/data_aggregate/utils/text/earnings_call_preparation.py) owns the single prepared/questions/answers sentiment-role declaration. The former uncertainty dictionary is removed. Model choices come from YAML, with one local engine per sentiment stage.

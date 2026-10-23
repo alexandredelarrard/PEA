@@ -6,7 +6,7 @@ tags:
   - wiki
   - todo
   - data-quality
-source_commit: 55d6e2d199fa9a83aca7d5442549eeb66eedd189
+source_commit: a8b02a3318e4b31e4bfa5b92f80d18874022572d
 ---
 # TODO
 
@@ -306,15 +306,15 @@ Transcript language drifts over the years, and nothing in the earnings-call feat
 - courtesy sentences in analyst questions go from 8.6 to 13.9 per 1,000 words, as a step (2.6–3.5 in 2011–13, then 12–15 from 2015), which looks like a change in transcription style rather than in behaviour (unverified);
 - courtesy in answers goes from 1.6 to 2.4 and in prepared remarks from 1.25 to 1.64 per 1,000 words.
 
-The lexicon counts use a 40-word subset of each Loughran-McDonald list, not FinBERT; courtesy is now removed before scoring, but the positive/negative word drift is in the substantive text. The `f_ec_*` features have no cross-sectional normalization by design, so a common upward drift reaches the raw levels, and the prior-only issuer-history scores (`*_vs_hist`, 5-year window) carry it too: every issuer's current call reads above its own history. Evidence: `reports/validate/2026-10-01-earnings-call-extraction-gaps/01-research.md` (text-noise follow-up) and `_out/clean_politeness_by_year.png`.
+The historical lexicon study used a 40-word subset of each Loughran-McDonald list, not FinBERT. Courtesy is removed before scoring, but substantive text may still drift. The current three role tone levels have no cross-sectional normalization by design; a common change could affect them. The former issuer-history z-scores were retired with the [ten-feature contract](./modules/data-aggregate.md#exact-ten-earnings-call-features), and the uncertainty dictionary is no longer a predictor. Historical evidence remains in `reports/validate/2026-10-01-earnings-call-extraction-gaps/01-research.md` (text-noise follow-up) and `_out/clean_politeness_by_year.png`.
 
 Reconsider when any of these holds:
 
-- full FinBERT scoring is done and the date-mean of `f_ec_tone` or `f_ec_tone_vs_hist` shows a trend over years;
+- full FinBERT scoring is done and date-means of `f_ec_prep_tone`, `f_ec_questions_tone` or `f_ec_answers_tone` trend over years;
 - the earnings-call validator raises a PSI drift warning (`drift_psi_warn`) on a tone feature; or
 - a model review finds the tone features' importance or sign unstable across CV folds by era.
 
-Candidate fixes to compare then: a per-date cross-sectional demeaning of tone only, or a time-detrended issuer history. Keep the 12-column contract unless the measurement justifies a change.
+Candidate fixes to compare then: per-date cross-sectional demeaning of role tone, or separately evaluated time detrending. Keep the approved ten-column contract unless measurements and a user decision justify a change; do not silently restore retired history features.
 
 ## Documentation retirement
 

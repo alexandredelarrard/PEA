@@ -7,7 +7,7 @@ tags:
   - guide
   - testing
   - validation
-source_commit: 96e77f81e5cf184b513b1e9bc4785aa68945654b
+source_commit: a8b02a3318e4b31e4bfa5b92f80d18874022572d
 ---
 # Testing and validation
 
@@ -284,6 +284,8 @@ Validation for this change uses exact affected pytest nodes only. Operational ac
 
 The committed refactor is at `96e77f81e5cf184b513b1e9bc4785aa68945654b`. Its source/config/test content matches the reviewed 24-file candidate `b09669091b48c436e96906fe953ee6c621e05316d037a409534b8c2cec92517b`. The [text step](../../src/data_aggregate/transformers/step_cube_text.py) runs shared preparation and independent sentiment/embedding saves before bounded feature creation. The [module contract](../modules/data-aggregate.md#earnings-call-feature-contract) describes eligibility, partial calls and the 30-calendar-day output overlap.
 
+This is a historical checkpoint for the former twelve-feature contract. Its actual PostgreSQL/API and history-feature measurements are retained as dated evidence; the later ten-feature follow-up below has its own candidate, cohort and limits.
+
 | Check | Measured result |
 | --- | --- |
 | Integrated regression | 358 passed, six skipped, zero failures/errors; five existing numeric warnings and zero live-guard trips. Skips are two unrelated opt-in live tests and four cases requiring the absent assembled cube. All 37 aggregate outputs/1,767 columns stay identical without fingerprint changes. |
@@ -302,3 +304,20 @@ Raw DOUBLE transport differences between COPY and append are retained as diagnos
 The refactor/code result is PASS. Broader data/model readiness remains CONDITIONAL: native validators retain nine high historical/post-2022 PSI alerts and low prepared-share findings, including some mostly administrative AMZN prepared text. Missing-prior-quarter and 66-session expiry gaps are explained, not filled. Generic coverage compares the deliberately narrow cohort with 491 price issuers. Clip and generic leakage checks abstain for missing applicable declarations; independent PIT arithmetic is separate. Full-universe cold backfill capacity and original first-publication timestamps remain unverified; the original full-source domain scan was stopped after 2,074.38 seconds without a result. No threshold was changed to remove these findings.
 
 Exact commands, raw validator exits/findings, source/data hashes, independent calculations and HTML are retained in the local ignored run `reports/validate/2026-10-22-text-cube-flow/`. The user explicitly authorized paid model calls and disposable PostgreSQL mutation for this run. Its final source/cube state is a dated [test-database observation](../reference/live-database.md#disposable-text-cube-test-state-2026-10-22), not a replacement full-universe census.
+
+## Ten-feature follow-up 2026-10-22
+
+The isolated candidate `a8b02a3318e4b31e4bfa5b92f80d18874022572d` replaces the old twelve fields with the [exact ten role/embedding features](../modules/data-aggregate.md#exact-ten-earnings-call-features). Three FinBERT role levels and their independent adjacent-fiscal-quarter deltas replace combined tone, Q&A gap, dictionary uncertainty, length change and history z-scores. Both tree configurations select all ten; no training or live adoption was performed in this run.
+
+| Check | Current candidate evidence |
+| --- | --- |
+| Regression/static | 267 distinct tests pass with zero failures/skips; Ruff and Pyright are clean on all 15 changed Python/test files. All 37 unrelated aggregate outputs and 1,767 columns remain identical; fingerprint baseline unchanged. |
+| Real source/model | Eight source calls/395 paragraphs across four issuers were read through context/store. Exactly eight actual offline CPU FinBERT documents were scored: all three roles on AAPL 2024Q2/Q3 and two additional question documents from AMZN/JPM. No synthetic probability is presented as a real model output. |
+| Saved output/arithmetic | Public isolated AAPL execution persists 128 rows and the exact ten fields. Twelve per-call sentiment cells and 768 daily sentiment cells/NULLs reconcile independently; the maximum daily float32 difference is 2.79e-8. Source dates verify two calendar days of lag and the original 66-trading-session expiry. |
+| Embedding scope | Forty independent calculations on existing saved v2 vectors confirm the retained three formulas and new question-only distance. Those vectors are never retagged v3. No compatible v3 vectors/API were supplied to the candidate replay, so its four embedding fields correctly remain NULL. |
+| Reads/incrementality | Cold public preparation reads 159 selected paragraphs once. Score history reads six rows for the selected fiscal pair; no five-year history. Three daily reruns exactly equal full output, including NULL masks, at a 1.524-second median with zero repeat sentiment/API calls. Paragraphs are still reread for pending embeddings; fully completed zero-paragraph behavior is covered separately by public-stage tests. |
+| Cold cost | Offline model loading takes 317.11 seconds and eight-document inference 162.39 seconds; total replay 508.75 seconds. These shared-host measurements do not certify archive throughput or a broad speedup. |
+
+Independent correctness and Ponytail reviews found no material product defect or required additional refactor. The run keeps all native validator exits: grain/bounds/timeseries pass; coverage/profile/redundancy/earnings-calls retain explained sparse-panel diagnostics. Clip, leakage and catalogue explicitly ABSTAIN for missing applicable declarations; the timeseries frozen component also abstains. Full-population distributions, actual compatible-v3 vector transport, calibrated accuracy and predictive value remain unmeasured. The existing short-body screen can retain short analyst comments; the source-fixture short-interrogative example has a transcription defect and is not a clean financial-question accuracy benchmark.
+
+Local ignored evidence: `reports/validate/2026-10-22-text-features-ten/` contains the approved specification/plan, RED/GREEN XML, independent validation and both code reviews, exact CLI JSON, source/model hashes and final HTML. No live PostgreSQL write, paid embedding call, model download or dependency installation occurred. Adoption still requires a full text-feature rebuild and cube reassembly, then fresh tree-model training; old fitted inputs are incompatible.

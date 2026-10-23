@@ -7,7 +7,7 @@ tags:
   - reference
   - database
   - schema
-source_commit: 96e77f81e5cf184b513b1e9bc4785aa68945654b
+source_commit: a8b02a3318e4b31e4bfa5b92f80d18874022572d
 ---
 # Table catalog
 
@@ -120,12 +120,14 @@ The four prose child tables are flattened from the retained `def14a_json` payloa
 | Table | Primary grain | Contract |
 | --- | --- | --- |
 | `earnings_call_sections` | ticker × quarter × paragraph | Raw defeatbeta transcript paragraphs: `as_of` DATE is the real call date (not null), plus `transcript_id`, `speaker`, `content`. `quarter` is the fiscal label (`2026Q2`). Content must exceed two characters; retained text is unchanged and retained paragraph numbers are contiguous from 1 per call, preserving source order and the resume marker. Speaker-turn splitting and cleaning run downstream; quarterly freshness on `as_of`. `content` is the payload, so reads project the needed columns and scope by ticker. |
-| `earnings_call_sentiment` | ticker × quarter × section tag | Cached call-intrinsic FinBERT and lexicon scores of cleaned prepared remarks and management-answer Q&A text; `model` carries the cleaning version. A completed partial call has both canonical tags: the unavailable section records zero words and NULL scores. Source reissues invalidate derived rows; legacy pending-marker models are excluded, and the active flow creates no repair markers. |
+| `earnings_call_sentiment` | ticker × quarter × role tag | Saved call-intrinsic FinBERT probabilities for `prepared_remarks`, `questions`, `answers`; `model` includes the cleaning version. All three canonical rows are needed for completion. True absence uses zero words/NULL probabilities; failed inference stays pending while valid roles remain usable. Compatible legacy management-only `qa` scores can be reused as answers, with canonical answers preferred. Source reissues invalidate derived rows; no repair markers or lexicon scores are created. |
 | `earning_calls_embedding` | ticker × quarter × speaker sequence | Speaker-turn embeddings of the split's cleaned turns, with question/answer linkage (`exchange_idx`); `model` is the cache tag `<OpenAI model>:<cleaning version>`. Text is omitted from the default projection. Readers normalize stored ISO date/timestamp spellings before completion checks and feature joins. |
 | `notes_embedding` | ticker × accession × tag | Mean-pooled footnote embeddings. Currently populated but not consumed by a cube panel. |
 | `ticker_descriptions`, `ticker_embeddings` | ticker | Business descriptions and similarity vectors used by peer deduction. |
 
-Earnings-call `as_of` remains the actual call date in raw paragraphs and NLP caches. The [text aggregate](../../src/data_aggregate/utils/text/earnings_call_features.py) uses `build_cube.earnings_calls.availability_lag_days: 2` from [build_cube.yml](../../configs/build_cube.yml), then the first trading session on or after call date + two calendar days (`searchsorted(..., side="left")`). Monday calls become eligible Wednesday; Thursday/Friday calls become eligible Monday unless that session is a holiday. The buffer applies once to all twelve EC features; the 66-session lifetime is unchanged. The provider has no first-available timestamp, so this buffer is an estimated availability policy.
+Earnings-call `as_of` remains the actual call date in raw paragraphs and NLP caches. The [text aggregate](../../src/data_aggregate/utils/text/earnings_call_features.py) uses `build_cube.earnings_calls.availability_lag_days: 2` from [build_cube.yml](../../configs/build_cube.yml), then the first trading session on or after call date + two calendar days (`searchsorted(..., side="left")`). Monday calls become eligible Wednesday; Thursday/Friday calls become eligible Monday unless that session is a holiday. The buffer applies once to all ten EC features; the 66-session lifetime is unchanged. The provider has no first-available timestamp, so this buffer is an estimated availability policy.
+
+The ten-column text contract keeps the sentiment PK unchanged. Fresh [DDL](../../sql/schema.sql) omits uncertainty and declares the current cube fields; an existing unused nullable sentiment uncertainty column can remain until database recreation. Rebuild the text part and reassemble to remove retired physical cube fields; no DataStore API or automatic physical sentiment-column drop is needed.
 
 The [fetcher](../../src/data_extract/utils/behavioral/fetch_earnings_call_transcripts.py) resolves supported historical symbols through the dated identity master and writes the currently traded canonical ticker before call deduplication. A raw-only fallback can fill an empty canonical ticker/fiscal-quarter slot after a unique master target and early company-name introduction match; normally accepted provider calls always win, even if not stored yet. Canonical stored rows still undergo consolidating-window and trusted alias checks at feature/validator time: ordinary extraction preserves source-absent legacy keys, so a stored canonical key alone does not establish issuer ownership. See [data sources](./data-sources.md#earnings-call-transcripts-and-attention-data).
 

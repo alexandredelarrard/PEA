@@ -5,7 +5,7 @@ type: flow
 tags:
   - wiki
   - flow
-source_commit: 5d13ac4980704564ce57dcbd7a378c73840db148
+source_commit: a8b02a3318e4b31e4bfa5b92f80d18874022572d
 ---
 # Cube build
 
@@ -60,4 +60,6 @@ A missing price-basis gate can propagate adjustment seams into returns, betas, a
 
 ## Text stage sequence
 
-[StepCubeText](../../src/data_aggregate/transformers/step_cube_text.py) runs calendar → plan_window → prepare_sections → run_sentiments → run_embeddings → run_features. Compact source keys are compared independently with each saved model table across history; selected paragraphs are prepared once. Shared paragraph cleaning removes provider/roster rows at any position and balanced parenthetical content before section splitting, scoring and embedding. Financial opening paragraphs are preserved; Operator handoffs provide split cues and never become model text. See the [exact twelve feature formulas](../modules/data-aggregate.md#exact-twelve-earnings-call-features). Features then read bounded saved metrics/vectors and tail-only price availability. The 30-calendar-day output rewrite is separate from the five-year call history needed by the existing history scores. History is limited to issuers with active output calls, preserving their actual fiscal predecessors across ticker changes. Stored embedding date-only and timestamp forms are normalized before completion and feature joins. See [text-cube acceptance](../guides/testing.md#text-cube-acceptance-2026-10-22) for the measured real-model, retry and full/daily checks. Old changes require an explicit full feature rebuild; it reuses valid sentiment/embedding outputs.
+[StepCubeText](../../src/data_aggregate/transformers/step_cube_text.py) runs calendar → plan_window → prepare_sections → run_sentiments → run_embeddings → run_features. Compact source keys are compared independently with each saved model table across history; selected paragraphs are read/prepared once. Shared cleaning removes provider/roster rows and balanced parenthetical content, preserves financial opening speech and keeps Operator handoffs only as split cues. Sentiment saves prepared, question and answer roles independently of embeddings; failed roles remain pending and available partner features remain usable. See the [exact ten formulas](../modules/data-aggregate.md#exact-ten-earnings-call-features).
+
+After both model stages, feature creation reads bounded saved scores/vectors and tail-only prices. The output rewrite is 30 calendar days; required payload history is active emitter calls plus their actual immediately preceding fiscal quarters, including old symbols. Retired history z-scores no longer require five years. Stored embedding date-only/timestamp forms normalize before completion and joins. Availability remains call date plus two calendar days and expiry remains 66 original trading sessions. Older changes require a full feature rebuild, reusing compatible model outputs. See [current ten-feature validation](../guides/testing.md#ten-feature-follow-up-2026-10-22) and the separately dated [earlier flow acceptance](../guides/testing.md#text-cube-acceptance-2026-10-22).

@@ -7,7 +7,7 @@ tags:
   - guide
   - runbook
   - operations
-source_commit: aeb931206d78eceb72ae1536988839056a630d1d
+source_commit: 15df4358b2a4ea81c34f02c71076256aed23544a
 ---
 # Run the pipeline
 
@@ -126,7 +126,7 @@ The first rereads all published ZIP datasets from the configured source start (2
 
 For bounded verification or targeted recovery, use `data_extract thirteen-f-managers --vintages` with both repeated `--cik` and `--accession`, plus required `--period-start`, `--period-end`, `--filed-through`, `--max-filings`. Optional repeated `--archive` selects cached source transport; it does not replace CIK/accession scope. Review `--dry-run` first. The [CLI](../../src/data_extract/cli.py) writes both existing destinations; it creates no auxiliary business table. Validate the same named scope with `validate institutionals --cik ... --period-start ... --period-end ... --filed-through ...`.
 
-After source adoption and the user's price refresh, run `data_aggregate build-institutionals -F`, then `data_aggregate build-sec-thirteen -F`, then `data_aggregate assemble-cube`. These full rebuilds remove transferred/retired columns from the old part and populate the new part; deleting all cube tables is unnecessary. These recovery/rebuild operations were not run by closure validation. Code merge/check status lives in the local audit `06-final.md`.
+After source adoption and the user's price refresh, run `data_aggregate build-institutionals -F`, then `data_aggregate build-sec-thirteen -F`, then `data_aggregate assemble-cube`. With nonempty validated output, these full rebuilds remove transferred/retired columns from the old part and populate the new part; deleting all cube tables is unnecessary. A builder returning no rows retains its previous table even on a full run. Verify physical column sets, unique date/ticker keys and readiness for both parts and the assembled cube before use. These recovery/rebuild operations were not run by closure validation. Code merge/check status lives in the local audit `06-final.md`.
 
 ### Source-specific notes
 

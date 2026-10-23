@@ -5,7 +5,7 @@ type: module
 tags:
   - wiki
   - module
-source_commit: aeb931206d78eceb72ae1536988839056a630d1d
+source_commit: 15df4358b2a4ea81c34f02c71076256aed23544a
 ---
 # Runtime and shared utilities
 
@@ -55,4 +55,4 @@ Shared introduction/speaker parsing lives in [earnings_call_split.py](../../src/
 
 ## Institutional utility ownership
 
-The aggregation-only `roster_as_of`, `first_snapshot_date` and `to_manager_books` functions live in [sec_thirteen/utils/superinvestor_roster.py](../../src/data_aggregate/sec_thirteen/utils/superinvestor_roster.py); `iter_public_books` lives in [sec_thirteen/utils/institutional_vintages.py](../../src/data_aggregate/sec_thirteen/utils/institutional_vintages.py). The remaining [shared roster](../../src/utils/superinvestor_roster.py) owns configuration, manager chains and snapshot/display policy used by extraction and aggregation. The remaining [shared vintage utilities](../../src/utils/institutional_vintages.py) own source reconciliation, completion and public-book clocks used across packages. Aggregate-only availability/decay/share-basis helpers are under `data_aggregate/utils/common`; source-specific utilities stay with their step. All aggregation steps bind `context.store` in initialization.
+The aggregation-only `roster_as_of` and `first_snapshot_date` functions live in [sec_thirteen/utils/superinvestor_roster.py](../../src/data_aggregate/sec_thirteen/utils/superinvestor_roster.py); `iter_public_books` lives in [sec_thirteen/utils/institutional_vintages.py](../../src/data_aggregate/sec_thirteen/utils/institutional_vintages.py). The remaining [shared roster](../../src/utils/superinvestor_roster.py) owns configuration, manager chains and snapshot/display policy used by extraction and aggregation. The remaining [shared vintage utilities](../../src/utils/institutional_vintages.py) own source reconciliation, completion and public-book clocks used across packages. Aggregate-only availability/decay/share-basis helpers are under `data_aggregate/utils/common`; source-specific utilities stay with their step. All aggregation steps bind `context.store` in initialization.

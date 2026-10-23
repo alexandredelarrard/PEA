@@ -1,7 +1,7 @@
 ---
 title: Wiki Log
 description: Append-only audit trail of wiki generation and refresh runs.
-source_commit: a8b02a3318e4b31e4bfa5b92f80d18874022572d
+source_commit: 9677e686d80af4e19461b362049d2c15d69bad62
 ---
 
 # Wiki Log
@@ -898,3 +898,14 @@ Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/
 - Pages: [Aggregation](./modules/data-aggregate.md), [Runtime/shared utilities](./modules/runtime-and-shared-utils.md), [Constants/configuration](./modules/constants-and-configuration.md), [Data access](./guides/data-access.md), [Data sources](./reference/data-sources.md), [Backlog](./TODO.md), [Overview](./OVERVIEW.md).
 - Evidence: all 22 affected Python ASTs retain their executable logic and import bindings after the expected path substitution; Ruff and format checks pass. The six content pages pass link checks, and no active wiki reference retains the old source path. Local Graphify extraction, clustering and symbol lookup succeed with the relocated sources. The targeted pytest outcome is retained in the local report reports/validate/2026-10-22-institutionals-sec-thirteen-split/merges/sec-utils-relocation.md.
 - Documentation locks from the concurrent merge were initially respected; after they cleared, every pending link was updated through OpenKnowledge. No source data, schema, model output, production cube, remote branch or fingerprint baseline was changed by this relocation.
+
+## 2026-10-23: refresh — shared SEC 13F pipeline
+
+- Profile: internal/standard; source_commit: 9677e686d80af4e19461b362049d2c15d69bad62, on isolated branch `harness/superinvestor-pipeline`. Original dev remains at `bb8dd2de033aebf10e18efe9e95b0315aaab5c4d`.
+- Coverage: both broad and elite panels now expose source-specific loading, shared CUSIP/date/value preparation, existing book reconciliation, elite selection, family feature stages and daily projection. Broad streams once; the smaller manager source uses one ordinary scoped read. The output window is planned first; complete dependency history is retained and schema fallback reuses the computed panel.
+- Independent evidence: implementation validation and the separate pass following `.claude/skills/harness-refactor/SKILL.md` are complete. The final committed affected union records 278 passed/5 skipped; the two real-marker cases separately pass after supplying original DB inputs to the read-only test process. Their overlay is 280 passed/3 declared live skips across invocations, not a single full-suite result. Three immutable comparisons are exact; disposable full/incremental/repeat storage remains 1,122 rows and idempotent.
+- Sample/follow-up: the fixed 2013Q2–2026Q2 cohort observes 104 raw CIKs/99 configured labels. Five labels span multiple configured CIKs, with six dated handoffs; these do not certify economic continuity. Manager/broad observed adjacency is 98.853%/98.499%, while 429 manager-only book keys arise after 2024Q3. The [TODO handoff](./TODO.md#13f-refactor-follow-ups--accepted-23-october-2026) preserves exact denominators/censoring, quarterly frontiers, SEC/ADV cases and deferred identity, numerical, update and store defects.
+- Limits: raw full-suite failures and eight remaining baseline configuration failures remain visible. Native catalogue9/redundancy8 findings and unsupported real versioned comparisons are retained; this is bounded refactor validation, not production data certification. A billion-dollar book is not a unit-error diagnosis; non-unit scale repair still needs the existing price/security quorum. No CIK correction, extraction replay, protected-store/configuration change, dependency installation, production rebuild, push, PR or merge to dev occurred.
+- Pages: [Aggregation](./modules/data-aggregate.md), [Data access](./guides/data-access.md), [Cube flow](./flows/cube-build.md), [TODO](./TODO.md), [Overview](./OVERVIEW.md), and this log. Local ignored evidence: `reports/validate/2026-10-22-superinvestor-pipeline/report.html`, `04-validation-03.md`, `05-review-01.md` and saved JSON/figures.
+
+- Audit: all six refreshed pages pass configured link checks; the overview directly reaches the other five, and the five non-log pages have no raw unresolved internal links. Fourteen reserved historical log-link findings remain withheld and unchanged. Markdownlint/frontmatter/OKF are not configured. No new page or navigation orphan was introduced.

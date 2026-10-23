@@ -7,7 +7,7 @@ tags:
   - guide
   - database
   - point-in-time
-source_commit: 4773469e660ee159f30fbef0e56ea401d019fab2
+source_commit: 9677e686d80af4e19461b362049d2c15d69bad62
 ---
 # Data access and storage
 
@@ -140,6 +140,8 @@ if result == COLUMNS_CHANGED:
 
 The part registry declares warm-up days and binding look-backs. A trailing recompute is valid only when every bounded daily look-back fits inside that warm-up and cross-sectional transforms are date-local. Tests prove full-versus-incremental equivalence for representative builders.
 
+SEC 13F retains complete source/calendar dependencies for expanding selection and history. `StepCubeSecThirteen` plans the output tail first, computes the complete panel once, and reuses it for full replacement on a schema mismatch. Its fallback does not recursively reload/rebuild; other builders retain their own contracts, including the generic example above.
+
 A declaration can still be wrong. Governance required a longer warm-up because a daily five-year self-history feature lived on top of annual filing inputs. Institutional features with expanding or event-age state compute against the full calendar and slice only at write time; no finite warm-up can reconstruct them.
 
 ## SEC and XBRL handling
@@ -184,7 +186,7 @@ Before merging a data-path change:
 
 `context.store.save_13f_filing(manifest, holdings)` is the bounded atomic entry point: one complete accession, any observed cover declarations and the actual typed source payload reconciled, unique CIK/accession/CUSIP grain. A legacy source may omit cover count/total only after the reader positively accounts for its structure and economic rows; missing declarations stay null and cannot be replaced by parsed totals. The existing unit-evidence field carries the source-accounting conclusion; callers cannot waive checks by supplying nulls alone. Holdings and completion manifest commit together. Failed parsing or a rolled-back transaction cannot establish an empty public book. Exact replay returns zero; a changed checksum for an existing accession raises visibly. Resume is by completed accession, so a stored amendment cannot hide a missing original.
 
-The [13F input reader](../../src/data_aggregate/utils/sec_thirteen/inputs.py) streams each source once through `context.store.iter_load`, with projected union manifest/position columns, complete/position status, markers included, manager scope and filing cutoff. It partitions completion rows and whole-book positions in memory; source-complete empty books remain observable. The shared candidate resolver `src/utils/institutional_vintages.py` filters public, complete source versions before resolving each CIK/report quarter. Current levels come from the greatest usable report quarter. Comparison inputs use the **latest public resolved version of the adjacent preceding report quarter at the target as-of**, not a fixed 90-day-old snapshot. A prior amendment updates that baseline prospectively; an older irrelevant amendment stays in audit history. Unknown adjacent-quarter coverage remains unknown rather than silently widening the comparison interval.
+The [13F input readers](../../src/data_aggregate/utils/sec_thirteen/inputs.py) use one projected `context.store.iter_load` stream for the broad source and one ordinary projected `context.store.load` for the smaller manager source. Both share the union manifest/position contract, complete/position status, included markers, manager scope and filing cutoff. They partition completion rows and whole-book positions in memory; source-complete empty books remain observable. The shared candidate resolver `src/utils/institutional_vintages.py` filters public, complete source versions before resolving each CIK/report quarter. Current levels come from the greatest usable report quarter. Comparison inputs use the **latest public resolved version of the adjacent preceding report quarter at the target as-of**, not a fixed 90-day-old snapshot. A prior amendment updates that baseline prospectively; an older irrelevant amendment stays in audit history. Unknown adjacent-quarter coverage remains unknown rather than silently widening the comparison interval.
 
 Candidate per-manager publications include active current/prior changes, including value-only corrections. An unrelated manager's event does not emit another manager's unchanged current rows. The daily DAG dependency lookback/output rewrite remains separately deferred in the refresh TODO (`reports/validate/2026-10-09-institutional-13f-audit/todo-13f-refresh.md`, local ignored audit artifact). No production consumer switch is implied by the scoped ledger proof.
 

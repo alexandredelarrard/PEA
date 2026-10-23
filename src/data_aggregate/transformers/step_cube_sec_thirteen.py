@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from functools import partial
 
 import pandas as pd
 from omegaconf import DictConfig
@@ -11,19 +12,20 @@ from src.constants.constants import F13_SETTLE_TRADING_DAYS
 from src.context import Context
 from src.data_aggregate.utils.common import inputs as capital_inputs
 from src.data_aggregate.utils.common.availability import InstitutionalAvailability
-from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_REFRESH_TRADING_DAYS, plan_window, write_part
+from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_REFRESH_TRADING_DAYS, PartWindow, plan_window, write_part
 from src.data_aggregate.utils.common.level_basis import load_bugfix
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
 from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.price_frames import PriceFrames, load_trading_calendar
 from src.data_aggregate.utils.sec_thirteen import inputs as thirteen_inputs
+from src.data_aggregate.utils.sec_thirteen.holdings_clean import attach_tickers, clean_public_holdings
 from src.data_aggregate.utils.sec_thirteen.institutional_features import (
     COVERAGE_BREAK_DEFAULT,
     F13_REVISION_MIN_MOVE,
-    build_institutional_feature_panel,
+    build_prepared_institutional_feature_panel,
 )
-from src.data_aggregate.utils.sec_thirteen.manager_selection import eligibility, elite_weight, manager_concentration_score, selection_diagnostics
-from src.data_aggregate.utils.sec_thirteen.superinvestor_features import attach_tickers, build_superinvestor_feature_panel
+from src.data_aggregate.utils.sec_thirteen.manager_selection import roster_members_on, select_managers
+from src.data_aggregate.utils.sec_thirteen.superinvestor_features import compute_superinvestor_feature_panel
 from src.data_aggregate.utils.sec_thirteen.superinvestor_roster import first_snapshot_date, roster_as_of
 from src.data_store.schema import Tables
 from src.utils.price_adjustments import ShareBasis
@@ -54,7 +56,7 @@ class StepCubeSecThirteen(Step):
         )
         panel = self.build_panel(full=full)
         if write_part(self._store, Tables.cube_part_sec_thirteen, panel, window, drop_empty=True) == COLUMNS_CHANGED:
-            self.run(full=True)
+            write_part(self._store, Tables.cube_part_sec_thirteen, panel, PartWindow(None, None), drop_empty=True)
 
     def _warmup(self) -> int:
         override = self._cfg.get("incremental", {}).get("warmup_trading_days")
@@ -90,17 +92,14 @@ class StepCubeSecThirteen(Step):
         if packet is None:
             return None
         filings, holdings = packet
-        holdings = attach_tickers(holdings, cusip_map, price_frames.universe)
-
         cfg = self._cfg.get("institutionals", {})
-        return build_institutional_feature_panel(
+        holdings = clean_public_holdings(attach_tickers(holdings, cusip_map, price_frames.universe), valuation_close, cfg.get("value_basis"))
+        return build_prepared_institutional_feature_panel(
             price_frames,
             holdings,
             shares_out_history=shares,
             splits=splits,
             share_basis=share_basis,
-            valuation_close=valuation_close,
-            value_basis=cfg.get("value_basis"),
             filings=filings,
             break_pct=float(cfg.get("coverage_break_pct", COVERAGE_BREAK_DEFAULT)),
             settle_trading_days=int(cfg.get("f13_settle_trading_days", F13_SETTLE_TRADING_DAYS)),
@@ -121,7 +120,7 @@ class StepCubeSecThirteen(Step):
             self._log.warning("`superinvestor_roster` has no snapshot -> elite 13F features skipped (run `data_extract superinvestors -F`).")
             return None
 
-        packet = thirteen_inputs.load_filing_vintages(self._store, frames.trading_index.max(), sorted(roster), table=Tables.sec13f_manager_holdings)
+        packet = thirteen_inputs.load_manager_filing_vintages(self._store, frames.trading_index.max(), sorted(roster))
         if packet is None:
             self._log.warning("No elite-manager 13F holdings -> superinvestor features skipped.")
             return None
@@ -133,14 +132,15 @@ class StepCubeSecThirteen(Step):
             len(roster_as_of(history, config_dir=self._context.config_dir)),
         )
 
-        return build_superinvestor_feature_panel(
+        holdings = clean_public_holdings(
+            attach_tickers(holdings, cusip_map, frames.universe),
+            valuation_close,
+            self._cfg.get("institutionals", {}).get("value_basis"),
+        )
+        return compute_superinvestor_feature_panel(
             frames,
             holdings,
-            roster,
-            cusip_map=cusip_map,
             splits=splits,
-            valuation_close=valuation_close,
-            value_basis=self._cfg.get("institutionals", {}).get("value_basis"),
             filings=filings,
             selection=self._superinvestor_selector(history),
             decay_halflife=float(self._decay_halflife("super")),
@@ -158,38 +158,15 @@ class StepCubeSecThirteen(Step):
         if first is None:
             self._log.warning("No roster snapshot -> selection falls back to flat 1.0.")
             return None
-        k = int(cfg.get("k", 15))
-        min_quarters = int(cfg.get("min_quarters", 4))
-        min_positions = int(cfg.get("min_positions", 0))
-
-        cache: dict[pd.Timestamp, set[str]] = {}
-
-        def roster_at(q: object) -> set[str]:
-            key = max(pd.Timestamp(q), first)
-            if key not in cache:
-                cache[key] = roster_as_of(history, key, config_dir=self._context.config_dir)
-            return cache[key]
-
-        def selector(state: pd.DataFrame) -> pd.Series:
-            ok = eligibility(state, roster_at, min_quarters=min_quarters, min_positions=min_positions)
-            scored = manager_concentration_score(state, eligible=ok)
-            sel = elite_weight(scored, mode=mode, k=k)
-            diag = selection_diagnostics(sel, state)
-            if not diag.empty:
-                settled = diag[diag["n_public"] >= k]
-                self._log.info(
-                    "elite selection (%s, k=%s): %s of %s manager-quarters eligible, live set %s-%s managers, median churn %s per filing date",
-                    mode,
-                    k,
-                    int(ok.sum()),
-                    len(ok),
-                    int(settled["n_selected"].min()) if len(settled) else 0,
-                    int(settled["n_selected"].max()) if len(settled) else 0,
-                    int(settled["churn"].median()) if len(settled) else 0,
-                )
-            return sel
-
-        return selector
+        roster_at = partial(roster_members_on, history=history, first=first, config_dir=self._context.config_dir, cache={})
+        return partial(
+            select_managers,
+            roster_at=roster_at,
+            mode=mode,
+            k=int(cfg.get("k", 15)),
+            min_quarters=int(cfg.get("min_quarters", 4)),
+            min_positions=int(cfg.get("min_positions", 0)),
+        )
 
     def _decay_halflife(self, family: str) -> float:
         cfg = self._cfg.get("institutionals", {}).get("decay_halflife", {})

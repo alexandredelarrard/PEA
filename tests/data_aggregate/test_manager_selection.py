@@ -397,15 +397,16 @@ def test_the_step_builds_a_selector_from_config_and_memoises_the_roster():
     # ---- top_k and continuous both produce a working weight ----
     st = _state({f"m{i}": 5 * (i + 1) for i in range(6)})
     import src.data_aggregate.transformers.step_cube_sec_thirteen as mod
+    import src.data_aggregate.utils.sec_thirteen.manager_selection as selection_module
 
-    orig_as_of, orig_first = mod.roster_as_of, mod.first_snapshot_date
+    orig_as_of, orig_first = selection_module.roster_as_of, mod.first_snapshot_date
     try:
 
         def _counting_as_of(_history, _as_of=None, *, config_dir=None):
             reads["n"] += 1
             return {f"m{i}" for i in range(6)}
 
-        mod.roster_as_of = _counting_as_of
+        selection_module.roster_as_of = _counting_as_of
         mod.first_snapshot_date = lambda _history: pd.Timestamp("2019-01-01")
 
         got = {}
@@ -418,7 +419,7 @@ def test_the_step_builds_a_selector_from_config_and_memoises_the_roster():
             got[mode] = (sel.nunique(), int(reads["n"]))
         print(f"distinct weights / roster lookups: {got}; distinct periods in the state: {st['period'].nunique()}")
     finally:
-        mod.roster_as_of, mod.first_snapshot_date = orig_as_of, orig_first
+        selection_module.roster_as_of, mod.first_snapshot_date = orig_as_of, orig_first
 
     assert got["top_k"][0] == 2, "top_k should be a 0/1 flag"
     assert got["continuous"][0] > 2, "continuous should keep a gradient"

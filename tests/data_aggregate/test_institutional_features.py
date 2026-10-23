@@ -1087,9 +1087,11 @@ def test_production_first_publication_uses_immutable_matched_cohorts(sqlite_stor
         )
         sqlite_store.save_13f_filing(manifest, holdings.assign(ticker="AAA"), table=Tables.sec13f_hr)
 
+    prepared = step_module.build_prepared_institutional_feature_panel
+
     def arithmetic(frames: Any, holdings: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
         # Three known-truth managers prove exact math after checking the production floor below.
-        return _panel(frames, holdings, min_prior_holders=0, **kwargs)
+        return prepared(frames, holdings, min_prior_holders=0, **kwargs)
 
     step = object.__new__(StepCubeSecThirteen)
     step._store, step._log = sqlite_store, logging.getLogger(__name__)
@@ -1107,7 +1109,7 @@ def test_production_first_publication_uses_immutable_matched_cohorts(sqlite_stor
     assert guarded is not None
     assert "f_ic_inst_shares_chg" not in guarded
     assert guarded.f_ic_inst_concentration.notna().any()
-    monkeypatch.setattr(step_module, "build_institutional_feature_panel", arithmetic)
+    monkeypatch.setattr(step_module, "build_prepared_institutional_feature_panel", arithmetic)
     prefix = step._institutional_panel(frames, None, None, pd.DataFrame({"cusip": ["111111111"], "ticker": ["AAA"]}), quotes)
     assert prefix is not None
     save_packet("c-new", "3", "2024-09-30", "2024-11-20", 500)

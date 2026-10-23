@@ -24,7 +24,7 @@ from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecTh
 from src.data_aggregate.utils.common.availability import filing_public_dates, public_books
 from src.data_aggregate.utils.common.price_frames import PriceFrames
 from src.data_aggregate.utils.sec_thirteen.institutional_features import (
-    build_institutional_feature_panel,
+    build_prepared_institutional_feature_panel,
     vintage_changes,
     vintage_cohort_publications,
     vintage_cohort_snapshot,
@@ -1065,9 +1065,9 @@ def test_ordinary_builders_use_versions_and_keep_prior_corrections_prospective(s
     step._context = SimpleNamespace(store=sqlite_store, log=step._log, config_dir="configs")
 
     def arithmetic(frames: Any, holdings: pd.DataFrame, **kw: Any) -> pd.DataFrame:
-        return build_institutional_feature_panel(frames, holdings, min_prior_holders=0, **kw)
+        return build_prepared_institutional_feature_panel(frames, holdings, min_prior_holders=0, **kw)
 
-    monkeypatch.setattr(step_module, "build_institutional_feature_panel", arithmetic)
+    monkeypatch.setattr(step_module, "build_prepared_institutional_feature_panel", arithmetic)
     frames = PriceFrames(
         GRID,
         ("AAA", "BBB"),
@@ -1103,9 +1103,9 @@ def ordinary_step(
     step._context = SimpleNamespace(store=sqlite_store, log=step._log, config_dir="configs")
 
     def arithmetic(frames: Any, holdings: pd.DataFrame, **kw: Any) -> pd.DataFrame:
-        return build_institutional_feature_panel(frames, holdings, min_prior_holders=0, **kw)
+        return build_prepared_institutional_feature_panel(frames, holdings, min_prior_holders=0, **kw)
 
-    monkeypatch.setattr(step_module, "build_institutional_feature_panel", arithmetic)
+    monkeypatch.setattr(step_module, "build_prepared_institutional_feature_panel", arithmetic)
     frames = PriceFrames(
         GRID,
         ("AAA", "BBB", "CCC"),

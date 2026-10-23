@@ -1,5 +1,5 @@
 """
-superinvestor_features.py  (src/data_aggregate/sec_thirteen/utils/superinvestor_features.py)
+superinvestor_features.py  (src/data_aggregate/utils/sec_thirteen/superinvestor_features.py)
 ----------------------------------------------------------------------------------------------
 Elite-manager 13F features for the Dataroma superinvestor roster.
 
@@ -66,14 +66,14 @@ import numpy as np
 import pandas as pd
 
 from src.constants.constants import SEC_13F_FILING_LAG_DAYS
-from src.data_aggregate.sec_thirteen.utils.holdings_clean import clean_holdings
-from src.data_aggregate.sec_thirteen.utils.institutional_vintages import iter_public_books
-from src.data_aggregate.sec_thirteen.utils.value_basis import log_register, nullable_value_to_daily, repair_value_basis
 from src.data_aggregate.utils.common.availability import InstitutionalAvailability
 from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.common.decay import decay_events
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.price_frames import PriceFrames
+from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_holdings
+from src.data_aggregate.utils.sec_thirteen.institutional_vintages import iter_public_books
+from src.data_aggregate.utils.sec_thirteen.value_basis import log_register, nullable_value_to_daily, repair_value_basis
 from src.data_store.schema import Tables
 from src.utils.institutional_vintages import filing_public_dates
 from src.utils.string import pad_cik

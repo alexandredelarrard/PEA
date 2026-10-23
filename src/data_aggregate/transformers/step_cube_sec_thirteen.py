@@ -9,15 +9,6 @@ from omegaconf import DictConfig
 
 from src.constants.constants import F13_SETTLE_TRADING_DAYS
 from src.context import Context
-from src.data_aggregate.sec_thirteen.utils import inputs as thirteen_inputs
-from src.data_aggregate.sec_thirteen.utils.institutional_features import (
-    COVERAGE_BREAK_DEFAULT,
-    F13_REVISION_MIN_MOVE,
-    build_institutional_feature_panel,
-)
-from src.data_aggregate.sec_thirteen.utils.manager_selection import eligibility, elite_weight, manager_concentration_score, selection_diagnostics
-from src.data_aggregate.sec_thirteen.utils.superinvestor_features import attach_tickers, build_superinvestor_feature_panel
-from src.data_aggregate.sec_thirteen.utils.superinvestor_roster import first_snapshot_date, roster_as_of
 from src.data_aggregate.utils.common import inputs as capital_inputs
 from src.data_aggregate.utils.common.availability import InstitutionalAvailability
 from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_REFRESH_TRADING_DAYS, plan_window, write_part
@@ -25,6 +16,15 @@ from src.data_aggregate.utils.common.level_basis import load_bugfix
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
 from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.price_frames import PriceFrames, load_trading_calendar
+from src.data_aggregate.utils.sec_thirteen import inputs as thirteen_inputs
+from src.data_aggregate.utils.sec_thirteen.institutional_features import (
+    COVERAGE_BREAK_DEFAULT,
+    F13_REVISION_MIN_MOVE,
+    build_institutional_feature_panel,
+)
+from src.data_aggregate.utils.sec_thirteen.manager_selection import eligibility, elite_weight, manager_concentration_score, selection_diagnostics
+from src.data_aggregate.utils.sec_thirteen.superinvestor_features import attach_tickers, build_superinvestor_feature_panel
+from src.data_aggregate.utils.sec_thirteen.superinvestor_roster import first_snapshot_date, roster_as_of
 from src.data_store.schema import Tables
 from src.utils.price_adjustments import ShareBasis
 from src.utils.step import Step

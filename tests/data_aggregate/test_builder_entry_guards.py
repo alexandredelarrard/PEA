@@ -22,11 +22,11 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from src.data_aggregate.sec_thirteen.utils.institutional_features import build_institutional_feature_panel
-from src.data_aggregate.sec_thirteen.utils.superinvestor_features import build_superinvestor_feature_panel
 from src.data_aggregate.utils.institutionals.insider_features import build_insider_feature_panel
 from src.data_aggregate.utils.institutionals.ownership_features import build_ownership_feature_panel
 from src.data_aggregate.utils.institutionals.short_flow_features import build_short_flow_feature_panel
+from src.data_aggregate.utils.sec_thirteen.institutional_features import build_institutional_feature_panel
+from src.data_aggregate.utils.sec_thirteen.superinvestor_features import build_superinvestor_feature_panel
 from tests.conftest import make_frames
 
 IDX = pd.bdate_range("2024-01-01", "2024-06-28")

@@ -1,6 +1,6 @@
 """
 Point-in-time elite-manager selection
-(src/data_aggregate/sec_thirteen/utils/manager_selection.py).
+(src/data_aggregate/utils/sec_thirteen/manager_selection.py).
 
 Proves the four properties that make this a SELECTOR rather than a filter applied with
 hindsight. Each is a defect the module was written to avoid, not a hypothetical:
@@ -25,8 +25,8 @@ from typing import Any, cast
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.sec_thirteen.utils.holdings_clean import clean_holdings
-from src.data_aggregate.sec_thirteen.utils.manager_selection import (
+from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_holdings
+from src.data_aggregate.utils.sec_thirteen.manager_selection import (
     eligibility,
     elite_weight,
     manager_concentration_score,
@@ -260,7 +260,7 @@ def _two_manager_book() -> pd.DataFrame:
 
 
 def _panel(holdings, **kw):
-    from src.data_aggregate.sec_thirteen.utils.superinvestor_features import (
+    from src.data_aggregate.utils.sec_thirteen.superinvestor_features import (
         build_superinvestor_feature_panel,
     )
 
@@ -268,7 +268,7 @@ def _panel(holdings, **kw):
 
 
 def _keys(holdings: pd.DataFrame) -> tuple[pd.MultiIndex, pd.DataFrame]:
-    from src.data_aggregate.sec_thirteen.utils.superinvestor_features import (
+    from src.data_aggregate.utils.sec_thirteen.superinvestor_features import (
         attach_tickers,
         manager_quarter_state,
     )

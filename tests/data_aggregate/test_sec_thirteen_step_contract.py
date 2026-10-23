@@ -8,9 +8,9 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from src.data_aggregate.sec_thirteen.utils.inputs import load_filing_vintages
 from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecThirteen
 from src.data_aggregate.utils.common import inputs as capital_inputs
+from src.data_aggregate.utils.sec_thirteen.inputs import load_filing_vintages
 from src.data_store.schema import Tables
 from tests.data_aggregate.test_institutional_step_contract import context, seed_prices
 

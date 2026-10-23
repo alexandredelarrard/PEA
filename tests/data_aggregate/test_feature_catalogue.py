@@ -29,7 +29,6 @@ from scripts.cube_feature_catalogue import CATALOGUE, CATALOGUES, split
 from scripts.cube_governance_catalogue import GOVERNANCE
 from scripts.cube_institutionals_catalogue import INSTITUTIONALS
 from scripts.cube_sec_thirteen_catalogue import SEC_THIRTEEN
-from src.data_aggregate.sec_thirteen.utils import institutional_features, superinvestor_features
 from src.data_aggregate.utils.governance import director_comp as dc
 from src.data_aggregate.utils.governance import directors as dr
 from src.data_aggregate.utils.governance import panel as pn
@@ -41,6 +40,7 @@ from src.data_aggregate.utils.institutionals import (
     ownership_features,
     short_flow_features,
 )
+from src.data_aggregate.utils.sec_thirteen import institutional_features, superinvestor_features
 
 #: ⚠ THE ONE ALLOWED DECLARED-BUT-ABSENT FIELD, named rather than filtered.
 #:

@@ -1,6 +1,6 @@
 """
 Superinvestor (elite-manager) 13F features
-(src/data_aggregate/sec_thirteen/utils/superinvestor_features.py).
+(src/data_aggregate/utils/sec_thirteen/superinvestor_features.py).
 
 Proves the four properties that make this panel different from the all-filer institutional
 one, each of which was a real defect caught by measurement rather than a hypothetical:
@@ -23,7 +23,8 @@ import logging
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.sec_thirteen.utils.superinvestor_features import (
+from src.data_aggregate.utils.common.availability import InstitutionalAvailability
+from src.data_aggregate.utils.sec_thirteen.superinvestor_features import (
     EMISSION,
     _selection_ciks,
     _selection_series,
@@ -35,7 +36,6 @@ from src.data_aggregate.sec_thirteen.utils.superinvestor_features import (
     manager_stock_conviction,
     public_state,
 )
-from src.data_aggregate.utils.common.availability import InstitutionalAvailability
 from tests.conftest import make_frames
 
 #: Two roster managers. `BIG` runs a 10-name book of which only 2 are in the universe --
@@ -197,7 +197,7 @@ def test_a_split_is_restated_not_read_as_a_purchase():
 
 def _contrib(conv, state):
     sel = _selection_series(state, None)
-    from src.data_aggregate.sec_thirteen.utils.superinvestor_features import _contributions
+    from src.data_aggregate.utils.sec_thirteen.superinvestor_features import _contributions
 
     return _contributions(conv, state, sel)
 

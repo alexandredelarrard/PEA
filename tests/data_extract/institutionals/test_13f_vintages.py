@@ -20,17 +20,17 @@ from sqlalchemy.engine import make_url
 import src.data_aggregate.transformers.step_cube_sec_thirteen as step_module
 import src.data_store.schema as schema
 from src.context import get_config_context
-from src.data_aggregate.sec_thirteen.utils.institutional_features import (
+from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecThirteen
+from src.data_aggregate.utils.common.availability import filing_public_dates, public_books
+from src.data_aggregate.utils.common.price_frames import PriceFrames
+from src.data_aggregate.utils.sec_thirteen.institutional_features import (
     build_institutional_feature_panel,
     vintage_changes,
     vintage_cohort_publications,
     vintage_cohort_snapshot,
     vintage_publications,
 )
-from src.data_aggregate.sec_thirteen.utils.institutional_vintages import iter_public_books
-from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecThirteen
-from src.data_aggregate.utils.common.availability import filing_public_dates, public_books
-from src.data_aggregate.utils.common.price_frames import PriceFrames
+from src.data_aggregate.utils.sec_thirteen.institutional_vintages import iter_public_books
 from src.data_extract.utils.institutionals import fetch_13f_managers as managers
 from src.data_extract.utils.institutionals.fetch_13f import filing_vintage
 from src.data_extract.utils.institutionals.fetch_13f_managers import pending_vintages

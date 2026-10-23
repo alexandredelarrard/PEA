@@ -19,7 +19,7 @@ import pandas as pd
 import pytest
 
 import src.utils.superinvestor_roster as sr
-from src.data_aggregate.sec_thirteen.utils.superinvestor_roster import roster_as_of
+from src.data_aggregate.utils.sec_thirteen.superinvestor_roster import roster_as_of
 from src.data_store.schema import Tables
 from src.utils.superinvestor_roster import _load_superinvestor_roster, roster_cik_union, roster_map_as_of
 from tests.fixtures.superinvestor_config import APPALOOSA_CHAIN, APPALOOSA_NEW, APPALOOSA_OLD, write_roster_config

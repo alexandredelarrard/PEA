@@ -1,5 +1,5 @@
 """
-institutional_features.py  (src/data_aggregate/sec_thirteen/utils/institutional_features.py)
+institutional_features.py  (src/data_aggregate/utils/sec_thirteen/institutional_features.py)
 --------------------------------------------------------------------------------
 Broad, point-in-time 13F institutional ownership features (`ic_inst_*`).
 
@@ -65,15 +65,15 @@ import numpy as np
 import pandas as pd
 
 from src.constants.constants import F13_SETTLE_TRADING_DAYS, SEC_13F_FILING_LAG_DAYS
-from src.data_aggregate.sec_thirteen.utils.holdings_clean import clean_holdings
-from src.data_aggregate.sec_thirteen.utils.institutional_vintages import iter_public_books
-from src.data_aggregate.sec_thirteen.utils.value_basis import log_register, nullable_value_to_daily, repair_value_basis
 from src.data_aggregate.utils.common.availability import availability_date, filing_public_dates, public_books
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
 from src.data_aggregate.utils.common.price_frames import PriceFrames
 from src.data_aggregate.utils.common.split_basis import future_split_factor, split_cum_product
 from src.data_aggregate.utils.common.typing import frame_column
+from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_holdings
+from src.data_aggregate.utils.sec_thirteen.institutional_vintages import iter_public_books
+from src.data_aggregate.utils.sec_thirteen.value_basis import log_register, nullable_value_to_daily, repair_value_basis
 from src.data_store.schema import Resume, Tables
 from src.utils.price_adjustments import ShareBasis
 

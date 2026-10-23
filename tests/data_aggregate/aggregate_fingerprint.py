@@ -791,17 +791,6 @@ def governance_panel(
 
 
 def compute() -> dict:
-    from src.data_aggregate.sec_thirteen.utils.institutional_features import (
-        _quarter_features,
-        build_institutional_feature_panel,
-    )
-    from src.data_aggregate.sec_thirteen.utils.superinvestor_features import (
-        attach_tickers,
-        build_superinvestor_feature_panel,
-        clean_holdings,
-        manager_quarter_state,
-        manager_stock_conviction,
-    )
     from src.data_aggregate.utils.common.frames import ratio, safe_div, sanitize
     from src.data_aggregate.utils.common.level_basis import as_traded_close
     from src.data_aggregate.utils.common.panel import build_peer_relative_panel
@@ -834,6 +823,17 @@ def compute() -> dict:
     from src.data_aggregate.utils.momentum.features import (
         build_feature_panel,
         compute_raw_features,
+    )
+    from src.data_aggregate.utils.sec_thirteen.institutional_features import (
+        _quarter_features,
+        build_institutional_feature_panel,
+    )
+    from src.data_aggregate.utils.sec_thirteen.superinvestor_features import (
+        attach_tickers,
+        build_superinvestor_feature_panel,
+        clean_holdings,
+        manager_quarter_state,
+        manager_stock_conviction,
     )
     from src.data_aggregate.utils.target.betas import estimate_all_betas
     from src.data_aggregate.utils.target.targets import (

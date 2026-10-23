@@ -17,8 +17,11 @@ import pytest
 
 import src.data_aggregate.transformers.step_cube_sec_thirteen as step_module
 from src.constants.constants import F13_SETTLE_TRADING_DAYS
-from src.data_aggregate.sec_thirteen.utils import institutional_features as _mod
-from src.data_aggregate.sec_thirteen.utils.institutional_features import (
+from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecThirteen
+from src.data_aggregate.utils.common.availability import availability_date
+from src.data_aggregate.utils.common.data_utils import to_day
+from src.data_aggregate.utils.sec_thirteen import institutional_features as _mod
+from src.data_aggregate.utils.sec_thirteen.institutional_features import (
     EMISSION,
     INST_DELTA_FLOOR_PERIOD,
     INST_LEVEL_FLOOR_PERIOD,
@@ -27,18 +30,15 @@ from src.data_aggregate.sec_thirteen.utils.institutional_features import (
     _availability_coverage,
     _stamp_availability,
 )
-from src.data_aggregate.sec_thirteen.utils.institutional_features import (
+from src.data_aggregate.utils.sec_thirteen.institutional_features import (
     _quarter_features as _qf,
 )
-from src.data_aggregate.sec_thirteen.utils.institutional_features import (
+from src.data_aggregate.utils.sec_thirteen.institutional_features import (
     build_institutional_feature_panel as _panel,
 )
-from src.data_aggregate.sec_thirteen.utils.institutional_features import (
+from src.data_aggregate.utils.sec_thirteen.institutional_features import (
     clean_holdings as _clean_holdings,
 )
-from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecThirteen
-from src.data_aggregate.utils.common.availability import availability_date
-from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_extract.utils.institutionals.fetch_13f import _book_frame, filing_vintage
 from src.data_extract.utils.institutionals.fetch_cusip_map import _parse_openfigi
 from src.data_store.schema import Tables
@@ -598,7 +598,7 @@ def test_ownership_above_the_ceiling_is_nulled_not_clipped():
         and hand the model a fabricated level;
       * everything below is untouched, to the bit.
     """
-    from src.data_aggregate.sec_thirteen.utils.institutional_features import OWNERSHIP_CEILING, _capped_ownership
+    from src.data_aggregate.utils.sec_thirteen.institutional_features import OWNERSHIP_CEILING, _capped_ownership
 
     idx = pd.DatetimeIndex(pd.bdate_range("2020-01-01", periods=4))
     raw = pd.DataFrame(
@@ -642,7 +642,7 @@ def test_the_shared_cleaner_handles_the_live_dtypes_not_just_strings():
     """
     import datetime as dt
 
-    from src.data_aggregate.sec_thirteen.utils.holdings_clean import clean_holdings
+    from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_holdings
 
     rows = [
         # the ORIGINAL filing, and its AMENDMENT four days later with a corrected count
@@ -712,7 +712,7 @@ def test_the_shared_cleaner_handles_the_live_dtypes_not_just_strings():
 
 
 def _banded(rows: list[dict], band=(45, 60)) -> pd.DataFrame:
-    from src.data_aggregate.sec_thirteen.utils.holdings_clean import clean_holdings
+    from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_holdings
 
     return clean_holdings(pd.DataFrame(rows), key=("ticker", "cik", "period"), filing_band=band)
 

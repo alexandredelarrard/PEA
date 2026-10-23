@@ -1,11 +1,10 @@
 ---
 title: Runtime and shared utilities
-description: Context construction, Step lifecycle, root CLI discovery, and cross-package
-  utilities.
+description: Context construction, Step lifecycle, root CLI discovery, and cross-package utilities.
 type: module
 tags:
-- wiki
-- module
+  - wiki
+  - module
 source_commit: 4773469e660ee159f30fbef0e56ea401d019fab2
 ---
 # Runtime and shared utilities
@@ -56,4 +55,4 @@ Shared introduction/speaker parsing lives in [earnings_call_split.py](../../src/
 
 ## Institutional utility ownership
 
-The aggregation-only `roster_as_of` and `first_snapshot_date` functions live in [sec_thirteen/utils/superinvestor_roster.py](../../src/data_aggregate/sec_thirteen/utils/superinvestor_roster.py); `iter_public_books` lives in [sec_thirteen/utils/institutional_vintages.py](../../src/data_aggregate/sec_thirteen/utils/institutional_vintages.py). The remaining [shared roster](../../src/utils/superinvestor_roster.py) owns configuration, manager chains and snapshot/display policy used by extraction and aggregation. The remaining [shared vintage utilities](../../src/utils/institutional_vintages.py) own source reconciliation, completion and public-book clocks used across packages. Aggregate-only availability/decay/share-basis helpers are under `data_aggregate/utils/common`; source-specific utilities stay with their step. All aggregation steps bind `context.store` in initialization.
+The aggregation-only `roster_as_of` and `first_snapshot_date` functions live in [utils/sec_thirteen/superinvestor_roster.py](../../src/data_aggregate/utils/sec_thirteen/superinvestor_roster.py); `iter_public_books` lives in [utils/sec_thirteen/institutional_vintages.py](../../src/data_aggregate/utils/sec_thirteen/institutional_vintages.py). The remaining [shared roster](../../src/utils/superinvestor_roster.py) owns configuration, manager chains and snapshot/display policy used by extraction and aggregation. The remaining [shared vintage utilities](../../src/utils/institutional_vintages.py) own source reconciliation, completion and public-book clocks used across packages. Aggregate-only availability/decay/share-basis helpers are under `data_aggregate/utils/common`; source-specific utilities stay with their step. All aggregation steps bind `context.store` in initialization.

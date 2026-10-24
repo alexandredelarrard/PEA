@@ -25,27 +25,30 @@ def load_symbol_lineage(
 ) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
     """Load the issuer lineage (`form345`/`manual` tenure on the roster CIKs) used to validate already-canonical source rows."""
     tickers = sorted(set(universe))
-    ticker_ciks = store.load(
+    # The roster determines the bounded issuer scope for the tenure read.
+    df_ticker_ciks = store.load(
         Tables.sp500_tickers,
         columns=("ticker", "cik"),
         where={"ticker": tickers},
         optional=True,
     )
-    if ticker_ciks is None or ticker_ciks.empty:
-        return None, ticker_ciks
+    if df_ticker_ciks is None or df_ticker_ciks.empty:
+        return None, df_ticker_ciks
 
-    ciks = sorted({pad_cik(value) for value in ticker_ciks["cik"] if pad_cik(value)})
+    ciks = sorted({cik for cik in df_ticker_ciks["cik"].map(pad_cik) if cik})
     if not ciks:
-        return None, ticker_ciks
-    symbol_tenure = store.load(
+        return None, df_ticker_ciks
+    df_symbol_tenure = store.load(
         Tables.symbol_tenure,
         columns=("symbol", "issuer_cik", "valid_from", "valid_to"),
         where={"issuer_cik": ciks, "source": list(TENURE_SOURCES)},
         optional=True,
     )
-    aliases = len(set(symbol_tenure["symbol"].astype(str))) if symbol_tenure is not None else 0
+
+    # Report the loaded lineage without another payload read.
+    aliases = len(set(df_symbol_tenure["symbol"].astype(str))) if df_symbol_tenure is not None else 0
     logger.info("Symbol lineage: %s current tickers backed by %s proven historical symbols", len(tickers), aliases)
-    return symbol_tenure, ticker_ciks
+    return df_symbol_tenure, df_ticker_ciks
 
 
 def load_insider_transactions(store: DataStore, universe: Sequence[str] | None = None) -> pd.DataFrame | None:
@@ -63,9 +66,9 @@ def load_insider_transactions(store: DataStore, universe: Sequence[str] | None =
     chunks = list(store.iter_load(table, columns=columns, where=where))
     if not chunks:
         return None
-    frame = pd.concat(chunks, ignore_index=True)
-    logger.info("Loaded %s: %s rows x %s cols", table.name, len(frame), len(frame.columns))
-    return frame
+    df_rows = pd.concat(chunks, ignore_index=True)
+    logger.info("Loaded %s: %s rows x %s cols", table.name, len(df_rows), len(df_rows.columns))
+    return df_rows
 
 
 def load_insider_role_evidence(store: DataStore, insider: pd.DataFrame) -> pd.DataFrame:
@@ -119,10 +122,14 @@ def load_insider_role_evidence(store: DataStore, insider: pd.DataFrame) -> pd.Da
 
 def load_fails(store: DataStore, universe: Sequence[str]) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
     """Keep global ZIP/date coverage while retaining only requested economic rows."""
-    coverage, rows = [], []
-    for chunk in store.iter_load(Tables.sec_fails_to_deliver, project=True):
-        coverage.append(chunk[["date", "period"]].drop_duplicates())
-        rows.append(chunk.loc[chunk["ticker"].isin(universe)])
-    if not coverage:
+    coverage_chunks, ticker_chunks = [], []
+
+    # Preserve market-wide observed dates before discarding other tickers' rows.
+    for df_chunk in store.iter_load(Tables.sec_fails_to_deliver, project=True):
+        coverage_chunks.append(df_chunk[["date", "period"]].drop_duplicates())
+        ticker_chunks.append(df_chunk.loc[df_chunk["ticker"].isin(universe)])
+    if not coverage_chunks:
         return None, None
-    return pd.concat(rows, ignore_index=True), pd.concat(coverage, ignore_index=True).drop_duplicates()
+
+    # Assemble the scoped economics and compact global coverage independently.
+    return pd.concat(ticker_chunks, ignore_index=True), pd.concat(coverage_chunks, ignore_index=True).drop_duplicates()

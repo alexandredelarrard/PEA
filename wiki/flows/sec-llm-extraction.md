@@ -2,7 +2,7 @@
 title: SEC and LLM extraction
 description: SEC filing discovery, five focused proxy requests, bounded retries and main-thread persistence.
 type: flow
-source_commit: 63e7d8f9b5331f56a95d8b4815ed208c7dab5653
+source_commit: c3f43e3ad6ae2260fa1020a5ba84107681d40495
 tags:
   - wiki
   - flow
@@ -49,11 +49,11 @@ sequenceDiagram
 
 [retry.py](../../src/data_extract/utils/structure/def14a/retry.py) binds the five schemas/tables. An unattempted section uses `retry=1`; a saved first attempt with a source-present missing key can run once more at `retry=2`. Two is excluded from further calls, including `-F`. There is no call cap, new retry parameter or separate repair command.
 
-[evidence.py](../../src/data_extract/utils/structure/def14a/evidence.py) requires a disclosed value tied to a row or label before repairing an attempted section. Headers, optional silence, dashes and less-than bounds do not prove an exact missing value. An unreadable filing consumes no attempt; a provider failure retains its reserved counter. Empty child sections use hidden `_empty` rows with complete primary keys. Legacy whole-proxy answers/markers prove a first attempt for all domains; a new split archive does not complete its siblings.
+[evidence.py](../../src/data_extract/utils/structure/def14a/evidence.py) requires a disclosed value tied to a row or label before repairing an attempted section. Headers, optional silence, dashes and less-than bounds do not prove an exact missing value. An unreadable filing consumes no attempt; a provider failure retains its reserved counter. Empty child sections use hidden `_empty` rows with complete primary keys. Marker stamps retain only the table's registered keys, filing date and permitted CIK metadata. Legacy whole-proxy answers/markers prove a first attempt for all domains; a new split archive does not complete its siblings.
 
 [postprocess.py](../../src/data_extract/utils/structure/def14a/postprocess.py) applies only declared currency/scale, converts percentages to fractions, preserves fiscal years, zeros, negatives and real changes, and keeps existing non-null facts during partial repair. Unsupported units remain unknown; historical option counts are never priced as dollar awards. No additional cross-filing smoothing is introduced. Existing gender consensus and downstream imputation retain their own contracts.
 
-The original paid JSON is retained inside the versioned `_def14a_split` archive member alongside raw section responses and source text; the outer object remains readable by legacy consumers. Raw answers are saved before postprocessing. A restart can replay them for free. Parent patches contain only their owned columns, so one call cannot clear another block or change another counter.
+The original paid JSON is retained inside the versioned `_def14a_split` archive member alongside raw section responses and source text; the outer object remains readable by legacy consumers. Raw answers are saved before postprocessing. A restart can replay them for free. Each section preserves independently owned facts and counters. Recovering CEO identity also refreshes parent CEO pay and ownership copies from the same filing's already-saved child rows. A matching person's unsupported copies remain unknown, so values selected for another CEO cannot survive the identity repair.
 
 ## Storage and consumers
 

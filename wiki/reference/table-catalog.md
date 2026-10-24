@@ -7,7 +7,7 @@ tags:
   - reference
   - database
   - schema
-source_commit: 63e7d8f9b5331f56a95d8b4815ed208c7dab5653
+source_commit: c3f43e3ad6ae2260fa1020a5ba84107681d40495
 ---
 # Table catalog
 
@@ -113,7 +113,7 @@ The distinction between the two histories is load-bearing: [data extraction](../
 | `def14a_directors` | parent key × person | Per-director attributes, including auditable gender basis and board-membership fields. |
 | `sec_def14a` | ticker × accession | Deterministic inline-XBRL Pay-versus-Performance facts for the post-2022 regulatory regime. Live presence must be checked before use. |
 
-Each child table owns one focused LLM request and its `retry` counter: executive pay, director pay, ownership, and board/CEO/governance. Audit uses the existing parent table, so no sixth table is needed. Parent pay/ownership/roster copies are deterministic summaries; they are not requested twice. Legacy `def14a_json` and appended raw section answers replay for free before any paid repair. See [SEC and LLM extraction](../flows/sec-llm-extraction.md).
+Each child table owns one focused LLM request and its `retry` counter: executive pay, director pay, ownership, and board/CEO/governance. Audit uses the existing parent table, so no sixth table is needed. Parent pay/ownership/roster copies are deterministic summaries; they are not requested twice. Recovering CEO identity refreshes its dependent pay/ownership copies from already-saved, matching child rows. Legacy `def14a_json` and appended raw section answers replay for free before any paid repair. See [SEC and LLM extraction](../flows/sec-llm-extraction.md).
 
 `retry` is BIGINT on all five tables: first attempt one; a source-present missing key can retry once at two; two is excluded even under `-F`. Child `_empty` markers persist failed/empty attempts and are hidden from economic reads (executive markers additionally use fiscal year -1). `DataStore.prepare_def14a_retries()` initializes existing rows once transactionally and preserves later counters. The parent default projection omits JSON/retry; governance and vote-role consumers also ignore parents containing only extraction metadata.
 

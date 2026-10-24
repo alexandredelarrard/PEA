@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 
@@ -76,25 +76,45 @@ def load_insider_role_evidence(store: DataStore, insider: pd.DataFrame) -> pd.Da
     columns = ["ticker", "issuer_cik", "owner_cik", "role_as_of", "officer_title_clean", "role", "role_source"]
     if not {"issuer_cik", "owner_cik", "owner_name", "officer_title"}.issubset(insider):
         return pd.DataFrame(columns=columns)
-    candidates = insider[insider["officer_title"].fillna("").astype(str).str.strip().eq("")].copy()
-    if candidates.empty:
+    blank_title = insider["officer_title"].fillna("").astype(str).str.strip().eq("")
+    if not blank_title.any():
         return pd.DataFrame(columns=columns)
-    ticks = sorted(candidates["ticker"].dropna().astype(str).unique())
+    ticks = sorted(insider.loc[blank_title, "ticker"].dropna().astype(str).unique())
+
+    # Load only proxy rows for tickers with a blank filed title.
     df_proxy = store.load(
         Tables.def14a_executive_comp, columns=["ticker", "cik", "as_of", "name", "title", "fiscal_year"], where={"ticker": ticks}, optional=True
     )
-    owners = insider[["ticker", "issuer_cik", "owner_cik", "owner_name", "filing_date"]].copy()
-    owners["filing_date"] = pd.to_datetime(owners["filing_date"], errors="coerce").dt.normalize()
-    owners = owners.sort_values("filing_date").drop_duplicates(["ticker", "issuer_cik", "owner_cik", "owner_name"])
-    owners["name_key"] = owners["owner_name"].map(owner_name_key)
-    for column in ("issuer_cik", "owner_cik"):
-        owners[column] = owners[column].map(pad_cik).fillna("")
-    identity = ["ticker", "issuer_cik", "name_key"]
-    owners["identity_from"] = pd.to_datetime(owners["filing_date"], errors="coerce").dt.normalize()
-    owners = owners[owners["name_key"].ne("") & owners["owner_cik"].ne("")].dropna(subset=["identity_from"])
-    owners = owners.groupby([*identity, "owner_cik"], as_index=False)["identity_from"].min()
     if df_proxy is None or df_proxy.empty:
         return pd.DataFrame(columns=columns)
+
+    # Match dated public titles only after an actual proxy payload is available.
+    df_owners = _role_owner_identities(insider)
+    df_roles = _match_proxy_roles(df_proxy, df_owners)
+    return df_roles[columns].drop_duplicates()
+
+
+def _role_owner_identities(df_insider: pd.DataFrame) -> pd.DataFrame:
+    """Earliest public owner identity per issuer and strict full-name key."""
+    identity = ["ticker", "issuer_cik", "name_key"]
+    df_owners = df_insider[["ticker", "issuer_cik", "owner_cik", "owner_name", "filing_date"]].copy()
+
+    # Canonicalize each owner before selecting its earliest public identity date.
+    df_owners["filing_date"] = pd.to_datetime(df_owners["filing_date"], errors="coerce").dt.normalize()
+    df_owners = df_owners.sort_values("filing_date").drop_duplicates(["ticker", "issuer_cik", "owner_cik", "owner_name"])
+    df_owners["name_key"] = df_owners["owner_name"].map(owner_name_key)
+    for column in ("issuer_cik", "owner_cik"):
+        df_owners[column] = df_owners[column].map(pad_cik).fillna("")
+    df_owners["identity_from"] = df_owners["filing_date"]
+    df_owners = df_owners[df_owners["name_key"].ne("") & df_owners["owner_cik"].ne("")].dropna(subset=["identity_from"])
+    return cast(pd.DataFrame, df_owners.groupby([*identity, "owner_cik"], as_index=False)["identity_from"].min())
+
+
+def _match_proxy_roles(df_proxy: pd.DataFrame, df_owners: pd.DataFrame) -> pd.DataFrame:
+    """Match same-issuer owners and preserve public ambiguity/conflict barriers."""
+    identity = ["ticker", "issuer_cik", "name_key"]
+
+    # Normalize explicit titles and retain the latest fiscal-year record per publication.
     df_proxy["issuer_cik"] = df_proxy["cik"].map(pad_cik).fillna("")
     df_proxy["name_key"] = df_proxy["name"].map(owner_name_key)
     df_proxy["role_as_of"] = pd.to_datetime(df_proxy["as_of"], errors="coerce").dt.normalize()
@@ -104,10 +124,10 @@ def load_insider_role_evidence(store: DataStore, insider: pd.DataFrame) -> pd.Da
     df_proxy = df_proxy[df_proxy["fiscal_year"].eq(latest)].dropna(subset=["role_as_of"])
     # Explicit non-management/former titles are history barriers; parent CEO fallback is not evidence.
     df_proxy = df_proxy[df_proxy["officer_title_clean"].ne("")]
-    df_proxy = df_proxy.merge(owners, on=identity, how="inner")
+    df_proxy = df_proxy.merge(df_owners, on=identity, how="inner")
     df_proxy["role_as_of"] = df_proxy[["role_as_of", "identity_from"]].max(axis=1)
     # Name uniqueness is evaluated when the mapping becomes public, never against future owners.
-    identities = owners.set_index(identity)
+    identities = df_owners.set_index(identity)
     for _, group in df_proxy.groupby(identity, sort=False):
         first = identities.loc[tuple(group.iloc[0][identity])]["identity_from"]
         if isinstance(first, pd.Timestamp):
@@ -117,7 +137,7 @@ def load_insider_role_evidence(store: DataStore, insider: pd.DataFrame) -> pd.Da
     df_proxy["role_source"] = "explicit_proxy_title"
     conflicted = df_proxy.groupby(["ticker", "issuer_cik", "owner_cik", "role_as_of"])["role"].transform("nunique").gt(1)
     df_proxy.loc[conflicted, ["role", "officer_title_clean"]] = [OTHER_OFFICER, "conflicting roles"]
-    return df_proxy[columns].drop_duplicates()
+    return df_proxy
 
 
 def load_fails(store: DataStore, universe: Sequence[str]) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:

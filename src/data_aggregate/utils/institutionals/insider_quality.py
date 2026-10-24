@@ -1,26 +1,14 @@
-"""
-insider_quality.py  (src/data_aggregate/utils/institutionals/insider_quality.py)
--------------------------------------------------------------------
-Scope and repair the Form 3/4/5 transaction log before any feature is summed off it.
+"""Canonical insider identities, common-stock scope, public filing versions and quote quality.
 
-Scope: non-derivative common-stock P/S, positive finite shares and a usable unit price.
-Prices are compared with independent as-traded quotes on the transaction date. Within10% keeps
-the filed execution; only gross corruption uses an explicitly estimated quote. Exact dated
-source evidence can correct a price or mark/retire a disputed quantity prospectively. Canonical
-USD is shares times cleaned unit price. Titles, owner identity and flags are cleaned here once.
-
-Versions: a trade repeated in a later accession (same ticker, transaction day, code, shares, price
-and post-trade holding) is kept once, from its earliest filing. An amendment replaces the original's
-whole (transaction day, code, security type) cell from its own filing day; every row carries the day
-the trade was first disclosed (`anchor`) and the interval `[visible_from, visible_until)` in which its
-record is the one known. The stored table is never deduplicated.
+Corrections retain original disclosure anchors and half-open visibility intervals.
+Unsupported quantities and execution prices remain separate evidence for downstream masks.
 """
 
 from __future__ import annotations
 
 import logging
 import re
-from typing import cast
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -161,7 +149,7 @@ def _canonical_inputs(df_rows: pd.DataFrame, role_evidence: pd.DataFrame | None)
         df_rows[column + "_raw"] = df_rows.get(column, values)
         df_rows[column] = values.where(np.isfinite(values))
     for column in ("is_director", "is_officer", "is_ten_pct_owner", "is_10b5_1"):
-        values = df_rows.get(column, pd.Series(np.nan, index=df_rows.index)).replace({"Y": 1, "N": 0, "true": 1, "false": 0})
+        values = cast(pd.Series, df_rows.get(column, pd.Series(np.nan, index=df_rows.index))).replace({"Y": 1, "N": 0, "true": 1, "false": 0})
         df_rows[column] = pd.to_numeric(values, errors="coerce").where(lambda x: x.isin([0, 1]))
     titles = df_rows["officer_title_clean"]
     df_rows["role"] = titles.map({title: officer_role(title) for title in titles.unique()})
@@ -174,7 +162,6 @@ def _canonical_inputs(df_rows: pd.DataFrame, role_evidence: pd.DataFrame | None)
 def _fill_prior_roles(df_rows: pd.DataFrame, role_evidence: pd.DataFrame | None) -> pd.DataFrame:
     """Fill only blank current officer titles; later/conflicting evidence never overwrites a row."""
     keys = ["ticker", "issuer_cik", "owner_cik"]
-    df_rows["role_as_of"] = to_day(df_rows["filing_date"])
     df_prior = df_rows.loc[df_rows["owner_cik"].ne(""), [*keys, "role_as_of", "officer_title_clean", "role"]].copy()
     df_prior["role_source"] = "prior_form4"
     df_prior = df_prior[df_prior["officer_title_clean"].ne("") & df_prior["role_as_of"].notna()]
@@ -251,16 +238,17 @@ def _apply_assessments(df_rows: pd.DataFrame, assessments: tuple[dict[str, objec
     if "accession_number" not in df_rows:
         return df_rows
     for evidence in sorted(assessments, key=lambda x: str(x["public_from"])):
-        date = pd.Timestamp(evidence["public_from"])
-        affected = df_rows["accession_number"].eq(evidence["accession_number"]) & (
+        date = pd.Timestamp(cast(str, evidence["public_from"]))
+        affected = df_rows["accession_number"].eq(cast(str, evidence["accession_number"])) & (
             df_rows["visible_until"].isna() | df_rows["visible_until"].gt(date)
         )
         for column, value in cast(dict[str, object], evidence.get("match", {})).items():
-            affected &= df_rows[column].eq(value)
+            affected &= df_rows[column].eq(cast(str | float | pd.Timestamp, value))
         if not affected.any():
             continue
         df_new = df_rows.loc[affected].copy()
-        starts = df_new["visible_from"].clip(lower=date)
+        # Pandas accepts datetime clip bounds; its numeric-only stub does not.
+        starts = df_new["visible_from"].clip(lower=cast(Any, date))
         before = affected & df_rows["visible_from"].lt(date)
         df_rows.loc[before, "visible_until"] = date
         df_rows = df_rows.loc[~(affected & ~before)].copy()
@@ -273,7 +261,7 @@ def _apply_assessments(df_rows: pd.DataFrame, assessments: tuple[dict[str, objec
         elif evidence["state"] == "uncertain_price":
             df_new[["price_clean", "value"]] = np.nan
         elif evidence["state"] == "corrected_price":
-            df_new["price_clean"] = float(evidence["price_per_share"])
+            df_new["price_clean"] = float(cast(str | float, evidence["price_per_share"]))
             df_new["value"] = df_new["shares_n"] * df_new["price_clean"]
             df_new["price_repaired"] = True
             df_new["price_estimated"] = False
@@ -339,32 +327,47 @@ def clean_transactions(
     assessments: tuple[dict[str, object], ...] | None = None,
     share_basis: ShareBasis | None = None,
 ) -> tuple[pd.DataFrame, dict]:
-    """Scope to priced common-stock open-market trades and repair the mispriced ones.
-
-    Returns `(frame, diagnostics)`. Added columns: `code`, `day` (normalised `filing_date`, the
-    point-in-time stamp, never `transaction_date`), `value` (repaired USD), `shares_n`,
-    `price_repaired`, `role`, `in_exercise_package` (an `S` sharing accession and transaction
-    date with an `M`) and `VISIBILITY_COLUMNS` (see `versioned_records`). Derivative, non-common
-    and unpriced rows are dropped, never zero-filled; later repeat copies are dropped.
-    """
-
+    """Return priced common-stock P/S versions and diagnostics for unsupported evidence."""
     need = {"ticker", "filing_date", "transaction_code", "shares"}
     diag: dict = {"input_rows": 0 if insider is None else len(insider)}
     if insider is None or insider.empty or not need.issubset(insider.columns):
         return pd.DataFrame(), diag
 
+    # Canonicalize identities, titles and amounts before selecting common-stock P/S.
     df_trades = _canonical_inputs(insider, role_evidence)
+    df_trades, scope_counts = _scope_transactions(df_trades)
+    diag.update(scope_counts)
+
+    # Resolve public versions before separating unsupported quantities/classes.
+    df_trades, versions = versioned_records(df_trades, df_trades["price_per_share"])
+    diag.update(versions)
+    unsupported = ~df_trades["shares_n"].gt(0) | df_trades["scope_unknown"]
+    diag["unsupported_events"] = df_trades.loc[unsupported].assign(quality_uncertain=True).copy()
+    df_trades = df_trades[~unsupported]
+
+    # Apply quote checks and dated source evidence, retaining unpriced share claims.
+    df_trades, price_counts = _clean_trade_prices(df_trades, as_traded_quotes, share_basis, price_tolerance, max_price_age_days, assessments)
+    diag.update(price_counts)
+
+    # Report the same economic and filing-version counts after cleaning.
+    _log_transaction_diagnostics(diag)
+    return df_trades, diag
+
+
+def _scope_transactions(df_trades: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    """Select common-stock P/S while retaining unknown scope and non-P/S flow evidence."""
+    diag: dict = {}
     df_trades["code"] = df_trades["transaction_code"].astype(str).str.upper().str.strip()
     df_trades["day"] = to_day(df_trades["filing_date"])
-    df_trades["shares_n"] = pd.to_numeric(df_trades["shares"], errors="coerce")
+    df_trades["shares_n"] = df_trades["shares"]
+
+    # Capture source coverage and other account flows before the P/S scope cut.
     diag["source_first"] = df_trades.loc[df_trades["ticker"].ne("") & df_trades["day"].notna()].groupby("ticker")["day"].min()
     diag["other_flows"] = (
         df_trades.loc[~df_trades["code"].isin(OPEN_MARKET_CODES), ["ticker", "owner_cik", "transaction_day", "day", "code", "security_type"]].copy()
         if "security_type" in df_trades
         else pd.DataFrame()
     )
-    pps = pd.to_numeric(cast(pd.Series, df_trades.get("price_per_share")), errors="coerce")
-
     # Computed before the scope cut, which removes the derivative `M` leg of the package.
     df_trades["in_exercise_package"] = _exercise_packages(df_trades)
 
@@ -381,16 +384,23 @@ def clean_transactions(
         df_trades = df_trades[common_stock_mask(df_trades["security_title"]) | unknown_title]
 
     df_trades = df_trades[df_trades["code"].isin(OPEN_MARKET_CODES) & df_trades["day"].notna() & (df_trades["ticker"] != "")]
-    pps = pps.reindex(df_trades.index)
     diag["scoped_rows"] = int((df_trades["shares_n"].gt(0) & ~df_trades["scope_unknown"]).sum())
-    df_trades, versions = versioned_records(df_trades, pps)
-    diag.update(versions)
-    # Unknown quantities/classes share correction/expiry intervals with usable disclosures.
-    unsupported = ~df_trades["shares_n"].gt(0) | df_trades["scope_unknown"]
-    diag["unsupported_events"] = df_trades.loc[unsupported].assign(quality_uncertain=True).copy()
-    df_trades = df_trades[~unsupported]
-    pps = df_trades["price_per_share"]
+    return df_trades, diag
 
+
+def _clean_trade_prices(
+    df_trades: pd.DataFrame,
+    as_traded_quotes: pd.DataFrame | None,
+    share_basis: ShareBasis | None,
+    price_tolerance: float,
+    max_price_age_days: int,
+    assessments: tuple[dict[str, object], ...] | None,
+) -> tuple[pd.DataFrame, dict]:
+    """Check execution prices against quotes and separate priced, unpriced and uncertain records."""
+    diag: dict = {}
+    filed_price = df_trades["price_per_share"]
+
+    # Match only supported transaction-date/class quotes in the declared share units.
     ref = pd.Series(np.nan, index=df_trades.index, dtype=float)
     if as_traded_quotes is not None and not as_traded_quotes.empty:
         quotes = _period_close(as_traded_quotes, df_trades["transaction_day"], max_price_age_days)
@@ -402,17 +412,21 @@ def clean_transactions(
             units = share_basis.factor(df_trades["ticker"], df_trades["transaction_day"], "units")
             declared = share_basis.declared_units(df_trades["ticker"], df_trades["transaction_day"], df_trades["security_title"])
             ref *= declared / units
-    ratio = pps / ref.where(ref.gt(0))
+
+    # Repair gross corruption and apply dated assessments in their original order.
+    ratio = filed_price / ref.where(ref.gt(0))
     bad = ratio.gt(price_tolerance)
     low = ratio.lt(1.0 / price_tolerance)
     df_trades["price_check_ratio"] = ratio
     df_trades["price_outside_band"] = ratio.notna() & ~ratio.between(0.90, 1.10)
-    df_trades["price_clean"] = pps.where(~bad, ref)
+    df_trades["price_clean"] = filed_price.where(~bad, ref)
     df_trades["price_repaired"] = bad
     df_trades["price_estimated"] = bad
     raw_value = pd.to_numeric(df_trades.loc[df_trades["price_clean"].gt(0), "value_usd"], errors="coerce")
     df_trades["value"] = df_trades["shares_n"] * df_trades["price_clean"]
     df_trades = _apply_assessments(df_trades, _source_assessments() if assessments is None else assessments)
+
+    # Preserve unpriced share evidence and the existing diagnostic denominators.
     priced = df_trades["price_clean"].gt(0)
     diag["dropped_unpriced"] = int((~priced).sum())
     total_shares = df_trades["shares_n"].sum()
@@ -430,8 +444,11 @@ def clean_transactions(
     diag["roles_imputed"] = int(df_trades["role_source"].ne("filed").sum())
     diag["outside_price_band"] = int(df_trades["price_outside_band"].sum())
     diag["uncertain_rows"] = len(diag["uncertain_events"])
-    # Unsupported non-P/S account flows forbid reconstructing a starting position from P/S alone.
+    return df_trades, diag
 
+
+def _log_transaction_diagnostics(diag: dict) -> None:
+    """Report cleaned value totals, excluded prices and public filing-version counts."""
     _log.info(
         "insider: %s rows -> %s scoped, %s unpriced dropped, %s overpriced repaired, %s underpriced left as filed ($%.3ftn -> $%.3fbn)",
         diag["input_rows"],
@@ -455,7 +472,6 @@ def clean_transactions(
         diag["amendment_cells_new"],
         diag["amendment_cells_identical"],
     )
-    return df_trades, diag
 
 
 def _exercise_packages(t: pd.DataFrame) -> pd.Series:

@@ -1,6 +1,7 @@
 from src.context import get_config_context
 from src.modelling.steps.step_long_short import StepLongShort
 
+
 if __name__ == "__main__":
     config, context = get_config_context("./configs", use_cache=False, save=True)
 
@@ -8,7 +9,7 @@ if __name__ == "__main__":
     # self.run()
 
     # self = StepBuildCube(context=context, config=config)
-    # self.run(full=True
+    # self.run(full=True)
 
     self = StepLongShort(context=context, config=config)
     # self.run()

@@ -106,10 +106,12 @@ class StepCubeText(Step):
         if not valid.empty:
             valid = valid.merge(source, on=["ticker", "quarter"], suffixes=("", "_source"))
             valid = valid[valid["as_of"].eq(valid["as_of_source"])].drop(columns="as_of_source")
-        embedding = embedding if embedding is not None else pd.DataFrame(columns=["ticker", "quarter", "seq", "as_of", "model"])
-        source_keys = set(map(tuple, source[["ticker", "quarter"]].to_numpy()))
         scored = completed_sentiment_calls(valid)
+
+        # clean embedding
+        embedding = embedding if embedding is not None else pd.DataFrame(columns=["ticker", "quarter", "seq", "as_of", "model"])
         embedded = completed_embedding_calls(embedding, self._embedding_cache, source)
+        source_keys = set(map(tuple, source[["ticker", "quarter"]].to_numpy()))
         plan = TextPlan(
             window=window,
             source=source,
@@ -300,6 +302,7 @@ class StepCubeText(Step):
             plan.embedding_work.discard((str(call.ticker), str(call.quarter)))
             completed += 1
             turns += len(rows)
+
         self._log.info("Embedding: %d calls/%d turns saved, %d stale turns removed.", completed, turns, removed)
 
     def run_features(self, calendar: pd.DatetimeIndex, plan: TextPlan) -> None:

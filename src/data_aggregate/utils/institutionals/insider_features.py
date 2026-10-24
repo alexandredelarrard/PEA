@@ -1,36 +1,13 @@
-"""Insider features from canonical common-stock P/S disclosures.
+"""Raw insider features on original-disclosure windows and public correction intervals.
 
-The cleaner owns identities, titles, amounts, independent transaction-date quote checks,
-and publication/version intervals. Contributions are available on the filing day, visible
-while visible_from <= day < visible_until, and age from their original disclosure.
-
-The twelve existing fields retain raw economic units:
-- buy_value_mcap_60d: trailing60-calendar-day purchase dollars/current market cap.
-- buy_value_mcap_180d: trailing180-calendar-day purchase dollars/market cap.
-- distinct_buyers_120d and cluster_buy_120d: trailing distinct-owner count, cluster >=2.
-- ceo/cfo/director_buy_mcap_180d: trailing180-day role purchase dollars/current market cap.
-- purchase_pct_prior: cumulative60-day bought shares/pooled buying-account starting holdings.
-- owner_surprise_120d: cumulative purchase-dollar-weighted rank over120 disclosure days.
-- net_buy_ratio_180d: (purchase dollars-sale dollars)/(purchase dollars+sale dollars).
-- discretionary/planned_sell_mcap_60d: trailing60-day sale dollars/market cap.
-
-Owner surprise compares purchase dollars with strictly earlier disclosure days, using
-then-visible owner-wide history. A complete, corroborated window without purchases emits
-zero as a no-purchase signal; active purchases without comparison history remain unknown.
-The only added field, management_position_change_60d,
-pools supported direct CEO/CFO/COO accounts: cumulative60-day net P/S shares / starting
-holdings counted once per active account. Known shares
-remain usable when execution prices are missing; uncertain share claims contaminate
-dependent holdings math. Unsupported balances/classes abstain.
-
-The legacy decay_halflife argument remains accepted for caller compatibility; these fields
-use actual calendar windows. Public corrections replace only then-visible
-states and never refresh an original disclosure anchor. No peer-relative leg is emitted.
+Complete, corroborated inactivity can be zero; unsupported prices, quantities and account
+balances mask only dependent fields. Owner ranks use strictly earlier visible disclosures.
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 
 import numpy as np
 import pandas as pd
@@ -44,19 +21,6 @@ from src.data_aggregate.utils.institutionals.insider_positions import cumulative
 from src.data_aggregate.utils.institutionals.insider_quality import FLAG_PCT_SHARES_OUTSTANDING, clean_transactions, report_oversized, security_class
 from src.data_store.schema import Tables
 from src.utils.price_adjustments import ShareBasis
-
-
-def _absent(df: pd.DataFrame | None, need: set[str] | None = None) -> bool:
-    """True when `df` cannot be built from: missing, empty, or short a required column.
-
-    The three-part test is the D5 entry contract stated once. `need` is the set the builder
-    dereferences unconditionally -- a column it only uses `if present` does NOT belong here,
-    or an optional projection turns into an empty panel.
-    """
-    if df is None or df.empty:
-        return True
-    return bool(need) and not need.issubset(df.columns)
-
 
 _log = logging.getLogger(__name__)
 
@@ -115,14 +79,16 @@ def build_insider_feature_panel(
     if insider is None or insider.empty or not need.issubset(insider.columns):
         return _empty_panel()
 
+    # Clean source versions once and establish the complete calculation calendar.
     df_trades, diag = clean_transactions(insider, as_traded_quotes=as_traded_quotes, role_evidence=role_evidence, share_basis=share_basis)
     df_unpriced = diag.get("unpriced_events", pd.DataFrame(columns=["ticker", "day", "code"]))
     idx = pd.DatetimeIndex(frames.trading_index).normalize().unique().sort_values()
     if idx.empty:
         return pd.DataFrame(columns=["date", "ticker"])
 
-    stock_close = frames.close_split
-    mcap = _market_cap(shares_out_history, stock_close, frames.level_factor)
+    # Prepare the distinct valuation and as-traded share denominators.
+    df_stock_close = frames.close_split
+    df_mcap = _market_cap(shares_out_history, df_stock_close, frames.level_factor)
     df_shares_out = (
         fundamentals_to_daily(shares_out_history, "sharesOutstandingPit", idx, share_basis=share_basis)
         if shares_out_history is not None and not shares_out_history.empty
@@ -130,74 +96,101 @@ def build_insider_feature_panel(
     )
     _report_oversized(df_trades, df_shares_out)
 
+    # Reconstruct positions with disclosed shares even when execution dollars are unknown.
     df_buys = df_trades[df_trades["code"].eq("P")].copy()
     df_sells = df_trades[df_trades["code"].eq("S")].copy()
     # Missing dollars do not invalidate disclosed shares or post-trade holdings.
     df_position_trades = position_units(pd.concat([df_trades, df_unpriced], ignore_index=True), frames, as_traded_quotes, share_basis)
-    other_flows = diag.get("other_flows", pd.DataFrame())
-    df_positions = _daily_positions(df_position_trades, other_flows)
+    df_other_flows = diag.get("other_flows", pd.DataFrame())
+    df_positions = _daily_positions(df_position_trades, df_other_flows)
 
+    # Calculate raw feature groups before applying source and identity masks.
     insider_floor = availability.source_date(Tables.insider_transactions) if availability is not None else INSIDER_FLOOR
     ten_b5_floor = availability.source_date(Tables.insider_transactions, "is_10b5_1") if availability is not None else TEN_B5_1_FLOOR
     fields = {
-        **_dense_fields(df_buys, df_sells, idx, mcap, ten_b5_floor),
+        **_dense_fields(df_buys, df_sells, idx, df_mcap, ten_b5_floor),
         **_breadth_fields(df_buys, idx),
-        **_sparse_fields(df_buys, idx, mcap),
-        **cumulative_positions(df_position_trades, df_positions, other_flows, idx, WINDOW_60),
+        **_sparse_fields(df_buys, idx, df_mcap),
+        **cumulative_positions(df_position_trades, df_positions, df_other_flows, idx, WINDOW_60),
     }
     fields = _gate_dates(fields, idx, insider_floor, complete_through)
 
+    # Establish observable quiet windows, preserving unsupported active disclosures.
     frontier = pd.Timestamp(complete_through) if complete_through is not None and pd.notna(complete_through) else None
     columns = pd.Index(sorted(map(str, frames.universe)), name="ticker")
-    listed = _listed(stock_close, idx, columns)
+    df_listed = _listed(df_stock_close, idx, columns)
     df_unsupported = diag.get("unsupported_events", pd.DataFrame())
     df_activity = pd.concat([df_trades, df_unpriced, df_unsupported], ignore_index=True)
-    _observe_quiet_windows(fields, df_activity, diag["source_first"], idx, columns, listed, insider_floor, ten_b5_floor, frontier, availability, mcap)
+    _observe_quiet_windows(
+        fields, df_activity, diag["source_first"], idx, columns, df_listed, insider_floor, ten_b5_floor, frontier, availability, df_mcap
+    )
 
+    # Propagate uncertainty through dollar windows, account balances and prior-owner ranks.
     df_uncertain = pd.concat([diag.get("uncertain_events", pd.DataFrame()), df_unsupported], ignore_index=True)
-    unpriced_masks = _unpriced_masks(pd.concat([df_unpriced, df_uncertain], ignore_index=True), idx)
-    if not df_uncertain.empty and not df_positions.empty:
-        keys = ["ticker", "owner_cik"]
-        df_dependency_unknown = df_uncertain[keys + ["visible_from", "visible_until"]].copy()
-        df_dependency_unknown["visible_until"] = _window_stop(df_uncertain, WINDOW_60)
-        dependencies = df_positions.merge(df_dependency_unknown, on=keys, suffixes=("", "_unknown"))
-        dependencies["visible_from"] = dependencies[["visible_from", "visible_from_unknown"]].max(axis=1)
-        dependencies["visible_until"] = dependencies[["visible_until", "visible_until_unknown"]].min(axis=1)
-        dependencies = dependencies[dependencies["visible_until"].isna() | dependencies["visible_from"].lt(dependencies["visible_until"])]
-        seen = pd.DataFrame(True, index=idx, columns=pd.Index(sorted(dependencies["ticker"].unique()), name="ticker"))
-        for name, selector, window in (
-            ("ic_insider_purchase_pct_prior", dependencies["buy_shares"].gt(0), WINDOW_60),
-            ("ic_insider_management_position_change_60d", dependencies["is_management"], WINDOW_60),
-        ):
-            affected = _rolling(dependencies[selector], idx, window, None, seen).gt(0)
-            previous = unpriced_masks.get(name, pd.DataFrame())
-            unpriced_masks[name] = previous.combine(affected, lambda a, b: a.fillna(False) | b.fillna(False))
-    # A later rank can depend on an earlier uncertain purchase on another ticker.
     df_unknown = pd.concat([df_unpriced, df_uncertain], ignore_index=True)
-    if not df_unknown.empty and "owner_cik" in df_unknown and "owner_cik" in df_buys:
-        df_pair = df_buys[["ticker", "owner_cik", "anchor", "visible_from", "visible_until"]].merge(
-            df_unknown.loc[df_unknown["code"].eq("P"), ["owner_cik", "anchor", "visible_from", "visible_until"]],
-            on="owner_cik",
-            suffixes=("", "_prior"),
-        )
-        affected = (
-            df_pair["owner_cik"].ne("")
-            & df_pair["anchor_prior"].lt(df_pair["anchor"])
-            & df_pair["visible_from_prior"].le(df_pair["visible_from"])
-            & (df_pair["visible_until_prior"].isna() | df_pair["visible_until_prior"].gt(df_pair["visible_from"]))
-        )
-        df_dep = df_pair.loc[affected, ["ticker", "anchor", "visible_from", "visible_until"]].drop_duplicates()
-        if not df_dep.empty:
-            columns_dep = pd.Index(sorted(df_dep["ticker"].unique()), name="ticker")
-            seen_dep = pd.DataFrame(True, index=idx, columns=columns_dep)
-            dep_mask = _rolling(df_dep, idx, WINDOW_120, None, seen_dep).gt(0)
-            previous = unpriced_masks.get("ic_insider_owner_surprise_120d", pd.DataFrame())
-            unpriced_masks["ic_insider_owner_surprise_120d"] = previous.combine(dep_mask, lambda a, b: a.fillna(False) | b.fillna(False))
+    unpriced_masks = _unpriced_masks(df_unknown, idx)
+    _add_position_uncertainty(unpriced_masks, df_uncertain, df_positions, idx)
+    _add_owner_uncertainty(unpriced_masks, df_unknown, df_buys, idx)
     _mask_unknown_windows(fields, unpriced_masks)
 
+    # Emit the existing raw float32 fields with own-price availability.
     _log.info("insider panel: %s features from %s scoped transactions (%s buys, %s sells)", len(fields), len(df_trades), len(df_buys), len(df_sells))
     emission = {name: EMISSION[name] for name in fields}
     return build_peer_relative_panel(fields, frames.peers, emission=emission, availability=frames.availability)
+
+
+def _add_position_uncertainty(masks: dict[str, pd.DataFrame], df_uncertain: pd.DataFrame, df_positions: pd.DataFrame, idx: pd.DatetimeIndex) -> None:
+    """Mask account ratios while their visible holdings depend on uncertain quantities."""
+    keys = ["ticker", "owner_cik"]
+    if df_uncertain.empty or df_positions.empty:
+        return
+
+    # Intersect account-position visibility with the uncertain disclosure's active window.
+    df_unknown = df_uncertain[keys + ["visible_from", "visible_until"]].copy()
+    df_unknown["visible_until"] = _window_stop(df_uncertain, WINDOW_60)
+    df_dependencies = df_positions.merge(df_unknown, on=keys, suffixes=("", "_unknown"))
+    df_dependencies["visible_from"] = df_dependencies[["visible_from", "visible_from_unknown"]].max(axis=1)
+    df_dependencies["visible_until"] = df_dependencies[["visible_until", "visible_until_unknown"]].min(axis=1)
+    df_dependencies = df_dependencies[df_dependencies["visible_until"].isna() | df_dependencies["visible_from"].lt(df_dependencies["visible_until"])]
+    df_seen = pd.DataFrame(True, index=idx, columns=pd.Index(sorted(df_dependencies["ticker"].unique()), name="ticker"))
+
+    # Extend each field's existing unknown mask without erasing other uncertainty.
+    for name, selector in (
+        ("ic_insider_purchase_pct_prior", df_dependencies["buy_shares"].gt(0)),
+        ("ic_insider_management_position_change_60d", df_dependencies["is_management"]),
+    ):
+        df_affected = _rolling(df_dependencies[selector], idx, WINDOW_60, None, df_seen).gt(0)
+        df_previous = masks.get(name, pd.DataFrame())
+        masks[name] = df_previous.combine(df_affected, lambda a, b: a.fillna(False) | b.fillna(False))
+
+
+def _add_owner_uncertainty(masks: dict[str, pd.DataFrame], df_unknown: pd.DataFrame, df_buys: pd.DataFrame, idx: pd.DatetimeIndex) -> None:
+    """Mask later ranks that depend on an earlier uncertain purchase by the same owner."""
+    if df_unknown.empty or "owner_cik" not in df_unknown or "owner_cik" not in df_buys:
+        return
+
+    # Find earlier purchases actually visible when the later purchase was disclosed.
+    df_pairs = df_buys[["ticker", "owner_cik", "anchor", "visible_from", "visible_until"]].merge(
+        df_unknown.loc[df_unknown["code"].eq("P"), ["owner_cik", "anchor", "visible_from", "visible_until"]],
+        on="owner_cik",
+        suffixes=("", "_prior"),
+    )
+    affected = (
+        df_pairs["owner_cik"].ne("")
+        & df_pairs["anchor_prior"].lt(df_pairs["anchor"])
+        & df_pairs["visible_from_prior"].le(df_pairs["visible_from"])
+        & (df_pairs["visible_until_prior"].isna() | df_pairs["visible_until_prior"].gt(df_pairs["visible_from"]))
+    )
+    df_dependencies = df_pairs.loc[affected, ["ticker", "anchor", "visible_from", "visible_until"]].drop_duplicates()
+    if df_dependencies.empty:
+        return
+
+    # Propagate the dependency through the same 120-day rank window.
+    columns = pd.Index(sorted(df_dependencies["ticker"].unique()), name="ticker")
+    df_seen = pd.DataFrame(True, index=idx, columns=columns)
+    df_affected = _rolling(df_dependencies, idx, WINDOW_120, None, df_seen).gt(0)
+    df_previous = masks.get("ic_insider_owner_surprise_120d", pd.DataFrame())
+    masks["ic_insider_owner_surprise_120d"] = df_previous.combine(df_affected, lambda a, b: a.fillna(False) | b.fillna(False))
 
 
 def _gate_dates(
@@ -692,38 +685,51 @@ def _daily_positions(trades: pd.DataFrame, other_flows: pd.DataFrame) -> pd.Data
     if slow_keys:
         df_slow = df_rows[pd.MultiIndex.from_frame(df_rows[keys]).isin(slow_keys)]
         records_out = []
-        for key, group in df_slow.groupby(keys, sort=False):
-            points = sorted(set(group["visible_from"]) | set(group["visible_until"].dropna()) | set(group["other_day"].dropna()))
-            for i, point in enumerate(points):
-                visible = group[group["visible_from"].le(point) & (group["visible_until"].isna() | group["visible_until"].gt(point))]
-                if visible.empty or (visible["other_day"].notna() & visible["other_day"].le(point)).any():
-                    continue
-                start = _starting_balance(visible)
-                if not np.isfinite(start) or start < 0:
-                    continue
-                record = dict(zip(keys, key, strict=True))
-                record.update(
-                    anchor=group["anchor"].min(),
-                    visible_from=point,
-                    visible_until=points[i + 1] if i + 1 < len(points) else pd.NaT,
-                    starting=start,
-                    net_shares=float(visible["delta"].sum()),
-                    buy_shares=float(visible["buy_shares"].sum()),
-                    value=float(visible["buy_value"].sum()),
-                    is_management=bool(visible["is_management"].any()),
-                )
-                records_out.append(record)
+        for key, df_group in df_slow.groupby(keys, sort=False):
+            account = dict(zip(keys, key, strict=True))
+            records_out.extend(_account_day_versions(df_group, account))
         if records_out:
             results.append(pd.DataFrame(records_out)[columns])
-    result = pd.concat(results, ignore_index=True)
-    result = result[result["starting"].ge(0)]
+    df_result = pd.concat(results, ignore_index=True)
+    df_result = df_result[df_result["starting"].ge(0)]
     _log.info(
         "insider positions: %s supported account-day versions from %s direct rows; %s zero-prior versions",
-        len(result),
+        len(df_result),
         len(df_rows),
-        int(result["starting"].eq(0).sum()),
+        int(df_result["starting"].eq(0).sum()),
     )
-    return result
+    return df_result
+
+
+def _account_day_versions(df_group: pd.DataFrame, account: Mapping[str, object]) -> list[dict[str, object]]:
+    """Reconstruct one account/economic day's balances at its public version boundaries."""
+    points = sorted(set(df_group["visible_from"]) | set(df_group["visible_until"].dropna()) | set(df_group["other_day"].dropna()))
+    anchor = df_group["anchor"].min()
+    records: list[dict[str, object]] = []
+
+    # Sweep disclosure/expiry boundaries, excluding publicly unsupported account flows.
+    for i, point in enumerate(points):
+        df_visible = df_group[df_group["visible_from"].le(point) & (df_group["visible_until"].isna() | df_group["visible_until"].gt(point))]
+        if df_visible.empty or (df_visible["other_day"].notna() & df_visible["other_day"].le(point)).any():
+            continue
+        start = _starting_balance(df_visible)
+        if not np.isfinite(start) or start < 0:
+            continue
+
+        # Keep each supported balance visible only until the next public boundary.
+        record = dict(account)
+        record.update(
+            anchor=anchor,
+            visible_from=point,
+            visible_until=points[i + 1] if i + 1 < len(points) else pd.NaT,
+            starting=start,
+            net_shares=float(df_visible["delta"].sum()),
+            buy_shares=float(df_visible["buy_shares"].sum()),
+            value=float(df_visible["buy_value"].sum()),
+            is_management=bool(df_visible["is_management"].any()),
+        )
+        records.append(record)
+    return records
 
 
 def _owner_surprise(ev: pd.DataFrame) -> pd.DataFrame | None:

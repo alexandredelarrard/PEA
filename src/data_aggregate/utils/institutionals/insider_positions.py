@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 import pandas as pd
 
@@ -16,28 +18,32 @@ def position_units(trades: pd.DataFrame, frames: PriceFrames, quotes: pd.DataFra
     A single economic day needs no cross-day conversion. Multi-day balances require a
     known common unit: the as-traded and adjusted price legs must share their quote date.
     """
-    rows = trades.copy()
-    rows["klass"] = security_class(rows["security_title"])
-    factor = pd.Series(np.nan, index=rows.index)
+    df_rows = trades.copy()
+    df_rows["klass"] = security_class(df_rows["security_title"])
+    factor = pd.Series(np.nan, index=df_rows.index)
+
+    # Resolve conversion factors only from matching as-traded and adjusted quote dates.
     if quotes is not None and not quotes.empty and frames.close_split is not None:
-        basis = frames.close_split
+        df_basis = frames.close_split
         if frames.level_factor is not None:
-            basis = basis * frames.level_factor.reindex_like(basis)
-        factors = quotes / basis.reindex_like(quotes).where(basis.reindex_like(quotes).gt(0))
-        row = factors.index.get_indexer(pd.DatetimeIndex(rows["transaction_day"]))
-        col = factors.columns.get_indexer(rows["ticker"])
+            df_basis = df_basis * frames.level_factor.reindex_like(df_basis)
+        df_factors = quotes / df_basis.reindex_like(quotes).where(df_basis.reindex_like(quotes).gt(0))
+        row = df_factors.index.get_indexer(pd.DatetimeIndex(df_rows["transaction_day"]))
+        col = df_factors.columns.get_indexer(pd.Index(df_rows["ticker"]))
         known = (row >= 0) & (col >= 0)
-        factor.iloc[known] = factors.to_numpy()[row[known], col[known]]
-        factor = factor.where(rows["klass"].eq("COMMON"))
+        factor.iloc[np.flatnonzero(known)] = pd.Series(df_factors.to_numpy()[row[known], col[known]], dtype=float)
+        factor = factor.where(df_rows["klass"].eq("COMMON"))
+
+    # Apply explicit share-unit policies before scaling both quantities and balances.
     if share_basis is not None:
-        configured = rows["ticker"].isin(share_basis.policies)
-        declared = share_basis.declared_units(rows["ticker"], rows["transaction_day"], rows["security_title"])
-        actual = share_basis.factor(rows["ticker"], rows["transaction_day"], "actual")
-        factor.loc[configured] = (actual * declared).loc[configured].where(rows.loc[configured, "klass"].eq("COMMON"))
-    rows["units_known"] = factor.gt(0) & np.isfinite(factor)
+        configured = df_rows["ticker"].isin(share_basis.policies)
+        declared = share_basis.declared_units(df_rows["ticker"], df_rows["transaction_day"], df_rows["security_title"])
+        actual = share_basis.factor(df_rows["ticker"], df_rows["transaction_day"], "actual")
+        factor.loc[configured] = (actual * declared).loc[configured].where(df_rows.loc[configured, "klass"].eq("COMMON"))
+    df_rows["units_known"] = factor.gt(0) & np.isfinite(factor)
     for column in ("shares_n", "shares_owned_after"):
-        rows[column] = rows[column] * factor.where(rows["units_known"], 1.0)
-    return rows
+        df_rows[column] = df_rows[column] * factor.where(df_rows["units_known"], 1.0)
+    return df_rows
 
 
 def cumulative_positions(
@@ -67,7 +73,7 @@ def cumulative_positions(
         if account_days is None:
             continue
         blocked = flows.get(key[:2], pd.DataFrame(columns=["transaction_day", "day"]))
-        intervals.extend(_account_intervals(key, group, account_days, blocked, idx))
+        intervals.extend(_account_intervals(cast(tuple[str, str, str], key), group, account_days, blocked, idx))
     columns = pd.Index(sorted(rows["ticker"].unique()), name="ticker")
     unknown = pd.DataFrame(np.nan, index=idx, columns=columns)
     out = {}
@@ -163,30 +169,33 @@ def _pool(events: pd.DataFrame, idx: pd.DatetimeIndex, value: str) -> pd.DataFra
     if events.empty:
         return pd.DataFrame(index=idx)
     columns = pd.Index(sorted(events["ticker"].unique()), name="ticker")
-    col = columns.get_indexer(events["ticker"])
+    col = columns.get_indexer(pd.Index(events["ticker"]))
     start = idx.searchsorted(events["start"].to_numpy(), side="left")
     stop = idx.searchsorted(events["stop"].to_numpy(), side="left")
     shape = (len(idx) + 1, len(columns))
 
-    def accumulated(values: np.ndarray) -> np.ndarray:
-        differences = np.zeros(shape)
-        np.add.at(differences, (start, col), values)
-        np.add.at(differences, (stop, col), -values)
-        return differences.cumsum(axis=0)[:-1]
-
-    numerator = accumulated(events[value].to_numpy(dtype=float))
-    denominator = accumulated(events["prior"].to_numpy(dtype=float))
-    count = accumulated(np.ones(len(events)))
+    # Sum account intervals in the same order for numerator, holdings and support count.
+    numerator = _accumulate_intervals(events[value].to_numpy(dtype=float), start, stop, col, shape)
+    denominator = _accumulate_intervals(events["prior"].to_numpy(dtype=float), start, stop, col, shape)
+    count = _accumulate_intervals(np.ones(len(events)), start, stop, col, shape)
     bases = np.zeros(shape)
     # Union each basis's intervals before counting; never allocate a panel per economic date.
     for (ticker, _, _), group in events.assign(_start=start, _stop=stop).groupby(["ticker", "klass", "unit_basis"], sort=False):
         ordered = group.sort_values("_start")
-        begins = ordered["_start"].to_numpy()
-        ends = np.maximum.accumulate(ordered["_stop"].to_numpy())
+        begins = ordered["_start"].to_numpy(dtype=np.intp)
+        ends = np.maximum.accumulate(ordered["_stop"].to_numpy(dtype=np.intp))
         segments = np.r_[0, np.flatnonzero(begins[1:] > ends[:-1]) + 1]
         last = np.r_[segments[1:] - 1, len(ends) - 1]
-        column = columns.get_loc(ticker)
+        column = cast(int, columns.get_loc(ticker))
         np.add.at(bases, (begins[segments], column), 1)
         np.add.at(bases, (ends[last], column), -1)
     known = (count > 0) & (denominator > 0) & (bases.cumsum(axis=0)[:-1] == 1)
     return pd.DataFrame(np.divide(numerator, denominator, out=np.full_like(numerator, np.nan), where=known), index=idx, columns=columns)
+
+
+def _accumulate_intervals(values: np.ndarray, start: np.ndarray, stop: np.ndarray, columns: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
+    """Sum each value on its half-open grid interval using start/stop differences."""
+    differences = np.zeros(shape)
+    np.add.at(differences, (start, columns), values)
+    np.add.at(differences, (stop, columns), -values)
+    return differences.cumsum(axis=0)[:-1]

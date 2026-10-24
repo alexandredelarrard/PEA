@@ -358,3 +358,23 @@ def test_retry_only_parent_is_hidden_from_cube_and_prior_ceo_roles(daily):
     roles, _ = _role_map(_role_source(context, "ZZ"), now + pd.Timedelta(days=2))
     assert roles == {}, "a genuine later audit observation keeps the existing latest-proxy semantics"
     print("SANITY: counter-only parents cannot hide a prior CEO or enter the cube; a genuine audit zero remains a real later observation.")
+
+
+@pytest.mark.parametrize("missing", ["ceo_name", "ceo_since_year"])
+def test_disclosed_ceo_identity_or_start_year_gap_is_retried(daily, monkeypatch, missing):
+    context, calls, answers, _ = daily
+    answers.update(_complete_answers())
+    answers["GovernanceExtract"].update(ceo_since_year=2018, ceo_pay_ratio=100, say_on_pay_support_pct=95)
+    answers["GovernanceExtract"][missing] = None
+    payloads = {
+        **PAYLOADS,
+        "governance": PAYLOADS["governance"]
+        + "\nJane Example is Chief Executive Officer since 2018.\nCEO pay ratio is 100 to 1; say-on-pay support was 95%.",
+    }
+    monkeypatch.setattr(fetch, "prepare_def14a_payloads", lambda *_: payloads)
+    fetch.fetch_def14a_llm(context, context.config, ["ZZ"])
+    fetch.fetch_def14a_llm(context, context.config, ["ZZ"])
+    assert [name for name, _, _ in calls[5:]] == ["GovernanceExtract"]
+    assert _attempts(context)[Tables.def14a_directors.name] == [2]
+    assert _attempts(context)[Tables.def14a_llm.name] == [1]
+    print(f"SANITY: source-disclosed missing {missing} retries only board/CEO and leaves audit at attempt 1.")

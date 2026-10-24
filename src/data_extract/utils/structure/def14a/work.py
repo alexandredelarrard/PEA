@@ -67,7 +67,7 @@ def has_gaps(section: Section, saved: pd.DataFrame, parent: dict[str, Any]) -> b
     if any(column not in rows or rows[column].isna().any() for column in keys):
         return True
     parent_keys = {
-        "governance": ("ceo_name_proxy", "ceo_age", "board_size", "ceo_pay_ratio", "say_on_pay_support_pct"),
+        "governance": ("ceo_name_proxy", "ceo_age", "ceo_since_year", "board_size", "ceo_pay_ratio", "say_on_pay_support_pct"),
         "ownership": ("insider_shares", "insider_ownership_pct", "insider_voting_pct"),
     }.get(section.key, ())
     return any(pd.isna(parent.get(column)) for column in parent_keys)
@@ -153,10 +153,9 @@ def replay_candidates(works: list[FilingWork]) -> Iterator[tuple[FilingWork, Sec
     """Yield already-paid domain answers; no source read or provider is involved."""
     for work in works:
         answers = archived_answers(work.raw) if work.pending else {}
-        for section in SECTIONS:
-            if section.key in work.pending:
-                for answer in answers.get(section.key, []):
-                    yield work, section, answer
+        for section in (item for item in SECTIONS if item.key in work.pending):
+            for answer in answers.get(section.key, []):
+                yield work, section, answer
 
 
 def requests_for(work: FilingWork, payloads: dict[str, str]) -> list[tuple[Section, LlmTask]]:

@@ -235,7 +235,7 @@ def _remove_rejected_subjects(ctx: Context, accessions: set[str]) -> int:
 def _require_legacy_write(ctx: Context) -> None:
     """Refuse the legacy paid replacement path after daily section retries are installed."""
     if any("retry" in ctx.store.columns(table) for table in (Tables.def14a_llm, *_CHILD_TABLES.values())):
-        raise SystemExit("Daily DEF14A section retries are installed; use the normal fetch-def14a-llm run for paid repair.")
+        raise SystemExit("Daily DEF14A section retries are installed; use the normal data_extract def14a run for paid repair.")
 
 
 def _extract(ctx: Context, config, work: pd.DataFrame, workers: int) -> tuple[int, int, int, int]:

@@ -151,62 +151,23 @@ def _listed_filing(accession: str, filing_date: pd.Timestamp) -> pd.DataFrame:
     )
 
 
-def _save_parent(context: Any, accession: str, extract: Any, filing_date: pd.Timestamp) -> None:
-    filing = _listed_filing(accession, filing_date).iloc[0]
-    frame = pd.DataFrame([_flatten("ZZ", filing, extract)])
-    for column in ("as_of", "period"):
-        frame[column] = pd.to_datetime(frame[column]).dt.strftime("%Y-%m-%d")
-    context.store.save(Tables.def14a_llm, frame)
-
-
 def _extractor_double(responses: list[BaseException | Any], tasked: list[str]):
     class _Extractor:
-        def __init__(self, context, config, action=None, threads=None, methodes=None):
-            del config, action, threads, methodes
-            self._context = context
+        def __init__(self, *args, **kwargs):
+            pass
 
-        def run_extraction(self, tasks, flatten=None, group_key=None):
-            del group_key
+        def run(self, tasks):
             results = []
-            for task in list(tasks):
+            for task in tasks:
                 tasked.append(str(task.meta["filing"]["accession_number"]))
                 answer = responses.pop(0)
                 if isinstance(answer, BaseException):
-                    results.append(LlmResult(seq=task.seq, task=task, parsed=None, error=f"{type(answer).__name__}: {answer}"))
+                    results.append(LlmResult(seq=task.seq, task=task, error=str(answer)))
                 else:
                     results.append(LlmResult(seq=task.seq, task=task, parsed=answer))
-
-            frames: dict[Any, list[pd.DataFrame]] = {}
-            for result in results:
-                if not result.ok:
-                    continue
-                for table, frame in (flatten(result) if flatten is not None else {}).items():
-                    frames.setdefault(table, []).append(frame)
-            for table, parts in frames.items():
-                frame = pd.concat(parts, ignore_index=True)
-                for column in ("as_of", "period"):
-                    if column in frame:
-                        frame[column] = pd.to_datetime(frame[column]).dt.strftime("%Y-%m-%d")
-                self._context.store.save(table, frame)
             return results
 
     return _Extractor
-
-
-def _install_daily_fetch_doubles(monkeypatch, extractor, filing: pd.DataFrame, listed_since: list[pd.Timestamp | None]) -> None:
-    from src.data_extract.utils.structure.def14a import fetch as mod
-
-    def _list(context, scope, company, years, since):
-        del context, scope, company, years
-        listed_since.append(since)
-        return filing.copy()
-
-    monkeypatch.setattr(mod, "LLMExtractor", extractor)
-    monkeypatch.setattr(mod, "load_cik_mapping", lambda *_: pd.DataFrame([{"ticker": "ZZ", "cik": "0000000001", "name": "Example Corp"}]))
-    monkeypatch.setattr(mod, "load_identity", lambda context: _ROSTER_ONLY)
-    monkeypatch.setattr(mod, "_list_scope_windows", _list)
-    monkeypatch.setattr(mod, "_payload_for", lambda *_: "=== BOARD OF DIRECTORS ===\nJane Director")
-    monkeypatch.setattr(mod, "_finalise_gender", lambda *_: None)
 
 
 def test_subject_guard_rejects_only_known_disjoint_subjects(monkeypatch, caplog):
@@ -289,7 +250,7 @@ def test_disjoint_subject_never_becomes_an_llm_task(tmp_path, monkeypatch):
         def __init__(self, *args, **kwargs):
             pass
 
-        def run_extraction(self, tasks, **kwargs):
+        def run(self, tasks, **kwargs):
             del kwargs
             llm_tasks.extend(tasks)
             return []
@@ -306,7 +267,7 @@ def test_disjoint_subject_never_becomes_an_llm_task(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "load_identity", lambda context: psky)
     monkeypatch.setattr(mod, "_list_scope_windows", lambda *_: filing)
     monkeypatch.setattr(mod, "_filing_subject_ciks", lambda _: frozenset({"0001437107"}))
-    monkeypatch.setattr(mod, "_payload_for", lambda *args: payload_calls.append(str(args[2]["accession_number"])))
+    monkeypatch.setattr(mod, "_read_proxy", lambda *args: payload_calls.append(str(args[2]["accession_number"])))
 
     mod.fetch_def14a_llm(context, context.config, ["PSKY"], model="gpt-5-mini")
 
@@ -483,8 +444,3 @@ def test_llm_proxies_are_listed_per_scope_window_with_the_seam_margin(monkeypatc
 
 
 _EMPTY_ANSWER = Def14AExtract(governance=GovernanceProfile(classified_board=False, dual_class_shares=False))
-
-
-def _seed_full_width_parent(context: Any) -> None:
-    """One unrelated evidenced parent, so the SQLite table carries every column (Postgres adds them on save)."""
-    _save_parent(context, "seed", Def14AExtract(ceo_name="Seed CEO"), pd.Timestamp("2020-04-01"))

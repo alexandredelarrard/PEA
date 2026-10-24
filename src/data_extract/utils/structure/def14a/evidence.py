@@ -91,9 +91,8 @@ def table_has_gap(section: Section, payload: str, saved: pd.DataFrame, parent: d
                 rows = rows.loc[pd.to_numeric(rows.fiscal_year, errors="coerce").eq(int(year))]
         for index, field in fields.items():
             cell = cells[index].replace("%", "").strip() if index < len(cells) else ""
-            if re.fullmatch(r"\$?\(?-?\d[\d,]*(?:\.\d+)?\)?", cell):
-                if rows.empty or field not in rows or rows[field].isna().all():
-                    return True
+            if re.fullmatch(r"\$?\(?-?\d[\d,]*(?:\.\d+)?\)?", cell) and (rows.empty or field not in rows or rows[field].isna().all()):
+                return True
     return False
 
 
@@ -128,6 +127,17 @@ def prose_has_gap(section: Section, payload: str, saved: pd.DataFrame, parent: d
         return False
     if section.key != "governance":
         return False
+
+    # A named CEO disclosure is a key even when every director row is already complete.
+    role = r"\b(?:Chief\s+Executive\s+Officer|CEO)\b"
+    named_role = re.search(r"\b[A-Z][a-z]+(?:\s+(?:[A-Z]\.|[A-Z][a-z]+)){1,3}[^.\n]{0,100}" + role, payload)
+    ceo = parent.get("ceo_name_proxy")
+    if (not isinstance(ceo, str) or not ceo.strip()) and named_role:
+        return True
+    if isinstance(ceo, str) and pd.isna(parent.get("ceo_since_year")):
+        bios = re.finditer(re.escape(ceo) + r"[^.\n]{0,250}", payload, re.I)
+        if any(re.search(role + r"[^.\n]{0,60}\bsince\s+(?:19|20)\d{2}\b", bio.group(), re.I) for bio in bios):
+            return True
 
     # A number must be tied to a named biography or an explicit board/CEO label.
     for match in re.finditer(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})[, ]+\s*(?:age[d]?\s*:?\s*)(\d{2})\b", payload):

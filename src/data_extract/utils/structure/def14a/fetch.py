@@ -282,27 +282,21 @@ def fetch_def14a_llm(
                 continue
             payloads = prepare_def14a_payloads(html, html_to_text(html))
             requests.extend(requests_for(work, payloads))
-            for section in SECTIONS:
-                if not work.attempts[section.key] and not payloads.get(section.key, "").strip():
-                    reserve(context, work, section, 1)
+            empty_sections = [section for section in SECTIONS if not work.attempts[section.key] and not payloads.get(section.key, "").strip()]
+            for section in empty_sections:
+                reserve(context, work, section, 1)
 
         # Reserve the owned attempt, call its matching prompt/schema, and get the answer.
         for section, tasks in matched_batches(requests, workers or int(config.gpt.threads)):
             for task in tasks:
                 work = task.meta["work"]
                 reserve(context, work, section, min(2, work.attempts[section.key] + 1))
-            for result in extractors[section.key].run(tasks):
+            results = extractors[section.key].run(tasks)
+            failed = {r.task.meta["work"].stamp["accession_number"]: r.error for r in results if not r.ok}
+            if failed:
+                context.log.warning("%s %s: reserved attempts failed: %s", ticker, section.key, failed)
+            for result in (r for r in results if r.ok):
                 work = result.task.meta["work"]
-                if not result.ok:
-                    context.log.warning(
-                        "%s %s %s: attempt %d failed (%s)",
-                        ticker,
-                        work.stamp["accession_number"],
-                        section.key,
-                        work.attempts[section.key],
-                        result.error,
-                    )
-                    continue
                 work.raw = append_answer(work.raw, section, result.parsed, result.task.payload)
                 save_archive(context, work)
 

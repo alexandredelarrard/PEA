@@ -40,14 +40,15 @@ class ProcessedSection:
     legacy: Def14AExtract
 
 
-def _normalize_units(section: Section, answer: BaseModel, as_of: object) -> dict[str, Any]:
+def _normalize_units(section: Section, answer: BaseModel, as_of: pd.Timestamp | str) -> dict[str, Any]:
     """Convert declared source bases once; leave unsupported currency/scale unknown."""
     payload = answer.model_dump()
     scales = {"units": 1.0, "thousands": 1_000.0, "millions": 1_000_000.0}
 
     # Normalize monetary cells without a magnitude or neighbour-based guess.
     if section.key != "ownership":
-        factor = scales.get(payload.get("amount_scale")) if str(payload.get("currency", "")).upper() == "USD" else None
+        amount_scale: str | None = payload.get("amount_scale")
+        factor = scales.get(amount_scale) if amount_scale is not None and str(payload.get("currency", "")).upper() == "USD" else None
         for row in payload.get("compensation", []):
             for field in {*_EXEC_COMPONENT_COLS, *_DIRECTOR_COMPONENT_COLS, "total"}:
                 value = row.get(field)
@@ -61,7 +62,8 @@ def _normalize_units(section: Section, answer: BaseModel, as_of: object) -> dict
     # Keep economic ownership and voting on separate fractional bases.
     if section.key == "ownership":
         percentage = 0.01 if payload["percent_unit"] == "percent" else 1.0
-        shares = scales.get(payload.get("shares_scale"))
+        shares_scale: str | None = payload.get("shares_scale")
+        shares = scales.get(shares_scale) if shares_scale is not None else None
         for row in payload["holders"]:
             row["shares"] = row["shares"] * shares if row["shares"] is not None and shares is not None else None
             for field in ("percent_of_class", "percent_of_voting_power"):
@@ -108,16 +110,18 @@ def _legacy_answer(section: Section, payload: dict[str, Any], parent: dict[str, 
         fields.update(auditor_name=payload.get("auditor_name"), auditor_since_year=payload.get("auditor_since_year"))
         categories = [fields[field + "_usd"] for field in _FEE_COLS[1:5]]
         if fields["auditor_fees_usd"] is None and all(value is not None for value in categories):
-            fields["auditor_fees_usd"] = sum(categories)
-        return Def14AExtract(governance=GovernanceProfile.model_validate(fields))
+            fields["auditor_fees_usd"] = sum(value for value in categories if value is not None)
+        return Def14AExtract.model_validate({"governance": GovernanceProfile.model_validate(fields)})
 
     # Group ownership remains independent from named holder rows.
     if section.key == "ownership":
         group = {field: payload.get(field) for field in ("insider_shares", "insider_ownership_pct", "insider_voting_pct")}
-        return Def14AExtract(
-            ceo_name=ceo,
-            ownership_holders=[BeneficialOwner.model_validate(row) for row in payload.get("holders", [])],
-            governance=GovernanceProfile.model_validate(group),
+        return Def14AExtract.model_validate(
+            {
+                "ceo_name": ceo,
+                "ownership_holders": [BeneficialOwner.model_validate(row) for row in payload.get("holders", [])],
+                "governance": GovernanceProfile.model_validate(group),
+            }
         )
 
     # Board summaries retain reported counts and explicit tri-state provisions.
@@ -160,15 +164,18 @@ def _parent_patch(section: Section, legacy: Def14AExtract, stamp: dict[str, Any]
         )
     filing = pd.Series({**stamp, "filing_date": stamp["as_of"]})
     values = _flatten(str(stamp["ticker"]), filing, safe)
-    governance = legacy.governance or GovernanceProfile()
+    governance = legacy.governance or GovernanceProfile.model_validate({})
     if section.key == "audit":
         values = {field: getattr(governance, field + "_usd", None) for field in _FEE_COLS}
         values.update(auditor_name=governance.auditor_name, auditor_since_year=governance.auditor_since_year)
     if section.key == "governance":
         values.update(ceo_pay_ratio=governance.ceo_pay_ratio, median_employee_pay=governance.median_employee_pay_usd)
-    if section.key == "ownership" and legacy.ceo_name:
+    ceo_name = clean_person_name(legacy.ceo_name)
+    if section.key == "ownership" and ceo_name is not None:
         matches = [
-            row for row in legacy.ownership_holders if clean_person_name(row.holder_name).casefold() == clean_person_name(legacy.ceo_name).casefold()
+            row
+            for row in legacy.ownership_holders
+            if (holder_name := clean_person_name(row.holder_name)) is not None and holder_name.casefold() == ceo_name.casefold()
         ]
         if len(matches) == 1:
             values.update(ceo_ownership_pct=matches[0].percent_of_class, ceo_voting_pct=matches[0].percent_of_voting_power)

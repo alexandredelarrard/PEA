@@ -28,6 +28,7 @@ from src.data_extract.utils.structure.def14a.gender import (
 from src.data_extract.utils.structure.def14a.postprocess import append_answer, postprocess_section, refresh_archive
 from src.data_extract.utils.structure.def14a.retry import SECTIONS
 from src.data_extract.utils.structure.def14a.work import (
+    FilingWork,
     load_archives,
     load_work,
     matched_batches,
@@ -289,14 +290,15 @@ def fetch_def14a_llm(
         # Reserve the owned attempt, call its matching prompt/schema, and get the answer.
         for section, tasks in matched_batches(requests, workers or int(config.gpt.threads)):
             for task in tasks:
-                work = task.meta["work"]
+                work = cast(FilingWork, task.meta["work"])
                 reserve(context, work, section, min(2, work.attempts[section.key] + 1))
             results = extractors[section.key].run(tasks)
-            failed = {r.task.meta["work"].stamp["accession_number"]: r.error for r in results if not r.ok}
+            failed = {cast(FilingWork, r.task.meta["work"]).stamp["accession_number"]: r.error for r in results if not r.ok}
             if failed:
                 context.log.warning("%s %s: reserved attempts failed: %s", ticker, section.key, failed)
             for result in (r for r in results if r.ok):
-                work = result.task.meta["work"]
+                work = cast(FilingWork, result.task.meta["work"])
+                assert result.parsed is not None
                 work.raw = append_answer(work.raw, section, result.parsed, result.task.payload)
                 save_archive(context, work)
 

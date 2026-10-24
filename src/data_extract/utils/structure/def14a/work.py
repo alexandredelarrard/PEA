@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 
@@ -45,7 +45,7 @@ def has_gaps(section: Section, saved: pd.DataFrame, parent: dict[str, Any]) -> b
                 "audit_fees_other",
             )
         )
-    marker_column, marker = section.table.empty_marker
+    marker_column, marker = cast(tuple[str, str], section.table.empty_marker)
     rows = saved.loc[saved[marker_column].ne(marker)] if marker_column in saved else saved
     if rows.empty:
         return True
@@ -96,7 +96,7 @@ def load_work(context: Context, ticker: str, filings: pd.DataFrame, floor: pd.Ti
         accession = str(filing["accession_number"])
         saved = {table: frame.loc[frame.accession_number.eq(accession)].copy() for table, frame in frames.items()}
         parent_rows = saved[Tables.def14a_llm]
-        parent = parent_rows.iloc[0].to_dict() if not parent_rows.empty else {}
+        parent = cast(dict[str, Any], parent_rows.iloc[0].to_dict()) if not parent_rows.empty else {}
         attempts = {
             section.key: int(pd.to_numeric(saved[section.table].retry, errors="coerce").max())
             if not saved[section.table].empty and saved[section.table].retry.notna().any()
@@ -209,11 +209,11 @@ def save_section(context: Context, work: FilingWork, processed: ProcessedSection
     for table, frame in processed.frames.items():
         context.store.save(table, frame)
         if table is Tables.def14a_llm:
-            work.parent.update(frame.iloc[0].to_dict())
+            work.parent.update(cast(dict[str, Any], frame.iloc[0].to_dict()))
             work.saved[table] = pd.DataFrame([work.parent])
             continue
         work.saved[table] = frame
-        marker_column, marker = table.empty_marker
+        marker_column, marker = cast(tuple[str, str], table.empty_marker)
         if frame[marker_column].ne(marker).any():
             context.store.delete(
                 table, where={"ticker": work.stamp["ticker"], "accession_number": work.stamp["accession_number"], marker_column: marker}

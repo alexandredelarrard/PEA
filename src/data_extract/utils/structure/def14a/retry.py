@@ -122,7 +122,8 @@ def reservation_frame(table: Table, stamp: dict[str, object], df_saved: pd.DataF
         columns = [column for column in (*table.pk, "as_of") if column in df_saved]
         return df_saved[columns].copy().assign(retry=retry)
 
-    # Empty child sections need a hidden row with all their primary-key fields.
+    # Empty child sections carry only marker keys, filing date and the declared CIK.
     if table is not Tables.def14a_llm:
-        return marker_frame(table, {**stamp, "retry": retry}, key_fill=dict(table.marker_key_fill))
+        values = {column: value for column, value in stamp.items() if column in (*table.pk, "as_of", table.marker_cik_col)}
+        return marker_frame(table, {**values, "retry": retry}, key_fill=dict(table.marker_key_fill))
     return pd.DataFrame([{**{column: stamp[column] for column in (*table.pk, "as_of")}, "retry": retry}])

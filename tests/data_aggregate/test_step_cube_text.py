@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -73,6 +74,15 @@ class ReplayStore:
         self.vector_rows = pd.concat([self.vector_rows, rows], ignore_index=True).drop_duplicates(["ticker", "quarter", "seq"], keep="last")
         return len(rows)
 
+    def iter_load(self, table: Any, *, chunksize: int = 200_000, **kwargs: Any) -> Iterator[pd.DataFrame]:
+        if table != Tables.earning_calls_embedding:
+            yield from self.base.iter_load(table, chunksize=chunksize, **kwargs)
+            return
+        rows = self.load(table, optional=True, **kwargs)
+        if rows is not None:
+            for start in range(0, len(rows), chunksize):
+                yield rows.iloc[start : start + chunksize].copy()
+
     def delete(self, table: Any, where: dict[str, Any]) -> int:
         if table != Tables.earning_calls_embedding:
             return self.base.delete(table, where)
@@ -137,7 +147,11 @@ def test_public_run_prepares_each_selected_call_once(sqlite_store: DataStore, mo
     monkeypatch.setattr(step_text, "get_sentiment_engine", lambda model: engine)
     monkeypatch.setattr(step_text, "openai_api_key", lambda: "stub")
     monkeypatch.setattr(step_text, "embed_texts", keyword_vectors)
-    with patch.object(store, "load", wraps=store.load) as reads:
+    with (
+        patch.object(store, "load", wraps=store.load) as reads,
+        patch.object(store, "iter_load", wraps=store.iter_load) as streams,
+        patch.object(step_text, "write_part", wraps=step_text.write_part) as writes,
+    ):
         StepCubeText(context, config).run(full=True)
     payload = [
         call
@@ -145,7 +159,42 @@ def test_public_run_prepares_each_selected_call_once(sqlite_store: DataStore, mo
         if call.args[0] == Tables.earnings_call_sections and "content" in (call.kwargs.get("columns") or (call.args[1] if len(call.args) > 1 else []))
     ]
     assert len(payload) == 1, f"expected shared one-time paragraph load, got {len(payload)}"
-    print("SANITY: actual public run loads source paragraphs once for both model stages.")
+    assert len([call for call in reads.call_args_list if call.args[0] == Tables.earnings_call_sentiment]) == 1
+    vectors = [call for call in streams.call_args_list if call.args[0] == Tables.earning_calls_embedding]
+    assert len(vectors) == 1 and vectors[0].kwargs["chunksize"] == 5_000
+    assert writes.call_count == 1
+    print("SANITY: public run reads paragraphs/sentiment once and streams embeddings in 5,000-row chunks before one feature save.")
+
+
+def test_embedding_cursor_closes_when_feature_calculation_fails(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    context, config, store = seeded_case(sqlite_store, ["ADP_2026Q3"])
+    configure_models(monkeypatch)
+    step = StepCubeText(context, config)
+    calendar = step_text.load_trading_calendar(context.store)
+    plan = step.plan_window(calendar, full=True)
+    prepared = step.prepare_sections(plan)
+    step.run_sentiments(prepared, plan)
+    step.run_embeddings(prepared, plan)
+    stream = store.iter_load
+    closed = []
+
+    def tracked(table: Any, **kwargs: Any) -> Iterator[pd.DataFrame]:
+        try:
+            yield from stream(table, **kwargs)
+        finally:
+            closed.append(table)
+
+    def fail(chunks: Any) -> pd.DataFrame:
+        next(iter(chunks))
+        raise RuntimeError("feature calculation interrupted")
+
+    monkeypatch.setattr(store, "iter_load", tracked)
+    monkeypatch.setattr(step_text, "build_embedding_kpis", fail)
+    with pytest.raises(RuntimeError, match="feature calculation interrupted"):
+        step.run_features(calendar, plan)
+    assert Tables.earning_calls_embedding in closed
+    assert not store.exists(Tables.cube_part_text)
+    print("SANITY: an interrupted feature calculation closes its embedding cursor and leaves the cube untouched.")
 
 
 def configure_models(monkeypatch: pytest.MonkeyPatch) -> tuple[MagicMock, MagicMock, MagicMock]:
@@ -405,7 +454,9 @@ def test_old_correction_needs_explicit_full_features(sqlite_store: DataStore, mo
     price_read = [call for call in reads.call_args_list + streams.call_args_list if call.args[0] == Tables.cube_part_prices]
     assert len(price_read) == 1 and price_read[0].kwargs["since"] == cutoff
     vector_read = [
-        call for call in reads.call_args_list if call.args[0] == Tables.earning_calls_embedding and "embedding" in (call.kwargs.get("columns") or [])
+        call
+        for call in streams.call_args_list
+        if call.args[0] == Tables.earning_calls_embedding and "embedding" in (call.kwargs.get("columns") or [])
     ]
     assert len(vector_read) == 1 and vector_read[0].kwargs["date_col"] == "as_of"
     factory.reset_mock()

@@ -26,6 +26,7 @@ def ensure_local_model(model_name: str) -> str:
 
     Try the CA bundle before a logged unverified fetch for corporate proxies.
     """
+    # Reuse a complete local model before creating any network session.
     base = os.getenv("PEA_MODEL_DIR") or str(Path.home() / ".cache" / "pea_models")
     dest = Path(base) / model_name.replace("/", "__")
     weight_files = ("model.safetensors", "pytorch_model.bin")
@@ -43,6 +44,7 @@ def ensure_local_model(model_name: str) -> str:
     base_url = f"https://huggingface.co/{model_name}/resolve/main/"
 
     def _fetch(fname: str, required: bool) -> bool:
+        # Try the configured CA, then the existing logged public-file fallback.
         out = dest / fname
         if out.exists():
             return True
@@ -64,6 +66,7 @@ def ensure_local_model(model_name: str) -> str:
             raise RuntimeError(f"could not download {fname}")
         return False
 
+    # Require configuration and one weight file; tokenizer extras are optional.
     try:
         _fetch("config.json", required=True)
         if not any(_fetch(w, required=False) for w in weight_files):
@@ -77,15 +80,16 @@ def ensure_local_model(model_name: str) -> str:
     return str(dest)
 
 
-def _window_ids(ids: list[int], stride: int) -> list[list[int]]:
-    """Split a token-id list into consecutive non-overlapping windows of <=`stride` tokens; [] for empty input."""
-    if stride <= 0:
-        raise ValueError("stride must be positive")
+def _window_ids(ids: list[int]) -> list[list[int]]:
+    """Split tokens into nonoverlapping FinBERT windows, leaving two special-token slots."""
+    # FinBERT accepts 512 tokens, including CLS and SEP.
+    stride = 510
     return [ids[i : i + stride] for i in range(0, len(ids), stride)]
 
 
 def _length_weighted_average(prob_rows: Sequence[Sequence[float]], weights: Sequence[float]) -> list[float]:
     """Length-weighted mean of per-window probability vectors; plain mean if all weights are non-positive, [] if empty."""
+    # Normalize token weights, retaining the existing uniform fallback.
     rows = [list(map(float, r)) for r in prob_rows]
     if not rows:
         return []
@@ -96,6 +100,7 @@ def _length_weighted_average(prob_rows: Sequence[Sequence[float]], weights: Sequ
         w = [1.0] * len(rows)
         tot = float(len(rows))
     out = [0.0] * n
+    # Accumulate each probability column in its original window order.
     for row, wi in zip(rows, w, strict=False):
         for j in range(n):
             out[j] += wi * row[j]
@@ -106,11 +111,10 @@ class SentimentEngine:
     """Thin wrapper over a HuggingFace tone classifier; build it via `get_sentiment_engine`."""
 
     def __init__(self, model_name: str) -> None:
+        # Resolve optional inference dependencies and the requested device.
         torch = import_module("torch")
         transformers = import_module("transformers")
         self._torch = torch
-        self.max_tokens = 512
-        self.batch_size = 16
 
         device_env = os.getenv("FINBERT_DEVICE", "").strip().lower()
         cuda_available = torch.cuda.is_available()
@@ -152,10 +156,13 @@ class SentimentEngine:
     def _score_windows(self, windows_text: list[str]) -> list[dict[str, float]]:
         """Score bounded windows in shared batches, mapping model labels to tone columns."""
         torch = self._torch
+        batch_size = 16
+        max_tokens = 512
         out: list[dict[str, float]] = []
-        for i in range(0, len(windows_text), self.batch_size):
-            batch = windows_text[i : i + self.batch_size]
-            enc = self._tok(batch, padding=True, truncation=True, max_length=self.max_tokens, return_tensors="pt").to(self.device)
+        # Score fixed-size batches and map model labels to the three tone roles.
+        for i in range(0, len(windows_text), batch_size):
+            batch = windows_text[i : i + batch_size]
+            enc = self._tok(batch, padding=True, truncation=True, max_length=max_tokens, return_tensors="pt").to(self.device)
             with torch.no_grad():
                 logits = self._model(**enc).logits
                 probs = torch.softmax(logits, dim=-1).cpu().tolist()
@@ -169,7 +176,7 @@ class SentimentEngine:
     def score_texts(self, texts: Sequence[str | None]) -> list[dict[str, float] | None]:
         """Score each document into a length-weighted {pos, neg, neu} distribution; blank/None docs -> None.
         Windows of every document are scored in shared batches."""
-        stride = max(1, self.max_tokens - 2)  # room for [CLS]/[SEP]
+        # Track each document's nonoverlapping windows and token weights.
         all_windows_text: list[str] = []
         owner: list[int] = []
         weights: list[int] = []
@@ -177,11 +184,12 @@ class SentimentEngine:
             if not txt or not str(txt).strip():
                 continue
             ids = self._tok(str(txt), add_special_tokens=False, truncation=False)["input_ids"]
-            for w in _window_ids(ids, stride):
+            for w in _window_ids(ids):
                 all_windows_text.append(self._tok.decode(w, skip_special_tokens=True))
                 owner.append(di)
                 weights.append(len(w))
 
+        # Share inference batches across documents, then restore document ownership.
         scored = self._score_windows(all_windows_text) if all_windows_text else []
         per_doc_rows: dict[int, list[list[float]]] = {}
         per_doc_w: dict[int, list[float]] = {}
@@ -189,6 +197,7 @@ class SentimentEngine:
             per_doc_rows.setdefault(di, []).append([row["pos"], row["neg"], row["neu"]])
             per_doc_w.setdefault(di, []).append(float(wt))
         out: list[dict[str, float] | None] = []
+        # Return one weighted distribution per document, preserving blank inputs.
         for di in range(len(texts)):
             if di not in per_doc_rows:
                 out.append(None)
@@ -200,6 +209,7 @@ class SentimentEngine:
 
 def get_sentiment_engine(model_name: str) -> SentimentEngine | None:
     """Load the requested engine; optional failures skip, required-CUDA failures propagate."""
+    # Required CUDA failures remain visible; optional CPU loading may abstain.
     requires_cuda = os.getenv("FINBERT_DEVICE", "").strip().lower() == "cuda"
     if not ml_stack_available():
         if requires_cuda:

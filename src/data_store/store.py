@@ -16,7 +16,7 @@ import io
 import json
 import logging
 import threading
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Generator, Sequence
 from contextlib import nullcontext
 from typing import Any, cast
 
@@ -746,13 +746,14 @@ class DataStore:
         since: object = None,
         until: object = None,
         date_col: str | None = None,
+        order_by: str | Sequence[str] | None = None,
         markers: bool = False,
-    ) -> Iterator[pd.DataFrame]:
+    ) -> Generator[pd.DataFrame]:
         """Stream `table` in row chunks so a multi-GB table never fully materializes.
 
         Needs a projection (`columns=` or `project=True`) and reads with `stream_results=True`, without
         which psycopg2 buffers the whole result client-side. Marker rows are dropped unless
-        `markers=True`, as in `load`.
+        `markers=True`, as in `load`. `order_by` orders the stream before chunking.
 
         Callers MUST exhaust or close the iterator: it holds a pooled connection for its lifetime.
         """
@@ -774,6 +775,7 @@ class DataStore:
             since=since,
             until=until,
             date_col=date_col or self._date_col(table),
+            order_by=order_by,
         )
         with self.engine.connect() as conn:
             conn = conn.execution_options(stream_results=True, yield_per=chunksize, max_row_buffer=chunksize)

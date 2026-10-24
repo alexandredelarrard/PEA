@@ -147,10 +147,9 @@ def test_canonical_support_requires_unambiguous_alias_inside_its_cik_window(vari
 def test_calendar_day_buffer_applies_once_to_all_ten_features(call_date: str, expected: str) -> None:
     calendar = pd.bdate_range("2024-05-01", "2024-10-31").difference(pd.DatetimeIndex(["2024-05-27"]))
     call = pd.DataFrame({"ticker": ["A"], "as_of": [pd.Timestamp(call_date)], **{name: [float(i)] for i, name in enumerate(EARNINGS_CALL_FEATURES)}})
-    panel = ec._feature_panel_from_prepared(call, calendar, None, availability_lag_days=2, since=None)
-    assert len(panel.filter(like="f_ec_").columns) == 10
     for name in EARNINGS_CALL_FEATURES:
-        live = panel.loc[panel[f"f_{name}"].notna(), "date"]
+        daily = _daily_frame(call[["ticker", "as_of", name]], name, calendar, availability_lag_days=2)
+        live = daily.index[daily["A"].notna()]
         assert live.min() == pd.Timestamp(expected) and len(live) == 66
     print(f"SANITY: {call_date}+2 calendar days -> {expected}, including holiday/weekend rollover, all10 features for66 sessions.")
 
@@ -212,7 +211,7 @@ def test_three_role_levels_and_independent_deltas() -> None:
                     model="m:speaker-clean-v3",
                 )
             )
-    actual = prepare_earnings_call_kpis(sentiment_kpis(pd.DataFrame(rows), "m:speaker-clean-v3")).set_index("quarter")
+    actual = prepare_earnings_call_kpis(sentiment_kpis(ec.valid_sentiment_rows(pd.DataFrame(rows), "m:speaker-clean-v3"))).set_index("quarter")
     for role, level, delta in (("prep", 0.3, -0.2), ("questions", 0.4, 0.6), ("answers", -0.3, -0.4)):
         assert actual.loc["2024Q2", f"ec_{role}_tone"] == pytest.approx(level)
         assert actual.loc["2024Q2", f"ec_{role}_tone_delta"] == pytest.approx(delta)
@@ -221,9 +220,9 @@ def test_three_role_levels_and_independent_deltas() -> None:
 
 
 def test_per_call_kpi_arithmetic() -> None:
-    per = prepare_earnings_call_kpis(sentiment_kpis(_sentiment_frame().query("ticker == 'A'"), EARNINGS_CALL_SENTIMENT_CACHE_MODEL)).set_index(
-        "quarter"
-    )
+    per = prepare_earnings_call_kpis(
+        sentiment_kpis(ec.valid_sentiment_rows(_sentiment_frame().query("ticker == 'A'"), EARNINGS_CALL_SENTIMENT_CACHE_MODEL))
+    ).set_index("quarter")
     for role, first, second in (("prep", 0.5, 0.65), ("questions", -0.3, -0.1), ("answers", 0.3, 0.4)):
         assert per.loc["2023Q1", f"ec_{role}_tone"] == pytest.approx(first)
         assert per.loc["2023Q2", f"ec_{role}_tone_delta"] == pytest.approx(second - first)
@@ -236,8 +235,11 @@ def test_sentiment_kpis_equals_batch(sqlite_store: DataStore) -> None:
     sqlite_store.save(Tables.earnings_call_sentiment, sent)
     stored = sqlite_store.load(Tables.earnings_call_sentiment)
     assert stored is not None
-    actual = sentiment_kpis(stored, EARNINGS_CALL_SENTIMENT_CACHE_MODEL)
-    expected = pd.concat([sentiment_kpis(group, EARNINGS_CALL_SENTIMENT_CACHE_MODEL) for _, group in sent.groupby("ticker")], ignore_index=True)
+    actual = sentiment_kpis(ec.valid_sentiment_rows(stored, EARNINGS_CALL_SENTIMENT_CACHE_MODEL))
+    expected = pd.concat(
+        [sentiment_kpis(ec.valid_sentiment_rows(group, EARNINGS_CALL_SENTIMENT_CACHE_MODEL)) for _, group in sent.groupby("ticker")],
+        ignore_index=True,
+    )
     actual["as_of"] = actual["as_of"].astype("datetime64[ns]")
     expected["as_of"] = expected["as_of"].astype("datetime64[ns]")
     pd.testing.assert_frame_equal(actual, expected, check_exact=True)
@@ -252,14 +254,14 @@ def test_malformed_or_incomplete_cached_call_is_missing() -> None:
     assert not ec.completed_sentiment_calls(valid.assign(n_words=1))
     invalid = scores.copy()
     invalid.loc[invalid["tag"].eq("questions"), "sent_pos"] = np.nan
-    partial = sentiment_kpis(invalid, EARNINGS_CALL_SENTIMENT_CACHE_MODEL)
+    partial = sentiment_kpis(ec.valid_sentiment_rows(invalid, EARNINGS_CALL_SENTIMENT_CACHE_MODEL))
     assert len(partial) == 1 and partial["ec_questions_tone"].isna().all() and partial["ec_answers_tone"].notna().all()
-    assert sentiment_kpis(scores.assign(model="legacy"), EARNINGS_CALL_SENTIMENT_CACHE_MODEL).empty
+    assert sentiment_kpis(ec.valid_sentiment_rows(scores.assign(model="legacy"), EARNINGS_CALL_SENTIMENT_CACHE_MODEL)).empty
     placeholder = scores.copy()
     mask = placeholder["tag"].eq("answers")
     placeholder.loc[mask, ["sent_pos", "sent_neg", "sent_neu"]] = np.nan
     placeholder.loc[mask, "n_words"] = 0
-    partial = sentiment_kpis(placeholder, EARNINGS_CALL_SENTIMENT_CACHE_MODEL)
+    partial = sentiment_kpis(ec.valid_sentiment_rows(placeholder, EARNINGS_CALL_SENTIMENT_CACHE_MODEL))
     assert len(partial) == 1 and partial["ec_answers_tone"].isna().all() and partial["ec_prep_tone"].notna().all()
     print("SANITY: incomplete scoring stays pending while valid partner roles remain usable; genuine absence stays null.")
 
@@ -277,7 +279,9 @@ def test_question_words_do_not_establish_completion() -> None:
 
 def test_panel_columns_lifetime_and_missingness():
     idx = pd.bdate_range("2023-01-02", "2023-09-29")
-    panel = build_earnings_call_feature_panel(sentiment_kpis(_sentiment_frame(), EARNINGS_CALL_SENTIMENT_CACHE_MODEL), idx, availability_lag_days=2)
+    panel = build_earnings_call_feature_panel(
+        sentiment_kpis(ec.valid_sentiment_rows(_sentiment_frame(), EARNINGS_CALL_SENTIMENT_CACHE_MODEL)), idx, availability_lag_days=2
+    )
     assert not panel.empty
     expected = {"date", "ticker", *[f"f_{name}" for name in EARNINGS_CALL_FEATURES]}
     assert set(panel.columns) == expected
@@ -316,14 +320,14 @@ def test_full_calendar_late_refresh_and_rerun_are_bit_exact() -> None:
     calendar = pd.bdate_range("2021-01-04", "2023-09-29")
     assert len(calendar) >= 500
     old = build_earnings_call_feature_panel(
-        sentiment_kpis(_sentiment_frame(), EARNINGS_CALL_SENTIMENT_CACHE_MODEL), calendar, availability_lag_days=2
+        sentiment_kpis(ec.valid_sentiment_rows(_sentiment_frame(), EARNINGS_CALL_SENTIMENT_CACHE_MODEL)), calendar, availability_lag_days=2
     )
     revised_sentiment = _sentiment_frame()
     mask = (revised_sentiment["ticker"] == "A") & (revised_sentiment["quarter"] == "2023Q1")
     revised_sentiment.loc[mask, "sent_pos"] += 0.05
     revised_sentiment.loc[mask, "sent_neu"] -= 0.05
     revised = build_earnings_call_feature_panel(
-        sentiment_kpis(revised_sentiment, EARNINGS_CALL_SENTIMENT_CACHE_MODEL), calendar, availability_lag_days=2
+        sentiment_kpis(ec.valid_sentiment_rows(revised_sentiment, EARNINGS_CALL_SENTIMENT_CACHE_MODEL)), calendar, availability_lag_days=2
     )
 
     class _Store:
@@ -506,10 +510,10 @@ def test_history_scope_is_bounded_and_keeps_fiscal_predecessors() -> None:
     calls = pd.concat([calls, expired], ignore_index=True)
     calendar = pd.bdate_range("2010-01-01", "2026-09-15")
     cutoff = pd.Timestamp("2026-08-15")
-    scope, comparisons = feature_history_scope(calls, calendar, cutoff, 2)
+    scope = feature_history_scope(calls, calendar, cutoff, 2)
     assert len(scope) < len(calls)
     assert len(scope) == 2
     assert scope["as_of"].max() <= calendar[-1]
     assert set(scope["issuer_id"]) == {"E1"}
-    assert comparisons == {("OLD_A", "2026Q1"), ("A", "2026Q2")}
+    assert set(map(tuple, scope[["ticker", "quarter"]].to_numpy())) == {("OLD_A", "2026Q1"), ("A", "2026Q2")}
     print("SANITY: bounded history excludes issuers with no active emitter and retains the actual same-issuer predecessor across a symbol change.")

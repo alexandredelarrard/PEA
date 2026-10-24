@@ -10,7 +10,7 @@ Pure speaker-turn split of one earnings-call transcript, given as source paragra
   clean_turn_text  -> one turn's substantive text: courtesy / backchannel, self-introductions,
                       addressed names and hand-offs removed anywhere; in prepared remarks also
                       safe-harbor / IR boilerplate and participant rosters. Hedges are kept.
-  label_turns      -> role-labelled turns {section, tag, person, text, exchange_idx, answer_idx}
+  _label_qa        -> mapped analyst questions and management answers
   split_call       -> CallSplit: cleaned prepared_remarks, cleaned management-answer qa, turns, status
 
 Measured on 585 defeatbeta calls (2024-2026, 54 symbols): status ok on 99.3 % (581; 3 no_qa: two
@@ -312,7 +312,6 @@ class CallNames(NamedTuple):
     full: tuple[str, ...]
 
 
-_NO_NAMES = CallNames(frozenset(), ())
 _NAME_STOP = frozenset(
     "Mr Mrs Ms Dr Jr Sr II III IV The And Of Inc LLC Ltd Corp Co Operator Analyst Unknown Speaker Executive Officer Chief "
     "President CEO CFO Company Representative Management Moderator Host Analysts Executives Participants Corporate "
@@ -607,66 +606,50 @@ def _has(low: str, keys: tuple[str, ...]) -> bool:
     return any(k in low for k in keys)
 
 
-def _prepared_noise(sent: str, low: str) -> str | None:
-    """'boilerplate' / 'roster' when a prepared-remarks sentence (`low` = lower-cased) is legal / IR
-    boilerplate or a participant roster, else None. Substring keys gate each regex (speed only)."""
+def _is_prepared_noise(sent: str) -> bool:
+    """Detect legal/IR boilerplate and participant rosters, preserving financial figures."""
+    low = sent.lower()
     if _has(low, _LEGAL_KEYS) and _BOILER_LEGAL.search(sent):
-        return "boilerplate"
+        return True
     if _FIGURE.search(sent):
-        return None
+        return False
     if _has(low, _IR_KEYS) and _BOILER_IR.search(sent):
-        return "boilerplate"
+        return True
     if _has(low, _POINTED_KEYS) and _BOILER_POINTED.search(sent) and _POINTER_VERB.search(sent):
-        return "boilerplate"
-    return "roster" if _has(low, _ROSTER_KEYS) and _ROSTER.search(sent) else None
+        return True
+    return _has(low, _ROSTER_KEYS) and bool(_ROSTER.search(sent))
 
 
 # ---- the shared cleaner -------------------------------------------------------------------- #
 def clean_turn_text(
     text: str,
-    names: CallNames = _NO_NAMES,
+    names: CallNames,
     *,
     prepared: bool = False,
-    removed: list[tuple[str, str]] | None = None,
 ) -> str:
     """The substantive text of one turn, sentence by sentence anywhere in the turn: courtesy /
     backchannel sentences, self-introductions, addressed names and pure hand-offs removed (names
     stripped from a hand-off that carries content); in prepared remarks also boilerplate and roster
-    sentences. Hedges and fillers are kept. `removed` collects (class, fragment) for audits."""
+    sentences. Hedges and fillers are kept."""
     kept: list[str] = []
-
-    def drop(cls: str, frag: str) -> None:
-        if removed is not None:
-            removed.append((cls, frag))
-
+    # Remove sentence-level boilerplate while preserving financial content.
     for sentence in split_sentences(text):
         sent = sentence
-        cls = _prepared_noise(sent, sent.lower()) if prepared else None
-        if cls is not None:
-            drop(cls, sent)
+        if prepared and _is_prepared_noise(sent):
             continue
         rest = _strip_self_intro(sent)
         if rest is not None:
-            drop("self_intro", sent[: len(sent) - len(rest)])
             sent = rest
             if not sent.strip():
                 continue
-        stripped = _strip_addressed(sent, names.tokens)
-        if stripped != sent:
-            drop("addressed_name", sent)
-            sent = stripped
+        sent = _strip_addressed(sent, names.tokens)
         if is_pleasantry(sent, names.tokens):
-            drop("courtesy", sent)
             continue
         allowance = _handoff_allowance(sent, names.tokens)
         if allowance is not None:
             if len(sent.split()) <= _MAX_NOISE_WORDS and _is_pure(sent, _HANDOFF_VOCAB, names.tokens, allowance):
-                drop("handoff", sent)
                 continue
-            no_names = _strip_names(sent, names)
-            if no_names != sent:
-                drop("handoff_name", sent)
-                sent = no_names
+            sent = _strip_names(sent, names)
         kept.append(sent)
     return " ".join(kept).strip()
 
@@ -680,10 +663,11 @@ def _announced(turns: list[Turn]) -> set[str]:
     return {next(g for g in m.groups() if g).strip() for _, txt in turns if _has(txt.lower(), _ANNOUNCE_KEYS) for m in _HANDOFF_NAME.finditer(txt)}
 
 
-def _call_names(turns: list[Turn], announced: set[str] | None = None) -> CallNames:
+def _call_names(turns: list[Turn], announced: set[str]) -> CallNames:
     """Participant names of a call: every non-operator speaker plus every analyst a hand-off announces."""
+    # Combine substantive speakers with the already detected analyst hand-offs.
     speakers = {per for per, _ in turns if per and not _is_op(per) and not _PLACEHOLDER_SPEAKER.match(per)}
-    full = {_PERSON_SUFFIX.split(per)[0].strip() for per in speakers} | (_announced(turns) if announced is None else announced)
+    full = {_PERSON_SUFFIX.split(per)[0].strip() for per in speakers} | announced
     full = {f for f in full if f and f not in _NAME_STOP}
     tokens = {t for f in full for t in re.findall(r"[A-Z][A-Za-z'’\-]+", f) if t not in _NAME_STOP and t not in _ADDRESS_NOT}
     return CallNames(frozenset(tokens), tuple(sorted(full, key=len, reverse=True)))
@@ -708,7 +692,9 @@ def _is_informative_question(text: str) -> bool:
     return _asks_something(text) and len(text.split()) >= _MIN_QA_WORDS
 
 
-def _turn(section: str, tag: str, person: str, text: str, exchange_idx: int, answer_idx: int) -> dict:
+def _turn(tag: str, person: str, text: str, exchange_idx: int = -1, answer_idx: int = -1) -> dict:
+    # The role determines its section; prepared turns have no exchange indices.
+    section = CALL_SECTIONS[0] if tag == "prepared" else CALL_SECTIONS[1]
     return {"section": section, "tag": tag, "person": person, "text": text, "exchange_idx": exchange_idx, "answer_idx": answer_idx}
 
 
@@ -748,15 +734,16 @@ def _qa_management(turns: list[Turn], analyst_names: set[str]) -> set[str]:
     }
 
 
-def _label_prepared(turns: list[Turn], section: str, names: CallNames) -> list[dict]:
+def _label_prepared(turns: list[Turn], names: CallNames) -> list[dict]:
     """Labelled prepared turns: every non-logistics turn whose cleaned text has >= `_MIN_TURN` chars."""
     prepared: list[dict] = []
+    # Prepared remarks contain substantive non-logistics speech only.
     for per, txt in turns:
         if _is_operator(per, txt):
             continue
         body = clean_turn_text(txt, names, prepared=True)
         if len(body) >= _MIN_TURN:
-            prepared.append(_turn(section, "prepared", per, body, -1, -1))
+            prepared.append(_turn("prepared", per, body))
     return prepared
 
 
@@ -780,7 +767,8 @@ class _QaState:
 
 
 def _is_question_turn(state: _QaState, perl: str, txt: str) -> bool:
-    """Role of one Q&A turn by the precedence documented in `label_turns`."""
+    """Known analyst, known management, prior asker, then boundary/new-speaker evidence."""
+    # Explicit participant evidence outranks conversational position.
     if perl in state.analyst_names:
         return True
     if perl in state.management:
@@ -792,15 +780,17 @@ def _is_question_turn(state: _QaState, perl: str, txt: str) -> bool:
 
 def _label_question(state: _QaState, per: str, perl: str, body: str) -> None:
     """A question turn: marks an asker, opens an exchange when informative and new."""
+    # Every substantive question contributes to sentiment and asker identity.
     new = state.boundary or state.saw_answer or perl != state.cur
     if _asks_something(body):
         state.questions.append(body)
         state.askers.add(perl)
         state.spoken.add(perl)
+    # Only embedding-eligible questions open mapped exchanges.
     if _is_informative_question(body):
         if new or not state.open_ex:  # a new question -> new exchange
             state.ex, state.ans_i, state.cur, state.saw_answer, state.open_ex = state.ex + 1, 0, perl, False, True
-        state.out.append(_turn(CALL_SECTIONS[1], "question", per, body, state.ex, 0))
+        state.out.append(_turn("question", per, body, state.ex, 0))
     elif new:  # a question too short to embed opens no exchange: its answers are orphaned
         state.cur, state.saw_answer, state.open_ex = perl, False, False
     state.boundary = False
@@ -808,6 +798,7 @@ def _label_question(state: _QaState, per: str, perl: str, body: str) -> None:
 
 def _label_answer(state: _QaState, per: str, perl: str, body: str) -> None:
     """A management / specialist answer turn: kept as answer text, attached to an open exchange."""
+    # Preserve management text even when its exchange cannot support embeddings.
     if body:
         state.answers.append(body)
     if state.ex < 0 or len(body) < _MIN_TURN:
@@ -816,16 +807,16 @@ def _label_answer(state: _QaState, per: str, perl: str, body: str) -> None:
     state.spoken.add(perl)
     if state.open_ex and len(body.split()) >= _MIN_QA_WORDS:
         state.ans_i += 1
-        state.out.append(_turn(CALL_SECTIONS[1], "answer", per, body, state.ex, state.ans_i))
+        state.out.append(_turn("answer", per, body, state.ex, state.ans_i))
 
 
-def _label_qa(
-    turns: list[Turn], mgmt_names: set[str] | None, names: CallNames, announced: set[str] | None = None
-) -> tuple[list[dict], list[str], list[str]]:
+def _label_qa(turns: list[Turn], mgmt_names: set[str], names: CallNames, announced: set[str]) -> tuple[list[dict], list[str], list[str]]:
     """Labelled embedding turns, management answers and all substantive analyst questions."""
-    analyst_names = {n.lower() for n in (_announced(turns) if announced is None else announced)}
-    management = (mgmt_names or set()) | _qa_management(turns, analyst_names)
+    # Seed role evidence from prepared speakers and Q&A hand-offs.
+    analyst_names = {name.lower() for name in announced}
+    management = mgmt_names | _qa_management(turns, analyst_names)
     state = _QaState(analyst_names, management, set(management))
+    # Operators delimit exchanges; substantive turns update one role state.
     for per, txt in turns:
         if _is_operator(per, txt):
             state.boundary = True
@@ -840,27 +831,6 @@ def _label_qa(
     return state.out, state.answers, state.questions
 
 
-def label_turns(turns: list[Turn], section: str, mgmt_names: set[str] | None = None, names: CallNames | None = None) -> list[dict]:
-    """Role-label turns -> [{section, tag, person, text, exchange_idx, answer_idx}], texts cleaned by
-    `clean_turn_text` with the call's participant `names` (derived from `turns` when omitted).
-
-    * prepared_remarks: every non-logistics turn is 'prepared' (exchange_idx = answer_idx = -1),
-      kept when its cleaned text has >= `_MIN_TURN` chars.
-    * qa: operator / logistics turns delimit exchanges and are dropped. Role per turn:
-        question if the speaker is NAMED by a hand-off, else answer if the speaker is management
-        (`mgmt_names`, lower-cased prepared speakers, plus the Q&A speakers `_qa_management` finds
-        answering across exchanges), else question if they already asked a question in this call,
-        else question right after a hand-off or when, after an answer, a speaker new to the call
-        asks a short question (a host hand-off phrased freely: "We've got X at Y"), else answer.
-      Question and answer turns need >= `_MIN_QA_WORDS` cleaned words. A kept question opens a new
-      exchange (indices stay contiguous); answer_idx = 0 for the question and 1, 2, ... for the
-      answers. A new question too short to keep opens nothing and its answers are not attached."""
-    names = names if names is not None else _call_names(turns)
-    if section == CALL_SECTIONS[1]:
-        return _label_qa(turns, mgmt_names, names)[0]
-    return _label_prepared(turns, section, names)
-
-
 def split_call(paragraphs: Iterable[Mapping[str, object]]) -> CallSplit:
     """Split one call at the Q&A start. prepared_remarks = the cleaned prepared turns, qa = the
     cleaned MANAGEMENT ANSWER turns (no operator, no analyst text); questions contains all substantive
@@ -868,16 +838,19 @@ def split_call(paragraphs: Iterable[Mapping[str, object]]) -> CallSplit:
     labelled prepared turns then labelled Q&A turns (management names for the Q&A roles come from the
     prepared speakers). Status: empty (no turn), no_qa (no Q&A start found; the whole call is
     prepared), no_prepared (no cleaned prepared text before the Q&A start), ok."""
+    # Restore source order and merge same-speaker paragraphs before detecting Q&A.
     turns = clean_paragraphs(paragraphs)
     if not turns:
         return CallSplit("", "", "", [], "empty")
     k = qa_start(turns)
     head, tail = (turns, []) if k is None else (turns[:k], turns[k:])
+    # Resolve names once and share them between both section labellers.
     tail_announced = _announced(tail)
     names = _call_names(turns, _announced(head) | tail_announced)
-    prep_turns = _label_prepared(head, CALL_SECTIONS[0], names)
+    prep_turns = _label_prepared(head, names)
     mgmt = {t["person"].strip().lower() for t in prep_turns if t["person"]}
     qa_turns, answers, questions = _label_qa(tail, mgmt, names, tail_announced)
+    # Return separate sentiment documents and the unchanged embedding population.
     prepared = "\n".join(t["text"] for t in prep_turns)
     status: SplitStatus = "no_qa" if k is None else "no_prepared" if not prepared else "ok"
     return CallSplit(prepared, "\n".join(answers), "\n".join(questions), prep_turns + qa_turns, status)

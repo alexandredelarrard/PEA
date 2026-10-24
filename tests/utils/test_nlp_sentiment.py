@@ -15,10 +15,11 @@ from src.data_aggregate.utils.text.nlp_sentiment import _length_weighted_average
 
 
 def test_window_ids_splits_long_docs() -> None:
-    assert _window_ids([], 3) == []  # empty -> no windows
-    assert _window_ids([1, 2, 3], 5) == [[1, 2, 3]]  # shorter than window -> one
-    assert _window_ids([1, 2, 3, 4, 5], 2) == [[1, 2], [3, 4], [5]]  # exact chunking + remainder
-    print("SANITY: long documents split into bounded token windows, including the remainder.")
+    assert _window_ids([]) == []
+    assert _window_ids([1, 2, 3]) == [[1, 2, 3]]
+    tokens = list(range(1021))
+    assert _window_ids(tokens) == [tokens[:510], tokens[510:1020], tokens[1020:]]
+    print("SANITY: real FinBERT's 510-token windows preserve document order and the final remainder.")
 
 
 def test_length_weighted_average_weights_by_tokens() -> None:

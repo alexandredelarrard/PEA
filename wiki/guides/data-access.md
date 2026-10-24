@@ -7,7 +7,7 @@ tags:
   - guide
   - database
   - point-in-time
-source_commit: 9677e686d80af4e19461b362049d2c15d69bad62
+source_commit: 9da992c7f0561c645c479c1d4bec075a569e97b9
 ---
 # Data access and storage
 
@@ -54,7 +54,7 @@ Projection rules:
 - declare tolerated live-schema gaps in `optional_columns`;
 - use `iter_load` for cube-sized or vector-heavy reads.
 
-`iter_load` requires a projection and enables server-side streaming. Exhaust or explicitly close its iterator because it owns a pooled connection for its lifetime.
+[`iter_load`](../../src/data_store/store.py) requires a projection and enables server-side streaming. Its `order_by` parameter orders the complete result before chunking, allowing consumers to preserve whole calls or other groups across boundaries. Exhaust or explicitly close its generator because it owns a pooled connection for its lifetime. Use vector-sized chunks for embeddings: the [text builder](../../src/data_aggregate/transformers/step_cube_text.py) uses 5,000 rows, carries unfinished calls, and closes the cursor even when feature calculation fails.
 
 Row filters are parameterized and validated against known columns. Scalar values compile to equality, collections to deterministic `IN`, `None` to `IS NULL`, and `store.NOT_NULL` to `IS NOT NULL`. An empty collection matches nothing, never everything. `since` and `until` operate on the registry date column; `until` includes the requested day even for timestamps.
 
@@ -194,4 +194,4 @@ The P3 candidate distinguishes `comparison_eligible` (otherwise comparable publi
 
 ## Text output windows
 
-[StepCubeText](../../src/data_aggregate/transformers/step_cube_text.py) has independent scopes: compact source/model keys for all missing or failed NLP work, one selected paragraph payload shared by the models, and bounded saved outputs for feature creation. Normal feature writes start at the stored text-part max date minus 30 calendar days. Only required emitter/predecessor/five-year call history is read, while price availability and daily arrays cover the output tail. Text uses ordinary DataFrames as requested; full/cold payload memory remains a deployment consideration. Older source revisions require explicit full feature rebuilding, without repeating valid inference.
+[StepCubeText](../../src/data_aggregate/transformers/step_cube_text.py) has independent scopes: compact source/model keys for all missing or failed NLP work, one selected paragraph payload shared by the models, and required saved outputs for feature creation. Normal feature writes start at the stored text-part max date minus 30 calendar days. Only required emitter/predecessor calls are selected, while price availability and daily arrays cover the output tail. Sentiment and price frames are materialized once; vectors stream in ordered 5,000-row chunks and are reduced to call coherence and pooled vectors before issuer comparisons. A full/cold/schema-change rebuild therefore does not materialize the complete turn-vector table. Older source revisions require explicit full feature rebuilding, without repeating valid inference.

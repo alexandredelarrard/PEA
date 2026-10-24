@@ -13,8 +13,18 @@ from pathlib import Path
 
 import pytest
 
-from src.utils.text.earnings_call_split import CallSplit, Turn, clean_paragraphs, company_in_introduction, label_turns, qa_start, split_call
-from src.utils.text.text_metrics import assess_earnings_call_sections
+from src.utils.text.earnings_call_split import (
+    CallNames,
+    CallSplit,
+    Turn,
+    clean_paragraphs,
+    clean_turn_text,
+    company_in_introduction,
+    qa_start,
+    split_call,
+    split_sentences,
+)
+from src.utils.text.text_metrics import assess_earnings_call_sections, clean_earnings_call_text
 
 FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "earnings_calls"
 FIXTURES = sorted(FIXTURE_DIR.glob("*.json"))
@@ -208,7 +218,7 @@ def test_split_call_terminal_statuses() -> None:
     print("SANITY statuses: empty input -> empty, Q&A from the first turn -> no_prepared, never an exception")
 
 
-def test_label_turns_role_fixes_on_minimal_exchange() -> None:
+def test_split_call_role_fixes_on_minimal_exchange() -> None:
     qa = [
         Turn("Host Person", "Thanks. Up next, we have Will Power at Baird."),
         Turn("William Power", "Can you walk us through the drivers of the bookings growth this year?"),
@@ -216,14 +226,17 @@ def test_label_turns_role_fixes_on_minimal_exchange() -> None:
         Turn("William Power", "And as a follow-up, how should we think about margins for next year?"),
         Turn("Chief Executive", "Margins should expand modestly as the new products scale through the year."),
     ]
-    turns = label_turns(qa, "qa", {"host person", "chief executive"})
+    prepared = " ".join(["Revenue growth remains strong across products and demand supports our margin outlook."] * 15)
+    paragraphs = [{"paragraph": 1, "speaker": "Chief Executive", "content": prepared}]
+    paragraphs += [{"paragraph": index + 2, "speaker": turn.speaker, "content": turn.text} for index, turn in enumerate(qa)]
+    turns = [turn for turn in split_call(paragraphs).turns if turn["section"] == "qa"]
     assert [(t["person"], t["tag"], t["exchange_idx"], t["answer_idx"]) for t in turns] == [
         ("William Power", "question", 0, 0),
         ("Chief Executive", "answer", 0, 1),
         ("William Power", "question", 1, 0),
         ("Chief Executive", "answer", 1, 1),
     ]
-    print("SANITY label_turns: 'Up next, we have X' is a dropped hand-off, the analyst's follow-up stays a question")
+    print("SANITY split_call: 'Up next, we have X' is a dropped hand-off, the analyst's follow-up stays a question")
 
 
 def test_fixture_suite_conclusion() -> None:
@@ -288,9 +301,6 @@ def _default_call() -> list[dict]:
 
 
 def test_sentence_split_never_alters_decimals_or_abbreviations() -> None:
-    from src.utils.text.earnings_call_split import split_sentences
-    from src.utils.text.text_metrics import clean_earnings_call_text
-
     assert " ".join(split_sentences(DECIMALS)) == DECIMALS
     text = f"{DECIMALS} Thank you. EPS was $2.10, up 3.4% year-over-year in the U.S. and the U.K. markets."
     assert " ".join(split_sentences(text)) == text
@@ -327,8 +337,6 @@ def test_qa_text_is_management_answers_only_and_turns_are_cleaned() -> None:
 
 
 def test_handoffs_are_dropped_but_requests_and_hedges_are_kept() -> None:
-    from src.utils.text.earnings_call_split import CallNames, clean_turn_text
-
     names = CallNames(frozenset({"Bill", "Smith", "Jane", "Doe"}), ("Bill Smith", "Jane Doe"))
     assert clean_turn_text("With that, I'll turn it over to Jane Doe, our CFO, for the forecast.", names) == ""
     assert clean_turn_text("So can you provide more detail on that?", names) == "So can you provide more detail on that?"

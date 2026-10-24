@@ -5,7 +5,7 @@ type: module
 tags:
   - wiki
   - module
-source_commit: 6421598d7cfdf2f5005182f47a05a99e30c2b9a8
+source_commit: 9da992c7f0561c645c479c1d4bec075a569e97b9
 ---
 # Cube aggregation
 
@@ -44,7 +44,7 @@ source_commit: 6421598d7cfdf2f5005182f47a05a99e30c2b9a8
 
 ## Earnings-call feature contract
 
-[StepCubeText.run](../../src/data_aggregate/transformers/step_cube_text.py) visibly loads the calendar, plans work, prepares selected text once, runs sentiments, runs embeddings, then reads saved model outputs and prices to build/persist features. Each model stage saves completed calls independently. The existing sentiment and embedding tables are the reusable outputs; no additional cache layer is needed.
+[StepCubeText.run](../../src/data_aggregate/transformers/step_cube_text.py) visibly loads the calendar, plans work, prepares selected text once, runs sentiments, runs embeddings, then builds/persists features. Sentiment is read once during planning and updated in memory with successfully saved scores. Feature creation reuses that frame, loads price frames once, streams saved embeddings, calculates call/daily features, and saves the panel once. Each model stage saves completed calls independently; the existing sentiment and embedding tables remain the reusable outputs.
 
 Planning compares compact ticker/quarter/date keys from paragraph 1 of earnings_call_sections with each model table's compatible completion metadata. Each model has its own missing/failed/stale work set across source history, including old holes. Preparation reads the union's projected paragraph payload once, then loops by ticker/quarter to split, clean and assess. These stages use ordinary DataFrames, with no generator or per-ticker table reads. Stored embedding dates are normalized explicitly as ISO8601 before completion checks and feature joins.
 
@@ -58,9 +58,11 @@ A completed sentiment call has exactly three canonical tags: `prepared_remarks`,
 
 Model choices come from build_cube.earnings_calls.sentiment_model and the existing gpt.embedding model/batch_size/max_chars settings. The step validates them at initialization and loads one local sentiment engine only for missing nonempty documents. Model identities include speaker-clean-v3. No global model/factory cache or configurable tag input is used; the canonical sentiment roles have one declaration in the preparation/persistence owner.
 
+Text-step functions and their direct text/parser dependencies keep at most five explicit inputs, roughly 100 lines and three nested control blocks. Short focus comments separate loading, validation, calculation and persistence. Cache validation happens once during planning; newly inferred distributions/vectors are validated before saving. Feature helpers reuse canonical numeric sentiment and identified complete embedding calls without repeating those checks. Fixed parser/FinBERT settings stay with their owning function; unused parser entry points and audit-only parameters are removed.
+
 The output is exactly ten `f_ec_*` columns: three role tone levels, three role deltas, three embedding distances and Q&A coherence. Dictionary uncertainty, combined tone, Q&A tone gap, length delta and issuer-history z-scores are removed. Missing roles leave only their dependent fields NULL; a prepared delta remains valid when Q&A coverage changes.
 
-Normal feature writes rewrite inclusively from the stored frontier minus 30 calendar days. Saved score/vector payload reads retain active emitter calls and their actual immediately preceding fiscal quarters for those issuers, including older symbols. Five-year history is no longer needed. Vectors use one scoped projected read without turn text/audit payload. Prices load after both model stages. The complete calendar preserves original positions while daily arrays/price availability cover the output tail. Features become visible on/after call date plus the configured lag (default two calendar days), then expire after 66 original trading sessions.
+Normal feature writes rewrite inclusively from the stored frontier minus 30 calendar days. Saved score/vector payload reads retain active emitter calls and their actual immediately preceding fiscal quarters for those issuers, including older symbols. Five-year history is no longer needed. Vectors use one scoped projected server-side stream without turn text/audit payload, ordered by ticker/quarter/sequence in 5,000-row chunks through [DataStore.iter_load](../../src/data_store/store.py). [Embedding mathematics](../../src/data_aggregate/utils/text/earnings_call_embeddings.py) carries the final unfinished call across chunks, computes coherence on complete exchanges, and retains only pooled numeric call vectors for issuer-level quarter comparisons. Raw turn vectors are released as the stream advances. Prices load after both model stages. The complete calendar preserves original positions while daily arrays/price availability cover the output tail. Features become visible on/after call date plus the configured lag (default two calendar days), then expire after 66 original trading sessions.
 
 Extraction invalidates saved model outputs when a source call changes. Corrections/deletions/backfills outside the normal tail require explicit build-text -F and cube assembly. Full/cold/schema-change feature rebuilding reuses compatible inference. No durable repair marker or cross-stage acknowledgement protocol is used.
 

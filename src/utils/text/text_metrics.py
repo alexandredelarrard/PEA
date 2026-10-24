@@ -25,12 +25,14 @@ def word_count(text: str) -> int:
 
 def clean_earnings_call_paragraphs(paragraphs: Iterable[Mapping[str, object]]) -> tuple[list[dict[str, object]], Counter[str]]:
     """Remove metadata/rosters and balanced parenthetical text; retain Operator split cues."""
+    # Provider metadata and balanced parentheticals are not financial speech.
     metadata = re.compile(
         r"(?:executives|analysts|company representatives|corporate participants|participants|transcript\s+(?:sponsor|operator)|ai\s+insights)", re.I
     )
     parenthetical = re.compile(r"\([^()]*\)")
     cleaned: list[dict[str, object]] = []
     removed: Counter[str] = Counter()
+    # Retain original paragraph keys while tracking each cleaning exclusion.
     for paragraph in paragraphs:
         speaker = " ".join(str(paragraph.get("speaker") or "").split())
         if metadata.fullmatch(speaker):
@@ -59,6 +61,7 @@ def clean_earnings_call_text(text: object) -> str:
     the shared lossless splitter ("3.5%" and "U.S." survive byte-identical) and courtesy is the
     shared `is_pleasantry` test, so on a `split_call` text, already cleaned sentence by sentence,
     this is a no-op."""
+    # Normalize nullable source values before splitting financial sentences.
     if text is None:
         raw = ""
     else:
@@ -68,6 +71,7 @@ def clean_earnings_call_text(text: object) -> str:
             missing = True
         raw = "" if missing else str(text)
     sentences = split_sentences(raw)
+    # Strip courtesy-only edges without altering the sentence interiors.
     while sentences and is_pleasantry(sentences[0]):
         sentences.pop(0)
     while sentences and is_pleasantry(sentences[-1]):
@@ -86,11 +90,11 @@ class EarningsCallQuality:
 
 def assess_earnings_call_sections(sections: Mapping[str, object]) -> EarningsCallQuality:
     """One shared validity decision for every split call, in the features and the validator."""
-    scored_tags = CALL_SECTIONS
+    # Clean the two management documents and retain any auxiliary role text.
     minimum_words = 100
-    scored = set(scored_tags)
-    cleaned = {str(tag): clean_earnings_call_text(text) if str(tag) in scored else str(text or "") for tag, text in sections.items()}
-    counts = {tag: word_count(cleaned.get(tag, "")) for tag in scored_tags}
+    cleaned = {str(tag): clean_earnings_call_text(text) if str(tag) in CALL_SECTIONS else str(text or "") for tag, text in sections.items()}
+    # Only prepared and management-answer words establish call eligibility.
+    counts = {tag: word_count(cleaned.get(tag, "")) for tag in CALL_SECTIONS}
     total = sum(counts.values())
     reason = "no usable sections" if total == 0 else None
     if reason is None and total < minimum_words:

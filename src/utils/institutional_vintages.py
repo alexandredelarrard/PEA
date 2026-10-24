@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import math
 import re
-from typing import Any
+from collections.abc import Iterable
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -64,23 +65,26 @@ def reconcile_13f_source(
         return 1.0
     if math.isclose(source_value, declared_value, rel_tol=0.005, abs_tol=1.0):
         return 1.0
-    if source_value > 0 and declared_value > 0:
-        exponent = round(math.log10(source_value) - math.log10(declared_value))
-        try:
-            factor = 10.0**exponent
-        except OverflowError:
-            return None
-        if factor > 0 and math.isfinite(factor):
-            aligned = declared_value * factor
-            if aligned > 0 and math.isfinite(aligned):
-                ratio = source_value / aligned
-                if (
-                    math.isclose(source_value, aligned, rel_tol=0.005, abs_tol=1.0)
-                    or lower <= ratio <= upper
-                    or math.isclose(ratio, lower, rel_tol=0.005)
-                    or math.isclose(ratio, upper, rel_tol=0.005)
-                ):
-                    return factor
+    if source_value <= 0 or declared_value <= 0:
+        return None
+    exponent = round(math.log10(source_value) - math.log10(declared_value))
+    try:
+        factor = 10.0**exponent
+    except OverflowError:
+        return None
+    if factor <= 0 or not math.isfinite(factor):
+        return None
+    aligned = declared_value * factor
+    if aligned <= 0 or not math.isfinite(aligned):
+        return None
+    ratio = source_value / aligned
+    if (
+        math.isclose(source_value, aligned, rel_tol=0.005, abs_tol=1.0)
+        or lower <= ratio <= upper
+        or math.isclose(ratio, lower, rel_tol=0.005)
+        or math.isclose(ratio, upper, rel_tol=0.005)
+    ):
+        return factor
     return None
 
 
@@ -162,6 +166,25 @@ def filing_public_dates(
     return pd.concat([first, next_session], axis=1).max(axis=1).where(first.notna() & next_session.notna())
 
 
+def prepare_book_vintages(
+    manifests: pd.DataFrame,
+    holdings: pd.DataFrame,
+    trading_index: pd.DatetimeIndex,
+    settle_days: int = F13_SETTLE_TRADING_DAYS,
+) -> pd.DataFrame:
+    """Validate vintage identities and prepare immutable publication facts once."""
+    if manifests["accession_number"].duplicated().any():
+        raise ValueError("13F manifest accessions must be unique")
+    if holdings.duplicated(["cik", "accession_number", "cusip"]).any():
+        raise ValueError("13F holding vintages must be unique")
+    df_manifest = manifests.copy()
+    df_manifest["period"] = pd.to_datetime(df_manifest["period"])
+    df_manifest["public_at"] = filing_public_dates(df_manifest, trading_index, settle_days)
+    df_manifest["_accepted_at"] = pd.to_datetime(df_manifest["accepted_at"], utc=True) if "accepted_at" in df_manifest else pd.NaT
+    df_manifest["_amended"] = df_manifest.amendment_type.ne("original")
+    return df_manifest
+
+
 def public_books(
     manifests: pd.DataFrame,
     holdings: pd.DataFrame,
@@ -169,20 +192,19 @@ def public_books(
     trading_index: pd.DatetimeIndex,
     settle_days: int = F13_SETTLE_TRADING_DAYS,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Resolve complete public books by (CIK, report quarter), without mutating any vintage."""
-    if manifests["accession_number"].duplicated().any():
-        raise ValueError("13F manifest accessions must be unique")
-    if holdings.duplicated(["cik", "accession_number", "cusip"]).any():
-        raise ValueError("13F holding vintages must be unique")
-    m = manifests.copy()
-    m["period"] = pd.to_datetime(m["period"])
-    m["public_at"] = filing_public_dates(m, trading_index, settle_days)
-    m = m.loc[m["public_at"].le(pd.Timestamp(as_of)) & m["parse_status"].eq("complete")]
-    m["_accepted_order"] = pd.to_datetime(m["accepted_at"], utc=True) if "accepted_at" in m else pd.NaT
-    complete_clocks = m.groupby(["cik", "period", "filing_date"])["_accepted_order"].transform(lambda clocks: clocks.notna().all())
-    m["_accepted_order"] = m["_accepted_order"].where(complete_clocks)
-    m["_amended"] = m.amendment_type.ne("original")
-    m = m.sort_values(
+    """Resolve raw complete public books without mutating any vintage."""
+    df_manifest = prepare_book_vintages(manifests, holdings, trading_index, settle_days)
+    return resolve_prepared_books(df_manifest, holdings, as_of)
+
+
+def resolve_prepared_books(manifests: pd.DataFrame, holdings: pd.DataFrame, as_of: object) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Resolve a public prefix from already validated publication facts."""
+    cutoff = pd.Timestamp(cast(Any, as_of))
+    df_manifest = manifests.loc[manifests["public_at"].le(cutoff) & manifests["parse_status"].eq("complete")].copy()
+    df_manifest["_accepted_order"] = df_manifest["_accepted_at"]
+    complete_clocks = df_manifest.groupby(["cik", "period", "filing_date"])["_accepted_order"].transform(lambda clocks: clocks.notna().all())
+    df_manifest["_accepted_order"] = df_manifest["_accepted_order"].where(complete_clocks)
+    df_manifest = df_manifest.sort_values(
         ["public_at", "filing_date", "_accepted_order", "_amended", "amendment_number", "accession_number"], kind="stable", na_position="first"
     )
     frames: list[pd.DataFrame] = []
@@ -190,102 +212,17 @@ def public_books(
     holdings_by_accession = {accession: rows for accession, rows in holdings.groupby("accession_number", sort=False)}
     amounts = [
         c
-        for c in holdings
+        for c in cast(Iterable[str], holdings.columns)
         if c in {"shares", "value_usd", "call_shares", "call_value", "put_shares", "put_value", "debt_prn", "debt_value", "other_value"}
         or c.startswith("raw_")
     ]
-    for (cik, period), versions in m.groupby(["cik", "period"], sort=True):
-        book = holdings.iloc[:0].copy()
-        known = False
-        restricted = False
-        uncertain_absence = False
-        full_report = False
-        level_public_at = pd.NaT
-        resolution_status = "missing_original"
-        for version in versions.itertuples():
-            incoming = holdings_by_accession.get(version.accession_number, holdings.iloc[:0]).copy()
-            if len(incoming) != int(version.parsed_row_count):
-                raise ValueError(f"Incomplete stored 13F book: {version.accession_number}")
-            if version.amendment_type in {"original", "restatement"}:
-                book, known, restricted = incoming, True, bool(version.restricted)
-                uncertain_absence = False
-                full_report = full_13f_report(version.report_type)
-                level_public_at = version.public_at
-                resolution_status = "resolved"
-            elif version.amendment_type == "additions":
-                if known:
-                    old = book.set_index("cusip")
-                    new = incoming.set_index("cusip")
-                    quantities = [column for column in amounts if column in {"shares", "call_shares", "put_shares", "debt_prn"}]
-                    raw_values = [column for column in amounts if column.startswith("raw_")]
-                    dollar_values = [column for column in amounts if column not in quantities and not column.startswith("raw_")]
-                    common = new.reindex(old.index)
-                    same_quantities = common[quantities].eq(old[quantities]).fillna(False).all(axis=1)
-                    same_raw = common[raw_values].eq(old[raw_values]).fillna(False).all(axis=1)
-                    same_dollars = common[dollar_values].eq(old[dollar_values]).fillna(False).all(axis=1)
-                    repeats = same_quantities & (same_raw | same_dollars) & old[quantities + raw_values].fillna(0).ne(0).any(axis=1)
-                    # ponytail: copied-majority inference recovers resubmitted books; entry-level identity is needed for finer patches.
-                    if int(repeats.sum()) > 1 and 2 * int(repeats.sum()) > max(len(old), len(new)):
-                        # A reported CUSIP may omit a previously held typed leg; structural zeros do not prove exits.
-                        previous = old.reindex(new.index)
-                        for quantity, value in (
-                            ("shares", "value_usd"),
-                            ("call_shares", "call_value"),
-                            ("put_shares", "put_value"),
-                            ("debt_prn", "debt_value"),
-                        ):
-                            unsupported_zero = (
-                                new.index.isin(old.index) & (previous[quantity].gt(0) | previous[quantity].isna()) & new[quantity].eq(0)
-                            )
-                            new.loc[unsupported_zero, [quantity, value, "raw_" + value]] = np.nan
-                        incoming = new.reset_index().reindex(columns=holdings.columns)
-                        omitted = book.loc[~book.cusip.isin(incoming.cusip)].copy()
-                        uncertain_absence = not omitted.empty
-                        omitted[amounts] = np.nan
-                        book = pd.concat([omitted, incoming], ignore_index=True).reindex(columns=holdings.columns)
-                        full_report = full_report and full_13f_report(version.report_type)
-                        restricted = restricted or bool(version.restricted)
-                        level_public_at = version.public_at
-                        resolution_status = "inferred_position_patch"
-                        continue
-                    # NEW HOLDINGS reports extra entries, including extra shares of an existing CUSIP.
-                    joined = pd.concat([book, incoming], ignore_index=True)
-                    grouped_amounts = joined.groupby("cusip")[amounts]
-                    numeric = grouped_amounts.sum(min_count=1).where(grouped_amounts.count().eq(joined.groupby("cusip").size(), axis=0))
-                    metadata = joined.drop(columns=amounts).drop_duplicates("cusip", keep="last").set_index("cusip")
-                    common_present = joined["position_type"].eq("common").groupby(joined["cusip"]).any()
-                    metadata.loc[common_present, "position_type"] = "common"
-                    metadata["class_evidence"] = joined.groupby("cusip")["class_evidence"].agg(
-                        lambda values: json.dumps(sorted({name for value in values for name in json.loads(value)}))
-                    )
-                    book = metadata.join(numeric).reset_index().reindex(columns=holdings.columns)
-                    # A new-holdings supplement alone cannot prove confidential positions are exhausted.
-                    full_report = full_report and full_13f_report(version.report_type)
-                    restricted = restricted or bool(version.restricted)
-                    level_public_at = version.public_at
-                    if resolution_status != "inferred_position_patch":
-                        resolution_status = "resolved"
-            else:
-                raise ValueError(f"Unknown 13F amendment type: {version.amendment_type}")
-        latest = versions.iloc[-1]
-        states.append(
-            {
-                "cik": cik,
-                "period": period,
-                "public_at": level_public_at,
-                "last_observed_at": latest.public_at,
-                "accession_number": latest.accession_number,
-                "book_known": known,
-                "zero_eligible": known and not restricted and not uncertain_absence and full_report,
-                "comparison_eligible": known and not restricted and full_report,
-                "restricted": restricted,
-                "resolution_status": resolution_status,
-            }
-        )
-        if known and not book.empty:
-            frames.append(book.assign(period=period, cik=cik))
-    resolved = pd.concat(frames, ignore_index=True) if frames else holdings.iloc[:0].copy()
-    states_frame = pd.DataFrame(
+    for _, df_versions in df_manifest.groupby(["cik", "period"], sort=True):
+        df_book, state = _resolve_quarter(df_versions, holdings_by_accession, holdings, amounts)
+        states.append(state)
+        if state["book_known"] and not df_book.empty:
+            frames.append(df_book.assign(period=state["period"], cik=state["cik"]))
+    df_resolved = pd.concat(frames, ignore_index=True) if frames else holdings.iloc[:0].copy()
+    df_states = pd.DataFrame(
         states,
         columns=[
             "cik",
@@ -300,4 +237,99 @@ def public_books(
             "resolution_status",
         ],
     )
-    return resolved.sort_values(["cik", "period", "cusip"], kind="stable").reset_index(drop=True), states_frame
+    return df_resolved.sort_values(["cik", "period", "cusip"], kind="stable").reset_index(drop=True), df_states
+
+
+def _resolve_quarter(
+    df_versions: pd.DataFrame,
+    holdings_by_accession: dict[Any, pd.DataFrame],
+    df_holdings: pd.DataFrame,
+    amounts: list[str],
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Replay one report quarter, keeping effective-book and observation clocks distinct."""
+    df_book = df_holdings.iloc[:0].copy()
+    known = False
+    restricted = False
+    uncertain_absence = False
+    full_report = False
+    level_public_at = pd.NaT
+    resolution_status = "missing_original"
+
+    for version in df_versions.itertuples():
+        df_incoming = holdings_by_accession.get(version.accession_number, df_holdings.iloc[:0]).copy()
+        if len(df_incoming) != int(cast(int, version.parsed_row_count)):
+            raise ValueError(f"Incomplete stored 13F book: {version.accession_number}")
+        if version.amendment_type in {"original", "restatement"}:
+            df_book, known, restricted = df_incoming, True, bool(version.restricted)
+            uncertain_absence = False
+            full_report = full_13f_report(version.report_type)
+            level_public_at = version.public_at
+            resolution_status = "resolved"
+            continue
+        if version.amendment_type != "additions":
+            raise ValueError(f"Unknown 13F amendment type: {version.amendment_type}")
+        if not known:
+            continue
+        df_book, inferred, omitted = _apply_additions(df_book, df_incoming, amounts)
+        if inferred:
+            uncertain_absence = omitted
+            resolution_status = "inferred_position_patch"
+        # A supplement alone cannot prove confidential positions are exhausted.
+        full_report = full_report and full_13f_report(version.report_type)
+        restricted = restricted or bool(version.restricted)
+        level_public_at = version.public_at
+        if resolution_status != "inferred_position_patch":
+            resolution_status = "resolved"
+
+    latest = df_versions.iloc[-1]
+    return df_book, {
+        "cik": latest.cik,
+        "period": latest.period,
+        "public_at": level_public_at,
+        "last_observed_at": latest.public_at,
+        "accession_number": latest.accession_number,
+        "book_known": known,
+        "zero_eligible": known and not restricted and not uncertain_absence and full_report,
+        "comparison_eligible": known and not restricted and full_report,
+        "restricted": restricted,
+        "resolution_status": resolution_status,
+    }
+
+
+def _apply_additions(df_book: pd.DataFrame, df_incoming: pd.DataFrame, amounts: list[str]) -> tuple[pd.DataFrame, bool, bool]:
+    """Return the merged book, copied-patch flag and that patch's uncertain absence."""
+    df_old = df_book.set_index("cusip")
+    df_new = df_incoming.set_index("cusip")
+    quantities = [column for column in amounts if column in {"shares", "call_shares", "put_shares", "debt_prn"}]
+    raw_values = [column for column in amounts if column.startswith("raw_")]
+    dollar_values = [column for column in amounts if column not in quantities and not column.startswith("raw_")]
+    df_common = df_new.reindex(df_old.index)
+    same_quantities = df_common[quantities].eq(df_old[quantities]).fillna(False).all(axis=1)
+    same_raw = df_common[raw_values].eq(df_old[raw_values]).fillna(False).all(axis=1)
+    same_dollars = df_common[dollar_values].eq(df_old[dollar_values]).fillna(False).all(axis=1)
+    repeats = same_quantities & (same_raw | same_dollars) & df_old[quantities + raw_values].fillna(0).ne(0).any(axis=1)
+    repeat_count = int(cast(int, repeats.sum()))
+
+    # shortcut: copied-majority inference recovers resubmissions; use entry identity for finer patches.
+    if repeat_count > 1 and 2 * repeat_count > max(len(df_old), len(df_new)):
+        df_previous = df_old.reindex(df_new.index)
+        # Structural zeros do not prove exits of previously held typed legs.
+        for quantity, value in (("shares", "value_usd"), ("call_shares", "call_value"), ("put_shares", "put_value"), ("debt_prn", "debt_value")):
+            unsupported_zero = df_new.index.isin(df_old.index) & (df_previous[quantity].gt(0) | df_previous[quantity].isna()) & df_new[quantity].eq(0)
+            df_new.loc[unsupported_zero, [quantity, value, "raw_" + value]] = np.nan
+        df_incoming = df_new.reset_index().reindex(columns=df_book.columns)
+        df_omitted = df_book.loc[~df_book.cusip.isin(df_incoming.cusip)].copy()
+        uncertain_absence = not df_omitted.empty
+        df_omitted[amounts] = np.nan
+        return pd.concat([df_omitted, df_incoming], ignore_index=True).reindex(columns=df_book.columns), True, uncertain_absence
+
+    df_joined = pd.concat([df_book, df_incoming], ignore_index=True)
+    grouped_amounts = df_joined.groupby("cusip")[amounts]
+    df_numeric = grouped_amounts.sum(min_count=1).where(grouped_amounts.count().eq(df_joined.groupby("cusip").size(), axis=0))
+    df_metadata = df_joined.drop(columns=amounts).drop_duplicates("cusip", keep="last").set_index("cusip")
+    common_present = df_joined["position_type"].eq("common").groupby(df_joined["cusip"]).any()
+    df_metadata.loc[common_present, "position_type"] = "common"
+    df_metadata["class_evidence"] = df_joined.groupby("cusip")["class_evidence"].agg(
+        lambda values: json.dumps(sorted({name for value in values for name in json.loads(value)}))
+    )
+    return df_metadata.join(df_numeric).reset_index().reindex(columns=df_book.columns), False, False

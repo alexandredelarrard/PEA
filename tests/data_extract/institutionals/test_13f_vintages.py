@@ -10,6 +10,7 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 import pandas as pd
 import pytest
@@ -331,6 +332,43 @@ def test_prospective_replacement_additions_and_future_invariance() -> None:
     assert "222222222" in set(before.cusip) and "222222222" not in set(after.cusip)
     assert dict(original[1].set_index("cusip").shares) == {"111111111": 100, "222222222": 200}
     print("SANITY: original immutable; additions sum; restatement removes only from its public date; future prefix identical.")
+
+
+def test_public_book_iteration_prepares_publication_clock_once() -> None:
+    original = packet("original", "2024-08-14", {"111111111": 100})
+    amendment = packet("amendment", "2024-10-17", {"111111111": 140}, kind="restatement")
+    manifests, holdings = combine(original, amendment)
+    with patch("src.utils.institutional_vintages.filing_public_dates", wraps=filing_public_dates) as clock:
+        snapshots = list(iter_public_books(manifests, holdings, GRID))
+    assert [books.iloc[0].shares for _, books, _ in snapshots] == [100, 140]
+    print(f"SANITY: {clock.call_count} publication-clock preparations for {len(snapshots)} public snapshots; exactly one is required.")
+    assert clock.call_count == 1
+
+
+def test_future_book_row_count_is_checked_only_when_public() -> None:
+    original = packet("original", "2024-08-14", {"111111111": 100})
+    future = packet("future", "2024-10-17", {"111111111": 140}, kind="restatement")
+    future[0].loc[0, "parsed_row_count"] = 2
+    manifests, holdings = combine(original, future)
+    before, _ = public_books(manifests, holdings, "2024-08-21", GRID)
+    assert before.iloc[0].shares == 100
+    with pytest.raises(ValueError, match="Incomplete stored 13F book: future"):
+        public_books(manifests, holdings, "2024-10-18", GRID)
+    print("SANITY: an unpublished bad row count leaves the prefix usable and raises when that accession becomes public.")
+
+
+@pytest.mark.parametrize("duplicate", ["manifest", "holdings"])
+def test_future_vintage_duplicates_fail_before_public_filtering(duplicate: str) -> None:
+    original = packet("original", "2024-08-14", {"111111111": 100})
+    future = packet("future", "2024-10-17", {"111111111": 140}, kind="restatement")
+    manifests, holdings = combine(original, future)
+    if duplicate == "manifest":
+        manifests = pd.concat([manifests, future[0]], ignore_index=True)
+    else:
+        holdings = pd.concat([holdings, future[1]], ignore_index=True)
+    with pytest.raises(ValueError, match="must be unique"):
+        public_books(manifests, holdings, "2024-08-21", GRID)
+    print(f"SANITY: duplicate future {duplicate} rows fail before the public-prefix filter, preserving raw-adapter validation.")
 
 
 def test_active_prior_correction_never_replaces_newer_levels() -> None:

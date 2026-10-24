@@ -14,7 +14,6 @@ from src.data_aggregate.utils.common.availability import availability_date
 from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.common.typing import frame_column
 from src.data_aggregate.utils.sec_thirteen.value_basis import log_register, repair_value_basis
-from src.utils.institutional_vintages import filing_public_dates
 from src.utils.string import pad_cik
 
 logger = logging.getLogger(__name__)
@@ -45,14 +44,6 @@ def clean_filing_dates(df_filings: pd.DataFrame, df_holdings: pd.DataFrame) -> t
         for column in _DATES:
             df[column] = pd.to_datetime(df[column])
     return df_filings, df_holdings
-
-
-def prepare_publications(df_filings: pd.DataFrame, trading_index: pd.DatetimeIndex, settle_days: int) -> pd.DataFrame:
-    """Prepare normalized public event dates without changing filing-version policy."""
-    df_manifest = df_filings.copy()
-    df_manifest["period"] = pd.to_datetime(df_manifest["period"])
-    df_manifest["_day"] = filing_public_dates(df_manifest, trading_index, settle_days)
-    return df_manifest.loc[df_manifest["_day"].notna()]
 
 
 def legacy_manager_public_dates(state: pd.DataFrame) -> pd.Series:

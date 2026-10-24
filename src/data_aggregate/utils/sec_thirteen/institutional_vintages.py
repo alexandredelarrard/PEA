@@ -9,8 +9,7 @@ import numpy as np
 import pandas as pd
 
 from src.constants.constants import F13_SETTLE_TRADING_DAYS
-from src.data_aggregate.utils.sec_thirteen.holdings_clean import prepare_publications
-from src.utils.institutional_vintages import public_books
+from src.utils.institutional_vintages import prepare_book_vintages, resolve_prepared_books
 
 
 def _publication_schedule(df_manifest: pd.DataFrame, trading_index: pd.DatetimeIndex, expiry_quarters: int | None) -> tuple[dict, pd.DatetimeIndex]:
@@ -39,8 +38,6 @@ def _reconcile_publication(
     cache: dict[tuple[str, pd.Timestamp], tuple[pd.DataFrame, pd.DataFrame]],
     active: Any,
     day: pd.Timestamp,
-    trading_index: pd.DatetimeIndex,
-    settle_days: int,
     history_quarters: int | None,
 ) -> tuple[dict[tuple[str, pd.Timestamp], tuple[pd.DataFrame, pd.DataFrame]], Any]:
     """Resolve changed books and retain the dependency quarters of the latest known report."""
@@ -51,7 +48,7 @@ def _reconcile_publication(
             continue
         df_versions = df_manifest.iloc[filing_groups[key]]
         indices = np.concatenate([position_indices.get(accession, np.array([], dtype=int)) for accession in df_versions.accession_number])
-        cache[key] = public_books(df_versions.drop(columns="_day"), df_holdings.iloc[indices], day, trading_index, settle_days)
+        cache[key] = resolve_prepared_books(df_versions, df_holdings.iloc[indices], day)
     usable = [key[1] for key, (_, df_state) in cache.items() if df_state.book_known.any()]
     if usable:
         active = max(usable)
@@ -77,7 +74,9 @@ def iter_public_books(
     expiry_quarters: int | None = None,
 ) -> Iterator[tuple[pd.Timestamp, pd.DataFrame, pd.DataFrame]]:
     """Schedule and yield reconciled public-book snapshots without cleaning inside the loop."""
-    df_manifest = prepare_publications(manifests, trading_index, settle_days)
+    df_manifest = prepare_book_vintages(manifests, holdings, trading_index, settle_days)
+    df_manifest["_day"] = df_manifest["public_at"]
+    df_manifest = df_manifest.loc[df_manifest["_day"].notna()]
     filing_groups = df_manifest.groupby(["cik", "period"], sort=False).indices
     position_indices = holdings.groupby("accession_number", sort=False).indices
     publications, days = _publication_schedule(df_manifest, trading_index, expiry_quarters)
@@ -85,7 +84,7 @@ def iter_public_books(
     active = pd.NaT
     for day in days:
         cache, active = _reconcile_publication(
-            df_manifest, holdings, filing_groups, position_indices, publications, cache, active, day, trading_index, settle_days, history_quarters
+            df_manifest, holdings, filing_groups, position_indices, publications, cache, active, day, history_quarters
         )
         if cache:
             df_books, df_states = _cached_snapshot(cache)

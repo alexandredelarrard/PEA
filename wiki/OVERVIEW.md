@@ -1,5 +1,5 @@
 ---
-source_commit: 9da992c7f0561c645c479c1d4bec075a569e97b9
+source_commit: 63e7d8f9b5331f56a95d8b4815ed208c7dab5653
 title: Codebase Wiki — Overview
 description: Canonical internal hub for architecture, modules, flows, concepts, guides, references and backlog.
 profile: internal/standard
@@ -151,3 +151,5 @@ Every durable claim should link to an inspected source file or another canonical
 The 2026-10-20 refresh is scoped to earnings-call lineage, canonical ownership checks, extraction recovery and the configured two-calendar-day feature buffer. Its inspected product revision is `482dd59a3b33609af32baa0900990a667bb48fbb`; it does not claim a full wiki refresh.
 
 A later read-only review at `eafd935b9e212204e11cb3ba81f76f0e4ed3698e` corrects company-level share-class eligibility and tests normalized company names against all 897 rejected call introductions. The [data sources reference](./reference/data-sources.md) records the independent results and why current-name matches cannot replace dated consolidation evidence. Product code is unchanged by this experiment.
+
+The 2026-10-24 DEF 14A refresh is bounded to the [SEC/LLM flow](./flows/sec-llm-extraction.md), [table contracts](./reference/table-catalog.md) and [daily repair runbook](./guides/run-the-pipeline.md). Its inspected product revision is `63e7d8f9b5331f56a95d8b4815ed208c7dab5653`; other domains retain their own dated source anchors.

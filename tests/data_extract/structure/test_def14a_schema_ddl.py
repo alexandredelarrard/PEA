@@ -43,6 +43,8 @@ from src.data_extract.utils.schemas.def14a_schema import (
     GovernanceProfile as _GovernanceProfile,
 )
 from src.data_extract.utils.structure.def14a.flatten import _child_frames, _flatten
+from src.data_extract.utils.structure.def14a.retry import reservation_frame
+from src.data_store.schema import Tables
 
 BeneficialOwner: Any = _BeneficialOwner
 Def14AExtract: Any = _Def14AExtract
@@ -93,6 +95,11 @@ def _code_columns() -> dict[str, list[str]]:
     for name, rows in _child_frames("ACME", filing, extract).items():
         assert rows, f"{name}: the maximal extract produced no row -- builder bug, not a DDL gap"
         out[name] = list(rows[0])
+    tables = (Tables.def14a_llm, Tables.def14a_executive_comp, Tables.def14a_director_comp, Tables.def14a_ownership, Tables.def14a_directors)
+    stamp = {"ticker": "ACME", "cik": "0000001800", "accession_number": "a1", "as_of": filing["filing_date"]}
+    for table in tables:
+        counter = reservation_frame(table, stamp, None, 1)
+        out[table.name] = list(dict.fromkeys([*out[table.name], *counter.columns]))
     return out
 
 

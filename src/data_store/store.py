@@ -18,12 +18,13 @@ import logging
 import threading
 from collections.abc import Callable, Generator, Sequence
 from contextlib import nullcontext
+from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
 import pandas as pd
 from pandas.core.dtypes.cast import maybe_box_native
-from sqlalchemy import Engine, MetaData, Select, Table, false, func, inspect, select, text, tuple_
+from sqlalchemy import Connection, Engine, MetaData, Select, Table, false, func, inspect, select, text, tuple_
 from sqlalchemy import types as sqltypes
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -380,6 +381,21 @@ def _delete_then_insert(conn, tbl: Table, chunk: list[dict], pk: list[str]) -> N
 TableRef = "SchemaTable | str"
 
 
+def _prepare_def14a_table(conn: Connection, spec: SchemaTable, block: str) -> bool:
+    """Create one canonical table or initialize its legacy attempts in the caller's transaction."""
+    inspector = inspect(conn)
+    if not inspector.has_table(spec.name):
+        for statement in block.split(";"):
+            if statement.strip():
+                conn.execute(text(statement))
+        return True
+    if "retry" in {column["name"] for column in inspector.get_columns(spec.name)}:
+        return False
+    conn.execute(text(f"ALTER TABLE {ddl.quote(spec.name)} ADD COLUMN retry BIGINT"))
+    conn.execute(text(f"UPDATE {ddl.quote(spec.name)} SET retry = 1"))
+    return True
+
+
 class DataStore:
     """THE database access layer -- nothing outside `src/data_store/` issues SQL.
 
@@ -399,6 +415,7 @@ class DataStore:
         self.engine = engine
         self._13f_tables: dict[str, Table] = {}
         self._13f_lock = threading.RLock()
+        self._def14a_retries_prepared = False
 
     # so callers write `store.NOT_NULL` without importing it
     NOT_NULL = NOT_NULL
@@ -521,6 +538,32 @@ class DataStore:
         with self.engine.connect() as conn:
             values = [r[0] for r in conn.execute(stmt).all()]
         return [v for v in values if v is not None] if dropna else values
+
+    def prepare_def14a_retries(self) -> list[str]:
+        """Install five typed schemas and initialize legacy attempts once, atomically."""
+        # Load canonical layouts before a counter-only write can infer a partial schema.
+        if self._def14a_retries_prepared:
+            return []
+        blocks = ddl.existing_blocks((Path(__file__).resolve().parents[2] / "sql" / "schema.sql").read_text(encoding="utf-8"))
+        tables = (Tables.def14a_llm, Tables.def14a_executive_comp, Tables.def14a_director_comp, Tables.def14a_ownership, Tables.def14a_directors)
+        changed: list[str] = []
+
+        # Serialize migration and keep ADD/backfill together so a restart cannot reset 2.
+        with _CREATE_LOCK:
+            if self._def14a_retries_prepared:
+                return []
+            with self.engine.begin() as conn:
+                if self.engine.dialect.name == "postgresql":
+                    conn.execute(text("SELECT pg_advisory_xact_lock(hashtext(:scope))"), {"scope": Tables.def14a_llm.name + ".retry"})
+                if self.engine.dialect.name == "sqlite":
+                    conn.exec_driver_sql("BEGIN")
+                for spec in tables:
+                    initialized = _prepare_def14a_table(conn, spec, blocks[spec.name])
+                    changed.extend([spec.name] if initialized else [])
+            self._def14a_retries_prepared = True
+
+        logger.info("DEF14A retry schemas prepared; %d table(s) initialized", len(changed))
+        return changed
 
     def _migrate_13f_table(self, spec: SchemaTable) -> bool:
         """Verify one source key or migrate its existing legacy key atomically."""
@@ -827,6 +870,14 @@ class DataStore:
             return 0
         if pk is None:
             pk = list(resolve(table).pk)
+        if "retry" in df and resolve(table) in (
+            Tables.def14a_llm,
+            Tables.def14a_executive_comp,
+            Tables.def14a_director_comp,
+            Tables.def14a_ownership,
+            Tables.def14a_directors,
+        ):
+            self.prepare_def14a_retries()
         with self._13f_lock if name in (Tables.sec13f_hr.name, Tables.sec13f_manager_holdings.name) else nullcontext():
             self._13f_tables.pop(name, None)
             if name in (Tables.sec13f_hr.name, Tables.sec13f_manager_holdings.name):
@@ -937,6 +988,7 @@ class DataStore:
         table that has already been removed from the registry.
         """
         name = name_of(table)
+        self._def14a_retries_prepared = False
         with self._13f_lock if name in (Tables.sec13f_hr.name, Tables.sec13f_manager_holdings.name) else nullcontext():
             self._13f_tables.pop(name, None)
             with self.engine.begin() as conn:

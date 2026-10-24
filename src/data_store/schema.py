@@ -1235,6 +1235,8 @@ class Tables:
         date_col="as_of",
         date_type_cols=("as_of",),
         freshness="yearly",
+        resume=def14a_llm.resume,
+        empty_marker=("name", _EMPTY),
         # StepCubeGovernance. 134,490 rows is a real read beside the 21.7M-row 13F table in
         # the same build, and the table is WIDE with columns the governance builders never
         # touch (`cik`, `gender_basis`, `reconciles`, `fiscal_year`).
@@ -1251,6 +1253,9 @@ class Tables:
         date_col="as_of",
         date_type_cols=("as_of",),
         freshness="yearly",
+        resume=def14a_llm.resume,
+        empty_marker=("name", _EMPTY),
+        marker_key_fill=(("fiscal_year", -1),),
     )
     def14a_director_comp = Table(
         "def14a_director_comp",
@@ -1258,6 +1263,8 @@ class Tables:
         date_col="as_of",
         date_type_cols=("as_of",),
         freshness="yearly",
+        resume=def14a_llm.resume,
+        empty_marker=("name", _EMPTY),
         # StepCubeGovernance, 80,252 rows. ⚠ SIX components, and the first is `fees_earned` --
         # Item 402(k) has no `salary` and no `bonus` line. `impute_director_comp` sums
         # exactly these six into a NULL `total`.
@@ -1281,6 +1288,8 @@ class Tables:
         date_col="as_of",
         date_type_cols=("as_of",),
         freshness="yearly",
+        resume=def14a_llm.resume,
+        empty_marker=("holder_name", _EMPTY),
     )
     def14a_edgar = Table(
         "sec_def14a",

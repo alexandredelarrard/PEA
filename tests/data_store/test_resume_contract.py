@@ -52,11 +52,6 @@ SIDE_TABLES = frozenset(
         Tables.cusip_ticker_map.name,
         Tables.insider_footnotes.name,
         Tables.sec_13d_transactions.name,
-        # children flattened out of each `def14a_llm` answer
-        Tables.def14a_directors.name,
-        Tables.def14a_executive_comp.name,
-        Tables.def14a_director_comp.name,
-        Tables.def14a_ownership.name,
         # derived caches of stored transcripts, notes and descriptions
         Tables.earnings_call_sentiment.name,
         Tables.earning_calls_embedding.name,

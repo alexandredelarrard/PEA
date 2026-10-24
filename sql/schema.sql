@@ -1292,6 +1292,7 @@ CREATE TABLE IF NOT EXISTS "def14a_llm" (
     "pct_gender_stated" DOUBLE PRECISION,
     "n_women_directors_vs_inferred" DOUBLE PRECISION,
     "def14a_json" TEXT,
+    "retry" BIGINT,
     PRIMARY KEY ("ticker", "accession_number")
 );
 CREATE INDEX IF NOT EXISTS ix_def14a_llm_as_of ON "def14a_llm" ("as_of");
@@ -1319,6 +1320,7 @@ CREATE TABLE IF NOT EXISTS "def14a_directors" (
     "gender" TEXT,
     "gender_basis" TEXT,
     "other_public_company_boards" DOUBLE PRECISION,
+    "retry" BIGINT,
     PRIMARY KEY ("ticker", "accession_number", "name")
 );
 CREATE INDEX IF NOT EXISTS ix_def14a_directors_as_of ON "def14a_directors" ("as_of");
@@ -1347,6 +1349,7 @@ CREATE TABLE IF NOT EXISTS "def14a_executive_comp" (
     "other_compensation" DOUBLE PRECISION,
     "total" DOUBLE PRECISION,
     "reconciles" DOUBLE PRECISION,
+    "retry" BIGINT,
     PRIMARY KEY ("ticker", "accession_number", "name", "fiscal_year")
 );
 CREATE INDEX IF NOT EXISTS ix_def14a_executive_comp_as_of ON "def14a_executive_comp" ("as_of");
@@ -1373,6 +1376,7 @@ CREATE TABLE IF NOT EXISTS "def14a_director_comp" (
     "other_compensation" DOUBLE PRECISION,
     "total" DOUBLE PRECISION,
     "reconciles" DOUBLE PRECISION,
+    "retry" BIGINT,
     PRIMARY KEY ("ticker", "accession_number", "name")
 );
 CREATE INDEX IF NOT EXISTS ix_def14a_director_comp_as_of ON "def14a_director_comp" ("as_of");
@@ -1393,6 +1397,7 @@ CREATE TABLE IF NOT EXISTS "def14a_ownership" (
     "shares" DOUBLE PRECISION,
     "percent_of_class" DOUBLE PRECISION,
     "percent_of_voting_power" DOUBLE PRECISION,
+    "retry" BIGINT,
     PRIMARY KEY ("ticker", "accession_number", "holder_name", "holder_type")
 );
 CREATE INDEX IF NOT EXISTS ix_def14a_ownership_as_of ON "def14a_ownership" ("as_of");

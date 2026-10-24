@@ -98,18 +98,24 @@ def attach_tickers(holdings: pd.DataFrame, cusip_map: pd.DataFrame | None, unive
     return df_holdings.merge(df_map[["cusip", "ticker"]], on="cusip", how="left")
 
 
-def clean_public_holdings(df_holdings: pd.DataFrame, valuation_close: pd.DataFrame | None, value_basis: Mapping[str, float] | None) -> pd.DataFrame:
+def clean_public_holdings(
+    df_holdings: pd.DataFrame,
+    valuation_close: pd.DataFrame | None,
+    value_basis: Mapping[str, Any] | None,
+    *,
+    period_quotes: pd.Series | None = None,
+) -> pd.DataFrame:
     """Repair raw accession values before reconciliation, retaining unsupported rows."""
     if df_holdings.empty:
         return df_holdings
-    df_holdings, df_register = repair_value_basis(df_holdings, valuation_close, **dict(value_basis or {}))
+    df_holdings, df_register = repair_value_basis(df_holdings, valuation_close, period_quotes=period_quotes, **dict(value_basis or {}))
     log_register(df_register, float(df_holdings.value_usd.sum()))
     if "value_basis_excluded" in df_holdings:
         df_holdings.loc[df_holdings.value_basis_excluded, ["shares", "value_usd"]] = np.nan
     return df_holdings
 
 
-def _repair_legacy_values(df_holdings: pd.DataFrame, valuation_close: pd.DataFrame | None, value_basis: Mapping[str, float] | None) -> pd.DataFrame:
+def _repair_legacy_values(df_holdings: pd.DataFrame, valuation_close: pd.DataFrame | None, value_basis: Mapping[str, Any] | None) -> pd.DataFrame:
     """Preserve legacy whole-row exclusions and its as-filed repair summary."""
     value_before = float(df_holdings["value_usd"].sum())
     df_holdings, df_register = repair_value_basis(df_holdings, valuation_close, **dict(value_basis or {}))

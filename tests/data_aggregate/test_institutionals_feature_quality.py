@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -309,14 +310,14 @@ def test_build_candidate_calls_full_panel_only_and_hashes_cutoff_output(tmp_path
     store = _MetadataOnlyStore()
     manifest = tmp_path / "input-manifest.json"
     _write_manifest(manifest, baseline, baseline_meta, store, "2024-01-03")
-    calls: list[bool] = []
+    calls: list[dict[str, Any]] = []
 
     class _Step:
         def __init__(self, context: object, config: object) -> None:
             self.context = context
 
-        def build_panel(self, full: bool = False) -> pd.DataFrame:
-            calls.append(full)
+        def build_panel(self, **kwargs: Any) -> pd.DataFrame:
+            calls.append(kwargs)
             future = pd.DataFrame({"date": [pd.Timestamp("2024-01-04")], "ticker": ["AAA"], "f_ic_inst_holders": [99.0]})
             return pd.concat([source, future], ignore_index=True)
 
@@ -354,7 +355,8 @@ def test_build_candidate_calls_full_panel_only_and_hashes_cutoff_output(tmp_path
         == 0
     )
     metadata = json.loads((out / "candidate-metadata.json").read_text(encoding="utf-8"))
-    assert calls == [True]
+    expected_arguments = {} if part == Tables.cube_part_sec_thirteen else {"full": True}
+    assert calls == [expected_arguments]
     assert metadata["table"] == part.name
     assert pd.read_parquet(candidate)["date"].max() == pd.Timestamp("2024-01-03")
     assert metadata["snapshot_sha256"] == hashlib.sha256(candidate.read_bytes()).hexdigest()
@@ -385,8 +387,10 @@ def test_build_candidate_calls_full_panel_only_and_hashes_cutoff_output(tmp_path
         )
         == 2
     )
-    assert calls == [True]
-    print("SANITY: candidate build used build_panel(full=True), trimmed the future row, wrote no table, and matched the frozen baseline exactly.")
+    assert calls == [expected_arguments]
+    print(
+        "SANITY: candidate used its owner's full computation interface, trimmed future rows, wrote no table, and matched the frozen baseline exactly."
+    )
 
 
 @pytest.mark.parametrize("part", [Tables.cube_part_institutionals, Tables.cube_part_sec_thirteen])

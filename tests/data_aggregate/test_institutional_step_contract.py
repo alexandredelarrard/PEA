@@ -4,27 +4,31 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
+from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 import pytest
 from omegaconf import OmegaConf
 
 from src.constants.constants import DEFAULT_CONFIG_DIR
+from src.context import Context
 from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
 from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecThirteen
 from src.data_aggregate.utils.common import inputs as capital_inputs
+from src.data_aggregate.utils.common.incremental import PartWindow
 from src.data_aggregate.utils.common.price_frames import PriceFrames
 from src.data_store.schema import Tables
 from src.utils.price_adjustments import resolve_share_events
 
 
-def context(store: Any, path: Path) -> SimpleNamespace:
+def context(store: Any, path: Path) -> Context:
     config = OmegaConf.create({"build_cube": {}, "local": {"paths": {"fails_deliver": "ftd"}}})
-    return SimpleNamespace(
-        store=store, log=logging.getLogger(__name__), config=config, config_dir=Path(DEFAULT_CONFIG_DIR), paths={"DATA_STORE": path}
+    return cast(
+        Context,
+        SimpleNamespace(store=store, log=logging.getLogger(__name__), config=config, config_dir=Path(DEFAULT_CONFIG_DIR), paths={"DATA_STORE": path}),
     )
 
 
@@ -77,7 +81,10 @@ def test_each_daily_part_rewrites_its_own_inclusive_seven_session_tail(
     cutoff = days[30 - 7]
     initial.loc[initial["date"] >= cutoff, "f_test"] = -1.0
     sqlite_store.replace(table, initial)
-    monkeypatch.setattr(step, "build_panel", lambda full=False: expected.copy())
+    if cls is StepCubeSecThirteen:
+        monkeypatch.setattr(step, "build_panel", lambda window=None, *, existing_columns=None: expected.copy())
+    else:
+        monkeypatch.setattr(step, "build_panel", lambda full=False: expected.copy())
     step.run()
     first = sqlite_store.load(table).sort_values(["date", "ticker"]).reset_index(drop=True)
     pd.testing.assert_frame_equal(first, expected, check_dtype=False)
@@ -141,6 +148,7 @@ def test_ftd_step_retains_global_zip_dates_from_one_stream(sqlite_store: Any, tm
 
     monkeypatch.setattr(sqlite_store, "iter_load", capture)
     result = step._short_flow_panel(frames, None, None, None, pd.DataFrame(), share_basis=resolve_share_events(None, None, {}))
+    assert result is not None
     ratio = result.set_index(["date", "ticker"])["f_ic_ftd_to_adv20"]
     assert ratio.loc[(pd.Timestamp("2024-01-30"), "AAA")] == 0
     assert streams.count(Tables.sec_fails_to_deliver) == 1
@@ -165,7 +173,12 @@ def test_changed_columns_trigger_full_owned_part_replacement(
         modes.append(full)
         return expected.copy()
 
-    monkeypatch.setattr(step, "build_panel", build)
+    def sec_build(window: PartWindow | None = None, *, existing_columns: Sequence[str] | None = None) -> pd.DataFrame:
+        assert window is not None and existing_columns is not None
+        modes.append(window.is_full)
+        return expected.copy()
+
+    monkeypatch.setattr(step, "build_panel", sec_build if cls is StepCubeSecThirteen else build)
     step.run()
     expected_modes = [False] if cls is StepCubeSecThirteen else [False, True]
     assert modes == expected_modes

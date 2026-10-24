@@ -1087,11 +1087,11 @@ def test_production_first_publication_uses_immutable_matched_cohorts(sqlite_stor
         )
         sqlite_store.save_13f_filing(manifest, holdings.assign(ticker="AAA"), table=Tables.sec13f_hr)
 
-    prepared = step_module.build_prepared_institutional_feature_panel
+    compute_history = step_module.compute_institutional_feature_history
 
-    def arithmetic(frames: Any, holdings: pd.DataFrame, **kwargs: Any) -> pd.DataFrame:
+    def arithmetic(snapshots: Any, **kwargs: Any) -> pd.DataFrame:
         # Three known-truth managers prove exact math after checking the production floor below.
-        return prepared(frames, holdings, min_prior_holders=0, **kwargs)
+        return compute_history(snapshots, min_prior_holders=0, **kwargs)
 
     step = object.__new__(StepCubeSecThirteen)
     step._store, step._log = sqlite_store, logging.getLogger(__name__)
@@ -1100,22 +1100,27 @@ def test_production_first_publication_uses_immutable_matched_cohorts(sqlite_stor
     quotes = pd.DataFrame(10.0, index=grid, columns=["AAA"])
     frames = make_frames(grid, {}, close_split=quotes, level_factor=quotes / 10)
     sqlite_store.save(Tables.cusip_ticker_map, pd.DataFrame({"cusip": ["111111111"], "ticker": ["AAA"]}))
-    assert step._institutional_panel(frames, None, None, pd.DataFrame({"cusip": ["111111111"], "ticker": ["AAA"]}), quotes) is None
+
+    def panel() -> pd.DataFrame | None:
+        features = step._institutional_features(frames, None, pd.DataFrame({"cusip": ["111111111"], "ticker": ["AAA"]}), quotes)
+        return None if features is None else step._project_institutional_panel(features, frames, None, None, grid)
+
+    assert panel() is None
 
     save_packet("a-prior", "1", "2024-06-30", "2024-08-14", 100)
     save_packet("b-prior", "2", "2024-06-30", "2024-08-14", 900)
     save_packet("a-current", "1", "2024-09-30", "2024-11-14", 110)
-    guarded = step._institutional_panel(frames, None, None, pd.DataFrame({"cusip": ["111111111"], "ticker": ["AAA"]}), quotes)
+    guarded = panel()
     assert guarded is not None
     assert "f_ic_inst_shares_chg" not in guarded
     assert guarded.f_ic_inst_concentration.notna().any()
-    monkeypatch.setattr(step_module, "build_prepared_institutional_feature_panel", arithmetic)
-    prefix = step._institutional_panel(frames, None, None, pd.DataFrame({"cusip": ["111111111"], "ticker": ["AAA"]}), quotes)
+    monkeypatch.setattr(step_module, "compute_institutional_feature_history", arithmetic)
+    prefix = panel()
     assert prefix is not None
     save_packet("c-new", "3", "2024-09-30", "2024-11-20", 500)
     save_packet("b-empty", "2", "2024-09-30", "2024-11-25", None)
     save_packet("a-prior-fix", "1", "2024-06-30", "2024-12-02", 90, kind="restatement")
-    full = step._institutional_panel(frames, None, None, pd.DataFrame({"cusip": ["111111111"], "ticker": ["AAA"]}), quotes)
+    full = panel()
     assert full is not None
     cutoff = pd.Timestamp("2024-11-20")
     pd.testing.assert_frame_equal(full.loc[full.date.le(cutoff)].reset_index(drop=True), prefix.loc[prefix.date.le(cutoff)].reset_index(drop=True))

@@ -124,6 +124,7 @@ def write_part(
     keys: Sequence[str] = tuple(PANEL_KEYS),
     refresh_from: pd.Timestamp | None = None,
     drop_empty: bool = False,
+    existing_columns: Sequence[str] | None = None,
 ) -> int:
     """Persist a part according to `window`.
 
@@ -132,16 +133,23 @@ def write_part(
     cutoff given: an explicit `refresh_from` (the target step's maturing-label window), then
     `window.refresh_from` (the part's own trailing rewrite), both inclusive because
     `append_tail` deletes `>=` the cutoff first, so a same-day re-run is idempotent; else
-    strictly after `window.last`. `drop_empty` removes rows with no feature value at all.
+    strictly after `window.last`. `drop_empty` removes rows with no feature value at all;
+    a nonempty refresh grid still clears stale tail rows when every feature is unknown.
+    `existing_columns` reuses metadata already read by the owning step.
     """
-    if rows is not None and not rows.empty and drop_empty:
-        rows = drop_empty_feature_rows(rows, keys, part)
-
     if rows is None or rows.empty:
         logger.warning("%s produced no rows -> nothing persisted.", part)
         return 0
 
+    existing = existing_columns
+    if existing is None and not window.is_full:
+        existing = store.columns(part)
+    if drop_empty:
+        rows = drop_empty_feature_rows(rows, keys, part)
+
     if window.is_full:
+        if rows.empty:
+            return 0
         n = store.replace(part, rows)
         logger.info("Persisted %s (FULL): %s rows x %s cols.", part, n, len([c for c in rows.columns if c not in keys]))
         return n
@@ -149,7 +157,6 @@ def write_part(
     # `columns` returns [] for a table that does not exist -- "no stored column set to
     # compare against", not "a stored set that differs". Treating [] as a difference would
     # report COLUMNS_CHANGED for an absent part.
-    existing = store.columns(part)
     if existing and set(existing) != set(rows.columns):
         logger.warning("%s column set changed (%s stored vs %s built) -> full rebuild needed.", part, len(existing), len(rows.columns))
         return COLUMNS_CHANGED

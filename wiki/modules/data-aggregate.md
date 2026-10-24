@@ -5,7 +5,7 @@ type: module
 tags:
   - wiki
   - module
-source_commit: 9da992c7f0561c645c479c1d4bec075a569e97b9
+source_commit: 280857c4e2c91157ae95550e0732752741c0cbdd
 ---
 # Cube aggregation
 
@@ -110,6 +110,14 @@ The stage runs in a fixed order: child fills, board merge, `impute_def14a` (carr
 > ⚠ **Run `build-governance -F` after each proxy season.** Because the stage reads later proxies (stint constants, the pay backfill), a new proxy can restate cleaned values on older rows. An incremental run rewrites the last 756 trading days to cover pay restatements; older rows still keep their last-built values, and the step logs a WARNING on every incremental run. Adopting the 395-day policy across stored history requires a full governance rebuild and subsequent cube assembly; changing the code does not alter previously stored rows.
 
 Every rule's count is logged as `governance clean | <stage>|<rule>: n`; `test_clean_stage_tally_keys` pins the stage names. Evidence: `reports/validate/2026-10-10-governance-fill-review/`.
+
+## Institutional build stages
+
+[StepCubeInstitutionals](../../src/data_aggregate/transformers/step_cube_institutionals.py) plans the saved output tail, then loads shared calendar, price/share/split resources and roster once. It runs insider, short-flow and ownership families sequentially so each family's raw frames can be released before the next family. Each source payload is read once; completeness metadata remains separate. The FTD source uses one global stream to retain observed-date coverage before collecting ticker economics.
+
+The insider path loads transactions and proxy evidence, scopes/canonicalizes transactions, reconciles versions and prices, prepares dated role/position evidence, calculates features, then applies uncertainty and availability masks. Short-flow separates weighted volume windows, settlement fails and persistence from the unchanged publication clock. Ownership prepares canonical events, calculates the existing decay/transition fields, then applies source and identity masks. [Common errors](../../src/data_aggregate/utils/common/errors.py) owns the shared absent-source predicate.
+
+All three families retain complete dependency history. The step merges their panels once and slices only at persistence. A schema mismatch reuses that completed full panel for replacement; it does not reload sources or calculate features again. Feature formulas, columns, types, missing-versus-zero rules and publication rules are unchanged. Functions in the eight refactored source files fit 90 lines and three control levels, with no nested function definitions; new helpers use at most six inputs while existing interfaces remain compatible. This is an output-preserving refactor; economic and publication-vintage assessment remains separate.
 
 ## Independent part refresh and ownership
 

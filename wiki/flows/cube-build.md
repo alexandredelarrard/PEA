@@ -5,7 +5,7 @@ type: flow
 tags:
   - wiki
   - flow
-source_commit: 6421598d7cfdf2f5005182f47a05a99e30c2b9a8
+source_commit: 280857c4e2c91157ae95550e0732752741c0cbdd
 ---
 # Cube build
 
@@ -57,6 +57,12 @@ A missing price-basis gate can propagate adjustment seams into returns, betas, a
 - [Cube parts](../concepts/cube-parts.md)
 - [Point-in-time and quality controls](../architecture/point-in-time-and-quality.md)
 - [Add a cube feature](../guides/add-a-cube-feature.md)
+
+## Institutional stage sequence
+
+[StepCubeInstitutionals.run](../../src/data_aggregate/transformers/step_cube_institutionals.py) follows saved-output planning → shared input loading → insider loading/cleaning/features/masks → short-flow loading/preparation/features → ownership loading/events/features/masks → one panel merge → inclusive output-tail write. The family stages process sequentially and reuse their loaded frames. The global FTD stream keeps coverage before ticker filtering, while insider/13D/13G completeness metadata remains independent of payload rows.
+
+The source/calendar history remains complete even for an incremental output tail. Schema recovery writes the already-computed full panel once, without recursive source reads or feature rebuilding. The refactor retains existing feature mathematics, publication rules and missing-versus-zero behavior; see [institutional build stages](../modules/data-aggregate.md#institutional-build-stages).
 
 ## SEC 13F stage sequence
 

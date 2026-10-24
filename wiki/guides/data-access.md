@@ -7,7 +7,7 @@ tags:
   - guide
   - database
   - point-in-time
-source_commit: 9da992c7f0561c645c479c1d4bec075a569e97b9
+source_commit: 280857c4e2c91157ae95550e0732752741c0cbdd
 ---
 # Data access and storage
 
@@ -141,6 +141,8 @@ if result == COLUMNS_CHANGED:
 The part registry declares warm-up days and binding look-backs. A trailing recompute is valid only when every bounded daily look-back fits inside that warm-up and cross-sectional transforms are date-local. Tests prove full-versus-incremental equivalence for representative builders.
 
 SEC 13F retains complete source/calendar dependencies for expanding selection and history. `StepCubeSecThirteen` plans the output tail first, computes the complete panel once, and reuses it for full replacement on a schema mismatch. Its fallback does not recursively reload/rebuild; other builders retain their own contracts, including the generic example above.
+
+`StepCubeInstitutionals` also retains full dependency history and computes its insider, short-flow and ownership panels once. Its schema fallback passes that completed full panel to the existing writer with a full window. Normal and recovery paths reuse the same projected source payloads; the global FTD stream preserves coverage before ticker filtering. This differs from the recursive generic example above, which still describes other builders' contracts.
 
 A declaration can still be wrong. Governance required a longer warm-up because a daily five-year self-history feature lived on top of annual filing inputs. Institutional features with expanding or event-age state compute against the full calendar and slice only at write time; no finite warm-up can reconstruct them.
 

@@ -26,7 +26,7 @@ import pandas as pd
 
 from src.constants.constants import FTD_ZIP_NAME_TEMPLATE, MARKET_TIMEZONE
 from src.data_aggregate.utils.common.data_utils import to_day
-from src.data_aggregate.utils.common.errors import _empty_panel
+from src.data_aggregate.utils.common.errors import _absent, _empty_panel
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 from src.data_aggregate.utils.common.price_frames import PriceFrames
@@ -34,14 +34,6 @@ from src.data_aggregate.utils.common.split_basis import split_adjust_frame
 from src.data_aggregate.utils.common.xs import self_history_z
 from src.utils.price_adjustments import ShareBasis
 from src.utils.string import pad_cik, yahoo_symbol
-
-
-def _absent(df: pd.DataFrame | None, need: set[str] | None = None) -> bool:
-    """True when `df` is missing, empty, or lacks a column of `need` (only unconditionally read columns)."""
-    if df is None or df.empty:
-        return True
-    return bool(need) and not need.issubset(df.columns)
-
 
 logger = logging.getLogger(__name__)
 

@@ -17,7 +17,7 @@ import pandas as pd
 
 from src.data_aggregate.utils.common.availability import InstitutionalAvailability
 from src.data_aggregate.utils.common.decay import decay_events
-from src.data_aggregate.utils.common.errors import _empty_panel
+from src.data_aggregate.utils.common.errors import _absent, _empty_panel
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.price_frames import PriceFrames
 from src.data_store.schema import Tables
@@ -27,18 +27,6 @@ from src.data_store.schema import Tables
 #: (`filing_date` -- `date_of_event` is never projected, which is what makes L4 structural)
 #: plus the two ownership/identity legs.
 _NEED = {"ticker", "accession_number", "cusip", "filing_date", "reporting_person_cik"}
-
-
-def _absent(df: pd.DataFrame | None, need: set[str] | None = None) -> bool:
-    """True when `df` cannot be built from: missing, empty, or short a required column.
-
-    The three-part test is the D5 entry contract stated once. `need` is the set the builder
-    dereferences unconditionally -- a column it only uses `if present` does NOT belong here,
-    or an optional projection turns into an empty panel.
-    """
-    if df is None or df.empty:
-        return True
-    return bool(need) and not need.issubset(df.columns)
 
 
 #: D28: 13G filing volume is not constant over 15 years, so the raw filer count is meaningless
@@ -183,6 +171,39 @@ def _cross_fields(canon_13d: pd.DataFrame, canon_13g: pd.DataFrame, idx: pd.Date
     return out
 
 
+def _apply_ownership_masks(
+    fields: dict[str, pd.DataFrame],
+    df_act_coverage: pd.DataFrame | None,
+    df_bo_source_coverage: pd.DataFrame | None,
+    df_bo_identity: pd.DataFrame,
+    idx: pd.DatetimeIndex,
+    columns: pd.Index,
+) -> None:
+    """Apply independent source coverage and retain positively proven same-filer transitions."""
+    cross_names = {"ic_bo_escalation_13g_to_13d", "ic_bo_de_escalation_13d_to_13g"}
+    cross_masks: dict[str, pd.DataFrame] = {}
+    df_bo_mask = InstitutionalAvailability.combine(df_bo_source_coverage, df_bo_identity) if df_bo_source_coverage is not None else df_bo_identity
+
+    # Unknown holders block absence claims, while known-filer transitions retain their evidence.
+    for name in cross_names & fields.keys():
+        df_observed = fields[name].reindex(index=idx, columns=columns).notna()
+        cross_masks[name] = InstitutionalAvailability.combine(
+            df_bo_identity | df_observed,
+            *(mask for mask in (df_act_coverage, df_bo_source_coverage) if mask is not None),
+        )
+
+    # Apply each field's own source/identity boundary without changing its event arithmetic.
+    for name, df_field in fields.items():
+        if name.startswith("ic_act_"):
+            df_mask = df_act_coverage
+        elif name in cross_names:
+            df_mask = cross_masks[name]
+        else:
+            df_mask = df_bo_mask
+        if df_mask is not None:
+            fields[name] = df_field.reindex(index=idx, columns=columns).where(df_mask)
+
+
 def build_ownership_feature_panel(
     frames: PriceFrames,
     sec_13d: pd.DataFrame | None,
@@ -199,11 +220,7 @@ def build_ownership_feature_panel(
     peer_dict = frames.peers
     trading_index = frames.trading_index
 
-    # D5 entry guard, PER LEG. The two channels are independent fetchers -- a universe with
-    # 13G coverage and no 13D still builds the `ic_bo_*` half -- so a leg that cannot be used
-    # is nulled rather than failing the whole panel. `_NEED` is what `_canonicalize`
-    # dereferences unconditionally; `is_amendment` is NOT in it because it is 13D-only and
-    # `_canonicalize` already builds its column list around its absence.
+    # Each schedule is optional; an unusable projection removes only that leg.
     sec_13d = None if _absent(sec_13d, _NEED) else sec_13d
     sec_13g = None if _absent(sec_13g, _NEED) else sec_13g
     if sec_13d is None and sec_13g is None:
@@ -213,11 +230,19 @@ def build_ownership_feature_panel(
     if idx.empty:
         return pd.DataFrame(columns=["date", "ticker"])
 
+    # Canonicalize each accession/security once before deriving filing events.
     canon_13d = _canonicalize(sec_13d, has_amendment=True)
     canon_13g = _canonicalize(sec_13g, has_amendment=False)
     if canon_13d.empty and canon_13g.empty:
         return pd.DataFrame(columns=["date", "ticker"])
 
+    # Compute activist, first-holder and cross-schedule events independently.
+    fields: dict[str, pd.DataFrame] = {}
+    fields.update(_act_fields(canon_13d, idx, decay_halflife_act))
+    fields.update(_bo_fields(canon_13g, idx, decay_halflife_bo))
+    fields.update(_cross_fields(canon_13d, canon_13g, idx, decay_halflife_bo))
+
+    # Prepare the separate source clocks and current holder-identity support.
     if availability is not None:
         g_start = availability.source_date(Tables.sec_13g)
     else:
@@ -245,29 +270,11 @@ def build_ownership_feature_panel(
         else None
     )
     bo_identity = _known_13g_identity_mask(canon_13g, idx, columns)
-    bo_mask = InstitutionalAvailability.combine(bo_source_coverage, bo_identity) if bo_source_coverage is not None else bo_identity
 
-    fields: dict[str, pd.DataFrame] = {}
-    fields.update(_act_fields(canon_13d, idx, decay_halflife_act))
-    fields.update(_bo_fields(canon_13g, idx, decay_halflife_bo))
-    fields.update(_cross_fields(canon_13d, canon_13g, idx, decay_halflife_bo))
+    # Post-process source and identity masks after all event calculations.
+    _apply_ownership_masks(fields, act_coverage, bo_source_coverage, bo_identity, idx, columns)
 
-    cross_names = {"ic_bo_escalation_13g_to_13d", "ic_bo_de_escalation_13d_to_13g"}
-    cross_masks: dict[str, pd.DataFrame] = {}
-    for name in cross_names & fields.keys():
-        observed = fields[name].reindex(index=idx, columns=columns).notna()
-        # An unidentified holder prevents an absence/zero claim, but cannot erase a later
-        # transition proven by the same known filer in both schedules. Source frontiers still
-        # bound that positive state independently, including when only one frontier is known.
-        cross_masks[name] = InstitutionalAvailability.combine(
-            bo_identity | observed,
-            *(mask for mask in (act_coverage, bo_source_coverage) if mask is not None),
-        )
-    for name, frame in fields.items():
-        mask = act_coverage if name.startswith("ic_act_") else cross_masks[name] if name in cross_names else bo_mask
-        if mask is not None:
-            fields[name] = frame.reindex(index=idx, columns=columns).where(mask)
-
+    # Preserve optional-field omission and the common raw float32 emission contract.
     for name in list(fields):
         if fields[name] is None or fields[name].empty:
             fields.pop(name)

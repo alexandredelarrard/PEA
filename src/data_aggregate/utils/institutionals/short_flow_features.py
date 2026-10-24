@@ -328,62 +328,84 @@ def _shortvol_fields(
     tenure_mask: pd.DataFrame | None = None,
 ) -> dict[str, pd.DataFrame]:
     """RegSHO ratio, acceleration, turnover, price-interaction and coverage legs, each shifted by the publication lag."""
-    short = _pivot(hist, "short_volume", idx)
-    total = _pivot(hist, "total_volume", idx)
-    if tenure_mask is not None:
-        source_tenure = tenure_mask.reindex(index=idx, columns=short.columns, fill_value=False)
-        short = short.where(source_tenure)
-        total = total.where(source_tenure)
-    observed = short.notna() & total.notna()
-    f_dict: dict[str, pd.DataFrame] = {}
+    # Prepare issuer-valid daily quantities and reuse their aligned tenure mask.
+    df_short = _pivot(hist, "short_volume", idx)
+    df_total = _pivot(hist, "total_volume", idx)
+    df_tenure = tenure_mask.reindex(index=idx, columns=df_short.columns, fill_value=False) if tenure_mask is not None else None
+    if df_tenure is not None:
+        df_short = df_short.where(df_tenure)
+        df_total = df_total.where(df_tenure)
+    df_observed = df_short.notna() & df_total.notna()
 
-    ratios: dict[int, pd.DataFrame] = {}
-    for w in RATIO_WINDOWS:
-        mp = _min_periods(w)
-        num = short.rolling(w, min_periods=mp).sum()
-        den = total.rolling(w, min_periods=mp).sum()
-        ratio = (num / den.where(den > 0)).replace([np.inf, -np.inf], np.nan).where(observed)
-        ratios[w] = ratio.shift(SHORTVOL_PUB_LAG)
-        f_dict[f"ic_shortvol_ratio_{w}d"] = ratios[w]
+    # Compute weighted window ratios and reuse the base-window sum for turnover.
+    ratios, df_turnover = _shortvol_window_fields(df_short, df_total, df_observed, idx, shares_out)
+    fields = {f"ic_shortvol_ratio_{window}d": df_ratio for window, df_ratio in ratios.items()}
+    fields["ic_shortvol_acceleration"] = ratios[BASE_WINDOW] - ratios[max(RATIO_WINDOWS)]
+    if df_turnover is not None:
+        fields["ic_shortvol_turnover_20d"] = df_turnover
 
-    base = ratios[BASE_WINDOW]
-    z = self_history_z(base, window=Z_WINDOW, min_periods=Z_MIN_PERIODS)
-    f_dict["ic_shortvol_acceleration"] = ratios[BASE_WINDOW] - ratios[max(RATIO_WINDOWS)]
-
-    if shares_out is not None and not shares_out.empty:
-        so = shares_out.reindex(index=idx).reindex(columns=short.columns)
-        turn = short.rolling(BASE_WINDOW, min_periods=_min_periods(BASE_WINDOW)).sum()
-        f_dict["ic_shortvol_turnover_20d"] = (turn / so.where(so > 0)).replace([np.inf, -np.inf], np.nan).where(observed).shift(SHORTVOL_PUB_LAG)
-
+    # Price interactions use total-return closes and the already-lagged ratio history.
     if close_total is not None and not close_total.empty:
-        # A return, so `close_total`; `close_split` is reserved for levels.
-        ret = close_total.reindex(index=idx).reindex(columns=short.columns).pct_change(RET_WINDOW)
-        high = z.clip(lower=0.0)
-        f_dict["ic_shortvol_high_x_weak_price"] = high * (-ret).clip(lower=0.0)
-        f_dict["ic_shortvol_high_x_strong_price"] = high * ret.clip(lower=0.0)
-
+        df_z = self_history_z(ratios[BASE_WINDOW], window=Z_WINDOW, min_periods=Z_MIN_PERIODS)
+        df_returns = close_total.reindex(index=idx).reindex(columns=df_short.columns).pct_change(RET_WINDOW)
+        df_high = df_z.clip(lower=0.0)
+        fields["ic_shortvol_high_x_weak_price"] = df_high * (-df_returns).clip(lower=0.0)
+        fields["ic_shortvol_high_x_strong_price"] = df_high * df_returns.clip(lower=0.0)
     if volume is not None and not volume.empty:
-        tape = volume.reindex(index=idx).reindex(columns=short.columns)
-        num = (total * split_adjust_frame(splits, total)).rolling(BASE_WINDOW, min_periods=_min_periods(BASE_WINDOW)).sum()
-        den = tape.rolling(BASE_WINDOW, min_periods=_min_periods(BASE_WINDOW)).sum()
-        cov = (num / den.where(den > 0)).replace([np.inf, -np.inf], np.nan).where(observed)
-        cov = _guard_coverage(cov)
-        f_dict["ic_shortvol_market_coverage"] = cov.shift(SHORTVOL_PUB_LAG)
-        live = cov.to_numpy(dtype="float64", na_value=np.nan).ravel()
-        live = live[np.isfinite(live)]
-        if len(live):
-            p05, p50, p95 = np.percentile(live, [5, 50, 95])
-            logger.info(
-                "RegSHO market coverage (off-exchange share of tape volume): p50 %.1f%%, p05 %.1f%%, p95 %.1f%% over %s ticker-days",
-                100 * p50,
-                100 * p05,
-                100 * p95,
-                len(live),
+        df_tape = volume.reindex(index=idx).reindex(columns=df_short.columns)
+        fields["ic_shortvol_market_coverage"] = _shortvol_market_coverage(df_total, df_tape, df_observed, splits)
+
+    # Publication does not extend a ticker beyond its proven current-issuer tenure.
+    if df_tenure is not None:
+        fields = {name: df_field.where(df_tenure) for name, df_field in fields.items()}
+    return fields
+
+
+def _shortvol_window_fields(
+    df_short: pd.DataFrame, df_total: pd.DataFrame, df_observed: pd.DataFrame, idx: pd.DatetimeIndex, shares_out: pd.DataFrame | None
+) -> tuple[dict[int, pd.DataFrame], pd.DataFrame | None]:
+    """Normalize window short-sale totals by total volume and optional PIT shares."""
+    ratios: dict[int, pd.DataFrame] = {}
+    df_turnover = None
+    df_shares = shares_out.reindex(index=idx).reindex(columns=df_short.columns) if shares_out is not None and not shares_out.empty else None
+
+    # Calculate each numerator once; the base sum also supplies share turnover.
+    for window in RATIO_WINDOWS:
+        min_periods = _min_periods(window)
+        df_numerator = df_short.rolling(window, min_periods=min_periods).sum()
+        df_denominator = df_total.rolling(window, min_periods=min_periods).sum()
+        df_ratio = (df_numerator / df_denominator.where(df_denominator > 0)).replace([np.inf, -np.inf], np.nan).where(df_observed)
+        ratios[window] = df_ratio.shift(SHORTVOL_PUB_LAG)
+        if window == BASE_WINDOW and df_shares is not None:
+            df_turnover = (
+                (df_numerator / df_shares.where(df_shares > 0)).replace([np.inf, -np.inf], np.nan).where(df_observed).shift(SHORTVOL_PUB_LAG)
             )
-    if tenure_mask is not None:
-        for name, frame in f_dict.items():
-            f_dict[name] = frame.where(tenure_mask.reindex(index=frame.index, columns=frame.columns, fill_value=False))
-    return f_dict
+    return ratios, df_turnover
+
+
+def _shortvol_market_coverage(df_total: pd.DataFrame, df_tape: pd.DataFrame, df_observed: pd.DataFrame, splits: pd.DataFrame | None) -> pd.DataFrame:
+    """Compute split-consistent off-exchange tape coverage and report its supported range."""
+    min_periods = _min_periods(BASE_WINDOW)
+
+    # Restate quantities to the tape basis before rolling and applying its physical ceiling.
+    df_numerator = (df_total * split_adjust_frame(splits, df_total)).rolling(BASE_WINDOW, min_periods=min_periods).sum()
+    df_denominator = df_tape.rolling(BASE_WINDOW, min_periods=min_periods).sum()
+    df_coverage = (df_numerator / df_denominator.where(df_denominator > 0)).replace([np.inf, -np.inf], np.nan).where(df_observed)
+    df_coverage = _guard_coverage(df_coverage)
+
+    # Keep the existing coverage diagnostic on settlement-day quantities.
+    live = df_coverage.to_numpy(dtype="float64", na_value=np.nan).ravel()
+    live = live[np.isfinite(live)]
+    if len(live):
+        p05, p50, p95 = np.percentile(live, [5, 50, 95])
+        logger.info(
+            "RegSHO market coverage (off-exchange share of tape volume): p50 %.1f%%, p05 %.1f%%, p95 %.1f%% over %s ticker-days",
+            100 * p50,
+            100 * p05,
+            100 * p95,
+            len(live),
+        )
+    return df_coverage.shift(SHORTVOL_PUB_LAG)
 
 
 def _fails_fields(
@@ -399,59 +421,79 @@ def _fails_fields(
     columns: pd.Index | None = None,
 ) -> dict[str, pd.DataFrame]:
     """FTD-to-ADV20 and persistence legs, published per ZIP; zero-filled only on dates the FTD file covers."""
+    # Resolve publication metadata before calculating settlement-day quantities.
     coverage = fails_hist if ftd_coverage is None else ftd_coverage
     available_by_period = _ftd_available_dates(coverage, ftd_cache_dir, stored_periods=ftd_stored_periods)
-    fails = _pivot(fails_hist, "fails_quantity", idx) if not fails_hist.empty else pd.DataFrame(index=idx, dtype="float64")
-    if ftd_coverage is not None and columns is not None:
-        fails = fails.reindex(columns=columns)
+    df_fails, on_file = _settlement_fails(fails_hist, coverage, idx, columns if ftd_coverage is not None else None, tenure_mask)
+    fields: dict[str, pd.DataFrame] = {}
+    df_pct_shares = None
+    df_to_adv = None
+
+    # Preserve the independent PIT-share and split-adjusted ADV denominators.
+    if shares_out is not None and not shares_out.empty:
+        df_shares = shares_out.reindex(index=idx).reindex(columns=df_fails.columns)
+        df_pct_shares = (df_fails / df_shares.where(df_shares > 0)).replace([np.inf, -np.inf], np.nan)
+    if volume is not None and not volume.empty:
+        df_adv = volume.reindex(index=idx).reindex(columns=df_fails.columns).rolling(BASE_WINDOW, min_periods=_min_periods(BASE_WINDOW)).mean()
+        df_adjusted = df_fails * split_adjust_frame(splits, df_fails)
+        df_to_adv = (df_adjusted / df_adv.where(df_adv > 0)).replace([np.inf, -np.inf], np.nan)
+        fields["ic_ftd_to_adv20"] = _publish_ftd_zip_states(df_to_adv, coverage, idx, available_by_period)
+
+    # Calculate settlement persistence, then expose each ZIP as one public state.
+    basis = df_pct_shares if df_pct_shares is not None else df_to_adv
+    if basis is not None:
+        df_persistence = _ftd_settlement_persistence(basis, on_file, idx)
+        fields["ic_ftd_persistence_30d"] = _publish_ftd_zip_states(df_persistence, coverage, idx, available_by_period)
+
+    # Retain unknown values outside the issuer's applicable published history.
+    if tenure_mask is not None:
+        for name, df_field in fields.items():
+            fields[name] = df_field.where(tenure_mask.reindex(index=df_field.index, columns=df_field.columns, fill_value=False))
+    return fields
+
+
+def _settlement_fails(
+    fails_hist: pd.DataFrame, coverage: pd.DataFrame, idx: pd.DatetimeIndex, columns: pd.Index | None, tenure_mask: pd.DataFrame | None
+) -> tuple[pd.DataFrame, pd.Series]:
+    """Align economic fails and fill zero only on globally observed settlement dates."""
+    df_fails = _pivot(fails_hist, "fails_quantity", idx) if not fails_hist.empty else pd.DataFrame(index=idx, dtype="float64")
+    if columns is not None:
+        df_fails = df_fails.reindex(columns=columns)
     covered = pd.DatetimeIndex(to_day(coverage["date"]).dropna().unique())
     on_file = pd.Series(idx.isin(covered), index=idx)
+
+    # Preserve global-date coverage before applying ticker-specific issuer support.
+    df_covered = pd.DataFrame({column: on_file for column in df_fails.columns}, index=idx)
+    df_fails = df_fails.mask(df_covered & df_fails.isna(), 0.0)
+    if tenure_mask is not None:
+        df_fails = df_fails.where(tenure_mask.reindex(index=idx, columns=df_fails.columns, fill_value=False))
+
+    # Report the same observed-date coverage used to distinguish zero from unknown.
     logger.info(
         "FTD file covers %s of %s trading days in the window (%.1f%%); an absent ticker on a covered date is 0 fails, an absent date is NaN",
         int(on_file.sum()),
         len(idx),
         100 * float(on_file.mean()),
     )
-    # 0 on a covered date, NaN on an unpublished one; the per-date flag is broadcast to the ticker axis explicitly.
-    covered_wide = pd.DataFrame({c: on_file for c in fails.columns}, index=idx)
-    fails = fails.mask(covered_wide & fails.isna(), 0.0)
-    if tenure_mask is not None:
-        source_tenure = tenure_mask.reindex(index=idx, columns=fails.columns, fill_value=False)
-        fails = fails.where(source_tenure)
-        covered_wide &= source_tenure
+    return df_fails, on_file
 
-    f_dict: dict[str, pd.DataFrame] = {}
-    pct_so = None
-    to_adv = None
-    if shares_out is not None and not shares_out.empty:
-        so = shares_out.reindex(index=idx).reindex(columns=fails.columns)
-        pct_so = (fails / so.where(so > 0)).replace([np.inf, -np.inf], np.nan)
-    if volume is not None and not volume.empty:
-        adv = volume.reindex(index=idx).reindex(columns=fails.columns).rolling(BASE_WINDOW, min_periods=_min_periods(BASE_WINDOW)).mean()
-        # Restate as-traded fails onto the split-adjusted basis of yfinance volume.
-        fails_adj = fails * split_adjust_frame(splits, fails)
-        to_adv = (fails_adj / adv.where(adv > 0)).replace([np.inf, -np.inf], np.nan)
-        f_dict["ic_ftd_to_adv20"] = _publish_ftd_zip_states(to_adv, coverage, idx, available_by_period)
-    # Prefer the shares-outstanding basis; fall back to ADV when fundamentals are absent.
-    basis = pct_so if pct_so is not None else to_adv
-    if basis is not None:
-        z = self_history_z(basis, window=Z_WINDOW, min_periods=Z_MIN_PERIODS)
-        # An undefined z is 0 when every covered observation in the window is present and exactly zero.
-        covered_basis = pd.DataFrame({c: on_file for c in basis.columns}, index=idx)
-        # Applicability starts at the ticker's first computable basis; a later hole blocks neutralization.
-        applicable = covered_basis & basis.notna().cummax()
-        expected = applicable.astype("float64").rolling(Z_WINDOW, min_periods=1).sum()
-        observed = basis.notna().astype("float64").rolling(Z_WINDOW, min_periods=1).sum()
-        zeros = basis.eq(0.0).astype("float64").rolling(Z_WINDOW, min_periods=1).sum()
-        neutral = applicable & basis.eq(0.0) & expected.ge(Z_MIN_PERIODS) & observed.eq(expected) & zeros.eq(expected)
-        z = z.mask(z.isna() & neutral, 0.0)
-        flag = (z > Z_HIGH).astype("float64").where(z.notna())
-        persistence = flag.rolling(PERSISTENCE_WINDOW, min_periods=_min_periods(PERSISTENCE_WINDOW)).sum().where(covered_basis)
-        f_dict["ic_ftd_persistence_30d"] = _publish_ftd_zip_states(persistence, coverage, idx, available_by_period)
-    if tenure_mask is not None:
-        for name, frame in f_dict.items():
-            f_dict[name] = frame.where(tenure_mask.reindex(index=frame.index, columns=frame.columns, fill_value=False))
-    return f_dict
+
+def _ftd_settlement_persistence(basis: pd.DataFrame, on_file: pd.Series, idx: pd.DatetimeIndex) -> pd.DataFrame:
+    """Count high-FTD days while preserving complete-zero neutralization and coverage gaps."""
+    df_z = self_history_z(basis, window=Z_WINDOW, min_periods=Z_MIN_PERIODS)
+    df_covered = pd.DataFrame({column: on_file for column in basis.columns}, index=idx)
+
+    # A complete observed zero window has a neutral z; a later missing basis does not.
+    df_applicable = df_covered & basis.notna().cummax()
+    df_expected = df_applicable.astype("float64").rolling(Z_WINDOW, min_periods=1).sum()
+    df_observed = basis.notna().astype("float64").rolling(Z_WINDOW, min_periods=1).sum()
+    df_zeros = basis.eq(0.0).astype("float64").rolling(Z_WINDOW, min_periods=1).sum()
+    df_neutral = df_applicable & basis.eq(0.0) & df_expected.ge(Z_MIN_PERIODS) & df_observed.eq(df_expected) & df_zeros.eq(df_expected)
+    df_z = df_z.mask(df_z.isna() & df_neutral, 0.0)
+
+    # Aggregate the same threshold flags on the settlement calendar before publication.
+    df_flags = (df_z > Z_HIGH).astype("float64").where(df_z.notna())
+    return df_flags.rolling(PERSISTENCE_WINDOW, min_periods=_min_periods(PERSISTENCE_WINDOW)).sum().where(df_covered)
 
 
 def build_short_flow_feature_panel(
@@ -479,33 +521,35 @@ def build_short_flow_feature_panel(
     """
     peer_dict = frames.peers
     trading_index = frames.trading_index
-    volume = with_class_volume(frames.volume, class_volume)
-    close_total = frames.close_total
+    df_close_total = frames.close_total
     # Both sources are optional; the panel is empty only when neither arrived.
     if _absent(short_history) and _absent(fails_history) and _absent(ftd_coverage):
         return _empty_panel()
 
+    # Prepare calendar, class-aware tape, issuer tenure and PIT share denominators once.
+    df_volume = with_class_volume(frames.volume, class_volume)
     idx = pd.DatetimeIndex(trading_index).normalize().unique().sort_values()
     columns = pd.Index(sorted(map(str, frames.universe)), name="ticker")
     tenure_mask = _proven_tenure_mask(idx, columns, symbol_tenure, ticker_ciks)
-    shares_out = None
+    df_shares_out = None
     if shares_out_history is not None and not shares_out_history.empty:
         # Point-in-time share count, matching the as-traded basis of fails and short sales.
-        shares_out = fundamentals_to_daily(shares_out_history, "sharesOutstandingPit", idx, share_basis=share_basis)
-        if shares_out.empty or not shares_out.notna().any().any():
-            shares_out = None
+        df_shares_out = fundamentals_to_daily(shares_out_history, "sharesOutstandingPit", idx, share_basis=share_basis)
+        if df_shares_out.empty or not df_shares_out.notna().any().any():
+            df_shares_out = None
 
+    # Calculate RegSHO and FTD independently so optional sources keep their own fields.
     fields: dict[str, pd.DataFrame] = {}
     if short_history is not None and not short_history.empty and {"short_volume", "total_volume"}.issubset(short_history.columns):
-        fields.update(_shortvol_fields(short_history, idx, shares_out, close_total, volume, splits, tenure_mask))
+        fields.update(_shortvol_fields(short_history, idx, df_shares_out, df_close_total, df_volume, splits, tenure_mask))
     if not _absent(ftd_coverage) or not _absent(fails_history, {"fails_quantity"}):
         fails_hist = fails_history if fails_history is not None else pd.DataFrame()
         fields.update(
             _fails_fields(
                 fails_hist,
                 idx,
-                shares_out,
-                volume,
+                df_shares_out,
+                df_volume,
                 splits,
                 tenure_mask,
                 ftd_cache_dir,
@@ -515,9 +559,10 @@ def build_short_flow_feature_panel(
             )
         )
 
+    # Preserve data-dependent field omission and the existing raw float32 emitter.
     for name in list(fields):
-        frame = fields[name]
-        if frame is None or frame.empty or not frame.notna().any().any():
+        df_field = fields[name]
+        if df_field is None or df_field.empty or not df_field.notna().any().any():
             fields.pop(name)
     if not fields:
         return pd.DataFrame(columns=["date", "ticker"])

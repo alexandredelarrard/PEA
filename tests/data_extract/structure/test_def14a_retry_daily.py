@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from types import SimpleNamespace
+from typing import Any
 
 import pandas as pd
 import pytest
@@ -12,7 +13,8 @@ from sqlalchemy import create_engine
 
 from src.data_extract.utils.common.identity import FilingScope
 from src.data_extract.utils.structure.def14a import fetch
-from src.data_store.schema import Tables
+from src.data_extract.utils.structure.def14a.retry import SECTIONS
+from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 from tests.data_extract.fake_context import extract_config
@@ -378,3 +380,74 @@ def test_disclosed_ceo_identity_or_start_year_gap_is_retried(daily, monkeypatch,
     assert _attempts(context)[Tables.def14a_directors.name] == [2]
     assert _attempts(context)[Tables.def14a_llm.name] == [1]
     print(f"SANITY: source-disclosed missing {missing} retries only board/CEO and leaves audit at attempt 1.")
+
+
+@pytest.mark.parametrize("interrupt_core_save", [False, True])
+def test_delayed_ceo_identity_refreshes_saved_pay_and_ownership_without_new_calls(
+    daily: tuple[SimpleNamespace, list[tuple[str, str, str]], dict[str, Any], pd.DataFrame],
+    monkeypatch: pytest.MonkeyPatch,
+    interrupt_core_save: bool,
+) -> None:
+    context, calls, answers, _ = daily
+    answers.update(_complete_answers())
+    core = dict(answers["GovernanceExtract"], ceo_name="Bob Brown", ceo_age=50, directors=[dict(name="Bob Brown", age=50)])
+    components = dict(bonus=0, stock_awards=0, option_awards=0, non_equity_incentive=0, pension_change=0, other_compensation=0)
+    answers["ExecutivePayExtract"]["compensation"] = [
+        dict(**components, name="Alice Adams", title="CEO", fiscal_year=2025, salary=100, total=100),
+        dict(**{**components, "stock_awards": 40, "option_awards": 60}, name="Bob Brown", title="CEO", fiscal_year=2025, salary=100, total=200),
+    ]
+    answers["OwnershipExtract"].update(
+        holders=[
+            dict(holder_name="Alice Adams", holder_type="director_officer", shares=100, percent_of_class=10, percent_of_voting_power=15),
+            dict(holder_name="Bob Brown", holder_type="director_officer", shares=200, percent_of_class=20, percent_of_voting_power=25),
+        ],
+        insider_shares=300,
+        insider_ownership_pct=30,
+        insider_voting_pct=40,
+    )
+    answers["GovernanceExtract"] = RuntimeError("core temporarily unavailable")
+    payloads = {
+        **PAYLOADS,
+        "governance": "Name\tAge\tDirector Since\nBob Brown\t50\t2018\nBob Brown is Chief Executive Officer.",
+        "executive_pay": "Name\tYear\tSalary\tStock Awards\tOption Awards\tTotal\nAlice Adams\t2025\t100\t0\t0\t100\nBob Brown\t2025\t100\t40\t60\t200",
+        "ownership": "Name\tNumber of Shares\tPercent of Class\tVoting Power\nAlice Adams\t100\t10%\t15%\nBob Brown\t200\t20%\t25%",
+    }
+    monkeypatch.setattr(fetch, "prepare_def14a_payloads", lambda *_: payloads)
+    fetch.fetch_def14a_llm(context, context.config, ["ZZ"])
+    before = context.store.load(Tables.def14a_llm).iloc[0]
+    assert len(calls) == 5 and before.ceo_total_comp == 100 and pd.isna(before.ceo_name_proxy)
+    answers["GovernanceExtract"] = core
+    reads: list[Table] = []
+    original_load, original_save = context.store.load, fetch.save_section
+
+    def tracked_load(table: Table, *args: Any, **kwargs: Any) -> pd.DataFrame | None:
+        reads.append(table)
+        return original_load(table, *args, **kwargs)
+
+    def interrupted_save(context: Any, work: Any, processed: Any) -> None:
+        if Tables.def14a_directors in processed.frames:
+            raise OSError("core save interrupted")
+        original_save(context, work, processed)
+
+    monkeypatch.setattr(context.store, "load", tracked_load)
+    if interrupt_core_save:
+        monkeypatch.setattr(fetch, "save_section", interrupted_save)
+        with pytest.raises(OSError, match="core save interrupted"):
+            fetch.fetch_def14a_llm(context, context.config, ["ZZ"])
+        assert len(calls) == 6
+        reads.clear()
+        monkeypatch.setattr(fetch, "save_section", original_save)
+        monkeypatch.setattr(fetch, "_read_proxy", lambda *_: pytest.fail("the paid core answer must replay without source"))
+    fetch.fetch_def14a_llm(context, context.config, ["ZZ"])
+    assert reads == [section.table for section in SECTIONS] + [Tables.def14a_llm]
+    after = original_load(Tables.def14a_llm).iloc[0]
+    assert after.ceo_name_proxy == "Bob Brown"
+    assert (after.ceo_total_comp, after.ceo_equity_pay_pct, after.ceo_ownership_pct, after.ceo_voting_pct) == (200, 0.5, 0.2, 0.25)
+    assert (after.n_neos, after.total_neo_comp, after.auditor_fees) == (2, 300, before.auditor_fees)
+    assert len(calls) == 6 and calls[-1][0] == "GovernanceExtract"
+    assert _attempts(context) == {table.name: [2 if table is Tables.def14a_directors else 1] for table in (section.table for section in SECTIONS)}
+    raw = json.loads(after.def14a_json)["_def14a_split"]["responses"]
+    assert raw["executive_pay"][0]["response"]["compensation"][0]["name"] == "Alice Adams"
+    print(
+        "SANITY: delayed core identity refreshes saved CEO pay/ownership immediately, including free restart replay; no extra reads/calls/counters."
+    )

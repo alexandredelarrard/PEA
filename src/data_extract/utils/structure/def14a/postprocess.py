@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -23,6 +24,7 @@ from src.data_extract.utils.structure.def14a.flatten import (
     _DIRECTOR_COMPONENT_COLS,
     _EXEC_COMPONENT_COLS,
     _FEE_COLS,
+    _ceo_from_compensation,
     _child_frames,
     _flatten,
     _prepare_frame,
@@ -203,10 +205,13 @@ def postprocess_section(
     section: Section,
     answer: BaseModel,
     stamp: dict[str, Any],
-    df_saved: pd.DataFrame | None,
+    saved: Mapping[Table, pd.DataFrame],
     parent: dict[str, Any],
 ) -> ProcessedSection:
     """Normalize one domain, preserve its partial facts and emit only owned frames."""
+    # Reuse the already-loaded facts for this domain.
+    df_saved = saved.get(section.table)
+
     # Legacy archived values were already requested in USD; do not scale them again.
     if isinstance(answer, Def14AExtract):
         legacy = answer.model_copy(deep=True)
@@ -241,8 +246,39 @@ def postprocess_section(
         else:
             frames[section.table] = reservation_frame(section.table, stamp, df_saved, retry)
 
-    # The audit counter alone belongs to the parent; sibling patches omit it.
+    # Merge this domain's scalar facts before resolving identity-dependent copies.
     df_parent = _parent_patch(section, legacy, stamp, parent)
+
+    # A repaired identity must immediately select its own already-saved pay and ownership.
+    ceo_name = clean_person_name(df_parent.iloc[0].get("ceo_name_proxy", parent.get("ceo_name_proxy")))
+    if section.key == "governance" and ceo_name:
+        for owner in (item for item in SECTIONS if item.key in ("executive_pay", "ownership")):
+            df_related = saved.get(owner.table)
+            if df_related is None or df_related.empty:
+                continue
+            df_related = df_related.loc[
+                df_related["ticker"].eq(stamp["ticker"])
+                & df_related["accession_number"].eq(stamp["accession_number"])
+                & pd.to_datetime(df_related["as_of"], errors="coerce").eq(pd.Timestamp(stamp["as_of"]))
+                & ~marker_mask(owner.table, df_related)
+            ]
+            if df_related.empty:
+                continue
+            raw_key = "compensation" if owner.key == "executive_pay" else "holders"
+            records = df_related.astype(object).where(pd.notna(df_related), None).to_dict("records")
+            retained = _legacy_answer(owner, {raw_key: records}, {"ceo_name_proxy": ceo_name})
+            selected = _ceo_from_compensation(retained)
+            selected_name = clean_person_name(selected.name) if selected is not None else None
+            matched = selected_name is not None and selected_name.casefold() == ceo_name.casefold()
+            if owner.key == "ownership":
+                matched = df_related.holder_name.map(clean_person_name).str.casefold().eq(ceo_name.casefold()).sum() == 1
+            if not matched:
+                continue
+            copied = _parent_patch(owner, retained, stamp, {})
+            columns = [column for column in owner.parent_columns if column.startswith("ceo_")]
+            df_parent[columns] = copied.reindex(columns=columns)
+
+    # The audit counter alone belongs to the parent; sibling patches omit it.
     if section.key == "audit":
         df_parent["retry"] = retry
     frames[Tables.def14a_llm] = df_parent

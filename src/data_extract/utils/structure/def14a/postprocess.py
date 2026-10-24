@@ -269,7 +269,12 @@ def append_answer(raw: str | None, section: Section, answer: BaseModel, payload:
 
 def archived_answers(raw: str | None) -> dict[str, list[BaseModel]]:
     """Reuse all already-paid legacy/split partial answers without another submission."""
-    document = _archive_document(raw)
+    try:
+        document = json.loads(raw) if raw and raw != "_empty" else {}
+    except (ValueError, TypeError):
+        document = {}
+    if not isinstance(document, dict):
+        document = {}
     metadata = document.get("_def14a_split")
     legacy_raw = metadata.get("legacy_json") if isinstance(metadata, dict) else raw
     result: dict[str, list[BaseModel]] = {section.key: [] for section in SECTIONS}

@@ -23,6 +23,7 @@ from omegaconf import OmegaConf
 from src.data_extract.utils.schemas.def14a_schema import Def14AExtract as _Def14AExtract
 from src.data_extract.utils.schemas.vote_schema import Item507Extract as _Item507Extract
 from src.data_extract.utils.structure.def14a import fetch as def14a_mod
+from src.data_extract.utils.structure.def14a.flatten import _result_frames
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 
 _GPT_YML = Path(__file__).resolve().parents[3] / "configs" / "gpt.yml"
@@ -160,7 +161,7 @@ def test_a_failed_filing_does_not_abort_its_ticker():
         for i in range(4)
     ]
 
-    results = ext.run_extraction(tasks, flatten=def14a_mod._result_frames, group_key=lambda t: str(t.meta["ticker"]))
+    results = ext.run_extraction(tasks, flatten=_result_frames, group_key=lambda t: str(t.meta["ticker"]))
 
     assert len(results) == 4
     assert sum(r.ok for r in results) == 3

@@ -59,7 +59,7 @@ _DIRECTOR_CONTENT_RE = re.compile(
 # "Awards" column — for the rare filing whose SCT title doesn't survive flattening.
 _COMPENSATION_TITLE_RE = re.compile(
     r"Summary\s+Compensation\s+Table"
-    r"(?=[\s\S]{0,1800}?\b20\d\d\b[\s\S]{0,25}?[\d,]{6,}[\s\S]{0,25}?[\d,]{5,})",
+    r"(?=[\s\S]{0,1800}?\b(?:19|20)\d\d\b[\s\S]{0,25}?[\d,]{6,}[\s\S]{0,25}?[\d,]{5,})",
     re.I,
 )
 _COMPENSATION_CONTENT_RE = re.compile(
@@ -380,6 +380,13 @@ def prepare_def14a_sections(html: str, text: str) -> str:
             parts.append(f"\n\n=== {label} ===\n{to_tsv(*tables[target])}")
             from_b.append(label)
 
+    # Named historical payments remain usable without a modern Item 402(k) table.
+    if DIRECTOR_COMP not in tables:
+        historical = _historical_director_pay(text)
+        if historical:
+            parts.append("\n\n=== DIRECTOR COMPENSATION TABLE ===\n" + historical)
+            from_a.append("DIRECTOR COMPENSATION TABLE")
+
     # A's EXECUTIVE COMPENSATION / SECURITY OWNERSHIP / AUDITOR FEES windows are now
     # FALLBACKS -- emitted only when B found no table for that target. Dropping them on the
     # happy path is where most of the payload saving comes from (three windows, 19,500 chars).
@@ -416,3 +423,67 @@ def prepare_def14a_sections(html: str, text: str) -> str:
         "def14a carve: B=%s | A=%s | no-table=%s | %d chars", ",".join(from_b) or "-", ",".join(from_a) or "-", ",".join(missing) or "-", len(payload)
     )
     return payload
+
+
+def _historical_director_pay(text: str) -> str:
+    """Retain explicit director-payment prose when no modern compensation table exists."""
+    pattern = r"\b(?:compensation\s+(?:of|for)\s+(?:non[- ]employee\s+)?directors|(?:non[- ]employee\s+)?directors?'?\s+compensation)\b"
+    for match in re.finditer(pattern, text, re.I):
+        body = text[match.start() :]
+        boundary = re.search(r"\n\s*(?:executive\s+compensation|security\s+ownership|election\s+of\s+directors|audit(?:or)?\s+fees)\b", body, re.I)
+        if boundary:
+            body = body[: boundary.start()]
+        if re.search(r"\$\s*\d|\b\d{1,3}(?:,\d{3})+\b", body):
+            return body
+    return ""
+
+
+def _unit_context(text: str, anchor: str) -> str:
+    """Carry source scale/currency notes adjacent to this domain's headings."""
+    snippets: list[str] = []
+    for match in re.finditer(anchor, text, re.I):
+        snippet = text[max(0, match.start() - _CONTEXT_PRE) : match.end() + _CONTEXT_PRE]
+        if re.search(r"\bin\s+(?:thousands|millions)|\bUSD\b|\bU\.?S\.?\s+dollars|\b(?:Canadian|Australian)\s+dollars|[£€]", snippet, re.I):
+            snippets.append(snippet)
+    return "\n".join(dict.fromkeys(snippets))
+
+
+def prepare_def14a_payloads(html: str, text: str) -> dict[str, str]:
+    """Parse once, then send each request only its table/prose blocks and unit context."""
+    # Reuse the existing classifier and content anchors once for this filing.
+    payload = prepare_def14a_sections(html, text)
+    matches = list(re.finditer(r"=== ([A-Z][A-Z &]+) ===\s*\n", payload))
+    blocks = {
+        match.group(1): payload[match.end() : matches[i + 1].start() if i + 1 < len(matches) else len(payload)].strip()
+        for i, match in enumerate(matches)
+    }
+    domains = {
+        "executive_pay": (("SUMMARY COMPENSATION TABLE", "EXECUTIVE COMPENSATION"), r"summary\s+compensation\s+table"),
+        "director_pay": (("DIRECTOR COMPENSATION TABLE",), r"compensation\s+(?:of|for)\s+directors|directors?'?\s+compensation"),
+        "audit": (("AUDIT FEE TABLE", "AUDITOR FEES", "AUDITOR NAME"), r"audit\s+(?:and\s+non.audit\s+)?fees|fees\s+billed"),
+        "ownership": (("FIVE PERCENT HOLDERS", "INSIDER OWNERSHIP", "SECURITY OWNERSHIP"), r"beneficial\s+ownership|security\s+ownership"),
+        "governance": (
+            ("DIRECTOR NOMINEES", "CORPORATE GOVERNANCE", "PAY RATIO & MEDIAN PAY", "SAY ON PAY"),
+            r"election\s+of\s+directors|corporate\s+governance|ceo\s+pay\s+ratio",
+        ),
+    }
+
+    # Recover short historical text and preserve the nearby scale/currency declaration.
+    result: dict[str, str] = {}
+    for domain, (labels, anchor) in domains.items():
+        parts = [f"=== {label} ===\n{blocks[label]}" for label in labels if blocks.get(label)]
+        if not parts:
+            position = _find_content_section(text, re.compile(anchor, re.I), (), toc_frac=0.0)
+            if position >= 0:
+                other = re.search(
+                    r"\n\s*(?:SUMMARY COMPENSATION TABLE|COMPENSATION OF DIRECTORS|AUDIT FEES|BENEFICIAL OWNERSHIP|CORPORATE GOVERNANCE)\b",
+                    text[position + _CONTEXT_PRE :],
+                    re.I,
+                )
+                end = position + _CONTEXT_PRE + other.start() if other else len(text)
+                parts.append(f"=== {labels[0]} ===\n{text[position:end]}")
+        units = _unit_context(text, anchor) if parts else ""
+        if units:
+            parts.append("=== SOURCE UNITS ===\n" + units)
+        result[domain] = "\n\n".join(parts)
+    return result

@@ -2,10 +2,36 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import pandas as pd
+from pydantic import BaseModel
 
 from src.data_extract.utils.common.empty_markers import marker_frame
+from src.data_extract.utils.schemas.def14a_schema import AuditExtract, DirectorPayExtract, ExecutivePayExtract, GovernanceExtract, OwnershipExtract
 from src.data_store.schema import Table, Tables
+
+
+@dataclass(frozen=True)
+class Section:
+    """One independently callable domain and the table that owns its attempts."""
+
+    key: str
+    schema: type[BaseModel]
+    table: Table
+
+    @property
+    def action(self) -> str:
+        return "def14a_" + self.key
+
+
+SECTIONS = (
+    Section("governance", GovernanceExtract, Tables.def14a_directors),
+    Section("executive_pay", ExecutivePayExtract, Tables.def14a_executive_comp),
+    Section("director_pay", DirectorPayExtract, Tables.def14a_director_comp),
+    Section("audit", AuditExtract, Tables.def14a_llm),
+    Section("ownership", OwnershipExtract, Tables.def14a_ownership),
+)
 
 
 def reservation_frame(table: Table, stamp: dict[str, object], df_saved: pd.DataFrame | None, retry: int) -> pd.DataFrame:

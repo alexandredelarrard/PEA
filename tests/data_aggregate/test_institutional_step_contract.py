@@ -495,8 +495,9 @@ def test_changed_columns_trigger_full_owned_part_replacement(
         return expected.copy()
 
     monkeypatch.setattr(step, "build_panel", sec_build if cls is StepCubeSecThirteen else build)
-    replace = Mock(wraps=sqlite_store.replace)
-    monkeypatch.setattr(sqlite_store, "replace", replace)
+    method = "replace_institutional_output" if cls is StepCubeInstitutionals else "replace"
+    replace = Mock(wraps=getattr(sqlite_store, method))
+    monkeypatch.setattr(sqlite_store, method, replace)
     step.run()
     assert modes == [False]
     replace.assert_called_once()

@@ -1413,6 +1413,30 @@ class DataStore:
                 )
         return copy_load(self.engine, df, name)
 
+    def replace_institutional_output(self, rows: pd.DataFrame, *, since: pd.Timestamp | None = None) -> int:
+        """Atomically replace the owned output schema or its inclusive corrected range."""
+        spec = Tables.cube_part_institutionals
+        keys = list(spec.pk)
+        if not set(keys).issubset(rows) or rows[keys].isna().any().any() or rows.duplicated(keys).any() or rows.columns.duplicated().any():
+            raise ValueError("Institutional output requires complete unique keys and columns")
+        if since is not None and (pd.to_datetime(rows["date"]) < since).any():
+            raise ValueError("Institutional replacement rows precede their corrected range")
+        with self._institutional_transaction() as conn:
+            if since is None:
+                conn.execute(text(f'DROP TABLE IF EXISTS "{spec.name}"'))
+                for statement in ddl.table_ddl_from_frame(spec, rows).split(";"):
+                    if statement.strip():
+                        conn.execute(text(statement))
+            tbl = _reflect(conn, spec.name)
+            if set(tbl.c.keys()) != set(rows.columns):
+                raise ValueError("Institutional corrected range must retain the stored schema")
+            if since is not None:
+                conn.execute(tbl.delete().where(tbl.c.date >= _bind_date(tbl.c.date, pd.Timestamp(since).normalize())))
+            for offset in range(0, len(rows), _CHUNK):
+                chunk = rows.iloc[offset : offset + _CHUNK]
+                conn.execute(tbl.insert(), _records(_coerce_temporal(chunk, tbl)))
+        return len(rows)
+
     def append_tail(self, table, df: pd.DataFrame, cutoff, *, inclusive: bool = False, date_col: str | None = None) -> int:
         """DELETE rows after `cutoff` (>= if `inclusive`), then append `df`. Idempotent, so
         re-running the same day never duplicates. `inclusive` is what the forward-looking

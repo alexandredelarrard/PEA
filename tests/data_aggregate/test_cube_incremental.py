@@ -23,6 +23,7 @@ from typing import Any, cast
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from src.data_aggregate.transformers import step_cube_institutionals
 from src.data_aggregate.transformers.step_cube_governance import REFRESH_TRADING_DAYS as GOVERNANCE_REFRESH
@@ -373,7 +374,7 @@ def _purchase(accession: str, ticker: str, owner: str, filed: pd.Timestamp) -> d
     }
 
 
-def _run_institutionals(monkeypatch, store: _StatefulGovernanceStore, calendar: pd.DatetimeIndex, insider: pd.DataFrame, *, full: bool) -> None:
+def _run_institutionals(monkeypatch: pytest.MonkeyPatch, store: DataStore, calendar: pd.DatetimeIndex, insider: pd.DataFrame, *, full: bool) -> None:
     """Exercise the real part lifecycle with the retained insider feature builder."""
     tickers = ["AAA", "BBB"]
     close = pd.DataFrame(100.0, index=calendar, columns=tickers)
@@ -393,7 +394,7 @@ def _sorted(rows: pd.DataFrame) -> pd.DataFrame:
     return rows.sort_values(["date", "ticker"]).reset_index(drop=True)
 
 
-def test_institutionals_rewrites_its_last_7_sessions(monkeypatch):
+def test_institutionals_rewrites_its_last_7_sessions(monkeypatch: pytest.MonkeyPatch, sqlite_store: DataStore) -> None:
     """AC-014: a filing dated D-3 that arrives one night late is in the cube after the next run.
 
     Night 1 builds through D-1 without the filing; night 2 sees it and an incremental run must
@@ -404,14 +405,14 @@ def test_institutionals_rewrites_its_last_7_sessions(monkeypatch):
     night_1 = pd.DataFrame(early)
     night_2 = pd.DataFrame([*early, late])
 
-    store = _StatefulGovernanceStore(pd.DataFrame())
+    store = sqlite_store
     _run_institutionals(monkeypatch, store, INSIDER_CAL[:-1], night_1, full=False)
-    before = _sorted(store.rows)
+    before = _sorted(cast(pd.DataFrame, store.load(Tables.cube_part_institutionals)))
     _run_institutionals(monkeypatch, store, INSIDER_CAL, night_2, full=False)
+    got = _sorted(cast(pd.DataFrame, store.load(Tables.cube_part_institutionals)))
 
-    reference = _StatefulGovernanceStore(pd.DataFrame())
-    _run_institutionals(monkeypatch, reference, INSIDER_CAL, night_2, full=True)
-    got, want = _sorted(store.rows), _sorted(reference.rows)
+    _run_institutionals(monkeypatch, store, INSIDER_CAL, night_2, full=True)
+    want = _sorted(cast(pd.DataFrame, store.load(Tables.cube_part_institutionals)))
 
     refreshed = INSIDER_CAL[-1 - 1 - PART_REFRESH_TRADING_DAYS]
     tail = want["date"] >= INSIDER_CAL[-4]

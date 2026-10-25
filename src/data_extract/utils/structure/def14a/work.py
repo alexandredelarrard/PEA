@@ -13,7 +13,7 @@ from src.context import Context
 from src.data_extract.utils.schemas.def14a_schema import OwnershipExtract
 from src.data_extract.utils.structure.def14a.evidence import layout_has_gap, prose_has_gap, table_has_gap
 from src.data_extract.utils.structure.def14a.holders import holders_need_reconciliation
-from src.data_extract.utils.structure.def14a.postprocess import ProcessedSection, archived_answers
+from src.data_extract.utils.structure.def14a.postprocess import ProcessedSection, archived_answers, source_for_answer
 from src.data_extract.utils.structure.def14a.retry import SECTIONS, Section, reservation_frame
 from src.data_store.schema import Table, Tables
 from src.gpt_extract.utils.schemas_gpt import LlmTask
@@ -157,14 +157,14 @@ def replay_candidates(works: list[FilingWork]) -> Iterator[tuple[FilingWork, Sec
     """Yield already-paid domain answers; no source read or provider is involved."""
     for work in works:
         answers = archived_answers(work.raw) if work.pending else {}
-        for section in (item for item in SECTIONS if item.key in work.pending):
+        for section in SECTIONS:
             # Normalizing saved holders is free, including complete retry=2 rows without JSON.
             if section.key == "ownership" and holders_need_reconciliation(work.saved[section.table]):
-                yield work, section, OwnershipExtract(percent_unit="fraction", shares_scale="units")
-            if section.key not in work.pending:
-                continue
+                yield work, section, OwnershipExtract.model_validate({"percent_unit": "fraction", "shares_scale": "units"})
             for answer in answers.get(section.key, []):
-                yield work, section, answer
+                source_repair = section.key in ("executive_pay", "director_pay", "ownership") and bool(source_for_answer(work.raw, section, answer))
+                if section.key in work.pending or source_repair:
+                    yield work, section, answer
 
 
 def requests_for(work: FilingWork, payloads: dict[str, str]) -> list[tuple[Section, LlmTask]]:
@@ -228,7 +228,7 @@ def save_section(context: Context, work: FilingWork, processed: ProcessedSection
             df_current = frame[keys].assign(as_of=pd.to_datetime(frame["as_of"]))
             obsolete = df_previous.merge(df_current, on=keys, how="left", indicator=True)
             for row in obsolete.loc[obsolete._merge.eq("left_only"), keys].to_dict("records"):
-                context.store.delete(table, where=row)
+                context.store.delete(table, where=cast(dict[str, object], row))
         work.saved[table] = frame
         marker_column, marker = cast(tuple[str, str], table.empty_marker)
         if frame[marker_column].ne(marker).any():

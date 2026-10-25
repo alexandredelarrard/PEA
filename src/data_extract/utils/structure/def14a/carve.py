@@ -470,6 +470,40 @@ def _unit_context(text: str, anchor: str) -> str:
     return "\n".join(dict.fromkeys(snippets))
 
 
+def _fixed_width_sct(raw: str) -> str:
+    """Keep SGML's explicit column starts so blank historical pay cells stay blank."""
+    parts = []
+    for match in re.finditer(r"(?is)<table\b[^>]*>(.*?)</table>", raw):
+        block = match[1]
+        if re.search(r"<t[rdh]\b", block, re.I) or not re.search(
+            r"summary\s+compensation\s+table", raw[max(0, match.start() - 350) : match.start()], re.I
+        ):
+            continue
+        lines = block.splitlines()
+        alignment = next((index for index, line in enumerate(lines) if re.match(r"\s*<S>.*<C>", line, re.I)), None)
+        if alignment is None:
+            continue
+        starts = [token.start() for token in re.finditer(r"<[SC]>", lines[alignment], re.I)]
+        ends = [*starts[1:], max(len(line) for line in lines)]
+        headers = [re.sub(r"<[^>]*>", lambda item: " " * len(item[0]), line) for line in lines[:alignment] if not re.fullmatch(r"[-\s]*", line)]
+        header = [" ".join(line[start:end].strip() for line in headers if line[start:end].strip()) for start, end in zip(starts, ends, strict=True)]
+        for label in ("OTHER ANNUAL", "TOTAL ANNUAL"):
+            heading = next((found for line in headers if (found := re.search(label, line, re.I))), None)
+            if heading is not None:
+                position = heading.start()
+                column = min(range(2, len(starts)), key=lambda index: abs(starts[index] - position))
+                header[column] = label + " COMPENSATION"
+        if not any("salary" in cell.lower() for cell in header) or not any("year" in cell.lower() for cell in header):
+            continue
+        rows = [
+            [line[start:end].strip() for start, end in zip(starts, ends, strict=True)]
+            for line in lines[alignment + 1 :]
+            if re.search(r"\b(?:19|20)\d{2}\b", line)
+        ]
+        parts.append("\t".join(header) + "\n" + "\n".join("\t".join(row) for row in rows))
+    return "\n\n".join(parts)
+
+
 def prepare_def14a_payloads(html: str, text: str) -> dict[str, str]:
     """Parse once, then send each request only its table/prose blocks and unit context."""
     # Reuse the existing classifier and content anchors once for this filing.
@@ -518,4 +552,7 @@ def prepare_def14a_payloads(html: str, text: str) -> dict[str, str]:
         if units:
             parts.append("=== SOURCE UNITS ===\n" + units)
         result[domain] = "\n\n".join(parts)
+    aligned = _fixed_width_sct(html)
+    if aligned:
+        result["executive_pay"] += "\n\n=== ORIGINAL COLUMN ALIGNMENT ===\n" + aligned
     return result

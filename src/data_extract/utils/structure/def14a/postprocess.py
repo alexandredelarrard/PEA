@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from typing import Any
 
 import pandas as pd
@@ -19,6 +20,7 @@ from src.data_extract.utils.schemas.def14a_schema import (
     ExecutiveCompensation,
     GovernanceProfile,
 )
+from src.data_extract.utils.structure.def14a.basis import correct_basis
 from src.data_extract.utils.structure.def14a.flatten import (
     _CHILD_SPEC,
     _DIRECTOR_COMPONENT_COLS,
@@ -28,6 +30,7 @@ from src.data_extract.utils.structure.def14a.flatten import (
     _child_frames,
     _flatten,
     _prepare_frame,
+    _reconciles,
 )
 from src.data_extract.utils.structure.def14a.holders import reconcile_holders
 from src.data_extract.utils.structure.def14a.retry import SECTIONS, Section, reservation_frame
@@ -41,6 +44,7 @@ class ProcessedSection:
 
     frames: dict[Table, pd.DataFrame]
     legacy: Def14AExtract
+    corrections: dict[str, tuple[float, float | None]] = dataclass_field(default_factory=dict)
 
 
 def _normalize_units(section: Section, answer: BaseModel, as_of: pd.Timestamp | str) -> dict[str, Any]:
@@ -209,12 +213,54 @@ def _parent_patch(section: Section, legacy: Def14AExtract, stamp: dict[str, Any]
     return pd.DataFrame([row])
 
 
+def _refresh_ceo_copies(df_parent: pd.DataFrame, stamp: dict[str, Any], saved: Mapping[Table, pd.DataFrame], parent: dict[str, Any]) -> pd.DataFrame:
+    """Select the repaired CEO's already-loaded pay and ownership at this exact filing."""
+    ceo_name = clean_person_name(df_parent.iloc[0].get("ceo_name_proxy", parent.get("ceo_name_proxy")))
+    previous_ceo = clean_person_name(parent.get("ceo_name_proxy"))
+    if not ceo_name:
+        return df_parent
+
+    # Read only the supplied sibling facts; no further table or source read is needed.
+    for owner in (item for item in SECTIONS if item.key in ("executive_pay", "ownership")):
+        df_related = saved.get(owner.table)
+        if df_related is None or df_related.empty:
+            continue
+        df_related = df_related.loc[
+            df_related["ticker"].eq(stamp["ticker"])
+            & df_related["accession_number"].eq(stamp["accession_number"])
+            & pd.to_datetime(df_related["as_of"], errors="coerce").eq(pd.Timestamp(stamp["as_of"]))
+            & ~marker_mask(owner.table, df_related)
+        ]
+        if df_related.empty:
+            continue
+        raw_key = "compensation" if owner.key == "executive_pay" else "holders"
+        records = df_related.astype(object).where(pd.notna(df_related), None).to_dict("records")
+        retained = _legacy_answer(owner, {raw_key: records}, {"ceo_name_proxy": ceo_name})
+        selected = _ceo_from_compensation(retained)
+        selected_name = clean_person_name(selected.name) if selected is not None else None
+        matched = selected_name is not None and selected_name.casefold() == ceo_name.casefold()
+        if owner.key == "ownership":
+            matched = df_related.holder_name.map(clean_person_name).str.casefold().eq(ceo_name.casefold()).sum() == 1
+        if not matched:
+            continue
+        copied = _parent_patch(owner, retained, stamp, {})
+        columns = [column for column in owner.parent_columns if column.startswith("ceo_")]
+        copied = copied.reindex(columns=columns)
+
+        # Keep unsupported copies only when the retained CEO identity is unchanged.
+        if previous_ceo and previous_ceo.casefold() == ceo_name.casefold():
+            copied = copied.combine_first(pd.DataFrame([{column: parent.get(column) for column in columns}]))
+        df_parent[columns] = copied
+    return df_parent
+
+
 def postprocess_section(
     section: Section,
     answer: BaseModel,
     stamp: dict[str, Any],
     saved: Mapping[Table, pd.DataFrame],
     parent: dict[str, Any],
+    source_payload: str = "",
 ) -> ProcessedSection:
     """Normalize one domain, preserve its partial facts and emit only owned frames."""
     # Reuse the already-loaded facts for this domain.
@@ -229,6 +275,7 @@ def postprocess_section(
     previous = pd.to_numeric(df_saved["retry"], errors="coerce").max() if df_saved is not None and "retry" in df_saved else float("nan")
     retry = int(previous) if pd.notna(previous) else 1
     frames: dict[Table, pd.DataFrame] = {}
+    source_corrections: dict[str, tuple[float, float | None]] = {}
 
     # Merge only this filing/domain; recompute duplicated summaries from retained rows.
     if section.table is not Tables.def14a_llm:
@@ -236,6 +283,13 @@ def postprocess_section(
         numeric, keys = _CHILD_SPEC[section.table.name]
         df_new = _prepare_frame(rows, numeric, keys) if rows else pd.DataFrame()
         df_merged = _merge_rows(section.table, df_saved, df_new)
+        supported = (
+            getattr(answer, "shares_scale", None) is not None
+            if section.key == "ownership"
+            else getattr(answer, "currency", None) == "USD" and getattr(answer, "amount_scale", None) is not None
+        )
+        supported_source = source_payload if supported else ""
+        df_merged, source_corrections = correct_basis(section, df_merged, df_new, supported_source, legacy.ceo_name)
         if not df_merged.empty:
             df_merged["retry"] = retry
             frames[section.table] = df_merged
@@ -249,6 +303,9 @@ def postprocess_section(
                 "governance": "directors",
             }[section.key]
             records = df_merged.astype(object).where(pd.notna(df_merged), None).to_dict("records")
+            if section.key in ("executive_pay", "director_pay"):
+                components = _EXEC_COMPONENT_COLS if section.key == "executive_pay" else _DIRECTOR_COMPONENT_COLS
+                df_merged["reconciles"] = [_reconciles(row, components) for row in records]
             retained = _legacy_answer(section, {raw_key: records}, parent)
             legacy = legacy.model_copy(update={legacy_key: getattr(retained, legacy_key)})
         else:
@@ -256,47 +313,21 @@ def postprocess_section(
 
     # Merge this domain's scalar facts before resolving identity-dependent copies.
     df_parent = _parent_patch(section, legacy, stamp, parent)
+    for field, (wrong, correct) in source_corrections.items():
+        if parent.get(field) == wrong or getattr(legacy.governance, field, None) == wrong:
+            df_parent[field] = correct
+            if field in GovernanceProfile.model_fields:
+                legacy.governance = (legacy.governance or GovernanceProfile.model_validate({})).model_copy(update={field: correct})
 
     # A repaired identity must immediately select its own already-saved pay and ownership.
-    ceo_name = clean_person_name(df_parent.iloc[0].get("ceo_name_proxy", parent.get("ceo_name_proxy")))
-    previous_ceo = clean_person_name(parent.get("ceo_name_proxy"))
-    if section.key == "governance" and ceo_name:
-        for owner in (item for item in SECTIONS if item.key in ("executive_pay", "ownership")):
-            df_related = saved.get(owner.table)
-            if df_related is None or df_related.empty:
-                continue
-            df_related = df_related.loc[
-                df_related["ticker"].eq(stamp["ticker"])
-                & df_related["accession_number"].eq(stamp["accession_number"])
-                & pd.to_datetime(df_related["as_of"], errors="coerce").eq(pd.Timestamp(stamp["as_of"]))
-                & ~marker_mask(owner.table, df_related)
-            ]
-            if df_related.empty:
-                continue
-            raw_key = "compensation" if owner.key == "executive_pay" else "holders"
-            records = df_related.astype(object).where(pd.notna(df_related), None).to_dict("records")
-            retained = _legacy_answer(owner, {raw_key: records}, {"ceo_name_proxy": ceo_name})
-            selected = _ceo_from_compensation(retained)
-            selected_name = clean_person_name(selected.name) if selected is not None else None
-            matched = selected_name is not None and selected_name.casefold() == ceo_name.casefold()
-            if owner.key == "ownership":
-                matched = df_related.holder_name.map(clean_person_name).str.casefold().eq(ceo_name.casefold()).sum() == 1
-            if not matched:
-                continue
-            copied = _parent_patch(owner, retained, stamp, {})
-            columns = [column for column in owner.parent_columns if column.startswith("ceo_")]
-            copied = copied.reindex(columns=columns)
-
-            # Keep unsupported copies only when the retained CEO identity is unchanged.
-            if previous_ceo and previous_ceo.casefold() == ceo_name.casefold():
-                copied = copied.combine_first(pd.DataFrame([{column: parent.get(column) for column in columns}]))
-            df_parent[columns] = copied
+    if section.key == "governance":
+        df_parent = _refresh_ceo_copies(df_parent, stamp, saved, parent)
 
     # The audit counter alone belongs to the parent; sibling patches omit it.
     if section.key == "audit":
         df_parent["retry"] = retry
     frames[Tables.def14a_llm] = df_parent
-    return ProcessedSection(frames, legacy)
+    return ProcessedSection(frames, legacy, source_corrections)
 
 
 def _archive_document(raw: str | None) -> dict[str, Any]:
@@ -357,7 +388,20 @@ def archived_answers(raw: str | None) -> dict[str, list[BaseModel]]:
     return result
 
 
-def refresh_archive(raw: str | None, section: Section, legacy: Def14AExtract) -> str:
+def source_for_answer(raw: str | None, section: Section, answer: BaseModel) -> str:
+    """Reuse only the source archived with this exact focused response."""
+    document = _archive_document(raw)
+    metadata = document.get("_def14a_split", {})
+    responses = metadata.get("responses", {}) if isinstance(metadata, dict) else {}
+    payload = json.loads(answer.model_dump_json())
+    matches = [entry.get("source") for entry in responses.get(section.key, []) if entry.get("response") == payload]
+    sources = {source for source in matches if isinstance(source, str) and source.strip()}
+    return next(iter(sources)) if len(sources) == 1 else ""
+
+
+def refresh_archive(
+    raw: str | None, section: Section, legacy: Def14AExtract, corrections: Mapping[str, tuple[float, float | None]] | None = None
+) -> str:
     """Refresh the legacy-readable facade while retaining original and raw responses."""
     document = _archive_document(raw)
     if not isinstance(document.get("_def14a_split"), dict):
@@ -404,6 +448,9 @@ def refresh_archive(raw: str | None, section: Section, legacy: Def14AExtract) ->
         derived_count = section.key == "ownership" and field == "n_five_percent_holders"
         if value is not None and (derived_count or current.get(field) is None):
             current[field] = value
+    for field, (wrong, correct) in (corrections or {}).items():
+        if field in governance_fields.get(section.key, ()) and current.get(field) == wrong:
+            current[field] = correct
     if current:
         document["governance"] = current
     return json.dumps(document, ensure_ascii=False, allow_nan=False)

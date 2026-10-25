@@ -25,7 +25,7 @@ from src.data_extract.utils.structure.def14a.gender import (
     log_consensus,
     recompute_parent_gender,
 )
-from src.data_extract.utils.structure.def14a.postprocess import append_answer, postprocess_section, refresh_archive
+from src.data_extract.utils.structure.def14a.postprocess import append_answer, postprocess_section, refresh_archive, source_for_answer
 from src.data_extract.utils.structure.def14a.retry import SECTIONS
 from src.data_extract.utils.structure.def14a.work import (
     FilingWork,
@@ -267,9 +267,9 @@ def fetch_def14a_llm(
         # Reuse paid answers before deciding whether another request is necessary.
         for work, section, answer in replay_candidates(works):
             reserve(context, work, section, work.attempts[section.key] or 1)
-            processed = postprocess_section(section, answer, work.stamp, work.saved, work.parent)
+            processed = postprocess_section(section, answer, work.stamp, work.saved, work.parent, source_for_answer(work.raw, section, answer))
             save_section(context, work, processed)
-            work.raw = refresh_archive(work.raw, section, processed.legacy)
+            work.raw = refresh_archive(work.raw, section, processed.legacy, processed.corrections)
             save_archive(context, work)
             updated += 1
 
@@ -303,9 +303,9 @@ def fetch_def14a_llm(
                 save_archive(context, work)
 
                 # Postprocess source units and retained facts, then save this section only.
-                processed = postprocess_section(section, result.parsed, work.stamp, work.saved, work.parent)
+                processed = postprocess_section(section, result.parsed, work.stamp, work.saved, work.parent, result.task.payload)
                 save_section(context, work, processed)
-                work.raw = refresh_archive(work.raw, section, processed.legacy)
+                work.raw = refresh_archive(work.raw, section, processed.legacy, processed.corrections)
                 save_archive(context, work)
                 updated += 1
 

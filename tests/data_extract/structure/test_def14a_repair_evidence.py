@@ -230,11 +230,13 @@ def test_monetary_year_suffix_is_not_a_fiscal_year_header() -> None:
     ]
     work = _work("executive_pay", rows)
     assert requests_for(work, {"executive_pay": payload}) == []
+    payload = "Name\tUnits vested this year\tSalary\tBonus\nJane Example\t2000\t2000\t0"
+    assert requests_for(work, {"executive_pay": payload}) == []
     payload = "Name\tYear\tSalary this year\tBonus\nJane Example\t2024\t2000\t0"
     assert requests_for(work, {"executive_pay": payload}) == []
     work.saved[Tables.def14a_executive_comp]["salary"] = None
     assert [section.key for section, _ in requests_for(work, {"executive_pay": payload})] == ["executive_pay"]
-    print("SANITY: a salary header ending in year cannot invent a fiscal year; a true Year column preserves salary 2000 as disclosed money.")
+    print("SANITY: pay or quantity headers ending in year cannot invent a fiscal year; a true Year column preserves salary 2000 as disclosed money.")
 
 
 def test_prefixed_year_does_not_price_option_counts() -> None:

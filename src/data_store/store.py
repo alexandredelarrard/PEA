@@ -744,26 +744,19 @@ class DataStore:
         optional: bool = False,
         markers: bool = False,
     ) -> pd.DataFrame | None:
-        """Read `table`, filtered server-side.
+        """Read a server-filtered projection, excluding empty-filing markers unless requested.
 
-        `where` is equality / IN / IS NULL / `NOT_NULL`; `since`/`until` bound the date column;
-        `project=True` uses the table's declared `read_columns`. Empty-filing marker rows
-        (`Table.empty_marker`) are dropped unless `markers=True`.
-
-        RAISES on a missing or empty result, since an empty read is nearly always a real fault.
-        `optional=True` returns None instead, for reads allowed to have no data yet: branch on `is None`.
+        Missing/empty results raise; optional reads return None. Date bounds are inclusive.
         """
         name = name_of(table)
-        cols = self._resolve_columns(table, columns, project)
-        if not self.exists(name):
+        tbl, cols = self._read_setup(table, columns, project)
+        if tbl is None:
             if optional:
                 return None
             raise TableMissingError(name)
-
-        df = read_table(
-            self.engine,
-            name,
-            columns=list(cols) if cols else None,
+        stmt = build_select(
+            tbl,
+            columns=cols,
             limit=limit,
             where=where,
             exclude=self._marker(table, markers),
@@ -773,13 +766,12 @@ class DataStore:
             order_by=order_by,
             descending=descending,
         )
+        with self.engine.connect() as conn:
+            df = pd.read_sql(stmt, conn)
 
-        if df.empty:
-            if optional:
-                return None
+        if df.empty and not optional:
             raise TableEmptyError(name, where)
-
-        return df
+        return None if df.empty else df
 
     def iter_load(
         self,
@@ -795,24 +787,24 @@ class DataStore:
         order_by: str | Sequence[str] | None = None,
         markers: bool = False,
     ) -> Generator[pd.DataFrame]:
-        """Stream `table` in row chunks so a multi-GB table never fully materializes.
+        """Stream an ordered projection with a server-side cursor and normal marker rules.
 
-        Needs a projection (`columns=` or `project=True`) and reads with `stream_results=True`, without
-        which psycopg2 buffers the whole result client-side. Marker rows are dropped unless
-        `markers=True`, as in `load`. `order_by` orders the stream before chunking.
-
-        Callers MUST exhaust or close the iterator: it holds a pooled connection for its lifetime.
+        Exhaust or close the iterator to release its held connection.
         """
         name = name_of(table)
-        cols = self._resolve_columns(table, columns, project)
+        projection_error = (
+            f"iter_load({name}) needs an explicit `columns=` or `project=True`: "
+            "streaming an unprojected wide table defeats the purpose (cube is 574 cols)"
+        )
+        if not project:
+            columns = list(columns) if columns is not None else None
+            if not columns:
+                raise ValueError(projection_error)
+        tbl, cols = self._read_setup(table, columns, project)
         if not cols:
-            raise ValueError(
-                f"iter_load({name}) needs an explicit `columns=` or `project=True`: "
-                "streaming an unprojected wide table defeats the purpose (cube is 574 cols)"
-            )
-        if not self.exists(name):
+            raise ValueError(projection_error)
+        if tbl is None:
             return
-        tbl = _reflect(self.engine, name)
         stmt = build_select(
             tbl,
             columns=list(cols),
@@ -831,8 +823,6 @@ class DataStore:
     @staticmethod
     def _date_col(table) -> str | None:
         """The table's declared incremental date column, or None for a bare name."""
-        if isinstance(table, SchemaTable):
-            return table.date_col
         try:
             return resolve(table).date_col
         except KeyError:
@@ -843,26 +833,25 @@ class DataStore:
         """The (column, sentinel) a consumer read excludes; None when `markers` or undeclared."""
         if markers:
             return None
-        if isinstance(table, SchemaTable):
-            return table.empty_marker
         try:
             return resolve(table).empty_marker
         except KeyError:
             return None
 
-    def _resolve_columns(self, table, columns, project: bool) -> Sequence[str] | None:
+    def _read_setup(self, table: SchemaTable | str, columns: Sequence[str] | None, project: bool) -> tuple[Table | None, Sequence[str] | None]:
+        """Resolve projection and selection from the same operation-local schema."""
         if columns is not None and project:
             raise ValueError("pass either columns= or project=True, not both")
-        if columns is not None:
-            return list(columns)
+        columns = list(columns) if columns is not None else None
+        tbl = _reflect(self.engine, name_of(table)) if self.exists(table) else None
         if not project:
-            return None
-        cols, required_missing, optional_missing = projection_report(table, self.columns(table) or None)
+            return tbl, columns
+        cols, required_missing, optional_missing = projection_report(table, (list(tbl.c.keys()) or None) if tbl is not None else None)
         if required_missing:
             logger.warning("%s is missing REQUIRED column(s) %s -> the features that need them will be empty", name_of(table), required_missing)
         elif optional_missing:
             logger.info("%s has no %s (optional) -> those features are skipped", name_of(table), optional_missing)
-        return cols
+        return tbl, cols
 
     @contextmanager
     def _institutional_transaction(self) -> Generator[Connection]:

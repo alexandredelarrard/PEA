@@ -15,6 +15,7 @@ from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecTh
 from src.data_aggregate.utils.common import inputs as capital_inputs
 from src.data_aggregate.utils.common.incremental import PartWindow
 from src.data_aggregate.utils.sec_thirteen.inputs import load_filing_vintages
+from src.data_aggregate.utils.sec_thirteen.superinvestor_features import EMISSION, SuperinvestorFeatureHistory
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from tests.data_aggregate.test_institutional_step_contract import context, seed_prices
@@ -28,15 +29,17 @@ def test_sec_thirteen_executes_broad_and_elite_once(sqlite_store: Any, monkeypat
     broad = Mock(
         return_value=pd.DataFrame({"period": [pd.Timestamp("2023-09-30")], "as_of": [days[0]], "ticker": ["AAA"], "ic_inst_concentration": [0.4]})
     )
-    elite = Mock(return_value={"ic_super_holders": pd.DataFrame({"AAA": [0.5]}, index=days[:1])})
+    levels = {name: pd.DataFrame({"AAA": [float("nan")]}, index=days[:1]) for name in EMISSION}
+    levels["ic_super_holders"].iloc[0, 0] = 1.0
+    elite = Mock(return_value=SuperinvestorFeatureHistory(levels, pd.DataFrame()))
     monkeypatch.setattr(step, "_institutional_features", broad)
-    monkeypatch.setattr(step, "_superinvestor_levels", elite)
+    monkeypatch.setattr(step, "_superinvestor_history", elite)
     result = step.build_panel()
     assert step._store is sqlite_store and step._part.table == Tables.cube_part_sec_thirteen
     assert broad.call_count == elite.call_count == 1
-    assert set(result.columns) == {"date", "ticker", "f_ic_inst_concentration", "f_ic_super_holders"}
+    assert set(result.columns) == {"date", "ticker", "f_ic_inst_concentration"} | {"f_" + name for name in EMISSION}
     assert result.f_ic_inst_concentration.dropna().eq(pd.Series([0.4], dtype="float32").iloc[0]).all()
-    assert result.f_ic_super_holders.dropna().eq(0.5).all()
+    assert result.f_ic_super_holders.dropna().eq(1.0).all()
     assert not result.duplicated(["date", "ticker"]).any()
     print("SANITY: SEC thirteen activates broad and elite 13F exactly once with a dedicated part owner.")
 

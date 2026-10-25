@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.common.availability import InstitutionalAvailability
+from src.data_aggregate.utils.institutionals.insider_capital import InsiderCapital
 from src.data_aggregate.utils.institutionals.insider_features import build_insider_feature_panel
 from src.data_aggregate.utils.institutionals.insider_quality import officer_role
 from src.data_store.schema import Tables
@@ -54,8 +55,7 @@ def _observed_panel(rows: list[dict], *, complete: bool = True) -> pd.DataFrame:
     return build_insider_feature_panel(
         make_frames(idx, _peers(tickers), close_split=close),
         _frame(rows),
-        shares_out_history=history,
-        as_traded_quotes=close,
+        capital=InsiderCapital(shares_out_history=history, as_traded_quotes=close),
         availability=InstitutionalAvailability.from_config({Tables.insider_transactions.name: {"__all__": "2024-01-01"}}),
         complete_through=idx.max() if complete else None,
     ).set_index(["date", "ticker"])
@@ -219,12 +219,12 @@ def test_account_counted_once_and_lots_expire_separately(same_economic_day: bool
     frames = make_frames(idx, _peers(), close_split=quotes)
     expected = {"2015-06-09": 0.1, "2015-06-10": 0.3, "2015-07-31": 20 / 110}
     for order in (rows, rows[::-1]):
-        panel = build_insider_feature_panel(frames, _frame(order), as_traded_quotes=quotes).set_index("date")
+        panel = build_insider_feature_panel(frames, _frame(order), capital=InsiderCapital(as_traded_quotes=quotes)).set_index("date")
         for name in ("f_ic_insider_management_position_change_60d", "f_ic_insider_purchase_pct_prior"):
             for day, value in expected.items():
                 assert panel.loc[day, name] == pytest.approx(value)
             assert pd.isna(panel.loc["2015-08-09", name])
-        prefix = build_insider_feature_panel(frames, _frame(rows[:1]), as_traded_quotes=quotes).set_index("date")
+        prefix = build_insider_feature_panel(frames, _frame(rows[:1]), capital=InsiderCapital(as_traded_quotes=quotes)).set_index("date")
         pd.testing.assert_series_equal(
             panel.loc[:"2015-06-09", "f_ic_insider_management_position_change_60d"],
             prefix.loc[:"2015-06-09", "f_ic_insider_management_position_change_60d"],
@@ -232,21 +232,21 @@ def test_account_counted_once_and_lots_expire_separately(same_economic_day: bool
     print("SANITY: 10/100 then30/100; first expiry20/110; second expiry unknown; one account denominator and invariant historical prefix/order.")
 
 
-def test_dollar_totals_use_current_cap_and_real_expiry() -> None:
+def test_dollar_totals_use_action_cap_and_real_expiry() -> None:
     rows = [_txn(accession_number="flow", shares=10, value_usd=1000, shares_owned_after=110, officer_title="CEO", is_officer=1)]
-    idx = pd.date_range("2015-06-01", "2015-12-01")
+    idx = pd.date_range("2015-05-29", "2015-12-01")
     close = pd.DataFrame({"AAA": np.where(idx < pd.Timestamp("2015-06-10"), 100.0, 200.0)}, index=idx)
     shares = pd.DataFrame([{"ticker": "AAA", "as_of": pd.Timestamp("2014-01-01"), "sharesOutstanding": 1000.0, "sharesOutstandingPit": 1000.0}])
     panel = build_insider_feature_panel(
-        make_frames(idx, _peers(), close_split=close), _frame(rows), shares_out_history=shares, complete_through=idx.max()
+        make_frames(idx, _peers(), close_split=close), _frame(rows), capital=InsiderCapital(shares_out_history=shares), complete_through=idx.max()
     ).set_index("date")
     assert panel.loc["2015-06-01", "f_ic_insider_buy_value_mcap_60d"] == pytest.approx(0.01)
-    assert panel.loc["2015-06-10", "f_ic_insider_buy_value_mcap_60d"] == pytest.approx(0.005)
-    assert panel.loc["2015-07-30", "f_ic_insider_buy_value_mcap_60d"] == pytest.approx(0.005)
+    assert panel.loc["2015-06-10", "f_ic_insider_buy_value_mcap_60d"] == pytest.approx(0.01)
+    assert panel.loc["2015-07-30", "f_ic_insider_buy_value_mcap_60d"] == pytest.approx(0.01)
     assert panel.loc["2015-07-31", "f_ic_insider_buy_value_mcap_60d"] == 0
-    assert panel.loc["2015-11-27", "f_ic_insider_ceo_buy_mcap_180d"] == pytest.approx(0.005)
+    assert panel.loc["2015-11-27", "f_ic_insider_ceo_buy_mcap_180d"] == pytest.approx(0.01)
     assert panel.loc["2015-11-28", "f_ic_insider_ceo_buy_mcap_180d"] == 0
-    print("SANITY: cumulative dollars divided once by current cap; 60/180-day expiries are exact and leave observed zero flows.")
+    print("SANITY: action-date ratios stay fixed after a price move; 60/180-day expiries are exact and leave observed zero flows.")
 
 
 @pytest.mark.parametrize("intervening_gift", [False, True])
@@ -268,7 +268,9 @@ def test_unsupported_account_span_abstains_prospectively(intervening_gift: bool)
         rows.append(_txn(accession_number="gift", transaction_code="G", filing_date="2015-06-12", transaction_date="2015-06-05"))
     idx = pd.date_range("2015-06-01", "2015-06-15")
     quotes = pd.DataFrame({"AAA": 100.0}, index=pd.date_range("2015-05-01", "2015-06-15"))
-    panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=quotes), _frame(rows), as_traded_quotes=quotes).set_index("date")
+    panel = build_insider_feature_panel(
+        make_frames(idx, _peers(), close_split=quotes), _frame(rows), capital=InsiderCapital(as_traded_quotes=quotes)
+    ).set_index("date")
     name = "f_ic_insider_management_position_change_60d"
     assert panel.loc["2015-06-09", name] == pytest.approx(0.1)
     blocked = "2015-06-12" if intervening_gift else "2015-06-10"
@@ -299,7 +301,7 @@ def test_genuine_split_units_cancel_level_actions() -> None:
     level = pd.DataFrame({"AAA": 1.25}, index=dates)
     quotes = pd.DataFrame({"AAA": np.where(dates < pd.Timestamp("2015-06-05"), 100.0, 50.0)}, index=dates)
     frames = make_frames(idx, _peers(), close_split=split_basis, level_factor=level)
-    panel = build_insider_feature_panel(frames, _frame(rows), as_traded_quotes=quotes).set_index("date")
+    panel = build_insider_feature_panel(frames, _frame(rows), capital=InsiderCapital(as_traded_quotes=quotes)).set_index("date")
     name = "f_ic_insider_management_position_change_60d"
     assert panel.loc["2015-06-10", name] == pytest.approx(40 / 200)
     assert panel.loc["2015-07-31", name] == pytest.approx(20 / 220)
@@ -354,7 +356,9 @@ def test_late_economic_trade_uses_latest_included_terminal() -> None:
     dates = pd.date_range("2015-05-01", "2015-08-20")
     idx = dates[dates >= pd.Timestamp("2015-06-01")]
     quotes = pd.DataFrame({"AAA": 100.0}, index=dates)
-    panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=quotes), _frame(rows), as_traded_quotes=quotes).set_index("date")
+    panel = build_insider_feature_panel(
+        make_frames(idx, _peers(), close_split=quotes), _frame(rows), capital=InsiderCapital(as_traded_quotes=quotes)
+    ).set_index("date")
     name = "f_ic_insider_management_position_change_60d"
     assert panel.loc["2015-06-19", name] == pytest.approx(20 / 110)
     assert panel.loc["2015-06-20", name] == pytest.approx(30 / 100)
@@ -393,8 +397,8 @@ def test_amendment_changes_shares_prospectively_without_refreshing_expiry() -> N
     quotes = pd.DataFrame({"AAA": 100.0}, index=dates)
     frames = make_frames(idx, _peers(), close_split=quotes)
     name = "f_ic_insider_management_position_change_60d"
-    panel = build_insider_feature_panel(frames, _frame(rows), as_traded_quotes=quotes).set_index("date")
-    prefix = build_insider_feature_panel(frames, _frame(rows[:2]), as_traded_quotes=quotes).set_index("date")
+    panel = build_insider_feature_panel(frames, _frame(rows), capital=InsiderCapital(as_traded_quotes=quotes)).set_index("date")
+    prefix = build_insider_feature_panel(frames, _frame(rows[:2]), capital=InsiderCapital(as_traded_quotes=quotes)).set_index("date")
     pd.testing.assert_series_equal(panel.loc[:"2015-06-19", name], prefix.loc[:"2015-06-19", name])
     assert panel.loc["2015-06-09", name] == pytest.approx(0.1)
     assert pd.isna(panel.loc["2015-06-19", name])
@@ -402,7 +406,7 @@ def test_amendment_changes_shares_prospectively_without_refreshing_expiry() -> N
     assert panel.loc["2015-07-31", name] == pytest.approx(20 / 120)
     assert pd.isna(panel.loc["2015-08-09", name])
     rows[2]["filing_date"] = "2015-08-15"
-    late = build_insider_feature_panel(frames, _frame(rows), as_traded_quotes=quotes).set_index("date")
+    late = build_insider_feature_panel(frames, _frame(rows), capital=InsiderCapital(as_traded_quotes=quotes)).set_index("date")
     assert late.loc["2015-08-15":, name].isna().all()
     print("SANITY: amendment restores a supported40/100 prospectively; original expiry leaves20/120; an amendment after expiry revives nothing.")
 
@@ -448,7 +452,9 @@ def test_balance_identity_does_not_hide_one_share_on_a_large_account() -> None:
     ]
     quotes = pd.DataFrame({"AAA": 100.0}, index=pd.date_range("2015-05-01", "2015-06-15"))
     idx = pd.date_range("2015-06-01", "2015-06-15")
-    panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=quotes), _frame(rows), as_traded_quotes=quotes).set_index("date")
+    panel = build_insider_feature_panel(
+        make_frames(idx, _peers(), close_split=quotes), _frame(rows), capital=InsiderCapital(as_traded_quotes=quotes)
+    ).set_index("date")
     name = "f_ic_insider_management_position_change_60d"
     assert panel.loc["2015-06-09", name] == pytest.approx(1 / 1_000_000)
     assert panel.loc["2015-06-10":, name].isna().all()
@@ -498,7 +504,9 @@ def test_cross_account_pool_requires_compatible_share_units(title: str, quote_mo
         quotes.loc[dates < pd.Timestamp("2015-06-05")] = np.nan
     adjusted = pd.DataFrame({"AAA": 50.0}, index=dates)
     panel = build_insider_feature_panel(
-        make_frames(idx, _peers(), close_split=adjusted), _frame(rows), as_traded_quotes=quotes if quote_mode != "none" else None
+        make_frames(idx, _peers(), close_split=adjusted),
+        _frame(rows),
+        capital=InsiderCapital(as_traded_quotes=quotes if quote_mode != "none" else None),
     ).set_index("date")
     expected = 0.35 if same_day else 0.2 if title == "Common Stock" and quote_mode == "both" else np.nan
     for name in ("f_ic_insider_management_position_change_60d", "f_ic_insider_purchase_pct_prior"):

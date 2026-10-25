@@ -11,6 +11,7 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.institutionals import insider_quality as iq
+from src.data_aggregate.utils.institutionals.insider_capital import InsiderCapital
 from src.data_aggregate.utils.institutionals.insider_features import build_insider_feature_panel
 from src.data_aggregate.utils.institutionals.insider_quality import OPEN_MARKET_CODES, clean_transactions, common_stock_mask
 from tests.conftest import make_frames
@@ -26,7 +27,7 @@ def _build(df_rows: pd.DataFrame) -> pd.DataFrame:
     close = pd.DataFrame(100.0, index=IDX, columns=["AAA"])
     fh = pd.DataFrame([{"ticker": "AAA", "as_of": pd.Timestamp("2023-01-01"), "sharesOutstanding": 1e6, "sharesOutstandingPit": 1e6}])
     return build_insider_feature_panel(
-        make_frames(IDX, {"AAA": {"AAA": 1.0}}, close_split=close), df_rows, shares_out_history=fh, complete_through=IDX.max()
+        make_frames(IDX, {"AAA": {"AAA": 1.0}}, close_split=close), df_rows, capital=InsiderCapital(shares_out_history=fh), complete_through=IDX.max()
     )
 
 

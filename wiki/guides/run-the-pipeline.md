@@ -7,7 +7,7 @@ tags:
   - guide
   - runbook
   - operations
-source_commit: 8e1277bbf02cd5995a61a6c1fd13b087ef9cba76
+source_commit: cbc13eb78abd2cfa59465ea780c1092a2b7ecb2e
 ---
 # Run the pipeline
 
@@ -132,7 +132,7 @@ The first rereads all published ZIP datasets from the configured source start (2
 
 For bounded verification or targeted recovery, use `data_extract thirteen-f-managers --vintages` with both repeated `--cik` and `--accession`, plus required `--period-start`, `--period-end`, `--filed-through`, `--max-filings`. Optional repeated `--archive` selects cached source transport; it does not replace CIK/accession scope. Review `--dry-run` first. The [CLI](../../src/data_extract/cli.py) writes both existing destinations; it creates no auxiliary business table. Validate the same named scope with `validate institutionals --cik ... --period-start ... --period-end ... --filed-through ...`.
 
-After source adoption and the user's price refresh, run `data_aggregate build-institutionals -F`, then `data_aggregate build-sec-thirteen -F`, then `data_aggregate assemble-cube`. With nonempty validated output, these full rebuilds remove transferred/retired columns from the old part and populate the new part; deleting all cube tables is unnecessary. A builder returning no rows retains its previous table even on a full run. Verify physical column sets, unique date/ticker keys and readiness for both parts and the assembled cube before use. These recovery/rebuild operations were not run by closure validation. Code merge/check status lives in the local audit `06-final.md`.
+After source adoption and the user's price refresh, run `data_aggregate build-institutionals -F`, then `data_aggregate build-sec-thirteen -F`, then `data_aggregate assemble-cube`. With nonempty validated output, these full rebuilds remove transferred/retired columns from the old part and populate the new part; deleting all cube tables is unnecessary. A builder returning no rows retains its previous table even on a full run. Verify physical column sets, unique date/ticker keys and readiness for both parts and the assembled cube before use. These recovery/rebuild operations were not run by closure validation. Code merge/check status lives in the local audit `06-final.md`. Feature-science adoption also requires these two full rebuilds: seven insider cap names retain their names while changing to action-date per-trade ratios, and the elite part changes its cohort/feature contract. A routine tail cannot migrate older same-named rows. Verify the effective ranked-list digest/K/90-day policy and train fresh compatible models after reassembly. The implementation audit does not execute these production commands.
 
 ### Source-specific notes
 
@@ -155,7 +155,7 @@ rtk proxy "$PY" -m src data_extract thirteen-f-managers --years 31 -c ./configs
 
 After a parser fix, repair existing holdings with a backed-up, source-verified whole-book proposal and an atomic scoped application, rather than relying on catch-up upserts to remove stale CUSIPs. The parser fix is merged into `dev`, and the 2026-10-07 historical repair was applied on 2026-10-08 (4 replaced books, 62 NULL-amount books); priorities and exact remaining gaps are in [TODO](../TODO.md#superinvestor-roster-follow-ups). After that repair, build `cube_part_prices` if absent, run `data_aggregate build-sec-thirteen -F`, then `data_aggregate assemble-cube` and the relevant read-only [validation](./validate-a-change.md). The latter assembly command has no `-F` option; see [aggregate CLI](../../src/data_aggregate/cli.py).
 
-The daily `superinvestors` command writes a snapshot only when Dataroma's roster changed. Rebuild the whole `superinvestor_roster` table after any change to `configs/superinvestors/` or to the roster code, and on a cold database:
+The daily `superinvestors` command writes a snapshot only when Dataroma's roster changed. Rebuild the whole `superinvestor_roster` table after a change to its history/overrides registers or roster extraction code, and on a cold database. The feature-only `ranked_managers.json` ordering does not change that source table: changing it or K requires a full SEC-thirteen feature rebuild, cube reassembly and compatible fresh models instead. The default list is provisional; see [configuration](../reference/configuration.md).
 
 ```bash
 rtk "$PY" -m src data_extract superinvestors -F -c ./configs

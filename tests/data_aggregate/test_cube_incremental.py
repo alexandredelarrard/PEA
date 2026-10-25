@@ -23,6 +23,7 @@ from typing import Any, cast
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from src.data_aggregate.transformers import step_cube_institutionals
 from src.data_aggregate.transformers.step_cube_governance import REFRESH_TRADING_DAYS as GOVERNANCE_REFRESH
@@ -37,6 +38,7 @@ from src.data_aggregate.utils.common.incremental import (
     write_part,
 )
 from src.data_aggregate.utils.common.parts import CUBE_PARTS, PART_BY_NAME
+from src.data_aggregate.utils.institutionals.insider_capital import InsiderCapital
 from src.data_aggregate.utils.institutionals.insider_features import build_insider_feature_panel
 from src.data_aggregate.utils.momentum.features import build_feature_panel
 from src.data_store.schema import (
@@ -385,7 +387,7 @@ def _run_institutionals(monkeypatch, store: _StatefulGovernanceStore, calendar: 
     step = cast(Any, object.__new__(StepCubeInstitutionals))
     step._store, step._log, step._cfg = store, logging.getLogger("test"), {}
     step._part = PART_BY_NAME["cube_part_institutionals"]
-    step.build_panel = lambda full=False: build_insider_feature_panel(frames, insider, shares_out_history=shares)
+    step.build_panel = lambda: build_insider_feature_panel(frames, insider, capital=InsiderCapital(shares_out_history=shares))
     step.run(full=full)
 
 
@@ -731,3 +733,35 @@ if __name__ == "__main__":
     test_per_part_warmup_covers_binding_lookback()
     test_read_projection_covers_builder_needs()
     test_projection_tolerates_an_absent_optional_column()
+
+
+@pytest.mark.parametrize("original_known", [False, True])
+def test_institutionals_cap_unknown_correction_clears_saved_tail(monkeypatch: pytest.MonkeyPatch, original_known: bool) -> None:
+    calendar = INSIDER_CAL
+    old = _purchase("old-history", "AAA", "0010", calendar[20])
+    original = _purchase("current-original", "AAA", "0001", calendar[-5])
+    original["price_per_share"] = 100.0 if original_known else np.nan
+    amended = {
+        **original,
+        "accession_number": "current-amendment",
+        "filing_date": calendar[-3],
+        "document_type": "4/A",
+        "original_submission_date": original["filing_date"],
+        "price_per_share": np.nan if original_known else 100.0,
+    }
+    before_rows = pd.DataFrame([old, original])
+    after_rows = pd.DataFrame([old, original, amended])
+    store = _StatefulGovernanceStore(pd.DataFrame())
+    _run_institutionals(monkeypatch, store, calendar[:-1], before_rows, full=False)
+    feature = "f_ic_insider_buy_value_mcap_60d"
+    prior = store.rows.set_index(["date", "ticker"]).loc[(calendar[-2], "AAA"), feature]
+    assert (prior == pytest.approx(0.001)) if original_known else pd.isna(prior)
+
+    _run_institutionals(monkeypatch, store, calendar, after_rows, full=False)
+    full_store = _StatefulGovernanceStore(pd.DataFrame())
+    _run_institutionals(monkeypatch, full_store, calendar, after_rows, full=True)
+    pd.testing.assert_frame_equal(_sorted(store.rows), _sorted(full_store.rows))
+    tail = store.rows[store.rows["ticker"].eq("AAA") & store.rows["date"].ge(calendar[-3])][feature]
+    assert tail.isna().all() if original_known else np.isclose(tail, 0.001).all()
+    assert feature in store.columns(Tables.cube_part_institutionals)
+    print("SANITY: corrected known/unknown cap windows replace saved cells, preserve historical schema and match a full build.")

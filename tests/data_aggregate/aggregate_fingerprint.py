@@ -51,6 +51,7 @@ import numpy as np
 import pandas as pd
 
 from src.context import Context
+from src.data_aggregate.utils.institutionals.insider_capital import InsiderCapital
 from tests.conftest import make_frames
 from tests.data_aggregate.pipeline_fingerprint import frame_digest
 
@@ -824,23 +825,23 @@ def compute() -> dict:
         build_feature_panel,
         compute_raw_features,
     )
+    from src.data_aggregate.utils.sec_thirteen.holdings_clean import attach_tickers, clean_public_holdings
     from src.data_aggregate.utils.sec_thirteen.institutional_features import (
         _quarter_features,
         build_institutional_feature_panel,
     )
-    from src.data_aggregate.utils.sec_thirteen.superinvestor_features import (
-        attach_tickers,
-        build_superinvestor_feature_panel,
-        clean_holdings,
-        manager_quarter_state,
-        manager_stock_conviction,
-    )
+    from src.data_aggregate.utils.sec_thirteen.superinvestor_books import prepare_superinvestor_book_history
+    from src.data_aggregate.utils.sec_thirteen.superinvestor_features import compute_superinvestor_feature_history, project_superinvestor_features
+    from src.data_aggregate.utils.sec_thirteen.superinvestor_metrics import BehaviorMarket
     from src.data_aggregate.utils.target.betas import estimate_all_betas
     from src.data_aggregate.utils.target.targets import (
         build_targets_multi,
         cross_sectional_rank,
         cross_sectional_zscore,
     )
+    from src.utils.institutional_vintages import prepare_book_vintages
+    from src.utils.price_adjustments import ShareBasis
+    from src.utils.string import pad_cik
 
     fund = fundamentals()
     tickers = sorted(str(ticker) for ticker in fund["ticker"].unique())
@@ -952,21 +953,39 @@ def compute() -> dict:
     )
     assert institutional["f_ic_inst_net_options_ratio"].nunique() > 1, "Do not freeze an unavailable options feature"
     out["panel.institutional"] = frame_digest(institutional)
-    # ⚠ `cusip_map` AND `universe` ARE BOTH REQUIRED. Without a cusip map `attach_tickers`
-    # nulls every ticker and the builder returns an EMPTY frame -- which is what this
-    # fingerprint silently digested between the Phase 2.2 rebuild and 2026-09-10, pinning a
-    # hole exactly as the say-on-pay gate once did.
-    superinvestor = build_superinvestor_feature_panel(
-        make_frames(idx, peers, close_split=close, universe=tickers),
-        priced_book,
-        roster,
-        cusip_map=cusip_map,
-        splits=splits,
-        valuation_close=valuation_close,
+    # Exercise the production immutable-book interface; whole books precede ticker projection.
+    df_books = priced_book.copy()
+    df_books["cik"] = df_books.cik.map(pad_cik)
+    df_books["period"] = pd.to_datetime(df_books.period)
+    df_books["accession_number"] = df_books.cik + "-" + df_books.period.dt.strftime("%Y%m%d")
+    df_books["class_evidence"] = '["common"]'
+    df_filings = (
+        df_books.groupby(["cik", "period", "accession_number"], as_index=False)
+        .agg(filing_date=("filing_date", "max"), parsed_row_count=("cusip", "size"))
+        .assign(
+            amendment_type="original",
+            amendment_number=0,
+            report_type="13F HOLDINGS REPORT",
+            restricted=False,
+            parse_status="complete",
+            accepted_at=pd.NaT,
+        )
+    )
+    df_books = clean_public_holdings(attach_tickers(df_books, cusip_map), valuation_close, None)
+    df_manifest = prepare_book_vintages(df_filings, df_books, idx, settle_days=0)
+    book_history = prepare_superinvestor_book_history(df_manifest, df_books, idx, 90)
+    actual = splits.rename(columns={"ratio": "value"})
+    market = BehaviorMarket(idx, valuation_close, ShareBasis(actual, actual, actual, {}))
+    cohort = frozenset(pad_cik(cik) for cik in roster)
+    super_history = compute_superinvestor_feature_history(book_history, {"": cohort, "topk": cohort}, tuple(tickers), market)
+    superinvestor = project_superinvestor_features(
+        super_history, make_frames(idx, peers, close_split=close, universe=tickers), pd.Timestamp("2013-01-01")
     )
     assert superinvestor["f_ic_super_conviction_weight"].nunique() > 1, "Do not freeze unknown whole-book denominators"
     out["panel.superinvestor"] = frame_digest(superinvestor)
-    out["panel.insider"] = frame_digest(build_insider_feature_panel(make_frames(idx, peers, close_split=close), insider, shares_out_history=fund))
+    out["panel.insider"] = frame_digest(
+        build_insider_feature_panel(make_frames(idx, peers, close_split=close), insider, capital=InsiderCapital(shares_out_history=fund))
+    )
     out["panel.ownership"] = frame_digest(build_ownership_feature_panel(make_frames(idx, peers), sec_13d, sec_13g))
     # ---- betas + the labels the model actually trains on ---- #
     factor_panel = pd.DataFrame(
@@ -1095,18 +1114,8 @@ def compute() -> dict:
         .sort_values(["ticker", "as_of"])
         .reset_index(drop=True)
     )
-    # The two INTERMEDIATES the elite panel turns on, replacing `prim.super_quarter_features`
-    # (whose function the Phase 2.2 rebuild deleted). `manager_quarter_state` carries the
-    # conviction DENOMINATOR and the concentration legs the selector ranks on;
-    # `manager_stock_conviction` carries the portfolio weight and the order-independent rank.
-    _book_t = clean_holdings(
-        attach_tickers(book, cusip_map, tickers), key=("cik", "period", "cusip"), numeric=("shares", "value_usd"), common_only=True, pad_ciks=True
-    )
-    _state = manager_quarter_state(_book_t)
-    out["prim.super_manager_state"] = frame_digest(_state.sort_values(["cik", "period"]).reset_index(drop=True))
-    out["prim.super_conviction"] = frame_digest(
-        manager_stock_conviction(_book_t, _state).sort_values(["cik", "period", "cusip"]).reset_index(drop=True)
-    )
+    # Retired dynamic-selector primitives have no production consumers.
+    # Their two owned baseline keys are deliberately removed, not kept as dead math.
 
     out["prim.pit"] = frame_digest(
         pd.concat(

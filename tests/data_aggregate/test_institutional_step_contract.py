@@ -64,38 +64,48 @@ def test_institutionals_emits_only_three_source_panels(sqlite_store: Any, monkey
     print("SANITY: institutionals merges exactly insider, short-flow and ownership on price keys.")
 
 
+@pytest.mark.parametrize("full", [False, True])
 @pytest.mark.parametrize(
     "cls, table", [(StepCubeInstitutionals, Tables.cube_part_institutionals), (StepCubeSecThirteen, Tables.cube_part_sec_thirteen)]
 )
-def test_each_daily_part_rewrites_its_own_inclusive_seven_session_tail(
+def test_each_daily_part_honors_full_or_inclusive_tail_write_window(
     sqlite_store: Any,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     cls: type,
     table: Any,
+    full: bool,
 ) -> None:
     days = seed_prices(sqlite_store)
     ctx = context(sqlite_store, tmp_path)
     step = cls(ctx, ctx.config)
     expected = pd.DataFrame({"date": days, "ticker": "AAA", "f_test": pd.Series(range(len(days)), dtype="float32")})
     initial = expected.iloc[:31].copy()
+    initial.loc[0, "f_test"] = -2.0
     cutoff = days[30 - 7]
     initial.loc[initial["date"] >= cutoff, "f_test"] = -1.0
     sqlite_store.replace(table, initial)
     if cls is StepCubeSecThirteen:
         monkeypatch.setattr(step, "build_panel", lambda window=None, *, existing_columns=None: expected.copy())
     else:
-        monkeypatch.setattr(step, "build_panel", lambda full=False: expected.copy())
-    step.run()
+        monkeypatch.setattr(step, "build_panel", lambda: expected.copy())
+    expected_saved = expected.copy()
+    if not full:
+        expected_saved.loc[0, "f_test"] = -2.0
+    save = Mock(wraps=sqlite_store.replace if full else sqlite_store.append_tail)
+    monkeypatch.setattr(sqlite_store, "replace" if full else "append_tail", save)
+    step.run(full=full)
     first = sqlite_store.load(table).sort_values(["date", "ticker"]).reset_index(drop=True)
-    pd.testing.assert_frame_equal(first, expected, check_dtype=False)
-    step.run()
+    pd.testing.assert_frame_equal(first, expected_saved, check_dtype=False)
+    step.run(full=full)
     second = sqlite_store.load(table).sort_values(["date", "ticker"]).reset_index(drop=True)
     pd.testing.assert_frame_equal(first, second)
+    assert save.call_count == 2
     assert len(initial.loc[initial["date"] >= cutoff]) == 8
     other = Tables.cube_part_sec_thirteen if table == Tables.cube_part_institutionals else Tables.cube_part_institutionals
     assert not sqlite_store.exists(other)
-    print(f"SANITY: {table.name} rewrites last-7 inclusively (8 stored dates), appends and reruns idempotently.")
+    mode = "replaces full history" if full else "rewrites last-7 inclusively (8 stored dates), preserving the earlier prefix"
+    print(f"SANITY: {table.name} {mode} with one save per run and an idempotent repeat.")
 
 
 @pytest.mark.parametrize("cls", [StepCubeInstitutionals, StepCubeSecThirteen])
@@ -168,22 +178,24 @@ def test_changed_columns_trigger_full_owned_part_replacement(
     step = cls(ctx, ctx.config)
     sqlite_store.replace(table, pd.DataFrame({"date": days[:3], "ticker": "AAA", "f_old": 9.0}))
     expected = pd.DataFrame({"date": days, "ticker": "AAA", "f_current": 1.0})
-    modes: list[bool] = []
+    builds: list[PartWindow | None] = []
 
-    def build(full: bool = False) -> pd.DataFrame:
-        modes.append(full)
+    def build() -> pd.DataFrame:
+        builds.append(None)
         return expected.copy()
 
     def sec_build(window: PartWindow | None = None, *, existing_columns: Sequence[str] | None = None) -> pd.DataFrame:
         assert window is not None and existing_columns is not None
-        modes.append(window.is_full)
+        builds.append(window)
         return expected.copy()
 
     monkeypatch.setattr(step, "build_panel", sec_build if cls is StepCubeSecThirteen else build)
     replace = Mock(wraps=sqlite_store.replace)
     monkeypatch.setattr(sqlite_store, "replace", replace)
     step.run()
-    assert modes == [False]
+    assert len(builds) == 1
+    if cls is StepCubeSecThirteen:
+        assert builds[0] is not None and not builds[0].is_full
     replace.assert_called_once()
     assert set(sqlite_store.columns(table)) == set(expected.columns)
     assert sqlite_store.row_count(table) == len(expected)

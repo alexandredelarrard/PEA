@@ -5,7 +5,7 @@ type: flow
 tags:
   - wiki
   - flow
-source_commit: 8e1277bbf02cd5995a61a6c1fd13b087ef9cba76
+source_commit: cbc13eb78abd2cfa59465ea780c1092a2b7ecb2e
 ---
 # Cube build
 
@@ -62,15 +62,17 @@ A missing price-basis gate can propagate adjustment seams into returns, betas, a
 
 [StepCubeInstitutionals.run](../../src/data_aggregate/transformers/step_cube_institutionals.py) follows saved-output planning → shared input loading → insider loading/cleaning/features/masks → short-flow loading/preparation/features → ownership loading/events/features/masks → one panel merge → inclusive output-tail write. The family stages process sequentially and reuse their loaded frames. The global FTD stream keeps coverage before ticker filtering, while insider/13D/13G completeness metadata remains independent of payload rows.
 
-The source/calendar history remains complete even for an incremental output tail. Schema recovery writes the already-computed full panel once, without recursive source reads or feature rebuilding. The refactor retains existing feature mathematics, publication rules and missing-versus-zero behavior; see [institutional build stages](../modules/data-aggregate.md#institutional-build-stages).
+The source/calendar history remains complete even for an incremental output tail. `run(full)` selects the effective window before calling `build_panel()` with no unused full flag. Schema recovery writes the already-computed full panel once, without recursive source reads or feature rebuilding. The seven insider market-cap fields sum per-trade action-date ratios; short-flow, ownership, publication windows and non-cap insider equations retain their established contracts. See [institutional build stages](../modules/data-aggregate.md#institutional-build-stages).
 
 ## SEC 13F stage sequence
 
-[StepCubeSecThirteen.run](../../src/data_aggregate/transformers/step_cube_sec_thirteen.py) plans the saved output window and loads shared resources once. The broad input uses one projected stream ordered by CIK, report quarter and accession, carrying complete CIK-quarter groups across 200,000-row chunks. The smaller manager input uses one ordinary projected load scoped to historical roster CIKs and the filing cutoff; both preserve completion markers.
+[StepCubeSecThirteen.run](../../src/data_aggregate/transformers/step_cube_sec_thirteen.py) plans the effective output window and loads shared resources once. The broad input streams projected CIK/period/accession groups; the smaller manager input is loaded once with projected columns and a roster/public-cutoff condition. Both preserve completion markers. Shared cleaning maps CUSIPs, prepares publication dates and repairs values before public original/addition/restatement reconciliation.
 
-[Shared cleaning](../../src/data_aggregate/utils/sec_thirteen/holdings_clean.py) attaches CUSIPs, prepares publication dates and repairs values per accession before reconciliation. Off-universe positions remain in whole-book denominators. [Compact broad books](../../src/data_aggregate/utils/sec_thirteen/institutional_books.py) release raw positions after retaining ticker amounts, security evidence and book states. The manager publication scheduler retains changed-book statistics and conviction; the step exposes selection, public state, contributions, levels and the separate institutional/superinvestor panels. Full sparse history and original calendar ordinals remain dependencies, while normal daily projection uses the effective window: currently 398 computation sessions and eight inclusive rewrite sessions when the saved frontier is current.
+Broad institutional equations remain unchanged. Elite [public books](../../src/data_aggregate/utils/sec_thirteen/superinvestor_books.py) feed one [metric engine](../../src/data_aggregate/utils/sec_thirteen/superinvestor_metrics.py) twice, using the full raw roster and the first K entries of the fixed ordered config. Fresh daily levels may mix report quarters, but quarterly/yearly changes use genuine same-raw-filer matched report-period pairs. Book age expires after day 90 from first known-public origin; amendments do not restart age. Unknown newer books block fallback. Missing managers do not become sales. All26 elite observations carry between public/expiry events without decay.
 
-Bounded historical probes establish emitted column support; genuine schema drift reprojects the same prepared facts over the full calendar without reloading sources or rebuilding books. A failed previously saved family or a missing saved calendar date inside the actual deletion footprint refuses persistence. A successful nonempty known-schema grid clears an entirely unknown incremental tail; genuinely empty output and all-null full rebuilds preserve saved data. Selection/cohort/CIK/continuity science and non-atomic tail replacement remain [follow-ups](../TODO.md#13f-refactor-follow-ups--completed-review-23-october-2026). See the [detailed stages](../modules/data-aggregate.md#sec-13f-build-stages); no complete 100M computation or 22 GB capacity certification was performed.
+Full sparse archive history supports exact quarterly/yearly comparisons and median observed holding runs. Normal daily projection uses the planned window: currently398 computation sessions and eight inclusive rewrite sessions at a current frontier. Schema recovery reprojects the same prepared facts over the full calendar, without another payload load or book build, before one save.
+
+Failed previously saved families or a saved-date gap inside the replacement footprint refuse persistence. A successful nonempty known-schema incremental grid clears an all-unknown tail; empty output and all-null full rebuilds preserve saved data. Non-atomic tail replacement, older source recoveries and manager/security lineage remain [follow-ups](../TODO.md#sec-13f-feature-science-follow-ups-2026-10-25). See [feature definitions](../modules/data-aggregate.md#elite-freshness-matched-samples-and-feature-definitions) and [validation](../guides/testing.md#sec-13f-feature-science-2026-10-25). No complete100M-row capacity certification or production adoption is implied.
 
 ## Text stage sequence
 

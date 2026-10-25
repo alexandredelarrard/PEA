@@ -70,6 +70,8 @@ def _txn(**kw) -> dict:
         accession_number="0000000000-00-000000",
         ticker="AAA",
         owner_cik="0001",
+        owner_ciks=None,
+        n_reporting_owners=1,
         owner_name="Doe Jane",
         filing_date="2015-06-01",
         transaction_date="2015-05-29",
@@ -88,6 +90,8 @@ def _txn(**kw) -> dict:
         is_10b5_1=np.nan,
     )
     row.update(kw)
+    if row["owner_ciks"] is None:
+        row["owner_ciks"] = row["owner_cik"]
     if "value_usd" in kw and "shares" not in kw and pd.notna(row["value_usd"]) and row["price_per_share"] > 0:
         row["shares"] = row["value_usd"] / row["price_per_share"]
     return row

@@ -360,11 +360,7 @@ def _scope_transactions(df_trades: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
 
     # Capture source coverage and other account flows before the P/S scope cut.
     diag["source_first"] = df_trades.loc[df_trades["ticker"].ne("") & df_trades["day"].notna()].groupby("ticker")["day"].min()
-    diag["other_flows"] = (
-        df_trades.loc[~df_trades["code"].isin(OPEN_MARKET_CODES), ["ticker", "owner_cik", "transaction_day", "day", "code", "security_type"]].copy()
-        if "security_type" in df_trades
-        else pd.DataFrame()
-    )
+    diag["other_flows"] = _other_flow_versions(df_trades)
     # Computed before the scope cut, which removes the derivative `M` leg of the package.
     df_trades["in_exercise_package"] = _exercise_packages(df_trades)
 
@@ -383,6 +379,88 @@ def _scope_transactions(df_trades: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     df_trades = df_trades[df_trades["code"].isin(OPEN_MARKET_CODES) & df_trades["day"].notna() & (df_trades["ticker"] != "")]
     diag["scoped_rows"] = int((df_trades["shares_n"].gt(0) & ~df_trades["scope_unknown"]).sum())
     return df_trades, diag
+
+
+def _other_flow_versions(df_rows: pd.DataFrame) -> pd.DataFrame:
+    """Retain non-P/S account metadata and its matching amendment-cell visibility."""
+    df_flows = df_rows.loc[~df_rows["code"].isin(OPEN_MARKET_CODES)].copy()
+    df_flows["visible_from"] = df_flows["day"]
+    df_flows["visible_until"] = pd.NaT
+    df_flows["version_known"] = False
+    if df_flows.empty or "accession_number" not in df_rows:
+        return df_flows
+    document = df_flows.get("document_type", pd.Series("", index=df_flows.index)).fillna("").astype(str).str.upper().str.strip()
+    df_flows["version_known"] = document.isin(["3", "4", "5"]) & df_flows["accession_number"].fillna("").ne("")
+    df_key = _copy_key(df_rows, df_rows["price_per_share"])
+    links, _ = _link_amendments(df_rows, df_key, require_unique=True)
+    if links.empty:
+        return df_flows
+    df_flows["version_known"] |= df_flows["accession_number"].isin(links.index)
+    df_cells = df_key.loc[df_flows.index, ["accession_number", "day", *CELL_KEY]].copy()
+    df_cells[["owner_cik", "direct_indirect"]] = df_flows[["owner_cik", "direct_indirect"]]
+    df_cells["klass"] = security_class(df_flows["security_title"])
+    members = (
+        df_flows.get("owner_ciks", pd.Series("", index=df_flows.index))
+        .fillna("")
+        .astype(str)
+        .str.replace(r"\s+", "", regex=True)
+        .str.split(",")
+        .explode()
+        .str.lstrip("0")
+    )
+    df_cells["owner_members"] = members.sort_values().groupby(level=0).agg(_joined).reindex(df_flows.index)
+    df_cells["n_reporting_owners"] = pd.to_numeric(df_flows.get("n_reporting_owners", pd.Series(np.nan, index=df_flows.index)), errors="coerce")
+    df_cells["original"] = df_cells["accession_number"].map(links).fillna(df_cells["accession_number"])
+    keys = ["original", *CELL_KEY, "owner_cik", "direct_indirect", "klass", "owner_members", "n_reporting_owners"]
+    df_boundaries = (
+        df_cells.groupby([*keys, "accession_number"], dropna=False)
+        .agg(day=("day", "min"), n_rows=("day", "size"))
+        .reset_index()
+        .sort_values([*keys, "day", "accession_number"])
+    )
+    versions = df_boundaries.groupby(keys, dropna=False)
+    df_boundaries["visible_until"] = versions["day"].shift(-1).where(df_boundaries["n_rows"].eq(versions["n_rows"].shift(-1)))
+    df_stops = df_cells.reset_index(names="source_index").merge(
+        df_boundaries[[*keys, "accession_number", "visible_until"]], on=[*keys, "accession_number"], how="left"
+    )
+    df_flows["visible_until"] = df_stops.set_index("source_index")["visible_until"].reindex(df_flows.index)
+    return df_flows
+
+
+def account_other_flows(df_flows: pd.DataFrame, ticker: str, owner: str) -> pd.DataFrame:
+    """Common-account blockers; only a proved independent derivative award is irrelevant."""
+    reporters = df_flows.get("owner_ciks", pd.Series("", index=df_flows.index)).fillna("").astype(str).str.replace(r"\s+", "", regex=True)
+    members = reporters.str.split(",").explode().str.lstrip("0")
+    members = members[members.str.fullmatch(r"\d+").fillna(False)]
+    n_members = members.groupby(level=0).nunique().reindex(df_flows.index, fill_value=0)
+    listed = members.eq(owner.lstrip("0")).groupby(level=0).any().reindex(df_flows.index, fill_value=False)
+    primary = df_flows["owner_cik"].str.lstrip("0").reindex(members.index)
+    primary_listed = members.eq(primary).groupby(level=0).any().reindex(df_flows.index, fill_value=False)
+    multiplicity = pd.to_numeric(df_flows.get("n_reporting_owners", pd.Series(np.nan, index=df_flows.index)), errors="coerce")
+    complete = multiplicity.ge(1) & multiplicity.eq(n_members) & primary_listed
+    df_rows = df_flows.loc[df_flows["ticker"].eq(ticker) & (df_flows["owner_cik"].eq(owner) | ~complete | listed)].copy()
+    df_rows["visible_from"] = df_rows.get("visible_from", df_rows["day"])
+    df_rows["visible_until"] = df_rows.get("visible_until", pd.Series(pd.NaT, index=df_rows.index))
+    if df_rows.empty:
+        return df_rows
+    unknown = pd.Series("", index=df_rows.index)
+    title = df_rows.get("security_title", unknown).fillna("").astype(str).str.strip()
+    security = df_rows.get("security_type", unknown).fillna("").astype(str).str.lower().str.strip()
+    account = df_rows.get("direct_indirect", unknown).fillna("").astype(str).str.upper().str.strip()
+    reporters = reporters.reindex(df_rows.index).str.lstrip("0")
+    multiplicity = multiplicity.reindex(df_rows.index)
+    independent = (
+        security.eq("deriv")
+        & df_rows["code"].eq("A")
+        & df_rows["owner_cik"].eq(owner)
+        & reporters.eq(owner.lstrip("0"))
+        & account.isin(["D", "I"])
+        & multiplicity.eq(1)
+        & title.ne("")
+        & ~common_stock_mask(title)
+        & df_rows.get("version_known", pd.Series(False, index=df_rows.index)).fillna(False)
+    )
+    return df_rows.loc[~independent].copy()
 
 
 def _clean_trade_prices(
@@ -578,12 +656,12 @@ def _owner_pairs(df: pd.DataFrame) -> pd.DataFrame:
     return df_pairs[df_pairs["owner"].fillna("").ne("")].drop_duplicates()
 
 
-def _link_amendments(df: pd.DataFrame, df_key: pd.DataFrame) -> tuple[pd.Series, int]:
+def _link_amendments(df: pd.DataFrame, df_key: pd.DataFrame, *, require_unique: bool = False) -> tuple[pd.Series, int]:
     """Amendment accession -> its original, and the number of amendments with several candidates.
 
     The original shares the ticker and an owner, is not an amendment, and was filed on the
-    amendment's `original_submission_date`, on or before the amendment. Among several
-    candidates the one sharing the most cells wins, then the lowest accession number.
+    amendment's `original_submission_date`, on or before the amendment. By default several
+    candidates resolve by shared cells then accession; `require_unique` refuses such ties.
     """
     none = pd.Series(dtype="string")
     if "document_type" not in df.columns or "original_submission_date" not in df.columns:
@@ -617,6 +695,8 @@ def _link_amendments(df: pd.DataFrame, df_key: pd.DataFrame) -> tuple[pd.Series,
     df_pairs = df_pairs.sort_values(["accession_number", "shared", "original"], ascending=[True, False, True])
     n_candidates = df_pairs.groupby("accession_number").size()
     links = df_pairs.drop_duplicates("accession_number").set_index("accession_number")["original"]
+    if require_unique:
+        links = links[n_candidates.reindex(links.index).eq(1)]
     return links, int((n_candidates > 1).sum())
 
 

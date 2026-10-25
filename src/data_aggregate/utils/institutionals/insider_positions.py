@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.institutionals.inputs import QuantityBasis
-from src.data_aggregate.utils.institutionals.insider_quality import security_class
+from src.data_aggregate.utils.institutionals.insider_quality import account_other_flows, security_class
 
 
 def position_units(trades: pd.DataFrame, basis: QuantityBasis | None) -> pd.DataFrame:
@@ -51,15 +51,14 @@ def cumulative_positions(
     rows["delta"] = rows["shares_n"].where(rows["code"].eq("P"), -rows["shares_n"])
     keys = ["ticker", "owner_cik", "klass"]
     day_groups = dict(tuple(positions.groupby(keys, sort=False)))
-    flows = (
-        {} if other_flows.empty else dict(tuple(other_flows.dropna(subset=["transaction_day", "day"]).groupby(["ticker", "owner_cik"], sort=False)))
-    )
+    flows = {} if other_flows.empty else dict(tuple(other_flows.dropna(subset=["transaction_day", "day"]).groupby("ticker", sort=False)))
     intervals = []
     for key, group in rows.groupby(keys, sort=False):
         account_days = day_groups.get(key)
         if account_days is None:
             continue
-        blocked = flows.get(key[:2], pd.DataFrame(columns=["transaction_day", "day"]))
+        df_flows = flows.get(key[0], pd.DataFrame(columns=["ticker", "owner_cik", "transaction_day", "day"]))
+        blocked = account_other_flows(df_flows, key[0], key[1])
         intervals.extend(_account_intervals(cast(tuple[str, str, str], key), group, account_days, blocked, idx))
     columns = pd.Index(sorted(rows["ticker"].unique()), name="ticker")
     unknown = pd.DataFrame(np.nan, index=idx, columns=columns)
@@ -85,7 +84,8 @@ def _account_intervals(
     lot = {column: lots[column].to_numpy(dtype="datetime64[ns]") for column in time_cols}
     pos = {column: positions[column].to_numpy(dtype="datetime64[ns]") for column in ("visible_from", "visible_until", "transaction_day")}
     flow_day = flows["transaction_day"].to_numpy(dtype="datetime64[ns]")
-    flow_public = flows["day"].to_numpy(dtype="datetime64[ns]")
+    flow_public = flows["visible_from"].to_numpy(dtype="datetime64[ns]")
+    flow_stop = flows["visible_until"].to_numpy(dtype="datetime64[ns]")
     points = np.unique(
         np.concatenate(
             [
@@ -94,6 +94,7 @@ def _account_intervals(
                 pos["visible_from"],
                 pos["visible_until"],
                 flow_public,
+                flow_stop,
                 np.array([idx.min(), idx.max() + pd.Timedelta(days=1)], dtype="datetime64[ns]"),
             ]
         )
@@ -120,7 +121,7 @@ def _account_intervals(
         visible &= (pos["transaction_day"] >= first) & (pos["transaction_day"] <= last)
         ordered = np.flatnonzero(visible)[np.argsort(pos["transaction_day"][visible])]
         # Expired trades interleaved between active economic days make a literal start ambiguous.
-        blocked = (flow_public <= point) & (flow_day >= first) & (flow_day <= last)
+        blocked = (flow_public <= point) & (np.isnat(flow_stop) | (flow_stop > point)) & (flow_day >= first) & (flow_day <= last)
         interleaved = span & ~active & (lot["transaction_day"] > first) & (lot["transaction_day"] < last)
         if blocked.any() or uncertain[span].any() or interleaved.any():
             continue

@@ -19,7 +19,7 @@ from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.pit import daily_market_cap
 from src.data_aggregate.utils.common.price_frames import PriceFrames
 from src.data_aggregate.utils.institutionals.insider_positions import cumulative_positions
-from src.data_aggregate.utils.institutionals.insider_quality import FLAG_PCT_SHARES_OUTSTANDING, report_oversized, security_class
+from src.data_aggregate.utils.institutionals.insider_quality import FLAG_PCT_SHARES_OUTSTANDING, account_other_flows, report_oversized, security_class
 from src.data_store.schema import Tables
 
 _log = logging.getLogger(__name__)
@@ -642,11 +642,15 @@ def _daily_positions(trades: pd.DataFrame, other_flows: pd.DataFrame) -> pd.Data
     df_rows["buy_value"] = df_rows["value"].where(df_rows["code"].eq("P"), 0.0)
     df_rows["missing_after"] = df_rows["shares_owned_after"].isna()
     keys = ["ticker", "owner_cik", "klass", "transaction_day"]
-    flow_keys = ["ticker", "owner_cik", "transaction_day"]
     df_rows["other_day"] = pd.NaT
+    flow_groups = {}
     if not other_flows.empty:
-        earliest = other_flows.dropna(subset=["day", "transaction_day"]).groupby(flow_keys)["day"].min()
-        df_rows["other_day"] = earliest.reindex(pd.MultiIndex.from_frame(df_rows[flow_keys])).to_numpy()
+        by_ticker = dict(tuple(other_flows.groupby("ticker", sort=False)))
+        for (ticker, owner), df_account in df_rows.groupby(["ticker", "owner_cik"], sort=False):
+            df_blocked = account_other_flows(by_ticker.get(ticker, other_flows.iloc[:0]), ticker, owner)
+            flow_groups[(ticker, owner)] = df_blocked
+            earliest = df_blocked.dropna(subset=["visible_from", "transaction_day"]).groupby("transaction_day")["visible_from"].min()
+            df_rows.loc[df_account.index, "other_day"] = earliest.reindex(df_account["transaction_day"]).to_numpy()
     grouped = df_rows.groupby(keys, sort=False)
     df_days = grouped.agg(
         anchor=("anchor", "min"),
@@ -674,21 +678,21 @@ def _daily_positions(trades: pd.DataFrame, other_flows: pd.DataFrame) -> pd.Data
     df_fast["starting"] = df_fast["terminal"] - df_fast["net_shares"]
     df_fast["visible_until"] = pd.NaT
     results = [df_fast.reset_index()[columns]]
-    never_supported = df_days["other_day"].le(df_days["visible_from"])
-    slow_keys = set(df_days.index[~fast & ~never_supported])
+    slow_keys = set(df_days.index[~fast])
     _log.info(
-        "insider positions: %s account days, %s simple, %s sequences, %s blocked by other flows",
+        "insider positions: %s account days, %s simple, %s sequences, %s initially blocked by other flows",
         len(df_days),
         int(fast.sum()),
         len(slow_keys),
-        int(never_supported.sum()),
+        int(df_days["other_day"].le(df_days["visible_from"]).sum()),
     )
     if slow_keys:
         df_slow = df_rows[pd.MultiIndex.from_frame(df_rows[keys]).isin(slow_keys)]
         records_out = []
         for key, df_group in df_slow.groupby(keys, sort=False):
             account = dict(zip(keys, key, strict=True))
-            records_out.extend(_account_day_versions(df_group, account))
+            df_flows = flow_groups.get(key[:2], pd.DataFrame(columns=["transaction_day", "visible_from", "visible_until"]))
+            records_out.extend(_account_day_versions(df_group, account, df_flows))
         if records_out:
             results.append(pd.DataFrame(records_out)[columns])
     df_result = pd.concat(results, ignore_index=True)
@@ -702,16 +706,23 @@ def _daily_positions(trades: pd.DataFrame, other_flows: pd.DataFrame) -> pd.Data
     return df_result
 
 
-def _account_day_versions(df_group: pd.DataFrame, account: Mapping[str, object]) -> list[dict[str, object]]:
+def _account_day_versions(df_group: pd.DataFrame, account: Mapping[str, object], df_flows: pd.DataFrame) -> list[dict[str, object]]:
     """Reconstruct one account/economic day's balances at its public version boundaries."""
-    points = sorted(set(df_group["visible_from"]) | set(df_group["visible_until"].dropna()) | set(df_group["other_day"].dropna()))
+    df_blocked = df_flows.loc[df_flows["transaction_day"].eq(account["transaction_day"])]
+    points = sorted(
+        set(df_group["visible_from"])
+        | set(df_group["visible_until"].dropna())
+        | set(df_blocked["visible_from"].dropna())
+        | set(df_blocked["visible_until"].dropna())
+    )
     anchor = df_group["anchor"].min()
     records: list[dict[str, object]] = []
 
     # Sweep disclosure/expiry boundaries, excluding publicly unsupported account flows.
     for i, point in enumerate(points):
         df_visible = df_group[df_group["visible_from"].le(point) & (df_group["visible_until"].isna() | df_group["visible_until"].gt(point))]
-        if df_visible.empty or (df_visible["other_day"].notna() & df_visible["other_day"].le(point)).any():
+        blocked = df_blocked["visible_from"].le(point) & (df_blocked["visible_until"].isna() | df_blocked["visible_until"].gt(point))
+        if df_visible.empty or blocked.any():
             continue
         start = _starting_balance(df_visible)
         if not np.isfinite(start) or start < 0:

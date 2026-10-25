@@ -69,5 +69,37 @@ linear:
   - f_log_ceo_total_comp # to normalize to market cap or revenue of firm
   - f_avg_board_tenure_vs_hist
   # - f_insider_ownership_pct
+
+  # Institutional inputs: insider, short volume/FTD, and 13D/G.
+  - f_ic_insider_buy_value_mcap_60d
+  - f_ic_insider_buy_value_mcap_180d
+  - f_ic_insider_distinct_buyers_120d
+  - f_ic_insider_cluster_buy_120d
+  - f_ic_insider_ceo_buy_mcap_180d
+  - f_ic_insider_cfo_buy_mcap_180d
+  - f_ic_insider_director_buy_mcap_180d
+  - f_ic_insider_purchase_pct_prior
+  - f_ic_insider_owner_surprise_120d
+  - f_ic_insider_net_buy_ratio_180d
+  - f_ic_insider_discretionary_sell_mcap_60d
+  - f_ic_insider_planned_sell_mcap_60d
+  - f_ic_insider_management_position_change_60d
+  - f_ic_shortvol_ratio_5d
+  - f_ic_shortvol_ratio_20d
+  - f_ic_shortvol_ratio_60d
+  - f_ic_shortvol_acceleration
+  - f_ic_shortvol_turnover_20d
+  - f_ic_shortvol_high_x_weak_price
+  - f_ic_shortvol_high_x_strong_price
+  - f_ic_shortvol_market_coverage
+  - f_ic_ftd_to_adv20
+  - f_ic_ftd_persistence_30d
+  - f_ic_act_initial_13d
+  - f_ic_act_amendment_intensity
+  - f_ic_act_repeat_activist
+  - f_ic_bo_new_holder
+  - f_ic_bo_escalation_13g_to_13d
+  - f_ic_bo_de_escalation_13d_to_13g
+
   # columns_by_horizon:
   #   60:

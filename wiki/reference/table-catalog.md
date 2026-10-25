@@ -7,7 +7,7 @@ tags:
   - reference
   - database
   - schema
-source_commit: 1bcc5558cabc6e984811d38e85fab25f1e639039
+source_commit: 7cffc8ef42e4d04c5cdf7d42e5f4ad59c33731db
 ---
 # Table catalog
 

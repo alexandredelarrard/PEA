@@ -34,7 +34,7 @@ def table_has_gap(section: Section, payload: str, saved: pd.DataFrame, parent: d
     }
     allowed = set(_CHILD_SPEC[section.table.name][0]) if section.key != "audit" else set()
     fields: dict[int, str] = {}
-    name_column, year_column = 0, None
+    name_column, year_columns = 0, []
     last_name = ""
     for line in payload.splitlines():
         cells = [cell.strip() for cell in line.split("\t")]
@@ -66,12 +66,14 @@ def table_has_gap(section: Section, payload: str, saved: pd.DataFrame, parent: d
             index: field
             for index, cell in enumerate(cells)
             for field, pattern in aliases.items()
-            if field in allowed and re.search(pattern, cell, re.I)
+            if field in allowed
+            and re.search(pattern, cell, re.I)
+            and not (field == "option_awards" and re.search(r"#|\bnumber\b|\bsecurities\b|\bshares\b", cell, re.I))
         }
         if header:
             fields = header
             name_column = next((index for index, cell in enumerate(cells) if re.search(r"name|principal position", cell, re.I)), 0)
-            year_column = next((index for index, cell in enumerate(cells) if re.fullmatch(r"(?:fiscal )?year", cell, re.I)), None)
+            year_columns = [index for index, cell in enumerate(cells) if re.search(r"\byear$", cell, re.I)]
             continue
         if not fields or name_column >= len(cells):
             continue
@@ -85,16 +87,71 @@ def table_has_gap(section: Section, payload: str, saved: pd.DataFrame, parent: d
         name_key = "holder_name" if section.key == "ownership" else "name"
         rows = saved.loc[saved[name_key].astype(str).str.casefold().eq(clean.casefold())] if name_key in saved else saved.iloc[:0]
         if section.key == "executive_pay":
-            year = cells[year_column] if year_column is not None and year_column < len(cells) else ""
-            if not re.fullmatch(r"(?:19|20)\d{2}", year):
+            year = next((cells[index] for index in year_columns if index < len(cells) and cells[index]), "")
+            label = re.fullmatch(r"((?:19|20)\d{2})(?:-(\d{2}|\d{4}))?", year)
+            if not label or (label[2] and not str(int(label[1]) + 1).endswith(label[2])):
                 continue
+            fiscal_year = int(label[1]) + bool(label[2])
             if "fiscal_year" in rows:
-                rows = rows.loc[pd.to_numeric(rows.fiscal_year, errors="coerce").eq(int(year))]
+                rows = rows.loc[pd.to_numeric(rows.fiscal_year, errors="coerce").eq(fiscal_year)]
         for index, field in fields.items():
             cell = cells[index].strip() if index < len(cells) else ""
             cell = cell if field == "is_independent" else cell.replace("%", "")
             pattern = r"yes|no" if field == "is_independent" else r"\$?\(?-?\d[\d,]*(?:\.\d+)?\)?"
             if re.fullmatch(pattern, cell, re.I) and (rows.empty or field not in rows or rows[field].isna().all()):
+                return True
+    return False
+
+
+def layout_has_gap(section: Section, payload: str, saved: pd.DataFrame, parent: dict[str, Any]) -> bool:
+    """Recognize explicit legacy salary rows and a year-labelled transposed fee matrix."""
+    # A transposed fee matrix needs its complete category order, dollar basis and adjacent years.
+    if section.key == "audit":
+        header = re.search(
+            r"\(IN\s+(?:MILLIONS|THOUSANDS|DOLLARS)\)\s+AUDIT(?: FEES)?\s+AUDIT\s*-\s*RELATED(?: FEES)?\s+"
+            r"TAX(?: FEES)?\s+ALL\s+OTHER(?: FEES)?\s+TOTAL(?: FEES)?\s+((?:19|20)\d{2})\s*\n",
+            payload,
+            re.I,
+        )
+        if not header:
+            return False
+        cells = [line.strip() for line in payload[header.end() :].splitlines() if line.strip()]
+        if len(cells) < 11 or cells[5] != str(int(header[1]) - 1):
+            return False
+        amounts = cells[:5] + cells[6:11]
+        if not all(re.fullmatch(r"\$-?\d[\d,]*(?:\.\d+)?|[-—]+|N/?A", cell, re.I) for cell in amounts):
+            return False
+        fields = ("audit_fees_audit", "audit_fees_audit_related", "audit_fees_tax", "audit_fees_other", "auditor_fees", "auditor_fees_prior")
+        return any(pd.isna(parent.get(field)) and cell.startswith("$") for field, cell in zip(fields, cells[:5] + [cells[10]], strict=True))
+    if section.key != "executive_pay":
+        return False
+
+    # Plain SCT recognition is limited to the explicitly first monetary column, salary.
+    for block in re.split(r"(?im)^.*summary compensation table[^\n]*\n", payload)[1:]:
+        header = re.search(r"(?im)^[^\n\t]*\byear\s+salary\b[^\n]*$|^[^\n\t]*\bsalary\b[^\n]*\nPOSITION YEAR \(\$\)[^\n]*$", block)
+        if not header:
+            continue
+        for line in block[header.end() :].splitlines():
+            if re.fullmatch(r"(?:\s*\(\d+\))+\s*", line):
+                continue
+            if re.fullmatch(r"[A-Z][A-Z /&-]*", line.strip()) or re.match(r"\s*(?:NAME|PRINCIPAL POSITION)\b", line, re.I):
+                break
+            if re.match(r"\s*(?:NOTES?\b|\(?\d+\)|(?:STOCK )?OPTIONS?\b|ALL OTHER COMPENSATION)", line, re.I):
+                break
+            row = re.fullmatch(
+                r"([A-Za-z][A-Za-z .,'-]+?)\s+((?:19|20)\d{2})\s+(\$?\s*\(?-?\d[\d,]*(?:\.\d+)?\)?)"
+                r"(?:\(\d+\))?\s+(?:\$?\s*-?\d|--?|N/A).*",
+                line.strip(),
+            )
+            if not row:
+                continue
+            name = clean_person_name(re.sub(r"\.{2,}", "", row[1]))
+            if not name or len(re.findall(r"[A-Za-z]+", name)) < 2:
+                continue
+            rows = saved.loc[saved.name.astype(str).str.casefold().eq(name.casefold())] if "name" in saved else saved.iloc[:0]
+            if "fiscal_year" in rows:
+                rows = rows.loc[pd.to_numeric(rows.fiscal_year, errors="coerce").eq(int(row[2]))]
+            if rows.empty or "salary" not in rows or rows.salary.isna().all():
                 return True
     return False
 

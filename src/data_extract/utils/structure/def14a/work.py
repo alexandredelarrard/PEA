@@ -10,7 +10,7 @@ from typing import Any, cast
 import pandas as pd
 
 from src.context import Context
-from src.data_extract.utils.structure.def14a.evidence import prose_has_gap, table_has_gap
+from src.data_extract.utils.structure.def14a.evidence import layout_has_gap, prose_has_gap, table_has_gap
 from src.data_extract.utils.structure.def14a.postprocess import ProcessedSection, archived_answers
 from src.data_extract.utils.structure.def14a.retry import SECTIONS, Section, reservation_frame
 from src.data_store.schema import Table, Tables
@@ -171,6 +171,7 @@ def requests_for(work: FilingWork, payloads: dict[str, str]) -> list[tuple[Secti
         if attempt and not (
             table_has_gap(section, payload, work.saved[section.table], work.parent)
             or prose_has_gap(section, payload, work.saved[section.table], work.parent)
+            or layout_has_gap(section, payload, work.saved[section.table], work.parent)
         ):
             continue
         task = LlmTask(seq=0, payload=payload, schema=section.schema, table=section.table, meta={"work": work})

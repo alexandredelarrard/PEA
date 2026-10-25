@@ -193,6 +193,100 @@ def test_institutionals_emits_only_three_source_panels(sqlite_store: Any, monkey
     print("SANITY: three source panels retain40price keys/observed zeros; all29 declared fields exist and26unsupported fields stay NULL.")
 
 
+# fmt: off
+def test_delivery_batches_preserve_fixed_calculation_context(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Known-truth routing control; numerical feature behavior is covered separately."""
+    names = tuple(f"T{number:03d}" for number in range(491))
+    delivered = names[:15]
+    days = pd.bdate_range("2024-01-02", periods=3, name="date").as_unit("ns")
+    prices = pd.MultiIndex.from_product([days, names], names=["date", "ticker"]).to_frame(index=False)
+    sqlite_store.replace(Tables.cube_part_prices, prices.assign(close_split=100.0, close_total=100.0, volume=1_000.0, level_factor=1.0))
+    history = pd.DataFrame(
+        [
+            row(
+                ticker=ticker,
+                issuer_cik=f"{number + 1:010d}",
+                accession_number=f"history-{number}-{year}",
+                transaction_date=f"{year}-01-03", filing_date=f"{year}-01-05",
+                lineage_role="canonical_current",
+            )
+            for number, ticker in enumerate(names) for year in (2000, 2023)
+        ]
+    )
+    sqlite_store.save(Tables.insider_transactions, pd.concat([history, pd.DataFrame([row(ticker="OUTSIDE", lineage_role="canonical_current")])], ignore_index=True))
+    ctx = context(sqlite_store, tmp_path)
+    step = StepCubeInstitutionals(ctx, ctx.config)
+    monkeypatch.setattr(capital_inputs, "load_peers_or_raise", lambda ctx: {})
+    reads: list[tuple[Any, dict[str, Any]]] = []
+    stages: list[str] = []
+    stream = sqlite_store.iter_load
+
+    def capture(table: Any, **kwargs: Any) -> Iterator[pd.DataFrame]:
+        reads.append((table, kwargs))
+        yield from stream(table, **kwargs)
+
+    def clean(source: pd.DataFrame, **kwargs: Any) -> tuple[pd.DataFrame, dict[str, Any]]:
+        stages.append("clean")
+        columns = ["ticker", "owner_cik", "accession_number", "filing_date"]
+        actual = source[columns].sort_values(columns[:3]).reset_index(drop=True)
+        expected = history[columns].sort_values(columns[:3]).reset_index(drop=True)
+        actual["filing_date"] = pd.to_datetime(actual["filing_date"]).astype("datetime64[ns]")
+        expected["filing_date"] = pd.to_datetime(expected["filing_date"]).astype("datetime64[ns]")
+        pd.testing.assert_frame_equal(actual, expected, check_exact=True)
+        return source.copy(), {"source_first": pd.Series(dtype="datetime64[ns]")}
+
+    def rebase(source: pd.DataFrame, basis: QuantityBasis) -> pd.DataFrame:
+        stages.append("rebase")
+        assert basis.target_date == days[-1]
+        return source
+
+    def panel(frames: PriceFrames, field: str, value: float) -> pd.DataFrame:
+        stages.append(field)
+        assert frames.universe == names
+        pd.testing.assert_index_equal(pd.DatetimeIndex(frames.trading_index).as_unit("ns"), days, exact=True)
+        result = frames.skeleton().assign(**{field: value})
+        result.loc[result["date"].eq(days[0]), field] = float("nan")
+        return result
+    monkeypatch.setattr(sqlite_store, "iter_load", capture)
+    monkeypatch.setattr(institutional_step, "clean_transactions", clean)
+    monkeypatch.setattr(institutional_step, "position_units", rebase)
+    fields = ["f_ic_insider_distinct_buyers_120d", "f_ic_shortvol_ratio_5d", "f_ic_act_initial_13d"]
+    monkeypatch.setattr(institutional_step, "build_insider_feature_panel", lambda frames, *args: panel(frames, fields[0], 2.0))
+    monkeypatch.setattr(institutional_step, "build_short_flow_feature_panel", lambda frames, *args: panel(frames, fields[1], 0.5))
+    monkeypatch.setattr(institutional_step, "build_ownership_feature_panel", lambda frames, *args, **kwargs: panel(frames, fields[2], 0.0))
+    deliveries = []
+    for batches in ([delivered], [delivered[:5], delivered[5:10], delivered[10:]], [tuple(reversed(delivered))]):
+        pieces = []
+        for batch in batches:
+            calculated = step.build_panel()
+            assert len(calculated) == 491 * len(days)
+            pieces.append(calculated.loc[calculated["ticker"].isin(batch)])
+        deliveries.append(pd.concat(pieces, ignore_index=True).sort_values(["date", "ticker"]).reset_index(drop=True))
+
+    expected_keys = pd.MultiIndex.from_product([days, delivered], names=["date", "ticker"])
+    for result in deliveries:
+        keys = pd.MultiIndex.from_arrays([pd.DatetimeIndex(result["date"]).as_unit("ns"), result["ticker"]], names=["date", "ticker"])
+        pd.testing.assert_index_equal(keys, expected_keys, exact=True)
+        pd.testing.assert_frame_equal(result, deliveries[0], check_exact=True)
+        assert list(result.columns) == ["date", "ticker", *INSTITUTIONAL_COLUMNS]
+        assert result[fields].notna().sum().tolist() == [30, 30, 30]
+        assert result.loc[result["date"].eq(days[0]), fields].isna().all().all()
+        assert result.loc[result["date"].gt(days[0]), fields].eq([2.0, 0.5, 0.0]).all().all()
+        assert result[[name for name in INSTITUTIONAL_COLUMNS if name not in fields]].isna().all().all()
+    assert stages == ["clean", "rebase", *fields] * 5
+    price_reads = [kwargs for table, kwargs in reads if table is Tables.cube_part_prices]
+    insider_reads = [kwargs for table, kwargs in reads if table is Tables.insider_transactions]
+    assert len(price_reads) == len(insider_reads) == 5
+    assert all(kwargs == {"columns": ["date", "ticker", *step._FIELDS], "since": None} for kwargs in price_reads)
+    assert all(kwargs["where"] == {"ticker": list(names)} and kwargs["markers"] and "since" not in kwargs for kwargs in insider_reads)
+    assert all({"issuer_cik", "lineage_role"}.issubset(kwargs["columns"]) for kwargs in insider_reads)
+    for table in (Tables.short_interest, Tables.sec_13d, Tables.sec_13g):
+        projected = [kwargs for source, kwargs in reads if source is table]
+        assert len(projected) == 5 and all(kwargs == {"project": True, "where": {"ticker": list(names)}} for kwargs in projected)
+    print("SANITY: 491 calculation names/982 owner-history rows reach five public builds; 15 deliveries match exactly across batches/order, NULLs and counts.")
+# fmt: on
+
+
 @pytest.mark.parametrize(
     "cls, table", [(StepCubeInstitutionals, Tables.cube_part_institutionals), (StepCubeSecThirteen, Tables.cube_part_sec_thirteen)]
 )

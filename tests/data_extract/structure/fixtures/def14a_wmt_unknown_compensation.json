@@ -1,0 +1,233 @@
+{
+  "key": "3baafa4d22d373b43978832be0ac039ab10c1b7c2c72d7d1616317d2ff35ff8d",
+  "meta": {
+    "accession_number": "0000104169-25-000055",
+    "action": "def14a_director_pay",
+    "as_of": "2025-04-24 00:00:00",
+    "cik": "0000104169",
+    "company_name": "Walmart Inc.",
+    "period": "2025-01-31 00:00:00",
+    "seq": 0,
+    "ticker": "WMT"
+  },
+  "parsed": {
+    "amount_scale": "units",
+    "compensation": [
+      {
+        "fees_earned": 100000.0,
+        "fiscal_year": 2025,
+        "name": "Cesar Conde",
+        "non_equity_incentive": null,
+        "option_awards": null,
+        "other_compensation": null,
+        "pension_change": null,
+        "stock_awards": 199973.0,
+        "total": 299973.0
+      },
+      {
+        "fees_earned": 130000.0,
+        "fiscal_year": 2025,
+        "name": "Tim Flynn",
+        "non_equity_incentive": null,
+        "option_awards": null,
+        "other_compensation": 1311.0,
+        "pension_change": null,
+        "stock_awards": 199973.0,
+        "total": 331284.0
+      },
+      {
+        "fees_earned": 120000.0,
+        "fiscal_year": 2025,
+        "name": "Sarah Friar",
+        "non_equity_incentive": null,
+        "option_awards": null,
+        "other_compensation": null,
+        "pension_change": null,
+        "stock_awards": 199973.0,
+        "total": 319973.0
+      },
+      {
+        "fees_earned": 120000.0,
+        "fiscal_year": 2025,
+        "name": "Carla Harris",
+        "non_equity_incentive": null,
+        "option_awards": null,
+        "other_compensation": null,
+        "pension_change": null,
+        "stock_awards": 199973.0,
+        "total": 319973.0
+      },
+      {
+        "fees_earned": 170000.0,
+        "fiscal_year": 2025,
+        "name": "Tom Horton",
+        "non_equity_incentive": null,
+        "option_awards": null,
+        "other_compensation": 230.0,
+        "pension_change": null,
+        "stock_awards": 199973.0,
+        "total": 370203.0
+      },
+      {
+        "fees_earned": 100000.0,
+        "fiscal_year": 2025,
+        "name": "Marissa Mayer",
+        "non_equity_incentive": null,
+        "option_awards": null,
+        "other_compensation": null,
+        "pension_change": null,
+        "stock_awards": 199973.0,
+        "total": 299973.0
+      },
+      {
+        "fees_earned": 37778.0,
+        "fiscal_year": 2025,
+        "name": "Bob Moritz",
+        "non_equity_incentive": null,
+        "option_awards": null,
+        "other_compensation": null,
+        "pension_change": null,
+        "stock_awards": 161069.0,
+        "total": 198847.0
+      },
+      {
+        "fees_earned": 75000.0,
+        "fiscal_year": 2025,
+        "name": "Brian Niccol",
+        "non_equity_incentive": null,
+        "option_awards": null,
+        "other_compensation": null,
+        "pension_change": null,
+        "stock_awards": 199973.0,
+        "total": 274973.0
+      },
+      {
+        "fees_earned": 212500.0,
+        "fiscal_year": 2025,
+        "name": "Greg Penner",
+        "non_equity_incentive": null,
+        "option_awards": null,
+        "other_compensation": null,
+        "pension_change": null,
+        "stock_awards": 312516.0,
+        "total": 525016.0
+      },
+      {
+        "fees_earned": 120000.0,
+        "fiscal_year": 2025,
+        "name": "Randall Stephenson",
+        "non_equity_incentive": null,
+        "option_awards": null,
+        "other_compensation": null,
+        "pension_change": null,
+        "stock_awards": 199973.0,
+        "total": 319973.0
+      },
+      {
+        "fees_earned": 25000.0,
+        "fiscal_year": 2025,
+        "name": "Rob Walton",
+        "non_equity_incentive": null,
+        "option_awards": null,
+        "other_compensation": null,
+        "pension_change": null,
+        "stock_awards": null,
+        "total": 25000.0
+      },
+      {
+        "fees_earned": 120000.0,
+        "fiscal_year": 2025,
+        "name": "Steuart Walton",
+        "non_equity_incentive": null,
+        "option_awards": null,
+        "other_compensation": null,
+        "pension_change": null,
+        "stock_awards": 199973.0,
+        "total": 319973.0
+      }
+    ],
+    "currency": "USD"
+  },
+  "source": "Read these focused source sections and return the requested director pay facts.\n\n=== DIRECTOR COMPENSATION TABLE ===\nSource context surrounding this table:\nectors or to the additional fees for Board Leadership positions. Components of Director Compensation Our Outside Director compensation program consists of the following primary components: Who is Eligible Component Annual Amount ($) Form of Payment Base Compensation \u2013 All Outside Directors Annual Stock Grant 200,000 Shares Annual Retainer 100,000 Cash Additional Fees \u2013 Some Outside Directors Non-Executive Chairman Retainer 225,000 50% Shares / 50% Cash Lead Independent Director Retainer 50,000 Cash Audit Chair Retainer 30,000 Cash CMDC, NGC, SPFC, and TeCC Chair Retainers 20,000 Cash In addition, each Outside Director who attends in person a Board meeting held at a location that requires intercontinental travel from his or her residence is paid an additional $4,000 meeting attendance fee. Form and Timing of Payment Stock grants to Outside Directors are made annually following election to the Board at our annual shareholders\u2019 meeting. For fiscal 2025, the annual stock grant was approved by the Board on Ju ne 6, 20 24 for those Outside Directors who were re-elected to the Board at our 2024 Annual Shareholders' Meeting. If an Outside Director is appointed to the Board during a term, he or she will receive a prorated portion of the annual stock grant. Each Outside Director may elect to defer the receipt of this stock grant in the form of stock units that are settled in Shares following the end of the director\u2019s Board service. The other components of Outside Director compensation listed above are paid quarterly in arrears. Each Outside Director can elect to receive these other components in the form of cash, Shares (with the number of Shares determined based on the closing price of Shares on the NYSE on the payment date), deferred in stock units, or deferred into an interest-credited cash account. Director Stock Ownership Guidelines Each Outside Director is required to own, within five years of his or her initial election to the Board, Shares or deferred stock units with a value equal to five times the annual retainer portion of the Outside Director compensation established by the Board in the year the director was initially elected. All Outside Directors who have reached the five-year compliance date own sufficient Shares or deferred stock units to satisfy this requirement. 46 www.walmart.com Corporate Governance Director Compensation for Fiscal 2025 Name (a) Fees Earned or Paid in Cash ($) (b) Stock Awards ($) (c) All Other Compensation ($) (g) Total ($) (h) Cesar Conde 100,000 199,973 \u2014 299,973 Tim Flynn 130,000 199,973 1,311 331,284 Sarah Friar 120,000 199,973 \u2014 319,973 Carla Harris 120,000 199,973 \u2014 319,973 Tom Horton 170,000 199,973 230 370,203 Marissa Mayer 100,000 199,973 \u2014 299,973 Bob Moritz 37,778 161,069 \u2014 198,847 Brian Niccol 75,000 199,973 \u2014 274,973 Greg Penner 212,500 312,516 \u2014 525,016 Randall Stephenson 120,000 199,973 \u2014 319,973 Rob Walton 25,000 \u2014 \u2014 25,000 Steuart Walton 120,000 199,973 \u2014 319,973 Explanation of information in the columns of the table: Name (column (a)) Doug McMillon is omitted from this table because he received compensation only in his capacity as an associate of our company during fiscal 2025 and did not receive any additional compensation for his duties as a director. Fees Earned or Paid in Cash (column (b)) Certain Outside Directors elected to either receive Shares in lieu of some or all of these amounts or defer these amounts in the form of deferred stock units, as shown below. These amounts were converted into Shares or deferred stock units quarterly using the closing price of a Share on the NYSE as of the respective payment dates, rounded to the nearest whole Share. For Mr. Stephenson, the amount in this column also includes $20,000 in fees for serving on a special litigation committee. Director Amount ($) Number of Shares Received in Lieu of Cash Number of Deferred Stock Units in Lieu of Cash Tim Flynn 130,000 \u2014 1,782 Sarah Friar 120,000 \u2014 1,646 Carla Harris 60,000 823 \u2014 Marissa Mayer 100,000 \u2014 1,371 Bob Moritz 37,778 435 \u2014 Brian Niccol 75,000 \u2014 956 Greg Penner 212,500 \u2014 2,914 Randall Stephenson 120,000 \u2014 1,646 Steuart Walton 120,000 \u2014 1,646 Stock Awards (column (c)) In accordance with SEC rules, the amounts in this column are the aggregate grant date fair value of stock awards granted during fiscal 2025, computed in accordance with GAAP stock-based accounting rules (as set forth in Financial Accounting Standards Board\u2019s Accounting Standards Codification Topic 718). Other than Mr. Penner, each Outside Director that was elected to the Board at the 2024 Annual Shareholders\u2019 Meeting received a stock award of 2,978 Shares ($200,000 divided by $67.15, the closing price of a Share on the NYSE on the grant date of June 6, 2024, and rounded to the nearest whole Share). Mr. Penner received a stock award of 4,654 Shares ($312,500 divided by $67.15 and rounded to the nearest whole Share). In addition, upon his appointment to the Board effective August 15, 2024, Mr. Moritz received a prorated portion of the annual stock grant for the term ending at the 2025 Annual Shareholders' Meeting, consisting of 2,201 Shares (a prorated value of $161,096 divided by $73.18, the closing price of a Share on the grant date, and rounded to the nearest whole Share). Mr. Flynn, Ms. Friar, Ms. Mayer, Mr. Niccol, Mr. Penner, and Mr. Steuart Walton elected to defer these Shares in the form of deferred stock units. Mr. Rob Walton retired from the Board as of the 2024 Annual Shareholders' Meeting and therefore did not receive a stock grant in fiscal 2025. None of our Outside Directors held any outstanding stock options or unvested restricted stock awards as of January 31, 2025. 2025 Proxy Statement 47 Corporate Governance Option Awards and Non-Equity Incentive Plan Compensation (columns (d) and (e)) We do not issue stock options to our Outside Directors and do not provide our Outside Directors with any non-eq\n\nSource table (tab-separated columns):\nName (a)\tFees Earned or Paid in Cash ($) (b)\tStock Awards ($) (c)\tAll Other Compensation ($) (g)\tTotal ($) (h)\nCesar Conde\t100,000\t199,973\t\u2014\t299,973\nTim Flynn\t130,000\t199,973\t1,311\t331,284\nSarah Friar\t120,000\t199,973\t\u2014\t319,973\nCarla Harris\t120,000\t199,973\t\u2014\t319,973\nTom Horton\t170,000\t199,973\t230\t370,203\nMarissa Mayer\t100,000\t199,973\t\u2014\t299,973\nBob Moritz\t37,778\t161,069\t\u2014\t198,847\nBrian Niccol\t75,000\t199,973\t\u2014\t274,973\nGreg Penner\t212,500\t312,516\t\u2014\t525,016\nRandall Stephenson\t120,000\t199,973\t\u2014\t319,973\nRob Walton\t25,000\t\u2014\t\u2014\t25,000\nSteuart Walton\t120,000\t199,973\t\u2014\t319,973\n",
+  "legacy_archive_conde": {
+    "name": "Cesar Conde",
+    "fiscal_year": null,
+    "fees_earned_usd": 100000.0,
+    "stock_awards_usd": 199973.0,
+    "option_awards_usd": null,
+    "non_equity_incentive_usd": null,
+    "pension_change_usd": null,
+    "all_other_comp_usd": 0.0,
+    "total_compensation_usd": 299973.0
+  },
+  "legacy_saved_conde": {
+    "accession_number": "0000104169-25-000055",
+    "as_of": "2025-04-24T00:00:00.000",
+    "cik": "0000104169",
+    "fees_earned": 100000.0,
+    "fiscal_year": null,
+    "name": "Cesar Conde",
+    "non_equity_incentive": null,
+    "option_awards": null,
+    "other_compensation": 0.0,
+    "pension_change": null,
+    "reconciles": 1.0,
+    "retry": 1,
+    "stock_awards": 199973.0,
+    "ticker": "WMT",
+    "total": 299973.0
+  },
+  "repair_saved_conde": {
+    "accession_number": "0000104169-25-000055",
+    "as_of": "2025-04-24T00:00:00.000",
+    "cik": "0000104169",
+    "fees_earned": 100000.0,
+    "fiscal_year": 2025.0,
+    "name": "Cesar Conde",
+    "non_equity_incentive": null,
+    "option_awards": null,
+    "other_compensation": 0.0,
+    "pension_change": null,
+    "reconciles": 1.0,
+    "retry": 2,
+    "stock_awards": 199973.0,
+    "ticker": "WMT",
+    "total": 299973.0
+  },
+  "source_reference": {
+    "accession_number": "0000104169-25-000055",
+    "annotation_note": "Other compensation dash, other listed columns absent; no unsupported zeros.",
+    "derivation": null,
+    "domain": "director_comp",
+    "entity_key": {
+      "fiscal_year": 2025,
+      "name": "Cesar Conde"
+    },
+    "expected": null,
+    "field": "other_compensation",
+    "fiscal_year_or_as_of": 2025,
+    "locator": {
+      "column_label": "other_compensation",
+      "heading": "Director Compensation for Fiscal 2025",
+      "row_label": "Cesar Conde",
+      "text_end": 141700,
+      "text_start": 140927
+    },
+    "normalized_unit": "USD",
+    "quote": "Director Compensation for Fiscal 2025 Name\n(a) Fees Earned or\nPaid in Cash\n($)\n(b) Stock\nAwards\n($)\n(c) All Other\nCompensation\n($)\n(g) Total\n($)\n(h) Cesar Conde 100,000 199,973 \u2014 299,973 Tim Flynn 130,000 199,973 1,311 331,284 Sarah Friar 120,000 199,973 \u2014 319,973 Carla Harris 120,000 199,973 \u2014 319,973 Tom Horton 170,000 199,973 230 370,203 Marissa Mayer 100,000 199,973 \u2014 299,973 Bob Moritz 37,778 161,069 \u2014 198,847 Brian Niccol 75,000 199,973 \u2014 274,973 Greg Penner 212,500 312,516 \u2014 525,016 Randall Stephenson 120,000 199,973 \u2014 319,973 Rob Walton 25,000 \u2014 \u2014 25,000 Steuart Walton 120,000 199,973 \u2014 319,973 Explanation of information in the columns of the table: Name (column (a)) Doug McMillon is omitted from this table because he received compensation only in his cap",
+    "quote_basis": "Frozen independent plaintext delivered with original SEC source; Python UTF-8 read_text universal-newline character offsets.",
+    "reference_id": "0000104169-25-000055|def14a_director_comp|Cesar Conde|2025|other_compensation",
+    "role": "child",
+    "source_path": "C:\\Users\\de larrard alexandre\\OneDrive - The Boston Consulting Group, Inc\\Documents\\repos_github\\PEA\\reports\\validate\\2026-10-24-def14a-extraction-refactor\\_out\\benchmark50\\sources\\WMT-0000104169-25-000055.html",
+    "source_sha256": "aa6c4e78a021b97ab61f9dff17c05dac3e03ea6ef6c587dd7ab23521c9e2736a",
+    "source_text_path": "C:\\Users\\de larrard alexandre\\OneDrive - The Boston Consulting Group, Inc\\Documents\\repos_github\\PEA\\reports\\validate\\2026-10-24-def14a-extraction-refactor\\_out\\benchmark50\\sources\\WMT-0000104169-25-000055.txt",
+    "source_text_sha256": "85cebd1778750de5c407ec3afe0dc5c1730ff0d6a2fcd6ea26b7cb7311836621",
+    "source_url": "https://www.sec.gov/Archives/edgar/data/104169/000010416925000055/wmt-20250424.htm",
+    "state": "not_disclosed",
+    "table": "def14a_director_comp",
+    "ticker": "WMT"
+  },
+  "legacy_raw_json": "{\"company_name\":\"Walmart Inc.\",\"fiscal_year\":2025,\"ceo_name\":\"Doug McMillon\",\"ceo_age\":58,\"ceo_since_year\":null,\"ceo_is_founder\":null,\"ceo_is_board_chair\":false,\"directors\":[{\"name\":\"Cesar Conde\",\"age\":51,\"tenure_years\":6.0,\"is_independent\":true,\"gender\":\"male\",\"gender_basis\":\"name\",\"other_public_company_boards\":1},{\"name\":\"Marissa Mayer\",\"age\":49,\"tenure_years\":13.0,\"is_independent\":true,\"gender\":\"female\",\"gender_basis\":\"name\",\"other_public_company_boards\":2},{\"name\":\"Timothy P. Flynn\",\"age\":68,\"tenure_years\":13.0,\"is_independent\":true,\"gender\":\"male\",\"gender_basis\":\"name\",\"other_public_company_boards\":1},{\"name\":\"Bob Moritz\",\"age\":61,\"tenure_years\":1.0,\"is_independent\":true,\"gender\":\"male\",\"gender_basis\":\"name\",\"other_public_company_boards\":1},{\"name\":\"Sarah J. Friar\",\"age\":52,\"tenure_years\":7.0,\"is_independent\":true,\"gender\":\"female\",\"gender_basis\":\"honorific\",\"other_public_company_boards\":0},{\"name\":\"Brian Niccol\",\"age\":51,\"tenure_years\":1.0,\"is_independent\":true,\"gender\":\"male\",\"gender_basis\":\"name\",\"other_public_company_boards\":1},{\"name\":\"Carla A. Harris\",\"age\":62,\"tenure_years\":8.0,\"is_independent\":true,\"gender\":\"female\",\"gender_basis\":\"honorific\",\"other_public_company_boards\":2},{\"name\":\"Randall Stephenson\",\"age\":65,\"tenure_years\":4.0,\"is_independent\":true,\"gender\":\"male\",\"gender_basis\":\"name\",\"other_public_company_boards\":0},{\"name\":\"Thomas W. Horton\",\"age\":63,\"tenure_years\":11.0,\"is_independent\":true,\"gender\":\"male\",\"gender_basis\":\"name\",\"other_public_company_boards\":1},{\"name\":\"Doug McMillon\",\"age\":58,\"tenure_years\":12.0,\"is_independent\":false,\"gender\":\"male\",\"gender_basis\":\"name\",\"other_public_company_boards\":0},{\"name\":\"Steuart Walton\",\"age\":43,\"tenure_years\":9.0,\"is_independent\":false,\"gender\":\"male\",\"gender_basis\":\"name\",\"other_public_company_boards\":0},{\"name\":\"Greg Penner\",\"age\":55,\"tenure_years\":17.0,\"is_independent\":false,\"gender\":\"male\",\"gender_basis\":\"name\",\"other_public_company_boards\":0}],\"compensation\":[{\"name\":\"Doug McMillon\",\"title\":\"President and CEO\",\"fiscal_year\":2025,\"salary_usd\":1511539.0,\"bonus_usd\":0.0,\"stock_awards_usd\":20375675.0,\"option_awards_usd\":0.0,\"non_equity_incentive_usd\":4356000.0,\"pension_change_usd\":783745.0,\"all_other_comp_usd\":381895.0,\"total_compensation_usd\":27408854.0},{\"name\":\"Doug McMillon\",\"title\":\"President and CEO\",\"fiscal_year\":2024,\"salary_usd\":1505769.0,\"bonus_usd\":0.0,\"stock_awards_usd\":19608750.0,\"option_awards_usd\":0.0,\"non_equity_incentive_usd\":4500000.0,\"pension_change_usd\":1133111.0,\"all_other_comp_usd\":221294.0,\"total_compensation_usd\":26968924.0},{\"name\":\"Doug McMillon\",\"title\":\"President and CEO\",\"fiscal_year\":2023,\"salary_usd\":1471569.0,\"bonus_usd\":0.0,\"stock_awards_usd\":19411326.0,\"option_awards_usd\":0.0,\"non_equity_incentive_usd\":3032667.0,\"pension_change_usd\":1191571.0,\"all_other_comp_usd\":199581.0,\"total_compensation_usd\":25306714.0},{\"name\":\"John David Rainey\",\"title\":\"Chief Financial Officer\",\"fiscal_year\":2025,\"salary_usd\":1033654.0,\"bonus_usd\":0.0,\"stock_awards_usd\":9964587.0,\"option_awards_usd\":0.0,\"non_equity_incentive_usd\":2234236.0,\"pension_change_usd\":0.0,\"all_other_comp_usd\":266837.0,\"total_compensation_usd\":13499314.0},{\"name\":\"John David Rainey\",\"title\":\"Chief Financial Officer\",\"fiscal_year\":2024,\"salary_usd\":1003846.0,\"bonus_usd\":0.0,\"stock_awards_usd\":9108093.0,\"option_awards_usd\":0.0,\"non_equity_incentive_usd\":1875000.0,\"pension_change_usd\":0.0,\"all_other_comp_usd\":1232413.0,\"total_compensation_usd\":13219352.0},{\"name\":\"John David Rainey\",\"title\":\"Chief Financial Officer\",\"fiscal_year\":2023,\"salary_usd\":700000.0,\"bonus_usd\":5000000.0,\"stock_awards_usd\":32651678.0,\"option_awards_usd\":0.0,\"non_equity_incentive_usd\":899181.0,\"pension_change_usd\":0.0,\"all_other_comp_usd\":474742.0,\"total_compensation_usd\":39725601.0},{\"name\":\"Suresh Kumar\",\"title\":\"Global Chief Technology and Development Officer\",\"fiscal_year\":2025,\"salary_usd\":1138750.0,\"bonus_usd\":0.0,\"stock_awards_usd\":12264141.0,\"option_awards_usd\":0.0,\"non_equity_incentive_usd\":2461408.0,\"pension_change_usd\":10124.0,\"all_other_comp_usd\":109182.0,\"total_compensation_usd\":15983605.0},{\"name\":\"Suresh Kumar\",\"title\":\"Global Chief Technology and Development Officer\",\"fiscal_year\":2024,\"salary_usd\":1104231.0,\"bonus_usd\":0.0,\"stock_awards_usd\":10831244.0,\"option_awards_usd\":0.0,\"non_equity_incentive_usd\":2475000.0,\"pension_change_usd\":15056.0,\"all_other_comp_usd\":81794.0,\"total_compensation_usd\":14507325.0},{\"name\":\"Suresh Kumar\",\"title\":\"Global Chief Technology and Development Officer\",\"fiscal_year\":2023,\"salary_usd\":1096825.0,\"bonus_usd\":0.0,\"stock_awards_usd\":13130922.0,\"option_awards_usd\":0.0,\"non_equity_incentive_usd\":1694495.0,\"pension_change_usd\":10897.0,\"all_other_comp_usd\":185570.0,\"total_compensation_usd\":16118709.0},{\"name\":\"John Furner\",\"title\":\"President and CEO, Walmart U.S.\",\"fiscal_year\":2025,\"salary_usd\":1315866.0,\"bonus_usd\":0.0,\"stock_awards_usd\":11753111.0,\"option_awards_usd\":0.0,\"non_equity_incentive_usd\":2820836.0,\"pension_change_usd\":192758.0,\"all_other_comp_usd\":190720.0,\"total_compensation_usd\":16273291.0},{\"name\":\"John Furner\",\"title\":\"President and CEO, Walmart U.S.\",\"fiscal_year\":2024,\"salary_usd\":1254808.0,\"bonus_usd\":0.0,\"stock_awards_usd\":10831244.0,\"option_awards_usd\":0.0,\"non_equity_incentive_usd\":2812500.0,\"pension_change_usd\":259596.0,\"all_other_comp_usd\":464463.0,\"total_compensation_usd\":15622611.0},{\"name\":\"John Furner\",\"title\":\"President and CEO, Walmart U.S.\",\"fiscal_year\":2023,\"salary_usd\":1223704.0,\"bonus_usd\":0.0,\"stock_awards_usd\":10692394.0,\"option_awards_usd\":0.0,\"non_equity_incentive_usd\":1594915.0,\"pension_change_usd\":245766.0,\"all_other_comp_usd\":358884.0,\"total_compensation_usd\":14115663.0},{\"name\":\"Kath McLay\",\"title\":\"President and CEO, Walmart International\",\"fiscal_year\":2025,\"salary_usd\":1128846.0,\"bonus_usd\":0.0,\"stock_awards_usd\":11242077.0,\"option_awards_usd\":0.0,\"non_equity_incentive_usd\":2379925.0,\"pension_change_usd\":12236.0,\"all_other_comp_usd\":586458.0,\"total_compensation_usd\":15349542.0},{\"name\":\"Kath McLay\",\"title\":\"President and CEO, Walmart International\",\"fiscal_year\":2024,\"salary_usd\":1003846.0,\"bonus_usd\":0.0,\"stock_awards_usd\":10339072.0,\"option_awards_usd\":0.0,\"non_equity_incentive_usd\":2000466.0,\"pension_change_usd\":15623.0,\"all_other_comp_usd\":337127.0,\"total_compensation_usd\":13696134.0},{\"name\":\"Kath McLay\",\"title\":\"President and CEO, Walmart International\",\"fiscal_year\":2023,\"salary_usd\":973771.0,\"bonus_usd\":0.0,\"stock_awards_usd\":8742164.0,\"option_awards_usd\":0.0,\"non_equity_incentive_usd\":1882901.0,\"pension_change_usd\":11408.0,\"all_other_comp_usd\":335639.0,\"total_compensation_usd\":11945883.0},{\"name\":\"Chris Nicholas\",\"title\":\"President and CEO, Sam\u2019s Club U.S.\",\"fiscal_year\":2025,\"salary_usd\":899808.0,\"bonus_usd\":0.0,\"stock_awards_usd\":8176066.0,\"option_awards_usd\":0.0,\"non_equity_incentive_usd\":2009324.0,\"pension_change_usd\":7071.0,\"all_other_comp_usd\":346029.0,\"total_compensation_usd\":11438298.0},{\"name\":\"Chris Nicholas\",\"title\":\"President and CEO, Sam\u2019s Club U.S.\",\"fiscal_year\":2024,\"salary_usd\":805471.0,\"bonus_usd\":0.0,\"stock_awards_usd\":10405147.0,\"option_awards_usd\":0.0,\"non_equity_incentive_usd\":1317484.0,\"pension_change_usd\":2499.0,\"all_other_comp_usd\":181578.0,\"total_compensation_usd\":12712179.0}],\"director_compensation\":[{\"name\":\"Cesar Conde\",\"fiscal_year\":null,\"fees_earned_usd\":100000.0,\"stock_awards_usd\":199973.0,\"option_awards_usd\":null,\"non_equity_incentive_usd\":null,\"pension_change_usd\":null,\"all_other_comp_usd\":0.0,\"total_compensation_usd\":299973.0},{\"name\":\"Tim Flynn\",\"fiscal_year\":null,\"fees_earned_usd\":130000.0,\"stock_awards_usd\":199973.0,\"option_awards_usd\":null,\"non_equity_incentive_usd\":null,\"pension_change_usd\":null,\"all_other_comp_usd\":1311.0,\"total_compensation_usd\":331284.0},{\"name\":\"Sarah Friar\",\"fiscal_year\":null,\"fees_earned_usd\":120000.0,\"stock_awards_usd\":199973.0,\"option_awards_usd\":null,\"non_equity_incentive_usd\":null,\"pension_change_usd\":null,\"all_other_comp_usd\":0.0,\"total_compensation_usd\":319973.0},{\"name\":\"Carla Harris\",\"fiscal_year\":null,\"fees_earned_usd\":120000.0,\"stock_awards_usd\":199973.0,\"option_awards_usd\":null,\"non_equity_incentive_usd\":null,\"pension_change_usd\":null,\"all_other_comp_usd\":0.0,\"total_compensation_usd\":319973.0},{\"name\":\"Tom Horton\",\"fiscal_year\":null,\"fees_earned_usd\":170000.0,\"stock_awards_usd\":199973.0,\"option_awards_usd\":null,\"non_equity_incentive_usd\":null,\"pension_change_usd\":null,\"all_other_comp_usd\":230.0,\"total_compensation_usd\":370203.0},{\"name\":\"Marissa Mayer\",\"fiscal_year\":null,\"fees_earned_usd\":100000.0,\"stock_awards_usd\":199973.0,\"option_awards_usd\":null,\"non_equity_incentive_usd\":null,\"pension_change_usd\":null,\"all_other_comp_usd\":0.0,\"total_compensation_usd\":299973.0},{\"name\":\"Bob Moritz\",\"fiscal_year\":null,\"fees_earned_usd\":37778.0,\"stock_awards_usd\":161069.0,\"option_awards_usd\":null,\"non_equity_incentive_usd\":null,\"pension_change_usd\":null,\"all_other_comp_usd\":0.0,\"total_compensation_usd\":198847.0},{\"name\":\"Brian Niccol\",\"fiscal_year\":null,\"fees_earned_usd\":75000.0,\"stock_awards_usd\":199973.0,\"option_awards_usd\":null,\"non_equity_incentive_usd\":null,\"pension_change_usd\":null,\"all_other_comp_usd\":0.0,\"total_compensation_usd\":274973.0},{\"name\":\"Greg Penner\",\"fiscal_year\":null,\"fees_earned_usd\":212500.0,\"stock_awards_usd\":312516.0,\"option_awards_usd\":null,\"non_equity_incentive_usd\":null,\"pension_change_usd\":null,\"all_other_comp_usd\":0.0,\"total_compensation_usd\":525016.0},{\"name\":\"Randall Stephenson\",\"fiscal_year\":null,\"fees_earned_usd\":120000.0,\"stock_awards_usd\":199973.0,\"option_awards_usd\":null,\"non_equity_incentive_usd\":null,\"pension_change_usd\":null,\"all_other_comp_usd\":0.0,\"total_compensation_usd\":319973.0},{\"name\":\"Rob Walton\",\"fiscal_year\":null,\"fees_earned_usd\":25000.0,\"stock_awards_usd\":0.0,\"option_awards_usd\":null,\"non_equity_incentive_usd\":null,\"pension_change_usd\":null,\"all_other_comp_usd\":0.0,\"total_compensation_usd\":25000.0},{\"name\":\"Steuart Walton\",\"fiscal_year\":null,\"fees_earned_usd\":120000.0,\"stock_awards_usd\":199973.0,\"option_awards_usd\":null,\"non_equity_incentive_usd\":null,\"pension_change_usd\":null,\"all_other_comp_usd\":0.0,\"total_compensation_usd\":319973.0}],\"ownership_holders\":[{\"holder_name\":\"Doug McMillon\",\"holder_type\":\"director_officer\",\"shares\":5746.0,\"percent_of_class\":null},{\"holder_name\":\"John Furner\",\"holder_type\":\"director_officer\",\"shares\":5612.0,\"percent_of_class\":null}],\"governance\":{\"board_size\":12,\"n_independent_directors\":9,\"n_women_directors\":3,\"independent_chair\":false,\"ceo_is_board_chair\":false,\"lead_independent_director\":true,\"classified_board\":false,\"dual_class_shares\":false,\"poison_pill\":null,\"majority_voting_for_directors\":null,\"say_on_pay_support_pct\":null,\"ceo_pay_ratio\":930.0,\"median_employee_pay_usd\":29469.0,\"auditor_name\":\"EY\",\"auditor_since_year\":null,\"auditor_fees_usd\":37916000.0,\"audit_fees_audit_usd\":36306000.0,\"audit_fees_audit_related_usd\":1586000.0,\"audit_fees_tax_usd\":0.0,\"audit_fees_other_usd\":24000.0,\"auditor_fees_prior_usd\":32132000.0,\"insider_ownership_pct\":null,\"ceo_ownership_pct\":null,\"n_five_percent_holders\":null}}",
+  "legacy_raw_sha256": "3ee99aba5efeaf364bfdebdbaf097c852b94b1b43295d2bb769ce20d0606ef34",
+  "omission_footnote_quote": "The cost of the underlying travel and meals is omitted from this column because the total cost of such benefits, if any, was less than $10,000 for each director."
+}

@@ -22,7 +22,7 @@ def _source_rows(source: str) -> list[tuple[str, int | None, dict[str, str]]]:
     last_name = ""
     caption_year, table_year = None, None
     for line in source.splitlines():
-        caption_years = set(re.findall(r"director\s+compensation\s+table\s+for\s+((?:19|20)\d{2})", line, re.I))
+        caption_years = set(re.findall(r"director\s+compensation(?:\s+table)?\s+for\s+(?:fiscal\s*)?((?:19|20)\d{2})", line, re.I))
         local_fiscal = (
             r"following table(?: and footnotes)?.{0,180}?compensation.{0,180}?Directors?\s+in\s+FY\s+((?:19|20)\d{2}(?:-(?:\d{2}|\d{4}))?)(?![-\d])"
         )
@@ -138,6 +138,8 @@ def _source_values(cells: dict[str, str], ownership: bool) -> dict[str, float | 
         factor = {"thousands": 1000.0, "millions": 1000000.0}[scale[1].lower()] if scale else 1.0
         if field not in values or value is not None:
             values[field] = value * factor if value is not None else None
+        if field == "other_compensation" and monetary and not quantity and raw.strip() in {"-", "\u2013", "\u2014"}:
+            values["_omitted_other"] = 1.0
         if field == "stock_awards" and raw.strip() in {"", "-", "\u2013", "\u2014"}:
             values["_blank_stock"] = 1.0
         if field == "option_awards" and monetary and re.search(r"\bsars?\b", label) and not re.search(r"\boption", headers):
@@ -193,8 +195,10 @@ def complete_director_years(section: Section, payload: dict[str, Any], source: s
     return payload
 
 
-def _correct_director_categories(rows: pd.DataFrame, records: list[tuple[str, int | None, dict[str, float | None]]]) -> pd.DataFrame:
-    """Move an explicitly misplaced option amount without assigning or changing a fiscal year."""
+def _correct_director_categories(
+    rows: pd.DataFrame, records: list[tuple[str, int | None, dict[str, float | None]]], new: pd.DataFrame
+) -> pd.DataFrame:
+    """Correct an explicit option-category error or an omitted other-pay zero in its own annual row."""
     result = rows.copy()
     for index, row in result.iterrows():
         identity = _identity(row["name"])
@@ -210,10 +214,27 @@ def _correct_director_categories(rows: pd.DataFrame, records: list[tuple[str, in
             pd.notna(row.get(field)) and (source_amount := values.get(field)) is not None and math.isclose(float(row[field]), source_amount)
             for field in ("fees_earned", "total")
         )
+        candidates = (
+            new.loc[new.name.map(_identity).eq(identity) & new.fiscal_year.eq(row["fiscal_year"])]
+            if "name" in new and "fiscal_year" in new
+            else new.iloc[:0]
+        )
+
+        # A literal omitted amount is unknown, while a new explicit zero or valid saved amount remains intact.
+        if (
+            year == row["fiscal_year"]
+            and values.get("_omitted_other") == 1.0
+            and anchors_match
+            and row.get("other_compensation") == 0
+            and len(candidates) == 1
+            and pd.isna(candidates.iloc[0].get("other_compensation"))
+        ):
+            result.at[index, "other_compensation"] = float("nan")
         if (
             option is not None
             and anchors_match
             and values.get("_blank_stock") == 1.0
+            and values.get("stock_awards") is None
             and pd.notna(row.get("stock_awards"))
             and math.isclose(float(row["stock_awards"]), option)
             and (pd.isna(row.get("option_awards")) or math.isclose(float(row["option_awards"]), option))
@@ -313,7 +334,7 @@ def correct_basis(
         result = _correct_security_rows(result, source, company_name)
     records = _source_records(source, section)
     if section.key == "director_pay":
-        result = _correct_director_categories(result, records)
+        result = _correct_director_categories(result, records, new)
     groups = [
         (float(total), float(shares))
         for name, _, values in records

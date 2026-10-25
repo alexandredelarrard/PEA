@@ -76,6 +76,7 @@ def test_actual_full40_paid_answers_keep_source_categories_year_and_scope(full40
         "foreign",
         "different_person",
         "unknown_stock",
+        "mixed_stock_columns",
     ],
 )
 def test_option_category_move_abstains_without_unique_person_year_and_monetary_anchors(guard: str) -> None:
@@ -96,6 +97,8 @@ def test_option_category_move_abstains_without_unique_person_year_and_monetary_a
     if guard in ("fees", "total", "nonblank_stock"):
         old, new = {"fees": ("80,000", "80,001"), "total": ("313,690", "313,691"), "nonblank_stock": ("\t\t233,152", "\t100\t233,152")}[guard]
         source = source.replace(old, new)
+    if guard == "mixed_stock_columns":
+        source = source.replace("Stock awards ($)", "Stock awards ($)\tStock awards ($)(b)").replace("\t\t233,152", "\t\t100\t233,152")
     if guard == "unknown_stock":
         source = source.replace("\t\t233,152", "\tsee footnote\t233,152")
     if guard == "count":

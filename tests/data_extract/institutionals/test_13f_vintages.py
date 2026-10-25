@@ -10,6 +10,7 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 import pandas as pd
 import pytest
@@ -23,8 +24,10 @@ from src.context import get_config_context
 from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecThirteen
 from src.data_aggregate.utils.common.availability import filing_public_dates, public_books
 from src.data_aggregate.utils.common.price_frames import PriceFrames
+from src.data_aggregate.utils.sec_thirteen.holdings_clean import attach_tickers
 from src.data_aggregate.utils.sec_thirteen.institutional_features import (
-    build_prepared_institutional_feature_panel,
+    build_institutional_feature_panel,
+    compute_institutional_feature_history,
     vintage_changes,
     vintage_cohort_publications,
     vintage_cohort_snapshot,
@@ -331,6 +334,43 @@ def test_prospective_replacement_additions_and_future_invariance() -> None:
     assert "222222222" in set(before.cusip) and "222222222" not in set(after.cusip)
     assert dict(original[1].set_index("cusip").shares) == {"111111111": 100, "222222222": 200}
     print("SANITY: original immutable; additions sum; restatement removes only from its public date; future prefix identical.")
+
+
+def test_public_book_iteration_prepares_publication_clock_once() -> None:
+    original = packet("original", "2024-08-14", {"111111111": 100})
+    amendment = packet("amendment", "2024-10-17", {"111111111": 140}, kind="restatement")
+    manifests, holdings = combine(original, amendment)
+    with patch("src.utils.institutional_vintages.filing_public_dates", wraps=filing_public_dates) as clock:
+        snapshots = list(iter_public_books(manifests, holdings, GRID))
+    assert [books.iloc[0].shares for _, books, _ in snapshots] == [100, 140]
+    print(f"SANITY: {clock.call_count} publication-clock preparations for {len(snapshots)} public snapshots; exactly one is required.")
+    assert clock.call_count == 1
+
+
+def test_future_book_row_count_is_checked_only_when_public() -> None:
+    original = packet("original", "2024-08-14", {"111111111": 100})
+    future = packet("future", "2024-10-17", {"111111111": 140}, kind="restatement")
+    future[0].loc[0, "parsed_row_count"] = 2
+    manifests, holdings = combine(original, future)
+    before, _ = public_books(manifests, holdings, "2024-08-21", GRID)
+    assert before.iloc[0].shares == 100
+    with pytest.raises(ValueError, match="Incomplete stored 13F book: future"):
+        public_books(manifests, holdings, "2024-10-18", GRID)
+    print("SANITY: an unpublished bad row count leaves the prefix usable and raises when that accession becomes public.")
+
+
+@pytest.mark.parametrize("duplicate", ["manifest", "holdings"])
+def test_future_vintage_duplicates_fail_before_public_filtering(duplicate: str) -> None:
+    original = packet("original", "2024-08-14", {"111111111": 100})
+    future = packet("future", "2024-10-17", {"111111111": 140}, kind="restatement")
+    manifests, holdings = combine(original, future)
+    if duplicate == "manifest":
+        manifests = pd.concat([manifests, future[0]], ignore_index=True)
+    else:
+        holdings = pd.concat([holdings, future[1]], ignore_index=True)
+    with pytest.raises(ValueError, match="must be unique"):
+        public_books(manifests, holdings, "2024-08-21", GRID)
+    print(f"SANITY: duplicate future {duplicate} rows fail before the public-prefix filter, preserving raw-adapter validation.")
 
 
 def test_active_prior_correction_never_replaces_newer_levels() -> None:
@@ -1064,10 +1104,10 @@ def test_ordinary_builders_use_versions_and_keep_prior_corrections_prospective(s
     step._cfg, step._availability = {"institutionals": {"value_basis": {"min_securities": 1}, "f13_settle_trading_days": 0}}, None
     step._context = SimpleNamespace(store=sqlite_store, log=step._log, config_dir="configs")
 
-    def arithmetic(frames: Any, holdings: pd.DataFrame, **kw: Any) -> pd.DataFrame:
-        return build_prepared_institutional_feature_panel(frames, holdings, min_prior_holders=0, **kw)
+    def arithmetic(snapshots: Any, **kw: Any) -> pd.DataFrame:
+        return compute_institutional_feature_history(snapshots, min_prior_holders=0, **kw)
 
-    monkeypatch.setattr(step_module, "build_prepared_institutional_feature_panel", arithmetic)
+    monkeypatch.setattr(step_module, "compute_institutional_feature_history", arithmetic)
     frames = PriceFrames(
         GRID,
         ("AAA", "BBB"),
@@ -1102,10 +1142,10 @@ def ordinary_step(
     step._cfg, step._availability = {"institutionals": {"value_basis": {"min_securities": 1}, "f13_settle_trading_days": 0}}, None
     step._context = SimpleNamespace(store=sqlite_store, log=step._log, config_dir="configs")
 
-    def arithmetic(frames: Any, holdings: pd.DataFrame, **kw: Any) -> pd.DataFrame:
-        return build_prepared_institutional_feature_panel(frames, holdings, min_prior_holders=0, **kw)
+    def arithmetic(snapshots: Any, **kw: Any) -> pd.DataFrame:
+        return compute_institutional_feature_history(snapshots, min_prior_holders=0, **kw)
 
-    monkeypatch.setattr(step_module, "build_prepared_institutional_feature_panel", arithmetic)
+    monkeypatch.setattr(step_module, "compute_institutional_feature_history", arithmetic)
     frames = PriceFrames(
         GRID,
         ("AAA", "BBB", "CCC"),
@@ -1119,9 +1159,40 @@ def ordinary_step(
 def normal_panels(step: StepCubeSecThirteen, frames: PriceFrames) -> tuple[pd.DataFrame, pd.DataFrame]:
     cusip_map = step._store.load(Tables.cusip_ticker_map)
     history = pd.DataFrame({"snapshot_date": [pd.Timestamp("2023-09-01")], "cik": ["0000000001"]})
+    session_positions = pd.Series(range(len(frames.trading_index)), index=frames.trading_index)
+    features = step._institutional_features(frames, pd.DataFrame(), cusip_map, frames.close_split)
+    levels = step._superinvestor_levels(
+        frames, pd.DataFrame(), cusip_map, {"0000000001"}, history, frames.close_split, session_positions=session_positions
+    )
+    assert features is not None and levels is not None
     return (
-        step._institutional_panel(frames, None, pd.DataFrame(), cusip_map, frames.close_split).set_index(["date", "ticker"]),
-        step._superinvestor_panel(frames, pd.DataFrame(), cusip_map, {"0000000001"}, history, frames.close_split).set_index(["date", "ticker"]),
+        step._project_institutional_panel(features, frames, None, None, frames.trading_index).set_index(["date", "ticker"]),
+        step._project_superinvestor_panel(levels, frames, session_positions).set_index(["date", "ticker"]),
+    )
+
+
+def test_raw_broad_builder_keeps_verified_filing_adapter() -> None:
+    prior = packet("prior", "2024-08-14", {"111111111": 100, "222222222": 100})
+    current = packet("current", "2024-11-14", {"111111111": 120, "222222222": 100}, period="2024-09-30")
+    filings, holdings = combine(prior, current)
+    mapping = pd.DataFrame({"cusip": ["111111111", "222222222"], "ticker": ["AAA", "BBB"]})
+    close = pd.DataFrame(10.0, index=GRID, columns=["AAA", "BBB"])
+    frames = PriceFrames(GRID, ("AAA", "BBB"), {}, close_split=close, level_factor=close / 10)
+    panel = build_institutional_feature_panel(
+        frames,
+        attach_tickers(holdings, mapping, frames.universe),
+        filings=filings,
+        min_prior_holders=0,
+        settle_trading_days=0,
+        valuation_close=close,
+        value_basis={"min_securities": 1},
+    ).set_index(["date", "ticker"])
+    day = pd.Timestamp("2024-11-21")
+    assert panel.loc[(day, "AAA"), "f_ic_inst_shares_chg"] == pytest.approx(0.2)
+    assert panel.loc[(day, "BBB"), "f_ic_inst_shares_chg"] == 0
+    assert pd.isna(panel.loc[(pd.Timestamp("2024-08-21"), "AAA"), "f_ic_inst_shares_chg"])
+    print(
+        "SANITY: the raw public broad builder retains verified filing input, reports +20%/0% on the known pair and leaves the unsupported first-quarter change unknown."
     )
 
 
@@ -1171,7 +1242,10 @@ def test_normal_elite_comparisons_keep_unknown_weights_and_zero_pools_safe(
     frames = PriceFrames(grid, ("AAA",), {}, close_split=close, level_factor=pd.DataFrame(1.0, index=grid, columns=["AAA"]))
     cusip_map = sqlite_store.load(Tables.cusip_ticker_map)
     history = pd.DataFrame({"snapshot_date": [pd.Timestamp("2023-09-01")] * 2, "cik": ["0000000001", "0000000002"]})
-    elite = step._superinvestor_panel(frames, pd.DataFrame(), cusip_map, set(history.cik), history, close).set_index(["date", "ticker"])
+    session_positions = pd.Series(range(len(grid)), index=grid)
+    levels = step._superinvestor_levels(frames, pd.DataFrame(), cusip_map, set(history.cik), history, close, session_positions=session_positions)
+    assert levels is not None
+    elite = step._project_superinvestor_panel(levels, frames, session_positions).set_index(["date", "ticker"])
     row = elite.loc[(pd.Timestamp("2024-11-15"), "AAA")]
     changes = row.reindex(["f_ic_super_shares_chg", "f_ic_super_conviction_chg", "f_ic_super_conviction_weight_yoy"])
     if mode == "top_k":
@@ -1330,7 +1404,9 @@ def test_normal_broad_retains_option_only_names(
     )
     step, frames = ordinary_step(sqlite_store, monkeypatch, (option,))
     cusip_map = sqlite_store.load(Tables.cusip_ticker_map)
-    broad = step._institutional_panel(frames, None, pd.DataFrame(), cusip_map, frames.close_split).set_index(["date", "ticker"])
+    features = step._institutional_features(frames, pd.DataFrame(), cusip_map, frames.close_split)
+    assert features is not None
+    broad = step._project_institutional_panel(features, frames, None, None, frames.trading_index).set_index(["date", "ticker"])
     row = broad.loc[(pd.Timestamp("2024-08-21"), "AAA")]
     assert row.f_ic_inst_net_options_ratio == 1
     assert row.f_ic_inst_holders == 0

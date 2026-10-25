@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
+from unittest.mock import Mock
 
 import pandas as pd
 import pytest
@@ -11,8 +13,10 @@ import pytest
 from src.data_aggregate.transformers import step_cube_sec_thirteen as step_module
 from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecThirteen
 from src.data_aggregate.utils.common import inputs as capital_inputs
+from src.data_aggregate.utils.common.incremental import PartWindow
 from src.data_aggregate.utils.sec_thirteen.inputs import load_filing_vintages
 from src.data_store.schema import Tables
+from src.data_store.store import DataStore
 from tests.data_aggregate.test_institutional_step_contract import context, seed_prices
 
 
@@ -21,18 +25,18 @@ def test_sec_thirteen_executes_broad_and_elite_once(sqlite_store: Any, monkeypat
     ctx = context(sqlite_store, tmp_path)
     step = StepCubeSecThirteen(ctx, ctx.config)
     monkeypatch.setattr(capital_inputs, "load_peers_or_raise", lambda ctx: {})
-    calls = []
-
-    def panel(name: str) -> pd.DataFrame:
-        calls.append(name)
-        return pd.DataFrame({"date": days, "ticker": "AAA", "f_" + name: 1.0})
-
-    monkeypatch.setattr(step, "_institutional_panel", lambda *args, **kwargs: panel("ic_inst_test"))
-    monkeypatch.setattr(step, "_superinvestor_panel", lambda *args, **kwargs: panel("ic_super_test"))
+    broad = Mock(
+        return_value=pd.DataFrame({"period": [pd.Timestamp("2023-09-30")], "as_of": [days[0]], "ticker": ["AAA"], "ic_inst_concentration": [0.4]})
+    )
+    elite = Mock(return_value={"ic_super_holders": pd.DataFrame({"AAA": [0.5]}, index=days[:1])})
+    monkeypatch.setattr(step, "_institutional_features", broad)
+    monkeypatch.setattr(step, "_superinvestor_levels", elite)
     result = step.build_panel()
     assert step._store is sqlite_store and step._part.table == Tables.cube_part_sec_thirteen
-    assert calls == ["ic_inst_test", "ic_super_test"]
-    assert set(result.columns) == {"date", "ticker", "f_ic_inst_test", "f_ic_super_test"}
+    assert broad.call_count == elite.call_count == 1
+    assert set(result.columns) == {"date", "ticker", "f_ic_inst_concentration", "f_ic_super_holders"}
+    assert result.f_ic_inst_concentration.dropna().eq(pd.Series([0.4], dtype="float32").iloc[0]).all()
+    assert result.f_ic_super_holders.dropna().eq(0.5).all()
     assert not result.duplicated(["date", "ticker"]).any()
     print("SANITY: SEC thirteen activates broad and elite 13F exactly once with a dedicated part owner.")
 
@@ -40,6 +44,7 @@ def test_sec_thirteen_executes_broad_and_elite_once(sqlite_store: Any, monkeypat
 def test_completed_accession_markers_and_positions_share_one_read() -> None:
     calls = []
     table = Tables.sec13f_hr
+    assert table.empty_marker is not None
     manifest = {
         "accession_number": "original",
         "cik": "0000000001",
@@ -70,7 +75,7 @@ def test_completed_accession_markers_and_positions_share_one_read() -> None:
             calls.append((table, kwargs))
             return iter([pd.DataFrame([manifest, position]).reindex(columns=columns)])
 
-    result = load_filing_vintages(Store(), pd.Timestamp("2024-02-20"), ["1"])
+    result = load_filing_vintages(cast(DataStore, Store()), pd.Timestamp("2024-02-20"), ["1"])
     assert result is not None
     filings, holdings = result
     assert len(filings) == len(holdings) == 1 and holdings.iloc[0]["shares"] == 10.0
@@ -81,6 +86,7 @@ def test_completed_accession_markers_and_positions_share_one_read() -> None:
 
 def test_manager_accessions_use_one_projected_load() -> None:
     table = Tables.sec13f_manager_holdings
+    assert table.empty_marker is not None
     required = [
         "accession_number",
         "cik",
@@ -130,7 +136,7 @@ def test_manager_accessions_use_one_projected_load() -> None:
         def iter_load(self, *args: Any, **kwargs: Any) -> Any:
             raise AssertionError("The bounded manager table should use ordinary load, not chunk iteration")
 
-    result = load_filing_vintages(Store(), pd.Timestamp("2024-02-20"), ["1"], table=table)
+    result = load_filing_vintages(cast(DataStore, Store()), pd.Timestamp("2024-02-20"), ["1"], table=table)
     assert result is not None
     filings, holdings = result
     assert len(filings) == len(holdings) == 1 and holdings.shares.iloc[0] == 10.0
@@ -150,8 +156,9 @@ def test_schema_change_reuses_the_computed_panel(sqlite_store: Any, monkeypatch:
     panel = previous.drop(columns="f_previous").assign(f_current=2.0)
     calls = []
 
-    def build(full: bool = False) -> pd.DataFrame:
-        calls.append(full)
+    def build(window: PartWindow | None = None, *, existing_columns: Sequence[str] | None = None) -> pd.DataFrame:
+        assert window is not None and existing_columns is not None
+        calls.append(window.is_full)
         return panel
 
     monkeypatch.setattr(step, "build_panel", build)

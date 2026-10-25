@@ -428,9 +428,12 @@ def build_candidate(
     peer_path = _manifest_peer_path(manifest)
     context.paths["SECTOR_PEERS_PATH"] = peer_path
     sources = _verify_source_identity(context.store, manifest, part=part)
-    panel = (StepCubeSecThirteen if part == Tables.cube_part_sec_thirteen else StepCubeInstitutionals)(
-        context=context, config=config_node
-    ).build_panel(full=True)
+    if part == Tables.cube_part_sec_thirteen:
+        panel = StepCubeSecThirteen(context=context, config=config_node).build_panel()
+        builder = f"{StepCubeSecThirteen.__name__}.build_panel()"
+    else:
+        panel = StepCubeInstitutionals(context=context, config=config_node).build_panel(full=True)
+        builder = f"{StepCubeInstitutionals.__name__}.build_panel(full=True)"
     if not set(KEYS).issubset(panel.columns):
         raise ValueError(f"candidate panel is missing keys {sorted(set(KEYS) - set(panel.columns))}")
     panel = panel.copy()
@@ -468,7 +471,7 @@ def build_candidate(
         "manifest_sha256": _sha256(manifest_path),
         "source_tables": sources,
         "peer_cache": manifest["peer_cache"],
-        "builder": f"{StepCubeSecThirteen.__name__ if part == Tables.cube_part_sec_thirteen else StepCubeInstitutionals.__name__}.build_panel(full=True)",
+        "builder": builder,
         "write_contract": "parquet artifact only; builder run/write_part not called",
     }
     out.mkdir(parents=True, exist_ok=True)

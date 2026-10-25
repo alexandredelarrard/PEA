@@ -5,7 +5,7 @@ type: module
 tags:
   - wiki
   - module
-source_commit: 280857c4e2c91157ae95550e0732752741c0cbdd
+source_commit: 6e0148de714dcaba5ac3fe04cb62b532efbdf78b
 ---
 # Cube aggregation
 
@@ -121,7 +121,7 @@ All three families retain complete dependency history. The step merges their pan
 
 ## Independent part refresh and ownership
 
-Both steps compute with the full price calendar and source history, then persist from their own last stored date minus seven trading-session intervals, inclusively: eight existing dates when both endpoints exist. Registry warmup is 390 sessions; it does not truncate these builders' source history. Older delayed corrections require a full part rebuild. The sequential DAG uses eight builders, nine parts and fourteen feature groups. The [part registry](../../src/data_aggregate/utils/common/parts.py) and [DAG](../../src/dags/dag_data_aggregation.py) share this order.
+Both steps retain complete source dependencies and persist from their own last stored date minus seven trading-session intervals, inclusively: eight existing dates when both endpoints exist. `StepCubeInstitutionals` keeps its full-history calculation contract. `StepCubeSecThirteen` retains sparse full-history facts and original calendar ordinals while bounding normal daily projection to its planned window: 390 warmup sessions plus the inclusive refresh under current settings. Older delayed corrections still require a full part rebuild. The sequential DAG uses eight builders, nine parts and fourteen feature groups. The [part registry](../../src/data_aggregate/utils/common/parts.py) and [DAG](../../src/dags/dag_data_aggregation.py) share this order.
 
 The 13F-only roster/iterator functions live in `utils/sec_thirteen`; shared source reconciliation and manager-chain/configuration policy remain in `src/utils`. Eight domain-only globals have moved out of `src/constants`: FTD cache/lag values, legacy filing bands, the revision floor, monetary factors and panel keys now live with their consumers. Aggregate-common availability, decay and share-basis helpers live in `utils/common`. No conditioning or cross-source sink remains.
 
@@ -159,15 +159,18 @@ Independent closure validation is conditional for bounded code/data correctness;
 
 ## SEC 13F build stages
 
-Both panel paths in [StepCubeSecThirteen](../../src/data_aggregate/transformers/step_cube_sec_thirteen.py) follow the same lifecycle:
+[StepCubeSecThirteen](../../src/data_aggregate/transformers/step_cube_sec_thirteen.py) separates preparation, book replay, manager selection, feature arithmetic and daily projection:
 
-1. Plan the inclusive output rewrite from the saved feature part before loading payloads. Keep the full dependency calendar/history: expanding selection, streaks and event ages cannot be reconstructed from the seven-session output tail.
-2. Load price/share/split resources, the roster and CUSIP map once. [inputs.py](../../src/data_aggregate/utils/sec_thirteen/inputs.py) streams the broad source once and reads the smaller scoped manager table once with ordinary `store.load`. Both use the same projected manifest/position contract and preserve completion markers.
-3. [holdings_clean.py](../../src/data_aggregate/utils/sec_thirteen/holdings_clean.py) owns CUSIP attachment, date/publication preparation, legacy adaptation and accession-level monetary repair. Unmapped/off-universe holdings remain in whole-book denominators. Repair precedes original/addition/restatement reconciliation.
-4. [institutional_vintages.py](../../src/data_aggregate/utils/sec_thirteen/institutional_vintages.py) schedules public/expiry events, reconciles only changed books through the unchanged [shared resolver](../../src/utils/institutional_vintages.py), and yields cached snapshots. It contains no feature equations or in-loop cleaning.
-5. The elite branch's [manager_selection.py](../../src/data_aggregate/utils/sec_thirteen/manager_selection.py) owns the existing historical roster lookup, eligibility statistics and selection. Named functions replace selector closures; the exact score/cutoff/K behavior is unchanged. The broad branch retains all eligible public filers.
-6. [institutional_features.py](../../src/data_aggregate/utils/sec_thirteen/institutional_features.py) and [superinvestor_features.py](../../src/data_aggregate/utils/sec_thirteen/superinvestor_features.py) calculate their separate levels, matched-quarter changes, annual changes and events, then project onto the daily grid. Elite current reductions/projections are reused; the versioned path no longer computes legacy comparisons only to overwrite them.
-7. Merge the family panels and write the planned output window. On a schema change, reuse the already computed full-history panel for replacement; do not reload sources or recursively rebuild.
+1. Plan the output window once from the saved part before reading payloads. Keep full sparse dependency history and the original trading-calendar ordinals for expanding selection, comparisons, streaks and event ages.
+2. Load price/share/split resources, roster and CUSIP map once. [inputs.py](../../src/data_aggregate/utils/sec_thirteen/inputs.py) reads the broad source through one projected stream ordered by CIK, report quarter and accession, using the store's 200,000-row default. It carries the unfinished CIK-quarter across chunks and explicitly closes the cursor. The smaller manager source uses one ordinary projected load scoped to historical roster CIKs and the filing cutoff. Both retain completion markers.
+3. [holdings_clean.py](../../src/data_aggregate/utils/sec_thirteen/holdings_clean.py) prepares dates, attaches tickers and repairs values per accession before original/addition/restatement reconciliation. The broad path prepares the period-quote lookup once. Unmapped/off-universe positions remain available for whole-book repair and manager denominators.
+4. [institutional_books.py](../../src/data_aggregate/utils/sec_thirteen/institutional_books.py) reduces each public broad-book replacement to mapped ticker amounts, quantity-unknown masks, interned CUSIP sets and book states before releasing raw positions. Its replay preserves the global active-quarter and adjacent-book rules; [institutional_features.py](../../src/data_aggregate/utils/sec_thirteen/institutional_features.py) calculates the sparse broad feature history.
+5. The manager [publication scheduler](../../src/data_aggregate/utils/sec_thirteen/institutional_vintages.py) retains changed-book caching and expiry events. `iter_manager_feature_inputs` caches unselected whole-book statistics and conviction for changed books; the step then declares weights, public state, contributions and `compute_superinvestor_levels` explicitly. Historical roster eligibility, selection scores/cutoffs/K and feature equations remain unchanged.
+6. Declare separate `institutional_panel` and `superinvestor_panel`, then project their sparse facts onto the requested daily dates with the full calendar's original positions. With the current 390-session warmup and seven-session refresh, an up-to-date incremental run computes 398 existing dates and rewrites eight inclusively; new dates extend the window.
+7. Probe earlier dates in bounded blocks through those same projectors when a tail alone cannot establish historical column support. A real schema change reprojects the already prepared facts over the full calendar without reloading sources or rebuilding books.
+8. Merge the two panels and persist once. A failed previously saved source family refuses the write. One saved-date metadata read guards calendar coverage for the actual replacement interval: the inclusive tail normally, or all saved dates for a full/schema-promoted replacement. A gap only in an untouched prefix does not block an ordinary tail refresh. A successful nonempty grid with known schema and entirely unknown incremental features clears the inclusive stale tail; a genuinely empty result or an all-null full rebuild still preserves the old table.
+
+The broad path does not concatenate the complete raw source. Full prices, compact book history and manager history remain resident, so streaming alone does not establish whole-source capacity within a particular container limit. The bounded replay and runtime estimate are retained in the local ignored audit `reports/validate/2026-10-24-sec13f-code-refactor/`; the full 100-million-row computation was not run.
 
 Public standalone legacy builders remain supported. A missing manifest cannot certify immutable completion, amendment provenance or absence, so those adapters retain their existing latest-only grain/publication rules instead of fabricating a versioned book. Versioned comparison eligibility still requires supported adjacent books; raw-CIK versus configured-manager continuity remains unchanged. The independent refactor preserves all feature names, values/null masks and support thresholds.
 

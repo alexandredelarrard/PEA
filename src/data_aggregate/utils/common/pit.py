@@ -107,21 +107,36 @@ def _observations_to_daily(
     *,
     max_age_days: int | None = None,
 ) -> pd.DataFrame:
-    """Project producing observations to daily rows, optionally expiring their age."""
+    """Project the last observation per requested session without pivoting older history."""
     df = observations[["ticker", "as_of", value_col]].copy()
     df["as_of"] = pd.to_datetime(df["as_of"], errors="coerce")
     df = df.dropna(subset=["ticker", "as_of", value_col])
     if df.empty:
         return pd.DataFrame(index=trading_index)
     df = df.sort_values(["ticker", "as_of"]).drop_duplicates(["ticker", "as_of"], keep="last")
-    wide = df.pivot(index="as_of", columns="ticker", values=value_col).sort_index()
-    union = wide.index.union(trading_index)
-    daily = wide.reindex(union).ffill().reindex(trading_index)
+    columns = pd.Index(df["ticker"].unique(), name="ticker").sort_values()
+    calendar = trading_index.unique().sort_values()
+    value_dtype = df[value_col].dtype
+    # Keep the dtype promotion of the original sparse history/calendar pivot.
+    if len(df) != df["as_of"].nunique() * len(columns) or not trading_index.isin(df["as_of"]).all():
+        value_dtype = pd.Series([], dtype=value_dtype).reindex([0]).dtype
+    df = df.loc[df["as_of"] <= calendar[-1]].copy() if len(calendar) else df.iloc[:0].copy()
+    if df.empty:
+        daily = pd.DataFrame({ticker: pd.Series([], dtype=value_dtype) for ticker in columns})
+        return daily.reindex(index=trading_index, columns=columns)
+
+    produced_at = df["as_of"].array.copy()
+    # Pre-window rows become a seed; between-session publications become visible next session.
+    df["as_of"] = calendar.take(calendar.searchsorted(df["as_of"], side="left"))
+    visible = ~df.duplicated(["ticker", "as_of"], keep="last")
+    wide = df.loc[visible].pivot(index="as_of", columns="ticker", values=value_col)
+    daily = wide.reindex(calendar).ffill().reindex(index=trading_index, columns=columns).astype(value_dtype)
     if max_age_days is None:
         return daily
 
-    produced = df.assign(_produced_at=df["as_of"]).pivot(index="as_of", columns="ticker", values="_produced_at")
-    produced = produced.sort_index().reindex(union).ffill().reindex(trading_index)
+    df["_produced_at"] = produced_at
+    produced = df.loc[visible].pivot(index="as_of", columns="ticker", values="_produced_at")
+    produced = produced.reindex(calendar).ffill().reindex(index=trading_index, columns=columns).astype(produced_at.dtype)
     current = pd.Series(trading_index, index=trading_index)
     horizon = pd.Timedelta(days=int(max_age_days))
     for ticker in daily.columns:

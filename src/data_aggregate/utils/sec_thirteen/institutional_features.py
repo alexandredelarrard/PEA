@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from typing import Any, cast
 
 import numpy as np
@@ -19,6 +19,7 @@ from src.data_aggregate.utils.common.typing import frame_column
 from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_holdings as clean_holdings
 from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_legacy_institutional_holdings, clean_public_holdings
 from src.data_aggregate.utils.sec_thirteen.holdings_clean import stamp_legacy_publication as _stamp_availability
+from src.data_aggregate.utils.sec_thirteen.institutional_books import compact_institutional_books
 from src.data_aggregate.utils.sec_thirteen.institutional_vintages import iter_public_books
 from src.data_aggregate.utils.sec_thirteen.value_basis import nullable_value_to_daily
 from src.data_store.schema import Resume, Tables
@@ -639,19 +640,21 @@ def _mask_daily_institutional_fields(
     return {name: df_field for name, df_field in fields.items() if df_field.notna().any().any()}
 
 
-def _daily_institutional_fields(
+def project_institutional_features(
     df_features: pd.DataFrame,
     frames: PriceFrames,
     shares_out_history: pd.DataFrame | None,
     share_basis: ShareBasis | None,
     settle_trading_days: int,
-    filings: pd.DataFrame | None,
+    *,
+    versioned: bool,
+    trading_calendar: pd.DatetimeIndex,
 ) -> dict[str, pd.DataFrame]:
     """Project quarter features and the existing ownership/value denominators onto daily dates."""
     features = [column for column in EMISSION if column in df_features.columns]
     value_fields = {"ic_inst_concentration", "ic_inst_net_options_ratio"}
     fields = {
-        feature: (nullable_value_to_daily if filings is not None or feature in value_fields else fundamentals_to_daily)(
+        feature: (nullable_value_to_daily if versioned or feature in value_fields else fundamentals_to_daily)(
             df_features, feature, frames.trading_index
         )
         for feature in features
@@ -664,7 +667,7 @@ def _daily_institutional_fields(
     df_weight = _daily_institutional_value_weight(df_features, frames, shares_out_history)
     if df_weight is not None:
         fields["ic_inst_value_to_mcap"] = df_weight
-    return _mask_daily_institutional_fields(fields, frames.trading_index, settle_trading_days)
+    return _mask_daily_institutional_fields(fields, trading_calendar, settle_trading_days)
 
 
 def build_prepared_institutional_feature_panel(
@@ -695,7 +698,15 @@ def build_prepared_institutional_feature_panel(
         return pd.DataFrame(columns=["date", "ticker"])
     if filings is None:
         _assert_emission_windows_ordered(df_features)
-    fields = _daily_institutional_fields(df_features, frames, shares_out_history, share_basis, settle_trading_days, filings)
+    fields = project_institutional_features(
+        df_features,
+        frames,
+        shares_out_history,
+        share_basis,
+        settle_trading_days,
+        versioned=filings is not None,
+        trading_calendar=frames.trading_index,
+    )
     if not fields:
         return pd.DataFrame(columns=["date", "ticker"])
     emission = {name: EMISSION[name] for name in fields}
@@ -930,11 +941,25 @@ def _versioned_quarter_features(
     settle_days: int,
     min_prior_holders: int,
 ) -> pd.DataFrame:
+    """Adapt bounded raw callers to the same compact public-snapshot arithmetic."""
+    snapshots = (
+        (day, compact_institutional_books(books), states)
+        for day, books, states in iter_public_books(manifests, holdings, trading_index, settle_days=settle_days)
+    )
+    return compute_institutional_feature_history(snapshots, splits=splits, min_prior_holders=min_prior_holders)
+
+
+def compute_institutional_feature_history(
+    snapshots: Iterator[tuple[pd.Timestamp, pd.DataFrame, pd.DataFrame]],
+    *,
+    splits: pd.DataFrame | None,
+    min_prior_holders: int = MIN_PRIOR_HOLDERS,
+) -> pd.DataFrame:
     """Aggregate observed levels and identical eligible book cohorts at each public event."""
     rows: list[pd.DataFrame] = []
     seen: set[str] = set()
     numeric = ["shares", "value_usd", "call_value", "put_value"]
-    for day, books, states in iter_public_books(manifests, holdings, trading_index, settle_days=settle_days):
+    for day, df_compact, states in snapshots:
         known = states.loc[states.book_known]
         if known.empty:
             continue
@@ -942,10 +967,8 @@ def _versioned_quarter_features(
         prior_period = (period.to_period("Q") - 1).end_time.normalize()
         current_states = known.loc[known.period.eq(period)].set_index("cik")
         prior_states = known.loc[known.period.eq(prior_period)].set_index("cik")
-        mapped = books.loc[books.ticker.notna()]
-        grouped = mapped.groupby(["period", "cik", "ticker"])[numeric]
-        totals = grouped.sum(min_count=1).where(grouped.count().eq(mapped.groupby(["period", "cik", "ticker"]).size(), axis=0))
-        securities = mapped.loc[mapped.shares.gt(0)].groupby(["period", "cik", "ticker"]).cusip.agg(frozenset)
+        totals = df_compact.drop(columns="_cusips").sort_index()
+        securities = df_compact["_cusips"].dropna().sort_index()
         current = totals.xs(period).copy() if period in totals.index.get_level_values("period") else totals.droplevel("period").iloc[:0]
         prior = totals.xs(prior_period).copy() if prior_period in totals.index.get_level_values("period") else current.iloc[:0]
         observed = current[["shares", "call_value", "put_value"]].gt(0).any(axis=1)

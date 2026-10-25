@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Generator, Iterator, Sequence
+from contextlib import closing
+from itertools import chain
 from typing import Any
 
 import pandas as pd
@@ -87,10 +89,47 @@ def _finish_packet(df_filings: pd.DataFrame, df_holdings: pd.DataFrame) -> tuple
     return df_filings, df_holdings
 
 
+def iter_filing_vintages(store: DataStore, until: object) -> Generator[tuple[pd.DataFrame, pd.DataFrame]] | None:
+    """Open one projected broad stream, yielding complete raw CIK-quarter packets."""
+    layout = _filing_layout(store, Tables.sec13f_hr, until, None)
+    if layout is None:
+        return None
+    manifest_columns, position_columns, query = layout
+    return _iter_filing_packets(store, manifest_columns, position_columns, query)
+
+
+def _iter_filing_packets(
+    store: DataStore, manifest_columns: tuple[str, ...], position_columns: tuple[str, ...], query: dict[str, Any]
+) -> Generator[tuple[pd.DataFrame, pd.DataFrame]]:
+    """Partition verified markers and positions while owning the source cursor."""
+    with closing(store.iter_load(Tables.sec13f_hr, order_by=("cik", "period", "accession_number"), **query)) as stream:
+        for df_packet in _iter_whole_quarters(stream):
+            yield clean_filing_dates(*_partition_packet(df_packet, Tables.sec13f_hr, manifest_columns, position_columns))
+            del df_packet
+
+
+def _iter_whole_quarters(stream: Iterator[pd.DataFrame]) -> Generator[pd.DataFrame]:
+    """Carry only the trailing CIK-quarter, concatenating its pieces once at completion."""
+    pieces: list[pd.DataFrame] = []
+    previous_key: object = None
+    groups = chain.from_iterable(df_chunk.groupby(["cik", "period"], sort=False) for df_chunk in stream)
+
+    for key, df_piece in groups:
+        if pieces and key != previous_key:
+            yield pd.concat(pieces, ignore_index=True)
+            pieces.clear()
+        # A group view must not retain the other raw books in its source chunk.
+        pieces.append(df_piece.copy())
+        previous_key = key
+        del df_piece
+    if pieces:
+        yield pd.concat(pieces, ignore_index=True)
+
+
 def load_filing_vintages(
     store: DataStore, until: object, ciks: Sequence[str] | None = None, *, table: Table = Tables.sec13f_hr
 ) -> tuple[pd.DataFrame, pd.DataFrame] | None:
-    """Stream the large broad source once; retain the existing manager-call interface."""
+    """Load a bounded compatibility scope; broad production uses iter_filing_vintages."""
     if table == Tables.sec13f_manager_holdings:
         return load_manager_filing_vintages(store, until, ciks)
     layout = _filing_layout(store, table, until, ciks)

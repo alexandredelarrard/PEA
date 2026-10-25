@@ -7,6 +7,8 @@ uncertain common and option values use tagged underlying-share market estimates.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -17,6 +19,18 @@ from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 logger = logging.getLogger(__name__)
 KEPT, DIVIDED, MULTIPLIED, ABSTAINED = 0, 1, -1, 9
 _VALUE_COLUMNS = ("value_usd", "call_value", "put_value", "debt_value", "other_value")
+_MAX_PRICE_AGE_DAYS = 7
+
+
+def prepare_public_value_quotes(close: pd.DataFrame | None, value_basis: Mapping[str, Any] | None) -> pd.Series | None:
+    """Prepare the existing age-bounded quote lookup once for streamed DATE periods."""
+    if close is None or close.empty:
+        return None
+    max_age_days = int((value_basis or {}).get("max_price_age_days", _MAX_PRICE_AGE_DAYS))
+    first = pd.Timestamp(close.index.min()).normalize()
+    last = pd.Timestamp(close.index.max()).normalize() + pd.Timedelta(days=max_age_days)
+    periods = pd.Series(pd.date_range(first, last))
+    return _period_close(close, periods, max_age_days)
 
 
 def repair_value_basis(
@@ -26,7 +40,8 @@ def repair_value_basis(
     min_securities: int = 15,
     min_agreement: float = 0.8,
     price_tolerance: float = 0.1,
-    max_price_age_days: int = 7,
+    max_price_age_days: int = _MAX_PRICE_AGE_DAYS,
+    period_quotes: pd.Series | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Normalize filing values, reconstruct missing equity inputs and mark exclusions.
 
@@ -51,9 +66,10 @@ def repair_value_basis(
     value = pd.to_numeric(df_out["value_usd"], errors="coerce").astype("float64")
     shares = pd.to_numeric(df_out["shares"], errors="coerce").astype("float64")
     quote = pd.Series(np.nan, index=df_out.index, dtype=float)
-    if close is not None and not close.empty and "ticker" in df_out:
-        quotes = _period_close(close, df_out["period"], max_price_age_days)
-        quote[:] = quotes.reindex(pd.MultiIndex.from_frame(df_out[["period", "ticker"]])).to_numpy()
+    if period_quotes is None and close is not None and not close.empty and "ticker" in df_out:
+        period_quotes = _period_close(close, df_out["period"], max_price_age_days)
+    if period_quotes is not None and "ticker" in df_out:
+        quote[:] = period_quotes.reindex(pd.MultiIndex.from_frame(df_out[["period", "ticker"]])).to_numpy()
     common = df_out["position_type"].astype(str).str.lower().eq("common") if "position_type" in df_out else pd.Series(True, index=df_out.index)
     swapped = common & value.eq(shares) & shares.gt(0)
     ratio = (value / shares.where(shares.gt(0)) / quote).where(value.gt(0) & ~swapped)
@@ -243,8 +259,9 @@ def _empty_register() -> pd.DataFrame:
 
 def nullable_value_to_daily(history: pd.DataFrame, field: str, trading_index: pd.DatetimeIndex) -> pd.DataFrame:
     """An explicit unknown dollar observation replaces an older known dollar value."""
-    df_daily = fundamentals_to_daily(history, field, trading_index)
-    df_known = history.assign(_value_known=history[field].notna().astype(float))
+    df_values = history[["ticker", "as_of", field]]
+    df_daily = fundamentals_to_daily(df_values, field, trading_index)
+    df_known = df_values.assign(_value_known=df_values[field].notna().astype(float))
     known = fundamentals_to_daily(df_known, "_value_known", trading_index)
     return df_daily.where(known.eq(1.0))
 

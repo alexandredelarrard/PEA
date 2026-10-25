@@ -26,13 +26,14 @@ import pandas as pd
 from src.data_aggregate.utils.common.availability import InstitutionalAvailability
 from src.data_aggregate.utils.sec_thirteen.superinvestor_features import (
     EMISSION,
+    _contributions,
     _selection_ciks,
-    _selection_series,
     attach_split_factor,
     attach_tickers,
     build_superinvestor_feature_panel,
     clean_holdings,
     manager_quarter_state,
+    manager_selection_weights,
     manager_stock_conviction,
     public_state,
 )
@@ -195,11 +196,9 @@ def test_a_split_is_restated_not_read_as_a_purchase():
     print("  Validated.")
 
 
-def _contrib(conv, state):
-    sel = _selection_series(state, None)
-    from src.data_aggregate.utils.sec_thirteen.superinvestor_features import _contributions
-
-    return _contributions(conv, state, sel)
+def _contrib(df_conviction: pd.DataFrame, df_state: pd.DataFrame) -> pd.DataFrame:
+    selection = manager_selection_weights(df_state, None)
+    return _contributions(df_conviction, df_state, selection, public_state(df_state, selection))
 
 
 # --------------------------------------------------------------------------------------- #
@@ -244,7 +243,7 @@ def test_each_manager_carries_its_own_availability_date():
         )
     )
     _, state, _ = _prepared(pd.DataFrame(rows))
-    st = public_state(state, _selection_series(state, None))
+    st = public_state(state, manager_selection_weights(state, None))
     stamps = dict(zip(st["cik"], st["avail"], strict=False))
     print("\n=== SANITY CHECK: per-manager availability ===")
     for cik, a in sorted(stamps.items()):
@@ -264,7 +263,7 @@ def test_a_superseded_backfiling_is_never_readable():
         + _book("2026-03-31", "2026-05-15", 1500, 0)
     )
     _, state, _ = _prepared(pd.DataFrame(rows))
-    st = public_state(state, _selection_series(state, None))
+    st = public_state(state, manager_selection_weights(state, None))
     kept = sorted(str(p.date()) for p in st["period"])
     print("\n=== SANITY CHECK: superseded back-filing ===")
     print("  filed periods: 2025-09-30 (submitted 2027-01-15), 2025-12-31, 2026-03-31")

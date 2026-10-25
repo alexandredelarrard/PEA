@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from typing import cast
 
 import numpy as np
@@ -27,10 +27,10 @@ from src.data_aggregate.utils.sec_thirteen.holdings_clean import (
 from src.data_aggregate.utils.sec_thirteen.holdings_clean import (
     legacy_manager_public_dates as _as_of_stamp,
 )
-from src.data_aggregate.utils.sec_thirteen.institutional_vintages import iter_public_books
+from src.data_aggregate.utils.sec_thirteen.institutional_vintages import iter_manager_book_updates
 from src.data_aggregate.utils.sec_thirteen.value_basis import nullable_value_to_daily
 from src.data_store.schema import Tables
-from src.utils.institutional_vintages import filing_public_dates
+from src.utils.institutional_vintages import prepare_book_vintages
 from src.utils.string import pad_cik
 
 logger = logging.getLogger(__name__)
@@ -165,7 +165,7 @@ def manager_stock_conviction(holdings: pd.DataFrame, state: pd.DataFrame) -> pd.
     return c
 
 
-def _selection_series(state: pd.DataFrame, selection: pd.Series | Callable | None) -> pd.Series:
+def manager_selection_weights(state: pd.DataFrame, selection: pd.Series | Callable | None) -> pd.Series:
     """Align supplied manager-quarter weights, preserving intentional exclusions."""
     idx = pd.MultiIndex.from_frame(state[["cik", "period"]])
     if selection is None:
@@ -234,7 +234,7 @@ def public_state(state: pd.DataFrame, sel: pd.Series) -> pd.DataFrame:
     return st
 
 
-def _contributions(conv: pd.DataFrame, state: pd.DataFrame, sel: pd.Series) -> pd.DataFrame:
+def _contributions(conv: pd.DataFrame, state: pd.DataFrame, sel: pd.Series, st: pd.DataFrame) -> pd.DataFrame:
     """Build manager-stock history, observed-row persistence and comparison inputs."""
     c = conv[conv["ticker"].notna()].copy()
     if c.empty or state.empty:
@@ -250,8 +250,6 @@ def _contributions(conv: pd.DataFrame, state: pd.DataFrame, sel: pd.Series) -> p
         value_usd=("value_usd", lambda values: values.sum(skipna=False)),
         rank_in_book=("rank_in_book", "min"),
     )
-
-    st = public_state(state, sel)
 
     # ⚠ DROP THE FILINGS THAT ARE NEVER THE MANAGER'S PUBLIC STATE. A manager's state on
     # date d is the LATEST PERIOD among the filings public by then, so a period `q` matters
@@ -557,10 +555,11 @@ def compute_superinvestor_feature_panel(
 ) -> pd.DataFrame:
     """Calculate elite features from cleaned books using the existing family view."""
     empty = pd.DataFrame(columns=["date", "ticker"])
+    session_positions = pd.Series(np.arange(len(frames.trading_index)), index=frames.trading_index)
     if holdings.empty:
         return empty
     if filings is not None:
-        levels, state = _versioned_super_levels(frames, holdings, filings, splits, selection, stale_quarters, decay_halflife)
+        levels, state = _versioned_super_levels(frames, holdings, filings, splits, selection, stale_quarters, decay_halflife, session_positions)
         if not levels:
             return empty
         family_start = min(frame.index.min() for frame in levels.values())
@@ -571,9 +570,9 @@ def compute_superinvestor_feature_panel(
         if state.empty or conv.empty:
             return empty
         state["avail"] = _as_of_stamp(state).to_numpy()
-        sel = _selection_series(state, selection)
+        sel = manager_selection_weights(state, selection)
         st = public_state(state, sel)
-        contrib = attach_split_factor(_contributions(conv, state, sel), splits)
+        contrib = attach_split_factor(_contributions(conv, state, sel, st), splits)
         if contrib.empty:
             return empty
         family_start = pd.Timestamp(contrib["avail"].min()).normalize()
@@ -581,13 +580,15 @@ def compute_superinvestor_feature_panel(
         events = _events(contrib)
     if availability is not None:
         family_start = max(family_start, availability.source_date(Tables.sec13f_manager_holdings))
-    fields = _project_super_fields(levels, events, frames, family_start, availability, decay_halflife, filings is not None)
+    fields = project_superinvestor_features(
+        levels, events, frames, family_start, availability, decay_halflife, filings is not None, session_positions=session_positions
+    )
     emission = {name: EMISSION[name] for name in fields}
     logger.info("elite 13F panel: %s features over %s managers / %s quarters", len(fields), state["cik"].nunique(), state["period"].nunique())
     return build_peer_relative_panel(fields, frames.peers, emission=emission, availability=frames.availability)
 
 
-def _project_super_fields(
+def project_superinvestor_features(
     levels: dict[str, pd.DataFrame],
     events: pd.DataFrame,
     frames: PriceFrames,
@@ -595,16 +596,19 @@ def _project_super_fields(
     availability: InstitutionalAvailability | None,
     decay_halflife: float,
     versioned: bool,
+    *,
+    session_positions: pd.Series,
 ) -> dict[str, pd.DataFrame]:
     """Project public levels and events with the existing decay and source floors."""
     trading_index = frames.trading_index
+    dates = session_positions.reindex(trading_index)
     fields = {name: nullable_value_to_daily(_to_long(frame, name), name, trading_index) for name, frame in levels.items()}
     event_features = ("ic_super_new_top10", "ic_super_rank_jump", "ic_super_initiations", "ic_super_full_exits")
     if versioned:
         for name in (name for name in event_features if name in fields):
-            dates = pd.Series(np.arange(len(trading_index)), index=trading_index)
-            publication = pd.Series(trading_index.get_indexer(levels[name].index), index=levels[name].index)
-            age = dates - publication.reindex(trading_index).ffill()
+            publication = session_positions.reindex(levels[name].index).fillna(-1)
+            published = publication.reindex(publication.index.union(trading_index)).ffill().reindex(trading_index)
+            age = dates - published
             fields[name] = fields[name].mul(0.5 ** (age / decay_halflife), axis=0)
     for kind, df_events in events.groupby("kind") if not events.empty else []:
         df_daily = decay_events(df_events, trading_index, decay_halflife, magnitude_col="magnitude")
@@ -618,21 +622,13 @@ def _project_super_fields(
     return {name: df_daily for name, df_daily in fields.items() if df_daily is not None and not df_daily.empty}
 
 
-def _snapshot_super_contributions(
-    books: pd.DataFrame,
-    states: pd.DataFrame,
-    first_public: pd.Series,
-    selection: pd.Series | Callable | None,
-    day: pd.Timestamp,
-    splits: pd.DataFrame | None,
-    stale_quarters: int,
-    observed_pairs: pd.DataFrame,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Use whole-book conviction and the latest public adjacent-quarter baseline."""
-    common = books.loc[books.position_type.eq("common") | books.shares.isna()].copy()
-    state = manager_quarter_state(common)
-    keys = states.loc[states.book_known, ["cik", "period"]]
-    state = keys.merge(state, on=["cik", "period"], how="left") if not state.empty else keys.copy()
+def manager_book_features(df_books: pd.DataFrame, df_states: pd.DataFrame, first_public: pd.Series) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Prepare unselected whole-book statistics and mapped conviction for one changed manager-quarter."""
+    columns = ["cik", "period", "cusip", "ticker", "shares", "value_usd", "portfolio_weight", "rank_in_book"]
+    df_common = df_books.loc[df_books.position_type.eq("common") | df_books.shares.isna()].copy()
+    df_state = manager_quarter_state(df_common)
+    df_keys = df_states.loc[df_states.book_known, ["cik", "period"]]
+    df_state = df_keys.merge(df_state, on=["cik", "period"], how="left") if not df_state.empty else df_keys.copy()
     for col in (
         "total_common_value",
         "n_positions",
@@ -644,12 +640,51 @@ def _snapshot_super_contributions(
         "n_index_positions",
         "filing_lag_days",
     ):
-        if col not in state:
-            state[col] = np.nan
-    state["n_positions"] = state.n_positions.fillna(0)
-    state["avail"] = first_public.reindex(pd.MultiIndex.from_frame(state[["cik", "period"]])).to_numpy()
-    sel = _selection_series(state, selection)
-    conviction = manager_stock_conviction(common, state)
+        if col not in df_state:
+            df_state[col] = np.nan
+    df_state["n_positions"] = df_state.n_positions.fillna(0)
+    df_state["avail"] = first_public.reindex(pd.MultiIndex.from_frame(df_state[["cik", "period"]])).to_numpy()
+    df_conviction = manager_stock_conviction(df_common, df_state)
+    if df_conviction.empty:
+        df_conviction = df_common.iloc[:0].assign(portfolio_weight=np.nan, rank_in_book=np.nan)
+    return df_state, df_conviction.loc[df_conviction.ticker.notna(), columns].copy()
+
+
+def iter_manager_feature_inputs(
+    df_filings: pd.DataFrame, df_holdings: pd.DataFrame, trading_index: pd.DatetimeIndex, stale_quarters: int
+) -> Iterator[tuple[pd.Timestamp, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]]:
+    """Reuse unchanged manager facts while retaining the full then-visible selection history."""
+    df_first = df_filings.loc[df_filings.amendment_type.isin(["original", "restatement"])]
+    first_public = df_first.groupby(["cik", "period"]).public_at.min()
+    facts: dict[tuple[str, pd.Timestamp], tuple[pd.DataFrame, pd.DataFrame]] = {}
+    df_observed_pairs = pd.DataFrame(columns=["cik", "ticker"])
+
+    for day, changed, df_states in iter_manager_book_updates(df_filings, df_holdings, trading_index, stale_quarters):
+        for key, (df_books, df_book_states) in changed.items():
+            facts[key] = manager_book_features(df_books, df_book_states, first_public)
+            df_observed = df_books.loc[df_books.position_type.eq("common") & df_books.shares.gt(0) & df_books.ticker.notna(), ["cik", "ticker"]]
+            df_observed_pairs = pd.concat([df_observed_pairs, df_observed], ignore_index=True).drop_duplicates()
+        df_state = pd.concat([value[0] for value in facts.values()], ignore_index=True)
+        df_conviction = pd.concat([value[1] for value in facts.values()], ignore_index=True)
+        yield day, df_state, df_conviction, df_states, df_observed_pairs
+
+
+def superinvestor_contributions(
+    conviction: pd.DataFrame,
+    state: pd.DataFrame,
+    states: pd.DataFrame,
+    sel: pd.Series,
+    st: pd.DataFrame,
+    day: pd.Timestamp,
+    splits: pd.DataFrame | None,
+    stale_quarters: int,
+    observed_pairs: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Prepare supported current and historical contributions without rebuilding book statistics."""
+    periods = pd.DatetimeIndex(states.period.unique())
+    prior_periods = {period: (period.to_period("Q") - 1).end_time.normalize() for period in periods}
+    year_periods = {period: (period.to_period("Q") - 4).end_time.normalize() for period in periods}
+    common = conviction
     observed = observed_pairs.merge(state[["cik", "period"]], on="cik")
     present = (
         pd.MultiIndex.from_frame(conviction[["cik", "period", "ticker"]])
@@ -661,16 +696,16 @@ def _snapshot_super_contributions(
         absent[column] = 0.0
     absent["rank_in_book"] = np.nan
     conviction = pd.concat([conviction, absent], ignore_index=True)
-    contrib = _contributions(conviction, state, sel)
+    contrib = _contributions(conviction, state, sel, st)
     if contrib.empty:
-        return contrib, state, pd.DataFrame(), contrib
+        return contrib, pd.DataFrame(), contrib
     contrib = attach_split_factor(contrib, splits)
     latest = states.loc[states.book_known].sort_values("period").drop_duplicates("cik", keep="last")
     active = contrib.merge(states[["cik", "period", "public_at", "comparison_eligible", "zero_eligible"]], on=["cik", "period"])
     prior = states[["cik", "period", "comparison_eligible", "zero_eligible"]].rename(
         columns={"period": "prior_period", "comparison_eligible": "prior_eligible", "zero_eligible": "prior_zero"}
     )
-    active["prior_period"] = active.period.map(lambda q: (q.to_period("Q") - 1).end_time.normalize())
+    active["prior_period"] = active.period.map(prior_periods)
     active = active.merge(prior, on=["cik", "prior_period"], how="left")
     paired = active.comparison_eligible & active.prior_eligible.eq(True) & active.prev_period.eq(active.prior_period)
     current_rows = common.groupby(["cik", "period", "ticker"]).shares.agg(lambda amounts: amounts.sum(skipna=False))
@@ -692,7 +727,7 @@ def _snapshot_super_contributions(
     year_keys = pd.MultiIndex.from_arrays(
         [
             active.cik,
-            active.period.map(lambda q: (q.to_period("Q") - 4).end_time.normalize()),
+            active.period.map(year_periods),
             active.ticker,
         ],
         names=["cik", "period", "ticker"],
@@ -708,11 +743,10 @@ def _snapshot_super_contributions(
     active = active.merge(latest[["cik", "period"]], on=["cik", "period"])
     active = active.loc[active.public_at + pd.DateOffset(months=3 * stale_quarters) >= day].copy()
     active["avail"] = day
-    st = public_state(state, sel)
     st = st.merge(latest[["cik", "period"]], on=["cik", "period"])
     st = st.loc[st.cik.isin(active.cik)].copy()
     st["avail"] = day
-    return active, state, st, historical
+    return active, st, historical
 
 
 def _matched_super_changes(contrib: pd.DataFrame, day: pd.Timestamp) -> tuple[dict[str, pd.DataFrame], pd.Series]:
@@ -764,7 +798,7 @@ def _annual_super_changes(contrib: pd.DataFrame, day: pd.Timestamp) -> dict[str,
 
 
 def _versioned_super_events(
-    contrib: pd.DataFrame, historical: pd.DataFrame, paired: pd.Series, day: pd.Timestamp, trading_index: pd.DatetimeIndex, decay_halflife: float
+    contrib: pd.DataFrame, historical: pd.DataFrame, paired: pd.Series, day: pd.Timestamp, session_positions: pd.Series, decay_halflife: float
 ) -> dict[str, pd.DataFrame]:
     """Rebuild decayed public events prospectively when source history changes."""
     levels: dict[str, pd.DataFrame] = {}
@@ -774,7 +808,7 @@ def _versioned_super_events(
         subset = events.loc[events.kind.eq(kind)] if not events.empty else events
         score = pd.Series(0.0, index=contrib.ticker.unique())
         if not subset.empty:
-            elapsed = trading_index.get_loc(day) - trading_index.get_indexer(pd.DatetimeIndex(subset.date))
+            elapsed = int(session_positions.loc[day]) - session_positions.reindex(pd.DatetimeIndex(subset.date)).fillna(-1).to_numpy(dtype=int)
             score = (
                 (subset.magnitude * 0.5 ** (elapsed / decay_halflife)).groupby(subset.ticker).sum(min_count=1).reindex(score.index, fill_value=0.0)
             )
@@ -790,12 +824,12 @@ def _mask_unknown_quantities(levels: dict[str, pd.DataFrame], unknown: np.ndarra
         levels[feature].loc[:, levels[feature].columns.isin(unknown)] = np.nan
 
 
-def _snapshot_super_levels(
+def compute_superinvestor_levels(
     contrib: pd.DataFrame,
     st: pd.DataFrame,
     historical: pd.DataFrame,
     day: pd.Timestamp,
-    trading_index: pd.DatetimeIndex,
+    session_positions: pd.Series,
     seen_tickers: Iterable[str],
     stale_quarters: int,
     decay_halflife: float,
@@ -809,7 +843,7 @@ def _snapshot_super_levels(
     levels.update(changes)
     unknown = contrib.loc[~contrib.quantity_known, "ticker"].unique()
     levels.update(_annual_super_changes(contrib, day))
-    levels.update(_versioned_super_events(contrib, historical, paired, day, trading_index, decay_halflife))
+    levels.update(_versioned_super_events(contrib, historical, paired, day, session_positions, decay_halflife))
     _mask_unknown_quantities(levels, unknown)
     return _order_super_levels(levels)
 
@@ -822,34 +856,21 @@ def _versioned_super_levels(
     selection: pd.Series | Callable | None,
     stale_quarters: int,
     decay_halflife: float,
+    session_positions: pd.Series,
 ) -> tuple[dict[str, pd.DataFrame], pd.DataFrame]:
     """Freeze each historical observation from its public source prefix, including revisions."""
-    public = filing_public_dates(filings, frames.trading_index, settle_days=0)
-    first = filings.assign(public_at=public).loc[filings.amendment_type.isin(["original", "restatement"])]
-    first_public = first.groupby(["cik", "period"]).public_at.min()
+    df_filings = prepare_book_vintages(filings, holdings, frames.trading_index, settle_days=0)
     snapshots: dict[str, list[pd.DataFrame]] = {}
     state = pd.DataFrame()
-    observed_pairs = pd.DataFrame(columns=["cik", "ticker"])
-    for day, books, states in iter_public_books(
-        filings, holdings, frames.trading_index, settle_days=0, history_quarters=None, expiry_quarters=stale_quarters
-    ):
-        observed = books.loc[books.position_type.eq("common") & books.shares.gt(0) & books.ticker.notna(), ["cik", "ticker"]]
-        observed_pairs = pd.concat([observed_pairs, observed], ignore_index=True).drop_duplicates()
-        contrib, state, st, historical = _snapshot_super_contributions(
-            books,
-            states,
-            first_public,
-            selection,
-            day,
-            splits,
-            stale_quarters,
-            observed_pairs,
-        )
+    for day, state, conviction, states, observed_pairs in iter_manager_feature_inputs(df_filings, holdings, frames.trading_index, stale_quarters):
+        sel = manager_selection_weights(state, selection)
+        st = public_state(state, sel)
+        contrib, st, historical = superinvestor_contributions(conviction, state, states, sel, st, day, splits, stale_quarters, observed_pairs)
         if contrib.empty or st.empty:
-            _append_unknown_snapshot(snapshots, day)
+            append_unknown_superinvestor_snapshot(snapshots, day)
             continue
-        levels = _snapshot_super_levels(
-            contrib, st, historical, day, frames.trading_index, observed_pairs.ticker.unique(), stale_quarters, decay_halflife
+        levels = compute_superinvestor_levels(
+            contrib, st, historical, day, session_positions, observed_pairs.ticker.unique(), stale_quarters, decay_halflife
         )
         for name, frame in levels.items():
             snapshots.setdefault(name, []).append(frame)
@@ -859,7 +880,7 @@ def _versioned_super_levels(
     )
 
 
-def _append_unknown_snapshot(snapshots: dict[str, list[pd.DataFrame]], day: pd.Timestamp) -> None:
+def append_unknown_superinvestor_snapshot(snapshots: dict[str, list[pd.DataFrame]], day: pd.Timestamp) -> None:
     """Invalidate carried values when no current public contribution is supported."""
     for parts in snapshots.values():
         columns = parts[-1].columns

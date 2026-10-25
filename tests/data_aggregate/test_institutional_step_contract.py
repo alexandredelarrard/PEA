@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
+from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -18,6 +19,7 @@ from src.context import Context
 from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
 from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecThirteen
 from src.data_aggregate.utils.common import inputs as capital_inputs
+from src.data_aggregate.utils.common.incremental import PartWindow
 from src.data_aggregate.utils.common.price_frames import PriceFrames
 from src.data_store.schema import Tables
 from src.utils.price_adjustments import resolve_share_events
@@ -80,7 +82,10 @@ def test_each_daily_part_rewrites_its_own_inclusive_seven_session_tail(
     cutoff = days[30 - 7]
     initial.loc[initial["date"] >= cutoff, "f_test"] = -1.0
     sqlite_store.replace(table, initial)
-    monkeypatch.setattr(step, "build_panel", lambda full=False: expected.copy())
+    if cls is StepCubeSecThirteen:
+        monkeypatch.setattr(step, "build_panel", lambda window=None, *, existing_columns=None: expected.copy())
+    else:
+        monkeypatch.setattr(step, "build_panel", lambda full=False: expected.copy())
     step.run()
     first = sqlite_store.load(table).sort_values(["date", "ticker"]).reset_index(drop=True)
     pd.testing.assert_frame_equal(first, expected, check_dtype=False)
@@ -169,7 +174,12 @@ def test_changed_columns_trigger_full_owned_part_replacement(
         modes.append(full)
         return expected.copy()
 
-    monkeypatch.setattr(step, "build_panel", build)
+    def sec_build(window: PartWindow | None = None, *, existing_columns: Sequence[str] | None = None) -> pd.DataFrame:
+        assert window is not None and existing_columns is not None
+        modes.append(window.is_full)
+        return expected.copy()
+
+    monkeypatch.setattr(step, "build_panel", sec_build if cls is StepCubeSecThirteen else build)
     replace = Mock(wraps=sqlite_store.replace)
     monkeypatch.setattr(sqlite_store, "replace", replace)
     step.run()

@@ -945,3 +945,11 @@ Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/
 - Limits/follow-up:66of1122management-position cells are already unknown at raw cumulative holdings; unchanged historical FTD availability uses an estimated release clock. Both are separate coverage/PIT investigations under the user's refactor-only scope; no proven leak or economic repair is claimed. Candidate/baseline snapshot quality flags are identical and publication-causality remains an abstention. No production table write, configuration/DDL/fingerprint change, dependency install, push, PR or dev merge occurred. Local ignored audit: reports/validate/2026-10-24-institutionals-code-refactor/.
 - Navigation: an exact eight-file code-only snapshot refresh yields273nodes/692edges and a successful1500-token query without parsing excluded sources. The full original repository graph remains unchanged. Content link audits pass; other lint families are not configured.
 - Pages: [Aggregation](./modules/data-aggregate.md), [Cube flow](./flows/cube-build.md), [Data access](./guides/data-access.md), [Overview](./OVERVIEW.md), and this append-only log.
+
+## 2026-10-24: refresh — SEC 13F bounded preparation and projection
+
+- Profile: internal/standard
+- source_commit: 8df7649faa77f1d76aace9a247e731daa461fe98 (was 9da992c7f0561c645c479c1d4bec075a569e97b9)
+- Coverage: SEC 13F ordered whole-quarter streaming, compact broad history, changed-manager-book statistics, explicit panel stages, bounded daily projection with original calendar clocks, historical schema support and targeted persistence guards. Existing selection/continuity science and store atomicity follow-ups remain separate.
+- Pages: [Overview](./OVERVIEW.md), [Cube aggregation](./modules/data-aggregate.md), [Data access](./guides/data-access.md), [Run the pipeline](./guides/run-the-pipeline.md), [TODO](./TODO.md)
+- Evidence: bounded full/incremental replay and connected-code gates are retained in local ignored `reports/validate/2026-10-24-sec13f-code-refactor/`. No full 100-million-row computation or production adoption ran; capacity and runtime estimates retain their stated assumptions.

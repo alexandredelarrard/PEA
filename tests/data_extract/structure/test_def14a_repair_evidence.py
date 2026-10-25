@@ -212,6 +212,31 @@ def test_salary_2000_is_not_a_year_cell() -> None:
     print("SANITY: 2000 under Salary($) is a monetary salary, independent of its resemblance to a year.")
 
 
+def test_monetary_year_suffix_is_not_a_fiscal_year_header() -> None:
+    payload = "Name\tSalary this year\tBonus\nJane Example\t2000\t0"
+    rows = [
+        dict(
+            name="Jane Example",
+            fiscal_year=2024,
+            salary=2000,
+            bonus=0,
+            stock_awards=0,
+            option_awards=None,
+            non_equity_incentive=0,
+            pension_change=0,
+            other_compensation=0,
+            total=2000,
+        )
+    ]
+    work = _work("executive_pay", rows)
+    assert requests_for(work, {"executive_pay": payload}) == []
+    payload = "Name\tYear\tSalary this year\tBonus\nJane Example\t2024\t2000\t0"
+    assert requests_for(work, {"executive_pay": payload}) == []
+    work.saved[Tables.def14a_executive_comp]["salary"] = None
+    assert [section.key for section, _ in requests_for(work, {"executive_pay": payload})] == ["executive_pay"]
+    print("SANITY: a salary header ending in year cannot invent a fiscal year; a true Year column preserves salary 2000 as disclosed money.")
+
+
 def test_prefixed_year_does_not_price_option_counts() -> None:
     payload = "Name\tB Year\tOption Awards(#)\nJane Example\t2006\t1,000,000"
     work = _work("executive_pay", [dict(name="Jane Example", fiscal_year=2006, salary=100, option_awards=None)])

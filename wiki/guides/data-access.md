@@ -7,7 +7,10 @@ tags:
   - guide
   - database
   - point-in-time
-source_commit: cbc13eb78abd2cfa59465ea780c1092a2b7ecb2e
+source_commit: 1c36d16f5e951e61999a0b11ac33c50cf6381198
+integration_parents:
+  - 2a3fd08aec2245ec688f671a9d2e1894e4dd1ad8
+  - fe27d5cd3fadc3736144e7a0c0216edc63eb1b1f
 ---
 # Data access and storage
 
@@ -85,6 +88,8 @@ A table that declares `Table.empty_marker` holds one marker row per filing that 
 | `save` | Normal fetcher output | Upsert on registry PK after table/column checks. |
 | `replace` | Full rebuild | Managed tables retain DDL; unmanaged cube parts are dropped and recreated. |
 | `append_tail` | Incremental aggregate part | Delete and rewrite from a day boundary; inclusive mode lets forward labels mature. |
+| `replace_institutional_source` / `patch_insider_source` | Institutional source reconciliation | Publish payload and existing-table completeness evidence together; failed or superseded evidence cannot certify quiet zeros. |
+| `replace_institutional_output` | Institutional historical corrections | Delete/recreate/insert the selected interval on one connection and transaction, with rollback on failure. |
 | `bulk_seed` | Later chunks of a streamed replacement | Append to an already-created schema; unknown columns raise. |
 | `delete` | Explicit scoped cleanup | A non-empty `where` clause is mandatory. |
 
@@ -128,12 +133,12 @@ The fundamentals path demonstrates the pattern: accession-grain facts retain ame
 ```python
 window = plan_window(
     store,
-    Tables.cube_part_institutionals,
+    Tables.cube_part_momentum,
     full=full,
     warmup=self._warmup(),
     trading_index=load_trading_calendar(store),
 )
-result = write_part(store, Tables.cube_part_institutionals, panel, window, drop_empty=True)
+result = write_part(store, Tables.cube_part_momentum, panel, window, drop_empty=True)
 if result == COLUMNS_CHANGED:
     return self.run(full=True)
 ```
@@ -144,7 +149,7 @@ SEC 13F retains full sparse source history and original calendar ordinals for ex
 
 A failed previously saved SEC 13F source family aborts before persistence. The price calendar must cover the saved dates inside the actual replacement interval: the inclusive tail for an ordinary refresh, and the whole saved part for a full or schema-promoted replacement. A missing date confined to the untouched prefix does not block a tail refresh. A successful nonempty, known-schema incremental grid clears the inclusive tail even when every resulting feature is unknown. A genuinely empty result or an all-null full rebuild still preserves the previous table. The existing store `append_tail` deletes and appends in separate transactions, so interruption after deletion remains a recovery limitation; this refactor does not change that store contract.
 
-`StepCubeInstitutionals` also retains full dependency history and computes its insider, short-flow and ownership panels once. Its schema fallback passes that completed full panel to the existing writer with a full window. Normal and recovery paths reuse the same projected source payloads; the global FTD stream preserves coverage before ticker filtering. This differs from the recursive generic example above, which still describes other builders' contracts. `run(full)` plans the output window; `build_panel()` has no unused full input. Insider ratios anchor each eligible trade to its action-date cap before public-window aggregation.
+`StepCubeInstitutionals` retains complete dependency history and computes each family once, with read/clean/rebase/compute visible in the step. It compares the completed candidate with the ordered saved stream and widens the seven-session rewrite to the earliest changed or deleted key. `replace_institutional_output` atomically publishes that interval, including schema repair and canonical all-null row removal. Genuinely empty or invalid candidates fail before writing. `run(full)` controls persistence; `build_panel()` takes no unused full flag. Other builders retain their own writer contracts.
 
 A declaration can still be wrong. Governance required a longer warm-up because a daily five-year self-history feature lived on top of annual filing inputs. Expanding institutional state cannot be reconstructed from a finite source tail. The SEC 13F step therefore retains complete sparse dependencies while bounding its daily projection; `StepCubeInstitutionals` keeps its separate full-history calculation contract.
 

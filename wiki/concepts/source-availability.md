@@ -5,7 +5,10 @@ type: concept
 tags:
   - wiki
   - concept
-source_commit: 15df4358b2a4ea81c34f02c71076256aed23544a
+source_commit: 1c36d16f5e951e61999a0b11ac33c50cf6381198
+integration_parents:
+  - 2a3fd08aec2245ec688f671a9d2e1894e4dd1ad8
+  - fe27d5cd3fadc3736144e7a0c0216edc63eb1b1f
 ---
 # Source availability
 
@@ -17,15 +20,15 @@ Source availability describes whether a source could have produced an observatio
 
 Treating unavailable data as zero fabricates negative evidence and changes cross-sectional ranks. The institutional feature system applies explicit availability masks, while validation uses source clocks and a narrow observed-zero declaration to decide whether a feature appeared too early.
 
-Configuration dates are only outer bounds; they do not fill missing cells or prove ticker eligibility. FTD settlement dates are likewise not availability dates: the [source table](../reference/table-catalog.md) persists each row's ZIP `period`, and the feature builder derives that ZIP's shared clock at build time. Historical ZIPs use period end plus 15 calendar days past weekends. Only the newest stored period within 60 days can use its cached ZIP's New York modification date when it is today or yesterday; this local, short-lived observation can change after a copy or later rebuild. Some `b` ZIPs contain day-15 settlements, so the half cannot be inferred safely from settlement date. Feature publication moves to the next trading session when necessary; missing FTD evidence remains null rather than a fabricated zero. Deferred source-history repairs are tracked in [TODO](../TODO.md).
+Configuration dates are outer bounds; they neither fill cells nor prove ticker eligibility. FTD settlement dates are not publication dates: the persisted source ZIP `period` determines half-period end, then `build_cube.institutionals.ftd_availability_calendar_days` adds21 calendar days and snaps forward to a trading session. This `estimated_policy_21d` policy never reads cache timestamps; historical SEC first-publication dates remain unverified. A `b` ZIP can contain day15 settlements, so settlement day cannot infer the half. See [accepted remaining research](../TODO.md#institutionals-follow-up-validation).
 
 ## Where it lives
 
 - Availability configuration: [configs/data.yml](../../configs/data.yml)
 - Validation declarations: [configs/validate.yml](../../configs/validate.yml)
 - Availability utilities: [availability.py](../../src/data_aggregate/utils/common/availability.py)
-- Completeness-frontier resolution: [frontiers.py](../../src/data_aggregate/utils/institutionals/frontiers.py), one `schedule_complete_through` rule for insider, 13D and 13G, read from the table alone: absence reads as zero through the last price session while the table's newest `filing_date` (markers included) lies within its 7-day resume overlap of that session, otherwise through that newest filing date; an empty table has no frontier. A late filing therefore reads as zero for at most 7 days, until the 7-session cube tail rewrites it
-- FTD coverage: the [input reader](../../src/data_aggregate/utils/institutionals/inputs.py) retains global date/ZIP coverage while collecting scoped economic rows. A missing ticker on an observed date is zero; an unobserved date remains unknown.
+- Insider completeness: [inputs.py](../../src/data_aggregate/utils/institutionals/inputs.py) derives per-ticker frontiers from `inventory_checked_through` and fetched accession evidence in the existing transaction table. The newest filing date alone does not prove that older filings were discovered or read. [frontiers.py](../../src/data_aggregate/utils/institutionals/frontiers.py) retains the existing independent Schedule13D/13G rule.
+- Short/FTD completeness: successfully parsed and reconciled source cohorts persist `source_checked_at` on existing ticker rows. Within dated supported security intervals, missing on a successful fetch is zero. Failed/incomplete fetches retry; legacy observed values remain usable without stamps, while absent rows require proof. Missing/zero denominators remain NULL, including0/0. Operational check dates never change public availability.
 - Leakage checks: [validate/checks/leakage.py](../../src/validate/checks/leakage.py)
 - Source constraints: [data sources](../reference/data-sources.md)
 

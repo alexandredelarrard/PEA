@@ -7,9 +7,18 @@ tags:
   - guide
   - testing
   - validation
-source_commit: cbc13eb78abd2cfa59465ea780c1092a2b7ecb2e
+source_commit: 1c36d16f5e951e61999a0b11ac33c50cf6381198
+integration_parents:
+  - 2a3fd08aec2245ec688f671a9d2e1894e4dd1ad8
+  - fe27d5cd3fadc3736144e7a0c0216edc63eb1b1f
 ---
 # Testing and validation
+
+## Institutional correction merge — 2026-10-25
+
+The merge preserves the independent SEC13F/DEF14A work on `dev` and combines shared insider action-date session checks with the institutional source-unit/dated-identity gates. Run only affected known-truth action-cap, institutional step/output, model-pool and disposable-store checks when changing these seams. Test the real store writer for persistence; an older mock exposing only `append_tail` cannot validate atomic replacement. Test output must include its sanity conclusion.
+
+The local ignored `reports/validate/2026-10-24-institutionals-feature-research/` run keeps checkpoint-bound evidence, the prepared independent validator and the next-session handoff. The full corrected frozen replay, final independent data validation and29-feature before/after KPI tables remain unexecuted at the session cutoff. Targeted passes are not a final research or model-readiness certificate. See [accepted remaining work](../TODO.md#institutionals-follow-up-validation).
 
 ## Goal
 

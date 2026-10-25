@@ -6,7 +6,10 @@ tags:
   - wiki
   - reference
   - configuration
-source_commit: cbc13eb78abd2cfa59465ea780c1092a2b7ecb2e
+source_commit: 1c36d16f5e951e61999a0b11ac33c50cf6381198
+integration_parents:
+  - 2a3fd08aec2245ec688f671a9d2e1894e4dd1ad8
+  - fe27d5cd3fadc3736144e7a0c0216edc63eb1b1f
 ---
 # Configuration
 
@@ -107,7 +110,7 @@ Runtime eligibility is the intersection of:
 4. required price, denominator, or related-source cells; and
 5. family-specific completeness rules.
 
-`source_freshness.insider_max_lag_days` is the only insider freshness knob: `cube-status` names the insider source behind when its completeness frontier (the last price session while the newest `insider_transactions` filing, markers included, lies within the table's 7-day overlap of it, else that filing date) is unknown or lags the institutionals part by more than this many days. There is no reviewed cutover date and no insider parity threshold; the zip and EDGAR sources share one table and EDGAR always wins.
+`source_freshness.insider_max_lag_days` remains the insider freshness threshold used by `cube-status`. The completeness frontier now comes from per-ticker `insider_transactions.inventory_checked_through` inventory validation, checked against fetched accession payloads, rather than a recent maximum filing date. EDGAR remains authoritative over ZIP duplicates. A missing proof column on an older physical schema is readable but cannot certify quiet absence.
 
 ## Cube assembly selection
 
@@ -156,6 +159,12 @@ Important blocks:
 | `output` | Persistence switches for cube, diagnostics and artifacts; historical modelling prediction/signal/CV writes are removed. |
 
 Every numerical value in [build_cube.yml](../../configs/build_cube.yml) carries an economic or measured justification. Read the adjacent comment before editing. If a feature introduces a longer daily look-back, update the [part registry](../../src/data_aggregate/utils/common/parts.py) as well.
+
+## Institutional correction settings
+
+`build_cube.institutionals.ftd_availability_calendar_days` in [build_cube.yml](../../configs/build_cube.yml) is21 calendar days from the persisted ZIP half-period end; publication snaps to the first eligible session. It is a deterministic estimate, independent of cache timestamps, and does not certify historical SEC publication dates.
+
+The [linear](../../configs/models/linear_modelling.yml), [LightGBM](../../configs/models/lgbm_modelling.yml) and [random-forest](../../configs/models/random_forest_modelling.yml) pools each include all29 existing institutional fields exactly once. Their respective pool sizes are73,99 and100. Targets, h30/h60/h90, fitting settings and existing non-institutional selections are unchanged by this addition. No fit was run.
 
 ## Model settings
 

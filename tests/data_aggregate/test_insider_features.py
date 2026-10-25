@@ -15,6 +15,7 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.institutionals.inputs import load_insider_role_evidence
+from src.data_aggregate.utils.institutionals.insider_capital import InsiderCapital, normalize_trade_capital
 from src.data_aggregate.utils.institutionals.insider_features import (
     CLUSTER_MIN,
     EMISSION,
@@ -586,7 +587,7 @@ def test_unpriced_insider_is_unknown_not_zero(unknown_code, known_code):
     panel = build_insider_feature_panel(
         make_frames(TRADING_INDEX, _peers(("AAA", "BBB")), close_split=close),
         _frame(rows),
-        shares_out_history=fh,
+        capital=InsiderCapital(shares_out_history=fh),
         complete_through=TRADING_INDEX.max(),
     )
     panel = panel[panel["ticker"].eq("AAA")].set_index("date")
@@ -697,7 +698,7 @@ def test_an_exercise_and_sell_package_is_not_a_discretionary_sale():
     idx = pd.bdate_range("2024-01-01", "2024-12-31")
     fh, close = _prices()
     close = pd.DataFrame(100.0, index=idx, columns=["AAA"])
-    panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close), _frame(rows), shares_out_history=fh)
+    panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close), _frame(rows), capital=InsiderCapital(shares_out_history=fh))
     col = "f_ic_insider_discretionary_sell_mcap_60d"
     after = panel[panel["date"].ge("2024-06-03")][col].dropna()
     one_sale = 100_000.0 / (1_000_000.0 * 100.0)
@@ -776,7 +777,9 @@ def test_owner_surprise_uses_only_that_owners_prior_purchases():
         for i, v in enumerate(sizes)
     ]
     fh, close = _prices()
-    panel = build_insider_feature_panel(make_frames(TRADING_INDEX, _peers(), close_split=close), _frame(rows), shares_out_history=fh)
+    panel = build_insider_feature_panel(
+        make_frames(TRADING_INDEX, _peers(), close_split=close), _frame(rows), capital=InsiderCapital(shares_out_history=fh)
+    )
     got = panel.set_index("date")["f_ic_insider_owner_surprise_120d"]
     on_second = got.loc["2015-02-16"]
     leaky = float(pd.Series(sizes).rank(pct=True).iloc[1])  # = 0.5
@@ -824,7 +827,7 @@ def test_nothing_is_emitted_before_the_measured_availability_floors():
     idx = pd.bdate_range("2004-01-01", "2026-01-01")
     fh, close = _prices()
     close = pd.DataFrame(100.0, index=idx, columns=["AAA"])
-    panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close), _frame(rows), shares_out_history=fh)
+    panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close), _frame(rows), capital=InsiderCapital(shares_out_history=fh))
     cols = [c for c in panel.columns if c not in ("date", "ticker")]
     before = panel[panel["date"] < INSIDER_FLOOR]
     assert before[cols].notna().to_numpy().sum() == 0
@@ -854,10 +857,7 @@ def test_complete_through_preserves_covered_zero_and_masks_the_unobserved_tail()
     close = pd.DataFrame(100.0, index=idx, columns=["AAA"])
 
     panel = build_insider_feature_panel(
-        make_frames(idx, _peers(), close_split=close),
-        _frame(rows),
-        shares_out_history=fh,
-        complete_through=complete_through,
+        make_frames(idx, _peers(), close_split=close), _frame(rows), capital=InsiderCapital(shares_out_history=fh), complete_through=complete_through
     ).set_index("date")
 
     covered_zero = panel.loc[pd.Timestamp("2024-07-31"), "f_ic_insider_buy_value_mcap_180d"]
@@ -879,12 +879,14 @@ def test_a_feature_never_sees_a_transaction_filed_after_the_date():
         for i, m in enumerate([2, 4, 6, 8, 10])
     ]
     fh, close = _prices()
-    full = build_insider_feature_panel(make_frames(TRADING_INDEX, _peers(), close_split=close), _frame(rows), shares_out_history=fh)
+    full = build_insider_feature_panel(
+        make_frames(TRADING_INDEX, _peers(), close_split=close), _frame(rows), capital=InsiderCapital(shares_out_history=fh)
+    )
     cut = pd.Timestamp("2015-07-01")
     truncated = build_insider_feature_panel(
         make_frames(TRADING_INDEX, _peers(), close_split=close),
         _frame([r for r in rows if pd.Timestamp(r["filing_date"]) < cut]),
-        shares_out_history=fh,
+        capital=InsiderCapital(shares_out_history=fh),
     )
     cols = [c for c in full.columns if c in truncated.columns and c not in ("date", "ticker")]
     a = full[full["date"] < cut].set_index(["date", "ticker"])[cols]
@@ -921,7 +923,10 @@ def test_distinct_buyers_counts_people_not_filings():
             )
     fh, close = _prices()
     panel = build_insider_feature_panel(
-        make_frames(TRADING_INDEX, _peers(), close_split=close), _frame(rows), shares_out_history=fh, complete_through=TRADING_INDEX.max()
+        make_frames(TRADING_INDEX, _peers(), close_split=close),
+        _frame(rows),
+        capital=InsiderCapital(shares_out_history=fh),
+        complete_through=TRADING_INDEX.max(),
     )
     n = panel.set_index("date")["f_ic_insider_distinct_buyers_120d"]
     peak = n.max()
@@ -946,7 +951,9 @@ def test_cluster_is_two_distinct_buyers_not_two_filings():
     col = "f_ic_insider_cluster_buy_120d"
     got = {}
     for name, rows in (("one buyer, 4 filings", solo), ("two buyers", pair)):
-        panel = build_insider_feature_panel(make_frames(TRADING_INDEX, _peers(), close_split=close), _frame(rows), shares_out_history=fh)
+        panel = build_insider_feature_panel(
+            make_frames(TRADING_INDEX, _peers(), close_split=close), _frame(rows), capital=InsiderCapital(shares_out_history=fh)
+        )
         got[name] = panel.set_index("date")[col].loc["2015-03-10"]
     assert got["one buyer, 4 filings"] == 0.0
     assert got["two buyers"] == 2.0 >= CLUSTER_MIN
@@ -983,7 +990,7 @@ def test_the_ten_b5_1_split_separates_planned_from_discretionary():
     idx = pd.bdate_range("2024-01-01", "2024-12-31")
     fh, _ = _prices()
     close = pd.DataFrame(100.0, index=idx, columns=["AAA"])
-    panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close), _frame(rows), shares_out_history=fh)
+    panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close), _frame(rows), capital=InsiderCapital(shares_out_history=fh))
     day = panel[panel["date"].eq("2024-03-01")].iloc[0]
     mcap = 1_000_000.0 * 100.0
     assert day["f_ic_insider_discretionary_sell_mcap_60d"] == pytest.approx(100_000 / mcap)
@@ -1005,7 +1012,7 @@ def test_net_buy_ratio_is_zero_only_inside_a_complete_observation_frontier():
     panel = build_insider_feature_panel(
         make_frames(TRADING_INDEX, _peers(), close_split=close),
         _frame(rows),
-        shares_out_history=fh,
+        capital=InsiderCapital(shares_out_history=fh),
         complete_through=pd.Timestamp("2016-06-30"),
     )
     s = panel.set_index("date")["f_ic_insider_net_buy_ratio_180d"]
@@ -1052,7 +1059,7 @@ def test_every_emitted_column_is_declared_and_every_declaration_is_emitted():
     idx = pd.bdate_range("2024-01-01", "2024-12-31")
     fh, _ = _prices()
     close = pd.DataFrame(100.0, index=idx, columns=["AAA"])
-    panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close), _frame(rows), shares_out_history=fh)
+    panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close), _frame(rows), capital=InsiderCapital(shares_out_history=fh))
     cols = {c for c in panel.columns if c not in ("date", "ticker")}
     expected = {f"f_{n}" for n in EMISSION} | {f"f_{n}_xs" for n, m in EMISSION.items() if m == "raw+xs"}
     assert cols == expected, f"missing {sorted(expected - cols)}, extra {sorted(cols - expected)}"
@@ -1165,7 +1172,7 @@ def test_the_mcap_features_are_present_and_the_vendor_basis_is_what_builds_them(
     mcap_feats = [f for f in EMISSION if "mcap" in f]
     assert len(mcap_feats) == 7, mcap_feats
 
-    panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close), _frame(rows), shares_out_history=fh)
+    panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close), _frame(rows), capital=InsiderCapital(shares_out_history=fh))
     missing = [f for f in mcap_feats if f"f_{f}" not in panel.columns]
     assert not missing, f"size-scaled insider features absent from the panel: {missing}"
     built = {f: int(panel[f"f_{f}"].notna().sum()) for f in mcap_feats}
@@ -1174,7 +1181,9 @@ def test_the_mcap_features_are_present_and_the_vendor_basis_is_what_builds_them(
     # ... and the PIT column ALONE is not a substitute.
     pit_only = fh.drop(columns=["sharesOutstanding"])
     with _capture_warnings("src.data_aggregate.utils.institutionals.insider_features") as logged:
-        degraded = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close), _frame(rows), shares_out_history=pit_only)
+        degraded = build_insider_feature_panel(
+            make_frames(idx, _peers(), close_split=close), _frame(rows), capital=InsiderCapital(shares_out_history=pit_only)
+        )
     survived = [f for f in mcap_feats if f"f_{f}" in degraded.columns]
     assert not survived, survived
     assert any("sharesOutstanding" in m for m in logged), f"the empty-market-cap path must name the missing column; logged: {logged}"
@@ -1192,3 +1201,250 @@ def test_the_mcap_features_are_present_and_the_vendor_basis_is_what_builds_them(
         "`sharesOutstandingPit` deletes every one of them, and that deletion is now "
         "REPORTED instead of silent. Validated."
     )
+
+
+def _action_cap_inputs() -> tuple[pd.DatetimeIndex, pd.DataFrame, pd.DataFrame]:
+    idx = pd.bdate_range("2024-01-01", "2024-12-31")
+    close = pd.DataFrame(100.0, index=idx, columns=["AAA"])
+    close.loc[idx >= pd.Timestamp("2024-03-06"), "AAA"] = 200.0
+    close.loc[idx >= pd.Timestamp("2024-03-11"), "AAA"] = 400.0
+    history = pd.DataFrame([{"ticker": "AAA", "as_of": pd.Timestamp("2023-01-01"), "sharesOutstanding": 1e6, "sharesOutstandingPit": 1e6}])
+    return idx, close, history
+
+
+@pytest.mark.parametrize(
+    ("metric", "code", "title", "plan"),
+    [
+        ("buy_value_mcap_60d", "P", "", 0.0),
+        ("buy_value_mcap_180d", "P", "", 0.0),
+        ("ceo_buy_mcap_180d", "P", "Chief Executive Officer", 0.0),
+        ("cfo_buy_mcap_180d", "P", "Chief Financial Officer", 0.0),
+        ("director_buy_mcap_180d", "P", "", 0.0),
+        ("discretionary_sell_mcap_60d", "S", "", 0.0),
+        ("planned_sell_mcap_60d", "S", "", 1.0),
+    ],
+)
+def test_action_cap_normalizes_each_trade_before_rolling(metric: str, code: str, title: str, plan: float) -> None:
+    idx, close, history = _action_cap_inputs()
+    rows = [
+        _txn(
+            accession_number=f"action-{n}",
+            owner_cik=f"{n:04d}",
+            filing_date=filing,
+            transaction_date=action,
+            transaction_code=code,
+            officer_title=title,
+            is_officer=float(bool(title)),
+            is_10b5_1=plan,
+            value_usd=1e6,
+        )
+        for n, (action, filing) in enumerate([("2024-03-04", "2024-03-05"), ("2024-03-06", "2024-03-07")], start=1)
+    ]
+    panel = build_insider_feature_panel(
+        make_frames(idx, _peers(), close_split=close), _frame(rows), capital=InsiderCapital(shares_out_history=history), complete_through=idx[-1]
+    ).set_index("date")
+    feature = f"f_ic_insider_{metric}"
+
+    assert panel.loc["2024-03-08", feature] == pytest.approx(0.015)
+    assert panel.loc["2024-03-11", feature] == pytest.approx(0.015)
+    assert pd.isna(panel.loc["2024-03-04", feature])
+    print(f"SANITY: {metric} sums 1m/100m + 1m/200m = 1.5%; later 400m cap never revalues disclosed trades.")
+
+
+def _build_action_cap(rows: list[dict], close: pd.DataFrame, history: pd.DataFrame) -> pd.DataFrame:
+    idx = pd.DatetimeIndex(close.index)
+    return build_insider_feature_panel(
+        make_frames(idx, _peers(), close_split=close), _frame(rows), capital=InsiderCapital(shares_out_history=history), complete_through=idx[-1]
+    ).set_index("date")
+
+
+@pytest.mark.parametrize("bad_cap_price", [np.nan, 0.0, -1.0, np.inf])
+def test_action_cap_exact_session_gap_does_not_fall_back(bad_cap_price: float) -> None:
+    _, close, history = _action_cap_inputs()
+    close.loc["2024-03-04", "AAA"] = bad_cap_price
+    rows = [_txn(filing_date="2024-03-05", transaction_date="2024-03-04", value_usd=1e6)]
+    panel = _build_action_cap(rows, close, history)
+
+    assert pd.isna(panel.loc["2024-03-07", "f_ic_insider_buy_value_mcap_60d"])
+    assert panel.loc["2024-03-07", "f_ic_insider_distinct_buyers_120d"] == 1.0
+    assert panel.loc["2024-05-06", "f_ic_insider_buy_value_mcap_60d"] == 0.0
+    print("SANITY: an exact-session invalid cap remains unknown until expiry; counts and covered quiet zeros survive.")
+
+
+def test_action_cap_missing_transaction_date_never_uses_filing_date() -> None:
+    _, close, history = _action_cap_inputs()
+    panel = _build_action_cap([_txn(filing_date="2024-03-05", transaction_date=None, value_usd=1e6)], close, history)
+
+    assert pd.isna(panel.loc["2024-03-07", "f_ic_insider_buy_value_mcap_60d"])
+    assert panel.loc["2024-03-07", "f_ic_insider_distinct_buyers_120d"] == 1.0
+    print("SANITY: missing economic date cannot borrow filing-day capital or erase a disclosed buyer.")
+
+
+def test_action_cap_non_session_uses_only_immediate_previous_session() -> None:
+    _, close, history = _action_cap_inputs()
+    history = pd.concat([history, history.assign(as_of=pd.Timestamp("2024-03-09"), sharesOutstanding=9e6)], ignore_index=True)
+    row = _txn(filing_date="2024-03-11", transaction_date="2024-03-09", value_usd=1e6)
+    panel = _build_action_cap([row], close, history)
+    assert panel.loc["2024-03-12", "f_ic_insider_buy_value_mcap_60d"] == pytest.approx(0.005)
+
+    close.loc["2024-03-08", "AAA"] = np.nan
+    unknown = _build_action_cap([row], close, history)
+    assert pd.isna(unknown.loc["2024-03-12", "f_ic_insider_buy_value_mcap_60d"])
+    print("SANITY: Saturday selects Friday exactly; missing Friday cap cannot skip to Thursday or Monday.")
+
+
+def test_action_cap_non_session_previous_session_older_than_seven_days_is_unknown() -> None:
+    _, close, history = _action_cap_inputs()
+    close = close.drop(index=pd.bdate_range("2024-03-04", "2024-03-08"))
+    panel = _build_action_cap([_txn(filing_date="2024-03-11", transaction_date="2024-03-09", value_usd=1e6)], close, history)
+
+    assert pd.isna(panel.loc["2024-03-12", "f_ic_insider_buy_value_mcap_60d"])
+    print("SANITY: a non-session action cannot borrow an eight-day-old previous session.")
+
+
+def test_action_cap_late_form5_uses_action_day_public_shares() -> None:
+    _, close, history = _action_cap_inputs()
+    later = history.assign(as_of=pd.Timestamp("2024-03-05"), fiscal_end=pd.Timestamp("2023-12-31"), sharesOutstanding=9e6)
+    history = pd.concat([history, later], ignore_index=True)
+    row = _txn(filing_date="2024-06-03", transaction_date="2024-03-04", document_type="5", value_usd=1e6)
+    panel = _build_action_cap([row], close, history)
+
+    assert pd.isna(panel.loc["2024-05-31", "f_ic_insider_buy_value_mcap_60d"])
+    assert panel.loc["2024-06-03", "f_ic_insider_buy_value_mcap_60d"] == pytest.approx(0.01)
+    assert panel.loc["2024-06-04", "f_ic_insider_buy_value_mcap_60d"] == pytest.approx(0.01)
+    print("SANITY: late Form5 remains private until disclosure and uses old action-date capital, never later public shares/fiscal end.")
+
+
+def test_action_cap_current_cap_loss_preserves_valid_trade_and_quiet_zero() -> None:
+    _, close, history = _action_cap_inputs()
+    history = pd.concat([history, history.assign(as_of=pd.Timestamp("2024-03-11"), sharesOutstanding=0.0)], ignore_index=True)
+    panel = _build_action_cap([_txn(filing_date="2024-03-05", transaction_date="2024-03-04", value_usd=1e6)], close, history)
+
+    assert panel.loc["2024-03-12", "f_ic_insider_buy_value_mcap_60d"] == pytest.approx(0.01)
+    assert panel.loc["2024-05-06", "f_ic_insider_buy_value_mcap_60d"] == 0.0
+    print("SANITY: loss of today capital cannot erase a valid action ratio or a later source-complete quiet zero.")
+
+
+def test_action_cap_unknown_event_masks_only_its_eligible_scopes() -> None:
+    _, close, history = _action_cap_inputs()
+    close.loc["2024-03-04", "AAA"] = np.nan
+    rows = [
+        _txn(
+            accession_number="unknown-ceo",
+            owner_cik="0001",
+            filing_date="2024-03-05",
+            transaction_date="2024-03-04",
+            value_usd=1e6,
+            officer_title="Chief Executive Officer",
+            is_officer=1.0,
+        ),
+        _txn(
+            accession_number="known-cfo",
+            owner_cik="0002",
+            filing_date="2024-03-07",
+            transaction_date="2024-03-06",
+            value_usd=1e6,
+            officer_title="Chief Financial Officer",
+            is_officer=1.0,
+        ),
+    ]
+    panel = _build_action_cap(rows, close, history)
+
+    assert pd.isna(panel.loc["2024-03-08", "f_ic_insider_buy_value_mcap_60d"])
+    assert pd.isna(panel.loc["2024-03-08", "f_ic_insider_ceo_buy_mcap_180d"])
+    assert panel.loc["2024-03-08", "f_ic_insider_cfo_buy_mcap_180d"] == pytest.approx(0.005)
+    assert panel.loc["2024-03-08", "f_ic_insider_distinct_buyers_120d"] == 2.0
+    assert panel.loc["2024-03-08", "f_ic_insider_net_buy_ratio_180d"] == 1.0
+    print("SANITY: missing CEO cap blocks the aggregate/CEO sum, retaining supported CFO/count/raw-dollar behavior.")
+
+
+@pytest.mark.parametrize("original_known", [False, True])
+def test_action_cap_amendment_known_unknown_visibility_and_expiry(original_known: bool) -> None:
+    _, close, history = _action_cap_inputs()
+    rows = [
+        _txn(
+            accession_number="original",
+            filing_date="2024-03-05",
+            transaction_date="2024-03-04",
+            price_per_share=100.0 if original_known else np.nan,
+            shares=10_000.0,
+        ),
+        _txn(
+            accession_number="amended",
+            filing_date="2024-03-12",
+            transaction_date="2024-03-04",
+            document_type="4/A",
+            original_submission_date="2024-03-05",
+            price_per_share=np.nan if original_known else 100.0,
+            shares=10_000.0,
+        ),
+    ]
+    panel = _build_action_cap(rows, close, history)
+    before = panel.loc["2024-03-11", "f_ic_insider_buy_value_mcap_60d"]
+    after = panel.loc["2024-03-12", "f_ic_insider_buy_value_mcap_60d"]
+
+    assert (before == pytest.approx(0.01)) if original_known else pd.isna(before)
+    assert pd.isna(after) if original_known else (after == pytest.approx(0.01))
+    assert panel.loc["2024-05-06", "f_ic_insider_buy_value_mcap_60d"] == 0.0
+    print("SANITY: corrected known/unknown dollars switch only at disclosure and expire at the original60-day anchor.")
+
+
+def test_action_cap_market_evidence_does_not_change_non_cap_features() -> None:
+    _, close, history = _action_cap_inputs()
+    rows = [_txn(filing_date="2024-03-05", transaction_date="2024-03-04", value_usd=1e6)]
+    supported = _build_action_cap(rows, close, history)
+    unsupported = _build_action_cap(rows, close, history.assign(sharesOutstanding=np.inf))
+    columns = [name for name in supported if "mcap" not in str(name)]
+
+    pd.testing.assert_frame_equal(supported[columns], unsupported[columns])
+    assert pd.isna(unsupported.loc["2024-03-07", "f_ic_insider_buy_value_mcap_60d"])
+    print("SANITY: nonfinite capitalization affects only cap-dependent fields; all other values/nulls remain equal.")
+
+
+def test_action_cap_prepared_lineage_and_finite_execution() -> None:
+    calendar = pd.bdate_range("2024-03-01", "2024-03-15")
+    trades = pd.DataFrame({"ticker": ["AAA", "AAA"], "transaction_day": pd.to_datetime(["2024-03-09", "2024-03-09"]), "value": [1e6, np.inf]})
+    caps = pd.DataFrame(200e6, index=calendar, columns=["AAA"])
+    history = pd.DataFrame(
+        {
+            "ticker": ["AAA", "AAA", "AAA"],
+            "as_of": pd.to_datetime(["2024-01-02", "2024-03-05", "2024-03-09"]),
+            "sharesOutstanding": [1e6, np.nan, 9e6],
+        }
+    )
+    prepared = normalize_trade_capital(trades, caps, calendar, history)
+
+    assert prepared["cap_session"].eq(pd.Timestamp("2024-03-08")).all()
+    assert prepared["cap_price_date"].eq(pd.Timestamp("2024-03-08")).all()
+    assert prepared["cap_share_as_of"].eq(pd.Timestamp("2024-01-02")).all()
+    assert prepared.loc[0, "value_mcap"] == pytest.approx(0.005)
+    assert prepared.loc[0, "cap_status"] == "supported"
+    assert prepared.loc[1, "cap_status"] == "unsupported_execution"
+    assert pd.isna(prepared.loc[1, "value_mcap"])
+    pd.testing.assert_series_equal(prepared["value"], trades["value"])
+    overflow = normalize_trade_capital(trades.assign(value=1e308), caps * 1e-308 / 200e6, calendar, history)
+    assert overflow["value_mcap"].isna().all()
+    assert overflow["cap_status"].eq("unsupported_ratio").all()
+    print("SANITY: prepared ratios retain exact prior-session/public-share lineage, reject infinite clean dollars and preserve raw amounts.")
+
+
+@pytest.mark.parametrize("invalid_leg", ["close", "level_factor"])
+def test_action_cap_double_negative_components_cannot_certify_capital(invalid_leg: str) -> None:
+    idx, close, history = _action_cap_inputs()
+    history["sharesOutstanding"] = -1e6
+    factor = pd.DataFrame(1.0, index=idx, columns=["AAA"])
+    if invalid_leg == "close":
+        close.loc["2024-03-04", "AAA"] = -100.0
+    else:
+        factor.loc["2024-03-04", "AAA"] = -1.0
+    row = _txn(filing_date="2024-03-05", transaction_date="2024-03-04", value_usd=1e6)
+    panel = build_insider_feature_panel(
+        make_frames(idx, _peers(), close_split=close, level_factor=factor),
+        _frame([row]),
+        capital=InsiderCapital(shares_out_history=history),
+        complete_through=idx[-1],
+    ).set_index("date")
+
+    assert pd.isna(panel.loc["2024-03-07", "f_ic_insider_buy_value_mcap_60d"])
+    assert panel.loc["2024-03-07", "f_ic_insider_distinct_buyers_120d"] == 1.0
+    print("SANITY: two invalid negative inputs cannot manufacture a compatible positive capitalization.")

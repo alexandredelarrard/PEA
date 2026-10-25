@@ -16,6 +16,7 @@ from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.price_frames import PriceFrames, load_trading_calendar
 from src.data_aggregate.utils.institutionals import frontiers as institutional_frontiers
 from src.data_aggregate.utils.institutionals import inputs as institutional_inputs
+from src.data_aggregate.utils.institutionals.insider_capital import InsiderCapital
 from src.data_aggregate.utils.institutionals.insider_features import build_insider_feature_panel
 from src.data_aggregate.utils.institutionals.ownership_features import build_ownership_feature_panel
 from src.data_aggregate.utils.institutionals.short_flow_features import build_short_flow_feature_panel, secondary_class_volume
@@ -90,7 +91,6 @@ class StepCubeInstitutionals(Step):
         valuation_close: pd.DataFrame | None = None,
     ) -> pd.DataFrame | None:
         last_session = pd.DatetimeIndex(frames.trading_index).max() if len(frames.trading_index) else None
-        decay_halflife = self._decay_halflife("insider")
 
         # Load transactions and their completeness/title evidence before cleaning.
         df_insider = institutional_inputs.load_insider_transactions(self._store, frames.universe)
@@ -103,13 +103,10 @@ class StepCubeInstitutionals(Step):
         return build_insider_feature_panel(
             frames,
             df_insider,
-            shares_out_history=shares,
-            decay_halflife=decay_halflife,
+            capital=InsiderCapital(shares, valuation_close, share_basis),
             availability=self._availability,
             complete_through=complete_through,
-            as_traded_quotes=valuation_close,
             role_evidence=df_roles,
-            share_basis=share_basis,
         )
 
     def _short_flow_panel(

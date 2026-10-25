@@ -51,6 +51,7 @@ import numpy as np
 import pandas as pd
 
 from src.context import Context
+from src.data_aggregate.utils.institutionals.insider_capital import InsiderCapital
 from tests.conftest import make_frames
 from tests.data_aggregate.pipeline_fingerprint import frame_digest
 
@@ -966,7 +967,9 @@ def compute() -> dict:
     )
     assert superinvestor["f_ic_super_conviction_weight"].nunique() > 1, "Do not freeze unknown whole-book denominators"
     out["panel.superinvestor"] = frame_digest(superinvestor)
-    out["panel.insider"] = frame_digest(build_insider_feature_panel(make_frames(idx, peers, close_split=close), insider, shares_out_history=fund))
+    out["panel.insider"] = frame_digest(
+        build_insider_feature_panel(make_frames(idx, peers, close_split=close), insider, capital=InsiderCapital(shares_out_history=fund))
+    )
     out["panel.ownership"] = frame_digest(build_ownership_feature_panel(make_frames(idx, peers), sec_13d, sec_13g))
     # ---- betas + the labels the model actually trains on ---- #
     factor_panel = pd.DataFrame(

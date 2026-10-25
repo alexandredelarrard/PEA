@@ -282,3 +282,17 @@ def test_award_quantity_is_never_corroborated_as_dollar_pay(field: str, label: s
     monetary = source.replace(label, label.replace("(#)", "fair value of shares ($)"))
     assert _process("executive_pay", [new], monetary).iloc[0][field] == 1000
     print("SANITY: explicit award counts stay unknown as dollars; a real dollar fair-value column remains valid.")
+
+
+def test_source_identity_reuses_canonical_parenthesis_accent_and_spacing_rules() -> None:
+    source = "Name\tTotal beneficial ownership\tAdditional underlying stock units\tTotal\nJÁNE   ROE (Officer)\t100\t900\t1000"
+    row = {"holder_name": "Jane Roe", "holder_type": "director_officer", "shares": 1000}
+    assert _process("ownership", [row], source).iloc[0].shares == 100
+    print("SANITY: basis proof shares the canonical identity used for holder deduplication.")
+
+
+def test_two_column_sgml_annual_heading_cannot_crash_payload_preparation() -> None:
+    raw = "SUMMARY COMPENSATION TABLE\n<TABLE><CAPTION>\nNAME TOTAL ANNUAL\n<S>  <C>\nJane Roe 1995\n</TABLE>"
+    payloads = prepare_def14a_payloads(raw, raw)
+    assert "ORIGINAL COLUMN ALIGNMENT" not in payloads["executive_pay"]
+    print("SANITY: malformed two-column SGML remains conservative and cannot crash the carver.")

@@ -7,7 +7,7 @@ import re
 
 import pandas as pd
 
-from src.data_extract.utils.structure.def14a.holders import _holder_name
+from src.data_extract.utils.structure.def14a.holders import _holder_name, normalize_name
 from src.data_extract.utils.structure.def14a.retry import Section
 from src.data_extract.utils.structure.def14a.validate import _leave_one_out_median
 
@@ -101,7 +101,7 @@ def _source_values(cells: dict[str, str], ownership: bool) -> dict[str, float | 
 
 def _identity(value: object) -> str:
     """Use the same address cleanup as holder reconciliation, without losing suffixes."""
-    return re.sub(r"[\W_]+", " ", _holder_name(str(value)).casefold()).strip()
+    return normalize_name(_holder_name(str(value)))
 
 
 def correct_basis(

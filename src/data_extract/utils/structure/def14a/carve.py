@@ -484,6 +484,8 @@ def _fixed_width_sct(raw: str) -> str:
         if alignment is None:
             continue
         starts = [token.start() for token in re.finditer(r"<[SC]>", lines[alignment], re.I)]
+        if len(starts) < 3:
+            continue
         ends = [*starts[1:], max(len(line) for line in lines)]
         headers = [re.sub(r"<[^>]*>", lambda item: " " * len(item[0]), line) for line in lines[:alignment] if not re.fullmatch(r"[-\s]*", line)]
         header = [" ".join(line[start:end].strip() for line in headers if line[start:end].strip()) for start, end in zip(starts, ends, strict=True)]

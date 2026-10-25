@@ -89,12 +89,10 @@ def _resolved_public_book(
     return PublicBook(key[0], key[1], day, first_public_at, df_positions, support)
 
 
-def _collect_public_revisions(
-    df_manifest: pd.DataFrame, df_holdings: pd.DataFrame, trading_index: pd.DatetimeIndex
-) -> Mapping[BookKey, tuple[PublicBook, ...]]:
+def _collect_public_revisions(df_manifest: pd.DataFrame, df_holdings: pd.DataFrame) -> Mapping[BookKey, tuple[PublicBook, ...]]:
     """Resolve changed manager-quarters once and retain unchanged resolver objects."""
     revisions: dict[BookKey, list[PublicBook]] = defaultdict(list)
-    for day, _, changed in _iter_public_book_cache(df_manifest, df_holdings, trading_index, history_quarters=None):
+    for day, _, changed in _iter_public_book_cache(df_manifest, df_holdings, history_quarters=None):
         for key, resolved in changed.items():
             previous = revisions[key]
             origin = previous[-1].first_public_at if previous else None
@@ -146,7 +144,7 @@ def prepare_superinvestor_book_history(
     if df_manifest.empty or grid.empty:
         return ()
 
-    revisions = _collect_public_revisions(df_manifest, df_holdings, grid)
+    revisions = _collect_public_revisions(df_manifest, df_holdings)
     publications, days = _public_book_schedule(revisions, grid, max_age_days)
     snapshots: list[PublicBookSnapshot] = []
     latest: dict[str, PublicBook] = {}

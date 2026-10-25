@@ -1560,30 +1560,6 @@ def test_same_day_missing_acceptance_clock_preserves_amendment_fallback(clocked:
     print(f"SANITY: same-day incomplete acceptance clocks use amendment metadata; timestamp only on {clocked}; latest shares140.")
 
 
-def test_expiry_sessions_are_unique_when_publications_share_a_future_session() -> None:
-    packets = (
-        packet("original", "2024-08-14", {"111111111": 100}),
-        packet("amendment", "2024-08-15", {"111111111": 120}, kind="restatement"),
-    )
-    manifest, holdings = combine(*packets)
-    days = pd.DatetimeIndex(
-        [
-            day
-            for day, _, _ in iter_public_books(
-                manifest,
-                holdings,
-                GRID,
-                settle_days=0,
-                history_quarters=None,
-                expiry_quarters=4,
-            )
-        ]
-    )
-    assert days.is_unique
-    assert list(days).count(pd.Timestamp("2025-08-18")) == 1
-    print("SANITY: distinct publication dates that expire onto one trading session emit one snapshot.")
-
-
 def test_normal_elite_handles_colliding_expiry_sessions(
     sqlite_store: DataStore,
     monkeypatch: pytest.MonkeyPatch,

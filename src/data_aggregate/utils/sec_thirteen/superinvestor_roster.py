@@ -1,11 +1,10 @@
-"""Frame-based point-in-time roster selection."""
+"""Configured fixed cohorts and historical roster access."""
 
 from __future__ import annotations
 
 import json
 import re
 from pathlib import Path
-from typing import cast
 
 import pandas as pd
 
@@ -43,18 +42,3 @@ def roster_as_of(history: pd.DataFrame | None, as_of: object = None, *, config_d
         return set()
     overrides = load_superinvestor_overrides(config_dir)
     return {c for raw in snap["cik"].dropna() if (c := overrides.manager_id(raw))}
-
-
-def first_snapshot_date(history: pd.DataFrame | None) -> pd.Timestamp | None:
-    """The earliest `snapshot_date` in the table, or None when it has never been written.
-
-    The roster history starts after the first 13F books, so `roster_as_of(q)` is EMPTY for
-    the earliest quarters and a caller that used it unguarded would zero every manager there.
-    Callers floor their lookup at this date: extrapolating the oldest roster backwards is a
-    compromise, but the alternative is today's roster, which is the survivorship bias this
-    table exists to remove."""
-    df = history
-    if df is None:
-        return None
-    snapshot_dates = df["snapshot_date"]
-    return cast(pd.Timestamp, pd.Timestamp(snapshot_dates.min()))

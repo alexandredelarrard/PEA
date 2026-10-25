@@ -1,11 +1,4 @@
-"""
-`DataStore` -- the only place in the repo that issues SQL. Engine-level helpers below it,
-the facade at the bottom.
-
-Dialect-aware: Postgres and SQLite both use native INSERT .. ON CONFLICT DO UPDATE, any
-other dialect falls back to delete-by-PK-then-insert, so the same code path serves the
-production container and an in-memory SQLite test DB.
-"""
+"""The sole SQL boundary: typed PostgreSQL/SQLite reads, writes and schema preparation."""
 
 from __future__ import annotations
 
@@ -60,10 +53,7 @@ def _reflect(engine: Engine | Connection, name: str) -> Table:
 
 
 def ensure_table(engine: Engine, name: str, df: pd.DataFrame) -> None:
-    """Create the table (registry PK, column types from `df`'s dtypes) if it does not exist.
-
-    The CREATE runs under a process-wide lock with a re-check inside it, so concurrent writers
-    to a cold table create it exactly once."""
+    """Create missing registry DDL from frame dtypes; serialize and recheck cold-table creation."""
     if table_exists(engine, name):
         return
     statements = [stmt for stmt in ddl.table_ddl_from_frame(resolve(name), df).split(";") if stmt.strip()]
@@ -76,30 +66,17 @@ def ensure_table(engine: Engine, name: str, df: pd.DataFrame) -> None:
 
 
 def reflect_columns(engine: Engine, name: str) -> list[tuple[str, str]]:
-    """Ordered (column, SQL type) from the LIVE table's real schema.
-
-    Used instead of sampled dtypes so a column that is all-NaN in an early sample (gold
-    before 2000) keeps its true DOUBLE PRECISION type rather than being inferred as TEXT.
-    """
+    """Ordered live column names/types; never infer SQL types from a nullable sample."""
     return [(c.name, str(c.type)) for c in _reflect(engine, name).c]
 
 
 def reflect_all(engine: Engine) -> dict[str, list[tuple[str, str]]]:
-    """`{table: [(column, sql_type)]}` for every MANAGED table that exists.
-
-    This is the map `ddl.generate_schema_sql` consumes. Doing the reflection HERE rather
-    than inside `ddl` is what removes the `ddl -> store` back-edge that made the data_store
-    imports circular (and forced four deferred imports inside this module).
-    """
+    """Live schemas for existing managed tables, consumed by ddl.generate_schema_sql."""
     return {t.name: reflect_columns(engine, t.name) for t in MANAGED if table_exists(engine, t.name)}
 
 
 def ensure_columns(engine: Engine, name: str, df: pd.DataFrame) -> list[str]:
-    """Schema evolution: ADD COLUMN for any DataFrame column missing from the
-    table, so newly-extracted fundamentals / features persist instead of being
-    silently dropped by the column-filter in upsert/copy. Returns the columns
-    added. No-op if the table doesn't exist yet (caller runs ensure_table first)
-    or on engines other than PostgreSQL and SQLite."""
+    """Add newly observed columns on PostgreSQL/SQLite and return their names; never drop fields."""
     if engine.dialect.name not in {"postgresql", "sqlite"} or not table_exists(engine, name):
         return []
     existing = set(_reflect(engine, name).c.keys())
@@ -116,9 +93,7 @@ def ensure_columns(engine: Engine, name: str, df: pd.DataFrame) -> list[str]:
 
 
 def copy_load(engine: Engine, df: pd.DataFrame, name: str) -> int:
-    """Fast bulk insert via Postgres COPY (CSV). For the one-time seed of empty
-    tables; no conflict handling. Falls back to upsert on non-Postgres engines
-    or for frames carrying array/list columns (COPY can't format those)."""
+    """COPY append on PostgreSQL; upsert elsewhere or for list/tuple payloads. No conflict handling in COPY."""
     if df is None or df.empty:
         return 0
     if engine.dialect.name != "postgresql" or any(df[c].apply(lambda value: isinstance(value, list | tuple)).any() for c in df):
@@ -147,8 +122,7 @@ def copy_load(engine: Engine, df: pd.DataFrame, name: str) -> int:
 
 
 class _NotNull:
-    """`where={"col": NOT_NULL}` -> `col IS NOT NULL`. An object, not a magic string, so it
-    cannot collide with a stored value (`None` already means IS NULL)."""
+    """Unambiguous IS NOT NULL filter sentinel; None already means IS NULL."""
 
     __slots__ = ()
 
@@ -169,9 +143,7 @@ def _is_temporal_column(column) -> bool:
 
 
 def _bind_date(column, value):
-    """Bind a date the way the COLUMN stores it: a real datetime/date for TIMESTAMP/DATE, an
-    ISO string for TEXT (SQLite). Reading it off the reflected type is what lets one `since=`
-    work on both dialects."""
+    """Bind dates according to the reflected DATE, TIMESTAMP or ISO-text column type."""
     ts = pd.Timestamp(value)
     if isinstance(column.type, sqltypes.DateTime):
         return ts.to_pydatetime()
@@ -181,8 +153,7 @@ def _bind_date(column, value):
 
 
 def _predicate(column, value):
-    """One WHERE clause. Normalizes the shapes already in use (`str`, `list`, `set`, `tuple`)
-    plus None/NOT_NULL, sorting collections so the SQL is deterministic."""
+    """Equality, deterministic IN, NULL and NOT_NULL predicates; an empty collection matches nothing."""
     if isinstance(value, _NotNull):
         return column.isnot(None)
     if value is None:
@@ -216,14 +187,9 @@ def build_select(
     distinct_on: str | None = None,
     exclude: tuple[str, object] | None = None,
 ) -> Select[Any]:
-    """The one query builder every read goes through. `where`, `since` and `until` are ANDed.
+    """Build a bound SELECT; filters and inclusive day bounds are ANDed.
 
-    `exclude` = (column, value) drops the rows holding that value (NULLs kept); a table without
-    the column has no such rows, so it is skipped there.
-
-    Built from reflected Columns and bound parameters, never string interpolation, so a value
-    cannot inject SQL and an unknown column raises KeyError before reaching the DB.
-    """
+    Exclusion keeps NULLs and ignores absent marker columns. Unknown columns raise KeyError."""
     if distinct_on is not None:
         stmt = select(tbl.c[distinct_on]).distinct()
     else:
@@ -238,17 +204,13 @@ def build_select(
         if date_col is None:
             raise ValueError("since/until need a date column: the table declares no `date_col`, so pass date_col= explicitly")
         if where and date_col in where:
-            # `date = a AND date >= b` is almost never what the caller meant, and silently
-            # emitting it would hide the mistake behind an empty result.
+            # Refuse an ambiguous equality/window combination instead of returning a misleading empty result.
             raise ValueError(f"{date_col!r} is constrained by both where= and since/until")
         column = tbl.c[date_col]
         if since is not None:
             stmt = stmt.where(column >= _bind_date(column, since))
         if until is not None:
-            # `< until + 1 day`, not `<= until`: on a text-typed column
-            # "2024-03-22 00:00:00.000000" <= "2024-03-22" is lexically FALSE, which would
-            # drop the very day the caller asked to include. This form is also right for a
-            # TIMESTAMP column carrying intraday times.
+            # Half-open next-day bounds include intraday timestamps and text-typed SQLite dates.
             end = cast(pd.Timestamp, pd.Timestamp(until)).normalize() + pd.Timedelta(days=1)
             stmt = stmt.where(column < _bind_date(column, end))
 
@@ -303,13 +265,7 @@ def _records(df: pd.DataFrame) -> list[dict]:
 
 
 def _coerce_temporal(df: pd.DataFrame, tbl: Table) -> pd.DataFrame:
-    """Bind an ISO-string date as a real date/datetime for DATE/TIMESTAMP columns.
-
-    psycopg2 casts the string itself, SQLite's driver refuses it -- so a frame that writes
-    fine in production raised `SQLite Date type only accepts Python date objects` on the
-    in-memory test DB. Driven off the REFLECTED column type, mirroring `_bind_date` on the
-    read side, so one frame writes to both dialects.
-    """
+    """Coerce frame date columns to reflected SQL temporal types, including Python dates for SQLite DATE."""
     fixed = {}
     for name in df.columns:
         col = tbl.c.get(name)
@@ -323,19 +279,9 @@ def _coerce_temporal(df: pd.DataFrame, tbl: Table) -> pd.DataFrame:
 
 
 def upsert_dataframe(engine: Engine, df: pd.DataFrame, name: str, pk: list[str], chunksize: int = _CHUNK) -> int:
-    """INSERT the frame, updating the columns THE FRAME CARRIES on PK conflict. Returns the
-    number of rows sent. No-op for an empty frame.
+    """Upsert carried fields on PK conflict, preserving omitted columns; explicit nulls overwrite.
 
-    A partial frame MERGES: a column the frame does not carry keeps its stored value. The
-    update list is therefore built from the frame's columns and not from the table's, which
-    is not a nicety -- `excluded.<col>` for a column absent from the INSERT resolves to that
-    column's DEFAULT, so building the list from `tbl.c` sets every omitted column to NULL.
-    Measured: a 4-column gender patch over `def14a_llm` nulled 392 of 409 rows including
-    `def14a_json`, destroying the LLM answers they were the only copy of.
-
-    Callers that mean to blank a column must send it explicitly as null; a caller that means
-    to rewrite a whole table wants `replace`.
-    """
+    Returns rows sent. Empty frames do nothing; whole-table rewrites use replace()."""
     if df is None or df.empty:
         return 0
     tbl = _reflect(engine, name)
@@ -370,13 +316,7 @@ def _upsert_records(
 
 
 def _delete_then_insert(conn, tbl: Table, chunk: list[dict], pk: list[str]) -> None:
-    """DELETE the conflicting keys, then INSERT. Only reached on a dialect with no
-    `ON CONFLICT` (neither Postgres nor SQLite, i.e. nothing this repo runs on).
-
-    It does NOT merge: a column the chunk omits comes back as that column's default, because
-    the old row is gone before the new one lands. Reproducing the merge here means reading
-    the conflicting rows first, so the divergence is recorded rather than hidden.
-    """
+    """Generic-dialect fallback: replace conflicting rows, so omitted fields revert to defaults rather than merge."""
     keys = [tuple(r[k] for k in pk) for r in chunk]
     conn.execute(tbl.delete().where(tuple_(*[tbl.c[k] for k in pk]).in_(keys)))
     conn.execute(tbl.insert(), chunk)
@@ -398,19 +338,7 @@ def _prepare_def14a_table(conn: Connection, spec: SchemaTable, block: str) -> bo
 
 
 class DataStore:
-    """THE database access layer -- nothing outside `src/data_store/` issues SQL.
-
-    One instance lives on `context.store`. Every method takes a `Table` from `schema.py` or
-    its name, so a call site that has the table also has its pk, date column and projection.
-
-    Absorbs `PartStore` (a second store implementation that existed only because the
-    `cube_part_*` tables were unregistered) and the capabilities eleven modules hand-rolled
-    with raw `pd.read_sql`: `date >= x`, `IS NOT NULL`, chunked reads, MAX/MIN, DISTINCT and
-    column introspection.
-
-    `load` RAISES when there is nothing to read (see `errors.py`); `optional=True` returns
-    None for the few genuinely optional reads.
-    """
+    """Registry-backed database facade. Missing/empty reads raise unless optional=True."""
 
     def __init__(self, engine: Engine) -> None:
         self.engine = engine
@@ -447,9 +375,7 @@ class DataStore:
         return row_count(self.engine, name) if self.exists(name) else 0
 
     def bounds(self, table, column: str | None = None) -> tuple:
-        """RAW `(MIN, MAX)` of `column` (defaults to the table's `date_col`). Raw because the
-        useful bounds are not always temporal -- `fetch_hf_transcripts` reads a `quarter`
-        string. `(None, None)` when absent or empty."""
+        """Raw MIN/MAX of the requested or declared date column; (None, None) when missing/empty."""
         name = name_of(table)
         col = column or self._date_col(table)
         if col is None:
@@ -462,10 +388,7 @@ class DataStore:
         return (row[0], row[1])
 
     def max_date(self, table, column: str | None = None) -> pd.Timestamp | None:
-        """Latest stored date at midnight, `None` if absent/empty.
-
-        None-on-absent is load-bearing: `plan_window` reads it as "no stored data -> full
-        rebuild", so this must not raise for an unbuilt part."""
+        """Latest stored day at midnight, or None when missing/empty/unparseable so callers can rebuild."""
         name = name_of(table)
         col = column or self._date_col(table)
         if col is None or not self.exists(name):
@@ -483,15 +406,7 @@ class DataStore:
             return None
 
     def max_date_by(self, table, key_col: str, date_col: str | None = None) -> dict[str, pd.Timestamp]:
-        """Per-key latest stored date -- `SELECT key, MAX(date) ... GROUP BY key`.
-
-        The grouped counterpart of `max_date`, for the fetchers that resume per entity.
-        One aggregate query, so the resume check never loads the table: `prices` is
-        ~1.8M rows, and reading it just to `groupby("ticker")["date"].max()` in pandas
-        cost seconds and hundreds of MB per run.
-
-        Empty dict when the table or either column is absent -- callers read that as
-        "nothing stored yet", the same contract as `max_date`'s None."""
+        """Per-key latest stored day in one grouped query; omit NULL keys/dates and unparseable dates."""
         name = name_of(table)
         col = date_col or self._date_col(table)
         if col is None or not self.exists(name):
@@ -513,10 +428,7 @@ class DataStore:
         return out
 
     def key_stats(self, table: SchemaTable | str, key_col: str, date_col: str | None = None, where: dict[str, object] | None = None) -> pd.DataFrame:
-        """Per-key `first`, `last` and row count `n` of `date_col`, in one `GROUP BY` read.
-
-        Returns columns `key, first, last, n` with the dates as midnight Timestamps. Marker rows
-        are counted. An empty frame when the table or either column is absent."""
+        """One grouped key/first/last/n read, including markers; missing tables/columns return an empty typed frame."""
         name = name_of(table)
         col = date_col or self._date_col(table)
         rows: list = []
@@ -537,9 +449,7 @@ class DataStore:
     def distinct(
         self, table, column: str, *, where: dict | None = None, order: str | None = None, limit: int | None = None, dropna: bool = True
     ) -> list:
-        """`SELECT DISTINCT col [WHERE ...] [ORDER BY col asc|desc] [LIMIT n]`. Replaces the
-        DISTINCT queries in `sec_utils`, `bulk_cache`, the earnings-call streamers and
-        `step_train`."""
+        """Distinct values with optional filtering, ordering, limit and NULL removal."""
         name = name_of(table)
         if not self.exists(name):
             return []
@@ -610,8 +520,7 @@ class DataStore:
         return changed
 
     def _prepare_13f_table(self, table: SchemaTable, columns: list[str], build: Callable[[], pd.DataFrame]) -> Table:
-        """Reuse verified schema until incoming columns or a store schema operation changes it;
-        `build` makes the typed frame for DDL only when the schema must be prepared."""
+        """Reuse verified 13F metadata until incoming columns or store schema operations invalidate it; build DDL frames lazily."""
         with self._13f_lock:
             prepared = self._13f_tables.get(table.name)
             if prepared is not None and tuple(prepared.primary_key.columns.keys()) == table.pk and set(columns) <= set(prepared.c.keys()):
@@ -1438,9 +1347,7 @@ class DataStore:
         return df
 
     def bulk_seed(self, table, df: pd.DataFrame) -> int:
-        """Fast COPY append onto a schema `replace` already established (the cube's streaming
-        writer). `copy_load` filters to existing columns and nothing here evolves the schema,
-        so an unknown column would be dropped silently -- raise instead."""
+        """Append to an established schema via COPY/fallback; reject unknown columns instead of silently dropping them."""
         name = name_of(table)
         if df is not None and not df.empty and self.exists(name):
             existing = set(self.columns(name))
@@ -1478,19 +1385,13 @@ class DataStore:
         return len(rows)
 
     def append_tail(self, table, df: pd.DataFrame, cutoff, *, inclusive: bool = False, date_col: str | None = None) -> int:
-        """DELETE rows after `cutoff` (>= if `inclusive`), then append `df`. Idempotent, so
-        re-running the same day never duplicates. `inclusive` is what the forward-looking
-        target part needs: a label that was NaN last run matures into a value."""
+        """Delete the tail after cutoff (inclusive when requested), then append; empty input still deletes the tail."""
         name = name_of(table)
         col = date_col or self._date_col(table)
         if col is None:
             raise ValueError(f"{name}: append_tail needs a date column")
         tbl = _reflect(self.engine, name)
-        # Always a `>=` against a DAY BOUNDARY, never `> cutoff`. A text-typed date column
-        # (SQLite stores "2024-03-08 00:00:00.000000") compares LEXICALLY, so `> '2024-03-08'`
-        # is true for that very day -- it deleted the cutoff day and the append never brought
-        # it back, silently losing one day per incremental run. Postgres hid this because its
-        # column is a real TIMESTAMP.
+        # A day boundary also preserves the cutoff day on text-typed SQLite dates.
         boundary = cast(pd.Timestamp, pd.Timestamp(cutoff)).normalize()
         if not inclusive:
             boundary += pd.Timedelta(days=1)
@@ -1502,12 +1403,7 @@ class DataStore:
         return len(df)
 
     def delete(self, table, where: dict[str, object]) -> int:
-        """DELETE the rows matching `where` (same predicate shapes as `load`); returns rows deleted.
-
-        `where` is REQUIRED and may not be empty: the alternative to a targeted delete is
-        load-the-whole-table-and-`replace`, which is how `_drop_stale_turns` used to reconcile a
-        few orphaned rows by pulling every 1536-dim vector in the cache into RAM.
-        """
+        """Delete a nonempty explicit row scope using the normal filter predicates; return deleted rows."""
         if not where:
             raise ValueError("delete() needs a where= filter; use replace() to rewrite a table")
         name = name_of(table)
@@ -1521,14 +1417,9 @@ class DataStore:
             return int(conn.execute(stmt).rowcount)
 
     def replace(self, table: SchemaTable | str, df: pd.DataFrame, chunksize: int = 200_000) -> int:
-        """Full rebuild: empty the table, fast-COPY the frame back in chunks.
+        """Rebuild with chunked COPY: DELETE managed tables, DROP/recreate unmanaged tables to remove stale columns.
 
-        Managed tables are DELETEd (keeping their sql/schema.sql DDL); unmanaged
-        `cube_part_*` tables are DROPPED and recreated, because a rebuild may legitimately
-        REMOVE a column and `ensure_columns` only ever adds. With a DELETE the stale column
-        would persist, `write_part`'s drift check would fire on every later run, and each
-        incremental build would silently become a full 15-year rebuild.
-        """
+        DROP, preparation, DELETE and COPY chunks retain their separate commits; failures can leave a partial rebuild."""
         if df is None or df.empty:
             return 0
         name = name_of(table)
@@ -1544,18 +1435,14 @@ class DataStore:
             return len(df)
 
     def ensure_columns(self, table: SchemaTable | str, df: pd.DataFrame) -> list[str]:
-        """ADD COLUMN for missing frame columns and invalidate prepared 13F metadata."""
+        """Add newly observed columns on PostgreSQL/SQLite and return their names; never drop fields."""
         name = name_of(table)
         with self._13f_lock if name in (Tables.sec13f_hr.name, Tables.sec13f_manager_holdings.name) else nullcontext():
             self._13f_tables.pop(name, None)
             return ensure_columns(self.engine, name, df)
 
     def drop(self, table: SchemaTable | str) -> None:
-        """Drop a table if it exists (unmanaged-part rebuilds, superseded-table cleanup).
-
-        Takes a bare name as well as a `Table`, since the thing being dropped is sometimes a
-        table that has already been removed from the registry.
-        """
+        """Drop a registered or bare table name and invalidate its prepared metadata."""
         name = name_of(table)
         self._def14a_retries_prepared = False
         with self._13f_lock if name in (Tables.sec13f_hr.name, Tables.sec13f_manager_holdings.name) else nullcontext():

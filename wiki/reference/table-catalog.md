@@ -7,7 +7,7 @@ tags:
   - reference
   - database
   - schema
-source_commit: c3f43e3ad6ae2260fa1020a5ba84107681d40495
+source_commit: 825bb44744861ba26b0c13c2ef734365d6532126
 ---
 # Table catalog
 
@@ -115,7 +115,7 @@ The distinction between the two histories is load-bearing: [data extraction](../
 
 Each child table owns one focused LLM request and its `retry` counter: executive pay, director pay, ownership, and board/CEO/governance. Audit uses the existing parent table, so no sixth table is needed. Parent pay/ownership/roster copies are deterministic summaries; they are not requested twice. Recovering CEO identity refreshes its dependent pay/ownership copies from already-saved, matching child rows. Legacy `def14a_json` and appended raw section answers replay for free before any paid repair. See [SEC and LLM extraction](../flows/sec-llm-extraction.md).
 
-`retry` is BIGINT on all five tables: first attempt one; a source-present missing key can retry once at two; two is excluded even under `-F`. Child `_empty` markers persist failed/empty attempts and are hidden from economic reads (executive markers additionally use fiscal year -1). `DataStore.prepare_def14a_retries()` initializes existing rows once transactionally and preserves later counters. The parent default projection omits JSON/retry; governance and vote-role consumers also ignore parents containing only extraction metadata.
+`retry` is BIGINT on all five tables and is owned per filing/domain, repeated on that domain's person/year rows: first attempt one; a source-present missing key can retry once at two; two is excluded even under `-F`. Missing plus one still needs a recognized source value; unsupported layouts can remain at one without a paid call. Child `_empty` markers persist failed/empty attempts and are hidden from economic reads (executive markers additionally use fiscal year -1). The daily fetcher calls `DataStore.prepare_def14a_retries()` before loading work: existing tables without the column receive the transactional add/backfill to one automatically; cold tables use canonical DDL. Repeated preparation preserves later counters. The parent default projection omits JSON/retry; governance and vote-role consumers also ignore parents containing only extraction metadata.
 
 ## Behavioral, transcript, and embedding tables
 

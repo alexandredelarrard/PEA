@@ -2,7 +2,7 @@
 title: SEC and LLM extraction
 description: SEC filing discovery, five focused proxy requests, bounded retries and main-thread persistence.
 type: flow
-source_commit: c3f43e3ad6ae2260fa1020a5ba84107681d40495
+source_commit: 825bb44744861ba26b0c13c2ef734365d6532126
 tags:
   - wiki
   - flow
@@ -49,7 +49,7 @@ sequenceDiagram
 
 [retry.py](../../src/data_extract/utils/structure/def14a/retry.py) binds the five schemas/tables. An unattempted section uses `retry=1`; a saved first attempt with a source-present missing key can run once more at `retry=2`. Two is excluded from further calls, including `-F`. There is no call cap, new retry parameter or separate repair command.
 
-[evidence.py](../../src/data_extract/utils/structure/def14a/evidence.py) requires a disclosed value tied to a row or label before repairing an attempted section. Headers, optional silence, dashes and less-than bounds do not prove an exact missing value. An unreadable filing consumes no attempt; a provider failure retains its reserved counter. Empty child sections use hidden `_empty` rows with complete primary keys. Marker stamps retain only the table's registered keys, filing date and permitted CIK metadata. Legacy whole-proxy answers/markers prove a first attempt for all domains; a new split archive does not complete its siblings.
+[evidence.py](../../src/data_extract/utils/structure/def14a/evidence.py) requires a disclosed value tied to a row or label before repairing an attempted section. Missing plus `retry=1` alone does not schedule a request: the source check must recognize the missing key. Supported layouts include named plaintext Summary Compensation Table salary rows, prefixed/repeated year headers, consecutive fiscal-year ranges and an explicitly labelled transposed audit-fee matrix. This check schedules the matching LLM action; it does not insert regex-derived amounts into fact tables. Unknown layouts can remain unresolved at one. Headers alone, optional silence, dashes and less-than bounds do not prove an exact missing value. An unreadable filing consumes no attempt; a provider failure retains its reserved counter. Empty child sections use hidden `_empty` rows with complete primary keys. Marker stamps retain only the table's registered keys, filing date and permitted CIK metadata. Legacy whole-proxy answers/markers prove a first attempt for all domains; a new split archive does not complete its siblings.
 
 [postprocess.py](../../src/data_extract/utils/structure/def14a/postprocess.py) applies only declared currency/scale, converts percentages to fractions, preserves fiscal years, zeros, negatives and real changes, and keeps existing non-null facts during partial repair. Unsupported units remain unknown; historical option counts are never priced as dollar awards. No additional cross-filing smoothing is introduced. Existing gender consensus and downstream imputation retain their own contracts.
 

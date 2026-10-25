@@ -124,8 +124,8 @@ def test_invalid_class_support_masks_only_rolling_tape_denominators(invalid: str
     control = control.set_index(["date", "ticker"]).sort_index()
 
     assert pd.isna(panel.loc[(idx[bad_position + 1], "LEN"), "f_ic_shortvol_market_coverage"])
-    assert pd.isna(panel.loc[(pd.Timestamp("2024-01-30"), "LEN"), "f_ic_ftd_to_adv20"])
-    assert panel.loc[(pd.Timestamp("2024-01-30"), "MRK"), "f_ic_ftd_to_adv20"] == pytest.approx(0.3)
+    assert pd.isna(panel.loc[(pd.Timestamp("2024-02-05"), "LEN"), "f_ic_ftd_to_adv20"])
+    assert panel.loc[(pd.Timestamp("2024-02-05"), "MRK"), "f_ic_ftd_to_adv20"] == pytest.approx(0.3)
     if invalid != "ratio":
         expected = 300 / (1_000 + (1_000 if invalid == "product" else 500))
         assert panel.loc[(idx[bad_position + 21], "LEN"), "f_ic_shortvol_market_coverage"] == pytest.approx(expected)
@@ -187,7 +187,7 @@ def test_public_step_rejects_negative_canonical_volume_hidden_by_a_positive_clas
         Tables.sec_fails_to_deliver,
         pd.DataFrame([{"date": bad_day, "ticker": ticker, "fails_quantity": 300.0, "period": "202401a"} for ticker in volume]),
     )
-    config = OmegaConf.create({"build_cube": {}, "local": {"paths": {"fails_deliver": "ftd"}}})
+    config = OmegaConf.create({"build_cube": {"institutionals": {"ftd_availability_calendar_days": 21}}})
     ctx = cast(
         Context,
         SimpleNamespace(
@@ -205,8 +205,8 @@ def test_public_step_rejects_negative_canonical_volume_hidden_by_a_positive_clas
 
     assert -1.0 + 500.0 == 499.0
     assert pd.isna(panel.loc[(pd.Timestamp("2024-01-03"), "LEN"), "f_ic_shortvol_market_coverage"])
-    assert pd.isna(panel.loc[(pd.Timestamp("2024-01-30"), "LEN"), "f_ic_ftd_to_adv20"])
-    assert panel.loc[(pd.Timestamp("2024-01-30"), "MRK"), "f_ic_ftd_to_adv20"] == pytest.approx(0.3)
+    assert pd.isna(panel.loc[(pd.Timestamp("2024-02-05"), "LEN"), "f_ic_ftd_to_adv20"])
+    assert panel.loc[(pd.Timestamp("2024-02-05"), "MRK"), "f_ic_ftd_to_adv20"] == pytest.approx(0.3)
     assert panel.loc[(pd.Timestamp("2024-01-03"), "LEN"), "f_ic_shortvol_ratio_5d"] == pytest.approx(1 / 3)
     print("\n=== SANITY CHECK: public step canonical support ===")
     print(
@@ -232,7 +232,7 @@ def test_two_classes_at_ratio_one_sum_into_both_denominators() -> None:
         .sort_index()
     )
 
-    day = (pd.Timestamp("2024-01-30"), "LEN")
+    day = (pd.Timestamp("2024-02-05"), "LEN")
     assert old.loc[day, "f_ic_ftd_to_adv20"] == pytest.approx(0.3)
     assert new.loc[day, "f_ic_ftd_to_adv20"] == pytest.approx(0.2)
     assert new.loc[day, "f_ic_shortvol_market_coverage"] == pytest.approx(0.2)
@@ -285,13 +285,13 @@ def test_brk_style_ratio_step_matches_the_as_traded_identity_across_a_one_class_
     assert df_regsho is not None
     cov = _shortvol_fields(df_regsho, idx, None, None, tape)["ic_shortvol_market_coverage"]
 
-    assert _cell(ratio, "2009-12-30", "BRK-B") == pytest.approx(160 / 2_300)
-    assert _cell(ratio, "2010-03-02", "BRK-B") == pytest.approx(2_500 / 115_000)
+    assert _cell(ratio, "2010-01-05", "BRK-B") == pytest.approx(160 / 2_300)
+    assert _cell(ratio, "2010-03-08", "BRK-B") == pytest.approx(2_500 / 115_000)
     assert cov["BRK-B"].dropna().round(12).eq(0.5).all() and cov["BRK-B"].notna().sum() > 50
     assert not missing.to_numpy().any()
     print("\n=== SANITY CHECK: BRK ratio step on the restated tape ===")
     print(
-        f"  fails/ADV {_cell(ratio, '2009-12-30', 'BRK-B'):.4f} before (as-traded 160/2,300) and {_cell(ratio, '2010-03-02', 'BRK-B'):.4f} after "
+        f"  fails/ADV {_cell(ratio, '2010-01-05', 'BRK-B'):.4f} before (as-traded 160/2,300) and {_cell(ratio, '2010-03-08', 'BRK-B'):.4f} after "
         f"(2,500/115,000); coverage 0.50 on every day across the 50:1 one-class split. Validated."
     )
 

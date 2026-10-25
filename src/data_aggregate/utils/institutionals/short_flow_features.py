@@ -7,25 +7,23 @@ days); `ic_shortvol_market_coverage` is RegSHO's measured share of tape volume. 
 denominators (ADV20 and coverage) sum the issuer's secondary share classes, as the class-summed
 numerators do (`secondary_class_volume`). Point-in-time:
 every `ic_shortvol_*` leg is shifted `SHORTVOL_PUB_LAG` trading day; an FTD ZIP becomes knowable as
-a whole at period end plus 15 calendar days past weekends (the fresh latest cached ZIP may
-use its mtime in `MARKET_TIMEZONE`), moved to the next session and held until the next ZIP. An
-absent FTD ticker is 0 only on a date the file covers; an uncovered date is NaN.
+a whole at half-month end plus the configured calendar-day lag (estimated_policy_21d),
+moved to the next actual session and held until the next ZIP. This is an estimated policy,
+not an observed historical SEC release timestamp. Verified issuer absence on a covered,
+dated-supported source is 0; unsupported absence remains NaN.
 """
 
 from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
-from pathlib import Path
 from typing import cast
 
 import numpy as np
 import pandas as pd
 
-from src.constants.constants import CANONICAL_ROLES, FTD_ZIP_NAME_TEMPLATE, MARKET_TIMEZONE
+from src.constants.constants import CANONICAL_ROLES
 from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.common.errors import _absent, _empty_panel
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
@@ -116,22 +114,18 @@ def _ftd_period_end(period: str) -> pd.Timestamp:
     return month + pd.Timedelta(days=14) if period[-1] == "a" else month + pd.offsets.MonthEnd(0)
 
 
-def _ftd_estimated_available_date(period: str) -> pd.Timestamp:
-    """Historical ZIP estimate: period end plus 15 calendar days, past weekends."""
-    available = _ftd_period_end(period) + pd.Timedelta(days=15)
-    while available.weekday() >= 5:
-        available += pd.Timedelta(days=1)
-    return available
+def _ftd_estimated_available_date(period: str, calendar_days: int) -> pd.Timestamp:
+    """Estimated ZIP policy day; the publisher snaps it to an actual market session."""
+    return _ftd_period_end(period) + pd.Timedelta(days=calendar_days)
 
 
 def _ftd_available_dates(
     fails_hist: pd.DataFrame,
-    cache_dir: Path | None,
-    *,
-    stored_periods: Sequence[str] | None = None,
-    today: pd.Timestamp | None = None,
+    calendar_days: int,
 ) -> dict[str, pd.Timestamp]:
-    """Derive one publication day per stored ZIP, using only a fresh latest cache mtime."""
+    """Derive deterministic estimated policy days from persisted ZIP periods and the owner setting."""
+    if isinstance(calendar_days, bool) or not isinstance(calendar_days, int) or calendar_days < 1:
+        raise ValueError("FTD availability calendar days must be a positive integer")
     if "period" not in fails_hist:
         raise ValueError("FTD source is missing its persisted ZIP period")
     if "date" not in fails_hist:
@@ -142,39 +136,19 @@ def _ftd_available_dates(
         raise ValueError("FTD source has a null settlement date or ZIP period")
     if source_periods.groupby("date")["period"].nunique().gt(1).any():
         raise ValueError("FTD settlement date belongs to multiple ZIP periods")
-    period_ends = {period: _ftd_period_end(period) for period in source_periods["period"].unique()}
-    periods = sorted(period_ends)
-    available = {period: _ftd_estimated_available_date(period) for period in periods}
-    if cache_dir is None or not periods:
-        return available
-
-    ny_today = pd.Timestamp.now(tz=MARKET_TIMEZONE).date() if today is None else pd.Timestamp(today).date()
-    candidate_ends = period_ends if stored_periods is None else {period: _ftd_period_end(period) for period in stored_periods}
-    eligible = [period for period, end in candidate_ends.items() if 0 <= (ny_today - end.date()).days <= 60]
-    if not eligible:
-        return available
-    latest = max(eligible)
-    if latest not in available:
-        return available
-    cached = cache_dir / FTD_ZIP_NAME_TEMPLATE.format(period=latest)
-    if cached.is_file():
-        cache_date = datetime.fromtimestamp(cached.stat().st_mtime, MARKET_TIMEZONE).date()
-        if 0 <= (ny_today - cache_date).days < 2:
-            available[latest] = pd.Timestamp(cache_date)
-    return available
+    available = {period: _ftd_estimated_available_date(period, calendar_days) for period in source_periods["period"].unique()}
+    return dict(sorted(available.items()))
 
 
 def _publish_ftd_zip_states(
     settlement_state: pd.DataFrame,
     fails_hist: pd.DataFrame,
     idx: pd.DatetimeIndex,
-    available_by_period: dict[str, pd.Timestamp] | None = None,
+    available_by_period: dict[str, pd.Timestamp],
 ) -> pd.DataFrame:
     """Expose each ZIP's latest cumulative FTD state from its first tradable session on or after its
     publication day until the next ZIP; raises when a ZIP would publish before its own settlement dates.
     """
-    if available_by_period is None:
-        available_by_period = _ftd_available_dates(fails_hist, None)
     periods: dict[str, list[pd.Timestamp]] = {}
     source_periods = fails_hist[["date", "period"]].drop_duplicates().copy()
     source_periods["date"] = to_day(source_periods["date"])

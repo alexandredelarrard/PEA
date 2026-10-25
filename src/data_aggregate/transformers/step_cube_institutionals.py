@@ -231,8 +231,6 @@ class StepCubeInstitutionals(Step):
         bars: pd.DataFrame,
         quantity_basis: institutional_inputs.QuantityBasis,
     ) -> pd.DataFrame | None:
-        cache_dir = self._context.paths["DATA_STORE"] / self._context.config.local.paths.fails_deliver
-
         # Load observed fallback only for companies without any adjudicated master evidence.
         known = set(lines["canonical_company"].dropna()) if lines is not None else set()
         df_finra = institutional_inputs.load_finra_tenure(self._store, sorted(set(frames.universe) - known))
@@ -261,7 +259,7 @@ class StepCubeInstitutionals(Step):
             df_source = df_fails if df_fails is not None else pd.DataFrame(columns=["date", "ticker", "fails_quantity", "period"])
             df_coverage = df_coverage if df_coverage is not None else df_source[["date", "period"]]
             settlement = prepare_fails_quantities(df_source, df_coverage, idx, columns, df_tenure, quantity_basis)
-            available = short_flow._ftd_available_dates(df_coverage, cache_dir, stored_periods=sorted(df_coverage["period"].unique()))
+            available = short_flow._ftd_available_dates(df_coverage, self._cfg.institutionals.ftd_availability_calendar_days)
             publication = FtdPublication(df_coverage, available)
         return build_short_flow_feature_panel(frames, df_short, settlement, capital, publication, df_tenure)
 

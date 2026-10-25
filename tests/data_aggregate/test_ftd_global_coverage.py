@@ -34,7 +34,7 @@ def test_ftd_scoped_payload_matches_global_rows(frozen_ftd_sources: tuple[pd.Dat
     frames = PriceFrames(trading_index=df_close.index, universe=(ticker,), peers={}, close_split=df_close, volume=df_volume)
     df_scoped = df_fails.loc[df_fails["ticker"].eq(ticker)]
     df_coverage = df_fails[["date", "period"]].drop_duplicates()
-    publication = FtdPublication(df_coverage, short_flow_features._ftd_available_dates(df_coverage, None))
+    publication = FtdPublication(df_coverage, short_flow_features._ftd_available_dates(df_coverage, 21))
     df_result = build_short_flow_feature_panel(frames, None, fails_history=df_scoped, publication=publication)
     df_reference = build_short_flow_feature_panel(frames, None, fails_history=df_fails)
     df_reference = df_reference.loc[df_reference["ticker"].eq(ticker)]
@@ -47,17 +47,25 @@ def test_ftd_scoped_payload_matches_global_rows(frozen_ftd_sources: tuple[pd.Dat
 
 
 def test_ftd_global_coverage_keeps_unknown_days_and_uses_latest_zip_state(monkeypatch: pytest.MonkeyPatch) -> None:
-    idx = pd.DatetimeIndex(pd.bdate_range("2023-12-01", "2024-02-20"), name="date")
-    columns = pd.Index(["A", "ZERO", "FUTURE"], name="ticker")
+    idx = pd.DatetimeIndex(pd.bdate_range("2023-12-01", "2024-02-26"), name="date")
+    columns = pd.Index(["A", "ZERO", "FUTURE", "UNKNOWN"], name="ticker")
     df_volume = pd.DataFrame(1_000.0, index=idx, columns=columns)
     df_close = pd.DataFrame(100.0, index=idx, columns=columns)
     df_volume.loc[:"2024-01-19", "FUTURE"] = np.nan
     df_close.loc[:"2024-01-19", "FUTURE"] = np.nan
     frames = PriceFrames(trading_index=idx, universe=tuple(columns), peers={}, volume=df_volume, close_split=df_close)
     df_fails = pd.DataFrame(
-        [("2024-01-02", "A", 100.0, "202401a"), ("2024-01-16", "A", 200.0, "202401b")],
+        [
+            ("2024-01-02", "A", 100.0, "202401a"),
+            ("2024-01-12", "A", 0.0, "202401a"),
+            ("2024-01-12", "ZERO", 0.0, "202401a"),
+            ("2024-01-16", "A", 200.0, "202401b"),
+            ("2024-01-31", "A", 0.0, "202401b"),
+            ("2024-01-31", "ZERO", 0.0, "202401b"),
+        ],
         columns=["date", "ticker", "fails_quantity", "period"],
     )
+    df_fails["source_checked_at"] = pd.Timestamp("2024-02-01")
     df_coverage = pd.DataFrame(
         [("2024-01-02", "202401a"), ("2024-01-12", "202401a"), ("2024-01-16", "202401b"), ("2024-01-31", "202401b")],
         columns=["date", "period"],
@@ -69,35 +77,44 @@ def test_ftd_global_coverage_keeps_unknown_days_and_uses_latest_zip_state(monkey
         settlement_state: pd.DataFrame,
         fails_hist: pd.DataFrame,
         idx: pd.DatetimeIndex,
-        available_by_period: dict[str, pd.Timestamp] | None = None,
+        available_by_period: dict[str, pd.Timestamp],
     ) -> pd.DataFrame:
         states.append(settlement_state.copy())
         return publish(settlement_state, fails_hist, idx, available_by_period)
 
     monkeypatch.setattr(short_flow_features, "_publish_ftd_zip_states", capture_state)
-    publication = FtdPublication(df_coverage, short_flow_features._ftd_available_dates(df_coverage, None))
+    publication = FtdPublication(df_coverage, short_flow_features._ftd_available_dates(df_coverage, 21))
     df_panel = build_short_flow_feature_panel(frames, None, fails_history=df_fails, publication=publication)
     df_ratio = df_panel.pivot(index="date", columns="ticker", values="f_ic_ftd_to_adv20")
     assert states[0].loc[pd.Timestamp("2024-01-03")].isna().all()
     assert states[0].loc[pd.Timestamp("2024-01-12"), ["A", "ZERO"]].eq(0.0).all()
     assert pd.isna(states[0].loc[pd.Timestamp("2024-01-12"), "FUTURE"])
-    assert df_ratio.loc[:"2024-01-29"].isna().all().all()
-    assert df_ratio.loc[pd.Timestamp("2024-01-30"), ["A", "ZERO"]].eq(0.0).all()
-    assert pd.isna(df_ratio.loc[pd.Timestamp("2024-01-30"), "FUTURE"])
-    assert df_ratio.loc[pd.Timestamp("2024-02-15"), ["A", "ZERO"]].eq(0.0).all()
-    print("SANITY: covered missing rows are zero, unobserved days and an unlisted source basis stay NaN; each ZIP publishes its global latest state.")
+    assert df_ratio.loc[:"2024-02-02"].isna().all().all()
+    assert df_ratio.loc[pd.Timestamp("2024-02-05"), ["A", "ZERO"]].eq(0.0).all()
+    assert df_ratio.loc[pd.Timestamp("2024-02-05"), ["FUTURE", "UNKNOWN"]].isna().all()
+    assert df_ratio.loc[pd.Timestamp("2024-02-21"), ["A", "ZERO"]].eq(0.0).all()
+    print(
+        "SANITY: explicit supported issuer zeros publish at each ZIP policy day; unobserved dates, missing issuer observations and an unlisted source basis stay NaN."
+    )
 
 
 @pytest.mark.parametrize("empty_payload", [None, pd.DataFrame(columns=["date", "ticker", "fails_quantity", "period"])])
-def test_ftd_global_coverage_publishes_zero_without_selected_rows(empty_payload: pd.DataFrame | None) -> None:
+def test_ftd_global_coverage_publishes_only_explicit_supported_zero(empty_payload: pd.DataFrame | None) -> None:
     idx = pd.DatetimeIndex(pd.bdate_range("2023-12-01", "2024-02-14"), name="date")
-    df_volume = pd.DataFrame({"NO_FAILS": 1_000.0}, index=idx)
-    frames = PriceFrames(trading_index=idx, universe=("NO_FAILS",), peers={}, volume=df_volume)
+    df_volume = pd.DataFrame({"NO_FAILS": 1_000.0, "UNKNOWN": 1_000.0}, index=idx)
+    frames = PriceFrames(trading_index=idx, universe=("NO_FAILS", "UNKNOWN"), peers={}, volume=df_volume)
     df_coverage = pd.DataFrame({"date": ["2024-01-12"], "period": ["202401a"]})
-    publication = FtdPublication(df_coverage, short_flow_features._ftd_available_dates(df_coverage, None))
-    df_panel = build_short_flow_feature_panel(frames, None, fails_history=empty_payload, publication=publication)
+    df_zero = pd.DataFrame(
+        {"date": ["2024-01-12"], "ticker": ["NO_FAILS"], "fails_quantity": [0.0], "period": ["202401a"], "source_checked_at": ["2024-02-01"]}
+    )
+    df_payload = pd.concat([empty_payload, df_zero], ignore_index=True) if empty_payload is not None else df_zero
+    publication = FtdPublication(df_coverage, short_flow_features._ftd_available_dates(df_coverage, 21))
+    df_panel = build_short_flow_feature_panel(frames, None, fails_history=df_payload, publication=publication)
     df_ratio = df_panel.pivot(index="date", columns="ticker", values="f_ic_ftd_to_adv20")
-    assert set(df_ratio.columns) == {"NO_FAILS"}
-    assert df_ratio.loc[:"2024-01-29"].isna().all().all()
-    assert df_ratio.loc["2024-01-30":, "NO_FAILS"].eq(0.0).all()
-    print("SANITY: a requested ticker with no selected source rows receives observed zero only after the globally covered ZIP publishes.")
+    assert set(df_ratio.columns) == {"NO_FAILS", "UNKNOWN"}
+    assert df_ratio.loc[:"2024-02-02"].isna().all().all()
+    assert df_ratio.loc["2024-02-05":, "NO_FAILS"].eq(0.0).all()
+    assert df_ratio["UNKNOWN"].isna().all()
+    print(
+        "SANITY: explicit supported NO_FAILS zero publishes only from its ZIP policy day; global ZIP metadata alone leaves the missing UNKNOWN issuer unavailable."
+    )

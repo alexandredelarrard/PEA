@@ -61,7 +61,7 @@ INSTITUTIONAL_COLUMNS = (
 
 
 def context(store: Any, path: Path) -> Context:
-    config = OmegaConf.create({"build_cube": {}, "local": {"paths": {"fails_deliver": "ftd"}}})
+    config = OmegaConf.create({"build_cube": {"institutionals": {"ftd_availability_calendar_days": 21}}})
     return cast(
         Context,
         SimpleNamespace(store=store, log=logging.getLogger(__name__), config=config, config_dir=Path(DEFAULT_CONFIG_DIR), paths={"DATA_STORE": path}),
@@ -301,7 +301,7 @@ def test_ftd_step_retains_global_zip_dates_from_one_stream(sqlite_store: Any, tm
     assert result is not None
     keys = pd.MultiIndex.from_product([idx, ["AAA"]], names=["date", "ticker"])
     ratio = result.set_index(["date", "ticker"]).reindex(index=keys, columns=["f_ic_ftd_to_adv20"])["f_ic_ftd_to_adv20"]
-    value = ratio.loc[(pd.Timestamp("2024-01-30"), "AAA")]
+    value = ratio.loc[(pd.Timestamp("2024-02-05"), "AAA")]
     assert value == 0 if checked else pd.isna(value)
     assert streams.count(Tables.sec_fails_to_deliver) == 1
     assert set(result["ticker"]).issubset({"AAA"})
@@ -406,7 +406,8 @@ def test_short_stage_uses_the_owner_publication_clock(sqlite_store: Any, tmp_pat
     frames = PriceFrames(trading_index=idx, universe=("AAA",), peers={}, volume=pd.DataFrame({"AAA": 1000.0}, index=idx))
     calls: list[object] = []
 
-    def fixed_clock(coverage: pd.DataFrame, cache_dir: Path | None, **kwargs: Any) -> dict[str, pd.Timestamp]:
+    def fixed_clock(coverage: pd.DataFrame, calendar_days: int) -> dict[str, pd.Timestamp]:
+        assert calendar_days == 21
         calls.append(coverage)
         return {"202401a": pd.Timestamp("2024-02-05")}
 

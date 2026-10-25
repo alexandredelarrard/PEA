@@ -934,7 +934,7 @@ def compute() -> dict:
     )
     ftd_coverage = ftd[["date", "period"]]
     ftd_settlement = prepare_fails_quantities(ftd, ftd_coverage, idx, None, None, quantity_basis)
-    ftd_publication = FtdPublication(ftd_coverage, _ftd_available_dates(ftd_coverage, None))
+    ftd_publication = FtdPublication(ftd_coverage, _ftd_available_dates(ftd_coverage, 21))
     out["panel.short_flow"] = frame_digest(
         build_short_flow_feature_panel(
             make_frames(idx, peers, volume=px["volume"], close_total=close),

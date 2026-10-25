@@ -24,7 +24,6 @@ from typing import Any, cast
 
 import numpy as np
 import pandas as pd
-from pandas.core.dtypes.cast import maybe_box_native
 from sqlalchemy import Connection, Engine, MetaData, Select, Table, case, create_engine, false, func, inspect, or_, select, text, tuple_
 from sqlalchemy import types as sqltypes
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -121,13 +120,7 @@ def copy_load(engine: Engine, df: pd.DataFrame, name: str) -> int:
     or for frames carrying array/list columns (COPY can't format those)."""
     if df is None or df.empty:
         return 0
-    # Only OBJECT columns can hold a list/tuple, so restrict the per-cell scan to those.
-    # The old version ran `.apply(isinstance)` over EVERY column -- 574 of them per 200k-row
-    # cube chunk, all but a handful numeric and incapable of holding a list. Compared on
-    # `dtype == object` rather than via select_dtypes, which folds pandas-3 `str` columns in.
-    object_cols = [c for c, dt in df.dtypes.items() if isinstance(dt, object)]
-    has_list = any(df[c].apply(lambda v: isinstance(v, list | tuple)).any() for c in object_cols)
-    if engine.dialect.name != "postgresql" or has_list:
+    if engine.dialect.name != "postgresql" or any(df[c].apply(lambda value: isinstance(value, list | tuple)).any() for c in df):
         return upsert_dataframe(engine, df, name, list(resolve(name).pk))
 
     tbl = _reflect(engine, name)
@@ -289,24 +282,23 @@ def row_count(engine: Engine, name: str) -> int:
 
 
 def _records(df: pd.DataFrame) -> list[dict]:
-    """DataFrame -> list of dicts with pandas NaN/NaT coerced to None so the
-    driver binds SQL NULL rather than a float nan.
-
-    One object array for the whole frame: a numpy or string column already yields native
-    scalars, so only the other columns are boxed element-wise as `to_dict` would box them."""
+    """Bind SQL NULLs, using public pandas boxing only for object/extension columns."""
     names = list(df.columns)
     if not names:
         return []
     values = df.astype(object).to_numpy(copy=True)
     values[df.isna().to_numpy()] = None
-    rows = values.tolist()
+    rows: list[dict] = [dict(zip(names, row, strict=True)) for row in values.tolist()]
     boxed = [
-        i for i, dtype in enumerate(df.dtypes) if not (isinstance(dtype, pd.StringDtype) or (isinstance(dtype, np.dtype) and dtype.kind in "biufcmM"))
+        column
+        for column, dtype in df.dtypes.items()
+        if not (isinstance(dtype, pd.StringDtype) or (isinstance(dtype, np.dtype) and dtype.kind in "biufcmM"))
     ]
-    for row in rows if boxed else ():
-        for i in boxed:
-            row[i] = maybe_box_native(row[i])
-    return [dict(zip(names, row, strict=True)) for row in rows]
+    if boxed:
+        subset = df[boxed].astype(object)
+        for row, native in zip(rows, subset.where(subset.notna(), None).to_dict("records"), strict=True):
+            row.update(native)
+    return rows
 
 
 def _coerce_temporal(df: pd.DataFrame, tbl: Table) -> pd.DataFrame:
@@ -438,12 +430,10 @@ class DataStore:
         return table_exists(self.engine, name_of(table))
 
     def columns(self, table) -> list[str]:
-        """Column names, `[]` if absent. Reflection, not `information_schema` -- that view
-        does not exist in SQLite, so the callers querying it could not be tested offline."""
+        """Ordered column names, or an empty list for an absent table."""
         name = name_of(table)
-        if not self.exists(name):
-            return []
-        return list(_reflect(self.engine, name).c.keys())
+        inspector = inspect(self.engine)
+        return [column["name"] for column in inspector.get_columns(name)] if inspector.has_table(name) else []
 
     def row_count(self, table) -> int:
         name = name_of(table)
@@ -1454,7 +1444,8 @@ class DataStore:
         so an unknown column would be dropped silently -- raise instead."""
         name = name_of(table)
         if df is not None and not df.empty and self.exists(name):
-            unknown = [c for c in df.columns if c not in set(self.columns(name))]
+            existing = set(self.columns(name))
+            unknown = [c for c in df.columns if c not in existing]
             if unknown:
                 raise ValueError(
                     f"bulk_seed({name}): frame has {len(unknown)} column(s) the table does "

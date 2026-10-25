@@ -1,0 +1,104 @@
+{
+  "source_accession": "0001193125-15-098865",
+  "source_html_table_ordinal": 20,
+  "source_sha256": "2142f04882e5ab1323e83523ca5ad85dc7321016a554c9bd51109a4fa57ae459",
+  "provenance": "Frozen actual EOG2015 repair-before-after ownership institution records; original amounts unchanged",
+  "rows": [
+    {
+      "accession_number": "0001193125-15-098865",
+      "as_of": "2015-03-20T00:00:00.000",
+      "cik": "0000821189",
+      "holder_name": "BlackRock, Inc.",
+      "holder_type": "5pct_holder",
+      "percent_of_class": 0.058,
+      "percent_of_voting_power": null,
+      "retry": 2,
+      "shares": 31845410.0,
+      "ticker": "EOG"
+    },
+    {
+      "accession_number": "0001193125-15-098865",
+      "as_of": "2015-03-20T00:00:00.000",
+      "cik": "0000821189",
+      "holder_name": "BlackRock, Inc.(c) 55 East 52nd Street, New York, NY 10022",
+      "holder_type": "5pct_holder",
+      "percent_of_class": 0.058,
+      "percent_of_voting_power": null,
+      "retry": 2,
+      "shares": 31845410.0,
+      "ticker": "EOG"
+    },
+    {
+      "accession_number": "0001193125-15-098865",
+      "as_of": "2015-03-20T00:00:00.000",
+      "cik": "0000821189",
+      "holder_name": "Capital Research Global Investors",
+      "holder_type": "5pct_holder",
+      "percent_of_class": 0.052,
+      "percent_of_voting_power": null,
+      "retry": 2,
+      "shares": 28680524.0,
+      "ticker": "EOG"
+    },
+    {
+      "accession_number": "0001193125-15-098865",
+      "as_of": "2015-03-20T00:00:00.000",
+      "cik": "0000821189",
+      "holder_name": "Capital Research Global Investors(e) 333 South Hope Street, Los Angeles, CA 90071",
+      "holder_type": "5pct_holder",
+      "percent_of_class": 0.052,
+      "percent_of_voting_power": null,
+      "retry": 2,
+      "shares": 28680524.0,
+      "ticker": "EOG"
+    },
+    {
+      "accession_number": "0001193125-15-098865",
+      "as_of": "2015-03-20T00:00:00.000",
+      "cik": "0000821189",
+      "holder_name": "FMR LLC",
+      "holder_type": "5pct_holder",
+      "percent_of_class": 0.054,
+      "percent_of_voting_power": null,
+      "retry": 2,
+      "shares": 29869058.0,
+      "ticker": "EOG"
+    },
+    {
+      "accession_number": "0001193125-15-098865",
+      "as_of": "2015-03-20T00:00:00.000",
+      "cik": "0000821189",
+      "holder_name": "FMR LLC(d) 245 Summer Street, Boston, MA 02210",
+      "holder_type": "5pct_holder",
+      "percent_of_class": 0.054,
+      "percent_of_voting_power": null,
+      "retry": 2,
+      "shares": 29869058.0,
+      "ticker": "EOG"
+    },
+    {
+      "accession_number": "0001193125-15-098865",
+      "as_of": "2015-03-20T00:00:00.000",
+      "cik": "0000821189",
+      "holder_name": "The Vanguard Group",
+      "holder_type": "5pct_holder",
+      "percent_of_class": 0.063,
+      "percent_of_voting_power": null,
+      "retry": 2,
+      "shares": 34810950.0,
+      "ticker": "EOG"
+    },
+    {
+      "accession_number": "0001193125-15-098865",
+      "as_of": "2015-03-20T00:00:00.000",
+      "cik": "0000821189",
+      "holder_name": "The Vanguard Group(b) 100 Vanguard Blvd., Malvern, PA 19355",
+      "holder_type": "5pct_holder",
+      "percent_of_class": 0.063,
+      "percent_of_voting_power": null,
+      "retry": 2,
+      "shares": 34810950.0,
+      "ticker": "EOG"
+    }
+  ]
+}

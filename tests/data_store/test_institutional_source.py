@@ -658,3 +658,26 @@ def test_ftd_null_owner_reconciliation_is_exact_and_atomic(sqlite_store: DataSto
     print(
         "SANITY: disappeared dated target NULL-owner keys reconcile atomically; retained other issuers survive, ambiguity refuses proof and failed derived inserts roll back raw deletion."
     )
+
+
+@pytest.mark.parametrize("case", ["complete", "partial", "mixed", "unfetched", "marker", "absent"])
+def test_inventory_boundary_requires_complete_consistent_rows(sqlite_store: DataStore, case: str) -> None:
+    rows, _, _ = _inventory(sqlite_store)
+    if case == "partial":
+        rows.loc[0, "inventory_checked_through"] = pd.NaT
+    elif case == "mixed":
+        rows.loc[0, "inventory_checked_through"] = pd.Timestamp("2026-07-02")
+    elif case == "unfetched":
+        rows.loc[0, "fetched_at"] = pd.NaT
+    elif case == "marker":
+        rows = rows.iloc[:1].assign(security_type="_empty")
+    sqlite_store.delete(Tables.insider_transactions, where={"ticker": "AAA"})
+    if case != "absent":
+        sqlite_store.save(Tables.insider_transactions, rows)
+    expected = pd.Series(pd.NaT, index=pd.Index(["AAA", "MISSING"], name="ticker"), dtype="datetime64[ns]")
+    if case in {"complete", "marker"}:
+        expected.loc["AAA"] = pd.Timestamp("2026-07-01")
+    pd.testing.assert_series_equal(sqlite_store.insider_inventory_boundaries(["MISSING", "AAA", "AAA"]), expected)
+    empty = sqlite_store.insider_inventory_boundaries([])
+    assert empty.empty and str(empty.dtype) == "datetime64[ns]" and empty.index.name == "ticker"
+    print(f"SANITY: {case} proof includes markers, requires every row and preserves sorted unique requests/NaT/datetime dtype.")

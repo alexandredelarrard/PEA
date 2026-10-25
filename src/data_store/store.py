@@ -48,6 +48,7 @@ from src.utils.institutional_vintages import reconcile_13f_source
 _CHUNK = 10_000
 _CREATE_LOCK = threading.Lock()
 logger = logging.getLogger(__name__)
+_IDENTITY_TABLES = (Tables.sp500_tickers, Tables.entity_lineage, Tables.symbol_tenure, Tables.security_master)
 
 
 def table_exists(engine: Engine, name: str) -> bool:
@@ -885,10 +886,7 @@ class DataStore:
         if not inspect(conn).has_table(spec.name):
             return pd.DataFrame()
         tbl = _reflect(conn, spec.name)
-        statement = select(tbl)
-        for column, value in (where or {}).items():
-            statement = statement.where(_predicate(tbl.c[column], value))
-        return pd.read_sql(statement, conn)
+        return pd.read_sql(build_select(tbl, where=where), conn)
 
     @staticmethod
     def _institutional_insert(conn: Connection, spec: SchemaTable, frame: pd.DataFrame) -> int:
@@ -947,6 +945,7 @@ class DataStore:
         if set(frames) not in pairs or set(scopes) != set(frames) or any(scope == {} for scope in scopes.values()):
             raise ValueError("An institutional source write needs one exact source pair and explicit scopes")
         prepared = dict(frames)
+        # Establish the proof column before schema preparation; retained rows are reset below.
         if Tables.insider_transactions in prepared:
             transactions = prepared[Tables.insider_transactions]
             prepared[Tables.insider_transactions] = transactions.assign(
@@ -1209,9 +1208,13 @@ class DataStore:
                 ).rowcount
             )
 
+    def _institutional_identity(self, conn: Connection) -> dict[SchemaTable, pd.DataFrame]:
+        """Capture the closed identity cohort on the caller's guarded connection."""
+        return {spec: self._institutional_select(conn, spec) for spec in _IDENTITY_TABLES}
+
     def _assert_institutional_identity(self, conn: Connection, expected_identity: dict[SchemaTable, pd.DataFrame]) -> None:
         """The mapping used outside the transaction must still be the exact guarded identity cohort."""
-        if set(expected_identity) != {Tables.sp500_tickers, Tables.entity_lineage, Tables.symbol_tenure, Tables.security_master}:
+        if set(expected_identity) != set(_IDENTITY_TABLES):
             raise ValueError("Expected identity must contain the closed institutional source cohort")
         for spec, expected in expected_identity.items():
             identity = self._institutional_select(conn, spec)
@@ -1233,18 +1236,17 @@ class DataStore:
     def insider_inventory_boundaries(self, tickers: Sequence[str]) -> pd.Series:
         """Compact requested-issuer proof summary, including markers and every actual row."""
         result = pd.Series(pd.NaT, index=pd.Index(sorted(set(tickers)), name="ticker"), dtype="datetime64[ns]")
-        columns = self.columns(Tables.insider_transactions)
-        if not {"inventory_checked_through", "fetched_at", "ticker"}.issubset(columns):
+        tbl, _ = self._read_setup(Tables.insider_transactions, None, False)
+        if tbl is None or not {"inventory_checked_through", "fetched_at", "ticker"}.issubset(tbl.c.keys()):
             return result
-        tbl = _reflect(self.engine, Tables.insider_transactions.name)
         checked = tbl.c.inventory_checked_through
-        statement = select(tbl.c.ticker, func.min(checked), func.max(checked), func.count(checked), func.count(tbl.c.fetched_at), func.count())
-        statement = statement.where(tbl.c.ticker.in_(list(result.index))).group_by(tbl.c.ticker)
+        statement = select(tbl.c.ticker, func.min(checked)).where(tbl.c.ticker.in_(list(result.index))).group_by(tbl.c.ticker)
+        statement = statement.having(
+            func.min(checked) == func.max(checked), func.count(checked) == func.count(), func.count(tbl.c.fetched_at) == func.count()
+        )
         with self.engine.connect() as conn:
-            rows = conn.execute(statement).all()
-        for ticker, first, last, verified, fetched, total in rows:
-            if first is not None and first == last and verified == fetched == total:
-                result.loc[ticker] = pd.Timestamp(first)
+            for ticker, boundary in conn.execute(statement):
+                result.loc[ticker] = pd.Timestamp(boundary)
         return result
 
     def short_volume_source_cohort(self, companies: Sequence[str], symbols: Sequence[str]) -> pd.DataFrame:
@@ -1252,7 +1254,7 @@ class DataStore:
         if not self.exists(Tables.sec_short_volume_security):
             return pd.DataFrame()
         raw = _reflect(self.engine, Tables.sec_short_volume_security.name)
-        owned_symbols = select(raw.c.source_symbol).where(raw.c.ticker.in_(list(companies))).distinct()
+        owned_symbols = select(raw.c.source_symbol).where(raw.c.ticker.in_(list(companies)))
         statement = select(raw).where(raw.c.source_symbol.in_(owned_symbols) | raw.c.source_symbol.in_(list(symbols)))
         with self.engine.connect() as conn:
             return pd.read_sql(statement, conn)
@@ -1354,10 +1356,7 @@ class DataStore:
         ensure_table(self.engine, table.name, rows)
         ensure_columns(self.engine, table.name, rows)
         with self._institutional_transaction() as conn:
-            cohorts = {
-                spec: self._institutional_select(conn, spec)
-                for spec in (Tables.sp500_tickers, Tables.entity_lineage, Tables.symbol_tenure, Tables.security_master)
-            }
+            cohorts = self._institutional_identity(conn)
             old = self._institutional_subset(cohorts[table], where)
             tbl = _reflect(conn, table.name)
             columns = self._institutional_identity_columns(table, set(old.columns) | set(rows.columns))
@@ -1397,10 +1396,7 @@ class DataStore:
         ensure_table(self.engine, spec.name, frame)
         ensure_columns(self.engine, spec.name, frame)
         with self._institutional_transaction() as conn:
-            cohorts = {
-                table: self._institutional_select(conn, table)
-                for table in (spec, Tables.entity_lineage, Tables.symbol_tenure, Tables.security_master)
-            }
+            cohorts = self._institutional_identity(conn)
             old = self._institutional_subset(cohorts[spec], {"ticker": frame["ticker"].tolist()})
             changed = pd.concat([old.reindex(columns=["ticker", "cik"]), frame[["ticker", "cik"]]]).drop_duplicates(keep=False)
             if not changed.empty:

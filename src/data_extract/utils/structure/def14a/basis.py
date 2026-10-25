@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import re
+from typing import Any
 
 import pandas as pd
 
@@ -16,28 +17,52 @@ def _source_rows(source: str) -> list[tuple[str, int | None, dict[str, str]]]:
     """Read only tab-separated named source rows, retaining blank cells and explicit years."""
     result = []
     header: list[str] = []
+    previous_header: list[str] = []
     name_column, year_column = 0, None
     last_name = ""
     caption_year, table_year = None, None
     for line in source.splitlines():
         caption_years = set(re.findall(r"director\s+compensation\s+table\s+for\s+((?:19|20)\d{2})", line, re.I))
+        local_fiscal = (
+            r"following table(?: and footnotes)?.{0,180}?compensation.{0,180}?Directors?\s+in\s+FY\s+((?:19|20)\d{2}(?:-(?:\d{2}|\d{4}))?)(?![-\d])"
+        )
+        for fiscal in re.findall(local_fiscal, line, re.I):
+            label = re.fullmatch(r"((?:19|20)\d{2})(?:-(\d{2}|\d{4}))?", fiscal)
+            if label and (not label[2] or str(int(label[1]) + 1).endswith(label[2])):
+                caption_years.add(str(int(label[1]) + bool(label[2])))
         if caption_years:
             caption_year = int(next(iter(caption_years))) if len(caption_years) == 1 else None
         cells = [cell.strip() for cell in line.split("\t")]
         if len(cells) < 2:
             header = []
+            previous_header = []
             if line.strip() and not caption_years and not line.strip().startswith("Source table (tab-separated columns):"):
                 caption_year = None
             continue
         names = [index for index, cell in enumerate(cells) if re.search(r"\bname\b", cell, re.I)]
         if names:
             header, name_column = cells, names[0]
+            missing_names = len(cells) - len(previous_header)
+            if (
+                missing_names in (1, 2)
+                and names == [0]
+                and not any(cells[1:missing_names])
+                and all(re.search(r"fees|awards|compensation|pension|total", label, re.I) for label in previous_header)
+            ):
+                header = [
+                    *cells[:missing_names],
+                    *(f"{label} {unit}".strip() for label, unit in zip(previous_header, cells[missing_names:], strict=True)),
+                ]
+            previous_header = []
             year_column = next((index for index, cell in enumerate(header) if re.fullmatch(r"(?:Fiscal\s+)?Year", cell, re.I)), None)
             table_year = caption_year if any(re.search(r"fees.*(?:earned|cash)", cell, re.I) for cell in header) else None
             caption_year = None
             last_name = ""
             continue
-        if not header or len(cells) != len(header):
+        if not header:
+            previous_header = cells
+            continue
+        if len(cells) != len(header):
             continue
         name = re.sub(r"\s*\(\d+\)", "", cells[name_column]) or last_name
         last_name = name
@@ -113,8 +138,12 @@ def _source_values(cells: dict[str, str], ownership: bool) -> dict[str, float | 
         factor = {"thousands": 1000.0, "millions": 1000000.0}[scale[1].lower()] if scale else 1.0
         if field not in values or value is not None:
             values[field] = value * factor if value is not None else None
+        if field == "stock_awards" and raw.strip() in {"", "-", "\u2013", "\u2014"}:
+            values["_blank_stock"] = 1.0
         if field == "option_awards" and monetary and re.search(r"\bsars?\b", label) and not re.search(r"\boption", headers):
             values["_sar_awards"] = values[field]
+        if field == "option_awards" and monetary and not re.search(r"#|\b(?:number|count|units|securities)\b", label):
+            values["_option_money"] = values[field]
     return values
 
 
@@ -139,6 +168,81 @@ def _source_records(source: str, section: Section) -> list[tuple[str, int | None
         if item not in records:
             records.append(item)
     return records
+
+
+def complete_director_years(section: Section, payload: dict[str, Any], source: str) -> dict[str, Any]:
+    """Fill only missing director years on normalized copies using their own labelled annual rows."""
+    if section.key != "director_pay":
+        return payload
+    records = _source_records(source, section)
+    for row in payload.get("compensation", []):
+        if row.get("fiscal_year") is not None:
+            continue
+        matches = [
+            year
+            for name, year, values in records
+            if name == _identity(row.get("name"))
+            and year is not None
+            and all(
+                row.get(field) is not None and (source_amount := values.get(field)) is not None and math.isclose(float(row[field]), source_amount)
+                for field in ("fees_earned", "stock_awards", "total")
+            )
+        ]
+        if len(matches) == 1:
+            row["fiscal_year"] = matches[0]
+    return payload
+
+
+def _correct_director_categories(rows: pd.DataFrame, records: list[tuple[str, int | None, dict[str, float | None]]]) -> pd.DataFrame:
+    """Move an explicitly misplaced option amount without assigning or changing a fiscal year."""
+    result = rows.copy()
+    for index, row in result.iterrows():
+        identity = _identity(row["name"])
+        same_person = result.loc[result.name.map(_identity).eq(identity)]
+        source_rows = [(year, values) for name, year, values in records if name == identity]
+        if len(same_person) != 1 or len(source_rows) != 1 or pd.isna(row.get("fiscal_year")):
+            continue
+        year, values = source_rows[0]
+        if year is not None and year != row["fiscal_year"]:
+            continue
+        option = values.get("_option_money")
+        anchors_match = all(
+            pd.notna(row.get(field)) and (source_amount := values.get(field)) is not None and math.isclose(float(row[field]), source_amount)
+            for field in ("fees_earned", "total")
+        )
+        if (
+            option is not None
+            and anchors_match
+            and values.get("_blank_stock") == 1.0
+            and pd.notna(row.get("stock_awards"))
+            and math.isclose(float(row["stock_awards"]), option)
+            and (pd.isna(row.get("option_awards")) or math.isclose(float(row["option_awards"]), option))
+        ):
+            result.at[index, "stock_awards"] = float("nan")
+            result.at[index, "option_awards"] = option
+    return result
+
+
+def _unsupported_group_percentage(source: str) -> dict[str, tuple[float, None]]:
+    """Reject a common-class group percentage as all-class ownership only with actual preferred holdings."""
+    aggregate = (
+        r"(?:all[- ]classes?|combined classes?).{0,80}(?:beneficial|economic)?\s*ownership|(?:beneficial|economic)\s+ownership.{0,40}all classes"
+    )
+    if re.search(aggregate, source, re.I):
+        return {}
+    preferred = [
+        _source_values(cells, True).get("shares")
+        for name, _, cells in _source_rows(source)
+        if "as a group" in _identity(name) and re.search(r"preferred stock", " ".join(cells), re.I)
+    ]
+    if not any(value is not None and value > 0 for value in preferred):
+        return {}
+    common = (
+        r"COMMON STOCK\s+NUMBER OF SHARES(?:/OPTIONS)?\s+Amount and Nature of Beneficial Ownership\s+Name(?:(?!PREFERRED STOCK).){0,400}?Percent of Class"
+        r"(?:(?!PREFERRED STOCK).){0,6000}?Directors and executive officers,?\s+as a group\s+[\d,.\s]+?\s+(\.\d+|\d+(?:\.\d+)?)%"
+    )
+    percentages = {float(value) * 0.01 for value in re.findall(common, source, re.I | re.S)}
+    return {"insider_ownership_pct": (next(iter(percentages)), None)} if len(percentages) == 1 else {}
 
 
 def _correct_security_rows(rows: pd.DataFrame, source: str, company_name: str | None) -> pd.DataFrame:
@@ -208,12 +312,16 @@ def correct_basis(
     if ownership:
         result = _correct_security_rows(result, source, company_name)
     records = _source_records(source, section)
+    if section.key == "director_pay":
+        result = _correct_director_categories(result, records)
     groups = [
         (float(total), float(shares))
         for name, _, values in records
         if " as a group" in name and (shares := values.get("shares")) is not None and (total := values.get("_inclusive_total")) is not None
     ]
     parent: dict[str, tuple[float, float | None]] = {"insider_shares": groups[0]} if ownership and len(groups) == 1 else {}
+    if ownership:
+        parent.update(_unsupported_group_percentage(source))
     ceo_rows = result.loc[result[name_column].map(_identity).eq(_identity(ceo_name))] if ceo_name else result.iloc[:0]
     latest = pd.to_numeric(ceo_rows.get("fiscal_year", pd.Series(dtype=float)), errors="coerce").max()
 

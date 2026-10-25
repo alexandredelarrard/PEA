@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
@@ -20,7 +21,7 @@ from src.data_extract.utils.schemas.def14a_schema import (
     ExecutiveCompensation,
     GovernanceProfile,
 )
-from src.data_extract.utils.structure.def14a.basis import correct_basis
+from src.data_extract.utils.structure.def14a.basis import complete_director_years, correct_basis
 from src.data_extract.utils.structure.def14a.flatten import (
     _CHILD_SPEC,
     _DIRECTOR_COMPONENT_COLS,
@@ -271,6 +272,7 @@ def postprocess_section(
         legacy = answer.model_copy(deep=True)
     else:
         normalized = _normalize_units(section, answer, stamp["as_of"])
+        normalized = complete_director_years(section, normalized, source_payload)
         legacy = _legacy_answer(section, normalized, parent)
     previous = pd.to_numeric(df_saved["retry"], errors="coerce").max() if df_saved is not None and "retry" in df_saved else float("nan")
     retry = int(previous) if pd.notna(previous) else 1
@@ -314,10 +316,12 @@ def postprocess_section(
     # Merge this domain's scalar facts before resolving identity-dependent copies.
     df_parent = _parent_patch(section, legacy, stamp, parent)
     for field, (wrong, correct) in source_corrections.items():
-        if parent.get(field) == wrong or getattr(legacy.governance, field, None) == wrong:
+        retained = df_parent.iloc[0].get(field, parent.get(field))
+        if retained is not None and pd.notna(retained) and math.isclose(float(retained), wrong):
             df_parent[field] = correct
-            if field in GovernanceProfile.model_fields:
-                legacy.governance = (legacy.governance or GovernanceProfile.model_validate({})).model_copy(update={field: correct})
+        value = getattr(legacy.governance, field, None)
+        if field in GovernanceProfile.model_fields and value is not None and pd.notna(value) and math.isclose(float(value), wrong):
+            legacy.governance = (legacy.governance or GovernanceProfile.model_validate({})).model_copy(update={field: correct})
 
     # A repaired identity must immediately select its own already-saved pay and ownership.
     if section.key == "governance":
@@ -449,7 +453,8 @@ def refresh_archive(
         if value is not None and (derived_count or current.get(field) is None):
             current[field] = value
     for field, (wrong, correct) in (corrections or {}).items():
-        if field in governance_fields.get(section.key, ()) and current.get(field) == wrong:
+        value = current.get(field)
+        if field in governance_fields.get(section.key, ()) and value is not None and pd.notna(value) and math.isclose(float(value), wrong):
             current[field] = correct
     if current:
         document["governance"] = current

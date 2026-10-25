@@ -446,8 +446,8 @@ def build_candidate(
         panel = StepCubeSecThirteen(context=context, config=config_node).build_panel()
         builder = f"{StepCubeSecThirteen.__name__}.build_panel()"
     else:
-        panel = StepCubeInstitutionals(context=context, config=config_node).build_panel(full=True)
-        builder = f"{StepCubeInstitutionals.__name__}.build_panel(full=True)"
+        panel = StepCubeInstitutionals(context=context, config=config_node).build_panel()
+        builder = f"{StepCubeInstitutionals.__name__}.build_panel()"
     if not set(KEYS).issubset(panel.columns):
         raise ValueError(f"candidate panel is missing keys {sorted(set(KEYS) - set(panel.columns))}")
     panel = panel.copy()

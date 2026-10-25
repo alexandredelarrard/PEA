@@ -289,7 +289,7 @@ def postprocess_section(
             else getattr(answer, "currency", None) == "USD" and getattr(answer, "amount_scale", None) is not None
         )
         supported_source = source_payload if supported else ""
-        df_merged, source_corrections = correct_basis(section, df_merged, df_new, supported_source, legacy.ceo_name)
+        df_merged, source_corrections = correct_basis(section, df_merged, df_new, supported_source, legacy.ceo_name, stamp.get("company_name"))
         if not df_merged.empty:
             df_merged["retry"] = retry
             frames[section.table] = df_merged

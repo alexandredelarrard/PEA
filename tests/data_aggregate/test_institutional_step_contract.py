@@ -27,6 +27,38 @@ from src.data_store.schema import Tables
 from src.utils.price_adjustments import resolve_share_events
 from tests.data_aggregate.insider_pit_reference import row
 
+INSTITUTIONAL_COLUMNS = (
+    "f_ic_insider_buy_value_mcap_60d",
+    "f_ic_insider_buy_value_mcap_180d",
+    "f_ic_insider_distinct_buyers_120d",
+    "f_ic_insider_cluster_buy_120d",
+    "f_ic_insider_ceo_buy_mcap_180d",
+    "f_ic_insider_cfo_buy_mcap_180d",
+    "f_ic_insider_director_buy_mcap_180d",
+    "f_ic_insider_purchase_pct_prior",
+    "f_ic_insider_owner_surprise_120d",
+    "f_ic_insider_net_buy_ratio_180d",
+    "f_ic_insider_discretionary_sell_mcap_60d",
+    "f_ic_insider_planned_sell_mcap_60d",
+    "f_ic_insider_management_position_change_60d",
+    "f_ic_shortvol_ratio_5d",
+    "f_ic_shortvol_ratio_20d",
+    "f_ic_shortvol_ratio_60d",
+    "f_ic_shortvol_acceleration",
+    "f_ic_shortvol_turnover_20d",
+    "f_ic_shortvol_high_x_weak_price",
+    "f_ic_shortvol_high_x_strong_price",
+    "f_ic_shortvol_market_coverage",
+    "f_ic_ftd_to_adv20",
+    "f_ic_ftd_persistence_30d",
+    "f_ic_act_initial_13d",
+    "f_ic_act_amendment_intensity",
+    "f_ic_act_repeat_activist",
+    "f_ic_bo_new_holder",
+    "f_ic_bo_escalation_13g_to_13d",
+    "f_ic_bo_de_escalation_13d_to_13g",
+)
+
 
 def context(store: Any, path: Path) -> Context:
     config = OmegaConf.create({"build_cube": {}, "local": {"paths": {"fails_deliver": "ftd"}}})
@@ -56,15 +88,19 @@ def test_institutionals_emits_only_three_source_panels(sqlite_store: Any, monkey
         calls.append(name)
         return pd.DataFrame({"date": days, "ticker": "AAA", "f_" + name: 0.0})
 
-    monkeypatch.setattr(step, "_insider_panel", lambda *args, **kwargs: panel("ic_insider_test"))
-    monkeypatch.setattr(step, "_short_flow_panel", lambda *args, **kwargs: panel("ic_shortvol_test"))
-    monkeypatch.setattr(step, "_ownership_panel", lambda *args, **kwargs: panel("ic_act_test"))
+    monkeypatch.setattr(step, "_insider_panel", lambda *args, **kwargs: panel("ic_insider_buy_value_mcap_60d"))
+    monkeypatch.setattr(step, "_short_flow_panel", lambda *args, **kwargs: panel("ic_shortvol_ratio_5d"))
+    monkeypatch.setattr(step, "_ownership_panel", lambda *args, **kwargs: panel("ic_act_initial_13d"))
     result = step.build_panel()
     assert step._store is sqlite_store
-    assert calls == ["ic_insider_test", "ic_shortvol_test", "ic_act_test"]
-    assert set(result.columns) == {"date", "ticker", *("f_" + name for name in calls)}
+    assert calls == ["ic_insider_buy_value_mcap_60d", "ic_shortvol_ratio_5d", "ic_act_initial_13d"]
+    assert list(result.columns) == ["date", "ticker", *INSTITUTIONAL_COLUMNS]
+    present = ["f_" + name for name in calls]
+    assert result[present].eq(0.0).all().all()
+    assert result[[name for name in INSTITUTIONAL_COLUMNS if name not in present]].isna().all().all()
+    assert len(result) == len(days) and result["date"].tolist() == days.tolist()
     assert not result.duplicated(["date", "ticker"]).any()
-    print("SANITY: institutionals merges exactly insider, short-flow and ownership on price keys.")
+    print("SANITY: three source panels retain40price keys/observed zeros; all29 declared fields exist and26unsupported fields stay NULL.")
 
 
 @pytest.mark.parametrize(
@@ -122,7 +158,11 @@ def test_builder_payload_reads_are_unique_with_optional_sources_absent(
 
         monkeypatch.setattr(sqlite_store, method, capture)
     result = step.build_panel()
-    assert set(result.columns) == {"date", "ticker"}
+    if cls is StepCubeInstitutionals:
+        assert list(result.columns) == ["date", "ticker", *INSTITUTIONAL_COLUMNS]
+        assert result[list(INSTITUTIONAL_COLUMNS)].isna().all().all()
+    else:
+        assert set(result.columns) == {"date", "ticker"}
     assert reads and max(reads.values()) == 1, reads
     print(f"SANITY: {cls.__name__} reads each payload once, including absent optional sources.")
 
@@ -215,10 +255,9 @@ def test_public_step_preserves_unusable_insider_source_boundary(
 
     monkeypatch.setattr("src.data_aggregate.transformers.step_cube_institutionals.position_units", forbidden)
     result = step.build_panel()
-    assert set(result.columns) == {"date", "ticker"}
-    print(
-        "SANITY: absent, empty or malformed optional insider payload never enters share reconstruction and keeps the public step's empty-family behavior."
-    )
+    assert list(result.columns) == ["date", "ticker", *INSTITUTIONAL_COLUMNS]
+    assert result[list(INSTITUTIONAL_COLUMNS)].isna().all().all()
+    print("SANITY: absent, empty or malformed insider payload never enters share reconstruction; all29 declared unsupported fields remain NULL.")
 
 
 def test_actual_loader_valid_empty_preserves_quiet_counts_and_undefined_ratios(
@@ -257,7 +296,8 @@ def test_actual_loader_valid_empty_preserves_quiet_counts_and_undefined_ratios(
     quiet_gross = panel.loc[(days[-1], "AAA"), gross]
     assert isinstance(quiet_gross, pd.Series)
     assert quiet_gross.eq(0).to_numpy().all()
-    assert panel.reindex(columns=ratios).isna().all().all()
+    assert list(panel.columns) == list(INSTITUTIONAL_COLUMNS)
+    assert panel[ratios].isna().all().all()
     print(
         "SANITY: actual loader/public step accepts a checked real empty accession; supported quiet gross/counts are0 and all four undefined ratios remain NULL."
     )

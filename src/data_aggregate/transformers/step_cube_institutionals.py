@@ -18,6 +18,9 @@ from src.data_aggregate.utils.institutionals import frontiers as institutional_f
 from src.data_aggregate.utils.institutionals import inputs as institutional_inputs
 from src.data_aggregate.utils.institutionals import short_flow_features as short_flow
 from src.data_aggregate.utils.institutionals.insider_features import (
+    EMISSION as INSIDER_EMISSION,
+)
+from src.data_aggregate.utils.institutionals.insider_features import (
     InsiderCoverage,
     build_insider_feature_panel,
     insider_market_cap,
@@ -25,7 +28,12 @@ from src.data_aggregate.utils.institutionals.insider_features import (
 )
 from src.data_aggregate.utils.institutionals.insider_positions import position_units
 from src.data_aggregate.utils.institutionals.insider_quality import clean_transactions
-from src.data_aggregate.utils.institutionals.ownership_features import build_ownership_feature_panel
+from src.data_aggregate.utils.institutionals.ownership_features import (
+    EMISSION as OWNERSHIP_EMISSION,
+)
+from src.data_aggregate.utils.institutionals.ownership_features import (
+    build_ownership_feature_panel,
+)
 from src.data_aggregate.utils.institutionals.short_flow_features import (
     FtdPublication,
     ShortFlowCapital,
@@ -93,8 +101,9 @@ class StepCubeInstitutionals(Step):
         merger.add(self._short_flow_panel(frames, df_shares, df_lines, df_bars, quantity_basis), "short-flow")
         merger.add(self._ownership_panel(frames), "beneficial-ownership")
 
-        # Merge once on observed price keys; the writer owns tail projection.
-        return merger.to_long()
+        # Keep declared inputs even when a source has no qualifying observations.
+        fields = [*INSIDER_EMISSION, *short_flow.EMISSION, *OWNERSHIP_EMISSION]
+        return merger.to_long().reindex(columns=["date", "ticker", *(f"f_{name}" for name in fields)])
 
     def _insider_panel(
         self,

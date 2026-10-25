@@ -66,6 +66,7 @@ class StepCubeSecThirteen(Step):
     def run(self, full: bool = False) -> None:
         calendar = load_trading_calendar(self._store)
         existing_columns = self._store.columns(Tables.cube_part_sec_thirteen)
+        saved_dates = pd.DatetimeIndex(self._store.distinct(Tables.cube_part_sec_thirteen, "date"))
         window = plan_window(
             self._store,
             Tables.cube_part_sec_thirteen,
@@ -74,15 +75,24 @@ class StepCubeSecThirteen(Step):
             trading_index=calendar,
             refresh=PART_REFRESH_TRADING_DAYS,
         )
-        if window.last is not None and window.last > calendar.max():
-            raise RuntimeError("SEC13F price calendar ends before the saved output frontier; no rows may be replaced.")
         if full:
             window = PartWindow(None, None)
+        self._require_saved_calendar(saved_dates, calendar, window.refresh_from)
 
         panel = self.build_panel(window, existing_columns=existing_columns)
         result = write_part(self._store, Tables.cube_part_sec_thirteen, panel, window, drop_empty=True, existing_columns=existing_columns)
         if result == COLUMNS_CHANGED:
+            self._require_saved_calendar(saved_dates, calendar, None)
             write_part(self._store, Tables.cube_part_sec_thirteen, panel, PartWindow(None, None), drop_empty=True)
+
+    @staticmethod
+    def _require_saved_calendar(saved_dates: pd.DatetimeIndex, calendar: pd.DatetimeIndex, refresh_from: pd.Timestamp | None) -> None:
+        """Preserve saved sessions absent from the calendar inside the actual deletion footprint."""
+        rewrite_dates = saved_dates
+        if refresh_from is not None:
+            rewrite_dates = saved_dates[saved_dates >= refresh_from]
+        if not rewrite_dates.difference(calendar).empty:
+            raise RuntimeError("SEC13F price calendar ends before the saved output frontier or omits a saved rewrite date; no rows may be replaced.")
 
     def _warmup(self) -> int:
         override = self._cfg.get("incremental", {}).get("warmup_trading_days")

@@ -229,6 +229,81 @@ def test_shortened_price_calendar_refuses_even_a_full_rebuild(sqlite_store: Any,
     print(f"SANITY: a saved frontier beyond prices blocks full={full} before source preparation or writes.")
 
 
+@pytest.mark.parametrize("hole", ["saved_frontier", "rewrite_interior"])
+@pytest.mark.parametrize("full", [False, True])
+def test_missing_saved_rewrite_date_refuses_without_writes(
+    sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, hole: str, full: bool
+) -> None:
+    step, days = _owner(sqlite_store, monkeypatch, tmp_path)
+    initial = pd.DataFrame({"date": days[:-1], "ticker": "AAA", "f_ic_inst_concentration": 0.25})
+    sqlite_store.replace(Tables.cube_part_sec_thirteen, initial)
+    missing = days[-2] if hole == "saved_frontier" else days[-3]
+    sqlite_store.delete(Tables.cube_part_prices, where={"date": missing})
+    prepared = _prepare(step, monkeypatch, _facts(days, (5,), ic_inst_concentration=[0.25]), {})
+    replace, append = Mock(wraps=sqlite_store.replace), Mock(wraps=sqlite_store.append_tail)
+    distinct = Mock(wraps=sqlite_store.distinct)
+    monkeypatch.setattr(sqlite_store, "replace", replace)
+    monkeypatch.setattr(sqlite_store, "append_tail", append)
+    monkeypatch.setattr(sqlite_store, "distinct", distinct)
+
+    with pytest.raises(RuntimeError, match="calendar.*saved"):
+        step.run(full=full)
+
+    assert replace.call_count == append.call_count == 0
+    assert [source.call_count for source in prepared] == [0, 0]
+    pd.testing.assert_frame_equal(_load(sqlite_store), initial, check_dtype=False)
+    saved_reads = [call for call in distinct.call_args_list if call.args[0] == Tables.cube_part_sec_thirteen]
+    assert len(saved_reads) == 1 and saved_reads[0].args[1] == "date"
+    print(f"SANITY: missing {hole} with full={full} refuses before preparation or writes even though prices extend past the saved frontier.")
+
+
+def test_schema_promotion_refuses_missing_saved_prefix_date(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    step, days = _owner(sqlite_store, monkeypatch, tmp_path)
+    initial = pd.DataFrame({"date": days, "ticker": "AAA", "f_ic_inst_concentration": 0.25})
+    sqlite_store.replace(Tables.cube_part_sec_thirteen, initial)
+    sqlite_store.delete(Tables.cube_part_prices, where={"date": days[10]})
+    prepared = _prepare(step, monkeypatch, _facts(days, (5,), ic_inst_concentration=[0.25], ic_inst_holders=[0.5]), {})
+    replace, append = Mock(wraps=sqlite_store.replace), Mock(wraps=sqlite_store.append_tail)
+    distinct = Mock(wraps=sqlite_store.distinct)
+    monkeypatch.setattr(sqlite_store, "replace", replace)
+    monkeypatch.setattr(sqlite_store, "append_tail", append)
+    monkeypatch.setattr(sqlite_store, "distinct", distinct)
+
+    with pytest.raises(RuntimeError, match="calendar.*saved"):
+        step.run()
+
+    assert replace.call_count == append.call_count == 0
+    assert [source.call_count for source in prepared] == [1, 1]
+    pd.testing.assert_frame_equal(_load(sqlite_store), initial, check_dtype=False)
+    saved_reads = [call for call in distinct.call_args_list if call.args[0] == Tables.cube_part_sec_thirteen]
+    assert len(saved_reads) == 1 and saved_reads[0].args[1] == "date"
+    print("SANITY: genuine column promotion checks the whole saved calendar and preserves the missing prefix row with zero writes and one date read.")
+
+
+def test_missing_saved_prefix_date_allows_one_incremental_write(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    step, days = _owner(sqlite_store, monkeypatch, tmp_path)
+    initial = pd.DataFrame({"date": days, "ticker": "AAA", "f_ic_inst_concentration": -9.0})
+    sqlite_store.replace(Tables.cube_part_sec_thirteen, initial)
+    sqlite_store.delete(Tables.cube_part_prices, where={"date": days[10]})
+    prepared = _prepare(step, monkeypatch, _facts(days, (5,), ic_inst_concentration=[0.25]), {})
+    replace, append = Mock(wraps=sqlite_store.replace), Mock(wraps=sqlite_store.append_tail)
+    distinct = Mock(wraps=sqlite_store.distinct)
+    monkeypatch.setattr(sqlite_store, "replace", replace)
+    monkeypatch.setattr(sqlite_store, "append_tail", append)
+    monkeypatch.setattr(sqlite_store, "distinct", distinct)
+
+    step.run()
+
+    expected = initial.copy()
+    expected.loc[expected.date >= days[-8], "f_ic_inst_concentration"] = 0.25
+    pd.testing.assert_frame_equal(_load(sqlite_store), expected, check_dtype=False)
+    assert replace.call_count == 0 and append.call_count == 1
+    assert [source.call_count for source in prepared] == [1, 1]
+    saved_reads = [call for call in distinct.call_args_list if call.args[0] == Tables.cube_part_sec_thirteen]
+    assert len(saved_reads) == 1 and saved_reads[0].args[1] == "date"
+    print("SANITY: a calendar hole before the incremental deletion footprint preserves its saved row and allows exactly one safe tail write.")
+
+
 @pytest.mark.parametrize("change", ["addition", "removal", "historical_addition"])
 def test_schema_change_reprojects_full_once_from_prepared_facts(
     sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, change: str
@@ -246,10 +321,18 @@ def test_schema_change_reprojects_full_once_from_prepared_facts(
     broad.reset_mock()
     elite.reset_mock()
     projections = _projections(step, monkeypatch)
+    replace, append = Mock(wraps=sqlite_store.replace), Mock(wraps=sqlite_store.append_tail)
+    distinct = Mock(wraps=sqlite_store.distinct)
+    monkeypatch.setattr(sqlite_store, "replace", replace)
+    monkeypatch.setattr(sqlite_store, "append_tail", append)
+    monkeypatch.setattr(sqlite_store, "distinct", distinct)
 
     step.run()
     pd.testing.assert_frame_equal(_load(sqlite_store), expected, check_dtype=False)
     assert broad.call_count == elite.call_count == 1
+    assert replace.call_count == 1 and append.call_count == 0
+    saved_reads = [call for call in distinct.call_args_list if call.args[0] == Tables.cube_part_sec_thirteen]
+    assert len(saved_reads) == 1 and saved_reads[0].args[1] == "date"
     assert ("f_ic_inst_holders" in expected) == (change != "removal")
     for projection in projections:
         assert sum(len(call.args[1].trading_index) == len(days) for call in projection.call_args_list) == 1

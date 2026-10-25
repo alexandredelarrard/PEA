@@ -332,4 +332,25 @@ def _apply_additions(df_book: pd.DataFrame, df_incoming: pd.DataFrame, amounts: 
     df_metadata["class_evidence"] = df_joined.groupby("cusip")["class_evidence"].agg(
         lambda values: json.dumps(sorted({name for value in values for name in json.loads(value)}))
     )
+    _merge_addition_evidence(df_metadata, df_joined)
     return df_metadata.join(df_numeric).reset_index().reindex(columns=df_book.columns), False, False
+
+
+def _merge_addition_evidence(df_metadata: pd.DataFrame, df_rows: pd.DataFrame) -> None:
+    """A summed amount inherits the least certain contributing source and every repair flag."""
+    for column, estimate in (
+        ("value_basis_shares_source", "value_estimated"),
+        ("value_basis_value_source", "market_estimated"),
+        ("value_basis_call_value_source", "market_estimated"),
+        ("value_basis_put_value_source", "market_estimated"),
+    ):
+        if column in df_rows:
+            evidence = df_rows[column].map({"filed": 0, estimate: 1}).fillna(2)
+            df_metadata[column] = evidence.groupby(df_rows["cusip"]).max().map({0: "filed", 1: estimate, 2: "unknown"})
+    flags = [
+        column
+        for column in df_rows.columns
+        if column.startswith("value_basis_") and column.endswith(("reconstructed", "excluded", "inverse_unit_unverified", "price_mismatch"))
+    ]
+    if flags:
+        df_metadata[flags] = df_rows.groupby("cusip")[flags].any()

@@ -336,6 +336,57 @@ def test_prospective_replacement_additions_and_future_invariance() -> None:
     print("SANITY: original immutable; additions sum; restatement removes only from its public date; future prefix identical.")
 
 
+@pytest.mark.parametrize(
+    ("shares_source", "value_source"),
+    [("value_estimated", "filed"), ("unknown", "filed"), ("filed", "market_estimated"), ("filed", "unknown"), (pd.NA, "filed"), ("filed", pd.NA)],
+)
+@pytest.mark.parametrize("uncertain_leg", [0, 1])
+def test_additions_preserve_contributing_evidence_until_restatement(shares_source: Any, value_source: Any, uncertain_leg: int) -> None:
+    packets = (
+        packet("original", "2024-08-14", {"111111111": 100}),
+        packet("addition", "2024-10-17", {"111111111": 5}, kind="additions"),
+        packet("later-addition", "2024-11-14", {"111111111": 2}, kind="additions"),
+        packet("restatement", "2025-05-14", {"111111111": 150}, kind="restatement"),
+    )
+    flags = [
+        "value_basis_shares_reconstructed",
+        "value_basis_reconstructed",
+        "value_basis_call_reconstructed",
+        "value_basis_put_reconstructed",
+        "value_basis_common_excluded",
+        "value_basis_excluded",
+        "value_basis_inverse_unit_unverified",
+        "value_basis_price_mismatch",
+    ]
+    for _, df_rows in packets:
+        df_rows["value_basis_shares_source"] = "filed"
+        for field in ("value_basis_value_source", "value_basis_call_value_source", "value_basis_put_value_source"):
+            df_rows[field] = "filed"
+        df_rows[flags] = False
+    packets[uncertain_leg][1]["value_basis_shares_source"] = shares_source
+    for field in ("value_basis_value_source", "value_basis_call_value_source", "value_basis_put_value_source"):
+        packets[uncertain_leg][1][field] = value_source
+    packets[uncertain_leg][1][flags] = True
+    manifests, holdings = combine(*packets)
+    original_holdings = holdings.copy(deep=True)
+    for day, shares in (("2024-10-18", 105), ("2024-11-15", 107)):
+        resolved, _ = public_books(manifests, holdings, day, GRID)
+        row = resolved.iloc[0]
+        assert row.shares == shares and row.value_usd == row.raw_value_usd == shares * 10
+        assert row.value_basis_shares_source == ("unknown" if pd.isna(shares_source) else shares_source)
+        for field in ("value_basis_value_source", "value_basis_call_value_source", "value_basis_put_value_source"):
+            assert row[field] == ("unknown" if pd.isna(value_source) else value_source)
+        assert row[flags].all()
+    restored, _ = public_books(manifests, holdings, "2025-05-15", GRID)
+    assert restored.iloc[0].shares == 150 and restored.iloc[0].value_usd == 1500
+    assert all(value == "filed" for value in restored.filter(regex="value_basis_.*source").iloc[0])
+    assert not restored[flags].any().any()
+    pd.testing.assert_frame_equal(holdings, original_holdings)
+    print(
+        f"SANITY: additive leg{uncertain_leg} retains shares={shares_source}, dollars={value_source} and repair flags; full restatement restores filed evidence."
+    )
+
+
 def test_public_book_iteration_prepares_publication_clock_once() -> None:
     original = packet("original", "2024-08-14", {"111111111": 100})
     amendment = packet("amendment", "2024-10-17", {"111111111": 140}, kind="restatement")
@@ -345,6 +396,53 @@ def test_public_book_iteration_prepares_publication_clock_once() -> None:
     assert [books.iloc[0].shares for _, books, _ in snapshots] == [100, 140]
     print(f"SANITY: {clock.call_count} publication-clock preparations for {len(snapshots)} public snapshots; exactly one is required.")
     assert clock.call_count == 1
+
+
+def test_additions_unknown_evidence_dominates_estimates_per_security() -> None:
+    original = packet("original", "2024-08-14", {"111111111": 100, "222222222": 200})
+    added = packet("addition", "2024-10-17", {"111111111": 5}, kind="additions")
+    original[1]["value_basis_shares_source"] = ["unknown", "filed"]
+    original[1]["value_basis_value_source"] = ["market_estimated", "filed"]
+    added[1]["value_basis_shares_source"] = "value_estimated"
+    added[1]["value_basis_value_source"] = "unknown"
+    resolved, _ = public_books(*combine(original, added), "2024-10-18", GRID)
+    rows = resolved.set_index("cusip")
+    for field in ("value_basis_shares_source", "value_basis_value_source"):
+        assert rows.at["111111111", field] == "unknown"
+        assert rows.at["222222222", field] == "filed"
+    assert rows.loc["111111111", "shares"] == 105 and rows.loc["111111111", "value_usd"] == 1050
+    assert rows.loc["222222222", "shares"] == 200 and rows.loc["222222222", "value_usd"] == 2000
+    print("SANITY: unknown outranks estimated evidence in either leg; an untouched filed sibling keeps its own source and amounts.")
+
+
+@pytest.mark.parametrize("partial", [False, True])
+def test_copied_replacement_uses_new_evidence_and_retains_omissions(partial: bool) -> None:
+    original = packet("original", "2024-08-14", {"111111111": 100, "222222222": 200, "333333333": 300, "444444444": 400})
+    amounts: dict[str, float] = {"111111111": 100, "222222222": 200, "333333333": 300}
+    if not partial:
+        amounts["444444444"] = 405
+    copied = packet("copied", "2024-10-17", amounts, kind="additions")
+    original[1]["value_basis_shares_source"] = "value_estimated"
+    original[1]["value_basis_value_source"] = "market_estimated"
+    original[1]["value_basis_shares_reconstructed"] = True
+    copied[1]["value_basis_shares_source"] = "filed"
+    copied[1]["value_basis_value_source"] = "filed"
+    copied[1]["value_basis_shares_reconstructed"] = False
+    resolved, state = public_books(*combine(original, copied), "2024-10-18", GRID)
+    rows = resolved.set_index("cusip")
+    assert state.iloc[0].resolution_status == "inferred_position_patch"
+    for field in ("value_basis_shares_source", "value_basis_value_source"):
+        assert rows[field].reindex(list(amounts)).eq("filed").all()
+    assert not rows.loc[list(amounts), "value_basis_shares_reconstructed"].any()
+    assert rows.loc[list(amounts), "shares"].to_dict() == amounts
+    if partial:
+        assert pd.isna(rows.loc["444444444", "shares"]) and pd.isna(rows.loc["444444444", "value_usd"])
+        assert rows.loc["444444444", "value_basis_shares_source"] == "value_estimated"
+        assert rows.loc["444444444", "value_basis_value_source"] == "market_estimated"
+        assert rows.loc["444444444", "value_basis_shares_reconstructed"]
+    print(
+        f"SANITY: inferred copied replacement, partial={partial}, uses its own filed rows; omitted old evidence and unknown amounts remain conservative."
+    )
 
 
 def test_future_book_row_count_is_checked_only_when_public() -> None:

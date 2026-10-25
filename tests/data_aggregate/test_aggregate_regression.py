@@ -485,17 +485,11 @@ def test_baseline_covers_every_panel_and_deduped_primitive(baseline):
         "prim.quarter_features",
         "prim.pit",
         "prim.peer_relative_panel",
-        # `prim.super_quarter_features` was here until Phase 2.2 deleted
-        # `_super_quarter_features`; the elite panel is now built from these two
-        # intermediates instead, and naming BOTH is what keeps the replacement as
-        # protected as the thing it replaced. This tuple catching the vanished name
-        # is the whole point of the test -- it failed on the 2026-09-10 regeneration
-        # and had to be updated deliberately, which is the intended workflow.
-        "prim.super_manager_state",
-        "prim.super_conviction",
     ):
         assert must in baseline, f"{must} is not fingerprinted"
         assert baseline[must]["rows"] > 0, f"{must} fingerprinted as empty"
+
+    # The approved shared panel engine covers 26 raw metrics; the retired legacy primitives have no consumer.
 
     # ⚠ These floors track the `must` tuples above rather than standing as free-floating
     # numbers. `>= 15` outlived its cause the moment `panel.attention` was deleted and had to
@@ -509,7 +503,7 @@ def test_baseline_covers_every_panel_and_deduped_primitive(baseline):
     #
     # 13 -> 16 on the Phase 2.5-2.7 regeneration: `panel.ownership` (a builder that was live
     assert len(panels) >= 14, f"panel coverage regressed: {panels}"
-    assert len(prims) >= 13, f"primitive coverage regressed: {prims}"
+    assert len(prims) >= 12, f"primitive coverage regressed: {prims}"
     assert len(labels) >= 6, f"only {len(labels)} target variants fingerprinted"
     # the frozen input must be pinned too: a silent DB change would otherwise look like a
     # code regression spread across every fundamentals-derived panel

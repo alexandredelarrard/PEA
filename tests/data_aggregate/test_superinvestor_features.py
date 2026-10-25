@@ -1,439 +1,520 @@
-"""
-Superinvestor (elite-manager) 13F features
-(src/data_aggregate/utils/sec_thirteen/superinvestor_features.py).
-
-Proves the four properties that make this panel different from the all-filer institutional
-one, each of which was a real defect caught by measurement rather than a hypothetical:
-
-  1. THE DENOMINATOR IS THE WHOLE BOOK. A portfolio weight divides by the manager's entire
-     common-stock book, not by the S&P500 slice `sec13f_hr` happens to store. On the live
-     table the slice is a median 59% of value and as little as 3.8%, so the old denominator
-     inflated conviction by a manager-specific 1.0x-26x.
-  2. A SPLIT IS NOT A PURCHASE. The prior quarter's share count is restated onto the current
-     basis before any ratio, and the residual guard nulls what is left.
-  3. RANKS ARE ORDER-INDEPENDENT. `rank(method="first")` numbered ties by row position and
-     flipped 2.06% of live ranks whenever anything upstream reordered the frame.
-  4. NOTHING MOVES BEFORE IT WAS FILED, and each manager carries its OWN availability date.
-"""
+"""Known-truth behavioral controls through the shared production science engine."""
 
 from __future__ import annotations
 
-import logging
+from dataclasses import replace
 
 import numpy as np
 import pandas as pd
+import pytest
 
-from src.data_aggregate.utils.common.availability import InstitutionalAvailability
+from src.data_aggregate.utils.common.price_frames import PriceFrames
+from src.data_aggregate.utils.sec_thirteen.superinvestor_books import BookSupport, PublicBook, PublicBookSnapshot
 from src.data_aggregate.utils.sec_thirteen.superinvestor_features import (
     EMISSION,
-    _contributions,
-    _selection_ciks,
-    attach_split_factor,
-    attach_tickers,
-    build_superinvestor_feature_panel,
-    clean_holdings,
-    manager_quarter_state,
-    manager_selection_weights,
-    manager_stock_conviction,
-    public_state,
+    SuperinvestorFeatureHistory,
+    compute_superinvestor_feature_history,
+    project_superinvestor_features,
 )
-from tests.conftest import make_frames
-
-#: Two roster managers. `BIG` runs a 10-name book of which only 2 are in the universe --
-#: the case README Finding 2 measured at 8.3% position coverage. `SMALL` is index-only.
-_ROSTER = {"0000000001": "Big Global Manager", "0000000002": "Index Only"}
-
-_UNIVERSE = ["HOT", "COLD"]
-_CUSIP_MAP = pd.DataFrame({"cusip": [f"{i:09d}" for i in range(10)], "ticker": ["HOT", "COLD"] + [f"OTC{i}" for i in range(8)]})
+from src.data_aggregate.utils.sec_thirteen.superinvestor_metrics import BehaviorMarket
+from src.utils.price_adjustments import ShareBasis
+from tests.data_aggregate.test_superinvestor_books import _history, _on, _packet
 
 
-def _book(period: str, filing_date: str, hot: int, cold: int, cik: str = "0000000001", n_other: int = 8, other: int = 1_000) -> list[dict]:
-    """One manager-quarter: two universe names plus `n_other` names that are NOT in the
-    universe but ARE in the book -- the denominator the S&P500 slice cannot see."""
+def _book(cik: str, period: str, positions: dict[str, tuple[float, float]], known: bool = True) -> PublicBook:
     rows = [
         {
-            "cik": cik,
-            "period": period,
-            "filing_date": filing_date,
-            "cusip": "000000000",
+            "cusip": ticker,
+            "ticker": ticker,
+            "shares": shares,
+            "value_usd": value,
             "position_type": "common",
-            "shares": hot,
-            "value_usd": hot * 10,
-        },
-        {
-            "cik": cik,
-            "period": period,
-            "filing_date": filing_date,
-            "cusip": "000000001",
-            "position_type": "common",
-            "shares": cold,
-            "value_usd": cold * 10,
-        },
-    ]
-    rows += [
-        {
-            "cik": cik,
-            "period": period,
-            "filing_date": filing_date,
-            "cusip": f"{i + 2:09d}",
-            "position_type": "common",
-            "shares": other,
-            "value_usd": other * 10,
+            "class_evidence": '["common"]',
+            "value_basis_shares_source": "filed",
+            "value_basis_inverse_unit_unverified": False,
         }
-        for i in range(n_other)
+        for ticker, (shares, value) in positions.items()
     ]
-    return rows
-
-
-def _holdings() -> pd.DataFrame:
-    rows = []
-    for period, filed, hot, cold in (
-        ("2025-09-30", "2025-11-14", 500, 500),
-        ("2025-12-31", "2026-02-14", 1000, 250),
-        ("2026-03-31", "2026-05-15", 1500, 0),
-    ):
-        rows += _book(period, filed, hot, cold)
-        rows += _book(period, filed, hot, cold, cik="0000000002", n_other=0)
-    return pd.DataFrame(rows)
-
-
-def _prepared(holdings=None):
-    h = clean_holdings(
-        attach_tickers(holdings if holdings is not None else _holdings(), _CUSIP_MAP, _UNIVERSE),
-        key=("cik", "period", "cusip"),
-        numeric=("shares", "value_usd"),
-        common_only=True,
-        pad_ciks=True,
+    columns = [
+        "cusip",
+        "ticker",
+        "shares",
+        "value_usd",
+        "position_type",
+        "class_evidence",
+        "value_basis_shares_source",
+        "value_basis_inverse_unit_unverified",
+    ]
+    origin = pd.Timestamp(period) + pd.Timedelta(days=46)
+    support = BookSupport(book_known=known, zero_eligible=known, comparison_eligible=known, restricted=False, resolution_status="complete")
+    return PublicBook(
+        cik=cik,
+        period=pd.Timestamp(period),
+        public_at=origin,
+        first_public_at=origin,
+        df_positions=pd.DataFrame(rows, columns=columns),
+        support=support,
     )
-    state = manager_quarter_state(h)
-    return h, state, manager_stock_conviction(h, state)
 
 
-# --------------------------------------------------------------------------------------- #
-# 1. the denominator                                                                        #
-# --------------------------------------------------------------------------------------- #
-def test_portfolio_weight_divides_by_the_whole_book_not_the_index_sleeve():
-    """A manager holding 10 names of which 2 are in the universe: the weights sum to 1.0
-    across ALL TEN, and the two universe names carry correspondingly small weights."""
-    h, state, conv = _prepared()
-    big = conv[(conv["cik"] == "0000000001") & (conv["period"] == pd.Timestamp("2025-12-31"))]
-    assert len(big) == 10, f"the whole book must survive the ticker join, got {len(big)}"
-    assert np.isclose(big["portfolio_weight"].sum(), 1.0), big["portfolio_weight"].sum()
+def _snapshot(books: list[PublicBook], day: str = "2024-08-15") -> PublicBookSnapshot:
+    archive = {(book.cik, book.period): book for book in books}
+    latest = {}
+    for book in sorted(books, key=lambda item: item.period):
+        latest[book.cik] = book
+    return PublicBookSnapshot(
+        day=pd.Timestamp(day),
+        common_period=max(book.period for book in books),
+        latest_period_by_manager={cik: book.period for cik, book in latest.items()},
+        level_books=latest,
+        archive=archive,
+    )
 
-    in_universe = big[big["ticker"].notna()]
-    assert len(in_universe) == 2
-    slice_w = in_universe["value_usd"] / in_universe["value_usd"].sum()
-    inflation = slice_w.to_numpy() / in_universe["portfolio_weight"].to_numpy()
-    row = state[(state["cik"] == "0000000001") & (state["period"] == pd.Timestamp("2025-12-31"))].iloc[0]
 
-    print("\n=== SANITY CHECK: conviction denominator ===")
+def _long_duration_books() -> list[PublicBook]:
+    periods = pd.period_range("2021Q1", "2024Q2", freq="Q")
+    books = []
+    for period in periods:
+        positions = {"OUT": (1000.0, 10000.0)}
+        if period >= periods[-2]:
+            positions["AAA"] = (100.0, 1000.0)
+        books.append(_book("1", str(period.end_time.date()), positions))
+    return books
+
+
+def _market(split: bool = False) -> BehaviorMarket:
+    index = pd.bdate_range("2022-01-03", "2025-01-31")
+    quotes = pd.DataFrame(10.0, index=index, columns=["AAA", "BBB", "OUT"])
+    actions = (
+        pd.DataFrame([{"ticker": "AAA", "date": pd.Timestamp("2024-05-01"), "value": 2.0}])
+        if split
+        else pd.DataFrame(columns=["ticker", "date", "value"])
+    )
+    basis = ShareBasis(actual=actions, vendor=actions, price=actions, policies={})
+    return BehaviorMarket(index, quotes, basis)
+
+
+def _compute(snapshot: PublicBookSnapshot, market: BehaviorMarket | None = None, topk: frozenset[str] | None = None) -> SuperinvestorFeatureHistory:
+    roster = frozenset(snapshot.latest_period_by_manager)
+    cohorts = {"": roster, "topk": roster if topk is None else topk}
+    return compute_superinvestor_feature_history((snapshot,), cohorts, ("AAA", "BBB"), market or _market())
+
+
+def _value(history: SuperinvestorFeatureHistory, metric: str, ticker: str = "AAA", cohort: str = "") -> float:
+    prefix = f"ic_super_{cohort}_" if cohort else "ic_super_"
+    return float(history.levels[prefix + metric].iloc[-1][ticker])
+
+
+def test_equal_manager_weight_and_pooled_weight_have_distinct_denominators() -> None:
+    books = [_book("1", "2024-06-30", {"AAA": (1, 10), "BBB": (9, 90)}), _book("2", "2024-06-30", {"AAA": (1.8, 18), "BBB": (88.2, 882)})]
+    history = _compute(_snapshot(books))
+    assert _value(history, "holders") == 2
+    assert _value(history, "conviction_weight") == pytest.approx(0.06)
+    assert _value(history, "pooled_weight") == pytest.approx(0.028)
+    assert _value(history, "max_conviction") == pytest.approx(0.10)
+    print("SANITY: two unequal books give6% equal-manager mean,2.8% pooled allocation and10% maximum weight.")
+
+
+def test_identical_masks_have_all_13_identical_values_and_nulls() -> None:
+    history = _compute(_snapshot([_book("1", "2024-06-30", {"AAA": (1, 10)})]))
+    assert len(EMISSION) == 26
+    for name, values in history.levels.items():
+        if not name.startswith("ic_super_topk_"):
+            pd.testing.assert_frame_equal(values, history.levels[name.replace("ic_super_", "ic_super_topk_")])
+    print("SANITY: identical raw-CIK masks produce exact equality for every metric and unknown.")
+
+
+def test_prices_do_not_create_trades_or_change_fixed_price_allocations() -> None:
+    prior = _book("1", "2024-03-31", {"AAA": (100, 1000), "BBB": (100, 1000)})
+    current = _book("1", "2024-06-30", {"AAA": (100, 2000), "BBB": (100, 1000)})
+    history = _compute(_snapshot([prior, current]))
+    for metric in ("shares_chg", "breadth_chg", "relative_position_chg", "pooled_weight_chg"):
+        assert _value(history, metric) == pytest.approx(0)
+    assert np.isnan(_value(history, "trade_balance"))
+    assert _value(history, "conviction_weight") == pytest.approx(2 / 3)
+    print("SANITY: a pure price double changes reported weight only; supported behavior is zero and no trader vote exists.")
+
+
+def test_genuine_split_rebases_prior_shares_and_reference_price_inversely() -> None:
+    prior = _book("1", "2024-03-31", {"AAA": (100, 1000), "BBB": (100, 1000)})
+    current = _book("1", "2024-06-30", {"AAA": (300, 1500), "BBB": (100, 1000)})
+    history = _compute(_snapshot([prior, current]), _market(split=True))
+    assert _value(history, "shares_chg") == pytest.approx(0.5)
+    assert _value(history, "relative_position_chg") == pytest.approx(0.25)
+    assert _value(history, "pooled_weight_chg") == pytest.approx(0.10)
+    assert _value(history, "trade_balance") == 1
+    print("SANITY:2:1 split plus50% active share growth gives25pp relative activity and10pp pooled allocation change.")
+
+
+def test_disappearing_manager_is_excluded_from_both_endpoints() -> None:
+    books = [
+        _book("1", "2024-03-31", {"AAA": (100, 1000)}),
+        _book("2", "2024-03-31", {"AAA": (1000, 10000)}),
+        _book("1", "2024-06-30", {"AAA": (110, 1100)}),
+    ]
+    snapshot = _snapshot(books)
+    snapshot = replace(snapshot, level_books={"1": books[-1]})
+    history = _compute(snapshot)
+    assert _value(history, "holders") == 1
+    assert _value(history, "shares_chg") == pytest.approx(0.1)
+    assert history.diagnostics.quarter_pairs.tolist() == [1, 1]
+    print("SANITY: the absent manager's1000shares never become a sale; the one genuine pair grows10%.")
+
+
+def test_complete_empty_book_proves_share_exit_but_not_zero_pooled_denominator() -> None:
+    history = _compute(_snapshot([_book("1", "2024-03-31", {"AAA": (100, 1000)}), _book("1", "2024-06-30", {})]))
+    assert _value(history, "shares_chg") == -1
+    assert _value(history, "trade_balance") == -1
+    assert _value(history, "holders") == 0
+    assert _value(history, "top10_holders") == 0
+    assert np.isnan(_value(history, "pooled_weight"))
+    assert np.isnan(_value(history, "pooled_weight_chg"))
+    print("SANITY: a complete empty book supports a100% exit; its zero whole-book denominator remains unknown.")
+
+
+def test_unknown_or_partial_book_never_manufactures_a_sale() -> None:
+    books = [_book("1", "2024-03-31", {"AAA": (100, 1000)}), _book("1", "2024-06-30", {}, known=False)]
+    history = _compute(_snapshot(books))
+    assert np.isnan(_value(history, "holders"))
+    assert np.isnan(_value(history, "shares_chg"))
+    print("SANITY: unusable current books remain unknown rather than zero holdings or sales.")
+
+
+@pytest.mark.parametrize("lag", [1, 4])
+@pytest.mark.parametrize("unknown_endpoint", ["current", "prior"])
+@pytest.mark.parametrize("position_type", ["call", "put"])
+def test_unknown_common_leg_survives_option_type_for_levels_and_comparisons(lag: int, unknown_endpoint: str, position_type: str) -> None:
+    prior_period = "2024-03-31" if lag == 1 else "2023-06-30"
+    prior = _book("1", prior_period, {"AAA": (100, 1000), "BBB": (100, 1000)})
+    current = _book("1", "2024-06-30", {"AAA": (110, 1100), "BBB": (120, 1200)})
+    unknown = current if unknown_endpoint == "current" else prior
+    target = unknown.df_positions.ticker.eq("AAA")
+    unknown.df_positions.loc[target, "position_type"] = position_type
+    unknown.df_positions.loc[target, ["shares", "value_usd"]] = np.nan
+    history = _compute(_snapshot([prior, current]))
+    change = "shares_chg" if lag == 1 else "shares_chg_yoy"
+    breadth = "breadth_chg" if lag == 1 else "holders_yoy"
+    for cohort in ("", "topk"):
+        assert np.isnan(_value(history, change, cohort=cohort))
+        assert np.isnan(_value(history, breadth, cohort=cohort))
+        assert _value(history, change, ticker="BBB", cohort=cohort) == pytest.approx(0.2)
+        assert _value(history, breadth, ticker="BBB", cohort=cohort) == 0
+        if lag == 1:
+            assert np.isnan(_value(history, "trade_balance", cohort=cohort))
+            assert _value(history, "trade_balance", ticker="BBB", cohort=cohort) == 1
+            for ticker in ("AAA", "BBB"):
+                assert np.isnan(_value(history, "relative_position_chg", ticker=ticker, cohort=cohort))
+                assert np.isnan(_value(history, "pooled_weight_chg", ticker=ticker, cohort=cohort))
+        if unknown_endpoint == "current":
+            for metric in ("holders", "top10_holders", "quarters_held", "conviction_weight", "max_conviction", "pooled_weight"):
+                assert np.isnan(_value(history, metric, cohort=cohort))
+            assert _value(history, "holders", ticker="BBB", cohort=cohort) == 1
+            assert np.isnan(_value(history, "conviction_weight", ticker="BBB", cohort=cohort))
+        else:
+            assert _value(history, "holders", cohort=cohort) == 1
+            assert _value(history, "quarters_held", cohort=cohort) == 1
     print(
-        f"  book = {int(row['n_positions'])} positions / ${row['total_common_value']:,.0f}; "
-        f"universe sleeve = {len(in_universe)} names / "
-        f"${in_universe['value_usd'].sum():,.0f} ({row['sp500_share']:.1%} of value)"
-    )
-    print(
-        f"  HOT weight: whole-book {in_universe['portfolio_weight'].max():.4f} vs "
-        f"index-sleeve {slice_w.max():.4f}  -> the old denominator inflated it "
-        f"{inflation.max():.2f}x"
-    )
-    print("  weights sum to 1.0 over all 10 names, not over the 2 in the universe. Validated.")
-    assert (inflation > 1.0).all(), "the slice weight must exceed the whole-book weight"
-    assert np.isclose(inflation, 1.0 / row["sp500_share"]).all(), "inflation must equal 1 / value coverage by construction"
-
-
-def test_unmapped_positions_stay_in_the_book():
-    """The cusip join is a LEFT join: the 8 names with no universe ticker keep their rows,
-    because dropping them rebuilds the index-sleeve denominator from the other end."""
-    joined = attach_tickers(_holdings(), _CUSIP_MAP, _UNIVERSE)
-    assert len(joined) == len(_holdings())
-    assert joined["ticker"].isna().sum() == 24, joined["ticker"].isna().sum()
-    print("\n=== SANITY CHECK: left join keeps the rest of the book ===")
-    print(
-        f"  {len(joined)} rows in, {len(joined)} out; {joined['ticker'].notna().sum()} "
-        f"carry a universe ticker and {joined['ticker'].isna().sum()} do not -- and the "
-        "latter are exactly what `total_common_value` needs. Validated."
+        f"SANITY: {position_type}-typed unknown common leg at {unknown_endpoint}, lag{lag}, stays unknown in both cohorts; "
+        "the known sibling grows20%, while required whole-book evidence is not dropped."
     )
 
 
-def test_universe_narrows_the_ticker_side_only():
-    """Without `universe`, `cusip_ticker_map`'s 20k tickers mark almost the whole book as
-    "in the index" -- measured on live data as a 98% index share against a true 59%."""
-    wide = attach_tickers(_holdings(), _CUSIP_MAP, universe=None)
-    narrow = attach_tickers(_holdings(), _CUSIP_MAP, universe=_UNIVERSE)
-    print("\n=== SANITY CHECK: universe restriction ===")
-    print(
-        f"  mapped rows with no universe filter: {wide['ticker'].notna().sum()} "
-        f"(all 10 names) vs with it: {narrow['ticker'].notna().sum()} (the 2 real ones)"
-    )
-    assert wide["ticker"].notna().sum() > narrow["ticker"].notna().sum()
-    print("  the denominator is identical either way; only the numerator narrows. Validated.")
+@pytest.mark.parametrize("lag", [1, 4])
+@pytest.mark.parametrize("position_type", ["call", "put"])
+def test_proven_option_only_common_zero_still_supports_nonholding_and_sale(lag: int, position_type: str) -> None:
+    prior_period = "2024-03-31" if lag == 1 else "2023-06-30"
+    prior = _book("1", prior_period, {"AAA": (100, 1000), "BBB": (100, 1000)})
+    current = _book("1", "2024-06-30", {"AAA": (0, 0), "BBB": (120, 1200)})
+    current.df_positions.loc[current.df_positions.ticker.eq("AAA"), "position_type"] = position_type
+    history = _compute(_snapshot([prior, current]))
+    change = "shares_chg" if lag == 1 else "shares_chg_yoy"
+    breadth = "breadth_chg" if lag == 1 else "holders_yoy"
+    for cohort in ("", "topk"):
+        assert _value(history, "holders", cohort=cohort) == 0
+        assert _value(history, "top10_holders", cohort=cohort) == 0
+        assert np.isnan(_value(history, "quarters_held", cohort=cohort))
+        assert _value(history, "conviction_weight", cohort=cohort) == 0
+        assert _value(history, change, cohort=cohort) == -1
+        assert _value(history, breadth, cohort=cohort) == -1
+        if lag == 1:
+            assert _value(history, "trade_balance", cohort=cohort) == -1
+            assert np.isfinite(_value(history, "relative_position_chg", cohort=cohort))
+            assert _value(history, "pooled_weight_chg", cohort=cohort) == pytest.approx(-0.5)
+    print(f"SANITY: proven zero common legs on a {position_type}-only row remain nonholdings and supported lag{lag} exits in both cohorts.")
 
 
-# --------------------------------------------------------------------------------------- #
-# 2. a split is not a purchase                                                              #
-# --------------------------------------------------------------------------------------- #
-def test_a_split_is_restated_not_read_as_a_purchase():
-    """A 20-for-1 split multiplies the share count with no trade. The prior quarter must be
-    restated onto the new basis, leaving a ~0% change rather than +1,900%."""
-    rows = _book("2025-12-31", "2026-02-14", hot=1_000, cold=100) + _book("2026-03-31", "2026-05-15", hot=20_000, cold=100)
-    h, state, conv = _prepared(pd.DataFrame(rows))
-    contrib = _contrib(conv, state)
-    splits = pd.DataFrame({"date": [pd.Timestamp("2026-02-10")], "ticker": ["HOT"], "ratio": [20.0]})
-    with_split = attach_split_factor(contrib, splits)
-    without = attach_split_factor(contrib, None)
-
-    def chg(frame):
-        r = frame[(frame["ticker"] == "HOT") & (frame["period"] == pd.Timestamp("2026-03-31"))].iloc[0]
-        return r["shares"] / r["prev_shares_adj"] - 1.0
-
-    print("\n=== SANITY CHECK: 20:1 split restatement ===")
-    print("  shares 1,000 -> 20,000 with no trade")
-    print(f"    without `prices_splits`: {without.pipe(chg):+.0%}  <- read as a purchase")
-    print(f"    with    `prices_splits`: {with_split.pipe(chg):+.0%}  <- restated")
-    assert np.isclose(with_split.pipe(chg), 0.0, atol=1e-9)
-    assert without.pipe(chg) > 18.0
-    print("  Validated.")
-
-
-def _contrib(df_conviction: pd.DataFrame, df_state: pd.DataFrame) -> pd.DataFrame:
-    selection = manager_selection_weights(df_state, None)
-    return _contributions(df_conviction, df_state, selection, public_state(df_state, selection))
+@pytest.mark.parametrize("lag", [1, 4])
+def test_complete_restatement_restores_known_absence_after_unknown_common_leg(lag: int) -> None:
+    prior_period = "2024-03-31" if lag == 1 else "2023-06-30"
+    prior = _book("1", prior_period, {"AAA": (100, 1000), "BBB": (100, 1000)})
+    unknown = _book("1", "2024-06-30", {"AAA": (np.nan, np.nan), "BBB": (120, 1200)})
+    unknown.df_positions.loc[unknown.df_positions.ticker.eq("AAA"), "position_type"] = "call"
+    restated = _book("1", "2024-06-30", {"BBB": (120, 1200)})
+    snapshots = (_snapshot([prior, unknown]), _snapshot([prior, restated], day="2024-08-16"))
+    cohorts = {"": frozenset({"1"}), "topk": frozenset({"1"})}
+    history = compute_superinvestor_feature_history(snapshots, cohorts, ("AAA", "BBB"), _market())
+    change = "shares_chg" if lag == 1 else "shares_chg_yoy"
+    breadth = "breadth_chg" if lag == 1 else "holders_yoy"
+    for cohort in ("", "topk"):
+        prefix = f"ic_super_{cohort}_" if cohort else "ic_super_"
+        assert np.isnan(history.levels[prefix + change].iloc[0].AAA)
+        assert np.isnan(history.levels[prefix + "holders"].iloc[0].AAA)
+        assert _value(history, "holders", cohort=cohort) == 0
+        assert _value(history, "top10_holders", cohort=cohort) == 0
+        assert _value(history, change, cohort=cohort) == -1
+        assert _value(history, breadth, cohort=cohort) == -1
+        if lag == 1:
+            assert _value(history, "trade_balance", cohort=cohort) == -1
+            assert _value(history, "pooled_weight_chg", cohort=cohort) == pytest.approx(-0.5)
+    print(f"SANITY: a complete later restatement restores known absence and a full lag{lag} sale prospectively in both cohorts.")
 
 
-# --------------------------------------------------------------------------------------- #
-# 3. ranks do not depend on row order                                                       #
-# --------------------------------------------------------------------------------------- #
-def test_rank_in_book_is_independent_of_row_order():
-    """`rank(method="first")` broke ties by frame position, so two positions of identical
-    value swapped ranks whenever anything upstream reordered rows -- 2.06% of live
-    manager-quarter-cusip rows, e.g. 38 <-> 39 at an identical 0.000089 weight."""
-    base = _holdings()
-    shuffled = base.sample(frac=1.0, random_state=7).reset_index(drop=True)
-    _, _, a = _prepared(base)
-    _, _, b = _prepared(shuffled)
-    key = ["cik", "period", "cusip"]
-    merged = a[key + ["rank_in_book"]].merge(b[key + ["rank_in_book"]], on=key, suffixes=("_a", "_b"))
-    ties = a.groupby(["cik", "period"])["value_usd"].transform(lambda s: s.duplicated(keep=False)).sum()
-    flipped = int((merged["rank_in_book_a"] != merged["rank_in_book_b"]).sum())
-    print("\n=== SANITY CHECK: deterministic ranks ===")
-    print(f"  {len(merged)} rows compared, {ties} of them tied on value_usd (the 8 equal non-universe positions)")
-    print(f"  ranks that changed when the input rows were shuffled: {flipped} (must be 0)")
-    assert flipped == 0
-    print("  tie-break is (value desc, cusip asc), a property of the filing. Validated.")
+def test_unselected_estimated_quantities_do_not_contaminate_topk() -> None:
+    books = [
+        _book("1", "2024-03-31", {"AAA": (100, 1000)}),
+        _book("1", "2024-06-30", {"AAA": (110, 1100)}),
+        _book("2", "2024-03-31", {"AAA": (100, 1000)}),
+        _book("2", "2024-06-30", {"AAA": (999, 9990)}),
+    ]
+    books[-1].df_positions["value_basis_shares_source"] = "value_estimated"
+    history = _compute(_snapshot(books), topk=frozenset({"1"}))
+    assert _value(history, "shares_chg", cohort="topk") == pytest.approx(0.1)
+    assert _value(history, "shares_chg") == pytest.approx(0.1)
+    print("SANITY: estimated shares exclude their manager/ticker comparison, not the selected known pair.")
 
 
-# --------------------------------------------------------------------------------------- #
-# 4. availability                                                                           #
-# --------------------------------------------------------------------------------------- #
-def test_each_manager_carries_its_own_availability_date():
-    """`max(period + 45d, filing_date)` PER MANAGER. Stamping the whole quarter at the last
-    contributing filing delayed 45 of 60 live quarters past 90 days (median 189); stamping
-    everything at the 45-day deadline leaks, because 16.5% of manager-quarters carrying
-    36.7% of book value are filed after it."""
-    rows = (
-        _book("2025-12-31", "2026-02-14", 1000, 250)  # on time
-        + _book(
-            "2025-12-31",
-            "2026-08-01",
-            800,
-            300,
-            cik="0000000002",  # 168 days late
-            n_other=0,
-        )
-    )
-    _, state, _ = _prepared(pd.DataFrame(rows))
-    st = public_state(state, manager_selection_weights(state, None))
-    stamps = dict(zip(st["cik"], st["avail"], strict=False))
-    print("\n=== SANITY CHECK: per-manager availability ===")
-    for cik, a in sorted(stamps.items()):
-        print(f"  {cik}  filed {'2026-02-14' if cik.endswith('1') else '2026-08-01'} -> public {a.date()}")
-    assert stamps["0000000001"] == pd.Timestamp("2026-02-14")
-    assert stamps["0000000002"] == pd.Timestamp("2026-08-01")
-    print("  the deadline is a FLOOR, never a substitute for a late filing date. Validated.")
+def test_same_quarter_watermark_does_not_reuse_old_topk_changes() -> None:
+    books = [
+        _book("1", "2023-12-31", {"AAA": (100, 1000)}),
+        _book("1", "2024-03-31", {"AAA": (110, 1100)}),
+        _book("2", "2024-06-30", {"AAA": (100, 1000)}),
+    ]
+    history = _compute(_snapshot(books), topk=frozenset({"1"}))
+    assert _value(history, "holders", cohort="topk") == 1
+    assert np.isnan(_value(history, "shares_chg", cohort="topk"))
+    print("SANITY: carried old books may supply levels but cannot pose as the activated common report quarter.")
 
 
-def test_a_superseded_backfiling_is_never_readable():
-    """A 13F back-filed for an old period arrives after the filings that supersede it, so
-    its readable window is empty. Keeping it would let an old period overwrite a newer one
-    -- a look-ahead in reverse."""
-    rows = (
-        _book("2025-09-30", "2027-01-15", 100, 100)  # back-filed 15 months late
-        + _book("2025-12-31", "2026-02-14", 1000, 250)  # on time, supersedes it
-        + _book("2026-03-31", "2026-05-15", 1500, 0)
-    )
-    _, state, _ = _prepared(pd.DataFrame(rows))
-    st = public_state(state, manager_selection_weights(state, None))
-    kept = sorted(str(p.date()) for p in st["period"])
-    print("\n=== SANITY CHECK: superseded back-filing ===")
-    print("  filed periods: 2025-09-30 (submitted 2027-01-15), 2025-12-31, 2026-03-31")
-    print(f"  periods that are ever the manager's public state: {kept}")
-    assert "2025-09-30" not in kept, "a superseded back-filing must be dropped"
-    print("  the 2027 submission never becomes readable: by then 2026-03-31 is the state. Validated.")
+def test_annual_comparison_uses_exact_lag4_and_tenure_resets_on_a_gap() -> None:
+    books = [
+        _book("1", "2023-06-30", {"AAA": (100, 1000)}),
+        _book("1", "2023-12-31", {"AAA": (150, 1500)}),
+        _book("1", "2024-03-31", {"AAA": (180, 1800)}),
+        _book("1", "2024-06-30", {"AAA": (200, 2000)}),
+    ]
+    history = _compute(_snapshot(books))
+    assert _value(history, "shares_chg_yoy") == 1
+    assert _value(history, "holders_yoy") == 0
+    assert _value(history, "quarters_held") == 3
+    print("SANITY: annual shares double from exact q-4; a missing intermediate quarter resets verified tenure to3.")
 
 
-def test_the_panel_is_empty_before_the_first_filing_is_public():
-    idx = pd.bdate_range("2025-10-01", "2026-09-30")
-    peers = {t: {p: 1.0 for p in _UNIVERSE if p != t} for t in _UNIVERSE}
-    panel = build_superinvestor_feature_panel(make_frames(idx, peers, universe=_UNIVERSE), _holdings(), _ROSTER, cusip_map=_CUSIP_MAP)
-    feats = [c for c in panel.columns if c.startswith("f_")]
-    before = panel[panel["date"] < pd.Timestamp("2025-11-14")]
-    after = panel[panel["date"] >= pd.Timestamp("2026-02-14")]
-    print("\n=== SANITY CHECK: leak-free panel ===")
-    print(f"  {len(panel):,} rows x {len(feats)} feature columns")
-    print(f"  rows before the first filing became public (2025-11-14): {len(before):,}, all-NaN: {before[feats].isna().all().all()}")
-    print(f"  non-null feature cells after 2026-02-14: {int(after[feats].notna().to_numpy().sum()):,}")
-    assert before.empty or before[feats].isna().all().all()
-    assert after[feats].notna().to_numpy().any()
-    print("  Validated.")
+def test_off_universe_position_is_included_in_fixed_price_whole_book() -> None:
+    prior = _book("1", "2024-03-31", {"AAA": (100, 1000), "OUT": (100, 1000)})
+    current = _book("1", "2024-06-30", {"AAA": (150, 1500), "OUT": (100, 1000)})
+    history = _compute(_snapshot([prior, current]))
+    assert _value(history, "relative_position_chg") == pytest.approx(0.25)
+    assert _value(history, "pooled_weight_chg") == pytest.approx(0.10)
+    print("SANITY: off-universe holdings remain in both whole-book denominators; output scope never shrinks the book.")
 
 
-def _availability(start: str) -> InstitutionalAvailability:
-    return InstitutionalAvailability.from_config(
-        {
-            "sec13f_manager_holdings": {"__all__": start},
-            "derived_features": {
-                "ic_super_conviction_chg": "2013-02-14",
-                "ic_super_full_exits": "2013-02-14",
-            },
-        }
-    )
+def test_missing_reference_excludes_whole_book_only_and_never_fills() -> None:
+    prior = _book("1", "2024-03-31", {"AAA": (100, 1000), "OUT": (100, 1000)})
+    current = _book("1", "2024-06-30", {"AAA": (150, 1500), "OUT": (100, 1000)})
+    market = _market()
+    assert market.as_traded_close is not None
+    market.as_traded_close.loc[pd.Timestamp("2024-03-29"), "OUT"] = np.nan
+    history = _compute(_snapshot([prior, current]), market)
+    assert _value(history, "shares_chg") == pytest.approx(0.5)
+    assert np.isnan(_value(history, "relative_position_chg"))
+    assert np.isnan(_value(history, "pooled_weight_chg"))
+    print("SANITY: one missing exact prior-session union quote excludes whole-book rates while supported ticker share growth survives.")
 
 
-def test_declared_source_start_masks_older_public_super_state():
-    idx = pd.bdate_range("2012-07-01", "2013-02-15").difference(pd.DatetimeIndex(["2013-01-01"]))
-    holdings = pd.DataFrame(_book("2012-06-30", "2012-08-14", 500, 500) + _book("2012-09-30", "2012-11-14", 1000, 0))
-    panel = build_superinvestor_feature_panel(
-        make_frames(idx, universe=_UNIVERSE),
-        holdings,
-        _ROSTER,
-        cusip_map=_CUSIP_MAP,
-        availability=_availability("2013-01-01"),
-    )
-    start = pd.Timestamp("2013-01-02")
-    features = panel.filter(like="f_")
-    assert panel.loc[panel["date"] < start, features.columns].isna().all().all()
-    assert panel.loc[panel["date"] >= start, features.columns].notna().any().any()
-    assert panel.loc[panel["date"] < pd.Timestamp("2013-02-14"), "f_ic_super_conviction_chg"].isna().all()
-    print("\n=== SANITY CHECK: declared elite-13F source start ===")
-    print("  2012 public states remain unavailable until the first 2013 trading session; persisted outputs agree. Validated.")
+def test_different_manager_capital_growth_can_move_pooled_allocation() -> None:
+    books = [
+        _book("1", "2024-03-31", {"AAA": (5, 50), "BBB": (5, 50)}),
+        _book("2", "2024-03-31", {"BBB": (10, 100)}),
+        _book("1", "2024-06-30", {"AAA": (10, 100), "BBB": (10, 100)}),
+        _book("2", "2024-06-30", {"BBB": (10, 100)}),
+    ]
+    history = _compute(_snapshot(books))
+    assert _value(history, "relative_position_chg") == pytest.approx(0)
+    assert _value(history, "conviction_weight") == pytest.approx(0.25)
+    assert _value(history, "pooled_weight_chg") == pytest.approx(1 / 3 - 1 / 4)
+    print("SANITY: manager-specific proportional expansion has zero relative activity but changes pooled capital weights by8.333pp.")
 
 
-def test_later_first_public_filing_remains_the_super_boundary():
-    idx = pd.bdate_range("2013-01-01", "2013-06-01")
-    holdings = pd.DataFrame(_book("2012-12-31", "2013-02-14", 500, 500) + _book("2013-03-31", "2013-05-15", 1000, 0))
-    panel = build_superinvestor_feature_panel(
-        make_frames(idx, universe=_UNIVERSE),
-        holdings,
-        _ROSTER,
-        cusip_map=_CUSIP_MAP,
-        availability=_availability("2013-01-01"),
-    )
-    start = pd.Timestamp("2013-02-14")
-    features = panel.filter(like="f_")
-    assert panel.loc[panel["date"] < start, features.columns].isna().all().all()
-    assert panel.loc[panel["date"] >= start, features.columns].notna().any().any()
-    print("\n=== SANITY CHECK: later elite-13F public filing ===")
-    print("  A 2013-01-01 source declaration does not pull a 2013-02-14 filing backward; persisted outputs start no earlier. Validated.")
+def test_daily_projection_has_no_decay_and_explicit_unknown_clears_state() -> None:
+    snapshot = _snapshot([_book("1", "2024-06-30", {"AAA": (100, 1000)})])
+    expired = replace(snapshot, day=pd.Timestamp("2024-08-20"), level_books={})
+    market = _market()
+    history = compute_superinvestor_feature_history((snapshot, expired), {"": frozenset({"1"}), "topk": frozenset({"1"})}, ("AAA", "BBB"), market)
+    dates = pd.bdate_range("2024-08-15", "2024-08-23")
+    prices = pd.DataFrame(10.0, index=dates, columns=["AAA", "BBB"])
+    frames = PriceFrames(dates, ("AAA", "BBB"), {}, close_split=prices)
+    full = project_superinvestor_features(history, frames, pd.Timestamp("2013-01-01")).set_index(["date", "ticker"])
+    assert len(full.columns) == 26
+    assert full.loc[(pd.Timestamp("2024-08-19"), "AAA"), "f_ic_super_holders"] == 1
+    assert full.loc[[(pd.Timestamp("2024-08-20"), "AAA")]].isna().all().all()
+    tail_frames = replace(frames, trading_index=dates[-2:], close_split=prices.tail(2))
+    tail = project_superinvestor_features(history, tail_frames, pd.Timestamp("2013-01-01")).set_index(["date", "ticker"])
+    pd.testing.assert_frame_equal(tail, full.loc[tail.index])
+    print("SANITY: no event means stable levels; explicit expiry clears all26fields, including an entirely unknown incremental tail.")
 
 
-# --------------------------------------------------------------------------------------- #
-# emission contract (D25 / D27)                                                             #
-# --------------------------------------------------------------------------------------- #
-def test_the_family_emits_no_peer_leg_and_never_a_rank_alone():
-    idx = pd.bdate_range("2025-10-01", "2026-09-30")
-    peers = {t: {p: 1.0 for p in _UNIVERSE if p != t} for t in _UNIVERSE}
-    panel = build_superinvestor_feature_panel(make_frames(idx, peers, universe=_UNIVERSE), _holdings(), _ROSTER, cusip_map=_CUSIP_MAP)
-    feats = [c for c in panel.columns if c.startswith("f_")]
-    peer_legs = [c for c in feats if c.endswith("_vs_peers")]
-    raws = {c[2:] for c in feats if not c.endswith("_xs")}
-    xs = {c[2:-3] for c in feats if c.endswith("_xs")}
-    print("\n=== SANITY CHECK: emission contract ===")
-    print(f"  peer legs: {len(peer_legs)} (D25 -- the signal is absolute, not sector-relative)")
-    print(f"  raw legs {len(raws)}, _xs legs {len(xs)}; every _xs has its raw: {xs <= raws}")
-    print(f"  declared `raw+xs`: {sorted(k for k, v in EMISSION.items() if v == 'raw+xs')}")
-    assert not peer_legs
-    assert xs <= raws, "no feature may ship as a rank alone"
-    assert xs == {k for k, v in EMISSION.items() if v == "raw+xs"} & raws
-    print("  Validated.")
+def test_breadth_uses_matched_manager_proportion_and_entries_have_no_prior_rate() -> None:
+    books = [
+        _book("1", "2024-03-31", {"AAA": (100, 1000)}),
+        _book("1", "2024-06-30", {"AAA": (100, 1000)}),
+        _book("2", "2024-03-31", {"BBB": (100, 1000)}),
+        _book("2", "2024-06-30", {"AAA": (100, 1000)}),
+    ]
+    history = _compute(_snapshot(books))
+    assert _value(history, "breadth_chg") == 0.5
+    assert _value(history, "shares_chg") == 1
+    assert _value(history, "trade_balance") == 1
+    assert _value(history, "relative_position_chg") == 0
+    entry = _compute(_snapshot(books[2:]))
+    assert np.isnan(_value(entry, "shares_chg"))
+    assert np.isnan(_value(entry, "relative_position_chg"))
+    print("SANITY: one new holder among two matched books adds50pp breadth; a pure entry has no prior-positive rate but casts a buyer vote.")
 
 
-def test_selection_ciks_reads_every_roster_shape():
-    assert _selection_ciks({"1067983": "Buffett", "0000000002": "Ackman"}) == {"0001067983", "0000000002"}
-    assert _selection_ciks({"1067983", "0000000002"}) == {"0001067983", "0000000002"}
-    assert _selection_ciks(["1067983", ""]) == {"0001067983"}
-    assert _selection_ciks(None) == set() and _selection_ciks(set()) == set() and _selection_ciks({}) == set()
-    print("\n=== SANITY CHECK: roster shapes ===")
-    print("  {cik: name} keys, a CIK set and a CIK list all resolve to padded CIKs; blanks dropped; None/empty -> empty set. Validated.")
+@pytest.mark.parametrize("lag", [1, 4])
+def test_changed_security_identity_is_unsupported_for_both_lags(lag: int) -> None:
+    prior_period = "2024-03-31" if lag == 1 else "2023-06-30"
+    prior = _book("1", prior_period, {"AAA": (100, 1000)})
+    current = _book("1", "2024-06-30", {"AAA": (200, 2000)})
+    current.df_positions["cusip"] = "UNRESOLVED_NEW_CUSIP"
+    history = _compute(_snapshot([prior, current]))
+    assert np.isnan(_value(history, "shares_chg" if lag == 1 else "shares_chg_yoy"))
+    print("SANITY: same ticker with unresolved changed CUSIP cannot become a reported trade, for quarterly or annual comparisons.")
 
 
-def _null_amounts(rows: list[dict]) -> list[dict]:
-    """An unverifiable legacy text book (F-001): positions kept, every amount NULL."""
-    return [{**r, "shares": None, "value_usd": None} for r in rows]
+def test_consensus_is_signed_and_excludes_unchanged_managers() -> None:
+    books = []
+    for cik, current in (("1", 110), ("2", 110), ("3", 90), ("4", 100)):
+        books.extend([_book(cik, "2024-03-31", {"AAA": (100, 1000)}), _book(cik, "2024-06-30", {"AAA": (current, current * 10)})])
+    history = _compute(_snapshot(books))
+    assert _value(history, "trade_balance") == pytest.approx(1 / 3)
+    print("SANITY: two buyers, one seller and one unchanged manager give signed consensus+1/3.")
 
 
-def test_a_book_with_all_null_amounts_matches_an_absent_book() -> None:
-    """An all-NULL manager-quarter must yield the same features as an absent book."""
-    books = (("2025-09-30", "2025-11-14", 500, 500), ("2025-12-31", "2026-02-14", 1000, 250), ("2026-03-31", "2026-05-15", 1500, 100))
-    other = [r for p, f, h, c in books for r in _book(p, f, h, c, cik="0000000002", n_other=0)]
-    first, middle, last = (_book(p, f, h, c) for p, f, h, c in books)
-    idx = pd.bdate_range("2025-10-01", "2026-09-30")
-    peers = {t: {p: 1.0 for p in _UNIVERSE if p != t} for t in _UNIVERSE}
+@pytest.mark.parametrize("endpoint", ["prior", "current", "history"])
+@pytest.mark.parametrize(
+    ("evidence", "verified"),
+    [
+        ("unknown_common", False),
+        ("known_zero", True),
+        ("option_zero", True),
+        ("unknown_option", False),
+        ("unverified_zero", False),
+        ("missing_source", False),
+        ("missing_unverified", True),
+        ("null_unverified", False),
+        ("object_null_unverified", True),
+    ],
+)
+def test_duration_preserves_same_ticker_sibling_evidence(endpoint: str, evidence: str, verified: bool) -> None:
+    prior = _book("1", "2024-03-31", {"AAA": (100, 1000)})
+    current = _book("1", "2024-06-30", {"AAA": (110, 1100)})
+    historical = _book("1", "2023-12-31", {"AAA": (100, 1000)})
+    books = [historical, prior, current] if endpoint == "history" else [prior, current]
+    target = historical if endpoint == "history" else (prior if endpoint == "prior" else current)
+    sibling = target.df_positions.iloc[0].copy()
+    sibling["cusip"] = "AAA_SIBLING"
+    sibling[["shares", "value_usd"]] = np.nan if evidence.startswith("unknown") else 0.0
+    sibling["position_type"] = "call" if "option" in evidence else "common"
+    sibling["value_basis_inverse_unit_unverified"] = evidence == "unverified_zero"
+    target.df_positions.loc[1] = sibling
+    if evidence == "missing_source":
+        target.df_positions.drop(columns="value_basis_shares_source", inplace=True)
+    if evidence == "missing_unverified":
+        target.df_positions.drop(columns="value_basis_inverse_unit_unverified", inplace=True)
+    if evidence in ("null_unverified", "object_null_unverified"):
+        dtype = "boolean" if evidence == "null_unverified" else "object"
+        target.df_positions["value_basis_inverse_unit_unverified"] = pd.Series([False, None], dtype=dtype)
+    originals = [book.df_positions.copy(deep=True) for book in books]
 
-    def run(rows: list[dict]) -> pd.DataFrame:
-        panel = build_superinvestor_feature_panel(make_frames(idx, peers, universe=_UNIVERSE), pd.DataFrame(rows), _ROSTER, cusip_map=_CUSIP_MAP)
-        return panel.sort_values(["date", "ticker"]).reset_index(drop=True)
-
-    panel_null = run(first + _null_amounts(middle) + last + other)
-    panel_absent = run(first + last + other)
-    named = ["f_ic_super_conviction_weight", "f_ic_super_shares_chg", "f_ic_super_top10_holders", "f_ic_super_holders"]
-    print("\n=== SANITY CHECK: all-NULL book behaves as absent ===")
-    print(f"  panel {panel_null.shape} vs {panel_absent.shape}; named features present: {[c for c in named if c in panel_null.columns]}")
-    for col in named:
-        assert col in panel_null.columns, col
-        pd.testing.assert_series_equal(panel_null[col], panel_absent[col])
-    pd.testing.assert_frame_equal(panel_null, panel_absent)
-    print("  Every panel column is identical to the absent-book run; unknown amounts cannot manufacture positions or exits. Validated.")
-
-
-def test_unknown_book_values_preserve_the_share_position_and_do_not_signal_exit() -> None:
-    h = _holdings()
-    uncertain = (h["cik"] == "0000000001") & (h["period"] == "2025-12-31")
-    h.loc[uncertain, "value_usd"] = np.nan
-    _, state, conv = _prepared(h)
-    one = state.loc[(state.cik == "0000000001") & (state.period == pd.Timestamp("2025-12-31"))].iloc[0]
-    assert pd.isna(one["total_common_value"])
-    contrib = _contrib(conv, state)
-    held = contrib.loc[(contrib.cik == "0000000001") & (contrib.period == pd.Timestamp("2025-12-31")) & contrib.ticker.eq("HOT")].iloc[0]
-    assert bool(held["held"])
-    assert held["shares"] == 1000
-    assert pd.isna(held["w"])
-    print("SANITY: an unknown-dollar book keeps its 1,000-share HOT holding and cannot create a false exit.")
-
-
-def test_partial_missing_dollars_do_not_inflate_known_portfolio_weights() -> None:
-    h = _holdings()
-    h.loc[0, "value_usd"] = np.nan
-    _, state, conv = _prepared(h)
-    group = conv.loc[(conv.cik == "0000000001") & (conv.period == pd.Timestamp("2025-09-30"))]
-    assert group["portfolio_weight"].isna().all()
-    assert group["shares"].sum() == 9000
-    print("SANITY: an incomplete dollar denominator is unknown; other holding weights are not inflated.")
+    history = _compute(_snapshot(books))
+    expected = float(len(books)) if verified else ({"prior": 1.0, "current": np.nan, "history": 2.0}[endpoint])
+    for cohort in ("", "topk"):
+        actual = _value(history, "quarters_held", cohort=cohort)
+        assert np.isnan(actual) if np.isnan(expected) else actual == expected
+    for book, original in zip(books, originals, strict=True):
+        pd.testing.assert_frame_equal(book.df_positions, original)
+    print(f"SANITY: {endpoint} {evidence} retains baseline tenure {expected}, including its exact dtype/default and sibling aggregation rules.")
 
 
-def test_absent_common_value_column_reaches_panel_fallback(caplog) -> None:
-    holdings = _holdings().drop(columns="value_usd")
-    idx = pd.bdate_range("2025-09-30", "2026-06-01")
-    prices = pd.DataFrame(10.0, index=pd.DatetimeIndex(["2025-09-30", "2025-12-31", "2026-03-31"]), columns=_UNIVERSE)
-    with caplog.at_level(logging.INFO):
-        panel = build_superinvestor_feature_panel(
-            make_frames(idx, {}, universe=_UNIVERSE),
-            holdings,
-            _ROSTER,
-            cusip_map=_CUSIP_MAP,
-            valuation_close=prices,
-        )
-    assert not panel.empty
-    assert "missing filed value" in caplog.text
-    assert panel.filter(like="f_ic_super_holders").notna().any().any()
-    print("SANITY: the elite panel accepts an absent value column, reconstructs supported common dollars and retains shareholder outputs.")
+@pytest.mark.parametrize(("shares", "value"), [(np.nan, 1000.0), (100.0, np.nan), (100.0, 1000.0)])
+def test_duration_uses_positive_reported_shares_or_value_even_when_estimated(shares: float, value: float) -> None:
+    prior = _book("1", "2024-03-31", {"AAA": (shares, value)})
+    prior.df_positions["value_basis_shares_source"] = "value_estimated"
+    current = _book("1", "2024-06-30", {"AAA": (110, 1100)})
+    history = _compute(_snapshot([prior, current]))
+    for cohort in ("", "topk"):
+        assert _value(history, "quarters_held", cohort=cohort) == 2
+        assert np.isnan(_value(history, "shares_chg", cohort=cohort))
+    print("SANITY: positive reported shares or dollars extend descriptive tenure; estimated quantities still cannot establish trading.")
+
+
+@pytest.mark.parametrize("barrier", ["missing", "empty", "partial", "restricted", "current_partial", "current_empty", "expired"])
+def test_duration_retains_supported_book_and_current_level_barriers(barrier: str) -> None:
+    prior = _book("1", "2024-03-31", {} if barrier == "empty" else {"AAA": (100, 1000)})
+    current = _book("1", "2024-06-30", {} if barrier == "current_empty" else {"AAA": (110, 1100)})
+    if barrier in ("partial", "restricted"):
+        prior = replace(prior, support=replace(prior.support, zero_eligible=False, comparison_eligible=False, restricted=barrier == "restricted"))
+    if barrier == "current_partial":
+        current = replace(current, support=replace(current.support, zero_eligible=False, comparison_eligible=False))
+    snapshot = _snapshot([current] if barrier == "missing" else [prior, current])
+    if barrier == "expired":
+        snapshot = replace(snapshot, day=pd.Timestamp("2024-11-15"), level_books={})
+    history = _compute(snapshot)
+    for cohort in ("", "topk"):
+        actual = _value(history, "quarters_held", cohort=cohort)
+        assert np.isnan(actual) if barrier in ("current_partial", "current_empty", "expired") else actual == 1
+    print(f"SANITY: {barrier} preserves the existing adjacent-book/current-level barrier without inventing tenure or a sale.")
+
+
+def test_duration_keeps_ticker_identity_across_class_and_cusip_changes() -> None:
+    prior = _book("1", "2024-03-31", {"AAA": (100, 1000)})
+    prior.df_positions["cusip"] = "OLD_CUSIP"
+    prior.df_positions["class_evidence"] = '["preferred"]'
+    current = _book("1", "2024-06-30", {"AAA": (110, 1100)})
+    history = _compute(_snapshot([prior, current]))
+    for cohort in ("", "topk"):
+        assert _value(history, "quarters_held", cohort=cohort) == 2
+        assert np.isnan(_value(history, "shares_chg", cohort=cohort))
+    print("SANITY: duration keeps its ticker-based policy across class/CUSIP changes; comparable trading still abstains.")
+
+
+def test_duration_old_quarter_revisions_and_backfills_change_only_later_public_states() -> None:
+    packets = [
+        _packet("1", "2024-03-31", "2024-05-15", {"111111111": 100}),
+        _packet("1", "2024-06-30", "2024-08-14", {"111111111": 100}),
+        _packet("1", "2024-03-31", "2024-08-19", {}, kind="restatement"),
+        _packet("1", "2024-03-31", "2024-08-21", {"111111111": 100}, kind="restatement"),
+        _packet("1", "2023-12-31", "2024-08-23", {"111111111": 100}),
+    ]
+    snapshots = _history(packets)
+    selected = tuple(_on(snapshots, day) for day in ("2024-08-15", "2024-08-20", "2024-08-22", "2024-08-26"))
+    cohorts = {"": frozenset({"1"}), "topk": frozenset({"1"})}
+    history = compute_superinvestor_feature_history(selected, cohorts, ("AAA", "BBB"), _market())
+    prefix = _compute(_on(_history(packets[:2]), "2024-08-15"))
+    for cohort in ("", "topk"):
+        name = f"ic_super_{cohort}_quarters_held" if cohort else "ic_super_quarters_held"
+        assert history.levels[name].AAA.tolist() == [2, 1, 2, 3]
+    for name, values in prefix.levels.items():
+        pd.testing.assert_frame_equal(values, history.levels[name].iloc[:1])
+    assert len({snapshot.level_books["1"].first_public_at for snapshot in selected}) == 1
+    print("SANITY: old-quarter restatements/backfills change later tenure2→1→2→3 without rewriting earlier features or current first-public age.")
+
+
+def test_duration_short_output_holding_preserves_long_off_universe_book() -> None:
+    history = _compute(_snapshot(_long_duration_books()))
+    for cohort in ("", "topk"):
+        assert _value(history, "quarters_held", cohort=cohort) == 2
+        assert _value(history, "conviction_weight", cohort=cohort) == pytest.approx(1 / 11)
+        assert _value(history, "pooled_weight", cohort=cohort) == pytest.approx(1 / 11)
+    print("SANITY: the output holding has tenure2 beside a14-quarter off-universe holding; all off-universe dollars remain in level denominators.")

@@ -1,13 +1,12 @@
 ---
 title: Configuration
-description: OmegaConf assembly, ownership of every configuration domain, and change
-  rules.
+description: OmegaConf assembly, ownership of every configuration domain, and change rules.
 type: reference
 tags:
-- wiki
-- reference
-- configuration
-source_commit: 4773469e660ee159f30fbef0e56ea401d019fab2
+  - wiki
+  - reference
+  - configuration
+source_commit: cbc13eb78abd2cfa59465ea780c1092a2b7ecb2e
 ---
 # Configuration
 
@@ -71,6 +70,10 @@ The Dataroma superinvestor roster keeps its two registers under `configs/superin
 
 - [dataroma_roster_history.json](../../configs/superinvestors/dataroma_roster_history.json): one Wayback capture of the Dataroma home page per calendar quarter from 2012Q1, each with `captured_at`, `source_url` and `managers` (code to name). It is generated, never hand-edited: [build_dataroma_roster_history.py](../../scripts/build_dataroma_roster_history.py) regenerates it (see [data sources](./data-sources.md#superinvestor-roster-dataroma)).
 - [overrides.json](../../configs/superinvestors/overrides.json): hand resolutions, each with its 13F evidence. `cik_overrides` maps a code to its filer CIK; `manager_ciks` chains a manager's successive filer CIKs in dated period windows under a manager ID (the oldest CIK); `unresolvable` lists codes allowed a NULL CIK; `inactive` lists dated ranges in which a resolved filer legitimately has no 13F. `load_superinvestor_overrides` validates the chains (no overlapping windows, manager ID = oldest member, a CIK in one chain only) and caches per resolved directory. Rebuild the table after any change (see [run the pipeline](../guides/run-the-pipeline.md#superinvestor-roster)).
+
+Elite feature cohorts use a separate [ranked_managers.json](../../configs/superinvestors/ranked_managers.json): a plain nonempty ordered array of unique ten-digit ASCII CIK strings. The first `build_cube.institutionals.superinvestor.selection.k` entries define the fixed top-K (default 20); `max_age_calendar_days` is90. The list may be a subset of the full stored roster raw-CIK union and must not redefine that full cohort. The checked-in 106-entry ascending order is a provisional retrospective default, not an evaluated manager-performance or continuity ranking. Replace its ordering through config alone and rebuild the whole part; there is no runtime replacement/ranking. The full cohort expands existing configured chains only to load each raw filer separately; the feature engine never merges them into an economic-manager book. Historical `roster_as_of` callers retain their separate chain-mapping policy.
+
+Only superinvestor decay is removed. Ownership still reads `build_cube.institutionals.decay_halflife.act` and `.bo`; the old `inst`/`insider` entries have no active consumer in these paths and are a documented future config cleanup. Current roster membership, vendor revision history and whole-manager reporting continuity are not certified by the fixed list. See [science support limits](../guides/testing.md#sec-13f-feature-science-2026-10-25).
 
 ## Extraction settings
 
@@ -147,7 +150,7 @@ Important blocks:
 | `features` | Cross-sectional transform policy. |
 | `intrinsic` | Two-stage DCF parameters; terminal growth must remain below discount rate. |
 | `hist` | Five-year-style self-history comparison window and minimum observations. |
-| `institutionals` | Decay, manager selection/staleness, coverage-break policy and retained source-family behavior. Both split steps keep this namespace; each reads its owned settings. |
+| `institutionals` | Fixed superinvestor top-K/90-day age, active ownership decay, coverage-break policy and retained source-family settings. Both split steps keep this namespace and read only their owned settings; elite runtime ranking and decay are removed. |
 | `fundamentals_features` | Fixed eight earnings-lag slots, eight-quarter persistence and three-session report response; prior SUE scale uses eight quarters. Changing fixed schema windows requires a feature-contract update. |
 | `workforce` | `part_time_weight`: α of the workforce headcount proxy FT + α·PT (0.65; must lie in [0.5, 1]). See [workforce features](./modelling-and-portfolio.md#workforce-features). |
 | `output` | Persistence switches for cube, diagnostics and artifacts; historical modelling prediction/signal/CV writes are removed. |

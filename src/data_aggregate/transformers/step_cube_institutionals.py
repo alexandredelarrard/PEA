@@ -16,6 +16,7 @@ from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.price_frames import PriceFrames, load_trading_calendar
 from src.data_aggregate.utils.institutionals import frontiers as institutional_frontiers
 from src.data_aggregate.utils.institutionals import inputs as institutional_inputs
+from src.data_aggregate.utils.institutionals.insider_capital import InsiderCapital
 from src.data_aggregate.utils.institutionals.insider_features import build_insider_feature_panel
 from src.data_aggregate.utils.institutionals.ownership_features import build_ownership_feature_panel
 from src.data_aggregate.utils.institutionals.short_flow_features import build_short_flow_feature_panel, secondary_class_volume
@@ -49,7 +50,7 @@ class StepCubeInstitutionals(Step):
         )
 
         # Compute once; history-dependent features need the complete calendar.
-        df_panel = self.build_panel(full=full)
+        df_panel = self.build_panel()
 
         # Replace an obsolete schema with the same completed panel.
         result = write_part(self._store, Tables.cube_part_institutionals, df_panel, window, drop_empty=True)
@@ -60,7 +61,7 @@ class StepCubeInstitutionals(Step):
         override = self._cfg.get("incremental", {}).get("warmup_trading_days")
         return int(override) if override is not None else self._part.warmup_trading_days
 
-    def build_panel(self, full: bool = False) -> pd.DataFrame:
+    def build_panel(self) -> pd.DataFrame:
         """Compute with full event history; run controls the independently rewritten tail."""
         # Load shared price, class and capital inputs once.
         frames = capital_inputs.load_full_price_frames(self._store, self._context, self._FIELDS)
@@ -90,7 +91,6 @@ class StepCubeInstitutionals(Step):
         valuation_close: pd.DataFrame | None = None,
     ) -> pd.DataFrame | None:
         last_session = pd.DatetimeIndex(frames.trading_index).max() if len(frames.trading_index) else None
-        decay_halflife = self._decay_halflife("insider")
 
         # Load transactions and their completeness/title evidence before cleaning.
         df_insider = institutional_inputs.load_insider_transactions(self._store, frames.universe)
@@ -103,13 +103,10 @@ class StepCubeInstitutionals(Step):
         return build_insider_feature_panel(
             frames,
             df_insider,
-            shares_out_history=shares,
-            decay_halflife=decay_halflife,
+            capital=InsiderCapital(shares, valuation_close, share_basis),
             availability=self._availability,
             complete_through=complete_through,
-            as_traded_quotes=valuation_close,
             role_evidence=df_roles,
-            share_basis=share_basis,
         )
 
     def _short_flow_panel(

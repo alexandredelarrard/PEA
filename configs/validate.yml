@@ -150,6 +150,9 @@ validate:
         - 2.0
         f_ic_super_holders:
         - 0.0
+        - .inf
+        f_ic_super_holders_yoy:
+        - -1.0
         - 1.0
         f_ic_super_conviction_weight:
         - 0.0
@@ -157,17 +160,71 @@ validate:
         f_ic_super_max_conviction:
         - 0.0
         - 1.0
+        f_ic_super_top10_holders:
+        - 0.0
+        - .inf
         f_ic_super_breadth_chg:
         - -1.0
         - 1.0
-        f_ic_super_conviction_chg:
+        f_ic_super_shares_chg:
+        - -1.0
+        - .inf
+        f_ic_super_shares_chg_yoy:
+        - -1.0
+        - .inf
+        f_ic_super_quarters_held:
+        - 1.0
+        - .inf
+        f_ic_super_trade_balance:
         - -1.0
         - 1.0
-        f_ic_super_sp500_share:
+        f_ic_super_relative_position_chg:
+        - -.inf
+        - .inf
+        f_ic_super_pooled_weight:
         - 0.0
         - 1.0
-        f_ic_super_selection_score:
+        f_ic_super_pooled_weight_chg:
+        - -1.0
+        - 1.0
+        f_ic_super_topk_holders:
         - 0.0
+        - .inf
+        f_ic_super_topk_holders_yoy:
+        - -1.0
+        - 1.0
+        f_ic_super_topk_conviction_weight:
+        - 0.0
+        - 1.0
+        f_ic_super_topk_max_conviction:
+        - 0.0
+        - 1.0
+        f_ic_super_topk_top10_holders:
+        - 0.0
+        - .inf
+        f_ic_super_topk_breadth_chg:
+        - -1.0
+        - 1.0
+        f_ic_super_topk_shares_chg:
+        - -1.0
+        - .inf
+        f_ic_super_topk_shares_chg_yoy:
+        - -1.0
+        - .inf
+        f_ic_super_topk_quarters_held:
+        - 1.0
+        - .inf
+        f_ic_super_topk_trade_balance:
+        - -1.0
+        - 1.0
+        f_ic_super_topk_relative_position_chg:
+        - -.inf
+        - .inf
+        f_ic_super_topk_pooled_weight:
+        - 0.0
+        - 1.0
+        f_ic_super_topk_pooled_weight_chg:
+        - -1.0
         - 1.0
       daily_legs:
       - _to_mcap

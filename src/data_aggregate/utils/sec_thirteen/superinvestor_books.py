@@ -1,0 +1,166 @@
+"""Fresh public manager books and immutable, date-aware report-quarter archives."""
+
+from __future__ import annotations
+
+from bisect import bisect_right
+from collections import defaultdict
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass
+from types import MappingProxyType
+
+import pandas as pd
+
+from src.data_aggregate.utils.sec_thirteen.institutional_vintages import _iter_public_book_cache
+
+type BookKey = tuple[str, pd.Timestamp]
+
+
+@dataclass(frozen=True, slots=True)
+class BookSupport:
+    """Resolver evidence determining which positions and absent positions are observable."""
+
+    book_known: bool
+    zero_eligible: bool
+    comparison_eligible: bool
+    restricted: bool
+    resolution_status: str
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class PublicBook:
+    """One public resolved revision; position/provenance columns stay untouched."""
+
+    cik: str
+    period: pd.Timestamp
+    public_at: pd.Timestamp
+    first_public_at: pd.Timestamp | None
+    df_positions: pd.DataFrame
+    support: BookSupport
+
+
+@dataclass(frozen=True, slots=True)
+class PublicBookSnapshot:
+    """Current manager candidates and genuine archival books at one public/expiry event."""
+
+    day: pd.Timestamp
+    common_period: pd.Timestamp | None
+    latest_period_by_manager: Mapping[str, pd.Timestamp]
+    level_books: Mapping[str, PublicBook]
+    archive: Mapping[BookKey, PublicBook]
+
+
+@dataclass(frozen=True, slots=True)
+class _PublicBookArchive(Mapping[BookKey, PublicBook]):
+    """Share revision storage while exposing only each key's latest public version."""
+
+    _revisions: Mapping[BookKey, tuple[PublicBook, ...]]
+    day: pd.Timestamp
+
+    def __getitem__(self, key: BookKey) -> PublicBook:
+        versions = self._revisions[key]
+        position = bisect_right(versions, self.day, key=lambda book: book.public_at)
+        if position == 0:
+            raise KeyError(key)
+        return versions[position - 1]
+
+    def __iter__(self) -> Iterator[BookKey]:
+        return (key for key, versions in self._revisions.items() if versions[0].public_at <= self.day)
+
+    def __len__(self) -> int:
+        return sum(versions[0].public_at <= self.day for versions in self._revisions.values())
+
+
+def _resolved_public_book(
+    key: BookKey, day: pd.Timestamp, resolved: tuple[pd.DataFrame, pd.DataFrame], first_public_at: pd.Timestamp | None
+) -> PublicBook:
+    """Wrap the shared resolver output, assigning age only on first known resolution."""
+    df_positions, df_state = resolved
+    if df_state.empty:
+        support = BookSupport(False, False, False, False, "unresolved")
+    else:
+        state = df_state.iloc[0]
+        support = BookSupport(
+            bool(state.book_known), bool(state.zero_eligible), bool(state.comparison_eligible), bool(state.restricted), str(state.resolution_status)
+        )
+
+    # Feature support cannot start or refresh the source book's age.
+    if support.book_known and first_public_at is None:
+        first_public_at = day
+    return PublicBook(key[0], key[1], day, first_public_at, df_positions, support)
+
+
+def _collect_public_revisions(df_manifest: pd.DataFrame, df_holdings: pd.DataFrame) -> Mapping[BookKey, tuple[PublicBook, ...]]:
+    """Resolve changed manager-quarters once and retain unchanged resolver objects."""
+    revisions: dict[BookKey, list[PublicBook]] = defaultdict(list)
+    for day, _, changed in _iter_public_book_cache(df_manifest, df_holdings, history_quarters=None):
+        for key, resolved in changed.items():
+            previous = revisions[key]
+            origin = previous[-1].first_public_at if previous else None
+            previous.append(_resolved_public_book(key, day, resolved, origin))
+    return MappingProxyType({key: tuple(versions) for key, versions in revisions.items()})
+
+
+def _public_book_schedule(
+    revisions: Mapping[BookKey, tuple[PublicBook, ...]], trading_index: pd.DatetimeIndex, max_age_days: int
+) -> tuple[dict[pd.Timestamp, list[PublicBook]], pd.DatetimeIndex]:
+    """Add first-session expiry events independently of later publications."""
+    publications: dict[pd.Timestamp, list[PublicBook]] = defaultdict(list)
+    expiry_days: set[pd.Timestamp] = set()
+    for versions in revisions.values():
+        for book in versions:
+            publications[book.public_at].append(book)
+
+        origin = versions[-1].first_public_at
+        if origin is None:
+            continue
+        expiry_position = int(trading_index.searchsorted(origin + pd.Timedelta(days=max_age_days), side="right"))
+        if expiry_position < len(trading_index):
+            expiry_days.add(trading_index[expiry_position])
+    days = pd.DatetimeIndex(sorted(set(publications) | expiry_days))
+    return publications, days
+
+
+def _advance_latest_books(latest: dict[str, PublicBook], published: list[PublicBook]) -> None:
+    """Advance only resolved quarter watermarks; restricted/partial books keep barriers."""
+    for book in published:
+        if not book.support.book_known:
+            continue
+        previous = latest.get(book.cik)
+        if previous is None or book.period >= previous.period:
+            latest[book.cik] = book
+
+
+def prepare_superinvestor_book_history(
+    df_manifest: pd.DataFrame, df_holdings: pd.DataFrame, trading_index: pd.DatetimeIndex, max_age_days: int
+) -> tuple[PublicBookSnapshot, ...]:
+    """Prepare causal public/expiry states from already cleaned, prepared whole books.
+
+    The caller owns cleaning and prepare_book_vintages. Freshness limits current
+    candidates only; archival lag/tenure evidence remains available at its public prefix.
+    """
+    if max_age_days < 0:
+        raise ValueError("Superinvestor book age must be nonnegative")
+    grid = pd.DatetimeIndex(trading_index).normalize().unique().sort_values()
+    if df_manifest.empty or grid.empty:
+        return ()
+
+    revisions = _collect_public_revisions(df_manifest, df_holdings)
+    publications, days = _public_book_schedule(revisions, grid, max_age_days)
+    snapshots: list[PublicBookSnapshot] = []
+    latest: dict[str, PublicBook] = {}
+
+    for day in days:
+        _advance_latest_books(latest, publications.get(day, []))
+        level_books = {
+            cik: book
+            for cik, book in latest.items()
+            if book.first_public_at is not None and day <= book.first_public_at + pd.Timedelta(days=max_age_days)
+        }
+        latest_periods = {cik: book.period for cik, book in latest.items()}
+        common_period = max(latest_periods.values(), default=None)
+        snapshots.append(
+            PublicBookSnapshot(
+                day, common_period, MappingProxyType(latest_periods), MappingProxyType(level_books), _PublicBookArchive(revisions, day)
+            )
+        )
+    return tuple(snapshots)

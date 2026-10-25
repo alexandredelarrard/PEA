@@ -4,7 +4,6 @@ import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -296,8 +295,8 @@ def _write_manifest(path: Path, snapshot: Path, metadata: dict[str, object], sto
     path.write_text(json.dumps(quality.jsonable(payload)), encoding="utf-8")
 
 
-@pytest.mark.parametrize("part", [Tables.cube_part_institutionals, Tables.cube_part_sec_thirteen])
-def test_build_candidate_calls_full_panel_only_and_hashes_cutoff_output(tmp_path: Path, monkeypatch: object, part: Table) -> None:
+def _candidate_build_inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, part: Table) -> tuple[list[str], SimpleNamespace, list[None]]:
+    # Freeze the baseline and source metadata before replacing the computation.
     baseline = tmp_path / "baseline.parquet"
     source = pd.DataFrame(
         {
@@ -310,14 +309,14 @@ def test_build_candidate_calls_full_panel_only_and_hashes_cutoff_output(tmp_path
     store = _MetadataOnlyStore()
     manifest = tmp_path / "input-manifest.json"
     _write_manifest(manifest, baseline, baseline_meta, store, "2024-01-03")
-    calls: list[dict[str, Any]] = []
+    calls: list[None] = []
 
     class _Step:
         def __init__(self, context: object, config: object) -> None:
             self.context = context
 
-        def build_panel(self, **kwargs: Any) -> pd.DataFrame:
-            calls.append(kwargs)
+        def build_panel(self) -> pd.DataFrame:
+            calls.append(None)
             future = pd.DataFrame({"date": [pd.Timestamp("2024-01-04")], "ticker": ["AAA"], "f_ic_inst_holders": [99.0]})
             return pd.concat([source, future], ignore_index=True)
 
@@ -329,23 +328,36 @@ def test_build_candidate_calls_full_panel_only_and_hashes_cutoff_output(tmp_path
     monkeypatch.setattr(quality, "StepCubeSecThirteen" if part == Tables.cube_part_sec_thirteen else "StepCubeInstitutionals", _Step)
     candidate = tmp_path / "candidate.parquet"
     out = tmp_path / "build"
+    argv = [
+        "build-candidate",
+        "--table",
+        part.name,
+        "--config",
+        "configs",
+        "--manifest",
+        str(manifest),
+        "--as-of",
+        "2024-01-03",
+        "--out-cache",
+        str(candidate),
+        "--out",
+        str(out),
+    ]
+    return argv, context, calls
+
+
+@pytest.mark.parametrize("part", [Tables.cube_part_institutionals, Tables.cube_part_sec_thirteen])
+def test_build_candidate_calls_full_panel_only_and_hashes_cutoff_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, part: Table) -> None:
+    argv, context, calls = _candidate_build_inputs(tmp_path, monkeypatch, part)
+    baseline = tmp_path / "baseline.parquet"
+    candidate = tmp_path / "candidate.parquet"
+    manifest = tmp_path / "input-manifest.json"
+    out = tmp_path / "build"
 
     assert (
         quality.main(
             [
-                "build-candidate",
-                "--table",
-                part.name,
-                "--config",
-                "configs",
-                "--manifest",
-                str(manifest),
-                "--as-of",
-                "2024-01-03",
-                "--out-cache",
-                str(candidate),
-                "--out",
-                str(out),
+                *argv,
                 "--compare-to",
                 str(baseline),
                 "--comparison-out",
@@ -355,9 +367,9 @@ def test_build_candidate_calls_full_panel_only_and_hashes_cutoff_output(tmp_path
         == 0
     )
     metadata = json.loads((out / "candidate-metadata.json").read_text(encoding="utf-8"))
-    expected_arguments = {} if part == Tables.cube_part_sec_thirteen else {"full": True}
-    assert calls == [expected_arguments]
+    assert calls == [None]
     assert metadata["table"] == part.name
+    assert metadata["builder"] == "_Step.build_panel()"
     assert pd.read_parquet(candidate)["date"].max() == pd.Timestamp("2024-01-03")
     assert metadata["snapshot_sha256"] == hashlib.sha256(candidate.read_bytes()).hexdigest()
     assert context.paths["SECTOR_PEERS_PATH"] == tmp_path / "peer-baskets.json"
@@ -367,30 +379,57 @@ def test_build_candidate_calls_full_panel_only_and_hashes_cutoff_output(tmp_path
     stale["source_tables"][0]["rows"] += 1
     stale_manifest = tmp_path / "stale-manifest.json"
     stale_manifest.write_text(json.dumps(stale), encoding="utf-8")
-    assert (
-        quality.main(
-            [
-                "build-candidate",
-                "--table",
-                part.name,
-                "--config",
-                "configs",
-                "--manifest",
-                str(stale_manifest),
-                "--as-of",
-                "2024-01-03",
-                "--out-cache",
-                str(tmp_path / "must-not-build.parquet"),
-                "--out",
-                str(tmp_path / "must-not-build"),
-            ]
-        )
-        == 2
-    )
-    assert calls == [expected_arguments]
+    stale_argv = argv.copy()
+    stale_argv[stale_argv.index("--manifest") + 1] = str(stale_manifest)
+    stale_argv[stale_argv.index("--out-cache") + 1] = str(tmp_path / "must-not-build.parquet")
+    stale_argv[stale_argv.index("--out") + 1] = str(tmp_path / "must-not-build")
+    assert quality.main(stale_argv) == 2
+    assert calls == [None]
     print(
         "SANITY: candidate used its owner's full computation interface, trimmed future rows, wrote no table, and matched the frozen baseline exactly."
     )
+
+
+@pytest.mark.parametrize("part", [Tables.cube_part_institutionals, Tables.cube_part_sec_thirteen])
+@pytest.mark.parametrize("mode,exit_code", [("no_compare", 0), ("output_only", 0), ("mismatch", 1), ("missing_output", 2)])
+def test_build_candidate_preserves_optional_comparison_artifacts_and_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, part: Table, mode: str, exit_code: int, caplog: pytest.LogCaptureFixture
+) -> None:
+    argv, context, calls = _candidate_build_inputs(tmp_path, monkeypatch, part)
+    baseline = tmp_path / "baseline.parquet"
+    candidate = tmp_path / "candidate.parquet"
+    out = tmp_path / "build"
+    comparison = out / "comparison.json"
+
+    # Optional comparison never changes the built candidate or its metadata.
+    if mode == "mismatch":
+        different = tmp_path / "different.parquet"
+        pd.read_parquet(baseline).assign(f_ic_inst_holders=99.0).to_parquet(different, index=False)
+        argv.extend(["--compare-to", str(different), "--comparison-out", str(comparison)])
+    if mode == "missing_output":
+        argv.extend(["--compare-to", str(baseline)])
+    if mode == "output_only":
+        argv.extend(["--comparison-out", str(comparison)])
+
+    assert quality.main(argv) == exit_code
+    assert calls == [None]
+    pd.testing.assert_frame_equal(pd.read_parquet(candidate), pd.read_parquet(baseline))
+    metadata = json.loads((out / "candidate-metadata.json").read_text(encoding="utf-8"))
+    assert metadata["table"] == part.name
+    assert metadata["snapshot_sha256"] == quality._sha256(candidate)
+    assert metadata["manifest_sha256"] == quality._sha256(tmp_path / "input-manifest.json")
+    assert metadata["write_contract"] == "parquet artifact only; builder run/write_part not called"
+    assert set(context.store.calls) <= {"exists", "columns", "row_count", "bounds"}
+    if mode == "mismatch":
+        report = json.loads(comparison.read_text(encoding="utf-8"))
+        assert report["status"] == "fail"
+        assert report["table"] == part.name
+        assert report["checks"]["values"]["pass"] is False
+    else:
+        assert not comparison.exists()
+    if mode == "missing_output":
+        assert "--comparison-out is required with --compare-to" in caplog.text
+    print(f"SANITY: {part.name} {mode} returns {exit_code} after the same hash-bound artifact build, without a table write.")
 
 
 @pytest.mark.parametrize("part", [Tables.cube_part_institutionals, Tables.cube_part_sec_thirteen])

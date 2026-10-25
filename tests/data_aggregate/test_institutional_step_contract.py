@@ -77,6 +77,96 @@ def seed_prices(store: Any, periods: int = 40) -> pd.DatetimeIndex:
     return days
 
 
+def market_lines(tickers: Sequence[str], start: pd.Timestamp) -> pd.DataFrame:
+    """Known-truth listing support for numerical step controls."""
+    return pd.DataFrame(
+        [
+            {
+                "canonical_company": ticker,
+                "market_symbol": ticker,
+                "source_symbol": ticker,
+                "source": "ftd",
+                "security_id": f"C{number:09d}",
+                "security_class": "common",
+                "lineage_role": "canonical_current",
+                "conversion_ratio": 1.0,
+                "valid_from": start,
+                "valid_to": None,
+            }
+            for number, ticker in enumerate(tickers, start=1)
+        ]
+    )
+
+
+def test_finra_tenure_reads_only_observed_fallback_once(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    idx = pd.date_range("2024-01-02", periods=3)
+    sqlite_store.save(
+        Tables.sec_short_volume_security,
+        pd.DataFrame(
+            {
+                "date": idx,
+                "source_symbol": ["OLD", "OTHER", "NEW"],
+                "ticker": ["AAA", "OTHER", "AAA"],
+                "security_id": ["S0000000123:OLD", "S0000000999:OTHER", "S0000000456:NEW"],
+                "lineage_role": "canonical_current",
+                "security_class": "common",
+            }
+        ),
+    )
+    calls: list[dict[str, Any]] = []
+    original = sqlite_store.iter_load
+
+    def capture(table: Any, **kwargs: Any) -> Any:
+        assert table is Tables.sec_short_volume_security
+        calls.append(kwargs)
+        return original(table, **kwargs)
+
+    monkeypatch.setattr(sqlite_store, "iter_load", capture)
+    observed = institutional_step.institutional_inputs.load_finra_tenure(sqlite_store, ["AAA"])
+    support = institutional_step.short_flow._proven_tenure_mask(idx, pd.Index(["AAA"]), None, observed)
+    assert support["AAA"].tolist() == [True, False, True]
+    assert len(calls) == 1
+    assert calls[0]["columns"] == ("date", "ticker", "security_id", "lineage_role", "security_class")
+    assert calls[0]["where"] == {"ticker": ["AAA"], "lineage_role": ["canonical_predecessor", "canonical_current"]}
+    print(
+        "SANITY: one projected/company-scoped FINRA stream preserves observed predecessor/current support without bridging an unsupported date or requiring operational stamps."
+    )
+
+
+@pytest.mark.parametrize("conflict", [False, True], ids=["observed-legacy-control", "outside-universe-conflict"])
+def test_public_step_checks_market_owners_outside_its_universe(
+    sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, conflict: bool
+) -> None:
+    idx = seed_prices(sqlite_store)
+    primary = market_lines(["AAA"], idx[0])
+    if conflict:
+        competing = primary.assign(canonical_company="OTHER", market_symbol="OTHER", source_symbol="OLD")
+        primary = pd.concat([primary, competing], ignore_index=True)
+    sqlite_store.save(Tables.security_master, primary)
+    sqlite_store.save(Tables.short_interest, pd.DataFrame({"ticker": "AAA", "date": idx, "short_volume": 400.0, "total_volume": 1_000.0}))
+    frames = PriceFrames(
+        trading_index=idx,
+        universe=("AAA",),
+        peers={},
+        close_split=pd.DataFrame({"AAA": 100.0}, index=idx),
+        volume=pd.DataFrame({"AAA": 1_000.0}, index=idx),
+    )
+    ctx = context(sqlite_store, tmp_path)
+    step = StepCubeInstitutionals(ctx, ctx.config)
+    basis = resolve_share_events(None, pd.DataFrame(columns=["ticker", "date", "ratio"]), {})
+    monkeypatch.setattr(capital_inputs, "load_full_price_frames", lambda *args: frames)
+    monkeypatch.setattr(capital_inputs, "load_share_inputs", lambda *args: (None, None, basis, None, pd.DataFrame()))
+    monkeypatch.setattr(step, "_insider_panel", lambda *args: None)
+    monkeypatch.setattr(step, "_ownership_panel", lambda *args: None)
+    keys = pd.MultiIndex.from_product([idx, ["AAA"]], names=["date", "ticker"])
+    panel = step.build_panel().set_index(["date", "ticker"]).reindex(keys)
+    value = panel.loc[(idx[30], "AAA"), "f_ic_shortvol_ratio_20d"]
+    assert pd.isna(value) if conflict else value == pytest.approx(0.4)
+    print(
+        "SANITY: the ordinary step rejects a same-security competing owner outside its calculation universe while an observed legacy source without check timestamps remains0.4."
+    )
+
+
 def test_institutionals_emits_only_three_source_panels(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     days = seed_prices(sqlite_store)
     ctx = context(sqlite_store, tmp_path)
@@ -205,7 +295,9 @@ def test_ftd_step_retains_global_zip_dates_from_one_stream(sqlite_store: Any, tm
         return original(table, **kwargs)
 
     monkeypatch.setattr(sqlite_store, "iter_load", capture)
-    result = step._short_flow_panel(frames, None, None, pd.DataFrame(), QuantityBasis.from_context(resolve_share_events(None, None, {}), idx))
+    result = step._short_flow_panel(
+        frames, None, market_lines(["AAA"], idx[0]), pd.DataFrame(), QuantityBasis.from_context(resolve_share_events(None, None, {}), idx)
+    )
     assert result is not None
     keys = pd.MultiIndex.from_product([idx, ["AAA"]], names=["date", "ticker"])
     ratio = result.set_index(["date", "ticker"]).reindex(index=keys, columns=["f_ic_ftd_to_adv20"])["f_ic_ftd_to_adv20"]
@@ -320,7 +412,7 @@ def test_short_stage_uses_the_owner_publication_clock(sqlite_store: Any, tmp_pat
 
     monkeypatch.setattr("src.data_aggregate.utils.institutionals.short_flow_features._ftd_available_dates", fixed_clock)
     events = resolve_share_events(None, pd.DataFrame(columns=["ticker", "date", "ratio"]), {})
-    result = step._short_flow_panel(frames, None, None, pd.DataFrame(), QuantityBasis.from_context(events, idx))
+    result = step._short_flow_panel(frames, None, market_lines(["AAA"], idx[0]), pd.DataFrame(), QuantityBasis.from_context(events, idx))
     assert result is not None and len(calls) == 1
     values = result.set_index(["date", "ticker"])["f_ic_ftd_to_adv20"]
     assert pd.isna(values.loc[(pd.Timestamp("2024-02-02"), "AAA")])

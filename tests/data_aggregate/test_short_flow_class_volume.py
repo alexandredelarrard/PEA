@@ -148,10 +148,35 @@ def test_public_step_rejects_negative_canonical_volume_hidden_by_a_positive_clas
     )
     lines = _lines(("LEN", "LEN-B", 1.0, "1900-01-01", OPEN))
     bars = _bars("LEN-B", idx, 500.0)
+    primary = pd.DataFrame(
+        {
+            "canonical_company": ["LEN", "MRK"],
+            "market_symbol": ["LEN", "MRK"],
+            "source_symbol": ["LEN", "MRK"],
+            "security_id": ["C111111111", "C222222222"],
+            "source": "ftd",
+            "security_class": "common",
+            "lineage_role": "canonical_current",
+            "conversion_ratio": 1.0,
+            "valid_from": idx[0],
+            "valid_to": None,
+        }
+    )
     sqlite_store.save(
         Tables.security_master,
-        lines.assign(
-            security_id="LEN-B", source="ftd", source_symbol="LENB", security_class="class_B", lineage_role="secondary_class", n_observations=1
+        pd.concat(
+            [
+                lines.assign(
+                    security_id="LEN-B",
+                    source="ftd",
+                    source_symbol="LENB",
+                    security_class="class_B",
+                    lineage_role="secondary_class",
+                    n_observations=1,
+                ),
+                primary,
+            ],
+            ignore_index=True,
         ),
     )
     sqlite_store.save(

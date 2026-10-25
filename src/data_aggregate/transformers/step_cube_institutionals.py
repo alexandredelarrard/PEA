@@ -88,11 +88,16 @@ class StepCubeInstitutionals(Step):
         frames = capital_inputs.load_full_price_frames(self._store, self._context, self._FIELDS)
         df_lines = self._store.load(
             Tables.security_master,
-            columns=institutional_inputs.CLASS_LINE_COLUMNS,
-            where={"lineage_role": SECONDARY_CLASS, "canonical_company": list(frames.universe)},
+            columns=(*institutional_inputs.CLASS_LINE_COLUMNS, "security_id", "source", "source_symbol", "security_class", "lineage_role"),
+            where={"source": "ftd"},
             optional=True,
         )
-        df_shares, _, basis, df_valuation_close, df_bars = capital_inputs.load_share_inputs(self._context, frames, self._bugfix, df_lines)
+        df_classes = (
+            df_lines.loc[df_lines["lineage_role"].eq(SECONDARY_CLASS) & df_lines["canonical_company"].isin(frames.universe)]
+            if df_lines is not None
+            else None
+        )
+        df_shares, _, basis, df_valuation_close, df_bars = capital_inputs.load_share_inputs(self._context, frames, self._bugfix, df_classes)
         quantity_basis = institutional_inputs.QuantityBasis.from_context(basis, pd.DatetimeIndex(frames.trading_index))
 
         # Build each family sequentially so raw sources do not overlap in memory.
@@ -144,15 +149,16 @@ class StepCubeInstitutionals(Step):
     ) -> pd.DataFrame | None:
         cache_dir = self._context.paths["DATA_STORE"] / self._context.config.local.paths.fails_deliver
 
-        # Load lineage, RegSHO and global FTD coverage once.
-        df_symbol_tenure, df_ticker_ciks = institutional_inputs.load_symbol_lineage(self._store, frames.universe)
+        # Load observed fallback only for companies without any adjudicated master evidence.
+        known = set(lines["canonical_company"].dropna()) if lines is not None else set()
+        df_finra = institutional_inputs.load_finra_tenure(self._store, sorted(set(frames.universe) - known))
         df_short = capital_inputs.load_source(self._store, Tables.short_interest, frames.universe)
         df_fails, df_coverage = institutional_inputs.load_fails(self._store, frames.universe)
 
         # Raw FINRA/FTD observations become ordinary shares on one explicit terminal basis.
         idx = pd.DatetimeIndex(frames.trading_index).normalize().unique().sort_values()
         columns = pd.Index(sorted(map(str, frames.universe)), name="ticker")
-        df_tenure = short_flow._proven_tenure_mask(idx, columns, df_symbol_tenure, df_ticker_ciks)
+        df_tenure = short_flow._proven_tenure_mask(idx, columns, lines, df_finra)
         df_short = institutional_inputs.short_quantity_history(df_short, quantity_basis)
         df_shares_out = institutional_inputs.daily_share_quantities(shares, idx, quantity_basis)
 
@@ -160,7 +166,8 @@ class StepCubeInstitutionals(Step):
         df_tape = institutional_inputs.tape_share_quantities(frames.volume, quantity_basis)
         df_supported = ~df_tape.lt(0) if df_tape is not None else None
         if lines is not None:
-            df_class_volume, df_missing = secondary_class_volume(lines, bars, idx)
+            df_classes = lines.loc[lines["lineage_role"].eq(SECONDARY_CLASS) & lines["canonical_company"].isin(frames.universe)]
+            df_class_volume, df_missing = secondary_class_volume(df_classes, bars, idx)
             df_tape = with_class_volume(df_tape, df_class_volume)
             df_class_supported = (~df_missing).reindex(index=idx, columns=columns, fill_value=True)
             df_supported = df_class_supported if df_supported is None else df_supported & df_class_supported

@@ -18,7 +18,6 @@ from src.utils.price_adjustments import ShareBasis
 from src.utils.string import pad_cik
 
 logger = logging.getLogger(__name__)
-TENURE_SOURCES = ("form345", "manual")
 CLASS_LINE_COLUMNS = ("canonical_company", "market_symbol", "conversion_ratio", "valid_from", "valid_to")
 
 
@@ -70,36 +69,18 @@ def tape_share_quantities(df_volume: pd.DataFrame | None, basis: QuantityBasis) 
     return df_volume.mul(units, axis="columns")
 
 
-def load_symbol_lineage(
-    store: DataStore,
-    universe: Sequence[str],
-) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
-    """Load the issuer lineage (`form345`/`manual` tenure on the roster CIKs) used to validate already-canonical source rows."""
-    tickers = sorted(set(universe))
-    # The roster determines the bounded issuer scope for the tenure read.
-    df_ticker_ciks = store.load(
-        Tables.sp500_tickers,
-        columns=("ticker", "cik"),
-        where={"ticker": tickers},
-        optional=True,
-    )
-    if df_ticker_ciks is None or df_ticker_ciks.empty:
-        return None, df_ticker_ciks
-
-    ciks = sorted({cik for cik in df_ticker_ciks["cik"].map(pad_cik) if cik})
-    if not ciks:
-        return None, df_ticker_ciks
-    df_symbol_tenure = store.load(
-        Tables.symbol_tenure,
-        columns=("symbol", "issuer_cik", "valid_from", "valid_to"),
-        where={"issuer_cik": ciks, "source": list(TENURE_SOURCES)},
-        optional=True,
-    )
-
-    # Report the loaded lineage without another payload read.
-    aliases = len(set(df_symbol_tenure["symbol"].astype(str))) if df_symbol_tenure is not None else 0
-    logger.info("Symbol lineage: %s current tickers backed by %s proven historical symbols", len(tickers), aliases)
-    return df_symbol_tenure, df_ticker_ciks
+def load_finra_tenure(store: DataStore, universe: Sequence[str]) -> pd.DataFrame | None:
+    """Observed fallback stamps already resolved by FINRA's dated owner/class mapper; missing dates stay unknown."""
+    if not universe or not store.exists(Tables.sec_short_volume_security):
+        return None
+    columns = ("date", "ticker", "security_id", "lineage_role", "security_class")
+    chunks = []
+    for chunk in store.iter_load(
+        Tables.sec_short_volume_security, columns=columns, where={"ticker": sorted(set(universe)), "lineage_role": list(CANONICAL_ROLES)}
+    ):
+        selected = chunk["security_id"].fillna("").str.fullmatch(r"S\d{10}:[A-Z0-9][A-Z0-9.-]*")
+        chunks.append(chunk.loc[selected].drop_duplicates())
+    return pd.concat(chunks, ignore_index=True).drop_duplicates() if chunks else None
 
 
 @dataclass(frozen=True)

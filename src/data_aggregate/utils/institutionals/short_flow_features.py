@@ -20,19 +20,19 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 import numpy as np
 import pandas as pd
 
-from src.constants.constants import FTD_ZIP_NAME_TEMPLATE, MARKET_TIMEZONE
+from src.constants.constants import CANONICAL_ROLES, FTD_ZIP_NAME_TEMPLATE, MARKET_TIMEZONE
 from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.common.errors import _absent, _empty_panel
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.price_frames import PriceFrames
 from src.data_aggregate.utils.common.xs import self_history_z
 from src.data_aggregate.utils.institutionals.inputs import QuantityBasis
-from src.utils.string import pad_cik, yahoo_symbol
+from src.utils.string import yahoo_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -298,46 +298,87 @@ def _guard_coverage(cov: pd.DataFrame) -> pd.DataFrame:
     return cov.mask(over)
 
 
-def _current_ticker_by_cik(ticker_ciks: pd.DataFrame) -> dict[str, str]:
-    grouped: dict[str, set[str]] = {}
-    for row in ticker_ciks.itertuples(index=False):
-        grouped.setdefault(pad_cik(row.cik), set()).add(str(row.ticker))
-    return {cik: next(iter(tickers)) for cik, tickers in grouped.items() if cik and len(tickers) == 1}
-
-
-def _lineage_target(symbol: object, issuer_cik: object, exact: dict[str, str], unique: dict[str, str]) -> str | None:
-    source_symbol, source_cik = str(symbol), pad_cik(issuer_cik)
-    if exact.get(source_symbol) == source_cik:
-        return source_symbol
-    return unique.get(source_cik)
+def _market_identity_conflicts(work: pd.DataFrame, idx: pd.DatetimeIndex) -> dict[object, np.ndarray]:
+    """A security has one dated owner and no simultaneous rejected canonical verdict, across every symbol key."""
+    conflicts = {}
+    for security, group in work.groupby("security_id", sort=False, dropna=False):
+        owners = {}
+        blocked = np.zeros(len(idx), dtype=bool)
+        for row in group.itertuples(index=False):
+            active = np.asarray((idx >= cast(pd.Timestamp, row.start)) & ((idx < cast(pd.Timestamp, row.end)) if pd.notna(row.end) else True))
+            owners.setdefault(str(row.canonical_company), np.zeros(len(idx), dtype=bool))[:] |= active
+            rejected = row.lineage_role not in (*CANONICAL_ROLES, "secondary_class", "acquired_constituent")
+            blocked |= active & (rejected or (row.lineage_role in CANONICAL_ROLES and not row.accepted))
+        conflicts[security] = blocked | (np.sum(list(owners.values()), axis=0) > 1)
+    return conflicts
 
 
 def _proven_tenure_mask(
     idx: pd.DatetimeIndex,
     columns: pd.Index,
-    symbol_tenure: pd.DataFrame | None,
-    ticker_ciks: pd.DataFrame | None,
-) -> pd.DataFrame | None:
-    """Current-issuer symbol tenure, when both lineage inputs are available."""
-    if symbol_tenure is None or ticker_ciks is None or symbol_tenure.empty or ticker_ciks.empty:
-        return None
-    if not {"symbol", "issuer_cik", "valid_from", "valid_to"}.issubset(symbol_tenure) or not {"ticker", "cik"}.issubset(ticker_ciks):
-        return None
-    current = _current_ticker_by_cik(ticker_ciks)
-    exact = {str(row.ticker): pad_cik(row.cik) for row in ticker_ciks.itertuples(index=False)}
+    master: pd.DataFrame | None,
+    finra: pd.DataFrame | None,
+) -> pd.DataFrame:
+    """Canonical market intervals first; accepted FINRA fallback supports only observed dates without a master."""
     mask = pd.DataFrame(False, index=idx, columns=columns)
-    for row in symbol_tenure.itertuples(index=False):
-        target = _lineage_target(row.symbol, row.issuer_cik, exact, current)
-        if target not in mask.columns:
-            continue
-        start = pd.to_datetime(cast(Any, row.valid_from), errors="coerce")
-        end = pd.to_datetime(cast(Any, row.valid_to), errors="coerce")
-        if pd.isna(start):
-            continue
-        valid = idx >= pd.Timestamp(start).normalize()
-        if pd.notna(end):
-            valid &= idx < pd.Timestamp(end).normalize()
-        mask.loc[valid, target] = True
+    required = {
+        "canonical_company",
+        "security_id",
+        "source",
+        "source_symbol",
+        "security_class",
+        "conversion_ratio",
+        "lineage_role",
+        "valid_from",
+        "valid_to",
+    }
+    work = pd.DataFrame(columns=["source", "key"])
+    if master is not None and required.issubset(master):
+        work = master.assign(
+            start=pd.to_datetime(master["valid_from"], errors="coerce").dt.normalize(),
+            end=pd.to_datetime(master["valid_to"], errors="coerce").dt.normalize(),
+            key=master["source_symbol"].astype(str).str.upper().str.replace(r"[^A-Z0-9]", "", regex=True),
+        )
+        ratio = pd.to_numeric(work["conversion_ratio"], errors="coerce")
+        work["accepted"] = (
+            work["lineage_role"].isin(CANONICAL_ROLES)
+            & work["security_class"].fillna("").str.fullmatch(r"common|class_[A-Z]")
+            & np.isfinite(ratio)
+            & ratio.gt(0)
+            & work["security_id"].fillna("").ne("")
+            & work["source_symbol"].fillna("").str.fullmatch(r"[A-Z0-9][A-Z0-9./-]*")
+            & work["canonical_company"].notna()
+            & work["canonical_company"].astype(str).str.strip().ne("")
+            & work["start"].notna()
+            & (master["valid_to"].isna() | work["end"].notna())
+        )
+    conflicts = _market_identity_conflicts(work, idx) if not work.empty else {}
+    for _, group in work.loc[work["source"].eq("ftd")].groupby("key", sort=False):
+        hits, summed, admitted = {}, {}, {}
+        rejected = np.zeros(len(idx), dtype=bool)
+        for row in group.itertuples(index=False):
+            active = np.asarray((idx >= cast(pd.Timestamp, row.start)) & ((idx < cast(pd.Timestamp, row.end)) if pd.notna(row.end) else True))
+            hits.setdefault(row.security_id, np.zeros(len(idx), dtype=bool))[:] |= active
+            if row.lineage_role in (*CANONICAL_ROLES, "secondary_class"):
+                summed.setdefault(row.security_id, np.zeros(len(idx), dtype=bool))[:] |= active
+            if row.lineage_role not in (*CANONICAL_ROLES, "secondary_class", "acquired_constituent"):
+                rejected |= active
+            if row.accepted and row.canonical_company in columns:
+                admitted.setdefault(row.canonical_company, np.zeros(len(idx), dtype=bool))[:] |= active & ~conflicts[row.security_id]
+        resolved = (np.sum(list(hits.values()), axis=0) == 1) | ((np.sum(list(summed.values()), axis=0) == 1) & ~rejected)
+        for ticker, active in admitted.items():
+            mask.loc[active & resolved, ticker] = True
+    known = set(master["canonical_company"].dropna()) if master is not None and "canonical_company" in master else set()
+    if finra is not None and {"date", "ticker", "security_id", "lineage_role", "security_class"}.issubset(finra):
+        selected = (
+            finra["ticker"].isin(columns)
+            & ~finra["ticker"].isin(known)
+            & finra["lineage_role"].isin(CANONICAL_ROLES)
+            & finra["security_class"].fillna("").str.fullmatch(r"common|class_[A-Z]")
+            & finra["security_id"].fillna("").str.fullmatch(r"S\d{10}:[A-Z0-9][A-Z0-9.-]*")
+        )
+        for ticker, group in finra.loc[selected].groupby("ticker", sort=False):
+            mask[ticker] |= idx.isin(pd.to_datetime(group["date"], errors="coerce").dt.normalize())
     return mask
 
 

@@ -564,35 +564,246 @@ def test_appending_later_ftd_zip_does_not_rewrite_published_prefix():
     print("  adding January b leaves every January-a published cell unchanged and replaces the held state only on Feb 15")
 
 
-def test_reused_symbol_is_null_outside_the_current_issuer_tenure():
+def _market_tenures(rows: list[dict[str, Any]]) -> pd.DataFrame:
+    """Explicit known-truth market identity rows, independent of accounting CIK windows."""
+    return pd.DataFrame([{"source": "ftd", "security_class": "common", "conversion_ratio": 1.0, **row} for row in rows])
+
+
+@pytest.mark.parametrize(
+    "ticker, start, seam, end",
+    [
+        ("APO", "2019-09-04", "2021-12-31", "2022-05-10"),
+        ("CI", "2018-11-02", "2018-12-20", "2018-12-27"),
+        ("NXPI", "2010-10-12", "2019-08-01", "2019-08-02"),
+    ],
+)
+def test_market_tenure_uses_dated_canonical_security_intervals(ticker: str, start: str, seam: str, end: str) -> None:
+    idx = pd.DatetimeIndex([pd.Timestamp(start) - pd.Timedelta(days=1), start, seam, end])
+    master = _market_tenures(
+        [
+            {
+                "canonical_company": ticker,
+                "security_id": "C111111111",
+                "source_symbol": "OLD",
+                "lineage_role": "canonical_predecessor",
+                "valid_from": start,
+                "valid_to": seam,
+            },
+            {
+                "canonical_company": ticker,
+                "security_id": "C222222222",
+                "source_symbol": ticker,
+                "lineage_role": "canonical_current",
+                "valid_from": seam,
+                "valid_to": end,
+            },
+        ]
+    )
+    mask = short_flow._proven_tenure_mask(idx, pd.Index([ticker]), master, None)
+    assert isinstance(mask, pd.DataFrame), "dated market identity must produce an explicit support mask"
+    assert mask[ticker].tolist() == [False, True, True, False]
+    print(
+        f"SANITY: {ticker} uses exact half-open canonical market dates across predecessor/current identity; accounting or Form345 onsets cannot truncate them."
+    )
+
+
+def test_market_tenure_accepts_only_supported_observed_finra_fallback() -> None:
+    idx = pd.date_range("2024-01-02", periods=7)
+    fallback = pd.DataFrame(
+        {
+            "date": idx[[0, 2, 3, 4, 5, 6]],
+            "ticker": "NEW",
+            "security_id": ["S0000000123:OLD", "S0000000456:NEW", "C111111111", "S0000000456:NEW", "S0000000456:NEW", "S0000000456:NEW"],
+            "lineage_role": [
+                "canonical_predecessor",
+                "canonical_current",
+                "canonical_current",
+                "acquired_constituent",
+                "secondary_class",
+                "canonical_current",
+            ],
+            "security_class": ["common", "class_A", "common", "common", "class_A", "unclassified"],
+        }
+    )
+    mask = short_flow._proven_tenure_mask(idx, pd.Index(["NEW"]), None, fallback)
+    assert isinstance(mask, pd.DataFrame), "observed FINRA mapping must produce explicit support"
+    assert mask["NEW"].tolist() == [True, False, True, False, False, False, False]
+    print(
+        "SANITY: accepted canonical FINRA S-stamps support only their observed dates; gaps, acquired/secondary/unclassified and nonfallback rows remain unknown without operational timestamps."
+    )
+
+
+@pytest.mark.parametrize("master", [None, pd.DataFrame(), pd.DataFrame({"valid_from": ["2024-01-02"]})], ids=["missing", "empty", "malformed"])
+def test_market_tenure_keeps_missing_and_rejected_identity_unknown(master: pd.DataFrame | None) -> None:
+    idx = pd.date_range("2024-01-02", periods=3)
+    mask = short_flow._proven_tenure_mask(idx, pd.Index(["UNKNOWN"]), master, None)
+    assert isinstance(mask, pd.DataFrame), "missing identity must never disable tenure masking"
+    assert not mask.to_numpy().any()
+    print("SANITY: missing, empty or malformed dated identity yields all-false support, so neither observed features nor quiet zeros are invented.")
+
+
+def test_market_tenure_refuses_ambiguous_primary_security() -> None:
+    idx = pd.date_range("2024-01-02", periods=5)
+    master = _market_tenures(
+        [
+            {
+                "canonical_company": "NEW",
+                "security_id": "C111111111",
+                "source_symbol": "NEW",
+                "lineage_role": "canonical_current",
+                "valid_from": idx[0],
+                "valid_to": idx[4],
+            },
+            {
+                "canonical_company": "NEW",
+                "security_id": "C222222222",
+                "source_symbol": "NEW",
+                "lineage_role": "canonical_current",
+                "valid_from": idx[2],
+                "valid_to": idx[3],
+            },
+        ]
+    )
+    fallback = pd.DataFrame(
+        {"date": [idx[2], idx[4]], "ticker": "NEW", "security_id": "S0000000123:NEW", "lineage_role": "canonical_current", "security_class": "common"}
+    )
+    mask = short_flow._proven_tenure_mask(idx, pd.Index(["NEW"]), master, fallback)
+    assert isinstance(mask, pd.DataFrame)
+    assert mask["NEW"].tolist() == [True, True, False, True, False]
+    print("SANITY: competing primary CUSIPs keep their overlap unknown, and fallback cannot override a known master's conflict or expired interval.")
+
+
+@pytest.mark.parametrize(
+    "role, security_class, ratio",
+    [
+        ("acquired_constituent", "common", 1.0),
+        ("excluded", "common", 1.0),
+        ("secondary_class", "class_A", 1.0),
+        ("canonical_current", "unclassified", 1.0),
+        ("canonical_current", "preferred", 1.0),
+        ("canonical_current", "common", float("nan")),
+        ("canonical_current", "common", 0.0),
+    ],
+)
+def test_market_tenure_does_not_promote_rejected_or_secondary_lines(role: str, security_class: str, ratio: float) -> None:
+    idx = pd.date_range("2024-01-02", periods=2)
+    master = _market_tenures(
+        [
+            {
+                "canonical_company": "NEW",
+                "security_id": "C111111111",
+                "source_symbol": "NEW",
+                "lineage_role": role,
+                "security_class": security_class,
+                "conversion_ratio": ratio,
+                "valid_from": idx[0],
+                "valid_to": None,
+            }
+        ]
+    )
+    fallback = pd.DataFrame(
+        {"date": idx, "ticker": "NEW", "security_id": "S0000000123:NEW", "lineage_role": "canonical_current", "security_class": "common"}
+    )
+    mask = short_flow._proven_tenure_mask(idx, pd.Index(["NEW"]), master, fallback)
+    assert isinstance(mask, pd.DataFrame)
+    assert not mask.to_numpy().any()
+    print(
+        "SANITY: acquired, excluded, secondary-only, unsupported class and invalid conversion evidence cannot establish primary market tenure or be overridden by fallback."
+    )
+
+
+@pytest.mark.parametrize("other_symbol", ["NEW", "OLD"])
+def test_market_tenure_refuses_one_security_with_two_active_owners(other_symbol: str) -> None:
+    idx = pd.date_range("2024-01-02", periods=3)
+    master = _market_tenures(
+        [
+            {
+                "canonical_company": company,
+                "source_symbol": symbol,
+                "security_id": "C111111111",
+                "lineage_role": "canonical_current",
+                "valid_from": idx[0],
+                "valid_to": None,
+            }
+            for company, symbol in [("NEW", "NEW"), ("OTHER", other_symbol)]
+        ]
+    )
+    support = short_flow._proven_tenure_mask(idx, pd.Index(["NEW", "OTHER"]), master, None)
+    assert not support.to_numpy().any()
+    print("SANITY: one active security cannot support two canonical owners, including across different historical symbol keys.")
+
+
+@pytest.mark.parametrize("rejected_symbol", ["NEW", "OLD"])
+def test_market_tenure_refuses_rejected_rows_of_the_same_security(rejected_symbol: str) -> None:
+    idx = pd.date_range("2024-01-02", periods=3)
+    master = _market_tenures(
+        [
+            {
+                "canonical_company": "NEW",
+                "source_symbol": symbol,
+                "security_id": "C111111111",
+                "lineage_role": role,
+                "valid_from": idx[0],
+                "valid_to": None,
+            }
+            for symbol, role in [("NEW", "canonical_current"), (rejected_symbol, "excluded")]
+        ]
+    )
+    support = short_flow._proven_tenure_mask(idx, pd.Index(["NEW"]), master, None)
+    assert not support.to_numpy().any()
+    print("SANITY: explicit overlapping rejection of the same security defeats primary support even when it uses another symbol key.")
+
+
+@pytest.mark.parametrize("source_symbol", [None, "", " "])
+def test_market_tenure_requires_an_actual_source_symbol(source_symbol: str | None) -> None:
+    idx = pd.date_range("2024-01-02", periods=2)
+    master = _market_tenures(
+        [
+            {
+                "canonical_company": "NEW",
+                "source_symbol": source_symbol,
+                "security_id": "C111111111",
+                "lineage_role": "canonical_current",
+                "valid_from": idx[0],
+                "valid_to": None,
+            }
+        ]
+    )
+    support = short_flow._proven_tenure_mask(idx, pd.Index(["NEW"]), master, None)
+    assert not support.to_numpy().any()
+    print("SANITY: NULL, empty and whitespace source symbols cannot become fabricated NAN/NONE market keys.")
+
+
+def test_reused_symbol_is_null_outside_the_current_issuer_tenure() -> None:
     idx = pd.bdate_range("2021-01-04", periods=90)
     ticker = "REUSED"
     hist = pd.DataFrame([{"date": day, "ticker": ticker, "short_volume": 400_000.0, "total_volume": 1_000_000.0} for day in idx])
-    tenure = pd.DataFrame(
+    tenure = _market_tenures(
         [
             {
-                "symbol": ticker,
-                "issuer_cik": "0000000123",
+                "canonical_company": ticker,
+                "source_symbol": ticker,
+                "security_id": "C111111111",
+                "lineage_role": "canonical_current",
                 "valid_from": idx[20],
                 "valid_to": idx[60],
             }
         ]
     )
-    roster = pd.DataFrame([{"ticker": ticker, "cik": "123"}])
     panel = build_short_flow_feature_panel(
         make_frames(idx, {ticker: {}}, universe=pd.Index([ticker])),
         hist,
-        tenure_mask=short_flow._proven_tenure_mask(idx, pd.Index([ticker]), tenure, roster),
+        tenure_mask=short_flow._proven_tenure_mask(idx, pd.Index([ticker]), tenure, None),
     )
     ratio = panel[panel["ticker"] == ticker].set_index("date")["f_ic_shortvol_ratio_20d"].reindex(idx)
     assert ratio.loc[: idx[19]].isna().all()
     assert np.isfinite(ratio.loc[idx[45]])
     assert ratio.loc[idx[60] :].isna().all()
     print("\n=== SANITY CHECK: reused-symbol tenure mask ===")
-    print("  RegSHO cells are available only inside the current roster CIK's proven half-open symbol tenure")
+    print("  RegSHO cells are available only inside the actual security's proven half-open market tenure")
 
 
-def test_canonical_ticker_survives_a_historical_alias_tenure():
+def test_canonical_ticker_survives_a_historical_alias_tenure() -> None:
     idx = pd.bdate_range("2023-05-01", periods=80)
     cutover = idx[35]
     history = pd.DataFrame(
@@ -606,25 +817,38 @@ def test_canonical_ticker_survives_a_historical_alias_tenure():
             for day in idx
         ]
     )
-    tenure = pd.DataFrame(
+    tenure = _market_tenures(
         [
-            {"symbol": "OLD", "issuer_cik": "0000000123", "valid_from": idx[0], "valid_to": cutover},
-            {"symbol": "NEW", "issuer_cik": "0000000123", "valid_from": cutover, "valid_to": None},
+            {
+                "canonical_company": "NEW",
+                "source_symbol": "OLD",
+                "security_id": "C111111111",
+                "lineage_role": "canonical_predecessor",
+                "valid_from": idx[0],
+                "valid_to": cutover,
+            },
+            {
+                "canonical_company": "NEW",
+                "source_symbol": "NEW",
+                "security_id": "C111111111",
+                "lineage_role": "canonical_current",
+                "valid_from": idx[30],
+                "valid_to": None,
+            },
         ]
     )
-    roster = pd.DataFrame([{"ticker": "NEW", "cik": "123.0"}])
 
     panel = build_short_flow_feature_panel(
         make_frames(idx, {"NEW": {}}, universe=pd.Index(["NEW"])),
         history,
-        tenure_mask=short_flow._proven_tenure_mask(idx, pd.Index(["NEW"]), tenure, roster),
+        tenure_mask=short_flow._proven_tenure_mask(idx, pd.Index(["NEW"]), tenure, None),
     )
     ratio = panel.set_index("date")["f_ic_shortvol_ratio_20d"].reindex(idx)
 
     assert ratio.loc[cutover:].notna().all()
     assert np.isclose(ratio.loc[cutover], 0.4)
     print("\n=== SANITY CHECK: canonical storage across a symbol alias ===")
-    print("  canonical NEW rows survive the OLD tenure, and a float-shaped roster CIK resolves through shared pad_cik")
+    print("  one security/owner survives OLD and NEW's overlapping proved aliases without a fabricated ownership conflict")
 
 
 def test_panel_columns_match_the_emission_map():

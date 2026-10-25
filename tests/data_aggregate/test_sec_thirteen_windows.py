@@ -12,9 +12,11 @@ import pandas as pd
 import pytest
 from omegaconf import OmegaConf
 
+from src.data_aggregate.transformers import step_cube_sec_thirteen as step_module
 from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecThirteen
 from src.data_aggregate.utils.common import inputs as capital_inputs
 from src.data_aggregate.utils.common.incremental import PartWindow
+from src.data_aggregate.utils.sec_thirteen.superinvestor_features import EMISSION, SuperinvestorFeatureHistory
 from src.data_store.schema import Tables
 from tests.data_aggregate.test_institutional_step_contract import context, seed_prices
 
@@ -22,7 +24,7 @@ from tests.data_aggregate.test_institutional_step_contract import context, seed_
 def _owner(store: Any, monkeypatch: pytest.MonkeyPatch, path: Path) -> tuple[StepCubeSecThirteen, pd.DatetimeIndex]:
     days = seed_prices(store, periods=120)
     ctx = context(store, path)
-    ctx.config.build_cube = OmegaConf.create({"incremental": {"warmup_trading_days": 0}, "institutionals": {"decay_halflife": {"super": 20}}})
+    ctx.config.build_cube = OmegaConf.create({"incremental": {"warmup_trading_days": 0}, "institutionals": {}})
     monkeypatch.setattr(capital_inputs, "load_peers_or_raise", lambda ctx: {})
     return StepCubeSecThirteen(ctx, ctx.config), days
 
@@ -41,26 +43,28 @@ def _facts(days: pd.DatetimeIndex, offsets: Sequence[int], **fields: Sequence[fl
     )
 
 
-def _elite(days: pd.DatetimeIndex, offsets: Sequence[int], **fields: Sequence[float]) -> dict[str, pd.DataFrame]:
-    return {name: pd.DataFrame({"AAA": values}, index=days[list(offsets)]) for name, values in fields.items()}
+def _elite(days: pd.DatetimeIndex, offsets: Sequence[int], **fields: Sequence[float]) -> SuperinvestorFeatureHistory:
+    levels = {name: pd.DataFrame({"AAA": [np.nan] * len(offsets)}, index=days[list(offsets)]) for name in EMISSION}
+    levels.update({name: pd.DataFrame({"AAA": values}, index=days[list(offsets)]) for name, values in fields.items()})
+    return SuperinvestorFeatureHistory(levels, pd.DataFrame())
 
 
 def _prepare(
     step: StepCubeSecThirteen,
     monkeypatch: pytest.MonkeyPatch,
     facts: pd.DataFrame | None,
-    levels: dict[str, pd.DataFrame] | None,
+    levels: SuperinvestorFeatureHistory | None,
 ) -> tuple[Mock, Mock]:
     broad, elite = Mock(return_value=facts), Mock(return_value=levels)
     monkeypatch.setattr(step, "_institutional_features", broad)
-    monkeypatch.setattr(step, "_superinvestor_levels", elite)
+    monkeypatch.setattr(step, "_superinvestor_history", elite)
     return broad, elite
 
 
 def _projections(step: StepCubeSecThirteen, monkeypatch: pytest.MonkeyPatch) -> tuple[Mock, Mock]:
-    broad, elite = Mock(wraps=step._project_institutional_panel), Mock(wraps=step._project_superinvestor_panel)
+    broad, elite = Mock(wraps=step._project_institutional_panel), Mock(wraps=step_module.project_superinvestor_features)
     monkeypatch.setattr(step, "_project_institutional_panel", broad)
-    monkeypatch.setattr(step, "_project_superinvestor_panel", elite)
+    monkeypatch.setattr(step_module, "project_superinvestor_features", elite)
     return broad, elite
 
 
@@ -76,6 +80,9 @@ def _saved(panel: pd.DataFrame) -> pd.DataFrame:
 def _load(store: Any) -> pd.DataFrame:
     panel = store.load(Tables.cube_part_sec_thirteen)
     assert panel is not None
+    # SQLite returns an all-NULL numeric column as object/None; compare numeric nulls.
+    for column in set(panel.columns) - {"date", "ticker"}:
+        panel[column] = pd.to_numeric(panel[column], errors="raise").astype("float64")
     return _ordered(panel)
 
 
@@ -94,8 +101,8 @@ def _bounded(projections: tuple[Mock, Mock], days: pd.DatetimeIndex, maximum: in
             pd.testing.assert_index_equal(frames.close_split.index, frames.trading_index)
             pd.testing.assert_index_equal(frames.level_factor.index, frames.trading_index)
             assert frames.universe == ("AAA",)
-            clock = call.args[4] if family == 0 else pd.DatetimeIndex(call.args[2].index)
-            pd.testing.assert_index_equal(clock, days)
+            if family == 0:
+                pd.testing.assert_index_equal(call.args[2].frames.trading_index, days)
 
 
 def test_tail_retains_full_dependency_clock_with_bounded_dense_projection(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -104,7 +111,7 @@ def test_tail_retains_full_dependency_clock_with_bounded_dense_projection(sqlite
         step,
         monkeypatch,
         _facts(days, (5, 90), ic_inst_concentration=[0.25, 0.5]),
-        _elite(days, (8,), ic_super_holders=[0.5], ic_super_new_top10=[1.0]),
+        _elite(days, (8,), ic_super_holders=[0.5], ic_super_pooled_weight_chg=[0.1]),
     )
     full = step.build_panel()
     for source in prepared:
@@ -117,12 +124,12 @@ def test_tail_retains_full_dependency_clock_with_bounded_dense_projection(sqlite
     assert [source.call_count for source in prepared] == [1, 1]
     assert [projection.call_count for projection in projections] == [1, 1]
     _bounded(projections, days, 8)
-    event = tail.set_index(["date", "ticker"]).loc[(days[-8], "AAA"), "f_ic_super_new_top10"]
-    assert event == pytest.approx(0.5 ** ((112 - 8) / 20))
-    assert prepared[0].call_args.args[0].trading_index.equals(days)
-    pd.testing.assert_index_equal(prepared[1].call_args.kwargs["session_positions"].index, days)
+    event = tail.set_index(["date", "ticker"]).loc[(days[-8], "AAA"), "f_ic_super_pooled_weight_chg"]
+    assert event == pytest.approx(0.1)
+    assert prepared[0].call_args.args[0].frames.trading_index.equals(days)
+    pd.testing.assert_index_equal(prepared[1].call_args.args[0].frames.trading_index, days)
     print(
-        "SANITY: an eight-session tail equals full history, preserves 104-session event age and prepares each source once; dense projections stay inside the tail."
+        "SANITY: an eight-session tail equals full history, keeps the quarterly allocation change stable without decay and prepares each source once; dense projections stay inside the tail."
     )
 
 
@@ -131,7 +138,7 @@ def test_early_window_uses_the_original_publication_floor(sqlite_store: Any, mon
     days = pd.bdate_range("2013-08-01", periods=120, name="date")
     sqlite_store.replace(Tables.cube_part_prices, pd.DataFrame({"date": days, "ticker": "AAA", "close_split": 100.0, "level_factor": 1.0}))
     facts = _facts(days, (0,), ic_inst_concentration=[0.25]).assign(period=pd.Timestamp("2013-06-30"))
-    _prepare(step, monkeypatch, facts, {})
+    _prepare(step, monkeypatch, facts, _elite(days, ()))
     full = step.build_panel()
     tail = step.build_panel(PartWindow(days[-1], pd.Timestamp("2013-08-15")), existing_columns=list(full.columns))
     pd.testing.assert_frame_equal(_ordered(tail), _ordered(full.loc[full.date >= "2013-08-15"]))
@@ -201,7 +208,12 @@ def test_failed_saved_family_refuses_writes(sqlite_store: Any, monkeypatch: pyte
     step, days = _owner(sqlite_store, monkeypatch, tmp_path)
     initial = pd.DataFrame({"date": days, "ticker": "AAA", "f_ic_inst_concentration": 0.25, "f_ic_super_holders": 0.5})
     sqlite_store.replace(Tables.cube_part_sec_thirteen, initial)
-    _prepare(step, monkeypatch, None if family == "broad" else _facts(days, (5,), ic_inst_concentration=[0.25]), None if family == "elite" else {})
+    _prepare(
+        step,
+        monkeypatch,
+        None if family == "broad" else _facts(days, (5,), ic_inst_concentration=[0.25]),
+        None if family == "elite" else _elite(days, ()),
+    )
     replace, append = Mock(wraps=sqlite_store.replace), Mock(wraps=sqlite_store.append_tail)
     monkeypatch.setattr(sqlite_store, "replace", replace)
     monkeypatch.setattr(sqlite_store, "append_tail", append)
@@ -217,7 +229,7 @@ def test_shortened_price_calendar_refuses_even_a_full_rebuild(sqlite_store: Any,
     step, days = _owner(sqlite_store, monkeypatch, tmp_path)
     initial = pd.DataFrame({"date": [days[-1] + pd.offsets.BDay(1)], "ticker": "AAA", "f_ic_inst_concentration": 0.25})
     sqlite_store.replace(Tables.cube_part_sec_thirteen, initial)
-    prepared = _prepare(step, monkeypatch, pd.DataFrame(), {})
+    prepared = _prepare(step, monkeypatch, pd.DataFrame(), _elite(days, ()))
     replace, append = Mock(wraps=sqlite_store.replace), Mock(wraps=sqlite_store.append_tail)
     monkeypatch.setattr(sqlite_store, "replace", replace)
     monkeypatch.setattr(sqlite_store, "append_tail", append)
@@ -239,7 +251,7 @@ def test_missing_saved_rewrite_date_refuses_without_writes(
     sqlite_store.replace(Tables.cube_part_sec_thirteen, initial)
     missing = days[-2] if hole == "saved_frontier" else days[-3]
     sqlite_store.delete(Tables.cube_part_prices, where={"date": missing})
-    prepared = _prepare(step, monkeypatch, _facts(days, (5,), ic_inst_concentration=[0.25]), {})
+    prepared = _prepare(step, monkeypatch, _facts(days, (5,), ic_inst_concentration=[0.25]), _elite(days, ()))
     replace, append = Mock(wraps=sqlite_store.replace), Mock(wraps=sqlite_store.append_tail)
     distinct = Mock(wraps=sqlite_store.distinct)
     monkeypatch.setattr(sqlite_store, "replace", replace)
@@ -262,7 +274,7 @@ def test_schema_promotion_refuses_missing_saved_prefix_date(sqlite_store: Any, m
     initial = pd.DataFrame({"date": days, "ticker": "AAA", "f_ic_inst_concentration": 0.25})
     sqlite_store.replace(Tables.cube_part_sec_thirteen, initial)
     sqlite_store.delete(Tables.cube_part_prices, where={"date": days[10]})
-    prepared = _prepare(step, monkeypatch, _facts(days, (5,), ic_inst_concentration=[0.25], ic_inst_holders=[0.5]), {})
+    prepared = _prepare(step, monkeypatch, _facts(days, (5,), ic_inst_concentration=[0.25], ic_inst_holders=[0.5]), _elite(days, ()))
     replace, append = Mock(wraps=sqlite_store.replace), Mock(wraps=sqlite_store.append_tail)
     distinct = Mock(wraps=sqlite_store.distinct)
     monkeypatch.setattr(sqlite_store, "replace", replace)
@@ -285,7 +297,7 @@ def test_missing_saved_prefix_date_allows_one_incremental_write(sqlite_store: An
     initial = pd.DataFrame({"date": days, "ticker": "AAA", "f_ic_inst_concentration": -9.0})
     sqlite_store.replace(Tables.cube_part_sec_thirteen, initial)
     sqlite_store.delete(Tables.cube_part_prices, where={"date": days[10]})
-    prepared = _prepare(step, monkeypatch, _facts(days, (5,), ic_inst_concentration=[0.25]), {})
+    prepared = _prepare(step, monkeypatch, _facts(days, (5,), ic_inst_concentration=[0.25]), None)
     replace, append = Mock(wraps=sqlite_store.replace), Mock(wraps=sqlite_store.append_tail)
     distinct = Mock(wraps=sqlite_store.distinct)
     monkeypatch.setattr(sqlite_store, "replace", replace)
@@ -346,7 +358,7 @@ def test_historical_only_saved_column_uses_bounded_probe_and_float32_padding(
     sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     step, days = _owner(sqlite_store, monkeypatch, tmp_path)
-    prepared = _prepare(step, monkeypatch, _facts(days, (5, 110), ic_inst_concentration=[0.25, 0.5], ic_inst_holders=[0.5, np.nan]), {})
+    prepared = _prepare(step, monkeypatch, _facts(days, (5, 110), ic_inst_concentration=[0.25, 0.5], ic_inst_holders=[0.5, np.nan]), _elite(days, ()))
     full = step.build_panel()
     for source in prepared:
         source.reset_mock()
@@ -368,7 +380,7 @@ def test_denominator_support_distinguishes_schema_removal_from_unknown_tail(
     sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, denominator: str
 ) -> None:
     step, days = _owner(sqlite_store, monkeypatch, tmp_path)
-    broad, elite = _prepare(step, monkeypatch, _facts(days, (5,), ic_inst_concentration=[0.25]), {})
+    broad, elite = _prepare(step, monkeypatch, _facts(days, (5,), ic_inst_concentration=[0.25]), _elite(days, ()))
     if denominator == "temporarily_unknown":
         _shares(sqlite_store, days, (0, 112), (100.0, 0.0))
     current = step.build_panel()
@@ -420,7 +432,7 @@ def test_observation_before_first_price_remains_supported_after_listing(sqlite_s
 def test_rejected_ownership_ratios_do_not_create_conditional_schema(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     step, days = _owner(sqlite_store, monkeypatch, tmp_path)
     _shares(sqlite_store, days, (0,), (100.0,))
-    broad, elite = _prepare(step, monkeypatch, _facts(days, (5,), ic_inst_concentration=[0.25], inst_shares=[300.0]), {})
+    broad, elite = _prepare(step, monkeypatch, _facts(days, (5,), ic_inst_concentration=[0.25], inst_shares=[300.0]), _elite(days, ()))
     expected = _saved(step.build_panel())
     assert "f_ic_inst_ownership_pct" not in expected and "f_ic_inst_value_to_mcap" in expected
     sqlite_store.replace(Tables.cube_part_sec_thirteen, expected.assign(f_ic_inst_ownership_pct=0.5))
@@ -439,8 +451,9 @@ def test_rejected_ownership_ratios_do_not_create_conditional_schema(sqlite_store
 
 def test_valid_empty_preparation_is_not_a_source_failure(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     step, days = _owner(sqlite_store, monkeypatch, tmp_path)
-    prepared = _prepare(step, monkeypatch, pd.DataFrame(), {})
+    prepared = _prepare(step, monkeypatch, pd.DataFrame(), _elite(days, ()))
     panel = step.build_panel(PartWindow(days[-1], days[-8], days[-8]), existing_columns=["date", "ticker", "f_ic_inst_holders", "f_ic_super_holders"])
-    assert set(panel.columns) == {"date", "ticker"} and panel.empty
+    assert set(panel.columns) == {"date", "ticker"} | {"f_" + name for name in EMISSION}
+    assert panel.filter(like="f_").isna().all().all()
     assert [source.call_count for source in prepared] == [1, 1]
-    print("SANITY: verified empty source preparations produce an empty feature schema rather than a failed-source exception.")
+    print("SANITY: verified empty source preparations retain26 unknown super fields rather than masquerading as a failed source.")

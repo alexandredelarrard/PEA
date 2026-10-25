@@ -1,12 +1,10 @@
-"""Broad institutional and elite-manager 13F features from public accession books."""
+"""Load once, reconcile public13F books, calculate features and save one effective window."""
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
-from dataclasses import replace
-from functools import partial
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
 
-import numpy as np
 import pandas as pd
 from omegaconf import DictConfig
 
@@ -23,32 +21,40 @@ from src.data_aggregate.utils.common.price_frames import PriceFrames, load_tradi
 from src.data_aggregate.utils.sec_thirteen import inputs as thirteen_inputs
 from src.data_aggregate.utils.sec_thirteen.holdings_clean import attach_tickers, clean_public_holdings
 from src.data_aggregate.utils.sec_thirteen.institutional_books import iter_institutional_books, prepare_institutional_book_history
-from src.data_aggregate.utils.sec_thirteen.institutional_features import (
-    EMISSION as INSTITUTIONAL_EMISSION,
-)
-from src.data_aggregate.utils.sec_thirteen.institutional_features import (
-    compute_institutional_feature_history,
-    project_institutional_features,
-)
-from src.data_aggregate.utils.sec_thirteen.manager_selection import roster_members_on, select_managers
+from src.data_aggregate.utils.sec_thirteen.institutional_features import EMISSION as INSTITUTIONAL_EMISSION
+from src.data_aggregate.utils.sec_thirteen.institutional_features import compute_institutional_feature_history, project_institutional_features
+from src.data_aggregate.utils.sec_thirteen.superinvestor_books import prepare_superinvestor_book_history
+from src.data_aggregate.utils.sec_thirteen.superinvestor_features import EMISSION as SUPERINVESTOR_EMISSION
 from src.data_aggregate.utils.sec_thirteen.superinvestor_features import (
-    EMISSION as SUPERINVESTOR_EMISSION,
-)
-from src.data_aggregate.utils.sec_thirteen.superinvestor_features import (
-    append_unknown_superinvestor_snapshot,
-    compute_superinvestor_levels,
-    iter_manager_feature_inputs,
-    manager_selection_weights,
+    SuperinvestorFeatureHistory,
+    compute_superinvestor_feature_history,
     project_superinvestor_features,
-    public_state,
-    superinvestor_contributions,
 )
-from src.data_aggregate.utils.sec_thirteen.superinvestor_roster import first_snapshot_date, roster_as_of
+from src.data_aggregate.utils.sec_thirteen.superinvestor_metrics import BehaviorMarket
+from src.data_aggregate.utils.sec_thirteen.superinvestor_roster import load_manager_cohorts
 from src.data_store.schema import Tables
 from src.utils.institutional_vintages import prepare_book_vintages
 from src.utils.price_adjustments import ShareBasis
 from src.utils.step import Step
 from src.utils.superinvestor_roster import filer_ciks
+
+
+@dataclass(frozen=True)
+class SecThirteenResources:
+    """One loaded capital/security snapshot shared by both13F families."""
+
+    frames: PriceFrames
+    shares: pd.DataFrame | None
+    basis: ShareBasis
+    valuation_close: pd.DataFrame | None
+    cusip_map: pd.DataFrame | None
+    cohorts: Mapping[str, frozenset[str]] | None
+
+
+@dataclass(frozen=True)
+class PreparedSecThirteen:
+    institutional: pd.DataFrame | None
+    superinvestor: SuperinvestorFeatureHistory | None
 
 
 class StepCubeSecThirteen(Step):
@@ -64,6 +70,7 @@ class StepCubeSecThirteen(Step):
         self._availability = InstitutionalAvailability.from_config(cfg) if cfg is not None else None
 
     def run(self, full: bool = False) -> None:
+        # Plan the actual rewrite footprint before loading dependency payloads.
         calendar = load_trading_calendar(self._store)
         existing_columns = self._store.columns(Tables.cube_part_sec_thirteen)
         saved_dates = pd.DatetimeIndex(self._store.distinct(Tables.cube_part_sec_thirteen, "date"))
@@ -79,6 +86,7 @@ class StepCubeSecThirteen(Step):
             window = PartWindow(None, None)
         self._require_saved_calendar(saved_dates, calendar, window.refresh_from)
 
+        # Schema fallback reuses the prepared full-history panel and performs one save.
         panel = self.build_panel(window, existing_columns=existing_columns)
         result = write_part(self._store, Tables.cube_part_sec_thirteen, panel, window, drop_empty=True, existing_columns=existing_columns)
         if result == COLUMNS_CHANGED:
@@ -87,10 +95,7 @@ class StepCubeSecThirteen(Step):
 
     @staticmethod
     def _require_saved_calendar(saved_dates: pd.DatetimeIndex, calendar: pd.DatetimeIndex, refresh_from: pd.Timestamp | None) -> None:
-        """Preserve saved sessions absent from the calendar inside the actual deletion footprint."""
-        rewrite_dates = saved_dates
-        if refresh_from is not None:
-            rewrite_dates = saved_dates[saved_dates >= refresh_from]
+        rewrite_dates = saved_dates if refresh_from is None else saved_dates[saved_dates >= refresh_from]
         if not rewrite_dates.difference(calendar).empty:
             raise RuntimeError("SEC13F price calendar ends before the saved output frontier or omits a saved rewrite date; no rows may be replaced.")
 
@@ -98,150 +103,91 @@ class StepCubeSecThirteen(Step):
         override = self._cfg.get("incremental", {}).get("warmup_trading_days")
         return int(override) if override is not None else self._part.warmup_trading_days
 
-    def build_panel(self, window: PartWindow | None = None, *, existing_columns: Sequence[str] | None = None) -> pd.DataFrame:
-        """Prepare full dependency history once, then project only the effective output dates."""
+    def _load_resources(self) -> SecThirteenResources:
+        # Read the shared dependencies once before any cleaning or feature work.
         frames = capital_inputs.load_full_price_frames(self._store, self._context, self._FIELDS)
         history = capital_inputs.load_source(self._store, Tables.superinvestor_roster)
         cusip_map = self._store.load(Tables.cusip_ticker_map, columns=["cusip", "ticker"], optional=True)
         shares, _, basis, valuation_close, _ = capital_inputs.load_share_inputs(self._context, frames, self._bugfix)
+
+        # The ordered list is user-owned; membership never depends on portfolio prices.
+        cohorts = None
+        if history is not None:
+            roster = filer_ciks(history.cik.dropna(), self._context.config_dir)
+            cfg = self._cfg.get("institutionals", {}).get("superinvestor", {})
+            cohorts = load_manager_cohorts(self._context.config_dir, roster, cfg.get("selection", {}).get("k", 20))
+        return SecThirteenResources(frames, shares, basis, valuation_close, cusip_map, cohorts)
+
+    def build_panel(self, window: PartWindow | None = None, *, existing_columns: Sequence[str] | None = None) -> pd.DataFrame:
+        resources = self._load_resources()
         saved_columns = self._store.columns(Tables.cube_part_sec_thirteen) if existing_columns is None else list(existing_columns)
         window = window or PartWindow(None, None)
-        session_positions = pd.Series(np.arange(len(frames.trading_index)), index=frames.trading_index)
 
-        if history is not None:
-            history["snapshot_date"] = pd.to_datetime(history["snapshot_date"])
-        roster = filer_ciks(history["cik"].dropna(), self._context.config_dir) if history is not None else set()
-        splits = basis.actual.rename(columns={"value": "ratio"})
-        institutional_features = self._institutional_features(frames, splits, cusip_map, valuation_close)
-        superinvestor_levels = self._superinvestor_levels(
-            frames, splits, cusip_map, roster, history, valuation_close, session_positions=session_positions
-        )
-        self._require_saved_families(institutional_features, superinvestor_levels, saved_columns)
-
-        output_dates = frames.trading_index if window.since is None else frames.trading_index[frames.trading_index >= window.since]
-        output_frames = self._output_frames(frames, output_dates)
-        institutional_panel, superinvestor_panel = self._project_panels(
-            output_frames, institutional_features, superinvestor_levels, shares, basis, session_positions
-        )
+        # Keep sparse full history for genuine lag comparisons and bounded daily projection.
+        prepared = PreparedSecThirteen(self._institutional_features(resources), self._superinvestor_history(resources))
+        self._require_saved_families(prepared, saved_columns)
+        dates = resources.frames.trading_index
+        output_dates = dates if window.since is None else dates[dates >= window.since]
+        panels = self._project_panels(resources, prepared, output_dates)
         if window.is_full:
-            return self._merge_panels(output_frames, institutional_panel, superinvestor_panel)
+            return self._merge_panels(resources.frames, panels)
 
-        supported = self._supported_columns(
-            frames,
-            output_dates,
-            institutional_features,
-            superinvestor_levels,
-            shares,
-            basis,
-            session_positions,
-            institutional_panel,
-            superinvestor_panel,
-        )
+        # A schema change reprojects the same facts, never reloads or rebuilds books.
+        supported = self._supported_columns(resources, prepared, output_dates, panels)
         if supported != set(saved_columns) - {"date", "ticker"}:
-            del institutional_panel, superinvestor_panel
-            institutional_panel, superinvestor_panel = self._project_panels(
-                frames, institutional_features, superinvestor_levels, shares, basis, session_positions
-            )
-            return self._merge_panels(frames, institutional_panel, superinvestor_panel)
+            panels = self._project_panels(resources, prepared, dates)
+            return self._merge_panels(resources.frames, panels)
+        output_frames = self._output_frames(resources.frames, output_dates)
+        df_panel = self._merge_panels(output_frames, panels)
+        if df_panel.empty:
+            df_panel = output_frames.skeleton()
+        for column in supported - set(df_panel.columns):
+            df_panel[column] = pd.Series(index=df_panel.index, dtype="float32")
+        return df_panel.reindex(columns=saved_columns)
 
-        panel = self._merge_panels(output_frames, institutional_panel, superinvestor_panel)
-        if panel.empty:
-            panel = output_frames.skeleton()
-        for column in supported - set(panel.columns):
-            panel[column] = pd.Series(np.nan, index=panel.index, dtype="float32")
-        return panel.reindex(columns=saved_columns)
-
-    def _institutional_features(
-        self,
-        price_frames: PriceFrames,
-        splits: pd.DataFrame | None,
-        cusip_map: pd.DataFrame | None,
-        valuation_close: pd.DataFrame | None = None,
-    ) -> pd.DataFrame | None:
-
-        packets = thirteen_inputs.iter_filing_vintages(self._store, price_frames.trading_index.max())
+    def _institutional_features(self, resources: SecThirteenResources) -> pd.DataFrame | None:
+        packets = thirteen_inputs.iter_filing_vintages(self._store, resources.frames.trading_index.max())
         cfg = self._cfg.get("institutionals", {})
-        settle_days = int(cfg.get("f13_settle_trading_days", F13_SETTLE_TRADING_DAYS))
-
         if packets is None:
             return None
+
+        # Preserve the existing broad cleaning, reconciliation and numerical equations.
         history = prepare_institutional_book_history(
             packets,
-            price_frames.trading_index,
-            cusip_map,
-            price_frames.universe,
-            valuation_close,
+            resources.frames.trading_index,
+            resources.cusip_map,
+            resources.frames.universe,
+            resources.valuation_close,
             cfg.get("value_basis"),
-            settle_days=settle_days,
+            settle_days=int(cfg.get("f13_settle_trading_days", F13_SETTLE_TRADING_DAYS)),
         )
         if history is None:
             return None
         compact, states = history
-        snapshots = iter_institutional_books(compact, states)
-        return compute_institutional_feature_history(snapshots, splits=splits)
+        splits = resources.basis.actual.rename(columns={"value": "ratio"})
+        return compute_institutional_feature_history(iter_institutional_books(compact, states), splits=splits)
 
-    def _superinvestor_levels(
-        self,
-        frames: PriceFrames,
-        splits: pd.DataFrame | None,
-        cusip_map: pd.DataFrame | None,
-        roster: set[str],
-        history: pd.DataFrame | None,
-        valuation_close: pd.DataFrame | None = None,
-        *,
-        session_positions: pd.Series,
-    ) -> dict[str, pd.DataFrame] | None:
-
-        filings, holdings = (
-            thirteen_inputs.load_manager_filing_vintages(self._store, frames.trading_index.max(), sorted(roster)) if roster else None
-        ) or (pd.DataFrame(), pd.DataFrame())
-        cfg = self._cfg.get("institutionals", {})
-        stale_quarters = int(cfg.get("superinvestor", {}).get("stale_quarters", 4))
-        decay_halflife = self._decay_halflife("super")
-        snapshots: dict[str, list[pd.DataFrame]] = {}
-        state = pd.DataFrame()
-
-        if filings.empty:
+    def _superinvestor_history(self, resources: SecThirteenResources) -> SuperinvestorFeatureHistory | None:
+        if resources.cohorts is None:
             return None
-        self._log.info(
-            "Elite 13F books: %s rows across %s ever-listed managers (%s on today's roster)",
-            len(holdings),
-            len(roster),
-            len(roster_as_of(history, config_dir=self._context.config_dir)),
-        )
+        packet = thirteen_inputs.load_manager_filing_vintages(self._store, resources.frames.trading_index.max(), sorted(resources.cohorts[""]))
+        if packet is None:
+            return None
 
-        holdings = clean_public_holdings(
-            attach_tickers(holdings, cusip_map, frames.universe),
-            valuation_close,
-            cfg.get("value_basis"),
-        )
-        prepared = prepare_book_vintages(filings, holdings, frames.trading_index, settle_days=0)
-        selector = self._superinvestor_selector(history)
+        # Clean whole books once, retaining mapped off-universe positions and provenance.
+        df_filings, df_holdings = packet
+        cfg = self._cfg.get("institutionals", {})
+        df_holdings = clean_public_holdings(attach_tickers(df_holdings, resources.cusip_map), resources.valuation_close, cfg.get("value_basis"))
+        df_manifest = prepare_book_vintages(df_filings, df_holdings, resources.frames.trading_index, settle_days=0)
 
-        for day, state, conviction, states, observed_pairs in iter_manager_feature_inputs(prepared, holdings, frames.trading_index, stale_quarters):
-            weights = manager_selection_weights(state, selector)
-            public = public_state(state, weights)
-            contributions, public, historical = superinvestor_contributions(
-                conviction, state, states, weights, public, day, splits, stale_quarters, observed_pairs
-            )
-            if contributions.empty or public.empty:
-                append_unknown_superinvestor_snapshot(snapshots, day)
-                continue
-            levels = compute_superinvestor_levels(
-                contributions, public, historical, day, session_positions, observed_pairs.ticker.unique(), stale_quarters, decay_halflife
-            )
-            for name, frame in levels.items():
-                snapshots.setdefault(name, []).append(frame)
-        if not snapshots:
-            return {}
-
-        levels = {name: pd.concat(parts).sort_index() for name, parts in snapshots.items()}
-        self._log.info("elite 13F levels: %s features over %s managers / %s quarters", len(levels), state.cik.nunique(), state.period.nunique())
-        return levels
+        # Public freshness, archival baselines and the common quarter precede equations.
+        age_days = int(cfg.get("superinvestor", {}).get("max_age_calendar_days", 90))
+        books = prepare_superinvestor_book_history(df_manifest, df_holdings, resources.frames.trading_index, age_days)
+        market = BehaviorMarket(resources.frames.trading_index, resources.valuation_close, resources.basis)
+        return compute_superinvestor_feature_history(books, resources.cohorts, resources.frames.universe, market)
 
     @staticmethod
     def _output_frames(frames: PriceFrames, dates: pd.DatetimeIndex) -> PriceFrames:
-        """Keep the logical universe while bounding the two dense price dependencies."""
         return replace(
             frames,
             trading_index=dates,
@@ -250,146 +196,87 @@ class StepCubeSecThirteen(Step):
         )
 
     @staticmethod
-    def _require_saved_families(
-        institutional_features: pd.DataFrame | None, superinvestor_levels: dict[str, pd.DataFrame] | None, saved_columns: Sequence[str]
-    ) -> None:
-        """Refuse replacement of a previously supported family after source preparation fails."""
-        failed = (("f_ic_inst_", institutional_features is None), ("f_ic_super_", superinvestor_levels is None))
+    def _require_saved_families(prepared: PreparedSecThirteen, saved_columns: Sequence[str]) -> None:
+        failed = (("f_ic_inst_", prepared.institutional is None), ("f_ic_super_", prepared.superinvestor is None))
         for prefix, missing in failed:
             if missing and any(column.startswith(prefix) for column in saved_columns):
                 raise RuntimeError(f"SEC13F source preparation failed for {prefix}; saved output is preserved.")
 
-    def _project_institutional_panel(
-        self,
-        features: pd.DataFrame,
-        frames: PriceFrames,
-        shares: pd.DataFrame | None,
-        share_basis: ShareBasis | None,
-        trading_calendar: pd.DatetimeIndex,
-    ) -> pd.DataFrame:
-        """Project prepared quarter facts on the requested dates with existing denominator policies."""
-        settle_days = int(self._cfg.get("institutionals", {}).get("f13_settle_trading_days", F13_SETTLE_TRADING_DAYS))
+    def _project_panels(
+        self, resources: SecThirteenResources, prepared: PreparedSecThirteen, dates: pd.DatetimeIndex
+    ) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
+        frames = self._output_frames(resources.frames, dates)
+        broad = self._project_institutional_panel(prepared.institutional, frames, resources) if prepared.institutional is not None else None
+        elite = None
+        if prepared.superinvestor is not None:
+            start = (
+                self._availability.source_date(Tables.sec13f_manager_holdings)
+                if self._availability is not None
+                else resources.frames.trading_index.min()
+            )
+            elite = project_superinvestor_features(prepared.superinvestor, frames, start)
+        return broad, elite
+
+    def _project_institutional_panel(self, features: pd.DataFrame, frames: PriceFrames, resources: SecThirteenResources) -> pd.DataFrame:
         if features.empty:
             return pd.DataFrame(columns=["date", "ticker"])
-        fields = project_institutional_features(features, frames, shares, share_basis, settle_days, versioned=True, trading_calendar=trading_calendar)
+        settle_days = int(self._cfg.get("institutionals", {}).get("f13_settle_trading_days", F13_SETTLE_TRADING_DAYS))
+        fields = project_institutional_features(
+            features,
+            frames,
+            resources.shares,
+            resources.basis,
+            settle_days,
+            versioned=True,
+            trading_calendar=resources.frames.trading_index,
+        )
         emission = {name: INSTITUTIONAL_EMISSION[name] for name in fields}
         return build_peer_relative_panel(fields, frames.peers, emission=emission, availability=frames.availability)
 
-    def _project_superinvestor_panel(self, levels: dict[str, pd.DataFrame], frames: PriceFrames, session_positions: pd.Series) -> pd.DataFrame:
-        """Project sparse selected-manager levels using their original full-calendar ordinals."""
-        decay_halflife = self._decay_halflife("super")
-        if not levels:
-            return pd.DataFrame(columns=["date", "ticker"])
-        family_start = min(frame.index.min() for frame in levels.values())
-        if self._availability is not None:
-            family_start = max(family_start, self._availability.source_date(Tables.sec13f_manager_holdings))
-        fields = project_superinvestor_features(
-            levels, pd.DataFrame(), frames, family_start, self._availability, decay_halflife, True, session_positions=session_positions
-        )
-        emission = {name: SUPERINVESTOR_EMISSION[name] for name in fields}
-        return build_peer_relative_panel(fields, frames.peers, emission=emission, availability=frames.availability)
-
-    def _project_panels(
-        self,
-        frames: PriceFrames,
-        institutional_features: pd.DataFrame | None,
-        superinvestor_levels: dict[str, pd.DataFrame] | None,
-        shares: pd.DataFrame | None,
-        share_basis: ShareBasis | None,
-        session_positions: pd.Series,
-    ) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
-        institutional_panel = None
-        superinvestor_panel = None
-        if institutional_features is not None:
-            institutional_panel = self._project_institutional_panel(
-                institutional_features, frames, shares, share_basis, pd.DatetimeIndex(session_positions.index)
-            )
-        if superinvestor_levels is not None:
-            superinvestor_panel = self._project_superinvestor_panel(superinvestor_levels, frames, session_positions)
-        return institutional_panel, superinvestor_panel
-
     @staticmethod
-    def _merge_panels(frames: PriceFrames, institutional_panel: pd.DataFrame | None, superinvestor_panel: pd.DataFrame | None) -> pd.DataFrame:
+    def _merge_panels(frames: PriceFrames, panels: tuple[pd.DataFrame | None, pd.DataFrame | None]) -> pd.DataFrame:
         merger = PanelMerger(anchor=frames.skeleton())
-        merger.add(institutional_panel, "institutional (13F)")
-        merger.add(superinvestor_panel, "superinvestor (elite 13F)")
+        merger.add(panels[0], "institutional (13F)")
+        merger.add(panels[1], "superinvestor (13F)")
         return merger.to_long()
 
     @staticmethod
-    def _feature_columns(*panels: pd.DataFrame | None) -> set[str]:
-        columns: set[str] = set()
-        for panel in panels:
-            if panel is not None:
-                columns.update(set(panel.columns) - {"date", "ticker"})
-        return columns
+    def _feature_columns(panels: tuple[pd.DataFrame | None, pd.DataFrame | None]) -> set[str]:
+        return set().union(*(set(panel.columns) - {"date", "ticker"} for panel in panels if panel is not None))
 
     @staticmethod
-    def _possible_columns(
-        institutional_features: pd.DataFrame | None, superinvestor_levels: dict[str, pd.DataFrame] | None, shares: pd.DataFrame | None
-    ) -> set[str]:
-        """Exclude absent producers; existing projectors decide actual historical support."""
+    def _possible_columns(resources: SecThirteenResources, prepared: PreparedSecThirteen) -> set[str]:
         fields: set[str] = set()
-        derived = {"inst_shares": "ic_inst_ownership_pct", "inst_value": "ic_inst_value_to_mcap"}
-        if institutional_features is not None and not institutional_features.empty:
-            fields.update(name for name in INSTITUTIONAL_EMISSION if name in institutional_features and institutional_features[name].notna().any())
-            if shares is not None and not shares.empty:
-                fields.update(
-                    name for source, name in derived.items() if source in institutional_features and institutional_features[source].notna().any()
-                )
-        if superinvestor_levels:
-            fields.update(name for name, frame in superinvestor_levels.items() if frame.notna().any().any())
+        broad = prepared.institutional
+        if broad is not None and not broad.empty:
+            fields.update(name for name in INSTITUTIONAL_EMISSION if name in broad and broad[name].notna().any())
+            if resources.shares is not None and not resources.shares.empty:
+                derived = {"inst_shares": "ic_inst_ownership_pct", "inst_value": "ic_inst_value_to_mcap"}
+                fields.update(name for source, name in derived.items() if source in broad and broad[source].notna().any())
+        if prepared.superinvestor is not None:
+            fields.update(SUPERINVESTOR_EMISSION)
         return {"f_" + name for name in fields}
 
     def _supported_columns(
         self,
-        frames: PriceFrames,
+        resources: SecThirteenResources,
+        prepared: PreparedSecThirteen,
         output_dates: pd.DatetimeIndex,
-        institutional_features: pd.DataFrame | None,
-        superinvestor_levels: dict[str, pd.DataFrame] | None,
-        shares: pd.DataFrame | None,
-        share_basis: ShareBasis | None,
-        session_positions: pd.Series,
-        institutional_panel: pd.DataFrame | None,
-        superinvestor_panel: pd.DataFrame | None,
+        panels: tuple[pd.DataFrame | None, pd.DataFrame | None],
     ) -> set[str]:
-        """Find historical-only support with bounded calls to the same family projections."""
-        supported = self._feature_columns(institutional_panel, superinvestor_panel)
-        unresolved = self._possible_columns(institutional_features, superinvestor_levels, shares) - supported
-        end = int(frames.trading_index.searchsorted(output_dates[0]))
+        supported = self._feature_columns(panels)
+        unresolved = self._possible_columns(resources, prepared) - supported
+        end = int(resources.frames.trading_index.searchsorted(output_dates[0])) if len(output_dates) else len(resources.frames.trading_index)
         span = max(len(output_dates), self._warmup() + PART_REFRESH_TRADING_DAYS + 1)
 
+        # Probe historical support using the same prepared facts and family projectors.
         while unresolved and end:
             start = max(0, end - span)
-            probe_frames = self._output_frames(frames, frames.trading_index[start:end])
-            broad = institutional_features if any(column.startswith("f_ic_inst_") for column in unresolved) else None
-            elite = superinvestor_levels if any(column.startswith("f_ic_super_") for column in unresolved) else None
-            probe_panels = self._project_panels(probe_frames, broad, elite, shares, share_basis, session_positions)
-            supported.update(self._feature_columns(*probe_panels))
+            broad = prepared.institutional if any(column.startswith("f_ic_inst_") for column in unresolved) else None
+            elite = prepared.superinvestor if any(column.startswith("f_ic_super_") for column in unresolved) else None
+            probe = PreparedSecThirteen(broad, elite)
+            probe_panels = self._project_panels(resources, probe, resources.frames.trading_index[start:end])
+            supported.update(self._feature_columns(probe_panels))
             unresolved.difference_update(supported)
-            del probe_panels
             end = start
         return supported
-
-    def _superinvestor_selector(self, history: pd.DataFrame | None) -> Callable[[pd.DataFrame], pd.Series] | None:
-        cfg = self._cfg.get("institutionals", {}).get("superinvestor", {}).get("selection", {})
-        raw = cfg.get("mode", "off")
-        mode = "off" if raw in (False, None, "") else str(raw).lower()
-        if mode in ("off", "none", "flat", "false"):
-            return None
-        first = first_snapshot_date(history)
-        if first is None:
-            self._log.warning("No roster snapshot -> selection falls back to flat 1.0.")
-            return None
-        roster_at = partial(roster_members_on, history=history, first=first, config_dir=self._context.config_dir, cache={})
-        return partial(
-            select_managers,
-            roster_at=roster_at,
-            mode=mode,
-            k=int(cfg.get("k", 15)),
-            min_quarters=int(cfg.get("min_quarters", 4)),
-            min_positions=int(cfg.get("min_positions", 0)),
-        )
-
-    def _decay_halflife(self, family: str) -> float:
-        cfg = self._cfg.get("institutionals", {}).get("decay_halflife", {})
-        return float(cfg.get(family, 63))

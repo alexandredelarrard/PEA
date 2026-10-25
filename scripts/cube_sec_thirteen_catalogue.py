@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from src.data_aggregate.utils.sec_thirteen.superinvestor_features import EMISSION as SUPERINVESTOR_EMISSION
+
 SEC_THIRTEEN: dict[str, tuple[str, str, str, str]] = {}
 
 
@@ -34,25 +36,8 @@ _add_group(
 )
 _add_group(
     "elite_13f",
-    (
-        "ic_super_holders",
-        "ic_super_breadth_chg",
-        "ic_super_conviction_weight",
-        "ic_super_max_conviction",
-        "ic_super_conviction_chg",
-        "ic_super_conviction_weight_yoy",
-        "ic_super_holders_yoy",
-        "ic_super_top10_holders",
-        "ic_super_quarters_held",
-        "ic_super_sp500_share",
-        "ic_super_selection_score",
-        "ic_super_shares_chg",
-        "ic_super_new_top10",
-        "ic_super_rank_jump",
-        "ic_super_initiations",
-        "ic_super_full_exits",
-    ),
-    "point-in-time selected-manager 13F books",
+    tuple(SUPERINVESTOR_EMISSION),
+    "fixed raw-CIK13F books;90-calendar-day first-public carry; genuine matched quarters for changes",
 )
 # Every characteristic emits its raw economic representation.
 CATALOGUE = {f"f_{name}": entry for name, entry in SEC_THIRTEEN.items()}

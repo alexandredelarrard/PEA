@@ -99,11 +99,26 @@ REMOVED_CHARACTERISTICS: dict[str, tuple[str, str]] = {
     "ic_act_purpose_strategic": ("beneficial_ownership", "fragile text-derived purpose flag"),
 }
 
+REMOVED_CHARACTERISTICS.update(
+    {
+        "ic_super_" + metric: ("elite_13f", "retired by the approved fixed-cohort feature-science inventory")
+        for metric in (
+            "conviction_chg",
+            "conviction_weight_yoy",
+            "selection_score",
+            "new_top10",
+            "rank_jump",
+            "initiations",
+            "full_exits",
+            "sp500_share",
+        )
+    }
+)
+
 # Explicit economics, not name heuristics. Import-time equality makes a newly catalogued
 # characteristic fail loudly until somebody classifies it.
 _EVENT = {
     "ic_inst_cluster_buying",
-    "ic_super_new_top10",
     "ic_insider_cluster_buy_120d",
     "ic_act_initial_13d",
     "ic_act_repeat_activist",
@@ -118,12 +133,9 @@ _COUNT = {
     "ic_super_holders",
     "ic_super_top10_holders",
     "ic_super_quarters_held",
-    "ic_super_initiations",
-    "ic_super_full_exits",
     "ic_insider_distinct_buyers_120d",
 }
 _SUPPORT = {
-    "ic_super_sp500_share",
     "ic_shortvol_market_coverage",
 }
 _BOUNDED = {
@@ -134,11 +146,12 @@ _BOUNDED = {
     "ic_inst_ownership_pct",
     "ic_super_conviction_weight",
     "ic_super_max_conviction",
+    "ic_super_pooled_weight",
+    "ic_super_trade_balance",
     "ic_insider_purchase_pct_prior",
     "ic_insider_net_buy_ratio_180d",
     "ic_ftd_persistence_30d",
 }
-_UNSCALED_LEVEL = {"ic_super_selection_score"}
 _NORMALIZED = {
     "ic_insider_management_position_change_60d",
     "ic_act_amendment_intensity",
@@ -160,23 +173,24 @@ _NORMALIZED = {
     "ic_shortvol_ratio_60d",
     "ic_shortvol_turnover_20d",
     "ic_super_breadth_chg",
-    "ic_super_conviction_chg",
-    "ic_super_conviction_weight_yoy",
     "ic_super_holders_yoy",
-    "ic_super_rank_jump",
     "ic_super_shares_chg",
+    "ic_super_shares_chg_yoy",
+    "ic_super_relative_position_chg",
+    "ic_super_pooled_weight_chg",
 }
+# The fixed subset uses exactly the same economic types as the full-roster engine.
+for _kind_names in (_COUNT, _BOUNDED, _NORMALIZED):
+    _kind_names.update("ic_super_topk_" + name.removeprefix("ic_super_") for name in tuple(_kind_names) if name.startswith("ic_super_"))
+
 CHARACTERISTIC_KIND = {
     **{name: "event" for name in _EVENT},
     **{name: "count" for name in _COUNT},
     **{name: "support" for name in _SUPPORT},
     **{name: "bounded" for name in _BOUNDED},
-    **{name: "unscaled-level" for name in _UNSCALED_LEVEL},
     **{name: "normalized" for name in _NORMALIZED},
 }
-if set(CHARACTERISTIC_KIND) != set(INSTITUTIONALS) or sum(map(len, (_EVENT, _COUNT, _SUPPORT, _BOUNDED, _UNSCALED_LEVEL, _NORMALIZED))) != len(
-    INSTITUTIONALS
-):
+if set(CHARACTERISTIC_KIND) != set(INSTITUTIONALS) or sum(map(len, (_EVENT, _COUNT, _SUPPORT, _BOUNDED, _NORMALIZED))) != len(INSTITUTIONALS):
     raise RuntimeError("institutionals taxonomy must explicitly classify every catalogued characteristic")
 
 FAMILY_WARMUP_SESSIONS = {

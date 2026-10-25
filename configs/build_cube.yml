@@ -93,82 +93,18 @@ build_cube:
                              # all-zeros has zero dispersion -> `peer_relative` returns NaN by
                              # policy, so the undecayed flag is an ABSENT feature. Decay is
                              # what makes these signals survive peer-relativization.
-      super: 63              # one quarter: elite 13F conviction, refreshed quarterly anyway
       inst: 63               # one quarter: matches the 13F reporting cadence
       insider: 63            # one quarter: Form 4 information is stale well inside a year
       act: 126               # two quarters: an activist campaign plays out over months, not
       bo: 126                # weeks -- same for a buyout/13D approach, so both decay slower
 
-    superinvestor:           # elite-manager (Dataroma roster) 13F panel
-      stale_quarters: 4      # quarters after a manager's last PUBLIC filing before their
-                             # book stops counting. A 13F filer silent for a year has
-                             # deregistered or fallen under the $100M threshold; without
-                             # this they stay a phantom holder in every name they ever
-                             # owned, and 23 roster managers are in exactly that state.
-
-      # Point-in-time manager selection on CONCENTRATION (plan D3b / Phase 2.2b).
-      # `sel(m, q)` in [0,1] multiplies EVERY elite aggregate, so this decides what
-      # `ic_super_holders` and friends actually mean:
-      #
-      #   "off"      sel = 1.0 for everyone -> "how many of the ~50 roster managers hold
-      #              this name". No selection; the behaviour before 2.2b.
-      #   top_k      sel = 1.0 for the k most concentrated managers public at that date,
-      #              0 otherwise -> "how many of the k most concentrated hold this".
-      #              ⚠ ALSO CHANGES COVERAGE, AND THE COST IS LARGE, NOT MARGINAL: a name
-      #              held only by managers outside the top k has no counted holder and
-      #              leaves the panel rather than reading 0. TWO coverage numbers, and
-      #              they differ by 4x, so quote the right one:
-      #                * FRESH holdings -- ticker-quarters with a top-k manager filing that
-      #                  quarter: 38/quarter against 398 under "off", 11%, 230 of 488 names
-      #                  ever, and the absent 89% carry 56% of the elite dollars.
-      #                * PANEL WIDTH -- in-universe tickers actually non-NaN on a given
-      #                  date, which is what a model sees: median 262 of 488 at the
-      #                  configured k=20, against 430 under "off" (61%). k=15 gives 195 and
-      #                  k=25 gives 313. `stale_quarters: 4` keeps a name live for a year
-      #                  after its last selected holder filed, so the panel is far wider
-      #                  than the fresh-filing count suggests.
-      #              The second number is the one that matters for `_xs` and for how many
-      #              names the model can score. `k` is the dial -- see the ladder below.
-      #   continuous sel = the concentration percentile itself -> "how concentrated are
-      #              this name's backers". Discards nobody, keeps the gradient, and is the
-      #              better shape for a boosted model.
-      #
-      # ⚠ QUOTE "off". PyYAML is YAML 1.1, where bare `off`/`no`/`on` parse as BOOLEANS.
-      #
-      # ⚠ TURNING THIS ON CHANGES EVERY `ic_super_*` VALUE (plan D8). What it buys, measured
-      # over 58 quarterly rebalances on the corrected pool (roster as published at `q`,
-      # filings read only once public): the top-15 concentrated consensus basket returns
-      # -0.32%/yr, i.e. it does NOT beat the equal-weight index -- the +3.41%/yr in README
-      # Finding 4(d) was two thirds manager survivorship and one third look-ahead. What
-      # survives is a ~1.8pp/yr SPREAD over the least-concentrated control, which is what a
-      # cross-sectional feature needs and what this weight is for.
+    superinvestor:
+      # One user-owned ordered raw-CIK list: superinvestors/ranked_managers.json.
+      # The checked-in ascending default is provisional, with retrospective roster bias.
+      # List/K/policy changes require an explicit full rebuild.
+      max_age_calendar_days: 90  # first public usability; amendments never reset age
       selection:
-        mode: top_k          # "off" | top_k | continuous. ⚠ `continuous` is what the
-                             # evidence alone would pick -- a hard cut asserts a cliff
-                             # between manager k and k+1 and the measurement shows a
-                             # gradient. `top_k` is a deliberate choice for an
-                             # INTERPRETABLE aggregate ("how many of the 15 most
-                             # concentrated hold this") over a marginally better-shaped one.
-        k: 20                # top_k only. Measured coverage ladder (tickers/quarter median,
-                             # % of `off` ticker-quarters, names ever covered, and the
-                             # within-quarter Spearman of the weighted book against `off`):
-                             #    k= 5    6   1.3%   53 names  rho 0.34
-                             #    k=10   20   5.2%  146 names  rho 0.20
-                             #    k=15   38  10.0%  230 names  rho 0.25
-                             #    k=20   68  16.5%  303 names  rho 0.61   <- here
-                             #    k=30  146  33.7%  392 names  rho 0.72
-                             #    k=60  360  83.7%  485 names  rho 0.94
-                             # rho stays low up to k~20 because the cut genuinely REORDERS
-                             # the cross-section rather than just thinning it -- which is
-                             # the point of selecting, and also why k trades signal
-                             # distinctiveness against how much of the universe is scored.
-        min_quarters: 4      # prior filings before a manager may be scored; a two-quarter
-                             # concentration estimate is noise. Free: -0.32% -> -0.27%.
-        min_positions: 0     # universe positions required. ⚠ 0 ON PURPOSE, not the 3 the
-                             # plan proposed: gating on the index sleeve while scoring the
-                             # whole book costs 1.3pp/yr and collapses the top-minus-bottom
-                             # spread from +1.97pp to +0.63pp. Raise it only alongside a
-                             # slice-basis score.
+        k: 20                   # fixed prefix; no runtime ranking or replacement
 
     # THE 13F AVAILABILITY GRID (D1). A 13F period is public only once it is filed, so each
     # `(ticker, period)` is first published at its availability date over the filings public

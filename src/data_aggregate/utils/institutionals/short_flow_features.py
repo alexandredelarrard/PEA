@@ -550,8 +550,8 @@ def build_short_flow_feature_panel(
         return _empty_panel()
     idx = pd.DatetimeIndex(frames.trading_index).normalize().unique().sort_values()
     if capital.tape is not None:
-        # Infinite company sums must not turn into finite partial rolling denominators.
-        df_supported = ~capital.tape.isin([np.inf, -np.inf])
+        # Invalid company sums must not turn into finite partial rolling denominators.
+        df_supported = ~capital.tape.isin([np.inf, -np.inf]) & ~capital.tape.lt(0)
         if capital.tape_supported is not None:
             df_supported &= capital.tape_supported.reindex(index=capital.tape.index, columns=capital.tape.columns, fill_value=True)
         capital = ShortFlowCapital(capital.shares_out, capital.tape, df_supported)

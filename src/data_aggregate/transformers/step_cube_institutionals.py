@@ -158,11 +158,12 @@ class StepCubeInstitutionals(Step):
 
         # Yahoo/class tape is already vendor-restated; apply its terminal class ratio once.
         df_tape = institutional_inputs.tape_share_quantities(frames.volume, quantity_basis)
-        df_supported = None
+        df_supported = ~df_tape.lt(0) if df_tape is not None else None
         if lines is not None:
             df_class_volume, df_missing = secondary_class_volume(lines, bars, idx)
             df_tape = with_class_volume(df_tape, df_class_volume)
-            df_supported = ~df_missing
+            df_class_supported = (~df_missing).reindex(index=idx, columns=columns, fill_value=True)
+            df_supported = df_class_supported if df_supported is None else df_supported & df_class_supported
         capital = ShortFlowCapital(df_shares_out, df_tape, df_supported)
         settlement = publication = None
         if df_coverage is not None or df_fails is not None:

@@ -17,8 +17,11 @@ from typing import Any, cast
 import numpy as np
 import pandas as pd
 import pytest
+from omegaconf import OmegaConf
 
 from src.constants.constants import DEFAULT_CONFIG_DIR, SECONDARY_CLASS
+from src.context import Context
+from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
 from src.data_aggregate.utils.common import inputs as capital_inputs
 from src.data_aggregate.utils.common.level_basis import load_bugfix
 from src.data_aggregate.utils.common.price_frames import PriceFrames
@@ -88,11 +91,11 @@ def test_class_sum_overflow_is_unsupported_and_observed_zero_is_supported() -> N
     print("  two finite class legs overflowing their sum are unsupported; observed zero and finite sum14 retain exact values. Validated.")
 
 
-@pytest.mark.parametrize("invalid", ["ratio", "bar", "product", "class-sum", "company-sum", "absent-bar"])
+@pytest.mark.parametrize("invalid", ["ratio", "bar", "product", "class-sum", "company-sum", "canonical-negative", "absent-bar"])
 def test_invalid_class_support_masks_only_rolling_tape_denominators(invalid: str) -> None:
     idx = pd.DatetimeIndex(pd.bdate_range("2023-12-01", "2024-03-08"), name="date")
     bad_day = pd.Timestamp("2024-01-02")
-    bad_position = int(idx.get_loc(bad_day))
+    bad_position = int(idx.get_indexer(pd.DatetimeIndex([bad_day]))[0])
     volume = pd.DataFrame({"LEN": 1_000.0, "MRK": 1_000.0}, index=idx)
     shares = pd.DataFrame(10_000.0, index=idx, columns=volume.columns)
     regsho = pd.DataFrame([{"date": day, "ticker": ticker, "short_volume": 100.0, "total_volume": 300.0} for day in idx for ticker in volume])
@@ -111,6 +114,8 @@ def test_invalid_class_support_masks_only_rolling_tape_denominators(invalid: str
         bars = pd.concat([bars, _bars("LEN-C", pd.DatetimeIndex([bad_day]), 1e308)], ignore_index=True)
     if invalid == "company-sum":
         volume.loc[bad_day, "LEN"] = 1e308
+    if invalid == "canonical-negative":
+        volume.loc[bad_day, "LEN"] = -1_000.0
     class_volume, missing = secondary_class_volume(lines, bars, idx)
     tape = with_class_volume(volume, class_volume)
     panel = build_short_flow_feature_panel(frames, regsho, fails_history=fails, capital=ShortFlowCapital(shares, tape, ~missing))
@@ -126,9 +131,62 @@ def test_invalid_class_support_masks_only_rolling_tape_denominators(invalid: str
         assert panel.loc[(idx[bad_position + 21], "LEN"), "f_ic_shortvol_market_coverage"] == pytest.approx(expected)
     unchanged = [column for column in panel if column not in {"f_ic_shortvol_market_coverage", "f_ic_ftd_to_adv20"}]
     pd.testing.assert_frame_equal(panel[unchanged], control[unchanged])
-    pd.testing.assert_frame_equal(panel.xs("MRK", level="ticker"), control.xs("MRK", level="ticker"))
+    pd.testing.assert_frame_equal(cast(pd.DataFrame, panel.xs("MRK", level="ticker")), cast(pd.DataFrame, control.xs("MRK", level="ticker")))
     print("\n=== SANITY CHECK: complete tape support ===")
     print(f"  {invalid}: coverage and published FTD/ADV stay unknown across unsupported tape; participation, turnover and MRK stay exact. Validated.")
+
+
+def test_public_step_rejects_negative_canonical_volume_hidden_by_a_positive_class(
+    sqlite_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    idx = pd.DatetimeIndex(pd.bdate_range("2023-12-01", "2024-03-08"), name="date")
+    bad_day = pd.Timestamp("2024-01-02")
+    volume = pd.DataFrame({"LEN": 1_000.0, "MRK": 1_000.0}, index=idx)
+    volume.loc[bad_day, "LEN"] = -1.0
+    frames = make_frames(
+        idx, {"LEN": {"MRK": 1.0}, "MRK": {"LEN": 1.0}}, volume=volume, close_split=pd.DataFrame(100.0, index=idx, columns=volume.columns)
+    )
+    lines = _lines(("LEN", "LEN-B", 1.0, "1900-01-01", OPEN))
+    bars = _bars("LEN-B", idx, 500.0)
+    sqlite_store.save(
+        Tables.security_master,
+        lines.assign(
+            security_id="LEN-B", source="ftd", source_symbol="LENB", security_class="class_B", lineage_role="secondary_class", n_observations=1
+        ),
+    )
+    sqlite_store.save(
+        Tables.short_interest,
+        pd.DataFrame([{"date": day, "ticker": ticker, "short_volume": 100.0, "total_volume": 300.0} for day in idx for ticker in volume]),
+    )
+    sqlite_store.save(
+        Tables.sec_fails_to_deliver,
+        pd.DataFrame([{"date": bad_day, "ticker": ticker, "fails_quantity": 300.0, "period": "202401a"} for ticker in volume]),
+    )
+    config = OmegaConf.create({"build_cube": {}, "local": {"paths": {"fails_deliver": "ftd"}}})
+    ctx = cast(
+        Context,
+        SimpleNamespace(
+            store=sqlite_store, log=logging.getLogger(__name__), config=config, config_dir=Path(DEFAULT_CONFIG_DIR), paths={"DATA_STORE": tmp_path}
+        ),
+    )
+    step = StepCubeInstitutionals(ctx, ctx.config)
+    events = resolve_share_events(None, pd.DataFrame(columns=["ticker", "date", "ratio"]), {})
+    monkeypatch.setattr(capital_inputs, "load_full_price_frames", lambda *args, **kwargs: frames)
+    monkeypatch.setattr(capital_inputs, "load_share_inputs", lambda *args, **kwargs: (None, None, events, None, bars))
+    monkeypatch.setattr(step, "_insider_panel", lambda *args, **kwargs: None)
+    monkeypatch.setattr(step, "_ownership_panel", lambda *args, **kwargs: None)
+
+    panel = step.build_panel().set_index(["date", "ticker"])
+
+    assert -1.0 + 500.0 == 499.0
+    assert pd.isna(panel.loc[(pd.Timestamp("2024-01-03"), "LEN"), "f_ic_shortvol_market_coverage"])
+    assert pd.isna(panel.loc[(pd.Timestamp("2024-01-30"), "LEN"), "f_ic_ftd_to_adv20"])
+    assert panel.loc[(pd.Timestamp("2024-01-30"), "MRK"), "f_ic_ftd_to_adv20"] == pytest.approx(0.3)
+    assert panel.loc[(pd.Timestamp("2024-01-03"), "LEN"), "f_ic_shortvol_ratio_5d"] == pytest.approx(1 / 3)
+    print("\n=== SANITY CHECK: public step canonical support ===")
+    print(
+        "  canonical-1 plus class500 cannot hide unsupported tape behind a positive499 sum; returned coverage/FTD stay unknown and participation stays1/3. Validated."
+    )
 
 
 def test_two_classes_at_ratio_one_sum_into_both_denominators() -> None:

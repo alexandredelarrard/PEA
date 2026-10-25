@@ -101,6 +101,80 @@ def test_fee_scale_context_survives_outside_the_table() -> None:
     print("SANITY: the fee request retains the adjacent source scale rather than asking the model to infer it from magnitude.")
 
 
+def test_director_table_retains_its_source_year_and_all_rows() -> None:
+    html = """<h2>Director Compensation—2024</h2>
+    <p>The table shows compensation earned or paid during 2024.</p>
+    <table><tr><th>Name</th><th>Fees Earned or Paid in Cash ($)</th><th>Stock Awards ($)</th><th>Total ($)</th></tr>
+    <tr><td>Wanda Austin</td><td>75,000</td><td>275,033</td><td>375,966</td></tr>
+    <tr><td>James Bell</td><td>50,000</td><td>0</td><td>61,038</td></tr>
+    <tr><td>Sue Wagner</td><td>135,000</td><td>275,033</td><td>416,275</td></tr></table>"""
+    text = "Director Compensation—2024\nThe table shows compensation earned or paid during 2024.\n"
+    text += "Name Fees Earned or Paid in Cash ($) Stock Awards ($) Total ($)\n"
+    text += "Wanda Austin 75,000 275,033 375,966\nJames Bell 50,000 0 61,038\nSue Wagner 135,000 275,033 416,275"
+
+    payload = prepare_def14a_payloads(html, text)["director_pay"]
+
+    assert "compensation earned or paid during 2024" in payload
+    assert "Wanda Austin\t75,000\t275,033\t375,966" in payload
+    assert "James Bell\t50,000\t0\t61,038" in payload
+    assert "Sue Wagner\t135,000\t275,033\t416,275" in payload
+    print("SANITY: Apple source-shaped director pay retains the disclosed fiscal year and every complete TSV row without year inference.")
+
+
+def test_ownership_footnote_table_keeps_the_neighboring_beneficial_totals() -> None:
+    html = """<h2>Stock Ownership as of April 11, 2025</h2>
+    <table><tr><th>Name of Beneficial Owner</th><th>Direct or Indirect with Sole Power</th><th>Total</th><th>Percent of Class</th></tr>
+    <tr><td>Doug McMillon</td><td>1,206,828</td><td>2,260,734</td><td>*</td></tr>
+    <tr><td>John Furner</td><td>433,007</td><td>433,007</td><td>*</td></tr>
+    <tr><td>Directors and Executive Officers as a Group</td><td>5,530,232</td><td>8,126,426</td><td>*</td></tr></table>
+    <p>These amounts include Shares that the following persons hold in the 401(k) Plan:</p>
+    <table><tr><th>Name</th><th>Shares Held in the 401(k) Plan</th></tr>
+    <tr><td>Doug McMillon</td><td>5,746</td></tr><tr><td>John Furner</td><td>5,612</td></tr>
+    <tr><td>Directors and Executive Officers as a Group</td><td>11,358</td></tr></table>"""
+    text = "Stock Ownership as of April 11, 2025\nName of Beneficial Owner Direct or Indirect with Sole Power Total Percent of Class\n"
+    text += "Doug McMillon 1,206,828 2,260,734 *\nJohn Furner 433,007 433,007 *\n"
+    text += "Directors and Executive Officers as a Group 5,530,232 8,126,426 *\n"
+    text += "These amounts include Shares that the following persons hold in the 401(k) Plan:\n"
+    text += "Name Shares Held in the 401(k) Plan\nDoug McMillon 5,746\nJohn Furner 5,612\nDirectors and Executive Officers as a Group 11,358"
+
+    payload = prepare_def14a_payloads(html, text)["ownership"]
+
+    assert "April 11, 2025" in payload and "2,260,734" in payload and "8,126,426" in payload
+    assert "These amounts include Shares" in payload
+    assert "Doug McMillon\t5,746" in payload and "Shares Held in the 401(k) Plan" in payload
+    print("SANITY: Walmart source-shaped 401(k) selection retains the main beneficial totals, ownership date and footnote scope together.")
+
+
+def test_table_context_requires_joint_row_evidence_and_preserves_ownership_basis() -> None:
+    table = "Name\tBeneficial ownership\tAdditional underlying stock units\tTotal\nJames Dimon\t6,464,764\t721,800\t7,186,564"
+    decoy = "Unrelated disclosure repeats 6,464,764. " + "other disclosure " * 1_000
+    source = decoy + "Security ownership as of February 28, 2025.\n"
+    source += "James Dimon 6,464,764 721,800 7,186,564\nAdditional underlying units include deferred compensation outside beneficial ownership."
+
+    context = carve._table_context(source, table, "ownership")
+
+    assert "Unrelated disclosure" not in context
+    assert "Security ownership as of February 28, 2025" in context
+    assert "outside beneficial ownership" in context
+    assert "6,464,764 721,800 7,186,564" in context
+    print("SANITY: a repeated amount alone cannot displace the joint person/value row; ownership column-basis definitions stay adjacent.")
+
+
+def test_table_context_does_not_bridge_distant_partial_row_matches() -> None:
+    table = "Name\tOptions exercisable\tShares held in 401(k)\nJames W. Breyer\t5,512\t0\n"
+    table += "Directors and Officers as a Group (24 persons)\t4,735,329\t88,246"
+    source = "James W. Breyer received an award of 5,512 units.\n" + "unrelated disclosure " * 10_000
+    source += "Holdings of officers and directors as of March 30, 2007.\n"
+    source += "James W. Breyer 5,512 0\nDirectors and Officers as a Group (24 persons) 4,735,329 88,246"
+
+    context = carve._table_context(source, table, "ownership")
+
+    assert len(context) < 20_000
+    assert "received an award" not in context
+    assert "as of March 30, 2007" in context and "4,735,329 88,246" in context
+    print("SANITY: the strongest complete ownership row keeps context local when another person's option count also appears far away.")
+
+
 @pytest.mark.parametrize(
     ("source", "independent", "expected"),
     [

@@ -102,24 +102,42 @@ def load_symbol_lineage(
     return df_symbol_tenure, df_ticker_ciks
 
 
-def load_insider_transactions(store: DataStore, universe: Sequence[str] | None = None) -> pd.DataFrame | None:
-    """`insider_transactions` rows of the companies' own history: `lineage_role` canonical (predecessor or current).
-    Acquired-constituent rows and rows without a stamp are not read."""
+@dataclass(frozen=True)
+class InsiderSource:
+    transactions: pd.DataFrame
+    complete_through: pd.Series
+    first_filed: pd.Series
+
+
+def load_insider_transactions(store: DataStore, universe: Sequence[str] | None = None) -> InsiderSource | None:
+    """Retain full issuer proof metadata, then select canonical economic rows and actual empty markers."""
     table = Tables.insider_transactions
     present = store.columns(table)
     if not present:
         logger.warning("%s is absent -> insider features are skipped.", table.name)
         return None
-    columns = [column for column in dict.fromkeys((*table.read_columns, "issuer_cik")) if column in present]
-    where: dict[str, Any] = {"lineage_role": list(CANONICAL_ROLES)}
+    columns = [column for column in dict.fromkeys((*table.read_columns, "issuer_cik", "lineage_role")) if column in present]
+    where: dict[str, Any] = {}
     if universe is not None:
         where["ticker"] = sorted(set(universe))
-    chunks = list(store.iter_load(table, columns=columns, where=where))
+    chunks = list(store.iter_load(table, columns=columns, where=where, markers=True))
     if not chunks:
         return None
     df_rows = pd.concat(chunks, ignore_index=True)
+    if not {"ticker", "filing_date", "security_type"}.issubset(df_rows):
+        logger.warning("%s lacks required source metadata -> insider features are skipped.", table.name)
+        return None
+    checked = pd.to_datetime(df_rows.get("inventory_checked_through", pd.Series(pd.NaT, index=df_rows.index)), errors="coerce")
+    fetched = pd.to_datetime(df_rows.get("fetched_at", pd.Series(pd.NaT, index=df_rows.index)), errors="coerce")
+    evidence = pd.DataFrame({"ticker": df_rows["ticker"], "checked": checked, "valid": checked.notna() & fetched.notna()})
+    grouped = evidence.groupby("ticker", sort=False)
+    joint = grouped["valid"].all() & grouped["checked"].nunique().eq(1)
+    boundaries = grouped["checked"].min().where(joint)
+    first = pd.to_datetime(df_rows["filing_date"], errors="coerce").groupby(df_rows["ticker"]).min()
+    roles = df_rows.get("lineage_role", pd.Series(index=df_rows.index, dtype=str))
+    selected = roles.isin(CANONICAL_ROLES) | df_rows["security_type"].eq("_empty")
     logger.info("Loaded %s: %s rows x %s cols", table.name, len(df_rows), len(df_rows.columns))
-    return df_rows
+    return InsiderSource(df_rows.loc[selected], boundaries, first)
 
 
 def load_insider_role_evidence(store: DataStore, insider: pd.DataFrame) -> pd.DataFrame:

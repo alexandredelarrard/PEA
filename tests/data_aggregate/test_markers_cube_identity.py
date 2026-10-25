@@ -107,7 +107,7 @@ def _builders(prices: pd.DataFrame) -> dict[str, Callable[[DataStore], pd.DataFr
         )
 
     def insider(store: DataStore) -> pd.DataFrame:
-        complete_through = schedule_complete_through(store, Tables.insider_transactions, close.index.max())
+        complete_through = store.insider_inventory_boundaries(TICKERS)
         return build_insider_feature_panel(
             frames, store.load(Tables.insider_transactions, project=True), coverage=InsiderCoverage.from_availability(None, complete_through)
         )

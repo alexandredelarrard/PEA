@@ -34,7 +34,8 @@ from src.data_extract.utils.common.registrant import resolve_registrant_filings
 from src.data_extract.utils.common.resume import DONE_TABLE, DocumentWork, document_worklist
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, configure, sec_call
 from src.data_extract.utils.common.sec_utils import load_cik_mapping
-from src.data_store.schema import Resume, Table
+from src.data_extract.utils.institutionals.insider_store import bind_insider_identity, certify_insider_source, save_insider_source
+from src.data_store.schema import Resume, Table, Tables
 from src.utils.string import pad_cik, run_date
 
 logger = logging.getLogger(__name__)
@@ -277,6 +278,8 @@ def marker_row(table: Table, ticker: str, stamp: FilingStamp) -> pd.DataFrame:
     if table.marker_cik_col is not None:
         row[table.marker_cik_col] = stamp.cik
     row |= dict(table.marker_extra)
+    if table == Tables.insider_transactions:
+        row["fetched_at"] = pd.Timestamp.now(tz="UTC").tz_localize(None)
     return marker_frame(table, row, dict(table.marker_key_fill))
 
 
@@ -296,6 +299,9 @@ def _read_unit(fetch: EdgarFetch, scope: EdgarScope, ticker: str, cik: str, stam
         logger.info("%s: %s %s not read (%s)", fetch.done.desc, ticker, stamp.accession_number, exc)
         return None, False
     except ParseFailureError as exc:
+        if fetch.done == Tables.insider_transactions:
+            logger.warning("%s: %s %s could not be parsed; listed again (%s)", fetch.done.desc, ticker, stamp.accession_number, exc)
+            return None, False
         logger.warning("%s: %s %s could not be parsed -> empty-filing marker (%s)", fetch.done.desc, ticker, stamp.accession_number, exc)
         return {fetch.done: marker_row(fetch.done, ticker, stamp)}, True
     except PROGRAMMING_ERRORS:
@@ -351,6 +357,8 @@ def _add_frames(frames: dict[Table, list[pd.DataFrame]], outcome: dict[Table, pd
 def _save_key(context: Context, fetch: EdgarFetch, ticker: str, frames: dict[Table, list[pd.DataFrame]]) -> tuple[dict[Table, int], bool]:
     """Upsert one key's frames, the done table last. Returns `(rows per table, failed_save)`; after a
     failed or undeclared save the done table is withheld, so the key's documents stay listed."""
+    if fetch.done == Tables.insider_transactions:
+        raise ValueError("The insider source writer requires its actual parser resolver")
     order = [t for t in frames if t != fetch.done] + ([fetch.done] if fetch.done in frames else [])
     counts: dict[Table, int] = {}
     failed_save = False
@@ -377,11 +385,30 @@ def _save_key(context: Context, fetch: EdgarFetch, ticker: str, frames: dict[Tab
     return counts, failed_save
 
 
+def _save_insider_key(context: Context, frames: dict[Table, list[pd.DataFrame]], identity: Identity | None) -> tuple[dict[Table, int], bool]:
+    transaction_frames = frames.get(Tables.insider_transactions, [])
+    if not transaction_frames:
+        return {}, False
+    if identity is None:
+        context.log.warning("Insider source pair not saved without its actual parser resolver")
+        return {}, True
+    transactions = pd.concat(transaction_frames, ignore_index=True).drop_duplicates(list(Tables.insider_transactions.pk), keep="last")
+    note_frames = frames.get(Tables.insider_footnotes, [])
+    notes = pd.concat(note_frames, ignore_index=True) if note_frames else pd.DataFrame(columns=list(Tables.insider_footnotes.retrieval_columns))
+    try:
+        return save_insider_source(context, transactions, notes, identity.source_cohort), False
+    except Exception as exc:
+        context.log.warning("Insider source pair not saved; all accessions remain retryable (%s)", exc)
+        return {}, True
+
+
 def _walk_key(context: Context, fetch: EdgarFetch, scope: EdgarScope, units: dict[str, pd.DataFrame], ticker: str, cik: str) -> KeyOutcome:
     """The pool worker: read then save one key's listed documents."""
     df_units = units.get(ticker, pd.DataFrame(columns=_UNIT_COLUMNS))
     frames, failed, markers = _read_key(fetch, scope, ticker, cik, df_units)
-    saved, failed_save = _save_key(context, fetch, ticker, frames)
+    saved, failed_save = (
+        _save_insider_key(context, frames, scope.identity) if fetch.done == Tables.insider_transactions else _save_key(context, fetch, ticker, frames)
+    )
     if failed_save:
         return KeyOutcome(listed=len(df_units), failed=df_units, saved=saved)
     return KeyOutcome(listed=len(df_units), failed=failed, markers=markers, saved=saved)
@@ -528,12 +555,34 @@ def run_edgar_fetch(
         if cik_map is None:
             cik_map = load_cik_mapping(context, tickers)
         scope = load_edgar_scope(context, identity_aware=prepared.identity_aware)
+        if prepared.done == Tables.insider_transactions and scope.identity is not None:
+            bind_insider_identity(context, scope.identity.source_cohort)
         if refresh_index:
-            edgar_index.refresh(context, start_date, years_history)
+            index_years = (
+                max(years_history, start_date.year - pd.Timestamp(cast(str, cast(Resume, prepared.done.resume).source_start)).year + 1)
+                if prepared.done == Tables.insider_transactions
+                else years_history
+            )
+            edgar_index.refresh(context, start_date, index_years)
         work = plan_fetch(context, prepared, cik_map, scope, start_date, years_history, full=full, no_cap=no_cap)
         context.log.info("%s: %d document(s) to read for %d key(s) %s", prepared.done.desc, work.size, len(work.units), work.counts)
         keys = cik_map[cik_map["ticker"].astype(str).isin(work.units)]
         outcomes = _run_pass(context, prepared, scope, keys, work.units, max_workers)
         _retry_rounds(context, prepared, scope, keys, outcomes, max_workers)
         _log_coverage(context, prepared, work, outcomes)
+        if prepared.done == Tables.insider_transactions:
+            _certify_insider_work(context, work, start_date)
         return FetchSummary(work=work, outcomes=outcomes)
+
+
+def _certify_insider_work(context: Context, work: DocumentWork, as_of: pd.Timestamp) -> None:
+    """Only a full validated source index and the exact reconciled source cohort establish quiet support."""
+    through = edgar_index.inventory_complete_through(context, as_of, cast(str, cast(Resume, Tables.insider_transactions.resume).source_start))
+    if through is None:
+        context.log.warning("insider inventory: incomplete or changed original index; no boundary advanced")
+        return
+    certified = 0
+    for ticker, listed in work.listed.items():
+        accessions = sorted(set(listed["accession"].astype(str)))
+        certified += int(certify_insider_source(context, ticker, through, accessions))
+    context.log.info("insider inventory: %d/%d actual issuer cohorts jointly certified through %s", certified, len(work.listed), through.date())

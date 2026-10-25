@@ -12,10 +12,12 @@ from __future__ import annotations
 import gzip
 import logging
 import os
+import re
 from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from tempfile import NamedTemporaryFile
+from typing import Protocol, cast
 
 import edgar
 import pandas as pd
@@ -23,6 +25,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
+from pandas.tseries.holiday import USFederalHolidayCalendar
 
 from src.context import Context
 from src.data_extract.utils.common import sec_io
@@ -40,6 +43,11 @@ _PREVIOUS_QUARTER_DAYS = 10
 _ENCODING = "latin-1"
 _SCHEMA = pa.schema([("cik", pa.int64()), ("company", pa.string()), ("form", pa.string()), ("filed", pa.date32()), ("accession", pa.string())])
 _ROW_GROUP = 65_536
+
+
+class _IndexRuntime(Protocol):
+    _edgar_index_inventory: dict[str, pd.Timestamp]
+    _edgar_index_versions: dict[str, tuple[int, int]]
 
 
 @dataclass(frozen=True, order=True)
@@ -91,12 +99,27 @@ def index_dir(context: Context) -> Path:
     return cache_dir(context, str(context.config.local.paths.sec_edgar_index))
 
 
-def parse_master(raw: bytes) -> pd.DataFrame:
-    """`master.idx` text (gzipped or plain) -> one row per line of an `INDEX_FORMS` form, typed like the cache."""
-    text = (gzip.decompress(raw) if raw[:2] == b"\x1f\x8b" else raw).decode(_ENCODING)
-    rows = [fields for line in text.splitlines() if len(fields := line.split("|")) == 5 and fields[0].isdigit() and fields[2] in INDEX_FORMS]
+def _parse_master_unit(raw: bytes) -> tuple[pd.DataFrame, pd.Timestamp]:
+    """Account for all forms/lines and the source's own declared public-calendar boundary."""
+    decoded = (gzip.decompress(raw) if raw[:2] == b"\x1f\x8b" else raw).decode(_ENCODING)
+    lines = decoded.splitlines()
+    header = "CIK|Company Name|Form Type|Date Filed|Filename"
+    boundary = re.search(r"^Last Data Received:\s*(.+)$", decoded, re.MULTILINE)
+    if header not in lines or boundary is None:
+        raise ValueError("EDGAR master index lacks its source header/boundary")
+    through = pd.Timestamp(boundary.group(1)).normalize()
+    body = lines[lines.index(header) + 1 :]
+    if not body or not body[0].strip() or set(body[0].strip()) != {"-"}:
+        raise ValueError("EDGAR master index lacks its complete header separator")
+    rows = [line.split("|") for line in body[1:] if line.strip()]
+    if any(len(fields) != 5 or not fields[0].isdigit() or not fields[2] or not fields[4].endswith(".txt") for fields in rows):
+        raise ValueError("EDGAR master index has an unaccounted source line")
     df = pd.DataFrame(rows, columns=["cik", "company", "form", "filed", "filename"])
-    return pd.DataFrame(
+    dates = pd.to_datetime(df["filed"], format="%Y-%m-%d", errors="raise")
+    if dates.gt(through).any() or not (dates.dt.to_period("Q") == through.to_period("Q")).all():
+        raise ValueError("EDGAR master index filing exceeds its declared quarter/boundary")
+    df = df.loc[df["form"].isin(INDEX_FORMS)]
+    result = pd.DataFrame(
         {
             "cik": df["cik"].astype("int64"),
             "company": df["company"].astype(object),
@@ -105,35 +128,77 @@ def parse_master(raw: bytes) -> pd.DataFrame:
             "accession": df["filename"].str.rsplit("/", n=1).str[-1].str.removesuffix(".txt").astype(object),
         }
     ).sort_values(["cik", "filed", "accession"], ignore_index=True)
+    return result, through
 
 
-def _write_atomic(df: pd.DataFrame, path: Path) -> None:
+def parse_master(raw: bytes) -> pd.DataFrame:
+    """Typed selected forms, only after validating the complete source unit."""
+    return _parse_master_unit(raw)[0]
+
+
+def _write_atomic(df: pd.DataFrame, path: Path) -> tuple[int, int]:
     """Write `df` to `path` through a temporary file and `os.replace`, so a reader never sees a partial file."""
-    tmp = path.with_name(path.name + ".part")
-    pq.write_table(pa.Table.from_pandas(df, schema=_SCHEMA, preserve_index=False), tmp, row_group_size=_ROW_GROUP)
-    os.replace(tmp, path)
+    with NamedTemporaryFile(dir=path.parent, prefix=path.name + ".", suffix=".part", delete=False) as handle:
+        tmp = Path(handle.name)
+    try:
+        pq.write_table(pa.Table.from_pandas(df, schema=_SCHEMA, preserve_index=False), tmp, row_group_size=_ROW_GROUP)
+        version = (tmp.stat().st_mtime_ns, tmp.stat().st_size)
+        os.replace(tmp, path)
+        return version
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _download_quarter(context: Context, quarter: Quarter, directory: Path) -> int | None:
     """Download, parse and cache one quarter; its row count, or None when SEC served no file."""
     gz_path = directory / f"{quarter.name}.master.gz"
-    status = sec_io.download(context, INDEX_URL.format(year=quarter.year, quarter=quarter.quarter), gz_path)
-    if status != 200:
-        context.log.warning("edgar index: %s not served (HTTP %d)", quarter.name, status)
-        return None
+    with NamedTemporaryFile(dir=directory, prefix=gz_path.name + ".", suffix=".part", delete=False) as handle:
+        temporary = Path(handle.name)
     try:
-        df = parse_master(gz_path.read_bytes())
+        status = sec_io.download(context, INDEX_URL.format(year=quarter.year, quarter=quarter.quarter), temporary)
+        if status != 200:
+            context.log.warning("edgar index: %s not served (HTTP %d)", quarter.name, status)
+            return None
+        df, through = _parse_master_unit(temporary.read_bytes())
+        if Quarter.of(through) != quarter:
+            raise ValueError("EDGAR master index source boundary does not match the requested quarter")
+        version = _write_atomic(df, directory / f"{quarter.name}.parquet")
+        os.replace(temporary, gz_path)
+        _record_inventory(context, quarter, through, version)
+        return len(df)
     finally:
-        gz_path.unlink(missing_ok=True)
-    _write_atomic(df, directory / f"{quarter.name}.parquet")
-    return len(df)
+        temporary.unlink(missing_ok=True)
+
+
+def _record_inventory(context: Context, quarter: Quarter, through: pd.Timestamp, version: tuple[int, int]) -> None:
+    """Bind a validated original's boundary to this run's derived cache version."""
+    runtime = cast(_IndexRuntime, context)
+    inventory = getattr(context, "_edgar_index_inventory", {})
+    inventory[quarter.name] = through
+    runtime._edgar_index_inventory = inventory
+    versions = getattr(context, "_edgar_index_versions", {})
+    versions[quarter.name] = version
+    runtime._edgar_index_versions = versions
 
 
 def _is_due(quarter: Quarter, current: Quarter, as_of: pd.Timestamp, path: Path, rebuild: bool) -> bool:
-    """Download when rebuilding, when missing, for the current quarter, or for the previous one early in a quarter."""
+    """Refresh originals weekly for post-acceptance revisions, plus the current/early prior quarter."""
     if rebuild or not path.exists() or quarter == current:
         return True
-    return quarter == current.previous() and (as_of - current.start).days < _PREVIOUS_QUARTER_DAYS
+    if quarter == current.previous() and (as_of - current.start).days < _PREVIOUS_QUARTER_DAYS:
+        return True
+    saturday = as_of - pd.Timedelta(days=(as_of.weekday() - 5) % 7)
+    return pd.Timestamp.fromtimestamp(path.stat().st_mtime).normalize() < saturday.normalize()
+
+
+def _validated_cached_quarter(context: Context, quarter: Quarter, directory: Path) -> None:
+    """Rebuild the selected cache from the same original that establishes this run's boundary."""
+    original = directory / f"{quarter.name}.master.gz"
+    df, boundary = _parse_master_unit(original.read_bytes())
+    if Quarter.of(boundary) != quarter:
+        raise ValueError("Cached original boundary does not match its quarter")
+    version = _write_atomic(df, directory / f"{quarter.name}.parquet")
+    _record_inventory(context, quarter, boundary, version)
 
 
 def refresh(context: Context, as_of: pd.Timestamp, years_history: int, *, rebuild: bool = False) -> dict[str, int]:
@@ -144,18 +209,43 @@ def refresh(context: Context, as_of: pd.Timestamp, years_history: int, *, rebuil
     directory = index_dir(context)
     current = Quarter.of(as_of)
     written: dict[str, int] = {}
+    runtime = cast(_IndexRuntime, context)
+    runtime._edgar_index_inventory = {}
+    runtime._edgar_index_versions = {}
     for quarter in quarters_between(as_of - pd.DateOffset(years=years_history), as_of):
-        if not _is_due(quarter, current, as_of, directory / f"{quarter.name}.parquet", rebuild):
-            continue
+        original = directory / f"{quarter.name}.master.gz"
         try:
-            n_rows = _download_quarter(context, quarter, directory)
-        except sec_io.TransientReadError as exc:
+            if _is_due(quarter, current, as_of, original, rebuild):
+                n_rows = _download_quarter(context, quarter, directory)
+            else:
+                _validated_cached_quarter(context, quarter, directory)
+                n_rows = None
+        except (sec_io.TransientReadError, ValueError, OSError, EOFError) as exc:
             context.log.warning("edgar index: %s not refreshed (%s)", quarter.name, exc)
             continue
         if n_rows is not None:
             written[quarter.name] = n_rows
     context.log.info("edgar index: %d quarter(s) downloaded through %s", len(written), as_of.date())
     return written
+
+
+def inventory_complete_through(context: Context, as_of: pd.Timestamp, source_start: str) -> pd.Timestamp | None:
+    """Every required original index must prove its source calendar; cache presence is insufficient."""
+    inventory = getattr(context, "_edgar_index_inventory", {})
+    versions = getattr(context, "_edgar_index_versions", {})
+    directory = index_dir(context)
+    business_day = pd.offsets.CustomBusinessDay(calendar=USFederalHolidayCalendar())
+    public_day = pd.Timestamp(as_of).normalize() - business_day
+    quarters = quarters_between(pd.Timestamp(source_start), public_day)
+    for quarter in quarters:
+        boundary = inventory.get(quarter.name)
+        required = pd.date_range(quarter.start, min(quarter.end, public_day), freq=business_day)
+        if boundary is None or Quarter.of(boundary) != quarter or required.empty or boundary < required[-1]:
+            return None
+        path = directory / f"{quarter.name}.parquet"
+        if not path.exists() or versions.get(quarter.name) != (path.stat().st_mtime_ns, path.stat().st_size):
+            return None
+    return min(pd.Timestamp(inventory[quarters[-1].name]), public_day) if quarters else None
 
 
 def quarter_counts(context: Context) -> dict[str, int]:

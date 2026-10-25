@@ -23,13 +23,13 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from src.context import Context
-from src.data_extract.utils.common.identity import FilingScope, Identity, load_identity
+from src.data_extract.utils.common.identity import FilingScope, Identity, load_identity, load_source_identity
 from src.data_extract.utils.common.resume import recently_changed
 from src.data_extract.utils.fundamentals.build_history import build_fundamentals_history
 from src.data_extract.utils.fundamentals.fetch_financial_notes import reparse_financial_notes
 from src.data_extract.utils.fundamentals.fetch_financial_statements import reparse_financial_statements
 from src.data_extract.utils.fundamentals_sharadar.merge_history import build_merged_history
-from src.data_extract.utils.institutionals.fetch_fails_to_deliver import load_fails_master, master_stamps, restamp_fails
+from src.data_extract.utils.institutionals.fetch_fails_to_deliver import load_fails_master, master_stamps, prepare_master, restamp_fails
 from src.data_extract.utils.institutionals.fetch_insider_transactions import reparse_insider_transactions, restamp_insider_lineage
 from src.data_extract.utils.institutionals.fetch_short_interest import change_stamps, restamp_short_volume
 from src.data_extract.utils.institutionals.security_tape import outside_scope, restamp_targets
@@ -109,6 +109,8 @@ def _foreign_rows(
     has no window admitting the row's date, and for a windowed table whose CIK holds no window of the ticker (a CIK with
     no digit is never judged)."""
     columns = ["ticker", spec.cik_col, spec.date_col, spec.key_col]
+    if spec.table == Tables.insider_transactions:
+        columns = list(dict.fromkeys([*columns, *Tables.insider_transactions.pk]))
     frames: list[pd.DataFrame] = []
     for start in range(0, len(tickers), _TICKER_CHUNK):
         rows = context.store.load(spec.table, columns=columns, where={"ticker": list(tickers[start : start + _TICKER_CHUNK])}, optional=True)
@@ -143,23 +145,31 @@ def _purge(
     context: Context,
     spec: FilerTable,
     tickers: Sequence[str],
-    own_ciks: Mapping[str, frozenset[str]],
-    own_windows: Mapping[str, Sequence[ListedWindow]],
+    identity: Identity,
     *,
     dry_run: bool,
 ) -> list[dict]:
     """Delete (or list) `tickers`' rows of `spec` filed by a CIK outside the ticker's entity, or outside its windows for a dated table."""
     if not tickers or not context.store.exists(spec.table):
         return []
-    foreign = _foreign_rows(context, spec, tickers, own_ciks, own_windows)
+    foreign = _foreign_rows(context, spec, tickers, _own_ciks(identity), _own_windows(identity))
     records = removal_records(spec.table.name, foreign, spec)
     if not dry_run:
-        for (ticker, cik), group in foreign.groupby(["ticker", spec.cik_col], sort=True):
-            keys = sorted(group[spec.key_col].astype(str).unique())
-            for start in range(0, len(keys), _KEY_CHUNK):
-                context.store.delete(spec.table, where={"ticker": ticker, spec.cik_col: cik, spec.key_col: keys[start : start + _KEY_CHUNK]})
+        if spec.table == Tables.insider_transactions:
+            columns = [*Tables.insider_transactions.pk, "ticker", "issuer_cik"]
+            context.store.patch_insider_source(pd.DataFrame(), foreign[columns], identity.source_cohort)
+        else:
+            _delete_foreign_rows(context, spec, foreign)
     _warn(context, spec.table.name, records, dry_run=dry_run)
     return records
+
+
+def _delete_foreign_rows(context: Context, spec: FilerTable, foreign: pd.DataFrame) -> None:
+    """Keep the existing non-insider table deletion scopes unchanged."""
+    for (ticker, cik), group in foreign.groupby(["ticker", spec.cik_col], sort=True):
+        keys = sorted(group[spec.key_col].astype(str).unique())
+        for start in range(0, len(keys), _KEY_CHUNK):
+            context.store.delete(spec.table, where={"ticker": ticker, spec.cik_col: cik, spec.key_col: keys[start : start + _KEY_CHUNK]})
 
 
 def _window_ciks(scopes: Mapping[str, FilingScope], table: Table) -> dict[str, frozenset[str]]:
@@ -199,14 +209,15 @@ def _refresh_fails(
     """Re-stamp the stored FTD lines of companies whose master rows changed recently; rebuild their rows."""
     if not context.store.exists(Tables.sec_fails_to_deliver_security):
         return []
-    master = load_fails_master(context)
-    if master is None or master.empty:
+    cohort = load_source_identity(context)
+    master = prepare_master(cohort[Tables.security_master])
+    if master.empty:
         return []
     changed = restamp_targets(context, Tables.sec_fails_to_deliver_security, master_stamps(master), as_of, every=every)
     if not changed:
         return []
     context.log.info("identity-propagate: re-stamping FTD lines for %d company(ies): %s", len(changed), ", ".join(changed))
-    records = restamp_fails(context, changed, tickers, master=master, dry_run=dry_run, others=others)
+    records = restamp_fails(context, changed, tickers, identity=cohort, dry_run=dry_run, others=others)
     _warn(context, Tables.sec_fails_to_deliver.name, records, dry_run=dry_run)
     return records
 
@@ -266,10 +277,9 @@ def propagate_identity(
     changed = _changed({ticker: scope.scope_changed_at for ticker, scope in scopes.items()}, run_date, every=every_ticker)
     if changed:
         context.log.info("identity-propagate: %d ticker lineage scope(s) to re-check: %s", len(changed), ", ".join(changed))
-    own_ciks, own_windows = _own_ciks(resolver), _own_windows(resolver)
     records: list[dict] = []
     for spec in PURGE_TABLES:
-        records += _purge(context, spec, changed, own_ciks, own_windows, dry_run=dry_run)
+        records += _purge(context, spec, changed, resolver, dry_run=dry_run)
     reparsed = {} if dry_run else _reparse_bulk(context, changed, scopes, resolver.co_registrant_ciks)
     records += _refresh_insider(context, resolver, changed, dry_run=dry_run)
     records += _refresh_fails(context, universe, run_date, dry_run=dry_run, every=every_ticker, others=others)

@@ -368,7 +368,7 @@ def _shortvol_fields(
         fields["ic_shortvol_high_x_strong_price"] = df_high * df_returns.clip(lower=0.0)
     if volume is not None and not volume.empty:
         df_tape = volume.reindex(index=idx).reindex(columns=df_short.columns)
-        fields["ic_shortvol_market_coverage"] = _shortvol_market_coverage(df_total, df_tape, df_observed)
+        fields["ic_shortvol_market_coverage"] = _shortvol_market_coverage(df_total, df_tape)
 
     # Publication does not extend a ticker beyond its proven current-issuer tenure.
     if df_tenure is not None:
@@ -387,25 +387,29 @@ def _shortvol_window_fields(
     # Calculate each numerator once; the base sum also supplies share turnover.
     for window in RATIO_WINDOWS:
         min_periods = _min_periods(window)
-        df_numerator = df_short.rolling(window, min_periods=min_periods).sum()
-        df_denominator = df_total.rolling(window, min_periods=min_periods).sum()
+        df_numerator = df_short.where(df_observed).rolling(window, min_periods=min_periods).sum()
+        df_denominator = df_total.where(df_observed).rolling(window, min_periods=min_periods).sum()
         df_ratio = (df_numerator / df_denominator.where(df_denominator > 0)).replace([np.inf, -np.inf], np.nan).where(df_observed)
         ratios[window] = df_ratio.shift(SHORTVOL_PUB_LAG)
         if window == BASE_WINDOW and df_shares is not None:
             df_turnover = (
-                (df_numerator / df_shares.where(df_shares > 0)).replace([np.inf, -np.inf], np.nan).where(df_observed).shift(SHORTVOL_PUB_LAG)
+                (df_short.rolling(window, min_periods=min_periods).sum() / df_shares.where(df_shares > 0))
+                .replace([np.inf, -np.inf], np.nan)
+                .where(df_short.notna())
+                .shift(SHORTVOL_PUB_LAG)
             )
     return ratios, df_turnover
 
 
-def _shortvol_market_coverage(df_total: pd.DataFrame, df_tape: pd.DataFrame, df_observed: pd.DataFrame) -> pd.DataFrame:
+def _shortvol_market_coverage(df_total: pd.DataFrame, df_tape: pd.DataFrame) -> pd.DataFrame:
     """Compute split-consistent off-exchange tape coverage and report its supported range."""
     min_periods = _min_periods(BASE_WINDOW)
 
     # Both prepared quantity legs already have the same ordinary-share basis.
-    df_numerator = df_total.rolling(BASE_WINDOW, min_periods=min_periods).sum()
-    df_denominator = df_tape.rolling(BASE_WINDOW, min_periods=min_periods).sum()
-    df_coverage = (df_numerator / df_denominator.where(df_denominator > 0)).replace([np.inf, -np.inf], np.nan).where(df_observed)
+    paired = df_total.notna() & df_tape.notna()
+    df_numerator = df_total.where(paired).rolling(BASE_WINDOW, min_periods=min_periods).sum()
+    df_denominator = df_tape.where(paired).rolling(BASE_WINDOW, min_periods=min_periods).sum()
+    df_coverage = (df_numerator / df_denominator.where(df_denominator > 0)).replace([np.inf, -np.inf], np.nan).where(paired)
     df_coverage = _guard_coverage(df_coverage)
 
     # Keep the existing coverage diagnostic on settlement-day quantities.
@@ -474,7 +478,7 @@ def prepare_fails_quantities(
     tenure_mask: pd.DataFrame | None,
     basis: QuantityBasis,
 ) -> FtdSettlement:
-    """Retain global observed zeros, then rebase raw dated canonical fails to target ordinary shares."""
+    """Rebase explicit dated canonical fails, including verified source zeros, to target ordinary shares."""
     df_fails, on_file = _settlement_fails(fails_hist, coverage, idx, columns, tenure_mask)
     source = pd.Series(idx, index=idx)
     target = pd.Series(basis.target_date, index=idx)
@@ -487,7 +491,7 @@ def prepare_fails_quantities(
 def _settlement_fails(
     fails_hist: pd.DataFrame, coverage: pd.DataFrame, idx: pd.DatetimeIndex, columns: pd.Index | None, tenure_mask: pd.DataFrame | None
 ) -> tuple[pd.DataFrame, pd.Series]:
-    """Align economic fails and fill zero only on globally observed settlement dates."""
+    """Align explicit issuer observations; global period metadata cannot create another issuer's zero."""
     df_fails = _pivot(fails_hist, "fails_quantity", idx) if not fails_hist.empty else pd.DataFrame(index=idx, dtype="float64")
     if columns is not None:
         df_fails = df_fails.reindex(columns=columns)
@@ -495,14 +499,12 @@ def _settlement_fails(
     on_file = pd.Series(idx.isin(covered), index=idx)
 
     # Preserve global-date coverage before applying ticker-specific issuer support.
-    df_covered = pd.DataFrame({column: on_file for column in df_fails.columns}, index=idx)
-    df_fails = df_fails.mask(df_covered & df_fails.isna(), 0.0)
     if tenure_mask is not None:
         df_fails = df_fails.where(tenure_mask.reindex(index=idx, columns=df_fails.columns, fill_value=False))
 
     # Report the same observed-date coverage used to distinguish zero from unknown.
     logger.info(
-        "FTD file covers %s of %s trading days in the window (%.1f%%); an absent ticker on a covered date is 0 fails, an absent date is NaN",
+        "FTD period metadata covers %s of %s trading days (%.1f%%); missing issuer observations remain unknown",
         int(on_file.sum()),
         len(idx),
         100 * float(on_file.mean()),
@@ -511,20 +513,20 @@ def _settlement_fails(
 
 
 def _ftd_settlement_persistence(basis: pd.DataFrame, on_file: pd.Series, idx: pd.DatetimeIndex) -> pd.DataFrame:
-    """Count high-FTD days while preserving complete-zero neutralization and coverage gaps."""
+    """Count supported high-FTD events; observed no-fail flags are independent of undefined constant-series z."""
     df_z = self_history_z(basis, window=Z_WINDOW, min_periods=Z_MIN_PERIODS)
     df_covered = pd.DataFrame({column: on_file for column in basis.columns}, index=idx)
 
-    # A complete observed zero window has a neutral z; a later missing basis does not.
+    # Complete observed zeros establish no-fail event flags; zero standard deviation leaves z undefined.
     df_applicable = df_covered & basis.notna().cummax()
     df_expected = df_applicable.astype("float64").rolling(Z_WINDOW, min_periods=1).sum()
     df_observed = basis.notna().astype("float64").rolling(Z_WINDOW, min_periods=1).sum()
     df_zeros = basis.eq(0.0).astype("float64").rolling(Z_WINDOW, min_periods=1).sum()
     df_neutral = df_applicable & basis.eq(0.0) & df_expected.ge(Z_MIN_PERIODS) & df_observed.eq(df_expected) & df_zeros.eq(df_expected)
-    df_z = df_z.mask(df_z.isna() & df_neutral, 0.0)
 
     # Aggregate the same threshold flags on the settlement calendar before publication.
     df_flags = (df_z > Z_HIGH).astype("float64").where(df_z.notna())
+    df_flags = df_flags.mask(df_z.isna() & df_neutral, 0.0)
     return df_flags.rolling(PERSISTENCE_WINDOW, min_periods=_min_periods(PERSISTENCE_WINDOW)).sum().where(df_covered)
 
 

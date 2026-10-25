@@ -84,22 +84,25 @@ def _fails_fields(
     return compute_fails_fields(settlement, ShortFlowCapital(shares_out, volume), publication, tenure_mask)
 
 
-def test_parse_regsho():
+def test_parse_regsho() -> None:
     txt = (
         "Date|Symbol|ShortVolume|ShortExemptVolume|TotalVolume|Market\n"
         "20230103|AAPL|500|0|1000|Q\n"
         "20230103|AAPL|100|0|200|N\n"  # second market center -> summed
         "20230103|MSFT|300|0|1200|Q\n"
+        "3\n"
     )
     out = _parse_regsho(txt)
     aapl = out[out["source_symbol"] == "AAPL"].iloc[0]
     assert aapl["short_volume"] == 600 and aapl["total_volume"] == 1200  # summed
     assert out["date"].iloc[0] == pd.Timestamp("2023-01-03")
-    assert _parse_regsho("").empty
+    assert _parse_regsho("Date|Symbol|ShortVolume|ShortExemptVolume|TotalVolume|Market\n0\n").empty
+    with pytest.raises(ValueError, match="header"):
+        _parse_regsho("")
     print("\n=== SANITY CHECK: RegSHO parser ===")
     print(
         f"  pipe file parsed; AAPL short/total summed across markets = "
-        f"{int(aapl['short_volume'])}/{int(aapl['total_volume'])}; empty -> empty. Validated."
+        f"{int(aapl['short_volume'])}/{int(aapl['total_volume'])}; validated empty0 is empty, unavailable text refuses. Validated."
     )
 
 
@@ -278,7 +281,8 @@ def test_price_interactions_are_one_sided_and_complementary():
     )
 
 
-def test_ftd_absent_ticker_is_zero_and_published_state_is_held():
+@pytest.mark.parametrize("checked_zero", [False, True], ids=["legacy-absence-unknown", "checked-zero"])
+def test_ftd_only_explicit_supported_zero_is_held(checked_zero: bool) -> None:
     idx = pd.DatetimeIndex(pd.bdate_range("2023-12-01", "2024-02-14"))
     fails = pd.DataFrame(
         [
@@ -287,15 +291,25 @@ def test_ftd_absent_ticker_is_zero_and_published_state_is_held():
             {"date": "2024-01-15", "ticker": "HI", "fails_quantity": 300.0, "period": "202401a"},
         ]
     )
+    if checked_zero:
+        fails = pd.concat(
+            [fails, pd.DataFrame([{"date": "2024-01-15", "ticker": "LO", "fails_quantity": 0.0, "period": "202401a"}])], ignore_index=True
+        )
+        fails["source_checked_at"] = pd.Timestamp("2024-01-30")
     volume = pd.DataFrame(1_000.0, index=idx, columns=["HI", "LO"])
     ratio = _fails_fields(fails, idx, None, volume)["ic_ftd_to_adv20"]
 
-    assert ratio.loc[pd.Timestamp("2024-01-29")].isna().all()
+    prepublication = ratio.loc[pd.Timestamp("2024-01-29")]
+    assert isinstance(prepublication, pd.Series)
+    assert prepublication.isna().to_numpy().all()
     assert ratio.loc[pd.Timestamp("2024-01-30"), "HI"] == pytest.approx(0.3)
-    assert ratio.loc[pd.Timestamp("2024-01-30"), "LO"] == pytest.approx(0.0)
+    if checked_zero:
+        assert ratio.loc[pd.Timestamp("2024-01-30"), "LO"] == pytest.approx(0.0)
+    else:
+        assert pd.isna(ratio.loc[pd.Timestamp("2024-01-30"), "LO"])
     assert ratio.loc[pd.Timestamp("2024-02-14"), "HI"] == pytest.approx(0.3)
     print("\n=== SANITY CHECK: FTD coverage semantics ===")
-    print("  LO is observed zero on the ZIP's latest covered date; the Jan-a estimate appears Jan 30 and is held until the next ZIP")
+    print("  A supported explicit LO zero is held after publication; another ticker's later observation cannot invent a legacy LO zero.")
 
 
 def test_ftd_zip_state_publishes_atomically_without_summing_balances():
@@ -305,6 +319,7 @@ def test_ftd_zip_state_publishes_atomically_without_summing_balances():
             {"date": "2024-01-02", "ticker": "HI", "fails_quantity": 100.0, "period": "202401a"},
             {"date": "2024-01-02", "ticker": "LO", "fails_quantity": 50.0, "period": "202401a"},
             {"date": "2024-01-15", "ticker": "HI", "fails_quantity": 300.0, "period": "202401a"},
+            {"date": "2024-01-15", "ticker": "LO", "fails_quantity": 0.0, "period": "202401a", "source_checked_at": "2024-01-30"},
             {"date": "2024-01-16", "ticker": "HI", "fails_quantity": 800.0, "period": "202401b"},
             {"date": "2024-01-31", "ticker": "HI", "fails_quantity": 900.0, "period": "202401b"},
         ]
@@ -622,9 +637,10 @@ def test_panel_columns_match_the_emission_map():
     keep = rng.random(len(dates) * len(tickers)) < 0.3
     ftd = pd.DataFrame(
         {
-            "date": np.repeat(dates.to_numpy(), len(tickers))[keep],
-            "ticker": np.tile(np.array(tickers), len(dates))[keep],
-            "fails_quantity": rng.lognormal(8, 1.2, int(keep.sum())).round(0),
+            "date": np.repeat(dates.to_numpy(), len(tickers)),
+            "ticker": np.tile(np.array(tickers), len(dates)),
+            "fails_quantity": np.where(keep, rng.lognormal(8, 1.2, len(keep)).round(0), 0.0),
+            "source_checked_at": pd.Timestamp("2025-01-01"),
         }
     )
     ftd["period"] = pd.to_datetime(ftd["date"]).map(lambda day: f"{day:%Y%m}{'a' if day.day <= 15 else 'b'}")

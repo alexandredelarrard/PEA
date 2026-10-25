@@ -11,6 +11,7 @@ from typing import Any
 import pandas as pd
 import pytest
 
+from src.data_extract.utils.common.identity import load_source_identity
 from src.data_extract.utils.institutionals import fetch_insider_transactions as ins
 from src.data_store.schema import Tables
 
@@ -53,7 +54,7 @@ def _parsed(tickers: list[str], quarter: str) -> tuple[pd.DataFrame, pd.DataFram
 @pytest.fixture
 def harness(sqlite_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     calls: dict[str, Any] = {"screens": [], "sweeps": 0}
-    monkeypatch.setattr(ins, "load_identity", lambda context: None)
+    monkeypatch.setattr(ins, "load_identity", lambda context: SimpleNamespace(source_cohort=load_source_identity(context)))
     monkeypatch.setattr(ins, "quarter_periods", lambda *args: ["2024q1", "2024q2"])
     monkeypatch.setattr(ins, "ensure_zip", lambda context, path, url, **kwargs: path)
     monkeypatch.setattr(ins, "_read_tables", lambda path: (path.stem,))
@@ -83,7 +84,10 @@ def harness(sqlite_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
 
 def test_a_new_ticker_re_reads_cached_quarters_for_itself_only(harness: dict[str, Any]) -> None:
     store, calls = harness["store"], harness["calls"]
-    store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["AAA", "NEW"], "added_on": pd.to_datetime(["2000-01-01", "2024-06-28"])}))
+    store.save(
+        Tables.sp500_tickers,
+        pd.DataFrame({"ticker": ["AAA", "NEW"], "cik": ["0000000001", "0000000002"], "added_on": pd.to_datetime(["2000-01-01", "2024-06-28"])}),
+    )
     store.save(Tables.insider_transactions, pd.DataFrame([_row("AAA", "2024q1")]))
 
     saved = ins.fetch_insider_transactions(harness["ctx"], ["AAA", "NEW"], years_history=15, as_of=_AS_OF)
@@ -102,7 +106,10 @@ def test_a_new_ticker_re_reads_cached_quarters_for_itself_only(harness: dict[str
 
 def test_a_scoped_run_parses_no_unstored_quarter_and_skips_the_sweep(harness: dict[str, Any]) -> None:
     store, calls = harness["store"], harness["calls"]
-    store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["AAA", "BBB"], "added_on": pd.to_datetime(["2000-01-01", "2000-01-01"])}))
+    store.save(
+        Tables.sp500_tickers,
+        pd.DataFrame({"ticker": ["AAA", "BBB"], "cik": ["0000000001", "0000000002"], "added_on": pd.to_datetime(["2000-01-01", "2000-01-01"])}),
+    )
     store.save(Tables.insider_transactions, pd.DataFrame([_row("AAA", "2024q1"), _row("BBB", "2024q1")]))
 
     assert ins.fetch_insider_transactions(harness["ctx"], ["AAA"], years_history=15, as_of=_AS_OF) == 0

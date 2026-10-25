@@ -15,12 +15,13 @@ import pytest
 
 from src.data_extract import identity_propagate as prop
 from src.data_extract.utils.common import security_master as sm
-from src.data_extract.utils.common.identity import build_identity
+from src.data_extract.utils.common.identity import Identity, build_identity
 from src.data_extract.utils.fundamentals import build_history
 from src.data_extract.utils.fundamentals.build_history import TickerHistory
 from src.data_extract.utils.fundamentals.kpi_catalogue import load_catalogue
 from src.data_extract.utils.institutionals import fetch_fails_to_deliver as ftd
 from src.data_store.schema import Tables
+from src.data_store.store import DataStore
 from src.utils import filer_tables
 from tests.data_extract.fake_context import extract_config
 
@@ -64,11 +65,27 @@ def _identity(stamps: dict[str, pd.Timestamp], symbol_rows: list[dict] = ()) -> 
     ]
     tenure = pd.DataFrame(
         [
-            {"symbol": t, "issuer_cik": c, "valid_from": pd.Timestamp("2000-01-01"), "valid_to": None, "n_filings": 5, "source": "form345"}
+            {
+                "symbol": t,
+                "issuer_cik": c,
+                "valid_from": pd.Timestamp("2000-01-01"),
+                "valid_to": None,
+                "n_filings": 5,
+                "source": "form345",
+                "evidence_period": "2000q1",
+            }
             for t, c in ROSTER.items()
         ]
     )
     return build_identity(pd.DataFrame(rows), tenure, pd.DataFrame([{"ticker": t, "cik": c} for t, c in ROSTER.items()]))
+
+
+def _stored_identity(store: DataStore, stamps: dict[str, pd.Timestamp]) -> Identity:
+    identity = _identity(stamps)
+    for table, frame in identity.source_cohort.items():
+        if not frame.empty:
+            store.save(table, frame)
+    return identity
 
 
 def _context(store, tmp_path) -> SimpleNamespace:
@@ -76,7 +93,7 @@ def _context(store, tmp_path) -> SimpleNamespace:
         store=store,
         paths={"DATA_STORE": tmp_path},
         log=logging.getLogger(LOGGER),
-        config=extract_config(data_extract={"years_history": 15, "manifest_full_rescan_days": 30}),
+        config=extract_config(data_extract={"years_history": 15, "manifest_full_rescan_days": 30, "redundant_ticks": []}),
         config_dir="./configs",
     )
 
@@ -158,7 +175,7 @@ def stubs(monkeypatch) -> dict[str, list]:
     monkeypatch.setattr(
         prop,
         "restamp_fails",
-        lambda context, companies, tickers, master=None, dry_run=False, others=None: calls["ftd"].append(sorted(companies)) or [],
+        lambda context, companies, tickers, identity=None, dry_run=False, others=None: calls["ftd"].append(sorted(companies)) or [],
     )
     monkeypatch.setattr(
         prop,
@@ -186,7 +203,8 @@ def test_a_contraction_purges_the_removed_cik_in_every_family_and_warns_once_per
     """AC-031/AC-034: ALB's scope changed after each table's last run; AB's rows go, ALB's own stay, MSFT is not read."""
     context = _context(sqlite_store, tmp_path)
     _seed(sqlite_store)
-    monkeypatch.setattr(prop, "load_identity", lambda context: _identity({"ALB": AFTER}))
+    identity = _stored_identity(sqlite_store, {"ALB": AFTER})
+    monkeypatch.setattr(prop, "load_identity", lambda context: identity)
 
     with caplog.at_level(logging.WARNING, logger=LOGGER):
         result = prop.propagate_identity(context, list(ROSTER), as_of=RUN_DATE)
@@ -335,7 +353,8 @@ def test_a_cik_with_no_digit_is_never_judged_as_the_validator_rules(sqlite_store
 def test_the_dry_run_returns_the_same_removals_and_deletes_nothing(sqlite_store, tmp_path, monkeypatch, stubs):
     context = _context(sqlite_store, tmp_path)
     _seed(sqlite_store)
-    monkeypatch.setattr(prop, "load_identity", lambda context: _identity({"ALB": AFTER}))
+    identity = _stored_identity(sqlite_store, {"ALB": AFTER})
+    monkeypatch.setattr(prop, "load_identity", lambda context: identity)
     before = {table.name: sqlite_store.row_count(table) for table in PURGED_FAMILIES}
 
     dry = prop.propagate_identity(context, list(ROSTER), dry_run=True, as_of=RUN_DATE)
@@ -435,7 +454,7 @@ def _ftd_raw(rows: list[tuple[str, str, str, int]]) -> pd.DataFrame:
 
 def test_a_moved_master_security_moves_its_fails_rows(sqlite_store, tmp_path, monkeypatch, caplog):
     """FTD contraction and expansion: the `OLD` security moves from ALB to MSFT in the master; ALB's OLD-era
-    ticker row goes (WARNING), MSFT gains it, re-stamped from the stored raw lines with no zip read."""
+    ticker row goes (WARNING), MSFT gains it after reconciling the controlled original source units."""
     context = _context(sqlite_store, tmp_path)
     raw = _ftd_raw([("20120301", "000000OL1", "OLD", 10), ("20240201", "000000AL1", "ALB", 5), ("20240201", "000000MS1", "MSFT", 7)])
     raw = raw.assign(
@@ -458,7 +477,13 @@ def test_a_moved_master_security_moves_its_fails_rows(sqlite_store, tmp_path, mo
     sqlite_store.save(Tables.sec_fails_to_deliver, stored)
     sqlite_store.replace(Tables.security_master, _master("MSFT", {"ALB": AFTER, "MSFT": AFTER}))
     monkeypatch.setattr(prop, "load_identity", lambda context: _identity({}))
-    monkeypatch.setattr(ftd, "read_zip_text", lambda *a, **k: pytest.fail("the re-stamp reads no zip"))
+    originals = {
+        "201203a": "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20120301|000000OL1|OLD|10|X|1.0\n",
+        "202402a": "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20240201|000000AL1|ALB|5|X|1.0\n20240201|000000MS1|MSFT|7|X|1.0\n",
+    }
+    monkeypatch.setattr(ftd, "_cached_periods", lambda cache: set(originals))
+    monkeypatch.setattr(ftd, "ensure_zip", lambda context, path, urls, **kwargs: path)
+    monkeypatch.setattr(ftd, "read_zip_text", lambda path, **kwargs: originals[path.stem.removeprefix("cnsfails")])
     monkeypatch.setattr(prop, "reparse_financial_notes", lambda context, tickers: 0)
     monkeypatch.setattr(prop, "reparse_financial_statements", lambda context, tickers: 0)
     monkeypatch.setattr(prop, "reparse_insider_transactions", lambda context, tickers: 0)
@@ -468,7 +493,9 @@ def test_a_moved_master_security_moves_its_fails_rows(sqlite_store, tmp_path, mo
 
     after = sqlite_store.load(Tables.sec_fails_to_deliver, columns=["ticker", "date", "fails_quantity"])
     got = sorted((t, str(pd.Timestamp(d).date()), q) for t, d, q in after.itertuples(index=False))
-    assert got == [("ALB", "2024-02-01", 5.0), ("MSFT", "2012-03-01", 10.0), ("MSFT", "2024-02-01", 7.0)], got
+    assert got == [("ALB", "2012-03-01", 0.0), ("ALB", "2024-02-01", 5.0), ("MSFT", "2012-03-01", 10.0), ("MSFT", "2024-02-01", 7.0)], got
+    checked = sqlite_store.load(Tables.sec_fails_to_deliver, where={"ticker": "ALB", "date": pd.Timestamp("2012-03-01")})
+    assert checked is not None and checked["source_checked_at"].notna().all()
     restamped = sqlite_store.load(Tables.sec_fails_to_deliver_security, where={"cusip": "000000OL1"})
     assert restamped["ticker"].tolist() == ["MSFT"]
     assert any(

@@ -1476,6 +1476,6 @@ def build_security_master(
     )
     log_identity_flags(context.log, build.items)
     unchanged = matches_stored(existing, rows, Tables.security_master)
-    written = 0 if unchanged else context.store.replace(Tables.security_master, rows)
+    written = 0 if unchanged else context.store.replace_institutional_identity(Tables.security_master, rows)
     context.log.info("security_master: unchanged; replace skipped" if unchanged else f"security_master: wrote {written} row(s)")
     return rows

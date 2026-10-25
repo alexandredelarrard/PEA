@@ -103,13 +103,11 @@ class StepCubeInstitutionals(Step):
         quantity_basis: institutional_inputs.QuantityBasis,
         valuation_close: pd.DataFrame | None,
     ) -> pd.DataFrame | None:
-        last_session = pd.DatetimeIndex(frames.trading_index).max() if len(frames.trading_index) else None
-
         # Load transactions and their completeness/title evidence before cleaning.
-        df_insider = institutional_inputs.load_insider_transactions(self._store, frames.universe)
-        if df_insider is None or df_insider.empty:
+        source = institutional_inputs.load_insider_transactions(self._store, frames.universe)
+        if source is None or source.transactions.empty:
             return None
-        complete_through = institutional_frontiers.schedule_complete_through(self._store, Tables.insider_transactions, last_session)
+        df_insider = source.transactions
         df_roles = institutional_inputs.load_insider_role_evidence(self._store, df_insider)
 
         # Preserve execution USD while cleaning source-unit prices and public versions.
@@ -118,12 +116,13 @@ class StepCubeInstitutionals(Step):
         )
         if "source_first" not in diagnostics:
             return None
+        diagnostics["source_first"] = source.first_filed
         df_unpriced = diagnostics.get("unpriced_events", pd.DataFrame())
         df_positions = position_units(pd.concat([df_trades, df_unpriced], ignore_index=True), quantity_basis)
         df_shares_out = institutional_inputs.daily_share_quantities(shares, pd.DatetimeIndex(frames.trading_index), quantity_basis)
         report_oversized_positions(df_positions.iloc[: len(df_trades)], df_shares_out)
         df_mcap = insider_market_cap(shares, frames.close_split, frames.level_factor)
-        coverage = InsiderCoverage.from_availability(self._availability, complete_through)
+        coverage = InsiderCoverage.from_availability(self._availability, source.complete_through)
         return build_insider_feature_panel(frames, df_trades, df_positions, diagnostics, df_mcap, coverage)
 
     def _short_flow_panel(

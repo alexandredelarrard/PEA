@@ -12,7 +12,7 @@ import pytest
 
 from src.data_extract.utils.common import security_master as sm
 from src.data_extract.utils.institutionals import fetch_fails_to_deliver as ftd
-from src.data_store.schema import Tables
+from src.data_store.schema import Table, Tables
 from tests.conftest import make_frames
 from tests.data_aggregate.test_short_flow_features import build_short_flow_feature_panel
 
@@ -148,26 +148,28 @@ def test_full_rebuild_keys_on_cusip_excludes_a_reused_symbol_and_is_repeatable(s
     monkeypatch.setattr(ftd, "_cached_periods", lambda cache: set(raw_by_period))
     monkeypatch.setattr(ftd, "read_zip_text", lambda path, log=None: raw_by_period[path.stem.removeprefix("cnsfails")])
     replace_calls: list[str] = []
-    original_replace = sqlite_store.replace
+    original_replace = sqlite_store.replace_institutional_source
 
-    def _replace(table, frame, *args, **kwargs):
-        replace_calls.append(getattr(table, "name", table))
-        return original_replace(table, frame, *args, **kwargs)
+    def _replace(frames: dict[Table, pd.DataFrame], scopes: dict[Table, dict[str, object] | None], *args: Any, **kwargs: Any) -> dict[Table, int]:
+        replace_calls.extend(table.name for table in frames)
+        return original_replace(frames, scopes, *args, **kwargs)
 
-    monkeypatch.setattr(sqlite_store, "replace", _replace)
+    monkeypatch.setattr(sqlite_store, "replace_institutional_source", _replace)
     universe = ["META", "TT", "IR", "WTW"]
     ftd.fetch_fails_to_deliver(ctx, universe, full=True)
     first = sqlite_store.load(Tables.sec_fails_to_deliver).sort_values(["ticker", "date"]).reset_index(drop=True)
     ftd.fetch_fails_to_deliver(ctx, universe, full=True)
     second = sqlite_store.load(Tables.sec_fails_to_deliver).sort_values(["ticker", "date"]).reset_index(drop=True)
 
-    assert replace_calls == [Tables.sec_fails_to_deliver_security.name, Tables.sec_fails_to_deliver.name] * 2
-    assert list(zip(first["ticker"], first["fails_quantity"], strict=True)) == [("META", 100.0), ("META", 200.0), ("TT", 50.0)]
+    assert replace_calls == [Tables.sec_fails_to_deliver_security.name, Tables.sec_fails_to_deliver.name] * 4
+    positive = first.loc[first["fails_quantity"].gt(0)]
+    assert list(zip(positive["ticker"], positive["fails_quantity"], strict=True)) == [("META", 100.0), ("META", 200.0), ("TT", 50.0)]
+    assert set(first.loc[first["fails_quantity"].eq(0), "ticker"]) == {"IR", "WTW"}
     assert "948626106" not in set(sqlite_store.load(Tables.sec_fails_to_deliver_security)["cusip"])
-    pd.testing.assert_frame_equal(first, second)
+    pd.testing.assert_frame_equal(first.drop(columns="source_checked_at"), second.drop(columns="source_checked_at"))
     print("\n=== SANITY CHECK: FTD CUSIP full rebuild ===")
     print("  FB and META one CUSIP -> META; pre-2020 IR -> TT by its CUSIP; the Weight Watchers WTW line never stored")
-    print("  second full run is byte-equivalent; both tables replaced each run")
+    print("  repeated economics match; each source period replaces its raw/derived pair atomically and actual served dates support mapped zeros")
 
 
 def test_a_scoped_full_run_upserts_its_company_and_never_replaces_the_tables(sqlite_store, monkeypatch, tmp_path):

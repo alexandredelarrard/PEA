@@ -588,7 +588,7 @@ def test_unpriced_insider_is_unknown_not_zero(unknown_code, known_code):
         make_frames(TRADING_INDEX, _peers(("AAA", "BBB")), close_split=close),
         _frame(rows),
         shares_out_history=fh,
-        coverage=InsiderCoverage.from_availability(None, TRADING_INDEX.max()),
+        coverage=InsiderCoverage.from_availability(None, pd.Series(TRADING_INDEX.max(), index=["AAA", "BBB"])),
     )
     panel = panel[panel["ticker"].eq("AAA")].set_index("date")
     ratio = panel["f_ic_insider_net_buy_ratio_180d"]
@@ -858,7 +858,7 @@ def test_complete_through_preserves_covered_zero_and_masks_the_unobserved_tail()
         make_frames(idx, _peers(), close_split=close),
         _frame(rows),
         shares_out_history=fh,
-        coverage=InsiderCoverage.from_availability(None, complete_through),
+        coverage=InsiderCoverage.from_availability(None, pd.Series({"AAA": complete_through})),
     ).set_index("date")
 
     covered_zero = panel.loc[pd.Timestamp("2024-07-31"), "f_ic_insider_buy_value_mcap_180d"]
@@ -925,7 +925,7 @@ def test_distinct_buyers_counts_people_not_filings():
         make_frames(TRADING_INDEX, _peers(), close_split=close),
         _frame(rows),
         shares_out_history=fh,
-        coverage=InsiderCoverage.from_availability(None, TRADING_INDEX.max()),
+        coverage=InsiderCoverage.from_availability(None, pd.Series({"AAA": TRADING_INDEX.max()})),
     )
     n = panel.set_index("date")["f_ic_insider_distinct_buyers_120d"]
     peak = n.max()
@@ -1003,23 +1003,21 @@ def test_the_ten_b5_1_split_separates_planned_from_discretionary():
     )
 
 
-def test_net_buy_ratio_is_zero_only_inside_a_complete_observation_frontier():
+def test_net_buy_ratio_keeps_quiet_zero_over_zero_undefined() -> None:
     rows = [_txn(filing_date="2015-06-01", transaction_date="2015-05-29")]
     fh, close = _prices()
     panel = build_insider_feature_panel(
         make_frames(TRADING_INDEX, _peers(), close_split=close),
         _frame(rows),
         shares_out_history=fh,
-        coverage=InsiderCoverage.from_availability(None, pd.Timestamp("2016-06-30")),
+        coverage=InsiderCoverage.from_availability(None, pd.Series({"AAA": pd.Timestamp("2016-06-30")})),
     )
     s = panel.set_index("date")["f_ic_insider_net_buy_ratio_180d"]
     assert pd.isna(s.loc["2015-05-01"]) and s.loc["2015-06-01"] == 1.0
-    assert s.loc["2016-06-01"] == 0.0
+    assert pd.isna(s.loc["2016-06-01"])
     assert pd.isna(s.loc["2016-07-01"])
     print(
-        f"SANITY: no issuer corroboration stays unknown; one purchase makes "
-        f"the ratio {s.loc['2015-06-01']:.0f}, and it returns to {s.loc['2016-06-01']:.0f} "
-        "after 180 days; past the complete frontier it is NaN."
+        f"SANITY: one observed purchase makes the supported ratio {s.loc['2015-06-01']:.0f}; after expiry the certified quiet 0/0 remains undefined."
     )
 
 

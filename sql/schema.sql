@@ -234,6 +234,7 @@ CREATE TABLE IF NOT EXISTS "prices_splits" (
 -- [extract] sec_short_interest  (pk: ticker, date)
 
 CREATE TABLE IF NOT EXISTS "sec_short_interest" (
+    "source_checked_at" TIMESTAMP,
     "date" TIMESTAMP NOT NULL,
     "ticker" TEXT NOT NULL,
     "short_volume" DOUBLE PRECISION,
@@ -265,6 +266,7 @@ CREATE INDEX IF NOT EXISTS ix_sec_short_volume_security_ticker ON "sec_short_vol
 -- [extract] sec_fails_to_deliver  (pk: ticker, date)
 
 CREATE TABLE IF NOT EXISTS "sec_fails_to_deliver" (
+    "source_checked_at" TIMESTAMP,
     "ticker" TEXT NOT NULL,
     "date" DATE NOT NULL,
     "fails_quantity" DOUBLE PRECISION,
@@ -1078,6 +1080,7 @@ CREATE TABLE IF NOT EXISTS "sec13f_manager_holdings" (
 -- EDGAR daily rows are authoritative (source='edgar'); zip quarters add missing filings (source='zip').
 
 CREATE TABLE IF NOT EXISTS "insider_transactions" (
+    "inventory_checked_through" DATE,
     "accession_number" TEXT NOT NULL,
     "security_type" TEXT NOT NULL,
     "row_sequence" BIGINT NOT NULL,

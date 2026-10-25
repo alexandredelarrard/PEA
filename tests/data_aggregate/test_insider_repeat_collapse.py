@@ -30,7 +30,7 @@ def _build(df_rows: pd.DataFrame) -> pd.DataFrame:
         make_frames(IDX, {"AAA": {"AAA": 1.0}}, close_split=close),
         df_rows,
         shares_out_history=fh,
-        coverage=InsiderCoverage.from_availability(None, IDX.max()),
+        coverage=InsiderCoverage.from_availability(None, pd.Series({"AAA": IDX.max()})),
     )
 
 

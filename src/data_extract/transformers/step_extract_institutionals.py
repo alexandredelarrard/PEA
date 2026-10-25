@@ -19,6 +19,7 @@ from src.data_extract.utils.institutionals.fetch_insider_edgar import INSIDER_ED
 from src.data_extract.utils.institutionals.fetch_insider_transactions import fetch_insider_transactions
 from src.data_extract.utils.institutionals.fetch_short_interest import fetch_short_interest
 from src.data_extract.utils.institutionals.fetch_superinvestors import upsert_roster_snapshot
+from src.data_extract.utils.institutionals.insider_store import insider_source_run
 from src.utils.step import Step
 from src.utils.universe import load_universe_tickers
 
@@ -42,8 +43,9 @@ class StepExtractInstitutionals(Step):
         fetch_13f_managers(self._context, years_history=years_history)
 
         # Quarterly zips first (they add only the filings EDGAR lacks), then EDGAR reads the indexed filings after the last zip quarter.
-        fetch_insider_transactions(self._context, tickers=tickers, years_history=years_history, all_tickers=universe)
-        run_edgar_fetch(self._context, tickers=tickers, years_history=years_history, fetch=INSIDER_EDGAR_FETCH)
+        with insider_source_run(self._context):
+            fetch_insider_transactions(self._context, tickers=tickers, years_history=years_history, all_tickers=universe)
+            run_edgar_fetch(self._context, tickers=tickers, years_history=years_history, fetch=INSIDER_EDGAR_FETCH)
 
         # Activist (SC 13D) then passive (SC 13G) stakes; same grain and column names, so they union.
         run_edgar_fetch(self._context, tickers=tickers, years_history=years_history, fetch=SEC_13D_FETCH)
@@ -57,4 +59,4 @@ class StepExtractInstitutionals(Step):
 
         # The short side: FINRA RegSHO short volume, then SEC settlement fails (mid-2009 on), stamped from the security master.
         fetch_short_interest(self._context, tickers=tickers, years_history=years_history, identity=identity, all_tickers=universe)
-        fetch_fails_to_deliver(self._context, tickers=tickers, all_tickers=universe)
+        fetch_fails_to_deliver(self._context, tickers=tickers, all_tickers=universe, identity=identity)

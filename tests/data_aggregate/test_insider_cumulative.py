@@ -122,7 +122,8 @@ def _observed_panel(rows: list[dict], *, complete: bool = True) -> pd.DataFrame:
         shares_out_history=history,
         as_traded_quotes=close,
         coverage=InsiderCoverage.from_availability(
-            InstitutionalAvailability.from_config({Tables.insider_transactions.name: {"__all__": "2024-01-01"}}), idx.max() if complete else None
+            InstitutionalAvailability.from_config({Tables.insider_transactions.name: {"__all__": "2024-01-01"}}),
+            pd.Series(idx.max(), index=tickers) if complete else None,
         ),
     ).set_index(["date", "ticker"])
 
@@ -136,13 +137,19 @@ def _source_row(**changes: object) -> dict:
 def test_complete_quiet_windows_do_not_require_a_prior_purchase() -> None:
     rows = [_source_row(), _source_row(ticker="BBB", accession_number="future", filing_date="2024-08-01")]
     panel = _observed_panel(rows)
-    assert len(panel.columns) == 13
+    ratios = [
+        "f_ic_insider_net_buy_ratio_180d",
+        "f_ic_insider_owner_surprise_120d",
+        "f_ic_insider_purchase_pct_prior",
+        "f_ic_insider_management_position_change_60d",
+    ]
+    assert len(panel.columns) == 9 and not set(ratios).intersection(panel.columns)
     assert panel.loc[("2024-07-01", "AAA")].eq(0).all()
     assert panel.loc[("2024-07-01", "BBB")].isna().all()
     assert panel.loc[("2024-09-01", "BBB")].eq(0).all()
     assert panel.loc[("2024-09-01", "CCC")].isna().all()
-    assert pd.isna(panel.loc[("2024-01-20", "AAA"), "f_ic_insider_owner_surprise_120d"])
-    print("SANITY: all13 confirmed quiet signals are zero without prior P/S; future/no issuer evidence and incomplete windows remain unknown.")
+    assert panel.reindex(columns=ratios).isna().all().all()
+    print("SANITY: nine confirmed quiet gross/count signals are zero; four undefined ratios remain NULL and future/no issuer evidence stays unknown.")
 
 
 @pytest.mark.parametrize(
@@ -163,13 +170,15 @@ def test_active_unsupported_trade_never_becomes_quiet_zero(changes: dict) -> Non
     active = _txn(accession_number="active", filing_date="2024-07-01", transaction_date="2024-07-01", officer_title="CEO", is_officer=1)
     active.update(changes)
     panel = _observed_panel([_source_row(), active])
+    ratios = ["f_ic_insider_management_position_change_60d", "f_ic_insider_owner_surprise_120d", "f_ic_insider_purchase_pct_prior"]
+    panel = panel.reindex(columns=list(dict.fromkeys([*panel.columns, *ratios])))
     assert pd.isna(panel.loc[("2024-07-01", "AAA"), "f_ic_insider_management_position_change_60d"])
     assert pd.isna(panel.loc[("2024-07-01", "AAA"), "f_ic_insider_owner_surprise_120d"])
     if changes.get("officer_title") != "":
         assert pd.isna(panel.loc[("2024-07-01", "AAA"), "f_ic_insider_purchase_pct_prior"])
-    assert panel.loc[("2024-08-30", "AAA"), "f_ic_insider_management_position_change_60d"] == 0
-    assert panel.loc[("2024-10-29", "AAA"), "f_ic_insider_owner_surprise_120d"] == 0
-    print("SANITY: active unsupported position and first-owner rank stay NaN; only original60/120-day expiry permits confirmed quiet0.")
+    assert pd.isna(panel.loc[("2024-08-30", "AAA"), "f_ic_insider_management_position_change_60d"])
+    assert pd.isna(panel.loc[("2024-10-29", "AAA"), "f_ic_insider_owner_surprise_120d"])
+    print("SANITY: active unsupported position/rank remain NULL; expiry cannot turn no-prior or no-scored-buy division into quiet0.")
 
 
 def test_quiet_zero_requires_frontier_and_available_denominator() -> None:
@@ -210,7 +219,8 @@ def test_unknown_quantity_amendment_retires_without_reaging() -> None:
     ):
         assert pd.isna(panel.loc[("2024-07-09", "AAA"), name])
         assert panel.loc[("2024-07-10", "AAA"), name] == pytest.approx(expected)
-        assert panel.loc[("2024-08-30", "AAA"), name] == 0
+        expired = panel.loc[("2024-08-30", "AAA"), name]
+        assert expired == 0 if name == "f_ic_insider_buy_value_mcap_60d" else pd.isna(expired)
     print("SANITY: 4/A retires missing quantity on publication, restores exact amounts, and expires at original disclosure+60.")
 
 
@@ -307,7 +317,7 @@ def test_dollar_totals_use_current_cap_and_real_expiry() -> None:
         make_frames(idx, _peers(), close_split=close),
         _frame(rows),
         shares_out_history=shares,
-        coverage=InsiderCoverage.from_availability(None, idx.max()),
+        coverage=InsiderCoverage.from_availability(None, pd.Series({"AAA": idx.max()})),
     ).set_index("date")
     assert panel.loc["2015-06-01", "f_ic_insider_buy_value_mcap_60d"] == pytest.approx(0.01)
     assert panel.loc["2015-06-10", "f_ic_insider_buy_value_mcap_60d"] == pytest.approx(0.005)

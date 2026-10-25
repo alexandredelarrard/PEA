@@ -70,6 +70,7 @@ class DocumentWork:
     counts: dict[str, int] = field(default_factory=dict)
     uncapped: int = 0
     timings: dict[str, float] = field(default_factory=dict)
+    listed: dict[str, pd.DataFrame] = field(default_factory=dict)
 
     @property
     def size(self) -> int:
@@ -100,6 +101,26 @@ def stored_accessions(context: Context, table: Table, keys: Sequence[str], scope
     if df is not None:
         for key, group in df.groupby(key_col, sort=False):
             done.setdefault(str(key), set()).update(group["accession_number"].astype(str))
+    return done
+
+
+def _insider_done(context: Context, keys: Sequence[str], recent: pd.Timestamp | None) -> dict[str, set[str]]:
+    """Historical ZIP units count as present; only the recent overlap requires EDGAR authority."""
+    rows = context.store.load(
+        Tables.insider_transactions,
+        columns=["ticker", "accession_number", "source", "filing_date"],
+        where={"ticker": list(keys)},
+        markers=True,
+        optional=True,
+    )
+    done: dict[str, set[str]] = {key: set() for key in keys}
+    if rows is None:
+        return done
+    accepted = rows["source"].eq("edgar")
+    if recent is not None:
+        accepted |= pd.to_datetime(rows["filing_date"]).lt(recent)
+    for ticker, group in rows.loc[accepted].groupby("ticker", sort=False):
+        done[str(ticker)].update(group["accession_number"].astype(str))
     return done
 
 
@@ -156,7 +177,11 @@ def document_worklist(
     resolved through each key's filing scope (its roster CIK alone without `identity`), minus the
     accessions stored on the rows matching `done_where` (ignored under `full`)."""
     started = time.perf_counter()
-    floor = document_floor(table, as_of, years_history, runtime_floor)
+    floor = (
+        pd.Timestamp(cast(str, table.resume.source_start))
+        if table == Tables.insider_transactions and table.resume is not None
+        else document_floor(table, as_of, years_history, runtime_floor)
+    )
     roster = dict(zip(keys["ticker"].astype(str), keys["cik"].astype(str), strict=True))
     scopes = {
         ticker: identity.filing_scope(ticker) if identity is not None else FilingScope.roster_only(ticker, cik) for ticker, cik in roster.items()
@@ -165,16 +190,22 @@ def document_worklist(
     df_index = edgar_index.entries(context, {c for ciks in candidates.values() for c in ciks}, forms, since=floor)
     by_cik = dict(tuple(df_index.groupby("cik", sort=False))) if not df_index.empty else {}
     read_index = time.perf_counter()
-    done = {key: set() for key in roster} if full else stored_accessions(context, table, list(roster), done_scope, done_where)
+    done = (
+        ({key: set() for key in roster} if full else _insider_done(context, list(roster), runtime_floor))
+        if table == Tables.insider_transactions
+        else ({key: set() for key in roster} if full else stored_accessions(context, table, list(roster), done_scope, done_where))
+    )
     read_done = time.perf_counter()
     overlap = table.resume.overlap_days if table.resume is not None else 0
     new = new_tickers(context.store, overlap, as_of) if overlap else set()
     units: dict[str, pd.DataFrame] = {}
     key_class: dict[str, str] = {}
     counts: dict[str, int] = {}
+    listed: dict[str, pd.DataFrame] = {}
     for ticker in roster:
         frames = [by_cik[c] for c in candidates[ticker] if c in by_cik]
         df_listed = resolve_registrant_entries(scopes[ticker], pd.concat(frames, ignore_index=True), forms) if frames else df_index.iloc[:0]
+        listed[ticker] = df_listed
         done_here = done.get(ticker, set()) & set(df_listed["accession"].astype(str))
         df_units = df_listed[~df_listed["accession"].isin(done_here)].reset_index(drop=True)
         key_class[ticker] = _key_class(ticker, new, df_listed, df_units)
@@ -184,7 +215,7 @@ def document_worklist(
             units[ticker] = df_units
     units, uncapped = _cap(units, cap, table.name)
     timings = {"index_read": read_index - started, "done_read": read_done - read_index, "total": time.perf_counter() - started}
-    return DocumentWork(units=units, key_class=key_class, counts=counts, uncapped=uncapped, timings=timings)
+    return DocumentWork(units=units, key_class=key_class, counts=counts, uncapped=uncapped, timings=timings, listed=listed)
 
 
 @dataclass
@@ -288,7 +319,7 @@ def series_windows(
     started = time.perf_counter()
     if table.resume is None or table.resume.key is None:
         raise ValueError(f"{table.name} declares no per-key resume contract")
-    
+
     key_col, date_col = table.resume.key, cast(str, table.resume.frontier_col)
     overlap = pd.Timedelta(days=table.resume.overlap_days)
 
@@ -301,7 +332,7 @@ def series_windows(
     new = set() if full else new_tickers(context.store, table.resume.overlap_days, as_of)
     table_max = context.store.max_date(table, date_col)
     reach = _listing_floors(context, listing, key_col, [key for key in keys if key in new], floor)
-    
+
     windows: dict[str, list[tuple[pd.Timestamp, pd.Timestamp]]] = {}
     key_class: dict[str, str] = {}
     holed: dict[str, tuple[pd.Timestamp, pd.Timestamp]] = {}
@@ -315,9 +346,9 @@ def series_windows(
         if key_class[key] == KEY_ESTABLISHED and _has_holes(calendar, *stats[key]):
             holed[key] = (max(stats[key][0], floor), since)
 
-        # start date to redo is latest day - overlap days 
+        # start date to redo is latest day - overlap days
         windows[key] = [(since, until)] if since <= until else []
-        
+
     read_stats = time.perf_counter()
     if holed:
         df_dates = cast(pd.DataFrame, context.store.load(table, columns=[key_col, date_col], where={key_col: list(holed)}, markers=True))
@@ -364,11 +395,14 @@ def archive_periods(context: Context, tables: Sequence[Table], published: Sequen
     periods stored in every one of `tables` (an absent table stores none)."""
     starts = [pd.Timestamp(t.resume.source_start).date() for t in tables if t.resume is not None and t.resume.source_start]
     floor = max(starts) if starts else None
-    listed = [p for p in dict.fromkeys(published) if floor is None or period_end(p) >= floor]
     stored: frozenset[str] | None = None
     for table in tables:
         values = stored_values(context, table, _period_column(table))
         stored = values if stored is None else stored & values
+    required = list(published)
+    if tuple(tables) in ((Tables.insider_transactions,), (Tables.sec_fails_to_deliver_security,)):
+        required.extend(sorted(stored or ()))
+    listed = [p for p in dict.fromkeys(required) if floor is None or period_end(p) >= floor]
     return listed, stored or frozenset()
 
 

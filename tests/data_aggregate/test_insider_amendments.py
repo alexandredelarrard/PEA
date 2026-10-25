@@ -27,7 +27,9 @@ def _build(df_rows: pd.DataFrame) -> pd.DataFrame:
     close = pd.DataFrame(100.0, index=IDX, columns=TICKERS)
     fh = pd.DataFrame([{"ticker": t, "as_of": pd.Timestamp("2023-01-01"), "sharesOutstanding": 1e6, "sharesOutstandingPit": 1e6} for t in TICKERS])
     frames = make_frames(IDX, {t: {t: 1.0} for t in TICKERS}, close_split=close)
-    return build_insider_feature_panel(frames, df_rows, shares_out_history=fh, coverage=InsiderCoverage.from_availability(None, COMPLETE))
+    return build_insider_feature_panel(
+        frames, df_rows, shares_out_history=fh, coverage=InsiderCoverage.from_availability(None, pd.Series(COMPLETE, index=TICKERS))
+    )
 
 
 def _series(panel: pd.DataFrame, column: str, ticker: str = "AAA") -> pd.Series:

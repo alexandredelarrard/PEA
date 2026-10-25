@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -127,7 +127,8 @@ def test_builder_payload_reads_are_unique_with_optional_sources_absent(
     print(f"SANITY: {cls.__name__} reads each payload once, including absent optional sources.")
 
 
-def test_ftd_step_retains_global_zip_dates_from_one_stream(sqlite_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("checked", [False, True], ids=["legacy-unknown", "checked-zero"])
+def test_ftd_step_retains_global_zip_dates_from_one_stream(sqlite_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, checked: bool) -> None:
     idx = pd.bdate_range("2023-12-01", "2024-02-14", name="date")
     sqlite_store.save(
         Tables.sec_fails_to_deliver,
@@ -140,6 +141,19 @@ def test_ftd_step_retains_global_zip_dates_from_one_stream(sqlite_store: Any, tm
             }
         ),
     )
+    if checked:
+        sqlite_store.save(
+            Tables.sec_fails_to_deliver,
+            pd.DataFrame(
+                {
+                    "date": [pd.Timestamp("2024-01-12")],
+                    "ticker": ["AAA"],
+                    "fails_quantity": [0.0],
+                    "period": ["202401a"],
+                    "source_checked_at": [pd.Timestamp("2024-01-30")],
+                }
+            ),
+        )
     ctx = context(sqlite_store, tmp_path)
     step = StepCubeInstitutionals(ctx, ctx.config)
     frames = PriceFrames(trading_index=idx, universe=("AAA",), peers={}, volume=pd.DataFrame({"AAA": 1000.0}, index=idx))
@@ -153,14 +167,29 @@ def test_ftd_step_retains_global_zip_dates_from_one_stream(sqlite_store: Any, tm
     monkeypatch.setattr(sqlite_store, "iter_load", capture)
     result = step._short_flow_panel(frames, None, None, pd.DataFrame(), QuantityBasis.from_context(resolve_share_events(None, None, {}), idx))
     assert result is not None
-    ratio = result.set_index(["date", "ticker"])["f_ic_ftd_to_adv20"]
-    assert ratio.loc[(pd.Timestamp("2024-01-30"), "AAA")] == 0
+    keys = pd.MultiIndex.from_product([idx, ["AAA"]], names=["date", "ticker"])
+    ratio = result.set_index(["date", "ticker"]).reindex(index=keys, columns=["f_ic_ftd_to_adv20"])["f_ic_ftd_to_adv20"]
+    value = ratio.loc[(pd.Timestamp("2024-01-30"), "AAA")]
+    assert value == 0 if checked else pd.isna(value)
     assert streams.count(Tables.sec_fails_to_deliver) == 1
-    assert set(result["ticker"]) == {"AAA"}
-    print("SANITY: actual step uses OTHER's observed ZIP date to publish AAA's zero with one FTD stream.")
+    assert set(result["ticker"]).issubset({"AAA"})
+    print(
+        "SANITY: one FTD stream retains global publication dates, but only AAA's checked zero can publish zero; OTHER cannot establish AAA absence."
+    )
 
 
-@pytest.mark.parametrize("source", [None, pd.DataFrame(), pd.DataFrame({"ticker": ["AAA"], "shares": [10.0]})], ids=["absent", "empty", "malformed"])
+@pytest.mark.parametrize(
+    "source",
+    [
+        None,
+        pd.DataFrame(),
+        pd.DataFrame({"ticker": ["AAA"], "shares": [10.0]}),
+        pd.DataFrame(
+            {"ticker": ["AAA"], "filing_date": [pd.Timestamp("2024-01-02")], "security_type": ["nonderiv"], "lineage_role": ["canonical_current"]}
+        ),
+    ],
+    ids=["absent", "empty", "malformed-metadata", "malformed-cleaner"],
+)
 def test_public_step_preserves_unusable_insider_source_boundary(
     sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, source: pd.DataFrame | None
 ) -> None:
@@ -168,7 +197,18 @@ def test_public_step_preserves_unusable_insider_source_boundary(
     ctx = context(sqlite_store, tmp_path)
     step = StepCubeInstitutionals(ctx, ctx.config)
     monkeypatch.setattr(capital_inputs, "load_peers_or_raise", lambda ctx: {})
-    monkeypatch.setattr("src.data_aggregate.utils.institutionals.inputs.load_insider_transactions", lambda *args: source)
+    if source is not None:
+        sqlite_store.save(Tables.insider_transactions, pd.DataFrame([row(ticker="AAA")]))
+    streamed = sqlite_store.iter_load
+
+    def optional_source(table: Any, **kwargs: Any) -> Iterator[pd.DataFrame]:
+        if table == Tables.insider_transactions:
+            if source is not None:
+                yield source
+        else:
+            yield from streamed(table, **kwargs)
+
+    monkeypatch.setattr(sqlite_store, "iter_load", optional_source)
 
     def forbidden(*args: Any, **kwargs: Any) -> Any:
         raise AssertionError("unusable source reached quantity reconstruction")
@@ -178,6 +218,48 @@ def test_public_step_preserves_unusable_insider_source_boundary(
     assert set(result.columns) == {"date", "ticker"}
     print(
         "SANITY: absent, empty or malformed optional insider payload never enters share reconstruction and keeps the public step's empty-family behavior."
+    )
+
+
+def test_actual_loader_valid_empty_preserves_quiet_counts_and_undefined_ratios(
+    sqlite_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    days = seed_prices(sqlite_store, periods=260)
+    marker = row(
+        ticker="AAA",
+        accession_number="actual-empty",
+        row_sequence=0,
+        security_type="_empty",
+        transaction_code=None,
+        shares=None,
+        price_per_share=None,
+        transaction_date=None,
+        filing_date="2024-01-02",
+        lineage_role=None,
+    )
+    marker.update(fetched_at=pd.Timestamp("2025-01-02"), inventory_checked_through=days.max())
+    sqlite_store.save(Tables.insider_transactions, pd.DataFrame([marker]))
+    sqlite_store.save(
+        Tables.fundamentals_history,
+        pd.DataFrame({"ticker": ["AAA"], "as_of": [pd.Timestamp("2023-01-01")], "sharesOutstanding": [1000.0], "sharesOutstandingPit": [1000.0]}),
+    )
+    ctx = context(sqlite_store, tmp_path)
+    step = StepCubeInstitutionals(ctx, ctx.config)
+    monkeypatch.setattr(capital_inputs, "load_peers_or_raise", lambda ctx: {})
+    panel = step.build_panel().set_index(["date", "ticker"])
+    ratios = [
+        "f_ic_insider_net_buy_ratio_180d",
+        "f_ic_insider_owner_surprise_120d",
+        "f_ic_insider_purchase_pct_prior",
+        "f_ic_insider_management_position_change_60d",
+    ]
+    gross = ["f_ic_insider_buy_value_mcap_60d", "f_ic_insider_distinct_buyers_120d", "f_ic_insider_cluster_buy_120d"]
+    quiet_gross = panel.loc[(days[-1], "AAA"), gross]
+    assert isinstance(quiet_gross, pd.Series)
+    assert quiet_gross.eq(0).to_numpy().all()
+    assert panel.reindex(columns=ratios).isna().all().all()
+    print(
+        "SANITY: actual loader/public step accepts a checked real empty accession; supported quiet gross/counts are0 and all four undefined ratios remain NULL."
     )
 
 

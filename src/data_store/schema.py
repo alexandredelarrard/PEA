@@ -244,8 +244,8 @@ class Tables:
         ("ticker", "date"),
         date_col="date",
         freshness="daily",
-        read_columns=("date", "ticker", "short_volume", "total_volume", "short_interest", "avg_daily_volume"),
-        optional_columns=frozenset({"short_interest", "avg_daily_volume"}),
+        read_columns=("date", "ticker", "short_volume", "total_volume", "short_interest", "avg_daily_volume", "source_checked_at"),
+        optional_columns=frozenset({"short_interest", "avg_daily_volume", "source_checked_at"}),
         # The first day FINRA serves; earlier never-stored days are not requested.
         resume=Resume(RESUME_SERIES, "ticker", "date", 7, source_start="2018-08-01"),
     )
@@ -260,7 +260,8 @@ class Tables:
         date_col="date",
         date_type_cols=("date",),
         freshness="biweekly",
-        read_columns=("date", "ticker", "fails_quantity", "period"),
+        read_columns=("date", "ticker", "fails_quantity", "period", "source_checked_at"),
+        optional_columns=frozenset({"source_checked_at"}),
         resume=Resume(RESUME_ARCHIVE, "ticker", "period", 31, period_col="period", source_start="2009-07-01"),
     )
     # SEC Fails-to-Deliver, RAW and PER SECURITY: one row per source line (no summing), keyed
@@ -937,6 +938,7 @@ class Tables:
             "expiration_date",
             "original_submission_date",
             "economic_date",
+            "inventory_checked_through",
         ),
         freshness="daily",
         freshness_date_col="filing_date",
@@ -967,7 +969,10 @@ class Tables:
             "document_type",
             "source",
             "row_sequence",
+            "fetched_at",
+            "inventory_checked_through",
         ),
+        optional_columns=frozenset({"fetched_at", "inventory_checked_through"}),
         # Two legs resume from these rows. EDGAR: the local index's Forms 3/4/5 filed after the last
         # stored zip quarter, minus the accessions stored from EDGAR under the key (markers
         # included). Zip: the quarters no row carries yet. A marker takes `row_sequence` = 0.

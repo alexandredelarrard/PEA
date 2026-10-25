@@ -24,6 +24,7 @@ import time
 from collections.abc import Collection, Mapping, Sequence
 from typing import cast
 
+import numpy as np
 import pandas as pd
 import requests
 from tqdm import tqdm
@@ -36,11 +37,7 @@ from src.data_extract.utils.common.security_master import EXCLUDED, SOURCE_FTD
 from src.data_extract.utils.common.sessions import last_completed_session
 from src.data_extract.utils.institutionals.fetch_fails_to_deliver import load_fails_master, master_stamps
 from src.data_extract.utils.institutionals.security_tape import (
-    KEY_CHUNK,
     SUMMED_ROLES,
-    TICKER_CHUNK,
-    apply_grain,
-    load_chunked,
     outside_scope,
     restamp_targets,
     stamp_changed,
@@ -48,7 +45,7 @@ from src.data_extract.utils.institutionals.security_tape import (
     warn_lost_rows,
 )
 from src.data_store.schema import Resume, Tables
-from src.utils.batching import batched_tuples
+from src.utils.filer_tables import filing_window
 from src.utils.string import squash, yahoo_symbol
 
 _URL = "https://cdn.finra.org/equity/regsho/daily/CNMSshvol{yyyymmdd}.txt"
@@ -74,12 +71,19 @@ logger = logging.getLogger(__name__)
 # Pure parse and symbology (unit-tested)                                        #
 # --------------------------------------------------------------------------- #
 def _parse_regsho(text: str) -> pd.DataFrame:
-    """Every line of one RegSHO file, raw: the symbol as filed (case and separators kept), `Market`, the three volumes."""
-    if not text or "|" not in text:
-        return pd.DataFrame(columns=list(RAW_COLUMNS))
-    df = pd.read_csv(io.StringIO(text), sep="|", dtype=str, keep_default_na=False)
-    if "Symbol" not in df.columns:
-        return pd.DataFrame(columns=list(RAW_COLUMNS))
+    """Validate the entire served file before retaining its raw symbols and quantities."""
+    lines = text.strip().splitlines()
+    header = "Date|Symbol|ShortVolume|ShortExemptVolume|TotalVolume|Market"
+    legacy = "Date|Symbol|ShortVolume|TotalVolume|Market"
+    supplied = lines[0].strip().lstrip("\ufeff") if lines else ""
+    if len(lines) < 2 or supplied not in (header, legacy) or not lines[-1].strip().isdigit():
+        raise ValueError("RegSHO missing header or record-count trailer")
+    records = lines[1:-1]
+    if int(lines[-1]) != len(records) or any(len(row.split("|")) != len(supplied.split("|")) for row in records):
+        raise ValueError("RegSHO record-count or line-width mismatch")
+    df = pd.read_csv(io.StringIO("\n".join([supplied, *records])), sep="|", dtype=str, keep_default_na=False)
+    if "ShortExemptVolume" not in df:
+        df["ShortExemptVolume"] = pd.NA
     out = pd.DataFrame(
         {
             "date": pd.to_datetime(df["Date"].str.strip(), format="%Y%m%d", errors="coerce"),
@@ -91,13 +95,24 @@ def _parse_regsho(text: str) -> pd.DataFrame:
             },
         }
     )
-    out = out[out["date"].notna() & out["source_symbol"].ne("")]
+    validated = _VOLUMES if supplied == header else ["short_volume", "total_volume"]
+    quantities = out[validated].to_numpy(dtype=float)
+    if out["date"].isna().any() or out["source_symbol"].eq("").any() or not np.isfinite(quantities).all() or (quantities < 0).any():
+        raise ValueError("RegSHO invalid date, symbol or finite nonnegative quantity")
+    if out["short_volume"].gt(out["total_volume"]).any():
+        raise ValueError("RegSHO short volume exceeds reported total volume")
+    if supplied == header and out["short_exempt_volume"].gt(out["short_volume"]).any():
+        raise ValueError("RegSHO exempt volume exceeds its short-volume total")
     out = out.groupby(["date", "source_symbol"], as_index=False, sort=False).agg(
         market=("market", "first"),
         short_volume=("short_volume", "sum"),
         short_exempt_volume=("short_exempt_volume", "sum"),
         total_volume=("total_volume", "sum"),
     )
+    if supplied == legacy:
+        out["short_exempt_volume"] = np.nan
+    if not np.isfinite(out[validated].to_numpy(dtype=float)).all():
+        raise ValueError("RegSHO grouped source quantities overflowed")
     return out[list(RAW_COLUMNS)].reset_index(drop=True)
 
 
@@ -197,7 +212,9 @@ def ticker_rows(stamped: pd.DataFrame, tickers: Collection[str] | None = None) -
     summed = summed_lines(stamped, tickers)
     if summed.empty:
         return pd.DataFrame(columns=list(TICKER_COLUMNS))
-    ratio = pd.to_numeric(summed["conversion_ratio"], errors="coerce").fillna(1.0)
+    ratio = pd.to_numeric(summed["conversion_ratio"], errors="coerce")
+    if not (np.isfinite(ratio) & ratio.gt(0)).all():
+        raise ValueError("RegSHO needs finite positive class conversion ratios")
     work = pd.DataFrame(
         {
             "date": pd.to_datetime(summed["date"]).dt.normalize(),
@@ -206,7 +223,10 @@ def ticker_rows(stamped: pd.DataFrame, tickers: Collection[str] | None = None) -
             "total_volume": pd.to_numeric(summed["total_volume"], errors="coerce") * ratio,
         }
     )
-    return work.groupby(["ticker", "date"], as_index=False, sort=True)[["short_volume", "total_volume"]].sum()[list(TICKER_COLUMNS)]
+    result = work.groupby(["ticker", "date"], as_index=False, sort=True)[["short_volume", "total_volume"]].sum()[list(TICKER_COLUMNS)]
+    if not np.isfinite(result[["short_volume", "total_volume"]].to_numpy(dtype=float)).all():
+        raise ValueError("RegSHO class-converted aggregate quantities overflowed")
+    return result
 
 
 def change_stamps(master: pd.DataFrame | None, identity: Identity) -> dict[str, pd.Timestamp]:
@@ -232,13 +252,14 @@ def _fetch_day(
     return r.text if r.status_code == 200 else None
 
 
-def _missing_days(context: Context, calendar: pd.DatetimeIndex, floor: pd.Timestamp) -> pd.DatetimeIndex:
-    """Calendar sessions inside the stored span (from `floor`) on which no key has a row: day files never stored."""
-    stored = pd.DatetimeIndex(pd.to_datetime(context.store.distinct(Tables.short_interest, "date"))).normalize()
+def _missing_days(context: Context, calendar: pd.DatetimeIndex, floor: pd.Timestamp, tickers: Sequence[str]) -> pd.DatetimeIndex:
+    """Never-stored global days plus scoped NULL quantities whose retained keys still require source."""
+    known, pending = context.store.short_source_days(tickers)
+    stored = pd.DatetimeIndex(sorted(known))
     if stored.empty:
         return pd.DatetimeIndex([])
     span = calendar[(calendar >= max(stored.min(), floor)) & (calendar <= stored.max())]
-    return span.difference(stored)
+    return span.difference(stored).union(pd.DatetimeIndex(sorted(pending)))
 
 
 def _plan_days(
@@ -248,6 +269,7 @@ def _plan_days(
     days past the calendar). `repair` adds each key's own interior gaps (a one-time pass, not nightly).
     A new key's first `prices` date is its listing floor: a joiner listed after the FINRA start is read in full once."""
     run_date = pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize()
+    floor = document_floor(Tables.short_interest, run_date, years_history)
     until = last_completed_session(as_of)
     calendar = trading_calendar(context)
     work = series_windows(
@@ -261,10 +283,10 @@ def _plan_days(
         calendar=calendar if repair else None,
         listing=Tables.prices,
     )
-    days = _missing_days(context, calendar, document_floor(Tables.short_interest, run_date, years_history))
+    days = _missing_days(context, calendar, floor, tickers)
     for since, end, _keys in work.groups():
         days = days.union(session_dates(calendar, since, end))
-    return days
+    return days.intersection(session_dates(calendar, floor, until))
 
 
 def _stored_days(context: Context) -> set[pd.Timestamp]:
@@ -289,19 +311,61 @@ def _company_rows(context: Context, identity: Identity, companies: Sequence[str]
     table = Tables.sec_short_volume_security
     keys = master_keys(identity, companies)
     symbols = sorted(s for s in map(str, context.store.distinct(table, "source_symbol")) if finra_key(s) in keys)
-    kept = load_chunked(context, table, SECURITY_COLUMNS, "ticker", companies, TICKER_CHUNK)
-    kept += load_chunked(context, table, SECURITY_COLUMNS, "source_symbol", symbols, KEY_CHUNK)
-    if not kept:
-        return pd.DataFrame(columns=list(SECURITY_COLUMNS))
-    rows = pd.concat(kept, ignore_index=True)
+    rows = context.store.short_volume_source_cohort(companies, symbols)
     rows["date"] = pd.to_datetime(rows["date"]).dt.normalize()
-    return rows.drop_duplicates(["source_symbol", "date"], ignore_index=True)
+    return rows
 
 
-def _delete_rows(context: Context, rows: pd.DataFrame) -> None:
-    for symbol, group in rows.groupby("source_symbol", sort=True):
-        for chunk in batched_tuples(sorted(group["date"]), KEY_CHUNK):
-            context.store.delete(Tables.sec_short_volume_security, where={"source_symbol": str(symbol), "date": chunk})
+def _retain_short_source_proof(grain: pd.DataFrame, previous: pd.DataFrame) -> pd.DataFrame:
+    """Carry only unchanged existing joint source observations under the guarded source/identity cohorts."""
+    old = previous.reindex(columns=[*TICKER_COLUMNS, "source_checked_at"]).copy()
+    old["date"] = pd.to_datetime(old["date"])
+    incoming = grain.copy()
+    incoming["date"] = pd.to_datetime(incoming["date"])
+    merged = incoming.merge(old, on=["ticker", "date"], how="left", suffixes=("", "_old"))
+    same = pd.Series(True, index=merged.index)
+    for column in ("short_volume", "total_volume"):
+        same &= merged[column].eq(merged[f"{column}_old"]) | (merged[column].isna() & merged[f"{column}_old"].isna())
+    merged["source_checked_at"] = pd.to_datetime(merged["source_checked_at"]).where(same)
+    result = merged[[*TICKER_COLUMNS, "source_checked_at"]]
+    quiet = old.loc[old["source_checked_at"].notna() & old["short_volume"].eq(0) & old["total_volume"].isna()]
+    quiet = quiet.loc[~pd.MultiIndex.from_frame(quiet[["ticker", "date"]]).isin(pd.MultiIndex.from_frame(result[["ticker", "date"]]))]
+    return pd.concat([result, quiet], ignore_index=True)
+
+
+def _short_grain_losses(previous: pd.DataFrame, grain: pd.DataFrame) -> list[dict]:
+    old = previous.copy()
+    old["date"] = pd.to_datetime(old["date"])
+    missing = old.loc[~pd.MultiIndex.from_frame(old[["ticker", "date"]]).isin(pd.MultiIndex.from_frame(grain[["ticker", "date"]]))]
+    records = []
+    for ticker, group in missing.groupby("ticker", sort=True):
+        first, last = filing_window(group["date"])
+        records.append(
+            {
+                "table": Tables.short_interest.name,
+                "ticker": str(ticker),
+                "cik": "",
+                "first_filed": first,
+                "last_filed": last,
+                "keys": len(group),
+                "rows": len(group),
+            }
+        )
+    return records
+
+
+def _same_short_cohorts(stored: pd.DataFrame, payload: pd.DataFrame, previous: pd.DataFrame, grain: pd.DataFrame) -> bool:
+    for left, right, keys in ((stored, payload, list(Tables.sec_short_volume_security.pk)), (previous, grain, list(Tables.short_interest.pk))):
+        if (set(left.columns) ^ set(right.columns)) - {"source_checked_at"}:
+            return False
+        columns = sorted(set(left.columns) | set(right.columns))
+        left, right = left.reindex(columns=columns), right.reindex(columns=columns)
+        left["date"], right["date"] = pd.to_datetime(left["date"]), pd.to_datetime(right["date"])
+        left, right = left.sort_values(keys), right.sort_values(keys)
+        left, right = left.astype(object).where(left.notna(), None), right.astype(object).where(right.notna(), None)
+        if left.to_dict("records") != right.to_dict("records"):
+            return False
+    return True
 
 
 def restamp_short_volume(
@@ -338,6 +402,9 @@ def restamp_short_volume(
     if not names:
         return []
     stored = _company_rows(context, resolver, names)
+    rebuilt = [name for name in names if name in universe]
+    previous_columns = context.store.columns(Tables.short_interest)
+    previous = context.store.load(Tables.short_interest, columns=previous_columns, where={"ticker": rebuilt}, optional=True) if rebuilt else None
     if stored.empty:
         return []
     fresh = stamp_short_volume(stored[list(RAW_COLUMNS)], resolver, universe | others)
@@ -346,19 +413,26 @@ def restamp_short_volume(
     gone = merged[merged["_merge"].eq("left_only") & ~held]
     both = merged[merged["_merge"].eq("both") & ~held]
     changed = stamp_changed(both, both, old_suffix="_old")
-    if not dry_run:
-        if not gone.empty:
-            _delete_rows(context, gone)
-        if changed.any():
-            context.store.save(table, both.loc[changed, list(SECURITY_COLUMNS)])
     logger.info(
         "RegSHO: %d row(s) of %d company(ies) re-stamped, %d left scope%s", int(changed.sum()), len(names), len(gone), " (dry run)" if dry_run else ""
     )
-    rebuilt = [name for name in names if name in universe]
     if not rebuilt:
         return []
-    grain = ticker_rows(fresh, rebuilt)
-    return apply_grain(context, rebuilt, grain, dry_run=dry_run, table=Tables.short_interest, columns=TICKER_COLUMNS)
+    old_grain = previous if previous is not None else pd.DataFrame(columns=list(TICKER_COLUMNS))
+    grain = _retain_short_source_proof(ticker_rows(fresh.loc[~fresh["ticker"].isin(others)], rebuilt), old_grain)
+    records = _short_grain_losses(old_grain, grain)
+    retained = merged.loc[held, [f"{column}_old" if column not in ("source_symbol", "date") else column for column in SECURITY_COLUMNS]]
+    retained.columns = list(SECURITY_COLUMNS)
+    payload = pd.concat([fresh.loc[~fresh["ticker"].isin(others), list(SECURITY_COLUMNS)], retained], ignore_index=True)
+    if not dry_run and not _same_short_cohorts(stored, payload, old_grain, grain):
+        expected_grain = old_grain.reindex(columns=list(dict.fromkeys([*previous_columns, *grain.columns])))
+        context.store.replace_institutional_source(
+            {table: payload, Tables.short_interest: grain},
+            {table: {"source_symbol": sorted(set(stored["source_symbol"]))}, Tables.short_interest: {"ticker": rebuilt}},
+            resolver.source_cohort,
+            {table: stored, Tables.short_interest: expected_grain},
+        )
+    return records
 
 
 def _log_stamps(stamped: pd.DataFrame) -> None:
@@ -373,6 +447,94 @@ def _log_stamps(stamped: pd.DataFrame) -> None:
             len(unresolved),
             ", ".join(f"{s} {n}" for s, n in counts.items()),
         )
+
+
+def _validated_regsho_day(day: pd.Timestamp, session: requests.Session) -> pd.DataFrame | None:
+    text = _fetch_day(day, session)
+    if not text:
+        return None
+    lines = _parse_regsho(text)
+    if not lines["date"].eq(day.normalize()).all():
+        raise ValueError("RegSHO source date does not match requested day")
+    return lines
+
+
+def _read_regsho_days(
+    days: Sequence[pd.Timestamp], identity: Identity, universe: Collection[str], pause: float
+) -> tuple[pd.DataFrame, list[pd.Timestamp], list[pd.Timestamp], list[str]]:
+    """Stage fully validated source units; failed units never enter the replacement cohort."""
+    known, fallback = master_keys(identity, universe), identity.universe_symbols(universe)
+    frames: list[pd.DataFrame] = []
+    successful: list[pd.Timestamp] = []
+    missing: list[pd.Timestamp] = []
+    errors: list[str] = []
+    with requests.Session() as session:
+        for day in tqdm(days, "short_interest OffExchange - fetch RegSHO"):
+            try:
+                lines = _validated_regsho_day(day, session)
+            except Exception as exc:
+                logger.error("RegSHO %s failed: %s", day.date(), exc)
+                errors.append(f"{day.date()} ({exc})")
+                continue
+            if lines is None:
+                missing.append(day)
+                continue
+            successful.append(day)
+            in_scope = lines["source_symbol"].map(finra_key).isin(known) | lines["source_symbol"].map(yahoo_symbol).isin(fallback)
+            frames.append(lines.loc[in_scope])
+            time.sleep(pause)
+    raw = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=list(RAW_COLUMNS))
+    return raw, successful, missing, errors
+
+
+def _incomplete_regsho_keys(stamped: pd.DataFrame, identity: Identity) -> set[tuple[str, pd.Timestamp]]:
+    """Any relevant unresolved raw security prevents a complete ordinary-company aggregate."""
+    incomplete = set()
+    for row in stamped.loc[stamped["lineage_role"].isna()].itertuples(index=False):
+        if finra_marker_kind(str(row.source_symbol)) is not None:
+            continue
+        intervals = identity.securities_by_symbol.get((SOURCE_FTD, finra_key(str(row.source_symbol))), ())
+        for _, _, hit in intervals:
+            if hit.canonical_company is not None and hit.lineage_role in SUMMED_ROLES:
+                incomplete.add((hit.canonical_company, cast(pd.Timestamp, row.date)))
+    return incomplete
+
+
+def _invalid_regsho_basis(identity: Identity, days: Sequence[pd.Timestamp], universe: Collection[str]) -> set[tuple[str, pd.Timestamp]]:
+    """An unknown class conversion cannot establish a checked company absence."""
+    intervals = [item for (source, _), values in identity.securities_by_symbol.items() if source == SOURCE_FTD for item in values]
+    invalid = set()
+    for start, end, hit in intervals:
+        if (
+            hit.canonical_company in universe
+            and hit.lineage_role in SUMMED_ROLES
+            and (not np.isfinite(hit.conversion_ratio) or hit.conversion_ratio <= 0)
+        ):
+            invalid.update((hit.canonical_company, day) for day in days if day >= start and (end is None or day < end))
+    return invalid
+
+
+def _checked_regsho_grain(stamped: pd.DataFrame, days: Sequence[pd.Timestamp], identity: Identity, universe: Collection[str]) -> pd.DataFrame:
+    """A checked mapped absence has zero short flow and an unavailable total-volume denominator."""
+    grain = ticker_rows(stamped, universe)
+    candidates = pd.MultiIndex.from_product([sorted(universe), days], names=["ticker", "date"]).to_frame(index=False)
+    symbols = identity.universe_symbols(universe)
+    mappings = [
+        (symbol, day, identity.security_on(symbol=finra_key(symbol), source=SOURCE_FTD, day=day) or _fallback(identity, symbol, day))
+        for symbol in symbols
+        for day in days
+    ]
+    supported = {(hit.canonical_company, day) for _, day, hit in mappings if hit is not None and hit.lineage_role in SUMMED_ROLES}
+    supported.update(grain[["ticker", "date"]].itertuples(index=False, name=None))
+    supported -= _incomplete_regsho_keys(stamped, identity)
+    supported -= _invalid_regsho_basis(identity, days, universe)
+    candidates = candidates.loc[[(ticker, day) in supported for ticker, day in candidates.itertuples(index=False, name=None)]]
+    grain = grain.loc[[(ticker, day) in supported for ticker, day in grain[["ticker", "date"]].itertuples(index=False, name=None)]]
+    if not candidates.empty:
+        candidates = candidates.merge(grain, on=["ticker", "date"], how="left")
+        candidates["short_volume"] = candidates["short_volume"].fillna(0.0)
+        grain = candidates
+    return grain.astype({"short_volume": "float64", "total_volume": "float64"}).assign(source_checked_at=pd.Timestamp.now(tz="UTC").tz_localize(None))
 
 
 def fetch_short_interest(
@@ -402,31 +564,8 @@ def fetch_short_interest(
     else:
         days, stored_days = list(_plan_days(context, sorted(universe), years_history, False, as_of, repair=repair)), set()
     resolver = identity or load_identity(context)
-    known, fallback = master_keys(resolver, universe), resolver.universe_symbols(universe)
     logger.info(f"Fetching {len(days)} RegSHO day-file(s) for {len(universe)} tickers")
-
-    frames: list[pd.DataFrame] = []
-    successful: list[pd.Timestamp] = []
-    missing: list[pd.Timestamp] = []
-    errors: list[str] = []
-    session = requests.Session()
-    for day in tqdm(days, "short_interest OffExchange - fetch RegSHO"):
-        try:
-            text = _fetch_day(day, session)
-        except Exception as e:  # incremental: one bad day must not abort the run
-            logger.error(f"RegSHO {day.date()} failed: {e}")
-            errors.append(f"{day.date()} ({e})")
-            continue
-        if not text:
-            missing.append(day)
-            continue
-        successful.append(day)
-        lines = _parse_regsho(text)
-        in_scope = lines["source_symbol"].map(finra_key).isin(known) | lines["source_symbol"].map(yahoo_symbol).isin(fallback)
-        if in_scope.any():
-            frames.append(lines[in_scope])
-        time.sleep(pause)
-    session.close()
+    raw, successful, missing, errors = _read_regsho_days(days, resolver, universe, pause)
 
     if full and not scoped:
         lost = sorted(day.date().isoformat() for day in set(missing) & stored_days)
@@ -435,29 +574,36 @@ def fetch_short_interest(
                 f"RegSHO full: {len(errors)} fetch error(s) {errors[:5]}, {len(lost)} stored date(s) not served {lost[:20]}, "
                 f"{len(successful)} served; aborting before any write"
             )
-    raw = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=list(RAW_COLUMNS))
     stamped = stamp_short_volume(raw, resolver, universe | others) if not raw.empty else pd.DataFrame(columns=[*SECURITY_COLUMNS, "conversion_ratio"])
+    stamped = stamped.astype(dict.fromkeys(_VOLUMES, "float64"))
     stamped = stamped[~stamped["ticker"].isin(others)]
-    grain = ticker_rows(stamped, universe)
+    grain = _checked_regsho_grain(stamped, successful, resolver, universe)
     if not stamped.empty:
         _log_stamps(stamped)
 
     if full and not scoped:
         if grain.empty or stamped.duplicated(["source_symbol", "date"]).any():
             raise ValueError("RegSHO full staged no ticker row, or a duplicate (source_symbol, date) key; aborting before any write")
-        context.store.replace(Tables.sec_short_volume_security, stamped[list(SECURITY_COLUMNS)])
-        written = context.store.replace(Tables.short_interest, grain)
+        counts = context.store.replace_institutional_source(
+            {Tables.sec_short_volume_security: stamped[list(SECURITY_COLUMNS)], Tables.short_interest: grain},
+            {Tables.sec_short_volume_security: None, Tables.short_interest: None},
+            resolver.source_cohort,
+        )
+        written = counts[Tables.short_interest]
         logger.info(f"RegSHO full: {len(successful)} served day(s), {len(stamped)} raw row(s), {written} ticker row(s); no legacy row kept")
         return
 
     written = 0
-    if not stamped.empty:
-        context.store.save(Tables.sec_short_volume_security, stamped[list(SECURITY_COLUMNS)])
-    if successful and context.store.exists(Tables.short_interest):
-        for chunk in batched_tuples(sorted(universe), TICKER_CHUNK):
-            context.store.delete(Tables.short_interest, where={"ticker": chunk, "date": successful})
-    if not grain.empty:
-        written = context.store.save(Tables.short_interest, grain)
+    if successful:
+        counts = context.store.replace_institutional_source(
+            {Tables.sec_short_volume_security: stamped[list(SECURITY_COLUMNS)], Tables.short_interest: grain},
+            {
+                Tables.sec_short_volume_security: {"ticker": sorted(universe), "date": successful},
+                Tables.short_interest: {"ticker": sorted(universe), "date": successful},
+            },
+            resolver.source_cohort,
+        )
+        written = counts[Tables.short_interest]
 
     logger.info(f"Saved {written} short-volume ticker row(s) over {len(successful)} day(s) to '{Tables.short_interest}'")
     warn_lost_rows(logger, "RegSHO", restamp_short_volume(context, None, universe, identity=resolver, as_of=as_of, others=others))

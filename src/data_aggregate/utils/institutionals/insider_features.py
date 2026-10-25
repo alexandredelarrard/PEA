@@ -63,15 +63,15 @@ TEN_B5_1_FLOOR = pd.Timestamp("2023-04-01")
 class InsiderCoverage:
     """Independent public-source/plan floors and complete-observation frontier."""
 
-    complete_through: pd.Timestamp | None = None
+    complete_through: pd.Series | None = None
     availability: InstitutionalAvailability | None = None
     insider_floor: pd.Timestamp = INSIDER_FLOOR
     plan_floor: pd.Timestamp = TEN_B5_1_FLOOR
 
     @classmethod
-    def from_availability(cls, availability: InstitutionalAvailability | None, complete_through: pd.Timestamp | None) -> InsiderCoverage:
+    def from_availability(cls, availability: InstitutionalAvailability | None, complete_through: pd.Series | None) -> InsiderCoverage:
         return cls(
-            pd.Timestamp(complete_through) if complete_through is not None and pd.notna(complete_through) else None,
+            complete_through,
             availability,
             availability.source_date(Tables.insider_transactions) if availability is not None else INSIDER_FLOOR,
             availability.source_date(Tables.insider_transactions, "is_10b5_1") if availability is not None else TEN_B5_1_FLOOR,
@@ -110,7 +110,7 @@ def build_insider_feature_panel(
         **_sparse_fields(df_buys, idx, df_mcap),
         **cumulative_positions(df_position_trades, df_positions, df_other_flows, idx, WINDOW_60),
     }
-    fields = _gate_dates(fields, idx, insider_floor, coverage.complete_through)
+    fields = _gate_dates(fields, idx, insider_floor)
 
     # Establish observable quiet windows, preserving unsupported active disclosures.
     df_unsupported = diag.get("unsupported_events", pd.DataFrame())
@@ -185,17 +185,17 @@ def _add_owner_uncertainty(masks: dict[str, pd.DataFrame], df_unknown: pd.DataFr
     masks["ic_insider_owner_surprise_120d"] = df_previous.combine(df_affected, lambda a, b: a.fillna(False) | b.fillna(False))
 
 
-def _gate_dates(
-    fields: dict[str, pd.DataFrame], idx: pd.DatetimeIndex, insider_floor: pd.Timestamp, complete_through: pd.Timestamp | None
-) -> dict[str, pd.DataFrame]:
-    """The non-empty fields, NaN before the source floor and after the complete frontier (when known)."""
+def _gate_dates(fields: dict[str, pd.DataFrame], idx: pd.DatetimeIndex, insider_floor: pd.Timestamp) -> dict[str, pd.DataFrame]:
+    """Preserve observed operands after their public source floor; inventory gates only inferred absence."""
     floor = pd.Series(idx >= insider_floor, index=idx)
-    frontier = (
-        pd.Series(idx <= pd.Timestamp(complete_through).normalize(), index=idx)
-        if complete_through is not None and pd.notna(complete_through)
-        else pd.Series(True, index=idx)
-    )
-    return {name: frame.where(floor & frontier, axis=0) for name, frame in fields.items() if frame is not None and not frame.empty}
+    return {name: frame.where(floor, axis=0) for name, frame in fields.items() if frame is not None and not frame.empty}
+
+
+def _inventory_mask(idx: pd.DatetimeIndex, columns: pd.Index, through: pd.Series | None) -> pd.DataFrame:
+    if through is None:
+        return pd.DataFrame(False, index=idx, columns=columns)
+    ends = pd.to_datetime(through.reindex(columns), errors="coerce")
+    return pd.DataFrame(idx.to_numpy()[:, None] <= ends.to_numpy()[None, :], index=idx, columns=columns)
 
 
 def _listed(stock_close: pd.DataFrame | None, idx: pd.DatetimeIndex, columns: pd.Index) -> pd.DataFrame:
@@ -217,11 +217,7 @@ def _net_buy_mask(
     source floor, and on or before the complete frontier."""
     history_start = pd.Timestamp(insider_floor).normalize() + pd.Timedelta(days=window_days - 1)
     full_window = InstitutionalAvailability.date_mask(idx, columns, history_start)
-    observed_through = (
-        InstitutionalAvailability.through_mask(idx, columns, coverage.complete_through)
-        if coverage.complete_through is not None
-        else pd.DataFrame(False, index=idx, columns=columns)
-    )
+    observed_through = _inventory_mask(idx, columns, coverage.complete_through)
     if coverage.availability is not None:
         return coverage.availability.source_mask(Tables.insider_transactions, idx, columns, requirements=(listed, full_window, observed_through))
     source_started = InstitutionalAvailability.date_mask(idx, columns, insider_floor)
@@ -278,7 +274,18 @@ def _observe_quiet_windows(
                 continue
             observed &= mcap.reindex(index=idx, columns=columns).gt(0)
         frame = fields.get(name, pd.DataFrame(index=idx)).reindex(index=idx, columns=columns)
-        fields[name] = frame.mask(observed & ~active, 0.0).where(observed)
+        ratios = {
+            "ic_insider_purchase_pct_prior",
+            "ic_insider_owner_surprise_120d",
+            "ic_insider_net_buy_ratio_180d",
+            "ic_insider_management_position_change_60d",
+        }
+        if name == "ic_insider_net_buy_ratio_180d":
+            bv = _rolling(activity[buy], idx, WINDOW_180, "value", seen).fillna(0.0)
+            sv = _rolling(activity[sell], idx, WINDOW_180, "value", seen).fillna(0.0)
+            verified = (bv - sv) / (bv + sv).where((bv + sv).gt(0))
+            frame = frame.where(~observed, verified)
+        fields[name] = (frame if name in ratios else frame.mask(observed & ~active, 0.0)).where(active | observed)
     unknown_roles = activity[role_unknown & buy]
     for name, days in (("ic_insider_ceo_buy_mcap_180d", WINDOW_180), ("ic_insider_cfo_buy_mcap_180d", WINDOW_180)):
         if name in fields:
@@ -318,11 +325,11 @@ def _dense_fields(
     if mcap is not None and not mcap.empty:
         out["ic_insider_buy_value_mcap_180d"] = _over(buy_val_180, mcap)
 
-    bv, sv = buy_val_180.fillna(0.0), sell_val_180.fillna(0.0)
+    bv = buy_val_180.where(_rolling(buys, idx, WINDOW_180, None, seen).gt(0))
+    sv = sell_val_180.where(_rolling(sells, idx, WINDOW_180, None, seen).gt(0))
     denom = bv + sv
 
-    # Leave 0/0 undefined here. The caller converts it to an observed neutral 0 only inside an
-    # explicit source-complete window; without that coverage proof, no filing remains unknown.
+    # Unobserved opposite legs require inventory proof; an actual 0/0 always stays undefined.
     # The bounded [-1, 1] range is what keeps this one `raw`.
     out["ic_insider_net_buy_ratio_180d"] = ((bv - sv) / denom.where(denom > 0)).replace([np.inf, -np.inf], np.nan)
 

@@ -535,8 +535,7 @@ def build_symbol_tenure(context: Context, scan: Form345Scan, config_dir: str | P
     unchanged = matches_stored(existing, out, Tables.symbol_tenure)
     written = 0
     if not unchanged:
-        context.store.delete(Tables.symbol_tenure, where={"source": list(BUILD_SOURCES)})
-        written = context.store.save(Tables.symbol_tenure, out)
+        written = context.store.replace_institutional_identity(Tables.symbol_tenure, out, {"source": list(BUILD_SOURCES)})
     if unchanged:
         logger.info("symbol_tenure: unchanged (%d row(s)); write skipped", len(out))
     else:
@@ -603,6 +602,4 @@ def save_dei_period(context: Context, period: str, rows: pd.DataFrame) -> int:
     existing = context.store.load(Tables.symbol_tenure, project=True, where=where, optional=True)
     if matches_stored(existing, rows, Tables.symbol_tenure):
         return 0
-    if existing is not None and not existing.empty:
-        context.store.delete(Tables.symbol_tenure, where=where)
-    return context.store.save(Tables.symbol_tenure, rows) if not rows.empty else 0
+    return context.store.replace_institutional_identity(Tables.symbol_tenure, rows, where)

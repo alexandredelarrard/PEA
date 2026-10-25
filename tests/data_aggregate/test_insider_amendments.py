@@ -11,6 +11,7 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.institutionals import insider_features
+from src.data_aggregate.utils.institutionals.insider_capital import InsiderCapital
 from src.data_aggregate.utils.institutionals.insider_features import build_insider_feature_panel
 from src.data_aggregate.utils.institutionals.insider_quality import clean_transactions
 from tests.conftest import make_frames
@@ -26,7 +27,7 @@ def _build(df_rows: pd.DataFrame) -> pd.DataFrame:
     close = pd.DataFrame(100.0, index=IDX, columns=TICKERS)
     fh = pd.DataFrame([{"ticker": t, "as_of": pd.Timestamp("2023-01-01"), "sharesOutstanding": 1e6, "sharesOutstandingPit": 1e6} for t in TICKERS])
     frames = make_frames(IDX, {t: {t: 1.0} for t in TICKERS}, close_split=close)
-    return build_insider_feature_panel(frames, df_rows, shares_out_history=fh, complete_through=COMPLETE)
+    return build_insider_feature_panel(frames, df_rows, capital=InsiderCapital(shares_out_history=fh), complete_through=COMPLETE)
 
 
 def _series(panel: pd.DataFrame, column: str, ticker: str = "AAA") -> pd.Series:

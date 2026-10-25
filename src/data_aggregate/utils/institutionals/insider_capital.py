@@ -25,10 +25,11 @@ def normalize_trade_capital(
     trading_index: pd.DatetimeIndex,
     share_history: pd.DataFrame | None,
 ) -> pd.DataFrame:
-    """Attach individually normalized dollars and causal session/share-source lineage."""
+    """Attach action-date ratios and lineage; future actions stay unsupported for their public version."""
     df_result = df_trades.copy()
     calendar = trading_index.normalize().unique().sort_values().as_unit("ns")
     action = pd.to_datetime(df_result["transaction_day"], errors="coerce").dt.normalize().dt.as_unit("ns")
+    public_day = pd.to_datetime(df_result["visible_from"], errors="coerce").dt.normalize().dt.as_unit("ns")
     df_result["cap_session"] = pd.Series(pd.NaT, index=df_result.index, dtype="datetime64[ns]")
     df_result["market_cap_on_action"] = np.nan
     df_result["cap_status"] = "missing_action_date"
@@ -39,9 +40,12 @@ def normalize_trade_capital(
         has_prior = action.notna().to_numpy() & (positions >= 0)
         selected = pd.Series(calendar.take(np.clip(positions, 0, len(calendar) - 1)), index=df_result.index)
         recent = (action - selected).le(pd.Timedelta(days=7)).to_numpy()
-        permitted = has_prior & (action.isin(calendar).to_numpy() | recent)
+        already_public = action.le(public_day) & selected.le(public_day)
+        permitted = has_prior & (action.isin(calendar).to_numpy() | recent) & already_public.to_numpy()
         df_result.loc[action.notna(), "cap_status"] = "no_previous_session"
         df_result.loc[has_prior, "cap_status"] = "stale_non_session"
+        df_result.loc[action.notna() & public_day.isna(), "cap_status"] = "missing_public_date"
+        df_result.loc[action.gt(public_day), "cap_status"] = "future_action_date"
         df_result.loc[permitted, "cap_session"] = selected.loc[permitted]
         df_result.loc[permitted, "cap_status"] = "unsupported_cap"
 

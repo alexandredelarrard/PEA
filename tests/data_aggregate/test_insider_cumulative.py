@@ -232,21 +232,21 @@ def test_account_counted_once_and_lots_expire_separately(same_economic_day: bool
     print("SANITY: 10/100 then30/100; first expiry20/110; second expiry unknown; one account denominator and invariant historical prefix/order.")
 
 
-def test_dollar_totals_use_current_cap_and_real_expiry() -> None:
+def test_dollar_totals_use_action_cap_and_real_expiry() -> None:
     rows = [_txn(accession_number="flow", shares=10, value_usd=1000, shares_owned_after=110, officer_title="CEO", is_officer=1)]
-    idx = pd.date_range("2015-06-01", "2015-12-01")
+    idx = pd.date_range("2015-05-29", "2015-12-01")
     close = pd.DataFrame({"AAA": np.where(idx < pd.Timestamp("2015-06-10"), 100.0, 200.0)}, index=idx)
     shares = pd.DataFrame([{"ticker": "AAA", "as_of": pd.Timestamp("2014-01-01"), "sharesOutstanding": 1000.0, "sharesOutstandingPit": 1000.0}])
     panel = build_insider_feature_panel(
         make_frames(idx, _peers(), close_split=close), _frame(rows), capital=InsiderCapital(shares_out_history=shares), complete_through=idx.max()
     ).set_index("date")
     assert panel.loc["2015-06-01", "f_ic_insider_buy_value_mcap_60d"] == pytest.approx(0.01)
-    assert panel.loc["2015-06-10", "f_ic_insider_buy_value_mcap_60d"] == pytest.approx(0.005)
-    assert panel.loc["2015-07-30", "f_ic_insider_buy_value_mcap_60d"] == pytest.approx(0.005)
+    assert panel.loc["2015-06-10", "f_ic_insider_buy_value_mcap_60d"] == pytest.approx(0.01)
+    assert panel.loc["2015-07-30", "f_ic_insider_buy_value_mcap_60d"] == pytest.approx(0.01)
     assert panel.loc["2015-07-31", "f_ic_insider_buy_value_mcap_60d"] == 0
-    assert panel.loc["2015-11-27", "f_ic_insider_ceo_buy_mcap_180d"] == pytest.approx(0.005)
+    assert panel.loc["2015-11-27", "f_ic_insider_ceo_buy_mcap_180d"] == pytest.approx(0.01)
     assert panel.loc["2015-11-28", "f_ic_insider_ceo_buy_mcap_180d"] == 0
-    print("SANITY: cumulative dollars divided once by current cap; 60/180-day expiries are exact and leave observed zero flows.")
+    print("SANITY: action-date ratios stay fixed after a price move; 60/180-day expiries are exact and leave observed zero flows.")
 
 
 @pytest.mark.parametrize("intervening_gift", [False, True])

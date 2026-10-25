@@ -1403,7 +1403,14 @@ def test_action_cap_market_evidence_does_not_change_non_cap_features() -> None:
 
 def test_action_cap_prepared_lineage_and_finite_execution() -> None:
     calendar = pd.bdate_range("2024-03-01", "2024-03-15")
-    trades = pd.DataFrame({"ticker": ["AAA", "AAA"], "transaction_day": pd.to_datetime(["2024-03-09", "2024-03-09"]), "value": [1e6, np.inf]})
+    trades = pd.DataFrame(
+        {
+            "ticker": ["AAA", "AAA"],
+            "transaction_day": pd.to_datetime(["2024-03-09", "2024-03-09"]),
+            "visible_from": pd.to_datetime(["2024-03-11", "2024-03-11"]),
+            "value": [1e6, np.inf],
+        }
+    )
     caps = pd.DataFrame(200e6, index=calendar, columns=["AAA"])
     history = pd.DataFrame(
         {
@@ -1448,3 +1455,38 @@ def test_action_cap_double_negative_components_cannot_certify_capital(invalid_le
     assert pd.isna(panel.loc["2024-03-07", "f_ic_insider_buy_value_mcap_60d"])
     assert panel.loc["2024-03-07", "f_ic_insider_distinct_buyers_120d"] == 1.0
     print("SANITY: two invalid negative inputs cannot manufacture a compatible positive capitalization.")
+
+
+@pytest.mark.parametrize("action", ["2024-03-11", "2024-03-09"])
+def test_action_cap_future_transaction_never_publishes_or_resurrects(action: str) -> None:
+    _, close, history = _action_cap_inputs()
+    row = _txn(filing_date="2024-03-08", transaction_date=action, value_usd=1e6)
+    panel = _build_action_cap([row], close, history)
+
+    assert pd.isna(panel.loc["2024-03-08", "f_ic_insider_buy_value_mcap_60d"])
+    assert pd.isna(panel.loc["2024-03-12", "f_ic_insider_buy_value_mcap_60d"])
+    assert panel.loc["2024-03-12", "f_ic_insider_distinct_buyers_120d"] == 1.0
+    assert panel.loc["2024-05-07", "f_ic_insider_buy_value_mcap_60d"] == 0.0
+    print("SANITY: a future trading/non-session action is unsupported from disclosure through expiry; passing its date never resurrects it.")
+
+
+def test_action_cap_future_transaction_recovers_only_on_new_public_version() -> None:
+    _, close, history = _action_cap_inputs()
+    original = _txn(accession_number="future-original", filing_date="2024-03-08", transaction_date="2024-03-11", value_usd=1e6)
+    amended = _txn(
+        accession_number="future-amended",
+        filing_date="2024-03-12",
+        transaction_date="2024-03-11",
+        document_type="4/A",
+        original_submission_date="2024-03-08",
+        value_usd=2e6,
+    )
+    panel = _build_action_cap([original, amended], close, history)
+
+    assert pd.isna(panel.loc["2024-03-08", "f_ic_insider_buy_value_mcap_60d"])
+    assert pd.isna(panel.loc["2024-03-11", "f_ic_insider_buy_value_mcap_60d"])
+    assert panel.loc["2024-03-12", "f_ic_insider_buy_value_mcap_60d"] == pytest.approx(0.005)
+    assert panel.loc["2024-05-07", "f_ic_insider_buy_value_mcap_60d"] == 0.0
+    print(
+        "SANITY: a later real correction can establish valid action/publication order prospectively, without resetting the first disclosure expiry."
+    )

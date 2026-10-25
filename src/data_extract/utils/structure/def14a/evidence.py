@@ -73,7 +73,7 @@ def table_has_gap(section: Section, payload: str, saved: pd.DataFrame, parent: d
         if header:
             fields = header
             name_column = next((index for index, cell in enumerate(cells) if re.search(r"name|principal position", cell, re.I)), 0)
-            year_columns = [index for index, cell in enumerate(cells) if re.search(r"\byear$", cell, re.I)]
+            year_columns = [index for index, cell in enumerate(cells) if index not in header and re.search(r"\byear$", cell, re.I)]
             continue
         if not fields or name_column >= len(cells):
             continue

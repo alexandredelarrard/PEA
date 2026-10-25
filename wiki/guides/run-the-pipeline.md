@@ -1,14 +1,13 @@
 ---
 title: Run the pipeline
-description: Interpreter, database, CLI, Airflow, cold-start, backfill, and validation
-  operations.
+description: Interpreter, database, CLI, Airflow, cold-start, backfill, and validation operations.
 type: guide
 tags:
-- wiki
-- guide
-- runbook
-- operations
-source_commit: 4773469e660ee159f30fbef0e56ea401d019fab2
+  - wiki
+  - guide
+  - runbook
+  - operations
+source_commit: 8df7649faa77f1d76aace9a247e731daa461fe98
 ---
 # Run the pipeline
 
@@ -199,7 +198,7 @@ Input preflight finishes before output changes. The streamed replacement remains
 
 Parts are incremental by default: each rewrites at least its last 7 sessions (45 for fundamentals), so a source correction older than that needs `-F`, which forces a rebuild. A changed target label/horizon set changes physical columns; the target step detects this and rebuilds, after which the cube must be assembled again.
 
-Institutional incremental computation intentionally reads full history for expanding/event-age families and writes only the tail. Budget it like a full calculation. Governance carries a long daily self-history despite annual filing inputs; do not infer cheapness from source cadence.
+`build-institutionals` retains its full-history calculation contract for expanding/event-age families. `build-sec-thirteen` also reads complete sparse dependencies, but streams the broad raw source, caches prepared manager-book statistics and bounds normal daily projection to the planned output window. Current defaults compute 398 existing trading dates and rewrite eight inclusively when the saved frontier is current; a full/schema-change run projects the full calendar. This reduces raw residency and daily work without proving capacity for the complete source. Governance carries a long daily self-history despite annual filing inputs; do not infer cheapness from source cadence.
 
 ## Modelling and portfolio
 

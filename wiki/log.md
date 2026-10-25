@@ -935,3 +935,11 @@ Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/
 - Preservation: sentiment remains one in-memory canonical numeric snapshot, prices load once, embeddings retain the ordered 5,000-row stream with complete-call handling, and the ten-feature panel saves once. Empty sentiment frames are excluded from concatenation so numeric score types remain valid without repeat validation. External model distributions/vectors and persisted cache provenance still receive boundary checks.
 - Evidence: 223 focused tests pass with zero skips or live-guard attempts, including nineteen hand-labelled transcript fixtures, stream ordering/cursor closure, malformed outputs, independent model retries, legacy score reuse and exact full/tail output. Ruff lint/format and scoped Pyright pass. A read-only replay of 11,988 actual v2 vector rows/246 calls retains the exact pre-change feature digest and nulls. Local ignored evidence: reports/validate/2026-10-24-text-readability/pytest-final.xml, structure.json and vector-replay.json.
 - Limits: the remote complete 1.6M-row v3 table was not replayed; no inference or production rebuild/write occurred. The prior protected DataStore change remains separate from this readability cleanup. [Aggregation](./modules/data-aggregate.md) records validation ownership and the bounded readability rules.
+
+## 2026-10-24: refresh — SEC 13F bounded preparation and projection
+
+- Profile: internal/standard
+- source_commit: 8df7649faa77f1d76aace9a247e731daa461fe98 (was 9da992c7f0561c645c479c1d4bec075a569e97b9)
+- Coverage: SEC 13F ordered whole-quarter streaming, compact broad history, changed-manager-book statistics, explicit panel stages, bounded daily projection with original calendar clocks, historical schema support and targeted persistence guards. Existing selection/continuity science and store atomicity follow-ups remain separate.
+- Pages: [Overview](./OVERVIEW.md), [Cube aggregation](./modules/data-aggregate.md), [Data access](./guides/data-access.md), [Run the pipeline](./guides/run-the-pipeline.md), [TODO](./TODO.md)
+- Evidence: bounded full/incremental replay and connected-code gates are retained in local ignored `reports/validate/2026-10-24-sec13f-code-refactor/`. No full 100-million-row computation or production adoption ran; capacity and runtime estimates retain their stated assumptions.

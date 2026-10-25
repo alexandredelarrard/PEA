@@ -1,5 +1,5 @@
 ---
-source_commit: 9da992c7f0561c645c479c1d4bec075a569e97b9
+source_commit: 8df7649faa77f1d76aace9a247e731daa461fe98
 title: Codebase Wiki — Overview
 description: Canonical internal hub for architecture, modules, flows, concepts, guides, references and backlog.
 profile: internal/standard
@@ -45,6 +45,8 @@ The narrow production boundary is deliberate: all tabular application I/O passes
 The [modelling workflow](./flows/model-training-and-prediction.md) separates training from fresh saved-model assessment. Train retains models and basic fold IC/IR; assess reloads models and current data to produce predictions, explanations and the run-local report. The generated training ID pins all weekly downstream stages. See [model artifacts](./modules/modelling.md) and the [bounded acceptance record](./guides/testing.md#modelling-workflow-acceptance-2026-10-21).
 
 The [text-cube flow](./flows/cube-build.md#text-stage-sequence) prepares selected paragraphs once, saves sentiment and embeddings independently, then builds features from bounded saved history and a 30-calendar-day output overlap. [Text-cube acceptance](./guides/testing.md#text-cube-acceptance-2026-10-22) records the committed refactor's passing code/real-model checks separately from remaining data/model and whole-universe capacity limits.
+
+The 2026-10-24 SEC 13F refresh at `8df7649faa77f1d76aace9a247e731daa461fe98` streams broad raw holdings, prepares compact book history and bounds normal daily projection. [Cube aggregation](./modules/data-aggregate.md) describes the stages; [data access](./guides/data-access.md) records the replacement guards, and [TODO](./TODO.md) retains the selection, continuity and storage follow-ups. This is a narrow documentation refresh: bounded replay does not establish whole-source runtime or capacity, and the full 100-million-row computation was not run.
 
 ## Task map
 

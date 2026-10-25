@@ -23,6 +23,8 @@ an extraction. Mean |Δ| of 1.06 directors between consecutive filings of the sa
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -91,7 +93,7 @@ class DirectorCompensation(BaseModel):
         `is_independent` flag (78% fill, 86% concordance). The 8-K vote role map depends on it.
       * 402(k) requires the LAST COMPLETED FISCAL YEAR ONLY, so this list is single-year by
         regulation -- unlike the SCT, which carries three.
-    The table exists only from the 2008 proxy season (Reg S-K 2006, FY ending >= 2006-12-15).
+    Historical named director payments remain eligible before standardized table disclosure.
     """
 
     name: str = Field(description="Full name of the non-employee director")
@@ -274,7 +276,7 @@ class Def14AExtract(BaseModel):
     director_compensation: list[DirectorCompensation] = Field(
         default_factory=list,
         description="Every row of the Director Compensation Table (Item 402(k)), one per "
-        "non-employee director. Empty for proxies before the 2008 season",
+        "non-employee director. Include historical named payment disclosures",
     )
     ownership_holders: list[BeneficialOwner] = Field(
         default_factory=list,
@@ -286,3 +288,114 @@ class Def14AExtract(BaseModel):
         description="Board composition, leadership, anti-takeover, say-on-pay, pay-ratio, "
         "auditor name / tenure / fee breakdown and beneficial-ownership summary facts",
     )
+
+
+# Focused requests keep source amounts raw; Python owns their unit conversion.
+class MoneyContext(BaseModel):
+    currency: str | None = Field(None, description="Source currency code; USD for US dollars, never convert another currency")
+    amount_scale: Literal["units", "thousands", "millions"] | None = Field(
+        None, description="Source monetary scale; units when dollar cells have no scaling note"
+    )
+
+
+class CompensationAmounts(BaseModel):
+    name: str = Field(description="Person's full name from this compensation row")
+    fiscal_year: int | None = Field(None, description="Year printed for this row; preserve every reported year")
+    stock_awards: float | None = Field(None, description="Reported monetary stock-award value, before scaling")
+    option_awards: float | None = Field(None, description="Reported monetary option-award value; never a count of options")
+    non_equity_incentive: float | None = Field(None, description="Reported non-equity incentive amount")
+    pension_change: float | None = Field(None, description="Reported pension/deferred-compensation change; preserve negative values")
+    other_compensation: float | None = Field(None, description="Reported all-other compensation")
+    total: float | None = Field(None, description="Reported total only; do not calculate a missing total")
+
+
+class ExecutivePayRow(CompensationAmounts):
+    title: str | None = Field(None, description="Reported executive title")
+    salary: float | None = Field(None, description="Reported salary")
+    bonus: float | None = Field(None, description="Reported discretionary cash bonus, separate from non-equity incentive")
+
+
+class DirectorPayRow(CompensationAmounts):
+    fees_earned: float | None = Field(None, description="Reported cash retainer/fees; a fee schedule is not a named person's annual total")
+
+
+class ExecutivePayExtract(MoneyContext):
+    compensation: list[ExecutivePayRow] = Field(
+        default_factory=list, description="Every named-executive/year row of the Summary Compensation Table, including historical disclosures"
+    )
+
+
+class DirectorPayExtract(MoneyContext):
+    compensation: list[DirectorPayRow] = Field(
+        default_factory=list, description="Named outside directors' reported annual pay, in tables or explicit named payment prose, in any year"
+    )
+
+
+class AuditExtract(MoneyContext):
+    auditor_name: str | None = Field(None, description="Accounting firm name only")
+    auditor_since_year: int | None = Field(None, description="Explicit first engagement year; null when unstated")
+    fiscal_year: int | None = Field(None, description="Current fee-table fiscal year")
+    prior_fiscal_year: int | None = Field(None, description="Prior fee-table fiscal year")
+    auditor_fees: float | None = Field(None, description="Reported current-year total; null when no total is printed")
+    audit_fees_audit: float | None = Field(None, description="Current-year Audit Fees")
+    audit_fees_audit_related: float | None = Field(None, description="Current-year Audit-Related Fees")
+    audit_fees_tax: float | None = Field(None, description="Current-year Tax Fees")
+    audit_fees_other: float | None = Field(None, description="Current-year All Other Fees")
+    auditor_fees_prior: float | None = Field(None, description="Reported prior-year total; never copy the current-year total")
+
+
+class OwnershipRow(BaseModel):
+    holder_name: str = Field(description="Beneficial holder's name, excluding addresses and group subtotal labels")
+    holder_type: Literal["5pct_holder", "director_officer"] = Field(description="Large outside holder or named director/officer")
+    shares: float | None = Field(None, description="Reported beneficial share count")
+    percent_of_class: float | None = Field(
+        None, description="Reported economic ownership percentage; null for bounds, stars or incompatible multiple-class rows"
+    )
+    percent_of_voting_power: float | None = Field(
+        None, description="Explicit total/combined voting-power percentage, separate from economic ownership"
+    )
+
+
+class OwnershipExtract(BaseModel):
+    percent_unit: Literal["percent", "fraction"] = Field(description="Percent for printed 9.63%, fraction only for a printed 0.0963 fraction")
+    shares_scale: Literal["units", "thousands", "millions"] | None = Field(None, description="Source share-quantity scale")
+    holders: list[OwnershipRow] = Field(
+        default_factory=list, description="Named large holders and directors/officers, one supported combined row per holder"
+    )
+    insider_shares: float | None = Field(None, description="Group total shares across all classes when reported")
+    insider_ownership_pct: float | None = Field(
+        None, description="Group economic ownership across all classes; null if only per-class percentages are available"
+    )
+    insider_voting_pct: float | None = Field(None, description="Explicit group total/combined voting power")
+
+
+class BoardDirector(BaseModel):
+    name: str = Field(description="Director/nominee full name")
+    age: int | None = Field(None, description="Disclosed age; null if absent")
+    director_since_year: int | None = Field(None, description="Explicit first board-service year; Python derives tenure")
+    is_independent: bool | None = Field(None, description="Disclosed independence status")
+    gender: str | None = Field(None, description="male/female from statement, honorific, pronoun, then name; null if unsupported")
+    gender_basis: Literal["stated", "honorific", "pronoun", "name"] | None = Field(None, description="Evidence used for gender, required when set")
+    other_public_company_boards: int | None = Field(None, description="Disclosed other public-board count; zero only when explicitly supported")
+
+
+class GovernanceExtract(MoneyContext):
+    ceo_name: str | None = Field(None, description="Current CEO's name")
+    ceo_age: int | None = Field(None, description="Current CEO's disclosed age")
+    ceo_since_year: int | None = Field(None, description="Explicit year the CEO took the role")
+    ceo_is_founder: bool | None = Field(None, description="Explicit founder/cofounder status")
+    ceo_is_board_chair: bool | None = Field(None, description="Explicit CEO/chair duality")
+    directors: list[BoardDirector] = Field(default_factory=list, description="All current directors/nominees")
+    board_size: int | None = Field(None, description="Explicit total board count; Python also derives roster counts")
+    n_independent_directors: int | None = Field(None, description="Explicit independent-director count")
+    n_women_directors: int | None = Field(None, description="Explicit women-director count")
+    independent_chair: bool | None = Field(None, description="Explicit independent-chair status")
+    lead_independent_director: bool | None = Field(None, description="Explicit lead independent director status")
+    classified_board: bool | None = Field(None, description="Explicit classified/staggered board status; silence is null")
+    dual_class_shares: bool | None = Field(None, description="Explicit multiple/super-voting share classes; silence is null")
+    poison_pill: bool | None = Field(None, description="Explicit shareholder-rights-plan status; silence is null")
+    majority_voting: bool | None = Field(None, description="Explicit majority versus plurality director voting; silence is null")
+    percent_unit: Literal["percent", "fraction"] = Field(description="Source percentage basis for say-on-pay support")
+    say_on_pay_support_pct: float | None = Field(None, description="Reported prior say-on-pay support, preserving failed votes")
+    ceo_pay_ratio: float | None = Field(None, description="Reported CEO/median-employee multiple; 250:1 is 250")
+    median_employee_pay: float | None = Field(None, description="Reported median-employee pay before monetary scaling")

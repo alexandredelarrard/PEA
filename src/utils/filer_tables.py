@@ -136,3 +136,18 @@ def removal_records(table: str, foreign: pd.DataFrame, spec: FilerTable) -> list
             }
         )
     return records
+
+
+def def14a_evidence_mask(frame: pd.DataFrame) -> pd.Series:
+    """Ignore retry/archive metadata and the legacy inferred-false provision defaults."""
+    mask = pd.Series(False, index=frame.index, dtype=bool)
+    metadata = {"ticker", "accession_number", "as_of", "period", "company_name", "fiscal_year_extract"}
+    for column in Tables.def14a_llm.read_columns:
+        if column in metadata or column not in frame:
+            continue
+        values = frame[column]
+        if column in {"classified_board", "dual_class_shares"}:
+            mask |= values.isin([True, 1])
+        else:
+            mask |= values.notna() & values.astype("string").str.strip().ne("").fillna(False)
+    return mask

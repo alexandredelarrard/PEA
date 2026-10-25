@@ -1,13 +1,11 @@
-"""DEF 14A LLM: every run lists each ticker's whole window and sends only proxies that are neither
-stored with evidence nor marked; an evidence-free answer becomes one empty-filing marker (never
-written over a stored parent row); a failed read or LLM call writes nothing and is listed again.
-Also the flatten of the auditor block. LLM calls are fakes (no spend).
+"""Legacy evidence/flatten compatibility and unchanged identity, listing and worker contracts.
+
+Daily section retry integration lives in test_def14a_retry_daily.py.
 """
 
 from __future__ import annotations
 
 import logging
-import types
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -153,152 +151,23 @@ def _listed_filing(accession: str, filing_date: pd.Timestamp) -> pd.DataFrame:
     )
 
 
-def _save_parent(context: Any, accession: str, extract: Any, filing_date: pd.Timestamp) -> None:
-    filing = _listed_filing(accession, filing_date).iloc[0]
-    frame = pd.DataFrame([_flatten("ZZ", filing, extract)])
-    for column in ("as_of", "period"):
-        frame[column] = pd.to_datetime(frame[column]).dt.strftime("%Y-%m-%d")
-    context.store.save(Tables.def14a_llm, frame)
-
-
 def _extractor_double(responses: list[BaseException | Any], tasked: list[str]):
     class _Extractor:
-        def __init__(self, context, config, action=None, threads=None, methodes=None):
-            del config, action, threads, methodes
-            self._context = context
+        def __init__(self, *args, **kwargs):
+            pass
 
-        def run_extraction(self, tasks, flatten=None, group_key=None):
-            del group_key
+        def run(self, tasks):
             results = []
-            for task in list(tasks):
+            for task in tasks:
                 tasked.append(str(task.meta["filing"]["accession_number"]))
                 answer = responses.pop(0)
                 if isinstance(answer, BaseException):
-                    results.append(LlmResult(seq=task.seq, task=task, parsed=None, error=f"{type(answer).__name__}: {answer}"))
+                    results.append(LlmResult(seq=task.seq, task=task, error=str(answer)))
                 else:
                     results.append(LlmResult(seq=task.seq, task=task, parsed=answer))
-
-            frames: dict[Any, list[pd.DataFrame]] = {}
-            for result in results:
-                if not result.ok:
-                    continue
-                for table, frame in (flatten(result) if flatten is not None else {}).items():
-                    frames.setdefault(table, []).append(frame)
-            for table, parts in frames.items():
-                frame = pd.concat(parts, ignore_index=True)
-                for column in ("as_of", "period"):
-                    if column in frame:
-                        frame[column] = pd.to_datetime(frame[column]).dt.strftime("%Y-%m-%d")
-                self._context.store.save(table, frame)
             return results
 
     return _Extractor
-
-
-def _install_daily_fetch_doubles(monkeypatch, extractor, filing: pd.DataFrame, listed_since: list[pd.Timestamp | None]) -> None:
-    from src.data_extract.utils.structure.def14a import fetch as mod
-
-    def _list(context, scope, company, years, since):
-        del context, scope, company, years
-        listed_since.append(since)
-        return filing.copy()
-
-    monkeypatch.setattr(mod, "LLMExtractor", extractor)
-    monkeypatch.setattr(mod, "load_cik_mapping", lambda *_: pd.DataFrame([{"ticker": "ZZ", "cik": "0000000001", "name": "Example Corp"}]))
-    monkeypatch.setattr(mod, "load_identity", lambda context: _ROSTER_ONLY)
-    monkeypatch.setattr(mod, "_list_scope_windows", _list)
-    monkeypatch.setattr(mod, "_payload_for", lambda *_: "=== BOARD OF DIRECTORS ===\nJane Director")
-    monkeypatch.setattr(mod, "_finalise_gender", lambda *_: None)
-
-
-def test_provider_failure_writes_nothing_and_is_retried_next_run(tmp_path, monkeypatch):
-    from src.data_extract.utils.structure.def14a import fetch as mod
-
-    context = _daily_context(tmp_path)
-    accession = "daily-provider-failure"
-    yesterday = pd.Timestamp.today().normalize() - pd.Timedelta(days=1)
-    filing = _listed_filing(accession, yesterday)
-    listed_since: list[pd.Timestamp | None] = []
-    tasked: list[str] = []
-    responses: list[BaseException | Any] = [
-        TypeError("Responses.parse() got an unexpected keyword argument 'seed'"),
-        Def14AExtract(ceo_name="Jane CEO", directors=[DirectorInfo(name="Jane Director", age=55)]),
-    ]
-    _install_daily_fetch_doubles(monkeypatch, _extractor_double(responses, tasked), filing, listed_since)
-
-    mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini")
-    assert not context.store.exists(Tables.def14a_llm), "day-D provider failure must not create a parent"
-
-    mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini")
-
-    assert listed_since == [None, None]
-    assert tasked == [accession, accession]
-    parent = context.store.load(Tables.def14a_llm)
-    assert parent is not None and list(parent["accession_number"]) == [accession]
-
-    print("\n=== SANITY: provider failure retries on D+1 ===")
-    print(f"  day D saved no parent and no marker; D+1 listed the whole window again and queued {accession} again. Validated.")
-
-
-def test_legacy_empty_parent_is_repaired_by_a_full_run(tmp_path, monkeypatch):
-    from src.data_extract.utils.structure.def14a import fetch as mod
-
-    context = _daily_context(tmp_path)
-    accession = "daily-empty-parent"
-    yesterday = pd.Timestamp.today().normalize() - pd.Timedelta(days=1)
-    _save_parent(
-        context,
-        accession,
-        Def14AExtract(governance=GovernanceProfile(classified_board=False, dual_class_shares=False)),
-        yesterday,
-    )
-
-    listed_since: list[pd.Timestamp | None] = []
-    tasked: list[str] = []
-    response = Def14AExtract(
-        ceo_name="Jane CEO",
-        directors=[DirectorInfo(name="Jane Director", age=55)],
-        governance=GovernanceProfile(board_size=1),
-    )
-    _install_daily_fetch_doubles(monkeypatch, _extractor_double([response], tasked), _listed_filing(accession, yesterday), listed_since)
-
-    mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini", full=True)
-
-    assert listed_since == [None]
-    assert tasked == [accession], "under -F the legacy empty key must not count as completed"
-    parent = context.store.load(Tables.def14a_llm)
-    directors = context.store.load(Tables.def14a_directors)
-    assert parent is not None and len(parent) == 1
-    assert parent.iloc[0]["ceo_name_proxy"] == "Jane CEO" and float(parent.iloc[0]["board_size"]) == 1.0
-    assert directors is not None and len(directors) == 1 and directors.iloc[0]["accession_number"] == accession
-
-    print("\n=== SANITY: legacy empty parent repairs under -F ===")
-    print(f"  {accession} was re-listed, re-extracted, and upserted to one evidenced parent plus one director. Validated.")
-
-
-def test_valid_parent_is_relisted_but_not_reextracted_next_day(tmp_path, monkeypatch):
-    from src.data_extract.utils.structure.def14a import fetch as mod
-
-    context = _daily_context(tmp_path)
-    accession = "daily-valid-parent"
-    yesterday = pd.Timestamp.today().normalize() - pd.Timedelta(days=1)
-    _save_parent(context, accession, Def14AExtract(ceo_name="Jane CEO", governance=GovernanceProfile(board_size=8)), yesterday)
-
-    listed_since: list[pd.Timestamp | None] = []
-    tasked: list[str] = []
-    payloads: list[str] = []
-    _install_daily_fetch_doubles(monkeypatch, _extractor_double([], tasked), _listed_filing(accession, yesterday), listed_since)
-    monkeypatch.setattr(mod, "_payload_for", lambda *_: payloads.append(accession) or "unused")
-
-    mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini")
-
-    parent = context.store.load(Tables.def14a_llm)
-    assert listed_since == [None]
-    assert tasked == [] and payloads == [], "semantic completion must filter the re-listed accession before token spend"
-    assert parent is not None and len(parent) == 1
-
-    print("\n=== SANITY: valid parent stays idempotent on D+1 ===")
-    print(f"  {accession} was re-listed over the whole window but produced zero payloads and zero LLM tasks. Validated.")
 
 
 def test_subject_guard_rejects_only_known_disjoint_subjects(monkeypatch, caplog):
@@ -381,7 +250,7 @@ def test_disjoint_subject_never_becomes_an_llm_task(tmp_path, monkeypatch):
         def __init__(self, *args, **kwargs):
             pass
 
-        def run_extraction(self, tasks, **kwargs):
+        def run(self, tasks, **kwargs):
             del kwargs
             llm_tasks.extend(tasks)
             return []
@@ -398,7 +267,7 @@ def test_disjoint_subject_never_becomes_an_llm_task(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "load_identity", lambda context: psky)
     monkeypatch.setattr(mod, "_list_scope_windows", lambda *_: filing)
     monkeypatch.setattr(mod, "_filing_subject_ciks", lambda _: frozenset({"0001437107"}))
-    monkeypatch.setattr(mod, "_payload_for", lambda *args: payload_calls.append(str(args[2]["accession_number"])))
+    monkeypatch.setattr(mod, "_read_proxy", lambda *args: payload_calls.append(str(args[2]["accession_number"])))
 
     mod.fetch_def14a_llm(context, context.config, ["PSKY"], model="gpt-5-mini")
 
@@ -406,96 +275,6 @@ def test_disjoint_subject_never_becomes_an_llm_task(tmp_path, monkeypatch):
     print("\n=== SANITY: wrong-subject filing stops before the LLM ===")
     print("  WBD accession produced zero payload fetches and zero LLM tasks")
     print("  OK: rejection precedes document carving and paid extraction")
-
-
-def test_gap_fill_lists_full_window_and_skips_present(tmp_path, monkeypatch):
-    """Every run lists the FULL window (no `since` cutoff) and the LLM runs ONLY on filings whose
-    accession is not already in the table -- so a HOLE in the middle (2023 here) is filled while
-    the present years (2022, 2024) are skipped. Uses a SQLite store (no Postgres)."""
-    import logging
-
-    from src.data_extract.utils.structure.def14a import fetch as mod
-
-    ds = DataStore(create_engine(f"sqlite:///{tmp_path / 'd.db'}"))
-    ds.save(
-        "def14a_llm",
-        pd.DataFrame(
-            [  # 2022 + 2024 present; 2023 is a HOLE
-                _completed_parent_row("ZZ", "a2022", "2022-04-01"),
-                _completed_parent_row("ZZ", "a2024", "2024-04-01"),
-            ]
-        ),
-    )
-    ctx: Any = types.SimpleNamespace(
-        store=ds,
-        log=logging.getLogger("t"),
-        paths={"DATA_STORE": tmp_path},
-        config_dir="configs",
-        config=extract_config(data_extract={"years_history": 15}),
-    )
-
-    listed_since, extracted = [], []
-
-    def _fake_list(context, cik, forms, years, company_name="", since=None, cache_dir=None):  # mirrors edgar_fillings.list_filings EXACTLY
-        # -- a stale stub binds `since` positionally
-        listed_since.append(since)  # must be None now (full window)
-        return pd.DataFrame(
-            [
-                {
-                    "accession_number": a,
-                    "doc_url": f"http://x/{a}",
-                    "filing_date": pd.Timestamp(d),
-                    "period_of_report": "2000-12-31",
-                    "form": "DEF 14A",
-                }
-                for a, d in [("a2022", "2022-04-01"), ("a2023", "2023-04-01"), ("a2024", "2024-04-01"), ("a2025", "2025-04-01")]
-            ]
-        )
-
-    class _FakeLLM:
-        """Stands in for the whole extracter: records which accessions became LLM tasks,
-        then writes the rows the real `flatten` would have produced.
-
-        The frame is written with a STRING `as_of` because this test runs on SQLite, whose
-        driver cannot bind a pandas Timestamp.
-        """
-
-        def __init__(self, context, config, action=None, threads=None, methodes=None):
-            self._context = context
-
-        def run_extraction(self, tasks, flatten=None, group_key=None):
-            tasks = list(tasks)
-            rows = []
-            for t in tasks:
-                f = t.meta["filing"]
-                extracted.append(f["accession_number"])
-                rows.append({"ticker": t.meta["ticker"], "accession_number": f["accession_number"], "as_of": f["filing_date"], "def14a_json": "{}"})
-            if rows:
-                df = pd.DataFrame(rows)
-                df["as_of"] = pd.to_datetime(df["as_of"]).dt.strftime("%Y-%m-%d")
-                self._context.store.save("def14a_llm", df)
-            return [SimpleNamespace(ok=True, task=t, parsed=Def14AExtract(ceo_name="Fresh extraction"), error=None) for t in tasks]
-
-    monkeypatch.setattr(mod, "list_filings", _fake_list)
-    monkeypatch.setattr(mod, "load_identity", lambda context: _ROSTER_ONLY)
-    monkeypatch.setattr(mod, "_payload_for", lambda context, ticker, f: "=== CARVED ===")
-    monkeypatch.setattr(mod, "LLMExtractor", _FakeLLM)
-    monkeypatch.setattr(mod, "load_cik_mapping", lambda _c, _t=None: pd.DataFrame({"ticker": ["ZZ"], "cik": ["0000000001"], "name": ["Z"]}))
-
-    mod.fetch_def14a_llm(ctx, ctx.config, tickers=["ZZ"], model="gpt-5-mini")
-
-    assert listed_since == [None], "must list the FULL window (no since cutoff) to find gaps"
-    assert set(extracted) == {"a2023", "a2025"}, f"only missing filings should hit the LLM: {extracted}"
-    stored = ds.load("def14a_llm")
-    assert stored is not None
-    accs = set(stored.query("ticker == 'ZZ'")["accession_number"])
-    assert accs == {"a2022", "a2023", "a2024", "a2025"}
-
-    print("\n=== SANITY: DEF 14A gap-filling incremental ===")
-    print(
-        f"  had 2022+2024, listed full window (since={listed_since[0]}) -> LLM ran ONLY on the "
-        f"missing {sorted(set(extracted))} (2023 hole + new 2025); 2 present skipped. Validated."
-    )
 
 
 def test_flatten_surfaces_the_auditor_block():
@@ -570,7 +349,8 @@ def test_every_ticker_is_listed_over_the_full_window_on_every_run(tmp_path, monk
     first = dict(listed)
     mod.fetch_def14a_llm(context, context.config, ["AA", "CC"], model="gpt-5-mini")
 
-    assert first == listed == {"AA": None, "CC": None}, (first, listed)
+    floor = pd.Timestamp.today().normalize() - pd.DateOffset(years=15)
+    assert first == listed == {"AA": floor, "CC": floor}, (first, listed)
     print("\n=== SANITY: DEF 14A lists every ticker's whole window ===")
     print(f"  AA (stored) and CC (new): listed with since={listed} on two consecutive runs; no gate skips a ticker. Validated.")
 
@@ -599,7 +379,8 @@ def test_a_lineage_expansion_lists_the_new_window_on_the_next_run_with_no_run_st
 
     mod.fetch_def14a_llm(context, context.config, ["CC"], model="gpt-5-mini")
 
-    assert listed == [("0000000009", None), ("0000000002", None)], listed
+    floor = pd.Timestamp.today().normalize() - pd.DateOffset(years=15)
+    assert listed == [("0000000009", floor), ("0000000002", floor)], listed
     print("\n=== SANITY: DEF 14A lists a newly added predecessor window ===")
     print(f"  CC's scope holds a predecessor window -> both CIKs listed over the whole window: {listed}. Validated.")
 
@@ -625,7 +406,7 @@ def test_llm_workers_default_to_config_gpt_threads(tmp_path, monkeypatch):
 
     mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini")
 
-    assert built == [7]
+    assert built == [7] * 5
     print("\n=== SANITY: DEF 14A LLM workers ===")
     print(f"  no `workers` passed -> the extractor ran {built[0]}-wide, i.e. config.gpt.threads (7 in this test config). Validated.")
 
@@ -663,117 +444,3 @@ def test_llm_proxies_are_listed_per_scope_window_with_the_seam_margin(monkeypatc
 
 
 _EMPTY_ANSWER = Def14AExtract(governance=GovernanceProfile(classified_board=False, dual_class_shares=False))
-
-
-def _seed_full_width_parent(context: Any) -> None:
-    """One unrelated evidenced parent, so the SQLite table carries every column (Postgres adds them on save)."""
-    _save_parent(context, "seed", Def14AExtract(ceo_name="Seed CEO"), pd.Timestamp("2020-04-01"))
-
-
-def test_an_evidence_free_answer_is_marked_and_never_sent_again(tmp_path, monkeypatch):
-    from src.data_extract.utils.structure.def14a import fetch as mod
-
-    context = _daily_context(tmp_path)
-    _seed_full_width_parent(context)
-    accession = "evidence-free"
-    filed = pd.Timestamp("2025-04-01")
-    tasked: list[str] = []
-    listed_since: list[pd.Timestamp | None] = []
-    _install_daily_fetch_doubles(monkeypatch, _extractor_double([_EMPTY_ANSWER], tasked), _listed_filing(accession, filed), listed_since)
-
-    mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini")
-    mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini")
-
-    marker = context.store.load(Tables.def14a_llm, markers=True).set_index("accession_number").loc[accession]
-    assert tasked == [accession], tasked
-    assert marker["def14a_json"] == "_empty" and pd.isna(marker["ceo_name_proxy"]) and pd.isna(marker["board_size"])
-    assert context.store.load(Tables.def14a_llm)["accession_number"].tolist() == ["seed"]
-    assert not context.store.exists(Tables.def14a_directors)
-    print("\n=== SANITY: DEF 14A evidence-free answer (D17) ===")
-    print(f"  run 1: 1 LLM call -> marker def14a_json='_empty', no child row, hidden by load; run 2: {len(tasked) - 1} call.")
-
-
-def test_a_failed_read_writes_nothing_and_is_sent_on_the_next_run(tmp_path, monkeypatch):
-    from src.data_extract.utils.structure.def14a import fetch as mod
-
-    context = _daily_context(tmp_path)
-    accession = "read-failed"
-    tasked: list[str] = []
-    answer = Def14AExtract(ceo_name="Jane CEO", governance=GovernanceProfile(board_size=8))
-    _install_daily_fetch_doubles(monkeypatch, _extractor_double([answer], tasked), _listed_filing(accession, pd.Timestamp("2025-04-01")), [])
-    reads = iter([None, "=== BOARD OF DIRECTORS ===\nJane Director"])
-    monkeypatch.setattr(mod, "_payload_for", lambda *_: next(reads))
-
-    mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini")
-    exists_after_failure = context.store.exists(Tables.def14a_llm)
-    mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini")
-
-    assert not exists_after_failure and tasked == [accession]
-    assert context.store.load(Tables.def14a_llm)["ceo_name_proxy"].tolist() == ["Jane CEO"]
-    print("\n=== SANITY: DEF 14A failed read ===")
-    print("  run 1: the proxy could not be read -> no row, no marker, no LLM call; run 2: read, sent once, parent stored.")
-
-
-def test_full_sends_a_marked_proxy_again(tmp_path, monkeypatch):
-    from src.data_extract.utils.structure.def14a import fetch as mod
-
-    context = _daily_context(tmp_path)
-    _seed_full_width_parent(context)
-    accession = "marked-then-full"
-    tasked: list[str] = []
-    answer = Def14AExtract(ceo_name="Jane CEO")
-    _install_daily_fetch_doubles(
-        monkeypatch, _extractor_double([_EMPTY_ANSWER, answer], tasked), _listed_filing(accession, pd.Timestamp("2025-04-01")), []
-    )
-
-    mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini")
-    mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini", full=True)
-
-    stored = context.store.load(Tables.def14a_llm, markers=True).set_index("accession_number").loc[accession]
-    assert tasked == [accession, accession]
-    assert stored["def14a_json"] != "_empty" and stored["ceo_name_proxy"] == "Jane CEO"
-    print("\n=== SANITY: DEF 14A --full ===")
-    print("  a marked proxy is sent again under --full; the evidenced answer replaces the marker.")
-
-
-def test_an_evidence_free_answer_never_overwrites_a_stored_parent(tmp_path, monkeypatch):
-    from src.data_extract.utils.structure.def14a import fetch as mod
-
-    context = _daily_context(tmp_path)
-    accession = "legacy-evidence-free"
-    filed = pd.Timestamp("2025-04-01")
-    _save_parent(context, accession, Def14AExtract(company_name="Legacy Co", governance=GovernanceProfile(classified_board=False)), filed)
-    before = context.store.load(Tables.def14a_llm, markers=True).iloc[0]
-    tasked: list[str] = []
-    _install_daily_fetch_doubles(monkeypatch, _extractor_double([_EMPTY_ANSWER], tasked), _listed_filing(accession, filed), [])
-
-    mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini", full=True)
-
-    after = context.store.load(Tables.def14a_llm, markers=True)
-    assert len(after) == 1 and after.iloc[0]["def14a_json"] == before["def14a_json"] != "_empty"
-    assert after.iloc[0]["company_name"] == "Legacy Co"
-    assert tasked == [accession]
-    print("\n=== SANITY: never mark over data (def14a_llm) ===")
-    print("  -F re-sends a stored evidence-free parent; the evidence-free answer's marker is dropped and the parent row is untouched.")
-
-
-def test_a_stored_evidence_free_parent_is_skipped_unless_full(tmp_path, monkeypatch):
-    from src.data_extract.utils.structure.def14a import fetch as mod
-
-    context = _daily_context(tmp_path)
-    accession = "stored-evidence-free"
-    filed = pd.Timestamp("2025-04-01")
-    _save_parent(context, accession, Def14AExtract(company_name="Legacy Co", governance=GovernanceProfile(classified_board=False)), filed)
-    tasked: list[str] = []
-    payloads: list[str] = []
-    _install_daily_fetch_doubles(monkeypatch, _extractor_double([_EMPTY_ANSWER, _EMPTY_ANSWER], tasked), _listed_filing(accession, filed), [])
-    monkeypatch.setattr(mod, "_payload_for", lambda *_: payloads.append(accession) or "=== BOARD OF DIRECTORS ===")
-
-    mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini")
-    nightly = (list(tasked), list(payloads))
-    mod.fetch_def14a_llm(context, context.config, ["ZZ"], model="gpt-5-mini", full=True)
-
-    assert nightly == ([], []), "a saved row counts as done on a nightly run"
-    assert tasked == [accession] and payloads == [accession]
-    print("\n=== SANITY: stored evidence-free parent (user decision 2026-10-04) ===")
-    print(f"  nightly run: {len(nightly[0])} LLM task, {len(nightly[1])} document read; -F: re-sent once ({tasked}).")

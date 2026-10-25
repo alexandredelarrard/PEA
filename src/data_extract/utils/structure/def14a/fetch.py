@@ -1,20 +1,9 @@
-"""Extract structured governance data from SEC DEF 14A proxies with an LLM (`Def14AExtract` schema).
-
-Per ticker: list its DEF 14A filings over `years_history` (one listing per CIK window of its filing scope), carve the
-relevant sections, send only accessions with no saved `def14a_llm` row to the LLM,
-and upsert that ticker's rows into `def14a_llm` plus four child tables (`def14a_executive_comp`,
-`def14a_director_comp`, `def14a_ownership`, `def14a_directors`) before the next ticker. An answer
-without evidence from a proxy that was read is stored as one `def14a_llm` marker; a failed read or
-LLM call writes nothing and is listed again next run. `full` re-sends the saved rows without
-evidence. A cross-ticker gender consensus runs once
-after the loop. Skips with a warning when no OpenAI key is configured.
-"""
+"""Daily five-domain DEF 14A extraction with free replay and one durable section retry."""
 
 from __future__ import annotations
 
 import logging
-from functools import partial
-from typing import cast
+from typing import Any, cast
 
 import pandas as pd
 from edgar import Filing
@@ -24,32 +13,36 @@ from tqdm import tqdm
 from src.context import Context
 from src.data_extract.utils.common.edgar_extract import html_to_text
 from src.data_extract.utils.common.edgar_fillings import list_filings
-from src.data_extract.utils.common.empty_markers import drop_markers_over_data
 from src.data_extract.utils.common.identity import FilingScope, load_identity
-from src.data_extract.utils.common.incremental import stored_values
 from src.data_extract.utils.common.registrant import header_subject_ciks
+from src.data_extract.utils.common.resume import document_floor
 from src.data_extract.utils.common.sec_io import TransientReadError, sec_get
 from src.data_extract.utils.common.sec_utils import load_cik_mapping
-from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
-from src.data_extract.utils.structure.def14a.carve import prepare_def14a_sections
-from src.data_extract.utils.structure.def14a.flatten import (
-    _DEF14A_EVIDENCE_COLUMNS,
-    _has_extract_evidence,
-    _has_parent_evidence,
-    _result_frames,
-)
+from src.data_extract.utils.structure.def14a.carve import prepare_def14a_payloads, prepare_def14a_sections
 from src.data_extract.utils.structure.def14a.gender import (
     basis_distribution,
     consensus,
     log_consensus,
     recompute_parent_gender,
 )
-from src.data_store.schema import Resume, Table, Tables
+from src.data_extract.utils.structure.def14a.postprocess import append_answer, postprocess_section, refresh_archive
+from src.data_extract.utils.structure.def14a.retry import SECTIONS
+from src.data_extract.utils.structure.def14a.work import (
+    FilingWork,
+    load_archives,
+    load_work,
+    matched_batches,
+    replay_candidates,
+    requests_for,
+    reserve,
+    save_archive,
+    save_section,
+)
+from src.data_store.schema import Resume, Tables
 
 # `gpt_extract` is a shared service like `src/utils/`, the sanctioned cross-import (model, keys, prompts, thread pool).
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 from src.gpt_extract.transformers.step_gpt_extracter import with_gpt_overrides
-from src.gpt_extract.utils.schemas_gpt import LlmResult, LlmTask
 from src.utils.string import pad_cik
 
 logger = logging.getLogger(__name__)
@@ -166,34 +159,6 @@ def accepted_subjects(scope: FilingScope) -> frozenset[str]:
     return frozenset(scope.event_ciks) if len(scope.windows) > 1 else frozenset()
 
 
-def _completed_accessions(context: Context) -> set[str]:
-    """Accessions whose parent row carries real extracted evidence, not merely a PK.
-
-    Evidence-free parents stay in the table but do not count as completed, so a `full` run re-extracts them.
-    A table created by a marker-only save may lack evidence columns; only the stored ones are read.
-    """
-    stored_columns = set(context.store.columns(Tables.def14a_llm))
-    if not stored_columns:
-        return set()
-    df_stored = context.store.load(
-        Tables.def14a_llm,
-        columns=["accession_number", *(c for c in _DEF14A_EVIDENCE_COLUMNS if c in stored_columns)],
-        optional=True,
-    )
-    if df_stored is None or df_stored.empty:
-        return set()
-    return {
-        str(row["accession_number"])
-        for row in cast(list[dict[str, object]], df_stored.to_dict(orient="records"))
-        if row.get("accession_number") is not None and _has_parent_evidence(row)
-    }
-
-
-def _frames_off_data(context: Context, result: LlmResult) -> dict[Table, pd.DataFrame]:
-    """`_result_frames` for one answer, minus any marker whose key already holds a real parent row."""
-    return {table: drop_markers_over_data(context.store, table, df, log=context.log) for table, df in _result_frames(result).items()}
-
-
 def _finalise_gender(context: Context) -> None:
     """Cross-ticker gender consensus over `def14a_directors`, run once after the per-ticker loop.
 
@@ -227,40 +192,43 @@ def _finalise_gender(context: Context) -> None:
         context.log.info("gender consensus: refreshed pct_female_directors / pct_gender_stated on %d filings", len(parent))
 
 
-def _ticker_tasks(context: Context, ticker: str, filings: pd.DataFrame, seen: set[str], accepted_subjects: frozenset[str]) -> list[LlmTask]:
-    """One LLM task per listed proxy not in `seen` (nor listed twice), whose subject is accepted and
-    whose document carves to a payload.
-
-    Fetching and carving run on this thread, so the pool only ever receives text and a schema;
-    a filing that cannot be read never becomes a task.
-    """
-    tasks: list[LlmTask] = []
-    queued: set[str] = set()
-    for _, filing in filings.iterrows():
-        accession = str(filing["accession_number"])
-        if accession in seen or accession in queued:
-            continue
-        if accepted_subjects and not _subject_is_accepted(context, ticker, filing, accepted_subjects):
-            continue
-        queued.add(accession)
-        payload = _payload_for(context, ticker, filing)
-        if payload:
-            tasks.append(
-                LlmTask(seq=len(tasks), payload=payload, schema=Def14AExtract, table=Tables.def14a_llm, meta={"ticker": ticker, "filing": filing})
-            )
-    return tasks
+def _accepted_filings(context: Context, ticker: str, filings: pd.DataFrame, subjects: frozenset[str]) -> pd.DataFrame:
+    """Apply the existing multi-entity subject guard before any counter or fact write."""
+    if not subjects or filings.empty:
+        return filings
+    accepted = [index for index, filing in filings.iterrows() if _subject_is_accepted(context, ticker, filing, subjects)]
+    return filings.loc[accepted]
 
 
-def _extract_ticker(context: Context, extractor: LLMExtractor, ticker: str, tasks: list[LlmTask]) -> tuple[list[str], int]:
-    """Run one ticker's tasks (the extractor saves that ticker's five frames once) and return the
-    accessions whose answer carries domain evidence plus the count of evidence-free answers, each
-    saved as an empty-filing marker unless its key already holds a parent row."""
-    results = extractor.run_extraction(tasks, flatten=partial(_frames_off_data, context), group_key=lambda t: str(t.meta["ticker"]))
-    evidenced = [r for r in results if r.ok and isinstance(r.parsed, Def14AExtract) and _has_extract_evidence(r.parsed)]
-    semantic_empty = sum(1 for r in results if r.ok) - len(evidenced)
-    if semantic_empty:
-        context.log.info("%s: %d DEF 14A result(s) contained no domain evidence; marked as read", ticker, semantic_empty)
-    return [str(cast(pd.Series, r.task.meta["filing"])["accession_number"]) for r in evidenced], semantic_empty
+def _read_proxy(context: Context, ticker: str, filing: pd.Series) -> str | None:
+    """Read once; unavailable documents do not consume a domain attempt."""
+    try:
+        return _fetch_filing_html(context, filing)
+    except (NameError, TypeError, KeyError, AttributeError, AssertionError):
+        raise
+    except Exception as exc:
+        context.log.warning("%s %s: DEF 14A source unavailable (%s)", ticker, filing["accession_number"], exc)
+        return None
+
+
+def _section_extractors(context: Context, config: DictConfig, overrides: dict[str, Any], workers: int | None) -> dict[str, LLMExtractor]:
+    """Bind each existing service to its own action, prompt, schema and unchanged worker setting."""
+    return {
+        section.key: LLMExtractor(context, with_gpt_overrides(config, section.action, **overrides), action=section.action, threads=workers)
+        for section in SECTIONS
+    }
+
+
+def _listed_proxies(context: Context, ticker: str, scope: FilingScope, company: str, years: int, floor: pd.Timestamp) -> pd.DataFrame | None:
+    """Preserve source-failure handling and registrant guards over the full rolling window."""
+    try:
+        filings = _list_scope_windows(context, scope, company, years, floor)
+    except (NameError, TypeError, KeyError, AttributeError, AssertionError):
+        raise
+    except Exception as exc:
+        context.log.warning("%s: DEF 14A filing list failed (%s)", ticker, exc)
+        return None
+    return _accepted_filings(context, ticker, filings, accepted_subjects(scope))
 
 
 def fetch_def14a_llm(
@@ -273,47 +241,75 @@ def fetch_def14a_llm(
     workers: int | None = None,
     full: bool = False,
 ) -> None:
-    """Build/refresh the DEF 14A LLM governance extract, one ticker at a time.
-
-    Lists each ticker's proxies per CIK window of its filing scope over `years_history`, sends only
-    accessions with no saved row to the LLM and upserts each ticker's rows before the next starts.
-    Skips when no OpenAI key is configured. `model` / `max_chars` / `cache` default to `config.gpt`
-    and `workers` (concurrent LLM calls) to `config.gpt.threads`; an explicit keyword pins one
-    without touching config. `full` also re-sends the saved accessions without evidence (markers
-    included); a proxy with stored evidence is never re-sent.
-    """
-    config = with_gpt_overrides(config, "def14a", model=model, max_chars=max_chars, cache=cache)
-    de = config.data_extract
+    """Extract new sections and repair source-present gaps once; full never resets attempts."""
+    # Read the ticker map and preserve each registrant's filing windows.
     cik_map = load_cik_mapping(context, tickers)
     identity = load_identity(context)
+    years = int(config.data_extract.years_history)
+    floor = document_floor(Tables.def14a_llm, pd.Timestamp.today(), years)
     try:
-        extractor = LLMExtractor(context, config, action="def14a", threads=workers)
-    except OSError as e:
-        context.log.warning("DEF 14A LLM extraction skipped: %s", e)
+        extractors = _section_extractors(context, config, {"model": model, "max_chars": max_chars, "cache": cache}, workers)
+    except OSError as exc:
+        context.log.warning("DEF 14A LLM extraction skipped: %s", exc)
         return
+    context.store.prepare_def14a_retries()
+    updated = 0
 
-    # A saved row is done; `full` re-sends every accession without evidence (evidence-free rows and markers).
-    seen = _completed_accessions(context) if full else set(stored_values(context, Tables.def14a_llm, "accession_number"))
-    years = int(de.years_history)
-
-    total_new, total_semantic_empty = 0, 0
-    for _, r in tqdm(cik_map.iterrows(), total=len(cik_map), desc="DEF 14A LLM"):
-        ticker, company = str(r["ticker"]), str(r.get("name", ""))
+    for _, company in tqdm(cik_map.iterrows(), total=len(cik_map), desc="DEF 14A LLM"):
+        ticker = str(company["ticker"])
         scope = identity.filing_scope(ticker)
-        try:
-            filings = _list_scope_windows(context, scope, company, years, None)
-        except Exception as e:
-            context.log.warning("%s: DEF 14A filing list failed (%s)", ticker, e)
+        filings = _listed_proxies(context, ticker, scope, str(company.get("name", "")), years, floor)
+        if filings is None:
             continue
-        tasks = _ticker_tasks(context, ticker, filings, seen, accepted_subjects(scope))
-        extracted, semantic_empty = _extract_ticker(context, extractor, ticker, tasks)
-        seen.update(extracted)
-        total_new += len(extracted)
-        total_semantic_empty += semantic_empty
-        if extracted:
-            context.log.info("%s: +%d new DEF 14A filing(s) extracted", ticker, len(extracted))
+        works = load_work(context, ticker, filings, floor)
+        load_archives(context, works)
 
-    # The gender consensus groups directors across tickers, so it runs once after the loop.
-    if total_new:
+        # Reuse paid answers before deciding whether another request is necessary.
+        for work, section, answer in replay_candidates(works):
+            reserve(context, work, section, work.attempts[section.key] or 1)
+            processed = postprocess_section(section, answer, work.stamp, work.saved, work.parent)
+            save_section(context, work, processed)
+            work.raw = refresh_archive(work.raw, section, processed.legacy)
+            save_archive(context, work)
+            updated += 1
+
+        # Deduce only unread sections or source-supported missing keys within the rolling window.
+        requests = []
+        for work in works:
+            if not any(key in work.pending and attempt < 2 for key, attempt in work.attempts.items()):
+                continue
+            html = _read_proxy(context, ticker, work.filing)
+            if html is None:
+                continue
+            payloads = prepare_def14a_payloads(html, html_to_text(html))
+            requests.extend(requests_for(work, payloads))
+            empty_sections = [section for section in SECTIONS if not work.attempts[section.key] and not payloads.get(section.key, "").strip()]
+            for section in empty_sections:
+                reserve(context, work, section, 1)
+
+        # Reserve the owned attempt, call its matching prompt/schema, and get the answer.
+        for section, tasks in matched_batches(requests, workers or int(config.gpt.threads)):
+            for task in tasks:
+                work = cast(FilingWork, task.meta["work"])
+                reserve(context, work, section, min(2, work.attempts[section.key] + 1))
+            results = extractors[section.key].run(tasks)
+            failed = {cast(FilingWork, r.task.meta["work"]).stamp["accession_number"]: r.error for r in results if not r.ok}
+            if failed:
+                context.log.warning("%s %s: reserved attempts failed: %s", ticker, section.key, failed)
+            for result in (r for r in results if r.ok):
+                work = cast(FilingWork, result.task.meta["work"])
+                assert result.parsed is not None
+                work.raw = append_answer(work.raw, section, result.parsed, result.task.payload)
+                save_archive(context, work)
+
+                # Postprocess source units and retained facts, then save this section only.
+                processed = postprocess_section(section, result.parsed, work.stamp, work.saved, work.parent)
+                save_section(context, work, processed)
+                work.raw = refresh_archive(work.raw, section, processed.legacy)
+                save_archive(context, work)
+                updated += 1
+
+    # Preserve the existing cross-ticker gender reconciliation after saved updates.
+    if updated:
         _finalise_gender(context)
-    context.log.info("DEF 14A: %d filing(s) extracted, %d evidence-free answer(s) marked as read", total_new, total_semantic_empty)
+    context.log.info("DEF 14A: %d section answer(s) replayed or extracted; retry=2 sections excluded", updated)

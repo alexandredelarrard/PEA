@@ -232,6 +232,12 @@ def _remove_rejected_subjects(ctx: Context, accessions: set[str]) -> int:
     return _backup_then_delete(ctx, (Tables.def14a_llm, *_CHILD_TABLES.values()), accessions)
 
 
+def _require_legacy_write(ctx: Context) -> None:
+    """Refuse the legacy paid replacement path after daily section retries are installed."""
+    if any("retry" in ctx.store.columns(table) for table in (Tables.def14a_llm, *_CHILD_TABLES.values())):
+        raise SystemExit("Daily DEF14A section retries are installed; use the normal data_extract def14a run for paid repair.")
+
+
 def _extract(ctx: Context, config, work: pd.DataFrame, workers: int) -> tuple[int, int, int, int]:
     """Re-extract `work`, batching ACROSS tickers so the pool stays full.
 
@@ -244,6 +250,7 @@ def _extract(ctx: Context, config, work: pd.DataFrame, workers: int) -> tuple[in
     calls costs nothing in crash safety -- each ticker's five frames are still written together,
     as soon as that ticker's last call in the batch returns.
     """
+    _require_legacy_write(ctx)
     cik_map = load_cik_mapping(ctx, sorted(work["ticker"].unique()))
     extractor = LLMExtractor(ctx, config, action="def14a", threads=workers)
     ok, failed, rejected, unresolved = 0, 0, 0, 0
@@ -319,6 +326,8 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     config, ctx = get_config_context("./configs", use_cache=True, save=False)
+    if args.write:
+        _require_legacy_write(ctx)
     work = _work(ctx, args)
 
     print(f"scope           {args.scope}")

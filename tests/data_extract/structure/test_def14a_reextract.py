@@ -127,3 +127,14 @@ def test_missing_or_unreadable_targets_are_unresolved(monkeypatch):
     assert unresolved == {listed, absent}
     print("\n=== SANITY: targeted DEF 14A cannot silently omit work ===")
     print("  absent listing + unreadable payload are both surfaced as unresolved failures")
+
+
+def test_legacy_paid_path_stops_before_queries_calls_or_deletes_after_migration(monkeypatch):
+    checked = []
+    context = SimpleNamespace(store=SimpleNamespace(columns=lambda table: checked.append(table) or ["retry"]))
+    monkeypatch.setattr(reextract, "load_cik_mapping", lambda *_: pytest.fail("no listing after migration guard"))
+    monkeypatch.setattr(reextract, "LLMExtractor", lambda *_args, **_kwargs: pytest.fail("no paid client after migration guard"))
+    with pytest.raises(SystemExit, match="Daily DEF14A section retries are installed"):
+        reextract._extract(context, None, pd.DataFrame(), 1)
+    assert checked == [Tables.def14a_llm]
+    print("SANITY: the legacy paid replacement entry point stops at column inspection before queries, calls, backups or deletes.")

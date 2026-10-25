@@ -1,14 +1,13 @@
 ---
 title: Table catalog
-description: Canonical PostgreSQL table grains, temporal semantics, ownership, and
-  lifecycle.
+description: Canonical PostgreSQL table grains, temporal semantics, ownership, and lifecycle.
 type: reference
 tags:
-- wiki
-- reference
-- database
-- schema
-source_commit: 4773469e660ee159f30fbef0e56ea401d019fab2
+  - wiki
+  - reference
+  - database
+  - schema
+source_commit: 7cffc8ef42e4d04c5cdf7d42e5f4ad59c33731db
 ---
 # Table catalog
 
@@ -37,7 +36,7 @@ This is the canonical map of PostgreSQL table grain, ownership, temporal key, an
 | `resume` | The `Resume` contract the nightly work list is derived from: mode (`series`, `documents`, `archive`, `market`, `snapshot`), key column, frontier column, overlap days, EDGAR forms, archive period column, and source start. `forms` is the sole declaration of extracted SEC form types; fetchers, the index, registrant policy, derived subsets and validation consume it. `source_start` owns extraction history floors; fetchers read it rather than declaring first-date/year globals. `coverage_start` records a later broad-coverage boundary (13F: 2013-06-30, separate from its 1999-07-01 source floor); `observed_from` records the archive-period cutoff between estimated and observed availability clocks (notes and pension: 2026-09-01). |
 | `empty_marker` | The (column, sentinel) of an empty-filing marker: a filing that was read and holds no data for its key is stored once as a row with the key columns, that sentinel and a typed NULL everywhere else, so it is not listed again. |
 
-Marker tables: `fundamentals_facts` (`field`), `insider_transactions` (`security_type`), `sec_13d` and `sec_13g` (`rp_seq` = -1), `def14a_llm` (`def14a_json`), `sec_def14a` (`form`), `sec_8k` (`item`), `sec_8k_votes` (`proposal_seq` = 0), `sec_filing_text` (`section`) and `sec13f_hr` (`cusip`, one row per ticker after a completed new-ticker EDGAR gap walk, dated the gap start); text sentinels are `_empty`. The approved existing-table 13F candidate also keeps verified filing-completion metadata in `sec13f_hr` and `sec13f_manager_holdings` under `cusip=_empty`, keyed by the actual CIK/period/accession. These differ from the ticker gap-walk marker, whose CIK is `_empty`; economic reads exclude both kinds. `load` and `iter_load` drop marker rows unless `markers=True`; resume reads (`distinct`, `max_date`, `max_date_by`, `key_stats`) and raw SQL count them.
+Marker tables: `fundamentals_facts` (`field`), `insider_transactions` (`security_type`), `sec_13d` and `sec_13g` (`rp_seq` = -1), `def14a_llm` (`def14a_json`), its four child tables (`name` or `holder_name`), `sec_def14a` (`form`), `sec_8k` (`item`), `sec_8k_votes` (`proposal_seq` = 0), `sec_filing_text` (`section`) and `sec13f_hr` (`cusip`, one row per ticker after a completed new-ticker EDGAR gap walk, dated the gap start); text sentinels are `_empty`. The approved existing-table 13F candidate also keeps verified filing-completion metadata in `sec13f_hr` and `sec13f_manager_holdings` under `cusip=_empty`, keyed by the actual CIK/period/accession. These differ from the ticker gap-walk marker, whose CIK is `_empty`; economic reads exclude both kinds. `load` and `iter_load` drop marker rows unless `markers=True`; resume reads (`distinct`, `max_date`, `max_date_by`, `key_stats`) and raw SQL count them.
 
 Derived registry views such as `ALL`, `BY_NAME`, `MANAGED`, `PARTS`, `by_kind()`, `resume_tables()`, `marker_tables()` and `projection_report()` are computed from the declarations. Adding a managed table means adding one declaration and regenerating [sql/schema.sql](../../sql/schema.sql) through [generate_schema_sql.py](../../scripts/generate_schema_sql.py).
 
@@ -107,14 +106,16 @@ The distinction between the two histories is load-bearing: [data extraction](../
 
 | Table | Primary grain | Contract |
 | --- | --- | --- |
-| `def14a_llm` | ticker × accession | Parent structured extraction for board, CEO, ownership, compensation, voting, governance, and auditor fields. Silence is represented as null for tri-state disclosures. |
+| `def14a_llm` | ticker × accession | Core board/CEO/governance disclosures, all six audit fee amounts, deterministic child summaries and the retained paid JSON archive. Its `retry` counter belongs to the audit request only; unknown disclosures remain null. |
 | `def14a_executive_comp` | parent key × person × fiscal year | Summary Compensation Table rows; missing fiscal-year keys are rejected. |
-| `def14a_director_comp` | parent key × person | Item 402(k) outside-director compensation, with fiscal year as payload. |
+| `def14a_director_comp` | parent key × person | Outside-director compensation, including supported historical named payments; fiscal year remains payload, not a key. No pre-2008 exclusion. |
 | `def14a_ownership` | parent key × holder × holder type | Item 403 ownership rows; SEC event sources remain preferred when as-of dates differ. |
 | `def14a_directors` | parent key × person | Per-director attributes, including auditable gender basis and board-membership fields. |
 | `sec_def14a` | ticker × accession | Deterministic inline-XBRL Pay-versus-Performance facts for the post-2022 regulatory regime. Live presence must be checked before use. |
 
-The four prose child tables are flattened from the retained `def14a_json` payload rather than paid for again. See [SEC and LLM extraction](../flows/sec-llm-extraction.md).
+Each child table owns one focused LLM request and its `retry` counter: executive pay, director pay, ownership, and board/CEO/governance. Audit uses the existing parent table, so no sixth table is needed. Parent pay/ownership/roster copies are deterministic summaries; they are not requested twice. Recovering CEO identity refreshes its dependent pay/ownership copies from already-saved, matching child rows. Legacy `def14a_json` and appended raw section answers replay for free before any paid repair. See [SEC and LLM extraction](../flows/sec-llm-extraction.md).
+
+`retry` is BIGINT on all five tables and is owned per filing/domain, repeated on that domain's person/year rows: first attempt one; a source-present missing key can retry once at two; two is excluded even under `-F`. Missing plus one still needs a recognized source value; unsupported layouts can remain at one without a paid call. Child `_empty` markers persist failed/empty attempts and are hidden from economic reads (executive markers additionally use fiscal year -1). The daily fetcher calls `DataStore.prepare_def14a_retries()` before loading work: existing tables without the column receive the transactional add/backfill to one automatically; cold tables use canonical DDL. Repeated preparation preserves later counters. The parent default projection omits JSON/retry; governance and vote-role consumers also ignore parents containing only extraction metadata.
 
 ## Behavioral, transcript, and embedding tables
 

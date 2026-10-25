@@ -100,7 +100,7 @@ Run `seed-universe` before stages that resolve the default ticker set.
 
 ### What a run fetches
 
-Every fetcher derives its work list from its own table's rows, its `Resume` contract in [schema.py](../../src/data_store/schema.py) and the run date. Missing filings, holes and new tickers are found on every run; to repair stored rows, delete them and the next run fetches them again. No code reads the retired run manifest or the bulk `*_universe.json` sidecars; they are kept in `data/_retired/2026-10/`.
+Every fetcher derives its work list from its own table's rows, its `Resume` contract in [schema.py](../../src/data_store/schema.py) and the run date. Missing filings, holes and new tickers are found on every run. DEF 14A LLM repairs stored gaps automatically under its per-section retry rule below; other sources retain their own recovery contracts. No code reads the retired run manifest or the bulk `*_universe.json` sidecars; they are kept in `data/_retired/2026-10/`.
 
 - **New ticker.** A ticker whose `sp500_tickers.added_on` lies inside the table's overlap (7 days for the archives and the 13F backfill) gets its full history. A dated series (prices, short interest, Sharadar) pulls it once: when the key's first stored date is within the overlap of the history floor or source start, a rerun resumes forward. For short interest that start is the later of the FINRA start and the key's first `prices` date, so a joiner listed late (a spin-off) is also read in full once; a key with no price row keeps the FINRA start. A ticker taken out of `INSUFFICIENT_HISTORY_TICKERS` keeps its old `added_on`, so it is not new: run `-t <ticker> -F` once for each source.
 - **`-t X`** plans X alone. An EDGAR document command reads X's missing filings. An archive command (`financial-statements`, `financial-notes`, `fails-to-deliver`, the zip half of `insider-transactions`) does nothing for an established X; `-t X -F` re-reads X's stored periods. A `-t` 13F run never reads past the stored frontier.
@@ -108,8 +108,14 @@ Every fetcher derives its work list from its own table's rows, its `Resume` cont
 - **Archives.** A period is done only when every table of its fetcher holds it. A period with no universe row is listed again every night. A change of the FTD symbol policy needs an explicit `-F`.
 - **Short interest.** A night reads each ticker's window plus the days on which no key has a row; `--repair-gaps` re-reads each key's own gap days once. `-t X -F` re-reads X's days and upserts only X's rows.
 - **Tapes after a lineage change.** Run `short-interest`, `fails-to-deliver` and `identity-propagate` unscoped while tickers sit in the 7-day window: a `-t` re-stamp counts a line that moved between two universe companies under both until the next unscoped run.
-- **DEF 14A LLM.** A stored row, an evidence-free answer included, counts as done; only `-F` sends the proxy again.
+- **DEF 14A LLM.** `def14a` lists the full rolling history, reuses paid JSON first, and schedules five independently owned sections. Unattempted sections use `retry=1`; a source-present missing key at one can be retried at two; two is excluded, including under `-F`. Optional silence and unreadable filings do not trigger repeated paid work. There is no separate repair command or call-cap parameter. [The extraction flow](../flows/sec-llm-extraction.md) defines the table ownership and empty markers.
 - **13F.** A hole older than the 7-day overlap needs `thirteen-f --filing-window START:END`.
+
+### DEF 14A retry adoption
+
+The writer calls `context.store.prepare_def14a_retries()` before retry-bearing saves. It uses a transactional one-time `ALTER TABLE`/initialization for each missing counter; existing rows become one, and later invocations never reset two or refill nulls in an already migrated table. Fresh tables use canonical DDL. This metadata step makes no LLM call and does not change extracted facts or archive bytes.
+
+An ordinary `rtk "$PY" -m src data_extract def14a -c ./configs` run then repairs only its derived domain worklist. `-F` preserves the two-attempt limit. Keep the configured rolling history and dated registrant guards. Do not use the legacy `scripts/def14a_reextract.py --write` replacement path after adoption; it now refuses paid writes. Do not delete counters to restart exhausted sections as routine recovery.
 
 ### 13F version adoption before a historical cube rebuild
 

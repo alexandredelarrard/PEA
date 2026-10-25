@@ -23,6 +23,7 @@ from src.data_aggregate.utils.common.price_frames import (
 from src.data_aggregate.utils.governance.clean import PAY_BACKFILL_STAGE, PAY_BACKFILL_WARNING, GovernanceInputs, clean_governance_inputs
 from src.data_aggregate.utils.governance.panel import build_governance_feature_panel
 from src.data_store.schema import Tables
+from src.utils.filer_tables import def14a_evidence_mask
 from src.utils.step import Step
 
 _PRICE_FIELDS = ("close_split", "close_total")
@@ -94,8 +95,10 @@ class StepCubeGovernance(Step):
         return load_price_frames(self._store, peers=load_peers_or_raise(self._context, self._config), fields=_PRICE_FIELDS, since=since)
 
     def _load_def14a(self) -> pd.DataFrame | None:
-        """Load the full proxy archive."""
-        df = self._store.load(Tables.def14a_llm, optional=True)
+        """Load usable scalar observations, excluding archives and retry-only parents."""
+        df = self._store.load(Tables.def14a_llm, project=True, optional=True)
+        if df is not None:
+            df = df.loc[def14a_evidence_mask(df)]
         if df is None or df.empty:
             return None
         self._log.info("Loaded %s: %s rows x %s cols", Tables.def14a_llm.name, len(df), len(df.columns))

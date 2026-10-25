@@ -18,7 +18,8 @@ import pandas as pd
 from src.context import Context
 from src.data_extract.utils.structure.def14a.gender import person_key
 from src.data_extract.utils.structure.def14a.validate import clean_text
-from src.data_store.schema import Tables
+from src.data_store.schema import Table, Tables
+from src.utils.filer_tables import def14a_evidence_mask
 
 
 # --------------------------------------------------------------------------- #
@@ -33,12 +34,14 @@ def _role_source(context: Context, ticker: str) -> dict[str, pd.DataFrame]:
     `def14a_json` blob along with it.
     """
 
-    def _read(table, columns: list[str]) -> pd.DataFrame:
+    def _read(table: Table, columns: list[str]) -> pd.DataFrame:
         df = context.store.load(table, columns=columns, where={"ticker": ticker}, optional=True)
         return df if df is not None else pd.DataFrame(columns=columns)
 
+    parent = context.store.load(Tables.def14a_llm, project=True, where={"ticker": ticker}, optional=True)
+    usable = parent.loc[def14a_evidence_mask(parent)] if parent is not None else pd.DataFrame(columns=["ticker", "as_of", "ceo_name_proxy"])
     return {
-        "ceo": _read(Tables.def14a_llm, ["ticker", "as_of", "ceo_name_proxy"]),
+        "ceo": usable.reindex(columns=["ticker", "as_of", "ceo_name_proxy"]),
         "exec": _read(Tables.def14a_executive_comp, ["ticker", "as_of", "name", "title", "fiscal_year"]),
         "director": _read(Tables.def14a_director_comp, ["ticker", "as_of", "name"]),
     }

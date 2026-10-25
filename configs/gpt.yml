@@ -31,6 +31,11 @@ gpt:
   # narrative is one already-carved item (longest measured: 17,032 chars).
   max_chars:
     def14a: 130000
+    def14a_executive_pay: 130000
+    def14a_director_pay: 130000
+    def14a_audit: 130000
+    def14a_ownership: 130000
+    def14a_governance: 130000
     sec8k_votes: 40000
     employees: 60000
 

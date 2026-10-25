@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import pytest
 
 from src.data_extract.utils.schemas.def14a_schema import (
     BeneficialOwner as _BeneficialOwner,
@@ -43,6 +44,9 @@ from src.data_extract.utils.schemas.def14a_schema import (
     GovernanceProfile as _GovernanceProfile,
 )
 from src.data_extract.utils.structure.def14a.flatten import _child_frames, _flatten
+from src.data_extract.utils.structure.def14a.retry import SECTIONS, reservation_frame
+from src.data_store.schema import Table, Tables
+from src.data_store.store import DataStore
 
 BeneficialOwner: Any = _BeneficialOwner
 Def14AExtract: Any = _Def14AExtract
@@ -93,6 +97,18 @@ def _code_columns() -> dict[str, list[str]]:
     for name, rows in _child_frames("ACME", filing, extract).items():
         assert rows, f"{name}: the maximal extract produced no row -- builder bug, not a DDL gap"
         out[name] = list(rows[0])
+    tables = (Tables.def14a_llm, Tables.def14a_executive_comp, Tables.def14a_director_comp, Tables.def14a_ownership, Tables.def14a_directors)
+    stamp = {
+        "ticker": "ACME",
+        "cik": "0000001800",
+        "accession_number": "a1",
+        "as_of": filing["filing_date"],
+        "period": filing["period_of_report"],
+        "company_name": extract.company_name,
+    }
+    for table in tables:
+        counter = reservation_frame(table, stamp, None, 1)
+        out[table.name] = list(dict.fromkeys([*out[table.name], *counter.columns]))
     return out
 
 
@@ -121,6 +137,42 @@ def test_schema_sql_matches_the_flatten_column_for_column():
     )
 
     assert bad == 0, "sql/schema.sql and the flatten disagree (see the printed report)"
+
+
+@pytest.mark.parametrize("table", [section.table for section in SECTIONS], ids=[section.key for section in SECTIONS])
+def test_full_filing_stamp_reservations_preserve_canonical_columns(table: Table, sqlite_store: DataStore) -> None:
+    """The complete stamp from the saved AAPL 1995 filing must not widen any schema."""
+    stamp = {
+        "ticker": "AAPL",
+        "accession_number": "0000891618-95-000750",
+        "as_of": pd.Timestamp("1995-12-19"),
+        "cik": "0000320193",
+        "period": "1996-01-23",
+        "company_name": "Apple Computer, Inc.",
+    }
+    canonical = set(_ddl_columns(table.name))
+    df_saved: pd.DataFrame | None = None
+
+    # Exercise the real saver before checking columns, including monotonic retries.
+    for requested, expected in ((1, 1), (2, 2), (1, 2)):
+        df_reservation = reservation_frame(table, stamp, df_saved, requested)
+        sqlite_store.save(table, df_reservation)
+        assert set(sqlite_store.columns(table)) == canonical
+        assert set(df_reservation.columns) <= canonical
+        df_saved = sqlite_store.load(table, where={"ticker": "AAPL"}, markers=True)
+        assert df_saved is not None and len(df_saved) == 1
+        assert not df_saved[list(table.pk)].isna().any().any()
+        assert pd.Timestamp(df_saved.iloc[0]["as_of"]) == stamp["as_of"]
+        assert df_saved.iloc[0]["retry"] == expected
+
+    # Children retain their legitimate CIK while empty rows remain hidden.
+    assert df_saved is not None
+    if table is Tables.def14a_llm:
+        assert "cik" not in df_reservation
+    else:
+        assert df_saved.iloc[0]["cik"] == stamp["cik"]
+        assert sqlite_store.load(table, columns=list(table.pk), where={"ticker": "AAPL"}, optional=True) is None
+    print(f"SANITY: {table.name} full-stamp reservations keep canonical columns, filing keys/date and retry=2; child markers stay hidden.")
 
 
 def test_primary_key_columns_are_never_null_in_a_built_row():

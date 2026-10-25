@@ -1,11 +1,8 @@
 """
 carve.py  (src/data_extract/utils/structure/def14a/carve.py)
 -------------------------------------------------------------
-Anchor a proxy statement and cut it down to the `=== LABEL ===` blocks the model reads.
-
-LLM extraction is far cheaper AND more accurate on narrow, precise text, so each section is
-capped tightly to just its data: ~51k chars versus the old ~122k, i.e. ~2.5x cheaper and
-faster with no loss of the target fields.
+Anchor a proxy statement into the `=== LABEL ===` blocks the model reads. Keep source
+headings, dates and ownership definitions beside the selected tables.
 
 Two thresholds here are load-bearing and measured, not tuned:
   `_TOC_SKIP_FRAC`      the table-of-contents floor -- an anchor in the first 5% of a proxy
@@ -30,10 +27,7 @@ from src.data_extract.utils.structure.def14a.tables import (
 
 logger = logging.getLogger(__name__)
 
-# Per-section char budgets. LLM extraction is far cheaper AND more accurate on narrow,
-# precise text, so each section is capped tightly to just its data (the Summary Comp
-# Table and pay-ratio/auditor lines are compact; only the director bios run long). Total
-# ~51k chars vs the old ~122k -> ~2.5x cheaper / faster with no loss of the target fields.
+# Context before the existing prose anchors; selected tables retain wider source context.
 _CONTEXT_PRE = 500  # chars of context before the anchor match
 
 # Content-based patterns that reliably mark the START of each section's actual data.
@@ -59,7 +53,7 @@ _DIRECTOR_CONTENT_RE = re.compile(
 # "Awards" column — for the rare filing whose SCT title doesn't survive flattening.
 _COMPENSATION_TITLE_RE = re.compile(
     r"Summary\s+Compensation\s+Table"
-    r"(?=[\s\S]{0,1800}?\b20\d\d\b[\s\S]{0,25}?[\d,]{6,}[\s\S]{0,25}?[\d,]{5,})",
+    r"(?=[\s\S]{0,1800}?\b(?:19|20)\d\d\b[\s\S]{0,25}?[\d,]{6,}[\s\S]{0,25}?[\d,]{5,})",
     re.I,
 )
 _COMPENSATION_CONTENT_RE = re.compile(
@@ -347,6 +341,34 @@ def _auditor_name_slice(text: str, fee_table: tuple[list[str], list[list[str]]] 
     return -1
 
 
+def _table_context(text: str, table: str, domain: str) -> str:
+    """Locate table rows jointly by names and values, retaining adjacent source definitions."""
+    # Match complete row evidence rather than a repeated amount or a biographical name alone.
+    source = re.sub(r"\s+", " ", text)
+    matches: list[tuple[int, int]] = []
+    rows = [line.split("\t") for line in table.splitlines()[1:]]
+    for row in rows[:3] + rows[-3:]:
+        cells = list(dict.fromkeys(cell for cell in row if 4 <= len(cell) <= 150))
+        labels = [cell for cell in cells if re.search(r"[A-Za-z]", cell)]
+        candidates = [match.start() for label in labels for match in re.finditer(re.escape(label), source)]
+        if not candidates:
+            continue
+        best = max(candidates, key=lambda position: sum(cell in source[max(0, position - 200) : position + 1_200] for cell in cells))
+        score = sum(cell in source[max(0, best - 200) : best + 1_200] for cell in cells)
+        if score >= 2:
+            matches.append((score, best))
+    if not matches:
+        return ""
+
+    # Keep one table neighborhood when a person/value pair also appears elsewhere in the proxy.
+    anchor = max(matches, key=lambda match: match[0])[1]
+    positions = [position for _, position in matches if abs(position - anchor) <= max(1_200, 2 * len(table))]
+
+    # Ownership footnotes and primary totals may occupy separate neighboring tables.
+    before, after = (8_000, 10_000) if domain == "ownership" else (2_500, 3_000)
+    return source[max(0, min(positions) - before) : min(len(source), max(positions) + after)]
+
+
 def prepare_def14a_sections(html: str, text: str) -> str:
     """Return a focused subset of the DEF 14A, routing each target to the strategy that
     actually reaches it.
@@ -379,6 +401,13 @@ def prepare_def14a_sections(html: str, text: str) -> str:
         if target in tables:
             parts.append(f"\n\n=== {label} ===\n{to_tsv(*tables[target])}")
             from_b.append(label)
+
+    # Named historical payments remain usable without a modern Item 402(k) table.
+    if DIRECTOR_COMP not in tables:
+        historical = _historical_director_pay(text)
+        if historical:
+            parts.append("\n\n=== DIRECTOR COMPENSATION TABLE ===\n" + historical)
+            from_a.append("DIRECTOR COMPENSATION TABLE")
 
     # A's EXECUTIVE COMPENSATION / SECURITY OWNERSHIP / AUDITOR FEES windows are now
     # FALLBACKS -- emitted only when B found no table for that target. Dropping them on the
@@ -416,3 +445,77 @@ def prepare_def14a_sections(html: str, text: str) -> str:
         "def14a carve: B=%s | A=%s | no-table=%s | %d chars", ",".join(from_b) or "-", ",".join(from_a) or "-", ",".join(missing) or "-", len(payload)
     )
     return payload
+
+
+def _historical_director_pay(text: str) -> str:
+    """Retain explicit director-payment prose when no modern compensation table exists."""
+    pattern = r"\b(?:compensation\s+(?:of|for)\s+(?:non[- ]employee\s+)?directors|(?:non[- ]employee\s+)?directors?'?\s+compensation)\b"
+    for match in re.finditer(pattern, text, re.I):
+        body = text[match.start() :]
+        boundary = re.search(r"\n\s*(?:executive\s+compensation|security\s+ownership|election\s+of\s+directors|audit(?:or)?\s+fees)\b", body, re.I)
+        if boundary:
+            body = body[: boundary.start()]
+        if re.search(r"\$\s*\d|\b\d{1,3}(?:,\d{3})+\b", body):
+            return body
+    return ""
+
+
+def _unit_context(text: str, anchor: str) -> str:
+    """Carry source scale/currency notes adjacent to this domain's headings."""
+    snippets: list[str] = []
+    for match in re.finditer(anchor, text, re.I):
+        snippet = text[max(0, match.start() - _CONTEXT_PRE) : match.end() + _CONTEXT_PRE]
+        if re.search(r"\bin\s+(?:thousands|millions)|\bUSD\b|\bU\.?S\.?\s+dollars|\b(?:Canadian|Australian)\s+dollars|[£€]", snippet, re.I):
+            snippets.append(snippet)
+    return "\n".join(dict.fromkeys(snippets))
+
+
+def prepare_def14a_payloads(html: str, text: str) -> dict[str, str]:
+    """Parse once, then send each request only its table/prose blocks and unit context."""
+    # Reuse the existing classifier and content anchors once for this filing.
+    payload = prepare_def14a_sections(html, text)
+    matches = list(re.finditer(r"=== ([A-Z][A-Z &]+) ===\s*\n", payload))
+    blocks = {
+        match.group(1): payload[match.end() : matches[i + 1].start() if i + 1 < len(matches) else len(payload)].strip()
+        for i, match in enumerate(matches)
+    }
+    domains = {
+        "executive_pay": (("SUMMARY COMPENSATION TABLE", "EXECUTIVE COMPENSATION"), r"summary\s+compensation\s+table"),
+        "director_pay": (("DIRECTOR COMPENSATION TABLE",), r"compensation\s+(?:of|for)\s+directors|directors?'?\s+compensation"),
+        "audit": (("AUDIT FEE TABLE", "AUDITOR FEES", "AUDITOR NAME"), r"audit\s+(?:and\s+non.audit\s+)?fees|fees\s+billed"),
+        "ownership": (("FIVE PERCENT HOLDERS", "INSIDER OWNERSHIP", "SECURITY OWNERSHIP"), r"beneficial\s+ownership|security\s+ownership"),
+        "governance": (
+            ("DIRECTOR NOMINEES", "CORPORATE GOVERNANCE", "PAY RATIO & MEDIAN PAY", "SAY ON PAY"),
+            r"election\s+of\s+directors|corporate\s+governance|ceo\s+pay\s+ratio",
+        ),
+    }
+
+    # Recover short historical text and preserve the nearby scale/currency declaration.
+    result: dict[str, str] = {}
+    for domain, (labels, anchor) in domains.items():
+        # Preserve date headings, basis definitions and neighboring source tables for these domains.
+        parts: list[str] = []
+        for label in labels:
+            block = blocks.get(label, "")
+            if not block:
+                continue
+            if domain in ("director_pay", "ownership") and "\t" in block:
+                context = _table_context(text, block, domain)
+                block = f"Source context surrounding this table:\n{context}\n\nSource table (tab-separated columns):\n{block}" if context else block
+            parts.append(f"=== {label} ===\n{block}")
+
+        if not parts:
+            position = _find_content_section(text, re.compile(anchor, re.I), (), toc_frac=0.0)
+            if position >= 0:
+                other = re.search(
+                    r"\n\s*(?:SUMMARY COMPENSATION TABLE|COMPENSATION OF DIRECTORS|AUDIT FEES|BENEFICIAL OWNERSHIP|CORPORATE GOVERNANCE)\b",
+                    text[position + _CONTEXT_PRE :],
+                    re.I,
+                )
+                end = position + _CONTEXT_PRE + other.start() if other else len(text)
+                parts.append(f"=== {labels[0]} ===\n{text[position:end]}")
+        units = _unit_context(text, anchor) if parts else ""
+        if units:
+            parts.append("=== SOURCE UNITS ===\n" + units)
+        result[domain] = "\n\n".join(parts)
+    return result

@@ -5,12 +5,13 @@ from __future__ import annotations
 import json
 import logging
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 import pytest
 from sqlalchemy import create_engine
 
+from src.context import Context
 from src.data_extract.utils.common.identity import FilingScope
 from src.data_extract.utils.structure.def14a import fetch
 from src.data_extract.utils.structure.def14a.retry import SECTIONS
@@ -380,6 +381,41 @@ def test_disclosed_ceo_identity_or_start_year_gap_is_retried(daily, monkeypatch,
     assert _attempts(context)[Tables.def14a_directors.name] == [2]
     assert _attempts(context)[Tables.def14a_llm.name] == [1]
     print(f"SANITY: source-disclosed missing {missing} retries only board/CEO and leaves audit at attempt 1.")
+
+
+@pytest.mark.parametrize(("cell", "repair"), [("Yes", True), ("No", False), ("Yes", None), ("?", None)])
+def test_disclosed_independence_gap_repairs_only_governance_once(
+    daily: tuple[SimpleNamespace, list[tuple[str, str, str]], dict[str, Any], pd.DataFrame],
+    monkeypatch: pytest.MonkeyPatch,
+    cell: str,
+    repair: bool | None,
+) -> None:
+    context, calls, answers, _ = daily
+    context = cast(Context, context)
+    answers.update(_complete_answers())
+    answers["GovernanceExtract"].update(ceo_since_year=2018, ceo_pay_ratio=100, say_on_pay_support_pct=95)
+    answers["GovernanceExtract"]["directors"][0]["is_independent"] = None
+    payloads = {**PAYLOADS, "governance": f"Name\tAge\tDirector Since\tIndependent\nJane Example\t54\t2018\t{cell}"}
+    monkeypatch.setattr(fetch, "prepare_def14a_payloads", lambda *_: payloads)
+    fetch.fetch_def14a_llm(context, context.config, ["ZZ"])
+    assert len(calls) == 5 and _attempts(context)[Tables.def14a_directors.name] == [1]
+
+    # A source-positive missing boolean gets one owned repair; ambiguity stays uncalled.
+    answers["GovernanceExtract"]["directors"][0]["is_independent"] = repair
+    fetch.fetch_def14a_llm(context, context.config, ["ZZ"])
+    should_retry = cell in {"Yes", "No"}
+    assert [name for name, _, _ in calls[5:]] == (["GovernanceExtract"] if should_retry else [])
+    assert _attempts(context)[Tables.def14a_directors.name] == ([2] if should_retry else [1])
+    assert all(value == [1] for key, value in _attempts(context).items() if key != Tables.def14a_directors.name)
+    saved = context.store.load(Tables.def14a_directors)
+    assert saved is not None
+    assert pd.isna(saved.iloc[0].is_independent) if repair is None else saved.iloc[0].is_independent == repair
+
+    # Retained False, exhausted missing output and ambiguous source never cause more calls.
+    fetch.fetch_def14a_llm(context, context.config, ["ZZ"])
+    fetch.fetch_def14a_llm(context, context.config, ["ZZ"], full=True)
+    assert len(calls) == 5 + int(should_retry)
+    print(f"SANITY: independence {cell}/{repair} repairs only its board attempt once; False is retained and missing retry=2 is excluded.")
 
 
 @pytest.mark.parametrize("interrupt_core_save", [False, True])

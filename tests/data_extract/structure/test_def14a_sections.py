@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
+import pandas as pd
 import pytest
 from omegaconf import OmegaConf
 from pydantic import BaseModel
@@ -15,6 +16,7 @@ from src.context import Context
 from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
 from src.data_extract.utils.structure.def14a import carve
 from src.data_extract.utils.structure.def14a.carve import prepare_def14a_payloads, prepare_def14a_sections
+from src.data_extract.utils.structure.def14a.evidence import prose_has_gap, table_has_gap
 from src.data_extract.utils.structure.def14a.retry import SECTIONS, Section
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 
@@ -97,3 +99,33 @@ def test_fee_scale_context_survives_outside_the_table() -> None:
     assert "in millions" in payload and "57.6" in payload
     assert "SOURCE UNITS" in payload
     print("SANITY: the fee request retains the adjacent source scale rather than asking the model to infer it from magnitude.")
+
+
+@pytest.mark.parametrize(
+    ("source", "independent", "expected"),
+    [
+        ("Name\tAge\tDirector Since\tIndependent\nJane Example\t54\t2018\tYes", None, True),
+        ("Name\tAge\tDirector Since\tIndependence\nJane Example\t54\t2018\tNo", None, True),
+        ("Jane Example is independent.", None, True),
+        ("Jane Example is not an independent director.", None, True),
+        ("Name\tIndependent\nJane Example\tYes", False, False),
+        ("Name\tIndependent\nJane Example\tNo", False, False),
+        ("Jane Example is not independent.", False, False),
+        ("Name\tIndependent\nJane Example\t-", None, False),
+        ("Name\tIndependent\nJane Example\t?", None, False),
+        ("Name\tIndependent\nJane Example\t1", None, False),
+        ("Name\tStatus\nJane Example\tYes", None, False),
+        ("Name\tIndependent", None, False),
+        ("Jane Example may be independent.", None, False),
+        ("Jane Example is independent?", None, False),
+        ("Jane Example is an independent consultant.", None, False),
+    ],
+)
+def test_independence_repair_requires_a_named_explicit_disclosure(source: str, independent: bool | None, expected: bool) -> None:
+    section = next(section for section in SECTIONS if section.key == "governance")
+    saved = pd.DataFrame([dict(name="Jane Example", age=54, tenure_years=8, is_independent=independent)])
+    parent = dict(ceo_name_proxy="Jane Example", ceo_age=54, ceo_since_year=2018, board_size=1, ceo_pay_ratio=100, say_on_pay_support_pct=0.95)
+
+    detected = table_has_gap(section, source, saved, parent) or prose_has_gap(section, source, saved, parent)
+    assert detected is expected
+    print(f"SANITY: named independence evidence gives repair={expected}; saved False and ambiguous or absent disclosures remain complete/unproved.")

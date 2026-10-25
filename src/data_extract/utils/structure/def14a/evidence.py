@@ -13,8 +13,8 @@ from src.data_extract.utils.structure.def14a.validate import clean_holder_name, 
 
 
 def table_has_gap(section: Section, payload: str, saved: pd.DataFrame, parent: dict[str, Any]) -> bool:
-    """Match a disclosed numeric cell to its named row and output field."""
-    # Only explicit numeric cells count; bounds, dashes and footnote symbols remain unknown.
+    """Match explicit numeric or independence cells to named rows and output fields."""
+    # Literal Yes/No and numeric cells count; bounds, dashes and footnotes remain unknown.
     aliases = {
         "salary": r"salary",
         "bonus": r"bonus",
@@ -30,6 +30,7 @@ def table_has_gap(section: Section, payload: str, saved: pd.DataFrame, parent: d
         "percent_of_voting_power": r"voting.*(?:power|percent)|percent.*voting",
         "age": r"age",
         "tenure_years": r"director since|since",
+        "is_independent": r"\bindependen(?:ce|t)\b",
     }
     allowed = set(_CHILD_SPEC[section.table.name][0]) if section.key != "audit" else set()
     fields: dict[int, str] = {}
@@ -90,8 +91,10 @@ def table_has_gap(section: Section, payload: str, saved: pd.DataFrame, parent: d
             if "fiscal_year" in rows:
                 rows = rows.loc[pd.to_numeric(rows.fiscal_year, errors="coerce").eq(int(year))]
         for index, field in fields.items():
-            cell = cells[index].replace("%", "").strip() if index < len(cells) else ""
-            if re.fullmatch(r"\$?\(?-?\d[\d,]*(?:\.\d+)?\)?", cell) and (rows.empty or field not in rows or rows[field].isna().all()):
+            cell = cells[index].strip() if index < len(cells) else ""
+            cell = cell if field == "is_independent" else cell.replace("%", "")
+            pattern = r"yes|no" if field == "is_independent" else r"\$?\(?-?\d[\d,]*(?:\.\d+)?\)?"
+            if re.fullmatch(pattern, cell, re.I) and (rows.empty or field not in rows or rows[field].isna().all()):
                 return True
     return False
 
@@ -127,6 +130,14 @@ def prose_has_gap(section: Section, payload: str, saved: pd.DataFrame, parent: d
         return False
     if section.key != "governance":
         return False
+
+    # A named explicit independence statement supports either True or False.
+    for match in re.finditer(
+        r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})\s+is\s+(?:not\s+)?(?:an?\s+)?independent(?:\s+director)?\s*(?:[.;]|$)", payload
+    ):
+        rows = saved.loc[saved.name.astype(str).str.casefold().eq(match[1].casefold())] if "name" in saved else saved.iloc[:0]
+        if rows.empty or "is_independent" not in rows or rows.is_independent.isna().all():
+            return True
 
     # A named CEO disclosure is a key even when every director row is already complete.
     role = r"\b(?:Chief\s+Executive\s+Officer|CEO)\b"

@@ -23,8 +23,22 @@ from tests.data_aggregate.test_insider_features import _txn
 def test_quiet_proof_never_changes_undefined_insider_ratios_to_zero() -> None:
     idx = pd.bdate_range("2026-01-01", periods=20)
     frames = cast(Any, SimpleNamespace(trading_index=idx, universe=["AAA"], close_split=pd.DataFrame(1.0, index=idx, columns=["AAA"])))
-    columns = ["code", "officer_title_clean", "is_officer", "role", "is_director", "is_10b5_1", "in_exercise_package", "is_management", "owner_cik"]
-    activity = pd.DataFrame(columns=columns).astype({"in_exercise_package": bool, "is_management": bool})
+    columns = [
+        "code",
+        "officer_title_clean",
+        "is_officer",
+        "role",
+        "role_unknown",
+        "is_director",
+        "is_10b5_1",
+        "in_exercise_package",
+        "is_management",
+        "owner_cik",
+        "security_title",
+        "security_type",
+        "direct_indirect",
+    ]
+    activity = pd.DataFrame(columns=columns).astype({"in_exercise_package": bool, "is_management": bool, "role_unknown": bool})
     names = [
         "ic_insider_net_buy_ratio_180d",
         "ic_insider_owner_surprise_120d",
@@ -34,7 +48,7 @@ def test_quiet_proof_never_changes_undefined_insider_ratios_to_zero() -> None:
     ]
     fields = {name: pd.DataFrame(np.nan, index=idx, columns=["AAA"]) for name in names}
     coverage = insider.InsiderCoverage.from_availability(None, pd.Series({"AAA": idx.max()}))
-    insider._observe_quiet_windows(fields, activity, pd.Series({"AAA": pd.Timestamp("2020-01-01")}), frames, coverage, None)
+    insider._observe_quiet_windows(fields, activity, pd.Series({"AAA": pd.Timestamp("2020-01-01")}), frames, coverage)
     for name in names[:-1]:
         assert fields[name].isna().all().all(), f"Undefined ratio {name} must remain NULL under a certified quiet window"
     assert fields[names[-1]].eq(0).all().all()

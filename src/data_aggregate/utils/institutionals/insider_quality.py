@@ -621,7 +621,8 @@ def versioned_records(df_scoped: pd.DataFrame, pps: pd.Series) -> tuple[pd.DataF
     df_key = _copy_key(df_rows, pps)
     links, counts["amendments_ambiguous"] = _link_amendments(df_rows, df_key)
     counts["amendments_linked"] = len(links)
-    df_plan, cell_counts = _supersede_plan(df_key, links)
+    unique_links, _ = _link_amendments(df_rows, df_key, require_unique=True)
+    df_plan, cell_counts = _supersede_plan(df_key, links, unique_links)
     counts.update(cell_counts)
     linked = df_key["accession_number"].isin(links.index)
     drop_copy, df_owners, copy_counts = _collapse_copies(df_rows, df_key, eligible=~linked)
@@ -647,6 +648,7 @@ def versioned_records(df_scoped: pd.DataFrame, pps: pd.Series) -> tuple[pd.DataF
 def _copy_key(df: pd.DataFrame, pps: pd.Series) -> pd.DataFrame:
     """Per row: accession, filing day, the `COPY_KEY` fields (`round_half_up`) and the `CELL_KEY` fields."""
     nan = pd.Series(np.nan, index=df.index)
+    blank = pd.Series("", index=df.index)
     owned = pd.to_numeric(df["shares_owned_after"], errors="coerce") if "shares_owned_after" in df.columns else nan
     txn_day = to_day(df["transaction_date"]) if "transaction_date" in df.columns else pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns]")
     security = df["security_type"].astype(str).str.lower() if "security_type" in df.columns else pd.Series("nonderiv", index=df.index)
@@ -661,6 +663,14 @@ def _copy_key(df: pd.DataFrame, pps: pd.Series) -> pd.DataFrame:
             "shares": round_half_up(df["shares_n"]),
             "price": round_half_up(pps.reindex(df.index)),
             "owned_after": round_half_up(owned),
+            "owner": df.get("owner_cik", blank),
+            "account": df.get("direct_indirect", blank),
+            "security_title": df.get("security_title", blank).fillna("").astype(str).str.upper().str.strip(),
+            "row_sequence": pd.to_numeric(df.get("row_sequence", nan), errors="coerce"),
+            "n_reporting_owners": pd.to_numeric(df.get("n_reporting_owners", nan), errors="coerce"),
+            "source_shares": df["shares_n"],
+            "source_price": pps.reindex(df.index),
+            "source_owned": owned,
         },
         index=df.index,
     )
@@ -733,7 +743,40 @@ def _link_amendments(df: pd.DataFrame, df_key: pd.DataFrame, *, require_unique: 
     return links, int((n_candidates > 1).sum())
 
 
-def _supersede_plan(df_key: pd.DataFrame, links: pd.Series) -> tuple[pd.DataFrame, dict]:
+def _corrected_action_cells(df_rows: pd.DataFrame, unique_links: pd.Series) -> pd.Series:
+    """Match date-only corrections only with unique filing, explicit row identity and complete unchanged correspondence."""
+    cell_days = df_rows["transaction_day"].copy()
+    keys = ["owner", "account", "security_type", "security_title", "row_sequence", "code", "source_shares", "source_price", "source_owned"]
+    known = (
+        df_rows["owner"].ne("")
+        & df_rows["account"].eq("D")
+        & df_rows["security_type"].eq("nonderiv")
+        & df_rows["security_title"].ne("")
+        & df_rows["row_sequence"].gt(0)
+        & df_rows["row_sequence"].mod(1).eq(0)
+        & df_rows["n_reporting_owners"].eq(1)
+        & df_rows["transaction_day"].notna()
+    )
+    df_known = df_rows.loc[known].dropna(subset=keys)
+    df_amended = df_known.loc[df_known["accession_number"].isin(unique_links.index)]
+    df_original = df_known.loc[df_known["is_original"], ["original", *keys, "transaction_day", "row"]]
+    df_matches = df_amended.merge(df_original, on=["original", *keys], suffixes=("", "_original"))
+    if df_matches.empty:
+        return cell_days
+    paired = df_matches.groupby(["accession_number", "row"])["row_original"].transform("size").eq(1)
+    paired &= df_matches.groupby(["accession_number", "row_original"])["row"].transform("size").eq(1)
+    df_matches = df_matches.loc[paired]
+    counts = df_rows.groupby("accession_number").size()
+    matched = df_matches.groupby("accession_number").size()
+    complete = df_matches["accession_number"].map(matched).eq(df_matches["accession_number"].map(counts)) & df_matches["accession_number"].map(
+        matched
+    ).eq(df_matches["original"].map(counts))
+    corrections = df_matches.loc[complete & df_matches["transaction_day"].ne(df_matches["transaction_day_original"])]
+    cell_days.loc[corrections["row"].to_numpy()] = corrections["transaction_day_original"].to_numpy()
+    return cell_days
+
+
+def _supersede_plan(df_key: pd.DataFrame, links: pd.Series, unique_links: pd.Series) -> tuple[pd.DataFrame, dict]:
     """Per row of a linked original or amendment: `anchor`, `visible_until` and `identical`.
 
     The records of one (original, cell) are ordered original first, then amendments by filing
@@ -752,9 +795,11 @@ def _supersede_plan(df_key: pd.DataFrame, links: pd.Series) -> tuple[pd.DataFram
     member = original.notna() | df_key["accession_number"].isin(set(links.to_numpy()))
     df_rows = df_key[member].assign(original=original[member].fillna(df_key.loc[member, "accession_number"]), row=df_key.index[member])
     df_rows["is_original"] = df_rows["original"].eq(df_rows["accession_number"])
+    df_rows["cell_day"] = _corrected_action_cells(df_rows, unique_links)
     shares, price, owned = (df_rows[c].to_numpy(dtype="float64").astype("U32") for c in ("shares", "price", "owned_after"))
     df_rows["record"] = np.char.add(np.char.add(np.char.add(np.char.add(shares, "|"), price), "|"), owned)
-    cell = ["original", *CELL_KEY]
+    df_rows["record"] = df_rows["record"] + "|" + df_rows["transaction_day"].astype(str)
+    cell = ["original", "cell_day", *(name for name in CELL_KEY if name != "transaction_day")]
     reporter = [*cell, "accession_number"]
 
     df_rep = (

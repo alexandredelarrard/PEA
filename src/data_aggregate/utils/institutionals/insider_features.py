@@ -13,13 +13,21 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from src.constants.constants import CANONICAL_ROLES
 from src.data_aggregate.utils.common.availability import InstitutionalAvailability
 from src.data_aggregate.utils.common.errors import _empty_panel
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.pit import daily_market_cap
 from src.data_aggregate.utils.common.price_frames import PriceFrames
 from src.data_aggregate.utils.institutionals.insider_positions import cumulative_positions
-from src.data_aggregate.utils.institutionals.insider_quality import FLAG_PCT_SHARES_OUTSTANDING, account_other_flows, report_oversized, security_class
+from src.data_aggregate.utils.institutionals.insider_quality import (
+    FLAG_PCT_SHARES_OUTSTANDING,
+    account_other_flows,
+    common_stock_mask,
+    report_oversized,
+    security_class,
+)
+from src.data_aggregate.utils.institutionals.short_flow_features import _proven_tenure_mask
 from src.data_store.schema import Tables
 
 _log = logging.getLogger(__name__)
@@ -67,14 +75,18 @@ class InsiderCoverage:
     availability: InstitutionalAvailability | None = None
     insider_floor: pd.Timestamp = INSIDER_FLOOR
     plan_floor: pd.Timestamp = TEN_B5_1_FLOOR
+    identity_intervals: pd.DataFrame | None = None
 
     @classmethod
-    def from_availability(cls, availability: InstitutionalAvailability | None, complete_through: pd.Series | None) -> InsiderCoverage:
+    def from_availability(
+        cls, availability: InstitutionalAvailability | None, complete_through: pd.Series | None, identity_intervals: pd.DataFrame | None = None
+    ) -> InsiderCoverage:
         return cls(
             complete_through,
             availability,
             availability.source_date(Tables.insider_transactions) if availability is not None else INSIDER_FLOOR,
             availability.source_date(Tables.insider_transactions, "is_10b5_1") if availability is not None else TEN_B5_1_FLOOR,
+            identity_intervals,
         )
 
 
@@ -95,6 +107,9 @@ def build_insider_feature_panel(
     if idx.empty:
         return pd.DataFrame(columns=["date", "ticker"])
 
+    # Keep execution USD intact while preparing a separate action-date contribution.
+    df_trades = df_trades.assign(declared_units_known=df_position_trades.iloc[: len(df_trades)]["declared_units_known"].to_numpy())
+    df_trades = _action_values(df_trades, df_mcap, frames, coverage.identity_intervals)
     # Reconstruct positions with disclosed shares even when execution dollars are unknown.
     df_buys = df_trades[df_trades["code"].eq("P")].copy()
     df_sells = df_trades[df_trades["code"].eq("S")].copy()
@@ -115,7 +130,7 @@ def build_insider_feature_panel(
     # Establish observable quiet windows, preserving unsupported active disclosures.
     df_unsupported = diag.get("unsupported_events", pd.DataFrame())
     df_activity = pd.concat([df_trades, df_unpriced, df_unsupported], ignore_index=True)
-    _observe_quiet_windows(fields, df_activity, diag["source_first"], frames, coverage, df_mcap)
+    _observe_quiet_windows(fields, df_activity, diag["source_first"], frames, coverage)
 
     # Propagate uncertainty through dollar windows, account balances and prior-owner ranks.
     df_uncertain = pd.concat([diag.get("uncertain_events", pd.DataFrame()), df_unsupported], ignore_index=True)
@@ -124,6 +139,7 @@ def build_insider_feature_panel(
     _add_position_uncertainty(unpriced_masks, df_uncertain, df_positions, idx)
     _add_owner_uncertainty(unpriced_masks, df_unknown, df_buys, idx)
     _mask_unknown_windows(fields, unpriced_masks)
+    _mask_unknown_windows(fields, {"ic_insider_management_position_change_60d": _management_uncertainty(df_activity, idx)})
 
     # Emit the existing raw float32 fields with own-price availability.
     _log.info("insider panel: %s features from %s scoped transactions (%s buys, %s sells)", len(fields), len(df_trades), len(df_buys), len(df_sells))
@@ -230,7 +246,6 @@ def _observe_quiet_windows(
     source_first: pd.Series,
     frames: PriceFrames,
     coverage: InsiderCoverage,
-    mcap: pd.DataFrame | None,
 ) -> None:
     """Fill only proven inactivity; unsupported active rows never become zero.
 
@@ -243,7 +258,7 @@ def _observe_quiet_windows(
     listed = _listed(frames.close_split, idx, columns)
     insider_floor, plan_floor, frontier = coverage.insider_floor, coverage.plan_floor, coverage.complete_through
     buy, sell = activity["code"].eq("P"), activity["code"].eq("S")
-    role_unknown = activity["officer_title_clean"].eq("") & ~activity["is_officer"].eq(0)
+    role_unknown = activity["role_unknown"]
     specifications = {
         "ic_insider_buy_value_mcap_60d": (WINDOW_60, buy),
         "ic_insider_buy_value_mcap_180d": (WINDOW_180, buy),
@@ -257,7 +272,7 @@ def _observe_quiet_windows(
         "ic_insider_net_buy_ratio_180d": (WINDOW_180, buy | sell),
         "ic_insider_discretionary_sell_mcap_60d": (WINDOW_60, sell & ~activity["is_10b5_1"].eq(1) & ~activity["in_exercise_package"]),
         "ic_insider_planned_sell_mcap_60d": (WINDOW_60, sell & ~activity["is_10b5_1"].eq(0)),
-        "ic_insider_management_position_change_60d": (WINDOW_60, (buy | sell) & (activity["is_management"] | role_unknown)),
+        "ic_insider_management_position_change_60d": (WINDOW_60, (buy | sell) & _possible_management(activity)),
     }
     seen = pd.DataFrame(True, index=idx, columns=columns)
     corroborated = pd.DataFrame({ticker: idx >= day for ticker, day in source_first.items()}, index=idx).reindex(columns=columns, fill_value=False)
@@ -269,10 +284,6 @@ def _observe_quiet_windows(
             continue
         floor = max(insider_floor, plan_floor) if "sell_mcap" in name else insider_floor
         observed = _net_buy_mask(idx, columns, listed, floor, coverage, window) & corroborated
-        if "mcap" in name:
-            if mcap is None or mcap.empty:
-                continue
-            observed &= mcap.reindex(index=idx, columns=columns).gt(0)
         frame = fields.get(name, pd.DataFrame(index=idx)).reindex(index=idx, columns=columns)
         ratios = {
             "ic_insider_purchase_pct_prior",
@@ -323,7 +334,7 @@ def _dense_fields(
     sell_val_180 = _rolling(sells, idx, WINDOW_180, "value", seen)
 
     if mcap is not None and not mcap.empty:
-        out["ic_insider_buy_value_mcap_180d"] = _over(buy_val_180, mcap)
+        out["ic_insider_buy_value_mcap_180d"] = _action_sum(buys, idx, WINDOW_180, seen)
 
     bv = buy_val_180.where(_rolling(buys, idx, WINDOW_180, None, seen).gt(0))
     sv = sell_val_180.where(_rolling(sells, idx, WINDOW_180, None, seen).gt(0))
@@ -341,7 +352,7 @@ def _dense_fields(
         # rather than letting "unknown" masquerade as "discretionary".
         disc = sells[planned.eq(0) & ~sells["in_exercise_package"].astype(bool)]
         for name, sub in (("ic_insider_discretionary_sell_mcap_60d", disc), ("ic_insider_planned_sell_mcap_60d", sells[planned.eq(1)])):
-            frame = _over(_rolling(sub, idx, WINDOW_60, "value", seen), mcap)
+            frame = _action_sum(sub, idx, WINDOW_60, seen)
             out[name] = frame.where(pd.Series(idx >= ten_b5_floor, index=idx), axis=0)
     return out
 
@@ -479,15 +490,135 @@ def _mask_unknown_windows(fields: dict[str, pd.DataFrame], masks: dict[str, pd.D
             fields[name] = field.mask(aligned)
 
 
-def _over(numerator: pd.DataFrame, denominator: pd.DataFrame) -> pd.DataFrame:
-    """`numerator / denominator` on the intersection, NaN where the denominator is absent or
-    non-positive. Never zero-fills the denominator: a missing share count is unknown size,
-    not infinite size."""
-    cols = numerator.columns.intersection(denominator.columns)
-    if cols.empty:
-        return pd.DataFrame(index=numerator.index)
-    den = denominator.reindex(index=numerator.index)[cols]
-    return (numerator[cols] / den.where(den > 0)).replace([np.inf, -np.inf], np.nan)
+def _possible_management(activity: pd.DataFrame) -> pd.Series:
+    """Potential direct common management scope, excluding only proved indirect, joint or noncommon accounts."""
+    owners = pd.to_numeric(activity.get("n_reporting_owners", pd.Series(np.nan, index=activity.index)), errors="coerce")
+    titles = activity["security_title"].fillna("").astype(str).str.strip()
+    common = common_stock_mask(titles) | titles.eq("")
+    kinds = activity["security_type"].fillna("").astype(str).str.lower()
+    return (
+        (activity["is_management"] | activity["role_unknown"])
+        & ~activity["direct_indirect"].eq("I")
+        & ~(owners.gt(1) & owners.mod(1).eq(0))
+        & common
+        & ~kinds.eq("deriv")
+    )
+
+
+def _management_uncertainty(activity: pd.DataFrame, idx: pd.DatetimeIndex) -> pd.DataFrame:
+    """Unsupported or unclassified potential managers invalidate finite partial pools over their public windows."""
+    owners = pd.to_numeric(activity.get("n_reporting_owners", pd.Series(np.nan, index=activity.index)), errors="coerce")
+    unknown = (
+        activity["role_unknown"]
+        | activity["owner_cik"].eq("")
+        | activity["transaction_day"].isna()
+        | ~activity["direct_indirect"].eq("D")
+        | ~owners.eq(1)
+        | ~activity["shares_n"].gt(0)
+        | activity["scope_unknown"].fillna(False)
+        | activity["quality_uncertain"].fillna(False)
+    )
+    df_unknown = activity.loc[activity["code"].isin(["P", "S"]) & _possible_management(activity) & unknown]
+    columns = pd.Index(sorted(activity["ticker"].unique()), name="ticker")
+    seen = pd.DataFrame(True, index=idx, columns=columns)
+    return _rolling(df_unknown, idx, WINDOW_60, None, seen).gt(0)
+
+
+def _action_values(trades: pd.DataFrame, mcap: pd.DataFrame | None, frames: PriceFrames, identity_intervals: pd.DataFrame | None) -> pd.DataFrame:
+    """Attach exact-session capital and intensity without changing clean execution dollars or public intervals."""
+    df_trades = trades.copy()
+    df_trades["action_session"] = pd.NaT
+    df_trades["action_mcap"] = np.nan
+    df_trades["action_value"] = np.nan
+    idx = pd.DatetimeIndex(frames.trading_index).normalize().unique().sort_values()
+    if df_trades.empty or mcap is None or mcap.empty or idx.empty:
+        return df_trades
+    action = pd.to_datetime(df_trades["transaction_day"], errors="coerce").dt.normalize()
+    positions = idx.searchsorted(pd.DatetimeIndex(action), side="right") - 1
+    chosen = pd.Series(idx.take(np.clip(positions, 0, len(idx) - 1)), index=df_trades.index).where(action.notna() & (positions >= 0))
+    df_trades["action_session"] = chosen
+    columns = mcap.columns.get_indexer(df_trades["ticker"])
+    capital = mcap.reindex(index=idx).to_numpy(dtype=float)[np.clip(positions, 0, len(idx) - 1), np.maximum(columns, 0)]
+    supported = chosen.notna() & (columns >= 0) & np.isfinite(capital) & (capital > 0) & df_trades["declared_units_known"].fillna(False)
+    if frames.close_split is None:
+        return df_trades
+    quotes = frames.close_split.reindex(index=idx, columns=mcap.columns).to_numpy(dtype=float)
+    price = quotes[np.clip(positions, 0, len(idx) - 1), np.maximum(columns, 0)]
+    supported &= np.isfinite(price) & (price > 0)
+    if frames.level_factor is not None:
+        factors = frames.level_factor.reindex(index=idx, columns=mcap.columns).to_numpy(dtype=float)
+        factor = factors[np.clip(positions, 0, len(idx) - 1), np.maximum(columns, 0)]
+        supported &= np.isfinite(factor) & (factor > 0)
+    needs_identity = action.ne(chosen) | security_class(df_trades["security_title"]).ne("COMMON")
+    continuous = pd.Series(False, index=df_trades.index)
+    if needs_identity.any():
+        continuous.loc[needs_identity] = _action_identity(df_trades.loc[needs_identity], chosen.loc[needs_identity], identity_intervals)
+    supported &= action.eq(chosen) | continuous
+    supported &= security_class(df_trades["security_title"]).eq("COMMON") | continuous
+    values = pd.to_numeric(df_trades["value"], errors="coerce")
+    supported &= np.isfinite(values) & values.gt(0)
+    df_trades["action_mcap"] = pd.Series(capital, index=df_trades.index).where(supported)
+    contribution = values / df_trades["action_mcap"]
+    df_trades["action_value"] = contribution.where(np.isfinite(contribution))
+    return df_trades
+
+
+def _action_identity(trades: pd.DataFrame, sessions: pd.Series, master: pd.DataFrame | None) -> pd.Series:
+    """Require one canonical interval across both dates and the shared global ownership/conflict policy."""
+    supported = pd.Series(False, index=trades.index)
+    required = {
+        "canonical_company",
+        "source",
+        "security_id",
+        "source_symbol",
+        "security_class",
+        "conversion_ratio",
+        "lineage_role",
+        "valid_from",
+        "valid_to",
+    }
+    if master is None or master.empty or not required.issubset(master):
+        return supported
+    df_pairs = pd.DataFrame(
+        {
+            "ticker": trades["ticker"],
+            "action": trades["transaction_day"],
+            "session": sessions,
+            "klass": security_class(trades["security_title"]),
+            "row": np.arange(len(trades)),
+        },
+        index=trades.index,
+    ).dropna(subset=["action", "session"])
+    if df_pairs.empty:
+        return supported
+    dates = pd.date_range(df_pairs["session"].min(), df_pairs["action"].max())
+    columns = pd.Index(df_pairs["ticker"].unique(), name="ticker")
+    tenure = _proven_tenure_mask(dates, columns, master, None)
+    gaps = np.vstack([np.zeros(len(columns), dtype=int), (~tenure).to_numpy().cumsum(axis=0)])
+    col = columns.get_indexer(df_pairs["ticker"])
+    continuous = gaps[dates.get_indexer(df_pairs["action"]) + 1, col] == gaps[dates.get_indexer(df_pairs["session"]), col]
+    df_pairs = df_pairs.loc[continuous]
+    df_lines = master.loc[master["source"].eq("ftd") & master["lineage_role"].isin(CANONICAL_ROLES)].copy()
+    ratio = pd.to_numeric(df_lines["conversion_ratio"], errors="coerce")
+    df_lines = df_lines.loc[np.isfinite(ratio) & ratio.gt(0) & df_lines["security_class"].fillna("").str.fullmatch(r"common|class_[A-Z]")]
+    df_lines["start"] = pd.to_datetime(df_lines["valid_from"], errors="coerce").dt.normalize()
+    df_lines["end"] = pd.to_datetime(df_lines["valid_to"], errors="coerce").dt.normalize()
+    df_matches = df_pairs.merge(df_lines, left_on="ticker", right_on="canonical_company")
+    matches = (
+        df_matches["start"].le(df_matches["session"])
+        & (df_matches["end"].isna() | df_matches["end"].gt(df_matches["action"]))
+        & (df_matches["klass"].eq("COMMON") | df_matches["security_class"].eq("class_" + df_matches["klass"]))
+    )
+    accepted = df_matches.loc[matches].groupby("row")["security_id"].nunique().eq(1)
+    supported.iloc[accepted.index[accepted]] = True
+    return supported
+
+
+def _action_sum(trades: pd.DataFrame, idx: pd.DatetimeIndex, window_days: int, seen: pd.DataFrame) -> pd.DataFrame:
+    """Sum supported contributions, masking a selected window if any active contribution is unknown."""
+    values = _rolling(trades, idx, window_days, "action_value", seen)
+    unknown = _rolling(trades.loc[trades["action_value"].isna()], idx, window_days, None, seen).gt(0)
+    return values.mask(unknown)
 
 
 # --------------------------------------------------------------------------- #
@@ -502,7 +633,7 @@ def _sparse_fields(buys: pd.DataFrame, idx: pd.DatetimeIndex, mcap: pd.DataFrame
     seen = _first_filing(buys, buys.iloc[:0], idx)
     out = {}
     if mcap is not None and not mcap.empty:
-        out["ic_insider_buy_value_mcap_60d"] = _over(_rolling(buys, idx, WINDOW_60, "value", seen), mcap)
+        out["ic_insider_buy_value_mcap_60d"] = _action_sum(buys, idx, WINDOW_60, seen)
         roles = {
             "ic_insider_ceo_buy_mcap_180d": buys["role"].eq("CEO"),
             "ic_insider_cfo_buy_mcap_180d": buys["role"].eq("CFO"),
@@ -515,7 +646,7 @@ def _sparse_fields(buys: pd.DataFrame, idx: pd.DatetimeIndex, mcap: pd.DataFrame
                 # A role's flow becomes observed only at its first eligible disclosure.
                 first = selected.groupby("ticker")["visible_from"].min()
                 role_seen = role_seen & pd.DataFrame({ticker: idx >= day for ticker, day in first.items()}, index=idx)
-                out[name] = _over(_rolling(selected, idx, WINDOW_180, "value", role_seen), mcap)
+                out[name] = _action_sum(selected, idx, WINDOW_180, role_seen)
     surprise = _owner_surprise(buys)
     if surprise is not None and not surprise.empty:
         scores = surprise.assign(_num=surprise["value"] * surprise["surprise"])

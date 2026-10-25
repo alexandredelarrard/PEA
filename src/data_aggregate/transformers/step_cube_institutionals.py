@@ -186,7 +186,7 @@ class StepCubeInstitutionals(Step):
 
         # Build each family sequentially so raw sources do not overlap in memory.
         merger = PanelMerger(anchor=frames.skeleton())
-        merger.add(self._insider_panel(frames, df_shares, quantity_basis, df_valuation_close), "insider-trading")
+        merger.add(self._insider_panel(frames, df_shares, quantity_basis, df_valuation_close, df_lines), "insider-trading")
         merger.add(self._short_flow_panel(frames, df_shares, df_lines, df_bars, quantity_basis), "short-flow")
         merger.add(self._ownership_panel(frames), "beneficial-ownership")
 
@@ -200,6 +200,7 @@ class StepCubeInstitutionals(Step):
         shares: pd.DataFrame | None,
         quantity_basis: institutional_inputs.QuantityBasis,
         valuation_close: pd.DataFrame | None,
+        identity_intervals: pd.DataFrame | None,
     ) -> pd.DataFrame | None:
         # Load transactions and their completeness/title evidence before cleaning.
         source = institutional_inputs.load_insider_transactions(self._store, frames.universe)
@@ -220,7 +221,7 @@ class StepCubeInstitutionals(Step):
         df_shares_out = institutional_inputs.daily_share_quantities(shares, pd.DatetimeIndex(frames.trading_index), quantity_basis)
         report_oversized_positions(df_positions.iloc[: len(df_trades)], df_shares_out)
         df_mcap = insider_market_cap(shares, frames.close_split, frames.level_factor)
-        coverage = InsiderCoverage.from_availability(self._availability, source.complete_through)
+        coverage = InsiderCoverage.from_availability(self._availability, source.complete_through, identity_intervals)
         return build_insider_feature_panel(frames, df_trades, df_positions, diagnostics, df_mcap, coverage)
 
     def _short_flow_panel(

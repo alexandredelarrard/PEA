@@ -517,6 +517,7 @@ def test_short_stage_uses_the_owner_publication_clock(sqlite_store: Any, tmp_pat
 
 def test_populated_insider_stage_reads_before_clean_rebase_compute(sqlite_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     days = seed_prices(sqlite_store)
+    sqlite_store.save(Tables.security_master, market_lines(["AAA"], days.min()))
     df_source = pd.DataFrame([row(ticker="AAA", transaction_date="2024-01-03", filing_date="2024-01-04", lineage_role="canonical_current")])
     sqlite_store.save(Tables.insider_transactions, df_source)
     ctx = context(sqlite_store, tmp_path)
@@ -551,6 +552,7 @@ def test_populated_insider_stage_reads_before_clean_rebase_compute(sqlite_store:
     def compute_stage(*args: Any, **kwargs: Any) -> Any:
         nonlocal computing
         stages.append("compute")
+        assert len(args) == 6 and args[5].identity_intervals["canonical_company"].tolist() == ["AAA"]
         result = compute(*args, **kwargs)
         computing = False
         return result
@@ -561,6 +563,7 @@ def test_populated_insider_stage_reads_before_clean_rebase_compute(sqlite_store:
     result = step.build_panel()
     assert stages == ["clean", "rebase", "compute"]
     assert reads[Tables.insider_transactions.name] == 1 and max(reads.values()) == 1
+    assert reads[Tables.security_master.name] == 1
     assert len(result) == len(days)
     print(
         "SANITY: the populated public step loads each payload once, then executes clean→rebase→compute with a store-read tripwire active throughout the numerical stages."

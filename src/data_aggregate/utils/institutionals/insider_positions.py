@@ -19,10 +19,12 @@ def position_units(trades: pd.DataFrame, basis: QuantityBasis | None) -> pd.Data
     """
     df_rows = trades.copy()
     df_rows["klass"] = security_class(df_rows["security_title"])
+    df_rows["declared_units_known"] = False
     if basis is None:
         df_rows["units_known"] = False
         return df_rows
     declared = basis.events.declared_units(df_rows["ticker"], df_rows["transaction_day"], df_rows["security_title"])
+    df_rows["declared_units_known"] = declared.gt(0) & np.isfinite(declared)
     target = pd.Series(basis.target_date, index=df_rows.index)
     factor = basis.events.rebase(pd.Series(1.0, index=df_rows.index), df_rows["ticker"], df_rows["transaction_day"], target) * declared
     factor = factor.where(df_rows["klass"].eq("COMMON"))

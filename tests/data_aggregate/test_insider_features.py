@@ -737,11 +737,11 @@ def test_unpriced_insider_is_unknown_not_zero(unknown_code, known_code):
     after = ratio.loc[unknown_day + pd.Timedelta(days=180) :]
 
     assert affected.isna().all()
-    assert not after.empty and after.eq(0.0).all()
+    assert not after.empty and after.isna().all()
     print(
         f"SANITY: the unpriced {unknown_code} leaves all {len(affected)} sessions in its "
         f"180-day net-buy window unknown; after it ages out, {len(after)} complete sessions "
-        "return to a genuine zero."
+        "remain undefined because both raw-USD legs are zero."
     )
 
 
@@ -820,14 +820,14 @@ def test_an_exercise_and_sell_package_is_not_a_discretionary_sale():
             security_type="deriv",
             security_title="Stock Option",
             filing_date="2024-06-03",
-            transaction_date="2024-06-01",
+            transaction_date="2024-05-31",
         ),
-        _txn(accession_number=acc, transaction_code="S", filing_date="2024-06-03", transaction_date="2024-06-01", is_10b5_1=0.0),
+        _txn(accession_number=acc, transaction_code="S", filing_date="2024-06-03", transaction_date="2024-05-31", is_10b5_1=0.0),
         _txn(
             accession_number="0001234567-23-000002",
             transaction_code="S",
             filing_date="2024-06-03",
-            transaction_date="2024-06-01",
+            transaction_date="2024-05-31",
             is_10b5_1=0.0,
             shares_owned_after=12_000.0,
         ),
@@ -1215,17 +1215,30 @@ def test_without_a_market_cap_the_dollar_features_are_absent_not_counts():
     rows = [
         _txn(
             accession_number=f"p{i}",
-            owner_cik=f"{i % 2:04d}",
+            owner_cik="0007",
             officer_title="Chief Executive Officer",
             is_officer=1.0,
             is_director=1.0,
             filing_date=f"2015-0{i + 1}-15",
             transaction_date=f"2015-0{i + 1}-14",
             shares=1_000.0 + i,
-            shares_owned_after=11_000.0 + i,
+            shares_owned_after=[11_000.0, 11_001.0, 12_003.0][i],
         )
         for i in range(3)
     ]
+    rows.append(
+        _txn(
+            accession_number="observed-sale",
+            owner_cik="0007",
+            transaction_code="S",
+            filing_date="2015-01-16",
+            transaction_date="2015-01-15",
+            shares=1000,
+            shares_owned_after=10_000,
+            officer_title="Chief Executive Officer",
+            is_officer=1,
+        )
+    )
     panel = build_insider_feature_panel(make_frames(TRADING_INDEX, _peers()), _frame(rows))
     got = {c.removeprefix("f_").removesuffix("_xs") for c in panel.columns if c not in ("date", "ticker")}
     scale_free = {
@@ -1283,7 +1296,7 @@ def test_the_mcap_features_are_present_and_the_vendor_basis_is_what_builds_them(
             is_officer=1.0 if title else 0.0,
             is_director=0.0 if title else 1.0,
             filing_date=f"2024-0{i + 1}-15",
-            transaction_date=f"2024-0{i + 1}-14",
+            transaction_date="2024-01-12" if i == 0 else f"2024-0{i + 1}-14",
             shares=1_000.0 + 100 * i,
             value_usd=100_000.0 + 10_000 * i,
             shares_owned_after=11_000.0 + i,

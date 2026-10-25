@@ -3,18 +3,33 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 
 import pandas as pd
 
 from src.data_extract.utils.structure.def14a.validate import clean_holder_name
 
 
+def normalize_name(value: str) -> str:
+    """Canonical name identity without parenthetical text, accents or punctuation."""
+    text = value
+    parentheses = re.compile(r"\([^()]*\)")
+
+    # Remove every complete parenthetical group, including nested groups.
+    while parentheses.search(text):
+        text = parentheses.sub(" ", text)
+
+    # Preserve name tokens while removing case, accent and punctuation differences.
+    text = "".join(character for character in unicodedata.normalize("NFKD", text.casefold()) if not unicodedata.combining(character))
+    return " ".join(re.sub(r"[\W_]+", " ", text).split())
+
+
 def _holder_name(value: str) -> str:
     """Remove an explicit postal-address tail without dropping entity or person suffixes."""
     name = clean_holder_name(value) or value
 
-    # Comma-separated US postal addresses escape the legacy whitespace-only cleaner.
-    parts = re.split(r",\s*(?=\d+\s)", name, maxsplit=1)
+    # A source footnote may sit directly before whitespace and the street number.
+    parts = re.split(r",\s*(?=\d+\s)|(?<=\([a-z]\))\s+(?=\d+\s)", name, maxsplit=1)
     if len(parts) == 2 and re.search(r"\b[A-Z]{2}\s+\d{5}(?:-\d{4})?\b", parts[1]):
         name = parts[0]
     return name.strip()
@@ -28,16 +43,15 @@ def reconcile_holders(df_saved: pd.DataFrame, df_new: pd.DataFrame) -> pd.DataFr
     columns = list(df_rows.columns)
     df_rows["as_of"] = pd.to_datetime(df_rows["as_of"])
 
-    # Saved non-null cells precede repair cells; punctuation cannot change an identity.
+    # Explicit security qualifiers cannot supply issuer facts when an issuer row exists.
+    df_rows["_security_qualified"] = df_rows.holder_name.str.contains(r"\([^)]*\b(?:stock|shares|class)\b[^)]*\)", case=False, regex=True)
+
+    # Saved comparable non-null cells precede repair cells under one shared name key.
     df_rows["holder_name"] = df_rows.holder_name.map(_holder_name)
-    df_rows["_holder_identity"] = (
-        df_rows.holder_name.str.casefold()
-        .str.replace("&", " and ")
-        .str.replace(r"[\W_]+", " ", regex=True)
-        .str.strip()
-        .str.replace(r"\s+", " ", regex=True)
-    )
+    df_rows["_holder_identity"] = df_rows.holder_name.map(normalize_name)
     keys = ["ticker", "accession_number", "as_of", "holder_type", "_holder_identity"]
+    has_issuer = df_rows.groupby(keys, sort=False, dropna=False)["_security_qualified"].transform("min").eq(False)
+    df_rows = df_rows.loc[~df_rows._security_qualified | ~has_issuer]
     return df_rows.groupby(keys, as_index=False, sort=False, dropna=False).first().reindex(columns=columns)
 
 

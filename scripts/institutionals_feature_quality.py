@@ -432,10 +432,9 @@ def build_candidate(
     out_cache: Path,
     out: Path,
     *,
-    compare_to: Path | None = None,
-    comparison_out: Path | None = None,
     part: Table = Tables.cube_part_institutionals,
 ) -> dict[str, Any]:
+    # Verify the frozen inputs before building the full candidate panel.
     cutoff = pd.Timestamp(as_of).normalize()
     manifest = _load_manifest(manifest_path, as_of, part=part)
     config_node, context = get_config_context(config, use_cache=False, save=False)
@@ -462,6 +461,7 @@ def build_candidate(
     if panel[part.date_col].max() > cutoff:
         raise ValueError("candidate contains rows after its declared cutoff")
 
+    # Save the cutoff artifact and its hash-bound metadata without a table write.
     out_cache.parent.mkdir(parents=True, exist_ok=True)
     panel.to_parquet(out_cache, index=False)
     parquet, columns, dtypes = _schema(out_cache)
@@ -490,12 +490,7 @@ def build_candidate(
     }
     out.mkdir(parents=True, exist_ok=True)
     _write_json(out / "candidate-metadata.json", metadata)
-    comparison: dict[str, Any] | None = None
-    if compare_to is not None:
-        if comparison_out is None:
-            raise ValueError("--comparison-out is required with --compare-to")
-        comparison = compare_refactor(compare_to, out_cache, comparison_out, part=part)
-    return {"status": "fail" if comparison and comparison["status"] == "fail" else "pass", "metadata": metadata, "comparison": comparison}
+    return {"status": "pass", "metadata": metadata, "comparison": None}
 
 
 def _keys(path: Path, *, part: Table = Tables.cube_part_institutionals) -> tuple[pd.DataFrame, np.ndarray, int, int]:
@@ -1662,10 +1657,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.as_of,
                 args.out_cache,
                 args.out,
-                compare_to=args.compare_to,
-                comparison_out=args.comparison_out,
                 part=part,
             )
+            # Preserve comparison validation after the candidate artifacts exist.
+            if args.compare_to is not None and args.comparison_out is None:
+                raise ValueError("--comparison-out is required with --compare-to")
+            if args.compare_to is not None:
+                comparison = compare_refactor(args.compare_to, args.out_cache, args.comparison_out, part=part)
+                summary["comparison"] = comparison
+                summary["status"] = "fail" if comparison["status"] == "fail" else "pass"
         elif args.command == "taxonomy":
             summary = taxonomy(args.config, args.snapshot, args.manifest, args.as_of, args.out, part=part)
         else:

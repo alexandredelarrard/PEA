@@ -387,7 +387,7 @@ def _run_institutionals(monkeypatch, store: _StatefulGovernanceStore, calendar: 
     step = cast(Any, object.__new__(StepCubeInstitutionals))
     step._store, step._log, step._cfg = store, logging.getLogger("test"), {}
     step._part = PART_BY_NAME["cube_part_institutionals"]
-    step.build_panel = lambda full=False: build_insider_feature_panel(frames, insider, capital=InsiderCapital(shares_out_history=shares))
+    step.build_panel = lambda: build_insider_feature_panel(frames, insider, capital=InsiderCapital(shares_out_history=shares))
     step.run(full=full)
 
 

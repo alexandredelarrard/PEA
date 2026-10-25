@@ -50,7 +50,7 @@ class StepCubeInstitutionals(Step):
         )
 
         # Compute once; history-dependent features need the complete calendar.
-        df_panel = self.build_panel(full=full)
+        df_panel = self.build_panel()
 
         # Replace an obsolete schema with the same completed panel.
         result = write_part(self._store, Tables.cube_part_institutionals, df_panel, window, drop_empty=True)
@@ -61,7 +61,7 @@ class StepCubeInstitutionals(Step):
         override = self._cfg.get("incremental", {}).get("warmup_trading_days")
         return int(override) if override is not None else self._part.warmup_trading_days
 
-    def build_panel(self, full: bool = False) -> pd.DataFrame:
+    def build_panel(self) -> pd.DataFrame:
         """Compute with full event history; run controls the independently rewritten tail."""
         # Load shared price, class and capital inputs once.
         frames = capital_inputs.load_full_price_frames(self._store, self._context, self._FIELDS)

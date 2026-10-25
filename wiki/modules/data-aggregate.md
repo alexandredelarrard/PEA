@@ -5,7 +5,7 @@ type: module
 tags:
   - wiki
   - module
-source_commit: 6e0148de714dcaba5ac3fe04cb62b532efbdf78b
+source_commit: 8e1277bbf02cd5995a61a6c1fd13b087ef9cba76
 ---
 # Cube aggregation
 
@@ -171,6 +171,8 @@ Independent closure validation is conditional for bounded code/data correctness;
 8. Merge the two panels and persist once. A failed previously saved source family refuses the write. One saved-date metadata read guards calendar coverage for the actual replacement interval: the inclusive tail normally, or all saved dates for a full/schema-promoted replacement. A gap only in an untouched prefix does not block an ordinary tail refresh. A successful nonempty grid with known schema and entirely unknown incremental features clears the inclusive stale tail; a genuinely empty result or an all-null full rebuild still preserves the old table.
 
 The broad path does not concatenate the complete raw source. Full prices, compact book history and manager history remain resident, so streaming alone does not establish whole-source capacity within a particular container limit. The bounded replay and runtime estimate are retained in the local ignored audit `reports/validate/2026-10-24-sec13f-code-refactor/`; the full 100-million-row computation was not run.
+
+The user-authorized dev integration combines this SEC13F refactor with the newer institutional code in merge `8e1277bbf02cd5995a61a6c1fd13b087ef9cba76`. All 77 focused integration checks pass, including one-build/one-write schema recovery for both steps. Unchanged SEC13F production files and the current dev source files were verified against their respective parents. The local ignored adoption record is `reports/validate/2026-10-24-sec13f-code-refactor/merges/merge-05.md`; prior bounded full/tail reproduction and all declared science/capacity limits remain separate evidence.
 
 Public standalone legacy builders remain supported. A missing manifest cannot certify immutable completion, amendment provenance or absence, so those adapters retain their existing latest-only grain/publication rules instead of fabricating a versioned book. Versioned comparison eligibility still requires supported adjacent books; raw-CIK versus configured-manager continuity remains unchanged. The independent refactor preserves all feature names, values/null masks and support thresholds.
 

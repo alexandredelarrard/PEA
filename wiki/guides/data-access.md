@@ -7,7 +7,7 @@ tags:
   - guide
   - database
   - point-in-time
-source_commit: 6e0148de714dcaba5ac3fe04cb62b532efbdf78b
+source_commit: 8e1277bbf02cd5995a61a6c1fd13b087ef9cba76
 ---
 # Data access and storage
 

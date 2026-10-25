@@ -953,3 +953,11 @@ Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/
 - Coverage: SEC 13F ordered whole-quarter streaming, compact broad history, changed-manager-book statistics, explicit panel stages, bounded daily projection with original calendar clocks, historical schema support and targeted persistence guards. Existing selection/continuity science and store atomicity follow-ups remain separate.
 - Pages: [Overview](./OVERVIEW.md), [Cube aggregation](./modules/data-aggregate.md), [Data access](./guides/data-access.md), [Run the pipeline](./guides/run-the-pipeline.md), [TODO](./TODO.md)
 - Evidence: bounded full/incremental replay and connected-code gates are retained in local ignored `reports/validate/2026-10-24-sec13f-code-refactor/`. No full 100-million-row computation or production adoption ran; capacity and runtime estimates retain their stated assumptions.
+
+## 2026-10-24: refresh — SEC13F dev integration
+
+- Profile: internal/standard; source_commit: 8e1277bbf02cd5995a61a6c1fd13b087ef9cba76, combining dev6e0148de and SEC13F a952c808.
+- Coverage: preserve both institutional and SEC13F documentation, reconcile the shared production-interface test, and synchronize the cube flow with complete-quarter streaming, compact books, effective daily windows, schema reprojection and saved-calendar write guards.
+- Evidence: 77 focused integration tests passed with zero blocked live effects; source comparison preserves the unchanged SEC13F files and newer dev production files. This is local code adoption, with no production build or complete100M computation and no new full-source capacity claim.
+- Pages: [Overview](./OVERVIEW.md), [Aggregation](./modules/data-aggregate.md), [Cube flow](./flows/cube-build.md), [Data access](./guides/data-access.md), [Run the pipeline](./guides/run-the-pipeline.md), [TODO](./TODO.md).
+- Local ignored audit: `reports/validate/2026-10-24-sec13f-code-refactor/merges/merge-05.md` and `_out/dev-merge-01.json`.

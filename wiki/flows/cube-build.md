@@ -5,7 +5,7 @@ type: flow
 tags:
   - wiki
   - flow
-source_commit: 280857c4e2c91157ae95550e0732752741c0cbdd
+source_commit: 8e1277bbf02cd5995a61a6c1fd13b087ef9cba76
 ---
 # Cube build
 
@@ -66,11 +66,11 @@ The source/calendar history remains complete even for an incremental output tail
 
 ## SEC 13F stage sequence
 
-[StepCubeSecThirteen.run](../../src/data_aggregate/transformers/step_cube_sec_thirteen.py) plans the saved output tail before `build_panel`. The builder reads shared price/share/split resources, roster and CUSIP map once, then processes broad and elite source packets sequentially. The broad source uses one projected stream; the smaller manager source uses one ordinary projected read with CIK/parse-status/filing-cutoff scope.
+[StepCubeSecThirteen.run](../../src/data_aggregate/transformers/step_cube_sec_thirteen.py) plans the saved output window and loads shared resources once. The broad input uses one projected stream ordered by CIK, report quarter and accession, carrying complete CIK-quarter groups across 200,000-row chunks. The smaller manager input uses one ordinary projected load scoped to historical roster CIKs and the filing cutoff; both preserve completion markers.
 
-Each panel visibly loads its packet, attaches CUSIPs, calls shared cleaning/value repair, then invokes its prepared feature builder. [The cleaning owner](../../src/data_aggregate/utils/sec_thirteen/holdings_clean.py) also prepares dates/publication and explicit legacy adapters. [The iterator](../../src/data_aggregate/utils/sec_thirteen/institutional_vintages.py) schedules/yields changed reconciled books through the existing raw-filer resolver. Elite [manager selection](../../src/data_aggregate/utils/sec_thirteen/manager_selection.py) and each family's comparison/event/projection stages then read prepared inputs. Off-universe positions stay in book totals.
+[Shared cleaning](../../src/data_aggregate/utils/sec_thirteen/holdings_clean.py) attaches CUSIPs, prepares publication dates and repairs values per accession before reconciliation. Off-universe positions remain in whole-book denominators. [Compact broad books](../../src/data_aggregate/utils/sec_thirteen/institutional_books.py) release raw positions after retaining ticker amounts, security evidence and book states. The manager publication scheduler retains changed-book statistics and conviction; the step exposes selection, public state, contributions, levels and the separate institutional/superinvestor panels. Full sparse history and original calendar ordinals remain dependencies, while normal daily projection uses the effective window: currently 398 computation sessions and eight inclusive rewrite sessions when the saved frontier is current.
 
-The existing seven-session output rewrite does not bound source dependencies: both families retain the full calendar/history. Schema fallback reuses that computed panel for full replacement, avoiding a second source read/feature replay. Original/addition/restatement semantics, family-specific comparison cohorts, legacy no-manifest behavior and unknown-versus-zero rules are preserved. This refactor does not fix CIK lineage, missing source books, omitted-feature carries, successful-empty retention or non-atomic tail replacement; see the [accepted follow-up](../TODO.md#13f-refactor-follow-ups--completed-review-23-october-2026) and [detailed stages](../modules/data-aggregate.md#sec-13f-build-stages).
+Bounded historical probes establish emitted column support; genuine schema drift reprojects the same prepared facts over the full calendar without reloading sources or rebuilding books. A failed previously saved family or a missing saved calendar date inside the actual deletion footprint refuses persistence. A successful nonempty known-schema grid clears an entirely unknown incremental tail; genuinely empty output and all-null full rebuilds preserve saved data. Selection/cohort/CIK/continuity science and non-atomic tail replacement remain [follow-ups](../TODO.md#13f-refactor-follow-ups--completed-review-23-october-2026). See the [detailed stages](../modules/data-aggregate.md#sec-13f-build-stages); no complete 100M computation or 22 GB capacity certification was performed.
 
 ## Text stage sequence
 

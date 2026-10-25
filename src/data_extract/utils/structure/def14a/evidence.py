@@ -32,6 +32,7 @@ def table_has_gap(section: Section, payload: str, saved: pd.DataFrame, parent: d
         "tenure_years": r"director since|since",
         "is_independent": r"\bindependen(?:ce|t)\b",
     }
+    year_header = r"(?:(?:[A-Z]|FY \d{4}-\d{2} Summary Compensation Table)\s+)?(?:Fiscal\s+)?Year"
     allowed = set(_CHILD_SPEC[section.table.name][0]) if section.key != "audit" else set()
     fields: dict[int, str] = {}
     name_column, year_columns = 0, []
@@ -73,7 +74,7 @@ def table_has_gap(section: Section, payload: str, saved: pd.DataFrame, parent: d
         if header:
             fields = header
             name_column = next((index for index, cell in enumerate(cells) if re.search(r"name|principal position", cell, re.I)), 0)
-            year_columns = [index for index, cell in enumerate(cells) if index not in header and re.search(r"\byear$", cell, re.I)]
+            year_columns = [index for index, cell in enumerate(cells) if re.fullmatch(year_header, cell, re.I)]
             continue
         if not fields or name_column >= len(cells):
             continue

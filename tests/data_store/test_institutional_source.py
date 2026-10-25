@@ -33,6 +33,7 @@ def _inventory(store: DataStore) -> tuple[pd.DataFrame, pd.DataFrame, dict[Table
             "ticker": ["AAA"] * 2,
             "issuer_cik": ["0000000001"] * 2,
             "shares": [2.0, 3.0],
+            "transaction_date": pd.to_datetime(["2026-07-01"] * 2),
             "fetched_at": pd.to_datetime(["2026-07-02"] * 2),
             "inventory_checked_through": pd.to_datetime(["2026-07-01"] * 2),
         }

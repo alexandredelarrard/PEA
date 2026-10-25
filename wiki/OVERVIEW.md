@@ -1,5 +1,5 @@
 ---
-source_commit: 8e1277bbf02cd5995a61a6c1fd13b087ef9cba76
+source_commit: cbc13eb78abd2cfa59465ea780c1092a2b7ecb2e
 title: Codebase Wiki — Overview
 description: Canonical internal hub for architecture, modules, flows, concepts, guides, references and backlog.
 profile: internal/standard
@@ -46,7 +46,7 @@ The [modelling workflow](./flows/model-training-and-prediction.md) separates tra
 
 The [text-cube flow](./flows/cube-build.md#text-stage-sequence) prepares selected paragraphs once, saves sentiment and embeddings independently, then builds features from bounded saved history and a 30-calendar-day output overlap. [Text-cube acceptance](./guides/testing.md#text-cube-acceptance-2026-10-22) records the committed refactor's passing code/real-model checks separately from remaining data/model and whole-universe capacity limits.
 
-The 2026-10-24 SEC 13F refresh at `8df7649faa77f1d76aace9a247e731daa461fe98` streams broad raw holdings, prepares compact book history and bounds normal daily projection. [Cube aggregation](./modules/data-aggregate.md) describes the stages; [data access](./guides/data-access.md) records the replacement guards, and [TODO](./TODO.md) retains the selection, continuity and storage follow-ups. This is a narrow documentation refresh: bounded replay does not establish whole-source runtime or capacity, and the full 100-million-row computation was not run.
+The 2026-10-25 feature-science change at product `cbc13eb78abd2cfa59465ea780c1092a2b7ecb2e` builds 26 elite 13F fields through one shared engine for the full raw roster and fixed top-K, removes decay, limits book carry to90 calendar days and compares genuine matched report-quarter pairs. Seven insider cap features now aggregate action-date per-trade ratios. [Cube aggregation](./modules/data-aggregate.md#sec-13f-build-stages) gives the linear flow and formulas, [configuration](./reference/configuration.md) identifies the user-owned ordered CIK list, [validation](./guides/testing.md#sec-13f-feature-science-2026-10-25) records exact replay evidence and data-quality limits, and [TODO](./TODO.md#sec-13f-feature-science-follow-ups-2026-10-25) keeps lineage, coverage and adoption follow-ups. This scoped refresh does not certify historical vendor vintages, whole-source capacity or predictive value.
 
 ## Task map
 

@@ -5,7 +5,7 @@ type: module
 tags:
   - wiki
   - module
-source_commit: 4773469e660ee159f30fbef0e56ea401d019fab2
+source_commit: cbc13eb78abd2cfa59465ea780c1092a2b7ecb2e
 ---
 # Runtime and shared utilities
 
@@ -55,4 +55,4 @@ Shared introduction/speaker parsing lives in [earnings_call_split.py](../../src/
 
 ## Institutional utility ownership
 
-The aggregation-only `roster_as_of` and `first_snapshot_date` functions live in [utils/sec_thirteen/superinvestor_roster.py](../../src/data_aggregate/utils/sec_thirteen/superinvestor_roster.py); `iter_public_books` lives in [utils/sec_thirteen/institutional_vintages.py](../../src/data_aggregate/utils/sec_thirteen/institutional_vintages.py). The remaining [shared roster](../../src/utils/superinvestor_roster.py) owns configuration, manager chains and snapshot/display policy used by extraction and aggregation. The remaining [shared vintage utilities](../../src/utils/institutional_vintages.py) own source reconciliation, completion and public-book clocks used across packages. Aggregate-only availability/decay/share-basis helpers are under `data_aggregate/utils/common`; source-specific utilities stay with their step. All aggregation steps bind `context.store` in initialization.
+The aggregation-only historical `roster_as_of` accessor and fixed cohort parser live in [utils/sec_thirteen/superinvestor_roster.py](../../src/data_aggregate/utils/sec_thirteen/superinvestor_roster.py); the retired `first_snapshot_date` helper is removed. [The public iterator](../../src/data_aggregate/utils/sec_thirteen/institutional_vintages.py) schedules/reuses reconciled public books; cleaning remains at the dedicated input boundary. The [shared roster](../../src/utils/superinvestor_roster.py) retains extraction configuration, manager-chain and snapshot/display policy. These policies do not silently bridge raw filers in elite science. The [shared resolver](../../src/utils/institutional_vintages.py) owns original/addition/restatement reconciliation and conservative component provenance. Aggregate availability, ownership decay and share-basis helpers remain under `data_aggregate/utils/common`. Steps bind `context.store` in initialization; loggers are never function inputs.

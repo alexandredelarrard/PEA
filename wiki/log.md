@@ -961,3 +961,12 @@ Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/
 - Evidence: 77 focused integration tests passed with zero blocked live effects; source comparison preserves the unchanged SEC13F files and newer dev production files. This is local code adoption, with no production build or complete100M computation and no new full-source capacity claim.
 - Pages: [Overview](./OVERVIEW.md), [Aggregation](./modules/data-aggregate.md), [Cube flow](./flows/cube-build.md), [Data access](./guides/data-access.md), [Run the pipeline](./guides/run-the-pipeline.md), [TODO](./TODO.md).
 - Local ignored audit: `reports/validate/2026-10-24-sec13f-code-refactor/merges/merge-05.md` and `_out/dev-merge-01.json`.
+
+## 2026-10-25: refresh — SEC 13F feature science
+
+- Profile: internal/standard
+- source_commit: cbc13eb78abd2cfa59465ea780c1092a2b7ecb2e (validated pre-wiki product); scientific execution: a4b67b01953f0f7dbf18b04737566abd4344dbed. The subsequent wiki-only HEAD preserves application/configuration/test/script/dependency identity.
+- Coverage: shared full-roster/fixed-top-K thirteen-metric engine; 90-day public-book age and matched genuine quarters; no elite decay; whole-book price/support and valuation semantics; seven action-date insider cap ratios; full/tail/schema reuse, configuration and adoption.
+- Pages: [Overview](./OVERVIEW.md), [Cube aggregation](./modules/data-aggregate.md), [Cube build](./flows/cube-build.md), [Cube parts](./concepts/cube-parts.md), [Runtime utilities](./modules/runtime-and-shared-utils.md), [Configuration](./reference/configuration.md), [Table catalog](./reference/table-catalog.md), [Constants/configuration](./modules/constants-and-configuration.md), [Data access](./guides/data-access.md), [Run the pipeline](./guides/run-the-pipeline.md), [Testing](./guides/testing.md), [TODO](./TODO.md).
+- Evidence: independent construction/quant/Claude-refactor review accepted; normal operational fingerprint 41/41; all eight ordinary persistence cases; unchanged numerical B/C artifacts; no new static diagnostic identities. Detailed executions, guarded skips and timing limits are preserved in the local ignored science audit.
+- Limits: empirical data readiness remains conditional; no production rebuild, extraction recovery, legal-manager CIK bridge, predictive-value certification or full broad-source capacity claim. The TODO preserves measured source/price/CIK/value/publication gaps.

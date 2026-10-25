@@ -1,14 +1,13 @@
 ---
 title: Testing and validation
-description: Real-data testing, known-truth fixtures, architectural guards, sanity
-  conclusions, and validators.
+description: Real-data testing, known-truth fixtures, architectural guards, sanity conclusions, and validators.
 type: guide
 tags:
-- wiki
-- guide
-- testing
-- validation
-source_commit: 4773469e660ee159f30fbef0e56ea401d019fab2
+  - wiki
+  - guide
+  - testing
+  - validation
+source_commit: cbc13eb78abd2cfa59465ea780c1092a2b7ecb2e
 ---
 # Testing and validation
 
@@ -328,3 +327,18 @@ The isolated candidate `a8b02a3318e4b31e4bfa5b92f80d18874022572d` replaces the o
 Independent correctness and Ponytail reviews found no material product defect or required additional refactor. The run keeps all native validator exits: grain/bounds/timeseries pass; coverage/profile/redundancy/earnings-calls retain explained sparse-panel diagnostics. Clip, leakage and catalogue explicitly ABSTAIN for missing applicable declarations; the timeseries frozen component also abstains. Full-population distributions, actual compatible-v3 vector transport, calibrated accuracy and predictive value remain unmeasured. The existing short-body screen can retain short analyst comments; the source-fixture short-interrogative example has a transcription defect and is not a clean financial-question accuracy benchmark.
 
 Local ignored evidence: `reports/validate/2026-10-22-text-features-ten/` contains the approved specification/plan, RED/GREEN XML, independent validation and both code reviews, exact CLI JSON, source/model hashes and final HTML. No live PostgreSQL write, paid embedding call, model download or dependency installation occurred. Adoption still requires a full text-feature rebuild and cube reassembly, then fresh tree-model training; old fitted inputs are incompatible.
+
+## SEC 13F feature science 2026-10-25
+
+The [linear SEC 13F flow and exact 13-metric inventory](../modules/data-aggregate.md#sec-13f-build-stages) are implemented at product `cbc13eb78abd2cfa59465ea780c1092a2b7ecb2e`. One shared engine emits both full-roster and fixed-top-K fields. Public-book freshness, matched q/q−1/q−4 samples, split-only share behavior, explicit unknown barriers and scheduled expiry replace superinvestor decay and dynamic selection. Seven [insider market-cap fields](../modules/data-aggregate.md#insider-canonical-cleaning-and-feature-contract) sum eligible action-date trade ratios. The ordered CIK config is provisional and user-replaceable.
+
+The final independent construction gate accepts this pre-wiki product. Scientific replay ran at immutable `a4b67b01953f0f7dbf18b04737566abd4344dbed`; its source/configuration is identical to the product. A later six-input quality-script correction changes only that operational script and its tests. The final wiki commit must preserve source, configuration, tests, scripts and dependencies.
+
+- Core run: 582 collected; 578 passed, one sanity-print encoding failure after all assertions passed, and three guarded skips. The unchanged failing node passed under explicit UTF-8 in a separately recorded rerun. The skips are two disposable-PostgreSQL migration/atomicity checks and one real-source amendment proof. These are not a claimed fresh 582-case green run.
+- Fresh normal product fingerprint run: 41/41 passed, zero skips/live attempts, unchanged approved baseline and source/input guards. S006 also passes 21 fresh operational cases and preserves 58 before/after artifacts, including 22 byte-identical parquets.
+- Eight ordinary persistence cases pass: full, incremental tail, repeated tail and schema migration for each affected part. Actual current raw preparation feeds the calculations and one SQLite save per case. The full SEC result has 429,981 rows; the insider result has 6,840. Both match strict saved B references with dtype/key/value/null/schema parity. No production table is written.
+- Independent equations: 2,600 seeded checks plus five cap cases; complete prepared-history semantics; all 26 SEC and all 13 insider numerical output columns match controlled B execution exactly. The raw preparation proof and controlled metric-tuple proof are separately identified; ordinary persistence supplies an additional composed path.
+- Ruff, formatting and function bounds pass. Reviewed changed functions have at most six inputs, three control levels and 90 lines, without unused/logger arguments. Source typing preserves the same 20 prior diagnostic identities. Per-file test/operational typing preserves 110 worker-GREEN identities (84 vintage, 17 incremental cube, six quality tests and three quality script); no new diagnostics. This is not a clean typing baseline.
+- Data readiness is **conditional**. Generic quality/profile/timeseries/redundancy checks retain FAIL and leakage retains ABSTAIN where applicable. In the bounded 37-event sample, complete whole-book reference support is 29/2,257 full-cohort book-event pairs, all one raw filer, and 0/399 top-K pairs. The top-K relative-position and pooled-weight-change fields are entirely missing. No filling, clipping or denominator reduction conceals that result.
+
+The local ignored audit `reports/validate/2026-10-24-sec13f-feature-science/` contains the final report, frozen input/source seals, original/final sample means, B/C parity, distributions, support reasons, continuity-over-time tables and measured timing/memory qualifications. Repeated daily carries are not independent quarterly observations. The original sample emits no finite elite output, so its means remain unavailable rather than fabricated zeros. This is construction and data-quality evidence, not an alpha claim or full-population capacity certification. See the [follow-up backlog](../TODO.md#sec-13f-feature-science-follow-ups-2026-10-25) and [full-adoption commands](./run-the-pipeline.md).

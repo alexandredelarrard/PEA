@@ -5,7 +5,7 @@ type: concept
 tags:
   - wiki
   - concept
-source_commit: 15df4358b2a4ea81c34f02c71076256aed23544a
+source_commit: cbc13eb78abd2cfa59465ea780c1092a2b7ecb2e
 ---
 # Cube parts
 
@@ -17,7 +17,7 @@ Cube parts are persisted intermediate tables, one per price, target, beta, or fe
 
 Parts prevent one process from holding every source and feature frame at once. They let Airflow run builders sequentially, allow targeted retries, and give the status gate a concrete freshness surface. Incremental correctness depends on each part rebuilding enough history to reproduce a full build's tail.
 
-Part tables are unmanaged: replacement drops and recreates them so removed feature columns do not linger. There are nine parts owned by eight builders. `cube_part_institutionals` contains insider, ownership and short-flow; `cube_part_sec_thirteen` contains broad institutional and superinvestor 13F. Both compute from full history and rewrite from their own last stored session minus seven trading-session intervals, inclusively (eight existing dates). Their 390-session warmup metadata is not an input cutoff. Corrections older than that output tail require a full rebuild. The final cube assembler reads the persisted parts and streams output chunks.
+Part tables are unmanaged: replacement drops and recreates them so removed feature columns do not linger. There are nine parts owned by eight builders. `cube_part_institutionals` contains insider, ownership and short-flow; `cube_part_sec_thirteen` contains broad institutional and superinvestor 13F. Both compute from full history and rewrite from their own last stored session minus seven trading-session intervals, inclusively (eight existing dates). Their 390-session warmup metadata is not an input cutoff. Corrections older than that output tail require a full rebuild. The final cube assembler reads the persisted parts and streams output chunks. The elite portion now emits13 shared metrics for the full raw roster and fixed top-K (26 raw fields), without decay. Seven existing insider cap names change to sums of action-date per-trade ratios. Full replacement of both parts and cube reassembly are necessary for adoption even when column names are unchanged; compatible fresh models are required. [Definitions](../modules/data-aggregate.md#elite-freshness-matched-samples-and-feature-definitions) and [validation limits](../guides/testing.md#sec-13f-feature-science-2026-10-25) distinguish source support from implementation correctness.
 
 ## Where it lives
 

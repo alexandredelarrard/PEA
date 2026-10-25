@@ -5,7 +5,7 @@ type: module
 tags:
   - wiki
   - module
-source_commit: 4773469e660ee159f30fbef0e56ea401d019fab2
+source_commit: cbc13eb78abd2cfa59465ea780c1092a2b7ecb2e
 ---
 # Constants and configuration
 
@@ -53,4 +53,4 @@ Configuration controls every stage, including [data extraction](./data-extract.m
 
 ## Institutional split defaults
 
-The split removes eight aggregation-only globals from [constants.py](../../src/constants/constants.py): `FTD_HISTORICAL_LAG_DAYS`, `FTD_LATEST_PERIOD_MAX_AGE_DAYS`, `FTD_RECENT_CACHE_DAYS`, `F13_MAX_EARLY_DAYS`, `F13_MAX_LATE_DAYS`, `F13_REVISION_MIN_MOVE`, `SEC_13F_VALUE_FACTORS` and `PANEL_KEYS`. FTD/filing-band/monetary values remain local to their consumers; the shared domain revision floor lives in [institutional_features.py](../../src/data_aggregate/utils/sec_thirteen/institutional_features.py), and panel keys in [panel_merge.py](../../src/data_aggregate/utils/common/panel_merge.py). Cross-package filing and settlement clocks remain shared. Existing `build_cube.institutionals` and `data_availability.institutionals` namespaces are preserved; the two steps read their owned settings.
+The split removes eight aggregation-only globals from [constants.py](../../src/constants/constants.py): `FTD_HISTORICAL_LAG_DAYS`, `FTD_LATEST_PERIOD_MAX_AGE_DAYS`, `FTD_RECENT_CACHE_DAYS`, `F13_MAX_EARLY_DAYS`, `F13_MAX_LATE_DAYS`, `F13_REVISION_MIN_MOVE`, `SEC_13F_VALUE_FACTORS` and `PANEL_KEYS`. FTD/filing-band/monetary values remain local to their consumers; the shared domain revision floor lives in [institutional_features.py](../../src/data_aggregate/utils/sec_thirteen/institutional_features.py), and panel keys in [panel_merge.py](../../src/data_aggregate/utils/common/panel_merge.py). Cross-package filing and settlement clocks remain shared. Existing `build_cube.institutionals` and `data_availability.institutionals` namespaces are preserved; the two steps read their owned settings. Elite cohort order lives only in `configs/superinvestors/ranked_managers.json`; K and 90-day age live in `build_cube.institutionals.superinvestor`. No duplicate Python selector/decay constants drive these metrics. Ownership retains its active decay settings. [Configuration](../reference/configuration.md) distinguishes raw-filer feature cohorts from historical roster chain mapping.

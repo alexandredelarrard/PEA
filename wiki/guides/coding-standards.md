@@ -47,13 +47,18 @@ These rules are compulsory for every future coding change:
 
 ## Function design and data flow
 
-- One function does one thing in at most 150 lines. A top-level orchestrator (a Step's `run()` or a `build_fundamentals_<x>` function) only calls the small step functions in order.
+- One function does one thing in at most 90 lines. A top-level orchestrator (a Step's `run()` or a `build_fundamentals_<x>` function) only calls the small step functions in order.
 - Nesting is at most 3 levels; 2 is the standard. Flatten deeper blocks with guard clauses, early returns, or a helper.
 - No pass-through functions: a function whose body only calls another function is removed, and callers call the target directly.
 - Functions doing the same thing are declared once. Logic repeated in two or more places, including across fetchers, is extracted to the closest shared utils module (package `utils/` for one package, `src/utils/` across packages) and called from every dependent; speculative one-use abstractions remain discouraged.
 - Pass a value computed in one function to the next; never re-declare or recompute it elsewhere.
 - Default assessed ticker lists come from [load_universe_tickers](../../src/utils/universe.py) and are already normalized. CLI `-t` input is a comma-separated string: split it first and call [normalise_ticker](../../src/utils/string.py) once per symbol. Downstream lists need no repeated normalization; reuse the complete universe snapshot when guarding subset writes. Normalize raw source/config symbols with the shared helper, preserving source-specific security-marker semantics.
 - Data flows in the golden-standard order: load → clean → compute features or steps → post-process → save → log, report, and sanity checks.
+- No function input only used by tests + no logger passed as an input of any function.
+- No more than 6 inputs in a function or class method
+- self.store = context.store at the start of a class and pass through its methods.
+- No global variable imported from constants.py when only used by its sub package functions. At the top of the function instead or in utils of the sub package part of the codebase.
+- Flow ordered load / check remaining to do → clean → compute → post-process → save → log / report / sanity checks.
 
 A static scan of function length, nesting depth, and pass-throughs is part of refactor validation.
 

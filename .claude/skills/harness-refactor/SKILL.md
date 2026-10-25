@@ -24,10 +24,14 @@ The canonical rule text lives in [coding standards](../../../wiki/guides/coding-
 
 Every refactor spec carries these acceptance criteria for each touched function and module (rules: [coding standards](../../../wiki/guides/coding-standards.md)):
 
-- [ ] At most 150 lines, one job; a top-level orchestrator only calls step functions in order.
-- [ ] At most 3 nesting levels; 2 is the standard.
+- [ ] At most 90 lines, one job; a top-level orchestrator only calls step functions in order.
+- [ ] At most 3 nesting levels; 2 is the standard + 1 helper function if needed.
 - [ ] No pass-through functions.
-- [ ] Flow ordered load → clean → compute → post-process → save → log / report / sanity checks.
+- [ ] No function input only used by tests + no logger passed as an input of any function.
+- [ ] No more than 6 inputs in a function or class method
+- [ ] self.store = context.store at the start of a class and pass through its methods.
+- [ ] No global variable imported from constants.py when only used by its sub package functions. At the top of the function instead or in utils of the sub package part of the codebase.
+- [ ] Flow ordered load / check remaining to do → clean → compute → post-process → save → log / report / sanity checks.
 - [ ] Same logic declared once: repeated logic across files or fetchers extracted to the closest utils module and called from every dependent.
 - [ ] Computed values passed between functions, never re-declared or recomputed.
 - [ ] Lowercase snake_case function names; lowercase, transparent variable names with `df_` for DataFrames.
@@ -35,6 +39,7 @@ Every refactor spec carries these acceptance criteria for each touched function 
 - [ ] Docstrings a few lines: what the code does, with no history, rationale chronology, or measurements.
 - [ ] Large frames pre-filtered to the rows that need computing and vectorised; no `DataFrame.apply` or row loops.
 - [ ] Stored data identical to the baseline unless the user approves a change.
+- [ ] A function has clear delimited logical block, with a scape and one liner comment at the start.
 - [ ] Risk zones (`context.py`, `utils/step.py`, constants, data store/DDL, configs, `data/`, the PostgreSQL volume, the fingerprint baseline) edited only with explicit approval.
 
 ## Evidence

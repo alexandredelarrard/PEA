@@ -194,6 +194,7 @@ class StepCubeGovernance(Step):
             close_total=frames.close_total,
             availability=frames.availability,
         )
+
         # Per-family row counts, the [0,1] rejects and the CEO-ballot split, one line each.
         # These are the numbers that make a thin family readable as a KNOWN property of the
         # ballot rather than a silent build failure -- `management_dissent_spread` in

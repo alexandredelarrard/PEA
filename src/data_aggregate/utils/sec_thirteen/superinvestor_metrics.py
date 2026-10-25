@@ -29,15 +29,32 @@ class BookSummary:
 
 
 class BookSummaries:
-    """Summarize each resolved vintage once, sharing it across dates and cohorts."""
+    """Cache full summaries and compact tenure evidence per immutable vintage."""
 
     def __init__(self) -> None:
         self._cache: dict[PublicBook, BookSummary] = {}
+        self._held_cache: dict[PublicBook, pd.Index] = {}
 
     def get(self, book: PublicBook) -> BookSummary:
         if book not in self._cache:
             self._cache[book] = summarize_book(book)
+            self._held_cache.pop(book, None)
         return self._cache[book]
+
+    def held(self, book: PublicBook) -> pd.Index:
+        """Reuse full evidence or retain only verified-held tickers for history."""
+        if book in self._cache:
+            df_tickers = self._cache[book].df_tickers
+            return df_tickers.index[df_tickers.held & df_tickers.held_known]
+        if book not in self._held_cache:
+            # Project before copying; optional provenance keeps its existing defaults.
+            columns = ["ticker", "position_type", "shares", "value_usd"]
+            columns.extend(name for name in ("value_basis_shares_source", "value_basis_inverse_unit_unverified") if name in book.df_positions)
+            df_positions = _holding_evidence(book.df_positions[columns])
+            grouped = df_positions.groupby("ticker", sort=False)
+            held = grouped.held.any()
+            self._held_cache[book] = held.index[held & grouped.held_known.all()]
+        return self._held_cache[book]
 
 
 @dataclass(frozen=True)
@@ -48,9 +65,9 @@ class PairSample:
     prior_period: pd.Timestamp | None
 
 
-def summarize_book(book: PublicBook) -> BookSummary:
-    """Keep whole-book totals, per-security evidence and per-ticker levels together."""
-    df_positions = book.df_positions.copy()
+def _holding_evidence(df_positions: pd.DataFrame) -> pd.DataFrame:
+    """Coerce common-leg amounts and preserve conservative row holding evidence."""
+    df_positions = df_positions.copy()
     for name in ("shares", "value_usd"):
         df_positions[name] = pd.to_numeric(df_positions[name], errors="coerce").astype("float64")
 
@@ -65,6 +82,12 @@ def summarize_book(book: PublicBook) -> BookSummary:
     df_positions["value_known"] = np.isfinite(df_positions.value_usd) & df_positions.value_usd.ge(0) & ~unverified
     df_positions["held"] = df_positions.shares.gt(0) | df_positions.value_usd.gt(0)
     df_positions["held_known"] = df_positions.held | (df_positions.quantity_known & df_positions.value_known)
+    return df_positions
+
+
+def summarize_book(book: PublicBook) -> BookSummary:
+    """Keep whole-book totals, per-security evidence and per-ticker levels together."""
+    df_positions = _holding_evidence(book.df_positions)
     total_value = float(df_positions.value_usd.sum()) if df_positions.value_known.all() else np.nan
 
     # Rank all common positions, including those outside the output universe.
@@ -89,19 +112,17 @@ def _supported_book(book: PublicBook | None) -> TypeIs[PublicBook]:
     return book is not None and book.support.book_known and book.support.zero_eligible and book.support.comparison_eligible
 
 
-def _holding_duration(book: PublicBook, snapshot: PublicBookSnapshot, summaries: BookSummaries) -> pd.Series:
+def _holding_duration(book: PublicBook, snapshot: PublicBookSnapshot, summaries: BookSummaries, universe: tuple[str, ...]) -> pd.Series:
     """Count adjacent observed report quarters; missing quarters break the verified run."""
-    df_current = summaries.get(book).df_tickers
-    duration = pd.Series(1.0, index=df_current.index[df_current.held & df_current.held_known])
+    held = summaries.held(book)
+    duration = pd.Series(1.0, index=held[held.isin(universe)])
     active = duration.index
     period = book.period.to_period("Q") - 1
     while len(active):
         prior = snapshot.archive.get((book.cik, period.end_time.normalize()))
         if not _supported_book(prior):
             break
-        df_prior = summaries.get(prior).df_tickers
-        continuing = df_prior.index[df_prior.held & df_prior.held_known]
-        active = active.intersection(continuing)
+        active = active.intersection(summaries.held(prior))
         duration.loc[active] += 1
         period -= 1
     return duration
@@ -124,7 +145,7 @@ def level_metrics(
         df_tickers = summary.df_tickers.reindex(universe)
         absent = ~df_tickers.index.isin(summary.df_tickers.index)
         held_rows.append(df_tickers.held.astype(float).where(df_tickers.held_known.fillna(False)).mask(absent, 0.0))
-        durations.append(_holding_duration(book, snapshot, summaries).reindex(universe))
+        durations.append(_holding_duration(book, snapshot, summaries, universe).reindex(universe))
         if np.isfinite(summary.total_value):
             top_rows.append(df_tickers.top10.astype(float).mask(absent, 0.0))
         if np.isfinite(summary.total_value) and summary.total_value > 0:

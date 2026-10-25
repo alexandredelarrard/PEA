@@ -345,7 +345,9 @@ class AuditExtract(MoneyContext):
 
 
 class OwnershipRow(BaseModel):
-    holder_name: str = Field(description="Beneficial holder's name, excluding addresses and group subtotal labels")
+    holder_name: str = Field(
+        description="Main ownership table's full holder name, once per holder; exclude postal addresses and footnotes; retain legal and Jr/Sr/III suffixes"
+    )
     holder_type: Literal["5pct_holder", "director_officer"] = Field(description="Large outside holder or named director/officer")
     shares: float | None = Field(None, description="Reported beneficial share count")
     percent_of_class: float | None = Field(

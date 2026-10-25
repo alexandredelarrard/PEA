@@ -10,7 +10,9 @@ from typing import Any, cast
 import pandas as pd
 
 from src.context import Context
+from src.data_extract.utils.schemas.def14a_schema import OwnershipExtract
 from src.data_extract.utils.structure.def14a.evidence import layout_has_gap, prose_has_gap, table_has_gap
+from src.data_extract.utils.structure.def14a.holders import holders_need_reconciliation
 from src.data_extract.utils.structure.def14a.postprocess import ProcessedSection, archived_answers
 from src.data_extract.utils.structure.def14a.retry import SECTIONS, Section, reservation_frame
 from src.data_store.schema import Table, Tables
@@ -48,6 +50,8 @@ def has_gaps(section: Section, saved: pd.DataFrame, parent: dict[str, Any]) -> b
     marker_column, marker = cast(tuple[str, str], section.table.empty_marker)
     rows = saved.loc[saved[marker_column].ne(marker)] if marker_column in saved else saved
     if rows.empty:
+        return True
+    if section.key == "ownership" and holders_need_reconciliation(rows):
         return True
     keys = {
         "executive_pay": (
@@ -154,6 +158,11 @@ def replay_candidates(works: list[FilingWork]) -> Iterator[tuple[FilingWork, Sec
     for work in works:
         answers = archived_answers(work.raw) if work.pending else {}
         for section in (item for item in SECTIONS if item.key in work.pending):
+            # Normalizing saved holders is free, including complete retry=2 rows without JSON.
+            if section.key == "ownership" and holders_need_reconciliation(work.saved[section.table]):
+                yield work, section, OwnershipExtract(percent_unit="fraction", shares_scale="units")
+            if section.key not in work.pending:
+                continue
             for answer in answers.get(section.key, []):
                 yield work, section, answer
 
@@ -206,13 +215,20 @@ def save_archive(context: Context, work: FilingWork) -> None:
 
 
 def save_section(context: Context, work: FilingWork, processed: ProcessedSection) -> None:
-    """Save owned facts before removing their hidden placeholder; never clear another domain."""
+    """Save survivors before deleting exact obsolete holder keys or hidden placeholders."""
     for table, frame in processed.frames.items():
         context.store.save(table, frame)
         if table is Tables.def14a_llm:
             work.parent.update(cast(dict[str, Any], frame.iloc[0].to_dict()))
             work.saved[table] = pd.DataFrame([work.parent])
             continue
+        if table is Tables.def14a_ownership and not work.saved[table].empty:
+            keys = [*table.pk, "as_of"]
+            df_previous = work.saved[table][keys].assign(as_of=pd.to_datetime(work.saved[table]["as_of"]))
+            df_current = frame[keys].assign(as_of=pd.to_datetime(frame["as_of"]))
+            obsolete = df_previous.merge(df_current, on=keys, how="left", indicator=True)
+            for row in obsolete.loc[obsolete._merge.eq("left_only"), keys].to_dict("records"):
+                context.store.delete(table, where=row)
         work.saved[table] = frame
         marker_column, marker = cast(tuple[str, str], table.empty_marker)
         if frame[marker_column].ne(marker).any():

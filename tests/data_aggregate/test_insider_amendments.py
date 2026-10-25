@@ -11,10 +11,10 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.institutionals import insider_features
-from src.data_aggregate.utils.institutionals.insider_capital import InsiderCapital
-from src.data_aggregate.utils.institutionals.insider_features import build_insider_feature_panel
+from src.data_aggregate.utils.institutionals.insider_features import InsiderCoverage
 from src.data_aggregate.utils.institutionals.insider_quality import clean_transactions
 from tests.conftest import make_frames
+from tests.data_aggregate.insider_pit_reference import build_prepared_insider_panel as build_insider_feature_panel
 from tests.data_aggregate.insider_pit_reference import compare, frame, reference_panel, row, sentinel_rows
 
 IDX = pd.bdate_range("2024-01-01", "2024-12-31")
@@ -27,7 +27,9 @@ def _build(df_rows: pd.DataFrame) -> pd.DataFrame:
     close = pd.DataFrame(100.0, index=IDX, columns=TICKERS)
     fh = pd.DataFrame([{"ticker": t, "as_of": pd.Timestamp("2023-01-01"), "sharesOutstanding": 1e6, "sharesOutstandingPit": 1e6} for t in TICKERS])
     frames = make_frames(IDX, {t: {t: 1.0} for t in TICKERS}, close_split=close)
-    return build_insider_feature_panel(frames, df_rows, capital=InsiderCapital(shares_out_history=fh), complete_through=COMPLETE)
+    return build_insider_feature_panel(
+        frames, df_rows, shares_out_history=fh, coverage=InsiderCoverage.from_availability(None, pd.Series(COMPLETE, index=TICKERS))
+    )
 
 
 def _series(panel: pd.DataFrame, column: str, ticker: str = "AAA") -> pd.Series:

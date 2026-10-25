@@ -15,19 +15,21 @@ import hashlib
 import io
 import json
 import logging
+import tempfile
 import threading
 from collections.abc import Callable, Generator, Sequence
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
 import pandas as pd
 from pandas.core.dtypes.cast import maybe_box_native
-from sqlalchemy import Connection, Engine, MetaData, Select, Table, false, func, inspect, select, text, tuple_
+from sqlalchemy import Connection, Engine, MetaData, Select, Table, case, create_engine, false, func, inspect, or_, select, text, tuple_
 from sqlalchemy import types as sqltypes
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.sql.elements import ColumnElement
 
 from src.constants.constants import SEC_13F_SOURCE_ACCOUNTED
 from src.data_store import ddl
@@ -53,7 +55,7 @@ def table_exists(engine: Engine, name: str) -> bool:
     return inspect(engine).has_table(name)
 
 
-def _reflect(engine: Engine, name: str) -> Table:
+def _reflect(engine: Engine | Connection, name: str) -> Table:
     return Table(name, MetaData(), autoload_with=engine)
 
 
@@ -416,6 +418,17 @@ class DataStore:
         self._13f_tables: dict[str, Table] = {}
         self._13f_lock = threading.RLock()
         self._def14a_retries_prepared = False
+
+    @staticmethod
+    @contextmanager
+    def temporary_insider_source() -> Generator[DataStore]:
+        """An isolated actual-payload spool using only the existing insider source pair."""
+        with tempfile.TemporaryDirectory(prefix="pea-insider-") as directory:
+            engine = create_engine("sqlite:///" + (Path(directory) / "source.sqlite").as_posix())
+            try:
+                yield DataStore(engine)
+            finally:
+                engine.dispose()
 
     # so callers write `store.NOT_NULL` without importing it
     NOT_NULL = NOT_NULL
@@ -861,6 +874,551 @@ class DataStore:
             logger.info("%s has no %s (optional) -> those features are skipped", name_of(table), optional_missing)
         return cols
 
+    @contextmanager
+    def _institutional_transaction(self) -> Generator[Connection]:
+        """Serialize source, identity and certification commits without permanent metadata."""
+        with self.engine.begin() as conn:
+            if conn.dialect.name == "postgresql":
+                conn.execute(text("SELECT pg_advisory_xact_lock(hashtext(:scope))"), {"scope": "institutional-source-proof"})
+            elif conn.dialect.name == "sqlite":
+                conn.exec_driver_sql("BEGIN IMMEDIATE")
+            else:
+                raise ValueError("Institutional proof transactions require PostgreSQL or SQLite")
+            yield conn
+
+    @staticmethod
+    def _institutional_select(conn: Connection, spec: SchemaTable, where: dict[str, object] | None = None) -> pd.DataFrame:
+        """Read one exact mutation/certification cohort on the guarded connection."""
+        if not inspect(conn).has_table(spec.name):
+            return pd.DataFrame()
+        tbl = _reflect(conn, spec.name)
+        statement = select(tbl)
+        for column, value in (where or {}).items():
+            statement = statement.where(_predicate(tbl.c[column], value))
+        return pd.read_sql(statement, conn)
+
+    @staticmethod
+    def _institutional_insert(conn: Connection, spec: SchemaTable, frame: pd.DataFrame) -> int:
+        """Upsert a prepared bounded frame using this transaction, preserving omitted fields."""
+        if frame.empty:
+            return 0
+        tbl = _reflect(conn, spec.name)
+        records = _records(_coerce_temporal(frame, tbl))
+        ins = pg_insert(tbl) if conn.dialect.name == "postgresql" else sqlite_insert(tbl)
+        updates = {str(column): ins.excluded[str(column)] for column in frame if column not in spec.pk}
+        statement = ins.on_conflict_do_update(index_elements=list(spec.pk), set_=updates) if updates else ins.on_conflict_do_nothing()
+        for offset in range(0, len(records), _CHUNK):
+            conn.execute(statement, records[offset : offset + _CHUNK])
+        return len(records)
+
+    @staticmethod
+    def _invalidate_checked_quiet(conn: Connection, table: Table, spec: SchemaTable, tickers: set[str]) -> None:
+        """An invalidated absence must not become an apparently observed legacy zero."""
+        if spec == Tables.short_interest and {"short_volume", "total_volume"}.issubset(table.c.keys()):
+            quiet = (table.c.short_volume == 0) & table.c.total_volume.is_(None)
+            values = {"short_volume": None}
+        elif spec == Tables.sec_fails_to_deliver and "fails_quantity" in table.c:
+            quiet = table.c.fails_quantity == 0
+            values = {column: None for column in ("fails_quantity", "fails_value") if column in table.c}
+        else:
+            return
+        predicate = table.c.ticker.in_(sorted(tickers)) & table.c.source_checked_at.is_not(None) & quiet
+        conn.execute(table.update().where(predicate).values(values))
+
+    @staticmethod
+    def _invalidate_institutional_proof(conn: Connection, tickers: set[str], identity_change: bool) -> None:
+        """A committed mutation clears retained proof, including the last deleted accession."""
+        for spec, column in (
+            (Tables.insider_transactions, "inventory_checked_through"),
+            (Tables.short_interest, "source_checked_at"),
+            (Tables.sec_fails_to_deliver, "source_checked_at"),
+        ):
+            if not identity_change and spec != Tables.insider_transactions:
+                continue
+            if not tickers or not inspect(conn).has_table(spec.name):
+                continue
+            tbl = _reflect(conn, spec.name)
+            if column in tbl.c:
+                if identity_change and spec != Tables.insider_transactions:
+                    DataStore._invalidate_checked_quiet(conn, tbl, spec, tickers)
+                conn.execute(tbl.update().where(tbl.c.ticker.in_(sorted(tickers))).values({column: None}))
+
+    def replace_institutional_source(
+        self,
+        frames: dict[SchemaTable, pd.DataFrame],
+        scopes: dict[SchemaTable, dict[str, object] | None],
+        expected_identity: dict[SchemaTable, pd.DataFrame] | None = None,
+        expected_source: dict[SchemaTable, pd.DataFrame] | None = None,
+    ) -> dict[SchemaTable, int]:
+        """Atomically replace one source pair; retained EDGAR authority is excluded from new ZIP row counts."""
+        pairs = (
+            {Tables.sec_short_volume_security, Tables.short_interest},
+            {Tables.sec_fails_to_deliver_security, Tables.sec_fails_to_deliver},
+            {Tables.insider_transactions, Tables.insider_footnotes},
+        )
+        if set(frames) not in pairs or set(scopes) != set(frames) or any(scope == {} for scope in scopes.values()):
+            raise ValueError("An institutional source write needs one exact source pair and explicit scopes")
+        prepared = dict(frames)
+        if Tables.insider_transactions in prepared:
+            transactions = prepared[Tables.insider_transactions]
+            prepared[Tables.insider_transactions] = transactions.assign(
+                inventory_checked_through=pd.Series(pd.NaT, index=transactions.index, dtype="datetime64[ns]")
+            )
+        for spec, frame in prepared.items():
+            if not set(spec.pk).issubset(frame) or frame.duplicated(list(spec.pk)).any():
+                raise ValueError(f"{spec}: missing or repeated source keys")
+            ensure_table(self.engine, spec.name, frame)
+            ensure_columns(self.engine, spec.name, frame)
+        with self._institutional_transaction() as conn:
+            if expected_identity is not None:
+                self._assert_institutional_identity(conn, expected_identity)
+            self._assert_institutional_source_keys(conn, prepared, scopes)
+            plans = {
+                spec: self._institutional_source_predicates(conn, spec, scopes[spec], expected_identity, prepared.get(Tables.sec_fails_to_deliver))
+                for spec in prepared
+            }
+            old = {spec: pd.read_sql(select(plans[spec][0]).where(*plans[spec][1]), conn) for spec in prepared}
+            for spec, expected in (expected_source or {}).items():
+                if spec not in old or not self._institutional_equal(conn, spec, old[spec], expected):
+                    raise ValueError("Institutional source cohort changed before atomic restamping")
+            if Tables.insider_transactions in prepared:
+                transactions, notes = self._institutional_insider_payload(
+                    old[Tables.insider_transactions],
+                    old[Tables.insider_footnotes],
+                    prepared[Tables.insider_transactions],
+                    prepared[Tables.insider_footnotes],
+                )
+                prepared = {
+                    Tables.insider_transactions: transactions.assign(
+                        inventory_checked_through=pd.Series(pd.NaT, index=transactions.index, dtype="datetime64[ns]")
+                    ),
+                    Tables.insider_footnotes: notes,
+                }
+                transactions = [old[Tables.insider_transactions], prepared[Tables.insider_transactions]]
+                tickers = {str(value) for frame in transactions for value in frame.get("ticker", pd.Series(dtype=str)).dropna()}
+                self._invalidate_institutional_proof(conn, tickers, False)
+            for spec in scopes:
+                tbl, predicates = plans[spec]
+                statement = tbl.delete().where(*predicates)
+                conn.execute(statement)
+            counts = {spec: self._institutional_insert(conn, spec, frame) for spec, frame in prepared.items()}
+            supplied = frames.get(Tables.insider_transactions)
+            if supplied is not None and "source" in supplied and supplied["source"].eq("zip").all():
+                committed = prepared[Tables.insider_transactions]
+                keys = pd.MultiIndex.from_frame(supplied[list(Tables.insider_transactions.pk)])
+                incoming = pd.MultiIndex.from_frame(committed[list(Tables.insider_transactions.pk)]).isin(keys)
+                counts[Tables.insider_transactions] = int((incoming & committed["source"].eq("zip")).sum())
+            return counts
+
+    @staticmethod
+    def _institutional_source_predicates(
+        conn: Connection,
+        spec: SchemaTable,
+        scope: dict[str, object] | None,
+        identity: dict[SchemaTable, pd.DataFrame] | None,
+        grain: pd.DataFrame | None,
+    ) -> tuple[Table, list[ColumnElement[bool]]]:
+        """A closed FTD raw cohort also owns dated, unambiguously placed NULL-owner source keys."""
+        tbl = _reflect(conn, spec.name)
+        ordinary: list[ColumnElement[bool]] = [_predicate(tbl.c[column], value) for column, value in (scope or {}).items()]
+        if spec != Tables.sec_fails_to_deliver_security or identity is None or scope is None or "ticker" not in scope:
+            return tbl, ordinary
+        return DataStore._ftd_source_predicates(conn, scope, grain)
+
+    @staticmethod
+    def _ftd_source_predicates(conn: Connection, scope: dict[str, object], grain: pd.DataFrame | None) -> tuple[Table, list[ColumnElement[bool]]]:
+        """Select and delete with the same dated owner predicate; ambiguity cannot certify absence."""
+        raw = _reflect(conn, Tables.sec_fails_to_deliver_security.name)
+        master = _reflect(conn, Tables.security_master.name).alias("ftd_scope_master")
+        targets = scope["ticker"] if isinstance(scope["ticker"], _IN_TYPES) else [scope["ticker"]]
+        base = [_predicate(raw.c[column], value) for column, value in scope.items() if column != "ticker"]
+        covers = (master.c.valid_from <= raw.c.trade_date) & (master.c.valid_to.is_(None) | (raw.c.trade_date < master.c.valid_to))
+        exact = select(1).where(master.c.cusip == raw.c.cusip, master.c.source_symbol == raw.c.source_symbol, covers).correlate(raw).exists()
+        same = (master.c.cusip == raw.c.cusip) & covers & ((master.c.source_symbol == raw.c.source_symbol) | ~exact)
+        owner_count = select(func.count(func.distinct(master.c.canonical_company))).where(same).correlate(raw).scalar_subquery()
+        target = select(1).where(same, master.c.canonical_company.in_(targets)).correlate(raw).exists()
+        unowned = select(1).where(same, master.c.canonical_company.is_(None)).correlate(raw).exists()
+        proved = raw.c.ticker.is_(None) & target & (owner_count == 1) & ~unowned
+        uncertain: set[tuple[str, pd.Timestamp]] = set()
+        for table, company, symbol in (
+            (Tables.security_master, "canonical_company", "source_symbol"),
+            (Tables.entity_lineage, "canonical_ticker", "symbol"),
+        ):
+            if not inspect(conn).has_table(table.name):
+                continue
+            evidence = _reflect(conn, table.name)
+            if not {company, symbol}.issubset(evidence.c.keys()):
+                continue
+            match = evidence.c[symbol] == raw.c.source_symbol
+            if "cusip" in evidence.c:
+                match |= evidence.c.cusip == raw.c.cusip
+            statement = select(evidence.c[company], raw.c.date).select_from(raw.join(evidence, match))
+            statement = statement.where(*base, raw.c.ticker.is_(None), ~proved, evidence.c[company].in_(targets))
+            uncertain.update((str(company_value), pd.Timestamp(day)) for company_value, day in conn.execute(statement))
+        if grain is not None and "source_checked_at" in grain:
+            checked = grain.loc[grain["source_checked_at"].notna()]
+            if uncertain & set(zip(checked["ticker"], pd.to_datetime(checked["date"]), strict=True)):
+                raise ValueError("Ambiguous retained FTD raw ownership cannot certify a complete company observation")
+        return raw, [*base, raw.c.ticker.in_(targets) | proved]
+
+    @staticmethod
+    def _assert_institutional_source_keys(
+        conn: Connection, frames: dict[SchemaTable, pd.DataFrame], scopes: dict[SchemaTable, dict[str, object] | None]
+    ) -> None:
+        """Scoped writes cannot steal retained owners, and FTD periods cannot collide at unchanged keys."""
+        for spec in (Tables.sec_short_volume_security, Tables.sec_fails_to_deliver_security, Tables.sec_fails_to_deliver):
+            incoming = frames.get(spec)
+            if incoming is None or incoming.empty:
+                continue
+            tbl = _reflect(conn, spec.name)
+            statement = select(tbl).where(*(tbl.c[key].in_(incoming[key].drop_duplicates().tolist()) for key in spec.pk))
+            actual = pd.read_sql(statement, conn)
+            if actual.empty:
+                continue
+            both = _coerce_temporal(incoming, tbl).merge(_coerce_temporal(actual, tbl), on=list(spec.pk), suffixes=("", "_stored"))
+            if spec in (Tables.sec_fails_to_deliver_security, Tables.sec_fails_to_deliver) and "period_stored" in both:
+                if both["period_stored"].notna().any() and both["period"].ne(both["period_stored"]).any():
+                    raise ValueError("Conflicting FTD source periods at an unchanged source key")
+            scope = scopes[spec] or {}
+            owners = scope.get("ticker")
+            if spec != Tables.sec_fails_to_deliver and owners is not None and "ticker_stored" in both:
+                owners = owners if isinstance(owners, _IN_TYPES) else [owners]
+                if (both["ticker_stored"].notna() & ~both["ticker_stored"].isin(owners)).any():
+                    raise ValueError("Scoped institutional source write would mutate another retained issuer")
+
+    @staticmethod
+    def _institutional_insider_payload(
+        old_transactions: pd.DataFrame, old_notes: pd.DataFrame, transactions: pd.DataFrame, notes: pd.DataFrame
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """Preserve current EDGAR authority and another issuer's actual owner-only filing."""
+        if old_transactions.empty or transactions.empty:
+            return transactions, notes
+        if "quarter" in old_transactions:
+            quarter_of = old_transactions.groupby("accession_number")["quarter"].first()
+            quarter = transactions.get("quarter", pd.Series(index=transactions.index, dtype=str))
+            transactions = transactions.assign(quarter=quarter.fillna(transactions["accession_number"].map(quarter_of)))
+        markers = transactions["security_type"].eq("_empty")
+        marker_only = set(transactions.loc[markers, "accession_number"]) - set(transactions.loc[~markers, "accession_number"])
+        incoming_keys = pd.MultiIndex.from_frame(transactions.loc[markers, ["accession_number", "ticker"]])
+        stored_keys = pd.MultiIndex.from_frame(old_transactions[["accession_number", "ticker"]])
+        retained = old_transactions.loc[old_transactions["accession_number"].isin(marker_only) & ~stored_keys.isin(incoming_keys)]
+        source = transactions.get("source", pd.Series(index=transactions.index, dtype=str))
+        zipped = transactions.loc[source.eq("zip")]
+        if not zipped.empty and "source" in old_transactions:
+            edgar = old_transactions.loc[
+                old_transactions["source"].eq("edgar") & old_transactions["accession_number"].isin(zipped["accession_number"])
+            ]
+            if not edgar.empty:
+                quarter_of = zipped.groupby("accession_number")["quarter"].first()
+                edgar = edgar.assign(quarter=edgar["accession_number"].map(quarter_of))
+                transactions = transactions.loc[~transactions["accession_number"].isin(edgar["accession_number"])]
+                retained = pd.concat([retained, edgar], ignore_index=True)
+        if retained.empty:
+            return transactions, notes
+        preserved = set(retained["accession_number"])
+        payload = pd.concat([transactions, retained], ignore_index=True).drop_duplicates(list(Tables.insider_transactions.pk), keep="last")
+        notes = pd.concat(
+            [notes.loc[~notes["accession_number"].isin(preserved)], old_notes.loc[old_notes["accession_number"].isin(preserved)]], ignore_index=True
+        )
+        return payload, notes
+
+    def patch_insider_source(
+        self, patch: pd.DataFrame, removed: Sequence[str] | pd.DataFrame, expected_identity: dict[SchemaTable, pd.DataFrame] | None = None
+    ) -> int:
+        """Apply actual quarter/lineage patches and accession deletions under the source-pair guard."""
+        allowed = {*Tables.insider_transactions.pk, "quarter", "economic_date", "lineage_role"}
+        if set(patch.columns) - allowed:
+            raise ValueError("An insider patch carries only existing quarter/lineage fields")
+        dropped = removed.get("accession_number", pd.Series(dtype=str)).astype(str) if isinstance(removed, pd.DataFrame) else removed
+        accessions = sorted(set(patch.get("accession_number", pd.Series(dtype=str)).astype(str)) | set(dropped))
+        if not accessions or not self.exists(Tables.insider_transactions):
+            return 0
+        if not patch.empty:
+            ensure_columns(self.engine, Tables.insider_transactions.name, patch)
+        with self._institutional_transaction() as conn:
+            if expected_identity is not None:
+                self._assert_institutional_identity(conn, expected_identity)
+            stored = self._institutional_select(conn, Tables.insider_transactions, {"accession_number": accessions})
+            notes = self._institutional_select(conn, Tables.insider_footnotes, {"accession_number": accessions})
+            payload = stored.set_index(list(Tables.insider_transactions.pk))
+            if not patch.empty:
+                changes = patch.set_index(list(Tables.insider_transactions.pk))
+                if not changes.index.isin(payload.index).all():
+                    raise ValueError("An insider patch cannot invent an accession row")
+                payload.loc[changes.index, changes.columns] = changes
+            payload = payload.reset_index()
+            payload = payload.loc[~self._insider_removal_mask(payload, removed)]
+            tickers = set(stored["ticker"].dropna().astype(str)) | set(payload["ticker"].dropna().astype(str))
+            self._invalidate_institutional_proof(conn, tickers, False)
+            if "inventory_checked_through" in payload:
+                payload["inventory_checked_through"] = pd.NaT
+            transactions = _reflect(conn, Tables.insider_transactions.name)
+            conn.execute(transactions.delete().where(transactions.c.accession_number.in_(accessions)))
+            orphaned = set(accessions) - set(payload["accession_number"])
+            if not notes.empty and orphaned:
+                footnotes = _reflect(conn, Tables.insider_footnotes.name)
+                conn.execute(footnotes.delete().where(footnotes.c.accession_number.in_(sorted(orphaned))))
+            self._institutional_insert(conn, Tables.insider_transactions, payload)
+            return len(stored) - len(payload) if len(removed) else len(patch)
+
+    @staticmethod
+    def _insider_removal_mask(payload: pd.DataFrame, removed: Sequence[str] | pd.DataFrame) -> pd.Series:
+        """Issuer-scoped keyed deletions cannot erase another retained owner of the accession."""
+        if not isinstance(removed, pd.DataFrame):
+            return payload["accession_number"].isin(removed)
+        if removed.empty:
+            return pd.Series(False, index=payload.index)
+        allowed = {*Tables.insider_transactions.pk, "ticker", "issuer_cik"}
+        if not set(Tables.insider_transactions.pk).issubset(removed) or set(removed) - allowed:
+            raise ValueError("Insider deletion requires declared row keys and optional actual issuer identity")
+        columns = list(removed.columns)
+        return pd.Series(pd.MultiIndex.from_frame(payload[columns]).isin(pd.MultiIndex.from_frame(removed[columns])), index=payload.index)
+
+    @staticmethod
+    def _institutional_equal(conn: Connection, spec: SchemaTable, actual: pd.DataFrame, expected: pd.DataFrame) -> bool:
+        """Compare exact payloads with SQL NULL/date normalization, ignoring only the proof being stamped."""
+        columns = [column for column in actual if column != "inventory_checked_through"]
+        if set(expected.columns) - {"inventory_checked_through"} != set(columns):
+            return False
+        if actual.empty and expected.empty:
+            return True
+        tbl = _reflect(conn, spec.name)
+        left = _records(_coerce_temporal(actual[columns].sort_values(list(spec.pk)), tbl))
+        right = _records(_coerce_temporal(expected[columns].sort_values(list(spec.pk)), tbl))
+        return left == right
+
+    def certify_insider_inventory(
+        self,
+        ticker: str,
+        through: pd.Timestamp,
+        expected_transactions: pd.DataFrame,
+        expected_footnotes: pd.DataFrame,
+        expected_identity: dict[SchemaTable, pd.DataFrame],
+    ) -> int:
+        """Stamp only the exact reconciled payload/notes/identity cohort under the mutation guard."""
+        identities = {Tables.sp500_tickers, Tables.entity_lineage, Tables.symbol_tenure, Tables.security_master}
+        if set(expected_identity) != identities or expected_transactions.empty:
+            raise ValueError("Certification requires an actual accession cohort and the closed identity cohort")
+        with self._institutional_transaction() as conn:
+            actual = self._institutional_select(conn, Tables.insider_transactions, {"ticker": ticker})
+            if "inventory_checked_through" not in actual or not self._institutional_equal(
+                conn, Tables.insider_transactions, actual, expected_transactions
+            ):
+                raise ValueError("Insider source cohort changed before certification")
+            accessions = sorted(set(actual["accession_number"].astype(str)))
+            notes = self._institutional_select(conn, Tables.insider_footnotes, {"accession_number": accessions})
+            if not self._institutional_equal(conn, Tables.insider_footnotes, notes, expected_footnotes):
+                raise ValueError("Insider footnote cohort changed before certification")
+            self._assert_institutional_identity(conn, expected_identity)
+            fetched = pd.to_datetime(actual.get("fetched_at", pd.Series(pd.NaT, index=actual.index)), errors="coerce")
+            changes = self._insider_scope_changes(ticker, actual, expected_identity)
+            if fetched.isna().any() or (changes.notna().any() and fetched.lt(changes.max()).any()):
+                raise ValueError("Every insider accession must be freshly reconciled for its dated identity scope")
+            tbl = _reflect(conn, Tables.insider_transactions.name)
+            return int(
+                conn.execute(
+                    tbl.update().where(tbl.c.ticker == ticker).values(inventory_checked_through=_bind_date(tbl.c.inventory_checked_through, through))
+                ).rowcount
+            )
+
+    def _assert_institutional_identity(self, conn: Connection, expected_identity: dict[SchemaTable, pd.DataFrame]) -> None:
+        """The mapping used outside the transaction must still be the exact guarded identity cohort."""
+        if set(expected_identity) != {Tables.sp500_tickers, Tables.entity_lineage, Tables.symbol_tenure, Tables.security_master}:
+            raise ValueError("Expected identity must contain the closed institutional source cohort")
+        for spec, expected in expected_identity.items():
+            identity = self._institutional_select(conn, spec)
+            columns = ["ticker", "cik"] if spec == Tables.sp500_tickers else list(spec.read_columns)
+            columns = [column for column in columns if column in identity]
+            if not self._institutional_equal(conn, spec, identity[columns], expected):
+                raise ValueError(f"Institutional identity cohort changed before commit: {spec}")
+
+    def insider_inventory_snapshot(self, ticker: str, expected_accessions: Sequence[str] | None) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """Capture a prior joint cohort under its guard; an inventory change clears retained proof."""
+        with self._institutional_transaction() as conn:
+            transactions = self._institutional_select(conn, Tables.insider_transactions, {"ticker": ticker})
+            accessions = sorted(set(transactions.get("accession_number", pd.Series(dtype=str)).astype(str)))
+            notes = self._institutional_select(conn, Tables.insider_footnotes, {"accession_number": accessions})
+            if expected_accessions is not None and set(accessions) != set(expected_accessions):
+                self._invalidate_institutional_proof(conn, {ticker}, False)
+            return transactions, notes
+
+    def insider_inventory_boundaries(self, tickers: Sequence[str]) -> pd.Series:
+        """Compact requested-issuer proof summary, including markers and every actual row."""
+        result = pd.Series(pd.NaT, index=pd.Index(sorted(set(tickers)), name="ticker"), dtype="datetime64[ns]")
+        columns = self.columns(Tables.insider_transactions)
+        if not {"inventory_checked_through", "fetched_at", "ticker"}.issubset(columns):
+            return result
+        tbl = _reflect(self.engine, Tables.insider_transactions.name)
+        checked = tbl.c.inventory_checked_through
+        statement = select(tbl.c.ticker, func.min(checked), func.max(checked), func.count(checked), func.count(tbl.c.fetched_at), func.count())
+        statement = statement.where(tbl.c.ticker.in_(list(result.index))).group_by(tbl.c.ticker)
+        with self.engine.connect() as conn:
+            rows = conn.execute(statement).all()
+        for ticker, first, last, verified, fetched, total in rows:
+            if first is not None and first == last and verified == fetched == total:
+                result.loc[ticker] = pd.Timestamp(first)
+        return result
+
+    def short_volume_source_cohort(self, companies: Sequence[str], symbols: Sequence[str]) -> pd.DataFrame:
+        """Read complete touched-symbol cohorts once, including retained other-owner dates."""
+        if not self.exists(Tables.sec_short_volume_security):
+            return pd.DataFrame()
+        raw = _reflect(self.engine, Tables.sec_short_volume_security.name)
+        owned_symbols = select(raw.c.source_symbol).where(raw.c.ticker.in_(list(companies))).distinct()
+        statement = select(raw).where(raw.c.source_symbol.in_(owned_symbols) | raw.c.source_symbol.in_(list(symbols)))
+        with self.engine.connect() as conn:
+            return pd.read_sql(statement, conn)
+
+    def fails_source_periods(self) -> tuple[set[str], set[str]]:
+        """Compact raw inventory and period keys whose raw or derived payload needs reconciliation."""
+        pending = set(map(str, self.distinct(Tables.sec_fails_to_deliver, "period", where={"fails_quantity": None})))
+        if not self.exists(Tables.sec_fails_to_deliver_security):
+            return set(), pending
+        raw = _reflect(self.engine, Tables.sec_fails_to_deliver_security.name)
+        statement = select(raw.c.period, func.count(), func.count(raw.c.security_id)).group_by(raw.c.period)
+        with self.engine.connect() as conn:
+            rows = conn.execute(statement).all()
+        stored = {str(period) for period, _, _ in rows if period is not None}
+        pending |= {str(period) for period, total, stamped in rows if period is not None and stamped < total}
+        return stored, pending
+
+    def short_source_days(self, tickers: Sequence[str]) -> tuple[set[pd.Timestamp], set[pd.Timestamp]]:
+        """One grouped date read retains global day presence and scoped unknown-quantity retries."""
+        if not self.exists(Tables.short_interest):
+            return set(), set()
+        table = _reflect(self.engine, Tables.short_interest.name)
+        unknown = table.c.short_volume.is_(None) if "short_volume" in table.c else table.c.date.is_not(None)
+        retry = func.max(case((table.c.ticker.in_(tickers) & unknown, 1), else_=0))
+        statement = select(table.c.date, retry).where(table.c.date.is_not(None)).group_by(table.c.date)
+        with self.engine.connect() as conn:
+            rows = conn.execute(statement).all()
+        stored = {pd.Timestamp(day).normalize() for day, _ in rows}
+        pending = {pd.Timestamp(day).normalize() for day, needs_retry in rows if needs_retry}
+        return stored, pending
+
+    @staticmethod
+    def _insider_scope_changes(ticker: str, transactions: pd.DataFrame, identity: dict[SchemaTable, pd.DataFrame]) -> pd.Series:
+        changes = []
+        ciks = set(transactions.get("issuer_cik", pd.Series(dtype=str)).dropna().astype(str).str.zfill(10))
+        for spec, company in ((Tables.entity_lineage, "canonical_ticker"), (Tables.security_master, "canonical_company")):
+            frame = identity[spec]
+            if "scope_changed_at" not in frame:
+                continue
+            applicable = frame[company].eq(ticker) if company in frame else pd.Series(False, index=frame.index)
+            cik_column = "cik" if spec == Tables.entity_lineage else "issuer_cik"
+            if cik_column in frame:
+                applicable |= frame[cik_column].astype("string").str.zfill(10).isin(ciks)
+            changes.append(pd.to_datetime(frame.loc[applicable, "scope_changed_at"], errors="coerce"))
+        return pd.concat(changes, ignore_index=True) if changes else pd.Series(dtype="datetime64[ns]")
+
+    @staticmethod
+    def _institutional_subset(frame: pd.DataFrame, where: dict[str, object] | None) -> pd.DataFrame:
+        selected = pd.Series(True, index=frame.index)
+        for column, value in (where or {}).items():
+            if column not in frame:
+                return frame.iloc[:0]
+            if isinstance(value, _IN_TYPES):
+                selected &= frame[column].isin(value)
+            else:
+                selected &= frame[column].isna() if value is None else (frame[column] == value)
+        return frame.loc[selected]
+
+    @staticmethod
+    def _institutional_identity_tickers(conn: Connection, changed: pd.DataFrame, cohorts: dict[SchemaTable, pd.DataFrame]) -> set[str]:
+        """Resolve old and new identity-bearing CIK/symbols to retained proof owners."""
+        ciks = {str(value).zfill(10) for column in ("cik", "issuer_cik") if column in changed for value in changed[column].dropna()}
+        symbols = {
+            str(value) for column in ("symbol", "source_symbol", "market_symbol", "ticker") if column in changed for value in changed[column].dropna()
+        }
+        tickers = {
+            str(value) for column in ("canonical_ticker", "canonical_company", "ticker") if column in changed for value in changed[column].dropna()
+        }
+        for frame in cohorts.values():
+            matched = pd.Series(False, index=frame.index)
+            for column in ("cik", "issuer_cik"):
+                if column in frame:
+                    matched |= frame[column].astype("string").str.zfill(10).isin(ciks)
+            for column in ("symbol", "source_symbol", "market_symbol", "ticker"):
+                if column in frame:
+                    matched |= frame[column].isin(symbols)
+            for column in ("ticker", "canonical_ticker", "canonical_company"):
+                if column in frame:
+                    tickers.update(str(value) for value in frame.loc[matched, column].dropna())
+        if inspect(conn).has_table(Tables.insider_transactions.name):
+            tbl = _reflect(conn, Tables.insider_transactions.name)
+            predicates = []
+            if "issuer_cik" in tbl.c and ciks:
+                predicates.append(tbl.c.issuer_cik.in_(sorted(ciks)))
+            if "source_symbol" in tbl.c and symbols:
+                predicates.append(tbl.c.source_symbol.in_(sorted(symbols)))
+            if predicates:
+                tickers.update(str(row[0]) for row in conn.execute(select(tbl.c.ticker).where(or_(*predicates)).distinct()) if row[0] is not None)
+        return tickers
+
+    def replace_institutional_identity(self, table: SchemaTable, rows: pd.DataFrame, where: dict[str, object] | None = None) -> int:
+        """Commit an existing identity replacement/partition with physical proof invalidation."""
+        if table not in (Tables.entity_lineage, Tables.security_master, Tables.symbol_tenure):
+            raise ValueError("Only the institutional lineage, master and tenure writers use this seam")
+        if where == {} or (table != Tables.symbol_tenure and where is not None):
+            raise ValueError("Only a symbol-tenure partition can carry a replacement scope")
+        if not set(table.pk).issubset(rows) or rows.duplicated(list(table.pk)).any():
+            raise ValueError("Identity replacement needs unique declared keys")
+        ensure_table(self.engine, table.name, rows)
+        ensure_columns(self.engine, table.name, rows)
+        with self._institutional_transaction() as conn:
+            cohorts = {
+                spec: self._institutional_select(conn, spec)
+                for spec in (Tables.sp500_tickers, Tables.entity_lineage, Tables.symbol_tenure, Tables.security_master)
+            }
+            old = self._institutional_subset(cohorts[table], where)
+            tbl = _reflect(conn, table.name)
+            columns = self._institutional_identity_columns(table, set(old.columns) | set(rows.columns))
+            compared = pd.concat([_coerce_temporal(old.reindex(columns=columns), tbl), _coerce_temporal(rows.reindex(columns=columns), tbl)])
+            changed = compared.drop_duplicates(keep=False)
+            if not changed.empty:
+                tickers = self._institutional_identity_tickers(conn, changed, cohorts)
+                self._invalidate_institutional_proof(conn, tickers, True)
+            statement = tbl.delete()
+            for column, value in (where or {}).items():
+                statement = statement.where(_predicate(tbl.c[column], value))
+            conn.execute(statement)
+            return self._institutional_insert(conn, table, rows)
+
+    @staticmethod
+    def _institutional_identity_columns(table: SchemaTable, available: set[str]) -> list[str]:
+        """Semantic scope and existing owner stamps; observation/evidence churn is not new identity."""
+        columns = [*table.pk, "valid_to"]
+        if table == Tables.entity_lineage:
+            columns += ["entity_id", "canonical_ticker", "cik", "scope_changed_at"]
+        elif table == Tables.security_master:
+            columns += [
+                "canonical_company",
+                "issuer_cik",
+                "market_symbol",
+                "cusip",
+                "lineage_role",
+                "security_class",
+                "conversion_ratio",
+                "scope_changed_at",
+            ]
+        return [column for column in dict.fromkeys(columns) if column in available]
+
+    def _save_institutional_roster(self, frame: pd.DataFrame) -> int:
+        """Preserve roster partial-upsert semantics while guarding actual ticker/CIK changes."""
+        spec = Tables.sp500_tickers
+        ensure_table(self.engine, spec.name, frame)
+        ensure_columns(self.engine, spec.name, frame)
+        with self._institutional_transaction() as conn:
+            cohorts = {
+                table: self._institutional_select(conn, table)
+                for table in (spec, Tables.entity_lineage, Tables.symbol_tenure, Tables.security_master)
+            }
+            old = self._institutional_subset(cohorts[spec], {"ticker": frame["ticker"].tolist()})
+            changed = pd.concat([old.reindex(columns=["ticker", "cik"]), frame[["ticker", "cik"]]]).drop_duplicates(keep=False)
+            if not changed.empty:
+                self._invalidate_institutional_proof(conn, self._institutional_identity_tickers(conn, changed, cohorts), True)
+            return self._institutional_insert(conn, spec, frame)
+
     # -- writes ------------------------------------------------------------ #
     def save(self, table: SchemaTable | str, df: pd.DataFrame, pk: list[str] | None = None) -> int:
         """Upsert `df` into `table` on its PK, creating the table if needed."""
@@ -868,6 +1426,8 @@ class DataStore:
         if df is None or df.empty:
             logger.warning(f"save() skipped: table '{name}' is empty")
             return 0
+        if name == Tables.sp500_tickers.name and "cik" in df:
+            return self._save_institutional_roster(df)
         if pk is None:
             pk = list(resolve(table).pk)
         if "retry" in df and resolve(table) in (
@@ -902,6 +1462,30 @@ class DataStore:
                     f"replace(), which evolve the schema."
                 )
         return copy_load(self.engine, df, name)
+
+    def replace_institutional_output(self, rows: pd.DataFrame, *, since: pd.Timestamp | None = None) -> int:
+        """Atomically replace the owned output schema or its inclusive corrected range."""
+        spec = Tables.cube_part_institutionals
+        keys = list(spec.pk)
+        if not set(keys).issubset(rows) or rows[keys].isna().any().any() or rows.duplicated(keys).any() or rows.columns.duplicated().any():
+            raise ValueError("Institutional output requires complete unique keys and columns")
+        if since is not None and (pd.to_datetime(rows["date"]) < since).any():
+            raise ValueError("Institutional replacement rows precede their corrected range")
+        with self._institutional_transaction() as conn:
+            if since is None:
+                conn.execute(text(f'DROP TABLE IF EXISTS "{spec.name}"'))
+                for statement in ddl.table_ddl_from_frame(spec, rows).split(";"):
+                    if statement.strip():
+                        conn.execute(text(statement))
+            tbl = _reflect(conn, spec.name)
+            if set(tbl.c.keys()) != set(rows.columns):
+                raise ValueError("Institutional corrected range must retain the stored schema")
+            if since is not None:
+                conn.execute(tbl.delete().where(tbl.c.date >= _bind_date(tbl.c.date, pd.Timestamp(since).normalize())))
+            for offset in range(0, len(rows), _CHUNK):
+                chunk = rows.iloc[offset : offset + _CHUNK]
+                conn.execute(tbl.insert(), _records(_coerce_temporal(chunk, tbl)))
+        return len(rows)
 
     def append_tail(self, table, df: pd.DataFrame, cutoff, *, inclusive: bool = False, date_col: str | None = None) -> int:
         """DELETE rows after `cutoff` (>= if `inclusive`), then append `df`. Idempotent, so

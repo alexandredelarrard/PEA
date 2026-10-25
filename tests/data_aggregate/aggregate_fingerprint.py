@@ -51,7 +51,6 @@ import numpy as np
 import pandas as pd
 
 from src.context import Context
-from src.data_aggregate.utils.institutionals.insider_capital import InsiderCapital
 from tests.conftest import make_frames
 from tests.data_aggregate.pipeline_fingerprint import frame_digest
 
@@ -813,13 +812,18 @@ def compute() -> dict:
     from src.data_aggregate.utils.fundamentals.employee_features import build_employee_feature_panel
     from src.data_aggregate.utils.fundamentals.fundamental_features import build_fundamental_feature_panel
     from src.data_aggregate.utils.fundamentals.sector_features import build_sector_feature_panel
-    from src.data_aggregate.utils.institutionals.insider_features import build_insider_feature_panel
+    from src.data_aggregate.utils.institutionals.inputs import QuantityBasis, daily_share_quantities, short_quantity_history, tape_share_quantities
     from src.data_aggregate.utils.institutionals.ownership_features import (
         build_ownership_feature_panel,
     )
     from src.data_aggregate.utils.institutionals.short_flow_features import (
+        FtdPublication,
+        ShortFlowCapital,
+        _ftd_available_dates,
         build_short_flow_feature_panel,
+        prepare_fails_quantities,
         secondary_class_volume,
+        with_class_volume,
     )
     from src.data_aggregate.utils.momentum.features import (
         build_feature_panel,
@@ -840,8 +844,9 @@ def compute() -> dict:
         cross_sectional_zscore,
     )
     from src.utils.institutional_vintages import prepare_book_vintages
-    from src.utils.price_adjustments import ShareBasis
+    from src.utils.price_adjustments import ShareBasis, resolve_share_events
     from src.utils.string import pad_cik
+    from tests.data_aggregate.insider_pit_reference import build_prepared_insider_panel as build_insider_feature_panel
 
     fund = fundamentals()
     tickers = sorted(str(ticker) for ticker in fund["ticker"].unique())
@@ -921,18 +926,21 @@ def compute() -> dict:
     out["panel.employee"] = frame_digest(build_employee_feature_panel(fund, employee_rows(fund), peers, idx, part_time_weight=0.5))
     out["panel.dividend"] = frame_digest(build_dividend_feature_panel(div, peers, idx, stock_close=close, fundamentals_history=fund))
     out["panel.governance"] = frame_digest(governance_panel(tickers, fund, peers, idx, close))
-    # `splits=` is not decoration: RegSHO volume is AS-TRADED and yfinance `Volume` is
-    # retroactively split-scaled, so `ic_shortvol_market_coverage` and `ic_ftd_to_adv20` carry a
-    # 1/F(d) factor without it -- which is how a 1-for-8 reverse split printed a "coverage" of
-    # 2.26 on the live build. A fixture that never passes splits cannot detect that regressing.
+    # Exercise the same visible dated-quantity preparation as the owning step.
+    quantity_basis = QuantityBasis.from_context(resolve_share_events(None, splits, {}), idx)
+    short_capital = ShortFlowCapital(
+        daily_share_quantities(fund, idx, quantity_basis), with_class_volume(tape_share_quantities(px["volume"], quantity_basis), class_volume)
+    )
+    ftd_coverage = ftd[["date", "period"]]
+    ftd_settlement = prepare_fails_quantities(ftd, ftd_coverage, idx, None, None, quantity_basis)
+    ftd_publication = FtdPublication(ftd_coverage, _ftd_available_dates(ftd_coverage, 21))
     out["panel.short_flow"] = frame_digest(
         build_short_flow_feature_panel(
             make_frames(idx, peers, volume=px["volume"], close_total=close),
-            short_hist,
-            fails_history=ftd,
-            shares_out_history=fund,
-            splits=splits,
-            class_volume=class_volume,
+            short_quantity_history(short_hist, quantity_basis),
+            ftd_settlement,
+            short_capital,
+            ftd_publication,
         )
     )
     # ⚠ `min_prior_holders=0` HERE AND AT `prim.quarter_features`, AND THE GATE DEPENDS ON IT.
@@ -984,7 +992,7 @@ def compute() -> dict:
     assert superinvestor["f_ic_super_conviction_weight"].nunique() > 1, "Do not freeze unknown whole-book denominators"
     out["panel.superinvestor"] = frame_digest(superinvestor)
     out["panel.insider"] = frame_digest(
-        build_insider_feature_panel(make_frames(idx, peers, close_split=close), insider, capital=InsiderCapital(shares_out_history=fund))
+        build_insider_feature_panel(make_frames(idx, peers, close_split=close), insider, shares_out_history=fund, share_basis=quantity_basis.events)
     )
     out["panel.ownership"] = frame_digest(build_ownership_feature_panel(make_frames(idx, peers), sec_13d, sec_13g))
     # ---- betas + the labels the model actually trains on ---- #

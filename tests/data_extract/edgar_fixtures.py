@@ -37,8 +37,11 @@ CIK|Company Name|Form Type|Date Filed|Filename
 
 def master_text(rows: Iterable[tuple[int | str, str, str, str, str]]) -> str:
     """A `master.idx` body for `(cik, company, form, filed, accession)` rows."""
+    rows = list(rows)
     lines = [f"{int(cik)}|{company}|{form}|{filed}|edgar/data/{int(cik)}/{accession}.txt" for cik, company, form, filed, accession in rows]
-    return MASTER_HEADER + "\n".join(lines) + "\n"
+    boundary = max(pd.Timestamp(row[3]) for row in rows).to_period("Q").end_time if rows else pd.Timestamp("2026-09-30")
+    header = MASTER_HEADER.replace("September 30, 2026", boundary.strftime("%B %d, %Y"))
+    return header + "\n".join(lines) + "\n"
 
 
 def fake_context(tmp_path, store, tickers: list[str], ciks: list[str] | None = None, **data_extract: Any) -> Any:
@@ -70,14 +73,18 @@ def fake_context(tmp_path, store, tickers: list[str], ciks: list[str] | None = N
 
 def seed_index(ctx: Any, rows: Iterable[tuple[int | str, str, str, str, str]]) -> pd.DataFrame:
     """Write `rows` into the local index cache, one Parquet file per quarter, through the production parser."""
-    df = edgar_index.parse_master(master_text(rows).encode("latin-1"))
     directory = edgar_index.index_dir(ctx)
     for path in directory.glob("*.parquet"):
         path.unlink()
-    quarters = pd.Series([edgar_index.Quarter.of(pd.Timestamp(str(d))).name for d in df["filed"]], index=df.index)
-    for name, part in df.groupby(quarters):
-        edgar_index._write_atomic(part.reset_index(drop=True), directory / f"{name}.parquet")
-    return df
+    quarters: dict[str, list[tuple[int | str, str, str, str, str]]] = {}
+    for row in rows:
+        quarters.setdefault(edgar_index.Quarter.of(pd.Timestamp(row[3])).name, []).append(row)
+    frames = []
+    for name, part in quarters.items():
+        frame = edgar_index.parse_master(master_text(part).encode("latin-1"))
+        edgar_index._write_atomic(frame, directory / f"{name}.parquet")
+        frames.append(frame)
+    return pd.concat(frames, ignore_index=True) if frames else edgar_index.parse_master(master_text([]).encode("latin-1"))
 
 
 def patch_index_filings(monkeypatch: pytest.MonkeyPatch, filings: dict[str, Any]) -> None:

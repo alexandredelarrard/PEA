@@ -2,21 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import numpy as np
 import pandas as pd
-
-from src.utils.price_adjustments import ShareBasis
-
-
-@dataclass(frozen=True)
-class InsiderCapital:
-    """Loaded market evidence reused by execution cleaning, capitalization and positions."""
-
-    shares_out_history: pd.DataFrame | None = None
-    as_traded_quotes: pd.DataFrame | None = None
-    share_basis: ShareBasis | None = None
 
 
 def normalize_trade_capital(

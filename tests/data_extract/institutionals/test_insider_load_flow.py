@@ -93,7 +93,7 @@ def _zip_tables(specs: list[Spec]) -> tuple[pd.DataFrame, ...]:
         [
             {
                 "ACCESSION_NUMBER": spec.accession,
-                "NONDERIV_TRANS_SK": str(1000 * k + i),
+                "NONDERIV_TRANS_SK": str(1000 * k + i + 1),
                 "SECURITY_TITLE": "Common Stock",
                 "TRANS_DATE": _bulk_date(trade.date),
                 "TRANS_CODE": trade.code,
@@ -158,12 +158,25 @@ class _FakeSec:
         self.zips: dict[str, tuple[pd.DataFrame, ...]] = {}
         self.specs: dict[str, Spec] = {}
         self.read: list[str] = []
-        monkeypatch.setattr(ins, "load_identity", lambda context: identity)
+
+        def load_identity(context: Any) -> Identity:
+            for table, frame in identity.source_cohort.items():
+                if not frame.empty:
+                    context.store.save(table, frame)
+            return identity
+
+        def archive(context: Any, path: Path, urls: Any, **kwargs: Any) -> Path | None:
+            if path.stem not in self.zips:
+                return None
+            path.write_bytes(b"known source fixture; member parsing is stubbed")
+            return path
+
+        monkeypatch.setattr(ins, "load_identity", load_identity)
         monkeypatch.setattr(ins, "cache_dir", lambda context, key: cache)
         monkeypatch.setattr(ins, "quarter_periods", lambda *args: list(QUARTERS))
-        monkeypatch.setattr(ins, "ensure_zip", lambda context, path, url, **kwargs: path)
+        monkeypatch.setattr(ins, "ensure_zip", archive)
         monkeypatch.setattr(ins, "_read_tables", lambda path: self.zips.get(path.stem))
-        monkeypatch.setattr(edgar_driver, "load_identity", lambda context: identity)
+        monkeypatch.setattr(edgar_driver, "load_identity", load_identity)
         # One worker (the in-memory SQLite store shares one connection across threads) and no index download.
         monkeypatch.setattr(edgar_driver, "run_edgar_fetch", partial(edgar_driver.run_edgar_fetch, max_workers=1, refresh_index=False))
         monkeypatch.setattr(edgar_index, "index_filing", self._filing)
@@ -182,7 +195,21 @@ class _FakeSec:
 @pytest.fixture(scope="module")
 def identity() -> Identity:
     return build_identity(
-        lineage=pd.DataFrame([{"cik": AAA_CIK, "entity_id": "E0000000001", "source": "roster", "confidence": None, "evidence": "test"}]),
+        lineage=pd.DataFrame(
+            [
+                {
+                    "cik": AAA_CIK,
+                    "entity_id": "E0000000001",
+                    "canonical_ticker": "AAA",
+                    "role": "cik_window",
+                    "symbol": "",
+                    "valid_from": pd.Timestamp("1900-01-01"),
+                    "sources": "roster",
+                    "confidence": None,
+                    "evidence": "test",
+                }
+            ]
+        ),
         tenure=pd.DataFrame(
             [
                 {
@@ -193,6 +220,7 @@ def identity() -> Identity:
                     "n_filings": 100,
                     "source": "form345",
                     "evidence": "",
+                    "evidence_period": "2006q1",
                 }
             ]
         ),
@@ -205,7 +233,7 @@ def _context(tmp_path: Path, store: Any, universe: tuple[str, ...] = ("AAA",)) -
     store.save(
         Tables.sp500_tickers,
         pd.DataFrame(
-            {col: [str(i + 1) if col == "cik" else f"{col}-{t}" for i, t in enumerate(universe)] for col in CIK_MAPPING_COLS}
+            {col: [str(i + 1).zfill(10) if col == "cik" else f"{col}-{t}" for i, t in enumerate(universe)] for col in CIK_MAPPING_COLS}
             | {"ticker": list(universe)}
         ),
     )
@@ -425,7 +453,22 @@ def identity_two() -> Identity:
     """AAA (CIK 1) and BBB (CIK 2), both universe companies."""
     pairs = (("AAA", AAA_CIK), ("BBB", BBB_CIK))
     return build_identity(
-        lineage=pd.DataFrame([{"cik": cik, "entity_id": f"E{cik}", "source": "roster", "confidence": None, "evidence": "test"} for _, cik in pairs]),
+        lineage=pd.DataFrame(
+            [
+                {
+                    "cik": cik,
+                    "entity_id": f"E{cik}",
+                    "canonical_ticker": symbol,
+                    "role": "cik_window",
+                    "symbol": "",
+                    "valid_from": pd.Timestamp("1900-01-01"),
+                    "sources": "roster",
+                    "confidence": None,
+                    "evidence": "test",
+                }
+                for symbol, cik in pairs
+            ]
+        ),
         tenure=pd.DataFrame(
             [
                 {
@@ -436,6 +479,7 @@ def identity_two() -> Identity:
                     "n_filings": 100,
                     "source": "form345",
                     "evidence": "",
+                    "evidence_period": "2006q1",
                 }
                 for s, cik in pairs
             ]
@@ -744,7 +788,8 @@ def test_singleton_reuse_keeps_tickers_exclusions_and_floor_local_after_failure(
     assert result.missing == {} and scopes == [("AAA",), ("BBB",)]
     assert floors == [pd.Timestamp("2026-04-01"), pd.Timestamp("2026-07-01")]
     assert "insider EDGAR run: no filing excluded by the identity screen" in _messages(caplog, logging.INFO)
-    assert not _messages(caplog, logging.WARNING)
+    warnings = _messages(caplog, logging.WARNING)
+    assert all("insider inventory: incomplete or changed original index" in message for message in warnings), warnings
     assert edgar.INSIDER_EDGAR_FETCH.parse is None
     assert _rows_of(_table(sqlite_store), second.accession)["source"].tolist() == ["edgar"]
     print("SANITY: reusing the singleton after failure binds BBB only, drops AAA's exclusions and recomputes the new quarter floor.")

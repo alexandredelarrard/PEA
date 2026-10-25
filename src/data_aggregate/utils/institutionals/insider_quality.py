@@ -89,7 +89,7 @@ def common_stock_mask(security_title: pd.Series) -> pd.Series:
 def officer_role(title: object) -> str:
     """Free-text `officer_title` -> the first matching `ROLE_PATTERNS` name, else `OTHER_OFFICER` (also for a blank)."""
     s = clean_officer_title(title)
-    if re.search(r"\b(?:FORMER|RETIRED|SUBSIDIAR(?:Y|IES)|DIVISION(?:AL)?|REGIONAL|SEGMENT|BUSINESS\s+UNIT)\b", s, re.I):
+    if re.search(r"\b(?:FORMER|RETIRED|INCOMING|DESIGNATE|ELECT|SUBSIDIAR(?:Y|IES)|DIVISION(?:AL)?|REGIONAL|SEGMENT|BUSINESS\s+UNIT)\b", s, re.I):
         return OTHER_OFFICER
     for name, rx in _ROLE_COMPILED:
         match = rx.search(s)
@@ -113,6 +113,28 @@ def clean_officer_title(value: object) -> str:
     title = re.sub(r"\bCHIEF\s+EXEC\b(?=\s+OFF(?:ICER|CR|R)\b)", "Chief Executive", title, flags=re.I)
     title = re.sub(r"\bCHIEF\s+EXEC\b(?!\s*UTIVE)", "Chief Executive Officer", title, flags=re.I)
     return re.sub(r"\s+", " ", title)
+
+
+def role_needs_evidence(value: object) -> bool:
+    """A blank or generic reference contains no job claim to contradict dated evidence."""
+    return re.fullmatch(r"(?:SEE\s+(?:REMARKS?|FOOTNOTES?))?", clean_officer_title(value), re.I) is not None
+
+
+def unresolved_role(value: object) -> bool:
+    """Separate missing/ambiguous jobs from explicit jobs outside issuer CEO/CFO/COO."""
+    title = clean_officer_title(value)
+    if not title or re.search(
+        r"\b(?:REMARKS?|FOOTNOTES?|UNKNOWN|UNSPECIFIED|CONFLICT\w*|AMBIGUOUS|INCOMING|DESIGNATE|ELECT|EFFECTIVE)\b", title, re.I
+    ):
+        return True
+    if officer_role(title) != OTHER_OFFICER:
+        return False
+    if re.search(r"\b(?:FORMER|RETIRED|SUBSIDIAR(?:Y|IES)|DIVISION(?:AL)?|REGIONAL|SEGMENT|BUSINESS\s+UNIT)\b", title, re.I):
+        return False
+    # A recognized chief title rejected by the role parser has a unit/affiliate tail.
+    if any(pattern.search(title) for _, pattern in _ROLE_COMPILED):
+        return False
+    return re.search(r"\b(?:PRESIDENT|PRES|CHAIR\w*|DIRECTOR|TREASURER|SECRETARY|CONTROLLER|COUNSEL|VICE|VP|SVP|EVP)\b", title, re.I) is None
 
 
 def owner_name_key(value: object) -> str:
@@ -153,6 +175,7 @@ def _canonical_inputs(df_rows: pd.DataFrame, role_evidence: pd.DataFrame | None)
         df_rows[column] = pd.to_numeric(values, errors="coerce").where(lambda x: x.isin([0, 1]))
     titles = df_rows["officer_title_clean"]
     df_rows["role"] = titles.map({title: officer_role(title) for title in titles.unique()})
+    df_rows["role_unknown"] = titles.map({title: unresolved_role(title) for title in titles.unique()}) & ~df_rows["is_officer"].eq(0)
     df_rows = _fill_prior_roles(df_rows, role_evidence)
     df_rows["is_management"] = df_rows["role"].isin(["CEO", "CFO", "COO"])
     df_rows["is_management"] &= ~df_rows["is_officer"].eq(0)
@@ -160,11 +183,12 @@ def _canonical_inputs(df_rows: pd.DataFrame, role_evidence: pd.DataFrame | None)
 
 
 def _fill_prior_roles(df_rows: pd.DataFrame, role_evidence: pd.DataFrame | None) -> pd.DataFrame:
-    """Fill only blank current officer titles; later/conflicting evidence never overwrites a row."""
+    """Resolve missing job claims from prior issuer/person proof; retain exclusion/uncertainty barriers."""
     keys = ["ticker", "issuer_cik", "owner_cik"]
-    df_prior = df_rows.loc[df_rows["owner_cik"].ne(""), [*keys, "role_as_of", "officer_title_clean", "role"]].copy()
+    known_identity = df_rows["issuer_cik"].ne("") & df_rows["owner_cik"].ne("")
+    df_prior = df_rows.loc[known_identity, [*keys, "role_as_of", "officer_title_clean", "role"]].copy()
     df_prior["role_source"] = "prior_form4"
-    df_prior = df_prior[df_prior["officer_title_clean"].ne("") & df_prior["role_as_of"].notna()]
+    df_prior = df_prior[df_prior["officer_title_clean"].map(role_needs_evidence).eq(False) & df_prior["role_as_of"].notna()]
     # A conflicting or non-management title is a history barrier, not a row to skip.
     grouped = df_prior.groupby([*keys, "role_as_of"], dropna=False)
     conflict = grouped["officer_title_clean"].transform("nunique").gt(1)
@@ -174,13 +198,20 @@ def _fill_prior_roles(df_rows: pd.DataFrame, role_evidence: pd.DataFrame | None)
         df_proxy = role_evidence.copy()
         for column in ("issuer_cik", "owner_cik"):
             df_proxy[column] = df_proxy[column].map(pad_cik).fillna("")
+        df_proxy = df_proxy[
+            df_proxy["issuer_cik"].ne("") & df_proxy["owner_cik"].ne("") & df_proxy["officer_title_clean"].map(role_needs_evidence).eq(False)
+        ]
         df_prior = pd.concat([df_prior, df_proxy[df_prior.columns]], ignore_index=True)
-    eligible = df_rows["officer_title_clean"].eq("") & df_rows["is_officer"].eq(1) & df_rows["owner_cik"].ne("") & df_rows["role_as_of"].notna()
+    eligible = df_rows["officer_title_clean"].map(role_needs_evidence) & df_rows["is_officer"].eq(1) & known_identity & df_rows["role_as_of"].notna()
     if not eligible.any() or df_prior.empty:
         return df_rows
     df_prior = df_prior.dropna(subset=["role_as_of"])
     conflict = df_prior.groupby([*keys, "role_as_of"])["role"].transform("nunique").gt(1)
     df_prior.loc[conflict, ["role", "officer_title_clean"]] = [OTHER_OFFICER, "conflicting roles"]
+    mapped = df_prior["officer_title_clean"].map(officer_role)
+    df_prior["role_unknown"] = df_prior["officer_title_clean"].map(unresolved_role).astype(bool) | (
+        df_prior["role"].eq(OTHER_OFFICER) & mapped.ne(OTHER_OFFICER)
+    )
     df_prior = df_prior.sort_values("role_as_of").drop_duplicates([*keys, "role_as_of"], keep="first")
     df_match = pd.merge_asof(
         df_rows.loc[eligible, [*keys, "role_as_of"]].reset_index().sort_values("role_as_of"),
@@ -191,6 +222,8 @@ def _fill_prior_roles(df_rows: pd.DataFrame, role_evidence: pd.DataFrame | None)
         allow_exact_matches=False,
         tolerance=pd.Timedelta(days=365),
     )
+    classified = df_match[df_match["role_unknown"].eq(False)].set_index("index")
+    df_rows.loc[classified.index, "role_unknown"] = False
     supported = df_match["role"].isin(["CEO", "CFO", "COO"])
     df_match = df_match[supported].set_index("index")
     for column in ("role", "officer_title_clean", "role_source"):
@@ -320,11 +353,8 @@ def consensus_price(txns: pd.DataFrame, *, window: str = CONSENSUS_WINDOW) -> pd
 def clean_transactions(
     insider: pd.DataFrame,
     *,
-    price_tolerance: float = PRICE_TOLERANCE,
     as_traded_quotes: pd.DataFrame | None = None,
     role_evidence: pd.DataFrame | None = None,
-    max_price_age_days: int = 7,
-    assessments: tuple[dict[str, object], ...] | None = None,
     share_basis: ShareBasis | None = None,
 ) -> tuple[pd.DataFrame, dict]:
     """Return priced common-stock P/S versions and diagnostics for unsupported evidence."""
@@ -346,7 +376,7 @@ def clean_transactions(
     df_trades = df_trades[~unsupported]
 
     # Apply quote checks and dated source evidence, retaining unpriced share claims.
-    df_trades, price_counts = _clean_trade_prices(df_trades, as_traded_quotes, share_basis, price_tolerance, max_price_age_days, assessments)
+    df_trades, price_counts = _clean_trade_prices(df_trades, as_traded_quotes, share_basis, PRICE_TOLERANCE, 7, None)
     diag.update(price_counts)
 
     # Report the same economic and filing-version counts after cleaning.
@@ -363,11 +393,7 @@ def _scope_transactions(df_trades: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
 
     # Capture source coverage and other account flows before the P/S scope cut.
     diag["source_first"] = df_trades.loc[df_trades["ticker"].ne("") & df_trades["day"].notna()].groupby("ticker")["day"].min()
-    diag["other_flows"] = (
-        df_trades.loc[~df_trades["code"].isin(OPEN_MARKET_CODES), ["ticker", "owner_cik", "transaction_day", "day", "code", "security_type"]].copy()
-        if "security_type" in df_trades
-        else pd.DataFrame()
-    )
+    diag["other_flows"] = _other_flow_versions(df_trades)
     # Computed before the scope cut, which removes the derivative `M` leg of the package.
     df_trades["in_exercise_package"] = _exercise_packages(df_trades)
 
@@ -386,6 +412,88 @@ def _scope_transactions(df_trades: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     df_trades = df_trades[df_trades["code"].isin(OPEN_MARKET_CODES) & df_trades["day"].notna() & (df_trades["ticker"] != "")]
     diag["scoped_rows"] = int((df_trades["shares_n"].gt(0) & ~df_trades["scope_unknown"]).sum())
     return df_trades, diag
+
+
+def _other_flow_versions(df_rows: pd.DataFrame) -> pd.DataFrame:
+    """Retain non-P/S account metadata and its matching amendment-cell visibility."""
+    df_flows = df_rows.loc[~df_rows["code"].isin(OPEN_MARKET_CODES)].copy()
+    df_flows["visible_from"] = df_flows["day"]
+    df_flows["visible_until"] = pd.NaT
+    df_flows["version_known"] = False
+    if df_flows.empty or "accession_number" not in df_rows:
+        return df_flows
+    document = df_flows.get("document_type", pd.Series("", index=df_flows.index)).fillna("").astype(str).str.upper().str.strip()
+    df_flows["version_known"] = document.isin(["3", "4", "5"]) & df_flows["accession_number"].fillna("").ne("")
+    df_key = _copy_key(df_rows, df_rows["price_per_share"])
+    links, _ = _link_amendments(df_rows, df_key, require_unique=True)
+    if links.empty:
+        return df_flows
+    df_flows["version_known"] |= df_flows["accession_number"].isin(links.index)
+    df_cells = df_key.loc[df_flows.index, ["accession_number", "day", *CELL_KEY]].copy()
+    df_cells[["owner_cik", "direct_indirect"]] = df_flows[["owner_cik", "direct_indirect"]]
+    df_cells["klass"] = security_class(df_flows["security_title"])
+    members = (
+        df_flows.get("owner_ciks", pd.Series("", index=df_flows.index))
+        .fillna("")
+        .astype(str)
+        .str.replace(r"\s+", "", regex=True)
+        .str.split(",")
+        .explode()
+        .str.lstrip("0")
+    )
+    df_cells["owner_members"] = members.sort_values().groupby(level=0).agg(_joined).reindex(df_flows.index)
+    df_cells["n_reporting_owners"] = pd.to_numeric(df_flows.get("n_reporting_owners", pd.Series(np.nan, index=df_flows.index)), errors="coerce")
+    df_cells["original"] = df_cells["accession_number"].map(links).fillna(df_cells["accession_number"])
+    keys = ["original", *CELL_KEY, "owner_cik", "direct_indirect", "klass", "owner_members", "n_reporting_owners"]
+    df_boundaries = (
+        df_cells.groupby([*keys, "accession_number"], dropna=False)
+        .agg(day=("day", "min"), n_rows=("day", "size"))
+        .reset_index()
+        .sort_values([*keys, "day", "accession_number"])
+    )
+    versions = df_boundaries.groupby(keys, dropna=False)
+    df_boundaries["visible_until"] = versions["day"].shift(-1).where(df_boundaries["n_rows"].eq(versions["n_rows"].shift(-1)))
+    df_stops = df_cells.reset_index(names="source_index").merge(
+        df_boundaries[[*keys, "accession_number", "visible_until"]], on=[*keys, "accession_number"], how="left"
+    )
+    df_flows["visible_until"] = df_stops.set_index("source_index")["visible_until"].reindex(df_flows.index)
+    return df_flows
+
+
+def account_other_flows(df_flows: pd.DataFrame, ticker: str, owner: str) -> pd.DataFrame:
+    """Common-account blockers; only a proved independent derivative award is irrelevant."""
+    reporters = df_flows.get("owner_ciks", pd.Series("", index=df_flows.index)).fillna("").astype(str).str.replace(r"\s+", "", regex=True)
+    members = reporters.str.split(",").explode().str.lstrip("0")
+    members = members[members.str.fullmatch(r"\d+").fillna(False)]
+    n_members = members.groupby(level=0).nunique().reindex(df_flows.index, fill_value=0)
+    listed = members.eq(owner.lstrip("0")).groupby(level=0).any().reindex(df_flows.index, fill_value=False)
+    primary = df_flows["owner_cik"].str.lstrip("0").reindex(members.index)
+    primary_listed = members.eq(primary).groupby(level=0).any().reindex(df_flows.index, fill_value=False)
+    multiplicity = pd.to_numeric(df_flows.get("n_reporting_owners", pd.Series(np.nan, index=df_flows.index)), errors="coerce")
+    complete = multiplicity.ge(1) & multiplicity.eq(n_members) & primary_listed
+    df_rows = df_flows.loc[df_flows["ticker"].eq(ticker) & (df_flows["owner_cik"].eq(owner) | ~complete | listed)].copy()
+    df_rows["visible_from"] = df_rows.get("visible_from", df_rows["day"])
+    df_rows["visible_until"] = df_rows.get("visible_until", pd.Series(pd.NaT, index=df_rows.index))
+    if df_rows.empty:
+        return df_rows
+    unknown = pd.Series("", index=df_rows.index)
+    title = df_rows.get("security_title", unknown).fillna("").astype(str).str.strip()
+    security = df_rows.get("security_type", unknown).fillna("").astype(str).str.lower().str.strip()
+    account = df_rows.get("direct_indirect", unknown).fillna("").astype(str).str.upper().str.strip()
+    reporters = reporters.reindex(df_rows.index).str.lstrip("0")
+    multiplicity = multiplicity.reindex(df_rows.index)
+    independent = (
+        security.eq("deriv")
+        & df_rows["code"].eq("A")
+        & df_rows["owner_cik"].eq(owner)
+        & reporters.eq(owner.lstrip("0"))
+        & account.isin(["D", "I"])
+        & multiplicity.eq(1)
+        & title.ne("")
+        & ~common_stock_mask(title)
+        & df_rows.get("version_known", pd.Series(False, index=df_rows.index)).fillna(False)
+    )
+    return df_rows.loc[~independent].copy()
 
 
 def _clean_trade_prices(
@@ -513,7 +621,8 @@ def versioned_records(df_scoped: pd.DataFrame, pps: pd.Series) -> tuple[pd.DataF
     df_key = _copy_key(df_rows, pps)
     links, counts["amendments_ambiguous"] = _link_amendments(df_rows, df_key)
     counts["amendments_linked"] = len(links)
-    df_plan, cell_counts = _supersede_plan(df_key, links)
+    unique_links, _ = _link_amendments(df_rows, df_key, require_unique=True)
+    df_plan, cell_counts = _supersede_plan(df_key, links, unique_links)
     counts.update(cell_counts)
     linked = df_key["accession_number"].isin(links.index)
     drop_copy, df_owners, copy_counts = _collapse_copies(df_rows, df_key, eligible=~linked)
@@ -539,6 +648,7 @@ def versioned_records(df_scoped: pd.DataFrame, pps: pd.Series) -> tuple[pd.DataF
 def _copy_key(df: pd.DataFrame, pps: pd.Series) -> pd.DataFrame:
     """Per row: accession, filing day, the `COPY_KEY` fields (`round_half_up`) and the `CELL_KEY` fields."""
     nan = pd.Series(np.nan, index=df.index)
+    blank = pd.Series("", index=df.index)
     owned = pd.to_numeric(df["shares_owned_after"], errors="coerce") if "shares_owned_after" in df.columns else nan
     txn_day = to_day(df["transaction_date"]) if "transaction_date" in df.columns else pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns]")
     security = df["security_type"].astype(str).str.lower() if "security_type" in df.columns else pd.Series("nonderiv", index=df.index)
@@ -553,6 +663,14 @@ def _copy_key(df: pd.DataFrame, pps: pd.Series) -> pd.DataFrame:
             "shares": round_half_up(df["shares_n"]),
             "price": round_half_up(pps.reindex(df.index)),
             "owned_after": round_half_up(owned),
+            "owner": df.get("owner_cik", blank),
+            "account": df.get("direct_indirect", blank),
+            "security_title": df.get("security_title", blank).fillna("").astype(str).str.upper().str.strip(),
+            "row_sequence": pd.to_numeric(df.get("row_sequence", nan), errors="coerce"),
+            "n_reporting_owners": pd.to_numeric(df.get("n_reporting_owners", nan), errors="coerce"),
+            "source_shares": df["shares_n"],
+            "source_price": pps.reindex(df.index),
+            "source_owned": owned,
         },
         index=df.index,
     )
@@ -581,12 +699,12 @@ def _owner_pairs(df: pd.DataFrame) -> pd.DataFrame:
     return df_pairs[df_pairs["owner"].fillna("").ne("")].drop_duplicates()
 
 
-def _link_amendments(df: pd.DataFrame, df_key: pd.DataFrame) -> tuple[pd.Series, int]:
+def _link_amendments(df: pd.DataFrame, df_key: pd.DataFrame, *, require_unique: bool = False) -> tuple[pd.Series, int]:
     """Amendment accession -> its original, and the number of amendments with several candidates.
 
     The original shares the ticker and an owner, is not an amendment, and was filed on the
-    amendment's `original_submission_date`, on or before the amendment. Among several
-    candidates the one sharing the most cells wins, then the lowest accession number.
+    amendment's `original_submission_date`, on or before the amendment. By default several
+    candidates resolve by shared cells then accession; `require_unique` refuses such ties.
     """
     none = pd.Series(dtype="string")
     if "document_type" not in df.columns or "original_submission_date" not in df.columns:
@@ -620,10 +738,45 @@ def _link_amendments(df: pd.DataFrame, df_key: pd.DataFrame) -> tuple[pd.Series,
     df_pairs = df_pairs.sort_values(["accession_number", "shared", "original"], ascending=[True, False, True])
     n_candidates = df_pairs.groupby("accession_number").size()
     links = df_pairs.drop_duplicates("accession_number").set_index("accession_number")["original"]
+    if require_unique:
+        links = links[n_candidates.reindex(links.index).eq(1)]
     return links, int((n_candidates > 1).sum())
 
 
-def _supersede_plan(df_key: pd.DataFrame, links: pd.Series) -> tuple[pd.DataFrame, dict]:
+def _corrected_action_cells(df_rows: pd.DataFrame, unique_links: pd.Series) -> pd.Series:
+    """Match date-only corrections only with unique filing, explicit row identity and complete unchanged correspondence."""
+    cell_days = df_rows["transaction_day"].copy()
+    keys = ["owner", "account", "security_type", "security_title", "row_sequence", "code", "source_shares", "source_price", "source_owned"]
+    known = (
+        df_rows["owner"].ne("")
+        & df_rows["account"].eq("D")
+        & df_rows["security_type"].eq("nonderiv")
+        & df_rows["security_title"].ne("")
+        & df_rows["row_sequence"].gt(0)
+        & df_rows["row_sequence"].mod(1).eq(0)
+        & df_rows["n_reporting_owners"].eq(1)
+        & df_rows["transaction_day"].notna()
+    )
+    df_known = df_rows.loc[known].dropna(subset=keys)
+    df_amended = df_known.loc[df_known["accession_number"].isin(unique_links.index)]
+    df_original = df_known.loc[df_known["is_original"], ["original", *keys, "transaction_day", "row"]]
+    df_matches = df_amended.merge(df_original, on=["original", *keys], suffixes=("", "_original"))
+    if df_matches.empty:
+        return cell_days
+    paired = df_matches.groupby(["accession_number", "row"])["row_original"].transform("size").eq(1)
+    paired &= df_matches.groupby(["accession_number", "row_original"])["row"].transform("size").eq(1)
+    df_matches = df_matches.loc[paired]
+    counts = df_rows.groupby("accession_number").size()
+    matched = df_matches.groupby("accession_number").size()
+    complete = df_matches["accession_number"].map(matched).eq(df_matches["accession_number"].map(counts)) & df_matches["accession_number"].map(
+        matched
+    ).eq(df_matches["original"].map(counts))
+    corrections = df_matches.loc[complete & df_matches["transaction_day"].ne(df_matches["transaction_day_original"])]
+    cell_days.loc[corrections["row"].to_numpy()] = corrections["transaction_day_original"].to_numpy()
+    return cell_days
+
+
+def _supersede_plan(df_key: pd.DataFrame, links: pd.Series, unique_links: pd.Series) -> tuple[pd.DataFrame, dict]:
     """Per row of a linked original or amendment: `anchor`, `visible_until` and `identical`.
 
     The records of one (original, cell) are ordered original first, then amendments by filing
@@ -642,9 +795,11 @@ def _supersede_plan(df_key: pd.DataFrame, links: pd.Series) -> tuple[pd.DataFram
     member = original.notna() | df_key["accession_number"].isin(set(links.to_numpy()))
     df_rows = df_key[member].assign(original=original[member].fillna(df_key.loc[member, "accession_number"]), row=df_key.index[member])
     df_rows["is_original"] = df_rows["original"].eq(df_rows["accession_number"])
+    df_rows["cell_day"] = _corrected_action_cells(df_rows, unique_links)
     shares, price, owned = (df_rows[c].to_numpy(dtype="float64").astype("U32") for c in ("shares", "price", "owned_after"))
     df_rows["record"] = np.char.add(np.char.add(np.char.add(np.char.add(shares, "|"), price), "|"), owned)
-    cell = ["original", *CELL_KEY]
+    df_rows["record"] = df_rows["record"] + "|" + df_rows["transaction_day"].astype(str)
+    cell = ["original", "cell_day", *(name for name in CELL_KEY if name != "transaction_day")]
     reporter = [*cell, "accession_number"]
 
     df_rep = (

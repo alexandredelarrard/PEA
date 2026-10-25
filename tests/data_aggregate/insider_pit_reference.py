@@ -16,7 +16,46 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from src.data_aggregate.utils.common.price_frames import PriceFrames
+from src.data_aggregate.utils.institutionals.inputs import QuantityBasis, daily_share_quantities
+from src.data_aggregate.utils.institutionals.insider_features import (
+    InsiderCoverage,
+    build_insider_feature_panel,
+    insider_market_cap,
+    report_oversized_positions,
+)
+from src.data_aggregate.utils.institutionals.insider_positions import position_units
 from src.data_aggregate.utils.institutionals.insider_quality import clean_transactions
+from src.utils.price_adjustments import ShareBasis
+
+_EMPTY_EVENTS = pd.DataFrame(columns=["ticker", "date", "value"])
+_NO_SPLIT_FIXTURE = ShareBasis(_EMPTY_EVENTS, _EMPTY_EVENTS, _EMPTY_EVENTS, {})
+
+
+def build_prepared_insider_panel(
+    frames: PriceFrames,
+    insider: pd.DataFrame | None,
+    shares_out_history: pd.DataFrame | None = None,
+    as_traded_quotes: pd.DataFrame | None = None,
+    share_basis: ShareBasis | None = _NO_SPLIT_FIXTURE,
+    coverage: InsiderCoverage | None = None,
+) -> pd.DataFrame:
+    """Producer/visibility control through actual stages; default known-truth fixtures have no genuine splits."""
+    df_trades, diagnostics = clean_transactions(
+        insider if insider is not None else pd.DataFrame(), as_traded_quotes=as_traded_quotes, share_basis=share_basis
+    )
+    observation = coverage if coverage is not None else InsiderCoverage()
+    if "source_first" not in diagnostics or not len(frames.trading_index):
+        return build_insider_feature_panel(frames, df_trades, pd.DataFrame(), diagnostics, None, observation)
+    basis = QuantityBasis.from_context(share_basis, pd.DatetimeIndex(frames.trading_index)) if share_basis is not None else None
+    df_unpriced = diagnostics.get("unpriced_events", pd.DataFrame())
+    df_positions = position_units(pd.concat([df_trades, df_unpriced], ignore_index=True), basis)
+    if basis is not None:
+        df_shares = daily_share_quantities(shares_out_history, pd.DatetimeIndex(frames.trading_index), basis)
+        report_oversized_positions(df_positions.iloc[: len(df_trades)], df_shares)
+    df_mcap = insider_market_cap(shares_out_history, frames.close_split, frames.level_factor)
+    return build_insider_feature_panel(frames, df_trades, df_positions, diagnostics, df_mcap, observation)
+
 
 #: Run-dir parquet snapshot of the stored zip rows, 2024q1-2026q2 (read-only).
 SNAPSHOT = Path("reports") / "validate" / "2026-10-03-insider-transactions-merge" / "_cache" / "zip_2024q1_2026q2.parquet"

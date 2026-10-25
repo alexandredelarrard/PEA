@@ -83,6 +83,7 @@ build_cube:
     reaction_sessions: 3      # pinned by the _3d feature schema
 
   institutionals:            # informed-capital panels (13F, insider, 13D/G, short flow)
+    ftd_availability_calendar_days: 21  # estimated_policy_21d; snap forward to an actual market session
     value_basis:
       min_securities: 15      # distinct priced common securities for a unit-changing override
       min_agreement: 0.8

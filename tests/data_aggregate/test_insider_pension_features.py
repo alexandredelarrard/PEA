@@ -12,9 +12,9 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.fundamentals.fundamental_features import _NET_PENSION_TAGS, _pension_deficit_daily
-from src.data_aggregate.utils.institutionals.insider_capital import InsiderCapital
-from src.data_aggregate.utils.institutionals.insider_features import build_insider_feature_panel
+from src.data_aggregate.utils.institutionals.insider_features import InsiderCoverage
 from tests.conftest import make_frames
+from tests.data_aggregate.insider_pit_reference import build_prepared_insider_panel as build_insider_feature_panel
 
 PRIMARY, VARIANT = _NET_PENSION_TAGS
 
@@ -150,11 +150,16 @@ def _insider_txns():
     )
 
 
-def test_insider_signal_ordering_and_leak_free():
-    idx = pd.bdate_range("2024-01-01", "2024-12-31")
+def test_insider_signal_ordering_and_leak_free() -> None:
+    idx = pd.bdate_range("2023-01-01", "2024-12-31")
     peers = {"BULL": {"BEAR": 1.0, "MIX": 1.0}, "BEAR": {"BULL": 1.0, "MIX": 1.0}, "MIX": {"BULL": 1.0, "BEAR": 1.0}}
     panel = build_insider_feature_panel(make_frames(idx, peers), _insider_txns())
     assert not panel.empty and "f_ic_insider_net_buy_ratio_180d" in panel.columns
+    legacy = panel.loc[panel["date"].eq(pd.Timestamp("2024-04-01"))].set_index("ticker")["f_ic_insider_net_buy_ratio_180d"]
+    assert legacy[["BULL", "BEAR"]].isna().all() and legacy["MIX"] == 0
+    coverage = InsiderCoverage.from_availability(None, pd.Series(idx.max(), index=list(peers)))
+    listed = pd.DataFrame(100.0, index=idx, columns=list(peers))
+    panel = build_insider_feature_panel(make_frames(idx, peers, close_split=listed), _insider_txns(), coverage=coverage)
 
     d = pd.Timestamp("2024-04-01")  # inside the 180d window, after the March filings
     row = panel[panel["date"] == d].set_index("ticker")
@@ -190,7 +195,10 @@ def test_insider_buy_value_is_scaled_by_market_cap():
     )
     close = pd.DataFrame({t: 50.0 for t in ("BULL", "BEAR", "MIX")}, index=idx)
     panel = build_insider_feature_panel(
-        make_frames(idx, peers, close_split=close), _insider_txns(), capital=InsiderCapital(shares_out_history=shares), complete_through=idx[-1]
+        make_frames(idx, peers, close_split=close),
+        _insider_txns(),
+        shares_out_history=shares,
+        coverage=InsiderCoverage.from_availability(None, pd.Series(idx[-1], index=["BULL", "BEAR", "MIX"])),
     )
     assert "f_ic_insider_buy_value_mcap_180d" in panel.columns
     d = pd.Timestamp("2024-04-01")

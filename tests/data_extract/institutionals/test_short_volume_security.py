@@ -112,7 +112,15 @@ def _lineage() -> pd.DataFrame:
 def _identity(master: pd.DataFrame | None = None) -> Any:
     tenure = pd.DataFrame(
         [
-            {"symbol": t, "issuer_cik": c, "valid_from": pd.Timestamp("2006-01-01"), "valid_to": None, "n_filings": 5, "source": "form345"}
+            {
+                "symbol": t,
+                "issuer_cik": c,
+                "valid_from": pd.Timestamp("2006-01-01"),
+                "valid_to": None,
+                "n_filings": 5,
+                "source": "form345",
+                "evidence_period": "2006q1",
+            }
             for t, c in ROSTER.items()
         ]
     )
@@ -121,7 +129,7 @@ def _identity(master: pd.DataFrame | None = None) -> Any:
 
 
 def _file(day: str, rows: list[tuple[str, float, float, float, str]]) -> str:
-    return "\n".join([HEADER, *(f"{day}|{s}|{sv}|{ex}|{tv}|{m}" for s, sv, ex, tv, m in rows)]) + "\n"
+    return "\n".join([HEADER, *(f"{day}|{s}|{sv}|{ex}|{tv}|{m}" for s, sv, ex, tv, m in rows), str(len(rows))]) + "\n"
 
 
 def _lines(day: str, rows: list[tuple[str, float, float]]) -> pd.DataFrame:
@@ -133,7 +141,7 @@ def _context(store, tmp_path: Path) -> Any:
         store=store,
         paths={"DATA_STORE": tmp_path},
         log=logging.getLogger("test.short_volume"),
-        config=extract_config(data_extract={"years_history": 15}),
+        config=extract_config(data_extract={"years_history": 15, "redundant_ticks": []}),
     )
 
 
@@ -141,17 +149,14 @@ def _context(store, tmp_path: Path) -> Any:
 
 
 def test_parse_keeps_the_raw_symbol_case_market_exempt_and_fractional_volumes():
-    text = (
-        _file(
-            "20260701",
-            [
-                ("BRK/A", 87.5, 0, 412.25, "B,Q,N"),
-                ("BACpB", 1200, 3, 5100, "Q,N"),
-                ("BACPB", 10, 0, 20, "Q"),
-                ("GOOGL", 438584.394961, 673, 733402.726526, "B,Q,N"),
-            ],
-        )
-        + "7814\n"
+    text = _file(
+        "20260701",
+        [
+            ("BRK/A", 87.5, 0, 412.25, "B,Q,N"),
+            ("BACpB", 1200, 3, 5100, "Q,N"),
+            ("BACPB", 10, 0, 20, "Q"),
+            ("GOOGL", 438584.394961, 673, 733402.726526, "B,Q,N"),
+        ],
     )
     parsed = si._parse_regsho(text)
     assert list(parsed.columns) == list(si.RAW_COLUMNS)
@@ -282,22 +287,34 @@ def test_the_ticker_table_keeps_its_consumer_schema_and_the_raw_table_is_spliced
     ddl = (REPO / "sql" / "schema.sql").read_text(encoding="utf-8")
     block = re.search(r'CREATE TABLE IF NOT EXISTS "sec_short_interest" \((.*?)\);', ddl, re.S)
     assert block is not None
-    assert re.findall(r'^\s*"(\w+)"', block.group(1), re.M) == ["date", "ticker", "short_volume", "total_volume"] == list(si.TICKER_COLUMNS)
+    assert re.findall(r'^\s*"(\w+)"', block.group(1), re.M) == ["source_checked_at", *si.TICKER_COLUMNS]
     assert Tables.short_interest.name == "sec_short_interest" and Tables.short_interest.pk == ("ticker", "date")
-    assert Tables.short_interest.read_columns == ("date", "ticker", "short_volume", "total_volume", "short_interest", "avg_daily_volume")
+    assert Tables.short_interest.read_columns == (
+        "date",
+        "ticker",
+        "short_volume",
+        "total_volume",
+        "short_interest",
+        "avg_daily_volume",
+        "source_checked_at",
+    )
     raw = re.search(r'CREATE TABLE IF NOT EXISTS "sec_short_volume_security" \((.*?)\);', ddl, re.S)
     assert raw is not None
     assert re.findall(r'^\s*"(\w+)"', raw.group(1), re.M) == list(si.SECURITY_COLUMNS)
     assert Tables.sec_short_volume_security.pk == ("source_symbol", "date")
     print("\n=== SANITY CHECK: consumer schema ===")
-    print("  sec_short_interest keeps PK (ticker, date) and its four columns; sec_short_volume_security is spliced with PK (source_symbol, date)")
+    print(
+        "  sec_short_interest keeps PK (ticker, date) and its financial columns plus optional source evidence; raw source columns and PK stay unchanged"
+    )
 
 
 # --------------------------------------------------------------------------- re-stamp (AC-118, E31, E32)
 
 
 def _stamped_store(store, tmp_path: Path) -> Any:
-    store.replace(Tables.security_master, _master())
+    for table, frame in _identity().source_cohort.items():
+        if not frame.empty:
+            store.save(table, frame)
     lines = pd.concat(
         [
             _lines("20200102", [("BRK/A", 2.0, 10.0), ("BRK/B", 1000.0, 4000.0), ("LEN", 60.0, 200.0), ("LEN/B", 5.0, 20.0)]),

@@ -81,12 +81,10 @@ def test_form4_preserves_every_cube_input_and_the_richer_xml_fields():
 
 def test_form3_holdings_are_not_invented_as_transactions():
     transactions, footnotes = parse_ownership_xml(FORM3_XML)
-    assert transactions.empty
+    assert transactions["security_type"].tolist() == ["nonderiv_holding"]
+    assert transactions["transaction_code"].isna().all() and transactions["shares"].isna().all()
     assert footnotes.empty
-    print(
-        "SANITY: a Form 3 containing a holding but no transaction produces zero transaction "
-        "rows; holdings need their own future table and cannot contaminate P/S features."
-    )
+    print("SANITY: a Form 3 retains its actual holding payload with a distinct row kind and no fabricated P/S code or flow shares.")
 
 
 @pytest.mark.parametrize("document_type", ["3", "3/A", "4", "4/A", "5", "5/A"])

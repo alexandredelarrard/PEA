@@ -16,6 +16,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 from functools import partial
 from typing import Any, cast
+from xml.etree import ElementTree
 
 import pandas as pd
 
@@ -27,7 +28,6 @@ from src.data_extract.utils.institutionals.insider_common import (
     INSIDER_COLUMNS,
     INSIDER_KEY,
     XML_DATE_FORMATS,
-    accession_batches,
     build_insider_frame,
     empty_footnotes,
     exclusion_rows,
@@ -36,6 +36,7 @@ from src.data_extract.utils.institutionals.insider_common import (
     screen_insider_rows,
 )
 from src.data_extract.utils.institutionals.insider_edgar_parser import extract_xml_strings
+from src.data_extract.utils.institutionals.insider_store import insider_source_run
 from src.data_store.schema import Table, Tables
 from src.utils.string import pad_cik
 
@@ -74,8 +75,13 @@ def parse_insider(
     xml = filing_xml(stamp.filing)
     if not xml:
         raise ParseFailureError(f"{stamp.accession_number}: no ownership XML")
-    df_str, df_owners, df_notes = extract_xml_strings(xml, str(stamp.accession_number))
-    if df_str.empty or _owner_role(df_str, ticker, cik, scope):
+    try:
+        df_str, df_owners, df_notes = extract_xml_strings(xml, str(stamp.accession_number))
+    except (ElementTree.ParseError, ValueError) as exc:
+        raise ParseFailureError(f"{stamp.accession_number}: invalid ownership XML ({exc})") from exc
+    if df_str.empty:
+        return {Tables.insider_footnotes: df_notes}
+    if _owner_role(df_str, ticker, cik, scope):
         return {}
     df_built = build_insider_frame(df_str, df_owners, date_formats=XML_DATE_FORMATS)
     df_built = df_built.assign(filing_date=stamp.filed.normalize(), acceptance_datetime=_acceptance_datetime(stamp.filing))
@@ -116,20 +122,36 @@ def replace_zip_accessions(context: Context, since: pd.Timestamp) -> int:
         context.log.info("insider EDGAR: no zip row stored (no `quarter` column) -> nothing to replace")
         return 0
     df_rows = context.store.load(
-        Tables.insider_transactions, columns=[*INSIDER_KEY, "source", "quarter"], since=since, date_col="filing_date", optional=True
+        Tables.insider_transactions,
+        columns=context.store.columns(Tables.insider_transactions),
+        since=since,
+        date_col="filing_date",
+        optional=True,
+        markers=True,
     )
     if df_rows is None:
         return 0
     quarter_of = df_rows.dropna(subset=["quarter"]).groupby("accession_number")["quarter"].first()
     df_stamp = df_rows.loc[df_rows["source"].eq("edgar") & df_rows["quarter"].isna(), INSIDER_KEY]
     df_stamp = df_stamp.assign(quarter=df_stamp["accession_number"].map(quarter_of)).dropna(subset=["quarter"])
-    if not df_stamp.empty:
-        context.store.save(Tables.insider_transactions, df_stamp)
     edgar_accessions = set(df_rows.loc[df_rows["source"].eq("edgar"), "accession_number"])
     mixed = sorted(edgar_accessions & set(df_rows.loc[df_rows["source"].eq("zip"), "accession_number"]))
-    deleted = sum(
-        context.store.delete(Tables.insider_transactions, where={"accession_number": batch, "source": "zip"}) for batch in accession_batches(mixed)
-    )
+    affected = sorted(set(mixed) | set(df_stamp["accession_number"]))
+    deleted = int((df_rows["accession_number"].isin(mixed) & df_rows["source"].eq("zip")).sum())
+    if affected:
+        notes = context.store.load(
+            Tables.insider_footnotes, columns=list(Tables.insider_footnotes.retrieval_columns), where={"accession_number": affected}, optional=True
+        )
+        payload = df_rows.loc[df_rows["accession_number"].isin(affected) & df_rows["source"].eq("edgar")].copy()
+        payload["quarter"] = payload["quarter"].fillna(payload["accession_number"].map(quarter_of))
+        context.store.replace_institutional_source(
+            {Tables.insider_transactions: payload, Tables.insider_footnotes: notes if notes is not None else empty_footnotes()},
+            {Tables.insider_transactions: {"accession_number": affected}, Tables.insider_footnotes: {"accession_number": affected}},
+            expected_source={
+                Tables.insider_transactions: df_rows.loc[df_rows["accession_number"].isin(affected)],
+                Tables.insider_footnotes: notes if notes is not None else empty_footnotes(),
+            },
+        )
     context.log.info(
         "insider EDGAR: stamped the zip quarter on %d EDGAR row(s); replaced %d zip-sourced filing(s) whole (%d zip row(s) deleted)",
         len(df_stamp),
@@ -144,13 +166,16 @@ def _insider_run_scope(context: Context, tickers: Sequence[str], as_of: pd.Times
     """Bind the run's requested tickers, exclusions and one ZIP floor; reconcile on every exit."""
     excluded: list[pd.DataFrame] = []
     since = edgar_window_start(context, as_of)
+    overlap = Tables.insider_transactions.resume.overlap_days if Tables.insider_transactions.resume is not None else 0
+    recent = since if since is not None else pd.Timestamp(as_of).normalize() - pd.Timedelta(days=overlap)
     failed = True
     try:
-        yield replace(
-            INSIDER_EDGAR_FETCH,
-            parse=partial(parse_insider, universe=tuple(tickers), excluded=excluded),
-            runtime_floor=lambda _context, _as_of: since,
-        )
+        with insider_source_run(context):
+            yield replace(
+                INSIDER_EDGAR_FETCH,
+                parse=partial(parse_insider, universe=tuple(tickers), excluded=excluded),
+                runtime_floor=lambda _context, _as_of: recent,
+            )
         failed = False
     finally:
         _finish_run(context, since, excluded, after_failure=failed)

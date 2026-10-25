@@ -13,6 +13,7 @@ from src.context import Context, get_config_context
 from src.data_aggregate.transformers import step_cube_prices as price_step
 from src.data_aggregate.utils.common.level_basis import apply_level_bugfix, as_traded_close, level_actions, level_factor, load_share_basis
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
+from src.data_aggregate.utils.institutionals.inputs import QuantityBasis
 from src.data_aggregate.utils.institutionals.insider_positions import position_units
 from src.data_aggregate.utils.sec_thirteen.institutional_features import _daily_owned_shares
 from src.data_store.schema import Tables
@@ -111,15 +112,7 @@ def test_real_level_boundaries(source_case: tuple, ticker: str, start: str, boun
 
 
 def test_actual_quantity_normalization_does_not_borrow_vendor_factor(source_case: tuple) -> None:
-    context, _, basis, _ = source_case
-    raw = context.store.load(
-        Tables.prices, columns=["ticker", "date", "close_split"], where={"ticker": "HBAN"}, since="1996-02-22", until="1996-02-22"
-    )
-    assert raw is not None and len(raw) == 1
-    raw["date"] = pd.to_datetime(raw["date"])
-    close = raw.pivot(index="date", columns="ticker", values="close_split")
-    level = level_factor(close.index, ["HBAN"], basis.price, basis)
-    quotes = as_traded_close(close, level, basis)
+    _, shares, basis, _ = source_case
     trades = pd.DataFrame(
         {
             "ticker": ["HBAN"],
@@ -129,7 +122,7 @@ def test_actual_quantity_normalization_does_not_borrow_vendor_factor(source_case
             "shares_owned_after": [1000.0],
         }
     )
-    normalized = position_units(trades, cast(Any, SimpleNamespace(close_split=close, level_factor=level)), quotes, basis)
+    normalized = position_units(trades, QuantityBasis.from_context(basis, pd.DatetimeIndex(shares["date"])))
     assert normalized["units_known"].all()
     assert normalized["shares_n"].iloc[0] == pytest.approx(100.0 * 1.1**5)
     assert normalized["shares_owned_after"].iloc[0] == pytest.approx(1000.0 * 1.1**5)

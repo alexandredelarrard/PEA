@@ -1271,7 +1271,7 @@ def build_entity_lineage(
     else:
         _log_changed_assignments(context, existing, out, roster)
     unchanged = matches_stored(existing, out, Tables.entity_lineage)
-    written = 0 if unchanged else context.store.replace(Tables.entity_lineage, out)
+    written = 0 if unchanged else context.store.replace_institutional_identity(Tables.entity_lineage, out)
     if unchanged:
         logger.info("entity_lineage: unchanged (%d row(s)); replace skipped", len(out))
     else:

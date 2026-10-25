@@ -6,6 +6,7 @@ from copy import deepcopy
 from types import SimpleNamespace
 from typing import Any, cast
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -319,3 +320,60 @@ def test_declared_quote_units_need_positive_title_evidence() -> None:
     assert pd.isna(units.iloc[2])
     assert units.iloc[3] == 1.0
     print("SANITY: ADS/ordinary titles resolve explicitly; generic common class cannot establish a nonunitary title's units.")
+
+
+def test_quantity_rebase_uses_actual_events_only() -> None:
+    df_actual = pd.DataFrame(
+        {
+            "ticker": ["FORWARD", "REVERSE", "MULTIPLE", "MULTIPLE"],
+            "date": pd.to_datetime(["2024-06-10"] * 3 + ["2024-07-01"]),
+            "value": [10, 0.125, 2, 3],
+        }
+    )
+    df_price = pd.DataFrame({"ticker": ["PRICE_ONLY"], "date": pd.to_datetime(["2024-06-10"]), "value": [1.5]})
+    basis = ShareBasis(df_actual, df_actual.assign(value=7), df_price, {})
+    quantities = pd.Series([5.0, 80, 5, 5, 5, -5, 0, 5, 5], index=list("abcdefghi"))
+    tickers = pd.Series(
+        ["FORWARD", "REVERSE", "MULTIPLE", "FORWARD", "FORWARD", "FORWARD", "FORWARD", "PRICE_ONLY", "UNCHANGED"], index=quantities.index
+    )
+    source = pd.Series(pd.to_datetime(["2024-06-07"] * 3 + ["2024-06-10", "2024-06-11"] + ["2024-06-07"] * 4), index=quantities.index)
+    target = pd.Series(pd.to_datetime(["2024-07-02"] * 4 + ["2024-06-07"] + ["2024-07-02"] * 4), index=quantities.index)
+    result = basis.rebase(quantities, tickers, source, target)
+    pd.testing.assert_series_equal(result, pd.Series([50.0, 10, 30, 5, 0.5, -50, 0, 5, 5], index=quantities.index))
+    pd.testing.assert_series_equal(basis.rebase(result, tickers, target, target), result)
+    assert quantities.iloc[0] == 5
+    print("SANITY: actual forward/reverse/successive splits, post-split ex-date and identity agree; vendor/price-only factors never create shares.")
+
+
+def test_quantity_rebase_preserves_unknowns_and_boundaries() -> None:
+    basis = resolve_share_events(None, None, {})
+    index = pd.Index([9, 4, 4, 8, 2, 1, 7, 3, 6])
+    quantities = pd.Series([5.0, 5, 0, 0, np.inf, np.nan, 5, -5, 0], index=index)
+    tickers = pd.Series(["TEST"] * 7 + [None, ""], index=index)
+    source = pd.Series(pd.to_datetime(pd.Series(["2024-06-07"] * 3 + [None] + ["2024-06-07"] * 5)).to_numpy(), index=index)
+    target = pd.Series(pd.to_datetime(["2024-06-07", "2024-06-10", "2024-06-10"] + ["2024-06-07"] * 6), index=index)
+    result = basis.rebase(quantities, tickers, source, target)
+    expected = pd.Series([5.0, np.nan, 0, np.nan, np.nan, np.nan, 5, np.nan, np.nan], index=index)
+    pd.testing.assert_series_equal(result, expected)
+    df_empty = pd.DataFrame(columns=["ticker", "date", "ratio"])
+    known = resolve_share_events(None, df_empty, {})
+    assert known.rebase(quantities, tickers, source, target).iloc[1] == 5
+    assert not np.isinf(result.to_numpy()).any()
+    for invalid_tickers in (pd.Series([123]), pd.Series([True]), pd.Series(["TEST", 123])):
+        values = pd.Series(0.0, index=invalid_tickers.index)
+        dates = pd.Series(pd.Timestamp("2024-06-07"), index=invalid_tickers.index)
+        assert pd.isna(basis.rebase(values, invalid_tickers, dates, dates).iloc[-1])
+    with pytest.raises(ValueError, match="aligned"):
+        basis.rebase(quantities, tickers.reset_index(drop=True), source, target)
+    print(
+        "SANITY: missing event sources preserve valid identities and zero; unknown nonzero intervals, invalid inputs and misalignment never invent a factor."
+    )
+
+
+@pytest.mark.parametrize("factor", [0.0, -2.0, np.inf, np.nan])
+def test_quantity_rebase_refuses_invalid_actual_evidence(factor: float) -> None:
+    df_actual = pd.DataFrame({"ticker": ["TEST"], "date": pd.to_datetime(["2024-06-10"]), "value": [factor]})
+    basis = ShareBasis(df_actual, df_actual, df_actual, {})
+    with pytest.raises(ValueError, match="actual.*positive|positive.*actual"):
+        basis.rebase(pd.Series([5.0]), pd.Series(["TEST"]), pd.Series(pd.to_datetime(["2024-06-07"])), pd.Series(pd.to_datetime(["2024-06-11"])))
+    print(f"SANITY: invalid genuine split factor {factor} is refused before quantity arithmetic.")

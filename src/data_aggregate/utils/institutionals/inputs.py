@@ -4,71 +4,127 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any, cast
 
 import pandas as pd
 
 from src.constants.constants import CANONICAL_ROLES
-from src.data_aggregate.utils.institutionals.insider_quality import OTHER_OFFICER, clean_officer_title, officer_role, owner_name_key
+from src.data_aggregate.utils.common.pit import fundamentals_to_daily
+from src.data_aggregate.utils.institutionals.insider_quality import (
+    OTHER_OFFICER,
+    clean_officer_title,
+    officer_role,
+    owner_name_key,
+    role_needs_evidence,
+)
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.price_adjustments import ShareBasis
 from src.utils.string import pad_cik
 
 logger = logging.getLogger(__name__)
-TENURE_SOURCES = ("form345", "manual")
 CLASS_LINE_COLUMNS = ("canonical_company", "market_symbol", "conversion_ratio", "valid_from", "valid_to")
 
 
-def load_symbol_lineage(
-    store: DataStore,
-    universe: Sequence[str],
-) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
-    """Load the issuer lineage (`form345`/`manual` tenure on the roster CIKs) used to validate already-canonical source rows."""
-    tickers = sorted(set(universe))
-    # The roster determines the bounded issuer scope for the tenure read.
-    df_ticker_ciks = store.load(
-        Tables.sp500_tickers,
-        columns=("ticker", "cik"),
-        where={"ticker": tickers},
-        optional=True,
-    )
-    if df_ticker_ciks is None or df_ticker_ciks.empty:
-        return None, df_ticker_ciks
+@dataclass(frozen=True)
+class QuantityBasis:
+    """Genuine ordinary-share event evidence and one full-context terminal basis date."""
 
-    ciks = sorted({cik for cik in df_ticker_ciks["cik"].map(pad_cik) if cik})
-    if not ciks:
-        return None, df_ticker_ciks
-    df_symbol_tenure = store.load(
-        Tables.symbol_tenure,
-        columns=("symbol", "issuer_cik", "valid_from", "valid_to"),
-        where={"issuer_cik": ciks, "source": list(TENURE_SOURCES)},
-        optional=True,
-    )
+    events: ShareBasis
+    target_date: pd.Timestamp
 
-    # Report the loaded lineage without another payload read.
-    aliases = len(set(df_symbol_tenure["symbol"].astype(str))) if df_symbol_tenure is not None else 0
-    logger.info("Symbol lineage: %s current tickers backed by %s proven historical symbols", len(tickers), aliases)
-    return df_symbol_tenure, df_ticker_ciks
+    @classmethod
+    def from_context(cls, events: ShareBasis, calendar: pd.DatetimeIndex) -> QuantityBasis:
+        """Anchor to the full vendor tape calendar; later event metadata cannot advance its restatement basis."""
+        if calendar.empty:
+            raise ValueError("Quantity basis requires a nonempty full calculation calendar")
+        return cls(events, pd.Timestamp(calendar.max()))
 
 
-def load_insider_transactions(store: DataStore, universe: Sequence[str] | None = None) -> pd.DataFrame | None:
-    """`insider_transactions` rows of the companies' own history: `lineage_role` canonical (predecessor or current).
-    Acquired-constituent rows and rows without a stamp are not read."""
+def short_quantity_history(df_history: pd.DataFrame | None, basis: QuantityBasis) -> pd.DataFrame | None:
+    """Raw dated FINRA aggregates already class-converted upstream, on the target ordinary-share basis."""
+    if df_history is None or df_history.empty:
+        return df_history
+    df_rows = df_history.copy()
+    target = pd.Series(basis.target_date, index=df_rows.index)
+    for column in ("short_volume", "total_volume"):
+        if column in df_rows:
+            df_rows[column] = basis.events.rebase(df_rows[column], df_rows["ticker"], df_rows["date"], target)
+    return df_rows
+
+
+def daily_share_quantities(df_history: pd.DataFrame | None, idx: pd.DatetimeIndex, basis: QuantityBasis) -> pd.DataFrame | None:
+    """Project as-of ordinary PIT counts after rebasing to the common target; vendor valuation counts stay intact."""
+    if df_history is None or df_history.empty or "sharesOutstandingPit" not in df_history:
+        return None
+    df_rows = df_history[["ticker", "as_of", "sharesOutstandingPit"]].copy()
+    target = pd.Series(basis.target_date, index=df_rows.index)
+    df_rows["sharesOutstandingPit"] = basis.events.rebase(df_rows["sharesOutstandingPit"], df_rows["ticker"], df_rows["as_of"], target)
+    df_daily = fundamentals_to_daily(df_rows, "sharesOutstandingPit", idx)
+    return df_daily if not df_daily.empty and df_daily.notna().any().any() else None
+
+
+def tape_share_quantities(df_volume: pd.DataFrame | None, basis: QuantityBasis) -> pd.DataFrame | None:
+    """Yahoo tape is already terminal-restated; only its explicitly evidenced quoted-security units need conversion."""
+    if df_volume is None or df_volume.empty:
+        return df_volume
+    tickers = pd.Series(df_volume.columns, index=df_volume.columns)
+    dates = pd.Series(basis.target_date, index=df_volume.columns)
+    units = basis.events.factor(tickers, dates, "units")
+    return df_volume.mul(units, axis="columns")
+
+
+def load_finra_tenure(store: DataStore, universe: Sequence[str]) -> pd.DataFrame | None:
+    """Observed fallback stamps already resolved by FINRA's dated owner/class mapper; missing dates stay unknown."""
+    if not universe or not store.exists(Tables.sec_short_volume_security):
+        return None
+    columns = ("date", "ticker", "security_id", "lineage_role", "security_class")
+    chunks = []
+    for chunk in store.iter_load(
+        Tables.sec_short_volume_security, columns=columns, where={"ticker": sorted(set(universe)), "lineage_role": list(CANONICAL_ROLES)}
+    ):
+        selected = chunk["security_id"].fillna("").str.fullmatch(r"S\d{10}:[A-Z0-9][A-Z0-9.-]*")
+        chunks.append(chunk.loc[selected].drop_duplicates())
+    return pd.concat(chunks, ignore_index=True).drop_duplicates() if chunks else None
+
+
+@dataclass(frozen=True)
+class InsiderSource:
+    transactions: pd.DataFrame
+    complete_through: pd.Series
+    first_filed: pd.Series
+
+
+def load_insider_transactions(store: DataStore, universe: Sequence[str] | None = None) -> InsiderSource | None:
+    """Retain full issuer proof metadata, then select canonical economic rows and actual empty markers."""
     table = Tables.insider_transactions
     present = store.columns(table)
     if not present:
         logger.warning("%s is absent -> insider features are skipped.", table.name)
         return None
-    columns = [column for column in dict.fromkeys((*table.read_columns, "issuer_cik")) if column in present]
-    where: dict[str, Any] = {"lineage_role": list(CANONICAL_ROLES)}
+    columns = [column for column in dict.fromkeys((*table.read_columns, "issuer_cik", "lineage_role")) if column in present]
+    where: dict[str, Any] = {}
     if universe is not None:
         where["ticker"] = sorted(set(universe))
-    chunks = list(store.iter_load(table, columns=columns, where=where))
+    chunks = list(store.iter_load(table, columns=columns, where=where, markers=True))
     if not chunks:
         return None
     df_rows = pd.concat(chunks, ignore_index=True)
+    if not {"ticker", "filing_date", "security_type"}.issubset(df_rows):
+        logger.warning("%s lacks required source metadata -> insider features are skipped.", table.name)
+        return None
+    checked = pd.to_datetime(df_rows.get("inventory_checked_through", pd.Series(pd.NaT, index=df_rows.index)), errors="coerce")
+    fetched = pd.to_datetime(df_rows.get("fetched_at", pd.Series(pd.NaT, index=df_rows.index)), errors="coerce")
+    evidence = pd.DataFrame({"ticker": df_rows["ticker"], "checked": checked, "valid": checked.notna() & fetched.notna()})
+    grouped = evidence.groupby("ticker", sort=False)
+    joint = grouped["valid"].all() & grouped["checked"].nunique().eq(1)
+    boundaries = grouped["checked"].min().where(joint)
+    first = pd.to_datetime(df_rows["filing_date"], errors="coerce").groupby(df_rows["ticker"]).min()
+    roles = df_rows.get("lineage_role", pd.Series(index=df_rows.index, dtype=str))
+    selected = roles.isin(CANONICAL_ROLES) | df_rows["security_type"].eq("_empty")
     logger.info("Loaded %s: %s rows x %s cols", table.name, len(df_rows), len(df_rows.columns))
-    return df_rows
+    return InsiderSource(df_rows.loc[selected], boundaries, first)
 
 
 def load_insider_role_evidence(store: DataStore, insider: pd.DataFrame) -> pd.DataFrame:
@@ -76,12 +132,12 @@ def load_insider_role_evidence(store: DataStore, insider: pd.DataFrame) -> pd.Da
     columns = ["ticker", "issuer_cik", "owner_cik", "role_as_of", "officer_title_clean", "role", "role_source"]
     if not {"issuer_cik", "owner_cik", "owner_name", "officer_title"}.issubset(insider):
         return pd.DataFrame(columns=columns)
-    blank_title = insider["officer_title"].fillna("").astype(str).str.strip().eq("")
-    if not blank_title.any():
+    missing_role = insider["officer_title"].map(role_needs_evidence).astype(bool)
+    if not missing_role.any():
         return pd.DataFrame(columns=columns)
-    ticks = sorted(insider.loc[blank_title, "ticker"].dropna().astype(str).unique())
+    ticks = sorted(insider.loc[missing_role, "ticker"].dropna().astype(str).unique())
 
-    # Load only proxy rows for tickers with a blank filed title.
+    # Load only proxy rows for tickers with a missing job claim.
     df_proxy = store.load(
         Tables.def14a_executive_comp, columns=["ticker", "cik", "as_of", "name", "title", "fiscal_year"], where={"ticker": ticks}, optional=True
     )
@@ -89,7 +145,10 @@ def load_insider_role_evidence(store: DataStore, insider: pd.DataFrame) -> pd.Da
         return pd.DataFrame(columns=columns)
 
     # Match dated public titles only after an actual proxy payload is available.
-    df_owners = _role_owner_identities(insider)
+    df_proxy = df_proxy.loc[df_proxy["cik"].map(pad_cik).fillna("").ne("")].copy()
+    df_owners = _role_owner_identities(insider.loc[insider["issuer_cik"].map(pad_cik).fillna("").ne("")])
+    if df_proxy.empty or df_owners.empty:
+        return pd.DataFrame(columns=columns)
     df_roles = _match_proxy_roles(df_proxy, df_owners)
     return df_roles[columns].drop_duplicates()
 

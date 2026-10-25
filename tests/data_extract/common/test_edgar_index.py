@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import gzip
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import pytest
@@ -26,7 +27,7 @@ _LINES = [
     (19617, "JPMORGAN CHASE & CO", "13F-HR", "2026-08-14", "0000019617-26-000003"),
     (19617, "JPMORGAN CHASE & CO", "FWP", "2026-08-15", "0000019617-26-000004"),
     (19617, "JPMORGAN CHASE & CO", "10-Q", "2026-08-01", "0000019617-26-000005"),
-    (19617, "JPMORGAN CHASE & CO", "DEF 14A", "2026-04-01", "0000019617-26-000006"),
+    (19617, "JPMORGAN CHASE & CO", "DEF 14A", "2026-07-01", "0000019617-26-000006"),
     (1364742, "BlackRock Inc.", "SC 13G", "2026-07-10", "0001364742-26-000001"),
     (1364742, "BlackRock Inc.", "SC 13G/A", "2026-07-11", "0001364742-26-000002"),
     (1364742, "BlackRock Inc.", "8-K", "2026-07-12", "0001364742-26-000003"),
@@ -68,9 +69,15 @@ def served(monkeypatch) -> list[str]:
     """Every quarter URL `sec_io.download` was asked for; each answers with the fixture index."""
     requested: list[str] = []
 
-    def download(context, url: str, path: Path, *, timeout: int = 300) -> int:
+    def download(context: Any, url: str, path: Path, *, timeout: int = 300) -> int:
         requested.append(url)
-        path.write_bytes(gzip.compress(master_text(_LINES).encode("latin-1")))
+        quarter = pd.Period(f"{url.split('/')[-3]}Q{url.split('/')[-2][-1]}", freq="Q")
+        offset = (quarter.year - 2026) * 12 + (quarter.quarter - 3) * 3
+        rows = [
+            (cik, company, form, (pd.Timestamp(filed) + pd.DateOffset(months=offset)).strftime("%Y-%m-%d"), accession)
+            for cik, company, form, filed, accession in _LINES
+        ]
+        path.write_bytes(gzip.compress(master_text(rows).encode("latin-1")))
         return 200
 
     monkeypatch.setattr(edgar_index.sec_io, "download", download)
@@ -81,7 +88,7 @@ def _quarters(urls: list[str]) -> list[str]:
     return [f"{url.split('/')[-3]}Q{url.split('/')[-2][-1]}" for url in urls]
 
 
-def test_a_closed_quarter_is_downloaded_once_and_the_current_quarter_every_run(tmp_path, sqlite_store, served):
+def test_closed_quarters_refresh_after_weekly_rebuild_and_current_quarter_every_run(tmp_path: Path, sqlite_store: Any, served: list[str]) -> None:
     ctx = fake_context(tmp_path, sqlite_store, ["AAPL"])
 
     first = edgar_index.refresh(ctx, pd.Timestamp("2026-10-20"), years_history=1)
@@ -90,12 +97,14 @@ def test_a_closed_quarter_is_downloaded_once_and_the_current_quarter_every_run(t
 
     assert sorted(first) == ["2025Q4", "2026Q1", "2026Q2", "2026Q3", "2026Q4"]
     assert list(second) == ["2026Q4"]  # closed quarters are cached, the current one is not
-    assert sorted(early) == ["2026Q4", "2027Q1"]  # day 5 of 2027Q1: the previous quarter again
-    assert _quarters(served) == ["2025Q4", "2026Q1", "2026Q2", "2026Q3", "2026Q4", "2026Q4", "2026Q4", "2027Q1"]
+    assert sorted(early) == ["2026Q1", "2026Q2", "2026Q3", "2026Q4", "2027Q1"]
+    assert _quarters(served) == ["2025Q4", "2026Q1", "2026Q2", "2026Q3", "2026Q4", "2026Q4", "2026Q1", "2026Q2", "2026Q3", "2026Q4", "2027Q1"]
     assert edgar_index.quarter_counts(ctx)["2026Q3"] == 23
-    assert not list(edgar_index.index_dir(ctx).glob("*.gz")) and not list(edgar_index.index_dir(ctx).glob("*.part"))
+    assert list(edgar_index.index_dir(ctx).glob("*.gz")) and not list(edgar_index.index_dir(ctx).glob("*.part"))
     print("\n=== SANITY CHECK: index refresh rule ===")
-    print(f"  run 1 downloads {len(first)} quarters; run 2 only the current one; on 2027-01-05 the previous quarter too: {sorted(early)}.")
+    print(
+        f"  run 1 downloads {len(first)} quarters; run 2 only current; old quarters refresh after a later weekly revision boundary: {sorted(early)}."
+    )
 
 
 def test_a_quarter_sec_does_not_serve_writes_nothing(tmp_path, sqlite_store, monkeypatch):

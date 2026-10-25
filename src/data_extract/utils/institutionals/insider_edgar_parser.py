@@ -7,6 +7,7 @@ one owner row.
 
 from __future__ import annotations
 
+from math import isfinite
 from xml.etree import ElementTree
 
 import pandas as pd
@@ -17,6 +18,8 @@ from src.data_extract.utils.institutionals.insider_common import FLAG_TRUE, FOOT
 XML_TABLES = (
     ("nonDerivativeTable", "nonDerivativeTransaction", "nonderiv"),
     ("derivativeTable", "derivativeTransaction", "deriv"),
+    ("nonDerivativeTable", "nonDerivativeHolding", "nonderiv_holding"),
+    ("derivativeTable", "derivativeHolding", "deriv_holding"),
 )
 #: Relationship checkbox -> the role name the bulk data sets write in `RPTOWNER_RELATIONSHIP`.
 ROLE_CHECKBOXES = (("isDirector", "Director"), ("isOfficer", "Officer"), ("isTenPercentOwner", "TenPercentOwner"), ("isOther", "Other"))
@@ -75,11 +78,29 @@ def _field_text(node: ElementTree.Element | None, field: InsiderField) -> str | 
     """One canonical string field: the first non-empty of its XML paths."""
     if field.kind == "role":
         return _relationship(_child(node, field.xml[0]))
-    return next((value for value in (_path_text(node, path) for path in field.xml) if value), None)
+    value = next((value for value in (_path_text(node, path) for path in field.xml) if value), None)
+    if field.kind == "number":
+        value = _number_text(value, field.name)
+    if value is not None and field.kind == "date" and pd.isna(pd.to_datetime(value, errors="coerce")):
+        raise ValueError(f"invalid ownership date field {field.name}")
+    return value
+
+
+def _number_text(value: str | None, name: str) -> str | None:
+    if value is not None and not isfinite(float(value.replace(",", "").replace("$", ""))):
+        raise ValueError(f"nonfinite ownership numeric field {name}")
+    return value
 
 
 def _scope_strings(node: ElementTree.Element | None, scope: str) -> dict[str, str | None]:
     return {field.name: _field_text(node, field) for field in INSIDER_FIELDS if field.scope == scope and field.xml}
+
+
+def _row_strings(node: ElementTree.Element, security_type: str) -> dict[str, str | None]:
+    fields = _scope_strings(node, "transaction")
+    if security_type.endswith("_holding"):
+        fields["total_value"] = _number_text(_path_text(node, "postTransactionAmounts/valueOwnedFollowingTransaction"), "holding_value")
+    return fields
 
 
 def _footnote_ids(node: ElementTree.Element) -> str:
@@ -92,9 +113,23 @@ def _footnotes(root: ElementTree.Element, accession_number: str) -> pd.DataFrame
     notes = []
     for note in _children(_child(root, "footnotes"), "footnote"):
         note_id = str(note.attrib.get("id", "")).strip()
-        if note_id:
-            notes.append({"accession_number": accession_number, "footnote_id": note_id, "footnote_text": "".join(note.itertext()).strip()})
+        if not note_id or any(note["footnote_id"] == note_id for note in notes):
+            raise ValueError("missing or repeated ownership footnote key")
+        notes.append({"accession_number": accession_number, "footnote_id": note_id, "footnote_text": "".join(note.itertext()).strip()})
     return pd.DataFrame(notes, columns=FOOTNOTE_COLUMNS)
+
+
+def _validate_xml_payload(root: ElementTree.Element, notes: pd.DataFrame) -> None:
+    """Recognize every ownership row and bind every note reference before any empty marker."""
+    for table_name in ("nonDerivativeTable", "derivativeTable"):
+        allowed = {row for table, row, _ in XML_TABLES if table == table_name}
+        table = _child(root, table_name)
+        if table is not None and any(_local_name(node.tag) not in allowed for node in table):
+            raise ValueError("unrecognized ownership payload row")
+    available = set(notes["footnote_id"])
+    references = [str(node.attrib.get("id", "")).strip() for node in root.iter() if _local_name(node.tag) == "footnoteId"]
+    if any(not value or value not in available for value in references):
+        raise ValueError("unresolved ownership footnote reference")
 
 
 def _owner_strings(root: ElementTree.Element, accession_number: str) -> pd.DataFrame:
@@ -109,6 +144,10 @@ def extract_xml_strings(xml: str, accession_number: str) -> tuple[pd.DataFrame, 
     if _local_name(root.tag) != "ownershipDocument":
         raise ValueError("ownership XML has no ownershipDocument root")
     base = {"accession_number": accession_number, **_scope_strings(root, "filing")}
+    if not str(base.get("issuer_cik") or "").isdigit():
+        raise ValueError("ownership XML lacks its actual issuer CIK")
+    notes = _footnotes(root, accession_number)
+    _validate_xml_payload(root, notes)
     rows: list[dict[str, object]] = []
     for table_name, row_name, security_type in XML_TABLES:
         for sequence, node in enumerate(_children(_child(root, table_name), row_name), start=1):
@@ -117,8 +156,10 @@ def extract_xml_strings(xml: str, accession_number: str) -> tuple[pd.DataFrame, 
                     **base,
                     "row_sequence": sequence,
                     "security_type": security_type,
-                    **_scope_strings(node, "transaction"),
+                    **_row_strings(node, security_type),
                     "footnote_ids": _footnote_ids(node),
                 }
             )
-    return pd.DataFrame(rows, columns=XML_STRING_COLUMNS), _owner_strings(root, accession_number), _footnotes(root, accession_number)
+    if not rows:
+        rows.append({**base, "row_sequence": 0, "security_type": "_empty"})
+    return pd.DataFrame(rows, columns=XML_STRING_COLUMNS), _owner_strings(root, accession_number), notes

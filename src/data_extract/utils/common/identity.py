@@ -46,7 +46,7 @@ from src.data_extract.utils.common.security_master import (
     squash,
 )
 from src.data_extract.utils.common.symbol_tenure import DEI_SOURCE
-from src.data_store.schema import Tables
+from src.data_store.schema import Table, Tables
 from src.utils.cik_windows import widen_seams
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series, yahoo_symbol
 
@@ -203,6 +203,7 @@ class Identity:
     securities_by_symbol: Mapping[tuple[str, str], tuple[SecurityInterval, ...]] = field(default_factory=dict)
     #: Subsidiary CIKs filing event forms under the parent's symbol; their rows are not stored (D-Q2-1).
     co_registrant_ciks: frozenset[str] = frozenset()
+    source_cohort: dict[Table, pd.DataFrame] = field(default_factory=dict, repr=False, compare=False)
     #: universe ticker -> the boundary days of its mergers (insider lineage).
     merger_boundaries: Mapping[str, tuple[MergerBoundary, ...]] = field(default_factory=dict)
 
@@ -452,6 +453,12 @@ def build_identity(
         **_security_maps(master),
         co_registrant_ciks=frozenset(pad_cik(cik) for cik in co_registrant_ciks),
         merger_boundaries=_by_ticker(mergers),
+        source_cohort={
+            Tables.entity_lineage: lineage.copy(),
+            Tables.symbol_tenure: tenure.copy(),
+            Tables.sp500_tickers: roster[["ticker", "cik"]].copy(),
+            Tables.security_master: master.copy() if master is not None else pd.DataFrame(),
+        },
     )
     _log_identity(identity)
     return identity
@@ -671,7 +678,7 @@ def load_identity(context: Context, refresh: bool = False) -> Identity:
     lineage = context.store.load(Tables.entity_lineage, project=True)
     tenure = context.store.load(
         Tables.symbol_tenure,
-        columns=["symbol", "issuer_cik", "valid_from", "valid_to", "n_filings", "source"],
+        columns=list(Tables.symbol_tenure.read_columns),
         where={"source": [*TENURE_SOURCES, DEI_SOURCE]},
     )
     roster = context.store.load(Tables.sp500_tickers, columns=list(ROSTER_COLUMNS))
@@ -689,4 +696,24 @@ def load_identity(context: Context, refresh: bool = False) -> Identity:
         mergers=merger_boundaries(manual),
     )
     context._identity_resolver = identity
+    cohort = {
+        Tables.entity_lineage: lineage,
+        Tables.symbol_tenure: tenure,
+        Tables.sp500_tickers: roster[["ticker", "cik"]],
+        Tables.security_master: master if master is not None else pd.DataFrame(),
+    }
+    identity.source_cohort.update(cohort)
     return identity
+
+
+def load_source_identity(context: Context) -> dict[Table, pd.DataFrame]:
+    """The closed identity projection needed to guard a source-only tape classifier."""
+    cohort: dict[Table, pd.DataFrame] = {}
+    for table in (Tables.entity_lineage, Tables.symbol_tenure, Tables.sp500_tickers, Tables.security_master):
+        rows = (
+            context.store.load(table, columns=["ticker", "cik"], optional=True)
+            if table == Tables.sp500_tickers
+            else context.store.load(table, project=True, optional=True)
+        )
+        cohort[table] = rows if rows is not None else pd.DataFrame()
+    return cohort

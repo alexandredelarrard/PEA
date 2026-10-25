@@ -15,15 +15,15 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.institutionals.inputs import load_insider_role_evidence
-from src.data_aggregate.utils.institutionals.insider_capital import InsiderCapital, normalize_trade_capital
+from src.data_aggregate.utils.institutionals.insider_capital import normalize_trade_capital
 from src.data_aggregate.utils.institutionals.insider_features import (
     CLUSTER_MIN,
     EMISSION,
     INSIDER_FLOOR,
     TEN_B5_1_FLOOR,
+    InsiderCoverage,
     _owner_surprise,
     _unpriced_masks,
-    build_insider_feature_panel,
 )
 from src.data_aggregate.utils.institutionals.insider_quality import (
     OPEN_MARKET_CODES,
@@ -35,6 +35,7 @@ from src.data_aggregate.utils.institutionals.insider_quality import (
 )
 from src.data_store.schema import Tables
 from tests.conftest import make_frames
+from tests.data_aggregate.insider_pit_reference import build_prepared_insider_panel as build_insider_feature_panel
 
 TRADING_INDEX = pd.bdate_range("2015-01-01", "2016-12-31")
 
@@ -70,6 +71,8 @@ def _txn(**kw) -> dict:
         accession_number="0000000000-00-000000",
         ticker="AAA",
         owner_cik="0001",
+        owner_ciks=None,
+        n_reporting_owners=1,
         owner_name="Doe Jane",
         filing_date="2015-06-01",
         transaction_date="2015-05-29",
@@ -88,6 +91,8 @@ def _txn(**kw) -> dict:
         is_10b5_1=np.nan,
     )
     row.update(kw)
+    if row["owner_ciks"] is None:
+        row["owner_ciks"] = row["owner_cik"]
     if "value_usd" in kw and "shares" not in kw and pd.notna(row["value_usd"]) and row["price_per_share"] > 0:
         row["shares"] = row["value_usd"] / row["price_per_share"]
     return row
@@ -163,16 +168,153 @@ def test_source_price_typo_abstains_without_erasing_known_shares() -> None:
 
 def test_canonical_titles_are_dated_and_identity_safe() -> None:
     rows = [
-        _txn(accession_number="a", officer_title="C.F.O.", is_officer=1),
-        _txn(accession_number="b", shares=1001, filing_date="2015-06-10", officer_title="", is_officer=1),
-        _txn(accession_number="c", shares=1002, filing_date="2015-05-20", officer_title="", is_officer=1),
-        _txn(accession_number="d", shares=1003, filing_date="2015-06-15", officer_title="President", is_officer=1),
+        _txn(accession_number="a", issuer_cik="123", officer_title="C.F.O.", is_officer=1),
+        _txn(accession_number="b", issuer_cik="123", shares=1001, filing_date="2015-06-10", officer_title="", is_officer=1),
+        _txn(accession_number="c", issuer_cik="123", shares=1002, filing_date="2015-05-20", officer_title="", is_officer=1),
+        _txn(accession_number="d", issuer_cik="123", shares=1003, filing_date="2015-06-15", officer_title="President", is_officer=1),
     ]
     out, _ = clean_transactions(_frame(rows))
     assert list(out["role"]) == ["CFO", "CFO", "other_named_officer", "other_named_officer"]
     assert out.loc[1, "role_source"] == "prior_form4"
     assert out.loc[2, "role_source"] == "filed"
     print("SANITY: punctuation normalized; blank title uses prior same-owner evidence; no future fill or contradictory-title promotion.")
+
+
+@pytest.mark.parametrize(
+    "prior_changes,current_changes,barrier_titles,recovered",
+    [
+        pytest.param({}, {}, [], True, id="same-issuer-owner"),
+        pytest.param({}, {"filing_date": "2024-01-01"}, [], True, id="365-day-boundary"),
+        pytest.param({}, {"filing_date": "2024-01-02"}, [], False, id="366-day-expiry"),
+        pytest.param({"filing_date": "2023-02-01"}, {}, [], False, id="same-public-day"),
+        pytest.param({"filing_date": "2023-03-01"}, {}, [], False, id="future-public-title"),
+        pytest.param({"officer_title": "Incoming Chief Executive Officer"}, {}, [], False, id="future-appointment-is-not-current-role"),
+        pytest.param({"issuer_cik": ""}, {"issuer_cik": ""}, [], False, id="missing-issuer"),
+        pytest.param({}, {"issuer_cik": "124"}, [], False, id="different-issuer"),
+        pytest.param({}, {"owner_cik": "2"}, [], False, id="different-owner"),
+        pytest.param({"owner_cik": ""}, {"owner_cik": ""}, [], False, id="missing-owner"),
+        pytest.param({}, {"officer_title": "See Remarks"}, [], True, id="remarks-with-dated-proof"),
+        pytest.param({"officer_title": "See Remarks"}, {}, [], False, id="remarks-is-not-a-role"),
+        pytest.param({}, {"officer_title": "President"}, [], False, id="current-nonmanagement"),
+        pytest.param({}, {}, ["Former Chief Executive Officer"], False, id="former-role-barrier"),
+        pytest.param({}, {}, ["Chief Executive Officer of AWS"], False, id="unit-role-barrier"),
+        pytest.param({}, {}, ["Chief Financial Officer", "Chief Operating Officer"], False, id="conflicting-role-barrier"),
+    ],
+)
+def test_prior_role_recovery_requires_dated_issuer_person_proof(
+    prior_changes: dict[str, object], current_changes: dict[str, object], barrier_titles: list[str], recovered: bool
+) -> None:
+    prior = _txn(
+        accession_number="prior-role",
+        issuer_cik="123",
+        filing_date="2023-01-01",
+        transaction_date="2023-01-01",
+        transaction_code="A",
+        officer_title="Chief Executive Officer",
+        is_officer=1,
+        is_director=0,
+    )
+    current = _txn(
+        accession_number="current-role",
+        issuer_cik="123",
+        filing_date="2023-02-01",
+        transaction_date="2023-02-01",
+        officer_title="",
+        is_officer=1,
+        is_director=0,
+    )
+    prior.update(prior_changes)
+    current.update(current_changes)
+    barriers = [dict(prior, accession_number=f"barrier-{i}", filing_date="2023-01-15", officer_title=title) for i, title in enumerate(barrier_titles)]
+    expected = "CEO" if recovered else "other_named_officer"
+    for rows in ([prior, *barriers, current], [current, *barriers[::-1], prior]):
+        cleaned, _ = clean_transactions(_frame(rows))
+        actual = cleaned.set_index("accession_number").loc["current-role"]
+        assert actual["role"] == expected
+        assert bool(actual["is_management"]) == recovered
+        assert actual["is_director"] == 0
+        assert actual["role_source"] == ("prior_form4" if recovered else "filed")
+        if recovered:
+            assert actual["role_as_of"] == pd.Timestamp(prior["filing_date"])
+    print(f"SANITY: dated issuer/person proof yields {expected}; row order cannot change recovery or infer a director flag.")
+
+
+@pytest.mark.parametrize(
+    "title,barrier_titles,unknown",
+    [
+        pytest.param("See Remarks", [], True, id="unresolved-reference"),
+        pytest.param("Officer", [], True, id="unspecified-officer"),
+        pytest.param("Chief Executive Officer", [], False, id="recognized-management"),
+        pytest.param("President", [], False, id="explicit-nonmanagement"),
+        pytest.param("", ["Former Chief Executive Officer"], False, id="former-role-barrier"),
+        pytest.param("", ["Chief Executive Officer of AWS"], False, id="unit-role-barrier"),
+        pytest.param("", ["Chief Financial Officer", "Chief Operating Officer"], True, id="conflicting-role-barrier"),
+    ],
+)
+def test_role_uncertainty_distinguishes_unresolved_and_explicit_exclusions(title: str, barrier_titles: list[str], unknown: bool) -> None:
+    current = _txn(accession_number="current-role", issuer_cik="123", filing_date="2023-02-01", officer_title=title, is_officer=1, is_director=0)
+    barriers = [
+        dict(current, accession_number=f"barrier-{i}", filing_date="2023-01-01", transaction_code="A", officer_title=barrier)
+        for i, barrier in enumerate(barrier_titles)
+    ]
+    cleaned, _ = clean_transactions(_frame([*barriers, current]))
+    actual = cleaned.set_index("accession_number").loc["current-role"]
+    assert bool(actual["role_unknown"]) == unknown
+    assert actual["is_director"] == 0
+    assert actual["officer_title"] == title
+    print(f"SANITY: unresolved role={unknown}; explicit exclusions stay distinct without changing the filed title or director flag.")
+
+
+@pytest.mark.parametrize(
+    "issuer_cik,current_title,recovered",
+    [
+        pytest.param("123", "", True, id="explicit-proxy-title"),
+        pytest.param("", "", False, id="missing-issuer-is-not-a-match"),
+        pytest.param("123", "See Remarks", True, id="remarks-with-public-proxy-proof"),
+    ],
+)
+def test_proxy_role_recovery_requires_known_issuer_and_unresolved_title(issuer_cik: str, current_title: str, recovered: bool) -> None:
+    rows = [
+        _txn(
+            accession_number="identity",
+            issuer_cik=issuer_cik,
+            filing_date="2023-01-01",
+            transaction_code="A",
+            officer_title="President",
+            is_officer=1,
+        ),
+        _txn(
+            accession_number="current-role", issuer_cik=issuer_cik, filing_date="2023-03-01", officer_title=current_title, is_officer=1, is_director=0
+        ),
+    ]
+
+    class Store:
+        def load(self, table: object, **kwargs: object) -> pd.DataFrame:
+            assert table is Tables.def14a_executive_comp
+            assert kwargs["where"] == {"ticker": ["AAA"]}
+            return pd.DataFrame(
+                [
+                    {
+                        "ticker": "AAA",
+                        "cik": issuer_cik,
+                        "as_of": "2023-02-01",
+                        "name": "Jane Doe",
+                        "title": "Chief Executive Officer",
+                        "fiscal_year": 2022,
+                    }
+                ]
+            )
+
+    evidence = load_insider_role_evidence(Store(), _frame(rows))
+    cleaned, _ = clean_transactions(_frame(rows), role_evidence=evidence)
+    actual = cleaned.set_index("accession_number").loc["current-role"]
+    assert actual["role"] == ("CEO" if recovered else "other_named_officer")
+    assert bool(actual["is_management"]) == recovered
+    assert actual["is_director"] == 0
+    assert actual["role_source"] == ("explicit_proxy_title" if recovered else "filed")
+    if recovered:
+        assert actual["role_as_of"] == pd.Timestamp("2023-02-01")
+    print(f"SANITY: proxy recovery={recovered} requires known issuer/person and a public explicit title; See Remarks supplies no title itself.")
 
 
 def test_dated_share_claim_masks_tail_and_retires_prospectively() -> None:
@@ -587,8 +729,8 @@ def test_unpriced_insider_is_unknown_not_zero(unknown_code, known_code):
     panel = build_insider_feature_panel(
         make_frames(TRADING_INDEX, _peers(("AAA", "BBB")), close_split=close),
         _frame(rows),
-        capital=InsiderCapital(shares_out_history=fh),
-        complete_through=TRADING_INDEX.max(),
+        shares_out_history=fh,
+        coverage=InsiderCoverage.from_availability(None, pd.Series(TRADING_INDEX.max(), index=["AAA", "BBB"])),
     )
     panel = panel[panel["ticker"].eq("AAA")].set_index("date")
     ratio = panel["f_ic_insider_net_buy_ratio_180d"]
@@ -596,11 +738,11 @@ def test_unpriced_insider_is_unknown_not_zero(unknown_code, known_code):
     after = ratio.loc[unknown_day + pd.Timedelta(days=180) :]
 
     assert affected.isna().all()
-    assert not after.empty and after.eq(0.0).all()
+    assert not after.empty and after.isna().all()
     print(
         f"SANITY: the unpriced {unknown_code} leaves all {len(affected)} sessions in its "
         f"180-day net-buy window unknown; after it ages out, {len(after)} complete sessions "
-        "return to a genuine zero."
+        "remain undefined because both raw-USD legs are zero."
     )
 
 
@@ -679,14 +821,14 @@ def test_an_exercise_and_sell_package_is_not_a_discretionary_sale():
             security_type="deriv",
             security_title="Stock Option",
             filing_date="2024-06-03",
-            transaction_date="2024-06-01",
+            transaction_date="2024-05-31",
         ),
-        _txn(accession_number=acc, transaction_code="S", filing_date="2024-06-03", transaction_date="2024-06-01", is_10b5_1=0.0),
+        _txn(accession_number=acc, transaction_code="S", filing_date="2024-06-03", transaction_date="2024-05-31", is_10b5_1=0.0),
         _txn(
             accession_number="0001234567-23-000002",
             transaction_code="S",
             filing_date="2024-06-03",
-            transaction_date="2024-06-01",
+            transaction_date="2024-05-31",
             is_10b5_1=0.0,
             shares_owned_after=12_000.0,
         ),
@@ -698,7 +840,7 @@ def test_an_exercise_and_sell_package_is_not_a_discretionary_sale():
     idx = pd.bdate_range("2024-01-01", "2024-12-31")
     fh, close = _prices()
     close = pd.DataFrame(100.0, index=idx, columns=["AAA"])
-    panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close), _frame(rows), capital=InsiderCapital(shares_out_history=fh))
+    panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close), _frame(rows), shares_out_history=fh)
     col = "f_ic_insider_discretionary_sell_mcap_60d"
     after = panel[panel["date"].ge("2024-06-03")][col].dropna()
     one_sale = 100_000.0 / (1_000_000.0 * 100.0)
@@ -777,9 +919,7 @@ def test_owner_surprise_uses_only_that_owners_prior_purchases():
         for i, v in enumerate(sizes)
     ]
     fh, close = _prices()
-    panel = build_insider_feature_panel(
-        make_frames(TRADING_INDEX, _peers(), close_split=close), _frame(rows), capital=InsiderCapital(shares_out_history=fh)
-    )
+    panel = build_insider_feature_panel(make_frames(TRADING_INDEX, _peers(), close_split=close), _frame(rows), shares_out_history=fh)
     got = panel.set_index("date")["f_ic_insider_owner_surprise_120d"]
     on_second = got.loc["2015-02-16"]
     leaky = float(pd.Series(sizes).rank(pct=True).iloc[1])  # = 0.5
@@ -827,7 +967,7 @@ def test_nothing_is_emitted_before_the_measured_availability_floors():
     idx = pd.bdate_range("2004-01-01", "2026-01-01")
     fh, close = _prices()
     close = pd.DataFrame(100.0, index=idx, columns=["AAA"])
-    panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close), _frame(rows), capital=InsiderCapital(shares_out_history=fh))
+    panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close), _frame(rows), shares_out_history=fh)
     cols = [c for c in panel.columns if c not in ("date", "ticker")]
     before = panel[panel["date"] < INSIDER_FLOOR]
     assert before[cols].notna().to_numpy().sum() == 0
@@ -857,7 +997,10 @@ def test_complete_through_preserves_covered_zero_and_masks_the_unobserved_tail()
     close = pd.DataFrame(100.0, index=idx, columns=["AAA"])
 
     panel = build_insider_feature_panel(
-        make_frames(idx, _peers(), close_split=close), _frame(rows), capital=InsiderCapital(shares_out_history=fh), complete_through=complete_through
+        make_frames(idx, _peers(), close_split=close),
+        _frame(rows),
+        shares_out_history=fh,
+        coverage=InsiderCoverage.from_availability(None, pd.Series({"AAA": complete_through})),
     ).set_index("date")
 
     covered_zero = panel.loc[pd.Timestamp("2024-07-31"), "f_ic_insider_buy_value_mcap_180d"]
@@ -879,14 +1022,12 @@ def test_a_feature_never_sees_a_transaction_filed_after_the_date():
         for i, m in enumerate([2, 4, 6, 8, 10])
     ]
     fh, close = _prices()
-    full = build_insider_feature_panel(
-        make_frames(TRADING_INDEX, _peers(), close_split=close), _frame(rows), capital=InsiderCapital(shares_out_history=fh)
-    )
+    full = build_insider_feature_panel(make_frames(TRADING_INDEX, _peers(), close_split=close), _frame(rows), shares_out_history=fh)
     cut = pd.Timestamp("2015-07-01")
     truncated = build_insider_feature_panel(
         make_frames(TRADING_INDEX, _peers(), close_split=close),
         _frame([r for r in rows if pd.Timestamp(r["filing_date"]) < cut]),
-        capital=InsiderCapital(shares_out_history=fh),
+        shares_out_history=fh,
     )
     cols = [c for c in full.columns if c in truncated.columns and c not in ("date", "ticker")]
     a = full[full["date"] < cut].set_index(["date", "ticker"])[cols]
@@ -925,8 +1066,8 @@ def test_distinct_buyers_counts_people_not_filings():
     panel = build_insider_feature_panel(
         make_frames(TRADING_INDEX, _peers(), close_split=close),
         _frame(rows),
-        capital=InsiderCapital(shares_out_history=fh),
-        complete_through=TRADING_INDEX.max(),
+        shares_out_history=fh,
+        coverage=InsiderCoverage.from_availability(None, pd.Series({"AAA": TRADING_INDEX.max()})),
     )
     n = panel.set_index("date")["f_ic_insider_distinct_buyers_120d"]
     peak = n.max()
@@ -951,9 +1092,7 @@ def test_cluster_is_two_distinct_buyers_not_two_filings():
     col = "f_ic_insider_cluster_buy_120d"
     got = {}
     for name, rows in (("one buyer, 4 filings", solo), ("two buyers", pair)):
-        panel = build_insider_feature_panel(
-            make_frames(TRADING_INDEX, _peers(), close_split=close), _frame(rows), capital=InsiderCapital(shares_out_history=fh)
-        )
+        panel = build_insider_feature_panel(make_frames(TRADING_INDEX, _peers(), close_split=close), _frame(rows), shares_out_history=fh)
         got[name] = panel.set_index("date")[col].loc["2015-03-10"]
     assert got["one buyer, 4 filings"] == 0.0
     assert got["two buyers"] == 2.0 >= CLUSTER_MIN
@@ -990,7 +1129,7 @@ def test_the_ten_b5_1_split_separates_planned_from_discretionary():
     idx = pd.bdate_range("2024-01-01", "2024-12-31")
     fh, _ = _prices()
     close = pd.DataFrame(100.0, index=idx, columns=["AAA"])
-    panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close), _frame(rows), capital=InsiderCapital(shares_out_history=fh))
+    panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close), _frame(rows), shares_out_history=fh)
     day = panel[panel["date"].eq("2024-03-01")].iloc[0]
     mcap = 1_000_000.0 * 100.0
     assert day["f_ic_insider_discretionary_sell_mcap_60d"] == pytest.approx(100_000 / mcap)
@@ -1006,23 +1145,21 @@ def test_the_ten_b5_1_split_separates_planned_from_discretionary():
     )
 
 
-def test_net_buy_ratio_is_zero_only_inside_a_complete_observation_frontier():
+def test_net_buy_ratio_keeps_quiet_zero_over_zero_undefined() -> None:
     rows = [_txn(filing_date="2015-06-01", transaction_date="2015-05-29")]
     fh, close = _prices()
     panel = build_insider_feature_panel(
         make_frames(TRADING_INDEX, _peers(), close_split=close),
         _frame(rows),
-        capital=InsiderCapital(shares_out_history=fh),
-        complete_through=pd.Timestamp("2016-06-30"),
+        shares_out_history=fh,
+        coverage=InsiderCoverage.from_availability(None, pd.Series({"AAA": pd.Timestamp("2016-06-30")})),
     )
     s = panel.set_index("date")["f_ic_insider_net_buy_ratio_180d"]
     assert pd.isna(s.loc["2015-05-01"]) and s.loc["2015-06-01"] == 1.0
-    assert s.loc["2016-06-01"] == 0.0
+    assert pd.isna(s.loc["2016-06-01"])
     assert pd.isna(s.loc["2016-07-01"])
     print(
-        f"SANITY: no issuer corroboration stays unknown; one purchase makes "
-        f"the ratio {s.loc['2015-06-01']:.0f}, and it returns to {s.loc['2016-06-01']:.0f} "
-        "after 180 days; past the complete frontier it is NaN."
+        f"SANITY: one observed purchase makes the supported ratio {s.loc['2015-06-01']:.0f}; after expiry the certified quiet 0/0 remains undefined."
     )
 
 
@@ -1059,7 +1196,7 @@ def test_every_emitted_column_is_declared_and_every_declaration_is_emitted():
     idx = pd.bdate_range("2024-01-01", "2024-12-31")
     fh, _ = _prices()
     close = pd.DataFrame(100.0, index=idx, columns=["AAA"])
-    panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close), _frame(rows), capital=InsiderCapital(shares_out_history=fh))
+    panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close), _frame(rows), shares_out_history=fh)
     cols = {c for c in panel.columns if c not in ("date", "ticker")}
     expected = {f"f_{n}" for n in EMISSION} | {f"f_{n}_xs" for n, m in EMISSION.items() if m == "raw+xs"}
     assert cols == expected, f"missing {sorted(expected - cols)}, extra {sorted(cols - expected)}"
@@ -1079,17 +1216,30 @@ def test_without_a_market_cap_the_dollar_features_are_absent_not_counts():
     rows = [
         _txn(
             accession_number=f"p{i}",
-            owner_cik=f"{i % 2:04d}",
+            owner_cik="0007",
             officer_title="Chief Executive Officer",
             is_officer=1.0,
             is_director=1.0,
             filing_date=f"2015-0{i + 1}-15",
             transaction_date=f"2015-0{i + 1}-14",
             shares=1_000.0 + i,
-            shares_owned_after=11_000.0 + i,
+            shares_owned_after=[11_000.0, 11_001.0, 12_003.0][i],
         )
         for i in range(3)
     ]
+    rows.append(
+        _txn(
+            accession_number="observed-sale",
+            owner_cik="0007",
+            transaction_code="S",
+            filing_date="2015-01-16",
+            transaction_date="2015-01-15",
+            shares=1000,
+            shares_owned_after=10_000,
+            officer_title="Chief Executive Officer",
+            is_officer=1,
+        )
+    )
     panel = build_insider_feature_panel(make_frames(TRADING_INDEX, _peers()), _frame(rows))
     got = {c.removeprefix("f_").removesuffix("_xs") for c in panel.columns if c not in ("date", "ticker")}
     scale_free = {
@@ -1147,7 +1297,7 @@ def test_the_mcap_features_are_present_and_the_vendor_basis_is_what_builds_them(
             is_officer=1.0 if title else 0.0,
             is_director=0.0 if title else 1.0,
             filing_date=f"2024-0{i + 1}-15",
-            transaction_date=f"2024-0{i + 1}-14",
+            transaction_date="2024-01-12" if i == 0 else f"2024-0{i + 1}-14",
             shares=1_000.0 + 100 * i,
             value_usd=100_000.0 + 10_000 * i,
             shares_owned_after=11_000.0 + i,
@@ -1172,7 +1322,7 @@ def test_the_mcap_features_are_present_and_the_vendor_basis_is_what_builds_them(
     mcap_feats = [f for f in EMISSION if "mcap" in f]
     assert len(mcap_feats) == 7, mcap_feats
 
-    panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close), _frame(rows), capital=InsiderCapital(shares_out_history=fh))
+    panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close), _frame(rows), shares_out_history=fh)
     missing = [f for f in mcap_feats if f"f_{f}" not in panel.columns]
     assert not missing, f"size-scaled insider features absent from the panel: {missing}"
     built = {f: int(panel[f"f_{f}"].notna().sum()) for f in mcap_feats}
@@ -1181,9 +1331,7 @@ def test_the_mcap_features_are_present_and_the_vendor_basis_is_what_builds_them(
     # ... and the PIT column ALONE is not a substitute.
     pit_only = fh.drop(columns=["sharesOutstanding"])
     with _capture_warnings("src.data_aggregate.utils.institutionals.insider_features") as logged:
-        degraded = build_insider_feature_panel(
-            make_frames(idx, _peers(), close_split=close), _frame(rows), capital=InsiderCapital(shares_out_history=pit_only)
-        )
+        degraded = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close), _frame(rows), shares_out_history=pit_only)
     survived = [f for f in mcap_feats if f"f_{f}" in degraded.columns]
     assert not survived, survived
     assert any("sharesOutstanding" in m for m in logged), f"the empty-market-cap path must name the missing column; logged: {logged}"
@@ -1241,7 +1389,10 @@ def test_action_cap_normalizes_each_trade_before_rolling(metric: str, code: str,
         for n, (action, filing) in enumerate([("2024-03-04", "2024-03-05"), ("2024-03-06", "2024-03-07")], start=1)
     ]
     panel = build_insider_feature_panel(
-        make_frames(idx, _peers(), close_split=close), _frame(rows), capital=InsiderCapital(shares_out_history=history), complete_through=idx[-1]
+        make_frames(idx, _peers(), close_split=close),
+        _frame(rows),
+        shares_out_history=history,
+        coverage=InsiderCoverage.from_availability(None, pd.Series({"AAA": idx[-1]})),
     ).set_index("date")
     feature = f"f_ic_insider_{metric}"
 
@@ -1254,7 +1405,28 @@ def test_action_cap_normalizes_each_trade_before_rolling(metric: str, code: str,
 def _build_action_cap(rows: list[dict], close: pd.DataFrame, history: pd.DataFrame) -> pd.DataFrame:
     idx = pd.DatetimeIndex(close.index)
     return build_insider_feature_panel(
-        make_frames(idx, _peers(), close_split=close), _frame(rows), capital=InsiderCapital(shares_out_history=history), complete_through=idx[-1]
+        make_frames(idx, _peers(), close_split=close),
+        _frame(rows),
+        shares_out_history=history,
+        coverage=InsiderCoverage.from_availability(
+            None,
+            pd.Series({"AAA": idx[-1]}),
+            identity_intervals=pd.DataFrame(
+                [
+                    {
+                        "canonical_company": "AAA",
+                        "source": "ftd",
+                        "security_id": "AAA-common",
+                        "source_symbol": "AAA",
+                        "security_class": "common",
+                        "conversion_ratio": 1.0,
+                        "lineage_role": "canonical_current",
+                        "valid_from": idx.min(),
+                        "valid_to": pd.NaT,
+                    }
+                ]
+            ),
+        ),
     ).set_index("date")
 
 
@@ -1448,8 +1620,8 @@ def test_action_cap_double_negative_components_cannot_certify_capital(invalid_le
     panel = build_insider_feature_panel(
         make_frames(idx, _peers(), close_split=close, level_factor=factor),
         _frame([row]),
-        capital=InsiderCapital(shares_out_history=history),
-        complete_through=idx[-1],
+        shares_out_history=history,
+        coverage=InsiderCoverage.from_availability(None, pd.Series({"AAA": idx[-1]})),
     ).set_index("date")
 
     assert pd.isna(panel.loc["2024-03-07", "f_ic_insider_buy_value_mcap_60d"])

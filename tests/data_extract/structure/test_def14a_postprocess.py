@@ -24,6 +24,7 @@ from src.data_extract.utils.structure.def14a.postprocess import (
 )
 from src.data_extract.utils.structure.def14a.retry import SECTIONS
 from src.data_store.schema import Table, Tables
+from src.data_store.store import DataStore
 
 
 @pytest.fixture
@@ -284,6 +285,50 @@ def test_matching_partial_ceo_clears_other_person_copies_and_ignores_future_rows
         pd.testing.assert_frame_equal(ceo_facts[table], frame)
     print(
         "SANITY: a matching partial CEO clears unsupported other-person copies, retains a real zero, ignores future facts and leaves child rows/counters untouched."
+    )
+
+
+@pytest.mark.parametrize("legacy_replay", [False, True])
+def test_same_ceo_partial_children_preserve_valid_copies_and_refresh_supported_values(
+    stamp: dict[str, object], ceo_facts: dict[Table, pd.DataFrame], sqlite_store: DataStore, legacy_replay: bool
+) -> None:
+    section = next(section for section in SECTIONS if section.key == "governance")
+    ceo_facts[Tables.def14a_executive_comp].loc[1, "bonus"] = 0
+    before = {table: frame.copy(deep=True) for table, frame in ceo_facts.items()}
+    parent = dict(
+        ceo_name_proxy="BOB BROWN",
+        ceo_salary=None,
+        ceo_bonus=12,
+        ceo_total_comp=200,
+        ceo_equity_pay_pct=0.5,
+        ceo_ownership_pct=0.2,
+        ceo_voting_pct=0.25,
+        auditor_fees=777,
+        retry=2,
+        def14a_json='{"original":"paid response"}',
+    )
+    previous = parent.copy()
+    keys = {column: stamp[column] for column in (*Tables.def14a_llm.pk, "as_of")}
+    sqlite_store.save(Tables.def14a_llm, pd.DataFrame([{**keys, **parent}]))
+    answer = Def14AExtract(ceo_name="Bob Brown") if legacy_replay else GovernanceExtract(percent_unit="fraction")
+    raw = answer.model_dump_json()
+    processed = postprocess_section(section, answer, stamp, ceo_facts, parent)
+    row = processed.frames[Tables.def14a_llm].iloc[0]
+    assert row["ceo_total_comp"] == 200 and row["ceo_equity_pay_pct"] == 0.5 and row["ceo_ownership_pct"] == 0.2
+    assert row["ceo_salary"] == 200 and row["ceo_bonus"] == 0 and row["ceo_voting_pct"] == 0
+    assert pd.isna(row["ceo_stock_awards"])
+    assert "auditor_fees" not in row and "retry" not in row and "def14a_json" not in row
+    assert set(processed.frames) == {Tables.def14a_directors, Tables.def14a_llm}
+    sqlite_store.save(Tables.def14a_llm, processed.frames[Tables.def14a_llm])
+    stored = sqlite_store.load(Tables.def14a_llm, where=dict(ticker=stamp["ticker"], accession_number=stamp["accession_number"])).iloc[0]
+    assert (stored["ceo_total_comp"], stored["ceo_equity_pay_pct"], stored["ceo_ownership_pct"]) == (200, 0.5, 0.2)
+    assert stored["ceo_salary"] == 200 and stored["ceo_bonus"] == 0 and stored["ceo_voting_pct"] == 0
+    assert stored["as_of"] == stamp["as_of"] and stored["auditor_fees"] == 777 and stored["retry"] == 2
+    assert stored["def14a_json"] == parent["def14a_json"] and parent == previous and answer.model_dump_json() == raw
+    for table, frame in before.items():
+        pd.testing.assert_frame_equal(ceo_facts[table], frame)
+    print(
+        "SANITY: partial facts for the retained same CEO preserve valid copies through a real save, fill holes and refresh zeros without changing archives/counters."
     )
 
 

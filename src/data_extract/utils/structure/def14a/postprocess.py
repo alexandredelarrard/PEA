@@ -251,6 +251,7 @@ def postprocess_section(
 
     # A repaired identity must immediately select its own already-saved pay and ownership.
     ceo_name = clean_person_name(df_parent.iloc[0].get("ceo_name_proxy", parent.get("ceo_name_proxy")))
+    previous_ceo = clean_person_name(parent.get("ceo_name_proxy"))
     if section.key == "governance" and ceo_name:
         for owner in (item for item in SECTIONS if item.key in ("executive_pay", "ownership")):
             df_related = saved.get(owner.table)
@@ -276,7 +277,12 @@ def postprocess_section(
                 continue
             copied = _parent_patch(owner, retained, stamp, {})
             columns = [column for column in owner.parent_columns if column.startswith("ceo_")]
-            df_parent[columns] = copied.reindex(columns=columns)
+            copied = copied.reindex(columns=columns)
+
+            # Keep unsupported copies only when the retained CEO identity is unchanged.
+            if previous_ceo and previous_ceo.casefold() == ceo_name.casefold():
+                copied = copied.combine_first(pd.DataFrame([{column: parent.get(column) for column in columns}]))
+            df_parent[columns] = copied
 
     # The audit counter alone belongs to the parent; sibling patches omit it.
     if section.key == "audit":

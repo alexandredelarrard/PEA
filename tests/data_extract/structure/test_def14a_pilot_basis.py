@@ -114,8 +114,42 @@ def test_sar_rescue_requires_money_and_exact_source_year_binding(pilot_packets: 
     if mode == "unlabelled_director_year":
         source = source.replace("Director Compensation Table for 2014", "Director Compensation Table")
     if mode == "ambiguous_director_year":
-        source += "\nDirector Compensation Table for 2013\n"
+        source = source.replace("Director Compensation Table for 2014", "Director Compensation Table for 2014 / Director Compensation Table for 2013")
     result = postprocess_section(section, section.schema.model_validate(packet["parsed"]), stamp, {}, {}, source)
     row = result.frames[section.table].loc[lambda frame: frame.name.eq(packet["target"]["name"]) & frame.fiscal_year.eq(2014)].iloc[0]
     assert pd.isna(row.option_awards)
     print("SANITY: SAR counts, unmatched year vectors and unlabelled or ambiguous director years remain unknown as annual option dollars.")
+
+
+@pytest.mark.parametrize("mode", ["yearless_grants", "wrong_domain_fee_table", "intervening_heading", "intervening_named_table"])
+def test_director_caption_cannot_lend_its_year_to_another_table(pilot_packets: dict[str, Any], mode: str) -> None:
+    domain = "executive_pay" if mode in ("yearless_grants", "wrong_domain_fee_table") else "director_pay"
+    packet = pilot_packets[domain]
+    section = next(item for item in SECTIONS if item.key == domain)
+    stamp = {**packet["meta"], "as_of": pd.Timestamp(packet["meta"]["as_of"])}
+    source = "Director Compensation Table for 2014\n"
+    if mode == "yearless_grants":
+        source += "Name\tFees Earned ($)\tSAR Awards ($)\nJanet F. Clark\t140000\t36655\n\n=== GRANTS OF PLAN-BASED AWARDS ===\n"
+        source += "Name\tSAR Awards ($)\nWilliam R. Thomas\t999\n"
+    if mode == "wrong_domain_fee_table":
+        source += "Name\tFees Earned ($)\tSAR Awards ($)\nWilliam R. Thomas\t140000\t999\n"
+    if mode == "intervening_heading":
+        source += "=== ANOTHER COMPENSATION TABLE ===\nName\tFees Earned ($)\tSAR Awards ($)\nJanet F. Clark\t140000\t999\n"
+    if mode == "intervening_named_table":
+        source += "Name\tStock Awards ($)\nOther Person\t100\n\nName\tFees Earned ($)\tSAR Awards ($)\nJanet F. Clark\t140000\t999\n"
+    result = postprocess_section(section, section.schema.model_validate(packet["parsed"]), stamp, {}, {}, source)
+    row = result.frames[section.table].loc[lambda frame: frame.name.eq(packet["target"]["name"]) & frame.fiscal_year.eq(2014)].iloc[0]
+    assert pd.isna(row.option_awards)
+    if domain == "executive_pay":
+        assert pd.isna(result.frames[Tables.def14a_llm].iloc[0].get("ceo_option_awards"))
+    print("SANITY: a director year belongs only to its local fee table; another heading, table or pay domain cannot borrow it.")
+
+
+def test_later_unrelated_caption_does_not_replace_the_owned_director_year(pilot_packets: dict[str, Any]) -> None:
+    packet = pilot_packets["director_pay"]
+    section = next(item for item in SECTIONS if item.key == "director_pay")
+    stamp = {**packet["meta"], "as_of": pd.Timestamp(packet["meta"]["as_of"])}
+    source = packet["source"] + "\nDirector Compensation Table for 2013\nName\tFees Earned ($)\tSAR Awards ($)\nDifferent Person\t140000\t999\n"
+    result = postprocess_section(section, section.schema.model_validate(packet["parsed"]), stamp, {}, {}, source)
+    assert result.frames[section.table].loc[lambda frame: frame.name.eq("Janet F. Clark")].iloc[0].option_awards == 36655
+    print("SANITY: a later unrelated caption cannot erase the explicit2014 authority of the earlier director fee table.")

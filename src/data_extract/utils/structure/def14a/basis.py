@@ -18,17 +18,23 @@ def _source_rows(source: str) -> list[tuple[str, int | None, dict[str, str]]]:
     header: list[str] = []
     name_column, year_column = 0, None
     last_name = ""
-    caption_years = set(re.findall(r"(?:director|summary)\s+compensation\s+table\s+for\s+((?:19|20)\d{2})", source, re.I))
-    caption_year = int(next(iter(caption_years))) if len(caption_years) == 1 else None
+    caption_year, table_year = None, None
     for line in source.splitlines():
+        caption_years = set(re.findall(r"director\s+compensation\s+table\s+for\s+((?:19|20)\d{2})", line, re.I))
+        if caption_years:
+            caption_year = int(next(iter(caption_years))) if len(caption_years) == 1 else None
         cells = [cell.strip() for cell in line.split("\t")]
         if len(cells) < 2:
             header = []
+            if line.strip() and not caption_years and not line.strip().startswith("Source table (tab-separated columns):"):
+                caption_year = None
             continue
         names = [index for index, cell in enumerate(cells) if re.search(r"\bname\b", cell, re.I)]
         if names:
             header, name_column = cells, names[0]
             year_column = next((index for index, cell in enumerate(header) if re.fullmatch(r"(?:Fiscal\s+)?Year", cell, re.I)), None)
+            table_year = caption_year if any(re.search(r"fees.*(?:earned|cash)", cell, re.I) for cell in header) else None
+            caption_year = None
             last_name = ""
             continue
         if not header or len(cells) != len(header):
@@ -45,7 +51,7 @@ def _source_rows(source: str) -> list[tuple[str, int | None, dict[str, str]]]:
                 (name, int(year), dict(zip(header, [vector[index] for vector in vectors], strict=True))) for index, year in enumerate(years)
             )
             continue
-        year = int(years[0]) if len(set(years)) == 1 else caption_year if not years and year_column is None else None
+        year = int(years[0]) if len(set(years)) == 1 else table_year if not years and year_column is None else None
         result.append((name, year, dict(zip(header, cells, strict=True))))
     return result
 
@@ -117,10 +123,13 @@ def _identity(value: object) -> str:
     return normalize_name(_holder_name(str(value)))
 
 
-def _source_records(source: str, ownership: bool) -> list[tuple[str, int | None, dict[str, float | None]]]:
+def _source_records(source: str, section: Section) -> list[tuple[str, int | None, dict[str, float | None]]]:
     """Bind explicit source categories to complete normalized names and fiscal years."""
     records = []
+    ownership = section.key == "ownership"
     for name, year, cells in _source_rows(source):
+        if section.key == "executive_pay" and any(re.search(r"fees.*(?:earned|cash)", cell, re.I) for cell in cells):
+            continue
         if not ownership:
             role = r"Chairman|Chief (?:Executive|Financial|Operating)|(?:(?:Executive|Senior) )?Vice President|President|CEO|CFO|COO"
             name = re.split(r"\s+(?:" + role + r")\b", name, maxsplit=1, flags=re.I)[0]
@@ -198,7 +207,7 @@ def correct_basis(
     name_column = "holder_name" if ownership else "name"
     if ownership:
         result = _correct_security_rows(result, source, company_name)
-    records = _source_records(source, ownership)
+    records = _source_records(source, section)
     groups = [
         (float(total), float(shares))
         for name, _, values in records

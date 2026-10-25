@@ -340,23 +340,32 @@ def upsert_dataframe(engine: Engine, df: pd.DataFrame, name: str, pk: list[str],
     tbl = _reflect(engine, name)
     df = cast(pd.DataFrame, df[[c for c in df.columns if c in tbl.c]])  # only real columns
     records = _records(_coerce_temporal(df, tbl))
-    dialect = engine.dialect.name
-    n = len(records)
-    carried = set(df.columns)
-
     with engine.begin() as conn:
-        for i in range(0, n, chunksize):
-            chunk = records[i : i + chunksize]
-            if dialect in ("postgresql", "sqlite"):
-                ins = pg_insert(tbl) if dialect == "postgresql" else sqlite_insert(tbl)
-                update_cols = {c.name: ins.excluded[c.name] for c in tbl.c if c.name not in pk and c.name in carried}
-                stmt = (
-                    ins.on_conflict_do_update(index_elements=pk, set_=update_cols) if update_cols else ins.on_conflict_do_nothing(index_elements=pk)
-                )
-                conn.execute(stmt, chunk)
-            else:  # generic fallback
-                _delete_then_insert(conn, tbl, chunk, pk)
-    return n
+        return _upsert_records(conn, tbl, records, pk, chunksize)
+
+
+def _upsert_records(
+    conn: Connection, tbl: Table, records: list[dict], pk: list[str], chunksize: int = _CHUNK, *, ignore_all_conflicts: bool = False
+) -> int:
+    """Execute carried-column upserts without taking ownership of the caller's transaction."""
+    offsets = range(0, len(records), chunksize)
+    if not records:
+        return 0
+    dialect = conn.dialect.name
+    if dialect in {"postgresql", "sqlite"}:
+        ins = pg_insert(tbl) if dialect == "postgresql" else sqlite_insert(tbl)
+        updates = {column: ins.excluded[column] for column in records[0] if column not in pk}
+        statement = (
+            ins.on_conflict_do_update(index_elements=pk, set_=updates)
+            if updates
+            else ins.on_conflict_do_nothing(index_elements=None if ignore_all_conflicts else pk)
+        )
+        for offset in offsets:
+            conn.execute(statement, records[offset : offset + chunksize])
+    else:
+        for offset in offsets:
+            _delete_then_insert(conn, tbl, records[offset : offset + chunksize], pk)
+    return len(records)
 
 
 def _delete_then_insert(conn, tbl: Table, chunk: list[dict], pk: list[str]) -> None:
@@ -370,9 +379,6 @@ def _delete_then_insert(conn, tbl: Table, chunk: list[dict], pk: list[str]) -> N
     keys = [tuple(r[k] for k in pk) for r in chunk]
     conn.execute(tbl.delete().where(tuple_(*[tbl.c[k] for k in pk]).in_(keys)))
     conn.execute(tbl.insert(), chunk)
-
-
-TableRef = "SchemaTable | str"
 
 
 def _prepare_def14a_table(conn: Connection, spec: SchemaTable, block: str) -> bool:
@@ -582,7 +588,7 @@ class DataStore:
             if self.engine.dialect.name != "postgresql":
                 raise ValueError("Legacy 13F primary-key migration requires PostgreSQL")
             conn.execute(text(f"ALTER TABLE {ddl.quote(spec.name)} ADD COLUMN IF NOT EXISTS accession_number TEXT NOT NULL DEFAULT '_legacy'"))
-            conn.execute(text(f"ALTER TABLE {ddl.quote(spec.name)} DROP CONSTRAINT {ddl.quote(old['name'])}"))
+            conn.execute(text(f"ALTER TABLE {ddl.quote(spec.name)} DROP CONSTRAINT {ddl.quote(cast(str, old['name']))}"))
             conn.execute(text(f"ALTER TABLE {ddl.quote(spec.name)} ADD PRIMARY KEY ({', '.join(ddl.quote(key) for key in spec.pk)})"))
         return True
 
@@ -617,19 +623,15 @@ class DataStore:
             self._13f_tables[table.name] = prepared
             return prepared
 
-    def save_13f_filing(
-        self,
-        manifest: pd.DataFrame,
-        holdings: pd.DataFrame,
-        *,
-        table: SchemaTable = Tables.sec13f_manager_holdings,
-    ) -> int:
-        """Atomically preserve a full accession and its completion marker in an existing table."""
+    @staticmethod
+    def _13f_checksum(manifest: pd.DataFrame, holdings: pd.DataFrame, table: SchemaTable) -> str:
+        """Validate source reconciliation and hash the immutable economic payload."""
         if table not in (Tables.sec13f_hr, Tables.sec13f_manager_holdings):
             raise ValueError("13F filings belong in the two existing holdings tables")
         if len(manifest) != 1 or manifest.iloc[0]["parse_status"] != "complete":
             raise ValueError("13F save requires one complete filing manifest")
-        row = manifest.iloc[0]
+        row: Any = manifest.iloc[0]
+        empty_marker = cast(tuple[str, str], table.empty_marker)
         if int(row["parsed_row_count"]) != len(holdings) or int(row["source_row_count"]) < len(holdings):
             raise ValueError("13F source row count does not reconcile")
         reconcile_13f_source(
@@ -639,7 +641,7 @@ class DataStore:
             row["declared_value_total"],
             source_accounted=str(row.get("value_unit_evidence", "")).startswith(SEC_13F_SOURCE_ACCOUNTED),
         )
-        if holdings.duplicated(["cik", "accession_number", "cusip"]).any() or holdings.cusip.eq(table.empty_marker[1]).any():
+        if holdings.duplicated(["cik", "accession_number", "cusip"]).any() or holdings.cusip.eq(empty_marker[1]).any():
             raise ValueError("Duplicate or reserved CUSIP within an immutable filing")
         for key in ("cik", "accession_number", "period", "filing_date"):
             if key not in holdings or (
@@ -672,18 +674,30 @@ class DataStore:
             "source_row_count",
             "source_value_total",
         )
-        canonical = {key: str(row[key]) for key in keys}
+        canonical: dict[str, Any] = {key: str(row[key]) for key in keys}
         payload_cols = ["cusip", "shares", "call_shares", "put_shares", "debt_prn", *raw_columns, "class_evidence"]
         payload = holdings[payload_cols].sort_values("cusip").fillna("").astype(str)
         canonical["positions"] = [
             dict(zip(payload_cols, values, strict=True)) for values in zip(*(payload[c].tolist() for c in payload_cols), strict=True)
         ]
-        checksum = hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest()
-        marker = manifest.assign(cusip=table.empty_marker[1], content_checksum=checksum)
+        return hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest()
+
+    def save_13f_filing(
+        self,
+        manifest: pd.DataFrame,
+        holdings: pd.DataFrame,
+        *,
+        table: SchemaTable = Tables.sec13f_manager_holdings,
+    ) -> int:
+        """Atomically preserve a full accession and its completion marker in an existing table."""
+        checksum = self._13f_checksum(manifest, holdings, table)
+        row: Any = manifest.iloc[0]
+        empty_marker = cast(tuple[str, str], table.empty_marker)
+        marker = manifest.assign(cusip=empty_marker[1], content_checksum=checksum)
         if table == Tables.sec13f_hr:
             if "ticker" not in holdings or holdings.ticker.isna().any():
                 raise ValueError("13F broad holdings require ticker or the unmapped sentinel")
-            marker["ticker"] = table.empty_marker[1]
+            marker["ticker"] = empty_marker[1]
         positions = holdings.assign(parse_status="position")
         columns = list(dict.fromkeys([*positions.columns, *marker.columns]))
 
@@ -706,7 +720,7 @@ class DataStore:
                         books.c.cik == row["cik"],
                         books.c.period == _bind_date(books.c.period, pd.Timestamp(row["period"])),
                         books.c.accession_number == row["accession_number"],
-                        books.c.cusip == table.empty_marker[1],
+                        books.c.cusip == empty_marker[1],
                     )
                 )
                 .mappings()
@@ -883,12 +897,7 @@ class DataStore:
             return 0
         tbl = _reflect(conn, spec.name)
         records = _records(_coerce_temporal(frame, tbl))
-        ins = pg_insert(tbl) if conn.dialect.name == "postgresql" else sqlite_insert(tbl)
-        updates = {str(column): ins.excluded[str(column)] for column in frame if column not in spec.pk}
-        statement = ins.on_conflict_do_update(index_elements=list(spec.pk), set_=updates) if updates else ins.on_conflict_do_nothing()
-        for offset in range(0, len(records), _CHUNK):
-            conn.execute(statement, records[offset : offset + _CHUNK])
-        return len(records)
+        return _upsert_records(conn, tbl, records, list(spec.pk), ignore_all_conflicts=True)
 
     @staticmethod
     def _invalidate_checked_quiet(conn: Connection, table: Table, spec: SchemaTable, tickers: set[str]) -> None:
@@ -1419,13 +1428,18 @@ class DataStore:
             self.prepare_def14a_retries()
         with self._13f_lock if name in (Tables.sec13f_hr.name, Tables.sec13f_manager_holdings.name) else nullcontext():
             self._13f_tables.pop(name, None)
-            if name in (Tables.sec13f_hr.name, Tables.sec13f_manager_holdings.name):
-                if "accession_number" not in df:
-                    df = df.assign(accession_number="_legacy")
-                self.migrate_13f_tables()
-            ensure_table(self.engine, name, df)
-            ensure_columns(self.engine, name, df)  # evolve schema for new columns
+            df = self._prepare_write(name, df)
             return upsert_dataframe(self.engine, df, name, pk)
+
+    def _prepare_write(self, name: str, df: pd.DataFrame) -> pd.DataFrame:
+        """Prepare ordinary save/rebuild layouts while the caller holds any 13F lock."""
+        if name in (Tables.sec13f_hr.name, Tables.sec13f_manager_holdings.name):
+            if "accession_number" not in df:
+                df = df.assign(accession_number="_legacy")
+            self.migrate_13f_tables()
+        ensure_table(self.engine, name, df)
+        ensure_columns(self.engine, name, df)
+        return df
 
     def bulk_seed(self, table, df: pd.DataFrame) -> int:
         """Fast COPY append onto a schema `replace` already established (the cube's streaming
@@ -1526,12 +1540,7 @@ class DataStore:
             self._13f_tables.pop(name, None)
             if resolve(table).is_unmanaged:
                 self.drop(name)
-            if name in (Tables.sec13f_hr.name, Tables.sec13f_manager_holdings.name):
-                if "accession_number" not in df:
-                    df = df.assign(accession_number="_legacy")
-                self.migrate_13f_tables()
-            ensure_table(self.engine, name, df)
-            ensure_columns(self.engine, name, df)  # evolve schema for new columns
+            df = self._prepare_write(name, df)
             with self.engine.begin() as conn:
                 conn.execute(text(f'DELETE FROM "{name}"'))
             for i in range(0, len(df), chunksize):

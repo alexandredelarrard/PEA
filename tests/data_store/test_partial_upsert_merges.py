@@ -182,3 +182,16 @@ def test_schema_evolution_uses_the_registered_date_type(monkeypatch):
 
     print("\n=== SANITY CHECK: live schema evolution type ===")
     print("  ensure_columns consults Tables.notes_num and adds available_at as DATE, not TIMESTAMP or TEXT. Validated.")
+
+
+@pytest.mark.parametrize("unknown_only", [False, True])
+def test_zero_chunk_size_is_rejected_without_writing(store: DataStore, unknown_only: bool) -> None:
+    before = store.load("extract", order_by="ticker")
+    assert before is not None
+    patch = pd.DataFrame({"unknown": [1]}) if unknown_only else _FULL.iloc[:1]
+    with pytest.raises(ValueError):
+        store_module.upsert_dataframe(store.engine, patch, "extract", ["ticker", "accession_number"], chunksize=0)
+    after = store.load("extract", order_by="ticker")
+    assert after is not None
+    pd.testing.assert_frame_equal(after, before)
+    print("SANITY: zero chunks fail without writing, even when filtering leaves no carried database columns.")

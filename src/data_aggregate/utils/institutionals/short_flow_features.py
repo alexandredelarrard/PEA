@@ -215,11 +215,12 @@ def _publish_ftd_zip_states(
 
 
 def secondary_class_volume(lines: pd.DataFrame, bars: pd.DataFrame, idx: pd.DatetimeIndex) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Wide (date x company) secondary-class volume in canonical shares, and the company-days an active class has no bar.
+    """Wide secondary-class volume in canonical shares, and company-days lacking supported active-class input.
 
     A class counts only on its `security_master` dates. Yahoo volume is restated to today's split basis, so a class
     enters at its latest conversion ratio: a dated ratio step is a split of one class (BRK-B's 50:1, BRK-A 30 -> 1,500)
-    that Yahoo already restated. A class with no bar on an active day adds nothing; those company-days are logged.
+    that Yahoo already restated. Ratios must be finite and positive; bars and converted quantities finite and nonnegative.
+    Unsupported active legs add nothing and flag the complete company denominator as unknown.
     """
     idx = pd.DatetimeIndex(idx).normalize()
     if lines.empty:
@@ -227,7 +228,7 @@ def secondary_class_volume(lines: pd.DataFrame, bars: pd.DataFrame, idx: pd.Date
     work = lines.assign(
         company=lines["canonical_company"].astype(str),
         symbol=lines["market_symbol"].map(yahoo_symbol),
-        ratio=pd.to_numeric(lines["conversion_ratio"], errors="coerce").fillna(1.0),
+        ratio=pd.to_numeric(lines["conversion_ratio"], errors="coerce"),
         start=pd.to_datetime(lines["valid_from"]).dt.normalize(),
         end=pd.to_datetime(lines["valid_to"]).dt.normalize(),
     ).sort_values("start", kind="stable")
@@ -243,20 +244,26 @@ def secondary_class_volume(lines: pd.DataFrame, bars: pd.DataFrame, idx: pd.Date
             window = idx >= start if pd.notna(start) else np.ones(len(idx), dtype=bool)
             active |= window & (idx < end) if pd.notna(end) else window
         bar = pd.to_numeric(tape[symbol], errors="coerce") if symbol in tape.columns else pd.Series(np.nan, index=idx)
-        has_bar = bar.notna().to_numpy()
-        volume[company] += np.where(active & has_bar, float(group["ratio"].iloc[-1]) * bar.fillna(0.0).to_numpy(), 0.0)
-        gap = active & ~has_bar
+        ratio = float(group["ratio"].iloc[-1])
+        raw = bar.to_numpy()
+        with np.errstate(over="ignore", invalid="ignore"):
+            converted = ratio * raw
+            supported = np.isfinite(ratio) & (ratio > 0) & np.isfinite(raw) & (raw >= 0) & np.isfinite(converted)
+            volume[company] += np.where(active & supported, converted, 0.0)
+        gap = active & ~supported
         missing[company] |= gap
         if gap.any():
             days = idx[gap]
             gaps.append(f"{company} {symbol} {int(gap.sum())} day(s) {days[0].date()}..{days[-1].date()}")
     if gaps:
         logger.warning(
-            "secondary-class volume: %s company-day(s) have an active class with no bar, which adds no volume: %s",
+            "secondary-class volume: %s company-day(s) have an active class without supported input, which adds no volume: %s",
             f"{int(missing.to_numpy().sum()):,}",
             "; ".join(gaps),
         )
-    return volume, missing
+    finite = np.isfinite(volume)
+    missing |= ~finite
+    return volume.where(finite, 0.0), missing
 
 
 def with_class_volume(volume: pd.DataFrame | None, class_volume: pd.DataFrame | None) -> pd.DataFrame | None:
@@ -542,6 +549,12 @@ def build_short_flow_feature_panel(
     if _absent(short_history) and settlement is None:
         return _empty_panel()
     idx = pd.DatetimeIndex(frames.trading_index).normalize().unique().sort_values()
+    if capital.tape is not None:
+        # Infinite company sums must not turn into finite partial rolling denominators.
+        df_supported = ~capital.tape.isin([np.inf, -np.inf])
+        if capital.tape_supported is not None:
+            df_supported &= capital.tape_supported.reindex(index=capital.tape.index, columns=capital.tape.columns, fill_value=True)
+        capital = ShortFlowCapital(capital.shares_out, capital.tape, df_supported)
     fields: dict[str, pd.DataFrame] = {}
     if short_history is not None and not short_history.empty and {"short_volume", "total_volume"}.issubset(short_history.columns):
         fields.update(_shortvol_fields(short_history, idx, capital.shares_out, frames.close_total, capital.tape, tenure_mask))

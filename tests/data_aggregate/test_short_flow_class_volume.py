@@ -58,6 +58,79 @@ def _cell(frame: pd.DataFrame, day: str, column: str) -> float:
     return float(cast(Any, frame.loc[pd.Timestamp(day), column]))
 
 
+@pytest.mark.parametrize(
+    ("ratio", "bar"),
+    [(np.nan, 10.0), (0.0, 10.0), (-1.0, 10.0), (np.inf, 10.0), (1.0, -10.0), (1.0, np.inf), (1e308, 2.0)],
+    ids=["missing-ratio", "zero-ratio", "negative-ratio", "infinite-ratio", "negative-bar", "infinite-bar", "product-overflow"],
+)
+def test_invalid_active_class_inputs_are_unsupported(ratio: float, bar: float) -> None:
+    idx = pd.DatetimeIndex(pd.bdate_range("2024-01-02", periods=3), name="date")
+    lines = _lines(("LEN", "LEN-B", ratio, str(idx[1].date()), str(idx[2].date())))
+    class_volume, missing = secondary_class_volume(lines, _bars("LEN-B", idx, bar), idx)
+
+    assert missing["LEN"].tolist() == [False, True, False]
+    assert class_volume["LEN"].eq(0.0).all()
+    assert class_volume.dtypes.tolist() == [np.dtype("float64")]
+    assert missing.dtypes.tolist() == [np.dtype("bool")]
+    print("\n=== SANITY CHECK: invalid class input ===")
+    print(f"  ratio={ratio}, bar={bar}: active day unsupported; inactive days add zero without a missing flag. Validated.")
+
+
+def test_class_sum_overflow_is_unsupported_and_observed_zero_is_supported() -> None:
+    idx = pd.DatetimeIndex(pd.bdate_range("2024-01-02", periods=3), name="date")
+    lines = _lines(("LEN", "LEN-B", 1.0, "1900-01-01", OPEN), ("LEN", "LEN-C", 1.0, "1900-01-01", OPEN))
+    bars = pd.concat([_bars(symbol, idx, [0.0, 1e308, 7.0]) for symbol in ("LEN-B", "LEN-C")], ignore_index=True)
+    class_volume, missing = secondary_class_volume(lines, bars, idx)
+
+    assert missing["LEN"].tolist() == [False, True, False]
+    assert class_volume["LEN"].tolist() == [0.0, 0.0, 14.0]
+    print("\n=== SANITY CHECK: company class sum ===")
+    print("  two finite class legs overflowing their sum are unsupported; observed zero and finite sum14 retain exact values. Validated.")
+
+
+@pytest.mark.parametrize("invalid", ["ratio", "bar", "product", "class-sum", "company-sum", "absent-bar"])
+def test_invalid_class_support_masks_only_rolling_tape_denominators(invalid: str) -> None:
+    idx = pd.DatetimeIndex(pd.bdate_range("2023-12-01", "2024-03-08"), name="date")
+    bad_day = pd.Timestamp("2024-01-02")
+    bad_position = int(idx.get_loc(bad_day))
+    volume = pd.DataFrame({"LEN": 1_000.0, "MRK": 1_000.0}, index=idx)
+    shares = pd.DataFrame(10_000.0, index=idx, columns=volume.columns)
+    regsho = pd.DataFrame([{"date": day, "ticker": ticker, "short_volume": 100.0, "total_volume": 300.0} for day in idx for ticker in volume])
+    fails = pd.DataFrame([{"date": bad_day, "ticker": ticker, "fails_quantity": 300.0, "period": "202401a"} for ticker in volume])
+    frames = make_frames(idx, {"LEN": {"MRK": 1.0}, "MRK": {"LEN": 1.0}}, volume=volume)
+    lines = _lines(("LEN", "LEN-B", np.nan if invalid == "ratio" else 1.0, "1900-01-01", OPEN))
+    bars = _bars("LEN-B", idx, 500.0)
+    if invalid == "absent-bar":
+        bars = bars[bars["date"].ne(bad_day)]
+    elif invalid in {"bar", "product", "class-sum", "company-sum"}:
+        bars.loc[bars["date"].eq(bad_day), "volume"] = -1.0 if invalid == "bar" else 1e308
+    if invalid == "product":
+        lines["conversion_ratio"] = 2.0
+    if invalid == "class-sum":
+        lines = pd.concat([lines, _lines(("LEN", "LEN-C", 1.0, str(bad_day.date()), str(idx[bad_position + 1].date())))], ignore_index=True)
+        bars = pd.concat([bars, _bars("LEN-C", pd.DatetimeIndex([bad_day]), 1e308)], ignore_index=True)
+    if invalid == "company-sum":
+        volume.loc[bad_day, "LEN"] = 1e308
+    class_volume, missing = secondary_class_volume(lines, bars, idx)
+    tape = with_class_volume(volume, class_volume)
+    panel = build_short_flow_feature_panel(frames, regsho, fails_history=fails, capital=ShortFlowCapital(shares, tape, ~missing))
+    panel = panel.set_index(["date", "ticker"]).sort_index()
+    control = build_short_flow_feature_panel(frames, regsho, fails_history=fails, capital=ShortFlowCapital(shares, volume))
+    control = control.set_index(["date", "ticker"]).sort_index()
+
+    assert pd.isna(panel.loc[(idx[bad_position + 1], "LEN"), "f_ic_shortvol_market_coverage"])
+    assert pd.isna(panel.loc[(pd.Timestamp("2024-01-30"), "LEN"), "f_ic_ftd_to_adv20"])
+    assert panel.loc[(pd.Timestamp("2024-01-30"), "MRK"), "f_ic_ftd_to_adv20"] == pytest.approx(0.3)
+    if invalid != "ratio":
+        expected = 300 / (1_000 + (1_000 if invalid == "product" else 500))
+        assert panel.loc[(idx[bad_position + 21], "LEN"), "f_ic_shortvol_market_coverage"] == pytest.approx(expected)
+    unchanged = [column for column in panel if column not in {"f_ic_shortvol_market_coverage", "f_ic_ftd_to_adv20"}]
+    pd.testing.assert_frame_equal(panel[unchanged], control[unchanged])
+    pd.testing.assert_frame_equal(panel.xs("MRK", level="ticker"), control.xs("MRK", level="ticker"))
+    print("\n=== SANITY CHECK: complete tape support ===")
+    print(f"  {invalid}: coverage and published FTD/ADV stay unknown across unsupported tape; participation, turnover and MRK stay exact. Validated.")
+
+
 def test_two_classes_at_ratio_one_sum_into_both_denominators() -> None:
     """LEN trades 1,000 a day and LEN-B 500: fails of 300 are 20% of ADV, not 30%; the single-class control is unchanged."""
     idx = pd.DatetimeIndex(pd.bdate_range("2023-12-01", "2024-02-14"), name="date")

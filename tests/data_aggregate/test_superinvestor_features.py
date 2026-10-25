@@ -18,6 +18,7 @@ from src.data_aggregate.utils.sec_thirteen.superinvestor_features import (
 )
 from src.data_aggregate.utils.sec_thirteen.superinvestor_metrics import BehaviorMarket
 from src.utils.price_adjustments import ShareBasis
+from tests.data_aggregate.test_superinvestor_books import _history, _on, _packet
 
 
 def _book(cik: str, period: str, positions: dict[str, tuple[float, float]], known: bool = True) -> PublicBook:
@@ -68,6 +69,17 @@ def _snapshot(books: list[PublicBook], day: str = "2024-08-15") -> PublicBookSna
         level_books=latest,
         archive=archive,
     )
+
+
+def _long_duration_books() -> list[PublicBook]:
+    periods = pd.period_range("2021Q1", "2024Q2", freq="Q")
+    books = []
+    for period in periods:
+        positions = {"OUT": (1000.0, 10000.0)}
+        if period >= periods[-2]:
+            positions["AAA"] = (100.0, 1000.0)
+        books.append(_book("1", str(period.end_time.date()), positions))
+    return books
 
 
 def _market(split: bool = False) -> BehaviorMarket:
@@ -387,3 +399,122 @@ def test_consensus_is_signed_and_excludes_unchanged_managers() -> None:
     history = _compute(_snapshot(books))
     assert _value(history, "trade_balance") == pytest.approx(1 / 3)
     print("SANITY: two buyers, one seller and one unchanged manager give signed consensus+1/3.")
+
+
+@pytest.mark.parametrize("endpoint", ["prior", "current", "history"])
+@pytest.mark.parametrize(
+    ("evidence", "verified"),
+    [
+        ("unknown_common", False),
+        ("known_zero", True),
+        ("option_zero", True),
+        ("unknown_option", False),
+        ("unverified_zero", False),
+        ("missing_source", False),
+        ("missing_unverified", True),
+        ("null_unverified", False),
+        ("object_null_unverified", True),
+    ],
+)
+def test_duration_preserves_same_ticker_sibling_evidence(endpoint: str, evidence: str, verified: bool) -> None:
+    prior = _book("1", "2024-03-31", {"AAA": (100, 1000)})
+    current = _book("1", "2024-06-30", {"AAA": (110, 1100)})
+    historical = _book("1", "2023-12-31", {"AAA": (100, 1000)})
+    books = [historical, prior, current] if endpoint == "history" else [prior, current]
+    target = historical if endpoint == "history" else (prior if endpoint == "prior" else current)
+    sibling = target.df_positions.iloc[0].copy()
+    sibling["cusip"] = "AAA_SIBLING"
+    sibling[["shares", "value_usd"]] = np.nan if evidence.startswith("unknown") else 0.0
+    sibling["position_type"] = "call" if "option" in evidence else "common"
+    sibling["value_basis_inverse_unit_unverified"] = evidence == "unverified_zero"
+    target.df_positions.loc[1] = sibling
+    if evidence == "missing_source":
+        target.df_positions.drop(columns="value_basis_shares_source", inplace=True)
+    if evidence == "missing_unverified":
+        target.df_positions.drop(columns="value_basis_inverse_unit_unverified", inplace=True)
+    if evidence in ("null_unverified", "object_null_unverified"):
+        dtype = "boolean" if evidence == "null_unverified" else "object"
+        target.df_positions["value_basis_inverse_unit_unverified"] = pd.Series([False, None], dtype=dtype)
+    originals = [book.df_positions.copy(deep=True) for book in books]
+
+    history = _compute(_snapshot(books))
+    expected = float(len(books)) if verified else ({"prior": 1.0, "current": np.nan, "history": 2.0}[endpoint])
+    for cohort in ("", "topk"):
+        actual = _value(history, "quarters_held", cohort=cohort)
+        assert np.isnan(actual) if np.isnan(expected) else actual == expected
+    for book, original in zip(books, originals, strict=True):
+        pd.testing.assert_frame_equal(book.df_positions, original)
+    print(f"SANITY: {endpoint} {evidence} retains baseline tenure {expected}, including its exact dtype/default and sibling aggregation rules.")
+
+
+@pytest.mark.parametrize(("shares", "value"), [(np.nan, 1000.0), (100.0, np.nan), (100.0, 1000.0)])
+def test_duration_uses_positive_reported_shares_or_value_even_when_estimated(shares: float, value: float) -> None:
+    prior = _book("1", "2024-03-31", {"AAA": (shares, value)})
+    prior.df_positions["value_basis_shares_source"] = "value_estimated"
+    current = _book("1", "2024-06-30", {"AAA": (110, 1100)})
+    history = _compute(_snapshot([prior, current]))
+    for cohort in ("", "topk"):
+        assert _value(history, "quarters_held", cohort=cohort) == 2
+        assert np.isnan(_value(history, "shares_chg", cohort=cohort))
+    print("SANITY: positive reported shares or dollars extend descriptive tenure; estimated quantities still cannot establish trading.")
+
+
+@pytest.mark.parametrize("barrier", ["missing", "empty", "partial", "restricted", "current_partial", "current_empty", "expired"])
+def test_duration_retains_supported_book_and_current_level_barriers(barrier: str) -> None:
+    prior = _book("1", "2024-03-31", {} if barrier == "empty" else {"AAA": (100, 1000)})
+    current = _book("1", "2024-06-30", {} if barrier == "current_empty" else {"AAA": (110, 1100)})
+    if barrier in ("partial", "restricted"):
+        prior = replace(prior, support=replace(prior.support, zero_eligible=False, comparison_eligible=False, restricted=barrier == "restricted"))
+    if barrier == "current_partial":
+        current = replace(current, support=replace(current.support, zero_eligible=False, comparison_eligible=False))
+    snapshot = _snapshot([current] if barrier == "missing" else [prior, current])
+    if barrier == "expired":
+        snapshot = replace(snapshot, day=pd.Timestamp("2024-11-15"), level_books={})
+    history = _compute(snapshot)
+    for cohort in ("", "topk"):
+        actual = _value(history, "quarters_held", cohort=cohort)
+        assert np.isnan(actual) if barrier in ("current_partial", "current_empty", "expired") else actual == 1
+    print(f"SANITY: {barrier} preserves the existing adjacent-book/current-level barrier without inventing tenure or a sale.")
+
+
+def test_duration_keeps_ticker_identity_across_class_and_cusip_changes() -> None:
+    prior = _book("1", "2024-03-31", {"AAA": (100, 1000)})
+    prior.df_positions["cusip"] = "OLD_CUSIP"
+    prior.df_positions["class_evidence"] = '["preferred"]'
+    current = _book("1", "2024-06-30", {"AAA": (110, 1100)})
+    history = _compute(_snapshot([prior, current]))
+    for cohort in ("", "topk"):
+        assert _value(history, "quarters_held", cohort=cohort) == 2
+        assert np.isnan(_value(history, "shares_chg", cohort=cohort))
+    print("SANITY: duration keeps its ticker-based policy across class/CUSIP changes; comparable trading still abstains.")
+
+
+def test_duration_old_quarter_revisions_and_backfills_change_only_later_public_states() -> None:
+    packets = [
+        _packet("1", "2024-03-31", "2024-05-15", {"111111111": 100}),
+        _packet("1", "2024-06-30", "2024-08-14", {"111111111": 100}),
+        _packet("1", "2024-03-31", "2024-08-19", {}, kind="restatement"),
+        _packet("1", "2024-03-31", "2024-08-21", {"111111111": 100}, kind="restatement"),
+        _packet("1", "2023-12-31", "2024-08-23", {"111111111": 100}),
+    ]
+    snapshots = _history(packets)
+    selected = tuple(_on(snapshots, day) for day in ("2024-08-15", "2024-08-20", "2024-08-22", "2024-08-26"))
+    cohorts = {"": frozenset({"1"}), "topk": frozenset({"1"})}
+    history = compute_superinvestor_feature_history(selected, cohorts, ("AAA", "BBB"), _market())
+    prefix = _compute(_on(_history(packets[:2]), "2024-08-15"))
+    for cohort in ("", "topk"):
+        name = f"ic_super_{cohort}_quarters_held" if cohort else "ic_super_quarters_held"
+        assert history.levels[name].AAA.tolist() == [2, 1, 2, 3]
+    for name, values in prefix.levels.items():
+        pd.testing.assert_frame_equal(values, history.levels[name].iloc[:1])
+    assert len({snapshot.level_books["1"].first_public_at for snapshot in selected}) == 1
+    print("SANITY: old-quarter restatements/backfills change later tenure2→1→2→3 without rewriting earlier features or current first-public age.")
+
+
+def test_duration_short_output_holding_preserves_long_off_universe_book() -> None:
+    history = _compute(_snapshot(_long_duration_books()))
+    for cohort in ("", "topk"):
+        assert _value(history, "quarters_held", cohort=cohort) == 2
+        assert _value(history, "conviction_weight", cohort=cohort) == pytest.approx(1 / 11)
+        assert _value(history, "pooled_weight", cohort=cohort) == pytest.approx(1 / 11)
+    print("SANITY: the output holding has tenure2 beside a14-quarter off-universe holding; all off-universe dollars remain in level denominators.")

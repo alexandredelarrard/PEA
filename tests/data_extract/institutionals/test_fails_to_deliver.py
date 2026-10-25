@@ -311,6 +311,35 @@ def test_ftd_feature_ranks_high_fails_and_is_leak_free():
     )
 
 
+def test_pending_source_replacement_withdraws_only_certified_quiet_zeros(sqlite_store: Any, tmp_path: Any) -> None:
+    """A new raw archive invalidates inferred absence until reconciliation succeeds."""
+    context = _context(sqlite_store, tmp_path)
+    seeded = pd.DataFrame(
+        {
+            "ticker": ["CHECKED", "LEGACY", "POSITIVE"],
+            "date": pd.to_datetime(["2024-01-02"] * 3),
+            "period": ["202401a"] * 3,
+            "fails_quantity": [0.0, 0.0, 7.0],
+            "fails_value": [0.0, 0.0, 70.0],
+            "source_checked_at": pd.to_datetime(["2024-02-01", None, "2024-02-01"]),
+        }
+    )
+    sqlite_store.save(Tables.sec_fails_to_deliver, seeded)
+    raw = ftd._parse_ftd_lines("SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20240102|037833100|AAPL|10|APPLE INC|10\n").assign(
+        period="202401a", security_id=None, ticker=None, lineage_role=None, security_class=None
+    )
+
+    assert ftd._save_pending_fails(context, raw, ["202401a"]) == 1
+
+    stored = sqlite_store.load(Tables.sec_fails_to_deliver).set_index("ticker")
+    assert stored.loc["CHECKED", ["fails_quantity", "fails_value"]].isna().all()
+    assert stored.loc["LEGACY", ["fails_quantity", "fails_value"]].tolist() == [0.0, 0.0]
+    assert stored.loc["POSITIVE", ["fails_quantity", "fails_value"]].tolist() == [7.0, 70.0]
+    assert stored["source_checked_at"].isna().all()
+    assert sqlite_store.fails_source_periods() == ({"202401a"}, {"202401a"})
+    print("\nSANITY: pending raw replacement withdraws checked quiet zeros; legacy zeros and positive observations survive; period retries.")
+
+
 # --------------------------------------------------------------------------- Q2a: ftd-download raw ingest
 
 _HEADER = "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n"

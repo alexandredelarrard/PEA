@@ -768,6 +768,8 @@ def _save_pending_fails(context: Context, rows: pd.DataFrame, periods: Sequence[
         payload = rows.loc[rows["period"].eq(period)]
         expected = observed.loc[observed["period"].eq(period)]
         retained = expected.assign(source_checked_at=pd.Series(pd.NaT, index=expected.index, dtype="datetime64[ns]"))
+        quiet = expected["source_checked_at"].notna() & expected["fails_quantity"].eq(0)
+        retained.loc[quiet, ["fails_quantity", "fails_value"]] = float("nan")
         counts = context.store.replace_institutional_source(
             {Tables.sec_fails_to_deliver_security: payload, Tables.sec_fails_to_deliver: retained},
             {Tables.sec_fails_to_deliver_security: {"period": period}, Tables.sec_fails_to_deliver: {"period": period}},

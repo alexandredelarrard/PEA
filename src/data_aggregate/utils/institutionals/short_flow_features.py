@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
@@ -28,11 +29,9 @@ from src.constants.constants import FTD_ZIP_NAME_TEMPLATE, MARKET_TIMEZONE
 from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.common.errors import _absent, _empty_panel
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
-from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 from src.data_aggregate.utils.common.price_frames import PriceFrames
-from src.data_aggregate.utils.common.split_basis import split_adjust_frame
 from src.data_aggregate.utils.common.xs import self_history_z
-from src.utils.price_adjustments import ShareBasis
+from src.data_aggregate.utils.institutionals.inputs import QuantityBasis
 from src.utils.string import pad_cik, yahoo_symbol
 
 logger = logging.getLogger(__name__)
@@ -70,13 +69,38 @@ EMISSION: dict[str, str] = {
 }
 
 
+@dataclass(frozen=True)
+class ShortFlowCapital:
+    """PIT outstanding counts and terminal-restated ordinary-share tape on one target basis."""
+
+    shares_out: pd.DataFrame | None
+    tape: pd.DataFrame | None
+    tape_supported: pd.DataFrame | None = None
+
+
+@dataclass(frozen=True)
+class FtdSettlement:
+    """Target-basis outstanding fails and independently observed source dates."""
+
+    quantities: pd.DataFrame
+    on_file: pd.Series
+
+
+@dataclass(frozen=True)
+class FtdPublication:
+    """Global settlement-date/ZIP coverage and each ZIP's existing public availability day."""
+
+    coverage: pd.DataFrame
+    available_by_period: dict[str, pd.Timestamp]
+
+
 def _min_periods(window: int) -> int:
     """Half the window, floored at 3: enough of the window present to be a window."""
     return max(3, window // 2)
 
 
 def _pivot(hist: pd.DataFrame, value: str, idx: pd.DatetimeIndex) -> pd.DataFrame:
-    wide = hist.pivot_table(index="date", columns="ticker", values=value, aggfunc="sum")
+    wide = hist.groupby(["date", "ticker"])[value].sum(min_count=1).unstack("ticker")
     wide.index = pd.to_datetime(wide.index).normalize()
     return wide.reindex(idx)
 
@@ -316,7 +340,6 @@ def _shortvol_fields(
     shares_out: pd.DataFrame | None,
     close_total: pd.DataFrame | None,
     volume: pd.DataFrame | None,
-    splits: pd.DataFrame | None = None,
     tenure_mask: pd.DataFrame | None = None,
 ) -> dict[str, pd.DataFrame]:
     """RegSHO ratio, acceleration, turnover, price-interaction and coverage legs, each shifted by the publication lag."""
@@ -345,7 +368,7 @@ def _shortvol_fields(
         fields["ic_shortvol_high_x_strong_price"] = df_high * df_returns.clip(lower=0.0)
     if volume is not None and not volume.empty:
         df_tape = volume.reindex(index=idx).reindex(columns=df_short.columns)
-        fields["ic_shortvol_market_coverage"] = _shortvol_market_coverage(df_total, df_tape, df_observed, splits)
+        fields["ic_shortvol_market_coverage"] = _shortvol_market_coverage(df_total, df_tape, df_observed)
 
     # Publication does not extend a ticker beyond its proven current-issuer tenure.
     if df_tenure is not None:
@@ -375,12 +398,12 @@ def _shortvol_window_fields(
     return ratios, df_turnover
 
 
-def _shortvol_market_coverage(df_total: pd.DataFrame, df_tape: pd.DataFrame, df_observed: pd.DataFrame, splits: pd.DataFrame | None) -> pd.DataFrame:
+def _shortvol_market_coverage(df_total: pd.DataFrame, df_tape: pd.DataFrame, df_observed: pd.DataFrame) -> pd.DataFrame:
     """Compute split-consistent off-exchange tape coverage and report its supported range."""
     min_periods = _min_periods(BASE_WINDOW)
 
-    # Restate quantities to the tape basis before rolling and applying its physical ceiling.
-    df_numerator = (df_total * split_adjust_frame(splits, df_total)).rolling(BASE_WINDOW, min_periods=min_periods).sum()
+    # Both prepared quantity legs already have the same ordinary-share basis.
+    df_numerator = df_total.rolling(BASE_WINDOW, min_periods=min_periods).sum()
     df_denominator = df_tape.rolling(BASE_WINDOW, min_periods=min_periods).sum()
     df_coverage = (df_numerator / df_denominator.where(df_denominator > 0)).replace([np.inf, -np.inf], np.nan).where(df_observed)
     df_coverage = _guard_coverage(df_coverage)
@@ -401,47 +424,64 @@ def _shortvol_market_coverage(df_total: pd.DataFrame, df_tape: pd.DataFrame, df_
 
 
 def _fails_fields(
-    fails_hist: pd.DataFrame,
-    idx: pd.DatetimeIndex,
-    shares_out: pd.DataFrame | None,
-    volume: pd.DataFrame | None,
-    splits: pd.DataFrame | None = None,
-    tenure_mask: pd.DataFrame | None = None,
-    ftd_cache_dir: Path | None = None,
-    ftd_stored_periods: Sequence[str] | None = None,
-    ftd_coverage: pd.DataFrame | None = None,
-    columns: pd.Index | None = None,
+    settlement: FtdSettlement,
+    capital: ShortFlowCapital,
+    publication: FtdPublication,
+    tenure_mask: pd.DataFrame | None,
 ) -> dict[str, pd.DataFrame]:
-    """FTD-to-ADV20 and persistence legs, published per ZIP; zero-filled only on dates the FTD file covers."""
-    # Resolve publication metadata before calculating settlement-day quantities.
-    coverage = fails_hist if ftd_coverage is None else ftd_coverage
-    available_by_period = _ftd_available_dates(coverage, ftd_cache_dir, stored_periods=ftd_stored_periods)
-    df_fails, on_file = _settlement_fails(fails_hist, coverage, idx, columns if ftd_coverage is not None else None, tenure_mask)
+    """Compute compatible quantity ratios and persistence before publishing each ZIP's state."""
+    df_fails, on_file = settlement.quantities, settlement.on_file
+    idx = pd.DatetimeIndex(df_fails.index)
     fields: dict[str, pd.DataFrame] = {}
     df_pct_shares = None
     df_to_adv = None
 
-    # Preserve the independent PIT-share and split-adjusted ADV denominators.
-    if shares_out is not None and not shares_out.empty:
-        df_shares = shares_out.reindex(index=idx).reindex(columns=df_fails.columns)
+    if capital.shares_out is not None and not capital.shares_out.empty:
+        df_shares = capital.shares_out.reindex(index=idx).reindex(columns=df_fails.columns)
         df_pct_shares = (df_fails / df_shares.where(df_shares > 0)).replace([np.inf, -np.inf], np.nan)
-    if volume is not None and not volume.empty:
-        df_adv = volume.reindex(index=idx).reindex(columns=df_fails.columns).rolling(BASE_WINDOW, min_periods=_min_periods(BASE_WINDOW)).mean()
-        df_adjusted = df_fails * split_adjust_frame(splits, df_fails)
-        df_to_adv = (df_adjusted / df_adv.where(df_adv > 0)).replace([np.inf, -np.inf], np.nan)
-        fields["ic_ftd_to_adv20"] = _publish_ftd_zip_states(df_to_adv, coverage, idx, available_by_period)
+    if capital.tape is not None and not capital.tape.empty:
+        df_adv = capital.tape.reindex(index=idx).reindex(columns=df_fails.columns).rolling(BASE_WINDOW, min_periods=_min_periods(BASE_WINDOW)).mean()
+        df_supported = _rolling_tape_support(capital.tape_supported, idx, df_fails.columns)
+        df_to_adv = (df_fails / df_adv.where(df_adv > 0)).replace([np.inf, -np.inf], np.nan).where(df_supported)
+        fields["ic_ftd_to_adv20"] = _publish_ftd_zip_states(df_to_adv, publication.coverage, idx, publication.available_by_period)
 
     # Calculate settlement persistence, then expose each ZIP as one public state.
     basis = df_pct_shares if df_pct_shares is not None else df_to_adv
     if basis is not None:
         df_persistence = _ftd_settlement_persistence(basis, on_file, idx)
-        fields["ic_ftd_persistence_30d"] = _publish_ftd_zip_states(df_persistence, coverage, idx, available_by_period)
+        fields["ic_ftd_persistence_30d"] = _publish_ftd_zip_states(df_persistence, publication.coverage, idx, publication.available_by_period)
 
     # Retain unknown values outside the issuer's applicable published history.
     if tenure_mask is not None:
         for name, df_field in fields.items():
             fields[name] = df_field.where(tenure_mask.reindex(index=df_field.index, columns=df_field.columns, fill_value=False))
     return fields
+
+
+def _rolling_tape_support(supported: pd.DataFrame | None, idx: pd.DatetimeIndex, columns: pd.Index) -> pd.DataFrame:
+    """An active class with missing input makes its complete rolling tape denominator unknown."""
+    if supported is None:
+        return pd.DataFrame(True, index=idx, columns=columns)
+    df_supported = supported.reindex(index=idx, columns=columns, fill_value=True).fillna(False)
+    return df_supported.astype(float).rolling(BASE_WINDOW, min_periods=1).min().eq(1)
+
+
+def prepare_fails_quantities(
+    fails_hist: pd.DataFrame,
+    coverage: pd.DataFrame,
+    idx: pd.DatetimeIndex,
+    columns: pd.Index | None,
+    tenure_mask: pd.DataFrame | None,
+    basis: QuantityBasis,
+) -> FtdSettlement:
+    """Retain global observed zeros, then rebase raw dated canonical fails to target ordinary shares."""
+    df_fails, on_file = _settlement_fails(fails_hist, coverage, idx, columns, tenure_mask)
+    source = pd.Series(idx, index=idx)
+    target = pd.Series(basis.target_date, index=idx)
+    for ticker in df_fails.columns:
+        names = pd.Series(ticker, index=idx)
+        df_fails[ticker] = basis.events.rebase(df_fails[ticker], names, source, target)
+    return FtdSettlement(df_fails, on_file)
 
 
 def _settlement_fails(
@@ -491,65 +531,24 @@ def _ftd_settlement_persistence(basis: pd.DataFrame, on_file: pd.Series, idx: pd
 def build_short_flow_feature_panel(
     frames: PriceFrames,
     short_history: pd.DataFrame | None,
-    *,
-    fails_history: pd.DataFrame | None = None,
-    ftd_coverage: pd.DataFrame | None = None,
-    ftd_cache_dir: Path | None = None,
-    ftd_stored_periods: Sequence[str] | None = None,
-    shares_out_history: pd.DataFrame | None = None,
-    splits: pd.DataFrame | None = None,
-    symbol_tenure: pd.DataFrame | None = None,
-    ticker_ciks: pd.DataFrame | None = None,
-    class_volume: pd.DataFrame | None = None,
-    share_basis: ShareBasis | None = None,
+    settlement: FtdSettlement | None,
+    capital: ShortFlowCapital,
+    publication: FtdPublication | None,
+    tenure_mask: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """Long-format short-flow panel (`f_<name>` per `EMISSION`); empty if neither source is available.
-
-    `frames.volume` plus `class_volume` (wide secondary-class volume from `secondary_class_volume`) backs
-    ADV20 and coverage, `shares_out_history` (`sharesOutstandingPit`) the
-    share-count-scaled legs, `frames.close_total` the price interactions; each is optional and its
-    absence removes only the legs that need it (hence no `frames.require`).
-    `ftd_coverage` retains global date/ZIP pairs when `fails_history` is ticker-scoped.
-    """
-    peer_dict = frames.peers
-    trading_index = frames.trading_index
-    df_close_total = frames.close_total
-    # Both sources are optional; the panel is empty only when neither arrived.
-    if _absent(short_history) and _absent(fails_history) and _absent(ftd_coverage):
+    """Compute the short/FTD families from prepared common-basis quantities and public ZIP metadata."""
+    if _absent(short_history) and settlement is None:
         return _empty_panel()
-
-    # Prepare calendar, class-aware tape, issuer tenure and PIT share denominators once.
-    df_volume = with_class_volume(frames.volume, class_volume)
-    idx = pd.DatetimeIndex(trading_index).normalize().unique().sort_values()
-    columns = pd.Index(sorted(map(str, frames.universe)), name="ticker")
-    tenure_mask = _proven_tenure_mask(idx, columns, symbol_tenure, ticker_ciks)
-    df_shares_out = None
-    if shares_out_history is not None and not shares_out_history.empty:
-        # Point-in-time share count, matching the as-traded basis of fails and short sales.
-        df_shares_out = fundamentals_to_daily(shares_out_history, "sharesOutstandingPit", idx, share_basis=share_basis)
-        if df_shares_out.empty or not df_shares_out.notna().any().any():
-            df_shares_out = None
-
-    # Calculate RegSHO and FTD independently so optional sources keep their own fields.
+    idx = pd.DatetimeIndex(frames.trading_index).normalize().unique().sort_values()
     fields: dict[str, pd.DataFrame] = {}
     if short_history is not None and not short_history.empty and {"short_volume", "total_volume"}.issubset(short_history.columns):
-        fields.update(_shortvol_fields(short_history, idx, df_shares_out, df_close_total, df_volume, splits, tenure_mask))
-    if not _absent(ftd_coverage) or not _absent(fails_history, {"fails_quantity"}):
-        fails_hist = fails_history if fails_history is not None else pd.DataFrame()
-        fields.update(
-            _fails_fields(
-                fails_hist,
-                idx,
-                df_shares_out,
-                df_volume,
-                splits,
-                tenure_mask,
-                ftd_cache_dir,
-                ftd_stored_periods,
-                ftd_coverage=ftd_coverage,
-                columns=columns,
-            )
-        )
+        fields.update(_shortvol_fields(short_history, idx, capital.shares_out, frames.close_total, capital.tape, tenure_mask))
+        if "ic_shortvol_market_coverage" in fields:
+            df_coverage = fields["ic_shortvol_market_coverage"]
+            df_supported = _rolling_tape_support(capital.tape_supported, idx, df_coverage.columns)
+            fields["ic_shortvol_market_coverage"] = df_coverage.where(df_supported.shift(SHORTVOL_PUB_LAG, fill_value=False))
+    if settlement is not None and publication is not None:
+        fields.update(_fails_fields(settlement, capital, publication, tenure_mask))
 
     # Preserve data-dependent field omission and the existing raw float32 emitter.
     for name in list(fields):
@@ -559,4 +558,4 @@ def build_short_flow_feature_panel(
     if not fields:
         return pd.DataFrame(columns=["date", "ticker"])
     emission = {name: EMISSION[name] for name in fields}
-    return build_peer_relative_panel(fields, peer_dict, emission=emission, availability=frames.availability)
+    return build_peer_relative_panel(fields, frames.peers, emission=emission, availability=frames.availability)

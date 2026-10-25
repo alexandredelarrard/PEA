@@ -37,7 +37,6 @@ from src.data_aggregate.utils.common.incremental import (
     write_part,
 )
 from src.data_aggregate.utils.common.parts import CUBE_PARTS, PART_BY_NAME
-from src.data_aggregate.utils.institutionals.insider_features import build_insider_feature_panel
 from src.data_aggregate.utils.momentum.features import build_feature_panel
 from src.data_store.schema import (
     ALL,
@@ -50,6 +49,7 @@ from src.data_store.schema import (
 )
 from src.data_store.store import DataStore
 from tests.conftest import make_frames
+from tests.data_aggregate.insider_pit_reference import build_prepared_insider_panel as build_insider_feature_panel
 
 
 def _synthetic_prices(n_days: int = 2000, n_tickers: int = 8, seed: int = 0):

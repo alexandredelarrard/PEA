@@ -36,6 +36,52 @@ class ShareBasis:
     vendor: pd.DataFrame
     price: pd.DataFrame
     policies: dict[str, dict]
+    actual_available: bool = True
+
+    def rebase(self, quantities: pd.Series, tickers: pd.Series, source_dates: pd.Series, target_dates: pd.Series) -> pd.Series:
+        """Convert ordinary-share quantities between explicit dates using genuine events only.
+
+        Effective-day quantities are post-split. Missing evidence leaves nonzero cross-date
+        quantities unknown; valid identities and zeros require no event history.
+        """
+        if any(not quantities.index.equals(values.index) for values in (tickers, source_dates, target_dates)):
+            raise ValueError("Quantity, ticker and basis dates must be index-aligned")
+        symbols = tickers.astype(object)
+        kind = pd.api.types.infer_dtype(symbols, skipna=True)
+        symbols = symbols.str.strip() if kind in {"string", "mixed", "mixed-integer", "empty"} else pd.Series(pd.NA, index=tickers.index)
+        df_rows = pd.DataFrame(
+            {
+                "quantity": pd.to_numeric(quantities, errors="coerce").to_numpy(dtype=float, na_value=np.nan),
+                "ticker": symbols.to_numpy(),
+                "source": pd.to_datetime(source_dates, errors="coerce").to_numpy(),
+                "target": pd.to_datetime(target_dates, errors="coerce").to_numpy(),
+            }
+        )
+        valid = np.isfinite(df_rows["quantity"]) & df_rows["ticker"].notna() & df_rows["ticker"].ne("")
+        valid &= df_rows["source"].notna() & df_rows["target"].notna()
+        identity = df_rows["source"].eq(df_rows["target"]) | df_rows["quantity"].eq(0)
+        result = df_rows["quantity"].where(valid & identity)
+        if not self.actual_available:
+            return pd.Series(result.to_numpy(), index=quantities.index, name=quantities.name)
+
+        df_actual = self.actual[["ticker", "date", "value"]].copy()
+        df_actual["date"] = pd.to_datetime(df_actual["date"], errors="coerce")
+        df_actual["value"] = pd.to_numeric(df_actual["value"], errors="coerce")
+        invalid = df_actual[["ticker", "date", "value"]].isna().any(axis=1)
+        invalid |= ~np.isfinite(df_actual["value"]) | df_actual["value"].le(0) | df_actual["ticker"].astype("string").str.strip().eq("")
+        if invalid.any():
+            raise ValueError("Genuine actual events require valid tickers/dates and positive finite factors")
+
+        events_by_ticker = {str(ticker): df_group for ticker, df_group in df_actual.groupby("ticker", sort=False)}
+        for ticker, df_group in df_rows.loc[valid & ~identity].groupby("ticker", sort=False):
+            stamps = np.concatenate([df_group["source"].to_numpy(), df_group["target"].to_numpy()])
+            df_events = events_by_ticker.get(str(ticker))
+            factors = suffix_factor(df_events, [str(ticker)], stamps).get(str(ticker), np.ones(len(stamps)))
+            size = len(df_group)
+            with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+                rebased = df_group["quantity"].to_numpy() * factors[:size] / factors[size:]
+            result.loc[df_group.index] = np.where(np.isfinite(rebased), rebased, np.nan)
+        return pd.Series(result.to_numpy(), index=quantities.index, name=quantities.name)
 
     def declared_units(self, tickers: pd.Series, dates: pd.Series, titles: pd.Series) -> pd.Series:
         """Ordinary shares per explicitly titled security; ambiguous nonunitary titles stay unknown."""
@@ -329,6 +375,7 @@ def resolve_share_events(
         vendor.sort_values(["ticker", "date"]).reset_index(drop=True),
         price.sort_values(["ticker", "date"]).reset_index(drop=True),
         policies,
+        actual_available=actions is not None or yf_splits is not None or base_events is not None,
     )
     _check_quantity_coverage(original, basis)
     _check_anchors(basis, shares, _anchor_quotes(quotes, bugfix, basis.policies))

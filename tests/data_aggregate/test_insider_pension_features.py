@@ -12,8 +12,9 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.fundamentals.fundamental_features import _NET_PENSION_TAGS, _pension_deficit_daily
-from src.data_aggregate.utils.institutionals.insider_features import build_insider_feature_panel
+from src.data_aggregate.utils.institutionals.insider_features import InsiderCoverage
 from tests.conftest import make_frames
+from tests.data_aggregate.insider_pit_reference import build_prepared_insider_panel as build_insider_feature_panel
 
 PRIMARY, VARIANT = _NET_PENSION_TAGS
 
@@ -189,7 +190,10 @@ def test_insider_buy_value_is_scaled_by_market_cap():
     )
     close = pd.DataFrame({t: 50.0 for t in ("BULL", "BEAR", "MIX")}, index=idx)
     panel = build_insider_feature_panel(
-        make_frames(idx, peers, close_split=close), _insider_txns(), shares_out_history=shares, complete_through=idx[-1]
+        make_frames(idx, peers, close_split=close),
+        _insider_txns(),
+        shares_out_history=shares,
+        coverage=InsiderCoverage.from_availability(None, idx[-1]),
     )
     assert "f_ic_insider_buy_value_mcap_180d" in panel.columns
     d = pd.Timestamp("2024-04-01")

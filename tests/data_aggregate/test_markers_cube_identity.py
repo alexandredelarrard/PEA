@@ -19,7 +19,7 @@ from src.data_aggregate.utils.common.inputs import load_source
 from src.data_aggregate.utils.governance.clean import GovernanceInputs, clean_governance_inputs
 from src.data_aggregate.utils.governance.panel import build_governance_feature_panel
 from src.data_aggregate.utils.institutionals.frontiers import schedule_complete_through
-from src.data_aggregate.utils.institutionals.insider_features import build_insider_feature_panel
+from src.data_aggregate.utils.institutionals.insider_features import InsiderCoverage
 from src.data_aggregate.utils.institutionals.ownership_features import build_ownership_feature_panel
 from src.data_aggregate.utils.sec_thirteen.institutional_features import build_institutional_feature_panel
 from src.data_extract.utils.common.edgar_driver import FilingStamp, marker_row
@@ -29,6 +29,7 @@ from src.data_extract.utils.institutionals.fetch_13f_backfill import mark_gap_wa
 from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore
 from tests.conftest import _store, make_frames
+from tests.data_aggregate.insider_pit_reference import build_prepared_insider_panel as build_insider_feature_panel
 
 TICKERS = ["AAPL", "DIS", "HPQ", "JPM", "PG"]
 GRID_START = pd.Timestamp("2024-01-02")
@@ -107,7 +108,9 @@ def _builders(prices: pd.DataFrame) -> dict[str, Callable[[DataStore], pd.DataFr
 
     def insider(store: DataStore) -> pd.DataFrame:
         complete_through = schedule_complete_through(store, Tables.insider_transactions, close.index.max())
-        return build_insider_feature_panel(frames, store.load(Tables.insider_transactions, project=True), complete_through=complete_through)
+        return build_insider_feature_panel(
+            frames, store.load(Tables.insider_transactions, project=True), coverage=InsiderCoverage.from_availability(None, complete_through)
+        )
 
     def governance(store: DataStore) -> pd.DataFrame:
         raw = GovernanceInputs(def14a=cast(pd.DataFrame, store.load(Tables.def14a_llm)), votes=store.load(Tables.sec_8k_votes))

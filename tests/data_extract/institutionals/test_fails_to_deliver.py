@@ -10,11 +10,11 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.institutionals.short_flow_features import build_short_flow_feature_panel
 from src.data_extract.utils.common import security_master as sm
 from src.data_extract.utils.institutionals import fetch_fails_to_deliver as ftd
 from src.data_store.schema import Tables
 from tests.conftest import make_frames
+from tests.data_aggregate.test_short_flow_features import build_short_flow_feature_panel
 
 
 def _context(sqlite_store, tmp_path) -> Any:

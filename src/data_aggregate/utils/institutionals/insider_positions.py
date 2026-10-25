@@ -7,42 +7,29 @@ from typing import cast
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.common.price_frames import PriceFrames
+from src.data_aggregate.utils.institutionals.inputs import QuantityBasis
 from src.data_aggregate.utils.institutionals.insider_quality import security_class
-from src.utils.price_adjustments import ShareBasis
 
 
-def position_units(trades: pd.DataFrame, frames: PriceFrames, quotes: pd.DataFrame | None, share_basis: ShareBasis | None = None) -> pd.DataFrame:
-    """Normalize quantities and holdings together using genuine splits, never level actions.
+def position_units(trades: pd.DataFrame, basis: QuantityBasis | None) -> pd.DataFrame:
+    """Rebase transaction-day shares and holdings together; preserve clean source execution USD.
 
-    A single economic day needs no cross-day conversion. Multi-day balances require a
-    known common unit: the as-traded and adjusted price legs must share their quote date.
+    Unknown class/event evidence keeps source quantities for scale-free same-day ratios,
+    while marking their cross-day and cross-account comparability unsupported.
     """
     df_rows = trades.copy()
     df_rows["klass"] = security_class(df_rows["security_title"])
-    factor = pd.Series(np.nan, index=df_rows.index)
-
-    # Resolve conversion factors only from matching as-traded and adjusted quote dates.
-    if quotes is not None and not quotes.empty and frames.close_split is not None:
-        df_basis = frames.close_split
-        if frames.level_factor is not None:
-            df_basis = df_basis * frames.level_factor.reindex_like(df_basis)
-        df_factors = quotes / df_basis.reindex_like(quotes).where(df_basis.reindex_like(quotes).gt(0))
-        row = df_factors.index.get_indexer(pd.DatetimeIndex(df_rows["transaction_day"]))
-        col = df_factors.columns.get_indexer(pd.Index(df_rows["ticker"]))
-        known = (row >= 0) & (col >= 0)
-        factor.iloc[np.flatnonzero(known)] = pd.Series(df_factors.to_numpy()[row[known], col[known]], dtype=float)
-        factor = factor.where(df_rows["klass"].eq("COMMON"))
-
-    # Apply explicit share-unit policies before scaling both quantities and balances.
-    if share_basis is not None:
-        configured = df_rows["ticker"].isin(share_basis.policies)
-        declared = share_basis.declared_units(df_rows["ticker"], df_rows["transaction_day"], df_rows["security_title"])
-        actual = share_basis.factor(df_rows["ticker"], df_rows["transaction_day"], "actual")
-        factor.loc[configured] = (actual * declared).loc[configured].where(df_rows.loc[configured, "klass"].eq("COMMON"))
+    if basis is None:
+        df_rows["units_known"] = False
+        return df_rows
+    declared = basis.events.declared_units(df_rows["ticker"], df_rows["transaction_day"], df_rows["security_title"])
+    target = pd.Series(basis.target_date, index=df_rows.index)
+    factor = basis.events.rebase(pd.Series(1.0, index=df_rows.index), df_rows["ticker"], df_rows["transaction_day"], target) * declared
+    factor = factor.where(df_rows["klass"].eq("COMMON"))
     df_rows["units_known"] = factor.gt(0) & np.isfinite(factor)
     for column in ("shares_n", "shares_owned_after"):
-        df_rows[column] = df_rows[column] * factor.where(df_rows["units_known"], 1.0)
+        rebased = basis.events.rebase(df_rows[column] * declared, df_rows["ticker"], df_rows["transaction_day"], target)
+        df_rows[column] = rebased.where(df_rows["units_known"], df_rows[column])
     return df_rows
 
 

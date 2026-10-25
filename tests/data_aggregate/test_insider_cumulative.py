@@ -5,11 +5,76 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.common.availability import InstitutionalAvailability
-from src.data_aggregate.utils.institutionals.insider_features import build_insider_feature_panel
-from src.data_aggregate.utils.institutionals.insider_quality import officer_role
+from src.data_aggregate.utils.institutionals.inputs import QuantityBasis
+from src.data_aggregate.utils.institutionals.insider_features import InsiderCoverage
+from src.data_aggregate.utils.institutionals.insider_positions import position_units
+from src.data_aggregate.utils.institutionals.insider_quality import clean_transactions, officer_role
 from src.data_store.schema import Tables
+from src.utils.price_adjustments import ShareBasis
 from tests.conftest import make_frames
+from tests.data_aggregate.insider_pit_reference import build_prepared_insider_panel as build_insider_feature_panel
 from tests.data_aggregate.test_insider_features import _frame, _peers, _txn
+
+
+def test_quantity_rebasing_preserves_clean_execution_usd() -> None:
+    idx = pd.bdate_range("2024-06-03", periods=10)
+    df_events = pd.DataFrame({"ticker": ["AAA"], "date": [pd.Timestamp("2024-06-10")], "value": [10.0]})
+    share_basis = ShareBasis(df_events, df_events, df_events, {})
+    rows = [
+        _txn(
+            accession_number="before", transaction_date="2024-06-07", filing_date="2024-06-11", shares=5, price_per_share=100, shares_owned_after=105
+        ),
+        _txn(
+            accession_number="after", transaction_date="2024-06-10", filing_date="2024-06-12", shares=50, price_per_share=10, shares_owned_after=1100
+        ),
+    ]
+    df_quotes = pd.DataFrame({"AAA": np.where(idx < pd.Timestamp("2024-06-10"), 100.0, 10.0)}, index=idx)
+    df_clean, _ = clean_transactions(_frame(rows), as_traded_quotes=df_quotes, share_basis=share_basis)
+    df_rebased = position_units(df_clean, QuantityBasis(share_basis, idx[-1]))
+    df_before = df_rebased.loc[df_rebased["transaction_day"].eq(pd.Timestamp("2024-06-07"))]
+    assert df_before["shares_n"].tolist() == [50]
+    assert df_before["shares_owned_after"].tolist() == [1050]
+    assert df_rebased["units_known"].all()
+    assert not df_clean["price_repaired"].any()
+    pd.testing.assert_series_equal(df_rebased["value"], df_clean["value"])
+    assert df_clean["value"].eq(500.0).all()
+    print(
+        "SANITY: source-date quotes validate100/10 execution prices before5→50 share rebasing; both500USD values remain exact after delayed disclosure."
+    )
+
+
+def test_quantity_rebasing_requires_explicit_nonunitary_titles() -> None:
+    df_events = pd.DataFrame({"ticker": ["AAA"], "date": pd.to_datetime(["2024-06-10"]), "value": [0.5]})
+    policy = {
+        "AAA": {
+            "quote_units": {
+                "date": "2024-06-10",
+                "before": 2,
+                "after": 1,
+                "quoted_titles": ["American Depositary Shares"],
+                "ordinary_titles": ["Ordinary Shares"],
+            }
+        }
+    }
+    basis = QuantityBasis(ShareBasis(df_events, df_events, df_events, policy), pd.Timestamp("2024-06-11"))
+    df_trades = pd.DataFrame(
+        {
+            "ticker": ["AAA"] * 3,
+            "transaction_day": pd.to_datetime(["2024-06-07"] * 3),
+            "security_title": ["Ordinary Shares", "American Depositary Shares", "Common Stock"],
+            "shares_n": [10.0] * 3,
+            "shares_owned_after": [100.0] * 3,
+            "value": [500.0] * 3,
+        }
+    )
+    df_rebased = position_units(df_trades, basis)
+    assert df_rebased["shares_n"].tolist() == [5, 10, 10]
+    assert df_rebased["shares_owned_after"].tolist() == [50, 100, 100]
+    assert df_rebased["units_known"].tolist() == [True, True, False]
+    pd.testing.assert_series_equal(df_rebased["value"], df_trades["value"])
+    print(
+        "SANITY: declared ordinary/ADS titles apply0.5/1 quantity conversion once; ambiguous common title stays unverified and all executionUSD is unchanged."
+    )
 
 
 @pytest.mark.parametrize(
@@ -56,8 +121,9 @@ def _observed_panel(rows: list[dict], *, complete: bool = True) -> pd.DataFrame:
         _frame(rows),
         shares_out_history=history,
         as_traded_quotes=close,
-        availability=InstitutionalAvailability.from_config({Tables.insider_transactions.name: {"__all__": "2024-01-01"}}),
-        complete_through=idx.max() if complete else None,
+        coverage=InsiderCoverage.from_availability(
+            InstitutionalAvailability.from_config({Tables.insider_transactions.name: {"__all__": "2024-01-01"}}), idx.max() if complete else None
+        ),
     ).set_index(["date", "ticker"])
 
 
@@ -238,7 +304,10 @@ def test_dollar_totals_use_current_cap_and_real_expiry() -> None:
     close = pd.DataFrame({"AAA": np.where(idx < pd.Timestamp("2015-06-10"), 100.0, 200.0)}, index=idx)
     shares = pd.DataFrame([{"ticker": "AAA", "as_of": pd.Timestamp("2014-01-01"), "sharesOutstanding": 1000.0, "sharesOutstandingPit": 1000.0}])
     panel = build_insider_feature_panel(
-        make_frames(idx, _peers(), close_split=close), _frame(rows), shares_out_history=shares, complete_through=idx.max()
+        make_frames(idx, _peers(), close_split=close),
+        _frame(rows),
+        shares_out_history=shares,
+        coverage=InsiderCoverage.from_availability(None, idx.max()),
     ).set_index("date")
     assert panel.loc["2015-06-01", "f_ic_insider_buy_value_mcap_60d"] == pytest.approx(0.01)
     assert panel.loc["2015-06-10", "f_ic_insider_buy_value_mcap_60d"] == pytest.approx(0.005)
@@ -299,7 +368,9 @@ def test_genuine_split_units_cancel_level_actions() -> None:
     level = pd.DataFrame({"AAA": 1.25}, index=dates)
     quotes = pd.DataFrame({"AAA": np.where(dates < pd.Timestamp("2015-06-05"), 100.0, 50.0)}, index=dates)
     frames = make_frames(idx, _peers(), close_split=split_basis, level_factor=level)
-    panel = build_insider_feature_panel(frames, _frame(rows), as_traded_quotes=quotes).set_index("date")
+    df_events = pd.DataFrame({"ticker": ["AAA"], "date": pd.to_datetime(["2015-06-05"]), "value": [2.0]})
+    share_basis = ShareBasis(df_events, df_events, df_events, {})
+    panel = build_insider_feature_panel(frames, _frame(rows), as_traded_quotes=quotes, share_basis=share_basis).set_index("date")
     name = "f_ic_insider_management_position_change_60d"
     assert panel.loc["2015-06-10", name] == pytest.approx(40 / 200)
     assert panel.loc["2015-07-31", name] == pytest.approx(20 / 220)
@@ -321,7 +392,7 @@ def test_unknown_split_conversion_abstains_for_multiple_days() -> None:
         ),
     ]
     idx = pd.date_range("2015-06-01", "2015-06-15")
-    panel = build_insider_feature_panel(make_frames(idx, _peers()), _frame(rows)).set_index("date")
+    panel = build_insider_feature_panel(make_frames(idx, _peers()), _frame(rows), share_basis=None).set_index("date")
     name = "f_ic_insider_management_position_change_60d"
     assert panel.loc["2015-06-09", name] == pytest.approx(0.1)
     assert panel.loc["2015-06-10":, name].isna().all()
@@ -456,16 +527,17 @@ def test_balance_identity_does_not_hide_one_share_on_a_large_account() -> None:
 
 
 @pytest.mark.parametrize(
-    "title,quote_mode,same_day",
+    "title,event_evidence,quote_mode,same_day",
     [
-        ("Class A Common Stock", "both", False),
-        ("Common Stock", "both", False),
-        ("Common Stock", "none", False),
-        ("Common Stock", "partial", False),
-        ("Class A Common Stock", "both", True),
+        ("Class A Common Stock", True, "both", False),
+        ("Common Stock", True, "both", False),
+        ("Common Stock", False, "none", False),
+        ("Common Stock", False, "partial", False),
+        ("Common Stock", True, "none", False),
+        ("Class A Common Stock", True, "both", True),
     ],
 )
-def test_cross_account_pool_requires_compatible_share_units(title: str, quote_mode: str, same_day: bool) -> None:
+def test_cross_account_pool_requires_compatible_share_units(title: str, event_evidence: bool, quote_mode: str, same_day: bool) -> None:
     rows = [
         _txn(
             accession_number="before",
@@ -497,10 +569,15 @@ def test_cross_account_pool_requires_compatible_share_units(title: str, quote_mo
     if quote_mode == "partial":
         quotes.loc[dates < pd.Timestamp("2015-06-05")] = np.nan
     adjusted = pd.DataFrame({"AAA": 50.0}, index=dates)
+    df_events = pd.DataFrame({"ticker": ["AAA"], "date": pd.to_datetime(["2015-06-05"]), "value": [2.0]})
+    share_basis = ShareBasis(df_events, df_events, df_events, {}) if event_evidence else None
     panel = build_insider_feature_panel(
-        make_frames(idx, _peers(), close_split=adjusted), _frame(rows), as_traded_quotes=quotes if quote_mode != "none" else None
+        make_frames(idx, _peers(), close_split=adjusted),
+        _frame(rows),
+        as_traded_quotes=quotes if quote_mode != "none" else None,
+        share_basis=share_basis,
     ).set_index("date")
-    expected = 0.35 if same_day else 0.2 if title == "Common Stock" and quote_mode == "both" else np.nan
+    expected = 0.35 if same_day else 0.2 if title == "Common Stock" and event_evidence else np.nan
     for name in ("f_ic_insider_management_position_change_60d", "f_ic_insider_purchase_pct_prior"):
         assert panel.loc["2015-06-09", name] == pytest.approx(0.1)
         if pd.isna(expected):

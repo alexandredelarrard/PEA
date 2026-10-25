@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
@@ -15,12 +16,11 @@ import pandas as pd
 from src.data_aggregate.utils.common.availability import InstitutionalAvailability
 from src.data_aggregate.utils.common.errors import _empty_panel
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
-from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
+from src.data_aggregate.utils.common.pit import daily_market_cap
 from src.data_aggregate.utils.common.price_frames import PriceFrames
-from src.data_aggregate.utils.institutionals.insider_positions import cumulative_positions, position_units
-from src.data_aggregate.utils.institutionals.insider_quality import FLAG_PCT_SHARES_OUTSTANDING, clean_transactions, report_oversized, security_class
+from src.data_aggregate.utils.institutionals.insider_positions import cumulative_positions
+from src.data_aggregate.utils.institutionals.insider_quality import FLAG_PCT_SHARES_OUTSTANDING, report_oversized, security_class
 from src.data_store.schema import Tables
-from src.utils.price_adjustments import ShareBasis
 
 _log = logging.getLogger(__name__)
 
@@ -58,72 +58,64 @@ CLUSTER_WINDOW_DAYS, CLUSTER_MIN = 120, 2
 INSIDER_FLOOR = pd.Timestamp("2006-01-03")
 TEN_B5_1_FLOOR = pd.Timestamp("2023-04-01")
 
-#: Legacy caller default; cumulative insider fields do not use temporal decay.
-DEFAULT_DECAY_HALFLIFE = 63.0
+
+@dataclass(frozen=True)
+class InsiderCoverage:
+    """Independent public-source/plan floors and complete-observation frontier."""
+
+    complete_through: pd.Timestamp | None = None
+    availability: InstitutionalAvailability | None = None
+    insider_floor: pd.Timestamp = INSIDER_FLOOR
+    plan_floor: pd.Timestamp = TEN_B5_1_FLOOR
+
+    @classmethod
+    def from_availability(cls, availability: InstitutionalAvailability | None, complete_through: pd.Timestamp | None) -> InsiderCoverage:
+        return cls(
+            pd.Timestamp(complete_through) if complete_through is not None and pd.notna(complete_through) else None,
+            availability,
+            availability.source_date(Tables.insider_transactions) if availability is not None else INSIDER_FLOOR,
+            availability.source_date(Tables.insider_transactions, "is_10b5_1") if availability is not None else TEN_B5_1_FLOOR,
+        )
 
 
 def build_insider_feature_panel(
     frames: PriceFrames,
-    insider: pd.DataFrame | None,
-    *,
-    shares_out_history: pd.DataFrame | None = None,
-    decay_halflife: float = DEFAULT_DECAY_HALFLIFE,
-    availability: InstitutionalAvailability | None = None,
-    complete_through: pd.Timestamp | None = None,
-    as_traded_quotes: pd.DataFrame | None = None,
-    role_evidence: pd.DataFrame | None = None,
-    share_basis: ShareBasis | None = None,
+    df_trades: pd.DataFrame,
+    df_position_trades: pd.DataFrame,
+    diagnostics: dict,
+    df_mcap: pd.DataFrame | None,
+    coverage: InsiderCoverage,
 ) -> pd.DataFrame:
-    """Point-in-time insider features, preserving source-complete quiet windows and unit evidence."""
-    need = {"ticker", "filing_date", "transaction_code", "shares"}
-    if insider is None or insider.empty or not need.issubset(insider.columns):
+    """Compute features from clean source-USD trades, separately rebased positions and dated coverage."""
+    if "source_first" not in diagnostics:
         return _empty_panel()
-
-    # Clean source versions once and establish the complete calculation calendar.
-    df_trades, diag = clean_transactions(insider, as_traded_quotes=as_traded_quotes, role_evidence=role_evidence, share_basis=share_basis)
+    diag = diagnostics
     df_unpriced = diag.get("unpriced_events", pd.DataFrame(columns=["ticker", "day", "code"]))
     idx = pd.DatetimeIndex(frames.trading_index).normalize().unique().sort_values()
     if idx.empty:
         return pd.DataFrame(columns=["date", "ticker"])
 
-    # Prepare the distinct valuation and as-traded share denominators.
-    df_stock_close = frames.close_split
-    df_mcap = _market_cap(shares_out_history, df_stock_close, frames.level_factor)
-    df_shares_out = (
-        fundamentals_to_daily(shares_out_history, "sharesOutstandingPit", idx, share_basis=share_basis)
-        if shares_out_history is not None and not shares_out_history.empty
-        else pd.DataFrame(index=idx)
-    )
-    _report_oversized(df_trades, df_shares_out)
-
     # Reconstruct positions with disclosed shares even when execution dollars are unknown.
     df_buys = df_trades[df_trades["code"].eq("P")].copy()
     df_sells = df_trades[df_trades["code"].eq("S")].copy()
     # Missing dollars do not invalidate disclosed shares or post-trade holdings.
-    df_position_trades = position_units(pd.concat([df_trades, df_unpriced], ignore_index=True), frames, as_traded_quotes, share_basis)
     df_other_flows = diag.get("other_flows", pd.DataFrame())
     df_positions = _daily_positions(df_position_trades, df_other_flows)
 
     # Calculate raw feature groups before applying source and identity masks.
-    insider_floor = availability.source_date(Tables.insider_transactions) if availability is not None else INSIDER_FLOOR
-    ten_b5_floor = availability.source_date(Tables.insider_transactions, "is_10b5_1") if availability is not None else TEN_B5_1_FLOOR
+    insider_floor, ten_b5_floor = coverage.insider_floor, coverage.plan_floor
     fields = {
         **_dense_fields(df_buys, df_sells, idx, df_mcap, ten_b5_floor),
         **_breadth_fields(df_buys, idx),
         **_sparse_fields(df_buys, idx, df_mcap),
         **cumulative_positions(df_position_trades, df_positions, df_other_flows, idx, WINDOW_60),
     }
-    fields = _gate_dates(fields, idx, insider_floor, complete_through)
+    fields = _gate_dates(fields, idx, insider_floor, coverage.complete_through)
 
     # Establish observable quiet windows, preserving unsupported active disclosures.
-    frontier = pd.Timestamp(complete_through) if complete_through is not None and pd.notna(complete_through) else None
-    columns = pd.Index(sorted(map(str, frames.universe)), name="ticker")
-    df_listed = _listed(df_stock_close, idx, columns)
     df_unsupported = diag.get("unsupported_events", pd.DataFrame())
     df_activity = pd.concat([df_trades, df_unpriced, df_unsupported], ignore_index=True)
-    _observe_quiet_windows(
-        fields, df_activity, diag["source_first"], idx, columns, df_listed, insider_floor, ten_b5_floor, frontier, availability, df_mcap
-    )
+    _observe_quiet_windows(fields, df_activity, diag["source_first"], frames, coverage, df_mcap)
 
     # Propagate uncertainty through dollar windows, account balances and prior-owner ranks.
     df_uncertain = pd.concat([diag.get("uncertain_events", pd.DataFrame()), df_unsupported], ignore_index=True)
@@ -218,17 +210,20 @@ def _net_buy_mask(
     columns: pd.Index,
     listed: pd.DataFrame,
     insider_floor: pd.Timestamp,
-    complete_through: pd.Timestamp,
-    availability: InstitutionalAvailability | None,
+    coverage: InsiderCoverage,
     window_days: int = WINDOW_180,
 ) -> pd.DataFrame:
     """Cells where an empty window is observable: listed, a full calendar window after the
     source floor, and on or before the complete frontier."""
     history_start = pd.Timestamp(insider_floor).normalize() + pd.Timedelta(days=window_days - 1)
     full_window = InstitutionalAvailability.date_mask(idx, columns, history_start)
-    observed_through = InstitutionalAvailability.through_mask(idx, columns, complete_through)
-    if availability is not None:
-        return availability.source_mask(Tables.insider_transactions, idx, columns, requirements=(listed, full_window, observed_through))
+    observed_through = (
+        InstitutionalAvailability.through_mask(idx, columns, coverage.complete_through)
+        if coverage.complete_through is not None
+        else pd.DataFrame(False, index=idx, columns=columns)
+    )
+    if coverage.availability is not None:
+        return coverage.availability.source_mask(Tables.insider_transactions, idx, columns, requirements=(listed, full_window, observed_through))
     source_started = InstitutionalAvailability.date_mask(idx, columns, insider_floor)
     return InstitutionalAvailability.combine(source_started, listed, full_window, observed_through)
 
@@ -237,13 +232,8 @@ def _observe_quiet_windows(
     fields: dict[str, pd.DataFrame],
     activity: pd.DataFrame,
     source_first: pd.Series,
-    idx: pd.DatetimeIndex,
-    columns: pd.Index,
-    listed: pd.DataFrame,
-    insider_floor: pd.Timestamp,
-    plan_floor: pd.Timestamp,
-    frontier: pd.Timestamp | None,
-    availability: InstitutionalAvailability | None,
+    frames: PriceFrames,
+    coverage: InsiderCoverage,
     mcap: pd.DataFrame | None,
 ) -> None:
     """Fill only proven inactivity; unsupported active rows never become zero.
@@ -252,6 +242,10 @@ def _observe_quiet_windows(
     named source window, current listing and required denominator/flag coverage are also
     necessary. Unknown officer/director attribution cannot establish role inactivity.
     """
+    idx = pd.DatetimeIndex(frames.trading_index).normalize().unique().sort_values()
+    columns = pd.Index(sorted(map(str, frames.universe)), name="ticker")
+    listed = _listed(frames.close_split, idx, columns)
+    insider_floor, plan_floor, frontier = coverage.insider_floor, coverage.plan_floor, coverage.complete_through
     buy, sell = activity["code"].eq("P"), activity["code"].eq("S")
     role_unknown = activity["officer_title_clean"].eq("") & ~activity["is_officer"].eq(0)
     specifications = {
@@ -278,7 +272,7 @@ def _observe_quiet_windows(
                 fields[name] = fields[name].reindex(index=idx, columns=columns).where(active)
             continue
         floor = max(insider_floor, plan_floor) if "sell_mcap" in name else insider_floor
-        observed = _net_buy_mask(idx, columns, listed, floor, frontier, availability, window) & corroborated
+        observed = _net_buy_mask(idx, columns, listed, floor, coverage, window) & corroborated
         if "mcap" in name:
             if mcap is None or mcap.empty:
                 continue
@@ -772,7 +766,9 @@ def _visible_prior_rank(d: pd.DataFrame) -> pd.Series:
 # --------------------------------------------------------------------------- #
 
 
-def _market_cap(shares_out_history: pd.DataFrame | None, stock_close: pd.DataFrame | None, level_factor: pd.DataFrame | None) -> pd.DataFrame | None:
+def insider_market_cap(
+    shares_out_history: pd.DataFrame | None, stock_close: pd.DataFrame | None, level_factor: pd.DataFrame | None
+) -> pd.DataFrame | None:
     if shares_out_history is None or shares_out_history.empty or stock_close is None or stock_close.empty:
         _log.warning("No shares outstanding or close -> the seven size-scaled insider features are skipped.")
         return None
@@ -793,10 +789,10 @@ def _market_cap(shares_out_history: pd.DataFrame | None, stock_close: pd.DataFra
     return mcap
 
 
-def _report_oversized(t: pd.DataFrame, shares_out: pd.DataFrame) -> None:
+def report_oversized_positions(t: pd.DataFrame, shares_out: pd.DataFrame | None) -> None:
     """Log, never drop. See `insider_quality.report_oversized` for why a threshold cannot
     separate a fabricated filing from a genuine block disposal on this universe."""
-    flagged = report_oversized(t, shares_out if not shares_out.empty else None)
+    flagged = report_oversized(t, shares_out)
     if flagged.empty:
         return
     top = flagged.head(5)

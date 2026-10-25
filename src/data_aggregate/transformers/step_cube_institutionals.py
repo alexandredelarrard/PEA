@@ -16,11 +16,25 @@ from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.price_frames import PriceFrames, load_trading_calendar
 from src.data_aggregate.utils.institutionals import frontiers as institutional_frontiers
 from src.data_aggregate.utils.institutionals import inputs as institutional_inputs
-from src.data_aggregate.utils.institutionals.insider_features import build_insider_feature_panel
+from src.data_aggregate.utils.institutionals import short_flow_features as short_flow
+from src.data_aggregate.utils.institutionals.insider_features import (
+    InsiderCoverage,
+    build_insider_feature_panel,
+    insider_market_cap,
+    report_oversized_positions,
+)
+from src.data_aggregate.utils.institutionals.insider_positions import position_units
+from src.data_aggregate.utils.institutionals.insider_quality import clean_transactions
 from src.data_aggregate.utils.institutionals.ownership_features import build_ownership_feature_panel
-from src.data_aggregate.utils.institutionals.short_flow_features import build_short_flow_feature_panel, secondary_class_volume
+from src.data_aggregate.utils.institutionals.short_flow_features import (
+    FtdPublication,
+    ShortFlowCapital,
+    build_short_flow_feature_panel,
+    prepare_fails_quantities,
+    secondary_class_volume,
+    with_class_volume,
+)
 from src.data_store.schema import Tables
-from src.utils.price_adjustments import ShareBasis
 from src.utils.step import Step
 
 
@@ -70,12 +84,13 @@ class StepCubeInstitutionals(Step):
             where={"lineage_role": SECONDARY_CLASS, "canonical_company": list(frames.universe)},
             optional=True,
         )
-        df_shares, df_splits, basis, df_valuation_close, df_bars = capital_inputs.load_share_inputs(self._context, frames, self._bugfix, df_lines)
+        df_shares, _, basis, df_valuation_close, df_bars = capital_inputs.load_share_inputs(self._context, frames, self._bugfix, df_lines)
+        quantity_basis = institutional_inputs.QuantityBasis.from_context(basis, pd.DatetimeIndex(frames.trading_index))
 
         # Build each family sequentially so raw sources do not overlap in memory.
         merger = PanelMerger(anchor=frames.skeleton())
-        merger.add(self._insider_panel(frames, df_shares, share_basis=basis, valuation_close=df_valuation_close), "insider-trading")
-        merger.add(self._short_flow_panel(frames, df_shares, df_splits, df_lines, df_bars, share_basis=basis), "short-flow")
+        merger.add(self._insider_panel(frames, df_shares, quantity_basis, df_valuation_close), "insider-trading")
+        merger.add(self._short_flow_panel(frames, df_shares, df_lines, df_bars, quantity_basis), "short-flow")
         merger.add(self._ownership_panel(frames), "beneficial-ownership")
 
         # Merge once on observed price keys; the writer owns tail projection.
@@ -85,12 +100,10 @@ class StepCubeInstitutionals(Step):
         self,
         frames: PriceFrames,
         shares: pd.DataFrame | None,
-        *,
-        share_basis: ShareBasis | None = None,
-        valuation_close: pd.DataFrame | None = None,
+        quantity_basis: institutional_inputs.QuantityBasis,
+        valuation_close: pd.DataFrame | None,
     ) -> pd.DataFrame | None:
         last_session = pd.DatetimeIndex(frames.trading_index).max() if len(frames.trading_index) else None
-        decay_halflife = self._decay_halflife("insider")
 
         # Load transactions and their completeness/title evidence before cleaning.
         df_insider = institutional_inputs.load_insider_transactions(self._store, frames.universe)
@@ -99,28 +112,27 @@ class StepCubeInstitutionals(Step):
         complete_through = institutional_frontiers.schedule_complete_through(self._store, Tables.insider_transactions, last_session)
         df_roles = institutional_inputs.load_insider_role_evidence(self._store, df_insider)
 
-        # Clean, calculate and mask through the family's production builder.
-        return build_insider_feature_panel(
-            frames,
-            df_insider,
-            shares_out_history=shares,
-            decay_halflife=decay_halflife,
-            availability=self._availability,
-            complete_through=complete_through,
-            as_traded_quotes=valuation_close,
-            role_evidence=df_roles,
-            share_basis=share_basis,
+        # Preserve execution USD while cleaning source-unit prices and public versions.
+        df_trades, diagnostics = clean_transactions(
+            df_insider, as_traded_quotes=valuation_close, role_evidence=df_roles, share_basis=quantity_basis.events
         )
+        if "source_first" not in diagnostics:
+            return None
+        df_unpriced = diagnostics.get("unpriced_events", pd.DataFrame())
+        df_positions = position_units(pd.concat([df_trades, df_unpriced], ignore_index=True), quantity_basis)
+        df_shares_out = institutional_inputs.daily_share_quantities(shares, pd.DatetimeIndex(frames.trading_index), quantity_basis)
+        report_oversized_positions(df_positions.iloc[: len(df_trades)], df_shares_out)
+        df_mcap = insider_market_cap(shares, frames.close_split, frames.level_factor)
+        coverage = InsiderCoverage.from_availability(self._availability, complete_through)
+        return build_insider_feature_panel(frames, df_trades, df_positions, diagnostics, df_mcap, coverage)
 
     def _short_flow_panel(
         self,
         frames: PriceFrames,
         shares: pd.DataFrame | None,
-        splits: pd.DataFrame | None,
         lines: pd.DataFrame | None,
         bars: pd.DataFrame,
-        *,
-        share_basis: ShareBasis,
+        quantity_basis: institutional_inputs.QuantityBasis,
     ) -> pd.DataFrame | None:
         cache_dir = self._context.paths["DATA_STORE"] / self._context.config.local.paths.fails_deliver
 
@@ -129,25 +141,29 @@ class StepCubeInstitutionals(Step):
         df_short = capital_inputs.load_source(self._store, Tables.short_interest, frames.universe)
         df_fails, df_coverage = institutional_inputs.load_fails(self._store, frames.universe)
 
-        # Prepare class-aware tape denominators and the observed ZIP inventory.
-        df_class_volume = secondary_class_volume(lines, bars, frames.trading_index)[0] if lines is not None else None
-        stored_periods = sorted(df_coverage["period"].unique()) if df_coverage is not None else None
+        # Raw FINRA/FTD observations become ordinary shares on one explicit terminal basis.
+        idx = pd.DatetimeIndex(frames.trading_index).normalize().unique().sort_values()
+        columns = pd.Index(sorted(map(str, frames.universe)), name="ticker")
+        df_tenure = short_flow._proven_tenure_mask(idx, columns, df_symbol_tenure, df_ticker_ciks)
+        df_short = institutional_inputs.short_quantity_history(df_short, quantity_basis)
+        df_shares_out = institutional_inputs.daily_share_quantities(shares, idx, quantity_basis)
 
-        # Compute both flow families with their existing publication clocks.
-        return build_short_flow_feature_panel(
-            frames,
-            df_short,
-            fails_history=df_fails,
-            ftd_coverage=df_coverage,
-            ftd_cache_dir=cache_dir,
-            ftd_stored_periods=stored_periods,
-            shares_out_history=shares,
-            splits=splits,
-            symbol_tenure=df_symbol_tenure,
-            ticker_ciks=df_ticker_ciks,
-            class_volume=df_class_volume,
-            share_basis=share_basis,
-        )
+        # Yahoo/class tape is already vendor-restated; apply its terminal class ratio once.
+        df_tape = institutional_inputs.tape_share_quantities(frames.volume, quantity_basis)
+        df_supported = None
+        if lines is not None:
+            df_class_volume, df_missing = secondary_class_volume(lines, bars, idx)
+            df_tape = with_class_volume(df_tape, df_class_volume)
+            df_supported = ~df_missing
+        capital = ShortFlowCapital(df_shares_out, df_tape, df_supported)
+        settlement = publication = None
+        if df_coverage is not None or df_fails is not None:
+            df_source = df_fails if df_fails is not None else pd.DataFrame(columns=["date", "ticker", "fails_quantity", "period"])
+            df_coverage = df_coverage if df_coverage is not None else df_source[["date", "period"]]
+            settlement = prepare_fails_quantities(df_source, df_coverage, idx, columns, df_tenure, quantity_basis)
+            available = short_flow._ftd_available_dates(df_coverage, cache_dir, stored_periods=sorted(df_coverage["period"].unique()))
+            publication = FtdPublication(df_coverage, available)
+        return build_short_flow_feature_panel(frames, df_short, settlement, capital, publication, df_tenure)
 
     def _ownership_panel(self, frames: PriceFrames) -> pd.DataFrame | None:
         last_session = pd.DatetimeIndex(frames.trading_index).max() if len(frames.trading_index) else None

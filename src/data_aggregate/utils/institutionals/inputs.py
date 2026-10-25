@@ -4,19 +4,70 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any, cast
 
 import pandas as pd
 
 from src.constants.constants import CANONICAL_ROLES
+from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 from src.data_aggregate.utils.institutionals.insider_quality import OTHER_OFFICER, clean_officer_title, officer_role, owner_name_key
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.price_adjustments import ShareBasis
 from src.utils.string import pad_cik
 
 logger = logging.getLogger(__name__)
 TENURE_SOURCES = ("form345", "manual")
 CLASS_LINE_COLUMNS = ("canonical_company", "market_symbol", "conversion_ratio", "valid_from", "valid_to")
+
+
+@dataclass(frozen=True)
+class QuantityBasis:
+    """Genuine ordinary-share event evidence and one full-context terminal basis date."""
+
+    events: ShareBasis
+    target_date: pd.Timestamp
+
+    @classmethod
+    def from_context(cls, events: ShareBasis, calendar: pd.DatetimeIndex) -> QuantityBasis:
+        """Anchor to the full vendor tape calendar; later event metadata cannot advance its restatement basis."""
+        if calendar.empty:
+            raise ValueError("Quantity basis requires a nonempty full calculation calendar")
+        return cls(events, pd.Timestamp(calendar.max()))
+
+
+def short_quantity_history(df_history: pd.DataFrame | None, basis: QuantityBasis) -> pd.DataFrame | None:
+    """Raw dated FINRA aggregates already class-converted upstream, on the target ordinary-share basis."""
+    if df_history is None or df_history.empty:
+        return df_history
+    df_rows = df_history.copy()
+    target = pd.Series(basis.target_date, index=df_rows.index)
+    for column in ("short_volume", "total_volume"):
+        if column in df_rows:
+            df_rows[column] = basis.events.rebase(df_rows[column], df_rows["ticker"], df_rows["date"], target)
+    return df_rows
+
+
+def daily_share_quantities(df_history: pd.DataFrame | None, idx: pd.DatetimeIndex, basis: QuantityBasis) -> pd.DataFrame | None:
+    """Project as-of ordinary PIT counts after rebasing to the common target; vendor valuation counts stay intact."""
+    if df_history is None or df_history.empty or "sharesOutstandingPit" not in df_history:
+        return None
+    df_rows = df_history[["ticker", "as_of", "sharesOutstandingPit"]].copy()
+    target = pd.Series(basis.target_date, index=df_rows.index)
+    df_rows["sharesOutstandingPit"] = basis.events.rebase(df_rows["sharesOutstandingPit"], df_rows["ticker"], df_rows["as_of"], target)
+    df_daily = fundamentals_to_daily(df_rows, "sharesOutstandingPit", idx)
+    return df_daily if not df_daily.empty and df_daily.notna().any().any() else None
+
+
+def tape_share_quantities(df_volume: pd.DataFrame | None, basis: QuantityBasis) -> pd.DataFrame | None:
+    """Yahoo tape is already terminal-restated; only its explicitly evidenced quoted-security units need conversion."""
+    if df_volume is None or df_volume.empty:
+        return df_volume
+    tickers = pd.Series(df_volume.columns, index=df_volume.columns)
+    dates = pd.Series(basis.target_date, index=df_volume.columns)
+    units = basis.events.factor(tickers, dates, "units")
+    return df_volume.mul(units, axis="columns")
 
 
 def load_symbol_lineage(

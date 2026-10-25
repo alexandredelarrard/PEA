@@ -20,9 +20,9 @@ from src.data_aggregate.utils.institutionals.insider_features import (
     EMISSION,
     INSIDER_FLOOR,
     TEN_B5_1_FLOOR,
+    InsiderCoverage,
     _owner_surprise,
     _unpriced_masks,
-    build_insider_feature_panel,
 )
 from src.data_aggregate.utils.institutionals.insider_quality import (
     OPEN_MARKET_CODES,
@@ -34,6 +34,7 @@ from src.data_aggregate.utils.institutionals.insider_quality import (
 )
 from src.data_store.schema import Tables
 from tests.conftest import make_frames
+from tests.data_aggregate.insider_pit_reference import build_prepared_insider_panel as build_insider_feature_panel
 
 TRADING_INDEX = pd.bdate_range("2015-01-01", "2016-12-31")
 
@@ -587,7 +588,7 @@ def test_unpriced_insider_is_unknown_not_zero(unknown_code, known_code):
         make_frames(TRADING_INDEX, _peers(("AAA", "BBB")), close_split=close),
         _frame(rows),
         shares_out_history=fh,
-        complete_through=TRADING_INDEX.max(),
+        coverage=InsiderCoverage.from_availability(None, TRADING_INDEX.max()),
     )
     panel = panel[panel["ticker"].eq("AAA")].set_index("date")
     ratio = panel["f_ic_insider_net_buy_ratio_180d"]
@@ -857,7 +858,7 @@ def test_complete_through_preserves_covered_zero_and_masks_the_unobserved_tail()
         make_frames(idx, _peers(), close_split=close),
         _frame(rows),
         shares_out_history=fh,
-        complete_through=complete_through,
+        coverage=InsiderCoverage.from_availability(None, complete_through),
     ).set_index("date")
 
     covered_zero = panel.loc[pd.Timestamp("2024-07-31"), "f_ic_insider_buy_value_mcap_180d"]
@@ -921,7 +922,10 @@ def test_distinct_buyers_counts_people_not_filings():
             )
     fh, close = _prices()
     panel = build_insider_feature_panel(
-        make_frames(TRADING_INDEX, _peers(), close_split=close), _frame(rows), shares_out_history=fh, complete_through=TRADING_INDEX.max()
+        make_frames(TRADING_INDEX, _peers(), close_split=close),
+        _frame(rows),
+        shares_out_history=fh,
+        coverage=InsiderCoverage.from_availability(None, TRADING_INDEX.max()),
     )
     n = panel.set_index("date")["f_ic_insider_distinct_buyers_120d"]
     peak = n.max()
@@ -1006,7 +1010,7 @@ def test_net_buy_ratio_is_zero_only_inside_a_complete_observation_frontier():
         make_frames(TRADING_INDEX, _peers(), close_split=close),
         _frame(rows),
         shares_out_history=fh,
-        complete_through=pd.Timestamp("2016-06-30"),
+        coverage=InsiderCoverage.from_availability(None, pd.Timestamp("2016-06-30")),
     )
     s = panel.set_index("date")["f_ic_insider_net_buy_ratio_180d"]
     assert pd.isna(s.loc["2015-05-01"]) and s.loc["2015-06-01"] == 1.0

@@ -22,16 +22,12 @@ from src.constants.constants import DEFAULT_CONFIG_DIR, SECONDARY_CLASS
 from src.data_aggregate.utils.common import inputs as capital_inputs
 from src.data_aggregate.utils.common.level_basis import load_bugfix
 from src.data_aggregate.utils.common.price_frames import PriceFrames
-from src.data_aggregate.utils.institutionals.inputs import CLASS_LINE_COLUMNS
-from src.data_aggregate.utils.institutionals.short_flow_features import (
-    _fails_fields,
-    _shortvol_fields,
-    build_short_flow_feature_panel,
-    secondary_class_volume,
-    with_class_volume,
-)
+from src.data_aggregate.utils.institutionals.inputs import CLASS_LINE_COLUMNS, QuantityBasis, short_quantity_history
+from src.data_aggregate.utils.institutionals.short_flow_features import ShortFlowCapital, _shortvol_fields, secondary_class_volume, with_class_volume
 from src.data_store.schema import Tables
+from src.utils.price_adjustments import resolve_share_events
 from tests.conftest import make_frames
+from tests.data_aggregate.test_short_flow_features import _fails_fields, build_short_flow_feature_panel
 
 
 def _load_classes(store: Any, universe: list[str], bugfix: dict | None = None) -> tuple[pd.DataFrame, pd.DataFrame] | None:
@@ -74,7 +70,11 @@ def test_two_classes_at_ratio_one_sum_into_both_denominators() -> None:
     frames = make_frames(idx, peers, volume=volume)
 
     old = build_short_flow_feature_panel(frames, regsho, fails_history=fails).set_index(["date", "ticker"]).sort_index()
-    new = build_short_flow_feature_panel(frames, regsho, fails_history=fails, class_volume=class_vol).set_index(["date", "ticker"]).sort_index()
+    new = (
+        build_short_flow_feature_panel(frames, regsho, fails_history=fails, capital=ShortFlowCapital(None, with_class_volume(volume, class_vol)))
+        .set_index(["date", "ticker"])
+        .sort_index()
+    )
 
     day = (pd.Timestamp("2024-01-30"), "LEN")
     assert old.loc[day, "f_ic_ftd_to_adv20"] == pytest.approx(0.3)
@@ -108,7 +108,7 @@ def test_brk_style_ratio_step_matches_the_as_traded_identity_across_a_one_class_
     lines = _lines(("BRK-B", "BRK-A", 30.0, "1900-01-01", "2010-01-21"), ("BRK-B", "BRK-A", 1500.0, "2010-01-21", OPEN))
     class_vol, missing = secondary_class_volume(lines, _bars("BRK-A", idx, 10.0), idx)
     tape = with_class_volume(volume, class_vol)
-
+    assert tape is not None
     assert _cell(tape, "2010-01-20", "BRK-B") == pytest.approx(50 * (2_000 + 30 * 10))
     assert _cell(tape, "2010-01-21", "BRK-B") == pytest.approx(100_000 + 1_500 * 10)
     fails_days = [d for d in idx if d <= pd.Timestamp("2009-12-14")] + [
@@ -124,7 +124,10 @@ def test_brk_style_ratio_step_matches_the_as_traded_identity_across_a_one_class_
     regsho = pd.DataFrame(
         [{"date": d, "ticker": "BRK-B", "short_volume": 1.0, "total_volume": 1_000 + 30 * 5 if d < split else 50_000 + 1_500 * 5} for d in idx]
     )
-    cov = _shortvol_fields(regsho, idx, None, None, tape, splits)["ic_shortvol_market_coverage"]
+    basis = QuantityBasis.from_context(resolve_share_events(None, splits, {}), idx)
+    df_regsho = short_quantity_history(regsho, basis)
+    assert df_regsho is not None
+    cov = _shortvol_fields(df_regsho, idx, None, None, tape)["ic_shortvol_market_coverage"]
 
     assert _cell(ratio, "2009-12-30", "BRK-B") == pytest.approx(160 / 2_300)
     assert _cell(ratio, "2010-03-02", "BRK-B") == pytest.approx(2_500 / 115_000)
@@ -197,8 +200,10 @@ def test_a_single_class_issuer_is_bit_identical() -> None:
     other_vol, _ = secondary_class_volume(_lines(("CCC", "CCC-B", 1.0, "1900-01-01", OPEN)), _bars("CCC-B", idx, 1e6), idx)
 
     base = build_short_flow_feature_panel(frames, regsho, fails_history=fails)
-    none_lines = build_short_flow_feature_panel(frames, regsho, fails_history=fails, class_volume=empty_vol)
-    others = build_short_flow_feature_panel(frames, regsho, fails_history=fails, class_volume=other_vol)
+    none_lines = build_short_flow_feature_panel(
+        frames, regsho, fails_history=fails, capital=ShortFlowCapital(None, with_class_volume(volume, empty_vol))
+    )
+    others = build_short_flow_feature_panel(frames, regsho, fails_history=fails, capital=ShortFlowCapital(None, with_class_volume(volume, other_vol)))
 
     pd.testing.assert_frame_equal(none_lines, base)
     single = base["ticker"].isin(["AAA", "BBB"])

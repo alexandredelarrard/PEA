@@ -320,11 +320,8 @@ def consensus_price(txns: pd.DataFrame, *, window: str = CONSENSUS_WINDOW) -> pd
 def clean_transactions(
     insider: pd.DataFrame,
     *,
-    price_tolerance: float = PRICE_TOLERANCE,
     as_traded_quotes: pd.DataFrame | None = None,
     role_evidence: pd.DataFrame | None = None,
-    max_price_age_days: int = 7,
-    assessments: tuple[dict[str, object], ...] | None = None,
     share_basis: ShareBasis | None = None,
 ) -> tuple[pd.DataFrame, dict]:
     """Return priced common-stock P/S versions and diagnostics for unsupported evidence."""
@@ -346,7 +343,7 @@ def clean_transactions(
     df_trades = df_trades[~unsupported]
 
     # Apply quote checks and dated source evidence, retaining unpriced share claims.
-    df_trades, price_counts = _clean_trade_prices(df_trades, as_traded_quotes, share_basis, price_tolerance, max_price_age_days, assessments)
+    df_trades, price_counts = _clean_trade_prices(df_trades, as_traded_quotes, share_basis, PRICE_TOLERANCE, 7, None)
     diag.update(price_counts)
 
     # Report the same economic and filing-version counts after cleaning.

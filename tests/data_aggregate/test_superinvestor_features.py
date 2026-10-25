@@ -168,6 +168,95 @@ def test_unknown_or_partial_book_never_manufactures_a_sale() -> None:
     print("SANITY: unusable current books remain unknown rather than zero holdings or sales.")
 
 
+@pytest.mark.parametrize("lag", [1, 4])
+@pytest.mark.parametrize("unknown_endpoint", ["current", "prior"])
+@pytest.mark.parametrize("position_type", ["call", "put"])
+def test_unknown_common_leg_survives_option_type_for_levels_and_comparisons(lag: int, unknown_endpoint: str, position_type: str) -> None:
+    prior_period = "2024-03-31" if lag == 1 else "2023-06-30"
+    prior = _book("1", prior_period, {"AAA": (100, 1000), "BBB": (100, 1000)})
+    current = _book("1", "2024-06-30", {"AAA": (110, 1100), "BBB": (120, 1200)})
+    unknown = current if unknown_endpoint == "current" else prior
+    target = unknown.df_positions.ticker.eq("AAA")
+    unknown.df_positions.loc[target, "position_type"] = position_type
+    unknown.df_positions.loc[target, ["shares", "value_usd"]] = np.nan
+    history = _compute(_snapshot([prior, current]))
+    change = "shares_chg" if lag == 1 else "shares_chg_yoy"
+    breadth = "breadth_chg" if lag == 1 else "holders_yoy"
+    for cohort in ("", "topk"):
+        assert np.isnan(_value(history, change, cohort=cohort))
+        assert np.isnan(_value(history, breadth, cohort=cohort))
+        assert _value(history, change, ticker="BBB", cohort=cohort) == pytest.approx(0.2)
+        assert _value(history, breadth, ticker="BBB", cohort=cohort) == 0
+        if lag == 1:
+            assert np.isnan(_value(history, "trade_balance", cohort=cohort))
+            assert _value(history, "trade_balance", ticker="BBB", cohort=cohort) == 1
+            for ticker in ("AAA", "BBB"):
+                assert np.isnan(_value(history, "relative_position_chg", ticker=ticker, cohort=cohort))
+                assert np.isnan(_value(history, "pooled_weight_chg", ticker=ticker, cohort=cohort))
+        if unknown_endpoint == "current":
+            for metric in ("holders", "top10_holders", "quarters_held", "conviction_weight", "max_conviction", "pooled_weight"):
+                assert np.isnan(_value(history, metric, cohort=cohort))
+            assert _value(history, "holders", ticker="BBB", cohort=cohort) == 1
+            assert np.isnan(_value(history, "conviction_weight", ticker="BBB", cohort=cohort))
+        else:
+            assert _value(history, "holders", cohort=cohort) == 1
+            assert _value(history, "quarters_held", cohort=cohort) == 1
+    print(
+        f"SANITY: {position_type}-typed unknown common leg at {unknown_endpoint}, lag{lag}, stays unknown in both cohorts; "
+        "the known sibling grows20%, while required whole-book evidence is not dropped."
+    )
+
+
+@pytest.mark.parametrize("lag", [1, 4])
+@pytest.mark.parametrize("position_type", ["call", "put"])
+def test_proven_option_only_common_zero_still_supports_nonholding_and_sale(lag: int, position_type: str) -> None:
+    prior_period = "2024-03-31" if lag == 1 else "2023-06-30"
+    prior = _book("1", prior_period, {"AAA": (100, 1000), "BBB": (100, 1000)})
+    current = _book("1", "2024-06-30", {"AAA": (0, 0), "BBB": (120, 1200)})
+    current.df_positions.loc[current.df_positions.ticker.eq("AAA"), "position_type"] = position_type
+    history = _compute(_snapshot([prior, current]))
+    change = "shares_chg" if lag == 1 else "shares_chg_yoy"
+    breadth = "breadth_chg" if lag == 1 else "holders_yoy"
+    for cohort in ("", "topk"):
+        assert _value(history, "holders", cohort=cohort) == 0
+        assert _value(history, "top10_holders", cohort=cohort) == 0
+        assert np.isnan(_value(history, "quarters_held", cohort=cohort))
+        assert _value(history, "conviction_weight", cohort=cohort) == 0
+        assert _value(history, change, cohort=cohort) == -1
+        assert _value(history, breadth, cohort=cohort) == -1
+        if lag == 1:
+            assert _value(history, "trade_balance", cohort=cohort) == -1
+            assert np.isfinite(_value(history, "relative_position_chg", cohort=cohort))
+            assert _value(history, "pooled_weight_chg", cohort=cohort) == pytest.approx(-0.5)
+    print(f"SANITY: proven zero common legs on a {position_type}-only row remain nonholdings and supported lag{lag} exits in both cohorts.")
+
+
+@pytest.mark.parametrize("lag", [1, 4])
+def test_complete_restatement_restores_known_absence_after_unknown_common_leg(lag: int) -> None:
+    prior_period = "2024-03-31" if lag == 1 else "2023-06-30"
+    prior = _book("1", prior_period, {"AAA": (100, 1000), "BBB": (100, 1000)})
+    unknown = _book("1", "2024-06-30", {"AAA": (np.nan, np.nan), "BBB": (120, 1200)})
+    unknown.df_positions.loc[unknown.df_positions.ticker.eq("AAA"), "position_type"] = "call"
+    restated = _book("1", "2024-06-30", {"BBB": (120, 1200)})
+    snapshots = (_snapshot([prior, unknown]), _snapshot([prior, restated], day="2024-08-16"))
+    cohorts = {"": frozenset({"1"}), "topk": frozenset({"1"})}
+    history = compute_superinvestor_feature_history(snapshots, cohorts, ("AAA", "BBB"), _market())
+    change = "shares_chg" if lag == 1 else "shares_chg_yoy"
+    breadth = "breadth_chg" if lag == 1 else "holders_yoy"
+    for cohort in ("", "topk"):
+        prefix = f"ic_super_{cohort}_" if cohort else "ic_super_"
+        assert np.isnan(history.levels[prefix + change].iloc[0].AAA)
+        assert np.isnan(history.levels[prefix + "holders"].iloc[0].AAA)
+        assert _value(history, "holders", cohort=cohort) == 0
+        assert _value(history, "top10_holders", cohort=cohort) == 0
+        assert _value(history, change, cohort=cohort) == -1
+        assert _value(history, breadth, cohort=cohort) == -1
+        if lag == 1:
+            assert _value(history, "trade_balance", cohort=cohort) == -1
+            assert _value(history, "pooled_weight_chg", cohort=cohort) == pytest.approx(-0.5)
+    print(f"SANITY: a complete later restatement restores known absence and a full lag{lag} sale prospectively in both cohorts.")
+
+
 def test_unselected_estimated_quantities_do_not_contaminate_topk() -> None:
     books = [
         _book("1", "2024-03-31", {"AAA": (100, 1000)}),

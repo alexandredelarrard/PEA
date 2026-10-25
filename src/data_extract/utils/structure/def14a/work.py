@@ -161,10 +161,16 @@ def replay_candidates(works: list[FilingWork]) -> Iterator[tuple[FilingWork, Sec
             # Normalizing saved holders is free, including complete retry=2 rows without JSON.
             if section.key == "ownership" and holders_need_reconciliation(work.saved[section.table]):
                 yield work, section, OwnershipExtract.model_validate({"percent_unit": "fraction", "shares_scale": "units"})
-            for answer in answers.get(section.key, []):
-                source_repair = section.key in ("executive_pay", "director_pay", "ownership") and bool(source_for_answer(work.raw, section, answer))
-                if section.key in work.pending or source_repair:
-                    yield work, section, answer
+
+            # Filter lazily because a yielded repair can complete the section.
+            section_answers = (
+                answer
+                for answer in answers.get(section.key, [])
+                if section.key in work.pending
+                or (section.key in ("executive_pay", "director_pay", "ownership") and bool(source_for_answer(work.raw, section, answer)))
+            )
+            for answer in section_answers:
+                yield work, section, answer
 
 
 def requests_for(work: FilingWork, payloads: dict[str, str]) -> list[tuple[Section, LlmTask]]:

@@ -961,3 +961,9 @@ Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/
 - Evidence: 77 focused integration tests passed with zero blocked live effects; source comparison preserves the unchanged SEC13F files and newer dev production files. This is local code adoption, with no production build or complete100M computation and no new full-source capacity claim.
 - Pages: [Overview](./OVERVIEW.md), [Aggregation](./modules/data-aggregate.md), [Cube flow](./flows/cube-build.md), [Data access](./guides/data-access.md), [Run the pipeline](./guides/run-the-pipeline.md), [TODO](./TODO.md).
 - Local ignored audit: `reports/validate/2026-10-24-sec13f-code-refactor/merges/merge-05.md` and `_out/dev-merge-01.json`.
+
+## 2026-10-24: backlog — potential governance leadership features
+
+- Profile: internal/standard; source_commit: 97c43693956d10af48bcf726a73429122798378b.
+- Coverage: record the user's deferred leadership-feature ideas in [TODO](./TODO.md): career/company tenure, committee expertise and attendance, financial alignment, incentive design, renewal, historical director-pay policy and conflicts/accountability.
+- Boundary: future source-coverage and point-in-time validation, not implementation today. Existing age, tenure, pay and ownership fields should be reused; 8-K votes are not duplicated. No extraction schema, cube feature or source data is changed by this backlog edit.

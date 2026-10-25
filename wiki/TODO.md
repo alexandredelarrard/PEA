@@ -290,6 +290,20 @@ Deferred from the identity manual-review run (local run dir `reports/validate/20
 - **Remaining tape-mix actions.** FITBP (an open `form345` tenure while the master's FITBP lines stop at 2026-06-09 and gap 2013–2019) and HUBA (the overlap runs to 2016-08-18, the master's HUBA line ends 2015-12-24) stay ACTION items for a tenure curation.
 - **Tape-mix flag reads the previous master.** `build_entity_lineage` judges tape-mix overlaps against the stored `security_master`, rebuilt after the lineage; a new acquired line is information only from the following run.
 
+## Governance cube — potential leadership features (deferred)
+
+Recorded at the user's request on 2026-10-24 as future research, **not implementation work for today**. Assess source coverage and point-in-time predictive usefulness before extending the [extraction schemas](../src/data_extract/utils/schemas/def14a_schema.py) or [governance builder](../src/data_aggregate/transformers/step_cube_governance.py).
+
+- **Career and continuity:** company joining year, internal promotion versus external appointment, prior CEO/CFO roles and explicitly dated operating experience. Keep company, CEO and board tenure distinct.
+- **Oversight and engagement:** audit financial-expert designation, audit/compensation/nomination committee memberships and chairs, and explicit attendance deficiencies. Distinguish group assertions from individual percentages.
+- **Financial alignment:** ownership requirements as pay multiples, compliance/retention periods, actual pledged shares, and separate beneficial common shares from deferred stock equivalents/unvested awards. Holdings alone do not prove voluntary purchases or unhedged personal exposure.
+- **Incentive design:** performance versus time vesting, horizon, metric names/weights, discretion and severance/change-of-control terms. Check whether additional CD&A/contract text is needed.
+- **Renewal and transitions:** director term/retirement limits and succession announcements, preserving announcement and effective dates separately.
+- **Historical director pay policy:** annual cash/equity retainers, per-meeting fees and committee-chair premiums; never substitute these for a person's missing annual payments.
+- **Conflicts/accountability:** explicit family/related-party transactions and actual compensation-recovery events, distinguished from generic policies.
+
+Reuse already requested age, CEO/board tenure, founder/chair status, compensation components, employee pay ratio and holdings. Do not duplicate 8-K votes or extract a subjective leadership-strength score. Unknown remains null; silence is not false. Source/examples proposal: local ignored `reports/validate/2026-10-24-def14a-extraction-refactor/leadership-feature-opportunities.md`.
+
 ## DEF 14A extraction follow-ups (governance)
 
 Deferred by the user on 2026-10-10 from the governance fill review. Evidence and charts are in the local, gitignored run dir `reports/validate/2026-10-10-governance-fill-review/` (`01-research.md` M2/M1/M4, scripts `_scripts/a5.py`, `c1.py`, `c2.py`). This phase changes the `def14a_llm` extraction; the cleaning stage does **not** repair these fields from other sources in the meantime.

@@ -163,16 +163,153 @@ def test_source_price_typo_abstains_without_erasing_known_shares() -> None:
 
 def test_canonical_titles_are_dated_and_identity_safe() -> None:
     rows = [
-        _txn(accession_number="a", officer_title="C.F.O.", is_officer=1),
-        _txn(accession_number="b", shares=1001, filing_date="2015-06-10", officer_title="", is_officer=1),
-        _txn(accession_number="c", shares=1002, filing_date="2015-05-20", officer_title="", is_officer=1),
-        _txn(accession_number="d", shares=1003, filing_date="2015-06-15", officer_title="President", is_officer=1),
+        _txn(accession_number="a", issuer_cik="123", officer_title="C.F.O.", is_officer=1),
+        _txn(accession_number="b", issuer_cik="123", shares=1001, filing_date="2015-06-10", officer_title="", is_officer=1),
+        _txn(accession_number="c", issuer_cik="123", shares=1002, filing_date="2015-05-20", officer_title="", is_officer=1),
+        _txn(accession_number="d", issuer_cik="123", shares=1003, filing_date="2015-06-15", officer_title="President", is_officer=1),
     ]
     out, _ = clean_transactions(_frame(rows))
     assert list(out["role"]) == ["CFO", "CFO", "other_named_officer", "other_named_officer"]
     assert out.loc[1, "role_source"] == "prior_form4"
     assert out.loc[2, "role_source"] == "filed"
     print("SANITY: punctuation normalized; blank title uses prior same-owner evidence; no future fill or contradictory-title promotion.")
+
+
+@pytest.mark.parametrize(
+    "prior_changes,current_changes,barrier_titles,recovered",
+    [
+        pytest.param({}, {}, [], True, id="same-issuer-owner"),
+        pytest.param({}, {"filing_date": "2024-01-01"}, [], True, id="365-day-boundary"),
+        pytest.param({}, {"filing_date": "2024-01-02"}, [], False, id="366-day-expiry"),
+        pytest.param({"filing_date": "2023-02-01"}, {}, [], False, id="same-public-day"),
+        pytest.param({"filing_date": "2023-03-01"}, {}, [], False, id="future-public-title"),
+        pytest.param({"officer_title": "Incoming Chief Executive Officer"}, {}, [], False, id="future-appointment-is-not-current-role"),
+        pytest.param({"issuer_cik": ""}, {"issuer_cik": ""}, [], False, id="missing-issuer"),
+        pytest.param({}, {"issuer_cik": "124"}, [], False, id="different-issuer"),
+        pytest.param({}, {"owner_cik": "2"}, [], False, id="different-owner"),
+        pytest.param({"owner_cik": ""}, {"owner_cik": ""}, [], False, id="missing-owner"),
+        pytest.param({}, {"officer_title": "See Remarks"}, [], True, id="remarks-with-dated-proof"),
+        pytest.param({"officer_title": "See Remarks"}, {}, [], False, id="remarks-is-not-a-role"),
+        pytest.param({}, {"officer_title": "President"}, [], False, id="current-nonmanagement"),
+        pytest.param({}, {}, ["Former Chief Executive Officer"], False, id="former-role-barrier"),
+        pytest.param({}, {}, ["Chief Executive Officer of AWS"], False, id="unit-role-barrier"),
+        pytest.param({}, {}, ["Chief Financial Officer", "Chief Operating Officer"], False, id="conflicting-role-barrier"),
+    ],
+)
+def test_prior_role_recovery_requires_dated_issuer_person_proof(
+    prior_changes: dict[str, object], current_changes: dict[str, object], barrier_titles: list[str], recovered: bool
+) -> None:
+    prior = _txn(
+        accession_number="prior-role",
+        issuer_cik="123",
+        filing_date="2023-01-01",
+        transaction_date="2023-01-01",
+        transaction_code="A",
+        officer_title="Chief Executive Officer",
+        is_officer=1,
+        is_director=0,
+    )
+    current = _txn(
+        accession_number="current-role",
+        issuer_cik="123",
+        filing_date="2023-02-01",
+        transaction_date="2023-02-01",
+        officer_title="",
+        is_officer=1,
+        is_director=0,
+    )
+    prior.update(prior_changes)
+    current.update(current_changes)
+    barriers = [dict(prior, accession_number=f"barrier-{i}", filing_date="2023-01-15", officer_title=title) for i, title in enumerate(barrier_titles)]
+    expected = "CEO" if recovered else "other_named_officer"
+    for rows in ([prior, *barriers, current], [current, *barriers[::-1], prior]):
+        cleaned, _ = clean_transactions(_frame(rows))
+        actual = cleaned.set_index("accession_number").loc["current-role"]
+        assert actual["role"] == expected
+        assert bool(actual["is_management"]) == recovered
+        assert actual["is_director"] == 0
+        assert actual["role_source"] == ("prior_form4" if recovered else "filed")
+        if recovered:
+            assert actual["role_as_of"] == pd.Timestamp(prior["filing_date"])
+    print(f"SANITY: dated issuer/person proof yields {expected}; row order cannot change recovery or infer a director flag.")
+
+
+@pytest.mark.parametrize(
+    "title,barrier_titles,unknown",
+    [
+        pytest.param("See Remarks", [], True, id="unresolved-reference"),
+        pytest.param("Officer", [], True, id="unspecified-officer"),
+        pytest.param("Chief Executive Officer", [], False, id="recognized-management"),
+        pytest.param("President", [], False, id="explicit-nonmanagement"),
+        pytest.param("", ["Former Chief Executive Officer"], False, id="former-role-barrier"),
+        pytest.param("", ["Chief Executive Officer of AWS"], False, id="unit-role-barrier"),
+        pytest.param("", ["Chief Financial Officer", "Chief Operating Officer"], True, id="conflicting-role-barrier"),
+    ],
+)
+def test_role_uncertainty_distinguishes_unresolved_and_explicit_exclusions(title: str, barrier_titles: list[str], unknown: bool) -> None:
+    current = _txn(accession_number="current-role", issuer_cik="123", filing_date="2023-02-01", officer_title=title, is_officer=1, is_director=0)
+    barriers = [
+        dict(current, accession_number=f"barrier-{i}", filing_date="2023-01-01", transaction_code="A", officer_title=barrier)
+        for i, barrier in enumerate(barrier_titles)
+    ]
+    cleaned, _ = clean_transactions(_frame([*barriers, current]))
+    actual = cleaned.set_index("accession_number").loc["current-role"]
+    assert bool(actual["role_unknown"]) == unknown
+    assert actual["is_director"] == 0
+    assert actual["officer_title"] == title
+    print(f"SANITY: unresolved role={unknown}; explicit exclusions stay distinct without changing the filed title or director flag.")
+
+
+@pytest.mark.parametrize(
+    "issuer_cik,current_title,recovered",
+    [
+        pytest.param("123", "", True, id="explicit-proxy-title"),
+        pytest.param("", "", False, id="missing-issuer-is-not-a-match"),
+        pytest.param("123", "See Remarks", True, id="remarks-with-public-proxy-proof"),
+    ],
+)
+def test_proxy_role_recovery_requires_known_issuer_and_unresolved_title(issuer_cik: str, current_title: str, recovered: bool) -> None:
+    rows = [
+        _txn(
+            accession_number="identity",
+            issuer_cik=issuer_cik,
+            filing_date="2023-01-01",
+            transaction_code="A",
+            officer_title="President",
+            is_officer=1,
+        ),
+        _txn(
+            accession_number="current-role", issuer_cik=issuer_cik, filing_date="2023-03-01", officer_title=current_title, is_officer=1, is_director=0
+        ),
+    ]
+
+    class Store:
+        def load(self, table: object, **kwargs: object) -> pd.DataFrame:
+            assert table is Tables.def14a_executive_comp
+            assert kwargs["where"] == {"ticker": ["AAA"]}
+            return pd.DataFrame(
+                [
+                    {
+                        "ticker": "AAA",
+                        "cik": issuer_cik,
+                        "as_of": "2023-02-01",
+                        "name": "Jane Doe",
+                        "title": "Chief Executive Officer",
+                        "fiscal_year": 2022,
+                    }
+                ]
+            )
+
+    evidence = load_insider_role_evidence(Store(), _frame(rows))
+    cleaned, _ = clean_transactions(_frame(rows), role_evidence=evidence)
+    actual = cleaned.set_index("accession_number").loc["current-role"]
+    assert actual["role"] == ("CEO" if recovered else "other_named_officer")
+    assert bool(actual["is_management"]) == recovered
+    assert actual["is_director"] == 0
+    assert actual["role_source"] == ("explicit_proxy_title" if recovered else "filed")
+    if recovered:
+        assert actual["role_as_of"] == pd.Timestamp("2023-02-01")
+    print(f"SANITY: proxy recovery={recovered} requires known issuer/person and a public explicit title; See Remarks supplies no title itself.")
 
 
 def test_dated_share_claim_masks_tail_and_retires_prospectively() -> None:

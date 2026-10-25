@@ -11,7 +11,13 @@ import pandas as pd
 
 from src.constants.constants import CANONICAL_ROLES
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
-from src.data_aggregate.utils.institutionals.insider_quality import OTHER_OFFICER, clean_officer_title, officer_role, owner_name_key
+from src.data_aggregate.utils.institutionals.insider_quality import (
+    OTHER_OFFICER,
+    clean_officer_title,
+    officer_role,
+    owner_name_key,
+    role_needs_evidence,
+)
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.price_adjustments import ShareBasis
@@ -126,12 +132,12 @@ def load_insider_role_evidence(store: DataStore, insider: pd.DataFrame) -> pd.Da
     columns = ["ticker", "issuer_cik", "owner_cik", "role_as_of", "officer_title_clean", "role", "role_source"]
     if not {"issuer_cik", "owner_cik", "owner_name", "officer_title"}.issubset(insider):
         return pd.DataFrame(columns=columns)
-    blank_title = insider["officer_title"].fillna("").astype(str).str.strip().eq("")
-    if not blank_title.any():
+    missing_role = insider["officer_title"].map(role_needs_evidence).astype(bool)
+    if not missing_role.any():
         return pd.DataFrame(columns=columns)
-    ticks = sorted(insider.loc[blank_title, "ticker"].dropna().astype(str).unique())
+    ticks = sorted(insider.loc[missing_role, "ticker"].dropna().astype(str).unique())
 
-    # Load only proxy rows for tickers with a blank filed title.
+    # Load only proxy rows for tickers with a missing job claim.
     df_proxy = store.load(
         Tables.def14a_executive_comp, columns=["ticker", "cik", "as_of", "name", "title", "fiscal_year"], where={"ticker": ticks}, optional=True
     )
@@ -139,7 +145,10 @@ def load_insider_role_evidence(store: DataStore, insider: pd.DataFrame) -> pd.Da
         return pd.DataFrame(columns=columns)
 
     # Match dated public titles only after an actual proxy payload is available.
-    df_owners = _role_owner_identities(insider)
+    df_proxy = df_proxy.loc[df_proxy["cik"].map(pad_cik).fillna("").ne("")].copy()
+    df_owners = _role_owner_identities(insider.loc[insider["issuer_cik"].map(pad_cik).fillna("").ne("")])
+    if df_proxy.empty or df_owners.empty:
+        return pd.DataFrame(columns=columns)
     df_roles = _match_proxy_roles(df_proxy, df_owners)
     return df_roles[columns].drop_duplicates()
 

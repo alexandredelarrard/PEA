@@ -89,7 +89,7 @@ def common_stock_mask(security_title: pd.Series) -> pd.Series:
 def officer_role(title: object) -> str:
     """Free-text `officer_title` -> the first matching `ROLE_PATTERNS` name, else `OTHER_OFFICER` (also for a blank)."""
     s = clean_officer_title(title)
-    if re.search(r"\b(?:FORMER|RETIRED|SUBSIDIAR(?:Y|IES)|DIVISION(?:AL)?|REGIONAL|SEGMENT|BUSINESS\s+UNIT)\b", s, re.I):
+    if re.search(r"\b(?:FORMER|RETIRED|INCOMING|DESIGNATE|ELECT|SUBSIDIAR(?:Y|IES)|DIVISION(?:AL)?|REGIONAL|SEGMENT|BUSINESS\s+UNIT)\b", s, re.I):
         return OTHER_OFFICER
     for name, rx in _ROLE_COMPILED:
         match = rx.search(s)
@@ -113,6 +113,28 @@ def clean_officer_title(value: object) -> str:
     title = re.sub(r"\bCHIEF\s+EXEC\b(?=\s+OFF(?:ICER|CR|R)\b)", "Chief Executive", title, flags=re.I)
     title = re.sub(r"\bCHIEF\s+EXEC\b(?!\s*UTIVE)", "Chief Executive Officer", title, flags=re.I)
     return re.sub(r"\s+", " ", title)
+
+
+def role_needs_evidence(value: object) -> bool:
+    """A blank or generic reference contains no job claim to contradict dated evidence."""
+    return re.fullmatch(r"(?:SEE\s+(?:REMARKS?|FOOTNOTES?))?", clean_officer_title(value), re.I) is not None
+
+
+def unresolved_role(value: object) -> bool:
+    """Separate missing/ambiguous jobs from explicit jobs outside issuer CEO/CFO/COO."""
+    title = clean_officer_title(value)
+    if not title or re.search(
+        r"\b(?:REMARKS?|FOOTNOTES?|UNKNOWN|UNSPECIFIED|CONFLICT\w*|AMBIGUOUS|INCOMING|DESIGNATE|ELECT|EFFECTIVE)\b", title, re.I
+    ):
+        return True
+    if officer_role(title) != OTHER_OFFICER:
+        return False
+    if re.search(r"\b(?:FORMER|RETIRED|SUBSIDIAR(?:Y|IES)|DIVISION(?:AL)?|REGIONAL|SEGMENT|BUSINESS\s+UNIT)\b", title, re.I):
+        return False
+    # A recognized chief title rejected by the role parser has a unit/affiliate tail.
+    if any(pattern.search(title) for _, pattern in _ROLE_COMPILED):
+        return False
+    return re.search(r"\b(?:PRESIDENT|PRES|CHAIR\w*|DIRECTOR|TREASURER|SECRETARY|CONTROLLER|COUNSEL|VICE|VP|SVP|EVP)\b", title, re.I) is None
 
 
 def owner_name_key(value: object) -> str:
@@ -153,6 +175,7 @@ def _canonical_inputs(df_rows: pd.DataFrame, role_evidence: pd.DataFrame | None)
         df_rows[column] = pd.to_numeric(values, errors="coerce").where(lambda x: x.isin([0, 1]))
     titles = df_rows["officer_title_clean"]
     df_rows["role"] = titles.map({title: officer_role(title) for title in titles.unique()})
+    df_rows["role_unknown"] = titles.map({title: unresolved_role(title) for title in titles.unique()}) & ~df_rows["is_officer"].eq(0)
     df_rows = _fill_prior_roles(df_rows, role_evidence)
     df_rows["is_management"] = df_rows["role"].isin(["CEO", "CFO", "COO"])
     df_rows["is_management"] &= ~df_rows["is_officer"].eq(0)
@@ -160,11 +183,12 @@ def _canonical_inputs(df_rows: pd.DataFrame, role_evidence: pd.DataFrame | None)
 
 
 def _fill_prior_roles(df_rows: pd.DataFrame, role_evidence: pd.DataFrame | None) -> pd.DataFrame:
-    """Fill only blank current officer titles; later/conflicting evidence never overwrites a row."""
+    """Resolve missing job claims from prior issuer/person proof; retain exclusion/uncertainty barriers."""
     keys = ["ticker", "issuer_cik", "owner_cik"]
-    df_prior = df_rows.loc[df_rows["owner_cik"].ne(""), [*keys, "role_as_of", "officer_title_clean", "role"]].copy()
+    known_identity = df_rows["issuer_cik"].ne("") & df_rows["owner_cik"].ne("")
+    df_prior = df_rows.loc[known_identity, [*keys, "role_as_of", "officer_title_clean", "role"]].copy()
     df_prior["role_source"] = "prior_form4"
-    df_prior = df_prior[df_prior["officer_title_clean"].ne("") & df_prior["role_as_of"].notna()]
+    df_prior = df_prior[df_prior["officer_title_clean"].map(role_needs_evidence).eq(False) & df_prior["role_as_of"].notna()]
     # A conflicting or non-management title is a history barrier, not a row to skip.
     grouped = df_prior.groupby([*keys, "role_as_of"], dropna=False)
     conflict = grouped["officer_title_clean"].transform("nunique").gt(1)
@@ -174,13 +198,20 @@ def _fill_prior_roles(df_rows: pd.DataFrame, role_evidence: pd.DataFrame | None)
         df_proxy = role_evidence.copy()
         for column in ("issuer_cik", "owner_cik"):
             df_proxy[column] = df_proxy[column].map(pad_cik).fillna("")
+        df_proxy = df_proxy[
+            df_proxy["issuer_cik"].ne("") & df_proxy["owner_cik"].ne("") & df_proxy["officer_title_clean"].map(role_needs_evidence).eq(False)
+        ]
         df_prior = pd.concat([df_prior, df_proxy[df_prior.columns]], ignore_index=True)
-    eligible = df_rows["officer_title_clean"].eq("") & df_rows["is_officer"].eq(1) & df_rows["owner_cik"].ne("") & df_rows["role_as_of"].notna()
+    eligible = df_rows["officer_title_clean"].map(role_needs_evidence) & df_rows["is_officer"].eq(1) & known_identity & df_rows["role_as_of"].notna()
     if not eligible.any() or df_prior.empty:
         return df_rows
     df_prior = df_prior.dropna(subset=["role_as_of"])
     conflict = df_prior.groupby([*keys, "role_as_of"])["role"].transform("nunique").gt(1)
     df_prior.loc[conflict, ["role", "officer_title_clean"]] = [OTHER_OFFICER, "conflicting roles"]
+    mapped = df_prior["officer_title_clean"].map(officer_role)
+    df_prior["role_unknown"] = df_prior["officer_title_clean"].map(unresolved_role).astype(bool) | (
+        df_prior["role"].eq(OTHER_OFFICER) & mapped.ne(OTHER_OFFICER)
+    )
     df_prior = df_prior.sort_values("role_as_of").drop_duplicates([*keys, "role_as_of"], keep="first")
     df_match = pd.merge_asof(
         df_rows.loc[eligible, [*keys, "role_as_of"]].reset_index().sort_values("role_as_of"),
@@ -191,6 +222,8 @@ def _fill_prior_roles(df_rows: pd.DataFrame, role_evidence: pd.DataFrame | None)
         allow_exact_matches=False,
         tolerance=pd.Timedelta(days=365),
     )
+    classified = df_match[df_match["role_unknown"].eq(False)].set_index("index")
+    df_rows.loc[classified.index, "role_unknown"] = False
     supported = df_match["role"].isin(["CEO", "CFO", "COO"])
     df_match = df_match[supported].set_index("index")
     for column in ("role", "officer_title_clean", "role_source"):

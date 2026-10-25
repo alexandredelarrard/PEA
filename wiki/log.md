@@ -1011,3 +1011,12 @@ Pages: [Data sources](./reference/data-sources.md), [Table catalog](./reference/
 - Evidence: independent bounded integration suite has 329 passes, two guarded live/disposable-PostgreSQL skips and zero failures/errors. The live-call guard records zero attempts; source/configuration/test/script/SQL pins remain unchanged. The shared-store/insider-role compatibility probe passes. The normal merge hooks pass without bypass.
 - Scope: the three adoption wiki edits identify this source merge and record its validation. Prior scientific execution remains attributed to `a4b67b01953f0f7dbf18b04737566abd4344dbed`, validated product `cbc13eb78abd2cfa59465ea780c1092a2b7ecb2e` and science/wiki `0af193ecde13e31f79fae371ec5aef7db5f41d57`; the local merge is not a new numerical replay.
 - Limits: population data readiness remains conditional, including documented CIK/extraction and whole-book reference-price coverage gaps. This adoption performs no push, production rebuild, provider call, extraction recovery or model-output adoption. Exact integration evidence is in the local ignored feature-science audit's dev-adoption artifacts.
+
+## 2026-10-25: refresh — DEF14A ownership and compensation source basis
+
+- Profile: internal/standard.
+- source_commit: 58c33f8622d33c4654b139d83677c92e019d15e0 (normal integration preserves concurrent SEC13F science work).
+- Coverage: the [SEC and LLM extraction flow](./flows/sec-llm-extraction.md) and [overview](./OVERVIEW.md); shared holder-name normalization, exact-filing reconciliation, source-proven pay/ownership corrections, literal omitted amounts and bounded free archived-answer replay.
+- Contracts retained: five owned retry counters, one source-supported second attempt, rolling history, six fee amounts, CEO age, ordinary daily planning and existing physical table keys. No new product parameter or production fact backfill.
+- Evidence: exact clean source `3d94d5592bbc6706499c5d88f35140414a32cfe6` passes328 affected tests with zero failures, three optional source-cache skips and zero external-I/O guard attempts; independent source/receipt review passes. The fixed40 filing audit keeps fresh, actual legacy repair and repeated processing separate. This is a regression cohort, not whole-population or governance-cube equivalence.
+- Deferred: future-effective CEO selection remains a known independent issue; no leadership features were implemented. All earlier log entries, including the concurrent SEC13F adoption, are preserved.

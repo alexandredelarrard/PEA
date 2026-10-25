@@ -1,0 +1,381 @@
+{
+  "eog_director_options": {
+    "domain": "director_pay",
+    "key": "689ecf7f654b89513a89bbb10446b843706459be3994b4501b31e33ccb19729c",
+    "meta": {
+      "accession_number": "0001206774-07-000811",
+      "action": "def14a_director_pay",
+      "as_of": "2007-03-29 00:00:00",
+      "cik": "0000821189",
+      "company_name": "EOG Resources, Inc.",
+      "period": "2007-04-24 00:00:00",
+      "seq": 0,
+      "ticker": "EOG"
+    },
+    "parsed": {
+      "amount_scale": "units",
+      "compensation": [
+        {
+          "fees_earned": 80000.0,
+          "fiscal_year": 2006,
+          "name": "George A. Alcorn",
+          "non_equity_incentive": null,
+          "option_awards": null,
+          "other_compensation": 538.0,
+          "pension_change": null,
+          "stock_awards": 233152.0,
+          "total": 313690.0
+        },
+        {
+          "fees_earned": 80000.0,
+          "fiscal_year": 2006,
+          "name": "Charles R. Crisp",
+          "non_equity_incentive": null,
+          "option_awards": null,
+          "other_compensation": 1247.0,
+          "pension_change": null,
+          "stock_awards": 233152.0,
+          "total": 314399.0
+        },
+        {
+          "fees_earned": 80000.0,
+          "fiscal_year": 2006,
+          "name": "William D. Stevens",
+          "non_equity_incentive": null,
+          "option_awards": null,
+          "other_compensation": null,
+          "pension_change": null,
+          "stock_awards": 243680.0,
+          "total": 323680.0
+        },
+        {
+          "fees_earned": 80000.0,
+          "fiscal_year": 2006,
+          "name": "H. Leighton Steward",
+          "non_equity_incentive": null,
+          "option_awards": null,
+          "other_compensation": 3599.0,
+          "pension_change": null,
+          "stock_awards": 243680.0,
+          "total": 327279.0
+        },
+        {
+          "fees_earned": 80000.0,
+          "fiscal_year": 2006,
+          "name": "Donald F. Textor",
+          "non_equity_incentive": null,
+          "option_awards": null,
+          "other_compensation": 60000.0,
+          "pension_change": null,
+          "stock_awards": 233152.0,
+          "total": 373152.0
+        },
+        {
+          "fees_earned": 80000.0,
+          "fiscal_year": 2006,
+          "name": "Frank G. Wisner",
+          "non_equity_incentive": null,
+          "option_awards": null,
+          "other_compensation": null,
+          "pension_change": null,
+          "stock_awards": 233152.0,
+          "total": 313152.0
+        }
+      ],
+      "currency": "USD"
+    },
+    "source": "Read these focused source sections and return the requested director pay facts.\n\n=== DIRECTOR COMPENSATION TABLE ===\nSource context surrounding this table:\n08/03/2014 13,750 41,250 (c) $ 62.98 08/15/2012 0 65,000 (e) $ 60.99 09/20/2013 Barry Hunsaker, Jr. 50,000 0 $ 16.83 08/07/2012 28,226 (i) $ 1,762,714 40,000 10,000 (a) $ 19.50 08/06/2013 0 20,000 (b) $ 32.45 08/03/2014 5,500 16,500 (c) $ 62.98 08/15/2012 0 22,000 (e) $ 60.99 09/20/2013 ____________________ (a) The unexercisable options will vest one hundred percent August 6, 2007. (b) The unexercisable options will vest fifty percent August 3, 2007 and fifty percent August 3, 2008. (c) The unexercisable options will vest in one-third increments August 15, 2007, August15, 2008 and August 15, 2009. (d) The unexercisable options will vest fifty percent September 20, 2007 and fifty percent September 20, 2008. 18 (e) The unexercisable options will vest in twenty-five percent increments September 20, 2007, September 20, 2008, September 20, 2009 and September 20, 2010. (f) The unvested shares/units will vest as follows: 30,868 units on February 12, 2007, 16,717 units on February 20, 2007, 30,151 units on February 20, 2008, 200,000 shares on November 6, 2008, 38,020 units on February 24, 2009, 24,857 units on March 11, 2010, and 14,981 units on March 8, 2011. Of the unvested shares/units, 155,594 shares were granted in connection with annual bonuses. (g) The unvested shares/units will vest as follows: 9,724 units on February 12, 2007, 7,090 units on February 20, 2008, 20,000 shares on November 6, 2008, 10,140 units on February 24, 2009, 5,686 units on March 11, 2010, and 5,484 units on March 8, 2011. Of the unvested shares/units, 38,124 shares were granted in connection with annual bonuses. (h) The unvested shares/units will vest as follows: 6,946 units on February 12, 2007, 5,374 units on February 20, 2008, 20,000 shares on November 6, 2008, 10,140 units on February 24, 2009, 7,943 units on March 11, 2010, and 6,421 units on March 8, 2011. Of the unvested shares/units, 36,824 shares were granted in connection with annual bonuses. (i) The unvested shares/units will vest as follows: 4,076 units on February 12, 2007, 3,434 units on February 20, 2008, 10,000 shares on November 6, 2008, 5,070 units on February 24, 2009, 2,904 units on March 11, 2010, and 2,742 units on March 8, 2011. Of the unvested shares/units, 18,226 shares were granted in connection with annual bonuses. OPTION EXERCISES AND STOCK VESTED TABLE The following table summarizes certain information regarding exercises of options and SARs and vesting of stock during the last fiscal year for each of the Named Officers: Option Awar ds Stock A war ds Number of Shares Number of Shares Acquired on Value Realized Acquired on Value Realized Name Exercise (#) on Exercise ($) Vesting (#) on Vesting ($) Mark G. Papa 167,500 $ 8,849,148 183,112 $ 13,322,163 Edmund P. Segner, III 66,500 $ 3,124,418 68,588 $ 5,059,217 Loren M. Leiker 22,500 $ 758,913 65,090 $ 4,820,443 Gary L. Thomas 22,500 $ 758,913 65,090 $ 4,820,443 Barry Hunsaker, Jr. 10,000 $ 328,750 33,182 $ 2,453,703 19 POST-EMPLOYMENT COMPENSATION We currently have no defined benefit pension plans. NONQUALIFIED DEFERRED COMPENSATION TABLE The following table provides certain information with respect to each defined contribution plan that provides for the deferral of compensation on a basis that is not tax qualified. Executive Registrant Aggregate Contributions Contributions Earnings in Aggregate Aggregate in Last Fiscal in Last Fiscal Last Fiscal Withdrawals/ Balance at Last Year Year Year Distributions Fiscal Year Name ($)(a) ($) ($)(b) ($) End ($)(c) Mark G. Papa $ 47,000 $ 238,500 $ 136,157 $ 2,842,753 Edmund P. Segner, III $ 26,000 $ 102,801 $ (8,524 ) $ 2,231,828 Loren M. Leiker $ 15,000 $ 94,260 $ 223,010 $ 1,672,242 Gary L. Thomas $ 20,000 $ 94,260 $ 198,752 $ 1,289,898 Barry Hunsaker, Jr. $ 0 $ 57,584 $ 97,420 $ 874,975 ____________________ (a) One hundred percent of such amount is reported in the salary column of the summary compensation table. (b) Amounts included in this column do not include above-market or preferential earnings (of which there were none) and, accordingly, such amount is not included in the Change in Pension Value and Nonqualified Deferred Compensation Earnings column of the Summary Compensation Table. (c) The amount of the aggregate balance as of December 31, 2006 that has been contributed by the Named Officer and shown as compensation in the Summary Compensation Table in previous years for each of the Named Officers is: Mr. Papa, $861,375; Mr. Segner, $1,144,093; Mr. Leiker, $1,011,875; Mr. Thomas, $784,363; and Mr. Hunsaker, $501,480. The amount of the aggregate balance as of December 31, 2006 that has been contributed by EOG and shown as compensation in the Summary Compensation Table in previous years for each of the Named Officer is: Mr. Papa, $943,501; Mr. Segner, $458,396; Mr. Leiker, $329,887; Mr. Thomas, $355,314; and Mr. Hunsaker, $189,218. Under our 1996 Deferral Plan, each Named Officer can elect to defer up to 50% of his regular salary and/or up to 100% of the cash portion of his annual bonus payout. Deferral elections are irrevocable and must be made prior to the first day of the calendar year during which the compensation would be earned. Deferrals are invested into either the Flexible Deferral Account, in which deferrals are treated as if they had been invested into various investment funds as directed by the participant, in which returns vary based on the performance of the funds; or into the Phantom Stock Account, in which deferrals are treated as if th\n\nSource table (tab-separated columns):\nFees Earned or Paid in Cash\tFees Earned or Paid in Cash\tStock Awards\tOption Awards\tOption Awards\tNon-Equity Incentive Plan Compensation\tChange in Pension Value and Nonqualified Deferred Compensation\tAll Other Compensation\tAll Other Compensation\tTotal\tTotal\nName\t\t($)(a)\t($)(a)\t($)\t($)(b)\t($)(b)\t($)\tEarnings\t($)(c)\t($)(c)\t($)\t($)\nGeorge A. Alcorn\tGeorge A. Alcorn\t$\t80,000\t\t$\t233,152\t\t\t$\t538\t$\t313,690\nCharles R. Crisp\tCharles R. Crisp\t$\t80,000\t\t$\t233,152\t\t\t$\t1,247\t$\t314,399\nWilliam D. Stevens\tWilliam D. Stevens\t$\t80,000\t\t$\t243,680\t\t\t\t\t$\t323,680\nH. Leighton Steward\tH. Leighton Steward\t$\t80,000\t\t$\t243,680\t\t\t$\t3,599\t$\t327,279\nDonald F. Textor\tDonald F. Textor\t$\t80,000\t\t$\t233,152\t\t\t$\t60,000\t$\t373,152\nFrank G. Wisner\tFrank G. Wisner\t$\t80,000\t\t$\t233,152\t\t\t\t\t$\t313,152\n"
+  },
+  "pg_director_year": {
+    "domain": "director_pay",
+    "key": "74e44a34d4733d3f5e60ad7e90cd5713c0f88321770efea85891d5f10b77d4cb",
+    "meta": {
+      "accession_number": "0001193125-20-233631",
+      "action": "def14a_director_pay",
+      "as_of": "2020-08-28 00:00:00",
+      "cik": "0000080424",
+      "company_name": "The Procter & Gamble Company",
+      "period": "2020-10-13 00:00:00",
+      "seq": 2,
+      "ticker": "PG"
+    },
+    "parsed": {
+      "amount_scale": "units",
+      "compensation": [
+        {
+          "fees_earned": 117500.0,
+          "fiscal_year": null,
+          "name": "Francis S. Blake",
+          "non_equity_incentive": null,
+          "option_awards": null,
+          "other_compensation": 0.0,
+          "pension_change": null,
+          "stock_awards": 200000.0,
+          "total": 317500.0
+        },
+        {
+          "fees_earned": 136250.0,
+          "fiscal_year": null,
+          "name": "Angela F. Braly",
+          "non_equity_incentive": null,
+          "option_awards": null,
+          "other_compensation": 0.0,
+          "pension_change": null,
+          "stock_awards": 200000.0,
+          "total": 336250.0
+        },
+        {
+          "fees_earned": 117500.0,
+          "fiscal_year": null,
+          "name": "Amy L. Chang",
+          "non_equity_incentive": null,
+          "option_awards": null,
+          "other_compensation": 0.0,
+          "pension_change": null,
+          "stock_awards": 200000.0,
+          "total": 317500.0
+        },
+        {
+          "fees_earned": 104375.0,
+          "fiscal_year": null,
+          "name": "Scott D. Cook",
+          "non_equity_incentive": null,
+          "option_awards": null,
+          "other_compensation": 0.0,
+          "pension_change": null,
+          "stock_awards": 200000.0,
+          "total": 304375.0
+        },
+        {
+          "fees_earned": 149375.0,
+          "fiscal_year": null,
+          "name": "Joseph Jimenez",
+          "non_equity_incentive": null,
+          "option_awards": null,
+          "other_compensation": 0.0,
+          "pension_change": null,
+          "stock_awards": 200000.0,
+          "total": 349375.0
+        },
+        {
+          "fees_earned": 141250.0,
+          "fiscal_year": null,
+          "name": "Terry J. Lundgren",
+          "non_equity_incentive": null,
+          "option_awards": null,
+          "other_compensation": 0.0,
+          "pension_change": null,
+          "stock_awards": 200000.0,
+          "total": 341250.0
+        },
+        {
+          "fees_earned": 90000.0,
+          "fiscal_year": null,
+          "name": "Christine M. McCarthy",
+          "non_equity_incentive": null,
+          "option_awards": null,
+          "other_compensation": 0.0,
+          "pension_change": null,
+          "stock_awards": 200000.0,
+          "total": 290000.0
+        },
+        {
+          "fees_earned": 155000.0,
+          "fiscal_year": null,
+          "name": "W. James McNerney, Jr.",
+          "non_equity_incentive": null,
+          "option_awards": null,
+          "other_compensation": 0.0,
+          "pension_change": null,
+          "stock_awards": 200000.0,
+          "total": 355000.0
+        },
+        {
+          "fees_earned": 117500.0,
+          "fiscal_year": null,
+          "name": "Nelson Peltz",
+          "non_equity_incentive": null,
+          "option_awards": null,
+          "other_compensation": 0.0,
+          "pension_change": null,
+          "stock_awards": 200000.0,
+          "total": 317500.0
+        },
+        {
+          "fees_earned": 117500.0,
+          "fiscal_year": null,
+          "name": "Margaret C. Whitman",
+          "non_equity_incentive": null,
+          "option_awards": null,
+          "other_compensation": 0.0,
+          "pension_change": null,
+          "stock_awards": 200000.0,
+          "total": 317500.0
+        },
+        {
+          "fees_earned": 146250.0,
+          "fiscal_year": null,
+          "name": "Patricia A. Woertz",
+          "non_equity_incentive": null,
+          "option_awards": null,
+          "other_compensation": 0.0,
+          "pension_change": null,
+          "stock_awards": 200000.0,
+          "total": 346250.0
+        }
+      ],
+      "currency": "USD"
+    },
+    "source": "Read these focused source sections and return the requested director pay facts.\n\n=== DIRECTOR COMPENSATION TABLE ===\nSource context surrounding this table:\nn The objective of the C&LD Committee is to provide non-employee members of the Board a compensation package consistent with the median of the Peer Group. Directors can elect to receive any part of their fees or retainer (other than the annual grant of Restricted Stock Units (“RSUs”)) as cash, RSUs, or unrestricted stock. Consistent with the practice of the past several years, the Company did not grant any stock options to Directors in FY 2019-20. Non-employee members of the Board received the following compensation: • a grant of RSUs following election to the Board at the Company’s October 8, 2019 annual meeting of shareholders, with a grant date fair value of $200,000. These units are forfeited if the Director resigns during the year, unless the resignation is for reasons of antitrust laws, or the Company’s conflict of interest, corporate governance, or continued service policies. These RSUs do not deliver in shares until at least one year after the Director leaves the Board and cannot be sold or traded until delivered in shares, thus encouraging alignment with the Company’s long-term interests and the interests of shareholders. These RSUs will earn dividend equivalents at the same rate as dividends paid to shareholders; • an annual retainer fee of $120,000 paid in quarterly increments; and • an additional annual retainer paid to the Lead Director and Chair of each committee as follows: Lead Director, $40,000; Chair of the Audit Committee, $30,000; Chair of the C&LD Committee, $25,000; Chairs of the Governance & Public Responsibility and Innovation & Technology Committees, $20,000. Non-employee members of the Board must own Company stock and/or RSUs worth six times their annual cash retainer. A number of the non-employee Directors were appointed or elected to the Board within the last few years. However, all non-employee Directors either meet or are on track to meet the ownership requirements within the five-year period established by the C&LD Committee. 28 The Procter & Gamble Company Table of Contents DIRECTOR COMPENSATION The following table and footnotes provide information regarding the compensation paid to the Company’s non-employee Directors in FY 2019-20. Directors who are employees of the Company receive no compensation for their service as Directors. DIRECTOR COMPENSATION TABLE Fees Name Annual Retainer ($) Committee Chair & Lead Director Fees ($) Total Fees Earned or Paid in Cash 1 ($) Stock Awards 2 ($) All Other Compensation 3 ($) Total ($) Francis S. Blake 117,500 — 117,500 200,000 0 317,500 Angela F. Braly 117,500 18,750 136,250 200,000 0 336,250 Amy L. Chang 117,500 — 117,500 200,000 0 317,500 Scott D. Cook 104,375 — 104,375 200,000 0 304,375 Joseph Jimenez 117,500 31,875 149,375 200,000 0 349,375 Terry J. Lundgren 117,500 23,750 141,250 200,000 0 341,250 Christine M. McCarthy 90,000 — 90,000 200,000 0 290,000 W. James McNerney, Jr. 117,500 37,500 155,000 200,000 0 355,000 Nelson Peltz 117,500 — 117,500 200,000 0 317,500 Margaret C. Whitman 117,500 — 117,500 200,000 0 317,500 Patricia A. Woertz 117,500 28,750 146,250 200,000 0 346,250 1 Director fees are paid quarterly. The fees listed here reflect one quarter of payments at the previous retainer amount of $110,000 annually. Each Director may elect to take these fees in cash, unrestricted stock, RSUs (which vest immediately and earn dividend equivalents), or a combination of the three. The total fees for Mr. Cook and Mr. Jimenez reflect an administrative correction to the Committee Chair fees paid to them in FY 2018-19. Mr. Blake elected to take $112,500 of his fees in unrestricted stock, which had a grant date fair value of $112,779. Ms. Braly elected to take $131,250 of her fees in RSUs, which had a grant date fair value of $131,378. Mr. Cook elected to take $60,000 of his fees in cash and $44,375 in unrestricted stock, which had a grant date fair value of $44,473. Mr. Jimenez elected to take $144,375 of his fees in RSUs, which had a grant date fair value of $144,551. Mr. Lundgren elected to take $136,250 of his fees in RSUs, which had a grant date fair value of $136,568. Ms. McCarthy was elected to the Board in October 2019 and her fees were prorated accordingly. She elected to take $30,000 of her fees in cash and $60,000 in RSUs, which had a grant date fair value of $60,075. Mr. McNerney elected to take $150,000 of his fees in unrestricted stock, which had a grant date fair value of $150,217. Ms. Woertz elected to take $71,250 of her fees in cash and $75,000 in RSUs, which had a grant date fair value of $75,125. The remaining Directors took their fees in cash. 2 Each year, upon election at the Company’s annual meeting of shareholders, every Director is awarded a $200,000 grant of RSUs which vest after one year as long as the Director remains on the Board. The RSUs earn dividend equivalents that are subject to the same vesting provision as the underlying RSUs and are accrued in the form of additional RSUs each quarter and credited to each Director’s holdings. Each Director has 1,686 RSUs outstanding (representing the grant on October 8, 2019, and subsequent dividend equivalents). In addition, Ms. Braly has 4,992 shares of retirement restricted stock outstanding as of June 30, 2020. 3 For all Board meetings throughout the fiscal year, Directors were entitled to bring a guest so long as the Director used the Company aircraft to attend the meeting and the guest’s attendance did not result in any incremental aircraft costs. Directors are also covered under the same insurance policy as all Company employees for accidental death while traveling on Company business (coverage is $750,000 for each Director). The incremental cost to the Company for this benefit is $3,541. In addition, the Company maintains a Charitable Awards Program for current and retired Directors who were participants prior to July 1, 2003. Under this program, at their death, the Company donates $1,000,000 per Director to up to five qualifying charitable organizations selected by each Director. Directors\n\nSource table (tab-separated columns):\nDIRECTOR COMPENSATION TABLE Name\tDIRECTOR COMPENSATION TABLE Fees Annual Retainer ($)\tDIRECTOR COMPENSATION TABLE Fees Committee Chair & Lead Director Fees ($)\tFees Total Fees Earned or Paid in Cash ($)\tStock Awards ($)\tAll Other Compensation ($)\tTotal ($)\nFrancis S. Blake\t117,500\t\t117,500\t200,000\t0\t317,500\nAngela F. Braly\t117,500\t18,750\t136,250\t200,000\t0\t336,250\nAmy L. Chang\t117,500\t\t117,500\t200,000\t0\t317,500\nScott D. Cook\t104,375\t\t104,375\t200,000\t0\t304,375\nJoseph Jimenez\t117,500\t31,875\t149,375\t200,000\t0\t349,375\nTerry J. Lundgren\t117,500\t23,750\t141,250\t200,000\t0\t341,250\nChristine M. McCarthy\t90,000\t\t90,000\t200,000\t0\t290,000\nW. James McNerney, Jr.\t117,500\t37,500\t155,000\t200,000\t0\t355,000\nNelson Peltz\t117,500\t\t117,500\t200,000\t0\t317,500\nMargaret C. Whitman\t117,500\t\t117,500\t200,000\t0\t317,500\nPatricia A. Woertz\t117,500\t28,750\t146,250\t200,000\t0\t346,250\n"
+  },
+  "pg_group_scope": {
+    "domain": "ownership",
+    "key": "08f521f376a700b4944c3cfe3bebf45f898e9fa1c646319da2754b93b2d2e4af",
+    "meta": {
+      "accession_number": "0001193125-20-233631",
+      "action": "def14a_ownership",
+      "as_of": "2020-08-28 00:00:00",
+      "cik": "0000080424",
+      "company_name": "The Procter & Gamble Company",
+      "period": "2020-10-13 00:00:00",
+      "seq": 3,
+      "ticker": "PG"
+    },
+    "parsed": {
+      "holders": [
+        {
+          "holder_name": "BlackRock, Inc.",
+          "holder_type": "5pct_holder",
+          "percent_of_class": 6.7,
+          "percent_of_voting_power": null,
+          "shares": 168168813.0
+        },
+        {
+          "holder_name": "The Vanguard Group",
+          "holder_type": "5pct_holder",
+          "percent_of_class": 8.96,
+          "percent_of_voting_power": null,
+          "shares": 223460608.0
+        },
+        {
+          "holder_name": "Steven D. Bishop",
+          "holder_type": "director_officer",
+          "percent_of_class": null,
+          "percent_of_voting_power": null,
+          "shares": 599891.0
+        },
+        {
+          "holder_name": "Francis S. Blake",
+          "holder_type": "director_officer",
+          "percent_of_class": null,
+          "percent_of_voting_power": null,
+          "shares": 6395.0
+        },
+        {
+          "holder_name": "Angela F. Braly",
+          "holder_type": "director_officer",
+          "percent_of_class": null,
+          "percent_of_voting_power": null,
+          "shares": 9674.0
+        },
+        {
+          "holder_name": "Amy L. Chang",
+          "holder_type": "director_officer",
+          "percent_of_class": null,
+          "percent_of_voting_power": null,
+          "shares": null
+        },
+        {
+          "holder_name": "Scott D. Cook",
+          "holder_type": "director_officer",
+          "percent_of_class": null,
+          "percent_of_voting_power": null,
+          "shares": 69447.0
+        },
+        {
+          "holder_name": "Mary Lynn Ferguson-McHugh",
+          "holder_type": "director_officer",
+          "percent_of_class": null,
+          "percent_of_voting_power": null,
+          "shares": 403103.0
+        },
+        {
+          "holder_name": "Joseph Jimenez",
+          "holder_type": "director_officer",
+          "percent_of_class": null,
+          "percent_of_voting_power": null,
+          "shares": 12468.0
+        },
+        {
+          "holder_name": "Terry J. Lundgren",
+          "holder_type": "director_officer",
+          "percent_of_class": null,
+          "percent_of_voting_power": null,
+          "shares": 3309.0
+        },
+        {
+          "holder_name": "Christine M. McCarthy",
+          "holder_type": "director_officer",
+          "percent_of_class": null,
+          "percent_of_voting_power": null,
+          "shares": 2191.0
+        },
+        {
+          "holder_name": "W. James McNerney, Jr.",
+          "holder_type": "director_officer",
+          "percent_of_class": null,
+          "percent_of_voting_power": null,
+          "shares": 34789.0
+        },
+        {
+          "holder_name": "Jon R. Moeller",
+          "holder_type": "director_officer",
+          "percent_of_class": null,
+          "percent_of_voting_power": null,
+          "shares": 748113.0
+        },
+        {
+          "holder_name": "Nelson Peltz",
+          "holder_type": "director_officer",
+          "percent_of_class": 0.436,
+          "percent_of_voting_power": null,
+          "shares": 10821934.0
+        },
+        {
+          "holder_name": "Carolyn M. Tastad",
+          "holder_type": "director_officer",
+          "percent_of_class": null,
+          "percent_of_voting_power": null,
+          "shares": 241021.0
+        },
+        {
+          "holder_name": "David S. Taylor",
+          "holder_type": "director_officer",
+          "percent_of_class": null,
+          "percent_of_voting_power": null,
+          "shares": 1293777.0
+        },
+        {
+          "holder_name": "Margaret C. Whitman",
+          "holder_type": "director_officer",
+          "percent_of_class": null,
+          "percent_of_voting_power": null,
+          "shares": 11075.0
+        },
+        {
+          "holder_name": "Patricia A. Woertz",
+          "holder_type": "director_officer",
+          "percent_of_class": null,
+          "percent_of_voting_power": null,
+          "shares": 1660.0
+        }
+      ],
+      "insider_ownership_pct": 0.7,
+      "insider_shares": 17348734.0,
+      "insider_voting_pct": null,
+      "percent_unit": "percent",
+      "shares_scale": "units"
+    },
+    "source": "Read these focused source sections and return the requested ownership facts.\n\n=== FIVE PERCENT HOLDERS ===\nSource context surrounding this table:\n003 Executive Group Life Insurance 0 0 0 0 5,100,000 Jon R. Moeller Salary 0 1,150,000 0 0 0 STAR 1 0 0 0 0 0 Long-Term Incentive Program 2 0 11,417,368 11,417,368 11,417,368 11,417,368 PSP 3 0 6,972,007 6,972,007 6,972,007 6,972,007 Special Equity Awards 4 0 0 0 0 0 Executive Group Life Insurance 0 0 0 0 2,760,000 Steven D. Bishop Salary 0 910,000 0 0 0 STAR 1 0 0 0 0 0 Long-Term Incentive Program 2 0 6,722,773 6,722,773 6,722,773 6,722,773 PSP 3 0 3,279,694 3,279,694 3,279,694 3,279,694 Special Equity Awards 4 0 0 0 0 0 Executive Group Life Insurance 0 0 0 0 1,820,000 62 The Procter & Gamble Company Table of Contents EXECUTIVE COMPENSATION PAYMENTS UPON TERMINATION OR CHANGE IN CONTROL Name Voluntary Separation or Termination for Cause ($) Written Separation Agreement ($) Retirement or Disability ($) Change in Control ($) Death ($) Mary Lynn Ferguson-McHugh Salary 0 910,000 0 0 0 STAR 1 0 0 0 0 0 Long-Term Incentive Program 2 0 3,841,921 3,841,921 3,841,921 3,841,921 PSP 3 0 3,444,462 3,444,462 3,444,462 3,444,462 Special Equity Awards 4 0 0 0 0 0 Executive Group Life Insurance 0 0 0 0 1,820,000 Carolyn M. Tastad Salary 0 800,000 0 0 0 STAR 1 0 0 0 0 3,626,156 Long-Term Incentive Program 2 0 4,695,583 4,695,583 4,695,583 4,695,583 PSP 3 0 3,377,851 3,377,851 3,377,851 3,377,851 Special Equity Awards 4 0 0 0 0 0 Executive Group Life Insurance 0 0 0 0 1,600,000 1 STAR awards previously elected in stock options that would vest and become exercisable immediately upon death. No other amounts are included for STAR because the NEO would be entitled to the same payment whether or not separation occurred on June 30, 2020. 2 Upon voluntary separation or termination, all outstanding awards would be forfeited. While all unvested awards are retained (except for the current year grant if separation occurs before June 30) in the event of Company encouraged separation, retirement, or disability, these events do not trigger any change in the original payment terms of the awards. The amounts shown for the LTIP Stock Grant in the event of Company-encouraged separation, retirement or disability represents the value of the unexercisable stock options and undelivered RSUs as of June 30, 2020, that would be retained at separation and payout according to the original terms and timing of the grants. Awards vest and become immediately exercisable in the event of death or change in control with termination for reasons other than cause or for good reason. 3 Upon voluntary separation or termination, all outstanding awards would be forfeited. While all unvested awards are retained (except for the current year grant if separation occurs before June 30) in the event of Company-encouraged separation, retirement or disability, or death, these events do not trigger any change in the original payment terms of the awards. In the event of change in control, PSP will pay out at target on the date of the change in control. The amounts shown for the PSP grants represent the value of the unvested PSUs as of June 30, 2020 that would be retained on the triggering event and pay out according to the original terms and timing of the grants. 4 Upon voluntary separation or termination, all outstanding awards would be forfeited. In the event of Company encouraged separation, retirement or disability, the CHRO has the discretion to allow retention of the awards with delivery under the original payment terms. Awards vest and become immediately deliverable in the event of death or change in control with termination for reasons other than cause or for good reason. Pay Ratio As required by Section 953(b) of the Dodd-Frank Wall Street Reform and Consumer Protection Act, and Item 402(u) of Regulation S-K, we are providing the following information about the relationship of the annual total compensation of our employees and the annual total compensation of Mr. David S. Taylor, our Chairman of the Board, President and Chief Executive Officer. The pay ratio was calculated in a manner consistent with Item 402(u) of Regulation S-K and based upon our reasonable judgment and assumptions. For FY 2019-20, the median of the annual total compensation of all employees of the company (other than our CEO) was $68,883, and the annual total compensation of our CEO was $22,905,128. Based on this information, the ratio of the annual total compensation of Mr. Taylor to the median of the annual total compensation of employees was 333 to 1. 2020 Proxy Statement 63 Table of Contents EXECUTIVE COMPENSATION In accordance with SEC requirements, we determined that there have been no changes to our employee population or employee compensation arrangements in FY 2019-20 that we believe would significantly affect our pay ratio disclosure. In determining our pay ratio for FY 2019-20, the employee who was identified as our median employee for FY 2017-18 retired from the Company. We replaced this employee with an employee in a similarly compensated position. To identify the median of the annual total compensation of all our employees, we determined that, as of April 1, 2018, our employee population consisted of approximately 94,481 active employees working at our parent company and consolidated subsidiaries. Applying the de minimis exemption under the rule, we chose to exclude approximately 4,539 employees in 31 countries where payroll data is maintained outside the system that holds data for the majority of our employees, or less than 5% of the total 1 . We also excluded 7 employees of Snowberry and 10 employees of Native because those businesses were acquired during FY 2017-18 and we subsequently determined that their inclusion would not significantly affect our pay ratio disclosure. To identify the “median employee” from the resulting employee population of 89,942, we selected Total Gross Pay as the consistently applied compensation measure. Total Gross Pay reflects a wide variety of pay items, including monthly and bi-weekly wages earned, time-related bonuses (such as overtime, shift premiums, holiday bonuses), vacation pay, bonuses, stock option exercises, and other benefits and allowances. Because pay periods vary across jurisdictions, we measured Total Gross Pay using a three-month period covering January, February, and March 2018. We adjusted the Total Gross Pay of approximately 1,477 employees who were hired during the three-month period but did not work the entire period. For purposes of this disclosure, we converted the gross salary amounts from the local currency paid in the country into U.S. dollar amounts using an average of the exchange rates at the end of each month in the three-month period. With respect to the annual total compensation of the “median employee,” we identified and calculated the elements of such employee’s compensation for FY 2019-20 in accordance with the requirements of Item 402(c)(2)(x) of Regulation S-K. With respect to the annual total compensation of our CEO, we used the amount reported in the “Total” column (column (j)) of our FY 2019-20 Summary Compensation Table included in this Proxy Statement. 1 We excluded the following approximate number of employees by jurisdiction: Saudi Arabia, 834; Ukraine, 585; Czech Republic, 555; Pakistan, 413; Nigeria, 363; South Africa, 323; United Arab Emirates, 290; Morocco, 201; Greece, 197; Netherlands, 144; Sweden, 129; Portugal, 84; Kazakhstan, 56; Austria, 47; Israel, 45; Croatia, 44; Kenya, 43; Serbia, 28; Slovakia, 25; Denmark, 24; Finland, 23; Bulgaria, 19; Azerbaijan, 19; Norway, 15; Latvia, 10; Ghana, 8; Algeria, 7; Ethiopia, 3; Luxembourg, 2; Dominican Republic, 2; Bangladesh, 1. 64 The Procter & Gamble Company Table of Contents BENEFICIAL OWNERSHIP Beneficial Ownership Security Ownership of Management and Certain Beneficial Owners The following table shows all entities that are the beneficial owners of more than 5% of any class of the Company’s voting securities: Title of Class Name and Address of Beneficial Owner Amount and Nature Percent of Class Common BlackRock, Inc. 55 East 52nd Street New York, NY 10055 168,168,813 1 6.70% Common The Vanguard Group 100 Vanguard Blvd. Malvern, PA 19355 223,460,608 2 8.96% 1 Based on information as of December 31, 2019, contained in a Schedule 13G/A filed with the SEC on February 5, 2020 by BlackRock, Inc. The Schedule 13G/A indicates that BlackRock, Inc. has (i) sole power to vote or direct to vote with respect to 142,359,551 shares, and (ii) sole dispositive power with respect to 168,168,813 shares. 2 Based on information as of December 31, 2019, contained in a Schedule 13G/A filed with the SEC on February 12, 2020 by The Vanguard Group. The Schedule 13G/A indicates that The Vanguard Group has (i) sole power to vote or direct to vote with respect to 3,710,780 shares, (ii) shared voting power with respect to 725,316 shares, (iii) sole dispositive power with respect to 219,250,876 shares, and (iv) shared dispositive power with respect to 4,209,732 shares. 2020 Proxy Statement 65 Table of Contents BENEFICIAL OWNERSHIP The following tables and footnotes provide information regarding the ownership of the Company’s Common Stock and Series A and B ESOP Convertible Class A Preferred Stock by all Directors and nominees, each NEO, and all Directors and executive officers as a group on June 30, 2020: COMMON STOCK NUMBER OF SHARES/OPTIONS Amount and Nature of Beneficial Ownership Name Direct 1 and Profit Sharing Plan 2 Right to Acquire 3 Trusteeships and Family Holdings 4 Indirect Holdings Total Percent of Class Restricted Stock Units 5 Steven D. Bishop 37,036 560,754 2,101 599,891 6 41,807 Francis S. Blake 6,395 6,395 6 10,920 Angela F. Braly 9,674 9,674 6 33,762 Amy L. Chang 6 5,970 Scott D. Cook 36,774 32,673 69,447 6 46,901 Mary Lynn Ferguson-McHugh 7 71,480 303,131 28,491 403,103 6 64,630 Joseph Jimenez 12,468 12,468 6 6,778 Terry J. Lundgren 2,779 530 3,309 6 23,872 Christine M. McCarthy 2,191 W. James McNerney, Jr. 34,789 34,789 6 46,901 Jon R. Moeller 8 134,383 613,730 748,113 6 62,162 Nelson Peltz 10,821,934 9 10,821,934 .436% 3,918 Carolyn M. Tastad 10 16,874 222,154 1,993 241,021 6 51,007 David S. Taylor 131,031 1,162,746 1,293,777 6 142,744 Margaret C. Whitman 11,075 11,075 6 22,447 Patricia A. Woertz 1,660 1,660 6 32,426 25 Directors and executive officers, as a group 708,661 5,729,646 88,493 10,821,934 17,348,734 .70% 811,016 1 Includes unrestricted Common Stock over which each Director or executive officer has sole voting and investment power and restricted Common Stock over which they have voting power but no investment power (until restrictions lapse). 2 Common Stock allocated to personal accounts of executive officers under the Retirement Trust pursuant to PST, the Procter & Gamble International Stock Ownership Plan (ISOP), or The Procter & Gamble U.K. 1-4-1 Plan. Plan participants have sole discretion as to voting and, within limitations provided by PST, investment of shares. PST shares are voted by the Trustees in accordance with instructions from participants. If instructions are not received by the Trustees as to the voting of particular shares, shares are to be voted in proportion to instructions actually received from other participants in the Retirement Trust. ISOP and U.K. 1-4-1 shares are voted in accordance with instructions from participants. If instructions are not received as to the voting of particular shares, a vote will not be submitted for those shares. 3 Total includes stock options that have vested or will vest within 60 days, Common Stock pursuant to the PST that will be allocated to personal accounts of executive officers within 60 days, PSP awards (as described beginning on page 38) that will deliver as Common Stock in August 2020, any Restricted Stock that will vest within 60 days, and any RSUs that will deliver as Common Stock within 60 days. The total does not include the final payment of dividend equivalents that took place on August 17 on PSP awards that will deliver as Common Stock in August. 4 This column includes shares in which voting and/or investment powers are shared. It also includes shares indirectly held through family members who reside in the household of the director or officer. 5 RSUs represent the right to receive unrestricted shares of Common Stock upon the lapse of restrictions, at which point the holders will have a non-forfeitable right to delivery of Common Stock on a specific date in the future. Total includes RSUs that will not deliver as Common Stock within 60 days and any PSP awards that will deliver as RSUs in August 2020. RSUs that will 66 The Procter & Gamble Company Table of Contents BENEFICIAL OWNERSHIP not deliver within 60 days of the record date are not considered “beneficially owned” because holders are not entitled to voting rights or investment control until the shares are delivered. RSUs that will deliver within 60 days are listed in the “Right to Acquire” column. 6 Excluding Mr. Peltz, less than .0521% for any one Director or NEO. 7 Totals include shares, stock options, and RSUs indirectly held by Ms. Ferguson-McHugh through her spouse, who was previously employed by the Company. 8 Totals include shares, stock options, and RSUs indirectly held by Mr. Moeller through his spouse, who is also employed by the Company. 9 These shares are owned by certain funds and investment vehicles (the “Trian Funds”) managed by Trian Fund Management, L.P. (“Trian”), an institutional investment manager. None of such shares are held directly by Mr. Peltz. From time to time, certain of these shares are held in the ordinary course of business with other investment securities owned by the Trian Funds in co-mingled margin accounts with a prime broker, which prime broker may, from time to time, extend margin credit to certain Trian Funds, subject to applicable federal margin regulations, stock exchange rules and credit policies. Trian Fund Management GP, LLC, of which Mr. Peltz is a member, is the general partner of Trian, and therefore is in a position to determine the investment and voting decisions made by the Trian Funds. Accordingly, Mr. Peltz and Trian may be deemed to indirectly beneficially own the shares that the Trian Funds directly and beneficially own. 10 Totals include shares, stock options, and RSUs indirectly held by Ms. Tastad through her spouse, who was previously employed by the Company. SERIES A ESOP CONVERTIBLE CLASS A PREFERRED STOCK NUMBER OF SHARES AMOUNT AND NATURE OF BENEFICIAL OWNERSHIP NAME PROFIT SHARING PLAN 1 TRUSTEESHIPS PERCENT OF SERIES Steven D. Bishop 9,015 2 Francis S. Blake Angela F. Braly Amy L. Chang Scott D. Cook Mary Lynn Ferguson-McHugh 3 8,865 2 Joseph Jimenez Terry J. Lundgren Christine M. McCarthy W. James McNerney, Jr. Jon R. Moeller 4 14,783 2 Nelson Peltz Carolyn M. Tastad 5 4,161 2 David S. Taylor 12,903 2 Margaret C. Whitman Patricia A. Woertz 25 Directors and executive officers, as a group 101,850 2 Employee Stock Ownership Trust of The Procter & Gamble Profit Sharing Trust and Employee Stock Ownership Plan P.O. Box 599, Cincinnati, Ohio 45201-0599 (R. L. Antoine, S. P. Donovan, Jr. and R. C. Stewart, Trustees) 3,263,731 6 1 Shares allocated to personal accounts of executive officers under the Employee Stock Ownership Trust pursuant to PST. Plan participants have sole discretion as to voting and, within limitations provided by PST, investment of shares. Shares are voted 2020 Proxy Statement 67 Table of Contents BENEFICIAL OWNERSHIP by the Trustees in accordance with instructions from participants. If instructions are not received by the Trustees as to the voting of particular shares, shares are to be voted in proportion to instructions actually received from other participants in the Trust. 2 Less than .32% for any NEO, and for the Directors and executive officers, as a group; by the terms of the stock, only persons who are or have been employees can have beneficial ownership of these shares. 3 Total includes shares indirectly held by Ms. Ferguson-McHugh through her spouse, who was previously employed by the Company. 4 Total includes shares indirectly held by Mr. Moeller through his spouse, who is also employed by the Company. 5 Total includes shares indirectly held by Ms. Tastad through her spouse, who was previously employed by the Company. 6 Unallocated shares. The voting of these shares is governed by the terms of PST, which provides that the Trustees shall vote unallocated shares held by them in proportion to instructions received from Trust participants as to voting of allocated shares. The disposition of these shares in connection with a tender offer would be governed by the terms of PST, which provides that the Trustees shall dispose of unallocated shares held by them in proportion to instructions received from Trust participants as to the disposition of allocated shares. SERIES B ESOP CONVERTIBLE CLASS A PREFERRED STOCK NUMBER OF SHARES Amount and Nature of Beneficial Ownership Name Profit Sharing Plan 1 Trusteeships Percent of Series Steven D. Bishop Francis S. Blake Angela F. Braly Amy L. Chang Scott D. Cook Mary Lynn Ferguson-McHugh 3 469 2 Joseph Jimenez Terry J. Lundgren Christine C. McCarthy W. James McNerney, Jr. Jon R. Moeller Nelson Peltz Carolyn M. Tastad 4 283 2 David S. Taylor 198 2 Margaret C. Whitman Patricia A. Woertz 32 Directors and executive officers, as a group 1,238 2 Employee Stock Ownership Trust of The Procter & Gamble Profit Sharing Trust and Employee Stock Ownership Plan P.O. Box 599, Cincinnati, Ohio 45201-0599 (R. L. Antoine, S. P. Donovan, Jr. and R. C. Stewart, Trustees) 25,104,796 5 1 Shares allocated to personal accounts of executive officers under the Employee Stock Ownership Trust pursuant to PST. Plan participants have sole discretion as to voting and, within limitations provided by PST, investment of shares. Shares are voted by the Trustees in accordance with instructions from participants. If instructions are not received by the Trustees as to the voting of particular shares, \n\nSource table (tab-separated columns):\nTitle of Class\tName and Address of Beneficial Owner\tAmount and Nature\tPercent of Class\nCommon\tBlackRock, Inc. 55 East 52nd Street New York, NY 10055\t168,168,813\t6.70%\nCommon\tThe Vanguard Group 100 Vanguard Blvd. Malvern, PA 19355\t223,460,608\t8.96%\n\n=== INSIDER OWNERSHIP ===\nSource context surrounding this table:\ny into U.S. dollar amounts using an average of the exchange rates at the end of each month in the three-month period. With respect to the annual total compensation of the “median employee,” we identified and calculated the elements of such employee’s compensation for FY 2019-20 in accordance with the requirements of Item 402(c)(2)(x) of Regulation S-K. With respect to the annual total compensation of our CEO, we used the amount reported in the “Total” column (column (j)) of our FY 2019-20 Summary Compensation Table included in this Proxy Statement. 1 We excluded the following approximate number of employees by jurisdiction: Saudi Arabia, 834; Ukraine, 585; Czech Republic, 555; Pakistan, 413; Nigeria, 363; South Africa, 323; United Arab Emirates, 290; Morocco, 201; Greece, 197; Netherlands, 144; Sweden, 129; Portugal, 84; Kazakhstan, 56; Austria, 47; Israel, 45; Croatia, 44; Kenya, 43; Serbia, 28; Slovakia, 25; Denmark, 24; Finland, 23; Bulgaria, 19; Azerbaijan, 19; Norway, 15; Latvia, 10; Ghana, 8; Algeria, 7; Ethiopia, 3; Luxembourg, 2; Dominican Republic, 2; Bangladesh, 1. 64 The Procter & Gamble Company Table of Contents BENEFICIAL OWNERSHIP Beneficial Ownership Security Ownership of Management and Certain Beneficial Owners The following table shows all entities that are the beneficial owners of more than 5% of any class of the Company’s voting securities: Title of Class Name and Address of Beneficial Owner Amount and Nature Percent of Class Common BlackRock, Inc. 55 East 52nd Street New York, NY 10055 168,168,813 1 6.70% Common The Vanguard Group 100 Vanguard Blvd. Malvern, PA 19355 223,460,608 2 8.96% 1 Based on information as of December 31, 2019, contained in a Schedule 13G/A filed with the SEC on February 5, 2020 by BlackRock, Inc. The Schedule 13G/A indicates that BlackRock, Inc. has (i) sole power to vote or direct to vote with respect to 142,359,551 shares, and (ii) sole dispositive power with respect to 168,168,813 shares. 2 Based on information as of December 31, 2019, contained in a Schedule 13G/A filed with the SEC on February 12, 2020 by The Vanguard Group. The Schedule 13G/A indicates that The Vanguard Group has (i) sole power to vote or direct to vote with respect to 3,710,780 shares, (ii) shared voting power with respect to 725,316 shares, (iii) sole dispositive power with respect to 219,250,876 shares, and (iv) shared dispositive power with respect to 4,209,732 shares. 2020 Proxy Statement 65 Table of Contents BENEFICIAL OWNERSHIP The following tables and footnotes provide information regarding the ownership of the Company’s Common Stock and Series A and B ESOP Convertible Class A Preferred Stock by all Directors and nominees, each NEO, and all Directors and executive officers as a group on June 30, 2020: COMMON STOCK NUMBER OF SHARES/OPTIONS Amount and Nature of Beneficial Ownership Name Direct 1 and Profit Sharing Plan 2 Right to Acquire 3 Trusteeships and Family Holdings 4 Indirect Holdings Total Percent of Class Restricted Stock Units 5 Steven D. Bishop 37,036 560,754 2,101 599,891 6 41,807 Francis S. Blake 6,395 6,395 6 10,920 Angela F. Braly 9,674 9,674 6 33,762 Amy L. Chang 6 5,970 Scott D. Cook 36,774 32,673 69,447 6 46,901 Mary Lynn Ferguson-McHugh 7 71,480 303,131 28,491 403,103 6 64,630 Joseph Jimenez 12,468 12,468 6 6,778 Terry J. Lundgren 2,779 530 3,309 6 23,872 Christine M. McCarthy 2,191 W. James McNerney, Jr. 34,789 34,789 6 46,901 Jon R. Moeller 8 134,383 613,730 748,113 6 62,162 Nelson Peltz 10,821,934 9 10,821,934 .436% 3,918 Carolyn M. Tastad 10 16,874 222,154 1,993 241,021 6 51,007 David S. Taylor 131,031 1,162,746 1,293,777 6 142,744 Margaret C. Whitman 11,075 11,075 6 22,447 Patricia A. Woertz 1,660 1,660 6 32,426 25 Directors and executive officers, as a group 708,661 5,729,646 88,493 10,821,934 17,348,734 .70% 811,016 1 Includes unrestricted Common Stock over which each Director or executive officer has sole voting and investment power and restricted Common Stock over which they have voting power but no investment power (until restrictions lapse). 2 Common Stock allocated to personal accounts of executive officers under the Retirement Trust pursuant to PST, the Procter & Gamble International Stock Ownership Plan (ISOP), or The Procter & Gamble U.K. 1-4-1 Plan. Plan participants have sole discretion as to voting and, within limitations provided by PST, investment of shares. PST shares are voted by the Trustees in accordance with instructions from participants. If instructions are not received by the Trustees as to the voting of particular shares, shares are to be voted in proportion to instructions actually received from other participants in the Retirement Trust. ISOP and U.K. 1-4-1 shares are voted in accordance with instructions from participants. If instructions are not received as to the voting of particular shares, a vote will not be submitted for those shares. 3 Total includes stock options that have vested or will vest within 60 days, Common Stock pursuant to the PST that will be allocated to personal accounts of executive officers within 60 days, PSP awards (as described beginning on page 38) that will deliver as Common Stock in August 2020, any Restricted Stock that will vest within 60 days, and any RSUs that will deliver as Common Stock within 60 days. The total does not include the final payment of dividend equivalents that took place on August 17 on PSP awards that will deliver as Common Stock in August. 4 This column includes shares in which voting and/or investment powers are shared. It also includes shares indirectly held through family members who reside in the household of the director or officer. 5 RSUs represent the right to receive unrestricted shares of Common Stock upon the lapse of restrictions, at which point the holders will have a non-forfeitable right to delivery of Common Stock on a specific date in the future. Total includes RSUs that will not deliver as Common Stock within 60 days and any PSP awards that will deliver as RSUs in August 2020. RSUs that will 66 The Procter & Gamble Company Table of Contents BENEFICIAL OWNERSHIP not deliver within 60 days of the record date are not considered “beneficially owned” because holders are not entitled to voting rights or investment control until the shares are delivered. RSUs that will deliver within 60 days are listed in the “Right to Acquire” column. 6 Excluding Mr. Peltz, less than .0521% for any one Director or NEO. 7 Totals include shares, stock options, and RSUs indirectly held by Ms. Ferguson-McHugh through her spouse, who was previously employed by the Company. 8 Totals include shares, stock options, and RSUs indirectly held by Mr. Moeller through his spouse, who is also employed by the Company. 9 These shares are owned by certain funds and investment vehicles (the “Trian Funds”) managed by Trian Fund Management, L.P. (“Trian”), an institutional investment manager. None of such shares are held directly by Mr. Peltz. From time to time, certain of these shares are held in the ordinary course of business with other investment securities owned by the Trian Funds in co-mingled margin accounts with a prime broker, which prime broker may, from time to time, extend margin credit to certain Trian Funds, subject to applicable federal margin regulations, stock exchange rules and credit policies. Trian Fund Management GP, LLC, of which Mr. Peltz is a member, is the general partner of Trian, and therefore is in a position to determine the investment and voting decisions made by the Trian Funds. Accordingly, Mr. Peltz and Trian may be deemed to indirectly beneficially own the shares that the Trian Funds directly and beneficially own. 10 Totals include shares, stock options, and RSUs indirectly held by Ms. Tastad through her spouse, who was previously employed by the Company. SERIES A ESOP CONVERTIBLE CLASS A PREFERRED STOCK NUMBER OF SHARES AMOUNT AND NATURE OF BENEFICIAL OWNERSHIP NAME PROFIT SHARING PLAN 1 TRUSTEESHIPS PERCENT OF SERIES Steven D. Bishop 9,015 2 Francis S. Blake Angela F. Braly Amy L. Chang Scott D. Cook Mary Lynn Ferguson-McHugh 3 8,865 2 Joseph Jimenez Terry J. Lundgren Christine M. McCarthy W. James McNerney, Jr. Jon R. Moeller 4 14,783 2 Nelson Peltz Carolyn M. Tastad 5 4,161 2 David S. Taylor 12,903 2 Margaret C. Whitman Patricia A. Woertz 25 Directors and executive officers, as a group 101,850 2 Employee Stock Ownership Trust of The Procter & Gamble Profit Sharing Trust and Employee Stock Ownership Plan P.O. Box 599, Cincinnati, Ohio 45201-0599 (R. L. Antoine, S. P. Donovan, Jr. and R. C. Stewart, Trustees) 3,263,731 6 1 Shares allocated to personal accounts of executive officers under the Employee Stock Ownership Trust pursuant to PST. Plan participants have sole discretion as to voting and, within limitations provided by PST, investment of shares. Shares are voted 2020 Proxy Statement 67 Table of Contents BENEFICIAL OWNERSHIP by the Trustees in accordance with instructions from participants. If instructions are not received by the Trustees as to the voting of particular shares, shares are to be voted in proportion to instructions actually received from other participants in the Trust. 2 Less than .32% for any NEO, and for the Directors and executive officers, as a group; by the terms of the stock, only persons who are or have been employees can have beneficial ownership of these shares. 3 Total includes shares indirectly held by Ms. Ferguson-McHugh through her spouse, who was previously employed by the Company. 4 Total includes shares indirectly held by Mr. Moeller through his spouse, who is also employed by the Company. 5 Total includes shares indirectly held by Ms. Tastad through her spouse, who was previously employed by the Company. 6 Unallocated shares. The voting of these shares is governed by the terms of PST, which provides that the Trustees shall vote unallocated shares held by them in proportion to instructions received from Trust participants as to voting of allocated shares. The disposition of these shares in connection with a tender offer would be governed by the terms of PST, which provides that the Trustees shall dispose of unallocated shares held by them in proportion to instructions received from Trust participants as to the disposition of allocated shares. SERIES B ESOP CONVERTIBLE CLASS A PREFERRED STOCK NUMBER OF SHARES Amount and Nature of Beneficial Ownership Name Profit Sharing Plan 1 Trusteeships Percent of Series Steven D. Bishop Francis S. Blake Angela F. Braly Amy L. Chang Scott D. Cook Mary Lynn Ferguson-McHugh 3 469 2 Joseph Jimenez Terry J. Lundgren Christine C. McCarthy W. James McNerney, Jr. Jon R. Moeller Nelson Peltz Carolyn M. Tastad 4 283 2 David S. Taylor 198 2 Margaret C. Whitman Patricia A. Woertz 32 Directors and executive officers, as a group 1,238 2 Employee Stock Ownership Trust of The Procter & Gamble Profit Sharing Trust and Employee Stock Ownership Plan P.O. Box 599, Cincinnati, Ohio 45201-0599 (R. L. Antoine, S. P. Donovan, Jr. and R. C. Stewart, Trustees) 25,104,796 5 1 Shares allocated to personal accounts of executive officers under the Employee Stock Ownership Trust pursuant to PST. Plan participants have sole discretion as to voting and, within limitations provided by PST, investment of shares. Shares are voted by the Trustees in accordance with instructions from participants. If instructions are not received by the Trustees as to the voting of particular shares, shares are to be voted in proportion to instructions actually received from other participants in the Trust. 68 The Procter & Gamble Company Table of Contents BENEFICIAL OWNERSHIP 2 Less than .0024% for any NEO, and for the Directors and executive officers, as a group; by the terms of the stock, only persons who are or have been employees can have beneficial ownership of these shares. 3 Total includes shares indirectly held by Ms. Ferguson-McHugh through her spouse, who was previously employed by the Company. 4 Total includes shares indirectly held by Ms. Tastad through her spouse, who was previously employed by the Company. 5 Unallocated shares. The voting of these shares is governed by the terms of PST, which provides that the Trustees shall vote unallocated shares held by them in proportion to instructions received from Trust participants as to voting of allocated shares. The disposition of these shares in connection with a tender offer would be governed by the terms of PST, which provides that the Trustees shall dispose of unallocated shares held by them in proportion to instructions received from Trust participants as to the disposition of allocated shares. Delinquent Section 16(a) Reports Ownership of, and transactions in, Company stock by executive officers and Directors of the Company are required to be reported to the SEC pursuant to Section 16 of the Securities Exchange Act of 1934. As a practical matter, the Company assists its Directors and officers by monitoring transactions and completing and filing Section 16 reports on their behalf. The Company believes that during the past fiscal year, all Section 16 reports for its Directors and officers were timely filed, except for one Form 4 reporting a sale of common stock by Ma. Fatima D. Francisco, which was filed late due to a broker’s oversight. 2020 Proxy Statement 69 Table of Contents AUDIT COMMITTEE REPORT Audit Committee Report Report of the Audit Committee Each member of the Audit Committee is an independent Director as determined by the Board of Directors, based on the NYSE listing standards and the Board’s own Independence Guidelines. Each member of the Committee also satisfies the SEC’s additional independence requirement for members of audit committees. The Board of Directors has determined that Ms. Woertz and Ms. McCarthy meet the criteria for “Audit Committee Financial Expert” as defined by SEC rules. The Board of Directors has also determined that all Audit Committee members are financially literate. See pages 20-21 for further detail on Audit Committee composition. As noted previously in the proxy statement, the Committee’s work is guided by a charter, which can be found in the corporate governance section of the Company’s website at www.pg.com . The Audit Committee has the responsibilities set forth in its charter with respect to: • Accounting, financial reporting and disclosure processes, and adequacy of systems of disclosure and internal control established by management; • Quality and integrity of the Company’s financial statements; • Company’s compliance with legal and regulatory requirements; • Company’s overall risk management profile; • Independent registered public accounting firm’s qualifications and independence; • Performance of the Company’s internal audit function and the independent registered public accounting firm; • Performance of the Company’s ethics and compliance function; • Preparing this annual Report of the Audit Committee to be included in the Company’s proxy statement. Management has the Company’s primary responsibility for establishing and maintaining adequate internal financial controllership, for preparing the financial statements, and for the public reporting process. Deloitte & Touche LLP, the Audit Committee-appointed independent registered public accounting firm for the fiscal year ended June 30, 2020, is responsible for expressing opinions on the conformity of the Company’s audited financial statements with generally accepted accounting principles and on management’s assessment of the effectiveness of the Company’s internal control over financial reporting. In its role of financial reporting oversight, the Committee reviewed and discussed with management and Deloitte & Touche LLP the audited financial statements for the year ended June 30, 2020, and management’s assessment of the effectiveness of the Company’s internal control over financial reporting. In this context, the Committee met eight times (including telephone meetings to discuss quarterly results) during the fiscal year ended June 30, 2020. The Committee has reviewed with Deloitte & Touche LLP matters required to be discussed pursuant to auditing standards adopted by the Public Company Accounting Oversight Board (“PCAOB”). In addition, the Committee has discussed various matters with Deloitte & Touche LLP related to the Company’s consolidated financial statements, including critical accounting policies and practices used, alternative treatments for material items that have been discussed with management, and other material written communications between Deloitte & Touche LLP and management. The Committee has also received written disclosures and the letter from Deloitte & Touche LLP required by PCAOB Rule 3526, “Communication with Audit Committees Concerning Independence,” and has discussed with Deloitte & Touche LLP its independence from the Company and its management. In addition, the Committee has received written material addressing Deloitte & Touche LLP’s internal quality control procedures and other matters, as required by the NYSE listing standards. The Committee understands the need for Deloitte & Touche LLP to maintain objectivity and independence in its audit of the Company’s financial statements and internal controls over financial reporting. The Committee has implemented a formal pre-approval process for non-audit fee spending, and it seeks to limit this spending to a level that keeps the core relationship with Deloitte & Touche LLP focused on financial statement review and evaluation. A copy of this pre-approval process is attached to this proxy statement as Exhibit B. Based on the considerations referred to above, the Committee recommended to our Board of Directors that the audited financial statements for the year ended June 30, 2020 be included in our Annual Report on Form 10-K for 2020 and selected Deloitte & Touche LLP as the independent registered public accounting firm for the Company for the fiscal year ending June 30, 2021. This report is provided by the following independent Directors, who constitute the Committee: Patricia A. Woertz, Chair Frank S. Blake Angela F. Braly Amy L. Chang Christine M. McCarthy 70 The Procter & Gamble Company Table of Contents AUDIT COMMITTEE REPORT Fees Paid to the Independent Registered Public Accounting Firm The A\n\nSource table (tab-separated columns):\nSERIES A ESOP CONVERTIBLE CLASS A PREFERRED STOCK NUMBER OF SHARES NAME\tAMOUNT AND NATURE OF BENEFICIAL OWNERSHIP PROFIT SHARING PLAN\nSteven D. Bishop\t9,015\nFrancis S. Blake\t\nAngela F. Braly\t\nAmy L. Chang\t\nScott D. Cook\t\nMary Lynn Ferguson-McHugh\t8,865\nJoseph Jimenez\t\nTerry J. Lundgren\t\nChristine M. McCarthy\t\nW. James McNerney, Jr.\t\nJon R. Moeller\t14,783\nNelson Peltz\t\nCarolyn M. Tastad\t4,161\nDavid S. Taylor\t12,903\nMargaret C. Whitman\t\nPatricia A. Woertz\t\n25 Directors and executive officers, as a group\t101,850\nEmployee Stock Ownership Trust of The Procter & Gamble Profit Sharing Trust and Employee Stock Ownership Plan P.O. Box 599, Cincinnati, Ohio 45201-0599 (R. L. Antoine, S. P. Donovan, Jr. and R. C. Stewart, Trustees)\t3,263,731\n"
+  }
+}

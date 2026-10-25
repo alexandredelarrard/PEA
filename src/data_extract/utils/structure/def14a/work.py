@@ -10,8 +10,10 @@ from typing import Any, cast
 import pandas as pd
 
 from src.context import Context
+from src.data_extract.utils.schemas.def14a_schema import OwnershipExtract
 from src.data_extract.utils.structure.def14a.evidence import layout_has_gap, prose_has_gap, table_has_gap
-from src.data_extract.utils.structure.def14a.postprocess import ProcessedSection, archived_answers
+from src.data_extract.utils.structure.def14a.holders import holders_need_reconciliation
+from src.data_extract.utils.structure.def14a.postprocess import ProcessedSection, archived_answers, source_for_answer
 from src.data_extract.utils.structure.def14a.retry import SECTIONS, Section, reservation_frame
 from src.data_store.schema import Table, Tables
 from src.gpt_extract.utils.schemas_gpt import LlmTask
@@ -48,6 +50,8 @@ def has_gaps(section: Section, saved: pd.DataFrame, parent: dict[str, Any]) -> b
     marker_column, marker = cast(tuple[str, str], section.table.empty_marker)
     rows = saved.loc[saved[marker_column].ne(marker)] if marker_column in saved else saved
     if rows.empty:
+        return True
+    if section.key == "ownership" and holders_need_reconciliation(rows):
         return True
     keys = {
         "executive_pay": (
@@ -153,8 +157,19 @@ def replay_candidates(works: list[FilingWork]) -> Iterator[tuple[FilingWork, Sec
     """Yield already-paid domain answers; no source read or provider is involved."""
     for work in works:
         answers = archived_answers(work.raw) if work.pending else {}
-        for section in (item for item in SECTIONS if item.key in work.pending):
-            for answer in answers.get(section.key, []):
+        for section in SECTIONS:
+            # Normalizing saved holders is free, including complete retry=2 rows without JSON.
+            if section.key == "ownership" and holders_need_reconciliation(work.saved[section.table]):
+                yield work, section, OwnershipExtract.model_validate({"percent_unit": "fraction", "shares_scale": "units"})
+
+            # Filter lazily because a yielded repair can complete the section.
+            section_answers = (
+                answer
+                for answer in answers.get(section.key, [])
+                if section.key in work.pending
+                or (section.key in ("executive_pay", "director_pay", "ownership") and bool(source_for_answer(work.raw, section, answer)))
+            )
+            for answer in section_answers:
                 yield work, section, answer
 
 
@@ -206,13 +221,20 @@ def save_archive(context: Context, work: FilingWork) -> None:
 
 
 def save_section(context: Context, work: FilingWork, processed: ProcessedSection) -> None:
-    """Save owned facts before removing their hidden placeholder; never clear another domain."""
+    """Save survivors before deleting exact obsolete holder keys or hidden placeholders."""
     for table, frame in processed.frames.items():
         context.store.save(table, frame)
         if table is Tables.def14a_llm:
             work.parent.update(cast(dict[str, Any], frame.iloc[0].to_dict()))
             work.saved[table] = pd.DataFrame([work.parent])
             continue
+        if table is Tables.def14a_ownership and not work.saved[table].empty:
+            keys = [*table.pk, "as_of"]
+            df_previous = work.saved[table][keys].assign(as_of=pd.to_datetime(work.saved[table]["as_of"]))
+            df_current = frame[keys].assign(as_of=pd.to_datetime(frame["as_of"]))
+            obsolete = df_previous.merge(df_current, on=keys, how="left", indicator=True)
+            for row in obsolete.loc[obsolete._merge.eq("left_only"), keys].to_dict("records"):
+                context.store.delete(table, where=cast(dict[str, object], row))
         work.saved[table] = frame
         marker_column, marker = cast(tuple[str, str], table.empty_marker)
         if frame[marker_column].ne(marker).any():

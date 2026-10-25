@@ -130,6 +130,36 @@ def _attempts(context):
     }
 
 
+@pytest.mark.parametrize("candidate", [True, False])
+def test_complete_pay_source_replay_is_bounded_to_already_selected_filings(daily, monkeypatch, candidate):
+    context, calls, answers, _ = daily
+    payloads = {**PAYLOADS, "executive_pay": "Name\tYear\tSalary ($)\tTotal ($)\nJane Example\t2025\t100\t100"}
+    monkeypatch.setattr(fetch, "prepare_def14a_payloads", lambda *_: payloads)
+    answers.update(_complete_answers())
+    answers["GovernanceExtract"].update(ceo_since_year=2018, board_size=1, ceo_pay_ratio=1, say_on_pay_support_pct=99)
+    fetch.fetch_def14a_llm(context, context.config, ["ZZ"])
+    for section in SECTIONS:
+        frame = context.store.load(section.table, markers=True)
+        frame["retry"] = 2
+        if section.key == "executive_pay":
+            frame["total"] = 999
+        if section.key == "audit":
+            frame["ceo_total_comp"] = 999
+            if candidate:
+                frame["audit_fees_tax"] = None
+        context.store.save(section.table, frame)
+    count = len(calls)
+    monkeypatch.setattr(fetch, "_fetch_filing_html", lambda *_: pytest.fail("Exhausted source replay must not read SEC or call a provider"))
+    for _ in range(2):
+        fetch.fetch_def14a_llm(context, context.config, ["ZZ"])
+    saved = context.store.load(Tables.def14a_executive_comp)
+    assert saved.iloc[0].total == (100 if candidate else 999)
+    assert saved.retry.eq(2).all() and len(calls) == count
+    print(
+        "SANITY: complete pay at retry2 reuses source only inside an already-selected filing; wholly complete filings are not scanned and no calls are added."
+    )
+
+
 def test_five_matched_calls_then_only_source_present_gap_is_retried(daily, monkeypatch):
     context, calls, answers, _ = daily
     monkeypatch.setattr(fetch, "prepare_def14a_payloads", lambda *_: PAYLOADS)

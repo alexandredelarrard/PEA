@@ -1,0 +1,458 @@
+{
+  "executive_pay": {
+    "key": "c5eae0a373247c246048c1c1f573144cfdac18fa031bc98ccf7097f4c6ef8881",
+    "meta": {
+      "accession_number": "0001193125-15-098865",
+      "action": "def14a_executive_pay",
+      "as_of": "2015-03-20 00:00:00",
+      "cik": "0000821189",
+      "company_name": "EOG Resources, Inc.",
+      "period": "2015-04-30 00:00:00",
+      "seq": 1,
+      "ticker": "EOG"
+    },
+    "parsed": {
+      "amount_scale": "units",
+      "compensation": [
+        {
+          "bonus": null,
+          "fiscal_year": 2014,
+          "name": "William R. Thomas",
+          "non_equity_incentive": 1600000.0,
+          "option_awards": null,
+          "other_compensation": 274441.0,
+          "pension_change": null,
+          "salary": 906731.0,
+          "stock_awards": 5788782.0,
+          "title": "Chairman of the Board and Chief Executive Officer",
+          "total": 10548457.0
+        },
+        {
+          "bonus": null,
+          "fiscal_year": 2013,
+          "name": "William R. Thomas",
+          "non_equity_incentive": 1200000.0,
+          "option_awards": null,
+          "other_compensation": 198931.0,
+          "pension_change": null,
+          "salary": 775000.0,
+          "stock_awards": 4814318.0,
+          "title": "Chairman of the Board and Chief Executive Officer",
+          "total": 8751908.0
+        },
+        {
+          "bonus": null,
+          "fiscal_year": 2012,
+          "name": "William R. Thomas",
+          "non_equity_incentive": 942500.0,
+          "option_awards": null,
+          "other_compensation": 263715.0,
+          "pension_change": null,
+          "salary": 690385.0,
+          "stock_awards": 4012265.0,
+          "title": "Chairman of the Board and Chief Executive Officer",
+          "total": 7264748.0
+        },
+        {
+          "bonus": null,
+          "fiscal_year": 2014,
+          "name": "Gary L. Thomas",
+          "non_equity_incentive": 1200000.0,
+          "option_awards": null,
+          "other_compensation": 454479.0,
+          "pension_change": null,
+          "salary": 791154.0,
+          "stock_awards": 4558580.0,
+          "title": "President and Chief Operating Officer",
+          "total": 8562261.0
+        },
+        {
+          "bonus": null,
+          "fiscal_year": 2013,
+          "name": "Gary L. Thomas",
+          "non_equity_incentive": 1100000.0,
+          "option_awards": null,
+          "other_compensation": 280862.0,
+          "pension_change": null,
+          "salary": 740385.0,
+          "stock_awards": 4230820.0,
+          "title": "President and Chief Operating Officer",
+          "total": 7901912.0
+        },
+        {
+          "bonus": null,
+          "fiscal_year": 2012,
+          "name": "Gary L. Thomas",
+          "non_equity_incentive": 942500.0,
+          "option_awards": null,
+          "other_compensation": 257193.0,
+          "pension_change": null,
+          "salary": 690385.0,
+          "stock_awards": 4012265.0,
+          "title": "President and Chief Operating Officer",
+          "total": 7258226.0
+        },
+        {
+          "bonus": null,
+          "fiscal_year": 2014,
+          "name": "Timothy K. Driggers",
+          "non_equity_incentive": 550000.0,
+          "option_awards": null,
+          "other_compensation": 160793.0,
+          "pension_change": null,
+          "salary": 458077.0,
+          "stock_awards": 1736612.0,
+          "title": "Vice President and Chief Financial Officer",
+          "total": 3499005.0
+        },
+        {
+          "bonus": null,
+          "fiscal_year": 2013,
+          "name": "Timothy K. Driggers",
+          "non_equity_incentive": 470000.0,
+          "option_awards": null,
+          "other_compensation": 115670.0,
+          "pension_change": null,
+          "salary": 432692.0,
+          "stock_awards": 1604896.0,
+          "title": "Vice President and Chief Financial Officer",
+          "total": 3211052.0
+        },
+        {
+          "bonus": null,
+          "fiscal_year": 2012,
+          "name": "Timothy K. Driggers",
+          "non_equity_incentive": 425000.0,
+          "option_awards": null,
+          "other_compensation": 116441.0,
+          "pension_change": null,
+          "salary": 407693.0,
+          "stock_awards": 1660177.0,
+          "title": "Vice President and Chief Financial Officer",
+          "total": 3174262.0
+        },
+        {
+          "bonus": null,
+          "fiscal_year": 2014,
+          "name": "Lloyd W. Helms, Jr.",
+          "non_equity_incentive": 550000.0,
+          "option_awards": null,
+          "other_compensation": 146342.0,
+          "pension_change": null,
+          "salary": 448077.0,
+          "stock_awards": 1157668.0,
+          "title": "Executive Vice President, Exploration and Production",
+          "total": 2697738.0
+        },
+        {
+          "bonus": null,
+          "fiscal_year": 2013,
+          "name": "Lloyd W. Helms, Jr.",
+          "non_equity_incentive": 440000.0,
+          "option_awards": null,
+          "other_compensation": 1157162.0,
+          "pension_change": null,
+          "salary": 419231.0,
+          "stock_awards": 1160413.0,
+          "title": "Executive Vice President, Exploration and Production",
+          "total": 3497361.0
+        },
+        {
+          "bonus": null,
+          "fiscal_year": 2014,
+          "name": "Michael P. Donaldson",
+          "non_equity_incentive": 550000.0,
+          "option_awards": null,
+          "other_compensation": 167407.0,
+          "pension_change": null,
+          "salary": 449423.0,
+          "stock_awards": 1551961.0,
+          "title": "Vice President, General Counsel and Corporate Secretary",
+          "total": 3249226.0
+        },
+        {
+          "bonus": null,
+          "fiscal_year": 2013,
+          "name": "Michael P. Donaldson",
+          "non_equity_incentive": 490000.0,
+          "option_awards": null,
+          "other_compensation": 75638.0,
+          "pension_change": null,
+          "salary": 419231.0,
+          "stock_awards": 1312962.0,
+          "title": "Vice President, General Counsel and Corporate Secretary",
+          "total": 2778829.0
+        },
+        {
+          "bonus": null,
+          "fiscal_year": 2012,
+          "name": "Michael P. Donaldson",
+          "non_equity_incentive": 410000.0,
+          "option_awards": null,
+          "other_compensation": 81679.0,
+          "pension_change": null,
+          "salary": 356846.0,
+          "stock_awards": 1307492.0,
+          "title": "Vice President, General Counsel and Corporate Secretary",
+          "total": 2478030.0
+        }
+      ],
+      "currency": "USD"
+    },
+    "source": "Read these focused source sections and return the requested executive pay facts.\n\n=== SUMMARY COMPENSATION TABLE ===\nName and Principal Position\tFiscal Year\tSalary ($)(a)\tStock Awards ($)(b)\tSAR Awards ($)(c)\tNon-Equity Incentive Plan Compensation ($)(d)\tAll Other Compensation ($)(f)\tTotal ($)\nWilliam R. Thomas Chairman of the Board and Chief Executive Officer\t2014 2013 2012\t906,731 775,000 690,385\t5,788,782 4,814,318 4,012,265\t1,978,503 1,763,659 1,355,883\t1,600,000 1,200,000 942,500\t274,441 198,931 263,715\t10,548,457 8,751,908 7,264,748\nGary L. Thomas(g) President and Chief Operating Officer\t2014 2013 2012\t791,154 740,385 690,385\t4,558,580 4,230,820 4,012,265\t1,558,048 1,549,845 1,355,883\t1,200,000 1,100,000 942,500\t454,479 280,862 257,193\t8,562,261 7,901,912 7,258,226\nTimothy K. Driggers Vice President and Chief Financial Officer\t2014 2013 2012\t458,077 432,692 407,693\t1,736,612 1,604,896 1,660,177\t593,523 587,794 564,951\t550,000 470,000 425,000\t160,793 115,670 116,441\t3,499,005 3,211,052 3,174,262\nLloyd W. Helms, Jr. Executive Vice President, Exploration and Production\t2014 2013\t448,077 419,231\t1,157,668 1,160,413\t395,651 320,555\t550,000 440,000\t146,342 1,157,162\t2,697,738 3,497,361\nMichael P. Donaldson Vice President, General Counsel and Corporate Secretary\t2014 2013 2012\t449,423 419,231 356,846\t1,551,961 1,312,962 1,307,492\t530,435 480,998 322,013\t550,000 490,000 410,000\t167,407 75,638 81,679\t3,249,226 2,778,829 2,478,030\n",
+    "target": {
+      "name": "William R. Thomas",
+      "field": "option_awards",
+      "expected": 1978503
+    }
+  },
+  "director_pay": {
+    "key": "444cf1e4a182255f64c6dbcdaa0655552504f4aeb2485ee12745431ac800e121",
+    "meta": {
+      "accession_number": "0001193125-15-098865",
+      "action": "def14a_director_pay",
+      "as_of": "2015-03-20 00:00:00",
+      "cik": "0000821189",
+      "company_name": "EOG Resources, Inc.",
+      "period": "2015-04-30 00:00:00",
+      "seq": 1,
+      "ticker": "EOG"
+    },
+    "parsed": {
+      "amount_scale": "units",
+      "compensation": [
+        {
+          "fees_earned": 140000.0,
+          "fiscal_year": 2014,
+          "name": "Janet F. Clark",
+          "non_equity_incentive": null,
+          "option_awards": null,
+          "other_compensation": null,
+          "pension_change": null,
+          "stock_awards": 186524.0,
+          "total": 363179.0
+        },
+        {
+          "fees_earned": 140000.0,
+          "fiscal_year": 2014,
+          "name": "Charles R. Crisp",
+          "non_equity_incentive": null,
+          "option_awards": null,
+          "other_compensation": 74140.0,
+          "pension_change": null,
+          "stock_awards": 139943.0,
+          "total": 380485.0
+        },
+        {
+          "fees_earned": 140000.0,
+          "fiscal_year": 2014,
+          "name": "James C. Day",
+          "non_equity_incentive": null,
+          "option_awards": null,
+          "other_compensation": 80272.0,
+          "pension_change": null,
+          "stock_awards": 139943.0,
+          "total": 386617.0
+        },
+        {
+          "fees_earned": 140000.0,
+          "fiscal_year": 2014,
+          "name": "Mark G. Papa",
+          "non_equity_incentive": null,
+          "option_awards": null,
+          "other_compensation": 264543.0,
+          "pension_change": null,
+          "stock_awards": 186524.0,
+          "total": 627722.0
+        },
+        {
+          "fees_earned": 140000.0,
+          "fiscal_year": 2014,
+          "name": "H. Leighton Steward",
+          "non_equity_incentive": null,
+          "option_awards": null,
+          "other_compensation": 74987.0,
+          "pension_change": null,
+          "stock_awards": 139943.0,
+          "total": 381332.0
+        },
+        {
+          "fees_earned": 140000.0,
+          "fiscal_year": 2014,
+          "name": "Donald F. Textor",
+          "non_equity_incentive": null,
+          "option_awards": null,
+          "other_compensation": 76141.0,
+          "pension_change": null,
+          "stock_awards": 139943.0,
+          "total": 382486.0
+        },
+        {
+          "fees_earned": 140000.0,
+          "fiscal_year": 2014,
+          "name": "Frank G. Wisner",
+          "non_equity_incentive": null,
+          "option_awards": null,
+          "other_compensation": 3450.0,
+          "pension_change": null,
+          "stock_awards": 139943.0,
+          "total": 309795.0
+        }
+      ],
+      "currency": "USD"
+    },
+    "source": "Read these focused source sections and return the requested director pay facts.\n\n=== DIRECTOR COMPENSATION TABLE ===\nSource context surrounding this table:\n. Papa would each be granted SARs having a value of $13,333 (such value to be calculated based on the closing price of EOG’s Common Stock on January 6, 2014 and taking into account a RSU/SAR ratio of 2.45-to-1 (consistent with Section 4.2(c)(ii) of the 2008 Stock Plan), with the resulting number of SARs rounded down to a whole SAR). The resulting grants to each of Ms. Clark and Mr. Papa, as calculated on January 6, 2014, were 568 RSUs and 398 SARs (as adjusted to reflect our two-for-one stock split (in the form of a stock dividend) which was effective March 31, 2014). In accordance with our stock ownership guidelines for non-employee directors (adopted by the Committee in December 2009 and as amended by the Committee in May 2012) and the terms of each non-employee director’s RSU grant agreements, each non-employee director is required to hold at least 65% of the shares of our Common Stock that such director receives upon the vesting of any restricted stock or RSUs previously granted. Each non-employee director, upon the vesting of restricted stock or RSUs, may sell up to 35% of the shares of our Common Stock received upon the vesting to cover any tax obligations the non-employee director may incur as a result of the vesting. The remaining 65% of the shares received upon the vesting must be held until the non-employee director no longer serves on the Board. Mr. W. Thomas, as our CEO, is subject to the stock ownership guidelines applicable to our executive officers and other officers discussed above, and does not receive any compensation in respect of his services as a director or as our Chairman of the Board. In light of the current commodity price environment, the Committee, at its March 2015 meeting, recommended to the Board that the annual compensation of our non-employee directors be reduced by $40,000 in 2015 by eliminating the grant of SARs. The Board intends to adopt this recommendation in connection with the determination of annual non-employee director compensation at the second quarter 2015 meetings of the Board and Committee. 42 Table of Contents Director Compensation Table for 2014 The following table summarizes certain information regarding compensation paid or accrued during 2014 to each non-employee director. Name Fees Earned or Paid in Cash ($)(a) Stock Awards ($)(b) SAR Awards ($)(c) Non-Equity Incentive Plan Compensation ($) Change in Pension Value and Nonqualified Deferred Compensation Earnings ($) All Other Compensation ($)(d) Total ($) Janet F. Clark $ 140,000 $ 186,524 $ 36,655 $ — $ 363,179 Charles R. Crisp $ 140,000 $ 139,943 $ 26,402 $ 74,140 $ 380,485 James C. Day $ 140,000 $ 139,943 $ 26,402 $ 80,272 $ 386,617 Mark G. Papa $ 140,000 $ 186,524 $ 36,655 $ 264,543 $ 627,722 H. Leighton Steward $ 140,000 $ 139,943 $ 26,402 $ 74,987 $ 381,332 Donald F. Textor $ 140,000 $ 139,943 $ 26,402 $ 76,141 $ 382,486 Frank G. Wisner $ 140,000 $ 139,943 $ 26,402 $ 3,450 $ 309,795 (a) Non-employee directors can defer all or a portion of their cash fees to a later specified date by participating in the Deferral Plan. Under the Deferral Plan, deferrals are invested into either (1) a flexible deferral account, in which deferrals are treated as if they had been invested into various investment funds as directed by the participant and in which returns vary based on the performance of the funds or (2) a phantom stock account, in which deferrals are treated as if such amounts are used to purchase our Common Stock at the closing price on the date such deferred fee would otherwise have been paid, and includes reinvestment of dividends. In 2014, four of our non-employee directors participated in the Deferral Plan. (b) Non-employee directors participate in the 2008 Stock Plan. Under the terms of the 2008 Stock Plan, each non-employee director received, upon re-election to the Board at our 2014 annual meeting of stockholders, 1,410 RSUs on May 5, 2014 (based on the closing price of our Common Stock on the NYSE of $99.25 per share on such date). Upon initial election to the Board, Ms. Clark and Mr. Papa each received 568 RSUs on January 6, 2014 (based on the closing price of our Common Stock on the NYSE of $82.01 per share on such date). RSUs granted to non-employee directors under the 2008 Stock Plan vest 100% after one year. Upon vesting and in accordance with the related grant agreements and our stock ownership guidelines for non-employee directors discussed above, 35% of the shares received upon the vesting may be sold to cover any tax obligations the non-employee director may incur as a result of the vesting, and the remaining 65% of such shares must be held until the non-employee director no longer serves on the Board. Non-employee directors can defer receipt of all or a portion of their RSU grants (and, if the non-employee director so elects, the dividends credited thereon) to a later specified date by participating in the phantom stock account of the Deferral Plan. Following is the market value of the unvested RSUs for each non-employee director as of December 31, 2014 (based on the closing price of our Common Stock on the NYSE of $92.07 per share on December 31, 2014): Ms. Clark, $182,114; and Messrs. Crisp, Day, Steward, Textor and Wisner, $129,819. Due to his departure from the Board in December 2014, the market value of Mr. Papa’s unvested RSUs as of December 31, 2014 was $0. (c) SARs granted to our non-employee directors under the 2008 Stock Plan vest 50% after one year, and 100% after two years, following the date of grant, and expire seven years from the date of grant. Under the terms of the 2008 Stock Plan, each non-employee director also received, upon re-election to the Board at our 2014 annual meeting of stockholders, 987 SARs at an exercise price equal to the fair market value of our Common Stock on May 5, 2014. The grant date fair value of each SAR gran\n\nSource table (tab-separated columns):\nName\tFees Earned or Paid in Cash ($)(a)\tStock Awards ($)(b)\tSAR Awards ($)(c)\tAll Other Compensation ($)(d)\tTotal ($)\nJanet F. Clark\t140,000\t186,524\t36,655\t\t363,179\nCharles R. Crisp\t140,000\t139,943\t26,402\t74,140\t380,485\nJames C. Day\t140,000\t139,943\t26,402\t80,272\t386,617\nMark G. Papa\t140,000\t186,524\t36,655\t264,543\t627,722\nH. Leighton Steward\t140,000\t139,943\t26,402\t74,987\t381,332\nDonald F. Textor\t140,000\t139,943\t26,402\t76,141\t382,486\nFrank G. Wisner\t140,000\t139,943\t26,402\t3,450\t309,795\n",
+    "target": {
+      "name": "Janet F. Clark",
+      "field": "option_awards",
+      "expected": 36655
+    }
+  },
+  "ownership": {
+    "key": "936e62e4575b79cdba2b213a076e50b5d9ab1b16d546b3eadd62237f5e38a09f",
+    "meta": {
+      "accession_number": "0000950129-96-000428",
+      "action": "def14a_ownership",
+      "as_of": "1996-03-25 00:00:00",
+      "cik": "0000821189",
+      "company_name": "Enron Oil & Gas Company",
+      "period": "1996-05-07 00:00:00",
+      "seq": 0,
+      "ticker": "EOG"
+    },
+    "parsed": {
+      "holders": [
+        {
+          "holder_name": "Fred C. Ackman",
+          "holder_type": "director_officer",
+          "percent_of_class": null,
+          "percent_of_voting_power": null,
+          "shares": 11000.0
+        },
+        {
+          "holder_name": "Forrest E. Hoglund",
+          "holder_type": "director_officer",
+          "percent_of_class": 2.12,
+          "percent_of_voting_power": null,
+          "shares": 3430389.0
+        },
+        {
+          "holder_name": "Richard D. Kinder",
+          "holder_type": "director_officer",
+          "percent_of_class": null,
+          "percent_of_voting_power": null,
+          "shares": 34238.0
+        },
+        {
+          "holder_name": "Kenneth L. Lay",
+          "holder_type": "director_officer",
+          "percent_of_class": null,
+          "percent_of_voting_power": null,
+          "shares": 51200.0
+        },
+        {
+          "holder_name": "Joe Mike McKinney",
+          "holder_type": "director_officer",
+          "percent_of_class": null,
+          "percent_of_voting_power": null,
+          "shares": 126498.0
+        },
+        {
+          "holder_name": "Mark G. Papa",
+          "holder_type": "director_officer",
+          "percent_of_class": null,
+          "percent_of_voting_power": null,
+          "shares": 286094.0
+        },
+        {
+          "holder_name": "Edward Randall, III",
+          "holder_type": "director_officer",
+          "percent_of_class": null,
+          "percent_of_voting_power": null,
+          "shares": 13000.0
+        },
+        {
+          "holder_name": "Dennis M. Ulak",
+          "holder_type": "director_officer",
+          "percent_of_class": null,
+          "percent_of_voting_power": null,
+          "shares": 72863.0
+        },
+        {
+          "holder_name": "Walter C. Wilson",
+          "holder_type": "director_officer",
+          "percent_of_class": null,
+          "percent_of_voting_power": null,
+          "shares": 194925.0
+        },
+        {
+          "holder_name": "Forrest E. Hoglund",
+          "holder_type": "director_officer",
+          "percent_of_class": null,
+          "percent_of_voting_power": null,
+          "shares": 606043.0
+        },
+        {
+          "holder_name": "Richard D. Kinder",
+          "holder_type": "director_officer",
+          "percent_of_class": null,
+          "percent_of_voting_power": null,
+          "shares": 2250295.0
+        },
+        {
+          "holder_name": "Kenneth L. Lay",
+          "holder_type": "director_officer",
+          "percent_of_class": 1.22,
+          "percent_of_voting_power": null,
+          "shares": 3079260.0
+        },
+        {
+          "holder_name": "Joe Mike McKinney",
+          "holder_type": "director_officer",
+          "percent_of_class": null,
+          "percent_of_voting_power": null,
+          "shares": 33525.0
+        },
+        {
+          "holder_name": "Mark G. Papa",
+          "holder_type": "director_officer",
+          "percent_of_class": null,
+          "percent_of_voting_power": null,
+          "shares": 62443.0
+        },
+        {
+          "holder_name": "Edward Randall, III",
+          "holder_type": "director_officer",
+          "percent_of_class": null,
+          "percent_of_voting_power": null,
+          "shares": 82060.0
+        },
+        {
+          "holder_name": "Dennis M. Ulak",
+          "holder_type": "director_officer",
+          "percent_of_class": null,
+          "percent_of_voting_power": null,
+          "shares": 4822.0
+        },
+        {
+          "holder_name": "Walter C. Wilson",
+          "holder_type": "director_officer",
+          "percent_of_class": null,
+          "percent_of_voting_power": null,
+          "shares": 11950.0
+        }
+      ],
+      "insider_ownership_pct": null,
+      "insider_shares": null,
+      "insider_voting_pct": null,
+      "percent_unit": "percent",
+      "shares_scale": "units"
+    },
+    "source": "Read these focused source sections and return the requested ownership facts.\n\n=== SECURITY OWNERSHIP ===\nh Street\nHouston, Texas 77002\nSECURITY OWNERSHIP OF THE BOARD OF DIRECTORS AND MANAGEMENT ON JANUARY 31, 1996\nAMOUNT AND NATURE OF BENEFICIAL OWNERSHIP\n-----------------------------------------------\nSOLE VOTING\nSOLE VOTING SHARED VOTING AND LIMITED\nAND AND OR NO\nINVESTMENT INVESTMENT INVESTMENT PERCENT\nTITLE OF CLASS NAME POWER(1)(2) POWER POWER(3) OF CLASS\n- --------------- ------------------------------ ----------- ------------- ----------- --------\nEnron Oil & Fred C. Ackman................ 11,000 *\nGas Company Forrest E. Hoglund............ 3,110,389 320,000 2.12\nCommon Stock Richard D. Kinder............. 13,738(4) 20,500(9) *\nKenneth L. Lay................ 50,000(4) 1,200(5) *\nJoe Mike McKinney............. 108,998 17,500 *\nMark G. Papa.................. 246,094 15,000 25,000 *\nEdward Randall, III........... 13,000 *\nDennis M. Ulak................ 52,863 20,000 *\nWalter C. Wilson.............. 179,925 15,000 *\nAll directors and executive\nofficers as a group (11 in\nnumber)..................... 3,892,799(4) 356,700 92,500 2.67\nEnron Corp. Forrest E. Hoglund............ 109,426 100,000(10) 396,617(6) *\nCommon Stock Richard D. Kinder............. 2,199,197 51,098 *\nKenneth L. Lay................ 2,996,638(11) 7,552(5) 75,070 1.22\nJoe Mike McKinney............. 25,150 8,375 *\nMark G. Papa.................. 23,320 8,018 31,105 *\nEdward Randall, III........... 49,091(7) 32,969(8) *\nDennis M. Ulak................ 4,822 *\nWalter C. Wilson.............. 11,950 *\nAll directors and executive\nofficers as a group (11 in\nnumber)..................... 5,402,822 148,539 606,899 2.42\n(See notes on following page)\n3\n6\n- ---------------\n* Less than 1 percent.\n(1) The number of shares of Common Stock of the Company subject to stock\noptions exercisable within 60 days after January 31, 1996, is as follows:\nMr. Ackman 9,000 shares; Mr. Hoglund 1,875,262 shares; Mr. Randall 9,000\nshares; Mr. McKinney 107,205 shares; Mr. Papa 242,948 shares; Mr. Ulak\n52,863 shares; Mr. Wilson 177,725 shares; and all directors and executive\nofficers as a group, 2,570,078 shares.\n(2) The number of shares of Enron Corp. Common Stock subject to stock options\nexercisable within 60 days after January 31, 1996, is as follows: Mr.\nHoglund 61,320 shares; Mr. Kinder 1,974,385 shares; Mr. Lay 2,058,264\nshares; Mr. McKinney 24,990 shares; Mr. Papa 23,320 shares; and all\ndirectors and executive officers as a group, 4,142,279 shares.\n(3) Includes shares held under the Enron Corp. Savings Plan and/or Employee\nStock Ownership Plan (\"ESOP\"). Participants in the Savings Plan have sole\nvoting power and limited investment power with respect to Enron Corp.\nshares in the Savings Plan. Participants in the ESOP have sole voting power\nand no investment power prior to distribution of shares from the ESOP. Also\nincludes restricted shares of Common Stock of the Company and Enron Corp.\nheld under the Company's 1992 Stock Plan and Enron Corp.'s 1991 Stock Plan\nfor which participants have sole voting power and no investment power until\nsuch shares vest in accordance with Plan provisions. After vesting, the\nparticipant has sole investment and voting powers.\n(4) Does not include 96,950,000 shares owned by Enron Corp. in which each of\nMessrs. Lay and Kinder, in their capacities as Chairman of the Board and\nPresident, respectively, of Enron Corp., has sole voting and investment\npower pursuant to the provisions of Enron Corp.'s bylaws.\n(5) Includes 1,200 shares with respect to Company Common Stock and 7,552 shares\nwith respect to Enron Corp. Common Stock held by Mr. Lay's children and\nstep-children.\n(6) Includes 370,656 restricted shares of Enron Corp. Common Stock, in which\nshares Mr. Hoglund has sole voting power and limited investment power.\n(7) Includes 42,291 shares of Enron Corp. Common Stock held by trusts of which\nMr. Randall is trustee and in which Mr. Randall disclaims beneficial\nownership.\n(8) Shares of Enron Corp. Common Stock held by trusts of which Mr. Randall is\ntrustee and in which Mr. Randall disclaims beneficial ownership.\n(9) Shares held in a charitable foundation in which Mr. Kinder has no pecuniary\ninterest.\n(10) Includes 100,000 shares held in a charitable foundation in which Mr.\nHoglund has no pecuniary interest.\n(11) Includes 100,000 shares held in a charitable foundation in which Mr. Lay\nhas no pecuniary interest.\nBOARD OF DIRECTORS AND COMMITTEES\nThe Board of Directors held four regularly scheduled meetings and four\nspecial meetings during the year ended December 31, 1995.\nThe Board of Directors uses working committees with functional\nresponsibility in the more complex recurring areas where disinterested oversight\nis required. The Audit Committee was created in October 1989, after the initial\npublic offering and sale of Common Stock, and is the communication link between\nthe Board and independent auditors of the Company. During the year ended\nDecember 31, 1995, the Audit Committee met three times. The Audit Committee\nrecommends to the Board of Directors the appointment of\n4\n7\nindependent public accountants as auditors for the Company and reviews as deemed\nappropriate the scope of the audit, the accounting policies and reporting\npractices, the system of internal controls, compliance with policies regarding\nbusiness conduct and other matters. The Audit Committee is currently composed of\nMessrs. Ackman (Chairman) and Randall.\nIn January, 1990, the Board of Directors created the Compensation\nCommittee, which is responsible for administration of the Company stock plans\nand approval of compensation arrangements of senior management. The Compensation\nCommittee, which met two times during the year, is composed of Messrs. Randall\n(Chairman) and Ackman.\nThe Company does not have a standing nominating committee.\nDuring the year ended December 31, 1995, each director attended at least\n75% of the total number of meetings of the Board and the committees on which the\ndirector served.\nCOMPENSATION OF DIRECTORS AND EXECUTIVE OFFICERS\nDIRECTOR COMPENSATION\nDuring 1995, each director who was not an employee of the Company, Enron\nCorp. or its affiliates, received annual fees of $33,500 for serving as a\ndirector and $5,000 for each committee of which such director was Chairman.\nTotal directors fees earned in 1995 were $77,000.\nPrior to the tax deconsolidation described under \"Certain Transactions,\"\nCompany directors fees could be deferred to a later specified date under the\nEnron Corp. 1985 Deferral Plan and 1994 Deferral Plan. Under the 1985 Deferral\nPlan, interest is credited on amounts deferred based on 150% of Moody's seasoned\ncorporate bond yield index, which for 1995 was 12.39%. Interest was credited at\n9% under the 1994 Deferral Plan. In connection with the deconsolidation of the\nCompany from the consolidated U.S. income tax reporting group of Enron Corp. in\nDecember 1995, the Company created the Enron Oil & Gas Company 1996 Deferral\nPlan (the \"1996 Deferral Plan\") and agreed to assume all deferral liabilities of\nEnron Corp. relating to Company directors and employees under the Enron Corp.\n1994 Deferral Plan described above. In addition, all deferrals after the tax\ndeconsolidation were made under the 1996 Deferral Plan. The terms of the 1996\nDeferral Plan are substantially identical to those of the Enron Corp. 1994\nDeferral Plan. Payments are made exclusively from the general assets of the\nCompany and the Company has elected to purchase life insurance on the lives of\nsome covered participants with the Company as the owner and beneficiary.\nCurrently one nonemployee director participates in the 1996 Deferral Plan.\nNonemployee directors also participate in the Enron Oil & Gas Company 1993\nNonemployee Director Stock Option Plan, which was approved by Company\nshareholders at the 1993 annual meeting. Under the terms of the Plan, each\nnonemployee director receives on the date of each annual meeting during the term\nof the Plan an option to purchase 6,000 shares of Common Stock at an exercise\nprice equal to the fair market value of the Common Stock on the date of grant.\nIn addition, each nonemployee director who is elected or appointed to the Board\nof Directors for the first time after an annual meeting is granted on the date\nof such election or appointment an option to purchase 6,000 shares of Common\nStock at an exercise price equal to the fair market value of the Common Stock on\nthe date of grant. Options granted under the Plan vest 50% after one year and\n100% after two full years of service as a director following the date of grant.\nAll options expire ten years from the date of grant. During 1995, each\nnonemployee director was granted a total of 6,000 options at an exercise price\nof $23.00.\n5\n8\nREPORT FROM THE COMPENSATION COMMITTEE REGARDING EXECUTIVE COMPENSATION\nCompensation for Company executives is administered by the Compensation\nCommittee of the Board of Directors (the \"Committee\"), which is composed\nexclusively of outside directors. It is the responsibility of the Committee to\ndevelop compensation philosophy and authorize salary increases for officers,\nincentive programs and awards consistent with this philosophy.\nThe Committee believes that appropriately balanced compensation elements\ncontribute to the success of the Company. Hay Management Consultants provides an\nannual analysis of executive base salaries, annual bonuses and long-term\nincentives paid by the Company as compared to those paid by a number of industry\npeer companies included in the \"Comparative Stock Performance\" section. The\nCommittee believes that the best compensation philosophy is to put a substantial\nportion of the total compensation package at risk and tied to both the financial\nresults achieved and the performance of the Common Stock of the Company, which\nmeans that the Company does not intend to lead the competition in base salary\nlevels. Further, the Committee believes that total compensation for the\nexecutives should exceed average compensation levels of a peer group of\ncompanies only if the\n",
+    "target": {
+      "name": "Dennis M. Ulak",
+      "field": "shares",
+      "expected": 72863
+    }
+  }
+}

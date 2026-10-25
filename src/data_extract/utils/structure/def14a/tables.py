@@ -347,7 +347,7 @@ _SCT_COLS = ("salary", "stock award", "option award", "non-equity incentive", "a
 #: phrase is regulatory and exact, so rejecting on it is safe.
 _PVP_MARKERS = ("compensation actually paid", "value of initial fixed", "peer group total shareholder")
 #: A CD&A "target pay" / "realized pay" table mimics the SCT header.
-_ALT_PAY_MARKERS = ("target total direct", "realized pay", "realizable pay", "target annual", "target direct compensation")
+_ALT_PAY_MARKERS = ("target total direct", "realized pay", "realizable pay", "target annual", "target direct compensation", "for performance year")
 #: The OTHER Item 402 tables that carry `Stock Awards` / `Option Awards` columns and the word
 #: "Year", and therefore satisfy the SCT rule without being an SCT. Measured on PG's 2026 proxy:
 #: its `Outstanding Equity at Fiscal Year End` table (402(f)) outscored the real SCT on data

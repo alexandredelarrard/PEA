@@ -14,22 +14,9 @@ from src.data_aggregate.utils.common.availability import availability_date
 from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.common.typing import frame_column
 from src.data_aggregate.utils.sec_thirteen.value_basis import log_register, repair_value_basis
-from src.utils.string import pad_cik
 
 logger = logging.getLogger(__name__)
 
-
-#: The DEFAULT numeric set: `sec13f_hr`'s four legs. Coerced to numeric and zero-filled when
-#: present, CREATED as 0.0 when not -- `_quarter_features` sums `call_value` / `put_value`
-#: unconditionally, and on that table a missing option leg means "no options reported", never
-#: "unknown".
-#:
-#: ⚠ THE ELITE TABLE PASSES ITS OWN TWO, and that is not symmetry-breaking for its own sake.
-#: `sec13f_manager_holdings` classifies positions with `position_type`, so the cleaner already
-#: filters options out by row; manufacturing zero-valued `call_value` / `put_value` columns
-#: there would add two all-zero columns to the conviction frame that nothing reads. Measured:
-#: passing the 13F default unchanged widened `prim.super_conviction` from 13 to 15 columns.
-_NUMERIC_13F = ("shares", "value_usd", "call_value", "put_value")
 
 #: Coerced to a midnight `datetime64` when present. `filing_date` is OPTIONAL on both tables
 #: (it is in `sec13f_hr.optional_columns`), which is why this is a membership test and not a
@@ -44,15 +31,6 @@ def clean_filing_dates(df_filings: pd.DataFrame, df_holdings: pd.DataFrame) -> t
         for column in _DATES:
             df[column] = pd.to_datetime(df[column])
     return df_filings, df_holdings
-
-
-def legacy_manager_public_dates(state: pd.DataFrame) -> pd.Series:
-    """Use the existing later of filing date and deadline for legacy manager states."""
-    deadline = state["period"] + pd.Timedelta(days=SEC_13F_FILING_LAG_DAYS)
-    filed = state.get("filing_date")
-    if filed is None:
-        return deadline
-    return pd.concat([deadline, pd.to_datetime(filed)], axis=1).max(axis=1)
 
 
 def stamp_legacy_publication(
@@ -133,19 +111,6 @@ def clean_legacy_institutional_holdings(
     return _repair_legacy_values(df_holdings, valuation_close, value_basis)
 
 
-def clean_legacy_manager_holdings(
-    df_holdings: pd.DataFrame,
-    cusip_map: pd.DataFrame | None,
-    universe: Sequence[str],
-    valuation_close: pd.DataFrame | None,
-    value_basis: Mapping[str, float] | None,
-) -> pd.DataFrame:
-    """Prepare the existing elite no-manifest grain, common rows and value basis."""
-    df_holdings = attach_tickers(df_holdings, cusip_map, universe)
-    df_holdings = clean_holdings(df_holdings, key=("cik", "period", "cusip"), numeric=("shares", "value_usd"), common_only=True, pad_ciks=True)
-    return _repair_legacy_values(df_holdings, valuation_close, value_basis)
-
-
 def _apply_filing_band(h: pd.DataFrame, band: tuple[int, int]) -> pd.DataFrame:
     """Keep legacy rows within the declared deadline band, including unknown dates."""
     early, late = band
@@ -183,29 +148,21 @@ def clean_holdings(
     holdings: pd.DataFrame,
     *,
     key: Sequence[str],
-    numeric: Sequence[str] = _NUMERIC_13F,
-    common_only: bool = False,
-    pad_ciks: bool = False,
     filing_band: tuple[int, int] | None = None,
 ) -> pd.DataFrame:
     """Normalize legacy keys, then apply the filing band and amendment order.
 
     This latest-only adapter does not certify immutable filing completeness."""
     h = holdings.copy()
-    if pad_ciks:
-        h["cik"] = h["cik"].map(pad_cik)
-
     for col in _DATES:
         if col in h.columns:
             h[col] = to_day(h[col])
-    for col in numeric:
+    for col in ("shares", "value_usd", "call_value", "put_value"):
         h[col] = pd.to_numeric(h[col], errors="coerce") if col in h.columns else pd.Series(np.nan if col == "value_usd" else 0.0, index=h.index)
         if col == "shares":
             h[col] = h[col].fillna(0.0)
 
     h = h.dropna(subset=list(key))
-    if common_only and "position_type" in h.columns:
-        h = h[h["position_type"].astype(str).str.lower() == "common"]
     if filing_band is not None:
         h = _apply_filing_band(h, filing_band)
 

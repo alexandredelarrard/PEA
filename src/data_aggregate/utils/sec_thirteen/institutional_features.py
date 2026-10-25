@@ -216,7 +216,7 @@ def _availability_coverage(h: pd.DataFrame) -> pd.Series:
     if not len(h) or "first_pub" not in h.columns:
         return pd.Series(dtype="float64")
     # ⚠ AN UNPROJECTED `shares` IS THE FAILURE MODE THIS GUARD EXISTS FOR, and it has already
-    # happened once. `clean_holdings` CREATES a missing numeric leg as 0.0 (see `_NUMERIC_13F`),
+    # happened once. `clean_holdings` CREATES a missing numeric leg as 0.0,
     # so a read that projected `[ticker, period, cik, filing_date]` arrives here with an
     # all-zero share column, every weight sums to 0, and the coverage comes back EMPTY -- which
     # a caller reads as "no quarter has a prior quarter", a true-sounding sentence about the

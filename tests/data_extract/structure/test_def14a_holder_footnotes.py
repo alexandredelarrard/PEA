@@ -37,11 +37,14 @@ def eog_holders() -> pd.DataFrame:
     return df_rows
 
 
+@pytest.mark.parametrize("reverse", [False, True])
 @pytest.mark.parametrize(("name", "footnote", "shares"), EOG_NAMES)
-def test_recorded_eog_lettered_postal_aliases_and_terminal_markers(eog_holders: pd.DataFrame, name: str, footnote: str, shares: int) -> None:
+def test_recorded_eog_lettered_postal_aliases_and_terminal_markers(
+    eog_holders: pd.DataFrame, name: str, footnote: str, shares: int, reverse: bool
+) -> None:
     df_pair = eog_holders.loc[eog_holders.holder_name.str.startswith(name)]
     assert len(df_pair) == 2 and df_pair.shares.eq(shares).all()
-    df_result = reconcile_holders(df_pair, pd.DataFrame())
+    df_result = reconcile_holders(df_pair.iloc[::-1] if reverse else df_pair, pd.DataFrame())
     assert len(df_result) == 1 and df_result.iloc[0].holder_name == name and df_result.iloc[0].shares == shares
     assert normalize_name(_holder_name(name + footnote)) == normalize_name(name)
     print(f"SANITY: EOG2015 {name}{footnote} and its recorded postal label resolve to one holder with {shares:,} unchanged shares.")
@@ -82,12 +85,16 @@ def test_shared_name_normalizer_removes_parentheses_accents_case_and_punctuation
     print(f"SANITY: {value!r} normalizes idempotently to {expected!r}.")
 
 
-def test_eog_letter_cleanup_persists_once_and_leaves_ge_facts_untouched(sqlite_store: DataStore, eog_holders: pd.DataFrame) -> None:
+@pytest.mark.parametrize("postal_only", [False, True])
+def test_eog_letter_cleanup_persists_once_and_leaves_ge_facts_untouched(
+    sqlite_store: DataStore, eog_holders: pd.DataFrame, postal_only: bool
+) -> None:
     section = next(item for item in SECTIONS if item.key == "ownership")
     ge_fixture = Path(__file__).parent / "fixtures/def14a_ge2025_holders.json"
     df_ge = pd.DataFrame(json.loads(ge_fixture.read_text())["rows"])
     df_ge["as_of"] = pd.to_datetime(df_ge["as_of"])
-    sqlite_store.save(section.table, pd.concat([eog_holders, df_ge], ignore_index=True))
+    df_seed = eog_holders.iloc[1::2] if postal_only else eog_holders
+    sqlite_store.save(section.table, pd.concat([df_seed, df_ge], ignore_index=True))
     df_ge_before = sqlite_store.load(section.table, where={"ticker": "GE"}).copy()
     stamp: dict[str, Any] = eog_holders.iloc[0][["ticker", "accession_number", "as_of", "cik"]].to_dict()
     context = cast(Context, SimpleNamespace(store=sqlite_store))
@@ -112,6 +119,22 @@ def test_eog_letter_cleanup_persists_once_and_leaves_ge_facts_untouched(sqlite_s
     print(
         "SANITY: EOG's eight saved labels become four stable holders at retry=2; exact shares, filing/entity clocks, archived originals and all 15 GE rows survive."
     )
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("BlackRock, Inc.(c)", "BlackRock, Inc."),
+        ("The Vanguard Group(b)(c)", "The Vanguard Group"),
+        ("Capital Research Global Investors (e) (f)", "Capital Research Global Investors"),
+        ("Example Fund (Class A)", "Example Fund (Class A)"),
+        ("John Example, Jr.", "John Example, Jr."),
+        ("Example (a) Capital", "Example (a) Capital"),
+    ],
+)
+def test_display_cleanup_removes_only_terminal_letter_footnotes(value: str, expected: str) -> None:
+    assert _holder_name(value) == expected and _holder_name(expected) == expected
+    print(f"SANITY: holder display {value!r} becomes {expected!r}, retaining readable punctuation and substantive qualifiers.")
 
 
 @pytest.mark.parametrize("reverse", [False, True])

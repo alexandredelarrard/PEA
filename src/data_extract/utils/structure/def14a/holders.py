@@ -25,14 +25,14 @@ def normalize_name(value: str) -> str:
 
 
 def _holder_name(value: str) -> str:
-    """Remove an explicit postal-address tail without dropping entity or person suffixes."""
+    """Remove explicit postal tails and terminal letter footnotes, retaining readable names."""
     name = clean_holder_name(value) or value
 
     # A source footnote may sit directly before whitespace and the street number.
     parts = re.split(r",\s*(?=\d+\s)|(?<=\([a-z]\))\s+(?=\d+\s)", name, maxsplit=1)
     if len(parts) == 2 and re.search(r"\b[A-Z]{2}\s+\d{5}(?:-\d{4})?\b", parts[1]):
         name = parts[0]
-    return name.strip()
+    return re.sub(r"(?:\s*\([A-Za-z]\))+\s*$", "", name).strip()
 
 
 def reconcile_holders(df_saved: pd.DataFrame, df_new: pd.DataFrame) -> pd.DataFrame:

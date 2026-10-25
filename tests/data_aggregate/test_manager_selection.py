@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -39,5 +40,5 @@ def test_invalid_k_is_rejected(tmp_path: Path, k: object) -> None:
     from src.data_aggregate.utils.sec_thirteen.superinvestor_roster import load_manager_cohorts
 
     with pytest.raises(ValueError):
-        load_manager_cohorts(_config(tmp_path, ["0000000001"]), {"0000000001"}, k)
+        load_manager_cohorts(_config(tmp_path, ["0000000001"]), {"0000000001"}, cast(int, k))
     print("SANITY: K must be a positive integer bounded by the explicit configured list.")

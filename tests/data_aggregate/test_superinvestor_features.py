@@ -12,6 +12,7 @@ from src.data_aggregate.utils.common.price_frames import PriceFrames
 from src.data_aggregate.utils.sec_thirteen.superinvestor_books import BookSupport, PublicBook, PublicBookSnapshot
 from src.data_aggregate.utils.sec_thirteen.superinvestor_features import (
     EMISSION,
+    SuperinvestorFeatureHistory,
     compute_superinvestor_feature_history,
     project_superinvestor_features,
 )
@@ -81,13 +82,13 @@ def _market(split: bool = False) -> BehaviorMarket:
     return BehaviorMarket(index, quotes, basis)
 
 
-def _compute(snapshot: PublicBookSnapshot, market: BehaviorMarket | None = None, topk: frozenset[str] | None = None):
+def _compute(snapshot: PublicBookSnapshot, market: BehaviorMarket | None = None, topk: frozenset[str] | None = None) -> SuperinvestorFeatureHistory:
     roster = frozenset(snapshot.latest_period_by_manager)
     cohorts = {"": roster, "topk": roster if topk is None else topk}
     return compute_superinvestor_feature_history((snapshot,), cohorts, ("AAA", "BBB"), market or _market())
 
 
-def _value(history, metric: str, ticker: str = "AAA", cohort: str = "") -> float:
+def _value(history: SuperinvestorFeatureHistory, metric: str, ticker: str = "AAA", cohort: str = "") -> float:
     prefix = f"ic_super_{cohort}_" if cohort else "ic_super_"
     return float(history.levels[prefix + metric].iloc[-1][ticker])
 
@@ -220,6 +221,7 @@ def test_missing_reference_excludes_whole_book_only_and_never_fills() -> None:
     prior = _book("1", "2024-03-31", {"AAA": (100, 1000), "OUT": (100, 1000)})
     current = _book("1", "2024-06-30", {"AAA": (150, 1500), "OUT": (100, 1000)})
     market = _market()
+    assert market.as_traded_close is not None
     market.as_traded_close.loc[pd.Timestamp("2024-03-29"), "OUT"] = np.nan
     history = _compute(_snapshot([prior, current]), market)
     assert _value(history, "shares_chg") == pytest.approx(0.5)
@@ -253,7 +255,7 @@ def test_daily_projection_has_no_decay_and_explicit_unknown_clears_state() -> No
     full = project_superinvestor_features(history, frames, pd.Timestamp("2013-01-01")).set_index(["date", "ticker"])
     assert len(full.columns) == 26
     assert full.loc[(pd.Timestamp("2024-08-19"), "AAA"), "f_ic_super_holders"] == 1
-    assert full.loc[(pd.Timestamp("2024-08-20"), "AAA")].isna().all()
+    assert full.loc[[(pd.Timestamp("2024-08-20"), "AAA")]].isna().all().all()
     tail_frames = replace(frames, trading_index=dates[-2:], close_split=prices.tail(2))
     tail = project_superinvestor_features(history, tail_frames, pd.Timestamp("2013-01-01")).set_index(["date", "ticker"])
     pd.testing.assert_frame_equal(tail, full.loc[tail.index])

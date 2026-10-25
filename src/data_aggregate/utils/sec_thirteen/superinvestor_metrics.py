@@ -50,9 +50,13 @@ class PairSample:
 
 def summarize_book(book: PublicBook) -> BookSummary:
     """Keep whole-book totals, per-security evidence and per-ticker levels together."""
-    df_positions = book.df_positions.loc[book.df_positions.position_type.eq("common")].copy()
+    df_positions = book.df_positions.copy()
     for name in ("shares", "value_usd"):
         df_positions[name] = pd.to_numeric(df_positions[name], errors="coerce").astype("float64")
+
+    # A typed amendment row can retain an explicitly unknown common leg.
+    unknown_common = df_positions[["shares", "value_usd"]].isna().any(axis=1)
+    df_positions = df_positions.loc[df_positions.position_type.eq("common") | unknown_common].copy()
 
     # Estimates can describe value, but cannot establish observed share trading.
     quantity_source = df_positions.get("value_basis_shares_source", pd.Series("unknown", index=df_positions.index))

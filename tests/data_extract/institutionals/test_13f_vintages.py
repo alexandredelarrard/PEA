@@ -415,6 +415,26 @@ def test_additions_unknown_evidence_dominates_estimates_per_security() -> None:
     print("SANITY: unknown outranks estimated evidence in either leg; an untouched filed sibling keeps its own source and amounts.")
 
 
+@pytest.mark.parametrize(("original_code", "addition_code", "expected"), [(True, False, 1), (-1, 0, -1), (9, 0, 9), (1, -1, 9), (0, 0, 0)])
+def test_additions_preserve_unit_repair_evidence(original_code: int, addition_code: int, expected: int) -> None:
+    original = packet("original", "2024-08-14", {"111111111": 100})
+    addition = packet("addition", "2024-10-17", {"111111111": 5}, kind="additions")
+    restated = packet("restated", "2025-05-14", {"111111111": 150}, kind="restatement")
+    for (manifest, rows), code in zip((original, addition, restated), (original_code, addition_code, 0), strict=True):
+        rows["value_basis_repaired"] = code
+        rows["value_basis_status"] = "source_only_no_price" if manifest.iloc[0].accession_number == "original" else "price_confirmed"
+    manifests, holdings = combine(original, addition, restated)
+    combined, _ = public_books(manifests, holdings, "2024-10-18", GRID)
+    assert combined.iloc[0].shares == 105 and combined.iloc[0].value_usd == 1050
+    assert combined.iloc[0].value_basis_repaired == expected
+    assert combined.iloc[0].value_basis_status == "source_only_no_price"
+    replaced, _ = public_books(manifests, holdings, "2025-05-15", GRID)
+    assert replaced.iloc[0].value_basis_repaired == 0 and replaced.iloc[0].value_basis_status == "price_confirmed"
+    print(
+        f"SANITY: additive unit evidence{original_code}+{addition_code} yields{expected}, retains an unpriced component, and a restatement resets both."
+    )
+
+
 @pytest.mark.parametrize("partial", [False, True])
 def test_copied_replacement_uses_new_evidence_and_retains_omissions(partial: bool) -> None:
     original = packet("original", "2024-08-14", {"111111111": 100, "222222222": 200, "333333333": 300, "444444444": 400})

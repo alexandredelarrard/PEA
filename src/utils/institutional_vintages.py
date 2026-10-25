@@ -347,6 +347,14 @@ def _merge_addition_evidence(df_metadata: pd.DataFrame, df_rows: pd.DataFrame) -
         if column in df_rows:
             evidence = df_rows[column].map({"filed": 0, estimate: 1}).fillna(2)
             df_metadata[column] = evidence.groupby(df_rows["cusip"]).max().map({0: "filed", 1: estimate, 2: "unknown"})
+    if "value_basis_repaired" in df_rows:
+        kept, divided, multiplied, abstained = 0, 1, -1, 9
+        units = df_rows["value_basis_repaired"].where(df_rows["value_basis_repaired"].isin([kept, divided, multiplied, abstained]), abstained)
+        repairs = units.where(units.ne(kept)).groupby(df_rows["cusip"])
+        df_metadata["value_basis_repaired"] = repairs.first().fillna(kept).where(repairs.nunique().le(1), abstained).astype(int)
+    if "value_basis_status" in df_rows:
+        unpriced = df_rows["value_basis_status"].eq("source_only_no_price").groupby(df_rows["cusip"]).any()
+        df_metadata.loc[unpriced, "value_basis_status"] = "source_only_no_price"
     flags = [
         column
         for column in df_rows.columns

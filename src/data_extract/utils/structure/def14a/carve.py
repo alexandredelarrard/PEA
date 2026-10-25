@@ -1,11 +1,8 @@
 """
 carve.py  (src/data_extract/utils/structure/def14a/carve.py)
 -------------------------------------------------------------
-Anchor a proxy statement and cut it down to the `=== LABEL ===` blocks the model reads.
-
-LLM extraction is far cheaper AND more accurate on narrow, precise text, so each section is
-capped tightly to just its data: ~51k chars versus the old ~122k, i.e. ~2.5x cheaper and
-faster with no loss of the target fields.
+Anchor a proxy statement into the `=== LABEL ===` blocks the model reads. Keep source
+headings, dates and ownership definitions beside the selected tables.
 
 Two thresholds here are load-bearing and measured, not tuned:
   `_TOC_SKIP_FRAC`      the table-of-contents floor -- an anchor in the first 5% of a proxy
@@ -30,10 +27,7 @@ from src.data_extract.utils.structure.def14a.tables import (
 
 logger = logging.getLogger(__name__)
 
-# Per-section char budgets. LLM extraction is far cheaper AND more accurate on narrow,
-# precise text, so each section is capped tightly to just its data (the Summary Comp
-# Table and pay-ratio/auditor lines are compact; only the director bios run long). Total
-# ~51k chars vs the old ~122k -> ~2.5x cheaper / faster with no loss of the target fields.
+# Context before the existing prose anchors; selected tables retain wider source context.
 _CONTEXT_PRE = 500  # chars of context before the anchor match
 
 # Content-based patterns that reliably mark the START of each section's actual data.
@@ -347,6 +341,34 @@ def _auditor_name_slice(text: str, fee_table: tuple[list[str], list[list[str]]] 
     return -1
 
 
+def _table_context(text: str, table: str, domain: str) -> str:
+    """Locate table rows jointly by names and values, retaining adjacent source definitions."""
+    # Match complete row evidence rather than a repeated amount or a biographical name alone.
+    source = re.sub(r"\s+", " ", text)
+    matches: list[tuple[int, int]] = []
+    rows = [line.split("\t") for line in table.splitlines()[1:]]
+    for row in rows[:3] + rows[-3:]:
+        cells = list(dict.fromkeys(cell for cell in row if 4 <= len(cell) <= 150))
+        labels = [cell for cell in cells if re.search(r"[A-Za-z]", cell)]
+        candidates = [match.start() for label in labels for match in re.finditer(re.escape(label), source)]
+        if not candidates:
+            continue
+        best = max(candidates, key=lambda position: sum(cell in source[max(0, position - 200) : position + 1_200] for cell in cells))
+        score = sum(cell in source[max(0, best - 200) : best + 1_200] for cell in cells)
+        if score >= 2:
+            matches.append((score, best))
+    if not matches:
+        return ""
+
+    # Keep one table neighborhood when a person/value pair also appears elsewhere in the proxy.
+    anchor = max(matches, key=lambda match: match[0])[1]
+    positions = [position for _, position in matches if abs(position - anchor) <= max(1_200, 2 * len(table))]
+
+    # Ownership footnotes and primary totals may occupy separate neighboring tables.
+    before, after = (8_000, 10_000) if domain == "ownership" else (2_500, 3_000)
+    return source[max(0, min(positions) - before) : min(len(source), max(positions) + after)]
+
+
 def prepare_def14a_sections(html: str, text: str) -> str:
     """Return a focused subset of the DEF 14A, routing each target to the strategy that
     actually reaches it.
@@ -471,7 +493,17 @@ def prepare_def14a_payloads(html: str, text: str) -> dict[str, str]:
     # Recover short historical text and preserve the nearby scale/currency declaration.
     result: dict[str, str] = {}
     for domain, (labels, anchor) in domains.items():
-        parts = [f"=== {label} ===\n{blocks[label]}" for label in labels if blocks.get(label)]
+        # Preserve date headings, basis definitions and neighboring source tables for these domains.
+        parts: list[str] = []
+        for label in labels:
+            block = blocks.get(label, "")
+            if not block:
+                continue
+            if domain in ("director_pay", "ownership") and "\t" in block:
+                context = _table_context(text, block, domain)
+                block = f"Source context surrounding this table:\n{context}\n\nSource table (tab-separated columns):\n{block}" if context else block
+            parts.append(f"=== {label} ===\n{block}")
+
         if not parts:
             position = _find_content_section(text, re.compile(anchor, re.I), (), toc_frac=0.0)
             if position >= 0:

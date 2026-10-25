@@ -77,7 +77,12 @@ def summarize_book(book: PublicBook) -> BookSummary:
     df_tickers["held_known"] = grouped.held_known.all()
     df_tickers["top10"] = grouped.top10.any()
     df_tickers["value_usd"] = df_tickers.value_usd.where(grouped.value_known.all())
-    return BookSummary(df_positions, df_tickers, total_value)
+
+    # Keep comparison evidence narrow; PublicBook retains full provenance.
+    comparison_columns = ["cusip", "ticker", "shares", "quantity_known"]
+    if "class_evidence" in df_positions:
+        comparison_columns.append("class_evidence")
+    return BookSummary(df_positions[comparison_columns].copy(), df_tickers, total_value)
 
 
 def _supported_book(book: PublicBook | None) -> TypeIs[PublicBook]:

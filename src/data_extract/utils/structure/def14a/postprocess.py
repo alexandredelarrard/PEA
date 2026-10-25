@@ -29,6 +29,7 @@ from src.data_extract.utils.structure.def14a.flatten import (
     _flatten,
     _prepare_frame,
 )
+from src.data_extract.utils.structure.def14a.holders import reconcile_holders
 from src.data_extract.utils.structure.def14a.retry import SECTIONS, Section, reservation_frame
 from src.data_extract.utils.structure.def14a.validate import clean_person_name
 from src.data_store.schema import Table, Tables
@@ -144,6 +145,10 @@ def _merge_rows(table: Table, df_saved: pd.DataFrame | None, df_new: pd.DataFram
     """Fill missing cells and retain useful people/years from partial answers."""
     df_old = df_saved.loc[~marker_mask(table, df_saved)].copy() if df_saved is not None else pd.DataFrame()
 
+    # Holder aliases share a source identity, not necessarily the stored literal key.
+    if table is Tables.def14a_ownership:
+        return reconcile_holders(df_old, df_new)
+
     # Existing non-null facts win; repair adds missing cells and new keys.
     if df_old.empty:
         return df_new.copy()
@@ -172,6 +177,9 @@ def _parent_patch(section: Section, legacy: Def14AExtract, stamp: dict[str, Any]
         values.update(auditor_name=governance.auditor_name, auditor_since_year=governance.auditor_since_year)
     if section.key == "governance":
         values.update(ceo_pay_ratio=governance.ceo_pay_ratio, median_employee_pay=governance.median_employee_pay_usd)
+    if section.key == "ownership" and legacy.ownership_holders:
+        values["n_five_percent_holders"] = sum(row.holder_type == "5pct_holder" for row in legacy.ownership_holders)
+        legacy.governance = governance.model_copy(update={"n_five_percent_holders": values["n_five_percent_holders"]})
     ceo_name = clean_person_name(legacy.ceo_name)
     if section.key == "ownership" and ceo_name is not None:
         matches = [
@@ -393,7 +401,8 @@ def refresh_archive(raw: str | None, section: Section, legacy: Def14AExtract) ->
     current = document.get("governance") or {}
     for field in governance_fields.get(section.key, ()):
         value = (payload.get("governance") or {}).get(field)
-        if value is not None and current.get(field) is None:
+        derived_count = section.key == "ownership" and field == "n_five_percent_holders"
+        if value is not None and (derived_count or current.get(field) is None):
             current[field] = value
     if current:
         document["governance"] = current

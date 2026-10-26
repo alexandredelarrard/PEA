@@ -43,6 +43,7 @@ from src.data_aggregate.utils.institutionals.short_flow_features import (
     secondary_class_volume,
     with_class_volume,
 )
+from src.data_extract.utils.common.identity_store import SOURCE_LOCK
 from src.data_store.schema import Tables
 from src.utils.step import Step
 
@@ -152,7 +153,15 @@ class StepCubeInstitutionals(Step):
         if cutoff is not None and earliest is not None:
             cutoff = min(cutoff, earliest)
         tail = canonical if cutoff is None else canonical.loc[canonical["date"] >= cutoff]
-        count = self._store.replace_institutional_output(tail, since=cutoff)
+        if cutoff is not None and (pd.to_datetime(tail["date"]) < cutoff).any():
+            raise ValueError("Institutional replacement rows precede their corrected range")
+        with self._store.transaction(SOURCE_LOCK) as store:
+            if cutoff is None:
+                count = store.replace(part, tail)
+            else:
+                if set(store.columns(part)) != set(tail.columns):
+                    raise ValueError("Institutional corrected range must retain the stored schema")
+                count = store.append_tail(part, tail, cutoff, inclusive=True)
         self._log.info(
             "Institutional output compared %s rows; earliest change %s; refresh %s -> %s; wrote %s rows",
             compared,

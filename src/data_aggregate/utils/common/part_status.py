@@ -9,6 +9,7 @@ import pandas as pd
 from src.context import Context
 from src.data_aggregate.utils.common.assembly import AssemblyPolicy, part_has_rows
 from src.data_aggregate.utils.common.parts import CUBE_PARTS, TERMINAL_TABLES
+from src.data_aggregate.utils.institutionals.frontiers import insider_inventory_boundaries
 from src.data_store.schema import Tables
 from src.utils.universe import load_universe_tickers
 
@@ -51,7 +52,7 @@ def cube_part_edge_report(context: Context) -> dict[str, Any]:
 def _insider_source_status(context: Context, part_max_date: str | None, tolerance_days: int) -> dict[str, Any]:
     store = context.store
     universe = load_universe_tickers(context)
-    boundaries = store.insider_inventory_boundaries(universe)
+    boundaries = insider_inventory_boundaries(store, universe)
     complete_through = boundaries.min() if not boundaries.empty and boundaries.notna().all() else None
     lag_days = int((pd.Timestamp(part_max_date) - complete_through).days) if part_max_date is not None and complete_through is not None else None
     return {

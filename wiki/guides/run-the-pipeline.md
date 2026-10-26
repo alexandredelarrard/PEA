@@ -54,7 +54,7 @@ rtk docker ps -a
 rtk docker exec -it pea_db vacuumdb -U alexandre -d pea --full
 ```
 
-PostgreSQL init scripts run only on an empty volume. Before any rebuild of the volume, inspect the running container's mounts because an older container may retain a stale pre-restructure bind even though [docker-compose.yml](../../docker-compose.yml) is correct.
+PostgreSQL init scripts run only on an empty volume. [docker-compose.yml](../../docker-compose.yml) mounts only `sql/schema.sql`, read-only, as `docker-entrypoint-initdb.d/01-schema.sql`; it preserves the external volume declaration. Canonical SQL already contains the 13F accession keys and all five DEF14A retry counters. Existing databases are assumed current: ingestion performs no 13F/DEF14A adoption, backfill or legacy-default synthesis. Do not recreate an existing volume to apply this code change. Before any separately approved volume rebuild, inspect the running container's mounts because an older container may retain a stale pre-restructure bind.
 
 Never kill all `python.exe` processes. Stop long source jobs by PID.
 
@@ -113,7 +113,7 @@ Every fetcher derives its work list from its own table's rows, its `Resume` cont
 
 ### DEF 14A retry adoption
 
-The writer calls `context.store.prepare_def14a_retries()` before retry-bearing saves. It uses a transactional one-time `ALTER TABLE`/initialization for each missing counter; existing rows become one, and later invocations never reset two or refill nulls in an already migrated table. Fresh tables use canonical DDL. This metadata step makes no LLM call and does not change extracted facts or archive bytes.
+The five retry counters are already part of canonical database initialization. Existing schemas are assumed current. The completed one-time adoption/backfill and `prepare_def14a_retries` hook are removed; generic writes persist the section owner's attempts and facts without issuing ALTERs or synthesizing legacy metadata.
 
 An ordinary `rtk "$PY" -m src data_extract def14a -c ./configs` run then repairs only its derived domain worklist. `-F` preserves the two-attempt limit. Keep the configured rolling history and dated registrant guards. Do not use the legacy `scripts/def14a_reextract.py --write` replacement path after adoption; it now refuses paid writes. Do not delete counters to restart exhausted sections as routine recovery.
 

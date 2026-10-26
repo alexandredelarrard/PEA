@@ -69,7 +69,7 @@ The original paid JSON is retained inside the versioned `_def14a_split` archive 
 
 ## Storage and consumers
 
-`DataStore.prepare_def14a_retries()` in [store.py](../../src/data_store/store.py) transactionally adds missing BIGINT counters and initializes existing rows to one exactly once. Repeated preparation preserves two and does not refill later nulls. Cold tables use canonical DDL. All writes run on the main thread, with existing worker concurrency retained.
+[Canonical SQL](../../sql/schema.sql) creates the complete five-table retry contract when Docker initializes an empty database. Existing databases are assumed current. The completed retry migration/backfill and runtime preparation hook are removed; ordinary generic saves preserve partial facts and the section owner's monotonic attempts without adding columns or resetting counters. All writes run on the main thread, with existing worker concurrency retained.
 
 The parent default projection excludes large JSON and retry metadata. A shared evidence mask in [filer_tables.py](../../src/utils/filer_tables.py) excludes retry-only rows from governance and prior-CEO vote-role lookup while retaining genuine sparse observations, including audit zero. The legacy paid replacement script refuses writes after the retry contract is installed.
 

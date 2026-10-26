@@ -17,6 +17,7 @@ from sqlalchemy import create_engine, event, inspect
 from src.context import Context
 from src.data_aggregate.utils.institutionals import inputs
 from src.data_aggregate.utils.institutionals import short_flow_features as short
+from src.data_aggregate.utils.institutionals.frontiers import insider_inventory_boundaries
 from src.data_extract.utils.common.identity import load_source_identity
 from src.data_extract.utils.common.identity_store import save_identity
 from src.data_extract.utils.institutionals.fetch_fails_to_deliver import replace_fails_source
@@ -712,8 +713,8 @@ def test_inventory_boundary_requires_complete_consistent_rows(sqlite_store: Data
     expected = pd.Series(pd.NaT, index=pd.Index(["AAA", "MISSING"], name="ticker"), dtype="datetime64[ns]")
     if case in {"complete", "marker"}:
         expected.loc["AAA"] = pd.Timestamp("2026-07-01")
-    pd.testing.assert_series_equal(sqlite_store.insider_inventory_boundaries(["MISSING", "AAA", "AAA"]), expected)
-    empty = sqlite_store.insider_inventory_boundaries([])
+    pd.testing.assert_series_equal(insider_inventory_boundaries(sqlite_store, ["MISSING", "AAA", "AAA"]), expected)
+    empty = insider_inventory_boundaries(sqlite_store, [])
     assert empty.empty and str(empty.dtype) == "datetime64[ns]" and empty.index.name == "ticker"
     print(f"SANITY: {case} proof includes markers, requires every row and preserves sorted unique requests/NaT/datetime dtype.")
 

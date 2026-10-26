@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 import pytest
-from sqlalchemy import inspect
+from sqlalchemy import event, inspect
 
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
@@ -41,3 +41,22 @@ def test_bound_writer_does_not_adopt_missing_fields(sqlite_store: DataStore) -> 
             store.save(table, frame.assign(retry=1))
     assert sqlite_store.columns(table) == before
     print("SANITY: a bound managed writer refuses missing fields and never silently repairs an existing schema.")
+
+
+@pytest.mark.parametrize("method", ["save", "replace"])
+def test_ordinary_managed_writes_never_adopt_an_existing_schema(sqlite_store: DataStore, method: str) -> None:
+    table = Tables.prices
+    df_rows = pd.DataFrame({"ticker": ["AAA"], "date": [pd.Timestamp("2024-01-01")], "close_split": [1.0]})
+    sqlite_store.save(table, df_rows)
+    statements = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(sqlite_store.engine, "before_cursor_execute", record)
+    with pytest.raises(ValueError, match="schema lacks"):
+        getattr(sqlite_store, method)(table, df_rows.assign(volume=100.0))
+    assert "volume" not in sqlite_store.columns(table)
+    assert sqlite_store.row_count(table) == 1
+    assert not any(statement.lstrip().upper().startswith("ALTER ") for statement in statements)
+    print("SANITY: ordinary managed writes reject missing fields before mutation, without adoption ALTERs.")

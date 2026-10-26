@@ -163,7 +163,7 @@ def test_load_identity_with_the_projected_roster_matches_the_full_roster(sqlite_
                     "n_filings": 1,
                     "source": "dei",
                     "evidence_period": "2026_09",
-                    "evidence": "",
+                    "evidence": "quarterly cover page",
                 },
             ]
         ),
@@ -188,15 +188,17 @@ def test_load_identity_with_the_projected_roster_matches_the_full_roster(sqlite_
         return original_co_registrants(lineage, evidence, declared)
 
     monkeypatch.setattr(identity_module, "co_registrant_ciks", co_registrants)
+    full_tenure = sqlite_store.load(Tables.symbol_tenure)
     loads = _spy_loads(monkeypatch, sqlite_store, Tables.symbol_tenure.name)
     projected = load_identity(_context(sqlite_store), refresh=True)
     assert len(loads) == 1, "symbol resolution and co-registrant evidence must share one tenure read"
-    assert loads[0]["columns"] == ["symbol", "issuer_cik", "valid_from", "valid_to", "n_filings", "source"]
+    assert loads[0]["columns"] == ["symbol", "issuer_cik", "valid_from", "valid_to", "n_filings", "source", "evidence_period", "evidence"]
     assert set(loads[0]["where"]["source"]) == {"form345", "manual", "dei"}
     assert len(evidence_reads) == 1 and set(evidence_reads[0]["source"]) == {"form345", "dei"}
+    pd.testing.assert_frame_equal(projected.source_cohort[Tables.symbol_tenure], full_tenure)
     full = build_identity(
         lineage=sqlite_store.load(Tables.entity_lineage, project=True),
-        tenure=sqlite_store.load(Tables.symbol_tenure, project=True),
+        tenure=full_tenure,
         roster=sqlite_store.load(Tables.sp500_tickers),
         redundant_symbols=frozenset(),
     )
@@ -210,7 +212,7 @@ def test_load_identity_with_the_projected_roster_matches_the_full_roster(sqlite_
     print("\n=== SANITY CHECK: projected sp500_tickers roster ===")
     print(f"  roster_cik {dict(projected.roster_cik)}; ticker_by_entity {dict(projected.ticker_by_entity)}")
     print("  OK: identity built from ('ticker', 'cik') equals the one built from the full roster")
-    print("  OK: one tenure read; form345/manual resolve symbols, form345/dei supply co-registrant evidence")
+    print("  OK: one tenure read preserves provenance; form345/manual resolve symbols, form345/dei supply co-registrant evidence")
 
 
 def test_cusip_map_projected_cache_read_returns_the_full_cache(sqlite_store: Any, monkeypatch: Any) -> None:

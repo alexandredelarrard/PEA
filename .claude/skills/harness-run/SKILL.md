@@ -64,6 +64,8 @@ Update `00-run.md` after every stage, user decision, validation/review attempt, 
 Before the first mutation:
 
 1. Read repository instructions and determine the true root, current branch, base revision, status, diff, and existing worktrees.
+Also Read the `wiki/guides` expecially the `coding-starndards.md` to ensure spec, plan and implementation have right latest codebase standards.
+
 2. Preserve user changes. Never reset, force-checkout, stash, discard, overwrite, or include unrelated paths.
 3. Work on an orchestrator branch named `harness/<slug>`. Prefer a host-native isolated workspace; otherwise use an existing ignored worktree convention or a safely verified Git worktree.
 4. If relevant uncommitted work is required as the baseline, ask how it enters the orchestrator branch. Isolate from HEAD when unrelated dirty changes can remain untouched.

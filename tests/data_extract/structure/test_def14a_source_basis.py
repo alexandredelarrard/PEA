@@ -171,6 +171,7 @@ def test_foreign_currency_never_replaces_saved_dollar_pay() -> None:
     print("SANITY: unsupported foreign money cannot overwrite stored dollars through source correction.")
 
 
+@pytest.mark.usefixtures("filing_store")
 def test_exact_archived_source_replay_persists_a_null_category(sqlite_store: DataStore) -> None:
     section = next(item for item in SECTIONS if item.key == "executive_pay")
     stamp = {"ticker": "X", "accession_number": "a", "as_of": pd.Timestamp("2025-04-01"), "cik": "1"}
@@ -202,6 +203,7 @@ def test_source_foreign_column_cannot_confirm_an_incorrect_usd_answer() -> None:
     print("SANITY: a source-labelled foreign amount cannot confirm dollars even when the answer incorrectly declares USD.")
 
 
+@pytest.mark.usefixtures("filing_store")
 def test_proven_total_clear_reaches_saved_parent_and_archive(sqlite_store: DataStore) -> None:
     section = next(item for item in SECTIONS if item.key == "executive_pay")
     stamp = {"ticker": "X", "accession_number": "a", "as_of": pd.Timestamp("2025-04-01"), "cik": "1"}
@@ -217,6 +219,7 @@ Jane Roe                         1995     $2,000,000     $3,250,000        $71,2
     answer = ExecutivePayExtract(currency="USD", amount_scale="units", compensation=[{"name": "Jane Roe", "fiscal_year": 1995, "salary": 2000000}])
     old = pd.DataFrame([{**stamp, "name": "Jane Roe", "fiscal_year": 1995, "salary": 2000000, "total": 5321228, "retry": 2}])
     parent = {**stamp, "ceo_name_proxy": "Jane Roe", "ceo_total_comp": 5321228}
+    sqlite_store.ensure_columns(Tables.def14a_llm, pd.DataFrame([parent]))
     sqlite_store.save(Tables.def14a_llm, pd.DataFrame([parent]))
     result = postprocess_section(section, answer, stamp, {section.table: old}, parent, source)
     for table, frame in result.frames.items():

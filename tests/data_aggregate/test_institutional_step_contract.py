@@ -24,6 +24,7 @@ from src.data_aggregate.utils.common.incremental import PartWindow
 from src.data_aggregate.utils.common.price_frames import PriceFrames
 from src.data_aggregate.utils.institutionals.inputs import QuantityBasis
 from src.data_store.schema import Tables
+from src.data_store.store import _create_canonical
 from src.utils.price_adjustments import resolve_share_events
 from tests.data_aggregate.insider_pit_reference import row
 
@@ -315,9 +316,9 @@ def test_each_daily_part_honors_full_or_inclusive_tail_write_window(
     expected_saved = expected.copy()
     if not full and cls is StepCubeSecThirteen:
         expected_saved.loc[0, "f_test"] = -2.0
-    method = "replace_institutional_output" if cls is StepCubeInstitutionals else "replace" if full else "append_tail"
-    save = Mock(wraps=getattr(sqlite_store, method))
-    monkeypatch.setattr(sqlite_store, method, save)
+    method = "replace" if full else "append_tail"
+    save = Mock(side_effect=getattr(type(sqlite_store), method))
+    monkeypatch.setattr(type(sqlite_store), method, lambda store, *args, **kwargs: save(store, *args, **kwargs))
     step.run(full=full)
     first = sqlite_store.load(table).sort_values(["date", "ticker"]).reset_index(drop=True)
     pd.testing.assert_frame_equal(first, expected_saved, check_dtype=False)
@@ -370,6 +371,8 @@ def test_builder_payload_reads_are_unique_with_optional_sources_absent(
 
 @pytest.mark.parametrize("checked", [False, True], ids=["legacy-unknown", "checked-zero"])
 def test_ftd_step_retains_global_zip_dates_from_one_stream(sqlite_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, checked: bool) -> None:
+    if checked:
+        _create_canonical(sqlite_store.engine, [Tables.sec_fails_to_deliver])
     idx = pd.bdate_range("2023-12-01", "2024-02-14", name="date")
     sqlite_store.save(
         Tables.sec_fails_to_deliver,
@@ -610,9 +613,9 @@ def test_changed_columns_trigger_full_owned_part_replacement(
         return expected.copy()
 
     monkeypatch.setattr(step, "build_panel", sec_build if cls is StepCubeSecThirteen else build)
-    method = "replace_institutional_output" if cls is StepCubeInstitutionals else "replace"
-    replace = Mock(wraps=getattr(sqlite_store, method))
-    monkeypatch.setattr(sqlite_store, method, replace)
+    method = "replace"
+    replace = Mock(side_effect=getattr(type(sqlite_store), method))
+    monkeypatch.setattr(type(sqlite_store), method, lambda store, *args, **kwargs: replace(store, *args, **kwargs))
     step.run()
     assert len(builds) == 1
     if cls is StepCubeSecThirteen:

@@ -22,6 +22,7 @@ def wmt_packet() -> dict[str, Any]:
 
 
 @pytest.mark.parametrize("saved_state", ["legacy_saved_conde", "repair_saved_conde"])
+@pytest.mark.usefixtures("filing_store")
 def test_actual_wmt_paid_unknown_clears_only_the_source_unsupported_legacy_zero(
     wmt_packet: dict[str, Any], saved_state: str, sqlite_store: DataStore
 ) -> None:

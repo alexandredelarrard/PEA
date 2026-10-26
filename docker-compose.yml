@@ -72,7 +72,7 @@ services:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - stock_pick_strat_pgdata:/var/lib/postgresql/data
-      # - ./sql:/docker-entrypoint-initdb.d:ro
+      - ./sql/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pea} -d ${POSTGRES_DB:-pea}"]
       interval: 5s

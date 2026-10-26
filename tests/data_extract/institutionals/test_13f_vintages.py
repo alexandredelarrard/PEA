@@ -19,7 +19,6 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.engine import make_url
 
 import src.data_aggregate.transformers.step_cube_sec_thirteen as step_module
-import src.data_store.schema as schema
 from src.context import get_config_context
 from src.data_aggregate.transformers.step_cube_sec_thirteen import PreparedSecThirteen, SecThirteenResources, StepCubeSecThirteen
 from src.data_aggregate.utils.common.availability import filing_public_dates, public_books
@@ -35,7 +34,7 @@ from src.data_aggregate.utils.sec_thirteen.institutional_features import (
 )
 from src.data_aggregate.utils.sec_thirteen.institutional_vintages import iter_public_books
 from src.data_extract.utils.institutionals import fetch_13f_managers as managers
-from src.data_extract.utils.institutionals.fetch_13f import filing_vintage
+from src.data_extract.utils.institutionals.fetch_13f import filing_vintage, save_13f_filing
 from src.data_extract.utils.institutionals.fetch_13f_managers import pending_vintages
 from src.data_extract.utils.institutionals.value_units import declared_units
 from src.data_store.schema import Tables
@@ -50,41 +49,41 @@ def completed(store: DataStore) -> pd.DataFrame:
     return store.load(Tables.sec13f_manager_holdings, where={"cusip": "_empty", "parse_status": "complete"}, markers=True)
 
 
-def test_only_existing_tables_store_complete_versions(sqlite_store: DataStore) -> None:
+def test_only_existing_tables_store_complete_versions(filing_store: DataStore) -> None:
     original = packet("same-day-original", "2024-08-14", {"111111111": 100, "222222222": 200})
     amended = packet("same-day-amendment", "2024-08-14", {"111111111": 90}, kind="restatement")
     for table in (Tables.sec13f_hr, Tables.sec13f_manager_holdings):
         for manifest, holdings in (original, amended):
             rows = holdings.assign(ticker="_empty") if table == Tables.sec13f_hr else holdings
-            sqlite_store.save_13f_filing(manifest, rows, table=table)
-        completed = sqlite_store.load(
+            save_13f_filing(filing_store, manifest, rows, table=table)
+        completed = filing_store.load(
             table,
             columns=["accession_number", "filing_date", "parsed_row_count"],
             where={"cusip": "_empty", "parse_status": "complete"},
             markers=True,
         )
         assert set(completed.accession_number) == {"same-day-original", "same-day-amendment"}
-        assert len(sqlite_store.load(table)) == 3
+        assert len(filing_store.load(table)) == 3
         assert "accession_number" in table.pk
     assert not hasattr(Tables, "sec13f_filings")
     assert not hasattr(Tables, "sec13f_holdings_vintages")
     print("SANITY: only the two existing tables retain original and same-day amendment plus hidden completion markers.")
 
 
-def test_equivalent_transport_replay_keeps_original_clock(sqlite_store: DataStore) -> None:
+def test_equivalent_transport_replay_keeps_original_clock(filing_store: DataStore) -> None:
     manifest, rows = packet("transport", "2024-08-14", {"111111111": 100})
-    sqlite_store.save_13f_filing(manifest, rows)
+    save_13f_filing(filing_store, manifest, rows)
     replay = manifest.copy()
     replay.loc[0, "source"] = "edgar"
     replay.loc[0, "source_checksum"] = "different-byte-layout"
     replay.loc[0, "accepted_at"] = pd.Timestamp("2024-08-14 20:00:00")
-    assert sqlite_store.save_13f_filing(replay, rows) == 0
-    clock = sqlite_store.load(Tables.sec13f_manager_holdings, columns=["accepted_at"], where={"cusip": "_empty"}, markers=True)
+    assert save_13f_filing(filing_store, replay, rows) == 0
+    clock = filing_store.load(Tables.sec13f_manager_holdings, columns=["accepted_at"], where={"cusip": "_empty"}, markers=True)
     assert clock.accepted_at.isna().all()
     changed = rows.copy()
     changed.loc[0, "shares"] = 99
     with pytest.raises(ValueError, match="checksum"):
-        sqlite_store.save_13f_filing(replay, changed)
+        save_13f_filing(filing_store, replay, changed)
     print("SANITY: equivalent ZIP/EDGAR content replays once, cannot retroactively improve a clock, and changed positions conflict.")
 
 
@@ -118,7 +117,7 @@ def combine(*packets: tuple[pd.DataFrame, pd.DataFrame]) -> tuple[pd.DataFrame, 
 
 @pytest.mark.parametrize(("received", "declared", "accepted"), [(17, 20, True), (16, 20, False), (22, 20, True), (23, 20, False), (20, 20, True)])
 def test_source_row_coverage_boundary_and_idempotent_save(
-    sqlite_store: DataStore, caplog: pytest.LogCaptureFixture, received: int, declared: int, accepted: bool
+    filing_store: DataStore, caplog: pytest.LogCaptureFixture, received: int, declared: int, accepted: bool
 ) -> None:
     info = pd.DataFrame(
         [
@@ -145,8 +144,8 @@ def test_source_row_coverage_boundary_and_idempotent_save(
             assert manifest.source_row_count.iloc[0] == received and manifest.declared_row_count.iloc[0] == declared
             for table in (Tables.sec13f_manager_holdings, Tables.sec13f_hr):
                 positions = rows.assign(ticker="AAA") if table == Tables.sec13f_hr else rows
-                assert sqlite_store.save_13f_filing(manifest, positions, table=table) == received
-                assert sqlite_store.save_13f_filing(manifest, positions, table=table) == 0
+                assert save_13f_filing(filing_store, manifest, positions, table=table) == received
+                assert save_13f_filing(filing_store, manifest, positions, table=table) == 0
             _, state = public_books(manifest, rows, "2024-08-21", GRID)
             assert state.iloc[0].book_known and state.iloc[0].comparison_eligible and state.iloc[0].zero_eligible
     if accepted and declared != received:
@@ -171,7 +170,7 @@ def test_source_row_coverage_boundary_and_idempotent_save(
     ],
 )
 def test_cover_unit_mismatch_preserves_raw_rows_and_own_unit_basis(
-    sqlite_store: DataStore, caplog: pytest.LogCaptureFixture, filed: str, cover_factor: float, usd_factor: float
+    filing_store: DataStore, caplog: pytest.LogCaptureFixture, filed: str, cover_factor: float, usd_factor: float
 ) -> None:
     info = pd.DataFrame([{"CUSIP": "111111111", "TITLEOFCLASS": "COM", "SSHPRNAMT": 100, "SSHPRNAMTTYPE": "SH", "VALUE": 1000}])
     with caplog.at_level(logging.WARNING):
@@ -189,8 +188,8 @@ def test_cover_unit_mismatch_preserves_raw_rows_and_own_unit_basis(
     assert rows.raw_value_usd.iloc[0] == 1000 and rows.shares.iloc[0] == 100
     assert rows.value_usd.iloc[0] == 1000 * usd_factor
     assert manifest.declared_value_total.iloc[0] == 1000 / cover_factor and manifest.source_value_total.iloc[0] == 1000
-    assert sqlite_store.save_13f_filing(manifest, rows) == 1
-    assert sqlite_store.save_13f_filing(manifest, rows) == 0
+    assert save_13f_filing(filing_store, manifest, rows) == 1
+    assert save_13f_filing(filing_store, manifest, rows) == 0
     assert any("cover-to-row factor" in record.getMessage() for record in caplog.records)
     print(
         f"SANITY: cover-to-row{cover_factor:g} aligns the source summary without another multiplication of row dollars; raw values, shares and replay preserved."
@@ -306,14 +305,14 @@ def test_tolerated_count_discrepancy_participates_in_normal_exits() -> None:
 
 
 @pytest.mark.parametrize("column,new_value", [("declared_row_count", 21), ("declared_value_total", 20)])
-def test_replay_rejects_changed_cover_metadata(sqlite_store: DataStore, column: str, new_value: float) -> None:
+def test_replay_rejects_changed_cover_metadata(filing_store: DataStore, column: str, new_value: float) -> None:
     manifest, rows = packet("fixed-cover", "2024-08-14", {f"{number:09d}": 100 for number in range(1, 21)})
-    assert sqlite_store.save_13f_filing(manifest, rows) == 20
+    assert save_13f_filing(filing_store, manifest, rows) == 20
     changed = manifest.copy()
     changed.loc[0, column] = new_value
     with pytest.raises(ValueError, match="checksum conflict"):
-        sqlite_store.save_13f_filing(changed, rows)
-    assert sqlite_store.save_13f_filing(manifest, rows) == 0
+        save_13f_filing(filing_store, changed, rows)
+    assert save_13f_filing(filing_store, manifest, rows) == 0
     print(
         f"SANITY: changing accepted{column} cannot silently replay an immutable accession; original compatible checksum and repeat save remain valid."
     )
@@ -526,13 +525,13 @@ def test_restriction_blocks_exit_inference() -> None:
     print("SANITY: confidentiality cannot create sells or exits.")
 
 
-def test_atomic_save_replay_conflict_and_accession_resume(sqlite_store: DataStore) -> None:
+def test_atomic_save_replay_conflict_and_accession_resume(filing_store: DataStore) -> None:
     manifest, rows = packet("original", "2024-08-14", {"111111111": 100})
-    assert sqlite_store.save_13f_filing(manifest, rows) == 1
-    assert sqlite_store.save_13f_filing(manifest, rows) == 0
+    assert save_13f_filing(filing_store, manifest, rows) == 1
+    assert save_13f_filing(filing_store, manifest, rows) == 0
     changed, changed_rows = packet("original", "2024-08-14", {"111111111": 99})
     with pytest.raises(ValueError, match="checksum"):
-        sqlite_store.save_13f_filing(changed, changed_rows)
+        save_13f_filing(filing_store, changed, changed_rows)
     amendment, amended_rows = packet("amendment", "2025-05-14", {"111111111": 90}, kind="restatement")
 
     def crash(conn: Any, cursor: Any, statement: str, parameters: Any, context: Any, executemany: bool) -> None:
@@ -543,23 +542,23 @@ def test_atomic_save_replay_conflict_and_accession_resume(sqlite_store: DataStor
         ):
             raise RuntimeError("injected crash after holdings")
 
-    event.listen(sqlite_store.engine, "before_cursor_execute", crash)
+    event.listen(filing_store.engine, "before_cursor_execute", crash)
     with pytest.raises(RuntimeError, match="injected"):
-        sqlite_store.save_13f_filing(amendment, amended_rows)
-    event.remove(sqlite_store.engine, "before_cursor_execute", crash)
-    assert len(completed(sqlite_store)) == 1
-    assert len(sqlite_store.load(Tables.sec13f_manager_holdings)) == 1
-    context = SimpleNamespace(store=sqlite_store, log=logging.getLogger(__name__))
+        save_13f_filing(filing_store, amendment, amended_rows)
+    event.remove(filing_store.engine, "before_cursor_execute", crash)
+    assert len(completed(filing_store)) == 1
+    assert len(filing_store.load(Tables.sec13f_manager_holdings)) == 1
+    context = SimpleNamespace(store=filing_store, log=logging.getLogger(__name__))
     assert pending_vintages(context, "0000000001", ["amendment", "original", "missing_original"]) == ["amendment", "missing_original"]
     print("SANITY: atomic rollback, identical replay, visible payload conflict, and accession gaps all enforced.")
 
 
-def test_source_completion_and_amendment_identity_are_validated(sqlite_store: DataStore) -> None:
+def test_source_completion_and_amendment_identity_are_validated(filing_store: DataStore) -> None:
     manifest, rows = packet("valid", "2024-08-14", {"111111111": 100})
     bad = manifest.copy()
     bad.loc[0, "source_row_count"] = 0
     with pytest.raises(ValueError, match="source row count"):
-        sqlite_store.save_13f_filing(bad, rows)
+        save_13f_filing(filing_store, bad, rows)
     with pytest.raises(ValueError, match="amendment"):
         packet("bad", "2024-08-14", {"111111111": 1}, kind="ambiguous")
     print("SANITY: unknown amendment semantics are rejected rather than interpreted as a full replacement.")
@@ -632,11 +631,11 @@ def test_nonfinite_source_is_rejected(quantity: float, value: float) -> None:
     print("SANITY: nonfinite source quantities and values cannot complete a filing.")
 
 
-def test_save_reconciles_actual_raw_legs(sqlite_store: DataStore) -> None:
+def test_save_reconciles_actual_raw_legs(filing_store: DataStore) -> None:
     manifest, rows = packet("original", "2024-08-14", {"111111111": 100})
     rows.loc[0, "raw_value_usd"] = 0
     with pytest.raises(ValueError, match="raw value total"):
-        sqlite_store.save_13f_filing(manifest, rows)
+        save_13f_filing(filing_store, manifest, rows)
     print("SANITY: altered book rows cannot pass by copying valid manifest totals.")
 
 
@@ -650,52 +649,6 @@ def test_date_fallback_timezone_holiday_and_calendar_end() -> None:
 
 
 @pytest.mark.live
-def test_disposable_postgres_existing_key_migration(monkeypatch: pytest.MonkeyPatch) -> None:
-    """An existing PostgreSQL key is altered without deleting a single source row."""
-    url = os.environ.get("PEA_13F_TEST_DATABASE_URL")
-    if not url:
-        pytest.skip("requires dedicated disposable PostgreSQL URL")
-    parsed = make_url(url)
-    assert parsed.host == "127.0.0.1" and parsed.port == 55433 and parsed.database == "p3" and parsed.username == "p3"
-    store = DataStore(create_engine(url))
-    tables = (Tables.sec13f_hr, Tables.sec13f_manager_holdings)
-    for table in tables:
-        if store.exists(table):
-            store.drop(table)
-    original = packet("migration-original", "2024-08-14", {"111111111": 100})
-    before: dict[str, pd.DataFrame] = {}
-    with monkeypatch.context() as legacy:
-        for table in tables:
-            old = replace(table, pk=tuple(key for key in table.pk if key != "accession_number"))
-            legacy.setitem(schema.BY_NAME, table.name, old)
-            legacy.setattr(Tables, table.name, old)
-        for table in tables:
-            rows = original[1].drop(columns="accession_number")
-            if table == tables[0]:
-                rows = rows.assign(ticker="AAA")
-            store.save(schema.resolve(table.name), rows)
-            before[table.name] = store.load(schema.resolve(table.name))
-    assert set(store.migrate_13f_tables()) == {table.name for table in tables}
-    assert store.migrate_13f_tables() == []
-    for table in tables:
-        pd.testing.assert_frame_equal(before[table.name], store.load(table))
-        assert set(store.load(table).accession_number) == {"_legacy"}
-        rows = original[1].assign(ticker="AAA") if table == tables[0] else original[1]
-        assert store.save_13f_filing(original[0], rows, table=table) == 1
-        amended = packet("migration-amendment", "2025-05-14", {"111111111": 90}, kind="restatement")
-        rows = amended[1].assign(ticker="AAA") if table == tables[0] else amended[1]
-        assert store.save_13f_filing(amended[0], rows, table=table) == 1
-        assert set(store.load(table).accession_number) == {"_legacy", "migration-original", "migration-amendment"}
-        assert len(store.load(table, where={"parse_status": "complete"}, markers=True)) == 2
-    for table in tables:
-        store.drop(table)
-    store.engine.dispose()
-    print(
-        "SANITY: PostgreSQL rekey retains exact legacy rows as unverified; original/amendment coexist in both existing tables; migration is idempotent."
-    )
-
-
-@pytest.mark.live
 def test_disposable_postgres_atomicity() -> None:
     url = os.environ.get("PEA_13F_TEST_DATABASE_URL")
     if not url:
@@ -704,8 +657,8 @@ def test_disposable_postgres_atomicity() -> None:
     assert parsed.host == "127.0.0.1" and parsed.port == 55433 and parsed.database == "p3" and parsed.username == "p3"
     store = DataStore(create_engine(url))
     m, h = packet("pg-original", "2024-08-14", {"111111111": 100})
-    assert store.save_13f_filing(m, h) == 1
-    assert store.save_13f_filing(m, h) == 0
+    assert save_13f_filing(store, m, h) == 1
+    assert save_13f_filing(store, m, h) == 0
     m2, h2 = packet("pg-amend", "2025-05-14", {"111111111": 90}, kind="restatement")
 
     def crash(conn: Any, cursor: Any, statement: str, parameters: Any, context: Any, executemany: bool) -> None:
@@ -718,26 +671,26 @@ def test_disposable_postgres_atomicity() -> None:
 
     event.listen(store.engine, "before_cursor_execute", crash)
     with pytest.raises(RuntimeError, match="injected PostgreSQL"):
-        store.save_13f_filing(m2, h2)
+        save_13f_filing(store, m2, h2)
     event.remove(store.engine, "before_cursor_execute", crash)
     assert len(completed(store)) == len(store.load(Tables.sec13f_manager_holdings)) == 1
-    assert store.save_13f_filing(m2, h2) == 1
+    assert save_13f_filing(store, m2, h2) == 1
     empty, no_rows = packet("pg-empty", "2025-06-01", {}, kind="restatement")
-    assert store.save_13f_filing(empty, no_rows) == 0
+    assert save_13f_filing(store, empty, no_rows) == 0
     assert len(completed(store)) == 3
     concurrent, concurrent_rows = packet("pg-concurrent", "2025-06-02", {"111111111": 80}, kind="restatement")
     with ThreadPoolExecutor(max_workers=2) as workers:
-        outcomes = list(workers.map(lambda _: store.save_13f_filing(concurrent, concurrent_rows), range(2)))
+        outcomes = list(workers.map(lambda _: save_13f_filing(store, concurrent, concurrent_rows), range(2)))
     assert sorted(outcomes) == [0, 1] and len(completed(store)) == 4
     changed, changed_rows = packet("pg-original", "2024-08-14", {"111111111": 99})
     with pytest.raises(ValueError, match="checksum"):
-        store.save_13f_filing(changed, changed_rows)
+        save_13f_filing(store, changed, changed_rows)
     store.engine.dispose()
     print("SANITY: real disposable PostgreSQL rollback, retry, empty completion, immutable replay/conflict passed; production untouched.")
 
 
-def test_bounded_recovery_dry_run_cap_and_original_gap(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
-    context = SimpleNamespace(store=sqlite_store, log=logging.getLogger(__name__))
+def test_bounded_recovery_dry_run_cap_and_original_gap(filing_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    context = SimpleNamespace(store=filing_store, log=logging.getLogger(__name__))
     old = SimpleNamespace(accession_number="orig", filed=pd.Timestamp("2024-08-14"), doc_url="fixture-original")
     new = SimpleNamespace(accession_number="amend", filed=pd.Timestamp("2025-05-14"), doc_url="fixture-amendment")
     monkeypatch.setattr(managers, "configure", lambda context: None)
@@ -756,21 +709,21 @@ def test_bounded_recovery_dry_run_cap_and_original_gap(sqlite_store: DataStore, 
         max_filings=2,
     )
     preview = managers.recover_13f_vintages(context, **args)
-    assert preview["pending_accessions"] == 2 and not sqlite_store.exists(Tables.sec13f_manager_holdings)
+    assert preview["pending_accessions"] == 2 and filing_store.row_count(Tables.sec13f_manager_holdings) == 0
     with pytest.raises(ValueError, match="exceeding cap"):
         managers.recover_13f_vintages(context, **{**args, "max_filings": 1}, dry_run=False)
-    sqlite_store.save_13f_filing(*packets["amend"])
+    save_13f_filing(filing_store, *packets["amend"])
     assert managers.recover_13f_vintages(context, **args, dry_run=False)["saved_rows"] == 1
-    assert len(completed(sqlite_store)) == 2
+    assert len(completed(filing_store)) == 2
     assert managers.recover_13f_vintages(context, **args, dry_run=False)["saved_rows"] == 0
-    assert sqlite_store.exists(Tables.sec13f_hr)
+    assert filing_store.exists(Tables.sec13f_hr)
     print("SANITY: dry run writes nothing; cap enforced before writes; stored amendment cannot hide original gap; replay is idempotent.")
 
 
-def test_completed_empty_book_can_create_schema_first(sqlite_store: DataStore) -> None:
-    assert sqlite_store.save_13f_filing(*packet("empty-first", "2024-08-14", {})) == 0
-    assert sqlite_store.save_13f_filing(*packet("populated-second", "2024-11-14", {"111111111": 100}, period="2024-09-30")) == 1
-    assert len(completed(sqlite_store)) == 2
+def test_completed_empty_book_can_create_schema_first(filing_store: DataStore) -> None:
+    assert save_13f_filing(filing_store, *packet("empty-first", "2024-08-14", {})) == 0
+    assert save_13f_filing(filing_store, *packet("populated-second", "2024-11-14", {"111111111": 100}, period="2024-09-30")) == 1
+    assert len(completed(filing_store)) == 2
     print("SANITY: empty-first source completion creates a stable schema that accepts later holdings.")
 
 
@@ -1210,18 +1163,18 @@ def test_cohort_identical_refiling_resets_observation_age() -> None:
     print("SANITY: identical current re-filing emits its reset clock; daily carried age equals direct snapshot; shares/flow unchanged.")
 
 
-def test_ordinary_builders_use_versions_and_keep_prior_corrections_prospective(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ordinary_builders_use_versions_and_keep_prior_corrections_prospective(filing_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
     original = packet("old", "2024-08-14", {"111111111": 100, "222222222": 100})
     new = packet("new", "2024-11-14", {"111111111": 120, "222222222": 100}, period="2024-09-30")
     revised = packet("amend", "2024-12-01", {"111111111": 90, "222222222": 100}, kind="restatement")
     for m, h in (original, new, revised):
-        sqlite_store.save_13f_filing(m, h)
-        sqlite_store.save_13f_filing(m, h.assign(ticker="_empty"), table=Tables.sec13f_hr)
-    sqlite_store.save(Tables.cusip_ticker_map, pd.DataFrame({"cusip": ["111111111", "222222222"], "ticker": ["AAA", "BBB"]}))
+        save_13f_filing(filing_store, m, h)
+        save_13f_filing(filing_store, m, h.assign(ticker="_empty"), table=Tables.sec13f_hr)
+    filing_store.save(Tables.cusip_ticker_map, pd.DataFrame({"cusip": ["111111111", "222222222"], "ticker": ["AAA", "BBB"]}))
     step = object.__new__(StepCubeSecThirteen)
-    step._store, step._log = sqlite_store, logging.getLogger(__name__)
+    step._store, step._log = filing_store, logging.getLogger(__name__)
     step._cfg, step._availability = {"institutionals": {"value_basis": {"min_securities": 1}, "f13_settle_trading_days": 0}}, None
-    step._context = SimpleNamespace(store=sqlite_store, log=step._log, config_dir="configs")
+    step._context = SimpleNamespace(store=filing_store, log=step._log, config_dir="configs")
 
     def arithmetic(snapshots: Any, **kw: Any) -> pd.DataFrame:
         return compute_institutional_feature_history(snapshots, min_prior_holders=0, **kw)
@@ -1241,25 +1194,25 @@ def test_ordinary_builders_use_versions_and_keep_prior_corrections_prospective(s
     assert elite.loc[(before, "AAA"), "f_ic_super_shares_chg"] == pytest.approx(0.2)
     assert elite.loc[(after, "AAA"), "f_ic_super_shares_chg"] == pytest.approx(1 / 3)
     assert elite.loc[(before, "AAA"), "f_ic_super_conviction_weight"] == elite.loc[(after, "AAA"), "f_ic_super_conviction_weight"]
-    assert set(completed(sqlite_store).accession_number) == {"old", "new", "amend"}
+    assert set(completed(filing_store).accession_number) == {"old", "new", "amend"}
     print(
         "SANITY: both ordinary builders read accessions; prior amendment changes .2 to .3333 prospectively while current conviction stays unchanged."
     )
 
 
 def ordinary_step(
-    sqlite_store: DataStore,
+    filing_store: DataStore,
     monkeypatch: pytest.MonkeyPatch,
     packets: tuple[tuple[pd.DataFrame, pd.DataFrame], ...],
 ) -> tuple[StepCubeSecThirteen, PriceFrames]:
     for manifest, holdings in packets:
-        sqlite_store.save_13f_filing(manifest, holdings)
-        sqlite_store.save_13f_filing(manifest, holdings.assign(ticker="_empty"), table=Tables.sec13f_hr)
-    sqlite_store.save(Tables.cusip_ticker_map, pd.DataFrame({"cusip": ["111111111", "222222222", "333333333"], "ticker": ["AAA", "BBB", "CCC"]}))
+        save_13f_filing(filing_store, manifest, holdings)
+        save_13f_filing(filing_store, manifest, holdings.assign(ticker="_empty"), table=Tables.sec13f_hr)
+    filing_store.save(Tables.cusip_ticker_map, pd.DataFrame({"cusip": ["111111111", "222222222", "333333333"], "ticker": ["AAA", "BBB", "CCC"]}))
     step = object.__new__(StepCubeSecThirteen)
-    step._store, step._log = sqlite_store, logging.getLogger(__name__)
+    step._store, step._log = filing_store, logging.getLogger(__name__)
     step._cfg, step._availability = {"institutionals": {"value_basis": {"min_securities": 1}, "f13_settle_trading_days": 0}}, None
-    step._context = SimpleNamespace(store=sqlite_store, log=step._log, config_dir="configs")
+    step._context = SimpleNamespace(store=filing_store, log=step._log, config_dir="configs")
 
     def arithmetic(snapshots: Any, **kw: Any) -> pd.DataFrame:
         return compute_institutional_feature_history(snapshots, min_prior_holders=0, **kw)
@@ -1316,12 +1269,12 @@ def test_raw_broad_builder_keeps_verified_filing_adapter() -> None:
     )
 
 
-def test_normal_builders_tolerated_count_discrepancy_keeps_exits(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_normal_builders_tolerated_count_discrepancy_keeps_exits(filing_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
     prior = packet("prior-full", "2024-08-14", {"111111111": 100, "222222222": 100, **{f"{number:09d}": 100 for number in range(3, 8)}})
     current = packet("current-six", "2024-11-14", {"222222222": 110, **{f"{number:09d}": 110 for number in range(3, 8)}}, period="2024-09-30")
     current[0]["declared_row_count"] = 7
     current[0]["declared_value_total"] = 7700.0
-    step, frames = ordinary_step(sqlite_store, monkeypatch, (prior, current))
+    step, frames = ordinary_step(filing_store, monkeypatch, (prior, current))
     broad, elite = normal_panels(step, frames)
     day = pd.Timestamp("2024-11-21")
     for panel, family in ((broad, "inst"), (elite, "super")):
@@ -1336,7 +1289,7 @@ def test_normal_builders_tolerated_count_discrepancy_keeps_exits(sqlite_store: D
 @pytest.mark.parametrize("cohort", ["", "topk_"])
 @pytest.mark.parametrize("unknown_value", [False, True])
 def test_normal_elite_comparisons_keep_unknown_weights_and_zero_pools_safe(
-    sqlite_store: DataStore,
+    filing_store: DataStore,
     monkeypatch: pytest.MonkeyPatch,
     cohort: str,
     unknown_value: bool,
@@ -1356,7 +1309,7 @@ def test_normal_elite_comparisons_keep_unknown_weights_and_zero_pools_safe(
                 manifest["source_value_total"] = manifest["declared_value_total"] = 2000000.0
                 holdings["value_usd"] = holdings["raw_value_usd"] = 1000000.0
             sources.append((manifest, holdings))
-    step, _ = ordinary_step(sqlite_store, monkeypatch, tuple(sources))
+    step, _ = ordinary_step(filing_store, monkeypatch, tuple(sources))
     step._cfg["institutionals"]["value_basis"] = {}
     grid = pd.bdate_range("2023-09-01", "2024-12-02")
     close = pd.DataFrame(10.0, index=grid, columns=["AAA"])
@@ -1396,17 +1349,17 @@ def test_normal_elite_comparisons_keep_unknown_weights_and_zero_pools_safe(
 
 @pytest.mark.parametrize("restricted", [False, True])
 def test_normal_removed_position_clears_carry_without_inventing_exit(
-    sqlite_store: DataStore,
+    filing_store: DataStore,
     monkeypatch: pytest.MonkeyPatch,
     restricted: bool,
 ) -> None:
     prior = packet("prior", "2024-08-14", {"222222222": 100})
     original = packet("original", "2024-11-14", {"111111111": 120, "222222222": 100}, period="2024-09-30")
     revised = packet("revised", "2024-12-01", {"222222222": 100}, kind="restatement", period="2024-09-30", restricted=restricted)
-    step, frames = ordinary_step(sqlite_store, monkeypatch, (prior, original))
+    step, frames = ordinary_step(filing_store, monkeypatch, (prior, original))
     before = normal_panels(step, frames)
-    sqlite_store.save_13f_filing(*revised)
-    sqlite_store.save_13f_filing(revised[0], revised[1].assign(ticker="_empty"), table=Tables.sec13f_hr)
+    save_13f_filing(filing_store, *revised)
+    save_13f_filing(filing_store, revised[0], revised[1].assign(ticker="_empty"), table=Tables.sec13f_hr)
     after = normal_panels(step, frames)
     for old, new, family in zip(before, after, ("inst", "super"), strict=True):
         cutoff = pd.Timestamp("2024-12-01")
@@ -1423,13 +1376,13 @@ def test_normal_removed_position_clears_carry_without_inventing_exit(
 
 @pytest.mark.parametrize("restricted", [False, True])
 def test_normal_empty_book_has_exit_only_with_complete_public_baseline(
-    sqlite_store: DataStore,
+    filing_store: DataStore,
     monkeypatch: pytest.MonkeyPatch,
     restricted: bool,
 ) -> None:
     prior = packet("prior", "2024-08-14", {"111111111": 100})
     current = packet("empty", "2024-11-14", {}, period="2024-09-30", restricted=restricted)
-    step, frames = ordinary_step(sqlite_store, monkeypatch, (prior, current))
+    step, frames = ordinary_step(filing_store, monkeypatch, (prior, current))
     broad, elite = normal_panels(step, frames)
     day = pd.Timestamp("2024-11-21")
     for panel, family in ((broad, "inst"), (elite, "super")):
@@ -1447,7 +1400,7 @@ def test_normal_empty_book_has_exit_only_with_complete_public_baseline(
 
 
 def test_normal_copied_amendment_unknown_leg_cannot_create_exit(
-    sqlite_store: DataStore,
+    filing_store: DataStore,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     prior = packet("prior", "2024-05-14", {"111111111": 90, "222222222": 190, "333333333": 290}, period="2024-03-31")
@@ -1469,7 +1422,7 @@ def test_normal_copied_amendment_unknown_leg_cannot_create_exit(
         declared_rows=3,
         declared_value=3200,
     )
-    step, frames = ordinary_step(sqlite_store, monkeypatch, (prior, original, amendment))
+    step, frames = ordinary_step(filing_store, monkeypatch, (prior, original, amendment))
     broad, elite = normal_panels(step, frames)
     day = pd.Timestamp("2024-10-18")
     for panel, family in ((broad, "inst"), (elite, "super")):
@@ -1485,10 +1438,10 @@ def test_normal_copied_amendment_unknown_leg_cannot_create_exit(
 
 
 def test_normal_elite_expiry_does_not_wait_for_another_filing(
-    sqlite_store: DataStore,
+    filing_store: DataStore,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    step, frames = ordinary_step(sqlite_store, monkeypatch, (packet("only", "2024-08-14", {"111111111": 100}),))
+    step, frames = ordinary_step(filing_store, monkeypatch, (packet("only", "2024-08-14", {"111111111": 100}),))
     _, elite = normal_panels(step, frames)
     assert elite.loc[(pd.Timestamp("2024-11-13"), "AAA"), "f_ic_super_holders"] == 1
     assert pd.isna(elite.loc[(pd.Timestamp("2024-11-14"), "AAA"), "f_ic_super_holders"])
@@ -1510,7 +1463,7 @@ def test_same_day_versions_follow_acceptance_time_before_accession_order() -> No
 
 
 def test_normal_broad_retains_option_only_names(
-    sqlite_store: DataStore,
+    filing_store: DataStore,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = pd.DataFrame(
@@ -1537,7 +1490,7 @@ def test_normal_broad_retains_option_only_names(
         declared_rows=1,
         declared_value=1000,
     )
-    step, frames = ordinary_step(sqlite_store, monkeypatch, (option,))
+    step, frames = ordinary_step(filing_store, monkeypatch, (option,))
     resources = normal_resources(step, frames)
     features = step._institutional_features(resources)
     assert features is not None
@@ -1561,7 +1514,7 @@ def test_same_day_missing_acceptance_clock_preserves_amendment_fallback(clocked:
 
 
 def test_normal_elite_handles_colliding_expiry_sessions(
-    sqlite_store: DataStore,
+    filing_store: DataStore,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     packets = (
@@ -1570,7 +1523,7 @@ def test_normal_elite_handles_colliding_expiry_sessions(
         packet("other-manager", "2024-08-15", {"111111111": 100}),
     )
     packets[-1][0]["cik"] = packets[-1][1]["cik"] = "0000000002"
-    step, frames = ordinary_step(sqlite_store, monkeypatch, packets)
+    step, frames = ordinary_step(filing_store, monkeypatch, packets)
     step._cfg["institutionals"]["superinvestor"] = {"max_age_calendar_days": 365}
     resources = replace(normal_resources(step, frames), cohorts=dict.fromkeys(("", "topk"), frozenset({"0000000001", "0000000002"})))
     history = step._superinvestor_history(resources)

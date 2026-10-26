@@ -195,6 +195,7 @@ def test_common_class_percentage_needs_actual_positive_preferred_group_holdings(
 
 
 @pytest.mark.parametrize("saved_percentage", [0.1, 0.007, None])
+@pytest.mark.usefixtures("filing_store")
 def test_group_scope_correction_preserves_valid_saved_aggregate_and_clears_only_proven_common_value(
     full40_packets: dict[str, Any], saved_percentage: float | None, sqlite_store: DataStore
 ) -> None:
@@ -204,6 +205,7 @@ def test_group_scope_correction_preserves_valid_saved_aggregate_and_clears_only_
     values = {**packet["parsed"], "insider_voting_pct": 1.25}
     answer = section.schema.model_validate(values)
     parent = {**stamp, "insider_ownership_pct": saved_percentage, "insider_voting_pct": 0.0125}
+    sqlite_store.ensure_columns(Tables.def14a_llm, pd.DataFrame([parent]))
     sqlite_store.save(Tables.def14a_llm, pd.DataFrame([parent]))
     raw = Def14AExtract.model_validate({"governance": {"insider_ownership_pct": saved_percentage, "insider_voting_pct": 0.0125}}).model_dump_json()
     raw = append_answer(raw, section, answer, packet["source"])

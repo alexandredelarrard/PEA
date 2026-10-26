@@ -18,7 +18,7 @@ import pytest
 from src.data_aggregate.utils.common.inputs import load_source
 from src.data_aggregate.utils.governance.clean import GovernanceInputs, clean_governance_inputs
 from src.data_aggregate.utils.governance.panel import build_governance_feature_panel
-from src.data_aggregate.utils.institutionals.frontiers import schedule_complete_through
+from src.data_aggregate.utils.institutionals.frontiers import insider_inventory_boundaries, schedule_complete_through
 from src.data_aggregate.utils.institutionals.insider_features import InsiderCoverage
 from src.data_aggregate.utils.institutionals.ownership_features import build_ownership_feature_panel
 from src.data_aggregate.utils.sec_thirteen.institutional_features import build_institutional_feature_panel
@@ -107,7 +107,7 @@ def _builders(prices: pd.DataFrame) -> dict[str, Callable[[DataStore], pd.DataFr
         )
 
     def insider(store: DataStore) -> pd.DataFrame:
-        complete_through = store.insider_inventory_boundaries(TICKERS)
+        complete_through = insider_inventory_boundaries(store, TICKERS)
         return build_insider_feature_panel(
             frames, store.load(Tables.insider_transactions, project=True), coverage=InsiderCoverage.from_availability(None, complete_through)
         )

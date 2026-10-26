@@ -37,6 +37,7 @@ from src.data_extract.utils.common.entity_lineage import (
     entity_or_singleton,
     roster_cik_map,
 )
+from src.data_extract.utils.common.identity_store import load_source_identity as load_source_identity
 from src.data_extract.utils.common.security_master import (
     ACQUIRED_CONSTITUENT,
     MergerBoundary,
@@ -704,16 +705,3 @@ def load_identity(context: Context, refresh: bool = False) -> Identity:
     }
     identity.source_cohort.update(cohort)
     return identity
-
-
-def load_source_identity(context: Context) -> dict[Table, pd.DataFrame]:
-    """The closed identity projection needed to guard a source-only tape classifier."""
-    cohort: dict[Table, pd.DataFrame] = {}
-    for table in (Tables.entity_lineage, Tables.symbol_tenure, Tables.sp500_tickers, Tables.security_master):
-        rows = (
-            context.store.load(table, columns=["ticker", "cik"], optional=True)
-            if table == Tables.sp500_tickers
-            else context.store.load(table, project=True, optional=True)
-        )
-        cohort[table] = rows if rows is not None else pd.DataFrame()
-    return cohort

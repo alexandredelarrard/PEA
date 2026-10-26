@@ -25,6 +25,7 @@ from src.data_extract.utils.common import bulk_cache
 from src.data_extract.utils.common.sec_utils import CIK_MAPPING_COLS
 from src.data_extract.utils.institutionals import fetch_13f as f13
 from src.data_extract.utils.institutionals import fetch_13f_backfill as fb
+from src.data_extract.utils.institutionals.fetch_13f import save_13f_filing
 from src.data_extract.utils.institutionals.fetch_superinvestors import activity_evidence
 from src.data_store.schema import Tables
 from tests.data_extract.edgar_fixtures import fake_context
@@ -215,7 +216,9 @@ def _patch_gap_walk(monkeypatch: pytest.MonkeyPatch, *, save: bool = False, cut:
         walks.append(kwargs)
         if save or cut:
             row = {"cik": "0000000007", "period": pd.Timestamp("2024-12-31"), "cusip": _NEW_CUSIP, "filing_date": pd.Timestamp("2025-01-10")}
-            context.store.save(Tables.sec13f_hr, pd.DataFrame([row | {"ticker": ticker} for ticker in kwargs["tickers"]]))
+            context.store.save(
+                Tables.sec13f_hr, (pd.DataFrame([row | {"ticker": ticker} for ticker in kwargs["tickers"]])).assign(accession_number="_legacy")
+            )
         if cut:
             raise RuntimeError("EDGAR walk cut off")
         return unread
@@ -240,14 +243,14 @@ def _stored_hr(store: Any, ticker: str) -> pd.DataFrame:
 def _save_oracle_book(store: Any, filing: tuple, scale: float = 1.0) -> None:
     book = _edgartools_book(filing)
     value_cols = ["value_usd", "call_value", "put_value", "debt_value", "other_value"]
-    store.save(Tables.sec13f_manager_holdings, book.assign(**{c: book[c] * scale for c in value_cols}))
+    store.save(Tables.sec13f_manager_holdings, (book.assign(**{c: book[c] * scale for c in value_cols})).assign(accession_number="_legacy"))
 
 
-def test_zip_preserves_raw_units_and_complete_source_books(tmp_path, sqlite_store, monkeypatch):
-    ctx = _ctx(tmp_path, sqlite_store, added_on={_NEW: "2026-09-28"})
+def test_zip_preserves_raw_units_and_complete_source_books(tmp_path, filing_store, monkeypatch):
+    ctx = _ctx(tmp_path, filing_store, added_on={_NEW: "2026-09-28"})
     _offline(monkeypatch)
     saved = fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF)
-    got = _stored_hr(sqlite_store, _NEW)
+    got = _stored_hr(filing_store, _NEW)
     assert saved == 5 and len(got) == 3
     a1 = got.loc[got.cik.eq("0000000001") & got.period.eq(pd.Timestamp("2023-03-31"))].iloc[0]
     # One share row at 1500 / 10,000 sh: only the few-rows implied price decides ($150/sh at x1000, $0.15 at x1).
@@ -256,27 +259,29 @@ def test_zip_preserves_raw_units_and_complete_source_books(tmp_path, sqlite_stor
     assert a1.shares == 10000 and a1.put_shares == 100
     a2 = got.loc[got.cik.eq(ROSTER)].iloc[0]
     assert a2.value_usd == 3000000 and a2.shares == 20000
-    assert not _stored_hr(sqlite_store, "AAPL").empty
-    assert not _stored_hr(sqlite_store, "MSFT").empty
+    assert not _stored_hr(filing_store, "AAPL").empty
+    assert not _stored_hr(filing_store, "MSFT").empty
     print("SANITY: complete ZIP books keep source quantities/raw values; units come from per-filing evidence, never the filing date.")
 
 
-def test_earliest_stored_period_does_not_hide_missing_source_filings(tmp_path, sqlite_store, monkeypatch):
-    ctx = _ctx(tmp_path, sqlite_store, added_on={_NEW: "2026-09-28"})
+def test_earliest_stored_period_does_not_hide_missing_source_filings(tmp_path, filing_store, monkeypatch):
+    ctx = _ctx(tmp_path, filing_store, added_on={_NEW: "2026-09-28"})
     _offline(monkeypatch)
-    sqlite_store.save(
+    filing_store.save(
         Tables.sec13f_hr,
-        pd.DataFrame(
-            [
-                {
-                    "cik": "0000000005",
-                    "period": pd.Timestamp("2024-03-31"),
-                    "ticker": _NEW,
-                    "cusip": _NEW_CUSIP,
-                    "filing_date": pd.Timestamp("2024-05-10"),
-                }
-            ]
-        ),
+        (
+            pd.DataFrame(
+                [
+                    {
+                        "cik": "0000000005",
+                        "period": pd.Timestamp("2024-03-31"),
+                        "ticker": _NEW,
+                        "cusip": _NEW_CUSIP,
+                        "filing_date": pd.Timestamp("2024-05-10"),
+                    }
+                ]
+            )
+        ).assign(accession_number="_legacy"),
     )
     read: list[str] = []
     real = fb._archive_scope
@@ -284,14 +289,14 @@ def test_earliest_stored_period_does_not_hide_missing_source_filings(tmp_path, s
 
     fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF)
     assert read == ["01jun2024-31aug2024_form13f.zip", "2023q2_form13f.zip"]
-    assert _B1[1] in set(sqlite_store.load(Tables.sec13f_hr).accession_number)
+    assert _B1[1] in set(filing_store.load(Tables.sec13f_hr).accession_number)
     work = fb.backfill_work([fb.DataSet.parse(n) for n in _DATA_SETS], [_NEW])
     assert [d.name for d, _ in work] == ["01jun2024-31aug2024", "2023q2"]
     print("SANITY: an earlier unverified row cannot hide a missing later filing; all source windows remain discoverable.")
 
 
-def test_no_new_ticker_reads_and_downloads_nothing(tmp_path, sqlite_store, monkeypatch):
-    ctx = _ctx(tmp_path, sqlite_store, added_on={_NEW: "2026-09-01"})  # added 29 days ago: past the 7-day window
+def test_no_new_ticker_reads_and_downloads_nothing(tmp_path, filing_store, monkeypatch):
+    ctx = _ctx(tmp_path, filing_store, added_on={_NEW: "2026-09-01"})  # added 29 days ago: past the 7-day window
     pages = _offline(monkeypatch)
 
     started = time.perf_counter()
@@ -299,13 +304,13 @@ def test_no_new_ticker_reads_and_downloads_nothing(tmp_path, sqlite_store, monke
     elapsed = time.perf_counter() - started
 
     assert saved == 0 and pages == [] and elapsed < 1.0
-    assert sqlite_store.load(Tables.sec13f_hr, optional=True) is None
+    assert filing_store.load(Tables.sec13f_hr, optional=True) is None
     print("\n=== SANITY: backfill no-op ===")
     print(f"  no ticker added inside 7 days: no landing page, no download, nothing saved, {elapsed:.3f}s. Validated.")
 
 
-def test_a_stored_row_filed_later_is_kept(tmp_path, sqlite_store, monkeypatch):
-    ctx = _ctx(tmp_path, sqlite_store, added_on={_NEW: "2026-09-28"})
+def test_a_stored_row_filed_later_is_kept(tmp_path, filing_store, monkeypatch):
+    ctx = _ctx(tmp_path, filing_store, added_on={_NEW: "2026-09-28"})
     _offline(monkeypatch)
     later = {
         "cik": "0000000001",
@@ -314,11 +319,11 @@ def test_a_stored_row_filed_later_is_kept(tmp_path, sqlite_store, monkeypatch):
         "cusip": _NEW_CUSIP,
         "filing_date": pd.Timestamp("2024-09-02"),
     }
-    sqlite_store.save(Tables.sec13f_hr, pd.DataFrame([later | {"value_usd": 9.0}]))
+    filing_store.save(Tables.sec13f_hr, (pd.DataFrame([later | {"value_usd": 9.0}])).assign(accession_number="_legacy"))
 
     fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF, full=True)
 
-    got = _stored_hr(sqlite_store, _NEW)
+    got = _stored_hr(filing_store, _NEW)
     legacy = got.loc[got.accession_number.eq("_legacy")]
     assert len(legacy) == 1 and legacy.iloc[0].value_usd == 9
     original = got.loc[got.accession_number.eq(_B1[1])]
@@ -327,13 +332,13 @@ def test_a_stored_row_filed_later_is_kept(tmp_path, sqlite_store, monkeypatch):
     print("SANITY: historical source replay preserves the later legacy row and separately restores the original accession.")
 
 
-def test_legacy_unit_error_cannot_block_verified_source_packets(tmp_path, sqlite_store, monkeypatch, caplog):
-    ctx = _ctx(tmp_path, sqlite_store, added_on={_NEW: "2026-09-28"})
+def test_legacy_unit_error_cannot_block_verified_source_packets(tmp_path, filing_store, monkeypatch, caplog):
+    ctx = _ctx(tmp_path, filing_store, added_on={_NEW: "2026-09-28"})
     _offline(monkeypatch)
-    _save_oracle_book(sqlite_store, _A2, scale=1000)
+    _save_oracle_book(filing_store, _A2, scale=1000)
     with caplog.at_level("ERROR"):
         fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF)
-    got = _stored_hr(sqlite_store, _NEW)
+    got = _stored_hr(filing_store, _NEW)
     assert len(got) == 3
     assert got.loc[got.accession_number.eq(_A2[1]), "value_usd"].iloc[0] == 3000000
     assert not any(r.levelno >= logging.ERROR for r in caplog.records)
@@ -341,13 +346,13 @@ def test_legacy_unit_error_cannot_block_verified_source_packets(tmp_path, sqlite
 
 
 @pytest.mark.parametrize(("tickers", "full", "saved_tickers"), [(["AAPL"], False, []), (["AAPL"], True, ["AAPL"]), ([_NEW], False, [_NEW])])
-def test_scoped_runs_follow_the_archive_rules(tmp_path, sqlite_store, monkeypatch, tickers, full, saved_tickers):
-    ctx = _ctx(tmp_path, sqlite_store, added_on={_NEW: "2026-09-28"})
+def test_scoped_runs_follow_the_archive_rules(tmp_path, filing_store, monkeypatch, tickers, full, saved_tickers):
+    ctx = _ctx(tmp_path, filing_store, added_on={_NEW: "2026-09-28"})
     _offline(monkeypatch)
 
     fb.fetch_13f_backfill(ctx, tickers=tickers, as_of=_AS_OF, full=full)
 
-    df = sqlite_store.load(Tables.sec13f_hr, columns=["ticker"], optional=True)
+    df = filing_store.load(Tables.sec13f_hr, columns=["ticker"], optional=True)
     if not saved_tickers:
         assert df is None
     else:
@@ -357,8 +362,8 @@ def test_scoped_runs_follow_the_archive_rules(tmp_path, sqlite_store, monkeypatc
     print(f"  requested tickers {saved_tickers}: manager discovery is scoped; complete source portfolios remain stored. Validated.")
 
 
-def test_the_gap_after_the_newest_data_set_is_walked_once_per_ticker(tmp_path, sqlite_store, monkeypatch):
-    ctx = _ctx(tmp_path, sqlite_store, added_on={_NEW: "2026-09-28"})
+def test_the_gap_after_the_newest_data_set_is_walked_once_per_ticker(tmp_path, filing_store, monkeypatch):
+    ctx = _ctx(tmp_path, filing_store, added_on={_NEW: "2026-09-28"})
     _offline(monkeypatch)
     walks = _patch_gap_walk(monkeypatch, save=True)
 
@@ -373,8 +378,8 @@ def test_the_gap_after_the_newest_data_set_is_walked_once_per_ticker(tmp_path, s
     print("  night 2 finds the walk's NEWCO marker and walks nothing. Validated.")
 
 
-def test_the_gap_starts_after_the_newest_data_set_read_not_the_newest_listed(tmp_path, sqlite_store, monkeypatch):
-    ctx = _ctx(tmp_path, sqlite_store, added_on={_NEW: "2026-09-28"})
+def test_the_gap_starts_after_the_newest_data_set_read_not_the_newest_listed(tmp_path, filing_store, monkeypatch):
+    ctx = _ctx(tmp_path, filing_store, added_on={_NEW: "2026-09-28"})
     _offline(monkeypatch)
     walks = _patch_gap_walk(monkeypatch)
     listed = [*_DATA_SETS, "01sep2024-30nov2024"]  # the newest is listed but its ZIP answers HTTP 404
@@ -391,8 +396,8 @@ def test_the_gap_starts_after_the_newest_data_set_read_not_the_newest_listed(tmp
     print(f"  01sep2024-30nov2024 listed but HTTP 404 -> the walk starts after 01jun2024-31aug2024: {walks[0]['filing_window']}. Validated.")
 
 
-def test_rows_from_the_nightly_overlap_do_not_mark_the_gap_done(tmp_path, sqlite_store, monkeypatch):
-    ctx = _ctx(tmp_path, sqlite_store, added_on={_NEW: "2026-09-28"})
+def test_rows_from_the_nightly_overlap_do_not_mark_the_gap_done(tmp_path, filing_store, monkeypatch):
+    ctx = _ctx(tmp_path, filing_store, added_on={_NEW: "2026-09-28"})
     _offline(monkeypatch)
     walks = _patch_gap_walk(monkeypatch)
     nightly = {
@@ -402,7 +407,7 @@ def test_rows_from_the_nightly_overlap_do_not_mark_the_gap_done(tmp_path, sqlite
         "cusip": _NEW_CUSIP,
         "filing_date": pd.Timestamp("2026-09-25"),
     }
-    sqlite_store.save(Tables.sec13f_hr, pd.DataFrame([nightly]))  # what the join night's walk can write
+    filing_store.save(Tables.sec13f_hr, (pd.DataFrame([nightly])).assign(accession_number="_legacy"))  # what the join night's walk can write
 
     fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF)
 
@@ -411,16 +416,20 @@ def test_rows_from_the_nightly_overlap_do_not_mark_the_gap_done(tmp_path, sqlite
     print("  a NEWCO row filed 2026-09-25 (within 7 days of joining) is the nightly walk's; the gap is still walked. Validated.")
 
 
-def test_rows_a_stale_nightly_walk_wrote_do_not_mark_the_gap_done(tmp_path, sqlite_store, monkeypatch):
-    ctx = _ctx(tmp_path, sqlite_store, added_on={_NEW: "2026-09-28"})
+def test_rows_a_stale_nightly_walk_wrote_do_not_mark_the_gap_done(tmp_path, filing_store, monkeypatch):
+    ctx = _ctx(tmp_path, filing_store, added_on={_NEW: "2026-09-28"})
     _offline(monkeypatch)
     walks = _patch_gap_walk(monkeypatch)
     # The join night's walk ran from a stale frontier (stage D: HOG rows filed 09-22/09-23, joined 10-06):
     # its rows sit inside [since, added_on - 7d), yet nothing walked 2024-09-01..2026-09-14.
     stale = {"cik": "0000000008", "period": pd.Timestamp("2026-06-30"), "ticker": _NEW, "cusip": _NEW_CUSIP}
-    sqlite_store.save(
+    filing_store.save(
         Tables.sec13f_hr,
-        pd.DataFrame([stale | {"filing_date": pd.Timestamp("2026-09-15")}, stale | {"cik": "0000000009", "filing_date": pd.Timestamp("2026-09-16")}]),
+        (
+            pd.DataFrame(
+                [stale | {"filing_date": pd.Timestamp("2026-09-15")}, stale | {"cik": "0000000009", "filing_date": pd.Timestamp("2026-09-16")}]
+            )
+        ).assign(accession_number="_legacy"),
     )
 
     fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF)
@@ -430,16 +439,16 @@ def test_rows_a_stale_nightly_walk_wrote_do_not_mark_the_gap_done(tmp_path, sqli
     print("  NEWCO rows filed 2026-09-15/16 came from the nightly walk, not the gap walk; the gap is still walked. Validated.")
 
 
-def test_a_completed_gap_walk_marks_each_walked_ticker_once_and_the_next_night_skips(tmp_path, sqlite_store, monkeypatch):
-    ctx = _ctx(tmp_path, sqlite_store, added_on={_NEW: "2026-09-28", "MSFT": "2026-09-27"})
+def test_a_completed_gap_walk_marks_each_walked_ticker_once_and_the_next_night_skips(tmp_path, filing_store, monkeypatch):
+    ctx = _ctx(tmp_path, filing_store, added_on={_NEW: "2026-09-28", "MSFT": "2026-09-27"})
     _offline(monkeypatch)
     walks = _patch_gap_walk(monkeypatch)
 
     fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF)
     fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF + pd.Timedelta(days=1))  # night 2, both still new
 
-    markers = _markers(sqlite_store).sort_values("ticker")
-    shown = sqlite_store.load(Tables.sec13f_hr, where={"ticker": ["MSFT", _NEW]})
+    markers = _markers(filing_store).sort_values("ticker")
+    shown = filing_store.load(Tables.sec13f_hr, where={"ticker": ["MSFT", _NEW]})
     assert len(walks) == 1 and walks[0]["tickers"] == ["MSFT", _NEW], walks
     assert markers["ticker"].tolist() == ["MSFT", _NEW]
     assert set(markers["cik"]) == {_SENTINEL}
@@ -451,33 +460,33 @@ def test_a_completed_gap_walk_marks_each_walked_ticker_once_and_the_next_night_s
     print(f"  values NULL); night 2 walks nothing; a consumer read of their {len(shown)} rows shows no marker. Validated.")
 
 
-def test_a_cut_off_gap_walk_writes_no_marker_and_is_walked_again(tmp_path, sqlite_store, monkeypatch):
-    ctx = _ctx(tmp_path, sqlite_store, added_on={_NEW: "2026-09-28"})
+def test_a_cut_off_gap_walk_writes_no_marker_and_is_walked_again(tmp_path, filing_store, monkeypatch):
+    ctx = _ctx(tmp_path, filing_store, added_on={_NEW: "2026-09-28"})
     _offline(monkeypatch)
     _patch_gap_walk(monkeypatch, cut=True)  # saves a NEWCO row filed 2025-01-10, then fails
 
     with pytest.raises(RuntimeError, match="cut off"):
         fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF)
-    after_cut = _markers(sqlite_store)
+    after_cut = _markers(filing_store)
     walks = _patch_gap_walk(monkeypatch)
     fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF + pd.Timedelta(days=1))
 
     assert after_cut.empty
     assert len(walks) == 1 and walks[0]["filing_window"] == ("2024-09-01", "2026-09-28"), walks
-    assert _markers(sqlite_store)["ticker"].tolist() == [_NEW]
+    assert _markers(filing_store)["ticker"].tolist() == [_NEW]
     print("\n=== SANITY: a cut-off gap walk ===")
     print("  night 1's walk saved a NEWCO row inside the gap, then failed: no marker; night 2 walks the whole gap again")
     print("  and only then writes NEWCO's marker. Validated.")
 
 
-def test_a_gap_walk_that_leaves_filings_unread_writes_no_marker(tmp_path, sqlite_store, monkeypatch, caplog):
-    ctx = _ctx(tmp_path, sqlite_store, added_on={_NEW: "2026-09-28"})
+def test_a_gap_walk_that_leaves_filings_unread_writes_no_marker(tmp_path, filing_store, monkeypatch, caplog):
+    ctx = _ctx(tmp_path, filing_store, added_on={_NEW: "2026-09-28"})
     _offline(monkeypatch)
     _patch_gap_walk(monkeypatch, save=True, unread=2)  # two filings still failing transiently after the retry rounds
 
     with caplog.at_level("WARNING"):
         fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF)
-    after_night_1 = _markers(sqlite_store)
+    after_night_1 = _markers(filing_store)
     walks = _patch_gap_walk(monkeypatch)
     fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF + pd.Timedelta(days=1))
 
@@ -493,23 +502,25 @@ def _seed_frontier_rows(store: Any) -> None:
     row = {"cik": "0000000001", "ticker": _NEW, "cusip": _NEW_CUSIP, "shares": 10, "value_usd": 1.0}
     store.save(
         Tables.sec13f_hr,
-        pd.DataFrame(
-            [
-                row | {"period": pd.Timestamp("2023-03-31"), "filing_date": pd.Timestamp("2023-05-15")},
-                row | {"period": pd.Timestamp("2026-06-30"), "filing_date": pd.Timestamp("2026-09-25")},
-            ]
-        ),
+        (
+            pd.DataFrame(
+                [
+                    row | {"period": pd.Timestamp("2023-03-31"), "filing_date": pd.Timestamp("2023-05-15")},
+                    row | {"period": pd.Timestamp("2026-06-30"), "filing_date": pd.Timestamp("2026-09-25")},
+                ]
+            )
+        ).assign(accession_number="_legacy"),
     )
 
 
-def test_gap_markers_move_neither_the_nightly_frontier_nor_the_zip_resume_point(tmp_path, sqlite_store, monkeypatch):
-    ctx = _ctx(tmp_path, sqlite_store, added_on={_NEW: "2026-09-28"})
-    _seed_frontier_rows(sqlite_store)
+def test_gap_markers_move_neither_the_nightly_frontier_nor_the_zip_resume_point(tmp_path, filing_store, monkeypatch):
+    ctx = _ctx(tmp_path, filing_store, added_on={_NEW: "2026-09-28"})
+    _seed_frontier_rows(filing_store)
     data_sets = [fb.DataSet.parse(n) for n in _DATA_SETS]
 
     def _frontiers() -> tuple[Any, ...]:
         points = fb.backfill_work(data_sets, [_NEW, "AAPL"])
-        return sqlite_store.max_date(Tables.sec13f_hr, "filing_date"), f13._resolve_window(ctx, 15, None, _AS_OF, False), points
+        return filing_store.max_date(Tables.sec13f_hr, "filing_date"), f13._resolve_window(ctx, 15, None, _AS_OF, False), points
 
     before = _frontiers()
     saved = fb.mark_gap_walked(ctx, [_NEW, "AAPL"], _GAP_START)
@@ -524,10 +535,10 @@ def test_gap_markers_move_neither_the_nightly_frontier_nor_the_zip_resume_point(
     print("  gap markers do not alter archive discovery or certify source accessions. Validated.")
 
 
-def test_every_sec13f_hr_consumer_read_hides_the_gap_marker(tmp_path, sqlite_store, monkeypatch):
-    ctx = _ctx(tmp_path, sqlite_store, added_on={_NEW: "2026-09-28"})
+def test_every_sec13f_hr_consumer_read_hides_the_gap_marker(tmp_path, filing_store, monkeypatch):
+    ctx = _ctx(tmp_path, filing_store, added_on={_NEW: "2026-09-28"})
     _offline(monkeypatch)
-    _save_oracle_book(sqlite_store, _A2)
+    _save_oracle_book(filing_store, _A2)
     fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF)  # the data-set rows, then the walk's NEWCO marker
     cache = tmp_path / str(ctx.config.local.paths.sec_13f_datasets)
     tables = fb._read_data_set(cache / "2023q2_form13f.zip", frozenset({_NEW_CUSIP}), {ROSTER})
@@ -537,17 +548,17 @@ def test_every_sec13f_hr_consumer_read_hides_the_gap_marker(tmp_path, sqlite_sto
 
     def _reads() -> dict[str, Any]:
         return {
-            "load": sqlite_store.load(Tables.sec13f_hr),
-            "load projected": sqlite_store.load(Tables.sec13f_hr, project=True),
-            "iter_load": pd.concat(sqlite_store.iter_load(Tables.sec13f_hr, project=True), ignore_index=True),
-            "aggregation load_source": load_source(sqlite_store, Tables.sec13f_hr, universe),
+            "load": filing_store.load(Tables.sec13f_hr),
+            "load projected": filing_store.load(Tables.sec13f_hr, project=True),
+            "iter_load": pd.concat(filing_store.iter_load(Tables.sec13f_hr, project=True), ignore_index=True),
+            "aggregation load_source": load_source(filing_store, Tables.sec13f_hr, universe),
             "unit check": fb.unit_check(ctx, book, {ROSTER}),
             "superinvestor activity": activity_evidence(ctx, [ROSTER, "1"]),
         }
 
     with_marker = _reads()
-    n_markers = len(_markers(sqlite_store))
-    sqlite_store.delete(Tables.sec13f_hr, {"cusip": _SENTINEL, "cik": _SENTINEL})
+    n_markers = len(_markers(filing_store))
+    filing_store.delete(Tables.sec13f_hr, {"cusip": _SENTINEL, "cik": _SENTINEL})
     without = _reads()
 
     assert n_markers == 1
@@ -562,21 +573,21 @@ def test_every_sec13f_hr_consumer_read_hides_the_gap_marker(tmp_path, sqlite_sto
     print("  return exactly what they return without it. Validated.")
 
 
-def test_the_cik_padding_guard_keeps_the_marker_sentinel(sqlite_store):
-    ctx: Any = SimpleNamespace(store=sqlite_store)
+def test_the_cik_padding_guard_keeps_the_marker_sentinel(filing_store):
+    ctx: Any = SimpleNamespace(store=filing_store)
     real = {"cik": "7", "period": pd.Timestamp("2026-06-30"), "filing_date": pd.Timestamp("2026-08-14"), "ticker": _NEW, "cusip": _NEW_CUSIP}
 
-    f13.save_hr(ctx, pd.DataFrame([real]))
+    f13.save_hr(ctx, pd.DataFrame([real]).assign(accession_number="padding-direct"))
     fb.mark_gap_walked(ctx, [_NEW], _GAP_START)
 
-    stored = sqlite_store.load(Tables.sec13f_hr, markers=True)
+    stored = filing_store.load(Tables.sec13f_hr, markers=True)
     assert sorted(zip(stored["cik"], stored["cusip"], strict=True)) == [("0000000007", _NEW_CUSIP), (_SENTINEL, _SENTINEL)]
     print("\n=== SANITY: 13F CIK padding vs the gap marker ===")
     print(f"  save_hr pads cik '7' to '0000000007' and keeps the marker's cik {_SENTINEL!r} (not padded to ''). Validated.")
 
 
-def test_an_established_ticker_has_no_gap(tmp_path, sqlite_store, monkeypatch):
-    ctx = _ctx(tmp_path, sqlite_store, added_on={_NEW: "2026-09-28"})
+def test_an_established_ticker_has_no_gap(tmp_path, filing_store, monkeypatch):
+    ctx = _ctx(tmp_path, filing_store, added_on={_NEW: "2026-09-28"})
     _offline(monkeypatch)
     walks = _patch_gap_walk(monkeypatch)
 
@@ -587,14 +598,14 @@ def test_an_established_ticker_has_no_gap(tmp_path, sqlite_store, monkeypatch):
     print("  -t AAPL -F reads the data sets only; AAPL joined long before 2024-08-31, so no EDGAR walk. Validated.")
 
 
-def test_a_ticker_added_after_as_of_is_not_backfilled_yet(tmp_path, sqlite_store, monkeypatch):
-    ctx = _ctx(tmp_path, sqlite_store, added_on={_NEW: "2026-10-03"})  # three days after the run date
+def test_a_ticker_added_after_as_of_is_not_backfilled_yet(tmp_path, filing_store, monkeypatch):
+    ctx = _ctx(tmp_path, filing_store, added_on={_NEW: "2026-10-03"})  # three days after the run date
     pages = _offline(monkeypatch)
     walks = _patch_gap_walk(monkeypatch)
 
     nightly = fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF)
     assert nightly == 0 and pages == [] and walks == []
-    assert sqlite_store.load(Tables.sec13f_hr, optional=True) is None
+    assert filing_store.load(Tables.sec13f_hr, optional=True) is None
 
     fb.fetch_13f_backfill(ctx, tickers=[_NEW], as_of=_AS_OF, full=True)
     assert walks == []  # under -F the data sets are read, but a ticker that has not joined yet has no gap to walk
@@ -602,14 +613,14 @@ def test_a_ticker_added_after_as_of_is_not_backfilled_yet(tmp_path, sqlite_store
     print("  NEWCO added 2026-10-03, run date 2026-09-30: the night reads nothing; -t NEWCO -F reads the data sets, no gap walk. Validated.")
 
 
-def test_gap_tickers_without_added_on_column_is_empty(tmp_path: Any, sqlite_store: Any) -> None:
+def test_gap_tickers_without_added_on_column_is_empty(tmp_path: Any, filing_store: Any) -> None:
     tickers = ["AAPL", _NEW]
-    ctx = fake_context(tmp_path, sqlite_store, tickers, redundant_ticks=[])
-    sqlite_store.drop(Tables.sp500_tickers)
-    sqlite_store.save(
+    ctx = fake_context(tmp_path, filing_store, tickers, redundant_ticks=[])
+    filing_store.drop(Tables.sp500_tickers)
+    filing_store.save(
         Tables.sp500_tickers, pd.DataFrame({col: ["x"] * len(tickers) for col in CIK_MAPPING_COLS} | {"ticker": tickers, "cik": ["1", "3"]})
     )
-    assert "added_on" not in sqlite_store.columns(Tables.sp500_tickers)
+    assert "added_on" not in filing_store.columns(Tables.sp500_tickers)
 
     since = pd.Timestamp("2024-09-01")
     nightly = fb.gap_tickers(ctx, tickers, since, _AS_OF, full=False)
@@ -620,28 +631,28 @@ def test_gap_tickers_without_added_on_column_is_empty(tmp_path: Any, sqlite_stor
     print(f"  sp500_tickers without added_on -> gap_tickers {nightly} nightly and {forced} under -F, no KeyError. Validated.")
 
 
-def test_normal_zip_backfill_preserves_whole_original_and_amended_books(tmp_path, sqlite_store, monkeypatch):
-    ctx = _ctx(tmp_path, sqlite_store, added_on={_NEW: "2026-09-28"})
+def test_normal_zip_backfill_preserves_whole_original_and_amended_books(tmp_path, filing_store, monkeypatch):
+    ctx = _ctx(tmp_path, filing_store, added_on={_NEW: "2026-09-28"})
     _offline(monkeypatch)
     amendment = ("1", "0000000001-23-000009", "13F-HR/A", "2023-06-01", "2023-03-31", [(_NEW_CUSIP, "NEWCO", 1600, 11000, "")])
     cache = tmp_path / str(ctx.config.local.paths.sec_13f_datasets)
     _write_zip(cache / "2023q2_form13f.zip", [_A1, amendment])
     fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF)
-    manifests = sqlite_store.load(
+    manifests = filing_store.load(
         Tables.sec13f_hr,
         columns=["accession_number", "amendment_type", "parsed_row_count"],
         where={"cik": "0000000001", "cusip": "_empty", "parse_status": "complete"},
         markers=True,
     )
     assert set(manifests.accession_number) == {_A1[1], amendment[1], _B1[1]}
-    vintages = sqlite_store.load(Tables.sec13f_hr, columns=["accession_number", "cusip", "shares"], where={"cik": "0000000001"})
+    vintages = filing_store.load(Tables.sec13f_hr, columns=["accession_number", "cusip", "shares"], where={"cik": "0000000001"})
     original = vintages.loc[vintages.accession_number.eq(_A1[1])]
     assert set(original.cusip) == {_NEW_CUSIP, "037833100"}, "keep the whole book before filtering its NEWCO leg"
     assert original.set_index("cusip").loc[_NEW_CUSIP, "shares"] == 10000
     assert set(vintages.loc[vintages.accession_number.eq(amendment[1])].cusip) == {_NEW_CUSIP}
     first = vintages.sort_values(["accession_number", "cusip"]).reset_index(drop=True)
     fb.fetch_13f_backfill(ctx, tickers=[_NEW], as_of=_AS_OF, full=True)
-    again = sqlite_store.load(Tables.sec13f_hr, columns=["accession_number", "cusip", "shares"], where={"cik": "0000000001"})
+    again = filing_store.load(Tables.sec13f_hr, columns=["accession_number", "cusip", "shares"], where={"cik": "0000000001"})
     pd.testing.assert_frame_equal(first, again.sort_values(["accession_number", "cusip"]).reset_index(drop=True))
     print("SANITY: ordinary cached-ZIP backfill retains original whole book, amended omission and immutable repeat saves.")
 
@@ -664,8 +675,8 @@ def test_invalid_zip_accession_does_not_hide_another_complete_packet(tmp_path):
     print("SANITY: invalid source packet is explicitly rejected; independent complete packet remains recoverable.")
 
 
-def test_zip_scope_preserves_earlier_baseline_and_later_omission(tmp_path, sqlite_store, monkeypatch):
-    ctx = _ctx(tmp_path, sqlite_store, added_on={_NEW: "2026-09-28"})
+def test_zip_scope_preserves_earlier_baseline_and_later_omission(tmp_path, filing_store, monkeypatch):
+    ctx = _ctx(tmp_path, filing_store, added_on={_NEW: "2026-09-28"})
     _offline(monkeypatch)
     cache = tmp_path / str(ctx.config.local.paths.sec_13f_datasets)
     earlier = ("42", "baseline", "13F-HR", "2023-05-15", "2023-03-31", [("037833100", "APPLE", 500, 5, "")])
@@ -674,16 +685,16 @@ def test_zip_scope_preserves_earlier_baseline_and_later_omission(tmp_path, sqlit
     _write_zip(cache / "2023q2_form13f.zip", [earlier])
     _write_zip(cache / "01jun2024-31aug2024_form13f.zip", [first, amended])
     fb.fetch_13f_backfill(ctx, tickers=[_NEW], as_of=_AS_OF, full=True)
-    raw = sqlite_store.load(Tables.sec13f_hr, where={"cik": "0000000042"})
+    raw = filing_store.load(Tables.sec13f_hr, where={"cik": "0000000042"})
     assert set(raw.accession_number) == {"baseline", "holding", "omission"}
     print("SANITY: manager union across ZIPs preserves an earlier baseline and the later amendment that omits the last requested ticker.")
 
 
-def test_zip_and_xml_equivalent_packet_replays_once(tmp_path, sqlite_store):
+def test_zip_and_xml_equivalent_packet_replays_once(tmp_path, filing_store):
     path = tmp_path / "replay.zip"
     _write_zip(path, [_A1])
     packet = fb.cached_filing_vintages(path, [_A1[1]])[0]
-    sqlite_store.save_13f_filing(*packet)
+    save_13f_filing(filing_store, *packet)
     cover = (
         "<edgarSubmission><isAmendment>false</isAmendment><amendmentNo>0</amendmentNo>"
         "<reportCalendarOrQuarter>2023-03-31</reportCalendarOrQuarter>"
@@ -692,8 +703,8 @@ def test_zip_and_xml_equivalent_packet_replays_once(tmp_path, sqlite_store):
     )
     xml = _xml(_A1[5]).replace("<titleOfClass>COM</titleOfClass>", "<titleOfClass>  COM  </titleOfClass>")
     parsed = f13.xml_filing_vintage(cover, xml, cik=_A1[0], accession_number=_A1[1], period=_A1[4], filing_date=_A1[3], source="edgar")
-    assert sqlite_store.save_13f_filing(*parsed) == 0
-    assert len(sqlite_store.load(Tables.sec13f_manager_holdings)) == 2
+    assert save_13f_filing(filing_store, *parsed) == 0
+    assert len(filing_store.load(Tables.sec13f_manager_holdings)) == 2
     print("SANITY: actual ZIP and XML parsers produce equivalent accession content despite source whitespace/transport differences.")
 
 
@@ -722,10 +733,10 @@ def test_original_xml_can_omit_false_amendment_flag():
     )
 
 
-def test_backfill_reuses_one_map_load_across_archives(tmp_path: Any, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    ctx = _ctx(tmp_path, sqlite_store, added_on={_NEW: "2026-09-28"})
+def test_backfill_reuses_one_map_load_across_archives(tmp_path: Any, filing_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    ctx = _ctx(tmp_path, filing_store, added_on={_NEW: "2026-09-28"})
     _offline(monkeypatch)
-    original = sqlite_store.load
+    original = filing_store.load
     map_loads = []
 
     def counted(table: Any, *args: Any, **kwargs: Any) -> Any:
@@ -733,16 +744,16 @@ def test_backfill_reuses_one_map_load_across_archives(tmp_path: Any, sqlite_stor
             map_loads.append(table)
         return original(table, *args, **kwargs)
 
-    monkeypatch.setattr(sqlite_store, "load", counted)
+    monkeypatch.setattr(filing_store, "load", counted)
     fb.fetch_13f_backfill(ctx, tickers=[_NEW], as_of=_AS_OF, full=True)
     assert len(map_loads) == 1
-    assert sqlite_store.load(Tables.sec13f_hr) is not None
-    assert set(sqlite_store.load(Tables.sec13f_manager_holdings).accession_number) == {_A2[1]}
+    assert filing_store.load(Tables.sec13f_hr) is not None
+    assert set(filing_store.load(Tables.sec13f_manager_holdings).accession_number) == {_A2[1]}
     print("SANITY: the actual two-archive backfill saver loads the map once and writes full broad and roster books.")
 
 
-def test_completed_backfill_skips_decode_but_keeps_discovery(tmp_path: Any, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    ctx = _ctx(tmp_path, sqlite_store, added_on={_NEW: "2026-09-28"})
+def test_completed_backfill_skips_decode_but_keeps_discovery(tmp_path: Any, filing_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    ctx = _ctx(tmp_path, filing_store, added_on={_NEW: "2026-09-28"})
     _offline(monkeypatch)
     fb.fetch_13f_backfill(ctx, tickers=[_NEW], as_of=_AS_OF, full=True)
     discovered = []
@@ -759,11 +770,11 @@ def test_completed_backfill_skips_decode_but_keeps_discovery(tmp_path: Any, sqli
     print("SANITY: completed ordinary rerun still discovers possible holders but performs no second decode/map/save pass.")
 
 
-def test_missing_roster_destination_remains_pending(tmp_path: Any, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    ctx = _ctx(tmp_path, sqlite_store, added_on={_NEW: "2026-09-28"})
+def test_missing_roster_destination_remains_pending(tmp_path: Any, filing_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    ctx = _ctx(tmp_path, filing_store, added_on={_NEW: "2026-09-28"})
     _offline(monkeypatch)
     fb.fetch_13f_backfill(ctx, tickers=[_NEW], as_of=_AS_OF, full=True)
-    sqlite_store.delete(Tables.sec13f_manager_holdings, where={"accession_number": _A2[1]})
+    filing_store.delete(Tables.sec13f_manager_holdings, where={"accession_number": _A2[1]})
     original = fb.cached_filing_vintages
     decoded = []
 
@@ -774,12 +785,12 @@ def test_missing_roster_destination_remains_pending(tmp_path: Any, sqlite_store:
     monkeypatch.setattr(fb, "cached_filing_vintages", decode)
     fb.fetch_13f_backfill(ctx, tickers=[_NEW], as_of=_AS_OF)
     assert decoded == [_A2[1]]
-    assert set(sqlite_store.load(Tables.sec13f_manager_holdings).accession_number) == {_A2[1]}
+    assert set(filing_store.load(Tables.sec13f_manager_holdings).accession_number) == {_A2[1]}
     print("SANITY: broad completion cannot hide a missing roster destination; only that accession is decoded and repaired.")
 
 
-def test_full_backfill_rechecks_completed_sources(tmp_path: Any, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    ctx = _ctx(tmp_path, sqlite_store, added_on={_NEW: "2026-09-28"})
+def test_full_backfill_rechecks_completed_sources(tmp_path: Any, filing_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    ctx = _ctx(tmp_path, filing_store, added_on={_NEW: "2026-09-28"})
     _offline(monkeypatch)
     fb.fetch_13f_backfill(ctx, tickers=[_NEW], as_of=_AS_OF, full=True)
     original = fb.cached_filing_vintages
@@ -795,20 +806,20 @@ def test_full_backfill_rechecks_completed_sources(tmp_path: Any, sqlite_store: A
     print("SANITY: explicit -F re-decodes completed originals and checks immutable replay rather than becoming an unchecked no-op.")
 
 
-def test_cusip_scope_keeps_unmapped_stored_holder_for_omission(tmp_path: Any, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    ctx = _ctx(tmp_path, sqlite_store, added_on={_NEW: "2026-09-28"})
+def test_cusip_scope_keeps_unmapped_stored_holder_for_omission(tmp_path: Any, filing_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    ctx = _ctx(tmp_path, filing_store, added_on={_NEW: "2026-09-28"})
     _offline(monkeypatch)
     original = ("42", "original-unmapped", "13F-HR", "2024-08-14", "2024-06-30", [(_NEW_CUSIP, "NEWCO", 1000, 10, "")])
     source = tmp_path / "original.zip"
     _write_zip(source, [original])
     manifest, positions = fb.cached_filing_vintages(source, [original[1]])[0]
-    sqlite_store.save_13f_filing(manifest, positions.assign(ticker="_empty"), table=Tables.sec13f_hr)
+    save_13f_filing(filing_store, manifest, positions.assign(ticker="_empty"), table=Tables.sec13f_hr)
     omission = ("42", "later-omission", "13F-HR/A", "2024-08-20", "2024-06-30", [("037833100", "APPLE", 500, 5, "")])
     cache = tmp_path / str(ctx.config.local.paths.sec_13f_datasets)
     for name in _DATA_SETS:
         _write_zip(cache / f"{name}_form13f.zip", [omission])
     fb.fetch_13f_backfill(ctx, tickers=[_NEW], as_of=_AS_OF)
-    got = sqlite_store.load(Tables.sec13f_hr, where={"cik": "0000000042"})
+    got = filing_store.load(Tables.sec13f_hr, where={"cik": "0000000042"})
     assert set(got.accession_number) == {"original-unmapped", "later-omission"}
     assert got.loc[got.accession_number.eq("original-unmapped"), "ticker"].eq("_empty").all()
     print("SANITY: CUSIP-aware stored scope recovers a later omission despite an unmapped stored ticker, without rewriting the original.")

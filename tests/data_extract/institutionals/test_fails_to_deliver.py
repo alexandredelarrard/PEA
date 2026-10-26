@@ -13,8 +13,27 @@ import pytest
 from src.data_extract.utils.common import security_master as sm
 from src.data_extract.utils.institutionals import fetch_fails_to_deliver as ftd
 from src.data_store.schema import Table, Tables
+from src.data_store.store import DataStore, _create_canonical
 from tests.conftest import make_frames
 from tests.data_aggregate.test_short_flow_features import build_short_flow_feature_panel
+
+
+@pytest.fixture
+def sqlite_store(sqlite_store):
+    _create_canonical(
+        sqlite_store.engine,
+        [
+            Tables.sp500_tickers,
+            Tables.entity_lineage,
+            Tables.symbol_tenure,
+            Tables.security_master,
+            Tables.sec_fails_to_deliver_security,
+            Tables.sec_fails_to_deliver,
+            Tables.sec_short_volume_security,
+            Tables.short_interest,
+        ],
+    )
+    return sqlite_store
 
 
 def _context(sqlite_store, tmp_path) -> Any:
@@ -148,13 +167,15 @@ def test_full_rebuild_keys_on_cusip_excludes_a_reused_symbol_and_is_repeatable(s
     monkeypatch.setattr(ftd, "_cached_periods", lambda cache: set(raw_by_period))
     monkeypatch.setattr(ftd, "read_zip_text", lambda path, log=None: raw_by_period[path.stem.removeprefix("cnsfails")])
     replace_calls: list[str] = []
-    original_replace = sqlite_store.replace_institutional_source
+    original_replace = ftd.replace_fails_source
 
-    def _replace(frames: dict[Table, pd.DataFrame], scopes: dict[Table, dict[str, object] | None], *args: Any, **kwargs: Any) -> dict[Table, int]:
+    def _replace(
+        store: DataStore, frames: dict[Table, pd.DataFrame], scopes: dict[Table, dict[str, object] | None], *args: Any, **kwargs: Any
+    ) -> dict[Table, int]:
         replace_calls.extend(table.name for table in frames)
-        return original_replace(frames, scopes, *args, **kwargs)
+        return original_replace(store, frames, scopes, *args, **kwargs)
 
-    monkeypatch.setattr(sqlite_store, "replace_institutional_source", _replace)
+    monkeypatch.setattr(ftd, "replace_fails_source", _replace)
     universe = ["META", "TT", "IR", "WTW"]
     ftd.fetch_fails_to_deliver(ctx, universe, full=True)
     first = sqlite_store.load(Tables.sec_fails_to_deliver).sort_values(["ticker", "date"]).reset_index(drop=True)
@@ -336,7 +357,7 @@ def test_pending_source_replacement_withdraws_only_certified_quiet_zeros(sqlite_
     assert stored.loc["LEGACY", ["fails_quantity", "fails_value"]].tolist() == [0.0, 0.0]
     assert stored.loc["POSITIVE", ["fails_quantity", "fails_value"]].tolist() == [7.0, 70.0]
     assert stored["source_checked_at"].isna().all()
-    assert sqlite_store.fails_source_periods() == ({"202401a"}, {"202401a"})
+    assert ftd.fails_source_periods(sqlite_store) == ({"202401a"}, {"202401a"})
     print("\nSANITY: pending raw replacement withdraws checked quiet zeros; legacy zeros and positive observations survive; period retries.")
 
 

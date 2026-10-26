@@ -29,6 +29,7 @@ import pytest
 from sqlalchemy import create_engine
 
 from src.data_store import store as store_module
+from src.data_store.errors import UnknownTableError
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 
@@ -137,6 +138,25 @@ def test_an_insert_of_a_new_key_is_unaffected(store):
     assert row["pct_female_directors"] == pytest.approx(0.38)
     assert pd.isna(row["payload"])
     assert len(store.load("extract")) == 3
+
+
+def test_missing_unregistered_table_is_not_created(sqlite_store: DataStore) -> None:
+    with pytest.raises(UnknownTableError):
+        sqlite_store.save("extract", _FULL, pk=["ticker", "accession_number"])
+    assert not sqlite_store.exists("extract")
+    print("SANITY: an explicit primary key does not permit creating an unregistered table.")
+
+
+def test_registered_dynamic_table_still_adds_columns(sqlite_store: DataStore) -> None:
+    table = Tables.cube_part_prices
+    rows = pd.DataFrame({"ticker": ["AAPL"], "date": [pd.Timestamp("2024-01-01")], "feature": [1.0]})
+    sqlite_store.save(table, rows)
+    assert sqlite_store.load(table) is not None
+    sqlite_store.save(table, rows.assign(added_feature=2.0))
+    actual = sqlite_store.load(table)
+    assert actual is not None and actual["added_feature"].tolist() == [2.0]
+    assert actual["feature"].tolist() == [1.0]
+    print("SANITY: a registered dynamic table adds new columns and refreshes its warmed metadata.")
 
 
 def test_schema_evolution_uses_the_registered_date_type(monkeypatch):

@@ -14,6 +14,7 @@ import pytest
 from src.data_extract.utils.common.identity import load_source_identity
 from src.data_extract.utils.institutionals import fetch_insider_transactions as ins
 from src.data_store.schema import Tables
+from src.data_store.store import _create_canonical
 
 _AS_OF = pd.Timestamp("2024-07-01")
 
@@ -53,8 +54,9 @@ def _parsed(tickers: list[str], quarter: str) -> tuple[pd.DataFrame, pd.DataFram
 
 @pytest.fixture
 def harness(sqlite_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    _create_canonical(sqlite_store.engine, [Tables.insider_transactions, Tables.insider_footnotes])
     calls: dict[str, Any] = {"screens": [], "sweeps": 0}
-    monkeypatch.setattr(ins, "load_identity", lambda context: SimpleNamespace(source_cohort=load_source_identity(context)))
+    monkeypatch.setattr(ins, "load_identity", lambda context: SimpleNamespace(source_cohort=load_source_identity(context.store)))
     monkeypatch.setattr(ins, "quarter_periods", lambda *args: ["2024q1", "2024q2"])
     monkeypatch.setattr(ins, "ensure_zip", lambda context, path, url, **kwargs: path)
     monkeypatch.setattr(ins, "_read_tables", lambda path: (path.stem,))

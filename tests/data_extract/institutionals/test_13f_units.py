@@ -17,7 +17,7 @@ import pytest
 from src.constants.constants import SEC_13F_SOURCE_ACCOUNTED
 from src.data_extract.utils.common.edgar_driver import FilingStamp
 from src.data_extract.utils.institutionals import fetch_13f as f13
-from src.data_extract.utils.institutionals.fetch_13f import _book_frame
+from src.data_extract.utils.institutionals.fetch_13f import _book_frame, save_13f_filing
 from src.data_extract.utils.institutionals.fetch_13f_backfill import data_set_book
 from src.data_extract.utils.institutionals.legacy_13f_fallback import parse_legacy_information_table
 from src.data_extract.utils.institutionals.value_units import (
@@ -472,7 +472,7 @@ def test_xml_unit_comes_from_evidence(
     print(f"SANITY: SYNTHETIC XML {schema} {rows} rows at {cells_per_share:g} cell/share -> x{factor:g} ({evidence}): {shape}.")
 
 
-def test_value_total_mismatch_is_saved_with_a_warning(sqlite_store: Any, caplog: pytest.LogCaptureFixture) -> None:
+def test_value_total_mismatch_is_saved_with_a_warning(filing_store: Any, caplog: pytest.LogCaptureFixture) -> None:
     cells = [(cusip, 50_000 * (index + 1), 1000 * (index + 1)) for index, cusip in enumerate(_CUSIPS)]
     primary, info = _xml("X0202", cells, 777.0)
     with caplog.at_level(logging.WARNING, logger=_EVIDENCE_LOGGER):
@@ -481,7 +481,7 @@ def test_value_total_mismatch_is_saved_with_a_warning(sqlite_store: Any, caplog:
         )
     assert "the cover is a reference only, filing kept" in _messages(caplog)
     assert manifest.iloc[0].declared_value_total == 777.0 and manifest.iloc[0].source_value_total == 1_050_000
-    assert sqlite_store.save_13f_filing(manifest, book) == len(cells)
+    assert save_13f_filing(filing_store, manifest, book) == len(cells)
     print("SANITY: XML cover total 777 against a 1,050,000 VALUE column -> WARNING, filing kept and saved, cover stored as filed.")
 
 

@@ -1,0 +1,170 @@
+"""Known-truth controls for explicit security units, money and dated cap support."""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from src.constants.constants_price import MACRO_MARKET_SERIES
+from src.context import get_config_context
+from src.data_store.schema import Tables
+from src.utils.price.adjustments import ShareBasis
+from src.utils.price.capitalization import capitalization_observations, project_security_shares
+from src.utils.price.levels import rebase_security_prices, rebase_security_quantities, security_quantity_basis
+
+
+def _basis(ratio: float, before: float, after: float) -> ShareBasis:
+    df_events = pd.DataFrame({"ticker": ["AAA"], "date": pd.to_datetime(["2024-01-05"]), "value": [ratio]})
+    policy = {"AAA": {"quote_units": {"date": "2024-01-05", "before": before, "after": after}}}
+    return ShareBasis(df_events, df_events.assign(value=7.0), df_events.assign(value=3.0), policy)
+
+
+@pytest.mark.parametrize(
+    ("ratio", "before", "after", "source_units", "expected"),
+    [
+        (4.0, 1.0, 1.0, 1.0, 40.0),
+        (0.25, 1.0, 1.0, 1.0, 2.5),
+        (1.1, 1.0, 1.0, 1.0, 11.0),
+        (1.0, 2.0, 4.0, 2.0, 5.0),
+        (1.0, 2.0, 4.0, 1.0, 2.5),
+        (0.5, 2.0, 1.0, 2.0, 10.0),
+    ],
+)
+def test_declared_units_preserve_money_and_do_not_use_vendor_price_factors(
+    ratio: float, before: float, after: float, source_units: float, expected: float
+) -> None:
+    basis = _basis(ratio, before, after)
+    quantity = pd.Series([10.0])
+    ticker = pd.Series(["AAA"])
+    source = pd.Series(pd.to_datetime(["2024-01-04"]))
+    target = pd.Series(pd.to_datetime(["2024-01-05"]))
+    units = pd.Series([source_units])
+    rebased = rebase_security_quantities(basis, quantity, ticker, source, target, units)
+    price = rebase_security_prices(basis, pd.Series([50.0]), ticker, source, target, units)
+    assert rebased.iloc[0] == pytest.approx(expected)
+    assert (rebased * price).iloc[0] == pytest.approx(500.0)
+    roundtrip = rebase_security_quantities(basis, rebased, ticker, target, source, pd.Series([after]))
+    assert roundtrip.iloc[0] == pytest.approx(10.0 * source_units / before)
+    print("SANITY: genuine event and declared quote units preserve $500; vendor F=7 and price Y=3 never become quantities.")
+
+
+def test_unknown_units_and_unavailable_cross_date_evidence_remain_unknown() -> None:
+    basis = _basis(4, 1, 1)
+    ticker = pd.Series(["AAA"] * 3)
+    source = pd.Series(pd.to_datetime(["2024-01-04"] * 3))
+    target = pd.Series(pd.to_datetime(["2024-01-05"] * 3))
+    result = rebase_security_quantities(basis, pd.Series([10.0, 10.0, 10.0]), ticker, source, target, pd.Series([np.nan, 0.0, -1.0]))
+    assert result.isna().all()
+    absent = ShareBasis(basis.actual, basis.vendor, basis.price, {}, actual_available=False)
+    result = rebase_security_quantities(absent, pd.Series([10.0]), ticker.iloc[:1], source.iloc[:1], target.iloc[:1], pd.Series([1.0]))
+    assert result.isna().all()
+    print("SANITY: unknown/invalid units and unavailable nonzero cross-date evidence fail closed.")
+
+
+def test_quantity_basis_uses_strict_future_genuine_events_and_quote_units() -> None:
+    basis = _basis(0.5, 2, 1)
+    index = pd.DatetimeIndex(["2024-01-04", "2024-01-05"])
+    result = security_quantity_basis(basis, index, pd.Index(["AAA"]))
+    assert result["AAA"].tolist() == [1.0, 1.0]
+    print("SANITY: .5 ordinary consolidation and ADS 2→1 leave the security holding basis unchanged on the effective day.")
+
+
+def test_successive_and_future_splits_preserve_historical_ownership() -> None:
+    df_events = pd.DataFrame({"ticker": ["AAA", "AAA"], "date": pd.to_datetime(["2024-01-05", "2024-01-10"]), "value": [4.0, 0.5]})
+    basis = ShareBasis(df_events, df_events, df_events, {})
+    quantity = pd.Series([10.0, 100.0])
+    ticker = pd.Series(["AAA", "AAA"])
+    source = pd.Series(pd.to_datetime(["2024-01-04"] * 2))
+    target = pd.Series(pd.to_datetime(["2024-01-10"] * 2))
+    units = pd.Series([1.0, 1.0])
+    result = rebase_security_quantities(basis, quantity, ticker, source, target, units)
+    assert result.tolist() == [20.0, 200.0]
+    future = pd.concat([df_events, pd.DataFrame({"ticker": ["AAA"], "date": pd.to_datetime(["2027-01-05"]), "value": [10.0]})], ignore_index=True)
+    later = ShareBasis(future, future, future, {})
+    pd.testing.assert_series_equal(result, rebase_security_quantities(later, quantity, ticker, source, target, units), check_exact=True)
+    assert result.iloc[0] / result.iloc[1] == 0.1
+    with pytest.raises(ValueError, match="index-aligned"):
+        rebase_security_quantities(basis, quantity, ticker, source, target, units.rename(index={0: 3}))
+    print(
+        "SANITY: a forward/reverse sequence preserves 10% ownership; a future split leaves historical quantities exactly invariant; misaligned units refuse."
+    )
+
+
+def test_capitalization_uses_dated_exact_lineage_and_unknown_successor_ends_support() -> None:
+    basis = _basis(1, 1, 1)
+    index = pd.bdate_range("2024-01-01", "2024-01-12")
+    df_history = pd.DataFrame(
+        {
+            "ticker": ["AAA"] * 2,
+            "as_of": pd.to_datetime(["2024-01-02", "2024-01-08"]),
+            "fiscal_end": pd.to_datetime(["2023-09-30", "2023-12-31"]),
+            "sharesOutstanding": [100.0, 120.0],
+            "sharesOutstandingPit": [100.0, 120.0],
+        }
+    )
+    df_vendor = pd.DataFrame(
+        {
+            "ticker": ["AAA"] * 2,
+            "date": df_history["as_of"],
+            "reportperiod": df_history["fiscal_end"],
+            "sharesbas": [100.0, 999.0],
+            "sharefactor": [1.5, 1.7],
+            "lastupdated": pd.to_datetime(["2024-01-03", "2024-01-08"]),
+            "marketcap": [7.0, 7.0],
+        }
+    )
+    original = df_history.copy(deep=True)
+    observations = capitalization_observations(df_history, df_vendor, index, basis)
+    shares, scale = project_security_shares(observations, basis, index, pd.Index(["AAA"]))
+    assert scale.loc[:"2024-01-03", "AAA"].isna().all()
+    assert scale.loc["2024-01-04":"2024-01-05", "AAA"].eq(1.5).all()
+    assert scale.loc["2024-01-08":, "AAA"].isna().all()
+    assert shares.at[pd.Timestamp("2024-01-08"), "AAA"] == 120.0
+    pd.testing.assert_frame_equal(df_history, original, check_exact=True)
+    print(
+        "SANITY: K starts strictly after lastupdated; mismatched successor stops old K, preserves actual count, and no reference cap fits the coefficient."
+    )
+
+
+def test_real_sharadar_class_scope_and_public_support() -> None:
+    _, context = get_config_context("./configs", use_cache=False, save=False)
+    names = ["BRK-B", "V"]
+    df_history = context.store.load(
+        Tables.fundamentals_history,
+        columns=["ticker", "as_of", "fiscal_end", "sharesOutstanding", "sharesOutstandingPit"],
+        where={"ticker": names},
+        since="2026-01-01",
+        until="2026-10-26",
+    )
+    df_vendor = context.store.load(
+        Tables.sharadar_fundamentals,
+        columns=["ticker", "date", "reportperiod", "sharesbas", "sharefactor", "lastupdated", "price", "marketcap"],
+        where={"ticker": names, "dimension": "ARQ"},
+        since="2026-01-01",
+        until="2026-10-26",
+    )
+    df_calendar = context.store.load(
+        Tables.prices_macro, columns=["date"], where={"ticker": MACRO_MARKET_SERIES}, since="2026-01-01", until="2026-10-26"
+    )
+    assert df_history is not None and df_vendor is not None and df_calendar is not None
+    calendar = pd.DatetimeIndex(pd.to_datetime(df_calendar["date"]).sort_values())
+    df_empty = pd.DataFrame({"ticker": pd.Series(dtype="str"), "date": pd.Series(dtype="datetime64[ns]"), "value": pd.Series(dtype="float64")})
+    basis = ShareBasis(df_empty, df_empty, df_empty, {})
+    observations = capitalization_observations(df_history, df_vendor, calendar, basis)
+    shares, scale = project_security_shares(observations, basis, calendar, pd.Index(names))
+    df_latest = observations.sort_values("as_of").groupby("ticker").tail(1)
+    for ticker in names:
+        row = df_latest.loc[df_latest["ticker"].eq(ticker)].iloc[0]
+        native = df_vendor.loc[df_vendor["ticker"].eq(ticker) & pd.to_datetime(df_vendor["date"]).eq(row["as_of"])].iloc[-1]
+        calculated = native["price"] * native["sharesbas"] * native["sharefactor"]
+        tolerance = 0.0005 / native["sharefactor"] + 0.005 / native["price"] + 0.5 / native["marketcap"]
+        assert abs(calculated / native["marketcap"] - 1) <= tolerance
+        ready = min(day for day in calendar if day > pd.Timestamp(native["lastupdated"]) and day >= row["as_of"])
+        assert scale.loc[(calendar >= row["as_of"]) & (calendar < ready), ticker].isna().all()
+        assert scale.at[ready, ticker] == native["sharefactor"]
+        assert shares.at[ready, ticker] == row["sharesOutstandingPit"]
+        assert scale.at[ready, ticker] > 1
+    print(
+        "SANITY: real BRK-B/V issuer-cap equations agree within source rounding; dated factors never backfill publication gaps or inflate the saved class count."
+    )

@@ -1,0 +1,96 @@
+"""Dated capitalization evidence and canonical outstanding-count projection."""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+
+from src.utils.price.adjustments import ShareBasis
+from src.utils.price.levels import rebase_security_quantities, security_quantity_basis
+
+
+def capitalization_observations(
+    df_history: pd.DataFrame, df_vendor: pd.DataFrame | None, calendar: pd.DatetimeIndex, basis: ShareBasis
+) -> pd.DataFrame:
+    """Attach a supported coefficient to the exact public share observation it values.
+
+    Unversioned nonunit coefficients start strictly after lastupdated and expire at
+    the next public observation. Prices and reference caps never fit the coefficient.
+    """
+    df_observations = df_history.copy()
+    df_observations["as_of"] = pd.to_datetime(df_observations["as_of"], errors="coerce")
+    df_observations["fiscal_end"] = pd.to_datetime(df_observations["fiscal_end"], errors="coerce")
+    if df_observations[["ticker", "as_of"]].isna().any().any() or df_observations.duplicated(["ticker", "as_of"]).any():
+        raise ValueError("Public share observations require unique, valid ticker/as_of keys")
+    df_observations["capitalization_factor"] = np.nan
+    df_observations["capitalization_available"] = pd.NaT
+    required = ("ticker", "date", "reportperiod", "sharesbas", "sharefactor", "lastupdated")
+    if df_vendor is None or not set(required).issubset(df_vendor.columns):
+        return df_observations
+
+    # Match the producer's same-date greatest-fiscal-period collapse before joining.
+    df_raw = df_vendor[list(required)].copy()
+    for field in ("date", "reportperiod", "lastupdated"):
+        df_raw[field] = pd.to_datetime(df_raw[field], errors="coerce")
+    if df_raw.duplicated(["ticker", "date", "reportperiod"]).any():
+        raise ValueError("Conflicting or repeated raw capitalization observation keys")
+    df_raw = df_raw.sort_values(["ticker", "date", "reportperiod"]).drop_duplicates(["ticker", "date"], keep="last")
+    df_observations = df_observations.drop(columns=["capitalization_factor", "capitalization_available"]).merge(
+        df_raw, how="left", left_on=["ticker", "as_of", "fiscal_end"], right_on=["ticker", "date", "reportperiod"], validate="one_to_one"
+    )
+    count = pd.to_numeric(df_observations["sharesOutstanding"], errors="coerce")
+    vendor_count = pd.to_numeric(df_observations["sharesbas"], errors="coerce")
+    coefficient = pd.to_numeric(df_observations["sharefactor"], errors="coerce")
+    units = basis.factor(df_observations["ticker"], df_observations["as_of"], "units")
+    matched = np.isclose(count, vendor_count, rtol=1e-12, atol=0) & count.gt(0)
+    supported = matched & np.isfinite(coefficient) & coefficient.gt(0)
+    # A mixed ADR/class coefficient needs a separate decomposition, never a second U.
+    supported &= units.eq(1) | coefficient.eq(1)
+    dated = coefficient.ne(1) | units.ne(1)
+    positions = calendar.searchsorted(df_observations["lastupdated"].dt.normalize(), side="right")
+    ready = pd.Series(pd.NaT, index=df_observations.index, dtype="datetime64[ns]")
+    in_calendar = positions < len(calendar)
+    ready.loc[in_calendar] = calendar.take(positions[in_calendar]).to_numpy()
+    public = df_observations["as_of"]
+    ready = pd.concat([public, ready], axis=1).max(axis=1).where(ready.notna() & df_observations["lastupdated"].notna())
+    df_observations["capitalization_factor"] = coefficient.where(supported)
+    df_observations["capitalization_available"] = public.where(~dated, ready).where(supported)
+    return df_observations
+
+
+def project_security_shares(
+    df_observations: pd.DataFrame, basis: ShareBasis, index: pd.DatetimeIndex, columns: pd.Index
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Carry the latest public ordinary count in date-specific quoted-security units.
+
+    The coefficient follows that same observation; an unsupported successor ends
+    its predecessor's support instead of being dropped and forward-filled through.
+    """
+    df_shares = pd.DataFrame(np.nan, index=index, columns=columns, dtype="float64")
+    df_scale = df_shares.copy()
+    if df_observations.empty or index.empty:
+        return df_shares, df_scale
+    df_source = df_observations.sort_values(["ticker", "as_of"]).copy()
+    original = pd.to_numeric(df_source["sharesOutstandingPit"], errors="coerce")
+    df_source["terminal_count"] = rebase_security_quantities(
+        basis,
+        original.where(original.gt(0)),
+        df_source["ticker"],
+        df_source["as_of"],
+        pd.Series(index[-1], index=df_source.index),
+        pd.Series(1.0, index=df_source.index),
+    )
+    df_basis = security_quantity_basis(basis, index, columns)
+    stamps = index.to_numpy(dtype="datetime64[ns]")
+    for ticker, df_group in df_source.groupby("ticker", sort=False):
+        if ticker not in columns:
+            continue
+        source_positions = np.searchsorted(df_group["as_of"].to_numpy(dtype="datetime64[ns]"), stamps, side="right") - 1
+        have_source = source_positions >= 0
+        selected = np.maximum(source_positions, 0)
+        quantities = df_group["terminal_count"].to_numpy(dtype="float64")[selected]
+        coefficient = df_group["capitalization_factor"].to_numpy(dtype="float64")[selected]
+        ready = df_group["capitalization_available"].to_numpy(dtype="datetime64[ns]")[selected]
+        df_shares[ticker] = np.where(have_source, quantities, np.nan) * df_basis[ticker].iloc[-1] / df_basis[ticker]
+        df_scale[ticker] = np.where(have_source & (stamps >= ready), coefficient, np.nan)
+    return df_shares, df_scale

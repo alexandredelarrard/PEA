@@ -177,3 +177,57 @@ def _period_close(close: pd.DataFrame, periods: pd.Series, max_age_days: int) ->
     result = cast(pd.Series, df_asof.stack(future_stack=True))
     result.index = result.index.set_names(["period", "ticker"])
     return result
+
+
+def rebase_security_quantities(
+    basis: ShareBasis,
+    quantities: pd.Series,
+    tickers: pd.Series,
+    source_dates: pd.Series,
+    target_dates: pd.Series,
+    ordinary_per_source: pd.Series,
+) -> pd.Series:
+    """Convert declared source quantities into target-date canonical security units.
+
+    ordinary_per_source is 1 for ordinary counts, U(source) for canonical quotes,
+    or an independently evidenced filed-class conversion. Unknown units stay null.
+    """
+    if not quantities.index.equals(ordinary_per_source.index):
+        raise ValueError("Source quantity units must be index-aligned")
+    units = pd.to_numeric(ordinary_per_source, errors="coerce")
+    supported = np.isfinite(units) & units.gt(0)
+    ordinary = pd.to_numeric(quantities, errors="coerce") * units.where(supported)
+    rebased = basis.rebase(ordinary, tickers, source_dates, target_dates)
+    result = rebased / basis.factor(tickers, target_dates, "units")
+    return result.where(np.isfinite(result) & (ordinary.eq(0) | result.ne(0)))
+
+
+def rebase_security_prices(
+    basis: ShareBasis,
+    prices: pd.Series,
+    tickers: pd.Series,
+    source_dates: pd.Series,
+    target_dates: pd.Series,
+    ordinary_per_source: pd.Series,
+) -> pd.Series:
+    """Apply the inverse quantity conversion to preserve a matched price/count value."""
+    multiplier = rebase_security_quantities(basis, pd.Series(1.0, index=prices.index), tickers, source_dates, target_dates, ordinary_per_source)
+    converted = pd.to_numeric(prices, errors="coerce") / multiplier
+    return converted.where(np.isfinite(converted) & converted.gt(0))
+
+
+def security_quantity_basis(basis: ShareBasis, index: pd.DatetimeIndex, columns: pd.Index) -> pd.DataFrame:
+    """Return GÃ—U on a canonical quote grid, keeping quantity and price wedges separate."""
+    df_basis = pd.DataFrame(1.0 if basis.actual_available else np.nan, index=index, columns=columns, dtype="float64")
+    if not basis.actual_available:
+        return df_basis
+    df_events = basis.actual
+    invalid = df_events[["ticker", "date", "value"]].isna().any(axis=1)
+    values = pd.to_numeric(df_events["value"], errors="coerce")
+    if (invalid | ~np.isfinite(values) | values.le(0)).any():
+        raise ValueError("Genuine quantity events require valid keys and positive finite factors")
+    factors = suffix_factor(df_events, list(columns), index.to_numpy(dtype="datetime64[ns]"))
+    for ticker in columns:
+        units = basis.factor(pd.Series(ticker, index=index), pd.Series(index, index=index), "units")
+        df_basis[ticker] = factors.get(str(ticker), np.ones(len(index))) * units
+    return df_basis.where(np.isfinite(df_basis) & df_basis.gt(0))

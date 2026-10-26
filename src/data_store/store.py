@@ -8,6 +8,7 @@ import hashlib
 import io
 import json
 import logging
+import re
 import tempfile
 import threading
 from collections.abc import Callable, Generator, Sequence
@@ -17,7 +18,7 @@ from typing import Any, cast
 
 import numpy as np
 import pandas as pd
-from sqlalchemy import Connection, Engine, MetaData, Select, Table, case, create_engine, false, func, inspect, or_, select, text, tuple_
+from sqlalchemy import Connection, Engine, MetaData, Select, Table, and_, case, create_engine, false, func, inspect, or_, select, text, true, tuple_
 from sqlalchemy import types as sqltypes
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -44,7 +45,48 @@ logger = logging.getLogger(__name__)
 _IDENTITY_TABLES = (Tables.sp500_tickers, Tables.entity_lineage, Tables.symbol_tenure, Tables.security_master)
 
 
-def table_exists(engine: Engine, name: str) -> bool:
+type Where = dict[str, Any] | pd.DataFrame | list[dict[str, Any] | pd.DataFrame]
+
+
+@contextmanager
+def _connection(engine: Engine | Connection, *, write: bool = False) -> Generator[Connection]:
+    """Reuse a caller-owned connection without closing or committing it."""
+    if isinstance(engine, Connection):
+        yield engine
+        return
+    with engine.begin() if write else engine.connect() as conn:
+        yield conn
+
+
+def _where(tbl: Table, where: Where | None) -> ColumnElement[bool]:
+    """Compile dictionary AND, exact declared-key tuples, or a flat OR of those scopes."""
+    if where is None:
+        return true()
+    if isinstance(where, dict):
+        return and_(true(), *(_predicate(tbl.c[column], value) for column, value in where.items()))
+    if isinstance(where, pd.DataFrame):
+        keys = list(resolve(tbl.name).pk)
+        if set(where.columns) != set(keys) or where.columns.duplicated().any() or where[keys].isna().any().any():
+            raise ValueError("Key scopes require exactly the complete non-null declared primary key")
+        df_keys = _coerce_temporal(where[keys].drop_duplicates(), tbl)
+        return tuple_(*(tbl.c[key] for key in keys)).in_(list(df_keys.itertuples(index=False, name=None)))
+    if isinstance(where, list):
+        if any(not isinstance(branch, dict | pd.DataFrame) or isinstance(branch, dict) and not branch for branch in where):
+            raise ValueError("OR scopes require non-empty dictionaries or complete-key frames; nesting is not supported")
+        return or_(false(), *(_where(tbl, branch) for branch in where))
+    raise TypeError("where must be a dictionary, complete-key DataFrame or flat OR list")
+
+
+def _create_canonical(engine: Engine, tables: Sequence[SchemaTable]) -> None:
+    """Initialize selected fresh staging tables from the canonical managed SQL."""
+    blocks = ddl.existing_blocks((Path(__file__).resolve().parents[2] / "sql" / "schema.sql").read_text(encoding="utf-8"))
+    statements = [statement for table in tables for statement in re.sub(r"--[^\n]*", "", blocks[table.name]).split(";") if statement.strip()]
+    with _connection(engine, write=True) as conn:
+        for statement in statements:
+            conn.execute(text(statement))
+
+
+def table_exists(engine: Engine | Connection, name: str) -> bool:
     return inspect(engine).has_table(name)
 
 
@@ -52,7 +94,7 @@ def _reflect(engine: Engine | Connection, name: str) -> Table:
     return Table(name, MetaData(), autoload_with=engine)
 
 
-def ensure_table(engine: Engine, name: str, df: pd.DataFrame) -> None:
+def ensure_table(engine: Engine | Connection, name: str, df: pd.DataFrame) -> None:
     """Create missing registry DDL from frame dtypes; serialize and recheck cold-table creation."""
     if table_exists(engine, name):
         return
@@ -60,22 +102,22 @@ def ensure_table(engine: Engine, name: str, df: pd.DataFrame) -> None:
     with _CREATE_LOCK:
         if table_exists(engine, name):
             return
-        with engine.begin() as conn:
+        with _connection(engine, write=True) as conn:
             for stmt in statements:
                 conn.execute(text(stmt))
 
 
-def reflect_columns(engine: Engine, name: str) -> list[tuple[str, str]]:
+def reflect_columns(engine: Engine | Connection, name: str) -> list[tuple[str, str]]:
     """Ordered live column names/types; never infer SQL types from a nullable sample."""
     return [(c.name, str(c.type)) for c in _reflect(engine, name).c]
 
 
-def reflect_all(engine: Engine) -> dict[str, list[tuple[str, str]]]:
+def reflect_all(engine: Engine | Connection) -> dict[str, list[tuple[str, str]]]:
     """Live schemas for existing managed tables, consumed by ddl.generate_schema_sql."""
     return {t.name: reflect_columns(engine, t.name) for t in MANAGED if table_exists(engine, t.name)}
 
 
-def ensure_columns(engine: Engine, name: str, df: pd.DataFrame) -> list[str]:
+def ensure_columns(engine: Engine | Connection, name: str, df: pd.DataFrame) -> list[str]:
     """Add newly observed columns on PostgreSQL/SQLite and return their names; never drop fields."""
     if engine.dialect.name not in {"postgresql", "sqlite"} or not table_exists(engine, name):
         return []
@@ -84,7 +126,7 @@ def ensure_columns(engine: Engine, name: str, df: pd.DataFrame) -> list[str]:
     if not missing:
         return []
     spec = resolve(name)
-    with engine.begin() as conn:
+    with _connection(engine, write=True) as conn:
         for c in missing:
             sqltype = ddl.sql_type(c, df[c].dtype, spec=spec)
             guard = "IF NOT EXISTS " if engine.dialect.name == "postgresql" else ""
@@ -92,32 +134,26 @@ def ensure_columns(engine: Engine, name: str, df: pd.DataFrame) -> list[str]:
     return missing
 
 
-def copy_load(engine: Engine, df: pd.DataFrame, name: str) -> int:
-    """COPY append on PostgreSQL; upsert elsewhere or for list/tuple payloads. No conflict handling in COPY."""
+def copy_load(engine: Engine | Connection, df: pd.DataFrame, name: str) -> int:
+    """Append using COPY or the existing array/SQLite upsert fallback on one connection."""
     if df is None or df.empty:
         return 0
     if engine.dialect.name != "postgresql" or any(df[c].apply(lambda value: isinstance(value, list | tuple)).any() for c in df):
         return upsert_dataframe(engine, df, name, list(resolve(name).pk))
-
     tbl = _reflect(engine, name)
     df = cast(pd.DataFrame, df[[c for c in df.columns if c in tbl.c]])
     buf = io.StringIO()
     df.to_csv(buf, index=False, header=False, quoting=csv.QUOTE_MINIMAL)
     buf.seek(0)
     cols = ", ".join(f'"{c}"' for c in df.columns)
-    # CSV COPY reads an unquoted empty field as NULL; a NOT NULL text column keeps '' instead.
     keep_empty = [f'"{c}"' for c in df.columns if not tbl.c[c].nullable and isinstance(tbl.c[c].type, sqltypes.String)]
     options = "FORMAT csv" + (f", FORCE_NOT_NULL ({', '.join(keep_empty)})" if keep_empty else "")
-    raw = engine.raw_connection()
-    try:
-        cur = raw.cursor()
+    with _connection(engine, write=True) as conn:
+        cursor = conn.connection.cursor()
         try:
-            cur.copy_expert(f'COPY "{name}" ({cols}) FROM STDIN WITH ({options})', buf)
+            cursor.copy_expert(f'COPY "{name}" ({cols}) FROM STDIN WITH ({options})', buf)
         finally:
-            cur.close()
-        raw.commit()
-    finally:
-        raw.close()
+            cursor.close()
     return len(df)
 
 
@@ -177,7 +213,7 @@ def _predicate(column, value):
 def build_select(
     tbl: Table,
     columns: Sequence[str] | None = None,
-    where: dict[str, Any] | None = None,
+    where: Where | None = None,
     since: Any = None,
     until: Any = None,
     date_col: str | None = None,
@@ -195,15 +231,15 @@ def build_select(
     else:
         stmt = select(*([tbl.c[c] for c in columns] if columns else [tbl]))
 
-    for col, value in (where or {}).items():
-        stmt = stmt.where(_predicate(tbl.c[col], value))
+    stmt = stmt.where(_where(tbl, where))
     if exclude is not None and exclude[0] in tbl.c:
         stmt = stmt.where(tbl.c[exclude[0]].is_distinct_from(exclude[1]))
 
     if since is not None or until is not None:
         if date_col is None:
             raise ValueError("since/until need a date column: the table declares no `date_col`, so pass date_col= explicitly")
-        if where and date_col in where:
+        branches = where if isinstance(where, list) else [where]
+        if any(branch is not None and date_col in branch for branch in branches):
             # Refuse an ambiguous equality/window combination instead of returning a misleading empty result.
             raise ValueError(f"{date_col!r} is constrained by both where= and since/until")
         column = tbl.c[date_col]
@@ -223,24 +259,24 @@ def build_select(
 
 
 def read_table(
-    engine: Engine,
+    engine: Engine | Connection,
     name: str,
     columns: list[str] | None = None,
     limit: int | None = None,
-    where: dict[str, object] | None = None,
+    where: Where | None = None,
     exclude: tuple[str, object] | None = None,
     **kwargs: Any,
 ) -> pd.DataFrame:
     """Execute a built SELECT and return the frame. See `build_select` for the filters."""
     tbl = _reflect(engine, name)
     stmt = build_select(tbl, columns=columns, where=where, limit=limit, exclude=exclude, **kwargs)
-    with engine.connect() as conn:
+    with _connection(engine) as conn:
         return pd.read_sql(stmt, conn)
 
 
-def row_count(engine: Engine, name: str) -> int:
+def row_count(engine: Engine | Connection, name: str) -> int:
     tbl = _reflect(engine, name)
-    with engine.connect() as conn:
+    with _connection(engine) as conn:
         return int(conn.execute(select(func.count()).select_from(tbl)).scalar_one())
 
 
@@ -278,7 +314,7 @@ def _coerce_temporal(df: pd.DataFrame, tbl: Table) -> pd.DataFrame:
     return df.assign(**fixed) if fixed else df
 
 
-def upsert_dataframe(engine: Engine, df: pd.DataFrame, name: str, pk: list[str], chunksize: int = _CHUNK) -> int:
+def upsert_dataframe(engine: Engine | Connection, df: pd.DataFrame, name: str, pk: list[str], chunksize: int = _CHUNK) -> int:
     """Upsert carried fields on PK conflict, preserving omitted columns; explicit nulls overwrite.
 
     Returns rows sent. Empty frames do nothing; whole-table rewrites use replace()."""
@@ -287,7 +323,7 @@ def upsert_dataframe(engine: Engine, df: pd.DataFrame, name: str, pk: list[str],
     tbl = _reflect(engine, name)
     df = cast(pd.DataFrame, df[[c for c in df.columns if c in tbl.c]])  # only real columns
     records = _records(_coerce_temporal(df, tbl))
-    with engine.begin() as conn:
+    with _connection(engine, write=True) as conn:
         return _upsert_records(conn, tbl, records, pk, chunksize)
 
 
@@ -340,7 +376,7 @@ def _prepare_def14a_table(conn: Connection, spec: SchemaTable, block: str) -> bo
 class DataStore:
     """Registry-backed database facade. Missing/empty reads raise unless optional=True."""
 
-    def __init__(self, engine: Engine) -> None:
+    def __init__(self, engine: Engine | Connection) -> None:
         self.engine = engine
         self._13f_tables: dict[str, Table] = {}
         self._13f_lock = threading.RLock()
@@ -359,6 +395,120 @@ class DataStore:
 
     # so callers write `store.NOT_NULL` without importing it
     NOT_NULL = NOT_NULL
+
+    @contextmanager
+    def transaction(self, lock_key: str | None = None) -> Generator[DataStore]:
+        """Bind generic operations to one transaction, optionally serializing a caller-owned scope."""
+        if isinstance(self.engine, Connection):
+            raise ValueError("Nested store transactions are not supported; reuse the bound store")
+        with self.engine.begin() as conn:
+            if conn.dialect.name == "sqlite":
+                conn.exec_driver_sql("BEGIN IMMEDIATE")
+            elif lock_key is not None:
+                if conn.dialect.name != "postgresql":
+                    raise ValueError("Scoped transaction locks require PostgreSQL or SQLite")
+                conn.execute(text("SELECT pg_advisory_xact_lock(hashtext(:scope))"), {"scope": lock_key})
+            yield DataStore(conn)
+
+    @staticmethod
+    @contextmanager
+    def temporary(tables: Sequence[SchemaTable]) -> Generator[DataStore]:
+        """Create an isolated disposable SQLite store with the selected canonical schemas."""
+        with tempfile.TemporaryDirectory(prefix="pea-store-") as directory:
+            engine = create_engine("sqlite:///" + (Path(directory) / "source.sqlite").as_posix())
+            try:
+                _create_canonical(engine, tables)
+                yield DataStore(engine)
+            finally:
+                engine.dispose()
+
+    def insert(self, table: SchemaTable | str, df: pd.DataFrame) -> int:
+        """Strictly append prepared rows to an existing table; conflicts fail and roll back."""
+        if df.empty:
+            return 0
+        tbl = _reflect(self.engine, name_of(table))
+        if set(df.columns) - set(tbl.c.keys()):
+            raise ValueError(f"{name_of(table)}: insert contains unknown columns")
+        records = _records(_coerce_temporal(df, tbl))
+        with _connection(self.engine, write=True) as conn:
+            for offset in range(0, len(records), _CHUNK):
+                conn.execute(tbl.insert(), records[offset : offset + _CHUNK])
+        return len(records)
+
+    def update(self, table: SchemaTable | str, values: dict[str, object], where: Where) -> int:
+        """Update carried values on an explicit scope; empty tuple/OR scopes change no rows."""
+        if where is None or isinstance(where, dict) and not where or not values:
+            raise ValueError("update() needs values and an explicit where scope")
+        if not self.exists(table):
+            return 0
+        tbl = _reflect(self.engine, name_of(table))
+        if set(values) - set(tbl.c.keys()):
+            raise ValueError(f"{name_of(table)}: update contains unknown columns")
+        bound = _records(_coerce_temporal(pd.DataFrame([values]), tbl))[0]
+        with _connection(self.engine, write=True) as conn:
+            return int(conn.execute(tbl.update().where(_where(tbl, where)).values(bound)).rowcount)
+
+    def summarize(
+        self,
+        table: SchemaTable | str,
+        by: str | Sequence[str],
+        aggregations: dict[str, tuple[str, str | None]],
+        *,
+        count_where: dict[str, Where] | None = None,
+        where: Where | None = None,
+    ) -> pd.DataFrame:
+        """Return grouped count/min/max values, with optional filters on named counts."""
+        groups = [by] if isinstance(by, str) else list(by)
+        if not aggregations or set(groups) & set(aggregations) or set(count_where or {}) - set(aggregations):
+            raise ValueError("Summary groups, aliases and filtered counts must be unambiguous")
+        if not self.exists(table):
+            return pd.DataFrame(columns=[*groups, *aggregations])
+        tbl = _reflect(self.engine, name_of(table))
+        values = []
+        for alias, (operation, column) in aggregations.items():
+            if operation not in {"count", "min", "max"} or column is None and operation != "count":
+                raise ValueError("Summaries support count/min/max; min/max need a column")
+            aggregate = getattr(func, operation)(tbl.c[column]) if column is not None else func.count()
+            if alias in (count_where or {}):
+                if operation != "count":
+                    raise ValueError("Only counts accept count_where")
+                aggregate = aggregate.filter(_where(tbl, cast(dict[str, Where], count_where)[alias]))
+            values.append(aggregate.label(alias))
+        stmt = select(*(tbl.c[column] for column in groups), *values).select_from(tbl).where(_where(tbl, where))
+        if groups:
+            stmt = stmt.group_by(*(tbl.c[column] for column in groups))
+        with _connection(self.engine) as conn:
+            return pd.read_sql(stmt, conn)
+
+    def load_cohort(
+        self,
+        table: SchemaTable | str,
+        group_column: str,
+        where: Where,
+        columns: Sequence[str] | None = None,
+    ) -> pd.DataFrame:
+        """Read every member of groups touched by the seed scope, using one same-table subquery."""
+        if not self.exists(table):
+            return pd.DataFrame(columns=list(columns or ()))
+        tbl = _reflect(self.engine, name_of(table))
+        group = tbl.c[group_column]
+        seeds = select(group).where(_where(tbl, where))
+        stmt = select(*(tbl.c[column] for column in columns)) if columns else select(tbl)
+        with _connection(self.engine) as conn:
+            return pd.read_sql(stmt.where(group.in_(seeds)), conn)
+
+    def same_rows(self, table: SchemaTable | str, actual: pd.DataFrame, expected: pd.DataFrame) -> bool:
+        """Compare caller-selected columns and keys using the actual SQL DATE/NULL binding rules."""
+        columns = list(actual.columns)
+        if set(columns) != set(expected.columns):
+            return False
+        if actual.empty and expected.empty:
+            return True
+        tbl = _reflect(self.engine, name_of(table))
+        keys = list(resolve(table).pk)
+        left = _records(_coerce_temporal(actual[columns].sort_values(keys), tbl))
+        right = _records(_coerce_temporal(expected[columns].sort_values(keys), tbl))
+        return left == right
 
     # -- introspection ----------------------------------------------------- #
     def exists(self, table) -> bool:
@@ -383,7 +533,7 @@ class DataStore:
         if not self.exists(name):
             return (None, None)
         tbl = _reflect(self.engine, name)
-        with self.engine.connect() as conn:
+        with _connection(self.engine) as conn:
             row = conn.execute(select(func.min(tbl.c[col]), func.max(tbl.c[col]))).one()
         return (row[0], row[1])
 
@@ -396,7 +546,7 @@ class DataStore:
         tbl = _reflect(self.engine, name)
         if col not in tbl.c:
             return None
-        with self.engine.connect() as conn:
+        with _connection(self.engine) as conn:
             value = conn.execute(select(func.max(tbl.c[col]))).scalar()
         if value is None:
             return None
@@ -414,7 +564,7 @@ class DataStore:
         tbl = _reflect(self.engine, name)
         if col not in tbl.c or key_col not in tbl.c:
             return {}
-        with self.engine.connect() as conn:
+        with _connection(self.engine) as conn:
             rows = conn.execute(select(tbl.c[key_col], func.max(tbl.c[col])).group_by(tbl.c[key_col])).all()
         # a DATE column round-trips as `datetime.date`, so normalise every value
         out: dict[str, pd.Timestamp] = {}
@@ -439,7 +589,7 @@ class DataStore:
                 stmt = select(key, func.min(day), func.max(day), func.count()).where(key.isnot(None))
                 for where_col, value in (where or {}).items():
                     stmt = stmt.where(_predicate(tbl.c[where_col], value))
-                with self.engine.connect() as conn:
+                with _connection(self.engine) as conn:
                     rows = list(conn.execute(stmt.group_by(key)).all())
         df = pd.DataFrame([tuple(r) for r in rows], columns=["key", "first", "last", "n"])
         for edge in ("first", "last"):
@@ -455,7 +605,7 @@ class DataStore:
             return []
         tbl = _reflect(self.engine, name)
         stmt = build_select(tbl, where=where, distinct_on=column, order_by=column if order else None, descending=(order == "desc"), limit=limit)
-        with self.engine.connect() as conn:
+        with _connection(self.engine) as conn:
             values = [r[0] for r in conn.execute(stmt).all()]
         return [v for v in values if v is not None] if dropna else values
 
@@ -472,7 +622,7 @@ class DataStore:
         with _CREATE_LOCK:
             if self._def14a_retries_prepared:
                 return []
-            with self.engine.begin() as conn:
+            with _connection(self.engine, write=True) as conn:
                 if self.engine.dialect.name == "postgresql":
                     conn.execute(text("SELECT pg_advisory_xact_lock(hashtext(:scope))"), {"scope": Tables.def14a_llm.name + ".retry"})
                 if self.engine.dialect.name == "sqlite":
@@ -487,7 +637,7 @@ class DataStore:
 
     def _migrate_13f_table(self, spec: SchemaTable) -> bool:
         """Verify one source key or migrate its existing legacy key atomically."""
-        with self.engine.begin() as conn:
+        with _connection(self.engine, write=True) as conn:
             if self.engine.dialect.name == "postgresql":
                 conn.execute(text("SELECT pg_advisory_xact_lock(hashtext(:scope))"), {"scope": spec.name})
             old = inspect(conn).get_pk_constraint(spec.name)
@@ -621,7 +771,7 @@ class DataStore:
             return frame
 
         books = self._prepare_13f_table(table, columns, typed_frame)
-        with self.engine.begin() as conn:
+        with _connection(self.engine, write=True) as conn:
             if self.engine.dialect.name == "postgresql":
                 conn.execute(text("SELECT pg_advisory_xact_lock(hashtext(:scope))"), {"scope": f"{table.name}:{row['accession_number']}"})
             existing = (
@@ -657,7 +807,7 @@ class DataStore:
         table: SchemaTable | str,
         columns: Sequence[str] | None = None,
         limit: int | None = None,
-        where: dict[str, Any] | None = None,
+        where: Where | None = None,
         *,
         project: bool = False,
         since: object = None,
@@ -690,7 +840,7 @@ class DataStore:
             order_by=order_by,
             descending=descending,
         )
-        with self.engine.connect() as conn:
+        with _connection(self.engine) as conn:
             df = pd.read_sql(stmt, conn)
 
         if df.empty and not optional:
@@ -704,7 +854,7 @@ class DataStore:
         chunksize: int = 200_000,
         columns: Sequence[str] | None = None,
         project: bool = False,
-        where: dict[str, object] | None = None,
+        where: Where | None = None,
         since: object = None,
         until: object = None,
         date_col: str | None = None,
@@ -739,9 +889,17 @@ class DataStore:
             date_col=date_col or self._date_col(table),
             order_by=order_by,
         )
-        with self.engine.connect() as conn:
-            conn = conn.execution_options(stream_results=True, yield_per=chunksize, max_row_buffer=chunksize)
-            yield from pd.read_sql(stmt, conn, chunksize=chunksize)
+        with _connection(self.engine) as conn:
+            options = conn.get_execution_options()
+            conn.execution_options(stream_results=True, yield_per=chunksize, max_row_buffer=chunksize)
+            try:
+                yield from pd.read_sql(stmt, conn, chunksize=chunksize)
+            finally:
+                conn.execution_options(
+                    stream_results=options.get("stream_results", False),
+                    yield_per=options.get("yield_per"),
+                    max_row_buffer=options.get("max_row_buffer", 1000),
+                )
 
     # -- helpers ----------------------------------------------------------- #
     @staticmethod
@@ -780,7 +938,7 @@ class DataStore:
     @contextmanager
     def _institutional_transaction(self) -> Generator[Connection]:
         """Serialize source, identity and certification commits without permanent metadata."""
-        with self.engine.begin() as conn:
+        with _connection(self.engine, write=True) as conn:
             if conn.dialect.name == "postgresql":
                 conn.execute(text("SELECT pg_advisory_xact_lock(hashtext(:scope))"), {"scope": "institutional-source-proof"})
             elif conn.dialect.name == "sqlite":
@@ -1153,7 +1311,7 @@ class DataStore:
         statement = statement.having(
             func.min(checked) == func.max(checked), func.count(checked) == func.count(), func.count(tbl.c.fetched_at) == func.count()
         )
-        with self.engine.connect() as conn:
+        with _connection(self.engine) as conn:
             for ticker, boundary in conn.execute(statement):
                 result.loc[ticker] = pd.Timestamp(boundary)
         return result
@@ -1165,7 +1323,7 @@ class DataStore:
         raw = _reflect(self.engine, Tables.sec_short_volume_security.name)
         owned_symbols = select(raw.c.source_symbol).where(raw.c.ticker.in_(list(companies)))
         statement = select(raw).where(raw.c.source_symbol.in_(owned_symbols) | raw.c.source_symbol.in_(list(symbols)))
-        with self.engine.connect() as conn:
+        with _connection(self.engine) as conn:
             return pd.read_sql(statement, conn)
 
     def fails_source_periods(self) -> tuple[set[str], set[str]]:
@@ -1175,7 +1333,7 @@ class DataStore:
             return set(), pending
         raw = _reflect(self.engine, Tables.sec_fails_to_deliver_security.name)
         statement = select(raw.c.period, func.count(), func.count(raw.c.security_id)).group_by(raw.c.period)
-        with self.engine.connect() as conn:
+        with _connection(self.engine) as conn:
             rows = conn.execute(statement).all()
         stored = {str(period) for period, _, _ in rows if period is not None}
         pending |= {str(period) for period, total, stamped in rows if period is not None and stamped < total}
@@ -1189,7 +1347,7 @@ class DataStore:
         unknown = table.c.short_volume.is_(None) if "short_volume" in table.c else table.c.date.is_not(None)
         retry = func.max(case((table.c.ticker.in_(tickers) & unknown, 1), else_=0))
         statement = select(table.c.date, retry).where(table.c.date.is_not(None)).group_by(table.c.date)
-        with self.engine.connect() as conn:
+        with _connection(self.engine) as conn:
             rows = conn.execute(statement).all()
         stored = {pd.Timestamp(day).normalize() for day, _ in rows}
         pending = {pd.Timestamp(day).normalize() for day, needs_retry in rows if needs_retry}
@@ -1313,12 +1471,20 @@ class DataStore:
             return self._institutional_insert(conn, spec, frame)
 
     # -- writes ------------------------------------------------------------ #
-    def save(self, table: SchemaTable | str, df: pd.DataFrame, pk: list[str] | None = None) -> int:
+    def save(self, table: SchemaTable | str, df: pd.DataFrame, pk: list[str] | None = None, *, ignore_all_conflicts: bool = False) -> int:
         """Upsert `df` into `table` on its PK, creating the table if needed."""
         name = name_of(table)
         if df is None or df.empty:
             logger.warning(f"save() skipped: table '{name}' is empty")
             return 0
+
+        if isinstance(self.engine, Connection):
+            tbl = _reflect(self.engine, name)
+            if set(df.columns) - set(tbl.c.keys()):
+                raise ValueError(f"{name}: save contains unknown columns")
+            return _upsert_records(
+                self.engine, tbl, _records(_coerce_temporal(df, tbl)), pk or list(resolve(table).pk), ignore_all_conflicts=ignore_all_conflicts
+            )
         if name == Tables.sp500_tickers.name and "cik" in df:
             return self._save_institutional_roster(df)
         if pk is None:
@@ -1395,31 +1561,39 @@ class DataStore:
         boundary = cast(pd.Timestamp, pd.Timestamp(cutoff)).normalize()
         if not inclusive:
             boundary += pd.Timedelta(days=1)
-        with self.engine.begin() as conn:
+        with _connection(self.engine, write=True) as conn:
             conn.execute(text(f'DELETE FROM "{name}" WHERE "{col}" >= :cut'), {"cut": _bind_date(tbl.c[col], boundary)})
         if df is None or df.empty:
             return 0
+        if isinstance(self.engine, Connection):
+            return self.insert(table, df)
         df.to_sql(name, self.engine, if_exists="append", index=False)
         return len(df)
 
-    def delete(self, table, where: dict[str, object]) -> int:
-        """Delete a nonempty explicit row scope using the normal filter predicates; return deleted rows."""
-        if not where:
-            raise ValueError("delete() needs a where= filter; use replace() to rewrite a table")
-        name = name_of(table)
-        if not self.exists(name):
+    def delete(self, table: SchemaTable | str, where: Where) -> int:
+        """Delete an explicit row scope; empty tuple/OR scopes match nothing."""
+        if where is None or isinstance(where, dict) and not where:
+            raise ValueError("delete() needs a where filter; use replace() to rewrite a table")
+        if not self.exists(table):
             return 0
-        tbl = _reflect(self.engine, name)
-        stmt = tbl.delete()
-        for col, value in where.items():
-            stmt = stmt.where(_predicate(tbl.c[col], value))
-        with self.engine.begin() as conn:
-            return int(conn.execute(stmt).rowcount)
+        tbl = _reflect(self.engine, name_of(table))
+        with _connection(self.engine, write=True) as conn:
+            return int(conn.execute(tbl.delete().where(_where(tbl, where))).rowcount)
 
     def replace(self, table: SchemaTable | str, df: pd.DataFrame, chunksize: int = 200_000) -> int:
         """Rebuild with chunked COPY: DELETE managed tables, DROP/recreate unmanaged tables to remove stale columns.
 
         DROP, preparation, DELETE and COPY chunks retain their separate commits; failures can leave a partial rebuild."""
+
+        if isinstance(self.engine, Connection):
+            if resolve(table).is_unmanaged:
+                self.drop(table)
+                ensure_table(self.engine, name_of(table), df)
+            tbl = _reflect(self.engine, name_of(table))
+            self.engine.execute(tbl.delete())
+            for offset in range(0, len(df), chunksize):
+                self.bulk_seed(table, df.iloc[offset : offset + chunksize])
+            return len(df)
         if df is None or df.empty:
             return 0
         name = name_of(table)
@@ -1428,7 +1602,7 @@ class DataStore:
             if resolve(table).is_unmanaged:
                 self.drop(name)
             df = self._prepare_write(name, df)
-            with self.engine.begin() as conn:
+            with _connection(self.engine, write=True) as conn:
                 conn.execute(text(f'DELETE FROM "{name}"'))
             for i in range(0, len(df), chunksize):
                 copy_load(self.engine, df.iloc[i : i + chunksize], name)
@@ -1447,5 +1621,5 @@ class DataStore:
         self._def14a_retries_prepared = False
         with self._13f_lock if name in (Tables.sec13f_hr.name, Tables.sec13f_manager_holdings.name) else nullcontext():
             self._13f_tables.pop(name, None)
-            with self.engine.begin() as conn:
+            with _connection(self.engine, write=True) as conn:
                 conn.execute(text(f'DROP TABLE IF EXISTS "{name}"'))

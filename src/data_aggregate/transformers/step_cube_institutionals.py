@@ -43,7 +43,6 @@ from src.data_aggregate.utils.institutionals.short_flow_features import (
     secondary_class_volume,
     with_class_volume,
 )
-from src.data_extract.utils.common.identity_store import SOURCE_LOCK
 from src.data_store.schema import Tables
 from src.utils.step import Step
 
@@ -155,7 +154,8 @@ class StepCubeInstitutionals(Step):
         tail = canonical if cutoff is None else canonical.loc[canonical["date"] >= cutoff]
         if cutoff is not None and (pd.to_datetime(tail["date"]) < cutoff).any():
             raise ValueError("Institutional replacement rows precede their corrected range")
-        with self._store.transaction(SOURCE_LOCK) as store:
+        # Serialize with source publication without importing an extraction owner.
+        with self._store.transaction("institutional-source-proof") as store:
             if cutoff is None:
                 count = store.replace(part, tail)
             else:

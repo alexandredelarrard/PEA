@@ -252,7 +252,6 @@ def fetch_def14a_llm(
     except OSError as exc:
         context.log.warning("DEF 14A LLM extraction skipped: %s", exc)
         return
-    context.store.prepare_def14a_retries()
     updated = 0
 
     for _, company in tqdm(cik_map.iterrows(), total=len(cik_map), desc="DEF 14A LLM"):

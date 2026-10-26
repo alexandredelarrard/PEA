@@ -16,7 +16,7 @@ from src.data_extract.utils.common.identity import FilingScope
 from src.data_extract.utils.structure.def14a import fetch
 from src.data_extract.utils.structure.def14a.retry import SECTIONS
 from src.data_store.schema import Table, Tables
-from src.data_store.store import DataStore
+from src.data_store.store import DataStore, _create_canonical
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 from tests.data_extract.fake_context import extract_config
 
@@ -32,6 +32,10 @@ def daily(tmp_path, monkeypatch):
         log=logging.getLogger("test.def14a.retry"),
         config_dir="configs",
         config=extract_config(data_extract={"years_history": 31}),
+    )
+    _create_canonical(
+        context.store.engine,
+        [Tables.def14a_llm, Tables.def14a_executive_comp, Tables.def14a_director_comp, Tables.def14a_ownership, Tables.def14a_directors],
     )
     filed = pd.Timestamp.today().normalize() - pd.Timedelta(days=1)
     filing = pd.DataFrame(
@@ -351,7 +355,6 @@ def test_split_parent_does_not_complete_unattempted_sibling_domains(daily, monke
     answers.update(_complete_answers())
     governance = next(section for section in SECTIONS if section.key == "governance")
     raw = append_answer(None, governance, governance.schema.model_validate(answers["GovernanceExtract"]), PAYLOADS["governance"])
-    context.store.prepare_def14a_retries()
     context.store.save(
         Tables.def14a_llm, pd.DataFrame([dict(ticker="ZZ", accession_number="retry-proxy", as_of=filing.iloc[0].filing_date, def14a_json=raw)])
     )
@@ -367,7 +370,6 @@ def test_retry_only_parent_is_hidden_from_cube_and_prior_ceo_roles(daily):
     from src.data_extract.utils.structure.votes.roles import _role_map, _role_source
 
     context, _, _, filing = daily
-    context.store.prepare_def14a_retries()
     now = filing.iloc[0].filing_date
     context.store.save(
         Tables.def14a_llm,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 import pytest
+from sqlalchemy import event
 from sqlalchemy.exc import IntegrityError
 
 from src.data_store.schema import Tables
@@ -105,3 +106,27 @@ def test_sql_date_null_comparison_and_explicit_staging(sqlite_store: DataStore) 
         assert df_stored is not None
         assert store.same_rows(Tables.sec_fails_to_deliver, df_stored, df_fails.assign(date=df_fails.date + pd.Timedelta(hours=12)))
     print("SANITY: equality follows SQL DATE/NULL binding and staging creates only explicitly selected full schemas.")
+
+
+def test_generic_metadata_reuse_and_explicit_schema_invalidation(sqlite_store: DataStore) -> None:
+    _prices(sqlite_store)
+    statements = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        if statement.startswith("PRAGMA"):
+            statements.append(statement)
+
+    event.listen(sqlite_store.engine, "before_cursor_execute", record)
+    sqlite_store.load(Tables.prices)
+    cold = len(statements)
+    with sqlite_store.transaction() as bound:
+        bound.load(Tables.prices)
+        bound.insert(Tables.prices, pd.DataFrame({"ticker": ["C"], "date": [pd.Timestamp("2024-01-01")], "close_split": [1.0]}))
+    assert len(statements) == cold, "ordinary and bound calls must reuse the same generic schema metadata"
+    sqlite_store.ensure_columns(Tables.prices, pd.DataFrame({"cache_note": ["explicit"]}))
+    assert "cache_note" in sqlite_store.columns(Tables.prices)
+    sqlite_store.drop(Tables.prices)
+    assert not sqlite_store.exists(Tables.prices)
+    _prices(sqlite_store)
+    assert "cache_note" not in sqlite_store.columns(Tables.prices)
+    print("SANITY: generic metadata is shared with transactions and refreshed by explicit alter/drop/recreate.")

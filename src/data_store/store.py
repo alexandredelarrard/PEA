@@ -4,15 +4,13 @@ from __future__ import annotations
 
 import csv
 import datetime as dt
-import hashlib
 import io
-import json
 import logging
 import re
 import tempfile
 import threading
-from collections.abc import Callable, Generator, Mapping, Sequence
-from contextlib import contextmanager, nullcontext
+from collections.abc import Generator, Mapping, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, cast
 
@@ -24,7 +22,6 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.sql.elements import ColumnElement
 
-from src.constants.constants import SEC_13F_SOURCE_ACCOUNTED
 from src.data_store import ddl
 from src.data_store.errors import TableEmptyError, TableMissingError
 from src.data_store.schema import (
@@ -37,7 +34,6 @@ from src.data_store.schema import (
 from src.data_store.schema import (
     Table as SchemaTable,
 )
-from src.utils.institutional_vintages import reconcile_13f_source
 
 _CHUNK = 10_000
 _CREATE_LOCK = threading.Lock()
@@ -90,8 +86,8 @@ def table_exists(engine: Engine | Connection, name: str) -> bool:
     return inspect(engine).has_table(name)
 
 
-def _reflect(engine: Engine | Connection, name: str) -> Table:
-    return Table(name, MetaData(), autoload_with=engine)
+def _reflect(engine: Engine | Connection, name: str, metadata: MetaData | None = None) -> Table:
+    return Table(name, metadata if metadata is not None else MetaData(), autoload_with=engine)
 
 
 def ensure_table(engine: Engine | Connection, name: str, df: pd.DataFrame) -> None:
@@ -358,30 +354,13 @@ def _delete_then_insert(conn, tbl: Table, chunk: list[dict], pk: list[str]) -> N
     conn.execute(tbl.insert(), chunk)
 
 
-def _prepare_def14a_table(conn: Connection, spec: SchemaTable, block: str) -> bool:
-    """Create one canonical table or initialize its legacy attempts in the caller's transaction."""
-    inspector = inspect(conn)
-    if not inspector.has_table(spec.name):
-        for statement in block.split(";"):
-            if statement.strip():
-                conn.execute(text(statement))
-        return True
-    if "retry" in {column["name"] for column in inspector.get_columns(spec.name)}:
-        return False
-    conn.execute(text(f"ALTER TABLE {ddl.quote(spec.name)} ADD COLUMN retry BIGINT"))
-    conn.execute(text(f"UPDATE {ddl.quote(spec.name)} SET retry = 1"))
-    return True
-
-
 class DataStore:
     """Registry-backed database facade. Missing/empty reads raise unless optional=True."""
 
     def __init__(self, engine: Engine | Connection) -> None:
         self.engine = engine.engine if isinstance(engine, Connection) else engine
         self._database: Engine | Connection = engine
-        self._13f_tables: dict[str, Table] = {}
-        self._13f_lock = threading.RLock()
-        self._def14a_retries_prepared = False
+        self._metadata = MetaData()
 
     @staticmethod
     @contextmanager
@@ -409,7 +388,13 @@ class DataStore:
                 if conn.dialect.name != "postgresql":
                     raise ValueError("Scoped transaction locks require PostgreSQL or SQLite")
                 conn.execute(text("SELECT pg_advisory_xact_lock(hashtext(:scope))"), {"scope": lock_key})
-            yield DataStore(conn)
+            bound = DataStore(conn)
+            bound._metadata = self._metadata
+            try:
+                yield bound
+            except BaseException:
+                self._metadata.clear()
+                raise
 
     @staticmethod
     @contextmanager
@@ -427,7 +412,7 @@ class DataStore:
         """Strictly append prepared rows to an existing table; conflicts fail and roll back."""
         if df.empty:
             return 0
-        tbl = _reflect(self._database, name_of(table))
+        tbl = self._table(table)
         if set(df.columns) - set(tbl.c.keys()):
             raise ValueError(f"{name_of(table)}: insert contains unknown columns")
         records = _records(_coerce_temporal(df, tbl))
@@ -442,7 +427,7 @@ class DataStore:
             raise ValueError("update() needs values and an explicit where scope")
         if not self.exists(table):
             return 0
-        tbl = _reflect(self._database, name_of(table))
+        tbl = self._table(table)
         if set(values) - set(tbl.c.keys()):
             raise ValueError(f"{name_of(table)}: update contains unknown columns")
         bound = _records(_coerce_temporal(pd.DataFrame([values]), tbl))[0]
@@ -464,7 +449,7 @@ class DataStore:
             raise ValueError("Summary groups, aliases and filtered counts must be unambiguous")
         if not self.exists(table):
             return pd.DataFrame(columns=[*groups, *aggregations])
-        tbl = _reflect(self._database, name_of(table))
+        tbl = self._table(table)
         values = []
         for alias, (operation, column) in aggregations.items():
             if operation not in {"count", "min", "max"} or column is None and operation != "count":
@@ -491,7 +476,7 @@ class DataStore:
         """Read every member of groups touched by the seed scope, using one same-table subquery."""
         if not self.exists(table):
             return pd.DataFrame(columns=list(columns or ()))
-        tbl = _reflect(self._database, name_of(table))
+        tbl = self._table(table)
         group = tbl.c[group_column]
         seeds = select(group).where(_where(tbl, where))
         stmt = select(*(tbl.c[column] for column in columns)) if columns else select(tbl)
@@ -505,19 +490,29 @@ class DataStore:
             return False
         if actual.empty and expected.empty:
             return True
-        tbl = _reflect(self._database, name_of(table))
+        tbl = self._table(table)
         keys = list(resolve(table).pk)
         left = _records(_coerce_temporal(actual[columns].sort_values(keys), tbl))
         right = _records(_coerce_temporal(expected[columns].sort_values(keys), tbl))
         return left == right
 
     # -- introspection ----------------------------------------------------- #
+    def _table(self, table: SchemaTable | str) -> Table:
+        """Reuse SQLAlchemy schema metadata across ordinary and transaction-bound operations."""
+        name = name_of(table)
+        with _CREATE_LOCK:
+            if name not in self._metadata.tables:
+                _reflect(self._database, name, self._metadata)
+            return self._metadata.tables[name]
+
     def exists(self, table) -> bool:
-        return table_exists(self._database, name_of(table))
+        return name_of(table) in self._metadata.tables or table_exists(self._database, name_of(table))
 
     def columns(self, table) -> list[str]:
         """Ordered column names, or an empty list for an absent table."""
         name = name_of(table)
+        if name in self._metadata.tables:
+            return list(self._metadata.tables[name].c.keys())
         inspector = inspect(self._database)
         return [column["name"] for column in inspector.get_columns(name)] if inspector.has_table(name) else []
 
@@ -533,7 +528,7 @@ class DataStore:
             raise ValueError(f"{name}: no column given and the table declares no date_col")
         if not self.exists(name):
             return (None, None)
-        tbl = _reflect(self._database, name)
+        tbl = self._table(name)
         with _connection(self._database) as conn:
             row = conn.execute(select(func.min(tbl.c[col]), func.max(tbl.c[col]))).one()
         return (row[0], row[1])
@@ -544,7 +539,7 @@ class DataStore:
         col = column or self._date_col(table)
         if col is None or not self.exists(name):
             return None
-        tbl = _reflect(self._database, name)
+        tbl = self._table(name)
         if col not in tbl.c:
             return None
         with _connection(self._database) as conn:
@@ -562,7 +557,7 @@ class DataStore:
         col = date_col or self._date_col(table)
         if col is None or not self.exists(name):
             return {}
-        tbl = _reflect(self._database, name)
+        tbl = self._table(name)
         if col not in tbl.c or key_col not in tbl.c:
             return {}
         with _connection(self._database) as conn:
@@ -584,7 +579,7 @@ class DataStore:
         col = date_col or self._date_col(table)
         rows: list = []
         if col is not None and self.exists(name):
-            tbl = _reflect(self._database, name)
+            tbl = self._table(name)
             if col in tbl.c and key_col in tbl.c:
                 key, day = tbl.c[key_col], tbl.c[col]
                 stmt = select(key, func.min(day), func.max(day), func.count()).where(key.isnot(None))
@@ -604,204 +599,11 @@ class DataStore:
         name = name_of(table)
         if not self.exists(name):
             return []
-        tbl = _reflect(self._database, name)
+        tbl = self._table(name)
         stmt = build_select(tbl, where=where, distinct_on=column, order_by=column if order else None, descending=(order == "desc"), limit=limit)
         with _connection(self._database) as conn:
             values = [r[0] for r in conn.execute(stmt).all()]
         return [v for v in values if v is not None] if dropna else values
-
-    def prepare_def14a_retries(self) -> list[str]:
-        """Install five typed schemas and initialize legacy attempts once, atomically."""
-        # Load canonical layouts before a counter-only write can infer a partial schema.
-        if self._def14a_retries_prepared:
-            return []
-        blocks = ddl.existing_blocks((Path(__file__).resolve().parents[2] / "sql" / "schema.sql").read_text(encoding="utf-8"))
-        tables = (Tables.def14a_llm, Tables.def14a_executive_comp, Tables.def14a_director_comp, Tables.def14a_ownership, Tables.def14a_directors)
-        changed: list[str] = []
-
-        # Serialize migration and keep ADD/backfill together so a restart cannot reset 2.
-        with _CREATE_LOCK:
-            if self._def14a_retries_prepared:
-                return []
-            with _connection(self.engine, write=True) as conn:
-                if self.engine.dialect.name == "postgresql":
-                    conn.execute(text("SELECT pg_advisory_xact_lock(hashtext(:scope))"), {"scope": Tables.def14a_llm.name + ".retry"})
-                if self.engine.dialect.name == "sqlite":
-                    conn.exec_driver_sql("BEGIN")
-                for spec in tables:
-                    initialized = _prepare_def14a_table(conn, spec, blocks[spec.name])
-                    changed.extend([spec.name] if initialized else [])
-            self._def14a_retries_prepared = True
-
-        logger.info("DEF14A retry schemas prepared; %d table(s) initialized", len(changed))
-        return changed
-
-    def _migrate_13f_table(self, spec: SchemaTable) -> bool:
-        """Verify one source key or migrate its existing legacy key atomically."""
-        with _connection(self.engine, write=True) as conn:
-            if self.engine.dialect.name == "postgresql":
-                conn.execute(text("SELECT pg_advisory_xact_lock(hashtext(:scope))"), {"scope": spec.name})
-            old = inspect(conn).get_pk_constraint(spec.name)
-            if tuple(old["constrained_columns"]) == spec.pk:
-                return False
-            expected = tuple(key for key in spec.pk if key != "accession_number")
-            if tuple(old["constrained_columns"]) != expected:
-                raise ValueError(f"Unexpected 13F primary key: {spec.name}: {old}")
-            if self.engine.dialect.name != "postgresql":
-                raise ValueError("Legacy 13F primary-key migration requires PostgreSQL")
-            conn.execute(text(f"ALTER TABLE {ddl.quote(spec.name)} ADD COLUMN IF NOT EXISTS accession_number TEXT NOT NULL DEFAULT '_legacy'"))
-            conn.execute(text(f"ALTER TABLE {ddl.quote(spec.name)} DROP CONSTRAINT {ddl.quote(cast(str, old['name']))}"))
-            conn.execute(text(f"ALTER TABLE {ddl.quote(spec.name)} ADD PRIMARY KEY ({', '.join(ddl.quote(key) for key in spec.pk)})"))
-        return True
-
-    def migrate_13f_tables(self) -> list[str]:
-        """Rekey existing PostgreSQL tables, retaining every unverified legacy row."""
-        changed: list[str] = []
-        with self._13f_lock:
-            for spec in (Tables.sec13f_hr, Tables.sec13f_manager_holdings):
-                prepared = self._13f_tables.get(spec.name)
-                if prepared is not None and tuple(prepared.primary_key.columns.keys()) == spec.pk:
-                    continue
-                if not self.exists(spec):
-                    continue
-                if self._migrate_13f_table(spec):
-                    self._13f_tables.pop(spec.name, None)
-                    changed.append(spec.name)
-                    logger.warning("%s: accession primary key installed; legacy rows retained as unverified _legacy.", spec.name)
-        return changed
-
-    def _prepare_13f_table(self, table: SchemaTable, columns: list[str], build: Callable[[], pd.DataFrame]) -> Table:
-        """Reuse verified 13F metadata until incoming columns or store schema operations invalidate it; build DDL frames lazily."""
-        with self._13f_lock:
-            prepared = self._13f_tables.get(table.name)
-            if prepared is not None and tuple(prepared.primary_key.columns.keys()) == table.pk and set(columns) <= set(prepared.c.keys()):
-                return prepared
-            frame = build()
-            ensure_table(self.engine, table.name, frame)
-            self.migrate_13f_tables()
-            ensure_columns(self.engine, table.name, frame)
-            prepared = _reflect(self.engine, table.name)
-            self._13f_tables[table.name] = prepared
-            return prepared
-
-    @staticmethod
-    def _13f_checksum(manifest: pd.DataFrame, holdings: pd.DataFrame, table: SchemaTable) -> str:
-        """Validate source reconciliation and hash the immutable economic payload."""
-        if table not in (Tables.sec13f_hr, Tables.sec13f_manager_holdings):
-            raise ValueError("13F filings belong in the two existing holdings tables")
-        if len(manifest) != 1 or manifest.iloc[0]["parse_status"] != "complete":
-            raise ValueError("13F save requires one complete filing manifest")
-        row: Any = manifest.iloc[0]
-        empty_marker = cast(tuple[str, str], table.empty_marker)
-        if int(row["parsed_row_count"]) != len(holdings) or int(row["source_row_count"]) < len(holdings):
-            raise ValueError("13F source row count does not reconcile")
-        reconcile_13f_source(
-            int(row["source_row_count"]),
-            row["declared_row_count"],
-            float(row["source_value_total"]),
-            row["declared_value_total"],
-            source_accounted=str(row.get("value_unit_evidence", "")).startswith(SEC_13F_SOURCE_ACCOUNTED),
-        )
-        if holdings.duplicated(["cik", "accession_number", "cusip"]).any() or holdings.cusip.eq(empty_marker[1]).any():
-            raise ValueError("Duplicate or reserved CUSIP within an immutable filing")
-        for key in ("cik", "accession_number", "period", "filing_date"):
-            if key not in holdings or (
-                not holdings.empty
-                and not (
-                    pd.to_datetime(holdings[key]).eq(pd.Timestamp(row[key])).all()
-                    if key in {"period", "filing_date"}
-                    else holdings[key].eq(row[key]).all()
-                )
-            ):
-                raise ValueError(f"13F manifest/holdings mismatch: {key}")
-        raw_columns = ["raw_value_usd", "raw_call_value", "raw_put_value", "raw_debt_value", "raw_other_value"]
-        if any(column not in holdings for column in raw_columns):
-            raise ValueError("13F immutable holdings require raw typed value legs")
-        raw_values = holdings[raw_columns].to_numpy(dtype=float)
-        if not np.isfinite(raw_values).all() or (raw_values < 0).any():
-            raise ValueError("13F raw holdings values must be finite and nonnegative")
-        if not np.isclose(float(raw_values.sum()), float(row["source_value_total"]), rtol=0.005, atol=1):
-            raise ValueError("13F holdings raw value total does not reconcile to source")
-        # Byte layout and clocks differ between ZIP and EDGAR; compare economic source content.
-        keys = (
-            "cik",
-            "accession_number",
-            "period",
-            "filing_date",
-            "amendment_type",
-            "amendment_number",
-            "report_type",
-            "restricted",
-            "source_row_count",
-            "source_value_total",
-        )
-        canonical: dict[str, Any] = {key: str(row[key]) for key in keys}
-        payload_cols = ["cusip", "shares", "call_shares", "put_shares", "debt_prn", *raw_columns, "class_evidence"]
-        payload = holdings[payload_cols].sort_values("cusip").fillna("").astype(str)
-        canonical["positions"] = [
-            dict(zip(payload_cols, values, strict=True)) for values in zip(*(payload[c].tolist() for c in payload_cols), strict=True)
-        ]
-        return hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest()
-
-    def save_13f_filing(
-        self,
-        manifest: pd.DataFrame,
-        holdings: pd.DataFrame,
-        *,
-        table: SchemaTable = Tables.sec13f_manager_holdings,
-    ) -> int:
-        """Atomically preserve a full accession and its completion marker in an existing table."""
-        checksum = self._13f_checksum(manifest, holdings, table)
-        row: Any = manifest.iloc[0]
-        empty_marker = cast(tuple[str, str], table.empty_marker)
-        marker = manifest.assign(cusip=empty_marker[1], content_checksum=checksum)
-        if table == Tables.sec13f_hr:
-            if "ticker" not in holdings or holdings.ticker.isna().any():
-                raise ValueError("13F broad holdings require ticker or the unmapped sentinel")
-            marker["ticker"] = empty_marker[1]
-        positions = holdings.assign(parse_status="position")
-        columns = list(dict.fromkeys([*positions.columns, *marker.columns]))
-
-        def typed_frame() -> pd.DataFrame:
-            frame = pd.concat([positions, marker], ignore_index=True)
-            for column in manifest:
-                if column not in holdings:
-                    dtype = manifest[column].dtype
-                    dtype = "Int64" if pd.api.types.is_integer_dtype(dtype) else ("boolean" if pd.api.types.is_bool_dtype(dtype) else dtype)
-                    frame[column] = frame[column].astype(dtype)
-            return frame
-
-        books = self._prepare_13f_table(table, columns, typed_frame)
-        with _connection(self.engine, write=True) as conn:
-            if self.engine.dialect.name == "postgresql":
-                conn.execute(text("SELECT pg_advisory_xact_lock(hashtext(:scope))"), {"scope": f"{table.name}:{row['accession_number']}"})
-            existing = (
-                conn.execute(
-                    select(books.c.content_checksum, books.c.declared_row_count, books.c.declared_value_total).where(
-                        books.c.cik == row["cik"],
-                        books.c.period == _bind_date(books.c.period, pd.Timestamp(row["period"])),
-                        books.c.accession_number == row["accession_number"],
-                        books.c.cusip == empty_marker[1],
-                    )
-                )
-                .mappings()
-                .one_or_none()
-            )
-            if existing is not None:
-                declared_count = None if pd.isna(row["declared_row_count"]) else int(row["declared_row_count"])
-                declared_total = None if pd.isna(row["declared_value_total"]) else float(row["declared_value_total"])
-                if (
-                    existing["content_checksum"] != checksum
-                    or existing["declared_row_count"] != declared_count
-                    or existing["declared_value_total"] != declared_total
-                ):
-                    raise ValueError(f"13F checksum conflict for {row['accession_number']}")
-                return 0
-            records = _records(_coerce_temporal(positions.reindex(columns=columns), books))
-            for offset in range(0, len(records), _CHUNK):
-                conn.execute(books.insert(), records[offset : offset + _CHUNK])
-            conn.execute(books.insert(), _records(_coerce_temporal(marker.reindex(columns=columns), books)))
-        return len(holdings)
 
     def load(
         self,
@@ -926,7 +728,7 @@ class DataStore:
         if columns is not None and project:
             raise ValueError("pass either columns= or project=True, not both")
         columns = list(columns) if columns is not None else None
-        tbl = _reflect(self._database, name_of(table)) if self.exists(table) else None
+        tbl = self._table(table) if self.exists(table) else None
         if not project:
             return tbl, columns
         cols, required_missing, optional_missing = projection_report(table, (list(tbl.c.keys()) or None) if tbl is not None else None)
@@ -1481,7 +1283,7 @@ class DataStore:
             return 0
 
         if isinstance(self._database, Connection):
-            tbl = _reflect(self._database, name)
+            tbl = self._table(name)
             if set(df.columns) - set(tbl.c.keys()):
                 raise ValueError(f"{name}: save contains unknown columns")
             return _upsert_records(
@@ -1491,27 +1293,14 @@ class DataStore:
             return self._save_institutional_roster(df)
         if pk is None:
             pk = list(resolve(table).pk)
-        if "retry" in df and resolve(table) in (
-            Tables.def14a_llm,
-            Tables.def14a_executive_comp,
-            Tables.def14a_director_comp,
-            Tables.def14a_ownership,
-            Tables.def14a_directors,
-        ):
-            self.prepare_def14a_retries()
-        with self._13f_lock if name in (Tables.sec13f_hr.name, Tables.sec13f_manager_holdings.name) else nullcontext():
-            self._13f_tables.pop(name, None)
-            df = self._prepare_write(name, df)
-            return upsert_dataframe(self._database, df, name, pk)
+        df = self._prepare_write(name, df)
+        return upsert_dataframe(self._database, df, name, pk)
 
     def _prepare_write(self, name: str, df: pd.DataFrame) -> pd.DataFrame:
         """Prepare ordinary save/rebuild layouts while the caller holds any 13F lock."""
-        if name in (Tables.sec13f_hr.name, Tables.sec13f_manager_holdings.name):
-            if "accession_number" not in df:
-                df = df.assign(accession_number="_legacy")
-            self.migrate_13f_tables()
         ensure_table(self._database, name, df)
-        ensure_columns(self._database, name, df)
+        if ensure_columns(self._database, name, df):
+            self._metadata.clear()
         return df
 
     def bulk_seed(self, table, df: pd.DataFrame) -> int:
@@ -1558,7 +1347,7 @@ class DataStore:
         col = date_col or self._date_col(table)
         if col is None:
             raise ValueError(f"{name}: append_tail needs a date column")
-        tbl = _reflect(self._database, name)
+        tbl = self._table(name)
         # A day boundary also preserves the cutoff day on text-typed SQLite dates.
         boundary = cast(pd.Timestamp, pd.Timestamp(cutoff)).normalize()
         if not inclusive:
@@ -1578,7 +1367,7 @@ class DataStore:
             raise ValueError("delete() needs a where filter; use replace() to rewrite a table")
         if not self.exists(table):
             return 0
-        tbl = _reflect(self._database, name_of(table))
+        tbl = self._table(table)
         with _connection(self._database, write=True) as conn:
             return int(conn.execute(tbl.delete().where(_where(tbl, where))).rowcount)
 
@@ -1591,7 +1380,7 @@ class DataStore:
             if resolve(table).is_unmanaged:
                 self.drop(table)
                 ensure_table(self._database, name_of(table), df)
-            tbl = _reflect(self._database, name_of(table))
+            tbl = self._table(table)
             self._database.execute(tbl.delete())
             for offset in range(0, len(df), chunksize):
                 self.bulk_seed(table, df.iloc[offset : offset + chunksize])
@@ -1599,29 +1388,26 @@ class DataStore:
         if df is None or df.empty:
             return 0
         name = name_of(table)
-        with self._13f_lock if name in (Tables.sec13f_hr.name, Tables.sec13f_manager_holdings.name) else nullcontext():
-            self._13f_tables.pop(name, None)
-            if resolve(table).is_unmanaged:
-                self.drop(name)
-            df = self._prepare_write(name, df)
-            with _connection(self._database, write=True) as conn:
-                conn.execute(text(f'DELETE FROM "{name}"'))
-            for i in range(0, len(df), chunksize):
-                copy_load(self._database, df.iloc[i : i + chunksize], name)
-            return len(df)
+        if resolve(table).is_unmanaged:
+            self.drop(name)
+        df = self._prepare_write(name, df)
+        with _connection(self._database, write=True) as conn:
+            conn.execute(text(f'DELETE FROM "{name}"'))
+        for i in range(0, len(df), chunksize):
+            copy_load(self._database, df.iloc[i : i + chunksize], name)
+        return len(df)
 
     def ensure_columns(self, table: SchemaTable | str, df: pd.DataFrame) -> list[str]:
         """Add newly observed columns on PostgreSQL/SQLite and return their names; never drop fields."""
         name = name_of(table)
-        with self._13f_lock if name in (Tables.sec13f_hr.name, Tables.sec13f_manager_holdings.name) else nullcontext():
-            self._13f_tables.pop(name, None)
+        try:
             return ensure_columns(self._database, name, df)
+        finally:
+            self._metadata.clear()
 
     def drop(self, table: SchemaTable | str) -> None:
         """Drop a registered or bare table name and invalidate its prepared metadata."""
         name = name_of(table)
-        self._def14a_retries_prepared = False
-        with self._13f_lock if name in (Tables.sec13f_hr.name, Tables.sec13f_manager_holdings.name) else nullcontext():
-            self._13f_tables.pop(name, None)
-            with _connection(self._database, write=True) as conn:
-                conn.execute(text(f'DROP TABLE IF EXISTS "{name}"'))
+        self._metadata.clear()
+        with _connection(self._database, write=True) as conn:
+            conn.execute(text(f'DROP TABLE IF EXISTS "{name}"'))

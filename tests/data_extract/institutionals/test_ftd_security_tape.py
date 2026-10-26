@@ -22,7 +22,7 @@ from src.data_extract.utils.common import security_master as sm
 from src.data_extract.utils.common.identity import build_identity, load_source_identity
 from src.data_extract.utils.institutionals import fetch_fails_to_deliver as ftd
 from src.data_store.schema import Table, Tables
-from src.data_store.store import DataStore
+from src.data_store.store import DataStore, _create_canonical
 from tests.data_extract.fake_context import extract_config
 
 REPO = Path(__file__).resolve().parents[3]
@@ -207,6 +207,24 @@ LINEAGE_ROWS = [
 # --------------------------------------------------------------------------- fixtures
 
 
+@pytest.fixture
+def sqlite_store(sqlite_store):
+    _create_canonical(
+        sqlite_store.engine,
+        [
+            Tables.sp500_tickers,
+            Tables.entity_lineage,
+            Tables.symbol_tenure,
+            Tables.security_master,
+            Tables.sec_fails_to_deliver_security,
+            Tables.sec_fails_to_deliver,
+            Tables.sec_short_volume_security,
+            Tables.short_interest,
+        ],
+    )
+    return sqlite_store
+
+
 def _master(rows: list[tuple] = MASTER_ROWS, stamp: pd.Timestamp = BUILT) -> pd.DataFrame:
     frame = pd.DataFrame(
         rows,
@@ -314,6 +332,7 @@ def _rebuild(
     """A full rebuild from `lines` as the whole cache, over a fresh source pair."""
     store.drop(Tables.sec_fails_to_deliver_security)
     store.drop(Tables.sec_fails_to_deliver)
+    _create_canonical(store.engine, [Tables.sec_fails_to_deliver_security, Tables.sec_fails_to_deliver])
     store.replace(Tables.security_master, _master() if master is None else master)
     _serve(monkeypatch, lines)
     context = _context(store, tmp_path)
@@ -633,18 +652,20 @@ def test_incremental_run_stamps_only_unstamped_rows_and_builds_their_periods(sql
     assert reads == ["200907b", "201506a"], "quiet zero requires the successfully served complete originals"
 
     writes: list[str] = []
-    for name in ("save", "delete", "replace", "replace_institutional_source"):
+    for name in ("save", "delete", "replace"):
         original = getattr(sqlite_store, name)
         monkeypatch.setattr(sqlite_store, name, lambda *a, _n=name, _o=original, **k: writes.append(_n) or _o(*a, **k))
-    assert sqlite_store.fails_source_periods()[1] == {"200907b"}, "a legacy raw row without a dated target owner stays pending"
+    original_pair = ftd.replace_fails_source
+    monkeypatch.setattr(ftd, "replace_fails_source", lambda *a, **k: writes.append("replace_fails_source") or original_pair(*a, **k))
+    assert ftd.fails_source_periods(sqlite_store)[1] == {"200907b"}, "a legacy raw row without a dated target owner stays pending"
     assert ftd.fetch_fails_to_deliver(context, tickers=UNIVERSE, as_of=RUN_DATE) > 0
-    assert writes == ["replace_institutional_source"] and reads == ["200907b", "201506a", "200907b"]
+    assert writes == ["replace_fails_source"] and reads == ["200907b", "201506a", "200907b"]
     pd.testing.assert_series_equal(pd.Series(_grain(sqlite_store)).sort_index(), pd.Series(grain).sort_index())
     retried_raw = _security(sqlite_store)
     pd.testing.assert_frame_equal(
         retried_raw.loc[retried_raw["cusip"].eq("370442105")].reset_index(drop=True), unknown_before, check_dtype=False, check_exact=True
     )
-    assert sqlite_store.fails_source_periods()[1] == {"200907b"}
+    assert ftd.fails_source_periods(sqlite_store)[1] == {"200907b"}
     print("\n=== SANITY CHECK: incremental FTD stamp ===")
     print(
         "  complete originals justify checked zeros and CB293; unowned legacy GMGMQ stays exact, uncounted and pending, so its period retries; coherent idempotence is checked separately"
@@ -671,18 +692,19 @@ def test_e31_a_moved_boundary_restamps_exactly_the_affected_rows(sqlite_store, t
     )
     sqlite_store.replace(Tables.security_master, master)
     saved: list[tuple[dict[Table, pd.DataFrame], dict[Table, dict[str, object] | None]]] = []
-    original = sqlite_store.replace_institutional_source
+    original = ftd.replace_fails_source
 
     def observe_pair(
+        store: DataStore,
         frames: dict[Table, pd.DataFrame],
         scopes: dict[Table, dict[str, object] | None],
         expected_identity: dict[Table, pd.DataFrame] | None = None,
         expected_source: dict[Table, pd.DataFrame] | None = None,
     ) -> dict[Table, int]:
         saved.append((frames, scopes))
-        return original(frames, scopes, expected_identity, expected_source)
+        return original(store, frames, scopes, expected_identity, expected_source)
 
-    monkeypatch.setattr(sqlite_store, "replace_institutional_source", observe_pair)
+    monkeypatch.setattr(ftd, "replace_fails_source", observe_pair)
 
     derived_before = sqlite_store.load(Tables.sec_fails_to_deliver)
     assert derived_before is not None

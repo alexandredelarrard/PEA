@@ -32,19 +32,28 @@ from tqdm import tqdm
 from src.constants.constants import BROWSER_HEADERS, CANONICAL_CURRENT, CANONICAL_PREDECESSOR, DATE_FORMAT_COMPACT
 from src.context import Context
 from src.data_extract.utils.common.identity import Identity, SecurityHit, load_identity
+from src.data_extract.utils.common.identity_store import SOURCE_LOCK, assert_source_identity, load_source_identity
 from src.data_extract.utils.common.resume import document_floor, series_windows, session_dates, trading_calendar
 from src.data_extract.utils.common.security_master import EXCLUDED, SOURCE_FTD
 from src.data_extract.utils.common.sessions import last_completed_session
 from src.data_extract.utils.institutionals.fetch_fails_to_deliver import load_fails_master, master_stamps
 from src.data_extract.utils.institutionals.security_tape import (
     SUMMED_ROLES,
+    assert_tape_owners,
+    assert_tape_source,
+    commit_tape_source,
+    load_tape_cohorts,
     outside_scope,
     restamp_targets,
+    scope_tape_rows,
     stamp_changed,
     summed_lines,
+    tape_key_matches,
+    validate_tape_frames,
     warn_lost_rows,
 )
-from src.data_store.schema import Resume, Tables
+from src.data_store.schema import Resume, Table, Tables
+from src.data_store.store import DataStore, Where
 from src.utils.filer_tables import filing_window
 from src.utils.string import squash, yahoo_symbol
 
@@ -252,9 +261,8 @@ def _fetch_day(
     return r.text if r.status_code == 200 else None
 
 
-def _missing_days(context: Context, calendar: pd.DatetimeIndex, floor: pd.Timestamp, tickers: Sequence[str]) -> pd.DatetimeIndex:
+def _missing_days(calendar: pd.DatetimeIndex, floor: pd.Timestamp, known: set[pd.Timestamp], pending: set[pd.Timestamp]) -> pd.DatetimeIndex:
     """Never-stored global days plus scoped NULL quantities whose retained keys still require source."""
-    known, pending = context.store.short_source_days(tickers)
     stored = pd.DatetimeIndex(sorted(known))
     if stored.empty:
         return pd.DatetimeIndex([])
@@ -272,6 +280,8 @@ def _plan_days(
     floor = document_floor(Tables.short_interest, run_date, years_history)
     until = last_completed_session(as_of)
     calendar = trading_calendar(context)
+    known, pending = short_source_days(context.store, tickers)
+    df_stats = context.store.key_stats(Tables.short_interest, "ticker", where={"ticker": tickers})
     work = series_windows(
         context,
         Tables.short_interest,
@@ -282,8 +292,9 @@ def _plan_days(
         full=full,
         calendar=calendar if repair else None,
         listing=Tables.prices,
+        stored=(df_stats, max(known) if known else None),
     )
-    days = _missing_days(context, calendar, floor, tickers)
+    days = _missing_days(calendar, floor, known, pending)
     for since, end, _keys in work.groups():
         days = days.union(session_dates(calendar, since, end))
     return days.intersection(session_dates(calendar, floor, until))
@@ -311,7 +322,9 @@ def _company_rows(context: Context, identity: Identity, companies: Sequence[str]
     table = Tables.sec_short_volume_security
     keys = master_keys(identity, companies)
     symbols = sorted(s for s in map(str, context.store.distinct(table, "source_symbol")) if finra_key(s) in keys)
-    rows = context.store.short_volume_source_cohort(companies, symbols)
+    rows = context.store.load_cohort(
+        table, "source_symbol", [{"ticker": list(companies)}, {"source_symbol": symbols}], columns=context.store.columns(table)
+    )
     rows["date"] = pd.to_datetime(rows["date"]).dt.normalize()
     return rows
 
@@ -426,7 +439,8 @@ def restamp_short_volume(
     payload = pd.concat([fresh.loc[~fresh["ticker"].isin(others), list(SECURITY_COLUMNS)], retained], ignore_index=True)
     if not dry_run and not _same_short_cohorts(stored, payload, old_grain, grain):
         expected_grain = old_grain.reindex(columns=list(dict.fromkeys([*previous_columns, *grain.columns])))
-        context.store.replace_institutional_source(
+        replace_short_source(
+            context.store,
             {table: payload, Tables.short_interest: grain},
             {table: {"source_symbol": sorted(set(stored["source_symbol"]))}, Tables.short_interest: {"ticker": rebuilt}},
             resolver.source_cohort,
@@ -584,7 +598,8 @@ def fetch_short_interest(
     if full and not scoped:
         if grain.empty or stamped.duplicated(["source_symbol", "date"]).any():
             raise ValueError("RegSHO full staged no ticker row, or a duplicate (source_symbol, date) key; aborting before any write")
-        counts = context.store.replace_institutional_source(
+        counts = replace_short_source(
+            context.store,
             {Tables.sec_short_volume_security: stamped[list(SECURITY_COLUMNS)], Tables.short_interest: grain},
             {Tables.sec_short_volume_security: None, Tables.short_interest: None},
             resolver.source_cohort,
@@ -595,7 +610,8 @@ def fetch_short_interest(
 
     written = 0
     if successful:
-        counts = context.store.replace_institutional_source(
+        counts = replace_short_source(
+            context.store,
             {Tables.sec_short_volume_security: stamped[list(SECURITY_COLUMNS)], Tables.short_interest: grain},
             {
                 Tables.sec_short_volume_security: {"ticker": sorted(universe), "date": successful},
@@ -607,3 +623,44 @@ def fetch_short_interest(
 
     logger.info(f"Saved {written} short-volume ticker row(s) over {len(successful)} day(s) to '{Tables.short_interest}'")
     warn_lost_rows(logger, "RegSHO", restamp_short_volume(context, None, universe, identity=resolver, as_of=as_of, others=others))
+
+
+def short_source_days(store: DataStore, tickers: Sequence[str]) -> tuple[set[pd.Timestamp], set[pd.Timestamp]]:
+    """One compact date summary retains global presence and scoped unknown-volume retries."""
+    unknown = {"short_volume": None} if "short_volume" in store.columns(Tables.short_interest) else {}
+    df_days = store.summarize(
+        Tables.short_interest,
+        "date",
+        {"retry": ("count", None)},
+        count_where={"retry": {"ticker": list(tickers), **unknown}},
+        where={"date": store.NOT_NULL},
+    )
+    dates = pd.to_datetime(df_days["date"]).dt.normalize()
+    return set(dates), set(dates.loc[df_days["retry"].gt(0)])
+
+
+def replace_short_source(
+    store: DataStore,
+    frames: dict[Table, pd.DataFrame],
+    scopes: dict[Table, dict[str, object] | None],
+    expected_identity: dict[Table, pd.DataFrame] | None = None,
+    expected_source: dict[Table, pd.DataFrame] | None = None,
+) -> dict[Table, int]:
+    """Atomically publish a FINRA raw/derived pair after fresh identity and retained-owner checks."""
+    raw, grain = Tables.sec_short_volume_security, Tables.short_interest
+    if set(frames) != {raw, grain}:
+        raise ValueError("FINRA writes require their raw and ticker-grain pair")
+    validate_tape_frames(frames, scopes)
+    with store.transaction(SOURCE_LOCK) as bound:
+        identity = load_source_identity(bound) if expected_identity is not None else None
+        queries: dict[Table, Where | None] = {}
+        for table, scope in scopes.items():
+            queries[table] = [scope, frames[table][list(table.pk)]] if scope is not None else None
+        current = load_tape_cohorts(bound, queries)
+
+        if expected_identity is not None and identity is not None:
+            assert_source_identity(bound, identity, expected_identity)
+        assert_tape_owners(tape_key_matches(raw, frames[raw], current[raw]), (scopes[raw] or {}).get("ticker"))
+        old = {table: scope_tape_rows(table, current[table], scopes[table]) for table in frames}
+        assert_tape_source(bound, old, expected_source)
+        return commit_tape_source(bound, frames, scopes)

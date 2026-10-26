@@ -309,6 +309,7 @@ def series_windows(
     full: bool = False,
     calendar: pd.DatetimeIndex | None,
     listing: Table | None = None,
+    stored: tuple[pd.DataFrame, pd.Timestamp | None] | None = None,
 ) -> SeriesWork:
     """Per-key fetch windows for a dated series `table` from one `key_stats` read (plus one date read
     for the keys with interior holes against the daily `calendar`; None for a non-daily series, which
@@ -327,10 +328,10 @@ def series_windows(
     floor = document_floor(table, as_of, years_history)
 
     # get per ticker, first, last date and n count
-    df_stats = context.store.key_stats(table, key_col, date_col, where={key_col: list(keys)})
+    df_stats = context.store.key_stats(table, key_col, date_col, where={key_col: list(keys)}) if stored is None else stored[0]
     stats = dict(zip(map(str, df_stats["key"]), zip(df_stats["first"], df_stats["last"], map(int, df_stats["n"]), strict=True), strict=True))
     new = set() if full else new_tickers(context.store, table.resume.overlap_days, as_of)
-    table_max = context.store.max_date(table, date_col)
+    table_max = context.store.max_date(table, date_col) if stored is None else stored[1]
     reach = _listing_floors(context, listing, key_col, [key for key in keys if key in new], floor)
 
     windows: dict[str, list[tuple[pd.Timestamp, pd.Timestamp]]] = {}

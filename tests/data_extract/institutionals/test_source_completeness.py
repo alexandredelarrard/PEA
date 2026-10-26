@@ -35,6 +35,24 @@ from tests.data_extract.fake_context import extract_config
 from tests.data_extract.institutionals.test_short_volume_security import _identity, _master
 
 
+@pytest.fixture
+def sqlite_store(sqlite_store: DataStore) -> DataStore:
+    _create_canonical(
+        sqlite_store.engine,
+        [
+            Tables.sp500_tickers,
+            Tables.entity_lineage,
+            Tables.symbol_tenure,
+            Tables.security_master,
+            Tables.sec_fails_to_deliver_security,
+            Tables.sec_fails_to_deliver,
+            Tables.sec_short_volume_security,
+            Tables.short_interest,
+        ],
+    )
+    return sqlite_store
+
+
 def _archive(path: Path, members: dict[str, str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with ZipFile(path, "w") as archive:
@@ -63,7 +81,7 @@ def _file(short: str = "1", total: str = "2", count: int = 1) -> str:
 @pytest.mark.parametrize("payload", ["not|a source", _file("9", "10", 2), _file("1e999", "10")], ids=["header", "count", "overflow"])
 def test_failed_finra_source_preserves_last_good_rows(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, payload: str) -> None:
     day = pd.Timestamp("2026-07-01")
-    identity = _identity()
+    identity = _identity(store=sqlite_store)
     raw = finra.stamp_short_volume(finra._parse_regsho(_file()), identity, ["LEN"])
     sqlite_store.save(Tables.sec_short_volume_security, raw[list(finra.SECURITY_COLUMNS)])
     expected = pd.DataFrame({"ticker": ["LEN"], "date": [day], "short_volume": [1.0], "total_volume": [2.0]})
@@ -142,7 +160,7 @@ def test_checked_finra_absence_has_no_fabricated_total(sqlite_store: DataStore, 
     monkeypatch.setattr(finra, "_plan_days", lambda *args, **kwargs: pd.DatetimeIndex([day]))
     monkeypatch.setattr(finra, "_fetch_day", lambda *args, **kwargs: _file().splitlines()[0] + "\n0\n")
     monkeypatch.setattr(finra, "restamp_short_volume", lambda *args, **kwargs: [])
-    identity = _identity()
+    identity = _identity(store=sqlite_store)
     for table, frame in identity.source_cohort.items():
         if not frame.empty:
             sqlite_store.save(table, frame)
@@ -156,7 +174,7 @@ def test_checked_finra_absence_has_no_fabricated_total(sqlite_store: DataStore, 
 
 def test_normal_finra_retry_recovers_old_null_quantity_once(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     context = cast(Any, SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path}, config=extract_config(), log=logging.getLogger(__name__)))
-    identity = _identity()
+    identity = _identity(store=sqlite_store)
     for table, frame in identity.source_cohort.items():
         if not frame.empty:
             sqlite_store.save(table, frame)
@@ -219,7 +237,7 @@ def test_finra_null_retries_respect_document_floor_completed_session_and_calenda
 
 def test_normal_ftd_retry_recovers_old_null_quantity_once(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     context = cast(Any, SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path}, config=extract_config(), log=logging.getLogger(__name__)))
-    identity = _identity()
+    identity = _identity(store=sqlite_store)
     for table, frame in identity.source_cohort.items():
         if not frame.empty:
             sqlite_store.save(table, frame)
@@ -378,7 +396,7 @@ def test_missing_or_invalid_secondary_factor_cannot_create_checked_absence(ratio
 @pytest.mark.parametrize("bad", ["malformed", "wrong-period"])
 def test_ftd_normal_planner_retries_bad_cached_payload(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, bad: str) -> None:
     context = cast(Any, SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path}, config=extract_config(), log=logging.getLogger(__name__)))
-    identity = _identity()
+    identity = _identity(store=sqlite_store)
     for table, frame in identity.source_cohort.items():
         if not frame.empty:
             sqlite_store.save(table, frame)
@@ -443,7 +461,7 @@ def test_pending_ftd_download_cannot_restore_a_stale_derived_cohort(
     proof_column: bool,
 ) -> None:
     context = cast(Any, SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path}, config=extract_config(), log=logging.getLogger(__name__)))
-    for table, frame in _identity().source_cohort.items():
+    for table, frame in _identity(store=sqlite_store).source_cohort.items():
         if not frame.empty:
             sqlite_store.save(table, frame)
     text = "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20260701|526057104|LEN|12|LEN|10\n"
@@ -476,7 +494,8 @@ def test_pending_ftd_download_cannot_restore_a_stale_derived_cohort(
         observed = load(table, **kwargs)
         if concurrent and table == Tables.sec_fails_to_deliver and not changed:
             changed = True
-            sqlite_store.replace_institutional_source(
+            ftd.replace_fails_source(
+                sqlite_store,
                 {Tables.sec_fails_to_deliver_security: newer_raw, Tables.sec_fails_to_deliver: newer_grain},
                 {Tables.sec_fails_to_deliver_security: {"period": "202607a"}, Tables.sec_fails_to_deliver: {"period": "202607a"}},
             )
@@ -594,7 +613,7 @@ def test_bulk_invalid_economic_number_is_retryable_source_failure(tmp_path: Path
 @pytest.mark.parametrize("fail", [False, True], ids=["unchanged", "rollback"])
 def test_finra_restamp_preserves_or_atomically_rolls_back_source_pair(sqlite_store: DataStore, tmp_path: Path, fail: bool) -> None:
     context = cast(Any, SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path}, config=extract_config(), log=logging.getLogger(__name__)))
-    identity = _identity()
+    identity = _identity(store=sqlite_store)
     for table, frame in identity.source_cohort.items():
         if not frame.empty:
             sqlite_store.save(table, frame)
@@ -681,7 +700,7 @@ def test_identity_propagation_ftd_restamp_binds_classification_cohort(
     sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, race: bool
 ) -> None:
     context = cast(Any, SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path}, config=extract_config(), log=logging.getLogger(__name__)))
-    identity = _identity()
+    identity = _identity(store=sqlite_store)
     for table, frame in identity.source_cohort.items():
         if not frame.empty:
             sqlite_store.save(table, frame)
@@ -783,7 +802,7 @@ def test_generic_identity_purge_uses_guarded_insider_issuer_deletion(
     sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, race: bool
 ) -> None:
     context = cast(Any, SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path}, config=extract_config(), log=logging.getLogger(__name__)))
-    identity = _identity()
+    identity = _identity(store=sqlite_store)
     for table, frame in identity.source_cohort.items():
         if not frame.empty:
             sqlite_store.save(table, frame)

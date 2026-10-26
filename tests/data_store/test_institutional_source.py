@@ -19,6 +19,8 @@ from src.data_aggregate.utils.institutionals import inputs
 from src.data_aggregate.utils.institutionals import short_flow_features as short
 from src.data_extract.utils.common.identity import load_source_identity
 from src.data_extract.utils.common.identity_store import save_identity
+from src.data_extract.utils.institutionals.fetch_fails_to_deliver import replace_fails_source
+from src.data_extract.utils.institutionals.fetch_short_interest import replace_short_source
 from src.data_extract.utils.institutionals.insider_store import (
     certify_insider_inventory,
     certify_insider_source,
@@ -582,7 +584,8 @@ def test_stale_classification_identity_refuses_source_pair_commit(sqlite_store: 
     before = sqlite_store.load(Tables.short_interest)
     assert before is not None
     with pytest.raises(ValueError, match="identity cohort changed"):
-        sqlite_store.replace_institutional_source(
+        replace_short_source(
+            sqlite_store,
             {Tables.sec_short_volume_security: raw.assign(short_volume=99.0), Tables.short_interest: grain.assign(short_volume=99.0)},
             {Tables.sec_short_volume_security: {"ticker": "AAA"}, Tables.short_interest: {"ticker": "AAA"}},
             identities,
@@ -654,7 +657,8 @@ def test_ftd_null_owner_reconciliation_is_exact_and_atomic(sqlite_store: DataSto
     try:
         if case in ("rollback", "ambiguous"):
             with pytest.raises((RuntimeError, ValueError), match="controlled|Ambiguous"):
-                sqlite_store.replace_institutional_source(
+                replace_fails_source(
+                    sqlite_store,
                     {
                         Tables.sec_fails_to_deliver_security: raw.iloc[:0],
                         Tables.sec_fails_to_deliver: grain.assign(fails_quantity=0.0, fails_value=0.0),
@@ -672,7 +676,8 @@ def test_ftd_null_owner_reconciliation_is_exact_and_atomic(sqlite_store: DataSto
             assert stored_frame is not None
             pd.testing.assert_frame_equal(stored_frame, before_grain)
         else:
-            sqlite_store.replace_institutional_source(
+            replace_fails_source(
+                sqlite_store,
                 {Tables.sec_fails_to_deliver_security: raw.iloc[:0], Tables.sec_fails_to_deliver: grain.assign(fails_quantity=0.0, fails_value=0.0)},
                 {
                     Tables.sec_fails_to_deliver_security: {"ticker": ["AAA"], "period": "202607a"},
@@ -711,3 +716,32 @@ def test_inventory_boundary_requires_complete_consistent_rows(sqlite_store: Data
     empty = sqlite_store.insider_inventory_boundaries([])
     assert empty.empty and str(empty.dtype) == "datetime64[ns]" and empty.index.name == "ticker"
     print(f"SANITY: {case} proof includes markers, requires every row and preserves sorted unique requests/NaT/datetime dtype.")
+
+
+@pytest.mark.parametrize("collision", ["period", "owner"])
+def test_tape_incoming_key_guards_escape_the_replacement_scope(sqlite_store: DataStore, collision: str) -> None:
+    _inventory(sqlite_store)
+    raw, grain = Tables.sec_fails_to_deliver_security, Tables.sec_fails_to_deliver
+    df_raw = pd.DataFrame(
+        {
+            "cusip": ["111"],
+            "date": [pd.Timestamp("2026-07-03")],
+            "trade_date": [pd.Timestamp("2026-07-01")],
+            "source_symbol": ["AAA"],
+            "ticker": ["AAA" if collision == "period" else "BBB"],
+            "period": ["old"],
+        }
+    )
+    sqlite_store.save(raw, df_raw)
+    df_grain = pd.DataFrame({"ticker": ["AAA"], "date": [pd.Timestamp("2026-07-03")], "period": ["new"]})
+    incoming = df_raw.assign(ticker="AAA", period="new" if collision == "period" else "old")
+    before = sqlite_store.load(raw)
+    assert before is not None
+    with pytest.raises(ValueError, match="source periods|another retained issuer"):
+        replace_fails_source(
+            sqlite_store, {raw: incoming, grain: df_grain}, {raw: {"ticker": ["AAA"], "period": "new"}, grain: {"ticker": ["AAA"], "period": "new"}}
+        )
+    after = sqlite_store.load(raw)
+    assert after is not None
+    pd.testing.assert_frame_equal(before, after)
+    print("SANITY: incoming exact keys outside the selected owner/period still trigger collision refusal before mutation.")

@@ -18,9 +18,10 @@ import pandas as pd
 import pytest
 
 from src.data_extract.utils.common import security_master as sm
-from src.data_extract.utils.common.identity import build_identity
+from src.data_extract.utils.common.identity import build_identity, load_source_identity
 from src.data_extract.utils.institutionals import fetch_short_interest as si
 from src.data_store.schema import Tables
+from src.data_store.store import DataStore, _create_canonical
 from tests.data_extract.fake_context import extract_config
 
 REPO = Path(__file__).resolve().parents[3]
@@ -69,6 +70,12 @@ LINEAGE_ROWS = [
 ]
 
 
+@pytest.fixture
+def sqlite_store(sqlite_store):
+    _create_canonical(sqlite_store.engine, [Tables.sec_short_volume_security, Tables.short_interest])
+    return sqlite_store
+
+
 def _master(rows: list[tuple] = MASTER_ROWS, stamp: pd.Timestamp = BUILT) -> pd.DataFrame:
     columns = ["cusip", "canonical_company", "issuer_cik", "source_symbol", "security_class", "conversion_ratio", "lineage_role"]
     frame = pd.DataFrame(rows, columns=[*columns, "valid_from", "valid_to", "lineage_reason"])
@@ -109,7 +116,7 @@ def _lineage() -> pd.DataFrame:
     )
 
 
-def _identity(master: pd.DataFrame | None = None) -> Any:
+def _identity(master: pd.DataFrame | None = None, *, store: DataStore | None = None) -> Any:
     tenure = pd.DataFrame(
         [
             {
@@ -125,7 +132,14 @@ def _identity(master: pd.DataFrame | None = None) -> Any:
         ]
     )
     roster = pd.DataFrame([{"ticker": t, "cik": c} for t, c in ROSTER.items()])
-    return build_identity(_lineage(), tenure, roster, master=_master() if master is None else master)
+    resolver = build_identity(_lineage(), tenure, roster, master=_master() if master is None else master)
+    if store is not None:
+        _create_canonical(store.engine, list(resolver.source_cohort))
+        for table, frame in resolver.source_cohort.items():
+            if not frame.empty and store.load(table, optional=True) is None:
+                store.save(table, frame)
+        resolver.source_cohort.update(load_source_identity(store))
+    return resolver
 
 
 def _file(day: str, rows: list[tuple[str, float, float, float, str]]) -> str:
@@ -336,7 +350,7 @@ def test_e31_a_moved_master_boundary_restamps_exactly_the_affected_rows(sqlite_s
     master.loc[master["canonical_company"].eq("LEN"), "scope_changed_at"] = LATER
     sqlite_store.replace(Tables.security_master, master)
 
-    records = si.restamp_short_volume(context, None, UNIVERSE, identity=_identity(master), as_of=RUN_DATE)
+    records = si.restamp_short_volume(context, None, UNIVERSE, identity=_identity(master, store=sqlite_store), as_of=RUN_DATE)
 
     raw = sqlite_store.load(Tables.sec_short_volume_security)
     raw["day"] = pd.to_datetime(raw["date"]).dt.strftime("%Y-%m-%d")
@@ -353,10 +367,19 @@ def test_e31_a_moved_master_boundary_restamps_exactly_the_affected_rows(sqlite_s
 
 def test_e32_an_unchanged_master_restamps_nothing(sqlite_store, tmp_path, monkeypatch):
     context = _stamped_store(sqlite_store, tmp_path)
+    resolver = _identity(store=sqlite_store)
     for name in ("save", "delete", "replace", "load"):
         monkeypatch.setattr(sqlite_store, name, lambda *a, _n=name, **k: pytest.fail(f"unchanged master must not {_n}"))
     assert (
-        si.restamp_short_volume(context, None, UNIVERSE, identity=_identity(), stamps=si.change_stamps(_master(), _identity()), as_of=RUN_DATE) == []
+        si.restamp_short_volume(
+            context,
+            None,
+            UNIVERSE,
+            identity=resolver,
+            stamps=si.change_stamps(_master(), resolver),
+            as_of=RUN_DATE,
+        )
+        == []
     )
     print("\n=== SANITY CHECK: E32 unchanged master ===")
     print("  every company's stamp predates the last run: no read, no re-stamp, no write")
@@ -371,13 +394,13 @@ def test_f101_a_scoped_restamp_never_deletes_or_restamps_another_companys_rows(s
     sqlite_store.replace(Tables.security_master, master)
     before = sqlite_store.load(Tables.sec_short_volume_security).sort_values(["source_symbol", "date"], ignore_index=True)
 
-    records = si.restamp_short_volume(context, None, ["BAC"], identity=_identity(master), as_of=RUN_DATE)
+    records = si.restamp_short_volume(context, None, ["BAC"], identity=_identity(master, store=sqlite_store), as_of=RUN_DATE)
 
     after = sqlite_store.load(Tables.sec_short_volume_security).sort_values(["source_symbol", "date"], ignore_index=True)
     assert records == []
     assert len(after) == len(before) == 6, "a run scoped to BAC deletes no LEN or BRK-B row"
     pd.testing.assert_frame_equal(after[list(si.SECURITY_COLUMNS)], before[list(si.SECURITY_COLUMNS)])
-    unscoped = si.restamp_short_volume(context, None, UNIVERSE, identity=_identity(master), as_of=RUN_DATE)
+    unscoped = si.restamp_short_volume(context, None, UNIVERSE, identity=_identity(master, store=sqlite_store), as_of=RUN_DATE)
     assert unscoped == [] and len(sqlite_store.load(Tables.sec_short_volume_security)) == 6
     print("\n=== SANITY CHECK: F-101 scoped re-stamp ===")
     print("  LEN changed recently; a re-stamp scoped to BAC leaves all 6 stored rows (4 LEN, 2 BRK-B) byte-identical")

@@ -223,9 +223,17 @@ def test_unresolved_manager_raises_unless_recorded():
 def _seed_13f(store: Any, hr: list[tuple[str, str]] | None = None, books: list[tuple[str, str]] | None = None) -> None:
     """Seed (cik, period) 13F activity: `hr` into `sec13f_hr` (the S&P slice), `books` into `sec13f_manager_holdings`."""
     if hr:
-        store.save(si.Tables.sec13f_hr, pd.DataFrame([{"cik": c, "period": p, "ticker": "AAPL", "cusip": "037833100", "shares": 1.0} for c, p in hr]))
+        store.save(
+            si.Tables.sec13f_hr,
+            pd.DataFrame(
+                [{"accession_number": "_legacy", "cik": c, "period": p, "ticker": "AAPL", "cusip": "037833100", "shares": 1.0} for c, p in hr]
+            ),
+        )
     if books:
-        store.save(si.Tables.sec13f_manager_holdings, pd.DataFrame([{"cik": c, "period": p, "cusip": "037833100", "shares": 1.0} for c, p in books]))
+        store.save(
+            si.Tables.sec13f_manager_holdings,
+            pd.DataFrame([{"accession_number": "_legacy", "cik": c, "period": p, "cusip": "037833100", "shares": 1.0} for c, p in books]),
+        )
 
 
 def _gate_row(code: str, cik: str | None, snapshot: str) -> dict[str, Any]:
@@ -268,6 +276,7 @@ def _stored_snapshot(store: Any, snapshot: str, mapping: dict[str, str]) -> None
     store.save(si.Tables.superinvestor_roster, pd.DataFrame(rows))
 
 
+@pytest.mark.usefixtures("filing_store")
 def test_live_refresh_noop_when_unchanged(monkeypatch, sqlite_store, tmp_path):
     """D-6: a refresh whose (code -> cik) mapping equals the latest stored snapshot writes nothing, on a
     later day and on a same-day repeat."""
@@ -285,6 +294,7 @@ def test_live_refresh_noop_when_unchanged(monkeypatch, sqlite_store, tmp_path):
     )
 
 
+@pytest.mark.usefixtures("filing_store")
 def test_live_refresh_writes_on_change(monkeypatch, sqlite_store, tmp_path):
     """A membership change, then a CIK change (an override correction), each write a full gated snapshot dated
     today; an unchanged repeat in between writes nothing."""
@@ -310,6 +320,7 @@ def test_live_refresh_writes_on_change(monkeypatch, sqlite_store, tmp_path):
     )
 
 
+@pytest.mark.usefixtures("filing_store")
 def test_live_refresh_refuses_empty_scrape(monkeypatch, sqlite_store, tmp_path):
     """A page that parses to no manager is refused with a named error, on a cold table too (first-ever run)."""
     ctx = _refresh_fixture(monkeypatch, sqlite_store, tmp_path)
@@ -321,6 +332,7 @@ def test_live_refresh_refuses_empty_scrape(monkeypatch, sqlite_store, tmp_path):
     print(f"  cold table, empty Dataroma page -> {type(err.value).__name__}: {str(err.value)[:90]}...; nothing written. Validated.")
 
 
+@pytest.mark.usefixtures("filing_store")
 def test_live_refresh_refuses_partial_scrape(monkeypatch, sqlite_store, tmp_path):
     """A 2-manager scrape against an 83-manager latest snapshot is below `ROSTER_CAPTURE_MIN_RATIO`: refused, naming both
     counts, with the table unchanged, although both scraped managers would pass the gates."""
@@ -338,6 +350,7 @@ def test_live_refresh_refuses_partial_scrape(monkeypatch, sqlite_store, tmp_path
     )
 
 
+@pytest.mark.usefixtures("filing_store")
 def test_gate_raises_on_inactive_cik(sqlite_store):
     """The RC -> TRAC Intermodal shape: a CIK with no 13F-HR near the snapshot raises, naming code, snapshot,
     CIK and the nearest known period; a CIK with local activity passes without an EDGAR listing call."""
@@ -399,6 +412,7 @@ def test_gate_clamps_pre_xml_window():
     )
 
 
+@pytest.mark.usefixtures("filing_store")
 def test_gate_uses_listing_on_local_miss(sqlite_store):
     """A 2012-only filer with no local rows passes through the EDGAR listing, asked once per CIK; a CIK with
     local evidence never triggers the listing."""
@@ -465,6 +479,7 @@ def test_empty_listing_still_fails_the_activity_gate(monkeypatch):
     print("  edgartools listed no 13F-HR -> empty period set -> SuperinvestorResolutionError 'no 13F-HR activity ... Correct the CIK'. Validated.")
 
 
+@pytest.mark.usefixtures("filing_store")
 def test_history_and_overrides_read_from_config_dir(sqlite_store, tmp_path):
     """The seed reads the roster history and the overrides from `<config_dir>/superinvestors/`,
     never from the data store: a decoy history under DATA_STORE must be ignored."""
@@ -505,6 +520,7 @@ def test_history_and_overrides_read_from_config_dir(sqlite_store, tmp_path):
     )
 
 
+@pytest.mark.usefixtures("filing_store")
 def test_writer_picks_member_valid_at_snapshot(sqlite_store, tmp_path):
     """A resolved CIK is stored as the member of its manager's chain valid at the last quarter end
     strictly before the snapshot date: a snapshot before the successor's first book stores the
@@ -584,6 +600,7 @@ def _table_hash(store: Any) -> str:
     return hashlib.sha256(df.sort_values(list(df.columns)).to_csv(index=False).encode()).hexdigest()
 
 
+@pytest.mark.usefixtures("filing_store")
 def test_rebuild_roster_combines_history_and_live_resolved_fresh(sqlite_store, tmp_path):
     """The rebuild replaces the table with every committed history snapshot plus every stored live snapshot (none
     collapsed), all resolved fresh: a wrong stored CIK is corrected by the override or by EDGAR, a stale seed
@@ -612,6 +629,7 @@ def test_rebuild_roster_combines_history_and_live_resolved_fresh(sqlite_store, t
 
 
 @pytest.mark.parametrize("crash", ["write", "delete"])
+@pytest.mark.usefixtures("filing_store")
 def test_rebuild_roster_crash_keeps_live_history_recoverable(monkeypatch, sqlite_store, tmp_path, crash):
     """A rebuild that crashes mid-write (the bulk insert, or the stale-key delete after it) leaves every stored live
     snapshot in the table, so the documented recovery -- rerun the rebuild -- restores the full history and drops
@@ -624,9 +642,8 @@ def test_rebuild_roster_crash_keeps_live_history_recoverable(monkeypatch, sqlite
         raise RuntimeError(f"simulated crash during the {crash}")
 
     with monkeypatch.context() as patch:
-        if crash == "write":  # every bulk-insert path of the store: COPY (replace) and upsert (save)
-            patch.setattr("src.data_store.store.copy_load", boom)
-            patch.setattr("src.data_store.store.upsert_dataframe", boom)
+        if crash == "write":
+            patch.setattr(type(sqlite_store), "save", boom)
         else:
             patch.setattr(type(sqlite_store), "delete", boom)
         with pytest.raises(RuntimeError, match="simulated crash"):
@@ -651,6 +668,7 @@ def test_rebuild_roster_crash_keeps_live_history_recoverable(monkeypatch, sqlite
 
 
 @pytest.mark.parametrize("failure", ["gate", "pk"])
+@pytest.mark.usefixtures("filing_store")
 def test_rebuild_roster_refuses_to_write(sqlite_store, tmp_path, failure):
     """A gate failure (a CIK with no 13F activity near its snapshot) or a duplicate (snapshot_date, code) between
     history and live raises before the replace, leaving the table untouched."""

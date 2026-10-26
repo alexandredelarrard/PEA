@@ -10,6 +10,7 @@ import pandas as pd
 from src.data_aggregate.utils.institutionals.frontiers import schedule_complete_through
 from src.data_extract.utils.common.edgar_driver import FilingStamp, marker_row
 from src.data_store.schema import Tables
+from src.data_store.store import _create_canonical
 
 LAST_SESSION = pd.Timestamp("2026-10-02")
 
@@ -30,6 +31,7 @@ def _rows(rows: list[tuple[str, str, str, str]]) -> pd.DataFrame:
 
 
 def test_the_frontier_is_the_last_session_only_while_the_table_is_fresh(sqlite_store) -> None:
+    _create_canonical(sqlite_store.engine, [Tables.insider_transactions])
     assert schedule_complete_through(sqlite_store, Tables.insider_transactions, LAST_SESSION) is None
 
     sqlite_store.save(Tables.insider_transactions, _rows([("AAA", "z1", "2026-06-20", "zip"), ("BBB", "e1", "2026-09-22", "edgar")]))

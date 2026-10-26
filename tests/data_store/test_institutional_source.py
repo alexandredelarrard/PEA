@@ -566,7 +566,59 @@ def test_one_source_lifetime_refuses_a_different_parser_resolver(sqlite_store: D
     )
 
 
-def test_stale_classification_identity_refuses_source_pair_commit(sqlite_store: DataStore) -> None:
+@pytest.mark.parametrize("verify_identity", [False, True])
+def test_finra_full_pair_skips_prior_payload_reads(sqlite_store: DataStore, verify_identity: bool) -> None:
+    _, _, identities = _inventory(sqlite_store)
+    originals = _tape_observations(sqlite_store)
+    frames = {table: originals[table].iloc[:1].assign(short_volume=99.0) for table in (Tables.sec_short_volume_security, Tables.short_interest)}
+    payload_selects: list[str] = []
+
+    def observe(conn: Any, cursor: Any, statement: str, parameters: Any, context: Any, executemany: bool) -> None:
+        if statement.lstrip().upper().startswith("SELECT ") and any(f"FROM {table.name}" in statement for table in frames):
+            payload_selects.append(statement)
+
+    event.listen(sqlite_store.engine, "before_cursor_execute", observe)
+    try:
+        counts = replace_short_source(
+            sqlite_store,
+            frames,
+            dict.fromkeys(frames),
+            identities if verify_identity else None,
+        )
+    finally:
+        event.remove(sqlite_store.engine, "before_cursor_execute", observe)
+    assert payload_selects == [], payload_selects
+    assert counts == dict.fromkeys(frames, 1)
+    for table in frames:
+        actual = sqlite_store.load(table)
+        assert actual is not None and actual["short_volume"].tolist() == [99.0]
+    print("SANITY: full FINRA publication replaces both outputs without selecting prior raw/derived payloads, with optional fresh identity proof.")
+
+
+@pytest.mark.parametrize("table", [Tables.sec_short_volume_security, Tables.short_interest])
+@pytest.mark.parametrize("stale", [False, True])
+def test_finra_full_pair_checks_explicit_source(sqlite_store: DataStore, table: Table, stale: bool) -> None:
+    _inventory(sqlite_store)
+    originals = _tape_observations(sqlite_store)
+    frames = {member: originals[member].iloc[:1].assign(short_volume=99.0) for member in (Tables.sec_short_volume_security, Tables.short_interest)}
+    expected = sqlite_store.load(table)
+    assert expected is not None
+    if stale:
+        with pytest.raises(ValueError, match="source cohort changed"):
+            replace_short_source(sqlite_store, frames, dict.fromkeys(frames), expected_source={table: expected.assign(short_volume=999.0)})
+    else:
+        replace_short_source(sqlite_store, frames, dict.fromkeys(frames), expected_source={table: expected})
+    for member in frames:
+        actual = sqlite_store.load(member)
+        assert actual is not None
+        assert actual["short_volume"].tolist() == (originals[member]["short_volume"].tolist() if stale else [99.0])
+    print(
+        "SANITY: full FINRA publication verifies each explicitly expected raw/derived snapshot and refuses stale source before changing either output."
+    )
+
+
+@pytest.mark.parametrize("scoped", [False, True])
+def test_stale_classification_identity_refuses_source_pair_commit(sqlite_store: DataStore, scoped: bool) -> None:
     _, _, identities = _inventory(sqlite_store)
     raw = pd.DataFrame({"source_symbol": ["AAA"], "date": pd.to_datetime(["2026-07-01"]), "ticker": ["AAA"], "short_volume": [1.0]})
     grain = pd.DataFrame(
@@ -588,7 +640,7 @@ def test_stale_classification_identity_refuses_source_pair_commit(sqlite_store: 
         replace_short_source(
             sqlite_store,
             {Tables.sec_short_volume_security: raw.assign(short_volume=99.0), Tables.short_interest: grain.assign(short_volume=99.0)},
-            {Tables.sec_short_volume_security: {"ticker": "AAA"}, Tables.short_interest: {"ticker": "AAA"}},
+            {Tables.sec_short_volume_security: {"ticker": "AAA"} if scoped else None, Tables.short_interest: {"ticker": "AAA"} if scoped else None},
             identities,
         )
     stored_frame = sqlite_store.load(Tables.short_interest)

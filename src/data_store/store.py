@@ -377,7 +377,8 @@ class DataStore:
     """Registry-backed database facade. Missing/empty reads raise unless optional=True."""
 
     def __init__(self, engine: Engine | Connection) -> None:
-        self.engine = engine
+        self.engine = engine.engine if isinstance(engine, Connection) else engine
+        self._database: Engine | Connection = engine
         self._13f_tables: dict[str, Table] = {}
         self._13f_lock = threading.RLock()
         self._def14a_retries_prepared = False
@@ -399,7 +400,7 @@ class DataStore:
     @contextmanager
     def transaction(self, lock_key: str | None = None) -> Generator[DataStore]:
         """Bind generic operations to one transaction, optionally serializing a caller-owned scope."""
-        if isinstance(self.engine, Connection):
+        if isinstance(self._database, Connection):
             raise ValueError("Nested store transactions are not supported; reuse the bound store")
         with self.engine.begin() as conn:
             if conn.dialect.name == "sqlite":
@@ -426,11 +427,11 @@ class DataStore:
         """Strictly append prepared rows to an existing table; conflicts fail and roll back."""
         if df.empty:
             return 0
-        tbl = _reflect(self.engine, name_of(table))
+        tbl = _reflect(self._database, name_of(table))
         if set(df.columns) - set(tbl.c.keys()):
             raise ValueError(f"{name_of(table)}: insert contains unknown columns")
         records = _records(_coerce_temporal(df, tbl))
-        with _connection(self.engine, write=True) as conn:
+        with _connection(self._database, write=True) as conn:
             for offset in range(0, len(records), _CHUNK):
                 conn.execute(tbl.insert(), records[offset : offset + _CHUNK])
         return len(records)
@@ -441,11 +442,11 @@ class DataStore:
             raise ValueError("update() needs values and an explicit where scope")
         if not self.exists(table):
             return 0
-        tbl = _reflect(self.engine, name_of(table))
+        tbl = _reflect(self._database, name_of(table))
         if set(values) - set(tbl.c.keys()):
             raise ValueError(f"{name_of(table)}: update contains unknown columns")
         bound = _records(_coerce_temporal(pd.DataFrame([values]), tbl))[0]
-        with _connection(self.engine, write=True) as conn:
+        with _connection(self._database, write=True) as conn:
             return int(conn.execute(tbl.update().where(_where(tbl, where)).values(bound)).rowcount)
 
     def summarize(
@@ -463,7 +464,7 @@ class DataStore:
             raise ValueError("Summary groups, aliases and filtered counts must be unambiguous")
         if not self.exists(table):
             return pd.DataFrame(columns=[*groups, *aggregations])
-        tbl = _reflect(self.engine, name_of(table))
+        tbl = _reflect(self._database, name_of(table))
         values = []
         for alias, (operation, column) in aggregations.items():
             if operation not in {"count", "min", "max"} or column is None and operation != "count":
@@ -477,7 +478,7 @@ class DataStore:
         stmt = select(*(tbl.c[column] for column in groups), *values).select_from(tbl).where(_where(tbl, where))
         if groups:
             stmt = stmt.group_by(*(tbl.c[column] for column in groups))
-        with _connection(self.engine) as conn:
+        with _connection(self._database) as conn:
             return pd.read_sql(stmt, conn)
 
     def load_cohort(
@@ -490,11 +491,11 @@ class DataStore:
         """Read every member of groups touched by the seed scope, using one same-table subquery."""
         if not self.exists(table):
             return pd.DataFrame(columns=list(columns or ()))
-        tbl = _reflect(self.engine, name_of(table))
+        tbl = _reflect(self._database, name_of(table))
         group = tbl.c[group_column]
         seeds = select(group).where(_where(tbl, where))
         stmt = select(*(tbl.c[column] for column in columns)) if columns else select(tbl)
-        with _connection(self.engine) as conn:
+        with _connection(self._database) as conn:
             return pd.read_sql(stmt.where(group.in_(seeds)), conn)
 
     def same_rows(self, table: SchemaTable | str, actual: pd.DataFrame, expected: pd.DataFrame) -> bool:
@@ -504,7 +505,7 @@ class DataStore:
             return False
         if actual.empty and expected.empty:
             return True
-        tbl = _reflect(self.engine, name_of(table))
+        tbl = _reflect(self._database, name_of(table))
         keys = list(resolve(table).pk)
         left = _records(_coerce_temporal(actual[columns].sort_values(keys), tbl))
         right = _records(_coerce_temporal(expected[columns].sort_values(keys), tbl))
@@ -512,17 +513,17 @@ class DataStore:
 
     # -- introspection ----------------------------------------------------- #
     def exists(self, table) -> bool:
-        return table_exists(self.engine, name_of(table))
+        return table_exists(self._database, name_of(table))
 
     def columns(self, table) -> list[str]:
         """Ordered column names, or an empty list for an absent table."""
         name = name_of(table)
-        inspector = inspect(self.engine)
+        inspector = inspect(self._database)
         return [column["name"] for column in inspector.get_columns(name)] if inspector.has_table(name) else []
 
     def row_count(self, table) -> int:
         name = name_of(table)
-        return row_count(self.engine, name) if self.exists(name) else 0
+        return row_count(self._database, name) if self.exists(name) else 0
 
     def bounds(self, table, column: str | None = None) -> tuple:
         """Raw MIN/MAX of the requested or declared date column; (None, None) when missing/empty."""
@@ -532,8 +533,8 @@ class DataStore:
             raise ValueError(f"{name}: no column given and the table declares no date_col")
         if not self.exists(name):
             return (None, None)
-        tbl = _reflect(self.engine, name)
-        with _connection(self.engine) as conn:
+        tbl = _reflect(self._database, name)
+        with _connection(self._database) as conn:
             row = conn.execute(select(func.min(tbl.c[col]), func.max(tbl.c[col]))).one()
         return (row[0], row[1])
 
@@ -543,10 +544,10 @@ class DataStore:
         col = column or self._date_col(table)
         if col is None or not self.exists(name):
             return None
-        tbl = _reflect(self.engine, name)
+        tbl = _reflect(self._database, name)
         if col not in tbl.c:
             return None
-        with _connection(self.engine) as conn:
+        with _connection(self._database) as conn:
             value = conn.execute(select(func.max(tbl.c[col]))).scalar()
         if value is None:
             return None
@@ -561,10 +562,10 @@ class DataStore:
         col = date_col or self._date_col(table)
         if col is None or not self.exists(name):
             return {}
-        tbl = _reflect(self.engine, name)
+        tbl = _reflect(self._database, name)
         if col not in tbl.c or key_col not in tbl.c:
             return {}
-        with _connection(self.engine) as conn:
+        with _connection(self._database) as conn:
             rows = conn.execute(select(tbl.c[key_col], func.max(tbl.c[col])).group_by(tbl.c[key_col])).all()
         # a DATE column round-trips as `datetime.date`, so normalise every value
         out: dict[str, pd.Timestamp] = {}
@@ -583,13 +584,13 @@ class DataStore:
         col = date_col or self._date_col(table)
         rows: list = []
         if col is not None and self.exists(name):
-            tbl = _reflect(self.engine, name)
+            tbl = _reflect(self._database, name)
             if col in tbl.c and key_col in tbl.c:
                 key, day = tbl.c[key_col], tbl.c[col]
                 stmt = select(key, func.min(day), func.max(day), func.count()).where(key.isnot(None))
                 for where_col, value in (where or {}).items():
                     stmt = stmt.where(_predicate(tbl.c[where_col], value))
-                with _connection(self.engine) as conn:
+                with _connection(self._database) as conn:
                     rows = list(conn.execute(stmt.group_by(key)).all())
         df = pd.DataFrame([tuple(r) for r in rows], columns=["key", "first", "last", "n"])
         for edge in ("first", "last"):
@@ -603,9 +604,9 @@ class DataStore:
         name = name_of(table)
         if not self.exists(name):
             return []
-        tbl = _reflect(self.engine, name)
+        tbl = _reflect(self._database, name)
         stmt = build_select(tbl, where=where, distinct_on=column, order_by=column if order else None, descending=(order == "desc"), limit=limit)
-        with _connection(self.engine) as conn:
+        with _connection(self._database) as conn:
             values = [r[0] for r in conn.execute(stmt).all()]
         return [v for v in values if v is not None] if dropna else values
 
@@ -840,7 +841,7 @@ class DataStore:
             order_by=order_by,
             descending=descending,
         )
-        with _connection(self.engine) as conn:
+        with _connection(self._database) as conn:
             df = pd.read_sql(stmt, conn)
 
         if df.empty and not optional:
@@ -889,7 +890,7 @@ class DataStore:
             date_col=date_col or self._date_col(table),
             order_by=order_by,
         )
-        with _connection(self.engine) as conn:
+        with _connection(self._database) as conn:
             options = conn.get_execution_options()
             conn.execution_options(stream_results=True, yield_per=chunksize, max_row_buffer=chunksize)
             try:
@@ -925,7 +926,7 @@ class DataStore:
         if columns is not None and project:
             raise ValueError("pass either columns= or project=True, not both")
         columns = list(columns) if columns is not None else None
-        tbl = _reflect(self.engine, name_of(table)) if self.exists(table) else None
+        tbl = _reflect(self._database, name_of(table)) if self.exists(table) else None
         if not project:
             return tbl, columns
         cols, required_missing, optional_missing = projection_report(table, (list(tbl.c.keys()) or None) if tbl is not None else None)
@@ -1478,12 +1479,12 @@ class DataStore:
             logger.warning(f"save() skipped: table '{name}' is empty")
             return 0
 
-        if isinstance(self.engine, Connection):
-            tbl = _reflect(self.engine, name)
+        if isinstance(self._database, Connection):
+            tbl = _reflect(self._database, name)
             if set(df.columns) - set(tbl.c.keys()):
                 raise ValueError(f"{name}: save contains unknown columns")
             return _upsert_records(
-                self.engine, tbl, _records(_coerce_temporal(df, tbl)), pk or list(resolve(table).pk), ignore_all_conflicts=ignore_all_conflicts
+                self._database, tbl, _records(_coerce_temporal(df, tbl)), pk or list(resolve(table).pk), ignore_all_conflicts=ignore_all_conflicts
             )
         if name == Tables.sp500_tickers.name and "cik" in df:
             return self._save_institutional_roster(df)
@@ -1500,7 +1501,7 @@ class DataStore:
         with self._13f_lock if name in (Tables.sec13f_hr.name, Tables.sec13f_manager_holdings.name) else nullcontext():
             self._13f_tables.pop(name, None)
             df = self._prepare_write(name, df)
-            return upsert_dataframe(self.engine, df, name, pk)
+            return upsert_dataframe(self._database, df, name, pk)
 
     def _prepare_write(self, name: str, df: pd.DataFrame) -> pd.DataFrame:
         """Prepare ordinary save/rebuild layouts while the caller holds any 13F lock."""
@@ -1508,8 +1509,8 @@ class DataStore:
             if "accession_number" not in df:
                 df = df.assign(accession_number="_legacy")
             self.migrate_13f_tables()
-        ensure_table(self.engine, name, df)
-        ensure_columns(self.engine, name, df)
+        ensure_table(self._database, name, df)
+        ensure_columns(self._database, name, df)
         return df
 
     def bulk_seed(self, table, df: pd.DataFrame) -> int:
@@ -1524,7 +1525,7 @@ class DataStore:
                     f"not have and COPY would silently drop: {unknown[:8]}. Use save() or "
                     f"replace(), which evolve the schema."
                 )
-        return copy_load(self.engine, df, name)
+        return copy_load(self._database, df, name)
 
     def replace_institutional_output(self, rows: pd.DataFrame, *, since: pd.Timestamp | None = None) -> int:
         """Atomically replace the owned output schema or its inclusive corrected range."""
@@ -1556,18 +1557,18 @@ class DataStore:
         col = date_col or self._date_col(table)
         if col is None:
             raise ValueError(f"{name}: append_tail needs a date column")
-        tbl = _reflect(self.engine, name)
+        tbl = _reflect(self._database, name)
         # A day boundary also preserves the cutoff day on text-typed SQLite dates.
         boundary = cast(pd.Timestamp, pd.Timestamp(cutoff)).normalize()
         if not inclusive:
             boundary += pd.Timedelta(days=1)
-        with _connection(self.engine, write=True) as conn:
+        with _connection(self._database, write=True) as conn:
             conn.execute(text(f'DELETE FROM "{name}" WHERE "{col}" >= :cut'), {"cut": _bind_date(tbl.c[col], boundary)})
         if df is None or df.empty:
             return 0
-        if isinstance(self.engine, Connection):
+        if isinstance(self._database, Connection):
             return self.insert(table, df)
-        df.to_sql(name, self.engine, if_exists="append", index=False)
+        df.to_sql(name, self._database, if_exists="append", index=False)
         return len(df)
 
     def delete(self, table: SchemaTable | str, where: Where) -> int:
@@ -1576,8 +1577,8 @@ class DataStore:
             raise ValueError("delete() needs a where filter; use replace() to rewrite a table")
         if not self.exists(table):
             return 0
-        tbl = _reflect(self.engine, name_of(table))
-        with _connection(self.engine, write=True) as conn:
+        tbl = _reflect(self._database, name_of(table))
+        with _connection(self._database, write=True) as conn:
             return int(conn.execute(tbl.delete().where(_where(tbl, where))).rowcount)
 
     def replace(self, table: SchemaTable | str, df: pd.DataFrame, chunksize: int = 200_000) -> int:
@@ -1585,12 +1586,12 @@ class DataStore:
 
         DROP, preparation, DELETE and COPY chunks retain their separate commits; failures can leave a partial rebuild."""
 
-        if isinstance(self.engine, Connection):
+        if isinstance(self._database, Connection):
             if resolve(table).is_unmanaged:
                 self.drop(table)
-                ensure_table(self.engine, name_of(table), df)
-            tbl = _reflect(self.engine, name_of(table))
-            self.engine.execute(tbl.delete())
+                ensure_table(self._database, name_of(table), df)
+            tbl = _reflect(self._database, name_of(table))
+            self._database.execute(tbl.delete())
             for offset in range(0, len(df), chunksize):
                 self.bulk_seed(table, df.iloc[offset : offset + chunksize])
             return len(df)
@@ -1602,10 +1603,10 @@ class DataStore:
             if resolve(table).is_unmanaged:
                 self.drop(name)
             df = self._prepare_write(name, df)
-            with _connection(self.engine, write=True) as conn:
+            with _connection(self._database, write=True) as conn:
                 conn.execute(text(f'DELETE FROM "{name}"'))
             for i in range(0, len(df), chunksize):
-                copy_load(self.engine, df.iloc[i : i + chunksize], name)
+                copy_load(self._database, df.iloc[i : i + chunksize], name)
             return len(df)
 
     def ensure_columns(self, table: SchemaTable | str, df: pd.DataFrame) -> list[str]:
@@ -1613,7 +1614,7 @@ class DataStore:
         name = name_of(table)
         with self._13f_lock if name in (Tables.sec13f_hr.name, Tables.sec13f_manager_holdings.name) else nullcontext():
             self._13f_tables.pop(name, None)
-            return ensure_columns(self.engine, name, df)
+            return ensure_columns(self._database, name, df)
 
     def drop(self, table: SchemaTable | str) -> None:
         """Drop a registered or bare table name and invalidate its prepared metadata."""
@@ -1621,5 +1622,5 @@ class DataStore:
         self._def14a_retries_prepared = False
         with self._13f_lock if name in (Tables.sec13f_hr.name, Tables.sec13f_manager_holdings.name) else nullcontext():
             self._13f_tables.pop(name, None)
-            with _connection(self.engine, write=True) as conn:
+            with _connection(self._database, write=True) as conn:
                 conn.execute(text(f'DROP TABLE IF EXISTS "{name}"'))

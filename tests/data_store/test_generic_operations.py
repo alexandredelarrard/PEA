@@ -41,6 +41,7 @@ def test_bound_changes_and_tail_replacement_rollback(sqlite_store: DataStore) ->
     df_prices = _prices(sqlite_store)
     with pytest.raises(RuntimeError, match="injected"):
         with sqlite_store.transaction("source-proof") as store:
+            assert store.engine is sqlite_store.engine
             store.update(Tables.prices, {"close_split": 10.0}, {"ticker": "A"})
             store.delete(Tables.prices, df_prices.iloc[[3]][list(Tables.prices.pk)])
             store.insert(Tables.prices, df_prices.iloc[[0]].assign(ticker="C"))

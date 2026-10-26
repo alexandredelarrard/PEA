@@ -87,13 +87,20 @@ Keep comments sparse and explain why a non-obvious choice exists. When changing 
 
 Before adding a URL, field name, format, threshold, taxonomy value, model identifier, or other literal, search [constants.py](../../src/constants/constants.py).
 
-- Keep only genuinely shared cross-package contracts in `src/constants/`. Values used by one function stay local to that function; domain-only shared values live with their existing domain owner. Do not add earnings-call-only aliases to the global constants file.
+- Keep only genuinely shared cross-package contracts in `src/constants/`, only important variables that multiple  python files will use (e.g: date format). Values used by one function stay local to that function; domain-only shared values live with their existing domain owner. Do not add earnings-call-only aliases to the global constants file.
 - Tunable numerical choices belong in [configuration](../reference/configuration.md).
 - Table names and grains belong only in [schema.py](../../src/data_store/schema.py).
 - Module-level constants sit at the top of the module, directly after the imports.
 - A module global holds only a parameter, URL, or value a user may tune; a value local to one function stays a local variable, even when used twice.
 
 Do not introduce `*_TABLE` constants or duplicate registries.
+
+## configs
+
+configs folder has the parameters needed in the code that the user can easily change. 
+- Only put in a config file parameters that worth changing, like hyper parameters or values that would change a calculus and worth parametrizing (number of retries, decay horizon, number of threads, etc)
+- Do not add in configs parameters never changing that has to be deduced in the code (value_usd base in 1000 or 1 -> deduced in code, not in config)
+- brief description and potential values for each parameter for the user to understand.
 
 ## Logging and error handling
 
@@ -123,6 +130,16 @@ Never:
 - treat unavailable data as zero.
 
 Cube builders keep heavy frames local to `run()`, load only their declared price fields, and let the part registry own incremental policy.
+
+## data_store folder and dedicated files 
+
+the data store folder holds the definition of tables in schema.py which has to be used to define anything constant regarding each table in the database:
+- the name of the table, refresh frequency, starting date, granularity, pk, etc.
+
+the store.py is a file only defined and updated to hold all the necessary functions to handle the table : 
+- extract, read, write, iter load, upsert, append, etc. 
+But any dedicated data manipulation for specific table should : 
+- see if store.py does not already have a generic function for the work to be done. If not, create a generic function to be used by all table (for instance alter, or rename a table), call the new store.py function directly from the part handling the table. store.py  should never have anything dedicated to a one table, this is generic data handling function and class. 
 
 ### Performance
 

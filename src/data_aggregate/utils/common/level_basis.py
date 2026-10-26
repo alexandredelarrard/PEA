@@ -162,15 +162,18 @@ def apply_volume_scale(bars: pd.DataFrame, bugfix: Mapping[str, Any]) -> pd.Data
     Re-verified before it fires: the observed jump across `before` (`_volume_jump`) must sit within
     `VOLUME_JUMP_TOL` of `expect_jump`, else the entry is skipped and logged. A frame with no bar
     before `before` has nothing to repair."""
+
     entries = bugfix.get("volume_scale") or {}
     if not entries or bars.empty:
         return bars
+    
     out = bars
     dates = pd.to_datetime(bars["date"])
     for ticker, items in entries.items():
         mine = bars["ticker"].astype(str).eq(ticker).to_numpy()
         if not mine.any():
             continue
+        
         for entry in items:
             when = pd.Timestamp(entry["before"])
             target = mine & (dates < when).to_numpy()

@@ -86,6 +86,7 @@ def test_shared_name_normalizer_removes_parentheses_accents_case_and_punctuation
 
 
 @pytest.mark.parametrize("postal_only", [False, True])
+@pytest.mark.usefixtures("filing_store")
 def test_eog_letter_cleanup_persists_once_and_leaves_ge_facts_untouched(
     sqlite_store: DataStore, eog_holders: pd.DataFrame, postal_only: bool
 ) -> None:
@@ -138,6 +139,7 @@ def test_display_cleanup_removes_only_terminal_letter_footnotes(value: str, expe
 
 
 @pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.usefixtures("filing_store")
 def test_parenthetical_stock_label_keeps_issuer_quantity_in_either_order(sqlite_store: DataStore, reverse: bool) -> None:
     # Frozen EOG1996 order: issuer sole-power quantity, then separately disclosed Enron stock.
     stamp = dict(ticker="EOG", accession_number="0000950129-96-000428", as_of=pd.Timestamp("1996-03-25"), cik="0000821189")

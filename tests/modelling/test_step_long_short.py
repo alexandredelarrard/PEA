@@ -364,6 +364,7 @@ def test_full_history_records_effective_end_and_restores_saved_fitting_controls(
     write_json(initial.run_dir / "assessment/metadata.json", {"run_id": initial.run_id, "complete": True})
     (initial.run_dir / "report.html").write_text("assessed", encoding="utf-8")
     cube = sqlite_store.load(Tables.cube).assign(new_column=42.0)
+    sqlite_store.ensure_columns(Tables.cube, cube)
     sqlite_store.replace(Tables.cube, cube)
     config.seed += 1
     config.lgbm.columns = ["new_column"]

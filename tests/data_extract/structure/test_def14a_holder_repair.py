@@ -36,6 +36,7 @@ def _stamp(df_holders: pd.DataFrame) -> dict[str, Any]:
     return df_holders.iloc[0][["ticker", "accession_number", "as_of", "cik"]].to_dict()
 
 
+@pytest.mark.usefixtures("filing_store")
 def test_recorded_ge_repair_reconciles_four_aliases_before_persisting(sqlite_store: DataStore, ge_holders: pd.DataFrame) -> None:
     section = next(item for item in SECTIONS if item.key == "ownership")
     stamp = _stamp(ge_holders)
@@ -73,11 +74,13 @@ def test_recorded_ge_repair_reconciles_four_aliases_before_persisting(sqlite_sto
     print("SANITY: recorded GE repair stays at 11 holders, including four institutions; repeat replay cannot recreate four address aliases.")
 
 
+@pytest.mark.usefixtures("filing_store")
 def test_complete_exhausted_holders_are_normalized_free_without_archive(sqlite_store: DataStore, ge_holders: pd.DataFrame) -> None:
     stamp = _stamp(ge_holders)
     df_complete = ge_holders.fillna({"percent_of_class": 0.01, "percent_of_voting_power": 0.01})
     sqlite_store.save(Tables.def14a_ownership, df_complete)
     parent = {**stamp, "insider_shares": 1, "insider_ownership_pct": 0.01, "insider_voting_pct": 0.01, "retry": 2}
+    sqlite_store.ensure_columns(Tables.def14a_llm, pd.DataFrame([parent]))
     sqlite_store.save(Tables.def14a_llm, pd.DataFrame([parent]))
     context = cast(Context, SimpleNamespace(store=sqlite_store))
     filings = pd.DataFrame([{**stamp, "filing_date": stamp["as_of"]}])
@@ -131,6 +134,7 @@ def test_holder_repair_retains_partial_old_facts_and_distinct_entities() -> None
     print("SANITY: alias repair fills only the missing percentage, preserves saved shares, and keeps affiliates and Jr/Sr separate.")
 
 
+@pytest.mark.usefixtures("filing_store")
 def test_survivor_save_failure_does_not_delete_saved_holder_aliases(
     sqlite_store: DataStore, ge_holders: pd.DataFrame, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -180,6 +184,7 @@ def test_holder_identity_preserves_word_boundaries_and_legal_suffixes() -> None:
     print("SANITY: separate name tokens and legal suffixes remain distinct; no fuzzy or prefix matching.")
 
 
+@pytest.mark.usefixtures("filing_store")
 def test_public_daily_and_full_replay_ge_aliases_without_source_or_provider(
     sqlite_store: DataStore, ge_holders: pd.DataFrame, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -190,6 +195,7 @@ def test_public_daily_and_full_replay_ge_aliases_without_source_or_provider(
     raw = Def14AExtract.model_validate(
         {"ownership_holders": ge_holders.to_dict("records"), "governance": {"n_five_percent_holders": 99}}
     ).model_dump_json()
+    sqlite_store.ensure_columns(Tables.def14a_llm, pd.DataFrame([{**stamp, "def14a_json": raw}]))
     sqlite_store.save(Tables.def14a_llm, pd.DataFrame([{**stamp, "def14a_json": raw}]))
     context = cast(Context, SimpleNamespace(store=sqlite_store, log=logging.getLogger("test.def14a.holders")))
     config = extract_config(data_extract={"years_history": 31})

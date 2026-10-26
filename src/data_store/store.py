@@ -746,7 +746,7 @@ class DataStore:
     def _prepare_write(self, name: str, df: pd.DataFrame) -> None:
         """Keep frame-created/dynamic layouts generic; existing managed schemas never evolve implicitly."""
         ensure_table(self._database, name, df)
-        if resolve(name).managed:
+        if any(table.name == name for table in MANAGED):
             unknown = set(df.columns) - set(self.columns(name))
             if unknown:
                 raise ValueError(f"{name}: managed schema lacks columns {sorted(unknown)}")

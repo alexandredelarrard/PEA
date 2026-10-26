@@ -31,10 +31,26 @@ Do not cross-import between sibling `src/` packages. Shared logic belongs in the
 
 - Fully annotate every function and method signature.
 - Put `from __future__ import annotations` at the top of new modules.
-- Keep all imports at module scope; solve cycles rather than hiding imports inside functions.
+- Keep all imports at module scope; solve cycles, never hide imports inside functions.
 - Variable names are lowercase (`N806`) and say what they hold: DataFrames carry a `df_` prefix (`df_prices`); scalars and collections use descriptive names (`n_filings`, `missing_tickers`).
 - Functions and methods use lower snake case (`N802`); arguments use lower snake case (`N803`); local variables inside functions use lower snake case (`N806`); exception classes end in `Error` (`N818`). Capitals are reserved for module-level constants and class names.
 - Prefer Python 3.13 syntax. Write unions as `A | B`, including runtime checks such as `isinstance(value, A | B)`. The runtime-check form is a project convention even though Ruff 0.16.9 removed `UP038`.
+
+## logical coding flow in `run()`
+
+Respect clear logical flow in `run()` or in similar high level function calling themselves dedicated functions or class methods :
+Data flows in the golden-standard order: load → clean → merge → compute features or steps → post-process →  log, report, and sanity checks → save .
+- load the data, model, inputs 
+- clean the data, or inputs 
+- merge the data or inputs 
+- perform the logical calculation, model training, prediction or any other operation on the cleaned data 
+- post process the data if needed 
+- analysis, check or logging
+- save the data 
+
+Never hide cleaning operation across functions, consolidate them into the cleaning function. 
+Never go with a spaghetti logic where parts of the logic attached to read, clean, merge, compute, postprocess, analyze, save is unclearly bounded.
+Read or load data, iteratively if data is too large for memory. Use the filters `where` and `columns` from `store.py` to load the strictly necessary part of the data for the flow.
 
 ## Mandatory rules for every coding agent
 
@@ -52,13 +68,12 @@ These rules are compulsory for every future coding change:
 - No pass-through functions: a function whose body only calls another function is removed, and callers call the target directly.
 - Functions doing the same thing are declared once. Logic repeated in two or more places, including across fetchers, is extracted to the closest shared utils module (package `utils/` for one package, `src/utils/` across packages) and called from every dependent; speculative one-use abstractions remain discouraged.
 - Pass a value computed in one function to the next; never re-declare or recompute it elsewhere.
-- Default assessed ticker lists come from [load_universe_tickers](../../src/utils/universe.py) and are already normalized. CLI `-t` input is a comma-separated string: split it first and call [normalise_ticker](../../src/utils/string.py) once per symbol. Downstream lists need no repeated normalization; reuse the complete universe snapshot when guarding subset writes. Normalize raw source/config symbols with the shared helper, preserving source-specific security-marker semantics.
-- Data flows in the golden-standard order: load → clean → compute features or steps → post-process → save → log, report, and sanity checks.
 - No function input only used by tests + no logger passed as an input of any function.
 - No more than 6 inputs in a function or class method
-- self.store = context.store at the start of a class and pass through its methods.
+- Logical parts of a function are separated by 1 jumped line and one line comment explaining what the block does. 
 - No global variable imported from constants.py when only used by its sub package functions. At the top of the function instead or in utils of the sub package part of the codebase.
-- Flow ordered load / check remaining to do → clean → compute → post-process → save → log / report / sanity checks.
+
+- Default assessed ticker lists come from [load_universe_tickers](../../src/utils/universe.py) and are already normalized. CLI `-t` input is a comma-separated string: split it first and call [normalise_ticker](../../src/utils/string.py) once per symbol. Downstream lists need no repeated normalization; reuse the complete universe snapshot when guarding subset writes. Normalize raw source/config symbols with the shared helper, preserving source-specific security-marker semantics.
 
 A static scan of function length, nesting depth, and pass-throughs is part of refactor validation.
 
@@ -153,7 +168,7 @@ Tables are large and pipelines run daily.
 
 Before adding code:
 
-1. search constants for the literal;
+1. search constants for the literal and store.py for available generic functions on data;
 2. search shared and package-local utilities for the helper;
 3. look for a registry that already owns the set being changed;
 4. modify the closest existing behavior;
@@ -200,9 +215,11 @@ Important data, model, or output work ends with the appropriate read-only valida
 
 - [ ] Step/Strategy boundary preserved.
 - [ ] Full annotations and top-level imports.
-- [ ] Each function does one thing in at most 150 lines and 3 nesting levels.
+- [ ] Flow ordered load → clean → merge → compute features or steps → post-process →  log → save.
+- [ ] Each function does one thing in at most 90 lines and 3 nesting levels.
 - [ ] No pass-through functions.
-- [ ] Flow ordered load → clean → compute → post-process → save → log.
+- [ ] No more than 6 inputs in each function
+- [ ] Functions logical blocks visible with 1 line comment per block
 - [ ] Repeated logic extracted to the closest utils module.
 - [ ] Large frames pre-filtered and vectorised; no row loops or `apply`.
 - [ ] Docstrings a few lines, without history or measurements.

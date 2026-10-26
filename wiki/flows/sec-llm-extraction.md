@@ -2,7 +2,7 @@
 title: SEC and LLM extraction
 description: SEC filing discovery, five focused proxy requests, bounded retries and main-thread persistence.
 type: flow
-source_commit: 58c33f8622d33c4654b139d83677c92e019d15e0
+source_commit: aa9ac35ff94b6992ac43106230f63e3d50082cab
 tags:
   - wiki
   - flow

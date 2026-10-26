@@ -653,14 +653,17 @@ def replace_short_source(
     validate_tape_frames(frames, scopes)
     with store.transaction(SOURCE_LOCK) as bound:
         identity = load_source_identity(bound) if expected_identity is not None else None
+        owners = (scopes[raw] or {}).get("ticker")
         queries: dict[Table, Where | None] = {}
         for table, scope in scopes.items():
-            queries[table] = [scope, frames[table][list(table.pk)]] if scope is not None else None
+            if table in (expected_source or {}) or (table == raw and owners is not None):
+                queries[table] = [scope, frames[table][list(table.pk)]] if scope is not None else None
         current = load_tape_cohorts(bound, queries)
 
         if expected_identity is not None and identity is not None:
             assert_source_identity(bound, identity, expected_identity)
-        assert_tape_owners(tape_key_matches(raw, frames[raw], current[raw]), (scopes[raw] or {}).get("ticker"))
-        old = {table: scope_tape_rows(table, current[table], scopes[table]) for table in frames}
+        if owners is not None:
+            assert_tape_owners(tape_key_matches(raw, frames[raw], current[raw]), owners)
+        old = {table: scope_tape_rows(table, df_rows, scopes[table]) for table, df_rows in current.items()}
         assert_tape_source(bound, old, expected_source)
         return commit_tape_source(bound, frames, scopes)

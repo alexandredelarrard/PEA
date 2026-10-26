@@ -28,16 +28,12 @@ import numpy as np
 import pandas as pd
 
 from src.context import Context
-from src.data_aggregate.utils.common.level_basis import (
-    apply_level_bugfix,
-    apply_return_seams,
-    apply_split_vintage,
-    level_actions,
-    level_factor,
-    load_bugfix,
-    load_share_basis,
-)
 from src.data_store.schema import Tables
+from src.utils.predecessor_series import load_level_actions as level_actions
+from src.utils.price.adjustments import load_bugfix
+from src.utils.price.basis import load_share_basis
+from src.utils.price.levels import apply_level_bugfix, level_factor
+from src.utils.price.repairs import apply_return_seams, apply_split_vintage
 from src.utils.universe import load_universe_tickers
 
 #: Invariant 1's band. 1% absorbs the as-of join (a filing date is often not a trading day)
@@ -288,7 +284,7 @@ def _level_factor_for(context: Context, panel: pd.DataFrame, where: dict | None)
     # invariant scores against. It is 8 tickers and it is stated in every one of their
     # register entries; the alternative is scoring a basis the cube does not use.
     close_wide = panel.pivot_table(index="date", columns="ticker", values="close_split")
-    wide = apply_level_bugfix(wide, bugfix, panel[["ticker", "date", "price"]], close_wide.reindex(index=idx, columns=tickers), logger.info)
+    wide = apply_level_bugfix(wide, bugfix, panel[["ticker", "date", "price"]], close_wide.reindex(index=idx, columns=tickers))
 
     flat = cast(pd.Series, wide.stack(future_stack=True)).rename("level_factor")
     flat.index = flat.index.set_names(["date", "ticker"])

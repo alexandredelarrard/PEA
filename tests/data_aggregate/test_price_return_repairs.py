@@ -12,9 +12,10 @@ import pytest
 
 from src.context import Context, get_config_context
 from src.data_aggregate.transformers import step_cube_prices as price_step
-from src.data_aggregate.utils.common.level_basis import apply_return_seams, measure_quote_seams, measure_seams
+from src.data_aggregate.utils.price.checks import measure_quote_seams, measure_seams
 from src.data_store.schema import Tables
-from src.utils.price_adjustments import load_bugfix
+from src.utils.price.adjustments import load_bugfix
+from src.utils.price.repairs import apply_return_seams
 
 
 @pytest.fixture(scope="module")
@@ -64,13 +65,13 @@ def test_real_total_return_target_and_price_isolation(
     pd.testing.assert_frame_equal(wide["close_total"].loc[when:], before["close_total"].loc[when:], check_exact=True)
     for field in set(wide) - {"close_total"}:
         pd.testing.assert_frame_equal(wide[field], before[field], check_exact=True)
-    assert measure_seams(wide["close_total"], blob, lambda *args: None) == {}
-    assert measure_quote_seams(wide["close_split"], blob, lambda *args: None) == {ticker: [when]}
+    assert measure_seams(wide["close_total"], blob) == {}
+    assert measure_quote_seams(wide["close_split"], blob) == {ticker: [when]}
     healed = wide["close_total"].copy()
     assert apply_return_seams(wide, blob) == 0
     pd.testing.assert_frame_equal(healed, wide["close_total"], check_exact=True)
     with pytest.raises(ValueError, match="rebuild historical prices"):
-        measure_seams(before["close_total"], blob, lambda *args: None)
+        measure_seams(before["close_total"], blob)
     print(
         f"SANITY: {ticker} {len(rows)} real bars recover {(target - 1):+.9%}; cash returns/OHLC/volume survive, quote masks remain and reapplication is exact."
     )

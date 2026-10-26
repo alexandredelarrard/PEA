@@ -27,9 +27,9 @@ from src.constants.constants import CANONICAL_ROLES
 from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.common.errors import _absent, _empty_panel
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
-from src.data_aggregate.utils.common.price_frames import PriceFrames
 from src.data_aggregate.utils.common.xs import self_history_z
 from src.data_aggregate.utils.institutionals.inputs import QuantityBasis
+from src.data_aggregate.utils.price.frames import PriceFrames
 from src.utils.string import yahoo_symbol
 
 logger = logging.getLogger(__name__)

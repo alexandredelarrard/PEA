@@ -13,8 +13,8 @@ import pytest
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.predecessor_series import load_level_actions
-from src.utils.price_adjustments import ShareBasis, resolve_share_events, validate_bugfix
-from src.utils.price_basis import load_share_basis
+from src.utils.price.adjustments import ShareBasis, resolve_share_events, validate_bugfix
+from src.utils.price.basis import load_share_basis
 
 
 def _frames() -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -167,7 +167,7 @@ def test_vendor_exclusion_keeps_actual_stock_dividend(caplog: pytest.LogCaptureF
     }
     shares = pd.DataFrame({"ticker": ["TEST"], "date": pd.to_datetime(["2020-01-02"]), "sharesbas": [100.0]})
     snapshot = yahoo.copy(deep=True)
-    with caplog.at_level("INFO", logger="src.utils.price_adjustments"):
+    with caplog.at_level("INFO", logger="src.utils.price.adjustments"):
         basis = resolve_share_events(actions, yahoo, _policy(event), shares=shares, tickers=["TEST"])
     assert "TEST VERIFIED configured overrides" in caplog.text
     assert _factor(basis, "actual", ["2020-01-02"]) == [1.1]

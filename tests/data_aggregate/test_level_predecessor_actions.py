@@ -17,9 +17,11 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.transformers.step_cube_prices import StepCubePrices
-from src.data_aggregate.utils.common.level_basis import genuine_splits, level_actions, level_factor
 from src.data_store.schema import Tables
 from src.utils.cutover_continuity import PredecessorSeries, predecessor_actions
+from src.utils.predecessor_series import load_level_actions as level_actions
+from src.utils.price.adjustments import split_events as genuine_splits
+from src.utils.price.levels import level_factor
 from src.validate.utils import prices as vprices
 from tests.conftest import FakeStore
 from tests.fixtures.jci_tyco_rows import JCI_ACTIONS, JCI_YF, SPIN_2012
@@ -145,7 +147,6 @@ def test_level_actions_warns_when_the_owner_actions_are_not_stored(tmp_path: Pat
     print(warnings)
     assert out is not None and sorted(out["date"].dt.strftime("%Y-%m-%d")) == ["2004-01-05", "2007-10-03", "2016-10-31"]
     assert warnings == [
-        "level factor: no selected predecessor split/spinoff rows for TYC of JCI (CIK 0000833444); "
-        "actions before 2016-09-02 are kept as fetched"
+        "level factor: no selected predecessor split/spinoff rows for TYC of JCI (CIK 0000833444); actions before 2016-09-02 are kept as fetched"
     ]
     print("  OK: JCI keeps its 3 own actions and one WARNING names the missing TYC series.")

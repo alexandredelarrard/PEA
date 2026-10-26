@@ -12,8 +12,8 @@ from src.context import Context
 from src.data_store.schema import Tables
 from src.portfolio.utils.contracts import MarketInputs, Settings
 from src.utils.predecessor_series import load_level_actions
-from src.utils.price_adjustments import load_bugfix
-from src.utils.price_basis import load_share_basis
+from src.utils.price.adjustments import load_bugfix
+from src.utils.price.basis import load_share_basis
 from src.utils.universe import load_universe_tickers
 
 
@@ -28,16 +28,16 @@ def load_market(context: Context, config: DictConfig, settings: Settings, metada
 
     # Calendar-day buffer covers the configured full trading-session windows without downloading history.
     since = settings.start - pd.Timedelta(days=3 * max(settings.momentum_window, settings.risk_window) + 30)
-    
+
     # load tables
-    prices = context.store.load(Tables.prices, columns=["date", "ticker", "close_split", "close_total"], 
-                                where={"ticker": names}, since=since, until=end)
-    levels = context.store.load(Tables.cube_part_prices, columns=["date", "ticker", "level_factor"], 
-                                where={"ticker": names}, since=since, until=end)
-    splits = context.store.load(Tables.prices_splits, columns=["date", "ticker", "ratio"], 
-                                where={"ticker": names}, optional=True)
-    macro = context.store.load(Tables.prices_macro, columns=["date", "ticker", "close"], 
-                               where={"ticker": MACRO_MARKET_SERIES}, since=since, until=end)
+    prices = context.store.load(
+        Tables.prices, columns=["date", "ticker", "close_split", "close_total"], where={"ticker": names}, since=since, until=end
+    )
+    levels = context.store.load(Tables.cube_part_prices, columns=["date", "ticker", "level_factor"], where={"ticker": names}, since=since, until=end)
+    splits = context.store.load(Tables.prices_splits, columns=["date", "ticker", "ratio"], where={"ticker": names}, optional=True)
+    macro = context.store.load(
+        Tables.prices_macro, columns=["date", "ticker", "close"], where={"ticker": MACRO_MARKET_SERIES}, since=since, until=end
+    )
     universe = context.store.load(Tables.sp500_tickers, columns=["ticker", "sector"], where={"ticker": names})
 
     if universe is None or universe.empty:
@@ -45,17 +45,17 @@ def load_market(context: Context, config: DictConfig, settings: Settings, metada
     if macro is None or macro.empty:
         raise ValueError("No stored S&P total-return proxy")
     if prices is None or prices.empty:
-        raise ValueError("No stored stock prices for the backtest")    
+        raise ValueError("No stored stock prices for the backtest")
     if levels is None or levels.empty:
         raise ValueError("Missing stored level factors; quoted execution prices cannot be reconstructed")
-    
+
     # dates format
     macro = macro.assign(date=pd.to_datetime(macro.date))
     prices = prices.assign(date=pd.to_datetime(prices.date))
     levels = levels.assign(date=pd.to_datetime(levels.date))
     prices = prices.merge(levels, on=["date", "ticker"], how="left", validate="one_to_one")
 
-    # load actions table and merge it all 
+    # load actions table and merge it all
     actions = load_level_actions(context, names)
     basis = load_share_basis(context, names, load_bugfix(context.config_dir), actions, splits, quotes=prices)
     vendor = basis.factor(prices.ticker, prices.date, "vendor")
@@ -65,7 +65,7 @@ def load_market(context: Context, config: DictConfig, settings: Settings, metada
     quotes = _wide(prices, "quote")
     returns = _wide(prices, "close_total").pct_change(fill_method=None)
 
-    # set index 
+    # set index
     market = macro.set_index("date")["close"].sort_index().astype(float)
     sectors = universe.set_index("ticker")["sector"].reindex(quotes.columns)
     return MarketInputs(pd.DataFrame(), quotes, returns, _wide(prices, "share_basis"), market, sectors, metadata)

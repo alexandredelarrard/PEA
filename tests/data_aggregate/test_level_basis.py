@@ -26,21 +26,13 @@ import pandas as pd
 import pytest
 
 from src.constants.constants import DEFAULT_CONFIG_DIR
-from src.data_aggregate.utils.common.level_basis import (
-    LEVEL_SNAP_TOL,
-    NULL_RET_STEP_TOL,
-    _vintage_multiplier,
-    apply_level_bugfix,
-    apply_null_ret,
-    apply_return_seams,
-    apply_split_vintage,
-    apply_volume_scale,
-    describe,
-    level_factor,
-    load_bugfix,
-)
 from src.data_aggregate.utils.common.pit import daily_market_cap
+from src.data_aggregate.utils.price.checks import describe
+from src.data_aggregate.utils.price.clean import NULL_RET_STEP_TOL, apply_null_ret, apply_volume_scale
 from src.data_extract.utils.fundamentals_sharadar.field_map import split_events
+from src.utils.price.adjustments import load_bugfix
+from src.utils.price.levels import apply_level_bugfix, level_factor
+from src.utils.price.repairs import LEVEL_SNAP_TOL, _vintage_multiplier, apply_return_seams, apply_split_vintage
 
 #: A daily grid that straddles every fixture event below. Business days only, so the frame is
 #: shaped like a real `cube_part_prices` slice without being large.
@@ -528,9 +520,7 @@ def test_a_level_wedge_moves_s_and_only_s():
     vendor = pd.DataFrame({"ticker": "IP", "date": pd.DatetimeIndex(["2014-03-31", "2014-05-15"]), "price": 40.0 * 1.07078})
     factor = pd.DataFrame({"IP": 1.0}, index=idx)
 
-    out = apply_level_bugfix(
-        factor, {"level_factor": {"IP": {"segments": [{"before": "2014-07-01", "factor": 1.07078}]}}}, vendor, close, lambda *a: None
-    )
+    out = apply_level_bugfix(factor, {"level_factor": {"IP": {"segments": [{"before": "2014-07-01", "factor": 1.07078}]}}}, vendor, close)
 
     early = out.loc[out.index < before, "IP"].to_numpy()
     assert early == pytest.approx(1.07078)
@@ -538,7 +528,7 @@ def test_a_level_wedge_moves_s_and_only_s():
     assert (close["IP"] == 40.0).all(), "a level wedge must never touch a price"
 
 
-def test_a_level_wedge_whose_observation_moved_is_refused():
+def test_a_level_wedge_whose_observation_moved_is_refused(monkeypatch: pytest.MonkeyPatch):
     """Same entry, a vendor that now agrees with Yahoo. The wedge reads 1.0, so the defect is
     gone and the multiply must not happen."""
     idx = pd.DatetimeIndex(pd.bdate_range("2014-01-01", "2014-12-31"), name="date")
@@ -546,19 +536,16 @@ def test_a_level_wedge_whose_observation_moved_is_refused():
     vendor = pd.DataFrame({"ticker": "IP", "date": pd.DatetimeIndex(["2014-03-31", "2014-05-15"]), "price": 40.0})
     logged: list[str] = []
 
+    monkeypatch.setattr("src.utils.price.levels.logger.info", lambda m, *a: logged.append(m % a))
     out = apply_level_bugfix(
-        pd.DataFrame({"IP": 1.0}, index=idx),
-        {"level_factor": {"IP": {"segments": [{"before": "2014-07-01", "factor": 1.07078}]}}},
-        vendor,
-        close,
-        lambda m, *a: logged.append(m % a),
+        pd.DataFrame({"IP": 1.0}, index=idx), {"level_factor": {"IP": {"segments": [{"before": "2014-07-01", "factor": 1.07078}]}}}, vendor, close
     )
 
     assert (out["IP"] == 1.0).all()
     assert any("GONE or CHANGED" in m for m in logged), logged
 
 
-def test_a_multi_segment_wedge_is_a_staircase_not_a_product():
+def test_a_multi_segment_wedge_is_a_staircase_not_a_product(monkeypatch: pytest.MonkeyPatch):
     """HBAN's shape, and the bug the build log caught.
 
     Five annual 10% stock dividends leave a wedge of 1.1^5, 1.1^4, ... 1.1^1 through five
@@ -583,12 +570,12 @@ def test_a_multi_segment_wedge_is_a_staircase_not_a_product():
     vendor = pd.DataFrame({"ticker": "HBAN", "date": filings, "price": price})
 
     logged: list[str] = []
+    monkeypatch.setattr("src.utils.price.levels.logger.info", lambda m, *a: logged.append(m % a))
     out = apply_level_bugfix(
         pd.DataFrame({"HBAN": 1.0}, index=idx),
         {"level_factor": {"HBAN": {"segments": [{"before": d, "factor": f} for d, f in ladder]}}},
         vendor,
         close,
-        lambda m, *a: logged.append(m % a),
     )
 
     assert not any("SKIPPED" in m for m in logged), logged
@@ -686,11 +673,12 @@ def _ret_frame(bad: float | None = DHR_RET) -> pd.DataFrame:
     return frame
 
 
-def test_a_null_ret_entry_deletes_the_bar_it_registered():
+def test_a_null_ret_entry_deletes_the_bar_it_registered(monkeypatch: pytest.MonkeyPatch):
     ret = _ret_frame()
     before = ret.copy()
     logged: list[str] = []
-    applied = apply_null_ret(ret, DHR_ENTRY, lambda m, *a: logged.append(m % a))
+    monkeypatch.setattr("src.data_aggregate.utils.price.clean.logger.info", lambda m, *a: logged.append(m % a))
+    applied = apply_null_ret(ret, DHR_ENTRY)
 
     assert applied == 1
     assert np.isnan(_number(ret.at[pd.Timestamp(DHR_DATE), "DHR"]))
@@ -706,12 +694,13 @@ def test_a_null_ret_entry_deletes_the_bar_it_registered():
     print(f"  cells changed across the whole {ret.shape[0]}x{ret.shape[1]} frame: {int(moved.to_numpy().sum())}; CTRL bit-identical. Validated.")
 
 
-def test_a_null_ret_entry_whose_defect_is_gone_is_refused():
+def test_a_null_ret_entry_whose_defect_is_gone_is_refused(monkeypatch: pytest.MonkeyPatch):
     """The guard, not the happy path. If Yahoo ever re-bases its own history the bar stops
     matching, and deleting a now-legitimate return would be a fabrication of its own."""
     ret = _ret_frame(bad=0.012)  # a real +1.2% day where the seam used to be
     logged: list[str] = []
-    applied = apply_null_ret(ret, DHR_ENTRY, lambda m, *a: logged.append(m % a))
+    monkeypatch.setattr("src.data_aggregate.utils.price.clean.logger.info", lambda m, *a: logged.append(m % a))
+    applied = apply_null_ret(ret, DHR_ENTRY)
 
     assert applied == 0
     assert ret.at[pd.Timestamp(DHR_DATE), "DHR"] == pytest.approx(0.012, rel=0, abs=0)
@@ -730,25 +719,27 @@ def test_the_null_ret_band_is_wide_enough_for_float_noise_and_no_wider():
     edge = (1.0 + DHR_RET) * (1.0 + NULL_RET_STEP_TOL * 0.9) - 1.0  # just inside
     outside = (1.0 + DHR_RET) * (1.0 + NULL_RET_STEP_TOL * 1.1) - 1.0  # just outside
 
-    assert apply_null_ret(_ret_frame(bad=edge), DHR_ENTRY, lambda *a: None) == 1
-    assert apply_null_ret(_ret_frame(bad=outside), DHR_ENTRY, lambda *a: None) == 0
+    assert apply_null_ret(_ret_frame(bad=edge), DHR_ENTRY) == 1
+    assert apply_null_ret(_ret_frame(bad=outside), DHR_ENTRY) == 0
 
     print("\n=== SANITY CHECK: the null_ret re-measurement band ===")
     print(f"  step tolerance {NULL_RET_STEP_TOL:.4f} -> on a {DHR_RET:+.5f} return the band is +/-{(1.0 + DHR_RET) * NULL_RET_STEP_TOL:.5f}")
     print(f"  {edge:+.5f} fires, {outside:+.5f} does not. Validated.")
 
 
-def test_a_null_ret_entry_outside_the_build_window_is_skipped():
+def test_a_null_ret_entry_outside_the_build_window_is_skipped(monkeypatch: pytest.MonkeyPatch):
     """An incremental build whose window starts after the registered date must not raise, and
     must not silently report the entry as applied."""
     ret = _ret_frame().drop(columns=["DHR"])
     logged: list[str] = []
-    assert apply_null_ret(ret, DHR_ENTRY, lambda m, *a: logged.append(m % a)) == 0
+    monkeypatch.setattr("src.data_aggregate.utils.price.clean.logger.info", lambda m, *a: logged.append(m % a))
+    assert apply_null_ret(ret, DHR_ENTRY) == 0
     assert any("outside this build's window" in m for m in logged), logged
 
     narrow = _ret_frame().loc[pd.Timestamp("2016-07-06") :]
     logged.clear()
-    assert apply_null_ret(narrow, DHR_ENTRY, lambda m, *a: logged.append(m % a)) == 0
+    monkeypatch.setattr("src.data_aggregate.utils.price.clean.logger.info", lambda m, *a: logged.append(m % a))
+    assert apply_null_ret(narrow, DHR_ENTRY) == 0
     assert not narrow.isna().to_numpy().any()
     assert any("outside this build's window" in m for m in logged), logged
 
@@ -756,13 +747,14 @@ def test_a_null_ret_entry_outside_the_build_window_is_skipped():
     print("  ticker absent -> skipped; date before the window -> skipped; 0 cells nulled, no exception. Validated.")
 
 
-def test_an_already_missing_return_is_not_counted_as_applied():
+def test_an_already_missing_return_is_not_counted_as_applied(monkeypatch: pytest.MonkeyPatch):
     """`ret` is NaN on a ticker's first bar and wherever the price is missing. Nulling a NaN
     is a no-op, and reporting it as a repair would inflate the applied count on every build."""
     ret = _ret_frame(bad=None)
     ret.at[pd.Timestamp(DHR_DATE), "DHR"] = np.nan
     logged: list[str] = []
-    assert apply_null_ret(ret, DHR_ENTRY, lambda m, *a: logged.append(m % a)) == 0
+    monkeypatch.setattr("src.data_aggregate.utils.price.clean.logger.info", lambda m, *a: logged.append(m % a))
+    assert apply_null_ret(ret, DHR_ENTRY) == 0
     assert any("already not a number" in m for m in logged), logged
 
     print("\n=== SANITY CHECK: an already-NaN bar is not a repair ===")

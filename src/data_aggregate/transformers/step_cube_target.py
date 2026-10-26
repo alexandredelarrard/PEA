@@ -31,11 +31,11 @@ from src.data_aggregate.utils.common.incremental import (
     window_start,
     write_part,
 )
-from src.data_aggregate.utils.common.level_basis import load_bugfix, measure_seams
 from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
 from src.data_aggregate.utils.common.pit import daily_market_cap
-from src.data_aggregate.utils.common.price_frames import (
+from src.data_aggregate.utils.price.checks import measure_seams
+from src.data_aggregate.utils.price.frames import (
     PriceFrames,
     load_price_frames,
     load_trading_calendar,
@@ -51,6 +51,7 @@ from src.data_aggregate.utils.target.factors import (
 from src.data_aggregate.utils.target.targets import build_targets_multi, fitted_beta_columns
 from src.data_store.schema import Tables
 from src.utils.macro import load_macro_wide
+from src.utils.price.adjustments import load_bugfix
 from src.utils.step import Step
 
 
@@ -124,7 +125,7 @@ class StepCubeTarget(Step):
     def _measure_seams(self, frames: PriceFrames) -> dict[str, list[pd.Timestamp]]:
         """The registered `null_ret` basis changes, re-measured on THIS step's `close_total`."""
         frames.require("close_total")
-        seams = measure_seams(frames.close_total, self._bugfix, self._log.info)
+        seams = measure_seams(frames.close_total, self._bugfix)
         listed = sum(len(v) for v in (self._bugfix.get("null_ret") or {}).values())
         self._log.info(
             "Seam masks: %s of %s registered null_ret entries measured (%s ticker(s)) "

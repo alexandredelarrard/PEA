@@ -25,7 +25,7 @@ import pandas as pd
 from src.constants.constants_price import MACRO_CUBE_FACTORS, MACRO_MARKET_SERIES
 from src.context import Context
 from src.data_aggregate.transformers.step_cube_target import StepCubeTarget
-from src.data_aggregate.utils.common.price_frames import PriceFrames
+from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_aggregate.utils.target.factors import (
     assemble_factor_panel,
     build_characteristics,

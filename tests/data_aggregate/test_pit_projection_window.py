@@ -9,7 +9,7 @@ import pandas as pd
 
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 from src.data_aggregate.utils.sec_thirteen.value_basis import nullable_value_to_daily
-from src.utils.price_adjustments import ShareBasis
+from src.utils.price.adjustments import ShareBasis
 
 
 def test_window_projection_keeps_original_age_and_bounds_dense_pivots() -> None:

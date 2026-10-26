@@ -21,7 +21,7 @@ from src.data_extract.utils.common.identity import load_source_identity
 from src.data_extract.utils.institutionals.insider_store import certify_insider_source, insider_source_run, save_insider_source
 from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore
-from src.utils.price_adjustments import ShareBasis
+from src.utils.price.adjustments import ShareBasis
 
 
 def _inventory(store: DataStore) -> tuple[pd.DataFrame, pd.DataFrame, dict[Table, pd.DataFrame]]:

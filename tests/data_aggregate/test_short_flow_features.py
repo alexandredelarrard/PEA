@@ -40,7 +40,7 @@ from src.data_aggregate.utils.institutionals.short_flow_features import (
     build_short_flow_feature_panel as compute_short_panel,
 )
 from src.data_extract.utils.institutionals.fetch_short_interest import _parse_regsho
-from src.utils.price_adjustments import ShareBasis, resolve_share_events
+from src.utils.price.adjustments import ShareBasis, resolve_share_events
 from tests.conftest import make_frames
 
 

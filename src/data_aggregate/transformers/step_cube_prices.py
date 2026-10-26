@@ -28,26 +28,21 @@ from omegaconf import DictConfig
 
 from src.constants.constants_price import MACRO_MARKET_SERIES
 from src.context import Context
-from src.data_aggregate.utils.common import data_utils as du
 from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_REFRESH_TRADING_DAYS, plan_window, write_part
-from src.data_aggregate.utils.common.level_basis import (
-    apply_level_bugfix,
-    apply_null_ret,
-    apply_return_seams,
-    apply_split_vintage,
-    apply_volume_scale,
-    describe,
-    level_actions,
-    level_factor,
-    load_bugfix,
-    load_share_basis,
-)
 from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers
-from src.data_aggregate.utils.common.price_frames import frames_to_long, load_trading_calendar, universe_columns
-from src.data_peers.utils.sector_peers import compute_sector_returns
+from src.data_aggregate.utils.price.checks import describe
+from src.data_aggregate.utils.price.clean import apply_null_ret, apply_volume_scale
+from src.data_aggregate.utils.price.frames import frames_to_long, get_trading_days, load_trading_calendar, universe_columns
+from src.data_aggregate.utils.price.returns import compute_sector_returns
 from src.data_store.schema import Tables
 from src.utils.macro import load_macro_series
+from src.utils.predecessor_series import load_level_actions as level_actions
+from src.utils.price.adjustments import load_bugfix
+from src.utils.price.basis import load_share_basis
+from src.utils.price.frames import daily_returns, extract_field, prices_long_to_multiindex
+from src.utils.price.levels import apply_level_bugfix, level_factor
+from src.utils.price.repairs import apply_return_seams, apply_split_vintage
 from src.utils.step import Step
 from src.utils.universe import load_universe_tickers
 
@@ -142,19 +137,19 @@ class StepCubePrices(Step):
 
     @staticmethod
     def _pivot_fields(raw: pd.DataFrame) -> dict[str, pd.DataFrame]:
-        pivot = du.prices_long_to_multiindex(raw)
+        pivot = prices_long_to_multiindex(raw)
         return {
-            "open": du.extract_field(pivot, "Open"),
-            "high": du.extract_field(pivot, "High"),
-            "low": du.extract_field(pivot, "Low"),
-            "close_split": du.extract_field(pivot, "CloseSplit"),
-            "close_total": du.extract_field(pivot, "CloseTotal"),
-            "volume": du.extract_field(pivot, "Volume"),
+            "open": extract_field(pivot, "Open"),
+            "high": extract_field(pivot, "High"),
+            "low": extract_field(pivot, "Low"),
+            "close_split": extract_field(pivot, "CloseSplit"),
+            "close_total": extract_field(pivot, "CloseTotal"),
+            "volume": extract_field(pivot, "Volume"),
         }
 
     def _trading_calendar(self, close_split: pd.DataFrame) -> pd.DatetimeIndex:
         """The market series' own calendar, read from `prices_macro` (the table that owns it).
-        `du.get_trading_days` also WARNS about interior holes -- dates where a quorum of stocks
+        `get_trading_days` also WARNS about interior holes -- dates where a quorum of stocks
         trade but the market series is missing -- because those dates get dropped for the
         entire universe."""
         market = load_macro_series(self._store, MACRO_MARKET_SERIES)
@@ -163,7 +158,7 @@ class StepCubePrices(Step):
                 f"'{Tables.prices_macro}' has no '{MACRO_MARKET_SERIES}' rows -> the cube "
                 "trading calendar is undefined. Run `data_extract macro` first."
             )
-        mask = du.get_trading_days(close_split, market, MACRO_MARKET_SERIES)
+        mask = get_trading_days(close_split, market, MACRO_MARKET_SERIES)
         idx = pd.DatetimeIndex(close_split.index[mask.to_numpy()], name="date")
         self._log.info("Trading calendar: %d dates (%s .. %s)", len(idx), idx.min().date(), idx.max().date())
         return idx
@@ -180,7 +175,7 @@ class StepCubePrices(Step):
     def _daily_returns(close_total: pd.DataFrame) -> pd.DataFrame:
         """TOTAL-return series in, `ret` out. The parameter is named for the basis it
         requires, so the one call site states its contract."""
-        return du.daily_returns(close_total)
+        return daily_returns(close_total)
 
     def _peers(self) -> dict:
         peers = load_peers(self._context, self._config)
@@ -257,7 +252,7 @@ class StepCubePrices(Step):
         bit-for-bit whatever this one does."""
         if not self._bugfix:
             return
-        applied = apply_null_ret(returns, self._bugfix, self._log.info)
+        applied = apply_null_ret(returns, self._bugfix)
         listed = sum(len(v) for v in (self._bugfix.get("null_ret") or {}).values())
         self._log.info("price bugfix: %d of %d registered null_ret repair(s) applied", applied, listed)
 
@@ -296,7 +291,7 @@ class StepCubePrices(Step):
         # The registered wedges are cases `S` is structurally BLIND to -- Yahoo adjusted the
         # price and its splits feed never said so -- so they multiply `S` rather than
         # replacing it, and land in the same stored column.
-        factor = apply_level_bugfix(factor, self._bugfix, vendor, close_split, self._log.info)
+        factor = apply_level_bugfix(factor, self._bugfix, vendor, close_split)
         # Logged AFTER the mask, so the line describes what is actually STORED. Unmasked it
         # reports pre-listing cells and their factors dominate the ranking -- LVS x0.0038 and
         # VRSK x0.0200 both date from before those tickers had a single bar.

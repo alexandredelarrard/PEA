@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.fundamentals.earnings_features import _derived_earnings_fields, reported_events
-from src.utils.price_adjustments import ShareBasis
+from src.utils.price.adjustments import ShareBasis
 
 
 def _basis(events: list[tuple[str, str, float]] | None = None) -> ShareBasis:

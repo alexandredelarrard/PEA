@@ -13,8 +13,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.common.level_basis import _period_close
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
+from src.utils.price.levels import _period_close
 
 logger = logging.getLogger(__name__)
 KEPT, DIVIDED, MULTIPLIED, ABSTAINED = 0, 1, -1, 9

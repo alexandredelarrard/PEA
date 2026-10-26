@@ -20,7 +20,7 @@ from src.data_aggregate.utils.institutionals.insider_quality import (
 )
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
-from src.utils.price_adjustments import ShareBasis
+from src.utils.price.adjustments import ShareBasis
 from src.utils.string import pad_cik
 
 logger = logging.getLogger(__name__)

@@ -1,7 +1,7 @@
 """
 The cube trading calendar, after it was repointed off `prices`.
 
-The calendar is DEFINED as "the dates the market series traded" -- `du.get_trading_days` used
+The calendar is DEFINED as "the dates the market series traded" -- `get_trading_days` used
 to express that as `close["SPY"].notna()`, reading a column inside the equity close matrix,
 because SPY was stored in `prices` alongside the equities. SPY now lives in `prices_macro`, so
 the caller reads the series and hands it in.
@@ -17,8 +17,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.common import data_utils as du
-from src.data_aggregate.utils.common.price_frames import load_trading_calendar
+from src.data_aggregate.utils.price.frames import get_trading_days, load_trading_calendar
 from src.data_store.schema import Tables
 
 MARKET = "SPY"
@@ -49,7 +48,7 @@ def test_new_signature_reproduces_the_old_calendar_exactly():
     old_input[MARKET] = market
     old_mask = old_input[MARKET].notna()  # the old body, verbatim
 
-    new_mask = du.get_trading_days(close, market, MARKET)
+    new_mask = get_trading_days(close, market, MARKET)
 
     pd.testing.assert_series_equal(new_mask, old_mask, check_names=False)
     assert list(dates[new_mask]) == [d for i, d in enumerate(dates) if i not in (4, 7)]

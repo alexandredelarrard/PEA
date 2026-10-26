@@ -792,16 +792,8 @@ def governance_panel(
 
 def compute() -> dict:
     from src.data_aggregate.utils.common.frames import ratio, safe_div, sanitize
-    from src.data_aggregate.utils.common.level_basis import as_traded_close
     from src.data_aggregate.utils.common.panel import build_peer_relative_panel
     from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
-    from src.data_aggregate.utils.common.prices import (
-        forward_compound,
-        forward_cumchange,
-        forward_return,
-        momentum_characteristic,
-        trailing_vol,
-    )
     from src.data_aggregate.utils.common.xs import (
         winsorize_xs,
         xs_standardize,
@@ -829,6 +821,13 @@ def compute() -> dict:
         build_feature_panel,
         compute_raw_features,
     )
+    from src.data_aggregate.utils.price.returns import (
+        forward_compound,
+        forward_cumchange,
+        forward_return,
+        momentum_characteristic,
+        trailing_vol,
+    )
     from src.data_aggregate.utils.sec_thirteen.holdings_clean import attach_tickers, clean_public_holdings
     from src.data_aggregate.utils.sec_thirteen.institutional_features import (
         _quarter_features,
@@ -844,7 +843,8 @@ def compute() -> dict:
         cross_sectional_zscore,
     )
     from src.utils.institutional_vintages import prepare_book_vintages
-    from src.utils.price_adjustments import ShareBasis, resolve_share_events
+    from src.utils.price.adjustments import ShareBasis, resolve_share_events
+    from src.utils.price.levels import as_traded_close
     from src.utils.string import pad_cik
     from tests.data_aggregate.insider_pit_reference import build_prepared_insider_panel as build_insider_feature_panel
 

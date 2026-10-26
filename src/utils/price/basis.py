@@ -9,8 +9,8 @@ import pandas as pd
 
 from src.context import Context
 from src.data_store.schema import Tables
-from src.utils.price_adjustments import ShareBasis, resolve_share_events
-from src.utils.price_repairs import apply_return_seams, apply_split_vintage
+from src.utils.price.adjustments import ShareBasis, resolve_share_events
+from src.utils.price.repairs import apply_return_seams, apply_split_vintage
 
 
 def _quote_anchors(context: Context, anchors: list[tuple[str, dict]], bugfix: dict, quotes: pd.DataFrame | None) -> pd.DataFrame | None:

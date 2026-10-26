@@ -16,10 +16,10 @@ import pandas as pd
 
 from src.constants.constants import CANONICAL_ROLES
 from src.context import Context
-from src.data_aggregate.utils.common.level_basis import suffix_factor
 from src.data_store.schema import Tables
 from src.utils.identity_flags import FLAG_COLUMNS
 from src.utils.predecessor_series import SECURITY_MANUAL_FILE
+from src.utils.price.adjustments import suffix_factor
 from src.utils.string import normalise_ticker, pad_cik
 
 KIND = "traded_security_mismatch"

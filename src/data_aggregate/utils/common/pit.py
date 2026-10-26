@@ -34,7 +34,7 @@ from typing import Literal, Protocol
 import numpy as np
 import pandas as pd
 
-from src.utils.price_adjustments import ShareBasis
+from src.utils.price.adjustments import ShareBasis
 
 
 class FieldGetter(Protocol):

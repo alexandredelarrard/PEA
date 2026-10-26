@@ -34,7 +34,7 @@ from src.data_aggregate.utils.common.parts import (
     FEATURE_PARTS,
     PART_COMMANDS,
 )
-from src.data_aggregate.utils.common.price_frames import ALL_FIELDS
+from src.data_aggregate.utils.price.frames import ALL_FIELDS
 
 # the sub-step that owns each CLI command
 OWNER = {

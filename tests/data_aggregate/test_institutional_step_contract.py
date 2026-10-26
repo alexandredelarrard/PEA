@@ -21,10 +21,10 @@ from src.data_aggregate.transformers.step_cube_institutionals import StepCubeIns
 from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecThirteen
 from src.data_aggregate.utils.common import inputs as capital_inputs
 from src.data_aggregate.utils.common.incremental import PartWindow
-from src.data_aggregate.utils.common.price_frames import PriceFrames
 from src.data_aggregate.utils.institutionals.inputs import QuantityBasis
+from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_store.schema import Tables
-from src.utils.price_adjustments import resolve_share_events
+from src.utils.price.adjustments import resolve_share_events
 from tests.data_aggregate.insider_pit_reference import row
 
 INSTITUTIONAL_COLUMNS = (

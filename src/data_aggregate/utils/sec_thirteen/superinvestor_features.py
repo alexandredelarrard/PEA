@@ -9,7 +9,7 @@ from typing import cast
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.common.price_frames import PriceFrames
+from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_aggregate.utils.sec_thirteen.superinvestor_books import PublicBookSnapshot
 from src.data_aggregate.utils.sec_thirteen.superinvestor_metrics import (
     BehaviorMarket,

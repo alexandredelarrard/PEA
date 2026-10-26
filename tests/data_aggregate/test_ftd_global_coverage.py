@@ -8,9 +8,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.common.price_frames import PriceFrames
 from src.data_aggregate.utils.institutionals import short_flow_features
 from src.data_aggregate.utils.institutionals.short_flow_features import FtdPublication
+from src.data_aggregate.utils.price.frames import PriceFrames
 from tests.data_aggregate.test_short_flow_features import build_short_flow_feature_panel
 
 

@@ -18,7 +18,6 @@ from src.data_aggregate.utils.common.availability import InstitutionalAvailabili
 from src.data_aggregate.utils.common.errors import _empty_panel
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.pit import daily_market_cap
-from src.data_aggregate.utils.common.price_frames import PriceFrames
 from src.data_aggregate.utils.institutionals.insider_capital import normalize_trade_capital
 from src.data_aggregate.utils.institutionals.insider_positions import cumulative_positions
 from src.data_aggregate.utils.institutionals.insider_quality import (
@@ -29,6 +28,7 @@ from src.data_aggregate.utils.institutionals.insider_quality import (
     security_class,
 )
 from src.data_aggregate.utils.institutionals.short_flow_features import _proven_tenure_mask
+from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_store.schema import Tables
 
 _log = logging.getLogger(__name__)

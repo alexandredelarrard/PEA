@@ -49,8 +49,8 @@ from src.data_extract.utils.institutionals.security_tape import (
     summed_lines,
 )
 from src.data_store.schema import Resume, Table, Tables
-from src.utils.price_adjustments import ShareBasis, load_bugfix, resolve_share_events
-from src.utils.price_basis import prepare_quote_anchors
+from src.utils.price.adjustments import ShareBasis, load_bugfix, resolve_share_events
+from src.utils.price.basis import prepare_quote_anchors
 from src.utils.string import normalise_ticker, run_date, yahoo_symbol
 
 logger = logging.getLogger(__name__)

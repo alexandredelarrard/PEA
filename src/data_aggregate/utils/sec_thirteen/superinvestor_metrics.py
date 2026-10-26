@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.sec_thirteen.superinvestor_books import PublicBook, PublicBookSnapshot
-from src.utils.price_adjustments import ShareBasis
+from src.utils.price.adjustments import ShareBasis
 
 
 @dataclass(frozen=True)

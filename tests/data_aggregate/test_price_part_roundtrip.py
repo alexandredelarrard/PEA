@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.common.price_frames import (
+from src.data_aggregate.utils.price.frames import (
     ALL_FIELDS,
     frames_to_long,
     load_price_frames,
@@ -75,14 +75,15 @@ def _normalize(frames: dict) -> tuple[dict, pd.DatetimeIndex]:
     The market series is no longer a column inside `close` (it lives in `prices_macro`), so
     the calendar mask is built from a market series handed in, and there is no second
     (market) part frame to persist."""
-    from src.data_aggregate.utils.common import data_utils as du
+    from src.data_aggregate.utils.price.frames import get_trading_days
+    from src.utils.price.frames import daily_returns
 
     wide = {k: v for k, v in frames.items() if k != "market"}
     close = wide["close_split"]
-    mask = du.get_trading_days(close, frames["market"])
+    mask = get_trading_days(close, frames["market"])
     idx = pd.DatetimeIndex(close.index[mask.to_numpy()], name="date")
     on_cal = {k: (v.loc[idx] if k != "volume" else v.reindex(idx)) for k, v in wide.items()}
-    returns = du.daily_returns(on_cal["close_total"])
+    returns = daily_returns(on_cal["close_total"])
 
     universe = universe_columns(TICKERS, on_cal["close_split"])
     uni = {k: v.reindex(columns=universe) for k, v in on_cal.items()}

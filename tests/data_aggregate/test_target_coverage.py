@@ -20,7 +20,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.common.prices import forward_return
+from src.data_aggregate.utils.price.returns import forward_return
 from src.data_aggregate.utils.target.betas import estimate_all_betas, estimate_betas_for_stock
 from src.data_aggregate.utils.target.factors import momentum_characteristic
 from src.data_aggregate.utils.target.targets import build_targets_multi

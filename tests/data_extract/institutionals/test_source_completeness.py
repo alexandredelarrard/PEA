@@ -24,7 +24,7 @@ from src.data_extract.utils.institutionals.insider_edgar_parser import extract_x
 from src.data_extract.utils.institutionals.insider_store import certify_insider_source, insider_source_run
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
-from src.utils.price_adjustments import ShareBasis
+from src.utils.price.adjustments import ShareBasis
 from tests.data_extract.fake_context import extract_config
 from tests.data_extract.institutionals.test_short_volume_security import _identity, _master
 

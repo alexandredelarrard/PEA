@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.common.price_frames import PriceFrames
+from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_aggregate.utils.sec_thirteen.superinvestor_books import BookSupport, PublicBook, PublicBookSnapshot
 from src.data_aggregate.utils.sec_thirteen.superinvestor_features import (
     EMISSION,
@@ -17,7 +17,7 @@ from src.data_aggregate.utils.sec_thirteen.superinvestor_features import (
     project_superinvestor_features,
 )
 from src.data_aggregate.utils.sec_thirteen.superinvestor_metrics import BehaviorMarket
-from src.utils.price_adjustments import ShareBasis
+from src.utils.price.adjustments import ShareBasis
 from tests.data_aggregate.test_superinvestor_books import _history, _on, _packet
 
 

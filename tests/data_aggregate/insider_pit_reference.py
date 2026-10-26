@@ -16,7 +16,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.common.price_frames import PriceFrames
 from src.data_aggregate.utils.institutionals.inputs import QuantityBasis, daily_share_quantities
 from src.data_aggregate.utils.institutionals.insider_features import (
     InsiderCoverage,
@@ -26,7 +25,8 @@ from src.data_aggregate.utils.institutionals.insider_features import (
 )
 from src.data_aggregate.utils.institutionals.insider_positions import position_units
 from src.data_aggregate.utils.institutionals.insider_quality import clean_transactions
-from src.utils.price_adjustments import ShareBasis
+from src.data_aggregate.utils.price.frames import PriceFrames
+from src.utils.price.adjustments import ShareBasis
 
 _EMPTY_EVENTS = pd.DataFrame(columns=["ticker", "date", "value"])
 _NO_SPLIT_FIXTURE = ShareBasis(_EMPTY_EVENTS, _EMPTY_EVENTS, _EMPTY_EVENTS, {})

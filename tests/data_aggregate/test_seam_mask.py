@@ -28,10 +28,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.common.level_basis import NULL_RET_STEP_TOL, mask_seam_windows, measure_seams
-from src.data_aggregate.utils.common.prices import MOMENTUM_SEAM_WINDOW, momentum_characteristic
 from src.data_aggregate.utils.common.xs import xs_rank_pct
 from src.data_aggregate.utils.momentum.features import SEAM_EWMA_SPAN_MULTIPLE, SEAM_WINDOWS, build_feature_panel, compute_raw_features
+from src.data_aggregate.utils.price.checks import mask_seam_windows, measure_seams
+from src.data_aggregate.utils.price.clean import NULL_RET_STEP_TOL
+from src.data_aggregate.utils.price.returns import MOMENTUM_SEAM_WINDOW, momentum_characteristic
 
 #: DHR's registered event -- the largest of the six. `close_total` re-bases at the FTV spinoff
 #: and `pct_change()` reads the seam between the two bases as a +61.218% return.
@@ -153,11 +154,12 @@ def test_the_mask_runs_off_the_end_of_the_frame_without_raising():
 # --------------------------------------------------------------------------- #
 # measure_seams -- the re-measurement contract                                 #
 # --------------------------------------------------------------------------- #
-def test_a_registered_seam_is_measured_on_close_total():
+def test_a_registered_seam_is_measured_on_close_total(monkeypatch: pytest.MonkeyPatch):
     frames = _frames()
     when = frames["close_total"].index[SEAM_POS]
     logged: list[str] = []
-    seams = measure_seams(frames["close_total"], _register(when), lambda m, *a: logged.append(m % a))
+    monkeypatch.setattr("src.data_aggregate.utils.price.checks.logger.info", lambda m, *a: logged.append(m % a))
+    seams = measure_seams(frames["close_total"], _register(when))
 
     assert seams == {"SEAM": [when]}
     assert any("MEASURED" in m for m in logged), logged
@@ -166,7 +168,7 @@ def test_a_registered_seam_is_measured_on_close_total():
     print(f"  SEAM {when.date()}: +{SEAM_RET * 100:.2f}% one-bar basis change measured from close_total. Validated.")
 
 
-def test_measuring_on_ret_would_find_nothing_which_is_why_it_reads_close_total():
+def test_measuring_on_ret_would_find_nothing_which_is_why_it_reads_close_total(monkeypatch: pytest.MonkeyPatch):
     """The load-bearing negative. By the time a feature step runs, `apply_null_ret` has already
     set the seam cell of `ret` to NaN, so re-measuring THERE finds no usable bar pair and skips
     every entry -- the mask would silently never apply and still pass a happy-path test."""
@@ -176,8 +178,9 @@ def test_measuring_on_ret_would_find_nothing_which_is_why_it_reads_close_total()
     ret.at[when, "SEAM"] = np.nan  # what apply_null_ret already did upstream
 
     logged: list[str] = []
-    on_ret = measure_seams(ret, _register(when), lambda m, *a: logged.append(m % a))
-    on_close = measure_seams(frames["close_total"], _register(when), lambda *a: None)
+    monkeypatch.setattr("src.data_aggregate.utils.price.checks.logger.info", lambda m, *a: logged.append(m % a))
+    on_ret = measure_seams(ret, _register(when))
+    on_close = measure_seams(frames["close_total"], _register(when))
 
     assert on_ret == {}
     assert on_close == {"SEAM": [when]}
@@ -187,13 +190,14 @@ def test_measuring_on_ret_would_find_nothing_which_is_why_it_reads_close_total()
     print(f"  measured on ret -> {on_ret} (mask would be a no-op); measured on close_total -> 1 seam. Validated.")
 
 
-def test_a_seam_whose_defect_is_gone_is_skipped_and_logged():
+def test_a_seam_whose_defect_is_gone_is_skipped_and_logged(monkeypatch: pytest.MonkeyPatch):
     """The stale-register contract, inherited from `apply_null_ret`: an entry whose observed
     step no longer matches is never masked on faith."""
     frames = _frames(step=0.012)  # a real +1.2% day where the seam used to be
     when = frames["close_total"].index[SEAM_POS]
     logged: list[str] = []
-    seams = measure_seams(frames["close_total"], _register(when), lambda m, *a: logged.append(m % a))
+    monkeypatch.setattr("src.data_aggregate.utils.price.checks.logger.info", lambda m, *a: logged.append(m % a))
+    seams = measure_seams(frames["close_total"], _register(when))
 
     assert seams == {}
     assert any("GONE or CHANGED" in m for m in logged), logged
@@ -210,8 +214,8 @@ def test_the_seam_band_is_wide_enough_for_float_noise_and_no_wider():
     index = _index()
     when = index[SEAM_POS]
 
-    inside = measure_seams(_frames(step=edge)["close_total"], _register(when), lambda *a: None)
-    refused = measure_seams(_frames(step=outside)["close_total"], _register(when), lambda *a: None)
+    inside = measure_seams(_frames(step=edge)["close_total"], _register(when))
+    refused = measure_seams(_frames(step=outside)["close_total"], _register(when))
 
     assert inside == {"SEAM": [when]}
     assert refused == {}
@@ -220,7 +224,7 @@ def test_the_seam_band_is_wide_enough_for_float_noise_and_no_wider():
     print(f"  tol {NULL_RET_STEP_TOL:.4f} of the STEP: {edge:+.5f} matches, {outside:+.5f} refused. Validated.")
 
 
-def test_a_seam_outside_the_loaded_window_is_skipped():
+def test_a_seam_outside_the_loaded_window_is_skipped(monkeypatch: pytest.MonkeyPatch):
     """An incremental build whose window starts after the seam must not raise, and must not
     mask a date it never loaded."""
     frames = _frames()
@@ -228,11 +232,12 @@ def test_a_seam_outside_the_loaded_window_is_skipped():
     narrow = frames["close_total"].iloc[SEAM_POS + 5 :]
 
     logged: list[str] = []
-    assert measure_seams(narrow, _register(when), lambda m, *a: logged.append(m % a)) == {}
+    monkeypatch.setattr("src.data_aggregate.utils.price.checks.logger.info", lambda m, *a: logged.append(m % a))
+    assert measure_seams(narrow, _register(when)) == {}
     assert any("outside this build's window" in m for m in logged), logged
 
     first_bar = frames["close_total"].iloc[:1]
-    assert measure_seams(first_bar, _register(frames["close_total"].index[0]), lambda *a: None) == {}
+    assert measure_seams(first_bar, _register(frames["close_total"].index[0])) == {}
 
     print("\n=== SANITY CHECK: seams outside the window ===")
     print("  window starting after the seam -> SKIPPED; a seam on the frame's first bar has no step to measure -> SKIPPED. Validated.")

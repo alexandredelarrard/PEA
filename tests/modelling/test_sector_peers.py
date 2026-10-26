@@ -21,12 +21,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.data_aggregate.utils.price.returns import compute_sector_returns
 from src.data_peers.utils.embeddings import DESCRIPTION_TICKER_ALIAS, fetch_business_descriptions
 from src.data_peers.utils.sector_peers import (
     build_peer_dict,
     build_peer_dict_hybrid,
     combine_similarity,
-    compute_sector_returns,
     cosine_similarity_matrix,
     dedupe_share_classes,
 )

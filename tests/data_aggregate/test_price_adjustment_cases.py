@@ -11,13 +11,15 @@ import pytest
 
 from src.context import Context, get_config_context
 from src.data_aggregate.transformers import step_cube_prices as price_step
-from src.data_aggregate.utils.common.level_basis import apply_level_bugfix, as_traded_close, level_actions, level_factor, load_share_basis
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 from src.data_aggregate.utils.institutionals.inputs import QuantityBasis
 from src.data_aggregate.utils.institutionals.insider_positions import position_units
 from src.data_aggregate.utils.sec_thirteen.institutional_features import _daily_owned_shares
 from src.data_store.schema import Tables
-from src.utils.price_adjustments import ShareBasis, load_bugfix, resolve_share_events
+from src.utils.predecessor_series import load_level_actions as level_actions
+from src.utils.price.adjustments import ShareBasis, load_bugfix, resolve_share_events
+from src.utils.price.basis import load_share_basis
+from src.utils.price.levels import apply_level_bugfix, as_traded_close, level_factor
 
 
 @pytest.fixture(scope="module")
@@ -104,7 +106,7 @@ def test_real_level_boundaries(source_case: tuple, ticker: str, start: str, boun
     raw["date"] = pd.to_datetime(raw["date"])
     vendor["date"] = pd.to_datetime(vendor["date"])
     close = raw.pivot(index="date", columns="ticker", values="close_split")
-    factor = apply_level_bugfix(pd.DataFrame(1.0, index=close.index, columns=close.columns), blob, vendor, close, lambda *args: None)
+    factor = apply_level_bugfix(pd.DataFrame(1.0, index=close.index, columns=close.columns), blob, vendor, close)
     assert factor.loc[factor.index >= pd.Timestamp(boundary), ticker].eq(1.0).all()
     old_boundary = "2009-12-31" if ticker == "BLDR" else "2002-06-30"
     assert int(close.loc[(close.index >= boundary) & (close.index < old_boundary), ticker].notna().sum()) == expected_count
@@ -189,13 +191,14 @@ def test_carried_ownership_rebases_both_quantity_legs() -> None:
     print("SANITY: a configured reverse split halves both carried ownership legs; ownership stays10% and the book never appears before publication.")
 
 
-def test_level_diagnostic_counts_only_observed_quote_bars() -> None:
+def test_level_diagnostic_counts_only_observed_quote_bars(monkeypatch: pytest.MonkeyPatch) -> None:
     index = pd.bdate_range("2020-01-01", periods=4)
     close = pd.DataFrame({"TEST": [float("nan"), float("nan"), 5.0, 5.0]}, index=index)
     vendor = pd.DataFrame({"ticker": ["TEST"], "date": [index[-1]], "price": [10.0]})
     blob = {"level_factor": {"TEST": {"segments": [{"before": "2020-02-01", "factor": 2.0}]}}}
     messages: list[str] = []
-    factor = apply_level_bugfix(close * 0 + 1, blob, vendor, close, lambda msg, *args: messages.append(msg % args))
+    monkeypatch.setattr("src.utils.price.levels.logger.info", lambda msg, *args: messages.append(msg % args))
+    factor = apply_level_bugfix(close * 0 + 1, blob, vendor, close)
     assert "APPLIED to 2 bar(s)" in messages[-1]
     assert factor["TEST"].dropna().eq(2.0).all()
     print("SANITY: a hidden wedge logs two observed quotes, excluding two prelisting NaN grid positions.")

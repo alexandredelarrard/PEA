@@ -43,7 +43,7 @@ from src.data_extract.utils.institutionals.fetch_13f import _book_frame, filing_
 from src.data_extract.utils.institutionals.fetch_cusip_map import _parse_openfigi
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
-from src.utils.price_adjustments import ShareBasis
+from src.utils.price.adjustments import ShareBasis
 from tests.conftest import make_frames
 
 LAG = pd.Timedelta(days=45)

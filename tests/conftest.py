@@ -297,8 +297,8 @@ def real_frames() -> dict[str, Any]:
     series were mixed into `prices`.
     """
     from src.constants.constants_price import MACRO_CUBE_FACTORS, MACRO_MARKET_SERIES
-    from src.data_aggregate.utils.common import data_utils as du
     from src.utils.macro import load_macro_wide
+    from src.utils.price.frames import daily_returns, extract_field, prices_long_to_multiindex
 
     store = _store()
     all_tickers = sorted(store.distinct("prices", "ticker"))
@@ -312,16 +312,16 @@ def real_frames() -> dict[str, Any]:
     macro = macro.set_index("date").sort_index()
 
     prices = cast(pd.DataFrame, store.load("prices", where={"ticker": sorted(subset)}))
-    raw = du.prices_long_to_multiindex(prices)
+    raw = prices_long_to_multiindex(prices)
     # BOTH bases, because the builders under test need both: `close_split` for market cap and
     # the intraday features that pair with open/high/low, `close_total` for every return.
-    close = du.extract_field(raw, "CloseSplit")
-    close_total = du.extract_field(raw, "CloseTotal")
+    close = extract_field(raw, "CloseSplit")
+    close_total = extract_field(raw, "CloseTotal")
     # the trading calendar is still the dates the MARKET traded -- sourced from prices_macro
     calendar = macro[MACRO_MARKET_SERIES].reindex(close.index).notna()
     close = close.loc[calendar]
     close_total = close_total.loc[calendar]
-    returns = du.daily_returns(close_total)
+    returns = daily_returns(close_total)
 
     cols = list(returns.columns)
     keep = (["AMD"] if "AMD" in cols else []) + [c for c in cols if c != "AMD"][:SUBSET_SIZE]
@@ -509,7 +509,7 @@ def make_frames(trading_index, peers: dict | None = None, universe=None, **field
     not load it" -- so a builder's degrade-on-absent path is reachable by simply not passing
     the frame.
     """
-    from src.data_aggregate.utils.common.price_frames import PriceFrames
+    from src.data_aggregate.utils.price.frames import PriceFrames
 
     idx = pd.DatetimeIndex(trading_index)
     if idx.name is None:

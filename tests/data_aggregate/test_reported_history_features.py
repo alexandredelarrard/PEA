@@ -8,9 +8,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.common.price_frames import load_trading_calendar
 from src.data_aggregate.utils.fundamentals.fundamental_features import _derived_fields
 from src.data_aggregate.utils.fundamentals.history_features import reported_history_fields
+from src.data_aggregate.utils.price.frames import load_trading_calendar
 from src.data_store.schema import Tables
 from tests.conftest import _store
 

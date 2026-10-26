@@ -10,7 +10,7 @@ from src.data_aggregate.utils.institutionals.insider_features import InsiderCove
 from src.data_aggregate.utils.institutionals.insider_positions import position_units
 from src.data_aggregate.utils.institutionals.insider_quality import clean_transactions, officer_role
 from src.data_store.schema import Tables
-from src.utils.price_adjustments import ShareBasis
+from src.utils.price.adjustments import ShareBasis
 from tests.conftest import make_frames
 from tests.data_aggregate.insider_pit_reference import build_prepared_insider_panel as build_insider_feature_panel
 from tests.data_aggregate.test_insider_features import _frame, _peers, _txn

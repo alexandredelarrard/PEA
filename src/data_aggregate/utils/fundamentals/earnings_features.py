@@ -14,7 +14,7 @@ import pandas as pd
 
 from src.data_aggregate.utils.common.frames import ratio
 from src.data_aggregate.utils.fundamentals.feature_views import build_fundamental_views
-from src.utils.price_adjustments import ShareBasis
+from src.utils.price.adjustments import ShareBasis
 
 logger = logging.getLogger(__name__)
 SURPRISE_WINDOW = 4

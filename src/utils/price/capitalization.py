@@ -2,11 +2,39 @@
 
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 import pandas as pd
 
 from src.utils.price.adjustments import ShareBasis
 from src.utils.price.levels import rebase_security_quantities, security_quantity_basis
+
+logger = logging.getLogger(__name__)
+
+
+def _restore_observation_counts(df_observations: pd.DataFrame, basis: ShareBasis) -> pd.DataFrame:
+    """Restore corroborated vendor counts using the same current F as the quote.
+
+    A cached original count can survive a source restatement only when either
+    contemporaneous vendor observation corroborates it, allowing one share of rounding.
+    """
+    count = pd.to_numeric(df_observations["sharesOutstanding"], errors="coerce")
+    original = pd.to_numeric(df_observations["sharesOutstandingPit"], errors="coerce")
+    factor = basis.factor(df_observations["ticker"], df_observations["as_of"], "vendor")
+    restored = count / factor
+    supported = np.isclose(original, restored, rtol=0, atol=1.0)
+    if "sharesbas" in df_observations:
+        raw = pd.to_numeric(df_observations["sharesbas"], errors="coerce")
+        supported |= np.isclose(original, raw / factor, rtol=0, atol=1.0)
+        matched = np.isclose(count, raw, rtol=1e-12, atol=0) & count.gt(0)
+        original = original.where(~matched, restored)
+        supported |= matched
+    valid = supported & np.isfinite(original) & original.gt(0)
+    if (~valid).any():
+        logger.warning("PIT share counts unsupported for %d public observations; cached count and current vendor basis disagree", int((~valid).sum()))
+    df_observations["sharesOutstandingPit"] = original.where(valid)
+    return df_observations
 
 
 def capitalization_observations(
@@ -26,7 +54,7 @@ def capitalization_observations(
     df_observations["capitalization_available"] = pd.NaT
     required = ("ticker", "date", "reportperiod", "sharesbas", "sharefactor", "lastupdated")
     if df_vendor is None or not set(required).issubset(df_vendor.columns):
-        return df_observations
+        return _restore_observation_counts(df_observations, basis)
 
     # Match the producer's same-date greatest-fiscal-period collapse before joining.
     df_raw = df_vendor[list(required)].copy()
@@ -55,7 +83,7 @@ def capitalization_observations(
     ready = pd.concat([public, ready], axis=1).max(axis=1).where(ready.notna() & df_observations["lastupdated"].notna())
     df_observations["capitalization_factor"] = coefficient.where(supported)
     df_observations["capitalization_available"] = public.where(~dated, ready).where(supported)
-    return df_observations
+    return _restore_observation_counts(df_observations, basis)
 
 
 def project_security_shares(

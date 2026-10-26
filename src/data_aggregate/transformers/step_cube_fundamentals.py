@@ -204,6 +204,9 @@ class StepCubeFundamentals(Step):
             ret=_slice(frames.ret),
             sector_ret=_slice(frames.sector_ret),
             level_factor=_slice(frames.level_factor),
+            close_pit=_slice(frames.close_pit),
+            shares_outstanding_pit=_slice(frames.shares_outstanding_pit),
+            mcap_pit=_slice(frames.mcap_pit),
         )
 
     def _load_history_fields(

@@ -7,17 +7,19 @@ reader's output must be identical.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
 import pandas as pd
-import pytest
 from omegaconf import DictConfig, OmegaConf
 from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
 
+from src.constants.constants_price import MACRO_MARKET_SERIES
 from src.data_aggregate.transformers.step_cube_prices import StepCubePrices
 from src.data_peers.step_deduce_peers import StepDeducePeers
 from src.data_store.schema import Tables
@@ -100,21 +102,15 @@ class _StopError(Exception):
     pass
 
 
-def test_cube_prices_reads_the_universe_only():
+def test_cube_prices_reads_the_universe_only(tmp_path: Path) -> None:
     def read(context: Any) -> pd.DataFrame:
-        step = StepCubePrices.__new__(StepCubePrices)
-        step._store, step._tickers, step._log, step._bugfix = context.store, list(UNIVERSE), context.log, {}
-        captured: dict[str, pd.DataFrame] = {}
-        step._plan_window = lambda full: SimpleNamespace(since=None)  # type: ignore[method-assign]
-
-        def pivot(raw: pd.DataFrame) -> None:
-            captured["raw"] = raw
-            raise _StopError
-
-        step._pivot_fields = pivot  # type: ignore[method-assign]
-        with pytest.raises(_StopError):
-            step.run()
-        return captured["raw"].sort_values(["ticker", "date"])
+        context.store.save(Tables.prices_macro, pd.DataFrame({"ticker": MACRO_MARKET_SERIES, "date": SESSIONS, "close": 100.0}))
+        peer_path = tmp_path / "peers.json"
+        peer_path.write_text(json.dumps({ticker: {ticker: 1.0} for ticker in UNIVERSE}), encoding="utf-8")
+        context.paths, context.config_dir = {"SECTOR_PEERS_PATH": peer_path}, tmp_path
+        context.config.build_cube = {}
+        StepCubePrices(context, context.config).run(full=True)
+        return context.store.load(Tables.cube_part_prices).sort_values(["ticker", "date"])
 
     assert set(_same(read, "step_cube_prices")["ticker"]) == set(UNIVERSE)
 

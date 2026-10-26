@@ -15,7 +15,9 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 import pytest
+from omegaconf import OmegaConf
 
+from src.constants.constants_price import MACRO_MARKET_SERIES
 from src.data_aggregate.transformers.step_cube_prices import StepCubePrices
 from src.data_store.schema import Tables
 from src.utils.cutover_continuity import PredecessorSeries, predecessor_actions
@@ -70,11 +72,33 @@ def _context(tmp_path: Path, overrides: list[dict]) -> SimpleNamespace:
 
 
 def _cube_s(context: SimpleNamespace, tickers: list[str]) -> pd.DataFrame:
-    """S(d) through `StepCubePrices._level_factor`, on a close grid that is never null."""
-    step = StepCubePrices.__new__(StepCubePrices)
-    step._context, step._store, step._log, step._bugfix = context, context.store, context.log, {}
-    close = pd.DataFrame(1.0, index=DAYS, columns=tickers)
-    return step._level_factor(DAYS, close)
+    """Exercise actual price creation with known predecessor action and quote inputs."""
+    context.store.replace(Tables.sp500_tickers, pd.DataFrame({"ticker": tickers}))
+    context.store.replace(
+        Tables.sharadar_fundamentals,
+        pd.DataFrame(columns=["ticker", "date", "dimension", "reportperiod", "sharesbas", "sharefactor", "price", "lastupdated"]),
+    )
+    context.store.replace(
+        Tables.fundamentals_history, pd.DataFrame(columns=["ticker", "as_of", "fiscal_end", "sharesOutstanding", "sharesOutstandingPit"])
+    )
+    context.store.save(
+        Tables.prices,
+        pd.DataFrame(
+            [
+                {"ticker": ticker, "date": day, "open": 1.0, "high": 1.0, "low": 1.0, "close_split": 1.0, "close_total": 1.0, "volume": 1.0}
+                for ticker in tickers
+                for day in DAYS
+            ]
+        ),
+    )
+    context.store.save(Tables.prices_macro, pd.DataFrame({"ticker": MACRO_MARKET_SERIES, "date": DAYS, "close": 1.0}))
+    peer_path = context.config_dir / "peers.json"
+    peer_path.write_text(json.dumps({ticker: {ticker: 1.0} for ticker in tickers}), encoding="utf-8")
+    context.paths = {"SECTOR_PEERS_PATH": peer_path}
+    context.config = OmegaConf.create({"build_cube": {}, "data_extract": {"redundant_ticks": []}})
+    StepCubePrices(context, context.config).run(full=True)
+    rows = context.store.load(Tables.cube_part_prices)
+    return rows.pivot(index="date", columns="ticker", values="level_factor").reindex(index=DAYS, columns=tickers)
 
 
 def _validate_s(context: SimpleNamespace, tickers: list[str]) -> pd.DataFrame:

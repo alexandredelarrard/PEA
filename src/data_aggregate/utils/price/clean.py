@@ -9,7 +9,10 @@ from typing import Any, cast
 import numpy as np
 import pandas as pd
 
-from src.utils.price.repairs import BUGFIX_STEP_TOL
+from src.constants.constants_price import MACRO_MARKET_SERIES
+from src.data_aggregate.utils.price.frames import get_trading_days, pivot_fields
+from src.data_aggregate.utils.price.inputs import PriceInputs
+from src.utils.price.repairs import BUGFIX_STEP_TOL, apply_return_seams, apply_split_vintage
 
 logger = logging.getLogger(__name__)
 
@@ -107,3 +110,31 @@ def apply_null_ret(ret: pd.DataFrame, bugfix: dict) -> int:
                 observed * 100,
             )
     return applied
+
+
+def clean_prices(inputs: PriceInputs, bugfix: dict) -> tuple[dict[str, pd.DataFrame], pd.DataFrame | None]:
+    """Clean volume, align the calendar, then repair quote/total legs before their use."""
+    if inputs.bars[["date", "ticker"]].isna().any().any() or inputs.bars.duplicated(["date", "ticker"]).any():
+        raise ValueError("Invalid or duplicate raw price keys")
+    if inputs.splits is not None:
+        ratios = pd.to_numeric(inputs.splits["ratio"], errors="coerce")
+        invalid = inputs.splits["ticker"].isna() | pd.to_datetime(inputs.splits["date"], errors="coerce").isna()
+        if (invalid | ~np.isfinite(ratios) | ratios.le(0)).any():
+            raise ValueError("Invalid Yahoo price-adjustment evidence")
+    df_bars = apply_volume_scale(inputs.bars, bugfix)
+    wide = pivot_fields(df_bars)
+    df_close = wide["close_split"]
+    mask = get_trading_days(df_close, inputs.market, MACRO_MARKET_SERIES)
+    index = pd.DatetimeIndex(df_close.index[mask.to_numpy()], name="date")
+    if index.empty:
+        raise ValueError("Invalid empty price trading calendar")
+    wide = {field: df_frame.reindex(index) if field == "volume" else df_frame.loc[index] for field, df_frame in wide.items()}
+    df_vendor = inputs.vendor
+    if df_vendor is not None and {"ticker", "date", "price"}.issubset(df_vendor):
+        df_vendor = df_vendor.assign(date=pd.to_datetime(df_vendor["date"]))
+    else:
+        df_vendor = None
+    applied = apply_split_vintage(wide, bugfix, df_vendor)
+    applied += apply_return_seams(wide, bugfix)
+    logger.info("Price cleaning: %d sessions, %d guarded quote/total repairs", len(index), applied)
+    return wide, df_vendor

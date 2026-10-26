@@ -96,6 +96,9 @@ def _normalize(frames: dict) -> tuple[dict, pd.DatetimeIndex]:
     lvl = pd.DataFrame(1.0, index=idx, columns=pd.Index(universe, name="ticker"))
     lvl.loc[: idx[30], "BBB"] = 1.241
     uni["level_factor"] = lvl.where(uni["close_split"].notna())
+    uni["close_pit"] = uni["close_split"] * uni["level_factor"]
+    uni["shares_outstanding_pit"] = pd.DataFrame(1e6, index=idx, columns=uni["close_split"].columns).where(uni["close_split"].notna())
+    uni["mcap_pit"] = uni["close_pit"] * uni["shares_outstanding_pit"]
     # a deterministic stand-in for compute_sector_returns (equal-weight mean of the others)
     uni["sector_ret"] = pd.DataFrame(
         {t: uni["ret"].drop(columns=[t]).mean(axis=1) for t in universe}, index=idx, columns=pd.Index(universe, name="ticker")

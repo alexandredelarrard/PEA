@@ -45,6 +45,18 @@ integration_parents:
 
 - [configs/build_cube.yml](../../configs/build_cube.yml) owns windows, targets, feature settings, and output switches.
 
+## Price-part contract (P0–P3)
+
+[StepCubePrices](../../src/data_aggregate/transformers/step_cube_prices.py) loads projected full-history source evidence once, cleans Yahoo quote/total repairs and volume units, resolves canonical/predecessor actions, computes the level history and PIT outputs, cleans returns, checks the complete candidate, then writes one part. Yahoo supplies prices; Sharadar supplies reconciliation and share/action evidence. No Sharadar DAILY market-cap reader is introduced.
+
+Cross-package corporate-action, quantity and capitalization mathematics live in [src/utils/price](../../src/utils/price/levels.py); aggregation-only loading, cleaning, projection and checks live in [data_aggregate/utils/price](../../src/data_aggregate/utils/price/inputs.py). Shared conversion retains explicit source/economic dates and ordinary-per-security units. Ordinary ShareBasis.rebase semantics remain unchanged.
+
+The existing unmanaged cube_part_prices persists float64 close_pit (historical quoted security close), shares_outstanding_pit (latest public source count in that session’s canonical security units, preserving class coverage), and mcap_pit (issuer USD capitalization using a separately supported coefficient). A class-covered count is never enlarged to manufacture issuer coverage. Nonunit coefficients are matched by ticker/public date/fiscal period and vendor count; without archived vintages, availability starts no earlier than the first session strictly after lastupdated. Supersession ends support even when the successor is unsupported. Unknown units or unsupported observations stay null. Cached ordinary counts are checked against the current vendor basis; matching raw/merged vendor observations are restored using that same basis on a working copy.
+
+close_split and close_total retain their adjusted meanings; returns continue to use close_total. The persisted level_factor is dimensionless, S = Y × H / (F × U). Historical quotes are close_split × S × F × U. No return is calculated from close_pit.
+
+Schema changes promote to a full build before payload loading. Incremental runs recompute the full required history and stream saved rows once to find the earliest changed key, value or null, including removed keys and changes before the normal warmup window. Publication rewrites from the earlier of that change and the normal refresh cutoff. The existing delete/insert writer is not atomic; failed writes require a retry from unchanged sources. Other cubes retain their existing economic consumption until P4/P5; fundamentals still resolve their legacy per-share basis, and momentum still verifies return seams.
+
 ## Earnings-call feature contract
 
 [StepCubeText.run](../../src/data_aggregate/transformers/step_cube_text.py) visibly loads the calendar, plans work, prepares selected text once, runs sentiments, runs embeddings, then builds/persists features. Sentiment is read once during planning and updated in memory with successfully saved scores. Feature creation reuses that frame, loads price frames once, streams saved embeddings, calculates call/daily features, and saves the panel once. Each model stage saves completed calls independently; the existing sentiment and embedding tables remain the reusable outputs.

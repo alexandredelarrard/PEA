@@ -9,7 +9,11 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.price.clean import NULL_RET_STEP_TOL
-from src.utils.price.repairs import LEVEL_SNAP_TOL, _total_seam_step
+from src.data_aggregate.utils.price.frames import ALL_FIELDS
+from src.data_store.schema import Tables
+from src.data_store.store import DataStore
+from src.utils.price.adjustments import SPLIT_MATCH_DAYS, ShareBasis
+from src.utils.price.repairs import BUGFIX_WEDGE_TOL, LEVEL_SNAP_TOL, _total_seam_step, observed_wedge
 
 logger = logging.getLogger(__name__)
 
@@ -128,3 +132,119 @@ def mask_seam_windows(frame: pd.DataFrame, seams: dict[str, list[pd.Timestamp]],
                 continue
             out.iloc[max(start, 0) : stop, column] = np.nan
     return out
+
+
+def verified_level_support(df_level: pd.DataFrame, df_vendor: pd.DataFrame | None, bugfix: dict) -> pd.DataFrame:
+    """Verify registered hidden levels without using source prices to fit a new factor."""
+    df_supported = pd.DataFrame(True, index=df_level.index, columns=df_level.columns)
+    if df_vendor is not None and not {"ticker", "date", "price"}.issubset(df_vendor):
+        df_vendor = None
+    for ticker, policy in bugfix.get("level_factor", {}).items():
+        if ticker not in df_level:
+            continue
+        lower = pd.Timestamp.min
+        for segment in sorted(policy.get("segments", []), key=lambda item: item["before"]):
+            upper = pd.Timestamp(segment["before"])
+            observed = observed_wedge(ticker, upper, df_vendor, df_level, since=lower)
+            window = (df_level.index >= lower) & (df_level.index < upper)
+            lower = upper
+            if observed is None or abs(observed - 1) > BUGFIX_WEDGE_TOL:
+                df_supported.loc[window, ticker] = False
+                logger.warning(
+                    "PIT quote support: %s before %s remains unknown; compatible vendor/price level ratio=%s", ticker, upper.date(), observed
+                )
+    return df_supported
+
+
+def _price_keys(df_rows: pd.DataFrame) -> pd.MultiIndex:
+    """Validate ordered daily security keys before matching or publishing rows."""
+    keys = list(Tables.cube_part_prices.pk)
+    df_keys = df_rows[keys].copy()
+    df_keys["date"] = pd.to_datetime(df_keys["date"], errors="coerce")
+    if df_keys.isna().any().any():
+        raise ValueError("Invalid price keys")
+    index = pd.MultiIndex.from_frame(df_keys)
+    if index.has_duplicates or not index.is_monotonic_increasing:
+        raise ValueError("Invalid duplicate or unordered price keys")
+    return index
+
+
+def verified_price_factor_support(df_close: pd.DataFrame, basis: ShareBasis) -> pd.DataFrame:
+    """Keep ambiguous pre-restatement quotes unknown when Yahoo has no evidenced factor."""
+    df_supported = pd.DataFrame(True, index=df_close.index, columns=df_close.columns)
+    price_dates = {ticker: pd.to_datetime(df_group["date"]) for ticker, df_group in basis.price.groupby("ticker", sort=False)}
+    df_events = basis.vendor.loc[basis.vendor["value"].ne(1), ["ticker", "date"]].drop_duplicates()
+    for ticker, date in df_events.itertuples(index=False, name=None):
+        if ticker not in df_close:
+            continue
+        when = pd.Timestamp(date)
+        declared = [event.get("vendor", event["actual"]) for event in basis.policies.get(ticker, {}).get("events", [])]
+        if any(leg is not None and pd.Timestamp(leg["date"]) == when for leg in declared):
+            continue
+        dates = price_dates.get(ticker)
+        if dates is not None and ((dates - when).abs() <= pd.Timedelta(days=SPLIT_MATCH_DAYS)).any():
+            continue
+        prefix = df_close.index < when
+        if df_close.loc[prefix, ticker].notna().any():
+            df_supported.loc[prefix, ticker] = False
+            logger.warning("PIT quote support: %s before %s unknown; vendor restatement has no evidenced Yahoo price factor", ticker, when.date())
+    return df_supported
+
+
+def check_candidate(df_rows: pd.DataFrame) -> None:
+    """Check the complete candidate before any price-part mutation."""
+    if df_rows.empty or set(df_rows) != {*Tables.cube_part_prices.pk, *ALL_FIELDS}:
+        raise ValueError("Invalid empty or incomplete price candidate")
+    _price_keys(df_rows)
+    for field in ALL_FIELDS:
+        values = df_rows[field]
+        if np.isinf(values.to_numpy(dtype="float64")).any():
+            raise ValueError(f"Invalid infinite price field: {field}")
+        positive = field.startswith("close_") or field in {"open", "high", "low", "level_factor", "shares_outstanding_pit", "mcap_pit"}
+        if (positive and values.le(0).any()) or (field == "volume" and values.lt(0).any()):
+            raise ValueError(f"Price field must be positive: {field}")
+    if (df_rows["mcap_pit"].notna() & df_rows[["close_pit", "shares_outstanding_pit"]].isna().any(axis=1)).any():
+        raise ValueError("Invalid market cap without a supported quote/count pair")
+    for field in ("close_pit", "shares_outstanding_pit", "mcap_pit"):
+        logger.info("Price candidate %s coverage: %d / %d observed security sessions", field, int(df_rows[field].notna().sum()), len(df_rows))
+
+
+def earliest_price_change(store: DataStore, df_rows: pd.DataFrame, existing_columns: list[str]) -> pd.Timestamp | None:
+    """Stream the saved part once and find the first key, null or exact value difference."""
+    keys = list(Tables.cube_part_prices.pk)
+    stream = store.iter_load(Tables.cube_part_prices, columns=existing_columns, order_by=keys)
+    try:
+        if set(existing_columns) != set(df_rows):
+            raise ValueError("Historical price comparison requires identical schemas")
+        index = _price_keys(df_rows)
+        fields = [field for field in df_rows if field not in keys]
+        values = df_rows[fields].to_numpy(dtype="float64")
+        seen = np.zeros(len(df_rows), dtype=bool)
+        earliest: pd.Timestamp | None = None
+        last_key: tuple | None = None
+        for df_chunk in stream:
+            stored_index = _price_keys(df_chunk)
+            if df_chunk.empty:
+                continue
+            if last_key is not None and stored_index[0] <= last_key:
+                raise ValueError("Invalid repeated or unordered saved price keys across chunks")
+            last_key = stored_index[-1]
+            dates = pd.DatetimeIndex(stored_index.get_level_values("date"))
+            positions = index.get_indexer(stored_index)
+            matched = positions >= 0
+            if seen[positions[matched]].any():
+                raise ValueError("Invalid repeated saved price keys")
+            seen[positions[matched]] = True
+            changed = ~matched
+            old = df_chunk.loc[matched, fields].to_numpy(dtype="float64")
+            new = values[positions[matched]]
+            changed[matched] = ~((old == new) | (np.isnan(old) & np.isnan(new))).all(axis=1)
+            if changed.any():
+                first = dates[changed].min()
+                earliest = first if earliest is None else min(earliest, first)
+        if (~seen).any():
+            first = pd.Timestamp(df_rows.loc[~seen, "date"].min())
+            earliest = first if earliest is None else min(earliest, first)
+        return earliest
+    finally:
+        stream.close()

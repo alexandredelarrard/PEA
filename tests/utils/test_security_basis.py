@@ -93,6 +93,7 @@ def test_successive_and_future_splits_preserve_historical_ownership() -> None:
 
 def test_capitalization_uses_dated_exact_lineage_and_unknown_successor_ends_support() -> None:
     basis = _basis(1, 1, 1)
+    basis = ShareBasis(basis.actual, basis.actual, basis.price, basis.policies)
     index = pd.bdate_range("2024-01-01", "2024-01-12")
     df_history = pd.DataFrame(
         {
@@ -168,3 +169,45 @@ def test_real_sharadar_class_scope_and_public_support() -> None:
     print(
         "SANITY: real BRK-B/V issuer-cap equations agree within source rounding; dated factors never backfill publication gaps or inflate the saved class count."
     )
+
+
+def test_unmatched_vendor_vintages_require_corroborated_original_counts() -> None:
+    basis = _basis(4, 1, 1)
+    basis = ShareBasis(basis.actual, basis.actual, basis.price, basis.policies)
+    df_history = pd.DataFrame(
+        {
+            "ticker": ["AAA", "AAA"],
+            "as_of": pd.to_datetime(["2024-01-02", "2024-01-03"]),
+            "fiscal_end": pd.to_datetime(["2023-09-30"] * 2),
+            "sharesOutstanding": [100.0, 100.0],
+            "sharesOutstandingPit": [100.0, 50.0],
+        }
+    )
+    df_raw = pd.DataFrame(
+        {
+            "ticker": ["AAA", "AAA"],
+            "date": df_history["as_of"],
+            "reportperiod": df_history["fiscal_end"],
+            "sharesbas": [400.0, 400.0],
+            "sharefactor": [1.0, 1.0],
+            "lastupdated": df_history["as_of"],
+        }
+    )
+    observations = capitalization_observations(df_history, df_raw, pd.bdate_range("2024-01-01", "2024-01-12"), basis)
+    assert observations["sharesOutstandingPit"].iloc[0] == 100.0
+    assert pd.isna(observations["sharesOutstandingPit"].iloc[1])
+    assert observations["capitalization_factor"].isna().all()
+    print(
+        "SANITY: current raw400/F4 corroborates original100 despite old merged100; neither vendor observation corroborates cached50, so it remains unknown."
+    )
+
+
+def test_identity_vendor_event_needs_no_yahoo_price_factor() -> None:
+    from src.data_aggregate.utils.price.checks import verified_price_factor_support
+
+    basis = _basis(1, 1, 1)
+    empty = basis.actual.iloc[:0]
+    basis = ShareBasis(basis.actual, basis.actual, empty, {})
+    df_close = pd.DataFrame({"AAA": [50.0, 50.0]}, index=pd.DatetimeIndex(["2024-01-04", "2024-01-05"]))
+    assert verified_price_factor_support(df_close, basis).all().all()
+    print("SANITY: a no-op vendor event does not turn a known quote into missing data.")

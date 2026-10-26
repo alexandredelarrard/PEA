@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
-import logging
+import json
+from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 
 import pandas as pd
 import pytest
 
+from src.constants.constants_price import MACRO_MARKET_SERIES
 from src.context import Context, get_config_context
 from src.data_aggregate.transformers import step_cube_prices as price_step
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 from src.data_aggregate.utils.institutionals.inputs import QuantityBasis
 from src.data_aggregate.utils.institutionals.insider_positions import position_units
+from src.data_aggregate.utils.price.inputs import PRICE_COLS
 from src.data_aggregate.utils.sec_thirteen.institutional_features import _daily_owned_shares
 from src.data_store.schema import Tables
 from src.utils.predecessor_series import load_level_actions as level_actions
@@ -28,7 +31,7 @@ def source_case() -> tuple[Context, pd.DataFrame, ShareBasis, dict]:
     names = ["IVZ", "HBAN", "APA", "SJM"]
     shares = context.store.load(
         Tables.sharadar_fundamentals,
-        columns=["ticker", "date", "sharesbas", "price"],
+        columns=["ticker", "date", "dimension", "reportperiod", "sharesbas", "price"],
         where={"ticker": names, "dimension": "ARQ"},
         since="1995-01-01",
         until="2008-12-31",
@@ -134,9 +137,11 @@ def test_actual_quantity_normalization_does_not_borrow_vendor_factor(source_case
 
 
 @pytest.mark.parametrize("changed", ["source", "anchor"])
-def test_ordinary_price_builder_refuses_changed_share_policy_before_write(source_case: tuple, monkeypatch: pytest.MonkeyPatch, changed: str) -> None:
-    context, shares, _, blob = source_case
-    raw = context.store.load(Tables.prices, columns=price_step.PRICE_COLS, where={"ticker": "IVZ"}, since="2007-11-01", until="2007-12-10")
+def test_ordinary_price_builder_refuses_changed_share_policy_before_write(
+    source_case: tuple, monkeypatch: pytest.MonkeyPatch, changed: str, sqlite_store: Any, tmp_path: Path
+) -> None:
+    context, shares, _, _ = source_case
+    raw = context.store.load(Tables.prices, columns=PRICE_COLS, where={"ticker": "IVZ"}, since="2007-11-01", until="2007-12-10")
     yahoo = context.store.load(Tables.prices_splits, columns=["ticker", "date", "ratio"], where={"ticker": "IVZ"})
     actions = context.store.load(
         Tables.sharadar_actions, columns=["ticker", "date", "action", "value"], where={"ticker": "IVZ", "action": ["split", "spinoff"]}
@@ -147,31 +152,23 @@ def test_ordinary_price_builder_refuses_changed_share_policy_before_write(source
     vendor = shares.copy()
     if changed == "anchor":
         vendor.loc[vendor["ticker"].eq("IVZ"), "sharesbas"] *= 2
-    inputs = {Tables.prices: raw, Tables.prices_splits: yahoo, Tables.sharadar_fundamentals: vendor}
+    sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["IVZ"]}))
+    sqlite_store.save(Tables.prices, raw)
+    sqlite_store.save(Tables.prices_splits, yahoo)
+    sqlite_store.save(Tables.sharadar_actions, actions.assign(contraticker=""))
+    sqlite_store.save(Tables.sharadar_fundamentals, vendor)
+    sqlite_store.save(Tables.prices_macro, pd.DataFrame({"ticker": MACRO_MARKET_SERIES, "date": raw["date"], "close": 1.0}))
+    peer_path = tmp_path / "peers.json"
+    peer_path.write_text(json.dumps({"IVZ": {"IVZ": 1.0}}), encoding="utf-8")
+    isolated = SimpleNamespace(
+        store=sqlite_store, config=context.config, config_dir=context.config_dir, log=context.log, paths={"SECTOR_PEERS_PATH": peer_path}
+    )
     writes: list[object] = []
-
-    class GuardStore:
-        def load(self, table: Any, **kwargs: Any) -> pd.DataFrame:
-            return inputs[table].copy()
-
-    step = price_step.StepCubePrices.__new__(price_step.StepCubePrices)
-    actual = cast(Any, step)
-    actual._store = GuardStore()
-    actual._context = SimpleNamespace(store=actual._store, log=context.log, config_dir=context.config_dir)
-    actual._tickers = ["IVZ"]
-    actual._bugfix = blob
-    actual._log = logging.getLogger(__name__)
-    monkeypatch.setattr(step, "_plan_window", lambda full: SimpleNamespace(since=None))
-    monkeypatch.setattr(step, "_trading_calendar", lambda close: pd.DatetimeIndex(close.index))
-    monkeypatch.setattr(step, "_vendor_price", lambda: None)
-    monkeypatch.setattr(step, "_peers", lambda: {})
-    monkeypatch.setattr(step, "_universe_frames", lambda wide, returns, peers: {**wide, "ret": returns})
-    monkeypatch.setattr(price_step, "level_actions", lambda *args: actions)
-    monkeypatch.setattr(price_step, "write_part", lambda *args, **kwargs: writes.append(args))
+    monkeypatch.setattr(sqlite_store, "replace", lambda *args, **kwargs: writes.append(args))
     with pytest.raises(ValueError, match="changed sharadar|share anchor"):
-        step.run(full=True)
+        price_step.StepCubePrices(isolated, context.config).run(full=True)
     assert not writes
-    print(f"SANITY: ordinary StepCubePrices.run refuses changed {changed} evidence before any part write; correction math is exercised.")
+    print(f"SANITY: actual StepCubePrices.run refuses changed {changed} evidence before any part write.")
 
 
 def test_carried_ownership_rebases_both_quantity_legs() -> None:

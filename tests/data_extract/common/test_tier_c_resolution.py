@@ -216,11 +216,10 @@ def test_fetchers_resolve_identity_only_through_the_accessor():
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
             and node.func.attr in {"load", "iter_load", "distinct", "summarize", "load_cohort"}
-            and node.args
-            and isinstance(node.args[0], ast.Attribute)
-            and isinstance(node.args[0].value, ast.Name)
-            and node.args[0].value.id == "Tables"
-            and node.args[0].attr == "sp500_tickers"
+            and any(
+                {"Tables", "sp500_tickers"} <= _names(arg)
+                for arg in node.args[:1] + [keyword.value for keyword in node.keywords if keyword.arg == "table"]
+            )
             for node in ast.walk(tree)
         ):
             roster.append(rel)
@@ -243,18 +242,21 @@ def test_fetchers_resolve_identity_only_through_the_accessor():
 
 
 @pytest.mark.parametrize("method", ["load", "iter_load", "distinct", "summarize", "load_cohort"])
-def test_identity_guard_rejects_roster_payload_reads(method, monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "table_arg", ["Tables.sp500_tickers", "table=Tables.sp500_tickers", "Tables.sp500_tickers.name", "table=Tables.sp500_tickers.name"]
+)
+def test_identity_guard_rejects_roster_payload_reads(method: str, table_arg: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     fetcher = tmp_path / "src/data_extract/utils/institutionals/insider_store.py"
     fetcher.parent.mkdir(parents=True)
-    fetcher.write_text(f"context.store.{method}(Tables.sp500_tickers)\n", encoding="utf-8")
+    fetcher.write_text(f"context.store.{method}({table_arg})\n", encoding="utf-8")
     monkeypatch.setitem(globals(), "REPO", tmp_path)
 
     with pytest.raises(AssertionError, match="fetchers reading sp500_tickers directly"):
         test_fetchers_resolve_identity_only_through_the_accessor()
-    print(f"SANITY: {method}(Tables.sp500_tickers) is rejected even inside an owner module. Validated.")
+    print(f"SANITY: {method}({table_arg}) is rejected even inside an owner module. Validated.")
 
 
-def test_identity_guard_accepts_metadata_and_loaded_cohort(monkeypatch, tmp_path):
+def test_identity_guard_accepts_metadata_and_loaded_cohort(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     fetcher = tmp_path / "src/data_extract/utils/institutionals/insider_store.py"
     fetcher.parent.mkdir(parents=True)
     fetcher.write_text(

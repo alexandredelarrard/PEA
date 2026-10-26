@@ -211,3 +211,37 @@ def test_identity_vendor_event_needs_no_yahoo_price_factor() -> None:
     df_close = pd.DataFrame({"AAA": [50.0, 50.0]}, index=pd.DatetimeIndex(["2024-01-04", "2024-01-05"]))
     assert verified_price_factor_support(df_close, basis).all().all()
     print("SANITY: a no-op vendor event does not turn a known quote into missing data.")
+
+
+@pytest.mark.parametrize("period", ["invalid", None])
+def test_missing_fiscal_keys_cannot_establish_or_extend_capitalization_support(period: str | None) -> None:
+    df_empty = pd.DataFrame(columns=["ticker", "date", "value"])
+    basis = ShareBasis(df_empty, df_empty, df_empty, {})
+    calendar = pd.bdate_range("2024-01-01", "2024-01-12")
+    df_history = pd.DataFrame(
+        {
+            "ticker": ["AAA", "AAA"],
+            "as_of": pd.to_datetime(["2024-01-02", "2024-01-08"]),
+            "fiscal_end": ["2023-09-30", period],
+            "sharesOutstanding": [100.0, 120.0],
+            "sharesOutstandingPit": [100.0, 120.0],
+        }
+    )
+    df_raw = pd.DataFrame(
+        {
+            "ticker": ["AAA", "AAA"],
+            "date": df_history["as_of"],
+            "reportperiod": df_history["fiscal_end"],
+            "sharesbas": [100.0, 120.0],
+            "sharefactor": [1.5, 1.7],
+            "lastupdated": pd.to_datetime(["2024-01-02", "2024-01-08"]),
+        }
+    )
+    observations = capitalization_observations(df_history, df_raw, calendar, basis)
+    shares, scale = project_security_shares(observations, basis, calendar, pd.Index(["AAA"]))
+    assert scale.loc["2024-01-03":"2024-01-05", "AAA"].eq(1.5).all()
+    assert scale.loc["2024-01-08":, "AAA"].isna().all()
+    assert shares.loc["2024-01-08":, "AAA"].eq(120.0).all()
+    print(
+        "SANITY: invalid fiscal keys never match through NaT; the malformed successor ends oldK while its independently known count remains usable."
+    )

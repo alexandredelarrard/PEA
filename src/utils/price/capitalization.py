@@ -60,6 +60,7 @@ def capitalization_observations(
     df_raw = df_vendor[list(required)].copy()
     for field in ("date", "reportperiod", "lastupdated"):
         df_raw[field] = pd.to_datetime(df_raw[field], errors="coerce")
+    df_raw = df_raw.dropna(subset=["ticker", "date", "reportperiod"])
     if df_raw.duplicated(["ticker", "date", "reportperiod"]).any():
         raise ValueError("Conflicting or repeated raw capitalization observation keys")
     df_raw = df_raw.sort_values(["ticker", "date", "reportperiod"]).drop_duplicates(["ticker", "date"], keep="last")

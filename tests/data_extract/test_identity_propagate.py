@@ -452,10 +452,10 @@ def _ftd_raw(rows: list[tuple[str, str, str, int]]) -> pd.DataFrame:
     return ftd._parse_ftd_lines("\n".join(lines) + "\n")
 
 
-def test_a_moved_master_security_moves_its_fails_rows(sqlite_store, tmp_path, monkeypatch, caplog):
-    _create_canonical(sqlite_store.engine, [Tables.sec_fails_to_deliver_security, Tables.sec_fails_to_deliver])
+def test_a_moved_master_security_moves_its_fails_rows(sqlite_store, tmp_path, monkeypatch):
     """FTD contraction and expansion: the `OLD` security moves from ALB to MSFT in the master; ALB's OLD-era
-    ticker row goes (WARNING), MSFT gains it after reconciling the controlled original source units."""
+    ticker row retains verified zero completion, MSFT gains it after reconciling the controlled original source units."""
+    _create_canonical(sqlite_store.engine, [Tables.sec_fails_to_deliver_security, Tables.sec_fails_to_deliver])
     context = _context(sqlite_store, tmp_path)
     raw = _ftd_raw([("20120301", "000000OL1", "OLD", 10), ("20240201", "000000AL1", "ALB", 5), ("20240201", "000000MS1", "MSFT", 7)])
     raw = raw.assign(
@@ -489,8 +489,7 @@ def test_a_moved_master_security_moves_its_fails_rows(sqlite_store, tmp_path, mo
     monkeypatch.setattr(prop, "reparse_financial_statements", lambda context, tickers: 0)
     monkeypatch.setattr(prop, "reparse_insider_transactions", lambda context, tickers: 0)
 
-    with caplog.at_level(logging.WARNING, logger=LOGGER):
-        prop.propagate_identity(context, list(ROSTER), as_of=RUN_DATE)
+    result = prop.propagate_identity(context, list(ROSTER), as_of=RUN_DATE)
 
     after = sqlite_store.load(Tables.sec_fails_to_deliver, columns=["ticker", "date", "fails_quantity"])
     got = sorted((t, str(pd.Timestamp(d).date()), q) for t, d, q in after.itertuples(index=False))
@@ -499,12 +498,9 @@ def test_a_moved_master_security_moves_its_fails_rows(sqlite_store, tmp_path, mo
     assert checked is not None and checked["source_checked_at"].notna().all()
     restamped = sqlite_store.load(Tables.sec_fails_to_deliver_security, where={"cusip": "000000OL1"})
     assert restamped["ticker"].tolist() == ["MSFT"]
-    assert any(
-        "'sec_fails_to_deliver'" in r.getMessage() and "ALB" in r.getMessage() and "2012-03-01..2012-03-01 1 row(s)" in r.getMessage()
-        for r in caplog.records
-    )
+    assert result.removals.empty, result.removals
     print("\n=== SANITY CHECK: FTD re-stamp ===")
-    print("  OLD moved from ALB to MSFT in the master: ALB's 2012 row purged (WARNING), MSFT gains it; ALB's own 2024 row kept")
+    print("  OLD moved from ALB to MSFT: ALB's 2012 row retains verified zero completion, MSFT gains its fails; 2024 rows kept; no removals")
 
 
 def test_the_master_stamp_alone_drives_the_fails_restamp(sqlite_store, tmp_path, monkeypatch, stubs):

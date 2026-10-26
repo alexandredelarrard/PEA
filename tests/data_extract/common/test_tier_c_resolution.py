@@ -174,6 +174,7 @@ REPO = next(p for p in Path(__file__).resolve().parents if (p / "pyproject.toml"
 #: The identity layer itself: the accessor, the lineage/tenure builds, the register loader they read, the roster listing.
 _ACCESSOR = {
     "src/data_extract/utils/common/identity.py",
+    "src/data_extract/utils/common/identity_store.py",
     "src/data_extract/utils/common/entity_lineage.py",
     "src/data_extract/utils/common/symbol_tenure.py",
     "src/data_extract/utils/common/registrant.py",
@@ -211,7 +212,16 @@ def test_fetchers_resolve_identity_only_through_the_accessor():
         if not rel.startswith("src/data_extract/utils/") or rel in _ACCESSOR:
             continue
         register += [f"{rel}: {name}" for name in sorted(names & _REGISTER)]
-        if rel != _ROSTER_WRITER and any(isinstance(n, ast.Attribute) and n.attr == "sp500_tickers" for n in ast.walk(tree)):
+        if rel != _ROSTER_WRITER and any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in {"load", "iter_load", "distinct", "summarize", "load_cohort"}
+            and any(
+                {"Tables", "sp500_tickers"} <= _names(arg)
+                for arg in node.args[:1] + [keyword.value for keyword in node.keywords if keyword.arg == "table"]
+            )
+            for node in ast.walk(tree)
+        ):
             roster.append(rel)
         for node in ast.walk(tree):
             if (
@@ -229,3 +239,34 @@ def test_fetchers_resolve_identity_only_through_the_accessor():
     print("\n=== SANITY CHECK: AC-027 one identity source ===")
     print(f"  no {sorted(_RETIRED)} in src; outside {len(_ACCESSOR)} identity modules no register read, no sp500_tickers read,")
     print("  every issuer Company() takes int(cik). Validated.")
+
+
+@pytest.mark.parametrize("method", ["load", "iter_load", "distinct", "summarize", "load_cohort"])
+@pytest.mark.parametrize(
+    "table_arg", ["Tables.sp500_tickers", "table=Tables.sp500_tickers", "Tables.sp500_tickers.name", "table=Tables.sp500_tickers.name"]
+)
+def test_identity_guard_rejects_roster_payload_reads(method: str, table_arg: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    fetcher = tmp_path / "src/data_extract/utils/institutionals/insider_store.py"
+    fetcher.parent.mkdir(parents=True)
+    fetcher.write_text(f"context.store.{method}({table_arg})\n", encoding="utf-8")
+    monkeypatch.setitem(globals(), "REPO", tmp_path)
+
+    with pytest.raises(AssertionError, match="fetchers reading sp500_tickers directly"):
+        test_fetchers_resolve_identity_only_through_the_accessor()
+    print(f"SANITY: {method}({table_arg}) is rejected even inside an owner module. Validated.")
+
+
+def test_identity_guard_accepts_metadata_and_loaded_cohort(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    fetcher = tmp_path / "src/data_extract/utils/institutionals/insider_store.py"
+    fetcher.parent.mkdir(parents=True)
+    fetcher.write_text(
+        "identities = {Tables.sp500_tickers, Tables.entity_lineage}\n"
+        "roster = cohort[Tables.sp500_tickers]\n"
+        "columns = context.store.columns(Tables.sp500_tickers)\n"
+        "lineage = context.store.load(Tables.entity_lineage)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setitem(globals(), "REPO", tmp_path)
+
+    test_fetchers_resolve_identity_only_through_the_accessor()
+    print("SANITY: table metadata, a loaded cohort lookup and another table's load are not roster payload reads. Validated.")

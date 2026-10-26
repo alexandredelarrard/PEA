@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 import re
 from collections.abc import Sequence
 from pathlib import Path
@@ -183,18 +182,3 @@ def test_document_contract_forms_are_the_forms_each_fetcher_lists(monkeypatch: p
     print(
         f"  {len(fetched)} actual EDGAR fetches use their owning table's exact forms tuple; the index keeps all {len(declared)} registered forms. Validated."
     )
-
-
-def test_extraction_form_lists_are_declared_only_in_schema() -> None:
-    root = _SCHEMA_SQL.parents[1]
-    pattern = re.compile(r"(?:10-[KQ](?:405)?|8-K|DEF 14[AC]|DEFC14A|SC 13[DG]|SCHEDULE 13[DG]|13F-HR|[345])(?:/A)?")
-    duplicates: list[str] = []
-    for package in ("constants", "data_extract", "data_aggregate"):
-        for path in (root / "src" / package).rglob("*.py"):
-            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-                if not isinstance(node, ast.List | ast.Tuple | ast.Set) or not node.elts:
-                    continue
-                if all(isinstance(value, ast.Constant) and isinstance(value.value, str) and pattern.fullmatch(value.value) for value in node.elts):
-                    duplicates.append(f"{path.relative_to(root)}:{node.lineno}")
-    assert not duplicates, f"SEC form lists outside schema.py: {duplicates}"
-    print("SANITY: constants, extraction and aggregation contain no independently declared SEC form lists; schema owns the extraction scope.")

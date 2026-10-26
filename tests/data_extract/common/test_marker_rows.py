@@ -13,6 +13,7 @@ import pytest
 
 from src.data_extract.utils.common.edgar_driver import FilingStamp, marker_row
 from src.data_store.schema import Table, Tables
+from src.data_store.store import _create_canonical
 from tests.data_extract.edgar_fixtures import fake_filing
 
 _SCHEMA_SQL = Path(__file__).resolve().parents[3] / "sql" / "schema.sql"
@@ -87,6 +88,7 @@ def _real_row(table: Table, extra: dict[str, object]) -> pd.DataFrame:
 @pytest.mark.parametrize("name", sorted(_CASES))
 def test_a_marker_is_one_typed_null_row_with_ddl_columns_only(name: str, sqlite_store) -> None:
     table, extra, (float_col, date_col, text_col) = _CASES[name]
+    _create_canonical(sqlite_store.engine, [table])
     assert table.empty_marker is not None
     column, sentinel = table.empty_marker
     marker = marker_row(table, "AAA", FilingStamp.of(fake_filing("0000000001-26-000002", 1, _FILED, form="4"), "0000000001"))

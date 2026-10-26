@@ -599,7 +599,7 @@ def restamp_fails(
     cached originals and report their actual missing keys without downloads or database writes.
     """
 
-    cohort = load_source_identity(context) if identity is None else identity
+    cohort = load_source_identity(context.store) if identity is None else identity
     master = prepare_master(cohort[Tables.security_master])
     if master.empty:
         return []
@@ -794,7 +794,7 @@ def fetch_fails_to_deliver(
     rebuilds both tables from every cached ZIP; a scoped (`-t`) run replaces only its guarded issuer source pairs.
     """
     universe = frozenset(tickers)
-    cohort = identity.source_cohort if identity is not None else load_source_identity(context)
+    cohort = identity.source_cohort if identity is not None else load_source_identity(context.store)
     master = prepare_master(cohort[Tables.security_master]) if not cohort[Tables.security_master].empty else None
     if master is None or master.empty:
         logger.warning("FTD: no security_master yet (run identity-tables first); nothing stamped")

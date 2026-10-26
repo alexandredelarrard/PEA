@@ -18,13 +18,37 @@ from src.context import Context
 from src.data_aggregate.utils.institutionals import inputs
 from src.data_aggregate.utils.institutionals import short_flow_features as short
 from src.data_extract.utils.common.identity import load_source_identity
-from src.data_extract.utils.institutionals.insider_store import certify_insider_source, insider_source_run, save_insider_source
+from src.data_extract.utils.common.identity_store import save_identity
+from src.data_extract.utils.institutionals.insider_store import (
+    certify_insider_inventory,
+    certify_insider_source,
+    insider_inventory_snapshot,
+    insider_source_run,
+    patch_insider_source,
+    replace_insider_source,
+    save_insider_source,
+)
 from src.data_store.schema import Table, Tables
-from src.data_store.store import DataStore
+from src.data_store.store import DataStore, _create_canonical
 from src.utils.price_adjustments import ShareBasis
 
 
 def _inventory(store: DataStore) -> tuple[pd.DataFrame, pd.DataFrame, dict[Table, pd.DataFrame]]:
+    _create_canonical(
+        store.engine,
+        [
+            Tables.sp500_tickers,
+            Tables.entity_lineage,
+            Tables.symbol_tenure,
+            Tables.security_master,
+            Tables.insider_transactions,
+            Tables.insider_footnotes,
+            Tables.short_interest,
+            Tables.sec_fails_to_deliver,
+            Tables.sec_short_volume_security,
+            Tables.sec_fails_to_deliver_security,
+        ],
+    )
     transactions = pd.DataFrame(
         {
             "accession_number": ["a", "b"],
@@ -76,7 +100,10 @@ def _inventory(store: DataStore) -> tuple[pd.DataFrame, pd.DataFrame, dict[Table
         store.save(spec, frame)
     store.save(Tables.insider_transactions, transactions)
     store.save(Tables.insider_footnotes, notes)
-    return transactions, notes, identities
+    transactions = store.load(Tables.insider_transactions, columns=store.columns(Tables.insider_transactions), markers=True)
+    notes = store.load(Tables.insider_footnotes, columns=store.columns(Tables.insider_footnotes))
+    assert transactions is not None and notes is not None
+    return transactions, notes, load_source_identity(store)
 
 
 def test_source_pair_rolls_back_payload_and_retained_proof(sqlite_store: DataStore) -> None:
@@ -93,7 +120,8 @@ def test_source_pair_rolls_back_payload_and_retained_proof(sqlite_store: DataSto
     event.listen(sqlite_store.engine, "before_cursor_execute", refuse_notes)
     try:
         with pytest.raises(RuntimeError, match="controlled"):
-            sqlite_store.replace_institutional_source(
+            replace_insider_source(
+                sqlite_store,
                 {
                     Tables.insider_transactions: transactions.iloc[:1].assign(shares=99.0),
                     Tables.insider_footnotes: notes.assign(footnote_text="changed"),
@@ -120,12 +148,13 @@ def test_same_accession_mutation_refuses_old_certification(sqlite_store: DataSto
         replacement["shares"] = 99.0
     else:
         replacement_notes["footnote_text"] = "changed same accession"
-    sqlite_store.replace_institutional_source(
+    replace_insider_source(
+        sqlite_store,
         {Tables.insider_transactions: replacement, Tables.insider_footnotes: replacement_notes},
         {Tables.insider_transactions: {"accession_number": ["a"]}, Tables.insider_footnotes: {"accession_number": ["a"]}},
     )
     with pytest.raises(ValueError, match="cohort changed"):
-        sqlite_store.certify_insider_inventory("AAA", pd.Timestamp("2026-07-03"), transactions, notes, identities)
+        certify_insider_inventory(sqlite_store, "AAA", pd.Timestamp("2026-07-03"), transactions, notes, identities)
     actual = sqlite_store.load(Tables.insider_transactions, markers=True)
     assert actual is not None and actual["inventory_checked_through"].isna().all()
     print("SANITY: same-accession payload/footnote changes invalidate every retained issuer row and refuse stale certification.")
@@ -136,7 +165,7 @@ def test_every_accession_must_be_fresh_before_certification(sqlite_store: DataSt
     transactions.loc[0, "fetched_at"] = pd.Timestamp("2026-05-01")
     sqlite_store.save(Tables.insider_transactions, transactions)
     with pytest.raises(ValueError, match="Every insider accession"):
-        sqlite_store.certify_insider_inventory("AAA", pd.Timestamp("2026-07-03"), transactions, notes, identities)
+        certify_insider_inventory(sqlite_store, "AAA", pd.Timestamp("2026-07-03"), transactions, notes, identities)
     print("SANITY: a recent maximum fetched_at cannot hide an older accession behind the identity scope change.")
 
 
@@ -183,7 +212,7 @@ def test_identity_replacement_clears_proof_in_same_commit(sqlite_store: DataStor
         for table in (Tables.sec_short_volume_security, Tables.sec_fails_to_deliver_security)
     }
     changed = identities[Tables.entity_lineage].assign(valid_from=pd.Timestamp("2019-01-01"))
-    sqlite_store.replace_institutional_identity(Tables.entity_lineage, changed)
+    save_identity(sqlite_store, Tables.entity_lineage, changed)
     actual = sqlite_store.load(Tables.insider_transactions, markers=True)
     assert actual is not None and len(actual) == len(transactions) and actual["inventory_checked_through"].isna().all()
     for table, quantity in ((Tables.short_interest, "short_volume"), (Tables.sec_fails_to_deliver, "fails_quantity")):
@@ -210,9 +239,7 @@ def test_identity_replacement_clears_proof_in_same_commit(sqlite_store: DataStor
 def test_invalidated_quiet_rows_cannot_become_legacy_cube_observations(sqlite_store: DataStore, metric: str) -> None:
     _, _, identities = _inventory(sqlite_store)
     _tape_observations(sqlite_store)
-    sqlite_store.replace_institutional_identity(
-        Tables.entity_lineage, identities[Tables.entity_lineage].assign(valid_from=pd.Timestamp("2019-01-01"))
-    )
+    save_identity(sqlite_store, Tables.entity_lineage, identities[Tables.entity_lineage].assign(valid_from=pd.Timestamp("2019-01-01")))
     rows = sqlite_store.load(Tables.short_interest, project=True)
     assert rows is not None
     dates = pd.bdate_range("2026-06-01", periods=4)
@@ -250,9 +277,7 @@ def test_identity_invalidation_rolls_back_quiet_payloads_and_proof(sqlite_store:
     event.listen(sqlite_store.engine, "before_cursor_execute", refuse_stamp)
     try:
         with pytest.raises(RuntimeError, match="controlled failure"):
-            sqlite_store.replace_institutional_identity(
-                Tables.entity_lineage, identities[Tables.entity_lineage].assign(valid_from=pd.Timestamp("2019-01-01"))
-            )
+            save_identity(sqlite_store, Tables.entity_lineage, identities[Tables.entity_lineage].assign(valid_from=pd.Timestamp("2019-01-01")))
     finally:
         event.remove(sqlite_store.engine, "before_cursor_execute", refuse_stamp)
     for table, expected in before.items():
@@ -264,7 +289,7 @@ def test_identity_invalidation_rolls_back_quiet_payloads_and_proof(sqlite_store:
 
 def test_exact_reconciliation_can_certify_all_actual_rows(sqlite_store: DataStore) -> None:
     transactions, notes, identities = _inventory(sqlite_store)
-    assert sqlite_store.certify_insider_inventory("AAA", pd.Timestamp("2026-07-03"), transactions, notes, identities) == 2
+    assert certify_insider_inventory(sqlite_store, "AAA", pd.Timestamp("2026-07-03"), transactions, notes, identities) == 2
     rows = sqlite_store.load(Tables.insider_transactions, markers=True)
     assert rows is not None and pd.to_datetime(rows["inventory_checked_through"]).eq(pd.Timestamp("2026-07-03")).all()
     print("SANITY: exact payload, notes, identity and every-accession freshness jointly stamp the real issuer cohort.")
@@ -282,7 +307,8 @@ def test_concurrent_same_key_mutation_cannot_leave_certification(tmp_path: Path)
 
     def mutate() -> None:
         mutate_started.set()
-        store.replace_institutional_source(
+        replace_insider_source(
+            store,
             {Tables.insider_transactions: transactions.iloc[:1].assign(shares=77.0), Tables.insider_footnotes: notes.assign(footnote_text="raced")},
             {Tables.insider_transactions: {"accession_number": ["a"]}, Tables.insider_footnotes: {"accession_number": ["a"]}},
         )
@@ -290,7 +316,7 @@ def test_concurrent_same_key_mutation_cannot_leave_certification(tmp_path: Path)
     event.listen(store.engine, "before_cursor_execute", pause_stamp)
     try:
         with ThreadPoolExecutor(max_workers=2) as executor:
-            certification = executor.submit(store.certify_insider_inventory, "AAA", pd.Timestamp("2026-07-03"), transactions, notes, identities)
+            certification = executor.submit(certify_insider_inventory, store, "AAA", pd.Timestamp("2026-07-03"), transactions, notes, identities)
             assert compared.wait(10)
             mutation = executor.submit(mutate)
             assert mutate_started.wait(10)
@@ -321,16 +347,16 @@ def test_legacy_projection_does_not_add_proof_columns(sqlite_store: DataStore) -
 def test_partial_patch_and_deleted_accession_keep_full_payload_atomic(sqlite_store: DataStore) -> None:
     transactions, notes, _ = _inventory(sqlite_store)
     patch = transactions.iloc[:1][list(Tables.insider_transactions.pk)].assign(quarter="2026q2")
-    assert sqlite_store.patch_insider_source(patch, []) == 1
+    assert patch_insider_source(sqlite_store, patch, []) == 1
     actual = sqlite_store.load(Tables.insider_transactions, markers=True)
     assert actual is not None and actual["shares"].tolist() == [3.0, 2.0]
     assert actual["inventory_checked_through"].isna().all()
     stored_frame = sqlite_store.load(Tables.insider_footnotes)
     assert stored_frame is not None
     pd.testing.assert_frame_equal(stored_frame, notes)
-    assert sqlite_store.patch_insider_source(pd.DataFrame(), ["a"]) == 1
+    assert patch_insider_source(sqlite_store, pd.DataFrame(), ["a"]) == 1
     assert sqlite_store.load(Tables.insider_footnotes, optional=True) is None
-    assert sqlite_store.patch_insider_source(pd.DataFrame(), ["b"]) == 1
+    assert patch_insider_source(sqlite_store, pd.DataFrame(), ["b"]) == 1
     assert sqlite_store.load(Tables.insider_transactions, markers=True, optional=True) is None
     print(
         "SANITY: a quarter-only patch preserves complete economics/notes; deletion removes notes and the last actual accession leaves the issuer unknown."
@@ -340,7 +366,8 @@ def test_partial_patch_and_deleted_accession_keep_full_payload_atomic(sqlite_sto
 def test_zip_preserves_existing_edgar_payload_notes_and_freshness(sqlite_store: DataStore) -> None:
     transactions, notes, _ = _inventory(sqlite_store)
     sqlite_store.save(Tables.insider_transactions, transactions.assign(source="edgar"))
-    counts = sqlite_store.replace_institutional_source(
+    counts = replace_insider_source(
+        sqlite_store,
         {
             Tables.insider_transactions: transactions.assign(source="zip", quarter="2026q2", shares=99.0, fetched_at=pd.Timestamp("2026-07-03")),
             Tables.insider_footnotes: notes.assign(footnote_text="ZIP must not replace EDGAR note"),
@@ -360,7 +387,8 @@ def test_zip_preserves_existing_edgar_payload_notes_and_freshness(sqlite_store: 
 def test_owner_only_marker_preserves_other_issuer_payload_and_notes(sqlite_store: DataStore) -> None:
     transactions, notes, _ = _inventory(sqlite_store)
     marker = transactions.iloc[:1].assign(ticker="BBB", security_type="_empty", row_sequence=0, shares=float("nan"))
-    sqlite_store.replace_institutional_source(
+    replace_insider_source(
+        sqlite_store,
         {Tables.insider_transactions: marker, Tables.insider_footnotes: notes.iloc[:0]},
         {Tables.insider_transactions: {"accession_number": ["a"]}, Tables.insider_footnotes: {"accession_number": ["a"]}},
     )
@@ -385,7 +413,8 @@ def test_owner_only_retention_is_per_accession_and_issuer(sqlite_store: DataStor
     incoming = pd.concat(
         [transactions.iloc[:1].assign(ticker="BBB", security_type="_empty", row_sequence=0), transactions.iloc[1:]], ignore_index=True
     )
-    sqlite_store.replace_institutional_source(
+    replace_insider_source(
+        sqlite_store,
         {Tables.insider_transactions: incoming, Tables.insider_footnotes: notes.iloc[:0]},
         {Tables.insider_transactions: {"accession_number": ["a", "b"]}, Tables.insider_footnotes: {"accession_number": ["a", "b"]}},
     )
@@ -405,7 +434,7 @@ def test_master_scope_change_requires_each_accession_freshness(sqlite_store: Dat
     sqlite_store.save(Tables.security_master, master)
     identities[Tables.security_master] = master
     with pytest.raises(ValueError, match="Every insider accession"):
-        sqlite_store.certify_insider_inventory("AAA", pd.Timestamp("2026-07-04"), transactions, notes, identities)
+        certify_insider_inventory(sqlite_store, "AAA", pd.Timestamp("2026-07-04"), transactions, notes, identities)
     print("SANITY: unchanged accession sets and lineage stamps cannot bypass a newer applicable security-master scope change.")
 
 
@@ -414,7 +443,7 @@ def test_temporary_source_roundtrip_and_cleanup_preserve_exact_cohort() -> None:
     started = perf_counter()
     staging_bytes = 0
     with pytest.raises(RuntimeError, match="controlled context exit"):
-        with DataStore.temporary_insider_source() as stage:
+        with DataStore.temporary([Tables.insider_transactions, Tables.insider_footnotes]) as stage:
             staged_path = Path(str(stage.engine.url.database))
             transactions = pd.DataFrame(
                 {
@@ -430,13 +459,14 @@ def test_temporary_source_roundtrip_and_cleanup_preserve_exact_cohort() -> None:
                 }
             )
             notes = pd.DataFrame({"accession_number": ["a", "b"], "footnote_id": ["F1", "F2"], "footnote_text": ['Exact "quoted"\nnotes é', None]})
-            stage.replace_institutional_source(
+            replace_insider_source(
+                stage,
                 {Tables.insider_transactions: transactions, Tables.insider_footnotes: notes},
                 {Tables.insider_transactions: {"accession_number": ["a", "b"]}, Tables.insider_footnotes: {"accession_number": ["a", "b"]}},
             )
-            actual, actual_notes = stage.insider_inventory_snapshot("AAA", ["a", "b"])
+            actual, actual_notes = insider_inventory_snapshot(stage, "AAA", ["a", "b"])
             expected = transactions.assign(filing_date=transactions["filing_date"].dt.date)
-            pd.testing.assert_frame_equal(actual.drop(columns="inventory_checked_through"), expected, check_dtype=False, check_exact=True)
+            pd.testing.assert_frame_equal(actual[list(expected.columns)], expected, check_dtype=False, check_exact=True)
             pd.testing.assert_frame_equal(actual_notes, notes, check_dtype=False)
             assert set(inspect(stage.engine).get_table_names()) == {Tables.insider_transactions.name, Tables.insider_footnotes.name}
             assert staged_path.exists()
@@ -457,7 +487,7 @@ def test_count_and_evidence_churn_preserves_identity_proof(sqlite_store: DataSto
     frames = _tape_observations(sqlite_store)
     before = {spec: sqlite_store.load(spec, columns=[str(column) for column in frame]) for spec, frame in frames.items()}
     rows = identities[table].assign(**{count: 99, "evidence": "additional observations, unchanged semantic scope"})
-    sqlite_store.replace_institutional_identity(table, rows)
+    save_identity(sqlite_store, table, rows)
     actual = sqlite_store.load(Tables.insider_transactions, markers=True)
     assert actual is not None and actual["inventory_checked_through"].notna().all()
     for spec, expected in before.items():
@@ -517,8 +547,8 @@ def test_one_source_lifetime_refuses_a_different_parser_resolver(sqlite_store: D
     with insider_source_run(context):
         save_insider_source(context, transactions.iloc[:1].assign(shares=9.0), notes, identities)
         master = identities[Tables.security_master].assign(canonical_company="BBB")
-        sqlite_store.replace_institutional_identity(Tables.security_master, master)
-        later = load_source_identity(context)
+        save_identity(sqlite_store, Tables.security_master, master)
+        later = load_source_identity(context.store)
         context_stub._institutional_identity_cohort = later
         with pytest.raises(ValueError, match="parser identity cohort changed"):
             save_insider_source(context, transactions.iloc[1:].assign(ticker="BBB", shares=99.0), notes.iloc[:0], later)
@@ -548,7 +578,7 @@ def test_stale_classification_identity_refuses_source_pair_commit(sqlite_store: 
     sqlite_store.save(Tables.sec_short_volume_security, raw)
     sqlite_store.save(Tables.short_interest, grain)
     changed = identities[Tables.entity_lineage].assign(valid_from=pd.Timestamp("2019-01-01"))
-    sqlite_store.replace_institutional_identity(Tables.entity_lineage, changed)
+    save_identity(sqlite_store, Tables.entity_lineage, changed)
     before = sqlite_store.load(Tables.short_interest)
     assert before is not None
     with pytest.raises(ValueError, match="identity cohort changed"):
@@ -586,7 +616,7 @@ def test_ftd_null_owner_reconciliation_is_exact_and_atomic(sqlite_store: DataSto
     if case == "ambiguous":
         master = pd.concat([master, master.iloc[:1].assign(security_id="C333", canonical_company="CCC")], ignore_index=True)
     sqlite_store.replace(Tables.security_master, master)
-    identities[Tables.security_master] = master
+    identities = load_source_identity(sqlite_store)
     raw = pd.DataFrame(
         {
             "cusip": ["111", "222"],

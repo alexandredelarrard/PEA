@@ -724,7 +724,7 @@ def test_e31_a_moved_boundary_restamps_exactly_the_affected_rows(sqlite_store, t
 
 def test_e32_an_unchanged_master_restamps_nothing(sqlite_store, tmp_path, monkeypatch):
     context = _stamped_store(sqlite_store, tmp_path, monkeypatch)
-    cohort = load_source_identity(context)
+    cohort = load_source_identity(context.store)
     for name in ("save", "delete", "replace", "load"):
         monkeypatch.setattr(sqlite_store, name, lambda *a, _n=name, **k: pytest.fail(f"unchanged master must not {_n}"))
     assert ftd.restamp_fails(context, companies=None, tickers=UNIVERSE, identity=cohort, as_of=RUN_DATE) == []

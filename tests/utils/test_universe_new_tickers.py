@@ -9,11 +9,12 @@ from typing import Any
 
 import pandas as pd
 import pytest
+from sqlalchemy import text
 
 from src.data_extract.utils.prices import fetch_tickers
 from src.data_store.schema import Tables
+from src.data_store.store import _create_canonical
 from src.utils.universe import new_tickers
-from tests.conftest import FakeStore
 
 _AS_OF = pd.Timestamp("2026-10-03")
 
@@ -120,14 +121,15 @@ def test_scraper_keeps_stored_added_on_and_stamps_new_tickers(sqlite_store, stub
     print(f"  AAPL keeps 2000-01-01, MSFT keeps NULL, NEWCO stamped {_AS_OF.date()} and keeps it on a later re-scrape. Validated.")
 
 
-def test_scraper_does_not_add_the_column_before_migration(stub_page) -> None:
-    store = FakeStore({Tables.sp500_tickers: pd.DataFrame({"ticker": ["AAPL"], "cik": ["0000320193"]})})
+def test_scraper_does_not_add_the_column_before_migration(sqlite_store, stub_page) -> None:
+    _create_canonical(sqlite_store.engine, [Tables.sp500_tickers])
+    with sqlite_store.engine.begin() as conn:
+        conn.execute(text(f'ALTER TABLE "{Tables.sp500_tickers.name}" DROP COLUMN added_on'))
+    sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["AAPL"], "cik": ["0000320193"]}))
 
-    fetch_tickers.get_sp500_tickers(_ctx(store), as_of=_AS_OF)
+    fetch_tickers.get_sp500_tickers(_ctx(sqlite_store), as_of=_AS_OF)
 
-    saved = store.saved_frames(Tables.sp500_tickers)
-    assert len(saved) == 1 and "added_on" not in saved[0].columns
-    assert set(saved[0]["ticker"]) == {"AAPL", "MSFT", "NEWCO"}
-
-    print("\n=== SANITY CHECK: no implicit migration ===")
-    print("  a stored table without added_on gets a frame without it: the save cannot ALTER the table or stamp 500 tickers as new. Validated.")
+    saved = sqlite_store.load(Tables.sp500_tickers)
+    assert saved is not None and "added_on" not in saved.columns
+    assert set(saved["ticker"]) == {"AAPL", "MSFT", "NEWCO"}
+    print("SANITY: the real atomic roster writer preserves a missing added_on field without adopting it or stamping established tickers.")

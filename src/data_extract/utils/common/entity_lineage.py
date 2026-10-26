@@ -29,6 +29,7 @@ import pandas as pd
 
 from src.context import Context
 from src.data_extract.utils.common.config_paths import resolve_config_dir
+from src.data_extract.utils.common.identity_store import save_identity
 from src.data_extract.utils.common.incremental import matches_stored
 from src.data_extract.utils.common.registrant import Registrant, load_registrants
 from src.data_extract.utils.common.symbol_tenure import DEI_SOURCE, collapse_dei_periods, load_manual_symbol_tenure
@@ -1244,6 +1245,7 @@ def build_entity_lineage(
     assert roster is not None
     existing = _stored_rows(context.store.load(Tables.entity_lineage, project=True, optional=True))
     dei_rows = context.store.load(Tables.symbol_tenure, project=True, where={"source": DEI_SOURCE}, optional=True)
+    master = context.store.load(Tables.security_master, columns=list(MASTER_COLUMNS), optional=True)
     dei = collapse_dei_periods(dei_rows) if dei_rows is not None and not dei_rows.empty else None
     build = derive_entity_lineage(
         tenure, roster, owner_pairs, config_dir, dei=dei, existing=existing, approved_rekeys=approved_rekeys, built_at=built_at
@@ -1257,7 +1259,6 @@ def build_entity_lineage(
         f"dei evidence {0 if dei is None else len(dei)} (symbol, CIK) interval(s); curation backlog {len(build.backlog)} item(s)"
     )
     evidence = tenure if dei is None else pd.concat([tenure, dei], ignore_index=True)
-    master = context.store.load(Tables.security_master, columns=list(MASTER_COLUMNS), optional=True)
     flags = identity_flags(out, cik_activity(evidence), redundant_symbols=redundant_symbols, backlog=build.backlog, master=master)
     log_identity_flags(context.log, flags)
     if not build.blocked.empty:
@@ -1271,7 +1272,7 @@ def build_entity_lineage(
     else:
         _log_changed_assignments(context, existing, out, roster)
     unchanged = matches_stored(existing, out, Tables.entity_lineage)
-    written = 0 if unchanged else context.store.replace_institutional_identity(Tables.entity_lineage, out)
+    written = 0 if unchanged else save_identity(context.store, Tables.entity_lineage, out)
     if unchanged:
         logger.info("entity_lineage: unchanged (%d row(s)); replace skipped", len(out))
     else:

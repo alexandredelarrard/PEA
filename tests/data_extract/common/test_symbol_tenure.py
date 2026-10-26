@@ -35,6 +35,7 @@ from src.data_extract.utils.common.symbol_tenure import (
     scan_form345_cache,
 )
 from src.data_store.schema import Tables
+from src.data_store.store import DataStore, _create_canonical
 
 #: The real cache. Absent on a fresh clone, so the real-data tests skip rather than fail.
 CACHE = Path("data/sec_insider_transactions")
@@ -605,6 +606,7 @@ def _seed_tenure_row(symbol: str, cik: str, source: str, evidence_period: str) -
 
 def test_build_rewrites_only_its_partitions_and_keeps_dei_rows(sqlite_store, monkeypatch, tmp_path):
     """The form345/manual build must leave rows of other sources (`dei`) in place and drop its own stale rows."""
+    _create_canonical(sqlite_store.engine, [Tables.symbol_tenure])
     seeded = pd.DataFrame(
         [
             _seed_tenure_row("DEI", "0000000009", "dei", "2024q1"),
@@ -628,8 +630,10 @@ def test_build_rewrites_only_its_partitions_and_keeps_dei_rows(sqlite_store, mon
     monkeypatch.setattr(tenure_module, "load_manual_symbol_tenure", lambda config_dir: pd.DataFrame(columns=manual_columns))
     writes: list[str] = []
     for method in ("save", "replace", "delete"):
-        real = getattr(sqlite_store, method)
-        monkeypatch.setattr(sqlite_store, method, lambda *args, _real=real, _name=method, **kwargs: (writes.append(_name), _real(*args, **kwargs))[1])
+        real = getattr(DataStore, method)
+        monkeypatch.setattr(
+            DataStore, method, lambda self, *args, _real=real, _name=method, **kwargs: (writes.append(_name), _real(self, *args, **kwargs))[1]
+        )
     context: Any = SimpleNamespace(store=sqlite_store, log=logging.getLogger("test.symbol_tenure.partition"))
 
     tenure_module.build_symbol_tenure(context, cast(Any, None), tmp_path)
@@ -649,6 +653,7 @@ def test_build_rewrites_only_its_partitions_and_keeps_dei_rows(sqlite_store, mon
 
 
 def test_symbol_tenure_build_logs_cold_and_changed_symbols(sqlite_store, monkeypatch, caplog, tmp_path):
+    _create_canonical(sqlite_store.engine, [Tables.symbol_tenure])
     frame = pd.DataFrame(
         {
             "symbol": ["AAA"],
@@ -701,6 +706,7 @@ def test_symbol_tenure_build_logs_cold_and_changed_symbols(sqlite_store, monkeyp
 
 def test_symbol_tenure_write_is_skipped_when_unchanged(sqlite_store, monkeypatch, caplog, tmp_path):
     """A rebuild that derives exactly the stored rows (read back through the store) writes nothing."""
+    _create_canonical(sqlite_store.engine, [Tables.symbol_tenure])
     frame = pd.DataFrame(
         {
             "symbol": ["BBB", "AAA"],
@@ -717,13 +723,14 @@ def test_symbol_tenure_write_is_skipped_when_unchanged(sqlite_store, monkeypatch
     manual_columns = ["canonical_ticker", "symbol", "issuer_cik", "valid_from", "valid_to", "n_filings", "source", "evidence", "reason"]
     monkeypatch.setattr(tenure_module, "load_manual_symbol_tenure", lambda config_dir: pd.DataFrame(columns=manual_columns))
     saved: list[int] = []
-    real_save = sqlite_store.save
+    real_save = DataStore.save
 
-    def counting_save(table, df):
-        saved.append(len(df))
-        return real_save(table, df)
+    def counting_save(self, table, df, **kwargs):
+        if table == Tables.symbol_tenure:
+            saved.append(len(df))
+        return real_save(self, table, df, **kwargs)
 
-    monkeypatch.setattr(sqlite_store, "save", counting_save)
+    monkeypatch.setattr(DataStore, "save", counting_save)
     context: Any = SimpleNamespace(store=sqlite_store, log=logging.getLogger("test.symbol_tenure.skip"))
     caplog.set_level(logging.INFO)
 
@@ -881,6 +888,7 @@ def test_a_rejection_must_be_cited_and_dated(tmp_path, mutation, message):
 
 
 def test_build_writes_the_partition_without_the_rejected_rows(sqlite_store, monkeypatch, tmp_path):
+    _create_canonical(sqlite_store.engine, [Tables.symbol_tenure])
     _manual_with_rejections(tmp_path, [_FCF_REJECTION])
     monkeypatch.setattr(tenure_module, "derive_symbol_tenure", lambda scan: _ford_and_fcf())
     context: Any = SimpleNamespace(store=sqlite_store, log=logging.getLogger("test.symbol_tenure.rejected"))

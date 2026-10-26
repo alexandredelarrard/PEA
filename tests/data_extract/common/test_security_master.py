@@ -18,6 +18,7 @@ from src.data_extract.utils.common import security_master as sm
 from src.data_extract.utils.common.identity import build_identity
 from src.data_extract.utils.common.sec_tickers import parse_company_tickers_exchange
 from src.data_store.schema import Tables
+from src.data_store.store import _create_canonical
 from src.utils.cutover_continuity import load_vendor_exceptions
 from src.utils.predecessor_series import load_vendor_series
 from tests.data_extract.fake_context import extract_config
@@ -1036,6 +1037,17 @@ def test_seam_boundaries_from_the_real_config():
 
 
 def test_build_reads_finra_trading_days_through_the_store(sqlite_store, tmp_path):
+    _create_canonical(
+        sqlite_store.engine,
+        [
+            Tables.sp500_tickers,
+            Tables.entity_lineage,
+            Tables.symbol_tenure,
+            Tables.security_master,
+            Tables.insider_transactions,
+            Tables.insider_footnotes,
+        ],
+    )
     obs = STZ_OBS.assign(trade_date=sm.trade_dates(STZ_OBS["date"]), fails_quantity=1000.0)
     sqlite_store.save(
         Tables.sec_fails_to_deliver_security,
@@ -1228,6 +1240,17 @@ def test_a_canonical_line_never_runs_back_into_another_use_of_its_symbol():
 
 
 def test_build_reads_common_symbol_days_through_the_store(sqlite_store, tmp_path):
+    _create_canonical(
+        sqlite_store.engine,
+        [
+            Tables.sp500_tickers,
+            Tables.entity_lineage,
+            Tables.symbol_tenure,
+            Tables.security_master,
+            Tables.insider_transactions,
+            Tables.insider_footnotes,
+        ],
+    )
     obs = EG_OBS.assign(trade_date=sm.trade_dates(EG_OBS["date"]), fails_quantity=1000.0)
     sqlite_store.save(
         Tables.sec_fails_to_deliver_security,

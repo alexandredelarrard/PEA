@@ -11,7 +11,7 @@ import logging
 import re
 import tempfile
 import threading
-from collections.abc import Callable, Generator, Sequence
+from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any, cast
@@ -436,7 +436,7 @@ class DataStore:
                 conn.execute(tbl.insert(), records[offset : offset + _CHUNK])
         return len(records)
 
-    def update(self, table: SchemaTable | str, values: dict[str, object], where: Where) -> int:
+    def update(self, table: SchemaTable | str, values: Mapping[str, object], where: Where) -> int:
         """Update carried values on an explicit scope; empty tuple/OR scopes change no rows."""
         if where is None or isinstance(where, dict) and not where or not values:
             raise ValueError("update() needs values and an explicit where scope")
@@ -1476,7 +1476,8 @@ class DataStore:
         """Upsert `df` into `table` on its PK, creating the table if needed."""
         name = name_of(table)
         if df is None or df.empty:
-            logger.warning(f"save() skipped: table '{name}' is empty")
+            if not isinstance(self._database, Connection):
+                logger.warning(f"save() skipped: table '{name}' is empty")
             return 0
 
         if isinstance(self._database, Connection):

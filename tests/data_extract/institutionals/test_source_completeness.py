@@ -15,15 +15,21 @@ from sqlalchemy import event
 from src.data_extract import identity_propagate
 from src.data_extract.utils.common.edgar_driver import EdgarFetch, EdgarScope, _read_unit, _walk_key
 from src.data_extract.utils.common.identity import Identity, load_source_identity
+from src.data_extract.utils.common.identity_store import save_identity
 from src.data_extract.utils.common.sec_io import ParseFailureError
 from src.data_extract.utils.institutionals import fetch_fails_to_deliver as ftd
 from src.data_extract.utils.institutionals import fetch_insider_edgar as insider_edgar
 from src.data_extract.utils.institutionals import fetch_insider_transactions as insider_zip
 from src.data_extract.utils.institutionals import fetch_short_interest as finra
 from src.data_extract.utils.institutionals.insider_edgar_parser import extract_xml_strings
-from src.data_extract.utils.institutionals.insider_store import certify_insider_source, insider_source_run
+from src.data_extract.utils.institutionals.insider_store import (
+    certify_insider_inventory,
+    certify_insider_source,
+    insider_inventory_snapshot,
+    insider_source_run,
+)
 from src.data_store.schema import Tables
-from src.data_store.store import DataStore
+from src.data_store.store import DataStore, _create_canonical
 from src.utils.price_adjustments import ShareBasis
 from tests.data_extract.fake_context import extract_config
 from tests.data_extract.institutionals.test_short_volume_security import _identity, _master
@@ -704,7 +710,7 @@ def test_identity_propagation_ftd_restamp_binds_classification_cohort(
         if race:
             changed = _master()
             changed.loc[changed["source_symbol"].eq("LEN"), "conversion_ratio"] = 2.0
-            sqlite_store.replace_institutional_identity(Tables.security_master, changed)
+            save_identity(sqlite_store, Tables.security_master, changed)
         return original(ctx, companies, tickers, **kwargs)
 
     monkeypatch.setattr(identity_propagate, "restamp_fails", restamp)
@@ -728,6 +734,7 @@ def test_identity_propagation_ftd_restamp_binds_classification_cohort(
 
 
 def test_zip_reconciliation_refuses_concurrently_changed_edgar_payload(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    _create_canonical(sqlite_store.engine, [Tables.insider_transactions, Tables.insider_footnotes])
     context = cast(Any, SimpleNamespace(store=sqlite_store, log=logging.getLogger(__name__)))
     rows = pd.DataFrame(
         {
@@ -745,21 +752,22 @@ def test_zip_reconciliation_refuses_concurrently_changed_edgar_payload(sqlite_st
     notes = pd.DataFrame({"accession_number": ["a"], "footnote_id": ["F1"], "footnote_text": ["old"]})
     sqlite_store.save(Tables.insider_transactions, rows)
     sqlite_store.save(Tables.insider_footnotes, notes)
-    original = sqlite_store.replace_institutional_source
+    original = insider_edgar.replace_insider_source
     concurrent = rows.assign(source="edgar", shares=99.0)
     entered = False
 
-    def pair(frames: Any, scopes: Any, *args: Any, **kwargs: Any) -> Any:
+    def pair(store: DataStore, frames: Any, scopes: Any, *args: Any, **kwargs: Any) -> Any:
         nonlocal entered
         if not entered:
             entered = True
             original(
+                store,
                 {Tables.insider_transactions: concurrent, Tables.insider_footnotes: notes.assign(footnote_text="new")},
                 {Tables.insider_transactions: {"accession_number": ["a"]}, Tables.insider_footnotes: {"accession_number": ["a"]}},
             )
-        return original(frames, scopes, *args, **kwargs)
+        return original(store, frames, scopes, *args, **kwargs)
 
-    monkeypatch.setattr(sqlite_store, "replace_institutional_source", pair)
+    monkeypatch.setattr(insider_edgar, "replace_insider_source", pair)
     with pytest.raises(ValueError, match="source cohort changed"):
         insider_edgar.replace_zip_accessions(context, pd.Timestamp("2026-07-01"))
     actual_rows = sqlite_store.load(Tables.insider_transactions)
@@ -807,9 +815,9 @@ def test_generic_identity_purge_uses_guarded_insider_issuer_deletion(
         if race:
             changed = identity.source_cohort[Tables.entity_lineage].copy()
             extra = changed.loc[changed["canonical_ticker"].eq("LEN")].iloc[:1].assign(cik="0000000099", valid_from=pd.Timestamp("2000-01-01"))
-            sqlite_store.replace_institutional_identity(Tables.entity_lineage, pd.concat([changed, extra], ignore_index=True))
-            actual, actual_notes = sqlite_store.insider_inventory_snapshot("LEN", None)
-            sqlite_store.certify_insider_inventory("LEN", pd.Timestamp("2026-10-06"), actual, actual_notes, load_source_identity(context))
+            save_identity(sqlite_store, Tables.entity_lineage, pd.concat([changed, extra], ignore_index=True))
+            actual, actual_notes = insider_inventory_snapshot(sqlite_store, "LEN", None)
+            certify_insider_inventory(sqlite_store, "LEN", pd.Timestamp("2026-10-06"), actual, actual_notes, load_source_identity(context.store))
         return foreign
 
     monkeypatch.setattr(identity_propagate, "_foreign_rows", classify)
@@ -836,11 +844,23 @@ def test_generic_identity_purge_uses_guarded_insider_issuer_deletion(
 
 
 def _parser_identity_context(store: DataStore, directory: Path) -> tuple[Any, Identity]:
+    _create_canonical(
+        store.engine,
+        [
+            Tables.sp500_tickers,
+            Tables.entity_lineage,
+            Tables.symbol_tenure,
+            Tables.security_master,
+            Tables.insider_transactions,
+            Tables.insider_footnotes,
+        ],
+    )
     context = SimpleNamespace(store=store, paths={"DATA_STORE": directory}, config=extract_config(), log=logging.getLogger(__name__))
     identity = _identity()
     for table, frame in identity.source_cohort.items():
         if not frame.empty:
             store.save(table, frame)
+    identity.source_cohort.update(load_source_identity(store))
     context._institutional_identity_cohort = identity.source_cohort
     return context, identity
 
@@ -850,8 +870,8 @@ def _advance_parser_identity(context: Any, identity: Identity) -> None:
     selected = changed["canonical_ticker"].eq("LEN")
     changed.loc[selected, "valid_to"] = pd.Timestamp("2020-01-01")
     changed.loc[selected, "scope_changed_at"] = pd.Timestamp("2026-10-05")
-    context.store.replace_institutional_identity(Tables.entity_lineage, changed)
-    context._institutional_identity_cohort = load_source_identity(context)
+    save_identity(context.store, Tables.entity_lineage, changed)
+    context._institutional_identity_cohort = load_source_identity(context.store)
 
 
 @pytest.mark.parametrize("race", [False, True], ids=["coherent", "same-context-new-resolver"])

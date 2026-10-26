@@ -12,7 +12,7 @@ import pandas as pd
 from src.constants.constants import F13_SETTLE_TRADING_DAYS, SEC_13F_FILING_LAG_DAYS
 from src.data_aggregate.utils.common.availability import availability_date, filing_public_dates, public_books
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
-from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
+from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 from src.data_aggregate.utils.common.split_basis import future_split_factor, split_cum_product
 from src.data_aggregate.utils.common.typing import frame_column
 from src.data_aggregate.utils.price.frames import PriceFrames
@@ -24,6 +24,7 @@ from src.data_aggregate.utils.sec_thirteen.institutional_vintages import iter_pu
 from src.data_aggregate.utils.sec_thirteen.value_basis import nullable_value_to_daily
 from src.data_store.schema import Resume, Tables
 from src.utils.price.adjustments import ShareBasis
+from src.utils.price.levels import rebase_security_quantities
 
 logger = logging.getLogger(__name__)
 F13_REVISION_MIN_MOVE = 0.001
@@ -142,8 +143,7 @@ def _capped_ownership(ratio: pd.DataFrame) -> pd.DataFrame:
     if n:
         logger.info(
             "ownership guard: %s of %s non-null `ic_inst_ownership_pct` cells (%.3f%%) "
-            "above %.1fx shares outstanding -> nulled (the `sharesOutstandingPit` split "
-            "defect, not a holder); max seen %.2f",
+            "above %.1fx saved PIT shares outstanding -> nulled; review source quantity/coverage compatibility; max seen %.2f",
             f"{n:,}",
             f"{int(ratio.notna().to_numpy().sum()):,}",
             100.0 * n / max(1, int(ratio.notna().to_numpy().sum())),
@@ -523,31 +523,36 @@ def _quarter_features(
 
 
 def _daily_owned_shares(qf: pd.DataFrame, trading_index: pd.DatetimeIndex, share_basis: ShareBasis | None) -> pd.DataFrame:
-    """Carry reported quantities in actual units without changing their publication clock."""
-    if share_basis is None or not share_basis.policies:
-        return nullable_value_to_daily(qf, "inst_shares", trading_index)
+    """Carry supported quoted quantities from report date without changing publication clocks."""
+    if share_basis is None or trading_index.empty:
+        df_daily = nullable_value_to_daily(qf, "inst_shares", trading_index)
+        return df_daily.where(df_daily.eq(0))
+
+    # Normalize every supported ticker before projecting public replacement observations.
     df_owned = qf.copy()
-    configured = df_owned["ticker"].isin(share_basis.policies)
     periods = pd.to_datetime(df_owned["period"])
-    factor = share_basis.factor(df_owned["ticker"], periods, "actual")
-    df_owned.loc[configured, "inst_shares"] *= factor.loc[configured]
-    # Aggregated books without an explicit security title cannot establish ADS units.
+    terminal = pd.Timestamp(trading_index.max())
+    targets = pd.Series(terminal, index=df_owned.index)
     units = share_basis.factor(df_owned["ticker"], periods, "units")
-    df_owned.loc[configured & units.ne(1.0), "inst_shares"] = np.nan
-    daily = nullable_value_to_daily(df_owned, "inst_shares", trading_index)
-    for ticker in share_basis.policies.keys() & set(daily.columns):
+    quantities = rebase_security_quantities(share_basis, df_owned["inst_shares"], df_owned["ticker"], periods, targets, units)
+    df_owned["inst_shares"] = quantities.where(units.eq(1.0))
+    df_daily = nullable_value_to_daily(df_owned, "inst_shares", trading_index).reindex(columns=sorted(df_owned["ticker"].dropna().unique()))
+
+    # Aggregated books lack the declared title required to establish nonunit ADS quantities.
+    for ticker in df_daily.columns:
         names = pd.Series(ticker, index=trading_index)
         dates = pd.Series(trading_index, index=trading_index)
-        daily[ticker] /= share_basis.factor(names, dates, "actual")
-        daily[ticker] = daily[ticker].where(share_basis.factor(names, dates, "units").eq(1.0))
-    return daily
+        source = pd.Series(terminal, index=trading_index)
+        declared = share_basis.factor(names, source, "units")
+        df_daily[ticker] = rebase_security_quantities(share_basis, df_daily[ticker], names, source, dates, declared)
+        df_daily[ticker] = df_daily[ticker].where(share_basis.factor(names, dates, "units").eq(1.0))
+    return df_daily
 
 
 def build_institutional_feature_panel(
     frames: PriceFrames,
     holdings: pd.DataFrame | None,
     *,
-    shares_out_history: pd.DataFrame | None = None,
     splits: pd.DataFrame | None = None,
     break_pct: float = COVERAGE_BREAK_DEFAULT,
     min_prior_holders: int = MIN_PRIOR_HOLDERS,
@@ -568,7 +573,6 @@ def build_institutional_feature_panel(
     return build_prepared_institutional_feature_panel(
         frames,
         df_holdings,
-        shares_out_history=shares_out_history,
         splits=splits,
         break_pct=break_pct,
         min_prior_holders=min_prior_holders,
@@ -599,20 +603,12 @@ def _prepare_institutional_holdings(
     return df_holdings
 
 
-def _daily_institutional_value_weight(df_features: pd.DataFrame, frames: PriceFrames, shares_out_history: pd.DataFrame | None) -> pd.DataFrame | None:
-    """Scale known institutional dollars by the existing daily market-cap basis."""
-    if shares_out_history is None or frames.close_split is None or frames.close_split.empty:
+def _daily_institutional_value_weight(df_features: pd.DataFrame, frames: PriceFrames) -> pd.DataFrame | None:
+    """Scale historical institutional dollars by the supported saved issuer cap."""
+    if frames.mcap_pit is None or frames.mcap_pit.empty or "inst_value" not in df_features:
         return None
-    df_market_cap = daily_market_cap(shares_out_history, frames.close_split, level_factor=frames.level_factor)
-    if df_market_cap.empty:
-        logger.warning(
-            "daily_market_cap returned no columns (shares_out_history has %s; "
-            "it needs `sharesOutstanding`, the VENDOR basis) -> "
-            "ic_inst_value_to_mcap is skipped.",
-            sorted(shares_out_history.columns),
-        )
-        return None
-    df_positive_cap = df_market_cap.where(df_market_cap > 0)
+    df_market_cap = frames.mcap_pit.reindex(frames.trading_index)
+    df_positive_cap = df_market_cap.where(np.isfinite(df_market_cap) & df_market_cap.gt(0))
     df_value = nullable_value_to_daily(df_features, "inst_value", frames.trading_index)
     df_weight = (df_value / df_positive_cap).replace([np.inf, -np.inf], np.nan)
     return df_weight if df_weight.notna().any().any() else None
@@ -643,7 +639,6 @@ def _mask_daily_institutional_fields(
 def project_institutional_features(
     df_features: pd.DataFrame,
     frames: PriceFrames,
-    shares_out_history: pd.DataFrame | None,
     share_basis: ShareBasis | None,
     settle_trading_days: int,
     *,
@@ -659,12 +654,13 @@ def project_institutional_features(
         )
         for feature in features
     }
-    if shares_out_history is not None and not shares_out_history.empty:
+    if frames.shares_outstanding_pit is not None and not frames.shares_outstanding_pit.empty and "inst_shares" in df_features:
         df_owned = _daily_owned_shares(df_features, frames.trading_index, share_basis)
-        df_shares = fundamentals_to_daily(shares_out_history, "sharesOutstandingPit", frames.trading_index, share_basis=share_basis)
+        df_shares = frames.shares_outstanding_pit.reindex(frames.trading_index)
         if not df_shares.empty and df_shares.notna().any().any():
-            fields["ic_inst_ownership_pct"] = _capped_ownership((df_owned / df_shares.where(df_shares > 0)).replace([np.inf, -np.inf], np.nan))
-    df_weight = _daily_institutional_value_weight(df_features, frames, shares_out_history)
+            df_supported_shares = df_shares.where(np.isfinite(df_shares) & df_shares.gt(0))
+            fields["ic_inst_ownership_pct"] = _capped_ownership((df_owned / df_supported_shares).replace([np.inf, -np.inf], np.nan))
+    df_weight = _daily_institutional_value_weight(df_features, frames)
     if df_weight is not None:
         fields["ic_inst_value_to_mcap"] = df_weight
     return _mask_daily_institutional_fields(fields, trading_calendar, settle_trading_days)
@@ -674,7 +670,6 @@ def build_prepared_institutional_feature_panel(
     frames: PriceFrames,
     holdings: pd.DataFrame,
     *,
-    shares_out_history: pd.DataFrame | None = None,
     splits: pd.DataFrame | None = None,
     break_pct: float = COVERAGE_BREAK_DEFAULT,
     min_prior_holders: int = MIN_PRIOR_HOLDERS,
@@ -701,7 +696,6 @@ def build_prepared_institutional_feature_panel(
     fields = project_institutional_features(
         df_features,
         frames,
-        shares_out_history,
         share_basis,
         settle_trading_days,
         versioned=filings is not None,

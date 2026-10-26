@@ -1232,6 +1232,7 @@ def test_ordinary_builders_use_versions_and_keep_prior_corrections_prospective(s
         ("AAA", "BBB"),
         {},
         close_split=pd.DataFrame(10.0, index=GRID, columns=["AAA", "BBB"]),
+        close_pit=pd.DataFrame(10.0, index=GRID, columns=["AAA", "BBB"]),
         level_factor=pd.DataFrame(1.0, index=GRID, columns=["AAA", "BBB"]),
     )
     broad, elite = normal_panels(step, frames)
@@ -1270,6 +1271,7 @@ def ordinary_step(
         ("AAA", "BBB", "CCC"),
         {},
         close_split=pd.DataFrame(10.0, index=GRID, columns=["AAA", "BBB", "CCC"]),
+        close_pit=pd.DataFrame(10.0, index=GRID, columns=["AAA", "BBB", "CCC"]),
         level_factor=pd.DataFrame(1.0, index=GRID, columns=["AAA", "BBB", "CCC"]),
     )
     return step, frames
@@ -1280,7 +1282,7 @@ def normal_resources(step: StepCubeSecThirteen, frames: PriceFrames) -> SecThirt
     splits = pd.DataFrame(columns=["date", "ticker", "value"])
     basis = ShareBasis(actual=splits, vendor=splits, price=splits, policies={})
     cohort = frozenset({"0000000001"})
-    return SecThirteenResources(frames, None, basis, frames.close_split, cusip_map, {"": cohort, "topk": cohort})
+    return SecThirteenResources(frames, basis, frames.close_pit, cusip_map, {"": cohort, "topk": cohort})
 
 
 def normal_panels(step: StepCubeSecThirteen, frames: PriceFrames) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -1297,7 +1299,7 @@ def test_raw_broad_builder_keeps_verified_filing_adapter() -> None:
     filings, holdings = combine(prior, current)
     mapping = pd.DataFrame({"cusip": ["111111111", "222222222"], "ticker": ["AAA", "BBB"]})
     close = pd.DataFrame(10.0, index=GRID, columns=["AAA", "BBB"])
-    frames = PriceFrames(GRID, ("AAA", "BBB"), {}, close_split=close, level_factor=close / 10)
+    frames = PriceFrames(GRID, ("AAA", "BBB"), {}, close_split=close, level_factor=close / 10, close_pit=close)
     panel = build_institutional_feature_panel(
         frames,
         attach_tickers(holdings, mapping, frames.universe),
@@ -1360,7 +1362,7 @@ def test_normal_elite_comparisons_keep_unknown_weights_and_zero_pools_safe(
     step._cfg["institutionals"]["value_basis"] = {}
     grid = pd.bdate_range("2023-09-01", "2024-12-02")
     close = pd.DataFrame(10.0, index=grid, columns=["AAA"])
-    frames = PriceFrames(grid, ("AAA",), {}, close_split=close, level_factor=pd.DataFrame(1.0, index=grid, columns=["AAA"]))
+    frames = PriceFrames(grid, ("AAA",), {}, close_split=close, level_factor=pd.DataFrame(1.0, index=grid, columns=["AAA"]), close_pit=close)
     resources = replace(
         normal_resources(step, frames),
         cohorts={"": frozenset({"0000000001", "0000000002"}), "topk": frozenset({"0000000002"})},

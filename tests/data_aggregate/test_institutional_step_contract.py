@@ -72,8 +72,23 @@ def seed_prices(store: Any, periods: int = 40) -> pd.DatetimeIndex:
     days = pd.bdate_range("2024-01-02", periods=periods, name="date")
     store.replace(
         Tables.cube_part_prices,
-        pd.DataFrame({"date": days, "ticker": "AAA", "close_split": 100.0, "close_total": 100.0, "volume": 1000.0, "level_factor": 1.0}),
+        pd.DataFrame(
+            {
+                "date": days,
+                "ticker": "AAA",
+                "close_split": 100.0,
+                "close_total": 100.0,
+                "volume": 1000.0,
+                "level_factor": 1.0,
+                "close_pit": 100.0,
+                "shares_outstanding_pit": float("nan"),
+                "mcap_pit": float("nan"),
+            }
+        ),
     )
+    if not store.exists(Tables.prices_splits):
+        store.save(Tables.prices_splits, pd.DataFrame({"ticker": ["AAA"], "date": [days[0]], "ratio": [1.0]}))
+        store.delete(Tables.prices_splits, where={"ticker": "AAA"})
     return days
 
 
@@ -200,7 +215,8 @@ def test_delivery_batches_preserve_fixed_calculation_context(sqlite_store: Any, 
     delivered = names[:15]
     days = pd.bdate_range("2024-01-02", periods=3, name="date").as_unit("ns")
     prices = pd.MultiIndex.from_product([days, names], names=["date", "ticker"]).to_frame(index=False)
-    sqlite_store.replace(Tables.cube_part_prices, prices.assign(close_split=100.0, close_total=100.0, volume=1_000.0, level_factor=1.0))
+    sqlite_store.replace(Tables.cube_part_prices, prices.assign(close_split=100.0, close_total=100.0, volume=1_000.0, level_factor=1.0,
+                                                             close_pit=100.0, shares_outstanding_pit=float("nan"), mcap_pit=float("nan")))
     history = pd.DataFrame(
         [
             row(

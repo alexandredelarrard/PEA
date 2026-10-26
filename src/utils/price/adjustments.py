@@ -423,7 +423,9 @@ def _is_simple_split(ratio: float) -> bool:
     return frac.denominator == 1 or frac.numerator == 1
 
 
-def split_events(actions: pd.DataFrame | None, yf_splits: pd.DataFrame | None = None, *, report: SplitReport | None = None) -> pd.DataFrame:
+def split_events(
+    actions: pd.DataFrame | None, yf_splits: pd.DataFrame | None = None, *, report: SplitReport | None = None, report_events: bool = True
+) -> pd.DataFrame:
     """The genuine share splits from both vendors, as `(ticker, date, value)`.
 
     `sharadar_actions` is incomplete per ticker, so it is cross-validated against yfinance (`prices_splits`) by
@@ -466,8 +468,9 @@ def split_events(actions: pd.DataFrame | None, yf_splits: pd.DataFrame | None = 
         yf = yf.dropna(subset=["date", "value"])
         yf = yf[yf["value"] != 0.0]
 
-    out = union_split_sources(sharadar, yf, report=report)
-    _log_codated(out, codated)
+    out = union_split_sources(sharadar, yf, report=report, report_events=report_events)
+    if report_events:
+        _log_codated(out, codated)
     return out
 
 
@@ -534,7 +537,7 @@ def _reject_yfinance_only(row: pd.Series, report: SplitReport | None) -> None:
         report.splits_rejected.append(f"{row['ticker']} {pd.Timestamp(row['date']).date()} x{row['value']} (yfinance-only, not split-shaped)")
 
 
-def union_split_sources(sharadar: pd.DataFrame, yf: pd.DataFrame, *, report: SplitReport | None = None) -> pd.DataFrame:
+def union_split_sources(sharadar: pd.DataFrame, yf: pd.DataFrame, *, report: SplitReport | None = None, report_events: bool = True) -> pd.DataFrame:
     """Merge two cleaned split lists into one, sorted by `(ticker, date)`.
 
     In both (within `SPLIT_MATCH_DAYS`): kept on the yfinance DATE (so it steps with `close_split`), ratio per
@@ -574,14 +577,15 @@ def union_split_sources(sharadar: pd.DataFrame, yf: pd.DataFrame, *, report: Spl
         elif report is not None:
             report.splits_rejected.append(f"{label} (uncorroborated, not split-shaped)")
 
-    if uncorroborated:
+    if uncorroborated and report_events:
         log.warning(
             "%d split event(s) in sharadar_actions but NOT in yfinance, kept because the ratio is split-shaped -- review: %s",
             len(uncorroborated),
             ", ".join(uncorroborated),
         )
     if conflicts:
-        log.warning("%d date(s) where the two vendors report DIFFERENT ratios -- resolved: %s", len(conflicts), "; ".join(conflicts))
+        if report_events:
+            log.warning("%d date(s) where the two vendors report DIFFERENT ratios -- resolved: %s", len(conflicts), "; ".join(conflicts))
         if report is not None:
             report.splits_rejected.extend(conflicts)
 
@@ -591,10 +595,37 @@ def union_split_sources(sharadar: pd.DataFrame, yf: pd.DataFrame, *, report: Spl
         .sort_values(["ticker", "date"])
         .reset_index(drop=True)
     )
-    log.info("split events: %d corroborated, %d yfinance-only, %d sharadar-only -> %d total", kept_both, kept_yf, kept_sharadar, len(out))
+    if report_events:
+        log.info("split events: %d corroborated, %d yfinance-only, %d sharadar-only -> %d total", kept_both, kept_yf, kept_sharadar, len(out))
     if report is not None:
         report.splits_applied.extend(f"{r.ticker} {pd.Timestamp(cast(Any, r.date)).date()} x{r.value}" for r in out.itertuples())
     return out
+
+
+def quantity_basis(actions: pd.DataFrame | None, yf_splits: pd.DataFrame | None, bugfix: dict, tickers: Sequence[str]) -> ShareBasis:
+    """Prepare source-checked genuine events and dated units for consumers of saved prices.
+
+    Price creation owns anchor verification and price reconciliation. This adapter checks
+    applicable event evidence without reloading anchors or resolving a price-level factor.
+    """
+    validate_bugfix(bugfix)
+    df_actual = split_events(actions, yf_splits, report_events=False)
+    sources = {
+        "sharadar": None if actions is None else actions.loc[actions["action"].eq(SHARADAR_ACTION_SPLIT), ["ticker", "date", "value"]].copy(),
+        "yahoo": None if yf_splits is None else yf_splits.rename(columns={"ratio": "value"})[["ticker", "date", "value"]].copy(),
+    }
+    for df_source in sources.values():
+        if df_source is not None:
+            df_source["date"] = pd.to_datetime(df_source["date"])
+    policies = {ticker: policy for ticker, policy in bugfix.get("share_events", {}).items() if ticker in tickers}
+    for ticker, policy in policies.items():
+        for event in policy["events"]:
+            for source, df_source in sources.items():
+                _check_source(df_source, ticker, event, source)
+            df_actual = _replace_event(df_actual, ticker, event, event["actual"])
+    df_actual = df_actual.sort_values(["ticker", "date"]).reset_index(drop=True)
+    df_empty = df_actual.iloc[:0].copy()
+    return ShareBasis(df_actual, df_empty, df_empty, policies, actual_available=actions is not None or yf_splits is not None)
 
 
 def forward_split_factor(tickers: pd.Series, dates: pd.Series, splits: pd.DataFrame) -> pd.Series:

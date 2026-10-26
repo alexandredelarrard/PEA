@@ -17,7 +17,6 @@ from src.constants.constants import CANONICAL_ROLES
 from src.data_aggregate.utils.common.availability import InstitutionalAvailability
 from src.data_aggregate.utils.common.errors import _empty_panel
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
-from src.data_aggregate.utils.common.pit import daily_market_cap
 from src.data_aggregate.utils.institutionals.insider_capital import normalize_trade_capital
 from src.data_aggregate.utils.institutionals.insider_positions import cumulative_positions
 from src.data_aggregate.utils.institutionals.insider_quality import (
@@ -107,6 +106,8 @@ def build_insider_feature_panel(
     idx = pd.DatetimeIndex(frames.trading_index).normalize().unique().sort_values()
     if idx.empty:
         return pd.DataFrame(columns=["date", "ticker"])
+    if df_mcap is None or df_mcap.empty or not df_mcap.notna().any().any():
+        _log.warning("Saved mcap_pit is unsupported -> active size-scaled insider contributions remain unknown; rebuild prices if evidence changed.")
 
     # Keep execution USD intact while preparing a separate action-date contribution.
     df_trades = df_trades.assign(declared_units_known=df_position_trades.iloc[: len(df_trades)]["declared_units_known"].to_numpy())
@@ -538,7 +539,7 @@ def _action_values(trades: pd.DataFrame, mcap: pd.DataFrame | None, frames: Pric
     positions = idx.searchsorted(pd.DatetimeIndex(action), side="right") - 1
     chosen = pd.Series(idx.take(np.clip(positions, 0, len(idx) - 1)), index=df_trades.index).where(action.notna() & (positions >= 0))
     df_trades["action_session"] = chosen
-    columns = mcap.columns.get_indexer(df_trades["ticker"])
+    columns = mcap.columns.get_indexer(pd.Index(df_trades["ticker"]))
     capital = mcap.reindex(index=idx).to_numpy(dtype=float)[np.clip(positions, 0, len(idx) - 1), np.maximum(columns, 0)]
     supported = (
         df_trades["cap_status"].eq("supported")
@@ -548,15 +549,11 @@ def _action_values(trades: pd.DataFrame, mcap: pd.DataFrame | None, frames: Pric
         & (capital > 0)
         & df_trades["declared_units_known"].fillna(False)
     )
-    if frames.close_split is None:
+    if frames.close_pit is None:
         return df_trades
-    quotes = frames.close_split.reindex(index=idx, columns=mcap.columns).to_numpy(dtype=float)
+    quotes = frames.close_pit.reindex(index=idx, columns=mcap.columns).to_numpy(dtype=float)
     price = quotes[np.clip(positions, 0, len(idx) - 1), np.maximum(columns, 0)]
     supported &= np.isfinite(price) & (price > 0)
-    if frames.level_factor is not None:
-        factors = frames.level_factor.reindex(index=idx, columns=mcap.columns).to_numpy(dtype=float)
-        factor = factors[np.clip(positions, 0, len(idx) - 1), np.maximum(columns, 0)]
-        supported &= np.isfinite(factor) & (factor > 0)
     needs_identity = action.ne(chosen) | security_class(df_trades["security_title"]).ne("COMMON")
     continuous = pd.Series(False, index=df_trades.index)
     if needs_identity.any():
@@ -921,29 +918,6 @@ def _visible_prior_rank(d: pd.DataFrame) -> pd.Series:
 # --------------------------------------------------------------------------- #
 # helpers                                                                       #
 # --------------------------------------------------------------------------- #
-
-
-def insider_market_cap(
-    shares_out_history: pd.DataFrame | None, stock_close: pd.DataFrame | None, level_factor: pd.DataFrame | None
-) -> pd.DataFrame | None:
-    if shares_out_history is None or shares_out_history.empty or stock_close is None or stock_close.empty:
-        _log.warning("No shares outstanding or close -> the seven size-scaled insider features are skipped.")
-        return None
-    mcap = daily_market_cap(shares_out_history, stock_close, level_factor=level_factor)
-    if mcap.empty:
-        # ⚠ THIS PATH USED TO BE SILENT, and that is what let a projection delete 10 features
-        # across three builders with a clean-looking build log. `daily_market_cap` returns a
-        # COLUMN-LESS frame when its input has no `sharesOutstanding` column, so the caller's
-        # `if not mcap.empty` branch just never fires. The inputs are present -- the warning
-        # above only covers their absence -- so the column is what has to be named.
-        _log.warning(
-            "daily_market_cap returned no columns (shares_out_history has %s; it "
-            "needs `sharesOutstanding`, the VENDOR basis, not `sharesOutstandingPit`)"
-            " -> the seven size-scaled insider features are skipped.",
-            sorted(shares_out_history.columns),
-        )
-        return None
-    return mcap
 
 
 def report_oversized_positions(t: pd.DataFrame, shares_out: pd.DataFrame | None) -> None:

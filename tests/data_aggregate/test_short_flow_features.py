@@ -20,7 +20,7 @@ import pytest
 
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 from src.data_aggregate.utils.institutionals import short_flow_features as short_flow
-from src.data_aggregate.utils.institutionals.inputs import QuantityBasis, daily_share_quantities, short_quantity_history, tape_share_quantities
+from src.data_aggregate.utils.institutionals.inputs import QuantityBasis, daily_share_quantities, short_quantity_history
 from src.data_aggregate.utils.institutionals.short_flow_features import (
     EMISSION,
     SHORTVOL_PUB_LAG,
@@ -176,8 +176,8 @@ def test_source_adapters_normalize_both_rolling_legs_and_pit_counts() -> None:
     df_raw = pd.DataFrame({"ticker": "TEST", "date": idx, "short_volume": [9.0] * 19 + [10.0] * 2, "total_volume": [10.0] * 19 + [100.0] * 2})
     df_filing = pd.DataFrame({"ticker": ["TEST"], "as_of": [idx[0]], "sharesOutstandingPit": [100.0], "sharesOutstanding": [1000.0]})
     df_normalized = short_quantity_history(df_raw, basis)
-    df_shares = daily_share_quantities(df_filing, idx, basis)
-    df_tape = tape_share_quantities(pd.DataFrame({"TEST": 200.0}, index=idx), basis)
+    df_shares = daily_share_quantities(pd.DataFrame({"TEST": [100.0] * 19 + [1000.0] * 2}, index=idx), idx, basis)
+    df_tape = pd.DataFrame({"TEST": 200.0}, index=idx)
     assert df_normalized is not None and df_shares is not None and df_tape is not None
     result = _shortvol_fields(df_normalized, idx, df_shares, None, df_tape)
     assert result["ic_shortvol_ratio_20d"].at[idx[20], "TEST"] == pytest.approx(1720 / 2000)
@@ -195,10 +195,9 @@ def test_future_event_cannot_advance_the_vendor_tape_basis() -> None:
     df_events = pd.DataFrame({"ticker": ["TEST"], "date": [idx[-1] + pd.Timedelta(days=10)], "value": [10.0]})
     basis = QuantityBasis.from_context(ShareBasis(df_events, df_events, df_events, {}), idx)
     df_raw = pd.DataFrame({"ticker": "TEST", "date": idx, "short_volume": 5.0, "total_volume": 10.0})
-    df_filing = pd.DataFrame({"ticker": ["TEST"], "as_of": [idx[0]], "sharesOutstandingPit": [100.0]})
     df_normalized = short_quantity_history(df_raw, basis)
-    df_shares = daily_share_quantities(df_filing, idx, basis)
-    df_tape = tape_share_quantities(pd.DataFrame({"TEST": 20.0}, index=idx), basis)
+    df_shares = daily_share_quantities(pd.DataFrame({"TEST": 100.0}, index=idx), idx, basis)
+    df_tape = pd.DataFrame({"TEST": 20.0}, index=idx)
     assert basis.target_date == idx[-1]
     assert df_normalized is not None
     pd.testing.assert_frame_equal(df_normalized, df_raw)
@@ -212,10 +211,9 @@ def test_future_event_cannot_advance_the_vendor_tape_basis() -> None:
 def test_paired_vendor_restatement_preserves_earlier_dimensionless_outputs() -> None:
     idx = pd.bdate_range("2024-01-02", periods=45)
     df_raw = pd.DataFrame({"ticker": "TEST", "date": idx, "short_volume": 5.0, "total_volume": 10.0})
-    df_filing = pd.DataFrame({"ticker": ["TEST"], "as_of": [idx[0]], "sharesOutstandingPit": [100.0]})
     empty = pd.DataFrame(columns=["ticker", "date", "ratio"])
     basis = QuantityBasis.from_context(resolve_share_events(None, empty, {}), idx)
-    df_shares = daily_share_quantities(df_filing, idx, basis)
+    df_shares = daily_share_quantities(pd.DataFrame({"TEST": 100.0}, index=idx), idx, basis)
     df_history = short_quantity_history(df_raw, basis)
     assert df_history is not None
     original = _shortvol_fields(df_history, idx, df_shares, None, pd.DataFrame({"TEST": 20.0}, index=idx))
@@ -223,7 +221,7 @@ def test_paired_vendor_restatement_preserves_earlier_dimensionless_outputs() -> 
     events = pd.DataFrame({"ticker": ["TEST"], "date": [extended[-1]], "ratio": [10.0]})
     later_basis = QuantityBasis.from_context(resolve_share_events(None, events, {}), extended)
     df_later = short_quantity_history(df_raw, later_basis)
-    df_later_shares = daily_share_quantities(df_filing, extended, later_basis)
+    df_later_shares = daily_share_quantities(pd.DataFrame({"TEST": [100.0] * len(idx) + [1000.0]}, index=extended), extended, later_basis)
     assert df_later is not None
     restated = _shortvol_fields(df_later, extended, df_later_shares, None, pd.DataFrame({"TEST": 200.0}, index=extended))
     for name, df_before in original.items():

@@ -43,7 +43,6 @@ class SecThirteenResources:
     """One loaded capital/security snapshot shared by both13F families."""
 
     frames: PriceFrames
-    shares: pd.DataFrame | None
     basis: ShareBasis
     valuation_close: pd.DataFrame | None
     cusip_map: pd.DataFrame | None
@@ -57,7 +56,7 @@ class PreparedSecThirteen:
 
 
 class StepCubeSecThirteen(Step):
-    _FIELDS = ("close_split", "level_factor")
+    _FIELDS = ("close_split", "close_pit", "shares_outstanding_pit", "mcap_pit")
 
     def __init__(self, context: Context, config: DictConfig) -> None:
         super().__init__(context=context, config=config)
@@ -107,7 +106,7 @@ class StepCubeSecThirteen(Step):
         frames = capital_inputs.load_full_price_frames(self._store, self._context, self._FIELDS)
         history = capital_inputs.load_source(self._store, Tables.superinvestor_roster)
         cusip_map = self._store.load(Tables.cusip_ticker_map, columns=["cusip", "ticker"], optional=True)
-        shares, _, basis, valuation_close, _ = capital_inputs.load_share_inputs(self._context, frames, self._bugfix)
+        _, _, basis, valuation_close, _ = capital_inputs.load_share_inputs(self._context, frames, self._bugfix)
 
         # The ordered list is user-owned; membership never depends on portfolio prices.
         cohorts = None
@@ -115,7 +114,7 @@ class StepCubeSecThirteen(Step):
             roster = filer_ciks(history.cik.dropna(), self._context.config_dir)
             cfg = self._cfg.get("institutionals", {}).get("superinvestor", {})
             cohorts = load_manager_cohorts(self._context.config_dir, roster, cfg.get("selection", {}).get("k", 20))
-        return SecThirteenResources(frames, shares, basis, valuation_close, cusip_map, cohorts)
+        return SecThirteenResources(frames, basis, valuation_close, cusip_map, cohorts)
 
     def build_panel(self, window: PartWindow | None = None, *, existing_columns: Sequence[str] | None = None) -> pd.DataFrame:
         resources = self._load_resources()
@@ -163,6 +162,13 @@ class StepCubeSecThirteen(Step):
         if history is None:
             return None
         compact, states = history
+
+        # Aggregated quantities cannot establish an untitled nonunit ADS source basis.
+        compact = compact.copy()
+        keys = compact.index.to_frame(index=False)
+        if not compact.empty:
+            supported = resources.basis.factor(keys["ticker"], keys["period"], "units").eq(1.0) & resources.basis.actual_available
+            compact["shares"] = compact["shares"].where(supported.to_numpy())
         splits = resources.basis.actual.rename(columns={"value": "ratio"})
         return compute_institutional_feature_history(iter_institutional_books(compact, states), splits=splits)
 
@@ -191,7 +197,9 @@ class StepCubeSecThirteen(Step):
             frames,
             trading_index=dates,
             close_split=frames.close_split.reindex(dates) if frames.close_split is not None else None,
-            level_factor=frames.level_factor.reindex(dates) if frames.level_factor is not None else None,
+            close_pit=frames.close_pit.reindex(dates) if frames.close_pit is not None else None,
+            shares_outstanding_pit=frames.shares_outstanding_pit.reindex(dates) if frames.shares_outstanding_pit is not None else None,
+            mcap_pit=frames.mcap_pit.reindex(dates) if frames.mcap_pit is not None else None,
         )
 
     @staticmethod
@@ -223,7 +231,6 @@ class StepCubeSecThirteen(Step):
         fields = project_institutional_features(
             features,
             frames,
-            resources.shares,
             resources.basis,
             settle_days,
             versioned=True,
@@ -249,9 +256,13 @@ class StepCubeSecThirteen(Step):
         broad = prepared.institutional
         if broad is not None and not broad.empty:
             fields.update(name for name in INSTITUTIONAL_EMISSION if name in broad and broad[name].notna().any())
-            if resources.shares is not None and not resources.shares.empty:
-                derived = {"inst_shares": "ic_inst_ownership_pct", "inst_value": "ic_inst_value_to_mcap"}
-                fields.update(name for source, name in derived.items() if source in broad and broad[source].notna().any())
+            denominators = (
+                (resources.frames.shares_outstanding_pit, "inst_shares", "ic_inst_ownership_pct"),
+                (resources.frames.mcap_pit, "inst_value", "ic_inst_value_to_mcap"),
+            )
+            for df_denominator, source, name in denominators:
+                if df_denominator is not None and df_denominator.gt(0).any().any() and source in broad and broad[source].notna().any():
+                    fields.add(name)
         if prepared.superinvestor is not None:
             fields.update(SUPERINVESTOR_EMISSION)
         return {"f_" + name for name in fields}

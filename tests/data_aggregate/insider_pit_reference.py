@@ -10,23 +10,25 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from collections.abc import Callable
+from dataclasses import replace
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
+from src.data_aggregate.utils.common.pit import daily_market_cap
 from src.data_aggregate.utils.institutionals.inputs import QuantityBasis, daily_share_quantities
 from src.data_aggregate.utils.institutionals.insider_features import (
     InsiderCoverage,
     build_insider_feature_panel,
-    insider_market_cap,
     report_oversized_positions,
 )
 from src.data_aggregate.utils.institutionals.insider_positions import position_units
 from src.data_aggregate.utils.institutionals.insider_quality import clean_transactions
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.utils.price.adjustments import ShareBasis
+from src.utils.price.capitalization import project_security_shares
 
 _EMPTY_EVENTS = pd.DataFrame(columns=["ticker", "date", "value"])
 _NO_SPLIT_FIXTURE = ShareBasis(_EMPTY_EVENTS, _EMPTY_EVENTS, _EMPTY_EVENTS, {})
@@ -41,6 +43,17 @@ def build_prepared_insider_panel(
     coverage: InsiderCoverage | None = None,
 ) -> pd.DataFrame:
     """Producer/visibility control through actual stages; default known-truth fixtures have no genuine splits."""
+    # Legacy numerical fixtures declare unitary shares; construct their saved-input contract.
+    df_cap = frames.mcap_pit
+    if df_cap is None and shares_out_history is not None and frames.close_split is not None:
+        df_cap = daily_market_cap(shares_out_history, frames.close_split, level_factor=frames.level_factor)
+    df_shares = frames.shares_outstanding_pit
+    if df_shares is None and shares_out_history is not None and share_basis is not None:
+        df_observations = shares_out_history.assign(capitalization_factor=1.0, capitalization_available=shares_out_history["as_of"])
+        df_shares, _ = project_security_shares(df_observations, share_basis, frames.trading_index, pd.Index(frames.universe))
+    frames = replace(
+        frames, close_pit=frames.close_pit if frames.close_pit is not None else frames.close_split, mcap_pit=df_cap, shares_outstanding_pit=df_shares
+    )
     df_trades, diagnostics = clean_transactions(
         insider if insider is not None else pd.DataFrame(), as_traded_quotes=as_traded_quotes, share_basis=share_basis
     )
@@ -51,10 +64,9 @@ def build_prepared_insider_panel(
     df_unpriced = diagnostics.get("unpriced_events", pd.DataFrame())
     df_positions = position_units(pd.concat([df_trades, df_unpriced], ignore_index=True), basis)
     if basis is not None:
-        df_shares = daily_share_quantities(shares_out_history, pd.DatetimeIndex(frames.trading_index), basis)
+        df_shares = daily_share_quantities(frames.shares_outstanding_pit, pd.DatetimeIndex(frames.trading_index), basis)
         report_oversized_positions(df_positions.iloc[: len(df_trades)], df_shares)
-    df_mcap = insider_market_cap(shares_out_history, frames.close_split, frames.level_factor)
-    return build_insider_feature_panel(frames, df_trades, df_positions, diagnostics, df_mcap, observation)
+    return build_insider_feature_panel(frames, df_trades, df_positions, diagnostics, frames.mcap_pit, observation)
 
 
 #: Run-dir parquet snapshot of the stored zip rows, 2024q1-2026q2 (read-only).

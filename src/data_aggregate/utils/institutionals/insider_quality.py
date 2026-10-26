@@ -16,7 +16,7 @@ import pandas as pd
 from src.data_aggregate.utils.common.data_utils import to_day
 from src.utils.names import clean_person_name
 from src.utils.price.adjustments import ShareBasis
-from src.utils.price.levels import _period_close
+from src.utils.price.levels import _period_close, rebase_security_quantities
 from src.utils.string import normalise_ticker, pad_cik
 
 _log = logging.getLogger(__name__)
@@ -517,9 +517,15 @@ def _clean_trade_prices(
         # An explicit non-primary class needs its own quote; the canonical ticker cannot certify it.
         ref = ref.where(security_class(df_trades["security_title"]).eq("COMMON"))
         if share_basis is not None:
-            units = share_basis.factor(df_trades["ticker"], df_trades["transaction_day"], "units")
             declared = share_basis.declared_units(df_trades["ticker"], df_trades["transaction_day"], df_trades["security_title"])
-            ref *= declared / units
+            ref *= rebase_security_quantities(
+                share_basis,
+                pd.Series(1.0, index=df_trades.index),
+                df_trades["ticker"],
+                df_trades["transaction_day"],
+                df_trades["transaction_day"],
+                declared,
+            )
 
     # Repair gross corruption and apply dated assessments in their original order.
     ratio = filed_price / ref.where(ref.gt(0))

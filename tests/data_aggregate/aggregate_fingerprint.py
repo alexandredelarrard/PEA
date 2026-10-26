@@ -804,7 +804,7 @@ def compute() -> dict:
     from src.data_aggregate.utils.fundamentals.employee_features import build_employee_feature_panel
     from src.data_aggregate.utils.fundamentals.fundamental_features import build_fundamental_feature_panel
     from src.data_aggregate.utils.fundamentals.sector_features import build_sector_feature_panel
-    from src.data_aggregate.utils.institutionals.inputs import QuantityBasis, daily_share_quantities, short_quantity_history, tape_share_quantities
+    from src.data_aggregate.utils.institutionals.inputs import QuantityBasis, daily_share_quantities, short_quantity_history
     from src.data_aggregate.utils.institutionals.ownership_features import (
         build_ownership_feature_panel,
     )
@@ -844,6 +844,7 @@ def compute() -> dict:
     )
     from src.utils.institutional_vintages import prepare_book_vintages
     from src.utils.price.adjustments import ShareBasis, resolve_share_events
+    from src.utils.price.capitalization import project_security_shares
     from src.utils.price.levels import as_traded_close
     from src.utils.string import pad_cik
     from tests.data_aggregate.insider_pit_reference import build_prepared_insider_panel as build_insider_feature_panel
@@ -928,9 +929,12 @@ def compute() -> dict:
     out["panel.governance"] = frame_digest(governance_panel(tickers, fund, peers, idx, close))
     # Exercise the same visible dated-quantity preparation as the owning step.
     quantity_basis = QuantityBasis.from_context(resolve_share_events(None, splits, {}), idx)
-    short_capital = ShortFlowCapital(
-        daily_share_quantities(fund, idx, quantity_basis), with_class_volume(tape_share_quantities(px["volume"], quantity_basis), class_volume)
+    observations = fund[["ticker", "as_of", "sharesOutstandingPit"]].assign(capitalization_factor=1.0, capitalization_available=fund["as_of"])
+    saved_shares, _ = project_security_shares(observations, quantity_basis.events, idx, close.columns)
+    price_frames = make_frames(
+        idx, peers, close_split=close, close_pit=valuation_close, shares_outstanding_pit=saved_shares, mcap_pit=valuation_close * saved_shares
     )
+    short_capital = ShortFlowCapital(daily_share_quantities(saved_shares, idx, quantity_basis), with_class_volume(px["volume"], class_volume))
     ftd_coverage = ftd[["date", "period"]]
     ftd_settlement = prepare_fails_quantities(ftd, ftd_coverage, idx, None, None, quantity_basis)
     ftd_publication = FtdPublication(ftd_coverage, _ftd_available_dates(ftd_coverage, 21))
@@ -952,10 +956,10 @@ def compute() -> dict:
     # say-on-pay hole), so the guard is turned OFF here and covered instead by
     # test_institutional_features.py::test_per_ticker_coverage_onset_guard.
     institutional = build_institutional_feature_panel(
-        make_frames(idx, peers, close_split=close),
+        price_frames,
         priced_holdings,
-        shares_out_history=fund,
         splits=splits,
+        share_basis=quantity_basis.events,
         min_prior_holders=0,
         valuation_close=valuation_close,
     )

@@ -9,6 +9,7 @@ import pandas as pd
 
 from src.data_aggregate.utils.institutionals.inputs import QuantityBasis
 from src.data_aggregate.utils.institutionals.insider_quality import account_other_flows, security_class
+from src.utils.price.levels import rebase_security_quantities
 
 
 def position_units(trades: pd.DataFrame, basis: QuantityBasis | None) -> pd.DataFrame:
@@ -26,11 +27,13 @@ def position_units(trades: pd.DataFrame, basis: QuantityBasis | None) -> pd.Data
     declared = basis.events.declared_units(df_rows["ticker"], df_rows["transaction_day"], df_rows["security_title"])
     df_rows["declared_units_known"] = declared.gt(0) & np.isfinite(declared)
     target = pd.Series(basis.target_date, index=df_rows.index)
-    factor = basis.events.rebase(pd.Series(1.0, index=df_rows.index), df_rows["ticker"], df_rows["transaction_day"], target) * declared
+    factor = rebase_security_quantities(
+        basis.events, pd.Series(1.0, index=df_rows.index), df_rows["ticker"], df_rows["transaction_day"], target, declared
+    )
     factor = factor.where(df_rows["klass"].eq("COMMON"))
     df_rows["units_known"] = factor.gt(0) & np.isfinite(factor)
     for column in ("shares_n", "shares_owned_after"):
-        rebased = basis.events.rebase(df_rows[column] * declared, df_rows["ticker"], df_rows["transaction_day"], target)
+        rebased = df_rows[column] * factor
         df_rows[column] = rebased.where(df_rows["units_known"], df_rows[column])
     return df_rows
 

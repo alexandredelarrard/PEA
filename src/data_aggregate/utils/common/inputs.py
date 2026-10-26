@@ -16,10 +16,8 @@ from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore
 from src.utils.cutover_continuity import predecessor_actions
 from src.utils.predecessor_series import load_predecessor_series
-from src.utils.price.adjustments import ShareBasis, resolve_share_events
-from src.utils.price.basis import prepare_quote_anchors
-from src.utils.price.levels import as_traded_close
-from src.utils.string import normalise_ticker, yahoo_symbol
+from src.utils.price.adjustments import ShareBasis, quantity_basis
+from src.utils.string import yahoo_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -57,20 +55,11 @@ def load_share_inputs(
     bugfix: dict,
     class_lines: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame | None, pd.DataFrame | None, ShareBasis, pd.DataFrame | None, pd.DataFrame]:
-    """Read each basis source once, combining class volume and all share/quote anchors."""
+    """Load sparse quantity evidence and class tape; reuse the price owner's saved quotes."""
     store = context.store
     names = list(frames.universe)
     series = load_predecessor_series(context, names)
-    policies = {ticker: policy for ticker, policy in bugfix.get("share_events", {}).items() if ticker in names}
-    anchors = [(ticker, anchor) for ticker, policy in policies.items() for anchor in policy["anchors"]]
-    quote_anchors = [(ticker, anchor) for ticker, anchor in anchors if "quoted_price" in anchor]
     class_names = set(class_lines["market_symbol"].map(yahoo_symbol)) if class_lines is not None else set()
-    quote_names = {ticker for ticker, _ in quote_anchors}
-    raw_names = sorted(class_names | quote_names)
-    vendor_names = sorted({ticker for ticker, _ in anchors})
-    boundaries = [pd.Timestamp(a["date"]) for _, a in quote_anchors]
-    boundaries += [pd.Timestamp(e["date"]) for t in quote_names for e in bugfix.get("return_seams", {}).get(t, []) if "fields" not in e]
-    boundaries += [pd.Timestamp(e["before"]) for t in quote_names for e in bugfix.get("split_vintage", {}).get(t, [])]
     shares = store.load(
         Tables.fundamentals_history, columns=["ticker", "as_of", "sharesOutstanding", "sharesOutstandingPit"], where={"ticker": names}, optional=True
     )
@@ -84,23 +73,11 @@ def load_share_inputs(
     raw = (
         store.load(
             Tables.prices,
-            columns=["ticker", "date", "close_split", "volume"],
-            where={"ticker": raw_names},
-            since=min(boundaries) - pd.Timedelta(days=7) if boundaries and not class_names else None,
-            until=max(boundaries) + pd.Timedelta(days=7) if boundaries and not class_names else None,
+            columns=["ticker", "date", "volume"],
+            where={"ticker": sorted(class_names)},
             optional=True,
         )
-        if raw_names
-        else None
-    )
-    vendor = (
-        store.load(
-            Tables.sharadar_fundamentals,
-            columns=["ticker", "date", "sharesbas", "price"],
-            where={"ticker": vendor_names, "dimension": "ARQ"},
-            optional=True,
-        )
-        if vendor_names
+        if class_names
         else None
     )
 
@@ -110,25 +87,12 @@ def load_share_inputs(
         actions = pd.DataFrame(columns=["ticker", "date", "action", "value"])
     if actions is not None and series:
         owners = actions.loc[actions["ticker"].isin({s.vendor_ticker for s in series})]
-        present = set(owners["ticker"].map(normalise_ticker))
-        for predecessor in series:
-            if predecessor.vendor_ticker not in present:
-                context.log.warning(
-                    "level factor: no selected predecessor split/spinoff rows for %s of %s (CIK %s); actions before %s are kept as fetched",
-                    predecessor.vendor_ticker,
-                    predecessor.ticker,
-                    predecessor.cik,
-                    predecessor.valid_to.date() if predecessor.valid_to is not None else "-",
-                )
         actions = predecessor_actions(actions.loc[actions["ticker"].isin(names)], owners, series)
-    if vendor is not None:
-        vendor = vendor.assign(date=pd.to_datetime(vendor["date"]))
-    quotes = prepare_quote_anchors(raw, vendor, quote_anchors, bugfix) if quote_anchors else None
-    basis = resolve_share_events(actions, splits, bugfix, shares=vendor, quotes=quotes, tickers=names)
+    basis = quantity_basis(actions, splits, bugfix, names)
     bars = (
         raw.loc[raw["ticker"].isin(class_names), ["ticker", "date", "volume"]]
         if raw is not None
         else pd.DataFrame(columns=["ticker", "date", "volume"])
     )
     bars = apply_volume_scale(bars, bugfix)
-    return shares, splits, basis, as_traded_close(frames.close_split, frames.level_factor, basis), bars
+    return shares, splits, basis, frames.close_pit, bars

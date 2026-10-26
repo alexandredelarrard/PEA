@@ -77,6 +77,8 @@ def build_institutional_feature_panel(frames, holdings, **kw):
     # Mirrors the real signature since step 1.6: `frames` first, then the source, and every
     # remaining argument keyword-only. `*a` would swallow `frames` into `holdings`.
     kw.setdefault("min_prior_holders", 0)
+    empty = pd.DataFrame(columns=["ticker", "date", "value"])
+    kw.setdefault("share_basis", ShareBasis(empty, empty, empty, {}))
     return _panel(frames, holdings, **kw)
 
 
@@ -383,9 +385,9 @@ def test_panel_columns_match_the_emission_map():
     idx = pd.bdate_range("2022-01-03", "2023-06-30")
     tickers = ["A", "B", "C", "D"]
     peers = {t: {p: 1.0 for p in tickers if p != t} for t in tickers}
-    fund = pd.DataFrame([{"ticker": t, "as_of": "2022-01-01", "sharesOutstanding": 1000.0, "sharesOutstandingPit": 1000.0} for t in tickers])
     close = pd.DataFrame({t: 10.0 for t in tickers}, index=idx)
-    panel = build_institutional_feature_panel(make_frames(idx, peers, close_split=close), _holdings(), shares_out_history=fund)
+    frames = make_frames(idx, peers, close_pit=close, shares_outstanding_pit=close * 100, mcap_pit=close * 1000)
+    panel = build_institutional_feature_panel(frames, _holdings())
     expected = set()
     for name, mode in EMISSION.items():
         expected.add(f"f_{name}")
@@ -464,17 +466,14 @@ def test_value_to_mcap_panel_excludes_reported_value_change_as_flow():
     idx = pd.bdate_range("2025-10-01", "2026-09-30")
     tickers = ["A", "B", "C", "D"]
     peers = {t: {p: 1.0 for p in tickers if p != t} for t in tickers}
-    fund = pd.DataFrame(
-        [{"ticker": t, "as_of": "2025-01-01", "sharesOutstanding": 1_000_000.0, "sharesOutstandingPit": 1_000_000.0} for t in tickers]
-    )
     close = pd.DataFrame({t: 10.0 for t in tickers}, index=idx)  # price 10 -> mcap 10M
     # Known-truth dollar exposure uses each typed underlying quantity on the same $10 basis.
     holdings = _holdings_opts()
     holdings["shares"] = holdings["value_usd"] / 10
     holdings["call_shares"] = holdings["call_value"] / 10
     holdings["put_shares"] = holdings["put_value"] / 10
-    frames = make_frames(idx, peers, close_split=close, level_factor=pd.DataFrame(1.0, index=idx, columns=tickers))
-    panel = build_institutional_feature_panel(frames, holdings, shares_out_history=fund, valuation_close=close)
+    frames = make_frames(idx, peers, close_pit=close, shares_outstanding_pit=close * 100_000, mcap_pit=close * 1_000_000)
+    panel = build_institutional_feature_panel(frames, holdings, valuation_close=close)
     for c in (
         "f_ic_inst_net_options_ratio",
         "f_ic_inst_concentration",
@@ -484,11 +483,11 @@ def test_value_to_mcap_panel_excludes_reported_value_change_as_flow():
     assert "f_ic_inst_value_to_mcap_xs" not in panel
     assert not any("flow_to_mcap" in column for column in panel)
     # A after its Q2 becomes public: long value 4.0M / mcap 10M = 0.40 (raw, pre xs-rank)
-    from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
+    from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 
     qf = _quarter_features(_holdings_opts())
     iv = fundamentals_to_daily(qf, "inst_value", idx)["A"].dropna().iloc[-1]
-    mc = daily_market_cap(fund, close, level_factor=None)["A"].iloc[-1]
+    mc = frames.mcap_pit["A"].iloc[-1]
     assert abs(iv / mc - 0.40) < 1e-6
     print("\n=== SANITY CHECK: institutional weight (value / market cap) ===")
     print(
@@ -1104,7 +1103,7 @@ def test_production_first_publication_uses_immutable_matched_cohorts(sqlite_stor
     sqlite_store.save(Tables.cusip_ticker_map, cusip_map)
     splits = pd.DataFrame(columns=["date", "ticker", "value"])
     basis = ShareBasis(actual=splits, vendor=splits, price=splits, policies={})
-    resources = SecThirteenResources(frames, None, basis, quotes, cusip_map, None)
+    resources = SecThirteenResources(frames, basis, quotes, cusip_map, None)
 
     def panel() -> pd.DataFrame | None:
         features = step._institutional_features(resources)

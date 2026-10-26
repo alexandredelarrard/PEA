@@ -30,6 +30,7 @@ from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.xs import self_history_z
 from src.data_aggregate.utils.institutionals.inputs import QuantityBasis
 from src.data_aggregate.utils.price.frames import PriceFrames
+from src.utils.price.levels import rebase_security_frame
 from src.utils.string import yahoo_symbol
 
 logger = logging.getLogger(__name__)
@@ -500,14 +501,9 @@ def prepare_fails_quantities(
     tenure_mask: pd.DataFrame | None,
     basis: QuantityBasis,
 ) -> FtdSettlement:
-    """Rebase explicit dated canonical fails, including verified source zeros, to target ordinary shares."""
+    """Rebase explicit canonical fails, including verified zeros, to terminal security units."""
     df_fails, on_file = _settlement_fails(fails_hist, coverage, idx, columns, tenure_mask)
-    source = pd.Series(idx, index=idx)
-    target = pd.Series(basis.target_date, index=idx)
-    for ticker in df_fails.columns:
-        names = pd.Series(ticker, index=idx)
-        df_fails[ticker] = basis.events.rebase(df_fails[ticker], names, source, target)
-    return FtdSettlement(df_fails, on_file)
+    return FtdSettlement(rebase_security_frame(basis.events, df_fails, basis.target_date), on_file)
 
 
 def _settlement_fails(

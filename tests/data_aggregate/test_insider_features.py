@@ -384,7 +384,7 @@ def test_position_arithmetic_keeps_known_shares_without_prices(buy_price: float,
             shares=10,
             price_per_share=np.nan,
             shares_owned_after=90 if sale_only else 100,
-            officer_title="CEO" if sale_only else "",
+            officer_title="CEO",
             is_officer=1,
         )
     ]
@@ -1175,7 +1175,7 @@ def test_every_emitted_column_is_declared_and_every_declaration_is_emitted():
             is_officer=1.0 if title else 0.0,
             is_director=0.0 if title else 1.0,
             filing_date=f"2024-0{i + 1}-15",
-            transaction_date=f"2024-0{i + 1}-14",
+            transaction_date=(pd.Timestamp(f"2024-0{i + 1}-15") - pd.offsets.BDay(1)).strftime("%Y-%m-%d"),
             shares=1_000.0 + 100 * i,
             value_usd=100_000.0 + 10_000 * i,
             shares_owned_after=11_000.0 + i,
@@ -1194,6 +1194,7 @@ def test_every_emitted_column_is_declared_and_every_declaration_is_emitted():
         ),
     ]
     idx = pd.bdate_range("2024-01-01", "2024-12-31")
+    assert pd.to_datetime(_frame(rows)["transaction_date"]).isin(idx).all()
     fh, _ = _prices()
     close = pd.DataFrame(100.0, index=idx, columns=["AAA"])
     panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close), _frame(rows), shares_out_history=fh)

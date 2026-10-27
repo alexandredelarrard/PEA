@@ -981,7 +981,8 @@ def compute() -> dict:
     )
     df_books = clean_public_holdings(attach_tickers(df_books, cusip_map), valuation_close, None)
     df_manifest = prepare_book_vintages(df_filings, df_books, idx, settle_days=0)
-    book_history = prepare_superinvestor_book_history(df_manifest, df_books, idx, 90)
+    book_history = prepare_superinvestor_book_history(((df_manifest, df_books) for _ in range(1)), idx, 90)
+    assert book_history is not None
     actual = splits.rename(columns={"ratio": "value"})
     market = BehaviorMarket(idx, valuation_close, ShareBasis(actual, actual, actual, {}))
     cohort = frozenset(pad_cik(cik) for cik in roster)

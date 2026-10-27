@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 from collections.abc import Generator, Iterator, Sequence
 from contextlib import closing
-from itertools import chain
 from typing import Any
 
 import pandas as pd
@@ -74,88 +73,58 @@ def _partition_packet(
     return df_filings, df_holdings
 
 
-def _finish_packet(df_filings: pd.DataFrame, df_holdings: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame] | None:
-    """Keep completion evidence, normalize dates and report the loaded source scope."""
-    if df_filings.empty:
-        logger.warning("No complete immutable 13F filings in scope; recover originals/amendments. Latest-only rows cannot supply PIT books.")
-        return None
-    df_filings, df_holdings = clean_filing_dates(df_filings, df_holdings)
-    logger.info(
-        "Immutable 13F: %s complete accessions / %s whole-book rows / %s managers; unverified legacy rows excluded.",
-        len(df_filings),
-        len(df_holdings),
-        df_filings.cik.nunique(),
-    )
-    return df_filings, df_holdings
-
-
-def iter_filing_vintages(store: DataStore, until: object) -> Generator[tuple[pd.DataFrame, pd.DataFrame]] | None:
-    """Open one projected broad stream, yielding complete raw CIK-quarter packets."""
-    layout = _filing_layout(store, Tables.sec13f_hr, until, None)
+def iter_filing_vintages(
+    store: DataStore,
+    until: object,
+    ciks: Sequence[str] | None = None,
+    *,
+    table: Table = Tables.sec13f_hr,
+    chunksize: int = 500_000,
+) -> Generator[tuple[pd.DataFrame, pd.DataFrame]] | None:
+    """Open one projected source stream of many complete CIK-quarter groups."""
+    if not isinstance(chunksize, int) or isinstance(chunksize, bool) or chunksize <= 0:
+        raise ValueError("13F chunksize must be a positive integer")
+    layout = _filing_layout(store, table, until, ciks)
     if layout is None:
         return None
     manifest_columns, position_columns, query = layout
-    return _iter_filing_packets(store, manifest_columns, position_columns, query)
+    return _iter_filing_packets(store, table, manifest_columns, position_columns, query, chunksize)
 
 
 def _iter_filing_packets(
-    store: DataStore, manifest_columns: tuple[str, ...], position_columns: tuple[str, ...], query: dict[str, Any]
+    store: DataStore, table: Table, manifest_columns: tuple[str, ...], position_columns: tuple[str, ...], query: dict[str, Any], chunksize: int
 ) -> Generator[tuple[pd.DataFrame, pd.DataFrame]]:
     """Partition verified markers and positions while owning the source cursor."""
-    with closing(store.iter_load(Tables.sec13f_hr, order_by=("cik", "period", "accession_number"), **query)) as stream:
+    with closing(store.iter_load(table, chunksize=chunksize, order_by=("cik", "period", "accession_number"), **query)) as stream:
         for df_packet in _iter_whole_quarters(stream):
-            yield clean_filing_dates(*_partition_packet(df_packet, Tables.sec13f_hr, manifest_columns, position_columns))
+            yield clean_filing_dates(*_partition_packet(df_packet, table, manifest_columns, position_columns))
             del df_packet
 
 
 def _iter_whole_quarters(stream: Iterator[pd.DataFrame]) -> Generator[pd.DataFrame]:
-    """Carry only the trailing CIK-quarter, concatenating its pieces once at completion."""
+    """Yield complete leading groups together, carrying only the unfinished final group."""
     pieces: list[pd.DataFrame] = []
     previous_key: object = None
-    groups = chain.from_iterable(df_chunk.groupby(["cik", "period"], sort=False) for df_chunk in stream)
-
-    for key, df_piece in groups:
-        if pieces and key != previous_key:
-            yield pd.concat(pieces, ignore_index=True)
-            pieces.clear()
-        # A group view must not retain the other raw books in its source chunk.
-        pieces.append(df_piece.copy())
+    for df_chunk in stream:
+        if df_chunk.empty:
+            continue
+        key = (df_chunk.cik.iat[-1], df_chunk.period.iat[-1])
+        trailing = df_chunk.cik.eq(key[0]) & df_chunk.period.eq(key[1])
+        boundary = len(df_chunk) - int(trailing.sum())
+        if key == previous_key:
+            pieces.append(df_chunk.copy())
+            del df_chunk
+            continue
+        if boundary:
+            pieces.append(df_chunk.iloc[:boundary].copy())
+        df_pending = df_chunk.iloc[boundary:].copy()
+        del df_chunk
+        df_batch = pd.concat(pieces, ignore_index=True) if pieces else None
+        pieces = [df_pending]
         previous_key = key
-        del df_piece
+        del df_pending
+        if df_batch is not None:
+            yield df_batch
+            del df_batch
     if pieces:
         yield pd.concat(pieces, ignore_index=True)
-
-
-def load_filing_vintages(
-    store: DataStore, until: object, ciks: Sequence[str] | None = None, *, table: Table = Tables.sec13f_hr
-) -> tuple[pd.DataFrame, pd.DataFrame] | None:
-    """Load a bounded compatibility scope; broad production uses iter_filing_vintages."""
-    if table == Tables.sec13f_manager_holdings:
-        return load_manager_filing_vintages(store, until, ciks)
-    layout = _filing_layout(store, table, until, ciks)
-    if layout is None:
-        return None
-    manifest_columns, position_columns, query = layout
-    manifests, positions = [], []
-    for df_chunk in store.iter_load(table, **query):
-        df_filings, df_holdings = _partition_packet(df_chunk, table, manifest_columns, position_columns)
-        manifests.append(df_filings)
-        positions.append(df_holdings)
-    df_filings = pd.concat(manifests, ignore_index=True) if manifests else pd.DataFrame(columns=manifest_columns)
-    df_holdings = pd.concat(positions, ignore_index=True) if positions else pd.DataFrame(columns=position_columns)
-    return _finish_packet(df_filings, df_holdings)
-
-
-def load_manager_filing_vintages(store: DataStore, until: object, ciks: Sequence[str] | None) -> tuple[pd.DataFrame, pd.DataFrame] | None:
-    """Read the bounded manager table once with ordinary projected, scoped loading."""
-    table = Tables.sec13f_manager_holdings
-    layout = _filing_layout(store, table, until, ciks)
-    if layout is None:
-        return None
-    manifest_columns, position_columns, query = layout
-    df_payload = store.load(table, optional=True, **query)
-    if df_payload is None:
-        logger.warning("No complete immutable 13F filings in scope; recover originals/amendments. Latest-only rows cannot supply PIT books.")
-        return None
-    df_filings, df_holdings = _partition_packet(df_payload, table, manifest_columns, position_columns)
-    return _finish_packet(df_filings, df_holdings)

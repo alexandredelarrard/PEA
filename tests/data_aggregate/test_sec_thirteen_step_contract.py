@@ -14,7 +14,7 @@ from src.data_aggregate.transformers import step_cube_sec_thirteen as step_modul
 from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecThirteen
 from src.data_aggregate.utils.common import inputs as capital_inputs
 from src.data_aggregate.utils.common.incremental import PartWindow
-from src.data_aggregate.utils.sec_thirteen.inputs import load_filing_vintages
+from src.data_aggregate.utils.sec_thirteen.inputs import iter_filing_vintages
 from src.data_aggregate.utils.sec_thirteen.superinvestor_features import EMISSION, SuperinvestorFeatureHistory
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
@@ -76,18 +76,18 @@ def test_completed_accession_markers_and_positions_share_one_read() -> None:
 
         def iter_load(self, table: Any, *, columns: list[str], **kwargs: Any) -> Any:
             calls.append((table, kwargs))
-            return iter([pd.DataFrame([manifest, position]).reindex(columns=columns)])
+            yield pd.DataFrame([manifest, position]).reindex(columns=columns)
 
-    result = load_filing_vintages(cast(DataStore, Store()), pd.Timestamp("2024-02-20"), ["1"])
+    result = iter_filing_vintages(cast(DataStore, Store()), pd.Timestamp("2024-02-20"), ["1"])
     assert result is not None
-    filings, holdings = result
+    [(filings, holdings)] = list(result)
     assert len(filings) == len(holdings) == 1 and holdings.iloc[0]["shares"] == 10.0
     assert len(calls) == 1 and calls[0][1]["markers"] is True
     assert calls[0][1]["where"] == {"parse_status": ["complete", "position"], "cik": ["0000000001"]}
     print("SANITY: completed empty-book evidence and whole-book positions come from one projected marker-inclusive stream.")
 
 
-def test_manager_accessions_use_one_projected_load() -> None:
+def test_manager_accessions_use_one_projected_stream() -> None:
     table = Tables.sec13f_manager_holdings
     assert table.empty_marker is not None
     required = [
@@ -132,22 +132,24 @@ def test_manager_accessions_use_one_projected_load() -> None:
             assert actual == table
             return required
 
-        def load(self, actual: Any, *, columns: list[str], **kwargs: Any) -> pd.DataFrame:
+        def iter_load(self, actual: Any, *, columns: list[str], **kwargs: Any) -> Any:
             calls.append((actual, columns, kwargs))
-            return rows.reindex(columns=columns)
+            yield rows.reindex(columns=columns)
 
-        def iter_load(self, *args: Any, **kwargs: Any) -> Any:
-            raise AssertionError("The bounded manager table should use ordinary load, not chunk iteration")
+        def load(self, *args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("Manager history must use bounded source iteration")
 
-    result = load_filing_vintages(cast(DataStore, Store()), pd.Timestamp("2024-02-20"), ["1"], table=table)
+    result = iter_filing_vintages(cast(DataStore, Store()), pd.Timestamp("2024-02-20"), ["1"], table=table)
     assert result is not None
-    filings, holdings = result
+    [(filings, holdings)] = list(result)
     assert len(filings) == len(holdings) == 1 and holdings.shares.iloc[0] == 10.0
     assert len(calls) == 1 and calls[0][0] == table
     assert calls[0][2]["markers"] is True
+    assert calls[0][2]["chunksize"] == 500_000
+    assert calls[0][2]["order_by"] == ("cik", "period", "accession_number")
     assert calls[0][2]["where"] == {"parse_status": ["complete", "position"], "cik": ["0000000001"]}
     assert calls[0][2]["date_col"] == "filing_date" and calls[0][2]["until"] == pd.Timestamp("2024-02-20")
-    print("SANITY: manager markers and positions use one scoped projected ordinary load, with identical public-cutoff filtering.")
+    print("SANITY: manager markers and positions use one scoped projected500k stream with the same public cutoff.")
 
 
 def test_schema_change_reuses_the_computed_panel(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

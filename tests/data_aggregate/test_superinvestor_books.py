@@ -43,7 +43,9 @@ def _history(packets: list[tuple[pd.DataFrame, pd.DataFrame]], grid: pd.Datetime
     df_filings = pd.concat([packet[0] for packet in packets], ignore_index=True)
     df_holdings = pd.concat([packet[1] for packet in packets], ignore_index=True)
     df_manifest = prepare_book_vintages(df_filings, df_holdings, grid, settle_days=0)
-    return prepare_superinvestor_book_history(df_manifest, df_holdings, grid, 90)
+    history = prepare_superinvestor_book_history(((df_manifest, df_holdings) for _ in range(1)), grid, 90)
+    assert history is not None
+    return history
 
 
 def _on(history: tuple[PublicBookSnapshot, ...], day: str) -> PublicBookSnapshot:

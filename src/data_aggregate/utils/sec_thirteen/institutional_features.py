@@ -949,6 +949,46 @@ def _versioned_quarter_features(
     return compute_institutional_feature_history(snapshots, splits=splits, min_prior_holders=min_prior_holders)
 
 
+def _institutional_levels(df_current: pd.DataFrame, df_states: pd.DataFrame, names: list[str]) -> pd.DataFrame:
+    """Reduce numeric columns natively, preserving any unknown contributor."""
+    grouped = df_current.groupby("ticker")
+    numeric = ["shares", "value_usd", "call_value", "put_value"]
+    df_totals = grouped[numeric].sum(min_count=1).where(grouped[numeric].count().eq(grouped.size(), axis=0))
+    df_out = pd.DataFrame(index=pd.Index(names, name="ticker"))
+    df_out["inst_shares"] = df_totals.shares
+    df_out["inst_value"] = df_totals.value_usd
+    holders = df_current.shares.gt(0).groupby("ticker").sum()
+    df_out["ic_inst_holders"] = (holders / len(df_states)).where(df_totals.shares.notna())
+    if df_states.zero_eligible.all():
+        absent = ~df_out.index.isin(df_current.index.get_level_values("ticker"))
+        df_out.loc[absent, ["inst_shares", "inst_value", "ic_inst_holders"]] = 0.0
+    value_total = df_totals.value_usd.reindex(df_current.index.get_level_values("ticker")).set_axis(df_current.index)
+    concentration = (df_current.value_usd / value_total.where(value_total.gt(0))).pow(2).groupby("ticker").sum(min_count=1)
+    df_out["ic_inst_concentration"] = concentration.where(df_out.inst_value.notna())
+    investment = df_out.inst_value + df_totals.call_value + df_totals.put_value
+    df_out["ic_inst_net_options_ratio"] = (df_totals.call_value - df_totals.put_value) / investment.where(investment.gt(0))
+    return df_out
+
+
+def _institutional_votes(df_matched: pd.DataFrame) -> pd.DataFrame:
+    """Share one native holder/trading reduction across the matched flow metrics."""
+    held, prior = df_matched.shares_current.gt(0), df_matched.shares_prior.gt(0)
+    return (
+        pd.DataFrame(
+            {
+                "held": held,
+                "prior": prior,
+                "new": held & df_matched.shares_prior.eq(0),
+                "exit": df_matched.shares_current.eq(0) & prior,
+                "increase": held & prior & df_matched.shares_current.gt(df_matched.shares_prior),
+                "decrease": held & prior & df_matched.shares_current.lt(df_matched.shares_prior),
+            }
+        )
+        .groupby("ticker")
+        .sum()
+    )
+
+
 def compute_institutional_feature_history(
     snapshots: Iterator[tuple[pd.Timestamp, pd.DataFrame, pd.DataFrame]],
     *,
@@ -959,6 +999,8 @@ def compute_institutional_feature_history(
     rows: list[pd.DataFrame] = []
     seen: set[str] = set()
     numeric = ["shares", "value_usd", "call_value", "put_value"]
+    split_period: pd.Timestamp | None = None
+    split_factors = pd.Series(dtype="float64")
     for day, df_compact, states in snapshots:
         known = states.loc[states.book_known]
         if known.empty:
@@ -969,31 +1011,16 @@ def compute_institutional_feature_history(
         prior_states = known.loc[known.period.eq(prior_period)].set_index("cik")
         totals = df_compact.drop(columns="_cusips").sort_index()
         securities = df_compact["_cusips"].dropna().sort_index()
-        current = totals.xs(period).copy() if period in totals.index.get_level_values("period") else totals.droplevel("period").iloc[:0]
-        prior = totals.xs(prior_period).copy() if prior_period in totals.index.get_level_values("period") else current.iloc[:0]
+        current = (
+            cast(pd.DataFrame, totals.xs(period)).copy() if period in totals.index.get_level_values("period") else totals.droplevel("period").iloc[:0]
+        )
+        prior = cast(pd.DataFrame, totals.xs(prior_period)).copy() if prior_period in totals.index.get_level_values("period") else current.iloc[:0]
         observed = current[["shares", "call_value", "put_value"]].gt(0).any(axis=1)
         seen.update(current.loc[observed].index.get_level_values("ticker"))
         names = sorted(seen)
         if not names:
             continue
-        out = pd.DataFrame(index=pd.Index(names, name="ticker"))
-        level = current.groupby("ticker")
-        out["inst_shares"] = level.shares.agg(lambda amounts: amounts.sum(skipna=False))
-        out["inst_value"] = level.value_usd.agg(lambda amounts: amounts.sum(skipna=False))
-        holders = current.shares.gt(0).groupby("ticker").sum()
-        out["ic_inst_holders"] = holders / len(current_states)
-        unknown_quantity = current.shares.isna().groupby("ticker").any()
-        out.loc[unknown_quantity.reindex(out.index).eq(True), "ic_inst_holders"] = np.nan
-        if current_states.zero_eligible.all():
-            empty_names = ~out.index.isin(current.index.get_level_values("ticker"))
-            out.loc[empty_names, ["inst_shares", "inst_value", "ic_inst_holders"]] = 0.0
-        value_total = current.value_usd.groupby("ticker").transform(lambda amounts: amounts.sum(skipna=False)).reindex(current.index)
-        hhi = (current.value_usd / value_total.where(value_total.gt(0))).pow(2).groupby("ticker").sum(min_count=1)
-        out["ic_inst_concentration"] = hhi.where(out.inst_value.notna())
-        calls = level.call_value.agg(lambda amounts: amounts.sum(skipna=False))
-        puts = level.put_value.agg(lambda amounts: amounts.sum(skipna=False))
-        investment = out.inst_value + calls + puts
-        out["ic_inst_net_options_ratio"] = (calls - puts) / investment.where(investment.gt(0))
+        out = _institutional_levels(current, current_states, names)
         paired = current_states.index[current_states.comparison_eligible & prior_states.comparison_eligible.reindex(current_states.index).eq(True)]
         joined = current.add_suffix("_current").join(prior.add_suffix("_prior"), how="outer")
         joined = joined.loc[joined.index.get_level_values("cik").isin(paired)]
@@ -1001,10 +1028,17 @@ def compute_institutional_feature_history(
             absent = ~joined.index.isin(values.index)
             zeros = state.zero_eligible.reindex(joined.index.get_level_values("cik")).eq(True).to_numpy()
             joined.loc[absent & zeros, [col + "_" + suffix for col in numeric]] = 0.0
-        factors = split_cum_product(
-            splits, pd.Series(joined.index.get_level_values("ticker")), pd.Series(period, index=range(len(joined)))
-        ) / split_cum_product(splits, pd.Series(joined.index.get_level_values("ticker")), pd.Series(prior_period, index=range(len(joined))))
-        joined["shares_prior"] *= factors
+        if split_period != period:
+            split_period, split_factors = period, pd.Series(dtype="float64")
+        tickers = joined.index.get_level_values("ticker")
+        missing = tickers.unique().difference(split_factors.index, sort=False)
+        if len(missing):
+            new_tickers = pd.Series(missing)
+            factors = split_cum_product(splits, new_tickers, pd.Series(period, index=new_tickers.index)) / split_cum_product(
+                splits, new_tickers, pd.Series(prior_period, index=new_tickers.index)
+            )
+            split_factors = pd.concat([split_factors, pd.Series(np.asarray(factors), index=missing)])
+        joined["shares_prior"] *= split_factors.reindex(tickers).to_numpy()
         if period in securities.index.get_level_values("period") and prior_period in securities.index.get_level_values("period"):
             now_ids = securities.xs(period).reindex(joined.index)
             old_ids = securities.xs(prior_period).reindex(joined.index)
@@ -1013,11 +1047,10 @@ def compute_institutional_feature_history(
         supported = joined.shares_current.notna() & joined.shares_prior.notna()
         matched = joined.loc[supported]
         groups = matched.groupby("ticker")
-        current_shares = groups.shares_current.sum(min_count=1)
-        previous_shares = groups.shares_prior.sum(min_count=1)
-        now_held, was_held = matched.shares_current.gt(0), matched.shares_prior.gt(0)
-        holder_count = now_held.groupby("ticker").sum()
-        prior_count = was_held.groupby("ticker").sum()
+        df_share_totals = groups[["shares_current", "shares_prior"]].sum(min_count=1)
+        current_shares, previous_shares = df_share_totals.shares_current, df_share_totals.shares_prior
+        df_votes = _institutional_votes(matched)
+        holder_count, prior_count = df_votes.held, df_votes.prior
         out["ic_inst_shares_chg"] = current_shares / previous_shares.where(previous_shares.gt(0)) - 1
         zero_books = current_states.zero_eligible.reindex(paired) & prior_states.zero_eligible.reindex(paired)
         safe_absence = zero_books.reindex(joined.index.get_level_values("cik")).to_numpy(dtype=bool)
@@ -1031,11 +1064,9 @@ def compute_institutional_feature_history(
             .sum()
         )
         out["ic_inst_breadth_chg"] = (holder_count - prior_count) / support_count.where(support_count.gt(0))
-        out["ic_inst_new_buyer_ratio"] = (now_held & matched.shares_prior.eq(0)).groupby("ticker").sum() / holder_count.where(holder_count.gt(0))
-        out["ic_inst_exit_ratio"] = (matched.shares_current.eq(0) & was_held).groupby("ticker").sum() / prior_count.where(prior_count.gt(0))
-        increases = (now_held & was_held & matched.shares_current.gt(matched.shares_prior)).groupby("ticker").sum()
-        decreases = (now_held & was_held & matched.shares_current.lt(matched.shares_prior)).groupby("ticker").sum()
-        out["ic_inst_cluster_buying"] = (increases - decreases) / holder_count.where(holder_count.gt(0))
+        out["ic_inst_new_buyer_ratio"] = df_votes["new"] / holder_count.where(holder_count.gt(0))
+        out["ic_inst_exit_ratio"] = df_votes.exit / prior_count.where(prior_count.gt(0))
+        out["ic_inst_cluster_buying"] = (df_votes.increase - df_votes.decrease) / holder_count.where(holder_count.gt(0))
         out.loc[prior_count.reindex(out.index).fillna(0).lt(min_prior_holders), list(DELTA_FEATURES)] = np.nan
         out["period"], out["as_of"] = period, day
         rows.append(out.reset_index())

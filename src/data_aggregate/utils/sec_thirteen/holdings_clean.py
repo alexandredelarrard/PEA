@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Generator, Mapping, Sequence
+from contextlib import closing
 from typing import Any, cast
 
 import numpy as np
@@ -13,7 +14,7 @@ from src.constants.constants import F13_SETTLE_TRADING_DAYS, SEC_13F_FILING_LAG_
 from src.data_aggregate.utils.common.availability import availability_date
 from src.data_aggregate.utils.common.data_utils import to_day
 from src.data_aggregate.utils.common.typing import frame_column
-from src.data_aggregate.utils.sec_thirteen.value_basis import log_register, repair_value_basis
+from src.data_aggregate.utils.sec_thirteen.value_basis import log_register, prepare_public_value_quotes, repair_value_basis
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +92,31 @@ def clean_public_holdings(
     if "value_basis_excluded" in df_holdings:
         df_holdings.loc[df_holdings.value_basis_excluded, ["shares", "value_usd"]] = np.nan
     return df_holdings
+
+
+def clean_public_batches(
+    packets: Generator[tuple[pd.DataFrame, pd.DataFrame]],
+    cusip_map: pd.DataFrame | None,
+    universe: Sequence[str] | None,
+    valuation_close: pd.DataFrame | None,
+    value_basis: Mapping[str, Any] | None,
+) -> Generator[tuple[pd.DataFrame, pd.DataFrame]]:
+    """Prepare shared mapping/quotes once and repair all completed books per batch."""
+    df_map = cusip_map.dropna(subset=["cusip", "ticker"]).drop_duplicates("cusip") if cusip_map is not None and not cusip_map.empty else None
+    if df_map is not None and universe is not None:
+        df_map = df_map.loc[df_map.ticker.isin(universe)]
+    period_quotes = prepare_public_value_quotes(valuation_close, value_basis)
+    with closing(packets):
+        for df_filings, df_raw in packets:
+            df_holdings = (
+                df_raw.assign(ticker=pd.Series(pd.NA, index=df_raw.index, dtype="object"))
+                if df_map is None
+                else df_raw.merge(df_map[["cusip", "ticker"]], on="cusip", how="left")
+            )
+            df_holdings = clean_public_holdings(df_holdings, valuation_close, value_basis, period_quotes=period_quotes)
+            del df_raw
+            yield df_filings, df_holdings
+            del df_filings, df_holdings
 
 
 def _repair_legacy_values(df_holdings: pd.DataFrame, valuation_close: pd.DataFrame | None, value_basis: Mapping[str, Any] | None) -> pd.DataFrame:

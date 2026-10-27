@@ -439,7 +439,7 @@ def synthetic_exec_comp(proxies: pd.DataFrame, rng: np.random.Generator) -> pd.D
 
 
 def synthetic_short_flow(tickers: list[str], idx: pd.DatetimeIndex, rng: np.random.Generator) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """RegSHO short VOLUME + the sparse fails-to-deliver log.
+    """RegSHO short VOLUME and supported daily fails-to-deliver observations.
 
     ⚠ `short_interest` / `avg_daily_volume` are NO LONGER DECLARED HERE. They backed
     `ic_shortvol_days_to_cover`, which is gone: days-to-cover needs FINRA's twice-monthly
@@ -466,6 +466,8 @@ def synthetic_short_flow(tickers: list[str], idx: pd.DatetimeIndex, rng: np.rand
             "fails_quantity": rng.lognormal(8.0, 1.2, int(keep.sum())).round(0),
         }
     )
+    # The canonical source records supported no-fail observations explicitly.
+    ftd = si[["date", "ticker"]].merge(ftd, on=["date", "ticker"], how="left").fillna({"fails_quantity": 0.0})
     ftd["period"] = pd.to_datetime(ftd["date"]).map(lambda day: f"{day:%Y%m}{'a' if day.day <= 15 else 'b'}")
     return si, ftd
 
@@ -610,7 +612,7 @@ def synthetic_insider(tickers: list[str], idx: pd.DatetimeIndex, rng: np.random.
     owners = np.array([f"{9000000 + 13 * i:010d}" for i in range(12)])
     titles = np.array(["Chief Executive Officer", "Chief Financial Officer", "President and COO", "Executive Vice President", ""])
     title = rng.choice(titles, n, p=[0.15, 0.15, 0.1, 0.1, 0.5])
-    return pd.DataFrame(
+    df_insider = pd.DataFrame(
         {
             "accession_number": [f"{1000000000 + 7 * i:010d}-00-{i % 1000:06d}" for i in range(n)],
             "ticker": tkr,
@@ -637,6 +639,7 @@ def synthetic_insider(tickers: list[str], idx: pd.DatetimeIndex, rng: np.random.
             "is_10b5_1": np.where(days >= pd.Timestamp("2023-07-01"), (rng.random(n) < 0.6).astype("float64"), np.nan),
         }
     )
+    return df_insider.assign(owner_ciks=df_insider["owner_cik"], n_reporting_owners=1)
 
 
 def synthetic_13f(tickers: list[str], idx: pd.DatetimeIndex, rng: np.random.Generator) -> tuple[pd.DataFrame, dict]:
@@ -934,15 +937,15 @@ def compute() -> dict:
     ftd_coverage = ftd[["date", "period"]]
     ftd_settlement = prepare_fails_quantities(ftd, ftd_coverage, idx, None, None, quantity_basis)
     ftd_publication = FtdPublication(ftd_coverage, _ftd_available_dates(ftd_coverage, 21))
-    out["panel.short_flow"] = frame_digest(
-        build_short_flow_feature_panel(
-            make_frames(idx, peers, volume=px["volume"], close_total=close),
-            short_quantity_history(short_hist, quantity_basis),
-            ftd_settlement,
-            short_capital,
-            ftd_publication,
-        )
+    df_short_flow = build_short_flow_feature_panel(
+        make_frames(idx, peers, volume=px["volume"], close_total=close),
+        short_quantity_history(short_hist, quantity_basis),
+        ftd_settlement,
+        short_capital,
+        ftd_publication,
     )
+    assert df_short_flow["f_ic_ftd_persistence_30d"].nunique() > 1, "Do not freeze unavailable FTD persistence"
+    out["panel.short_flow"] = frame_digest(df_short_flow)
     # ⚠ `min_prior_holders=0` HERE AND AT `prim.quarter_features`, AND THE GATE DEPENDS ON IT.
     # The production floor is 100 filers (`MIN_PRIOR_HOLDERS`) and `N_MANAGERS` is 8, so the
     # per-ticker coverage-onset guard would null EVERY QoQ delta in this fixture. The digest
@@ -992,9 +995,12 @@ def compute() -> dict:
     )
     assert superinvestor["f_ic_super_conviction_weight"].nunique() > 1, "Do not freeze unknown whole-book denominators"
     out["panel.superinvestor"] = frame_digest(superinvestor)
-    out["panel.insider"] = frame_digest(
-        build_insider_feature_panel(make_frames(idx, peers, close_split=close), insider, shares_out_history=fund, share_basis=quantity_basis.events)
+    df_insider = build_insider_feature_panel(
+        make_frames(idx, peers, close_split=close), insider, shares_out_history=fund, share_basis=quantity_basis.events
     )
+    for column in ("f_ic_insider_purchase_pct_prior", "f_ic_insider_management_position_change_60d"):
+        assert df_insider[column].nunique() > 1, f"Do not freeze unavailable insider positions: {column}"
+    out["panel.insider"] = frame_digest(df_insider)
     out["panel.ownership"] = frame_digest(build_ownership_feature_panel(make_frames(idx, peers), sec_13d, sec_13g))
     # ---- betas + the labels the model actually trains on ---- #
     factor_panel = pd.DataFrame(

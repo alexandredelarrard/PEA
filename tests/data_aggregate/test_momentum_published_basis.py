@@ -26,7 +26,18 @@ def test_missing_or_invalid_level_never_becomes_a_dollar_volume_identity(missing
     df_factor = None if missing_factor is None else pd.DataFrame({"AAA": missing_factor}, index=index)
 
     fields = compute_raw_features(
-        df_close, df_close, df_close * 0, volume=df_volume, level_factor=df_factor, close_pit=df_close, tape_support=df_close.gt(0)
+        PriceFrames(
+            trading_index=(df_close).index,
+            universe=tuple((df_close).columns),
+            peers={},
+            close_total=df_close,
+            open=df_close,
+            sector_ret=df_close * 0,
+            volume=df_volume,
+            level_factor=df_factor,
+            close_pit=df_close,
+        ),
+        tape_support=df_close.gt(0),
     )
 
     assert fields["dollar_volume_63"].isna().all().all()
@@ -42,7 +53,18 @@ def test_supported_level_and_zero_tape_match_traded_dollars() -> None:
     df_factor = pd.DataFrame({"AAA": 2.0}, index=index)
 
     fields = compute_raw_features(
-        df_close, df_close, df_close * 0, volume=df_volume, level_factor=df_factor, close_pit=df_close, tape_support=df_close.gt(0)
+        PriceFrames(
+            trading_index=(df_close).index,
+            universe=tuple((df_close).columns),
+            peers={},
+            close_total=df_close,
+            open=df_close,
+            sector_ret=df_close * 0,
+            volume=df_volume,
+            level_factor=df_factor,
+            close_pit=df_close,
+        ),
+        tape_support=df_close.gt(0),
     )
 
     expected = np.log1p((df_close * df_volume * df_factor).rolling(63, min_periods=20).mean())
@@ -63,7 +85,18 @@ def test_numeric_level_identity_cannot_override_unknown_quote_support() -> None:
     df_factor = pd.DataFrame({"AAA": 1.0}, index=index)
     df_unknown = pd.DataFrame({"AAA": np.nan}, index=index)
     fields = compute_raw_features(
-        df_close, df_close, df_close * 0, volume=df_close * 10, level_factor=df_factor, close_pit=df_unknown, tape_support=df_close.gt(0)
+        PriceFrames(
+            trading_index=(df_close).index,
+            universe=tuple((df_close).columns),
+            peers={},
+            close_total=df_close,
+            open=df_close,
+            sector_ret=df_close * 0,
+            volume=df_close * 10,
+            level_factor=df_factor,
+            close_pit=df_unknown,
+        ),
+        tape_support=df_close.gt(0),
     )
     assert fields["dollar_volume_63"].isna().all().all()
     assert fields["amihud_63"].isna().all().all()
@@ -79,7 +112,18 @@ def test_incompatible_tape_basis_keeps_dollar_liquidity_unknown() -> None:
     df_close = pd.DataFrame({"AAA": 100 * np.cumprod(np.full(len(index), 1.001))}, index=index)
     df_factor = pd.DataFrame({"AAA": 0.25}, index=index)
     fields = compute_raw_features(
-        df_close, df_close, df_close * 0, volume=df_close * 10, level_factor=df_factor, close_pit=df_close, tape_support=df_close.lt(0)
+        PriceFrames(
+            trading_index=(df_close).index,
+            universe=tuple((df_close).columns),
+            peers={},
+            close_total=df_close,
+            open=df_close,
+            sector_ret=df_close * 0,
+            volume=df_close * 10,
+            level_factor=df_factor,
+            close_pit=df_close,
+        ),
+        tape_support=df_close.lt(0),
     )
     assert fields["dollar_volume_63"].isna().all().all()
     assert fields["amihud_63"].isna().all().all()

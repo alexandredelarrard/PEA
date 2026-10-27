@@ -27,6 +27,9 @@ synthetic frame that hand-builds the missing column reproduces none of it.
 
 from __future__ import annotations
 
+from dataclasses import replace
+from typing import cast
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -46,10 +49,12 @@ from src.data_aggregate.utils.fundamentals.fundamental_features import (
     _PENSION_FACTS_TABLE,
     _derived_fields,
 )
+from src.data_aggregate.utils.fundamentals.inputs import FundamentalHistory, FundamentalSupplement
 from src.data_aggregate.utils.fundamentals.sector_features import (
     SECTOR_KPI_COLS,
     compute_sector_kpis,
 )
+from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.db import get_engine
@@ -114,13 +119,12 @@ def feature_frames() -> dict[str, pd.DataFrame]:
         return got.reset_index(drop=True) if got is not None else None
 
     frames = _derived_fields(
-        fund_hist=fh,
-        idx=idx,
+        FundamentalHistory(raw_history=fh, share_basis=known_no_share_events()),
+        replace(cast(PriceFrames, legacy_capital_frames(fh, close)), trading_index=idx),
+        supplement=FundamentalSupplement(
+            pension_facts=_facts(_PENSION_FACTS_TABLE, _NET_PENSION_TAGS), notes_num=_facts(_NOTES_NUM_TABLE, (_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG))
+        ),
         yoy_periods=infer_yoy_periods(fh),
-        pension_facts=_facts(_PENSION_FACTS_TABLE, _NET_PENSION_TAGS),
-        notes_num=_facts(_NOTES_NUM_TABLE, (_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG)),
-        prices=legacy_capital_frames(fh, close),
-        share_basis=known_no_share_events(),
     )
     kdf = compute_sector_kpis(fh)
     for name in SECTOR_KPI_COLS:

@@ -102,7 +102,7 @@ class StepCubeTarget(Step):
 
         # fit betas and build target neutrals to betas
         betas = self._estimate_betas(price_frames, panel, sector_excess)
-        targets = self._build_targets(price_frames, betas, panel, macro_cols, horizons, sector_groups, sector_excess, seams)
+        targets = self._build_targets(price_frames, (betas, panel, macro_cols), horizons, (sector_groups, sector_excess), seams)
         n = self._persist(
             targets,
             betas,
@@ -122,6 +122,7 @@ class StepCubeTarget(Step):
     def _measure_seams(self, frames: PriceFrames) -> dict[str, list[pd.Timestamp]]:
         """The registered `null_ret` basis changes, re-measured on THIS step's `close_total`."""
         frames.require("close_total")
+        assert frames.close_total is not None
         seams = measure_seams(frames.close_total, self._bugfix)
         listed = sum(len(v) for v in (self._bugfix.get("null_ret") or {}).values())
         self._log.info(
@@ -133,7 +134,7 @@ class StepCubeTarget(Step):
         )
         return seams
 
-    def _load_fundamentals(self) -> pd.DataFrame:
+    def _load_fundamentals(self) -> pd.DataFrame | None:
         columns = ("ticker", "as_of", "netIncome", "freeCashflow", "stockholdersEquity")
         return self._context.store.load(Tables.fundamentals_history, columns=columns)
 
@@ -224,6 +225,7 @@ class StepCubeTarget(Step):
         cfg = self._cfg.betas
         sector = sector_groups["sector"]
         frames.require("ret")
+        assert frames.ret is not None
 
         # `market_ret` is the panel's own `market` column, passed in rather than re-derived:
         # this de-markets the sector REGRESSOR before any beta is fit, so it must be the exact
@@ -240,6 +242,7 @@ class StepCubeTarget(Step):
     def _estimate_betas(self, frames: PriceFrames, panel: pd.DataFrame, sector_excess: pd.DataFrame | None) -> dict:
         cfg = self._cfg.betas
         frames.require("ret")
+        assert frames.ret is not None
         betas = estimate_all_betas(
             stock_returns=frames.ret,
             global_factors=panel,
@@ -267,14 +270,14 @@ class StepCubeTarget(Step):
     def _build_targets(
         self,
         frames: PriceFrames,
-        betas: dict,
-        panel: pd.DataFrame,
-        macro_cols: list[str],
+        factors: tuple[dict, pd.DataFrame, list[str]],
         horizons: list[int],
-        sector_groups: dict[str, dict[str, str]],
-        sector_excess: pd.DataFrame | None,
+        sectors: tuple[dict[str, dict[str, str]], pd.DataFrame | None],
         seams: dict[str, list[pd.Timestamp]] | None = None,
     ) -> dict:
+        """Build labels from the fitted factor bundle and matched sector exposures."""
+        betas, panel, macro_cols = factors
+        sector_groups, sector_excess = sectors
         cfg = self._cfg.targets
         frames.require("close_total", "ret")
         assert frames.close_total is not None

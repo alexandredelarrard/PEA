@@ -26,13 +26,13 @@ import pandas as pd
 import pytest
 
 from src.constants.constants import DEFAULT_CONFIG_DIR
-from src.data_aggregate.utils.common.pit import daily_market_cap
 from src.data_aggregate.utils.price.checks import describe
 from src.data_aggregate.utils.price.clean import NULL_RET_STEP_TOL, apply_null_ret, apply_volume_scale
 from src.data_extract.utils.fundamentals_sharadar.field_map import split_events
 from src.utils.price.adjustments import load_bugfix
 from src.utils.price.levels import apply_level_bugfix, level_factor
 from src.utils.price.repairs import LEVEL_SNAP_TOL, _vintage_multiplier, apply_return_seams, apply_split_vintage
+from tests.data_aggregate.fundamental_pit_reference import legacy_daily_market_cap as daily_market_cap
 
 #: A daily grid that straddles every fixture event below. Business days only, so the frame is
 #: shaped like a real `cube_part_prices` slice without being large.

@@ -10,6 +10,7 @@ import pandas as pd
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 from src.data_aggregate.utils.sec_thirteen.value_basis import nullable_value_to_daily
 from src.utils.price.adjustments import ShareBasis
+from src.utils.price.capitalization import project_security_shares
 
 
 def test_window_projection_keeps_original_age_and_bounds_dense_pivots() -> None:
@@ -97,7 +98,10 @@ def test_window_seed_keeps_production_date_for_split_basis_and_expiry() -> None:
     splits = pd.DataFrame({"ticker": ["AAPL"], "date": pd.to_datetime(["2025-01-07"]), "value": [2.0]})
     basis = ShareBasis(actual=splits, vendor=splits.iloc[:0], price=splits.iloc[:0], policies={"AAPL": {}})
 
-    daily = fundamentals_to_daily(history, "sharesOutstandingPit", calendar, max_age_days=5, share_basis=basis)
+    observations = history.assign(capitalization_factor=1.0, capitalization_available=history["as_of"])
+    daily, _ = project_security_shares(observations, basis, calendar, pd.Index(["AAPL"], name="ticker"))
+    source_age = fundamentals_to_daily(history.assign(_produced_at=history["as_of"]), "_produced_at", calendar, max_age_days=5)
+    daily = daily.where(source_age.notna())
 
     expected = pd.DataFrame({"AAPL": [100.0, 200.0, np.nan]}, index=calendar)
     expected.columns.name = "ticker"

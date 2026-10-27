@@ -39,6 +39,7 @@ from src.data_aggregate.utils.common.incremental import (
 )
 from src.data_aggregate.utils.common.parts import CUBE_PARTS, PART_BY_NAME
 from src.data_aggregate.utils.momentum.features import build_feature_panel
+from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_store.schema import (
     ALL,
     Resume,
@@ -81,7 +82,24 @@ def test_windowed_build_reproduces_full_tail():
     sh = [5, 20, 60]
 
     df_factor = pd.DataFrame(1.0, index=close.index, columns=close.columns)
-    full = build_feature_panel(close, open_, sector, "rank", high, low, volume, sh, level_factor=df_factor, close_pit=close, tape_support=close.gt(0))
+    full = build_feature_panel(
+        PriceFrames(
+            trading_index=(close).index,
+            universe=tuple((close).columns),
+            peers={},
+            close_total=close,
+            open=open_,
+            sector_ret=sector,
+            high=high,
+            low=low,
+            volume=volume,
+            level_factor=df_factor,
+            close_pit=close,
+        ),
+        method="rank",
+        seasonal_horizons=sh,
+        tape_support=close.gt(0),
+    )
 
     # simulate an incremental run with the ACTUAL configured price-group warm-up: recompute only
     # [refresh_from - warmup, end]. This must cover the longest daily look-back (the 5-year =
@@ -93,16 +111,21 @@ def test_windowed_build_reproduces_full_tail():
     refresh_from = dates[cutoff_pos - refresh]
     start = dates[cutoff_pos - refresh - warmup]
     win = build_feature_panel(
-        close.loc[start:],
-        open_.loc[start:],
-        sector.loc[start:],
-        "rank",
-        high.loc[start:],
-        low.loc[start:],
-        volume.loc[start:],
-        sh,
-        level_factor=df_factor.loc[start:],
-        close_pit=close.loc[start:],
+        PriceFrames(
+            trading_index=(close.loc[start:]).index,
+            universe=tuple((close.loc[start:]).columns),
+            peers={},
+            close_total=close.loc[start:],
+            open=open_.loc[start:],
+            sector_ret=sector.loc[start:],
+            high=high.loc[start:],
+            low=low.loc[start:],
+            volume=volume.loc[start:],
+            level_factor=df_factor.loc[start:],
+            close_pit=close.loc[start:],
+        ),
+        method="rank",
+        seasonal_horizons=sh,
         tape_support=close.loc[start:].gt(0),
     )
 

@@ -30,6 +30,7 @@ from src.data_aggregate.utils.momentum.features import (
     build_feature_panel,
     compute_raw_features,
 )
+from src.data_aggregate.utils.price.frames import PriceFrames
 
 DATES = pd.bdate_range("2024-01-01", periods=120)
 TICKERS = [f"T{i:03d}" for i in range(100)]
@@ -173,13 +174,31 @@ def test_guard_runs_before_the_rank_not_after():
     bad = prices.index[100]
     prices.loc[bad, TICKERS[9:]] = np.nan
 
-    raw = compute_raw_features(prices, prices, _sector_returns(prices))
+    raw = compute_raw_features(
+        PriceFrames(
+            trading_index=(prices).index,
+            universe=tuple((prices).columns),
+            peers={},
+            close_total=prices,
+            open=prices,
+            sector_ret=_sector_returns(prices),
+        )
+    )
     unguarded_min = xs_rank_pct(raw["rev_5"]).loc[bad].min()
     n_live = int(raw["rev_5"].loc[bad].notna().sum())
     print(f"  unguarded: {n_live} names -> min(rank)={unguarded_min:.6f} (= 1/{n_live})")
     assert unguarded_min == pytest.approx(1.0 / n_live)
 
-    panel = build_feature_panel(prices, prices, _sector_returns(prices))
+    panel = build_feature_panel(
+        PriceFrames(
+            trading_index=(prices).index,
+            universe=tuple((prices).columns),
+            peers={},
+            close_total=prices,
+            open=prices,
+            sector_ret=_sector_returns(prices),
+        )
+    )
     on_bad = panel.loc[panel["date"] == bad, "rev_5"]
     print(f"  guarded  : {len(on_bad)} rows on that date, all-NaN={on_bad.isna().all()}")
     assert on_bad.isna().all(), "a rank drawn from 9% of the universe must not be published"
@@ -197,7 +216,18 @@ def test_price_availability_masks_momentum_before_ranking(monkeypatch):
         lambda *args, **kwargs: {"signal": raw.copy()},
     )
 
-    panel = build_feature_panel(close, close, close * 0.0, method="rank", close_split=close_split)
+    panel = build_feature_panel(
+        PriceFrames(
+            trading_index=(close).index,
+            universe=tuple((close).columns),
+            peers={},
+            close_total=close,
+            open=close,
+            sector_ret=close * 0.0,
+            close_split=close_split,
+        ),
+        method="rank",
+    )
     first = panel.loc[panel["date"] == dates[0]].set_index("ticker")["signal"]
     second = panel.loc[panel["date"] == dates[1]].set_index("ticker")["signal"]
 
@@ -237,7 +267,16 @@ def test_downside_vol_defined_on_a_strong_uptrend():
 
     ret_63 = prices["T000"].iloc[-63:].pct_change()
     n_down = int((ret_63 < 0).sum())
-    raw = compute_raw_features(prices, prices, _sector_returns(prices))
+    raw = compute_raw_features(
+        PriceFrames(
+            trading_index=(prices).index,
+            universe=tuple((prices).columns),
+            peers={},
+            close_total=prices,
+            open=prices,
+            sector_ret=_sector_returns(prices),
+        )
+    )
     got = raw["downside_vol_63"]["T000"].iloc[-1]
     print(f"  T000: {n_down} down days in 63 -> downside_vol_63={got}")
     assert 5 <= n_down < 20, "the test case must sit in the band the old min_periods nulled"
@@ -249,7 +288,16 @@ def test_downside_vol_still_undefined_below_five_down_days():
     idx = pd.bdate_range("2023-01-02", periods=200)
     prices = pd.DataFrame({t: 100.0 * np.exp(np.arange(len(idx)) * 0.001) for t in TICKERS[:5]}, index=idx)
     prices.iloc[80, 0] *= 0.99  # exactly ONE down day, far outside the last window
-    raw = compute_raw_features(prices, prices, _sector_returns(prices))
+    raw = compute_raw_features(
+        PriceFrames(
+            trading_index=(prices).index,
+            universe=tuple((prices).columns),
+            peers={},
+            close_total=prices,
+            open=prices,
+            sector_ret=_sector_returns(prices),
+        )
+    )
     got = raw["downside_vol_63"].iloc[-1, 0]
     print(f"  monotone riser, 0 down days in the last 63 -> downside_vol_63={got}")
     assert pd.isna(got)
@@ -261,7 +309,16 @@ def test_exactly_five_down_days_is_enough():
     idx = pd.bdate_range("2023-01-02", periods=120)
     prices = pd.DataFrame({t: 100.0 * np.exp(np.arange(len(idx)) * 0.001) for t in TICKERS[:5]}, index=idx)
     prices.iloc[[60, 65, 70, 75, 80], 0] *= 0.98  # exactly 5 down days
-    raw = compute_raw_features(prices, prices, _sector_returns(prices))
+    raw = compute_raw_features(
+        PriceFrames(
+            trading_index=(prices).index,
+            universe=tuple((prices).columns),
+            peers={},
+            close_total=prices,
+            open=prices,
+            sector_ret=_sector_returns(prices),
+        )
+    )
     got = raw["downside_vol_63"].iloc[85, 0]
     print(f"  exactly 5 down days in the window -> downside_vol_63={got}")
     assert np.isfinite(got), "5 down days must be enough (min_periods=5)"

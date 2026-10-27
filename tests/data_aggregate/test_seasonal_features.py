@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.momentum.features import build_feature_panel, compute_raw_features
+from src.data_aggregate.utils.price.frames import PriceFrames
 
 
 def _synth(years=6, n=12, seed=0, season_start=120, season_len=40, boost=0.004):
@@ -34,7 +35,10 @@ def _synth(years=6, n=12, seed=0, season_start=120, season_len=40, boost=0.004):
 
 def test_seasonal_present_and_dispersed():
     dates, tickers, close, open_, sector, s0, sl = _synth()
-    raw = compute_raw_features(close, open_, sector, seasonal_horizons=[30, 60, 90])
+    raw = compute_raw_features(
+        PriceFrames(trading_index=(close).index, universe=tuple((close).columns), peers={}, close_total=close, open=open_, sector_ret=sector),
+        seasonal_horizons=[30, 60, 90],
+    )
     for h in (30, 60, 90):
         assert f"seasonal_h{h}" in raw, f"seasonal_h{h} missing"
     # CROSS-SECTIONAL dispersion: not identical across names (a calendar dummy would be)
@@ -50,13 +54,19 @@ def test_seasonal_present_and_dispersed():
 
 def test_seasonal_is_leak_free():
     dates, tickers, close, open_, sector, s0, sl = _synth()
-    base = compute_raw_features(close, open_, sector, seasonal_horizons=[60])["seasonal_h60"]
+    base = compute_raw_features(
+        PriceFrames(trading_index=(close).index, universe=tuple((close).columns), peers={}, close_total=close, open=open_, sector_ret=sector),
+        seasonal_horizons=[60],
+    )["seasonal_h60"]
 
     # perturb ALL returns after t -> seasonal at t must not move (uses only past yrs)
     t_idx = 252 * 4
     close2 = close.copy()
     close2.iloc[t_idx + 1 :] *= 1.5
-    pert = compute_raw_features(close2, open_, sector, seasonal_horizons=[60])["seasonal_h60"]
+    pert = compute_raw_features(
+        PriceFrames(trading_index=(close2).index, universe=tuple((close2).columns), peers={}, close_total=close2, open=open_, sector_ret=sector),
+        seasonal_horizons=[60],
+    )["seasonal_h60"]
     a = base.iloc[t_idx].to_numpy()
     b = pert.iloc[t_idx].to_numpy()
     assert np.allclose(a, b, equal_nan=True), "seasonal_h60 leaked future returns"
@@ -66,7 +76,10 @@ def test_seasonal_is_leak_free():
 
 def test_seasonal_ranks_the_seasonal_stock():
     dates, tickers, close, open_, sector, s0, sl = _synth()
-    raw = compute_raw_features(close, open_, sector, seasonal_horizons=[30])
+    raw = compute_raw_features(
+        PriceFrames(trading_index=(close).index, universe=tuple((close).columns), peers={}, close_total=close, open=open_, sector_ret=sector),
+        seasonal_horizons=[30],
+    )
     seas = raw["seasonal_h30"]
     doy = dates.dayofyear.to_numpy()
     # dates in a late year whose 30d-forward window sits INSIDE SEAS's season,
@@ -78,7 +91,11 @@ def test_seasonal_ranks_the_seasonal_stock():
     assert avg_rank > 0.7, f"seasonal stock not ranked high (avg pct-rank {avg_rank:.2f})"
 
     # panel integration: seasonal columns present and rank-standardized to [0,1]
-    panel = build_feature_panel(close, open_, sector, method="rank", seasonal_horizons=[30, 60])
+    panel = build_feature_panel(
+        PriceFrames(trading_index=(close).index, universe=tuple((close).columns), peers={}, close_total=close, open=open_, sector_ret=sector),
+        method="rank",
+        seasonal_horizons=[30, 60],
+    )
     assert {"seasonal_h30", "seasonal_h60"}.issubset(panel.columns)
     assert panel["seasonal_h30"].dropna().between(0, 1).all()
     print("\n=== SANITY CHECK: seasonal ranks the seasonal name ===")

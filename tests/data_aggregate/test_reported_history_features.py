@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -10,7 +12,8 @@ import pytest
 
 from src.data_aggregate.utils.fundamentals.fundamental_features import _derived_fields
 from src.data_aggregate.utils.fundamentals.history_features import reported_history_fields
-from src.data_aggregate.utils.price.frames import load_trading_calendar
+from src.data_aggregate.utils.fundamentals.inputs import FundamentalHistory
+from src.data_aggregate.utils.price.frames import PriceFrames, load_trading_calendar
 from src.data_store.schema import Tables
 from tests.conftest import _store
 from tests.data_aggregate.fundamental_pit_reference import known_no_share_events, legacy_capital_frames
@@ -101,7 +104,10 @@ def test_ocf_yield_preserves_cash_burn_and_uses_current_market_cap() -> None:
     idx = pd.bdate_range("2026-01-05", periods=3)
     hist = pd.DataFrame({"ticker": ["AAA"], "as_of": [idx[0]], "sharesOutstanding": [10.0], "operatingCashFlow": [-20.0]})
     close = pd.DataFrame({"AAA": [5.0, 10.0, 0.0]}, index=idx)
-    fields = _derived_fields(hist, idx, legacy_capital_frames(hist, close, None), share_basis=known_no_share_events())
+    fields = _derived_fields(
+        FundamentalHistory(raw_history=hist, share_basis=known_no_share_events()),
+        replace(cast(PriceFrames, legacy_capital_frames(hist, close, None)), trading_index=idx),
+    )
     np.testing.assert_allclose(fields["ocf_yield"]["AAA"].iloc[:2], [-0.4, -0.2])
     assert np.isnan(fields["ocf_yield"]["AAA"].iloc[2])
     print("\nSANITY: OCF yield retains negative cash flow, updates with price, and rejects nonpositive market cap.")

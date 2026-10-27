@@ -32,6 +32,7 @@ from src.data_aggregate.utils.common.xs import xs_rank_pct
 from src.data_aggregate.utils.momentum.features import SEAM_EWMA_SPAN_MULTIPLE, SEAM_WINDOWS, build_feature_panel, compute_raw_features
 from src.data_aggregate.utils.price.checks import mask_seam_windows, measure_seams
 from src.data_aggregate.utils.price.clean import NULL_RET_STEP_TOL
+from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_aggregate.utils.price.returns import MOMENTUM_SEAM_WINDOW, momentum_characteristic
 
 #: DHR's registered event -- the largest of the six. `close_total` re-bases at the FTV spinoff
@@ -88,15 +89,20 @@ def _register(date: pd.Timestamp, expect: float = SEAM_RET) -> dict:
 
 def _raw(frames: dict, seams: dict | None) -> dict:
     return compute_raw_features(
-        frames["close_total"],
-        frames["open"],
-        frames["sector_ret"],
-        close_split=frames["close_split"],
-        high=frames["high"],
-        low=frames["low"],
-        volume=frames["volume"],
-        level_factor=pd.DataFrame(1.0, index=frames["close_split"].index, columns=frames["close_split"].columns),
-        close_pit=frames["close_split"],
+        PriceFrames(
+            trading_index=(frames["close_total"]).index,
+            universe=tuple((frames["close_total"]).columns),
+            peers={},
+            close_total=frames["close_total"],
+            open=frames["open"],
+            sector_ret=frames["sector_ret"],
+            close_split=frames["close_split"],
+            high=frames["high"],
+            low=frames["low"],
+            volume=frames["volume"],
+            level_factor=pd.DataFrame(1.0, index=frames["close_split"].index, columns=frames["close_split"].columns),
+            close_pit=frames["close_split"],
+        ),
         tape_support=frames["close_split"].gt(0),
         seams=seams,
     )
@@ -448,17 +454,22 @@ def test_the_stored_panel_carries_the_mask_through_build_feature_panel():
     frames = _frames()
     when = frames["close_total"].index[SEAM_POS]
     panel = build_feature_panel(
-        frames["close_total"],
-        frames["open"],
-        frames["sector_ret"],
+        PriceFrames(
+            trading_index=(frames["close_total"]).index,
+            universe=tuple((frames["close_total"]).columns),
+            peers={},
+            close_total=frames["close_total"],
+            open=frames["open"],
+            sector_ret=frames["sector_ret"],
+            high=frames["high"],
+            low=frames["low"],
+            volume=frames["volume"],
+            level_factor=pd.DataFrame(1.0, index=frames["close_split"].index, columns=frames["close_split"].columns),
+            close_pit=frames["close_split"],
+            close_split=frames["close_split"],
+        ),
         method="rank",
-        high=frames["high"],
-        low=frames["low"],
-        volume=frames["volume"],
-        level_factor=pd.DataFrame(1.0, index=frames["close_split"].index, columns=frames["close_split"].columns),
-        close_pit=frames["close_split"],
         tape_support=frames["close_split"].gt(0),
-        close_split=frames["close_split"],
         seams={"SEAM": [when]},
     )
 

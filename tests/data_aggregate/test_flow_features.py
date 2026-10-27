@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.momentum.features import build_feature_panel, compute_raw_features
+from src.data_aggregate.utils.price.frames import PriceFrames
 
 _FLOW = ["signed_vol_63", "volume_trend_63", "volume_cv_63"]
 
@@ -40,7 +41,12 @@ def _synth(years=3, n=8, seed=0):
 
 def test_flow_features_present_and_signed_volume():
     dates, tickers, close, open_, volume, sector = _synth()
-    raw = compute_raw_features(close, open_, sector, volume=volume, seasonal_horizons=None)
+    raw = compute_raw_features(
+        PriceFrames(
+            trading_index=(close).index, universe=tuple((close).columns), peers={}, close_total=close, open=open_, sector_ret=sector, volume=volume
+        ),
+        seasonal_horizons=None,
+    )
     for k in _FLOW:
         assert k in raw, f"{k} missing"
     t = dates[-1]
@@ -64,8 +70,17 @@ def test_the_dropped_tax_loss_pressure_stays_dropped():
     specialist sleeve, not as a column the ranker sees all year.
     """
     dates, tickers, close, open_, volume, sector = _synth()
-    raw = compute_raw_features(close, open_, sector, volume=volume)
-    panel = build_feature_panel(close, open_, sector, method="rank", volume=volume)
+    raw = compute_raw_features(
+        PriceFrames(
+            trading_index=(close).index, universe=tuple((close).columns), peers={}, close_total=close, open=open_, sector_ret=sector, volume=volume
+        )
+    )
+    panel = build_feature_panel(
+        PriceFrames(
+            trading_index=(close).index, universe=tuple((close).columns), peers={}, close_total=close, open=open_, sector_ret=sector, volume=volume
+        ),
+        method="rank",
+    )
 
     assert "tax_loss_pressure" not in raw
     assert "tax_loss_pressure" not in panel.columns
@@ -80,16 +95,29 @@ def test_the_dropped_tax_loss_pressure_stays_dropped():
 
 def test_flow_is_leak_free_and_panel():
     dates, tickers, close, open_, volume, sector = _synth()
-    base = compute_raw_features(close, open_, sector, volume=volume)
+    base = compute_raw_features(
+        PriceFrames(
+            trading_index=(close).index, universe=tuple((close).columns), peers={}, close_total=close, open=open_, sector_ret=sector, volume=volume
+        )
+    )
     t_idx = 252 * 2
     close2, vol2 = close.copy(), volume.copy()
     close2.iloc[t_idx + 1 :] *= 1.5
     vol2.iloc[t_idx + 1 :] *= 4.0
-    pert = compute_raw_features(close2, open_, sector, volume=vol2)
+    pert = compute_raw_features(
+        PriceFrames(
+            trading_index=(close2).index, universe=tuple((close2).columns), peers={}, close_total=close2, open=open_, sector_ret=sector, volume=vol2
+        )
+    )
     for k in _FLOW:
         assert np.allclose(base[k].iloc[t_idx].to_numpy(), pert[k].iloc[t_idx].to_numpy(), equal_nan=True), f"{k} leaks"
 
-    panel = build_feature_panel(close, open_, sector, method="rank", volume=volume)
+    panel = build_feature_panel(
+        PriceFrames(
+            trading_index=(close).index, universe=tuple((close).columns), peers={}, close_total=close, open=open_, sector_ret=sector, volume=volume
+        ),
+        method="rank",
+    )
     for k in _FLOW:
         assert k in panel.columns and panel[k].dropna().between(0, 1).all()
     print("\n=== SANITY CHECK: flow features point-in-time + panel ===")

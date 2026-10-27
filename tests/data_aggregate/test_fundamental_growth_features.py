@@ -8,6 +8,8 @@ import pytest
 
 from src.data_aggregate.utils.fundamentals.feature_views import FEATURE_COLUMNS, HISTORY_FEATURES
 from src.data_aggregate.utils.fundamentals.fundamental_features import _derived_fields, build_fundamental_feature_panel
+from src.data_aggregate.utils.fundamentals.inputs import FundamentalFeatureSettings, FundamentalHistory
+from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_store.schema import Tables, name_of
 from src.utils.config import read_config
 from src.validate.spec import load_spec
@@ -46,7 +48,9 @@ def _history() -> pd.DataFrame:
 
 def test_signed_annual_growth_and_three_year_cagr_exact() -> None:
     idx = pd.DatetimeIndex(["2024-04-30", "2024-05-01"])
-    fields = _derived_fields(_history(), idx, prices=None, share_basis=known_no_share_events())
+    fields = _derived_fields(
+        FundamentalHistory(raw_history=_history(), share_basis=known_no_share_events()), PriceFrames(trading_index=idx, universe=(), peers={})
+    )
     assert "y_earnings_growth_signed" in fields
     assert "revenue_cagr_3y" in fields
     expected = {"NARROW": 0.5, "DEEP": -1.0, "POS": -0.5, "TURN": 2.0, "LOSS": -2.0}
@@ -68,10 +72,13 @@ def test_cagr_invalid_replacement_clears_state_and_future_amendments_do_not_leak
     invalid = history.iloc[[-1]].assign(as_of="2024-08-01", totalRevenue=-1.0)
     history = pd.concat([history, amendment, new_report, invalid], ignore_index=True)
     idx = pd.DatetimeIndex(["2024-05-01", "2024-07-01", "2024-08-01", "2024-11-01"])
-    full = _derived_fields(history, idx, prices=None, share_basis=known_no_share_events())["revenue_cagr_3y"]
-    prefix = _derived_fields(history.loc[pd.to_datetime(history.as_of) <= idx[0]], idx[:1], prices=None, share_basis=known_no_share_events())[
-        "revenue_cagr_3y"
-    ]
+    full = _derived_fields(
+        FundamentalHistory(raw_history=history, share_basis=known_no_share_events()), PriceFrames(trading_index=idx, universe=(), peers={})
+    )["revenue_cagr_3y"]
+    prefix = _derived_fields(
+        FundamentalHistory(raw_history=history.loc[pd.to_datetime(history.as_of) <= idx[0]], share_basis=known_no_share_events()),
+        PriceFrames(trading_index=idx[:1], universe=(), peers={}),
+    )["revenue_cagr_3y"]
     assert full.loc[idx[0], "POS"] == pytest.approx(0.2)
     assert full.loc[idx[1], "POS"] == pytest.approx(4 ** (1 / 3) - 1)
     assert full.loc[idx[2] :, "POS"].isna().all()
@@ -84,7 +91,10 @@ def test_cagr_requires_positive_finite_endpoints(prior: float, current: float) -
     history = _history().query("ticker == 'POS'").copy()
     history.loc[history.fiscal_end == "2021-03-31", "totalRevenue"] = prior
     history.loc[history.fiscal_end == "2024-03-31", "totalRevenue"] = current
-    fields = _derived_fields(history, pd.DatetimeIndex(["2024-05-01"]), prices=None, share_basis=known_no_share_events())
+    fields = _derived_fields(
+        FundamentalHistory(raw_history=history, share_basis=known_no_share_events()),
+        PriceFrames(trading_index=pd.DatetimeIndex(["2024-05-01"]), universe=(), peers={}),
+    )
     assert pd.isna(fields["revenue_cagr_3y"].iloc[0, 0])
     print("SANITY: zero, negative and infinite revenue endpoints cannot become a valid CAGR.")
 
@@ -106,7 +116,9 @@ def test_cash_runway_domains_visibility_and_invalid_replacement() -> None:
     history = pd.DataFrame(rows)
     history = pd.concat([history, history.loc[history.ticker == "BURN"].assign(as_of="2024-06-01", cash=np.nan)], ignore_index=True)
     idx = pd.DatetimeIndex(["2024-04-30", "2024-05-01", "2024-06-01"])
-    fields = _derived_fields(history, idx, prices=None, share_basis=known_no_share_events())
+    fields = _derived_fields(
+        FundamentalHistory(raw_history=history, share_basis=known_no_share_events()), PriceFrames(trading_index=idx, universe=(), peers={})
+    )
     assert "cash_runway_months" in fields
     runway = fields["cash_runway_months"]
     assert runway.loc[idx[0]].isna().all()
@@ -123,14 +135,21 @@ def test_cash_runway_domains_visibility_and_invalid_replacement() -> None:
 def test_new_features_expire_and_missing_fiscal_year_is_not_bridged() -> None:
     history = _history().query("ticker == 'POS'").copy()
     idx = pd.DatetimeIndex(["2024-05-01", "2024-11-02", "2024-11-03"])
-    fields = _derived_fields(history, idx, prices=None, share_basis=known_no_share_events())
+    fields = _derived_fields(
+        FundamentalHistory(raw_history=history, share_basis=known_no_share_events()), PriceFrames(trading_index=idx, universe=(), peers={})
+    )
     for name in ["revenue_cagr_3y", "y_earnings_growth_signed", "cash_runway_months"]:
         assert pd.notna(fields[name].loc[idx[1], "POS"])
         assert pd.isna(fields[name].loc[idx[2], "POS"])
     history.loc[history.fiscal_end == "2021-03-31", "fiscal_end"] = "2020-12-31"
-    fields = _derived_fields(history, idx[:1], prices=None, share_basis=known_no_share_events())
+    fields = _derived_fields(
+        FundamentalHistory(raw_history=history, share_basis=known_no_share_events()), PriceFrames(trading_index=idx[:1], universe=(), peers={})
+    )
     assert fields["revenue_cagr_3y"].isna().all().all()
-    undated = _derived_fields(history.drop(columns="fiscal_end"), idx[:1], prices=None, share_basis=known_no_share_events())
+    undated = _derived_fields(
+        FundamentalHistory(raw_history=history.drop(columns="fiscal_end"), share_basis=known_no_share_events()),
+        PriceFrames(trading_index=idx[:1], universe=(), peers={}),
+    )
     assert undated["revenue_cagr_3y"].isna().all().all()
     assert undated["y_earnings_growth_signed"].isna().all().all()
     print("SANITY: each feature expires after source day 185 and the CAGR cannot borrow a different fiscal quarter.")
@@ -138,7 +157,11 @@ def test_new_features_expire_and_missing_fiscal_year_is_not_bridged() -> None:
 
 def test_output_schema_keeps_one_signed_annual_growth_and_preserves_history_view() -> None:
     idx = pd.bdate_range("2024-05-01", periods=6)
-    panel = build_fundamental_feature_panel(_history(), {}, idx, hist_window=3, hist_min_periods=2, share_basis=known_no_share_events())
+    panel = build_fundamental_feature_panel(
+        FundamentalHistory(raw_history=_history(), share_basis=known_no_share_events()),
+        PriceFrames(trading_index=idx, universe=(), peers={}),
+        settings=FundamentalFeatureSettings(history_window=3, history_min_periods=2),
+    )
     expected = {"f_revenue_cagr_3y", "f_y_earnings_growth_signed", "f_cash_runway_months"}
     assert expected <= set(panel)
     assert expected <= set(FEATURE_COLUMNS)

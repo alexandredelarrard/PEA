@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.utils.momentum.features import build_feature_panel, compute_raw_features
+from src.data_aggregate.utils.price.frames import PriceFrames
 
 _LIQ = ["dollar_volume_63", "amihud_63", "rel_volume_5_63"]
 
@@ -29,16 +30,23 @@ def _synth(t=260, n=25, seed=0):
 
 def test_liquidity_skipped_without_volume_present_with():
     dates, tickers, close, open_, volume, sector = _synth()
-    no_vol = compute_raw_features(close, open_, sector)
+    no_vol = compute_raw_features(
+        PriceFrames(trading_index=(close).index, universe=tuple((close).columns), peers={}, close_total=close, open=open_, sector_ret=sector)
+    )
     assert not any(k in no_vol for k in _LIQ), "liquidity must be skipped without volume"
 
     with_vol = compute_raw_features(
-        close,
-        open_,
-        sector,
-        volume=volume,
-        level_factor=pd.DataFrame(1.0, index=close.index, columns=close.columns),
-        close_pit=close,
+        PriceFrames(
+            trading_index=(close).index,
+            universe=tuple((close).columns),
+            peers={},
+            close_total=close,
+            open=open_,
+            sector_ret=sector,
+            volume=volume,
+            level_factor=pd.DataFrame(1.0, index=close.index, columns=close.columns),
+            close_pit=close,
+        ),
         tape_support=close.gt(0),
     )
     for k in _LIQ:
@@ -55,12 +63,17 @@ def test_no_lookahead():
     dates, tickers, close, open_, volume, sector = _synth()
     t_idx = 150
     base = compute_raw_features(
-        close,
-        open_,
-        sector,
-        volume=volume,
-        level_factor=pd.DataFrame(1.0, index=close.index, columns=close.columns),
-        close_pit=close,
+        PriceFrames(
+            trading_index=(close).index,
+            universe=tuple((close).columns),
+            peers={},
+            close_total=close,
+            open=open_,
+            sector_ret=sector,
+            volume=volume,
+            level_factor=pd.DataFrame(1.0, index=close.index, columns=close.columns),
+            close_pit=close,
+        ),
         tape_support=close.gt(0),
     )
 
@@ -68,12 +81,17 @@ def test_no_lookahead():
     close2.iloc[t_idx + 1 :] *= 1.5  # perturb everything AFTER t
     volume2.iloc[t_idx + 1 :] *= 3.0
     pert = compute_raw_features(
-        close2,
-        open_,
-        sector,
-        volume=volume2,
-        level_factor=pd.DataFrame(1.0, index=close2.index, columns=close2.columns),
-        close_pit=close2,
+        PriceFrames(
+            trading_index=(close2).index,
+            universe=tuple((close2).columns),
+            peers={},
+            close_total=close2,
+            open=open_,
+            sector_ret=sector,
+            volume=volume2,
+            level_factor=pd.DataFrame(1.0, index=close2.index, columns=close2.columns),
+            close_pit=close2,
+        ),
         tape_support=close2.gt(0),
     )
 
@@ -88,12 +106,17 @@ def test_no_lookahead():
 def test_dollar_volume_ranks_liquidity():
     dates, tickers, close, open_, volume, sector = _synth()
     raw = compute_raw_features(
-        close,
-        open_,
-        sector,
-        volume=volume,
-        level_factor=pd.DataFrame(1.0, index=close.index, columns=close.columns),
-        close_pit=close,
+        PriceFrames(
+            trading_index=(close).index,
+            universe=tuple((close).columns),
+            peers={},
+            close_total=close,
+            open=open_,
+            sector_ret=sector,
+            volume=volume,
+            level_factor=pd.DataFrame(1.0, index=close.index, columns=close.columns),
+            close_pit=close,
+        ),
         tape_support=close.gt(0),
     )
     dv = raw["dollar_volume_63"].iloc[-1]  # last date
@@ -101,13 +124,18 @@ def test_dollar_volume_ranks_liquidity():
     assert dv[tickers[-1]] > dv[tickers[0]], (dv[tickers[0]], dv[tickers[-1]])
 
     panel = build_feature_panel(
-        close,
-        open_,
-        sector,
+        PriceFrames(
+            trading_index=(close).index,
+            universe=tuple((close).columns),
+            peers={},
+            close_total=close,
+            open=open_,
+            sector_ret=sector,
+            volume=volume,
+            level_factor=pd.DataFrame(1.0, index=close.index, columns=close.columns),
+            close_pit=close,
+        ),
         method="rank",
-        volume=volume,
-        level_factor=pd.DataFrame(1.0, index=close.index, columns=close.columns),
-        close_pit=close,
         tape_support=close.gt(0),
     )
     for k in _LIQ:
@@ -131,12 +159,17 @@ def test_amihud_is_monotone_in_illiquidity_and_rank_invariant_under_the_log():
     """
     dates, tickers, close, open_, volume, sector = _synth()
     raw = compute_raw_features(
-        close,
-        open_,
-        sector,
-        volume=volume,
-        level_factor=pd.DataFrame(1.0, index=close.index, columns=close.columns),
-        close_pit=close,
+        PriceFrames(
+            trading_index=(close).index,
+            universe=tuple((close).columns),
+            peers={},
+            close_total=close,
+            open=open_,
+            sector_ret=sector,
+            volume=volume,
+            level_factor=pd.DataFrame(1.0, index=close.index, columns=close.columns),
+            close_pit=close,
+        ),
         tape_support=close.gt(0),
     )
     logged = raw["amihud_63"]
@@ -190,12 +223,17 @@ def test_an_all_flat_window_yields_nan_not_minus_inf():
 
     with np.errstate(divide="raise", invalid="raise"):
         raw = compute_raw_features(
-            close,
-            close.shift(1).bfill(),
-            sector,
-            volume=volume,
-            level_factor=pd.DataFrame(1.0, index=close.index, columns=close.columns),
-            close_pit=close,
+            PriceFrames(
+                trading_index=(close).index,
+                universe=tuple((close).columns),
+                peers={},
+                close_total=close,
+                open=close.shift(1).bfill(),
+                sector_ret=sector,
+                volume=volume,
+                level_factor=pd.DataFrame(1.0, index=close.index, columns=close.columns),
+                close_pit=close,
+            ),
             tape_support=close.gt(0),
         )
 

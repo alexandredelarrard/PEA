@@ -24,9 +24,7 @@ from src.context import get_config_context
 from src.data_aggregate.transformers.step_cube_sec_thirteen import PreparedSecThirteen, SecThirteenResources, StepCubeSecThirteen
 from src.data_aggregate.utils.common.availability import filing_public_dates, public_books
 from src.data_aggregate.utils.price.frames import PriceFrames
-from src.data_aggregate.utils.sec_thirteen.holdings_clean import attach_tickers
 from src.data_aggregate.utils.sec_thirteen.institutional_features import (
-    build_institutional_feature_panel,
     compute_institutional_feature_history,
     vintage_changes,
     vintage_cohort_publications,
@@ -1293,28 +1291,17 @@ def normal_panels(step: StepCubeSecThirteen, frames: PriceFrames) -> tuple[pd.Da
     return broad.set_index(["date", "ticker"]), elite.set_index(["date", "ticker"])
 
 
-def test_raw_broad_builder_keeps_verified_filing_adapter() -> None:
+def test_immutable_broad_stages_keep_verified_filing_arithmetic(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
     prior = packet("prior", "2024-08-14", {"111111111": 100, "222222222": 100})
     current = packet("current", "2024-11-14", {"111111111": 120, "222222222": 100}, period="2024-09-30")
-    filings, holdings = combine(prior, current)
-    mapping = pd.DataFrame({"cusip": ["111111111", "222222222"], "ticker": ["AAA", "BBB"]})
-    close = pd.DataFrame(10.0, index=GRID, columns=["AAA", "BBB"])
-    frames = PriceFrames(GRID, ("AAA", "BBB"), {}, close_split=close, level_factor=close / 10, close_pit=close)
-    panel = build_institutional_feature_panel(
-        frames,
-        attach_tickers(holdings, mapping, frames.universe),
-        filings=filings,
-        min_prior_holders=0,
-        settle_trading_days=0,
-        valuation_close=close,
-        value_basis={"min_securities": 1},
-    ).set_index(["date", "ticker"])
+    step, frames = ordinary_step(sqlite_store, monkeypatch, (prior, current))
+    panel, _ = normal_panels(step, frames)
     day = pd.Timestamp("2024-11-21")
     assert panel.loc[(day, "AAA"), "f_ic_inst_shares_chg"] == pytest.approx(0.2)
     assert panel.loc[(day, "BBB"), "f_ic_inst_shares_chg"] == 0
     assert pd.isna(panel.loc[(pd.Timestamp("2024-08-21"), "AAA"), "f_ic_inst_shares_chg"])
     print(
-        "SANITY: the raw public broad builder retains verified filing input, reports +20%/0% on the known pair and leaves the unsupported first-quarter change unknown."
+        "SANITY: immutable broad preparation, computation and projection report +20%/0% on the known pair and leave the unsupported first-quarter change unknown."
     )
 
 

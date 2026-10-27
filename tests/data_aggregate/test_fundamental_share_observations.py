@@ -10,6 +10,7 @@ import pytest
 
 from src.data_aggregate.utils.fundamentals.dividend_features import _dividend_fields
 from src.data_aggregate.utils.fundamentals.fundamental_features import _financial_eps_yield
+from src.data_aggregate.utils.fundamentals.inputs import FundamentalHistory
 from src.data_aggregate.utils.price.inputs import load_fundamental_share_observations
 from src.data_aggregate.utils.price.observations import fundamental_share_observations
 from src.utils.cutover_continuity import PredecessorSeries
@@ -121,8 +122,8 @@ def test_raw_dividend_cash_legs_ignore_normalized_comparison_copy() -> None:
     close = pd.DataFrame({"APH": 100.0}, index=days)
     frames = make_frames(days, close_split=close, mcap_pit=close * 1200)
     dividends = pd.DataFrame({"ticker": ["APH"], "date": [days[0]], "dividends": [1.0]})
-    before = _dividend_fields(dividends, frames, history, _basis())
-    after = _dividend_fields(dividends, frames, history, _basis(), comparison)
+    before = _dividend_fields(dividends, frames, FundamentalHistory(raw_history=history, share_basis=_basis()))
+    after = _dividend_fields(dividends, frames, FundamentalHistory(raw_history=history, normalized_share_history=comparison, share_basis=_basis()))
     for field in ("dividend_yield", "dividend_payout_ratio", "dividend_coverage"):
         pd.testing.assert_frame_equal(before[field], after[field], check_exact=True)
     assert after["dividend_payout_ratio"].iloc[0, 0] == pytest.approx(1200 / 3750)

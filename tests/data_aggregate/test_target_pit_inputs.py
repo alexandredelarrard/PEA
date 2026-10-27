@@ -57,7 +57,7 @@ def test_target_neutralizer_passes_saved_cap_without_legacy_fallback(monkeypatch
         return {}
 
     monkeypatch.setattr(target_step, "build_targets_multi", capture)
-    step._build_targets(frames, {}, pd.DataFrame(index=index), [], [1], {}, None)
+    step._build_targets(frames, ({}, pd.DataFrame(index=index), []), [1], ({}, None))
 
     pd.testing.assert_frame_equal(observed["market_cap"], df_cap, check_exact=True)
     assert observed["stock_ret"] is frames.ret

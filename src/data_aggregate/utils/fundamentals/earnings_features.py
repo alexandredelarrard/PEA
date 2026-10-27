@@ -14,6 +14,7 @@ import pandas as pd
 
 from src.data_aggregate.utils.common.frames import ratio
 from src.data_aggregate.utils.fundamentals.feature_views import build_fundamental_views
+from src.data_aggregate.utils.price.frames import PriceFrames
 from src.utils.price.adjustments import ShareBasis
 from src.utils.price.per_share import eps_basis_supported, eps_price
 
@@ -117,21 +118,17 @@ def _derived_earnings_fields(
 
 def build_earnings_feature_panel(
     earnings_history: pd.DataFrame | None,
-    peer_dict: dict,
-    trading_index: pd.DatetimeIndex,
-    stock_close: pd.DataFrame | None = None,
-    level_factor: pd.DataFrame | None = None,
+    prices: PriceFrames,
     history_fields: dict[str, pd.DataFrame] | None = None,
     output_since: pd.Timestamp | None = None,
-    *,
     share_basis: ShareBasis | None = None,
 ) -> pd.DataFrame:
-    """Long-format report features using the approved raw/self-history view contract."""
-    if earnings_history is None or earnings_history.empty or stock_close is None or "earnings_date" not in earnings_history.columns:
+    """Build report features from saved prices and the dated quantity basis."""
+    if earnings_history is None or earnings_history.empty or prices.close_split is None or "earnings_date" not in earnings_history.columns:
         return pd.DataFrame(columns=["date", "ticker"])
-    fields = _derived_earnings_fields(earnings_history, trading_index, stock_close, level_factor, share_basis=share_basis)
-    panel = build_fundamental_views(fields, peer_dict, history_fields=history_fields, output_since=output_since)
-    days = days_since_earnings(earnings_history, trading_index)
+    fields = _derived_earnings_fields(earnings_history, prices.trading_index, prices.close_split, prices.level_factor, share_basis=share_basis)
+    panel = build_fundamental_views(fields, prices.peers, history_fields=history_fields, output_since=output_since)
+    days = days_since_earnings(earnings_history, prices.trading_index)
     if output_since is not None:
         days = days.loc[days.index >= pd.Timestamp(output_since)]
     if not days.empty and days.notna().any().any():

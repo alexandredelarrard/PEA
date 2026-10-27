@@ -17,7 +17,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.common.pit import daily_market_cap
 from src.data_aggregate.utils.institutionals.inputs import QuantityBasis, daily_share_quantities
 from src.data_aggregate.utils.institutionals.insider_features import (
     InsiderCoverage,
@@ -29,6 +28,7 @@ from src.data_aggregate.utils.institutionals.insider_quality import clean_transa
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.utils.price.adjustments import ShareBasis
 from src.utils.price.capitalization import project_security_shares
+from tests.data_aggregate.fundamental_pit_reference import legacy_daily_market_cap as daily_market_cap
 
 _EMPTY_EVENTS = pd.DataFrame(columns=["ticker", "date", "value"])
 _NO_SPLIT_FIXTURE = ShareBasis(_EMPTY_EVENTS, _EMPTY_EVENTS, _EMPTY_EVENTS, {})

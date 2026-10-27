@@ -59,7 +59,7 @@ class StepDeducePeers(Step):
         self._log.info("Loaded peer dict from %s (%s tickers, %s with peers)", peers_path, len(self.peers), n)
         return self.peers
 
-    def normalize_prices(self):
+    def normalize_prices(self) -> None:
         prices_long = self.prices_long
         if prices_long is None:
             raise RuntimeError("prices must be loaded before normalization")

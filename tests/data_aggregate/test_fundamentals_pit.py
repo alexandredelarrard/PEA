@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import logging
 from dataclasses import replace
-from types import SimpleNamespace
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -13,8 +12,11 @@ import pytest
 from src.data_aggregate.transformers import step_cube_fundamentals as module
 from src.data_aggregate.transformers.step_cube_fundamentals import StepCubeFundamentals
 from src.data_aggregate.utils.fundamentals.dividend_features import _dividend_fields
+from src.data_aggregate.utils.fundamentals.earnings_features import build_earnings_feature_panel
 from src.data_aggregate.utils.fundamentals.fundamental_features import _derived_fields
+from src.data_aggregate.utils.fundamentals.inputs import FundamentalHistory
 from src.data_aggregate.utils.fundamentals.intrinsic import intrinsic_value_daily
+from src.data_aggregate.utils.price.frames import PriceFrames
 from src.utils.price.adjustments import ShareBasis
 from src.utils.price.per_share import eps_price, ordinary_per_share_to_security, vendor_ordinary_per_share
 from tests.conftest import make_frames
@@ -46,15 +48,13 @@ def test_step_projects_all_saved_capital_inputs() -> None:
 def test_earnings_gate_has_no_price_resolution_or_raw_source_reads(monkeypatch: pytest.MonkeyPatch) -> None:
     days = pd.bdate_range("2024-01-02", periods=3)
     frames = make_frames(days, close_split=pd.DataFrame({"AAA": 100.0}, index=days), level_factor=pd.DataFrame({"AAA": 1.0}, index=days))
-    step = StepCubeFundamentals.__new__(StepCubeFundamentals)
-    step._store = SimpleNamespace(load=lambda *args, **kwargs: pytest.fail("EPS gate reloaded an action/price source"))
-    step._context = SimpleNamespace(store=step._store, config_dir="configs", log=logging.getLogger(__name__))
-    monkeypatch.setattr(module, "build_earnings_feature_panel", lambda *args, **kwargs: pd.DataFrame({"basis": [kwargs["share_basis"]]}))
-    basis = known_no_share_events()
-    df_result = step._earnings_panel(frames, pd.DataFrame({"earnings_date": [days[0]]}), None, None, basis)
-    assert df_result is not None
-    assert df_result.iloc[0]["basis"] is basis
-    print("SANITY: EPS eligibility uses only dated quote units and saved price inputs, without replaying price resolution.")
+    monkeypatch.setattr(module, "load_price_identity", lambda *args, **kwargs: pytest.fail("EPS gate reloaded identity"))
+    monkeypatch.setattr(module, "load_quantity_basis", lambda *args, **kwargs: pytest.fail("EPS gate reloaded source units"))
+    df_earnings = pd.DataFrame({"ticker": ["AAA"], "earnings_date": [days[0]], "eps_actual": [1.0], "eps_estimate": [0.5], "surprise_pct": [100.0]})
+    df_result = build_earnings_feature_panel(df_earnings, frames, share_basis=known_no_share_events())
+    assert not df_result.empty
+    assert df_result["f_days_since_earnings"].tolist() == [1.0, 2.0]
+    print("SANITY: the public earnings builder uses saved price inputs and the supplied basis without source reads; report age begins next session.")
 
 
 def test_fundamental_yields_use_saved_cap_and_preserve_unsupported_cells() -> None:
@@ -66,7 +66,7 @@ def test_fundamental_yields_use_saved_cap_and_preserve_unsupported_cells() -> No
         shares_outstanding_pit=pd.DataFrame({"AAA": 100.0}, index=days),
         mcap_pit=pd.DataFrame({"AAA": [10_000.0, np.nan]}, index=days),
     )
-    fields = _derived_fields(_history(), days, prices=prices)
+    fields = _derived_fields(FundamentalHistory(raw_history=_history()), replace(cast(PriceFrames, prices), trading_index=days))
     assert fields["earnings_yield"].iloc[0, 0] == pytest.approx(0.001)
     assert pd.isna(fields["earnings_yield"].iloc[1, 0])
     print("SANITY: saved issuer cap10,000 determines earnings yield0.001; its null successor cannot fall back to quote times cached shares.")
@@ -94,7 +94,7 @@ def test_dividend_cash_fallback_uses_saved_cap_and_keeps_missing_payer_unknown()
     days = pd.bdate_range("2024-01-02", periods=2)
     prices = make_frames(days, close_split=pd.DataFrame({"AAA": 100.0}, index=days), mcap_pit=pd.DataFrame({"AAA": [20_000.0, np.nan]}, index=days))
     df_dividends = pd.DataFrame({"ticker": ["AAA"], "date": [days[0]], "dividends": [0.0]})
-    fields = _dividend_fields(df_dividends, prices, _history())
+    fields = _dividend_fields(df_dividends, prices, FundamentalHistory(raw_history=_history()))
     assert fields["dividend_yield"].iloc[0, 0] == pytest.approx(0.01)
     assert pd.isna(fields["dividend_yield"].iloc[1, 0])
     print("SANITY: known cash payer200 uses saved cap20,000 for yield1%; unsupported cap stays unknown, not a nonpayer zero.")
@@ -110,7 +110,7 @@ def test_enterprise_value_dilution_requires_supported_matching_coverage() -> Non
         mcap_pit=pd.DataFrame({"AAA": [2_000.0, 3_000.0, np.nan]}, index=days),
     )
     df_history = _history().assign(sharesOutstanding=1_000.0, dilutedShares=1_100.0, ebitda=20.0)
-    fields = _derived_fields(df_history, days, prices=prices)
+    fields = _derived_fields(FundamentalHistory(raw_history=df_history), replace(cast(PriceFrames, prices), trading_index=days))
     assert fields["ebitda_to_ev"].iloc[0, 0] == pytest.approx(20.0 / 2_200.0)
     assert fields["ebitda_to_ev"].iloc[1, 0] == pytest.approx(20.0 / 3_000.0)
     assert pd.isna(fields["ebitda_to_ev"].iloc[2, 0])
@@ -127,7 +127,7 @@ def test_carried_capital_does_not_reset_the_public_share_observation_age() -> No
         mcap_pit=pd.DataFrame({"AAA": 10_000.0}, index=days),
     )
     df_history = pd.concat([_history(), _history().assign(as_of="2024-05-01", netIncome=20.0, sharesOutstanding=np.nan)], ignore_index=True)
-    fields = _derived_fields(df_history, days, prices=prices)
+    fields = _derived_fields(FundamentalHistory(raw_history=df_history), replace(cast(PriceFrames, prices), trading_index=days))
     assert fields["earnings_yield"].iloc[0, 0] == pytest.approx(0.001)
     assert pd.isna(fields["earnings_yield"].iloc[1, 0])
     print("SANITY: fresh price/cash-flow observations cannot refresh a share observation older than185 days.")
@@ -156,7 +156,10 @@ def test_genuine_stock_dividend_without_vendor_restatement_is_not_issuance() -> 
         shares_outstanding_pit=pd.DataFrame({"AAA": 110.0}, index=days),
         mcap_pit=pd.DataFrame({"AAA": 10_000.0}, index=days),
     )
-    fields = _derived_fields(df_history, days, prices=prices, share_basis=_stock_dividend_basis(pd.Timestamp("2023-06-15")))
+    fields = _derived_fields(
+        FundamentalHistory(raw_history=df_history, share_basis=_stock_dividend_basis(pd.Timestamp("2023-06-15"))),
+        replace(cast(PriceFrames, prices), trading_index=days),
+    )
     assert fields["shares_growth"].iloc[0, 0] == pytest.approx(0.0)
     pd.testing.assert_frame_equal(df_history, df_before)
     print("SANITY: G1.1 with vendorF1 rebases both fiscal observations to110 shares; share growth is0%, not false10% issuance.")
@@ -173,7 +176,7 @@ def test_dividend_buyback_leg_uses_genuine_comparison_units() -> None:
     )
     prices = make_frames(days, close_split=pd.DataFrame({"AAA": 100.0 / 1.1}, index=days), mcap_pit=pd.DataFrame({"AAA": 10_000.0}, index=days))
     df_dividends = pd.DataFrame({"ticker": ["AAA"], "date": [days[0]], "dividends": [0.0]})
-    fields = _dividend_fields(df_dividends, prices, df_history, share_basis=_stock_dividend_basis(days[252]))
+    fields = _dividend_fields(df_dividends, prices, FundamentalHistory(raw_history=df_history, share_basis=_stock_dividend_basis(days[252])))
     assert fields["shareholder_yield"].loc[days[252], "AAA"] == pytest.approx(0.0)
     print("SANITY: a10% stock dividend with unrestated vendor counts creates neither a buyback nor a dilution penalty.")
 
@@ -188,7 +191,10 @@ def test_financial_eps_matches_the_same_ordinary_vendor_price_basis() -> None:
         shares_outstanding_pit=pd.DataFrame({"AAA": 100.0}, index=days),
         mcap_pit=pd.DataFrame({"AAA": 10_000.0}, index=days),
     )
-    fields = _derived_fields(_history().assign(dilutedShares=100.0, epsDiluted=0.1), days, prices=prices, share_basis=known_no_share_events())
+    fields = _derived_fields(
+        FundamentalHistory(raw_history=_history().assign(dilutedShares=100.0, epsDiluted=0.1), share_basis=known_no_share_events()),
+        replace(cast(PriceFrames, prices), trading_index=days),
+    )
     assert fields["earnings_yield"].iloc[0, 0] == pytest.approx(0.001)
     assert fields["eps_yield"].iloc[0, 0] == pytest.approx(0.001)
     print("SANITY: same-scope EPS and total earnings yield both equal0.1% using the matched C50-times-S2 price leg.")
@@ -206,7 +212,9 @@ def test_financial_eps_has_no_stock_dividend_yield_jump_without_vendor_restateme
         mcap_pit=pd.DataFrame({"AAA": 10_000.0}, index=days),
     )
     df_history = _history().assign(dilutedShares=100.0, epsDiluted=0.1)
-    fields = _derived_fields(df_history, days, prices=prices, share_basis=_stock_dividend_basis(days[1]))
+    fields = _derived_fields(
+        FundamentalHistory(raw_history=df_history, share_basis=_stock_dividend_basis(days[1])), replace(cast(PriceFrames, prices), trading_index=days)
+    )
     assert fields["eps_yield"]["AAA"].tolist() == pytest.approx([0.001] * 3)
     print("SANITY: G1.1/F1 lowers carried canonical EPS and the quoted price together; EPS yield remains0.1% after the stock dividend.")
 
@@ -238,7 +246,9 @@ def test_invalid_new_financial_eps_clears_the_prior_public_state() -> None:
         ],
         ignore_index=True,
     )
-    fields = _derived_fields(df_history, days, prices=prices, share_basis=known_no_share_events())
+    fields = _derived_fields(
+        FundamentalHistory(raw_history=df_history, share_basis=known_no_share_events()), replace(cast(PriceFrames, prices), trading_index=days)
+    )
     assert fields["eps_yield"].iloc[0, 0] == pytest.approx(0.001)
     assert fields["eps_yield"].iloc[1:, 0].isna().all()
     print("SANITY: an invalid newly public EPS ends the previous state instead of reviving an older estimate.")
@@ -264,7 +274,10 @@ def test_vendor_comparison_fields_have_no_mechanical_stock_dividend_growth(field
         ignore_index=True,
     )
     df_before = df_history.copy()
-    fields = _derived_fields(df_history, days, share_basis=_stock_dividend_basis(pd.Timestamp("2023-06-15")))
+    fields = _derived_fields(
+        FundamentalHistory(raw_history=df_history, share_basis=_stock_dividend_basis(pd.Timestamp("2023-06-15"))),
+        PriceFrames(trading_index=days, universe=(), peers={}),
+    )
     assert fields[field].iloc[0, 0] == pytest.approx(0.0)
     pd.testing.assert_frame_equal(df_history, df_before)
     print(f"SANITY: {field} compares the same economic unit across G1.1/F1; raw vendor weighted counts and DPS remain untouched.")
@@ -280,7 +293,7 @@ def test_piotroski_masks_only_new_unit_uncertainty_in_existing_comparison_pairs(
         ignore_index=True,
     )
     df_history = df_history.assign(longTermDebt=30.0, currentAssets=50.0, currentLiabilities=25.0, grossMargins=0.4)
-    fields = _derived_fields(df_history, days, share_basis=None)
+    fields = _derived_fields(FundamentalHistory(raw_history=df_history, share_basis=None), PriceFrames(trading_index=days, universe=(), peers={}))
     assert fields["piotroski_f_score"].iloc[0, 0] == pytest.approx(3.0)
     assert np.isnan(fields["piotroski_f_score"].iloc[1, 0])
     print("SANITY: the first partial F-score keeps3/9; a later raw count pair with unresolved comparison units is unknown, with no raw fallback.")

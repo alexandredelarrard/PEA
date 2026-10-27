@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import json
 import zlib
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
@@ -51,6 +52,8 @@ import numpy as np
 import pandas as pd
 
 from src.context import Context
+from src.data_aggregate.utils.fundamentals.inputs import FundamentalHistory, FundamentalSupplement
+from src.data_aggregate.utils.price.frames import PriceFrames
 from tests.conftest import make_frames
 from tests.data_aggregate.pipeline_fingerprint import frame_digest
 
@@ -794,7 +797,7 @@ def governance_panel(
 def compute() -> dict:
     from src.data_aggregate.utils.common.frames import ratio, safe_div, sanitize
     from src.data_aggregate.utils.common.panel import build_peer_relative_panel
-    from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
+    from src.data_aggregate.utils.common.pit import fundamentals_to_daily
     from src.data_aggregate.utils.common.xs import (
         winsorize_xs,
         xs_standardize,
@@ -830,10 +833,6 @@ def compute() -> dict:
         trailing_vol,
     )
     from src.data_aggregate.utils.sec_thirteen.holdings_clean import attach_tickers, clean_public_holdings
-    from src.data_aggregate.utils.sec_thirteen.institutional_features import (
-        _quarter_features,
-        build_institutional_feature_panel,
-    )
     from src.data_aggregate.utils.sec_thirteen.superinvestor_books import prepare_superinvestor_book_history
     from src.data_aggregate.utils.sec_thirteen.superinvestor_features import compute_superinvestor_feature_history, project_superinvestor_features
     from src.data_aggregate.utils.sec_thirteen.superinvestor_metrics import BehaviorMarket
@@ -849,7 +848,9 @@ def compute() -> dict:
     from src.utils.price.levels import as_traded_close
     from src.utils.string import pad_cik
     from tests.data_aggregate.fundamental_pit_reference import known_no_share_events, legacy_capital_frames
+    from tests.data_aggregate.fundamental_pit_reference import legacy_daily_market_cap as daily_market_cap
     from tests.data_aggregate.insider_pit_reference import build_prepared_insider_panel as build_insider_feature_panel
+    from tests.data_aggregate.sec_thirteen_legacy_reference import _quarter_features, build_institutional_feature_panel
 
     fund = fundamentals()
     tickers = sorted(str(ticker) for ticker in fund["ticker"].unique())
@@ -908,15 +909,20 @@ def compute() -> dict:
                 k: v
                 for k, v in sorted(
                     compute_raw_features(
-                        close,
-                        px["open"],
-                        sector_ret,
-                        high=px["high"],
-                        low=px["low"],
-                        volume=px["volume"],
+                        PriceFrames(
+                            trading_index=close.index,
+                            universe=tuple(close.columns),
+                            peers={},
+                            close_total=close,
+                            open=px["open"],
+                            sector_ret=sector_ret,
+                            high=px["high"],
+                            low=px["low"],
+                            volume=px["volume"],
+                            level_factor=close * 0 + 1,
+                            close_pit=close,
+                        ),
                         seasonal_horizons=[30, 60, 90],
-                        level_factor=close * 0 + 1,
-                        close_pit=close,
                         tape_support=close.notna(),
                     ).items()
                 )
@@ -927,16 +933,21 @@ def compute() -> dict:
     )
     out["panel.price"] = frame_digest(
         build_feature_panel(
-            close,
-            px["open"],
-            sector_ret,
-            "rank",
-            px["high"],
-            px["low"],
-            px["volume"],
-            [30, 60, 90],
-            level_factor=close * 0 + 1,
-            close_pit=close,
+            PriceFrames(
+                trading_index=close.index,
+                universe=tuple(close.columns),
+                peers={},
+                close_total=close,
+                open=px["open"],
+                sector_ret=sector_ret,
+                high=px["high"],
+                low=px["low"],
+                volume=px["volume"],
+                level_factor=close * 0 + 1,
+                close_pit=close,
+            ),
+            method="rank",
+            seasonal_horizons=[30, 60, 90],
             tape_support=close.notna(),
         )
     )
@@ -945,14 +956,24 @@ def compute() -> dict:
     # The consequence is explicit -- the `pension_*` features are absent from this digest and
     # are guarded by `test_insider_pension_features.py` instead.
     legacy_prices = legacy_capital_frames(fund, close)
-    fp = build_fundamental_feature_panel(fund, peers, idx, prices=legacy_prices, earnings_history=earn, share_basis=known_no_share_events())
+    fp = build_fundamental_feature_panel(
+        FundamentalHistory(raw_history=fund, share_basis=known_no_share_events()),
+        replace(cast(PriceFrames, legacy_prices), trading_index=idx, peers=peers),
+        supplement=FundamentalSupplement(earnings_history=earn),
+    )
     out["panel.fundamental"] = frame_digest(fp)
     sp = build_sector_feature_panel(fund, peers, idx)
     out["panel.sector"] = frame_digest(sp)
-    out["panel.earnings"] = frame_digest(build_earnings_feature_panel(earn, peers, idx, stock_close=close))
+    out["panel.earnings"] = frame_digest(
+        build_earnings_feature_panel(earn, PriceFrames(trading_index=idx, universe=(), peers=peers, close_split=close))
+    )
     out["panel.employee"] = frame_digest(build_employee_feature_panel(fund, employee_rows(fund), peers, idx, part_time_weight=0.5))
     out["panel.dividend"] = frame_digest(
-        build_dividend_feature_panel(div, peers, idx, prices=legacy_prices, fundamentals_history=fund, share_basis=known_no_share_events())
+        build_dividend_feature_panel(
+            div,
+            replace(cast(PriceFrames, legacy_prices), trading_index=idx, peers=peers),
+            FundamentalHistory(raw_history=fund, share_basis=known_no_share_events()),
+        )
     )
     out["panel.governance"] = frame_digest(governance_panel(tickers, fund, peers, idx, close))
     # Exercise the same visible dated-quantity preparation as the owning step.

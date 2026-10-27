@@ -13,7 +13,6 @@ import pytest
 from src.constants.constants_price import MACRO_MARKET_SERIES
 from src.context import Context, get_config_context
 from src.data_aggregate.transformers import step_cube_prices as price_step
-from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 from src.data_aggregate.utils.institutionals.inputs import QuantityBasis
 from src.data_aggregate.utils.institutionals.insider_positions import position_units
 from src.data_aggregate.utils.price.inputs import PRICE_COLS
@@ -22,7 +21,9 @@ from src.data_store.schema import Tables
 from src.utils.predecessor_series import load_level_actions as level_actions
 from src.utils.price.adjustments import ShareBasis, load_bugfix, resolve_share_events
 from src.utils.price.basis import load_share_basis
+from src.utils.price.capitalization import project_security_shares
 from src.utils.price.levels import apply_level_bugfix, as_traded_close, level_factor
+from tests.data_aggregate.fundamental_pit_reference import legacy_fundamentals_to_daily
 
 
 @pytest.fixture(scope="module")
@@ -66,7 +67,7 @@ def test_original_ordinary_share_controls(source_case: tuple, ticker: str, stamp
     print(f"SANITY: {ticker} {stamp} vendor count restores {actual:,.3f} original ordinary shares (within one share).")
 
 
-def test_real_ivz_level_quote_and_pit_carry(source_case: tuple) -> None:
+def test_real_ivz_level_quote_and_legacy_ordinary_carry(source_case: tuple) -> None:
     context, shares, basis, _ = source_case
     raw = context.store.load(
         Tables.prices, columns=["ticker", "date", "close_split"], where={"ticker": "IVZ"}, since="2006-01-01", until="2007-12-31"
@@ -83,11 +84,11 @@ def test_real_ivz_level_quote_and_pit_carry(source_case: tuple) -> None:
     filing = shares.loc[shares["ticker"].eq("IVZ") & pd.to_datetime(shares["date"]).eq(pd.Timestamp("2007-11-09"))]
     history = filing[["ticker", "date"]].rename(columns={"date": "as_of"}).assign(sharesOutstandingPit=836680132.0)
     index = pd.DatetimeIndex(["2007-11-09", "2007-12-03", "2007-12-04", "2007-12-05"])
-    daily = fundamentals_to_daily(history, "sharesOutstandingPit", index, share_basis=basis)
+    daily = legacy_fundamentals_to_daily(history, "sharesOutstandingPit", index, share_basis=basis)
     assert daily["IVZ"].tolist() == [836680132.0, 836680132.0, 418340066.0, 418340066.0]
     assert pd.Timestamp(history["as_of"].iloc[0]) == pd.Timestamp("2007-11-09")
     assert history["sharesOutstandingPit"].iloc[0] == 836680132.0
-    stale = fundamentals_to_daily(history, "sharesOutstandingPit", index, max_age_days=20, share_basis=basis)
+    stale = legacy_fundamentals_to_daily(history, "sharesOutstandingPit", index, max_age_days=20, share_basis=basis)
     assert stale.loc[pd.Timestamp("2007-12-04"), "IVZ"] != stale.loc[pd.Timestamp("2007-12-04"), "IVZ"]
     print("SANITY: IVZ level S=1 preserves ADS quotes; carried ordinary count converts December4 without refreshing its filing age.")
 
@@ -180,7 +181,8 @@ def test_carried_ownership_rebases_both_quantity_legs() -> None:
     )
     filing = book[["ticker", "as_of"]].assign(sharesOutstandingPit=100.0)
     owned = _daily_owned_shares(book, index, basis)
-    outstanding = fundamentals_to_daily(filing, "sharesOutstandingPit", index, share_basis=basis)
+    observations = filing.assign(capitalization_factor=1.0, capitalization_available=filing["as_of"])
+    outstanding, _ = project_security_shares(observations, basis, index, pd.Index(["TEST"]))
     assert pd.isna(owned.iloc[0, 0])
     assert owned["TEST"].iloc[1:].tolist() == [10.0, 5.0, 5.0]
     assert (owned / outstanding)["TEST"].iloc[1:].tolist() == [0.1, 0.1, 0.1]

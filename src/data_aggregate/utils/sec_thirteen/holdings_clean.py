@@ -4,15 +4,13 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
-from typing import Any, cast
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
-from src.constants.constants import F13_SETTLE_TRADING_DAYS, SEC_13F_FILING_LAG_DAYS
-from src.data_aggregate.utils.common.availability import availability_date
+from src.constants.constants import SEC_13F_FILING_LAG_DAYS
 from src.data_aggregate.utils.common.data_utils import to_day
-from src.data_aggregate.utils.common.typing import frame_column
 from src.data_aggregate.utils.sec_thirteen.value_basis import log_register, repair_value_basis
 
 logger = logging.getLogger(__name__)
@@ -31,37 +29,6 @@ def clean_filing_dates(df_filings: pd.DataFrame, df_holdings: pd.DataFrame) -> t
         for column in _DATES:
             df[column] = pd.to_datetime(df[column])
     return df_filings, df_holdings
-
-
-def stamp_legacy_publication(
-    holdings: pd.DataFrame, trading_index: pd.DatetimeIndex, *, settle_trading_days: int = F13_SETTLE_TRADING_DAYS
-) -> pd.DataFrame:
-    """Retain legacy late revisions; remove periods not yet public on the calendar."""
-    h = holdings.copy()
-    h["first_pub"] = availability_date(frame_column(h, "period"), trading_index, settle_trading_days=settle_trading_days)
-    if "filing_date" not in h.columns:
-        logger.info(
-            "13F availability: no `filing_date` column -> `as_of` is the period's "
-            "availability date for every row; the cutoff CANNOT be applied on this read, so "
-            "a late filing is inside the first publication",
-        )
-        h["as_of"] = h["first_pub"]
-    else:
-        filing_date = frame_column(h, "filing_date")
-        first_pub = frame_column(h, "first_pub")
-        later = filing_date.notna() & first_pub.notna() & (filing_date > first_pub)
-        h["as_of"] = first_pub.where(~later, filing_date)
-    unavailable = frame_column(h, "as_of").isna()
-    if unavailable.any():
-        # An unpublishable predecessor must not enter the next quarter's differences.
-        logger.info(
-            "13F availability: %s row(s) across period(s) %s have no availability date inside the trading calendar (it ends %s) -> not emitted",
-            f"{int(unavailable.sum()):,}",
-            sorted({str(pd.Timestamp(p).date()) for p in cast(pd.Series, h.loc[unavailable, "period"]).unique()})[:6],
-            str(pd.Timestamp(cast(Any, pd.DatetimeIndex(trading_index).max())).date()) if len(trading_index) else "(empty)",
-        )
-        h = cast(pd.DataFrame, h.loc[~unavailable])
-    return cast(pd.DataFrame, h)
 
 
 def attach_tickers(holdings: pd.DataFrame, cusip_map: pd.DataFrame | None, universe: Sequence[str] | None = None) -> pd.DataFrame:
@@ -91,24 +58,6 @@ def clean_public_holdings(
     if "value_basis_excluded" in df_holdings:
         df_holdings.loc[df_holdings.value_basis_excluded, ["shares", "value_usd"]] = np.nan
     return df_holdings
-
-
-def _repair_legacy_values(df_holdings: pd.DataFrame, valuation_close: pd.DataFrame | None, value_basis: Mapping[str, Any] | None) -> pd.DataFrame:
-    """Preserve legacy whole-row exclusions and its as-filed repair summary."""
-    value_before = float(df_holdings["value_usd"].sum())
-    df_holdings, df_register = repair_value_basis(df_holdings, valuation_close, **dict(value_basis or {}))
-    log_register(df_register, value_before)
-    if "value_basis_excluded" in df_holdings:
-        df_holdings = df_holdings.loc[~df_holdings["value_basis_excluded"]]
-    return df_holdings
-
-
-def clean_legacy_institutional_holdings(
-    df_holdings: pd.DataFrame, valuation_close: pd.DataFrame | None, value_basis: Mapping[str, float] | None
-) -> pd.DataFrame:
-    """Prepare the existing broad no-manifest contract without certifying vintages."""
-    df_holdings = clean_holdings(df_holdings, key=("ticker", "cik", "period"), filing_band=(45, 60))
-    return _repair_legacy_values(df_holdings, valuation_close, value_basis)
 
 
 def _apply_filing_band(h: pd.DataFrame, band: tuple[int, int]) -> pd.DataFrame:

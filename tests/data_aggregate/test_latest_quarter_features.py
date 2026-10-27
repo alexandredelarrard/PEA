@@ -13,6 +13,8 @@ import pandas as pd
 
 from src.data_aggregate.utils.common.pit import fiscal_apply_to_daily
 from src.data_aggregate.utils.fundamentals.fundamental_features import _derived_fields
+from src.data_aggregate.utils.fundamentals.inputs import FundamentalHistory
+from src.data_aggregate.utils.price.frames import PriceFrames
 from tests.data_aggregate.fundamental_pit_reference import known_no_share_events
 
 
@@ -68,7 +70,11 @@ def test_latest_quarter_margin_inflection_exact():
     fund, ends, rev_q, ni_q = _synth_quarterly()
     idx = pd.bdate_range("2019-01-01", "2021-06-01")
 
-    fields = _derived_fields(fund, idx, yoy_periods=4, prices=None, share_basis=known_no_share_events())
+    fields = _derived_fields(
+        FundamentalHistory(raw_history=fund, share_basis=known_no_share_events()),
+        PriceFrames(trading_index=idx, universe=(), peers={}),
+        yoy_periods=4,
+    )
     assert "q_margin_vs_ttm" in fields
     assert "q_rev_growth" not in fields
 

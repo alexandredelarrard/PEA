@@ -33,6 +33,7 @@ from src.data_aggregate.utils.fundamentals.fundamental_features import (
     load_notes_num_scoped,
     load_pension_facts_scoped,
 )
+from src.data_aggregate.utils.fundamentals.inputs import FundamentalFeatureSettings, FundamentalHistory, FundamentalSupplement
 from src.data_aggregate.utils.fundamentals.sector_features import build_sector_feature_panel
 from src.data_aggregate.utils.price.frames import (
     PriceFrames,
@@ -42,7 +43,7 @@ from src.data_aggregate.utils.price.frames import (
 from src.data_aggregate.utils.price.inputs import load_fundamental_share_observations
 from src.data_store.schema import Table as SchemaTable
 from src.data_store.schema import Tables
-from src.utils.price.adjustments import ShareBasis, load_bugfix
+from src.utils.price.adjustments import load_bugfix
 from src.utils.price.basis import load_price_identity, load_quantity_basis
 from src.utils.step import Step
 
@@ -64,7 +65,7 @@ class StepCubeFundamentals(Step):
         self._bugfix = load_bugfix(context.config_dir)
 
     def run(self, full: bool = False) -> None:
-        # load inputs
+        # Plan the public calculation and refresh clocks.
         trading_calendar = load_trading_calendar(self._store)
         window = plan_window(
             self._store,
@@ -84,78 +85,76 @@ class StepCubeFundamentals(Step):
                 raise RuntimeError("incremental fundamentals window requires an inclusive refresh boundary")
             output_since = window.refresh_from
             source_since = pd.Timestamp(dividend_frames.trading_index.max()).normalize() - pd.DateOffset(years=_INCREMENTAL_SOURCE_YEARS)
-            history_fields = self._load_history_fields(
-                dividend_frames.universe,
-                since=window.since,
-                until=output_since,
-            )
+            history_fields = self._load_history_fields(dividend_frames.universe, since=window.since, until=output_since)
             frames = self._slice_frames(dividend_frames, output_since)
 
-        fundamentals = self._load_fundamentals(frames.universe, since=source_since)
-        earnings = self._load_optional(
-            Tables.earnings_surprises,
-            "earnings-surprise history",
-            "fetch_earnings_surprises",
-            frames.universe,
-            since=source_since,
+        # Load each source once and preserve raw financial cash units.
+        df_fundamentals = self._load_fundamentals(frames.universe, since=source_since)
+        df_earnings = self._load_optional(
+            Tables.earnings_surprises, "earnings-surprise history", "fetch_earnings_surprises", frames.universe, since=source_since
         )
-        employees = self._load_employees(frames.universe, since=source_since)
-
+        df_employees = self._load_employees(frames.universe, since=source_since)
         identity = load_price_identity(self._context, list(frames.universe))
         basis = load_quantity_basis(self._context, frames.universe, self._bugfix, identity)
-        share_history = load_fundamental_share_observations(self._context, fundamentals, basis, identity[0])
+        df_share_history = load_fundamental_share_observations(self._context, df_fundamentals, basis, identity[0])
+        histories = FundamentalHistory(df_fundamentals, df_share_history, basis)
+        df_pension = load_pension_facts_scoped(self._context, tickers=frames.universe, since=source_since)
+        df_notes = load_notes_num_scoped(self._context, tickers=frames.universe, since=source_since)
+        df_dividends = self._load_optional(Tables.dividends, "dividend history", "fetch_prices_and_actions -> StepExtractPrices", frames.universe)
 
+        # Compute families on the same saved price and source-unit basis.
         merger = PanelMerger()
         merger.add(frames.skeleton().assign(_grid=1.0), "universe-grid")
         merger.add(
-            self._fundamental_panel(
-                frames,
-                share_history,
-                earnings,
-                basis,
-                history_fields,
-                output_since,
-                source_since,
+            build_fundamental_feature_panel(
+                histories, frames, self._feature_settings(), FundamentalSupplement(df_earnings, df_pension, df_notes), history_fields, output_since
             ),
             "peer-relative fundamental",
             "No fundamental features built (missing fundamentals).",
         )
+        del df_pension, df_notes
         merger.add(
-            self._sector_kpi_panel(frames, fundamentals, history_fields, output_since),
+            self._sector_kpi_panel(frames, df_fundamentals, history_fields, output_since),
             "sector-KPI",
             "No sector KPI features built (missing fundamentals).",
         )
-
-        # earnings
         merger.add(
-            self._earnings_panel(frames, earnings, history_fields, output_since, basis),
+            build_earnings_feature_panel(df_earnings, frames, history_fields, output_since, basis),
             "earnings-expectation",
             "No earnings-expectation features built.",
         )
-        merger.add(self._disclosure_panel(dividend_frames, earnings, output_since), "disclosure response")
-
-        # employees
+        merger.add(self._disclosure_panel(dividend_frames, df_earnings, output_since), "disclosure response")
         merger.add(
-            self._employee_panel(frames, fundamentals, employees, history_fields, output_since),
+            self._employee_panel(frames, df_fundamentals, df_employees, history_fields, output_since),
             "workforce",
             "No workforce features built.",
         )
-
-        # dividends
         merger.add(
-            self._dividend_panel(dividend_frames, fundamentals, basis, history_fields, output_since, share_history),
+            build_dividend_feature_panel(df_dividends, dividend_frames, histories, history_fields, output_since),
             "dividend",
             "No dividend features built (missing dividend history).",
         )
 
+        # Restrict the completed panel before publishing the inclusive refresh.
         panel = merger.to_long().drop(columns=["_grid"], errors="ignore")
-        panel = self._restrict_to_skeleton(panel, frames.skeleton())
-        panel = panel.reindex(columns=["date", "ticker", *FEATURE_COLUMNS])
-        del frames, fundamentals, earnings, employees, basis
-
+        panel = self._restrict_to_skeleton(panel, frames.skeleton()).reindex(columns=["date", "ticker", *FEATURE_COLUMNS])
+        del frames, dividend_frames, histories, df_fundamentals, df_share_history, df_earnings, df_employees, df_dividends, basis
         n = write_part(self._store, Tables.cube_part_fundamentals, panel, window, drop_empty=True)
         if n == COLUMNS_CHANGED:
             return self.run(full=True)
+
+    def _feature_settings(self) -> FundamentalFeatureSettings:
+        """Read the existing financial history and intrinsic-model controls."""
+        hist = self._cfg.get("hist", {})
+        features = self._cfg.get("fundamentals_features", {})
+        return FundamentalFeatureSettings(
+            history_window=int(hist.get("window", 1260)),
+            history_min_periods=int(hist.get("min_periods", 252)),
+            earnings_lags=int(features.get("earnings_lags", 8)),
+            earnings_scale_quarters=int(features.get("earnings_scale_quarters", 8)),
+            persistence_quarters=int(features.get("persistence_quarters", 8)),
+            intrinsic_cfg=self._cfg.get("intrinsic", {}),
+        )
 
     def _warmup(self) -> int:
         override = self._cfg.get("incremental", {}).get("warmup_trading_days")
@@ -257,11 +256,9 @@ class StepCubeFundamentals(Step):
         fetcher: str,
         universe: tuple[str, ...],
         since: pd.Timestamp | None = None,
-        columns: tuple[str, ...] | None = None,
     ) -> pd.DataFrame | None:
         df = self._context.store.load(
             table,
-            columns=list(columns) if columns is not None else None,
             optional=True,
             where={"ticker": list(universe)},
             since=since,
@@ -272,15 +269,17 @@ class StepCubeFundamentals(Step):
         return df
 
     def _load_employees(self, universe: tuple[str, ...], since: pd.Timestamp | None) -> pd.DataFrame | None:
-        """`fundamentals_employees` keys, components and basis, from `_EMPLOYEE_LOOKBACK_YEARS` before `since`."""
-        return self._load_optional(
+        """Load projected employee history with its prior-year lookback."""
+        df_employees = self._store.load(
             Tables.fundamentals_employees,
-            "employee headcount",
-            "fundamentals-employees",
-            universe,
+            columns=list(EMPLOYEE_COLUMNS),
+            optional=True,
+            where={"ticker": list(universe)},
             since=None if since is None else pd.Timestamp(since) - pd.DateOffset(years=_EMPLOYEE_LOOKBACK_YEARS),
-            columns=EMPLOYEE_COLUMNS,
         )
+        if df_employees is None:
+            self._log.warning("No %s -> related features skipped (run %s).", "employee headcount", "fundamentals-employees")
+        return df_employees
 
     @staticmethod
     def _restrict_to_skeleton(
@@ -297,48 +296,6 @@ class StepCubeFundamentals(Step):
         )
 
     # ---- panels ---- #
-    def _fundamental_panel(
-        self,
-        frames: PriceFrames,
-        fundamentals: pd.DataFrame | None,
-        earnings: pd.DataFrame | None,
-        share_basis: ShareBasis,
-        history_fields: dict[str, pd.DataFrame] | None,
-        output_since: pd.Timestamp | None,
-        source_since: pd.Timestamp | None,
-    ) -> pd.DataFrame | None:
-        if fundamentals is None:
-            return None
-        hist = self._cfg.get("hist", {})
-        # tag-scoped reads: only the two pension tags of each table, never the whole
-        # multi-million-row facts tables
-        return build_fundamental_feature_panel(
-            fundamentals_history=fundamentals,
-            peer_dict=frames.peers,
-            trading_index=frames.trading_index,
-            prices=frames,
-            share_basis=share_basis,
-            intrinsic_cfg=self._cfg.get("intrinsic", {}),
-            hist_window=int(hist.get("window", 1260)),
-            hist_min_periods=int(hist.get("min_periods", 252)),
-            earnings_history=earnings,
-            pension_facts=load_pension_facts_scoped(
-                self._context,
-                tickers=frames.universe,
-                since=source_since,
-            ),
-            notes_num=load_notes_num_scoped(
-                self._context,
-                tickers=frames.universe,
-                since=source_since,
-            ),
-            history_fields=history_fields,
-            output_since=output_since,
-            feature_cfg={
-                key: int(self._cfg.get("fundamentals_features", {}).get(key, 8))
-                for key in ("earnings_lags", "earnings_scale_quarters", "persistence_quarters")
-            },
-        )
 
     def _sector_kpi_panel(
         self,
@@ -358,28 +315,6 @@ class StepCubeFundamentals(Step):
             frames.trading_index,
             history_fields=history_fields,
             output_since=output_since,
-        )
-
-    def _earnings_panel(
-        self,
-        frames: PriceFrames,
-        earnings: pd.DataFrame | None,
-        history_fields: dict[str, pd.DataFrame] | None,
-        output_since: pd.Timestamp | None,
-        share_basis: ShareBasis,
-    ) -> pd.DataFrame | None:
-        """Report-associated expectations and surprises on their observed publication clock."""
-        if earnings is None:
-            return None
-        return build_earnings_feature_panel(
-            earnings,
-            frames.peers,
-            frames.trading_index,
-            stock_close=frames.close_split,
-            level_factor=frames.level_factor,
-            history_fields=history_fields,
-            output_since=output_since,
-            share_basis=share_basis,
         )
 
     def _disclosure_panel(
@@ -419,34 +354,6 @@ class StepCubeFundamentals(Step):
             frames.peers,
             frames.trading_index,
             part_time_weight=part_time_weight(self._cfg),
-            history_fields=history_fields,
-            output_since=output_since,
-        )
-
-    def _dividend_panel(
-        self,
-        frames: PriceFrames,
-        fundamentals: pd.DataFrame | None,
-        share_basis: ShareBasis,
-        history_fields: dict[str, pd.DataFrame] | None,
-        output_since: pd.Timestamp | None,
-        comparison_history: pd.DataFrame,
-    ) -> pd.DataFrame | None:
-        """TTM yield, 1y + 5y payout growth, payer flag, payout ratio, FCF coverage, dividend
-        + buyback yield. RECONCILES the per-share ex-date history (`dividends`, primary) with
-        the SEC cash-flow `dividendsPaid` total (gap-fill + payout/coverage). Non-payers get a
-        real 0 yield so they rank correctly."""
-        dividends = self._load_optional(Tables.dividends, "dividend history", "fetch_prices_and_actions -> StepExtractPrices", frames.universe)
-        if dividends is None:
-            return None
-        return build_dividend_feature_panel(
-            dividends,
-            frames.peers,
-            frames.trading_index,
-            prices=frames,
-            share_basis=share_basis,
-            fundamentals_history=fundamentals,
-            comparison_history=comparison_history,
             history_fields=history_fields,
             output_since=output_since,
         )

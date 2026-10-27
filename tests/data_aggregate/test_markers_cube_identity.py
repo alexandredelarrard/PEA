@@ -21,7 +21,6 @@ from src.data_aggregate.utils.governance.panel import build_governance_feature_p
 from src.data_aggregate.utils.institutionals.frontiers import schedule_complete_through
 from src.data_aggregate.utils.institutionals.insider_features import InsiderCoverage
 from src.data_aggregate.utils.institutionals.ownership_features import build_ownership_feature_panel
-from src.data_aggregate.utils.sec_thirteen.institutional_features import build_institutional_feature_panel
 from src.data_extract.utils.common.edgar_driver import FilingStamp, marker_row
 from src.data_extract.utils.common.empty_markers import marker_frame
 from src.data_extract.utils.fundamentals.build_history import FACT_COLUMNS, build_ticker_history
@@ -31,6 +30,7 @@ from src.data_store.store import DataStore
 from tests.conftest import _store, make_frames
 from tests.data_aggregate.governance_pit_reference import clean_governance_inputs
 from tests.data_aggregate.insider_pit_reference import build_prepared_insider_panel as build_insider_feature_panel
+from tests.data_aggregate.sec_thirteen_legacy_reference import build_institutional_feature_panel
 
 TICKERS = ["AAPL", "DIS", "HPQ", "JPM", "PG"]
 GRID_START = pd.Timestamp("2024-01-02")

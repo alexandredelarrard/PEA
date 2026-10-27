@@ -15,6 +15,7 @@ It also owns the live-test gate: `@pytest.mark.live` tests skip unless PEA_LIVE_
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -47,10 +48,13 @@ from dotenv import load_dotenv  # noqa: E402
 load_dotenv(ROOT / ".env")
 
 # `tests/` is on sys.path (pytest prepends a conftest's directory), so the guard imports flat.
+
 import live_guard  # noqa: E402
 from sqlalchemy import create_engine  # noqa: E402
 from sqlalchemy.pool import StaticPool  # noqa: E402
 
+from src.data_aggregate.utils.fundamentals.inputs import FundamentalHistory  # noqa: E402
+from src.data_aggregate.utils.price.frames import PriceFrames  # noqa: E402
 from src.data_store.errors import TableEmptyError  # noqa: E402
 from src.data_store.schema import BY_NAME, name_of, resolve  # noqa: E402
 from src.data_store.store import DataStore  # noqa: E402
@@ -450,11 +454,8 @@ def fundamental_panel(real_frames):
         pytest.skip("fundamentals_history has no rows for the sample universe")
     peers = build_peer_dict(stock_ret, top_k=20, weighting="corr", min_obs=120)
     panel = build_fundamental_feature_panel(
-        fundamentals,
-        peers,
-        stock_close.index,
-        prices=legacy_capital_frames(fundamentals, stock_close),
-        share_basis=known_no_share_events(),
+        FundamentalHistory(raw_history=fundamentals, share_basis=known_no_share_events()),
+        replace(cast(PriceFrames, legacy_capital_frames(fundamentals, stock_close)), trading_index=stock_close.index, peers=peers),
     )
     return {"panel": panel, "fundamentals": fundamentals, "peers": peers, "stock_close": stock_close}
 

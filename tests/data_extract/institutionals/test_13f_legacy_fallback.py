@@ -23,6 +23,7 @@ from edgar import Filing
 
 from src.data_extract.utils.common.edgar_driver import FilingStamp
 from src.data_extract.utils.institutionals import fetch_13f as f13
+from src.data_extract.utils.institutionals.fetch_13f import save_13f_filing
 from src.data_extract.utils.institutionals.legacy_13f_fallback import (
     _blank_cusip_value,
     _holding_rows,
@@ -107,7 +108,7 @@ def _read(report: _Report) -> pd.DataFrame | f13.ReadFailure:
     return f13._read_filing(FilingStamp.of(filing, filing.cik))
 
 
-def test_legacy_edgar_preserves_accession_and_reconciled_book(sqlite_store: Any) -> None:
+def test_legacy_edgar_preserves_accession_and_reconciled_book(filing_store: Any) -> None:
     raw = "[X] 13F HOLDINGS REPORT\nForm 13F Information Table Value Total: $157,462\n" + _table(_HEADER, _AFLAC, _AMGEN)
     filing = _Filing(_Report(None, txt=raw))
     packet = f13.read_filing_vintage(FilingStamp.of(filing, filing.cik))
@@ -117,8 +118,8 @@ def test_legacy_edgar_preserves_accession_and_reconciled_book(sqlite_store: Any)
     # Two share rows, no caption and a ratio-1 cover: only the few-rows implied price ($43 and $120 at x1000) decides.
     assert len(holdings) == 2 and holdings.value_usd.sum() == 157462000
     assert manifest.iloc[0].value_unit_evidence.endswith(FEW_ROWS_PRICE)
-    sqlite_store.save_13f_filing(manifest, holdings)
-    assert len(sqlite_store.load(f13.Tables.sec13f_manager_holdings)) == 2
+    save_13f_filing(filing_store, manifest, holdings)
+    assert len(filing_store.load(f13.Tables.sec13f_manager_holdings)) == 2
     amendment = _Filing(_Report(None, txt=raw), form="13F-HR/A", accession_number="missing-type")
     failed = f13.read_filing_vintage(FilingStamp.of(amendment, amendment.cik))
     assert isinstance(failed, f13.ReadFailure) and "amendment type" in failed.reason
@@ -580,7 +581,7 @@ def test_legacy_separate_cover_and_zero_quantity_reach_p1(monkeypatch: pytest.Mo
 
 
 @pytest.mark.parametrize("missing", ["count", "value", "both"])
-def test_intact_legacy_missing_summary_is_truthful_and_replayable(sqlite_store: Any, missing: str) -> None:
+def test_intact_legacy_missing_summary_is_truthful_and_replayable(filing_store: Any, missing: str) -> None:
     raw = "Form 13F Information Table Value Total: $145,462\n" + _table(_HEADER, _AFLAC)
     if missing in {"count", "both"}:
         raw = raw.replace("Form 13F Information Table Entry Total: 1", "")
@@ -595,9 +596,9 @@ def test_intact_legacy_missing_summary_is_truthful_and_replayable(sqlite_store: 
     assert rows.iloc[0].shares == 3362515 and rows.iloc[0].raw_value_usd == 145462
     for table in (f13.Tables.sec13f_hr, f13.Tables.sec13f_manager_holdings):
         positions = rows.assign(ticker="AFL") if table == f13.Tables.sec13f_hr else rows
-        assert sqlite_store.save_13f_filing(manifest, positions, table=table) == 1
-        assert sqlite_store.save_13f_filing(manifest, positions, table=table) == 0
-        marker = sqlite_store.load(table, where={"cusip": "_empty"}, markers=True)
+        assert save_13f_filing(filing_store, manifest, positions, table=table) == 1
+        assert save_13f_filing(filing_store, manifest, positions, table=table) == 0
+        marker = filing_store.load(table, where={"cusip": "_empty"}, markers=True)
         assert pd.isna(marker.iloc[0].declared_row_count) == (missing in {"count", "both"})
     print(f"SANITY: intact source with missing {missing} reaches both existing tables without invented declarations; replay is idempotent.")
 
@@ -754,7 +755,7 @@ def test_subtotal_independent_rounding_keeps_exact_share_proof() -> None:
     print("SANITY: independently rounded VALUE subtotals require exact quantity and independent cover count; source values stay unchanged.")
 
 
-def test_missing_declarations_require_source_accounting_at_writer(sqlite_store: Any) -> None:
+def test_missing_declarations_require_source_accounting_at_writer(filing_store: Any) -> None:
     raw = _table(_HEADER, _AFLAC).replace("Form 13F Information Table Entry Total: 1", "")
     filing = _Filing(_Report(None, txt=raw))
     manifest, rows = f13.text_filing_vintage(raw, FilingStamp.of(filing, filing.cik))
@@ -762,27 +763,27 @@ def test_missing_declarations_require_source_accounting_at_writer(sqlite_store: 
     for table in (f13.Tables.sec13f_hr, f13.Tables.sec13f_manager_holdings):
         positions = rows.assign(ticker="AFL") if table == f13.Tables.sec13f_hr else rows
         with pytest.raises(ValueError, match="does not reconcile"):
-            sqlite_store.save_13f_filing(unaccounted, positions, table=table)
-        assert not sqlite_store.exists(table)
+            save_13f_filing(filing_store, unaccounted, positions, table=table)
+        assert filing_store.row_count(table) == 0
     print("SANITY: nullable cover fields alone cannot waive source validation or create completion markers.")
 
 
-def test_missing_declarations_replay_null_types_and_preserve_conflicts(sqlite_store: Any) -> None:
+def test_missing_declarations_replay_null_types_and_preserve_conflicts(filing_store: Any) -> None:
     raw = _table(_HEADER, _AFLAC).replace("Form 13F Information Table Entry Total: 1", "")
     filing = _Filing(_Report(None, txt=raw))
     manifest, rows = f13.text_filing_vintage(raw, FilingStamp.of(filing, filing.cik))
     for table in (f13.Tables.sec13f_hr, f13.Tables.sec13f_manager_holdings):
         positions = rows.assign(ticker="AFL") if table == f13.Tables.sec13f_hr else rows
-        assert sqlite_store.save_13f_filing(manifest, positions, table=table) == 1
+        assert save_13f_filing(filing_store, manifest, positions, table=table) == 1
         for missing in (None, float("nan"), pd.NA):
             replay = manifest.assign(declared_row_count=missing, declared_value_total=missing)
-            assert sqlite_store.save_13f_filing(replay, positions, table=table) == 0
+            assert save_13f_filing(filing_store, replay, positions, table=table) == 0
         with pytest.raises(ValueError, match="conflict"):
-            sqlite_store.save_13f_filing(manifest.assign(declared_row_count=1), positions, table=table)
+            save_13f_filing(filing_store, manifest.assign(declared_row_count=1), positions, table=table)
     print("SANITY: SQL null, NaN and pandas NA replay identically; adding an observed declaration conflicts with immutable source metadata.")
 
 
-def test_private_identifier_and_inferred_scope_reach_public_books(sqlite_store: Any) -> None:
+def test_private_identifier_and_inferred_scope_reach_public_books(filing_store: Any) -> None:
     raw = _table(_HEADER, "NAMIC INSURANCE COMPANY INC  COM 62989*105 21 93 SH SOLE 93 0 0")
     filing = _Filing(_Report(None, txt=raw))
     manifest, rows = f13.text_filing_vintage(raw, FilingStamp.of(filing, filing.cik))
@@ -791,9 +792,9 @@ def test_private_identifier_and_inferred_scope_reach_public_books(sqlite_store: 
     calendar = pd.bdate_range("2010-03-01", "2010-06-01")
     for table in (f13.Tables.sec13f_hr, f13.Tables.sec13f_manager_holdings):
         positions = rows.assign(ticker=table.empty_marker[1]) if table == f13.Tables.sec13f_hr else rows
-        sqlite_store.save_13f_filing(manifest, positions, table=table)
-        saved = sqlite_store.load(table)
-        markers = sqlite_store.load(table, where={"cusip": table.empty_marker[1]}, markers=True)
+        save_13f_filing(filing_store, manifest, positions, table=table)
+        saved = filing_store.load(table)
+        markers = filing_store.load(table, where={"cusip": table.empty_marker[1]}, markers=True)
         book, states = public_books(markers, saved, "2010-06-01", calendar)
         assert book.iloc[0].cusip == "62989*105" and book.iloc[0].shares == 93
         assert states.zero_eligible.all() and states.comparison_eligible.all()
@@ -818,7 +819,7 @@ def test_page_labels_and_final_totals_are_not_economic_rows(label: str) -> None:
 
 
 @pytest.mark.parametrize("count", [":\n    2", ":\n\n\t2", "\n2"])
-def test_next_line_entry_count_is_preserved_in_both_destinations(count: str, sqlite_store: Any) -> None:
+def test_next_line_entry_count_is_preserved_in_both_destinations(count: str, filing_store: Any) -> None:
     raw = _table(_HEADER, _AFLAC, _AMGEN).replace("Entry Total: 2", "Entry Total" + count)
     filing = _Filing(_Report(None, txt=raw))
     manifest, rows = f13.text_filing_vintage(raw, FilingStamp.of(filing, filing.cik))
@@ -826,10 +827,10 @@ def test_next_line_entry_count_is_preserved_in_both_destinations(count: str, sql
     assert manifest.iloc[0].source_row_count == 2
     for table in (f13.Tables.sec13f_hr, f13.Tables.sec13f_manager_holdings):
         positions = rows.assign(ticker=["AFL", "AMGN"]) if table == f13.Tables.sec13f_hr else rows
-        assert sqlite_store.save_13f_filing(manifest, positions, table=table) == 2
-        marker = sqlite_store.load(table, where={"cusip": "_empty"}, markers=True)
+        assert save_13f_filing(filing_store, manifest, positions, table=table) == 2
+        marker = filing_store.load(table, where={"cusip": "_empty"}, markers=True)
         assert marker.iloc[0].declared_row_count == 2
-        assert sqlite_store.save_13f_filing(manifest, positions, table=table) == 0
+        assert save_13f_filing(filing_store, manifest, positions, table=table) == 0
     print("SANITY: a numeric count on the next line remains an observed declaration in both destinations; replay preserves all economic facts.")
 
 
@@ -900,7 +901,7 @@ def test_signer_address_is_not_an_unconsumed_holding(metadata: str) -> None:
         "before-marker-untyped-missing-cusip",
     ],
 )
-def test_unconsumed_holdings_cannot_complete_either_destination(location: str, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_unconsumed_holdings_cannot_complete_either_destination(location: str, filing_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     raw = _table(_HEADER, _AFLAC).replace("Form 13F Information Table Entry Total: 1", "")
     extra = _AMGEN
     if location.endswith("missing-cusip"):
@@ -920,10 +921,10 @@ def test_unconsumed_holdings_cannot_complete_either_destination(location: str, s
     monkeypatch.setattr(filing, "full_text_submission", lambda: raw, raising=False)
     packet = f13.read_filing_vintage(FilingStamp.of(filing, filing.cik))
     assert isinstance(packet, f13.ReadFailure) and not packet.transient
-    saver = f13._Saver(SimpleNamespace(store=sqlite_store), {"AFL", "AMGN"}, {filing.cik}, 600)
+    saver = f13._Saver(SimpleNamespace(store=filing_store), {"AFL", "AMGN"}, {filing.cik}, 600)
     saver.add(f13._Read(FilingStamp.of(filing, filing.cik), packet))
     for table in (f13.Tables.sec13f_hr, f13.Tables.sec13f_manager_holdings):
-        assert not sqlite_store.exists(table)
+        assert filing_store.row_count(table) == 0
     print(f"SANITY: economic rows {location} cannot self-certify a surviving subset or produce a completion marker in either destination.")
 
 

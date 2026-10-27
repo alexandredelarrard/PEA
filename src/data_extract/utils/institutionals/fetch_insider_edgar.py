@@ -36,7 +36,7 @@ from src.data_extract.utils.institutionals.insider_common import (
     screen_insider_rows,
 )
 from src.data_extract.utils.institutionals.insider_edgar_parser import extract_xml_strings
-from src.data_extract.utils.institutionals.insider_store import insider_source_run
+from src.data_extract.utils.institutionals.insider_store import insider_source_run, replace_insider_source
 from src.data_store.schema import Table, Tables
 from src.utils.string import pad_cik
 
@@ -131,6 +131,12 @@ def replace_zip_accessions(context: Context, since: pd.Timestamp) -> int:
     )
     if df_rows is None:
         return 0
+    notes = context.store.load(
+        Tables.insider_footnotes,
+        columns=list(Tables.insider_footnotes.retrieval_columns),
+        where={"accession_number": df_rows["accession_number"].dropna().unique().tolist()},
+        optional=True,
+    )
     quarter_of = df_rows.dropna(subset=["quarter"]).groupby("accession_number")["quarter"].first()
     df_stamp = df_rows.loc[df_rows["source"].eq("edgar") & df_rows["quarter"].isna(), INSIDER_KEY]
     df_stamp = df_stamp.assign(quarter=df_stamp["accession_number"].map(quarter_of)).dropna(subset=["quarter"])
@@ -139,12 +145,11 @@ def replace_zip_accessions(context: Context, since: pd.Timestamp) -> int:
     affected = sorted(set(mixed) | set(df_stamp["accession_number"]))
     deleted = int((df_rows["accession_number"].isin(mixed) & df_rows["source"].eq("zip")).sum())
     if affected:
-        notes = context.store.load(
-            Tables.insider_footnotes, columns=list(Tables.insider_footnotes.retrieval_columns), where={"accession_number": affected}, optional=True
-        )
+        notes = notes.loc[notes["accession_number"].isin(affected)] if notes is not None else None
         payload = df_rows.loc[df_rows["accession_number"].isin(affected) & df_rows["source"].eq("edgar")].copy()
         payload["quarter"] = payload["quarter"].fillna(payload["accession_number"].map(quarter_of))
-        context.store.replace_institutional_source(
+        replace_insider_source(
+            context.store,
             {Tables.insider_transactions: payload, Tables.insider_footnotes: notes if notes is not None else empty_footnotes()},
             {Tables.insider_transactions: {"accession_number": affected}, Tables.insider_footnotes: {"accession_number": affected}},
             expected_source={

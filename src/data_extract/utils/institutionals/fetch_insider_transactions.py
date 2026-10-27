@@ -61,7 +61,7 @@ from src.data_extract.utils.institutionals.insider_common import (
     stamp_lineage,
     top_counts,
 )
-from src.data_extract.utils.institutionals.insider_store import bind_insider_identity, save_insider_source
+from src.data_extract.utils.institutionals.insider_store import bind_insider_identity, patch_insider_source, save_insider_source
 from src.data_store.schema import Resume, Table, Tables
 from src.utils.filer_tables import FilerTable, removal_records
 from src.utils.string import pad_cik_series
@@ -366,7 +366,7 @@ def _screen_stored_rows(context: Context, universe: Sequence[str], identity: Ide
         if df_rejected.empty:  # re-adjudicated clean on the full row: leave it
             continue
         excluded.append(exclusion_rows(df_rejected))
-        deleted += context.store.patch_insider_source(pd.DataFrame(), sorted(df_rejected["accession_number"].unique()))
+        deleted += patch_insider_source(context.store, pd.DataFrame(), sorted(df_rejected["accession_number"].unique()))
     log_exclusions(logger, "stored-row sweep", excluded)
     return deleted
 
@@ -645,5 +645,5 @@ def _restamp_rows(context: Context, df_rows: pd.DataFrame, identity: Identity, *
     df_kept = df_rows[~co_registrant]
     df_changed = _changed_stamps(df_kept, stamp_lineage(df_kept, identity))
     if not dry_run and (not df_changed.empty or not df_purge.empty):
-        context.store.patch_insider_source(df_changed, sorted(df_purge["accession_number"].unique()))
+        patch_insider_source(context.store, df_changed, sorted(df_purge["accession_number"].unique()))
     return records, len(df_changed)

@@ -58,6 +58,7 @@ from src.data_extract.utils.institutionals.value_units import (
     resolve_value_units,
 )
 from src.data_store.schema import Resume, Table, Tables
+from src.data_store.store import DataStore
 from src.utils.institutional_vintages import literal_13f_cusip, reconcile_13f_source
 from src.utils.string import pad_cik, pad_cik_series
 from src.utils.superinvestor_roster import roster_cik_union
@@ -401,13 +402,6 @@ def save_hr(context: Context, hr: pd.DataFrame) -> int:
     return context.store.save(Tables.sec13f_hr, _padded(hr)) if not hr.empty else 0
 
 
-def _save_book(context: Context, book: pd.DataFrame) -> tuple[int, int]:
-    """Upsert manager-book rows with padded CIKs. Returns (rows saved, suspect-price rows)."""
-    if book.empty:
-        return 0, 0
-    return context.store.save(Tables.sec13f_manager_holdings, _padded(book[_BOOK_COLS])), _suspect_prices(book)
-
-
 def _ticker_map(context: Context, book: pd.DataFrame, walk: _WalkState) -> pd.DataFrame:
     """Reuse the full per-walk cache, including misses; failed lookups stay unknown and retryable."""
     new_cusips = set(book["cusip"].dropna()) - walk.looked_up
@@ -415,21 +409,6 @@ def _ticker_map(context: Context, book: pd.DataFrame, walk: _WalkState) -> pd.Da
         walk.cmap = build_cusip_ticker_map(context, sorted(new_cusips), cached=walk.cmap, include_misses=True)
         walk.looked_up.update(walk.cmap["cusip"])
     return walk.cmap
-
-
-## for test
-def _save_batch(context: Context, book: pd.DataFrame, universe: set[str], roster_ciks: set[str], walk: _WalkState) -> None:
-    """Upsert one batch of books: the universe slice to `sec13f_hr`, roster managers' rows to
-    `sec13f_manager_holdings`; the last filed wins per (cik, period, cusip). Counts accumulate on
-    `walk`."""
-    book = _latest_per_key(_padded(book))
-    hr = _resolve_tickers(book, _ticker_map(context, book, walk), universe)
-    if not hr.empty:
-        walk.hr_suspect += _suspect_prices(hr)
-        walk.hr_saved += save_hr(context, hr)
-    saved, suspect = _save_book(context, book[book["cik"].isin(roster_ciks)])
-    walk.book_saved += saved
-    walk.book_suspect += suspect
 
 
 def _resolve_window(
@@ -488,6 +467,106 @@ class _Read:
     result: tuple[pd.DataFrame, pd.DataFrame] | ReadFailure
 
 
+def _filing_checksum(manifest: pd.DataFrame, holdings: pd.DataFrame, table: Table) -> str:
+    """Validate source reconciliation and hash the immutable economic payload."""
+    if table not in (Tables.sec13f_hr, Tables.sec13f_manager_holdings):
+        raise ValueError("13F filings belong in the two existing holdings tables")
+    if len(manifest) != 1 or manifest.iloc[0]["parse_status"] != "complete":
+        raise ValueError("13F save requires one complete filing manifest")
+    row: Any = manifest.iloc[0]
+    empty_marker = cast(tuple[str, str], table.empty_marker)
+    if int(row["parsed_row_count"]) != len(holdings) or int(row["source_row_count"]) < len(holdings):
+        raise ValueError("13F source row count does not reconcile")
+    reconcile_13f_source(
+        int(row["source_row_count"]),
+        row["declared_row_count"],
+        float(row["source_value_total"]),
+        row["declared_value_total"],
+        source_accounted=str(row.get("value_unit_evidence", "")).startswith(SEC_13F_SOURCE_ACCOUNTED),
+    )
+    if holdings.duplicated(["cik", "accession_number", "cusip"]).any() or holdings.cusip.eq(empty_marker[1]).any():
+        raise ValueError("Duplicate or reserved CUSIP within an immutable filing")
+    for key in ("cik", "accession_number", "period", "filing_date"):
+        if key not in holdings or (
+            not holdings.empty
+            and not (
+                pd.to_datetime(holdings[key]).eq(pd.Timestamp(row[key])).all()
+                if key in {"period", "filing_date"}
+                else holdings[key].eq(row[key]).all()
+            )
+        ):
+            raise ValueError(f"13F manifest/holdings mismatch: {key}")
+    raw_columns = ["raw_value_usd", "raw_call_value", "raw_put_value", "raw_debt_value", "raw_other_value"]
+    if any(column not in holdings for column in raw_columns):
+        raise ValueError("13F immutable holdings require raw typed value legs")
+    raw_values = holdings[raw_columns].to_numpy(dtype=float)
+    if not np.isfinite(raw_values).all() or (raw_values < 0).any():
+        raise ValueError("13F raw holdings values must be finite and nonnegative")
+    if not np.isclose(float(raw_values.sum()), float(row["source_value_total"]), rtol=0.005, atol=1):
+        raise ValueError("13F holdings raw value total does not reconcile to source")
+    # Byte layout and clocks differ between ZIP and EDGAR; compare economic source content.
+    keys = (
+        "cik",
+        "accession_number",
+        "period",
+        "filing_date",
+        "amendment_type",
+        "amendment_number",
+        "report_type",
+        "restricted",
+        "source_row_count",
+        "source_value_total",
+    )
+    canonical: dict[str, Any] = {key: str(row[key]) for key in keys}
+    payload_cols = ["cusip", "shares", "call_shares", "put_shares", "debt_prn", *raw_columns, "class_evidence"]
+    payload = holdings[payload_cols].sort_values("cusip").fillna("").astype(str)
+    canonical["positions"] = [
+        dict(zip(payload_cols, values, strict=True)) for values in zip(*(payload[c].tolist() for c in payload_cols), strict=True)
+    ]
+    return hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest()
+
+
+def save_13f_filing(
+    store: DataStore,
+    manifest: pd.DataFrame,
+    holdings: pd.DataFrame,
+    *,
+    table: Table = Tables.sec13f_manager_holdings,
+) -> int:
+    """Preserve one immutable accession and its completion marker in the existing destination."""
+    checksum = _filing_checksum(manifest, holdings, table)
+    row = manifest.iloc[0]
+    empty = cast(tuple[str, str], table.empty_marker)[1]
+    if table == Tables.sec13f_hr and ("ticker" not in holdings or holdings.ticker.isna().any()):
+        raise ValueError("13F broad holdings require ticker or the unmapped sentinel")
+    with store.transaction(f"{table.name}:{row['accession_number']}") as bound:
+        df_existing = bound.load(
+            table,
+            columns=["content_checksum", "declared_row_count", "declared_value_total"],
+            where={"cik": row["cik"], "period": row["period"], "accession_number": row["accession_number"], "cusip": empty},
+            markers=True,
+            optional=True,
+        )
+
+        if df_existing is not None:
+            existing = df_existing.iloc[0]
+            declared_count = None if pd.isna(row["declared_row_count"]) else int(row["declared_row_count"])
+            declared_total = None if pd.isna(row["declared_value_total"]) else float(row["declared_value_total"])
+            actual_count = None if pd.isna(existing["declared_row_count"]) else int(existing["declared_row_count"])
+            actual_total = None if pd.isna(existing["declared_value_total"]) else float(existing["declared_value_total"])
+            if existing["content_checksum"] != checksum or actual_count != declared_count or actual_total != declared_total:
+                raise ValueError(f"13F checksum conflict for {row['accession_number']}")
+            return 0
+        marker = manifest.assign(cusip=empty, content_checksum=checksum)
+        if table == Tables.sec13f_hr:
+            marker["ticker"] = empty
+        positions = holdings.assign(parse_status="position")
+        columns = list(dict.fromkeys([*positions.columns, *marker.columns]))
+        bound.insert(table, positions.reindex(columns=columns))
+        bound.insert(table, marker.reindex(columns=columns))
+    return len(holdings)
+
+
 @dataclass
 class _Saver:
     """Save each accession atomically, in read order, `save_every` books at a time, and accumulate walk
@@ -524,10 +603,10 @@ class _Saver:
         cmap = _ticker_map(self.context, book, self.walk)
         broad = book.merge(cmap[["cusip", "ticker"]].drop_duplicates("cusip"), on="cusip", how="left")
         broad["ticker"] = broad["ticker"].fillna(Tables.sec13f_hr.empty_marker[1])
-        self.walk.hr_saved += self.context.store.save_13f_filing(manifest, broad, table=Tables.sec13f_hr)
+        self.walk.hr_saved += save_13f_filing(self.context.store, manifest, broad, table=Tables.sec13f_hr)
         self.walk.hr_suspect += _suspect_prices(book)
         if str(manifest.iloc[0].cik) in self.roster_ciks:
-            self.walk.book_saved += self.context.store.save_13f_filing(manifest, book)
+            self.walk.book_saved += save_13f_filing(self.context.store, manifest, book)
             self.walk.book_suspect += _suspect_prices(book)
 
 

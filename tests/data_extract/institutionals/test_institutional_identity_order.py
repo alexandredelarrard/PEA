@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import logging
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -58,14 +59,14 @@ def test_institutionals_consume_the_upstream_identity_in_one_resolver(monkeypatc
         order.append("regsho")
 
     def fails(*args, **kwargs):
-        assert "identity" not in kwargs, "FTD is stamped from security_master, not the symbol resolver"
+        assert kwargs["identity"] is identity, "FTD reuses the loaded resolver's source cohort"
         order.append("ftd")
 
     monkeypatch.setattr(module, "fetch_short_interest", short)
     monkeypatch.setattr(module, "fetch_fails_to_deliver", fails)
 
     config = SimpleNamespace(data_extract=SimpleNamespace(years_history=15))
-    context = SimpleNamespace(config=config, config_dir="./configs")
+    context = SimpleNamespace(config=config, config_dir="./configs", log=logging.getLogger(__name__))
     step = cast(Any, object.__new__(StepExtractInstitutionals))
     step._context = context
     step.config = config
@@ -83,7 +84,7 @@ def test_institutionals_consume_the_upstream_identity_in_one_resolver(monkeypatc
 
     print("\n=== SANITY CHECK: institutional identity consumption ===")
     print(f"  {len(order)} calls: 13F -> roster -> managers -> insider parse -> insider live -> 13D -> 13G -> 8-K -> identity -> RegSHO -> FTD")
-    print("  OK: no identity build inside the step; RegSHO uses the resolver the identity stage refreshed, FTD the security master")
+    print("  OK: no identity build inside the step; RegSHO and FTD share one resolver; FTD stamps from its security master cohort")
 
 
 def test_domain_steps_contain_no_identity_stage():

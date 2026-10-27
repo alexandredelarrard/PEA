@@ -5,6 +5,7 @@ type: module
 tags:
   - wiki
   - module
+source_commit: aa9ac35ff94b6992ac43106230f63e3d50082cab
 ---
 # Data extraction
 
@@ -18,6 +19,7 @@ tags:
 - Normalize provider identifiers, dates, filing metadata, and source-specific schemas.
 - Cache expensive bulk downloads while persisting tabular results through `context.store`.
 - Save what each run read, re-read failed SEC documents in a few in-task rounds, log the coverage and exit 0; what could not be read is listed again on the next run.
+- Own table-specific persistence rules beside each source: insider pairs in `insider_store.py`, FTD/FINRA pairs and compact inventories in their fetchers, and the immutable 13F writer/checksum beside `_Saver` in `fetch_13f.py`. These call generic DataStore operations under one transaction; they issue no SQL or runtime schema adoption.
 - Report each schema-declared table's age against its cadence, and the per-ticker fresh share of the three prediction inputs.
 - Maintain shared EDGAR, identity, registrant, lineage, retry and pacing plumbing, the local EDGAR filing index, and the work-list planners.
 - Extract employee headcount through an independent annual-filing walk where a table row (counted or status-only) marks a filing decided; the cube reads that table directly.
@@ -49,6 +51,7 @@ Scope remains source-specific: `sharadar-gap-check` defaults to all stored names
   - [sec_io.py](../../src/data_extract/utils/common/sec_io.py): the one SEC retry policy (`sec_retry`) and the shared per-process limiter for every SEC request; an exhausted retry raises `TransientReadError`.
   - [edgar_driver.py](../../src/data_extract/utils/common/edgar_driver.py): `EdgarFetch` declares the parser and execution rules for one per-ticker EDGAR document fetch (8-K, 13D, 13G, DEF 14A ECD, filing text, SEC fundamentals, EDGAR insider). Its completion table supplies `desc`, `Resume.forms` and marker stamps from [schema.py](../../src/data_store/schema.py); table `retrieval_columns` supplies the ordered output layouts, including the 13D trades and insider footnotes. Source-field mappings, parser intermediates and narrow read projections stay local. `run_edgar_fetch` walks it: refresh the index, plan the work list, read each filing as one unit, re-read failed units in `retry_rounds`, log coverage and return. `runtime_floor` raises the listing floor (the insider zip floor) and `done_where` filters the done set (the insider fetch counts only `source='edgar'` rows); `FilingStamp` reads filing CIK, filing date, guarded `period_of_report`, and document URL once per filing.
   - [empty_markers.py](../../src/data_extract/utils/common/empty_markers.py): `marker_frame` builds an empty-filing marker; `drop_markers_over_data` drops any marker whose key already holds a real row, so a marker never replaces data.
+  - [identity_store.py](../../src/data_extract/utils/common/identity_store.py): the single closed source-identity loader, atomic identity/roster writes and dependent proof invalidation. The dependency-light owner avoids a resolver/builder import cycle. Each guarded unit captures the fresh cohort at its start and compares preloaded frames before writing.
   - [identity.py](../../src/data_extract/utils/common/identity.py): `load_identity(context)` caches the resolver on that context only; repeated calls do no table reads, and `refresh=True` replaces the cached resolver after the identity build. `Identity.filing_scope(ticker)` returns the precomputed `FilingScope` (entity, roster CIK, every entity CIK, symbols, same-CIK aliases) used for registrant resolution.
   - [registrant.py](../../src/data_extract/utils/common/registrant.py): one registrant walk for index rows and `Company` listings, and the filing-header subject check that tells a 13D/13G subject from its filer.
   - [bulk_cache.py](../../src/data_extract/utils/common/bulk_cache.py): `read_zip_tables` for every SEC bulk zip, the cached-archive listing, and archive availability dates.

@@ -456,6 +456,7 @@ def _other_flow_versions(df_rows: pd.DataFrame) -> pd.DataFrame:
         return df_flows
     df_flows["version_known"] |= df_flows["accession_number"].isin(links.index)
     df_cells = df_key.loc[df_flows.index, ["accession_number", "day", *CELL_KEY]].copy()
+    df_cells["transaction_day"] = _declared_action_cells(df_key, links).reindex(df_flows.index)
     df_cells[["owner_cik", "direct_indirect"]] = df_flows[["owner_cik", "direct_indirect"]]
     df_cells["klass"] = security_class(df_flows["security_title"])
     members = (
@@ -697,6 +698,7 @@ def _copy_key(df: pd.DataFrame, pps: pd.Series) -> pd.DataFrame:
             "day": df["day"],
             "ticker": df["ticker"],
             "transaction_day": txn_day,
+            "declared_day": insider_days(df.get("transaction_date_raw", df.get("transaction_date", pd.Series(pd.NaT, index=df.index)))),
             "code": df["code"],
             "security_type": security,
             "shares": round_half_up(df["shares_n"]),
@@ -783,6 +785,7 @@ def _link_amendments(df: pd.DataFrame, df_key: pd.DataFrame, *, require_unique: 
 def _corrected_action_cells(df_rows: pd.DataFrame, unique_links: pd.Series) -> pd.Series:
     """Match date-only corrections only with unique filing, explicit row identity and complete unchanged correspondence."""
     cell_days = df_rows["transaction_day"].copy()
+    future_original = df_rows["is_original"] & cell_days.isna() & df_rows["declared_day"].gt(df_rows["day"])
     keys = ["owner", "account", "security_type", "security_title", "row_sequence", "code", "source_shares", "source_price", "source_owned"]
     known = (
         df_rows["owner"].ne("")
@@ -792,11 +795,12 @@ def _corrected_action_cells(df_rows: pd.DataFrame, unique_links: pd.Series) -> p
         & df_rows["row_sequence"].gt(0)
         & df_rows["row_sequence"].mod(1).eq(0)
         & df_rows["n_reporting_owners"].eq(1)
-        & df_rows["transaction_day"].notna()
+        & (df_rows["transaction_day"].notna() | future_original)
     )
     df_known = df_rows.loc[known].dropna(subset=keys)
     df_amended = df_known.loc[df_known["accession_number"].isin(unique_links.index)]
-    df_original = df_known.loc[df_known["is_original"], ["original", *keys, "transaction_day", "row"]]
+    df_original = df_known.loc[df_known["is_original"], ["original", *keys, "transaction_day", "row"]].copy()
+    df_original["transaction_day"] = df_original["transaction_day"].fillna(df_known["declared_day"])
     df_matches = df_amended.merge(df_original, on=["original", *keys], suffixes=("", "_original"))
     if df_matches.empty:
         return cell_days
@@ -810,6 +814,31 @@ def _corrected_action_cells(df_rows: pd.DataFrame, unique_links: pd.Series) -> p
     ).eq(df_matches["original"].map(counts))
     corrections = df_matches.loc[complete & df_matches["transaction_day"].ne(df_matches["transaction_day_original"])]
     cell_days.loc[corrections["row"].to_numpy()] = corrections["transaction_day_original"].to_numpy()
+    confirmed = df_matches.loc[complete & df_matches["row_original"].isin(df_rows.loc[future_original, "row"])]
+    cell_days.loc[confirmed["row_original"].to_numpy()] = confirmed["transaction_day_original"].to_numpy()
+    return cell_days
+
+
+def _declared_action_cells(df_key: pd.DataFrame, unique_links: pd.Series) -> pd.Series:
+    """Let a later verified amendment confirm an original's declared future day for supersession only."""
+    cell_days = df_key["transaction_day"].copy()
+    if unique_links.empty:
+        return cell_days
+    df_original = df_key.loc[
+        df_key["accession_number"].isin(unique_links.to_numpy()) & cell_days.isna() & df_key["declared_day"].gt(df_key["day"]),
+        ["accession_number", "declared_day", "code", "security_type"],
+    ].reset_index(names="row")
+    if df_original.empty:
+        return cell_days
+    df_amended = df_key.loc[df_key["accession_number"].isin(unique_links.index) & cell_days.notna()].assign(
+        original=lambda rows: rows["accession_number"].map(unique_links)
+    )
+    df_matches = df_original.merge(
+        df_amended[["original", *CELL_KEY]].drop_duplicates(),
+        left_on=["accession_number", "declared_day", "code", "security_type"],
+        right_on=["original", *CELL_KEY],
+    )
+    cell_days.loc[df_matches["row"].to_numpy()] = df_matches["declared_day"].to_numpy()
     return cell_days
 
 
@@ -832,14 +861,19 @@ def _supersede_plan(df_key: pd.DataFrame, links: pd.Series, unique_links: pd.Ser
     member = original.notna() | df_key["accession_number"].isin(set(links.to_numpy()))
     df_rows = df_key[member].assign(original=original[member].fillna(df_key.loc[member, "accession_number"]), row=df_key.index[member])
     df_rows["is_original"] = df_rows["original"].eq(df_rows["accession_number"])
-    df_rows["cell_day"] = _corrected_action_cells(df_rows, unique_links)
-    df_rows = df_rows.dropna(subset=["transaction_day"])
+    df_rows["cell_day"] = _corrected_action_cells(df_rows, unique_links).fillna(_declared_action_cells(df_key, unique_links))
+    df_rows = df_rows.dropna(subset=["cell_day"])
     if df_rows.empty:
         return pd.DataFrame(columns=columns), counts
+    cell = ["original", "cell_day", *(name for name in CELL_KEY if name != "transaction_day")]
+    unknown_original = df_rows["is_original"] & df_rows["transaction_day"].isna()
+    if unknown_original.any():
+        confirmed_cells = pd.MultiIndex.from_frame(df_rows.loc[unknown_original, cell])
+        independent = df_rows["is_original"] | df_rows["accession_number"].isin(unique_links.index)
+        df_rows = df_rows[independent | ~pd.MultiIndex.from_frame(df_rows[cell]).isin(confirmed_cells)]
     shares, price, owned = (df_rows[c].to_numpy(dtype="float64").astype("U32") for c in ("shares", "price", "owned_after"))
     df_rows["record"] = np.char.add(np.char.add(np.char.add(np.char.add(shares, "|"), price), "|"), owned)
     df_rows["record"] = df_rows["record"] + "|" + df_rows["transaction_day"].astype(str)
-    cell = ["original", "cell_day", *(name for name in CELL_KEY if name != "transaction_day")]
     reporter = [*cell, "accession_number"]
 
     df_rep = (

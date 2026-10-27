@@ -132,6 +132,151 @@ def test_unknown_non_market_flow_dates_cannot_share_an_amendment_boundary() -> N
     print("SANITY: non-P/S unknown execution dates remain independent account blockers rather than matching amendment cells.")
 
 
+def _future_versions(code: str) -> list[dict[str, Any]]:
+    return [
+        row(accession_number="future-original", filing_date="2024-03-08", transaction_date="2024-03-11", transaction_code=code),
+        row(
+            accession_number="future-amended",
+            filing_date="2024-03-12",
+            transaction_date="2024-03-11",
+            transaction_code=code,
+            document_type="4/A",
+            original_submission_date="2024-03-08",
+        ),
+    ]
+
+
+@pytest.mark.parametrize("code", ["P", "G"])
+def test_later_valid_amendment_confirms_a_declared_day_only_prospectively(code: str) -> None:
+    df_source = pd.DataFrame(_future_versions(code))
+    df_original = df_source.copy(deep=True)
+    df_clean, diagnostics = clean_transactions(df_source)
+    df_versions = (df_clean if code == "P" else diagnostics["other_flows"]).set_index("accession_number")
+    df_original_version, df_amended = df_versions.loc[["future-original"]], df_versions.loc[["future-amended"]]
+
+    assert len(df_original_version) == len(df_amended) == 1
+    assert df_original_version["transaction_day"].isna().all() and df_original_version["transaction_date_raw"].tolist() == ["2024-03-11"]
+    assert df_original_version["reference_day"].eq(pd.Timestamp("2024-03-08")).all() and df_original_version["reference_day_estimated"].all()
+    assert df_original_version["visible_until"].eq(pd.Timestamp("2024-03-12")).all()
+    assert df_amended["transaction_day"].eq(pd.Timestamp("2024-03-11")).all() and not df_amended["reference_day_estimated"].any()
+    assert df_amended["visible_from"].eq(pd.Timestamp("2024-03-12")).all()
+    if code == "P":
+        assert df_versions["anchor"].eq(pd.Timestamp("2024-03-08")).all()
+        assert diagnostics["amendment_cells_identical"] == 0
+    df_again, repeated = clean_transactions(df_versions.reset_index())
+    df_again = (df_again if code == "P" else repeated["other_flows"]).set_index("accession_number")
+    pd.testing.assert_series_equal(df_again["transaction_date_raw"], df_versions["transaction_date_raw"])
+    pd.testing.assert_frame_equal(df_source, df_original)
+    print(
+        f"SANITY: {code=}; later verified timing retires only the old public version, retaining its unknown action/raw provenance and disclosure age."
+    )
+
+
+@pytest.mark.parametrize("code", ["P", "G"])
+@pytest.mark.parametrize(
+    "case", ["missing", "ancient", "different-day-no-row-proof", "future-amendment", "invalid-submission", "ambiguous", "code", "security"]
+)
+def test_declared_day_cannot_replace_independent_amendment_proof(code: str, case: str) -> None:
+    rows = _future_versions(code)
+    if case == "missing":
+        rows[0]["transaction_date"] = None
+    elif case == "ancient":
+        rows[0]["transaction_date"] = "0001-01-01"
+    elif case == "different-day-no-row-proof":
+        rows[0]["transaction_date"] = "2024-03-10"
+        rows[0]["row_sequence"] = None
+    elif case == "future-amendment":
+        rows[1]["filing_date"] = "2024-03-10"
+    elif case == "invalid-submission":
+        rows[1]["original_submission_date"] = "0001-01-01"
+    elif case == "ambiguous":
+        rows.insert(1, rows[0] | {"accession_number": "other-original"})
+    elif case == "code":
+        rows[1]["transaction_code"] = "S" if code == "P" else "F"
+    elif case == "security":
+        rows[1]["security_type"] = "deriv"
+    df_clean, diagnostics = clean_transactions(pd.DataFrame(rows))
+    df_original = (df_clean if code == "P" else diagnostics["other_flows"]).set_index("accession_number").loc[["future-original"]]
+    assert len(df_original) == 1 and df_original["transaction_day"].isna().all() and df_original["visible_until"].isna().all()
+    print(f"SANITY: {code=} {case=}; a raw date cannot establish a filing link or replace a verified matching action cell.")
+
+
+@pytest.mark.parametrize("code", ["P", "G"])
+def test_later_confirmation_does_not_merge_earlier_unknown_versions(code: str) -> None:
+    original, confirmed = _future_versions(code)
+    pending = confirmed | {"accession_number": "future-pending", "filing_date": "2024-03-10"}
+    df_clean, diagnostics = clean_transactions(pd.DataFrame([original, pending, confirmed]))
+    df_versions = (df_clean if code == "P" else diagnostics["other_flows"]).set_index("accession_number")
+    assert df_versions.loc["future-original", "visible_until"] == pd.Timestamp("2024-03-12")
+    assert pd.isna(df_versions.loc["future-pending", "visible_until"]) and pd.isna(df_versions.loc["future-pending", "transaction_day"])
+    if code == "P":
+        assert df_versions.loc["future-pending", "anchor"] == pd.Timestamp("2024-03-10")
+    print(f"SANITY: {code=}; confirmation on March 12 cannot equate two earlier unknown action dates or retire either version on March 10.")
+
+
+@pytest.mark.parametrize("case", ["complete", "missing-row", "owner", "account", "class", "cardinality", "amount", "ambiguous", "missing", "ancient"])
+def test_explicit_row_proof_can_correct_only_a_safe_original_declaration(case: str) -> None:
+    rows = _future_versions("P")
+    rows[1]["transaction_date"] = "2024-03-04"
+    if case == "missing-row":
+        rows[0]["row_sequence"] = None
+    elif case == "owner":
+        rows[1].update(owner_cik="2", owner_ciks="2")
+    elif case == "account":
+        rows[1]["direct_indirect"] = "I"
+    elif case == "class":
+        rows[1]["security_title"] = "Class B Common Stock"
+    elif case == "cardinality":
+        rows[1]["n_reporting_owners"] = 2
+    elif case == "amount":
+        rows[1]["shares"] = 1100.0
+    elif case == "ambiguous":
+        rows.insert(1, rows[0] | {"accession_number": "other-original"})
+    elif case == "missing":
+        rows[0]["transaction_date"] = None
+    elif case == "ancient":
+        rows[0]["transaction_date"] = "0001-01-01"
+    df_clean, _ = clean_transactions(pd.DataFrame(rows))
+    df_versions = df_clean.set_index("accession_number")
+    df_original = df_versions.loc[["future-original"]]
+    assert df_original["transaction_day"].isna().all()
+    if case == "complete":
+        assert df_original["visible_until"].eq(pd.Timestamp("2024-03-12")).all()
+        assert df_versions["anchor"].eq(pd.Timestamp("2024-03-08")).all()
+        assert df_versions.loc[["future-amended"], "transaction_day"].eq(pd.Timestamp("2024-03-04")).all()
+    else:
+        assert df_original["visible_until"].isna().all()
+    print(
+        f"SANITY: {case=}; only complete independent row correspondence can prospectively correct a safe future declaration to a different valid day."
+    )
+
+
+def test_later_row_proof_cannot_retire_an_earlier_unknown_amendment() -> None:
+    original, confirmed = _future_versions("P")
+    pending = confirmed | {"accession_number": "future-pending", "filing_date": "2024-03-10"}
+    confirmed["transaction_date"] = "2024-03-04"
+    df_clean, _ = clean_transactions(pd.DataFrame([original, pending, confirmed]))
+    df_versions = df_clean.set_index("accession_number")
+    assert df_versions.loc[["future-original"], "visible_until"].eq(pd.Timestamp("2024-03-12")).all()
+    assert df_versions.loc[["future-pending"], "visible_until"].isna().all()
+    assert df_versions.loc[["future-pending"], "transaction_day"].isna().all()
+    print(
+        "SANITY: later row proof can retire the original only on March 12; an earlier unknown amendment remains an independent uncertainty barrier."
+    )
+
+
+def test_later_row_confirmation_cannot_borrow_an_earlier_ambiguous_link() -> None:
+    original, confirmed = _future_versions("P")
+    other = original | {"accession_number": "z-other-original", "owner_cik": "2", "owner_ciks": "2", "transaction_date": "2024-03-20"}
+    ambiguous = confirmed | {"accession_number": "earlier-ambiguous", "filing_date": "2024-03-11", "owner_ciks": "1,2", "n_reporting_owners": 2}
+    confirmed["transaction_date"] = "2024-03-04"
+    df_clean, _ = clean_transactions(pd.DataFrame([original, other, ambiguous, confirmed]))
+    df_versions = df_clean.set_index("accession_number")
+    assert df_versions.loc[["future-original"], "visible_until"].eq(pd.Timestamp("2024-03-12")).all()
+    assert df_versions.loc[["earlier-ambiguous"], "anchor"].eq(pd.Timestamp("2024-03-11")).all()
+    print("SANITY: proof first available March 12 cannot retroactively make an ambiguous March 11 filing retire the unknown original.")
+
+
 def test_unknown_execution_keeps_actual_panel_cap_quantity_and_accounts_unsupported() -> None:
     _, df_close, df_history = _action_cap_inputs()
     source = row(filing_date="2024-03-05", transaction_date="2024-03-20", officer_title="CEO", is_officer=1.0)

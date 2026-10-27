@@ -1654,11 +1654,35 @@ def test_action_cap_future_transaction_recovers_only_on_new_public_version() -> 
         value_usd=2e6,
     )
     panel = _build_action_cap([original, amended], close, history)
+    prefix = _build_action_cap([original], close, history)
 
     assert pd.isna(panel.loc["2024-03-08", "f_ic_insider_buy_value_mcap_60d"])
     assert pd.isna(panel.loc["2024-03-11", "f_ic_insider_buy_value_mcap_60d"])
     assert panel.loc["2024-03-12", "f_ic_insider_buy_value_mcap_60d"] == pytest.approx(0.005)
     assert panel.loc["2024-05-07", "f_ic_insider_buy_value_mcap_60d"] == 0.0
+    pd.testing.assert_series_equal(
+        panel.loc[:"2024-03-11", "f_ic_insider_buy_value_mcap_60d"], prefix.loc[:"2024-03-11", "f_ic_insider_buy_value_mcap_60d"]
+    )
     print(
         "SANITY: a later real correction can establish valid action/publication order prospectively, without resetting the first disclosure expiry."
     )
+
+
+def test_action_cap_future_declaration_recovers_on_an_explicit_row_date_correction() -> None:
+    _, close, history = _action_cap_inputs()
+    original = _txn(accession_number="future-original", filing_date="2024-03-08", transaction_date="2024-03-11", value_usd=1e6, row_sequence=1)
+    amended = original | {
+        "accession_number": "future-amended",
+        "filing_date": "2024-03-12",
+        "transaction_date": "2024-03-04",
+        "document_type": "4/A",
+        "original_submission_date": "2024-03-08",
+    }
+    panel = _build_action_cap([original, amended], close, history)
+    prefix = _build_action_cap([original], close, history)
+    feature = "f_ic_insider_buy_value_mcap_60d"
+    assert pd.isna(panel.loc["2024-03-11", feature])
+    assert panel.loc["2024-03-12", feature] == pytest.approx(0.01)
+    assert panel.loc["2024-05-07", feature] == 0.0
+    pd.testing.assert_series_equal(panel.loc[:"2024-03-11", feature], prefix.loc[:"2024-03-11", feature])
+    print("SANITY: independent full-row proof corrects the action to March 4 only on March 12, giving 1m/100m until the original May 7 expiry.")

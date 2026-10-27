@@ -146,9 +146,31 @@ def owner_name_key(value: object) -> str:
     return " ".join(sorted(token for token in tokens if token not in {"mr", "mrs", "ms", "dr", "jr", "sr", "ii", "iii", "iv"}))
 
 
+def insider_days(values: pd.Series) -> pd.Series:
+    """Reject implausible/unsafe source dates before converting pandas' retained microseconds to nanoseconds."""
+    days = pd.to_datetime(values, errors="coerce", format="mixed", utc=True).dt.tz_localize(None)
+    return days.where(days.between(pd.Timestamp("1900-01-01"), pd.Timestamp.max)).dt.normalize().dt.as_unit("ns")
+
+
+def normalize_insider_dates(df_rows: pd.DataFrame) -> None:
+    """Normalize an owned source frame; execution evidence stays separate from filing-backed quote references."""
+    for column in ("filing_date", "transaction_date", "original_submission_date"):
+        if column not in df_rows:
+            df_rows[column] = pd.Series(pd.NaT, index=df_rows.index, dtype="datetime64[ns]")
+        if column + "_raw" not in df_rows:
+            df_rows[column + "_raw"] = df_rows[column]
+        df_rows[column] = insider_days(df_rows[column])
+        if column != "filing_date":
+            df_rows[column] = df_rows[column].where(df_rows[column].le(df_rows["filing_date"]))
+    df_rows["transaction_day"] = df_rows["transaction_date"]
+    df_rows["reference_day"] = df_rows["transaction_day"].fillna(df_rows["filing_date"])
+    df_rows["reference_day_estimated"] = df_rows["transaction_day"].isna() & df_rows["reference_day"].notna()
+
+
 def _canonical_inputs(df_rows: pd.DataFrame, role_evidence: pd.DataFrame | None) -> pd.DataFrame:
     """Clean shared downstream fields and enrich blank titles from prior public identity evidence."""
     df_rows = df_rows.copy().reset_index(drop=True)
+    normalize_insider_dates(df_rows)
     df_rows["ticker"] = df_rows["ticker"].fillna("").map(normalise_ticker)
     df_rows["source_row"] = np.arange(len(df_rows))
     for column in ("officer_title", "owner_name", "owner_cik", "issuer_cik", "direct_indirect", "security_title"):
@@ -164,7 +186,6 @@ def _canonical_inputs(df_rows: pd.DataFrame, role_evidence: pd.DataFrame | None)
     df_rows["officer_title_clean"] = values.map({value: clean_officer_title(value) for value in values.dropna().unique()}).fillna("")
     df_rows["role_source"] = "filed"
     df_rows["role_as_of"] = to_day(df_rows["filing_date"])
-    df_rows["transaction_day"] = to_day(df_rows.get("transaction_date", pd.Series(pd.NaT, index=df_rows.index)))
     df_rows["direct_indirect"] = df_rows["direct_indirect"].fillna("").astype(str).str.upper().str.strip()
     for column in ("shares", "price_per_share", "value_usd", "shares_owned_after"):
         values = pd.to_numeric(df_rows.get(column, pd.Series(np.nan, index=df_rows.index)), errors="coerce")
@@ -196,6 +217,7 @@ def _fill_prior_roles(df_rows: pd.DataFrame, role_evidence: pd.DataFrame | None)
     df_prior = df_prior.drop_duplicates([*keys, "role_as_of"])
     if role_evidence is not None and not role_evidence.empty:
         df_proxy = role_evidence.copy()
+        df_proxy["role_as_of"] = insider_days(df_proxy["role_as_of"])
         for column in ("issuer_cik", "owner_cik"):
             df_proxy[column] = df_proxy[column].map(pad_cik).fillna("")
         df_proxy = df_proxy[
@@ -365,6 +387,10 @@ def clean_transactions(
 
     # Canonicalize identities, titles and amounts before selecting common-stock P/S.
     df_trades = _canonical_inputs(insider, role_evidence)
+    diag["unavailable_filing_dates"] = int(df_trades["filing_date"].isna().sum())
+    for column in ("transaction_date", "original_submission_date"):
+        diag["invalid_" + column + "s"] = int((df_trades[column + "_raw"].notna() & df_trades[column].isna()).sum())
+    diag["date_fallback_rows"] = int(df_trades["reference_day_estimated"].sum())
     df_trades, scope_counts = _scope_transactions(df_trades)
     diag.update(scope_counts)
 
@@ -444,6 +470,9 @@ def _other_flow_versions(df_rows: pd.DataFrame) -> pd.DataFrame:
     df_cells["owner_members"] = members.sort_values().groupby(level=0).agg(_joined).reindex(df_flows.index)
     df_cells["n_reporting_owners"] = pd.to_numeric(df_flows.get("n_reporting_owners", pd.Series(np.nan, index=df_flows.index)), errors="coerce")
     df_cells["original"] = df_cells["accession_number"].map(links).fillna(df_cells["accession_number"])
+    df_cells = df_cells.dropna(subset=["transaction_day"])
+    if df_cells.empty:
+        return df_flows
     keys = ["original", *CELL_KEY, "owner_cik", "direct_indirect", "klass", "owner_members", "n_reporting_owners"]
     df_boundaries = (
         df_cells.groupby([*keys, "accession_number"], dropna=False)
@@ -508,17 +537,17 @@ def _clean_trade_prices(
     diag: dict = {}
     filed_price = df_trades["price_per_share"]
 
-    # Match only supported transaction-date/class quotes in the declared share units.
+    # A filing-backed reference can estimate a price, never execution-time quantities or capital.
     ref = pd.Series(np.nan, index=df_trades.index, dtype=float)
     if as_traded_quotes is not None and not as_traded_quotes.empty:
-        quotes = _period_close(as_traded_quotes, df_trades["transaction_day"], max_price_age_days)
-        lookup = pd.MultiIndex.from_arrays([df_trades["transaction_day"], df_trades["ticker"]], names=["period", "ticker"])
+        quotes = _period_close(as_traded_quotes, df_trades["reference_day"], max_price_age_days)
+        lookup = pd.MultiIndex.from_arrays([df_trades["reference_day"], df_trades["ticker"]], names=["period", "ticker"])
         ref[:] = quotes.reindex(lookup).to_numpy()
         # An explicit non-primary class needs its own quote; the canonical ticker cannot certify it.
         ref = ref.where(security_class(df_trades["security_title"]).eq("COMMON"))
         if share_basis is not None:
-            units = share_basis.factor(df_trades["ticker"], df_trades["transaction_day"], "units")
-            declared = share_basis.declared_units(df_trades["ticker"], df_trades["transaction_day"], df_trades["security_title"])
+            units = share_basis.factor(df_trades["ticker"], df_trades["reference_day"], "units")
+            declared = share_basis.declared_units(df_trades["ticker"], df_trades["reference_day"], df_trades["security_title"])
             ref *= declared / units
 
     # Repair gross corruption and apply dated assessments in their original order.
@@ -558,6 +587,13 @@ def _clean_trade_prices(
 def _log_transaction_diagnostics(diag: dict) -> None:
     """Report cleaned value totals, excluded prices and public filing-version counts."""
     _log.info(
+        "insider dates: %s unavailable filing, %s invalid execution, %s invalid original submission; %s filing-backed references",
+        diag["unavailable_filing_dates"],
+        diag["invalid_transaction_dates"],
+        diag["invalid_original_submission_dates"],
+        diag["date_fallback_rows"],
+    )
+    _log.info(
         "insider: %s rows -> %s scoped, %s unpriced dropped, %s overpriced repaired, %s underpriced left as filed ($%.3ftn -> $%.3fbn)",
         diag["input_rows"],
         diag["scoped_rows"],
@@ -585,9 +621,9 @@ def _log_transaction_diagnostics(diag: dict) -> None:
 def _exercise_packages(t: pd.DataFrame) -> pd.Series:
     """True for an `S` row in the same accession and transaction date as an option exercise `M`
     (a mechanical exercise-and-sell, excluded from discretionary-sell features)."""
-    if "accession_number" not in t.columns or "transaction_date" not in t.columns:
+    if "accession_number" not in t.columns or "transaction_day" not in t.columns:
         return pd.Series(False, index=t.index)
-    key = pd.MultiIndex.from_arrays([t["accession_number"].astype(str), pd.to_datetime(t["transaction_date"], errors="coerce")])
+    key = pd.MultiIndex.from_arrays([t["accession_number"].astype(str), t["transaction_day"]])
     has_m = pd.Series(t["code"].eq("M").to_numpy(), index=key).groupby(level=[0, 1]).any()
     return pd.Series(has_m.reindex(key).to_numpy(), index=t.index).fillna(False) & t["code"].eq("S")
 
@@ -650,14 +686,17 @@ def _copy_key(df: pd.DataFrame, pps: pd.Series) -> pd.DataFrame:
     nan = pd.Series(np.nan, index=df.index)
     blank = pd.Series("", index=df.index)
     owned = pd.to_numeric(df["shares_owned_after"], errors="coerce") if "shares_owned_after" in df.columns else nan
-    txn_day = to_day(df["transaction_date"]) if "transaction_date" in df.columns else pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns]")
+    txn_day = df.get("transaction_day")
+    if txn_day is None:
+        txn_day = insider_days(df.get("transaction_date", pd.Series(pd.NaT, index=df.index)))
+        txn_day = txn_day.where(txn_day.le(insider_days(df["day"])))
     security = df["security_type"].astype(str).str.lower() if "security_type" in df.columns else pd.Series("nonderiv", index=df.index)
     return pd.DataFrame(
         {
             "accession_number": df["accession_number"].astype(str),
             "day": df["day"],
             "ticker": df["ticker"],
-            "transaction_day": txn_day.astype("datetime64[ns]"),
+            "transaction_day": txn_day,
             "code": df["code"],
             "security_type": security,
             "shares": round_half_up(df["shares_n"]),
@@ -713,9 +752,7 @@ def _link_amendments(df: pd.DataFrame, df_key: pd.DataFrame, *, require_unique: 
     if not amend.any():
         return none, 0
 
-    df_acc = df_key[["accession_number", "ticker"]].assign(
-        day=df_key["day"].astype("datetime64[ns]"), submitted=to_day(df["original_submission_date"]).astype("datetime64[ns]")
-    )
+    df_acc = df_key[["accession_number", "ticker"]].assign(day=df_key["day"], submitted=df["original_submission_date"])
     df_amend = df_acc[amend].drop_duplicates("accession_number")
     df_amend = df_amend[df_amend["submitted"].notna() & (df_amend["submitted"] <= df_amend["day"])]
     df_orig = df_acc[~amend].drop_duplicates("accession_number")[["accession_number", "ticker", "day"]]
@@ -726,7 +763,7 @@ def _link_amendments(df: pd.DataFrame, df_key: pd.DataFrame, *, require_unique: 
     if df_pairs.empty:
         return none, 0
 
-    df_cells = df_key[["accession_number", *CELL_KEY]].drop_duplicates()
+    df_cells = df_key[["accession_number", *CELL_KEY]].dropna(subset=["transaction_day"]).drop_duplicates()
     shared = (
         df_pairs.merge(df_cells, on="accession_number")
         .merge(df_cells.rename(columns={"accession_number": "original"}), on=["original", *CELL_KEY])
@@ -796,6 +833,9 @@ def _supersede_plan(df_key: pd.DataFrame, links: pd.Series, unique_links: pd.Ser
     df_rows = df_key[member].assign(original=original[member].fillna(df_key.loc[member, "accession_number"]), row=df_key.index[member])
     df_rows["is_original"] = df_rows["original"].eq(df_rows["accession_number"])
     df_rows["cell_day"] = _corrected_action_cells(df_rows, unique_links)
+    df_rows = df_rows.dropna(subset=["transaction_day"])
+    if df_rows.empty:
+        return pd.DataFrame(columns=columns), counts
     shares, price, owned = (df_rows[c].to_numpy(dtype="float64").astype("U32") for c in ("shares", "price", "owned_after"))
     df_rows["record"] = np.char.add(np.char.add(np.char.add(np.char.add(shares, "|"), price), "|"), owned)
     df_rows["record"] = df_rows["record"] + "|" + df_rows["transaction_day"].astype(str)

@@ -14,6 +14,8 @@ from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 from src.data_aggregate.utils.institutionals.insider_quality import (
     OTHER_OFFICER,
     clean_officer_title,
+    insider_days,
+    normalize_insider_dates,
     officer_role,
     owner_name_key,
     role_needs_evidence,
@@ -114,13 +116,14 @@ def load_insider_transactions(store: DataStore, universe: Sequence[str] | None =
     if not {"ticker", "filing_date", "security_type"}.issubset(df_rows):
         logger.warning("%s lacks required source metadata -> insider features are skipped.", table.name)
         return None
-    checked = pd.to_datetime(df_rows.get("inventory_checked_through", pd.Series(pd.NaT, index=df_rows.index)), errors="coerce")
-    fetched = pd.to_datetime(df_rows.get("fetched_at", pd.Series(pd.NaT, index=df_rows.index)), errors="coerce")
+    normalize_insider_dates(df_rows)
+    checked = insider_days(df_rows.get("inventory_checked_through", pd.Series(pd.NaT, index=df_rows.index)))
+    fetched = insider_days(df_rows.get("fetched_at", pd.Series(pd.NaT, index=df_rows.index)))
     evidence = pd.DataFrame({"ticker": df_rows["ticker"], "checked": checked, "valid": checked.notna() & fetched.notna()})
     grouped = evidence.groupby("ticker", sort=False)
     joint = grouped["valid"].all() & grouped["checked"].nunique().eq(1)
     boundaries = grouped["checked"].min().where(joint)
-    first = pd.to_datetime(df_rows["filing_date"], errors="coerce").groupby(df_rows["ticker"]).min()
+    first = df_rows["filing_date"].groupby(df_rows["ticker"]).min()
     roles = df_rows.get("lineage_role", pd.Series(index=df_rows.index, dtype=str))
     selected = roles.isin(CANONICAL_ROLES) | df_rows["security_type"].eq("_empty")
     logger.info("Loaded %s: %s rows x %s cols", table.name, len(df_rows), len(df_rows.columns))
@@ -159,7 +162,7 @@ def _role_owner_identities(df_insider: pd.DataFrame) -> pd.DataFrame:
     df_owners = df_insider[["ticker", "issuer_cik", "owner_cik", "owner_name", "filing_date"]].copy()
 
     # Canonicalize each owner before selecting its earliest public identity date.
-    df_owners["filing_date"] = pd.to_datetime(df_owners["filing_date"], errors="coerce").dt.normalize()
+    df_owners["filing_date"] = insider_days(df_owners["filing_date"])
     df_owners = df_owners.sort_values("filing_date").drop_duplicates(["ticker", "issuer_cik", "owner_cik", "owner_name"])
     df_owners["name_key"] = df_owners["owner_name"].map(owner_name_key)
     for column in ("issuer_cik", "owner_cik"):
@@ -176,7 +179,7 @@ def _match_proxy_roles(df_proxy: pd.DataFrame, df_owners: pd.DataFrame) -> pd.Da
     # Normalize explicit titles and retain the latest fiscal-year record per publication.
     df_proxy["issuer_cik"] = df_proxy["cik"].map(pad_cik).fillna("")
     df_proxy["name_key"] = df_proxy["name"].map(owner_name_key)
-    df_proxy["role_as_of"] = pd.to_datetime(df_proxy["as_of"], errors="coerce").dt.normalize()
+    df_proxy["role_as_of"] = insider_days(df_proxy["as_of"])
     df_proxy["officer_title_clean"] = df_proxy["title"].map(clean_officer_title)
     df_proxy["role"] = df_proxy["officer_title_clean"].map(officer_role)
     latest = df_proxy.groupby(["ticker", "as_of"])["fiscal_year"].transform("max")

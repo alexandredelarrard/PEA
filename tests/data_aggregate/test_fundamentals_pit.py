@@ -53,7 +53,8 @@ def test_earnings_gate_has_no_price_resolution_or_raw_source_reads(monkeypatch: 
     df_earnings = pd.DataFrame({"ticker": ["AAA"], "earnings_date": [days[0]], "eps_actual": [1.0], "eps_estimate": [0.5], "surprise_pct": [100.0]})
     df_result = build_earnings_feature_panel(df_earnings, frames, share_basis=known_no_share_events())
     assert not df_result.empty
-    assert df_result["f_days_since_earnings"].tolist() == [1.0, 2.0]
+    assert pd.isna(df_result["f_days_since_earnings"].iloc[0])
+    assert df_result["f_days_since_earnings"].iloc[1:].tolist() == [1.0, 2.0]
     print("SANITY: the public earnings builder uses saved price inputs and the supplied basis without source reads; report age begins next session.")
 
 

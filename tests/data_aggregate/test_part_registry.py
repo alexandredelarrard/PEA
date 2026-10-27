@@ -35,6 +35,7 @@ from src.data_aggregate.utils.common.parts import (
     PART_COMMANDS,
 )
 from src.data_aggregate.utils.common.price_frames import ALL_FIELDS
+from src.data_store.schema import Tables
 
 # the sub-step that owns each CLI command
 OWNER = {
@@ -74,18 +75,14 @@ def test_every_part_has_an_owning_substep_and_cli_command():
 
 
 def test_every_substep_constructs_and_binds_its_part(sqlite_store):
-    """CONSTRUCT every part-owning sub-step, which nothing else in the suite did.
+    """Construct every owner and check its registered output.
 
-    Their `__init__` resolves `part_for(Tables.cube_part_*)` and reads the universe, so a
-    registry lookup that no longer matches its key -- e.g. indexing the name-keyed
-    `PART_BY_NAME` with a `Table` object -- is a KeyError at construction that every
-    build-time test missed because they exercise `run()` helpers on pre-built objects."""
+    Text uses an explicit table; its public-run test verifies the persistence target.
+    """
     import pandas as pd
     from omegaconf import OmegaConf
 
-    from src.data_aggregate.utils.common.parts import CUBE_PARTS as REG
-
-    sqlite_store.replace("sp500_tickers", pd.DataFrame({"ticker": ["AAA", "BBB"]}))
+    sqlite_store.replace(Tables.sp500_tickers, pd.DataFrame({"ticker": ["AAA", "BBB"]}))
     config = OmegaConf.create(
         {
             # no market_ticker / other_tickers: the market and commodity/FX series are named
@@ -110,16 +107,17 @@ def test_every_substep_constructs_and_binds_its_part(sqlite_store):
         config_dir=Path(DEFAULT_CONFIG_DIR),
         paths={"DATA_STORE": Path("."), "SECTOR_PEERS_PATH": Path("peers.json")},
     )
-    owned = {cmd: [p.name for p in REG if p.command == cmd] for cmd in OWNER}
+    owned = {cmd: [p.name for p in CUBE_PARTS if p.command == cmd] for cmd in OWNER}
+    bindings: dict[str, str] = {}
     for cmd, cls in OWNER.items():
         step = cls(context=ctx, config=config)
-        assert step._part.name in owned[cmd], f"{cls.__name__} bound the wrong part"
-        assert isinstance(step._part.name, str), "CubePart.name must stay a plain str"
+        name = Tables.cube_part_text.name if cls is StepCubeText else step._part.name
+        assert name in owned[cmd], f"{cls.__name__} bound the wrong part"
+        assert isinstance(name, str), "CubePart.name must stay a plain str"
+        bindings[cmd] = name
     print("\n=== SANITY CHECK: sub-step construction ===")
-    print(
-        f"  all {len(OWNER)} sub-steps construct and bind a registered part: { {c: OWNER[c](context=ctx, config=config)._part.name for c in OWNER} }"
-    )
-    print("  CONCLUSION: the registry lookup in every __init__ resolves. Validated.")
+    print(f"  all {len(OWNER)} sub-steps construct; registered outputs: {bindings}")
+    print("  CONCLUSION: registry bindings and the explicit text output resolve. Validated.")
 
 
 def test_substep_price_fields_are_declared_and_valid():

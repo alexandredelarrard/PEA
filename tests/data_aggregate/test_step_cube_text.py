@@ -163,7 +163,10 @@ def test_public_run_prepares_each_selected_call_once(sqlite_store: DataStore, mo
     vectors = [call for call in streams.call_args_list if call.args[0] == Tables.earning_calls_embedding]
     assert len(vectors) == 1 and vectors[0].kwargs["chunksize"] == 5_000
     assert writes.call_count == 1
-    print("SANITY: public run reads paragraphs/sentiment once and streams embeddings in 5,000-row chunks before one feature save.")
+    assert writes.call_args.args[1] == Tables.cube_part_text
+    print(
+        "SANITY: public run reads paragraphs/sentiment once and streams embeddings in 5,000-row chunks before one save to the registered text part."
+    )
 
 
 def test_embedding_cursor_closes_when_feature_calculation_fails(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:

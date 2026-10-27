@@ -689,16 +689,22 @@ def test_projection_tolerates_an_absent_optional_column():
     REQUIRED one must be REPORTED rather than swallowed.
 
     `read_table` resolves each projected column via `tbl.c[name]`, which raises KeyError for
-    an absent one. The live `sec_short_interest` table has only date/ticker/short_volume/
-    total_volume, while the projection also declares `short_interest` + `avg_daily_volume` --
-    which `_short_fields` uses only `if {...}.issubset(hist.columns)`. Demanding them
-    unconditionally killed the whole institutionals step with `KeyError: 'short_interest'`.
+    an absent one. An older `sec_short_interest` table has only date/ticker/short_volume/
+    total_volume, while the projection also declares optional `short_interest`,
+    `avg_daily_volume` and `source_checked_at`. Demanding optional fields unconditionally
+    killed the whole institutionals step with `KeyError: 'short_interest'`.
     """
     live_short = ["date", "ticker", "short_volume", "total_volume"]
     cols, required_missing, optional_missing = projection_report(Tables.short_interest, live_short)
     assert cols == live_short, cols
     assert not required_missing
-    assert sorted(optional_missing) == ["avg_daily_volume", "short_interest"]
+    assert sorted(optional_missing) == ["avg_daily_volume", "short_interest", "source_checked_at"]
+
+    checked_short = [*live_short, "source_checked_at"]
+    checked_cols, checked_required_missing, checked_optional_missing = projection_report(Tables.short_interest, checked_short)
+    assert checked_cols == checked_short
+    assert not checked_required_missing
+    assert sorted(checked_optional_missing) == ["avg_daily_volume", "short_interest"]
 
     # a table with every projected column present is unchanged
     full_13f = list(Tables.sec13f_hr.read_columns)
@@ -718,6 +724,7 @@ def test_projection_tolerates_an_absent_optional_column():
     print("=== SANITY CHECK: optional projected columns degrade, required ones report ===")
     print(f"  short_interest live cols {live_short} -> projection {cols}")
     print(f"  dropped as optional: {sorted(optional_missing)}")
+    print("  source_checked_at is retained when present and tolerated when absent")
     print(f"  sec13f_hr without `value_usd` -> required_missing={req_missing}")
     print(
         "  CONCLUSION: an optional column missing from the live table is dropped from the "

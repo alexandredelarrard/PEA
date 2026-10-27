@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -14,8 +15,12 @@ from omegaconf import OmegaConf
 
 from src.constants.constants_price import MACRO_MARKET_SERIES
 from src.data_aggregate.transformers.step_cube_prices import StepCubePrices
+from src.data_aggregate.utils.price.features import pit_fields
 from src.data_aggregate.utils.price.frames import load_price_frames
+from src.data_aggregate.utils.price.inputs import PriceInputs
 from src.data_store.schema import Tables
+from src.utils.cutover_continuity import PredecessorSeries
+from src.utils.price.adjustments import ShareBasis
 
 
 def seed_prices(store: Any, directory: Path) -> SimpleNamespace:
@@ -67,7 +72,7 @@ def seed_prices(store: Any, directory: Path) -> SimpleNamespace:
                 "sharesbas": [400.0, 300.0],
                 "sharefactor": [1.0, 1.0],
                 "price": [25.0, 10.0],
-                "lastupdated": [index[0]] * 2,
+                "lastupdated": [index[6]] * 2,
             }
         ),
     )
@@ -299,7 +304,7 @@ def test_new_public_share_observation_preserves_the_earlier_prefix(sqlite_store:
     )
 
 
-def test_count_restoration_uses_the_same_current_basis_as_the_quote(sqlite_store: Any, tmp_path: Path) -> None:
+def test_count_restoration_uses_matched_vendor_vintage_not_stale_cache(sqlite_store: Any, tmp_path: Path) -> None:
     context = seed_prices(sqlite_store, tmp_path)
     df_history = sqlite_store.load(Tables.fundamentals_history)
     df_history.loc[df_history["ticker"].eq("AAA"), "sharesOutstandingPit"] = 50.0
@@ -310,6 +315,75 @@ def test_count_restoration_uses_the_same_current_basis_as_the_quote(sqlite_store
     assert df_a["shares_outstanding_pit"].iloc[5:].eq(400.0).all()
     assert df_a["mcap_pit"].eq(10_000.0).all()
     assert sqlite_store.load(Tables.fundamentals_history, where={"ticker": "AAA"})["sharesOutstandingPit"].eq(50.0).all()
+    print("SANITY: the new count restores the corroborated vendor vintage, rather than trusting a stale cachedPIT value; the source is unchanged.")
+
+
+def test_vendor_catch_up_preserves_original_counts_and_quoted_cap(sqlite_store: Any, tmp_path: Path) -> None:
+    context = seed_prices(sqlite_store, tmp_path)
+    df_history = sqlite_store.load(Tables.fundamentals_history)
+    df_vendor = sqlite_store.load(Tables.sharadar_fundamentals)
+    selected = df_history["ticker"].eq("AAA")
+    df_history.loc[selected, "sharesOutstanding"] = 100.0
+    df_history.loc[selected, "sharesOutstandingPit"] = 25.0
+    df_vendor.loc[df_vendor["ticker"].eq("AAA"), "sharesbas"] = 100.0
+    df_vendor.loc[df_vendor["ticker"].eq("AAA"), "price"] = 100.0
+    df_vendor.loc[df_vendor["ticker"].eq("AAA"), "lastupdated"] = df_history.loc[selected, "as_of"].iloc[0]
+    sqlite_store.replace(Tables.fundamentals_history, df_history)
+    sqlite_store.replace(Tables.sharadar_fundamentals, df_vendor)
+    StepCubePrices(context, context.config).run(full=True)
+    df_before = sqlite_store.load(Tables.cube_part_prices)
+    df_a = df_before.loc[df_before["ticker"].eq("AAA")].sort_values("date")
+    assert df_a["shares_outstanding_pit"].iloc[:5].eq(100.0).all()
+    assert df_a["shares_outstanding_pit"].iloc[5:].eq(400.0).all()
+    assert df_a["mcap_pit"].eq(10_000.0).all()
+    pd.testing.assert_frame_equal(sqlite_store.load(Tables.fundamentals_history), df_history, check_exact=True)
+    df_history.loc[selected, "sharesOutstanding"] = 400.0
+    df_vendor.loc[df_vendor["ticker"].eq("AAA"), "sharesbas"] = 400.0
+    df_vendor.loc[df_vendor["ticker"].eq("AAA"), "price"] = 25.0
+    df_vendor.loc[df_vendor["ticker"].eq("AAA"), "lastupdated"] = df_a["date"].iloc[6]
+    sqlite_store.replace(Tables.fundamentals_history, df_history)
+    sqlite_store.replace(Tables.sharadar_fundamentals, df_vendor)
+    StepCubePrices(context, context.config).run(full=True)
+    pd.testing.assert_frame_equal(sqlite_store.load(Tables.cube_part_prices), df_before, check_exact=True)
+    print("SANITY: a vendor catch-up changes its representation, preserving every historical quote/count/cap; the stale cache is never rewritten.")
+
+
+def test_pit_fields_refuse_an_unproven_predecessor_count_owner() -> None:
+    index = pd.bdate_range("2024-01-02", periods=3)
+    df_close = pd.DataFrame({"AAA": [10.0] * 3}, index=index)
+    df_events = pd.DataFrame(columns=["ticker", "date", "value"])
+    basis = ShareBasis(df_events, df_events, df_events, {})
+    df_history = pd.DataFrame(
+        {
+            "ticker": ["AAA"] * 2,
+            "as_of": index[:2],
+            "fiscal_end": index[:2],
+            "sharesOutstanding": [100.0, 200.0],
+            "sharesOutstandingPit": [100.0, 200.0],
+        }
+    )
+    df_vendor = df_history.rename(columns={"as_of": "date", "fiscal_end": "reportperiod", "sharesOutstanding": "sharesbas"}).assign(
+        lastupdated=index[:2], sharefactor=1.0
+    )
+    inputs = PriceInputs(
+        bars=pd.DataFrame(),
+        market=pd.Series(100.0, index=index),
+        peers={},
+        vendor=df_vendor,
+        shares=df_history,
+        actions=None,
+        splits=df_events.rename(columns={"value": "ratio"}),
+        predecessors=(),
+        unsupported_units=frozenset(),
+    )
+    expected = pit_fields(df_close, df_close * 0 + 1, basis, inputs, {}, None)
+    inputs = replace(inputs, predecessors=(PredecessorSeries("AAA", "OLD", "0000000001", None, index[1]),))
+    actual = pit_fields(df_close, df_close * 0 + 1, basis, inputs, {}, None)
+    pd.testing.assert_frame_equal(actual["close_pit"], expected["close_pit"], check_exact=True)
+    assert pd.isna(actual["shares_outstanding_pit"].iloc[0, 0])
+    assert pd.isna(actual["mcap_pit"].iloc[0, 0])
+    assert actual["shares_outstanding_pit"].iloc[1:, 0].eq(200.0).all()
+    assert actual["mcap_pit"].iloc[1:, 0].eq(2000.0).all()
     print(
-        "SANITY: the new count restores the corroborated vendor observation with currentF, rather than trusting a stale cachedPIT value; the source is unchanged."
+        "SANITY: canonical ticker/date equality cannot certify a different predecessor owner; quotes and the effective-day successor remain available."
     )

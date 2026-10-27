@@ -229,6 +229,35 @@ def _validate_quantity_events(df_events: pd.DataFrame) -> None:
         raise ValueError("Quantity events require valid keys and positive finite factors")
 
 
+def vendor_identity_support(basis: ShareBasis, tickers: pd.Series, source_dates: pd.Series) -> pd.Series:
+    """Prove absence of future nonunit restatements; cancelling products are insufficient."""
+    if not tickers.index.equals(source_dates.index):
+        raise ValueError("Vendor ticker and source date must be index-aligned")
+    _validate_quantity_events(basis.vendor)
+    source = pd.to_datetime(source_dates, errors="coerce").dt.normalize()
+    supported = source.notna() & tickers.notna() & tickers.astype("string").str.strip().ne("") & basis.actual_available
+    if basis.vendor.empty:
+        return supported
+    df_events = basis.vendor.loc[pd.to_numeric(basis.vendor["value"]).ne(1)].copy()
+    if df_events.empty:
+        return supported
+    df_events["date"] = pd.to_datetime(df_events["date"])
+    last = tickers.map(df_events.groupby("ticker")["date"].max())
+    return supported & (last.isna() | source.ge(last))
+
+
+def vendor_observation_factor(basis: ShareBasis, tickers: pd.Series, source_dates: pd.Series, vintages: pd.Series) -> pd.Series:
+    """Vendor restatements between a public observation and its evidenced representation vintage."""
+    if any(not tickers.index.equals(values.index) for values in (source_dates, vintages)):
+        raise ValueError("Vendor ticker, source date and vintage must be index-aligned")
+    _validate_quantity_events(basis.vendor)
+    source = pd.to_datetime(source_dates, errors="coerce").dt.normalize()
+    vintage = pd.to_datetime(vintages, errors="coerce").dt.normalize()
+    factor = basis.factor(tickers, source, "vendor") / basis.factor(tickers, vintage, "vendor")
+    supported = source.notna() & vintage.notna() & vintage.ge(source) & tickers.notna() & tickers.astype("string").str.strip().ne("")
+    return factor.where(supported & basis.actual_available & np.isfinite(factor) & factor.gt(0))
+
+
 def security_quantity_basis(basis: ShareBasis, index: pd.DatetimeIndex, columns: pd.Index) -> pd.DataFrame:
     """Return GÃ—U on a canonical quote grid, keeping quantity and price wedges separate."""
     df_basis = pd.DataFrame(1.0 if basis.actual_available else np.nan, index=index, columns=columns, dtype="float64")

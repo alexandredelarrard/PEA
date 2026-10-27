@@ -1534,7 +1534,9 @@ def _derived_fields(
         fund_hist, share_basis, pd.Timestamp(idx.max()), count_fields=("sharesOutstanding", "dilutedShares"), per_share_fields=("dividendsPerShare",)
     )
     # Raw observations establish age/availability only; comparisons use the converted column.
-    df_comparison["_source_shares_outstanding"] = fund_hist.get("sharesOutstanding", pd.Series(np.nan, index=fund_hist.index))
+    df_comparison["_source_shares_outstanding"] = fund_hist.get(
+        "_source_shares_outstanding", fund_hist.get("sharesOutstanding", pd.Series(np.nan, index=fund_hist.index))
+    )
     daily, prior = _fiscal_accessors(df_comparison, idx, yoy_periods)
 
     # ---- frames shared by MORE THAN ONE block (hoisted once) ---- #

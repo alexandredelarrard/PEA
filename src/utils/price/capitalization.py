@@ -7,38 +7,60 @@ import logging
 import numpy as np
 import pandas as pd
 
+from src.utils.cutover_continuity import PredecessorSeries
 from src.utils.price.adjustments import ShareBasis
-from src.utils.price.levels import rebase_security_quantities, security_quantity_basis
+from src.utils.price.levels import rebase_security_quantities, security_quantity_basis, vendor_identity_support, vendor_observation_factor
 
 logger = logging.getLogger(__name__)
 
 
-def _restore_observation_counts(df_observations: pd.DataFrame, basis: ShareBasis) -> pd.DataFrame:
-    """Restore corroborated vendor counts using the same current F as the quote.
+def canonical_source_support(tickers: pd.Series, dates: pd.Series, predecessors: tuple[PredecessorSeries, ...]) -> pd.Series:
+    """Refuse current-ticker financial evidence while a different predecessor owns the quote."""
+    if not tickers.index.equals(dates.index):
+        raise ValueError("Source ticker and owner dates must be index-aligned")
+    stamps = pd.to_datetime(dates, errors="coerce")
+    supported = tickers.notna() & stamps.notna()
+    for owner in predecessors:
+        if owner.ticker == owner.vendor_ticker:
+            continue
+        selected = tickers.eq(owner.ticker)
+        if owner.valid_from is not None:
+            selected &= stamps.ge(owner.valid_from)
+        if owner.valid_to is not None:
+            selected &= stamps.lt(owner.valid_to)
+        supported &= ~selected
+    return supported
 
-    A cached original count can survive a source restatement only when either
-    contemporaneous vendor observation corroborates it, allowing one share of rounding.
-    """
+
+def _restore_observation_counts(df_observations: pd.DataFrame, basis: ShareBasis) -> pd.DataFrame:
+    """Restore a matched raw vintage or retain a corroborated original count, allowing one share of rounding."""
     count = pd.to_numeric(df_observations["sharesOutstanding"], errors="coerce")
     original = pd.to_numeric(df_observations["sharesOutstandingPit"], errors="coerce")
-    factor = basis.factor(df_observations["ticker"], df_observations["as_of"], "vendor")
-    restored = count / factor
-    supported = np.isclose(original, restored, rtol=0, atol=1.0)
-    if "sharesbas" in df_observations:
+    identity = vendor_identity_support(basis, df_observations["ticker"], df_observations["as_of"])
+    supported = identity & np.isfinite(count) & count.gt(0) & np.isclose(original, count, rtol=0, atol=1.0)
+    if {"sharesbas", "lastupdated"}.issubset(df_observations):
         raw = pd.to_numeric(df_observations["sharesbas"], errors="coerce")
-        supported |= np.isclose(original, raw / factor, rtol=0, atol=1.0)
-        matched = np.isclose(count, raw, rtol=1e-12, atol=0) & count.gt(0)
+        observed = vendor_observation_factor(basis, df_observations["ticker"], df_observations["as_of"], df_observations["lastupdated"])
+        restored = raw / observed
+        supported |= np.isfinite(restored) & restored.gt(0) & np.isclose(original, restored, rtol=0, atol=1.0)
+        matched = np.isclose(count, raw, rtol=1e-12, atol=0) & count.gt(0) & observed.notna()
         original = original.where(~matched, restored)
         supported |= matched
-    valid = supported & np.isfinite(original) & original.gt(0)
+    valid = supported & np.isfinite(original) & original.gt(0) & df_observations["source_owner_supported"]
     if (~valid).any():
-        logger.warning("PIT share counts unsupported for %d public observations; cached count and current vendor basis disagree", int((~valid).sum()))
+        logger.warning(
+            "PIT share counts unsupported for %d public observations; original units, source vintage or owner are uncorroborated", int((~valid).sum())
+        )
     df_observations["sharesOutstandingPit"] = original.where(valid)
     return df_observations
 
 
 def capitalization_observations(
-    df_history: pd.DataFrame, df_vendor: pd.DataFrame | None, calendar: pd.DatetimeIndex, basis: ShareBasis
+    df_history: pd.DataFrame,
+    df_vendor: pd.DataFrame | None,
+    calendar: pd.DatetimeIndex,
+    basis: ShareBasis,
+    predecessors: tuple[PredecessorSeries, ...] = (),
 ) -> pd.DataFrame:
     """Attach a supported coefficient to the exact public share observation it values.
 
@@ -52,12 +74,18 @@ def capitalization_observations(
         raise ValueError("Public share observations require unique, valid ticker/as_of keys")
     df_observations["capitalization_factor"] = np.nan
     df_observations["capitalization_available"] = pd.NaT
-    required = ("ticker", "date", "reportperiod", "sharesbas", "sharefactor", "lastupdated")
+    df_observations["source_owner_supported"] = canonical_source_support(df_observations["ticker"], df_observations["as_of"], predecessors)
+    required = ("ticker", "date", "reportperiod", "sharesbas")
     if df_vendor is None or not set(required).issubset(df_vendor.columns):
         return _restore_observation_counts(df_observations, basis)
 
     # Match the producer's same-date greatest-fiscal-period collapse before joining.
-    df_raw = df_vendor[list(required)].copy()
+    optional = ("sharefactor", "lastupdated")
+    df_raw = df_vendor[[*required, *(field for field in optional if field in df_vendor)]].copy()
+    if "sharefactor" not in df_raw:
+        df_raw["sharefactor"] = np.nan
+    if "lastupdated" not in df_raw:
+        df_raw["lastupdated"] = pd.NaT
     for field in ("date", "reportperiod", "lastupdated"):
         df_raw[field] = pd.to_datetime(df_raw[field], errors="coerce")
     df_raw = df_raw.dropna(subset=["ticker", "date", "reportperiod"])
@@ -72,7 +100,7 @@ def capitalization_observations(
     coefficient = pd.to_numeric(df_observations["sharefactor"], errors="coerce")
     units = basis.factor(df_observations["ticker"], df_observations["as_of"], "units")
     matched = np.isclose(count, vendor_count, rtol=1e-12, atol=0) & count.gt(0)
-    supported = matched & np.isfinite(coefficient) & coefficient.gt(0)
+    supported = matched & np.isfinite(coefficient) & coefficient.gt(0) & df_observations["source_owner_supported"]
     # A mixed ADR/class coefficient needs a separate decomposition, never a second U.
     supported &= units.eq(1) | coefficient.eq(1)
     dated = coefficient.ne(1) | units.ne(1)

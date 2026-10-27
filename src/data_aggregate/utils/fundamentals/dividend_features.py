@@ -41,7 +41,11 @@ def _ttm_dividends(dividends_hist: pd.DataFrame, idx: pd.DatetimeIndex, universe
 
 
 def _dividend_fields(
-    dividends_hist: pd.DataFrame, prices: PriceFrames, fundamentals: pd.DataFrame | None, share_basis: ShareBasis | None = None
+    dividends_hist: pd.DataFrame,
+    prices: PriceFrames,
+    fundamentals: pd.DataFrame | None,
+    share_basis: ShareBasis | None = None,
+    comparison_history: pd.DataFrame | None = None,
 ) -> dict:
     """Keep adjusted dividend/quote pairs; use saved cap for cash-only fallback yields.
 
@@ -119,7 +123,9 @@ def _dividend_fields(
 
     # ---- shareholder yield = dividend yield + buyback yield (- share issuance) ----
     if fundamentals is not None:
-        df_comparison = comparison_share_history(fundamentals, share_basis, pd.Timestamp(idx.max()))
+        df_comparison = comparison_share_history(
+            fundamentals if comparison_history is None else comparison_history, share_basis, pd.Timestamp(idx.max())
+        )
         df_comparison_shares = fundamentals_to_daily(df_comparison, "sharesOutstanding", idx, max_age_days=_QUARTERLY_MAX_AGE_DAYS)
     else:
         df_comparison_shares = pd.DataFrame(index=idx)
@@ -140,6 +146,7 @@ def build_dividend_feature_panel(
     history_fields: dict[str, pd.DataFrame] | None = None,
     output_since: pd.Timestamp | None = None,
     share_basis: ShareBasis | None = None,
+    comparison_history: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Long-format dividend panel using the approved raw/self-history view contract.
     Empty if no dividend history is available."""
@@ -157,7 +164,7 @@ def build_dividend_feature_panel(
         close_split=prices.close_split.reindex(trading_index),
         mcap_pit=None if prices.mcap_pit is None else prices.mcap_pit.reindex(trading_index),
     )
-    fields = _dividend_fields(dividends_history, prices, fundamentals_history, share_basis)
+    fields = _dividend_fields(dividends_history, prices, fundamentals_history, share_basis, comparison_history)
     semantics = {name: mode for name, mode in DIVIDEND_TRANSFORM_SEMANTICS.items() if name in fields}
     return build_fundamental_views(
         fields,

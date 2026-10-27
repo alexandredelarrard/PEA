@@ -39,10 +39,11 @@ from src.data_aggregate.utils.price.frames import (
     load_price_frames,
     load_trading_calendar,
 )
+from src.data_aggregate.utils.price.inputs import load_fundamental_share_observations
 from src.data_store.schema import Table as SchemaTable
 from src.data_store.schema import Tables
 from src.utils.price.adjustments import ShareBasis, load_bugfix
-from src.utils.price.basis import load_quantity_basis
+from src.utils.price.basis import load_price_identity, load_quantity_basis
 from src.utils.step import Step
 
 _INCREMENTAL_SOURCE_YEARS = 6
@@ -100,14 +101,16 @@ class StepCubeFundamentals(Step):
         )
         employees = self._load_employees(frames.universe, since=source_since)
 
-        basis = load_quantity_basis(self._context, frames.universe, self._bugfix)
+        identity = load_price_identity(self._context, list(frames.universe))
+        basis = load_quantity_basis(self._context, frames.universe, self._bugfix, identity)
+        share_history = load_fundamental_share_observations(self._context, fundamentals, basis, identity[0])
 
         merger = PanelMerger()
         merger.add(frames.skeleton().assign(_grid=1.0), "universe-grid")
         merger.add(
             self._fundamental_panel(
                 frames,
-                fundamentals,
+                share_history,
                 earnings,
                 basis,
                 history_fields,
@@ -140,7 +143,7 @@ class StepCubeFundamentals(Step):
 
         # dividends
         merger.add(
-            self._dividend_panel(dividend_frames, fundamentals, basis, history_fields, output_since),
+            self._dividend_panel(dividend_frames, fundamentals, basis, history_fields, output_since, share_history),
             "dividend",
             "No dividend features built (missing dividend history).",
         )
@@ -220,7 +223,7 @@ class StepCubeFundamentals(Step):
         )
         return fields
 
-    def _load_fundamentals(self, universe: tuple[str, ...], since: pd.Timestamp | None = None) -> pd.DataFrame | None:
+    def _load_fundamentals(self, universe: tuple[str, ...], since: pd.Timestamp | None = None) -> pd.DataFrame:
         """`fundamentals_history` with GICS attached, loaded ONCE for five builders.
 
         The GICS join happens HERE, after the load, and returns a new frame rather than
@@ -427,6 +430,7 @@ class StepCubeFundamentals(Step):
         share_basis: ShareBasis,
         history_fields: dict[str, pd.DataFrame] | None,
         output_since: pd.Timestamp | None,
+        comparison_history: pd.DataFrame,
     ) -> pd.DataFrame | None:
         """TTM yield, 1y + 5y payout growth, payer flag, payout ratio, FCF coverage, dividend
         + buyback yield. RECONCILES the per-share ex-date history (`dividends`, primary) with
@@ -442,6 +446,7 @@ class StepCubeFundamentals(Step):
             prices=frames,
             share_basis=share_basis,
             fundamentals_history=fundamentals,
+            comparison_history=comparison_history,
             history_fields=history_fields,
             output_since=output_since,
         )

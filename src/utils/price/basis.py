@@ -34,11 +34,16 @@ def load_price_identity(context: Context, tickers: list[str]) -> tuple[tuple[Pre
     return with_overrides(derived, declared), df_security
 
 
-def load_quantity_basis(context: Context, tickers: Sequence[str], bugfix: dict) -> ShareBasis:
+def load_quantity_basis(
+    context: Context,
+    tickers: Sequence[str],
+    bugfix: dict,
+    identity: tuple[tuple[PredecessorSeries, ...], pd.DataFrame | None] | None = None,
+) -> ShareBasis:
     """Load sparse quantity events and identity once, without price anchors or repairs."""
     names = sorted(set(tickers))
     store = context.store
-    series, df_security = load_price_identity(context, names)
+    series, df_security = load_price_identity(context, names) if identity is None else identity
     df_splits = store.load(Tables.prices_splits, columns=["ticker", "date", "ratio"], where={"ticker": names}, optional=True)
     df_actions = store.load(
         Tables.sharadar_actions,

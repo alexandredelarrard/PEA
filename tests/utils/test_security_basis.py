@@ -11,7 +11,7 @@ from src.context import get_config_context
 from src.data_store.schema import Tables
 from src.utils.price.adjustments import ShareBasis
 from src.utils.price.capitalization import capitalization_observations, project_security_shares
-from src.utils.price.levels import rebase_security_prices, rebase_security_quantities, security_quantity_basis
+from src.utils.price.levels import rebase_security_prices, rebase_security_quantities, security_quantity_basis, vendor_observation_factor
 
 
 def _basis(ratio: float, before: float, after: float) -> ShareBasis:
@@ -190,7 +190,7 @@ def test_unmatched_vendor_vintages_require_corroborated_original_counts() -> Non
             "reportperiod": df_history["fiscal_end"],
             "sharesbas": [400.0, 400.0],
             "sharefactor": [1.0, 1.0],
-            "lastupdated": df_history["as_of"],
+            "lastupdated": pd.to_datetime(["2024-01-08"] * 2),
         }
     )
     observations = capitalization_observations(df_history, df_raw, pd.bdate_range("2024-01-01", "2024-01-12"), basis)
@@ -211,6 +211,107 @@ def test_identity_vendor_event_needs_no_yahoo_price_factor() -> None:
     df_close = pd.DataFrame({"AAA": [50.0, 50.0]}, index=pd.DatetimeIndex(["2024-01-04", "2024-01-05"]))
     assert verified_price_factor_support(df_close, basis).all().all()
     print("SANITY: a no-op vendor event does not turn a known quote into missing data.")
+
+
+def test_vendor_observation_factor_requires_an_evidenced_vintage() -> None:
+    basis = _basis(4, 1, 1)
+    names = pd.Series(["AAA"] * 4)
+    dates = pd.Series(pd.to_datetime(["2024-01-04"] * 4))
+    vintages = pd.Series(pd.to_datetime(["2024-01-04", "2024-01-05", None, "2024-01-03"]))
+    observed = vendor_observation_factor(basis, names, dates, vintages)
+    assert observed.iloc[:2].tolist() == [1.0, 7.0]
+    assert observed.iloc[2:].isna().all()
+    with pytest.raises(ValueError, match="index-aligned"):
+        vendor_observation_factor(basis, names, dates, vintages.rename(index={0: 9}))
+    malformed = ShareBasis(basis.actual, basis.vendor.assign(value=-1.0), basis.price, {})
+    with pytest.raises(ValueError, match="positive finite"):
+        vendor_observation_factor(malformed, names, dates, vintages)
+    print(
+        "SANITY: vendor F7 enters only from its effective-day representation; missing/reversed vintages and malformed factors never become evidence."
+    )
+
+
+def test_cancelled_future_events_do_not_certify_an_unmatched_cached_count() -> None:
+    df_events = pd.DataFrame({"ticker": ["AAA"] * 2, "date": pd.to_datetime(["2024-01-03", "2024-01-10"]), "value": [2.0, 0.5]})
+    basis = ShareBasis(df_events, df_events, df_events, {})
+    df_history = pd.DataFrame(
+        {
+            "ticker": ["AAA"],
+            "as_of": pd.to_datetime(["2024-01-02"]),
+            "fiscal_end": pd.to_datetime(["2023-09-30"]),
+            "sharesOutstanding": [200.0],
+            "sharesOutstandingPit": [200.0],
+        }
+    )
+    df_raw = pd.DataFrame(
+        {
+            "ticker": ["AAA"],
+            "date": df_history["as_of"],
+            "reportperiod": df_history["fiscal_end"],
+            "sharesbas": [100.0],
+            "sharefactor": [1.0],
+            "lastupdated": pd.to_datetime(["2024-01-05"]),
+        }
+    )
+    observations = capitalization_observations(df_history, df_raw, pd.bdate_range("2024-01-01", "2024-01-12"), basis)
+    assert observations["sharesOutstandingPit"].isna().all()
+    assert observations["capitalization_factor"].isna().all()
+    print("SANITY: cancelling future2× and0.5× events do not prove the representation of an unmatched cached count.")
+
+
+def test_count_vintage_remains_supported_without_capitalization_coefficient() -> None:
+    df_events = pd.DataFrame({"ticker": ["AAA"], "date": pd.to_datetime(["2024-01-05"]), "value": [4.0]})
+    basis = ShareBasis(df_events, df_events, df_events, {})
+    df_history = pd.DataFrame(
+        {
+            "ticker": ["AAA"],
+            "as_of": pd.to_datetime(["2024-01-02"]),
+            "fiscal_end": pd.to_datetime(["2023-09-30"]),
+            "sharesOutstanding": [400.0],
+            "sharesOutstandingPit": [100.0],
+        }
+    )
+    df_raw = pd.DataFrame(
+        {
+            "ticker": ["AAA"],
+            "date": df_history["as_of"],
+            "reportperiod": df_history["fiscal_end"],
+            "sharesbas": [400.0],
+            "lastupdated": pd.to_datetime(["2024-01-08"]),
+        }
+    )
+    observations = capitalization_observations(df_history, df_raw, pd.bdate_range("2024-01-01", "2024-01-12"), basis)
+    assert observations["sharesOutstandingPit"].iloc[0] == 100.0
+    assert observations["capitalization_factor"].isna().all()
+    print("SANITY: missing issuer-cap coefficient keeps supported count restoration and unknown capitalization independent.")
+
+
+@pytest.mark.parametrize("sentinel", [0.0, -0.5])
+def test_nonpositive_counts_cannot_corroborate_a_positive_cache(sentinel: float) -> None:
+    df_events = pd.DataFrame(columns=["ticker", "date", "value"])
+    basis = ShareBasis(df_events, df_events, df_events, {})
+    df_history = pd.DataFrame(
+        {
+            "ticker": ["AAA"],
+            "as_of": pd.to_datetime(["2024-01-02"]),
+            "fiscal_end": pd.to_datetime(["2023-09-30"]),
+            "sharesOutstanding": [sentinel],
+            "sharesOutstandingPit": [0.5],
+        }
+    )
+    df_raw = pd.DataFrame(
+        {
+            "ticker": ["AAA"],
+            "date": df_history["as_of"],
+            "reportperiod": df_history["fiscal_end"],
+            "sharesbas": [sentinel],
+            "sharefactor": [1.0],
+            "lastupdated": df_history["as_of"],
+        }
+    )
+    observations = capitalization_observations(df_history, df_raw, pd.bdate_range("2024-01-01", "2024-01-12"), basis)
+    assert observations["sharesOutstandingPit"].isna().all()
+    print("SANITY: one-share rounding never lets a zero/negative source sentinel establish a positive outstanding count.")
 
 
 @pytest.mark.parametrize("period", ["invalid", None])

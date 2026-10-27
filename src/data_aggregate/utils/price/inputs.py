@@ -12,6 +12,7 @@ from src.constants.constants_price import MACRO_MARKET_SERIES
 from src.context import Context
 from src.data_aggregate.utils.common.peers_io import load_peers
 from src.data_aggregate.utils.price.frames import PriceFrames
+from src.data_aggregate.utils.price.observations import fundamental_share_observations
 from src.data_store.schema import Tables
 from src.utils.cutover_continuity import PredecessorSeries, predecessor_actions
 from src.utils.macro import load_macro_series
@@ -21,6 +22,28 @@ from src.utils.string import yahoo_symbol
 
 logger = logging.getLogger(__name__)
 PRICE_COLS = ["date", "open", "high", "low", "close_split", "close_total", "volume", "ticker"]
+
+
+def load_fundamental_share_observations(
+    context: Context, history: pd.DataFrame, basis: ShareBasis, predecessors: tuple[PredecessorSeries, ...]
+) -> pd.DataFrame:
+    """Read one scoped raw representation projection for an ephemeral financial unit view."""
+    wanted = ["ticker", "date", "reportperiod", "calendardate", "lastupdated", "sharesbas", "shareswa", "shareswadil", "dps"]
+    available = set(context.store.columns(Tables.sharadar_fundamentals))
+    missing = pd.Series(pd.NaT, index=history.index, dtype="datetime64[ns]")
+    dates = pd.to_datetime(history.get("as_of", missing), errors="coerce")
+    fiscal = pd.to_datetime(history.get("fiscal_end", missing), errors="coerce")
+    raw = None
+    if dates.notna().any() and fiscal.notna().any():
+        raw = context.store.load(
+            Tables.sharadar_fundamentals,
+            columns=[field for field in wanted if field in available] or wanted,
+            where={"ticker": sorted(set(history["ticker"].astype(str))), "dimension": "ARQ"},
+            since=fiscal.min() - pd.DateOffset(years=1),
+            until=dates.max(),
+            optional=True,
+        )
+    return fundamental_share_observations(history, raw, basis, predecessors)
 
 
 def load_quantity_inputs(

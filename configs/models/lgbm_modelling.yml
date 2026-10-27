@@ -101,7 +101,6 @@ lgbm:
   - f_intrinsic_yield
   - f_eps_surprise_4q_avg
   - f_ocf_yield
-  - f_y_earnings_growth #-> 2 regimes again
   - f_intangibles_to_equity #-> to review because 2 different regimes
   - f_sbc_intensity #-> 2 regimes ? cut 0.04
   - f_earnings_sue_lag3

@@ -325,7 +325,7 @@ def test_active_model_configs_use_only_surviving_fundamental_views() -> None:
     _assert_unique("lgbm.columns", lgbm["columns"])
     _assert_unique("linear.columns", linear["columns"])
     _assert_unique("random_forest.columns", forest["columns"])
-    for horizon, columns in forest["columns_by_horizon"].items():
+    for horizon, columns in (forest.get("columns_by_horizon") or {}).items():
         _assert_unique(f"random_forest.columns_by_horizon.{horizon}", columns)
 
     print("\n=== SANITY CHECK: model-config compatibility ===")

@@ -34,6 +34,8 @@ class BookSummaries:
     def __init__(self) -> None:
         self._cache: dict[PublicBook, BookSummary] = {}
         self._held_cache: dict[PublicBook, pd.Index] = {}
+        self._pairs: dict[tuple[PublicBook, PublicBook], pd.DataFrame] = {}
+        self._active_pairs: set[tuple[PublicBook, PublicBook]] = set()
 
     def get(self, book: PublicBook) -> BookSummary:
         if book not in self._cache:
@@ -56,13 +58,41 @@ class BookSummaries:
             self._held_cache[book] = held.index[held & grouped.held_known.all()]
         return self._held_cache[book]
 
+    def pair(self, current: PublicBook, prior: PublicBook) -> pd.DataFrame:
+        """Reuse immutable endpoint facts and give price/split attachment its own frame."""
+        key = (current, prior)
+        self._active_pairs.add(key)
+        if key not in self._pairs:
+            self._pairs[key] = _join_positions(self.get(current), self.get(prior))
+        return self._pairs[key].copy()
+
+    def prune_pairs(self) -> None:
+        """After both lags, retain only comparisons selected at this public event."""
+        self._pairs = {key: value for key, value in self._pairs.items() if key in self._active_pairs}
+        self._active_pairs.clear()
+
 
 @dataclass(frozen=True)
 class PairSample:
     df_positions: pd.DataFrame
+    df_tickers: pd.DataFrame
     managers: frozenset[str]
-    period: pd.Timestamp | None
-    prior_period: pd.Timestamp | None
+
+
+@dataclass(frozen=True)
+class LevelSample:
+    df_held: pd.DataFrame
+    df_top: pd.DataFrame
+    df_weights: pd.DataFrame
+    df_values: pd.DataFrame
+    df_durations: pd.DataFrame
+    totals: pd.Series
+
+
+@dataclass(frozen=True)
+class WholeBookSample:
+    df_tickers: pd.DataFrame
+    df_books: pd.DataFrame
 
 
 def _holding_evidence(df_positions: pd.DataFrame) -> pd.DataFrame:
@@ -128,43 +158,50 @@ def _holding_duration(book: PublicBook, snapshot: PublicBookSnapshot, summaries:
     return duration
 
 
-def level_metrics(
-    snapshot: PublicBookSnapshot, cohort: frozenset[str], universe: tuple[str, ...], summaries: BookSummaries
-) -> tuple[dict[str, pd.Series], dict[str, int]]:
-    """Use each manager's latest fresh complete book for descriptive levels."""
-    books = [book for cik, book in snapshot.level_books.items() if cik in cohort and _supported_book(book)]
-    names = ("holders", "conviction_weight", "max_conviction", "top10_holders", "quarters_held", "pooled_weight")
-    result = {name: pd.Series(np.nan, index=universe, dtype="float64") for name in names}
-    if not books:
-        return result, {"observed": 0, "valued": 0}
-
-    # Structural zeros are allowed only because each included book is complete.
-    held_rows, top_rows, weight_rows, value_rows, durations, totals = [], [], [], [], [], []
-    for book in books:
+def prepare_level_sample(snapshot: PublicBookSnapshot, universe: tuple[str, ...], summaries: BookSummaries) -> LevelSample:
+    """Prepare manager contributions and archive-sensitive tenure once per event."""
+    held_rows, top_rows, weight_rows, value_rows, durations, totals = {}, {}, {}, {}, {}, {}
+    for cik, book in snapshot.level_books.items():
+        if not _supported_book(book):
+            continue
         summary = summaries.get(book)
         df_tickers = summary.df_tickers.reindex(universe)
         absent = ~df_tickers.index.isin(summary.df_tickers.index)
-        held_rows.append(df_tickers.held.astype(float).where(df_tickers.held_known.fillna(False)).mask(absent, 0.0))
-        durations.append(_holding_duration(book, snapshot, summaries, universe).reindex(universe))
+        held_rows[cik] = df_tickers.held.astype(float).where(df_tickers.held_known.fillna(False)).mask(absent, 0.0)
+        durations[cik] = _holding_duration(book, snapshot, summaries, universe).reindex(universe)
         if np.isfinite(summary.total_value):
-            top_rows.append(df_tickers.top10.astype(float).mask(absent, 0.0))
+            top_rows[cik] = df_tickers.top10.astype(float).mask(absent, 0.0)
         if np.isfinite(summary.total_value) and summary.total_value > 0:
             values = df_tickers.value_usd.mask(absent, 0.0)
-            value_rows.append(values)
-            weight_rows.append(values / summary.total_value)
-            totals.append(summary.total_value)
+            value_rows[cik] = values
+            weight_rows[cik] = values / summary.total_value
+            totals[cik] = summary.total_value
+    frames = [
+        pd.DataFrame.from_dict(values, orient="index").reindex(columns=universe)
+        for values in (held_rows, top_rows, weight_rows, value_rows, durations)
+    ]
+    return LevelSample(frames[0], frames[1], frames[2], frames[3], frames[4], pd.Series(totals, dtype="float64"))
 
-    df_held = pd.DataFrame(held_rows)
+
+def level_metrics(sample: LevelSample, cohort: frozenset[str], universe: tuple[str, ...]) -> tuple[dict[str, pd.Series], dict[str, int]]:
+    """Reduce the same prepared manager rows under each fixed cohort mask."""
+    names = ("holders", "conviction_weight", "max_conviction", "top10_holders", "quarters_held", "pooled_weight")
+    result = {name: pd.Series(np.nan, index=universe, dtype="float64") for name in names}
+    df_held = sample.df_held.loc[sample.df_held.index.isin(cohort)]
+    totals = sample.totals.loc[sample.totals.index.isin(cohort)]
+    if df_held.empty:
+        return result, {"observed": 0, "valued": 0}
     result["holders"] = df_held.sum(min_count=1)
-    result["quarters_held"] = pd.DataFrame(durations).median()
-    if top_rows:
-        result["top10_holders"] = pd.DataFrame(top_rows).sum(min_count=1)
-    if weight_rows:
-        df_weights = pd.DataFrame(weight_rows)
+    result["quarters_held"] = sample.df_durations.loc[df_held.index].median()
+    df_top = sample.df_top.loc[sample.df_top.index.isin(cohort)]
+    if not df_top.empty:
+        result["top10_holders"] = df_top.sum(min_count=1)
+    if not totals.empty:
+        df_weights = sample.df_weights.loc[totals.index]
         result["conviction_weight"] = df_weights.mean()
         result["max_conviction"] = df_weights.where(df_weights.gt(0)).max()
-        result["pooled_weight"] = pd.DataFrame(value_rows).sum(min_count=1) / sum(totals)
-    return result, {"observed": len(books), "valued": len(totals)}
+        result["pooled_weight"] = sample.df_values.loc[totals.index].sum(min_count=1) / sum(totals)
+    return result, {"observed": len(df_held), "valued": len(totals)}
 
 
 def _join_positions(current: BookSummary, prior: BookSummary) -> pd.DataFrame:
@@ -213,7 +250,7 @@ def _attach_reference_prices(df_pair: pd.DataFrame, market: BehaviorMarket, prio
 def prepare_pair_sample(snapshot: PublicBookSnapshot, lag: int, summaries: BookSummaries, market: BehaviorMarket) -> PairSample:
     """Prepare genuine exact-quarter pairs once for both cohort reductions."""
     if snapshot.common_period is None:
-        return PairSample(pd.DataFrame(), frozenset(), None, None)
+        return PairSample(pd.DataFrame(), pd.DataFrame(), frozenset())
     period = snapshot.common_period
     prior_period = (period.to_period("Q") - lag).end_time.normalize()
     parts, managers = [], set()
@@ -221,14 +258,17 @@ def prepare_pair_sample(snapshot: PublicBookSnapshot, lag: int, summaries: BookS
         prior = snapshot.archive.get((cik, prior_period))
         if current.period != period or not _supported_book(current) or not _supported_book(prior):
             continue
-        df_pair = _join_positions(summaries.get(current), summaries.get(prior))
+        df_pair = summaries.pair(current, prior)
         parts.append(df_pair.assign(cik=cik))
         managers.add(cik)
     if not parts:
-        return PairSample(pd.DataFrame(), frozenset(), period, prior_period)
+        return PairSample(pd.DataFrame(), pd.DataFrame(), frozenset())
     df_positions = pd.concat(parts, ignore_index=True)
     df_positions = _attach_reference_prices(df_positions, market, prior_period, period)
-    return PairSample(df_positions, frozenset(managers), period, prior_period)
+    grouped = df_positions.groupby(["cik", "ticker"], sort=False)
+    df_tickers = grouped[["current", "prior"]].sum(min_count=1)
+    df_tickers["known"] = grouped.known.all()
+    return PairSample(df_positions, df_tickers, frozenset(managers))
 
 
 def quantity_metrics(sample: PairSample, cohort: frozenset[str], universe: tuple[str, ...]) -> dict[str, pd.Series]:
@@ -237,10 +277,7 @@ def quantity_metrics(sample: PairSample, cohort: frozenset[str], universe: tuple
     count = len(sample.managers & cohort)
     if not count:
         return result
-    df_positions = sample.df_positions.loc[sample.df_positions.cik.isin(cohort)]
-    grouped = df_positions.groupby(["cik", "ticker"], sort=False)
-    df_tickers = grouped[["current", "prior"]].sum(min_count=1)
-    df_tickers["known"] = grouped.known.all()
+    df_tickers = sample.df_tickers.loc[sample.df_tickers.index.get_level_values("cik").isin(cohort)]
     unknown = (~df_tickers.known).groupby(level="ticker").sum().reindex(universe, fill_value=0)
     df_known = df_tickers.loc[df_tickers.known]
 
@@ -259,29 +296,40 @@ def quantity_metrics(sample: PairSample, cohort: frozenset[str], universe: tuple
     return result
 
 
-def whole_book_metrics(sample: PairSample, cohort: frozenset[str], universe: tuple[str, ...]) -> tuple[dict[str, pd.Series], int]:
-    """Remove endpoint price moves with one common fixed-price whole-book union."""
-    result = {name: pd.Series(np.nan, index=universe, dtype="float64") for name in ("relative_position_chg", "pooled_weight_chg")}
-    if not sample.managers & cohort:
-        return result, 0
-    df_positions = sample.df_positions.loc[sample.df_positions.cik.isin(cohort)].copy()
+def prepare_whole_book_sample(sample: PairSample) -> WholeBookSample:
+    """Prepare whole-manager eligibility and fixed-price amounts before cohort masks."""
+    if sample.df_positions.empty:
+        return WholeBookSample(pd.DataFrame(), pd.DataFrame())
+    df_positions = sample.df_positions.copy()
     priced = np.isfinite(df_positions.price) & df_positions.price.gt(0)
     supported = df_positions.known & priced
     eligible = supported.groupby(df_positions.cik).all()
     df_positions = df_positions.loc[df_positions.cik.isin(eligible.index[eligible])]
     if df_positions.empty:
-        return result, int(eligible.sum())
+        return WholeBookSample(pd.DataFrame(), pd.DataFrame())
 
     # A missing union position excludes its manager rather than shrinking the book.
     df_positions["prior_value"] = df_positions.prior * df_positions.price
     df_positions["current_value"] = df_positions.current * df_positions.price
     df_books = df_positions.groupby("cik")[["prior_value", "current_value"]].sum()
-    prior_total, current_total = df_books.prior_value.sum(), df_books.current_value.sum()
     df_tickers = df_positions.groupby(["cik", "ticker"])[["prior", "current", "prior_value", "current_value"]].sum()
     growth = df_books.current_value / df_books.prior_value.where(df_books.prior_value.gt(0)) - 1
-    relative = df_tickers.current / df_tickers.prior.where(df_tickers.prior.gt(0)) - 1 - df_tickers.index.get_level_values("cik").map(growth)
-    result["relative_position_chg"] = relative.groupby(level="ticker").mean().reindex(universe)
+    df_tickers["relative"] = (
+        df_tickers.current / df_tickers.prior.where(df_tickers.prior.gt(0)) - 1 - df_tickers.index.get_level_values("cik").map(growth)
+    )
+    return WholeBookSample(df_tickers, df_books)
+
+
+def whole_book_metrics(sample: WholeBookSample, cohort: frozenset[str], universe: tuple[str, ...]) -> tuple[dict[str, pd.Series], int]:
+    """Remove endpoint price moves with one common fixed-price whole-book union."""
+    result = {name: pd.Series(np.nan, index=universe, dtype="float64") for name in ("relative_position_chg", "pooled_weight_chg")}
+    df_books = sample.df_books.loc[sample.df_books.index.isin(cohort)]
+    if df_books.empty:
+        return result, 0
+    df_tickers = sample.df_tickers.loc[sample.df_tickers.index.get_level_values("cik").isin(cohort)]
+    prior_total, current_total = df_books.prior_value.sum(), df_books.current_value.sum()
+    result["relative_position_chg"] = df_tickers.relative.groupby(level="ticker").mean().reindex(universe)
     if prior_total > 0 and current_total > 0:
         pooled = df_tickers.groupby(level="ticker")[["prior_value", "current_value"]].sum().reindex(universe, fill_value=0)
         result["pooled_weight_chg"] = pooled.current_value / current_total - pooled.prior_value / prior_total
-    return result, int(eligible.sum())
+    return result, len(df_books)

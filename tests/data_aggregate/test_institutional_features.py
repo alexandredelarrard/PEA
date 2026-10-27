@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any, cast
+from unittest.mock import Mock
 
 import numpy as np
 import pandas as pd
@@ -1173,3 +1174,29 @@ def test_all_fallback_exclusions_return_an_empty_panel() -> None:
     panel = _panel(make_frames(pd.bdate_range("2023-09-01", "2023-12-01"), {}, universe=["NOQUOTE"]), holdings)
     assert panel.empty and list(panel.columns) == ["date", "ticker"]
     print("SANITY: excluding every unsupported holding returns the normal empty panel before date-availability arithmetic.")
+
+
+def test_active_reductions_preserve_unknowns_and_reuse_ticker_split_pairs(monkeypatch: pytest.MonkeyPatch) -> None:
+    periods = pd.to_datetime(["2024-03-31", "2024-06-30"])
+    index = pd.MultiIndex.from_product([periods, ["1", "2"], ["AAA", "UNK"]], names=["period", "cik", "ticker"])
+    df_compact = pd.DataFrame({"shares": 100.0, "value_usd": 1000.0, "call_value": 0.0, "put_value": 0.0}, index=index)
+    df_compact["_cusips"] = pd.Series([frozenset({ticker}) for ticker in index.get_level_values("ticker")], index=index, dtype="object")
+    df_compact.loc[(periods[1], "1", "UNK"), "value_usd"] = np.nan
+    df_states = pd.DataFrame(
+        [
+            {"period": period, "cik": cik, "book_known": True, "zero_eligible": True, "comparison_eligible": True}
+            for period in periods
+            for cik in ("1", "2")
+        ]
+    )
+    snapshots = [(pd.Timestamp(day), df_compact, df_states) for day in ("2024-08-15", "2024-08-16")]
+    lookup = Mock(wraps=_mod.split_cum_product)
+    monkeypatch.setattr(_mod, "split_cum_product", lookup)
+    result = _mod.compute_institutional_feature_history(iter(snapshots), splits=None, min_prior_holders=1)
+    assert (lookup.call_count, [len(call.args[1]) for call in lookup.call_args_list]) == (2, [2, 2])
+    assert result.loc[result.ticker.eq("UNK"), ["inst_value", "ic_inst_concentration", "ic_inst_net_options_ratio"]].isna().all().all()
+    assert result.loc[result.ticker.eq("AAA"), "inst_value"].eq(2000.0).all()
+    assert result.ic_inst_shares_chg.eq(0.0).all()
+    print(
+        "SANITY: native totals preserve partially unknown dollars and valid quantities; two ticker split pairs are evaluated once across managers/events."
+    )

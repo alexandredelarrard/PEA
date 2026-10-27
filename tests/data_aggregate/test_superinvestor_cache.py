@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.data_aggregate.utils.sec_thirteen import superinvestor_features as feature_module
 from src.data_aggregate.utils.sec_thirteen import superinvestor_metrics as metrics
 from src.data_aggregate.utils.sec_thirteen.superinvestor_features import compute_superinvestor_feature_history
 from tests.data_aggregate.test_superinvestor_features import _book, _compute, _long_duration_books, _market, _snapshot, _value
@@ -28,6 +29,81 @@ def test_each_unchanged_vintage_is_summarized_once_across_dates_and_cohorts(monk
     assert summarizer.call_count == 2
     assert len(history.diagnostics) == 6
     print("SANITY: two resolved vintages are summarized exactly twice across three states, two masks and all lag/tenure consumers.")
+
+
+def test_unchanged_pairs_and_same_event_duration_are_prepared_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    prior = _book("1", "2024-03-31", {"AAA": (100, 1000)})
+    current = _book("1", "2024-06-30", {"AAA": (110, 1100)})
+    first = _snapshot([prior], day="2024-05-16")
+    second = _snapshot([prior, current])
+    repeated = replace(second, day=pd.Timestamp("2024-08-16"))
+    joins = Mock(wraps=metrics._join_positions)
+    durations = Mock(wraps=metrics._holding_duration)
+    monkeypatch.setattr(metrics, "_join_positions", joins)
+    monkeypatch.setattr(metrics, "_holding_duration", durations)
+    history = compute_superinvestor_feature_history(
+        (first, second, repeated), {"": frozenset({"1"}), "topk": frozenset({"1"})}, ("AAA", "BBB"), _market(split=True)
+    )
+    assert (joins.call_count, durations.call_count) == (1, 3)
+    for values in history.levels.values():
+        pd.testing.assert_frame_equal(values.iloc[1:2].reset_index(drop=True), values.iloc[2:].reset_index(drop=True))
+    print("SANITY: one immutable pair join spans unchanged events; tenure is prepared once per event for both masks without repeated split mutation.")
+
+
+@pytest.mark.parametrize("lag", [1, 4])
+@pytest.mark.parametrize("endpoint", ["current", "prior"])
+def test_pair_reuse_reselects_both_revised_endpoints(lag: int, endpoint: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    prior = _book("1", "2024-03-31" if lag == 1 else "2023-06-30", {"AAA": (100, 1000)})
+    current = _book("1", "2024-06-30", {"AAA": (110, 1100)})
+    first = _snapshot([prior, current])
+    original = current if endpoint == "current" else prior
+    df_revised = original.df_positions.copy(deep=True)
+    df_revised[["shares", "value_usd"]] *= 2
+    revised = replace(original, public_at=pd.Timestamp("2024-08-17"), df_positions=df_revised)
+    changed = _snapshot([prior, revised] if endpoint == "current" else [revised, current], day="2024-08-17")
+    joins = Mock(wraps=metrics._join_positions)
+    monkeypatch.setattr(metrics, "_join_positions", joins)
+    history = compute_superinvestor_feature_history(
+        (first, replace(first, day=pd.Timestamp("2024-08-16")), changed), {"": frozenset({"1"}), "topk": frozenset({"1"})}, ("AAA", "BBB"), _market()
+    )
+    assert joins.call_count == 2
+    metric = "shares_chg" if lag == 1 else "shares_chg_yoy"
+    for cohort in ("", "topk"):
+        assert _value(history, metric, cohort=cohort) == np.float32(1.2 if endpoint == "current" else -0.45)
+    assert original.df_positions.shares.iloc[0] == (110 if endpoint == "current" else 100)
+    print(f"SANITY: lag{lag} {endpoint} amendment creates one new pair and correct later values while the original endpoint remains unchanged.")
+
+
+def test_pair_cache_is_scoped_to_active_managers_quarters_and_expiry(monkeypatch: pytest.MonkeyPatch) -> None:
+    books = [
+        _book(cik, period, {"AAA": (shares, shares * 10)}) for cik in ("1", "2") for period, shares in (("2024-03-31", 100), ("2024-06-30", 110))
+    ]
+    first = _snapshot(books)
+    advanced = _snapshot([*books, _book("1", "2024-09-30", {"AAA": (120, 1200)})], day="2024-11-15")
+    expired = replace(advanced, day=pd.Timestamp("2024-11-18"), level_books={})
+    summaries = metrics.BookSummaries()
+    sizes: list[int] = []
+    original = summaries.prune_pairs
+
+    def record() -> None:
+        original()
+        sizes.append(len(summaries._pairs))
+
+    monkeypatch.setattr(summaries, "prune_pairs", record)
+    monkeypatch.setattr(feature_module, "BookSummaries", lambda: summaries)
+    joins = Mock(wraps=metrics._join_positions)
+    monkeypatch.setattr(metrics, "_join_positions", joins)
+    compute_superinvestor_feature_history(
+        (first, replace(first, day=pd.Timestamp("2024-08-16")), advanced, expired),
+        {"": frozenset({"1", "2"}), "topk": frozenset({"1"})},
+        ("AAA",),
+        _market(),
+    )
+    assert joins.call_count == 3 and sizes == [2, 2, 1, 0]
+    assert not summaries._pairs
+    print(
+        "SANITY: identical positions in separate CIKs have separate pairs; quarter changes retain one eligible pair and expiry releases all comparisons."
+    )
 
 
 def test_future_snapshot_does_not_mutate_previous_outputs() -> None:
@@ -126,7 +202,8 @@ def test_duration_limits_starting_tickers_before_walking_the_archive() -> None:
     summaries = metrics.BookSummaries()
     for _ in range(2):
         archive.reset_mock()
-        levels, coverage = metrics.level_metrics(snapshot, frozenset({"1"}), ("AAA",), summaries)
+        sample = metrics.prepare_level_sample(snapshot, ("AAA",), summaries)
+        levels, coverage = metrics.level_metrics(sample, frozenset({"1"}), ("AAA",))
         assert levels["quarters_held"].AAA == 2
         assert levels["conviction_weight"].AAA == pytest.approx(1 / 11)
         assert coverage == {"observed": 1, "valued": 1}

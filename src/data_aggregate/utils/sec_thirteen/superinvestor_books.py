@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from bisect import bisect_right
 from collections import defaultdict
-from collections.abc import Iterator, Mapping
+from collections.abc import Generator, Iterator, Mapping
+from contextlib import closing
 from dataclasses import dataclass
 from types import MappingProxyType
 
@@ -89,15 +90,26 @@ def _resolved_public_book(
     return PublicBook(key[0], key[1], day, first_public_at, df_positions, support)
 
 
-def _collect_public_revisions(df_manifest: pd.DataFrame, df_holdings: pd.DataFrame) -> Mapping[BookKey, tuple[PublicBook, ...]]:
-    """Resolve changed manager-quarters once and retain unchanged resolver objects."""
+def _collect_public_revisions(packets: Generator[tuple[pd.DataFrame, pd.DataFrame]]) -> Mapping[BookKey, tuple[PublicBook, ...]] | None:
+    """Resolve each complete prepared batch into the shared immutable revision archive."""
     revisions: dict[BookKey, list[PublicBook]] = defaultdict(list)
-    for day, _, changed in _iter_public_book_cache(df_manifest, df_holdings, history_quarters=None):
-        for key, resolved in changed.items():
-            previous = revisions[key]
-            origin = previous[-1].first_public_at if previous else None
-            previous.append(_resolved_public_book(key, day, resolved, origin))
-    return MappingProxyType({key: tuple(versions) for key, versions in revisions.items()})
+    filings_count = 0
+    with closing(packets):
+        for df_manifest, df_holdings in packets:
+            filings_count += len(df_manifest)
+            keys = set(df_manifest[["cik", "period"]].itertuples(index=False, name=None))
+            if keys.intersection(revisions):
+                raise ValueError("13F prepared batches must contain complete disjoint CIK-quarters")
+            for day, _, changed in _iter_public_book_cache(df_manifest, df_holdings, history_quarters=None):
+                for key, resolved in changed.items():
+                    previous = revisions[key]
+                    origin = previous[-1].first_public_at if previous else None
+                    previous.append(_resolved_public_book(key, day, resolved, origin))
+            del df_manifest, df_holdings
+    if not filings_count:
+        return None
+    ordered = sorted(revisions, key=lambda key: revisions[key][0].public_at)
+    return MappingProxyType({key: tuple(revisions[key]) for key in ordered})
 
 
 def _public_book_schedule(
@@ -131,8 +143,8 @@ def _advance_latest_books(latest: dict[str, PublicBook], published: list[PublicB
 
 
 def prepare_superinvestor_book_history(
-    df_manifest: pd.DataFrame, df_holdings: pd.DataFrame, trading_index: pd.DatetimeIndex, max_age_days: int
-) -> tuple[PublicBookSnapshot, ...]:
+    packets: Generator[tuple[pd.DataFrame, pd.DataFrame]], trading_index: pd.DatetimeIndex, max_age_days: int
+) -> tuple[PublicBookSnapshot, ...] | None:
     """Prepare causal public/expiry states from already cleaned, prepared whole books.
 
     The caller owns cleaning and prepare_book_vintages. Freshness limits current
@@ -141,10 +153,11 @@ def prepare_superinvestor_book_history(
     if max_age_days < 0:
         raise ValueError("Superinvestor book age must be nonnegative")
     grid = pd.DatetimeIndex(trading_index).normalize().unique().sort_values()
-    if df_manifest.empty or grid.empty:
+    revisions = _collect_public_revisions(packets)
+    if revisions is None:
+        return None
+    if not revisions or grid.empty:
         return ()
-
-    revisions = _collect_public_revisions(df_manifest, df_holdings)
     publications, days = _public_book_schedule(revisions, grid, max_age_days)
     snapshots: list[PublicBookSnapshot] = []
     latest: dict[str, PublicBook] = {}

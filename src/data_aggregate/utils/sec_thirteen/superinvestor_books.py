@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from bisect import bisect_right
 from collections import defaultdict
 from collections.abc import Generator, Iterator, Mapping
@@ -12,8 +13,47 @@ from types import MappingProxyType
 import pandas as pd
 
 from src.data_aggregate.utils.sec_thirteen.institutional_vintages import _iter_public_book_cache
+from src.utils.institutional_vintages import prepare_book_vintages
 
 type BookKey = tuple[str, pd.Timestamp]
+
+_log = logging.getLogger(__name__)
+
+
+def prepare_superinvestor_batches(
+    packets: Generator[tuple[pd.DataFrame, pd.DataFrame]], trading_index: pd.DatetimeIndex
+) -> Generator[tuple[pd.DataFrame, pd.DataFrame]]:
+    """Preserve global uniqueness on the source's ordered, complete CIK-quarter batches."""
+    accessions: set[str] = set()
+    manager: str | None = None
+    holding_keys: set[tuple[str, str]] = set()
+    peak_keys = 0
+    try:
+        with closing(packets):
+            for df_filings, df_holdings in packets:
+                if df_filings["accession_number"].isin(accessions).any():
+                    raise ValueError("13F manifest accessions must be unique")
+                df_manifest = prepare_book_vintages(df_filings, df_holdings, trading_index, settle_days=0)
+                df_keys = df_holdings[["cik", "accession_number", "cusip"]]
+                if manager is not None and holding_keys.intersection(
+                    df_keys.loc[df_keys.cik.eq(manager), ["accession_number", "cusip"]].itertuples(index=False, name=None)
+                ):
+                    raise ValueError("13F holding vintages must be unique")
+                accessions.update(df_filings["accession_number"])
+
+                # Earlier CIKs cannot recur in the ordered source; only the trailing manager can straddle a batch.
+                ciks: set[str] = set(df_filings["cik"]).union(df_holdings["cik"])
+                if ciks:
+                    trailing = max(ciks)
+                    if trailing != manager:
+                        holding_keys.clear()
+                    manager = trailing
+                    holding_keys.update(df_keys.loc[df_keys.cik.eq(manager), ["accession_number", "cusip"]].itertuples(index=False, name=None))
+                    peak_keys = max(peak_keys, len(holding_keys))
+                yield df_manifest, df_holdings
+                del df_filings, df_holdings, df_manifest, df_keys
+    finally:
+        _log.info("13F identity validation: %s manifest accessions; peak trailing-manager holding keys=%s", len(accessions), peak_keys)
 
 
 @dataclass(frozen=True, slots=True)

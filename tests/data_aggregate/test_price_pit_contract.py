@@ -160,6 +160,25 @@ def test_invalid_candidate_never_reaches_the_writer(sqlite_store: Any, tmp_path:
     print("SANITY: an invalid total-return input is refused before any price-part write.")
 
 
+def test_zero_open_is_null_only_in_the_candidate(sqlite_store: Any, tmp_path: Path) -> None:
+    context = seed_prices(sqlite_store, tmp_path)
+    step = StepCubePrices(context, context.config)
+    step.run(full=True)
+    df_expected = sqlite_store.load(Tables.cube_part_prices)
+    df_source = sqlite_store.load(Tables.prices)
+    row = df_source.index[0]
+    day, ticker = df_source.loc[row, ["date", "ticker"]]
+    df_source.loc[row, "open"] = 0.0
+    sqlite_store.replace(Tables.prices, df_source)
+    step.run(full=True)
+    df_actual = sqlite_store.load(Tables.cube_part_prices)
+    selected = pd.to_datetime(df_expected["date"]).eq(pd.Timestamp(day)) & df_expected["ticker"].eq(ticker)
+    df_expected.loc[selected, "open"] = float("nan")
+    pd.testing.assert_frame_equal(df_actual, df_expected, check_exact=True)
+    pd.testing.assert_frame_equal(sqlite_store.load(Tables.prices), df_source, check_exact=True)
+    print("SANITY: a zero opening quote becomes one candidate null; every other output and every raw source cell is unchanged.")
+
+
 def test_missing_yahoo_price_factor_is_not_assumed_already_correct(sqlite_store: Any, tmp_path: Path) -> None:
     context = seed_prices(sqlite_store, tmp_path)
     sqlite_store.delete(Tables.prices_splits, where={"ticker": "AAA"})

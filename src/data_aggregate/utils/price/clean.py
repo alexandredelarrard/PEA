@@ -123,6 +123,10 @@ def clean_prices(inputs: PriceInputs, bugfix: dict) -> tuple[dict[str, pd.DataFr
             raise ValueError("Invalid Yahoo price-adjustment evidence")
     df_bars = apply_volume_scale(inputs.bars, bugfix)
     wide = pivot_fields(df_bars)
+    zero_open = wide["open"].eq(0.0)
+    if zero_open.any().any():
+        logger.warning("Price cleaning: %d zero opening quotes set to null in the candidate", int(zero_open.sum().sum()))
+    wide["open"] = wide["open"].mask(zero_open)
     df_close = wide["close_split"]
     mask = get_trading_days(df_close, inputs.market, MACRO_MARKET_SERIES)
     index = pd.DatetimeIndex(df_close.index[mask.to_numpy()], name="date")

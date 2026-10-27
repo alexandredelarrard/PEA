@@ -1224,7 +1224,7 @@
    "f_ic_inst_value_to_mcap",
    "ticker"
   ],
-  "hash": "c6ea899c3aadb3bca74cef35b3ee9bb5",
+  "hash": "6ed62fed2963c7ccf5598a03162c3a77",
   "per_column": {
    "date": "cbfcfe9a40ab077b",
    "f_ic_inst_breadth_chg": "f047816191871880",
@@ -1234,9 +1234,9 @@
    "f_ic_inst_holders": "786ed613fa66b644",
    "f_ic_inst_net_options_ratio": "469e80fc46856e8f",
    "f_ic_inst_new_buyer_ratio": "ba75290a9790e564",
-   "f_ic_inst_ownership_pct": "75f303df269a0dec",
+   "f_ic_inst_ownership_pct": "8de6dd5967aedb6e",
    "f_ic_inst_shares_chg": "60202a2632bdc915",
-   "f_ic_inst_value_to_mcap": "31a6b326315cf870",
+   "f_ic_inst_value_to_mcap": "9f63da436bca2d8e",
    "ticker": "20baf79a52b9d113"
   },
   "rows": 43010

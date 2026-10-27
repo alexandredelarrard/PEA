@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Generator, Sequence
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import Mock
@@ -11,14 +11,126 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.transformers import step_cube_sec_thirteen as step_module
-from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecThirteen
+from src.data_aggregate.transformers.step_cube_sec_thirteen import SecThirteenResources, StepCubeSecThirteen
 from src.data_aggregate.utils.common import inputs as capital_inputs
 from src.data_aggregate.utils.common.incremental import PartWindow
+from src.data_aggregate.utils.common.price_frames import PriceFrames
 from src.data_aggregate.utils.sec_thirteen.inputs import iter_filing_vintages
 from src.data_aggregate.utils.sec_thirteen.superinvestor_features import EMISSION, SuperinvestorFeatureHistory
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.institutional_vintages import prepare_book_vintages
+from src.utils.price_adjustments import resolve_share_events
 from tests.data_aggregate.test_institutional_step_contract import context, seed_prices
+from tests.data_aggregate.test_superinvestor_books import _packet
+
+
+def _manager_batch_owner(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, packets: list[tuple[pd.DataFrame, pd.DataFrame]]
+) -> tuple[StepCubeSecThirteen, pd.DatetimeIndex, list[bool], Mock]:
+    """Actual public owner with only resource/source/persistence boundaries supplied."""
+    store = Mock(spec=DataStore)
+    store.columns.return_value = []
+    store.distinct.return_value = []
+    ctx = context(store, tmp_path)
+    step = StepCubeSecThirteen(ctx, ctx.config)
+    grid = pd.bdate_range("2024-01-02", "2024-12-31")
+    df_close = pd.DataFrame(100.0, index=grid, columns=["AAA"])
+    frames = PriceFrames(trading_index=grid, universe=("AAA",), peers={"AAA": {"AAA": 1.0}}, close_split=df_close, level_factor=df_close / 100.0)
+    ciks = frozenset(cik for filings, holdings in packets for df_rows in (filings, holdings) for cik in df_rows.cik)
+    resources = SecThirteenResources(frames, None, resolve_share_events(None, None, {}), None, None, {"": ciks})
+    closed: list[bool] = []
+
+    def source(*args: Any, **kwargs: Any) -> Generator[tuple[pd.DataFrame, pd.DataFrame]]:
+        try:
+            yield from packets
+        finally:
+            closed.append(True)
+
+    monkeypatch.setattr(step, "_load_resources", lambda: resources)
+    monkeypatch.setattr(step, "_institutional_features", lambda resources: None)
+    monkeypatch.setattr(step_module.thirteen_inputs, "iter_filing_vintages", source)
+    monkeypatch.setattr(step_module, "load_trading_calendar", lambda store: grid)
+    monkeypatch.setattr(step_module, "plan_window", lambda *args, **kwargs: PartWindow(None, None))
+    save = Mock()
+    monkeypatch.setattr(step_module, "write_part", save)
+    return step, grid, closed, save
+
+
+@pytest.mark.parametrize("first_state", ["public", "unpublished", "failed", "orphan"])
+@pytest.mark.parametrize("same_manager", [False, True], ids=["different-manager", "different-quarter"])
+def test_manager_duplicate_accession_across_batches_refuses_before_save(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, first_state: str, same_manager: bool
+) -> None:
+    first = _packet("0000000001", "2024-03-31", "2024-12-31" if first_state == "unpublished" else "2024-05-15", {"111111111": 10})
+    second = _packet("0000000001" if same_manager else "0000000002", "2024-06-30", "2024-08-14", {"222222222": 20})
+    for df_rows in (*first, *second):
+        df_rows["accession_number"] = "same-accession"
+    if first_state == "failed":
+        first[0]["parse_status"] = "failed"
+    elif first_state == "orphan":
+        first[0]["amendment_type"] = "additions"
+    packets = [first, second]
+    step, grid, closed, save = _manager_batch_owner(monkeypatch, tmp_path, packets)
+    message = "^13F manifest accessions must be unique$"
+    with pytest.raises(ValueError, match=message):
+        prepare_book_vintages(pd.concat([first[0], second[0]]), pd.concat([first[1], second[1]]), grid, settle_days=0)
+    with pytest.raises(ValueError, match=message):
+        step.run(full=True)
+    assert closed == [True] and save.call_count == 0
+    print(f"SANITY: {first_state=} {same_manager=}; duplicate accession keeps the old exact refusal, closes upstream and saves nothing.")
+
+
+@pytest.mark.parametrize("orphan_first", [False, True])
+def test_manager_duplicate_holding_vintage_across_quarters_refuses_before_save(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, orphan_first: bool
+) -> None:
+    first = _packet("0000000001", "2024-03-31", "2024-05-15", {"111111111": 10})
+    second = _packet("0000000001", "2024-06-30", "2024-08-14", {"111111111": 20})
+    for df_rows in (*first, *second):
+        df_rows["accession_number"] = "same-accession"
+    packets = [(first[0].iloc[:0] if orphan_first else first[0], first[1]), (second[0].iloc[:0], second[1])]
+    step, grid, closed, save = _manager_batch_owner(monkeypatch, tmp_path, packets)
+    message = "^13F holding vintages must be unique$"
+    with pytest.raises(ValueError, match=message):
+        prepare_book_vintages(pd.concat([packet[0] for packet in packets]), pd.concat([packet[1] for packet in packets]), grid, settle_days=0)
+    with pytest.raises(ValueError, match=message):
+        step.run(full=True)
+    assert closed == [True] and save.call_count == 0
+    print(f"SANITY: {orphan_first=} repeated CIK/accession/CUSIP across quarters keeps the exact holding-key refusal before any save.")
+
+
+def test_manager_disjoint_orphan_holding_keys_remain_allowed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    first = _packet("0000000001", "2024-03-31", "2024-05-15", {"111111111": 10})
+    second = _packet("0000000001", "2024-06-30", "2024-08-14", {"222222222": 20})
+    for df_rows in (*first, *second):
+        df_rows["accession_number"] = "same-accession"
+    packets = [first, (second[0].iloc[:0], second[1])]
+    before = [tuple(df_rows.copy(deep=True) for df_rows in packet) for packet in packets]
+    step, grid, closed, save = _manager_batch_owner(monkeypatch, tmp_path, packets)
+    prepare_book_vintages(pd.concat([packet[0] for packet in packets]), pd.concat([packet[1] for packet in packets]), grid, settle_days=0)
+    step.run(full=True)
+    assert closed == [True] and save.call_count == 1
+    for old, actual in zip(before, packets, strict=True):
+        for expected, df_rows in zip(old, actual, strict=True):
+            pd.testing.assert_frame_equal(expected, df_rows)
+    print("SANITY: distinct orphan CUSIPs retain the old acceptance and one checked save; accession-only holding rejection would be too broad.")
+
+
+def test_manager_validation_releases_prior_manager_holding_keys(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    packets = [
+        _packet("0000000001", "2024-03-31", "2024-05-15", {"111111111": 10, "222222222": 20}),
+        _packet("0000000002", "2024-03-31", "2024-05-15", {"111111111": 30, "222222222": 40, "333333333": 50}),
+        _packet("0000000003", "2024-03-31", "2024-05-15", {}),
+    ]
+    step, _, closed, save = _manager_batch_owner(monkeypatch, tmp_path, packets)
+    with caplog.at_level("INFO", logger="src.data_aggregate.utils.sec_thirteen.superinvestor_books"):
+        step.run(full=True)
+    assert closed == [True] and save.call_count == 1
+    assert "peak trailing-manager holding keys=3" in caplog.text
+    print("SANITY: unique books and complete empty markers save once; validation retains at most3keys for one manager rather than5across managers.")
 
 
 def test_sec_thirteen_executes_broad_and_elite_once(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

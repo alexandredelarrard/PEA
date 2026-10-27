@@ -24,7 +24,7 @@ from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_public_ba
 from src.data_aggregate.utils.sec_thirteen.institutional_books import iter_institutional_books, prepare_institutional_book_history
 from src.data_aggregate.utils.sec_thirteen.institutional_features import EMISSION as INSTITUTIONAL_EMISSION
 from src.data_aggregate.utils.sec_thirteen.institutional_features import compute_institutional_feature_history, project_institutional_features
-from src.data_aggregate.utils.sec_thirteen.superinvestor_books import prepare_superinvestor_book_history
+from src.data_aggregate.utils.sec_thirteen.superinvestor_books import prepare_superinvestor_batches, prepare_superinvestor_book_history
 from src.data_aggregate.utils.sec_thirteen.superinvestor_features import EMISSION as SUPERINVESTOR_EMISSION
 from src.data_aggregate.utils.sec_thirteen.superinvestor_features import (
     SuperinvestorFeatureHistory,
@@ -34,7 +34,6 @@ from src.data_aggregate.utils.sec_thirteen.superinvestor_features import (
 from src.data_aggregate.utils.sec_thirteen.superinvestor_metrics import BehaviorMarket
 from src.data_aggregate.utils.sec_thirteen.superinvestor_roster import load_manager_cohorts
 from src.data_store.schema import Tables
-from src.utils.institutional_vintages import prepare_book_vintages
 from src.utils.price_adjustments import ShareBasis
 from src.utils.step import Step
 from src.utils.superinvestor_roster import filer_ciks
@@ -181,10 +180,7 @@ class StepCubeSecThirteen(Step):
         cfg = self._cfg.get("institutionals", {})
         age_days = int(cfg.get("superinvestor", {}).get("max_age_calendar_days", 90))
         with closing(clean_public_batches(packets, resources.cusip_map, None, resources.valuation_close, cfg.get("value_basis"))) as batches:
-            prepared = (
-                (prepare_book_vintages(df_filings, df_holdings, resources.frames.trading_index, settle_days=0), df_holdings)
-                for df_filings, df_holdings in batches
-            )
+            prepared = prepare_superinvestor_batches(batches, resources.frames.trading_index)
             books = prepare_superinvestor_book_history(prepared, resources.frames.trading_index, age_days)
         if books is None:
             return None

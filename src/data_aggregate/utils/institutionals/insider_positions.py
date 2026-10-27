@@ -24,11 +24,11 @@ def position_units(trades: pd.DataFrame, basis: QuantityBasis | None) -> pd.Data
         df_rows["units_known"] = False
         return df_rows
     declared = basis.events.declared_units(df_rows["ticker"], df_rows["transaction_day"], df_rows["security_title"])
-    df_rows["declared_units_known"] = declared.gt(0) & np.isfinite(declared)
+    df_rows["declared_units_known"] = declared.gt(0) & np.isfinite(declared) & df_rows["transaction_day"].notna()
     target = pd.Series(basis.target_date, index=df_rows.index)
     factor = basis.events.rebase(pd.Series(1.0, index=df_rows.index), df_rows["ticker"], df_rows["transaction_day"], target) * declared
     factor = factor.where(df_rows["klass"].eq("COMMON"))
-    df_rows["units_known"] = factor.gt(0) & np.isfinite(factor)
+    df_rows["units_known"] = factor.gt(0) & np.isfinite(factor) & df_rows["transaction_day"].notna()
     for column in ("shares_n", "shares_owned_after"):
         rebased = basis.events.rebase(df_rows[column] * declared, df_rows["ticker"], df_rows["transaction_day"], target)
         df_rows[column] = rebased.where(df_rows["units_known"], df_rows[column])
@@ -62,7 +62,8 @@ def cumulative_positions(
     rows["delta"] = rows["shares_n"].where(rows["code"].eq("P"), -rows["shares_n"])
     keys = ["ticker", "owner_cik", "klass"]
     day_groups = {} if positions.empty else dict(tuple(positions.groupby(keys, sort=False)))
-    flows = {} if other_flows.empty else dict(tuple(other_flows.dropna(subset=["transaction_day", "day"]).groupby("ticker", sort=False)))
+    df_flows = pd.concat([other_flows, trades.loc[trades["transaction_day"].isna()]], ignore_index=True)
+    flows = {} if df_flows.empty else dict(tuple(df_flows.dropna(subset=["day"]).groupby("ticker", sort=False)))
     possible = (trades["is_management"] | role_unknown) & ~trades["direct_indirect"].eq("I")
     possible &= ~(multiplicity.gt(1) & multiplicity.mod(1).eq(0)) & (~account_known | role_unknown)
     intervals = _possible_intervals(trades[possible], days)
@@ -105,6 +106,7 @@ def _account_intervals(
     positions = positions.reindex(columns=["visible_from", "visible_until", "transaction_day", "starting", "net_shares"])
     pos = {column: positions[column].to_numpy(dtype="datetime64[ns]") for column in ("visible_from", "visible_until", "transaction_day")}
     flow_day = flows["transaction_day"].to_numpy(dtype="datetime64[ns]")
+    flow_filed = flows["day"].to_numpy(dtype="datetime64[ns]")
     flow_public = flows["visible_from"].to_numpy(dtype="datetime64[ns]")
     flow_stop = flows["visible_until"].to_numpy(dtype="datetime64[ns]")
     points = np.unique(
@@ -155,7 +157,8 @@ def _account_intervals(
         visible &= (pos["transaction_day"] >= first) & (pos["transaction_day"] <= last)
         ordered = np.flatnonzero(visible)[np.argsort(pos["transaction_day"][visible])]
         # Expired trades interleaved between active economic days make a literal start ambiguous.
-        blocked = (flow_public <= point) & (np.isnat(flow_stop) | (flow_stop > point)) & (flow_day >= first) & (flow_day <= last)
+        possible_day = ((flow_day >= first) & (flow_day <= last)) | (np.isnat(flow_day) & (flow_filed >= first))
+        blocked = (flow_public <= point) & (np.isnat(flow_stop) | (flow_stop > point)) & possible_day
         interleaved = span & ~active & (lot["transaction_day"] > first) & (lot["transaction_day"] < last)
         if blocked.any() or uncertain[span].any() or interleaved.any():
             continue

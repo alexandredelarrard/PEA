@@ -281,7 +281,7 @@ def test_a_partial_4a_keeps_the_cells_it_does_not_report():
     cleaned, diag = clean_transactions(frame(mixed_rows()))
 
     def cell(accession: str, day: str) -> pd.DataFrame:
-        return cleaned[cleaned["accession_number"].eq(accession) & cleaned["transaction_date"].eq(pd.Timestamp(day).date())]
+        return cleaned[cleaned["accession_number"].eq(accession) & cleaned["transaction_date"].eq(pd.Timestamp(day))]
 
     x_orig, y_orig = cell(_acc(11), "2024-01-30"), cell(_acc(11), "2024-01-31")
     x_amend, z_amend = cell(_acc(12), "2024-01-30"), cell(_acc(12), "2024-02-02")

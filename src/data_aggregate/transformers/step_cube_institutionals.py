@@ -40,6 +40,8 @@ from src.data_aggregate.utils.institutionals.short_flow_features import (
     secondary_class_volume,
     with_class_volume,
 )
+from src.data_aggregate.utils.price import inputs as price_inputs
+from src.data_aggregate.utils.price.clean import apply_volume_scale
 from src.data_aggregate.utils.price.frames import PriceFrames, load_trading_calendar
 from src.data_store.schema import Tables
 from src.utils.price.adjustments import load_bugfix
@@ -180,13 +182,16 @@ class StepCubeInstitutionals(Step):
             if df_lines is not None
             else None
         )
-        df_shares, _, basis, df_valuation_close, df_bars = capital_inputs.load_share_inputs(self._context, frames, self._bugfix, df_classes)
+        basis, df_bars = price_inputs.load_quantity_inputs(self._context, frames, self._bugfix, df_classes)
+
+        # Clean the raw secondary-class tape once before its quantity denominators are built.
+        df_bars = apply_volume_scale(df_bars, self._bugfix)
         quantity_basis = institutional_inputs.QuantityBasis.from_context(basis, pd.DatetimeIndex(frames.trading_index))
 
         # Build each family sequentially so raw sources do not overlap in memory.
         merger = PanelMerger(anchor=frames.skeleton())
-        merger.add(self._insider_panel(frames, df_shares, quantity_basis, df_valuation_close, df_lines), "insider-trading")
-        merger.add(self._short_flow_panel(frames, df_shares, df_lines, df_bars, quantity_basis), "short-flow")
+        merger.add(self._insider_panel(frames, quantity_basis, df_lines), "insider-trading")
+        merger.add(self._short_flow_panel(frames, df_lines, df_bars, quantity_basis), "short-flow")
         merger.add(self._ownership_panel(frames), "beneficial-ownership")
 
         # Keep declared inputs even when a source has no qualifying observations.
@@ -196,9 +201,7 @@ class StepCubeInstitutionals(Step):
     def _insider_panel(
         self,
         frames: PriceFrames,
-        shares: pd.DataFrame | None,
         quantity_basis: institutional_inputs.QuantityBasis,
-        valuation_close: pd.DataFrame | None,
         identity_intervals: pd.DataFrame | None,
     ) -> pd.DataFrame | None:
         # Load transactions and their completeness/title evidence before cleaning.
@@ -210,7 +213,7 @@ class StepCubeInstitutionals(Step):
 
         # Preserve execution USD while cleaning source-unit prices and public versions.
         df_trades, diagnostics = clean_transactions(
-            df_insider, as_traded_quotes=valuation_close, role_evidence=df_roles, share_basis=quantity_basis.events
+            df_insider, as_traded_quotes=frames.close_pit, role_evidence=df_roles, share_basis=quantity_basis.events
         )
         if "source_first" not in diagnostics:
             return None
@@ -228,7 +231,6 @@ class StepCubeInstitutionals(Step):
     def _short_flow_panel(
         self,
         frames: PriceFrames,
-        shares: pd.DataFrame | None,
         lines: pd.DataFrame | None,
         bars: pd.DataFrame,
         quantity_basis: institutional_inputs.QuantityBasis,

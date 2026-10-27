@@ -765,8 +765,9 @@ def governance_panel(
     from the proxy say-on-pay fallback rows the stage appends, and the holder-table ownership
     estimate is not digested (`test_governance_ownership_estimate.py` guards it).
     """
-    from src.data_aggregate.utils.governance.clean import GovernanceInputs, clean_governance_inputs
+    from src.data_aggregate.utils.governance.clean import GovernanceInputs
     from src.data_aggregate.utils.governance.panel import build_governance_feature_panel
+    from tests.data_aggregate.governance_pit_reference import clean_governance_inputs
 
     proxies = synthetic_def14a(tickers, idx, rng_for("def14a"))
     board = synthetic_directors(proxies, rng_for("directors"))
@@ -847,6 +848,7 @@ def compute() -> dict:
     from src.utils.price.capitalization import project_security_shares
     from src.utils.price.levels import as_traded_close
     from src.utils.string import pad_cik
+    from tests.data_aggregate.fundamental_pit_reference import known_no_share_events, legacy_capital_frames
     from tests.data_aggregate.insider_pit_reference import build_prepared_insider_panel as build_insider_feature_panel
 
     fund = fundamentals()
@@ -906,7 +908,16 @@ def compute() -> dict:
                 k: v
                 for k, v in sorted(
                     compute_raw_features(
-                        close, px["open"], sector_ret, high=px["high"], low=px["low"], volume=px["volume"], seasonal_horizons=[30, 60, 90]
+                        close,
+                        px["open"],
+                        sector_ret,
+                        high=px["high"],
+                        low=px["low"],
+                        volume=px["volume"],
+                        seasonal_horizons=[30, 60, 90],
+                        level_factor=close * 0 + 1,
+                        close_pit=close,
+                        tape_support=close.notna(),
                     ).items()
                 )
                 if isinstance(v, pd.DataFrame)
@@ -914,18 +925,35 @@ def compute() -> dict:
             axis=1,
         )
     )
-    out["panel.price"] = frame_digest(build_feature_panel(close, px["open"], sector_ret, "rank", px["high"], px["low"], px["volume"], [30, 60, 90]))
+    out["panel.price"] = frame_digest(
+        build_feature_panel(
+            close,
+            px["open"],
+            sector_ret,
+            "rank",
+            px["high"],
+            px["low"],
+            px["volume"],
+            [30, 60, 90],
+            level_factor=close * 0 + 1,
+            close_pit=close,
+            tape_support=close.notna(),
+        )
+    )
     # `pension_facts` / `notes_num` are deliberately NOT passed: they are separate bulk SEC
     # tables, and freezing a slice of each would double the fixture for one feature family.
     # The consequence is explicit -- the `pension_*` features are absent from this digest and
     # are guarded by `test_insider_pension_features.py` instead.
-    fp = build_fundamental_feature_panel(fund, peers, idx, stock_close=close, earnings_history=earn)
+    legacy_prices = legacy_capital_frames(fund, close)
+    fp = build_fundamental_feature_panel(fund, peers, idx, prices=legacy_prices, earnings_history=earn, share_basis=known_no_share_events())
     out["panel.fundamental"] = frame_digest(fp)
     sp = build_sector_feature_panel(fund, peers, idx)
     out["panel.sector"] = frame_digest(sp)
     out["panel.earnings"] = frame_digest(build_earnings_feature_panel(earn, peers, idx, stock_close=close))
     out["panel.employee"] = frame_digest(build_employee_feature_panel(fund, employee_rows(fund), peers, idx, part_time_weight=0.5))
-    out["panel.dividend"] = frame_digest(build_dividend_feature_panel(div, peers, idx, stock_close=close, fundamentals_history=fund))
+    out["panel.dividend"] = frame_digest(
+        build_dividend_feature_panel(div, peers, idx, prices=legacy_prices, fundamentals_history=fund, share_basis=known_no_share_events())
+    )
     out["panel.governance"] = frame_digest(governance_panel(tickers, fund, peers, idx, close))
     # Exercise the same visible dated-quantity preparation as the owning step.
     quantity_basis = QuantityBasis.from_context(resolve_share_events(None, splits, {}), idx)

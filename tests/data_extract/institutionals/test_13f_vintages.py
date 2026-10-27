@@ -1282,7 +1282,7 @@ def normal_resources(step: StepCubeSecThirteen, frames: PriceFrames) -> SecThirt
     splits = pd.DataFrame(columns=["date", "ticker", "value"])
     basis = ShareBasis(actual=splits, vendor=splits, price=splits, policies={})
     cohort = frozenset({"0000000001"})
-    return SecThirteenResources(frames, basis, frames.close_pit, cusip_map, {"": cohort, "topk": cohort})
+    return SecThirteenResources(frames, basis, cusip_map, {"": cohort, "topk": cohort})
 
 
 def normal_panels(step: StepCubeSecThirteen, frames: PriceFrames) -> tuple[pd.DataFrame, pd.DataFrame]:

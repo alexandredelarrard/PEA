@@ -80,7 +80,8 @@ def test_windowed_build_reproduces_full_tail():
     dates, close, open_, sector, high, low, volume = _synthetic_prices()
     sh = [5, 20, 60]
 
-    full = build_feature_panel(close, open_, sector, "rank", high, low, volume, sh)
+    df_factor = pd.DataFrame(1.0, index=close.index, columns=close.columns)
+    full = build_feature_panel(close, open_, sector, "rank", high, low, volume, sh, level_factor=df_factor, close_pit=close, tape_support=close.gt(0))
 
     # simulate an incremental run with the ACTUAL configured price-group warm-up: recompute only
     # [refresh_from - warmup, end]. This must cover the longest daily look-back (the 5-year =
@@ -92,7 +93,17 @@ def test_windowed_build_reproduces_full_tail():
     refresh_from = dates[cutoff_pos - refresh]
     start = dates[cutoff_pos - refresh - warmup]
     win = build_feature_panel(
-        close.loc[start:], open_.loc[start:], sector.loc[start:], "rank", high.loc[start:], low.loc[start:], volume.loc[start:], sh
+        close.loc[start:],
+        open_.loc[start:],
+        sector.loc[start:],
+        "rank",
+        high.loc[start:],
+        low.loc[start:],
+        volume.loc[start:],
+        sh,
+        level_factor=df_factor.loc[start:],
+        close_pit=close.loc[start:],
+        tape_support=close.loc[start:].gt(0),
     )
 
     # the tail the incremental run WRITES (date >= refresh_from) must match the full build

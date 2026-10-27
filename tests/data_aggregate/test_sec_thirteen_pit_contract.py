@@ -107,7 +107,7 @@ def test_broad_source_unit_gate_preserves_reported_usd(monkeypatch: pytest.Monke
     policy = {"TEST": {"quote_units": {"date": "2024-06-01", "before": 2.0, "after": 1.0}}}
     basis = ShareBasis(empty, empty, empty, policy)
     frames = make_frames(index, close_pit=pd.DataFrame(50.0, index=index, columns=["TEST"]))
-    resources = SecThirteenResources(frames, basis, frames.close_pit, None, None)
+    resources = SecThirteenResources(frames, basis, None, None)
     step = object.__new__(StepCubeSecThirteen)
     step._store, step._cfg = None, {"institutionals": {}}
     monkeypatch.setattr(step_module.thirteen_inputs, "iter_filing_vintages", lambda *args: iter(()))

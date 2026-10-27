@@ -16,6 +16,7 @@ from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PART_RE
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
 from src.data_aggregate.utils.common.parts import part_for
+from src.data_aggregate.utils.price import inputs as price_inputs
 from src.data_aggregate.utils.price.frames import PriceFrames, load_trading_calendar
 from src.data_aggregate.utils.sec_thirteen import inputs as thirteen_inputs
 from src.data_aggregate.utils.sec_thirteen.holdings_clean import attach_tickers, clean_public_holdings
@@ -44,7 +45,6 @@ class SecThirteenResources:
 
     frames: PriceFrames
     basis: ShareBasis
-    valuation_close: pd.DataFrame | None
     cusip_map: pd.DataFrame | None
     cohorts: Mapping[str, frozenset[str]] | None
 
@@ -106,7 +106,7 @@ class StepCubeSecThirteen(Step):
         frames = capital_inputs.load_full_price_frames(self._store, self._context, self._FIELDS)
         history = capital_inputs.load_source(self._store, Tables.superinvestor_roster)
         cusip_map = self._store.load(Tables.cusip_ticker_map, columns=["cusip", "ticker"], optional=True)
-        _, _, basis, valuation_close, _ = capital_inputs.load_share_inputs(self._context, frames, self._bugfix)
+        basis, _ = price_inputs.load_quantity_inputs(self._context, frames, self._bugfix)
 
         # The ordered list is user-owned; membership never depends on portfolio prices.
         cohorts = None
@@ -114,7 +114,7 @@ class StepCubeSecThirteen(Step):
             roster = filer_ciks(history.cik.dropna(), self._context.config_dir)
             cfg = self._cfg.get("institutionals", {}).get("superinvestor", {})
             cohorts = load_manager_cohorts(self._context.config_dir, roster, cfg.get("selection", {}).get("k", 20))
-        return SecThirteenResources(frames, basis, valuation_close, cusip_map, cohorts)
+        return SecThirteenResources(frames, basis, cusip_map, cohorts)
 
     def build_panel(self, window: PartWindow | None = None, *, existing_columns: Sequence[str] | None = None) -> pd.DataFrame:
         resources = self._load_resources()
@@ -155,7 +155,7 @@ class StepCubeSecThirteen(Step):
             resources.frames.trading_index,
             resources.cusip_map,
             resources.frames.universe,
-            resources.valuation_close,
+            resources.frames.close_pit,
             cfg.get("value_basis"),
             settle_days=int(cfg.get("f13_settle_trading_days", F13_SETTLE_TRADING_DAYS)),
         )
@@ -182,13 +182,13 @@ class StepCubeSecThirteen(Step):
         # Clean whole books once, retaining mapped off-universe positions and provenance.
         df_filings, df_holdings = packet
         cfg = self._cfg.get("institutionals", {})
-        df_holdings = clean_public_holdings(attach_tickers(df_holdings, resources.cusip_map), resources.valuation_close, cfg.get("value_basis"))
+        df_holdings = clean_public_holdings(attach_tickers(df_holdings, resources.cusip_map), resources.frames.close_pit, cfg.get("value_basis"))
         df_manifest = prepare_book_vintages(df_filings, df_holdings, resources.frames.trading_index, settle_days=0)
 
         # Public freshness, archival baselines and the common quarter precede equations.
         age_days = int(cfg.get("superinvestor", {}).get("max_age_calendar_days", 90))
         books = prepare_superinvestor_book_history(df_manifest, df_holdings, resources.frames.trading_index, age_days)
-        market = BehaviorMarket(resources.frames.trading_index, resources.valuation_close, resources.basis)
+        market = BehaviorMarket(resources.frames.trading_index, resources.frames.close_pit, resources.basis)
         return compute_superinvestor_feature_history(books, resources.cohorts, resources.frames.universe, market)
 
     @staticmethod

@@ -40,9 +40,10 @@ from src.data_aggregate.utils.governance.directors import (
 from src.data_aggregate.utils.governance.names import ceo_identity_series, ceo_stint_ids, given_names
 from src.data_aggregate.utils.governance.pay_features import SCT_GROWTH
 from src.data_aggregate.utils.governance.staleness import source_date_column
+from src.data_aggregate.utils.price.frames import PriceFrames, public_security_counts
 from src.utils.names import person_key
+from src.utils.price.adjustments import ShareBasis
 
-_SHARES_OUTSTANDING = "sharesOutstandingPit"
 _OWNERSHIP = "insider_ownership_pct"
 _DIRECTOR_OFFICER = "director_officer"
 #: a holder table naming fewer directors/officers than this is too partial to sum
@@ -111,7 +112,9 @@ def _record(stats: dict[str, int], stage: str, part: dict[str, int]) -> None:
     stats.update({f"{stage}|{k}": int(v) for k, v in part.items()})
 
 
-def clean_governance_inputs(raw: GovernanceInputs, fundamentals: pd.DataFrame | None) -> tuple[GovernanceInputs, dict[str, int]]:
+def clean_governance_inputs(
+    raw: GovernanceInputs, fundamentals: pd.DataFrame | None, prices: PriceFrames | None = None, basis: ShareBasis | None = None
+) -> tuple[GovernanceInputs, dict[str, int]]:
     """Clean the raw governance inputs. Returns `(cleaned bundle, stats keyed "<stage>|<rule>")`.
 
     Order: child fills, board merge, `impute_def14a`, board provenance, ownership basis repair,
@@ -149,7 +152,7 @@ def clean_governance_inputs(raw: GovernanceInputs, fundamentals: pd.DataFrame | 
         if "as_of" in frame.columns:
             # Blank per-class ownership before computed economic ownership fills the gap.
             tally: dict[str, int] = {}
-            shares_out = pit_shares_outstanding(frame, fundamentals, tally)
+            shares_out = pit_shares_outstanding(frame, prices, fundamentals, basis, tally)
             frame = repair_ownership_basis(frame, tally)
             frame = economic_ownership(frame, shares_out, tally)
             _record(stats, "ownership", tally)
@@ -185,43 +188,22 @@ def _board_fill_kinds(frame: pd.DataFrame) -> None:
             frame.loc[frame[f"{field}_source"] == SOURCE_DERIVED, fill_kind_column(field)] = FILL_CROSS_SOURCE
 
 
-def _pit_shares_outstanding(def14a_hist: pd.DataFrame, fundamentals: pd.DataFrame) -> pd.Series | None:
-    """Point-in-time shares outstanding at each proxy's `as_of`, aligned on the proxy index."""
-    # merge_asof requires identical datetime resolution across the two sources.
-    left = pd.DataFrame({"ticker": def14a_hist["ticker"], "_as_of": pd.to_datetime(def14a_hist["as_of"], errors="coerce").astype("datetime64[ns]")})
-    right = cast(
-        pd.DataFrame,
-        fundamentals[["ticker", "as_of", _SHARES_OUTSTANDING]]
-        .copy()
-        .assign(_as_of=lambda d: pd.to_datetime(d["as_of"], errors="coerce").astype("datetime64[ns]"))
-        .drop(columns="as_of")
-        .dropna(subset=["_as_of"]),
-    )
-    right = cast(pd.DataFrame, right.loc[frame_column(right, _SHARES_OUTSTANDING) > 0])
-    if right.empty:
-        return None
-
-    # Preserve row identity because merge_asof resets the index.
-    left["_key"] = range(len(left))
-    dated_left = cast(pd.DataFrame, left.dropna(subset=["_as_of"])).sort_values("_as_of")
-    merged = pd.merge_asof(dated_left, right.sort_values("_as_of"), on="_as_of", by="ticker", direction="backward")
-    shares_out = cast(pd.Series, pd.to_numeric(frame_column(merged, _SHARES_OUTSTANDING), errors="coerce"))
-    by_key = pd.Series(shares_out.to_numpy(), index=frame_column(merged, "_key").to_numpy())
-    aligned = by_key.reindex(frame_column(left, "_key").to_numpy())
-    aligned.index = def14a_hist.index
-    return aligned
-
-
-def pit_shares_outstanding(def14a_hist: pd.DataFrame, fundamentals: pd.DataFrame | None, tally: dict[str, int] | None = None) -> pd.Series | None:
-    """Point-in-time shares outstanding at each proxy's `as_of` (the ownership denominator), or
-    None when the fundamentals cannot supply it."""
-    if fundamentals is None or fundamentals.empty or not {"ticker", "as_of"}.issubset(def14a_hist.columns):
-        return None
-    if not {"ticker", "as_of", _SHARES_OUTSTANDING}.issubset(fundamentals.columns):
+def pit_shares_outstanding(
+    def14a_hist: pd.DataFrame,
+    prices: PriceFrames | None,
+    fundamentals: pd.DataFrame | None,
+    basis: ShareBasis | None,
+    tally: dict[str, int] | None = None,
+) -> pd.Series | None:
+    """Read saved counts in the proxy's evidenced unitary security basis."""
+    if prices is None or prices.shares_outstanding_pit is None or fundamentals is None or basis is None:
         if tally is not None and "insider_shares" in def14a_hist.columns:
-            tally[f"⚠ economic ownership not computed: {_SHARES_OUTSTANDING} absent"] = 1
+            tally["⚠ economic ownership not computed: shares_outstanding_pit unsupported"] = 1
         return None
-    return _pit_shares_outstanding(def14a_hist, fundamentals)
+    counts = public_security_counts(def14a_hist, prices.shares_outstanding_pit, fundamentals, basis)
+    units = basis.factor(def14a_hist["ticker"], def14a_hist["as_of"], "units")
+    # Proxy totals have no declared ADS title; preserve the existing class safeguards.
+    return counts.where(units.eq(1.0))
 
 
 def _proxy_dates(df: pd.DataFrame) -> pd.Series:

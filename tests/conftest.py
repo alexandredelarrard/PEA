@@ -371,7 +371,10 @@ def real_pipeline(real_frames: dict[str, Any]) -> dict[str, Any]:
     sector_groups = load_gics_maps(cast(Any, context))
 
     # mirror StepCubeTarget._factor_panel: market + style + commodity + currency + macro
-    chars = build_characteristics(stock_close_total, stock_ret, fundamentals, resvol_window=63, stock_close_split=stock_close)
+    from tests.data_aggregate.fundamental_pit_reference import legacy_capital_frames
+
+    price_inputs = legacy_capital_frames(fundamentals, stock_close, max_age_days=None)
+    chars = build_characteristics(stock_close_total, stock_ret, fundamentals, resvol_window=63, mcap_pit=price_inputs.mcap_pit)
     style_cols = {}
     for name, char in chars.items():
         char.name = name
@@ -434,6 +437,7 @@ def fundamental_panel(real_frames):
     plus the inputs needed to sanity-check it against the target."""
     from src.data_aggregate.utils.fundamentals.fundamental_features import build_fundamental_feature_panel
     from src.data_peers.utils.sector_peers import build_peer_dict
+    from tests.data_aggregate.fundamental_pit_reference import known_no_share_events, legacy_capital_frames
 
     stock_close = real_frames["stock_close"]
     stock_ret = real_frames["stock_ret"]
@@ -449,7 +453,8 @@ def fundamental_panel(real_frames):
         fundamentals,
         peers,
         stock_close.index,
-        stock_close=stock_close,
+        prices=legacy_capital_frames(fundamentals, stock_close),
+        share_basis=known_no_share_events(),
     )
     return {"panel": panel, "fundamentals": fundamentals, "peers": peers, "stock_close": stock_close}
 

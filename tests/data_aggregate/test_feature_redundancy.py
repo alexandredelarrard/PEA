@@ -53,6 +53,7 @@ from src.data_aggregate.utils.fundamentals.sector_features import (
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.db import get_engine
+from tests.data_aggregate.fundamental_pit_reference import known_no_share_events, legacy_capital_frames
 
 #: |r| at or above which two features are the SAME SIGNAL, not two views of one.
 #: Deliberately not 1.0: `net_debt_to_ebitdare` reduced to `net_debt_to_ebitda` at 0.9998,
@@ -115,10 +116,11 @@ def feature_frames() -> dict[str, pd.DataFrame]:
     frames = _derived_fields(
         fund_hist=fh,
         idx=idx,
-        close=close,
         yoy_periods=infer_yoy_periods(fh),
         pension_facts=_facts(_PENSION_FACTS_TABLE, _NET_PENSION_TAGS),
         notes_num=_facts(_NOTES_NUM_TABLE, (_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG)),
+        prices=legacy_capital_frames(fh, close),
+        share_basis=known_no_share_events(),
     )
     kdf = compute_sector_kpis(fh)
     for name in SECTOR_KPI_COLS:

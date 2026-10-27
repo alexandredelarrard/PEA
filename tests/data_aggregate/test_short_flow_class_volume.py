@@ -25,6 +25,8 @@ from src.data_aggregate.transformers.step_cube_institutionals import StepCubeIns
 from src.data_aggregate.utils.common import inputs as capital_inputs
 from src.data_aggregate.utils.institutionals.inputs import CLASS_LINE_COLUMNS, QuantityBasis, short_quantity_history
 from src.data_aggregate.utils.institutionals.short_flow_features import ShortFlowCapital, _shortvol_fields, secondary_class_volume, with_class_volume
+from src.data_aggregate.utils.price import inputs as price_inputs
+from src.data_aggregate.utils.price.clean import apply_volume_scale
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_store.schema import Tables
 from src.utils.price.adjustments import load_bugfix, resolve_share_events
@@ -40,8 +42,8 @@ def _load_classes(store: Any, universe: list[str], bugfix: dict | None = None) -
         return None
     context = SimpleNamespace(store=store, log=logging.getLogger(__name__), config_dir=Path(DEFAULT_CONFIG_DIR))
     frames = PriceFrames(trading_index=pd.DatetimeIndex([]), universe=tuple(universe), peers={})
-    _, _, _, _, bars = capital_inputs.load_share_inputs(context, frames, bugfix or {}, lines)
-    return lines, bars
+    _, df_bars = price_inputs.load_quantity_inputs(context, frames, bugfix or {}, lines)
+    return lines, apply_volume_scale(df_bars, bugfix or {})
 
 
 OPEN = pd.NaT
@@ -196,7 +198,7 @@ def test_public_step_rejects_negative_canonical_volume_hidden_by_a_positive_clas
     step = StepCubeInstitutionals(ctx, ctx.config)
     events = resolve_share_events(None, pd.DataFrame(columns=["ticker", "date", "ratio"]), {})
     monkeypatch.setattr(capital_inputs, "load_full_price_frames", lambda *args, **kwargs: frames)
-    monkeypatch.setattr(capital_inputs, "load_share_inputs", lambda *args, **kwargs: (None, None, events, None, bars))
+    monkeypatch.setattr(price_inputs, "load_quantity_inputs", lambda *args, **kwargs: (events, bars))
     monkeypatch.setattr(step, "_insider_panel", lambda *args, **kwargs: None)
     monkeypatch.setattr(step, "_ownership_panel", lambda *args, **kwargs: None)
 

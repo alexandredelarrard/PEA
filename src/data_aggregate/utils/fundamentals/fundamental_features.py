@@ -1,106 +1,12 @@
 # ruff: noqa: N806
-"""
-fundamental_features.py  (src/data_aggregate/utils/fundamental_features.py)
----------------------------------------------------------------------------
-Point-in-time fundamental signals for the modelling cube. Every approved
-characteristic is emitted in raw economic units; the selected characteristics
-also receive a trailing self-history z-score. Two explicit existing-peer
-comparisons complete the 218-column fundamentals contract.
+"""Point-in-time fundamental features with supported issuer-valued denominators.
 
-CHARACTERISTICS
-===============
-Valuation (as YIELDS = fundamental / price, so cheap => high, and the metric is
-bounded/rankable instead of exploding when the denominator -> 0). Market cap is
-rebuilt DAILY as point-in-time sharesOutstanding * close, so valuation moves
-every day with the price, not only when a new filing lands:
-    earnings_yield  = netIncome        / marketCap      (E/P, inverse trailing PE)
-    sales_yield     = totalRevenue     / marketCap      (S/P, inverse P/S)
-    book_yield      = stockholdersEquity/ marketCap      (B/P, inverse P/B)
-    fcf_yield       = freeCashflow     / marketCap      (FCF/P)
-    ebitda_to_ev    = ebitda / TRUE EV (inverse EV/EBITDA), where the True
-                      (fully-diluted) EV = diluted-shares*price + total debt +
-                      lease liabilities + minority interest - cash - short-term
-                      investments (only non-operating liquid assets are netted).
-                      Real debt columns are used, with debtToEquity*equity as a
-                      fallback for histories that lack them.
-    fcf_to_ev       = freeCashflow / EV (Fully-Diluted FCF Yield) -- cash the whole
-                      capital structure throws off vs its total price; the cross-
-                      sector cash-valuation yield (and the energy "FCF EV yield").
-    altman_z        = market-value Altman Z bankruptcy screen (WC/RE/EBIT/mcap/sales
-                      over assets); pegy = P/E / (EPS growth% + dividend yield%).
-    ffo_yield / implied_cap_rate (REITs), ebitdax_to_ev (energy) -- sector EV/price
-                      multiples gated on the sector's balance-sheet signature.
-    operating_leverage_elasticity = %ΔOperatingIncome / %ΔRevenue; nwc_elasticity =
-                      %ΔNWC / %ΔRevenue; margin_expansion_delta = Δgross - ΔEBITDA
-                      margin; diluted_shares_growth; ebit_interest_coverage.
-
-Profitability / moat:
-    grossMargins, operatingMargins, profitMargins, returnOnEquity  (raw ratios)
-    fcf_margin      = freeCashflow / totalRevenue        (cash profitability)
-    accruals        = (netIncome - freeCashflow)/totalRevenue  (earnings quality;
-                      LOW/negative = earnings backed by cash = higher quality)
-
-Growth (TTM, year-over-year):
-    y_rev_growth, y_earnings_growth_signed (YoY, from the fiscal series)
-    fcf_growth                     (YoY free-cash-flow growth)
-    gross_margin_chg               (YoY change in gross margin = margin expansion)
-
-Latest-quarter momentum (discrete single quarter, what TTM smooths away):
-    rev_growth_accel  change in that YoY vs the prior quarter (acceleration)
-    q_earnings_growth latest-quarter net-income YoY
-    q_margin_vs_ttm   latest-quarter profit margin minus the TTM margin (inflection)
-
-Yearly-TTM momentum (current TTM vs TTM one year ago, less noisy than single quarter):
-    y_rev_growth      TTM revenue YoY growth (computed fresh from totalRevenue)
-    y_rev_growth_accel change in TTM revenue YoY (trend acceleration over a year)
-    y_earnings_growth_signed (NI - prior NI) / abs(prior NI)
-    y_margin_vs_ttm   YoY change in TTM profit margin (margin expansion/contraction)
-
-Intrinsic value (two-stage DCF on TTM free cash flow, see intrinsic.py):
-    intrinsic_yield   DCF equity value / market cap  ( >1 => below intrinsic )
-
-Distress / solvency (debt-SERVICING ability, which debtToEquity ignores):
-    net_debt_to_ebitda (total debt - cash) / EBITDA   (leverage; HIGH = worse)
-    interest_coverage  EBITDA / interest expense       (HIGH = safer)
-    current_ratio      current assets / current liabs  (near-term liquidity)
-    cash_to_debt       cash / total debt               (liquidity cushion)
-
-Marketing & sales efficiency:
-    sga_intensity      SG&A / revenue                  (selling-cost discipline)
-    sga_growth         YoY SG&A growth
-    operating_leverage revenue growth - SG&A growth    (>0 = scaling profitably)
-
-M&A footprint (organic vs inorganic growth; goodwill-impairment risk):
-    acquisition_intensity acquisition spend / total assets
-    goodwill_growth       YoY goodwill growth
-
-Stock-based compensation ("employee shares given"; gross, unlike net dilution):
-    sbc_intensity      stock-based comp / revenue
-    sbc_to_ocf         stock-based comp / operating cash flow (cash-flow quality)
-
-Self-history views (emitted as `f_<characteristic>_vs_hist`):
-    approved ratios and levels get a z-score versus the firm's OWN trailing
-    history. The explicit allow-list lives in `feature_views.py`.
-
-Capital allocation / dilution ("stock given to employees" proxy):
-    shares_growth   = YoY change in sharesOutstanding. Positive => issuing /
-                      diluting (heavy SBC), negative => buying back.
-
-R&D / intangibles moat (only when researchAndDevelopment was collected):
-    rd_intensity    = researchAndDevelopment / totalRevenue
-
-AVAILABILITY
-============
-Valuation needs `close`; growth/dilution/trend need the fiscal history. All are
-point-in-time (values keyed on the SEC filing date via fundamentals_to_daily),
-so there is no look-ahead. researchAndDevelopment must be present in the
-history parquet (added to the SEC extractor); if absent, R&D features are
-skipped automatically.
-"""
+Saved capitalization supplies issuer yields; vendor per-share inputs and comparison quantities keep distinct bases."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -109,7 +15,6 @@ from src.context import Context
 from src.data_aggregate.utils.common import capital
 from src.data_aggregate.utils.common.frames import ratio, sanitize
 from src.data_aggregate.utils.common.pit import (
-    daily_market_cap,
     fiscal_change_to_daily,
     fiscal_change_values,
     fiscal_prior_positions,
@@ -130,6 +35,9 @@ from src.data_aggregate.utils.fundamentals.earnings_features import reported_eve
 from src.data_aggregate.utils.fundamentals.feature_views import build_fundamental_views
 from src.data_aggregate.utils.fundamentals.history_features import reported_history_fields
 from src.data_aggregate.utils.fundamentals.intrinsic import intrinsic_value_daily
+from src.data_aggregate.utils.price.frames import PriceFrames, comparison_share_history
+from src.utils.price.adjustments import ShareBasis
+from src.utils.price.per_share import ordinary_per_share_to_security, same_capital_scope, vendor_ordinary_per_share
 
 _PENSION_FACTS_TABLE = "pension_facts"  # bulk Financial-Statement-Data-Sets pension facts (literal)
 _NOTES_NUM_TABLE = "notes_num"  # footnote NUMERIC facts (10 tags; the panel uses 2)
@@ -219,16 +127,7 @@ def _combine_debt(daily, long_debt: pd.DataFrame, short_debt: pd.DataFrame, fall
 
 
 def _enterprise_value(mcap: pd.DataFrame, additions: list, subtractions: list) -> pd.DataFrame:
-    """True (fully-diluted) enterprise value, restricted to tickers with a market cap:
-
-        EV = fully-diluted market cap
-             + Σ additions      (total debt, lease liabilities, minority interest)
-             − Σ subtractions   (cash, short-term investments)
-
-    This is the production textbook EV: only NON-OPERATING liquid financial assets
-    (cash + short-term investments) are netted, and the claims senior to / alongside
-    common equity (debt, capitalized leases, minority interest) are added. NaN-
-    tolerant: a missing component contributes 0."""
+    """Build enterprise value from supported equity and available senior claims/liquid assets."""
     ev = mcap.copy()
     for part in additions:
         if part is not None and not part.empty:
@@ -687,7 +586,24 @@ def _digestion_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex, yoy
     return F
 
 
-def _per_share_and_profit_slice_fields(daily, fund_hist: pd.DataFrame, idx: pd.DatetimeIndex, yoy_periods: int, close: pd.DataFrame | None) -> dict:
+def _financial_eps_yield(fund_hist: pd.DataFrame, prices: PriceFrames | None, idx: pd.DatetimeIndex, share_basis: ShareBasis | None) -> pd.DataFrame:
+    """Normalize vendor-ordinary EPS on its public clock before using saved canonical quotes."""
+    if prices is None or prices.close_pit is None or share_basis is None or "epsDiluted" not in fund_hist:
+        return pd.DataFrame(index=idx)
+    terminal = pd.Timestamp(idx.max())
+    targets = pd.Series(terminal, index=fund_hist.index)
+    values = vendor_ordinary_per_share(share_basis, fund_hist["epsDiluted"], fund_hist["ticker"], fund_hist["as_of"], targets)
+    df_eps = fiscal_values_to_daily(fund_hist, values, idx, max_age_days=_QUARTERLY_MAX_AGE_DAYS, preserve_nulls=True)
+    source = pd.Series(terminal, index=idx)
+    destination = pd.Series(idx, index=idx)
+    for ticker in df_eps:
+        df_eps[ticker] = ordinary_per_share_to_security(share_basis, df_eps[ticker], pd.Series(str(ticker), index=idx), source, destination)
+    return ratio(df_eps.where(df_eps.gt(0)), prices.close_pit.reindex(index=idx), positive_den=True)
+
+
+def _per_share_and_profit_slice_fields(
+    daily: Callable[[str], pd.DataFrame], comparison_history: pd.DataFrame, idx: pd.DatetimeIndex, yoy_periods: int, df_eps_yield: pd.DataFrame
+) -> dict:
     """Per-share economics and the non-controlled slice of reported profit.
 
     Per share  reported diluted EPS (98.8%) and the OPTION OVERHANG (diluted - basic) / basic,
@@ -709,14 +625,10 @@ def _per_share_and_profit_slice_fields(daily, fund_hist: pd.DataFrame, idx: pd.D
     overhang = daily("optionOverhang")
     if not overhang.empty and overhang.notna().any().any():
         F["option_overhang"] = overhang
-    eps = daily("epsDiluted")
-    if not eps.empty and close is not None:
-        cols = eps.columns.intersection(close.columns)
-        ey = ratio(eps[cols].where(eps[cols] > 0), close[cols], positive_den=True)
-        if ey.notna().any().any():
-            F["eps_yield"] = ey  # reported diluted EPS / price: E/P net of preferred
+    if not df_eps_yield.empty and df_eps_yield.notna().any().any():
+        F["eps_yield"] = df_eps_yield
     dps_growth = fiscal_change_to_daily(
-        fund_hist, "dividendsPerShare", idx, kind="pct", periods=yoy_periods, years=1, max_age_days=_QUARTERLY_MAX_AGE_DAYS
+        comparison_history, "dividendsPerShare", idx, kind="pct", periods=yoy_periods, years=1, max_age_days=_QUARTERLY_MAX_AGE_DAYS
     )
     if dps_growth.notna().any().any():
         F["dps_growth"] = dps_growth
@@ -863,9 +775,22 @@ def _valuation_yield_fields(
     }
 
 
+def _diluted_capital(fund_hist: pd.DataFrame, idx: pd.DatetimeIndex, prices: PriceFrames | None, df_cap: pd.DataFrame) -> pd.DataFrame:
+    """Scale supported same-scope issuer cap by a co-observed vendor dilution ratio."""
+    if prices is None or not {"dilutedShares", "sharesOutstanding"}.issubset(fund_hist):
+        return df_cap
+    counts = pd.to_numeric(fund_hist["sharesOutstanding"], errors="coerce")
+    diluted = pd.to_numeric(fund_hist["dilutedShares"], errors="coerce")
+    ratio_values = diluted / counts.where(counts.gt(0))
+    ratio_values = ratio_values.where(np.isfinite(ratio_values) & ratio_values.gt(0))
+    df_ratio = fiscal_values_to_daily(fund_hist, ratio_values, idx, max_age_days=_QUARTERLY_MAX_AGE_DAYS, preserve_nulls=True)
+    df_supported = same_capital_scope(prices.close_pit, prices.shares_outstanding_pit, df_cap)
+    df_diluted = df_cap * df_ratio.reindex_like(df_cap)
+    return df_diluted.where(df_supported & np.isfinite(df_diluted) & df_diluted.gt(0)).combine_first(df_cap)
+
+
 def _enterprise_value_frame(
     daily,
-    close: pd.DataFrame | None,
     mcap: pd.DataFrame,
     equity: pd.DataFrame,
     d2e: pd.DataFrame,
@@ -873,32 +798,13 @@ def _enterprise_value_frame(
     pension_ret: pd.DataFrame,
     operating_cash: frozenset[str] | None = None,
 ) -> pd.DataFrame:
-    """True (fully-diluted) enterprise value; feeds every EV yield.
-
-      EV = fully-diluted mcap
-           + total debt (borrowings + capitalized leases, shared `capital` definition)
-           + minority interest + redeemable NCI / temporary equity + PREFERRED equity
-           + pension/OPEB net deficit
-           - non-operating liquid assets (cash + ST investments + current marketables)
-
-    Prefers diluted shares x price for the equity claim (falls back to basic mcap when
-    diluted shares are absent); real debt columns preferred, with debtToEquity*equity as
-    a last-resort fallback. PREFERRED stock and redeemable NCI rank ahead of / alongside
-    common and were simply missing: `preferredEquity` is the balance-sheet carrying
-    amount, which for a par-value-only filer understates the claim -- but never
-    overstates it, so including it is strictly closer to the true EV than omitting it."""
-    diluted = daily("dilutedShares")
-    fd_mcap = mcap
-    if close is not None and not diluted.empty and diluted.notna().any().any():
-        cols = diluted.columns.intersection(close.columns)
-        fd = (close[cols] * diluted[cols]).where(lambda x: x > 0)
-        fd_mcap = fd.combine_first(mcap)  # diluted where available, else basic
+    """Add debt, senior claims and pension obligations, then subtract non-operating liquid assets."""
     debt = capital.total_debt(daily)
     if debt is None or debt.empty:
         debt = d2e.clip(lower=0.0) * equity.where(equity > 0) if not d2e.empty and not equity.empty else pd.DataFrame()
     liquid = capital.liquid_assets(daily, operating_cash=operating_cash)
     return _enterprise_value(
-        fd_mcap,
+        mcap,
         [debt, daily("minorityInterest"), daily("redeemableNCI"), daily("preferredEquity"), pension_ret],
         [liquid if liquid is not None else capital.drop_operating_cash(cash, operating_cash)],
     )
@@ -1159,7 +1065,8 @@ def _quality_regime_fields(
         F["rule_of_40"] = rule40
     _oa = capital.assets_ex_lease(daily)
     _ocf = daily("operatingCashFlow")
-    _sh = daily("sharesOutstanding")
+    df_source_shares = daily("_source_shares_outstanding")
+    _sh = daily("sharesOutstanding").reindex_like(df_source_shares)
     _roa = ratio(net_income, _oa, positive_den=True)
     _cr = ratio(daily("currentAssets"), daily("currentLiabilities"), positive_den=True)
     _lev = ratio(long_debt, _oa, positive_den=True)
@@ -1177,6 +1084,7 @@ def _quality_regime_fields(
         )
         prior_lev = ratio(prior("longTermDebt"), prior_assets, positive_den=True)
         prior_turn = ratio(prior("totalRevenue"), prior_assets, positive_den=True)
+        df_prior_shares = prior("sharesOutstanding").reindex_like(df_source_shares)
         parts = [
             (_roa > 0),
             (_ocf > 0),
@@ -1184,13 +1092,16 @@ def _quality_regime_fields(
             (ratio(_ocf, _oa, positive_den=True) > _roa),  # accruals: cash > profit
             (_lev < prior_lev),
             (_cr > prior_cr),
-            (_sh <= prior("sharesOutstanding") * 1.001),  # no net dilution
+            (_sh <= df_prior_shares * 1.001),  # no net dilution on common comparison units
             (_gm > prior("grossMargins")),
             (_turn > prior_turn),
         ]
-        fscore = sum(p.astype("float64") for p in parts)
+        fscore = cast(pd.DataFrame, sum(p.astype("float64") for p in parts))
+        df_raw_pair = df_source_shares.notna() & prior("_source_shares_outstanding").reindex_like(df_source_shares).notna()
+        df_converted_pair = _sh.notna() & df_prior_shares.notna()
+        df_unknown_units = (df_raw_pair & ~df_converted_pair).reindex_like(fscore).fillna(False).astype(bool)
         gate = _oa.notna() & net_income.notna() & _ocf.notna()
-        fscore = fscore.where(gate)
+        fscore = fscore.where(gate & ~df_unknown_units)
         if fscore.notna().any().any():
             F["piotroski_f_score"] = fscore
     return F
@@ -1524,15 +1435,11 @@ def _valuation_engine_fields(
     return F
 
 
-def _intrinsic_fields(
-    fund_hist: pd.DataFrame, close: pd.DataFrame | None, idx: pd.DatetimeIndex, intrinsic_cfg: dict | None, level_factor: pd.DataFrame | None = None
-) -> dict:
-    """INTRINSIC VALUE (two-stage DCF on TTM FCF) vs price. `intrinsic_cfg` is optional --
-    every caller up the chain defaults it to None, so fall back to `intrinsic_value_daily`'s
-    own documented DCF defaults rather than splatting None."""
-    if close is None:
+def _intrinsic_fields(fund_hist: pd.DataFrame, prices: PriceFrames | None, idx: pd.DatetimeIndex, intrinsic_cfg: dict | None) -> dict:
+    """Emit issuer DCF yield only when saved capitalization supports it."""
+    if prices is None:
         return {}
-    iy = intrinsic_value_daily(fund_hist, close, idx, level_factor=level_factor, **(intrinsic_cfg or {})).get("yield")
+    iy = intrinsic_value_daily(fund_hist, prices, idx, settings=intrinsic_cfg).get("yield")
     if iy is None or iy.empty or not iy.notna().any().any():
         return {}
     return {"intrinsic_yield": iy}
@@ -1612,18 +1519,23 @@ def _fiscal_accessors(
 def _derived_fields(
     fund_hist: pd.DataFrame,
     idx: pd.DatetimeIndex,
-    close: pd.DataFrame | None,
+    prices: PriceFrames | None = None,
     yoy_periods: int = 1,
     intrinsic_cfg: dict | None = None,
     earnings_history: pd.DataFrame | None = None,
     pension_facts: pd.DataFrame | None = None,
     notes_num: pd.DataFrame | None = None,
-    level_factor: pd.DataFrame | None = None,
+    share_basis: ShareBasis | None = None,
 ) -> dict:
-    """Compose daily characteristics from shared fiscal accessors and capital bases."""
+    """Compose issuer-valued, matched per-share and comparison-unit characteristics."""
     fund_hist = null_invalid_gross_profit_sentinels(fund_hist)
     F: dict[str, pd.DataFrame] = {}
-    daily, prior = _fiscal_accessors(fund_hist, idx, yoy_periods)
+    df_comparison = comparison_share_history(
+        fund_hist, share_basis, pd.Timestamp(idx.max()), count_fields=("sharesOutstanding", "dilutedShares"), per_share_fields=("dividendsPerShare",)
+    )
+    # Raw observations establish age/availability only; comparisons use the converted column.
+    df_comparison["_source_shares_outstanding"] = fund_hist.get("sharesOutstanding", pd.Series(np.nan, index=fund_hist.index))
+    daily, prior = _fiscal_accessors(df_comparison, idx, yoy_periods)
 
     # ---- frames shared by MORE THAN ONE block (hoisted once) ---- #
     revenue = daily("totalRevenue")
@@ -1669,31 +1581,16 @@ def _derived_fields(
     # would turn NEGATIVE, nulling a feature that has a value today.
     operating_cash = frozenset(family_tickers(fund_hist, "bank") | family_tickers(fund_hist, "insurance"))
 
-    # ---- everything that needs a daily market cap ---- #
-    # `close` is Optional all the way down this module (`_intrinsic_fields` returns early on
-    # None, `_enterprise_value_frame` and the earnings-yield block both test it), but
-    # `daily_market_cap` declares a non-Optional frame and reads `close_split.index` on its
-    # first line. An empty frame on `idx` is the same answer `PitCache.market_cap` gives when
-    # either input is absent, and every downstream block already handles an empty mcap.
-    mcap = (
-        pd.DataFrame(index=idx)
-        if close is None or close.empty
-        else daily_market_cap(
-            fund_hist,
-            close,
-            level_factor=level_factor,
-            max_age_days=_QUARTERLY_MAX_AGE_DAYS,
-        )
-    )
+    # Saved issuer capitalization remains subject to the original public source-age gate.
+    mcap = pd.DataFrame(index=idx) if prices is None or prices.mcap_pit is None else prices.mcap_pit.reindex(idx)
+    df_eligible = daily("_source_shares_outstanding")
+    mcap = mcap.where(df_eligible.reindex_like(mcap).gt(0) & np.isfinite(mcap) & mcap.gt(0))
 
-    # Every field below is a yield or a multiple, so all of them are undefined without a
-    # price. They are SKIPPED rather than emitted empty, because a key carrying an empty
-    # frame becomes an all-NaN column downstream and reads as "this company has no earnings
-    # yield" instead of "there was no price to compute one" -- the same distinction
-    # `_intrinsic_fields` already makes by returning `{}` when `close is None`.
+    # Preserve the existing field-presence contract when the capitalization input is absent.
     if not mcap.empty:
         F["ocf_yield"] = ratio(daily("operatingCashFlow"), mcap, positive_den=True)
-        ev = _enterprise_value_frame(daily, close, mcap, equity, d2e, cash, pension_ret, operating_cash)
+        df_equity_value = _diluted_capital(fund_hist, idx, prices, mcap)
+        ev = _enterprise_value_frame(daily, df_equity_value, equity, d2e, cash, pension_ret, operating_cash)
         F.update(
             _valuation_yield_fields(
                 mcap,
@@ -1712,7 +1609,7 @@ def _derived_fields(
 
     # ---- price-independent blocks ---- #
     F.update(_profitability_level_fields(daily, revenue, net_income, fcf))
-    F.update(_growth_trend_fields(daily, fund_hist, idx, revenue, rnd, yoy_periods, prior))
+    F.update(_growth_trend_fields(daily, df_comparison, idx, revenue, rnd, yoy_periods, prior))
     F.update(_reinvestment_fields(daily, fund_hist, idx, yoy_periods))
     F.update(_quality_regime_fields(daily, fund_hist, idx, revenue, net_income, fcf, long_debt, yoy_periods, prior))
     F.update(_state_flag_fields(daily, net_income, fcf, equity))
@@ -1723,8 +1620,8 @@ def _derived_fields(
     F.update(_sga_efficiency_fields(daily, fund_hist, idx, revenue, yoy_periods))
     F.update(_ma_footprint_fields(daily, fund_hist, idx, revenue, yoy_periods))
     F.update(_sbc_fields(daily, revenue, sbc))
-    F.update(_valuation_engine_fields(daily, fund_hist, idx, revenue, ebitda, yoy_periods, prior))
-    F.update(_intrinsic_fields(fund_hist, close, idx, intrinsic_cfg, level_factor))
+    F.update(_valuation_engine_fields(daily, df_comparison, idx, revenue, ebitda, yoy_periods, prior))
+    F.update(_intrinsic_fields(fund_hist, prices, idx, intrinsic_cfg))
 
     # ---- BUSINESS-QUALITY blocks ---- #
     #   SBC-vs-buyback, #5 forensic red flags, #3 M&A digestion, per-share economics.
@@ -1740,7 +1637,8 @@ def _derived_fields(
     F.update(_da_realism_fields(daily))
     F.update(_forensic_fields(daily, idx, prior))
     F.update(_digestion_fields(daily, fund_hist, idx, yoy_periods, operating_cash))
-    F.update(_per_share_and_profit_slice_fields(daily, fund_hist, idx, yoy_periods, close))
+    df_eps_yield = _financial_eps_yield(fund_hist, prices, idx, share_basis)
+    F.update(_per_share_and_profit_slice_fields(daily, df_comparison, idx, yoy_periods, df_eps_yield))
 
     return F
 
@@ -1749,27 +1647,21 @@ def build_fundamental_feature_panel(
     fundamentals_history: pd.DataFrame | None,
     peer_dict: dict,
     trading_index: pd.DatetimeIndex,
-    stock_close: pd.DataFrame | None = None,
+    prices: PriceFrames | None = None,
     intrinsic_cfg: dict | None = None,
     hist_window: int = _HIST_WINDOW,
     hist_min_periods: int = _HIST_MIN_PERIODS,
     earnings_history: pd.DataFrame | None = None,
     pension_facts: pd.DataFrame | None = None,
     notes_num: pd.DataFrame | None = None,
-    level_factor: pd.DataFrame | None = None,
+    share_basis: ShareBasis | None = None,
     history_fields: dict[str, pd.DataFrame] | None = None,
     output_since: pd.Timestamp | None = None,
     feature_cfg: dict | None = None,
 ) -> pd.DataFrame:
-    """
-    Long-format panel with a raw ``f_<characteristic>`` column for every approved
-    characteristic and ``f_<characteristic>_vs_hist`` only for the approved history set.
-    Two explicitly selected characteristics also retain their existing-peer comparison.
+    """Build the existing raw/history feature panel using public fundamentals and saved capital.
 
-    `stock_close` is required for the valuation features (daily market cap);
-    without it valuation is skipped but every other feature is still built.
-    Empty frame if no fundamentals available.
-    """
+    Weighted-average share definitions remain distinct; unsupported saved capitalization stays missing."""
 
     if fundamentals_history is None or fundamentals_history.empty:
         raise ValueError("Need to build fundamentals_history table first")
@@ -1778,13 +1670,13 @@ def build_fundamental_feature_panel(
     fields = _derived_fields(
         fund_hist=fundamentals_history,
         idx=trading_index,
-        close=stock_close,
+        prices=prices,
         yoy_periods=yoy_periods,
         intrinsic_cfg=intrinsic_cfg,
         earnings_history=earnings_history,
         pension_facts=pension_facts,
         notes_num=notes_num,
-        level_factor=level_factor,
+        share_basis=share_basis,
     )
     fields.update(reported_history_fields(fundamentals_history, trading_index, **(feature_cfg or {})))
 

@@ -274,7 +274,8 @@ def test_economic_ownership_is_computed_from_the_filed_share_count():
     filing space — dividing two independently forward-filled daily frames would put a stale
     proxy's share count over a fresh quarter's outstanding and drift with every buyback.
     """
-    from src.data_aggregate.utils.governance.clean import economic_ownership, pit_shares_outstanding
+    from src.data_aggregate.utils.governance.clean import economic_ownership
+    from tests.data_aggregate.governance_pit_reference import pit_shares_outstanding
 
     hist = pd.DataFrame(
         [

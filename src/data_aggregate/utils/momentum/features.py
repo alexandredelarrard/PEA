@@ -89,6 +89,7 @@ from src.data_aggregate.utils.common.panel import mask_to_availability
 from src.data_aggregate.utils.common.xs import xs_standardize
 from src.data_aggregate.utils.price.checks import mask_seam_windows
 from src.data_aggregate.utils.price.returns import forward_compound, momentum_characteristic, trailing_vol
+from src.utils.price.levels import dollar_volume
 
 logger = logging.getLogger(__name__)
 
@@ -203,6 +204,8 @@ def compute_raw_features(
     *,
     returns: pd.DataFrame | None = None,
     level_factor: pd.DataFrame | None = None,
+    close_pit: pd.DataFrame | None = None,
+    tape_support: pd.DataFrame | None = None,
     seams: dict[str, list[pd.Timestamp]] | None = None,
     split_seams: dict[str, list[pd.Timestamp]] | None = None,
 ) -> dict:
@@ -302,16 +305,12 @@ def compute_raw_features(
     # ---- Liquidity / volume (point-in-time trailing windows; skipped w/o volume) ----
     if volume is not None:
         volume = volume.reindex_like(close_total)
-        # `None` -> 1.0, so the synthetic fingerprint harness and every test that has no
-        # factor to give are bit-identical to the pre-`S` result rather than skipped.
-        lvl = 1.0 if level_factor is None else level_factor.reindex_like(close_total).fillna(1.0)
+        # Unknown published S cannot establish a trusted dollar valuation.
         # `split`, not `close_total`: dollar volume is a LEVEL x a share count, and both
         # carry the same SPLIT restatement so it cancels. On the total-return basis the
         # dollars traded would be depressed by every later dividend.
 
-        # ⚠ Spinoff reduce price and backfilled, but vol does not
-        # lvl is the factor to apply to volume to represent the spinoff shares added
-        dollar_vol = split * volume * lvl  # daily $ traded
+        dollar_vol = dollar_volume(split, volume, level_factor, close_pit, tape_support)
 
         # Liquidity/size proxy: log average daily dollar volume (63d).
         dollar_volume_log = cast(pd.DataFrame, np.log1p(dollar_vol.rolling(63, min_periods=20).mean()))
@@ -464,6 +463,8 @@ def build_feature_panel(
     returns: pd.DataFrame | None = None,
     close_split: pd.DataFrame | None = None,
     level_factor: pd.DataFrame | None = None,
+    close_pit: pd.DataFrame | None = None,
+    tape_support: pd.DataFrame | None = None,
     seams: dict[str, list[pd.Timestamp]] | None = None,
     split_seams: dict[str, list[pd.Timestamp]] | None = None,
 ) -> pd.DataFrame:
@@ -497,6 +498,8 @@ def build_feature_panel(
         seasonal_horizons=seasonal_horizons,
         returns=returns,
         level_factor=level_factor,
+        close_pit=close_pit,
+        tape_support=tape_support,
         seams=seams,
         split_seams=split_seams,
     )

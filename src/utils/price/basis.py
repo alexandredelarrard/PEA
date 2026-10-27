@@ -7,10 +7,59 @@ from typing import cast
 
 import pandas as pd
 
+from src.constants.constants import SHARADAR_ACTION_SPINOFF, SHARADAR_ACTION_SPLIT
 from src.context import Context
 from src.data_store.schema import Tables
-from src.utils.price.adjustments import ShareBasis, resolve_share_events
+from src.utils.cutover_continuity import PredecessorSeries, predecessor_actions, predecessor_series, register_windows
+from src.utils.predecessor_series import load_vendor_series, with_overrides
+from src.utils.price.adjustments import ShareBasis, quantity_basis, resolve_share_events
 from src.utils.price.repairs import apply_return_seams, apply_split_vintage
+
+
+def load_price_identity(context: Context, tickers: list[str]) -> tuple[tuple[PredecessorSeries, ...], pd.DataFrame | None]:
+    """Load predecessor ownership and ADR category evidence in one metadata projection."""
+    store = context.store
+    columns = ["canonical_ticker", "cik", "role", "valid_from", "valid_to", "sources"]
+    df_lineage = (
+        store.load(Tables.entity_lineage, columns=columns, where={"role": "cik_window"}, optional=True)
+        if "role" in store.columns(Tables.entity_lineage)
+        else None
+    )
+    security_columns = ["ticker", "secfilings", "lastquarter"]
+    if "category" in store.columns(Tables.sharadar_tickers):
+        security_columns.append("category")
+    df_security = store.load(Tables.sharadar_tickers, columns=security_columns, optional=True)
+    derived = () if df_lineage is None or df_security is None else predecessor_series(df_security, register_windows(df_lineage), tickers)
+    declared = tuple(item for item in load_vendor_series(context.config_dir) if item.ticker in tickers)
+    return with_overrides(derived, declared), df_security
+
+
+def load_quantity_basis(context: Context, tickers: Sequence[str], bugfix: dict) -> ShareBasis:
+    """Load sparse quantity events and identity once, without price anchors or repairs."""
+    names = sorted(set(tickers))
+    store = context.store
+    series, df_security = load_price_identity(context, names)
+    df_splits = store.load(Tables.prices_splits, columns=["ticker", "date", "ratio"], where={"ticker": names}, optional=True)
+    df_actions = store.load(
+        Tables.sharadar_actions,
+        columns=["ticker", "date", "action", "value"],
+        where={
+            "ticker": sorted(set(names) | {s.vendor_ticker for s in series}),
+            "action": [SHARADAR_ACTION_SPLIT, SHARADAR_ACTION_SPINOFF, "adrratiosplit"],
+        },
+        optional=True,
+    )
+    if df_splits is None and store.exists(Tables.prices_splits):
+        df_splits = pd.DataFrame(columns=["ticker", "date", "ratio"])
+    if df_actions is None and store.exists(Tables.sharadar_actions):
+        df_actions = pd.DataFrame(columns=["ticker", "date", "action", "value"])
+    if df_actions is not None and series:
+        df_units = df_actions.loc[df_actions["action"].eq("adrratiosplit") & df_actions["ticker"].isin(names)]
+        df_economics = df_actions.loc[df_actions["action"].isin([SHARADAR_ACTION_SPLIT, SHARADAR_ACTION_SPINOFF])]
+        df_owners = df_economics.loc[df_economics["ticker"].isin({s.vendor_ticker for s in series})]
+        df_actions = predecessor_actions(df_economics.loc[df_economics["ticker"].isin(names)], df_owners, series)
+        df_actions = pd.concat([df_actions, df_units], ignore_index=True)
+    return quantity_basis(df_actions, df_splits, bugfix, names, df_security)
 
 
 def _quote_anchors(context: Context, anchors: list[tuple[str, dict]], bugfix: dict, quotes: pd.DataFrame | None) -> pd.DataFrame | None:

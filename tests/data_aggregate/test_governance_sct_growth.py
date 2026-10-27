@@ -17,7 +17,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.governance.clean import PAY_BACKFILL_STAGE, GovernanceInputs, clean_governance_inputs
+from src.data_aggregate.utils.governance.clean import PAY_BACKFILL_STAGE, GovernanceInputs
 from src.data_aggregate.utils.governance.def14a_impute import (
     CEO_COMP,
     FILL_BACKFILL,
@@ -29,6 +29,7 @@ from src.data_aggregate.utils.governance.def14a_impute import (
 from src.data_aggregate.utils.governance.panel import _ceo_pay_growth
 from src.data_aggregate.utils.governance.pay_features import SCT_GROWTH, _comp_history
 from src.data_aggregate.utils.governance.staleness import source_date_column
+from tests.data_aggregate.governance_pit_reference import clean_governance_inputs
 
 IDX = pd.bdate_range("2021-01-04", "2023-12-29")
 

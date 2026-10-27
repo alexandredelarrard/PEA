@@ -1,26 +1,6 @@
-"""
-step_cube_fundamentals.py  (src/data_aggregate/transformers/step_cube_fundamentals.py)
-----------------------------------------------------------------------------------
-Everything keyed on SEC filings -> `cube_part_fundamentals`: the peer-relative fundamental
-panel, the sector-scoped KPIs, earnings expectations, workforce and dividends.
+"""Build the fundamental cube from public histories and saved price capital.
 
-WHY THESE FIVE TOGETHER. They all read `fundamentals_history`, and in the exploded DAG each
-was its own task, so that table was loaded five separate times and every shared field
-(`sharesOutstanding`, `totalRevenue`, `netIncome`, `freeCashflow`) was pivoted and
-forward-filled once per task. Here it is loaded ONCE and the point-in-time frames are shared
-through a single `PitFrames`, which is a pure memoization -- proved bit-identical by
-`tests/data_aggregate/test_pit_cache.py`.
-
-Quarter-basis and leak-free by construction: the SEC history is quarterly (TTM levels) and
-every value is keyed on its FILING date (`as_of`); the point-in-time layer forward-fills each
-value only from that date, so a feature on day d reflects the most recent quarter whose
-10-Q/10-K was already public on d -- never a not-yet-filed one.
-
-Warm-up 1560: the binding look-backs are `_self_history_z`'s rolling(1260) and the 5-year
-dividend payout CAGR's 1260-day shift of a 252-day TTM series (1511 days end to end).
-`sector` / `earnings` need ~none (they look back in filing space over the full source table),
-so merging them into this part costs them a longer daily grid but no correctness.
-"""
+Quantity evidence is loaded once; each family retains its publication, age and per-share rules."""
 
 from __future__ import annotations
 
@@ -38,7 +18,7 @@ from src.data_aggregate.utils.common.incremental import (
 from src.data_aggregate.utils.common.panel_merge import PanelMerger
 from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
-from src.data_aggregate.utils.common.pit import PitFrames, add_cube_time_growth
+from src.data_aggregate.utils.common.pit import add_cube_time_growth
 from src.data_aggregate.utils.fundamentals.disclosure_features import disclosure_return_fields
 from src.data_aggregate.utils.fundamentals.dividend_features import build_dividend_feature_panel
 from src.data_aggregate.utils.fundamentals.earnings_features import build_earnings_feature_panel
@@ -61,9 +41,8 @@ from src.data_aggregate.utils.price.frames import (
 )
 from src.data_store.schema import Table as SchemaTable
 from src.data_store.schema import Tables
-from src.utils.predecessor_series import load_level_actions as level_actions
-from src.utils.price.adjustments import load_bugfix
-from src.utils.price.basis import load_share_basis
+from src.utils.price.adjustments import ShareBasis, load_bugfix
+from src.utils.price.basis import load_quantity_basis
 from src.utils.step import Step
 
 _INCREMENTAL_SOURCE_YEARS = 6
@@ -74,13 +53,14 @@ _EMPLOYEE_LOOKBACK_YEARS = 2
 class StepCubeFundamentals(Step):
     # The price fields this step projects, declared like every sibling sub-step so the
     # Levels value the business; persisted total returns measure disclosure responses.
-    _FIELDS = ("close_split", "level_factor", "ret", "sector_ret")
+    _FIELDS = ("close_split", "level_factor", "ret", "sector_ret", "close_pit", "shares_outstanding_pit", "mcap_pit")
 
-    def __init__(self, context: Context, config: DictConfig):
+    def __init__(self, context: Context, config: DictConfig) -> None:
         super().__init__(context=context, config=config)
         self._cfg = config.build_cube
         self._part = part_for(Tables.cube_part_fundamentals)
         self._store = context.store
+        self._bugfix = load_bugfix(context.config_dir)
 
     def run(self, full: bool = False) -> None:
         # load inputs
@@ -120,8 +100,7 @@ class StepCubeFundamentals(Step):
         )
         employees = self._load_employees(frames.universe, since=source_since)
 
-        # ONE point-in-time cache for all five builders (see the module docstring)
-        pit = PitFrames(fundamentals, frames.trading_index, frames.close_split, frames.level_factor)
+        basis = load_quantity_basis(self._context, frames.universe, self._bugfix)
 
         merger = PanelMerger()
         merger.add(frames.skeleton().assign(_grid=1.0), "universe-grid")
@@ -130,7 +109,7 @@ class StepCubeFundamentals(Step):
                 frames,
                 fundamentals,
                 earnings,
-                pit,
+                basis,
                 history_fields,
                 output_since,
                 source_since,
@@ -139,14 +118,14 @@ class StepCubeFundamentals(Step):
             "No fundamental features built (missing fundamentals).",
         )
         merger.add(
-            self._sector_kpi_panel(frames, fundamentals, pit, history_fields, output_since),
+            self._sector_kpi_panel(frames, fundamentals, history_fields, output_since),
             "sector-KPI",
             "No sector KPI features built (missing fundamentals).",
         )
 
         # earnings
         merger.add(
-            self._earnings_panel(frames, earnings, history_fields, output_since),
+            self._earnings_panel(frames, earnings, history_fields, output_since, basis),
             "earnings-expectation",
             "No earnings-expectation features built.",
         )
@@ -161,16 +140,15 @@ class StepCubeFundamentals(Step):
 
         # dividends
         merger.add(
-            self._dividend_panel(dividend_frames, fundamentals, pit, history_fields, output_since),
+            self._dividend_panel(dividend_frames, fundamentals, basis, history_fields, output_since),
             "dividend",
             "No dividend features built (missing dividend history).",
         )
-        self._log.info("PitFrames shared across the fundamentals builders: %s", pit.stats())
 
         panel = merger.to_long().drop(columns=["_grid"], errors="ignore")
         panel = self._restrict_to_skeleton(panel, frames.skeleton())
         panel = panel.reindex(columns=["date", "ticker", *FEATURE_COLUMNS])
-        del frames, fundamentals, earnings, employees, pit
+        del frames, fundamentals, earnings, employees, basis
 
         n = write_part(self._store, Tables.cube_part_fundamentals, panel, window, drop_empty=True)
         if n == COLUMNS_CHANGED:
@@ -321,7 +299,7 @@ class StepCubeFundamentals(Step):
         frames: PriceFrames,
         fundamentals: pd.DataFrame | None,
         earnings: pd.DataFrame | None,
-        pit: PitFrames,
+        share_basis: ShareBasis,
         history_fields: dict[str, pd.DataFrame] | None,
         output_since: pd.Timestamp | None,
         source_since: pd.Timestamp | None,
@@ -335,8 +313,8 @@ class StepCubeFundamentals(Step):
             fundamentals_history=fundamentals,
             peer_dict=frames.peers,
             trading_index=frames.trading_index,
-            stock_close=frames.close_split,
-            level_factor=frames.level_factor,
+            prices=frames,
+            share_basis=share_basis,
             intrinsic_cfg=self._cfg.get("intrinsic", {}),
             hist_window=int(hist.get("window", 1260)),
             hist_min_periods=int(hist.get("min_periods", 252)),
@@ -363,7 +341,6 @@ class StepCubeFundamentals(Step):
         self,
         frames: PriceFrames,
         fundamentals: pd.DataFrame | None,
-        pit: PitFrames,
         history_fields: dict[str, pd.DataFrame] | None,
         output_since: pd.Timestamp | None,
     ) -> pd.DataFrame | None:
@@ -386,14 +363,11 @@ class StepCubeFundamentals(Step):
         earnings: pd.DataFrame | None,
         history_fields: dict[str, pd.DataFrame] | None,
         output_since: pd.Timestamp | None,
+        share_basis: ShareBasis,
     ) -> pd.DataFrame | None:
         """Report-associated expectations and surprises on their observed publication clock."""
         if earnings is None:
             return None
-        names = list(frames.universe)
-        actions = level_actions(self._context, names)
-        splits = self._store.load(Tables.prices_splits, columns=["ticker", "date", "ratio"], where={"ticker": names}, optional=True)
-        basis = load_share_basis(self._context, names, load_bugfix(self._context.config_dir), actions, splits)
         return build_earnings_feature_panel(
             earnings,
             frames.peers,
@@ -402,7 +376,7 @@ class StepCubeFundamentals(Step):
             level_factor=frames.level_factor,
             history_fields=history_fields,
             output_since=output_since,
-            share_basis=basis,
+            share_basis=share_basis,
         )
 
     def _disclosure_panel(
@@ -450,7 +424,7 @@ class StepCubeFundamentals(Step):
         self,
         frames: PriceFrames,
         fundamentals: pd.DataFrame | None,
-        pit: PitFrames,
+        share_basis: ShareBasis,
         history_fields: dict[str, pd.DataFrame] | None,
         output_since: pd.Timestamp | None,
     ) -> pd.DataFrame | None:
@@ -465,8 +439,8 @@ class StepCubeFundamentals(Step):
             dividends,
             frames.peers,
             frames.trading_index,
-            stock_close=frames.close_split,
-            level_factor=frames.level_factor,
+            prices=frames,
+            share_basis=share_basis,
             fundamentals_history=fundamentals,
             history_fields=history_fields,
             output_since=output_since,

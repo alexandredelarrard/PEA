@@ -1098,12 +1098,12 @@ def test_production_first_publication_uses_immutable_matched_cohorts(sqlite_stor
     step._cfg = {"institutionals": {"value_basis": {"min_securities": 1}}}
     grid = pd.bdate_range("2024-08-01", "2024-12-06")
     quotes = pd.DataFrame(10.0, index=grid, columns=["AAA"])
-    frames = make_frames(grid, {}, close_split=quotes, level_factor=quotes / 10)
+    frames = make_frames(grid, {}, close_split=quotes, level_factor=quotes / 10, close_pit=quotes)
     cusip_map = pd.DataFrame({"cusip": ["111111111"], "ticker": ["AAA"]})
     sqlite_store.save(Tables.cusip_ticker_map, cusip_map)
     splits = pd.DataFrame(columns=["date", "ticker", "value"])
     basis = ShareBasis(actual=splits, vendor=splits, price=splits, policies={})
-    resources = SecThirteenResources(frames, basis, quotes, cusip_map, None)
+    resources = SecThirteenResources(frames, basis, cusip_map, None)
 
     def panel() -> pd.DataFrame | None:
         features = step._institutional_features(resources)

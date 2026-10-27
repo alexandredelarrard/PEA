@@ -40,11 +40,15 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import cast
 
+import numpy as np
 import pandas as pd
 
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.price.adjustments import ShareBasis
 from src.utils.price.frames import extract_field, prices_long_to_multiindex
+from src.utils.price.levels import rebase_security_quantities, rebase_vendor_quantities
+from src.utils.price.per_share import vendor_ordinary_per_share
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +130,31 @@ class PriceFrames:
         idx_col = s.columns[0]
         m = s.melt(id_vars=idx_col, var_name="ticker", value_name="_v").dropna(subset=["_v"]).rename(columns={idx_col: "date"})
         return m[["date", "ticker"]].reset_index(drop=True)
+
+
+def comparison_share_history(
+    df_history: pd.DataFrame,
+    basis: ShareBasis | None,
+    target_date: pd.Timestamp,
+    count_fields: Sequence[str] = ("sharesOutstanding",),
+    per_share_fields: Sequence[str] = (),
+) -> pd.DataFrame:
+    """Copy declared source fields into common comparison units, preserving raw definitions."""
+    df_result = df_history.copy(deep=False)
+    if basis is None:
+        for field in (*count_fields, *per_share_fields):
+            if field in df_result:
+                df_result[field] = np.nan
+        return df_result
+    target = pd.Series(target_date, index=df_result.index)
+    for field in count_fields:
+        if field in df_result:
+            values = rebase_vendor_quantities(basis, df_result[field], df_result["ticker"], df_result["as_of"], target)
+            df_result[field] = values.where(values.gt(0))
+    for field in per_share_fields:
+        if field in df_result:
+            df_result[field] = vendor_ordinary_per_share(basis, df_result[field], df_result["ticker"], df_result["as_of"], target)
+    return df_result
 
 
 def frames_to_long(universe_fields: dict[str, pd.DataFrame]) -> pd.DataFrame:
@@ -267,3 +296,53 @@ def pivot_fields(df_prices: pd.DataFrame) -> dict[str, pd.DataFrame]:
     df_pivot = prices_long_to_multiindex(df_prices)
     fields = {"open": "Open", "high": "High", "low": "Low", "close_split": "CloseSplit", "close_total": "CloseTotal", "volume": "Volume"}
     return {field: extract_field(df_pivot, source) for field, source in fields.items()}
+
+
+def public_security_counts(df_queries: pd.DataFrame, df_daily: pd.DataFrame | None, df_public: pd.DataFrame | None, basis: ShareBasis) -> pd.Series:
+    """Look up saved counts on the same public observation, preserving exact-session holes.
+
+    A non-session publication may use the next session only when it introduces no later
+    observation; its quantity is converted back to the requested date's security unit.
+    """
+    result = pd.Series(np.nan, index=pd.RangeIndex(len(df_queries)), dtype="float64")
+    if df_daily is None or df_daily.empty or df_public is None or df_public.empty:
+        return result.set_axis(df_queries.index)
+    calendar = pd.DatetimeIndex(df_daily.index).as_unit("ns").sort_values()
+    if calendar.has_duplicates:
+        raise ValueError("Saved daily counts require unique session keys")
+    df_counts = df_daily.reindex(calendar)
+    df_rows = df_queries[["ticker", "as_of"]].reset_index(drop=True).copy()
+    df_rows["as_of"] = pd.to_datetime(df_rows["as_of"], errors="coerce").dt.normalize()
+    df_history = df_public[["ticker", "as_of"]].copy()
+    df_history["as_of"] = pd.to_datetime(df_history["as_of"], errors="coerce").dt.normalize()
+    histories = {
+        str(ticker): group["as_of"].dropna().sort_values().to_numpy(dtype="datetime64[ns]")
+        for ticker, group in df_history.groupby("ticker", sort=False)
+    }
+    stamps = calendar.to_numpy(dtype="datetime64[ns]")
+    for ticker, df_group in df_rows.groupby("ticker", sort=False):
+        if ticker not in df_counts or not len(histories.get(str(ticker), [])):
+            continue
+        public = histories[str(ticker)]
+        dates = df_group["as_of"].to_numpy(dtype="datetime64[ns]")
+        previous = stamps.searchsorted(dates, side="right") - 1
+        following = stamps.searchsorted(dates, side="left")
+        past = np.clip(previous, 0, len(calendar) - 1)
+        future = np.clip(following, 0, len(calendar) - 1)
+        values = pd.to_numeric(df_counts[ticker], errors="coerce").to_numpy(dtype="float64")
+        wanted = public.searchsorted(dates, side="right") - 1
+        past_public = public.searchsorted(stamps[past], side="right") - 1
+        future_public = public.searchsorted(stamps[future], side="right") - 1
+        next_session = ~df_group["as_of"].isin(calendar).to_numpy() & (previous >= 0) & (following < len(calendar))
+        next_session &= (past_public != wanted) & (future_public == wanted) & np.isfinite(values[future]) & (values[future] > 0)
+        selected = np.where(next_session, future, past)
+        selected_public = public.searchsorted(stamps[selected], side="right") - 1
+        supported = df_group["as_of"].notna().to_numpy() & (previous >= 0) & (wanted >= 0) & (selected_public == wanted)
+        supported &= np.abs(stamps[selected] - dates) <= np.timedelta64(7, "D")
+        quantities = pd.Series(np.where(supported, values[selected], np.nan), index=df_group.index)
+        source = pd.Series(calendar.take(selected), index=df_group.index)
+        names = pd.Series(str(ticker), index=df_group.index)
+        units = basis.factor(names, source, "units")
+        converted = rebase_security_quantities(basis, quantities.where(quantities.gt(0)), names, source, df_group["as_of"], units)
+        result.iloc[df_group.index] = converted.to_numpy()
+    return result.set_axis(df_queries.index)

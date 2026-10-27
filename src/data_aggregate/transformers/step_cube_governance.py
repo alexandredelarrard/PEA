@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pandas as pd
 from omegaconf import DictConfig
 
@@ -24,9 +26,11 @@ from src.data_aggregate.utils.price.frames import (
 )
 from src.data_store.schema import Tables
 from src.utils.filer_tables import def14a_evidence_mask
+from src.utils.price.adjustments import load_bugfix
+from src.utils.price.basis import load_quantity_basis
 from src.utils.step import Step
 
-_PRICE_FIELDS = ("close_split", "close_total")
+_PRICE_FIELDS = ("close_split", "close_total", "shares_outstanding_pit")
 _OWNERSHIP_COLUMNS = ("ticker", "accession_number", "holder_type", "holder_name", "shares")
 #: the cleaning stage reads later proxies (stint constants, the historical pay backfill), so an
 #: incremental run cannot restate the rows it does not rewrite
@@ -92,7 +96,17 @@ class StepCubeGovernance(Step):
 
     # ---- inputs ---- #
     def _load_frames(self, since: pd.Timestamp | None) -> PriceFrames:
-        return load_price_frames(self._store, peers=load_peers_or_raise(self._context, self._config), fields=_PRICE_FIELDS, since=since)
+        """Retain full count lineage while bounding the daily feature/return grid."""
+        frames = load_price_frames(self._store, peers=load_peers_or_raise(self._context, self._config), fields=_PRICE_FIELDS, since=None)
+        if since is None:
+            return frames
+        idx = frames.trading_index[frames.trading_index >= since]
+        return replace(
+            frames,
+            trading_index=idx,
+            close_split=frames.close_split.reindex(idx) if frames.close_split is not None else None,
+            close_total=frames.close_total.reindex(idx) if frames.close_total is not None else None,
+        )
 
     def _load_def14a(self) -> pd.DataFrame | None:
         """Load usable scalar observations, excluding archives and retry-only parents."""
@@ -153,7 +167,7 @@ class StepCubeGovernance(Step):
 
     def _load_fundamentals(self) -> pd.DataFrame | None:
         """Load revenue and point-in-time shares used by governance features."""
-        df = self._store.load(Tables.fundamentals_history, optional=True)
+        df = self._store.load(Tables.fundamentals_history, columns=["ticker", "as_of", "fiscal_end", "totalRevenue"], optional=True)
         if df is None or df.empty:
             self._log.warning("No fundamentals history -> the pay-vs-revenue-growth misalignment feature is skipped.")
             return None
@@ -177,7 +191,8 @@ class StepCubeGovernance(Step):
             ownership=self._load_ownership(),
         )
         fundamentals = self._load_fundamentals()
-        inputs, stats = clean_governance_inputs(raw, fundamentals)
+        basis = load_quantity_basis(self._context, frames.universe, load_bugfix(self._context.config_dir))
+        inputs, stats = clean_governance_inputs(raw, fundamentals, frames, basis)
         lookahead = {k.split("|", 1)[1]: v for k, v in stats.items() if k.startswith(f"{PAY_BACKFILL_STAGE}|")}
         for key, value in stats.items():
             if not key.startswith(f"{PAY_BACKFILL_STAGE}|"):

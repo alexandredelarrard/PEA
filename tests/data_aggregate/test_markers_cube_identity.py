@@ -16,7 +16,7 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.common.inputs import load_source
-from src.data_aggregate.utils.governance.clean import GovernanceInputs, clean_governance_inputs
+from src.data_aggregate.utils.governance.clean import GovernanceInputs
 from src.data_aggregate.utils.governance.panel import build_governance_feature_panel
 from src.data_aggregate.utils.institutionals.frontiers import schedule_complete_through
 from src.data_aggregate.utils.institutionals.insider_features import InsiderCoverage
@@ -29,6 +29,7 @@ from src.data_extract.utils.institutionals.fetch_13f_backfill import mark_gap_wa
 from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore
 from tests.conftest import _store, make_frames
+from tests.data_aggregate.governance_pit_reference import clean_governance_inputs
 from tests.data_aggregate.insider_pit_reference import build_prepared_insider_panel as build_insider_feature_panel
 
 TICKERS = ["AAPL", "DIS", "HPQ", "JPM", "PG"]

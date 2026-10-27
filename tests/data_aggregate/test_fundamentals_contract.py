@@ -18,6 +18,7 @@ from src.constants.constants import FUNDAMENTALS_REFRESH_TRADING_DAYS
 from src.data_aggregate.transformers.step_cube_fundamentals import StepCubeFundamentals
 from src.data_aggregate.utils.common.incremental import PART_REFRESH_TRADING_DAYS
 from src.data_store.schema import Tables, name_of
+from tests.data_aggregate.fundamental_pit_reference import known_no_share_events, legacy_capital_frames
 
 
 class _StopAfterPlanError(RuntimeError):
@@ -188,17 +189,11 @@ def test_real_fundamentals_full_and_incremental_tail_parity(real_frames):
     window = calendar[calendar >= warmup_start]
 
     full = build_fundamental_feature_panel(
-        fundamentals,
-        peers,
-        calendar,
-        stock_close=close.reindex(calendar),
+        fundamentals, peers, calendar, prices=legacy_capital_frames(fundamentals, close.reindex(calendar)), share_basis=known_no_share_events()
     )
 
     incremental = build_fundamental_feature_panel(
-        fundamentals,
-        peers,
-        window,
-        stock_close=close.reindex(window),
+        fundamentals, peers, window, prices=legacy_capital_frames(fundamentals, close.reindex(window)), share_basis=known_no_share_events()
     )
 
     keys = ["date", "ticker"]

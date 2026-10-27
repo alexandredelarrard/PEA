@@ -11,13 +11,31 @@ from src.constants.constants import SHARADAR_ACTION_SPINOFF, SHARADAR_ACTION_SPL
 from src.constants.constants_price import MACRO_MARKET_SERIES
 from src.context import Context
 from src.data_aggregate.utils.common.peers_io import load_peers
+from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_store.schema import Tables
-from src.utils.cutover_continuity import PredecessorSeries, predecessor_actions, predecessor_series, register_windows
+from src.utils.cutover_continuity import PredecessorSeries, predecessor_actions
 from src.utils.macro import load_macro_series
-from src.utils.predecessor_series import load_vendor_series, with_overrides
+from src.utils.price.adjustments import ShareBasis, unsupported_units
+from src.utils.price.basis import load_price_identity, load_quantity_basis
+from src.utils.string import yahoo_symbol
 
 logger = logging.getLogger(__name__)
 PRICE_COLS = ["date", "open", "high", "low", "close_split", "close_total", "volume", "ticker"]
+
+
+def load_quantity_inputs(
+    context: Context, frames: PriceFrames, bugfix: dict, class_lines: pd.DataFrame | None = None
+) -> tuple[ShareBasis, pd.DataFrame]:
+    """Load complete sparse unit evidence and projected raw secondary-class tape once."""
+    names = list(frames.universe)
+    class_names = sorted(set(class_lines["market_symbol"].map(yahoo_symbol))) if class_lines is not None else []
+    df_bars = (
+        context.store.load(Tables.prices, columns=["ticker", "date", "volume"], where={"ticker": class_names}, optional=True) if class_names else None
+    )
+    basis = load_quantity_basis(context, names, bugfix)
+    if df_bars is None:
+        df_bars = pd.DataFrame(columns=["ticker", "date", "volume"])
+    return basis, df_bars
 
 
 @dataclass(frozen=True)
@@ -35,40 +53,10 @@ class PriceInputs:
     unsupported_units: frozenset[str]
 
 
-def _identity_inputs(context: Context, tickers: list[str]) -> tuple[tuple[PredecessorSeries, ...], pd.DataFrame | None]:
-    """Read predecessor identity metadata once before combining source scopes."""
-    store = context.store
-    columns = ["canonical_ticker", "cik", "role", "valid_from", "valid_to", "sources"]
-    df_lineage = (
-        store.load(Tables.entity_lineage, columns=columns, where={"role": "cik_window"}, optional=True)
-        if "role" in store.columns(Tables.entity_lineage)
-        else None
-    )
-    security_columns = ["ticker", "secfilings", "lastquarter"]
-    if "category" in store.columns(Tables.sharadar_tickers):
-        security_columns.append("category")
-    df_security = store.load(Tables.sharadar_tickers, columns=security_columns, optional=True)
-    derived = () if df_lineage is None or df_security is None else predecessor_series(df_security, register_windows(df_lineage), tickers)
-    declared = tuple(item for item in load_vendor_series(context.config_dir) if item.ticker in tickers)
-    return with_overrides(derived, declared), df_security
-
-
-def _unsupported_units(df_actions: pd.DataFrame | None, df_security: pd.DataFrame | None, tickers: list[str], bugfix: dict) -> frozenset[str]:
-    """Refuse unestablished ADS units without inventing an ordinary-to-quote ratio."""
-    unknown: set[str] = set()
-    if df_actions is not None:
-        unknown.update(df_actions.loc[df_actions["action"].eq("adrratiosplit") & df_actions["ticker"].isin(tickers), "ticker"])
-    if df_security is not None and "category" in df_security:
-        adr = df_security["category"].astype("string").str.contains(r"\bADR\b|\bADS\b", case=False, na=False)
-        unknown.update(df_security.loc[adr & df_security["ticker"].isin(tickers), "ticker"])
-    unknown.difference_update(ticker for ticker, policy in bugfix.get("share_events", {}).items() if "quote_units" in policy)
-    return frozenset(unknown)
-
-
 def load_price_inputs(context: Context, tickers: list[str], bugfix: dict) -> PriceInputs:
     """Read projected sources once, retaining full actions, anchors and public share seeds."""
     store = context.store
-    predecessors, df_security = _identity_inputs(context, tickers)
+    predecessors, df_security = load_price_identity(context, tickers)
     action_tickers = sorted(set(tickers) | {item.vendor_ticker for item in predecessors})
     actions_present, splits_present = store.exists(Tables.sharadar_actions), store.exists(Tables.prices_splits)
     df_bars = store.load(Tables.prices, columns=PRICE_COLS, where={"ticker": tickers})
@@ -103,7 +91,7 @@ def load_price_inputs(context: Context, tickers: list[str], bugfix: dict) -> Pri
         df_actions = pd.DataFrame(columns=["ticker", "date", "action", "value"])
     if df_splits is None and splits_present:
         df_splits = pd.DataFrame(columns=["ticker", "date", "ratio"])
-    unknown = _unsupported_units(df_actions, df_security, tickers, bugfix)
+    unknown = unsupported_units(df_actions, df_security, tickers, bugfix)
     return PriceInputs(df_bars, market, peers, df_vendor, df_shares, df_actions, df_splits, predecessors, unknown)
 
 

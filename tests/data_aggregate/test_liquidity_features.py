@@ -32,7 +32,15 @@ def test_liquidity_skipped_without_volume_present_with():
     no_vol = compute_raw_features(close, open_, sector)
     assert not any(k in no_vol for k in _LIQ), "liquidity must be skipped without volume"
 
-    with_vol = compute_raw_features(close, open_, sector, volume=volume)
+    with_vol = compute_raw_features(
+        close,
+        open_,
+        sector,
+        volume=volume,
+        level_factor=pd.DataFrame(1.0, index=close.index, columns=close.columns),
+        close_pit=close,
+        tape_support=close.gt(0),
+    )
     for k in _LIQ:
         assert k in with_vol, f"{k} missing when volume supplied"
         # finite after warmup (need >=20 obs for the 63d windows)
@@ -46,12 +54,28 @@ def test_no_lookahead():
     """A feature at date t must not change if FUTURE rows are altered."""
     dates, tickers, close, open_, volume, sector = _synth()
     t_idx = 150
-    base = compute_raw_features(close, open_, sector, volume=volume)
+    base = compute_raw_features(
+        close,
+        open_,
+        sector,
+        volume=volume,
+        level_factor=pd.DataFrame(1.0, index=close.index, columns=close.columns),
+        close_pit=close,
+        tape_support=close.gt(0),
+    )
 
     close2, volume2 = close.copy(), volume.copy()
     close2.iloc[t_idx + 1 :] *= 1.5  # perturb everything AFTER t
     volume2.iloc[t_idx + 1 :] *= 3.0
-    pert = compute_raw_features(close2, open_, sector, volume=volume2)
+    pert = compute_raw_features(
+        close2,
+        open_,
+        sector,
+        volume=volume2,
+        level_factor=pd.DataFrame(1.0, index=close2.index, columns=close2.columns),
+        close_pit=close2,
+        tape_support=close2.gt(0),
+    )
 
     for k in _LIQ:
         a = base[k].iloc[t_idx].to_numpy()
@@ -63,12 +87,29 @@ def test_no_lookahead():
 
 def test_dollar_volume_ranks_liquidity():
     dates, tickers, close, open_, volume, sector = _synth()
-    raw = compute_raw_features(close, open_, sector, volume=volume)
+    raw = compute_raw_features(
+        close,
+        open_,
+        sector,
+        volume=volume,
+        level_factor=pd.DataFrame(1.0, index=close.index, columns=close.columns),
+        close_pit=close,
+        tape_support=close.gt(0),
+    )
     dv = raw["dollar_volume_63"].iloc[-1]  # last date
     # S24 has ~100x the base volume of S00 -> must rank far higher on $ volume
     assert dv[tickers[-1]] > dv[tickers[0]], (dv[tickers[0]], dv[tickers[-1]])
 
-    panel = build_feature_panel(close, open_, sector, method="rank", volume=volume)
+    panel = build_feature_panel(
+        close,
+        open_,
+        sector,
+        method="rank",
+        volume=volume,
+        level_factor=pd.DataFrame(1.0, index=close.index, columns=close.columns),
+        close_pit=close,
+        tape_support=close.gt(0),
+    )
     for k in _LIQ:
         assert k in panel.columns, f"{k} not in built panel"
         col = panel[k].dropna()
@@ -89,7 +130,15 @@ def test_amihud_is_monotone_in_illiquidity_and_rank_invariant_under_the_log():
         eight orders of magnitude and 76.8% of the cross-section sits inside +/-0.25sd.
     """
     dates, tickers, close, open_, volume, sector = _synth()
-    raw = compute_raw_features(close, open_, sector, volume=volume)
+    raw = compute_raw_features(
+        close,
+        open_,
+        sector,
+        volume=volume,
+        level_factor=pd.DataFrame(1.0, index=close.index, columns=close.columns),
+        close_pit=close,
+        tape_support=close.gt(0),
+    )
     logged = raw["amihud_63"]
 
     # the un-logged statistic, rebuilt here as the reference
@@ -140,7 +189,15 @@ def test_an_all_flat_window_yields_nan_not_minus_inf():
     sector = pd.DataFrame(0.0, index=dates, columns=tickers)
 
     with np.errstate(divide="raise", invalid="raise"):
-        raw = compute_raw_features(close, close.shift(1).bfill(), sector, volume=volume)
+        raw = compute_raw_features(
+            close,
+            close.shift(1).bfill(),
+            sector,
+            volume=volume,
+            level_factor=pd.DataFrame(1.0, index=close.index, columns=close.columns),
+            close_pit=close,
+            tape_support=close.gt(0),
+        )
 
     flat = raw["amihud_63"]["FLAT"]
     assert flat.isna().all()

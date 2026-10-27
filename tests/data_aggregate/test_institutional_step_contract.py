@@ -22,6 +22,7 @@ from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecTh
 from src.data_aggregate.utils.common import inputs as capital_inputs
 from src.data_aggregate.utils.common.incremental import PartWindow
 from src.data_aggregate.utils.institutionals.inputs import QuantityBasis
+from src.data_aggregate.utils.price import inputs as price_inputs
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_store.schema import Tables
 from src.utils.price.adjustments import resolve_share_events
@@ -170,7 +171,7 @@ def test_public_step_checks_market_owners_outside_its_universe(
     step = StepCubeInstitutionals(ctx, ctx.config)
     basis = resolve_share_events(None, pd.DataFrame(columns=["ticker", "date", "ratio"]), {})
     monkeypatch.setattr(capital_inputs, "load_full_price_frames", lambda *args: frames)
-    monkeypatch.setattr(capital_inputs, "load_share_inputs", lambda *args: (None, None, basis, None, pd.DataFrame()))
+    monkeypatch.setattr(price_inputs, "load_quantity_inputs", lambda *args: (basis, pd.DataFrame()))
     monkeypatch.setattr(step, "_insider_panel", lambda *args: None)
     monkeypatch.setattr(step, "_ownership_panel", lambda *args: None)
     keys = pd.MultiIndex.from_product([idx, ["AAA"]], names=["date", "ticker"])
@@ -423,7 +424,7 @@ def test_ftd_step_retains_global_zip_dates_from_one_stream(sqlite_store: Any, tm
 
     monkeypatch.setattr(sqlite_store, "iter_load", capture)
     result = step._short_flow_panel(
-        frames, None, market_lines(["AAA"], idx[0]), pd.DataFrame(), QuantityBasis.from_context(resolve_share_events(None, None, {}), idx)
+        frames, market_lines(["AAA"], idx[0]), pd.DataFrame(), QuantityBasis.from_context(resolve_share_events(None, None, {}), idx)
     )
     assert result is not None
     keys = pd.MultiIndex.from_product([idx, ["AAA"]], names=["date", "ticker"])
@@ -540,7 +541,7 @@ def test_short_stage_uses_the_owner_publication_clock(sqlite_store: Any, tmp_pat
 
     monkeypatch.setattr("src.data_aggregate.utils.institutionals.short_flow_features._ftd_available_dates", fixed_clock)
     events = resolve_share_events(None, pd.DataFrame(columns=["ticker", "date", "ratio"]), {})
-    result = step._short_flow_panel(frames, None, market_lines(["AAA"], idx[0]), pd.DataFrame(), QuantityBasis.from_context(events, idx))
+    result = step._short_flow_panel(frames, market_lines(["AAA"], idx[0]), pd.DataFrame(), QuantityBasis.from_context(events, idx))
     assert result is not None and len(calls) == 1
     values = result.set_index(["date", "ticker"])["f_ic_ftd_to_adv20"]
     assert pd.isna(values.loc[(pd.Timestamp("2024-02-02"), "AAA")])

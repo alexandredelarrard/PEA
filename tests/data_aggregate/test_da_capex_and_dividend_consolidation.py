@@ -11,6 +11,7 @@ import pandas as pd
 
 from src.data_aggregate.utils.fundamentals.fundamental_features import build_fundamental_feature_panel
 from src.data_extract.utils.prices.fetch_dividends import _extract_dividends
+from tests.data_aggregate.fundamental_pit_reference import known_no_share_events, legacy_capital_frames
 
 
 def test_dividends_extracted_from_price_frame():
@@ -94,7 +95,7 @@ def test_da_vs_capex_feature():
     close = pd.DataFrame(100.0, index=idx, columns=tickers)
     peers = {t: {p: 1.0 for p in tickers if p != t} for t in tickers}
 
-    panel = build_fundamental_feature_panel(fund, peers, idx, stock_close=close)
+    panel = build_fundamental_feature_panel(fund, peers, idx, prices=legacy_capital_frames(fund, close), share_basis=known_no_share_events())
     assert {
         "f_da_to_capex",
         "f_da_to_capex_vs_hist",

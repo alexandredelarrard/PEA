@@ -14,8 +14,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.governance.clean import GovernanceInputs, clean_governance_inputs
+from src.data_aggregate.utils.governance.clean import GovernanceInputs
 from src.data_aggregate.utils.governance.vote_dissent_features import _say_on_pay_history
+from tests.data_aggregate.governance_pit_reference import clean_governance_inputs
 
 
 def _proxies(rows: list[tuple[str, str, str, float]]) -> pd.DataFrame:

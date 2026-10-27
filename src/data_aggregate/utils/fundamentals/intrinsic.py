@@ -1,31 +1,16 @@
-"""
-intrinsic.py  (src/data_aggregate/utils/intrinsic.py)
------------------------------------------------------
-A transparent, point-in-time INTRINSIC VALUE estimate from the firm's own cash
-generation -- the "what is this business worth on its future cash flows" anchor
-that we then compare against the market price AND against the sell-side analyst
-estimates.
-
-Model: two-stage discounted cash flow on trailing-twelve-month free cash flow.
-    * Stage 1 (explicit): grow base FCF at `growth` for `years`, discount at `r`.
-    * Stage 2 (terminal): a Gordon perpetuity at `terminal_growth`.
-        V = Σ_{t=1..N} FCF·(1+g)^t / (1+r)^t
-          + [ FCF·(1+g)^N·(1+g_term) / (r - g_term) ] / (1+r)^N
-
-Everything is built from fundamentals that are already keyed on their SEC filing
-date (via `fundamentals_to_daily`), so the estimate is point-in-time and never
-uses a cash-flow number before it was public. `growth` is the firm's own TTM
-revenue growth, winsorized to a sane band so a single blow-out quarter cannot
-produce an absurd valuation. Where base FCF <= 0 the DCF is undefined (returned
-as NaN) -- a business burning cash has no meaningful cash-flow intrinsic value.
-"""
+"""Point-in-time two-stage cash-flow DCF values against supported saved capitalization."""
 
 from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
-from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
+from src.data_aggregate.utils.common.pit import fundamentals_to_daily
+from src.data_aggregate.utils.price.frames import PriceFrames
+from src.utils.price.per_share import same_capital_scope
 
 _QUARTERLY_MAX_AGE_DAYS = 185
 
@@ -61,62 +46,31 @@ def two_stage_dcf(
 
 def intrinsic_value_daily(
     fund_hist: pd.DataFrame,
-    close: pd.DataFrame | None,
+    prices: PriceFrames | None,
     idx: pd.DatetimeIndex,
-    discount_rate: float = 0.10,
-    terminal_growth: float = 0.025,
-    years: int = 5,
-    growth_cap: float = 0.15,
-    growth_floor: float = -0.10,
-    level_factor: pd.DataFrame | None = None,
-) -> dict:
-    """Point-in-time intrinsic value from TTM free cash flow.
-
-    Returns wide daily frames:
-      * total     : intrinsic equity value (currency)
-      * per_share : total / shares outstanding
-      * yield      : total / market cap  ( >1 => cheaper than intrinsic )
-    `yield` and `per_share` require `close`; `total` is always returned.
-    """
-    base_fcf = fundamentals_to_daily(
-        fund_hist,
-        "freeCashflow",
-        idx,
-        max_age_days=_QUARTERLY_MAX_AGE_DAYS,
-    )
-    if base_fcf.empty:
+    settings: Mapping[str, Any] | None = None,
+) -> dict[str, pd.DataFrame]:
+    """Return issuer DCF total/yield, plus per-security value only with matching coverage."""
+    options = settings or {}
+    df_cashflow = fundamentals_to_daily(fund_hist, "freeCashflow", idx, max_age_days=_QUARTERLY_MAX_AGE_DAYS)
+    if df_cashflow.empty:
         return {}
-    rev_growth = fundamentals_to_daily(
-        fund_hist,
-        "revenueGrowth",
-        idx,
-        max_age_days=_QUARTERLY_MAX_AGE_DAYS,
-    )
-    g = rev_growth.reindex_like(base_fcf).clip(growth_floor, growth_cap)
-    g = g.fillna(terminal_growth)  # no growth info -> conservative
+    df_growth = fundamentals_to_daily(fund_hist, "revenueGrowth", idx, max_age_days=_QUARTERLY_MAX_AGE_DAYS)
+    df_growth = df_growth.reindex_like(df_cashflow).clip(float(options.get("growth_floor", -0.10)), float(options.get("growth_cap", 0.15)))
+    terminal_growth = float(options.get("terminal_growth", 0.025))
+    df_growth = df_growth.fillna(terminal_growth)
+    df_total = two_stage_dcf(df_cashflow, df_growth, float(options.get("discount_rate", 0.10)), terminal_growth, int(options.get("years", 5)))
+    fields = {"total": df_total}
+    if prices is None or prices.mcap_pit is None:
+        return fields
 
-    total = two_stage_dcf(base_fcf, g, discount_rate, terminal_growth, years)
-    out = {"total": total}
-
-    shares = fundamentals_to_daily(
-        fund_hist,
-        "sharesOutstanding",
-        idx,
-        max_age_days=_QUARTERLY_MAX_AGE_DAYS,
-    )
-    if not shares.empty:
-        cols = total.columns.intersection(shares.columns)
-        sh = shares[cols].where(shares[cols] > 0)
-        out["per_share"] = (total[cols] / sh).replace([np.inf, -np.inf], np.nan)
-
-    if close is not None:
-        mcap = daily_market_cap(
-            fund_hist,
-            close,
-            level_factor=level_factor,
-            max_age_days=_QUARTERLY_MAX_AGE_DAYS,
-        )
-        if not mcap.empty:
-            cols = total.columns.intersection(mcap.columns)
-            out["yield"] = (total[cols] / mcap[cols]).replace([np.inf, -np.inf], np.nan)
-    return out
+    # Carrying daily capital never refreshes its original public-share observation age.
+    df_eligible = fundamentals_to_daily(fund_hist, "sharesOutstanding", idx, max_age_days=_QUARTERLY_MAX_AGE_DAYS)
+    df_cap = prices.mcap_pit.reindex(index=idx, columns=df_total.columns)
+    df_cap = df_cap.where(df_eligible.reindex_like(df_cap).gt(0) & np.isfinite(df_cap) & df_cap.gt(0))
+    fields["yield"] = (df_total / df_cap).replace([np.inf, -np.inf], np.nan)
+    if prices.shares_outstanding_pit is not None:
+        df_count = prices.shares_outstanding_pit.reindex_like(df_total)
+        df_supported = same_capital_scope(prices.close_pit, df_count, df_cap)
+        fields["per_share"] = (df_total / df_count.where(df_count.gt(0))).where(df_supported).replace([np.inf, -np.inf], np.nan)
+    return fields

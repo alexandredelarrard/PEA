@@ -26,7 +26,8 @@ MACRO factors (one CHANGE series each; a stock's sensitivity is its beta):
 
 DATA-AVAILABILITY NOTE
 ----------------------
-momentum / size / resvol  -> price-only, fully historical.
+momentum / resvol         -> published adjusted-return history.
+size                      -> supported saved issuer capitalization.
 macro                     -> FRED, fully historical.
 value / quality           -> need fundamentals HISTORY. With snapshot-only
                              fundamentals these exist only from when you started
@@ -44,12 +45,7 @@ import numpy as np
 import pandas as pd
 
 from src.constants.constants_price import DAILY_MACRO_LEVELS
-
-# the point-in-time pivot + daily market cap moved to utils/common/pit.py, and the
-# price-derived primitives to utils/common/prices.py: they are generic, and keeping them
-# here made this factor-RETURN module a dependency of nine feature builders that only
-# wanted a point-in-time frame or a rolling std.
-from src.data_aggregate.utils.common.pit import daily_market_cap, fundamentals_to_daily
+from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 from src.data_aggregate.utils.common.xs import XS_CLIP_CHARACTERISTIC, xs_z
 from src.data_aggregate.utils.price.returns import momentum_characteristic, trailing_vol
 
@@ -65,32 +61,11 @@ def build_characteristics(
     fundamentals_history: pd.DataFrame | None,
     resvol_window: int = 63,  # 3 month stock
     *,
-    stock_close_split: pd.DataFrame | None = None,
-    level_factor: pd.DataFrame | None = None,
+    mcap_pit: pd.DataFrame | None = None,
     seams: dict[str, list[pd.Timestamp]] | None = None,
 ) -> dict:
-    """
-    Returns {factor_name: characteristic DataFrame (date x ticker)}, higher =
-    more of that factor's long side. Only price-based factors are guaranteed;
-    value/quality appear only if fundamentals are available.
-
-    ⚠ TWO price bases, because this builds both a RETURN and a LEVEL:
-      * `momentum` is a 12-1 return -> `stock_close_total`
-      * `size` is -log(market cap) -> `stock_close_split`, the ONLY basis on which the
-        future-split factor cancels against Sharadar's `sharesbas`. Fed the total-return
-        series instead, every market cap would carry a `D(d)` dividend factor (median 0.618
-        in 2003) and the size factor would become a dividend-policy tilt.
-    `stock_close_split` defaults to the total-return frame only so a dividend-free synthetic
-    fixture stays a one-liner; every real caller passes both.
-
-    `seams` masks `momentum`'s straddling windows. It matters HERE and not only in the label,
-    because `characteristic_to_factor_return` turns this characteristic into the momentum
-    FACTOR's return: a name carrying a fabricated top-decile exposure sits in the factor's long
-    leg for 231 trading days, so the contamination would leave the six seam tickers and reach
-    `beta_momentum` for the whole universe.
-    """
+    """Build return characteristics and saved-cap size/value without backcasting snapshots."""
     idx = pd.DatetimeIndex(stock_close_total.index)
-    close_level = stock_close_total if stock_close_split is None else stock_close_split.reindex_like(stock_close_total)
     chars: dict[str, pd.DataFrame] = {}
 
     # Momentum 12-1 (skip most recent month). max 75% of values missing
@@ -99,34 +74,24 @@ def build_characteristics(
     # Residual/low volatility: negative trailing vol (low vol = long side).
     chars["resvol"] = -trailing_vol(stock_ret, resvol_window)
 
+    # Daily capitalization has one owner; unsupported saved cells stay unknown.
+    if mcap_pit is None or mcap_pit.empty:
+        return chars
+    df_mcap = mcap_pit.reindex_like(stock_close_total)
+    df_mcap = df_mcap.where(np.isfinite(df_mcap) & df_mcap.gt(0))
+    chars["size"] = cast(pd.DataFrame, -np.log(df_mcap))
+
+    # Fiscal numerators retain their original publication clock and coverage.
     if fundamentals_history is not None and not fundamentals_history.empty:
-        # Historical daily market cap from SEC shares * price (moves daily).
-        mcap = daily_market_cap(fundamentals_history, close_level, level_factor=level_factor)
-        if mcap.empty:
-            # fallback to old proxy if only a current marketCap snapshot exists
-            snap = fundamentals_to_daily(fundamentals_history, "marketCap", idx)
-            if not snap.empty:
-                latest_px = close_level.reindex(columns=snap.columns).ffill().iloc[-1]
-                sh = (snap.iloc[-1] / latest_px).replace([np.inf, -np.inf], np.nan)
-                mcap = close_level.reindex(columns=snap.columns).mul(sh, axis=1)
-
-        if not mcap.empty:
-            # Size: -log market cap (small = long side).
-            chars["size"] = cast(pd.DataFrame, -np.log(mcap.where(mcap > 0)))
-
-            # Value: earnings yield + FCF yield + book/price, all vs market cap.
-            ni = fundamentals_to_daily(fundamentals_history, "netIncome", idx)
-            fcf = fundamentals_to_daily(fundamentals_history, "freeCashflow", idx)
-            eq = fundamentals_to_daily(fundamentals_history, "stockholdersEquity", idx)
-            val_parts = []
-            for num in (ni, fcf, eq):
-                if not num.empty:
-                    common = [c for c in num.columns if c in mcap.columns]
-                    if common:
-                        yld = (num[common] / mcap[common]).replace([np.inf, -np.inf], np.nan)
-                        val_parts.append(xs_z(yld, clip=XS_CLIP_CHARACTERISTIC))
-            if val_parts:
-                chars["value"] = cast(pd.DataFrame, sum(val_parts)) / len(val_parts)
+        val_parts = []
+        for field in ("netIncome", "freeCashflow", "stockholdersEquity"):
+            df_num = fundamentals_to_daily(fundamentals_history, field, idx)
+            common = df_num.columns.intersection(df_mcap.columns)
+            if len(common):
+                df_yield = (df_num[common] / df_mcap[common]).replace([np.inf, -np.inf], np.nan)
+                val_parts.append(xs_z(df_yield, clip=XS_CLIP_CHARACTERISTIC))
+        if val_parts:
+            chars["value"] = cast(pd.DataFrame, sum(val_parts)) / len(val_parts)
     return chars
 
 

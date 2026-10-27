@@ -216,16 +216,26 @@ def rebase_security_prices(
     return converted.where(np.isfinite(converted) & converted.gt(0))
 
 
+def _validate_quantity_events(df_events: pd.DataFrame) -> None:
+    """Refuse malformed quantity evidence before suffix products can discard it."""
+    if df_events.empty:
+        return
+    if not {"ticker", "date", "value"}.issubset(df_events):
+        raise ValueError("Quantity events require ticker, date and value")
+    values = pd.to_numeric(df_events["value"], errors="coerce")
+    invalid = df_events[["ticker", "date", "value"]].isna().any(axis=1)
+    invalid |= pd.to_datetime(df_events["date"], errors="coerce").isna() | df_events["ticker"].astype("string").str.strip().eq("")
+    if (invalid | ~np.isfinite(values) | values.le(0)).any():
+        raise ValueError("Quantity events require valid keys and positive finite factors")
+
+
 def security_quantity_basis(basis: ShareBasis, index: pd.DatetimeIndex, columns: pd.Index) -> pd.DataFrame:
     """Return GÃ—U on a canonical quote grid, keeping quantity and price wedges separate."""
     df_basis = pd.DataFrame(1.0 if basis.actual_available else np.nan, index=index, columns=columns, dtype="float64")
     if not basis.actual_available:
         return df_basis
     df_events = basis.actual
-    invalid = df_events[["ticker", "date", "value"]].isna().any(axis=1)
-    values = pd.to_numeric(df_events["value"], errors="coerce")
-    if (invalid | ~np.isfinite(values) | values.le(0)).any():
-        raise ValueError("Genuine quantity events require valid keys and positive finite factors")
+    _validate_quantity_events(df_events)
     factors = suffix_factor(df_events, list(columns), index.to_numpy(dtype="datetime64[ns]"))
     for ticker in columns:
         units = basis.factor(pd.Series(ticker, index=index), pd.Series(index, index=index), "units")
@@ -243,3 +253,56 @@ def rebase_security_frame(basis: ShareBasis, df_quantities: pd.DataFrame, target
         units = basis.factor(names, source, "units")
         df_result[ticker] = rebase_security_quantities(basis, df_result[ticker], names, source, target, units)
     return df_result
+
+
+def rebase_vendor_quantities(
+    basis: ShareBasis, quantities: pd.Series, tickers: pd.Series, source_dates: pd.Series, target_dates: pd.Series
+) -> pd.Series:
+    """Undo the source's F restatement, then carry genuine quantities in target security units."""
+    factor = basis.factor(tickers, source_dates, "vendor")
+    original = pd.to_numeric(quantities, errors="coerce") / factor.where(np.isfinite(factor) & factor.gt(0))
+    result = rebase_security_quantities(basis, original, tickers, source_dates, target_dates, pd.Series(1.0, index=quantities.index))
+    return result if basis.actual_available else result.where(quantities.eq(0))
+
+
+def compatible_tape_support(basis: ShareBasis, index: pd.DatetimeIndex, columns: pd.Index, terminal_date: pd.Timestamp) -> pd.DataFrame:
+    """Prove compatibility of the retained adjusted-price/terminal-quoted-tape pair."""
+    df_supported = pd.DataFrame(False, index=index, columns=columns)
+    if not basis.actual_available:
+        return df_supported
+    _validate_quantity_events(basis.actual)
+    _validate_quantity_events(basis.vendor)
+    stamps = index.to_numpy(dtype="datetime64[ns]")
+    actual = suffix_factor(basis.actual, list(columns), stamps)
+    vendor = suffix_factor(basis.vendor, list(columns), stamps)
+    names = pd.Series(columns.astype(str))
+    terminal = pd.Series(terminal_date, index=names.index)
+    target = basis.factor(names, terminal, "actual") * basis.factor(names, terminal, "units")
+    for position, ticker in enumerate(columns):
+        genuine = actual.get(str(ticker), np.ones(len(index)))
+        restatement = vendor.get(str(ticker), np.ones(len(index)))
+        units = basis.factor(pd.Series(str(ticker), index=index), pd.Series(index, index=index), "units")
+        supported = np.isfinite(units) & units.gt(0) & np.isfinite(target.iloc[position]) & (target.iloc[position] > 0)
+        supported &= np.isfinite(genuine) & (genuine > 0) & np.isfinite(restatement) & (restatement > 0)
+        df_supported[ticker] = supported & np.isclose(restatement * target.iloc[position], genuine, rtol=1e-12, atol=0)
+    return df_supported
+
+
+def dollar_volume(
+    df_close: pd.DataFrame,
+    df_volume: pd.DataFrame,
+    df_factor: pd.DataFrame | None,
+    df_quote: pd.DataFrame | None,
+    df_tape_support: pd.DataFrame | None,
+) -> pd.DataFrame:
+    """Value the compatible adjusted quote/tape pair with the published level factor."""
+    if df_factor is None or df_quote is None or df_tape_support is None:
+        return pd.DataFrame(np.nan, index=df_close.index, columns=df_close.columns, dtype="float64")
+    df_tape = df_volume.reindex_like(df_close)
+    df_level = df_factor.reindex_like(df_close)
+    df_value = df_close * df_tape * df_level
+    supported = df_close.gt(0) & df_tape.ge(0) & df_level.gt(0)
+    supported &= np.isfinite(df_close) & np.isfinite(df_tape) & np.isfinite(df_level) & np.isfinite(df_value)
+    df_quoted = df_quote.reindex_like(df_close)
+    supported &= np.isfinite(df_quoted) & df_quoted.gt(0) & df_tape_support.reindex_like(df_close).eq(True)
+    return df_value.where(supported)

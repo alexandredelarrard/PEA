@@ -46,6 +46,7 @@ def apply_split_vintage(wide: dict[str, pd.DataFrame], bugfix: dict, vendor_pric
     Independent vendor prices guard the expected wedge; all price legs use the
     same per-bar multipliers. Volume and post-event bars stay unchanged.
     """
+    
     applied = 0
     for ticker, entries in (bugfix.get("split_vintage") or {}).items():
         for entry in entries:

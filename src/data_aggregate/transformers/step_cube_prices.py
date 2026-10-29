@@ -74,10 +74,10 @@ class StepCubePrices(Step):
     def run(self, full: bool = False) -> None:
 
         window = self._plan_window(full)
-        since = window.since
-        raw = self._store.load(Tables.prices, since=since, columns=PRICE_COLS, where={"ticker": self._tickers})
+        raw = self._store.load(Tables.prices, since=window.since, columns=PRICE_COLS, where={"ticker": self._tickers})
         assert raw is not None
-        self._log.info(f"Loading {Tables.prices} since={since if since else 'full'}")
+        self._log.info(f"Loading {Tables.prices} since={window.since if window.since else 'full'}")
+        
         raw = apply_volume_scale(raw, self._bugfix)
 
         # long to wide format
@@ -90,17 +90,11 @@ class StepCubePrices(Step):
         days_index = self._trading_calendar(wide["close_split"])
         wide = self._on_calendar(wide, days_index)
 
-        # get deltas
-        # ⚠ `close_total`, NOT `close_split`. `ret` is the persisted return that momentum,
-        # vol, betas and every LABEL are built from, so it must be the buy-and-hold path.
-        # Feeding it `close_split` would make every one of them a PRICE return -- MO reads
-        # 1.24x over this sample where the truth is 20.2x.
-        # ⚠ BEFORE `_daily_returns`. Two of the three repairs move `close_total`, so running
-        # them afterwards would leave `ret` computed from the series we just disowned.
+        # get the price of sharadar
         vendor = self._vendor_price()
         self._repair(wide, vendor)
 
-        returns = self._daily_returns(wide["close_total"])
+        returns = du.daily_returns(wide["close_total"])
         # ⚠ AFTER `_daily_returns`, unlike the two repairs above, because it acts on the
         # RETURN itself rather than on a price leg the return is derived from.
         self._null_returns(returns)
@@ -176,12 +170,6 @@ class StepCubePrices(Step):
         out["volume"] = wide["volume"].reindex(idx)
         return out
 
-    @staticmethod
-    def _daily_returns(close_total: pd.DataFrame) -> pd.DataFrame:
-        """TOTAL-return series in, `ret` out. The parameter is named for the basis it
-        requires, so the one call site states its contract."""
-        return du.daily_returns(close_total)
-
     def _peers(self) -> dict:
         peers = load_peers(self._context, self._config)
         n = sum(1 for p in peers.values() if p)
@@ -241,6 +229,7 @@ class StepCubePrices(Step):
         no price leg at all."""
         if not self._bugfix:
             return
+        
         applied = apply_split_vintage(wide, self._bugfix, vendor)
         applied += apply_return_seams(wide, self._bugfix)
         listed = sum(len(v) for v in (self._bugfix.get("split_vintage") or {}).values()) + sum(
@@ -257,6 +246,7 @@ class StepCubePrices(Step):
         bit-for-bit whatever this one does."""
         if not self._bugfix:
             return
+        
         applied = apply_null_ret(returns, self._bugfix, self._log.info)
         listed = sum(len(v) for v in (self._bugfix.get("null_ret") or {}).values())
         self._log.info("price bugfix: %d of %d registered null_ret repair(s) applied", applied, listed)

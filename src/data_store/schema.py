@@ -1376,6 +1376,8 @@ class Tables:
         resume=def14a_llm.resume,
         empty_marker=("name", _EMPTY),
         marker_key_fill=(("fiscal_year", -1),),
+        read_columns=("ticker", "issuer_cik", "owner_cik", "role_as_of", 
+               "officer_title_clean", "role", "role_source"),
     )
     def14a_director_comp = Table(
         "def14a_director_comp",

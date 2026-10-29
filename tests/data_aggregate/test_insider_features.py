@@ -29,7 +29,6 @@ from src.data_aggregate.utils.institutionals.insider_quality import (
     OPEN_MARKET_CODES,
     clean_transactions,
     common_stock_mask,
-    consensus_price,
     officer_role,
     security_class,
 )
@@ -305,7 +304,7 @@ def test_proxy_role_recovery_requires_known_issuer_and_unresolved_title(issuer_c
                 ]
             )
 
-    evidence = load_insider_role_evidence(Store(), _frame(rows))
+    evidence = load_insider_role_evidence(Store(), _frame(rows), universe=['AAA'])
     cleaned, _ = clean_transactions(_frame(rows), role_evidence=evidence)
     actual = cleaned.set_index("accession_number").loc["current-role"]
     assert actual["role"] == ("CEO" if recovered else "other_named_officer")
@@ -579,7 +578,7 @@ def test_proxy_role_barriers_prevent_stale_management_fill(later_titles: list[st
             assert table is Tables.def14a_executive_comp
             return pd.DataFrame(proxies)
 
-    evidence = load_insider_role_evidence(Store(), _frame(rows))
+    evidence = load_insider_role_evidence(Store(), _frame(rows), universe=['AAA'])
     clean, _ = clean_transactions(_frame(rows), role_evidence=evidence)
     assert clean["role"].eq("other_named_officer").all() and not clean["is_management"].any()
     print(f"SANITY: dated proxy evidence {later_titles} blocks stale CEO carry-forward into a later blank title.")
@@ -771,43 +770,6 @@ def test_an_underpriced_row_is_counted_but_never_inflated():
         f"row) and left at its filed ${low['value']:,.0f}. A too-low price understates a "
         f"flow; a too-high one invented $182,982,720tn, and only that direction is "
         f"repaired."
-    )
-
-
-def test_the_consensus_is_built_within_a_share_class():
-    """ERIE: Class A near $35, Class B near $32,740, both titled '... Common Stock'. A
-    ticker-wide median prices a Class A purchase off the Class B tape."""
-    rows = []
-    for i in range(6):
-        rows.append(
-            _txn(
-                accession_number=f"a{i}",
-                owner_cik=f"a{i}",
-                transaction_date=f"2015-05-{20 + i:02d}",
-                security_title="Class A Common Stock",
-                price_per_share=35.0,
-            )
-        )
-        rows.append(
-            _txn(
-                accession_number=f"b{i}",
-                owner_cik=f"b{i}",
-                transaction_date=f"2015-05-{20 + i:02d}",
-                security_title="Class B Common Stock",
-                price_per_share=32_740.0,
-            )
-        )
-    df = _frame(rows)
-    ref = consensus_price(df)
-    a = ref[df["security_title"].eq("Class A Common Stock")]
-    b = ref[df["security_title"].eq("Class B Common Stock")]
-    assert a.max() == pytest.approx(35.0) and b.min() == pytest.approx(32_740.0)
-    out, diag = clean_transactions(df)
-    assert diag["repaired_rows"] == 0
-    print(
-        f"SANITY: per-class consensus = ${a.iloc[0]:,.0f} / ${b.iloc[0]:,.0f}; pooled it "
-        f"would be ${np.median([35.0, 32_740.0]):,.0f} and every Class A row would be "
-        f"'repaired' to 468x its value. 0 rows repaired, which is correct here."
     )
 
 

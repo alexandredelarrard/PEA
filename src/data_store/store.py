@@ -642,7 +642,7 @@ class DataStore:
         self,
         table: SchemaTable | str,
         *,
-        chunksize: int = 200_000,
+        chunksize: int = 400_000,
         columns: Sequence[str] | None = None,
         project: bool = False,
         where: Where | None = None,

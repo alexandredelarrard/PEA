@@ -177,6 +177,7 @@ class StepCubeInstitutionals(Step):
 
     def build_panel(self) -> pd.DataFrame:
         """Compute with full event history; run controls the independently rewritten tail."""
+        
         # Load shared price, class and capital inputs once.
         frames = capital_inputs.load_full_price_frames(self._store, self._context, self._FIELDS)
         df_lines = self._store.load(
@@ -208,28 +209,37 @@ class StepCubeInstitutionals(Step):
         frames: PriceFrames,
         shares: pd.DataFrame | None,
         quantity_basis: institutional_inputs.QuantityBasis,
-        valuation_close: pd.DataFrame | None,
+        df_valuation_close: pd.DataFrame | None,
         identity_intervals: pd.DataFrame | None,
     ) -> pd.DataFrame | None:
+        
         # Load transactions and their completeness/title evidence before cleaning.
         source = institutional_inputs.load_insider_transactions(self._store, frames.universe)
         if source is None or source.transactions.empty:
             return None
-        df_insider = source.transactions
-        df_roles = institutional_inputs.load_insider_role_evidence(self._store, df_insider)
+
+        # load and clean roles per person
+        df_roles = institutional_inputs.load_insider_role_evidence(self._store, source.transactions, frames.universe)
 
         # Preserve execution USD while cleaning source-unit prices and public versions.
         df_trades, diagnostics = clean_transactions(
-            df_insider, as_traded_quotes=valuation_close, role_evidence=df_roles, share_basis=quantity_basis.events
+            df_insider=source.transactions, 
+            df_valuation_close=df_valuation_close, 
+            df_roles=df_roles, 
+            share_basis=quantity_basis.events
         )
         if "source_first" not in diagnostics:
             return None
+
+        # get shares 
+        df_shares_out = institutional_inputs.daily_share_quantities(shares, pd.DatetimeIndex(frames.trading_index), quantity_basis)
+        df_mcap = insider_market_cap(shares, frames.close_split, frames.level_factor)
+    
         diagnostics["source_first"] = source.first_filed
         df_unpriced = diagnostics.get("unpriced_events", pd.DataFrame())
         df_positions = position_units(pd.concat([df_trades, df_unpriced], ignore_index=True), quantity_basis)
-        df_shares_out = institutional_inputs.daily_share_quantities(shares, pd.DatetimeIndex(frames.trading_index), quantity_basis)
         report_oversized_positions(df_positions.iloc[: len(df_trades)], df_shares_out)
-        df_mcap = insider_market_cap(shares, frames.close_split, frames.level_factor)
+        
         coverage = InsiderCoverage.from_availability(self._availability, source.complete_through, identity_intervals)
         return build_insider_feature_panel(frames, df_trades, df_positions, diagnostics, df_mcap, coverage)
 

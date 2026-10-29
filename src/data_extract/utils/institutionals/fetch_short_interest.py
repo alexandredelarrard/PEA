@@ -55,7 +55,7 @@ from src.data_extract.utils.institutionals.security_tape import (
 from src.data_store.schema import Resume, Table, Tables
 from src.data_store.store import DataStore, Where
 from src.utils.filer_tables import filing_window
-from src.utils.string import squash, yahoo_symbol
+from src.utils.string import squash, yahoo_symbol, run_date
 
 _URL = "https://cdn.finra.org/equity/regsho/daily/CNMSshvol{yyyymmdd}.txt"
 
@@ -276,8 +276,9 @@ def _plan_days(
     """The day files to read: every key's windows plus the never-stored days, as trading sessions (business
     days past the calendar). `repair` adds each key's own interior gaps (a one-time pass, not nightly).
     A new key's first `prices` date is its listing floor: a joiner listed after the FINRA start is read in full once."""
-    run_date = pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize()
-    floor = document_floor(Tables.short_interest, run_date, years_history)
+    
+    start_date = run_date(as_of)
+    floor = document_floor(Tables.short_interest, start_date, years_history)
     until = last_completed_session(as_of)
     calendar = trading_calendar(context)
     known, pending = short_source_days(context.store, tickers)
@@ -286,7 +287,7 @@ def _plan_days(
         context,
         Tables.short_interest,
         tickers,
-        run_date,
+        start_date,
         until=until,
         years_history=years_history,
         full=full,
@@ -575,8 +576,9 @@ def fetch_short_interest(
     scoped = bool(others)
     if full:
         days, stored_days = _full_days(context, pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize())
-    else:
+    else: 
         days, stored_days = list(_plan_days(context, sorted(universe), years_history, False, as_of, repair=repair)), set()
+    
     resolver = identity or load_identity(context)
     logger.info(f"Fetching {len(days)} RegSHO day-file(s) for {len(universe)} tickers")
     raw, successful, missing, errors = _read_regsho_days(days, resolver, universe, pause)

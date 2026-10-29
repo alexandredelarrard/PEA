@@ -31,6 +31,7 @@ from src.data_extract.utils.common.entity_lineage import (
     entity_or_singleton,
     roster_cik_map,
 )
+from src.data_extract.utils.common.identity_store import save_identity
 from src.data_extract.utils.common.incremental import matches_stored
 from src.data_extract.utils.common.symbol_tenure import DEI_SOURCE
 from src.data_store.schema import Tables
@@ -1449,13 +1450,14 @@ def build_security_master(
     evidence = context.store.load(
         Tables.symbol_tenure, columns=["issuer_cik", "source", "valid_from", "valid_to"], where={"source": ["form345", DEI_SOURCE]}, optional=True
     )
-    manual = load_security_manual(str(config_dir or context.config_dir))
-    co_registrants = co_registrant_ciks(lineage, evidence, manual.co_registrants)
     finra = (
         [str(s) for s in context.store.distinct(Tables.sec_short_volume_security, "source_symbol")]
         if context.store.exists(Tables.sec_short_volume_security)
         else []
     )
+    finra_presence = _finra_presence(context, finra)
+    manual = load_security_manual(str(config_dir or context.config_dir))
+    co_registrants = co_registrant_ciks(lineage, evidence, manual.co_registrants)
     build = derive_security_master(
         observations,
         lineage,
@@ -1464,7 +1466,7 @@ def build_security_master(
         built_at=built_at or pd.Timestamp.now().floor("s"),
         sec_tickers=sec_tickers,
         finra_symbols=[symbol for symbol in finra if re.fullmatch(r"[A-Z]+/[A-Z]", symbol)],
-        finra_presence=_finra_presence(context, finra),
+        finra_presence=finra_presence,
         co_registrant_ciks=co_registrants,
         existing=existing,
     )
@@ -1476,6 +1478,6 @@ def build_security_master(
     )
     log_identity_flags(context.log, build.items)
     unchanged = matches_stored(existing, rows, Tables.security_master)
-    written = 0 if unchanged else context.store.replace_institutional_identity(Tables.security_master, rows)
+    written = 0 if unchanged else save_identity(context.store, Tables.security_master, rows)
     context.log.info("security_master: unchanged; replace skipped" if unchanged else f"security_master: wrote {written} row(s)")
     return rows

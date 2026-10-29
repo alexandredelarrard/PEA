@@ -52,8 +52,8 @@ from sqlalchemy import create_engine  # noqa: E402
 from sqlalchemy.pool import StaticPool  # noqa: E402
 
 from src.data_store.errors import TableEmptyError  # noqa: E402
-from src.data_store.schema import BY_NAME, name_of, resolve  # noqa: E402
-from src.data_store.store import DataStore  # noqa: E402
+from src.data_store.schema import BY_NAME, Tables, name_of, resolve  # noqa: E402
+from src.data_store.store import DataStore, _create_canonical  # noqa: E402
 from src.utils.db import get_engine  # noqa: E402
 
 DATA = ROOT / "data"
@@ -519,3 +519,21 @@ def make_frames(trading_index, peers: dict | None = None, universe=None, **field
         wide = next((f for f in fields.values() if isinstance(f, pd.DataFrame) and not f.empty), None)
         universe = list(wide.columns) if wide is not None else list(peers)
     return PriceFrames(trading_index=idx, universe=tuple(str(t) for t in universe), peers=peers, **fields)
+
+
+@pytest.fixture
+def filing_store(sqlite_store):
+    """Owner tests start with the canonical schemas supplied to a new initialized database."""
+    _create_canonical(
+        sqlite_store.engine,
+        [
+            Tables.sec13f_hr,
+            Tables.sec13f_manager_holdings,
+            Tables.def14a_llm,
+            Tables.def14a_executive_comp,
+            Tables.def14a_director_comp,
+            Tables.def14a_ownership,
+            Tables.def14a_directors,
+        ],
+    )
+    return sqlite_store

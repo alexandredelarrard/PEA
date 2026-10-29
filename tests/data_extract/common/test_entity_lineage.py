@@ -42,6 +42,7 @@ from src.data_extract.utils.common.entity_lineage import (
 from src.data_extract.utils.common.registrant import load_registrants
 from src.data_extract.utils.common.symbol_tenure import scan_form345_cache
 from src.data_store.schema import Tables
+from src.data_store.store import _create_canonical
 from src.utils.identity_flags import KIND_ORDER, cik_activity, identity_flags
 
 CONFIG_DIR = "./configs"
@@ -627,6 +628,17 @@ def test_register_reproduction_reports_reproduced_abstained_and_contradicted(tmp
 
 def test_build_writes_through_the_store_and_skips_an_unchanged_rebuild(tmp_path, monkeypatch, sqlite_store, caplog):
     """End to end on SQLite: `dei` read from `symbol_tenure`, rows written, a second build is a no-op."""
+    _create_canonical(
+        sqlite_store.engine,
+        [
+            Tables.sp500_tickers,
+            Tables.entity_lineage,
+            Tables.symbol_tenure,
+            Tables.security_master,
+            Tables.insider_transactions,
+            Tables.insider_footnotes,
+        ],
+    )
     tenure, dei = _handoff_evidence()
     sqlite_store.save(Tables.sp500_tickers, _roster([("ABC", "0000000200")]))
     sqlite_store.save(Tables.symbol_tenure, dei.assign(evidence_period="2025q1"))
@@ -674,6 +686,7 @@ def test_entity_lineage_build_logs_changed_ciks_and_affected_tickers(monkeypatch
     monkeypatch.setattr(lineage_module, "derive_entity_lineage", lambda *args, **kwargs: _empty_build(new))
     monkeypatch.setattr(lineage_module, "validate_manual_tenure_entities", lambda *args, **kwargs: None)
     monkeypatch.setattr(lineage_module, "load_manual_symbol_tenure", lambda *a, **k: pd.DataFrame({"canonical_ticker": ["AAA"]}))
+    monkeypatch.setattr(lineage_module, "save_identity", lambda store, table, rows: store.replace(table, rows))
     context: Any = SimpleNamespace(store=Store(), log=logging.getLogger("test.entity_lineage"))
     caplog.set_level(logging.INFO, logger="test.entity_lineage")
 
@@ -708,6 +721,7 @@ def test_the_build_logs_the_manual_decision_block(monkeypatch, caplog):
     monkeypatch.setattr(lineage_module, "derive_entity_lineage", lambda *args, **kwargs: build)
     monkeypatch.setattr(lineage_module, "validate_manual_tenure_entities", lambda *args, **kwargs: None)
     monkeypatch.setattr(lineage_module, "load_manual_symbol_tenure", lambda *a, **k: pd.DataFrame({"canonical_ticker": ["AAA"]}))
+    monkeypatch.setattr(lineage_module, "save_identity", lambda store, table, rows: store.replace(table, rows))
     context: Any = SimpleNamespace(store=Store(), log=logging.getLogger("test.entity_lineage.flags"))
     caplog.set_level(logging.INFO, logger="test.entity_lineage.flags")
 

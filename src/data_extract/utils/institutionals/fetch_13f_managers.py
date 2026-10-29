@@ -23,7 +23,7 @@ from src.data_extract.utils.common.edgar_driver import FilingStamp
 from src.data_extract.utils.common.parallel_fetch import run_per_ticker
 from src.data_extract.utils.common.resume import DONE_PER_KEY, stored_accessions
 from src.data_extract.utils.common.sec_io import company, company_filings, configure
-from src.data_extract.utils.institutionals.fetch_13f import _IMPLIED_PRICE_BAND, ReadFailure, _suspect_prices, read_filing_vintage
+from src.data_extract.utils.institutionals.fetch_13f import _IMPLIED_PRICE_BAND, ReadFailure, _suspect_prices, read_filing_vintage, save_13f_filing
 from src.data_extract.utils.institutionals.fetch_13f_backfill import _submissions, cached_filing_vintages
 from src.data_store.schema import Resume, Tables
 from src.utils.string import pad_cik
@@ -83,7 +83,7 @@ def _catch_up_cik(label: str, cik: str, *, context: Context, since: pd.Timestamp
             _log_read_failure(context, cik, stamp, period, rows)
         else:
             manifest, book = rows
-            context.store.save_13f_filing(manifest, book)
+            save_13f_filing(context.store, manifest, book)
             if not book.empty:
                 frames.append(book)
         if isinstance(rows, ReadFailure) and rows.transient:
@@ -261,12 +261,12 @@ def recover_13f_vintages(
         if isinstance(packet, ReadFailure):
             raise RuntimeError(f"13F recovery stopped at {accession}: {packet.reason}")
         manifest, holdings = packet
-        saved += context.store.save_13f_filing(manifest, holdings)
+        saved += save_13f_filing(context.store, manifest, holdings)
         cmap = context.store.load(Tables.cusip_ticker_map, columns=["cusip", "ticker"], optional=True)
         broad = holdings.assign(ticker=Tables.sec13f_hr.empty_marker[1])
         if cmap is not None:
             mapping = cmap.drop_duplicates("cusip").set_index("cusip").ticker
             broad["ticker"] = broad.cusip.map(mapping).fillna(Tables.sec13f_hr.empty_marker[1])
-        context.store.save_13f_filing(manifest, broad, table=Tables.sec13f_hr)
+        save_13f_filing(context.store, manifest, broad, table=Tables.sec13f_hr)
     preview["saved_rows"] = saved
     return preview

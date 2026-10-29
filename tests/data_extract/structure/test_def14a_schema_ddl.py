@@ -140,7 +140,7 @@ def test_schema_sql_matches_the_flatten_column_for_column():
 
 
 @pytest.mark.parametrize("table", [section.table for section in SECTIONS], ids=[section.key for section in SECTIONS])
-def test_full_filing_stamp_reservations_preserve_canonical_columns(table: Table, sqlite_store: DataStore) -> None:
+def test_full_filing_stamp_reservations_preserve_canonical_columns(table: Table, filing_store: DataStore) -> None:
     """The complete stamp from the saved AAPL 1995 filing must not widen any schema."""
     stamp = {
         "ticker": "AAPL",
@@ -156,10 +156,10 @@ def test_full_filing_stamp_reservations_preserve_canonical_columns(table: Table,
     # Exercise the real saver before checking columns, including monotonic retries.
     for requested, expected in ((1, 1), (2, 2), (1, 2)):
         df_reservation = reservation_frame(table, stamp, df_saved, requested)
-        sqlite_store.save(table, df_reservation)
-        assert set(sqlite_store.columns(table)) == canonical
+        filing_store.save(table, df_reservation)
+        assert set(filing_store.columns(table)) == canonical
         assert set(df_reservation.columns) <= canonical
-        df_saved = sqlite_store.load(table, where={"ticker": "AAPL"}, markers=True)
+        df_saved = filing_store.load(table, where={"ticker": "AAPL"}, markers=True)
         assert df_saved is not None and len(df_saved) == 1
         assert not df_saved[list(table.pk)].isna().any().any()
         assert pd.Timestamp(df_saved.iloc[0]["as_of"]) == stamp["as_of"]
@@ -171,7 +171,7 @@ def test_full_filing_stamp_reservations_preserve_canonical_columns(table: Table,
         assert "cik" not in df_reservation
     else:
         assert df_saved.iloc[0]["cik"] == stamp["cik"]
-        assert sqlite_store.load(table, columns=list(table.pk), where={"ticker": "AAPL"}, optional=True) is None
+        assert filing_store.load(table, columns=list(table.pk), where={"ticker": "AAPL"}, optional=True) is None
     print(f"SANITY: {table.name} full-stamp reservations keep canonical columns, filing keys/date and retry=2; child markers stay hidden.")
 
 

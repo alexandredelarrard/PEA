@@ -15,7 +15,9 @@ from src.data_aggregate.utils.sec_thirteen.superinvestor_metrics import (
     BehaviorMarket,
     BookSummaries,
     level_metrics,
+    prepare_level_sample,
     prepare_pair_sample,
+    prepare_whole_book_sample,
     quantity_metrics,
     whole_book_metrics,
 )
@@ -62,12 +64,15 @@ def compute_superinvestor_feature_history(
     for snapshot in snapshots:
         quarter = prepare_pair_sample(snapshot, 1, summaries, market)
         year = prepare_pair_sample(snapshot, 4, summaries, market)
+        summaries.prune_pairs()
+        level = prepare_level_sample(snapshot, universe, summaries)
+        whole_sample = prepare_whole_book_sample(quarter)
         days.append(snapshot.day)
         for name, cohort in cohorts.items():
-            levels, coverage = level_metrics(snapshot, cohort, universe, summaries)
+            levels, coverage = level_metrics(level, cohort, universe)
             changes = quantity_metrics(quarter, cohort, universe)
             annual = quantity_metrics(year, cohort, universe)
-            whole, priced = whole_book_metrics(quarter, cohort, universe)
+            whole, priced = whole_book_metrics(whole_sample, cohort, universe)
             metrics = {**levels, **changes, **whole, "holders_yoy": annual["breadth_chg"], "shares_chg_yoy": annual["shares_chg"]}
             prefix = f"ic_super_{name}_" if name else "ic_super_"
             for metric, values in metrics.items():

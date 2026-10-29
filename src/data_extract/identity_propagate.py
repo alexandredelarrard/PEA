@@ -32,6 +32,7 @@ from src.data_extract.utils.fundamentals_sharadar.merge_history import build_mer
 from src.data_extract.utils.institutionals.fetch_fails_to_deliver import load_fails_master, master_stamps, prepare_master, restamp_fails
 from src.data_extract.utils.institutionals.fetch_insider_transactions import reparse_insider_transactions, restamp_insider_lineage
 from src.data_extract.utils.institutionals.fetch_short_interest import change_stamps, restamp_short_volume
+from src.data_extract.utils.institutionals.insider_store import patch_insider_source
 from src.data_extract.utils.institutionals.security_tape import outside_scope, restamp_targets
 from src.data_store.schema import Table, Tables
 from src.utils.filer_tables import (
@@ -157,7 +158,7 @@ def _purge(
     if not dry_run:
         if spec.table == Tables.insider_transactions:
             columns = [*Tables.insider_transactions.pk, "ticker", "issuer_cik"]
-            context.store.patch_insider_source(pd.DataFrame(), foreign[columns], identity.source_cohort)
+            patch_insider_source(context.store, pd.DataFrame(), foreign[columns], identity.source_cohort)
         else:
             _delete_foreign_rows(context, spec, foreign)
     _warn(context, spec.table.name, records, dry_run=dry_run)
@@ -209,7 +210,7 @@ def _refresh_fails(
     """Re-stamp the stored FTD lines of companies whose master rows changed recently; rebuild their rows."""
     if not context.store.exists(Tables.sec_fails_to_deliver_security):
         return []
-    cohort = load_source_identity(context)
+    cohort = load_source_identity(context.store)
     master = prepare_master(cohort[Tables.security_master])
     if master.empty:
         return []

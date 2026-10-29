@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any, cast
+from unittest.mock import Mock
 
 import numpy as np
 import pandas as pd
@@ -39,10 +40,10 @@ from src.data_aggregate.utils.sec_thirteen.institutional_features import (
 from src.data_aggregate.utils.sec_thirteen.institutional_features import (
     clean_holdings as _clean_holdings,
 )
-from src.data_extract.utils.institutionals.fetch_13f import _book_frame, filing_vintage
+from src.data_extract.utils.institutionals.fetch_13f import _book_frame, filing_vintage, save_13f_filing
 from src.data_extract.utils.institutionals.fetch_cusip_map import _parse_openfigi
 from src.data_store.schema import Tables
-from src.data_store.store import DataStore
+from src.data_store.store import DataStore, _create_canonical
 from src.utils.price_adjustments import ShareBasis
 from tests.conftest import make_frames
 
@@ -1071,6 +1072,7 @@ def test_the_coverage_diagnostic_is_share_weighted_not_filer_weighted():
 
 def test_production_first_publication_uses_immutable_matched_cohorts(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
     """Known-truth packet math through the ordinary builder preserves public cohorts and history."""
+    _create_canonical(sqlite_store.engine, [Tables.sec13f_hr, Tables.sec13f_manager_holdings])
 
     def save_packet(accession: str, cik: str, period: str, filed: str, shares: float | None, *, kind: str = "original") -> None:
         columns = ["CUSIP", "TITLEOFCLASS", "SSHPRNAMT", "SSHPRNAMTTYPE", "VALUE"]
@@ -1086,7 +1088,7 @@ def test_production_first_publication_uses_immutable_matched_cohorts(sqlite_stor
             declared_rows=len(info),
             declared_value=float(info.VALUE.sum()),
         )
-        sqlite_store.save_13f_filing(manifest, holdings.assign(ticker="AAA"), table=Tables.sec13f_hr)
+        save_13f_filing(sqlite_store, manifest, holdings.assign(ticker="AAA"), table=Tables.sec13f_hr)
 
     compute_history = step_module.compute_institutional_feature_history
 
@@ -1173,3 +1175,29 @@ def test_all_fallback_exclusions_return_an_empty_panel() -> None:
     panel = _panel(make_frames(pd.bdate_range("2023-09-01", "2023-12-01"), {}, universe=["NOQUOTE"]), holdings)
     assert panel.empty and list(panel.columns) == ["date", "ticker"]
     print("SANITY: excluding every unsupported holding returns the normal empty panel before date-availability arithmetic.")
+
+
+def test_active_reductions_preserve_unknowns_and_reuse_ticker_split_pairs(monkeypatch: pytest.MonkeyPatch) -> None:
+    periods = pd.to_datetime(["2024-03-31", "2024-06-30"])
+    index = pd.MultiIndex.from_product([periods, ["1", "2"], ["AAA", "UNK"]], names=["period", "cik", "ticker"])
+    df_compact = pd.DataFrame({"shares": 100.0, "value_usd": 1000.0, "call_value": 0.0, "put_value": 0.0}, index=index)
+    df_compact["_cusips"] = pd.Series([frozenset({ticker}) for ticker in index.get_level_values("ticker")], index=index, dtype="object")
+    df_compact.loc[(periods[1], "1", "UNK"), "value_usd"] = np.nan
+    df_states = pd.DataFrame(
+        [
+            {"period": period, "cik": cik, "book_known": True, "zero_eligible": True, "comparison_eligible": True}
+            for period in periods
+            for cik in ("1", "2")
+        ]
+    )
+    snapshots = [(pd.Timestamp(day), df_compact, df_states) for day in ("2024-08-15", "2024-08-16")]
+    lookup = Mock(wraps=_mod.split_cum_product)
+    monkeypatch.setattr(_mod, "split_cum_product", lookup)
+    result = _mod.compute_institutional_feature_history(iter(snapshots), splits=None, min_prior_holders=1)
+    assert (lookup.call_count, [len(call.args[1]) for call in lookup.call_args_list]) == (2, [2, 2])
+    assert result.loc[result.ticker.eq("UNK"), ["inst_value", "ic_inst_concentration", "ic_inst_net_options_ratio"]].isna().all().all()
+    assert result.loc[result.ticker.eq("AAA"), "inst_value"].eq(2000.0).all()
+    assert result.ic_inst_shares_chg.eq(0.0).all()
+    print(
+        "SANITY: native totals preserve partially unknown dollars and valid quantities; two ticker split pairs are evaluated once across managers/events."
+    )

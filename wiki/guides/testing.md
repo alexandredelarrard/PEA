@@ -7,7 +7,7 @@ tags:
   - guide
   - testing
   - validation
-source_commit: 1c36d16f5e951e61999a0b11ac33c50cf6381198
+source_commit: aa9ac35ff94b6992ac43106230f63e3d50082cab
 integration_parents:
   - 2a3fd08aec2245ec688f671a9d2e1894e4dd1ad8
   - fe27d5cd3fadc3736144e7a0c0216edc63eb1b1f
@@ -65,6 +65,16 @@ Pair the known-truth test with a real-data coverage check when the practical que
 Prefer `sqlite_store` for store behavior. It exercises a real second SQL dialect and catches facade divergence. Use `FakeStore` only when a PostgreSQL vector payload cannot bind in SQLite or when the test must inspect write order.
 
 Both test stores preserve the production rule that an absent or empty table raises unless `optional=True`.
+
+## Generic store fixtures and model isolation
+
+[Managed-table fixtures](../../tests/conftest.py) initialize the current canonical schema explicitly. Use the existing `filing_store` fixture for the two 13F and five DEF14A tables. Historical-layout tests construct their old schema and keys deliberately; ordinary writes must not perform migrations or synthesize legacy defaults. The [bootstrap controls](../../tests/data_store/test_schema_bootstrap.py) check that managed writes reject missing fields without altering stored data.
+
+Use an instance's existing model-selection seam for a local fake, as in the [training contract](../../tests/modelling/test_training_contract.py). Do not patch inherited class constructors globally: that can leak into later tests. Keep the [literal horizon/fallback checks](../../tests/modelling/test_random_forest.py), [tree feature checks](../../tests/modelling/test_tree_feature_contract.py), [canonical key/type checks](../../tests/data_store/test_insider_registry.py), and [full-versus-projected identity comparison](../../tests/data_extract/common/test_projected_resume_reads.py).
+
+The [identity guard](../../tests/data_extract/common/test_tier_c_resolution.py) rejects actual roster payload reads while allowing metadata references and already-loaded cohorts. The [runtime form contract](../../tests/data_store/test_resume_contract.py) checks the actual fetch planners against their registry forms; a form-shaped validation or amendment label is not itself an extraction-scope declaration.
+
+Use a short Windows pytest `--basetemp` path for model artifacts. The 2026-10-26 [validation record](../log.md) used four OpenMP threads and one BLAS thread for unit workers; those are test-runtime controls, not production model settings. It records 388 passes, five skips and one operational predictor deselection. All 21 selected model/schema/identity failures were resolved as 14 passing repaired cases and seven cases removed from two obsolete tests. The local ignored harness audit `reports/validate/2026-10-26-generic-data-store/` contains each case disposition, skip reason and command. Twenty unrelated baseline failures remain outside that follow-up; this is not a production financial-quality certificate.
 
 ## Cube assembly source replay
 
@@ -220,9 +230,9 @@ The real replay exposed a shared expiry-calendar duplicate-session crash in thre
 
 ## Cached 13F backfill performance controls
 
-The October 2026 refactor retains exact source/economic/public fields against dev4f125ab7 while shortening grouped book calculation, sharing the full CUSIP cache and caching verified writer preparation. [ZIP controls](../../tests/data_extract/institutionals/test_13f_backfill_zip.py) cover all-window discovery, missing manager copies, CUSIP continuity, ordinary completed-accession skips and forced source replay. [Mapper controls](../../tests/data_extract/institutionals/test_cusip_map.py) distinguish cached NULL misses from failed transports and preserve overrides. [Writer preparation](../../tests/data_store/test_13f_preparation.py) covers lazy warm use, new columns, facade invalidation and concurrent cold use. The existing vintage tests retain atomic rollback, empty-book completion and checksum/cover conflicts.
+The historical October 2026 refactor measured source/economic/public parity against dev4f125ab7 while shortening grouped book calculation, sharing the full CUSIP cache and caching the then-current writer preparation. [ZIP controls](../../tests/data_extract/institutionals/test_13f_backfill_zip.py) cover all-window discovery, missing manager copies, CUSIP continuity, ordinary completed-accession skips and forced source replay. [Mapper controls](../../tests/data_extract/institutionals/test_cusip_map.py) distinguish cached NULL misses from failed transports and preserve overrides. The former table-specific preparation tests are retired: current [generic metadata controls](../../tests/data_store/test_store_metadata.py) and [canonical bootstrap controls](../../tests/data_store/test_schema_bootstrap.py) cover cache invalidation and schema stability without ingestion-time migration. [Vintage tests](../../tests/data_extract/institutionals/test_13f_vintages.py) retain atomic rollback, empty-book completion and checksum/cover conflicts.
 
-Use disposable PostgreSQL16 with a dedicated test URL for the opt-in migration/atomicity/concurrency nodes; production volumes are excluded. General fixture tests run with the live-write tripwire. On Windows, use a short workspace-contained `--basetemp` if long temporary paths or external pytest cleanup fail. Performance and read-only source validation evidence is kept in local ignored `reports/validate/2026-10-11-13f-backfill-performance/`; bounded source timings do not establish a whole-history runtime or network latency.
+Use disposable PostgreSQL16 with a dedicated test URL for current bootstrap, atomicity and concurrency checks; production volumes are excluded. The former ingestion-time migration nodes are historical and have been retired. General fixture tests run with the live-write tripwire. On Windows, use a short workspace-contained `--basetemp` if long temporary paths or external pytest cleanup fail. Performance and read-only source validation evidence is kept in local ignored `reports/validate/2026-10-11-13f-backfill-performance/`; bounded source timings do not establish a whole-history runtime or network latency.
 
 The integrated timing proof compares 240 requested accessions in 2014Q1, 2019Q4 and March–May2026: 222 accepted books/167,130 grouped positions match the approved-rule baseline exactly, with identical rejected siblings and unchanged archive hashes. CPU transformation improves 2.5–2.8x on these bounded samples. The same 20-book/48,911-position actual saver reduces full-map reads from 15 to 1; disposable PostgreSQL cold writes take68.83s→46.41s and immutable replay15.40s→8.09s, with exact stored payload/checksum equality. These workloads overlap and are not summed. First-save latency is not improved in the saver sample (3.08s→5.81s); full-history runtime and live network waits remain unmeasured.
 

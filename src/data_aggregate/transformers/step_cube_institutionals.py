@@ -152,7 +152,16 @@ class StepCubeInstitutionals(Step):
         if cutoff is not None and earliest is not None:
             cutoff = min(cutoff, earliest)
         tail = canonical if cutoff is None else canonical.loc[canonical["date"] >= cutoff]
-        count = self._store.replace_institutional_output(tail, since=cutoff)
+        if cutoff is not None and (pd.to_datetime(tail["date"]) < cutoff).any():
+            raise ValueError("Institutional replacement rows precede their corrected range")
+        # Serialize with source publication without importing an extraction owner.
+        with self._store.transaction("institutional-source-proof") as store:
+            if cutoff is None:
+                count = store.replace(part, tail)
+            else:
+                if set(store.columns(part)) != set(tail.columns):
+                    raise ValueError("Institutional corrected range must retain the stored schema")
+                count = store.append_tail(part, tail, cutoff, inclusive=True)
         self._log.info(
             "Institutional output compared %s rows; earliest change %s; refresh %s -> %s; wrote %s rows",
             compared,

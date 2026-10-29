@@ -384,7 +384,7 @@ def test_position_arithmetic_keeps_known_shares_without_prices(buy_price: float,
             shares=10,
             price_per_share=np.nan,
             shares_owned_after=90 if sale_only else 100,
-            officer_title="CEO" if sale_only else "",
+            officer_title="CEO",
             is_officer=1,
         )
     ]
@@ -1175,7 +1175,7 @@ def test_every_emitted_column_is_declared_and_every_declaration_is_emitted():
             is_officer=1.0 if title else 0.0,
             is_director=0.0 if title else 1.0,
             filing_date=f"2024-0{i + 1}-15",
-            transaction_date=f"2024-0{i + 1}-14",
+            transaction_date=(pd.Timestamp(f"2024-0{i + 1}-15") - pd.offsets.BDay(1)).strftime("%Y-%m-%d"),
             shares=1_000.0 + 100 * i,
             value_usd=100_000.0 + 10_000 * i,
             shares_owned_after=11_000.0 + i,
@@ -1194,6 +1194,7 @@ def test_every_emitted_column_is_declared_and_every_declaration_is_emitted():
         ),
     ]
     idx = pd.bdate_range("2024-01-01", "2024-12-31")
+    assert pd.to_datetime(_frame(rows)["transaction_date"]).isin(idx).all()
     fh, _ = _prices()
     close = pd.DataFrame(100.0, index=idx, columns=["AAA"])
     panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=close), _frame(rows), shares_out_history=fh)
@@ -1654,11 +1655,35 @@ def test_action_cap_future_transaction_recovers_only_on_new_public_version() -> 
         value_usd=2e6,
     )
     panel = _build_action_cap([original, amended], close, history)
+    prefix = _build_action_cap([original], close, history)
 
     assert pd.isna(panel.loc["2024-03-08", "f_ic_insider_buy_value_mcap_60d"])
     assert pd.isna(panel.loc["2024-03-11", "f_ic_insider_buy_value_mcap_60d"])
     assert panel.loc["2024-03-12", "f_ic_insider_buy_value_mcap_60d"] == pytest.approx(0.005)
     assert panel.loc["2024-05-07", "f_ic_insider_buy_value_mcap_60d"] == 0.0
+    pd.testing.assert_series_equal(
+        panel.loc[:"2024-03-11", "f_ic_insider_buy_value_mcap_60d"], prefix.loc[:"2024-03-11", "f_ic_insider_buy_value_mcap_60d"]
+    )
     print(
         "SANITY: a later real correction can establish valid action/publication order prospectively, without resetting the first disclosure expiry."
     )
+
+
+def test_action_cap_future_declaration_recovers_on_an_explicit_row_date_correction() -> None:
+    _, close, history = _action_cap_inputs()
+    original = _txn(accession_number="future-original", filing_date="2024-03-08", transaction_date="2024-03-11", value_usd=1e6, row_sequence=1)
+    amended = original | {
+        "accession_number": "future-amended",
+        "filing_date": "2024-03-12",
+        "transaction_date": "2024-03-04",
+        "document_type": "4/A",
+        "original_submission_date": "2024-03-08",
+    }
+    panel = _build_action_cap([original, amended], close, history)
+    prefix = _build_action_cap([original], close, history)
+    feature = "f_ic_insider_buy_value_mcap_60d"
+    assert pd.isna(panel.loc["2024-03-11", feature])
+    assert panel.loc["2024-03-12", feature] == pytest.approx(0.01)
+    assert panel.loc["2024-05-07", feature] == 0.0
+    pd.testing.assert_series_equal(panel.loc[:"2024-03-11", feature], prefix.loc[:"2024-03-11", feature])
+    print("SANITY: independent full-row proof corrects the action to March 4 only on March 12, giving 1m/100m until the original May 7 expiry.")

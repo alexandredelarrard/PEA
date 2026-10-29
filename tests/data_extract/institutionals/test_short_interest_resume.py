@@ -20,12 +20,33 @@ import pytest
 
 from src.data_extract.utils.institutionals import fetch_short_interest as si
 from src.data_store.schema import Tables
+from src.data_store.store import _create_canonical
 from tests.data_extract.fake_context import extract_config
 from tests.data_extract.institutionals.test_short_volume_security import UNIVERSE, _file, _identity, _master
 
 
+@pytest.fixture
+def sqlite_store(sqlite_store):
+    _create_canonical(
+        sqlite_store.engine,
+        [
+            Tables.sp500_tickers,
+            Tables.entity_lineage,
+            Tables.symbol_tenure,
+            Tables.security_master,
+            Tables.sec_fails_to_deliver_security,
+            Tables.sec_fails_to_deliver,
+            Tables.sec_short_volume_security,
+            Tables.short_interest,
+        ],
+    )
+    return sqlite_store
+
+
 def _context(store, tmp_path: Path | None = None) -> Any:
-    return SimpleNamespace(store=store, paths={"DATA_STORE": tmp_path}, log=logging.getLogger("test.regsho"), config=extract_config(data_extract={}))
+    return SimpleNamespace(
+        store=store, paths={"DATA_STORE": tmp_path}, log=logging.getLogger("test.regsho"), config=extract_config(data_extract={"redundant_ticks": []})
+    )
 
 
 def _raw(rows: list[tuple[str, str, float, float]]) -> pd.DataFrame:
@@ -249,10 +270,16 @@ def test_incremental_run_rewrites_only_the_fetched_days(sqlite_store, tmp_path, 
     monkeypatch.setattr(si, "_plan_days", lambda *a, **k: pd.bdate_range("2020-01-03", "2020-01-06"))
     asked = _serve(monkeypatch, {"20200103": [("LEN", 30.0, 40.0), ("LEN/B", 5.0, 6.0), ("ZZZZ", 1.0, 1.0)], "20200106": [("LEN", 50.0, 60.0)]})
 
-    si.fetch_short_interest(_context(sqlite_store, tmp_path), UNIVERSE, pause=0.0, identity=_identity())
+    si.fetch_short_interest(_context(sqlite_store, tmp_path), UNIVERSE, pause=0.0, identity=_identity(store=sqlite_store))
 
     assert [d.date().isoformat() for d in asked] == ["2020-01-03", "2020-01-06"]
-    assert _grain(sqlite_store) == {("LEN", "2020-01-02"): 1.0, ("LEN", "2020-01-03"): 35.0, ("LEN", "2020-01-06"): 50.0}
+    assert {key: value for key, value in _grain(sqlite_store).items() if value > 0} == {
+        ("LEN", "2020-01-02"): 1.0,
+        ("LEN", "2020-01-03"): 35.0,
+        ("LEN", "2020-01-06"): 50.0,
+    }
+    quiet = sqlite_store.load(Tables.short_interest, where={"short_volume": 0})
+    assert quiet is not None and quiet["total_volume"].isna().all() and quiet["source_checked_at"].notna().all()
     raw = sqlite_store.load(Tables.sec_short_volume_security)
     assert sorted(raw["source_symbol"]) == ["LEN", "LEN", "LEN", "LEN/B"], "ZZZZ is no universe security"
     print("\n=== SANITY CHECK: RegSHO incremental ===")
@@ -270,23 +297,29 @@ def test_full_refetches_every_served_day_and_keeps_no_legacy_row(sqlite_store, m
     asked = _serve(monkeypatch, files)
 
     with pytest.raises(RuntimeError, match="2015-01-02"):
-        si.fetch_short_interest(_context(sqlite_store), UNIVERSE, pause=0.0, full=True, identity=_identity())
+        si.fetch_short_interest(_context(sqlite_store), UNIVERSE, pause=0.0, full=True, identity=_identity(store=sqlite_store))
     assert _grain(sqlite_store) == {("LEN", "2015-01-02"): 9.0}, "a stored date the source no longer serves aborts before any write"
 
-    sqlite_store.drop(Tables.sec_short_volume_security)
+    sqlite_store.delete(Tables.sec_short_volume_security, {"source_symbol": sqlite_store.NOT_NULL})
     with pytest.raises(RuntimeError, match="2015-01-02"):
-        si.fetch_short_interest(_context(sqlite_store), UNIVERSE, pause=0.0, full=True, identity=_identity())
+        si.fetch_short_interest(_context(sqlite_store), UNIVERSE, pause=0.0, full=True, identity=_identity(store=sqlite_store))
     assert _grain(sqlite_store) == {("LEN", "2015-01-02"): 9.0}, "an empty raw table (cold start): the ticker table's day still guards"
 
     sqlite_store.delete(Tables.short_interest, where={"date": [pd.Timestamp("2015-01-02")]})
     legacy = pd.DataFrame({"date": pd.to_datetime(["2018-08-02"]), "ticker": "LEN", "short_volume": [99.0], "total_volume": [99.0]})
     sqlite_store.save(Tables.short_interest, legacy)
     asked.clear()
-    si.fetch_short_interest(_context(sqlite_store), UNIVERSE, pause=0.0, full=True, identity=_identity())
+    si.fetch_short_interest(_context(sqlite_store), UNIVERSE, pause=0.0, full=True, identity=_identity(store=sqlite_store))
 
     assert {d.date().isoformat() for d in asked} == {"2018-08-01", "2018-08-02", "2018-08-03"}
     assert min(asked) == pd.Timestamp("2018-08-01") and pd.Timestamp("2018-07-31") not in asked
-    assert _grain(sqlite_store) == {("LEN", "2018-08-01"): 3.0, ("LEN", "2018-08-02"): 5.0, ("LEN", "2018-08-03"): 7.0}
+    assert {key: value for key, value in _grain(sqlite_store).items() if value > 0} == {
+        ("LEN", "2018-08-01"): 3.0,
+        ("LEN", "2018-08-02"): 5.0,
+        ("LEN", "2018-08-03"): 7.0,
+    }
+    quiet = sqlite_store.load(Tables.short_interest, where={"short_volume": 0})
+    assert quiet is not None and quiet["total_volume"].isna().all() and quiet["source_checked_at"].notna().all()
     print("\n=== SANITY CHECK: RegSHO full ===")
     print("  a stored 2015 date the source no longer serves aborts the run with both tables intact, read from the raw table or,")
     print("  when it is empty (cold start), from the ticker table; without it, full re-fetches from the registered 2018-08-01 floor")
@@ -304,7 +337,7 @@ def test_full_aborts_before_replace_when_a_served_date_fails(sqlite_store, monke
     _serve(monkeypatch, {"20171229": [("LEN", 1.0, 2.0)], "20180801": [("LEN", 30.0, 40.0)]})  # 2018-08-02 is stored but not served
 
     with pytest.raises(RuntimeError, match="2018-08-02"):
-        si.fetch_short_interest(_context(sqlite_store), UNIVERSE, pause=0.0, full=True, identity=_identity())
+        si.fetch_short_interest(_context(sqlite_store), UNIVERSE, pause=0.0, full=True, identity=_identity(store=sqlite_store))
     assert _grain(sqlite_store) == {("LEN", "2018-08-01"): 1.0, ("LEN", "2018-08-02"): 3.0}
     assert len(sqlite_store.load(Tables.sec_short_volume_security)) == 2
 
@@ -313,7 +346,7 @@ def test_full_aborts_before_replace_when_a_served_date_fails(sqlite_store, monke
 
     monkeypatch.setattr(si, "_fetch_day", _boom)
     with pytest.raises(RuntimeError, match="aborting"):
-        si.fetch_short_interest(_context(sqlite_store), UNIVERSE, pause=0.0, full=True, identity=_identity())
+        si.fetch_short_interest(_context(sqlite_store), UNIVERSE, pause=0.0, full=True, identity=_identity(store=sqlite_store))
     assert _grain(sqlite_store) == {("LEN", "2018-08-01"): 1.0, ("LEN", "2018-08-02"): 3.0}
     print("\n=== SANITY CHECK: RegSHO full abort gate ===")
     print("  a stored date not served, or a network error, aborts full before replace; both tables keep their rows")
@@ -334,7 +367,7 @@ def test_scoped_full_upserts_its_tickers_and_leaves_every_other_key(sqlite_store
     context = _context(sqlite_store)
     context.config = extract_config(data_extract={"redundant_ticks": []})
 
-    si.fetch_short_interest(context, ["LEN"], pause=0.0, full=True, identity=_identity())
+    si.fetch_short_interest(context, ["LEN"], pause=0.0, full=True, identity=_identity(store=sqlite_store))
 
     assert _grain(sqlite_store) == {("LEN", "2018-08-01"): 3.0, ("LEN", "2018-08-02"): 5.0, ("OTHR", "2018-08-01"): 7.0}
     print("\n=== SANITY CHECK: RegSHO scoped full ===")
@@ -342,10 +375,12 @@ def test_scoped_full_upserts_its_tickers_and_leaves_every_other_key(sqlite_store
 
 
 def test_empty_download_leaves_the_tables_untouched(sqlite_store, monkeypatch):
+    sqlite_store.drop(Tables.short_interest)
+    sqlite_store.drop(Tables.sec_short_volume_security)
     monkeypatch.setattr(si, "_fetch_day", lambda day, session=None: None)
     monkeypatch.setattr(si, "_plan_days", lambda *a, **k: pd.bdate_range("2024-06-24", "2024-06-28"))
 
-    assert si.fetch_short_interest(_context(sqlite_store), tickers=["LEN"], pause=0.0, identity=_identity()) is None
+    assert si.fetch_short_interest(_context(sqlite_store), tickers=["LEN"], pause=0.0, identity=_identity(store=sqlite_store)) is None
     assert not sqlite_store.exists(Tables.short_interest) and not sqlite_store.exists(Tables.sec_short_volume_security)
     print("\n=== SANITY CHECK: RegSHO empty window ===")
     print("  every day-file missing -> no crash, no table created; the frontier is unchanged, so they are planned again. Validated.")

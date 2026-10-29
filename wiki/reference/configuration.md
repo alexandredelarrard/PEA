@@ -6,7 +6,7 @@ tags:
   - wiki
   - reference
   - configuration
-source_commit: 1c36d16f5e951e61999a0b11ac33c50cf6381198
+source_commit: b0333bd2db32d65b0f573e11fe7160a324789226
 integration_parents:
   - 2a3fd08aec2245ec688f671a9d2e1894e4dd1ad8
   - fe27d5cd3fadc3736144e7a0c0216edc63eb1b1f
@@ -164,7 +164,7 @@ Every numerical value in [build_cube.yml](../../configs/build_cube.yml) carries 
 
 `build_cube.institutionals.ftd_availability_calendar_days` in [build_cube.yml](../../configs/build_cube.yml) is21 calendar days from the persisted ZIP half-period end; publication snaps to the first eligible session. It is a deterministic estimate, independent of cache timestamps, and does not certify historical SEC publication dates.
 
-The [linear](../../configs/models/linear_modelling.yml), [LightGBM](../../configs/models/lgbm_modelling.yml) and [random-forest](../../configs/models/random_forest_modelling.yml) pools each include all29 existing institutional fields exactly once. Their respective pool sizes are73,99 and100. Targets, h30/h60/h90, fitting settings and existing non-institutional selections are unchanged by this addition. No fit was run.
+The [linear](../../configs/models/linear_modelling.yml), [LightGBM](../../configs/models/lgbm_modelling.yml) and [random-forest](../../configs/models/random_forest_modelling.yml) pools each include all29 existing institutional fields exactly once. Their respective pool sizes are73,98 and100. LightGBM excludes the retired `f_y_earnings_growth` input and retains the already selected `f_y_earnings_growth_signed`. Targets, h30/h60/h90 and fitting settings are unchanged. No fit was run.
 
 ## Model settings
 

@@ -19,6 +19,50 @@ def _account_result(df_raw: pd.DataFrame, idx: pd.DatetimeIndex) -> tuple[pd.Dat
     return df_trades, df_positions, cumulative_positions(df_trades, df_positions, df_flows, idx, 60)
 
 
+@pytest.mark.parametrize("action", [None, "0001-01-01", "2024-02-01"], ids=["missing", "ancient", "post-filing"])
+@pytest.mark.parametrize("code", ["G", "P", "S"])
+@pytest.mark.parametrize("management", [True, False], ids=["management", "other-role"])
+def test_unknown_action_cannot_improve_a_mixed_common_account(code: str, action: str | None, management: bool) -> None:
+    rows = [
+        row(accession_number="first", shares=10, shares_owned_after=110, officer_title="CEO", is_officer=1),
+        row(
+            accession_number="second",
+            filing_date="2024-01-20",
+            transaction_date="2024-01-18",
+            shares=20,
+            shares_owned_after=130,
+            officer_title="CEO",
+            is_officer=1,
+        ),
+        row(
+            accession_number="unknown",
+            filing_date="2024-01-22",
+            transaction_date=action,
+            transaction_code=code,
+            shares=5,
+            shares_owned_after=135 if code != "S" else 125,
+            officer_title="CEO" if management else "Director",
+            is_officer=int(management),
+        ),
+        row(
+            accession_number="later",
+            filing_date="2024-04-02",
+            transaction_date="2024-04-01",
+            shares=10,
+            shares_owned_after=110,
+            officer_title="CEO",
+            is_officer=1,
+        ),
+    ]
+    idx = pd.date_range("2024-01-20", "2024-04-03")
+    _, _, result = _account_result(pd.DataFrame(rows), idx)
+    values = result["ic_insider_management_position_change_60d"]["AAA"]
+    assert values.loc["2024-01-21"] == pytest.approx(0.3)
+    assert values.loc["2024-01-22":"2024-01-25"].isna().all()
+    assert values.loc["2024-04-02"] == pytest.approx(0.1)
+    print(f"SANITY: {code=} {action=} {management=}; unknown action cannot preserve a supported30/100 account; a post-filing chain recovers.")
+
+
 @pytest.mark.parametrize("same_day", [False, True], ids=["cross-day", "same-day"])
 @pytest.mark.parametrize(
     "changes,independent",

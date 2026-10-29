@@ -104,11 +104,14 @@ def test_each_prediction_input_blocks_when_stale_per_key(table: Table, tmp_path:
     print(f"  3 of 20 keys 400 days old while the table-wide max is fresh -> blocked: {raised.value}. Validated.")
 
 
+@pytest.mark.usefixtures("filing_store")
 def test_stale_targets_13f_and_insider_do_not_block(tmp_path: Path, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     _seed(sqlite_store)
     old = TODAY - pd.Timedelta(days=400)
     sqlite_store.replace(Tables.cube_part_targets, pd.DataFrame({"date": old, "ticker": TICKERS, "target_rank_h30": 0.5}))
-    sqlite_store.replace(Tables.sec13f_hr, pd.DataFrame({"cik": "0000000001", "period": old, "ticker": TICKERS, "cusip": "X"}))
+    sqlite_store.replace(
+        Tables.sec13f_hr, pd.DataFrame({"accession_number": "_legacy", "cik": "0000000001", "period": old, "ticker": TICKERS, "cusip": "X"})
+    )
     sqlite_store.replace(
         Tables.insider_transactions,
         pd.DataFrame(

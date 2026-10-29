@@ -289,6 +289,7 @@ def test_matching_partial_ceo_clears_other_person_copies_and_ignores_future_rows
 
 
 @pytest.mark.parametrize("legacy_replay", [False, True])
+@pytest.mark.usefixtures("filing_store")
 def test_same_ceo_partial_children_preserve_valid_copies_and_refresh_supported_values(
     stamp: dict[str, object], ceo_facts: dict[Table, pd.DataFrame], sqlite_store: DataStore, legacy_replay: bool
 ) -> None:

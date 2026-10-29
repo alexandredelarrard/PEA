@@ -21,6 +21,7 @@ import pandas as pd
 
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import ZipRead, read_zip_tables
+from src.data_extract.utils.common.identity_store import save_identity
 from src.data_extract.utils.common.incremental import matches_stored
 from src.data_store.schema import Tables
 from src.utils.string import normalise_ticker, pad_cik_series, yahoo_symbol
@@ -535,7 +536,7 @@ def build_symbol_tenure(context: Context, scan: Form345Scan, config_dir: str | P
     unchanged = matches_stored(existing, out, Tables.symbol_tenure)
     written = 0
     if not unchanged:
-        written = context.store.replace_institutional_identity(Tables.symbol_tenure, out, {"source": list(BUILD_SOURCES)})
+        written = save_identity(context.store, Tables.symbol_tenure, out, {"source": list(BUILD_SOURCES)})
     if unchanged:
         logger.info("symbol_tenure: unchanged (%d row(s)); write skipped", len(out))
     else:
@@ -602,4 +603,4 @@ def save_dei_period(context: Context, period: str, rows: pd.DataFrame) -> int:
     existing = context.store.load(Tables.symbol_tenure, project=True, where=where, optional=True)
     if matches_stored(existing, rows, Tables.symbol_tenure):
         return 0
-    return context.store.replace_institutional_identity(Tables.symbol_tenure, rows, where)
+    return save_identity(context.store, Tables.symbol_tenure, rows, where)

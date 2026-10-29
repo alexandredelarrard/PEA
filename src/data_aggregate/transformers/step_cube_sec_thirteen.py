@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from contextlib import closing
 from dataclasses import dataclass, replace
 
 import pandas as pd
@@ -19,11 +20,11 @@ from src.data_aggregate.utils.common.panel_merge import PanelMerger
 from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.price_frames import PriceFrames, load_trading_calendar
 from src.data_aggregate.utils.sec_thirteen import inputs as thirteen_inputs
-from src.data_aggregate.utils.sec_thirteen.holdings_clean import attach_tickers, clean_public_holdings
+from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_public_batches
 from src.data_aggregate.utils.sec_thirteen.institutional_books import iter_institutional_books, prepare_institutional_book_history
 from src.data_aggregate.utils.sec_thirteen.institutional_features import EMISSION as INSTITUTIONAL_EMISSION
 from src.data_aggregate.utils.sec_thirteen.institutional_features import compute_institutional_feature_history, project_institutional_features
-from src.data_aggregate.utils.sec_thirteen.superinvestor_books import prepare_superinvestor_book_history
+from src.data_aggregate.utils.sec_thirteen.superinvestor_books import prepare_superinvestor_batches, prepare_superinvestor_book_history
 from src.data_aggregate.utils.sec_thirteen.superinvestor_features import EMISSION as SUPERINVESTOR_EMISSION
 from src.data_aggregate.utils.sec_thirteen.superinvestor_features import (
     SuperinvestorFeatureHistory,
@@ -33,7 +34,6 @@ from src.data_aggregate.utils.sec_thirteen.superinvestor_features import (
 from src.data_aggregate.utils.sec_thirteen.superinvestor_metrics import BehaviorMarket
 from src.data_aggregate.utils.sec_thirteen.superinvestor_roster import load_manager_cohorts
 from src.data_store.schema import Tables
-from src.utils.institutional_vintages import prepare_book_vintages
 from src.utils.price_adjustments import ShareBasis
 from src.utils.step import Step
 from src.utils.superinvestor_roster import filer_ciks
@@ -170,19 +170,20 @@ class StepCubeSecThirteen(Step):
     def _superinvestor_history(self, resources: SecThirteenResources) -> SuperinvestorFeatureHistory | None:
         if resources.cohorts is None:
             return None
-        packet = thirteen_inputs.load_manager_filing_vintages(self._store, resources.frames.trading_index.max(), sorted(resources.cohorts[""]))
-        if packet is None:
+        packets = thirteen_inputs.iter_filing_vintages(
+            self._store, resources.frames.trading_index.max(), sorted(resources.cohorts[""]), table=Tables.sec13f_manager_holdings
+        )
+        if packets is None:
             return None
 
         # Clean whole books once, retaining mapped off-universe positions and provenance.
-        df_filings, df_holdings = packet
         cfg = self._cfg.get("institutionals", {})
-        df_holdings = clean_public_holdings(attach_tickers(df_holdings, resources.cusip_map), resources.valuation_close, cfg.get("value_basis"))
-        df_manifest = prepare_book_vintages(df_filings, df_holdings, resources.frames.trading_index, settle_days=0)
-
-        # Public freshness, archival baselines and the common quarter precede equations.
         age_days = int(cfg.get("superinvestor", {}).get("max_age_calendar_days", 90))
-        books = prepare_superinvestor_book_history(df_manifest, df_holdings, resources.frames.trading_index, age_days)
+        with closing(clean_public_batches(packets, resources.cusip_map, None, resources.valuation_close, cfg.get("value_basis"))) as batches:
+            prepared = prepare_superinvestor_batches(batches, resources.frames.trading_index)
+            books = prepare_superinvestor_book_history(prepared, resources.frames.trading_index, age_days)
+        if books is None:
+            return None
         market = BehaviorMarket(resources.frames.trading_index, resources.valuation_close, resources.basis)
         return compute_superinvestor_feature_history(books, resources.cohorts, resources.frames.universe, market)
 

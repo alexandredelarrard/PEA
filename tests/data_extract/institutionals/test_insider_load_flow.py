@@ -20,18 +20,17 @@ from typing import Any
 
 import pandas as pd
 import pytest
-from sqlalchemy import text
 
 from src.data_aggregate.utils.institutionals.frontiers import schedule_complete_through
 from src.data_extract import cli as cli_mod
 from src.data_extract.utils.common import edgar_driver, edgar_index, resume
 from src.data_extract.utils.common.identity import Identity, build_identity
+from src.data_extract.utils.common.identity_store import load_source_identity
 from src.data_extract.utils.common.sec_utils import CIK_MAPPING_COLS
 from src.data_extract.utils.institutionals import fetch_insider_edgar as edgar
 from src.data_extract.utils.institutionals import fetch_insider_transactions as ins
-from src.data_store import ddl
-from src.data_store import store as store_module
 from src.data_store.schema import Tables
+from src.data_store.store import _create_canonical
 from tests.data_extract.edgar_fixtures import seed_index
 from tests.data_extract.fake_context import extract_config
 
@@ -163,6 +162,7 @@ class _FakeSec:
             for table, frame in identity.source_cohort.items():
                 if not frame.empty:
                     context.store.save(table, frame)
+            identity.source_cohort.update(load_source_identity(context.store))
             return identity
 
         def archive(context: Any, path: Path, urls: Any, **kwargs: Any) -> Path | None:
@@ -230,6 +230,17 @@ def identity() -> Identity:
 
 def _context(tmp_path: Path, store: Any, universe: tuple[str, ...] = ("AAA",)) -> Any:
     """A fake context whose `sp500_tickers` (the analysis universe) holds `universe`, CIKs 1, 2, ..."""
+    _create_canonical(
+        store.engine,
+        [
+            Tables.sp500_tickers,
+            Tables.entity_lineage,
+            Tables.symbol_tenure,
+            Tables.security_master,
+            Tables.insider_transactions,
+            Tables.insider_footnotes,
+        ],
+    )
     store.save(
         Tables.sp500_tickers,
         pd.DataFrame(
@@ -580,39 +591,25 @@ def test_a_ticker_subset_edgar_run_never_hides_another_tickers_filing(tmp_path, 
     )
 
 
-def _postgres_add_column(engine: Any, name: str, df: pd.DataFrame) -> list[str]:
-    """The store's Postgres schema evolution (`ADD COLUMN` for frame columns the table lacks), run on
-    SQLite too, where `store.ensure_columns` is a no-op."""
-    if not store_module.table_exists(engine, name):
-        return []
-    missing = [column for column in df.columns if column not in store_module._reflect(engine, name).c]
-    with engine.begin() as conn:
-        for column in missing:
-            sql_type = ddl.sql_type(column, df[column].dtype, spec=Tables.insider_transactions)
-            conn.execute(text(f'ALTER TABLE "{name}" ADD COLUMN "{column}" {sql_type}'))
-    return missing
-
-
 def test_an_edgar_first_run_then_a_zip_ingest_stamps_and_reconciles(tmp_path, sqlite_store, monkeypatch, identity, caplog):
-    """R-03: EDGAR creates the table (no `quarter` column, no zip row); its reconcile is a no-op. A
-    zip ingest afterwards adds `quarter` (Postgres schema evolution, emulated here on SQLite), stamps
-    E1 and inserts Z1; EDGAR then re-reads Z1 whole and keeps its quarter."""
+    """EDGAR leaves canonical quarter fields NULL; ZIP fills them while preserving authoritative EDGAR payload."""
     caplog.set_level(logging.INFO)
-    monkeypatch.setattr(store_module, "ensure_columns", _postgres_add_column)
     sec = _FakeSec(monkeypatch, identity, tmp_path)
     context = _context(tmp_path, sqlite_store)
 
     sec.publish(context, [E1, E2])
     _run_edgar(context)
     df_edgar_only = _table(sqlite_store)
-    assert "quarter" not in df_edgar_only.columns and len(df_edgar_only) == 3
+    assert df_edgar_only["quarter"].isna().all() and len(df_edgar_only) == 3
     assert not any("zip-sourced filing" in message for message in _messages(caplog, logging.INFO)), "no zip quarter -> no reconcile"
 
     sec.zips["2026q2"] = _zip_tables([E1_ZIP, Z1])
     assert _run_zip(context) == 1
     df_zip = _table(sqlite_store)
     assert list(_rows_of(df_zip, E1.accession)["quarter"]) == ["2026q2", "2026q2"]
-    pd.testing.assert_frame_equal(_rows_of(df_zip, E1.accession).drop(columns="quarter"), _rows_of(df_edgar_only, E1.accession))
+    pd.testing.assert_frame_equal(
+        _rows_of(df_zip, E1.accession).drop(columns="quarter"), _rows_of(df_edgar_only, E1.accession).drop(columns="quarter")
+    )
     assert _rows_of(df_zip, E2.accession)["quarter"].isna().all()
     assert list(_rows_of(df_zip, Z1.accession)["source"]) == ["zip"]
 

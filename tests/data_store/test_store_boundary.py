@@ -166,3 +166,21 @@ def test_store_surface_covers_every_capability_the_bypasses_needed():
         f"  DataStore exposes all {len(required)} capabilities the 11 former bypasses needed, so "
         "no call site has a reason to reach past the facade. Validated."
     )
+
+
+def test_store_contains_only_generic_table_operations() -> None:
+    source = (STORE_PKG / "store.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    concrete = [
+        node.lineno for node in ast.walk(tree) if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "Tables"
+    ]
+    assert not concrete, f"Concrete table policy belongs in its owner, found at lines {concrete}"
+    for word in ("institutional", "13f", "def14a", "_legacy", "source_checked_at", "inventory_checked_through"):
+        assert word not in code_only(source).lower(), f"Specialized store policy remains: {word}"
+    assert not any(
+        isinstance(node, ast.ImportFrom)
+        and node.module
+        and (node.module.startswith("src.data_extract") or node.module.startswith("src.data_aggregate"))
+        for node in ast.walk(tree)
+    )
+    print("SANITY: store uses generic registry metadata without concrete-table dispatch, domain imports, proof fields or migration defaults.")

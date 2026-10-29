@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TypeIs
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -108,7 +108,7 @@ def summarize_book(book: PublicBook) -> BookSummary:
     return BookSummary(df_positions[comparison_columns].copy(), df_tickers, total_value)
 
 
-def _supported_book(book: PublicBook | None) -> TypeIs[PublicBook]:
+def _supported_book(book: PublicBook | None) -> Any[PublicBook]:
     return book is not None and book.support.book_known and book.support.zero_eligible and book.support.comparison_eligible
 
 

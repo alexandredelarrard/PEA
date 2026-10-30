@@ -131,8 +131,9 @@ def build_governance(config_path: str, full: bool) -> None:
     help_priority=9,
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-def assemble_cube(config_path: str) -> None:
-    _step(StepAssembleCube, config_path).run()
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+def assemble_cube(config_path: str, full: bool) -> None:
+    _step(StepAssembleCube, config_path).run(full=full)
 
 
 @cli.command(

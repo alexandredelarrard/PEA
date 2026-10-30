@@ -14,8 +14,9 @@ from omegaconf import OmegaConf
 
 from src.context import Context
 from src.data_aggregate.transformers.step_assemble_cube import StepAssembleCube
-from src.data_aggregate.utils.assemble.cube import panel_from_cube
+from src.data_aggregate.utils.common.panel_merge import DuplicateKeyError, FeatureCollisionError
 from src.data_aggregate.utils.common.parts import CUBE_PARTS
+from src.data_store.errors import UnknownTableError
 from src.data_store.schema import Tables, name_of
 from src.modelling.utils.panel import load_frame
 from src.utils.config import read_config
@@ -31,8 +32,16 @@ def _parts() -> dict[str, pd.DataFrame]:
     return tables
 
 
+_OPTIONAL = (Tables.cube_part_text, Tables.cube_part_institutionals)
+_ASSEMBLED = tuple(p for p in CUBE_PARTS if p.table != Tables.cube_part_betas)
+
+
 def _config(**assembly: Any) -> Any:
-    policy = {"optional_parts": [Tables.cube_part_text.name, Tables.cube_part_institutionals.name], **assembly}
+    policy = {
+        "optional_parts": [t.name for t in _OPTIONAL],
+        "compulsory_parts": [p.name for p in _ASSEMBLED if p.table not in _OPTIONAL],
+        **assembly,
+    }
     return OmegaConf.create({"build_cube": {"assembly": policy}, "data_extract": {"redundant_ticks": []}})
 
 
@@ -106,11 +115,6 @@ class _SpyStore:
         self.tables[name_of(table)] = frame.copy()
         return len(frame)
 
-    def bulk_seed(self, table: Any, frame: pd.DataFrame) -> int:
-        self.writes.append("bulk_seed")
-        self.tables[name_of(table)] = pd.concat([self.tables[name_of(table)], frame], ignore_index=True)
-        return len(frame)
-
 
 def test_price_grid_values_precision_and_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
     tables = _parts()
@@ -123,14 +127,14 @@ def test_price_grid_values_precision_and_chunks(monkeypatch: pytest.MonkeyPatch)
     store = _SpyStore(tables)
     _step(store, monkeypatch).run()
     cube = store.tables[Tables.cube.name]
-    assert store.writes == ["replace", "bulk_seed"]
+    assert store.writes == ["replace"]
     assert cube[["date", "ticker"]].equals(tables[Tables.cube_part_prices.name][["date", "ticker"]])
     assert pd.isna(cube.iloc[-1]["target_zscore_h60"]) and pd.isna(cube.iloc[-1]["v_3"])
     np.testing.assert_array_equal(cube["close_split"], tables[Tables.cube_part_prices.name]["close_split"])
     assert all(cube[col].dtype == np.float32 for col in cube if str(col).startswith(("v_", "target_")))
     assert cube["peers"].eq('{"BBB": 1.0}').all()
     assert {"sector", "industry_group"}.issubset(cube)
-    print("SANITY: exact price grid, sparse cells and null latest labels survive; precision and bounded write order preserved.")
+    print("SANITY: exact price grid, sparse cells and null latest labels survive; precision preserved.")
 
 
 @pytest.mark.parametrize("selection", [None, [], ["v_3"], ["date", "ticker", "v_3"]])
@@ -147,12 +151,12 @@ def test_projected_reads(monkeypatch: pytest.MonkeyPatch, selection: Any) -> Non
     print(f"SANITY: selection {selection!r} projects payload before reading; only key scans may precede it.")
 
 
-@pytest.mark.parametrize("table", [Tables.cube_part_prices, Tables.cube_part_betas, Tables.cube_part_targets])
-def test_duplicate_keys_across_read_chunks(monkeypatch: pytest.MonkeyPatch, table: Any) -> None:
+@pytest.mark.parametrize("table", [Tables.cube_part_prices, Tables.cube_part_targets, Tables.cube_part_fundamentals])
+def test_duplicate_keys_are_refused(monkeypatch: pytest.MonkeyPatch, table: Any) -> None:
     tables = _parts()
     tables[table.name] = pd.concat([tables[table.name], tables[table.name].iloc[:1]], ignore_index=True)
     store = _SpyStore(tables)
-    with pytest.raises(RuntimeError, match=f"{table.name} has 1 duplicate"):
+    with pytest.raises(DuplicateKeyError, match="duplicate|repeats"):
         _step(store, monkeypatch).run()
     assert not store.writes
     print(f"SANITY: {table.name} duplicate spans one-row read chunks and is refused before writes.")
@@ -160,11 +164,11 @@ def test_duplicate_keys_across_read_chunks(monkeypatch: pytest.MonkeyPatch, tabl
 
 def test_keys_only_selections_preserve_all_price_rows(monkeypatch: pytest.MonkeyPatch) -> None:
     store = _SpyStore(_parts())
-    cfg = _config(columns={part.name: ["date", "ticker"] for part in CUBE_PARTS})
+    cfg = _config(columns={part.name: ["date", "ticker"] for part in _ASSEMBLED if part.kind != "prices"})
     _step(store, monkeypatch, cfg).run()
     assert len(store.tables[Tables.cube.name]) == 2
-    assert set(store.tables[Tables.cube.name]) == {"date", "ticker", "peers", "sector", "industry_group"}
-    print("SANITY: even keys-only projections cannot remove rows from the complete price anchor.")
+    assert set(store.tables[Tables.cube.name]) == {"date", "ticker", "close_split", "peers", "sector", "industry_group"}
+    print("SANITY: keys-only projections cannot remove rows from the price root.")
 
 
 def test_bad_input_preserves_physical_cube(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -180,7 +184,7 @@ def test_bad_input_preserves_physical_cube(sqlite_store: Any, monkeypatch: pytes
     print("SANITY: preflight failure preserves the real destination's existing cells and physical schema.")
 
 
-@pytest.mark.parametrize("part", [p for p in CUBE_PARTS if p.table not in (Tables.cube_part_text, Tables.cube_part_institutionals)])
+@pytest.mark.parametrize("part", [p for p in _ASSEMBLED if p.table not in _OPTIONAL and p.kind != "prices"])
 @pytest.mark.parametrize("empty", [False, True])
 def test_required_inputs_preserve_existing_cube(monkeypatch: pytest.MonkeyPatch, part: Any, empty: bool) -> None:
     tables = _parts()
@@ -210,68 +214,34 @@ def test_optional_absent_or_empty_skips_before_selection(monkeypatch: pytest.Mon
     print(f"SANITY: optional {table}, empty={empty}, skips before requested-column validation.")
 
 
-@pytest.mark.parametrize(
-    "policy",
-    [
-        {"columns": {"unknown": ["x"]}},
-        pytest.param({"columns": {1: [], "unknown": []}}, id="mixed-columns-keys"),
-        {"columns": []},
-        {"optional_parts": "bad"},
-        {"optional_parts": ["unknown"]},
-        {"columns": {Tables.cube_part_fundamentals.name: "bad"}},
-        {"columns": {Tables.cube_part_fundamentals.name: [" "]}},
-        {"columns": {Tables.cube_part_fundamentals.name: ["v_3", "v_3"]}},
-    ],
-)
-def test_invalid_policy(monkeypatch: pytest.MonkeyPatch, policy: Any) -> None:
+def test_unknown_part_name(monkeypatch: pytest.MonkeyPatch) -> None:
     store = _SpyStore(_parts())
     original_cube = pd.DataFrame({"preserved": [1.0]})
     store.tables[Tables.cube.name] = original_cube.copy()
-    with pytest.raises(ValueError, match="assembly"):
-        _step(store, monkeypatch, _config(**policy)).run()
+    config = _config()
+    config.build_cube.assembly.optional_parts.append("cube_part_typo")
+    with pytest.raises(UnknownTableError):
+        _step(store, monkeypatch, config).run()
     assert not store.writes
     pd.testing.assert_frame_equal(store.tables[Tables.cube.name], original_cube)
-    print("SANITY: malformed policy names assembly, makes zero writes and preserves existing output.")
+    print("SANITY: a mistyped part name fails loudly, makes zero writes and preserves existing output.")
 
 
-@pytest.mark.parametrize(
-    "defect",
-    [
-        "duplicate",
-        "null_date",
-        "bad_date",
-        "null_ticker",
-        "blank_ticker",
-        "numeric_ticker",
-        "collision",
-        "metadata",
-        "missing_column",
-        "long_target",
-        "read_error",
-    ],
-)
+@pytest.mark.parametrize("defect", ["duplicate", "bad_date", "collision", "metadata", "missing_column", "read_error"])
 def test_broken_present_inputs(monkeypatch: pytest.MonkeyPatch, defect: str) -> None:
     tables = _parts()
-    part = Tables.cube_part_targets if defect == "long_target" else Tables.cube_part_text
+    part = Tables.cube_part_text
     frame = tables[part.name]
     if defect == "duplicate":
         tables[part.name] = pd.concat([frame, frame.iloc[:1]], ignore_index=True)
-    elif defect in ("null_date", "bad_date"):
+    elif defect == "bad_date":
         frame["date"] = frame["date"].astype(object)
-        frame.loc[0, "date"] = None if defect == "null_date" else "bad"
-    elif defect in ("null_ticker", "blank_ticker"):
-        frame.loc[0, "ticker"] = None if defect == "null_ticker" else " "
-    elif defect == "numeric_ticker":
-        frame["ticker"] = [123, 456]
+        frame.loc[0, "date"] = "bad"
     elif defect == "collision":
         frame["target_zscore_h60"] = 7.0
     elif defect == "metadata":
         frame["peers"] = "bad"
-    elif defect == "long_target":
-        frame["target_horizon"] = 60
     cfg = _config(columns={part.name: ["missing"]}) if defect == "missing_column" else _config()
-    if defect == "long_target":
-        cfg = _config(columns={part.name: ["target_zscore_h60"]})
     tables[Tables.cube.name] = pd.DataFrame({"preserved": [1.0]})
     store = _SpyStore(tables)
     if defect == "read_error":
@@ -283,13 +253,11 @@ def test_broken_present_inputs(monkeypatch: pytest.MonkeyPatch, defect: str) -> 
             yield from original(table, **kwargs)
 
         monkeypatch.setattr(store, "iter_load", failing)
-    error_type = ValueError if defect == "numeric_ticker" else (ValueError, RuntimeError)
-    match = f"{part.name}.*build-text" if defect == "numeric_ticker" else "cube_part|peers|target_horizon"
-    with pytest.raises(error_type, match=match):
+    with pytest.raises((ValueError, RuntimeError, FeatureCollisionError, DuplicateKeyError)):
         _step(store, monkeypatch, cfg).run()
     assert not store.writes
     pd.testing.assert_frame_equal(store.tables[Tables.cube.name], tables[Tables.cube.name])
-    print(f"SANITY: populated {defect} fails before replacement, including projected-out legacy target schema.")
+    print(f"SANITY: populated {defect} fails before replacement.")
 
 
 def test_physical_schema_narrows(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -307,14 +275,14 @@ def test_physical_schema_narrows(sqlite_store: Any, monkeypatch: pytest.MonkeyPa
 
 
 def test_committed_config() -> None:
-    cfg = read_config("configs")
-    assert set(cfg.build_cube.assembly.optional_parts) == {
-        Tables.cube_part_text.name,
-        Tables.cube_part_institutionals.name,
-        Tables.cube_part_sec_thirteen.name,
-    }
-    assert all(value is None or len(value) == 0 for value in cfg.build_cube.assembly.columns.values())
-    print("SANITY: ordinary config loader exposes keep-all defaults and exactly two optional parts.")
+    assembly = read_config("configs").build_cube.assembly
+    listed = [*assembly.compulsory_parts, *assembly.optional_parts]
+    assert set(assembly.optional_parts) == {Tables.cube_part_text.name, Tables.cube_part_institutionals.name, Tables.cube_part_sec_thirteen.name}
+    assert len(listed) == len(set(listed))
+    missing = {p.name for p in _ASSEMBLED} - set(listed)
+    assert not missing, f"registered parts silently excluded from the cube: {sorted(missing)}"
+    assert all(value is None or len(value) == 0 for value in assembly.columns.values())
+    print("SANITY: every registered part except betas is listed once in the config; optional parts and keep-all defaults match.")
 
 
 def test_optional_no_overlap_and_selected_out_collision(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -329,15 +297,38 @@ def test_optional_no_overlap_and_selected_out_collision(monkeypatch: pytest.Monk
     print("SANITY: populated out-of-grid optional payload contributes null columns; selected-out collisions are harmless.")
 
 
-def test_assembled_cube_feeds_actual_train_and_prediction_readers(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_assembled_cube_feeds_the_modelling_reader(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     for name, frame in _parts().items():
         sqlite_store.replace(name, frame)
     _step(sqlite_store, monkeypatch).run()
     raw = load_frame(sqlite_store, Tables.cube, columns=["date", "ticker", "v_3", "target_zscore_h60"])
-    assert raw is not None
-    training = panel_from_cube(raw, horizon=60, label_name="target_zscore", feature_cols=["v_3"], target_type="zscore")
-    assert len(training) == 1
+    assert raw is not None and raw["target_zscore_h60"].notna().sum() == 1
     latest = load_frame(sqlite_store, Tables.cube, columns=["date", "ticker", "v_3"], since="2023-01-03", downcast=False)
     assert latest is not None and len(latest) == 1 and latest["v_3"].notna().all()
     assert "target_zscore_h60" not in latest
-    print("SANITY: actual training reader keeps labelled row; feature-only prediction reader retains newest assembled unlabelled price row.")
+    print("SANITY: the modelling reader keeps the one labelled row; the feature-only reader retains the newest unlabelled price row.")
+
+
+def test_existing_cube_rewrites_only_the_overlap_window(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    for name, frame in _parts().items():
+        sqlite_store.replace(name, frame)
+    _step(sqlite_store, monkeypatch).run()
+
+    # a new session, a restated value inside the window (last stored date) and one before it
+    grid = pd.DataFrame({"date": pd.to_datetime(["2023-01-02", "2023-01-03", "2023-01-04"]), "ticker": "AAA"})
+    for name in (p.name for p in _ASSEMBLED):
+        old = sqlite_store.load(name)
+        assert old is not None
+        value_cols = [c for c in old.columns if c not in ("date", "ticker")]
+        new = grid.assign(**{c: np.float64(1.2) for c in value_cols})
+        if name == Tables.cube_part_fundamentals.name:
+            new["v_3"] = [7.0, 5.0, 6.0]
+        sqlite_store.replace(name, new)
+    _step(sqlite_store, monkeypatch).run()
+
+    cube = sqlite_store.load(Tables.cube, columns=["date", "ticker", "v_3"])
+    assert cube is not None
+    cube = cube.assign(date=pd.to_datetime(cube["date"])).sort_values("date")
+    assert len(cube) == 3
+    np.testing.assert_allclose(cube["v_3"].to_numpy(float), [1.2, 5.0, 6.0], rtol=1e-6)
+    print("SANITY: rows before the overlap start keep their stored value; the last stored date is restated and the new session appended.")

@@ -114,7 +114,7 @@ Runtime eligibility is the intersection of:
 
 ## Cube assembly selection
 
-[build_cube.yml](../../configs/build_cube.yml) supplies `build_cube.assembly` to the existing [assembler](../../src/data_aggregate/transformers/step_assemble_cube.py) and shared [policy](../../src/data_aggregate/utils/common/assembly.py). All registered parts participate. Prices, targets, betas, fundamentals, momentum and governance are compulsory; the committed optional list contains text, institutionals and SEC thirteen. Optional skips apply only to absent/physically empty tables; a populated broken input fails.
+[build_cube.yml](../../configs/build_cube.yml) supplies `build_cube.assembly` to the existing [assembler](../../src/data_aggregate/transformers/step_assemble_cube.py) and the [readiness report](../../src/data_aggregate/utils/common/part_status.py). `compulsory_parts` plus `optional_parts` are the parts merged into the cube (prices is the root; betas are not assembled); a registered part missing from both lists is silently excluded, which `test_committed_config` guards. The committed compulsory list is prices, targets, fundamentals, momentum and governance; the optional list contains text, institutionals and SEC thirteen. Optional skips apply only to absent/physically empty tables; a populated broken input fails.
 
 ```yaml
 build_cube:
@@ -123,6 +123,12 @@ build_cube:
       - cube_part_text
       - cube_part_institutionals
       - cube_part_sec_thirteen
+    compulsory_parts:
+      - cube_part_prices
+      - cube_part_targets
+      - cube_part_fundamentals
+      - cube_part_momentum
+      - cube_part_governance
     columns:
       cube_part_fundamentals: null
       cube_part_governance: null

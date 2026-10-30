@@ -7,7 +7,7 @@ from typing import Any
 import pandas as pd
 
 from src.context import Context
-from src.data_aggregate.utils.common.assembly import AssemblyPolicy, part_has_rows
+from src.data_aggregate.utils.common.assembly import part_has_rows
 from src.data_aggregate.utils.common.parts import CUBE_PARTS, TERMINAL_TABLES
 from src.data_aggregate.utils.institutionals.frontiers import insider_inventory_boundaries
 from src.data_store.schema import Tables
@@ -29,16 +29,16 @@ def _edge_detail(part_max: pd.Timestamp | None, reference: pd.Timestamp | None) 
 
 def cube_part_edge_report(context: Context) -> dict[str, Any]:
     store = context.store
-    policy = AssemblyPolicy.from_config(context.config.get("build_cube", {}))
+    optional = set(context.config.build_cube.assembly.optional_parts)
     universe = set(load_universe_tickers(context))
     maxima = store.max_date_by(Tables.prices, "ticker")
     reference = max((day for ticker, day in maxima.items() if ticker in universe), default=None)
     details: dict[str, dict[str, Any]] = {}
     for part in CUBE_PARTS:
-        present = part_has_rows(store, part)
+        present = part_has_rows(store, part.table)
         detail = _edge_detail(store.max_date(part.table) if present else None, reference)
-        detail.update(required=part.name not in policy.optional, skipped=False, expected_date=_fmt(reference), refresh_command=part.command)
-        if not present and part.name in policy.optional:
+        detail.update(required=part.name not in optional, skipped=False, expected_date=_fmt(reference), refresh_command=part.command)
+        if not present and part.name in optional:
             detail.update(status="skipped", skipped=True, reason="absent or empty")
         details[part.name] = detail
     return {

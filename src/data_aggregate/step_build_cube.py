@@ -76,7 +76,7 @@ class StepBuildCube(Step):
         self._institutionals.run(full=full)
         self._sec_thirteen.run(full=full)
         self._governance.run(full=full)
-        self._assemble.run()
+        self._assemble.run(full=full)
 
     def _assert_price_basis_is_sound(self) -> None:
         """Refuse to build on a price table with unexplained adjustment seams.

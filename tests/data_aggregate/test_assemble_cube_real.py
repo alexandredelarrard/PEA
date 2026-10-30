@@ -40,10 +40,8 @@ def test_real_source_assembly_replay(sqlite_store: Any, monkeypatch: pytest.Monk
     load_dotenv(find_dotenv(usecwd=True))
     config = read_config("configs")
     source = _store()
-    optional = set(config.build_cube.assembly.optional_parts)
-    missing = [
-        part.name for part in CUBE_PARTS if part.name not in optional and (not source.exists(part.table) or source.max_date(part.table) is None)
-    ]
+    compulsory = list(config.build_cube.assembly.compulsory_parts)
+    missing = [name for name in compulsory if not source.exists(name) or source.max_date(name) is None]
     if missing:
         _record(tmp_path, {"status": "abstain", "reason": "missing compulsory sources", "parts": missing, "metadata": _metadata(source)})
         pytest.skip(f"real candidate replay incomplete: compulsory parts absent/empty: {missing}")
@@ -96,7 +94,8 @@ def test_real_source_assembly_replay(sqlite_store: Any, monkeypatch: pytest.Monk
     prices = snapshot[Tables.cube_part_prices.name].assign(date=lambda d: pd.to_datetime(d["date"])).set_index(keys).sort_index()
     assert actual.index.equals(prices.index)
     checked = 0
-    for part in CUBE_PARTS:
+    assembled = [*config.build_cube.assembly.compulsory_parts, *config.build_cube.assembly.optional_parts]
+    for part in (p for p in CUBE_PARTS if p.name in assembled):
         frame = snapshot.get(part.name)
         if frame is None or frame.empty:
             continue

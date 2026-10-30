@@ -199,17 +199,16 @@ def test_feature_parts_cover_every_group_exactly_once():
     )
 
 
-def test_assemble_reads_only_registered_feature_parts():
-    """Every part participates through the shared registry, including price/beta/targets."""
+def test_assemble_parts_come_from_config_not_code():
+    """The assembler merges what `build_cube.assembly` lists; no part name is hard-coded in it."""
     import inspect
 
     src = inspect.getsource(StepAssembleCube)
-    assert "CUBE_PARTS" in src, "assemble must enumerate the registry, not a literal list"
     for part in FEATURE_PARTS:
-        assert part.name not in src, f"{part.name} is hard-coded in the assemble step; it should come from the registry"
-    print("\n=== SANITY CHECK: assemble is registry-driven ===")
-    print(f"  iterates CUBE_PARTS ({len(CUBE_PARTS)} parts), no feature part name hard-coded")
-    print("  CONCLUSION: adding a feature part needs a registry entry only. Validated.")
+        assert part.name not in src, f"{part.name} is hard-coded in the assemble step; it should come from the config"
+    assert "PART_BY_NAME" not in src
+    print("\n=== SANITY CHECK: assemble is config-driven ===")
+    print("  CONCLUSION: the part list is `build_cube.assembly`; test_assemble_cube::test_committed_config covers registry coverage. Validated.")
 
 
 def test_monolithic_build_runs_each_registered_command_once_in_order():
@@ -225,7 +224,8 @@ def test_monolithic_build_runs_each_registered_command_once_in_order():
             calls.append(self.command)
 
     class _Assembler:
-        def run(self) -> None:
+        def run(self, full: bool = False) -> None:
+            assert full
             calls.append("assemble-cube")
 
     step = StepBuildCube.__new__(StepBuildCube)

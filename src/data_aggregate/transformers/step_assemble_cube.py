@@ -1,26 +1,30 @@
-"""Project registered parts onto price keys and stream a wide prediction-safe cube."""
+"""Merge the pre-built cube parts onto the price grid and save the wide prediction-safe cube."""
 
 from __future__ import annotations
 
-import gc
 import json
+from collections.abc import Sequence
 
 import pandas as pd
 from omegaconf import DictConfig
 
 from src.context import Context
-from src.data_aggregate.utils.common.assembly import AssemblyPolicy, part_has_rows
-from src.data_aggregate.utils.common.frames import downcast_float32
-from src.data_aggregate.utils.common.gics import GICS_COLUMNS, apply_categorical_codes
-from src.data_aggregate.utils.common.panel_merge import PANEL_KEYS, FeatureCollisionError, PanelMerger
+from src.data_aggregate.utils.common.assembly import part_has_rows
+from src.data_aggregate.utils.common.frames import downcast_float32, normalize_date_col
+from src.data_aggregate.utils.common.gics import apply_categorical_codes
+from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PartWindow, write_part
+from src.data_aggregate.utils.common.panel_merge import PANEL_KEYS, PanelMerger
 from src.data_aggregate.utils.common.part_status import cube_part_edge_report
-from src.data_aggregate.utils.common.parts import CUBE_PARTS, PART_BY_NAME, CubePart
+from src.data_aggregate.utils.common.parts import part_for
 from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
-from src.data_store.schema import Tables
+from src.data_store.schema import Table, Tables, resolve
 from src.utils.step import Step
 
 _CHUNK_ROWS = 200_000
 _MIN_TARGET_COVERAGE_PCT = 50.0
+
+# An existing cube is re-read and rewritten from this many calendar days before today (or its last date, if older).
+_OVERLAP_DAYS = 385
 
 
 class StepAssembleCube(Step):
@@ -29,56 +33,44 @@ class StepAssembleCube(Step):
         self._store = context.store
         self._cfg = config.build_cube
 
-    def run(self) -> None:
-
-        # check latest info per cube
-        policy = AssemblyPolicy.from_config(self._cfg)
+    def run(self, full: bool = False) -> None:
         self._warn_on_part_edges()
+        window = PartWindow(None, None) if full else self._plan_window()
+        cube, labels = self._assemble(window.since)
+        if self._persist(cube, window) == COLUMNS_CHANGED:
+            self._log.warning("%s column set changed -> full reassembly.", Tables.cube)
+            window = PartWindow(None, None)
+            cube, labels = self._assemble(None)
+            self._persist(cube, window)
+        self._report(cube, labels)
 
-        prices = self._read_part(PART_BY_NAME[Tables.cube_part_prices.name], policy)
-        if prices is None:
-            raise RuntimeError(f"{Tables.cube_part_prices} is required as the price grid; run build-prices")
-        
-        price_index = pd.MultiIndex.from_frame(prices[PANEL_KEYS])
-        merger = PanelMerger(anchor=prices[PANEL_KEYS])
-        owners: dict[str, str] = {name: "metadata" for name in ("peers", *GICS_COLUMNS)}
-        base_columns: list[str] = []
-        targets = pd.DataFrame(index=price_index[:0])
-        for part in CUBE_PARTS:
+    def _plan_window(self) -> PartWindow:
+        """Full when no cube is stored; else re-read from the earlier of its last date and today - overlap."""
+        last = self._store.max_date(Tables.cube)
+        if last is None:
+            return PartWindow(None, None)
+        start = min(last, pd.Timestamp.today().normalize() - pd.Timedelta(days=_OVERLAP_DAYS))
+        return PartWindow(last, start, start)
 
-            if part.table.name == "cube_part_betas":
+    def _assemble(self, since: pd.Timestamp | None) -> tuple[pd.DataFrame, list[str]]:
+        assembly = self._cfg.assembly
+        optional = set(assembly.optional_parts)
+        selected = assembly.get("columns") or {}
+        root = self._load_root(since)
+        merger = PanelMerger(anchor=root[PANEL_KEYS])
+        merger.add(root, Tables.cube_part_prices.name)
+        labels: list[str] = []
+        for name in [*assembly.compulsory_parts, *assembly.optional_parts]:
+            table = resolve(name)
+            if table == Tables.cube_part_prices:
                 continue
-
-            # read the cube
-            if part.table == Tables.cube_part_prices:
-                panel = prices 
-            else:
-                panel = self._read_part(part, policy, prices[PANEL_KEYS])
-
+            panel = self._read_part(table, selected.get(name), since, optional=name in optional)
             if panel is None:
                 continue
-
-            payload = [col for col in panel.columns if col not in PANEL_KEYS]
-            collisions = set(payload) & owners.keys()
-            if collisions:
-                raise FeatureCollisionError(f"{part.name} collides on {sorted(collisions)} with { {col: owners[col] for col in sorted(collisions)} }")
-            owners.update(dict.fromkeys(payload, part.name))
-            if part.table == Tables.cube_part_targets:
-                targets = panel.set_index(PANEL_KEYS)
-            else:
-                merger.add(panel, part.name)
-                base_columns.extend(payload)
-
-        base = merger.to_long().set_index(PANEL_KEYS).reindex(index=price_index, columns=base_columns).sort_index()
-        for column in set(base_columns) - set(merger.feature_columns):
-            base[column] = pd.Series(index=base.index, dtype="float32")
-        peers = load_peers_or_raise(self._context, self._config)
-        peer_json = {ticker: json.dumps(peers.get(ticker, {}), ensure_ascii=False) for ticker in prices["ticker"].unique()}
-        base = base.reset_index()
-        base["peers"] = base["ticker"].map(peer_json)
-        base = apply_categorical_codes(base, self._context).set_index(PANEL_KEYS)
-        del prices, merger
-        self._stream_cube(base, targets)
+            if table == Tables.cube_part_targets:
+                labels = [col for col in panel.columns if col not in PANEL_KEYS]
+            merger.add(panel, name)
+        return merger.to_long(), labels
 
     def _warn_on_part_edges(self) -> None:
         edge = cube_part_edge_report(self._context)
@@ -93,70 +85,50 @@ class StepAssembleCube(Step):
                 detail["refresh_command"],
             )
 
-    def _validate_keys(self, frame: pd.DataFrame, part: CubePart) -> None:
-        frame["date"] = pd.to_datetime(frame["date"], errors="coerce", format="mixed").dt.normalize()
-        if not frame.empty and pd.api.types.infer_dtype(frame["ticker"], skipna=True) != "string":
-            raise ValueError(f"{part.name} has null or invalid date/ticker keys; run {part.command}")
-        ticker = frame["ticker"].str.strip()
-        if frame["date"].isna().any() or ticker.isna().any() or ticker.eq("").any() or ticker.ne(frame["ticker"]).any():
-            raise ValueError(f"{part.name} has null or invalid date/ticker keys; run {part.command}")
-        duplicates = int(frame.duplicated(PANEL_KEYS).sum())
-        if duplicates:
-            raise RuntimeError(f"{part.name} has {duplicates} duplicate (date,ticker) rows; run {part.command}")
+    def _load_root(self, since: pd.Timestamp | None) -> pd.DataFrame:
+        """The price grid (float64: raw prices stay exact) with the peer basket and GICS codes attached."""
+        root = self._store.load(Tables.cube_part_prices, since=since)
+        assert root is not None
+        root = normalize_date_col(root)
+        assert root is not None
+        root = root.sort_values(PANEL_KEYS, ignore_index=True)
+        peers = load_peers_or_raise(self._context, self._config)
+        peer_json = {ticker: json.dumps(peers.get(ticker, {}), ensure_ascii=False) for ticker in root["ticker"].unique()}
+        root["peers"] = root["ticker"].map(peer_json)
+        return apply_categorical_codes(root, self._context)
 
-    def _read_part(self, part: CubePart, policy: AssemblyPolicy, price_keys: pd.DataFrame | None = None) -> pd.DataFrame | None:
+    def _read_part(self, table: Table, columns: Sequence[str] | None, since: pd.Timestamp | None, *, optional: bool) -> pd.DataFrame | None:
+        """One part projected on its configured columns (all when None/empty), float32 payload."""
         store = self._store
-        if not part_has_rows(store, part):
-            if part.name in policy.optional:
-                self._log.info("Skipping optional %s: absent or empty; refresh with %s", part.name, part.command)
+        command = part_for(table).command
+        if not part_has_rows(store, table):
+            if optional:
+                self._log.info("Skipping optional %s: absent or empty; refresh with %s", table.name, command)
                 return None
-            raise RuntimeError(f"{part.name} missing/empty; run {part.command}")
-        
-        actual = store.columns(part.table)
-        columns = policy.projection(part, actual)
-        where: dict[str, object] | None = None
-        since, until = None, None
-        if price_keys is not None:
-            # Check all keys before scoping payload, so null/off-grid keys cannot hide corruption.
-            key_chunks = list(store.iter_load(part.table, columns=PANEL_KEYS, chunksize=_CHUNK_ROWS))
-            keys = pd.concat(key_chunks, ignore_index=True) if key_chunks else pd.DataFrame(columns=PANEL_KEYS)
-            self._validate_keys(keys, part)
-            where = {"ticker": price_keys["ticker"].unique().tolist()}
-            since, until = price_keys["date"].min(), price_keys["date"].max()
-            del keys, key_chunks
-        chunks = [
-            chunk if part.kind == "prices" else downcast_float32(chunk)
-            for chunk in store.iter_load(part.table, columns=columns, chunksize=_CHUNK_ROWS, where=where, since=since, until=until)
-        ]
-        panel = pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame(columns=columns)
-        self._validate_keys(panel, part)
-        if price_keys is not None:
-            index = pd.MultiIndex.from_frame(panel[PANEL_KEYS])
-            panel = panel.loc[index.isin(pd.MultiIndex.from_frame(price_keys))]
-        if panel.empty and part.name not in policy.optional:
-            raise RuntimeError(f"{part.name} has no rows on the price grid; run {part.command}")
-        return panel
+            raise RuntimeError(f"{table.name} missing/empty; run {command}")
 
-    def _stream_cube(self, base: pd.DataFrame, targets: pd.DataFrame) -> None:
+        actual = store.columns(table)
+        wanted = [*PANEL_KEYS, *(col for col in (columns or actual) if col not in PANEL_KEYS)]
+        missing = sorted(set(wanted) - set(actual))
+        if missing:
+            raise ValueError(f"{table.name} missing columns {missing}; run {command}")
+        chunks = [downcast_float32(chunk) for chunk in store.iter_load(table, columns=wanted, chunksize=_CHUNK_ROWS, since=since)]
+        return normalize_date_col(pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame(columns=wanted))
+
+    def _persist(self, cube: pd.DataFrame, window: PartWindow) -> int:
         store = self._store
-        total, matched = 0, 0
-        labels = list(targets.columns)
-        expected = set(PANEL_KEYS) | set(base.columns) | set(labels)
-        for start in range(0, len(base), _CHUNK_ROWS):
-            chunk = base.iloc[start : start + _CHUNK_ROWS].join(targets, how="left", validate="one_to_one").reset_index()
-            matched += int(chunk[labels].notna().any(axis=1).sum())
-            if start == 0:
-                if set(store.columns(Tables.cube)) - expected:
-                    store.drop(Tables.cube)
-                store.replace(Tables.cube, chunk)
-            else:
-                store.bulk_seed(Tables.cube, chunk)
-            total += len(chunk)
-            del chunk
-            gc.collect()
-            
-        if set(store.columns(Tables.cube)) != expected or store.row_count(Tables.cube) != len(base):
-            raise RuntimeError("Stored cube schema/row count differs from the verified price-grid output; rerun assemble-cube")
+        if window.is_full and set(store.columns(Tables.cube)) - set(cube.columns):
+            store.drop(Tables.cube)
+        written = write_part(store, Tables.cube, cube, window)
+        if written == COLUMNS_CHANGED:
+            return written
+        if set(store.columns(Tables.cube)) != set(cube.columns) or (window.is_full and store.row_count(Tables.cube) != len(cube)):
+            raise RuntimeError("Stored cube schema/row count differs from the assembled frame; rerun assemble-cube")
+        return written
+
+    def _report(self, cube: pd.DataFrame, labels: list[str]) -> None:
+        total = len(cube)
+        matched = int(cube[labels].notna().any(axis=1).sum()) if labels else 0
         coverage = 100 * matched / total if total else 0.0
         if coverage < _MIN_TARGET_COVERAGE_PCT:
             self._log.warning(
@@ -165,4 +137,6 @@ class StepAssembleCube(Step):
                 matched,
                 total,
             )
-        self._log.info("Saved %s: %s price rows x %s columns, %s targets, %.1f%% labelled", Tables.cube, total, len(expected), len(labels), coverage)
+        self._log.info(
+            "Assembled %s: %s price rows x %s columns, %s targets, %.1f%% labelled", Tables.cube, total, cube.shape[1], len(labels), coverage
+        )

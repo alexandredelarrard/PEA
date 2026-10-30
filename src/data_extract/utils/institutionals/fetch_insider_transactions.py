@@ -61,8 +61,8 @@ from src.data_extract.utils.institutionals.insider_common import (
     stamp_lineage,
     top_counts,
 )
-from src.data_extract.utils.institutionals.insider_store import bind_insider_identity, patch_insider_source, save_insider_source
-from src.data_store.schema import Resume, Table, Tables
+from src.data_extract.utils.institutionals.insider_store import patch_insider_source, save_insider_source
+from src.data_store.schema import Resume, Tables
 from src.utils.filer_tables import FilerTable, removal_records
 from src.utils.string import pad_cik_series
 
@@ -122,10 +122,15 @@ def _member_strings(df: pd.DataFrame, scope: str) -> pd.DataFrame:
     return pd.DataFrame({"accession_number": _col(df, "ACCESSION_NUMBER"), **{field.name: _col(df, field.bulk or "") for field in fields}})
 
 
+def _footnote_ids(cells: pd.Series) -> str:
+    """The distinct footnote ids of one line's `*_FN` cells, in first-seen order (cells may hold `F1, F2` or `[F1]`)."""
+    return ",".join(dict.fromkeys(part.strip() for cell in cells for part in cell.replace("[", "").replace("]", "").split(",") if part.strip()))
+
+
 def _transaction_strings(df: pd.DataFrame | None, sk_col: str, security_type: str) -> pd.DataFrame:
     """One string row per keyed (non-)derivative transaction line. `row_sequence` is the rank of the
     numeric SEC transaction id inside the accession's table, which is the filing's XML order;
-    a line without an id cannot be keyed and is dropped."""
+    a missing, invalid or repeated id refuses the quarter."""
     if df is None or df.empty or "ACCESSION_NUMBER" not in df.columns:
         return pd.DataFrame()
     sk = pd.to_numeric(_col(df, sk_col), errors="coerce")
@@ -135,7 +140,7 @@ def _transaction_strings(df: pd.DataFrame | None, sk_col: str, security_type: st
     if security_type.endswith("_holding"):
         frame = df.rename(columns={"EXERCISE_DATE": "EXCERCISE_DATE", "VALU_OWND_FOLWNG_TRANS": "TRANS_TOTAL_VALUE"})
     note_columns = [column for column in df if isinstance(column, str) and column.endswith("_FN")]
-    footnotes = df[note_columns].fillna("").astype(str).agg(",".join, axis=1).str.strip(",") if note_columns else ""
+    footnotes = df[note_columns].fillna("").astype(str).agg(_footnote_ids, axis=1) if note_columns else ""
     df_lines = _member_strings(frame, "transaction").assign(security_type=security_type, _sk=sk, footnote_ids=footnotes)
     sequence = df_lines.groupby("accession_number")["_sk"].rank(method="first").astype("int64")
     return df_lines.assign(row_sequence=sequence).drop(columns="_sk")
@@ -381,11 +386,11 @@ def _stored_rows(context: Context, accessions: Sequence[str], columns: list[str]
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=columns)
 
 
-def store_zip_quarter(context: Context, quarter: str, df_kept: pd.DataFrame, df_notes: pd.DataFrame, identity: dict[Table, pd.DataFrame]) -> int:
+def store_zip_quarter(context: Context, quarter: str, df_kept: pd.DataFrame, df_notes: pd.DataFrame) -> int:
     """Commit each parsed ZIP accession and its notes together, preserving current EDGAR authority."""
     if df_kept.empty:
         return 0
-    counts = save_insider_source(context, df_kept.assign(quarter=quarter), df_notes, identity)
+    counts = save_insider_source(context, df_kept.assign(quarter=quarter), df_notes)
     return counts[Tables.insider_transactions]
 
 
@@ -512,7 +517,6 @@ def fetch_insider_transactions(
     already stored, so a parse change reaches the oldest rows too.
     """
     identity = load_identity(context)
-    bind_insider_identity(context, identity.source_cohort)
     cache = cache_dir(context, context.config.local.paths.insider_transactions)
     run_date = pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize()
     first_year = pd.Timestamp(cast(str, cast(Resume, Tables.insider_transactions.resume).source_start)).year
@@ -537,7 +541,7 @@ def fetch_insider_transactions(
         excluded.append(exclusion_rows(df_rejected))
         if quarter not in rescanned:
             report_zip_quarter(context, quarter, df_kept)
-        saved += store_zip_quarter(context, quarter, df_kept, df_notes, identity.source_cohort)
+        saved += store_zip_quarter(context, quarter, df_kept, df_notes)
         notes_saved += len(df_notes)
     log_exclusions(logger, f"zip run ({len(units)} quarter(s))", excluded)
 
@@ -563,7 +567,6 @@ def reparse_insider_transactions(context: Context, tickers: list[str]) -> int:
     stored-row sweep belongs to the regular full-universe run.
     """
     identity = load_identity(context)
-    bind_insider_identity(context, identity.source_cohort)
     cache = cache_dir(context, context.config.local.paths.insider_transactions)
     on_disk = cached_periods(cache)
     first_year = pd.Timestamp(cast(str, cast(Resume, Tables.insider_transactions.resume).source_start)).year
@@ -575,7 +578,7 @@ def reparse_insider_transactions(context: Context, tickers: list[str]) -> int:
         if parsed is None:
             continue
         df_kept, _, df_notes = parsed
-        saved += store_zip_quarter(context, quarter, df_kept, df_notes, identity.source_cohort)
+        saved += store_zip_quarter(context, quarter, df_kept, df_notes)
     logger.info("insider_transactions: re-parsed %d cached quarter(s) for %d ticker(s), %d row(s) upserted", len(quarters), len(tickers), saved)
     return saved
 

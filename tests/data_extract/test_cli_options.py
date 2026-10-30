@@ -40,7 +40,21 @@ def test_cli_default_reuses_the_normalized_universe_list(monkeypatch: pytest.Mon
     print("SANITY: omitted -t returns the universe list unchanged; scoped-write guards share its single read.")
 
 
-@pytest.mark.parametrize("command,target", [("short-interest", "fetch_short_interest"), ("insider-zip", "fetch_insider_transactions")])
+def test_cli_short_interest_passes_the_normalized_subset(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = SimpleNamespace(data_extract=SimpleNamespace(years_history=31))
+    context = SimpleNamespace(config=config, log=Mock())
+    fetch = Mock()
+    monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, context))
+    monkeypatch.setattr(cli_mod, "load_universe_tickers", Mock(return_value=["AAA", "BBB"]))
+    monkeypatch.setattr(cli_mod, "fetch_short_interest", fetch)
+
+    result = CliRunner().invoke(cli_mod.cli, ["short-interest", "-t", " aaa ,AAA", "-F"])
+    assert result.exit_code == 0, result.exception
+    assert fetch.call_args.kwargs["tickers"] == ["AAA"] and fetch.call_args.kwargs["full"] is True
+    print("SANITY: short-interest passes the normalized CSV subset and the full flag to the source.")
+
+
+@pytest.mark.parametrize("command,target", [("insider-zip", "fetch_insider_transactions")])
 def test_cli_subset_and_complete_universe_reach_the_source(command: str, target: str, monkeypatch: pytest.MonkeyPatch) -> None:
     config = SimpleNamespace(data_extract=SimpleNamespace(years_history=31))
     context = SimpleNamespace(config=config, log=Mock())

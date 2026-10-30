@@ -355,6 +355,7 @@ def _purchase(accession: str, ticker: str, owner: str, filed: pd.Timestamp) -> d
         "accession_number": accession,
         "ticker": ticker,
         "owner_cik": owner,
+        "issuer_cik": "0000000100",
         "owner_name": f"Owner {owner}",
         "filing_date": filed,
         "transaction_date": filed - pd.Timedelta(days=1),

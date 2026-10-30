@@ -180,7 +180,7 @@ def stubs(monkeypatch) -> dict[str, list]:
     monkeypatch.setattr(
         prop,
         "restamp_short_volume",
-        lambda context, companies, tickers, identity=None, stamps=None, dry_run=False, others=None: calls["short"].append(sorted(companies)) or [],
+        lambda context, companies, tickers, identity=None, dry_run=False: calls["short"].append(sorted(companies)) or [],
     )
     monkeypatch.setattr(
         prop,

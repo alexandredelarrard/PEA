@@ -54,8 +54,6 @@ TABLE_ARGS = ("--table", "table_name")
 TABLE_KWARGS: dict[str, Any] = dict(default=None, help="One table; default: every table supported by this command.")
 
 # ---- data extraction (`src/data_extract/cli.py`) ---- #
-REPAIR_GAPS_ARGS = ("--repair-gaps", "repair")
-REPAIR_GAPS_KWARGS: dict[str, Any] = dict(is_flag=True, default=False, help="Also re-read every day a key misses inside its stored span (one-time).")
 
 FILING_WINDOW_ARGS = ("--filing-window",)
 FILING_WINDOW_KWARGS: dict[str, Any] = dict(

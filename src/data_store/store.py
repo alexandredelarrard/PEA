@@ -365,17 +365,13 @@ class DataStore:
     NOT_NULL = NOT_NULL
 
     @contextmanager
-    def transaction(self, lock_key: str | None = None) -> Generator[DataStore]:
-        """Bind generic operations to one transaction, optionally serializing a caller-owned scope."""
+    def transaction(self) -> Generator[DataStore]:
+        """Bind generic operations to one transaction."""
         if isinstance(self._database, Connection):
             raise ValueError("Nested store transactions are not supported; reuse the bound store")
         with self.engine.begin() as conn:
             if conn.dialect.name == "sqlite":
                 conn.exec_driver_sql("BEGIN IMMEDIATE")
-            elif lock_key is not None:
-                if conn.dialect.name != "postgresql":
-                    raise ValueError("Scoped transaction locks require PostgreSQL or SQLite")
-                conn.execute(text("SELECT pg_advisory_xact_lock(hashtext(:scope))"), {"scope": lock_key})
             bound = DataStore(conn)
             bound._metadata = self._metadata
             try:

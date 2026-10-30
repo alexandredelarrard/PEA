@@ -52,8 +52,6 @@ from src.constants.command_line_interface import (
     REBUILD_KWARGS,
     REPAIR_AVAILABILITY_ARGS,
     REPAIR_AVAILABILITY_KWARGS,
-    REPAIR_GAPS_ARGS,
-    REPAIR_GAPS_KWARGS,
     REPORT_PATH_ARGS,
     REPORT_PATH_KWARGS,
     TABLE_ARGS,
@@ -248,23 +246,18 @@ def price_history(config_path: str, tickers: str | None, full: bool, as_of: date
 
 @cli.command(
     help="FINRA RegSHO daily short volume: raw rows per symbol (sec_short_volume_security) stamped from security_master, "
-    "summed per ticker by class into sec_short_interest. Day files: each ticker's own window (forward overlap, a new "
-    "ticker's full history) plus the never-stored days. --full re-fetches every served date (2018-08-01 on, plus "
-    "2017-12-29), keeps no legacy row, and aborts before writing if a stored date is not served; with -t it upserts "
-    "only those tickers."
+    "summed per ticker by class into sec_short_interest. Day files: business days from the earlier of the latest stored "
+    "day and today minus the 7-day overlap, to today. --full re-fetches from 2018-08-01 and aborts before writing on "
+    "a fetch error."
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
-@click.option(*REPAIR_GAPS_ARGS, **REPAIR_GAPS_KWARGS)
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
-def short_interest(config_path: str, tickers: str | None, full: bool, repair: bool, as_of: datetime | None) -> None:
+def short_interest(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
-    years_history = int(context.config.data_extract.years_history)
-    names, universe = _ticker_scope(context, tickers)
-    fetch_short_interest(
-        context, tickers=names, years_history=years_history, full=full, as_of=_market_as_of(as_of), repair=repair, all_tickers=universe
-    )
+    names, _ = _ticker_scope(context, tickers)
+    fetch_short_interest(context, tickers=names, full=full, as_of=_market_as_of(as_of))
 
 
 @cli.command(

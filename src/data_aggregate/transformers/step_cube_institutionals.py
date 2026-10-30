@@ -154,8 +154,7 @@ class StepCubeInstitutionals(Step):
         tail = canonical if cutoff is None else canonical.loc[canonical["date"] >= cutoff]
         if cutoff is not None and (pd.to_datetime(tail["date"]) < cutoff).any():
             raise ValueError("Institutional replacement rows precede their corrected range")
-        # Serialize with source publication without importing an extraction owner.
-        with self._store.transaction("institutional-source-proof") as store:
+        with self._store.transaction() as store:
             if cutoff is None:
                 count = store.replace(part, tail)
             else:
@@ -177,7 +176,7 @@ class StepCubeInstitutionals(Step):
 
     def build_panel(self) -> pd.DataFrame:
         """Compute with full event history; run controls the independently rewritten tail."""
-        
+
         # Load shared price, class and capital inputs once.
         frames = capital_inputs.load_full_price_frames(self._store, self._context, self._FIELDS)
         df_lines = self._store.load(
@@ -212,7 +211,7 @@ class StepCubeInstitutionals(Step):
         df_valuation_close: pd.DataFrame | None,
         identity_intervals: pd.DataFrame | None,
     ) -> pd.DataFrame | None:
-        
+
         # Load transactions and their completeness/title evidence before cleaning.
         source = institutional_inputs.load_insider_transactions(self._store, frames.universe)
         if source is None or source.transactions.empty:
@@ -223,23 +222,20 @@ class StepCubeInstitutionals(Step):
 
         # Preserve execution USD while cleaning source-unit prices and public versions.
         df_trades, diagnostics = clean_transactions(
-            df_insider=source.transactions, 
-            df_valuation_close=df_valuation_close, 
-            df_roles=df_roles, 
-            share_basis=quantity_basis.events
+            df_insider=source.transactions, df_valuation_close=df_valuation_close, df_roles=df_roles, share_basis=quantity_basis.events
         )
         if "source_first" not in diagnostics:
             return None
 
-        # get shares 
+        # get shares
         df_shares_out = institutional_inputs.daily_share_quantities(shares, pd.DatetimeIndex(frames.trading_index), quantity_basis)
         df_mcap = insider_market_cap(shares, frames.close_split, frames.level_factor)
-    
+
         diagnostics["source_first"] = source.first_filed
         df_unpriced = diagnostics.get("unpriced_events", pd.DataFrame())
         df_positions = position_units(pd.concat([df_trades, df_unpriced], ignore_index=True), quantity_basis)
         report_oversized_positions(df_positions.iloc[: len(df_trades)], df_shares_out)
-        
+
         coverage = InsiderCoverage.from_availability(self._availability, source.complete_through, identity_intervals)
         return build_insider_feature_panel(frames, df_trades, df_positions, diagnostics, df_mcap, coverage)
 

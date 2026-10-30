@@ -55,7 +55,7 @@ def test_quiet_proof_never_changes_undefined_insider_ratios_to_zero() -> None:
     print("SANITY: certified quiet counts are zero; net0/0, no scored buys and no eligible prior-position ratios remain NULL.")
 
 
-def test_insider_proof_uses_full_per_ticker_cohort_before_selection(sqlite_store: DataStore) -> None:
+def test_insider_boundary_uses_full_per_ticker_cohort_before_selection(sqlite_store: DataStore) -> None:
     rows = pd.DataFrame(
         {
             "accession_number": ["a", "b", "c"],
@@ -64,15 +64,14 @@ def test_insider_proof_uses_full_per_ticker_cohort_before_selection(sqlite_store
             "ticker": ["AAA", "AAA", "BBB"],
             "lineage_role": ["canonical_current", None, "canonical_current"],
             "filing_date": pd.to_datetime(["2026-01-01"] * 3),
-            "fetched_at": pd.to_datetime(["2026-07-01"] * 3),
-            "inventory_checked_through": pd.to_datetime(pd.Series(["2026-06-30", None, "2026-05-31"])),
+            "fetched_at": pd.to_datetime(pd.Series(["2026-07-01", None, "2026-05-31"])),
         }
     )
     sqlite_store.save(Tables.insider_transactions, rows)
     source = inputs.load_insider_transactions(sqlite_store, ["AAA", "BBB"])
     assert source is not None
     assert pd.isna(source.complete_through.loc["AAA"]) and source.complete_through.loc["BBB"] == pd.Timestamp("2026-05-31")
-    print("SANITY: an unverified valid-empty accession blocks only its ticker, including rows excluded by economic selection.")
+    print("SANITY: an unfetched valid-empty accession blocks only its ticker, including rows excluded by economic selection.")
 
 
 def test_ftd_other_ticker_observation_cannot_create_zero() -> None:
@@ -84,7 +83,7 @@ def test_ftd_other_ticker_observation_cannot_create_zero() -> None:
     print("SANITY: a valid explicit legacy FTD observation survives; another ticker's served date cannot fabricate an absent leg.")
 
 
-def test_mixed_nonnull_inventory_stamps_are_not_a_joint_cohort(sqlite_store: DataStore) -> None:
+def test_insider_boundary_is_the_latest_fetch_day_of_the_ticker(sqlite_store: DataStore) -> None:
     rows = pd.DataFrame(
         {
             "accession_number": ["a", "b"],
@@ -93,14 +92,13 @@ def test_mixed_nonnull_inventory_stamps_are_not_a_joint_cohort(sqlite_store: Dat
             "ticker": ["AAA", "AAA"],
             "lineage_role": ["canonical_current"] * 2,
             "filing_date": pd.to_datetime(["2024-01-01", "2026-01-01"]),
-            "fetched_at": pd.to_datetime(["2026-07-01"] * 2),
-            "inventory_checked_through": pd.to_datetime(["2024-06-30", "2026-06-30"]),
+            "fetched_at": pd.to_datetime(["2026-06-01", "2026-07-01"]),
         }
     )
     sqlite_store.save(Tables.insider_transactions, rows)
     source = inputs.load_insider_transactions(sqlite_store, ["AAA"])
-    assert source is not None and pd.isna(source.complete_through.loc["AAA"])
-    print("SANITY: mixed nonNULL accession stamps cannot impersonate one atomically certified issuer inventory.")
+    assert source is not None and source.complete_through.loc["AAA"] == pd.Timestamp("2026-07-01")
+    print("SANITY: a ticker read on several days is complete through its latest fetch day.")
 
 
 def test_cube_readiness_cannot_infer_global_completeness_from_latest_filing(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:

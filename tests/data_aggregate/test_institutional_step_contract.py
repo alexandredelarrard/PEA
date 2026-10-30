@@ -226,15 +226,15 @@ def test_delivery_batches_preserve_fixed_calculation_context(sqlite_store: Any, 
         reads.append((table, kwargs))
         yield from stream(table, **kwargs)
 
-    def clean(source: pd.DataFrame, **kwargs: Any) -> tuple[pd.DataFrame, dict[str, Any]]:
+    def clean(df_insider: pd.DataFrame, **kwargs: Any) -> tuple[pd.DataFrame, dict[str, Any]]:
         stages.append("clean")
         columns = ["ticker", "owner_cik", "accession_number", "filing_date"]
-        actual = source[columns].sort_values(columns[:3]).reset_index(drop=True)
+        actual = df_insider[columns].sort_values(columns[:3]).reset_index(drop=True)
         expected = history[columns].sort_values(columns[:3]).reset_index(drop=True)
         actual["filing_date"] = pd.to_datetime(actual["filing_date"]).astype("datetime64[ns]")
         expected["filing_date"] = pd.to_datetime(expected["filing_date"]).astype("datetime64[ns]")
         pd.testing.assert_frame_equal(actual, expected, check_exact=True)
-        return source.copy(), {"source_first": pd.Series(dtype="datetime64[ns]")}
+        return df_insider.copy(), {"source_first": pd.Series(dtype="datetime64[ns]")}
 
     def rebase(source: pd.DataFrame, basis: QuantityBasis) -> pd.DataFrame:
         stages.append("rebase")

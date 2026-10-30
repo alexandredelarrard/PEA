@@ -130,6 +130,8 @@ def _insider_txns():
             "accession_number": [f"0001-24-{i:06d}" for i in range(n)],
             "ticker": ["BULL", "BULL", "BULL", "BEAR", "BEAR", "MIX", "MIX"],
             "owner_cik": ["0001", "0002", "0003", "0004", "0005", "0006", "0007"],
+            "owner_name": [f"Owner {i}" for i in range(n)],
+            "issuer_cik": ["0000000100"] * n,
             "filing_date": ["2024-03-01", "2024-03-05", "2024-03-10", "2024-03-01", "2024-03-05", "2024-03-01", "2024-03-06"],
             "transaction_date": ["2024-02-28", "2024-03-01", "2024-03-06", "2024-02-28", "2024-03-01", "2024-02-28", "2024-03-04"],
             "transaction_code": ["P", "P", "P", "S", "S", "P", "S"],

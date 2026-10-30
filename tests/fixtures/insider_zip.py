@@ -36,12 +36,12 @@ def zip_path() -> Path | None:
 
 @cache
 def zip_members(path: Path) -> tuple[pd.DataFrame, ...]:
-    """(SUBMISSION, REPORTINGOWNER, NONDERIV_TRANS, DERIV_TRANS) of `path`, cut to the fixture accessions."""
+    """(SUBMISSION, REPORTINGOWNER, NONDERIV_TRANS, DERIV_TRANS, NONDERIV_HOLDING, DERIV_HOLDING) of `path`, cut to the fixture accessions."""
     tables = read_zip_tables(path, ins._ZIP_SPECS, on_corrupt="skip", log=logging.getLogger(__name__))
     assert tables, f"{path} has no SUBMISSION member"
     accessions = set(fixture_accessions())
-    sub, own, nonderiv, deriv, _ = (ins._accession_rows(df, accessions) for df in tables.values())
-    return sub, own, nonderiv, deriv
+    names = ("SUBMISSION.TSV", "REPORTINGOWNER.TSV", "NONDERIV_TRANS.TSV", "DERIV_TRANS.TSV", "NONDERIV_HOLDING.TSV", "DERIV_HOLDING.TSV")
+    return tuple(ins._accession_rows(tables[name], accessions) for name in names)
 
 
 def zip_frame(path: Path) -> pd.DataFrame:

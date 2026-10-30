@@ -113,20 +113,19 @@ def load_insider_transactions(store: DataStore, universe: Sequence[str] | None =
     chunks = list(store.iter_load(table, columns=list(columns), where=where, markers=True))
     if not chunks:
         return None
-    
+
     df_rows = pd.concat(chunks, ignore_index=True)
     if not {"ticker", "filing_date", "security_type"}.issubset(df_rows):
         logger.warning("%s lacks required source metadata -> insider features are skipped.", table.name)
         return None
 
-    # clean dates of insider 
+    # clean dates of insider
     df_rows = normalize_insider_dates(df_rows)
     fetched = insider_days(df_rows.get("fetched_at", pd.Series(pd.NaT, index=df_rows.index)))
-    evidence = pd.DataFrame({"ticker": df_rows["ticker"], "valid": fetched.notna()})
-    grouped = evidence.groupby("ticker", sort=False)
-    boundaries = grouped["checked"].min().where(grouped["valid"].all())
+    grouped = fetched.groupby(df_rows["ticker"], sort=False)
+    boundaries = grouped.max().where(grouped.agg(lambda days: bool(days.notna().all())))
     first = df_rows["filing_date"].groupby(df_rows["ticker"]).min()
-    selected = df_rows['lineage_role'].isin(CANONICAL_ROLES) | df_rows["security_type"].eq("_empty")
+    selected = df_rows["lineage_role"].isin(CANONICAL_ROLES) | df_rows["security_type"].eq("_empty")
 
     logger.info("Loaded %s: %s rows x %s cols", table.name, len(df_rows), len(df_rows.columns))
     return InsiderSource(df_rows.loc[selected], boundaries, first)
@@ -183,11 +182,11 @@ def _match_proxy_roles(df_proxy: pd.DataFrame, df_owners: pd.DataFrame) -> pd.Da
     df_proxy["role"] = df_proxy["officer_title_clean"].map(officer_role)
     latest = df_proxy.groupby(["ticker", "as_of"])["fiscal_year"].transform("max")
     df_proxy = df_proxy[df_proxy["fiscal_year"].eq(latest)].dropna(subset=["role_as_of"])
-    
+
     # Explicit non-management/former titles are history barriers; parent CEO fallback is not evidence.
     df_proxy = df_proxy.merge(df_owners, on=identity, how="inner")
     df_proxy["role_as_of"] = df_proxy[["role_as_of", "identity_from"]].max(axis=1)
-    
+
     # Name uniqueness is evaluated when the mapping becomes public, never against future owners.
     identities = df_owners.set_index(identity)
     for _, group in df_proxy.groupby(identity, sort=False):
@@ -196,11 +195,11 @@ def _match_proxy_roles(df_proxy: pd.DataFrame, df_owners: pd.DataFrame) -> pd.Da
             continue
         ambiguous = group["role_as_of"].map(lambda day, first=first: first.le(day).sum() > 1)
         df_proxy.loc[group.index[ambiguous], "role"] = OTHER_OFFICER
-    
+
     df_proxy["role_source"] = "explicit_proxy_title"
     conflicted = df_proxy.groupby(["ticker", "issuer_cik", "owner_cik", "role_as_of"])["role"].transform("nunique").gt(1)
     df_proxy.loc[conflicted, ["role", "officer_title_clean"]] = [OTHER_OFFICER, "conflicting roles"]
-    
+
     return df_proxy
 
 

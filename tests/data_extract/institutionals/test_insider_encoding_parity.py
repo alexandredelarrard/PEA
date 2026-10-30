@@ -51,7 +51,7 @@ FIXTURE_ACCESSIONS = {
 ROUNDED = ["shares", "price_per_share", "shares_owned_after", "underlying_shares", "exercise_price", "underlying_value"]
 ROUNDING = 0.005 + 1e-6
 #: Optional per-line text the zip can attach to a different line of the same filing than the XML does.
-ZIP_SHIFTED = ["transaction_timeliness", "nature_of_ownership"]
+ZIP_SHIFTED = ["transaction_timeliness", "nature_of_ownership", "footnote_ids"]
 
 # --------------------------------------------------------------------------- #
 # (a) known truth: one joint Form 4/A, built as zip members and as XML            #
@@ -186,6 +186,11 @@ def test_a_known_joint_filing_stores_identical_values_from_zip_rows_and_from_xml
 # --------------------------------------------------------------------------- #
 # (b) real: every XML fixture vs its rows in the cached 2026q2 zip                #
 # --------------------------------------------------------------------------- #
+def _ids(cell: object) -> frozenset[str]:
+    """The footnote ids of one `footnote_ids` cell, order ignored."""
+    return frozenset() if pd.isna(cell) else frozenset(part for part in str(cell).split(",") if part)
+
+
 def _agreement(df_matched: pd.DataFrame, column: str) -> pd.Series:
     """Per-row agreement of `column` between the `_zip` and `_xml` sides."""
     left, right = df_matched[f"{column}_zip"], df_matched[f"{column}_xml"]
@@ -195,18 +200,27 @@ def _agreement(df_matched: pd.DataFrame, column: str) -> pd.Series:
     if column == "value_usd":
         bound = ROUNDING * (df_matched["shares_xml"].abs() + df_matched["price_per_share_xml"].abs()).fillna(0.0) + 1e-4
         return both_missing | (left - right).abs().le(bound)
+    if column == "footnote_ids":  # the zip lists a line's notes in column order, the XML in tag order: the same set of ids
+        same_ids = [_ids(a) == _ids(b) for a, b in zip(df_matched[f"{column}_zip"], df_matched[f"{column}_xml"], strict=True)]
+        return pd.Series(same_ids, index=df_matched.index)
     cells = pd.Series(
         [a == b for a, b in zip(_cells(df_matched, [f"{column}_zip"]).iloc[:, 0], _cells(df_matched, [f"{column}_xml"]).iloc[:, 0], strict=True)]
     )
     return cells.set_axis(df_matched.index)
 
 
+def _comparable(column: str, values: pd.Series) -> list[str] | frozenset[str]:
+    """`values` for a per-filing-table comparison: a multiset of strings, or for footnote ids the union of the ids
+    (the zip lists a note on a neighbouring line of the same filing table)."""
+    if column == "footnote_ids":
+        return frozenset().union(*(_ids(value) for value in values))
+    return sorted(map(str, values.fillna("<NA>")))
+
+
 def _same_values_per_filing_table(df_matched: pd.DataFrame, column: str) -> bool:
-    """True when each (accession, security_type) holds the same multiset of `column` values on both sides."""
+    """True when each (accession, security_type) holds the same values of `column` on both sides."""
     groups = df_matched.groupby(["accession_number", "security_type"])
-    return all(
-        sorted(map(str, group[f"{column}_zip"].fillna("<NA>"))) == sorted(map(str, group[f"{column}_xml"].fillna("<NA>"))) for _, group in groups
-    )
+    return all(_comparable(column, group[f"{column}_zip"]) == _comparable(column, group[f"{column}_xml"]) for _, group in groups)
 
 
 @pytest.mark.skipif(zip_path() is None or not fixture_accessions(), reason="cached 2026q2 insider zip or XML fixtures absent")

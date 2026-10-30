@@ -80,6 +80,8 @@ class StepExtractAllData(Step):
         tickers = self._resolve_tickers()
 
         self._refresh_identity(tickers)
+
+        # run each extract big block
         self._prices.run(tickers=tickers)
         self._institutionals.run(tickers=tickers, all_tickers=tickers)
         self._fundamentals_sharadar.run(tickers=tickers, full=False)

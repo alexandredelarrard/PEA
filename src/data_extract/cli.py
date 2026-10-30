@@ -782,12 +782,11 @@ def notes_download(config_path: str, full: bool) -> None:
 @cli.command(help="DEF 14A governance / executive pay (LLM-parsed). SEC-api + LLM.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
-@click.option(*FULL_ARGS, **FULL_KWARGS)
-def def14a(config_path: str, tickers: str | None, full: bool) -> None:
+def def14a(config_path: str, tickers: str | None) -> None:
     """Every run lists each ticker's whole `years_history`; `--full` also re-sends the saved proxies without
     evidence, markers included (a proxy with stored evidence is never re-sent)."""
     config, context = get_config_context(config_path, use_cache=False, save=False)
-    fetch_def14a_llm(context, config, tickers=_tickers(context, tickers), full=full)
+    fetch_def14a_llm(context, config, tickers=_tickers(context, tickers))
 
 
 @cli.command(help="8-K events: item codes + has_earnings/has_press_release (edgartools).")

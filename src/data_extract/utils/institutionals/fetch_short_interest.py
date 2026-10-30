@@ -653,6 +653,7 @@ def replace_short_source(
     if set(frames) != {raw, grain}:
         raise ValueError("FINRA writes require their raw and ticker-grain pair")
     validate_tape_frames(frames, scopes)
+    
     with store.transaction(SOURCE_LOCK) as bound:
         identity = load_source_identity(bound) if expected_identity is not None else None
         owners = (scopes[raw] or {}).get("ticker")

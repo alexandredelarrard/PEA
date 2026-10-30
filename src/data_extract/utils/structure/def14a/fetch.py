@@ -211,10 +211,10 @@ def _read_proxy(context: Context, ticker: str, filing: pd.Series) -> str | None:
         return None
 
 
-def _section_extractors(context: Context, config: DictConfig, overrides: dict[str, Any], workers: int | None) -> dict[str, LLMExtractor]:
+def _section_extractors(context: Context, config: DictConfig, workers: int | None) -> dict[str, LLMExtractor]:
     """Bind each existing service to its own action, prompt, schema and unchanged worker setting."""
     return {
-        section.key: LLMExtractor(context, with_gpt_overrides(config, section.action, **overrides), action=section.action, threads=workers)
+        section.key: LLMExtractor(context, config, action=section.action, threads=workers)
         for section in SECTIONS
     }
 
@@ -235,11 +235,7 @@ def fetch_def14a_llm(
     context: Context,
     config: DictConfig,
     tickers: list[str],
-    model: str | None = None,
-    max_chars: int | None = None,
-    cache: bool | None = None,
-    workers: int | None = None,
-    full: bool = False,
+    workers: int | None = 2
 ) -> None:
     """Extract new sections and repair source-present gaps once; full never resets attempts."""
     # Read the ticker map and preserve each registrant's filing windows.
@@ -247,8 +243,9 @@ def fetch_def14a_llm(
     identity = load_identity(context)
     years = int(config.data_extract.years_history)
     floor = document_floor(Tables.def14a_llm, pd.Timestamp.today(), years)
+    
     try:
-        extractors = _section_extractors(context, config, {"model": model, "max_chars": max_chars, "cache": cache}, workers)
+        extractors = _section_extractors(context, config, workers)
     except OSError as exc:
         context.log.warning("DEF 14A LLM extraction skipped: %s", exc)
         return

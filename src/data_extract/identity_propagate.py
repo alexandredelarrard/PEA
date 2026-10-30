@@ -158,7 +158,7 @@ def _purge(
     if not dry_run:
         if spec.table == Tables.insider_transactions:
             columns = [*Tables.insider_transactions.pk, "ticker", "issuer_cik"]
-            patch_insider_source(context.store, pd.DataFrame(), foreign[columns], identity.source_cohort)
+            patch_insider_source(context.store, pd.DataFrame(), foreign[columns])
         else:
             _delete_foreign_rows(context, spec, foreign)
     _warn(context, spec.table.name, records, dry_run=dry_run)
@@ -224,7 +224,7 @@ def _refresh_fails(
 
 
 def _refresh_short_volume(
-    context: Context, identity: Identity, tickers: Sequence[str], as_of: pd.Timestamp, *, dry_run: bool, every: bool, others: frozenset[str]
+    context: Context, identity: Identity, tickers: Sequence[str], as_of: pd.Timestamp, *, dry_run: bool, every: bool
 ) -> list[dict]:
     """Re-stamp the stored short-volume rows of companies whose master or symbol rows changed recently."""
     if not context.store.exists(Tables.sec_short_volume_security):
@@ -234,7 +234,7 @@ def _refresh_short_volume(
     if not changed:
         return []
     context.log.info("identity-propagate: re-stamping short-volume rows for %d company(ies): %s", len(changed), ", ".join(changed))
-    records = restamp_short_volume(context, changed, tickers, identity=identity, dry_run=dry_run, others=others)
+    records = restamp_short_volume(context, changed, tickers, identity=identity, dry_run=dry_run)
     _warn(context, Tables.short_interest.name, records, dry_run=dry_run)
     return records
 
@@ -284,7 +284,7 @@ def propagate_identity(
     reparsed = {} if dry_run else _reparse_bulk(context, changed, scopes, resolver.co_registrant_ciks)
     records += _refresh_insider(context, resolver, changed, dry_run=dry_run)
     records += _refresh_fails(context, universe, run_date, dry_run=dry_run, every=every_ticker, others=others)
-    records += _refresh_short_volume(context, resolver, universe, run_date, dry_run=dry_run, every=every_ticker, others=others)
+    records += _refresh_short_volume(context, resolver, universe, run_date, dry_run=dry_run, every=every_ticker)
     removals = pd.DataFrame(records, columns=list(REMOVAL_COLUMNS))
     purged_facts = sorted(set(removals.loc[removals["table"] == Tables.fundamentals_facts.name, "ticker"]))
     if purged_facts and not dry_run:

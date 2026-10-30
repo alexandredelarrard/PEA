@@ -10,10 +10,10 @@ import pytest
 
 from src.data_aggregate.utils.institutionals.inputs import QuantityBasis, load_insider_transactions
 from src.data_aggregate.utils.institutionals.insider_positions import position_units
-from src.data_aggregate.utils.institutionals.insider_quality import clean_transactions
+from src.data_aggregate.utils.institutionals.insider_quality import clean_transactions, normalize_insider_dates
 from src.data_store.schema import Tables
 from src.utils.price_adjustments import ShareBasis
-from tests.data_aggregate.insider_pit_reference import row
+from tests.data_aggregate.insider_pit_reference import row, source_frame
 from tests.data_aggregate.test_insider_features import _action_cap_inputs, _build_action_cap
 
 
@@ -21,6 +21,7 @@ from tests.data_aggregate.test_insider_features import _action_cap_inputs, _buil
 def test_ancient_microsecond_dates_reach_actual_cleaner_safely(column: str) -> None:
     df_source = pd.DataFrame([row(document_type="4/A", transaction_code="M" if column == "original_submission_date" else "P")])
     df_source[column] = pd.Series(np.array(["0001-01-01"], dtype="datetime64[us]"))
+    df_source = normalize_insider_dates(df_source)
     df_original = df_source.copy(deep=True)
     df_clean, diagnostics = clean_transactions(df_source)
     df_result = diagnostics["other_flows"] if column == "original_submission_date" else df_clean
@@ -35,6 +36,7 @@ def test_ancient_microsecond_dates_reach_actual_cleaner_safely(column: str) -> N
 def test_nanosecond_minimum_is_rejected_before_midnight_normalization() -> None:
     df_source = pd.DataFrame([row()])
     df_source["transaction_date"] = pd.Series([pd.Timestamp.min], dtype="datetime64[ns]")
+    df_source = normalize_insider_dates(df_source)
     df_clean, diagnostics = clean_transactions(df_source)
     assert df_clean["transaction_day"].isna().all() and diagnostics["invalid_transaction_dates"] == 1
     assert df_clean["transaction_date_raw"].iloc[0] == pd.Timestamp.min
@@ -44,7 +46,7 @@ def test_nanosecond_minimum_is_rejected_before_midnight_normalization() -> None:
 
 def test_unusable_execution_dates_have_only_a_marked_filing_reference() -> None:
     actions: list[object] = ["0001-01-01", None, "bad-date", "2024-04-01"]
-    df_source = pd.DataFrame(
+    df_source = source_frame(
         [row(accession_number=f"bad-{n}", filing_date="2024-02-01", transaction_date=action) for n, action in enumerate(actions)]
     )
     df_clean, diagnostics = clean_transactions(df_source)
@@ -52,16 +54,16 @@ def test_unusable_execution_dates_have_only_a_marked_filing_reference() -> None:
     assert len(df_clean) == 4 and df_clean["transaction_date"].isna().all() and df_clean["transaction_day"].isna().all()
     assert str(df_clean["transaction_day"].dtype) == "datetime64[ns]"
     assert df_clean["reference_day"].eq(pd.Timestamp("2024-02-01")).all() and df_clean["reference_day_estimated"].all()
-    pd.testing.assert_series_equal(df_clean["transaction_date_raw"], df_source["transaction_date"], check_names=False)
+    pd.testing.assert_series_equal(df_clean["transaction_date_raw"], df_source["transaction_date_raw"], check_names=False)
     assert diagnostics["date_fallback_rows"] == 4 and diagnostics["copy_rows_dropped"] == 0
     df_repeat, _ = clean_transactions(df_clean)
-    pd.testing.assert_series_equal(df_repeat["transaction_date_raw"], df_source["transaction_date"], check_names=False)
+    pd.testing.assert_series_equal(df_repeat["transaction_date_raw"], df_source["transaction_date_raw"], check_names=False)
     print("SANITY: ancient, missing, malformed and post-filing execution dates stay unknown; marked filing references never become copy identity.")
 
 
 @pytest.mark.parametrize("submitted", ["0001-01-01", "2024-03-01"])
 def test_invalid_original_submission_cannot_fabricate_an_amendment_link(submitted: str) -> None:
-    df_source = pd.DataFrame(
+    df_source = source_frame(
         [
             row(accession_number="original", filing_date="2024-01-10"),
             row(accession_number="amendment", filing_date="2024-02-01", original_submission_date=submitted, document_type="4/A", shares=1100.0),
@@ -76,10 +78,10 @@ def test_invalid_original_submission_cannot_fabricate_an_amendment_link(submitte
 
 
 def test_future_quotes_do_not_reprice_a_filing_date_fallback() -> None:
-    df_source = pd.DataFrame([row(filing_date="2024-02-01", transaction_date="2024-04-01", price_per_share=100_000.0)])
+    df_source = source_frame([row(filing_date="2024-02-01", transaction_date="2024-04-01", price_per_share=100_000.0)])
     df_quotes = pd.DataFrame({"AAA": [100.0, 1000.0]}, index=pd.to_datetime(["2024-02-01", "2024-04-01"]))
-    df_prefix, _ = clean_transactions(df_source, as_traded_quotes=df_quotes.iloc[:1])
-    df_full, _ = clean_transactions(df_source, as_traded_quotes=df_quotes)
+    df_prefix, _ = clean_transactions(df_source, df_valuation_close=df_quotes.iloc[:1])
+    df_full, _ = clean_transactions(df_source, df_valuation_close=df_quotes)
 
     assert df_full["price_clean"].tolist() == [100.0] and df_full["value"].tolist() == [100_000.0]
     assert df_full["price_estimated"].all() and df_full["reference_day_estimated"].all()
@@ -90,7 +92,7 @@ def test_future_quotes_do_not_reprice_a_filing_date_fallback() -> None:
 
 
 def test_unknown_dates_do_not_identify_packages_or_amendment_cells() -> None:
-    df_source = pd.DataFrame(
+    df_source = source_frame(
         [
             row(accession_number="package", filing_date="2024-02-01", transaction_date="2024-04-01", transaction_code="M", security_type="deriv"),
             row(accession_number="package", filing_date="2024-02-01", transaction_date="2024-04-01", transaction_code="S"),
@@ -113,7 +115,7 @@ def test_unknown_dates_do_not_identify_packages_or_amendment_cells() -> None:
 
 
 def test_unknown_non_market_flow_dates_cannot_share_an_amendment_boundary() -> None:
-    df_source = pd.DataFrame(
+    df_source = source_frame(
         [
             row(accession_number="original", filing_date="2024-01-10", transaction_date=None, transaction_code="G"),
             row(
@@ -148,7 +150,7 @@ def _future_versions(code: str) -> list[dict[str, Any]]:
 
 @pytest.mark.parametrize("code", ["P", "G"])
 def test_later_valid_amendment_confirms_a_declared_day_only_prospectively(code: str) -> None:
-    df_source = pd.DataFrame(_future_versions(code))
+    df_source = source_frame(_future_versions(code))
     df_original = df_source.copy(deep=True)
     df_clean, diagnostics = clean_transactions(df_source)
     df_versions = (df_clean if code == "P" else diagnostics["other_flows"]).set_index("accession_number")
@@ -195,7 +197,7 @@ def test_declared_day_cannot_replace_independent_amendment_proof(code: str, case
         rows[1]["transaction_code"] = "S" if code == "P" else "F"
     elif case == "security":
         rows[1]["security_type"] = "deriv"
-    df_clean, diagnostics = clean_transactions(pd.DataFrame(rows))
+    df_clean, diagnostics = clean_transactions(source_frame(rows))
     df_original = (df_clean if code == "P" else diagnostics["other_flows"]).set_index("accession_number").loc[["future-original"]]
     assert len(df_original) == 1 and df_original["transaction_day"].isna().all() and df_original["visible_until"].isna().all()
     print(f"SANITY: {code=} {case=}; a raw date cannot establish a filing link or replace a verified matching action cell.")
@@ -205,7 +207,7 @@ def test_declared_day_cannot_replace_independent_amendment_proof(code: str, case
 def test_later_confirmation_does_not_merge_earlier_unknown_versions(code: str) -> None:
     original, confirmed = _future_versions(code)
     pending = confirmed | {"accession_number": "future-pending", "filing_date": "2024-03-10"}
-    df_clean, diagnostics = clean_transactions(pd.DataFrame([original, pending, confirmed]))
+    df_clean, diagnostics = clean_transactions(source_frame([original, pending, confirmed]))
     df_versions = (df_clean if code == "P" else diagnostics["other_flows"]).set_index("accession_number")
     assert df_versions.loc["future-original", "visible_until"] == pd.Timestamp("2024-03-12")
     assert pd.isna(df_versions.loc["future-pending", "visible_until"]) and pd.isna(df_versions.loc["future-pending", "transaction_day"])
@@ -236,7 +238,7 @@ def test_explicit_row_proof_can_correct_only_a_safe_original_declaration(case: s
         rows[0]["transaction_date"] = None
     elif case == "ancient":
         rows[0]["transaction_date"] = "0001-01-01"
-    df_clean, _ = clean_transactions(pd.DataFrame(rows))
+    df_clean, _ = clean_transactions(source_frame(rows))
     df_versions = df_clean.set_index("accession_number")
     df_original = df_versions.loc[["future-original"]]
     assert df_original["transaction_day"].isna().all()
@@ -255,7 +257,7 @@ def test_later_row_proof_cannot_retire_an_earlier_unknown_amendment() -> None:
     original, confirmed = _future_versions("P")
     pending = confirmed | {"accession_number": "future-pending", "filing_date": "2024-03-10"}
     confirmed["transaction_date"] = "2024-03-04"
-    df_clean, _ = clean_transactions(pd.DataFrame([original, pending, confirmed]))
+    df_clean, _ = clean_transactions(source_frame([original, pending, confirmed]))
     df_versions = df_clean.set_index("accession_number")
     assert df_versions.loc[["future-original"], "visible_until"].eq(pd.Timestamp("2024-03-12")).all()
     assert df_versions.loc[["future-pending"], "visible_until"].isna().all()
@@ -270,7 +272,7 @@ def test_later_row_confirmation_cannot_borrow_an_earlier_ambiguous_link() -> Non
     other = original | {"accession_number": "z-other-original", "owner_cik": "2", "owner_ciks": "2", "transaction_date": "2024-03-20"}
     ambiguous = confirmed | {"accession_number": "earlier-ambiguous", "filing_date": "2024-03-11", "owner_ciks": "1,2", "n_reporting_owners": 2}
     confirmed["transaction_date"] = "2024-03-04"
-    df_clean, _ = clean_transactions(pd.DataFrame([original, other, ambiguous, confirmed]))
+    df_clean, _ = clean_transactions(source_frame([original, other, ambiguous, confirmed]))
     df_versions = df_clean.set_index("accession_number")
     assert df_versions.loc[["future-original"], "visible_until"].eq(pd.Timestamp("2024-03-12")).all()
     assert df_versions.loc[["earlier-ambiguous"], "anchor"].eq(pd.Timestamp("2024-03-11")).all()
@@ -280,7 +282,7 @@ def test_later_row_confirmation_cannot_borrow_an_earlier_ambiguous_link() -> Non
 def test_unknown_execution_keeps_actual_panel_cap_quantity_and_accounts_unsupported() -> None:
     _, df_close, df_history = _action_cap_inputs()
     source = row(filing_date="2024-03-05", transaction_date="2024-03-20", officer_title="CEO", is_officer=1.0)
-    df_clean, _ = clean_transactions(pd.DataFrame([source]))
+    df_clean, _ = clean_transactions(source_frame([source]))
     df_empty = pd.DataFrame(columns=["ticker", "date", "value"])
     basis = QuantityBasis.from_context(ShareBasis(df_empty, df_empty, df_empty, {}), pd.DatetimeIndex(df_close.index))
     df_positions = position_units(df_clean, basis)

@@ -29,7 +29,6 @@ from src.constants.constants import CANONICAL_ROLES, FTD_ZIP_NAME_TEMPLATE, SHAR
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import cache_dir, cached_periods, ensure_zip, period_end, read_zip_text
 from src.data_extract.utils.common.identity import Identity, load_source_identity
-from src.data_extract.utils.common.identity_store import SOURCE_LOCK, assert_source_identity
 from src.data_extract.utils.common.resume import archive_periods, recently_changed
 from src.data_extract.utils.common.security_master import (
     SOURCE_FTD,
@@ -914,18 +913,17 @@ def replace_fails_source(
     store: DataStore,
     frames: dict[Table, pd.DataFrame],
     scopes: dict[Table, dict[str, object] | None],
-    expected_identity: dict[Table, pd.DataFrame] | None = None,
+    identity: dict[Table, pd.DataFrame] | None = None,
     expected_source: dict[Table, pd.DataFrame] | None = None,
 ) -> dict[Table, int]:
-    """Reconcile one actual FTD raw/derived pair with exact ownership and source-period guards."""
+    """Reconcile one actual FTD raw/derived pair under `identity`, with exact ownership and source-period guards."""
     raw, grain = Tables.sec_fails_to_deliver_security, Tables.sec_fails_to_deliver
     if set(frames) != {raw, grain}:
         raise ValueError("FTD writes require their raw and ticker-grain pair")
     validate_tape_frames(frames, scopes)
 
     # Capture identity, bounded raw candidates and both tables' incoming-key collisions first.
-    with store.transaction(SOURCE_LOCK) as bound:
-        identity = load_source_identity(bound) if expected_identity is not None else None
+    with store.transaction() as bound:
         queries = {
             raw: _fails_candidate_scope(frames[raw], scopes[raw], identity),
             grain: [scopes[grain], frames[grain][list(grain.pk)]] if scopes[grain] is not None else None,
@@ -933,8 +931,6 @@ def replace_fails_source(
         current = load_tape_cohorts(bound, queries)
 
         # Match full keys before ownership selection so period filters never hide a collision.
-        if expected_identity is not None and identity is not None:
-            assert_source_identity(bound, identity, expected_identity)
         for table in frames:
             df_both = tape_key_matches(table, frames[table], current[table])
             if "period_stored" in df_both and df_both["period_stored"].notna().any() and df_both["period"].ne(df_both["period_stored"]).any():

@@ -25,7 +25,7 @@ from src.data_aggregate.utils.institutionals.insider_features import (
     report_oversized_positions,
 )
 from src.data_aggregate.utils.institutionals.insider_positions import position_units
-from src.data_aggregate.utils.institutionals.insider_quality import clean_transactions
+from src.data_aggregate.utils.institutionals.insider_quality import clean_transactions, normalize_insider_dates
 from src.utils.price_adjustments import ShareBasis
 
 _EMPTY_EVENTS = pd.DataFrame(columns=["ticker", "date", "value"])
@@ -36,13 +36,13 @@ def build_prepared_insider_panel(
     frames: PriceFrames,
     insider: pd.DataFrame | None,
     shares_out_history: pd.DataFrame | None = None,
-    as_traded_quotes: pd.DataFrame | None = None,
+    df_valuation_close: pd.DataFrame | None = None,
     share_basis: ShareBasis | None = _NO_SPLIT_FIXTURE,
     coverage: InsiderCoverage | None = None,
 ) -> pd.DataFrame:
     """Producer/visibility control through actual stages; default known-truth fixtures have no genuine splits."""
     df_trades, diagnostics = clean_transactions(
-        insider if insider is not None else pd.DataFrame(), as_traded_quotes=as_traded_quotes, share_basis=share_basis
+        source_frame(insider) if insider is not None else pd.DataFrame(), df_valuation_close=df_valuation_close, share_basis=share_basis
     )
     observation = coverage if coverage is not None else InsiderCoverage()
     if "source_first" not in diagnostics or not len(frames.trading_index):
@@ -76,6 +76,7 @@ def row(**kw: object) -> dict:
         accession_number="0000000000-24-000000",
         ticker="AAA",
         owner_cik="0000000001",
+        issuer_cik="0000000100",
         owner_ciks=None,
         n_reporting_owners=1,
         owner_name="Doe Jane",
@@ -127,6 +128,11 @@ def frame(rows: list[dict]) -> pd.DataFrame:
     for column in ("filing_date", "transaction_date", "original_submission_date"):
         df[column] = pd.to_datetime(df[column]).dt.date
     return df
+
+
+def source_frame(rows: list[dict] | pd.DataFrame) -> pd.DataFrame:
+    """Rows as `load_insider_transactions` hands them to the cleaner: dates normalized, raw dates kept."""
+    return normalize_insider_dates(pd.DataFrame(rows))
 
 
 def _round(value: object) -> float:
@@ -239,7 +245,7 @@ def reference_panel(df_rows: pd.DataFrame, idx: pd.DatetimeIndex, build: Callabl
         if dates.empty:
             continue
         view = asof_view(df_rows, pd.Timestamp(start))
-        _, diag = clean_transactions(view)
+        _, diag = clean_transactions(source_frame(view))
         assert diag.get("copy_groups", 0) == 0 and diag.get("amendments_linked", 0) == 0, "the as-of view must already be plain"
         panel = build(view)
         if not panel.empty:

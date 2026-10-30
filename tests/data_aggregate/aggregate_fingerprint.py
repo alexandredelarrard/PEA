@@ -639,7 +639,9 @@ def synthetic_insider(tickers: list[str], idx: pd.DatetimeIndex, rng: np.random.
             "is_10b5_1": np.where(days >= pd.Timestamp("2023-07-01"), (rng.random(n) < 0.6).astype("float64"), np.nan),
         }
     )
-    return df_insider.assign(owner_ciks=df_insider["owner_cik"], n_reporting_owners=1)
+    return df_insider.assign(
+        owner_ciks=df_insider["owner_cik"], n_reporting_owners=1, issuer_cik="0000000100", document_type="4", original_submission_date=None
+    )
 
 
 def synthetic_13f(tickers: list[str], idx: pd.DatetimeIndex, rng: np.random.Generator) -> tuple[pd.DataFrame, dict]:

@@ -58,5 +58,5 @@ class StepExtractInstitutionals(Step):
         identity = load_identity(self._context)
 
         # The short side: FINRA RegSHO short volume, then SEC settlement fails (mid-2009 on), stamped from the security master.
-        fetch_short_interest(self._context, tickers=tickers, years_history=years_history, identity=identity, all_tickers=universe)
+        fetch_short_interest(self._context, tickers=tickers, identity=identity)
         fetch_fails_to_deliver(self._context, tickers=tickers, all_tickers=universe, identity=identity)

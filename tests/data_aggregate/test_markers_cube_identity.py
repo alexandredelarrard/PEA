@@ -18,7 +18,8 @@ import pytest
 from src.data_aggregate.utils.common.inputs import load_source
 from src.data_aggregate.utils.governance.clean import GovernanceInputs, clean_governance_inputs
 from src.data_aggregate.utils.governance.panel import build_governance_feature_panel
-from src.data_aggregate.utils.institutionals.frontiers import insider_inventory_boundaries, schedule_complete_through
+from src.data_aggregate.utils.institutionals.frontiers import schedule_complete_through
+from src.data_aggregate.utils.institutionals.inputs import load_insider_transactions
 from src.data_aggregate.utils.institutionals.insider_features import InsiderCoverage
 from src.data_aggregate.utils.institutionals.ownership_features import build_ownership_feature_panel
 from src.data_aggregate.utils.sec_thirteen.institutional_features import build_institutional_feature_panel
@@ -106,11 +107,14 @@ def _builders(prices: pd.DataFrame) -> dict[str, Callable[[DataStore], pd.DataFr
             complete_through_13g=schedule_complete_through(store, Tables.sec_13g, close.index.max()),
         )
 
+    # A marker's fetch proof may extend the per-issuer boundary; the first build pins it so only the marker rows are compared.
+    pinned: dict[str, pd.Series] = {}
+
     def insider(store: DataStore) -> pd.DataFrame:
-        complete_through = insider_inventory_boundaries(store, TICKERS)
-        return build_insider_feature_panel(
-            frames, store.load(Tables.insider_transactions, project=True), coverage=InsiderCoverage.from_availability(None, complete_through)
-        )
+        source = load_insider_transactions(store, TICKERS)
+        assert source is not None
+        complete_through = pinned.setdefault("through", source.complete_through)
+        return build_insider_feature_panel(frames, source.transactions, coverage=InsiderCoverage.from_availability(None, complete_through))
 
     def governance(store: DataStore) -> pd.DataFrame:
         raw = GovernanceInputs(def14a=cast(pd.DataFrame, store.load(Tables.def14a_llm)), votes=store.load(Tables.sec_8k_votes))

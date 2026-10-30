@@ -59,7 +59,7 @@ def _assert_saved(store: DataStore, expected: pd.DataFrame) -> None:
         )
 
 
-def test_output_writer_keeps_package_boundary_and_source_lock(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_output_writer_keeps_package_boundary_and_one_transaction(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     module = ast.parse(Path(institutional_step.__file__).read_text(encoding="utf-8"))
     imports = [node.module for node in ast.walk(module) if isinstance(node, ast.ImportFrom) and node.module]
     assert not any(name.startswith("src.data_extract") for name in imports), imports
@@ -67,8 +67,8 @@ def test_output_writer_keeps_package_boundary_and_source_lock(sqlite_store: Data
     transaction = Mock(wraps=sqlite_store.transaction)
     monkeypatch.setattr(sqlite_store, "transaction", transaction)
     step.run()
-    transaction.assert_called_once_with("institutional-source-proof")
-    print("SANITY: the aggregate imports no extractor owner and writes under the same institutional source lock.")
+    transaction.assert_called_once_with()
+    print("SANITY: the aggregate imports no extractor owner and writes inside one store transaction.")
 
 
 @pytest.mark.parametrize("change", ["float64", "null", "missing", "stale", "equal-count-key", "all-null-row", "empty", "schema", "unchanged"])

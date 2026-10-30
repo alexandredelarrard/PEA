@@ -1,11 +1,8 @@
 """RegSHO short-volume fetch: day-file plan, incremental write, `full` rebuild and its abort gate.
 
-One RegSHO file covers the whole market, so the run reads the UNION of the sessions any universe key
-needs (`resume.series_windows` on `sec_short_interest`): each key's own last date minus the overlap
-and the full window for a new key. A hole is a DAY: a calendar session inside the stored span on which
-no key has a row (the file was never stored); `repair=True` re-reads per-key gaps once. An unscoped
-`full` re-fetches every served date (2018-08-01 on, plus the 2017-12-29 file) and keeps no legacy row;
-a stored date the source fails to serve aborts it before any write. A scoped `full` upserts its tickers.
+One RegSHO file covers the whole market, so the plan is table-wide: the business days from the earlier
+of the table's latest day and today less its overlap, to today. An empty table or `full` starts at the
+source start; `full` aborts before any write on a fetch error or when nothing is served.
 """
 
 from __future__ import annotations
@@ -82,181 +79,47 @@ def _grain(store) -> dict[tuple[str, str], float]:
     return {(str(t), str(pd.Timestamp(d).date())): float(v) for t, d, v in zip(frame["ticker"], frame["date"], frame["short_volume"], strict=True)}
 
 
-_AS_OF = pd.Timestamp("2024-06-29")  # last completed session: Friday 2024-06-28
-_SESSIONS = pd.bdate_range("2024-05-01", "2024-06-28")
+_AS_OF = pd.Timestamp("2024-06-28")  # a Friday
 
 
 def _si(ticker: str, dates) -> pd.DataFrame:
     return pd.DataFrame({"ticker": ticker, "date": pd.DatetimeIndex(dates), "short_volume": 1.0, "total_volume": 2.0})
 
 
-def _seed_universe(store, tickers: list[str], added_on: dict[str, str]) -> None:
-    store.save(
-        Tables.sp500_tickers,
-        pd.DataFrame(
-            {
-                "ticker": tickers,
-                "cik": [str(i) for i in range(len(tickers))],
-                "added_on": [pd.Timestamp(added_on.get(t, "2000-01-01")) for t in tickers],
-            }
-        ),
-    )
-
-
-def test_the_day_plan_is_the_union_of_every_key_s_windows(sqlite_store):
+def test_an_up_to_date_table_rereads_the_overlap_window(sqlite_store):
     ctx = _context(sqlite_store)
-    sqlite_store.save(Tables.prices, pd.DataFrame({"ticker": "CAL", "date": _SESSIONS, "close_split": 1.0}))  # the calendar
-    cold = si._plan_days(ctx, ["AAA"], 1, False, _AS_OF)
+    sqlite_store.save(Tables.short_interest, _si("AAA", ["2024-06-27"]))
 
-    sqlite_store.save(Tables.short_interest, _si("AAA", _SESSIONS))
-    sqlite_store.save(Tables.short_interest, _si("LAG", _SESSIONS[_SESSIONS <= pd.Timestamp("2024-06-10")]))
-    _seed_universe(sqlite_store, ["AAA", "LAG", "NEW"], {"NEW": "2024-06-27"})
-    warm = si._plan_days(ctx, ["AAA", "LAG"], 1, False, _AS_OF)
-    with_new = si._plan_days(ctx, ["AAA", "LAG", "NEW"], 1, False, _AS_OF)
+    plan = si._plan_days(ctx, False, _AS_OF)
 
-    assert cold.equals(_SESSIONS)  # no table: every calendar session from the 1-year floor
-    assert warm.equals(_SESSIONS[_SESSIONS >= pd.Timestamp("2024-06-03")])  # LAG's own window from 06-10 - 7 d
-    assert with_new.equals(_SESSIONS)  # NEW (added inside the overlap) reads back to the floor
-    print("\n=== SANITY CHECK: RegSHO day plan ===")
-    print(f"  cold -> {len(cold)} sessions; LAG's own window from 06-03 -> {len(warm)} day files;")
-    print(f"  a new key widens the union to the whole window ({len(with_new)} sessions). Each day file is read once.")
+    assert plan.equals(pd.bdate_range("2024-06-21", _AS_OF))  # today - 7 d is earlier than the latest day
+    print("\n=== SANITY CHECK: RegSHO day plan, up to date ===")
+    print(f"  latest stored day 06-27 -> {len(plan)} day files from today - 7 d (06-21) to today.")
 
 
-def test_a_day_with_rows_for_some_keys_is_not_re_read_a_day_with_none_is(sqlite_store):
+def test_a_stale_table_resumes_from_its_latest_day(sqlite_store):
     ctx = _context(sqlite_store)
-    sqlite_store.save(Tables.prices, pd.DataFrame({"ticker": "CAL", "date": _SESSIONS, "close_split": 1.0}))
-    partial = pd.Timestamp("2024-05-14")  # AAA missing, BBB stored: the file was read
-    empty = pd.Timestamp("2024-05-21")  # nobody stored: the file was never read
-    sqlite_store.save(Tables.short_interest, _si("AAA", _SESSIONS.difference(pd.DatetimeIndex([partial, empty]))))
-    sqlite_store.save(Tables.short_interest, _si("BBB", _SESSIONS.difference(pd.DatetimeIndex([empty]))))
+    sqlite_store.save(Tables.short_interest, _si("AAA", ["2024-05-01"]))
+    sqlite_store.save(Tables.short_interest, _si("BBB", ["2024-05-20"]))
 
-    nightly = si._plan_days(ctx, ["AAA", "BBB"], 1, False, _AS_OF)
-    repair = si._plan_days(ctx, ["AAA", "BBB"], 1, False, _AS_OF, repair=True)
+    plan = si._plan_days(ctx, False, _AS_OF)
 
-    forward = _SESSIONS[_SESSIONS >= pd.Timestamp("2024-06-21")]
-    assert nightly.equals(forward.union(pd.DatetimeIndex([empty])))
-    assert repair.equals(forward.union(pd.DatetimeIndex([partial, empty])))
-    print("\n=== SANITY CHECK: RegSHO day-level holes ===")
-    print(f"  {partial.date()} has BBB's row -> not re-read nightly; {empty.date()} has no row at all -> re-read;")
-    print("  repair=True (the one-time Phase 11 pass) also lists the per-key gap day.")
+    assert plan.equals(pd.bdate_range("2024-05-20", _AS_OF)), "the table-wide latest day, not each ticker's own"
+    print("\n=== SANITY CHECK: RegSHO day plan, stale ===")
+    print(f"  AAA stops 05-01, BBB 05-20 -> {len(plan)} day files from the table's latest day 05-20.")
 
 
-def test_days_after_the_calendar_are_business_days(sqlite_store):
+def test_an_empty_table_and_full_start_at_the_source_start(sqlite_store):
     ctx = _context(sqlite_store)
-    sqlite_store.save(Tables.prices, pd.DataFrame({"ticker": "CAL", "date": _SESSIONS[_SESSIONS <= pd.Timestamp("2024-06-26")], "close_split": 1.0}))
-    sqlite_store.save(Tables.short_interest, _si("AAA", _SESSIONS[_SESSIONS <= pd.Timestamp("2024-06-26")]))
-
-    days = si._plan_days(ctx, ["AAA"], 1, False, _AS_OF)
-
-    assert list(days.strftime("%m-%d")) == ["06-19", "06-20", "06-21", "06-24", "06-25", "06-26", "06-27", "06-28"]
-    print("\n=== SANITY CHECK: RegSHO days past the calendar ===")
-    print("  prices end 06-26 -> 06-27 and 06-28 are still requested as business days.")
-
-
-def test_days_before_the_source_start_are_never_requested(sqlite_store):
-    # FINRA serves nothing before 2018-08-01 except one stray 2017-12-29 file, so the
-    # never-stored sessions between them must not be listed as holes, nightly or on repair.
     assert Tables.short_interest.resume is not None and Tables.short_interest.resume.source_start == "2018-08-01"
-    ctx = _context(sqlite_store)
-    sessions = pd.bdate_range("2017-12-26", "2018-08-17")
-    served = sessions[sessions >= pd.Timestamp("2018-08-01")]
-    sqlite_store.save(Tables.prices, pd.DataFrame({"ticker": "CAL", "date": sessions, "close_split": 1.0}))
-    sqlite_store.save(Tables.short_interest, _si("AAA", served.union(pd.DatetimeIndex(["2017-12-29"]))))
-    sqlite_store.save(Tables.short_interest, _si("BBB", served))
-    as_of = pd.Timestamp("2018-08-18")  # last completed session: Friday 2018-08-17
+    cold = si._plan_days(ctx, False, _AS_OF)
+    sqlite_store.save(Tables.short_interest, _si("AAA", ["2024-06-27"]))
+    full = si._plan_days(ctx, True, _AS_OF)
 
-    nightly = si._plan_days(ctx, ["AAA", "BBB"], 1, False, as_of)
-    repair = si._plan_days(ctx, ["AAA", "BBB"], 1, False, as_of, repair=True)
-
-    forward = served[served >= pd.Timestamp("2018-08-10")]
-    assert nightly.equals(forward)
-    assert repair.equals(forward)
-    print("\n=== SANITY CHECK: RegSHO source start ===")
-    print("  stored span starts 2017-12-29 but source_start is 2018-08-01: nightly and repair both read only the")
-    print(f"  {len(forward)} forward sessions from 08-10; the 2018-01..07 block FINRA answers 403 is never requested.")
-
-
-def test_a_new_key_reads_every_day_file_once_then_only_forward(sqlite_store):
-    # REQ-010: once a new key's stored days reach the FINRA start, a rerun (same night or a later night
-    # inside the new-key window) reads only the forward days, not the whole source window again.
-    ctx = _context(sqlite_store)
-    sessions = pd.bdate_range("2018-08-01", "2018-08-17")
-    sqlite_store.save(Tables.prices, pd.DataFrame({"ticker": "CAL", "date": sessions, "close_split": 1.0}))
-    sqlite_store.save(Tables.short_interest, _si("AAA", sessions))
-    _seed_universe(sqlite_store, ["AAA", "NEW"], {"NEW": "2018-08-17"})
-    as_of = pd.Timestamp("2018-08-18")  # last completed session: Friday 2018-08-17
-
-    first = si._plan_days(ctx, ["AAA", "NEW"], 1, False, as_of)
-    sqlite_store.save(Tables.short_interest, _si("NEW", first[1:]))  # no NEW row in the 2018-08-01 file
-    again = si._plan_days(ctx, ["AAA", "NEW"], 1, False, as_of)
-    next_night = si._plan_days(ctx, ["AAA", "NEW"], 1, False, as_of + pd.Timedelta(days=3))
-
-    assert first.equals(sessions)  # the whole window from the FINRA start
-    assert again.equals(sessions[sessions >= pd.Timestamp("2018-08-10")])
-    assert next_night.equals(pd.bdate_range("2018-08-10", "2018-08-20"))  # Tuesday: NEW is still inside its window
-    print("\n=== SANITY CHECK: RegSHO new key, rerun ===")
-    print(f"  NEW reads all {len(first)} day files from 2018-08-01 once; stored from 08-02 (inside the tolerance), the")
-    print(f"  rerun reads {len(again)} forward files and the next night {len(next_night)}, not the whole window again.")
-
-
-_SPIN_AS_OF = pd.Timestamp("2024-03-16")  # last completed session: Friday 2024-03-15; floor = FINRA start 2018-08-01
-_SPIN_CALENDAR = pd.bdate_range("2018-08-01", "2024-03-15")
-_SPIN_LISTED = pd.bdate_range("2024-03-01", "2024-03-15")
-
-
-def _spin_store(store, prices: dict[str, pd.DatetimeIndex]) -> None:
-    """A calendar from the FINRA start, AAA established from 2024-02-01, SPIN and NOPX added 2024-03-14."""
-    store.save(Tables.prices, pd.DataFrame({"ticker": "CAL", "date": _SPIN_CALENDAR, "close_split": 1.0}))
-    for ticker, dates in prices.items():
-        store.save(Tables.prices, pd.DataFrame({"ticker": ticker, "date": dates, "close_split": 1.0}))
-    store.save(Tables.short_interest, _si("AAA", _SPIN_CALENDAR[_SPIN_CALENDAR >= pd.Timestamp("2024-02-01")]))
-    _seed_universe(store, ["AAA", "SPIN", "NOPX"], {"SPIN": "2024-03-14", "NOPX": "2024-03-14"})
-
-
-def test_a_joiner_listed_after_the_source_start_is_read_in_full_once_then_only_forward(sqlite_store):
-    # A spin-off whose first price is 2024-03-01 has no FINRA row before it: once its stored days
-    # reach max(FINRA start, first price date) plus the tolerance, its full pull is done.
-    ctx = _context(sqlite_store)
-    _spin_store(sqlite_store, {"SPIN": _SPIN_LISTED})
-
-    first = si._plan_days(ctx, ["AAA", "SPIN"], 8, False, _SPIN_AS_OF)
-    sqlite_store.save(Tables.short_interest, _si("SPIN", first[first >= pd.Timestamp("2024-03-01")]))
-    again = si._plan_days(ctx, ["AAA", "SPIN"], 8, False, _SPIN_AS_OF)
-    next_night = si._plan_days(ctx, ["AAA", "SPIN"], 8, False, _SPIN_AS_OF + pd.Timedelta(days=3))
-
-    assert first.equals(_SPIN_CALENDAR)  # the whole window from the FINRA start, once
-    assert again.equals(_SPIN_CALENDAR[_SPIN_CALENDAR >= pd.Timestamp("2024-03-08")])
-    assert next_night.equals(pd.bdate_range("2024-03-08", "2024-03-18"))  # Tuesday: SPIN is still inside its window
-    print("\n=== SANITY CHECK: RegSHO joiner listed 2024-03-01, rerun ===")
-    print(f"  SPIN reads all {len(first)} day files from 2018-08-01 once; stored from its first price date, the rerun")
-    print(f"  reads {len(again)} forward files and the next night {len(next_night)}, not the whole window again.")
-
-
-def test_a_new_key_with_no_price_row_keeps_the_source_start_floor(sqlite_store):
-    # No `prices` row, no listing date: the floor stays the FINRA start, so days stored only from
-    # 2024-03-01 do not complete the full pull (the bug-2 rule, unchanged).
-    ctx = _context(sqlite_store)
-    _spin_store(sqlite_store, {})
-    sqlite_store.save(Tables.short_interest, _si("NOPX", _SPIN_LISTED))
-
-    again = si._plan_days(ctx, ["AAA", "NOPX"], 8, False, _SPIN_AS_OF)
-
-    assert again.equals(_SPIN_CALENDAR)
-    print("\n=== SANITY CHECK: RegSHO new key without prices ===")
-    print(f"  NOPX, stored from 2024-03-01 with no price row, still reads all {len(again)} day files from 2018-08-01.")
-
-
-def test_an_established_key_ignores_its_listing_date(sqlite_store):
-    # The listing floor only decides when a NEW key's full pull is done: an established key whose
-    # prices start late resumes from its own last day minus the overlap, as before.
-    ctx = _context(sqlite_store)
-    _spin_store(sqlite_store, {"AAA": _SPIN_LISTED})
-
-    plan = si._plan_days(ctx, ["AAA"], 8, False, _SPIN_AS_OF)
-
-    assert plan.equals(_SPIN_CALENDAR[_SPIN_CALENDAR >= pd.Timestamp("2024-03-08")])
-    print("\n=== SANITY CHECK: RegSHO established key ===")
-    print(f"  AAA (established, prices from 2024-03-01) reads {len(plan)} forward files from 2024-03-08, unchanged.")
+    expected = pd.bdate_range("2018-08-01", _AS_OF)
+    assert cold.equals(expected) and full.equals(expected)
+    print("\n=== SANITY CHECK: RegSHO day plan, cold and full ===")
+    print(f"  no table or --full -> all {len(full)} business days from the 2018-08-01 source start to today.")
 
 
 def test_incremental_run_rewrites_only_the_fetched_days(sqlite_store, tmp_path, monkeypatch):
@@ -286,33 +149,18 @@ def test_incremental_run_rewrites_only_the_fetched_days(sqlite_store, tmp_path, 
     print("  fetched days rewritten (LEN 2020-01-03 = 30 + LEN-B 5); the unfetched 2020-01-02 row kept; ZZZZ not stored")
 
 
-def test_full_refetches_every_served_day_and_keeps_no_legacy_row(sqlite_store, monkeypatch):
+def test_full_refetches_every_served_day_from_the_source_start(sqlite_store, monkeypatch):
     sqlite_store.replace(Tables.security_master, _master())
-    sqlite_store.save(
-        Tables.short_interest, pd.DataFrame({"date": pd.to_datetime(["2015-01-02"]), "ticker": "LEN", "short_volume": [9.0], "total_volume": [9.0]})
-    )
-    sqlite_store.save(Tables.sec_short_volume_security, _raw([("LEN", "2015-01-02", 9.0, 9.0)]))
+    legacy = pd.DataFrame({"date": pd.to_datetime(["2018-08-02"]), "ticker": "LEN", "short_volume": [99.0], "total_volume": [99.0]})
+    sqlite_store.save(Tables.short_interest, legacy)
     monkeypatch.setattr(pd.Timestamp, "today", classmethod(lambda cls, tz=None: pd.Timestamp("2018-08-03")))
     files = {"20180801": [("LEN", 3.0, 4.0)], "20180802": [("LEN", 5.0, 6.0)], "20180803": [("LEN", 7.0, 8.0)]}
     asked = _serve(monkeypatch, files)
 
-    with pytest.raises(RuntimeError, match="2015-01-02"):
-        si.fetch_short_interest(_context(sqlite_store), UNIVERSE, pause=0.0, full=True, identity=_identity(store=sqlite_store))
-    assert _grain(sqlite_store) == {("LEN", "2015-01-02"): 9.0}, "a stored date the source no longer serves aborts before any write"
-
-    sqlite_store.delete(Tables.sec_short_volume_security, {"source_symbol": sqlite_store.NOT_NULL})
-    with pytest.raises(RuntimeError, match="2015-01-02"):
-        si.fetch_short_interest(_context(sqlite_store), UNIVERSE, pause=0.0, full=True, identity=_identity(store=sqlite_store))
-    assert _grain(sqlite_store) == {("LEN", "2015-01-02"): 9.0}, "an empty raw table (cold start): the ticker table's day still guards"
-
-    sqlite_store.delete(Tables.short_interest, where={"date": [pd.Timestamp("2015-01-02")]})
-    legacy = pd.DataFrame({"date": pd.to_datetime(["2018-08-02"]), "ticker": "LEN", "short_volume": [99.0], "total_volume": [99.0]})
-    sqlite_store.save(Tables.short_interest, legacy)
-    asked.clear()
     si.fetch_short_interest(_context(sqlite_store), UNIVERSE, pause=0.0, full=True, identity=_identity(store=sqlite_store))
 
     assert {d.date().isoformat() for d in asked} == {"2018-08-01", "2018-08-02", "2018-08-03"}
-    assert min(asked) == pd.Timestamp("2018-08-01") and pd.Timestamp("2018-07-31") not in asked
+    assert pd.Timestamp("2018-07-31") not in asked
     assert {key: value for key, value in _grain(sqlite_store).items() if value > 0} == {
         ("LEN", "2018-08-01"): 3.0,
         ("LEN", "2018-08-02"): 5.0,
@@ -321,25 +169,21 @@ def test_full_refetches_every_served_day_and_keeps_no_legacy_row(sqlite_store, m
     quiet = sqlite_store.load(Tables.short_interest, where={"short_volume": 0})
     assert quiet is not None and quiet["total_volume"].isna().all() and quiet["source_checked_at"].notna().all()
     print("\n=== SANITY CHECK: RegSHO full ===")
-    print("  a stored 2015 date the source no longer serves aborts the run with both tables intact, read from the raw table or,")
-    print("  when it is empty (cold start), from the ticker table; without it, full re-fetches from the registered 2018-08-01 floor")
-    print("  and the legacy 2018-08-02 ticker value 99 is replaced")
+    print("  full re-fetches every day from the registered 2018-08-01 source start and the legacy 2018-08-02 value 99 is replaced")
 
 
-def test_full_aborts_before_replace_when_a_served_date_fails(sqlite_store, monkeypatch):
+def test_full_aborts_before_any_write_on_a_fetch_error_or_an_empty_source(sqlite_store, monkeypatch):
     sqlite_store.replace(Tables.security_master, _master())
-    sqlite_store.save(Tables.sec_short_volume_security, _raw([("LEN", "2018-08-01", 1.0, 2.0), ("LEN", "2018-08-02", 3.0, 4.0)]))
     sqlite_store.save(
         Tables.short_interest,
         pd.DataFrame({"date": pd.to_datetime(["2018-08-01", "2018-08-02"]), "ticker": "LEN", "short_volume": [1.0, 3.0], "total_volume": [2.0, 4.0]}),
     )
     monkeypatch.setattr(pd.Timestamp, "today", classmethod(lambda cls, tz=None: pd.Timestamp("2018-08-02")))
-    _serve(monkeypatch, {"20171229": [("LEN", 1.0, 2.0)], "20180801": [("LEN", 30.0, 40.0)]})  # 2018-08-02 is stored but not served
+    _serve(monkeypatch, {})
 
-    with pytest.raises(RuntimeError, match="2018-08-02"):
+    with pytest.raises(RuntimeError, match="aborting"):
         si.fetch_short_interest(_context(sqlite_store), UNIVERSE, pause=0.0, full=True, identity=_identity(store=sqlite_store))
     assert _grain(sqlite_store) == {("LEN", "2018-08-01"): 1.0, ("LEN", "2018-08-02"): 3.0}
-    assert len(sqlite_store.load(Tables.sec_short_volume_security)) == 2
 
     def _boom(day: pd.Timestamp, session: object = None) -> str | None:
         raise ConnectionError("reset")
@@ -349,11 +193,11 @@ def test_full_aborts_before_replace_when_a_served_date_fails(sqlite_store, monke
         si.fetch_short_interest(_context(sqlite_store), UNIVERSE, pause=0.0, full=True, identity=_identity(store=sqlite_store))
     assert _grain(sqlite_store) == {("LEN", "2018-08-01"): 1.0, ("LEN", "2018-08-02"): 3.0}
     print("\n=== SANITY CHECK: RegSHO full abort gate ===")
-    print("  a stored date not served, or a network error, aborts full before replace; both tables keep their rows")
+    print("  nothing served, or a network error, aborts full before the write; the ticker table keeps its rows")
 
 
-def test_scoped_full_upserts_its_tickers_and_leaves_every_other_key(sqlite_store, monkeypatch):
-    """A `-t` full run re-reads every served day for its tickers only: no replace, another key's rows survive."""
+def test_a_run_upserts_its_tickers_and_leaves_every_other_key(sqlite_store, monkeypatch):
+    """A `-t` run re-reads the planned days for its tickers only: another key's rows survive."""
     sqlite_store.replace(Tables.security_master, _master())
     sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["LEN", "OTHR"], "cik": ["0000920760", "0000000009"]}))
     sqlite_store.save(
@@ -370,8 +214,8 @@ def test_scoped_full_upserts_its_tickers_and_leaves_every_other_key(sqlite_store
     si.fetch_short_interest(context, ["LEN"], pause=0.0, full=True, identity=_identity(store=sqlite_store))
 
     assert _grain(sqlite_store) == {("LEN", "2018-08-01"): 3.0, ("LEN", "2018-08-02"): 5.0, ("OTHR", "2018-08-01"): 7.0}
-    print("\n=== SANITY CHECK: RegSHO scoped full ===")
-    print("  -t LEN -F: LEN's served days re-read and upserted; OTHR's stored row untouched (no table replace). Validated.")
+    print("\n=== SANITY CHECK: RegSHO scoped run ===")
+    print("  -t LEN -F: LEN's served days re-read and upserted; OTHR's stored row untouched. Validated.")
 
 
 def test_empty_download_leaves_the_tables_untouched(sqlite_store, monkeypatch):

@@ -539,7 +539,7 @@ def save_13f_filing(
     empty = cast(tuple[str, str], table.empty_marker)[1]
     if table == Tables.sec13f_hr and ("ticker" not in holdings or holdings.ticker.isna().any()):
         raise ValueError("13F broad holdings require ticker or the unmapped sentinel")
-    with store.transaction(f"{table.name}:{row['accession_number']}") as bound:
+    with store.transaction() as bound:
         df_existing = bound.load(
             table,
             columns=["content_checksum", "declared_row_count", "declared_value_total"],

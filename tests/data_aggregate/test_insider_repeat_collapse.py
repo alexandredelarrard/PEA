@@ -15,7 +15,7 @@ from src.data_aggregate.utils.institutionals.insider_features import InsiderCove
 from src.data_aggregate.utils.institutionals.insider_quality import OPEN_MARKET_CODES, clean_transactions, common_stock_mask
 from tests.conftest import make_frames
 from tests.data_aggregate.insider_pit_reference import build_prepared_insider_panel as build_insider_feature_panel
-from tests.data_aggregate.insider_pit_reference import compare, frame, reference_panel, row, sentinel_rows, snapshot_path
+from tests.data_aggregate.insider_pit_reference import compare, frame, reference_panel, row, sentinel_rows, snapshot_path, source_frame
 from tests.fixtures.insider_zip import fixture_accessions, xml_frame, zip_frame, zip_path
 
 IDX = pd.bdate_range("2024-01-01", "2024-12-31")
@@ -81,7 +81,7 @@ def test_rows_kept_apart_by_holding_nan_or_accession():
             row_sequence=2,
         ),
     ]
-    cleaned, diag = clean_transactions(frame(rows))
+    cleaned, diag = clean_transactions(source_frame(frame(rows)))
     assert len(cleaned) == len(rows) and diag["copy_groups"] == 0
     print(
         "SANITY: 6 rows of one size and price stay 6 trades: different post-trade holdings (coincidence), "
@@ -92,7 +92,7 @@ def test_rows_kept_apart_by_holding_nan_or_accession():
 def test_the_kept_copy_carries_only_already_public_owners():
     first, second = _copy_pair()
     second = {**second, "owner_ciks": "0000000009,0000000010", "n_reporting_owners": 2}
-    cleaned, diag = clean_transactions(frame([first, second]))
+    cleaned, diag = clean_transactions(source_frame(frame([first, second])))
     kept = cleaned.iloc[0]
     assert len(cleaned) == 2 and kept["owner_cik"] == "0000000008"
     assert kept["owner_ciks"] == "0000000008" and kept["n_reporting_owners"] == 1
@@ -138,7 +138,7 @@ def test_real_copy_groups_contribute_once_and_coincidences_survive():
     loose = keyed.groupby(five)["accession_number"].transform("nunique") > 1
     coincidence = keyed[loose & ~keyed.index.isin(grouped.index)]
 
-    cleaned, diag = clean_transactions(df)
+    cleaned, diag = clean_transactions(source_frame(df))
     survivors = pd.Index(cleaned["source_row"]).intersection(later)
     removed = float(df.loc[later, "value_usd"].sum())
     assert survivors.empty, f"{len(survivors)} later copies reach the features"
@@ -174,7 +174,7 @@ def _zip_and_edgar_copies(edgar: dict, zipped: dict) -> list[dict]:
 )
 def test_a_zip_copy_of_an_edgar_trade_is_one_trade_at_a_half_cent(edgar: dict, zipped: dict):
     """R-02: the copy key rounds as the zip does (half away from zero), so the zip's copy of an EDGAR value collapses."""
-    cleaned, diag = clean_transactions(frame(_zip_and_edgar_copies(edgar, zipped)))
+    cleaned, diag = clean_transactions(source_frame(frame(_zip_and_edgar_copies(edgar, zipped))))
     assert diag["copy_groups"] == 1 and len(cleaned) == 1 and cleaned.iloc[0]["source"] == "edgar"
     df_rows = frame(_zip_and_edgar_copies(edgar, zipped) + sentinel_rows())
     report = compare(_build(df_rows), reference_panel(df_rows, IDX, _build), IDX, ["AAA"])
@@ -185,7 +185,7 @@ def test_a_zip_copy_of_an_edgar_trade_is_one_trade_at_a_half_cent(edgar: dict, z
 def test_values_apart_beyond_the_half_stay_two_trades():
     """Only a half rounds up: 105.0849 (zip 105.08) and 105.085 (zip 105.09) stay distinct trades."""
     df_rows = frame(_zip_and_edgar_copies({"shares": 105.0849}, {"shares": 105.09}))
-    cleaned, diag = clean_transactions(df_rows)
+    cleaned, diag = clean_transactions(source_frame(df_rows))
     assert diag["copy_groups"] == 0 and len(cleaned) == 2
     print("SANITY: EDGAR 105.0849 and zip 105.09 keep two trades: the key rounds 105.0849 to 105.08, as the zip would.")
 

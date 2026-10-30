@@ -29,6 +29,7 @@ from src.data_aggregate.utils.institutionals.insider_quality import (
     OPEN_MARKET_CODES,
     clean_transactions,
     common_stock_mask,
+    normalize_insider_dates,
     officer_role,
     security_class,
 )
@@ -70,6 +71,7 @@ def _txn(**kw) -> dict:
         accession_number="0000000000-00-000000",
         ticker="AAA",
         owner_cik="0001",
+        issuer_cik="0000000100",
         owner_ciks=None,
         n_reporting_owners=1,
         owner_name="Doe Jane",
@@ -88,6 +90,8 @@ def _txn(**kw) -> dict:
         is_officer=0.0,
         is_ten_pct_owner=0.0,
         is_10b5_1=np.nan,
+        document_type="4",
+        original_submission_date=None,
     )
     row.update(kw)
     if row["owner_ciks"] is None:
@@ -98,7 +102,7 @@ def _txn(**kw) -> dict:
 
 
 def _frame(rows: list[dict]) -> pd.DataFrame:
-    return pd.DataFrame(rows)
+    return normalize_insider_dates(pd.DataFrame(rows))
 
 
 def _prices(tickers=("AAA",), price=100.0) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -116,7 +120,7 @@ def _peers(tickers=("AAA",)) -> dict:
 def test_canonical_cleaner_uses_independent_transaction_quote() -> None:
     quotes = pd.DataFrame({"AAA": [100.0]}, index=pd.to_datetime(["2015-05-29"]))
     rows = [_txn(price_per_share=105, value_usd=105_000), _txn(accession_number="bad", price_per_share=100_000, value_usd=100_000_000)]
-    out, diag = clean_transactions(_frame(rows), as_traded_quotes=quotes)
+    out, diag = clean_transactions(_frame(rows), df_valuation_close=quotes)
     assert out.loc[0, "value"] == 105_000
     assert out.loc[1, "value"] == 100_000
     assert out.loc[1, "price_estimated"]
@@ -304,8 +308,8 @@ def test_proxy_role_recovery_requires_known_issuer_and_unresolved_title(issuer_c
                 ]
             )
 
-    evidence = load_insider_role_evidence(Store(), _frame(rows), universe=['AAA'])
-    cleaned, _ = clean_transactions(_frame(rows), role_evidence=evidence)
+    evidence = load_insider_role_evidence(Store(), _frame(rows), universe=["AAA"])
+    cleaned, _ = clean_transactions(_frame(rows), df_roles=evidence)
     actual = cleaned.set_index("accession_number").loc["current-role"]
     assert actual["role"] == ("CEO" if recovered else "other_named_officer")
     assert bool(actual["is_management"]) == recovered
@@ -578,8 +582,8 @@ def test_proxy_role_barriers_prevent_stale_management_fill(later_titles: list[st
             assert table is Tables.def14a_executive_comp
             return pd.DataFrame(proxies)
 
-    evidence = load_insider_role_evidence(Store(), _frame(rows), universe=['AAA'])
-    clean, _ = clean_transactions(_frame(rows), role_evidence=evidence)
+    evidence = load_insider_role_evidence(Store(), _frame(rows), universe=["AAA"])
+    clean, _ = clean_transactions(_frame(rows), df_roles=evidence)
     assert clean["role"].eq("other_named_officer").all() and not clean["is_management"].any()
     print(f"SANITY: dated proxy evidence {later_titles} blocks stale CEO carry-forward into a later blank title.")
 
@@ -631,7 +635,7 @@ def test_an_overpriced_row_is_repaired_to_shares_times_the_consensus():
         _txn(accession_number="bad", owner_cik="9999", transaction_date="2015-05-25", shares=10.0, price_per_share=10_000.0, value_usd=100_000.0)
     )
     quote = pd.DataFrame(100.0, index=pd.bdate_range("2015-05-01", "2015-06-01"), columns=["AAA"])
-    out, diag = clean_transactions(_frame(rows), as_traded_quotes=quote)
+    out, diag = clean_transactions(_frame(rows), df_valuation_close=quote)
     bad = out[out["accession_number"].eq("bad")].iloc[0]
     assert diag["repaired_rows"] == 1
     assert bad["price_repaired"] and bad["value"] == pytest.approx(1_000.0)
@@ -683,8 +687,8 @@ def test_consensus_never_uses_a_later_transaction():
     ]
 
     quote = pd.DataFrame(100.0, index=pd.bdate_range("2015-05-01", "2015-06-01"), columns=["AAA"])
-    prefix, _ = clean_transactions(_frame(earlier), as_traded_quotes=quote)
-    full, _ = clean_transactions(_frame(earlier + later), as_traded_quotes=quote)
+    prefix, _ = clean_transactions(_frame(earlier), df_valuation_close=quote)
+    full, _ = clean_transactions(_frame(earlier + later), df_valuation_close=quote)
     prefix_row = prefix.set_index("accession_number").loc["suspect"]
     full_row = full[full["accession_number"].eq("suspect") & full["visible_from"].eq(full["anchor"])].iloc[0]
 
@@ -761,7 +765,7 @@ def test_an_underpriced_row_is_counted_but_never_inflated():
     ]
     rows.append(_txn(accession_number="low", owner_cik="9999", transaction_date="2015-05-25", shares=10.0, price_per_share=1.0, value_usd=10.0))
     quote = pd.DataFrame(100.0, index=pd.bdate_range("2015-05-01", "2015-06-01"), columns=["AAA"])
-    out, diag = clean_transactions(_frame(rows), as_traded_quotes=quote)
+    out, diag = clean_transactions(_frame(rows), df_valuation_close=quote)
     low = out[out["accession_number"].eq("low")].iloc[0]
     assert diag["underpriced_rows"] == 1 and diag["repaired_rows"] == 0
     assert not low["price_repaired"] and low["value"] == pytest.approx(10.0)

@@ -29,7 +29,7 @@ def test_quantity_rebasing_preserves_clean_execution_usd() -> None:
         ),
     ]
     df_quotes = pd.DataFrame({"AAA": np.where(idx < pd.Timestamp("2024-06-10"), 100.0, 10.0)}, index=idx)
-    df_clean, _ = clean_transactions(_frame(rows), as_traded_quotes=df_quotes, share_basis=share_basis)
+    df_clean, _ = clean_transactions(_frame(rows), df_valuation_close=df_quotes, share_basis=share_basis)
     df_rebased = position_units(df_clean, QuantityBasis(share_basis, idx[-1]))
     df_before = df_rebased.loc[df_rebased["transaction_day"].eq(pd.Timestamp("2024-06-07"))]
     assert df_before["shares_n"].tolist() == [50]
@@ -46,7 +46,7 @@ def test_quantity_rebasing_preserves_clean_execution_usd() -> None:
             idx, _peers(), close_split=pd.DataFrame(price, index=idx, columns=["AAA"]), level_factor=pd.DataFrame(factor, index=idx, columns=["AAA"])
         )
         panel = build_insider_feature_panel(
-            frames, _frame(rows), shares_out_history=shares, as_traded_quotes=df_quotes, share_basis=share_basis
+            frames, _frame(rows), shares_out_history=shares, df_valuation_close=df_quotes, share_basis=share_basis
         ).set_index("date")
         assert panel.loc["2024-06-11", "f_ic_insider_buy_value_mcap_60d"] == pytest.approx(0.0000005)
         assert panel.loc["2024-06-12", "f_ic_insider_buy_value_mcap_60d"] == pytest.approx(0.000001)
@@ -133,7 +133,7 @@ def _observed_panel(rows: list[dict], *, complete: bool = True) -> pd.DataFrame:
         make_frames(idx, _peers(tickers), close_split=close),
         _frame(rows),
         shares_out_history=history,
-        as_traded_quotes=close,
+        df_valuation_close=close,
         coverage=InsiderCoverage.from_availability(
             InstitutionalAvailability.from_config({Tables.insider_transactions.name: {"__all__": "2024-01-01"}}),
             pd.Series(idx.max(), index=tickers) if complete else None,
@@ -308,12 +308,12 @@ def test_account_counted_once_and_lots_expire_separately(same_economic_day: bool
     frames = make_frames(idx, _peers(), close_split=quotes)
     expected = {"2015-06-09": 0.1, "2015-06-10": 0.3, "2015-07-31": 20 / 110}
     for order in (rows, rows[::-1]):
-        panel = build_insider_feature_panel(frames, _frame(order), as_traded_quotes=quotes).set_index("date")
+        panel = build_insider_feature_panel(frames, _frame(order), df_valuation_close=quotes).set_index("date")
         for name in ("f_ic_insider_management_position_change_60d", "f_ic_insider_purchase_pct_prior"):
             for day, value in expected.items():
                 assert panel.loc[day, name] == pytest.approx(value)
             assert pd.isna(panel.loc["2015-08-09", name])
-        prefix = build_insider_feature_panel(frames, _frame(rows[:1]), as_traded_quotes=quotes).set_index("date")
+        prefix = build_insider_feature_panel(frames, _frame(rows[:1]), df_valuation_close=quotes).set_index("date")
         pd.testing.assert_series_equal(
             panel.loc[:"2015-06-09", "f_ic_insider_management_position_change_60d"],
             prefix.loc[:"2015-06-09", "f_ic_insider_management_position_change_60d"],
@@ -394,7 +394,7 @@ def _action_panel(
 ) -> pd.DataFrame:
     coverage = InsiderCoverage.from_availability(None, pd.Series({"AAA": close.index.max()}) if complete else None, identity)
     return build_insider_feature_panel(
-        make_frames(close.index, _peers(), close_split=close), _frame(rows), shares_out_history=shares, as_traded_quotes=close, coverage=coverage
+        make_frames(close.index, _peers(), close_split=close), _frame(rows), shares_out_history=shares, df_valuation_close=close, coverage=coverage
     ).set_index("date")
 
 
@@ -617,7 +617,7 @@ def test_action_cap_requires_known_source_security_units(case: str) -> None:
         make_frames(idx, _peers(), close_split=close),
         _frame(rows),
         shares_out_history=shares,
-        as_traded_quotes=close,
+        df_valuation_close=close,
         share_basis=basis,
         coverage=InsiderCoverage.from_availability(None, pd.Series({"AAA": idx.max()})),
     ).set_index("date")
@@ -694,7 +694,7 @@ def test_unsupported_account_span_abstains_prospectively(intervening_gift: bool)
         rows.append(_txn(accession_number="gift", transaction_code="G", filing_date="2015-06-12", transaction_date="2015-06-05"))
     idx = pd.date_range("2015-06-01", "2015-06-15")
     quotes = pd.DataFrame({"AAA": 100.0}, index=pd.date_range("2015-05-01", "2015-06-15"))
-    panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=quotes), _frame(rows), as_traded_quotes=quotes).set_index("date")
+    panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=quotes), _frame(rows), df_valuation_close=quotes).set_index("date")
     name = "f_ic_insider_management_position_change_60d"
     assert panel.loc["2015-06-09", name] == pytest.approx(0.1)
     blocked = "2015-06-12" if intervening_gift else "2015-06-10"
@@ -727,7 +727,7 @@ def test_genuine_split_units_cancel_level_actions() -> None:
     frames = make_frames(idx, _peers(), close_split=split_basis, level_factor=level)
     df_events = pd.DataFrame({"ticker": ["AAA"], "date": pd.to_datetime(["2015-06-05"]), "value": [2.0]})
     share_basis = ShareBasis(df_events, df_events, df_events, {})
-    panel = build_insider_feature_panel(frames, _frame(rows), as_traded_quotes=quotes, share_basis=share_basis).set_index("date")
+    panel = build_insider_feature_panel(frames, _frame(rows), df_valuation_close=quotes, share_basis=share_basis).set_index("date")
     name = "f_ic_insider_management_position_change_60d"
     assert panel.loc["2015-06-10", name] == pytest.approx(40 / 200)
     assert panel.loc["2015-07-31", name] == pytest.approx(20 / 220)
@@ -782,7 +782,7 @@ def test_late_economic_trade_uses_latest_included_terminal() -> None:
     dates = pd.date_range("2015-05-01", "2015-08-20")
     idx = dates[dates >= pd.Timestamp("2015-06-01")]
     quotes = pd.DataFrame({"AAA": 100.0}, index=dates)
-    panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=quotes), _frame(rows), as_traded_quotes=quotes).set_index("date")
+    panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=quotes), _frame(rows), df_valuation_close=quotes).set_index("date")
     name = "f_ic_insider_management_position_change_60d"
     assert panel.loc["2015-06-19", name] == pytest.approx(20 / 110)
     assert panel.loc["2015-06-20", name] == pytest.approx(30 / 100)
@@ -821,8 +821,8 @@ def test_amendment_changes_shares_prospectively_without_refreshing_expiry() -> N
     quotes = pd.DataFrame({"AAA": 100.0}, index=dates)
     frames = make_frames(idx, _peers(), close_split=quotes)
     name = "f_ic_insider_management_position_change_60d"
-    panel = build_insider_feature_panel(frames, _frame(rows), as_traded_quotes=quotes).set_index("date")
-    prefix = build_insider_feature_panel(frames, _frame(rows[:2]), as_traded_quotes=quotes).set_index("date")
+    panel = build_insider_feature_panel(frames, _frame(rows), df_valuation_close=quotes).set_index("date")
+    prefix = build_insider_feature_panel(frames, _frame(rows[:2]), df_valuation_close=quotes).set_index("date")
     pd.testing.assert_series_equal(panel.loc[:"2015-06-19", name], prefix.loc[:"2015-06-19", name])
     assert panel.loc["2015-06-09", name] == pytest.approx(0.1)
     assert pd.isna(panel.loc["2015-06-19", name])
@@ -830,7 +830,7 @@ def test_amendment_changes_shares_prospectively_without_refreshing_expiry() -> N
     assert panel.loc["2015-07-31", name] == pytest.approx(20 / 120)
     assert pd.isna(panel.loc["2015-08-09", name])
     rows[2]["filing_date"] = "2015-08-15"
-    late = build_insider_feature_panel(frames, _frame(rows), as_traded_quotes=quotes).set_index("date")
+    late = build_insider_feature_panel(frames, _frame(rows), df_valuation_close=quotes).set_index("date")
     assert late.loc["2015-08-15":, name].isna().all()
     print("SANITY: amendment restores a supported40/100 prospectively; original expiry leaves20/120; an amendment after expiry revives nothing.")
 
@@ -877,7 +877,7 @@ def test_balance_identity_does_not_hide_one_share_on_a_large_account() -> None:
     ]
     quotes = pd.DataFrame({"AAA": 100.0}, index=pd.date_range("2015-05-01", "2015-06-15"))
     idx = pd.date_range("2015-06-01", "2015-06-15")
-    panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=quotes), _frame(rows), as_traded_quotes=quotes).set_index("date")
+    panel = build_insider_feature_panel(make_frames(idx, _peers(), close_split=quotes), _frame(rows), df_valuation_close=quotes).set_index("date")
     name = "f_ic_insider_management_position_change_60d"
     assert panel.loc["2015-06-09", name] == pytest.approx(1 / 1_000_000)
     assert panel.loc["2015-06-10":, name].isna().all()
@@ -932,7 +932,7 @@ def test_cross_account_pool_requires_compatible_share_units(title: str, event_ev
     panel = build_insider_feature_panel(
         make_frames(idx, _peers(), close_split=adjusted),
         _frame(rows),
-        as_traded_quotes=quotes if quote_mode != "none" else None,
+        df_valuation_close=quotes if quote_mode != "none" else None,
         share_basis=share_basis,
     ).set_index("date")
     expected = 0.35 if same_day else 0.2 if title == "Common Stock" and event_evidence else np.nan

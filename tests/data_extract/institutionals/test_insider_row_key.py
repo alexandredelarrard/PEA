@@ -14,18 +14,22 @@ KEY = ["accession_number", "security_type", "row_sequence"]
 
 def test_zip_row_sequence_ranks_the_numeric_sk_per_filing_table():
     sub = pd.DataFrame({"ACCESSION_NUMBER": ["a", "b"], "ISSUERCIK": ["1", "2"], "FILING_DATE": ["03-FEB-2026", "03-FEB-2026"]})
-    nonderiv = pd.DataFrame(
-        {"ACCESSION_NUMBER": ["a", "a", "a", "a", "b"], "NONDERIV_TRANS_SK": ["10", "9", None, "30", "5"], "TRANS_CODE": list("PQRST")}
-    )
+    nonderiv = pd.DataFrame({"ACCESSION_NUMBER": ["a", "a", "a", "b"], "NONDERIV_TRANS_SK": ["10", "9", "30", "5"], "TRANS_CODE": list("PQST")})
     deriv = pd.DataFrame({"ACCESSION_NUMBER": ["a"], "DERIV_TRANS_SK": ["7"], "TRANS_CODE": ["M"]})
     df_str, _ = extract_bulk_strings(sub, pd.DataFrame(), nonderiv, deriv)
     got = {(row.accession_number, row.security_type, row.row_sequence): row.transaction_code for row in df_str.itertuples()}
     assert got == {("a", "nonderiv", 1): "Q", ("a", "nonderiv", 2): "P", ("a", "nonderiv", 3): "S", ("b", "nonderiv", 1): "T", ("a", "deriv", 1): "M"}
-    assert "R" not in set(df_str["transaction_code"]) and "transaction_sk" not in df_str.columns
-    print(
-        "SANITY: SKs 10, 9, 30 rank numerically to 2, 1, 3 (not lexically), each filing table restarts at 1, "
-        "and a line without an SK cannot be keyed and is dropped."
-    )
+    assert "transaction_sk" not in df_str.columns
+    print("SANITY: SKs 10, 9, 30 rank numerically to 2, 1, 3 (not lexically) and each filing table restarts at 1.")
+
+
+@pytest.mark.parametrize("sks", [["10", None], ["10", "0"], ["10", "1.5"], ["10", "10"]], ids=["missing", "non-positive", "fractional", "repeated"])
+def test_a_line_without_a_valid_unique_sk_refuses_the_quarter(sks):
+    sub = pd.DataFrame({"ACCESSION_NUMBER": ["a"], "ISSUERCIK": ["1"], "FILING_DATE": ["03-FEB-2026"]})
+    nonderiv = pd.DataFrame({"ACCESSION_NUMBER": ["a", "a"], "NONDERIV_TRANS_SK": sks, "TRANS_CODE": ["P", "Q"]})
+    with pytest.raises(ValueError, match="row key"):
+        extract_bulk_strings(sub, pd.DataFrame(), nonderiv, pd.DataFrame())
+    print("SANITY: a missing, non-positive, fractional or repeated SK cannot be keyed, so the quarter is refused rather than certified incomplete.")
 
 
 @pytest.mark.skipif(zip_path() is None or not fixture_accessions(), reason="cached 2026q2 insider zip or XML fixtures absent")
@@ -40,7 +44,10 @@ def test_zip_and_xml_give_equal_keys_on_every_fixture_filing():
     zip_date, xml_date = df_matched["transaction_date_zip"], df_matched["transaction_date_xml"]
     zip_shares, xml_shares = df_matched["shares_zip"], df_matched["shares_xml"]
     same_line = (
-        df_matched["transaction_code_zip"].eq(df_matched["transaction_code_xml"])
+        (
+            df_matched["transaction_code_zip"].eq(df_matched["transaction_code_xml"])
+            | (df_matched["transaction_code_zip"].isna() & df_matched["transaction_code_xml"].isna())
+        )
         & (zip_date.eq(xml_date) | (zip_date.isna() & xml_date.isna()))
         & ((zip_shares - xml_shares).abs().le(0.005 + 1e-6) | (zip_shares.isna() & xml_shares.isna()))
     )

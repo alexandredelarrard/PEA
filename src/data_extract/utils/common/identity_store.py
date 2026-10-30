@@ -10,8 +10,6 @@ import pandas as pd
 from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore, Where
 
-SOURCE_LOCK = "institutional-source-proof"
-
 
 def load_source_identity(store: DataStore) -> dict[Table, pd.DataFrame]:
     """Load the closed four-table identity projection for source classification and guarded writes."""
@@ -24,15 +22,6 @@ def load_source_identity(store: DataStore) -> dict[Table, pd.DataFrame]:
         )
         cohort[table] = df_rows if df_rows is not None else pd.DataFrame()
     return cohort
-
-
-def assert_source_identity(store: DataStore, actual: dict[Table, pd.DataFrame], expected: dict[Table, pd.DataFrame]) -> None:
-    """Refuse classification based on a changed or incomplete identity cohort."""
-    if set(expected) != set(actual):
-        raise ValueError("Expected identity must contain the closed institutional source cohort")
-    for table, df_expected in expected.items():
-        if not store.same_rows(table, actual[table], df_expected):
-            raise ValueError(f"Institutional identity cohort changed before commit: {table}")
 
 
 def invalidate_source_proof(store: DataStore, tickers: set[str], *, identity_change: bool = False) -> None:
@@ -145,7 +134,7 @@ def save_identity(store: DataStore, table: Table, df_rows: pd.DataFrame, where: 
         raise ValueError("Identity replacement needs unique declared keys")
 
     # Load the closed cohort and compact retained owners under the shared guard.
-    with store.transaction(SOURCE_LOCK) as bound:
+    with store.transaction() as bound:
         cohorts = load_source_identity(bound)
         scope: dict[str, object] | None = {"ticker": df_rows["ticker"].tolist()} if table == Tables.sp500_tickers else where
         df_old = _scope_rows(cohorts[table], scope)

@@ -8,7 +8,7 @@ from src.data_aggregate.utils.institutionals.inputs import QuantityBasis
 from src.data_aggregate.utils.institutionals.insider_features import _daily_positions
 from src.data_aggregate.utils.institutionals.insider_positions import cumulative_positions, position_units
 from src.data_aggregate.utils.institutionals.insider_quality import clean_transactions
-from tests.data_aggregate.insider_pit_reference import _NO_SPLIT_FIXTURE, row
+from tests.data_aggregate.insider_pit_reference import _NO_SPLIT_FIXTURE, row, source_frame
 
 
 def _account_result(df_raw: pd.DataFrame, idx: pd.DatetimeIndex) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, pd.DataFrame]]:
@@ -55,7 +55,7 @@ def test_unknown_action_cannot_improve_a_mixed_common_account(code: str, action:
         ),
     ]
     idx = pd.date_range("2024-01-20", "2024-04-03")
-    _, _, result = _account_result(pd.DataFrame(rows), idx)
+    _, _, result = _account_result(source_frame(rows), idx)
     values = result["ic_insider_management_position_change_60d"]["AAA"]
     assert values.loc["2024-01-21"] == pytest.approx(0.3)
     assert values.loc["2024-01-22":"2024-01-25"].isna().all()
@@ -125,7 +125,7 @@ def test_only_proved_independent_derivative_award_leaves_common_account_supporte
         flow,
     ]
     idx = pd.date_range("2024-01-20", "2024-01-25")
-    _, _, result = _account_result(pd.DataFrame(rows), idx)
+    _, _, result = _account_result(source_frame(rows), idx)
     values = result["ic_insider_management_position_change_60d"]["AAA"]
     assert values.loc["2024-01-21"] == pytest.approx(0.3)
     if independent:
@@ -218,7 +218,7 @@ def test_blocker_account_metadata_amendment_changes_support_only_when_public(sam
             ]
         )
     idx = pd.date_range("2024-01-20", "2024-01-26")
-    _, _, result = _account_result(pd.DataFrame(rows), idx)
+    _, _, result = _account_result(source_frame(rows), idx)
     values = result["ic_insider_management_position_change_60d"]["AAA"]
     assert values.loc["2024-01-21"] == pytest.approx(0.3)
     assert values.loc["2024-01-22":"2024-01-23"].isna().all()

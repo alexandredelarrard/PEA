@@ -34,7 +34,7 @@ from src.data_extract.utils.common.registrant import resolve_registrant_filings
 from src.data_extract.utils.common.resume import DONE_TABLE, DocumentWork, document_worklist
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, configure, sec_call
 from src.data_extract.utils.common.sec_utils import load_cik_mapping
-from src.data_extract.utils.institutionals.insider_store import bind_insider_identity, certify_insider_source, save_insider_source
+from src.data_extract.utils.institutionals.insider_store import certify_insider_source, save_insider_source
 from src.data_store.schema import Resume, Table, Tables
 from src.utils.string import pad_cik, run_date
 
@@ -385,18 +385,15 @@ def _save_key(context: Context, fetch: EdgarFetch, ticker: str, frames: dict[Tab
     return counts, failed_save
 
 
-def _save_insider_key(context: Context, frames: dict[Table, list[pd.DataFrame]], identity: Identity | None) -> tuple[dict[Table, int], bool]:
+def _save_insider_key(context: Context, frames: dict[Table, list[pd.DataFrame]]) -> tuple[dict[Table, int], bool]:
     transaction_frames = frames.get(Tables.insider_transactions, [])
     if not transaction_frames:
         return {}, False
-    if identity is None:
-        context.log.warning("Insider source pair not saved without its actual parser resolver")
-        return {}, True
     transactions = pd.concat(transaction_frames, ignore_index=True).drop_duplicates(list(Tables.insider_transactions.pk), keep="last")
     note_frames = frames.get(Tables.insider_footnotes, [])
     notes = pd.concat(note_frames, ignore_index=True) if note_frames else pd.DataFrame(columns=list(Tables.insider_footnotes.retrieval_columns))
     try:
-        return save_insider_source(context, transactions, notes, identity.source_cohort), False
+        return save_insider_source(context, transactions, notes), False
     except Exception as exc:
         context.log.warning("Insider source pair not saved; all accessions remain retryable (%s)", exc)
         return {}, True
@@ -407,7 +404,7 @@ def _walk_key(context: Context, fetch: EdgarFetch, scope: EdgarScope, units: dic
     df_units = units.get(ticker, pd.DataFrame(columns=_UNIT_COLUMNS))
     frames, failed, markers = _read_key(fetch, scope, ticker, cik, df_units)
     saved, failed_save = (
-        _save_insider_key(context, frames, scope.identity) if fetch.done == Tables.insider_transactions else _save_key(context, fetch, ticker, frames)
+        _save_insider_key(context, frames) if fetch.done == Tables.insider_transactions else _save_key(context, fetch, ticker, frames)
     )
     if failed_save:
         return KeyOutcome(listed=len(df_units), failed=df_units, saved=saved)
@@ -555,8 +552,6 @@ def run_edgar_fetch(
         if cik_map is None:
             cik_map = load_cik_mapping(context, tickers)
         scope = load_edgar_scope(context, identity_aware=prepared.identity_aware)
-        if prepared.done == Tables.insider_transactions and scope.identity is not None:
-            bind_insider_identity(context, scope.identity.source_cohort)
         if refresh_index:
             index_years = (
                 max(years_history, start_date.year - pd.Timestamp(cast(str, cast(Resume, prepared.done.resume).source_start)).year + 1)

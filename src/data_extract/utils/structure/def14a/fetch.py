@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, cast
+from typing import cast
 
 import pandas as pd
 from edgar import Filing
@@ -32,6 +32,7 @@ from src.data_extract.utils.structure.def14a.work import (
     load_archives,
     load_work,
     matched_batches,
+    open_sections,
     replay_candidates,
     requests_for,
     reserve,
@@ -42,7 +43,6 @@ from src.data_store.schema import Resume, Tables
 
 # `gpt_extract` is a shared service like `src/utils/`, the sanctioned cross-import (model, keys, prompts, thread pool).
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
-from src.gpt_extract.transformers.step_gpt_extracter import with_gpt_overrides
 from src.utils.string import pad_cik
 
 logger = logging.getLogger(__name__)
@@ -213,10 +213,7 @@ def _read_proxy(context: Context, ticker: str, filing: pd.Series) -> str | None:
 
 def _section_extractors(context: Context, config: DictConfig, workers: int | None) -> dict[str, LLMExtractor]:
     """Bind each existing service to its own action, prompt, schema and unchanged worker setting."""
-    return {
-        section.key: LLMExtractor(context, config, action=section.action, threads=workers)
-        for section in SECTIONS
-    }
+    return {section.key: LLMExtractor(context, config, action=section.action, threads=workers) for section in SECTIONS}
 
 
 def _listed_proxies(context: Context, ticker: str, scope: FilingScope, company: str, years: int, floor: pd.Timestamp) -> pd.DataFrame | None:
@@ -235,15 +232,21 @@ def fetch_def14a_llm(
     context: Context,
     config: DictConfig,
     tickers: list[str],
-    workers: int | None = 2
+    workers: int | None = 2,
+    replay_stored_json: bool = False,
 ) -> None:
-    """Extract new sections and repair source-present gaps once; full never resets attempts."""
+    """Extract every section that has a key gap and fewer than two attempts, then stamp the attempt.
+
+    A new filing gets `retry=1`; a filing still gapped at `retry=1` gets one more call and `retry=2`;
+    the rest is skipped from the stored tables alone. `replay_stored_json` re-runs the postprocessing on
+    already-paid answers stored in `def14a_json`, with no source read and no provider call.
+    """
     # Read the ticker map and preserve each registrant's filing windows.
     cik_map = load_cik_mapping(context, tickers)
     identity = load_identity(context)
     years = int(config.data_extract.years_history)
     floor = document_floor(Tables.def14a_llm, pd.Timestamp.today(), years)
-    
+
     try:
         extractors = _section_extractors(context, config, workers)
     except OSError as exc:
@@ -260,28 +263,28 @@ def fetch_def14a_llm(
         works = load_work(context, ticker, filings, floor)
         load_archives(context, works)
 
-        # Reuse paid answers before deciding whether another request is necessary.
-        for work, section, answer in replay_candidates(works):
-            reserve(context, work, section, work.attempts[section.key] or 1)
-            processed = postprocess_section(section, answer, work.stamp, work.saved, work.parent, source_for_answer(work.raw, section, answer))
-            save_section(context, work, processed)
-            work.raw = refresh_archive(work.raw, section, processed.legacy, processed.corrections)
-            save_archive(context, work)
-            updated += 1
+        if replay_stored_json:
+            for work, section, answer in replay_candidates(works):
+                reserve(context, work, section, work.attempts[section.key] or 1)
+                processed = postprocess_section(section, answer, work.stamp, work.saved, work.parent, source_for_answer(work.raw, section, answer))
+                save_section(context, work, processed)
+                work.raw = refresh_archive(work.raw, section, processed.legacy, processed.corrections)
+                save_archive(context, work)
+                updated += 1
 
-        # Deduce only unread sections or source-supported missing keys within the rolling window.
+        # Read the source only for filings with an open section; an open section the source lacks consumes its attempt.
         requests = []
         for work in works:
-            if not any(key in work.pending and attempt < 2 for key, attempt in work.attempts.items()):
+            if not open_sections(work):
                 continue
             html = _read_proxy(context, ticker, work.filing)
             if html is None:
                 continue
             payloads = prepare_def14a_payloads(html, html_to_text(html))
             requests.extend(requests_for(work, payloads))
-            empty_sections = [section for section in SECTIONS if not work.attempts[section.key] and not payloads.get(section.key, "").strip()]
-            for section in empty_sections:
-                reserve(context, work, section, 1)
+            for section in open_sections(work):
+                if not payloads.get(section.key, "").strip():
+                    reserve(context, work, section, work.attempts[section.key] + 1)
 
         # Reserve the owned attempt, call its matching prompt/schema, and get the answer.
         for section, tasks in matched_batches(requests, workers or int(config.gpt.threads)):
@@ -308,4 +311,4 @@ def fetch_def14a_llm(
     # Preserve the existing cross-ticker gender reconciliation after saved updates.
     if updated:
         _finalise_gender(context)
-    context.log.info("DEF 14A: %d section answer(s) replayed or extracted; retry=2 sections excluded", updated)
+    context.log.info("DEF 14A: %d section answer(s) extracted or replayed; sections at retry=2 skipped", updated)

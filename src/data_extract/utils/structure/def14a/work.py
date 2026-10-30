@@ -11,7 +11,6 @@ import pandas as pd
 
 from src.context import Context
 from src.data_extract.utils.schemas.def14a_schema import OwnershipExtract
-from src.data_extract.utils.structure.def14a.evidence import layout_has_gap, prose_has_gap, table_has_gap
 from src.data_extract.utils.structure.def14a.holders import holders_need_reconciliation
 from src.data_extract.utils.structure.def14a.postprocess import ProcessedSection, archived_answers, source_for_answer
 from src.data_extract.utils.structure.def14a.retry import SECTIONS, Section, reservation_frame
@@ -33,7 +32,7 @@ class FilingWork:
 
 
 def has_gaps(section: Section, saved: pd.DataFrame, parent: dict[str, Any]) -> bool:
-    """Conservative key check; the source decides whether a null needs a paid retry."""
+    """Key-field check: a section is a gap when it has no row, or none of its key fields is populated."""
     if section.table is Tables.def14a_llm:
         return any(
             pd.isna(parent.get(column))
@@ -51,30 +50,14 @@ def has_gaps(section: Section, saved: pd.DataFrame, parent: dict[str, Any]) -> b
     rows = saved.loc[saved[marker_column].ne(marker)] if marker_column in saved else saved
     if rows.empty:
         return True
-    if section.key == "ownership" and holders_need_reconciliation(rows):
-        return True
+    if section.key == "governance":
+        return pd.isna(parent.get("ceo_name_proxy"))
     keys = {
-        "executive_pay": (
-            "salary",
-            "bonus",
-            "stock_awards",
-            "option_awards",
-            "non_equity_incentive",
-            "pension_change",
-            "other_compensation",
-            "total",
-        ),
-        "director_pay": ("fees_earned", "stock_awards", "option_awards", "non_equity_incentive", "pension_change", "other_compensation", "total"),
-        "ownership": ("shares", "percent_of_class", "percent_of_voting_power"),
-        "governance": ("age", "tenure_years", "is_independent"),
+        "executive_pay": ("total", "salary"),
+        "director_pay": ("total", "fees_earned"),
+        "ownership": ("shares", "percent_of_class"),
     }[section.key]
-    if any(column not in rows or rows[column].isna().any() for column in keys):
-        return True
-    parent_keys = {
-        "governance": ("ceo_name_proxy", "ceo_age", "ceo_since_year", "board_size", "ceo_pay_ratio", "say_on_pay_support_pct"),
-        "ownership": ("insider_shares", "insider_ownership_pct", "insider_voting_pct"),
-    }.get(section.key, ())
-    return any(pd.isna(parent.get(column)) for column in parent_keys)
+    return all(column not in rows or rows[column].isna().all() for column in keys)
 
 
 def load_work(context: Context, ticker: str, filings: pd.DataFrame, floor: pd.Timestamp) -> list[FilingWork]:
@@ -173,25 +156,18 @@ def replay_candidates(works: list[FilingWork]) -> Iterator[tuple[FilingWork, Sec
                 yield work, section, answer
 
 
+def open_sections(work: FilingWork) -> list[Section]:
+    """Sections with a key gap and fewer than two attempts: the only ones worth a source read."""
+    return [section for section in SECTIONS if section.key in work.pending and work.attempts[section.key] < 2]
+
+
 def requests_for(work: FilingWork, payloads: dict[str, str]) -> list[tuple[Section, LlmTask]]:
-    """Charge only an unread section, or a first attempt with a disclosed missing key."""
-    requests = []
-    for section in SECTIONS:
-        attempt = work.attempts[section.key]
-        if attempt >= 2 or section.key not in work.pending:
-            continue
-        payload = payloads.get(section.key, "")
-        if not payload.strip():
-            continue
-        if attempt and not (
-            table_has_gap(section, payload, work.saved[section.table], work.parent)
-            or prose_has_gap(section, payload, work.saved[section.table], work.parent)
-            or layout_has_gap(section, payload, work.saved[section.table], work.parent)
-        ):
-            continue
-        task = LlmTask(seq=0, payload=payload, schema=section.schema, table=section.table, meta={"work": work})
-        requests.append((section, task))
-    return requests
+    """One task per open section whose carved payload is not empty."""
+    return [
+        (section, LlmTask(seq=0, payload=payloads[section.key], schema=section.schema, table=section.table, meta={"work": work}))
+        for section in open_sections(work)
+        if payloads.get(section.key, "").strip()
+    ]
 
 
 def matched_batches(requests: list[tuple[Section, LlmTask]], size: int) -> Iterator[tuple[Section, list[LlmTask]]]:

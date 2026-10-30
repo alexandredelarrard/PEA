@@ -185,7 +185,7 @@ def test_holder_identity_preserves_word_boundaries_and_legal_suffixes() -> None:
 
 
 @pytest.mark.usefixtures("filing_store")
-def test_public_daily_and_full_replay_ge_aliases_without_source_or_provider(
+def test_public_replay_cleans_ge_aliases_without_source_or_provider(
     sqlite_store: DataStore, ge_holders: pd.DataFrame, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     stamp = _stamp(ge_holders)
@@ -208,9 +208,9 @@ def test_public_daily_and_full_replay_ge_aliases_without_source_or_provider(
     monkeypatch.setattr(fetch, "_finalise_gender", lambda *_: None)
     monkeypatch.setattr(fetch, "_read_proxy", lambda *_: pytest.fail("exhausted cleanup must not fetch SEC source"))
 
-    # Exercise the unchanged daily entry point twice; an empty extractor map forbids calls.
-    for full in (False, True):
-        fetch.fetch_def14a_llm(context, config, ["GE"], full=full)
+    # Exercise the public replay entry point twice (it must be idempotent); an empty extractor map forbids calls.
+    for _ in range(2):
+        fetch.fetch_def14a_llm(context, config, ["GE"], replay_stored_json=True)
         df_stored = sqlite_store.load(Tables.def14a_ownership, where={"ticker": "GE"})
         parent = sqlite_store.load(Tables.def14a_llm, where={"ticker": "GE"}).iloc[0]
         assert df_stored is not None and len(df_stored) == 11 and set(df_stored.retry) == {2}
@@ -219,4 +219,4 @@ def test_public_daily_and_full_replay_ge_aliases_without_source_or_provider(
         assert facade["governance"]["n_five_percent_holders"] == 4
         assert json.loads(raw)["governance"]["n_five_percent_holders"] == 99
         assert parent.n_ownership_rows == 11 and parent.n_five_percent_holders == 4 and parent.retry == 2
-    print("SANITY: public daily/full extraction cleans recorded GE aliases with no source/provider access and keeps original paid JSON and retry=2.")
+    print("SANITY: public replay cleans recorded GE aliases with no source/provider access and keeps original paid JSON and retry=2.")

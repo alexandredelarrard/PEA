@@ -108,14 +108,14 @@ Every fetcher derives its work list from its own table's rows, its `Resume` cont
 - **Archives.** A period is done only when every table of its fetcher holds it. A period with no universe row is listed again every night. A change of the FTD symbol policy needs an explicit `-F`.
 - **Short interest.** A night reads each ticker's window plus the days on which no key has a row; `--repair-gaps` re-reads each key's own gap days once. `-t X -F` re-reads X's days and upserts only X's rows.
 - **Tapes after a lineage change.** Run `short-interest`, `fails-to-deliver` and `identity-propagate` unscoped while tickers sit in the 7-day window: a `-t` re-stamp counts a line that moved between two universe companies under both until the next unscoped run.
-- **DEF 14A LLM.** `def14a` lists the full rolling history, reuses paid JSON first, and schedules five independently owned sections. Unattempted sections use `retry=1`; a source-present missing key at one can be retried at two; two is excluded, including under `-F`. Optional silence and unreadable filings do not trigger repeated paid work. There is no separate repair command or call-cap parameter. [The extraction flow](../flows/sec-llm-extraction.md) defines the table ownership and empty markers.
+- **DEF 14A LLM.** `def14a` lists the full rolling history and schedules five independently owned sections. A section with a missing key field and `retry < 2` gets one call and `retry+1`; two is final and costs no source read. Only filings with an open section are downloaded. Stored-JSON replay is off by default (`replay_stored_json=True` in code). Optional nulls and unreadable filings do not trigger repeated paid work. There is no separate repair command or call-cap parameter. [The extraction flow](../flows/sec-llm-extraction.md) defines the table ownership and empty markers.
 - **13F.** A hole older than the 7-day overlap needs `thirteen-f --filing-window START:END`.
 
 ### DEF 14A retry adoption
 
 The five retry counters are already part of canonical database initialization. Existing schemas are assumed current. The completed one-time adoption/backfill and `prepare_def14a_retries` hook are removed; generic writes persist the section owner's attempts and facts without issuing ALTERs or synthesizing legacy metadata.
 
-An ordinary `rtk "$PY" -m src data_extract def14a -c ./configs` run then repairs only its derived domain worklist. `-F` preserves the two-attempt limit. Keep the configured rolling history and dated registrant guards. Do not use the legacy `scripts/def14a_reextract.py --write` replacement path after adoption; it now refuses paid writes. Do not delete counters to restart exhausted sections as routine recovery.
+An ordinary `rtk "$PY" -m src data_extract def14a -c ./configs` run then processes only its derived domain worklist (open sections). The two-attempt limit always holds. Keep the configured rolling history and dated registrant guards. Do not use the legacy `scripts/def14a_reextract.py --write` replacement path after adoption; it now refuses paid writes. Do not delete counters to restart exhausted sections as routine recovery.
 
 ### 13F version adoption before a historical cube rebuild
 

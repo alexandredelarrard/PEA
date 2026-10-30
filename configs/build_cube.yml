@@ -8,6 +8,11 @@ build_cube:
       - cube_part_text
       - cube_part_institutionals
       - cube_part_sec_thirteen
+    compulsory_parts: 
+      - cube_part_prices 
+      - cube_part_targets
+      - cube_part_fundamentals
+      - cube_part_governance
     columns:
       cube_part_fundamentals: null  # null, empty or omitted: all columns
       cube_part_governance: null

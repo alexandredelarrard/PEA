@@ -3,6 +3,7 @@
 from typing import Any, cast
 
 import click
+import pandas as pd
 
 from src.constants.command_line_interface import CONFIG_ARGS, CONFIG_KWARGS
 from src.context import get_config_context
@@ -24,6 +25,7 @@ def backtest(config_path: str, run_id: str | None) -> None:
     if run_id is not None:
         validate_run_id(run_id)
     config, context = get_config_context(config_path, use_cache=False, save=False)
+    config.portfolio.start = str((pd.Timestamp(config.train.end_date) + pd.Timedelta(days=3)).date())
     run, _ = select_cutoff(context, config, run_id)
     config.model.models_dir = str(run / "cutoff")
     context.paths = {**context.paths, "OUTPUT_DIR": run / "backtest_portfolio"}

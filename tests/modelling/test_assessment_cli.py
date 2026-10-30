@@ -168,7 +168,7 @@ def test_portfolio_cli_uses_selected_or_latest_assessed_cutoff(
     )
     write_json(cutoff / "metadata.json", metadata)
     config.model.models_dir = "output/models"
-    config.portfolio = {"start": "2022-06-01", "training_cutoff": "2021-12-31", "spread_bps": 2.0}
+    config.portfolio = {"start": "2022-06-01", "spread_bps": 2.0}
     write_json(run / "assessment/metadata.json", {"run_id": run.name, "complete": state != "incomplete"})
     (run / "report.html").write_text("assessed", encoding="utf-8")
     if state == "missing-configuration":

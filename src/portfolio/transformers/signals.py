@@ -18,6 +18,15 @@ from src.utils.modelling_runs import select_run
 from src.utils.universe import load_universe_tickers
 
 
+def check_date(record: dict[str, Any], key: str, cutoff: pd.Timestamp) -> None:
+    value = record.get(key)
+    if value is None:
+        raise ValueError(f"Cutoff {key} missing or later than {cutoff.date()}")
+    date = pd.Timestamp(value)
+    if pd.isna(date) or date > cutoff:
+        raise ValueError(f"Cutoff {key} missing or later than {cutoff.date()}")
+
+
 def select_cutoff(context: Context, config: DictConfig, run_id: str | None) -> tuple[Path, dict[str, Any]]:
     """Validate identity and all observed outcome dates before loading any pickle."""
     run, state = select_run(context, config, run_id, assessed=True)
@@ -29,32 +38,24 @@ def select_cutoff(context: Context, config: DictConfig, run_id: str | None) -> t
     for key in ("horizons", "model_types", "feature_cols", "categorical_cols", "target_type", "label_column"):
         if key not in meta or meta[key] != state[key]:
             raise ValueError(f"Cutoff/run {key} mismatch")
-    cutoff = pd.Timestamp(config.portfolio.training_cutoff)
+    cutoff = pd.Timestamp(config.train.end_date)
     if pd.isna(cutoff) or cutoff >= pd.Timestamp(config.portfolio.start):
         raise ValueError("Training cutoff must precede the backtest")
 
-    def check_date(record: dict[str, Any], key: str) -> None:
-        value = record.get(key)
-        if value is None:
-            raise ValueError(f"Cutoff {key} missing or later than {cutoff.date()}")
-        date = pd.Timestamp(value)
-        if pd.isna(date) or date > cutoff:
-            raise ValueError(f"Cutoff {key} missing or later than {cutoff.date()}")
-
     for key in ("training_as_of", "selection_as_of", "train_end"):
-        check_date(meta, key)
+        check_date(meta, key, cutoff)
     if state.get("training_as_of") != meta["training_as_of"]:
         raise ValueError("Run/cutoff observation frontier mismatch")
     for horizon in meta["horizons"]:
         audit = meta.get("fit_audit", {}).get(str(horizon), {})
         for key in ("training_as_of", "feature_max", "label_end_max"):
-            check_date(audit, key)
+            check_date(audit, key, cutoff)
         folds = meta.get("selection", {}).get(str(horizon), {}).get("folds", [])
         if len(folds) != len(state["folds"][str(horizon)]):
             raise ValueError("Incomplete cutoff selection audit")
         for fold in folds:
             for key in ("train_end", "train_label_end_max", "test_end", "test_label_end_max"):
-                check_date(fold, key)
+                check_date(fold, key, cutoff)
             if pd.Timestamp(fold["train_label_end_max"]) >= pd.Timestamp(fold["test_start"]):
                 raise ValueError("Training labels overlap selection test")
     return run, meta

@@ -186,7 +186,7 @@ train.end_date is a feature ceiling; train.outcome_cutoff=2021-12-31 limits ever
 
 [portfolio.yml](../../configs/portfolio.yml) is the sole owner. The defaults allocate50% long/short,25% S&P and25% free cash. The three nonnegative shares must sum to one; invalid values are refused rather than renormalized. All paths start at100.
 
-allocation_frequency defaults to weekly; LS filters independently select daily/weekly/monthly. training_cutoff=2021-12-31 and start=2022-01-03 preserve the intended historical boundary. cash_rate=0.033 compounds only free cash over calendar days. momentum_window=126 and risk_window=63 require full past sessions. commission_bps=0, spread_bps=5 and sell_fee_bps=0.206 are a documented proportional proxy, not exact historical broker fees. read_chunksize controls bounded monthly feature loading.
+allocation_frequency defaults to weekly; LS filters independently select daily/weekly/monthly. The portfolio cutoff is train.end_date from modellling.yml and the CLI sets start to three days after it, so neither is configured here. cash_rate=0.033 compounds only free cash over calendar days. momentum_window=126 and risk_window=63 require full past sessions. commission_bps=0, spread_bps=5 and sell_fee_bps=0.206 are a documented proportional proxy, not exact historical broker fees. read_chunksize controls bounded monthly feature loading.
 
 There are no per-sleeve configs, leverage/target-vol/ERC knobs, Streamlit settings or ledger command. Allocation changes require a fresh Python backtest. See [portfolio](../modules/portfolio.md) for financing, missing-data and output contracts.
 

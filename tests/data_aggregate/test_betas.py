@@ -29,7 +29,7 @@ import numpy as np
 import pandas as pd
 
 from src.data_aggregate.transformers.step_cube_target import StepCubeTarget
-from src.data_aggregate.utils.assemble.cube import _betas_to_long
+from src.data_aggregate.utils.target.betas import _betas_to_long
 from src.data_aggregate.utils.common.incremental import PartWindow
 from src.data_aggregate.utils.target.betas import (
     estimate_all_betas,

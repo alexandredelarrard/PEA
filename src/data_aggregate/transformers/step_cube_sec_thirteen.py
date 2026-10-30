@@ -70,6 +70,7 @@ class StepCubeSecThirteen(Step):
         self._availability = InstitutionalAvailability.from_config(cfg) if cfg is not None else None
 
     def run(self, full: bool = False) -> None:
+        
         # Plan the actual rewrite footprint before loading dependency payloads.
         calendar = load_trading_calendar(self._store)
         existing_columns = self._store.columns(Tables.cube_part_sec_thirteen)
@@ -119,13 +120,17 @@ class StepCubeSecThirteen(Step):
         return SecThirteenResources(frames, shares, basis, valuation_close, cusip_map, cohorts)
 
     def build_panel(self, window: PartWindow | None = None, *, existing_columns: Sequence[str] | None = None) -> pd.DataFrame:
+        
         resources = self._load_resources()
-        saved_columns = self._store.columns(Tables.cube_part_sec_thirteen) if existing_columns is None else list(existing_columns)
+        saved_columns = list(existing_columns)
         window = window or PartWindow(None, None)
 
         # Keep sparse full history for genuine lag comparisons and bounded daily projection.
-        prepared = PreparedSecThirteen(self._institutional_features(resources), self._superinvestor_history(resources))
+        df_institutionals = self._institutional_features(resources)
+        super_investors = self._superinvestor_history(resources)
+        prepared = PreparedSecThirteen(df_institutionals, super_investors)
         self._require_saved_families(prepared, saved_columns)
+
         dates = resources.frames.trading_index
         output_dates = dates if window.since is None else dates[dates >= window.since]
         panels = self._project_panels(resources, prepared, output_dates)
@@ -146,7 +151,7 @@ class StepCubeSecThirteen(Step):
         return df_panel.reindex(columns=saved_columns)
 
     def _institutional_features(self, resources: SecThirteenResources) -> pd.DataFrame | None:
-        packets = thirteen_inputs.iter_filing_vintages(self._store, resources.frames.trading_index.max())
+        packets = thirteen_inputs.iter_filing_vintages(self._store, until=resources.frames.trading_index.max())
         cfg = self._cfg.get("institutionals", {})
         if packets is None:
             return None
@@ -168,8 +173,10 @@ class StepCubeSecThirteen(Step):
         return compute_institutional_feature_history(iter_institutional_books(compact, states), splits=splits)
 
     def _superinvestor_history(self, resources: SecThirteenResources) -> SuperinvestorFeatureHistory | None:
+        
         if resources.cohorts is None:
             return None
+        
         packets = thirteen_inputs.iter_filing_vintages(
             self._store, resources.frames.trading_index.max(), sorted(resources.cohorts[""]), table=Tables.sec13f_manager_holdings
         )

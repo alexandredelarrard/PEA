@@ -40,23 +40,6 @@ def horizons_in(columns: Iterable[str], label: str) -> list[int]:
     return sorted(out)
 
 
-def _betas_to_long(betas: dict[str, pd.DataFrame], availability: pd.DataFrame | None = None) -> pd.DataFrame:
-    """Keep non-empty beta rows, restricted to observed own-price dates when supplied."""
-    frames = []
-    for ticker, bdf in betas.items():
-        bdf = bdf.dropna(how="all")
-        if availability is not None:
-            bdf = bdf.loc[availability.reindex(index=bdf.index, columns=[ticker], fill_value=False)[ticker].fillna(False)]
-        tmp = bdf.reset_index()
-        if "index" in tmp.columns:
-            tmp = tmp.rename(columns={"index": "date"})
-        elif tmp.columns[0] != "date":
-            tmp = tmp.rename(columns={tmp.columns[0]: "date"})
-        tmp["ticker"] = ticker
-        frames.append(tmp)
-    return pd.concat(frames, ignore_index=True)
-
-
 def labels_to_wide(
     labels: dict,
     valid_keys: pd.DataFrame | None = None,

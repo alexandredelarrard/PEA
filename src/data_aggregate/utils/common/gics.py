@@ -38,6 +38,8 @@ from src.data_store.schema import Tables
 
 GICS_COLUMNS = ("sector", "industry_group")
 
+logger = logging.getLogger(__name__)
+
 
 def load_gics_maps(context: Context) -> dict[str, dict[str, str]]:
     """{"sector": {ticker: group}, "industry_group": {...}} -- only the columns present and
@@ -77,17 +79,17 @@ def attach_gics_columns(df: pd.DataFrame, context: Context, log: logging.Logger 
     return out
 
 
-def apply_categorical_codes(df: pd.DataFrame, context: Context, log: logging.Logger | None = None) -> pd.DataFrame:
+def apply_categorical_codes(df: pd.DataFrame, context: Context) -> pd.DataFrame:
     """Attach GICS sector / industry_group as INTEGER category codes (deterministic sorted
     mapping; unknown / NaN -> -1)."""
-    log = log or logging.getLogger(__name__)
+
     ref = context.store.load(Tables.sp500_tickers, optional=True)
     for col in GICS_COLUMNS:
         if ref is None or col not in ref.columns:
-            log.warning("%s has no '%s' -> categorical skipped", Tables.sp500_tickers, col)
+            logger.warning("%s has no '%s' -> categorical skipped", Tables.sp500_tickers, col)
             continue
         m = dict(zip(ref["ticker"].astype(str), ref[col].astype("string"), strict=False))
         cats = df["ticker"].astype(str).map(m).astype("category")
         df[col] = cats.cat.codes.astype("int16")  # unknown / NaN -> -1
-        log.info("Added categorical '%s' (%d categories)", col, cats.cat.categories.size)
+        logger.info("Added categorical '%s' (%d categories)", col, cats.cat.categories.size)
     return df

@@ -84,6 +84,7 @@ def iter_filing_vintages(
     """Open one projected source stream of many complete CIK-quarter groups."""
     if not isinstance(chunksize, int) or isinstance(chunksize, bool) or chunksize <= 0:
         raise ValueError("13F chunksize must be a positive integer")
+    
     layout = _filing_layout(store, table, until, ciks)
     if layout is None:
         return None

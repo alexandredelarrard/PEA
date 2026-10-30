@@ -30,20 +30,34 @@ class StepAssembleCube(Step):
         self._cfg = config.build_cube
 
     def run(self) -> None:
+
+        # check latest info per cube
         policy = AssemblyPolicy.from_config(self._cfg)
         self._warn_on_part_edges()
+
         prices = self._read_part(PART_BY_NAME[Tables.cube_part_prices.name], policy)
         if prices is None:
             raise RuntimeError(f"{Tables.cube_part_prices} is required as the price grid; run build-prices")
+        
         price_index = pd.MultiIndex.from_frame(prices[PANEL_KEYS])
         merger = PanelMerger(anchor=prices[PANEL_KEYS])
         owners: dict[str, str] = {name: "metadata" for name in ("peers", *GICS_COLUMNS)}
         base_columns: list[str] = []
         targets = pd.DataFrame(index=price_index[:0])
         for part in CUBE_PARTS:
-            panel = prices if part.table == Tables.cube_part_prices else self._read_part(part, policy, prices[PANEL_KEYS])
+
+            if part.table.name == "cube_part_betas":
+                continue
+
+            # read the cube
+            if part.table == Tables.cube_part_prices:
+                panel = prices 
+            else:
+                panel = self._read_part(part, policy, prices[PANEL_KEYS])
+
             if panel is None:
                 continue
+
             payload = [col for col in panel.columns if col not in PANEL_KEYS]
             collisions = set(payload) & owners.keys()
             if collisions:
@@ -54,6 +68,7 @@ class StepAssembleCube(Step):
             else:
                 merger.add(panel, part.name)
                 base_columns.extend(payload)
+
         base = merger.to_long().set_index(PANEL_KEYS).reindex(index=price_index, columns=base_columns).sort_index()
         for column in set(base_columns) - set(merger.feature_columns):
             base[column] = pd.Series(index=base.index, dtype="float32")
@@ -61,7 +76,7 @@ class StepAssembleCube(Step):
         peer_json = {ticker: json.dumps(peers.get(ticker, {}), ensure_ascii=False) for ticker in prices["ticker"].unique()}
         base = base.reset_index()
         base["peers"] = base["ticker"].map(peer_json)
-        base = apply_categorical_codes(base, self._context, self._log).set_index(PANEL_KEYS)
+        base = apply_categorical_codes(base, self._context).set_index(PANEL_KEYS)
         del prices, merger
         self._stream_cube(base, targets)
 
@@ -96,9 +111,8 @@ class StepAssembleCube(Step):
                 self._log.info("Skipping optional %s: absent or empty; refresh with %s", part.name, part.command)
                 return None
             raise RuntimeError(f"{part.name} missing/empty; run {part.command}")
+        
         actual = store.columns(part.table)
-        if part.table == Tables.cube_part_targets and "target_horizon" in actual:
-            raise RuntimeError(f"{part.name} still carries target_horizon; run build-target --full to rewrite it wide")
         columns = policy.projection(part, actual)
         where: dict[str, object] | None = None
         since, until = None, None
@@ -140,6 +154,7 @@ class StepAssembleCube(Step):
             total += len(chunk)
             del chunk
             gc.collect()
+            
         if set(store.columns(Tables.cube)) != expected or store.row_count(Tables.cube) != len(base):
             raise RuntimeError("Stored cube schema/row count differs from the verified price-grid output; rerun assemble-cube")
         coverage = 100 * matched / total if total else 0.0

@@ -22,7 +22,8 @@ from omegaconf import DictConfig
 
 from src.constants.constants_price import DAILY_MACRO_LEVELS, MACRO_CUBE_FACTORS, MACRO_MARKET_SERIES
 from src.context import Context
-from src.data_aggregate.utils.assemble.cube import _betas_to_long, labels_to_wide
+from src.data_aggregate.utils.assemble.cube import labels_to_wide
+from src.data_aggregate.utils.target.betas import _betas_to_long
 from src.data_aggregate.utils.common.gics import load_gics_maps
 from src.data_aggregate.utils.common.incremental import (
     COLUMNS_CHANGED,

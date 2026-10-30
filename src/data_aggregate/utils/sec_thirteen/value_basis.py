@@ -51,6 +51,7 @@ def repair_value_basis(
     Options use their own underlying quantities; debt needs an instrument quote.
     Source frames remain unchanged and repeat repair is idempotent.
     """
+
     if min_securities < 1 or not 0.5 < min_agreement <= 1 or not 0 < price_tolerance < 0.5 or max_price_age_days < 0:
         raise ValueError("Invalid 13F value-basis support or price-age policy")
     df_out = holdings.copy()
@@ -78,6 +79,7 @@ def repair_value_basis(
     ratio = ratio.where(np.isfinite(ratio) & ratio.gt(0))
     security = "cusip" if "cusip" in df_out else "ticker"
     df_evidence = df_out[keys + [security]].assign(_ratio=ratio)
+
     # One vote per security, irrespective of repeated source rows.
     evidence = df_evidence.groupby(keys + [security], dropna=False)["_ratio"].median()
     grouped = evidence.groupby(level=list(range(len(keys))), dropna=False)
@@ -124,12 +126,14 @@ def repair_value_basis(
     for column in value_columns:
         original = pd.to_numeric(df_out[column], errors="coerce").astype("float64")
         df_out[column] = (original * scale).mask(original.eq(0), 0.0)
+
     # Check individual common valuations only after the raw book unit is frozen.
     position_ratio = df_out["value_usd"] / shares.where(shares.gt(0)) / quote
     mismatch = common & np.isfinite(position_ratio) & position_ratio.gt(0)
     mismatch &= ~position_ratio.between(1 - price_tolerance, 1 + price_tolerance)
     df_out["value_basis_price_mismatch"] = mismatch
     _repair_common_quantities(df_out, value, shares, quote, scale, common)
+
     # 13F options report underlying-share exposure, so each leg uses its own quantity.
     # Debt principal is not an equity quantity and cannot use this stock quote.
     estimates: dict[str, pd.Series] = {}
@@ -159,12 +163,14 @@ def repair_value_basis(
         market_value = quantity * quote
         market_value = market_value.where(eligible & quantity.gt(0) & np.isfinite(quantity) & np.isfinite(market_value))
         estimates[column] = eligible & uncertain & market_value.notna()
+        
         # Estimates follow the raw common-holding unit decision and never vote for it.
         df_out[column] = df_out[column].mask(eligible & uncertain, market_value)
         df_out[f"value_basis_{label}reconstructed"] = estimates[column]
         df_out[f"value_basis_{label}value_source"] = np.where(
             estimates[column], "market_estimated", np.where(df_out[column].notna(), "filed", "unknown")
         )
+
     # Decide whole-row exclusions after unsupported sibling dollars have been nulled.
     sibling = pd.Series(False, index=df_out.index)
     for column in ("call_shares", "put_shares", "debt_prn", "call_value", "put_value", "debt_value", "other_value"):

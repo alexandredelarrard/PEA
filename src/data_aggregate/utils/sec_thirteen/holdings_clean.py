@@ -96,23 +96,19 @@ def clean_public_holdings(
 
 def clean_public_batches(
     packets: Generator[tuple[pd.DataFrame, pd.DataFrame]],
-    cusip_map: pd.DataFrame | None,
+    cusip_map: pd.DataFrame,
     universe: Sequence[str] | None,
     valuation_close: pd.DataFrame | None,
     value_basis: Mapping[str, Any] | None,
 ) -> Generator[tuple[pd.DataFrame, pd.DataFrame]]:
     """Prepare shared mapping/quotes once and repair all completed books per batch."""
-    df_map = cusip_map.dropna(subset=["cusip", "ticker"]).drop_duplicates("cusip") if cusip_map is not None and not cusip_map.empty else None
-    if df_map is not None and universe is not None:
+    df_map = cusip_map.dropna(subset=["cusip", "ticker"]).drop_duplicates("cusip")
+    if universe is not None:
         df_map = df_map.loc[df_map.ticker.isin(universe)]
     period_quotes = prepare_public_value_quotes(valuation_close, value_basis)
     with closing(packets):
         for df_filings, df_raw in packets:
-            df_holdings = (
-                df_raw.assign(ticker=pd.Series(pd.NA, index=df_raw.index, dtype="object"))
-                if df_map is None
-                else df_raw.merge(df_map[["cusip", "ticker"]], on="cusip", how="left")
-            )
+            df_holdings = df_raw.merge(df_map[["cusip", "ticker"]], on="cusip", how="left")
             df_holdings = clean_public_holdings(df_holdings, valuation_close, value_basis, period_quotes=period_quotes)
             del df_raw
             yield df_filings, df_holdings

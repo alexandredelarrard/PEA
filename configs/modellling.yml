@@ -28,7 +28,7 @@ model:
 
   diagnostics:                # Required assessment artifacts under the named dated run.
     dependence_sample: 1000   # Display rows; retain the full sampled contributions separately.
-    shap_sample: 15000        # Development budget across five folds, plus this many cutoff rows.
+    shap_sample: 25000        # Development budget across five folds, plus this many cutoff rows.
     pdp_grid: 30               # partial-dependence grid resolution
     pdp_background: 2000
     rolling_window: 252

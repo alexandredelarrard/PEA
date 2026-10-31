@@ -24,7 +24,7 @@ lgbm:
 
   # Shared by LGBM and RF at all horizons, aligned to selected fitted inputs.
   monotonic:
-    enabled: true
+    enabled: false
     features:
     # - f_reported_expected_eps_yield: 1   # OFF: linear sign opposite (coefficient and cluster net effect)
     - f_intangibles_to_assets: -1

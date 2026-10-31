@@ -20,7 +20,7 @@ from src.data_aggregate.utils.common.peers_io import load_peers_or_raise
 from src.data_store.schema import Table, Tables, resolve
 from src.utils.step import Step
 
-_CHUNK_ROWS = 200_000
+_CHUNK_ROWS = 400_000
 _MIN_TARGET_COVERAGE_PCT = 50.0
 
 # An existing cube is re-read and rewritten from this many calendar days before today (or its last date, if older).
@@ -67,6 +67,7 @@ class StepAssembleCube(Step):
             panel = self._read_part(table, selected.get(name), since, optional=name in optional)
             if panel is None:
                 continue
+            panel = self._post_processing(panel)
             if table == Tables.cube_part_targets:
                 labels = [col for col in panel.columns if col not in PANEL_KEYS]
             merger.add(panel, name)
@@ -113,7 +114,13 @@ class StepAssembleCube(Step):
         if missing:
             raise ValueError(f"{table.name} missing columns {missing}; run {command}")
         chunks = [downcast_float32(chunk) for chunk in store.iter_load(table, columns=wanted, chunksize=_CHUNK_ROWS, since=since)]
-        return normalize_date_col(pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame(columns=wanted))
+        return pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame(columns=wanted)
+
+    def _post_processing(self, panel: pd.DataFrame) -> pd.DataFrame:
+        """One part's panel after reading: dates normalized to midnight so merges across parts align."""
+        normalized = normalize_date_col(panel)
+        assert normalized is not None
+        return normalized
 
     def _persist(self, cube: pd.DataFrame, window: PartWindow) -> int:
         store = self._store

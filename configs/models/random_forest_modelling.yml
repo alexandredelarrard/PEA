@@ -72,9 +72,9 @@ random_forest:
   columns_by_horizon:
     30:
     # PRICES / MOMENTUM cube (27)
-    - gap_21
     - volume_trend_63
     - seasonal_h90
+
     # FUNDAMENTALS cube (218)
     - f_accruals
     - f_accruals_ratio
@@ -87,7 +87,7 @@ random_forest:
     - f_cash_runway_months
     - f_cash_to_debt
     - f_days_since_earnings
-    - f_debtToEquity_vs_hist
+    # - f_debtToEquity_vs_hist   # OFF tier 2: insignificant + unstable + weak contribution
     - f_deferred_rev_intensity
     - f_dio
     - f_dividend_coverage
@@ -115,23 +115,21 @@ random_forest:
     - f_grossMargins
     - f_gross_profitability
     - f_headcount_elasticity
-    - f_hyper_growth
     - f_intangibles_to_assets
     - f_intangibles_to_assets_vs_hist
     - f_intangibles_to_equity
     - f_interest_coverage
     - f_interest_coverage_vs_hist
     - f_margin_expansion_delta
-    - f_negative_equity
     - f_net_debt_to_ebitda
     - f_nwc_elasticity_vs_hist
-    - f_operatingMargins
+    # - f_operatingMargins   # OFF tier 2: insignificant + unstable + weak contribution
     - f_operatingMargins_vs_hist
     - f_pegy
     - f_profit_improvement_to_assets
     - f_q_margin_vs_ttm
     - f_rd_capitalized_roic
-    - f_refinancing_risk
+    # - f_refinancing_risk   # OFF tier 2: insignificant + unstable + weak contribution
     - f_reported_expected_eps_yield_vs_hist
     - f_reported_expected_ttm_yield
     - f_returnOnEquity
@@ -144,24 +142,24 @@ random_forest:
     - f_sbc_intensity
     - f_sbc_to_buyback_vs_hist
     - f_y_earnings_growth_signed
-    - f_y_earnings_growth_signed_vs_hist
+    # - f_y_earnings_growth_signed_vs_hist   # OFF tier 2: insignificant + unstable + weak contribution
     - f_y_margin_vs_ttm
     - f_y_margin_vs_ttm_vs_hist
+
     # TEXT cube (earnings calls) (10)
     - f_ec_prep_tone
     - f_ec_qa_coherence_mean
     - f_ec_qa_qq_distance
     - f_ec_questions_only_qq_distance
+
     # INSTITUTIONALS cube (insider, short volume/FTD, 13D/G) (29)
     - f_ic_bo_de_escalation_13d_to_13g
     - f_ic_insider_buy_value_mcap_180d
     - f_ic_insider_buy_value_mcap_60d
-    - f_ic_insider_cfo_buy_mcap_180d
     - f_ic_insider_net_buy_ratio_180d
+
     # GOVERNANCE cube (101)
     - f_board_independence_delta_1y
-    - f_board_independence_drop_10pp
-    - f_board_size
     - f_board_size_vs_peers
     - f_ceo_comp_growth_1y
     - f_ceo_excess_dissent
@@ -169,23 +167,21 @@ random_forest:
     - f_ceo_pay_slice
     - f_ceo_to_director_pay_ratio
     - f_director_equity_pay_pct
-    - f_founder_ceo
-    - f_governance_improvement_count
-    - f_lead_independent_director_added
+
+    # - f_lead_independent_director_added   # OFF tier 1: ~zero contribution (SHAP/coef) in >=5 of 6 folds
     - f_log_ceo_total_comp
-    - f_majority_voting_added
-    - f_majority_voting_removed
     - f_pay_return_peer_misalignment
     - f_pay_revenue_peer_misalignment
-    - f_pay_up_return_down_severity
+
     # CATEGORICALS (2)
     - industry_group
     - sector
+
     60:
     # PRICES / MOMENTUM cube (27)
     - ret_skew_126
-    - volume_trend_63
     - seasonal_h90
+
     # FUNDAMENTALS cube (218)
     - f_accruals
     - f_accruals_ratio
@@ -197,7 +193,6 @@ random_forest:
     - f_capex_intensity_vs_hist
     - f_cash_to_debt
     - f_da_minus_capex_growth
-    - f_days_since_earnings
     - f_debtToEquity_vs_hist
     - f_deferred_rev_intensity
     - f_dio
@@ -230,7 +225,6 @@ random_forest:
     - f_gross_profitability
     - f_gross_profitability_vs_hist
     - f_headcount_elasticity
-    - f_hyper_growth
     - f_intangibles_roic_drag
     - f_intangibles_to_assets
     - f_intangibles_to_assets_vs_hist
@@ -238,7 +232,6 @@ random_forest:
     - f_intangibles_to_equity_vs_hist
     - f_margin_expansion_delta
     - f_nci_income_share
-    - f_negative_equity
     - f_net_debt_to_ebitda_vs_hist
     - f_nwc_elasticity_vs_hist
     - f_operatingMargins
@@ -259,39 +252,37 @@ random_forest:
     - f_y_earnings_growth_signed_vs_hist
     - f_y_margin_vs_ttm
     - f_y_margin_vs_ttm_vs_hist
+
     # TEXT cube (earnings calls) (10)
     - f_ec_prep_tone
     - f_ec_qa_qq_distance
     - f_ec_questions_only_qq_distance
+
     # INSTITUTIONALS cube (insider, short volume/FTD, 13D/G) (29)
     - f_ic_bo_de_escalation_13d_to_13g
     - f_ic_insider_buy_value_mcap_180d
     - f_ic_insider_buy_value_mcap_60d
     - f_ic_insider_cfo_buy_mcap_180d
     - f_ic_insider_net_buy_ratio_180d
+
     # GOVERNANCE cube (101)
-    - f_board_size
     - f_board_size_vs_peers
     - f_ceo_excess_dissent
     - f_ceo_pay_slice
-    - f_classified_board_removed
     - f_director_cash_fee_pct_vs_peers
     - f_director_equity_pay_pct
-    - f_founder_ceo
-    - f_governance_improvement_count
-    - f_majority_voting_added
-    - f_majority_voting_removed
     - f_pay_return_peer_misalignment
     - f_pay_revenue_peer_misalignment
-    - f_pay_up_return_down_severity
+
     # CATEGORICALS (2)
     - industry_group
     - sector
+
     90:
     # PRICES / MOMENTUM cube (27)
-    - rel_volume_5_63
     - volume_trend_63
     - seasonal_h90
+
     # FUNDAMENTALS cube (218)
     - f_accruals
     - f_accruals_ratio
@@ -328,12 +319,10 @@ random_forest:
     - f_grossMargins
     - f_gross_profitability
     - f_headcount_elasticity
-    - f_hyper_growth
     - f_intangibles_to_assets
     - f_intangibles_to_assets_vs_hist
     - f_intangibles_to_equity
     - f_margin_expansion_delta
-    - f_negative_equity
     - f_nwc_elasticity_vs_hist
     - f_operatingMargins
     - f_operatingMargins_vs_hist
@@ -352,36 +341,32 @@ random_forest:
     - f_y_earnings_growth_signed_vs_hist
     - f_y_margin_vs_ttm
     - f_y_margin_vs_ttm_vs_hist
+
     # TEXT cube (earnings calls) (10)
     - f_ec_prep_tone
     - f_ec_qa_qq_distance
     - f_ec_questions_only_qq_distance
+
     # INSTITUTIONALS cube (insider, short volume/FTD, 13D/G) (29)
     - f_ic_bo_de_escalation_13d_to_13g
-    - f_ic_ftd_to_adv20
     - f_ic_insider_buy_value_mcap_180d
     - f_ic_insider_buy_value_mcap_60d
     - f_ic_insider_cfo_buy_mcap_180d
     - f_ic_insider_director_buy_mcap_180d
     - f_ic_insider_net_buy_ratio_180d
-    - f_ic_insider_purchase_pct_prior
+    # - f_ic_insider_purchase_pct_prior
+
     # GOVERNANCE cube (101)
     - f_board_size
     - f_board_size_vs_peers
     - f_ceo_excess_dissent
     - f_ceo_pay_slice
     - f_ceo_pay_vs_revenue_growth
-    - f_classified_board_added
     - f_director_equity_pay_pct
-    - f_dual_class_added
-    - f_founder_ceo
-    - f_governance_improvement_count
-    - f_majority_voting_added
-    - f_majority_voting_removed
     - f_pay_return_peer_misalignment
     - f_pay_revenue_gap
     - f_pay_revenue_peer_misalignment
-    - f_pay_up_return_down_severity
+
     # CATEGORICALS (2)
     - industry_group
     - sector

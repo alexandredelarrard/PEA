@@ -27,46 +27,46 @@ lgbm:
     enabled: false
     features:
     # - f_reported_expected_eps_yield: 1   # OFF: linear sign opposite (coefficient and cluster net effect)
-    - f_intangibles_to_assets: -1
-    - f_pct_independent_directors: 1
+    # - f_intangibles_to_assets: -1
+    # - f_pct_independent_directors: 1
     # - ma_ratio_200: -1   # OFF: linear sign opposite (coefficient and cluster net effect)
-    - ma_ratio_50: -1
-    - rsi_14: -1
+    # - ma_ratio_50: -1
+    # - rsi_14: -1
     # - f_ceo_pay_vs_revenue_growth: 1   # OFF: sign differs between horizons; against literature: excess CEO pay growth -> agency cost -> negative (Bebchuk-Fried; Core et al.)
     # - f_earnings_sue_lag3: -1   # OFF: against literature: SUE autocorrelation is positive at lags 1-3 (Bernard-Thomas); linear sign opposite (coefficient and cluster net effect)
-    - f_auditor_vote_dissent: -1
+    # - f_auditor_vote_dissent: -1
     # - f_y_rev_growth_accel: 1   # OFF: linear sign opposite (coefficient and cluster net effect)
-    - f_sustainable_growth_rate: 1
+    # - f_sustainable_growth_rate: 1
     # - f_option_overhang: 1   # OFF: sign differs between horizons; against literature: option overhang = future dilution -> negative (Core; Pontiff-Woodgate); linear sign opposite (coefficient and cluster net effect)
     # - f_fcf_to_ev_vs_peers: 1   # OFF: sign differs between horizons
-    - f_returnOnEquity: 1
-    - f_board_dissent_median: 1
-    - f_accruals_ratio: -1
-    - f_reported_expected_eps_growth_qoq: -1
+    # - f_returnOnEquity: 1
+    # - f_board_dissent_median: 1
+    # - f_accruals_ratio: -1
+    # - f_reported_expected_eps_growth_qoq: -1
     # - f_diluted_shares_growth: -1   # OFF: linear sign opposite (coefficient and cluster net effect)
-    - f_director_equity_pay_pct_vs_peers: 1
-    - f_dividend_growth: 1
+    # - f_director_equity_pay_pct_vs_peers: 1
+    # - f_dividend_growth: 1
     # - f_book_yield: -1   # OFF: against literature: book-to-market value premium is positive (Fama-French); linear sign opposite (coefficient and cluster net effect)
-    - f_board_tenure_dispersion: -1
-    - f_payout_ratio: 1
-    - f_board_dissent_breadth_20_vs_peers: 1
-    - f_rd_capitalized_roic: 1
-    - f_days_since_earnings: 1
-    - f_auditor_tenure: 1
-    - f_shareholder_yield: 1
-    - f_oldest_director_age: -1
+    # - f_board_tenure_dispersion: -1
+    # - f_payout_ratio: 1
+    # - f_board_dissent_breadth_20_vs_peers: 1
+    # - f_rd_capitalized_roic: 1
+    # - f_days_since_earnings: 1
+    # - f_auditor_tenure: 1
+    # - f_shareholder_yield: 1
+    # - f_oldest_director_age: -1
     # - f_log_ceo_total_comp: 1   # OFF: sign differs between horizons; against literature: overpaid CEOs underperform (Cooper-Gulen-Rau); linear sign opposite (coefficient and cluster net effect)
-    - f_avg_board_tenure_vs_hist: 1
+    # - f_avg_board_tenure_vs_hist: 1
     # - f_dso_vs_hist: 1   # OFF: against literature: receivables build vs history -> lower returns (Sloan/Thomas-Zhang accrual family)
-    - f_gmroi_vs_hist: 1
-    - f_fcf_margin_vs_hist: 1
-    - f_capex_to_dep: -1
+    # - f_gmroi_vs_hist: 1
+    # - f_fcf_margin_vs_hist: 1
+    # - f_capex_to_dep: -1
     # - f_sales_yield_vs_hist: -1   # OFF: against literature: cheaper than own history (higher sales yield) -> positive value signal; linear sign opposite (coefficient and cluster net effect)
-    - f_insider_ownership_pct: -1
+    # - f_insider_ownership_pct: -1
     # - f_ebitda_to_ev_vs_hist: 1   # OFF: sign differs between horizons
-    - f_intrinsic_yield: 1
+    # - f_intrinsic_yield: 1
     # - f_ceo_pay_slice_delta_1y: 1   # OFF: against literature: rising CEO pay slice -> entrenchment, lower value (Bebchuk-Cremers-Peyer)
-    - f_eps_surprise_4q_avg: 1
+    # - f_eps_surprise_4q_avg: 1
     # - f_ocf_yield: 1   # OFF: linear sign opposite (coefficient and cluster net effect)
 
   columns:
@@ -496,9 +496,11 @@ lgbm:
     - f_dividend_payout_ratio_vs_hist
     - f_dividend_yield
     - f_dps_growth
+    - f_dso
     - f_dso_change
     - f_dso_change_vs_hist
     - f_dso_vs_hist
+    - f_earnings_abret_since_report
     - f_earnings_sue_lag0
     - f_earnings_sue_lag3
     - f_earnings_sue_lag5
@@ -506,6 +508,7 @@ lgbm:
     - f_ebit_interest_coverage_vs_hist
     - f_effective_tax_rate
     - f_fcf_margin
+    - f_fcf_to_ev
     - f_fixed_cost_coverage_margin
     - f_gmroi
     - f_gmroi_vs_hist
@@ -514,6 +517,7 @@ lgbm:
     - f_headcount_elasticity
     - f_hyper_growth
     - f_intangibles_to_assets
+    - f_intangibles_to_assets_vs_hist
     - f_intangibles_to_equity
     - f_interest_coverage
     - f_interest_coverage_vs_hist
@@ -530,6 +534,7 @@ lgbm:
     - f_refinancing_risk
     - f_reported_expected_eps_yield_vs_hist
     - f_reported_expected_ttm_yield
+    - f_returnOnEquity
     - f_returnOnEquity_vs_hist
     - f_revenue_cagr_3y
     - f_revenue_per_employee
@@ -552,21 +557,26 @@ lgbm:
     - f_ic_insider_buy_value_mcap_180d
     - f_ic_insider_buy_value_mcap_60d
     - f_ic_insider_cfo_buy_mcap_180d
+    - f_ic_insider_net_buy_ratio_180d
     # GOVERNANCE cube (101)
     - f_board_independence_delta_1y
     - f_board_independence_drop_10pp
     - f_board_size
     - f_board_size_vs_peers
     - f_ceo_comp_growth_1y
+    - f_ceo_excess_dissent
     - f_ceo_pay_growth
     - f_ceo_pay_slice
     - f_ceo_to_director_pay_ratio
+    - f_director_equity_pay_pct
     - f_founder_ceo
     - f_governance_improvement_count
     - f_lead_independent_director_added
     - f_log_ceo_total_comp
     - f_majority_voting_added
     - f_majority_voting_removed
+    - f_pay_return_peer_misalignment
+    - f_pay_revenue_peer_misalignment
     - f_pay_up_return_down_severity
     # CATEGORICALS (2)
     - industry_group
@@ -598,9 +608,11 @@ lgbm:
     - f_dividend_payout_ratio_vs_hist
     - f_dividend_yield
     - f_dps_growth
+    - f_dso
     - f_dso_change
     - f_dso_change_vs_hist
     - f_dso_vs_hist
+    - f_earnings_abret_since_report
     - f_earnings_sue_lag3
     - f_earnings_sue_lag5
     - f_earnings_yield
@@ -609,6 +621,7 @@ lgbm:
     - f_effective_tax_rate_vs_hist
     - f_eps_yield
     - f_fcf_margin
+    - f_fcf_to_ev
     - f_fixed_cost_coverage_margin
     - f_gmroi
     - f_gmroi_vs_hist
@@ -620,6 +633,7 @@ lgbm:
     - f_hyper_growth
     - f_intangibles_roic_drag
     - f_intangibles_to_assets
+    - f_intangibles_to_assets_vs_hist
     - f_intangibles_to_equity
     - f_intangibles_to_equity_vs_hist
     - f_margin_expansion_delta
@@ -634,6 +648,7 @@ lgbm:
     - f_rd_capitalized_roic
     - f_refinancing_risk
     - f_reported_expected_ttm_yield
+    - f_returnOnEquity
     - f_returnOnEquity_vs_hist
     - f_revenue_cagr_3y
     - f_revenue_per_employee_vs_hist
@@ -653,16 +668,21 @@ lgbm:
     - f_ic_insider_buy_value_mcap_180d
     - f_ic_insider_buy_value_mcap_60d
     - f_ic_insider_cfo_buy_mcap_180d
+    - f_ic_insider_net_buy_ratio_180d
     # GOVERNANCE cube (101)
     - f_board_size
     - f_board_size_vs_peers
+    - f_ceo_excess_dissent
     - f_ceo_pay_slice
     - f_classified_board_removed
     - f_director_cash_fee_pct_vs_peers
+    - f_director_equity_pay_pct
     - f_founder_ceo
     - f_governance_improvement_count
     - f_majority_voting_added
     - f_majority_voting_removed
+    - f_pay_return_peer_misalignment
+    - f_pay_revenue_peer_misalignment
     - f_pay_up_return_down_severity
     # CATEGORICALS (2)
     - industry_group
@@ -692,13 +712,16 @@ lgbm:
     - f_dividend_payout_ratio_vs_hist
     - f_dividend_yield
     - f_dps_growth
+    - f_dso
     - f_dso_change
     - f_dso_change_vs_hist
     - f_dso_vs_hist
+    - f_earnings_abret_since_report
     - f_earnings_sue_lag3
     - f_earnings_sue_lag5
     - f_effective_tax_rate
     - f_fcf_margin
+    - f_fcf_to_ev
     - f_fixed_cost_coverage_margin
     - f_gmroi
     - f_gmroi_vs_hist
@@ -707,6 +730,7 @@ lgbm:
     - f_headcount_elasticity
     - f_hyper_growth
     - f_intangibles_to_assets
+    - f_intangibles_to_assets_vs_hist
     - f_intangibles_to_equity
     - f_margin_expansion_delta
     - f_negative_equity
@@ -717,6 +741,7 @@ lgbm:
     - f_rd_capitalized_roic
     - f_refinancing_risk
     - f_reported_expected_ttm_yield
+    - f_returnOnEquity
     - f_returnOnEquity_vs_hist
     - f_revenue_cagr_3y
     - f_revenue_per_employee_vs_hist
@@ -738,19 +763,24 @@ lgbm:
     - f_ic_insider_buy_value_mcap_60d
     - f_ic_insider_cfo_buy_mcap_180d
     - f_ic_insider_director_buy_mcap_180d
+    - f_ic_insider_net_buy_ratio_180d
     - f_ic_insider_purchase_pct_prior
     # GOVERNANCE cube (101)
     - f_board_size
     - f_board_size_vs_peers
+    - f_ceo_excess_dissent
     - f_ceo_pay_slice
     - f_ceo_pay_vs_revenue_growth
     - f_classified_board_added
+    - f_director_equity_pay_pct
     - f_dual_class_added
     - f_founder_ceo
     - f_governance_improvement_count
     - f_majority_voting_added
     - f_majority_voting_removed
+    - f_pay_return_peer_misalignment
     - f_pay_revenue_gap
+    - f_pay_revenue_peer_misalignment
     - f_pay_up_return_down_severity
     # CATEGORICALS (2)
     - industry_group

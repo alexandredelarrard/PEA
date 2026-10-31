@@ -358,13 +358,18 @@ class StepLongShort(Step):
         schema = Schema(
             horizons, load_cols, feature_cols, categorical_cols, list(dict.fromkeys(feature_cols + categorical_cols)), family_cols, family_cols_by_h
         )
+        active_keys = {cls.config_key for cls in self._classes.values()}
+        per_family = " ".join(
+            f"{key}:{'/'.join(f'h{h}={len(by_h[h])}' for h in horizons)}"
+            for key, by_h in family_cols_by_h.items()
+            if _FAMILY_BLOCKS[key].config_key in active_keys
+        )
         self._log.info(
-            "Setup: horizons=%s target_type=%s models=%s | features -> linear:%d lgbm:%d (+%d cats) union:%d",
+            "Setup: horizons=%s target_type=%s models=%s | features per horizon (columns_by_horizon, else columns) -> %s | cats:%d union:%d",
             horizons,
             self.target_type,
             self.families,
-            len(family_cols["linear"]),
-            len(family_cols["lgbm"]),
+            per_family,
             len(categorical_cols),
             len(feature_cols),
         )

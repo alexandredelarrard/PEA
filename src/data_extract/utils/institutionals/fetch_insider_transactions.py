@@ -220,15 +220,15 @@ def _parse_quarter(
 
 
 def _read_tables(path: Path) -> tuple[pd.DataFrame, ...] | None:
-    """Read a complete source unit; invalid cache is removed for the next normal retry."""
+    """Read a complete source unit; None when invalid. Invalid content is logged and the file kept;
+    only a corrupt archive is deleted for the next normal retry."""
     try:
         tables = read_zip_tables(path, _ZIP_SPECS, on_corrupt="delete", log=logger)
         if not tables:
             raise ValueError("missing, ambiguous or unreadable required source member")
         _validate_bulk_tables(tables)
     except (ValueError, pd.errors.ParserError, UnicodeError) as exc:
-        logger.warning("%s: invalid original (%s); deleting cache for normal retry; good stored rows retained", path.name, exc)
-        path.unlink(missing_ok=True)
+        logger.warning("%s: invalid original (%s); skipped, cached file kept; good stored rows retained", path.name, exc)
         return None
     return tuple(tables.values())
 
@@ -261,11 +261,14 @@ def _validate_bulk_tables(tables: dict[str, pd.DataFrame]) -> None:
 
 
 def _validate_bulk_member(name: str, frame: pd.DataFrame) -> None:
-    """Source keys are mandatory even in a header-only member."""
+    """Source keys are mandatory even in a header-only member; a footnote's text may be empty."""
     if name == "FOOTNOTES.TSV":
-        required = ["FOOTNOTE_ID", "FOOTNOTE_TXT"]
-        if not set(required).issubset(frame) or frame[required].isna().any().any() or frame.duplicated(["ACCESSION_NUMBER", "FOOTNOTE_ID"]).any():
-            raise ValueError("invalid footnote key or text")
+        if (
+            not {"FOOTNOTE_ID", "FOOTNOTE_TXT"}.issubset(frame)
+            or frame["FOOTNOTE_ID"].isna().any()
+            or frame.duplicated(["ACCESSION_NUMBER", "FOOTNOTE_ID"]).any()
+        ):
+            raise ValueError("invalid footnote key")
         return
     if name == "REPORTINGOWNER.TSV":
         if "RPTOWNERCIK" not in frame or not frame["RPTOWNERCIK"].astype("string").str.fullmatch(r"\d{1,10}").fillna(False).all():
@@ -309,8 +312,7 @@ def _read_quarter(
     try:
         return _parse_quarter(tables, quarter, universe, identity, fetched_at)
     except ValueError as exc:
-        logger.warning("%s: invalid payload (%s); deleting cache for normal retry; good stored rows retained", path.name, exc)
-        path.unlink(missing_ok=True)
+        logger.warning("%s: invalid payload (%s); skipped, cached file kept; good stored rows retained", path.name, exc)
         return None
 
 

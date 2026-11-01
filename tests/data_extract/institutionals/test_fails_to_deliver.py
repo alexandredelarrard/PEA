@@ -4,17 +4,21 @@ the FTD feature (fails/volume, publication-lagged so it's leak-free)."""
 from __future__ import annotations
 
 import logging
+import re
+import shutil
 from types import SimpleNamespace
 from typing import Any
+from zipfile import ZipFile
 
 import pandas as pd
 import pytest
 
 from src.data_extract.utils.common import security_master as sm
+from src.data_extract.utils.common.bulk_cache import read_zip_text
 from src.data_extract.utils.institutionals import fetch_fails_to_deliver as ftd
 from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore, _create_canonical
-from tests.conftest import make_frames
+from tests.conftest import DATA, make_frames
 from tests.data_aggregate.test_short_flow_features import build_short_flow_feature_panel
 
 
@@ -76,6 +80,49 @@ def test_period_urls_legacy_vs_modern_boundary():
     assert _foia not in mod[0] and "fails-deliver-data/cnsfails202401a" in mod[0] and _foia in mod[1]
     print("\n=== SANITY: FTD legacy/modern URL selection ===")
     print("  <=201706a -> FOIA legacy path first (modern fallback); >=201706b -> current path (legacy fallback). Boundary at 2017-06b. Validated.")
+
+
+def test_period_urls_end_with_the_other_root():
+    urls = ftd._period_urls("202610a")
+    other = "https://www.sec.gov/files/data/other/fails-deliver-data/cnsfails202610a.zip"
+    assert urls[-1] == other and urls[0] == ftd.SEC_FTD_URL_TEMPLATE.format(period="202610a")
+    print(f"SANITY: 202610a tries {len(urls)} SEC roots, the current path first and the /other/ root last.")
+
+
+def test_parse_ftd_lines_strips_the_trailer_and_checks_its_count():
+    body = f"{_HEADER}20240102|037833100|AAPL|10|APPLE INC|10\n20240103|037833100|AAPL|5|APPLE INC|.\n"
+    lines = ftd._parse_ftd_lines(body + "Trailer record count 2\nTrailer total quantity of shares 15\n")
+    assert lines["fails_quantity"].tolist() == [10.0, 5.0]
+    with pytest.raises(ValueError, match="trailer"):
+        ftd._parse_ftd_lines(body + "Trailer record count 3\nTrailer total quantity of shares 15\n")
+    print("SANITY: the two SEC trailer lines are dropped; a record count that disagrees with the data lines refuses the file.")
+
+
+def test_real_202609a_parses_its_trailer_count_on_a_copy(tmp_path):
+    source = DATA / "sec_fails_to_deliver" / "cnsfails202609a.zip"
+    if not source.exists():
+        pytest.skip("cached FTD 202609a zip absent")
+    cache = tmp_path / "sec_fails_to_deliver"
+    cache.mkdir()
+    path = cache / source.name
+    shutil.copyfile(source, path)
+    raw = read_zip_text(path)
+    assert raw is not None
+    trailer = int(re.search(r"Trailer record count (\d+)", raw).group(1))  # type: ignore[union-attr]
+    parsed = ftd._read_period(SimpleNamespace(), cache, "202609a", download=False)  # type: ignore[arg-type]
+    assert parsed is not None and len(parsed) == trailer and path.exists()
+    print(f"SANITY: real FTD 202609a (copy) parses {len(parsed):,} lines = its trailer record count {trailer:,}; the cached file is kept.")
+
+
+def test_invalid_ftd_content_keeps_the_cached_file(tmp_path):
+    cache = tmp_path / "sec_fails_to_deliver"
+    cache.mkdir()
+    path = cache / "cnsfails202607a.zip"
+    with ZipFile(path, "w") as archive:
+        archive.writestr("cnsfails202607a.txt", f"{_HEADER}20260701|526057104|LEN|bad|LEN|10\n")
+    assert ftd._read_period(SimpleNamespace(), cache, "202607a", download=False) is None  # type: ignore[arg-type]
+    assert path.exists()
+    print("SANITY: an FTD file with invalid content is skipped and left in the cache; only a corrupt archive is deleted.")
 
 
 def test_parse_ftd_math_and_na_price():

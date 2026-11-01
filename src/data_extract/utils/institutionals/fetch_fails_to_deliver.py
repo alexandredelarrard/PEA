@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import io
 import logging
+import re
 from collections.abc import Collection, Sequence
 from pathlib import Path
 from typing import cast
@@ -99,6 +100,7 @@ _FAR = pd.Timestamp("2262-01-01")
 # The ZIP's period tag, not the settlement day, controls availability; files <= 2017-06a live on the FOIA path.
 SEC_FTD_URL_TEMPLATE = "https://www.sec.gov/files/data/fails-deliver-data/cnsfails{period}.zip"
 SEC_FTD_LEGACY_URL_TEMPLATE = "https://www.sec.gov/files/data/frequently-requested-foia-document-fails-deliver-data/cnsfails{period}.zip"
+SEC_FTD_OTHER_URL_TEMPLATE = "https://www.sec.gov/files/data/other/fails-deliver-data/cnsfails{period}.zip"
 SEC_FTD_LEGACY_LAST_PERIOD = "201706a"  # last period on the legacy path
 SEC_FTD_ZIP_PREFIX = "cnsfails"  # a cached archive is named `{prefix}{period}.zip`
 
@@ -126,13 +128,23 @@ def _ftd_column(df: pd.DataFrame, cols: dict[str, str], name: str) -> pd.Series:
     return df[cols[name]].astype("string").str.strip() if name in cols else pd.Series(pd.NA, index=df.index, dtype="string")
 
 
+def _strip_ftd_trailer(lines: list[str]) -> list[str]:
+    """The file's lines without the SEC `Trailer ...` lines; a stated record count must equal the data lines."""
+    body = [row for row in lines if not row.startswith("Trailer ")]
+    counts = [match.group(1) for row in lines if (match := re.fullmatch(r"Trailer record count\s+(\d+)\s*", row))]
+    if counts and int(counts[-1]) != len(body) - 1:
+        raise ValueError(f"FTD trailer record count {counts[-1]} != {len(body) - 1} data lines")
+    return body
+
+
 def _parse_ftd_lines(raw: str) -> pd.DataFrame:
     """Every source line of one FTD file, raw: symbol as filed, description, PRICE ('.' -> NULL), trade date.
 
-    Exact duplicate lines collapse to one; nothing is summed.
+    The SEC trailer lines are dropped after checking their record count. Exact duplicate lines collapse
+    to one; nothing is summed.
     """
     columns = list(SECURITY_COLUMNS[:8])
-    lines = raw.strip().splitlines()
+    lines = _strip_ftd_trailer(raw.strip().splitlines())
     header = "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE"
     if not lines or lines[0].strip().lstrip("\ufeff").upper() != header or any(len(row.split("|")) != 6 for row in lines[1:]):
         raise ValueError("FTD invalid header or source line width")
@@ -171,10 +183,12 @@ def _parse_ftd_lines(raw: str) -> pd.DataFrame:
 
 def _period_urls(period: str) -> tuple[str, ...]:
     """Download URLs for a period: the date-appropriate path first (legacy <= 2017-06a), the other
-    as fallback. Fixed-width 'YYYYMMx' tags sort chronologically, so a string compare is safe."""
+    as fallback, then the `other/` root. Fixed-width 'YYYYMMx' tags sort chronologically, so a string
+    compare is safe."""
     modern = SEC_FTD_URL_TEMPLATE.format(period=period)
     legacy = SEC_FTD_LEGACY_URL_TEMPLATE.format(period=period)
-    return (legacy, modern) if period <= SEC_FTD_LEGACY_LAST_PERIOD else (modern, legacy)
+    other = SEC_FTD_OTHER_URL_TEMPLATE.format(period=period)
+    return (legacy, modern, other) if period <= SEC_FTD_LEGACY_LAST_PERIOD else (modern, legacy, other)
 
 
 def _cached_periods(cache: Path) -> set[str]:
@@ -665,7 +679,10 @@ def _in_scope(lines: pd.DataFrame, symbols: frozenset[str], prefixes: frozenset[
 
 
 def _read_period(context: Context, cache: Path, period: str, *, download: bool) -> pd.DataFrame | None:
-    """One period's raw lines from the cache (downloading it once when `download`); None when unavailable."""
+    """One period's raw lines from the cache (downloading it once when `download`); None when unavailable.
+
+    A file with invalid content is logged and kept in the cache; only a corrupt archive is deleted.
+    """
     path: Path | None = cache / FTD_ZIP_NAME_TEMPLATE.format(period=period)
     if download:
         path = ensure_zip(context, path, _period_urls(period), label=f"FTD {period}", timeout=180, log=logger)
@@ -682,8 +699,7 @@ def _read_period(context: Context, cache: Path, period: str, *, download: bool) 
         if not parsed["date"].between(start, end).all():
             raise ValueError(f"settlement date outside declared source period {period}")
     except ValueError as exc:
-        logger.warning("FTD %s: invalid original (%s); deleting cache for normal retry; good stored rows retained", period, exc)
-        path.unlink(missing_ok=True)
+        logger.warning("FTD %s: invalid original (%s); skipped, cached file kept; good stored rows retained", period, exc)
         return None
     parsed.attrs["period"] = period
     return parsed

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -28,6 +29,7 @@ from src.data_extract.utils.institutionals.insider_store import (
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore, _create_canonical
 from src.utils.price_adjustments import ShareBasis
+from tests.conftest import DATA
 from tests.data_extract.fake_context import extract_config
 from tests.data_extract.institutionals.test_short_volume_security import _identity, _master
 
@@ -372,14 +374,15 @@ def test_ftd_normal_planner_retries_bad_cached_payload(sqlite_store: DataStore, 
     stored_frame = sqlite_store.load(Tables.sec_fails_to_deliver)
     assert stored_frame is not None
     pd.testing.assert_frame_equal(stored_frame, before)
-    assert not path.exists() and not requests
+    assert path.exists() and not requests
+    path.unlink()
     assert ftd.download_fails_to_deliver(context, as_of=pd.Timestamp("2026-07-30")) == 1
     assert len(requests) == 1
     recovered_raw = sqlite_store.load(Tables.sec_fails_to_deliver_security)
     assert recovered_raw is not None
     assert recovered_raw["fails_quantity"].tolist() == [12.0]
     print(
-        "SANITY: a valid ZIP with malformed/wrong-period FTD content preserves both good tables and proof; the next normal planner downloads the required original again."
+        "SANITY: a valid ZIP with malformed/wrong-period FTD content preserves both good tables, proof and the cached file; once removed, the next normal planner downloads it again."
     )
 
 
@@ -502,13 +505,14 @@ def test_insider_normal_planner_retries_invalid_cached_quarter(
     stored_frame = sqlite_store.load(Tables.insider_transactions)
     assert stored_frame is not None
     pd.testing.assert_frame_equal(stored_frame, before)
-    assert not path.exists() and not requests
+    assert path.exists() and not requests
+    path.unlink()
     assert insider_zip.fetch_insider_transactions(context, ["LEN"], 1, all_tickers=["LEN"], as_of=pd.Timestamp("2026-10-01")) == 1
     recovered_rows = sqlite_store.load(Tables.insider_transactions)
     assert recovered_rows is not None
     assert len(requests) == 1 and recovered_rows["shares"].tolist() == [12.0]
     print(
-        "SANITY: incomplete or semantically invalid insider ZIP preserves good payload/proof and is downloaded again through the next normal production worklist."
+        "SANITY: incomplete or semantically invalid insider ZIP preserves good payload/proof and the cached file; once removed, the next normal worklist downloads it again."
     )
 
 
@@ -538,8 +542,43 @@ def test_bulk_invalid_economic_number_is_retryable_source_failure(tmp_path: Path
     members["NONDERIV_TRANS.TSV"] = members["NONDERIV_TRANS.TSV"].replace("\t12\t10", "\t1e999\t10")
     path = tmp_path / "2026q3.zip"
     _archive(path, members)
-    assert insider_zip._read_tables(path) is None and not path.exists()
-    print("SANITY: a nonfinite bulk economic operand cannot be silently coerced to missing and certified; its source unit remains retryable.")
+    assert insider_zip._read_tables(path) is None and path.exists()
+    print(
+        "SANITY: a nonfinite bulk economic operand cannot be silently coerced to missing and certified; the cached source unit is kept for inspection."
+    )
+
+
+def test_bulk_empty_footnote_text_is_accepted_but_keys_stay_required(tmp_path: Path) -> None:
+    members = _bulk_members()
+    members["FOOTNOTES.TSV"] += "0000920760-26-000001\tF1\t\n"
+    path = tmp_path / "2026q3.zip"
+    _archive(path, members)
+    tables = insider_zip._read_tables(path)
+    assert tables is not None and tables[4]["FOOTNOTE_TXT"].isna().all()
+    notes = insider_zip._footnote_strings(tables[4])
+    assert notes["footnote_id"].tolist() == ["F1"] and notes["footnote_text"].isna().all()
+    for bad in ("0000920760-26-000001\t\tText\n", "0000920760-26-000001\tF1\t\n0000920760-26-000001\tF1\tOther\n"):
+        damaged = _bulk_members()
+        damaged["FOOTNOTES.TSV"] += bad
+        _archive(path, damaged)
+        assert insider_zip._read_tables(path) is None and path.exists()
+    print("SANITY: an empty FOOTNOTE_TXT is a valid NULL-text footnote; a missing or repeated footnote id still refuses the unit and keeps the file.")
+
+
+def test_real_2026q1_insider_zip_validates_on_a_copy(tmp_path: Path) -> None:
+    source = DATA / "sec_insider_transactions" / "2026q1.zip"
+    if not source.exists():
+        pytest.skip("cached 2026q1 insider zip absent")
+    path = tmp_path / "2026q1.zip"
+    shutil.copyfile(source, path)
+    tables = insider_zip._read_tables(path)
+    assert tables is not None and path.exists()
+    notes = tables[4]
+    empty = int(notes["FOOTNOTE_TXT"].isna().sum())
+    assert empty > 0
+    print(
+        f"SANITY: real 2026q1 insider zip (copy) validates: {len(tables[0]):,} submissions, {len(notes):,} footnotes of which {empty} have empty text."
+    )
 
 
 @pytest.mark.parametrize("fail", [False, True], ids=["unchanged", "rollback"])

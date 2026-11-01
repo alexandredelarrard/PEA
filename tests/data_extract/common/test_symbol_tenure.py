@@ -22,8 +22,8 @@ from typing import Any, cast
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common import symbol_tenure as tenure_module
-from src.data_extract.utils.common.symbol_tenure import (
+from src.data_extract.utils.identity import symbol_tenure as tenure_module
+from src.data_extract.utils.identity.symbol_tenure import (
     ManualSymbolTenureError,
     _parse_filing_dates,
     changed_tenure_symbols,

@@ -19,7 +19,7 @@ import pandas as pd
 import pytest
 
 import src.data_extract.utils.fundamentals.fetch_financial_notes as fn
-from src.data_extract.utils.common.symbol_tenure import (
+from src.data_extract.utils.identity.symbol_tenure import (
     DEI_SOURCE,
     TABLE_COLUMNS,
     aggregate_dei_symbols,

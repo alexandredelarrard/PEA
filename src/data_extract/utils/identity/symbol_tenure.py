@@ -21,8 +21,8 @@ import pandas as pd
 
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import ZipRead, read_zip_tables
-from src.data_extract.utils.common.identity_store import save_identity
 from src.data_extract.utils.common.incremental import matches_stored
+from src.data_extract.utils.identity.identity_store import save_identity
 from src.data_store.schema import Tables
 from src.utils.string import normalise_ticker, pad_cik_series, yahoo_symbol
 

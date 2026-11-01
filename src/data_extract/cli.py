@@ -68,7 +68,6 @@ from src.constants.command_line_interface import (
     YEARS_KWARGS,
 )
 from src.context import Context, get_config_context
-from src.data_extract.identity_propagate import propagate_identity
 from src.data_extract.transformers.step_extract_fundamentals_sharadar import (
     StepExtractFundamentalsSharadar,
 )
@@ -78,11 +77,7 @@ from src.data_extract.utils.behavioral.fetch_earnings_call_transcripts import (
 from src.data_extract.utils.common import edgar_index
 from src.data_extract.utils.common.bulk_cache import cache_dir
 from src.data_extract.utils.common.edgar_driver import EdgarFetch, load_edgar_scope, plan_fetch, run_edgar_fetch
-from src.data_extract.utils.common.entity_lineage import build_entity_lineage
-from src.data_extract.utils.common.sec_tickers import download_sec_company_tickers
 from src.data_extract.utils.common.sec_utils import load_cik_mapping
-from src.data_extract.utils.common.security_master import build_security_master
-from src.data_extract.utils.common.symbol_tenure import build_symbol_tenure, scan_form345_cache
 from src.data_extract.utils.fundamentals.build_history import build_fundamentals_history
 from src.data_extract.utils.fundamentals.fetch_earnings_surprises import fetch_earnings_surprises
 from src.data_extract.utils.fundamentals.fetch_financial_notes import download_financial_notes, fetch_financial_notes
@@ -101,6 +96,11 @@ from src.data_extract.utils.fundamentals_sharadar.gap_check import (
     run_gap_check,
 )
 from src.data_extract.utils.fundamentals_sharadar.merge_history import build_merged_history
+from src.data_extract.utils.identity.entity_lineage import build_entity_lineage
+from src.data_extract.utils.identity.identity_propagate import propagate_identity
+from src.data_extract.utils.identity.sec_tickers import download_sec_company_tickers
+from src.data_extract.utils.identity.security_master import build_security_master
+from src.data_extract.utils.identity.symbol_tenure import build_symbol_tenure, scan_form345_cache
 from src.data_extract.utils.institutionals.fetch_8k_edgar import SEC_8K_FETCH
 from src.data_extract.utils.institutionals.fetch_13d_edgar import SEC_13D_FETCH
 from src.data_extract.utils.institutionals.fetch_13f import fetch_13f

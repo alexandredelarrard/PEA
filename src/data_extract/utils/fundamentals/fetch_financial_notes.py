@@ -39,7 +39,7 @@ from src.data_extract.utils.common.identity import Identity, load_identity, tick
 from src.data_extract.utils.common.incremental import stored_values
 from src.data_extract.utils.common.resume import archive_worklist
 from src.data_extract.utils.common.sec_io import sec_get
-from src.data_extract.utils.common.symbol_tenure import DEI_SOURCE, aggregate_dei_symbols, save_dei_period
+from src.data_extract.utils.identity.symbol_tenure import DEI_SOURCE, aggregate_dei_symbols, save_dei_period
 from src.data_store.schema import Resume, Table, Tables
 from src.utils.string import pad_cik_series
 

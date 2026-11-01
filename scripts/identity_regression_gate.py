@@ -27,11 +27,11 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.constants.constants import CANONICAL_ROLES, SECONDARY_CLASS  # noqa: E402
-from src.data_extract.utils.common.entity_lineage import entity_by_cik_map, entity_or_singleton, load_d19_allowlist, roster_cik_map  # noqa: E402
 from src.data_extract.utils.common.identity import FilingScope, Identity, UnknownUniverseTickerError, load_identity  # noqa: E402
 from src.data_extract.utils.common.registrant import FORM_POLICY, Combine  # noqa: E402
 from src.data_extract.utils.fundamentals.build_history import keep_window_owner_filings  # noqa: E402
 from src.data_extract.utils.fundamentals_sharadar.field_map import load_field_map  # noqa: E402
+from src.data_extract.utils.identity.entity_lineage import entity_by_cik_map, entity_or_singleton, load_d19_allowlist, roster_cik_map  # noqa: E402
 from src.data_extract.utils.institutionals.fetch_short_interest import finra_key  # noqa: E402
 from src.data_extract.utils.institutionals.security_tape import SUMMED_ROLES  # noqa: E402
 from src.data_store.schema import Tables  # noqa: E402

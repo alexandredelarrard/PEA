@@ -18,10 +18,10 @@ import pandas as pd
 import pytest
 
 from scripts import identity_regression_gate as gate
-from src.data_extract import identity_propagate as prop
 from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp
 from src.data_extract.utils.common.identity import Identity, build_identity
 from src.data_extract.utils.common.registrant import resolve_registrant_entries
+from src.data_extract.utils.identity import identity_propagate as prop
 from src.data_extract.utils.institutionals import schedule_rows
 from src.data_extract.utils.institutionals.fetch_13g_edgar import SCHEDULE_13G
 from src.data_store.schema import Resume, Tables

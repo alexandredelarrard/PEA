@@ -22,7 +22,7 @@ import pandas as pd
 
 from src.constants.constants import CANONICAL_CURRENT, CANONICAL_PREDECESSOR, CANONICAL_ROLES, SECONDARY_CLASS
 from src.context import Context
-from src.data_extract.utils.common.entity_lineage import (
+from src.data_extract.utils.identity.entity_lineage import (
     FORM345_SOURCE,
     MANUAL_SOURCE,
     ROLE_EVENT,
@@ -37,8 +37,8 @@ from src.data_extract.utils.common.entity_lineage import (
     entity_or_singleton,
     roster_cik_map,
 )
-from src.data_extract.utils.common.identity_store import load_source_identity as load_source_identity
-from src.data_extract.utils.common.security_master import (
+from src.data_extract.utils.identity.identity_store import load_source_identity as load_source_identity
+from src.data_extract.utils.identity.security_master import (
     ACQUIRED_CONSTITUENT,
     MergerBoundary,
     co_registrant_ciks,
@@ -46,7 +46,7 @@ from src.data_extract.utils.common.security_master import (
     merger_boundaries,
     squash,
 )
-from src.data_extract.utils.common.symbol_tenure import DEI_SOURCE
+from src.data_extract.utils.identity.symbol_tenure import DEI_SOURCE
 from src.data_store.schema import Table, Tables
 from src.utils.cik_windows import widen_seams
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series, yahoo_symbol

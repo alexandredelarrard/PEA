@@ -18,9 +18,9 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.common.level_basis import genuine_splits, level_actions, level_factor, load_share_basis
-from src.data_extract.utils.common import security_master as sm
 from src.data_extract.utils.fundamentals_sharadar import fetch_sharadar, gap_check, merge_history
 from src.data_extract.utils.fundamentals_sharadar.field_map import load_field_map
+from src.data_extract.utils.identity import security_master as sm
 from src.data_store.schema import Tables
 from src.utils import cutover_continuity as cc
 from src.utils.predecessor_series import load_predecessor_series, load_vendor_series

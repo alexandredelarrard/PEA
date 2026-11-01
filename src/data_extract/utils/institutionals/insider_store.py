@@ -12,7 +12,7 @@ from typing import Protocol, cast
 import pandas as pd
 
 from src.context import Context
-from src.data_extract.utils.common.identity_store import invalidate_source_proof, load_source_identity
+from src.data_extract.utils.identity.identity_store import invalidate_source_proof, load_source_identity
 from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore
 

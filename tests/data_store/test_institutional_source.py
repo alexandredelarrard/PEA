@@ -19,7 +19,7 @@ from src.data_aggregate.utils.institutionals import inputs
 from src.data_aggregate.utils.institutionals import short_flow_features as short
 from src.data_aggregate.utils.institutionals.frontiers import insider_inventory_boundaries
 from src.data_extract.utils.common.identity import load_source_identity
-from src.data_extract.utils.common.identity_store import save_identity
+from src.data_extract.utils.identity.identity_store import save_identity
 from src.data_extract.utils.institutionals.fetch_fails_to_deliver import replace_fails_source
 from src.data_extract.utils.institutionals.insider_store import (
     certify_insider_inventory,

@@ -26,11 +26,6 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common.entity_lineage import (
-    CikInTwoEntitiesError,
-    IdentityError,
-    TwoUniverseTickersOneEntityError,
-)
 from src.data_extract.utils.common.identity import (
     AmbiguousSymbolTenureError,
     Identity,
@@ -38,6 +33,11 @@ from src.data_extract.utils.common.identity import (
     build_identity,
     load_identity,
     tickers_for_ciks,
+)
+from src.data_extract.utils.identity.entity_lineage import (
+    CikInTwoEntitiesError,
+    IdentityError,
+    TwoUniverseTickersOneEntityError,
 )
 from src.utils.string import pad_cik, pad_cik_series
 

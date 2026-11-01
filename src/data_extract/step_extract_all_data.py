@@ -11,7 +11,6 @@ reads the propagated lineage. Institutionals must run before structure: the vote
 from omegaconf import DictConfig
 
 from src.context import Context
-from src.data_extract.identity_propagate import propagate_identity
 from src.data_extract.transformers.step_extract_behavioral import StepExtractBehavioral
 from src.data_extract.transformers.step_extract_fundamentals import StepExtractFundamentals
 from src.data_extract.transformers.step_extract_fundamentals_sharadar import (
@@ -23,12 +22,13 @@ from src.data_extract.transformers.step_extract_institutionals import (
 from src.data_extract.transformers.step_extract_prices import StepExtractPrices
 from src.data_extract.transformers.step_extract_structure import StepExtractStructure
 from src.data_extract.utils.common.bulk_cache import cache_dir
-from src.data_extract.utils.common.entity_lineage import build_entity_lineage
 from src.data_extract.utils.common.identity import load_identity
-from src.data_extract.utils.common.sec_tickers import download_sec_company_tickers
-from src.data_extract.utils.common.security_master import build_security_master
-from src.data_extract.utils.common.symbol_tenure import build_symbol_tenure, scan_form345_cache
 from src.data_extract.utils.fundamentals.fetch_financial_notes import download_financial_notes
+from src.data_extract.utils.identity.entity_lineage import build_entity_lineage
+from src.data_extract.utils.identity.identity_propagate import propagate_identity
+from src.data_extract.utils.identity.sec_tickers import download_sec_company_tickers
+from src.data_extract.utils.identity.security_master import build_security_master
+from src.data_extract.utils.identity.symbol_tenure import build_symbol_tenure, scan_form345_cache
 from src.data_extract.utils.institutionals.fetch_fails_to_deliver import download_fails_to_deliver
 from src.data_extract.utils.institutionals.fetch_insider_transactions import download_insider_transactions
 from src.data_extract.utils.prices.fetch_tickers import get_sp500_tickers

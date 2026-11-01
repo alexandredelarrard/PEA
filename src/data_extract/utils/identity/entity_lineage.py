@@ -29,10 +29,10 @@ import pandas as pd
 
 from src.context import Context
 from src.data_extract.utils.common.config_paths import resolve_config_dir
-from src.data_extract.utils.common.identity_store import save_identity
 from src.data_extract.utils.common.incremental import matches_stored
 from src.data_extract.utils.common.registrant import Registrant, load_registrants
-from src.data_extract.utils.common.symbol_tenure import DEI_SOURCE, collapse_dei_periods, load_manual_symbol_tenure
+from src.data_extract.utils.identity.identity_store import save_identity
+from src.data_extract.utils.identity.symbol_tenure import DEI_SOURCE, collapse_dei_periods, load_manual_symbol_tenure
 from src.data_store.schema import Tables
 from src.utils.identity_flags import MASTER_COLUMNS, cik_activity, identity_flags, log_identity_flags
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series

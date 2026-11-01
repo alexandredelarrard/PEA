@@ -14,9 +14,9 @@ import pandas as pd
 
 from src.constants.constants import CUSIP_TICKER_OVERRIDES
 from src.data_extract.utils.common import identity as identity_module
-from src.data_extract.utils.common.entity_lineage import ROSTER_COLUMNS
 from src.data_extract.utils.common.identity import build_identity, load_identity
 from src.data_extract.utils.fundamentals import fetch_earnings_surprises as surprises
+from src.data_extract.utils.identity.entity_lineage import ROSTER_COLUMNS
 from src.data_extract.utils.institutionals.fetch_cusip_map import build_cusip_ticker_map, normalize_cusip
 from src.data_store.schema import Tables
 

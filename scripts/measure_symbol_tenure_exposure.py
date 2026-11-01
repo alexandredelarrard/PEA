@@ -54,8 +54,8 @@ from typing import cast
 import pandas as pd
 
 from src.context import get_config_context
-from src.data_extract.utils.common.entity_lineage import load_d19_allowlist
 from src.data_extract.utils.common.identity import AmbiguousSymbolTenureError, load_identity
+from src.data_extract.utils.identity.entity_lineage import load_d19_allowlist
 from src.data_store.schema import Resume, Tables
 
 CONFIG_DIR = "./configs"

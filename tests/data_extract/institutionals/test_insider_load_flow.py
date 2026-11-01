@@ -25,8 +25,8 @@ from src.data_aggregate.utils.institutionals.frontiers import schedule_complete_
 from src.data_extract import cli as cli_mod
 from src.data_extract.utils.common import edgar_driver, edgar_index, resume
 from src.data_extract.utils.common.identity import Identity, build_identity
-from src.data_extract.utils.common.identity_store import load_source_identity
 from src.data_extract.utils.common.sec_utils import CIK_MAPPING_COLS
+from src.data_extract.utils.identity.identity_store import load_source_identity
 from src.data_extract.utils.institutionals import fetch_insider_edgar as edgar
 from src.data_extract.utils.institutionals import fetch_insider_transactions as ins
 from src.data_store.schema import Tables

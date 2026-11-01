@@ -19,9 +19,9 @@ import pandas as pd
 import pytest
 
 from src.data_aggregate.utils.institutionals import inputs as institutional_inputs
-from src.data_extract import identity_propagate as prop
-from src.data_extract.utils.common import security_master as sm
 from src.data_extract.utils.common.identity import build_identity
+from src.data_extract.utils.identity import identity_propagate as prop
+from src.data_extract.utils.identity import security_master as sm
 from src.data_extract.utils.institutionals import fetch_insider_transactions as ins
 from src.data_extract.utils.institutionals import insider_common as ic
 from src.data_store import ddl

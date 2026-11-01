@@ -13,10 +13,10 @@ import pandas as pd
 import pytest
 from sqlalchemy import event
 
-from src.data_extract import identity_propagate
 from src.data_extract.utils.common.edgar_driver import EdgarFetch, EdgarScope, _read_unit, _walk_key
 from src.data_extract.utils.common.identity import Identity, load_source_identity
 from src.data_extract.utils.common.sec_io import ParseFailureError
+from src.data_extract.utils.identity import identity_propagate
 from src.data_extract.utils.institutionals import fetch_fails_to_deliver as ftd
 from src.data_extract.utils.institutionals import fetch_insider_edgar as insider_edgar
 from src.data_extract.utils.institutionals import fetch_insider_transactions as insider_zip

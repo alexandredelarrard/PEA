@@ -18,8 +18,8 @@ import pandas as pd
 import pytest
 from sqlalchemy import event
 
-from src.data_extract.utils.common import security_master as sm
 from src.data_extract.utils.common.identity import build_identity, load_source_identity
+from src.data_extract.utils.identity import security_master as sm
 from src.data_extract.utils.institutionals import fetch_fails_to_deliver as ftd
 from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore, _create_canonical

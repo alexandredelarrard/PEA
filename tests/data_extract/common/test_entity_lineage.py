@@ -23,8 +23,9 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common import entity_lineage as lineage_module
-from src.data_extract.utils.common.entity_lineage import (
+from src.data_extract.utils.common.registrant import load_registrants
+from src.data_extract.utils.identity import entity_lineage as lineage_module
+from src.data_extract.utils.identity.entity_lineage import (
     OVERLAP_JACCARD_SAME,
     OVERLAP_SHARED_SAME,
     ManualTenureEntityError,
@@ -39,8 +40,7 @@ from src.data_extract.utils.common.entity_lineage import (
     score_overlap,
     validate_manual_tenure_entities,
 )
-from src.data_extract.utils.common.registrant import load_registrants
-from src.data_extract.utils.common.symbol_tenure import scan_form345_cache
+from src.data_extract.utils.identity.symbol_tenure import scan_form345_cache
 from src.data_store.schema import Tables
 from src.data_store.store import _create_canonical
 from src.utils.identity_flags import KIND_ORDER, cik_activity, identity_flags

@@ -8,7 +8,7 @@ import requests
 from src.constants.constants import BROWSER_HEADERS
 from src.context import Context
 from src.data_extract.utils.common.gics import industry_group
-from src.data_extract.utils.common.identity_store import save_identity
+from src.data_extract.utils.identity.identity_store import save_identity
 from src.data_store.schema import Tables
 
 logger = logging.getLogger(__name__)

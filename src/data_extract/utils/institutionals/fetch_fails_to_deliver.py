@@ -31,7 +31,7 @@ from src.context import Context
 from src.data_extract.utils.common.bulk_cache import cache_dir, cached_periods, ensure_zip, period_end, read_zip_text
 from src.data_extract.utils.common.identity import Identity, load_source_identity
 from src.data_extract.utils.common.resume import archive_periods, recently_changed
-from src.data_extract.utils.common.security_master import (
+from src.data_extract.utils.identity.security_master import (
     SOURCE_FTD,
     cusip_votes,
     lineage_scope_symbols,

@@ -13,12 +13,12 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from src.data_extract import identity_propagate as prop
-from src.data_extract.utils.common import security_master as sm
 from src.data_extract.utils.common.identity import Identity, build_identity
 from src.data_extract.utils.fundamentals import build_history
 from src.data_extract.utils.fundamentals.build_history import TickerHistory
 from src.data_extract.utils.fundamentals.kpi_catalogue import load_catalogue
+from src.data_extract.utils.identity import identity_propagate as prop
+from src.data_extract.utils.identity import security_master as sm
 from src.data_extract.utils.institutionals import fetch_fails_to_deliver as ftd
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore, _create_canonical

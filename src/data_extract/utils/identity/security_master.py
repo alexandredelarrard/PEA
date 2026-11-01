@@ -22,7 +22,8 @@ import pandas as pd
 from src.constants.constants import CANONICAL_CURRENT, CANONICAL_PREDECESSOR, CANONICAL_ROLES, SECONDARY_CLASS
 from src.context import Context
 from src.data_extract.utils.common.config_paths import resolve_config_dir
-from src.data_extract.utils.common.entity_lineage import (
+from src.data_extract.utils.common.incremental import matches_stored
+from src.data_extract.utils.identity.entity_lineage import (
     ROLE_SYMBOL,
     ROLE_WINDOW,
     ROSTER_COLUMNS,
@@ -31,9 +32,8 @@ from src.data_extract.utils.common.entity_lineage import (
     entity_or_singleton,
     roster_cik_map,
 )
-from src.data_extract.utils.common.identity_store import save_identity
-from src.data_extract.utils.common.incremental import matches_stored
-from src.data_extract.utils.common.symbol_tenure import DEI_SOURCE
+from src.data_extract.utils.identity.identity_store import save_identity
+from src.data_extract.utils.identity.symbol_tenure import DEI_SOURCE
 from src.data_store.schema import Tables
 from src.utils.cutover_continuity import ShareExchange
 from src.utils.identity_flags import FLAG_COLUMNS, cik_activity, identity_flags, log_identity_flags

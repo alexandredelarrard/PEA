@@ -174,12 +174,12 @@ REPO = next(p for p in Path(__file__).resolve().parents if (p / "pyproject.toml"
 #: The identity layer itself: the accessor, the lineage/tenure builds, the register loader they read, the roster listing.
 _ACCESSOR = {
     "src/data_extract/utils/common/identity.py",
-    "src/data_extract/utils/common/identity_store.py",
-    "src/data_extract/utils/common/entity_lineage.py",
-    "src/data_extract/utils/common/symbol_tenure.py",
+    "src/data_extract/utils/identity/identity_store.py",
+    "src/data_extract/utils/identity/entity_lineage.py",
+    "src/data_extract/utils/identity/symbol_tenure.py",
     "src/data_extract/utils/common/registrant.py",
     "src/data_extract/utils/common/sec_utils.py",
-    "src/data_extract/utils/common/security_master.py",
+    "src/data_extract/utils/identity/security_master.py",
 }
 #: The roster seeder writes `sp500_tickers`; 13F managers are listed by their own CIK, not an issuer (00-run N1).
 _ROSTER_WRITER = "src/data_extract/utils/prices/fetch_tickers.py"

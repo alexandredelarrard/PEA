@@ -14,9 +14,9 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common import security_master as sm
 from src.data_extract.utils.common.identity import build_identity
-from src.data_extract.utils.common.sec_tickers import parse_company_tickers_exchange
+from src.data_extract.utils.identity import security_master as sm
+from src.data_extract.utils.identity.sec_tickers import parse_company_tickers_exchange
 from src.data_store.schema import Tables
 from src.data_store.store import _create_canonical
 from src.utils.cutover_continuity import load_vendor_exceptions

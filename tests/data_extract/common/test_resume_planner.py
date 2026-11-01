@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src.data_extract.utils.common.edgar_driver import FilingStamp, marker_row
 from src.data_extract.utils.common.resume import (
     DONE_PER_KEY,
     KEY_ESTABLISHED,
@@ -15,7 +14,8 @@ from src.data_extract.utils.common.resume import (
     archive_worklist,
     document_worklist,
 )
-from src.data_extract.utils.common.sec_utils import CIK_MAPPING_COLS
+from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp, marker_row
+from src.data_extract.utils.edgar_extract.sec_utils import CIK_MAPPING_COLS
 from src.data_store.schema import Tables
 from tests.data_extract.edgar_fixtures import fake_context, fake_filing, seed_index
 

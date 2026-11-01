@@ -1,5 +1,5 @@
 """
-fetch_13d_edgar.py (src/data_extract/utils/institutionals/fetch_13d_edgar.py)
+fetch_13d_edgar.py (src/data_extract/utils/edgar_extract/fetch_13d_edgar.py)
 ---------------------------------------------------------------------------
 SC 13D/13D-A filings via edgartools into `sec_13d` (one row per ticker, accession, 0-based
 `rp_seq`; co-filers keyed by position since a reporting person often has no CIK) and
@@ -20,12 +20,12 @@ from typing import Any, cast
 import pandas as pd
 from bs4 import BeautifulSoup
 
-from src.data_extract.utils.common.edgar_driver import EdgarFetch, EdgarScope, FilingStamp
-from src.data_extract.utils.common.item_carve import ITEM_SEP, carve_spans, item_heading
-from src.data_extract.utils.common.parallel_fetch import PROGRAMMING_ERRORS
 from src.data_extract.utils.common.resume import DONE_PER_KEY
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, filing_attachments, filing_text
-from src.data_extract.utils.institutionals.schedule_rows import SCHEDULE_NUMERIC_COLS, ScheduleSpec, schedule_is_subject, schedule_ticker_rows
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarScope, FilingStamp
+from src.data_extract.utils.edgar_extract.item_carve import ITEM_SEP, carve_spans, item_heading
+from src.data_extract.utils.edgar_extract.parallel_fetch import PROGRAMMING_ERRORS
+from src.data_extract.utils.edgar_extract.schedule_rows import SCHEDULE_NUMERIC_COLS, ScheduleSpec, schedule_is_subject, schedule_ticker_rows
 from src.data_store.schema import Table, Tables
 
 # --- Item narrative fallback -------------------------------------------------- #

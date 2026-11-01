@@ -20,16 +20,16 @@ from typing import Any, cast
 import pandas as pd
 
 from src.context import Context
-from src.data_extract.utils.common.edgar_driver import (
+from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, filing_xbrl
+from src.data_extract.utils.edgar_extract.edgar_driver import (
     EdgarFetch,
     EdgarScope,
     FetchSummary,
     FilingStamp,
     run_edgar_fetch,
 )
-from src.data_extract.utils.common.parallel_fetch import PROGRAMMING_ERRORS
-from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, filing_xbrl
-from src.data_extract.utils.common.sec_utils import load_cik_mapping
+from src.data_extract.utils.edgar_extract.parallel_fetch import PROGRAMMING_ERRORS
+from src.data_extract.utils.edgar_extract.sec_utils import load_cik_mapping
 from src.data_extract.utils.fundamentals import entity_scope as scope
 from src.data_extract.utils.fundamentals.kpi_catalogue import Catalogue, load_catalogue
 from src.data_extract.utils.fundamentals.periods import AMBIGUOUS_DURATION, ANNUAL, OTHER_SHAPE, QUARTERLY, period_shape

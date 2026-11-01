@@ -15,7 +15,7 @@ import pyarrow as pa
 import pytest
 
 from src.constants.constants import SEC_13F_SOURCE_ACCOUNTED
-from src.data_extract.utils.common.edgar_driver import FilingStamp
+from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp
 from src.data_extract.utils.institutionals import fetch_13f as f13
 from src.data_extract.utils.institutionals.fetch_13f import _book_frame, save_13f_filing
 from src.data_extract.utils.institutionals.fetch_13f_backfill import data_set_book

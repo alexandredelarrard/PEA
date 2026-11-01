@@ -27,11 +27,11 @@ from typing import cast
 import pandas as pd
 
 from src.context import Context
-from src.data_extract.utils.common import edgar_index
 from src.data_extract.utils.common.bulk_cache import period_end
 from src.data_extract.utils.common.identity import FilingScope, Identity
 from src.data_extract.utils.common.incremental import stored_values
 from src.data_extract.utils.common.registrant import listing_ciks, resolve_registrant_entries
+from src.data_extract.utils.edgar_extract import edgar_index
 from src.data_store.schema import Resume, Table, Tables
 from src.utils.string import normalise_ticker
 from src.utils.universe import load_universe_tickers, new_tickers

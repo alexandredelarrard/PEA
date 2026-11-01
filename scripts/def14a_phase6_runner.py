@@ -48,7 +48,7 @@ if str(ROOT) not in sys.path:
 # ruff: noqa: E402
 
 from src.context import get_config_context
-from src.data_extract.utils.common.edgar_extract import html_to_text
+from src.data_extract.utils.edgar_extract.html_text import html_to_text
 from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
 from src.data_extract.utils.schemas.vote_schema import Item507Extract
 from src.data_extract.utils.structure.def14a.carve import prepare_def14a_sections
@@ -193,9 +193,9 @@ def run_ecd(context, limit: int | None, dry: bool) -> None:
     """Reuses the production builder verbatim rather than re-implementing it, so what the gate
     measures is what the pipeline will write. 2023+ only: an earlier proxy carries no `ecd:`
     facts (Item 402(v), FY ending >= 2022-12-16) and correctly gets no row."""
-    from src.data_extract.utils.common.edgar_driver import FilingStamp, load_edgar_scope
-    from src.data_extract.utils.common.sec_utils import load_cik_mapping
-    from src.data_extract.utils.structure.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
+    from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp, load_edgar_scope
+    from src.data_extract.utils.edgar_extract.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
+    from src.data_extract.utils.edgar_extract.sec_utils import load_cik_mapping
 
     # edgartools' identity is PROCESS-GLOBAL and the production fetcher sets it via the
     # Context; a script calling `DEF14A_EDGAR_FETCH.build` directly bypasses that and every

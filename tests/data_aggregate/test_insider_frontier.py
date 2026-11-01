@@ -8,7 +8,7 @@ from typing import cast
 import pandas as pd
 
 from src.data_aggregate.utils.institutionals.frontiers import schedule_complete_through
-from src.data_extract.utils.common.edgar_driver import FilingStamp, marker_row
+from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp, marker_row
 from src.data_store.schema import Tables
 from src.data_store.store import _create_canonical
 

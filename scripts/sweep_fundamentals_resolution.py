@@ -42,9 +42,9 @@ from dotenv import load_dotenv  # noqa: E402
 
 from src.constants.constants import FUNDAMENTALS_CATALOGUE_SUBDIR, FUNDAMENTALS_ROSTERS_FILENAME  # noqa: E402
 from src.context import get_config_context  # noqa: E402
-from src.data_extract.utils.common.edgar_driver import FilingStamp  # noqa: E402
 from src.data_extract.utils.common.identity import FilingScope, load_identity  # noqa: E402
 from src.data_extract.utils.common.registrant import resolve_registrant_filings  # noqa: E402
+from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp  # noqa: E402
 from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import rows_from_xbrl  # noqa: E402
 from src.data_extract.utils.fundamentals.kpi_catalogue import load_catalogue  # noqa: E402
 from src.data_store.schema import Resume, Tables

@@ -14,9 +14,9 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common import edgar_driver
-from src.data_extract.utils.common.edgar_driver import EdgarScope, plan_fetch, run_edgar_fetch
-from src.data_extract.utils.institutionals import fetch_insider_edgar as module
+from src.data_extract.utils.edgar_extract import edgar_driver
+from src.data_extract.utils.edgar_extract import fetch_insider_edgar as module
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarScope, plan_fetch, run_edgar_fetch
 from src.data_store.schema import Tables
 from src.data_store.store import _create_canonical
 from tests.data_extract.edgar_fixtures import fake_context, fake_filing, identity_for, patch_index_filings, seed_index

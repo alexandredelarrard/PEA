@@ -22,7 +22,7 @@ from edgar.thirteenf.models import ThirteenF
 
 from src.data_aggregate.utils.common.inputs import load_source
 from src.data_extract.utils.common import bulk_cache
-from src.data_extract.utils.common.sec_utils import CIK_MAPPING_COLS
+from src.data_extract.utils.edgar_extract.sec_utils import CIK_MAPPING_COLS
 from src.data_extract.utils.institutionals import fetch_13f as f13
 from src.data_extract.utils.institutionals import fetch_13f_backfill as fb
 from src.data_extract.utils.institutionals.fetch_13f import save_13f_filing

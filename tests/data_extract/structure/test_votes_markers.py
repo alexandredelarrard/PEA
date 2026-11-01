@@ -15,7 +15,7 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common.empty_markers import marker_frame
+from src.data_extract.utils.edgar_extract.empty_markers import marker_frame
 from src.data_extract.utils.schemas.def14a_schema import Def14AExtract as _Def14AExtract
 from src.data_extract.utils.schemas.vote_schema import Item507Extract as _Item507Extract
 from src.data_extract.utils.structure.def14a.flatten import _result_frames as def14a_result_frames

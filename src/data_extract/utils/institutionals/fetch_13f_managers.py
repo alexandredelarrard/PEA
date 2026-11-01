@@ -19,10 +19,10 @@ import pandas as pd
 
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import ZipRead, read_zip_tables
-from src.data_extract.utils.common.edgar_driver import FilingStamp
-from src.data_extract.utils.common.parallel_fetch import run_per_ticker
 from src.data_extract.utils.common.resume import DONE_PER_KEY, stored_accessions
 from src.data_extract.utils.common.sec_io import company, company_filings, configure
+from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp
+from src.data_extract.utils.edgar_extract.parallel_fetch import run_per_ticker
 from src.data_extract.utils.institutionals.fetch_13f import _IMPLIED_PRICE_BAND, ReadFailure, _suspect_prices, read_filing_vintage, save_13f_filing
 from src.data_extract.utils.institutionals.fetch_13f_backfill import _submissions, cached_filing_vintages
 from src.data_store.schema import Resume, Tables

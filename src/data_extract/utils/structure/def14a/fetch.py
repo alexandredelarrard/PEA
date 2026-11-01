@@ -11,13 +11,13 @@ from omegaconf import DictConfig
 from tqdm import tqdm
 
 from src.context import Context
-from src.data_extract.utils.common.edgar_extract import html_to_text
-from src.data_extract.utils.common.edgar_fillings import list_filings
 from src.data_extract.utils.common.identity import FilingScope, load_identity
 from src.data_extract.utils.common.registrant import header_subject_ciks
 from src.data_extract.utils.common.resume import document_floor
 from src.data_extract.utils.common.sec_io import TransientReadError, sec_get
-from src.data_extract.utils.common.sec_utils import load_cik_mapping
+from src.data_extract.utils.edgar_extract.edgar_fillings import list_filings
+from src.data_extract.utils.edgar_extract.html_text import html_to_text
+from src.data_extract.utils.edgar_extract.sec_utils import load_cik_mapping
 from src.data_extract.utils.structure.def14a.carve import prepare_def14a_payloads, prepare_def14a_sections
 from src.data_extract.utils.structure.def14a.gender import (
     basis_distribution,

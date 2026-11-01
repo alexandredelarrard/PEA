@@ -47,7 +47,7 @@ import pandas as pd
 
 from src.context import Context, get_config_context
 from src.data_extract.utils.common.identity import FilingScope, load_identity
-from src.data_extract.utils.common.sec_utils import load_cik_mapping
+from src.data_extract.utils.edgar_extract.sec_utils import load_cik_mapping
 from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
 from src.data_extract.utils.structure.def14a.fetch import (
     _list_scope_windows,

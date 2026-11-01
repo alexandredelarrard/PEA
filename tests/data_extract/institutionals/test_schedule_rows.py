@@ -15,12 +15,12 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp
 from src.data_extract.utils.common.sec_io import ParseFailureError
-from src.data_extract.utils.institutionals import fetch_13d_edgar
-from src.data_extract.utils.institutionals.fetch_13d_edgar import SCHEDULE_13D, SEC_13D_FETCH
-from src.data_extract.utils.institutionals.fetch_13g_edgar import SCHEDULE_13G, SEC_13G_FETCH
-from src.data_extract.utils.institutionals.schedule_rows import SCHEDULE_NUMERIC_COLS, schedule_filing_rows
+from src.data_extract.utils.edgar_extract import fetch_13d_edgar
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarScope, FilingStamp
+from src.data_extract.utils.edgar_extract.fetch_13d_edgar import SCHEDULE_13D, SEC_13D_FETCH
+from src.data_extract.utils.edgar_extract.fetch_13g_edgar import SCHEDULE_13G, SEC_13G_FETCH
+from src.data_extract.utils.edgar_extract.schedule_rows import SCHEDULE_NUMERIC_COLS, schedule_filing_rows
 from src.data_store.schema import Table, Tables
 
 _NUMERIC = SCHEDULE_NUMERIC_COLS

@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src.data_extract.utils.common.edgar_driver import EdgarFetch, EdgarScope, FilingStamp, marker_row, run_edgar_fetch
-from src.data_extract.utils.common.empty_markers import drop_markers_over_data, marker_shares_data_key
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarScope, FilingStamp, marker_row, run_edgar_fetch
+from src.data_extract.utils.edgar_extract.empty_markers import drop_markers_over_data, marker_shares_data_key
 from src.data_store.schema import Table, Tables, marker_tables
 from tests.data_extract.edgar_fixtures import fake_context, fake_filing, seed_index
 

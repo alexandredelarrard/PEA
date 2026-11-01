@@ -34,7 +34,7 @@ if str(ROOT) not in sys.path:
 # ruff: noqa: E402
 
 from src.context import get_config_context
-from src.data_extract.utils.common.edgar_extract import html_to_text
+from src.data_extract.utils.edgar_extract.html_text import html_to_text
 from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
 from src.data_extract.utils.structure.def14a.carve import prepare_def14a_sections
 from src.data_extract.utils.structure.def14a.flatten import _child_frames, _flatten

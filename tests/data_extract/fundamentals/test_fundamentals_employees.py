@@ -13,9 +13,9 @@ from omegaconf import OmegaConf
 
 import src.data_extract.cli as cli_mod
 import src.data_extract.utils.fundamentals.fundamentals_employees as mod
-from src.data_extract.utils.common import edgar_driver
 from src.data_extract.utils.common.identity import FilingScope
 from src.data_extract.utils.common.registrant import Combine, combine_for
+from src.data_extract.utils.edgar_extract import edgar_driver
 from src.data_store.schema import Tables
 from src.gpt_extract.utils.schemas_gpt import LlmResult
 

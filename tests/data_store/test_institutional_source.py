@@ -20,8 +20,7 @@ from src.data_aggregate.utils.institutionals import short_flow_features as short
 from src.data_aggregate.utils.institutionals.frontiers import insider_inventory_boundaries
 from src.data_extract.utils.common.identity import load_source_identity
 from src.data_extract.utils.identity.identity_store import save_identity
-from src.data_extract.utils.institutionals.fetch_fails_to_deliver import replace_fails_source
-from src.data_extract.utils.institutionals.insider_store import (
+from src.data_extract.utils.insider.insider_store import (
     certify_insider_inventory,
     certify_insider_source,
     insider_inventory_snapshot,
@@ -30,6 +29,7 @@ from src.data_extract.utils.institutionals.insider_store import (
     replace_insider_source,
     save_insider_source,
 )
+from src.data_extract.utils.institutionals.fetch_fails_to_deliver import replace_fails_source
 from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore, _create_canonical
 from src.utils.price_adjustments import ShareBasis

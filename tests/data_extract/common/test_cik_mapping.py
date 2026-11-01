@@ -15,7 +15,7 @@ from typing import Any
 
 import pandas as pd
 
-from src.data_extract.utils.common import sec_utils
+from src.data_extract.utils.edgar_extract import sec_utils
 
 
 def test_load_cik_mapping_reads_sp500_tickers(sqlite_store):

@@ -18,9 +18,9 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common.edgar_driver import FilingStamp
 from src.data_extract.utils.common.identity import build_identity
 from src.data_extract.utils.common.registrant import FORM_POLICY, Combine, combine_for, resolve_registrant_filings
+from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp
 from src.data_extract.utils.identity.entity_lineage import derive_entity_lineage
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity, filing, patch_company
 

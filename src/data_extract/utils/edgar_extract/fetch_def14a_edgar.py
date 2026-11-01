@@ -12,7 +12,7 @@ from functools import partial
 
 import pandas as pd
 
-from src.data_extract.utils.common.edgar_driver import EdgarFetch, FilingStamp, parse_filing_rows
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, FilingStamp, parse_filing_rows
 from src.data_extract.utils.structure.def14a.ecd import ecd_facts, ecd_row, has_ecd_block
 from src.data_extract.utils.structure.def14a.validate import repair_main_row
 from src.data_store.schema import Tables

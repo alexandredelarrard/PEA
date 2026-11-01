@@ -13,9 +13,9 @@ import re
 from functools import partial
 from typing import Any
 
-from src.data_extract.utils.common.edgar_driver import EdgarFetch, FilingStamp, parse_filing_rows
-from src.data_extract.utils.common.item_carve import ITEM_SEP, CrossRefCues, carve_spans, item_heading
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, filing_obj, filing_text
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, FilingStamp, parse_filing_rows
+from src.data_extract.utils.edgar_extract.item_carve import ITEM_SEP, CrossRefCues, carve_spans, item_heading
 from src.data_store.schema import Tables
 
 FILING_SECTION_RISK = "risk_factors"  # 10-K Item 1A

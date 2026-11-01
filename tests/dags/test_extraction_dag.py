@@ -16,15 +16,15 @@ from tests.dags.dag_harness import ALL_DONE, ALL_SUCCESS, load_dag, replay
 
 DAG_FILE = Path(__file__).resolve().parents[2] / "src" / "dags" / "dag_data_extraction.py"
 AGG_DAG_FILE = Path(__file__).resolve().parents[2] / "src" / "dags" / "dag_data_aggregation.py"
-EDGAR_DRIVER_FILE = "src/data_extract/utils/common/edgar_driver.py"
+EDGAR_DRIVER_FILE = "src/data_extract/utils/edgar_extract/edgar_driver.py"
 STRICT_EDGAR_FILES = (
     "src/data_extract/utils/fundamentals/fetch_fundamentals_sec.py",
-    "src/data_extract/utils/institutionals/fetch_8k_edgar.py",
-    "src/data_extract/utils/institutionals/fetch_13d_edgar.py",
-    "src/data_extract/utils/institutionals/fetch_13g_edgar.py",
-    "src/data_extract/utils/institutionals/fetch_insider_edgar.py",
-    "src/data_extract/utils/structure/fetch_def14a_edgar.py",
-    "src/data_extract/utils/structure/fetch_filing_text.py",
+    "src/data_extract/utils/edgar_extract/fetch_8k_edgar.py",
+    "src/data_extract/utils/edgar_extract/fetch_13d_edgar.py",
+    "src/data_extract/utils/edgar_extract/fetch_13g_edgar.py",
+    "src/data_extract/utils/edgar_extract/fetch_insider_edgar.py",
+    "src/data_extract/utils/edgar_extract/fetch_def14a_edgar.py",
+    "src/data_extract/utils/edgar_extract/fetch_filing_text.py",
 )
 REQUIRED_COMMANDS = {
     "seed-universe",

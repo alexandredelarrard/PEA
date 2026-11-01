@@ -18,11 +18,11 @@ import pytest
 
 from src.data_extract.transformers.step_extract_institutionals import StepExtractInstitutionals
 from src.data_extract.transformers.step_extract_structure import StepExtractStructure
-from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp, parse_filing_rows, run_edgar_fetch
 from src.data_extract.utils.common.sec_io import ParseFailureError
-from src.data_extract.utils.institutionals import fetch_8k_edgar
-from src.data_extract.utils.institutionals.fetch_8k_edgar import SEC_8K_FETCH, _filing_row, submission_filings
-from src.data_extract.utils.institutionals.fetch_13d_edgar import (
+from src.data_extract.utils.edgar_extract import fetch_8k_edgar
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarScope, FilingStamp, parse_filing_rows, run_edgar_fetch
+from src.data_extract.utils.edgar_extract.fetch_8k_edgar import SEC_8K_FETCH, _filing_row, submission_filings
+from src.data_extract.utils.edgar_extract.fetch_13d_edgar import (
     _ITEM_ANCHORS,
     SCHEDULE_13D,
     _carve_with,
@@ -32,7 +32,7 @@ from src.data_extract.utils.institutionals.fetch_13d_edgar import (
     _normalize_item_text,
     parse_13d,
 )
-from src.data_extract.utils.institutionals.schedule_rows import schedule_filing_rows
+from src.data_extract.utils.edgar_extract.schedule_rows import schedule_filing_rows
 from src.data_store.schema import Resume, Tables
 from src.utils.string import pad_cik
 

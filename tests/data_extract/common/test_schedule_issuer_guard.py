@@ -8,7 +8,7 @@ storing +0 rows after resolving MDT 28, BLK 50, VTRS 16+6 and ICE 10 predecessor
 
 from __future__ import annotations
 
-from src.data_extract.utils.common.edgar_driver import EdgarScope
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarScope
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
 
 #: VTRS as the register holds it: Mylan Inc -> Mylan N.V. -> Viatris.

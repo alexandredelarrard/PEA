@@ -24,7 +24,7 @@ import pytest
 
 from src.data_extract.utils.fundamentals import fetch_financial_notes as fn
 from src.data_extract.utils.fundamentals import fetch_financial_statements as fin
-from src.data_extract.utils.institutionals.insider_common import screen_insider_rows
+from src.data_extract.utils.insider.insider_common import screen_insider_rows
 from src.data_store.schema import Tables
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
 
@@ -178,7 +178,7 @@ _ACCESSOR = {
     "src/data_extract/utils/identity/entity_lineage.py",
     "src/data_extract/utils/identity/symbol_tenure.py",
     "src/data_extract/utils/common/registrant.py",
-    "src/data_extract/utils/common/sec_utils.py",
+    "src/data_extract/utils/edgar_extract/sec_utils.py",
     "src/data_extract/utils/identity/security_master.py",
 }
 #: The roster seeder writes `sp500_tickers`; 13F managers are listed by their own CIK, not an issuer (00-run N1).
@@ -246,7 +246,7 @@ def test_fetchers_resolve_identity_only_through_the_accessor():
     "table_arg", ["Tables.sp500_tickers", "table=Tables.sp500_tickers", "Tables.sp500_tickers.name", "table=Tables.sp500_tickers.name"]
 )
 def test_identity_guard_rejects_roster_payload_reads(method: str, table_arg: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    fetcher = tmp_path / "src/data_extract/utils/institutionals/insider_store.py"
+    fetcher = tmp_path / "src/data_extract/utils/insider/insider_store.py"
     fetcher.parent.mkdir(parents=True)
     fetcher.write_text(f"context.store.{method}({table_arg})\n", encoding="utf-8")
     monkeypatch.setitem(globals(), "REPO", tmp_path)
@@ -257,7 +257,7 @@ def test_identity_guard_rejects_roster_payload_reads(method: str, table_arg: str
 
 
 def test_identity_guard_accepts_metadata_and_loaded_cohort(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    fetcher = tmp_path / "src/data_extract/utils/institutionals/insider_store.py"
+    fetcher = tmp_path / "src/data_extract/utils/insider/insider_store.py"
     fetcher.parent.mkdir(parents=True)
     fetcher.write_text(
         "identities = {Tables.sp500_tickers, Tables.entity_lineage}\n"

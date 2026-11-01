@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import pandas as pd
 from pydantic import BaseModel
 
-from src.data_extract.utils.common.empty_markers import marker_frame
+from src.data_extract.utils.edgar_extract.empty_markers import marker_frame
 from src.data_extract.utils.schemas.def14a_schema import AuditExtract, DirectorPayExtract, ExecutivePayExtract, GovernanceExtract, OwnershipExtract
 from src.data_store.schema import Table, Tables
 

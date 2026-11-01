@@ -13,19 +13,19 @@ import pandas as pd
 import pytest
 from sqlalchemy import event
 
-from src.data_extract.utils.common.edgar_driver import EdgarFetch, EdgarScope, _read_unit, _walk_key
 from src.data_extract.utils.common.identity import Identity, load_source_identity
 from src.data_extract.utils.common.sec_io import ParseFailureError
+from src.data_extract.utils.edgar_extract import fetch_insider_edgar as insider_edgar
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarScope, _read_unit, _walk_key
+from src.data_extract.utils.edgar_extract.insider_edgar_parser import extract_xml_strings
 from src.data_extract.utils.identity import identity_propagate
-from src.data_extract.utils.institutionals import fetch_fails_to_deliver as ftd
-from src.data_extract.utils.institutionals import fetch_insider_edgar as insider_edgar
-from src.data_extract.utils.institutionals import fetch_insider_transactions as insider_zip
-from src.data_extract.utils.institutionals import fetch_short_interest as finra
-from src.data_extract.utils.institutionals.insider_edgar_parser import extract_xml_strings
-from src.data_extract.utils.institutionals.insider_store import (
+from src.data_extract.utils.insider.insider_store import (
     certify_insider_source,
     insider_source_run,
 )
+from src.data_extract.utils.institutionals import fetch_fails_to_deliver as ftd
+from src.data_extract.utils.institutionals import fetch_insider_transactions as insider_zip
+from src.data_extract.utils.institutionals import fetch_short_interest as finra
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore, _create_canonical
 from src.utils.price_adjustments import ShareBasis
@@ -825,7 +825,7 @@ def test_actual_xml_parser_run_writes_and_certifies(sqlite_store: DataStore, mon
         header=SimpleNamespace(acceptance_datetime="2026-07-01 16:05:00"),
         xml=lambda: xml,
     )
-    monkeypatch.setattr("src.data_extract.utils.common.edgar_index.index_filing", lambda *args: filing)
+    monkeypatch.setattr("src.data_extract.utils.edgar_extract.edgar_index.index_filing", lambda *args: filing)
     units = pd.DataFrame(
         {"cik": ["0000920760"], "company": ["LEN"], "form": ["4"], "filed": pd.to_datetime(["2026-07-01"]), "accession": [accession]}
     )

@@ -7,19 +7,19 @@ built and propagated upstream (`StepExtractAllData`, the DAG's identity stage); 
 from omegaconf import DictConfig
 
 from src.context import Context
-from src.data_extract.utils.common.edgar_driver import run_edgar_fetch
 from src.data_extract.utils.common.identity import load_identity
-from src.data_extract.utils.institutionals.fetch_8k_edgar import SEC_8K_FETCH
-from src.data_extract.utils.institutionals.fetch_13d_edgar import SEC_13D_FETCH
+from src.data_extract.utils.edgar_extract.edgar_driver import run_edgar_fetch
+from src.data_extract.utils.edgar_extract.fetch_8k_edgar import SEC_8K_FETCH
+from src.data_extract.utils.edgar_extract.fetch_13d_edgar import SEC_13D_FETCH
+from src.data_extract.utils.edgar_extract.fetch_13g_edgar import SEC_13G_FETCH
+from src.data_extract.utils.edgar_extract.fetch_insider_edgar import INSIDER_EDGAR_FETCH
+from src.data_extract.utils.insider.insider_store import insider_source_run
 from src.data_extract.utils.institutionals.fetch_13f import fetch_13f
 from src.data_extract.utils.institutionals.fetch_13f_managers import fetch_13f_managers
-from src.data_extract.utils.institutionals.fetch_13g_edgar import SEC_13G_FETCH
 from src.data_extract.utils.institutionals.fetch_fails_to_deliver import fetch_fails_to_deliver
-from src.data_extract.utils.institutionals.fetch_insider_edgar import INSIDER_EDGAR_FETCH
 from src.data_extract.utils.institutionals.fetch_insider_transactions import fetch_insider_transactions
 from src.data_extract.utils.institutionals.fetch_short_interest import fetch_short_interest
 from src.data_extract.utils.institutionals.fetch_superinvestors import upsert_roster_snapshot
-from src.data_extract.utils.institutionals.insider_store import insider_source_run
 from src.utils.step import Step
 from src.utils.universe import load_universe_tickers
 

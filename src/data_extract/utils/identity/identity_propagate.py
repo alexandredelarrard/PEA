@@ -29,10 +29,10 @@ from src.data_extract.utils.fundamentals.build_history import build_fundamentals
 from src.data_extract.utils.fundamentals.fetch_financial_notes import reparse_financial_notes
 from src.data_extract.utils.fundamentals.fetch_financial_statements import reparse_financial_statements
 from src.data_extract.utils.fundamentals_sharadar.merge_history import build_merged_history
+from src.data_extract.utils.insider.insider_store import patch_insider_source
 from src.data_extract.utils.institutionals.fetch_fails_to_deliver import load_fails_master, master_stamps, prepare_master, restamp_fails
 from src.data_extract.utils.institutionals.fetch_insider_transactions import reparse_insider_transactions, restamp_insider_lineage
 from src.data_extract.utils.institutionals.fetch_short_interest import change_stamps, restamp_short_volume
-from src.data_extract.utils.institutionals.insider_store import patch_insider_source
 from src.data_extract.utils.institutionals.security_tape import outside_scope, restamp_targets
 from src.data_store.schema import Table, Tables
 from src.utils.filer_tables import (

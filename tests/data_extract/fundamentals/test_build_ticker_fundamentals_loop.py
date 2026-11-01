@@ -15,8 +15,8 @@ import pandas as pd
 import pytest
 
 import src.data_extract.utils.fundamentals.fetch_fundamentals_sec as mod
-from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarScope, FilingStamp
 
 
 def _filing(accession: str, cik: str, date: str, form: str = "10-Q", xbrl: Any = None):

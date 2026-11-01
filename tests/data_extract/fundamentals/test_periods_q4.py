@@ -521,7 +521,7 @@ def real_periods() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         pytest.skip("SEC_USER_AGENT unset -- the real-data checks need EDGAR")
     from edgar import Company, set_identity
 
-    from src.data_extract.utils.common.edgar_driver import FilingStamp
+    from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp
     from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import filing_rows
 
     set_identity(os.environ["SEC_USER_AGENT"])
@@ -812,7 +812,7 @@ def orcl_quarters() -> tuple[pd.DataFrame, list[dict], pd.DataFrame]:
         pytest.skip("SEC_USER_AGENT unset -- the real-data checks need EDGAR")
     from edgar import Company, set_identity
 
-    from src.data_extract.utils.common.edgar_driver import FilingStamp
+    from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp
     from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import filing_rows
 
     set_identity(os.environ["SEC_USER_AGENT"])

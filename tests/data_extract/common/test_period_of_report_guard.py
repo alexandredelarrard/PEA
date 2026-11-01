@@ -15,8 +15,8 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common.edgar_driver import FilingStamp
-from src.data_extract.utils.common.parallel_fetch import PROGRAMMING_ERRORS
+from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp
+from src.data_extract.utils.edgar_extract.parallel_fetch import PROGRAMMING_ERRORS
 
 
 class _Raising:

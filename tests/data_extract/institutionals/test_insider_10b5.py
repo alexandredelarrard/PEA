@@ -15,16 +15,16 @@ from typing import cast
 import pandas as pd
 
 from src.data_extract.utils.common.bulk_cache import quarter_periods
-from src.data_extract.utils.institutionals.fetch_insider_transactions import (
-    _footnote_strings,
-    extract_bulk_strings,
-)
-from src.data_extract.utils.institutionals.insider_common import (
+from src.data_extract.utils.insider.insider_common import (
     BULK_DATE_FORMATS,
     FOOTNOTE_COLUMNS,
     build_insider_frame,
     filter_footnotes,
     normalize_flag,
+)
+from src.data_extract.utils.institutionals.fetch_insider_transactions import (
+    _footnote_strings,
+    extract_bulk_strings,
 )
 from src.data_store.schema import Resume, Tables
 

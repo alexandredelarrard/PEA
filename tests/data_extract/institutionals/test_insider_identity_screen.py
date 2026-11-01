@@ -25,9 +25,7 @@ import pytest
 from sqlalchemy import create_engine
 
 from src.data_extract.utils.common.identity import build_identity
-from src.data_extract.utils.institutionals import fetch_insider_transactions as ins
-from src.data_extract.utils.institutionals.fetch_insider_transactions import _footnote_strings
-from src.data_extract.utils.institutionals.insider_common import (
+from src.data_extract.utils.insider.insider_common import (
     BULK_DATE_FORMATS,
     INSIDER_COLUMNS,
     build_insider_frame,
@@ -39,6 +37,8 @@ from src.data_extract.utils.institutionals.insider_common import (
     screen_insider_rows,
     screened_accessions,
 )
+from src.data_extract.utils.institutionals import fetch_insider_transactions as ins
+from src.data_extract.utils.institutionals.fetch_insider_transactions import _footnote_strings
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 

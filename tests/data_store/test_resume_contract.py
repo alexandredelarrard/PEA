@@ -12,16 +12,16 @@ import pandas as pd
 import pytest
 
 from src.context import Context
-from src.data_extract.utils.common import edgar_driver
-from src.data_extract.utils.common.edgar_driver import EdgarScope, plan_fetch
-from src.data_extract.utils.common.edgar_index import INDEX_FORMS
+from src.data_extract.utils.edgar_extract import edgar_driver
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarScope, plan_fetch
+from src.data_extract.utils.edgar_extract.edgar_index import INDEX_FORMS
+from src.data_extract.utils.edgar_extract.fetch_8k_edgar import SEC_8K_FETCH
+from src.data_extract.utils.edgar_extract.fetch_13d_edgar import SEC_13D_FETCH
+from src.data_extract.utils.edgar_extract.fetch_13g_edgar import SEC_13G_FETCH
+from src.data_extract.utils.edgar_extract.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
+from src.data_extract.utils.edgar_extract.fetch_filing_text import FILING_TEXT_FETCH
+from src.data_extract.utils.edgar_extract.fetch_insider_edgar import INSIDER_EDGAR_FETCH
 from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import fundamentals_fetch
-from src.data_extract.utils.institutionals.fetch_8k_edgar import SEC_8K_FETCH
-from src.data_extract.utils.institutionals.fetch_13d_edgar import SEC_13D_FETCH
-from src.data_extract.utils.institutionals.fetch_13g_edgar import SEC_13G_FETCH
-from src.data_extract.utils.institutionals.fetch_insider_edgar import INSIDER_EDGAR_FETCH
-from src.data_extract.utils.structure.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
-from src.data_extract.utils.structure.fetch_filing_text import FILING_TEXT_FETCH
 from src.data_store import ddl
 from src.data_store.schema import (
     KIND_EXTRACT,

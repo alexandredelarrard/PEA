@@ -34,9 +34,9 @@ from tqdm import tqdm
 
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import ZipRead, cache_dir, ensure_zip, is_cached, read_zip_tables
-from src.data_extract.utils.common.empty_markers import marker_frame
 from src.data_extract.utils.common.resume import DONE_PER_KEY, stored_accessions
 from src.data_extract.utils.common.sec_io import TransientReadError, sec_get
+from src.data_extract.utils.edgar_extract.empty_markers import marker_frame
 from src.data_extract.utils.institutionals.fetch_13f import (
     _HR_COLS,
     _classify_holdings,

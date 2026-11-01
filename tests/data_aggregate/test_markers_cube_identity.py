@@ -23,8 +23,8 @@ from src.data_aggregate.utils.institutionals.inputs import load_insider_transact
 from src.data_aggregate.utils.institutionals.insider_features import InsiderCoverage
 from src.data_aggregate.utils.institutionals.ownership_features import build_ownership_feature_panel
 from src.data_aggregate.utils.sec_thirteen.institutional_features import build_institutional_feature_panel
-from src.data_extract.utils.common.edgar_driver import FilingStamp, marker_row
-from src.data_extract.utils.common.empty_markers import marker_frame
+from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp, marker_row
+from src.data_extract.utils.edgar_extract.empty_markers import marker_frame
 from src.data_extract.utils.fundamentals.build_history import FACT_COLUMNS, build_ticker_history
 from src.data_extract.utils.institutionals.fetch_13f_backfill import mark_gap_walked
 from src.data_store.schema import Table, Tables

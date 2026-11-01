@@ -19,9 +19,9 @@ from typing import Any, cast
 
 import pytest
 
-from src.data_extract.utils.common.edgar_driver import FilingStamp
-from src.data_extract.utils.common.parallel_fetch import PROGRAMMING_ERRORS
 from src.data_extract.utils.common.sec_io import ParseFailureError
+from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp
+from src.data_extract.utils.edgar_extract.parallel_fetch import PROGRAMMING_ERRORS
 from src.data_extract.utils.fundamentals import fetch_fundamentals_sec as fetcher
 
 _ACCESSION = "0000320193-24-000123"

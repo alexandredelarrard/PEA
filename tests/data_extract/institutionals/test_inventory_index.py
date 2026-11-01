@@ -11,7 +11,7 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common import edgar_index
+from src.data_extract.utils.edgar_extract import edgar_index
 from tests.data_extract.edgar_fixtures import MASTER_HEADER, fake_context
 
 

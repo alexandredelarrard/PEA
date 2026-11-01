@@ -1,5 +1,5 @@
 """
-fetch_13g_edgar.py (src/data_extract/utils/institutionals/fetch_13g_edgar.py)
+fetch_13g_edgar.py (src/data_extract/utils/edgar_extract/fetch_13g_edgar.py)
 -----------------------------------------------------------------------------
 Schedule 13G / 13G/A (passive >5% ownership) via edgartools into `sec_13g`, one row per reporting
 person with `sec_13d`'s grain and column names, built by the shared `schedule_rows` row builder.
@@ -14,10 +14,10 @@ from typing import Any
 
 import pandas as pd
 
-from src.data_extract.utils.common.edgar_driver import EdgarFetch
 from src.data_extract.utils.common.resume import DONE_PER_KEY
 from src.data_extract.utils.common.sec_io import TransientReadError, filing_header
-from src.data_extract.utils.institutionals.schedule_rows import ScheduleSpec, parse_schedule, schedule_is_subject
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch
+from src.data_extract.utils.edgar_extract.schedule_rows import ScheduleSpec, parse_schedule, schedule_is_subject
 from src.data_store.schema import Tables
 
 # Explicit cover-page format so an ambiguous date is never inferred day-first.

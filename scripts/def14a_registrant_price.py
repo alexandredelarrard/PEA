@@ -17,8 +17,8 @@ from typing import cast
 import pandas as pd
 
 from src.context import get_config_context
-from src.data_extract.utils.common.edgar_fillings import list_filings
 from src.data_extract.utils.common.registrant import load_registrants
+from src.data_extract.utils.edgar_extract.edgar_fillings import list_filings
 from src.data_store.schema import Resume, Tables
 
 #: Measured 2026-09-05 over a full run: ~$0.023 a filing, of which output tokens are ~87%.

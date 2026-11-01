@@ -14,7 +14,7 @@ import pandas as pd
 from edgar import Company
 
 from src.context import Context, get_config_context
-from src.data_extract.utils.institutionals.fetch_8k_edgar import _recover_item_507_from_primary
+from src.data_extract.utils.edgar_extract.fetch_8k_edgar import _recover_item_507_from_primary
 from src.data_store.schema import Resume, Tables
 
 

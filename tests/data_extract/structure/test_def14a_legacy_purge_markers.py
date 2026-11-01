@@ -7,7 +7,7 @@ from __future__ import annotations
 import pandas as pd
 
 from scripts.def14a_legacy_purge import NEW_SCHEMA_COLUMNS, legacy_accessions
-from src.data_extract.utils.common.empty_markers import marker_frame
+from src.data_extract.utils.edgar_extract.empty_markers import marker_frame
 from src.data_store.schema import Tables
 
 

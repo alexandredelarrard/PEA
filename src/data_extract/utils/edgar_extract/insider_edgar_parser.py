@@ -12,7 +12,7 @@ from xml.etree import ElementTree
 
 import pandas as pd
 
-from src.data_extract.utils.institutionals.insider_common import FLAG_TRUE, FOOTNOTE_COLUMNS, INSIDER_FIELDS, OWNER_STRING_COLUMNS, InsiderField
+from src.data_extract.utils.insider.insider_common import FLAG_TRUE, FOOTNOTE_COLUMNS, INSIDER_FIELDS, OWNER_STRING_COLUMNS, InsiderField
 
 #: (table element, row element, security_type) of the two transaction tables.
 XML_TABLES = (

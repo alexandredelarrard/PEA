@@ -1,5 +1,5 @@
 """
-fetch_8k_edgar.py (src/data_extract/utils/institutionals/fetch_8k_edgar.py)
+fetch_8k_edgar.py (src/data_extract/utils/edgar_extract/fetch_8k_edgar.py)
 ------------------------------------------------------------------------
 SEC Form 8-K filings -> `sec_8k`, one row per (ticker, accession, item code).
 Item codes come from EDGAR's submissions metadata (the issuer's `Company` listing, read only for
@@ -20,8 +20,8 @@ from typing import Any, cast
 import pandas as pd
 
 from src.data_extract.utils.common import sec_io
-from src.data_extract.utils.common.edgar_driver import EdgarFetch, FilingStamp, parse_filing_rows
 from src.data_extract.utils.common.sec_io import TransientReadError, filing_obj, filing_text
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, FilingStamp, parse_filing_rows
 from src.data_extract.utils.structure.votes.guard import has_vote_table
 from src.data_store.schema import Resume, Tables
 

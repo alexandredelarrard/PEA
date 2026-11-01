@@ -5,8 +5,8 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.institutionals.insider_common import XML_DATE_FORMATS, build_insider_frame
-from src.data_extract.utils.institutionals.insider_edgar_parser import extract_xml_strings
+from src.data_extract.utils.edgar_extract.insider_edgar_parser import extract_xml_strings
+from src.data_extract.utils.insider.insider_common import XML_DATE_FORMATS, build_insider_frame
 
 ROLES = ["is_director", "is_officer", "is_ten_pct_owner", "is_other"]
 

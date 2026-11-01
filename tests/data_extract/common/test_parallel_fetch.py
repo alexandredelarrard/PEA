@@ -8,7 +8,7 @@ import types
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common.parallel_fetch import run_per_ticker
+from src.data_extract.utils.edgar_extract.parallel_fetch import run_per_ticker
 
 
 def _log() -> types.SimpleNamespace:

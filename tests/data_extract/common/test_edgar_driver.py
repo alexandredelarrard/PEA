@@ -1,4 +1,4 @@
-"""Tests for the shared EDGAR fetch driver (`src/data_extract/utils/common/edgar_driver.py`) and the
+"""Tests for the shared EDGAR fetch driver (`src/data_extract/utils/edgar_extract/edgar_driver.py`) and the
 `Company`-based registrant listing (`resolve_registrant_filings`) the LLM fetchers still use.
 
 The driver tests run offline on a real `DataStore` (SQLite), a seeded local EDGAR index and fake
@@ -18,11 +18,12 @@ from typing import Any, cast
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common import edgar_driver, frame_sanitize
-from src.data_extract.utils.common.edgar_driver import EdgarFetch, EdgarScope, FilingStamp, parse_filing_rows, run_edgar_fetch
+from src.data_extract.utils.common import frame_sanitize
 from src.data_extract.utils.common.identity import FilingScope
 from src.data_extract.utils.common.registrant import resolve_registrant_filings
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError
+from src.data_extract.utils.edgar_extract import edgar_driver
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarScope, FilingStamp, parse_filing_rows, run_edgar_fetch
 from src.data_store import schema
 from src.data_store.schema import RESUME_DOCUMENTS, Resume, Table, Tables
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity

@@ -5,7 +5,7 @@ from __future__ import annotations
 import pandas as pd
 from sqlalchemy import event
 
-from src.data_extract.utils.common.empty_markers import marker_frame
+from src.data_extract.utils.edgar_extract.empty_markers import marker_frame
 from src.data_extract.utils.structure.def14a.retry import reservation_frame
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore

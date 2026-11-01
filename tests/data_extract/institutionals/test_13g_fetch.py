@@ -16,16 +16,16 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp
 from src.data_extract.utils.common.sec_io import ParseFailureError
-from src.data_extract.utils.institutionals.fetch_13g_edgar import (
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarScope, FilingStamp
+from src.data_extract.utils.edgar_extract.fetch_13g_edgar import (
     SCHEDULE_13G,
     SEC_13G_FETCH,
     _norm_entity,
     _reporting_person_cik,
 )
-from src.data_extract.utils.institutionals.schedule_rows import SCHEDULE_NUMERIC_COLS as _NUMERIC_COLS
-from src.data_extract.utils.institutionals.schedule_rows import schedule_filing_rows
+from src.data_extract.utils.edgar_extract.schedule_rows import SCHEDULE_NUMERIC_COLS as _NUMERIC_COLS
+from src.data_extract.utils.edgar_extract.schedule_rows import schedule_filing_rows
 from src.data_store.schema import Tables
 
 

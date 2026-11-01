@@ -1,5 +1,5 @@
 """Insider transaction-date repair
-(src/data_extract/utils/institutionals/insider_common.py::repair_transaction_dates).
+(src/data_extract/utils/insider/insider_common.py::repair_transaction_dates).
 
 A Form 3/4/5 discloses a COMPLETED transaction, so `transaction_date <= filing_date` always.
 That makes the field self-validating. The live table breached it 14 times in 1.39M rows, two ways:
@@ -17,7 +17,7 @@ from collections.abc import Sequence
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.institutionals.insider_common import repair_transaction_dates
+from src.data_extract.utils.insider.insider_common import repair_transaction_dates
 
 
 def _frame(rows: Sequence[tuple[str | None, str | None]]) -> pd.DataFrame:

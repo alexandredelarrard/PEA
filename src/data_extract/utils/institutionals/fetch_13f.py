@@ -36,10 +36,10 @@ from tqdm import tqdm
 
 from src.constants.constants import SEC_13F_INFERRED_HOLDINGS_REPORT, SEC_13F_SOURCE_ACCOUNTED
 from src.context import Context
-from src.data_extract.utils.common.edgar_driver import FilingStamp, RetryRounds
-from src.data_extract.utils.common.empty_markers import marker_mask
 from src.data_extract.utils.common.resume import DONE_PER_KEY, DONE_TABLE, document_floor, stored_accessions
 from src.data_extract.utils.common.sec_io import TransientReadError, configure, filing_obj, sec_call
+from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp, RetryRounds
+from src.data_extract.utils.edgar_extract.empty_markers import marker_mask
 from src.data_extract.utils.institutionals.fetch_cusip_map import build_cusip_ticker_map
 from src.data_extract.utils.institutionals.legacy_13f_fallback import (
     _ENTRY_COUNT,

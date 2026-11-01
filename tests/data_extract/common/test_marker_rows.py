@@ -11,7 +11,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common.edgar_driver import FilingStamp, marker_row
+from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp, marker_row
 from src.data_store.schema import Table, Tables
 from src.data_store.store import _create_canonical
 from tests.data_extract.edgar_fixtures import fake_filing

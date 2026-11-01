@@ -11,9 +11,9 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common import edgar_driver
-from src.data_extract.utils.common.edgar_driver import run_edgar_fetch
-from src.data_extract.utils.institutionals.fetch_13g_edgar import SEC_13G_FETCH
+from src.data_extract.utils.edgar_extract import edgar_driver
+from src.data_extract.utils.edgar_extract.edgar_driver import run_edgar_fetch
+from src.data_extract.utils.edgar_extract.fetch_13g_edgar import SEC_13G_FETCH
 from src.data_store.schema import Tables
 from tests.data_extract.edgar_fixtures import fake_context, fake_filing, identity_for, patch_index_filings, seed_index
 

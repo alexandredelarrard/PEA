@@ -13,9 +13,9 @@ from typing import Any
 
 import pandas as pd
 
-from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp
-from src.data_extract.utils.structure.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
-from src.data_extract.utils.structure.fetch_filing_text import FILING_TEXT_FETCH, FILING_TEXT_MIN_CHARS
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarScope, FilingStamp
+from src.data_extract.utils.edgar_extract.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
+from src.data_extract.utils.edgar_extract.fetch_filing_text import FILING_TEXT_FETCH, FILING_TEXT_MIN_CHARS
 from src.data_store.schema import Tables
 
 FIXTURES = Path(__file__).parent / "fixtures"

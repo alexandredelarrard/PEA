@@ -20,8 +20,8 @@ from typing import cast
 
 import pandas as pd
 
-from src.data_extract.utils.common.empty_markers import marker_frame
 from src.data_extract.utils.common.frame_sanitize import strip_nul
+from src.data_extract.utils.edgar_extract.empty_markers import marker_frame
 from src.data_extract.utils.schemas.def14a_schema import Def14AExtract, ExecutiveCompensation
 from src.data_extract.utils.structure.def14a.validate import (
     DEF14A_AUDIT_FEE_MIN_PLAUSIBLE,

@@ -518,9 +518,9 @@ def test_flatten_ceo_age_fallback():
 def test_llm_extractor_real_apple():
     """Live: fetch Apple's latest DEF 14A, extract with the tailored prompt, sanity-check."""
     from src.context import get_config_context
-    from src.data_extract.utils.common.edgar_extract import html_to_text
-    from src.data_extract.utils.common.edgar_fillings import list_filings
-    from src.data_extract.utils.common.sec_utils import sec_get
+    from src.data_extract.utils.edgar_extract.edgar_fillings import list_filings
+    from src.data_extract.utils.edgar_extract.html_text import html_to_text
+    from src.data_extract.utils.edgar_extract.sec_utils import sec_get
     from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 
     config, ctx = get_config_context("./configs", use_cache=True, save=False)

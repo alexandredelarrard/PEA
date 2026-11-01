@@ -23,11 +23,12 @@ import pytest
 
 from src.data_aggregate.utils.institutionals.frontiers import schedule_complete_through
 from src.data_extract import cli as cli_mod
-from src.data_extract.utils.common import edgar_driver, edgar_index, resume
+from src.data_extract.utils.common import resume
 from src.data_extract.utils.common.identity import Identity, build_identity
-from src.data_extract.utils.common.sec_utils import CIK_MAPPING_COLS
+from src.data_extract.utils.edgar_extract import edgar_driver, edgar_index
+from src.data_extract.utils.edgar_extract import fetch_insider_edgar as edgar
+from src.data_extract.utils.edgar_extract.sec_utils import CIK_MAPPING_COLS
 from src.data_extract.utils.identity.identity_store import load_source_identity
-from src.data_extract.utils.institutionals import fetch_insider_edgar as edgar
 from src.data_extract.utils.institutionals import fetch_insider_transactions as ins
 from src.data_store.schema import Tables
 from src.data_store.store import _create_canonical

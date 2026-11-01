@@ -21,7 +21,7 @@ import pandas as pd
 import pytest
 from edgar import Filing
 
-from src.data_extract.utils.common.edgar_driver import FilingStamp
+from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp
 from src.data_extract.utils.institutionals import fetch_13f as f13
 from src.data_extract.utils.institutionals.fetch_13f import save_13f_filing
 from src.data_extract.utils.institutionals.legacy_13f_fallback import (

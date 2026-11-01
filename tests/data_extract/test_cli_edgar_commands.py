@@ -18,14 +18,14 @@ from click.testing import CliRunner
 import src.data_extract.cli as cli_mod
 from src.data_extract.transformers.step_extract_institutionals import StepExtractInstitutionals
 from src.data_extract.transformers.step_extract_structure import StepExtractStructure
-from src.data_extract.utils.common.edgar_driver import EdgarFetch, FilingStamp, marker_row
 from src.data_extract.utils.common.resume import DocumentWork
-from src.data_extract.utils.institutionals.fetch_8k_edgar import SEC_8K_FETCH
-from src.data_extract.utils.institutionals.fetch_13d_edgar import SEC_13D_FETCH
-from src.data_extract.utils.institutionals.fetch_13g_edgar import SEC_13G_FETCH
-from src.data_extract.utils.institutionals.fetch_insider_edgar import INSIDER_EDGAR_FETCH
-from src.data_extract.utils.structure.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
-from src.data_extract.utils.structure.fetch_filing_text import FILING_TEXT_FETCH
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, FilingStamp, marker_row
+from src.data_extract.utils.edgar_extract.fetch_8k_edgar import SEC_8K_FETCH
+from src.data_extract.utils.edgar_extract.fetch_13d_edgar import SEC_13D_FETCH
+from src.data_extract.utils.edgar_extract.fetch_13g_edgar import SEC_13G_FETCH
+from src.data_extract.utils.edgar_extract.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
+from src.data_extract.utils.edgar_extract.fetch_filing_text import FILING_TEXT_FETCH
+from src.data_extract.utils.edgar_extract.fetch_insider_edgar import INSIDER_EDGAR_FETCH
 from src.data_store.schema import Tables
 from tests.data_extract.edgar_fixtures import fake_filing
 

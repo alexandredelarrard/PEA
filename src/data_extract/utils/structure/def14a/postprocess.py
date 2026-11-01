@@ -12,7 +12,7 @@ from typing import Any
 import pandas as pd
 from pydantic import BaseModel, ValidationError
 
-from src.data_extract.utils.common.empty_markers import marker_mask
+from src.data_extract.utils.edgar_extract.empty_markers import marker_mask
 from src.data_extract.utils.schemas.def14a_schema import (
     BeneficialOwner,
     Def14AExtract,

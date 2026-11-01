@@ -13,9 +13,9 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common import edgar_index
 from src.data_extract.utils.common.identity import Identity, build_identity
-from src.data_extract.utils.common.sec_utils import CIK_MAPPING_COLS
+from src.data_extract.utils.edgar_extract import edgar_index
+from src.data_extract.utils.edgar_extract.sec_utils import CIK_MAPPING_COLS
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik
 from tests.data_extract.fake_context import extract_config

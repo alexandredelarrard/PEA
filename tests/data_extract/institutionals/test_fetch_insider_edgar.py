@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 
-from src.data_extract.utils.institutionals import fetch_insider_edgar as module
+from src.data_extract.utils.edgar_extract import fetch_insider_edgar as module
 from src.data_store.ddl import columns_from_frame
 from src.data_store.schema import Tables
 from tests.data_extract.edgar_fixtures import identity_for

@@ -24,10 +24,10 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.common import edgar_driver
-from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp, run_edgar_fetch
 from src.data_extract.utils.common.identity import FilingScope
-from src.data_extract.utils.structure import fetch_def14a_edgar
+from src.data_extract.utils.edgar_extract import edgar_driver, fetch_def14a_edgar
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarScope, FilingStamp, run_edgar_fetch
+from src.data_extract.utils.edgar_extract.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
 from src.data_extract.utils.structure.def14a.ecd import (
     _CATEGORY_AXIS,
     _PEO_MEMBER,
@@ -37,7 +37,6 @@ from src.data_extract.utils.structure.def14a.ecd import (
     latest_period,
     peo_block,
 )
-from src.data_extract.utils.structure.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
 from src.data_store.schema import Tables
 from tests.data_extract.edgar_fixtures import fake_context, patch_index_filings, seed_index
 

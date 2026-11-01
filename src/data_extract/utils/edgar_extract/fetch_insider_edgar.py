@@ -21,10 +21,11 @@ from xml.etree import ElementTree
 import pandas as pd
 
 from src.context import Context
-from src.data_extract.utils.common.edgar_driver import EdgarFetch, EdgarScope, FilingStamp
 from src.data_extract.utils.common.resume import DONE_PER_KEY
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, filing_header, filing_xml
-from src.data_extract.utils.institutionals.insider_common import (
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarScope, FilingStamp
+from src.data_extract.utils.edgar_extract.insider_edgar_parser import extract_xml_strings
+from src.data_extract.utils.insider.insider_common import (
     INSIDER_COLUMNS,
     INSIDER_KEY,
     XML_DATE_FORMATS,
@@ -35,8 +36,7 @@ from src.data_extract.utils.institutionals.insider_common import (
     log_exclusions,
     screen_insider_rows,
 )
-from src.data_extract.utils.institutionals.insider_edgar_parser import extract_xml_strings
-from src.data_extract.utils.institutionals.insider_store import insider_source_run, replace_insider_source
+from src.data_extract.utils.insider.insider_store import insider_source_run, replace_insider_source
 from src.data_store.schema import Table, Tables
 from src.utils.string import pad_cik
 

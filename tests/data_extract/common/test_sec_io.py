@@ -27,9 +27,9 @@ from edgar.sgml.sgml_header import FilingHeader
 from edgar.sgml.sgml_parser import SECHTMLResponseError
 from omegaconf import OmegaConf
 
-from src.data_extract.utils.common import edgar_fillings as ef
 from src.data_extract.utils.common import sec_io
 from src.data_extract.utils.common.sec_io import RetryPolicy, TransientReadError
+from src.data_extract.utils.edgar_extract import edgar_fillings as ef
 
 _REPO = Path(__file__).resolve().parents[3]
 _URL = "https://www.sec.gov/Archives/edgar/data/1/000000000000000001/doc.htm"

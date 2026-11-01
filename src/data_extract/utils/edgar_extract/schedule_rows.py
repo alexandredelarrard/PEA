@@ -1,5 +1,5 @@
 """
-schedule_rows.py (src/data_extract/utils/institutionals/schedule_rows.py)
+schedule_rows.py (src/data_extract/utils/edgar_extract/schedule_rows.py)
 -------------------------------------------------------------------------
 One Schedule 13D/13G row builder, the subject test and the issuer-guarded per-filing parse. A
 `ScheduleSpec` carries what differs between the two forms (form-specific filing fields,
@@ -16,11 +16,11 @@ from typing import Any
 
 import pandas as pd
 
-from src.data_extract.utils.common.edgar_driver import EdgarScope, FilingStamp, num_or_null
 from src.data_extract.utils.common.frame_sanitize import finalise_frame
-from src.data_extract.utils.common.parallel_fetch import PROGRAMMING_ERRORS
 from src.data_extract.utils.common.registrant import header_subject_ciks
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, filing_obj
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarScope, FilingStamp, num_or_null
+from src.data_extract.utils.edgar_extract.parallel_fetch import PROGRAMMING_ERRORS
 from src.data_store.schema import Table
 from src.utils.string import pad_cik
 

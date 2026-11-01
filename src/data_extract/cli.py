@@ -74,10 +74,16 @@ from src.data_extract.transformers.step_extract_fundamentals_sharadar import (
 from src.data_extract.utils.behavioral.fetch_earnings_call_transcripts import (
     extract_earnings_calls as _extract_earnings_calls,
 )
-from src.data_extract.utils.common import edgar_index
 from src.data_extract.utils.common.bulk_cache import cache_dir
-from src.data_extract.utils.common.edgar_driver import EdgarFetch, load_edgar_scope, plan_fetch, run_edgar_fetch
-from src.data_extract.utils.common.sec_utils import load_cik_mapping
+from src.data_extract.utils.edgar_extract import edgar_index
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, load_edgar_scope, plan_fetch, run_edgar_fetch
+from src.data_extract.utils.edgar_extract.fetch_8k_edgar import SEC_8K_FETCH
+from src.data_extract.utils.edgar_extract.fetch_13d_edgar import SEC_13D_FETCH
+from src.data_extract.utils.edgar_extract.fetch_13g_edgar import SEC_13G_FETCH
+from src.data_extract.utils.edgar_extract.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
+from src.data_extract.utils.edgar_extract.fetch_filing_text import FILING_TEXT_FETCH
+from src.data_extract.utils.edgar_extract.fetch_insider_edgar import INSIDER_EDGAR_FETCH
+from src.data_extract.utils.edgar_extract.sec_utils import load_cik_mapping
 from src.data_extract.utils.fundamentals.build_history import build_fundamentals_history
 from src.data_extract.utils.fundamentals.fetch_earnings_surprises import fetch_earnings_surprises
 from src.data_extract.utils.fundamentals.fetch_financial_notes import download_financial_notes, fetch_financial_notes
@@ -101,14 +107,10 @@ from src.data_extract.utils.identity.identity_propagate import propagate_identit
 from src.data_extract.utils.identity.sec_tickers import download_sec_company_tickers
 from src.data_extract.utils.identity.security_master import build_security_master
 from src.data_extract.utils.identity.symbol_tenure import build_symbol_tenure, scan_form345_cache
-from src.data_extract.utils.institutionals.fetch_8k_edgar import SEC_8K_FETCH
-from src.data_extract.utils.institutionals.fetch_13d_edgar import SEC_13D_FETCH
 from src.data_extract.utils.institutionals.fetch_13f import fetch_13f
 from src.data_extract.utils.institutionals.fetch_13f_backfill import fetch_13f_backfill
 from src.data_extract.utils.institutionals.fetch_13f_managers import fetch_13f_managers, recover_13f_vintages
-from src.data_extract.utils.institutionals.fetch_13g_edgar import SEC_13G_FETCH
 from src.data_extract.utils.institutionals.fetch_fails_to_deliver import download_fails_to_deliver, fetch_fails_to_deliver
-from src.data_extract.utils.institutionals.fetch_insider_edgar import INSIDER_EDGAR_FETCH
 from src.data_extract.utils.institutionals.fetch_insider_transactions import download_insider_transactions, fetch_insider_transactions
 from src.data_extract.utils.institutionals.fetch_short_interest import fetch_short_interest
 from src.data_extract.utils.institutionals.fetch_superinvestors import rebuild_roster, upsert_roster_snapshot
@@ -116,8 +118,6 @@ from src.data_extract.utils.prices.fetch_macro import fetch_macro
 from src.data_extract.utils.prices.fetch_prices import fetch_prices_and_actions
 from src.data_extract.utils.prices.fetch_tickers import get_sp500_tickers
 from src.data_extract.utils.structure.def14a import fetch_def14a_llm
-from src.data_extract.utils.structure.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
-from src.data_extract.utils.structure.fetch_filing_text import FILING_TEXT_FETCH
 from src.data_extract.utils.structure.votes import fetch_8k_votes_llm
 from src.data_store.schema import Table, Tables, freshness_tables, marker_tables, resolve
 from src.utils.cli_helper import SpecialHelpOrder

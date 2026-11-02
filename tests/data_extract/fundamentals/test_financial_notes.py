@@ -26,8 +26,12 @@ import src.data_extract.utils.zips.zip_archive as zip_archive
 from src.constants.constants import MARKET_TIMEZONE
 from src.data_extract.utils.common import bulk_cache
 from src.data_extract.utils.common.resume import ArchiveWork
+from src.data_extract.utils.zips.zip_archive import ZipScope
 from src.data_store.schema import Resume, Tables
+from src.utils.string import run_date
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
+
+AAPL_SCOPE = ZipScope(tickers=["AAPL"], all_tickers=None, run_date=run_date(None), full=False)
 
 # --------------------------------------------------------------------------- #
 # Synthetic in-memory notes zip                                                  #
@@ -399,7 +403,7 @@ def test_fetch_repairs_converged_historical_clock_without_reparsing_zip(tmp_path
     )
     monkeypatch.setattr(fn, "archive_worklist", lambda *args, **kwargs: pytest.fail("metadata repair must not enter extraction"))
 
-    assert fn.fetch_financial_notes(context, ["AAPL"], years_history=15, repair_availability=True) == 0
+    assert fn.repair_notes_availability(context, tmp_path) == 0
     assert repaired == [(period, date(2021, 9, 13), True)]
     print("\n=== SANITY CHECK: converged notes metadata repair ===")
     print("  an already-ingested August 2021 period is relabelled September 13 without a ZIP reparse. Validated.")
@@ -417,7 +421,6 @@ def test_fetch_validates_clock_before_converged_period_fast_path(tmp_path, monke
     monkeypatch.setattr(fn, "cache_dir", lambda context, key: tmp_path)
     monkeypatch.setattr(fn, "archive_worklist", lambda *args, **kwargs: _work([]))
     monkeypatch.setattr(fn, "_periods_missing_available_at", lambda context: set())
-    monkeypatch.setattr(fn, "notes_periods", lambda context, years_history, today=None: [period])
     monkeypatch.setattr(
         fn,
         "stored_period_clock",
@@ -425,7 +428,7 @@ def test_fetch_validates_clock_before_converged_period_fast_path(tmp_path, monke
     )
 
     with pytest.raises(ValueError, match="conflicting stored available_at values"):
-        fn.fetch_financial_notes(context, ["AAPL"], years_history=15)
+        fn.ingest_financial_notes(context, tmp_path, AAPL_SCOPE, [period])
 
     print("\n=== SANITY CHECK: converged notes archive clock ===")
     print("  a fully ingested period still validates its immutable stored archive clock before the fast-path skip. Validated.")
@@ -482,12 +485,11 @@ def test_fetch_stamps_one_archive_clock_on_numeric_and_text_rows(tmp_path, monke
     monkeypatch.setattr(fn, "cache_dir", lambda context, key: tmp_path)
     monkeypatch.setattr(fn, "archive_worklist", lambda context, tables, periods, cached, keys, as_of, full, all_tickers=None: _work(list(periods)))
     monkeypatch.setattr(fn, "_periods_missing_available_at", lambda context: set())
-    monkeypatch.setattr(fn, "notes_periods", lambda context, years_history, today=None: [period])
     monkeypatch.setattr(zip_archive, "ensure_zip", lambda *args, **kwargs: path)
     monkeypatch.setattr(fn, "stored_period_clock", lambda context, tables, period: None)
     monkeypatch.setattr(fn, "_read_notes", lambda path, identity, universe: (num.copy(), txt.copy()))
 
-    assert fn.fetch_financial_notes(context, ["AAPL"], years_history=15) == 2
+    assert fn.ingest_financial_notes(context, tmp_path, AAPL_SCOPE, [period]) == 2
     assert [table for table, _ in saved] == [fn.Tables.notes_num, fn.Tables.notes_text]
     assert all(frame["available_at"].eq(archive_date).all() for _, frame in saved)
 
@@ -539,12 +541,11 @@ def test_fetch_stamps_new_zip_with_successful_download_date(tmp_path: Path, monk
     monkeypatch.setattr(fn, "cache_dir", lambda context, key: tmp_path)
     monkeypatch.setattr(fn, "archive_worklist", lambda context, tables, periods, cached, keys, as_of, full, all_tickers=None: _work(list(periods)))
     monkeypatch.setattr(fn, "_periods_missing_available_at", lambda context: set())
-    monkeypatch.setattr(fn, "notes_periods", lambda context, years_history, today=None: [period])
     monkeypatch.setattr(fn, "stored_period_clock", lambda context, tables, period: None)
     monkeypatch.setattr(zip_archive, "ensure_zip", download)
     monkeypatch.setattr(fn, "_read_notes", lambda path, identity, universe: (num.copy(), pd.DataFrame()))
 
-    assert fn.fetch_financial_notes(context, ["AAPL"], years_history=15) == 1
+    assert fn.ingest_financial_notes(context, tmp_path, AAPL_SCOPE, [period]) == 1
     assert saved[0]["available_at"].iloc[0] == date(2026, 10, 15)
     print("\n=== SANITY CHECK: newly downloaded notes ZIP ===")
     print("  the completed download day in New York wins over the ZIP cache's older file timestamp. Validated.")

@@ -211,9 +211,10 @@ def _read_proxy(context: Context, ticker: str, filing: pd.Series) -> str | None:
         return None
 
 
-def section_extractors(context: Context, config: DictConfig, workers: int | None = 2) -> dict[str, LLMExtractor]:
-    """One extractor per section, bound to its own action, prompt and schema; `workers` concurrent calls each
-    (None: `config.gpt.threads`), which also bounds the answers in flight."""
+def section_extractors(context: Context, config: DictConfig) -> dict[str, LLMExtractor]:
+    """One extractor per section, bound to its own action, prompt and schema; two concurrent calls each, which also
+    bounds the answers in flight."""
+    workers = 2
     return {section.key: LLMExtractor(context, config, action=section.action, threads=workers) for section in SECTIONS}
 
 

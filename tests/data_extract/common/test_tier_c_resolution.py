@@ -26,7 +26,9 @@ from src.data_extract.utils.insider.insider_common import screen_insider_rows
 from src.data_extract.utils.zips import fetch_financial_notes as fn
 from src.data_extract.utils.zips import fetch_financial_statements as fin
 from src.data_extract.utils.zips import zip_archive
+from src.data_extract.utils.zips.zip_archive import ZipScope
 from src.data_store.schema import Tables
+from src.utils.string import run_date
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
 
 #: GOOGL (Google Inc -> Alphabet, 2015-10-02), VTRS (Mylan -> Viatris, 2020-11-07), APA (Apache -> APA Corp, 2021-03-01).
@@ -107,9 +109,9 @@ def test_notes_rows_resolve_through_the_lineage_window_of_their_filer(sqlite_sto
     (tmp_path / f"{period}_notes.zip").write_bytes(_notes_zip())
     _patch_bulk_io(fn, monkeypatch, tmp_path)
     monkeypatch.setattr(fn, "_repair_stored_clocks", lambda *args, **kwargs: {})
-    monkeypatch.setattr(fn, "notes_periods", lambda context, years_history, today=None: [period])
 
-    fn.fetch_financial_notes(_context(sqlite_store, tmp_path), UNIVERSE, years_history=1)
+    scope = ZipScope(tickers=UNIVERSE, all_tickers=None, run_date=run_date(None), full=False)
+    fn.ingest_financial_notes(_context(sqlite_store, tmp_path), tmp_path, scope, [period])
 
     stored = sqlite_store.load(Tables.notes_num, columns=["adsh", "ticker"])
     got = dict(zip(stored["adsh"], stored["ticker"], strict=True))

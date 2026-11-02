@@ -232,12 +232,10 @@ def test_download_captures_only_new_periods_and_writes_no_marker_file(tmp_path: 
     read: list[str] = []
     real_read = dei._read_dei_facts
     monkeypatch.setattr(dei, "_read_dei_facts", lambda path: (read.append(path.name), real_read(path))[1])
-    monkeypatch.setattr(fn, "cache_dir", lambda context, key: tmp_path)
-    monkeypatch.setattr(fn, "notes_periods", lambda context, years_history: periods)
     monkeypatch.setattr(fn, "ensure_zip", lambda context, path, urls, **kwargs: path)
 
     context = _context(sqlite_store)
-    assert fn.download_financial_notes(context) == 1, "only the uncaptured period is downloaded"
+    assert fn.download_notes_periods(context, tmp_path, periods) == 1, "only the uncaptured period is downloaded"
     written = dei.capture_pending_dei(context, tmp_path, full=False)
     after = _stored(sqlite_store)
 
@@ -264,12 +262,10 @@ def test_full_recapture_replaces_only_that_periods_dei_rows(tmp_path: Path, sqli
         _seed_row("XYZ", "0000000001", "manual", ""),
     ]
     sqlite_store.save(Tables.symbol_tenure, pd.DataFrame(seeded))
-    monkeypatch.setattr(fn, "cache_dir", lambda context, key: tmp_path)
-    monkeypatch.setattr(fn, "notes_periods", lambda context, years_history: ["2025q3"])
     monkeypatch.setattr(fn, "ensure_zip", lambda *args, **kwargs: pytest.fail("a cached, captured period needs no download"))
 
     context = _context(sqlite_store)
-    fn.download_financial_notes(context)
+    fn.download_notes_periods(context, tmp_path, ["2025q3"])
     dei.capture_pending_dei(context, tmp_path, full=True)
     rows = {(r.symbol, r.source, r.evidence_period) for r in _stored(sqlite_store).itertuples(index=False)}
 

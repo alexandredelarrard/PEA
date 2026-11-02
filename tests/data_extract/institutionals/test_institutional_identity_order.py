@@ -20,7 +20,7 @@ IDENTITY_STAGE_NAMES = (
     "build_entity_lineage",
     "propagate_identity",
     "download_insider_transactions",
-    "download_financial_notes",
+    "download_notes_periods",
     "refresh=True",
 )
 

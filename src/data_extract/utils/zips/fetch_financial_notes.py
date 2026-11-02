@@ -5,7 +5,7 @@ curated tags on consolidated facts (`dimn == 0`, no `coreg`); text is stored raw
 ticker whose lineage window of its filer CIK holds the filing date (consolidating). Rows carry their archive
 `period` and point-in-time `available_at` clock. A period counts as done only when both tables hold it; the work
 list comes from `resume.archive_worklist`. Zips are large, so the window is the dedicated `notes_years_history` knob.
-`download_financial_notes` caches the zips whose cover-page `dei:TradingSymbol` facts the identity step has not
+`download_notes_periods` caches the zips whose cover-page `dei:TradingSymbol` facts the identity step has not
 captured yet (`utils/identity/capture_dei.py`); the notes parse reads its zips itself.
 """
 
@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Collection
 from datetime import date
 from functools import partial
 from pathlib import Path
@@ -41,7 +40,7 @@ from src.data_extract.utils.common.sec_io import sec_get
 from src.data_extract.utils.identity.symbol_tenure import captured_dei_periods
 from src.data_extract.utils.zips.zip_archive import ArchiveSource, ZipScope, ensure_archive
 from src.data_store.schema import Resume, Table, Tables
-from src.utils.string import pad_cik_series, run_date
+from src.utils.string import pad_cik_series
 
 logger = logging.getLogger(__name__)
 
@@ -344,12 +343,6 @@ def download_notes_periods(context: Context, cache: Path, periods: list[str]) ->
     )
 
 
-def download_financial_notes(context: Context, years_history: int = 15) -> int:
-    """`download_notes_periods` over the window's listed periods (the step's `download_notes_periods` with the cache and period list resolved here)."""
-    cache = cache_dir(context, context.config.local.paths.financial_notes)
-    return download_notes_periods(context, cache, notes_periods(context, years_history + 1))
-
-
 def repair_notes_availability(context: Context, cache: Path) -> int:
     """Re-stamp every stored period's `available_at` clock; metadata only, never a download or parse. Returns 0."""
     _repair_stored_clocks(context, cache, overwrite=True)
@@ -395,25 +388,6 @@ def ingest_financial_notes(context: Context, cache: Path, scope: ZipScope, perio
 
     logger.info("notes: upserted %d num + %d text rows (%d pending + %d rescanned periods)", n_num, n_txt, len(work.pending), len(work.rescan))
     return n_num + n_txt
-
-
-def fetch_financial_notes(
-    context: Context,
-    tickers: list[str],
-    years_history: int,
-    reparse: bool = False,
-    repair_availability: bool = False,
-    as_of: pd.Timestamp | None = None,
-    *,
-    all_tickers: Collection[str] | None = None,
-) -> int:
-    """`ingest_financial_notes` over the window's listed periods, or
-    with `repair_availability` only `repair_notes_availability` (returns 0 before any download or parse)."""
-    cache = cache_dir(context, context.config.local.paths.financial_notes)
-    if repair_availability:
-        return repair_notes_availability(context, cache)
-    scope = ZipScope(tickers=tickers, all_tickers=all_tickers, run_date=run_date(as_of), full=reparse)
-    return ingest_financial_notes(context, cache, scope, notes_periods(context, years_history + 1, scope.run_date))
 
 
 def reparse_financial_notes(context: Context, tickers: list[str]) -> int:

@@ -389,7 +389,7 @@ def test_a_lineage_expansion_lists_the_new_window_on_the_next_run_with_no_run_st
     print(f"  CC's scope holds a predecessor window -> both CIKs listed over the whole window: {listed}. Validated.")
 
 
-def test_llm_workers_none_falls_back_to_config_gpt_threads(tmp_path, monkeypatch):
+def test_section_extractors_run_two_wide_whatever_config_gpt_threads(tmp_path, monkeypatch):
     from src.data_extract.utils.structure.def14a import fetch as mod
 
     context = _daily_context(tmp_path)
@@ -408,11 +408,11 @@ def test_llm_workers_none_falls_back_to_config_gpt_threads(tmp_path, monkeypatch
     monkeypatch.setattr(mod, "LLMExtractor", _RecordingExtractor)
     monkeypatch.setattr(mod, "load_cik_mapping", lambda *_: pd.DataFrame({"ticker": ["ZZ"], "cik": ["1"], "name": ["Z"]}))
 
-    mod.fetch_def14a_llm(context, context.config, ["ZZ"], mod.section_extractors(context, context.config, workers=None))
+    mod.fetch_def14a_llm(context, context.config, ["ZZ"], mod.section_extractors(context, context.config))
 
-    assert built == [7] * 5
+    assert built == [2] * 5
     print("\n=== SANITY: DEF 14A LLM workers ===")
-    print(f"  workers=None -> the extractor ran {built[0]}-wide, i.e. config.gpt.threads (7 in this test config). Validated.")
+    print(f"  each of the 5 section extractors runs {built[0]}-wide although config.gpt.threads is 7. Validated.")
 
 
 def test_llm_proxies_are_listed_per_scope_window_with_the_seam_margin(monkeypatch):

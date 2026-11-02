@@ -44,68 +44,58 @@ def _seed_prices(sqlite_store: DataStore) -> None:
     )
 
 
-def _seed_insider(sqlite_store: DataStore, filing_date: str, inventory_date: str | None) -> None:
-    """One stored insider row with independently dated inventory proof."""
+def _seed_insider(sqlite_store: DataStore, filing_date: str) -> None:
+    """One stored insider empty-filing marker (no fetched_at) filed on `filing_date`."""
     sqlite_store.save(
         Tables.insider_transactions,
         pd.DataFrame(
             {
                 "accession_number": ["a1"],
-                "security_type": "nonderiv",
-                "row_sequence": 1,
+                "security_type": "_empty",
+                "row_sequence": 0,
                 "ticker": ["AAA"],
                 "filing_date": [pd.Timestamp(filing_date)],
-                "fetched_at": [pd.Timestamp("2026-09-05")],
-                "inventory_checked_through": [pd.Timestamp(inventory_date) if inventory_date else pd.NaT],
                 "source": ["edgar"],
             }
         ),
     )
 
 
-def test_inventory_proof_through_the_part_edge_makes_the_source_current(sqlite_store: DataStore) -> None:
+def test_a_filing_on_the_reference_date_makes_the_source_current(sqlite_store: DataStore) -> None:
     _seed_prices(sqlite_store)
-    _seed_insider(sqlite_store, "2026-09-01", "2026-09-04")
+    _seed_insider(sqlite_store, "2026-09-04")
 
-    status = _insider_source_status(cast(Context, _context(sqlite_store)), "2026-09-04", tolerance_days=4)
+    status = _insider_source_status(cast(Context, _context(sqlite_store)), "2026-09-04", "2026-09-03", tolerance_days=4)
 
     assert status == {
         "complete_through": "2026-09-04",
-        "part_max_date": "2026-09-04",
+        "reference_price_date": "2026-09-04",
+        "part_max_date": "2026-09-03",
         "lag_days": 0,
         "tolerance_days": 4,
         "ok": True,
     }
-    print("SANITY: explicit fetched inventory proof through the last price session makes the source current, independently of the filing date.")
+    print("SANITY: D = 2026-09-04 (a marker without fetched_at) equals the reference price date: lag 0, ok.")
 
 
-def test_a_recent_filing_without_inventory_proof_cannot_make_the_source_current(sqlite_store: DataStore) -> None:
+def test_a_frontier_five_days_behind_fails_a_four_day_tolerance(sqlite_store: DataStore) -> None:
     _seed_prices(sqlite_store)
-    _seed_insider(sqlite_store, "2026-09-04", None)
+    _seed_insider(sqlite_store, "2026-08-30")
 
-    status = _insider_source_status(cast(Context, _context(sqlite_store)), "2026-09-04", tolerance_days=4)
+    status = _insider_source_status(cast(Context, _context(sqlite_store)), "2026-09-04", "2026-09-04", tolerance_days=4)
+
+    assert status["complete_through"] == "2026-08-30" and status["lag_days"] == 5 and status["ok"] is False
+    print("SANITY: D 5 days behind the reference price date fails the 4-day tolerance.")
+
+
+def test_an_empty_insider_table_cannot_make_the_source_current(sqlite_store: DataStore) -> None:
+    _seed_prices(sqlite_store)
+
+    status = _insider_source_status(cast(Context, _context(sqlite_store)), "2026-09-04", "2026-09-04", tolerance_days=4)
 
     assert status["complete_through"] is None and status["lag_days"] is None and status["ok"] is False
-    print("SANITY: a filing on the last price session cannot certify an unchecked issuer inventory.")
-
-
-def test_an_empty_insider_table_cannot_make_the_source_current(sqlite_store):
-    _seed_prices(sqlite_store)
-
-    status = _insider_source_status(cast(Context, _context(sqlite_store)), "2026-09-04", tolerance_days=4)
-
-    assert status["complete_through"] is None and status["lag_days"] is None and status["ok"] is False
-    print("SANITY: with no stored insider row the frontier is unknown and the gate is red.")
-
-
-def test_a_stale_insider_table_fails_the_lag_gate(sqlite_store: DataStore) -> None:
-    _seed_prices(sqlite_store)
-    _seed_insider(sqlite_store, "2026-09-04", "2026-08-25")
-
-    status = _insider_source_status(cast(Context, _context(sqlite_store)), "2026-09-04", tolerance_days=4)
-
-    assert status["complete_through"] == "2026-08-25" and status["lag_days"] == 10 and status["ok"] is False
-    print("SANITY: a recent filing cannot advance inventory proof ten days behind the part edge; the 4-day tolerance still fails.")
+    assert status["reason"] == "insider_transactions is absent or empty"
+    print(f"SANITY: with no stored insider row the frontier is unknown, the gate is red, reason: {status['reason']!r}.")
 
 
 class _ReportStore:
@@ -116,32 +106,17 @@ class _ReportStore:
         missing: tuple[str, ...] = (),
         empty: tuple[str, ...] = (),
         source_date: str | None = "2026-09-04",
-        inventory_date: str | None = "2026-09-04",
+        insider_date: str = "2026-09-04",
     ) -> None:
         self.max_dates = max_dates or {}
         self.missing = set(missing)
         self.empty = set(empty)
         self.source_date = source_date
-        self.inventory_date = inventory_date
+        self.insider_date = insider_date
 
-    def columns(self, table: Any) -> list[str]:
-        if table == Tables.insider_transactions:
-            return ["ticker", "inventory_checked_through", "fetched_at"]
+    @staticmethod
+    def columns(table: Any) -> list[str]:
         return ["date", "ticker"]
-
-    def summarize(self, table: Any, group_by: str, aggregates: dict[str, tuple[str, str | None]], *, where: dict[str, list[str]]) -> pd.DataFrame:
-        boundary = pd.Timestamp(self.inventory_date) if self.inventory_date else pd.NaT
-        tickers = where["ticker"] if self.exists(table) and table.name not in self.empty else []
-        return pd.DataFrame(
-            {
-                "ticker": tickers,
-                "first": boundary,
-                "last": boundary,
-                "checked": int(pd.notna(boundary)),
-                "fetched": 1,
-                "rows": 1,
-            }
-        )
 
     def load(self, table, **kwargs):
         if not self.exists(table) or getattr(table, "name", table) in self.empty:
@@ -160,6 +135,8 @@ class _ReportStore:
         name = getattr(table, "name", table)
         if name in self.empty:
             return None
+        if name == Tables.insider_transactions.name:
+            return pd.Timestamp(self.insider_date)
         return self.max_dates.get(name, pd.Timestamp("2026-09-04"))
 
     def row_count(self, table) -> int:
@@ -202,7 +179,7 @@ def test_cube_part_edges_require_exact_price_alignment():
 
 
 def test_full_status_keeps_the_dag_contract_and_adds_source_detail():
-    context = _context(_ReportStore(inventory_date="2026-08-20"))
+    context = _context(_ReportStore(insider_date="2026-08-20"))
 
     report = part_status_report(cast(Context, context))
 
@@ -223,8 +200,8 @@ def test_full_status_keeps_the_dag_contract_and_adds_source_detail():
     insider = report["sources"]["cube_part_institutionals"]["insider_transactions"]
     assert insider["complete_through"] == "2026-08-20" and insider["lag_days"] == 15
     print(
-        "SANITY: the DAG's ok/behind/parts/max_date contract is unchanged, and inventory proof 15 days behind "
-        "the part edge names the insider source in `behind` even with a current filing."
+        "SANITY: the DAG's ok/behind/parts/max_date contract is unchanged, and an insider frontier D 15 days behind "
+        "the reference price date names the insider source in `behind`."
     )
 
 
@@ -237,7 +214,7 @@ def test_status_fails_closed_for_missing_cube_and_part_edge_mismatch():
     assert not report["ok"]
     assert lagging in report["behind"]
     assert Tables.cube.name in report["behind"]
-    assert SOURCE not in report["behind"], "inventory proof through the last session keeps the insider source current"
+    assert SOURCE not in report["behind"], "an insider frontier on the reference date keeps the insider source current"
     assert set(report["misaligned"]) == {lagging, Tables.cube.name}
     print("\n=== SANITY CHECK: cube status fails closed ===")
     print("  the missing final cube and the one-day fundamentals lag are both named in `behind`; the current insider source is not. Validated.")

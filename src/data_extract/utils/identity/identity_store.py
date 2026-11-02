@@ -24,17 +24,11 @@ def load_source_identity(store: DataStore) -> dict[Table, pd.DataFrame]:
     return cohort
 
 
-def invalidate_source_proof(store: DataStore, tickers: set[str], *, identity_change: bool = False) -> None:
+def invalidate_source_proof(store: DataStore, tickers: set[str]) -> None:
     """Clear retained proof and checked quiet quantities in the caller's active transaction."""
     if not tickers:
         return
-    for table, stamp in (
-        (Tables.insider_transactions, "inventory_checked_through"),
-        (Tables.short_interest, "source_checked_at"),
-        (Tables.sec_fails_to_deliver, "source_checked_at"),
-    ):
-        if not identity_change and table != Tables.insider_transactions:
-            continue
+    for table, stamp in ((Tables.short_interest, "source_checked_at"), (Tables.sec_fails_to_deliver, "source_checked_at")):
         columns = set(store.columns(table))
         if stamp not in columns:
             continue
@@ -148,7 +142,7 @@ def save_identity(store: DataStore, table: Table, df_rows: pd.DataFrame, where: 
             df_compared[column] = values.dt.normalize() if column in table.date_type_cols else values
         df_changed = df_compared.drop_duplicates(keep=False)
         if not df_changed.empty:
-            invalidate_source_proof(bound, _affected_tickers(df_changed, cohorts, df_retained), identity_change=True)
+            invalidate_source_proof(bound, _affected_tickers(df_changed, cohorts, df_retained))
         if table == Tables.sp500_tickers:
             return bound.save(table, df_rows, ignore_all_conflicts=True)
         if where is None:

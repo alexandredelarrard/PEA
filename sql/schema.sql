@@ -1080,7 +1080,6 @@ CREATE TABLE IF NOT EXISTS "sec13f_manager_holdings" (
 -- EDGAR daily rows are authoritative (source='edgar'); zip quarters add missing filings (source='zip').
 
 CREATE TABLE IF NOT EXISTS "insider_transactions" (
-    "inventory_checked_through" DATE,
     "accession_number" TEXT NOT NULL,
     "security_type" TEXT NOT NULL,
     "row_sequence" BIGINT NOT NULL,

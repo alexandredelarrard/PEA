@@ -938,7 +938,6 @@ class Tables:
             "expiration_date",
             "original_submission_date",
             "economic_date",
-            "inventory_checked_through",
         ),
         freshness="daily",
         freshness_date_col="filing_date",
@@ -970,9 +969,8 @@ class Tables:
             "source",
             "row_sequence",
             "fetched_at",
-            "inventory_checked_through",
         ),
-        optional_columns=frozenset({"fetched_at", "inventory_checked_through"}),
+        optional_columns=frozenset({"fetched_at"}),
         # Two legs resume from these rows. EDGAR: the local index's Forms 3/4/5 filed after the last
         # stored zip quarter, minus the accessions stored from EDGAR under the key (markers
         # included). Zip: the quarters no row carries yet. A marker takes `row_sequence` = 0.
@@ -1376,8 +1374,7 @@ class Tables:
         resume=def14a_llm.resume,
         empty_marker=("name", _EMPTY),
         marker_key_fill=(("fiscal_year", -1),),
-        read_columns=("ticker", "issuer_cik", "owner_cik", "role_as_of", 
-               "officer_title_clean", "role", "role_source"),
+        read_columns=("ticker", "issuer_cik", "owner_cik", "role_as_of", "officer_title_clean", "role", "role_source"),
     )
     def14a_director_comp = Table(
         "def14a_director_comp",

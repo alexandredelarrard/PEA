@@ -30,16 +30,13 @@ DoneFn = Callable[[Context, Sequence[str], pd.Timestamp | None], dict[str, set[s
 
 @dataclass
 class DocumentWork:
-    """One table's document work list: index rows to read per key (oldest first), plus what `resume-plan` reports,
-    and the index file versions it was planned on (`edgar_index.file_versions`)."""
+    """One table's document work list: index rows to read per key (oldest first), plus what `resume-plan` reports."""
 
     units: dict[str, pd.DataFrame]
     key_class: dict[str, str]
     counts: dict[str, int] = field(default_factory=dict)
     uncapped: int = 0
     timings: dict[str, float] = field(default_factory=dict)
-    listed: dict[str, pd.DataFrame] = field(default_factory=dict)
-    index_versions: dict[str, tuple[int, int]] = field(default_factory=dict)
 
     @property
     def size(self) -> int:
@@ -85,7 +82,7 @@ class WorklistRequest:
     """One walk's planning inputs: the `keys` (`ticker`, `cik`) on the `as_of` run date, the table's `forms`, the
     `identity` (None: roster CIKs only), the `years_history` window, the run's `added_on` map (read once per run),
     the runtime floor, the done-accession scope and filter, `full` re-read and the per-run `cap` (None: uncapped).
-    `listing_floor` replaces the window floor (a certifying fetch lists from its source start); `done_accessions`
+    `listing_floor` replaces the window floor (a source-history fetch lists from its source start); `done_accessions`
     replaces the scope/filter read with the fetch's own stored-set rule."""
 
     keys: pd.DataFrame
@@ -122,7 +119,6 @@ def document_worklist(context: Context, table: Table, request: WorklistRequest) 
         ticker: identity.filing_scope(ticker) if identity is not None else FilingScope.roster_only(ticker, cik) for ticker, cik in roster.items()
     }
     candidates = {ticker: listing_ciks(scope) for ticker, scope in scopes.items()}
-    index_versions = edgar_index.file_versions(context)
     df_index = edgar_index.entries(context, {c for ciks in candidates.values() for c in ciks}, forms, since=floor)
     by_cik = dict(tuple(df_index.groupby("cik", sort=False))) if not df_index.empty else {}
     read_index = time.perf_counter()
@@ -138,11 +134,9 @@ def document_worklist(context: Context, table: Table, request: WorklistRequest) 
     units: dict[str, pd.DataFrame] = {}
     key_class: dict[str, str] = {}
     counts: dict[str, int] = {}
-    listed: dict[str, pd.DataFrame] = {}
     for ticker in roster:
         frames = [by_cik[c] for c in candidates[ticker] if c in by_cik]
         df_listed = resolve_registrant_entries(scopes[ticker], pd.concat(frames, ignore_index=True), forms) if frames else df_index.iloc[:0]
-        listed[ticker] = df_listed
         done_here = done.get(ticker, set()) & set(df_listed["accession"].astype(str))
         df_units = df_listed[~df_listed["accession"].isin(done_here)].reset_index(drop=True)
         key_class[ticker] = _key_class(ticker, new, df_listed, df_units)
@@ -152,6 +146,4 @@ def document_worklist(context: Context, table: Table, request: WorklistRequest) 
             units[ticker] = df_units
     units, uncapped = _cap(units, request.cap, table.name)
     timings = {"index_read": read_index - started, "done_read": read_done - read_index, "total": time.perf_counter() - started}
-    return DocumentWork(
-        units=units, key_class=key_class, counts=counts, uncapped=uncapped, timings=timings, listed=listed, index_versions=index_versions
-    )
+    return DocumentWork(units=units, key_class=key_class, counts=counts, uncapped=uncapped, timings=timings)

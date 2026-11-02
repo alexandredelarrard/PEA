@@ -193,7 +193,7 @@ def test_a_walk_alone_skips_a_refresh_already_done_today(monkeypatch: pytest.Mon
     backdated = Driver(monkeypatch, refreshed_today=True)
     getattr(_step(EdgarOptions(as_of=pd.Timestamp("2026-10-31"))), name)()
 
-    assert driver.refreshes == [] and len(driver.calls) == 1, "today's nightly refresh covers a lone walk, the certifying insider walk included"
+    assert driver.refreshes == [] and len(driver.calls) == 1, "today's nightly refresh covers a lone walk, the source-history insider walk included"
     assert backdated.refreshes != [], "a backdated run never relies on today's refresh"
     print(f"\n=== SANITY: {name} after the nightly edgar-index ===")
     print(f"  refreshes today: {driver.refreshes} (the insider walk certifies from the quarter footers); backdated run refreshes.")

@@ -2,61 +2,14 @@
 
 from __future__ import annotations
 
-import threading
-import time
-from collections.abc import Iterator, Sequence
-from contextlib import AbstractContextManager, contextmanager
-from pathlib import Path
-from typing import Protocol, cast
+from collections.abc import Sequence
+from typing import cast
 
 import pandas as pd
 
 from src.context import Context
-from src.data_extract.utils.identity.identity_store import invalidate_source_proof, load_source_identity
 from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore
-
-
-class _InsiderRuntime(Protocol):
-    _insider_source_store: DataStore
-    _insider_source_lock: AbstractContextManager[object]
-    _insider_source_captured: set[str]
-    _insider_source_max_cohort: int
-
-
-def _runtime(context: Context) -> _InsiderRuntime:
-    """Type the existing owner-created fields; their lifetime remains inside insider_source_run."""
-    return cast(_InsiderRuntime, context)
-
-
-@contextmanager
-def insider_source_run(context: Context) -> Iterator[None]:
-    """Bound actual reconciled payloads to one explicitly isolated, disposable source pair."""
-    runtime = _runtime(context)
-    if getattr(context, "_insider_source_store", None) is not None:
-        yield
-        return
-    started = time.perf_counter()
-    with DataStore.temporary([Tables.insider_transactions, Tables.insider_footnotes]) as staged:
-        runtime._insider_source_store = staged
-        runtime._insider_source_lock = threading.RLock()
-        runtime._insider_source_captured = set()
-        runtime._insider_source_max_cohort = 0
-        try:
-            yield
-        finally:
-            database = Path(str(staged.engine.url.database))
-            context.log.info(
-                "insider reconciliation staging: %d rows, %d bytes, largest issuer %d rows, %.2fs",
-                staged.row_count(Tables.insider_transactions),
-                database.stat().st_size if database.exists() else 0,
-                runtime._insider_source_max_cohort,
-                time.perf_counter() - started,
-            )
-            del runtime._insider_source_store
-            del runtime._insider_source_lock
-            del runtime._insider_source_captured
-            del runtime._insider_source_max_cohort
 
 
 def _source_pair(store: DataStore, transactions: pd.DataFrame, notes: pd.DataFrame) -> dict[Table, int]:
@@ -68,67 +21,9 @@ def _source_pair(store: DataStore, transactions: pd.DataFrame, notes: pd.DataFra
     )
 
 
-def capture_insider_cohort(context: Context, ticker: str, expected_accessions: Sequence[str] | None) -> None:
-    """Reuse only a consistently captured prior joint certificate, never legacy stored payload."""
-    runtime = _runtime(context)
-    staged = getattr(context, "_insider_source_store", None)
-    if staged is None:
-        return
-    with runtime._insider_source_lock:
-        if ticker in runtime._insider_source_captured:
-            if expected_accessions is not None:
-                insider_inventory_snapshot(context.store, ticker, expected_accessions)
-            return
-        transactions, notes = insider_inventory_snapshot(context.store, ticker, expected_accessions)
-        runtime._insider_source_captured.add(ticker)
-        proof = pd.to_datetime(transactions.get("inventory_checked_through", pd.Series(dtype="datetime64[ns]")), errors="coerce")
-        if transactions.empty or len(proof) != len(transactions) or proof.isna().any() or proof.nunique() != 1:
-            return
-        present = set(staged.distinct(Tables.insider_transactions, "accession_number"))
-        missing = set(transactions["accession_number"].astype(str)) - present
-        payload = transactions.loc[transactions["accession_number"].isin(missing)]
-        if not payload.empty:
-            _source_pair(staged, payload, notes.loc[notes["accession_number"].isin(missing)])
-
-
-def certify_insider_source(context: Context, ticker: str, through: pd.Timestamp, accessions: Sequence[str]) -> bool:
-    """Compare the actual source/prior-joint cohort against the current payload in one guarded stamp."""
-    runtime = _runtime(context)
-    staged = getattr(context, "_insider_source_store", None)
-    if staged is None:
-        return False
-    capture_insider_cohort(context, ticker, accessions)
-    with runtime._insider_source_lock:
-        transactions = staged.load(
-            Tables.insider_transactions, columns=staged.columns(Tables.insider_transactions), where={"ticker": ticker}, markers=True, optional=True
-        )
-        if transactions is None or set(transactions["accession_number"].astype(str)) != set(accessions):
-            return False
-        notes = staged.load(
-            Tables.insider_footnotes, columns=staged.columns(Tables.insider_footnotes), where={"accession_number": list(accessions)}, optional=True
-        )
-        runtime._insider_source_max_cohort = max(runtime._insider_source_max_cohort, len(transactions))
-        try:
-            expected_notes = notes if notes is not None else pd.DataFrame(columns=staged.columns(Tables.insider_footnotes))
-            certify_insider_inventory(context.store, ticker, through, transactions, expected_notes)
-            return True
-        except ValueError as exc:
-            context.log.warning("insider inventory: %s not certified (%s)", ticker, exc)
-            return False
-
-
 def save_insider_source(context: Context, transactions: pd.DataFrame, notes: pd.DataFrame) -> dict[Table, int]:
-    """EDGAR authority, payload/notes and retained proof share the store's guarded transaction."""
-    runtime = _runtime(context)
-    staged = getattr(context, "_insider_source_store", None)
-    if staged is not None:
-        for ticker in transactions["ticker"].dropna().astype(str).unique():
-            capture_insider_cohort(context, ticker, None)
-    result = _source_pair(context.store, transactions, notes)
-    if staged is not None:
-        with runtime._insider_source_lock:
-            _source_pair(staged, transactions, notes)
-    return result
+    """EDGAR authority and the payload/notes pair share the store's guarded transaction."""
+    return _source_pair(context.store, transactions, notes)
 
 
 def _reconciled_payload(
@@ -191,21 +86,6 @@ def _insider_removal_mask(payload: pd.DataFrame, removed: Sequence[str] | pd.Dat
     return pd.Series(pd.MultiIndex.from_frame(payload[columns]).isin(pd.MultiIndex.from_frame(removed[columns])), index=payload.index)
 
 
-def _insider_scope_changes(ticker: str, transactions: pd.DataFrame, identity: dict[Table, pd.DataFrame]) -> pd.Series:
-    changes = []
-    ciks = set(transactions.get("issuer_cik", pd.Series(dtype=str)).dropna().astype(str).str.zfill(10))
-    for spec, company in ((Tables.entity_lineage, "canonical_ticker"), (Tables.security_master, "canonical_company")):
-        frame = identity[spec]
-        if "scope_changed_at" not in frame:
-            continue
-        applicable = frame[company].eq(ticker) if company in frame else pd.Series(False, index=frame.index)
-        cik_column = "cik" if spec == Tables.entity_lineage else "issuer_cik"
-        if cik_column in frame:
-            applicable |= frame[cik_column].astype("string").str.zfill(10).isin(ciks)
-        changes.append(pd.to_datetime(frame.loc[applicable, "scope_changed_at"], errors="coerce"))
-    return pd.concat(changes, ignore_index=True) if changes else pd.Series(dtype="datetime64[ns]")
-
-
 def _load_pair(store: DataStore, scopes: dict[Table, dict[str, object] | None]) -> dict[Table, pd.DataFrame]:
     """Load the actual source pair once, including markers, before reconciliation."""
     transactions, notes = Tables.insider_transactions, Tables.insider_footnotes
@@ -218,19 +98,13 @@ def _load_pair(store: DataStore, scopes: dict[Table, dict[str, object] | None]) 
     return {transactions: df_transactions, notes: df_notes if df_notes is not None else pd.DataFrame(columns=note_columns)}
 
 
-def _same_source_rows(store: DataStore, table: Table, actual: pd.DataFrame, expected: pd.DataFrame) -> bool:
-    """Compare the actual source fields while excluding the proof being established."""
-    excluded = ["inventory_checked_through"] if table == Tables.insider_transactions else []
-    return store.same_rows(table, actual.drop(columns=excluded, errors="ignore"), expected.drop(columns=excluded, errors="ignore"))
-
-
 def replace_insider_source(
     store: DataStore,
     frames: dict[Table, pd.DataFrame],
     scopes: dict[Table, dict[str, object] | None],
     expected_source: dict[Table, pd.DataFrame] | None = None,
 ) -> dict[Table, int]:
-    """Commit one insider payload/notes cohort, preserving EDGAR authority and invalidating proof."""
+    """Commit one insider payload/notes cohort, preserving EDGAR authority."""
     transactions, notes = Tables.insider_transactions, Tables.insider_footnotes
     if set(frames) != {transactions, notes} or set(scopes) != set(frames) or any(scope == {} for scope in scopes.values()):
         raise ValueError("An insider source write needs its exact source pair and explicit scopes")
@@ -242,15 +116,11 @@ def replace_insider_source(
     with store.transaction() as bound:
         old = _load_pair(bound, scopes)
         for table, df_expected in (expected_source or {}).items():
-            if table not in old or not _same_source_rows(bound, table, old[table], df_expected):
+            if table not in old or not bound.same_rows(table, old[table], df_expected):
                 raise ValueError("Institutional source cohort changed before atomic restamping")
         df_transactions, df_notes = _insider_payload(old[transactions], old[notes], frames[transactions], frames[notes])
-        df_transactions = df_transactions.assign(inventory_checked_through=pd.Series(pd.NaT, index=df_transactions.index, dtype="datetime64[ns]"))
-        tickers = set(old[transactions].get("ticker", pd.Series(dtype=str)).dropna().astype(str))
-        tickers.update(df_transactions.get("ticker", pd.Series(dtype=str)).dropna().astype(str))
 
-        # Publish the reconciled pair and clear every retained issuer certificate together.
-        invalidate_source_proof(bound, tickers)
+        # Publish the reconciled pair.
         for table in scopes:
             if scopes[table] is None:
                 continue
@@ -289,55 +159,11 @@ def patch_insider_source(store: DataStore, patch: pd.DataFrame, removed: Sequenc
             df_payload.loc[df_changes.index, df_changes.columns] = df_changes
         df_payload = df_payload.reset_index()
         df_payload = df_payload.loc[~_insider_removal_mask(df_payload, removed)]
-        tickers = set(df_stored["ticker"].dropna().astype(str)) | set(df_payload["ticker"].dropna().astype(str))
         orphaned = set(accessions) - set(df_payload["accession_number"])
-        if "inventory_checked_through" in df_payload:
-            df_payload["inventory_checked_through"] = pd.NaT
 
         # Preserve unrelated issuer rows and remove only genuinely orphaned notes.
-        invalidate_source_proof(bound, tickers)
         bound.delete(table, {"accession_number": accessions})
         if not df_notes.empty and orphaned:
             bound.delete(Tables.insider_footnotes, {"accession_number": sorted(orphaned)})
         bound.save(table, df_payload, ignore_all_conflicts=True)
         return len(df_stored) - len(df_payload) if len(removed) else len(patch)
-
-
-def insider_inventory_snapshot(store: DataStore, ticker: str, expected_accessions: Sequence[str] | None) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Capture the guarded joint cohort, clearing retained proof when inventory changed."""
-    with store.transaction() as bound:
-        pair = _load_pair(bound, {Tables.insider_transactions: {"ticker": ticker}})
-        df_transactions = pair[Tables.insider_transactions]
-        accessions = set(df_transactions.get("accession_number", pd.Series(dtype=str)).astype(str))
-        if expected_accessions is not None and accessions != set(expected_accessions):
-            invalidate_source_proof(bound, {ticker})
-        return df_transactions, pair[Tables.insider_footnotes]
-
-
-def certify_insider_inventory(
-    store: DataStore,
-    ticker: str,
-    through: pd.Timestamp,
-    expected_transactions: pd.DataFrame,
-    expected_footnotes: pd.DataFrame,
-) -> int:
-    """Certify only the exact freshly reconciled source/notes cohort, reconciled after the stored lineage's last change."""
-    if expected_transactions.empty:
-        raise ValueError("Certification requires an actual accession cohort")
-
-    # Read each current cohort before payload, footnote and freshness checks.
-    with store.transaction() as bound:
-        pair = _load_pair(bound, {Tables.insider_transactions: {"ticker": ticker}})
-        identity = load_source_identity(bound)
-        df_actual, df_notes = pair[Tables.insider_transactions], pair[Tables.insider_footnotes]
-        if "inventory_checked_through" not in df_actual or not _same_source_rows(
-            bound, Tables.insider_transactions, df_actual, expected_transactions
-        ):
-            raise ValueError("Insider source cohort changed before certification")
-        if not _same_source_rows(bound, Tables.insider_footnotes, df_notes, expected_footnotes):
-            raise ValueError("Insider footnote cohort changed before certification")
-        fetched = pd.to_datetime(df_actual.get("fetched_at", pd.Series(pd.NaT, index=df_actual.index)), errors="coerce")
-        changes = _insider_scope_changes(ticker, df_actual, identity)
-        if fetched.isna().any() or changes.notna().any() and fetched.lt(changes.max()).any():
-            raise ValueError("Every insider accession must be freshly reconciled for its dated identity scope")
-        return bound.update(Tables.insider_transactions, {"inventory_checked_through": through}, {"ticker": ticker})

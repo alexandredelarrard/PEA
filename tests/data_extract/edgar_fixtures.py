@@ -74,7 +74,7 @@ def fake_context(tmp_path, store, tickers: list[str], ciks: list[str] | None = N
 
 def seed_index(ctx: Any, rows: Iterable[tuple[int | str, str, str, str, str]]) -> pd.DataFrame:
     """Write `rows` into the local index cache, one Parquet file per quarter, through the production parser and
-    writer, as a refresh on each original's boundary date would have stamped it."""
+    writer."""
     directory = edgar_index.index_dir(ctx)
     for path in directory.glob("*.parquet"):
         path.unlink()
@@ -83,8 +83,8 @@ def seed_index(ctx: Any, rows: Iterable[tuple[int | str, str, str, str, str]]) -
         quarters.setdefault(edgar_index.Quarter.of(pd.Timestamp(row[3])).name, []).append(row)
     frames = []
     for name, part in quarters.items():
-        frame, through = edgar_index._parse_master_unit(master_text(part).encode("latin-1"))
-        edgar_index._write_atomic(frame, directory / f"{name}.parquet", through, through)
+        frame = edgar_index.parse_master(master_text(part).encode("latin-1"))
+        edgar_index._write_atomic(frame, directory / f"{name}.parquet")
         frames.append(frame)
     return pd.concat(frames, ignore_index=True) if frames else edgar_index.parse_master(master_text([]).encode("latin-1"))
 

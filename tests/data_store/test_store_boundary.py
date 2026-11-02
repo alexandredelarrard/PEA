@@ -175,7 +175,7 @@ def test_store_contains_only_generic_table_operations() -> None:
         node.lineno for node in ast.walk(tree) if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "Tables"
     ]
     assert not concrete, f"Concrete table policy belongs in its owner, found at lines {concrete}"
-    for word in ("institutional", "13f", "def14a", "_legacy", "source_checked_at", "inventory_checked_through"):
+    for word in ("institutional", "13f", "def14a", "_legacy", "source_checked_at"):
         assert word not in code_only(source).lower(), f"Specialized store policy remains: {word}"
     assert not any(
         isinstance(node, ast.ImportFrom)

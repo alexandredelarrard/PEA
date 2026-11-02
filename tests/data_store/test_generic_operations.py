@@ -98,7 +98,7 @@ def test_sql_date_null_comparison_and_explicit_staging(sqlite_store: DataStore) 
     assert not sqlite_store.same_rows(Tables.prices, df_actual, df_prices.assign(date=df_prices.date + pd.Timedelta(hours=12)))
     assert not sqlite_store.same_rows(Tables.prices, df_actual, df_prices.assign(close_split=0.0))
     with DataStore.temporary([Tables.insider_transactions, Tables.insider_footnotes, Tables.sec_fails_to_deliver]) as store:
-        assert "inventory_checked_through" in store.columns(Tables.insider_transactions)
+        assert "fetched_at" in store.columns(Tables.insider_transactions)
         assert not store.exists(Tables.prices)
         df_fails = df_prices.rename(columns={"close_split": "fails_quantity"})
         store.save(Tables.sec_fails_to_deliver, df_fails)

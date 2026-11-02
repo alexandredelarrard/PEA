@@ -20,10 +20,6 @@ from src.data_extract.utils.edgar_extract import fetch_insider_edgar as insider_
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarScope, _read_unit, _walk_key
 from src.data_extract.utils.edgar_extract.insider_edgar_parser import extract_xml_strings
 from src.data_extract.utils.identity import capture_ftd, identity_propagate
-from src.data_extract.utils.insider.insider_store import (
-    certify_insider_source,
-    insider_source_run,
-)
 from src.data_extract.utils.institutionals import fetch_short_interest as finra
 from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd
 from src.data_extract.utils.zips import fetch_insider_transactions as insider_zip
@@ -486,7 +482,6 @@ def test_insider_normal_planner_retries_invalid_cached_quarter(
                 "accession_number": ["0000920760-26-000001"],
                 "security_type": ["nonderiv"],
                 "row_sequence": [1],
-                "inventory_checked_through": pd.to_datetime(["2026-09-30"]),
             }
         ),
     )
@@ -764,7 +759,6 @@ def test_generic_identity_purge_uses_guarded_insider_issuer_deletion(
             "filing_date": pd.to_datetime(["2026-07-01"] * 3),
             "shares": [1.0, 2.0, 3.0],
             "fetched_at": pd.to_datetime(["2026-10-07"] * 3),
-            "inventory_checked_through": pd.to_datetime(["2026-10-06"] * 3),
         }
     )
     notes = pd.DataFrame({"accession_number": ["a"], "footnote_id": ["F1"], "footnote_text": ["shared actual note"]})
@@ -781,13 +775,10 @@ def test_generic_identity_purge_uses_guarded_insider_issuer_deletion(
     kept = sqlite_store.load(Tables.insider_transactions)
     assert kept is not None
     assert set(zip(kept["accession_number"], kept["ticker"], strict=True)) == {("a", "AAA"), ("b", "LEN")}
-    assert kept.loc[kept["ticker"].eq("LEN"), "inventory_checked_through"].isna().all()
     kept_notes = sqlite_store.load(Tables.insider_footnotes)
     assert kept_notes is not None
     assert kept_notes["footnote_text"].tolist() == ["shared actual note"]
-    print(
-        "SANITY: actual generic identity propagation preserves another issuer's shared-accession payload/notes and atomically clears retained proof."
-    )
+    print("SANITY: actual generic identity propagation preserves another issuer's shared-accession payload/notes.")
 
 
 def _parser_identity_context(store: DataStore, directory: Path) -> tuple[Any, Identity]:
@@ -811,7 +802,7 @@ def _parser_identity_context(store: DataStore, directory: Path) -> tuple[Any, Id
     return context, identity
 
 
-def test_actual_xml_parser_run_writes_and_certifies(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_actual_xml_parser_run_writes_and_stamps_fetched_at(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     context, identity = _parser_identity_context(sqlite_store, tmp_path)
     accession = "0000920760-26-000001"
     xml = """<ownershipDocument><documentType>4</documentType><periodOfReport>2026-07-01</periodOfReport>
@@ -836,16 +827,14 @@ def test_actual_xml_parser_run_writes_and_certifies(sqlite_store: DataStore, mon
     )
     with insider_edgar._insider_run_scope(context, ["LEN"], pd.Timestamp("2026-10-06")) as prepared:
         outcome = _walk_key(context, prepared, EdgarScope(identity), {"LEN": units}, "LEN", "0000920760")
-        certified = certify_insider_source(context, "LEN", pd.Timestamp("2026-07-03"), [accession])
-        assert certified and len(outcome.failed) == 0
+        assert len(outcome.failed) == 0
     rows = sqlite_store.load(Tables.insider_transactions)
-    assert rows is not None
+    assert rows is not None and set(rows["accession_number"]) == {accession}
     assert pd.to_datetime(rows["fetched_at"]).min() >= pd.Timestamp("2026-10-05")
-    assert rows["inventory_checked_through"].notna().all()
-    print("SANITY: actual XML parsing writes the accession and certifies its issuer inventory in one coherent source run.")
+    print(f"SANITY: actual XML parsing writes {len(rows)} row(s) of the accession, each with fetched_at stamped as data.")
 
 
-def test_actual_bulk_parser_run_writes_and_certifies(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_actual_bulk_parser_run_writes_the_quarter(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     context, identity = _parser_identity_context(sqlite_store, tmp_path)
     monkeypatch.setattr(insider_zip, "load_identity", lambda ctx: identity)
     monkeypatch.setattr(insider_zip, "quarter_periods", lambda *args: ["2026q3"])
@@ -853,8 +842,6 @@ def test_actual_bulk_parser_run_writes_and_certifies(sqlite_store: DataStore, mo
     members = _bulk_members()
     members["FOOTNOTES.TSV"] += "0000920760-26-000001\tF1\tActual source note\n"
     _archive(tmp_path / context.config.local.paths.insider_transactions / "2026q3.zip", members)
-    with insider_source_run(context):
-        insider_zip.fetch_insider_transactions(context, ["LEN"], 1, all_tickers=["LEN"], as_of=pd.Timestamp("2026-10-06"))
-        assert certify_insider_source(context, "LEN", pd.Timestamp("2026-07-03"), ["0000920760-26-000001"])
-    assert sqlite_store.row_count(Tables.insider_transactions) > 0
-    print("SANITY: actual bulk parsing writes the quarter and certifies its issuer inventory in one coherent source run.")
+    insider_zip.fetch_insider_transactions(context, ["LEN"], 1, all_tickers=["LEN"], as_of=pd.Timestamp("2026-10-06"))
+    assert sqlite_store.row_count(Tables.insider_transactions) > 0 and sqlite_store.row_count(Tables.insider_footnotes) == 1
+    print("SANITY: actual bulk parsing writes the quarter's rows and its one footnote.")

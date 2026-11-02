@@ -57,7 +57,6 @@ INSIDER_COLUMNS = (
     "source_symbol",
     "economic_date",
     "lineage_role",
-    "inventory_checked_through",
 )
 DATE_COLUMNS = (
     "transaction_date",
@@ -68,7 +67,6 @@ DATE_COLUMNS = (
     "expiration_date",
     "original_submission_date",
     "economic_date",
-    "inventory_checked_through",
 )
 PK = ("accession_number", "security_type", "row_sequence")
 NEW_READ_COLUMNS = (
@@ -79,7 +77,6 @@ NEW_READ_COLUMNS = (
     "source",
     "row_sequence",
     "fetched_at",
-    "inventory_checked_through",
 )
 REMOVED_TABLES = ("insider_transactions_live", "insider_transactions_live_coverage", "insider_transactions_quarantine")
 OLD_READ_COLUMNS = (
@@ -114,13 +111,13 @@ def test_insider_transactions_registry_is_the_single_table_contract() -> None:
     assert table.freshness == "daily"
     assert table.freshness_date_col == "filing_date"
     assert table.read_columns == OLD_READ_COLUMNS + NEW_READ_COLUMNS
-    assert table.optional_columns == frozenset({"fetched_at", "inventory_checked_through"})
+    assert table.optional_columns == frozenset({"fetched_at"})
     assert "transaction_sk" not in table.read_columns
     assert set(table.read_columns) <= set(INSIDER_COLUMNS)
 
     print("\n=== SANITY: insider_transactions registry ===")
     print(f"  pk {table.pk}, freshness {table.freshness} on {table.freshness_date_col}")
-    print(f"  {len(table.date_type_cols)} DATE columns incl. inventory_checked_through; {len(table.read_columns)} read columns, no transaction_sk")
+    print(f"  {len(table.date_type_cols)} DATE columns; {len(table.read_columns)} read columns, no transaction_sk")
     print("  SANITY: the registry declares the single-table key and column contract.")
 
 
@@ -133,7 +130,6 @@ def test_insider_transactions_schema_sql_matches_the_contract() -> None:
     assert {c for c, t in columns.items() if t == "DATE"} == set(DATE_COLUMNS)
     assert columns["acceptance_datetime"] == columns["fetched_at"] == "TIMESTAMP"
     assert columns["row_sequence"] == columns["n_reporting_owners"] == "BIGINT"
-    assert '"inventory_checked_through" DATE,' in block
     assert 'PRIMARY KEY ("accession_number", "security_type", "row_sequence")' in block
     assert all(f'"{c}" {columns[c]} NOT NULL' in block for c in PK)
     assert "transaction_sk" not in block

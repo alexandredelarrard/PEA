@@ -22,8 +22,6 @@ import pandas as pd
 
 from src.context import Context
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, filing_header, filing_xml
-from src.data_extract.utils.edgar_extract import edgar_index
-from src.data_extract.utils.edgar_extract.document_resume import DocumentWork
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarScope, FilingStamp
 from src.data_extract.utils.edgar_extract.insider_edgar_parser import extract_xml_strings
 from src.data_extract.utils.insider.insider_common import (
@@ -37,8 +35,8 @@ from src.data_extract.utils.insider.insider_common import (
     log_exclusions,
     screen_insider_rows,
 )
-from src.data_extract.utils.insider.insider_store import certify_insider_source, insider_source_run, replace_insider_source, save_insider_source
-from src.data_store.schema import Resume, Table, Tables
+from src.data_extract.utils.insider.insider_store import replace_insider_source, save_insider_source
+from src.data_store.schema import Table, Tables
 from src.utils.string import pad_cik, run_date
 
 #: EDGAR rows carry the whole contract except `quarter`, so the merge-upsert keeps a stored zip quarter.
@@ -206,21 +204,6 @@ def save_insider_key(context: Context, fetch: EdgarFetch, ticker: str, frames: d
         return {}, True
 
 
-def certify_insider_work(context: Context, work: DocumentWork, as_of: pd.Timestamp) -> None:
-    """Only a full validated source index, unchanged since `work` was planned, and the exact reconciled source cohort
-    establish quiet support."""
-    source_start = cast(str, cast(Resume, Tables.insider_transactions.resume).source_start)
-    through = edgar_index.inventory_complete_through(context, as_of, source_start, work.index_versions)
-    if through is None:
-        context.log.warning("insider inventory: incomplete or changed original index; no boundary advanced")
-        return
-    certified = 0
-    for ticker, listed in work.listed.items():
-        accessions = sorted(set(listed["accession"].astype(str)))
-        certified += int(certify_insider_source(context, ticker, through, accessions))
-    context.log.info("insider inventory: %d/%d actual issuer cohorts jointly certified through %s", certified, len(work.listed), through.date())
-
-
 @contextmanager
 def _insider_run_scope(context: Context, tickers: Sequence[str], as_of: pd.Timestamp) -> Iterator[EdgarFetch]:
     """Bind the run's requested tickers, exclusions and one ZIP floor; reconcile on every exit."""
@@ -230,12 +213,11 @@ def _insider_run_scope(context: Context, tickers: Sequence[str], as_of: pd.Times
     recent = since if since is not None else run_date(as_of) - pd.Timedelta(days=overlap)
     failed = True
     try:
-        with insider_source_run(context):
-            yield replace(
-                INSIDER_EDGAR_FETCH,
-                parse=partial(parse_insider, universe=tuple(tickers), excluded=excluded),
-                runtime_floor=lambda _context, _as_of: recent,
-            )
+        yield replace(
+            INSIDER_EDGAR_FETCH,
+            parse=partial(parse_insider, universe=tuple(tickers), excluded=excluded),
+            runtime_floor=lambda _context, _as_of: recent,
+        )
         failed = False
     finally:
         _finish_run(context, since, excluded, after_failure=failed)
@@ -263,5 +245,5 @@ INSIDER_EDGAR_FETCH = EdgarFetch(
     runtime_floor=edgar_window_start,
     run_scope=_insider_run_scope,
     save=save_insider_key,
-    certify=certify_insider_work,
+    source_history=True,
 )

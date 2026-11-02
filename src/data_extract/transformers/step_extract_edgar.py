@@ -48,7 +48,7 @@ _WALKS: tuple[EdgarFetch, ...] = (INSIDER_EDGAR_FETCH, SEC_13D_FETCH, SEC_13G_FE
 
 
 def widest_index_years(years_history: int, run_date: pd.Timestamp) -> int:
-    """The index window covering every walk on `run_date`: the certifying insider walk reaches its source start."""
+    """The index window covering every walk on `run_date`: the source-history insider walk reaches its source start."""
     return max(index_years(fetch, years_history, run_date) for fetch in _WALKS)
 
 

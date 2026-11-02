@@ -191,10 +191,6 @@ class SaveFn(Protocol):
     ) -> tuple[dict[Table, int], bool]: ...
 
 
-class CertifyFn(Protocol):
-    def __call__(self, context: Context, work: DocumentWork, as_of: pd.Timestamp) -> None: ...
-
-
 @dataclass(frozen=True)
 class EdgarFetch:
     """One per-filing EDGAR fetch, declared once and walked by `run_edgar_fetch`.
@@ -207,9 +203,9 @@ class EdgarFetch:
     floors the listing at run time. `run_scope` optionally prepares a run-local descriptor and
     finalizes it on exit; a planning declaration may omit `parse` when that context supplies it.
     `done_accessions(context, keys, runtime_floor)` replaces that stored-set read with the fetch's own rule.
-    `save` replaces the per-table key save; `certify(context, work, as_of)` runs after the walk on the index inventory,
-    so a certifying fetch lists filings and refreshes the index from its table's source start. The done
-    table owns the description, forms and marker stamps.
+    `save` replaces the per-table key save. `source_history` lists filings, and refreshes the index, from the done
+    table's source start rather than the run's window (gap filings). The done table owns the description, forms
+    and marker stamps.
     """
 
     tables: tuple[Table, ...]
@@ -222,7 +218,7 @@ class EdgarFetch:
     runtime_floor: Callable[[Context, pd.Timestamp], pd.Timestamp | None] | None = None
     run_scope: Callable[[Context, Sequence[str], pd.Timestamp], AbstractContextManager[EdgarFetch]] | None = None
     save: SaveFn | None = None
-    certify: CertifyFn | None = None
+    source_history: bool = False
     done_accessions: DoneFn | None = None
 
     @property
@@ -568,7 +564,7 @@ def plan_fetch(context: Context, fetch: EdgarFetch, run: EdgarRun) -> DocumentWo
         done_where=fetch.done_where,
         full=run.full,
         cap=run.cap,
-        listing_floor=_source_start(fetch) if fetch.certify is not None else None,
+        listing_floor=_source_start(fetch) if fetch.source_history else None,
         done_accessions=fetch.done_accessions,
     )
     return document_worklist(context, fetch.done, request)
@@ -579,8 +575,8 @@ def _source_start(fetch: EdgarFetch) -> pd.Timestamp:
 
 
 def index_years(fetch: EdgarFetch, years_history: int, run_date: pd.Timestamp) -> int:
-    """The index window `fetch` needs on `run_date`: `years_history`, widened to the table's source start for a certifying fetch."""
-    if fetch.certify is None:
+    """The index window `fetch` needs on `run_date`: `years_history`, widened to the table's source start for a source-history fetch."""
+    if not fetch.source_history:
         return years_history
     return max(years_history, run_date.year - _source_start(fetch).year + 1)
 
@@ -610,6 +606,4 @@ def run_edgar_fetch(context: Context, fetch: EdgarFetch, run: EdgarRun, *, max_w
         outcomes = _run_pass(context, prepared, run.scope, keys, work.units, max_workers)
         _retry_rounds(context, prepared, run, keys, outcomes, max_workers)
         _log_coverage(context, prepared, work, outcomes)
-        if prepared.certify is not None:
-            prepared.certify(context, work, start_date)
         return FetchSummary(work=work, outcomes=outcomes)

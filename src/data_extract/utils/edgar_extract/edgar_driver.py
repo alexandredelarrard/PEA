@@ -32,12 +32,12 @@ from src.data_extract.utils.common.registrant import resolve_registrant_filings
 from src.data_extract.utils.common.resume import DONE_TABLE
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, configure, sec_call
 from src.data_extract.utils.edgar_extract import edgar_index
-from src.data_extract.utils.edgar_extract.document_resume import DocumentWork, WorklistRequest, document_worklist
+from src.data_extract.utils.edgar_extract.document_resume import DocumentWork, DoneFn, WorklistRequest, document_worklist
 from src.data_extract.utils.edgar_extract.edgar_fillings import archive_url
 from src.data_extract.utils.edgar_extract.empty_markers import drop_markers_over_data, marker_frame
 from src.data_extract.utils.edgar_extract.parallel_fetch import PROGRAMMING_ERRORS, run_per_ticker
 from src.data_extract.utils.edgar_extract.sec_utils import load_cik_mapping
-from src.data_store.schema import Resume, Table, Tables
+from src.data_store.schema import Resume, Table
 from src.utils.string import pad_cik, run_date
 from src.utils.universe import added_on_map
 
@@ -204,10 +204,11 @@ class EdgarFetch:
     df_units)` may supply richer `Filing` objects by accession. `runtime_floor(context, run_date)`
     floors the listing at run time. `run_scope` optionally prepares a run-local descriptor and
     finalizes it on exit; a planning declaration may omit `parse` when that context supplies it.
+    `done_accessions(context, keys, runtime_floor)` replaces that stored-set read with the fetch's own rule.
     `relist_unparsed` lists a filing that fails to parse again instead of marking it; `save` replaces
     the per-table key save; `certify(context, work, as_of)` runs after the walk on the index inventory,
-    so a certifying fetch refreshes the index from its table's source start. The done table owns the
-    description, forms and marker stamps.
+    so a certifying fetch lists filings and refreshes the index from its table's source start. The done
+    table owns the description, forms and marker stamps.
     """
 
     tables: tuple[Table, ...]
@@ -222,6 +223,7 @@ class EdgarFetch:
     relist_unparsed: bool = False
     save: SaveFn | None = None
     certify: CertifyFn | None = None
+    done_accessions: DoneFn | None = None
 
     @property
     def done(self) -> Table:
@@ -350,8 +352,6 @@ def marker_row(table: Table, ticker: str, stamp: FilingStamp) -> pd.DataFrame:
     if table.marker_cik_col is not None:
         row[table.marker_cik_col] = stamp.cik
     row |= dict(table.marker_extra)
-    if table == Tables.insider_transactions:
-        row["fetched_at"] = pd.Timestamp.now(tz="UTC").tz_localize(None)
     return marker_frame(table, row, dict(table.marker_key_fill))
 
 
@@ -571,16 +571,21 @@ def plan_fetch(context: Context, fetch: EdgarFetch, run: EdgarRun) -> DocumentWo
         done_where=fetch.done_where,
         full=run.full,
         cap=run.cap,
+        listing_floor=_source_start(fetch) if fetch.certify is not None else None,
+        done_accessions=fetch.done_accessions,
     )
     return document_worklist(context, fetch.done, request)
+
+
+def _source_start(fetch: EdgarFetch) -> pd.Timestamp:
+    return pd.Timestamp(cast(str, cast(Resume, fetch.done.resume).source_start))
 
 
 def index_years(fetch: EdgarFetch, years_history: int, run_date: pd.Timestamp) -> int:
     """The index window `fetch` needs on `run_date`: `years_history`, widened to the table's source start for a certifying fetch."""
     if fetch.certify is None:
         return years_history
-    source_start = pd.Timestamp(cast(str, cast(Resume, fetch.done.resume).source_start))
-    return max(years_history, run_date.year - source_start.year + 1)
+    return max(years_history, run_date.year - _source_start(fetch).year + 1)
 
 
 def refresh_index(context: Context, run: EdgarRun, years_history: int) -> None:

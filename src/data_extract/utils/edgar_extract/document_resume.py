@@ -9,9 +9,8 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import cast
 
 import pandas as pd
 
@@ -20,10 +19,13 @@ from src.data_extract.utils.common.identity import FilingScope, Identity
 from src.data_extract.utils.common.registrant import listing_ciks, resolve_registrant_entries
 from src.data_extract.utils.common.resume import DONE_TABLE, KEY_ESTABLISHED, KEY_NEW, KEY_ROWLESS, document_floor, stored_accessions
 from src.data_extract.utils.edgar_extract import edgar_index
-from src.data_store.schema import Table, Tables
+from src.data_store.schema import Table
 from src.utils.universe import new_in_window
 
 logger = logging.getLogger(__name__)
+
+#: `(context, keys, runtime_floor) -> {key: done accessions}`: a fetch's own stored-set rule.
+DoneFn = Callable[[Context, Sequence[str], pd.Timestamp | None], dict[str, set[str]]]
 
 
 @dataclass
@@ -42,26 +44,6 @@ class DocumentWork:
     @property
     def size(self) -> int:
         return sum(len(df) for df in self.units.values())
-
-
-def _insider_done(context: Context, keys: Sequence[str], recent: pd.Timestamp | None) -> dict[str, set[str]]:
-    """Historical ZIP units count as present; only the recent overlap requires EDGAR authority."""
-    rows = context.store.load(
-        Tables.insider_transactions,
-        columns=["ticker", "accession_number", "source", "filing_date"],
-        where={"ticker": list(keys)},
-        markers=True,
-        optional=True,
-    )
-    done: dict[str, set[str]] = {key: set() for key in keys}
-    if rows is None:
-        return done
-    accepted = rows["source"].eq("edgar")
-    if recent is not None:
-        accepted |= pd.to_datetime(rows["filing_date"]).lt(recent)
-    for ticker, group in rows.loc[accepted].groupby("ticker", sort=False):
-        done[str(ticker)].update(group["accession_number"].astype(str))
-    return done
 
 
 def _key_class(ticker: str, new: set[str], df_listed: pd.DataFrame, df_units: pd.DataFrame) -> str:
@@ -102,7 +84,9 @@ def _cap(units: dict[str, pd.DataFrame], cap: int | None, desc: str) -> tuple[di
 class WorklistRequest:
     """One walk's planning inputs: the `keys` (`ticker`, `cik`) on the `as_of` run date, the table's `forms`, the
     `identity` (None: roster CIKs only), the `years_history` window, the run's `added_on` map (read once per run),
-    the runtime floor, the done-accession scope and filter, `full` re-read and the per-run `cap` (None: uncapped)."""
+    the runtime floor, the done-accession scope and filter, `full` re-read and the per-run `cap` (None: uncapped).
+    `listing_floor` replaces the window floor (a certifying fetch lists from its source start); `done_accessions`
+    replaces the scope/filter read with the fetch's own stored-set rule."""
 
     keys: pd.DataFrame
     as_of: pd.Timestamp
@@ -115,12 +99,14 @@ class WorklistRequest:
     done_where: dict[str, object] | None = None
     full: bool = False
     cap: int | None = None
+    listing_floor: pd.Timestamp | None = None
+    done_accessions: DoneFn | None = None
 
 
 def document_worklist(context: Context, table: Table, request: WorklistRequest) -> DocumentWork:
     """The documents `table` still lacks for the request's keys: index rows from the floor on, resolved through
     each key's filing scope (its roster CIK alone without `identity`), minus the accessions stored on the rows
-    matching `done_where` (ignored under `full`)."""
+    matching `done_where`, or by the request's own `done_accessions` (ignored under `full`)."""
     keys, as_of, forms, identity, runtime_floor, full = (
         request.keys,
         request.as_of,
@@ -130,11 +116,7 @@ def document_worklist(context: Context, table: Table, request: WorklistRequest) 
         request.full,
     )
     started = time.perf_counter()
-    floor = (
-        pd.Timestamp(cast(str, table.resume.source_start))
-        if table == Tables.insider_transactions and table.resume is not None
-        else document_floor(table, as_of, request.years_history, runtime_floor)
-    )
+    floor = request.listing_floor if request.listing_floor is not None else document_floor(table, as_of, request.years_history, runtime_floor)
     roster = dict(zip(keys["ticker"].astype(str), keys["cik"].astype(str), strict=True))
     scopes = {
         ticker: identity.filing_scope(ticker) if identity is not None else FilingScope.roster_only(ticker, cik) for ticker, cik in roster.items()
@@ -144,11 +126,12 @@ def document_worklist(context: Context, table: Table, request: WorklistRequest) 
     df_index = edgar_index.entries(context, {c for ciks in candidates.values() for c in ciks}, forms, since=floor)
     by_cik = dict(tuple(df_index.groupby("cik", sort=False))) if not df_index.empty else {}
     read_index = time.perf_counter()
-    done = (
-        ({key: set() for key in roster} if full else _insider_done(context, list(roster), runtime_floor))
-        if table == Tables.insider_transactions
-        else ({key: set() for key in roster} if full else stored_accessions(context, table, list(roster), request.done_scope, request.done_where))
-    )
+    if full:
+        done: dict[str, set[str]] = {key: set() for key in roster}
+    elif request.done_accessions is not None:
+        done = request.done_accessions(context, list(roster), runtime_floor)
+    else:
+        done = stored_accessions(context, table, list(roster), request.done_scope, request.done_where)
     read_done = time.perf_counter()
     overlap = table.resume.overlap_days if table.resume is not None else 0
     new = new_in_window(request.added_on, overlap, as_of) if overlap else set()

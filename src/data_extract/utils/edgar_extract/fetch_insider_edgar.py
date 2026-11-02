@@ -21,7 +21,6 @@ from xml.etree import ElementTree
 import pandas as pd
 
 from src.context import Context
-from src.data_extract.utils.common.resume import DONE_PER_KEY
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, filing_header, filing_xml
 from src.data_extract.utils.edgar_extract import edgar_index
 from src.data_extract.utils.edgar_extract.document_resume import DocumentWork
@@ -168,12 +167,36 @@ def replace_zip_accessions(context: Context, since: pd.Timestamp) -> int:
     return deleted
 
 
+def insider_done(context: Context, keys: Sequence[str], recent: pd.Timestamp | None) -> dict[str, set[str]]:
+    """Accessions done per key: every EDGAR row or marker; a ZIP row only when filed before `recent`, so the recent
+    overlap requires EDGAR authority."""
+    rows = context.store.load(
+        Tables.insider_transactions,
+        columns=["ticker", "accession_number", "source", "filing_date"],
+        where={"ticker": list(keys)},
+        markers=True,
+        optional=True,
+    )
+    done: dict[str, set[str]] = {key: set() for key in keys}
+    if rows is None:
+        return done
+    accepted = rows["source"].eq("edgar")
+    if recent is not None:
+        accepted |= pd.to_datetime(rows["filing_date"]).lt(recent)
+    for ticker, group in rows.loc[accepted].groupby("ticker", sort=False):
+        done[str(ticker)].update(group["accession_number"].astype(str))
+    return done
+
+
 def save_insider_key(context: Context, fetch: EdgarFetch, ticker: str, frames: dict[Table, list[pd.DataFrame]]) -> tuple[dict[Table, int], bool]:
-    """Save one key's transactions and footnotes as one insider source pair: `(rows per table, failed_save)`."""
+    """Save one key's transactions and footnotes as one insider source pair: `(rows per table, failed_save)`.
+    An empty-filing marker is stamped `fetched_at` here, as the parsed rows are when read."""
     transaction_frames = frames.get(Tables.insider_transactions, [])
     if not transaction_frames:
         return {}, False
     transactions = pd.concat(transaction_frames, ignore_index=True).drop_duplicates(list(Tables.insider_transactions.pk), keep="last")
+    fetched = transactions["fetched_at"] if "fetched_at" in transactions else pd.Series(pd.NaT, index=transactions.index)
+    transactions["fetched_at"] = pd.to_datetime(fetched).fillna(pd.Timestamp.now(tz="UTC").tz_localize(None))
     note_frames = frames.get(Tables.insider_footnotes, [])
     notes = pd.concat(note_frames, ignore_index=True) if note_frames else pd.DataFrame(columns=list(Tables.insider_footnotes.retrieval_columns))
     try:
@@ -236,8 +259,7 @@ def _finish_run(context: Context, since: pd.Timestamp | None, excluded: list[pd.
 INSIDER_EDGAR_FETCH = EdgarFetch(
     tables=(Tables.insider_footnotes, Tables.insider_transactions),
     done_table=Tables.insider_transactions,
-    done_scope=DONE_PER_KEY,
-    done_where={"source": "edgar"},
+    done_accessions=insider_done,
     runtime_floor=edgar_window_start,
     run_scope=_insider_run_scope,
     relist_unparsed=True,

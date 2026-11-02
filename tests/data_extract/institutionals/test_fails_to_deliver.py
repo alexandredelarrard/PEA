@@ -1,4 +1,4 @@
-"""SEC Fails-to-Deliver: parse + semi-monthly period logic, the full-rebuild gates, the ftd-download ingest and
+"""SEC Fails-to-Deliver: parse + semi-monthly period logic, the full-rebuild gates, the FTD capture (`identity --only capture-ftd`) and
 the FTD feature (fails/volume, publication-lagged so it's leak-free)."""
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from tests.data_aggregate.test_short_flow_features import build_short_flow_featu
 
 
 def download_and_capture(context: Any, years_history: int = 31, full: bool = False, as_of: pd.Timestamp | None = None) -> int:
-    """`ftd-download` as the CLI runs it: cache the ZIPs, then the identity step's raw capture; returns the rows captured."""
+    """`zips-download --only ftd` then `identity --only capture-ftd`: cache the ZIPs, then the identity step's raw capture; returns the rows captured."""
     ftd.download_fails_to_deliver(context, years_history=years_history, full=full, as_of=as_of)
     cache = ftd.cache_dir(context, context.config.local.paths.fails_deliver)
     return capture_ftd.capture_ftd_cusips(context, cache, years_history, full=full, as_of=run_date(as_of))
@@ -250,7 +250,7 @@ def test_full_rebuild_keys_on_cusip_excludes_a_reused_symbol_and_is_repeatable(s
 
 
 def test_a_scoped_full_run_upserts_its_company_and_never_replaces_the_tables(sqlite_store, monkeypatch, tmp_path):
-    """`fails-to-deliver -t META -F` re-reads the cache for META's CUSIPs only and upserts; TT's stored row survives."""
+    """`zips-ingest --only ftd -t META -F` re-reads the cache for META's CUSIPs only and upserts; TT's stored row survives."""
     ctx = _context(sqlite_store, tmp_path)
     sqlite_store.replace(Tables.security_master, _master(_REUSE_MASTER))
     sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["META", "TT"], "cik": ["0001326801", "0001466258"]}))
@@ -417,7 +417,7 @@ def test_pending_source_replacement_withdraws_only_certified_quiet_zeros(sqlite_
     print("\nSANITY: pending raw replacement withdraws checked quiet zeros; legacy zeros and positive observations survive; period retries.")
 
 
-# --------------------------------------------------------------------------- Q2a: ftd-download raw ingest
+# --------------------------------------------------------------------------- Q2a: FTD raw capture
 
 _HEADER = "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n"
 
@@ -488,6 +488,6 @@ def test_ftd_download_ingests_symbols_then_the_voted_cusip6_from_cache(sqlite_st
     calls.clear()
     assert download_and_capture(ctx, years_history=1) == 0
     assert calls == [], "a converged scope re-reads nothing"
-    print("\n=== SANITY CHECK: ftd-download raw in-scope ingest ===")
+    print("\n=== SANITY CHECK: FTD raw in-scope capture ===")
     print("  pass 1 keeps the lineage symbol ABC; its vote adds CUSIP-6 000111, so the earlier warrant row is re-read from cache")
     print("  unrelated ZZZ never stored; stamp columns NULL until the master; a converged re-run reads no zip")

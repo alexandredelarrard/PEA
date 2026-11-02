@@ -454,7 +454,7 @@ def fetch_short_interest(
     as_of: pd.Timestamp | None = None,
 ) -> None:
     """Fetch the `_plan_days` RegSHO day files, store their lines stamped and rebuild `short_interest` for those days.
-    `full` aborts before any write on a fetch error or when no day is served. Stored rows are re-stamped by `identity-propagate`,
+    `full` aborts before any write on a fetch error or when no day is served. Stored rows are re-stamped by `identity --only propagate`,
     which runs first."""
     universe = frozenset(tickers)
     days = list(_plan_days(context, full, as_of))

@@ -472,14 +472,14 @@ def _require_tables(lineage: pd.DataFrame, tenure: pd.DataFrame, roster: pd.Data
             "identity: `entity_lineage` is empty. That is a LOUD failure and not an empty "
             "map: every universe ticker would fall back to a singleton entity, `owns()` "
             "would reject every predecessor row in the panel, and nothing would raise. Run "
-            "`identity-tables` first. (`load_registrants` returning {} is a different case "
+            "`identity` first. (`load_registrants` returning {} is a different case "
             "-- it is an OPTIONAL curated layer; these two tables are mandatory.)"
         )
     if tenure is None or tenure.empty:
         raise IdentityError(
             "identity: `symbol_tenure` is empty. The D19 cross-check would pass vacuously "
             "and Phase 6's symbol resolution would answer None for every symbol. Run "
-            "`identity-tables` first."
+            "`identity` first."
         )
     if roster is None or roster.empty:
         raise IdentityError("identity: `sp500_tickers` is empty; there is no universe to resolve rows against.")

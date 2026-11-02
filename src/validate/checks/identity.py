@@ -1,7 +1,7 @@
 """Identity check: rows filed by a CIK outside the ticker's entity, `entity_lineage` invariants, the manual-fix flags,
 the vendor-series continuity at register cutovers and the traded-security price match (`traded_security`).
 
-Reads only through `context.store`. The pending removals are the ones `identity-propagate` would purge,
+Reads only through `context.store`. The pending removals are the ones `identity --only propagate` would purge,
 recomputed from the stored rows and the lineage: a filing of any CIK of the entity (margin filings and
 siblings included) is own, an 8-K / 13D / 13G only inside a seam-widened window of its CIK, a consolidating row
 (facts, notes, filing text, proxies) only when its CIK holds a window of the ticker; a null CIK is never judged.
@@ -154,7 +154,7 @@ def _foreign_in_table(
 
 
 def pending_removals(context: Context, lineage: pd.DataFrame, tickers: Sequence[str], *, dated: bool = True) -> pd.DataFrame:
-    """The rows `identity-propagate` would purge from every filer-CIK table, as `REMOVAL_COLUMNS` records.
+    """The rows `identity --only propagate` would purge from every filer-CIK table, as `REMOVAL_COLUMNS` records.
 
     `dated=False` skips the window rule (a pre-cutover lineage declares no dated windows)."""
     ciks, windows = _entity_ciks(lineage), _listed_windows(lineage) if dated else {}
@@ -387,7 +387,7 @@ def _unmigrated_report(context: Context, lineage: pd.DataFrame, scope: list[str]
 def check_identity(context: Context, *, tickers: Sequence[str] | None = None) -> IdentityReport:
     """Foreign rows per filer-CIK table, lineage invariants and the manual-fix flags; logs the flag block."""
     empty = IdentityReport(
-        CheckResult.abstained(CHECK, Tables.entity_lineage.name, "entity_lineage is empty: run identity-tables first"),
+        CheckResult.abstained(CHECK, Tables.entity_lineage.name, "entity_lineage is empty: run identity first"),
         pd.DataFrame(columns=list(FLAG_COLUMNS)),
         pd.DataFrame(columns=list(REMOVAL_COLUMNS)),
     )

@@ -3,7 +3,7 @@
 Scope is the lineage and master as stored before this run's rebuild: lineage symbols plus the CUSIP-6 of the
 master's securities and the manual config. The periods read are those no stored line carries; every cached period
 is re-read for the symbols and prefixes whose lineage or master rows changed recently and for a CUSIP-6 newly voted
-for by a lineage symbol interval. Stamp columns stay NULL. Offline: cached ZIPs only (`ftd-download` caches them).
+for by a lineage symbol interval. Stamp columns stay NULL. Offline: cached ZIPs only (`zips-download --only ftd` caches them).
 """
 
 from __future__ import annotations

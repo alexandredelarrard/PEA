@@ -1,4 +1,4 @@
-"""`identity-propagate`: a lineage contraction purges rows whose filer CIK (or tape symbol) left the
+"""`identity --only propagate`: a lineage contraction purges rows whose filer CIK (or tape symbol) left the
 ticker's entity, an expansion re-parses the bulk families for that ticker only, and the derived
 history of a purged ticker is rebuilt. Offline: a real `DataStore` on SQLite, a real `Identity` over
 hand-written lineage rows, the bulk re-parsers and the merged-history build stubbed where noted.
@@ -213,7 +213,7 @@ def test_a_contraction_purges_the_removed_cik_in_every_family_and_warns_once_per
         keys = _keys(sqlite_store, table)
         assert ("ALB", "ab-1") not in keys and ("ALB", "ab-2") not in keys, table.name
         assert {("ALB", "alb-1"), ("ALB", "alb-2"), ("MSFT", "msft-1"), ("MSFT", "msft-x")} <= keys, table.name
-    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING and "identity-propagate: purged" in r.getMessage()]
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING and "identity propagate: purged" in r.getMessage()]
     assert len(warnings) == len(PURGED_FAMILIES), warnings
     for table in PURGED_FAMILIES:
         line = next(w for w in warnings if f"'{table.name}'" in w)

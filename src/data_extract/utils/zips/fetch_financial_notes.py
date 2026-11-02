@@ -345,7 +345,7 @@ def download_notes_periods(context: Context, cache: Path, periods: list[str]) ->
 
 
 def download_financial_notes(context: Context, years_history: int = 15) -> int:
-    """`download_notes_periods` over the window's listed periods (the per-source `notes-download` command)."""
+    """`download_notes_periods` over the window's listed periods (the step's `download_notes_periods` with the cache and period list resolved here)."""
     cache = cache_dir(context, context.config.local.paths.financial_notes)
     return download_notes_periods(context, cache, notes_periods(context, years_history + 1))
 
@@ -407,7 +407,7 @@ def fetch_financial_notes(
     *,
     all_tickers: Collection[str] | None = None,
 ) -> int:
-    """The per-source `financial-notes` command: `ingest_financial_notes` over the window's listed periods, or
+    """`ingest_financial_notes` over the window's listed periods, or
     with `repair_availability` only `repair_notes_availability` (returns 0 before any download or parse)."""
     cache = cache_dir(context, context.config.local.paths.financial_notes)
     if repair_availability:

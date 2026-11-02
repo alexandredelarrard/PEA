@@ -1,5 +1,5 @@
 """Notes cover-page symbol evidence: every filer's `dei:TradingSymbol` facts in the cached Notes zips, one period
-at a time, into the `dei` partition of `symbol_tenure`. Offline: cached zips only (`notes-download` caches them).
+at a time, into the `dei` partition of `symbol_tenure`. Offline: cached zips only (`zips-download --only notes` caches them).
 """
 
 from __future__ import annotations

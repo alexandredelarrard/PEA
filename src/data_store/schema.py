@@ -217,7 +217,7 @@ class Tables:
     )
 
     # SEC's current ticker list with exchanges (`company_tickers_exchange.json`), one snapshot per
-    # `sec-tickers` run. A CURRENT map with no dates: read only for sibling share-class discovery
+    # `zips-download --only sec-tickers` run. A CURRENT map with no dates: read only for sibling share-class discovery
     # and `exchange` in the security master, never for dating or CIK resolution.
     sec_company_tickers = Table(
         "sec_company_tickers",
@@ -265,11 +265,11 @@ class Tables:
         resume=Resume(RESUME_ARCHIVE, "ticker", "period", 31, period_col="period", source_start="2009-07-01"),
     )
     # SEC Fails-to-Deliver, RAW and PER SECURITY: one row per source line (no summing), keyed
-    # on the CUSIP the file reports. `ftd-download` stores the in-scope lines (lineage symbols
+    # on the CUSIP the file reports. `identity --only capture-ftd` stores the in-scope lines (lineage symbols
     # and the CUSIP-6 of their voted issuers) with `security_id`, `ticker`, `lineage_role` and
     # `security_class` NULL; the security master is derived from these rows. `date` is the
     # settlement date as filed, `trade_date` its settlement-cycle conversion; `price` is NULL
-    # where the file has '.', and so is `fails_value`. `ftd-download` resumes on the periods no stored
+    # where the file has '.', and so is `fails_value`. `identity --only capture-ftd` resumes on the periods no stored
     # line carries; one market-wide frontier (no key), the ticker grain is rebuilt from these rows.
     sec_fails_to_deliver_security = Table(
         "sec_fails_to_deliver_security",
@@ -526,7 +526,7 @@ class Tables:
     # `employees_full_time` and `employees_part_time`, the `basis` they support, a `status`, the
     # `source_document` read and `source_quote` (JSON, one verbatim quote per component).
     # A filing with no usable count is a row with NULL components and its status, so the row
-    # itself marks the date decided and the table declares no marker. `identity-propagate`
+    # itself marks the date decided and the table declares no marker. `identity --only propagate`
     # purges rows by `cik` (`filer_tables.PURGE_TABLES`).
     fundamentals_employees = Table(
         "fundamentals_employees",

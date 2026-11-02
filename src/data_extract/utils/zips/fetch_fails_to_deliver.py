@@ -1,7 +1,7 @@
 """
 fetch_fails_to_deliver.py (src/data_extract/utils/zips/fetch_fails_to_deliver.py)
 ------------------------------------------------------------------------------------
-SEC Fails-to-Deliver semi-monthly ZIPs. `download_fails_to_deliver` (the `ftd-download` stage) caches
+SEC Fails-to-Deliver semi-monthly ZIPs. `download_fails_to_deliver` (`zips-download --only ftd`) caches
 the ZIPs; the identity step (`utils/identity/capture_ftd.py`) stores their in-scope source lines raw,
 per CUSIP, in `sec_fails_to_deliver_security`. `fetch_fails_to_deliver` stamps those lines from
 `security_master` (security, canonical company, lineage role, class) and rebuilds the ticker-grain
@@ -376,7 +376,7 @@ def unique_ftd_keys(lines: pd.DataFrame, label: str) -> pd.DataFrame:
 
 
 def load_fails_master(context: Context) -> pd.DataFrame | None:
-    """The stored `security_master` prepared for stamping; None before the first `identity-tables` build."""
+    """The stored `security_master` prepared for stamping; None before the first `identity` build."""
     master = context.store.load(Tables.security_master, columns=[*_MASTER_COLUMNS, "source"], optional=True)
     return None if master is None else prepare_master(master)
 
@@ -718,7 +718,7 @@ def fetch_fails_to_deliver(
     cohort = identity.source_cohort if identity is not None else load_source_identity(context.store)
     master = prepare_master(cohort[Tables.security_master]) if not cohort[Tables.security_master].empty else None
     if master is None or master.empty:
-        logger.warning("FTD: no security_master yet (run identity-tables first); nothing stamped")
+        logger.warning("FTD: no security_master yet (run `identity` first); nothing stamped")
         return 0
     others = outside_scope(context, universe, all_tickers)
     basis = load_fails_basis(context, master)

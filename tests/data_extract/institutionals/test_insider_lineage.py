@@ -443,7 +443,7 @@ def test_a_lineage_change_restamps_stored_rows_in_place(sqlite_store: Any, tmp_p
 
 
 def test_identity_propagate_restamps_insider_rows_of_changed_tickers(sqlite_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The re-stamp is wired into `identity-propagate`: driven by the lineage `scope_changed_at` inside the re-check window."""
+    """The re-stamp is wired into `identity --only propagate`: driven by the lineage `scope_changed_at` inside the re-check window."""
     sqlite_store.save(Tables.insider_transactions, _stored(_identity(pld_windows=True, mergers=(ACCOUNTING_PLD,))))
     context = _context(sqlite_store, tmp_path)
     monkeypatch.setattr(prop, "_reparse_bulk", lambda *a, **k: {})
@@ -452,7 +452,7 @@ def test_identity_propagate_restamps_insider_rows_of_changed_tickers(sqlite_stor
     got = sqlite_store.load(Tables.insider_transactions, columns=["accession_number", "lineage_role"])
     roles = dict(zip(got["accession_number"], got["lineage_role"], strict=True))
     assert roles["amb"] == "canonical_current" and roles["opld"] == "acquired_constituent"
-    print("\nSANITY: identity-propagate re-stamps the stored insider rows of the company whose lineage changed")
+    print("\nSANITY: identity --only propagate re-stamps the stored insider rows of the company whose lineage changed")
 
 
 def test_a_config_edit_restamps_and_purges_on_the_next_propagation_without_a_lineage_change(

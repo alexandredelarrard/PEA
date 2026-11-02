@@ -130,7 +130,7 @@ CREATE INDEX IF NOT EXISTS ix_entity_lineage_entity_id ON "entity_lineage" ("ent
 -- [reference] security_master  (pk: security_id, source, source_symbol, valid_from)
 -- WHICH SECURITY a market-tape line is, its issuer CIK, class and lineage role, and WHEN: the
 -- security grain under entity_lineage's issuer grain. One row per (security, source symbol
--- interval, role interval); `security_id` is "C" + CUSIP-9. Derived offline by identity-tables
+-- interval, role interval); `security_id` is "C" + CUSIP-9. Derived offline by `identity`
 -- from the stored FTD lines, the lineage, the roster, sec_company_tickers and
 -- configs/sec/security_master_manual.json.
 --
@@ -163,7 +163,7 @@ CREATE TABLE IF NOT EXISTS "security_master" (
 );
 
 -- [reference] sec_company_tickers  (pk: cik, ticker)
--- SEC's current ticker list with exchanges, one snapshot per sec-tickers run. No dates: read
+-- SEC's current ticker list with exchanges, one snapshot per `zips-download --only sec-tickers` run. No dates: read
 -- only for sibling share-class discovery and `exchange`, never for dating or CIK resolution.
 
 CREATE TABLE IF NOT EXISTS "sec_company_tickers" (
@@ -278,7 +278,7 @@ CREATE TABLE IF NOT EXISTS "sec_fails_to_deliver" (
 -- [extract] sec_fails_to_deliver_security  (pk: cusip, date)
 -- SEC Fails-to-Deliver, RAW and PER SECURITY: one row per source line, no summing. `date` is the
 -- settlement date as filed, `trade_date` its settlement-cycle conversion; `price` and
--- `fails_value` are NULL where the file has '.'. ftd-download stores the in-scope lines with the
+-- `fails_value` are NULL where the file has '.'. `identity --only capture-ftd` stores the in-scope lines with the
 -- four stamp columns NULL.
 
 CREATE TABLE IF NOT EXISTS "sec_fails_to_deliver_security" (
@@ -644,7 +644,7 @@ CREATE INDEX IF NOT EXISTS ix_fundamentals_reason_codes_code ON "fundamentals_re
 -- `status`, the `source_document` read (primary or an exhibit type) and `source_quote`, a
 -- JSON object holding one verbatim quote per kept component. A filing with no usable count
 -- is a row with NULL components and its status, so the row marks the date decided.
--- `identity-propagate` purges rows by `cik`.
+-- `identity --only propagate` purges rows by `cik`.
 
 CREATE TABLE IF NOT EXISTS "fundamentals_employees" (
     "ticker" TEXT NOT NULL,

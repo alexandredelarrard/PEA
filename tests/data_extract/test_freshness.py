@@ -61,7 +61,7 @@ def test_notes_tables_declare_monthly_archive_availability():
         assert table.freshness_col == "available_at"
         assert "available_at" in table.date_type_cols
 
-    print("\n=== SANITY CHECK: financial-notes registry contract ===")
+    print("\n=== SANITY CHECK: notes registry contract ===")
     print("  notes_num and notes_text retain ddate as data time and use date-typed available_at for monthly freshness. Validated.")
 
 

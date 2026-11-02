@@ -1441,7 +1441,9 @@ def build_security_master(
     """Derive `security_master` from the stored FTD lines and the lineage just built; replace the table unless unchanged."""
     observations = context.store.load(Tables.sec_fails_to_deliver_security, columns=list(_OBSERVATION_COLUMNS), optional=True)
     if observations is None:
-        context.log.warning("security_master: no stored FTD lines (run ftd-download first); table left unchanged")
+        context.log.warning(
+            "security_master: no stored FTD lines (run `zips-download --only ftd`, then `identity --only capture-ftd`); table left unchanged"
+        )
         return pd.DataFrame(columns=list(TABLE_COLUMNS))
     roster = context.store.load(Tables.sp500_tickers, columns=list(ROSTER_COLUMNS))
     assert roster is not None

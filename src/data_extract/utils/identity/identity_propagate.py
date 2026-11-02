@@ -1,4 +1,4 @@
-"""`identity-propagate`: carry an `entity_lineage` change into the stored SEC rows.
+"""`identity --only propagate`: carry an `entity_lineage` change into the stored SEC rows.
 
 The tickers whose lineage stamp (`entity_lineage.scope_changed_at`) falls inside
 `resume.recently_changed`'s window on the run date are re-checked, on every table; each step is
@@ -137,9 +137,9 @@ def _warn(context: Context, table: str, records: list[dict], *, dry_run: bool) -
     detail = "; ".join(f"{r['ticker']} cik {r['cik'] or '-'} {r['first_filed']}..{r['last_filed']} {r['rows']} row(s)" for r in records)
     total = sum(r["rows"] for r in records)
     if dry_run:
-        context.log.info("identity-propagate (dry run): would purge %d row(s) from '%s' -- %s", total, table, detail)
+        context.log.info("identity propagate (dry run): would purge %d row(s) from '%s' -- %s", total, table, detail)
     else:
-        context.log.warning("identity-propagate: purged %d row(s) from '%s' -- %s", total, table, detail)
+        context.log.warning("identity propagate: purged %d row(s) from '%s' -- %s", total, table, detail)
 
 
 def _purge(
@@ -198,7 +198,7 @@ def _reparse_bulk(
     for table, reparse, scope_ciks in families:
         tickers = _lacking_scope_rows(context, table, changed, scope_ciks) if context.store.exists(table) else list(changed)
         if tickers:
-            context.log.info("identity-propagate: re-parsing '%s' from cache for %d ticker(s): %s", table.name, len(tickers), ", ".join(tickers))
+            context.log.info("identity propagate: re-parsing '%s' from cache for %d ticker(s): %s", table.name, len(tickers), ", ".join(tickers))
             reparse(context, tickers)
             done[table.name] = tuple(tickers)
     return done
@@ -217,7 +217,7 @@ def _refresh_fails(
     changed = restamp_targets(context, Tables.sec_fails_to_deliver_security, master_stamps(master), as_of, every=every)
     if not changed:
         return []
-    context.log.info("identity-propagate: re-stamping FTD lines for %d company(ies): %s", len(changed), ", ".join(changed))
+    context.log.info("identity propagate: re-stamping FTD lines for %d company(ies): %s", len(changed), ", ".join(changed))
     records = restamp_fails(context, changed, tickers, identity=cohort, dry_run=dry_run, others=others)
     _warn(context, Tables.sec_fails_to_deliver.name, records, dry_run=dry_run)
     return records
@@ -233,7 +233,7 @@ def _refresh_short_volume(
     changed = restamp_targets(context, Tables.sec_short_volume_security, stamps, as_of, every=every)
     if not changed:
         return []
-    context.log.info("identity-propagate: re-stamping short-volume rows for %d company(ies): %s", len(changed), ", ".join(changed))
+    context.log.info("identity propagate: re-stamping short-volume rows for %d company(ies): %s", len(changed), ", ".join(changed))
     records = restamp_short_volume(context, changed, tickers, identity=identity, dry_run=dry_run)
     _warn(context, Tables.short_interest.name, records, dry_run=dry_run)
     return records
@@ -250,7 +250,7 @@ def _refresh_insider(context: Context, identity: Identity, changed: Sequence[str
 
 def _rebuild_history(context: Context, tickers: list[str]) -> None:
     """Delete and rebuild the SEC history of `tickers`, then their merged history in full."""
-    context.log.warning("identity-propagate: rebuilding the SEC and merged history of %d purged ticker(s): %s", len(tickers), ", ".join(tickers))
+    context.log.warning("identity propagate: rebuilding the SEC and merged history of %d purged ticker(s): %s", len(tickers), ", ".join(tickers))
     build_fundamentals_history(context, tickers, rebuild_history=True)
     build_merged_history(context, tickers, full=True, config_dir=str(context.config_dir))
 
@@ -268,7 +268,7 @@ def propagate_identity(
     """Purge, re-parse and rebuild for the lineage changes inside the re-check window on `as_of` (default
     today); `dry_run` only lists removals.
 
-    `every_ticker` (`identity-propagate --full`) checks every ticker whatever its stamp; the tapes then re-stamp every company.
+    `every_ticker` (`identity --only propagate --full`) checks every ticker whatever its stamp; the tapes then re-stamp every company.
     """
     resolver = identity or load_identity(context)
     run_date = pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize()
@@ -277,7 +277,7 @@ def propagate_identity(
     scopes = {ticker: resolver.filing_scope(ticker) for ticker in universe}
     changed = _changed({ticker: scope.scope_changed_at for ticker, scope in scopes.items()}, run_date, every=every_ticker)
     if changed:
-        context.log.info("identity-propagate: %d ticker lineage scope(s) to re-check: %s", len(changed), ", ".join(changed))
+        context.log.info("identity propagate: %d ticker lineage scope(s) to re-check: %s", len(changed), ", ".join(changed))
     records: list[dict] = []
     for spec in PURGE_TABLES:
         records += _purge(context, spec, changed, resolver, dry_run=dry_run)
@@ -290,7 +290,7 @@ def propagate_identity(
     if purged_facts and not dry_run:
         _rebuild_history(context, purged_facts)
     context.log.info(
-        "identity-propagate%s: %d removal group(s), %d row(s); re-parsed %s; history rebuilt for %d ticker(s)",
+        "identity propagate%s: %d removal group(s), %d row(s); re-parsed %s; history rebuilt for %d ticker(s)",
         " (dry run)" if dry_run else "",
         len(removals),
         int(removals["rows"].sum()) if not removals.empty else 0,

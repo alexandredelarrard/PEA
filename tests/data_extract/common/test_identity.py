@@ -495,7 +495,7 @@ def test_a_tape_symbol_never_maps_an_interval_evidenced_by_dei_alone():
 
 
 def test_d19_is_the_lineage_builds_check_and_is_not_repeated_at_load():
-    """D19 stops `identity-tables` (`test_entity_lineage.test_a_d19_disagreement_still_stops_the_build`);
+    """D19 stops `identity` (`test_entity_lineage.test_a_d19_disagreement_still_stops_the_build`);
     a consumer loading the stored tables does not re-run it."""
     identity = build_identity(
         lineage=_lineage([("0000000100", "E0000000100", "roster"), ("0000000900", "E0000000900", "roster")]),

@@ -749,7 +749,7 @@ def live_build() -> Any:
     except Exception as exc:  # noqa: BLE001
         pytest.skip(f"database unavailable ({type(exc).__name__})")
     if tenure is None or roster is None or tenure.empty or roster.empty:
-        pytest.skip("symbol_tenure / sp500_tickers empty -- run `identity-tables` first")
+        pytest.skip("symbol_tenure / sp500_tickers empty -- run `identity` first")
     assert tenure is not None and roster is not None
     return derive_entity_lineage(tenure, roster, scan_form345_cache(CACHE).owner_pairs, CONFIG_DIR)
 

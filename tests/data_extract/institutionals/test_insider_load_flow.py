@@ -501,7 +501,7 @@ def identity_two() -> Identity:
 
 
 def test_a_ticker_subset_run_never_deletes_another_universe_company(tmp_path, sqlite_store, monkeypatch, identity_two, caplog):
-    """R-01: `insider-transactions -t AAA -F` re-reads AAA only; the stored-row sweep, which adjudicates
+    """R-01: `zips-ingest --only insider -t AAA -F` re-reads AAA only; the stored-row sweep, which adjudicates
     against the whole universe, is skipped, so BBB's zip and EDGAR rows survive unchanged."""
     caplog.set_level(logging.INFO)
     sec = _FakeSec(monkeypatch, identity_two, tmp_path)

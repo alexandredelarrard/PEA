@@ -390,7 +390,7 @@ def _backlog_items(backlog: pd.DataFrame | None) -> list[dict[str, object]]:
         return []
     actions = {
         "grey_band": ("add a manual decision (own_entity or separate) citing the filing", _MANUAL),
-        "rekey": ("approve with identity-tables --approve-rekey OLD:NEW, or leave excluded", ""),
+        "rekey": ("approve with identity --approve-rekey OLD:NEW, or leave excluded", ""),
     }
     return [
         _item(kind, True, str(ticker or entity), (str(cik),), str(detail), *actions[kind])

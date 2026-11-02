@@ -29,7 +29,7 @@ from src.data_extract.utils.edgar_extract import edgar_driver, edgar_index
 from src.data_extract.utils.edgar_extract import fetch_insider_edgar as edgar
 from src.data_extract.utils.edgar_extract.sec_utils import CIK_MAPPING_COLS
 from src.data_extract.utils.identity.identity_store import load_source_identity
-from src.data_extract.utils.institutionals import fetch_insider_transactions as ins
+from src.data_extract.utils.zips import fetch_insider_transactions as ins
 from src.data_store.schema import Tables
 from src.data_store.store import _create_canonical
 from tests.data_extract.edgar_fixtures import seed_index

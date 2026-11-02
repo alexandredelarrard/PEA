@@ -18,7 +18,7 @@ from typing import Any
 import pandas as pd
 import pytest
 
-import src.data_extract.utils.fundamentals.fetch_financial_notes as fn
+import src.data_extract.utils.zips.fetch_financial_notes as fn
 from src.data_extract.utils.identity.symbol_tenure import (
     DEI_SOURCE,
     TABLE_COLUMNS,

@@ -1,5 +1,5 @@
 """
-fetch_fails_to_deliver.py (src/data_extract/utils/institutionals/fetch_fails_to_deliver.py)
+fetch_fails_to_deliver.py (src/data_extract/utils/zips/fetch_fails_to_deliver.py)
 ------------------------------------------------------------------------------------
 SEC Fails-to-Deliver semi-monthly ZIPs. `download_fails_to_deliver` (the `ftd-download` stage) caches
 the ZIPs and stores the in-scope source lines raw, per CUSIP, in `sec_fails_to_deliver_security`.

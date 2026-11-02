@@ -12,7 +12,7 @@ import pandas as pd
 import pytest
 
 from src.data_extract.utils.common.identity import load_source_identity
-from src.data_extract.utils.institutionals import fetch_insider_transactions as ins
+from src.data_extract.utils.zips import fetch_insider_transactions as ins
 from src.data_store.schema import Tables
 from src.data_store.store import _create_canonical
 

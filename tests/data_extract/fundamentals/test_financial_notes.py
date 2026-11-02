@@ -1,5 +1,5 @@
 """Unit tests for the SEC Financial Statement & Notes extractor
-(src/data_extract/utils/fundamentals/fetch_financial_notes.py).
+(src/data_extract/utils/zips/fetch_financial_notes.py).
 
 Covers, with NO network:
   * the pure parse/join (num + text) incl. the dimn==0 / coreg / universe filters,
@@ -21,7 +21,7 @@ from typing import Any, cast
 import pandas as pd
 import pytest
 
-import src.data_extract.utils.fundamentals.fetch_financial_notes as fn
+import src.data_extract.utils.zips.fetch_financial_notes as fn
 from src.constants.constants import MARKET_TIMEZONE
 from src.data_extract.utils.common import bulk_cache
 from src.data_extract.utils.common.resume import ArchiveWork

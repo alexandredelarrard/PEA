@@ -23,9 +23,9 @@ from src.data_extract.utils.insider.insider_store import (
     certify_insider_source,
     insider_source_run,
 )
-from src.data_extract.utils.institutionals import fetch_fails_to_deliver as ftd
-from src.data_extract.utils.institutionals import fetch_insider_transactions as insider_zip
 from src.data_extract.utils.institutionals import fetch_short_interest as finra
+from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd
+from src.data_extract.utils.zips import fetch_insider_transactions as insider_zip
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore, _create_canonical
 from src.utils.price_adjustments import ShareBasis

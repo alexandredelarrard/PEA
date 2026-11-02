@@ -23,15 +23,15 @@ from src.data_extract.transformers.step_extract_prices import StepExtractPrices
 from src.data_extract.transformers.step_extract_structure import StepExtractStructure
 from src.data_extract.utils.common.bulk_cache import cache_dir
 from src.data_extract.utils.common.identity import load_identity
-from src.data_extract.utils.fundamentals.fetch_financial_notes import download_financial_notes
 from src.data_extract.utils.identity.entity_lineage import build_entity_lineage
 from src.data_extract.utils.identity.identity_propagate import propagate_identity
 from src.data_extract.utils.identity.sec_tickers import download_sec_company_tickers
 from src.data_extract.utils.identity.security_master import build_security_master
 from src.data_extract.utils.identity.symbol_tenure import build_symbol_tenure, scan_form345_cache
-from src.data_extract.utils.institutionals.fetch_fails_to_deliver import download_fails_to_deliver
-from src.data_extract.utils.institutionals.fetch_insider_transactions import download_insider_transactions
 from src.data_extract.utils.prices.fetch_tickers import get_sp500_tickers
+from src.data_extract.utils.zips.fetch_fails_to_deliver import download_fails_to_deliver
+from src.data_extract.utils.zips.fetch_financial_notes import download_financial_notes
+from src.data_extract.utils.zips.fetch_insider_transactions import download_insider_transactions
 from src.data_store.schema import Tables
 from src.utils.step import Step
 from src.utils.universe import load_universe_tickers

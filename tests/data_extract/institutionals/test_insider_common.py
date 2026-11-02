@@ -18,7 +18,7 @@ from src.data_extract.utils.insider.insider_common import (
     parse_number,
     parse_sec_date,
 )
-from src.data_extract.utils.institutionals.fetch_insider_transactions import extract_bulk_strings
+from src.data_extract.utils.zips.fetch_insider_transactions import extract_bulk_strings
 
 ROLES = ["is_director", "is_officer", "is_ten_pct_owner", "is_other"]
 ACCESSION = "0000320193-26-000010"

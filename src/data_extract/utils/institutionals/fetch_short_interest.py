@@ -30,13 +30,13 @@ from src.constants.constants import BROWSER_HEADERS, CANONICAL_CURRENT, CANONICA
 from src.context import Context
 from src.data_extract.utils.common.identity import Identity, SecurityHit, load_identity
 from src.data_extract.utils.identity.security_master import EXCLUDED, SOURCE_FTD
-from src.data_extract.utils.institutionals.fetch_fails_to_deliver import master_stamps
 from src.data_extract.utils.institutionals.security_tape import (
     SUMMED_ROLES,
     commit_tape_source,
     summed_lines,
     validate_tape_frames,
 )
+from src.data_extract.utils.zips.fetch_fails_to_deliver import master_stamps
 from src.data_store.schema import Resume, Table, Tables
 from src.data_store.store import DataStore
 from src.utils.filer_tables import filing_window

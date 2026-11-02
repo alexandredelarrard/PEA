@@ -7,7 +7,7 @@ from typing import Any, cast
 
 from src.constants.constants import SEC_INSIDER_SWAP_YEAR, SEC_INSIDER_URL_NEW_TEMPLATE, SEC_INSIDER_URL_TEMPLATE
 from src.data_extract.utils.common.bulk_cache import ensure_zip
-from src.data_extract.utils.institutionals.fetch_insider_transactions import zip_urls
+from src.data_extract.utils.zips.fetch_insider_transactions import zip_urls
 
 
 def test_each_quarter_lists_both_paths_with_the_likelier_first():

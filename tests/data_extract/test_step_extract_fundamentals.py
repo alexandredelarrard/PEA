@@ -14,7 +14,7 @@ re-arms the ordering invariant automatically the moment either is re-enabled, ra
 leaving the rule unguarded until someone remembers it.
 
 `fetch_insider_transactions` is NOT part of this step: it moved to `StepExtractPrices`
-(`src/data_extract/utils/institutionals/fetch_insider_transactions.py`), alongside the other
+(`src/data_extract/utils/zips/fetch_insider_transactions.py`), alongside the other
 price/settlement signals.
 """
 

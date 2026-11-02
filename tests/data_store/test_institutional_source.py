@@ -29,7 +29,7 @@ from src.data_extract.utils.insider.insider_store import (
     replace_insider_source,
     save_insider_source,
 )
-from src.data_extract.utils.institutionals.fetch_fails_to_deliver import replace_fails_source
+from src.data_extract.utils.zips.fetch_fails_to_deliver import replace_fails_source
 from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore, _create_canonical
 from src.utils.price_adjustments import ShareBasis

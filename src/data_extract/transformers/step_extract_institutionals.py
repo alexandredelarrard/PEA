@@ -16,10 +16,10 @@ from src.data_extract.utils.edgar_extract.fetch_insider_edgar import INSIDER_EDG
 from src.data_extract.utils.insider.insider_store import insider_source_run
 from src.data_extract.utils.institutionals.fetch_13f import fetch_13f
 from src.data_extract.utils.institutionals.fetch_13f_managers import fetch_13f_managers
-from src.data_extract.utils.institutionals.fetch_fails_to_deliver import fetch_fails_to_deliver
-from src.data_extract.utils.institutionals.fetch_insider_transactions import fetch_insider_transactions
 from src.data_extract.utils.institutionals.fetch_short_interest import fetch_short_interest
 from src.data_extract.utils.institutionals.fetch_superinvestors import upsert_roster_snapshot
+from src.data_extract.utils.zips.fetch_fails_to_deliver import fetch_fails_to_deliver
+from src.data_extract.utils.zips.fetch_insider_transactions import fetch_insider_transactions
 from src.utils.step import Step
 from src.utils.universe import load_universe_tickers
 

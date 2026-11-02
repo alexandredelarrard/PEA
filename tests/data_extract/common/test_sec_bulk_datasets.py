@@ -23,9 +23,9 @@ import src.data_extract.cli as cli_mod
 from src.constants.constants import MARKET_TIMEZONE
 from src.data_extract.utils.common import bulk_cache
 from src.data_extract.utils.common.identity import build_identity
-from src.data_extract.utils.fundamentals import fetch_financial_statements as fin
 from src.data_extract.utils.insider.insider_common import BULK_DATE_FORMATS, build_insider_frame, screen_insider_rows
-from src.data_extract.utils.institutionals import fetch_insider_transactions as ins
+from src.data_extract.utils.zips import fetch_financial_statements as fin
+from src.data_extract.utils.zips import fetch_insider_transactions as ins
 from src.data_store.schema import Resume, Tables
 from src.data_store.store import DataStore, _create_canonical
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity

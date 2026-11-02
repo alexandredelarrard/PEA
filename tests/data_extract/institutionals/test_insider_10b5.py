@@ -22,7 +22,7 @@ from src.data_extract.utils.insider.insider_common import (
     filter_footnotes,
     normalize_flag,
 )
-from src.data_extract.utils.institutionals.fetch_insider_transactions import (
+from src.data_extract.utils.zips.fetch_insider_transactions import (
     _footnote_strings,
     extract_bulk_strings,
 )

@@ -6,7 +6,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.institutionals.fetch_insider_transactions import extract_bulk_strings
+from src.data_extract.utils.zips.fetch_insider_transactions import extract_bulk_strings
 from tests.fixtures.insider_zip import fixture_accessions, xml_frame, zip_frame, zip_path
 
 KEY = ["accession_number", "security_type", "row_sequence"]

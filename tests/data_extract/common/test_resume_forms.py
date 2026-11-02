@@ -9,8 +9,8 @@ import pandas as pd
 import pytest
 
 from src.data_extract.utils.common.registrant import FORM_POLICY
-from src.data_extract.utils.institutionals import fetch_fails_to_deliver as ftd
 from src.data_extract.utils.institutionals import fetch_superinvestors as roster
+from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd
 from src.data_store.schema import RESUME_DOCUMENTS, Resume, Table, Tables, resume_tables
 
 

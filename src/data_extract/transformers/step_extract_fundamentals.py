@@ -20,8 +20,8 @@ from omegaconf import DictConfig
 
 from src.context import Context
 from src.data_extract.utils.fundamentals.fetch_earnings_surprises import fetch_earnings_surprises
-from src.data_extract.utils.fundamentals.fetch_financial_notes import fetch_financial_notes
-from src.data_extract.utils.fundamentals.fetch_financial_statements import fetch_financial_statements
+from src.data_extract.utils.zips.fetch_financial_notes import fetch_financial_notes
+from src.data_extract.utils.zips.fetch_financial_statements import fetch_financial_statements
 from src.utils.step import Step
 from src.utils.universe import load_universe_tickers
 

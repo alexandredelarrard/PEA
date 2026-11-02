@@ -86,8 +86,6 @@ from src.data_extract.utils.edgar_extract.fetch_insider_edgar import INSIDER_EDG
 from src.data_extract.utils.edgar_extract.sec_utils import load_cik_mapping
 from src.data_extract.utils.fundamentals.build_history import build_fundamentals_history
 from src.data_extract.utils.fundamentals.fetch_earnings_surprises import fetch_earnings_surprises
-from src.data_extract.utils.fundamentals.fetch_financial_notes import download_financial_notes, fetch_financial_notes
-from src.data_extract.utils.fundamentals.fetch_financial_statements import fetch_financial_statements
 from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import fetch_fundamentals_sec, fetched_filing_dates, fundamentals_fetch
 from src.data_extract.utils.fundamentals.fundamentals_employees import fetch_fundamentals_employees
 from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import (
@@ -110,8 +108,6 @@ from src.data_extract.utils.identity.symbol_tenure import build_symbol_tenure, s
 from src.data_extract.utils.institutionals.fetch_13f import fetch_13f
 from src.data_extract.utils.institutionals.fetch_13f_backfill import fetch_13f_backfill
 from src.data_extract.utils.institutionals.fetch_13f_managers import fetch_13f_managers, recover_13f_vintages
-from src.data_extract.utils.institutionals.fetch_fails_to_deliver import download_fails_to_deliver, fetch_fails_to_deliver
-from src.data_extract.utils.institutionals.fetch_insider_transactions import download_insider_transactions, fetch_insider_transactions
 from src.data_extract.utils.institutionals.fetch_short_interest import fetch_short_interest
 from src.data_extract.utils.institutionals.fetch_superinvestors import rebuild_roster, upsert_roster_snapshot
 from src.data_extract.utils.prices.fetch_macro import fetch_macro
@@ -119,6 +115,10 @@ from src.data_extract.utils.prices.fetch_prices import fetch_prices_and_actions
 from src.data_extract.utils.prices.fetch_tickers import get_sp500_tickers
 from src.data_extract.utils.structure.def14a import fetch_def14a_llm
 from src.data_extract.utils.structure.votes import fetch_8k_votes_llm
+from src.data_extract.utils.zips.fetch_fails_to_deliver import download_fails_to_deliver, fetch_fails_to_deliver
+from src.data_extract.utils.zips.fetch_financial_notes import download_financial_notes, fetch_financial_notes
+from src.data_extract.utils.zips.fetch_financial_statements import fetch_financial_statements
+from src.data_extract.utils.zips.fetch_insider_transactions import download_insider_transactions, fetch_insider_transactions
 from src.data_store.schema import Table, Tables, freshness_tables, marker_tables, resolve
 from src.utils.cli_helper import SpecialHelpOrder
 from src.utils.freshness import PREDICTION_INPUTS, fresh_share, last_dates_by_key, max_age_days, table_freshness

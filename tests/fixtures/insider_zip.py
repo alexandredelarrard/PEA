@@ -17,7 +17,7 @@ import pandas as pd
 from src.data_extract.utils.common.bulk_cache import read_zip_tables
 from src.data_extract.utils.edgar_extract.insider_edgar_parser import extract_xml_strings
 from src.data_extract.utils.insider.insider_common import BULK_DATE_FORMATS, XML_DATE_FORMATS, build_insider_frame
-from src.data_extract.utils.institutionals import fetch_insider_transactions as ins
+from src.data_extract.utils.zips import fetch_insider_transactions as ins
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "insider"
 ZIP_MEMBER = Path("data") / "sec_insider_transactions" / "2026q2.zip"

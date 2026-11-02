@@ -22,9 +22,9 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.fundamentals import fetch_financial_notes as fn
-from src.data_extract.utils.fundamentals import fetch_financial_statements as fin
 from src.data_extract.utils.insider.insider_common import screen_insider_rows
+from src.data_extract.utils.zips import fetch_financial_notes as fn
+from src.data_extract.utils.zips import fetch_financial_statements as fin
 from src.data_store.schema import Tables
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
 

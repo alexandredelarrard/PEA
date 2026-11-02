@@ -23,7 +23,7 @@ from src.data_extract.utils.common.identity import build_identity
 from src.data_extract.utils.identity import identity_propagate as prop
 from src.data_extract.utils.identity import security_master as sm
 from src.data_extract.utils.insider import insider_common as ic
-from src.data_extract.utils.institutionals import fetch_insider_transactions as ins
+from src.data_extract.utils.zips import fetch_insider_transactions as ins
 from src.data_store import ddl
 from src.data_store.schema import Tables
 from tests.data_extract.fake_context import extract_config

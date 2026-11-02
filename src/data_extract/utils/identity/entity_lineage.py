@@ -1291,6 +1291,11 @@ def _stored_rows(existing: pd.DataFrame | None) -> pd.DataFrame | None:
     return out
 
 
+def load_stored_lineage(context: Context) -> pd.DataFrame | None:
+    """The stored `entity_lineage` with its dates parsed, as `build_security_master` reads a lineage just built; None when absent."""
+    return _stored_rows(context.store.load(Tables.entity_lineage, project=True, optional=True))
+
+
 def _log_changed_assignments(context: Context, existing: pd.DataFrame, out: pd.DataFrame, roster: pd.DataFrame) -> None:
     """Name every CIK whose entity changed and the current tickers those entities hold."""
     old_map = entity_by_cik_map(existing)

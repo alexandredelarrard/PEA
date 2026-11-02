@@ -544,6 +544,13 @@ def build_symbol_tenure(context: Context, scan: Form345Scan, config_dir: str | P
     return out
 
 
+def load_built_tenure(context: Context) -> pd.DataFrame:
+    """The stored `form345` and `manual` partitions (what `build_symbol_tenure` returns), dates parsed; empty when absent."""
+    stored = context.store.load(Tables.symbol_tenure, columns=list(TABLE_COLUMNS), where={"source": list(BUILD_SOURCES)}, optional=True)
+    out = stored if stored is not None else pd.DataFrame(columns=list(TABLE_COLUMNS))
+    return out.assign(valid_from=pd.to_datetime(out["valid_from"]), valid_to=pd.to_datetime(out["valid_to"]))
+
+
 def aggregate_dei_symbols(facts: pd.DataFrame, period: str) -> pd.DataFrame:
     """One Notes zip's cover-page symbol facts `[adsh, cik, name, filed, value]` -> its `dei` rows.
 
@@ -595,6 +602,11 @@ def collapse_dei_periods(rows: pd.DataFrame) -> pd.DataFrame:
         .agg(valid_from=("valid_from", "min"), valid_to=("valid_to", "max"), n_filings=("n_filings", "sum"), evidence=("evidence", "last"))
     )
     return agg.assign(source=DEI_SOURCE)[["symbol", "issuer_cik", "valid_from", "valid_to", "n_filings", "source", "evidence"]]
+
+
+def captured_dei_periods(context: Context) -> set[str]:
+    """The Notes periods whose cover-page symbols are stored in the `dei` partition."""
+    return {str(value) for value in context.store.distinct(Tables.symbol_tenure, "evidence_period", where={"source": DEI_SOURCE})}
 
 
 def save_dei_period(context: Context, period: str, rows: pd.DataFrame) -> int:

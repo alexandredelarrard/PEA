@@ -53,7 +53,7 @@ def test_changed_source_dates_reach_archive_and_roster_planning(monkeypatch: pyt
     table = Tables.sec_fails_to_deliver_security
     resume = replace(cast(Resume, table.resume), source_start="2011-06-16")
     monkeypatch.setattr(Tables, "sec_fails_to_deliver_security", replace(table, resume=resume))
-    periods = ftd._periods(50, pd.Timestamp("2011-07-01"))
+    periods = ftd.ftd_periods(50, pd.Timestamp("2011-07-01"))
     assert periods == ["201106b", "201107a", "201107b"]
     table = Tables.superinvestor_roster
     resume = replace(cast(Resume, table.resume), source_start="2013-01-01")

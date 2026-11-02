@@ -318,8 +318,8 @@ def _serve(monkeypatch: pytest.MonkeyPatch, lines: dict[str, list[str]]) -> list
         read.append(period)
         return "\n".join([HEADER, *lines[period]]) + "\n"
 
-    monkeypatch.setattr(ftd, "_cached_periods", lambda cache: set(lines))
-    monkeypatch.setattr(ftd, "_periods", lambda *a, **k: sorted(lines))
+    monkeypatch.setattr(ftd, "cached_ftd_periods", lambda cache: set(lines))
+    monkeypatch.setattr(ftd, "ftd_periods", lambda *a, **k: sorted(lines))
     monkeypatch.setattr(ftd, "ensure_zip", lambda context, path, urls, **kwargs: path)
     monkeypatch.setattr(ftd, "read_zip_text", _read)
     monkeypatch.setattr(ftd, "load_identity", lambda context, refresh=False: _identity(), raising=False)

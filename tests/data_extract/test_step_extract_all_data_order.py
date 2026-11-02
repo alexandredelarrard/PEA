@@ -1,4 +1,4 @@
-"""`StepExtractAllData` runs downloads -> identity build -> propagation before every domain step."""
+"""`StepExtractAllData` runs downloads -> `StepExtractIdentity` (captures, build, propagation) before every domain step."""
 
 from __future__ import annotations
 
@@ -7,10 +7,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
+import pandas as pd
 import pytest
 
 from src.data_extract import step_extract_all_data as module
 from src.data_extract.step_extract_all_data import StepExtractAllData
+from src.data_extract.transformers import step_extract_identity as identity_module
 
 DOMAIN_STEPS = ("prices", "institutionals", "fundamentals_sharadar", "fundamentals", "structure", "behavioral")
 IDENTITY_STAGE = (
@@ -18,6 +20,8 @@ IDENTITY_STAGE = (
     "notes_download",
     "ftd_download",
     "sec_tickers",
+    "dei_capture",
+    "ftd_capture",
     "form345_scan",
     "symbol_tenure",
     "entity_lineage",
@@ -45,7 +49,10 @@ def _step(monkeypatch, order: list[str], *, boom: str | None = None) -> Any:
     monkeypatch.setattr(module, "download_financial_notes", mark("notes_download"))
     monkeypatch.setattr(module, "download_fails_to_deliver", mark("ftd_download"))
     monkeypatch.setattr(module, "download_sec_company_tickers", mark("sec_tickers"))
-    monkeypatch.setattr(module, "cache_dir", lambda context, name: Path("cache") / name)
+    monkeypatch.setattr(identity_module, "cache_dir", lambda context, name: Path("cache") / name)
+    monkeypatch.setattr(identity_module, "load_universe_tickers", lambda context: ["AAA", "BBB"])
+    monkeypatch.setattr(identity_module, "capture_pending_dei", lambda context, cache, full: mark("dei_capture")())
+    monkeypatch.setattr(identity_module, "capture_ftd_cusips", lambda context, cache, years, full, as_of: mark("ftd_capture")())
 
     def form345_scan(cache):
         assert cache == Path("cache") / "sec_insider_transactions"
@@ -57,7 +64,7 @@ def _step(monkeypatch, order: list[str], *, boom: str | None = None) -> Any:
 
     lineage = object()
 
-    def entity_lineage(context, given_tenure, owner_pairs, config_dir, redundant_symbols=frozenset()):
+    def entity_lineage(context, given_tenure, owner_pairs, config_dir, approved_rekeys=frozenset(), redundant_symbols=frozenset()):
         assert given_tenure is tenure and owner_pairs is scan.owner_pairs and redundant_symbols == {"GOOG"}
         return mark("entity_lineage", lineage)()
 
@@ -70,19 +77,23 @@ def _step(monkeypatch, order: list[str], *, boom: str | None = None) -> Any:
         return mark("identity_refresh", identity)()
 
     def propagate(context, tickers, **kwargs):
-        assert list(tickers) == ["AAA", "BBB"] and kwargs == {"identity": identity, "all_tickers": tickers}
+        today = pd.Timestamp.today().normalize()
+        assert list(tickers) == ["AAA", "BBB"] and kwargs["identity"] is identity and kwargs["all_tickers"] == ["AAA", "BBB"]
+        assert not kwargs["dry_run"] and not kwargs["every_ticker"] and kwargs["as_of"] == today
         return mark("propagate")()
 
-    monkeypatch.setattr(module, "scan_form345_cache", form345_scan)
-    monkeypatch.setattr(module, "build_symbol_tenure", symbol_tenure)
-    monkeypatch.setattr(module, "build_entity_lineage", entity_lineage)
-    monkeypatch.setattr(module, "build_security_master", security_master)
-    monkeypatch.setattr(module, "load_identity", refresh)
-    monkeypatch.setattr(module, "propagate_identity", propagate)
+    monkeypatch.setattr(identity_module, "scan_form345_cache", form345_scan)
+    monkeypatch.setattr(identity_module, "build_symbol_tenure", symbol_tenure)
+    monkeypatch.setattr(identity_module, "build_entity_lineage", entity_lineage)
+    monkeypatch.setattr(identity_module, "build_security_master", security_master)
+    monkeypatch.setattr(identity_module, "load_identity", refresh)
+    monkeypatch.setattr(identity_module, "propagate_identity", propagate)
 
     config = SimpleNamespace(
         data_extract=SimpleNamespace(years_history=15, redundant_ticks=["GOOG"]),
-        local=SimpleNamespace(paths=SimpleNamespace(insider_transactions="sec_insider_transactions")),
+        local=SimpleNamespace(
+            paths=SimpleNamespace(insider_transactions="sec_insider_transactions", financial_notes="notes", fails_deliver="sec_fails_to_deliver")
+        ),
     )
     step = cast(Any, object.__new__(StepExtractAllData))
     step._context = SimpleNamespace(config=config, config_dir="./configs")

@@ -18,7 +18,7 @@ from src.data_extract.utils.common.sec_io import ParseFailureError
 from src.data_extract.utils.edgar_extract import fetch_insider_edgar as insider_edgar
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarScope, _read_unit, _walk_key
 from src.data_extract.utils.edgar_extract.insider_edgar_parser import extract_xml_strings
-from src.data_extract.utils.identity import identity_propagate
+from src.data_extract.utils.identity import capture_ftd, identity_propagate
 from src.data_extract.utils.insider.insider_store import (
     certify_insider_source,
     insider_source_run,
@@ -31,6 +31,7 @@ from src.data_store.store import DataStore, _create_canonical
 from src.utils.price_adjustments import ShareBasis
 from tests.conftest import DATA
 from tests.data_extract.fake_context import extract_config
+from tests.data_extract.institutionals.test_fails_to_deliver import download_and_capture
 from tests.data_extract.institutionals.test_short_volume_security import _identity, _master
 
 
@@ -115,7 +116,7 @@ def test_ftd_same_key_conflicting_source_periods_refuse() -> None:
         }
     )
     with pytest.raises(ValueError, match="conflict"):
-        ftd._unique_keys(lines, "known conflicting ZIPs")
+        ftd.unique_ftd_keys(lines, "known conflicting ZIPs")
     print("SANITY: incompatible same-key FTD ZIP values refuse before any latest/first-wins persistence.")
 
 
@@ -194,13 +195,13 @@ def test_normal_ftd_retry_recovers_old_null_quantity_once(sqlite_store: DataStor
     path = tmp_path / context.config.local.paths.fails_deliver / "cnsfails202607a.zip"
     _archive(path, {"fails.txt": good})
     requested: list[str] = []
-    reader = ftd._read_period
+    reader = ftd.read_ftd_period
 
     def observed(ctx: Any, cache: Path, period: str, *, download: bool) -> pd.DataFrame | None:
         requested.append(period)
         return reader(ctx, cache, period, download=download)
 
-    monkeypatch.setattr(ftd, "_read_period", observed)
+    monkeypatch.setattr(ftd, "read_ftd_period", observed)
     ftd.fetch_fails_to_deliver(context, ["LEN"], as_of=pd.Timestamp("2027-02-01"), all_tickers=["LEN"], identity=identity)
     assert requested == ["202607a"], "normal FTD planning skipped a NULL derived period because its raw rows and ZIP already existed"
     rows = sqlite_store.load(Tables.sec_fails_to_deliver, where={"ticker": "LEN"})
@@ -365,9 +366,9 @@ def test_ftd_normal_planner_retries_bad_cached_payload(sqlite_store: DataStore, 
         return 200
 
     monkeypatch.setattr("src.data_extract.utils.common.bulk_cache.download", download)
-    monkeypatch.setattr(ftd, "_periods", lambda *args: ["202607a"])
-    monkeypatch.setattr(ftd, "_changed_scope", lambda *args: (frozenset(), frozenset()))
-    assert ftd.download_fails_to_deliver(context, full=True, as_of=pd.Timestamp("2026-07-30")) == 0
+    monkeypatch.setattr(ftd, "ftd_periods", lambda *args: ["202607a"])
+    monkeypatch.setattr(capture_ftd, "_changed_scope", lambda *args: (frozenset(), frozenset()))
+    assert download_and_capture(context, full=True, as_of=pd.Timestamp("2026-07-30")) == 0
     stored_frame = sqlite_store.load(Tables.sec_fails_to_deliver_security)
     assert stored_frame is not None
     pd.testing.assert_frame_equal(stored_frame, before_raw)
@@ -376,7 +377,7 @@ def test_ftd_normal_planner_retries_bad_cached_payload(sqlite_store: DataStore, 
     pd.testing.assert_frame_equal(stored_frame, before)
     assert path.exists() and not requests
     path.unlink()
-    assert ftd.download_fails_to_deliver(context, as_of=pd.Timestamp("2026-07-30")) == 1
+    assert download_and_capture(context, as_of=pd.Timestamp("2026-07-30")) == 1
     assert len(requests) == 1
     recovered_raw = sqlite_store.load(Tables.sec_fails_to_deliver_security)
     assert recovered_raw is not None
@@ -441,18 +442,18 @@ def test_pending_ftd_download_cannot_restore_a_stale_derived_cohort(
         return observed
 
     monkeypatch.setattr(sqlite_store, "load", interleaved)
-    monkeypatch.setattr(ftd, "_periods", lambda *args: ["202607a"])
-    monkeypatch.setattr(ftd, "_changed_scope", lambda *args: (frozenset(), frozenset()))
+    monkeypatch.setattr(ftd, "ftd_periods", lambda *args: ["202607a"])
+    monkeypatch.setattr(capture_ftd, "_changed_scope", lambda *args: (frozenset(), frozenset()))
     if concurrent:
         with pytest.raises(ValueError, match="source cohort changed"):
-            ftd.download_fails_to_deliver(context, full=True, as_of=pd.Timestamp("2026-07-30"))
+            download_and_capture(context, full=True, as_of=pd.Timestamp("2026-07-30"))
         for member, expected in recovered.items():
             stored_frame = load(member)
             assert stored_frame is not None
             pd.testing.assert_frame_equal(stored_frame, expected)
             assert expected["fails_quantity"].tolist() == [99.0, 7.0]
     else:
-        assert ftd.download_fails_to_deliver(context, full=True, as_of=pd.Timestamp("2026-07-30")) == 1
+        assert download_and_capture(context, full=True, as_of=pd.Timestamp("2026-07-30")) == 1
         pending_rows = load(Tables.sec_fails_to_deliver)
         assert pending_rows is not None
         assert pending_rows["source_checked_at"].isna().all()
@@ -660,7 +661,7 @@ def test_ftd_b_zip_retains_documented_day15_overlap(tmp_path: Path) -> None:
     cache = tmp_path / context.config.local.paths.fails_deliver
     path = cache / "cnsfails202607b.zip"
     _archive(path, {"fails.txt": "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20260715|526057104|LEN|12|LEN|10\n"})
-    source = ftd._read_period(context, cache, "202607b", download=False)
+    source = ftd.read_ftd_period(context, cache, "202607b", download=False)
     assert source is not None and source["period"].tolist() == ["202607b"] and source["date"].tolist() == [pd.Timestamp("2026-07-15")]
     assert path.exists()
     print("SANITY: the documented day15 b-ZIP overlap retains its actual assigned source tag and publication clock.")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock, call
@@ -11,6 +12,7 @@ import pytest
 from click.testing import CliRunner
 
 from src.data_extract import cli as cli_mod
+from src.data_extract.transformers import step_extract_identity as step_identity
 from src.data_store.schema import Tables
 
 
@@ -90,6 +92,16 @@ def test_cli_backfill_keeps_the_missing_subset_distinct(monkeypatch: pytest.Monk
     print("SANITY: 13F backfill retains None for omitted -t (new names); explicit CSV reaches the source as a list.")
 
 
+def stub_identity_step(monkeypatch: pytest.MonkeyPatch, config: SimpleNamespace, context: SimpleNamespace) -> None:
+    """Make `StepExtractIdentity` constructible on a stub config and context: caches, universe and resolver stubbed."""
+    config.local = SimpleNamespace(paths=SimpleNamespace(insider_transactions="insider", financial_notes="notes", fails_deliver="ftd"))
+    config.data_extract.redundant_ticks = []
+    context.config_dir = "configs"
+    monkeypatch.setattr(step_identity, "cache_dir", lambda ctx, name: Path(name))
+    monkeypatch.setattr(step_identity, "load_universe_tickers", lambda ctx: ["AAA", "BBB"])
+    monkeypatch.setattr(step_identity, "load_identity", lambda ctx, refresh=False: object())
+
+
 @pytest.fixture
 def context(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     config = SimpleNamespace(data_extract=SimpleNamespace(years_history=31))
@@ -125,7 +137,10 @@ def test_full_reaches_the_existing_source_operation(
         calls.append(kwargs)
         return SimpleNamespace(removals=pd.DataFrame())
 
-    if command == "edgar-index":
+    if command == "identity-propagate":
+        stub_identity_step(monkeypatch, context.config, context)
+        monkeypatch.setattr(step_identity, target, record)
+    elif command == "edgar-index":
         monkeypatch.setattr(cli_mod.edgar_index, target, record)
         monkeypatch.setattr(cli_mod.edgar_index, "quarter_counts", lambda ctx: {})
     else:

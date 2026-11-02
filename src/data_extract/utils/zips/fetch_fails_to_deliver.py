@@ -2,15 +2,13 @@
 fetch_fails_to_deliver.py (src/data_extract/utils/zips/fetch_fails_to_deliver.py)
 ------------------------------------------------------------------------------------
 SEC Fails-to-Deliver semi-monthly ZIPs. `download_fails_to_deliver` (the `ftd-download` stage) caches
-the ZIPs and stores the in-scope source lines raw, per CUSIP, in `sec_fails_to_deliver_security`.
-`fetch_fails_to_deliver` stamps those lines from `security_master` (security, canonical company,
-lineage role, class) and rebuilds the ticker-grain `sec_fails_to_deliver`, its own table so its
-publication lag never moves `short_interest`'s frontier: per (ticker, settlement date) the sum over
-the canonical and secondary-class lines of quantity x conversion ratio, and of quantity x the file's
-PRICE (NULL when a summed line has no price). Values are cumulative net unsettled balances, not new
-fails. The download reads the periods no raw line carries (`resume.archive_periods`), plus every cached
-period for the symbols and CUSIP-6 prefixes whose lineage or master rows changed recently; `full`
-rebuilds both tables from every cached ZIP.
+the ZIPs; the identity step (`utils/identity/capture_ftd.py`) stores their in-scope source lines raw,
+per CUSIP, in `sec_fails_to_deliver_security`. `fetch_fails_to_deliver` stamps those lines from
+`security_master` (security, canonical company, lineage role, class) and rebuilds the ticker-grain
+`sec_fails_to_deliver`, its own table so its publication lag never moves `short_interest`'s frontier:
+per (ticker, settlement date) the sum over the canonical and secondary-class lines of quantity x
+conversion ratio, and of quantity x the file's PRICE (NULL when a summed line has no price). Values
+are cumulative net unsettled balances, not new fails. `full` rebuilds both tables from every cached ZIP.
 """
 
 from __future__ import annotations
@@ -30,12 +28,9 @@ from src.constants.constants import CANONICAL_ROLES, FTD_ZIP_NAME_TEMPLATE, SHAR
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import cache_dir, cached_periods, ensure_zip, period_end, read_zip_text
 from src.data_extract.utils.common.identity import Identity, load_source_identity
-from src.data_extract.utils.common.resume import archive_periods, recently_changed
+from src.data_extract.utils.common.resume import archive_periods
 from src.data_extract.utils.identity.security_master import (
     SOURCE_FTD,
-    cusip_votes,
-    lineage_scope_symbols,
-    load_security_manual,
     squash,
     trade_dates,
 )
@@ -93,7 +88,6 @@ _MASTER_COLUMNS = [
     "valid_to",
     "scope_changed_at",
 ]
-_LINEAGE_SCOPE_COLUMNS = ["entity_id", "canonical_ticker", "cik", "role", "symbol", "valid_from", "valid_to", "status", "sources"]
 #: The open end of a master interval.
 _FAR = pd.Timestamp("2262-01-01")
 
@@ -105,7 +99,7 @@ SEC_FTD_LEGACY_LAST_PERIOD = "201706a"  # last period on the legacy path
 SEC_FTD_ZIP_PREFIX = "cnsfails"  # a cached archive is named `{prefix}{period}.zip`
 
 
-def _periods(years_history: int, today: pd.Timestamp | None = None) -> list[str]:
+def ftd_periods(years_history: int, today: pd.Timestamp | None = None) -> list[str]:
     """Semi-monthly file tags ('YYYYMMa'/'YYYYMMb') from the data-set era to now."""
     today = (today or pd.Timestamp.today()).normalize()
     source_start = pd.Timestamp(cast(str, cast(Resume, Tables.sec_fails_to_deliver_security.resume).source_start))
@@ -191,7 +185,7 @@ def _period_urls(period: str) -> tuple[str, ...]:
     return (legacy, modern, other) if period <= SEC_FTD_LEGACY_LAST_PERIOD else (modern, legacy, other)
 
 
-def _cached_periods(cache: Path) -> set[str]:
+def cached_ftd_periods(cache: Path) -> set[str]:
     """Period tags present in the local SEC FTD ZIP cache."""
     return cached_periods(cache, prefix=SEC_FTD_ZIP_PREFIX)
 
@@ -266,7 +260,7 @@ def ticker_rows(stamped: pd.DataFrame, tickers: Collection[str] | None = None, b
     quantity x conversion ratio and of quantity x PRICE; the dollars are NULL when a summed line has no price."""
     summed = summed_lines(stamped, tickers)
     if summed.empty:
-        return _empty_fails_grain()[list(TICKER_COLUMNS)]
+        return empty_fails_grain()[list(TICKER_COLUMNS)]
     quantity = _settlement_quantity(summed, basis)
     if not np.isfinite(quantity).all():
         raise ValueError("FTD settlement quantity basis is unavailable or nonfinite")
@@ -345,7 +339,7 @@ def _checked_ftd_grain(
     return result
 
 
-def _empty_fails_grain() -> pd.DataFrame:
+def empty_fails_grain() -> pd.DataFrame:
     return pd.DataFrame(
         {
             "ticker": pd.Series(dtype=object),
@@ -367,7 +361,7 @@ def _scope_fails_source(source: pd.DataFrame, master: pd.DataFrame, universe: fr
     return scoped
 
 
-def _unique_keys(lines: pd.DataFrame, label: str) -> pd.DataFrame:
+def unique_ftd_keys(lines: pd.DataFrame, label: str) -> pd.DataFrame:
     """Collapse exact source repeats; refuse conflicting payloads or ZIP periods at the raw PK."""
     source_columns = [column for column in SECURITY_COLUMNS[:8] + ("period",) if column in lines]
     kept = lines.drop_duplicates(source_columns, ignore_index=True)
@@ -445,7 +439,7 @@ def _prepare_fails_period(
         if others
         else None
     )
-    source = _scope_fails_source(_unique_keys(source, "FTD source period"), master, universe)
+    source = _scope_fails_source(unique_ftd_keys(source, "FTD source period"), master, universe)
     periods = sorted(set(source["period"].astype(str))) or [str(source.attrs["period"])]
     if held is not None:
         held = held.loc[held["period"].isin(periods)]
@@ -496,14 +490,14 @@ def _rebuild_from_cache(
 ) -> tuple[int, int]:
     """Validate every required cached original before bounded atomic period replacements."""
     cache = cache_dir(context, context.config.local.paths.fails_deliver)
-    cached = sorted(_cached_periods(cache))
+    cached = sorted(cached_ftd_periods(cache))
     stored = context.store.distinct(Tables.sec_fails_to_deliver_security, "period")
     missing = sorted(set(map(str, stored)) - set(cached))
     if missing:
         raise FileNotFoundError(f"FTD full rebuild cannot reproduce stored period(s) {missing}: not in the cache")
     frames: list[pd.DataFrame] = []
     for period in tqdm(cached, desc="SEC fails-to-deliver (rebuild)"):
-        source = _read_period(context, cache, period, download=False)
+        source = read_ftd_period(context, cache, period, download=False)
         if source is None:
             raise ValueError(f"FTD full rebuild cannot read cached period {period}")
         frames.append(_scope_fails_source(source, master, universe))
@@ -514,7 +508,7 @@ def _rebuild_from_cache(
             payload.attrs = {}
             payloads.append(payload)
         combined = pd.concat(payloads, ignore_index=True)
-        _unique_keys(combined, "FTD rebuild")
+        unique_ftd_keys(combined, "FTD rebuild")
     raw, saved = 0, 0
     for source in frames:
         n_raw, n_saved = _save_fails_period(context, source, master, universe, identity, basis)
@@ -530,11 +524,11 @@ def _stamp_new(
     """Reconcile pending units and recover required originals missing from the cache."""
     stored, pending = fails_source_periods(context.store)
     cache = cache_dir(context, context.config.local.paths.fails_deliver)
-    cached = _cached_periods(cache)
+    cached = cached_ftd_periods(cache)
     pending |= stored.symmetric_difference(cached)
     saved = 0
     for period in sorted(map(str, pending)):
-        source = _read_period(context, cache, period, download=True)
+        source = read_ftd_period(context, cache, period, download=True)
         if source is None:
             logger.warning("FTD: pending %s has no readable original; good rows retained, original remains required", period)
             continue
@@ -573,8 +567,8 @@ def _recover_fails_companies(
     observed = stored if stored is not None else pd.DataFrame(columns=["ticker", "date", "period"])
     cache = cache_dir(context, context.config.local.paths.fails_deliver)
     saved, gone = 0, []
-    for period in sorted(_cached_periods(cache) | set(observed["period"].astype(str))):
-        source = _read_period(context, cache, period, download=not dry_run)
+    for period in sorted(cached_ftd_periods(cache) | set(observed["period"].astype(str))):
+        source = read_ftd_period(context, cache, period, download=not dry_run)
         if source is None:
             logger.warning("FTD: %s original unavailable; scope proof remains unknown", period)
             continue
@@ -647,38 +641,7 @@ def restamp_fails(
     return records
 
 
-def _ingest_scope(context: Context) -> tuple[pd.DataFrame | None, pd.DataFrame | None, frozenset[str], frozenset[str]]:
-    """`(lineage, squashed lineage symbols, CUSIP-6 prefixes)`; prefixes come from the stored master and the manual config."""
-    lineage = context.store.load(Tables.entity_lineage, columns=[*_LINEAGE_SCOPE_COLUMNS, "scope_changed_at"], optional=True)
-    master = context.store.load(Tables.security_master, columns=["cusip", "scope_changed_at"], optional=True)
-    if lineage is None:
-        return None, master, frozenset(), frozenset()
-    manual = load_security_manual(getattr(context, "config_dir", None))
-    cusips = set() if master is None else set(master["cusip"].dropna().astype(str))
-    cusips |= set(manual.boundaries["cusip"].dropna()) | set(manual.ratios["cusip"].dropna())
-    return lineage, master, lineage_scope_symbols(lineage), frozenset(c[:6] for c in cusips if c)
-
-
-def _recent_keys(rows: pd.DataFrame, key: str, as_of: pd.Timestamp) -> list[str]:
-    """The values of `key` whose latest `scope_changed_at` is inside `resume.recently_changed`'s window on `as_of`."""
-    stamps = pd.to_datetime(rows["scope_changed_at"], errors="coerce").groupby(rows[key].astype(str)).max()
-    return recently_changed({str(k): v for k, v in stamps.items()}, as_of)
-
-
-def _changed_scope(lineage: pd.DataFrame, master: pd.DataFrame | None, as_of: pd.Timestamp) -> tuple[frozenset[str], frozenset[str]]:
-    """Changed symbols and CUSIP-6 prefixes derived from the initial identity snapshot."""
-    entities = set(_recent_keys(lineage, "entity_id", as_of))
-    symbols = lineage_scope_symbols(lineage.loc[lineage["entity_id"].astype(str).isin(entities)]) if entities else frozenset()
-    prefixes = frozenset(cusip[:6] for cusip in _recent_keys(master, "cusip", as_of) if cusip) if master is not None else frozenset()
-    return symbols, prefixes
-
-
-def _in_scope(lines: pd.DataFrame, symbols: frozenset[str], prefixes: frozenset[str]) -> pd.DataFrame:
-    keys = lines["source_symbol"].map(squash)
-    return lines[keys.isin(symbols) | lines["cusip"].str[:6].isin(prefixes)]
-
-
-def _read_period(context: Context, cache: Path, period: str, *, download: bool) -> pd.DataFrame | None:
+def read_ftd_period(context: Context, cache: Path, period: str, *, download: bool) -> pd.DataFrame | None:
     """One period's raw lines from the cache (downloading it once when `download`); None when unavailable.
 
     A file with invalid content is logged and kept in the cache; only a corrupt archive is deleted.
@@ -705,94 +668,36 @@ def _read_period(context: Context, cache: Path, period: str, *, download: bool) 
     return parsed
 
 
-def download_fails_to_deliver(context: Context, years_history: int = 31, full: bool = False, as_of: pd.Timestamp | None = None) -> int:
-    """Cache the FTD ZIPs and store their in-scope source lines raw in `sec_fails_to_deliver_security`.
+def pending_ftd_periods(context: Context, cache: Path, years_history: int, *, full: bool, as_of: pd.Timestamp) -> list[str]:
+    """The periods the raw capture reads: every listed period under `full`, else those no stored line carries or not cached."""
+    periods = sorted(cached_ftd_periods(cache) | set(ftd_periods(years_history + 1, as_of)))
+    listed, stored = archive_periods(context, (Tables.sec_fails_to_deliver_security,), periods)
+    cached = cached_ftd_periods(cache)
+    return listed if full else [p for p in listed if p not in stored or p not in cached]
 
-    Scope: lineage symbols plus the CUSIP-6 of the master's securities. The periods read are those no stored line
-    carries; every cached period is re-read for the symbols and prefixes whose lineage or master rows changed
-    recently and for a CUSIP-6 newly voted for by a lineage symbol interval. Stamp columns stay NULL. `full`
-    replaces the table from every listed period. Returns the rows written.
+
+def ensure_ftd_zip(context: Context, cache: Path, period: str) -> Path | None:
+    """The cached ZIP of `period`, downloaded once when absent; None when no location serves it."""
+    return ensure_zip(
+        context, cache / FTD_ZIP_NAME_TEMPLATE.format(period=period), _period_urls(period), label=f"FTD {period}", timeout=180, log=logger
+    )
+
+
+def download_fails_to_deliver(context: Context, years_history: int = 31, full: bool = False, as_of: pd.Timestamp | None = None) -> int:
+    """Cache the FTD ZIPs the identity capture reads; returns the ZIPs available.
+
+    Before the first `entity_lineage` build every listed period is cached (cold start); afterwards only the
+    periods the capture will read (`pending_ftd_periods`). Writes no table.
     """
     cache = cache_dir(context, context.config.local.paths.fails_deliver)
-    table = Tables.sec_fails_to_deliver_security
     start_date = run_date(as_of)
-    lineage, master, symbols, prefixes = _ingest_scope(context)
-    changed_symbols, changed_prefixes = (frozenset(), frozenset()) if full or lineage is None else _changed_scope(lineage, master, start_date)
-    periods = sorted(_cached_periods(cache) | set(_periods(years_history + 1, start_date)))
-    if lineage is None:
-        cached = [
-            p
-            for p in periods
-            if ensure_zip(context, cache / FTD_ZIP_NAME_TEMPLATE.format(period=p), _period_urls(p), label=f"FTD {p}", timeout=180, log=logger)
-        ]
-        logger.warning("FTD download: no entity_lineage yet; %d zip(s) cached, lines are ingested after identity-tables has run", len(cached))
-        return 0
-    listed, stored = archive_periods(context, (table,), periods)
-    cached = _cached_periods(cache)
-    pending = listed if full else [p for p in listed if p not in stored or p not in cached]
-    frames = []
-    reconciled: set[str] = set()
-    for period in tqdm(pending, desc="FTD download"):
-        frame = _read_period(context, cache, period, download=True)
-        if frame is not None:
-            frames.append(_in_scope(frame, symbols, prefixes))
-            reconciled.add(period)
-    kept = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=list(SECURITY_COLUMNS[:9]))
-    voted = cusip_votes(kept, lineage) if not kept.empty else pd.DataFrame(columns=["cusip"])
-    added = frozenset(str(c)[:6] for c in voted["cusip"]) - prefixes
-    rescan_prefixes = added | changed_prefixes
-    if rescan_prefixes or changed_symbols:
-        logger.info(
-            "FTD download: re-reading every cached period for %d changed symbol(s) and %d CUSIP-6 prefix(es) (%s)",
-            len(changed_symbols),
-            len(rescan_prefixes),
-            ", ".join(sorted(rescan_prefixes)),
-        )
-        for period in sorted(_cached_periods(cache)):
-            frame = _read_period(context, cache, period, download=False)
-            if frame is not None:
-                kept = pd.concat([kept, _in_scope(frame, symbols, prefixes | rescan_prefixes)], ignore_index=True)
-                reconciled.add(period)
-    kept = _unique_keys(kept, "FTD download")
-    rows = kept.assign(security_id=None, ticker=None, lineage_role=None, security_class=None)[list(SECURITY_COLUMNS)]
-    written = _save_pending_fails(context, rows, sorted(reconciled))
-    logger.info(
-        "FTD download: %d period(s) read, %d in-scope line(s) stored (%d symbol(s), %d CUSIP-6 prefix(es) in scope)",
-        len(pending),
-        written,
-        len(symbols),
-        len(prefixes | added),
-    )
-    return written
-
-
-def _save_pending_fails(context: Context, rows: pd.DataFrame, periods: Sequence[str]) -> int:
-    """New raw units and retained, explicitly unverified derived rows commit as one source pair."""
-    previous = (
-        context.store.load(
-            Tables.sec_fails_to_deliver, columns=context.store.columns(Tables.sec_fails_to_deliver), where={"period": list(periods)}, optional=True
-        )
-        if periods
-        else None
-    )
-    observed = previous if previous is not None else _empty_fails_grain()
-    if "source_checked_at" not in observed:
-        observed = observed.assign(source_checked_at=pd.Series(pd.NaT, index=observed.index, dtype="datetime64[ns]"))
-    written = 0
-    for period in periods:
-        payload = rows.loc[rows["period"].eq(period)]
-        expected = observed.loc[observed["period"].eq(period)]
-        retained = expected.assign(source_checked_at=pd.Series(pd.NaT, index=expected.index, dtype="datetime64[ns]"))
-        quiet = expected["source_checked_at"].notna() & expected["fails_quantity"].eq(0)
-        retained.loc[quiet, ["fails_quantity", "fails_value"]] = float("nan")
-        counts = replace_fails_source(
-            context.store,
-            {Tables.sec_fails_to_deliver_security: payload, Tables.sec_fails_to_deliver: retained},
-            {Tables.sec_fails_to_deliver_security: {"period": period}, Tables.sec_fails_to_deliver: {"period": period}},
-            expected_source={Tables.sec_fails_to_deliver: expected},
-        )
-        written += counts[Tables.sec_fails_to_deliver_security]
-    return written
+    if context.store.load(Tables.entity_lineage, columns=["entity_id"], limit=1, optional=True) is None:
+        periods = sorted(cached_ftd_periods(cache) | set(ftd_periods(years_history + 1, start_date)))
+        cached = [period for period in periods if ensure_ftd_zip(context, cache, period)]
+        logger.warning("FTD download: no entity_lineage yet; %d zip(s) cached, lines are captured after the first identity build", len(cached))
+        return len(cached)
+    pending = pending_ftd_periods(context, cache, years_history, full=full, as_of=start_date)
+    return sum(ensure_ftd_zip(context, cache, period) is not None for period in tqdm(pending, desc="FTD download"))
 
 
 def fetch_fails_to_deliver(

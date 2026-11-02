@@ -18,6 +18,7 @@ from typing import Any
 import pandas as pd
 import pytest
 
+import src.data_extract.utils.identity.capture_dei as dei
 import src.data_extract.utils.zips.fetch_financial_notes as fn
 from src.data_extract.utils.identity.symbol_tenure import (
     DEI_SOURCE,
@@ -135,7 +136,7 @@ def _stored(store: Any) -> pd.DataFrame:
 def test_one_zip_aggregates_normalised_symbols_over_distinct_accessions(tmp_path: Path) -> None:
     """Known truth for one zip: distinct accessions per (symbol, CIK), symbols normalised, co-registrant facts ignored."""
     path = _write_notes_zip(tmp_path, "2025q3", ["A1", "A2", "A3", "B1", "D1"])
-    facts = fn._read_dei_facts(path)
+    facts = dei._read_dei_facts(path)
     assert facts is not None
     rows = aggregate_dei_symbols(facts, "2025q3")
 
@@ -159,7 +160,7 @@ def test_a_combined_cover_keeps_the_filers_own_securities_only(tmp_path: Path) -
     """Known truth for an Entergy-shaped cover: a symbol dimensioned on another legal entity is that entity's
     security, and a `/26A` series code stays on its issuer's symbol instead of becoming a `26A` ticker."""
     path = _write_notes_zip(tmp_path, "2025q3", ["E1", "B1"], dims=_DIMS)
-    facts = fn._read_dei_facts(path)
+    facts = dei._read_dei_facts(path)
     assert facts is not None
     rows = aggregate_dei_symbols(facts, "2025q3")
 
@@ -167,7 +168,7 @@ def test_a_combined_cover_keeps_the_filers_own_securities_only(tmp_path: Path) -
     assert got == {("ETR", "0000065984"), ("ETR-26A", "0000065984"), ("BFA", "0000000002"), ("BFB", "0000000002")}, got
 
     (tmp_path / "old").mkdir()
-    no_dim = fn._read_dei_facts(_write_notes_zip(tmp_path / "old", "2025q3", ["B1"]))
+    no_dim = dei._read_dei_facts(_write_notes_zip(tmp_path / "old", "2025q3", ["B1"]))
     assert no_dim is not None and set(aggregate_dei_symbols(no_dim, "2025q3")["symbol"]) == {"BFA", "BFB"}
 
     print("\n=== SANITY CHECK: combined cover page ===")
@@ -180,7 +181,7 @@ def test_monthly_and_quarterly_zips_holding_the_same_accessions_collapse_to_dist
     _write_notes_zip(tmp_path, "2025_07", ["A1", "A2"])
     _write_notes_zip(tmp_path, "2025_08", ["B1"])
     _write_notes_zip(tmp_path, "2025q3", ["A1", "A2", "A3", "B1"])
-    written = fn.capture_dei_symbols(_context(sqlite_store), tmp_path, ["2025_07", "2025_08", "2025q3"])
+    written = dei.capture_dei_symbols(_context(sqlite_store), tmp_path, ["2025_07", "2025_08", "2025q3"])
 
     stored = _stored(sqlite_store)
     per_period = stored[stored["symbol"].eq("XYZ")].set_index("evidence_period")["n_filings"].to_dict()
@@ -204,9 +205,9 @@ def test_reprocessing_a_captured_zip_is_a_row_identical_no_op(tmp_path: Path, sq
     context = _context(sqlite_store)
     writes = _spy_writes(sqlite_store, monkeypatch)
 
-    fn.capture_dei_symbols(context, tmp_path, ["2025q3"])
+    dei.capture_dei_symbols(context, tmp_path, ["2025q3"])
     first, first_writes = _stored(sqlite_store), list(writes)
-    fn.capture_dei_symbols(context, tmp_path, ["2025q3"])
+    dei.capture_dei_symbols(context, tmp_path, ["2025q3"])
     second = _stored(sqlite_store)
 
     pd.testing.assert_frame_equal(first, second)
@@ -229,13 +230,15 @@ def test_download_captures_only_new_periods_and_writes_no_marker_file(tmp_path: 
     before = _stored(sqlite_store)
 
     read: list[str] = []
-    real_read = fn._read_dei_facts
-    monkeypatch.setattr(fn, "_read_dei_facts", lambda path: (read.append(path.name), real_read(path))[1])
+    real_read = dei._read_dei_facts
+    monkeypatch.setattr(dei, "_read_dei_facts", lambda path: (read.append(path.name), real_read(path))[1])
     monkeypatch.setattr(fn, "cache_dir", lambda context, key: tmp_path)
     monkeypatch.setattr(fn, "_notes_periods", lambda context, years_history: periods)
     monkeypatch.setattr(fn, "ensure_zip", lambda context, path, urls, **kwargs: path)
 
-    written = fn.download_financial_notes(_context(sqlite_store))
+    context = _context(sqlite_store)
+    assert fn.download_financial_notes(context) == 1, "only the uncaptured period is downloaded"
+    written = dei.capture_pending_dei(context, tmp_path, full=False)
     after = _stored(sqlite_store)
 
     assert read == ["2025_04_notes.zip"], read
@@ -265,7 +268,9 @@ def test_full_recapture_replaces_only_that_periods_dei_rows(tmp_path: Path, sqli
     monkeypatch.setattr(fn, "_notes_periods", lambda context, years_history: ["2025q3"])
     monkeypatch.setattr(fn, "ensure_zip", lambda *args, **kwargs: pytest.fail("a cached, captured period needs no download"))
 
-    fn.download_financial_notes(_context(sqlite_store), full=True)
+    context = _context(sqlite_store)
+    fn.download_financial_notes(context)
+    dei.capture_pending_dei(context, tmp_path, full=True)
     rows = {(r.symbol, r.source, r.evidence_period) for r in _stored(sqlite_store).itertuples(index=False)}
 
     assert rows == {("XYZ", DEI_SOURCE, "2025q3"), ("KEEP", DEI_SOURCE, "2025q2"), ("XYZ", "form345", ""), ("XYZ", "manual", "")}, rows

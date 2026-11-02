@@ -16,6 +16,7 @@ import pytest
 from click.testing import CliRunner
 
 import src.data_extract.cli as cli_mod
+from src.data_extract.transformers import step_extract_identity as step_identity
 from src.data_extract.transformers.step_extract_institutionals import StepExtractInstitutionals
 from src.data_extract.transformers.step_extract_structure import StepExtractStructure
 from src.data_extract.utils.edgar_extract.document_resume import DocumentWork
@@ -28,6 +29,7 @@ from src.data_extract.utils.edgar_extract.fetch_filing_text import FILING_TEXT_F
 from src.data_extract.utils.edgar_extract.fetch_insider_edgar import INSIDER_EDGAR_FETCH
 from src.data_store.schema import Tables
 from tests.data_extract.edgar_fixtures import fake_filing
+from tests.data_extract.test_cli_options import stub_identity_step
 
 DAG_FILE = Path(__file__).resolve().parents[2] / "src" / "dags" / "dag_data_extraction.py"
 
@@ -181,11 +183,14 @@ def test_the_insider_bulk_parse_and_its_live_edgar_tail_run_as_separate_commands
 def test_f109_f115_identity_propagate_every_ticker_and_notes_download_years_reach_their_functions(monkeypatch: pytest.MonkeyPatch) -> None:
     config = SimpleNamespace(data_extract=SimpleNamespace(years_history=31))
     calls: list[tuple[str, dict[str, Any]]] = []
-    monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, SimpleNamespace(name="ctx")))
+    context = SimpleNamespace(name="ctx")
+    monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, context))
     monkeypatch.setattr(cli_mod, "_tickers", lambda ctx, names: ["AAA"])
     monkeypatch.setattr(cli_mod, "load_universe_tickers", lambda ctx: ["AAA"])
+    stub_identity_step(monkeypatch, config, context)
+    monkeypatch.setattr(step_identity, "capture_pending_dei", lambda ctx, cache, **kwargs: calls.append(("dei", kwargs)) or 0)
     monkeypatch.setattr(
-        cli_mod,
+        step_identity,
         "propagate_identity",
         lambda context, tickers, **kwargs: calls.append(("propagate", kwargs)) or SimpleNamespace(removals=pd.DataFrame()),
     )
@@ -195,6 +200,7 @@ def test_f109_f115_identity_propagate_every_ticker_and_notes_download_years_reac
     assert CliRunner().invoke(cli_mod.cli, ["identity-propagate"]).exit_code == 0
     assert CliRunner().invoke(cli_mod.cli, ["notes-download"]).exit_code == 0
     assert [kwargs.get("every_ticker") for name, kwargs in calls if name == "propagate"] == [True, False]
-    assert [kwargs for name, kwargs in calls if name == "notes"] == [{"years_history": 31, "full": False}]
+    assert [kwargs for name, kwargs in calls if name == "notes"] == [{"years_history": 31}]
+    assert [kwargs for name, kwargs in calls if name == "dei"] == [{"full": False}], "notes-download then captures the cover-page symbols"
     print("\n=== SANITY CHECK: F-109 / F-115 CLI wiring ===")
     print("  identity-propagate --full reaches propagate_identity(every_ticker=True); notes-download passes years_history 31")

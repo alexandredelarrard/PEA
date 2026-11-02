@@ -482,7 +482,7 @@ def test_a_moved_master_security_moves_its_fails_rows(sqlite_store, tmp_path, mo
         "201203a": "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20120301|000000OL1|OLD|10|X|1.0\n",
         "202402a": "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE\n20240201|000000AL1|ALB|5|X|1.0\n20240201|000000MS1|MSFT|7|X|1.0\n",
     }
-    monkeypatch.setattr(ftd, "_cached_periods", lambda cache: set(originals))
+    monkeypatch.setattr(ftd, "cached_ftd_periods", lambda cache: set(originals))
     monkeypatch.setattr(ftd, "ensure_zip", lambda context, path, urls, **kwargs: path)
     monkeypatch.setattr(ftd, "read_zip_text", lambda path, **kwargs: originals[path.stem.removeprefix("cnsfails")])
     monkeypatch.setattr(prop, "reparse_financial_notes", lambda context, tickers: 0)

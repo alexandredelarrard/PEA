@@ -71,10 +71,10 @@ from src.context import Context, get_config_context
 from src.data_extract.transformers.step_extract_fundamentals_sharadar import (
     StepExtractFundamentalsSharadar,
 )
+from src.data_extract.transformers.step_extract_identity import IdentityOptions, StepExtractIdentity
 from src.data_extract.utils.behavioral.fetch_earnings_call_transcripts import (
     extract_earnings_calls as _extract_earnings_calls,
 )
-from src.data_extract.utils.common.bulk_cache import cache_dir
 from src.data_extract.utils.edgar_extract import edgar_index
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, load_edgar_scope, plan_fetch, run_edgar_fetch
 from src.data_extract.utils.edgar_extract.fetch_8k_edgar import SEC_8K_FETCH
@@ -100,11 +100,7 @@ from src.data_extract.utils.fundamentals_sharadar.gap_check import (
     run_gap_check,
 )
 from src.data_extract.utils.fundamentals_sharadar.merge_history import build_merged_history
-from src.data_extract.utils.identity.entity_lineage import build_entity_lineage
-from src.data_extract.utils.identity.identity_propagate import propagate_identity
 from src.data_extract.utils.identity.sec_tickers import download_sec_company_tickers
-from src.data_extract.utils.identity.security_master import build_security_master
-from src.data_extract.utils.identity.symbol_tenure import build_symbol_tenure, scan_form345_cache
 from src.data_extract.utils.institutionals.fetch_13f import fetch_13f
 from src.data_extract.utils.institutionals.fetch_13f_backfill import fetch_13f_backfill
 from src.data_extract.utils.institutionals.fetch_13f_managers import fetch_13f_managers, recover_13f_vintages
@@ -671,6 +667,7 @@ def ftd_download(config_path: str, full: bool, as_of: datetime | None) -> None:
     carries, plus every cached period for the symbols and CUSIP-6 prefixes whose lineage or master rows changed recently."""
     config, context = get_config_context(config_path, use_cache=False, save=False)
     download_fails_to_deliver(context, years_history=int(config.data_extract.years_history), full=full, as_of=run_date(as_of))
+    StepExtractIdentity(context, config, IdentityOptions(full=full, as_of=run_date(as_of))).run_capture_ftd_cusips()
 
 
 @cli.command(name="sec-tickers", help="Snapshot SEC's current tickers with exchanges (one GET) into sec_company_tickers. SEC-bulk.")
@@ -693,28 +690,65 @@ def identity_tables(config_path: str, approved_rekeys: tuple[str, ...]) -> None:
     tenure and the master's issuers off the lineage, so a stale input silently narrows the next. Market-wide:
     the three tables are rebuilt from the cache and the DB.
     """
-    _, context = get_config_context(config_path, use_cache=False, save=False)
-    cache = cache_dir(context, context.config.local.paths.insider_transactions)
-    parsed_rekeys: set[tuple[str, str]] = set()
-    for value in approved_rekeys:
+    config, context = get_config_context(config_path, use_cache=False, save=False)
+    step = StepExtractIdentity(context, config, IdentityOptions(approved_rekeys=_approved_rekeys(approved_rekeys)))
+    step.run_symbol_tenure()
+    step.run_entity_lineage()
+    step.run_security_master()
+
+
+_IDENTITY_STAGES = ("capture-dei", "capture-ftd", "tenure", "lineage", "master", "propagate")
+
+
+@cli.command(
+    name="identity",
+    help="Identity layer, OFFLINE (cached zips + DB): capture the Notes cover-page symbols and the FTD lines, then build "
+    "symbol_tenure -> entity_lineage -> security_master and propagate the lineage changes. --only runs one stage "
+    f"({', '.join(_IDENTITY_STAGES)}); --full re-captures every cached zip and re-checks every ticker. Cold start: "
+    "`identity`, then `identity --only capture-ftd -F`, then `identity --only master`.",
+)
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+@click.option(*APPROVE_REKEY_ARGS, **APPROVE_REKEY_KWARGS)
+@click.option(*DRY_RUN_ARGS, **DRY_RUN_KWARGS)
+@click.option("--only", "only", type=click.Choice(_IDENTITY_STAGES), default=None, help="Run this one stage instead of all six.")
+def identity(
+    config_path: str, tickers: str | None, full: bool, as_of: datetime | None, approved_rekeys: tuple[str, ...], dry_run: bool, only: str | None
+) -> None:
+    config, context = get_config_context(config_path, use_cache=False, save=False)
+    options = IdentityOptions(
+        tickers=_tickers(context, tickers) if tickers else None,
+        full=full,
+        dry_run=dry_run,
+        as_of=run_date(as_of),
+        approved_rekeys=_approved_rekeys(approved_rekeys),
+    )
+    step = StepExtractIdentity(context, config, options)
+    stages = {
+        "capture-dei": step.run_capture_dei_symbols,
+        "capture-ftd": step.run_capture_ftd_cusips,
+        "tenure": step.run_symbol_tenure,
+        "lineage": step.run_entity_lineage,
+        "master": step.run_security_master,
+        "propagate": step.run_propagate,
+    }
+    if only is None:
+        step.run()
+    else:
+        stages[only]()
+
+
+def _approved_rekeys(values: tuple[str, ...]) -> frozenset[tuple[str, str]]:
+    """`--approve-rekey OLD:NEW` values as `(old, new)` entity-id pairs."""
+    parsed: set[tuple[str, str]] = set()
+    for value in values:
         old, separator, new = value.partition(":")
         if not separator or not old or not new:
-            raise click.BadParameter(
-                "expected OLD_ENTITY_ID:NEW_ENTITY_ID",
-                param_hint="--approve-rekey",
-            )
-        parsed_rekeys.add((old, new))
-    scan = scan_form345_cache(cache)
-    tenure = build_symbol_tenure(context, scan, config_path)
-    lineage = build_entity_lineage(
-        context,
-        tenure,
-        scan.owner_pairs,
-        config_path,
-        approved_rekeys=frozenset(parsed_rekeys),
-        redundant_symbols=frozenset(context.config.data_extract.redundant_ticks),
-    )
-    build_security_master(context, lineage, config_path)
+            raise click.BadParameter("expected OLD_ENTITY_ID:NEW_ENTITY_ID", param_hint="--approve-rekey")
+        parsed.add((old, new))
+    return frozenset(parsed)
 
 
 @cli.command(
@@ -732,9 +766,9 @@ def identity_tables(config_path: str, approved_rekeys: tuple[str, ...]) -> None:
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 def identity_propagate(config_path: str, tickers: str | None, dry_run: bool, full: bool, as_of: datetime | None) -> None:
-    _, context = get_config_context(config_path, use_cache=False, save=False)
-    names, universe = _ticker_scope(context, tickers)
-    result = propagate_identity(context, names, dry_run=dry_run, every_ticker=full, as_of=run_date(as_of), all_tickers=universe)
+    config, context = get_config_context(config_path, use_cache=False, save=False)
+    options = IdentityOptions(tickers=_tickers(context, tickers) if tickers else None, full=full, dry_run=dry_run, as_of=run_date(as_of))
+    result = StepExtractIdentity(context, config, options).run_propagate()
     if dry_run:
         click.echo(result.removals.to_string(index=False) if not result.removals.empty else "identity-propagate: no pending removals")
 
@@ -768,7 +802,8 @@ def financial_notes(config_path: str, tickers: str | None, full: bool, repair_av
 def notes_download(config_path: str, full: bool) -> None:
     """`--full` re-captures every cached zip (one-off backfill); the default captures only periods not yet stored."""
     config, context = get_config_context(config_path, use_cache=False, save=False)
-    download_financial_notes(context, years_history=int(config.data_extract.years_history), full=full)
+    download_financial_notes(context, years_history=int(config.data_extract.years_history))
+    StepExtractIdentity(context, config, IdentityOptions(full=full)).run_capture_dei_symbols()
 
 
 # --- Structure (governance) ---

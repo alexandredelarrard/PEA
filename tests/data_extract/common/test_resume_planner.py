@@ -13,10 +13,11 @@ from src.data_extract.utils.common.resume import (
     KEY_ROWLESS,
     archive_worklist,
 )
-from src.data_extract.utils.edgar_extract.document_resume import document_worklist
+from src.data_extract.utils.edgar_extract.document_resume import WorklistRequest, document_worklist
 from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp, marker_row
 from src.data_extract.utils.edgar_extract.sec_utils import CIK_MAPPING_COLS
 from src.data_store.schema import Tables
+from src.utils.universe import added_on_map
 from tests.data_extract.edgar_fixtures import fake_context, fake_filing, seed_index
 
 _AS_OF = pd.Timestamp("2026-09-30")
@@ -43,7 +44,8 @@ def _universe(ctx, tickers: dict[str, str], added_on: dict[str, str] | None = No
 
 def _plan(ctx, cik_map: pd.DataFrame, as_of: pd.Timestamp = _AS_OF, table=Tables.sec_8k, **kwargs):
     defaults = {"forms": _FORMS, "identity": None, "years_history": 5}
-    return document_worklist(ctx, table, cik_map, as_of, **(defaults | kwargs))
+    request = WorklistRequest(keys=cik_map, as_of=as_of, added_on=added_on_map(ctx.store, as_of), **(defaults | kwargs))
+    return document_worklist(ctx, table, request)
 
 
 def _store(ctx, ticker: str, accessions: list[str], filed: str = "2026-01-05", item: str = "8.01") -> None:

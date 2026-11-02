@@ -6,13 +6,14 @@ import re
 from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import cast
 
 import pandas as pd
 import pytest
 
 from src.context import Context
 from src.data_extract.utils.edgar_extract import edgar_driver
+from src.data_extract.utils.edgar_extract.document_resume import WorklistRequest
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarRun, EdgarScope, plan_fetch
 from src.data_extract.utils.edgar_extract.edgar_index import INDEX_FORMS
 from src.data_extract.utils.edgar_extract.fetch_8k_edgar import SEC_8K_FETCH
@@ -38,6 +39,7 @@ from src.data_store.schema import (
     resume_tables,
 )
 from src.data_store.store import DataStore
+from src.utils.universe import added_on_map
 
 _SCHEMA_SQL = Path(__file__).resolve().parents[2] / "sql" / "schema.sql"
 
@@ -161,14 +163,20 @@ def test_document_contract_forms_are_the_forms_each_fetcher_lists(monkeypatch: p
     )
     planned: list[tuple[Table, Sequence[str]]] = []
 
-    def capture_worklist(context: Context, table: Table, keys: pd.DataFrame, run_date: pd.Timestamp, *, forms: Sequence[str], **kwargs: Any) -> None:
-        planned.append((table, forms))
+    def capture_worklist(context: Context, table: Table, request: WorklistRequest) -> None:
+        planned.append((table, request.forms))
 
     monkeypatch.setattr(edgar_driver, "document_worklist", capture_worklist)
     column_types = _column_types()
     for fetch in fetched:
         keys = cik_map.assign(cik="1")
-        plan_fetch(context, fetch, EdgarRun(list(keys["ticker"]), keys, EdgarScope(), pd.Timestamp("2026-10-13"), 10))
+        plan_fetch(
+            context,
+            fetch,
+            EdgarRun(
+                list(keys["ticker"]), keys, EdgarScope(), pd.Timestamp("2026-10-13"), 10, added_on_map(context.store, pd.Timestamp("2026-10-13"))
+            ),
+        )
         assert planned[-1][0] is fetch.done
         assert planned[-1][1] is cast(Resume, fetch.done.resume).forms
         assert fetch.done.desc

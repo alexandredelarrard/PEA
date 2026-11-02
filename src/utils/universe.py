@@ -8,7 +8,7 @@ cube, modelling, backtest) resolves which tickers to analyse from ONE place: the
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 import pandas as pd
 
@@ -47,14 +47,26 @@ def new_tickers(store: DataStore, overlap_days: int, as_of: pd.Timestamp) -> set
 
     A NULL `added_on` is an established ticker, a later one is not new yet, and a table without the
     column has no new ticker."""
+    return new_in_window(added_on_map(store, as_of), overlap_days, as_of)
+
+
+def added_on_map(store: DataStore, as_of: pd.Timestamp) -> dict[str, pd.Timestamp]:
+    """Every upper-cased `sp500_tickers` ticker's `added_on` on or before `as_of`; NULL or later is left out, and a
+    table without the column maps nothing. Read once, it serves `new_in_window` for any number of overlaps."""
     if "added_on" not in store.columns(Tables.sp500_tickers):
-        return set()
+        return {}
+    df = store.load(Tables.sp500_tickers, columns=["ticker", "added_on"], date_col="added_on", until=pd.Timestamp(as_of).normalize(), optional=True)
+    if df is None:
+        return {}
+    df = df.dropna(subset=["ticker", "added_on"])
+    return {t: pd.Timestamp(d).normalize() for raw, d in zip(df["ticker"], df["added_on"], strict=True) if (t := normalise_ticker(raw))}
+
+
+def new_in_window(added_on: Mapping[str, pd.Timestamp], overlap_days: int, as_of: pd.Timestamp) -> set[str]:
+    """The tickers of `added_on` added inside the `overlap_days` ending on `as_of` (both ends included)."""
     day = pd.Timestamp(as_of).normalize()
     cutoff = day - pd.Timedelta(days=overlap_days - 1)
-    df = store.load(Tables.sp500_tickers, columns=["ticker"], date_col="added_on", since=cutoff, until=day, optional=True)
-    if df is None:
-        return set()
-    return {t for raw in df["ticker"].dropna() if (t := normalise_ticker(raw))}
+    return {ticker for ticker, added in added_on.items() if cutoff <= added <= day}
 
 
 #: The filing tables a company keyed by CIK must appear in if its CIK is the right one. Kept

@@ -32,13 +32,14 @@ from src.data_extract.utils.common.registrant import resolve_registrant_filings
 from src.data_extract.utils.common.resume import DONE_TABLE
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, configure, sec_call
 from src.data_extract.utils.edgar_extract import edgar_index
-from src.data_extract.utils.edgar_extract.document_resume import DocumentWork, document_worklist
+from src.data_extract.utils.edgar_extract.document_resume import DocumentWork, WorklistRequest, document_worklist
 from src.data_extract.utils.edgar_extract.edgar_fillings import archive_url
 from src.data_extract.utils.edgar_extract.empty_markers import drop_markers_over_data, marker_frame
 from src.data_extract.utils.edgar_extract.parallel_fetch import PROGRAMMING_ERRORS, run_per_ticker
 from src.data_extract.utils.edgar_extract.sec_utils import load_cik_mapping
 from src.data_store.schema import Resume, Table, Tables
 from src.utils.string import pad_cik, run_date
+from src.utils.universe import added_on_map
 
 logger = logging.getLogger(__name__)
 
@@ -251,14 +252,15 @@ class RetryRounds:
 @dataclass(frozen=True, eq=False)
 class EdgarRun:
     """What every walk of one EDGAR run shares, declared once: the requested `tickers`, their `cik_map`, the
-    identity `scope`, the `run_date`, the `years_history` window, `full` re-read, the document `cap` (None:
-    uncapped) and the `retry` policy."""
+    identity `scope`, the `run_date`, the `years_history` window, the `sp500_tickers.added_on` map, `full` re-read,
+    the document `cap` (None: uncapped) and the `retry` policy."""
 
     tickers: list[str]
     cik_map: pd.DataFrame
     scope: EdgarScope
     run_date: pd.Timestamp
     years_history: int
+    added_on: dict[str, pd.Timestamp]
     full: bool = False
     cap: int | None = None
     retry: RetryRounds = field(default_factory=RetryRounds)
@@ -274,14 +276,16 @@ class EdgarRun:
         full: bool = False,
         no_cap: bool = False,
     ) -> EdgarRun:
-        """Read the run's state once: CIK mapping, identity, cap and retry policy; `years_history` None reads the configured window."""
+        """Read the run's state once: CIK mapping, identity, `added_on`, cap and retry policy; `years_history` None reads the configured window."""
         config = getattr(context, "config", None)
+        day = run_date(as_of)
         return cls(
             tickers=tickers,
             cik_map=load_cik_mapping(context, tickers),
             scope=load_edgar_scope(context),
-            run_date=run_date(as_of),
+            run_date=day,
             years_history=int(years_history if years_history is not None else context.config.data_extract.years_history),
+            added_on=load_added_on(context, day),
             full=full,
             cap=_document_cap(context, no_cap),
             retry=RetryRounds.from_config(config),
@@ -538,6 +542,11 @@ def _log_coverage(context: Context, fetch: EdgarFetch, work: DocumentWork, outco
     )
 
 
+def load_added_on(context: Context, day: pd.Timestamp) -> dict[str, pd.Timestamp]:
+    """The run's `sp500_tickers.added_on` map on `day`, read once and shared by every walk's new-ticker test."""
+    return added_on_map(context.store, day)
+
+
 def load_edgar_scope(context: Context) -> EdgarScope:
     """The run's `EdgarScope` over the identity layer of `context`."""
     return EdgarScope(load_identity(context))
@@ -550,20 +559,20 @@ def _document_cap(context: Context, no_cap: bool) -> int | None:
 
 def plan_fetch(context: Context, fetch: EdgarFetch, run: EdgarRun) -> DocumentWork:
     """`fetch`'s work list for `run`'s keys on its run date (read-only; the index cache as it stands)."""
-    return document_worklist(
-        context,
-        fetch.done,
-        run.cik_map[["ticker", "cik"]],
-        run.run_date,
+    request = WorklistRequest(
+        keys=run.cik_map[["ticker", "cik"]],
+        as_of=run.run_date,
         forms=cast(Resume, fetch.done.resume).forms,
         identity=run.scope.identity,
         years_history=run.years_history,
+        added_on=run.added_on,
         runtime_floor=fetch.runtime_floor(context, run.run_date) if fetch.runtime_floor is not None else None,
         done_scope=fetch.done_scope,
         done_where=fetch.done_where,
         full=run.full,
         cap=run.cap,
     )
+    return document_worklist(context, fetch.done, request)
 
 
 def index_years(fetch: EdgarFetch, run: EdgarRun) -> int:

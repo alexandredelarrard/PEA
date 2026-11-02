@@ -32,6 +32,7 @@ from src.data_extract.utils.identity.identity_store import load_source_identity
 from src.data_extract.utils.zips import fetch_insider_transactions as ins
 from src.data_store.schema import Tables
 from src.data_store.store import _create_canonical
+from src.utils.universe import added_on_map
 from tests.data_extract.edgar_fixtures import seed_index
 from tests.data_extract.fake_context import extract_config
 
@@ -717,7 +718,14 @@ def test_empty_work_reconciles_the_window_and_planning_never_enters_the_scope(
     monkeypatch.setattr(sqlite_store, "delete", forbidden)
     descriptor = replace(edgar.INSIDER_EDGAR_FETCH, run_scope=forbidden)
     cik_map = pd.DataFrame({"ticker": ["AAA"], "cik": [AAA_CIK]})
-    run = edgar_driver.EdgarRun(["AAA"], cik_map, edgar_driver.EdgarScope(identity_two), pd.Timestamp("2026-07-08"), 15)
+    run = edgar_driver.EdgarRun(
+        ["AAA"],
+        cik_map,
+        edgar_driver.EdgarScope(identity_two),
+        pd.Timestamp("2026-07-08"),
+        15,
+        added_on_map(context.store, pd.Timestamp("2026-07-08")),
+    )
     plan = edgar_driver.plan_fetch(context, descriptor, run)
     assert plan.size == 0 and floor_reads == ["quarter", "quarter"]
     print(

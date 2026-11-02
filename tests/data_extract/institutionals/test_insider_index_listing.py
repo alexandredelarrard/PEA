@@ -19,6 +19,7 @@ from src.data_extract.utils.edgar_extract import fetch_insider_edgar as module
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarRun, EdgarScope, plan_fetch, run_edgar_fetch
 from src.data_store.schema import Tables
 from src.data_store.store import _create_canonical
+from src.utils.universe import added_on_map
 from tests.data_extract.edgar_fixtures import fake_context, fake_filing, identity_for, patch_index_filings, seed_index
 
 _AS_OF = pd.Timestamp("2026-09-30")
@@ -73,11 +74,15 @@ def test_every_indexed_form_4_is_listed_until_stored(ctx, sqlite_store):
     scope = EdgarScope(edgar_driver.load_identity(ctx), {})
     fetch = module.INSIDER_EDGAR_FETCH
 
-    night1 = plan_fetch(ctx, fetch, EdgarRun(list(cik_map["ticker"]), cik_map, scope, _AS_OF, 15))
+    night1 = plan_fetch(ctx, fetch, EdgarRun(list(cik_map["ticker"]), cik_map, scope, _AS_OF, 15, added_on_map(ctx.store, _AS_OF)))
     stored = [r[4] for r in rows[:5_100]]
     sqlite_store.save(Tables.insider_transactions, _stored(stored, "edgar"))
     sqlite_store.save(Tables.insider_transactions, _stored([r[4] for r in rows[5_100:]], "zip"))
-    night2 = plan_fetch(ctx, fetch, EdgarRun(list(cik_map["ticker"]), cik_map, scope, _AS_OF + pd.Timedelta(days=1), 15))
+    night2 = plan_fetch(
+        ctx,
+        fetch,
+        EdgarRun(list(cik_map["ticker"]), cik_map, scope, _AS_OF + pd.Timedelta(days=1), 15, added_on_map(ctx.store, _AS_OF + pd.Timedelta(days=1))),
+    )
 
     assert night1.size == 5_200
     assert night2.size == 100 and night2.units["JPM"]["accession"].tolist() == [r[4] for r in rows[5_100:]]
@@ -107,7 +112,9 @@ def test_a_stored_zip_row_counts_as_read_only_before_the_edgar_window(ctx, sqlit
     seed_index(ctx, rows)
     sqlite_store.save(Tables.insider_transactions, _zip_book(rows, "JPM", "2026q2"))
     cik_map = pd.DataFrame({"ticker": ["JPM"], "cik": ["0000019617"]})
-    work = plan_fetch(ctx, module.INSIDER_EDGAR_FETCH, EdgarRun(list(cik_map["ticker"]), cik_map, EdgarScope(), _AS_OF, 15))
+    work = plan_fetch(
+        ctx, module.INSIDER_EDGAR_FETCH, EdgarRun(list(cik_map["ticker"]), cik_map, EdgarScope(), _AS_OF, 15, added_on_map(ctx.store, _AS_OF))
+    )
 
     listed = work.units["JPM"]["filed"]
     expected = sum(pd.Timestamp(r[3]) >= pd.Timestamp("2026-07-01") for r in rows)
@@ -136,8 +143,16 @@ def test_zip_rows_count_as_read_before_the_earlier_of_the_zip_floor_and_seven_da
     roster = pd.DataFrame({"ticker": ["JPM", "OXY"], "cik": ["0000019617", "0000797468"]})
     scope = EdgarScope(edgar_driver.load_identity(ctx), {})
 
-    universe = plan_fetch(ctx, module.INSIDER_EDGAR_FETCH, EdgarRun(list(roster["ticker"]), roster, scope, pd.Timestamp(as_of), 15))
-    subset = plan_fetch(ctx, module.INSIDER_EDGAR_FETCH, EdgarRun(list(roster.iloc[:1]["ticker"]), roster.iloc[:1], scope, pd.Timestamp(as_of), 15))
+    universe = plan_fetch(
+        ctx,
+        module.INSIDER_EDGAR_FETCH,
+        EdgarRun(list(roster["ticker"]), roster, scope, pd.Timestamp(as_of), 15, added_on_map(ctx.store, pd.Timestamp(as_of))),
+    )
+    subset = plan_fetch(
+        ctx,
+        module.INSIDER_EDGAR_FETCH,
+        EdgarRun(list(roster.iloc[:1]["ticker"]), roster.iloc[:1], scope, pd.Timestamp(as_of), 15, added_on_map(ctx.store, pd.Timestamp(as_of))),
+    )
 
     first = {key: df["filed"].min() for key, df in universe.units.items()}
     assert first == {"JPM": pd.Timestamp(start), "OXY": pd.Timestamp(start)}
@@ -189,6 +204,8 @@ def test_an_unread_filing_is_stored_nowhere_and_listed_again(ctx, sqlite_store, 
     assert summary.missing == {"OXY": [accession]}
     assert sqlite_store.load(Tables.insider_transactions, markers=True, optional=True) is None
     cik_map = pd.DataFrame({"ticker": ["OXY"], "cik": ["0000797468"]})
-    again = plan_fetch(ctx, module.INSIDER_EDGAR_FETCH, EdgarRun(list(cik_map["ticker"]), cik_map, EdgarScope(), _AS_OF, 15))
+    again = plan_fetch(
+        ctx, module.INSIDER_EDGAR_FETCH, EdgarRun(list(cik_map["ticker"]), cik_map, EdgarScope(), _AS_OF, 15, added_on_map(ctx.store, _AS_OF))
+    )
     assert again.units["OXY"]["accession"].tolist() == [accession]
     print("\nSANITY: a Form 4 that 503'd is stored nowhere (no row, no marker) and is listed again on the next night.")

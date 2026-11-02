@@ -51,6 +51,7 @@ class Driver:
         self.runs: list[EdgarRun] = []
         monkeypatch.setattr(step_mod, "load_universe_tickers", self.universe)
         monkeypatch.setattr(edgar_driver, "load_cik_mapping", self.cik_mapping)
+        monkeypatch.setattr(edgar_driver, "load_added_on", lambda ctx, day: {})
         monkeypatch.setattr(edgar_driver, "load_identity", self.identity)
         monkeypatch.setattr(step_mod, "run_edgar_fetch", self.fetch)
         monkeypatch.setattr(step_mod, "refresh_index", self.refresh)

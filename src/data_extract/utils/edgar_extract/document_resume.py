@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import cast
 
@@ -21,7 +21,7 @@ from src.data_extract.utils.common.registrant import listing_ciks, resolve_regis
 from src.data_extract.utils.common.resume import DONE_TABLE, KEY_ESTABLISHED, KEY_NEW, KEY_ROWLESS, document_floor, stored_accessions
 from src.data_extract.utils.edgar_extract import edgar_index
 from src.data_store.schema import Table, Tables
-from src.utils.universe import new_tickers
+from src.utils.universe import new_in_window
 
 logger = logging.getLogger(__name__)
 
@@ -96,29 +96,42 @@ def _cap(units: dict[str, pd.DataFrame], cap: int | None, desc: str) -> tuple[di
     return capped, uncapped
 
 
-def document_worklist(
-    context: Context,
-    table: Table,
-    keys: pd.DataFrame,
-    as_of: pd.Timestamp,
-    *,
-    forms: Sequence[str],
-    identity: Identity | None,
-    years_history: int,
-    runtime_floor: pd.Timestamp | None = None,
-    done_scope: str = DONE_TABLE,
-    done_where: dict[str, object] | None = None,
-    full: bool = False,
-    cap: int | None = None,
-) -> DocumentWork:
-    """The documents `table` still lacks for `keys` (`ticker`, `cik`): index rows from the floor on,
-    resolved through each key's filing scope (its roster CIK alone without `identity`), minus the
-    accessions stored on the rows matching `done_where` (ignored under `full`)."""
+@dataclass(frozen=True)
+class WorklistRequest:
+    """One walk's planning inputs: the `keys` (`ticker`, `cik`) on the `as_of` run date, the table's `forms`, the
+    `identity` (None: roster CIKs only), the `years_history` window, the run's `added_on` map (read once per run),
+    the runtime floor, the done-accession scope and filter, `full` re-read and the per-run `cap` (None: uncapped)."""
+
+    keys: pd.DataFrame
+    as_of: pd.Timestamp
+    forms: Sequence[str]
+    identity: Identity | None
+    years_history: int
+    added_on: Mapping[str, pd.Timestamp]
+    runtime_floor: pd.Timestamp | None = None
+    done_scope: str = DONE_TABLE
+    done_where: dict[str, object] | None = None
+    full: bool = False
+    cap: int | None = None
+
+
+def document_worklist(context: Context, table: Table, request: WorklistRequest) -> DocumentWork:
+    """The documents `table` still lacks for the request's keys: index rows from the floor on, resolved through
+    each key's filing scope (its roster CIK alone without `identity`), minus the accessions stored on the rows
+    matching `done_where` (ignored under `full`)."""
+    keys, as_of, forms, identity, runtime_floor, full = (
+        request.keys,
+        request.as_of,
+        request.forms,
+        request.identity,
+        request.runtime_floor,
+        request.full,
+    )
     started = time.perf_counter()
     floor = (
         pd.Timestamp(cast(str, table.resume.source_start))
         if table == Tables.insider_transactions and table.resume is not None
-        else document_floor(table, as_of, years_history, runtime_floor)
+        else document_floor(table, as_of, request.years_history, runtime_floor)
     )
     roster = dict(zip(keys["ticker"].astype(str), keys["cik"].astype(str), strict=True))
     scopes = {
@@ -131,11 +144,11 @@ def document_worklist(
     done = (
         ({key: set() for key in roster} if full else _insider_done(context, list(roster), runtime_floor))
         if table == Tables.insider_transactions
-        else ({key: set() for key in roster} if full else stored_accessions(context, table, list(roster), done_scope, done_where))
+        else ({key: set() for key in roster} if full else stored_accessions(context, table, list(roster), request.done_scope, request.done_where))
     )
     read_done = time.perf_counter()
     overlap = table.resume.overlap_days if table.resume is not None else 0
-    new = new_tickers(context.store, overlap, as_of) if overlap else set()
+    new = new_in_window(request.added_on, overlap, as_of) if overlap else set()
     units: dict[str, pd.DataFrame] = {}
     key_class: dict[str, str] = {}
     counts: dict[str, int] = {}
@@ -151,6 +164,6 @@ def document_worklist(
             counts[name] = counts.get(name, 0) + n
         if not df_units.empty:
             units[ticker] = df_units
-    units, uncapped = _cap(units, cap, table.name)
+    units, uncapped = _cap(units, request.cap, table.name)
     timings = {"index_read": read_index - started, "done_read": read_done - read_index, "total": time.perf_counter() - started}
     return DocumentWork(units=units, key_class=key_class, counts=counts, uncapped=uncapped, timings=timings, listed=listed)

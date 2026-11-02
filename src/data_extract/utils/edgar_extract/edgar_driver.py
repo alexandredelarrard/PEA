@@ -339,9 +339,9 @@ def marker_row(table: Table, ticker: str, stamp: FilingStamp) -> pd.DataFrame:
     return marker_frame(table, row, dict(table.marker_key_fill))
 
 
-def _has_key_rows(df: pd.DataFrame | None, table: Table, ticker: str) -> bool:
+def _has_key_rows(df: pd.DataFrame, table: Table, ticker: str) -> bool:
     key_col = table.resume.key if table.resume is not None and table.resume.key else "ticker"
-    return df is not None and not df.empty and key_col in df.columns and bool(df[key_col].astype(str).eq(ticker).any())
+    return key_col in df.columns and bool(df[key_col].astype(str).eq(ticker).any())
 
 
 def _read_unit(fetch: EdgarFetch, scope: EdgarScope, ticker: str, cik: str, stamp: FilingStamp) -> tuple[dict[Table, pd.DataFrame] | None, bool]:
@@ -365,10 +365,12 @@ def _read_unit(fetch: EdgarFetch, scope: EdgarScope, ticker: str, cik: str, stam
     except Exception as exc:  # noqa: BLE001 -- an unclassified source failure is retried, never marked
         logger.warning("%s: %s %s failed (%s: %s); listed again next run", fetch.done.desc, ticker, stamp.accession_number, type(exc).__name__, exc)
         return None, False
-    if _has_key_rows(frames.get(fetch.done), fetch.done, ticker):
+    done = frames.get(fetch.done)
+    if done is None or done.empty:
+        return {**frames, fetch.done: pd.concat([marker_row(fetch.done, ticker, stamp)], ignore_index=True)}, True
+    if _has_key_rows(done, fetch.done, ticker):
         return frames, False
-    done_frames = [df for df in (frames.get(fetch.done),) if df is not None and not df.empty]
-    return {**frames, fetch.done: pd.concat([*done_frames, marker_row(fetch.done, ticker, stamp)], ignore_index=True)}, True
+    return {**frames, fetch.done: pd.concat([done, marker_row(fetch.done, ticker, stamp)], ignore_index=True)}, True
 
 
 def _unit_filings(fetch: EdgarFetch, ticker: str, df_units: pd.DataFrame) -> dict[str, Any] | None:

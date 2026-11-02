@@ -20,7 +20,7 @@ from src.data_extract.transformers.step_extract_edgar import StepExtractEdgar
 from src.data_extract.transformers.step_extract_institutionals import StepExtractInstitutionals
 from src.data_extract.utils.common.sec_io import ParseFailureError
 from src.data_extract.utils.edgar_extract import fetch_8k_edgar
-from src.data_extract.utils.edgar_extract.edgar_driver import EdgarScope, FilingStamp, parse_filing_rows, run_edgar_fetch
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarRun, EdgarScope, FilingStamp, parse_filing_rows
 from src.data_extract.utils.edgar_extract.fetch_8k_edgar import SEC_8K_FETCH, _filing_row, submission_filings
 from src.data_extract.utils.edgar_extract.fetch_13d_edgar import (
     _ITEM_ANCHORS,
@@ -53,19 +53,20 @@ def test_filing_fetchers_take_years_history_as_an_argument():
     Counting only one step would let the other quietly start reading config again."""
     import inspect
 
-    for fn in (run_edgar_fetch,):
-        params = inspect.signature(fn).parameters
-        assert "years_history" in params, f"{fn.__name__} must take years_history"
-        assert params["years_history"].default is inspect.Parameter.empty, (
-            f"{fn.__name__}.years_history must be required, not defaulted -- a default is a second place for the window to diverge"
-        )
+    # the driver's run state carries the window as a required field: no second default can diverge from the step's
+    params = inspect.signature(EdgarRun).parameters
+    assert "years_history" in params, "EdgarRun must carry years_history"
+    assert params["years_history"].default is inspect.Parameter.empty, (
+        "EdgarRun.years_history must be required, not defaulted -- a default is a second place for the window to diverge"
+    )
 
     # each step is the single place that reads the window off the config, for its own fetchers
     expected = {
         # 13F, 13F-manager books (superinvestors takes no window; short interest plans from its latest stored day)
         StepExtractInstitutionals: (inspect.getsource(StepExtractInstitutionals.run), "years_history=years_history", 2),
-        # insider EDGAR, 13D, 13G, 8-K, filing text, DEF 14A ECD: the init reads it, the one driver call passes it
-        StepExtractEdgar: (inspect.getsource(StepExtractEdgar), "years_history=self._years_history", 1),
+        # insider EDGAR, 13D, 13G, 8-K, filing text, DEF 14A ECD: the init declares one `EdgarRun`, whose loader reads
+        # the window (unless `-y` gives it) and which every walk receives
+        StepExtractEdgar: (inspect.getsource(StepExtractEdgar) + inspect.getsource(EdgarRun.load), "EdgarRun.load(", 1),
     }
     for step, (source, passed, n_windowed) in expected.items():
         assert source.count("data_extract.years_history") == 1, f"{step.__name__} must read the window exactly once"
@@ -84,16 +85,13 @@ def test_sec_8k_fetch_declares_its_driver_settings():
     (`full` reaching the driver is covered by tests/data_extract/test_cli_edgar_commands.py.)"""
     assert SEC_8K_FETCH.tables == (Tables.sec_8k,) and SEC_8K_FETCH.done == Tables.sec_8k
     assert SEC_8K_FETCH.done.desc == "8-K (edgartools)"
-    assert SEC_8K_FETCH.identity_aware is True
     parse = cast(Any, SEC_8K_FETCH.parse)
     assert parse.func is parse_filing_rows
     assert parse.keywords["table"] == Tables.sec_8k
     assert parse.keywords["row_fn"] is _filing_row
     assert SEC_8K_FETCH.filings is submission_filings
     print("\n=== SANITY: 8-K fetch declaration ===")
-    print(
-        "  SEC_8K_FETCH -> sec_8k over its registered forms, identity_aware, parse_filing_rows with the 8-K row function, item codes from submissions."
-    )
+    print("  SEC_8K_FETCH -> sec_8k over its registered forms, parse_filing_rows with the 8-K row function, item codes from submissions.")
 
 
 def test_8k_item_codes_come_from_the_submissions_listing_of_listed_units(monkeypatch):

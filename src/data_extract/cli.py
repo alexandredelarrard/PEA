@@ -78,14 +78,13 @@ from src.data_extract.utils.behavioral.fetch_earnings_call_transcripts import (
     extract_earnings_calls as _extract_earnings_calls,
 )
 from src.data_extract.utils.edgar_extract import edgar_index
-from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, load_edgar_scope, plan_fetch
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarRun, plan_fetch
 from src.data_extract.utils.edgar_extract.fetch_8k_edgar import SEC_8K_FETCH
 from src.data_extract.utils.edgar_extract.fetch_13d_edgar import SEC_13D_FETCH
 from src.data_extract.utils.edgar_extract.fetch_13g_edgar import SEC_13G_FETCH
 from src.data_extract.utils.edgar_extract.fetch_def14a_edgar import DEF14A_EDGAR_FETCH
 from src.data_extract.utils.edgar_extract.fetch_filing_text import FILING_TEXT_FETCH
 from src.data_extract.utils.edgar_extract.fetch_insider_edgar import INSIDER_EDGAR_FETCH
-from src.data_extract.utils.edgar_extract.sec_utils import load_cik_mapping
 from src.data_extract.utils.fundamentals.build_history import build_fundamentals_history
 from src.data_extract.utils.fundamentals.fetch_earnings_surprises import fetch_earnings_surprises
 from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import fetch_fundamentals_sec, fetched_filing_dates, fundamentals_fetch
@@ -964,7 +963,7 @@ def edgar_index_command(config_path: str, full: bool, as_of: datetime | None) ->
         click.echo(f"{quarter}\t{n_rows}")
 
 
-def _document_fetches(context: Context, tickers: list[str]) -> dict[str, EdgarFetch]:
+def _document_fetches(context: Context, cik_map: pd.DataFrame) -> dict[str, EdgarFetch]:
     """Every EDGAR document fetch, keyed by its done table's name."""
     fetches = (
         SEC_8K_FETCH,
@@ -972,7 +971,7 @@ def _document_fetches(context: Context, tickers: list[str]) -> dict[str, EdgarFe
         SEC_13G_FETCH,
         FILING_TEXT_FETCH,
         DEF14A_EDGAR_FETCH,
-        fundamentals_fetch(context, load_cik_mapping(context, tickers)),
+        fundamentals_fetch(context, cik_map),
         INSIDER_EDGAR_FETCH,
     )
     return {fetch.done.name: fetch for fetch in fetches}
@@ -985,17 +984,15 @@ def _document_fetches(context: Context, tickers: list[str]) -> dict[str, EdgarFe
 @click.option(*TIMINGS_ARGS, **TIMINGS_KWARGS)
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 def resume_plan(config_path: str, tickers: str | None, table_name: str | None, timings: bool, as_of: datetime | None) -> None:
-    config, context = get_config_context(config_path, use_cache=False, save=False)
-    names = _tickers(context, tickers)
-    cik_map = load_cik_mapping(context, names)
-    fetches = _document_fetches(context, names)
+    _, context = get_config_context(config_path, use_cache=False, save=False)
+    run = EdgarRun.load(context, _tickers(context, tickers), as_of=as_of)
+    fetches = _document_fetches(context, run.cik_map)
     if table_name is not None and table_name not in fetches:
         raise click.BadParameter(f"not an EDGAR document table: {table_name}; one of {sorted(fetches)}", param_hint="--table")
     for name, fetch in fetches.items():
         if table_name is not None and name != table_name:
             continue
-        scope = load_edgar_scope(context, identity_aware=fetch.identity_aware)
-        work = plan_fetch(context, fetch, cik_map, scope, run_date(as_of), int(config.data_extract.years_history))
+        work = plan_fetch(context, fetch, run)
         report: dict[str, object] = {
             "table": name,
             "documents": work.size,

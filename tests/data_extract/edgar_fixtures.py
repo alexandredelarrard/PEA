@@ -14,7 +14,8 @@ import pandas as pd
 import pytest
 
 from src.data_extract.utils.common.identity import Identity, build_identity
-from src.data_extract.utils.edgar_extract import edgar_index
+from src.data_extract.utils.edgar_extract import edgar_driver, edgar_index
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarRun
 from src.data_extract.utils.edgar_extract.sec_utils import CIK_MAPPING_COLS
 from src.data_store.schema import Tables
 from src.utils.string import pad_cik
@@ -121,3 +122,33 @@ def identity_for(roster: dict[str, str]) -> Identity:
         ),
         roster=pd.DataFrame([{"ticker": t, "cik": pad_cik(c)} for t, c in roster.items()]),
     )
+
+
+def roster_run(ctx: Any, tickers: list[str], years_history: int = 15, *, as_of: pd.Timestamp, full: bool = False, no_cap: bool = False) -> EdgarRun:
+    """`EdgarRun.load` with no identity layer: each key's filing scope is its roster CIK alone."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(edgar_driver, "load_identity", lambda context: None)
+        return EdgarRun.load(ctx, tickers, years_history, as_of=as_of, full=full, no_cap=no_cap)
+
+
+def walk_call(fetch: EdgarFetch, run: EdgarRun) -> dict[str, Any]:
+    """One driver call as the flat options it carries: the fetch, tickers, CIK mapping, window, run date, `full`, `no_cap`."""
+    return {
+        "fetch": fetch,
+        "tickers": run.tickers,
+        "cik_map": run.cik_map,
+        "years_history": run.years_history,
+        "as_of": run.run_date,
+        "full": run.full,
+        "no_cap": run.cap is None,
+    }
+
+
+def stub_edgar_step(monkeypatch: pytest.MonkeyPatch, driver: Any) -> None:
+    """Make `StepExtractEdgar` constructible offline: the CIK mapping and identity stubbed, each driver call handed to
+    `driver(context, **walk_call(fetch, run))`."""
+    from src.data_extract.transformers import step_extract_edgar
+
+    monkeypatch.setattr(edgar_driver, "load_cik_mapping", lambda ctx, names: pd.DataFrame({"ticker": names, "cik": ["0"] * len(names)}))
+    monkeypatch.setattr(edgar_driver, "load_identity", lambda ctx: None)
+    monkeypatch.setattr(step_extract_edgar, "run_edgar_fetch", lambda ctx, fetch, run: driver(ctx, **walk_call(fetch, run)))

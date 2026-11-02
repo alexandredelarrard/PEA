@@ -12,9 +12,9 @@ import pytest
 from click.testing import CliRunner
 
 from src.data_extract import cli as cli_mod
-from src.data_extract.transformers import step_extract_edgar as step_edgar
 from src.data_extract.transformers import step_extract_identity as step_identity
 from src.data_store.schema import Tables
+from tests.data_extract.edgar_fixtures import stub_edgar_step
 
 
 def test_cli_tickers_split_csv_before_normalizing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -147,8 +147,7 @@ def test_full_reaches_the_existing_source_operation(
     else:
         monkeypatch.setattr(cli_mod, target, record)
     context.config_dir = "configs"
-    monkeypatch.setattr(step_edgar, "load_cik_mapping", lambda ctx, names: pd.DataFrame({"ticker": names, "cik": ["0"] * len(names)}))
-    monkeypatch.setattr(step_edgar, "run_edgar_fetch", lambda ctx, **kwargs: edgar_calls.append(kwargs))
+    stub_edgar_step(monkeypatch, lambda ctx, **kwargs: edgar_calls.append(kwargs))
     runner = CliRunner()
     for flags in ([], ["-F"], ["--full"]):
         calls.clear()

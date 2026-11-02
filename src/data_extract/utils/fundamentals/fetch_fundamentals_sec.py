@@ -23,13 +23,13 @@ from src.context import Context
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, filing_xbrl
 from src.data_extract.utils.edgar_extract.edgar_driver import (
     EdgarFetch,
+    EdgarRun,
     EdgarScope,
     FetchSummary,
     FilingStamp,
     run_edgar_fetch,
 )
 from src.data_extract.utils.edgar_extract.parallel_fetch import PROGRAMMING_ERRORS
-from src.data_extract.utils.edgar_extract.sec_utils import load_cik_mapping
 from src.data_extract.utils.fundamentals import entity_scope as scope
 from src.data_extract.utils.fundamentals.kpi_catalogue import Catalogue, load_catalogue
 from src.data_extract.utils.fundamentals.periods import AMBIGUOUS_DURATION, ANNUAL, OTHER_SHAPE, QUARTERLY, period_shape
@@ -626,15 +626,5 @@ def fetch_fundamentals_sec(
     context: Context, tickers: list[str], years_history: int, *, full: bool = False, as_of: pd.Timestamp | None = None, no_cap: bool = False
 ) -> FetchSummary:
     """Fetch the `fundamentals_facts` documents not yet stored for `tickers` (see `run_edgar_fetch`); returns its summary."""
-    cik_map = load_cik_mapping(context, tickers)
-    return run_edgar_fetch(
-        context,
-        tickers,
-        years_history,
-        fundamentals_fetch(context, cik_map),
-        full=full,
-        cik_map=cik_map,
-        max_workers=int(context.config.data_extract.fundamentals_workers),
-        as_of=as_of,
-        no_cap=no_cap,
-    )
+    run = EdgarRun.load(context, tickers, years_history, as_of=as_of, full=full, no_cap=no_cap)
+    return run_edgar_fetch(context, fundamentals_fetch(context, run.cik_map), run, max_workers=int(context.config.data_extract.fundamentals_workers))

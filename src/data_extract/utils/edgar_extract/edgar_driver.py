@@ -188,7 +188,6 @@ class EdgarFetch:
     parse: ParseFn | None = None
     done_table: Table | None = None
     is_subject: SubjectFn | None = None
-    identity_aware: bool = True
     done_scope: str = DONE_TABLE
     filings: FilingsFn | None = None
     done_where: dict[str, object] | None = None
@@ -219,6 +218,46 @@ class RetryRounds:
 
     def due(self, listed: int, failed: int) -> bool:
         return listed > 0 and failed >= self.min_failed and (listed - failed) / listed < self.threshold
+
+
+@dataclass(frozen=True, eq=False)
+class EdgarRun:
+    """What every walk of one EDGAR run shares, declared once: the requested `tickers`, their `cik_map`, the
+    identity `scope`, the `run_date`, the `years_history` window, `full` re-read, the document `cap` (None:
+    uncapped) and the `retry` policy."""
+
+    tickers: list[str]
+    cik_map: pd.DataFrame
+    scope: EdgarScope
+    run_date: pd.Timestamp
+    years_history: int
+    full: bool = False
+    cap: int | None = None
+    retry: RetryRounds = field(default_factory=RetryRounds)
+
+    @classmethod
+    def load(
+        cls,
+        context: Context,
+        tickers: list[str],
+        years_history: int | None = None,
+        *,
+        as_of: pd.Timestamp | None = None,
+        full: bool = False,
+        no_cap: bool = False,
+    ) -> EdgarRun:
+        """Read the run's state once: CIK mapping, identity, cap and retry policy; `years_history` None reads the configured window."""
+        config = getattr(context, "config", None)
+        return cls(
+            tickers=tickers,
+            cik_map=load_cik_mapping(context, tickers),
+            scope=load_edgar_scope(context),
+            run_date=run_date(as_of),
+            years_history=int(years_history if years_history is not None else context.config.data_extract.years_history),
+            full=full,
+            cap=_document_cap(context, no_cap),
+            retry=RetryRounds.from_config(config),
+        )
 
 
 @dataclass
@@ -433,13 +472,13 @@ def _run_pass(
 def _retry_rounds(
     context: Context,
     fetch: EdgarFetch,
-    scope: EdgarScope,
+    run: EdgarRun,
     cik_map: pd.DataFrame,
     outcomes: dict[str, KeyOutcome],
     max_workers: int | None,
 ) -> None:
-    """Re-read only the failed documents of keys below the read-rate threshold, up to the configured rounds, in place."""
-    policy = RetryRounds.from_config(getattr(context, "config", None))
+    """Re-read only the failed documents of keys below the read-rate threshold, up to `run.retry`'s rounds, in place."""
+    policy = run.retry
     for round_no in range(1, policy.rounds + 1):
         due = [t for t, o in outcomes.items() if policy.due(o.listed, len(o.failed))]
         if not due:
@@ -451,7 +490,7 @@ def _retry_rounds(
             "%s: retry round %d/%d for %d key(s), %d document(s), after %.0fs", fetch.done.desc, round_no, policy.rounds, len(due), n_documents, wait
         )
         _sleep(wait)
-        again = _run_pass(context, fetch, scope, cik_map[cik_map["ticker"].astype(str).isin(due)], retry, max_workers)
+        again = _run_pass(context, fetch, run.scope, cik_map[cik_map["ticker"].astype(str).isin(due)], retry, max_workers)
         for ticker, outcome in again.items():
             previous = outcomes[ticker]
             saved = {t: previous.saved.get(t, 0) + outcome.saved.get(t, 0) for t in {*previous.saved, *outcome.saved}}
@@ -487,9 +526,9 @@ def _log_coverage(context: Context, fetch: EdgarFetch, work: DocumentWork, outco
     )
 
 
-def load_edgar_scope(context: Context, *, identity_aware: bool = True) -> EdgarScope:
-    """The run's `EdgarScope` over the identity layer of `context` (roster CIKs only when not identity-aware)."""
-    return EdgarScope(load_identity(context) if identity_aware else None)
+def load_edgar_scope(context: Context) -> EdgarScope:
+    """The run's `EdgarScope` over the identity layer of `context`."""
+    return EdgarScope(load_identity(context))
 
 
 def _document_cap(context: Context, no_cap: bool) -> int | None:
@@ -497,74 +536,50 @@ def _document_cap(context: Context, no_cap: bool) -> int | None:
     return None if no_cap or value is None else int(value)
 
 
-def plan_fetch(
-    context: Context,
-    fetch: EdgarFetch,
-    cik_map: pd.DataFrame,
-    scope: EdgarScope,
-    run_date: pd.Timestamp,
-    years_history: int,
-    *,
-    full: bool = False,
-    no_cap: bool = False,
-) -> DocumentWork:
-    """`fetch`'s work list for `cik_map`'s keys on `run_date` (read-only; the index cache as it stands)."""
+def plan_fetch(context: Context, fetch: EdgarFetch, run: EdgarRun) -> DocumentWork:
+    """`fetch`'s work list for `run`'s keys on its run date (read-only; the index cache as it stands)."""
     return document_worklist(
         context,
         fetch.done,
-        cik_map[["ticker", "cik"]],
-        run_date,
+        run.cik_map[["ticker", "cik"]],
+        run.run_date,
         forms=cast(Resume, fetch.done.resume).forms,
-        identity=scope.identity,
-        years_history=years_history,
-        runtime_floor=fetch.runtime_floor(context, run_date) if fetch.runtime_floor is not None else None,
+        identity=run.scope.identity,
+        years_history=run.years_history,
+        runtime_floor=fetch.runtime_floor(context, run.run_date) if fetch.runtime_floor is not None else None,
         done_scope=fetch.done_scope,
         done_where=fetch.done_where,
-        full=full,
-        cap=_document_cap(context, no_cap),
+        full=run.full,
+        cap=run.cap,
     )
 
 
 def run_edgar_fetch(
-    context: Context,
-    tickers: list[str],
-    years_history: int,
-    fetch: EdgarFetch,
-    *,
-    full: bool = False,
-    cik_map: pd.DataFrame | None = None,
-    max_workers: int | None = None,
-    as_of: pd.Timestamp | None = None,
-    no_cap: bool = False,
-    refresh_index: bool = True,
+    context: Context, fetch: EdgarFetch, run: EdgarRun, *, max_workers: int | None = None, refresh_index: bool = True
 ) -> FetchSummary:
-    """Fetch every document `fetch.done` still lacks for `tickers` and save what was read.
+    """Fetch every document `fetch.done` still lacks for `run`'s keys and save what was read.
 
-    `full` re-reads the whole listed history (stored accessions and markers included); `as_of` is
-    the run date (default today); `no_cap` lifts `max_documents_per_run`. Never raises for a
+    `run.full` re-reads the whole listed history (stored accessions and markers included). Never raises for a
     source failure: what could not be read is logged and listed again on the next run.
     """
-    start_date = run_date(as_of)
-    with fetch.run_scope(context, tickers, start_date) if fetch.run_scope is not None else nullcontext(fetch) as prepared:
+    start_date = run.run_date
+    with fetch.run_scope(context, run.tickers, start_date) if fetch.run_scope is not None else nullcontext(fetch) as prepared:
         if prepared.parse is None:
             raise ValueError(f"{prepared.done.desc}: run scope did not supply a parser")
         context.ensure_edgar_identity()
         configure(context)
-        if cik_map is None:
-            cik_map = load_cik_mapping(context, tickers)
-        scope = load_edgar_scope(context, identity_aware=prepared.identity_aware)
         if refresh_index:
             index_years = (
-                max(years_history, start_date.year - pd.Timestamp(cast(str, cast(Resume, prepared.done.resume).source_start)).year + 1)
+                max(run.years_history, start_date.year - pd.Timestamp(cast(str, cast(Resume, prepared.done.resume).source_start)).year + 1)
                 if prepared.done == Tables.insider_transactions
-                else years_history
+                else run.years_history
             )
             edgar_index.refresh(context, start_date, index_years)
-        work = plan_fetch(context, prepared, cik_map, scope, start_date, years_history, full=full, no_cap=no_cap)
+        work = plan_fetch(context, prepared, run)
         context.log.info("%s: %d document(s) to read for %d key(s) %s", prepared.done.desc, work.size, len(work.units), work.counts)
-        keys = cik_map[cik_map["ticker"].astype(str).isin(work.units)]
-        outcomes = _run_pass(context, prepared, scope, keys, work.units, max_workers)
-        _retry_rounds(context, prepared, scope, keys, outcomes, max_workers)
+        keys = run.cik_map[run.cik_map["ticker"].astype(str).isin(work.units)]
+        outcomes = _run_pass(context, prepared, run.scope, keys, work.units, max_workers)
+        _retry_rounds(context, prepared, run, keys, outcomes, max_workers)
         _log_coverage(context, prepared, work, outcomes)
         if prepared.done == Tables.insider_transactions:
             _certify_insider_work(context, work, start_date)

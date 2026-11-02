@@ -16,10 +16,10 @@ import pytest
 from click.testing import CliRunner
 
 import src.data_extract.cli as cli_mod
-from src.data_extract.transformers import step_extract_edgar as step_edgar
 from src.data_extract.transformers import step_extract_identity as step_identity
 from src.data_extract.transformers.step_extract_edgar import StepExtractEdgar
 from src.data_extract.transformers.step_extract_institutionals import StepExtractInstitutionals
+from src.data_extract.utils.edgar_extract import edgar_driver
 from src.data_extract.utils.edgar_extract.document_resume import DocumentWork
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, FilingStamp, marker_row
 from src.data_extract.utils.edgar_extract.fetch_8k_edgar import SEC_8K_FETCH
@@ -29,7 +29,7 @@ from src.data_extract.utils.edgar_extract.fetch_def14a_edgar import DEF14A_EDGAR
 from src.data_extract.utils.edgar_extract.fetch_filing_text import FILING_TEXT_FETCH
 from src.data_extract.utils.edgar_extract.fetch_insider_edgar import INSIDER_EDGAR_FETCH
 from src.data_store.schema import Tables
-from tests.data_extract.edgar_fixtures import fake_filing
+from tests.data_extract.edgar_fixtures import fake_filing, stub_edgar_step
 from tests.data_extract.test_cli_options import stub_identity_step
 
 DAG_FILE = Path(__file__).resolve().parents[2] / "src" / "dags" / "dag_data_extraction.py"
@@ -48,17 +48,12 @@ COMMANDS: dict[str, tuple[EdgarFetch, bool]] = {
 @pytest.fixture
 def recorded(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     calls: list[dict[str, Any]] = []
-    config = SimpleNamespace(data_extract=SimpleNamespace(years_history=15))
-    monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, SimpleNamespace(name="ctx", config_dir="configs")))
+    config = SimpleNamespace(data_extract=SimpleNamespace(years_history=15, max_documents_per_run=100))
+    context = SimpleNamespace(name="ctx", config=config, config_dir="configs")
+    monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, context))
     monkeypatch.setattr(cli_mod, "_tickers", lambda ctx, names: [t.strip().upper() for t in names.split(",")])
     stub_edgar_step(monkeypatch, lambda context, **kwargs: calls.append({"context": context, **kwargs}))
     return calls
-
-
-def stub_edgar_step(monkeypatch: pytest.MonkeyPatch, driver: Any) -> None:
-    """Make `StepExtractEdgar` constructible offline: the CIK mapping stubbed, the driver replaced by `driver`."""
-    monkeypatch.setattr(step_edgar, "load_cik_mapping", lambda ctx, names: pd.DataFrame({"ticker": names, "cik": ["0"] * len(names)}))
-    monkeypatch.setattr(step_edgar, "run_edgar_fetch", driver)
 
 
 @pytest.mark.parametrize("command", sorted(COMMANDS))
@@ -118,11 +113,11 @@ def test_markers_counts_and_deletes_by_sentinel(monkeypatch: pytest.MonkeyPatch,
 
 def test_resume_plan_prints_one_line_per_document_table(monkeypatch: pytest.MonkeyPatch) -> None:
     config = SimpleNamespace(data_extract=SimpleNamespace(years_history=15))
-    monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, SimpleNamespace(name="ctx")))
+    monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, SimpleNamespace(name="ctx", config=config)))
     monkeypatch.setattr(cli_mod, "_tickers", lambda ctx, names: ["AAA"])
-    monkeypatch.setattr(cli_mod, "load_cik_mapping", lambda ctx, names: pd.DataFrame({"ticker": ["AAA"], "cik": ["0000000001"]}))
-    monkeypatch.setattr(cli_mod, "_document_fetches", lambda ctx, names: {"sec_8k": SEC_8K_FETCH, "sec_13g": SEC_13G_FETCH})
-    monkeypatch.setattr(cli_mod, "load_edgar_scope", lambda ctx, identity_aware: None)
+    monkeypatch.setattr(edgar_driver, "load_cik_mapping", lambda ctx, names: pd.DataFrame({"ticker": ["AAA"], "cik": ["0000000001"]}))
+    monkeypatch.setattr(edgar_driver, "load_identity", lambda ctx: None)
+    monkeypatch.setattr(cli_mod, "_document_fetches", lambda ctx, cik_map: {"sec_8k": SEC_8K_FETCH, "sec_13g": SEC_13G_FETCH})
     work = DocumentWork(units={"AAA": pd.DataFrame({"accession": ["x"]})}, key_class={"AAA": "established"}, counts={"forward": 1}, uncapped=1)
     work.timings = {"index_read": 0.1, "done_read": 0.2, "total": 0.3}
     monkeypatch.setattr(cli_mod, "plan_fetch", lambda *args, **kwargs: work)
@@ -153,8 +148,9 @@ def test_steps_import_and_dag_parses() -> None:
 @pytest.fixture
 def insider_calls(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict[str, Any]]]:
     calls: list[tuple[str, dict[str, Any]]] = []
-    config = SimpleNamespace(data_extract=SimpleNamespace(years_history=15))
-    monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, SimpleNamespace(name="ctx", config_dir="configs")))
+    config = SimpleNamespace(data_extract=SimpleNamespace(years_history=15, max_documents_per_run=100))
+    context = SimpleNamespace(name="ctx", config=config, config_dir="configs")
+    monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, context))
     monkeypatch.setattr(cli_mod, "load_universe_tickers", lambda ctx: ["ALL"])
     monkeypatch.setattr(cli_mod, "fetch_insider_transactions", lambda context, **kwargs: calls.append(("bulk", kwargs)))
     stub_edgar_step(monkeypatch, lambda context, **kwargs: calls.append(("edgar", kwargs)))

@@ -1,5 +1,6 @@
-"""`StepExtractEdgar` declares its window, run date, tickers and CIK mapping once, runs the six EDGAR walks in order
-through the shared driver, and each `run_*` fails alone. Offline: the driver, the universe and the CIK mapping are stubbed."""
+"""`StepExtractEdgar` declares its window, run date, tickers, CIK mapping, identity scope, cap and retry policy once,
+runs the six EDGAR walks in order through the shared driver, and each `run_*` fails alone. Offline: the driver, the
+universe, the CIK mapping and the identity are stubbed."""
 
 from __future__ import annotations
 
@@ -13,6 +14,9 @@ from click.testing import CliRunner
 import src.data_extract.cli as cli_mod
 from src.data_extract.transformers import step_extract_edgar as step_mod
 from src.data_extract.transformers.step_extract_edgar import EdgarOptions, StepExtractEdgar
+from src.data_extract.utils.edgar_extract import edgar_driver
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarRun
+from tests.data_extract.edgar_fixtures import walk_call
 
 RUNS = ("run_insider", "run_13d", "run_13g", "run_8k", "run_filing_text", "run_def14a_ecd")
 FETCHES = {
@@ -41,8 +45,10 @@ class Driver:
         self.calls: list[dict[str, Any]] = []
         self.reads: list[str] = []
         self.boom = FETCHES[boom] if boom else None
+        self.runs: list[EdgarRun] = []
         monkeypatch.setattr(step_mod, "load_universe_tickers", self.universe)
-        monkeypatch.setattr(step_mod, "load_cik_mapping", self.cik_mapping)
+        monkeypatch.setattr(edgar_driver, "load_cik_mapping", self.cik_mapping)
+        monkeypatch.setattr(edgar_driver, "load_identity", self.identity)
         monkeypatch.setattr(step_mod, "run_edgar_fetch", self.fetch)
 
     def universe(self, context: Any) -> list[str]:
@@ -53,10 +59,14 @@ class Driver:
         self.reads.append("cik_map")
         return CIK_MAP[CIK_MAP["ticker"].isin(tickers)]
 
-    def fetch(self, context: Any, **kwargs: Any) -> None:
-        self.calls.append(kwargs)
-        if kwargs["fetch"] is self.boom:
-            raise RuntimeError(f"simulated {kwargs['fetch'].done.desc} failure")
+    def identity(self, context: Any) -> None:
+        self.reads.append("identity")
+
+    def fetch(self, context: Any, fetch: EdgarFetch, run: EdgarRun) -> None:
+        self.calls.append(walk_call(fetch, run))
+        self.runs.append(run)
+        if fetch is self.boom:
+            raise RuntimeError(f"simulated {fetch.done.desc} failure")
 
     @property
     def order(self) -> list[str]:
@@ -64,7 +74,7 @@ class Driver:
 
 
 def _config() -> SimpleNamespace:
-    return SimpleNamespace(data_extract=SimpleNamespace(years_history=15))
+    return SimpleNamespace(data_extract=SimpleNamespace(years_history=15, max_documents_per_run=100))
 
 
 def _step(options: EdgarOptions | None = None) -> StepExtractEdgar:
@@ -77,22 +87,25 @@ def test_run_walks_the_six_fetches_in_order_on_state_declared_once(monkeypatch: 
     _step(EdgarOptions(as_of=pd.Timestamp("2026-10-31 15:00"))).run()
 
     assert driver.order == [FETCHES[name].done.desc for name in RUNS]
-    assert driver.reads == ["universe", "cik_map"], "the universe and the CIK mapping are read once, in the init"
+    assert driver.reads == ["universe", "cik_map", "identity"], "the universe, the CIK mapping and the identity are read once, in the init"
     first = driver.calls[0]
     assert first["cik_map"]["ticker"].tolist() == ["AAA", "BBB"] and first["tickers"] == ["AAA", "BBB"]
-    assert all(call["cik_map"] is first["cik_map"] and call["tickers"] is first["tickers"] for call in driver.calls)
+    assert all(run is driver.runs[0] for run in driver.runs), "every walk receives the one declared EdgarRun"
+    assert driver.runs[0].cap == 100 and driver.runs[0].retry.rounds == 3
     assert {(call["years_history"], call["as_of"], call["full"], call["no_cap"]) for call in driver.calls} == {
         (15, pd.Timestamp("2026-10-31"), False, False)
     }
     print("\n=== SANITY: StepExtractEdgar.run order ===")
-    print(f"  {' -> '.join(driver.order)}; one universe read and one CIK mapping shared by all 6 walks; window 15y, run date 2026-10-31.")
+    print(
+        f"  {' -> '.join(driver.order)}; one universe, CIK mapping and identity read, one EdgarRun (cap 100) shared by all 6 walks; window 15y, run date 2026-10-31."
+    )
 
 
 def test_options_reach_every_walk_and_a_subset_skips_the_universe_read(monkeypatch: pytest.MonkeyPatch) -> None:
     driver = Driver(monkeypatch)
     _step(EdgarOptions(tickers=["BBB"], years=3, full=True, no_cap=True)).run()
 
-    assert driver.reads == ["cik_map"]
+    assert driver.reads == ["cik_map", "identity"]
     assert {(tuple(call["tickers"]), call["years_history"], call["full"], call["no_cap"]) for call in driver.calls} == {(("BBB",), 3, True, True)}
     assert driver.calls[0]["cik_map"]["ticker"].tolist() == ["BBB"]
     print("\n=== SANITY: EdgarOptions ===")
@@ -129,7 +142,7 @@ def test_edgar_commands_call_their_step_operation(monkeypatch: pytest.MonkeyPatc
     result = CliRunner().invoke(cli_mod.cli, [command, "-t", "bbb", "--as-of", "2026-09-30"])
 
     assert result.exit_code == 0, result.output
-    assert driver.order == [FETCHES[COMMANDS[command]].done.desc] and driver.reads == ["cik_map"]
+    assert driver.order == [FETCHES[COMMANDS[command]].done.desc] and driver.reads == ["cik_map", "identity"]
     assert driver.calls[0]["tickers"] == ["BBB"] and driver.calls[0]["as_of"] == pd.Timestamp("2026-09-30")
     print(f"\n=== SANITY: `{command}` -> StepExtractEdgar.{COMMANDS[command]} ===")
-    print(f"  one walk ({driver.order[0]}) over ['BBB'] on 2026-09-30, CIK mapping read once.")
+    print(f"  one walk ({driver.order[0]}) over ['BBB'] on 2026-09-30, CIK mapping and identity read once.")

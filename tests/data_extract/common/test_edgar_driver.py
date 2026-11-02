@@ -23,11 +23,11 @@ from src.data_extract.utils.common.identity import FilingScope
 from src.data_extract.utils.common.registrant import resolve_registrant_filings
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError
 from src.data_extract.utils.edgar_extract import edgar_driver
-from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarScope, FilingStamp, parse_filing_rows, run_edgar_fetch
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarRun, EdgarScope, FilingStamp, parse_filing_rows, run_edgar_fetch
 from src.data_store import schema
 from src.data_store.schema import RESUME_DOCUMENTS, Resume, Table, Tables
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
-from tests.data_extract.edgar_fixtures import fake_context, fake_filing, seed_index
+from tests.data_extract.edgar_fixtures import fake_context, fake_filing, roster_run, seed_index
 
 _T_DOC = Table(
     "driver_doc",
@@ -100,11 +100,11 @@ class _Source:
 
 
 def _fetch(source: _Source) -> EdgarFetch:
-    return EdgarFetch(tables=(_T_CHILD, _T_DOC), parse=source.parse, done_table=_T_DOC, identity_aware=False)
+    return EdgarFetch(tables=(_T_CHILD, _T_DOC), parse=source.parse, done_table=_T_DOC)
 
 
 def _run(ctx, source: _Source, tickers: list[str], as_of: pd.Timestamp = _AS_OF, **kwargs: Any):
-    return run_edgar_fetch(ctx, tickers, 15, _fetch(source), as_of=as_of, refresh_index=False, max_workers=1, **kwargs)
+    return run_edgar_fetch(ctx, _fetch(source), roster_run(ctx, tickers, as_of=as_of, **kwargs), refresh_index=False, max_workers=1)
 
 
 def _stored(store, table: Table = _T_DOC) -> set[str]:
@@ -138,13 +138,13 @@ def test_run_scope_covers_setup_execution_and_empty_work(tmp_path: Path, sqlite_
 
     monkeypatch.setattr(ctx, "ensure_edgar_identity", setup)
     fetch = EdgarFetch(tables=(_T_CHILD, _T_DOC), done_table=_T_DOC, run_scope=run_scope)
-    kwargs = {"as_of": _AS_OF + pd.Timedelta(hours=12), "refresh_index": False, "max_workers": 1}
+    run = roster_run(ctx, ["AAA"], as_of=_AS_OF + pd.Timedelta(hours=12))
     if stage in {"setup", "enter", "parse"}:
         with pytest.raises(NameError if stage == "parse" else RuntimeError):
-            run_edgar_fetch(ctx, ["AAA"], 15, fetch, **kwargs)
+            run_edgar_fetch(ctx, fetch, run, refresh_index=False, max_workers=1)
         assert not sqlite_store.exists(_T_DOC)
     else:
-        result = run_edgar_fetch(ctx, ["AAA"], 15, fetch, **kwargs)
+        result = run_edgar_fetch(ctx, fetch, run, refresh_index=False, max_workers=1)
         assert result.work.size == len(accessions)
         assert _stored(sqlite_store) == set(accessions)
     assert events == (["enter"] if stage == "enter" else ["enter", "setup", "exit"])
@@ -161,7 +161,7 @@ def test_an_unprepared_parser_is_rejected_before_setup(tmp_path: Path, sqlite_st
     monkeypatch.setattr(ctx, "ensure_edgar_identity", unexpected_setup)
     fetch = EdgarFetch(tables=(_T_DOC,))
     with pytest.raises(ValueError, match="parser"):
-        run_edgar_fetch(ctx, ["AAA"], 15, fetch, refresh_index=False)
+        run_edgar_fetch(ctx, fetch, roster_run(ctx, ["AAA"], as_of=_AS_OF), refresh_index=False)
     print("SANITY: an unprepared descriptor without a parser fails before setup or source reads.")
 
 
@@ -398,12 +398,12 @@ def test_a_lineage_expansion_lists_the_new_cik_on_the_next_run_with_no_run_state
         [("AAA", "0009999991", "cik_window", SENTINEL, "2020-01-01"), ("AAA", "0000000001", "cik_window", "2020-01-01", None)],
         {"AAA": "0000000001"},
     )
-    fetch = dataclasses.replace(_fetch(_Source()), identity_aware=True)
+    fetch = _fetch(_Source())
     monkeypatch.setattr(edgar_driver, "load_identity", lambda context: before)
-    plain = run_edgar_fetch(ctx, ["AAA"], 15, fetch, as_of=_AS_OF, refresh_index=False, max_workers=1)
+    plain = run_edgar_fetch(ctx, fetch, EdgarRun.load(ctx, ["AAA"], 15, as_of=_AS_OF), refresh_index=False, max_workers=1)
     monkeypatch.setattr(edgar_driver, "load_identity", lambda context: after)
 
-    expanded = run_edgar_fetch(ctx, ["AAA"], 15, fetch, as_of=_AS_OF + pd.Timedelta(days=1), refresh_index=False, max_workers=1)
+    expanded = run_edgar_fetch(ctx, fetch, EdgarRun.load(ctx, ["AAA"], 15, as_of=_AS_OF + pd.Timedelta(days=1)), refresh_index=False, max_workers=1)
 
     assert plain.work.units["AAA"]["accession"].tolist() == [_accession(1)]
     assert expanded.work.units["AAA"]["accession"].tolist() == ["0009999991-19-000001"]

@@ -13,7 +13,7 @@ import pytest
 
 from src.context import Context
 from src.data_extract.utils.edgar_extract import edgar_driver
-from src.data_extract.utils.edgar_extract.edgar_driver import EdgarScope, plan_fetch
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarRun, EdgarScope, plan_fetch
 from src.data_extract.utils.edgar_extract.edgar_index import INDEX_FORMS
 from src.data_extract.utils.edgar_extract.fetch_8k_edgar import SEC_8K_FETCH
 from src.data_extract.utils.edgar_extract.fetch_13d_edgar import SEC_13D_FETCH
@@ -167,7 +167,8 @@ def test_document_contract_forms_are_the_forms_each_fetcher_lists(monkeypatch: p
     monkeypatch.setattr(edgar_driver, "document_worklist", capture_worklist)
     column_types = _column_types()
     for fetch in fetched:
-        plan_fetch(context, fetch, cik_map.assign(cik="1"), EdgarScope(), pd.Timestamp("2026-10-13"), 10)
+        keys = cik_map.assign(cik="1")
+        plan_fetch(context, fetch, EdgarRun(list(keys["ticker"]), keys, EdgarScope(), pd.Timestamp("2026-10-13"), 10))
         assert planned[-1][0] is fetch.done
         assert planned[-1][1] is cast(Resume, fetch.done.resume).forms
         assert fetch.done.desc

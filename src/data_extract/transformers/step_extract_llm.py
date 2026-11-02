@@ -3,8 +3,8 @@
 Order: DEF 14A sections (lists and reads each ticker's proxies itself), 8-K Item 5.07 votes (reads the stored `sec_8k`
 narratives and the DEF 14A tables, so it runs after DEF 14A), employee counts (lists and reads each ticker's annual
 filings itself). The DEF 14A section extractors and the votes extractor are built once here and reused by every run;
-the init raises `OSError` when a provider these runs use has no API key. The employee extractor is still built per
-ticker inside `fundamentals_employees`: its per-ticker workers run concurrently and one extractor is not re-entrant.
+the init raises `OSError` when a provider these runs use has no API key. The employee extractors are built on first
+need inside `fundamentals_employees`, at most one per concurrent ticker worker, and lent to one ticker at a time.
 """
 
 from __future__ import annotations

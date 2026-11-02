@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import queue
 import re
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
@@ -627,20 +628,32 @@ def _employee_task(sequence: int, ticker: str, stamp: FilingStamp, max_chars: in
     )
 
 
-def _extract_answers(context: Context, config: DictConfig, ticker: str, stamps: list[FilingStamp]) -> list[LlmResult]:
+def _extract_answers(
+    context: Context, config: DictConfig, ticker: str, stamps: list[FilingStamp], extractors: queue.SimpleQueue[LLMExtractor]
+) -> list[LlmResult]:
     """One LLM result per filing, in filing order; a failed call is a result with its error, not a raise.
 
-    Filings are read as the calls run, so reading the next filing overlaps the call on the previous one.
+    Filings are read as the calls run, so reading the next filing overlaps the call on the previous one. The
+    extractor is borrowed from `extractors` (built on first need, so at most one per concurrent ticker worker) and
+    returned after the run; `LLMExtractor.run` resets its per-run state, so one thread at a time reuses it safely.
     """
-    extractor = LLMExtractor(context, config, action="employees", threads=1)
+    try:
+        extractor = extractors.get_nowait()
+    except queue.Empty:
+        extractor = LLMExtractor(context, config, action="employees", threads=1)
     max_chars = int(config.gpt.max_chars.employees)
-    results = extractor.run(_employee_task(sequence, ticker, stamp, max_chars) for sequence, stamp in enumerate(stamps))
+    try:
+        results = extractor.run(_employee_task(sequence, ticker, stamp, max_chars) for sequence, stamp in enumerate(stamps))
+    finally:
+        extractors.put(extractor)
     if len(results) != len(stamps):
         raise RuntimeError(f"{ticker}: {len(results)} employee LLM result(s) for {len(stamps)} filing(s)")
     return results
 
 
-def _llm_decisions(context: Context, ticker: str, stamps: list[FilingStamp]) -> tuple[list[_Decision], list[FilingStamp]]:
+def _llm_decisions(
+    context: Context, ticker: str, stamps: list[FilingStamp], extractors: queue.SimpleQueue[LLMExtractor]
+) -> tuple[list[_Decision], list[FilingStamp]]:
     """`(decisions, failed)`: one guarded decision per answered filing, and the filings whose call failed.
 
     A failed call (invalid JSON included) is not a property of the filing, so it gets no row and
@@ -655,7 +668,7 @@ def _llm_decisions(context: Context, ticker: str, stamps: list[FilingStamp]) -> 
     history["as_of"] = pd.to_datetime(history["as_of"])
     decisions: list[_Decision] = []
     failed: list[FilingStamp] = []
-    for result in _extract_answers(context, config, ticker, stamps):
+    for result in _extract_answers(context, config, ticker, stamps, extractors):
         stamp = _task_stamp(result)
         if not result.ok:
             context.log.warning(
@@ -764,8 +777,9 @@ def build_ticker_employees(
     since: pd.Timestamp | None,
     done_dates: frozenset[pd.Timestamp],
     scope: EdgarScope,
+    extractors: queue.SimpleQueue[LLMExtractor],
 ) -> EmployeeTickerResult:
-    """Decide every annual filing whose date has no row yet, through the LLM and the source guard.
+    """Decide every annual filing whose date has no row yet, through the LLM (an extractor of `extractors`) and the source guard.
 
     A listed filing whose filer the identity layer does not tie to `ticker` is skipped and counted in `scope.guard`.
     A filing whose LLM call failed withholds its whole filing date, so a stored same-day filing
@@ -781,7 +795,7 @@ def build_ticker_employees(
         (stamp for stamp in (FilingStamp.of(filing, cik) for filing in owned) if stamp.filed.normalize() not in done_dates),
         key=_filing_key,
     )
-    by_llm, failed = _llm_decisions(context, ticker, stamps) if stamps else ([], [])
+    by_llm, failed = _llm_decisions(context, ticker, stamps, extractors) if stamps else ([], [])
     withheld = {stamp.filed.normalize() for stamp in failed}
     decisions = [decision for decision in by_llm if decision.stamp.filed.normalize() not in withheld]
     result = _decide_ticker(context, ticker, decisions)
@@ -814,6 +828,7 @@ def _fetch_ticker_employees(
     since: pd.Timestamp,
     done: dict[str, frozenset[pd.Timestamp]],
     scope: EdgarScope,
+    extractors: queue.SimpleQueue[LLMExtractor],
 ) -> EmployeeTickerResult:
     """Decide one ticker's undecided filings and save its rows; the per-ticker worker."""
     result = build_ticker_employees(
@@ -823,6 +838,7 @@ def _fetch_ticker_employees(
         since=since,
         done_dates=done.get(ticker, frozenset()),
         scope=scope,
+        extractors=extractors,
     )
     if not result.frame.empty:
         context.store.save(Tables.fundamentals_employees, result.frame)
@@ -859,7 +875,8 @@ def fetch_fundamentals_employees(
     done = {} if full else _done_dates(context, tickers, since)
     context.log.info("fundamentals employees: %d dates * ticker already done (skipped)", sum(map(len, done.values())))
 
-    worker = partial(_fetch_ticker_employees, context=context, since=since, done=done, scope=scope)
+    extractors: queue.SimpleQueue[LLMExtractor] = queue.SimpleQueue()  # bounded by the worker count, reused across tickers
+    worker = partial(_fetch_ticker_employees, context=context, since=since, done=done, scope=scope, extractors=extractors)
     results = run_per_ticker(
         cik_map,
         worker,

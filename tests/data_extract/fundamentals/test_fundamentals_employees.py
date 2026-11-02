@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import queue
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -121,6 +122,7 @@ def build(
         since=None,
         done_dates=done_dates,
         scope=scope or mod.EdgarScope(identity),
+        extractors=queue.SimpleQueue(),
     )
 
 
@@ -1112,3 +1114,24 @@ def test_a_read_filing_drops_its_cached_submission(monkeypatch):
         "\nSANITY: after the employee text is read the filing holds no cached submission; the task and the 41,000 row are unchanged, "
         "and the document is scanned for workforce numbers once."
     )
+
+
+def test_one_employee_extractor_serves_sequential_tickers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """F-004: the extractor is built on first need and lent back, so one worker reuses it for every ticker."""
+    built: list[dict] = []
+
+    class OneRunLLM:
+        def __init__(self, *args, **kwargs):
+            built.append(kwargs)
+
+        def run(self, tasks=()):
+            return list(tasks)
+
+    monkeypatch.setattr(mod, "LLMExtractor", OneRunLLM)
+    monkeypatch.setattr(mod, "_employee_task", lambda sequence, ticker, stamp, max_chars: (ticker, sequence, max_chars))
+    config = OmegaConf.create({"gpt": {"max_chars": {"employees": 100}}})
+    extractors: queue.SimpleQueue = queue.SimpleQueue()
+    for ticker in ("AAA", "BBB", "CCC"):
+        assert mod._extract_answers(SimpleNamespace(), config, ticker, ["s1", "s2"], extractors) == [(ticker, 0, 100), (ticker, 1, 100)]
+    assert built == [{"action": "employees", "threads": 1}], built
+    print(f"\nSANITY: 3 tickers x 2 filings answered in order through {len(built)} employee extractor (threads=1), not one per ticker.")

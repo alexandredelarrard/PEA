@@ -68,7 +68,7 @@ from src.constants.command_line_interface import (
     YEARS_KWARGS,
 )
 from src.context import Context, get_config_context
-from src.data_extract.transformers.step_extract_edgar import EdgarOptions, StepExtractEdgar
+from src.data_extract.transformers.step_extract_edgar import EdgarOptions, StepExtractEdgar, widest_index_years
 from src.data_extract.transformers.step_extract_fundamentals_sharadar import (
     StepExtractFundamentalsSharadar,
 )
@@ -775,8 +775,8 @@ def _llm_step(config_path: str, tickers: str | None, full: bool = False) -> Step
 # --- EDGAR index, work-list dry run and empty-filing markers ---
 @cli.command(
     name="edgar-index",
-    help="Download the local EDGAR filing index (closed quarters once, the current quarter again) and print rows per quarter. "
-    "--full downloads every quarter again.",
+    help="Download the local EDGAR filing index over every EDGAR walk's window (closed quarters once, the current quarter "
+    "again) and print rows per quarter. --full downloads every quarter again.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
@@ -785,7 +785,8 @@ def edgar_index_command(config_path: str, full: bool, as_of: datetime | None) ->
     """One EDGAR walk: run it alone. The first build fetches about 128 quarters."""
     config, context = get_config_context(config_path, use_cache=False, save=False)
     context.ensure_edgar_identity()
-    edgar_index.refresh(context, run_date(as_of), int(config.data_extract.years_history), rebuild=full)
+    day = run_date(as_of)
+    edgar_index.refresh(context, day, widest_index_years(int(config.data_extract.years_history), day), rebuild=full)
     for quarter, n_rows in edgar_index.quarter_counts(context).items():
         click.echo(f"{quarter}\t{n_rows}")
 

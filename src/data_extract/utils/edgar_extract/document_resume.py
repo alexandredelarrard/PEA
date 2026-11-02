@@ -28,7 +28,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class DocumentWork:
-    """One table's document work list: index rows to read per key (oldest first), plus what `resume-plan` reports."""
+    """One table's document work list: index rows to read per key (oldest first), plus what `resume-plan` reports,
+    and the index file versions it was planned on (`edgar_index.file_versions`)."""
 
     units: dict[str, pd.DataFrame]
     key_class: dict[str, str]
@@ -36,6 +37,7 @@ class DocumentWork:
     uncapped: int = 0
     timings: dict[str, float] = field(default_factory=dict)
     listed: dict[str, pd.DataFrame] = field(default_factory=dict)
+    index_versions: dict[str, tuple[int, int]] = field(default_factory=dict)
 
     @property
     def size(self) -> int:
@@ -138,6 +140,7 @@ def document_worklist(context: Context, table: Table, request: WorklistRequest) 
         ticker: identity.filing_scope(ticker) if identity is not None else FilingScope.roster_only(ticker, cik) for ticker, cik in roster.items()
     }
     candidates = {ticker: listing_ciks(scope) for ticker, scope in scopes.items()}
+    index_versions = edgar_index.file_versions(context)
     df_index = edgar_index.entries(context, {c for ciks in candidates.values() for c in ciks}, forms, since=floor)
     by_cik = dict(tuple(df_index.groupby("cik", sort=False))) if not df_index.empty else {}
     read_index = time.perf_counter()
@@ -166,4 +169,6 @@ def document_worklist(context: Context, table: Table, request: WorklistRequest) 
             units[ticker] = df_units
     units, uncapped = _cap(units, request.cap, table.name)
     timings = {"index_read": read_index - started, "done_read": read_done - read_index, "total": time.perf_counter() - started}
-    return DocumentWork(units=units, key_class=key_class, counts=counts, uncapped=uncapped, timings=timings, listed=listed)
+    return DocumentWork(
+        units=units, key_class=key_class, counts=counts, uncapped=uncapped, timings=timings, listed=listed, index_versions=index_versions
+    )

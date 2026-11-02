@@ -630,5 +630,5 @@ def fetch_fundamentals_sec(
     """Fetch the `fundamentals_facts` documents not yet stored for `tickers` (see `run_edgar_fetch`); returns its summary."""
     run = EdgarRun.load(context, tickers, years_history, as_of=as_of, full=full, no_cap=no_cap)
     fetch = fundamentals_fetch(context, run.cik_map)
-    refresh_index(context, run, index_years(fetch, run))
+    refresh_index(context, run, index_years(fetch, run.years_history, run.run_date))
     return run_edgar_fetch(context, fetch, run, max_workers=int(context.config.data_extract.fundamentals_workers))

@@ -5,8 +5,9 @@ enters its own source run), SC 13D, SC 13G, 8-K, 10-K/10-Q filing text, DEF 14A 
 ticker scope and CIK mapping are declared once and shared by every walk. Consumes the identity built and propagated
 upstream; the identity scope, document cap and retry policy are read once too. The local EDGAR index is refreshed
 once per step: `run()` refreshes it over the widest window of the six walks before them (`run_index`); a walk run
-alone refreshes its own window, unless the step already did, or, for a walk that certifies nothing, unless today's
-refresh (the nightly `edgar-index` task) already covered it. The DEF 14A LLM pass and the 8-K vote parser read what this step stores, so they run after it.
+alone refreshes its own window, unless the step already did or today's refresh (the nightly `edgar-index` task,
+over the same widest window) already covered it. The insider walk certifies from the quarter files' footers, so it
+needs no refresh of its own. The DEF 14A LLM pass and the 8-K vote parser read what this step stores, so they run after it.
 """
 
 from __future__ import annotations
@@ -46,6 +47,11 @@ class EdgarOptions:
 _WALKS: tuple[EdgarFetch, ...] = (INSIDER_EDGAR_FETCH, SEC_13D_FETCH, SEC_13G_FETCH, SEC_8K_FETCH, FILING_TEXT_FETCH, DEF14A_EDGAR_FETCH)
 
 
+def widest_index_years(years_history: int, run_date: pd.Timestamp) -> int:
+    """The index window covering every walk on `run_date`: the certifying insider walk reaches its source start."""
+    return max(index_years(fetch, years_history, run_date) for fetch in _WALKS)
+
+
 class StepExtractEdgar(Step):
     def __init__(self, context: Context, config: DictConfig, options: EdgarOptions | None = None) -> None:
         super().__init__(context=context, config=config)
@@ -60,11 +66,11 @@ class StepExtractEdgar(Step):
         self._indexed_years = years_history
 
     def _ensure_index(self, fetch: EdgarFetch) -> None:
-        """Refresh the index for `fetch` unless this step, or today's refresh for a walk that certifies nothing, covered it."""
-        years = index_years(fetch, self._run)
+        """Refresh the index for `fetch` unless this step, or today's refresh, already covered its window."""
+        years = index_years(fetch, self._run.years_history, self._run.run_date)
         if self._indexed_years is not None and self._indexed_years >= years:
             return
-        if fetch.certify is None and self._run.run_date == run_date(None) and edgar_index.refreshed_today(self._context, years):
+        if self._run.run_date == run_date(None) and edgar_index.refreshed_today(self._context, years):
             self._log.info("edgar index: already refreshed today over %d year(s); not refreshed again", years)
             return
         self._refresh(years)
@@ -75,7 +81,7 @@ class StepExtractEdgar(Step):
 
     def run_index(self) -> None:
         """Refresh the local EDGAR index once over the widest window of the six walks."""
-        self._refresh(max(index_years(fetch, self._run) for fetch in _WALKS))
+        self._refresh(widest_index_years(self._run.years_history, self._run.run_date))
 
     def run_insider(self) -> FetchSummary:
         return self._run_fetch(INSIDER_EDGAR_FETCH)

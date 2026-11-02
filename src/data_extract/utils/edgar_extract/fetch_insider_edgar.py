@@ -184,8 +184,10 @@ def save_insider_key(context: Context, fetch: EdgarFetch, ticker: str, frames: d
 
 
 def certify_insider_work(context: Context, work: DocumentWork, as_of: pd.Timestamp) -> None:
-    """Only a full validated source index and the exact reconciled source cohort establish quiet support."""
-    through = edgar_index.inventory_complete_through(context, as_of, cast(str, cast(Resume, Tables.insider_transactions.resume).source_start))
+    """Only a full validated source index, unchanged since `work` was planned, and the exact reconciled source cohort
+    establish quiet support."""
+    source_start = cast(str, cast(Resume, Tables.insider_transactions.resume).source_start)
+    through = edgar_index.inventory_complete_through(context, as_of, source_start, work.index_versions)
     if through is None:
         context.log.warning("insider inventory: incomplete or changed original index; no boundary advanced")
         return

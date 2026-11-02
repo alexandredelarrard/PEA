@@ -575,12 +575,12 @@ def plan_fetch(context: Context, fetch: EdgarFetch, run: EdgarRun) -> DocumentWo
     return document_worklist(context, fetch.done, request)
 
 
-def index_years(fetch: EdgarFetch, run: EdgarRun) -> int:
-    """The index window `fetch` needs: `run`'s window, widened to the table's source start for a certifying fetch."""
+def index_years(fetch: EdgarFetch, years_history: int, run_date: pd.Timestamp) -> int:
+    """The index window `fetch` needs on `run_date`: `years_history`, widened to the table's source start for a certifying fetch."""
     if fetch.certify is None:
-        return run.years_history
+        return years_history
     source_start = pd.Timestamp(cast(str, cast(Resume, fetch.done.resume).source_start))
-    return max(run.years_history, run.run_date.year - source_start.year + 1)
+    return max(years_history, run_date.year - source_start.year + 1)
 
 
 def refresh_index(context: Context, run: EdgarRun, years_history: int) -> None:

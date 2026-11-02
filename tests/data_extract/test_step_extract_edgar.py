@@ -187,13 +187,31 @@ def test_a_walk_alone_refreshes_its_own_window_once(monkeypatch: pytest.MonkeyPa
 
 
 @pytest.mark.parametrize("name", RUNS)
-def test_a_walk_alone_skips_a_refresh_already_done_today_unless_it_certifies(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+def test_a_walk_alone_skips_a_refresh_already_done_today(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
     driver = Driver(monkeypatch, refreshed_today=True)
     getattr(_step(), name)()
     backdated = Driver(monkeypatch, refreshed_today=True)
     getattr(_step(EdgarOptions(as_of=pd.Timestamp("2026-10-31"))), name)()
 
-    assert driver.refreshes == ([max(15, INSIDER_YEARS)] if name == "run_insider" else []), "today's nightly refresh covers a lone walk"
+    assert driver.refreshes == [] and len(driver.calls) == 1, "today's nightly refresh covers a lone walk, the certifying insider walk included"
     assert backdated.refreshes != [], "a backdated run never relies on today's refresh"
     print(f"\n=== SANITY: {name} after the nightly edgar-index ===")
-    print(f"  refreshes today: {driver.refreshes} (the insider walk rebuilds its certification inventory); backdated run refreshes.")
+    print(f"  refreshes today: {driver.refreshes} (the insider walk certifies from the quarter footers); backdated run refreshes.")
+
+
+def test_edgar_index_command_refreshes_the_widest_walk_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = SimpleNamespace(data_extract=SimpleNamespace(years_history=3))
+    context = SimpleNamespace(config=config, ensure_edgar_identity=lambda: None)
+    refreshes: list[tuple[pd.Timestamp, int, bool]] = []
+    monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, context))
+    monkeypatch.setattr(edgar_index, "refresh", lambda ctx, as_of, years, *, rebuild=False: refreshes.append((as_of, years, rebuild)))
+    monkeypatch.setattr(edgar_index, "quarter_counts", lambda ctx: {})
+
+    result = CliRunner().invoke(cli_mod.cli, ["edgar-index", "--as-of", "2026-10-31"])
+
+    assert result.exit_code == 0, result.output
+    assert refreshes == [(pd.Timestamp("2026-10-31"), INSIDER_YEARS, False)], (
+        "the nightly refresh reaches the insider source start, not only years_history"
+    )
+    print("\n=== SANITY: edgar-index window ===")
+    print(f"  years_history 3 -> one refresh over {INSIDER_YEARS}y (insider source start), the window run() would refresh.")

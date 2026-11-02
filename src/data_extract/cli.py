@@ -73,6 +73,7 @@ from src.data_extract.transformers.step_extract_fundamentals_sharadar import (
     StepExtractFundamentalsSharadar,
 )
 from src.data_extract.transformers.step_extract_identity import IdentityOptions, StepExtractIdentity
+from src.data_extract.transformers.step_extract_llm import LlmOptions, StepExtractLlm
 from src.data_extract.transformers.step_extract_zips import StepExtractZips, ZipsOptions
 from src.data_extract.utils.behavioral.fetch_earnings_call_transcripts import (
     extract_earnings_calls as _extract_earnings_calls,
@@ -88,7 +89,6 @@ from src.data_extract.utils.edgar_extract.fetch_insider_edgar import INSIDER_EDG
 from src.data_extract.utils.fundamentals.build_history import build_fundamentals_history
 from src.data_extract.utils.fundamentals.fetch_earnings_surprises import fetch_earnings_surprises
 from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import fetch_fundamentals_sec, fetched_filing_dates, fundamentals_fetch
-from src.data_extract.utils.fundamentals.fundamentals_employees import fetch_fundamentals_employees
 from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import (
     fetch_sharadar_actions,
     fetch_sharadar_sp500,
@@ -110,8 +110,6 @@ from src.data_extract.utils.institutionals.fetch_superinvestors import rebuild_r
 from src.data_extract.utils.prices.fetch_macro import fetch_macro
 from src.data_extract.utils.prices.fetch_prices import fetch_prices_and_actions
 from src.data_extract.utils.prices.fetch_tickers import get_sp500_tickers
-from src.data_extract.utils.structure.def14a import fetch_def14a_llm
-from src.data_extract.utils.structure.votes import fetch_8k_votes_llm
 from src.data_extract.utils.zips.fetch_fails_to_deliver import download_fails_to_deliver, fetch_fails_to_deliver
 from src.data_extract.utils.zips.fetch_financial_notes import download_financial_notes, fetch_financial_notes
 from src.data_extract.utils.zips.fetch_financial_statements import fetch_financial_statements
@@ -419,13 +417,7 @@ def fundamentals_facts(config_path: str, tickers: str | None, full: bool, as_of:
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
 def fundamentals_employees(config_path: str, tickers: str | None, full: bool) -> None:
-    config, context = get_config_context(config_path, use_cache=False, save=False)
-    fetch_fundamentals_employees(
-        context,
-        tickers=_tickers(context, tickers),
-        full=full,
-        years_history=int(config.data_extract.years_history),
-    )
+    _llm_step(config_path, tickers, full).run_employees()
 
 
 @cli.command(
@@ -869,8 +861,7 @@ def notes_download(config_path: str, full: bool) -> None:
 def def14a(config_path: str, tickers: str | None) -> None:
     """Every run lists each ticker's whole `years_history`; `--full` also re-sends the saved proxies without
     evidence, markers included (a proxy with stored evidence is never re-sent)."""
-    config, context = get_config_context(config_path, use_cache=False, save=False)
-    fetch_def14a_llm(context, config, tickers=_tickers(context, tickers))
+    _llm_step(config_path, tickers).run_def14a()
 
 
 @cli.command(help="8-K events: item codes + has_earnings/has_press_release (edgartools).")
@@ -888,8 +879,7 @@ def sec_8k_items(config_path: str, tickers: str | None, years: int | None, full:
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
 def sec_8k_votes(config_path: str, tickers: str | None) -> None:
-    config, context = get_config_context(config_path, use_cache=False, save=False)
-    fetch_8k_votes_llm(context, config, tickers=_tickers(context, tickers))
+    _llm_step(config_path, tickers).run_8k_votes()
 
 
 @cli.command(help="SC 13D activist filings + amendments: reporting persons, CUSIP, ownership (edgartools).")
@@ -943,6 +933,12 @@ def _edgar_step(config_path: str, tickers: str | None, years: int | None, full: 
     return StepExtractEdgar(
         context, config, EdgarOptions(tickers=_tickers(context, tickers), years=years, full=full, as_of=run_date(as_of), no_cap=no_cap)
     )
+
+
+def _llm_step(config_path: str, tickers: str | None, full: bool = False) -> StepExtractLlm:
+    """The LLM step over the --tickers subset (or the universe); `full` re-decides every employee filing date."""
+    config, context = get_config_context(config_path, use_cache=False, save=False)
+    return StepExtractLlm(context, config, LlmOptions(tickers=_tickers(context, tickers), full=full))
 
 
 # --- EDGAR index, work-list dry run and empty-filing markers ---

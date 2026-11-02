@@ -127,8 +127,12 @@ def _step(monkeypatch, order: list[str], *, boom: str | None = None) -> Any:
         return SimpleNamespace(run=mark("edgar"))
 
     monkeypatch.setattr(all_data_module, "StepExtractEdgar", edgar_step)
-    monkeypatch.setattr(all_data_module, "fetch_def14a_llm", mark("def14a_llm"))
-    monkeypatch.setattr(all_data_module, "fetch_8k_votes_llm", mark("votes_llm"))
+
+    def llm_step(context, config, options):
+        assert options.tickers == ["AAA", "BBB"]
+        return SimpleNamespace(run_def14a=mark("def14a_llm"), run_8k_votes=mark("votes_llm"))
+
+    monkeypatch.setattr(all_data_module, "StepExtractLlm", llm_step)
     return step
 
 

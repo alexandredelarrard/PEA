@@ -103,6 +103,9 @@ _CONTRACTOR_LABEL_RE = re.compile(_CONTRACTOR_RE.pattern, re.I)
 _SEPARATELY_RE = re.compile(r"\b(?:exclud\w*|not\s+includ\w*|additional|in\s+addition|besides|apart\s+from|other\s+than)\b", re.I)
 _PHRASE_STOP_RE = re.compile(r"\d|[.;]\s")  # a number's own phrase ends at the next number or sentence end
 
+#: The provider the employee extraction calls (a cheaper model than `config.gpt.default_api`).
+EMPLOYEES_PROVIDER = "open_ai_cheap"
+
 COMPONENTS = ("total", "full_time", "part_time")
 _COMPONENT_SHIFT = {"total": None, "full_time": "full", "part_time": "part"}  # the shift label a component's number must carry
 # Decided statuses. `found`: at least one component is supported. With every component NULL: `not_disclosed`
@@ -643,7 +646,7 @@ def _llm_decisions(context: Context, ticker: str, stamps: list[FilingStamp]) -> 
     A failed call (invalid JSON included) is not a property of the filing, so it gets no row and
     is listed again next run; only a parsed answer is decided.
     """
-    config = with_gpt_overrides(context.config, "employees", provider="open_ai_cheap")
+    config = with_gpt_overrides(context.config, "employees", provider=EMPLOYEES_PROVIDER)
     columns = ["as_of", *_COUNT_COLUMNS]
     stored = context.store.load(
         Tables.fundamentals_employees, columns=columns, where={"ticker": ticker}, until=max(stamp.filed for stamp in stamps), optional=True

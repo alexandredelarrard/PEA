@@ -12,6 +12,7 @@ from click.testing import CliRunner
 from omegaconf import OmegaConf
 
 import src.data_extract.cli as cli_mod
+import src.data_extract.transformers.step_extract_llm as llm_step_mod
 import src.data_extract.utils.fundamentals.fundamentals_employees as mod
 from src.data_extract.utils.common.identity import FilingScope
 from src.data_extract.utils.common.registrant import Combine, combine_for
@@ -1072,12 +1073,16 @@ def test_missing_roster_cik_cannot_certify_coverage(monkeypatch):
 
 def test_cli_still_dispatches_explicit_full_replay(monkeypatch):
     calls = []
-    context = SimpleNamespace()
+    context = SimpleNamespace(config_dir="configs")
     config = SimpleNamespace(data_extract=SimpleNamespace(years_history=31))
     monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, context))
     monkeypatch.setattr(cli_mod, "_tickers", lambda ctx, names: ["AAA"])
+    monkeypatch.setattr(llm_step_mod, "section_extractors", lambda ctx, cfg: {})
     monkeypatch.setattr(
-        cli_mod,
+        llm_step_mod, "LLMExtractor", lambda ctx, cfg, action: SimpleNamespace(default_api="open_ai", _require_key=lambda provider: None)
+    )
+    monkeypatch.setattr(
+        llm_step_mod,
         "fetch_fundamentals_employees",
         lambda ctx, tickers, years_history, full=False: calls.append((tickers, years_history, full)),
     )

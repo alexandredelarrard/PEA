@@ -602,7 +602,7 @@ def test_fetch_def14a_llm_to_postgres(monkeypatch):
         monkeypatch.setattr(mod, "load_cik_mapping", lambda _ctx: pd.DataFrame({"ticker": [ticker], "cik": ["0000000000"], "name": ["Z"]}))
         monkeypatch.setattr(mod, "_is_up_to_date", lambda _ctx, _n: False)
 
-        mod.fetch_def14a_llm(ctx, ctx.config, tickers=[ticker])
+        mod.fetch_def14a_llm(ctx, ctx.config, [ticker], mod.section_extractors(ctx, ctx.config))
 
         assert captured["schema"] is Def14AExtract, captured
         assert "SUMMARY COMPENSATION TABLE" in captured["system"]  # the .md prompt is used
@@ -702,7 +702,7 @@ def test_fetch_def14a_llm_incremental(monkeypatch):
         monkeypatch.setattr(mod, "load_cik_mapping", lambda _ctx: pd.DataFrame({"ticker": [ticker], "cik": ["0000000001"], "name": ["Z"]}))
         monkeypatch.setattr(mod, "_is_up_to_date", lambda _ctx, _n: False)
 
-        mod.fetch_def14a_llm(ctx, ctx.config, tickers=[ticker])
+        mod.fetch_def14a_llm(ctx, ctx.config, [ticker], mod.section_extractors(ctx, ctx.config))
 
         # full window listed (no since cutoff), and ONLY the two missing years hit the LLM
         assert captured["since_seen"] == [None]

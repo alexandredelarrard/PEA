@@ -153,6 +153,8 @@ def _listed_filing(accession: str, filing_date: pd.Timestamp) -> pd.DataFrame:
 
 def _extractor_double(responses: list[BaseException | Any], tasked: list[str]):
     class _Extractor:
+        threads = 2
+
         def __init__(self, *args, **kwargs):
             pass
 
@@ -247,6 +249,8 @@ def test_disjoint_subject_never_becomes_an_llm_task(tmp_path, monkeypatch):
     payload_calls: list[str] = []
 
     class FakeLLM:
+        threads = 2
+
         def __init__(self, *args, **kwargs):
             pass
 
@@ -269,7 +273,7 @@ def test_disjoint_subject_never_becomes_an_llm_task(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "_filing_subject_ciks", lambda _: frozenset({"0001437107"}))
     monkeypatch.setattr(mod, "_read_proxy", lambda *args: payload_calls.append(str(args[2]["accession_number"])))
 
-    mod.fetch_def14a_llm(context, context.config, ["PSKY"])
+    mod.fetch_def14a_llm(context, context.config, ["PSKY"], mod.section_extractors(context, context.config))
 
     assert payload_calls == [] and llm_tasks == []
     print("\n=== SANITY: wrong-subject filing stops before the LLM ===")
@@ -345,9 +349,9 @@ def test_every_ticker_is_listed_over_the_full_window_on_every_run(tmp_path, monk
     monkeypatch.setattr(mod, "LLMExtractor", _extractor_double([], []))
     monkeypatch.setattr(mod, "load_cik_mapping", lambda *_: pd.DataFrame({"ticker": ["AA", "CC"], "cik": ["1", "2"], "name": ["A", "C"]}))
 
-    mod.fetch_def14a_llm(context, context.config, ["AA", "CC"])
+    mod.fetch_def14a_llm(context, context.config, ["AA", "CC"], mod.section_extractors(context, context.config))
     first = dict(listed)
-    mod.fetch_def14a_llm(context, context.config, ["AA", "CC"])
+    mod.fetch_def14a_llm(context, context.config, ["AA", "CC"], mod.section_extractors(context, context.config))
 
     floor = pd.Timestamp.today().normalize() - pd.DateOffset(years=15)
     assert first == listed == {"AA": floor, "CC": floor}, (first, listed)
@@ -377,7 +381,7 @@ def test_a_lineage_expansion_lists_the_new_window_on_the_next_run_with_no_run_st
     monkeypatch.setattr(mod, "LLMExtractor", _extractor_double([], []))
     monkeypatch.setattr(mod, "load_cik_mapping", lambda *_: pd.DataFrame({"ticker": ["CC"], "cik": ["2"], "name": ["C"]}))
 
-    mod.fetch_def14a_llm(context, context.config, ["CC"])
+    mod.fetch_def14a_llm(context, context.config, ["CC"], mod.section_extractors(context, context.config))
 
     floor = pd.Timestamp.today().normalize() - pd.DateOffset(years=15)
     assert listed == [("0000000009", floor), ("0000000002", floor)], listed
@@ -404,7 +408,7 @@ def test_llm_workers_none_falls_back_to_config_gpt_threads(tmp_path, monkeypatch
     monkeypatch.setattr(mod, "LLMExtractor", _RecordingExtractor)
     monkeypatch.setattr(mod, "load_cik_mapping", lambda *_: pd.DataFrame({"ticker": ["ZZ"], "cik": ["1"], "name": ["Z"]}))
 
-    mod.fetch_def14a_llm(context, context.config, ["ZZ"], workers=None)
+    mod.fetch_def14a_llm(context, context.config, ["ZZ"], mod.section_extractors(context, context.config, workers=None))
 
     assert built == [7] * 5
     print("\n=== SANITY: DEF 14A LLM workers ===")

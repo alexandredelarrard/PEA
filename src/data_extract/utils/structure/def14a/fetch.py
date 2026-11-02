@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from typing import cast
 
 import pandas as pd
@@ -43,7 +44,6 @@ from src.data_store.schema import Resume, Tables
 
 # `gpt_extract` is a shared service like `src/utils/`, the sanctioned cross-import (model, keys, prompts, thread pool).
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
-from src.utils.string import pad_cik
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +97,7 @@ def _subject_is_accepted(
     """Reject only a known subject that is outside the accepted registrant entity. A header SEC could
     not serve skips the filing this run (it is not queued, so a later run reads it again)."""
     accession = str(filing["accession_number"])
-    filer_cik = pad_cik(filing["cik"])
+    filer_cik = str(filing["cik"])
     try:
         context.ensure_edgar_identity()
         subjects = _filing_subject_ciks(filing)
@@ -211,8 +211,9 @@ def _read_proxy(context: Context, ticker: str, filing: pd.Series) -> str | None:
         return None
 
 
-def _section_extractors(context: Context, config: DictConfig, workers: int | None) -> dict[str, LLMExtractor]:
-    """Bind each existing service to its own action, prompt, schema and unchanged worker setting."""
+def section_extractors(context: Context, config: DictConfig, workers: int | None = 2) -> dict[str, LLMExtractor]:
+    """One extractor per section, bound to its own action, prompt and schema; `workers` concurrent calls each
+    (None: `config.gpt.threads`), which also bounds the answers in flight."""
     return {section.key: LLMExtractor(context, config, action=section.action, threads=workers) for section in SECTIONS}
 
 
@@ -232,14 +233,15 @@ def fetch_def14a_llm(
     context: Context,
     config: DictConfig,
     tickers: list[str],
-    workers: int | None = 2,
+    extractors: Mapping[str, LLMExtractor],
     replay_stored_json: bool = False,
 ) -> None:
     """Extract every section that has a key gap and fewer than two attempts, then stamp the attempt.
 
     A new filing gets `retry=1`; a filing still gapped at `retry=1` gets one more call and `retry=2`;
     the rest is skipped from the stored tables alone. `replay_stored_json` re-runs the postprocessing on
-    already-paid answers stored in `def14a_json`, with no source read and no provider call.
+    already-paid answers stored in `def14a_json`, with no source read and no provider call. `extractors`
+    (`section_extractors`) holds one extractor per section; their worker count bounds the answers in flight.
     """
     # Read the ticker map and preserve each registrant's filing windows.
     cik_map = load_cik_mapping(context, tickers)
@@ -247,11 +249,7 @@ def fetch_def14a_llm(
     years = int(config.data_extract.years_history)
     floor = document_floor(Tables.def14a_llm, pd.Timestamp.today(), years)
 
-    try:
-        extractors = _section_extractors(context, config, workers)
-    except OSError as exc:
-        context.log.warning("DEF 14A LLM extraction skipped: %s", exc)
-        return
+    batch_size = max((extractor.threads for extractor in extractors.values()), default=1)
     updated = 0
 
     for _, company in tqdm(cik_map.iterrows(), total=len(cik_map), desc="DEF 14A LLM"):
@@ -287,7 +285,7 @@ def fetch_def14a_llm(
                     reserve(context, work, section, work.attempts[section.key] + 1)
 
         # Reserve the owned attempt, call its matching prompt/schema, and get the answer.
-        for section, tasks in matched_batches(requests, workers or int(config.gpt.threads)):
+        for section, tasks in matched_batches(requests, batch_size):
             for task in tasks:
                 work = cast(FilingWork, task.meta["work"])
                 reserve(context, work, section, min(2, work.attempts[section.key] + 1))

@@ -91,9 +91,9 @@ def _tickers() -> list[str]:
 def test_zero_proposal_filing_is_queued_once(sqlite_store, llm) -> None:
     context = _context(sqlite_store)
 
-    votes_fetch.fetch_8k_votes_llm(context, context.config, _tickers())
+    votes_fetch.fetch_8k_votes_llm(context, _tickers(), votes_fetch.LLMExtractor(context, context.config, action=votes_fetch.VOTES_ACTION))
     first = len(llm.calls)
-    votes_fetch.fetch_8k_votes_llm(context, context.config, _tickers())
+    votes_fetch.fetch_8k_votes_llm(context, _tickers(), votes_fetch.LLMExtractor(context, context.config, action=votes_fetch.VOTES_ACTION))
 
     assert first == 3 and len(llm.calls) == 3, llm.calls
     markers = sqlite_store.load(Tables.sec_8k_votes, markers=True)
@@ -109,10 +109,10 @@ def test_a_failed_llm_call_writes_nothing_and_is_queued_again(sqlite_store, llm)
     failed = str(_FIXTURES["jpm_2025"]["accession_number"])
     llm.failing = {failed}
 
-    votes_fetch.fetch_8k_votes_llm(context, context.config, _tickers())
+    votes_fetch.fetch_8k_votes_llm(context, _tickers(), votes_fetch.LLMExtractor(context, context.config, action=votes_fetch.VOTES_ACTION))
     stored = set(sqlite_store.distinct(Tables.sec_8k_votes, "accession_number"))
     llm.failing = set()
-    votes_fetch.fetch_8k_votes_llm(context, context.config, _tickers())
+    votes_fetch.fetch_8k_votes_llm(context, _tickers(), votes_fetch.LLMExtractor(context, context.config, action=votes_fetch.VOTES_ACTION))
 
     assert failed not in stored and len(stored) == 2
     assert llm.calls[3:] == [failed]
@@ -131,7 +131,7 @@ def test_a_votes_marker_reads_back_as_typed_nulls(sqlite_store, llm) -> None:
     }
     sqlite_store.save(Tables.sec_8k_votes, pd.DataFrame([real]))
 
-    votes_fetch.fetch_8k_votes_llm(context, context.config, _tickers())
+    votes_fetch.fetch_8k_votes_llm(context, _tickers(), votes_fetch.LLMExtractor(context, context.config, action=votes_fetch.VOTES_ACTION))
 
     shown = sqlite_store.load(Tables.sec_8k_votes, markers=True)
     row = shown[shown["proposal_seq"] == 0.0].iloc[0]

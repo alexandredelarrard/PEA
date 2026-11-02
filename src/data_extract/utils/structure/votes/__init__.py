@@ -20,6 +20,6 @@ stored `*_ceo` / `*_exec_officer` / `*_non_employee` columns on `sec_8k_votes`. 
 re-partitions those STORED columns without recomputing them, so a change there is a re-extraction.
 """
 
-from src.data_extract.utils.structure.votes.fetch import fetch_8k_votes_llm
+from src.data_extract.utils.structure.votes.fetch import VOTES_ACTION, fetch_8k_votes_llm
 
-__all__ = ["fetch_8k_votes_llm"]
+__all__ = ["VOTES_ACTION", "fetch_8k_votes_llm"]

@@ -204,13 +204,12 @@ def test_public_replay_cleans_ge_aliases_without_source_or_provider(
     monkeypatch.setattr(fetch, "load_cik_mapping", lambda *_: pd.DataFrame([dict(ticker="GE", name="GE")]))
     monkeypatch.setattr(fetch, "load_identity", lambda *_: identity)
     monkeypatch.setattr(fetch, "_listed_proxies", lambda *_: filings.copy())
-    monkeypatch.setattr(fetch, "_section_extractors", lambda *_: {})
     monkeypatch.setattr(fetch, "_finalise_gender", lambda *_: None)
     monkeypatch.setattr(fetch, "_read_proxy", lambda *_: pytest.fail("exhausted cleanup must not fetch SEC source"))
 
     # Exercise the public replay entry point twice (it must be idempotent); an empty extractor map forbids calls.
     for _ in range(2):
-        fetch.fetch_def14a_llm(context, config, ["GE"], replay_stored_json=True)
+        fetch.fetch_def14a_llm(context, config, ["GE"], {}, replay_stored_json=True)
         df_stored = sqlite_store.load(Tables.def14a_ownership, where={"ticker": "GE"})
         parent = sqlite_store.load(Tables.def14a_llm, where={"ticker": "GE"}).iloc[0]
         assert df_stored is not None and len(df_stored) == 11 and set(df_stored.retry) == {2}

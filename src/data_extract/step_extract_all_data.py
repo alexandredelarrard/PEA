@@ -21,11 +21,10 @@ from src.data_extract.transformers.step_extract_identity import IdentityOptions,
 from src.data_extract.transformers.step_extract_institutionals import (
     StepExtractInstitutionals,
 )
+from src.data_extract.transformers.step_extract_llm import LlmOptions, StepExtractLlm
 from src.data_extract.transformers.step_extract_prices import StepExtractPrices
 from src.data_extract.transformers.step_extract_zips import StepExtractZips, ZipsOptions
 from src.data_extract.utils.prices.fetch_tickers import get_sp500_tickers
-from src.data_extract.utils.structure.def14a import fetch_def14a_llm
-from src.data_extract.utils.structure.votes import fetch_8k_votes_llm
 from src.data_store.schema import Tables
 from src.utils.step import Step
 from src.utils.universe import load_universe_tickers
@@ -64,7 +63,9 @@ class StepExtractAllData(Step):
         self._fundamentals_sharadar.run(tickers=tickers, full=False)
         self._fundamentals.run(tickers=tickers, full=False)
         StepExtractEdgar(self._context, self._config, EdgarOptions(tickers=tickers)).run()
-        # The LLM passes read what the EDGAR step stored (DEF 14A documents, `sec_8k` Item 5.07); votes last.
-        fetch_def14a_llm(self._context, self._config, tickers=tickers)
-        fetch_8k_votes_llm(self._context, self._config, tickers=tickers)
+        # The LLM passes read what the EDGAR step stored (`sec_8k` Item 5.07); votes after DEF 14A. Built here, so a
+        # missing API key fails only from this point on.
+        llm = StepExtractLlm(self._context, self._config, LlmOptions(tickers=tickers))
+        llm.run_def14a()
+        llm.run_8k_votes()
         self._behavioral.run(tickers=tickers)

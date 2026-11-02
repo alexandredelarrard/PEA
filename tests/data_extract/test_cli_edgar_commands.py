@@ -1,7 +1,7 @@
 """The five per-ticker EDGAR CLI commands dispatch their `EdgarFetch` declaration to the shared
 driver with the requested tickers, window, `--full`, `--as-of` and `--no-cap`; `resume-plan` and
 `markers` report per table; the steps and the Airflow DAG that call them still import and parse.
-Offline: `run_edgar_fetch` is replaced by a recorder, `markers` runs on SQLite.
+Offline: `run_edgar_fetch` (called by `StepExtractEdgar`) is replaced by a recorder, `markers` runs on SQLite.
 """
 
 from __future__ import annotations
@@ -16,9 +16,10 @@ import pytest
 from click.testing import CliRunner
 
 import src.data_extract.cli as cli_mod
+from src.data_extract.transformers import step_extract_edgar as step_edgar
 from src.data_extract.transformers import step_extract_identity as step_identity
+from src.data_extract.transformers.step_extract_edgar import StepExtractEdgar
 from src.data_extract.transformers.step_extract_institutionals import StepExtractInstitutionals
-from src.data_extract.transformers.step_extract_structure import StepExtractStructure
 from src.data_extract.utils.edgar_extract.document_resume import DocumentWork
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, FilingStamp, marker_row
 from src.data_extract.utils.edgar_extract.fetch_8k_edgar import SEC_8K_FETCH
@@ -48,10 +49,16 @@ COMMANDS: dict[str, tuple[EdgarFetch, bool]] = {
 def recorded(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     calls: list[dict[str, Any]] = []
     config = SimpleNamespace(data_extract=SimpleNamespace(years_history=15))
-    monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, SimpleNamespace(name="ctx")))
+    monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, SimpleNamespace(name="ctx", config_dir="configs")))
     monkeypatch.setattr(cli_mod, "_tickers", lambda ctx, names: [t.strip().upper() for t in names.split(",")])
-    monkeypatch.setattr(cli_mod, "run_edgar_fetch", lambda context, **kwargs: calls.append({"context": context, **kwargs}))
+    stub_edgar_step(monkeypatch, lambda context, **kwargs: calls.append({"context": context, **kwargs}))
     return calls
+
+
+def stub_edgar_step(monkeypatch: pytest.MonkeyPatch, driver: Any) -> None:
+    """Make `StepExtractEdgar` constructible offline: the CIK mapping stubbed, the driver replaced by `driver`."""
+    monkeypatch.setattr(step_edgar, "load_cik_mapping", lambda ctx, names: pd.DataFrame({"ticker": names, "cik": ["0"] * len(names)}))
+    monkeypatch.setattr(step_edgar, "run_edgar_fetch", driver)
 
 
 @pytest.mark.parametrize("command", sorted(COMMANDS))
@@ -136,7 +143,7 @@ def test_steps_import_and_dag_parses() -> None:
         if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "fetch" and node.args and isinstance(node.args[0], ast.Constant)
     }
 
-    assert callable(StepExtractInstitutionals.run) and callable(StepExtractStructure.run)
+    assert callable(StepExtractInstitutionals.run) and callable(StepExtractEdgar.run)
     assert set(COMMANDS) <= dag_commands, f"DAG no longer schedules {sorted(set(COMMANDS) - dag_commands)}"
     assert set(COMMANDS) <= set(cli_mod.cli.commands)
     print("\n=== SANITY: step imports + DAG ===")
@@ -147,10 +154,10 @@ def test_steps_import_and_dag_parses() -> None:
 def insider_calls(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict[str, Any]]]:
     calls: list[tuple[str, dict[str, Any]]] = []
     config = SimpleNamespace(data_extract=SimpleNamespace(years_history=15))
-    monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, SimpleNamespace(name="ctx")))
+    monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, SimpleNamespace(name="ctx", config_dir="configs")))
     monkeypatch.setattr(cli_mod, "load_universe_tickers", lambda ctx: ["ALL"])
     monkeypatch.setattr(cli_mod, "fetch_insider_transactions", lambda context, **kwargs: calls.append(("bulk", kwargs)))
-    monkeypatch.setattr(cli_mod, "run_edgar_fetch", lambda context, **kwargs: calls.append(("edgar", kwargs)))
+    stub_edgar_step(monkeypatch, lambda context, **kwargs: calls.append(("edgar", kwargs)))
     return calls
 
 

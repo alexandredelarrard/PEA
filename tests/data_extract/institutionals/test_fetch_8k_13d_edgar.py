@@ -16,8 +16,8 @@ from typing import Any, cast
 import pandas as pd
 import pytest
 
+from src.data_extract.transformers.step_extract_edgar import StepExtractEdgar
 from src.data_extract.transformers.step_extract_institutionals import StepExtractInstitutionals
-from src.data_extract.transformers.step_extract_structure import StepExtractStructure
 from src.data_extract.utils.common.sec_io import ParseFailureError
 from src.data_extract.utils.edgar_extract import fetch_8k_edgar
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarScope, FilingStamp, parse_filing_rows, run_edgar_fetch
@@ -48,9 +48,9 @@ def test_filing_fetchers_take_years_history_as_an_argument():
     over the SAME window as fundamentals_facts, instead of drifting apart through a config
     read nobody can see from the call site.
 
-    8-K and 13D moved to `StepExtractInstitutionals`, so the invariant is now checked on
-    BOTH steps: each reads the window exactly once and passes it to every downloader it
-    owns. Counting only one step would let the other quietly start reading config again."""
+    The invariant is checked on BOTH windowed steps: each reads the window exactly once and
+    passes it to every downloader it owns (the EDGAR step through one shared driver call).
+    Counting only one step would let the other quietly start reading config again."""
     import inspect
 
     for fn in (run_edgar_fetch,):
@@ -62,21 +62,17 @@ def test_filing_fetchers_take_years_history_as_an_argument():
 
     # each step is the single place that reads the window off the config, for its own fetchers
     expected = {
-        # 13F, 13F-manager books, daily insiders, 13D, 13G, 8-K (bulk insiders and FTD are StepExtractZips)
-        # (superinvestors takes no window; short interest plans from its latest stored day)
-        StepExtractInstitutionals: 6,
-        # DEF 14A edgar + filing text (the LLM and vote passes take no window)
-        StepExtractStructure: 2,
+        # 13F, 13F-manager books (superinvestors takes no window; short interest plans from its latest stored day)
+        StepExtractInstitutionals: (inspect.getsource(StepExtractInstitutionals.run), "years_history=years_history", 2),
+        # insider EDGAR, 13D, 13G, 8-K, filing text, DEF 14A ECD: the init reads it, the one driver call passes it
+        StepExtractEdgar: (inspect.getsource(StepExtractEdgar), "years_history=self._years_history", 1),
     }
-    for step, n_windowed in expected.items():
-        run = inspect.getsource(step.run)
-        assert run.count("data_extract.years_history") == 1, f"{step.__name__} must read the window exactly once"
-        assert run.count("years_history=years_history") == n_windowed, (
-            f"{step.__name__} passes the window to {run.count('years_history=years_history')} fetchers, expected {n_windowed}"
-        )
+    for step, (source, passed, n_windowed) in expected.items():
+        assert source.count("data_extract.years_history") == 1, f"{step.__name__} must read the window exactly once"
+        assert source.count(passed) == n_windowed, f"{step.__name__} passes the window {source.count(passed)} time(s), expected {n_windowed}"
     print("\n=== SANITY: extraction window plumbing ===")
     print(
-        f"  {' + '.join(f'{s.__name__}={n}' for s, n in expected.items())} windowed "
+        f"  {' + '.join(f'{s.__name__}={n}' for s, (_, _, n) in expected.items())} windowed "
         "fetchers; each step reads data_extract.years_history exactly once and passes it "
         "down. No fetcher reads the config itself. Validated."
     )

@@ -362,9 +362,10 @@ def test_a_failed_fetcher_never_blocks_aggregation_but_a_failed_identity_check_d
     print("  F-106: a failed SEC download still runs identity_tables, the consumers and price_history; a failed build still runs prices")
 
 
-#: Modules whose entry points walk EDGAR filing by filing (the document walks plus the 13F walks).
+#: Modules whose entry points walk EDGAR filing by filing (the document walks, the EDGAR step running them, the 13F walks).
 EDGAR_WALK_FILES = (
     *STRICT_EDGAR_FILES,
+    "src/data_extract/transformers/step_extract_edgar.py",
     "src/data_extract/utils/institutionals/fetch_13f.py",
     "src/data_extract/utils/institutionals/fetch_13f_backfill.py",
     "src/data_extract/utils/institutionals/fetch_13f_managers.py",
@@ -414,7 +415,7 @@ def test_every_edgar_walk_runs_in_the_sec_api_pool():
     assert "insider_edgar" in walks and "insider_zip" not in walks
     assert {"insider_zip", "identity_propagate"} <= dag.tasks["insider_edgar"].upstream
     # the manual command still runs both legs
-    assert {"fetch_insider_transactions", "INSIDER_EDGAR_FETCH"} <= _command_names("insider-transactions")
+    assert {"fetch_insider_transactions", "StepExtractEdgar"} <= _command_names("insider-transactions")
 
     print("\n=== SANITY CHECK: one EDGAR walk at a time ===")
     print(f"  {len(walks)} tasks walk EDGAR (derived from the CLI code), all in sec_api: {sorted(walks)}")

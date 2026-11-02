@@ -68,6 +68,7 @@ from src.constants.command_line_interface import (
     YEARS_KWARGS,
 )
 from src.context import Context, get_config_context
+from src.data_extract.transformers.step_extract_edgar import EdgarOptions, StepExtractEdgar
 from src.data_extract.transformers.step_extract_fundamentals_sharadar import (
     StepExtractFundamentalsSharadar,
 )
@@ -77,7 +78,7 @@ from src.data_extract.utils.behavioral.fetch_earnings_call_transcripts import (
     extract_earnings_calls as _extract_earnings_calls,
 )
 from src.data_extract.utils.edgar_extract import edgar_index
-from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, load_edgar_scope, plan_fetch, run_edgar_fetch
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, load_edgar_scope, plan_fetch
 from src.data_extract.utils.edgar_extract.fetch_8k_edgar import SEC_8K_FETCH
 from src.data_extract.utils.edgar_extract.fetch_13d_edgar import SEC_13D_FETCH
 from src.data_extract.utils.edgar_extract.fetch_13g_edgar import SEC_13G_FETCH
@@ -610,7 +611,7 @@ def insider_transactions(config_path: str, tickers: str | None, full: bool, as_o
     years_history = int(config.data_extract.years_history)
     start_date = run_date(as_of)
     fetch_insider_transactions(context, tickers=names, years_history=years_history, reparse=full, as_of=start_date, all_tickers=universe)
-    run_edgar_fetch(context, tickers=names, years_history=years_history, fetch=INSIDER_EDGAR_FETCH, full=full, as_of=start_date, no_cap=no_cap)
+    StepExtractEdgar(context, config, EdgarOptions(tickers=names, full=full, as_of=start_date, no_cap=no_cap)).run_insider()
 
 
 @cli.command(
@@ -642,7 +643,7 @@ def insider_zip(config_path: str, tickers: str | None, full: bool, as_of: dateti
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 @click.option(*NO_CAP_ARGS, **NO_CAP_KWARGS)
 def insider_edgar(config_path: str, tickers: str | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
-    _run_document_command(config_path, tickers, None, INSIDER_EDGAR_FETCH, full=full, as_of=as_of, no_cap=no_cap)
+    _edgar_step(config_path, tickers, None, full, as_of, no_cap).run_insider()
 
 
 @cli.command(
@@ -881,7 +882,7 @@ def def14a(config_path: str, tickers: str | None) -> None:
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 @click.option(*NO_CAP_ARGS, **NO_CAP_KWARGS)
 def sec_8k_items(config_path: str, tickers: str | None, years: int | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
-    _run_document_command(config_path, tickers, years, SEC_8K_FETCH, full=full, as_of=as_of, no_cap=no_cap)
+    _edgar_step(config_path, tickers, years, full, as_of, no_cap).run_8k()
 
 
 @cli.command(help="Shareholder vote tallies from the STORED 8-K Item 5.07 narratives (LLM). No download — reads sec_8k.")
@@ -900,7 +901,7 @@ def sec_8k_votes(config_path: str, tickers: str | None) -> None:
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 @click.option(*NO_CAP_ARGS, **NO_CAP_KWARGS)
 def sec_13d(config_path: str, tickers: str | None, years: int | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
-    _run_document_command(config_path, tickers, years, SEC_13D_FETCH, full=full, as_of=as_of, no_cap=no_cap)
+    _edgar_step(config_path, tickers, years, full, as_of, no_cap).run_13d()
 
 
 @cli.command(help="SC 13G passive 5%+ beneficial ownership + amendments (edgartools). HEAVY.")
@@ -912,7 +913,7 @@ def sec_13d(config_path: str, tickers: str | None, years: int | None, full: bool
 @click.option(*NO_CAP_ARGS, **NO_CAP_KWARGS)
 def sec_13g(config_path: str, tickers: str | None, years: int | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
     """Passive counterpart of `sec-13d`. A schedule a universe company only FILED is stored as an empty-filing marker under it."""
-    _run_document_command(config_path, tickers, years, SEC_13G_FETCH, full=full, as_of=as_of, no_cap=no_cap)
+    _edgar_step(config_path, tickers, years, full, as_of, no_cap).run_13g()
 
 
 @cli.command(help="Filing text: 10-K Item 1A (Risk Factors) + Item 7 (MD&A) & 10-Q Item 2 (MD&A). SEC-api.")
@@ -923,7 +924,7 @@ def sec_13g(config_path: str, tickers: str | None, years: int | None, full: bool
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 @click.option(*NO_CAP_ARGS, **NO_CAP_KWARGS)
 def filing_text(config_path: str, tickers: str | None, years: int | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
-    _run_document_command(config_path, tickers, years, FILING_TEXT_FETCH, full=full, as_of=as_of, no_cap=no_cap)
+    _edgar_step(config_path, tickers, years, full, as_of, no_cap).run_filing_text()
 
 
 @cli.command(help="DEF 14A structured: pay-vs-performance, audit fees, comp/ownership/vote tables (edgartools).")
@@ -934,22 +935,14 @@ def filing_text(config_path: str, tickers: str | None, years: int | None, full: 
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 @click.option(*NO_CAP_ARGS, **NO_CAP_KWARGS)
 def def14a_edgar(config_path: str, tickers: str | None, years: int | None, full: bool, as_of: datetime | None, no_cap: bool) -> None:
-    _run_document_command(config_path, tickers, years, DEF14A_EDGAR_FETCH, full=full, as_of=as_of, no_cap=no_cap)
+    _edgar_step(config_path, tickers, years, full, as_of, no_cap).run_def14a_ecd()
 
 
-def _run_document_command(
-    config_path: str, tickers: str | None, years: int | None, fetch: EdgarFetch, *, full: bool, as_of: datetime | None, no_cap: bool
-) -> None:
-    """One declared EDGAR document fetch over the --tickers subset (or the universe)."""
+def _edgar_step(config_path: str, tickers: str | None, years: int | None, full: bool, as_of: datetime | None, no_cap: bool) -> StepExtractEdgar:
+    """The EDGAR step over the --tickers subset (or the universe), the -y window (or the configured one) and the run options."""
     config, context = get_config_context(config_path, use_cache=False, save=False)
-    run_edgar_fetch(
-        context,
-        tickers=_tickers(context, tickers),
-        years_history=years or config.data_extract.years_history,
-        fetch=fetch,
-        full=full,
-        as_of=run_date(as_of),
-        no_cap=no_cap,
+    return StepExtractEdgar(
+        context, config, EdgarOptions(tickers=_tickers(context, tickers), years=years, full=full, as_of=run_date(as_of), no_cap=no_cap)
     )
 
 

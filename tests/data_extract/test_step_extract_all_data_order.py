@@ -1,4 +1,5 @@
-"""`StepExtractAllData` runs zip downloads -> `StepExtractIdentity` (captures, build, propagation) -> zip ingests before every domain step."""
+"""`StepExtractAllData` runs zip downloads -> `StepExtractIdentity` (captures, build, propagation) -> zip ingests before every
+domain step; `StepExtractEdgar` runs after fundamentals, then the DEF 14A LLM pass and the 8-K votes, then behavioral."""
 
 from __future__ import annotations
 
@@ -10,11 +11,14 @@ from typing import Any, cast
 import pandas as pd
 import pytest
 
+from src.data_extract import step_extract_all_data as all_data_module
 from src.data_extract.step_extract_all_data import StepExtractAllData
 from src.data_extract.transformers import step_extract_identity as identity_module
 from src.data_extract.transformers import step_extract_zips as zips_module
 
-DOMAIN_STEPS = ("prices", "institutionals", "fundamentals_sharadar", "fundamentals", "structure", "behavioral")
+PRE_EDGAR_STEPS = ("prices", "institutionals", "fundamentals_sharadar", "fundamentals")
+EDGAR_AND_LLM = ("edgar", "def14a_llm", "votes_llm")
+DOMAIN_STEPS = (*PRE_EDGAR_STEPS, *EDGAR_AND_LLM, "behavioral")
 IDENTITY_STAGE = (
     "insider_download",
     "notes_download",
@@ -115,8 +119,16 @@ def _step(monkeypatch, order: list[str], *, boom: str | None = None) -> Any:
     step._config = config
     step._log = logging.getLogger("test_step_extract_all_data_order")
     step._resolve_tickers = lambda: ["AAA", "BBB"]
-    for name in DOMAIN_STEPS:
+    for name in (*PRE_EDGAR_STEPS, "behavioral"):
         setattr(step, f"_{name}", SimpleNamespace(run=mark(name)))
+
+    def edgar_step(context, config, options):
+        assert options.tickers == ["AAA", "BBB"]
+        return SimpleNamespace(run=mark("edgar"))
+
+    monkeypatch.setattr(all_data_module, "StepExtractEdgar", edgar_step)
+    monkeypatch.setattr(all_data_module, "fetch_def14a_llm", mark("def14a_llm"))
+    monkeypatch.setattr(all_data_module, "fetch_8k_votes_llm", mark("votes_llm"))
     return step
 
 

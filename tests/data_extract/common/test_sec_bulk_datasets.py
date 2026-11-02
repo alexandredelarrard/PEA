@@ -21,6 +21,7 @@ from sqlalchemy import create_engine
 
 import src.data_extract.cli as cli_mod
 from src.constants.constants import MARKET_TIMEZONE
+from src.data_extract.transformers import step_extract_edgar as step_edgar
 from src.data_extract.utils.common import bulk_cache
 from src.data_extract.utils.common.identity import build_identity
 from src.data_extract.utils.insider.insider_common import BULK_DATE_FORMATS, build_insider_frame, screen_insider_rows
@@ -251,7 +252,7 @@ def test_insider_download_cli_runs_only_the_download(monkeypatch):
     monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (None, SimpleNamespace(name="ctx")))
     monkeypatch.setattr(cli_mod, "download_insider_transactions", lambda context: calls.append("download") or [])
     monkeypatch.setattr(cli_mod, "fetch_insider_transactions", lambda *a, **k: calls.append("parse"))
-    monkeypatch.setattr(cli_mod, "run_edgar_fetch", lambda *a, **k: calls.append("edgar"))
+    monkeypatch.setattr(step_edgar, "run_edgar_fetch", lambda *a, **k: calls.append("edgar"))
 
     result = CliRunner().invoke(cli_mod.cli, ["insider-download"])
 

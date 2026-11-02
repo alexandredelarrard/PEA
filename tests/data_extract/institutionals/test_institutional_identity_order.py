@@ -7,7 +7,7 @@ import logging
 from types import SimpleNamespace
 from typing import Any, cast
 
-from src.data_extract.transformers import step_extract_fundamentals, step_extract_structure
+from src.data_extract.transformers import step_extract_edgar, step_extract_fundamentals
 from src.data_extract.transformers import step_extract_institutionals as module
 from src.data_extract.transformers.step_extract_institutionals import (
     StepExtractInstitutionals,
@@ -42,8 +42,6 @@ def test_institutionals_consume_the_upstream_identity_in_one_resolver(monkeypatc
         "fetch_13f_managers",
     ):
         monkeypatch.setattr(module, name, mark(name))
-    # Insider, 13D, 13G and 8-K run through the shared driver, one EdgarFetch declaration each
-    monkeypatch.setattr(module, "run_edgar_fetch", lambda *args, **kwargs: order.append(kwargs["fetch"].done.desc))
 
     def load(*args, **kwargs):
         assert not kwargs.get("refresh"), "the identity is refreshed once, by the identity stage"
@@ -66,25 +64,19 @@ def test_institutionals_consume_the_upstream_identity_in_one_resolver(monkeypatc
     step.config = config
     step.run(["AAA"])
 
-    assert order[:4] == [
-        "fetch_13f",
-        "upsert_roster_snapshot",
-        "fetch_13f_managers",
-        module.INSIDER_EDGAR_FETCH.done.desc,
-    ]
-    assert order[-2:] == ["identity_load", "regsho"]
-    assert len(order) == 9, order
+    assert order == ["fetch_13f", "upsert_roster_snapshot", "fetch_13f_managers", "identity_load", "regsho"], order
+    assert not hasattr(module, "run_edgar_fetch"), "the EDGAR walks belong to StepExtractEdgar"
 
     print("\n=== SANITY CHECK: institutional identity consumption ===")
-    print(f"  {len(order)} calls: 13F -> roster -> managers -> insider live -> 13D -> 13G -> 8-K -> identity -> RegSHO")
-    print("  OK: no identity build inside the step; the insider zips and FTD are StepExtractZips' ingests")
+    print(f"  {len(order)} calls: 13F -> roster -> managers -> identity -> RegSHO")
+    print("  OK: no identity build inside the step; zips/FTD are StepExtractZips', insider EDGAR/13D/13G/8-K StepExtractEdgar's")
 
 
 def test_domain_steps_contain_no_identity_stage():
-    steps = (module, step_extract_fundamentals, step_extract_structure)
+    steps = (module, step_extract_fundamentals, step_extract_edgar)
     found = {step.__name__: [name for name in IDENTITY_STAGE_NAMES if name in inspect.getsource(step)] for step in steps}
     assert all(not names for names in found.values()), found
 
     print("\n=== SANITY CHECK: consume-only domain steps (AC-011, AC-038) ===")
     print(f"  {len(steps)} step modules scanned for {len(IDENTITY_STAGE_NAMES)} identity-stage names: none found")
-    print("  OK: institutionals, fundamentals and structure only read the lineage built and propagated upstream")
+    print("  OK: institutionals, fundamentals and EDGAR only read the lineage built and propagated upstream")

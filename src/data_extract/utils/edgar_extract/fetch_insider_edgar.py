@@ -40,7 +40,7 @@ from src.data_extract.utils.insider.insider_common import (
 )
 from src.data_extract.utils.insider.insider_store import certify_insider_source, insider_source_run, replace_insider_source, save_insider_source
 from src.data_store.schema import Resume, Table, Tables
-from src.utils.string import pad_cik
+from src.utils.string import pad_cik, run_date
 
 #: EDGAR rows carry the whole contract except `quarter`, so the merge-upsert keeps a stored zip quarter.
 _EDGAR_COLUMNS = tuple(column for column in INSIDER_COLUMNS if column != "quarter")
@@ -202,7 +202,7 @@ def _insider_run_scope(context: Context, tickers: Sequence[str], as_of: pd.Times
     excluded: list[pd.DataFrame] = []
     since = edgar_window_start(context, as_of)
     overlap = Tables.insider_transactions.resume.overlap_days if Tables.insider_transactions.resume is not None else 0
-    recent = since if since is not None else pd.Timestamp(as_of).normalize() - pd.Timedelta(days=overlap)
+    recent = since if since is not None else run_date(as_of) - pd.Timedelta(days=overlap)
     failed = True
     try:
         with insider_source_run(context):

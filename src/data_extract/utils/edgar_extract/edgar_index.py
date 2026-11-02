@@ -32,7 +32,7 @@ from src.context import Context
 from src.data_extract.utils.common import sec_io
 from src.data_extract.utils.common.bulk_cache import cache_dir
 from src.data_store.schema import Resume, resume_tables
-from src.utils.string import pad_cik_series
+from src.utils.string import pad_cik_series, run_date
 
 logger = logging.getLogger(__name__)
 
@@ -233,7 +233,7 @@ def refresh(context: Context, as_of: pd.Timestamp, years_history: int, *, rebuil
 def refreshed_today(context: Context, years_history: int) -> bool:
     """True when a refresh already ran today over `years_history`: the current quarter's original was downloaded
     today and every quarter of the window is cached."""
-    today = pd.Timestamp.now().normalize()
+    today = run_date(None)
     directory = index_dir(context)
     original = directory / f"{Quarter.of(today).name}.master.gz"
     if not original.exists() or pd.Timestamp.fromtimestamp(original.stat().st_mtime).normalize() < today:

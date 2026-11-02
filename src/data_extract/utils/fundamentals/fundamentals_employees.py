@@ -769,33 +769,35 @@ def _row(ticker: str, filed: pd.Timestamp, outcome: dict) -> dict:
     }
 
 
-def build_ticker_employees(
-    context: Context,
-    ticker: str,
-    cik: str,
-    *,
-    since: pd.Timestamp | None,
-    done_dates: frozenset[pd.Timestamp],
-    scope: EdgarScope,
-    extractors: queue.SimpleQueue[LLMExtractor],
-) -> EmployeeTickerResult:
-    """Decide every annual filing whose date has no row yet, through the LLM (an extractor of `extractors`) and the source guard.
+@dataclass(frozen=True)
+class EmployeeRun:
+    """What every ticker of one employee run shares: the listing floor `since` (None: no floor), the identity-aware
+    `scope` and the queue of employee `extractors` lent to one ticker at a time."""
+
+    since: pd.Timestamp | None
+    scope: EdgarScope
+    extractors: queue.SimpleQueue[LLMExtractor]
+
+
+def build_ticker_employees(context: Context, ticker: str, cik: str, *, done_dates: frozenset[pd.Timestamp], run: EmployeeRun) -> EmployeeTickerResult:
+    """Decide every annual filing whose date has no row yet, through the LLM (an extractor of `run.extractors`) and the source guard.
 
     A listed filing whose filer the identity layer does not tie to `ticker` is skipped and counted in `scope.guard`.
     A filing whose LLM call failed withholds its whole filing date, so a stored same-day filing
     cannot mark that date done; the ticker's other dates are kept.
     """
+    scope = run.scope
     identity = scope.identity
     if identity is None:
         raise ValueError(f"{ticker}: employee extraction needs an identity-aware EdgarScope")
-    listed = scope.list_filings(ticker, cik, cast(Resume, Tables.fundamentals_employees.resume).forms, since=since, done_accessions=frozenset())
+    listed = scope.list_filings(ticker, cik, cast(Resume, Tables.fundamentals_employees.resume).forms, since=run.since, done_accessions=frozenset())
     owned = [filing for filing in listed if _owned(context, identity, ticker, filing)]
     scope.guard.add(len(listed) - len(owned))
     stamps = sorted(
         (stamp for stamp in (FilingStamp.of(filing, cik) for filing in owned) if stamp.filed.normalize() not in done_dates),
         key=_filing_key,
     )
-    by_llm, failed = _llm_decisions(context, ticker, stamps, extractors) if stamps else ([], [])
+    by_llm, failed = _llm_decisions(context, ticker, stamps, run.extractors) if stamps else ([], [])
     withheld = {stamp.filed.normalize() for stamp in failed}
     decisions = [decision for decision in by_llm if decision.stamp.filed.normalize() not in withheld]
     result = _decide_ticker(context, ticker, decisions)
@@ -825,21 +827,11 @@ def _fetch_ticker_employees(
     cik: str,
     *,
     context: Context,
-    since: pd.Timestamp,
     done: dict[str, frozenset[pd.Timestamp]],
-    scope: EdgarScope,
-    extractors: queue.SimpleQueue[LLMExtractor],
+    run: EmployeeRun,
 ) -> EmployeeTickerResult:
     """Decide one ticker's undecided filings and save its rows; the per-ticker worker."""
-    result = build_ticker_employees(
-        context,
-        ticker,
-        cik,
-        since=since,
-        done_dates=done.get(ticker, frozenset()),
-        scope=scope,
-        extractors=extractors,
-    )
+    result = build_ticker_employees(context, ticker, cik, done_dates=done.get(ticker, frozenset()), run=run)
     if not result.frame.empty:
         context.store.save(Tables.fundamentals_employees, result.frame)
     return result
@@ -875,8 +867,8 @@ def fetch_fundamentals_employees(
     done = {} if full else _done_dates(context, tickers, since)
     context.log.info("fundamentals employees: %d dates * ticker already done (skipped)", sum(map(len, done.values())))
 
-    extractors: queue.SimpleQueue[LLMExtractor] = queue.SimpleQueue()  # bounded by the worker count, reused across tickers
-    worker = partial(_fetch_ticker_employees, context=context, since=since, done=done, scope=scope, extractors=extractors)
+    run = EmployeeRun(since=since, scope=scope, extractors=queue.SimpleQueue())  # extractors: bounded by the worker count
+    worker = partial(_fetch_ticker_employees, context=context, done=done, run=run)
     results = run_per_ticker(
         cik_map,
         worker,

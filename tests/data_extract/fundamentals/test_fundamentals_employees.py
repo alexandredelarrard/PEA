@@ -119,10 +119,8 @@ def build(
         context,
         "AAA",
         "0000000001",
-        since=None,
         done_dates=done_dates,
-        scope=scope or mod.EdgarScope(identity),
-        extractors=queue.SimpleQueue(),
+        run=mod.EmployeeRun(since=None, scope=scope or mod.EdgarScope(identity), extractors=queue.SimpleQueue()),
     )
 
 
@@ -905,7 +903,7 @@ def test_table_rows_decide_what_is_done_and_full_rereads_them(monkeypatch):
     monkeypatch.setattr(mod, "build_ticker_employees", fake_build)
     mod.fetch_fundamentals_employees(run_context(saved, decided), ["AAA"], 15)
     assert seen[0]["done_dates"] == frozenset({pd.Timestamp("2024-02-26")})
-    assert seen[0]["since"] == pd.Timestamp.today().normalize() - pd.DateOffset(years=15)
+    assert seen[0]["run"].since == pd.Timestamp.today().normalize() - pd.DateOffset(years=15)
     assert pd.isna(saved[0]["employees_total"].iloc[0])
     mod.fetch_fundamentals_employees(run_context(saved, decided), ["AAA"], 15, full=True)
     assert seen[1]["done_dates"] == frozenset()

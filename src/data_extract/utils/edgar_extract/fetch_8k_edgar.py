@@ -140,12 +140,8 @@ def _filing_row(ticker: str, stamp: FilingStamp) -> list[dict]:
 
     base = {
         "ticker": ticker,
-        # The filing registrant's CIK (not the roster's), so a registrant boundary stays visible.
-        "cik": stamp.cik,
-        "accession_number": stamp.accession_number,
-        "form": stamp.form,
-        "filing_date": stamp.filed,
-        "period_of_report": stamp.period_of_report,
+        # The filing registrant's CIK (not the roster's), so a registrant boundary stays visible; the raw filing time.
+        **stamp.columns(Tables.sec_8k, normalise=False),
         "n_items": len(item_list),
         "is_amendment": float(stamp.is_amendment),
         "has_earnings": has_earnings,

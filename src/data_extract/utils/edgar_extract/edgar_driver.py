@@ -135,6 +135,17 @@ class FilingStamp:
         except Exception:  # noqa: BLE001 -- EDGAR metadata defect
             return None
 
+    def columns(self, table: Table, *, normalise: bool = True) -> dict[str, object]:
+        """The filing-level columns `table` stamps on its rows, named by its marker metadata: the filer's CIK, the
+        accession, the form, the filing date (midnight unless `normalise` is False) and `period_of_report`."""
+        return {
+            table.marker_cik_col or "cik": self.cik,
+            "accession_number": self.accession_number,
+            table.marker_form_col: str(self.form),
+            cast(str, cast(Resume, table.resume).frontier_col): self.filed.normalize() if normalise else self.filed,
+            "period_of_report": self.period_of_report,
+        }
+
     @cached_property
     def doc_url(self) -> str | None:
         """The primary document's URL: the attachment's own `url`, else the archives path, else None."""

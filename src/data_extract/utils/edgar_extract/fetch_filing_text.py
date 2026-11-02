@@ -135,21 +135,20 @@ def _filing_sections(filing: Any) -> dict[str, str]:
 
 def _filing_rows(ticker: str, stamp: FilingStamp) -> list[dict]:
     """One row per extracted section of the filing; none when no section could be read."""
-    filed = stamp.filed.normalize()
+    sections = _filing_sections(stamp.filing)
+    if not sections:
+        return []
+    stamped = stamp.columns(Tables.filing_risk_text)
     return [
         {
             # The table's registered forms use SPLIT, so each row's registrant is unambiguous.
             "ticker": ticker,
-            "cik": stamp.cik,
-            "accession_number": stamp.accession_number,
-            "form": str(stamp.form),
-            "filed": filed,
-            "period_of_report": stamp.period_of_report,
+            **stamped,
             "section": section,
             "text": body,
             "n_words": len(body.split()),
         }
-        for section, body in _filing_sections(stamp.filing).items()
+        for section, body in sections.items()
     ]
 
 

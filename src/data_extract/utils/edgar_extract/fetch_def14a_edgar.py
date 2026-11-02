@@ -64,12 +64,7 @@ def _filing_row(ticker: str, stamp: FilingStamp) -> list[dict]:
     row.update(
         ticker=ticker,
         # The filer's own CIK, not the roster's, so a registrant reorganisation stays visible.
-        cik=stamp.cik,
-        accession_number=stamp.accession_number,
-        form=str(stamp.form),
-        filing_date=stamp.filed.normalize(),
-        # From the filing index (guarded: the raw property can raise).
-        period_of_report=stamp.period_of_report,
+        **stamp.columns(Tables.def14a_edgar),
         company_name=_company_name(facts, stamp.filing),
     )
     return [repair_main_row(row)]

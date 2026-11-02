@@ -217,3 +217,30 @@ def test_gap_check_uses_the_shared_report_option_and_keeps_its_default(context: 
         assert report.call_args.kwargs["report_path"] == expected
         assert report.call_args.kwargs["tickers"] is None
     print("SANITY: --report selects the gap-check output path; an omitted path retains the existing report destination.")
+
+
+@pytest.mark.parametrize(
+    "command,exit_code,called",
+    [
+        ("identity --dry-run", 2, []),
+        ("identity --only lineage --dry-run", 2, []),
+        ("identity --only propagate --dry-run", 0, ["run_propagate"]),
+        ("identity --only tenure --approve-rekey A:B", 2, []),
+        ("identity --only lineage --approve-rekey A:B", 0, ["run_entity_lineage"]),
+        ("identity --approve-rekey A:B", 0, ["run"]),
+        ("zips-ingest --repair-availability", 2, []),
+        ("zips-ingest --only notes --only ftd --repair-availability", 2, []),
+        ("zips-ingest --only notes --repair-availability", 0, ["run_ingest_financial_notes"]),
+    ],
+)
+def test_a_flag_scoped_to_one_stage_is_refused_elsewhere(
+    command: str, exit_code: int, called: list[str], context: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    step = Mock()
+    step.run_propagate.return_value.removals = pd.DataFrame()
+    monkeypatch.setattr(cli_mod, "StepExtractIdentity", Mock(return_value=step))
+    monkeypatch.setattr(cli_mod, "StepExtractZips", Mock(return_value=step))
+    result = CliRunner().invoke(cli_mod.cli, command.split())
+    assert result.exit_code == exit_code, result.output
+    assert [name for name, _, _ in step.mock_calls if "." not in name] == called
+    print(f"SANITY: `{command}` exits {exit_code} and runs {called or 'nothing'}; a scoped flag never widens the run.")

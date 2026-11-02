@@ -607,6 +607,8 @@ def zips_download(config_path: str, full: bool, as_of: datetime | None, only: tu
 @click.option(*REPAIR_AVAILABILITY_ARGS, **REPAIR_AVAILABILITY_KWARGS)
 @click.option("--only", "only", type=click.Choice(_ZIP_INGESTS), multiple=True, help="Run only this source; repeatable.")
 def zips_ingest(config_path: str, tickers: str | None, full: bool, as_of: datetime | None, repair_availability: bool, only: tuple[str, ...]) -> None:
+    if repair_availability and set(only) != {"notes"}:
+        raise click.UsageError("--repair-availability needs `--only notes` and no other source.")
     config, context = get_config_context(config_path, use_cache=False, save=False)
     options = ZipsOptions(
         tickers=_tickers(context, tickers) if tickers else None, full=full, as_of=run_date(as_of), repair_availability=repair_availability
@@ -642,6 +644,10 @@ _IDENTITY_STAGES = ("capture-dei", "capture-ftd", "tenure", "lineage", "master",
 def identity(
     config_path: str, tickers: str | None, full: bool, as_of: datetime | None, approved_rekeys: tuple[str, ...], dry_run: bool, only: str | None
 ) -> None:
+    if dry_run and only != "propagate":
+        raise click.UsageError("--dry-run applies to `--only propagate` only.")
+    if approved_rekeys and only not in (None, "lineage"):
+        raise click.UsageError("--approve-rekey applies to the full run or `--only lineage`.")
     config, context = get_config_context(config_path, use_cache=False, save=False)
     options = IdentityOptions(
         tickers=_tickers(context, tickers) if tickers else None,
@@ -661,7 +667,7 @@ def identity(
     }
     if only is None:
         step.run()
-    elif only == "propagate" and dry_run:
+    elif dry_run:
         removals = step.run_propagate().removals
         click.echo(removals.to_string(index=False) if not removals.empty else "identity --only propagate: no pending removals")
     else:

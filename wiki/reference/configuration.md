@@ -110,7 +110,7 @@ Runtime eligibility is the intersection of:
 4. required price, denominator, or related-source cells; and
 5. family-specific completeness rules.
 
-`source_freshness.insider_max_lag_days` remains the insider freshness threshold used by `cube-status`. The completeness frontier now comes from per-ticker `insider_transactions.inventory_checked_through` inventory validation, checked against fetched accession payloads, rather than a recent maximum filing date. EDGAR remains authoritative over ZIP duplicates. A missing proof column on an older physical schema is readable but cannot certify quiet absence.
+`source_freshness.insider_max_lag_days` (default 4) is the insider freshness threshold used by `cube-status`: the insider source is late when D, the newest stored `insider_transactions.filing_date` (markers included), is more than that many days behind the reference price date. EDGAR remains authoritative over ZIP duplicates.
 
 ## Cube assembly selection
 

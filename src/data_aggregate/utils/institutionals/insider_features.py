@@ -70,9 +70,10 @@ TEN_B5_1_FLOOR = pd.Timestamp("2023-04-01")
 
 @dataclass(frozen=True)
 class InsiderCoverage:
-    """Independent public-source/plan floors and complete-observation frontier."""
+    """Independent public-source/plan floors and the observation frontier: `complete_through` is the newest
+    stored insider filing date (whole table, markers included); a quiet window after it is unknown."""
 
-    complete_through: pd.Series | None = None
+    complete_through: pd.Timestamp | None = None
     availability: InstitutionalAvailability | None = None
     insider_floor: pd.Timestamp = INSIDER_FLOOR
     plan_floor: pd.Timestamp = TEN_B5_1_FLOOR
@@ -80,7 +81,7 @@ class InsiderCoverage:
 
     @classmethod
     def from_availability(
-        cls, availability: InstitutionalAvailability | None, complete_through: pd.Series | None, identity_intervals: pd.DataFrame | None = None
+        cls, availability: InstitutionalAvailability | None, complete_through: pd.Timestamp | None, identity_intervals: pd.DataFrame | None = None
     ) -> InsiderCoverage:
         return cls(
             complete_through,
@@ -208,13 +209,6 @@ def _gate_dates(fields: dict[str, pd.DataFrame], idx: pd.DatetimeIndex, insider_
     return {name: frame.where(floor, axis=0) for name, frame in fields.items() if frame is not None and not frame.empty}
 
 
-def _inventory_mask(idx: pd.DatetimeIndex, columns: pd.Index, through: pd.Series | None) -> pd.DataFrame:
-    if through is None:
-        return pd.DataFrame(False, index=idx, columns=columns)
-    ends = pd.to_datetime(through.reindex(columns), errors="coerce")
-    return pd.DataFrame(idx.to_numpy()[:, None] <= ends.to_numpy()[None, :], index=idx, columns=columns)
-
-
 def _listed(stock_close: pd.DataFrame | None, idx: pd.DatetimeIndex, columns: pd.Index) -> pd.DataFrame:
     """True where the ticker has a close on the day; missing listing evidence is unknown."""
     if stock_close is not None and not stock_close.empty:
@@ -231,10 +225,10 @@ def _net_buy_mask(
     window_days: int = WINDOW_180,
 ) -> pd.DataFrame:
     """Cells where an empty window is observable: listed, a full calendar window after the
-    source floor, and on or before the complete frontier."""
+    source floor, and on or before the table-wide frontier."""
     history_start = pd.Timestamp(insider_floor).normalize() + pd.Timedelta(days=window_days - 1)
     full_window = InstitutionalAvailability.date_mask(idx, columns, history_start)
-    observed_through = _inventory_mask(idx, columns, coverage.complete_through)
+    observed_through = InstitutionalAvailability.through_mask(idx, columns, pd.Timestamp(coverage.complete_through))
     if coverage.availability is not None:
         return coverage.availability.source_mask(Tables.insider_transactions, idx, columns, requirements=(listed, full_window, observed_through))
     source_started = InstitutionalAvailability.date_mask(idx, columns, insider_floor)
@@ -250,7 +244,7 @@ def _observe_quiet_windows(
 ) -> None:
     """Fill only proven inactivity; unsupported active rows never become zero.
 
-    Any issuer disclosure corroborates coverage prospectively. A complete frontier, full
+    Any issuer disclosure corroborates coverage prospectively. The table-wide frontier, a full
     named source window, current listing and required denominator/flag coverage are also
     necessary. Unknown officer/director attribution cannot establish role inactivity.
     """

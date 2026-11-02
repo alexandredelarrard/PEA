@@ -733,7 +733,7 @@ def test_unpriced_insider_is_unknown_not_zero(unknown_code, known_code):
         make_frames(TRADING_INDEX, _peers(("AAA", "BBB")), close_split=close),
         _frame(rows),
         shares_out_history=fh,
-        coverage=InsiderCoverage.from_availability(None, pd.Series(TRADING_INDEX.max(), index=["AAA", "BBB"])),
+        coverage=InsiderCoverage.from_availability(None, TRADING_INDEX.max()),
     )
     panel = panel[panel["ticker"].eq("AAA")].set_index("date")
     ratio = panel["f_ic_insider_net_buy_ratio_180d"]
@@ -966,7 +966,7 @@ def test_complete_through_preserves_covered_zero_and_masks_the_unobserved_tail()
         make_frames(idx, _peers(), close_split=close),
         _frame(rows),
         shares_out_history=fh,
-        coverage=InsiderCoverage.from_availability(None, pd.Series({"AAA": complete_through})),
+        coverage=InsiderCoverage.from_availability(None, complete_through),
     ).set_index("date")
 
     covered_zero = panel.loc[pd.Timestamp("2024-07-31"), "f_ic_insider_buy_value_mcap_180d"]
@@ -1033,7 +1033,7 @@ def test_distinct_buyers_counts_people_not_filings():
         make_frames(TRADING_INDEX, _peers(), close_split=close),
         _frame(rows),
         shares_out_history=fh,
-        coverage=InsiderCoverage.from_availability(None, pd.Series({"AAA": TRADING_INDEX.max()})),
+        coverage=InsiderCoverage.from_availability(None, TRADING_INDEX.max()),
     )
     n = panel.set_index("date")["f_ic_insider_distinct_buyers_120d"]
     peak = n.max()
@@ -1118,7 +1118,7 @@ def test_net_buy_ratio_keeps_quiet_zero_over_zero_undefined() -> None:
         make_frames(TRADING_INDEX, _peers(), close_split=close),
         _frame(rows),
         shares_out_history=fh,
-        coverage=InsiderCoverage.from_availability(None, pd.Series({"AAA": pd.Timestamp("2016-06-30")})),
+        coverage=InsiderCoverage.from_availability(None, pd.Timestamp("2016-06-30")),
     )
     s = panel.set_index("date")["f_ic_insider_net_buy_ratio_180d"]
     assert pd.isna(s.loc["2015-05-01"]) and s.loc["2015-06-01"] == 1.0
@@ -1359,7 +1359,7 @@ def test_action_cap_normalizes_each_trade_before_rolling(metric: str, code: str,
         make_frames(idx, _peers(), close_split=close),
         _frame(rows),
         shares_out_history=history,
-        coverage=InsiderCoverage.from_availability(None, pd.Series({"AAA": idx[-1]})),
+        coverage=InsiderCoverage.from_availability(None, idx[-1]),
     ).set_index("date")
     feature = f"f_ic_insider_{metric}"
 
@@ -1377,7 +1377,7 @@ def _build_action_cap(rows: list[dict], close: pd.DataFrame, history: pd.DataFra
         shares_out_history=history,
         coverage=InsiderCoverage.from_availability(
             None,
-            pd.Series({"AAA": idx[-1]}),
+            idx[-1],
             identity_intervals=pd.DataFrame(
                 [
                     {
@@ -1588,7 +1588,7 @@ def test_action_cap_double_negative_components_cannot_certify_capital(invalid_le
         make_frames(idx, _peers(), close_split=close, level_factor=factor),
         _frame([row]),
         shares_out_history=history,
-        coverage=InsiderCoverage.from_availability(None, pd.Series({"AAA": idx[-1]})),
+        coverage=InsiderCoverage.from_availability(None, idx[-1]),
     ).set_index("date")
 
     assert pd.isna(panel.loc["2024-03-07", "f_ic_insider_buy_value_mcap_60d"])

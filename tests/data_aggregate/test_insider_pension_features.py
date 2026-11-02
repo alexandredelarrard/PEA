@@ -159,7 +159,7 @@ def test_insider_signal_ordering_and_leak_free() -> None:
     assert not panel.empty and "f_ic_insider_net_buy_ratio_180d" in panel.columns
     legacy = panel.loc[panel["date"].eq(pd.Timestamp("2024-04-01"))].set_index("ticker")["f_ic_insider_net_buy_ratio_180d"]
     assert legacy[["BULL", "BEAR"]].isna().all() and legacy["MIX"] == 0
-    coverage = InsiderCoverage.from_availability(None, pd.Series(idx.max(), index=list(peers)))
+    coverage = InsiderCoverage.from_availability(None, idx.max())
     listed = pd.DataFrame(100.0, index=idx, columns=list(peers))
     panel = build_insider_feature_panel(make_frames(idx, peers, close_split=listed), _insider_txns(), coverage=coverage)
 
@@ -200,7 +200,7 @@ def test_insider_buy_value_is_scaled_by_market_cap():
         make_frames(idx, peers, close_split=close),
         _insider_txns(),
         shares_out_history=shares,
-        coverage=InsiderCoverage.from_availability(None, pd.Series(idx[-1], index=["BULL", "BEAR", "MIX"])),
+        coverage=InsiderCoverage.from_availability(None, idx[-1]),
     )
     assert "f_ic_insider_buy_value_mcap_180d" in panel.columns
     d = pd.Timestamp("2024-04-01")

@@ -136,7 +136,7 @@ def _observed_panel(rows: list[dict], *, complete: bool = True) -> pd.DataFrame:
         df_valuation_close=close,
         coverage=InsiderCoverage.from_availability(
             InstitutionalAvailability.from_config({Tables.insider_transactions.name: {"__all__": "2024-01-01"}}),
-            pd.Series(idx.max(), index=tickers) if complete else None,
+            idx.max() if complete else None,
         ),
     ).set_index(["date", "ticker"])
 
@@ -330,7 +330,7 @@ def test_dollar_totals_use_action_cap_and_real_expiry() -> None:
         make_frames(idx, _peers(), close_split=close),
         _frame(rows),
         shares_out_history=shares,
-        coverage=InsiderCoverage.from_availability(None, pd.Series({"AAA": idx.max()})),
+        coverage=InsiderCoverage.from_availability(None, idx.max()),
     ).set_index("date")
     assert pd.isna(panel.loc["2015-05-29", "f_ic_insider_buy_value_mcap_60d"])
     assert panel.loc["2015-06-01", "f_ic_insider_buy_value_mcap_60d"] == pytest.approx(0.001)
@@ -392,7 +392,7 @@ def test_action_cap_missing_active_trade_and_strict_prior_session(bad_cap: float
 def _action_panel(
     rows: list[dict], close: pd.DataFrame, shares: pd.DataFrame | None, identity: pd.DataFrame | None = None, complete: bool = False
 ) -> pd.DataFrame:
-    coverage = InsiderCoverage.from_availability(None, pd.Series({"AAA": close.index.max()}) if complete else None, identity)
+    coverage = InsiderCoverage.from_availability(None, close.index.max() if complete else None, identity)
     return build_insider_feature_panel(
         make_frames(close.index, _peers(), close_split=close), _frame(rows), shares_out_history=shares, df_valuation_close=close, coverage=coverage
     ).set_index("date")
@@ -619,7 +619,7 @@ def test_action_cap_requires_known_source_security_units(case: str) -> None:
         shares_out_history=shares,
         df_valuation_close=close,
         share_basis=basis,
-        coverage=InsiderCoverage.from_availability(None, pd.Series({"AAA": idx.max()})),
+        coverage=InsiderCoverage.from_availability(None, idx.max()),
     ).set_index("date")
     value = panel.loc["2024-06-05", "f_ic_insider_buy_value_mcap_60d"]
     assert value == pytest.approx(0.001) if case == "known" else pd.isna(value)

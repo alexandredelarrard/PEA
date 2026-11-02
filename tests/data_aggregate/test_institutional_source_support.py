@@ -9,7 +9,6 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.common import part_status
 from src.data_aggregate.utils.institutionals import inputs
 from src.data_aggregate.utils.institutionals import insider_features as insider
 from src.data_aggregate.utils.institutionals import short_flow_features as short
@@ -47,7 +46,7 @@ def test_quiet_proof_never_changes_undefined_insider_ratios_to_zero() -> None:
         "ic_insider_distinct_buyers_120d",
     ]
     fields = {name: pd.DataFrame(np.nan, index=idx, columns=["AAA"]) for name in names}
-    coverage = insider.InsiderCoverage.from_availability(None, pd.Series({"AAA": idx.max()}))
+    coverage = insider.InsiderCoverage.from_availability(None, idx.max())
     insider._observe_quiet_windows(fields, activity, pd.Series({"AAA": pd.Timestamp("2020-01-01")}), frames, coverage)
     for name in names[:-1]:
         assert fields[name].isna().all().all(), f"Undefined ratio {name} must remain NULL under a certified quiet window"
@@ -55,7 +54,7 @@ def test_quiet_proof_never_changes_undefined_insider_ratios_to_zero() -> None:
     print("SANITY: certified quiet counts are zero; net0/0, no scored buys and no eligible prior-position ratios remain NULL.")
 
 
-def test_insider_boundary_uses_full_per_ticker_cohort_before_selection(sqlite_store: DataStore) -> None:
+def test_insider_frontier_is_the_whole_table_newest_filing_markers_included(sqlite_store: DataStore) -> None:
     rows = pd.DataFrame(
         {
             "accession_number": ["a", "b", "c"],
@@ -63,15 +62,15 @@ def test_insider_boundary_uses_full_per_ticker_cohort_before_selection(sqlite_st
             "row_sequence": [1, 0, 1],
             "ticker": ["AAA", "AAA", "BBB"],
             "lineage_role": ["canonical_current", None, "canonical_current"],
-            "filing_date": pd.to_datetime(["2026-01-01"] * 3),
+            "filing_date": pd.to_datetime(["2026-01-01", "2026-05-29", "2026-06-30"]),
             "fetched_at": pd.to_datetime(pd.Series(["2026-07-01", None, "2026-05-31"])),
         }
     )
     sqlite_store.save(Tables.insider_transactions, rows)
-    source = inputs.load_insider_transactions(sqlite_store, ["AAA", "BBB"])
-    assert source is not None
-    assert pd.isna(source.complete_through.loc["AAA"]) and source.complete_through.loc["BBB"] == pd.Timestamp("2026-05-31")
-    print("SANITY: an unfetched valid-empty accession blocks only its ticker, including rows excluded by economic selection.")
+    source = inputs.load_insider_transactions(sqlite_store, ["AAA"])
+    assert source is not None and source.complete_through == pd.Timestamp("2026-06-30")
+    assert source.first_filed.to_dict() == {"AAA": pd.Timestamp("2026-01-01")}
+    print("SANITY: D = 2026-06-30, the newest filing of the whole table (another ticker), read for AAA alone; fetched_at plays no part.")
 
 
 def test_ftd_other_ticker_observation_cannot_create_zero() -> None:
@@ -81,44 +80,6 @@ def test_ftd_other_ticker_observation_cannot_create_zero() -> None:
     fails, _ = short._settlement_fails(hist, coverage, idx, pd.Index(["AAA", "BBB"]), None)
     assert fails.loc[idx[0], "AAA"] == 12.0 and fails["BBB"].isna().all()
     print("SANITY: a valid explicit legacy FTD observation survives; another ticker's served date cannot fabricate an absent leg.")
-
-
-def test_insider_boundary_is_the_latest_fetch_day_of_the_ticker(sqlite_store: DataStore) -> None:
-    rows = pd.DataFrame(
-        {
-            "accession_number": ["a", "b"],
-            "security_type": ["nonderiv", "nonderiv"],
-            "row_sequence": [1, 1],
-            "ticker": ["AAA", "AAA"],
-            "lineage_role": ["canonical_current"] * 2,
-            "filing_date": pd.to_datetime(["2024-01-01", "2026-01-01"]),
-            "fetched_at": pd.to_datetime(["2026-06-01", "2026-07-01"]),
-        }
-    )
-    sqlite_store.save(Tables.insider_transactions, rows)
-    source = inputs.load_insider_transactions(sqlite_store, ["AAA"])
-    assert source is not None and source.complete_through.loc["AAA"] == pd.Timestamp("2026-07-01")
-    print("SANITY: a ticker read on several days is complete through its latest fetch day.")
-
-
-def test_cube_readiness_cannot_infer_global_completeness_from_latest_filing(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
-    rows = pd.DataFrame(
-        {
-            "accession_number": ["a", "b"],
-            "security_type": ["nonderiv", "_empty"],
-            "row_sequence": [1, 0],
-            "ticker": ["AAA", "BBB"],
-            "filing_date": pd.to_datetime(["2026-07-01"] * 2),
-            "fetched_at": pd.to_datetime(["2026-07-02"] * 2),
-            "inventory_checked_through": pd.to_datetime(pd.Series(["2026-07-01", None])),
-        }
-    )
-    sqlite_store.save(Tables.insider_transactions, rows)
-    sqlite_store.save(Tables.cube_part_prices, pd.DataFrame({"ticker": ["AAA", "BBB"], "date": pd.to_datetime(["2026-07-01"] * 2)}))
-    monkeypatch.setattr(part_status, "load_universe_tickers", lambda context: ["AAA", "BBB"])
-    status = part_status._insider_source_status(cast(Any, SimpleNamespace(store=sqlite_store)), "2026-07-01", 4)
-    assert status["complete_through"] is None and not status["ok"]
-    print("SANITY: one recent filing or one verified issuer cannot certify cube readiness while another requested issuer is unverified.")
 
 
 def test_finra_metrics_use_their_own_defined_paired_operands() -> None:
@@ -187,7 +148,7 @@ def test_physically_absent_legacy_proof_preserves_observed_operands_only(sqlite_
         Tables.sec_fails_to_deliver, pd.DataFrame({"ticker": ["AAA"], "date": dates[:1], "fails_quantity": [12.0], "period": ["201501a"]})
     )
     source = inputs.load_insider_transactions(sqlite_store, ["AAA", "BBB"])
-    assert source is not None and source.complete_through.isna().all()
+    assert source is not None and source.complete_through == pd.Timestamp(transactions["filing_date"].max())
     close = pd.DataFrame(100.0, index=dates, columns=["AAA", "BBB"])
     frames = make_frames(dates, {"AAA": {"AAA": 1.0}, "BBB": {"BBB": 1.0}}, close_split=close)
     shares = pd.DataFrame(
@@ -210,11 +171,10 @@ def test_physically_absent_legacy_proof_preserves_observed_operands_only(sqlite_
     fails, _ = short._settlement_fails(fails_rows, coverage, dates, pd.Index(["AAA", "BBB"]), None)
     assert fails.loc[dates[0], "AAA"] == 12.0 and fails["BBB"].isna().all()
     for table, proof in (
-        (Tables.insider_transactions, "inventory_checked_through"),
         (Tables.short_interest, "source_checked_at"),
         (Tables.sec_fails_to_deliver, "source_checked_at"),
     ):
         assert proof not in sqlite_store.columns(table)
     print(
-        "SANITY: physically legacy schemas keep explicit paired insider/FINRA operands and explicit FTD quantities, create no quiet or absent-ticker zeros, and execute no read-triggered schema evolution."
+        "SANITY: physically legacy schemas keep explicit paired insider/FINRA operands and explicit FTD quantities, create no absent-ticker zeros, and execute no read-triggered schema evolution."
     )

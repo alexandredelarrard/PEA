@@ -479,10 +479,9 @@ def test_actual_loader_valid_empty_preserves_quiet_counts_and_undefined_ratios(
         shares=None,
         price_per_share=None,
         transaction_date=None,
-        filing_date="2024-01-02",
+        filing_date=str(days[-1].date()),
         lineage_role=None,
     )
-    marker.update(fetched_at=pd.Timestamp("2025-01-02"), inventory_checked_through=days.max())
     sqlite_store.save(Tables.insider_transactions, pd.DataFrame([marker]))
     sqlite_store.save(
         Tables.fundamentals_history,
@@ -505,7 +504,57 @@ def test_actual_loader_valid_empty_preserves_quiet_counts_and_undefined_ratios(
     assert list(panel.columns) == list(INSTITUTIONAL_COLUMNS)
     assert panel[ratios].isna().all().all()
     print(
-        "SANITY: actual loader/public step accepts a checked real empty accession; supported quiet gross/counts are0 and all four undefined ratios remain NULL."
+        "SANITY: actual loader/public step accepts a real empty accession without fetched_at; supported quiet gross/counts are 0 and all four undefined ratios remain NULL."
+    )
+
+
+def _quiet_marker(ticker: str, accession: str, filed: pd.Timestamp) -> dict:
+    return row(
+        ticker=ticker,
+        accession_number=accession,
+        row_sequence=0,
+        security_type="_empty",
+        transaction_code=None,
+        shares=None,
+        price_per_share=None,
+        transaction_date=None,
+        filing_date=str(filed.date()),
+        lineage_role=None,
+    )
+
+
+def test_quiet_windows_are_zero_through_the_table_frontier_and_rewritten_when_it_advances(
+    sqlite_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    days = seed_prices(sqlite_store, periods=60)
+    sqlite_store.save(
+        Tables.fundamentals_history,
+        pd.DataFrame({"ticker": ["AAA"], "as_of": [pd.Timestamp("2023-01-01")], "sharesOutstanding": [1000.0], "sharesOutstandingPit": [1000.0]}),
+    )
+    sqlite_store.save(Tables.insider_transactions, pd.DataFrame([_quiet_marker("AAA", "aaa-empty", days[20])]))
+    ctx = context(sqlite_store, tmp_path)
+    monkeypatch.setattr(capital_inputs, "load_peers_or_raise", lambda ctx: {})
+    gross = "f_ic_insider_distinct_buyers_120d"
+
+    # Outage: D sits 3 sessions behind the last price session, so exactly those 3 sessions stay NaN.
+    sqlite_store.save(Tables.insider_transactions, pd.DataFrame([_quiet_marker("ZZZ", "zzz-empty", days[-4])]))
+    panel = StepCubeInstitutionals(ctx, ctx.config).build_panel().set_index(["date", "ticker"])[gross].xs("AAA", level="ticker")
+    assert panel.loc[: days[19]].isna().all() and panel.loc[days[20] : days[-4]].eq(0).all()
+    assert panel.loc[days[-3] :].isna().all() and len(panel.loc[days[-3] :]) == 3
+
+    # A 12-session lag is stored, then D advances (another ticker's marker): the next build rewrites every quiet NaN.
+    sqlite_store.delete(Tables.insider_transactions, {"accession_number": ["zzz-empty"]})
+    sqlite_store.save(Tables.insider_transactions, pd.DataFrame([_quiet_marker("ZZZ", "zzz-empty", days[-13])]))
+    StepCubeInstitutionals(ctx, ctx.config).run(full=True)
+    before = sqlite_store.load(Tables.cube_part_institutionals).set_index(["date", "ticker"])[gross].xs("AAA", level="ticker")
+    sqlite_store.save(Tables.insider_transactions, pd.DataFrame([_quiet_marker("ZZZ", "zzz-late", days[-1])]))
+    StepCubeInstitutionals(ctx, ctx.config).run(full=False)
+    after = sqlite_store.load(Tables.cube_part_institutionals).set_index(["date", "ticker"])[gross].xs("AAA", level="ticker")
+    assert before.reindex(days[-12:]).isna().all() and after.reindex(days[-12:]).eq(0).all()
+    assert after.loc[days[20] :].eq(0).all()
+    print(
+        "SANITY: a quiet ticker is 0 from its first filing through D and NaN after D (3 sessions when D is 3 behind); "
+        f"after D advances, the incremental build rewrote all 12 lagging sessions ({days[-12].date()}..{days[-1].date()}) to 0."
     )
 
 

@@ -92,20 +92,24 @@ def load_finra_tenure(store: DataStore, universe: Sequence[str]) -> pd.DataFrame
 
 @dataclass(frozen=True)
 class InsiderSource:
+    """Canonical rows and empty-filing markers, the table-wide frontier (newest stored `filing_date`) and each
+    ticker's first stored filing date."""
+
     transactions: pd.DataFrame
-    complete_through: pd.Series
+    complete_through: pd.Timestamp | None
     first_filed: pd.Series
 
 
 def load_insider_transactions(store: DataStore, universe: Sequence[str] | None = None) -> InsiderSource | None:
-    """Retain full issuer proof metadata, then select canonical economic rows and actual empty markers."""
+    """Retain full issuer metadata, then select canonical economic rows and actual empty markers."""
     table = Tables.insider_transactions
     present = store.columns(table)
     if not present:
         logger.warning("%s is absent -> insider features are skipped.", table.name)
         return None
 
-    # keep columns needed & read data in chunks
+    # keep columns needed & read data in chunks; the frontier is the whole table's newest filing
+    complete_through = store.max_date(table, "filing_date")
     columns = set(present).intersection(set((*table.read_columns, "issuer_cik", "lineage_role")))
     where: dict[str, Any] = {}
     if universe is not None:
@@ -121,14 +125,11 @@ def load_insider_transactions(store: DataStore, universe: Sequence[str] | None =
 
     # clean dates of insider
     df_rows = normalize_insider_dates(df_rows)
-    fetched = insider_days(df_rows.get("fetched_at", pd.Series(pd.NaT, index=df_rows.index)))
-    grouped = fetched.groupby(df_rows["ticker"], sort=False)
-    boundaries = grouped.max().where(grouped.agg(lambda days: bool(days.notna().all())))
     first = df_rows["filing_date"].groupby(df_rows["ticker"]).min()
     selected = df_rows["lineage_role"].isin(CANONICAL_ROLES) | df_rows["security_type"].eq("_empty")
 
     logger.info("Loaded %s: %s rows x %s cols", table.name, len(df_rows), len(df_rows.columns))
-    return InsiderSource(df_rows.loc[selected], boundaries, first)
+    return InsiderSource(df_rows.loc[selected], complete_through, first)
 
 
 def load_insider_role_evidence(store: DataStore, insider: pd.DataFrame, universe: Sequence[str] | None = None) -> pd.DataFrame:

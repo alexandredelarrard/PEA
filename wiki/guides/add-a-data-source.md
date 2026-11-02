@@ -18,9 +18,9 @@ Add a source without bypassing the store boundary, losing point-in-time provenan
 2. Add exactly one `Table` declaration to [schema.py](../../src/data_store/schema.py), including the smallest safe read projection.
 3. Regenerate [sql/schema.sql](../../sql/schema.sql) through [scripts/generate_schema_sql.py](../../scripts/generate_schema_sql.py) when the table is managed.
 4. Implement the fetcher under the owning [data_extract utils package](../../src/data_extract/utils/) and accept `Context` rather than constructing a store.
-5. Declare the table's `Resume` contract (and an `empty_marker` when a read can find nothing) in [schema.py](../../src/data_store/schema.py), and plan the work list through [resume.py](../../src/data_extract/utils/common/resume.py) at the source's actual retrieval grain.
+5. Declare the table's `Resume` contract (and an `empty_marker` when a read can find nothing) in [schema.py](../../src/data_store/schema.py), and plan the work list through [resume.py](../../src/data_extract/utils/common/resume.py) (dated series and archives) or [document_resume.py](../../src/data_extract/utils/edgar_extract/document_resume.py) (EDGAR documents) at the source's actual retrieval grain.
 6. Save bounded work per ticker, filing, or source chunk so interruption loses minimal progress.
-7. Add the fetcher to the correct transformer step and expose a source command in [data_extract/cli.py](../../src/data_extract/cli.py).
+7. Add the fetcher to the correct functional step as a public `run_*` sub-run (an EDGAR document walk is one `EdgarFetch` run by `StepExtractEdgar`, a bulk archive a `run_download_*`/`run_ingest_*` pair on `StepExtractZips`, a provider-backed pass a method of `StepExtractLlm`) and expose a source command or a `--only` value in [data_extract/cli.py](../../src/data_extract/cli.py).
 8. Add an Airflow task only when scheduled refresh is appropriate, choosing the resource pool by operational constraint.
 9. Add parsing tests with known-truth fixtures and economic/incremental checks with bounded real data.
 10. Add validation declarations or a dedicated check when availability, bounds, or reconciliation needs an explicit contract.
@@ -30,7 +30,7 @@ Add a source without bypassing the store boundary, losing point-in-time provenan
 - Store registry: [src/data_store/schema.py](../../src/data_store/schema.py)
 - Store facade: [src/data_store/store.py](../../src/data_store/store.py)
 - Incremental helpers: [data_extract/utils/common/incremental.py](../../src/data_extract/utils/common/incremental.py)
-- EDGAR driver: [data_extract/utils/common/edgar_driver.py](../../src/data_extract/utils/common/edgar_driver.py)
+- EDGAR driver: [data_extract/utils/edgar_extract/edgar_driver.py](../../src/data_extract/utils/edgar_extract/edgar_driver.py)
 - Extraction orchestrator: [step_extract_all_data.py](../../src/data_extract/step_extract_all_data.py)
 
 ## Gotchas

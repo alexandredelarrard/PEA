@@ -53,9 +53,9 @@ rtk "$PY" scripts/registrant_impact.py --snapshot baseline_YYYY-MM-DD
 Then apply the approved register change and recover each source according to its storage model:
 
 ~~~bash
-rtk "$PY" -m src data_extract insider-zip -F
-rtk "$PY" -m src data_extract financial-notes --full
-rtk "$PY" -m src data_extract financial-statements --full
+rtk "$PY" -m src data_extract zips-ingest --only insider -F
+rtk "$PY" -m src data_extract zips-ingest --only notes --full
+rtk "$PY" -m src data_extract zips-ingest --only statements --full
 rtk "$PY" -m src data_extract fundamentals-facts -t TICKER1,TICKER2
 rtk "$PY" -m src data_extract fundamentals-employees -t TICKER1,TICKER2
 rtk "$PY" -m src data_extract sec-8k-items -t TICKER1,TICKER2
@@ -191,19 +191,20 @@ The registry source start is 1999-07-01, so a walk over an empty `sec13f_hr` rea
 
 ## Insider reparse and full rebuild
 
-`insider_transactions` is one table for both sources (see [data sources](../reference/data-sources.md)). A run ingests pending zip quarters first, then reads from EDGAR every indexed Form 3/4/5 of each ticker's lineage filed from the earlier of the day after the last stored zip quarter and the run date minus 7 days, except the accessions already stored from EDGAR.
+`insider_transactions` is one table for both sources (see [data sources](../reference/data-sources.md)). `zips-ingest --only insider` ingests the pending zip quarters, then `insider-edgar` reads from EDGAR every indexed Form 3/4/5 of each ticker's lineage filed from the earlier of the day after the last stored zip quarter and the run date minus 7 days, except the accessions already stored from EDGAR.
 
-- **Zip parse change** (a new column, an identity change): `insider-zip -F` re-reads every cached quarter without an EDGAR walk. Filings EDGAR already holds only get their `quarter` stamped; every other filing is re-saved from the zip. Nothing is re-downloaded. Run it without `-t`: only a full-universe run sweeps stored rows that the identity screen now rejects.
+- **Zip parse change** (a new column, an identity change): `zips-ingest --only insider -F` re-reads every cached quarter without an EDGAR walk. Filings EDGAR already holds only get their `quarter` stamped; every other filing is re-saved from the zip. Nothing is re-downloaded. Run it without `-t`: only a full-universe run sweeps stored rows that the identity screen now rejects.
 
   ~~~bash
-  rtk "$PY" -m src data_extract insider-zip -F
+  rtk "$PY" -m src data_extract zips-ingest --only insider -F
   ~~~
 
-- **Full rebuild** (an EDGAR parser change, a key or encoding change): drop the table, then run with `-F`. `insider-transactions -F` re-parses every cached zip into the empty table, then EDGAR re-reads its whole window, including filings already stored from EDGAR.
+- **Full rebuild** (an EDGAR parser change, a key or encoding change): drop the table, then run both halves with `-F`: `zips-ingest --only insider -F` re-parses every cached zip into the empty table, then `insider-edgar -F` re-reads its whole EDGAR window, including filings already stored from EDGAR.
 
   ~~~bash
   rtk docker exec pea_db psql -U alexandre -d pea -c "DROP TABLE insider_transactions"
-  rtk "$PY" -m src data_extract insider-transactions -F
+  rtk "$PY" -m src data_extract zips-ingest --only insider -F
+  rtk "$PY" -m src data_extract insider-edgar -F
   ~~~
 
   Dropping the table is a live-DB change: ask first. `store.save` recreates it from the registry on the first zip save.
@@ -216,16 +217,20 @@ After a refill, check that every quarter was ingested before trusting the fronti
 rtk docker exec pea_db psql -U alexandre -d pea -c "SELECT count(DISTINCT quarter), min(quarter), max(quarter) FROM insider_transactions"
 ~~~
 
-If a quarter is missing, one normal run (no `-F`, no `-t`) ingests it: it is still pending because no row carries its `quarter`. Its first `missing from EDGAR` WARNING then reads near 100 %, an artefact of the hole, not an EDGAR loss.
+If a quarter is missing, one normal `zips-ingest --only insider` run (no `-F`, no `-t`) ingests it: it is still pending because no row carries its `quarter`. Its first `missing from EDGAR` WARNING then reads near 100 %, an artefact of the hole, not an EDGAR loss.
 
 Run from a worktree with `ROOT_PATH` set to the main repo root, so the run uses the cached zips and filing index instead of downloading them again into the worktree:
 
 ~~~powershell
-$env:ROOT_PATH = "<main repo root>"; rtk $PY -m src data_extract insider-transactions -F
+$env:ROOT_PATH = "<main repo root>"
+rtk $PY -m src data_extract zips-ingest --only insider -F
+rtk $PY -m src data_extract insider-edgar -F
 ~~~
 
 ~~~bash
-ROOT_PATH="<main repo root>" rtk "$PY" -m src data_extract insider-transactions -F
+export ROOT_PATH="<main repo root>"
+rtk "$PY" -m src data_extract zips-ingest --only insider -F
+rtk "$PY" -m src data_extract insider-edgar -F
 ~~~
 
 ## Source-coverage evidence

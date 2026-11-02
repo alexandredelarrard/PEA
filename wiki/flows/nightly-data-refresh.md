@@ -27,8 +27,9 @@ sequenceDiagram
   participant Cube as Cube builders
   participant Predict as Prediction DAG
   Airflow->>Extract: seed universe
-  Airflow->>Extract: refresh insiders
-  Airflow->>Extract: build identity tables
+  Airflow->>Extract: download SEC bulk zips
+  Airflow->>Extract: build and propagate identity
+  Airflow->>Extract: ingest zips, refresh EDGAR index
   Airflow->>Extract: run identity-consuming SEC tasks
   Airflow->>Extract: facts and employees as sibling walks
   Extract->>Store: incremental upserts
@@ -46,8 +47,8 @@ sequenceDiagram
 ## Steps
 
 1. Seed or load the S&P 500 universe through [data extraction](../modules/data-extract.md).
-2. Refresh insider evidence (pending zip quarters fill the filings EDGAR missed; EDGAR then reads every indexed Form 3/4/5 of each ticker's lineage filed from the earlier of the day after the last zip quarter and the run date minus 7 days that is not yet stored from EDGAR, all into `insider_transactions`), build `identity-tables`, then fan out every issuer-identity SEC consumer. The 13F walk, its new-ticker backfill and the 13F manager chain stay independent because they do not resolve issuer filing history; `thirteen-f-backfill` runs after `thirteen-f` so only one EDGAR walk runs at a time, and it does nothing on a night with no new ticker.
-3. Run SEC facts/history and standalone employee headcount as sibling tasks. The Sharadar merge waits for SEC facts/history only; the cube reads headcount from `fundamentals_employees`. Either task can be repaired and rerun without replaying the other.
+2. Cache the SEC bulk zips (`zips_download`: Form 3/4/5, Notes, Financial Statements, FTD and the `sec_company_tickers` snapshot), build and propagate the identity layer offline (`identity`: Notes and FTD captures, `symbol_tenure`, `entity_lineage`, `security_master`, propagation), then fan out every issuer-identity SEC consumer. The zip ingests are two `sec_bulk` tasks: `zips_ingest_insider` (`zips-ingest --only insider`: pending zip quarters fill the filings EDGAR missed) and `zips_ingest_datasets` (`zips-ingest --only notes --only statements --only ftd`). `edgar_index` refreshes the local EDGAR filing index once; the six EDGAR walks (`insider_edgar`, `sec_13d`, `sec_13g`, `sec_8k_items`, `filing_text`, `def14a_edgar`) wait for it in the `sec_api` pool, and `insider_edgar` also waits for `zips_ingest_insider`: it reads every indexed Form 3/4/5 of each ticker's lineage filed from the earlier of the day after the last zip quarter and the run date minus 7 days that is not yet stored from EDGAR, all into `insider_transactions`. The 13F walk, its new-ticker backfill and the 13F manager chain stay independent because they do not resolve issuer filing history; `thirteen-f-backfill` runs after `thirteen-f` so only one EDGAR walk runs at a time, and it does nothing on a night with no new ticker.
+3. Run SEC facts/history and standalone employee headcount as sibling tasks. The Sharadar merge waits for SEC facts/history only; the cube reads headcount from `fundamentals_employees`. Either task can be repaired and rerun without replaying the other. Employee headcount runs only as this task (`fundamentals-employees`); `StepExtractAllData` does not include it.
 4. Run `extract-earnings-calls` as one task in the default pool. It reads the transcripts file's footer, then only the row groups whose latest call reaches the stored frontier minus the table's overlap (a new ticker's at any date), and the transcripts of new or re-issued calls only. The split, sentiment and embeddings run later in `build-text`.
 5. Each fetcher saves what it read, re-reads failed SEC documents in up to three in-task rounds and exits 0; Airflow retries only a task that raises, up to three times. Per-ticker SEC API walks consume the whole SEC pool so their process-local rate limiters cannot exceed the shared request budget.
 6. Run `extraction-status`. Its table inventory, cadence, and publication date column come from `freshness_tables()` in [schema.py](../../src/data_store/schema.py); cadence tolerances come from [constants.py](../../src/constants/constants.py). A table is RED when its newest date is older than its cadence tolerance, or, for the three prediction inputs (`prices`, `fundamentals_sharadar`, `fundamentals_history`), when the share of universe tickers whose own latest date is fresh falls below `prediction_fresh_share`. It logs one WARNING per RED table and exits 0. `earnings_call_sections` declares quarterly freshness on `as_of`. Google Trends is not scheduled and declares no freshness; there is no Wikipedia pageviews task.
@@ -56,7 +57,7 @@ sequenceDiagram
 
 ## Failure modes
 
-A source that fails does not stop the night: its fetcher keeps what it read and exits 0, and the next run lists the rest again, because every work list is derived from the stored rows. A filing that was read and holds no data for its key is stored once as an empty-filing marker, so it is not listed again; consumer reads never see markers. `extraction-status` reports stale tables and blocks nothing. The `predict` guard is the only hard stop: stale prices, Sharadar fundamentals or merged fundamentals history, or a cube that ends before `prices`. Aggregation remains sequential because the largest part determines peak memory; parallelizing part builds would add their working sets.
+A source that fails does not stop the night: its fetcher keeps what it read and exits 0, and the next run lists the rest again, because every work list is derived from the stored rows. A filing that was read and holds no data for its key is stored once as an empty-filing marker, so it is not listed again; consumer reads never see markers. A failed `edgar_index` holds the six EDGAR walks; a failed `zips_download` still lets `identity` run on the cached evidence. `extraction-status` reports stale tables and blocks nothing. The `predict` guard is the only hard stop: stale prices, Sharadar fundamentals or merged fundamentals history, or a cube that ends before `prices`. Aggregation remains sequential because the largest part determines peak memory; parallelizing part builds would add their working sets.
 
 ## Related
 

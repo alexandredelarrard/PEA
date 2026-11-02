@@ -2,7 +2,7 @@
 title: SEC and LLM extraction
 description: SEC filing discovery, five focused proxy requests, bounded retries and main-thread persistence.
 type: flow
-source_commit: aa9ac35ff94b6992ac43106230f63e3d50082cab
+source_commit: 1b5f33a2a210336c14758ce4897008c72da1d42c
 tags:
   - wiki
   - flow
@@ -12,9 +12,13 @@ tags:
 
 SEC narrative extraction shares discovery, identity, clients, prompts, concurrency and usage tracking. DEF 14A uses five independent requests. Item 5.07 votes retain their own existing schema and grouped persistence.
 
+## LLM step
+
+`StepExtractLlm` in [step_extract_llm.py](../../src/data_extract/transformers/step_extract_llm.py) owns the three provider-backed passes: `run_def14a` (`def14a`), `run_8k_votes` (`sec-8k-votes`, which reads the stored `sec_8k` Item 5.07 narratives and the DEF 14A tables, so it runs after DEF 14A) and `run_employees` (`fundamentals-employees`). Its constructor builds the five DEF 14A section extractors and the votes extractor once and checks the API key of every provider these runs use: a missing key raises `OSError` at construction, before any filing is listed; no pass skips silently. `StepExtractAllData` builds the step only after its EDGAR step, so a missing key fails the LLM passes and what follows, not the zip, identity and EDGAR work before them; it calls `run_def14a` then `run_8k_votes` and leaves employees to their own command. The employee extractor is still built per ticker inside [fundamentals_employees.py](../../src/data_extract/utils/fundamentals/fundamentals_employees.py): its per-ticker workers run concurrently and one extractor is not re-entrant.
+
 ## DEF 14A daily flow
 
-The `def14a` CLI invokes `fetch_def14a_llm` in [fetch.py](../../src/data_extract/utils/structure/def14a/fetch.py). Every run lists each accepted CIK window over the configured rolling history. [work.py](../../src/data_extract/utils/structure/def14a/work.py) reads each scoped fact table once and loads candidate archives separately. A section is open when a key field is missing and its `retry` is below two; only filings with an open section are downloaded. Replaying already-paid answers from `def14a_json` is off by default and runs only with `fetch_def14a_llm(..., replay_stored_json=True)`.
+The `def14a` CLI calls `StepExtractLlm.run_def14a`, which invokes `fetch_def14a_llm` in [fetch.py](../../src/data_extract/utils/structure/def14a/fetch.py). Every run lists each accepted CIK window over the configured rolling history. [work.py](../../src/data_extract/utils/structure/def14a/work.py) reads each scoped fact table once and loads candidate archives separately. A section is open when a key field is missing and its `retry` is below two; only filings with an open section are downloaded. Replaying already-paid answers from `def14a_json` is off by default and runs only with `fetch_def14a_llm(..., replay_stored_json=True)`.
 
 | Request/action | Output and counter owner |
 | --- | --- |

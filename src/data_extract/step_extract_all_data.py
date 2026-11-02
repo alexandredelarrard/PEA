@@ -1,9 +1,9 @@
 """Super step orchestrating the data-extraction sub-steps over one universe from `sp500_tickers`.
 
-The universe is seeded via the S&P 500 scraper only when the table is empty. Order: identity stage
-(Form 3/4/5, Notes and FTD zip downloads, SEC current tickers -> `StepExtractIdentity`: Notes and FTD
-captures, symbol_tenure + entity_lineage + security_master -> propagation) -> prices ->
-institutionals -> fundamentals (Sharadar then SEC) -> structure -> behavioral. Every domain step only
+The universe is seeded via the S&P 500 scraper only when the table is empty. Order: zip downloads (Form 3/4/5,
+Notes, Financial Statements, FTD, SEC current tickers) -> `StepExtractIdentity` (Notes and FTD captures,
+symbol_tenure + entity_lineage + security_master -> propagation) -> zip ingests (insider zip quarters, notes,
+pension facts, FTD) -> prices -> institutionals -> fundamentals (Sharadar then SEC) -> structure -> behavioral. Every domain step only
 reads the propagated lineage. Institutionals must run before structure: the vote parser reads the
 `sec_8k` Item 5.07 narratives institutionals stores.
 """
@@ -22,11 +22,8 @@ from src.data_extract.transformers.step_extract_institutionals import (
 )
 from src.data_extract.transformers.step_extract_prices import StepExtractPrices
 from src.data_extract.transformers.step_extract_structure import StepExtractStructure
-from src.data_extract.utils.identity.sec_tickers import download_sec_company_tickers
+from src.data_extract.transformers.step_extract_zips import StepExtractZips, ZipsOptions
 from src.data_extract.utils.prices.fetch_tickers import get_sp500_tickers
-from src.data_extract.utils.zips.fetch_fails_to_deliver import download_fails_to_deliver
-from src.data_extract.utils.zips.fetch_financial_notes import download_financial_notes
-from src.data_extract.utils.zips.fetch_insider_transactions import download_insider_transactions
 from src.data_store.schema import Tables
 from src.utils.step import Step
 from src.utils.universe import load_universe_tickers
@@ -52,24 +49,18 @@ class StepExtractAllData(Step):
         self._log.info(f"Equity universe: {len(universe)} tickers from {Tables.sp500_tickers}")
         return universe
 
-    def _download_identity_evidence(self) -> None:
-        """Cache the Form 3/4/5, Notes and FTD zips and snapshot SEC's current tickers for the identity step."""
-        years_history = int(self._config.data_extract.years_history)
-        download_insider_transactions(self._context)
-        download_financial_notes(self._context, years_history=years_history)
-        download_fails_to_deliver(self._context, years_history=years_history)
-        download_sec_company_tickers(self._context)
-
     def run(self) -> None:
         tickers = self._resolve_tickers()
 
-        self._download_identity_evidence()
+        zips = StepExtractZips(self._context, self._config, ZipsOptions(tickers=tickers))
+        zips.run_download()
         StepExtractIdentity(self._context, self._config, IdentityOptions(tickers=tickers)).run()
+        zips.run_ingest()
 
         # run each extract big block
         self._prices.run(tickers=tickers)
         self._institutionals.run(tickers=tickers, all_tickers=tickers)
         self._fundamentals_sharadar.run(tickers=tickers, full=False)
-        self._fundamentals.run(tickers=tickers, full=False, all_tickers=tickers)
+        self._fundamentals.run(tickers=tickers, full=False)
         self._structure.run(tickers=tickers)
         self._behavioral.run(tickers=tickers)

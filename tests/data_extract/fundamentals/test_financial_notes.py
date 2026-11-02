@@ -22,6 +22,7 @@ import pandas as pd
 import pytest
 
 import src.data_extract.utils.zips.fetch_financial_notes as fn
+import src.data_extract.utils.zips.zip_archive as zip_archive
 from src.constants.constants import MARKET_TIMEZONE
 from src.data_extract.utils.common import bulk_cache
 from src.data_extract.utils.common.resume import ArchiveWork
@@ -242,13 +243,13 @@ def test_generate_periods_has_quarterly_and_recent_monthly():
 def test_notes_periods_uses_scrape_when_available(monkeypatch):
     fake = ["2009q1", "2020q3", "2025_07", "2026_06"]
     monkeypatch.setattr(fn, "_scrape_available_periods", lambda context: fake)
-    got = fn._notes_periods(cast(Any, None), years_history=3, today=pd.Timestamp("2026-07-19"))
+    got = fn.notes_periods(cast(Any, None), years_history=3, today=pd.Timestamp("2026-07-19"))
     assert got == ["2025_07", "2026_06"]  # 2009/2020 outside 3y window
 
 
 def test_notes_periods_falls_back_to_generator(monkeypatch):
     monkeypatch.setattr(fn, "_scrape_available_periods", lambda context: None)
-    got = fn._notes_periods(cast(Any, None), years_history=2, today=pd.Timestamp("2026-07-19"))
+    got = fn.notes_periods(cast(Any, None), years_history=2, today=pd.Timestamp("2026-07-19"))
     assert got and all(fn._period_year(p) >= 2024 for p in got)
 
 
@@ -416,7 +417,7 @@ def test_fetch_validates_clock_before_converged_period_fast_path(tmp_path, monke
     monkeypatch.setattr(fn, "cache_dir", lambda context, key: tmp_path)
     monkeypatch.setattr(fn, "archive_worklist", lambda *args, **kwargs: _work([]))
     monkeypatch.setattr(fn, "_periods_missing_available_at", lambda context: set())
-    monkeypatch.setattr(fn, "_notes_periods", lambda context, years_history, today=None: [period])
+    monkeypatch.setattr(fn, "notes_periods", lambda context, years_history, today=None: [period])
     monkeypatch.setattr(
         fn,
         "stored_period_clock",
@@ -481,8 +482,8 @@ def test_fetch_stamps_one_archive_clock_on_numeric_and_text_rows(tmp_path, monke
     monkeypatch.setattr(fn, "cache_dir", lambda context, key: tmp_path)
     monkeypatch.setattr(fn, "archive_worklist", lambda context, tables, periods, cached, keys, as_of, full, all_tickers=None: _work(list(periods)))
     monkeypatch.setattr(fn, "_periods_missing_available_at", lambda context: set())
-    monkeypatch.setattr(fn, "_notes_periods", lambda context, years_history, today=None: [period])
-    monkeypatch.setattr(fn, "ensure_zip", lambda *args, **kwargs: path)
+    monkeypatch.setattr(fn, "notes_periods", lambda context, years_history, today=None: [period])
+    monkeypatch.setattr(zip_archive, "ensure_zip", lambda *args, **kwargs: path)
     monkeypatch.setattr(fn, "stored_period_clock", lambda context, tables, period: None)
     monkeypatch.setattr(fn, "_read_notes", lambda path, identity, universe: (num.copy(), txt.copy()))
 
@@ -538,9 +539,9 @@ def test_fetch_stamps_new_zip_with_successful_download_date(tmp_path: Path, monk
     monkeypatch.setattr(fn, "cache_dir", lambda context, key: tmp_path)
     monkeypatch.setattr(fn, "archive_worklist", lambda context, tables, periods, cached, keys, as_of, full, all_tickers=None: _work(list(periods)))
     monkeypatch.setattr(fn, "_periods_missing_available_at", lambda context: set())
-    monkeypatch.setattr(fn, "_notes_periods", lambda context, years_history, today=None: [period])
+    monkeypatch.setattr(fn, "notes_periods", lambda context, years_history, today=None: [period])
     monkeypatch.setattr(fn, "stored_period_clock", lambda context, tables, period: None)
-    monkeypatch.setattr(fn, "ensure_zip", download)
+    monkeypatch.setattr(zip_archive, "ensure_zip", download)
     monkeypatch.setattr(fn, "_read_notes", lambda path, identity, universe: (num.copy(), pd.DataFrame()))
 
     assert fn.fetch_financial_notes(context, ["AAPL"], years_history=15) == 1

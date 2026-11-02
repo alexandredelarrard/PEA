@@ -37,7 +37,7 @@ __all__ = [
     "stored_period_clock",
 ]
 
-_DEFAULT_TIMEOUT = 300  # seconds
+DEFAULT_TIMEOUT = 300  # seconds
 _RELEASE_DAY = 12  # estimated release: this day of the month after the period end
 
 logger = logging.getLogger(__name__)
@@ -82,7 +82,7 @@ def ensure_zip(
     urls: str | tuple[str, ...] | list[str],
     *,
     label: str,
-    timeout: int = _DEFAULT_TIMEOUT,
+    timeout: int = DEFAULT_TIMEOUT,
     log: logging.Logger | None = None,
 ) -> Path | None:
     """Local path to a cached archive, downloading it once if absent.

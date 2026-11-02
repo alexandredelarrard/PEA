@@ -40,7 +40,6 @@ def test_institutionals_consume_the_upstream_identity_in_one_resolver(monkeypatc
         "fetch_13f",
         "upsert_roster_snapshot",
         "fetch_13f_managers",
-        "fetch_insider_transactions",
     ):
         monkeypatch.setattr(module, name, mark(name))
     # Insider, 13D, 13G and 8-K run through the shared driver, one EdgarFetch declaration each
@@ -58,12 +57,7 @@ def test_institutionals_consume_the_upstream_identity_in_one_resolver(monkeypatc
         assert kwargs["identity"] is identity
         order.append("regsho")
 
-    def fails(*args, **kwargs):
-        assert kwargs["identity"] is identity, "FTD reuses the loaded resolver's source cohort"
-        order.append("ftd")
-
     monkeypatch.setattr(module, "fetch_short_interest", short)
-    monkeypatch.setattr(module, "fetch_fails_to_deliver", fails)
 
     config = SimpleNamespace(data_extract=SimpleNamespace(years_history=15))
     context = SimpleNamespace(config=config, config_dir="./configs", log=logging.getLogger(__name__))
@@ -72,19 +66,18 @@ def test_institutionals_consume_the_upstream_identity_in_one_resolver(monkeypatc
     step.config = config
     step.run(["AAA"])
 
-    assert order[:5] == [
+    assert order[:4] == [
         "fetch_13f",
         "upsert_roster_snapshot",
         "fetch_13f_managers",
-        "fetch_insider_transactions",
         module.INSIDER_EDGAR_FETCH.done.desc,
     ]
-    assert order[-3:] == ["identity_load", "regsho", "ftd"]
-    assert len(order) == 11, order
+    assert order[-2:] == ["identity_load", "regsho"]
+    assert len(order) == 9, order
 
     print("\n=== SANITY CHECK: institutional identity consumption ===")
-    print(f"  {len(order)} calls: 13F -> roster -> managers -> insider parse -> insider live -> 13D -> 13G -> 8-K -> identity -> RegSHO -> FTD")
-    print("  OK: no identity build inside the step; RegSHO and FTD share one resolver; FTD stamps from its security master cohort")
+    print(f"  {len(order)} calls: 13F -> roster -> managers -> insider live -> 13D -> 13G -> 8-K -> identity -> RegSHO")
+    print("  OK: no identity build inside the step; the insider zips and FTD are StepExtractZips' ingests")
 
 
 def test_domain_steps_contain_no_identity_stage():

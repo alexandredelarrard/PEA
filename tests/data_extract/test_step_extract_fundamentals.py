@@ -3,7 +3,7 @@ StepExtractFundamentals wiring test: `run()` calls its sources directly, in orde
 per-source error isolation -- a failure in any one of them propagates immediately (no
 `_run_source` wrapper).
 
-The ACTIVE sequence is `earnings_surprises -> financial_notes -> financial_statements`.
+The ACTIVE sequence is `earnings_surprises`; the notes and statements zips moved to `StepExtractZips`.
 
 ⚠ TWO SOURCES ARE IMPORTED BUT CURRENTLY DORMANT. `fetch_fundamentals_sec` (the per-filing
 XBRL facts walk) and `build_fundamentals_history` (the publication-event replay over exactly
@@ -29,11 +29,7 @@ from omegaconf import OmegaConf
 from src.data_extract.transformers.step_extract_fundamentals import StepExtractFundamentals
 
 #: (module attribute, label) for every source `run()` actually calls, in call order.
-EXPECTED_SOURCES: tuple[tuple[str, str], ...] = (
-    ("fetch_earnings_surprises", "earnings_surprises"),
-    ("fetch_financial_notes", "financial_notes"),
-    ("fetch_financial_statements", "financial_statements"),
-)
+EXPECTED_SOURCES: tuple[tuple[str, str], ...] = (("fetch_earnings_surprises", "earnings_surprises"),)
 
 #: Imported and patchable, but not called by `run()` today. Kept in the test so that
 #: re-enabling one is a VISIBLE change here rather than a silent one.
@@ -50,8 +46,6 @@ def _patched_step(monkeypatch, calls: list[str], *, boom: str | None = None):
 
     `boom` names the label whose recorder raises after recording, for the no-isolation test."""
     import src.data_extract.transformers.step_extract_fundamentals as mod
-
-    monkeypatch.setattr(mod, "load_universe_tickers", lambda context: ["AAPL"])
 
     def _recorder(label: str):
         def _fn(*args, **kwargs):

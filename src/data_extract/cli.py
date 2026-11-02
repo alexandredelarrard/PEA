@@ -72,6 +72,7 @@ from src.data_extract.transformers.step_extract_fundamentals_sharadar import (
     StepExtractFundamentalsSharadar,
 )
 from src.data_extract.transformers.step_extract_identity import IdentityOptions, StepExtractIdentity
+from src.data_extract.transformers.step_extract_zips import StepExtractZips, ZipsOptions
 from src.data_extract.utils.behavioral.fetch_earnings_call_transcripts import (
     extract_earnings_calls as _extract_earnings_calls,
 )
@@ -675,6 +676,61 @@ def ftd_download(config_path: str, full: bool, as_of: datetime | None) -> None:
 def sec_tickers(config_path: str) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
     download_sec_company_tickers(context)
+
+
+_ZIP_DOWNLOADS = ("insider", "notes", "statements", "ftd", "sec-tickers")
+_ZIP_INGESTS = ("insider", "notes", "statements", "ftd")
+
+
+@cli.command(
+    name="zips-download",
+    help="Cache the SEC bulk zips (Form 3/4/5, Notes, Financial Statements, FTD) and snapshot SEC's current tickers "
+    f"(the one table written). --only runs the named source(s) ({', '.join(_ZIP_DOWNLOADS)}). SEC-bulk.",
+)
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+@click.option("--only", "only", type=click.Choice(_ZIP_DOWNLOADS), multiple=True, help="Run only this source; repeatable.")
+def zips_download(config_path: str, full: bool, as_of: datetime | None, only: tuple[str, ...]) -> None:
+    config, context = get_config_context(config_path, use_cache=False, save=False)
+    step = StepExtractZips(context, config, ZipsOptions(full=full, as_of=run_date(as_of)))
+    sources = {
+        "insider": step.run_download_insider,
+        "notes": step.run_download_financial_notes,
+        "statements": step.run_download_financial_statements,
+        "ftd": step.run_download_fails_to_deliver,
+        "sec-tickers": step.run_download_sec_tickers,
+    }
+    for name in only or _ZIP_DOWNLOADS:
+        sources[name]()
+
+
+@cli.command(
+    name="zips-ingest",
+    help="Parse the cached SEC bulk zips into insider_transactions (zip quarters), notes_num/notes_text, pension_facts and the "
+    f"two FTD tables, downloading a pending period not cached yet. --only runs the named source(s) ({', '.join(_ZIP_INGESTS)}); "
+    "-F re-parses every cached period; --repair-availability only repairs the stored Notes clocks. SEC-bulk.",
+)
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
+@click.option(*FULL_ARGS, **FULL_KWARGS)
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+@click.option(*REPAIR_AVAILABILITY_ARGS, **REPAIR_AVAILABILITY_KWARGS)
+@click.option("--only", "only", type=click.Choice(_ZIP_INGESTS), multiple=True, help="Run only this source; repeatable.")
+def zips_ingest(config_path: str, tickers: str | None, full: bool, as_of: datetime | None, repair_availability: bool, only: tuple[str, ...]) -> None:
+    config, context = get_config_context(config_path, use_cache=False, save=False)
+    options = ZipsOptions(
+        tickers=_tickers(context, tickers) if tickers else None, full=full, as_of=run_date(as_of), repair_availability=repair_availability
+    )
+    step = StepExtractZips(context, config, options)
+    sources = {
+        "insider": step.run_ingest_insider,
+        "notes": step.run_ingest_financial_notes,
+        "statements": step.run_ingest_financial_statements,
+        "ftd": step.run_ingest_fails_to_deliver,
+    }
+    for name in only or _ZIP_INGESTS:
+        sources[name]()
 
 
 @cli.command(

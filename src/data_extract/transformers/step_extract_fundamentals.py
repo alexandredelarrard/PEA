@@ -8,8 +8,7 @@ Fundamentals / financials extraction:
     rides the facts walk and lands in `fundamentals_employees`. `FundamentalsValidator`
     follows at Phase 5b. See reports/planning/active-tasks/2026-08-23-fundamentals-rebuild-plan-v2.md.
   * earnings surprises
-  * insider transactions
-  * footnote (notes) pension detail + note text
+(the notes and financial-statement zips are `StepExtractZips`)
 """
 
 import time
@@ -20,10 +19,7 @@ from omegaconf import DictConfig
 
 from src.context import Context
 from src.data_extract.utils.fundamentals.fetch_earnings_surprises import fetch_earnings_surprises
-from src.data_extract.utils.zips.fetch_financial_notes import fetch_financial_notes
-from src.data_extract.utils.zips.fetch_financial_statements import fetch_financial_statements
 from src.utils.step import Step
-from src.utils.universe import load_universe_tickers
 
 
 def _elapsed(seconds: float) -> str:
@@ -56,14 +52,13 @@ class StepExtractFundamentals(Step):
         finally:
             self._log.info("%s: done in %s", what, _elapsed(time.perf_counter() - start))
 
-    def run(self, tickers: list[str], full: bool = False, *, all_tickers: list[str] | None = None) -> None:
+    def run(self, tickers: list[str], full: bool = False) -> None:
 
         # `self._config`, the attribute `Step.__init__` actually sets. There is no `config`
         # property on `Step` (only `strategies/base.Strategy` has one, and
         # `StepExtractPrices` assigns its own in `__init__`), so `self.config` here raised
         # AttributeError on every real invocation of this step.
         years_history = int(self._config.data_extract.years_history)
-        universe = load_universe_tickers(self._context) if all_tickers is None else all_tickers
 
         # Per-filing SEC XBRL -> fundamentals_facts (+ fundamentals_employees from the same
         # 10-K prose), each KPI resolved from the filer's own calculation linkbase.
@@ -88,16 +83,3 @@ class StepExtractFundamentals(Step):
         # earnings surprises
         with self._stage("earnings surprises", tickers):
             fetch_earnings_surprises(self._context, tickers=tickers, years_history=years_history)
-
-        # Footnote (notes) pension detail + note TEXT from the Financial Statement
-        # AND Notes data sets -> notes_num / notes_text. Heavy (~26GB back-fill at
-        # notes_years_history=15); own cache dir + config knob. (fetch_fails_to_deliver
-        # lives in StepExtractPrices, alongside the other price/settlement signals.)
-        with self._stage("financial notes (pension + note text)", tickers):
-            fetch_financial_notes(self._context, tickers=tickers, years_history=years_history, all_tickers=universe)
-
-        # Pension facts (SEC Financial Statement Data Sets, the plain sibling of the notes
-        # sets above). Shares the notes fetch's SEC bulk-download cache locality; newly wired
-        # into main.py here -- previously reached only via its own CLI command and the DAG.
-        with self._stage("financial statements (pension facts)", tickers):
-            fetch_financial_statements(self._context, tickers=tickers, years_history=years_history, all_tickers=universe)

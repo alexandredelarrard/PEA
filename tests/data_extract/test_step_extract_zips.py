@@ -1,0 +1,161 @@
+"""`StepExtractZips`: phase order, one Notes period list, options reaching each source, per-source failures, CLI `--only`."""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import pandas as pd
+import pytest
+from click.testing import CliRunner
+
+from src.data_extract import cli as cli_mod
+from src.data_extract.transformers import step_extract_zips as module
+from src.data_extract.transformers.step_extract_zips import StepExtractZips, ZipsOptions
+
+DOWNLOADS = ("insider_download", "notes_download", "statements_download", "ftd_download", "sec_tickers")
+INGESTS = ("insider_ingest", "notes_ingest", "statements_ingest", "ftd_ingest")
+METHODS = {
+    "insider_download": "run_download_insider",
+    "notes_download": "run_download_financial_notes",
+    "statements_download": "run_download_financial_statements",
+    "ftd_download": "run_download_fails_to_deliver",
+    "sec_tickers": "run_download_sec_tickers",
+    "insider_ingest": "run_ingest_insider",
+    "notes_ingest": "run_ingest_financial_notes",
+    "statements_ingest": "run_ingest_financial_statements",
+    "ftd_ingest": "run_ingest_fails_to_deliver",
+}
+
+
+def _config() -> SimpleNamespace:
+    paths = SimpleNamespace(insider_transactions="insider", financial_notes="notes", financial_statements="statements", fails_deliver="ftd")
+    return SimpleNamespace(data_extract=SimpleNamespace(years_history=15), local=SimpleNamespace(paths=paths))
+
+
+def _stub(monkeypatch: pytest.MonkeyPatch, calls: list[tuple[str, tuple, dict]], boom: str | None = None) -> list[int]:
+    scrapes: list[int] = []
+
+    def mark(name: str, result: object = 0):
+        def call(*args: Any, **kwargs: Any) -> object:
+            calls.append((name, args, kwargs))
+            if name == boom:
+                raise RuntimeError(f"simulated {name} failure")
+            return result
+
+        return call
+
+    def periods(context: Any, years_history: int, today: pd.Timestamp) -> list[str]:
+        scrapes.append(years_history)
+        return ["2026q1"]
+
+    monkeypatch.setattr(module, "cache_dir", lambda context, name: Path("cache") / name)
+    monkeypatch.setattr(module, "load_universe_tickers", lambda context: ["AAA", "BBB"])
+    monkeypatch.setattr(module, "notes_periods", periods)
+    monkeypatch.setattr(module, "download_insider_transactions", mark("insider_download", []))
+    monkeypatch.setattr(module, "download_notes_periods", mark("notes_download"))
+    monkeypatch.setattr(module, "download_financial_statements", mark("statements_download"))
+    monkeypatch.setattr(module, "download_fails_to_deliver", mark("ftd_download"))
+    monkeypatch.setattr(module, "download_sec_company_tickers", mark("sec_tickers"))
+    monkeypatch.setattr(module, "fetch_insider_transactions", mark("insider_ingest"))
+    monkeypatch.setattr(module, "ingest_financial_notes", mark("notes_ingest"))
+    monkeypatch.setattr(module, "repair_notes_availability", mark("notes_repair"))
+    monkeypatch.setattr(module, "fetch_financial_statements", mark("statements_ingest"))
+    monkeypatch.setattr(module, "fetch_fails_to_deliver", mark("ftd_ingest"))
+    return scrapes
+
+
+def _context() -> SimpleNamespace:
+    return SimpleNamespace(config=_config(), config_dir="configs", log=logging.getLogger(__name__))
+
+
+def test_run_downloads_then_ingests_with_one_notes_period_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, tuple, dict]] = []
+    scrapes = _stub(monkeypatch, calls)
+    StepExtractZips(_context(), _config()).run()  # type: ignore[arg-type]
+
+    order = [name for name, _, _ in calls]
+    assert order == [*DOWNLOADS, *INGESTS], order
+    assert scrapes == [16], "the Notes landing page is scraped once per step, for the window plus one year"
+    notes_download = next(args for name, args, _ in calls if name == "notes_download")
+    notes_ingest = next(args for name, args, _ in calls if name == "notes_ingest")
+    assert notes_download[2] == notes_ingest[3] == ["2026q1"], "download and ingest share one period list"
+
+    print("\n=== SANITY CHECK: StepExtractZips.run order ===")
+    print(f"  download: {' -> '.join(DOWNLOADS)}")
+    print(f"  ingest:   {' -> '.join(INGESTS)}")
+    print(f"  Notes landing scrapes: {len(scrapes)}")
+    print("  OK: a plain sequence, and both Notes phases read one period list")
+
+
+def test_options_reach_every_source(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, tuple, dict]] = []
+    _stub(monkeypatch, calls)
+    as_of = pd.Timestamp("2026-10-30")
+    StepExtractZips(_context(), _config(), ZipsOptions(tickers=["AAA"], full=True, as_of=as_of)).run_ingest()  # type: ignore[arg-type]
+
+    seen = {name: (args, kwargs) for name, args, kwargs in calls}
+    insider_args, insider_kwargs = seen["insider_ingest"]
+    assert insider_args[1:] == (["AAA"], 15) and insider_kwargs == {"reparse": True, "as_of": as_of, "all_tickers": ["AAA", "BBB"]}
+    scope = seen["notes_ingest"][0][2]
+    assert (scope.tickers, list(scope.all_tickers), scope.run_date, scope.full) == (["AAA"], ["AAA", "BBB"], as_of, True)
+    statements_args, statements_kwargs = seen["statements_ingest"]
+    assert statements_args[1:] == (["AAA"], 15) and statements_kwargs["reparse"] and statements_kwargs["as_of"] == as_of
+    ftd_args, ftd_kwargs = seen["ftd_ingest"]
+    assert ftd_args[1:] == (["AAA"], True, as_of) and ftd_kwargs == {"all_tickers": ["AAA", "BBB"]}
+
+    print("\n=== SANITY CHECK: StepExtractZips options ===")
+    print("  tickers, universe, full and run date declared once in the init reach all four ingests")
+
+
+def test_repair_availability_only_repairs_the_notes_clocks(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, tuple, dict]] = []
+    scrapes = _stub(monkeypatch, calls)
+    StepExtractZips(_context(), _config(), ZipsOptions(repair_availability=True)).run_ingest_financial_notes()  # type: ignore[arg-type]
+
+    assert [name for name, _, _ in calls] == ["notes_repair"] and scrapes == []
+
+    print("\n=== SANITY CHECK: --repair-availability ===")
+    print("  metadata-only clock repair: no landing scrape, no parse")
+
+
+@pytest.mark.parametrize("boom", list(METHODS))
+def test_a_failing_source_raises_from_its_own_method_only(monkeypatch: pytest.MonkeyPatch, boom: str) -> None:
+    calls: list[tuple[str, tuple, dict]] = []
+    _stub(monkeypatch, calls, boom=boom)
+    step = StepExtractZips(_context(), _config())  # type: ignore[arg-type]
+
+    with pytest.raises(RuntimeError, match=boom):
+        getattr(step, METHODS[boom])()
+    for name, method in METHODS.items():
+        if name != boom:
+            getattr(step, method)()
+    with pytest.raises(RuntimeError, match=boom):
+        step.run()
+
+    phase = DOWNLOADS if boom in DOWNLOADS else (*DOWNLOADS, *INGESTS)
+    last_run = [name for name, _, _ in calls][-(phase.index(boom) + 1) :]
+    assert last_run == list(phase[: phase.index(boom) + 1]), last_run
+
+    print(f"\n=== SANITY CHECK: {boom} failure ===")
+    print(f"  {METHODS[boom]} raised alone; the other {len(METHODS) - 1} methods ran; run() stopped at it")
+
+
+def test_cli_only_runs_the_named_sources(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, tuple, dict]] = []
+    _stub(monkeypatch, calls)
+    monkeypatch.setattr(cli_mod, "get_config_context", lambda *args, **kwargs: (_config(), _context()))
+
+    runner = CliRunner()
+    ingest = runner.invoke(cli_mod.cli, ["zips-ingest", "--only", "notes", "--only", "ftd"])
+    download = runner.invoke(cli_mod.cli, ["zips-download", "--only", "insider"])
+    everything = runner.invoke(cli_mod.cli, ["zips-ingest"])
+
+    assert ingest.exit_code == download.exit_code == everything.exit_code == 0, (ingest.output, download.output, everything.output)
+    order = [name for name, _, _ in calls]
+    assert order == ["notes_ingest", "ftd_ingest", "insider_download", *INGESTS], order
+
+    print("\n=== SANITY CHECK: CLI --only (D-16) ===")
+    print("  zips-ingest --only notes --only ftd -> 2 sources; zips-download --only insider -> 1; zips-ingest -> all 4")

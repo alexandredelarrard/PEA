@@ -233,7 +233,7 @@ def test_download_captures_only_new_periods_and_writes_no_marker_file(tmp_path: 
     real_read = dei._read_dei_facts
     monkeypatch.setattr(dei, "_read_dei_facts", lambda path: (read.append(path.name), real_read(path))[1])
     monkeypatch.setattr(fn, "cache_dir", lambda context, key: tmp_path)
-    monkeypatch.setattr(fn, "_notes_periods", lambda context, years_history: periods)
+    monkeypatch.setattr(fn, "notes_periods", lambda context, years_history: periods)
     monkeypatch.setattr(fn, "ensure_zip", lambda context, path, urls, **kwargs: path)
 
     context = _context(sqlite_store)
@@ -265,7 +265,7 @@ def test_full_recapture_replaces_only_that_periods_dei_rows(tmp_path: Path, sqli
     ]
     sqlite_store.save(Tables.symbol_tenure, pd.DataFrame(seeded))
     monkeypatch.setattr(fn, "cache_dir", lambda context, key: tmp_path)
-    monkeypatch.setattr(fn, "_notes_periods", lambda context, years_history: ["2025q3"])
+    monkeypatch.setattr(fn, "notes_periods", lambda context, years_history: ["2025q3"])
     monkeypatch.setattr(fn, "ensure_zip", lambda *args, **kwargs: pytest.fail("a cached, captured period needs no download"))
 
     context = _context(sqlite_store)

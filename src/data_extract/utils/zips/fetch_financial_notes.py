@@ -29,7 +29,6 @@ from src.data_extract.utils.common.bulk_cache import (
     cache_dir,
     cached_periods,
     ensure_zip,
-    is_cached,
     period_end,
     quarter_periods,
     read_zip_tables,
@@ -40,8 +39,9 @@ from src.data_extract.utils.common.incremental import stored_values
 from src.data_extract.utils.common.resume import archive_worklist
 from src.data_extract.utils.common.sec_io import sec_get
 from src.data_extract.utils.identity.symbol_tenure import captured_dei_periods
+from src.data_extract.utils.zips.zip_archive import ArchiveSource, ZipScope, ensure_archive
 from src.data_store.schema import Resume, Table, Tables
-from src.utils.string import pad_cik_series
+from src.utils.string import pad_cik_series, run_date
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +119,13 @@ _TXT_OUT = [
 ]
 
 SEC_FINNOTES_URL_TEMPLATE = "https://www.sec.gov/files/dera/data/financial-statement-notes-data-sets/{period}_notes.zip"
+NOTES_ARCHIVE = ArchiveSource(
+    label="notes",
+    file_template="{period}_notes.zip",
+    url_template=SEC_FINNOTES_URL_TEMPLATE,
+    observed_from=date.fromisoformat(cast(str, cast(Resume, Tables.notes_num.resume).observed_from)),
+    timeout=600,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -148,7 +155,7 @@ def _generate_periods(years_history: int, today: pd.Timestamp | None = None) -> 
     return sorted(set(quarterly + monthly))
 
 
-def _notes_periods(context: Context, years_history: int, today: pd.Timestamp | None = None) -> list[str]:
+def notes_periods(context: Context, years_history: int, today: pd.Timestamp | None = None) -> list[str]:
     """Period tags to fetch, newest last, filtered to the year window."""
     today = (today or pd.Timestamp.today()).normalize()
     first_year = min(pd.Timestamp(cast(str, cast(Resume, table.resume).source_start)).year for table in _NOTES_TABLES)
@@ -321,14 +328,13 @@ def cached_notes_periods(cache: Path) -> list[str]:
     return sorted(match.group(1) for path in cache.glob("*_notes.zip") if (match := _NOTES_ZIP_NAME.fullmatch(path.name)))
 
 
-def download_financial_notes(context: Context, years_history: int = 15) -> int:
-    """Cache the notes zips of the window whose cover-page symbols are not captured yet; returns the zips available.
+def download_notes_periods(context: Context, cache: Path, periods: list[str]) -> int:
+    """Cache the notes zips of `periods` whose cover-page symbols are not captured yet; returns the zips available.
 
     Resume reads the `dei` periods stored in `symbol_tenure` (no marker file). Writes no table.
     """
-    cache = cache_dir(context, context.config.local.paths.financial_notes)
     captured = captured_dei_periods(context)
-    pending = [period for period in _notes_periods(context, years_history + 1) if period not in captured]
+    pending = [period for period in periods if period not in captured]
     return sum(
         ensure_zip(
             context, cache / f"{period}_notes.zip", SEC_FINNOTES_URL_TEMPLATE.format(period=period), label=f"notes {period}", timeout=600, log=logger
@@ -336,6 +342,59 @@ def download_financial_notes(context: Context, years_history: int = 15) -> int:
         is not None
         for period in pending
     )
+
+
+def download_financial_notes(context: Context, years_history: int = 15) -> int:
+    """`download_notes_periods` over the window's listed periods (the per-source `notes-download` command)."""
+    cache = cache_dir(context, context.config.local.paths.financial_notes)
+    return download_notes_periods(context, cache, notes_periods(context, years_history + 1))
+
+
+def repair_notes_availability(context: Context, cache: Path) -> int:
+    """Re-stamp every stored period's `available_at` clock; metadata only, never a download or parse. Returns 0."""
+    _repair_stored_clocks(context, cache, overwrite=True)
+    return 0
+
+
+def ingest_financial_notes(context: Context, cache: Path, scope: ZipScope, periods: list[str]) -> int:
+    """Parse the work list's notes periods into `notes_num` and `notes_text`; returns rows upserted.
+
+    Periods missing from either table are parsed for every ticker, and cached periods again for a new ticker
+    with no row. `scope.full` re-reads every stored period too (after a parse change).
+    """
+    period_clocks = _repair_stored_clocks(context, cache, overwrite=False)
+    identity = load_identity(context)
+    work = archive_worklist(
+        context,
+        _NOTES_TABLES,
+        periods,
+        cached_periods(cache, suffix="_notes.zip"),
+        scope.tickers,
+        scope.run_date,
+        full=scope.full,
+        all_tickers=scope.all_tickers,
+    )
+    units = dict(work.units())
+    n_num = n_txt = 0
+    for period in tqdm(periods, desc="SEC financial-statement notes"):
+        # every stored period validates its immutable clock, including those skipped below
+        available_at = period_clocks.get(period) or stored_period_clock(context, _NOTES_TABLES, period)
+        if period not in units:
+            continue
+        found = ensure_archive(context, cache, NOTES_ARCHIVE, period)
+        if found is None:
+            continue
+        path, clock = found
+        available_at = available_at or clock
+        if available_at is None:
+            logger.warning("notes %s: archive clock unavailable -> skipping rows until a later retry", period)
+            continue
+        num, txt = _read_notes(path, identity, set(units[period]))
+        n_num += _save_period(context, Tables.notes_num, num, _NUM_OUT, period, available_at)
+        n_txt += _save_period(context, Tables.notes_text, txt, _TXT_OUT, period, available_at)
+
+    logger.info("notes: upserted %d num + %d text rows (%d pending + %d rescanned periods)", n_num, n_txt, len(work.pending), len(work.rescan))
+    return n_num + n_txt
 
 
 def fetch_financial_notes(
@@ -348,50 +407,13 @@ def fetch_financial_notes(
     *,
     all_tickers: Collection[str] | None = None,
 ) -> int:
-    """Fetch the notes data sets over `years_history` into `notes_num` and `notes_text`; returns rows upserted.
-
-    Periods missing from either table are parsed for every ticker, and cached periods again for a new ticker
-    with no row. `reparse` re-reads every stored period too (after a parse change). `repair_availability`
-    only repairs stored `available_at` clocks and returns 0 before any download or parse.
-    """
-
+    """The per-source `financial-notes` command: `ingest_financial_notes` over the window's listed periods, or
+    with `repair_availability` only `repair_notes_availability` (returns 0 before any download or parse)."""
     cache = cache_dir(context, context.config.local.paths.financial_notes)
-
-    period_clocks = _repair_stored_clocks(context, cache, overwrite=repair_availability)
     if repair_availability:
-        return 0  # Metadata-only mode: never download or reparse a ZIP.
-
-    identity = load_identity(context)
-    run_date = pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize()
-    periods = _notes_periods(context, years_history + 1, run_date)
-    work = archive_worklist(
-        context, _NOTES_TABLES, periods, cached_periods(cache, suffix="_notes.zip"), tickers, run_date, full=reparse, all_tickers=all_tickers
-    )
-    units = dict(work.units())
-    n_num = n_txt = 0
-    observed_from = date.fromisoformat(cast(str, cast(Resume, Tables.notes_num.resume).observed_from))
-    for period in tqdm(periods, desc="SEC financial-statement notes"):
-        # every stored period validates its immutable clock, including those skipped below
-        available_at = period_clocks.get(period) or stored_period_clock(context, _NOTES_TABLES, period)
-        if period not in units:
-            continue
-
-        archive_path = cache / f"{period}_notes.zip"
-        downloaded = not is_cached(archive_path)
-        path = ensure_zip(context, archive_path, SEC_FINNOTES_URL_TEMPLATE.format(period=period), label=f"notes {period}", timeout=600, log=logger)
-        if path is None:
-            continue
-        available_at = available_at or archive_available_at(period_end(period), path, observed_from=observed_from, downloaded=downloaded)
-        if available_at is None:
-            logger.warning("notes %s: archive clock unavailable -> skipping rows until a later retry", period)
-            continue
-
-        num, txt = _read_notes(path, identity, set(units[period]))
-        n_num += _save_period(context, Tables.notes_num, num, _NUM_OUT, period, available_at)
-        n_txt += _save_period(context, Tables.notes_text, txt, _TXT_OUT, period, available_at)
-
-    logger.info("notes: upserted %d num + %d text rows (%d pending + %d rescanned periods)", n_num, n_txt, len(work.pending), len(work.rescan))
-    return n_num + n_txt
+        return repair_notes_availability(context, cache)
+    scope = ZipScope(tickers=tickers, all_tickers=all_tickers, run_date=run_date(as_of), full=reparse)
+    return ingest_financial_notes(context, cache, scope, notes_periods(context, years_history + 1, scope.run_date))
 
 
 def reparse_financial_notes(context: Context, tickers: list[str]) -> int:

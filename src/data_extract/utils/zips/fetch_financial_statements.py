@@ -21,11 +21,11 @@ from tqdm import tqdm
 
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import (
+    DEFAULT_TIMEOUT,
     ZipRead,
     archive_available_at,
     cache_dir,
     cached_periods,
-    ensure_zip,
     is_cached,
     period_end,
     quarter_periods,
@@ -33,7 +33,8 @@ from src.data_extract.utils.common.bulk_cache import (
     stored_period_clock,
 )
 from src.data_extract.utils.common.identity import Identity, load_identity, tickers_for_ciks
-from src.data_extract.utils.common.resume import archive_worklist
+from src.data_extract.utils.common.resume import archive_periods, archive_worklist
+from src.data_extract.utils.zips.zip_archive import ArchiveSource, ensure_archive
 from src.data_store.schema import Resume, Tables
 from src.utils.string import pad_cik_series, run_date
 
@@ -62,6 +63,13 @@ _ZIP_SPECS = {
 _OUT_COLS = ["cik", "ticker", "tag", "ddate", "qtrs", "uom", "value", "adsh", "filed", "form", "fy", "fp", "quarter", "available_at"]
 
 SEC_FINSTMT_URL_TEMPLATE = "https://www.sec.gov/files/dera/data/financial-statement-data-sets/{quarter}.zip"
+STATEMENTS_ARCHIVE = ArchiveSource(
+    label="finstmt",
+    file_template="{period}.zip",
+    url_template=SEC_FINSTMT_URL_TEMPLATE,
+    observed_from=date.fromisoformat(cast(str, cast(Resume, Tables.pension_facts.resume).observed_from)),
+    timeout=DEFAULT_TIMEOUT,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -129,6 +137,18 @@ def _save_pension_quarter(context: Context, identity: Identity, path: Path, quar
     return context.store.save(Tables.pension_facts, facts[[c for c in _OUT_COLS if c in facts.columns]])
 
 
+def statement_quarters(years_history: int, as_of: pd.Timestamp) -> list[str]:
+    """The quarters of the `years_history` window ending `as_of`, from the table's source start."""
+    first_year = pd.Timestamp(cast(str, cast(Resume, Tables.pension_facts.resume).source_start)).year
+    return quarter_periods(years_history + 1, first_year, as_of)
+
+
+def download_financial_statements(context: Context, cache: Path, quarters: list[str]) -> int:
+    """Cache the zips of `quarters` no stored `pension_facts` row carries; returns the zips available. Writes no table."""
+    listed, stored = archive_periods(context, (Tables.pension_facts,), quarters)
+    return sum(ensure_archive(context, cache, STATEMENTS_ARCHIVE, q) is not None for q in listed if q not in stored)
+
+
 def fetch_financial_statements(
     context: Context,
     tickers: list[str],
@@ -148,24 +168,19 @@ def fetch_financial_statements(
     identity = load_identity(context)
     cache = cache_dir(context, context.config.local.paths.financial_statements)
     start_date = run_date(as_of)
-    first_year = pd.Timestamp(cast(str, cast(Resume, Tables.pension_facts.resume).source_start)).year
-    periods = quarter_periods(years_history + 1, first_year, start_date)
-    observed_from = date.fromisoformat(cast(str, cast(Resume, Tables.pension_facts.resume).observed_from))
+    periods = statement_quarters(years_history, start_date)
     work = archive_worklist(
         context, (Tables.pension_facts,), periods, cached_periods(cache), tickers, start_date, full=reparse, all_tickers=all_tickers
     )
 
     saved = 0
     for q, keys in tqdm(list(work.units()), desc="financial-statement data sets"):
-        cached_path = cache / f"{q}.zip"
-        downloaded = not is_cached(cached_path)
-        path = ensure_zip(context, cached_path, SEC_FINSTMT_URL_TEMPLATE.format(quarter=q), label=f"finstmt {q}", log=logger)
-        if path is None:
+        found = ensure_archive(context, cache, STATEMENTS_ARCHIVE, q)
+        if found is None:
             continue
+        path, clock = found
         stored = stored_period_clock(context, (Tables.pension_facts,), q, column="quarter")
-        end = period_end(q)
-        clock = archive_available_at(end, path, observed_from=observed_from, downloaded=downloaded)
-        available_at = clock if end < observed_from else stored or clock
+        available_at = clock if period_end(q) < STATEMENTS_ARCHIVE.observed_from else stored or clock
         if available_at is None:
             logger.warning("finstmt %s: archive clock unavailable -> leaving quarter un-ingested", q)
             continue

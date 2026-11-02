@@ -25,6 +25,7 @@ import pytest
 from src.data_extract.utils.insider.insider_common import screen_insider_rows
 from src.data_extract.utils.zips import fetch_financial_notes as fn
 from src.data_extract.utils.zips import fetch_financial_statements as fin
+from src.data_extract.utils.zips import zip_archive
 from src.data_store.schema import Tables
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
 
@@ -93,8 +94,9 @@ def _patch_bulk_io(module: Any, monkeypatch: pytest.MonkeyPatch, tmp_path) -> No
     monkeypatch.setattr(module, "load_identity", lambda context: IDENTITY, raising=False)
     monkeypatch.setattr(module, "load_cik_mapping", lambda context: ROSTER.copy(), raising=False)
     monkeypatch.setattr(module, "cache_dir", lambda context, key: tmp_path)
-    monkeypatch.setattr(module, "ensure_zip", lambda context, path, url, **kwargs: path)
-    monkeypatch.setattr(module, "is_cached", lambda path: True)
+    monkeypatch.setattr(zip_archive, "ensure_zip", lambda context, path, url, **kwargs: path)
+    monkeypatch.setattr(zip_archive, "is_cached", lambda path: True)
+    monkeypatch.setattr(zip_archive, "archive_available_at", lambda *args, **kwargs: date(2025, 1, 13))
     monkeypatch.setattr(module, "archive_available_at", lambda *args, **kwargs: date(2025, 1, 13))
     monkeypatch.setattr(module, "stored_period_clock", lambda *args, **kwargs: None)
 
@@ -105,7 +107,7 @@ def test_notes_rows_resolve_through_the_lineage_window_of_their_filer(sqlite_sto
     (tmp_path / f"{period}_notes.zip").write_bytes(_notes_zip())
     _patch_bulk_io(fn, monkeypatch, tmp_path)
     monkeypatch.setattr(fn, "_repair_stored_clocks", lambda *args, **kwargs: {})
-    monkeypatch.setattr(fn, "_notes_periods", lambda context, years_history, today=None: [period])
+    monkeypatch.setattr(fn, "notes_periods", lambda context, years_history, today=None: [period])
 
     fn.fetch_financial_notes(_context(sqlite_store, tmp_path), UNIVERSE, years_history=1)
 

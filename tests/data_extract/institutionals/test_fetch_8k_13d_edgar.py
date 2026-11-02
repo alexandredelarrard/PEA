@@ -62,9 +62,9 @@ def test_filing_fetchers_take_years_history_as_an_argument():
 
     # each step is the single place that reads the window off the config, for its own fetchers
     expected = {
-        # 13F, 13F-manager books, bulk insiders, daily insiders, 13D, 13G, 8-K
-        # (superinvestors takes no window; short interest plans from its latest stored day; FTD stamps stored lines and reads none)
-        StepExtractInstitutionals: 7,
+        # 13F, 13F-manager books, daily insiders, 13D, 13G, 8-K (bulk insiders and FTD are StepExtractZips)
+        # (superinvestors takes no window; short interest plans from its latest stored day)
+        StepExtractInstitutionals: 6,
         # DEF 14A edgar + filing text (the LLM and vote passes take no window)
         StepExtractStructure: 2,
     }

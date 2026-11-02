@@ -1,4 +1,4 @@
-"""`StepExtractAllData` runs downloads -> `StepExtractIdentity` (captures, build, propagation) before every domain step."""
+"""`StepExtractAllData` runs zip downloads -> `StepExtractIdentity` (captures, build, propagation) -> zip ingests before every domain step."""
 
 from __future__ import annotations
 
@@ -10,14 +10,15 @@ from typing import Any, cast
 import pandas as pd
 import pytest
 
-from src.data_extract import step_extract_all_data as module
 from src.data_extract.step_extract_all_data import StepExtractAllData
 from src.data_extract.transformers import step_extract_identity as identity_module
+from src.data_extract.transformers import step_extract_zips as zips_module
 
 DOMAIN_STEPS = ("prices", "institutionals", "fundamentals_sharadar", "fundamentals", "structure", "behavioral")
 IDENTITY_STAGE = (
     "insider_download",
     "notes_download",
+    "statements_download",
     "ftd_download",
     "sec_tickers",
     "dei_capture",
@@ -29,6 +30,7 @@ IDENTITY_STAGE = (
     "identity_refresh",
     "propagate",
 )
+ZIP_INGESTS = ("insider_ingest", "notes_ingest", "statements_ingest", "ftd_ingest")
 
 
 def _step(monkeypatch, order: list[str], *, boom: str | None = None) -> Any:
@@ -45,10 +47,18 @@ def _step(monkeypatch, order: list[str], *, boom: str | None = None) -> Any:
 
         return call
 
-    monkeypatch.setattr(module, "download_insider_transactions", mark("insider_download"))
-    monkeypatch.setattr(module, "download_financial_notes", mark("notes_download"))
-    monkeypatch.setattr(module, "download_fails_to_deliver", mark("ftd_download"))
-    monkeypatch.setattr(module, "download_sec_company_tickers", mark("sec_tickers"))
+    monkeypatch.setattr(zips_module, "cache_dir", lambda context, name: Path("cache") / name)
+    monkeypatch.setattr(zips_module, "load_universe_tickers", lambda context: ["AAA", "BBB"])
+    monkeypatch.setattr(zips_module, "notes_periods", lambda context, years_history, today: ["2026q1"])
+    monkeypatch.setattr(zips_module, "download_insider_transactions", mark("insider_download", []))
+    monkeypatch.setattr(zips_module, "download_notes_periods", mark("notes_download", 0))
+    monkeypatch.setattr(zips_module, "download_financial_statements", mark("statements_download", 0))
+    monkeypatch.setattr(zips_module, "download_fails_to_deliver", mark("ftd_download", 0))
+    monkeypatch.setattr(zips_module, "download_sec_company_tickers", mark("sec_tickers", 0))
+    monkeypatch.setattr(zips_module, "fetch_insider_transactions", mark("insider_ingest", 0))
+    monkeypatch.setattr(zips_module, "ingest_financial_notes", mark("notes_ingest", 0))
+    monkeypatch.setattr(zips_module, "fetch_financial_statements", mark("statements_ingest", 0))
+    monkeypatch.setattr(zips_module, "fetch_fails_to_deliver", mark("ftd_ingest", 0))
     monkeypatch.setattr(identity_module, "cache_dir", lambda context, name: Path("cache") / name)
     monkeypatch.setattr(identity_module, "load_universe_tickers", lambda context: ["AAA", "BBB"])
     monkeypatch.setattr(identity_module, "capture_pending_dei", lambda context, cache, full: mark("dei_capture")())
@@ -92,7 +102,12 @@ def _step(monkeypatch, order: list[str], *, boom: str | None = None) -> Any:
     config = SimpleNamespace(
         data_extract=SimpleNamespace(years_history=15, redundant_ticks=["GOOG"]),
         local=SimpleNamespace(
-            paths=SimpleNamespace(insider_transactions="sec_insider_transactions", financial_notes="notes", fails_deliver="sec_fails_to_deliver")
+            paths=SimpleNamespace(
+                insider_transactions="sec_insider_transactions",
+                financial_notes="notes",
+                financial_statements="statements",
+                fails_deliver="sec_fails_to_deliver",
+            )
         ),
     )
     step = cast(Any, object.__new__(StepExtractAllData))
@@ -109,10 +124,11 @@ def test_identity_stage_runs_before_every_domain_step(monkeypatch):
     order: list[str] = []
     _step(monkeypatch, order).run()
 
-    assert order == [*IDENTITY_STAGE, *DOMAIN_STEPS], order
+    assert order == [*IDENTITY_STAGE, *ZIP_INGESTS, *DOMAIN_STEPS], order
 
     print("\n=== SANITY CHECK: StepExtractAllData order (AC-011, AC-038, AC-040) ===")
     print(f"  identity stage: {' -> '.join(IDENTITY_STAGE)}")
+    print(f"  then zip ingests: {' -> '.join(ZIP_INGESTS)}")
     print(f"  then domain steps: {' -> '.join(DOMAIN_STEPS)}")
     print("  OK: every consumer, and the derived tables they rebuild, run on the propagated lineage")
 
@@ -123,8 +139,8 @@ def test_identity_or_propagation_failure_stops_before_any_consumer(monkeypatch, 
     with pytest.raises(RuntimeError, match=boom):
         _step(monkeypatch, order, boom=boom).run()
 
-    assert order[-1] == boom and not set(DOMAIN_STEPS) & set(order), order
+    assert order[-1] == boom and not set(DOMAIN_STEPS + ZIP_INGESTS) & set(order), order
 
     print(f"\n=== SANITY CHECK: {boom} failure ===")
-    print(f"  {len(order)} call(s) ran, the last one {boom}; no domain step started")
+    print(f"  {len(order)} call(s) ran, the last one {boom}; no zip ingest or domain step started")
     print("  OK: a failed identity stage raises out of the run instead of feeding consumers a stale lineage")

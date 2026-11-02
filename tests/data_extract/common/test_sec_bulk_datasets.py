@@ -26,6 +26,7 @@ from src.data_extract.utils.common.identity import build_identity
 from src.data_extract.utils.insider.insider_common import BULK_DATE_FORMATS, build_insider_frame, screen_insider_rows
 from src.data_extract.utils.zips import fetch_financial_statements as fin
 from src.data_extract.utils.zips import fetch_insider_transactions as ins
+from src.data_extract.utils.zips import zip_archive
 from src.data_store.schema import Resume, Tables
 from src.data_store.store import DataStore, _create_canonical
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
@@ -365,7 +366,7 @@ def test_pension_fetch_preserves_two_zip_vintages(tmp_path: Path, monkeypatch: p
     monkeypatch.setattr(fin, "load_identity", lambda context: BDX_IDENTITY)
     monkeypatch.setattr(fin, "cache_dir", lambda context, key: tmp_path)
     monkeypatch.setattr(fin, "quarter_periods", lambda *args: ["2026q1", "2026q2"])
-    monkeypatch.setattr(fin, "ensure_zip", lambda context, path, url, **kwargs: path)
+    monkeypatch.setattr(zip_archive, "ensure_zip", lambda context, path, url, **kwargs: path)
     monkeypatch.setattr(fin, "_read_pension_facts", fact)
 
     assert fin.fetch_financial_statements(context, ["BDX"], years_history=15) == 2
@@ -408,7 +409,7 @@ def test_pension_new_zip_uses_successful_download_day_and_preserves_it(tmp_path:
     monkeypatch.setattr(fin, "load_identity", lambda context: BDX_IDENTITY)
     monkeypatch.setattr(fin, "cache_dir", lambda context, key: tmp_path)
     monkeypatch.setattr(fin, "quarter_periods", lambda *args: ["2026q3"])
-    monkeypatch.setattr(fin, "ensure_zip", download)
+    monkeypatch.setattr(zip_archive, "ensure_zip", download)
     monkeypatch.setattr(
         fin,
         "_read_pension_facts",

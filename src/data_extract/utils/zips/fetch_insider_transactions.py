@@ -562,17 +562,17 @@ def fetch_insider_transactions(
     return saved
 
 
-def reparse_insider_transactions(context: Context, tickers: list[str]) -> int:
-    """Re-read every cached quarter for `tickers` only (a lineage expansion); returns the zip rows saved.
+def reparse_insider_transactions(context: Context, tickers: list[str], *, identity: Identity, run_date: pd.Timestamp) -> int:
+    """Re-read every cached quarter up to `run_date`'s year for `tickers` only (a lineage expansion) through `identity`;
+    returns the zip rows saved.
 
     Each quarter goes through `store_zip_quarter`, so a filing EDGAR already stored keeps its rows. The
     stored-row sweep belongs to the regular full-universe run.
     """
-    identity = load_identity(context)
     cache = cache_dir(context, context.config.local.paths.insider_transactions)
     on_disk = cached_periods(cache)
     first_year = pd.Timestamp(cast(str, cast(Resume, Tables.insider_transactions.resume).source_start)).year
-    quarters = [q for q in quarter_periods(pd.Timestamp.today().year - first_year + 1, first_year) if q in on_disk]
+    quarters = [q for q in quarter_periods(run_date.year - first_year + 1, first_year) if q in on_disk]
     saved = 0
     fetched_at = pd.Timestamp.now(tz="UTC").tz_localize(None)
     for quarter in quarters:

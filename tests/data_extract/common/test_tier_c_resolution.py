@@ -99,7 +99,7 @@ def _patch_bulk_io(module: Any, monkeypatch: pytest.MonkeyPatch, tmp_path) -> No
     monkeypatch.setattr(zip_archive, "ensure_zip", lambda context, path, url, **kwargs: path)
     monkeypatch.setattr(zip_archive, "is_cached", lambda path: True)
     monkeypatch.setattr(zip_archive, "archive_available_at", lambda *args, **kwargs: date(2025, 1, 13))
-    monkeypatch.setattr(module, "archive_available_at", lambda *args, **kwargs: date(2025, 1, 13))
+    monkeypatch.setattr(module, "archive_available_at", lambda *args, **kwargs: date(2025, 1, 13), raising=False)
     monkeypatch.setattr(module, "stored_period_clock", lambda *args, **kwargs: None)
 
 

@@ -23,7 +23,6 @@ from src.context import Context
 from src.data_extract.utils.common.bulk_cache import (
     DEFAULT_TIMEOUT,
     ZipRead,
-    archive_available_at,
     cache_dir,
     cached_periods,
     is_cached,
@@ -34,7 +33,7 @@ from src.data_extract.utils.common.bulk_cache import (
 )
 from src.data_extract.utils.common.identity import Identity, load_identity, tickers_for_ciks
 from src.data_extract.utils.common.resume import archive_periods, archive_worklist
-from src.data_extract.utils.zips.zip_archive import ArchiveSource, ensure_archive
+from src.data_extract.utils.zips.zip_archive import ArchiveSource, ensure_archive, reparse_clock
 from src.data_store.schema import Resume, Tables
 from src.utils.string import pad_cik_series, run_date
 
@@ -190,22 +189,20 @@ def fetch_financial_statements(
     return saved
 
 
-def reparse_financial_statements(context: Context, tickers: list[str]) -> int:
-    """Re-read every cached statement zip for `tickers` only (a lineage expansion); returns rows upserted.
+def reparse_financial_statements(context: Context, tickers: list[str], *, identity: Identity, run_date: pd.Timestamp) -> int:
+    """Re-read every cached statement zip up to `run_date`'s year for `tickers` only (a lineage expansion) through
+    `identity`; returns rows upserted.
 
     No download: the next regular run keeps its own resume.
     """
-    identity = load_identity(context)
     cache = cache_dir(context, context.config.local.paths.financial_statements)
     first_year = pd.Timestamp(cast(str, cast(Resume, Tables.pension_facts.resume).source_start)).year
-    quarters = [q for q in quarter_periods(pd.Timestamp.today().year - first_year + 1, first_year) if is_cached(cache / f"{q}.zip")]
+    quarters = [q for q in quarter_periods(run_date.year - first_year + 1, first_year) if is_cached(cache / f"{q}.zip")]
     observed_from = date.fromisoformat(cast(str, cast(Resume, Tables.pension_facts.resume).observed_from))
     saved = 0
     for q in quarters:
         path = cache / f"{q}.zip"
-        available_at = stored_period_clock(context, (Tables.pension_facts,), q, column="quarter") or archive_available_at(
-            period_end(q), path, observed_from=observed_from, downloaded=False
-        )
+        available_at = reparse_clock(context, (Tables.pension_facts,), q, path, observed_from, column="quarter")
         if available_at is None:
             logger.warning("finstmt %s: archive clock unavailable -> not re-parsed", q)
             continue

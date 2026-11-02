@@ -38,7 +38,7 @@ from src.data_extract.utils.common.incremental import stored_values
 from src.data_extract.utils.common.resume import archive_worklist
 from src.data_extract.utils.common.sec_io import sec_get
 from src.data_extract.utils.identity.symbol_tenure import captured_dei_periods
-from src.data_extract.utils.zips.zip_archive import ArchiveSource, ZipScope, ensure_archive
+from src.data_extract.utils.zips.zip_archive import ArchiveSource, ZipScope, ensure_archive, reparse_clock
 from src.data_store.schema import Resume, Table, Tables
 from src.utils.string import pad_cik_series
 
@@ -390,25 +390,23 @@ def ingest_financial_notes(context: Context, cache: Path, scope: ZipScope, perio
     return n_num + n_txt
 
 
-def reparse_financial_notes(context: Context, tickers: list[str]) -> int:
-    """Re-read every cached notes zip for `tickers` only (a lineage expansion); returns rows upserted.
+def reparse_financial_notes(context: Context, tickers: list[str], *, identity: Identity) -> int:
+    """Re-read every cached notes zip for `tickers` only (a lineage expansion) through `identity`; returns rows upserted.
 
     No download: the next regular run keeps its own resume.
     """
     cache = cache_dir(context, context.config.local.paths.financial_notes)
-    identity = load_identity(context)
     saved = 0
     observed_from = date.fromisoformat(cast(str, cast(Resume, Tables.notes_num.resume).observed_from))
-    for period in cached_notes_periods(cache):
+    periods = cached_notes_periods(cache)
+    for period in periods:
         path = cache / f"{period}_notes.zip"
-        available_at = stored_period_clock(context, _NOTES_TABLES, period) or archive_available_at(
-            period_end(period), path, observed_from=observed_from, downloaded=False
-        )
+        available_at = reparse_clock(context, _NOTES_TABLES, period, path, observed_from)
         if available_at is None:
             logger.warning("notes %s: archive clock unavailable -> not re-parsed", period)
             continue
         num, txt = _read_notes(path, identity, set(tickers))
         saved += _save_period(context, Tables.notes_num, num, _NUM_OUT, period, available_at)
         saved += _save_period(context, Tables.notes_text, txt, _TXT_OUT, period, available_at)
-    logger.info("notes: re-parsed %d cached period(s) for %d ticker(s), %d row(s) upserted", len(cached_notes_periods(cache)), len(tickers), saved)
+    logger.info("notes: re-parsed %d cached period(s) for %d ticker(s), %d row(s) upserted", len(periods), len(tickers), saved)
     return saved

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
+from functools import partial
 
 import pandas as pd
 
@@ -183,16 +184,20 @@ def _window_ciks(scopes: Mapping[str, FilingScope], table: Table) -> dict[str, f
 
 
 def _reparse_bulk(
-    context: Context, changed: Sequence[str], scopes: Mapping[str, FilingScope], co_registrants: frozenset[str]
+    context: Context, changed: Sequence[str], scopes: Mapping[str, FilingScope], resolver: Identity, run_date: pd.Timestamp
 ) -> dict[str, tuple[str, ...]]:
-    """Re-parse each bulk family from its cache for the changed tickers whose table lacks rows of a CIK it can hold:
-    a window CIK listed after the data set starts for the consolidating Notes and statement families, an event CIK
-    other than a co-registrant for insider."""
-    events = {ticker: frozenset(scope.event_ciks) - co_registrants for ticker, scope in scopes.items()}
+    """Re-parse each bulk family from its cache, through `resolver` up to `run_date`, for the changed tickers whose
+    table lacks rows of a CIK it can hold: a window CIK listed after the data set starts for the consolidating Notes
+    and statement families, an event CIK other than a co-registrant for insider."""
+    events = {ticker: frozenset(scope.event_ciks) - resolver.co_registrant_ciks for ticker, scope in scopes.items()}
     families: tuple[tuple[Table, Callable[[Context, list[str]], int], Mapping[str, frozenset[str]]], ...] = (
-        (Tables.notes_num, reparse_financial_notes, _window_ciks(scopes, Tables.notes_num)),
-        (Tables.pension_facts, reparse_financial_statements, _window_ciks(scopes, Tables.pension_facts)),
-        (Tables.insider_transactions, reparse_insider_transactions, events),
+        (Tables.notes_num, partial(reparse_financial_notes, identity=resolver), _window_ciks(scopes, Tables.notes_num)),
+        (
+            Tables.pension_facts,
+            partial(reparse_financial_statements, identity=resolver, run_date=run_date),
+            _window_ciks(scopes, Tables.pension_facts),
+        ),
+        (Tables.insider_transactions, partial(reparse_insider_transactions, identity=resolver, run_date=run_date), events),
     )
     done: dict[str, tuple[str, ...]] = {}
     for table, reparse, scope_ciks in families:
@@ -281,7 +286,7 @@ def propagate_identity(
     records: list[dict] = []
     for spec in PURGE_TABLES:
         records += _purge(context, spec, changed, resolver, dry_run=dry_run)
-    reparsed = {} if dry_run else _reparse_bulk(context, changed, scopes, resolver.co_registrant_ciks)
+    reparsed = {} if dry_run else _reparse_bulk(context, changed, scopes, resolver, run_date)
     records += _refresh_insider(context, resolver, changed, dry_run=dry_run)
     records += _refresh_fails(context, universe, run_date, dry_run=dry_run, every=every_ticker, others=others)
     records += _refresh_short_volume(context, resolver, universe, run_date, dry_run=dry_run, every=every_ticker)

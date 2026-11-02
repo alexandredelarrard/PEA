@@ -3,7 +3,10 @@
 Order: insider Forms 3/4/5 (EDGAR rows after the last stored zip quarter, then the zip reconcile; the insider run
 enters its own source run), SC 13D, SC 13G, 8-K, 10-K/10-Q filing text, DEF 14A ECD XBRL. The window, run date,
 ticker scope and CIK mapping are declared once and shared by every walk. Consumes the identity built and propagated
-upstream; the identity scope, document cap and retry policy are read once too. The DEF 14A LLM pass and the 8-K vote parser read what this step stores, so they run after it.
+upstream; the identity scope, document cap and retry policy are read once too. The local EDGAR index is refreshed
+once per step: `run()` refreshes it over the widest window of the six walks before them (`run_index`); a walk run
+alone refreshes its own window, unless the step already did, or, for a walk that certifies nothing, unless today's
+refresh (the nightly `edgar-index` task) already covered it. The DEF 14A LLM pass and the 8-K vote parser read what this step stores, so they run after it.
 """
 
 from __future__ import annotations
@@ -14,7 +17,8 @@ import pandas as pd
 from omegaconf import DictConfig
 
 from src.context import Context
-from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarRun, FetchSummary, run_edgar_fetch
+from src.data_extract.utils.edgar_extract import edgar_index
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarRun, FetchSummary, index_years, refresh_index, run_edgar_fetch
 from src.data_extract.utils.edgar_extract.fetch_8k_edgar import SEC_8K_FETCH
 from src.data_extract.utils.edgar_extract.fetch_13d_edgar import SEC_13D_FETCH
 from src.data_extract.utils.edgar_extract.fetch_13g_edgar import SEC_13G_FETCH
@@ -22,6 +26,7 @@ from src.data_extract.utils.edgar_extract.fetch_def14a_edgar import DEF14A_EDGAR
 from src.data_extract.utils.edgar_extract.fetch_filing_text import FILING_TEXT_FETCH
 from src.data_extract.utils.edgar_extract.fetch_insider_edgar import INSIDER_EDGAR_FETCH
 from src.utils.step import Step
+from src.utils.string import run_date
 from src.utils.universe import load_universe_tickers
 
 
@@ -37,6 +42,10 @@ class EdgarOptions:
     no_cap: bool = False
 
 
+#: The six walks, in `run()` order.
+_WALKS: tuple[EdgarFetch, ...] = (INSIDER_EDGAR_FETCH, SEC_13D_FETCH, SEC_13G_FETCH, SEC_8K_FETCH, FILING_TEXT_FETCH, DEF14A_EDGAR_FETCH)
+
+
 class StepExtractEdgar(Step):
     def __init__(self, context: Context, config: DictConfig, options: EdgarOptions | None = None) -> None:
         super().__init__(context=context, config=config)
@@ -44,9 +53,29 @@ class StepExtractEdgar(Step):
         self._run = EdgarRun.load(
             context, options.tickers or load_universe_tickers(context), options.years, as_of=options.as_of, full=options.full, no_cap=options.no_cap
         )
+        self._indexed_years: int | None = None
+
+    def _refresh(self, years_history: int) -> None:
+        refresh_index(self._context, self._run, years_history)
+        self._indexed_years = years_history
+
+    def _ensure_index(self, fetch: EdgarFetch) -> None:
+        """Refresh the index for `fetch` unless this step, or today's refresh for a walk that certifies nothing, covered it."""
+        years = index_years(fetch, self._run)
+        if self._indexed_years is not None and self._indexed_years >= years:
+            return
+        if fetch.certify is None and self._run.run_date == run_date(None) and edgar_index.refreshed_today(self._context, years):
+            self._log.info("edgar index: already refreshed today over %d year(s); not refreshed again", years)
+            return
+        self._refresh(years)
 
     def _run_fetch(self, fetch: EdgarFetch) -> FetchSummary:
+        self._ensure_index(fetch)
         return run_edgar_fetch(self._context, fetch, self._run)
+
+    def run_index(self) -> None:
+        """Refresh the local EDGAR index once over the widest window of the six walks."""
+        self._refresh(max(index_years(fetch, self._run) for fetch in _WALKS))
 
     def run_insider(self) -> FetchSummary:
         return self._run_fetch(INSIDER_EDGAR_FETCH)
@@ -67,6 +96,7 @@ class StepExtractEdgar(Step):
         return self._run_fetch(DEF14A_EDGAR_FETCH)
 
     def run(self) -> None:
+        self.run_index()
         self.run_insider()
         self.run_13d()
         self.run_13g()

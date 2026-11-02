@@ -153,7 +153,7 @@ def test_an_owner_role_form_4_is_a_marker_and_never_hides_the_issuers_filing(ctx
     # the tables exist with their full column set, as their DDL makes them on Postgres
     _create_canonical(sqlite_store.engine, [Tables.insider_transactions, Tables.insider_footnotes])
 
-    first = run_edgar_fetch(ctx, module.INSIDER_EDGAR_FETCH, EdgarRun.load(ctx, list(_ROSTER), 15, as_of=_AS_OF), refresh_index=False, max_workers=1)
+    first = run_edgar_fetch(ctx, module.INSIDER_EDGAR_FETCH, EdgarRun.load(ctx, list(_ROSTER), 15, as_of=_AS_OF), max_workers=1)
 
     shown = sqlite_store.load(Tables.insider_transactions, markers=True, where={"ticker": list(_ROSTER)}).sort_values("ticker")
     assert shown[["ticker", "security_type", "row_sequence", "source"]].to_dict("records") == [
@@ -169,7 +169,6 @@ def test_an_owner_role_form_4_is_a_marker_and_never_hides_the_issuers_filing(ctx
         ctx,
         module.INSIDER_EDGAR_FETCH,
         EdgarRun.load(ctx, list(_ROSTER), 15, as_of=_AS_OF + pd.Timedelta(days=1)),
-        refresh_index=False,
         max_workers=1,
     )
     assert list(again.work.units) == ["OXY"]
@@ -185,7 +184,7 @@ def test_an_unread_filing_is_stored_nowhere_and_listed_again(ctx, sqlite_store, 
     filing.xml = lambda: (_ for _ in ()).throw(module.TransientReadError("HTTP 503"))
     patch_index_filings(monkeypatch, {accession: filing})
 
-    summary = run_edgar_fetch(ctx, module.INSIDER_EDGAR_FETCH, EdgarRun.load(ctx, ["OXY"], 15, as_of=_AS_OF), refresh_index=False, max_workers=1)
+    summary = run_edgar_fetch(ctx, module.INSIDER_EDGAR_FETCH, EdgarRun.load(ctx, ["OXY"], 15, as_of=_AS_OF), max_workers=1)
 
     assert summary.missing == {"OXY": [accession]}
     assert sqlite_store.load(Tables.insider_transactions, markers=True, optional=True) is None

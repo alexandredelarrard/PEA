@@ -27,6 +27,8 @@ from src.data_extract.utils.edgar_extract.edgar_driver import (
     EdgarScope,
     FetchSummary,
     FilingStamp,
+    index_years,
+    refresh_index,
     run_edgar_fetch,
 )
 from src.data_extract.utils.edgar_extract.parallel_fetch import PROGRAMMING_ERRORS
@@ -627,4 +629,6 @@ def fetch_fundamentals_sec(
 ) -> FetchSummary:
     """Fetch the `fundamentals_facts` documents not yet stored for `tickers` (see `run_edgar_fetch`); returns its summary."""
     run = EdgarRun.load(context, tickers, years_history, as_of=as_of, full=full, no_cap=no_cap)
-    return run_edgar_fetch(context, fundamentals_fetch(context, run.cik_map), run, max_workers=int(context.config.data_extract.fundamentals_workers))
+    fetch = fundamentals_fetch(context, run.cik_map)
+    refresh_index(context, run, index_years(fetch, run))
+    return run_edgar_fetch(context, fetch, run, max_workers=int(context.config.data_extract.fundamentals_workers))

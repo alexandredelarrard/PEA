@@ -1,6 +1,7 @@
 """Shared driver for the per-filing EDGAR document fetchers.
 
-`run_edgar_fetch` refreshes the local EDGAR index, plans each key's work list with
+`refresh_index` brings the local EDGAR index up to the run date; the caller refreshes it once per run, before its
+walks. `run_edgar_fetch` plans each key's work list with
 `document_resume.document_worklist` (index rows not yet stored), reads every listed filing on a pool of keys
 and saves what it read. A filing that holds no data for the key (not its subject, nothing parsed,
 or a deterministic parse failure) is saved as one empty-filing marker in the done table. A
@@ -559,10 +560,15 @@ def index_years(fetch: EdgarFetch, run: EdgarRun) -> int:
     return max(run.years_history, run.run_date.year - source_start.year + 1)
 
 
-def run_edgar_fetch(
-    context: Context, fetch: EdgarFetch, run: EdgarRun, *, max_workers: int | None = None, refresh_index: bool = True
-) -> FetchSummary:
-    """Fetch every document `fetch.done` still lacks for `run`'s keys and save what was read.
+def refresh_index(context: Context, run: EdgarRun, years_history: int) -> None:
+    """Bring the local EDGAR index up to `run`'s date over `years_history` (SEC identity and retry policy set first)."""
+    context.ensure_edgar_identity()
+    configure(context)
+    edgar_index.refresh(context, run.run_date, years_history)
+
+
+def run_edgar_fetch(context: Context, fetch: EdgarFetch, run: EdgarRun, *, max_workers: int | None = None) -> FetchSummary:
+    """Fetch every document `fetch.done` still lacks for `run`'s keys, on the index as it stands, and save what was read.
 
     `run.full` re-reads the whole listed history (stored accessions and markers included). Never raises for a
     source failure: what could not be read is logged and listed again on the next run.
@@ -573,8 +579,6 @@ def run_edgar_fetch(
             raise ValueError(f"{prepared.done.desc}: run scope did not supply a parser")
         context.ensure_edgar_identity()
         configure(context)
-        if refresh_index:
-            edgar_index.refresh(context, start_date, index_years(prepared, run))
         work = plan_fetch(context, prepared, run)
         context.log.info("%s: %d document(s) to read for %d key(s) %s", prepared.done.desc, work.size, len(work.units), work.counts)
         keys = run.cik_map[run.cik_map["ticker"].astype(str).isin(work.units)]

@@ -66,7 +66,7 @@ def ctx(tmp_path, sqlite_store, monkeypatch) -> Any:
 
 
 def _run(ctx, as_of: pd.Timestamp = _AS_OF):
-    return run_edgar_fetch(ctx, SEC_13G_FETCH, EdgarRun.load(ctx, list(_ROSTER), 15, as_of=as_of), refresh_index=False, max_workers=1)
+    return run_edgar_fetch(ctx, SEC_13G_FETCH, EdgarRun.load(ctx, list(_ROSTER), 15, as_of=as_of), max_workers=1)
 
 
 def test_a_13g_the_key_only_filed_is_one_marker_never_listed_again(ctx, sqlite_store, monkeypatch):

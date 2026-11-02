@@ -133,7 +133,7 @@ def test_a_full_refetch_that_parses_nothing_leaves_the_stored_proxy_untouched(tm
     sqlite_store.save(Tables.def14a_edgar, _real_proxy())
     fetch = EdgarFetch(tables=(Tables.def14a_edgar,), parse=_parse_nothing)
 
-    run_edgar_fetch(ctx, fetch, roster_run(ctx, ["AAA"], full=True, as_of=_AS_OF), refresh_index=False, max_workers=1)
+    run_edgar_fetch(ctx, fetch, roster_run(ctx, ["AAA"], full=True, as_of=_AS_OF), max_workers=1)
 
     stored = sqlite_store.load(Tables.def14a_edgar, markers=True).set_index("accession_number")
     assert stored.loc[_KEPT, "form"] == "DEF 14A" and stored.loc[_KEPT, "peo_total_comp"] == 12.5

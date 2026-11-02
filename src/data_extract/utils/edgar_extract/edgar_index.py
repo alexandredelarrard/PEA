@@ -3,7 +3,8 @@
 One Parquet file per quarter, `{y}Q{q}.parquet`, under `<DATA_STORE>/<paths.sec_edgar_index>`, with
 every CIK's filings of `INDEX_FORMS`: `cik` (int64), `company`, `form`, `filed` (date), `accession`.
 `refresh` downloads a missing closed quarter once, the current quarter on every call, and the
-previous quarter again during the first `_PREVIOUS_QUARTER_DAYS` days of a quarter. Downloads go
+previous quarter again during the first `_PREVIOUS_QUARTER_DAYS` days of a quarter; `refreshed_today`
+tells, from the cache files, whether today's refresh already covered a window. Downloads go
 through `sec_io`; a quarter file is replaced atomically. `entries` reads the cache with filters.
 """
 
@@ -227,6 +228,17 @@ def refresh(context: Context, as_of: pd.Timestamp, years_history: int, *, rebuil
             written[quarter.name] = n_rows
     context.log.info("edgar index: %d quarter(s) downloaded through %s", len(written), as_of.date())
     return written
+
+
+def refreshed_today(context: Context, years_history: int) -> bool:
+    """True when a refresh already ran today over `years_history`: the current quarter's original was downloaded
+    today and every quarter of the window is cached."""
+    today = pd.Timestamp.now().normalize()
+    directory = index_dir(context)
+    original = directory / f"{Quarter.of(today).name}.master.gz"
+    if not original.exists() or pd.Timestamp.fromtimestamp(original.stat().st_mtime).normalize() < today:
+        return False
+    return all((directory / f"{quarter.name}.parquet").exists() for quarter in quarters_between(today - pd.DateOffset(years=years_history), today))
 
 
 def inventory_complete_through(context: Context, as_of: pd.Timestamp, source_start: str) -> pd.Timestamp | None:

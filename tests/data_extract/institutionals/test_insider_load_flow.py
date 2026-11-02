@@ -179,7 +179,7 @@ class _FakeSec:
         monkeypatch.setattr(ins, "_read_tables", lambda path: self.zips.get(path.stem))
         monkeypatch.setattr(edgar_driver, "load_identity", load_identity)
         # One worker (the in-memory SQLite store shares one connection across threads) and no index download.
-        monkeypatch.setattr(edgar_driver, "run_edgar_fetch", partial(edgar_driver.run_edgar_fetch, max_workers=1, refresh_index=False))
+        monkeypatch.setattr(edgar_driver, "run_edgar_fetch", partial(edgar_driver.run_edgar_fetch, max_workers=1))
         monkeypatch.setattr(edgar_index, "index_filing", self._filing)
 
     def publish(self, context: Any, specs: list[Spec], *, owner_listed: tuple[tuple[Spec, str], ...] = ()) -> None:

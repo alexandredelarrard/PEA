@@ -5,6 +5,7 @@ filtered read. Offline: `sec_io.download` is replaced by a fake that serves fixt
 from __future__ import annotations
 
 import gzip
+import os
 from pathlib import Path
 from typing import Any
 
@@ -105,6 +106,22 @@ def test_closed_quarters_refresh_after_weekly_rebuild_and_current_quarter_every_
     print(
         f"  run 1 downloads {len(first)} quarters; run 2 only current; old quarters refresh after a later weekly revision boundary: {sorted(early)}."
     )
+
+
+def test_refreshed_today_reads_the_cache_files(tmp_path: Path, sqlite_store: Any, served: list[str]) -> None:
+    ctx = fake_context(tmp_path, sqlite_store, ["AAPL"])
+    today = pd.Timestamp.now().normalize()
+    before = edgar_index.refreshed_today(ctx, 1)
+
+    edgar_index.refresh(ctx, today, years_history=1)
+    covered, wider = edgar_index.refreshed_today(ctx, 1), edgar_index.refreshed_today(ctx, 3)
+    original = edgar_index.index_dir(ctx) / f"{edgar_index.Quarter.of(today).name}.master.gz"
+    yesterday = (today - pd.Timedelta(days=1)).timestamp()
+    os.utime(original, (yesterday, yesterday))
+
+    assert not before and covered and not wider and not edgar_index.refreshed_today(ctx, 1)
+    print("\n=== SANITY CHECK: refreshed today ===")
+    print("  empty cache -> no; after today's 1-year refresh -> yes for 1y, no for 3y; current original from yesterday -> no.")
 
 
 def test_a_quarter_sec_does_not_serve_writes_nothing(tmp_path, sqlite_store, monkeypatch):

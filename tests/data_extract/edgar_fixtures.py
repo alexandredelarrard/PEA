@@ -145,10 +145,12 @@ def walk_call(fetch: EdgarFetch, run: EdgarRun) -> dict[str, Any]:
 
 
 def stub_edgar_step(monkeypatch: pytest.MonkeyPatch, driver: Any) -> None:
-    """Make `StepExtractEdgar` constructible offline: the CIK mapping and identity stubbed, each driver call handed to
-    `driver(context, **walk_call(fetch, run))`."""
+    """Make `StepExtractEdgar` constructible offline: the CIK mapping, the identity and the index refresh stubbed, each
+    driver call handed to `driver(context, **walk_call(fetch, run))`."""
     from src.data_extract.transformers import step_extract_edgar
 
     monkeypatch.setattr(edgar_driver, "load_cik_mapping", lambda ctx, names: pd.DataFrame({"ticker": names, "cik": ["0"] * len(names)}))
     monkeypatch.setattr(edgar_driver, "load_identity", lambda ctx: None)
+    monkeypatch.setattr(step_extract_edgar, "refresh_index", lambda ctx, run, years_history: None)
+    monkeypatch.setattr(edgar_index, "refreshed_today", lambda ctx, years_history: False)
     monkeypatch.setattr(step_extract_edgar, "run_edgar_fetch", lambda ctx, fetch, run: driver(ctx, **walk_call(fetch, run)))

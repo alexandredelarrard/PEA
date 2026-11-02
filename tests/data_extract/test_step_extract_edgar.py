@@ -14,7 +14,7 @@ from click.testing import CliRunner
 import src.data_extract.cli as cli_mod
 from src.data_extract.transformers import step_extract_edgar as step_mod
 from src.data_extract.transformers.step_extract_edgar import EdgarOptions, StepExtractEdgar
-from src.data_extract.utils.edgar_extract import edgar_driver
+from src.data_extract.utils.edgar_extract import edgar_driver, edgar_index
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarRun
 from tests.data_extract.edgar_fixtures import walk_call
 
@@ -41,8 +41,11 @@ CIK_MAP = pd.DataFrame({"ticker": ["AAA", "BBB"], "cik": ["0000000001", "0000000
 class Driver:
     """Records every declared read and driver call; `boom` names the fetch whose walk raises."""
 
-    def __init__(self, monkeypatch: pytest.MonkeyPatch, boom: str | None = None) -> None:
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, boom: str | None = None, refreshed_today: bool = False) -> None:
         self.calls: list[dict[str, Any]] = []
+        self.refreshes: list[int] = []
+        self.events: list[str] = []
+        self.refreshed_today = refreshed_today
         self.reads: list[str] = []
         self.boom = FETCHES[boom] if boom else None
         self.runs: list[EdgarRun] = []
@@ -50,6 +53,12 @@ class Driver:
         monkeypatch.setattr(edgar_driver, "load_cik_mapping", self.cik_mapping)
         monkeypatch.setattr(edgar_driver, "load_identity", self.identity)
         monkeypatch.setattr(step_mod, "run_edgar_fetch", self.fetch)
+        monkeypatch.setattr(step_mod, "refresh_index", self.refresh)
+        monkeypatch.setattr(edgar_index, "refreshed_today", lambda context, years_history: self.refreshed_today)
+
+    def refresh(self, context: Any, run: EdgarRun, years_history: int) -> None:
+        self.refreshes.append(years_history)
+        self.events.append(f"refresh {years_history}y")
 
     def universe(self, context: Any) -> list[str]:
         self.reads.append("universe")
@@ -65,6 +74,7 @@ class Driver:
     def fetch(self, context: Any, fetch: EdgarFetch, run: EdgarRun) -> None:
         self.calls.append(walk_call(fetch, run))
         self.runs.append(run)
+        self.events.append(fetch.done.desc)
         if fetch is self.boom:
             raise RuntimeError(f"simulated {fetch.done.desc} failure")
 
@@ -146,3 +156,43 @@ def test_edgar_commands_call_their_step_operation(monkeypatch: pytest.MonkeyPatc
     assert driver.calls[0]["tickers"] == ["BBB"] and driver.calls[0]["as_of"] == pd.Timestamp("2026-09-30")
     print(f"\n=== SANITY: `{command}` -> StepExtractEdgar.{COMMANDS[command]} ===")
     print(f"  one walk ({driver.order[0]}) over ['BBB'] on 2026-09-30, CIK mapping and identity read once.")
+
+
+#: The insider walk certifies its cohorts on the index inventory, so its window reaches the table's source start.
+INSIDER_YEARS = 2026 - pd.Timestamp(str(step_mod.INSIDER_EDGAR_FETCH.done.resume.source_start)).year + 1
+
+
+def test_run_refreshes_the_index_once_over_the_widest_window_before_the_walks(monkeypatch: pytest.MonkeyPatch) -> None:
+    driver = Driver(monkeypatch)
+    _step(EdgarOptions(as_of=pd.Timestamp("2026-10-31"))).run()
+
+    assert driver.refreshes == [max(15, INSIDER_YEARS)], "one refresh per run(), over the insider walk's source-start window"
+    assert driver.events[0].startswith("refresh") and len(driver.events) == 7
+    print("\n=== SANITY: one index refresh per run() ===")
+    print(f"  {driver.events[0]} then the 6 walks; edgar_index.refresh 6 -> 1.")
+
+
+@pytest.mark.parametrize("name", RUNS)
+def test_a_walk_alone_refreshes_its_own_window_once(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    driver = Driver(monkeypatch)
+    step = _step(EdgarOptions(as_of=pd.Timestamp("2026-10-31")))
+    getattr(step, name)()
+    getattr(step, name)()
+
+    expected = max(15, INSIDER_YEARS) if name == "run_insider" else 15
+    assert driver.refreshes == [expected], "a lone walk refreshes once per step, over its own window"
+    print(f"\n=== SANITY: {name} alone ===")
+    print(f"  called twice on one step: one refresh over {expected}y, two walks.")
+
+
+@pytest.mark.parametrize("name", RUNS)
+def test_a_walk_alone_skips_a_refresh_already_done_today_unless_it_certifies(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    driver = Driver(monkeypatch, refreshed_today=True)
+    getattr(_step(), name)()
+    backdated = Driver(monkeypatch, refreshed_today=True)
+    getattr(_step(EdgarOptions(as_of=pd.Timestamp("2026-10-31"))), name)()
+
+    assert driver.refreshes == ([max(15, INSIDER_YEARS)] if name == "run_insider" else []), "today's nightly refresh covers a lone walk"
+    assert backdated.refreshes != [], "a backdated run never relies on today's refresh"
+    print(f"\n=== SANITY: {name} after the nightly edgar-index ===")
+    print(f"  refreshes today: {driver.refreshes} (the insider walk rebuilds its certification inventory); backdated run refreshes.")

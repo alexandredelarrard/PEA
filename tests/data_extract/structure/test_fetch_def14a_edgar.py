@@ -248,7 +248,7 @@ def test_the_run_skips_stored_accessions(tmp_path, sqlite_store, monkeypatch):
     sqlite_store.save(Tables.def14a_edgar, _parse(filings[0]))
 
     run = EdgarRun.load(context, ["BA"], 31, as_of=pd.Timestamp("2024-07-01"))
-    summary = run_edgar_fetch(context, DEF14A_EDGAR_FETCH, run, refresh_index=False, max_workers=1)
+    summary = run_edgar_fetch(context, DEF14A_EDGAR_FETCH, run, max_workers=1)
 
     df = sqlite_store.load(Tables.def14a_edgar)
     assert summary.work.size == 1 and set(df["accession_number"]) == {"0001-done", "0001-new"}
@@ -296,9 +296,7 @@ def test_ecd_run_never_parses_a_proxy_filed_before_item_402v(tmp_path, sqlite_st
     parsed: list[str] = []
     monkeypatch.setattr(fetch_def14a_edgar, "ecd_facts", lambda filing: parsed.append(filing.accession_number))
 
-    run_edgar_fetch(
-        context, DEF14A_EDGAR_FETCH, EdgarRun.load(context, ["BA"], 31, as_of=pd.Timestamp("2026-09-30")), refresh_index=False, max_workers=1
-    )
+    run_edgar_fetch(context, DEF14A_EDGAR_FETCH, EdgarRun.load(context, ["BA"], 31, as_of=pd.Timestamp("2026-09-30")), max_workers=1)
 
     assert parsed == ["0001-2024"]
     print("\n=== SANITY: ECD listing floor ===")

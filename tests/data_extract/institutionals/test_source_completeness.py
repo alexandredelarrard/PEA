@@ -377,13 +377,16 @@ def test_ftd_normal_planner_retries_bad_cached_payload(sqlite_store: DataStore, 
     pd.testing.assert_frame_equal(stored_frame, before)
     assert path.exists() and not requests
     path.unlink()
-    assert download_and_capture(context, as_of=pd.Timestamp("2026-07-30")) == 1
-    assert len(requests) == 1
-    recovered_raw = sqlite_store.load(Tables.sec_fails_to_deliver_security)
-    assert recovered_raw is not None
-    assert recovered_raw["fails_quantity"].tolist() == [12.0]
+    assert download_and_capture(context, as_of=pd.Timestamp("2026-07-30")) == 0
+    assert len(requests) == 1 and path.exists()
+    stored_frame = sqlite_store.load(Tables.sec_fails_to_deliver_security)
+    assert stored_frame is not None
+    pd.testing.assert_frame_equal(stored_frame, before_raw)
+    stored_frame = sqlite_store.load(Tables.sec_fails_to_deliver)
+    assert stored_frame is not None
+    pd.testing.assert_frame_equal(stored_frame, before)
     print(
-        "SANITY: a valid ZIP with malformed/wrong-period FTD content preserves both good tables, proof and the cached file; once removed, the next normal planner downloads it again."
+        "SANITY: a valid ZIP with malformed/wrong-period FTD content preserves both good tables, proof and the cached file; once removed, the next download caches it again and the stored period is not re-captured."
     )
 
 

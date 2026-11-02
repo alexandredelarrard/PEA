@@ -262,7 +262,6 @@ INSIDER_EDGAR_FETCH = EdgarFetch(
     done_accessions=insider_done,
     runtime_floor=edgar_window_start,
     run_scope=_insider_run_scope,
-    relist_unparsed=True,
     save=save_insider_key,
     certify=certify_insider_work,
 )

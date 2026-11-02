@@ -253,7 +253,7 @@ def test_known_13g_parse_failure_is_a_deterministic_parse_failure():
     with pytest.raises(ParseFailureError, match="0001-broken"):
         _parse_all("JNJ", "0000200406", [filing])
     print("\n=== SANITY CHECK: known 13G parse failure ===")
-    print("  the accession raises ParseFailureError naming it: the driver logs it and stores one empty-filing marker")
+    print("  the accession raises ParseFailureError naming it: the driver logs it and lists it again next run")
 
 
 if __name__ == "__main__":

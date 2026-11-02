@@ -922,7 +922,7 @@ def test_known_13d_parse_failure_is_a_deterministic_parse_failure():
     with pytest.raises(ParseFailureError, match="0001-broken"):
         parse_13d("AAPL", "0000320193", FilingStamp.of(filing, "0000320193"), EdgarScope())
     print("\n=== SANITY CHECK: known 13D parse failure ===")
-    print("  the accession raises ParseFailureError naming it: the driver logs it and stores one empty-filing marker")
+    print("  the accession raises ParseFailureError naming it: the driver logs it and lists it again next run")
 
 
 def test_13d_item3_and_item6_use_correct_structured_attribute_names():

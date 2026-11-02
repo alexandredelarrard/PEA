@@ -5,8 +5,8 @@ Strictly as-filed: every value is a number the filer tagged, on the period shape
 and YTD decumulation happen later, in memory, in the history build. `xbrl_linkbase` picks the concept(s) for a
 field, `entity_scope` picks the consolidated-registrant facts, and this module turns both into rows. A field or
 period with no usable value is emitted as a value-less row carrying a `dc_code`, so every null has a reason.
-`run_edgar_fetch` lists the index filings not yet stored; a filing with no XBRL, an unreadable one or one
-with no consolidated facts becomes an empty-filing marker.
+`run_edgar_fetch` lists the index filings not yet stored; a filing with no XBRL or no consolidated facts becomes
+an empty-filing marker, an unreadable one (`ParseFailureError`) is listed again next run.
 """
 
 from __future__ import annotations

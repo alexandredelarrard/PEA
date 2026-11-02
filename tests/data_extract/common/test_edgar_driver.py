@@ -9,6 +9,7 @@ AC-012).
 from __future__ import annotations
 
 import dataclasses
+import logging
 import types
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -301,23 +302,25 @@ def test_a_long_outage_heals_on_the_first_good_night(tmp_path, sqlite_store, wai
     print(f"  10 nights of 503 stored nothing and raised nothing; night 11 read all {len(_stored(sqlite_store))} filings from 2026-08-01 on.")
 
 
-def test_an_empty_or_unparseable_filing_is_one_marker_never_listed_again(tmp_path, sqlite_store, waits):
+def test_an_empty_filing_is_one_marker_and_an_unparseable_one_is_listed_again(tmp_path, sqlite_store, waits, caplog):
     ctx = fake_context(tmp_path, sqlite_store, ["AAA"])
     accessions = _seed(ctx, 3)
     source = _Source()
     source.kinds = {accessions[0]: "empty", accessions[1]: "parse"}
 
-    summary = _run(ctx, source, ["AAA"])
+    with caplog.at_level(logging.WARNING):
+        summary = _run(ctx, source, ["AAA"])
     again = _run(ctx, source, ["AAA"], as_of=_AS_OF + pd.Timedelta(days=1))
 
     shown = sqlite_store.load(_T_DOC, markers=True)
     markers = shown[shown["item"] == "_empty"]
-    assert sorted(markers["accession_number"]) == sorted(accessions[:2])
-    assert markers["form"].tolist() == ["8-K", "8-K"] and set(markers["ticker"]) == {"AAA"}
+    assert markers["accession_number"].tolist() == [accessions[0]] and markers["form"].tolist() == ["8-K"]
     assert sqlite_store.load(_T_DOC)["accession_number"].tolist() == [accessions[2]]
-    assert summary.outcomes["AAA"].markers == 2 and again.work.size == 0
-    print("\n=== SANITY CHECK: empty-filing markers ===")
-    print(f"  empty + unparseable -> {len(markers)} marker rows (item '_empty'), hidden from load; the next run lists {again.work.size}.")
+    assert summary.outcomes["AAA"].markers == 1 and summary.missing == {"AAA": [accessions[1]]}
+    assert again.work.units["AAA"]["accession"].tolist() == [accessions[1]]
+    assert any(accessions[1] in r.getMessage() and "listed again" in r.getMessage() for r in caplog.records if r.levelno == logging.WARNING)
+    print("\n=== SANITY CHECK: empty filing vs parse failure ===")
+    print(f"  empty -> 1 marker (item '_empty'); unparseable {accessions[1]} -> WARNING, no row, listed again next run ({again.work.size} unit).")
 
 
 def test_done_table_is_saved_last_so_a_failed_save_leaves_the_filing_listed(tmp_path, sqlite_store, waits, monkeypatch):

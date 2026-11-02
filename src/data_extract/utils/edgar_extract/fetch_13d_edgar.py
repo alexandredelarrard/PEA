@@ -8,7 +8,7 @@ SC 13D/13D-A filings via edgartools into `sec_13d` (one row per ticker, accessio
 XML without placeholder zeros, so the table never claims an undisclosed 0% stake; pre-XML item
 prose is regex-carved from the filing text and normalized for encoding/whitespace only. SEC reads go
 through `sec_io`; a transient failure raises and fails the filing, a parse failure of the schedule
-or its trade exhibit raises `ParseFailureError` (an empty-filing marker).
+or its trade exhibit raises `ParseFailureError` (logged; listed again next run).
 """
 
 from __future__ import annotations

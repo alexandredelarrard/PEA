@@ -85,4 +85,4 @@ def test_no_xbrl_unreadable_and_transient_take_three_paths(patched):
     with pytest.raises(TransientReadError):
         _parse("AAPL", "0000320193", _filing("0001-503", "0000320193", "2008-07-31", xbrl=lambda: (_ for _ in ()).throw(TransientReadError("503"))))
     print("\n=== SANITY: no XBRL vs unreadable vs transient ===")
-    print("  no XBRL -> no rows (a marker); unreadable -> ParseFailureError (a marker, logged); 503 -> TransientReadError (listed again).")
+    print("  no XBRL -> no rows (a marker); unreadable -> ParseFailureError (logged, listed again); 503 -> TransientReadError (listed again).")

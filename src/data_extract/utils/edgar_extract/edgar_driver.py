@@ -3,10 +3,12 @@
 `refresh_index` brings the local EDGAR index up to the run date; the caller refreshes it once per run, before its
 walks. `run_edgar_fetch` plans each key's work list with
 `document_resume.document_worklist` (index rows not yet stored), reads every listed filing on a pool of keys
-and saves what it read. A filing that holds no data for the key (not its subject, nothing parsed,
-or a deterministic parse failure) is saved as one empty-filing marker in the done table. A
-transient SEC failure saves nothing for that filing; a key reading below the configured rate gets
-in-task retry rounds, and whatever is still missing is listed again on the next run. Each key's
+and saves what it read. A filing that holds no data for the key (not its subject, or nothing
+parsed from it) is saved as one empty-filing marker in the done table. A filing that fails to parse
+or to read (`ParseFailureError`, a transient SEC failure, any unclassified source error) saves
+nothing: it is logged with its accession and listed again on the next run, for every walk, since
+a stored marker could not be told apart from an empty filing. A key reading below the configured
+rate gets in-task retry rounds; the per-run cap bounds what is re-read. Each key's
 tables are saved after its pass, the done table last. Only a programming error fails the run.
 """
 
@@ -205,8 +207,7 @@ class EdgarFetch:
     floors the listing at run time. `run_scope` optionally prepares a run-local descriptor and
     finalizes it on exit; a planning declaration may omit `parse` when that context supplies it.
     `done_accessions(context, keys, runtime_floor)` replaces that stored-set read with the fetch's own rule.
-    `relist_unparsed` lists a filing that fails to parse again instead of marking it; `save` replaces
-    the per-table key save; `certify(context, work, as_of)` runs after the walk on the index inventory,
+    `save` replaces the per-table key save; `certify(context, work, as_of)` runs after the walk on the index inventory,
     so a certifying fetch lists filings and refreshes the index from its table's source start. The done
     table owns the description, forms and marker stamps.
     """
@@ -220,7 +221,6 @@ class EdgarFetch:
     done_where: dict[str, object] | None = None
     runtime_floor: Callable[[Context, pd.Timestamp], pd.Timestamp | None] | None = None
     run_scope: Callable[[Context, Sequence[str], pd.Timestamp], AbstractContextManager[EdgarFetch]] | None = None
-    relist_unparsed: bool = False
     save: SaveFn | None = None
     certify: CertifyFn | None = None
     done_accessions: DoneFn | None = None
@@ -371,11 +371,8 @@ def _read_unit(fetch: EdgarFetch, scope: EdgarScope, ticker: str, cik: str, stam
         logger.info("%s: %s %s not read (%s)", fetch.done.desc, ticker, stamp.accession_number, exc)
         return None, False
     except ParseFailureError as exc:
-        if fetch.relist_unparsed:
-            logger.warning("%s: %s %s could not be parsed; listed again (%s)", fetch.done.desc, ticker, stamp.accession_number, exc)
-            return None, False
-        logger.warning("%s: %s %s could not be parsed -> empty-filing marker (%s)", fetch.done.desc, ticker, stamp.accession_number, exc)
-        return {fetch.done: marker_row(fetch.done, ticker, stamp)}, True
+        logger.warning("%s: %s %s could not be parsed; listed again next run (%s)", fetch.done.desc, ticker, stamp.accession_number, exc)
+        return None, False
     except PROGRAMMING_ERRORS:
         raise
     except Exception as exc:  # noqa: BLE001 -- an unclassified source failure is retried, never marked

@@ -70,7 +70,7 @@ def test_a_data_error_from_the_resolver_is_a_parse_failure(monkeypatch):
         fetcher.filing_rows("NEM", _stamp(), catalogue=cast(Any, None), gics=None)
 
     print("\n=== SANITY CHECK: filing_rows classifies a data failure ===")
-    print("  ValueError -> ParseFailureError naming the accession -> one logged empty-filing marker.")
+    print("  ValueError -> ParseFailureError naming the accession -> logged, listed again next run.")
 
 
 @pytest.mark.parametrize("error", [AttributeError("'NoneType' has no attribute 'facts'"), KeyError("ContextRef"), ValueError("bad xml")])
@@ -80,7 +80,7 @@ def test_an_unreadable_filing_is_always_a_parse_failure_whatever_the_class(error
     still mean "unreadable filing" here."""
     with pytest.raises(ParseFailureError, match=_ACCESSION):
         fetcher.filing_rows("NEM", _stamp(xbrl_error=error), catalogue=cast(Any, None), gics=None)
-    print(f"\n  {type(error).__name__} from filing.xbrl() -> ParseFailureError (a marker, never a crash)")
+    print(f"\n  {type(error).__name__} from filing.xbrl() -> ParseFailureError (listed again, never a crash)")
 
 
 def test_the_programming_error_classes_are_the_ones_the_driver_uses():

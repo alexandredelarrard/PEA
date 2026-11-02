@@ -228,7 +228,11 @@ def _net_buy_mask(
     source floor, and on or before the table-wide frontier."""
     history_start = pd.Timestamp(insider_floor).normalize() + pd.Timedelta(days=window_days - 1)
     full_window = InstitutionalAvailability.date_mask(idx, columns, history_start)
-    observed_through = InstitutionalAvailability.through_mask(idx, columns, pd.Timestamp(coverage.complete_through))
+    frontier = coverage.complete_through
+    if frontier is None:
+        observed_through = pd.DataFrame(False, index=idx, columns=columns)
+    else:
+        observed_through = InstitutionalAvailability.through_mask(idx, columns, frontier)
     if coverage.availability is not None:
         return coverage.availability.source_mask(Tables.insider_transactions, idx, columns, requirements=(listed, full_window, observed_through))
     source_started = InstitutionalAvailability.date_mask(idx, columns, insider_floor)

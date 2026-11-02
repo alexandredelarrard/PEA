@@ -18,7 +18,7 @@ from click.testing import CliRunner
 import src.data_extract.cli as cli_mod
 from src.data_extract.transformers.step_extract_institutionals import StepExtractInstitutionals
 from src.data_extract.transformers.step_extract_structure import StepExtractStructure
-from src.data_extract.utils.common.resume import DocumentWork
+from src.data_extract.utils.edgar_extract.document_resume import DocumentWork
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, FilingStamp, marker_row
 from src.data_extract.utils.edgar_extract.fetch_8k_edgar import SEC_8K_FETCH
 from src.data_extract.utils.edgar_extract.fetch_13d_edgar import SEC_13D_FETCH

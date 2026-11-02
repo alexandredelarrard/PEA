@@ -12,8 +12,8 @@ from src.data_extract.utils.common.resume import (
     KEY_NEW,
     KEY_ROWLESS,
     archive_worklist,
-    document_worklist,
 )
+from src.data_extract.utils.edgar_extract.document_resume import document_worklist
 from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp, marker_row
 from src.data_extract.utils.edgar_extract.sec_utils import CIK_MAPPING_COLS
 from src.data_store.schema import Tables

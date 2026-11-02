@@ -1,7 +1,7 @@
 """Shared driver for the per-filing EDGAR document fetchers.
 
 `run_edgar_fetch` refreshes the local EDGAR index, plans each key's work list with
-`resume.document_worklist` (index rows not yet stored), reads every listed filing on a pool of keys
+`document_resume.document_worklist` (index rows not yet stored), reads every listed filing on a pool of keys
 and saves what it read. A filing that holds no data for the key (not its subject, nothing parsed,
 or a deterministic parse failure) is saved as one empty-filing marker in the done table. A
 transient SEC failure saves nothing for that filing; a key reading below the configured rate gets
@@ -27,9 +27,10 @@ from src.context import Context
 from src.data_extract.utils.common.frame_sanitize import finalise_frame
 from src.data_extract.utils.common.identity import FilingScope, Identity, load_identity
 from src.data_extract.utils.common.registrant import resolve_registrant_filings
-from src.data_extract.utils.common.resume import DONE_TABLE, DocumentWork, document_worklist
+from src.data_extract.utils.common.resume import DONE_TABLE
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, configure, sec_call
 from src.data_extract.utils.edgar_extract import edgar_index
+from src.data_extract.utils.edgar_extract.document_resume import DocumentWork, document_worklist
 from src.data_extract.utils.edgar_extract.edgar_fillings import archive_url
 from src.data_extract.utils.edgar_extract.empty_markers import drop_markers_over_data, marker_frame
 from src.data_extract.utils.edgar_extract.parallel_fetch import PROGRAMMING_ERRORS, run_per_ticker

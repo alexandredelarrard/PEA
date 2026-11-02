@@ -18,7 +18,7 @@ import pytest
 from click.testing import CliRunner
 
 import src.data_extract.cli as cli_mod
-from src.data_extract.utils.common.resume import DocumentWork
+from src.data_extract.utils.edgar_extract.document_resume import DocumentWork
 from src.data_extract.utils.edgar_extract.edgar_driver import FetchSummary, KeyOutcome
 from src.data_extract.utils.fundamentals import build_history as mod
 from src.data_extract.utils.fundamentals.build_history import FACT_COLUMNS

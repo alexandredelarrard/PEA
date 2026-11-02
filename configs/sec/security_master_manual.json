@@ -1,6 +1,6 @@
 {
   "_README": [
-    "Curated rows of the security master (src/data_extract/utils/common/security_master.py). Every entry cites a URL or an SEC accession in `source`; an entry without one is refused at load.",
+    "Curated rows of the security master (src/data_extract/utils/identity/security_master.py). Every entry cites a URL or an SEC accession in `source`; an entry without one is refused at load.",
     "conversion_ratios: dated number of canonical-class shares one share of `cusip` is worth, half-open trade dates [valid_from, valid_to) (null = open). Only contractual ratios live here; every other common class is 1.",
     "market_boundaries: CUSIP-qualified role and issuer over half-open trade dates; they override the derived issuer and the lineage-window role for that CUSIP. role is one of canonical_predecessor, canonical_current, secondary_class, acquired_constituent, excluded (excluded rows name the reason).",
     "class_overrides: {cusip, security_class, source} for a line whose class evidence the FTD description does not carry.",

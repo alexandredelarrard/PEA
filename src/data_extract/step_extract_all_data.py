@@ -3,9 +3,10 @@
 The universe is seeded via the S&P 500 scraper only when the table is empty. Order: zip downloads (Form 3/4/5,
 Notes, Financial Statements, FTD, SEC current tickers) -> `StepExtractIdentity` (Notes and FTD captures,
 symbol_tenure + entity_lineage + security_master -> propagation) -> zip ingests (insider zip quarters, notes,
-pension facts, FTD) -> prices -> institutionals -> fundamentals (Sharadar then SEC) -> EDGAR (insider, 13D, 13G, 8-K,
-filing text, DEF 14A ECD) -> DEF 14A LLM -> 8-K votes -> behavioral. Every domain step only reads the propagated
-lineage. The vote parser runs last: it reads the `sec_8k` Item 5.07 narratives and the DEF 14A tables.
+pension facts, FTD) -> prices (+ earnings surprises) -> institutionals (13F, roster, managers, short interest) ->
+Sharadar -> fundamentals -> EDGAR (insider, 13D, 13G, 8-K, filing text, DEF 14A ECD) -> LLM (DEF 14A, 8-K votes)
+-> behavioral. Every domain step only reads the propagated lineage. The LLM step is built only once the EDGAR step
+has run, so a missing API key fails from there on; employees stay on their own command (`fundamentals-employees`).
 """
 
 from omegaconf import DictConfig

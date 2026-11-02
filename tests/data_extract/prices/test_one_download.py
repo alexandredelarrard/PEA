@@ -85,6 +85,7 @@ def yahoo(monkeypatch: pytest.MonkeyPatch) -> FakeYahoo:
 
 def test_one_call_per_window(sqlite_store: DataStore, yahoo: FakeYahoo, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(step_module, "fetch_macro", lambda *a, **k: None)
+    monkeypatch.setattr(step_module, "fetch_earnings_surprises", lambda *a, **k: None)  # the step's own sub-run, tested apart
     ctx = _context(sqlite_store)
 
     StepExtractPrices(context=ctx, config=ctx.config).run(tickers=_TICKERS)

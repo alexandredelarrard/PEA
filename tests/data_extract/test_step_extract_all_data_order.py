@@ -1,5 +1,6 @@
-"""`StepExtractAllData` runs zip downloads -> `StepExtractIdentity` (captures, build, propagation) -> zip ingests before every
-domain step; `StepExtractEdgar` runs after fundamentals, then the DEF 14A LLM pass and the 8-K votes, then behavioral."""
+"""`StepExtractAllData` runs the spec's decision-1 order (AC-001): zip downloads -> `StepExtractIdentity` (captures, build,
+propagation) -> zip ingests -> prices (+ earnings surprises) -> institutionals -> Sharadar -> fundamentals -> `StepExtractEdgar`
+-> `StepExtractLlm` (built only then; DEF 14A, 8-K votes; employees stay on their own command) -> behavioral."""
 
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ from src.data_extract.transformers import step_extract_identity as identity_modu
 from src.data_extract.transformers import step_extract_zips as zips_module
 
 PRE_EDGAR_STEPS = ("prices", "institutionals", "fundamentals_sharadar", "fundamentals")
-EDGAR_AND_LLM = ("edgar", "def14a_llm", "votes_llm")
+EDGAR_AND_LLM = ("edgar", "llm_init", "def14a_llm", "votes_llm")
 DOMAIN_STEPS = (*PRE_EDGAR_STEPS, *EDGAR_AND_LLM, "behavioral")
 IDENTITY_STAGE = (
     "insider_download",
@@ -130,6 +131,7 @@ def _step(monkeypatch, order: list[str], *, boom: str | None = None) -> Any:
 
     def llm_step(context, config, options):
         assert options.tickers == ["AAA", "BBB"]
+        order.append("llm_init")
         return SimpleNamespace(run_def14a=mark("def14a_llm"), run_8k_votes=mark("votes_llm"))
 
     monkeypatch.setattr(all_data_module, "StepExtractLlm", llm_step)
@@ -146,7 +148,7 @@ def test_identity_stage_runs_before_every_domain_step(monkeypatch):
     print(f"  identity stage: {' -> '.join(IDENTITY_STAGE)}")
     print(f"  then zip ingests: {' -> '.join(ZIP_INGESTS)}")
     print(f"  then domain steps: {' -> '.join(DOMAIN_STEPS)}")
-    print("  OK: every consumer, and the derived tables they rebuild, run on the propagated lineage")
+    print("  OK: decision-1 order; the LLM step is built after the EDGAR step; every consumer reads the propagated lineage")
 
 
 @pytest.mark.parametrize("boom", ["entity_lineage", "security_master", "propagate"])

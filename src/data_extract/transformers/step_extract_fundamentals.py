@@ -7,8 +7,8 @@ Fundamentals / financials extraction:
     publication-event history replay over them (`build_history.py`, no network). Headcount
     rides the facts walk and lands in `fundamentals_employees`. `FundamentalsValidator`
     follows at Phase 5b. See reports/planning/active-tasks/2026-08-23-fundamentals-rebuild-plan-v2.md.
-  * earnings surprises
-(the notes and financial-statement zips are `StepExtractZips`)
+Both layers are dormant in `run()` (the `fundamentals` command runs them). Earnings surprises are
+`StepExtractPrices.run_earnings_surprises`; the notes and financial-statement zips are `StepExtractZips`.
 """
 
 import time
@@ -18,7 +18,6 @@ from contextlib import contextmanager
 from omegaconf import DictConfig
 
 from src.context import Context
-from src.data_extract.utils.fundamentals.fetch_earnings_surprises import fetch_earnings_surprises
 from src.utils.step import Step
 
 
@@ -54,11 +53,9 @@ class StepExtractFundamentals(Step):
 
     def run(self, tickers: list[str], full: bool = False) -> None:
 
-        # `self._config`, the attribute `Step.__init__` actually sets. There is no `config`
-        # property on `Step` (only `strategies/base.Strategy` has one, and
-        # `StepExtractPrices` assigns its own in `__init__`), so `self.config` here raised
-        # AttributeError on every real invocation of this step.
-        years_history = int(self._config.data_extract.years_history)
+        # Both layers are dormant here; when re-enabled, the window is
+        # `years_history = int(self._config.data_extract.years_history)` (`self._config`, the attribute
+        # `Step.__init__` sets: `self.config` raised AttributeError on every real invocation of this step).
 
         # Per-filing SEC XBRL -> fundamentals_facts (+ fundamentals_employees from the same
         # 10-K prose), each KPI resolved from the filer's own calculation linkbase.
@@ -79,7 +76,4 @@ class StepExtractFundamentals(Step):
         # with self._stage("fundamentals history replay", tickers):
         #     build_fundamentals_history(self._context, tickers=tickers,
         #                                rebuild_history=full)
-
-        # earnings surprises
-        with self._stage("earnings surprises", tickers):
-            fetch_earnings_surprises(self._context, tickers=tickers, years_history=years_history)
+        self._log.info("fundamentals: facts walk and history replay dormant in this step (%d ticker(s)); run `fundamentals`", len(tickers))

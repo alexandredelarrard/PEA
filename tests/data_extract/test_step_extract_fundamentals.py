@@ -3,7 +3,8 @@ StepExtractFundamentals wiring test: `run()` calls its sources directly, in orde
 per-source error isolation -- a failure in any one of them propagates immediately (no
 `_run_source` wrapper).
 
-The ACTIVE sequence is `earnings_surprises`; the notes and statements zips moved to `StepExtractZips`.
+No source is ACTIVE: earnings surprises moved to `StepExtractPrices.run_earnings_surprises`
+(`test_step_extract_prices.py`), the notes and statements zips to `StepExtractZips`.
 
 ⚠ TWO SOURCES ARE IMPORTED BUT CURRENTLY DORMANT. `fetch_fundamentals_sec` (the per-filing
 XBRL facts walk) and `build_fundamentals_history` (the publication-event replay over exactly
@@ -13,9 +14,7 @@ so this test patches them and asserts they are NOT called -- and `test_the_facts
 re-arms the ordering invariant automatically the moment either is re-enabled, rather than
 leaving the rule unguarded until someone remembers it.
 
-`fetch_insider_transactions` is NOT part of this step: it moved to `StepExtractPrices`
-(`src/data_extract/utils/zips/fetch_insider_transactions.py`), alongside the other
-price/settlement signals.
+`fetch_insider_transactions` is NOT part of this step: it is `StepExtractZips.run_ingest_insider`.
 """
 
 from __future__ import annotations
@@ -23,13 +22,12 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import pytest
 from omegaconf import OmegaConf
 
 from src.data_extract.transformers.step_extract_fundamentals import StepExtractFundamentals
 
 #: (module attribute, label) for every source `run()` actually calls, in call order.
-EXPECTED_SOURCES: tuple[tuple[str, str], ...] = (("fetch_earnings_surprises", "earnings_surprises"),)
+EXPECTED_SOURCES: tuple[tuple[str, str], ...] = ()
 
 #: Imported and patchable, but not called by `run()` today. Kept in the test so that
 #: re-enabling one is a VISIBLE change here rather than a silent one.
@@ -117,22 +115,14 @@ def test_the_facts_walk_and_its_replay_stay_adjacent(monkeypatch):
     print(f"\n  facts walk active -> adjacency held: {calls[0]} -> {calls[1]}")
 
 
-def test_a_failing_source_aborts_the_rest(monkeypatch):
-    """No per-source try/except -- a raised exception propagates and the remaining sources
-    never run."""
+def test_earnings_surprises_left_this_step(monkeypatch):
+    """Earnings surprises are the prices step's now; `run()` reaches no fetcher and still logs its call."""
+    import src.data_extract.transformers.step_extract_fundamentals as mod
+
     calls: list[str] = []
-    first = EXPECTED_SOURCES[0][1]
-    step = _patched_step(monkeypatch, calls, boom=first)
+    _patched_step(monkeypatch, calls).run(tickers=["AAPL"])
 
-    with pytest.raises(RuntimeError, match="simulated fundamentals fetch failure"):
-        step.run(tickers=["AAPL"])
-
-    assert calls == [first]
-
-    print("\n=== SANITY CHECK: StepExtractFundamentals direct calls, no isolation ===")
-    print(
-        f"  run() calls {len(EXPECTED_SOURCES)} active sources directly in order "
-        f"({', '.join(label for _, label in EXPECTED_SOURCES)}); no _run_source wrapper."
-    )
-    print(f"  A failure in the first source ({first}) propagates and the rest never run.")
-    print("  Validated.")
+    assert not hasattr(mod, "fetch_earnings_surprises"), "earnings surprises moved to StepExtractPrices"
+    assert calls == []
+    print("\n=== SANITY CHECK: StepExtractFundamentals after the move ===")
+    print("  fetch_earnings_surprises is no longer imported here; run() calls no source (both layers dormant). Validated.")

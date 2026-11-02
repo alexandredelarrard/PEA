@@ -13,6 +13,7 @@ from click.testing import CliRunner
 
 from src.data_extract import cli as cli_mod
 from src.data_extract.transformers import step_extract_identity as step_identity
+from src.data_extract.transformers import step_extract_zips as step_zips
 from src.data_store.schema import Tables
 from tests.data_extract.edgar_fixtures import stub_edgar_step
 
@@ -57,20 +58,31 @@ def test_cli_short_interest_passes_the_normalized_subset(monkeypatch: pytest.Mon
     print("SANITY: short-interest passes the normalized CSV subset and the full flag to the source.")
 
 
-@pytest.mark.parametrize("command,target", [("insider-zip", "fetch_insider_transactions")])
-def test_cli_subset_and_complete_universe_reach_the_source(command: str, target: str, monkeypatch: pytest.MonkeyPatch) -> None:
+def stub_zips_step(monkeypatch: pytest.MonkeyPatch, config: SimpleNamespace, load: Any) -> None:
+    """Make `StepExtractZips` constructible on a stub config: caches, universe and the Notes landing scrape stubbed."""
+    config.local = SimpleNamespace(
+        paths=SimpleNamespace(insider_transactions="insider", financial_notes="notes", financial_statements="statements", fails_deliver="ftd")
+    )
+    monkeypatch.setattr(step_zips, "cache_dir", lambda ctx, name: Path(name))
+    monkeypatch.setattr(step_zips, "load_universe_tickers", load)
+    monkeypatch.setattr(step_zips, "notes_periods", lambda ctx, years, today: ["2026q1"])
+
+
+@pytest.mark.parametrize("command,target", [(["zips-ingest", "--only", "insider"], "fetch_insider_transactions")])
+def test_cli_subset_and_complete_universe_reach_the_source(command: list[str], target: str, monkeypatch: pytest.MonkeyPatch) -> None:
     config = SimpleNamespace(data_extract=SimpleNamespace(years_history=31))
-    context = SimpleNamespace(config=config, log=Mock())
+    context = SimpleNamespace(config=config, log=Mock(), config_dir="configs")
     universe = ["AAA", "BBB"]
     load = Mock(return_value=universe)
     fetch = Mock()
     monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, context))
     monkeypatch.setattr(cli_mod, "load_universe_tickers", load)
-    monkeypatch.setattr(cli_mod, target, fetch)
+    stub_zips_step(monkeypatch, config, load)
+    monkeypatch.setattr(step_zips, target, fetch)
 
-    result = CliRunner().invoke(cli_mod.cli, [command, "-t", " aaa ,AAA", "-F"])
+    result = CliRunner().invoke(cli_mod.cli, [*command, "-t", " aaa ,AAA", "-F"])
     assert result.exit_code == 0, result.exception
-    assert fetch.call_args.kwargs["tickers"] == ["AAA"]
+    assert fetch.call_args.args[1] == ["AAA"]
     assert fetch.call_args.kwargs["all_tickers"] is universe
     load.assert_called_once_with(context)
     print(f"SANITY: {command} passes the normalized CSV subset and one complete universe snapshot to protect other rows.")
@@ -119,12 +131,11 @@ def context(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     ("command", "target", "keyword"),
     [
         ("seed-universe", "get_sp500_tickers", None),
-        ("financial-notes", "fetch_financial_notes", "reparse"),
-        ("financial-statements", "fetch_financial_statements", "reparse"),
-        ("insider-zip", "fetch_insider_transactions", "reparse"),
-        ("insider-transactions", "fetch_insider_transactions", "reparse"),
+        ("zips-ingest --only notes", "ingest_financial_notes", "full"),
+        ("zips-ingest --only statements", "fetch_financial_statements", "reparse"),
+        ("zips-ingest --only insider", "fetch_insider_transactions", "reparse"),
         ("fundamentals-history-sec", "build_fundamentals_history", "rebuild_history"),
-        ("identity-propagate", "propagate_identity", "every_ticker"),
+        ("identity --only propagate", "propagate_identity", "every_ticker"),
         ("edgar-index", "refresh", "rebuild"),
     ],
 )
@@ -135,12 +146,17 @@ def test_full_reaches_the_existing_source_operation(
     edgar_calls: list[dict[str, Any]] = []
 
     def record(*args: Any, **kwargs: Any) -> SimpleNamespace:
-        calls.append(kwargs)
+        # the notes core takes its `ZipScope` positionally: its `full` and run date are the options it carries
+        scope = next((arg for arg in args if hasattr(arg, "full") and hasattr(arg, "run_date")), None)
+        calls.append(kwargs if scope is None else {"full": scope.full, "as_of": scope.run_date})
         return SimpleNamespace(removals=pd.DataFrame())
 
-    if command == "identity-propagate":
+    if command.startswith("identity "):
         stub_identity_step(monkeypatch, context.config, context)
         monkeypatch.setattr(step_identity, target, record)
+    elif command.startswith("zips-ingest "):
+        stub_zips_step(monkeypatch, context.config, lambda ctx: ["AAA"])
+        monkeypatch.setattr(step_zips, target, record)
     elif command == "edgar-index":
         monkeypatch.setattr(cli_mod.edgar_index, target, record)
         monkeypatch.setattr(cli_mod.edgar_index, "quarter_counts", lambda ctx: {})
@@ -153,14 +169,13 @@ def test_full_reaches_the_existing_source_operation(
         calls.clear()
         edgar_calls.clear()
         date_flags = [] if command == "fundamentals-history-sec" else ["--as-of", "2026-09-29"]
-        result = runner.invoke(cli_mod.cli, [command, *date_flags, *flags])
+        result = runner.invoke(cli_mod.cli, [*command.split(), *date_flags, *flags])
         assert result.exit_code == 0, result.output
         if keyword is None:
             assert len(calls) == int(bool(flags)), "An existing roster is scraped only in full mode."
         else:
             assert len(calls) == 1 and calls[0][keyword] is bool(flags)
-        if command == "insider-transactions":
-            assert len(edgar_calls) == 1 and edgar_calls[0]["full"] is bool(flags)
+        assert not edgar_calls, "no command of this list walks EDGAR"
         if calls and "as_of" in calls[0]:
             assert calls[0]["as_of"] == pd.Timestamp("2026-09-29")
     context.store.delete.assert_not_called()

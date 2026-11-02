@@ -22,6 +22,7 @@ from sqlalchemy import create_engine
 import src.data_extract.cli as cli_mod
 from src.constants.constants import MARKET_TIMEZONE
 from src.data_extract.transformers import step_extract_edgar as step_edgar
+from src.data_extract.transformers import step_extract_zips as step_zips
 from src.data_extract.utils.common import bulk_cache
 from src.data_extract.utils.common.identity import build_identity
 from src.data_extract.utils.insider.insider_common import BULK_DATE_FORMATS, build_insider_frame, screen_insider_rows
@@ -31,6 +32,7 @@ from src.data_extract.utils.zips import zip_archive
 from src.data_store.schema import Resume, Tables
 from src.data_store.store import DataStore, _create_canonical
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
+from tests.data_extract.test_cli_options import stub_zips_step
 
 # Repo root = the first ancestor holding pyproject.toml, NOT a fixed `parents[N]`.
 # This file moved down one directory level once already (into the mirrored
@@ -248,18 +250,22 @@ def test_insider_download_caches_every_quarter_from_the_first_year_and_parses_no
 
 
 def test_insider_download_cli_runs_only_the_download(monkeypatch):
+    """`zips-download --only insider` caches the Form 3/4/5 zips and nothing else."""
     calls: list[str] = []
-    monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (None, SimpleNamespace(name="ctx")))
-    monkeypatch.setattr(cli_mod, "download_insider_transactions", lambda context: calls.append("download") or [])
-    monkeypatch.setattr(cli_mod, "fetch_insider_transactions", lambda *a, **k: calls.append("parse"))
+    config = SimpleNamespace(data_extract=SimpleNamespace(years_history=15))
+    context = SimpleNamespace(name="ctx", config=config, config_dir="configs")
+    monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, context))
+    stub_zips_step(monkeypatch, config, lambda ctx: ["AAA"])
+    monkeypatch.setattr(step_zips, "download_insider_transactions", lambda context: calls.append("download") or [])
+    monkeypatch.setattr(step_zips, "fetch_insider_transactions", lambda *a, **k: calls.append("parse"))
     monkeypatch.setattr(step_edgar, "run_edgar_fetch", lambda *a, **k: calls.append("edgar"))
 
-    result = CliRunner().invoke(cli_mod.cli, ["insider-download"])
+    result = CliRunner().invoke(cli_mod.cli, ["zips-download", "--only", "insider"])
 
     assert result.exit_code == 0, result.output
     assert calls == ["download"]
-    print("\n=== SANITY CHECK: insider-download CLI ===")
-    print("  the command caches the Form 3/4/5 zips only; parsing stays in insider-transactions. Validated.")
+    print("\n=== SANITY CHECK: zips-download --only insider CLI ===")
+    print("  the command caches the Form 3/4/5 zips only; parsing stays in zips-ingest --only insider. Validated.")
 
 
 # --------------------------------------------------------------------------- #

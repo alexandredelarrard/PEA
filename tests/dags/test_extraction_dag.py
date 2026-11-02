@@ -32,19 +32,13 @@ REQUIRED_COMMANDS = {
     "short-interest",
     "earnings-surprises",
     "price-history",
-    "fails-to-deliver",
+    "zips-download",
+    "identity",
+    "zips-ingest",
+    "edgar-index",
     "thirteen-f",
     "thirteen-f-backfill",
-    "financial-statements",
-    "insider-zip",
     "insider-edgar",
-    "insider-download",
-    "notes-download",
-    "ftd-download",
-    "sec-tickers",
-    "financial-notes",
-    "identity-tables",
-    "identity-propagate",
     "superinvestors",
     "thirteen-f-managers",
     "fundamentals",
@@ -99,14 +93,17 @@ def test_freshness_inventory_comes_only_from_schema():
     print("  OK: schema.py is the sole table/cadence/date-column source of truth")
 
 
-#: identity producers, in stage order: the cache downloads (Form 3/4/5, Notes, FTD, SEC current tickers), the build, the propagation.
-IDENTITY_DOWNLOADS = {"insider_download", "notes_download", "ftd_download", "sec_tickers"}
-#: every task that reads the lineage; each must start after `identity_propagate`.
+#: identity producers, in stage order: the zip downloads (Form 3/4/5, Notes, Statements, FTD, SEC current tickers),
+#: then the identity step (captures, build, propagation).
+IDENTITY_DOWNLOADS = {"zips_download"}
+#: the two zip ingests (D-16a): the insider quarters alone, and notes + statements + FTD.
+ZIP_INGESTS = {"zips_ingest_insider": "insider", "zips_ingest_datasets": "notes --only statements --only ftd"}
+#: the six EDGAR document walks; each waits for the one nightly `edgar_index` refresh (P7b).
+EDGAR_WALKS = {"insider_edgar", "sec_13d", "sec_13g", "sec_8k_items", "filing_text", "def14a_edgar"}
+#: every task that reads the lineage; each must start after `identity`.
 IDENTITY_CONSUMERS = {
-    "insider_zip",
-    "financial_notes",
-    "financial_statements",
-    "fails_to_deliver",
+    *ZIP_INGESTS,
+    "insider_edgar",
     "short_interest",
     "fundamentals",
     "fundamentals_employees",
@@ -232,25 +229,26 @@ def test_retries_dependencies_and_hard_gates_are_wired():
     print("  OK: every fetcher -> extraction_status -> identity_check -> trigger_aggregation")
 
 
-def test_identity_stage_orders_downloads_build_propagation_consumers_and_status(monkeypatch):
+def test_identity_stage_orders_downloads_identity_consumers_and_status(monkeypatch):
     graph, params = _load_dag_graph(monkeypatch)
     order = _topological_order(graph)
     assert len(order) == len(graph), "the extraction DAG has a cycle"
     position = {task: index for index, task in enumerate(order)}
-    after_build = _descendants(graph, "identity_tables")
-    after_propagation = _descendants(graph, "identity_propagate")
+    after_identity = _descendants(graph, "identity")
 
-    # downloads -> identity build -> propagation -> every consumer
+    # zip downloads -> identity (captures, build, propagation) -> every consumer, the two zip ingests included
     for download in IDENTITY_DOWNLOADS:
-        assert "identity_tables" in graph[download], f"{download} must feed identity_tables"
-    assert graph["identity_tables"] == {"identity_propagate", "extraction_status", "price_history"}
-    assert IDENTITY_CONSUMERS <= graph["identity_propagate"], sorted(IDENTITY_CONSUMERS - graph["identity_propagate"])
+        assert "identity" in graph[download], f"{download} must feed identity"
+    assert graph["identity"] == IDENTITY_CONSUMERS | {"edgar_index", "extraction_status", "price_history"}, sorted(graph["identity"])
     for derived, parents in DERIVED_PARENTS.items():
         assert all(derived in graph[parent] for parent in parents), f"{derived} must wait for {sorted(parents)}"
-        assert derived in after_propagation
+        assert derived in after_identity
     # sources that read no lineage keep running beside the identity stage
-    assert IDENTITY_INDEPENDENT.isdisjoint(after_build), sorted(IDENTITY_INDEPENDENT & after_build)
-    assert not (IDENTITY_DOWNLOADS | {"identity_tables"}) & after_propagation
+    assert IDENTITY_INDEPENDENT.isdisjoint(after_identity), sorted(IDENTITY_INDEPENDENT & after_identity)
+    assert not (IDENTITY_DOWNLOADS | {"identity"}) & after_identity
+    for task, only in ZIP_INGESTS.items():
+        assert params[task]["pool"] == "sec_bulk" and f" zips-ingest --only {only} -c " in str(params[task]["bash_command"]), task
+    assert "insider_edgar" in graph["zips_ingest_insider"] and "insider_edgar" not in graph["zips_ingest_datasets"], "D-16a"
 
     # every fetcher upstream of the report; the report and the check run ALL_DONE (no source blocks the night)
     upstream_of_status = {task for task in graph if "extraction_status" in _descendants(graph, task)}
@@ -267,13 +265,24 @@ def test_identity_stage_orders_downloads_build_propagation_consumers_and_status(
         assert params[task]["pool"] == "sec_bulk"
 
     print("\n=== SANITY CHECK: identity stage order (AC-011, AC-037-039) ===")
-    print(f"  {len(graph)} tasks, acyclic; downloads {sorted(IDENTITY_DOWNLOADS)} -> identity_tables -> identity_propagate")
-    print(f"  -> {len(IDENTITY_CONSUMERS)} consumers -> sec_8k_votes / fundamentals_sharadar -> extraction_status -> identity_check")
-    first = min(position[task] for task in IDENTITY_DOWNLOADS)
-    print(f"  first identity task at topological position {first}, gate at {position['extraction_status']}")
+    print(f"  {len(graph)} tasks, acyclic; {sorted(IDENTITY_DOWNLOADS)} -> identity -> {len(IDENTITY_CONSUMERS)} consumers")
+    print(f"  zip ingests {sorted(ZIP_INGESTS)} in sec_bulk; only the insider one feeds insider_edgar (D-16a)")
+    print(f"  first identity task at topological position {position['zips_download']}, gate at {position['extraction_status']}")
     print(
-        f"  OK: {len(IDENTITY_INDEPENDENT)} non-identity sources run beside the stage; a failed build leaves its consumers unrun, the check still runs"
+        f"  OK: {len(IDENTITY_INDEPENDENT)} non-identity sources run beside the stage; a failed identity run leaves its consumers unrun, the check still runs"
     )
+
+
+def test_the_edgar_index_refreshes_once_before_the_six_edgar_walks(monkeypatch):
+    """P7b / D-17: one `edgar-index` task in the sec_api pool, after identity; the six document walks wait for it."""
+    graph, params = _load_dag_graph(monkeypatch)
+    task = params["edgar_index"]
+    assert task["pool"] == "sec_api" and task["pool_slots"] == 2 and " edgar-index -c " in str(task["bash_command"])
+    assert "edgar_index" in graph["identity"]
+    assert graph["edgar_index"] == EDGAR_WALKS | {"extraction_status"}, sorted(graph["edgar_index"])
+    assert all(params[walk]["pool"] == "sec_api" for walk in EDGAR_WALKS)
+    print("\n=== SANITY CHECK: one nightly EDGAR index refresh (P7b) ===")
+    print(f"  identity -> edgar_index (sec_api, 2 slots) -> {sorted(EDGAR_WALKS)}")
 
 
 def test_the_sharadar_merge_does_not_wait_for_headcount(monkeypatch):
@@ -287,28 +296,29 @@ def test_the_sharadar_merge_does_not_wait_for_headcount(monkeypatch):
 
 
 def test_price_history_waits_for_the_security_master(monkeypatch):
-    """Q2d: the price fetch list adds the master's current secondary classes, so it runs after `identity_tables`."""
-    graph, _ = _load_dag_graph(monkeypatch)
-    assert "price_history" in graph["identity_tables"]
-    assert "price_history" not in _descendants(graph, "identity_propagate"), "prices read only the master, not the propagation"
-    print("\n=== SANITY CHECK: price_history order ===\n  identity_tables -> price_history; no wait on propagation")
+    """Q2d: the price fetch list adds the master's current secondary classes, so it runs after `identity`."""
+    graph, params = _load_dag_graph(monkeypatch)
+    assert "price_history" in graph["identity"] and params["price_history"]["trigger_rule"] == "all_done"
+    waits_for = {task for task in graph if "price_history" in graph[task]}
+    assert not {"zips_ingest_insider", "zips_ingest_datasets", "edgar_index"} & waits_for, "prices wait only for the identity step"
+    print("\n=== SANITY CHECK: price_history order ===\n  identity -> price_history (ALL_DONE); no wait on the zip ingests")
 
 
 def test_the_live_insider_walk_runs_in_the_sec_api_pool_after_the_bulk_parse(monkeypatch):
     """D-8: the Form 3/4/5 bulk parse stays in `sec_bulk`; its live EDGAR tail is its own `sec_api` task, so it never
     overlaps another EDGAR walk."""
     graph, params = _load_dag_graph(monkeypatch)
-    bulk, walk = params["insider_zip"], params["insider_edgar"]
+    bulk, walk = params["zips_ingest_insider"], params["insider_edgar"]
 
-    assert bulk["pool"] == "sec_bulk" and " insider-zip -c " in str(bulk["bash_command"])
+    assert bulk["pool"] == "sec_bulk" and " zips-ingest --only insider -c " in str(bulk["bash_command"])
     assert walk["pool"] == "sec_api" and walk["pool_slots"] == 2 and " insider-edgar -c " in str(walk["bash_command"])
-    assert "insider_edgar" in graph["insider_zip"], "the live tail resumes from the bulk table's latest quarter"
-    assert "insider_edgar" in _descendants(graph, "identity_propagate") and "extraction_status" in graph["insider_edgar"]
+    assert "insider_edgar" in graph["zips_ingest_insider"], "the live tail resumes from the bulk table's latest quarter"
+    assert "insider_edgar" in _descendants(graph, "identity") and "extraction_status" in graph["insider_edgar"]
     edgar_in_bulk = [task for task, kwargs in params.items() if kwargs.get("pool") == "sec_bulk" and "edgar" in str(kwargs.get("bash_command"))]
     assert not edgar_in_bulk, edgar_in_bulk
 
     print("\n=== SANITY CHECK: insider tasks by pool (D-8) ===")
-    print(f"  insider_zip:   {bulk['pool']} -> {bulk['bash_command'].split(' -m src data_extract ')[1]}")
+    print(f"  zips_ingest_insider: {bulk['pool']} -> {bulk['bash_command'].split(' -m src data_extract ')[1]}")
     print(f"  insider_edgar: {walk['pool']} ({walk['pool_slots']} slots) -> {walk['bash_command'].split(' -m src data_extract ')[1]}")
     print("  OK: the live EDGAR walk holds both sec_api slots and starts after the bulk parse and the identity propagation.")
 
@@ -336,19 +346,19 @@ def test_a_failed_fetcher_never_blocks_aggregation_but_a_failed_identity_check_d
     }
     assert gate.upstream == fetchers, "the report, then the identity check, wait for every fetcher"
     assert {"thirteen_f"} <= dag.tasks["thirteen_f_backfill"].upstream, "one EDGAR walk at a time: the backfill follows the nightly 13F walk"
-    lenient = {"identity_tables", "price_history"}
+    lenient = {"identity", "price_history"}
     assert all(dag.tasks[task_id].trigger_rule == ALL_SUCCESS for task_id in fetchers - lenient), "a fetcher still waits for its own sources"
     assert all(dag.tasks[task_id].trigger_rule == ALL_DONE for task_id in lenient), "F-106: a failed SEC download never skips prices"
 
-    for failed in (["price_history"], ["identity_tables"], ["thirteen_f", "insider_zip", "extraction_status"]):
+    for failed in (["price_history"], ["identity"], ["thirteen_f", "zips_ingest_insider", "extraction_status"], ["edgar_index"]):
         states = replay(dag, failed)
         assert states["trigger_data_aggregation"] == "success", (failed, states)
-    states = replay(dag, ["identity_tables"])
-    assert states["fundamentals"] == "upstream_failed" and states["extraction_status"] == "success"
+    states = replay(dag, ["identity"])
+    assert states["fundamentals"] == states["zips_ingest_datasets"] == "upstream_failed" and states["extraction_status"] == "success"
     assert states["price_history"] == "success", "prices read the stored master when the build fails"
-    for download in ("notes_download", "insider_download", "ftd_download", "sec_tickers"):
+    for download in sorted(IDENTITY_DOWNLOADS):
         states = replay(dag, [download])
-        assert states["price_history"] == states["identity_tables"] == states["identity_propagate"] == states["fundamentals"] == "success", download
+        assert states["price_history"] == states["identity"] == states["zips_ingest_insider"] == states["fundamentals"] == "success", download
     held = replay(dag, ["identity_check"])
     assert held["trigger_data_aggregation"] == "upstream_failed", held
     assert held["extraction_status"] == "success" and all(held[task_id] == "success" for task_id in fetchers), (
@@ -357,9 +367,9 @@ def test_a_failed_fetcher_never_blocks_aggregation_but_a_failed_identity_check_d
 
     print("\n=== SANITY CHECK: extraction never blocked, aggregation gated on identity (AC-015, P37) ===")
     print(f"  {len(fetchers)} fetchers -> extraction_status (ALL_DONE) -> identity_check (ALL_DONE) -> trigger_data_aggregation (ALL_SUCCESS)")
-    print("  replay: price_history failed / identity_tables failed (its 12 consumers upstream_failed) / 13F + insider + the report failed")
+    print("  replay: price_history / identity (its 12 consumers upstream_failed) / 13F + insider zips + the report / the index failed")
     print("  -> aggregation triggered every time; identity_check failed -> every fetcher and the report succeed, the trigger is upstream_failed")
-    print("  F-106: a failed SEC download still runs identity_tables, the consumers and price_history; a failed build still runs prices")
+    print("  F-106: a failed zip download still runs identity, the consumers and price_history; a failed build still runs prices")
 
 
 #: Modules whose entry points walk EDGAR filing by filing (the document walks, the EDGAR step running them, the 13F walks).
@@ -411,11 +421,12 @@ def test_every_edgar_walk_runs_in_the_sec_api_pool():
     assert {"thirteen_f", "fundamentals", "sec_13d"} <= set(walks), f"the walk detection lost known walks: {sorted(walks)}"
     outside = {task_id: pool for task_id, pool in walks.items() if pool != "sec_api"}
     assert not outside, f"EDGAR walks outside the sec_api pool: {outside}"
-    # insiders: the zip leg is no walk; the EDGAR leg follows it and the identity propagation
-    assert "insider_edgar" in walks and "insider_zip" not in walks
-    assert {"insider_zip", "identity_propagate"} <= dag.tasks["insider_edgar"].upstream
-    # the manual command still runs both legs
-    assert {"fetch_insider_transactions", "StepExtractEdgar"} <= _command_names("insider-transactions")
+    # insiders: the zip leg is no walk; the EDGAR leg follows it, the identity step and the nightly index refresh
+    assert "insider_edgar" in walks and not {"zips_ingest_insider", "zips_ingest_datasets", "zips_download", "identity"} & set(walks)
+    assert {"zips_ingest_insider", "identity", "edgar_index"} <= dag.tasks["insider_edgar"].upstream
+    # by hand the two legs are two commands: `zips-ingest --only insider` (no walk), then `insider-edgar` (the walk)
+    assert "StepExtractZips" in _command_names("zips-ingest") and not _command_names("zips-ingest") & walk_names
+    assert "StepExtractEdgar" in _command_names("insider-edgar")
 
     print("\n=== SANITY CHECK: one EDGAR walk at a time ===")
     print(f"  {len(walks)} tasks walk EDGAR (derived from the CLI code), all in sec_api: {sorted(walks)}")

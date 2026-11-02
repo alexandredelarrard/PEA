@@ -17,6 +17,7 @@ from click.testing import CliRunner
 
 import src.data_extract.cli as cli_mod
 from src.data_extract.transformers import step_extract_identity as step_identity
+from src.data_extract.transformers import step_extract_zips as step_zips
 from src.data_extract.transformers.step_extract_edgar import StepExtractEdgar
 from src.data_extract.transformers.step_extract_institutionals import StepExtractInstitutionals
 from src.data_extract.utils.edgar_extract import edgar_driver
@@ -30,7 +31,7 @@ from src.data_extract.utils.edgar_extract.fetch_filing_text import FILING_TEXT_F
 from src.data_extract.utils.edgar_extract.fetch_insider_edgar import INSIDER_EDGAR_FETCH
 from src.data_store.schema import Tables
 from tests.data_extract.edgar_fixtures import fake_filing, stub_edgar_step
-from tests.data_extract.test_cli_options import stub_identity_step
+from tests.data_extract.test_cli_options import stub_identity_step, stub_zips_step
 
 DAG_FILE = Path(__file__).resolve().parents[2] / "src" / "dags" / "dag_data_extraction.py"
 
@@ -152,18 +153,23 @@ def insider_calls(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict[str, 
     context = SimpleNamespace(name="ctx", config=config, config_dir="configs")
     monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, context))
     monkeypatch.setattr(cli_mod, "load_universe_tickers", lambda ctx: ["ALL"])
-    monkeypatch.setattr(cli_mod, "fetch_insider_transactions", lambda context, **kwargs: calls.append(("bulk", kwargs)))
+    stub_zips_step(monkeypatch, config, lambda ctx: ["ALL"])
+    monkeypatch.setattr(
+        step_zips, "fetch_insider_transactions", lambda context, tickers, years, **kwargs: calls.append(("bulk", {"tickers": tickers, **kwargs}))
+    )
     stub_edgar_step(monkeypatch, lambda context, **kwargs: calls.append(("edgar", kwargs)))
     return calls
 
 
 def test_the_insider_bulk_parse_and_its_live_edgar_tail_run_as_separate_commands(insider_calls: list[tuple[str, dict[str, Any]]]) -> None:
-    """D-8: `insider-zip` parses the zips without the EDGAR walk, `insider-edgar` walks only; the bare command still does both."""
+    """D-8: `zips-ingest --only insider` parses the zips without the EDGAR walk, `insider-edgar` walks only; by hand
+    both halves are the two commands in that order."""
     runner = CliRunner()
     invocations = (
-        ["insider-zip", "-t", "aapl"],
+        ["zips-ingest", "--only", "insider", "-t", "aapl"],
         ["insider-edgar", "-t", "aapl", "-F"],
-        ["insider-transactions", "-t", "aapl"],
+        ["zips-ingest", "--only", "insider", "-t", "aapl", "-F"],
+        ["insider-edgar", "-t", "aapl"],
     )
     for args in invocations:
         result = runner.invoke(cli_mod.cli, args)
@@ -177,13 +183,15 @@ def test_the_insider_bulk_parse_and_its_live_edgar_tail_run_as_separate_commands
         "no_cap": False,
     }
     assert insider_calls[3][1]["full"] is False and insider_calls[0][1]["tickers"] == ["AAPL"]
+    assert insider_calls[0][1]["reparse"] is False and insider_calls[2][1]["reparse"] is True
     assert insider_calls[1][1]["fetch"] is INSIDER_EDGAR_FETCH and insider_calls[3][1]["fetch"] is INSIDER_EDGAR_FETCH
     print("\n=== SANITY: insider commands (D-8) ===")
-    print("  insider-zip -> bulk parse only; insider-edgar -F -> live walk only (full=True);")
-    print("  insider-transactions -> both, as before. OK: the DAG can schedule the walk in its own pool.")
+    print("  zips-ingest --only insider -> bulk parse only (-F re-parses); insider-edgar -F -> live walk only (full=True);")
+    print("  the two in order run both halves. OK: the DAG can schedule the walk in its own pool.")
 
 
 def test_f109_f115_identity_propagate_every_ticker_and_notes_download_years_reach_their_functions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`identity --only propagate`, and `zips-download --only notes` then `identity --only capture-dei`."""
     config = SimpleNamespace(data_extract=SimpleNamespace(years_history=31))
     calls: list[tuple[str, dict[str, Any]]] = []
     context = SimpleNamespace(name="ctx")
@@ -197,13 +205,18 @@ def test_f109_f115_identity_propagate_every_ticker_and_notes_download_years_reac
         "propagate_identity",
         lambda context, tickers, **kwargs: calls.append(("propagate", kwargs)) or SimpleNamespace(removals=pd.DataFrame()),
     )
-    monkeypatch.setattr(cli_mod, "download_financial_notes", lambda context, **kwargs: calls.append(("notes", kwargs)) or 0)
+    stub_zips_step(monkeypatch, config, lambda ctx: ["AAA"])
+    monkeypatch.setattr(step_zips, "notes_periods", lambda ctx, years, today: calls.append(("periods", {"years": years})) or ["2026q1"])
+    monkeypatch.setattr(step_zips, "download_notes_periods", lambda ctx, cache, periods: calls.append(("notes", {"periods": periods})) or 0)
 
-    assert CliRunner().invoke(cli_mod.cli, ["identity-propagate", "--full", "--dry-run"]).exit_code == 0
-    assert CliRunner().invoke(cli_mod.cli, ["identity-propagate"]).exit_code == 0
-    assert CliRunner().invoke(cli_mod.cli, ["notes-download"]).exit_code == 0
+    dry_run = CliRunner().invoke(cli_mod.cli, ["identity", "--only", "propagate", "--full", "--dry-run"])
+    assert dry_run.exit_code == 0 and "no pending removals" in dry_run.output
+    assert CliRunner().invoke(cli_mod.cli, ["identity", "--only", "propagate"]).exit_code == 0
+    assert CliRunner().invoke(cli_mod.cli, ["zips-download", "--only", "notes"]).exit_code == 0
+    assert CliRunner().invoke(cli_mod.cli, ["identity", "--only", "capture-dei"]).exit_code == 0
     assert [kwargs.get("every_ticker") for name, kwargs in calls if name == "propagate"] == [True, False]
-    assert [kwargs for name, kwargs in calls if name == "notes"] == [{"years_history": 31}]
-    assert [kwargs for name, kwargs in calls if name == "dei"] == [{"full": False}], "notes-download then captures the cover-page symbols"
+    assert [kwargs for name, kwargs in calls if name in ("periods", "notes")] == [{"years": 32}, {"periods": ["2026q1"]}]
+    assert [kwargs for name, kwargs in calls if name == "dei"] == [{"full": False}], "identity --only capture-dei captures the cover-page symbols"
     print("\n=== SANITY CHECK: F-109 / F-115 CLI wiring ===")
-    print("  identity-propagate --full reaches propagate_identity(every_ticker=True); notes-download passes years_history 31")
+    print("  identity --only propagate --full reaches propagate_identity(every_ticker=True) and prints the dry run;")
+    print("  zips-download --only notes lists years_history 31 + 1 Notes years; identity --only capture-dei captures")

@@ -18,6 +18,7 @@ import time
 from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
+from datetime import datetime
 from functools import cached_property, partial
 from operator import attrgetter
 from typing import Any, Protocol, cast
@@ -269,7 +270,7 @@ class EdgarRun:
         tickers: list[str],
         years_history: int | None = None,
         *,
-        as_of: pd.Timestamp | None = None,
+        as_of: datetime | None = None,
         full: bool = False,
         no_cap: bool = False,
     ) -> EdgarRun:

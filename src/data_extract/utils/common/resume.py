@@ -122,13 +122,6 @@ def trading_calendar(context: Context) -> pd.DatetimeIndex:
     return pd.DatetimeIndex(pd.to_datetime(context.store.distinct(Tables.prices, "date"))).normalize().unique().sort_values()
 
 
-def session_dates(calendar: pd.DatetimeIndex, since: pd.Timestamp, until: pd.Timestamp) -> pd.DatetimeIndex:
-    """Calendar sessions in `[since, until]`, plus business days after the calendar's last session."""
-    inside = calendar[(calendar >= since) & (calendar <= until)]
-    after = calendar.max() + pd.Timedelta(days=1) if len(calendar) else since
-    return inside.union(pd.bdate_range(max(after, since), until)) if after <= until else inside
-
-
 def _hole_spans(calendar: pd.DatetimeIndex, stored: pd.Series, first: pd.Timestamp, edge: pd.Timestamp) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
     """Runs of calendar sessions in `[first, edge)` with no stored row, as `(first missing, last missing)` spans."""
     span = calendar[(calendar >= first) & (calendar < edge)]

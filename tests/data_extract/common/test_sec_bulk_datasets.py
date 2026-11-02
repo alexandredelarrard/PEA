@@ -30,7 +30,8 @@ from src.data_extract.utils.zips import fetch_financial_statements as fin
 from src.data_extract.utils.zips import fetch_insider_transactions as ins
 from src.data_extract.utils.zips import zip_archive
 from src.data_store.schema import Resume, Tables
-from src.data_store.store import DataStore, _create_canonical
+from src.data_store.store import DataStore
+from tests.canonical_schema import create_canonical
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
 from tests.data_extract.test_cli_options import stub_zips_step
 
@@ -178,7 +179,7 @@ def test_insider_work_list_comes_from_the_stored_quarters_alone(tmp_path):
     from src.data_extract.utils.common.resume import archive_worklist
 
     ds = DataStore(create_engine(f"sqlite:///{tmp_path / 't.db'}"))
-    _create_canonical(ds.engine, [Tables.insider_transactions])
+    create_canonical(ds.engine, [Tables.insider_transactions])
     ds.save(
         "insider_transactions",
         pd.DataFrame([{"accession_number": "a1", "security_type": "nonderiv", "row_sequence": 1, "ticker": "AAPL", "quarter": "2024q1"}]),
@@ -466,7 +467,7 @@ def _pension_zip(path: Path, rows: list[tuple[str, str, str, str]]) -> Path:
 
 def test_pension_new_key_re_reads_a_cached_stored_quarter_for_itself_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     store = DataStore(create_engine(f"sqlite:///{tmp_path / 'p.db'}"))
-    _create_canonical(store.engine, [Tables.pension_facts])
+    create_canonical(store.engine, [Tables.pension_facts])
     context = SimpleNamespace(
         store=store,
         config_dir="configs",

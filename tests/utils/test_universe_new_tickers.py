@@ -13,8 +13,8 @@ from sqlalchemy import text
 
 from src.data_extract.utils.prices import fetch_tickers
 from src.data_store.schema import Tables
-from src.data_store.store import _create_canonical
 from src.utils.universe import new_tickers
+from tests.canonical_schema import create_canonical
 
 _AS_OF = pd.Timestamp("2026-10-03")
 
@@ -122,7 +122,7 @@ def test_scraper_keeps_stored_added_on_and_stamps_new_tickers(sqlite_store, stub
 
 
 def test_scraper_does_not_add_the_column_before_migration(sqlite_store, stub_page) -> None:
-    _create_canonical(sqlite_store.engine, [Tables.sp500_tickers])
+    create_canonical(sqlite_store.engine, [Tables.sp500_tickers])
     with sqlite_store.engine.begin() as conn:
         conn.execute(text(f'ALTER TABLE "{Tables.sp500_tickers.name}" DROP COLUMN added_on'))
     sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["AAPL"], "cik": ["0000320193"]}))

@@ -13,7 +13,7 @@ data_extract:
     attempts: 3
     waits: [5, 20]
     retry_after_cap: 120
-  # EDGAR document fetchers (`utils/common/edgar_driver.py`): a key whose read rate in a run is
+  # EDGAR document fetchers (`utils/edgar_extract/edgar_driver.py`): a key whose read rate in a run is
   # below `threshold`, with at least `min_failed` failed documents, re-reads only those documents
   # in up to `rounds` in-task rounds, waiting `waits` seconds before each; the rest is listed again
   # on the next run, which always exits 0.

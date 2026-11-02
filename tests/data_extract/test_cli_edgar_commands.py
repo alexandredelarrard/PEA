@@ -120,7 +120,7 @@ def test_resume_plan_prints_one_line_per_document_table(monkeypatch: pytest.Monk
     monkeypatch.setattr(edgar_driver, "load_added_on", lambda ctx, day: {})
     monkeypatch.setattr(edgar_driver, "load_identity", lambda ctx: None)
     monkeypatch.setattr(cli_mod, "_document_fetches", lambda ctx, cik_map: {"sec_8k": SEC_8K_FETCH, "sec_13g": SEC_13G_FETCH})
-    work = DocumentWork(units={"AAA": pd.DataFrame({"accession": ["x"]})}, key_class={"AAA": "established"}, counts={"forward": 1}, uncapped=1)
+    work = DocumentWork(units={"AAA": pd.DataFrame({"accession": ["x"]})}, counts={"forward": 1}, uncapped=1)
     work.timings = {"index_read": 0.1, "done_read": 0.2, "total": 0.3}
     monkeypatch.setattr(cli_mod, "plan_fetch", lambda *args, **kwargs: work)
 

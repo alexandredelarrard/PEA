@@ -25,6 +25,7 @@ from src.data_extract.utils.edgar_extract.fetch_insider_edgar import INSIDER_EDG
 from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import fundamentals_fetch
 from src.data_store import ddl
 from src.data_store.schema import (
+    ALL,
     KIND_EXTRACT,
     RESUME_ARCHIVE,
     RESUME_DOCUMENTS,
@@ -34,7 +35,6 @@ from src.data_store.schema import (
     Resume,
     Table,
     Tables,
-    by_kind,
     marker_tables,
     resume_tables,
 )
@@ -73,7 +73,7 @@ def _column_types() -> dict[str, dict[str, str]]:
 
 
 def test_every_extract_table_resumes_or_is_a_side_table() -> None:
-    extract = {t.name for t in by_kind(KIND_EXTRACT)}
+    extract = {t.name for t in ALL if t.kind == KIND_EXTRACT}
     with_contract = {t.name for t in resume_tables() if t.kind == KIND_EXTRACT}
     uncovered = extract - with_contract - SIDE_TABLES
     stale_side = SIDE_TABLES & with_contract

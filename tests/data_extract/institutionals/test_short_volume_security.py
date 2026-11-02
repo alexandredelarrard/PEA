@@ -21,7 +21,8 @@ from src.data_extract.utils.common.identity import build_identity, load_source_i
 from src.data_extract.utils.identity import security_master as sm
 from src.data_extract.utils.institutionals import fetch_short_interest as si
 from src.data_store.schema import Tables
-from src.data_store.store import DataStore, _create_canonical
+from src.data_store.store import DataStore
+from tests.canonical_schema import create_canonical
 from tests.data_extract.fake_context import extract_config
 
 REPO = Path(__file__).resolve().parents[3]
@@ -72,7 +73,7 @@ LINEAGE_ROWS = [
 
 @pytest.fixture
 def sqlite_store(sqlite_store):
-    _create_canonical(sqlite_store.engine, [Tables.sec_short_volume_security, Tables.short_interest])
+    create_canonical(sqlite_store.engine, [Tables.sec_short_volume_security, Tables.short_interest])
     return sqlite_store
 
 
@@ -134,7 +135,7 @@ def _identity(master: pd.DataFrame | None = None, *, store: DataStore | None = N
     roster = pd.DataFrame([{"ticker": t, "cik": c} for t, c in ROSTER.items()])
     resolver = build_identity(_lineage(), tenure, roster, master=_master() if master is None else master)
     if store is not None:
-        _create_canonical(store.engine, list(resolver.source_cohort))
+        create_canonical(store.engine, list(resolver.source_cohort))
         for table, frame in resolver.source_cohort.items():
             if not frame.empty and store.load(table, optional=True) is None:
                 store.save(table, frame)

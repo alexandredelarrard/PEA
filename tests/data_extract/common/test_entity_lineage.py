@@ -42,8 +42,8 @@ from src.data_extract.utils.identity.entity_lineage import (
 )
 from src.data_extract.utils.identity.symbol_tenure import scan_form345_cache
 from src.data_store.schema import Tables
-from src.data_store.store import _create_canonical
 from src.utils.identity_flags import KIND_ORDER, cik_activity, identity_flags
+from tests.canonical_schema import create_canonical
 
 CONFIG_DIR = "./configs"
 CACHE = Path("data/sec_insider_transactions")
@@ -350,17 +350,18 @@ def test_a_symbol_handoff_seen_in_both_sources_joins_the_predecessor(tmp_path):
     print("  OK: the handoff needs both sources on both CIKs")
 
 
-def test_automatic_windows_when_both_sources_agree(tmp_path):
+def test_automatic_windows_when_both_sources_agree(tmp_path, monkeypatch):
     tenure, dei = _handoff_evidence()
     config = _config(tmp_path)
-    auto = derive_entity_lineage(tenure, _roster([("ABC", "0000000200")]), _owner_pairs({}), config, dei=dei, auto_windows=True)
+    auto = derive_entity_lineage(tenure, _roster([("ABC", "0000000200")]), _owner_pairs({}), config, dei=dei)
     windows = _rows(auto, role="cik_window").set_index("cik")
     assert windows.loc["0000000100", "valid_from"] == L.SENTINEL_START and windows.loc["0000000100", "valid_to"] == pd.Timestamp("2015-07-01")
     assert windows.loc["0000000200", "valid_from"] == pd.Timestamp("2015-07-01") and pd.isna(windows.loc["0000000200", "valid_to"])
     assert set(windows["status"]) == {"corroborated"} and set(windows["sources"]) == {"dei,form345"}
     assert auto.backlog[auto.backlog["kind"].eq("multi_cik_no_window")].empty
 
-    off = derive_entity_lineage(tenure, _roster([("ABC", "0000000200")]), _owner_pairs({}), config, dei=dei, auto_windows=False)
+    monkeypatch.setattr(lineage_module, "AUTO_WINDOWS_ENABLED", False)
+    off = derive_entity_lineage(tenure, _roster([("ABC", "0000000200")]), _owner_pairs({}), config, dei=dei)
     assert _rows(off, role="cik_window")["cik"].tolist() == ["0000000200"]
     assert _rows(off, role="cik_event")["cik"].tolist() == ["0000000100"]
     pending = off.backlog[off.backlog["kind"].eq("multi_cik_no_window")]
@@ -396,10 +397,10 @@ def test_automatic_windows_are_live_and_a_register_entry_overrides_them(tmp_path
     print("  OK: the automatic rule fills only what the register leaves undeclared")
 
 
-def test_every_automatic_window_is_listed_for_review(tmp_path):
+def test_every_automatic_window_is_listed_for_review(tmp_path, monkeypatch):
     """P36: an automatic chain is an information item (`automatic_cik_window`) carrying the switch evidence."""
     tenure, dei = _handoff_evidence()
-    build = derive_entity_lineage(tenure, _roster([("ABC", "0000000200")]), _owner_pairs({}), _config(tmp_path), dei=dei, auto_windows=True)
+    build = derive_entity_lineage(tenure, _roster([("ABC", "0000000200")]), _owner_pairs({}), _config(tmp_path), dei=dei)
     flags = identity_flags(build.rows, cik_activity(pd.concat([tenure, dei], ignore_index=True)))
     auto = flags[flags["kind"].eq("automatic_cik_window")]
     assert "automatic_cik_window" in KIND_ORDER
@@ -409,7 +410,8 @@ def test_every_automatic_window_is_listed_for_review(tmp_path):
     assert "0000000200 from 2015-07-01" in text and "dei" in text and "form345" in text
     assert "registrant_cutover.json" in auto["config_file"].iloc[0]
 
-    off = derive_entity_lineage(tenure, _roster([("ABC", "0000000200")]), _owner_pairs({}), _config(tmp_path), dei=dei, auto_windows=False)
+    monkeypatch.setattr(lineage_module, "AUTO_WINDOWS_ENABLED", False)
+    off = derive_entity_lineage(tenure, _roster([("ABC", "0000000200")]), _owner_pairs({}), _config(tmp_path), dei=dei)
     assert identity_flags(off.rows, cik_activity(pd.concat([tenure, dei], ignore_index=True)))["kind"].ne("automatic_cik_window").all()
 
     print("\n=== SANITY CHECK: automatic windows listed for review ===")
@@ -421,7 +423,7 @@ def test_disagreeing_sources_abstain_and_keep_the_roster_window(tmp_path):
     """AC-019b: Forms 3/4/5 switch in 2015, cover pages in 2018 -> no window, P4 behaviour, backlog."""
     tenure, dei = _handoff_evidence(dei_successor_first="2018-03-01", dei_predecessor_last="2018-02-21")
     owners = {"0000000100": {f"{i:010d}" for i in range(10)}, "0000000200": {f"{i:010d}" for i in range(10)}}
-    build = derive_entity_lineage(tenure, _roster([("ABC", "0000000200")]), _owner_pairs(owners), _config(tmp_path), dei=dei, auto_windows=True)
+    build = derive_entity_lineage(tenure, _roster([("ABC", "0000000200")]), _owner_pairs(owners), _config(tmp_path), dei=dei)
     assert set(_rows(build, cik="0000000100")["oracle"]) == {"owner_overlap"}
     assert _rows(build, role="cik_window")["cik"].tolist() == ["0000000200"]
     assert _rows(build, role="cik_event")["cik"].tolist() == ["0000000100"]
@@ -628,7 +630,7 @@ def test_register_reproduction_reports_reproduced_abstained_and_contradicted(tmp
 
 def test_build_writes_through_the_store_and_skips_an_unchanged_rebuild(tmp_path, monkeypatch, sqlite_store, caplog):
     """End to end on SQLite: `dei` read from `symbol_tenure`, rows written, a second build is a no-op."""
-    _create_canonical(
+    create_canonical(
         sqlite_store.engine,
         [
             Tables.sp500_tickers,

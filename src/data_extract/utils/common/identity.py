@@ -241,10 +241,6 @@ class Identity:
             scope_changed_at=self.scope_changed_at_by_entity.get(entity),
         )
 
-    def symbols_changed_at(self, ticker: str) -> pd.Timestamp | None:
-        """When the ticker's entity's symbol rows last changed; None when it has none."""
-        return self.symbols_changed_at_by_entity.get(self.universe_entity(ticker))
-
     def ticker_for_cik(self, cik, filed=None, policy: CikPolicy = "event") -> str | None:
         """The universe ticker a filing by `cik` belongs to, or None.
 
@@ -353,12 +349,9 @@ class Identity:
             return ACQUIRED_CONSTITUENT
         return CANONICAL_CURRENT if owner == roster else CANONICAL_PREDECESSOR
 
-    def owns(self, ticker: str, cik, on_date=None) -> bool:
-        """Is this CIK's filing about this universe ticker's company?
-
-        `on_date` is accepted but not read: union-policy forms (`registrant.FORM_POLICY`) keep a
-        predecessor's filing past a registrant boundary. Callers pass `filing_date`, not `transaction_date`.
-        """
+    def owns(self, ticker: str, cik) -> bool:
+        """Is this CIK's filing about this universe ticker's company? Undated: union-policy forms
+        (`registrant.FORM_POLICY`) keep a predecessor's filing past a registrant boundary."""
         return self.entity_of(cik) == self.universe_entity(ticker)
 
     # symbol_tenure

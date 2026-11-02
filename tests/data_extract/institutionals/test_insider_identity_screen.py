@@ -48,7 +48,6 @@ from src.data_store.store import DataStore
 
 BROADCOM = "0001441634"  # Broadcom Inc, AVGO's roster CIK
 BROADCOM_LTD = "0001649338"  # Broadcom Ltd, the Singapore segment
-AVAGO = "0001441634"  # (same CIK family; the register chains them)
 AVICENA = "0001317092"  # Avicena Group -- typed AVGO, unrelated company
 TRANE = "0001466258"  # Ingersoll-Rand plc, TT's registrant today
 TRANE_NEW = "0001699150"  # Trane Technologies plc, TT's roster CIK

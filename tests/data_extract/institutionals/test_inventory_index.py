@@ -28,7 +28,7 @@ from tests.data_extract.edgar_fixtures import MASTER_HEADER, fake_context
 )
 def test_incomplete_master_index_is_rejected(raw: str) -> None:
     with pytest.raises(ValueError):
-        edgar_index.parse_master(raw.encode("latin-1"))
+        edgar_index._parse_master_unit(raw.encode("latin-1"))
     print("SANITY: absent public boundary, unaccounted line, malformed nonselected form or post-boundary filing is rejected.")
 
 
@@ -45,7 +45,7 @@ def test_missing_original_is_retried_and_failed_rebuild_preserves_good_cache(
     quarter = edgar_index.Quarter(2026, 3)
     raw = gzip.compress((MASTER_HEADER + "1|Issuer|4|2026-09-30|edgar/data/1/0000000001-26-000001.txt\n").encode("latin-1"))
     cache = directory / "2026Q3.parquet"
-    _legacy_write(edgar_index.parse_master(raw), cache)
+    _legacy_write(edgar_index._parse_master_unit(raw)[0], cache)
     requested: list[str] = []
 
     def download(context: Any, url: str, path: Path) -> int:
@@ -68,7 +68,7 @@ def test_each_index_writer_owns_its_temporary_source_bytes(tmp_path: Path, sqlit
     context = fake_context(tmp_path, sqlite_store, ["AAA"])
     path = edgar_index.index_dir(context) / "2026Q3.parquet"
     raw = MASTER_HEADER + "1|Issuer|4|2026-09-30|edgar/data/1/0000000001-26-000001.txt\n"
-    actual = edgar_index.parse_master(raw.encode("latin-1"))
+    actual = edgar_index._parse_master_unit(raw.encode("latin-1"))[0]
     other = actual.iloc[:0]
     write = edgar_index.pq.write_table
     replace = edgar_index.os.replace

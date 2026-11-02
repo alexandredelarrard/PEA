@@ -21,8 +21,9 @@ from src.data_extract.utils.identity import identity_propagate as prop
 from src.data_extract.utils.identity import security_master as sm
 from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd
 from src.data_store.schema import Tables
-from src.data_store.store import DataStore, _create_canonical
+from src.data_store.store import DataStore
 from src.utils import filer_tables
+from tests.canonical_schema import create_canonical
 from tests.data_extract.fake_context import extract_config
 
 SENTINEL = "1900-01-01"
@@ -455,7 +456,7 @@ def _ftd_raw(rows: list[tuple[str, str, str, int]]) -> pd.DataFrame:
 def test_a_moved_master_security_moves_its_fails_rows(sqlite_store, tmp_path, monkeypatch):
     """FTD contraction and expansion: the `OLD` security moves from ALB to MSFT in the master; ALB's OLD-era
     ticker row retains verified zero completion, MSFT gains it after reconciling the controlled original source units."""
-    _create_canonical(sqlite_store.engine, [Tables.sec_fails_to_deliver_security, Tables.sec_fails_to_deliver])
+    create_canonical(sqlite_store.engine, [Tables.sec_fails_to_deliver_security, Tables.sec_fails_to_deliver])
     context = _context(sqlite_store, tmp_path)
     raw = _ftd_raw([("20120301", "000000OL1", "OLD", 10), ("20240201", "000000AL1", "ALB", 5), ("20240201", "000000MS1", "MSFT", 7)])
     raw = raw.assign(

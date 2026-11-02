@@ -19,7 +19,7 @@ from src.data_extract.utils.common.sec_io import TransientReadError, sec_get
 from src.data_extract.utils.edgar_extract.edgar_fillings import list_filings
 from src.data_extract.utils.edgar_extract.html_text import html_to_text
 from src.data_extract.utils.edgar_extract.sec_utils import load_cik_mapping
-from src.data_extract.utils.structure.def14a.carve import prepare_def14a_payloads, prepare_def14a_sections
+from src.data_extract.utils.structure.def14a.carve import prepare_def14a_payloads
 from src.data_extract.utils.structure.def14a.gender import (
     basis_distribution,
     consensus,
@@ -61,19 +61,6 @@ def _fetch_filing_html(context: Context, filing: pd.Series) -> str:
             raise
         logger.info("%s: primary document unavailable, falling back to the full submission", filing.get("accession_number", ""))
         return sec_get(context, txt_url).text
-
-
-def _payload_for(context: Context, ticker: str, filing: pd.Series) -> str | None:
-    """The carved `=== LABEL ===` text one filing contributes, or None if it cannot be read.
-
-    Runs on the main thread before any task is queued: a worker receives text and a schema, never a `Context`.
-    """
-    try:
-        raw_html = _fetch_filing_html(context, filing)
-        return prepare_def14a_sections(raw_html, html_to_text(raw_html))
-    except Exception as e:  # noqa: BLE001 -- one filing, not the run
-        logger.warning("%s %s: DEF 14A filing could not be read (%s)", ticker, filing.get("filing_date", ""), e)
-        return None
 
 
 def _filing_subject_ciks(filing: pd.Series) -> frozenset[str]:

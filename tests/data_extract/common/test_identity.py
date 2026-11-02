@@ -624,7 +624,7 @@ WORKED_CASES = [
 def test_the_four_worked_cases(live, ticker, cik, entity, universe, verdict, why):
     assert live.entity_of(cik) == entity
     assert live.universe_entity(ticker) == universe
-    assert live.owns(ticker, cik, pd.Timestamp("2020-01-01")) is verdict
+    assert live.owns(ticker, cik) is verdict
 
 
 def test_the_four_worked_cases_summary(live):

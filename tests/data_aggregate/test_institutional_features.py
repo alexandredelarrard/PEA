@@ -43,8 +43,9 @@ from src.data_aggregate.utils.sec_thirteen.institutional_features import (
 from src.data_extract.utils.institutionals.fetch_13f import _book_frame, filing_vintage, save_13f_filing
 from src.data_extract.utils.institutionals.fetch_cusip_map import _parse_openfigi
 from src.data_store.schema import Tables
-from src.data_store.store import DataStore, _create_canonical
+from src.data_store.store import DataStore
 from src.utils.price_adjustments import ShareBasis
+from tests.canonical_schema import create_canonical
 from tests.conftest import make_frames
 
 LAG = pd.Timedelta(days=45)
@@ -1072,7 +1073,7 @@ def test_the_coverage_diagnostic_is_share_weighted_not_filer_weighted():
 
 def test_production_first_publication_uses_immutable_matched_cohorts(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
     """Known-truth packet math through the ordinary builder preserves public cohorts and history."""
-    _create_canonical(sqlite_store.engine, [Tables.sec13f_hr, Tables.sec13f_manager_holdings])
+    create_canonical(sqlite_store.engine, [Tables.sec13f_hr, Tables.sec13f_manager_holdings])
 
     def save_packet(accession: str, cik: str, period: str, filed: str, shares: float | None, *, kind: str = "original") -> None:
         columns = ["CUSIP", "TITLEOFCLASS", "SSHPRNAMT", "SSHPRNAMTTYPE", "VALUE"]

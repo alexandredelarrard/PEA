@@ -27,7 +27,7 @@ from src.data_extract.utils.identity.symbol_tenure import (
     collapse_dei_periods,
 )
 from src.data_store.schema import Tables
-from src.data_store.store import _create_canonical
+from tests.canonical_schema import create_canonical
 
 _SUB_COLS = ["adsh", "cik", "name", "sic", "form", "period", "fy", "fp", "filed"]
 _TXT_COLS = ["adsh", "tag", "version", "ddate", "qtrs", "iprx", "lang", "dimh", "dimn", "coreg", "escaped", "txtlen", "value"]
@@ -93,7 +93,7 @@ def _write_notes_zip(cache: Path, period: str, keys: list[str], dims: dict[str, 
 
 
 def _context(store: Any) -> Any:
-    _create_canonical(store.engine, [Tables.symbol_tenure])
+    create_canonical(store.engine, [Tables.symbol_tenure])
     return SimpleNamespace(
         store=store,
         log=logging.getLogger("test.dei_symbol_tenure"),

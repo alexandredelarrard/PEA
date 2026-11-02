@@ -22,7 +22,8 @@ from src.data_extract.utils.common.identity import build_identity, load_source_i
 from src.data_extract.utils.identity import security_master as sm
 from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd
 from src.data_store.schema import Table, Tables
-from src.data_store.store import DataStore, _create_canonical
+from src.data_store.store import DataStore
+from tests.canonical_schema import create_canonical
 from tests.data_extract.fake_context import extract_config
 
 REPO = Path(__file__).resolve().parents[3]
@@ -209,7 +210,7 @@ LINEAGE_ROWS = [
 
 @pytest.fixture
 def sqlite_store(sqlite_store):
-    _create_canonical(
+    create_canonical(
         sqlite_store.engine,
         [
             Tables.sp500_tickers,
@@ -322,7 +323,6 @@ def _serve(monkeypatch: pytest.MonkeyPatch, lines: dict[str, list[str]]) -> list
     monkeypatch.setattr(ftd, "ftd_periods", lambda *a, **k: sorted(lines))
     monkeypatch.setattr(ftd, "ensure_zip", lambda context, path, urls, **kwargs: path)
     monkeypatch.setattr(ftd, "read_zip_text", _read)
-    monkeypatch.setattr(ftd, "load_identity", lambda context, refresh=False: _identity(), raising=False)
     return read
 
 
@@ -332,7 +332,7 @@ def _rebuild(
     """A full rebuild from `lines` as the whole cache, over a fresh source pair."""
     store.drop(Tables.sec_fails_to_deliver_security)
     store.drop(Tables.sec_fails_to_deliver)
-    _create_canonical(store.engine, [Tables.sec_fails_to_deliver_security, Tables.sec_fails_to_deliver])
+    create_canonical(store.engine, [Tables.sec_fails_to_deliver_security, Tables.sec_fails_to_deliver])
     store.replace(Tables.security_master, _master() if master is None else master)
     _serve(monkeypatch, lines)
     context = _context(store, tmp_path)

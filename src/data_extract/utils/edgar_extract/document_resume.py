@@ -33,7 +33,6 @@ class DocumentWork:
     """One table's document work list: index rows to read per key (oldest first), plus what `resume-plan` reports."""
 
     units: dict[str, pd.DataFrame]
-    key_class: dict[str, str]
     counts: dict[str, int] = field(default_factory=dict)
     uncapped: int = 0
     timings: dict[str, float] = field(default_factory=dict)
@@ -132,18 +131,16 @@ def document_worklist(context: Context, table: Table, request: WorklistRequest) 
     overlap = table.resume.overlap_days if table.resume is not None else 0
     new = new_in_window(request.added_on, overlap, as_of) if overlap else set()
     units: dict[str, pd.DataFrame] = {}
-    key_class: dict[str, str] = {}
     counts: dict[str, int] = {}
     for ticker in roster:
         frames = [by_cik[c] for c in candidates[ticker] if c in by_cik]
         df_listed = resolve_registrant_entries(scopes[ticker], pd.concat(frames, ignore_index=True), forms) if frames else df_index.iloc[:0]
         done_here = done.get(ticker, set()) & set(df_listed["accession"].astype(str))
         df_units = df_listed[~df_listed["accession"].isin(done_here)].reset_index(drop=True)
-        key_class[ticker] = _key_class(ticker, new, df_listed, df_units)
-        for name, n in _classify_units(df_listed, df_units, key_class[ticker], overlap).items():
+        for name, n in _classify_units(df_listed, df_units, _key_class(ticker, new, df_listed, df_units), overlap).items():
             counts[name] = counts.get(name, 0) + n
         if not df_units.empty:
             units[ticker] = df_units
     units, uncapped = _cap(units, request.cap, table.name)
     timings = {"index_read": read_index - started, "done_read": read_done - read_index, "total": time.perf_counter() - started}
-    return DocumentWork(units=units, key_class=key_class, counts=counts, uncapped=uncapped, timings=timings)
+    return DocumentWork(units=units, counts=counts, uncapped=uncapped, timings=timings)

@@ -418,7 +418,7 @@ def _summary(units: dict[str, list[tuple[str, str]]], failed: dict[str, list[str
         ticker: KeyOutcome(listed=len(df), failed=df[df["accession"].isin(failed.get(ticker, []))].reset_index(drop=True))
         for ticker, df in frames.items()
     }
-    return FetchSummary(work=DocumentWork(units=frames, key_class={t: "established" for t in frames}), outcomes=outcomes)
+    return FetchSummary(work=DocumentWork(units=frames), outcomes=outcomes)
 
 
 def test_fetched_dates_exclude_missing_documents() -> None:

@@ -24,8 +24,9 @@ from src.data_extract.utils.institutionals import fetch_short_interest as finra
 from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd
 from src.data_extract.utils.zips import fetch_insider_transactions as insider_zip
 from src.data_store.schema import Tables
-from src.data_store.store import DataStore, _create_canonical
+from src.data_store.store import DataStore
 from src.utils.price_adjustments import ShareBasis
+from tests.canonical_schema import create_canonical
 from tests.conftest import DATA
 from tests.data_extract.fake_context import extract_config
 from tests.data_extract.institutionals.test_fails_to_deliver import download_and_capture
@@ -34,7 +35,7 @@ from tests.data_extract.institutionals.test_short_volume_security import _identi
 
 @pytest.fixture
 def sqlite_store(sqlite_store: DataStore) -> DataStore:
-    _create_canonical(
+    create_canonical(
         sqlite_store.engine,
         [
             Tables.sp500_tickers,
@@ -697,7 +698,7 @@ def test_identity_propagation_ftd_restamp_certifies_the_classified_cohort(sqlite
 
 
 def test_zip_reconciliation_refuses_concurrently_changed_edgar_payload(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
-    _create_canonical(sqlite_store.engine, [Tables.insider_transactions, Tables.insider_footnotes])
+    create_canonical(sqlite_store.engine, [Tables.insider_transactions, Tables.insider_footnotes])
     context = cast(Any, SimpleNamespace(store=sqlite_store, log=logging.getLogger(__name__)))
     rows = pd.DataFrame(
         {
@@ -782,7 +783,7 @@ def test_generic_identity_purge_uses_guarded_insider_issuer_deletion(
 
 
 def _parser_identity_context(store: DataStore, directory: Path) -> tuple[Any, Identity]:
-    _create_canonical(
+    create_canonical(
         store.engine,
         [
             Tables.sp500_tickers,

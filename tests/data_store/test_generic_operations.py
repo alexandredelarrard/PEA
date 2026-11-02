@@ -90,22 +90,14 @@ def test_filtered_summary_and_complete_cohort(sqlite_store: DataStore) -> None:
     print("SANITY: filtered counts stay server-side and one touched member selects its complete group.")
 
 
-def test_sql_date_null_comparison_and_explicit_staging(sqlite_store: DataStore) -> None:
+def test_sql_date_null_comparison(sqlite_store: DataStore) -> None:
     df_prices = _prices(sqlite_store)
     df_actual = sqlite_store.load(Tables.prices, order_by=["ticker", "date"])
     assert df_actual is not None
     assert sqlite_store.same_rows(Tables.prices, df_actual, df_prices)
     assert not sqlite_store.same_rows(Tables.prices, df_actual, df_prices.assign(date=df_prices.date + pd.Timedelta(hours=12)))
     assert not sqlite_store.same_rows(Tables.prices, df_actual, df_prices.assign(close_split=0.0))
-    with DataStore.temporary([Tables.insider_transactions, Tables.insider_footnotes, Tables.sec_fails_to_deliver]) as store:
-        assert "fetched_at" in store.columns(Tables.insider_transactions)
-        assert not store.exists(Tables.prices)
-        df_fails = df_prices.rename(columns={"close_split": "fails_quantity"})
-        store.save(Tables.sec_fails_to_deliver, df_fails)
-        df_stored = store.load(Tables.sec_fails_to_deliver, columns=list(df_fails.columns))
-        assert df_stored is not None
-        assert store.same_rows(Tables.sec_fails_to_deliver, df_stored, df_fails.assign(date=df_fails.date + pd.Timedelta(hours=12)))
-    print("SANITY: equality follows SQL DATE/NULL binding and staging creates only explicitly selected full schemas.")
+    print("SANITY: equality follows SQL DATE/NULL binding: a 12-hour shift and a changed close both differ.")
 
 
 def test_generic_metadata_reuse_and_explicit_schema_invalidation(sqlite_store: DataStore) -> None:

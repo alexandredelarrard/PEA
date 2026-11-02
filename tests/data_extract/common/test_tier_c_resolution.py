@@ -44,7 +44,6 @@ IDENTITY = dated_identity(
     ],
     {"GOOGL": "0001652044", "VTRS": "0001792044", "APA": "0001841666", "AAPL": "0000320193"},
 )
-ROSTER = pd.DataFrame({"ticker": ["GOOGL", "VTRS", "APA", "AAPL"], "cik": ["0001652044", "0001792044", "0001841666", "0000320193"]})
 UNIVERSE = ["AAPL", "APA", "GOOGL", "VTRS"]
 
 #: (accession, filer CIK, filed, expected ticker or None)
@@ -94,12 +93,10 @@ def _context(store: Any, tmp_path) -> SimpleNamespace:
 def _patch_bulk_io(module: Any, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     """Cache, clocks and bookkeeping stubbed; identity and roster from the fixtures above."""
     monkeypatch.setattr(module, "load_identity", lambda context: IDENTITY, raising=False)
-    monkeypatch.setattr(module, "load_cik_mapping", lambda context: ROSTER.copy(), raising=False)
     monkeypatch.setattr(module, "cache_dir", lambda context, key: tmp_path)
     monkeypatch.setattr(zip_archive, "ensure_zip", lambda context, path, url, **kwargs: path)
     monkeypatch.setattr(zip_archive, "is_cached", lambda path: True)
     monkeypatch.setattr(zip_archive, "archive_available_at", lambda *args, **kwargs: date(2025, 1, 13))
-    monkeypatch.setattr(module, "archive_available_at", lambda *args, **kwargs: date(2025, 1, 13), raising=False)
     monkeypatch.setattr(module, "stored_period_clock", lambda *args, **kwargs: None)
 
 
@@ -108,6 +105,7 @@ def test_notes_rows_resolve_through_the_lineage_window_of_their_filer(sqlite_sto
     period = "2020q3"
     (tmp_path / f"{period}_notes.zip").write_bytes(_notes_zip())
     _patch_bulk_io(fn, monkeypatch, tmp_path)
+    monkeypatch.setattr(fn, "archive_available_at", lambda *args, **kwargs: date(2025, 1, 13))
     monkeypatch.setattr(fn, "_repair_stored_clocks", lambda *args, **kwargs: {})
 
     scope = ZipScope(tickers=UNIVERSE, all_tickers=None, run_date=run_date(None), full=False)

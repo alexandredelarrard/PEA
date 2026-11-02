@@ -26,10 +26,8 @@ from functools import partial
 from pathlib import Path
 from typing import cast
 
-import numpy as np
 import pandas as pd
 import requests
-from edgar.thirteenf.models import _detect_value_in_thousands
 from tqdm import tqdm
 
 from src.context import Context
@@ -38,9 +36,6 @@ from src.data_extract.utils.common.resume import DONE_PER_KEY, stored_accessions
 from src.data_extract.utils.common.sec_io import TransientReadError, sec_get
 from src.data_extract.utils.edgar_extract.empty_markers import marker_frame
 from src.data_extract.utils.institutionals.fetch_13f import (
-    _HR_COLS,
-    _classify_holdings,
-    _latest_per_key,
     _pick,
     _Saver,
     _WalkState,
@@ -49,7 +44,6 @@ from src.data_extract.utils.institutionals.fetch_13f import (
     save_hr,
 )
 from src.data_extract.utils.institutionals.fetch_cusip_map import build_cusip_ticker_map
-from src.data_extract.utils.institutionals.value_units import resolve_value_units
 from src.data_store.schema import Resume, Tables
 from src.utils.string import pad_cik_series
 from src.utils.superinvestor_roster import roster_cik_union
@@ -63,14 +57,8 @@ _ZIP_URL = "https://www.sec.gov/files/{section}/data/form-13f-data-sets/{name}_f
 _ZIP_NAME = re.compile(r"(\d{4}q[1-4]|\d{2}[a-z]{3}\d{4}-\d{2}[a-z]{3}\d{4})_form13f\.zip", re.IGNORECASE)
 _DOWNLOAD_TIMEOUT = 600  # seconds; each ZIP is 73-100 MB
 _CHUNK_ROWS = 500_000
-# A filing whose data-set value total is this many times its stored book (either way) flipped unit.
-_UNIT_FLIP = (500.0, 2000.0)
-_UNIT_TOLERANCE = 0.005
 
-_BOOK_COLS = [c for c in _HR_COLS if c != "ticker"]
 _INFO_COLS = frozenset({"ACCESSION_NUMBER", "CUSIP", "VALUE", "SSHPRNAMT", "SSHPRNAMTTYPE", "PUTCALL"})
-# The edgartools infotable spelling of the data sets' SSHPRNAMTTYPE.
-_AMOUNT_TYPES = {"SH": "Shares", "PRN": "Principal"}
 
 
 @dataclass(frozen=True)
@@ -101,15 +89,6 @@ class DataSet:
     @property
     def filename(self) -> str:
         return f"{self.name}_form13f.zip"
-
-
-@dataclass(frozen=True)
-class UnitCheck:
-    """Roster-manager filings compared with their stored books: how many, how many within tolerance, and the unit flips."""
-
-    compared: int
-    within: int
-    flips: list[str]
 
 
 def published_data_sets(context: Context) -> list[DataSet] | None:
@@ -205,135 +184,6 @@ def _archive_scope(path: Path, cusips: frozenset[str]) -> tuple[pd.DataFrame, se
     submissions = _submissions(first["SUBMISSION.tsv"], first["COVERPAGE.tsv"])
     holders = set(_pick(first["INFOTABLE.tsv"], "ACCESSION_NUMBER").astype("string").str.strip().dropna())
     return submissions, set(submissions.loc[submissions.accession.isin(holders), "cik"])
-
-
-def _read_data_set(path: Path, cusips: frozenset[str], roster_ciks: set[str]) -> tuple[pd.DataFrame, pd.DataFrame] | None:
-    """The data set's 13F-HR submissions and the info-table lines of every filing that holds one of
-    `cusips` or comes from a roster CIK (two chunked passes over INFOTABLE); None for a corrupt or
-    incomplete ZIP."""
-    scope = _archive_scope(path, cusips)
-    if scope is None:
-        return None
-    submissions, target_managers = scope
-    managers = target_managers | roster_ciks
-    wanted = frozenset(submissions.loc[submissions.cik.isin(managers), "accession"])
-    if not wanted:
-        return submissions.iloc[:0], pd.DataFrame(columns=sorted(_INFO_COLS))
-    second = read_zip_tables(
-        path,
-        {"INFOTABLE.tsv": ZipRead(usecols=_INFO_COLS, keep=partial(_filed_in, accessions=wanted), chunksize=_CHUNK_ROWS, upper=True)},
-        on_corrupt="delete",
-        log=logger,
-    )
-    return None if not second else (submissions.loc[submissions.accession.isin(wanted)], second["INFOTABLE.tsv"])
-
-
-def _value_in_thousands(df_info: pd.DataFrame, report_period: pd.Series) -> pd.Series:
-    """Per accession, edgartools' unit decision on that filing's raw holdings (the data sets carry no
-    schema version, so an ambiguous filing falls back on its report period)."""
-    df_holdings = pd.DataFrame(
-        {
-            "accession": df_info["accession"],
-            "Type": _pick(df_info, "SSHPRNAMTTYPE").astype("string").str.strip().str.upper().map(_AMOUNT_TYPES),
-            "SharesPrnAmount": pd.to_numeric(_pick(df_info, "SSHPRNAMT"), errors="coerce"),
-            "PutCall": _pick(df_info, "PUTCALL").astype("string").str.strip().fillna(""),
-            "Value": pd.to_numeric(_pick(df_info, "VALUE"), errors="coerce"),
-        }
-    )
-    decided: dict[str, bool] = {}
-    for accession, df_filing in df_holdings.groupby("accession", sort=False):
-        reported = report_period.get(accession)
-        decided[str(accession)] = bool(
-            _detect_value_in_thousands(df_filing, None, None if pd.isna(reported) else pd.Timestamp(reported).to_pydatetime())
-        )
-    return pd.Series(decided, dtype=bool)
-
-
-def data_set_book(submissions: pd.DataFrame, df_info: pd.DataFrame, *, source_values: bool = False) -> pd.DataFrame:
-    """The data set's holdings as `fetch_13f` books: values scaled per filing, lines summed per
-    (accession, cusip), the last filed kept per (cik, period, cusip)."""
-    df_info = df_info.assign(accession=_pick(df_info, "ACCESSION_NUMBER").astype("string").str.strip())
-    df_info = df_info[df_info["accession"].isin(submissions["accession"])]
-    if df_info.empty:
-        return pd.DataFrame(columns=_BOOK_COLS)
-    raw_value = pd.to_numeric(df_info["VALUE"], errors="coerce")
-    if source_values:
-        units = {row.accession: resolve_value_units(row.filing_date) for row in submissions.itertuples()}
-        scale = df_info["accession"].map({accession: unit.factor for accession, unit in units.items()})
-        normalized = df_info.assign(VALUE=raw_value * scale, raw_value=raw_value)
-    else:
-        thousands = _value_in_thousands(df_info, submissions.set_index("accession")["report_period"])
-        scale = np.where(df_info["accession"].map(thousands).fillna(False).astype(bool), 1000.0, 1.0)
-        normalized = df_info.assign(VALUE=raw_value * scale)
-    typed = _classify_holdings(normalized)
-    typed["accession"] = df_info["accession"].to_numpy()
-    summed = typed.dropna(subset=["cusip"]).groupby(["accession", "cusip"], as_index=False).sum(numeric_only=True)
-    meta = submissions[["accession", "cik", "period", "filing_date", "is_amendment"]]
-    book = summed.merge(meta, on="accession", how="inner").dropna(subset=["period"])
-    book = book.sort_values(["filing_date", "is_amendment", "accession"], kind="stable")
-    if source_values:
-        invalid = typed.groupby(["accession", "cusip"])[["value_usd", "call_value", "put_value", "debt_value", "other_value"]].agg(
-            lambda values: values.isna().any()
-        )
-        keys = pd.MultiIndex.from_frame(book[["accession", "cusip"]])
-        for column in invalid:
-            book[column] = book[column].mask(invalid[column].reindex(keys).to_numpy())
-        book["value_unit_factor"] = book["accession"].map({accession: unit.factor for accession, unit in units.items()})
-        book["value_unit_evidence"] = book["accession"].map({accession: unit.evidence for accession, unit in units.items()})
-        return book.reset_index(drop=True)
-    return _latest_per_key(book)[_BOOK_COLS].reset_index(drop=True)
-
-
-def unit_check(context: Context, book: pd.DataFrame, roster_ciks: set[str]) -> UnitCheck:
-    """The data set's roster-manager filings against their stored books, per (cik, period, filing date)
-    over the CUSIPs both hold: a value total a unit factor off is a flip."""
-    keys = ["cik", "period", "filing_date"]
-    df_zip = book.loc[book["cik"].isin(roster_ciks), [*keys, "cusip", "value_usd"]]
-    df_stored = (
-        None
-        if df_zip.empty
-        else context.store.load(
-            Tables.sec13f_manager_holdings,
-            columns=[*keys, "cusip", "value_usd"],
-            where={"cik": sorted(set(df_zip["cik"]))},
-            date_col="period",
-            since=df_zip["period"].min(),
-            until=df_zip["period"].max(),
-            optional=True,
-        )
-    )
-    if df_stored is None:
-        return UnitCheck(0, 0, [])
-    df_stored = df_stored.assign(**{col: pd.to_datetime(df_stored[col]).dt.normalize() for col in ("period", "filing_date")})
-    df_merged = df_zip.merge(df_stored, on=[*keys, "cusip"], suffixes=("_zip", "_db"))
-    df_totals = df_merged.groupby(keys)[["value_usd_zip", "value_usd_db"]].sum()
-    ratio = (df_totals["value_usd_zip"] / df_totals["value_usd_db"])[df_totals["value_usd_db"] > 0]
-    low, high = _UNIT_FLIP
-    flipped = ratio.between(low, high) | ratio.between(1 / high, 1 / low)
-    flips = [f"{cik} {period:%Y-%m-%d} filed {filed:%Y-%m-%d}" for cik, period, filed in ratio[flipped].index]
-    return UnitCheck(len(ratio), int(((ratio - 1).abs() <= _UNIT_TOLERANCE).sum()), flips)
-
-
-def _drop_superseded(context: Context, df_hr: pd.DataFrame) -> pd.DataFrame:
-    """`df_hr` without the rows whose stored twin (same primary key) was filed on or after them."""
-    pk = list(Tables.sec13f_hr.pk)
-    df_stored = context.store.load(
-        Tables.sec13f_hr,
-        columns=[*pk, "filing_date"],
-        where={"ticker": sorted(set(df_hr["ticker"]))},
-        date_col="period",
-        since=df_hr["period"].min(),
-        until=df_hr["period"].max(),
-        optional=True,
-    )
-    if df_stored is None:
-        return df_hr
-    df_stored = df_stored.assign(
-        period=pd.to_datetime(df_stored["period"]).dt.normalize(), stored_filed=pd.to_datetime(df_stored["filing_date"]).dt.normalize()
-    )
-    df_merged = df_hr[[*pk, "filing_date"]].merge(df_stored[[*pk, "stored_filed"]], on=pk, how="left")
-    keep = df_merged["stored_filed"].isna() | (df_merged["filing_date"] > df_merged["stored_filed"])
-    return df_hr[keep.to_numpy()]
 
 
 def _backfill_data_set(

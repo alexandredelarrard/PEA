@@ -2,28 +2,26 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-from time import perf_counter
 from typing import Any
 
 import numpy as np
 import pandas as pd
 import pytest
-from sqlalchemy import event, inspect
+from sqlalchemy import event
 
 from src.data_aggregate.utils.institutionals import inputs
 from src.data_aggregate.utils.institutionals import short_flow_features as short
 from src.data_extract.utils.common.identity import load_source_identity
 from src.data_extract.utils.identity.identity_store import save_identity
 from src.data_extract.utils.insider.insider_store import patch_insider_source, replace_insider_source
-from src.data_extract.utils.zips.fetch_fails_to_deliver import replace_fails_source
 from src.data_store.schema import Table, Tables
-from src.data_store.store import DataStore, _create_canonical
+from src.data_store.store import DataStore
 from src.utils.price_adjustments import ShareBasis
+from tests.canonical_schema import create_canonical
 
 
 def _inventory(store: DataStore) -> tuple[pd.DataFrame, pd.DataFrame, dict[Table, pd.DataFrame]]:
-    _create_canonical(
+    create_canonical(
         store.engine,
         [
             Tables.sp500_tickers,
@@ -332,187 +330,3 @@ def test_owner_only_retention_is_per_accession_and_issuer(sqlite_store: DataStor
     assert stored_frame is not None
     pd.testing.assert_frame_equal(stored_frame, notes)
     print("SANITY: another accession's same ticker cannot erase an owner-only accession's actual issuer.")
-
-
-def test_temporary_source_roundtrip_and_cleanup_preserve_exact_cohort() -> None:
-    staged_path: Path | None = None
-    started = perf_counter()
-    staging_bytes = 0
-    with pytest.raises(RuntimeError, match="controlled context exit"):
-        with DataStore.temporary([Tables.insider_transactions, Tables.insider_footnotes]) as stage:
-            staged_path = Path(str(stage.engine.url.database))
-            transactions = pd.DataFrame(
-                {
-                    "accession_number": ["a", "b"],
-                    "security_type": ["nonderiv", "deriv_holding"],
-                    "row_sequence": [1, 1],
-                    "ticker": ["AAA", "AAA"],
-                    "issuer_cik": ["0000000001", "0000000001"],
-                    "shares": [9007199254740994.0, np.nan],
-                    "shares_owned_after": [np.nan, 1.0000000000000002],
-                    "filing_date": pd.to_datetime(["2026-07-01", "2026-07-02"]),
-                    "fetched_at": pd.to_datetime(["2026-07-03 01:02:03.123456"] * 2),
-                }
-            )
-            notes = pd.DataFrame({"accession_number": ["a", "b"], "footnote_id": ["F1", "F2"], "footnote_text": ['Exact "quoted"\nnotes é', None]})
-            replace_insider_source(
-                stage,
-                {Tables.insider_transactions: transactions, Tables.insider_footnotes: notes},
-                {Tables.insider_transactions: {"accession_number": ["a", "b"]}, Tables.insider_footnotes: {"accession_number": ["a", "b"]}},
-            )
-            actual = stage.load(
-                Tables.insider_transactions, columns=stage.columns(Tables.insider_transactions), where={"ticker": "AAA"}, markers=True
-            )
-            actual_notes = stage.load(Tables.insider_footnotes, columns=stage.columns(Tables.insider_footnotes))
-            assert actual is not None and actual_notes is not None
-            expected = transactions.assign(filing_date=transactions["filing_date"].dt.date)
-            pd.testing.assert_frame_equal(actual[list(expected.columns)], expected, check_dtype=False, check_exact=True)
-            pd.testing.assert_frame_equal(actual_notes, notes, check_dtype=False)
-            assert set(inspect(stage.engine).get_table_names()) == {Tables.insider_transactions.name, Tables.insider_footnotes.name}
-            assert staged_path.exists()
-            staging_bytes = staged_path.stat().st_size
-            raise RuntimeError("controlled context exit")
-    assert staged_path is not None and not staged_path.exists() and not staged_path.parent.exists()
-    print(
-        f"SANITY: transient existing-table SQLite preserves exact payloads/notes; 2 transaction rows, 2 note rows, {staging_bytes} bytes, "
-        f"largest issuer2 rows, {perf_counter() - started:.3f}s; rollback exit removes database and directory."
-    )
-
-
-@pytest.mark.parametrize(
-    "table,count", [(Tables.entity_lineage, "n_observations"), (Tables.security_master, "n_observations"), (Tables.symbol_tenure, "n_filings")]
-)
-def test_count_and_evidence_churn_preserves_identity_proof(sqlite_store: DataStore, table: Table, count: str) -> None:
-    _, _, identities = _inventory(sqlite_store)
-    frames = _tape_observations(sqlite_store)
-    before = {spec: sqlite_store.load(spec, columns=[str(column) for column in frame]) for spec, frame in frames.items()}
-    rows = identities[table].assign(**{count: 99, "evidence": "additional observations, unchanged semantic scope"})
-    save_identity(sqlite_store, table, rows)
-    for spec, expected in before.items():
-        actual = sqlite_store.load(spec, columns=[str(column) for column in frames[spec]])
-        assert expected is not None and actual is not None
-        pd.testing.assert_frame_equal(actual, expected)
-    print("SANITY: count/evidence-only refresh preserves unchanged tape proof, quiet payload and raw observations.")
-
-
-@pytest.mark.parametrize("case", ["disappeared", "ambiguous", "rollback"])
-def test_ftd_null_owner_reconciliation_is_exact_and_atomic(sqlite_store: DataStore, case: str) -> None:
-    _, _, identities = _inventory(sqlite_store)
-    master = pd.DataFrame(
-        {
-            "security_id": ["C111", "C222"],
-            "source": ["ftd"] * 2,
-            "source_symbol": ["AAA", "BBB"],
-            "valid_from": pd.to_datetime(["2020-01-01"] * 2),
-            "valid_to": [pd.NaT] * 2,
-            "canonical_company": ["AAA", "BBB"],
-            "issuer_cik": ["0000000001", "0000000002"],
-            "cusip": ["111", "222"],
-        }
-    )
-    if case == "ambiguous":
-        master = pd.concat([master, master.iloc[:1].assign(security_id="C333", canonical_company="CCC")], ignore_index=True)
-    sqlite_store.replace(Tables.security_master, master)
-    identities = load_source_identity(sqlite_store)
-    raw = pd.DataFrame(
-        {
-            "cusip": ["111", "222"],
-            "date": pd.to_datetime(["2026-07-03"] * 2),
-            "trade_date": pd.to_datetime(["2026-07-01"] * 2),
-            "source_symbol": ["AAA", "BBB"],
-            "ticker": [None, "BBB"],
-            "period": ["202607a"] * 2,
-            "fails_quantity": [10.0, 20.0],
-        }
-    )
-    grain = pd.DataFrame(
-        {
-            "ticker": ["AAA"],
-            "date": pd.to_datetime(["2026-07-03"]),
-            "period": ["202607a"],
-            "fails_quantity": [5.0],
-            "fails_value": [50.0],
-            "source_checked_at": pd.to_datetime(["2026-07-04"]),
-        }
-    )
-    sqlite_store.save(Tables.sec_fails_to_deliver_security, raw)
-    sqlite_store.save(Tables.sec_fails_to_deliver, grain)
-    before_raw = sqlite_store.load(Tables.sec_fails_to_deliver_security)
-    assert before_raw is not None
-    before_grain = sqlite_store.load(Tables.sec_fails_to_deliver)
-    assert before_grain is not None
-
-    def refuse(conn: Any, cursor: Any, statement: str, parameters: Any, context: Any, executemany: bool) -> None:
-        if statement.startswith(f"INSERT INTO {Tables.sec_fails_to_deliver.name} "):
-            raise RuntimeError("controlled derived failure")
-
-    if case == "rollback":
-        event.listen(sqlite_store.engine, "before_cursor_execute", refuse)
-    try:
-        if case in ("rollback", "ambiguous"):
-            with pytest.raises((RuntimeError, ValueError), match="controlled|Ambiguous"):
-                replace_fails_source(
-                    sqlite_store,
-                    {
-                        Tables.sec_fails_to_deliver_security: raw.iloc[:0],
-                        Tables.sec_fails_to_deliver: grain.assign(fails_quantity=0.0, fails_value=0.0),
-                    },
-                    {
-                        Tables.sec_fails_to_deliver_security: {"ticker": ["AAA"], "period": "202607a"},
-                        Tables.sec_fails_to_deliver: {"ticker": ["AAA"], "period": "202607a"},
-                    },
-                    identities,
-                )
-            stored_frame = sqlite_store.load(Tables.sec_fails_to_deliver_security)
-            assert stored_frame is not None
-            pd.testing.assert_frame_equal(stored_frame, before_raw)
-            stored_frame = sqlite_store.load(Tables.sec_fails_to_deliver)
-            assert stored_frame is not None
-            pd.testing.assert_frame_equal(stored_frame, before_grain)
-        else:
-            replace_fails_source(
-                sqlite_store,
-                {Tables.sec_fails_to_deliver_security: raw.iloc[:0], Tables.sec_fails_to_deliver: grain.assign(fails_quantity=0.0, fails_value=0.0)},
-                {
-                    Tables.sec_fails_to_deliver_security: {"ticker": ["AAA"], "period": "202607a"},
-                    Tables.sec_fails_to_deliver: {"ticker": ["AAA"], "period": "202607a"},
-                },
-                identities,
-            )
-            remaining = sqlite_store.load(Tables.sec_fails_to_deliver_security)
-            assert remaining is not None and remaining["cusip"].tolist() == ["222"] and remaining["fails_quantity"].tolist() == [20.0]
-    finally:
-        if case == "rollback":
-            event.remove(sqlite_store.engine, "before_cursor_execute", refuse)
-    print(
-        "SANITY: disappeared dated target NULL-owner keys reconcile atomically; retained other issuers survive, ambiguity refuses proof and failed derived inserts roll back raw deletion."
-    )
-
-
-@pytest.mark.parametrize("collision", ["period", "owner"])
-def test_tape_incoming_key_guards_escape_the_replacement_scope(sqlite_store: DataStore, collision: str) -> None:
-    _inventory(sqlite_store)
-    raw, grain = Tables.sec_fails_to_deliver_security, Tables.sec_fails_to_deliver
-    df_raw = pd.DataFrame(
-        {
-            "cusip": ["111"],
-            "date": [pd.Timestamp("2026-07-03")],
-            "trade_date": [pd.Timestamp("2026-07-01")],
-            "source_symbol": ["AAA"],
-            "ticker": ["AAA" if collision == "period" else "BBB"],
-            "period": ["old"],
-        }
-    )
-    sqlite_store.save(raw, df_raw)
-    df_grain = pd.DataFrame({"ticker": ["AAA"], "date": [pd.Timestamp("2026-07-03")], "period": ["new"]})
-    incoming = df_raw.assign(ticker="AAA", period="new" if collision == "period" else "old")
-    before = sqlite_store.load(raw)
-    assert before is not None
-    with pytest.raises(ValueError, match="source periods|another retained issuer"):
-        replace_fails_source(
-            sqlite_store, {raw: incoming, grain: df_grain}, {raw: {"ticker": ["AAA"], "period": "new"}, grain: {"ticker": ["AAA"], "period": "new"}}
-        )
-    after = sqlite_store.load(raw)
-    assert after is not None
-    pd.testing.assert_frame_equal(before, after)
-    print("SANITY: incoming exact keys outside the selected owner/period still trigger collision refusal before mutation.")

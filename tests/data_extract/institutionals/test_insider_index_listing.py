@@ -18,8 +18,8 @@ from src.data_extract.utils.edgar_extract import edgar_driver
 from src.data_extract.utils.edgar_extract import fetch_insider_edgar as module
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarRun, EdgarScope, plan_fetch, run_edgar_fetch
 from src.data_store.schema import Tables
-from src.data_store.store import _create_canonical
 from src.utils.universe import added_on_map
+from tests.canonical_schema import create_canonical
 from tests.data_extract.edgar_fixtures import fake_context, fake_filing, identity_for, patch_index_filings, seed_index
 
 _AS_OF = pd.Timestamp("2026-09-30")
@@ -166,7 +166,7 @@ def test_an_owner_role_form_4_is_a_marker_and_never_hides_the_issuers_filing(ctx
     seed_index(ctx, [(797468, "OCCIDENTAL PETROLEUM", "4", "2026-09-02", accession), (1067983, "BERKSHIRE HATHAWAY", "4", "2026-09-02", accession)])
     patch_index_filings(monkeypatch, {accession: _form4(accession, "1067983", "0000797468", "OXY")})
     # the tables exist with their full column set, as their DDL makes them on Postgres
-    _create_canonical(sqlite_store.engine, [Tables.insider_transactions, Tables.insider_footnotes])
+    create_canonical(sqlite_store.engine, [Tables.insider_transactions, Tables.insider_footnotes])
 
     first = run_edgar_fetch(ctx, module.INSIDER_EDGAR_FETCH, EdgarRun.load(ctx, list(_ROSTER), 15, as_of=_AS_OF), max_workers=1)
 

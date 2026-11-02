@@ -8,7 +8,7 @@ fetcher offers is "delete rows and re-run everything", which on 12,343 filings i
 
 This script is the targeted lever. It resolves a scope to a set of accessions, prices the work
 BEFORE spending anything, and re-extracts only those, reusing production's own carve
-(`_payload_for`), schema (`Def14AExtract`) and flatten (`_result_frames`) so the rows it writes
+(`_payload_for`: `_fetch_filing_html` + `prepare_def14a_sections`), schema (`Def14AExtract`) and flatten (`_result_frames`) so the rows it writes
 are indistinguishable from rows production would write.
 
     --scope dual-class      the filings whose ownership table can print TWO percent columns
@@ -47,11 +47,13 @@ import pandas as pd
 
 from src.context import Context, get_config_context
 from src.data_extract.utils.common.identity import FilingScope, load_identity
+from src.data_extract.utils.edgar_extract.html_text import html_to_text
 from src.data_extract.utils.edgar_extract.sec_utils import load_cik_mapping
 from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
+from src.data_extract.utils.structure.def14a.carve import prepare_def14a_sections
 from src.data_extract.utils.structure.def14a.fetch import (
+    _fetch_filing_html,
     _list_scope_windows,
-    _payload_for,
     _subject_is_accepted,
     accepted_subjects,
 )
@@ -123,6 +125,19 @@ SCOPES["both"] = f"""
 """
 
 logger = logging.getLogger("def14a_reextract")
+
+
+def _payload_for(context: Context, ticker: str, filing: pd.Series) -> str | None:
+    """The carved `=== LABEL ===` text one filing contributes, or None if it cannot be read.
+
+    Runs on the main thread before any task is queued: a worker receives text and a schema, never a `Context`.
+    """
+    try:
+        raw_html = _fetch_filing_html(context, filing)
+        return prepare_def14a_sections(raw_html, html_to_text(raw_html))
+    except Exception as e:  # noqa: BLE001 -- one filing, not the run
+        logger.warning("%s %s: DEF 14A filing could not be read (%s)", ticker, filing.get("filing_date", ""), e)
+        return None
 
 
 def _work(ctx: Context, args: argparse.Namespace) -> pd.DataFrame:

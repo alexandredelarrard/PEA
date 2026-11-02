@@ -133,24 +133,6 @@ def _daily_context(tmp_path: Path) -> Any:
     )
 
 
-def _listed_filing(accession: str, filing_date: pd.Timestamp) -> pd.DataFrame:
-    return pd.DataFrame(
-        [
-            {
-                "ticker": "ZZ",
-                "cik": "0000000001",
-                "company_name": "Example Corp",
-                "accession_number": accession,
-                "doc_url": f"https://example.invalid/{accession}",
-                "txt_url": f"https://example.invalid/{accession}.txt",
-                "filing_date": filing_date,
-                "period_of_report": str(filing_date.date()),
-                "form": "DEF 14A",
-            }
-        ]
-    )
-
-
 def _extractor_double(responses: list[BaseException | Any], tasked: list[str]):
     class _Extractor:
         threads = 2
@@ -445,6 +427,3 @@ def test_llm_proxies_are_listed_per_scope_window_with_the_seam_margin(monkeypatc
     assert mod.accepted_subjects(FilingScope.roster_only("AAPL", "320193")) == frozenset()
     print("\n=== SANITY: DEF 14A LLM per-window listing ===")
     print("  both PSKY CIKs listed; the predecessor's 2026 proxy (past its margin) dropped; margin proxies on both sides kept")
-
-
-_EMPTY_ANSWER = Def14AExtract(governance=GovernanceProfile(classified_board=False, dual_class_shares=False))

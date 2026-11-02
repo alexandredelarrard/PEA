@@ -53,7 +53,7 @@ _DROPPED_FORMS = {"424B2", "S-8", "FWP", "N-PX", "D", "6-K", "8-K12B"}
 
 def test_master_idx_parses_to_typed_policy_rows():
     raw = gzip.compress(master_text(_LINES).encode("latin-1"))
-    df = edgar_index.parse_master(raw)
+    df = edgar_index._parse_master_unit(raw)[0]
 
     assert len(_LINES) == 30 and len(df) == 30 - 7
     assert not set(df["form"]) & _DROPPED_FORMS

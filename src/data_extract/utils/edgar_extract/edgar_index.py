@@ -126,11 +126,6 @@ def _parse_master_unit(raw: bytes) -> tuple[pd.DataFrame, pd.Timestamp]:
     return result, through
 
 
-def parse_master(raw: bytes) -> pd.DataFrame:
-    """Typed selected forms, only after validating the complete source unit."""
-    return _parse_master_unit(raw)[0]
-
-
 def _write_atomic(df: pd.DataFrame, path: Path) -> None:
     """Write `df` to `path` through a temporary file and `os.replace`, so a reader never sees a partial file."""
     with NamedTemporaryFile(dir=path.parent, prefix=path.name + ".", suffix=".part", delete=False) as handle:

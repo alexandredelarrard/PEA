@@ -968,9 +968,7 @@ class Tables:
             "document_type",
             "source",
             "row_sequence",
-            "fetched_at",
         ),
-        optional_columns=frozenset({"fetched_at"}),
         # Two legs resume from these rows. EDGAR: the local index's Forms 3/4/5 filed after the last
         # stored zip quarter, minus the accessions stored from EDGAR under the key (markers
         # included). Zip: the quarters no row carries yet. A marker takes `row_sequence` = 0.
@@ -1603,10 +1601,6 @@ def name_of(table: Table | str) -> str:
     being deleted would be backwards.
     """
     return table.name if isinstance(table, Table) else str(table)
-
-
-def by_kind(kind: str) -> tuple[Table, ...]:
-    return tuple(t for t in ALL if t.kind == kind)
 
 
 def freshness_tables() -> tuple[Table, ...]:

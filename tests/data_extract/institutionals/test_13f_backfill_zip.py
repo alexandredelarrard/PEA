@@ -540,10 +540,6 @@ def test_every_sec13f_hr_consumer_read_hides_the_gap_marker(tmp_path, filing_sto
     _offline(monkeypatch)
     _save_oracle_book(filing_store, _A2)
     fb.fetch_13f_backfill(ctx, tickers=None, as_of=_AS_OF)  # the data-set rows, then the walk's NEWCO marker
-    cache = tmp_path / str(ctx.config.local.paths.sec_13f_datasets)
-    tables = fb._read_data_set(cache / "2023q2_form13f.zip", frozenset({_NEW_CUSIP}), {ROSTER})
-    assert tables is not None
-    book = fb.data_set_book(*tables)
     universe = ["AAPL", "MSFT", _NEW]
 
     def _reads() -> dict[str, Any]:
@@ -552,7 +548,6 @@ def test_every_sec13f_hr_consumer_read_hides_the_gap_marker(tmp_path, filing_sto
             "load projected": filing_store.load(Tables.sec13f_hr, project=True),
             "iter_load": pd.concat(filing_store.iter_load(Tables.sec13f_hr, project=True), ignore_index=True),
             "aggregation load_source": load_source(filing_store, Tables.sec13f_hr, universe),
-            "unit check": fb.unit_check(ctx, book, {ROSTER}),
             "superinvestor activity": activity_evidence(ctx, [ROSTER, "1"]),
         }
 

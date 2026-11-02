@@ -24,8 +24,8 @@ from src.data_aggregate.utils.common.incremental import PartWindow
 from src.data_aggregate.utils.common.price_frames import PriceFrames
 from src.data_aggregate.utils.institutionals.inputs import QuantityBasis
 from src.data_store.schema import Tables
-from src.data_store.store import _create_canonical
 from src.utils.price_adjustments import resolve_share_events
+from tests.canonical_schema import create_canonical
 from tests.data_aggregate.insider_pit_reference import row
 
 INSTITUTIONAL_COLUMNS = (
@@ -372,7 +372,7 @@ def test_builder_payload_reads_are_unique_with_optional_sources_absent(
 @pytest.mark.parametrize("checked", [False, True], ids=["legacy-unknown", "checked-zero"])
 def test_ftd_step_retains_global_zip_dates_from_one_stream(sqlite_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, checked: bool) -> None:
     if checked:
-        _create_canonical(sqlite_store.engine, [Tables.sec_fails_to_deliver])
+        create_canonical(sqlite_store.engine, [Tables.sec_fails_to_deliver])
     idx = pd.bdate_range("2023-12-01", "2024-02-14", name="date")
     sqlite_store.save(
         Tables.sec_fails_to_deliver,

@@ -53,8 +53,9 @@ from sqlalchemy.pool import StaticPool  # noqa: E402
 
 from src.data_store.errors import TableEmptyError  # noqa: E402
 from src.data_store.schema import BY_NAME, Tables, name_of, resolve  # noqa: E402
-from src.data_store.store import DataStore, _create_canonical  # noqa: E402
+from src.data_store.store import DataStore  # noqa: E402
 from src.utils.db import get_engine  # noqa: E402
+from tests.canonical_schema import create_canonical  # noqa: E402
 
 DATA = ROOT / "data"
 
@@ -524,7 +525,7 @@ def make_frames(trading_index, peers: dict | None = None, universe=None, **field
 @pytest.fixture
 def filing_store(sqlite_store):
     """Owner tests start with the canonical schemas supplied to a new initialized database."""
-    _create_canonical(
+    create_canonical(
         sqlite_store.engine,
         [
             Tables.sec13f_hr,

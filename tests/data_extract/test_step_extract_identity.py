@@ -16,7 +16,7 @@ from src.data_extract.transformers import step_extract_identity as module
 from src.data_extract.transformers.step_extract_identity import IdentityOptions, StepExtractIdentity
 from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd
 from src.data_store.schema import Tables
-from src.data_store.store import _create_canonical
+from tests.canonical_schema import create_canonical
 from tests.data_extract.institutionals.test_fails_to_deliver import _HEADER, _scope_lineage
 
 STAGES = ("dei", "ftd", "scan", "tenure", "lineage", "master", "refresh", "propagate")
@@ -122,7 +122,7 @@ def test_options_reach_the_propagation_and_the_lineage_build(monkeypatch: pytest
 def test_cold_start_sequence_captures_ftd_once_a_lineage_exists(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """D-15: `identity` (no lineage: the FTD capture is a no-op) -> `identity --only capture-ftd -F` -> `identity --only master`."""
     tables = [Tables.entity_lineage, Tables.security_master, Tables.sec_fails_to_deliver_security, Tables.sec_fails_to_deliver, Tables.symbol_tenure]
-    _create_canonical(sqlite_store.engine, tables)
+    create_canonical(sqlite_store.engine, tables)
     context, config = _context(sqlite_store, tmp_path), _config()
     raw_by_period = {"201501b": _HEADER + "20150120|000111AAA|ABC|100|ABC CORP|10.0\n20150120|999999ZZZ|ZZZ|9|OTHER CO|3.0\n"}
     read: list[str] = []

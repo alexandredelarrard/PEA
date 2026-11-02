@@ -473,18 +473,6 @@ def _save_fails_period(
     return _write_fails_period(context, frames, scopes, identity)
 
 
-def _log_unplaced(stamped: pd.DataFrame) -> None:
-    unplaced = stamped["security_id"].notna() & stamped["lineage_role"].isna()
-    if unplaced.any():
-        cusips = sorted(set(stamped.loc[unplaced, "cusip"]))
-        logger.warning(
-            "FTD: %d line(s) of %d master CUSIP(s) fall in no master interval; stored, never summed: %s",
-            int(unplaced.sum()),
-            len(cusips),
-            ", ".join(cusips[:20]),
-        )
-
-
 def _rebuild_from_cache(
     context: Context, master: pd.DataFrame, universe: frozenset[str], others: frozenset[str], identity: dict[Table, pd.DataFrame], basis: ShareBasis
 ) -> tuple[int, int]:

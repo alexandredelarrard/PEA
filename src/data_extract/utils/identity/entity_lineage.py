@@ -649,7 +649,6 @@ def derive_entity_lineage(
     existing: pd.DataFrame | None = None,
     approved_rekeys: frozenset[tuple[str, str]] = frozenset(),
     built_at: pd.Timestamp | None = None,
-    auto_windows: bool | None = None,
 ) -> LineageBuild:
     """The dated `entity_lineage` rows from `form345`/`manual` tenure, collapsed `dei` rows, the roster and owner pairs.
 
@@ -658,7 +657,6 @@ def derive_entity_lineage(
     builder bug (`CikInTwoEntitiesError`).
     """
     stamp = pd.Timestamp.now(tz="UTC").tz_localize(None).floor("s") if built_at is None else pd.Timestamp(built_at)
-    use_auto = AUTO_WINDOWS_ENABLED if auto_windows is None else auto_windows
     registrants = load_registrants(config_dir)
     manual = load_manual_lineage(config_dir)
     evidence = _evidence(tenure, dei)
@@ -681,7 +679,7 @@ def derive_entity_lineage(
 
     _check_d19(tenure, roster_cik, entity_of, load_d19_allowlist(config_dir))
     holders = _symbol_holders(evidence, entity_of, ticker_by_entity, roster_cik)
-    cik_rows, windows = _cik_rows(membership, entity_of, ticker_by_entity, roster_cik, registrants, index, evidence, use_auto, backlog)
+    cik_rows, windows = _cik_rows(membership, entity_of, ticker_by_entity, roster_cik, registrants, index, evidence, AUTO_WINDOWS_ENABLED, backlog)
     symbol_rows = _close_on_window(holders[holders["canonical_ticker"].notna()], windows).assign(role=ROLE_SYMBOL, confidence=float("nan"))
     symbol_rows["oracle"] = [membership.provenance.verdicts.get(cik, ("roster",))[0] for cik in symbol_rows["cik"]]
     backlog += _conflict_backlog(symbol_rows)
@@ -694,7 +692,7 @@ def derive_entity_lineage(
         holders=holders,
         reproduction=reproduce_register(registrants, index),
     )
-    _log_build(membership, out, len(candidates), excluded, use_auto)
+    _log_build(membership, out, len(candidates), excluded, AUTO_WINDOWS_ENABLED)
     return out
 
 

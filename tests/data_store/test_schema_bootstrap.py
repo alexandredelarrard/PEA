@@ -8,9 +8,10 @@ from sqlalchemy import event, inspect
 
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from tests.canonical_schema import create_canonical
 
 
-def test_canonical_source_keys_and_retry_fields() -> None:
+def test_canonical_source_keys_and_retry_fields(sqlite_store: DataStore) -> None:
     tables = [
         Tables.sec13f_hr,
         Tables.sec13f_manager_holdings,
@@ -20,14 +21,14 @@ def test_canonical_source_keys_and_retry_fields() -> None:
         Tables.def14a_ownership,
         Tables.def14a_directors,
     ]
-    with DataStore.temporary(tables) as store:
-        for table in tables:
-            assert inspect(store.engine).get_pk_constraint(table.name)["constrained_columns"] == list(table.pk)
-            if table in tables[2:]:
-                assert "retry" in store.columns(table)
-            else:
-                assert "accession_number" in store.columns(table)
-                assert "content_checksum" in store.columns(table)
+    create_canonical(sqlite_store.engine, tables)
+    for table in tables:
+        assert inspect(sqlite_store.engine).get_pk_constraint(table.name)["constrained_columns"] == list(table.pk)
+        if table in tables[2:]:
+            assert "retry" in sqlite_store.columns(table)
+        else:
+            assert "accession_number" in sqlite_store.columns(table)
+            assert "content_checksum" in sqlite_store.columns(table)
     print("SANITY: both accession keys and all five retry fields exist on a fresh canonical schema.")
 
 

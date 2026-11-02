@@ -16,8 +16,9 @@ from src.data_extract.utils.common.identity import FilingScope
 from src.data_extract.utils.structure.def14a import fetch
 from src.data_extract.utils.structure.def14a.retry import SECTIONS
 from src.data_store.schema import Table, Tables
-from src.data_store.store import DataStore, _create_canonical
+from src.data_store.store import DataStore
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
+from tests.canonical_schema import create_canonical
 from tests.data_extract.fake_context import extract_config
 
 PROXY = """<html><body><h1>Election of Directors</h1>
@@ -33,7 +34,7 @@ def daily(tmp_path, monkeypatch):
         config_dir="configs",
         config=extract_config(data_extract={"years_history": 31}),
     )
-    _create_canonical(
+    create_canonical(
         context.store.engine,
         [Tables.def14a_llm, Tables.def14a_executive_comp, Tables.def14a_director_comp, Tables.def14a_ownership, Tables.def14a_directors],
     )

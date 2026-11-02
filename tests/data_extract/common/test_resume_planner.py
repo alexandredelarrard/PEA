@@ -66,7 +66,7 @@ def test_absent_table_lists_every_index_entry_from_the_floor(tmp_path, sqlite_st
     work = _plan(ctx, _universe(ctx, {"AAA": "1"}))
 
     assert _units(work, "AAA") == ["a-001", "a-002"]  # 2019 is before as_of - 5 years
-    assert work.key_class == {"AAA": KEY_ROWLESS} and work.counts == {KEY_ROWLESS: 2}
+    assert work.counts == {KEY_ROWLESS: 2}
     print("\n=== SANITY CHECK: M2 absent table ===")
     print(f"  no table -> {_units(work, 'AAA')} (2019 filing below the 5-year floor is not listed).")
 
@@ -81,7 +81,6 @@ def test_a_new_key_gets_its_full_history_and_other_keys_are_unchanged(tmp_path, 
 
     assert _units(work, "NEW") == ["n-000", "n-001", "n-002"]
     assert _units(work, "AAA") == ["a-001"]
-    assert work.key_class == {"AAA": KEY_ESTABLISHED, "NEW": KEY_NEW}
     assert work.counts == {KEY_NEW: 3, "forward": 1, "gap": 0}
     print("\n=== SANITY CHECK: M2 new key ===")
     print(f"  NEW (added 2026-09-29) lists its whole history {_units(work, 'NEW')}; AAA only its missing 8-K; counts {work.counts}.")
@@ -192,7 +191,6 @@ def test_done_set_narrowing_keeps_units(tmp_path, sqlite_store):
     work = _plan(ctx, cik_map)
 
     assert _units(work, "AAA") == ["a-000", "a-002"] and _units(work, "BBB") == ["b-001"]
-    assert work.key_class == {"AAA": KEY_ESTABLISHED, "BBB": KEY_ESTABLISHED}
     assert work.counts == {"forward": 2, "gap": 1}
     print("\n=== SANITY CHECK: done-set narrowing ===")
     print(f"  5 stored, 3 never listed -> AAA {_units(work, 'AAA')}, BBB {_units(work, 'BBB')}, counts {work.counts}.")

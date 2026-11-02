@@ -18,8 +18,9 @@ from src.data_extract.utils.identity import capture_ftd
 from src.data_extract.utils.identity import security_master as sm
 from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd
 from src.data_store.schema import Table, Tables
-from src.data_store.store import DataStore, _create_canonical
+from src.data_store.store import DataStore
 from src.utils.string import run_date
+from tests.canonical_schema import create_canonical
 from tests.conftest import DATA, make_frames
 from tests.data_aggregate.test_short_flow_features import build_short_flow_feature_panel
 
@@ -33,7 +34,7 @@ def download_and_capture(context: Any, years_history: int = 31, full: bool = Fal
 
 @pytest.fixture
 def sqlite_store(sqlite_store):
-    _create_canonical(
+    create_canonical(
         sqlite_store.engine,
         [
             Tables.sp500_tickers,

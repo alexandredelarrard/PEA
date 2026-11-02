@@ -6,17 +6,14 @@ import csv
 import datetime as dt
 import io
 import logging
-import re
-import tempfile
 import threading
 from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
 import pandas as pd
-from sqlalchemy import Connection, Engine, MetaData, Select, Table, and_, create_engine, false, func, inspect, or_, select, text, true, tuple_
+from sqlalchemy import Connection, Engine, MetaData, Select, Table, and_, false, func, inspect, or_, select, text, true, tuple_
 from sqlalchemy import types as sqltypes
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -69,15 +66,6 @@ def _where(tbl: Table, where: Where | None) -> ColumnElement[bool]:
             raise ValueError("OR scopes require non-empty dictionaries or complete-key frames; nesting is not supported")
         return or_(false(), *(_where(tbl, branch) for branch in where))
     raise TypeError("where must be a dictionary, complete-key DataFrame or flat OR list")
-
-
-def _create_canonical(engine: Engine, tables: Sequence[SchemaTable]) -> None:
-    """Initialize selected fresh staging tables from the canonical managed SQL."""
-    blocks = ddl.existing_blocks((Path(__file__).resolve().parents[2] / "sql" / "schema.sql").read_text(encoding="utf-8"))
-    statements = [statement for table in tables for statement in re.sub(r"--[^\n]*", "", blocks[table.name]).split(";") if statement.strip()]
-    with _connection(engine, write=True) as conn:
-        for statement in statements:
-            conn.execute(text(statement))
 
 
 def table_exists(engine: Engine | Connection, name: str) -> bool:
@@ -379,18 +367,6 @@ class DataStore:
             except BaseException:
                 self._metadata.clear()
                 raise
-
-    @staticmethod
-    @contextmanager
-    def temporary(tables: Sequence[SchemaTable]) -> Generator[DataStore]:
-        """Create an isolated disposable SQLite store with the selected canonical schemas."""
-        with tempfile.TemporaryDirectory(prefix="pea-store-") as directory:
-            engine = create_engine("sqlite:///" + (Path(directory) / "source.sqlite").as_posix())
-            try:
-                _create_canonical(engine, tables)
-                yield DataStore(engine)
-            finally:
-                engine.dispose()
 
     def insert(self, table: SchemaTable | str, df: pd.DataFrame) -> int:
         """Strictly append prepared rows to an existing table; conflicts fail and roll back."""

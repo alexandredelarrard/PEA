@@ -46,7 +46,6 @@ from src.data_extract.utils.institutionals.legacy_13f_fallback import (
     _FOOTER_TOTAL,
     _VALUE_TOTAL,
     _genuine_holding_lines,
-    _value_total_error,
     needs_legacy_fallback,
     parse_legacy_information_table,
 )
@@ -54,8 +53,6 @@ from src.data_extract.utils.institutionals.value_units import (
     ValueUnits,
     decide_value_units,
     declared_units,
-    normalize_information_values,
-    resolve_value_units,
 )
 from src.data_store.schema import Resume, Table, Tables
 from src.data_store.store import DataStore
@@ -310,32 +307,7 @@ def _legacy_book(stamp: FilingStamp, raw: str) -> pd.DataFrame:
     return book
 
 
-def _source_information_table(report: Any, stamp: FilingStamp, xml: str | None, raw: str | None) -> tuple[pd.DataFrame, ValueUnits]:
-    """Raw parser output and source-unit evidence, for the versioned-book path only."""
-    schema = sec_call(getattr, report, "_schema_version", None, label=f"{stamp.accession_number} schema_version")
-    units = resolve_value_units(stamp.filed, schema_version=schema, information_table_text=raw)
-    if xml:
-        root = ElementTree.fromstring(xml)  # Strict parse: library recovery must not certify a partial book.
-        source_rows = [element for element in root.iter() if element.tag.rsplit("}", 1)[-1] == "infoTable"]
-        table = parse_infotable_xml(xml)
-        if len(table) != len(source_rows):
-            raise ValueError("13F raw XML row count differs from parsed information table")
-    elif raw:
-        table = parse_legacy_information_table(raw, value_factor=1.0, verify_values=False)
-        _warn_blank_cusip_lines(stamp.accession_number, table)
-    else:
-        return pd.DataFrame(), units
-    if table.empty:
-        return table, units
-    normalized = normalize_information_values(table, units)
-    if raw and units.factor is not None:
-        value_column = next(column for column in normalized if column.lower() == "value")
-        if error := _value_total_error(raw, normalized[value_column].tolist(), default_factor=units.factor):
-            logger.warning("13F %s: cover value total is a reference only, book kept: %s", stamp.accession_number, error)
-    return normalized, units
-
-
-def _read_filing(stamp: FilingStamp, *, source_values: bool = False) -> pd.DataFrame | ReadFailure:
+def _read_filing(stamp: FilingStamp) -> pd.DataFrame | ReadFailure:
     """Fetch and parse one 13F-HR into its book: empty for an empty info table, a `ReadFailure`
     (not logged; the caller decides) when the read failed, so one bad filing never aborts a batch.
     The failure is transient exactly when `sec_io` gave up on a throttle, 5xx or network error.
@@ -348,11 +320,6 @@ def _read_filing(stamp: FilingStamp, *, source_values: bool = False) -> pd.DataF
         report = filing_obj(stamp.filing, sgml_xml_only=True)
         xml = sec_call(getattr, report, "infotable_xml", None, label=f"{stamp.accession_number} infotable_xml")
         raw = None if xml else sec_call(getattr, report, "infotable_txt", None, label=f"{stamp.accession_number} infotable_txt")
-        if source_values:
-            infotable, units = _source_information_table(report, stamp, xml, raw)
-            book = pd.DataFrame(columns=_BOOK_COLS) if infotable.empty else _book_frame(stamp.cik, stamp.filed, stamp.period_of_report, infotable)
-            book.attrs["value_units"] = units
-            return book
         try:
             infotable, edgar_error = report.infotable, None
         except Exception as e:  # noqa: BLE001 -- malformed legacy text makes EdgarTools raise

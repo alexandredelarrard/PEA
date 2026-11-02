@@ -31,8 +31,8 @@ from src.data_extract.utils.edgar_extract.sec_utils import CIK_MAPPING_COLS
 from src.data_extract.utils.identity.identity_store import load_source_identity
 from src.data_extract.utils.zips import fetch_insider_transactions as ins
 from src.data_store.schema import Tables
-from src.data_store.store import _create_canonical
 from src.utils.universe import added_on_map
+from tests.canonical_schema import create_canonical
 from tests.data_extract.edgar_fixtures import seed_index
 from tests.data_extract.fake_context import extract_config
 
@@ -232,7 +232,7 @@ def identity() -> Identity:
 
 def _context(tmp_path: Path, store: Any, universe: tuple[str, ...] = ("AAA",)) -> Any:
     """A fake context whose `sp500_tickers` (the analysis universe) holds `universe`, CIKs 1, 2, ..."""
-    _create_canonical(
+    create_canonical(
         store.engine,
         [
             Tables.sp500_tickers,

@@ -17,14 +17,14 @@ import pytest
 
 from src.data_extract.utils.institutionals import fetch_short_interest as si
 from src.data_store.schema import Tables
-from src.data_store.store import _create_canonical
+from tests.canonical_schema import create_canonical
 from tests.data_extract.fake_context import extract_config
 from tests.data_extract.institutionals.test_short_volume_security import UNIVERSE, _file, _identity, _master
 
 
 @pytest.fixture
 def sqlite_store(sqlite_store):
-    _create_canonical(
+    create_canonical(
         sqlite_store.engine,
         [
             Tables.sp500_tickers,

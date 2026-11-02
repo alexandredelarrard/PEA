@@ -76,7 +76,6 @@ NEW_READ_COLUMNS = (
     "document_type",
     "source",
     "row_sequence",
-    "fetched_at",
 )
 REMOVED_TABLES = ("insider_transactions_live", "insider_transactions_live_coverage", "insider_transactions_quarantine")
 OLD_READ_COLUMNS = (
@@ -111,7 +110,8 @@ def test_insider_transactions_registry_is_the_single_table_contract() -> None:
     assert table.freshness == "daily"
     assert table.freshness_date_col == "filing_date"
     assert table.read_columns == OLD_READ_COLUMNS + NEW_READ_COLUMNS
-    assert table.optional_columns == frozenset({"fetched_at"})
+    assert table.optional_columns == frozenset()  # `fetched_at` is stored data, not read
+    assert "fetched_at" not in table.read_columns and "fetched_at" in INSIDER_COLUMNS
     assert "transaction_sk" not in table.read_columns
     assert set(table.read_columns) <= set(INSIDER_COLUMNS)
 

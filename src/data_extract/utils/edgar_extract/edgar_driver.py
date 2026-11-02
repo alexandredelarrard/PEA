@@ -35,7 +35,6 @@ from src.data_extract.utils.edgar_extract.edgar_fillings import archive_url
 from src.data_extract.utils.edgar_extract.empty_markers import drop_markers_over_data, marker_frame
 from src.data_extract.utils.edgar_extract.parallel_fetch import PROGRAMMING_ERRORS, run_per_ticker
 from src.data_extract.utils.edgar_extract.sec_utils import load_cik_mapping
-from src.data_extract.utils.insider.insider_store import certify_insider_source, save_insider_source
 from src.data_store.schema import Resume, Table, Tables
 from src.utils.string import pad_cik, run_date
 
@@ -170,6 +169,16 @@ class FilingsFn(Protocol):
     def __call__(self, ticker: str, df_units: pd.DataFrame) -> dict[str, Any]: ...
 
 
+class SaveFn(Protocol):
+    def __call__(
+        self, context: Context, fetch: EdgarFetch, ticker: str, frames: dict[Table, list[pd.DataFrame]]
+    ) -> tuple[dict[Table, int], bool]: ...
+
+
+class CertifyFn(Protocol):
+    def __call__(self, context: Context, work: DocumentWork, as_of: pd.Timestamp) -> None: ...
+
+
 @dataclass(frozen=True)
 class EdgarFetch:
     """One per-filing EDGAR fetch, declared once and walked by `run_edgar_fetch`.
@@ -181,7 +190,10 @@ class EdgarFetch:
     df_units)` may supply richer `Filing` objects by accession. `runtime_floor(context, run_date)`
     floors the listing at run time. `run_scope` optionally prepares a run-local descriptor and
     finalizes it on exit; a planning declaration may omit `parse` when that context supplies it.
-    The done table owns the description, forms and marker stamps.
+    `relist_unparsed` lists a filing that fails to parse again instead of marking it; `save` replaces
+    the per-table key save; `certify(context, work, as_of)` runs after the walk on the index inventory,
+    so a certifying fetch refreshes the index from its table's source start. The done table owns the
+    description, forms and marker stamps.
     """
 
     tables: tuple[Table, ...]
@@ -193,6 +205,9 @@ class EdgarFetch:
     done_where: dict[str, object] | None = None
     runtime_floor: Callable[[Context, pd.Timestamp], pd.Timestamp | None] | None = None
     run_scope: Callable[[Context, Sequence[str], pd.Timestamp], AbstractContextManager[EdgarFetch]] | None = None
+    relist_unparsed: bool = False
+    save: SaveFn | None = None
+    certify: CertifyFn | None = None
 
     @property
     def done(self) -> Table:
@@ -339,7 +354,7 @@ def _read_unit(fetch: EdgarFetch, scope: EdgarScope, ticker: str, cik: str, stam
         logger.info("%s: %s %s not read (%s)", fetch.done.desc, ticker, stamp.accession_number, exc)
         return None, False
     except ParseFailureError as exc:
-        if fetch.done == Tables.insider_transactions:
+        if fetch.relist_unparsed:
             logger.warning("%s: %s %s could not be parsed; listed again (%s)", fetch.done.desc, ticker, stamp.accession_number, exc)
             return None, False
         logger.warning("%s: %s %s could not be parsed -> empty-filing marker (%s)", fetch.done.desc, ticker, stamp.accession_number, exc)
@@ -397,8 +412,6 @@ def _add_frames(frames: dict[Table, list[pd.DataFrame]], outcome: dict[Table, pd
 def _save_key(context: Context, fetch: EdgarFetch, ticker: str, frames: dict[Table, list[pd.DataFrame]]) -> tuple[dict[Table, int], bool]:
     """Upsert one key's frames, the done table last. Returns `(rows per table, failed_save)`; after a
     failed or undeclared save the done table is withheld, so the key's documents stay listed."""
-    if fetch.done == Tables.insider_transactions:
-        raise ValueError("The insider source writer requires its actual parser resolver")
     order = [t for t in frames if t != fetch.done] + ([fetch.done] if fetch.done in frames else [])
     counts: dict[Table, int] = {}
     failed_save = False
@@ -425,27 +438,11 @@ def _save_key(context: Context, fetch: EdgarFetch, ticker: str, frames: dict[Tab
     return counts, failed_save
 
 
-def _save_insider_key(context: Context, frames: dict[Table, list[pd.DataFrame]]) -> tuple[dict[Table, int], bool]:
-    transaction_frames = frames.get(Tables.insider_transactions, [])
-    if not transaction_frames:
-        return {}, False
-    transactions = pd.concat(transaction_frames, ignore_index=True).drop_duplicates(list(Tables.insider_transactions.pk), keep="last")
-    note_frames = frames.get(Tables.insider_footnotes, [])
-    notes = pd.concat(note_frames, ignore_index=True) if note_frames else pd.DataFrame(columns=list(Tables.insider_footnotes.retrieval_columns))
-    try:
-        return save_insider_source(context, transactions, notes), False
-    except Exception as exc:
-        context.log.warning("Insider source pair not saved; all accessions remain retryable (%s)", exc)
-        return {}, True
-
-
 def _walk_key(context: Context, fetch: EdgarFetch, scope: EdgarScope, units: dict[str, pd.DataFrame], ticker: str, cik: str) -> KeyOutcome:
     """The pool worker: read then save one key's listed documents."""
     df_units = units.get(ticker, pd.DataFrame(columns=_UNIT_COLUMNS))
     frames, failed, markers = _read_key(fetch, scope, ticker, cik, df_units)
-    saved, failed_save = (
-        _save_insider_key(context, frames) if fetch.done == Tables.insider_transactions else _save_key(context, fetch, ticker, frames)
-    )
+    saved, failed_save = (fetch.save or _save_key)(context, fetch, ticker, frames)
     if failed_save:
         return KeyOutcome(listed=len(df_units), failed=df_units, saved=saved)
     return KeyOutcome(listed=len(df_units), failed=failed, markers=markers, saved=saved)
@@ -554,6 +551,14 @@ def plan_fetch(context: Context, fetch: EdgarFetch, run: EdgarRun) -> DocumentWo
     )
 
 
+def index_years(fetch: EdgarFetch, run: EdgarRun) -> int:
+    """The index window `fetch` needs: `run`'s window, widened to the table's source start for a certifying fetch."""
+    if fetch.certify is None:
+        return run.years_history
+    source_start = pd.Timestamp(cast(str, cast(Resume, fetch.done.resume).source_start))
+    return max(run.years_history, run.run_date.year - source_start.year + 1)
+
+
 def run_edgar_fetch(
     context: Context, fetch: EdgarFetch, run: EdgarRun, *, max_workers: int | None = None, refresh_index: bool = True
 ) -> FetchSummary:
@@ -569,31 +574,13 @@ def run_edgar_fetch(
         context.ensure_edgar_identity()
         configure(context)
         if refresh_index:
-            index_years = (
-                max(run.years_history, start_date.year - pd.Timestamp(cast(str, cast(Resume, prepared.done.resume).source_start)).year + 1)
-                if prepared.done == Tables.insider_transactions
-                else run.years_history
-            )
-            edgar_index.refresh(context, start_date, index_years)
+            edgar_index.refresh(context, start_date, index_years(prepared, run))
         work = plan_fetch(context, prepared, run)
         context.log.info("%s: %d document(s) to read for %d key(s) %s", prepared.done.desc, work.size, len(work.units), work.counts)
         keys = run.cik_map[run.cik_map["ticker"].astype(str).isin(work.units)]
         outcomes = _run_pass(context, prepared, run.scope, keys, work.units, max_workers)
         _retry_rounds(context, prepared, run, keys, outcomes, max_workers)
         _log_coverage(context, prepared, work, outcomes)
-        if prepared.done == Tables.insider_transactions:
-            _certify_insider_work(context, work, start_date)
+        if prepared.certify is not None:
+            prepared.certify(context, work, start_date)
         return FetchSummary(work=work, outcomes=outcomes)
-
-
-def _certify_insider_work(context: Context, work: DocumentWork, as_of: pd.Timestamp) -> None:
-    """Only a full validated source index and the exact reconciled source cohort establish quiet support."""
-    through = edgar_index.inventory_complete_through(context, as_of, cast(str, cast(Resume, Tables.insider_transactions.resume).source_start))
-    if through is None:
-        context.log.warning("insider inventory: incomplete or changed original index; no boundary advanced")
-        return
-    certified = 0
-    for ticker, listed in work.listed.items():
-        accessions = sorted(set(listed["accession"].astype(str)))
-        certified += int(certify_insider_source(context, ticker, through, accessions))
-    context.log.info("insider inventory: %d/%d actual issuer cohorts jointly certified through %s", certified, len(work.listed), through.date())

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -16,7 +17,7 @@ from sqlalchemy import event
 from src.data_extract.utils.common.identity import Identity, load_source_identity
 from src.data_extract.utils.common.sec_io import ParseFailureError
 from src.data_extract.utils.edgar_extract import fetch_insider_edgar as insider_edgar
-from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarScope, _read_unit, _walk_key
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarScope, _read_unit, _walk_key
 from src.data_extract.utils.edgar_extract.insider_edgar_parser import extract_xml_strings
 from src.data_extract.utils.identity import capture_ftd, identity_propagate
 from src.data_extract.utils.insider.insider_store import (
@@ -124,7 +125,7 @@ def test_insider_parse_failure_remains_retryable() -> None:
     def failed(ticker: str, cik: str, stamp: Any, scope: Any) -> dict[Any, pd.DataFrame]:
         raise ParseFailureError("known unreadable ownership XML")
 
-    fetch = EdgarFetch(tables=(Tables.insider_transactions,), parse=failed)
+    fetch = replace(insider_edgar.INSIDER_EDGAR_FETCH, parse=failed)
     stamp = cast(Any, SimpleNamespace(accession_number="0000000001-26-000001", filed=pd.Timestamp("2026-07-01"), form="4", cik="0000000001"))
     frames, marker = _read_unit(fetch, cast(Any, SimpleNamespace()), "AAA", "0000000001", stamp)
     assert frames is None and not marker, "Failed parsing must remain eligible for retry, never become a valid empty filing."

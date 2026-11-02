@@ -23,6 +23,8 @@ import pandas as pd
 from src.context import Context
 from src.data_extract.utils.common.resume import DONE_PER_KEY
 from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, filing_header, filing_xml
+from src.data_extract.utils.edgar_extract import edgar_index
+from src.data_extract.utils.edgar_extract.document_resume import DocumentWork
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarScope, FilingStamp
 from src.data_extract.utils.edgar_extract.insider_edgar_parser import extract_xml_strings
 from src.data_extract.utils.insider.insider_common import (
@@ -36,8 +38,8 @@ from src.data_extract.utils.insider.insider_common import (
     log_exclusions,
     screen_insider_rows,
 )
-from src.data_extract.utils.insider.insider_store import insider_source_run, replace_insider_source
-from src.data_store.schema import Table, Tables
+from src.data_extract.utils.insider.insider_store import certify_insider_source, insider_source_run, replace_insider_source, save_insider_source
+from src.data_store.schema import Resume, Table, Tables
 from src.utils.string import pad_cik
 
 #: EDGAR rows carry the whole contract except `quarter`, so the merge-upsert keeps a stored zip quarter.
@@ -166,6 +168,34 @@ def replace_zip_accessions(context: Context, since: pd.Timestamp) -> int:
     return deleted
 
 
+def save_insider_key(context: Context, fetch: EdgarFetch, ticker: str, frames: dict[Table, list[pd.DataFrame]]) -> tuple[dict[Table, int], bool]:
+    """Save one key's transactions and footnotes as one insider source pair: `(rows per table, failed_save)`."""
+    transaction_frames = frames.get(Tables.insider_transactions, [])
+    if not transaction_frames:
+        return {}, False
+    transactions = pd.concat(transaction_frames, ignore_index=True).drop_duplicates(list(Tables.insider_transactions.pk), keep="last")
+    note_frames = frames.get(Tables.insider_footnotes, [])
+    notes = pd.concat(note_frames, ignore_index=True) if note_frames else pd.DataFrame(columns=list(Tables.insider_footnotes.retrieval_columns))
+    try:
+        return save_insider_source(context, transactions, notes), False
+    except Exception as exc:
+        context.log.warning("Insider source pair not saved; all accessions remain retryable (%s)", exc)
+        return {}, True
+
+
+def certify_insider_work(context: Context, work: DocumentWork, as_of: pd.Timestamp) -> None:
+    """Only a full validated source index and the exact reconciled source cohort establish quiet support."""
+    through = edgar_index.inventory_complete_through(context, as_of, cast(str, cast(Resume, Tables.insider_transactions.resume).source_start))
+    if through is None:
+        context.log.warning("insider inventory: incomplete or changed original index; no boundary advanced")
+        return
+    certified = 0
+    for ticker, listed in work.listed.items():
+        accessions = sorted(set(listed["accession"].astype(str)))
+        certified += int(certify_insider_source(context, ticker, through, accessions))
+    context.log.info("insider inventory: %d/%d actual issuer cohorts jointly certified through %s", certified, len(work.listed), through.date())
+
+
 @contextmanager
 def _insider_run_scope(context: Context, tickers: Sequence[str], as_of: pd.Timestamp) -> Iterator[EdgarFetch]:
     """Bind the run's requested tickers, exclusions and one ZIP floor; reconcile on every exit."""
@@ -208,4 +238,7 @@ INSIDER_EDGAR_FETCH = EdgarFetch(
     done_where={"source": "edgar"},
     runtime_floor=edgar_window_start,
     run_scope=_insider_run_scope,
+    relist_unparsed=True,
+    save=save_insider_key,
+    certify=certify_insider_work,
 )

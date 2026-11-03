@@ -151,7 +151,7 @@ MISSING: list[tuple] = [
 
 # --------------------------------------------------------------------------------------- #
 # NULL-RATE FORENSICS (section 4). Same exception as SEC_COVERAGE above: these describe
-# `fundamentals_history`, `pension_facts`, `notes_num` and per-SECTOR cuts of the cube, none of
+# `fundamentals_history`, `notes_num` and per-SECTOR cuts of the cube, none of
 # which the cube profile can answer, so they cannot come through `meta`. Measured 2026-09-05;
 # each query is named beside its table so every figure is re-derivable.
 #
@@ -250,7 +250,6 @@ MERGED_VS_MASKED: list[tuple[str, str, str]] = [
 ]
 
 PENSION_SOURCES: list[tuple[str, str, str, str]] = [
-    ("`pension_facts` (bulk FSDS)", "6,244", "125 tickers", "4 tags, 94 on the recognised noncurrent liability; median 17 years each"),
     ("`notes_num` `…FairValueOfPlanAssets`", "4,209", "214 CIKs", "widest single source"),
     ("`notes_num` `…BenefitObligation`", "2,428", "122 CIKs", "the PBO leg; caps `funded_ratio` at 98 tickers"),
     ("companyfacts `pensionDeficit`", "—", "**0**", "**the dead leg — DELETED, see D2**"),
@@ -670,7 +669,7 @@ def closing(m: dict) -> list[tuple]:
         (
             "p",
             "**The guard only worked once its fixture was made faithful.** It had never been "
-            "passed `pension_facts` / `notes_num`, so every pension feature was silently absent "
+            "passed the pension tables, so every pension feature was silently absent "
             "from its matrix and the pair read as *exactly* 1.000000 — a fixture artefact rather "
             "than a measurement. That is an unfaithful-fixture defect of the same shape as the one "
             "Phase 4 fixed; this one was missed. Passing them took the comparable-feature "

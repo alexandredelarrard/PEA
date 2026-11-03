@@ -72,7 +72,6 @@ IMPACTED: dict[str, tuple[str | None, str | None, str | None]] = {
     "insider_footnotes": (None, None, None),
     "notes_num": ("ticker", "filed", "cik"),
     "notes_text": ("ticker", "filed", "cik"),
-    "pension_facts": ("ticker", "filed", "cik"),
     # the merged fundamentals table every cube consumer actually reads
     "fundamentals_history": ("ticker", "as_of", None),
 }

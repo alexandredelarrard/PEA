@@ -20,9 +20,9 @@ requiring a per-ticker event would call the correct zero a leak. A multi-source 
 leg starts only after every declared source has begun publishing.
 
 ⚠ THE PUBLICATION CLOCK IS NOT THE PERIOD CLOCK. A 13F describes a quarter that ended 45 days
-before it was filed, and a Form 4 describes a trade that happened before it was reported. Four
+before it was filed, and a Form 4 describes a trade that happened before it was reported. Three
 tables in this registry publish on a different clock than the period they describe --
-`pension_facts`, `notes_num` and `notes_text` (`filed`) and `insider_transactions`
+`notes_num` and `notes_text` (`filed`) and `insider_transactions`
 (`filing_date`) -- so the comparison reads `resolve(src).freshness_col`, which is the
 registry's own answer to that question, never `date_col` and never a name written here.
 

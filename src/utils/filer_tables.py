@@ -58,7 +58,6 @@ PURGE_TABLES: tuple[FilerTable, ...] = (
     FilerTable(Tables.fundamentals_employees, "cik", "as_of", "accession_number", windowed=True),
     FilerTable(Tables.notes_num, "cik", "filed", "adsh", windowed=True),
     FilerTable(Tables.notes_text, "cik", "filed", "adsh", windowed=True),
-    FilerTable(Tables.pension_facts, "cik", "filed", "adsh", windowed=True),
 )
 PURGE_TABLES_BY_NAME: Mapping[str, FilerTable] = {spec.table.name: spec for spec in PURGE_TABLES}
 

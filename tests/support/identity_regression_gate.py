@@ -31,14 +31,13 @@ from src.data_extract.utils.common.identity import FilingScope, Identity, Unknow
 from src.data_extract.utils.common.registrant import FORM_POLICY, Combine  # noqa: E402
 from src.data_extract.utils.fundamentals.build_history import keep_window_owner_filings  # noqa: E402
 from src.data_extract.utils.fundamentals_sharadar.field_map import load_field_map  # noqa: E402
-from src.data_extract.utils.identity.entity_lineage import entity_by_cik_map, entity_or_singleton, load_d19_allowlist, roster_cik_map  # noqa: E402
+from src.data_extract.utils.identity.entity_lineage import entity_by_cik_map, entity_or_singleton, load_d19_allowlist  # noqa: E402
 from src.data_extract.utils.institutionals.fetch_short_interest import finra_key  # noqa: E402
 from src.data_extract.utils.institutionals.security_tape import SUMMED_ROLES  # noqa: E402
 from src.data_store.schema import Tables  # noqa: E402
 from src.utils.filer_tables import PURGE_TABLES, FilerTable  # noqa: E402
 from src.utils.predecessor_series import load_predecessor_series  # noqa: E402
 from src.utils.string import normalise_ticker, pad_cik, pad_cik_series, squash, yahoo_symbol  # noqa: E402
-from src.utils.universe import load_universe_tickers  # noqa: E402
 
 log = logging.getLogger("identity_regression_gate")
 
@@ -172,7 +171,7 @@ class LegacyTapeResolver:
         self, lineage: pd.DataFrame, tenure: pd.DataFrame, roster: pd.DataFrame, *, allowlist: Mapping[str, str], redundant: Collection[str]
     ) -> None:
         self.entity_by_cik = entity_by_cik_map(lineage)
-        self.roster_cik = roster_cik_map(roster)
+        self.roster_cik = _roster_cik(roster)
         self.ticker_by_entity: dict[str, str] = {}
         for ticker, cik in sorted(self.roster_cik.items()):
             self.ticker_by_entity.setdefault(entity_or_singleton(self.entity_by_cik, cik), ticker)
@@ -1047,7 +1046,7 @@ def read_filer_table(store: Any, spec: FilerTable, tickers: Sequence[str] | None
 _FRAMES: dict[str, tuple[Any, tuple[str, ...] | None]] = {
     "entity_lineage": (Tables.entity_lineage, None),
     "symbol_tenure": (Tables.symbol_tenure, None),
-    "roster": (Tables.sp500_tickers, ("ticker", "cik")),
+    "roster": (Tables.tickers_universe, ("ticker", "cik")),
     "history_sec": (Tables.fundamentals_history_sec, None),
     "ftd": (Tables.sec_fails_to_deliver, ("ticker", "date", "fails_quantity", "fails_value")),
     "short_interest": (Tables.short_interest, ("ticker", "date", "short_volume", "total_volume")),
@@ -1114,6 +1113,13 @@ def _scopes(identity: Identity, tickers: Iterable[str]) -> dict[str, FilingScope
     return out
 
 
+def _roster_cik(roster: pd.DataFrame) -> dict[str, str]:
+    """`{ticker: padded CIK}` of a snapshot roster, skipping a row with no CIK."""
+    ciks = pad_cik_series(roster["cik"])
+    has_cik = ciks.ne("")
+    return dict(zip(roster.loc[has_cik, "ticker"].map(normalise_ticker), ciks[has_cik], strict=False))
+
+
 def _old_ciks(lineage: pd.DataFrame, roster: pd.DataFrame) -> dict[str, frozenset[str]]:
     """Per roster ticker: the CIKs of its entity in the before lineage, roster CIK included."""
     by_cik = entity_by_cik_map(lineage)
@@ -1121,7 +1127,7 @@ def _old_ciks(lineage: pd.DataFrame, roster: pd.DataFrame) -> dict[str, frozense
     for cik, entity in by_cik.items():
         by_entity.setdefault(entity, set()).add(cik)
     out = {}
-    for ticker, cik in roster_cik_map(roster).items():
+    for ticker, cik in _roster_cik(roster).items():
         out[ticker] = frozenset(by_entity.get(entity_or_singleton(by_cik, cik), set()) | {cik})
     return out
 
@@ -1240,9 +1246,9 @@ def run_diff(
         frames["filing"] = _filing_section(store, snap_dir, identity, _old_ciks(old_lineage, old_roster), scope)
     if "tape" in sections:
         resolver = LegacyTapeResolver(
-            old_lineage, old_tenure, old_roster, allowlist=load_d19_allowlist(config_dir), redundant=context.config.data_extract.redundant_ticks
+            old_lineage, old_tenure, old_roster, allowlist=load_d19_allowlist(config_dir), redundant=context.universe.alias_symbols
         )
-        tape, stats = _tape_section(store, snap_dir, master, resolver, load_universe_tickers(context), scope)
+        tape, stats = _tape_section(store, snap_dir, master, resolver, context.universe.tickers, scope)
         frames["tape"] = explain_listed_rows(tape, load_hypotheses(config_dir))
     if "insider" in sections:
         frames["insider"] = _insider_section(store, snap_dir, identity, scope)

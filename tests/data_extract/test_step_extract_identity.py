@@ -25,7 +25,7 @@ STAGES = ("dei", "ftd", "scan", "tenure", "lineage", "master", "refresh", "propa
 
 def _config() -> SimpleNamespace:
     paths = SimpleNamespace(insider_transactions="insider", financial_notes="notes", fails_deliver="sec_fails_to_deliver")
-    return SimpleNamespace(local=SimpleNamespace(paths=paths), data_extract=SimpleNamespace(years_history=1, redundant_ticks=["GOOG"]))
+    return SimpleNamespace(local=SimpleNamespace(paths=paths), data_extract=SimpleNamespace(years_history=1))
 
 
 def _stub_stages(monkeypatch: pytest.MonkeyPatch, order: list[str], boom: str | None = None) -> None:
@@ -113,12 +113,12 @@ def test_options_reach_the_propagation_and_the_lineage_build(monkeypatch: pytest
     step.run_entity_lineage()
     step.run_propagate()
 
-    assert calls["lineage"]["approved_rekeys"] == {("E1", "E2")} and calls["lineage"]["redundant_symbols"] == {"GOOG"}
+    assert calls["lineage"]["approved_rekeys"] == {("E1", "E2")} and "redundant_symbols" not in calls["lineage"]
     propagate = calls["propagate"]
     assert propagate["tickers"] == ["AAA"] and "all_tickers" not in propagate
     assert propagate["dry_run"] and propagate["every_ticker"] and propagate["as_of"] == pd.Timestamp("2026-10-30")
     print("\n=== SANITY CHECK: identity options ===")
-    print("  --approve-rekey and redundant_ticks reach the lineage; -t, --full, --dry-run and --as-of reach the propagation")
+    print("  --approve-rekey reaches the lineage (aliases come from context.universe); -t, --full, --dry-run and --as-of reach the propagation")
 
 
 def test_cold_start_sequence_captures_ftd_once_a_lineage_exists(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

@@ -39,7 +39,7 @@ from src.data_extract.utils.fundamentals.periods import (
 )
 from src.data_extract.utils.identity.security_master import load_security_manual
 from src.data_store.schema import Resume, Tables
-from src.utils.string import normalise_ticker, pad_cik_series
+from src.utils.string import pad_cik_series
 
 #: Form precedence for a same-day collapse; keeps `publication_form` a scalar.
 FORM_PRECEDENCE = tuple(
@@ -828,7 +828,7 @@ def _seam_rule_windows(context: Context, ticker: str, filers: int) -> tuple[CikW
     if filers == 0:
         return None
     identity = load_identity(context)
-    if filers == 1 and normalise_ticker(ticker) not in identity.roster_cik:
+    if filers == 1 and ticker not in identity.roster_cik:
         return None
     windows = identity.filing_scope(ticker).windows
     return windows if filers > 1 or any(window.valid_from is not None for window in windows) else None

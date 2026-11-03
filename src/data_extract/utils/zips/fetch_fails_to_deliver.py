@@ -293,7 +293,7 @@ def _settlement_quantity(summed: pd.DataFrame, basis: ShareBasis | None) -> pd.S
     if basis is None:
         return result
     symbols = summed["market_symbol"].map(yahoo_symbol)
-    canonical = summed["ticker"].map(yahoo_symbol)
+    canonical = summed["ticker"]
     trade = pd.to_datetime(summed["trade_date"])
     settlement = pd.to_datetime(summed["date"])
     class_quantity = basis.rebase(quantity, symbols, settlement, trade)
@@ -426,8 +426,7 @@ def _prepare_fails_period(
 ) -> tuple[dict[Table, pd.DataFrame], dict[Table, dict[str, object] | None]]:
     """Prepare one actual source period's exact raw/derived pair and guarded scopes."""
     periods = sorted(set(source["period"].astype(str))) or [str(source.attrs["period"])]
-    roster = identity[Tables.sp500_tickers]
-    others = sorted(set(roster["ticker"].astype(str)) - universe) if "ticker" in roster else []
+    others = sorted(context.universe.outside(universe))
     held = (
         context.store.load(
             Tables.sec_fails_to_deliver_security,

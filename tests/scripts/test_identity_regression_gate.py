@@ -22,7 +22,9 @@ import pytest
 from tests.support import identity_regression_gate as gate
 from src.data_extract.utils.common.identity import CikWindow, FilingScope
 from src.data_store.schema import Tables
+from src.utils.tickers_universe.universe import Universe
 from tests.data_extract.fake_context import extract_config
+from tests.support.universe import seed_universe, universe_config
 
 CONFIGS = Path(__file__).resolve().parents[2] / "configs"
 ACE, OLD_CHUBB = "0000896159", "0000020171"
@@ -667,8 +669,14 @@ class _Context:
     def __init__(self, store: Any) -> None:
         self.store = store
         self.config_dir = str(CONFIGS)
-        self.config = extract_config(data_extract={"redundant_ticks": ["GOOG"], "years_history": 17})
+        self.config = extract_config(data_extract={"years_history": 17})
         self.log = logging.getLogger("gate-test")
+
+    @property
+    def universe(self) -> Universe:
+        """The stored `tickers_universe`, with GOOG as GOOGL's alias when GOOGL is in it."""
+        tickers = self.store.load(Tables.tickers_universe, columns=["ticker"])["ticker"].tolist()
+        return Universe(self.store, universe_config(tickers, {"GOOGL": ["GOOG"]} if "GOOGL" in tickers else None))
 
 
 def _dated_lineage() -> pd.DataFrame:
@@ -697,7 +705,7 @@ def _dated_lineage() -> pd.DataFrame:
 def _seed_before(store: Any) -> None:
     _old_lineage().to_sql(Tables.entity_lineage.name, store.engine, index=False)  # the old shape: SQLite refuses the dated PK on it
     store.save(Tables.symbol_tenure, _tenure().assign(evidence_period=""))
-    store.save(Tables.sp500_tickers, _roster(), pk=["ticker"])
+    seed_universe(store, _roster()["ticker"].tolist(), rows={t: {"cik": c} for t, c in _roster().itertuples(index=False)})
     store.save(
         Tables.sec_fails_to_deliver,
         pd.DataFrame(
@@ -908,7 +916,7 @@ def _trs_seed(store: Any, side: int, lines: list[tuple[Any, ...]]) -> None:
 def test_a_stamped_snapshot_takes_the_old_issuer_from_the_stored_stamps_and_a_declared_move_is_explained(
     sqlite_store: Any, tmp_path: Path, undeclared: bool
 ) -> None:
-    sqlite_store.save(Tables.sp500_tickers, pd.DataFrame([{"ticker": t, "cik": c} for t, c in TRS_ROSTER.items()]), pk=["ticker"])
+    seed_universe(sqlite_store, list(TRS_ROSTER), rows={t: {"cik": c} for t, c in TRS_ROSTER.items()})
     sqlite_store.save(Tables.symbol_tenure, _tenure().assign(evidence_period=""))
     _trs_seed(sqlite_store, 0, TRS_LINES)
     counts = gate.take_snapshot(gate.ReadOnlyStore(sqlite_store), tmp_path / "before")

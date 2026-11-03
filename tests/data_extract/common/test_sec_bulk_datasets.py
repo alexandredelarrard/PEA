@@ -34,7 +34,7 @@ from src.data_store.store import DataStore
 from tests.canonical_schema import create_canonical
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
 from tests.data_extract.test_cli_options import stub_zips_step
-from tests.support.universe import seed_universe
+from tests.support.universe import as_roster, seed_universe
 
 # Repo root = the first ancestor holding pyproject.toml, NOT a fixed `parents[N]`.
 # This file moved down one directory level once already (into the mirrored
@@ -150,7 +150,7 @@ def test_insider_parse_and_universe_filter_synthetic():
                 }
             ]
         ),
-        roster=pd.DataFrame([{"ticker": "AAPL", "cik": "0000320193"}]),
+        roster_cik=as_roster(pd.DataFrame([{"ticker": "AAPL", "cik": "0000320193"}])),
     )
     filt, rejected = screen_insider_rows(out, ["AAPL"], identity)
     assert set(filt["ticker"]) == {"AAPL"}

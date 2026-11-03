@@ -864,7 +864,7 @@ def test_missing_report_period_keeps_filing_date_and_a_foreign_cik_is_skipped_an
     foreign = Filing("foreign", "2025-03-01", "We had 9 employees.")
     foreign.cik = "0000000002"
     foreign.html = lambda: pytest.fail("a foreign filing was read or sent to the LLM")
-    identity = SimpleNamespace(owns=lambda ticker, cik: str(cik).zfill(10) == "0000000001", filing_scope=lambda t: FilingScope.roster_only(t, "1"))
+    identity = SimpleNamespace(owns=lambda ticker, cik: str(cik).zfill(10) == "0000000001", filing_scope=lambda t: FilingScope.roster_only(t, "0000000001"))
     scope = mod.EdgarScope(identity)
     result = build(monkeypatch, [filing, foreign], {"no-period": answer(40000, "We had 40,000 employees.")}, scope=scope)
     assert result.frame["as_of"].tolist() == [pd.Timestamp("2024-03-01")]

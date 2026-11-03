@@ -47,7 +47,6 @@ class StepExtractIdentity(Step):
         self._notes_cache = cache_dir(context, paths.financial_notes)
         self._ftd_cache = cache_dir(context, paths.fails_deliver)
         self._years_history = int(config.data_extract.years_history)
-        self._redundant_symbols = frozenset(config.data_extract.redundant_ticks)
         self._run_date = run_date(self._options.as_of)
         self._scan: Form345Scan | None = None
         self._tenure: pd.DataFrame | None = None
@@ -78,7 +77,6 @@ class StepExtractIdentity(Step):
             self._form345_scan().owner_pairs,
             str(self._config_dir),
             approved_rekeys=self._options.approved_rekeys,
-            redundant_symbols=self._redundant_symbols,
         )
         return self._lineage
 

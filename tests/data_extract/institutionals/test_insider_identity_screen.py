@@ -41,6 +41,7 @@ from src.data_extract.utils.zips import fetch_insider_transactions as ins
 from src.data_extract.utils.zips.fetch_insider_transactions import _footnote_strings
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from tests.support.universe import as_roster
 
 # --------------------------------------------------------------------------- #
 # fixtures                                                                      #
@@ -99,7 +100,7 @@ def identity():
     roster = pd.DataFrame(
         [{"ticker": t, "cik": c} for t, c in [("AVGO", BROADCOM), ("TT", TRANE_NEW), ("IR", INGERSOLL_OLD), ("DD", DUPONT_EI), ("COR", ABC)]]
     )
-    return build_identity(lineage=lineage, tenure=tenure, roster=roster)
+    return build_identity(lineage=lineage, tenure=tenure, roster_cik=as_roster(roster))
 
 
 def _rows(pairs) -> pd.DataFrame:

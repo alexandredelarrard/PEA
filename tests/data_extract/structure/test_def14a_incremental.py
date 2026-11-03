@@ -32,7 +32,7 @@ from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
 from tests.data_extract.fake_context import extract_config
 
 #: A stand-in identity whose every ticker is listed from its roster CIK alone.
-_ROSTER_ONLY = SimpleNamespace(filing_scope=lambda ticker: FilingScope.roster_only(ticker, "1"))
+_ROSTER_ONLY = SimpleNamespace(filing_scope=lambda ticker: FilingScope.roster_only(ticker, "0000000001"))
 
 BeneficialOwner: Any = _BeneficialOwner
 Def14AExtract: Any = _Def14AExtract
@@ -424,6 +424,6 @@ def test_llm_proxies_are_listed_per_scope_window_with_the_seam_margin(monkeypatc
     assert listed == ["0000813828", "0002041610"]
     assert sorted(out["accession_number"]) == ["1610-2025-07-20", "1610-2026-04-02", "3828-2024-04-01", "3828-2025-08-20"]
     assert mod.accepted_subjects(scope) == frozenset({"0000813828", "0002041610"})
-    assert mod.accepted_subjects(FilingScope.roster_only("AAPL", "320193")) == frozenset()
+    assert mod.accepted_subjects(FilingScope.roster_only("AAPL", "0000320193")) == frozenset()
     print("\n=== SANITY: DEF 14A LLM per-window listing ===")
     print("  both PSKY CIKs listed; the predecessor's 2026 proxy (past its margin) dropped; margin proxies on both sides kept")

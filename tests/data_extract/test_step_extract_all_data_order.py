@@ -78,8 +78,8 @@ def _step(monkeypatch, store, order: list[str], *, boom: str | None = None) -> A
 
     lineage = object()
 
-    def entity_lineage(context, given_tenure, owner_pairs, config_dir, approved_rekeys=frozenset(), redundant_symbols=frozenset()):
-        assert given_tenure is tenure and owner_pairs is scan.owner_pairs and redundant_symbols == {"GOOG"}
+    def entity_lineage(context, given_tenure, owner_pairs, config_dir, approved_rekeys=frozenset()):
+        assert given_tenure is tenure and owner_pairs is scan.owner_pairs
         return mark("entity_lineage", lineage)()
 
     def security_master(context, given_lineage, config_dir):
@@ -104,7 +104,7 @@ def _step(monkeypatch, store, order: list[str], *, boom: str | None = None) -> A
     monkeypatch.setattr(identity_module, "propagate_identity", propagate)
 
     config = SimpleNamespace(
-        data_extract=SimpleNamespace(years_history=15, redundant_ticks=["GOOG"]),
+        data_extract=SimpleNamespace(years_history=15),
         local=SimpleNamespace(
             paths=SimpleNamespace(
                 insider_transactions="sec_insider_transactions",

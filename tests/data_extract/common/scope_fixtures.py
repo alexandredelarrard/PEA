@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 from src.data_extract.utils.common.identity import Identity, build_identity
+from tests.support.universe import as_roster
 
 SENTINEL = "1900-01-01"
 CHANGED_AT = pd.Timestamp("2026-01-01 09:00:00")
@@ -64,7 +65,7 @@ def dated_identity(
             for symbol, cik, start in (symbols or [(ticker, cik, "2000-01-01") for ticker, cik in roster.items()])
         ]
     )
-    return build_identity(lineage=lineage, tenure=tenure, roster=pd.DataFrame([{"ticker": t, "cik": c} for t, c in roster.items()]))
+    return build_identity(lineage=lineage, tenure=tenure, roster_cik=as_roster(pd.DataFrame([{"ticker": t, "cik": c} for t, c in roster.items()])))
 
 
 #: (ticker, filer cik, symbol, valid_from, valid_to, status); the row's entity is the ticker's.
@@ -120,7 +121,7 @@ def symbol_identity(rows: list[SymbolRow], roster: dict[str, str], *, redundant:
     return build_identity(
         lineage=pd.DataFrame(windows + symbols),
         tenure=tenure,
-        roster=pd.DataFrame([{"ticker": t, "cik": c} for t, c in roster.items()]),
+        roster_cik=as_roster(pd.DataFrame([{"ticker": t, "cik": c} for t, c in roster.items()])),
         redundant_symbols=redundant,
     )
 

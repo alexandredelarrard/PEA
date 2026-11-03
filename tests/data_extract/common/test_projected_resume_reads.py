@@ -2,7 +2,7 @@
 
 Each test seeds a real SQLite `DataStore`, recomputes the answer from an unprojected
 `store.load(table)` the way the old code did, and checks the projected read agrees:
-earnings-surprise plan, the `sp500_tickers` roster behind `load_identity`, and the CUSIP map cache.
+earnings-surprise plan, the universe roster behind `load_identity`, and the CUSIP map cache.
 """
 
 from __future__ import annotations
@@ -16,9 +16,10 @@ from src.constants.constants import CUSIP_TICKER_OVERRIDES
 from src.data_extract.utils.common import identity as identity_module
 from src.data_extract.utils.common.identity import build_identity, load_identity
 from src.data_extract.utils.fundamentals import fetch_earnings_surprises as surprises
-from src.data_extract.utils.identity.entity_lineage import ROSTER_COLUMNS
 from src.data_extract.utils.institutionals.fetch_cusip_map import build_cusip_ticker_map, normalize_cusip
 from src.data_store.schema import Tables
+from src.utils.tickers_universe.universe import Universe
+from tests.support.universe import as_roster, seed_universe, universe_config
 
 CONFIG_DIR = "configs"
 
@@ -30,7 +31,12 @@ class _Context:
         self.store = store
         self.log = types.SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None)
         self.config_dir = CONFIG_DIR
-        self.config = types.SimpleNamespace(data_extract=types.SimpleNamespace(redundant_ticks=[], years_history=15))
+        self.config = types.SimpleNamespace(data_extract=types.SimpleNamespace(years_history=15))
+
+    @property
+    def universe(self) -> Universe:
+        tickers = self.store.load(Tables.tickers_universe, columns=["ticker"])["ticker"].tolist()
+        return Universe(self.store, universe_config(tickers))
 
 
 def _context(store: Any) -> Any:
@@ -168,17 +174,7 @@ def test_load_identity_with_the_projected_roster_matches_the_full_roster(sqlite_
             ]
         ),
     )
-    roster = pd.DataFrame(
-        {
-            "ticker": ["AAA", "BBB"],
-            "cik": ["100", "900"],
-            "name": ["A Co", "B Co"],
-            "sector": ["X", "Y"],
-            "industry_group": ["X1", "Y1"],
-            "sub_industry": ["X11", "Y11"],
-        }
-    )
-    sqlite_store.save(Tables.sp500_tickers, roster)
+    seed_universe(sqlite_store, ["AAA", "BBB"], rows={"AAA": {"cik": "0000000100"}, "BBB": {"cik": "0000000900"}})
 
     evidence_reads: list[pd.DataFrame] = []
     original_co_registrants = identity_module.co_registrant_ciks
@@ -199,19 +195,18 @@ def test_load_identity_with_the_projected_roster_matches_the_full_roster(sqlite_
     full = build_identity(
         lineage=sqlite_store.load(Tables.entity_lineage, project=True),
         tenure=full_tenure,
-        roster=sqlite_store.load(Tables.sp500_tickers),
+        roster_cik=as_roster(sqlite_store.load(Tables.tickers_universe, columns=["ticker", "cik"])),
         redundant_symbols=frozenset(),
     )
 
-    assert ROSTER_COLUMNS == ("ticker", "cik")
     assert projected.roster_cik == full.roster_cik == {"AAA": "0000000100", "BBB": "0000000900"}
     assert projected.ticker_by_entity == full.ticker_by_entity
     assert projected.tenure_by_symbol == full.tenure_by_symbol
     assert projected.manual_tenure_by_symbol == full.manual_tenure_by_symbol
     assert projected.entity_for("AAA", "2001-01-01") == "E0000000100", "manual tenure resolves; DEI is not direct symbol evidence"
-    print("\n=== SANITY CHECK: projected sp500_tickers roster ===")
+    print("\n=== SANITY CHECK: universe roster ===")
     print(f"  roster_cik {dict(projected.roster_cik)}; ticker_by_entity {dict(projected.ticker_by_entity)}")
-    print("  OK: identity built from ('ticker', 'cik') equals the one built from the full roster")
+    print("  OK: identity built from context.universe equals the one built from the stored universe rows")
     print("  OK: one tenure read preserves provenance; form345/manual resolve symbols, form345/dei supply co-registrant evidence")
 
 

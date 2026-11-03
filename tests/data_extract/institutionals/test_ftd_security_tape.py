@@ -25,7 +25,7 @@ from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore
 from tests.canonical_schema import create_canonical
 from tests.data_extract.fake_context import extract_config
-from tests.support.universe import seed_universe
+from tests.support.universe import as_roster, seed_universe
 
 REPO = Path(__file__).resolve().parents[3]
 BUILT = pd.Timestamp("2026-10-04 12:00:00")
@@ -297,7 +297,7 @@ def _identity() -> Any:
         ]
     )
     roster = pd.DataFrame([{"ticker": t, "cik": c} for t, c in ROSTER.items()])
-    return build_identity(_lineage(), tenure, roster, master=_master())
+    return build_identity(_lineage(), tenure, as_roster(roster), master=_master())
 
 
 def _context(store, tmp_path: Path) -> Any:

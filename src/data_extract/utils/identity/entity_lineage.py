@@ -50,9 +50,6 @@ OVERLAP_SHARED_SAME = 5
 
 SOURCE_PRIORITY = ("register", "manual", "symbol_handoff", "owner_overlap", "roster")
 
-#: The `sp500_tickers` columns the identity layer reads (`roster_cik_map`).
-ROSTER_COLUMNS = ("ticker", "cik")
-
 #: Key in `entity_lineage_manual.json` holding the D19 cross-check's exceptions; underscore-prefixed so the lineage loader skips it.
 D19_ALLOWLIST_KEY = "_d19_allowlist"
 
@@ -186,13 +183,6 @@ def entity_by_cik_map(lineage: pd.DataFrame) -> dict[str, str]:
     return dict(zip(pad_cik_series(lineage["cik"]), lineage["entity_id"].astype(str), strict=False))
 
 
-def roster_cik_map(roster: pd.DataFrame) -> dict[str, str]:
-    """`{universe ticker: padded roster CIK}` from `sp500_tickers`, skipping a row with no CIK."""
-    ciks = pad_cik_series(roster["cik"])
-    has_cik = ciks.ne("")
-    return dict(zip(roster.loc[has_cik, "ticker"].map(normalise_ticker), ciks[has_cik], strict=False))
-
-
 def check_one_entity_per_cik(lineage: pd.DataFrame) -> None:
     """Raise `CikInTwoEntitiesError` when one CIK carries two entity_ids, which would make `entity_of` order-dependent."""
     per_cik = pd.DataFrame({"cik": pad_cik_series(lineage["cik"]), "entity_id": lineage["entity_id"].astype(str)}).drop_duplicates()
@@ -294,24 +284,22 @@ def classify_overlap(shared: int, jaccard: float) -> str:
     return "grey"
 
 
-def candidate_ciks(tenure: pd.DataFrame, roster: pd.DataFrame) -> tuple[frozenset[str], dict[str, set[str]], dict[str, str]]:
-    """(all candidates, {ticker: CIKs seen under its symbol}, {ticker: roster CIK}).
+def candidate_ciks(tenure: pd.DataFrame, roster_cik: Mapping[str, str]) -> tuple[frozenset[str], dict[str, set[str]]]:
+    """(all candidates, {ticker: CIKs seen under its symbol}) for the `{universe ticker: roster CIK}` map.
 
     Candidates are every issuer CIK that filed under a current-universe symbol plus every roster
     CIK; any other CIK is a singleton by default.
     """
-    roster_cik = roster_cik_map(roster)
     seen = tenure[tenure["symbol"].astype(str).isin(set(roster_cik))]
     by_ticker: dict[str, set[str]] = {t: {roster_cik[t]} for t in roster_cik}
     for symbol, cik in zip(seen["symbol"].astype(str), seen["issuer_cik"].astype(str), strict=False):
         by_ticker[str(symbol)].add(str(cik))
-    return frozenset().union(*by_ticker.values()), by_ticker, roster_cik
+    return frozenset().union(*by_ticker.values()), by_ticker
 
 
-def validate_manual_tenure_entities(manual: pd.DataFrame, lineage: pd.DataFrame, roster: pd.DataFrame) -> None:
+def validate_manual_tenure_entities(manual: pd.DataFrame, lineage: pd.DataFrame, roster_cik: Mapping[str, str]) -> None:
     """Require each manual CIK to belong to its configured current ticker's entity."""
     entity_by_cik = entity_by_cik_map(lineage)
-    roster_cik = roster_cik_map(roster)
     errors: list[str] = []
     for row in manual.itertuples(index=False):
         canonical_ticker = str(row.canonical_ticker)
@@ -641,7 +629,7 @@ class LineageBuild:
 
 def derive_entity_lineage(
     tenure: pd.DataFrame,
-    roster: pd.DataFrame,
+    roster_cik: Mapping[str, str],
     owner_pairs: pd.DataFrame,
     config_dir: str | None = None,
     *,
@@ -661,7 +649,7 @@ def derive_entity_lineage(
     manual = load_manual_lineage(config_dir)
     evidence = _evidence(tenure, dei)
     index = _EvidenceIndex(evidence)
-    candidates, by_ticker, roster_cik = candidate_ciks(tenure, roster)
+    candidates, by_ticker = candidate_ciks(tenure, roster_cik)
     owners = derive_owner_sets(owner_pairs, candidates)
     backlog: list[dict[str, Any]] = []
 
@@ -874,7 +862,7 @@ def _roster_rows(rows: list[dict[str, Any]], roster_cik: Mapping[str, str]) -> l
                 "valid_to": None,
                 "sources": frozenset({ROSTER_SOURCE}),
                 "n_observations": 0,
-                "evidence": "roster: sp500_tickers names this ticker on this CIK today; no filing spells it this way",
+                "evidence": "roster: the universe names this ticker on this CIK today; no filing spells it this way",
                 "curated": False,
                 "roster": True,
             }
@@ -1231,33 +1219,30 @@ def build_entity_lineage(
     *,
     approved_rekeys: frozenset[tuple[str, str]] = frozenset(),
     built_at: pd.Timestamp | None = None,
-    redundant_symbols: frozenset[str] = frozenset(),
 ) -> pd.DataFrame:
     """Derive `entity_lineage` from tenure, the stored `dei` evidence and owner pairs; replace the table unless unchanged.
 
     An older-CIK rekey is excluded and backlogged unless its ``(old_entity_id, new_entity_id)`` pair is in
-    `approved_rekeys`. Logs the items needing a manual decision (`redundant_symbols`: the configured
-    redundant share classes), reading tape-mix pairs against the stored `security_master`. Returns the derived rows.
+    `approved_rekeys`. Logs the items needing a manual decision (the universe's alias share classes), reading tape-mix pairs against the stored `security_master`. Returns the derived rows.
     """
-    roster = context.store.load(Tables.sp500_tickers, columns=list(ROSTER_COLUMNS))
-    assert roster is not None
+    roster_cik = context.universe.cik_by_ticker
     existing = _stored_rows(context.store.load(Tables.entity_lineage, project=True, optional=True))
     dei_rows = context.store.load(Tables.symbol_tenure, project=True, where={"source": DEI_SOURCE}, optional=True)
     master = context.store.load(Tables.security_master, columns=list(MASTER_COLUMNS), optional=True)
     dei = collapse_dei_periods(dei_rows) if dei_rows is not None and not dei_rows.empty else None
     build = derive_entity_lineage(
-        tenure, roster, owner_pairs, config_dir, dei=dei, existing=existing, approved_rekeys=approved_rekeys, built_at=built_at
+        tenure, roster_cik, owner_pairs, config_dir, dei=dei, existing=existing, approved_rekeys=approved_rekeys, built_at=built_at
     )
     out = build.rows
     manual_tenure = load_manual_symbol_tenure(config_dir or context.config_dir)
-    validate_manual_tenure_entities(manual_tenure, out, roster)
+    validate_manual_tenure_entities(manual_tenure, out, roster_cik)
     context.log.info(
         f"entity_lineage: {len(manual_tenure)} manual symbol interval(s) resolve to "
         f"their {manual_tenure['canonical_ticker'].nunique()} canonical entity(ies); "
         f"dei evidence {0 if dei is None else len(dei)} (symbol, CIK) interval(s); curation backlog {len(build.backlog)} item(s)"
     )
     evidence = tenure if dei is None else pd.concat([tenure, dei], ignore_index=True)
-    flags = identity_flags(out, cik_activity(evidence), redundant_symbols=redundant_symbols, backlog=build.backlog, master=master)
+    flags = identity_flags(out, cik_activity(evidence), redundant_symbols=context.universe.alias_symbols, backlog=build.backlog, master=master)
     log_identity_flags(context.log, flags)
     if not build.blocked.empty:
         logger.warning(
@@ -1268,7 +1253,7 @@ def build_entity_lineage(
     if existing is None or existing.empty:
         context.log.info(f"entity_lineage: cold build with {len(out)} row(s) over {out['entity_id'].nunique()} entity(ies)")
     else:
-        _log_changed_assignments(context, existing, out, roster)
+        _log_changed_assignments(context, existing, out, roster_cik)
     unchanged = matches_stored(existing, out, Tables.entity_lineage)
     written = 0 if unchanged else save_identity(context.store, Tables.entity_lineage, out)
     if unchanged:
@@ -1294,12 +1279,12 @@ def load_stored_lineage(context: Context) -> pd.DataFrame | None:
     return _stored_rows(context.store.load(Tables.entity_lineage, project=True, optional=True))
 
 
-def _log_changed_assignments(context: Context, existing: pd.DataFrame, out: pd.DataFrame, roster: pd.DataFrame) -> None:
+def _log_changed_assignments(context: Context, existing: pd.DataFrame, out: pd.DataFrame, roster_cik: Mapping[str, str]) -> None:
     """Name every CIK whose entity changed and the current tickers those entities hold."""
     old_map = entity_by_cik_map(existing)
     new_map = entity_by_cik_map(out)
     changed = sorted(cik for cik in set(old_map) | set(new_map) if old_map.get(cik) != new_map.get(cik))
-    entity_tickers = {entity_or_singleton(new_map, cik): ticker for ticker, cik in roster_cik_map(roster).items()}
+    entity_tickers = {entity_or_singleton(new_map, cik): ticker for ticker, cik in roster_cik.items()}
     affected = sorted({entity_tickers[entity] for cik in changed for entity in (old_map.get(cik), new_map.get(cik)) if entity in entity_tickers})
     context.log.info(
         f"entity_lineage: {len(changed)} changed CIK assignment(s): "

@@ -12,14 +12,10 @@ from src.data_store.store import DataStore, Where
 
 
 def load_source_identity(store: DataStore) -> dict[Table, pd.DataFrame]:
-    """Load the closed four-table identity projection for source classification and guarded writes."""
+    """Load the closed three-table identity projection for source classification and guarded writes."""
     cohort: dict[Table, pd.DataFrame] = {}
-    for table in (Tables.entity_lineage, Tables.symbol_tenure, Tables.sp500_tickers, Tables.security_master):
-        df_rows = (
-            store.load(table, columns=["ticker", "cik"], optional=True)
-            if table == Tables.sp500_tickers
-            else store.load(table, project=True, optional=True)
-        )
+    for table in (Tables.entity_lineage, Tables.symbol_tenure, Tables.security_master):
+        df_rows = store.load(table, project=True, optional=True)
         cohort[table] = df_rows if df_rows is not None else pd.DataFrame()
     return cohort
 
@@ -100,9 +96,7 @@ def _scope_rows(df_rows: pd.DataFrame, where: dict[str, object] | None) -> pd.Da
 def _identity_columns(table: Table, available: set[str]) -> list[str]:
     """Semantic identity fields and owner stamps, excluding observation/evidence churn."""
     columns = [*table.pk, "valid_to"]
-    if table == Tables.sp500_tickers:
-        columns = ["ticker", "cik"]
-    elif table == Tables.entity_lineage:
+    if table == Tables.entity_lineage:
         columns += ["entity_id", "canonical_ticker", "cik", "scope_changed_at"]
     elif table == Tables.security_master:
         columns += [
@@ -119,19 +113,18 @@ def _identity_columns(table: Table, available: set[str]) -> list[str]:
 
 
 def save_identity(store: DataStore, table: Table, df_rows: pd.DataFrame, where: dict[str, object] | None = None) -> int:
-    """Save one roster/identity scope with physical dependent-proof invalidation."""
-    if table not in (Tables.sp500_tickers, Tables.entity_lineage, Tables.security_master, Tables.symbol_tenure):
-        raise ValueError("Only the roster, lineage, master and tenure writers use the identity commit")
+    """Save one identity scope with physical dependent-proof invalidation."""
+    if table not in (Tables.entity_lineage, Tables.security_master, Tables.symbol_tenure):
+        raise ValueError("Only the lineage, master and tenure writers use the identity commit")
     if where == {} or table != Tables.symbol_tenure and where is not None:
         raise ValueError("Only a symbol-tenure partition can carry a replacement scope")
-    if table != Tables.sp500_tickers and (not set(table.pk).issubset(df_rows) or df_rows.duplicated(list(table.pk)).any()):
+    if not set(table.pk).issubset(df_rows) or df_rows.duplicated(list(table.pk)).any():
         raise ValueError("Identity replacement needs unique declared keys")
 
     # Load the closed cohort and compact retained owners under the shared guard.
     with store.transaction() as bound:
         cohorts = load_source_identity(bound)
-        scope: dict[str, object] | None = {"ticker": df_rows["ticker"].tolist()} if table == Tables.sp500_tickers else where
-        df_old = _scope_rows(cohorts[table], scope)
+        df_old = _scope_rows(cohorts[table], where)
         df_retained = _retained_owners(bound, pd.concat([df_old, df_rows], ignore_index=True))
 
         # Compare semantic fields using canonical date precision, then invalidate and save.
@@ -143,8 +136,6 @@ def save_identity(store: DataStore, table: Table, df_rows: pd.DataFrame, where: 
         df_changed = df_compared.drop_duplicates(keep=False)
         if not df_changed.empty:
             invalidate_source_proof(bound, _affected_tickers(df_changed, cohorts, df_retained))
-        if table == Tables.sp500_tickers:
-            return bound.save(table, df_rows, ignore_all_conflicts=True)
         if where is None:
             return bound.replace(table, df_rows)
         bound.delete(table, where)

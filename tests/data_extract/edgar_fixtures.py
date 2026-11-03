@@ -21,7 +21,7 @@ from src.data_store.schema import Tables
 from src.utils.string import pad_cik
 from tests.data_extract.fake_context import extract_config
 from tests.fixtures.superinvestor_config import write_roster_config
-from tests.support.universe import seed_universe
+from tests.support.universe import as_roster, seed_universe
 
 MASTER_HEADER = """Description:           Master Index of EDGAR Dissemination Feed
 Last Data Received:    September 30, 2026
@@ -126,7 +126,7 @@ def identity_for(roster: dict[str, str]) -> Identity:
                 for t, c in roster.items()
             ]
         ),
-        roster=pd.DataFrame([{"ticker": t, "cik": pad_cik(c)} for t, c in roster.items()]),
+        roster_cik=as_roster(pd.DataFrame([{"ticker": t, "cik": pad_cik(c)} for t, c in roster.items()])),
     )
 
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 
 import pandas as pd
 from omegaconf import DictConfig, OmegaConf
@@ -11,6 +11,7 @@ from sqlalchemy.pool import StaticPool
 
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.string import pad_cik
 from src.utils.tickers_universe.universe import Universe
 
 
@@ -55,6 +56,15 @@ def universe_of(
     """A `Universe` over its own in-memory store, for a stub context that has no store to seed."""
     engine = create_engine("sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False})
     return seed_universe(DataStore(engine), tickers, aliases=aliases, rows=rows)
+
+
+def as_roster(roster: pd.DataFrame | Mapping[str, str] | Iterable[tuple[str, str]]) -> dict[str, str]:
+    """`{ticker: 10-digit CIK}` from a fixture `(ticker, cik)` frame, mapping or pairs: the `cik_by_ticker` shape."""
+    if isinstance(roster, pd.DataFrame):
+        roster = zip(roster["ticker"], roster["cik"], strict=True)
+    elif isinstance(roster, Mapping):
+        roster = roster.items()
+    return {str(ticker): pad_cik(cik) for ticker, cik in roster}
 
 
 def universe_in(store: DataStore) -> Universe:

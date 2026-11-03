@@ -24,6 +24,7 @@ from omegaconf import OmegaConf
 from src.data_extract.utils.behavioral import fetch_earnings_call_transcripts as ect
 from src.data_extract.utils.common.identity import CikWindow, Identity, SymbolInterval, build_identity
 from src.data_store.schema import Resume, Tables
+from tests.support.universe import as_roster
 
 _PARAGRAPH = pa.struct([("paragraph_number", pa.int32()), ("speaker", pa.string()), ("content", pa.string())])
 _SCHEMA = pa.schema(
@@ -121,7 +122,7 @@ def _identity() -> Identity:
     return build_identity(
         lineage=pd.DataFrame(rows),
         tenure=tenure,
-        roster=roster,
+        roster_cik=as_roster(roster),
         redundant_symbols=frozenset({"GOOG", "BFA"}),
     )
 
@@ -155,7 +156,7 @@ def _recovery_context(tmp_path: Path, store: Any) -> Any:
         ]
     )
     tenure = pd.DataFrame([dict(symbol="AVGO", issuer_cik="1730168", valid_from="2016-01-01", valid_to=None, n_filings=1, source="manual")])
-    ctx._identity_resolver = build_identity(lineage, tenure, roster)
+    ctx._identity_resolver = build_identity(lineage, tenure, as_roster(roster))
     store.save(Tables.sp500_tickers, roster)
     return ctx
 
@@ -395,7 +396,7 @@ def test_rebased_support_requires_unambiguous_dated_alias_and_its_own_cik_window
             "source": "manual",
         }
     )
-    identity = build_identity(lineage, tenure, roster)
+    identity = build_identity(lineage, tenure, as_roster(roster))
     assert ect.ticker_for_call(identity, "OLD", pd.Timestamp("2010-05-01")).ticker is None
     assert ect.ticker_for_call(identity, "NEW", pd.Timestamp("2010-05-01")).ticker is None
     assert ect.ticker_for_call(identity, "NEW", pd.Timestamp("2015-01-01")).ticker == "NEW"

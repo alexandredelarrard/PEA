@@ -25,7 +25,7 @@ from src.data_store.store import DataStore
 from src.utils import filer_tables
 from tests.canonical_schema import create_canonical
 from tests.data_extract.fake_context import extract_config
-from tests.support.universe import seed_universe
+from tests.support.universe import as_roster, seed_universe
 
 SENTINEL = "1900-01-01"
 #: The run date: AFTER falls inside the 7-day re-check window before it, BEFORE does not.
@@ -79,7 +79,7 @@ def _identity(stamps: dict[str, pd.Timestamp], symbol_rows: list[dict] = ()) -> 
             for t, c in ROSTER.items()
         ]
     )
-    return build_identity(pd.DataFrame(rows), tenure, pd.DataFrame([{"ticker": t, "cik": c} for t, c in ROSTER.items()]))
+    return build_identity(pd.DataFrame(rows), tenure, as_roster(pd.DataFrame([{"ticker": t, "cik": c} for t, c in ROSTER.items()])))
 
 
 def _stored_identity(store: DataStore, stamps: dict[str, pd.Timestamp]) -> Identity:
@@ -305,7 +305,7 @@ def test_an_event_only_cik_leaves_the_consolidating_tables_of_a_single_window_ti
     tenure = pd.DataFrame(
         [{"symbol": "PLD", "issuer_cik": prologis, "valid_from": pd.Timestamp("2000-01-01"), "valid_to": None, "n_filings": 5, "source": "form345"}]
     )
-    identity = build_identity(pd.DataFrame(rows), tenure, pd.DataFrame([{"ticker": "PLD", "cik": prologis}]))
+    identity = build_identity(pd.DataFrame(rows), tenure, as_roster(pd.DataFrame([{"ticker": "PLD", "cik": prologis}])))
     filings = [("old-1", old_prologis, "2010-11-09"), ("old-2", old_prologis, "2011-08-09"), ("new-1", prologis, "2011-08-09")]
     for table in (Tables.fundamentals_facts, Tables.def14a_edgar, Tables.insider_transactions):
         sqlite_store.save(table, _filings(table, "PLD", filings))
@@ -606,7 +606,7 @@ def test_f105_the_bulk_reparse_compares_each_table_only_with_the_ciks_it_can_hol
         ]
     )
     roster = pd.DataFrame([{"ticker": t, "cik": c} for t, c in ROSTER.items()])
-    identity = build_identity(rows, tenure, roster, co_registrant_ciks=[TMO_USA])
+    identity = build_identity(rows, tenure, as_roster(roster), co_registrant_ciks=[TMO_USA])
     monkeypatch.setattr(prop, "load_identity", lambda context: identity)
 
     result = prop.propagate_identity(context, list(ROSTER), as_of=RUN_DATE)

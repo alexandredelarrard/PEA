@@ -33,7 +33,7 @@ from src.data_store.schema import Tables
 from tests.canonical_schema import create_canonical
 from tests.data_extract.edgar_fixtures import seed_index
 from tests.data_extract.fake_context import extract_config
-from tests.support.universe import seed_universe
+from tests.support.universe import as_roster, seed_universe
 
 AAA_CIK = "0000000001"
 OTHER_CIK = "0000000099"  # an unrelated issuer whose filings claim `AAA`
@@ -225,7 +225,7 @@ def identity() -> Identity:
                 }
             ]
         ),
-        roster=pd.DataFrame([{"ticker": "AAA", "cik": AAA_CIK}]),
+        roster_cik=as_roster(pd.DataFrame([{"ticker": "AAA", "cik": AAA_CIK}])),
     )
 
 
@@ -497,7 +497,7 @@ def identity_two() -> Identity:
                 for s, cik in pairs
             ]
         ),
-        roster=pd.DataFrame([{"ticker": s, "cik": cik} for s, cik in pairs]),
+        roster_cik=as_roster(pd.DataFrame([{"ticker": s, "cik": cik} for s, cik in pairs])),
     )
 
 

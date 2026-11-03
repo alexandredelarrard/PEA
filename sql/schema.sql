@@ -727,27 +727,6 @@ CREATE TABLE IF NOT EXISTS "earnings_surprises" (
     PRIMARY KEY ("ticker", "earnings_date")
 );
 
--- [extract] pension_facts  (pk: cik, tag, ddate, qtrs, quarter)
-
-CREATE TABLE IF NOT EXISTS "pension_facts" (
-    "cik" TEXT NOT NULL,
-    "ticker" TEXT,
-    "tag" TEXT NOT NULL,
-    "ddate" DATE NOT NULL,
-    "qtrs" BIGINT NOT NULL,
-    "uom" TEXT,
-    "value" DOUBLE PRECISION,
-    "adsh" TEXT,
-    "filed" DATE,
-    "form" TEXT,
-    "fy" TEXT,
-    "fp" TEXT,
-    "quarter" TEXT NOT NULL,
-    "available_at" DATE,
-    PRIMARY KEY ("cik", "tag", "ddate", "qtrs", "quarter")
-);
-CREATE INDEX IF NOT EXISTS ix_pension_facts_ticker ON "pension_facts" ("ticker");
-
 -- [extract] notes_num  (pk: adsh, tag, ddate, qtrs)
 
 CREATE TABLE IF NOT EXISTS "notes_num" (

@@ -610,17 +610,6 @@ class Tables:
         freshness="quarterly",
         resume=Resume(RESUME_DOCUMENTS, "ticker", "earnings_date", 35, source_start="2002-10-01"),
     )
-    # SEC Financial Statement Data Sets (num/sub): curated pension facts per
-    # company/tag/period-end (`ddate`) / duration (`qtrs`) / ZIP quarter vintage.
-    pension_facts = Table(
-        "pension_facts",
-        ("cik", "tag", "ddate", "qtrs", "quarter"),
-        date_col="ddate",
-        date_type_cols=("ddate", "filed", "available_at"),
-        freshness="quarterly",
-        freshness_date_col="available_at",
-        resume=Resume(RESUME_ARCHIVE, "ticker", "quarter", 95, period_col="quarter", source_start="2009-01-01", observed_from="2026-09-01"),
-    )
     # SEC Financial Statement AND NOTES Data Sets -- footnote NUMERIC facts (consolidated /
     # undimensioned, curated tag set: PBO, plan assets, funded status, service cost,
     # employer contributions, discount rate, recognized net pension liability). Grain = one fact per filing (`adsh`) / tag /

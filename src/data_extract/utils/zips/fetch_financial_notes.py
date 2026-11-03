@@ -40,7 +40,7 @@ from src.data_extract.utils.common.sec_io import sec_get
 from src.data_extract.utils.identity.symbol_tenure import captured_dei_periods
 from src.data_extract.utils.zips.zip_archive import ArchiveSource, ZipScope, ensure_archive, reparse_clock
 from src.data_store.schema import Resume, Table, Tables
-from src.utils.string import pad_cik_series
+from src.utils.string import pad_cik_series, run_date
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +147,7 @@ def _scrape_available_periods(context: Context) -> list[str] | None:
 
 def _generate_periods(years_history: int, today: pd.Timestamp | None = None) -> list[str]:
     """Candidate tags: quarterly over the window plus the last 14 months as monthly (404s are skipped downstream)."""
-    today = (today or pd.Timestamp.today()).normalize()
+    today = run_date(today)
     first_year = min(pd.Timestamp(cast(str, cast(Resume, table.resume).source_start)).year for table in _NOTES_TABLES)
     quarterly = quarter_periods(years_history, first_year, today)
     monthly = [f"{month.year}_{month.month:02d}" for month in pd.period_range(end=today, periods=14, freq="M")]
@@ -156,7 +156,7 @@ def _generate_periods(years_history: int, today: pd.Timestamp | None = None) -> 
 
 def notes_periods(context: Context, years_history: int, today: pd.Timestamp | None = None) -> list[str]:
     """Period tags to fetch, newest last, filtered to the year window."""
-    today = (today or pd.Timestamp.today()).normalize()
+    today = run_date(today)
     first_year = min(pd.Timestamp(cast(str, cast(Resume, table.resume).source_start)).year for table in _NOTES_TABLES)
     start_year = max(first_year, today.year - years_history)
     avail = _scrape_available_periods(context)

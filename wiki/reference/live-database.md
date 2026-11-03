@@ -27,6 +27,7 @@ The measured environment was PostgreSQL 16 in container `pea_db`, database `pea`
 
 - `tickers_universe` was built on 2026-11-03 (C1): 491 rows, CIK and CUSIPs on every row, GICS (`sector`, `industry_group`, `sub_industry`) copied from `sp500_tickers` for all 491 by user decision (six universe tickers, BLDR CTVA PSKY TAP TTD WBD, are no longer on Wikipedia's S&P 500 page), `universe_added_on` 2000-01-01 everywhere. A second `sync` wrote 0 rows. GICS maps and integer codes equal the pre-refactor baseline (C2).
 - Code reads the universe only through `context.universe`. `sp500_tickers` is still present but no code reads it; C3 (back it up, then drop it) is the user's step.
+- Live checks the same day: `data_extract universe` wrote 0 rows; `price-history -t AAPL,MSFT` resumed and saved 26 price and 26 dividend rows; `-t GOOG` was refused before any fetch as the alias of GOOGL. WBD (acquired by SKYD 2026-10-05) and PSKY (renamed SKYD 2026-10-06) stay in the universe; stopping extraction for ended tickers is deferred to its own spec.
 - Back up `tickers_universe` before ever dropping it: a rebuild loses `universe_added_on` and the carried GICS, so every ticker would look new and be backfilled, and off-Wikipedia tickers would lose their GICS.
 
 ## Disposable text-cube test state (2026-10-22)

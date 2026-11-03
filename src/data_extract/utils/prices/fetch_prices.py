@@ -28,7 +28,7 @@ from src.data_extract.utils.prices.anchor_check import anchor_restated_keys
 from src.data_extract.utils.prices.fetch_dividends import _extract_dividends
 from src.data_extract.utils.prices.fetch_splits import _extract_splits
 from src.data_store.schema import Tables
-from src.utils.string import yahoo_symbol
+from src.utils.string import run_date, yahoo_symbol
 
 logger = logging.getLogger(__name__)
 
@@ -357,7 +357,7 @@ def fetch_prices_and_actions(
     alongside; a class with no stored bar takes the whole window. A key whose response holds a split or a cash
     dividend after its last stored bar, or whose first-year `close_split` disagrees with Yahoo's (`anchor_check`),
     is re-pulled over the whole window before saving."""
-    run_date = pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize()
+    start_date = run_date(as_of)
     until = last_completed_session(as_of)
     calendar = trading_calendar(context)
     plan = {"until": until, "years_history": years_history, "full": full, "calendar": calendar}
@@ -365,13 +365,14 @@ def fetch_prices_and_actions(
     if owners:
         logger.info("%d current secondary class(es) fetched with their companies: %s", len(owners), ", ".join(owners))
     symbols = [*tickers, *owners]
-    floor = document_floor(Tables.prices, run_date, years_history)
-    prices_work = series_windows(context, Tables.prices, symbols, run_date, **plan)
+    floor = document_floor(Tables.prices, start_date, years_history)
+    prices_work = series_windows(context, Tables.prices, symbols, start_date, **plan)
+
     # A secondary class is never a new universe key, so one with no stored bar takes the whole window here.
     for symbol in owners:
         if symbol not in prices_work.last:
             prices_work.windows[symbol] = [(floor, until)]
-    work = prices_work.merge(series_windows(context, Tables.dividends, tickers, run_date, **plan))
+    work = prices_work.merge(series_windows(context, Tables.dividends, tickers, start_date, **plan))
     df_raw = _download_groups(work.groups(), chunk_size, pause, "resume")
 
     full_keys = {key for key, spans in work.windows.items() if spans and spans[0][0] <= floor}
@@ -397,6 +398,7 @@ def fetch_prices_and_actions(
         df_raw = pd.concat([df_raw[~df_raw["ticker"].isin(repull)], df_repull], ignore_index=True)
 
     n_prices = context.store.save(Tables.prices, _price_rows(df_raw))
+
     # Dividends and splits are kept for the universe only; a secondary class lands in `prices` alone.
     df_universe = df_raw[df_raw["ticker"].isin(set(tickers))] if not df_raw.empty else df_raw
     n_dividends = context.store.save(Tables.dividends, _extract_dividends(df_universe))

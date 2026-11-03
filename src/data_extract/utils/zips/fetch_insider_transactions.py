@@ -64,7 +64,7 @@ from src.data_extract.utils.insider.insider_common import (
 from src.data_extract.utils.insider.insider_store import patch_insider_source, save_insider_source
 from src.data_store.schema import Resume, Tables
 from src.utils.filer_tables import FilerTable, removal_records
-from src.utils.string import pad_cik_series
+from src.utils.string import pad_cik_series, run_date
 
 logger = logging.getLogger(__name__)
 
@@ -508,11 +508,11 @@ def fetch_insider_transactions(
     """
     identity = load_identity(context)
     cache = cache_dir(context, context.config.local.paths.insider_transactions)
-    run_date = pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize()
+    start_date = run_date(as_of)
     first_year = pd.Timestamp(cast(str, cast(Resume, Tables.insider_transactions.resume).source_start)).year
-    span = (run_date.year - first_year + 1) if reparse else years_history + 1
-    quarters = quarter_periods(span, first_year, run_date)
-    work = archive_worklist(context, (Tables.insider_transactions,), quarters, cached_periods(cache), tickers, run_date, full=reparse)
+    span = (start_date.year - first_year + 1) if reparse else years_history + 1
+    quarters = quarter_periods(span, first_year, start_date)
+    work = archive_worklist(context, (Tables.insider_transactions,), quarters, cached_periods(cache), tickers, start_date, full=reparse)
 
     units, rescanned = _insider_work_units(work, cached_periods(cache))
     saved = notes_saved = 0

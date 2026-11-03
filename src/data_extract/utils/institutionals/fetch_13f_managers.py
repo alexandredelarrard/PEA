@@ -26,7 +26,7 @@ from src.data_extract.utils.edgar_extract.parallel_fetch import run_per_ticker
 from src.data_extract.utils.institutionals.fetch_13f import _IMPLIED_PRICE_BAND, ReadFailure, _suspect_prices, read_filing_vintage, save_13f_filing
 from src.data_extract.utils.institutionals.fetch_13f_backfill import _submissions, cached_filing_vintages
 from src.data_store.schema import Resume, Tables
-from src.utils.string import pad_cik
+from src.utils.string import pad_cik, run_date
 from src.utils.superinvestor_roster import roster_cik_union, roster_map_as_of
 
 logger = logging.getLogger(__name__)
@@ -127,7 +127,7 @@ def fetch_13f_managers(context: Context, years_history: int = 15) -> int:
         )
     names = roster_map_as_of(context)  # latest snapshot; only used for log lines
     with_book = set(context.store.distinct(Tables.sec13f_manager_holdings, "cik"))
-    since = pd.Timestamp.today().normalize() - pd.DateOffset(years=years_history)
+    since = run_date(None) - pd.DateOffset(years=years_history)
     logger.info("13F managers: %d roster CIK(s), %d with a stored book, periods from %s", len(ciks), len(with_book & set(ciks)), since.date())
 
     worker = partial(_catch_up_cik, context=context, since=since)

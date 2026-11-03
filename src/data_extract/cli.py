@@ -157,7 +157,7 @@ def _table_status(context: Context, table: Table, universe: list[str], as_of: pd
 
 def _extraction_status_report(context: Context, *, as_of: pd.Timestamp | None = None) -> dict[str, object]:
     """Freshness report over exactly the tables and cadences declared by the schema registry."""
-    as_of = (as_of if as_of is not None else pd.Timestamp.today()).normalize()
+    as_of = run_date(as_of)
     universe = context.universe.tickers
     min_share = float(context.config.data_extract.prediction_fresh_share)
     statuses = {table.name: _table_status(context, table, universe, as_of, min_share) for table in freshness_tables()}

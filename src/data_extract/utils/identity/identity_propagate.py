@@ -48,7 +48,7 @@ from src.utils.filer_tables import (
     window_owner_mask,
     windowed_filer_mask,
 )
-from src.utils.string import pad_cik
+from src.utils.string import pad_cik, run_date
 
 #: Tickers read per scoped load, and keys per targeted delete.
 _TICKER_CHUNK = 50
@@ -273,18 +273,18 @@ def propagate_identity(
     `every_ticker` (`identity --only propagate --full`) checks every ticker whatever its stamp; the tapes then re-stamp every company.
     """
     resolver = identity or load_identity(context)
-    run_date = pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize()
+    start_date = run_date(as_of)
     scopes = {ticker: resolver.filing_scope(ticker) for ticker in tickers}
-    changed = _changed({ticker: scope.scope_changed_at for ticker, scope in scopes.items()}, run_date, every=every_ticker)
+    changed = _changed({ticker: scope.scope_changed_at for ticker, scope in scopes.items()}, start_date, every=every_ticker)
     if changed:
         context.log.info("identity propagate: %d ticker lineage scope(s) to re-check: %s", len(changed), ", ".join(changed))
     records: list[dict] = []
     for spec in PURGE_TABLES:
         records += _purge(context, spec, changed, resolver, dry_run=dry_run)
-    reparsed = {} if dry_run else _reparse_bulk(context, changed, scopes, resolver, run_date)
+    reparsed = {} if dry_run else _reparse_bulk(context, changed, scopes, resolver, start_date)
     records += _refresh_insider(context, resolver, changed, dry_run=dry_run)
-    records += _refresh_fails(context, tickers, run_date, dry_run=dry_run, every=every_ticker)
-    records += _refresh_short_volume(context, resolver, tickers, run_date, dry_run=dry_run, every=every_ticker)
+    records += _refresh_fails(context, tickers, start_date, dry_run=dry_run, every=every_ticker)
+    records += _refresh_short_volume(context, resolver, tickers, start_date, dry_run=dry_run, every=every_ticker)
     removals = pd.DataFrame(records, columns=list(REMOVAL_COLUMNS))
     purged_facts = sorted(set(removals.loc[removals["table"] == Tables.fundamentals_facts.name, "ticker"]))
     if purged_facts and not dry_run:

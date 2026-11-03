@@ -268,8 +268,8 @@ def test_notnull_and_equality_compose_like_step_train_panel(store):
 
 
 def test_in_predicate_matches_fundamental_features_tag_pushdown(store):
-    """`fundamental_features.load_tagged_facts` -- `WHERE tag IN :tags` via
-    `bindparam(expanding=True)` (fundamental_features.py:417)."""
+    """`fundamental_features.load_notes_num_scoped` -- `WHERE tag IN :tags` via
+    `bindparam(expanding=True)`."""
     _requires(store, "load")
     tags = ["DefinedBenefitPlanBenefitObligation", "DefinedBenefitPlanFairValueOfPlanAssets"]
     cols = ["adsh", "tag", "ddate", "qtrs", "value"]

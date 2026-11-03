@@ -32,7 +32,6 @@ from src.data_aggregate.utils.fundamentals.fundamental_features import (
     _self_history_z,
     build_fundamental_feature_panel,
     load_notes_num_scoped,
-    load_tagged_facts,
 )
 
 
@@ -1064,7 +1063,7 @@ class _Ctx:
         self.log = logging.getLogger("test")
 
 
-def test_load_tagged_facts_reads_only_needed_tags(sqlite_store):
+def test_load_notes_num_scoped_reads_only_needed_tags(sqlite_store):
     """`load_notes_num_scoped` returns ONLY the 4 pension tags the panel reads (PBO, plan assets and
     the 2 net-liability tags) — the other footnote tags are never materialised. Runs on
     a REAL DataStore (SQLite), so it exercises the server-side `tag IN (...)` pushdown itself."""
@@ -1081,16 +1080,15 @@ def test_load_tagged_facts_reads_only_needed_tags(sqlite_store):
         }
         for i, tag in enumerate((_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, *_NET_PENSION_TAGS, "SomeOtherFootnoteTag", "AnotherUnusedTag"))
     ]
-    sqlite_store.save("notes_num", pd.DataFrame(rows))
     ctx = _Ctx(sqlite_store)
+    assert load_notes_num_scoped(ctx) is None  # cold DB: table absent -> None, not a raise
+    sqlite_store.save("notes_num", pd.DataFrame(rows))
     out = load_notes_num_scoped(ctx)
     assert set(out["tag"]) == {_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, *_NET_PENSION_TAGS}, "non-pension footnote tags leaked in"
     assert len(out) == 4, f"expected only the 4 pension tags, got {len(out)}"
     assert list(out.columns) == ["ticker", "tag", "ddate", "qtrs", "value", "filed", "available_at", "adsh"]
-    # no matching tag -> None (builder then treats pension as unavailable)
-    assert load_tagged_facts(ctx, "notes_num", ("NoSuchTag",)) is None
-    # table absent entirely (cold DB) -> None, not a raise
-    assert load_tagged_facts(ctx, "no_such_table_xyz", (_FN_PBO_TAG,)) is None
+    # no matching row -> None (builder then treats pension as unavailable)
+    assert load_notes_num_scoped(ctx, tickers=("NOSUCH",)) is None
     print("\n=== SANITY CHECK: scoped facts read ===")
     print(
         f"  notes_num -> only {_FN_PBO_TAG}, {_FN_PLAN_ASSETS_TAG} and the 2 net-liability tags loaded "

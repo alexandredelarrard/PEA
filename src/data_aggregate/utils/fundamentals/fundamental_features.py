@@ -444,48 +444,22 @@ def _notes_num_daily(notes_num: pd.DataFrame | None, tag: str, idx: pd.DatetimeI
     )
 
 
-def load_tagged_facts(
-    context: Context,
-    table: str,
-    tags: tuple[str, ...],
-    columns: list[str] | None = None,
-    *,
-    tickers: tuple[str, ...] | None = None,
-    since: pd.Timestamp | None = None,
-) -> pd.DataFrame | None:
-    """Read ONLY the rows whose `tag` the pension builders use, with the tag filter pushed down
-    server-side, so the whole facts table is never pulled and filtered in memory. None if the
-    table is absent/empty or no row matches."""
-    where: dict[str, object] = {"tag": list(tags)}
-    if tickers:
-        where["ticker"] = list(tickers)
-    df = context.store.load(
-        table,
-        columns=columns or _FACT_COLS,
-        where=where,
-        since=since,
-        optional=True,
-    )
-    return df.reset_index(drop=True) if df is not None else None
-
-
 def load_notes_num_scoped(
     context: Context,
     *,
     tickers: tuple[str, ...] | None = None,
     since: pd.Timestamp | None = None,
 ) -> pd.DataFrame | None:
-    """`notes_num` restricted to the 4 tags the pension features read: PBO, plan assets and
-    the two recognized net-liability tags, in one read."""
+    """`notes_num` restricted to the 4 tags the pension features read (PBO, plan assets and
+    the two recognized net-liability tags), the tag filter pushed down server-side in one
+    read. None if the table is absent/empty, lacks `available_at`, or no row matches."""
     if "available_at" not in context.store.columns(_NOTES_NUM_TABLE):
         return None
-    return load_tagged_facts(
-        context,
-        _NOTES_NUM_TABLE,
-        (_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, *_NET_PENSION_TAGS),
-        tickers=tickers,
-        since=since,
-    )
+    where: dict[str, object] = {"tag": [_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, *_NET_PENSION_TAGS]}
+    if tickers:
+        where["ticker"] = list(tickers)
+    df = context.store.load(_NOTES_NUM_TABLE, columns=_FACT_COLS, where=where, since=since, optional=True)
+    return df.reset_index(drop=True) if df is not None else None
 
 
 def _forensic_fields(daily, idx: pd.DatetimeIndex, prior=None) -> dict:

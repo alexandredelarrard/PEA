@@ -413,7 +413,7 @@ def _net_pension_daily(notes_num: pd.DataFrame | None, idx: pd.DatetimeIndex) ->
 def _notes_num_daily(notes_num: pd.DataFrame | None, tag: str, idx: pd.DatetimeIndex, instant: bool = True) -> pd.DataFrame:
     """One tag from the NOTES sets (`notes_num`) -> daily wide frame, point-in-time on
     the later of filing and archive availability, latest period-end (`ddate`) per
-    filing; the accession breaks a tie between filings.
+    filing; the later filing date, then the accession, breaks a tie between filings.
     `instant` keeps the balance-type facts (qtrs==0, e.g. PBO / plan assets); else
     the duration facts (qtrs>0, e.g. service cost). Empty frame if unavailable."""
     if notes_num is None or notes_num.empty or not {"tag", "ticker", "filed", "available_at", "adsh"} <= set(notes_num.columns):
@@ -434,7 +434,8 @@ def _notes_num_daily(notes_num: pd.DataFrame | None, tag: str, idx: pd.DatetimeI
     d = d.dropna(subset=["as_of", "value", "ticker"])
     if d.empty:
         return pd.DataFrame(index=idx)
-    d = d.sort_values(["ticker", "as_of", "ddate", "adsh"]).rename(columns={"value": tag})
+    d["filed"] = filed
+    d = d.sort_values(["ticker", "as_of", "ddate", "filed", "adsh"]).rename(columns={"value": tag})
     return fundamentals_to_daily(
         d,
         tag,

@@ -219,3 +219,27 @@ def test_insider_buy_value_is_scaled_by_market_cap():
         f"BEAR bought nothing -> {got['BEAR']:.0f}, a zero rather than a NaN because the "
         f"window is populated and the answer is 'no buying'. Validated."
     )
+
+
+def test_net_pension_daily_same_zip_tie_follows_filing_order_not_accession():
+    day = pd.Timestamp("2020-03-12")
+    pf = pd.DataFrame(
+        {
+            "adsh": ["0001193125-20-000100", "0000004281-20-000050"],  # 10-K, then the later 10-K/A (lower accession text)
+            "ticker": ["XYZ", "XYZ"],
+            "tag": [PRIMARY, PRIMARY],
+            "ddate": ["2019-12-31", "2019-12-31"],
+            "qtrs": [0, 0],
+            "value": [100.0, 250.0],
+            "filed": ["2020-02-25", "2020-02-28"],
+            "available_at": [day, day],  # same archive clock for both filings
+        }
+    )
+
+    out = _net_pension_daily(pf, pd.DatetimeIndex([day]))
+    flipped = _net_pension_daily(pf.iloc[::-1], pd.DatetimeIndex([day]))
+
+    assert float(out.loc[day, "XYZ"]) == 250.0
+    assert float(flipped.loc[day, "XYZ"]) == 250.0
+    print("\n=== SANITY: same-archive 10-K vs later 10-K/A ===")
+    print("  The later-filed amendment (250) wins in both row orders, whatever the accession text order. Validated.")

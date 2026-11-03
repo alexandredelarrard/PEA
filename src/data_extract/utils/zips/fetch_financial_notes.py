@@ -4,7 +4,7 @@ Each period zip (`.tsv` members: sub, num, txt) is cached locally and parsed for
 curated tags on consolidated facts (`dimn == 0`, no `coreg`); text is stored raw, no NLP. A filing belongs to the
 ticker whose lineage window of its filer CIK holds the filing date (consolidating). Rows carry their archive
 `period` and point-in-time `available_at` clock. A period counts as done only when both tables hold it; the work
-list comes from `resume.archive_worklist`. Zips are large, so the window is the dedicated `notes_years_history` knob.
+list comes from `resume.archive_worklist`. Zips are large, so the window is `years_history + 1` years (`StepExtractZips`).
 `download_notes_periods` caches the zips whose cover-page `dei:TradingSymbol` facts the identity step has not
 captured yet (`utils/identity/capture_dei.py`); the notes parse reads its zips itself.
 """
@@ -63,6 +63,8 @@ _NOTES_NUM_TAGS = frozenset(
         "DefinedBenefitPlanExpectedFutureBenefitPaymentsNextTwelveMonths",  # near-term cash outflow
         "DefinedBenefitPlanAssumptionsUsedCalculatingNetPeriodicBenefitCostDiscountRate",
         "DefinedBenefitPlanWeightedAverageAssumptionsUsedCalculatingBenefitObligationDiscountRate",
+        "PensionAndOtherPostretirementDefinedBenefitPlansLiabilitiesNoncurrent",  # recognized net liability (balance sheet)
+        "DefinedBenefitPensionPlanLiabilitiesNoncurrent",  # recognized net liability, pension-only variant
     }
 )
 

@@ -549,3 +549,28 @@ def test_fetch_stamps_new_zip_with_successful_download_date(tmp_path: Path, monk
     assert saved[0]["available_at"].iloc[0] == date(2026, 10, 15)
     print("\n=== SANITY CHECK: newly downloaded notes ZIP ===")
     print("  the completed download day in New York wins over the ZIP cache's older file timestamp. Validated.")
+
+
+def test_net_pension_liability_tags_kept_only_undimensioned_and_without_coreg() -> None:
+    liability_tags = [
+        "PensionAndOtherPostretirementDefinedBenefitPlansLiabilitiesNoncurrent",
+        "DefinedBenefitPensionPlanLiabilitiesNoncurrent",
+    ]
+    cols = ["adsh", "tag", "dimn", "coreg"]
+    rows = [
+        ("A", liability_tags[0], 0, ""),  # keep
+        ("A", liability_tags[1], 0, ""),  # keep
+        ("A", liability_tags[0], 1, ""),  # drop: dimension
+        ("A", liability_tags[1], 2, ""),  # drop: dimension
+        ("A", liability_tags[0], 0, "SUBSID"),  # drop: co-registrant
+        ("A", liability_tags[1], 0, "SUBSID"),  # drop: co-registrant
+        ("B", liability_tags[0], 0, ""),  # drop: non-universe filing
+    ]
+    chunk = pd.DataFrame(rows, columns=cols)
+    kept = fn._consolidated_rows(chunk, {"A"}, fn._NOTES_NUM_TAGS)
+    assert kept.tolist() == [True, True, False, False, False, False, False]
+    assert set(chunk.loc[kept, "tag"]) == set(liability_tags)
+
+    print("\n=== SANITY: net pension liability tags ===")
+    print(f"  kept rows = {int(kept.sum())} of {len(chunk)} (dimn==0, no coreg, universe filing only)")
+    print("  -> both recognized net-liability tags are curated; dimension/coreg/non-universe rows are dropped.")

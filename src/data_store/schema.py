@@ -623,7 +623,7 @@ class Tables:
     )
     # SEC Financial Statement AND NOTES Data Sets -- footnote NUMERIC facts (consolidated /
     # undimensioned, curated tag set: PBO, plan assets, funded status, service cost,
-    # employer contributions, discount rate). Grain = one fact per filing (`adsh`) / tag /
+    # employer contributions, discount rate, recognized net pension liability). Grain = one fact per filing (`adsh`) / tag /
     # period-end (`ddate`) / duration (`qtrs`).
     notes_num = Table(
         "notes_num",

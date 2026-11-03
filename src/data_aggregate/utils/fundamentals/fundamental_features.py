@@ -401,8 +401,8 @@ def _net_pension_daily(notes_num: pd.DataFrame | None, idx: pd.DatetimeIndex) ->
     """Recognized net DB-pension liability from the two `notes_num` balance-sheet tags,
     point-in-time. The primary tag is preferred; the pension-only variant fills gaps.
     Empty frame if `notes_num` is unavailable."""
-    primary = _notes_num_daily(notes_num, _NET_PENSION_TAGS[0], idx, instant=True)
-    variant = _notes_num_daily(notes_num, _NET_PENSION_TAGS[1], idx, instant=True)
+    primary = _notes_num_daily(notes_num, _NET_PENSION_TAGS[0], idx)
+    variant = _notes_num_daily(notes_num, _NET_PENSION_TAGS[1], idx)
     if primary.empty:
         return variant
     if variant.empty:
@@ -410,12 +410,11 @@ def _net_pension_daily(notes_num: pd.DataFrame | None, idx: pd.DatetimeIndex) ->
     return primary.combine_first(variant)
 
 
-def _notes_num_daily(notes_num: pd.DataFrame | None, tag: str, idx: pd.DatetimeIndex, instant: bool = True) -> pd.DataFrame:
+def _notes_num_daily(notes_num: pd.DataFrame | None, tag: str, idx: pd.DatetimeIndex) -> pd.DataFrame:
     """One tag from the NOTES sets (`notes_num`) -> daily wide frame, point-in-time on
     the later of filing and archive availability, latest period-end (`ddate`) per
     filing; the later filing date, then the accession, breaks a tie between filings.
-    `instant` keeps the balance-type facts (qtrs==0, e.g. PBO / plan assets); else
-    the duration facts (qtrs>0, e.g. service cost). Empty frame if unavailable."""
+    Keeps the balance-type facts only (qtrs==0, e.g. PBO / plan assets). Empty frame if unavailable."""
     if notes_num is None or notes_num.empty or not {"tag", "ticker", "filed", "available_at", "adsh"} <= set(notes_num.columns):
         return pd.DataFrame(index=idx)
     d = notes_num[notes_num["tag"] == tag].copy()
@@ -430,7 +429,7 @@ def _notes_num_daily(notes_num: pd.DataFrame | None, tag: str, idx: pd.DatetimeI
     d["as_of"] = filed.where(filed >= available, available)
     d["value"] = pd.to_numeric(d.get("value"), errors="coerce")
     q = pd.to_numeric(d.get("qtrs"), errors="coerce").fillna(0)
-    d = d[(q == 0) if instant else (q > 0)]
+    d = d[q == 0]
     d = d.dropna(subset=["as_of", "value", "ticker"])
     if d.empty:
         return pd.DataFrame(index=idx)
@@ -678,8 +677,8 @@ def _pension_pool(notes_num: pd.DataFrame | None, idx: pd.DatetimeIndex) -> tupl
     across two `notes_num` sources in order of directness:
       1) the recognized net liability (the two balance-sheet tags),
       2) the footnote funded status = PBO - plan assets."""
-    pbo = _notes_num_daily(notes_num, _FN_PBO_TAG, idx, instant=True)
-    plan_assets = _notes_num_daily(notes_num, _FN_PLAN_ASSETS_TAG, idx, instant=True)
+    pbo = _notes_num_daily(notes_num, _FN_PBO_TAG, idx)
+    plan_assets = _notes_num_daily(notes_num, _FN_PLAN_ASSETS_TAG, idx)
     fn_deficit = pd.DataFrame()
     if not pbo.empty and not plan_assets.empty:
         # funded status = plan assets - PBO; the deficit (underfunding) is the debt-like part.
@@ -698,7 +697,7 @@ def _pension_health_fields(daily, pbo: pd.DataFrame, notes_num: pd.DataFrame | N
     The NOTES footnote (PBO / plan assets) yields a standalone funded ratio that covers
     names the balance-sheet tag misses."""
     F: dict[str, pd.DataFrame] = {}
-    plan_assets = _notes_num_daily(notes_num, _FN_PLAN_ASSETS_TAG, idx, instant=True)
+    plan_assets = _notes_num_daily(notes_num, _FN_PLAN_ASSETS_TAG, idx)
     if not pbo.empty and not plan_assets.empty:
         funded_ratio = ratio(plan_assets, pbo, positive_den=True)  # 1.0 = fully funded
         if funded_ratio.notna().any().any():

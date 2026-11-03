@@ -18,6 +18,35 @@ CREATE TABLE IF NOT EXISTS "sp500_tickers" (
     PRIMARY KEY ("ticker")
 );
 
+-- [reference] tickers_universe  (pk: ticker)
+-- The traded universe, one row per `configs/universe.yml` ticker. Written only by
+-- `src/utils/tickers_universe/sync.py`, read only through `context.universe`.
+
+CREATE TABLE IF NOT EXISTS "tickers_universe" (
+    "ticker" TEXT NOT NULL,
+    "name" TEXT,
+    "cik" TEXT NOT NULL,
+    "sector" TEXT,
+    "industry_group" TEXT,
+    "sub_industry" TEXT,
+    "universe_added_on" DATE NOT NULL,
+    "permaticker" BIGINT,
+    "sharadar_name" TEXT,
+    "exchange" TEXT,
+    "category" TEXT,
+    "sharadar_sector" TEXT,
+    "sharadar_industry" TEXT,
+    "sicsector" TEXT,
+    "sicindustry" TEXT,
+    "famaindustry" TEXT,
+    "scalemarketcap" TEXT,
+    "scalerevenue" TEXT,
+    "location" TEXT,
+    "isdelisted" TEXT,
+    "cusips" TEXT,
+    PRIMARY KEY ("ticker")
+);
+
 -- [reference] superinvestor_roster  (pk: snapshot_date, dataroma_code)
 -- Dataroma's curated elite-manager roster, ONE ROW PER (snapshot, manager), so membership is
 -- a fact over time: `roster_as_of(q)` reads the most recent snapshot at or before q. Seeded

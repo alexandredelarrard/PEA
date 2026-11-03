@@ -143,6 +143,9 @@ class Tables:
     # Reference / dimension                                             #
     # ----------------------------------------------------------------- #
     sp500_tickers = Table("sp500_tickers", ("ticker",), KIND_REFERENCE, date_type_cols=("added_on",))
+    # The traded universe, one row per `configs/universe.yml` ticker. Written only by
+    # `src/utils/tickers_universe/sync.py`, read only through `context.universe`.
+    tickers_universe = Table("tickers_universe", ("ticker",), KIND_REFERENCE, date_type_cols=("universe_added_on",))
 
     superinvestor_roster = Table(
         "superinvestor_roster",

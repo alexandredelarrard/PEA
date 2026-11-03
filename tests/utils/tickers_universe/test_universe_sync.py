@@ -100,7 +100,10 @@ def test_second_sync_writes_nothing_and_keeps_the_table(store, config) -> None:
 
 def test_a_sharadar_change_rewrites_only_that_row_and_never_the_carried_columns(store, config, monkeypatch) -> None:
     sync(store, config, AS_OF)
-    store.save(Tables.sharadar_tickers, pd.DataFrame({"table": ["fundamentals"], "permaticker": [199059], "ticker": ["AAPL"], "category": ["X"], "name": ["NEW"]}))
+    store.save(
+        Tables.sharadar_tickers,
+        pd.DataFrame({"table": ["fundamentals"], "permaticker": [199059], "ticker": ["AAPL"], "category": ["X"], "name": ["NEW"]}),
+    )
     written = sync(store, config, AS_OF)
     row = Universe(store, config).frame.set_index("ticker").loc["AAPL"]
 

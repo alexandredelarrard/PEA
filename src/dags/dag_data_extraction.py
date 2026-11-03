@@ -15,7 +15,7 @@ capped by Airflow POOLS (created in airflow-init):
                           superinvestors, earnings calls  (+ the one heavy yfinance pull:
                           price_history)
 
-Flow: seed_universe -> (fetchers, with source dependencies) -> extraction_status -> identity_check -> trigger
+Flow: sharadar_tickers -> universe -> (fetchers, with source dependencies) -> extraction_status -> identity_check -> trigger
 the data_aggregation DAG. Every task has `retries: 3`, so four attempts in all. No source blocks
 the night: `extraction_status` and `identity_check` run on ALL_DONE, so they start once every fetcher
 has finished, failed or not. The aggregation trigger runs only when `identity_check` succeeds (the
@@ -86,8 +86,10 @@ def fetch(
     )
 
 
-# 0) universe seed — everything downstream resolves the universe from sp500_tickers
-seed_universe = fetch("seed-universe")
+# 0) universe — Sharadar's ticker dimension first (market-wide), then `tickers_universe` is synced
+#    from configs/universe.yml; every fetcher reads it, so a failed sync stops the night
+sharadar_tickers = fetch("sharadar-tickers")
+universe_sync = fetch("universe")
 
 # 1) LIGHT / fast — fan out in the default pool
 macro = fetch("macro")
@@ -202,7 +204,7 @@ identity_consumers = [
 ]
 edgar_walks = [insider_edgar, sec_13d, sec_13g, sec_8k_items, filing_text, def14a_edgar]
 
-seed_universe >> all_fetchers
+sharadar_tickers >> universe_sync >> all_fetchers
 identity >> price_history  # the fetch list adds the security master's current secondary classes
 zips_download >> identity >> identity_consumers
 identity >> edgar_index >> edgar_walks  # the walks plan on tonight's index and skip their own refresh

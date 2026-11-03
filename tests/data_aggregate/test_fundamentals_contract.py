@@ -107,35 +107,32 @@ def test_every_direct_source_read_is_pushed_down_to_the_price_universe(monkeypat
 
 def test_sec_fact_reads_are_ticker_and_date_bounded():
     from src.data_aggregate.utils.fundamentals.fundamental_features import (
+        _FN_PBO_TAG,
+        _FN_PLAN_ASSETS_TAG,
+        _NET_PENSION_TAGS,
         load_notes_num_scoped,
-        load_pension_facts_scoped,
     )
 
     store = _SourceStore()
     context = SimpleNamespace(store=store)
     source_since = pd.Timestamp("2020-09-04")
 
-    load_pension_facts_scoped(
-        context,
-        tickers=("AAA", "BBB"),
-        since=source_since,
-    )
     load_notes_num_scoped(
         context,
         tickers=("AAA", "BBB"),
         since=source_since,
     )
 
-    assert [table for table, _ in store.calls] == ["pension_facts", "notes_num"]
+    assert [table for table, _ in store.calls] == ["notes_num"]  # one read serves every pension leg
     for table, kwargs in store.calls:
         assert kwargs["where"]["ticker"] == ["AAA", "BBB"], (table, kwargs)
         assert kwargs["where"]["tag"], (table, kwargs)
         assert kwargs["since"] == source_since, (table, kwargs)
     assert "available_at" in store.calls[0][1]["columns"]
-    assert "quarter" in store.calls[0][1]["columns"]
-    assert "available_at" in store.calls[1][1]["columns"]
+    assert "adsh" in store.calls[0][1]["columns"]
+    assert set(store.calls[0][1]["where"]["tag"]) == {_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, *_NET_PENSION_TAGS}
     print("\n=== SANITY CHECK: SEC fact source bounds ===")
-    print("  both pension/notes reads push ticker universe, tag projection, and six-year date bound into the store. Validated.")
+    print("  the single notes_num read pushes ticker universe, tag projection, and six-year date bound into the store. Validated.")
 
 
 def test_final_fundamentals_panel_is_contained_by_the_price_skeleton():

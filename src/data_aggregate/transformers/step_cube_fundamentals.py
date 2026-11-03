@@ -57,7 +57,6 @@ from src.data_aggregate.utils.fundamentals.feature_views import FEATURE_COLUMNS,
 from src.data_aggregate.utils.fundamentals.fundamental_features import (
     build_fundamental_feature_panel,
     load_notes_num_scoped,
-    load_pension_facts_scoped,
 )
 from src.data_aggregate.utils.fundamentals.sector_features import build_sector_feature_panel
 from src.data_store.schema import Table as SchemaTable
@@ -324,8 +323,8 @@ class StepCubeFundamentals(Step):
         if fundamentals is None:
             return None
         hist = self._cfg.get("hist", {})
-        # tag-scoped reads: only the two pension tags of each table, never the whole
-        # multi-million-row facts tables
+        # tag-scoped read: only the 4 pension tags of notes_num, never the whole
+        # multi-million-row facts table
         return build_fundamental_feature_panel(
             fundamentals_history=fundamentals,
             peer_dict=frames.peers,
@@ -336,11 +335,6 @@ class StepCubeFundamentals(Step):
             hist_window=int(hist.get("window", 1260)),
             hist_min_periods=int(hist.get("min_periods", 252)),
             earnings_history=earnings,
-            pension_facts=load_pension_facts_scoped(
-                self._context,
-                tickers=frames.universe,
-                since=source_since,
-            ),
             notes_num=load_notes_num_scoped(
                 self._context,
                 tickers=frames.universe,

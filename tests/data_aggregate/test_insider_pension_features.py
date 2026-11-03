@@ -1,5 +1,5 @@
 """Tests for the two SEC-bulk cube wirings:
-* pension_facts -> point-in-time net pension deficit (fundamental_features)
+* notes_num net-liability tags -> point-in-time net pension deficit (fundamental_features)
 * insider_transactions -> trailing-window insider-buying signal (insider_features)
 """
 
@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.fundamentals.fundamental_features import _NET_PENSION_TAGS, _pension_deficit_daily
+from src.data_aggregate.utils.fundamentals.fundamental_features import _NET_PENSION_TAGS, _net_pension_daily
 from src.data_aggregate.utils.institutionals.insider_features import InsiderCoverage
 from tests.conftest import make_frames
 from tests.data_aggregate.insider_pit_reference import build_prepared_insider_panel as build_insider_feature_panel
@@ -19,10 +19,11 @@ from tests.data_aggregate.insider_pit_reference import build_prepared_insider_pa
 PRIMARY, VARIANT = _NET_PENSION_TAGS
 
 
-def test_pension_deficit_daily_pit_latest_period_and_primary_preference():
+def test_net_pension_daily_pit_latest_period_and_primary_preference():
     idx = pd.bdate_range("2024-01-01", "2024-12-31")
     pf = pd.DataFrame(
         {
+            "adsh": ["a-vz-1", "a-vz-1", "a-ge-1", "a-ge-1", "a-ms-1"],
             "ticker": ["VZ", "VZ", "GE", "GE", "MSFT"],
             "tag": [PRIMARY, PRIMARY, PRIMARY, VARIANT, VARIANT],
             "ddate": ["2023-12-31", "2022-12-31", "2023-12-31", "2023-12-31", "2023-12-31"],
@@ -32,7 +33,7 @@ def test_pension_deficit_daily_pit_latest_period_and_primary_preference():
             "available_at": ["2024-04-12", "2024-04-12", "2024-04-12", "2024-04-12", "2024-07-12"],
         }
     )
-    out = _pension_deficit_daily(pf, idx)
+    out = _net_pension_daily(pf, idx)
     # point-in-time: the earlier filing cannot reveal the later bulk ZIP
     assert np.isnan(float(cast(Any, out.loc[pd.Timestamp("2024-04-11"), "VZ"])))
     # after archive availability: latest period-end, not the prior-year comparative
@@ -43,7 +44,7 @@ def test_pension_deficit_daily_pit_latest_period_and_primary_preference():
     assert np.isnan(float(cast(Any, out.loc[pd.Timestamp("2024-06-03"), "MSFT"])))
     assert abs(float(cast(Any, out.loc[pd.Timestamp("2024-08-15"), "MSFT"])) - 5e8) < 1
 
-    print("\n=== SANITY: pension_facts -> PIT net deficit ===")
+    print("\n=== SANITY: notes_num -> PIT net deficit ===")
     print(
         f"  VZ 2024-04-15 = ${out.loc[pd.Timestamp('2024-04-15'), 'VZ']:,.0f} "
         f"(latest FY, PIT after ZIP availability); GE primary tag preferred; "
@@ -51,10 +52,11 @@ def test_pension_deficit_daily_pit_latest_period_and_primary_preference():
     )
 
 
-def test_pension_deficit_daily_preserves_zip_vintages_and_requires_availability():
+def test_net_pension_daily_preserves_filing_vintages_and_requires_availability():
     idx = pd.DatetimeIndex(["2026-04-10", "2026-04-13", "2026-07-10", "2026-07-13"])
     pf = pd.DataFrame(
         {
+            "adsh": ["a-bdx-1", "a-bdx-2", "a-bad-1"],
             "ticker": ["BDX", "BDX", "BAD"],
             "tag": [PRIMARY, PRIMARY, PRIMARY],
             "ddate": ["2025-09-30"] * 3,
@@ -64,44 +66,47 @@ def test_pension_deficit_daily_preserves_zip_vintages_and_requires_availability(
             "available_at": ["2026-04-13", "2026-07-13", None],
         }
     )
-    out = _pension_deficit_daily(pf, idx)
+    out = _net_pension_daily(pf, idx)
     assert np.isnan(float(out.loc[pd.Timestamp("2026-04-10"), "BDX"]))
     assert float(out.loc[pd.Timestamp("2026-04-13"), "BDX"]) == 1.069e9
     assert float(out.loc[pd.Timestamp("2026-07-10"), "BDX"]) == 1.069e9
     assert float(out.loc[pd.Timestamp("2026-07-13"), "BDX"]) == 1.027e9
     assert "BAD" not in out or out["BAD"].isna().all()
-    assert _pension_deficit_daily(pf.drop(columns="available_at"), idx).empty
-    print("\n=== SANITY: pension ZIP vintages stay point-in-time ===")
+    assert _net_pension_daily(pf.drop(columns="available_at"), idx).empty
+    print("\n=== SANITY: pension filing vintages stay point-in-time ===")
     print("  BDX Q1 vintage starts Apr 13; Q2 revision replaces it Jul 13; missing archive clocks cannot leak. Validated.")
 
 
-def test_pension_deficit_daily_uses_latest_zip_when_downloaded_same_day():
+def test_net_pension_daily_breaks_a_same_day_tie_on_accession():
     day = pd.Timestamp("2027-01-15")
     pf = pd.DataFrame(
         {
+            "adsh": ["0001-26-000002", "0001-26-000001"],
             "ticker": ["BDX", "BDX"],
             "tag": [PRIMARY, PRIMARY],
             "ddate": ["2025-09-30", "2025-09-30"],
             "qtrs": [0, 0],
-            "value": [200.0, 100.0],  # deliberately put the newer ZIP first
+            "value": [200.0, 100.0],  # deliberately put the later accession first
             "filed": ["2026-05-07", "2026-05-07"],
             "available_at": [day, day],
-            "quarter": ["2026q4", "2026q3"],
         }
     )
 
-    out = _pension_deficit_daily(pf, pd.DatetimeIndex([day]))
+    out = _net_pension_daily(pf, pd.DatetimeIndex([day]))
+    flipped = _net_pension_daily(pf.iloc[::-1], pd.DatetimeIndex([day]))
 
     assert float(out.loc[day, "BDX"]) == 200.0
-    print("\n=== SANITY: same-day pension ZIP catch-up ===")
-    print("  The newer Q4 revision wins even when both ZIPs were first downloaded on one day. Validated.")
+    assert float(flipped.loc[day, "BDX"]) == 200.0
+    print("\n=== SANITY: same-day tie between two filings ===")
+    print("  The later accession wins whatever the row order, so the series is deterministic. Validated.")
 
 
-def test_pension_deficit_daily_expires_after_460_days():
+def test_net_pension_daily_expires_after_460_days():
     start = pd.Timestamp("2025-01-13")
     idx = pd.DatetimeIndex([start + pd.Timedelta(days=460), start + pd.Timedelta(days=461)])
     pf = pd.DataFrame(
         {
+            "adsh": ["a-x-1"],
             "ticker": ["X"],
             "tag": [PRIMARY],
             "ddate": ["2024-12-31"],
@@ -111,7 +116,7 @@ def test_pension_deficit_daily_expires_after_460_days():
             "available_at": [start],
         }
     )
-    out = _pension_deficit_daily(pf, idx)
+    out = _net_pension_daily(pf, idx)
     assert float(out.loc[idx[0], "X"]) == 42.0
     assert np.isnan(float(out.loc[idx[1], "X"]))
     print("\n=== SANITY: pension availability age bound ===")

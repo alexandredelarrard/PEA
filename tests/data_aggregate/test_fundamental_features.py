@@ -26,12 +26,12 @@ from src.data_aggregate.utils.fundamentals.feature_views import build_fundamenta
 from src.data_aggregate.utils.fundamentals.fundamental_features import (
     _FN_PBO_TAG,
     _FN_PLAN_ASSETS_TAG,
+    _NET_PENSION_TAGS,
     _derived_fields,
     _pegy_fields,
     _self_history_z,
     build_fundamental_feature_panel,
     load_notes_num_scoped,
-    load_pension_facts_scoped,
     load_tagged_facts,
 )
 
@@ -1065,8 +1065,8 @@ class _Ctx:
 
 
 def test_load_tagged_facts_reads_only_needed_tags(sqlite_store):
-    """`load_notes_num_scoped` returns ONLY the 2 footnote pension tags the panel reads — the other
-    8 footnote tags are never materialised (the notes_num waste this optimization targets). Runs on
+    """`load_notes_num_scoped` returns ONLY the 4 pension tags the panel reads (PBO, plan assets and
+    the 2 net-liability tags) — the other footnote tags are never materialised. Runs on
     a REAL DataStore (SQLite), so it exercises the server-side `tag IN (...)` pushdown itself."""
     rows = [
         {
@@ -1079,23 +1079,23 @@ def test_load_tagged_facts_reads_only_needed_tags(sqlite_store):
             "filed": "2025-02-14",
             "available_at": "2025-03-12",
         }
-        for i, tag in enumerate((_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, "SomeOtherFootnoteTag", "AnotherUnusedTag"))
+        for i, tag in enumerate((_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, *_NET_PENSION_TAGS, "SomeOtherFootnoteTag", "AnotherUnusedTag"))
     ]
     sqlite_store.save("notes_num", pd.DataFrame(rows))
     ctx = _Ctx(sqlite_store)
     out = load_notes_num_scoped(ctx)
-    assert set(out["tag"]) == {_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG}, "non-pension footnote tags leaked in"
-    assert len(out) == 2, f"expected only the 2 pension tags, got {len(out)}"
-    assert list(out.columns) == ["ticker", "tag", "ddate", "qtrs", "value", "filed", "available_at"]
+    assert set(out["tag"]) == {_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, *_NET_PENSION_TAGS}, "non-pension footnote tags leaked in"
+    assert len(out) == 4, f"expected only the 4 pension tags, got {len(out)}"
+    assert list(out.columns) == ["ticker", "tag", "ddate", "qtrs", "value", "filed", "available_at", "adsh"]
     # no matching tag -> None (builder then treats pension as unavailable)
     assert load_tagged_facts(ctx, "notes_num", ("NoSuchTag",)) is None
     # table absent entirely (cold DB) -> None, not a raise
-    assert load_pension_facts_scoped(ctx) is None
+    assert load_tagged_facts(ctx, "no_such_table_xyz", (_FN_PBO_TAG,)) is None
     print("\n=== SANITY CHECK: scoped facts read ===")
     print(
-        f"  notes_num (10 tags in prod) -> only {_FN_PBO_TAG} + {_FN_PLAN_ASSETS_TAG} loaded "
-        "(2/4 synthetic rows) via server-side tag IN; projected to the 7 columns the builders "
-        "read; no-match -> None; absent pension_facts -> None. Validated."
+        f"  notes_num -> only {_FN_PBO_TAG}, {_FN_PLAN_ASSETS_TAG} and the 2 net-liability tags loaded "
+        "(4/6 synthetic rows) via server-side tag IN; projected to the 8 columns the builders "
+        "read; no-match -> None; absent table -> None. Validated."
     )
 
 

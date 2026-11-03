@@ -43,7 +43,6 @@ from src.data_aggregate.utils.fundamentals.fundamental_features import (
     _FN_PLAN_ASSETS_TAG,
     _NET_PENSION_TAGS,
     _NOTES_NUM_TABLE,
-    _PENSION_FACTS_TABLE,
     _derived_fields,
 )
 from src.data_aggregate.utils.fundamentals.sector_features import (
@@ -83,7 +82,7 @@ def feature_frames() -> dict[str, pd.DataFrame]:
     Taken BEFORE the `_vs_peers` / `_xs` suffixes: a computational no-op is undiluted at
     this level, while the peer-z and the percentile rank both compress it.
 
-    ⚠ THE PENSION TABLES ARE PART OF PRODUCTION'S INPUT AND MUST BE PASSED. Without them
+    ⚠ `notes_num` IS PART OF PRODUCTION'S INPUT AND MUST BE PASSED. Without it
     `_pension_pool` returns empty and every pension feature silently disappears from the
     matrix — an unfaithful-fixture defect of the same shape as one Phase 4 fixed elsewhere,
     and missed here. Passing them raises the comparable-feature
@@ -117,8 +116,7 @@ def feature_frames() -> dict[str, pd.DataFrame]:
         idx=idx,
         close=close,
         yoy_periods=infer_yoy_periods(fh),
-        pension_facts=_facts(_PENSION_FACTS_TABLE, _NET_PENSION_TAGS),
-        notes_num=_facts(_NOTES_NUM_TABLE, (_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG)),
+        notes_num=_facts(_NOTES_NUM_TABLE, (_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, *_NET_PENSION_TAGS)),
     )
     kdf = compute_sector_kpis(fh)
     for name in SECTOR_KPI_COLS:

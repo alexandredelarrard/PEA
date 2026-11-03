@@ -919,8 +919,8 @@ def compute() -> dict:
         )
     )
     out["panel.price"] = frame_digest(build_feature_panel(close, px["open"], sector_ret, "rank", px["high"], px["low"], px["volume"], [30, 60, 90]))
-    # `pension_facts` / `notes_num` are deliberately NOT passed: they are separate bulk SEC
-    # tables, and freezing a slice of each would double the fixture for one feature family.
+    # `notes_num` is deliberately NOT passed: it is a separate bulk SEC table, and
+    # freezing a slice of it would double the fixture for one feature family.
     # The consequence is explicit -- the `pension_*` features are absent from this digest and
     # are guarded by `test_insider_pension_features.py` instead.
     fp = build_fundamental_feature_panel(fund, peers, idx, stock_close=close, earnings_history=earn)

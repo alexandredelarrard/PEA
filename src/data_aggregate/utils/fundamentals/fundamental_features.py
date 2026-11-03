@@ -131,10 +131,8 @@ from src.data_aggregate.utils.fundamentals.feature_views import build_fundamenta
 from src.data_aggregate.utils.fundamentals.history_features import reported_history_fields
 from src.data_aggregate.utils.fundamentals.intrinsic import intrinsic_value_daily
 
-_PENSION_FACTS_TABLE = "pension_facts"  # bulk Financial-Statement-Data-Sets pension facts (literal)
-_NOTES_NUM_TABLE = "notes_num"  # footnote NUMERIC facts (10 tags; the panel uses 2)
-_FACT_COLS = ["ticker", "tag", "ddate", "qtrs", "value", "filed", "available_at"]
-_PENSION_FACT_COLS = [*_FACT_COLS, "quarter"]  # only quarterly ZIPs have this tie-break
+_NOTES_NUM_TABLE = "notes_num"  # footnote NUMERIC facts (the panel reads 4 tags)
+_FACT_COLS = ["ticker", "tag", "ddate", "qtrs", "value", "filed", "available_at", "adsh"]
 
 
 #: Re-exported from `common/xs.py`, which now owns the self-history z (it gained a second
@@ -383,9 +381,9 @@ _NET_PENSION_TAGS = (
     "DefinedBenefitPensionPlanLiabilitiesNoncurrent",  # variant
 )
 
-# Footnote pension tags from the Financial Statement & NOTES sets (`notes_num`):
-# the projected benefit obligation and fair value of plan assets, both INSTANT
-# (balance-type) facts the primary statements never expose.
+# Footnote pension tags from the NOTES sets (`notes_num`): the projected benefit
+# obligation and fair value of plan assets, both INSTANT (balance-type) facts the
+# primary statements never expose.
 _FN_PBO_TAG = "DefinedBenefitPlanBenefitObligation"  # projected benefit obligation
 _FN_PLAN_ASSETS_TAG = "DefinedBenefitPlanFairValueOfPlanAssets"
 
@@ -399,58 +397,26 @@ def _scope_to_universe(facts: pd.DataFrame | None, universe: set[str]) -> pd.Dat
     return facts[facts["ticker"].astype(str).isin(universe)]
 
 
-def _pension_deficit_daily(pension_facts: pd.DataFrame | None, idx: pd.DatetimeIndex) -> pd.DataFrame:
-    """Universe-wide recognized net DB-pension deficit from the Financial Statement
-    Data Sets (`pension_facts` table), point-in-time on the later of filing and
-    ZIP availability, taking the latest period-end per vintage. Primary net-
-    liability tag preferred; the pension-only variant fills gaps. Empty frame
-    if the table is unavailable or its archive clock is missing."""
-    if pension_facts is None or pension_facts.empty or not {"tag", "ticker", "filed", "available_at"} <= set(pension_facts.columns):
-        return pd.DataFrame(index=idx)
-    pf = pension_facts.copy()
-    filed = pd.to_datetime(pf["filed"], errors="coerce")
-    available = pd.to_datetime(pf["available_at"], errors="coerce")
-    valid_clock = filed.notna() & available.notna()
-    pf = pf[valid_clock].copy()
-    filed = filed[valid_clock]
-    available = available[valid_clock]
-    pf["as_of"] = filed.where(filed >= available, available)
-    pf["value"] = pd.to_numeric(pf.get("value"), errors="coerce")
-    if "qtrs" in pf.columns:  # instant (balance-sheet) facts only
-        pf = pf[pd.to_numeric(pf["qtrs"], errors="coerce").fillna(0) == 0]
-    pf = pf.dropna(subset=["as_of", "value", "ticker"])
-
-    def _one(tag: str) -> pd.DataFrame:
-        d = pf[pf["tag"] == tag]
-        if d.empty:
-            return pd.DataFrame(index=idx)
-        # Latest period-end wins; if ZIPs share one download day, the newer ZIP wins ties.
-        order = ["ticker", "as_of", "ddate"]
-        if "quarter" in d.columns:
-            order.append("quarter")
-        d = d.sort_values(order).rename(columns={"value": "pension_deficit"})
-        return fundamentals_to_daily(
-            d,
-            "pension_deficit",
-            idx,
-            max_age_days=_ANNUAL_MAX_AGE_DAYS,
-        )
-
-    prim, var = _one(_NET_PENSION_TAGS[0]), _one(_NET_PENSION_TAGS[1])
-    if prim.empty:
-        return var
-    if var.empty:
-        return prim
-    return prim.combine_first(var)
+def _net_pension_daily(notes_num: pd.DataFrame | None, idx: pd.DatetimeIndex) -> pd.DataFrame:
+    """Recognized net DB-pension liability from the two `notes_num` balance-sheet tags,
+    point-in-time. The primary tag is preferred; the pension-only variant fills gaps.
+    Empty frame if `notes_num` is unavailable."""
+    primary = _notes_num_daily(notes_num, _NET_PENSION_TAGS[0], idx, instant=True)
+    variant = _notes_num_daily(notes_num, _NET_PENSION_TAGS[1], idx, instant=True)
+    if primary.empty:
+        return variant
+    if variant.empty:
+        return primary
+    return primary.combine_first(variant)
 
 
 def _notes_num_daily(notes_num: pd.DataFrame | None, tag: str, idx: pd.DatetimeIndex, instant: bool = True) -> pd.DataFrame:
-    """One footnote-numeric tag from the NOTES sets (`notes_num`) -> daily wide
-    frame, point-in-time on the later of filing and archive availability, latest
-    period-end (`ddate`) per filing.
+    """One tag from the NOTES sets (`notes_num`) -> daily wide frame, point-in-time on
+    the later of filing and archive availability, latest period-end (`ddate`) per
+    filing; the accession breaks a tie between filings.
     `instant` keeps the balance-type facts (qtrs==0, e.g. PBO / plan assets); else
     the duration facts (qtrs>0, e.g. service cost). Empty frame if unavailable."""
-    if notes_num is None or notes_num.empty or not {"tag", "ticker", "filed", "available_at"} <= set(notes_num.columns):
+    if notes_num is None or notes_num.empty or not {"tag", "ticker", "filed", "available_at", "adsh"} <= set(notes_num.columns):
         return pd.DataFrame(index=idx)
     d = notes_num[notes_num["tag"] == tag].copy()
     if d.empty:
@@ -468,7 +434,7 @@ def _notes_num_daily(notes_num: pd.DataFrame | None, tag: str, idx: pd.DatetimeI
     d = d.dropna(subset=["as_of", "value", "ticker"])
     if d.empty:
         return pd.DataFrame(index=idx)
-    d = d.sort_values(["ticker", "as_of", "ddate"]).rename(columns={"value": tag})
+    d = d.sort_values(["ticker", "as_of", "ddate", "adsh"]).rename(columns={"value": tag})
     return fundamentals_to_daily(
         d,
         tag,
@@ -486,10 +452,9 @@ def load_tagged_facts(
     tickers: tuple[str, ...] | None = None,
     since: pd.Timestamp | None = None,
 ) -> pd.DataFrame | None:
-    """Read ONLY the rows whose `tag` the pension/footnote builders actually use — they touch just 2
-    tags of each facts table (`notes_num` has 10 tags; only ~16% of its rows are these two). Pulling
-    the whole table then filtering in-memory is the same waste pattern as the 13F/embedding tables.
-    The tag filter is pushed down server-side. None if the table is absent/empty or no row matches."""
+    """Read ONLY the rows whose `tag` the pension builders use, with the tag filter pushed down
+    server-side, so the whole facts table is never pulled and filtered in memory. None if the
+    table is absent/empty or no row matches."""
     where: dict[str, object] = {"tag": list(tags)}
     if tickers:
         where["ticker"] = list(tickers)
@@ -503,36 +468,20 @@ def load_tagged_facts(
     return df.reset_index(drop=True) if df is not None else None
 
 
-def load_pension_facts_scoped(
-    context: Context,
-    *,
-    tickers: tuple[str, ...] | None = None,
-    since: pd.Timestamp | None = None,
-) -> pd.DataFrame | None:
-    """`pension_facts` restricted to the recognized net-liability tags the panel reads."""
-    return load_tagged_facts(
-        context,
-        _PENSION_FACTS_TABLE,
-        _NET_PENSION_TAGS,
-        columns=_PENSION_FACT_COLS,
-        tickers=tickers,
-        since=since,
-    )
-
-
 def load_notes_num_scoped(
     context: Context,
     *,
     tickers: tuple[str, ...] | None = None,
     since: pd.Timestamp | None = None,
 ) -> pd.DataFrame | None:
-    """`notes_num` restricted to the footnote PBO + plan-asset tags the panel reads."""
+    """`notes_num` restricted to the 4 tags the pension features read: PBO, plan assets and
+    the two recognized net-liability tags, in one read."""
     if "available_at" not in context.store.columns(_NOTES_NUM_TABLE):
         return None
     return load_tagged_facts(
         context,
         _NOTES_NUM_TABLE,
-        (_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG),
+        (_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, *_NET_PENSION_TAGS),
         tickers=tickers,
         since=since,
     )
@@ -543,7 +492,7 @@ def _forensic_fields(daily, idx: pd.DatetimeIndex, prior=None) -> dict:
     and their year-over-year drift (supplier-funded growth = rising DPO; channel
     stuffing = rising DSO), off-balance-sheet-INCLUSIVE net leverage (adds lease
     liabilities + pension deficit), and the Beneish M-score. All inputs already
-    extracted; `pension_deficit` is the bulk Financial-Statement-Data-Sets frame."""
+    extracted; `pension_deficit` is the recognized net pension liability."""
     F: dict[str, pd.DataFrame] = {}
     rev, cogs = daily("totalRevenue"), daily("costOfRevenue")
     ar, ap, inv = daily("accountsReceivable"), daily("accountsPayable"), daily("inventory")
@@ -744,27 +693,18 @@ def _per_share_and_profit_slice_fields(daily, fund_hist: pd.DataFrame, idx: pd.D
 # `revenue`, `mcap`, `ev` and `pension_ret` through ~110 signatures, which reads worse
 # than the original, not better.
 # --------------------------------------------------------------------------- #
-def _pension_pool(
-    notes_num: pd.DataFrame | None, pension_facts: pd.DataFrame | None, idx: pd.DatetimeIndex
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def _pension_pool(notes_num: pd.DataFrame | None, idx: pd.DatetimeIndex) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """The three SHARED pension frames: (pbo, footnote deficit, coalesced overhang).
 
     Not features -- these feed the EV calculation, the forensic block and the scale
     features below, which is why they are computed once here rather than per block.
 
     The overhang is gap-filled (`combine_first`, NOT a sum -> no OPEB double-count)
-    across TWO sources in order of directness:
-      1) bulk Financial-Statement-Data-Sets recognized net liability (`pension_facts`) --
-         6,244 rows over 125 tickers, median 17 years each,
-      2) footnote funded status = PBO - plan assets from the NOTES sets (`notes_num`) --
-         the widest single source at 4,209 plan-asset rows over 214 CIKs, but the PBO leg
-         covers only 122, which is what caps `pension_funded_ratio` at 98 tickers.
-
-    A third leg used to sit between them, reading a `pensionDeficit` column off
-    `fundamentals_history`. That column does not exist on the Sharadar-first schema and
-    never has, so the leg was dead code; it was removed rather than extracted, because
-    these two sources are the substrate limit. Measured ceiling: 199 of 489 tickers ever
-    receive a value, at 20.9% mean fill of their live span."""
+    across two `notes_num` sources in order of directness:
+      1) the recognized net liability (the two balance-sheet tags),
+      2) the footnote funded status = PBO - plan assets.
+    A third leg that read a `pensionDeficit` column off `fundamentals_history` was removed:
+    that column does not exist on the Sharadar-first schema."""
     pbo = _notes_num_daily(notes_num, _FN_PBO_TAG, idx, instant=True)
     plan_assets = _notes_num_daily(notes_num, _FN_PLAN_ASSETS_TAG, idx, instant=True)
     fn_deficit = pd.DataFrame()
@@ -772,7 +712,7 @@ def _pension_pool(
         # funded status = plan assets - PBO; the deficit (underfunding) is the debt-like part.
         fn_deficit = pbo.sub(plan_assets).clip(lower=0.0)
 
-    pension_ret = _pension_deficit_daily(pension_facts, idx)
+    pension_ret = _net_pension_daily(notes_num, idx)
     if not fn_deficit.empty:
         pension_ret = pension_ret.combine_first(fn_deficit) if not pension_ret.empty else fn_deficit
     if not pension_ret.empty:
@@ -1616,7 +1556,6 @@ def _derived_fields(
     yoy_periods: int = 1,
     intrinsic_cfg: dict | None = None,
     earnings_history: pd.DataFrame | None = None,
-    pension_facts: pd.DataFrame | None = None,
     notes_num: pd.DataFrame | None = None,
     level_factor: pd.DataFrame | None = None,
 ) -> dict:
@@ -1641,19 +1580,15 @@ def _derived_fields(
 
     # pension/OPEB overhang: three frames feeding the EV, forensic and scale blocks.
     #
-    # ⚠ SCOPED TO THE FUNDAMENTALS UNIVERSE FIRST. `pension_facts` and `notes_num` are bulk
-    # SEC tables keyed on their own filer set, and the helpers below pivot them WIDE: every
-    # ticker they carry becomes a column, and the first arithmetic against a fundamentals
-    # frame aligns on the UNION. Unscoped, that grafts filers with no balance sheet into the
-    # panel -- rows carrying a pension ratio and nothing else, since every other feature
-    # needs a fundamentals row to divide by. Measured against the live tables: 4 tickers in
-    # `pension_facts` and 7 in `notes_num` are absent from `fundamentals_history`, and on a
-    # 10-ticker slice the two tables alone widened the panel to 279.
+    # ⚠ SCOPED TO THE FUNDAMENTALS UNIVERSE FIRST. `notes_num` is a bulk SEC table keyed on its
+    # own filer set, and the helpers below pivot it WIDE: every ticker it carries becomes a
+    # column, and the first arithmetic against a fundamentals frame aligns on the UNION.
+    # Unscoped, that grafts filers with no balance sheet into the panel -- rows carrying a
+    # pension ratio and nothing else.
     universe = set(fund_hist["ticker"].astype(str)) if "ticker" in fund_hist.columns else set()
-    pension_facts = _scope_to_universe(pension_facts, universe)
     notes_num = _scope_to_universe(notes_num, universe)
 
-    pbo, fn_deficit, pension_ret = _pension_pool(notes_num, pension_facts, idx)
+    pbo, fn_deficit, pension_ret = _pension_pool(notes_num, idx)
     F.update(_pension_health_fields(daily, pbo, notes_num, idx, pension_ret))
 
     # Tickers whose `cash` is a CORE OPERATING ASSET, not spare cash: bank required
@@ -1754,7 +1689,6 @@ def build_fundamental_feature_panel(
     hist_window: int = _HIST_WINDOW,
     hist_min_periods: int = _HIST_MIN_PERIODS,
     earnings_history: pd.DataFrame | None = None,
-    pension_facts: pd.DataFrame | None = None,
     notes_num: pd.DataFrame | None = None,
     level_factor: pd.DataFrame | None = None,
     history_fields: dict[str, pd.DataFrame] | None = None,
@@ -1782,7 +1716,6 @@ def build_fundamental_feature_panel(
         yoy_periods=yoy_periods,
         intrinsic_cfg=intrinsic_cfg,
         earnings_history=earnings_history,
-        pension_facts=pension_facts,
         notes_num=notes_num,
         level_factor=level_factor,
     )

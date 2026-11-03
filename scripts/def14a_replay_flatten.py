@@ -39,7 +39,7 @@ if str(ROOT) not in sys.path:
 # Project imports intentionally follow the repository-root path bootstrap.
 # ruff: noqa: E402
 
-from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
+from src.data_extract.utils.structure.def14a.def14a_schema import Def14AExtract
 from src.data_extract.utils.structure.def14a.flatten import _CHILD_SPEC, _child_frames, _flatten
 
 DEFAULT_BASELINE = ROOT / "reports/planning/active-tasks/2026-09-01-def14a-extraction-fix/baseline"

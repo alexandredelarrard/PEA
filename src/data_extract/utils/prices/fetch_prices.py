@@ -1,8 +1,9 @@
 """
 fetch_prices.py  (src/data_extract/utils/prices/fetch_prices.py)
 ------------------------------------------------------------------
-Daily OHLCV, cash dividends and share splits per equity ticker from ONE yfinance `actions=True`
-download per window group, split into `prices`, `prices_dividends` and `prices_splits`.
+Daily OHLCV, cash dividends and share splits per equity ticker: `fetch_prices`, `fetch_dividends` and
+`fetch_price_actions` each fill one table (`prices`, `prices_dividends`, `prices_splits`) from yfinance
+`actions=True` pulls made through one shared `YahooSession`, which never requests the same ticker window twice.
 
 Windows are planned by `resume.series_windows` from the tables' own rows. `download_ohlcv` is the
 shared chunked entry point (the macro fetcher calls it on the total-return basis). Market/macro
@@ -22,12 +23,12 @@ from tqdm import tqdm
 
 from src.constants.constants import DATE_FORMAT, SECONDARY_CLASS
 from src.context import Context
-from src.data_extract.utils.common.resume import document_floor, series_windows, trading_calendar
+from src.data_extract.utils.common.resume import SeriesWork, document_floor, series_windows, trading_calendar
 from src.data_extract.utils.common.sessions import last_completed_session
 from src.data_extract.utils.prices.anchor_check import anchor_restated_keys
 from src.data_extract.utils.prices.fetch_dividends import _extract_dividends
 from src.data_extract.utils.prices.fetch_splits import _extract_splits
-from src.data_store.schema import Tables
+from src.data_store.schema import Table, Tables
 from src.utils.string import run_date, yahoo_symbol
 
 logger = logging.getLogger(__name__)
@@ -235,7 +236,7 @@ def download_ohlcv(
     stock splits]. Empty frame when every chunk failed; `actions` adds the action columns.
 
     `auto_adjust` is keyword-only and required because the callers need different bases:
-    `fetch_prices_and_actions` passes False (split-adjusted `Close`, the market-cap basis, plus
+    `fetch_prices` passes False (split-adjusted `Close`, the market-cap basis, plus
     `Adj Close`, total return); `fetch_macro._fetch_price_leg` passes True, because its `SPY` leg
     is stored as `equity_tr` and feeds the L/S benchmark, `beta_market` and every label's `fwd_market`."""
     frames: list[pd.DataFrame] = []
@@ -248,6 +249,38 @@ def download_ohlcv(
         return pd.DataFrame()
 
     return _normalize_prices(pd.concat(frames, ignore_index=True), auto_adjust)
+
+
+class YahooSession:
+    """The yfinance client of one run, shared by the three fetchers: a ticker window pulled once is kept."""
+
+    def __init__(self, chunk_size: int = 50, pause: float = 1.0) -> None:
+        self.chunk_size = chunk_size
+        self.pause = pause
+        self._responses: dict[tuple[str, pd.Timestamp, pd.Timestamp], pd.DataFrame] = {}
+
+    def pull(self, groups: list[tuple[pd.Timestamp, pd.Timestamp, list[str]]], label: str) -> pd.DataFrame:
+        """`actions=True` rows over each `(since, until, keys)` group; duplicate `(ticker, date)` rows keep the last."""
+        frames = []
+        for since, until, keys in groups:
+            todo = [key for key in keys if (key, since, until) not in self._responses]
+            if todo:
+                logger.info("Downloading prices and actions for %d ticker(s) over %s .. %s (%s)", len(todo), since.date(), until.date(), label)
+                df_new = download_ohlcv(
+                    todo, since, until, self.chunk_size, self.pause, desc=f"Downloading prices ({label})", auto_adjust=False, actions=True
+                )
+                by_key = {str(key): rows for key, rows in df_new.groupby("ticker")} if not df_new.empty else {}
+                for key in todo:
+                    self._responses[(key, since, until)] = by_key.get(key, df_new.iloc[0:0])
+            frames.extend(self._responses[(key, since, until)] for key in keys)
+        frames = [df for df in frames if not df.empty]
+        if not frames:
+            return pd.DataFrame()
+        return pd.concat(frames, ignore_index=True).drop_duplicates(subset=["ticker", "date"], keep="last").reset_index(drop=True)
+
+    def bars(self, keys: list[str], since: pd.Timestamp, until: pd.Timestamp) -> pd.DataFrame:
+        """Bars only (`actions=False`), for the anchor check; not kept."""
+        return download_ohlcv(keys, since, until, self.chunk_size, self.pause, desc="Downloading prices (anchor)", auto_adjust=False, actions=False)
 
 
 def secondary_class_symbols(context: Context, companies: list[str]) -> dict[str, str]:
@@ -327,93 +360,120 @@ def _warn_shorter_history(context: Context, rows: pd.DataFrame, keys: list[str])
             )
 
 
-def _download_groups(groups: list[tuple[pd.Timestamp, pd.Timestamp, list[str]]], chunk_size: int, pause: float, label: str) -> pd.DataFrame:
-    """One `actions=True` download per window group, concatenated; duplicate `(ticker, date)` rows keep the last."""
-    frames = []
-    for since, until, keys in groups:
-        logger.info("Downloading prices and actions for %d ticker(s) over %s .. %s (%s)", len(keys), since.date(), until.date(), label)
-        frames.append(download_ohlcv(keys, since, until, chunk_size, pause, desc=f"Downloading prices ({label})", auto_adjust=False, actions=True))
-    frames = [df for df in frames if not df.empty]
-    if not frames:
-        return pd.DataFrame()
-    return pd.concat(frames, ignore_index=True).drop_duplicates(subset=["ticker", "date"], keep="last").reset_index(drop=True)
-
-
-def fetch_prices_and_actions(
-    context: Context,
-    tickers: list[str],
-    years_history: int,
-    *,
-    full: bool = False,
-    as_of: pd.Timestamp | None = None,
-    chunk_size: int = 50,
-    pause: float = 1.0,
-) -> None:
-    """`prices`, `prices_dividends` and `prices_splits` from ONE yfinance `actions=True` download per window group.
-
-    Windows come from `series_windows` over `prices` and `prices_dividends` (each key from its own last
-    date minus the overlap, holes, new keys in full until their history reaches the floor) and end at the
-    last completed session. The companies' current secondary classes (`secondary_class_symbols`) are fetched
-    alongside; a class with no stored bar takes the whole window. A key whose response holds a split or a cash
-    dividend after its last stored bar, or whose first-year `close_split` disagrees with Yahoo's (`anchor_check`),
-    is re-pulled over the whole window before saving."""
-    start_date = run_date(as_of)
+def _plan(
+    context: Context, table: Table, keys: list[str], years_history: int, full: bool, as_of: pd.Timestamp | None
+) -> tuple[SeriesWork, pd.Timestamp, pd.Timestamp]:
+    """The `table`'s fetch windows over `keys`, the history floor and the last completed session."""
     until = last_completed_session(as_of)
-    calendar = trading_calendar(context)
-    plan = {"until": until, "years_history": years_history, "full": full, "calendar": calendar}
-    owners = secondary_class_symbols(context, tickers)
-    if owners:
-        logger.info("%d current secondary class(es) fetched with their companies: %s", len(owners), ", ".join(owners))
-    symbols = [*tickers, *owners]
-    floor = document_floor(Tables.prices, start_date, years_history)
-    prices_work = series_windows(context, Tables.prices, symbols, start_date, **plan)
+    work = series_windows(
+        context, table, keys, run_date(as_of), until=until, years_history=years_history, full=full, calendar=trading_calendar(context)
+    )
+    return work, document_floor(table, run_date(as_of), years_history), until
 
-    # A secondary class is never a new universe key, so one with no stored bar takes the whole window here.
-    for symbol in owners:
-        if symbol not in prices_work.last:
-            prices_work.windows[symbol] = [(floor, until)]
-    work = prices_work.merge(series_windows(context, Tables.dividends, tickers, start_date, **plan))
-    df_raw = _download_groups(work.groups(), chunk_size, pause, "resume")
 
-    full_keys = {key for key, spans in work.windows.items() if spans and spans[0][0] <= floor}
-    repull = _restated_repulls(_restating_events(df_raw), prices_work.last, full_keys)
+def _full_keys(work: SeriesWork, floor: pd.Timestamp) -> set[str]:
+    """Keys whose first window already reaches the floor: their whole history is in the pull."""
+    return {key for key, spans in work.windows.items() if spans and spans[0][0] <= floor}
+
+
+def _initial_pull(session: YahooSession, work: SeriesWork, full_keys: set[str]) -> tuple[pd.DataFrame, list[str]]:
+    """The resume windows' rows, and the keys a split or dividend after their last stored bar leaves on a stale basis."""
+    df_raw = session.pull(work.groups(), "resume")
+    repull = _restated_repulls(_restating_events(df_raw), work.last, full_keys)
     if repull:
         logger.info(
             "%d ticker(s) split or went ex-dividend after their last stored bar; re-pulling their whole window: %s", len(repull), ", ".join(repull)
         )
-    if not full:
-        checked = [key for key in prices_work.last if key not in full_keys and key not in repull]
-        anchored = anchor_restated_keys(
-            context,
-            checked,
-            until,
-            lambda keys, since, end: download_ohlcv(
-                keys, since, end, chunk_size, pause, desc="Downloading prices (anchor)", auto_adjust=False, actions=False
-            ),
-        )
-        repull = sorted({*repull, *anchored})
-    if repull:
-        df_repull = _download_groups([(_repull_start(context, floor), until, repull)], chunk_size, pause, "post-action re-pull")
-        _warn_shorter_history(context, _price_rows(df_repull), repull)
-        df_raw = pd.concat([df_raw[~df_raw["ticker"].isin(repull)], df_repull], ignore_index=True)
+    return df_raw, repull
 
-    n_prices = context.store.save(Tables.prices, _price_rows(df_raw))
 
-    # Dividends and splits are kept for the universe only; a secondary class lands in `prices` alone.
-    df_universe = df_raw[df_raw["ticker"].isin(set(tickers))] if not df_raw.empty else df_raw
-    n_dividends = context.store.save(Tables.dividends, _extract_dividends(df_universe))
-    df_splits = _extract_splits(df_universe)
-    n_splits = context.store.save(Tables.prices_splits, df_splits) if not df_splits.empty else 0
+def _apply_repull(
+    context: Context, session: YahooSession, df_raw: pd.DataFrame, repull: list[str], floor: pd.Timestamp, until: pd.Timestamp
+) -> pd.DataFrame:
+    """`df_raw` with the `repull` keys' rows replaced by their whole-window pull."""
+    if not repull:
+        return df_raw
+    df_repull = session.pull([(_repull_start(context, floor), until, repull)], "post-action re-pull")
+    return pd.concat([df_raw[~df_raw["ticker"].isin(repull)], df_repull], ignore_index=True)
+
+
+def _report_pull(table: Table, work: SeriesWork, df_raw: pd.DataFrame, n_rows: int) -> None:
+    """Log the saved row count and the key classes; warn on keys with a window but no bar."""
     served = set(df_raw["ticker"]) if not df_raw.empty else set()
     missing = sorted(key for key, spans in work.windows.items() if spans and key not in served)
+    classes = {cls: sum(1 for c in work.key_class.values() if c == cls) for cls in sorted(set(work.key_class.values()))}
     logger.info(
-        "Saved %d price, %d dividend and %d split row(s) for %d ticker(s) in %d window group(s); key classes %s",
-        n_prices,
-        n_dividends,
-        n_splits,
-        len(symbols),
+        "Saved %d %s row(s) for %d ticker(s) in %d window group(s); key classes %s",
+        n_rows,
+        table.name,
+        len(work.windows),
         len(work.groups()),
-        {cls: sum(1 for c in work.key_class.values() if c == cls) for cls in sorted(set(work.key_class.values()))},
+        classes,
     )
     if missing:
         logger.warning("No bars returned for %d ticker(s) with a window; they are re-listed next run: %s", len(missing), ", ".join(missing))
+
+
+def _pull_actions(
+    context: Context, session: YahooSession, table: Table, tickers: list[str], years_history: int, full: bool, as_of: pd.Timestamp | None
+) -> tuple[pd.DataFrame, SeriesWork]:
+    """The `actions=True` rows of the universe over `table`'s windows, restated keys re-pulled whole."""
+    work, floor, until = _plan(context, table, tickers, years_history, full, as_of)
+    df_raw, repull = _initial_pull(session, work, _full_keys(work, floor))
+    return _apply_repull(context, session, df_raw, repull, floor, until), work
+
+
+def fetch_prices(
+    context: Context, session: YahooSession, tickers: list[str], years_history: int, *, full: bool = False, as_of: pd.Timestamp | None = None
+) -> None:
+    """`prices` (bars on both bases) of the universe and its current secondary classes.
+
+    Windows come from `series_windows` over `prices` and end at the last completed session; a secondary class
+    with no stored bar takes the whole window. A key with a split or cash dividend after its last stored bar, or
+    whose first-year `close_split` disagrees with Yahoo's (`anchor_check`), is re-pulled over the whole window."""
+    # Windows: the universe plus its current secondary classes
+    owners = secondary_class_symbols(context, tickers)
+    if owners:
+        logger.info("%d current secondary class(es) fetched with their companies: %s", len(owners), ", ".join(owners))
+    work, floor, until = _plan(context, Tables.prices, [*tickers, *owners], years_history, full, as_of)
+    for symbol in owners:
+        if symbol not in work.last:
+            work.windows[symbol] = [(floor, until)]
+
+    # Download: resume windows, then the keys restated by an event or a moved anchor
+    full_keys = _full_keys(work, floor)
+    df_raw, repull = _initial_pull(session, work, full_keys)
+    if not full:
+        checked = [key for key in work.last if key not in full_keys and key not in repull]
+        repull = sorted({*repull, *anchor_restated_keys(context, checked, until, session.bars)})
+    df_raw = _apply_repull(context, session, df_raw, repull, floor, until)
+
+    # Save
+    df_bars = _price_rows(df_raw)
+    if repull:
+        _warn_shorter_history(context, df_bars[df_bars["ticker"].isin(repull)], repull)
+    _report_pull(Tables.prices, work, df_raw, context.store.save(Tables.prices, df_bars))
+
+
+def fetch_dividends(
+    context: Context, session: YahooSession, tickers: list[str], years_history: int, *, full: bool = False, as_of: pd.Timestamp | None = None
+) -> None:
+    """`prices_dividends` (cash dividends on the ex-date, 0 when none) of the universe.
+
+    Windows come from `series_windows` over `prices_dividends`; a key with a split or dividend after its last
+    stored row is re-pulled over the whole window."""
+    df_raw, work = _pull_actions(context, session, Tables.dividends, tickers, years_history, full, as_of)
+    df_dividends = _extract_dividends(df_raw)
+    _report_pull(Tables.dividends, work, df_raw, context.store.save(Tables.dividends, df_dividends) if not df_dividends.empty else 0)
+
+
+def fetch_price_actions(
+    context: Context, session: YahooSession, tickers: list[str], years_history: int, *, full: bool = False, as_of: pd.Timestamp | None = None
+) -> None:
+    """`prices_splits` (non-zero share-split ex-dates) of the universe.
+
+    The table is sparse, so its windows are planned from the dense `prices` frontier: run it BEFORE `fetch_prices`
+    saves, or the window is empty. A key with a split or dividend after its last stored bar is re-pulled whole."""
+    df_raw, work = _pull_actions(context, session, Tables.prices, tickers, years_history, full, as_of)
+    df_splits = _extract_splits(df_raw)
+    _report_pull(Tables.prices_splits, work, df_raw, context.store.save(Tables.prices_splits, df_splits) if not df_splits.empty else 0)

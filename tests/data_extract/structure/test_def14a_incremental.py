@@ -15,13 +15,13 @@ import pytest
 from sqlalchemy import create_engine
 
 from src.data_extract.utils.common.identity import FilingScope
-from src.data_extract.utils.schemas.def14a_schema import BeneficialOwner as _BeneficialOwner
-from src.data_extract.utils.schemas.def14a_schema import Def14AExtract as _Def14AExtract
-from src.data_extract.utils.schemas.def14a_schema import DirectorCompensation as _DirectorCompensation
-from src.data_extract.utils.schemas.def14a_schema import DirectorInfo as _DirectorInfo
-from src.data_extract.utils.schemas.def14a_schema import ExecutiveCompensation as _ExecutiveCompensation
-from src.data_extract.utils.schemas.def14a_schema import GovernanceProfile as _GovernanceProfile
 from src.data_extract.utils.structure.def14a import flatten as flatten_mod
+from src.data_extract.utils.structure.def14a.def14a_schema import BeneficialOwner as _BeneficialOwner
+from src.data_extract.utils.structure.def14a.def14a_schema import Def14AExtract as _Def14AExtract
+from src.data_extract.utils.structure.def14a.def14a_schema import DirectorCompensation as _DirectorCompensation
+from src.data_extract.utils.structure.def14a.def14a_schema import DirectorInfo as _DirectorInfo
+from src.data_extract.utils.structure.def14a.def14a_schema import ExecutiveCompensation as _ExecutiveCompensation
+from src.data_extract.utils.structure.def14a.def14a_schema import GovernanceProfile as _GovernanceProfile
 from src.data_extract.utils.structure.def14a.fetch import _subject_is_accepted
 from src.data_extract.utils.structure.def14a.flatten import _flatten, _result_frames
 from src.data_store.schema import Tables
@@ -242,9 +242,7 @@ def test_disjoint_subject_never_becomes_an_llm_task(tmp_path, monkeypatch):
             return []
 
     monkeypatch.setattr(mod, "LLMExtractor", FakeLLM)
-    monkeypatch.setattr(
-        mod, "universe_rows", lambda *_: pd.DataFrame([{"ticker": "PSKY", "cik": "0002041610", "name": "Paramount Skydance Corp"}])
-    )
+    monkeypatch.setattr(mod, "universe_rows", lambda *_: pd.DataFrame([{"ticker": "PSKY", "cik": "0002041610", "name": "Paramount Skydance Corp"}]))
     # PSKY's register chain makes it a multi-window scope, so its proxies' subject headers are checked.
     psky = dated_identity(
         [("PSKY", "0000813828", "cik_window", SENTINEL, "2025-08-07"), ("PSKY", "0002041610", "cik_window", "2025-08-07", None)],

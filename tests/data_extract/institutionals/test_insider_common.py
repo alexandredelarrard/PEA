@@ -6,8 +6,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.data_extract.utils.edgar_extract.insider_edgar_parser import extract_xml_strings
-from src.data_extract.utils.insider.insider_common import (
+from src.data_extract.utils.edgar_extract.insider_common import (
     BULK_DATE_FORMATS,
     INSIDER_FIELDS,
     OWNER_STRING_COLUMNS,
@@ -18,6 +17,7 @@ from src.data_extract.utils.insider.insider_common import (
     parse_number,
     parse_sec_date,
 )
+from src.data_extract.utils.edgar_extract.insider_edgar_parser import extract_xml_strings
 from src.data_extract.utils.zips.fetch_insider_transactions import extract_bulk_strings
 
 ROLES = ["is_director", "is_officer", "is_ten_pct_owner", "is_other"]

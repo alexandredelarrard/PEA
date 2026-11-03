@@ -25,7 +25,7 @@ import pytest
 from sqlalchemy import create_engine
 
 from src.data_extract.utils.common.identity import build_identity
-from src.data_extract.utils.insider.insider_common import (
+from src.data_extract.utils.edgar_extract.insider_common import (
     BULK_DATE_FORMATS,
     INSIDER_COLUMNS,
     build_insider_frame,

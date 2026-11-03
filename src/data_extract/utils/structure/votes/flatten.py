@@ -18,11 +18,6 @@ import pandas as pd
 
 from src.data_extract.utils.common.frame_sanitize import strip_nul
 from src.data_extract.utils.edgar_extract.empty_markers import marker_frame
-from src.data_extract.utils.schemas.vote_schema import (
-    PROPOSAL_TYPES,
-    VOTE_STANDARDS,
-    Item507Extract,
-)
 from src.data_extract.utils.structure.def14a.gender import person_key
 from src.data_extract.utils.structure.def14a.validate import clean_text
 from src.data_extract.utils.structure.votes.guard import (
@@ -30,6 +25,11 @@ from src.data_extract.utils.structure.votes.guard import (
     _grounded_nominees,
     _is_grounded,
     mentions_preliminary,
+)
+from src.data_extract.utils.structure.votes.vote_schema import (
+    PROPOSAL_TYPES,
+    VOTE_STANDARDS,
+    Item507Extract,
 )
 from src.data_store.schema import Tables
 

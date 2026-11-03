@@ -16,19 +16,21 @@ from src.data_extract import cli as cli_mod
 from src.data_extract.transformers import step_extract_prices as mod
 from src.data_extract.transformers.step_extract_prices import StepExtractPrices
 
-ORDER = ["prices", "macro", "earnings_surprises"]
+ORDER = ["price_actions", "dividends", "prices", "macro", "earnings_surprises"]
 
 
 def _step(monkeypatch: pytest.MonkeyPatch, calls: list[tuple[str, dict[str, Any]]], *, boom: str | None = None) -> StepExtractPrices:
     def recorder(label: str):
-        def fn(context: Any, **kwargs: Any) -> None:
+        def fn(context: Any, *args: Any, **kwargs: Any) -> None:
             calls.append((label, kwargs))
             if label == boom:
                 raise RuntimeError(f"simulated {label} failure")
 
         return fn
 
-    monkeypatch.setattr(mod, "fetch_prices_and_actions", recorder("prices"))
+    monkeypatch.setattr(mod, "fetch_price_actions", recorder("price_actions"))
+    monkeypatch.setattr(mod, "fetch_dividends", recorder("dividends"))
+    monkeypatch.setattr(mod, "fetch_prices", recorder("prices"))
     monkeypatch.setattr(mod, "fetch_macro", recorder("macro"))
     monkeypatch.setattr(mod, "fetch_earnings_surprises", recorder("earnings_surprises"))
     config = OmegaConf.create({"data_extract": {"years_history": 15, "macro_years_history": 30}})
@@ -41,7 +43,7 @@ def test_run_ends_with_earnings_surprises(monkeypatch: pytest.MonkeyPatch) -> No
     _step(monkeypatch, calls).run(tickers=["AAPL"])
 
     assert [label for label, _ in calls] == ORDER
-    assert calls[2][1] == {"tickers": ["AAPL"], "years_history": 15}
+    assert calls[4][1] == {"tickers": ["AAPL"], "years_history": 15}
     print("\n=== SANITY CHECK: StepExtractPrices order ===")
     print(f"  {' -> '.join(ORDER)}; earnings surprises get the equity window 15 (not the macro 30). Validated.")
 
@@ -60,7 +62,7 @@ def test_a_failing_source_aborts_the_rest(monkeypatch: pytest.MonkeyPatch) -> No
     with pytest.raises(RuntimeError, match="simulated macro failure"):
         _step(monkeypatch, calls, boom="macro").run(tickers=["AAPL"])
 
-    assert [label for label, _ in calls] == ["prices", "macro"]
+    assert [label for label, _ in calls] == ["price_actions", "dividends", "prices", "macro"]
     print("\n=== SANITY CHECK: StepExtractPrices direct calls, no isolation ===")
     print("  macro raised -> earnings surprises never ran. Validated.")
 

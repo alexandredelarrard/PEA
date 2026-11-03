@@ -12,9 +12,9 @@ from omegaconf import OmegaConf
 from pydantic import BaseModel
 
 from src.context import Context
-from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
 from src.data_extract.utils.structure.def14a import carve
 from src.data_extract.utils.structure.def14a.carve import prepare_def14a_payloads, prepare_def14a_sections
+from src.data_extract.utils.structure.def14a.def14a_schema import Def14AExtract
 from src.data_extract.utils.structure.def14a.retry import SECTIONS, Section
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 

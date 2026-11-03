@@ -253,7 +253,7 @@ def test_paid_answer_survives_postprocessing_failure_and_replays_free(daily, mon
 
 
 def test_legacy_paid_json_restores_children_before_any_paid_repair(daily, monkeypatch):
-    from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
+    from src.data_extract.utils.structure.def14a.def14a_schema import Def14AExtract
     from src.data_extract.utils.structure.def14a.flatten import _flatten
 
     context, calls, _, filing = daily

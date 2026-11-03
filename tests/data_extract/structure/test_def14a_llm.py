@@ -25,18 +25,6 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.schemas.def14a_schema import (
-    Def14AExtract as _Def14AExtract,
-)
-from src.data_extract.utils.schemas.def14a_schema import (
-    DirectorInfo as _DirectorInfo,
-)
-from src.data_extract.utils.schemas.def14a_schema import (
-    ExecutiveCompensation as _ExecutiveCompensation,
-)
-from src.data_extract.utils.schemas.def14a_schema import (
-    GovernanceProfile as _GovernanceProfile,
-)
 from src.data_extract.utils.structure.def14a.carve import (
     _COMPENSATION_CONTENT_RE,
     _DIRECTOR_MAX_FRAC,
@@ -47,6 +35,18 @@ from src.data_extract.utils.structure.def14a.carve import (
     _SAYONPAY_CONTENT_RE,
     _densest_window,
     prepare_def14a_sections,
+)
+from src.data_extract.utils.structure.def14a.def14a_schema import (
+    Def14AExtract as _Def14AExtract,
+)
+from src.data_extract.utils.structure.def14a.def14a_schema import (
+    DirectorInfo as _DirectorInfo,
+)
+from src.data_extract.utils.structure.def14a.def14a_schema import (
+    ExecutiveCompensation as _ExecutiveCompensation,
+)
+from src.data_extract.utils.structure.def14a.def14a_schema import (
+    GovernanceProfile as _GovernanceProfile,
 )
 from src.data_extract.utils.structure.def14a.flatten import _flatten
 
@@ -518,9 +518,9 @@ def test_flatten_ceo_age_fallback():
 def test_llm_extractor_real_apple():
     """Live: fetch Apple's latest DEF 14A, extract with the tailored prompt, sanity-check."""
     from src.context import get_config_context
+    from src.data_extract.utils.common.sec_io import sec_get
     from src.data_extract.utils.edgar_extract.edgar_fillings import list_filings
     from src.data_extract.utils.edgar_extract.html_text import html_to_text
-    from src.data_extract.utils.common.sec_io import sec_get
     from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 
     config, ctx = get_config_context("./configs", use_cache=True, save=False)

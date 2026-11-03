@@ -15,7 +15,7 @@ from typing import cast
 import pandas as pd
 
 from src.data_extract.utils.common.bulk_cache import quarter_periods
-from src.data_extract.utils.insider.insider_common import (
+from src.data_extract.utils.edgar_extract.insider_common import (
     BULK_DATE_FORMATS,
     FOOTNOTE_COLUMNS,
     build_insider_frame,

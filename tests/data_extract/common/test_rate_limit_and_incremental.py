@@ -84,7 +84,7 @@ def test_is_rate_limited_reads_the_status_code_not_digits_inside_identifiers():
 
 
 def test_earnings_download_one_retries_rate_limit(monkeypatch):
-    import src.data_extract.utils.fundamentals.fetch_earnings_surprises as fe
+    import src.data_extract.utils.prices.fetch_earnings_surprises as fe
 
     state = {"n": 0}
     idx = pd.to_datetime(["2024-02-01"])

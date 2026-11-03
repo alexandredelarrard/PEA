@@ -107,7 +107,7 @@ from src.data_extract.utils.institutionals.fetch_13f_managers import fetch_13f_m
 from src.data_extract.utils.institutionals.fetch_short_interest import fetch_short_interest
 from src.data_extract.utils.institutionals.fetch_superinvestors import rebuild_roster, upsert_roster_snapshot
 from src.data_extract.utils.prices.fetch_macro import fetch_macro
-from src.data_extract.utils.prices.fetch_prices import fetch_prices_and_actions
+from src.data_extract.utils.prices.fetch_prices import YahooSession, fetch_dividends, fetch_price_actions, fetch_prices
 from src.data_store.schema import Table, Tables, freshness_tables, marker_tables, resolve
 from src.utils.cli_helper import SpecialHelpOrder
 from src.utils.freshness import PREDICTION_INPUTS, fresh_share, last_dates_by_key, max_age_days, table_freshness
@@ -196,7 +196,7 @@ def universe(config_path: str, as_of: datetime | None) -> None:
 
 # --- Prices / market / macro ---
 @cli.command(
-    help="Daily OHLCV, dividend and split ex-dates from one yfinance download (prices, prices_dividends, prices_splits). HEAVY.", help_priority=2
+    help="Daily OHLCV, dividend and split ex-dates through one yfinance session (prices_splits, prices_dividends, prices). HEAVY.", help_priority=2
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
@@ -206,7 +206,12 @@ def price_history(config_path: str, tickers: str | None, full: bool, as_of: date
     """`--full` re-pulls the whole window for every requested ticker; new tickers, holes and splits need no flag."""
     _, context = get_config_context(config_path, use_cache=False, save=False)
     years_history = int(context.config.data_extract.years_history)
-    fetch_prices_and_actions(context, tickers=_tickers(context, tickers), years_history=years_history, full=full, as_of=_market_as_of(as_of))
+    names, as_of_date, session = _tickers(context, tickers), _market_as_of(as_of), YahooSession()
+
+    # Splits first: their windows are planned from the stored `prices`, which `fetch_prices` then advances.
+    fetch_price_actions(context, session, tickers=names, years_history=years_history, full=full, as_of=as_of_date)
+    fetch_dividends(context, session, tickers=names, years_history=years_history, full=full, as_of=as_of_date)
+    fetch_prices(context, session, tickers=names, years_history=years_history, full=full, as_of=as_of_date)
 
 
 @cli.command(

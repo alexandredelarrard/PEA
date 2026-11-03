@@ -1,5 +1,5 @@
 """
-vote_schema.py  (src/data_extract/utils/structure/vote_schema.py)
+vote_schema.py  (src/data_extract/utils/structure/votes/vote_schema.py)
 ------------------------------------------------------------------
 Pydantic v2 schema for structured extraction of Form 8-K **Item 5.07** ("Submission of
 Matters to a Vote of Security Holders") narratives — the certified shareholder-meeting

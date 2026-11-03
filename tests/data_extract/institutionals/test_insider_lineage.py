@@ -20,9 +20,9 @@ import pytest
 
 from src.data_aggregate.utils.institutionals import inputs as institutional_inputs
 from src.data_extract.utils.common.identity import build_identity
+from src.data_extract.utils.edgar_extract import insider_common as ic
 from src.data_extract.utils.identity import identity_propagate as prop
 from src.data_extract.utils.identity import security_master as sm
-from src.data_extract.utils.insider import insider_common as ic
 from src.data_extract.utils.zips import fetch_insider_transactions as ins
 from src.data_store import ddl
 from src.data_store.schema import Tables

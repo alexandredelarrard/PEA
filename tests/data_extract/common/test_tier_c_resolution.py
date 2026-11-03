@@ -22,7 +22,7 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.insider.insider_common import screen_insider_rows
+from src.data_extract.utils.edgar_extract.insider_common import screen_insider_rows
 from src.data_extract.utils.zips import fetch_financial_notes as fn
 from src.data_extract.utils.zips import fetch_financial_statements as fin
 from src.data_extract.utils.zips import zip_archive
@@ -248,7 +248,7 @@ def test_fetchers_resolve_identity_only_through_the_accessor():
     "table_arg", ["Tables.tickers_universe", "table=Tables.tickers_universe", "Tables.tickers_universe.name", "table=Tables.tickers_universe.name"]
 )
 def test_identity_guard_rejects_roster_payload_reads(method: str, table_arg: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    fetcher = tmp_path / "src/data_extract/utils/insider/insider_store.py"
+    fetcher = tmp_path / "src/data_extract/utils/edgar_extract/insider_store.py"
     fetcher.parent.mkdir(parents=True)
     fetcher.write_text(f"context.store.{method}({table_arg})\n", encoding="utf-8")
     monkeypatch.setitem(globals(), "REPO", tmp_path)
@@ -259,7 +259,7 @@ def test_identity_guard_rejects_roster_payload_reads(method: str, table_arg: str
 
 
 def test_identity_guard_accepts_metadata_and_loaded_cohort(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    fetcher = tmp_path / "src/data_extract/utils/insider/insider_store.py"
+    fetcher = tmp_path / "src/data_extract/utils/edgar_extract/insider_store.py"
     fetcher.parent.mkdir(parents=True)
     fetcher.write_text(
         "identities = {Tables.tickers_universe, Tables.entity_lineage}\n"

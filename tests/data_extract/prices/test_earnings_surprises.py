@@ -16,7 +16,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from src.data_extract.utils.fundamentals.fetch_earnings_surprises import _RECENT_LIMIT, _plan_fetch, _resume_dates
+from src.data_extract.utils.prices.fetch_earnings_surprises import _RECENT_LIMIT, _plan_fetch, _resume_dates
 from src.data_store.schema import Tables
 
 _COLS = ["ticker", "earnings_date", "eps_estimate", "eps_actual", "surprise_pct"]

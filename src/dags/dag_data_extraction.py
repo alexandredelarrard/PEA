@@ -97,7 +97,7 @@ macro = fetch("macro")
 short_interest = fetch("short-interest")
 earnings_surprises = fetch("earnings-surprises")  # StepExtractPrices.run_earnings_surprises
 
-# yfinance: one download writes prices, prices_dividends and prices_splits (a new split re-pulls its ticker)
+# yfinance: one shared session runs fetch_price_actions, fetch_dividends and fetch_prices -> prices_splits, prices_dividends, prices (a new split re-pulls its ticker)
 price_history = fetch("price-history", trigger_rule=TriggerRule.ALL_DONE)  # the stored master is enough when identity fails
 
 # 2) identity stage: cache the Form 3/4/5, Notes, Financial Statements and FTD zips and snapshot SEC's current

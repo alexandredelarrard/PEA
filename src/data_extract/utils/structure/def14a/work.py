@@ -10,7 +10,7 @@ from typing import Any, cast
 import pandas as pd
 
 from src.context import Context
-from src.data_extract.utils.schemas.def14a_schema import OwnershipExtract
+from src.data_extract.utils.structure.def14a.def14a_schema import OwnershipExtract
 from src.data_extract.utils.structure.def14a.holders import holders_need_reconciliation
 from src.data_extract.utils.structure.def14a.postprocess import ProcessedSection, archived_answers, source_for_answer
 from src.data_extract.utils.structure.def14a.retry import SECTIONS, Section, reservation_frame

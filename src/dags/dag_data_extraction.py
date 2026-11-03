@@ -6,9 +6,9 @@ Nightly DATA-EXTRACTION DAG. One task PER SOURCE (fetcher, or one step sub-run),
 LOAD, not by big group: the light sources fan out freely, while the heavy / long / rate-limited ones are
 capped by Airflow POOLS (created in airflow-init):
 
-  * sec_bulk (2 slots)  — the SEC bulk zips: zips_download (Form 3/4/5, Notes, Financial Statements and FTD
+  * sec_bulk (2 slots)  — the SEC bulk zips: zips_download (Form 3/4/5, Notes and FTD
                           zips + the SEC current-tickers GET), zips_ingest_insider (the Form 3/4/5 zip
-                          parse) and zips_ingest_datasets (notes, statements, FTD; disk + SEC bandwidth bound)
+                          parse) and zips_ingest_datasets (notes, FTD; disk + SEC bandwidth bound)
   * sec_api  (2 slots)  — per-ticker EDGAR API (shared 10 req/s); each task consumes both
                           slots, so only one EDGAR walk runs at a time (edgar_index and insider_edgar included)
   * default             — light / fast: macro, short_interest, earnings_surprises, identity,
@@ -97,7 +97,7 @@ earnings_surprises = fetch("earnings-surprises")  # StepExtractPrices.run_earnin
 # yfinance: one download writes prices, prices_dividends and prices_splits (a new split re-pulls its ticker)
 price_history = fetch("price-history", trigger_rule=TriggerRule.ALL_DONE)  # the stored master is enough when identity fails
 
-# 2) identity stage: cache the Form 3/4/5, Notes, Financial Statements and FTD zips and snapshot SEC's current
+# 2) identity stage: cache the Form 3/4/5, Notes and FTD zips and snapshot SEC's current
 #    tickers (StepExtractZips download phase); then StepExtractIdentity offline: capture the Notes cover-page
 #    symbols and the raw in-scope FTD lines, build symbol_tenure + entity_lineage + security_master, and carry
 #    lineage changes into the stored rows
@@ -107,7 +107,7 @@ identity = fetch("identity", trigger_rule=TriggerRule.ALL_DONE)  # builds offlin
 # 3) SEC bulk zip ingests (StepExtractZips ingest phase) — capped to 2 concurrent (disk + SEC bandwidth); the
 #    insider quarters alone, so insider_edgar never waits for the heavy notes ingest
 zips_ingest_insider = fetch("zips-ingest --only insider", pool="sec_bulk", task_id="zips_ingest_insider")
-zips_ingest_datasets = fetch("zips-ingest --only notes --only statements --only ftd", pool="sec_bulk", task_id="zips_ingest_datasets")  # VERY heavy
+zips_ingest_datasets = fetch("zips-ingest --only notes --only ftd", pool="sec_bulk", task_id="zips_ingest_datasets")  # VERY heavy
 thirteen_f = fetch("thirteen-f", pool="sec_api")
 # new tickers' 13F history (cached data-set ZIPs + one EDGAR walk); a no-op on nights with no new ticker
 thirteen_f_backfill = fetch("thirteen-f-backfill", pool="sec_api")

@@ -169,9 +169,8 @@ def _seed(store) -> None:
 @pytest.fixture
 def stubs(monkeypatch) -> dict[str, list]:
     """Bulk re-parsers, the FTD re-stamp and the derived rebuilds recorded instead of run."""
-    calls: dict[str, list] = {"notes": [], "pension": [], "insider": [], "ftd": [], "short": [], "history": [], "merged": []}
+    calls: dict[str, list] = {"notes": [], "insider": [], "ftd": [], "short": [], "history": [], "merged": []}
     monkeypatch.setattr(prop, "reparse_financial_notes", lambda context, tickers, **kwargs: calls["notes"].append(sorted(tickers)) or 0)
-    monkeypatch.setattr(prop, "reparse_financial_statements", lambda context, tickers, **kwargs: calls["pension"].append(sorted(tickers)) or 0)
     monkeypatch.setattr(prop, "reparse_insider_transactions", lambda context, tickers, **kwargs: calls["insider"].append(sorted(tickers)) or 0)
     monkeypatch.setattr(
         prop,
@@ -361,7 +360,7 @@ def test_the_dry_run_returns_the_same_removals_and_deletes_nothing(sqlite_store,
     dry = prop.propagate_identity(context, list(ROSTER), dry_run=True, as_of=RUN_DATE)
 
     assert {table.name: sqlite_store.row_count(table) for table in PURGED_FAMILIES} == before
-    assert stubs["notes"] == stubs["pension"] == stubs["insider"] == stubs["history"] == stubs["merged"] == []
+    assert stubs["notes"] == stubs["insider"] == stubs["history"] == stubs["merged"] == []
     wet = prop.propagate_identity(context, list(ROSTER), as_of=RUN_DATE)
     columns = list(filer_tables.REMOVAL_COLUMNS)
     assert dry.removals[columns].reset_index(drop=True).equals(wet.removals[columns].reset_index(drop=True))
@@ -395,10 +394,10 @@ def test_an_expansion_reparses_the_bulk_families_for_that_ticker_only(sqlite_sto
 
     prop.propagate_identity(context, list(ROSTER), as_of=RUN_DATE)
 
-    assert stubs["notes"] == stubs["pension"] == stubs["insider"] == [["MSFT"]]
+    assert stubs["notes"] == stubs["insider"] == [["MSFT"]]
     assert stubs["ftd"] == []  # no stored FTD lines, no master
     print("\n=== SANITY CHECK: expansion (AC-030) ===")
-    print("  notes, pension and insider bulk re-parsed for MSFT only; FTD untouched (no stored lines)")
+    print("  notes and insider bulk re-parsed for MSFT only; FTD untouched (no stored lines)")
 
 
 def test_short_volume_is_restamped_from_stored_rows_not_purged(sqlite_store, tmp_path, monkeypatch, stubs):
@@ -487,7 +486,6 @@ def test_a_moved_master_security_moves_its_fails_rows(sqlite_store, tmp_path, mo
     monkeypatch.setattr(ftd, "ensure_zip", lambda context, path, urls, **kwargs: path)
     monkeypatch.setattr(ftd, "read_zip_text", lambda path, **kwargs: originals[path.stem.removeprefix("cnsfails")])
     monkeypatch.setattr(prop, "reparse_financial_notes", lambda context, tickers, **kwargs: 0)
-    monkeypatch.setattr(prop, "reparse_financial_statements", lambda context, tickers, **kwargs: 0)
     monkeypatch.setattr(prop, "reparse_insider_transactions", lambda context, tickers, **kwargs: 0)
 
     result = prop.propagate_identity(context, list(ROSTER), as_of=RUN_DATE)
@@ -547,7 +545,7 @@ def test_the_history_of_a_purged_ticker_is_rebuilt_without_the_foreign_filing(sq
     assert sqlite_store.row_count(Tables.fundamentals_history_sec) == 2
     monkeypatch.setattr(prop, "load_identity", lambda context: _identity({"ALB": AFTER}))
     monkeypatch.setattr(build_history, "load_identity", lambda context: _identity({"ALB": AFTER}))
-    for name in ("reparse_financial_notes", "reparse_financial_statements", "reparse_insider_transactions"):
+    for name in ("reparse_financial_notes", "reparse_insider_transactions"):
         monkeypatch.setattr(prop, name, lambda context, tickers, **kwargs: 0)
     merged: list = []
     monkeypatch.setattr(prop, "build_merged_history", lambda context, tickers, full=False, config_dir=None: merged.append((list(tickers), full)))
@@ -610,26 +608,24 @@ def test_f105_the_bulk_reparse_compares_each_table_only_with_the_ciks_it_can_hol
     result = prop.propagate_identity(context, list(ROSTER), as_of=RUN_DATE)
 
     assert stubs["notes"] == [] and stubs["insider"] == [], "no table lacks a CIK it can hold: nothing re-parsed"
-    assert stubs["pension"] == [["ALB", "MSFT", "TMUS"]], "pension_facts not created yet: every changed ticker"
     assert "notes_num" not in result.reparsed and "insider_transactions" not in result.reparsed
     print("\n=== SANITY CHECK: F-105 bulk re-parse trigger ===")
     print("  every scope changed: ALB holds its window CIK's notes, MSFT holds none, TMUS's co-registrant is never stored -> no re-parse")
 
 
 def test_the_bulk_reparse_uses_the_propagation_resolver_and_run_date(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """S6: the three family re-parses get the resolver and run date from `_reparse_bulk`; none reloads the identity."""
+    """S6: the two family re-parses get the resolver and run date from `_reparse_bulk`; none reloads the identity."""
     from src.data_extract.utils.zips import fetch_financial_notes as notes
-    from src.data_extract.utils.zips import fetch_financial_statements as statements
     from src.data_extract.utils.zips import fetch_insider_transactions as insider
 
     loads: list[str] = []
-    for module in (notes, statements, insider):
+    for module in (notes, insider):
         monkeypatch.setattr(module, "load_identity", lambda context, *a, **k: loads.append("load") or None)
         monkeypatch.setattr(module, "cache_dir", lambda context, key: tmp_path)
     resolver = SimpleNamespace(co_registrant_ciks=frozenset())
     store = SimpleNamespace(exists=lambda table: False)
     context = SimpleNamespace(store=store, log=logging.getLogger("test.reparse"), config=extract_config())
     done = prop._reparse_bulk(context, ["AAA"], {"AAA": SimpleNamespace(event_ciks=(), windows=())}, resolver, pd.Timestamp("2026-10-31"))
-    assert done == {Tables.notes_num.name: ("AAA",), Tables.pension_facts.name: ("AAA",), Tables.insider_transactions.name: ("AAA",)}
+    assert done == {Tables.notes_num.name: ("AAA",), Tables.insider_transactions.name: ("AAA",)}
     assert loads == [], loads
-    print(f"\nSANITY: 3 family re-parses ran on an empty cache through the passed resolver; load_identity calls = {len(loads)}.")
+    print(f"\nSANITY: 2 family re-parses ran on an empty cache through the passed resolver; load_identity calls = {len(loads)}.")

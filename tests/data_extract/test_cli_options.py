@@ -60,9 +60,7 @@ def test_cli_short_interest_passes_the_normalized_subset(monkeypatch: pytest.Mon
 
 def stub_zips_step(monkeypatch: pytest.MonkeyPatch, config: SimpleNamespace, load: Any) -> None:
     """Make `StepExtractZips` constructible on a stub config: caches, universe and the Notes landing scrape stubbed."""
-    config.local = SimpleNamespace(
-        paths=SimpleNamespace(insider_transactions="insider", financial_notes="notes", financial_statements="statements", fails_deliver="ftd")
-    )
+    config.local = SimpleNamespace(paths=SimpleNamespace(insider_transactions="insider", financial_notes="notes", fails_deliver="ftd"))
     monkeypatch.setattr(step_zips, "cache_dir", lambda ctx, name: Path(name))
     monkeypatch.setattr(step_zips, "load_universe_tickers", load)
     monkeypatch.setattr(step_zips, "notes_periods", lambda ctx, years, today: ["2026q1"])
@@ -132,7 +130,6 @@ def context(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     [
         ("seed-universe", "get_sp500_tickers", None),
         ("zips-ingest --only notes", "ingest_financial_notes", "full"),
-        ("zips-ingest --only statements", "fetch_financial_statements", "reparse"),
         ("zips-ingest --only insider", "fetch_insider_transactions", "reparse"),
         ("fundamentals-history-sec", "build_fundamentals_history", "rebuild_history"),
         ("identity --only propagate", "propagate_identity", "every_ticker"),

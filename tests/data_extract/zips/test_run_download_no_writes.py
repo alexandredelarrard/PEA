@@ -55,13 +55,13 @@ def test_run_download_writes_only_the_sec_tickers_snapshot(sqlite_store, tmp_pat
     downloads: list[str] = []
     _offline(monkeypatch, downloads)
     written = _counted(sqlite_store, monkeypatch)
-    paths = SimpleNamespace(insider_transactions="insider", financial_notes="notes", financial_statements="statements", fails_deliver="ftd")
+    paths = SimpleNamespace(insider_transactions="insider", financial_notes="notes", fails_deliver="ftd")
     config = SimpleNamespace(data_extract=SimpleNamespace(years_history=1), local=SimpleNamespace(paths=paths))
     context = SimpleNamespace(store=sqlite_store, config=config, config_dir="configs", paths={"DATA_STORE": tmp_path})
 
     StepExtractZips(context, config).run_download()  # type: ignore[arg-type]
 
-    cached = {directory: len(list((tmp_path / directory).glob("*.zip"))) for directory in ("insider", "notes", "statements", "ftd")}
+    cached = {directory: len(list((tmp_path / directory).glob("*.zip"))) for directory in ("insider", "notes", "ftd")}
     assert set(written) == {"sec_company_tickers"}, written
     assert all(cached.values()), cached
     assert bulk_cache.is_cached(tmp_path / "notes" / "2026q1_notes.zip")

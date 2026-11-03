@@ -33,7 +33,6 @@ from src.data_extract.utils.institutionals.fetch_short_interest import change_st
 from src.data_extract.utils.institutionals.security_tape import outside_scope, restamp_targets
 from src.data_extract.utils.zips.fetch_fails_to_deliver import load_fails_master, master_stamps, prepare_master, restamp_fails
 from src.data_extract.utils.zips.fetch_financial_notes import reparse_financial_notes
-from src.data_extract.utils.zips.fetch_financial_statements import reparse_financial_statements
 from src.data_extract.utils.zips.fetch_insider_transactions import reparse_insider_transactions, restamp_insider_lineage
 from src.data_store.schema import Table, Tables
 from src.utils.filer_tables import (
@@ -188,15 +187,10 @@ def _reparse_bulk(
 ) -> dict[str, tuple[str, ...]]:
     """Re-parse each bulk family from its cache, through `resolver` up to `run_date`, for the changed tickers whose
     table lacks rows of a CIK it can hold: a window CIK listed after the data set starts for the consolidating Notes
-    and statement families, an event CIK other than a co-registrant for insider."""
+    family, an event CIK other than a co-registrant for insider."""
     events = {ticker: frozenset(scope.event_ciks) - resolver.co_registrant_ciks for ticker, scope in scopes.items()}
     families: tuple[tuple[Table, Callable[[Context, list[str]], int], Mapping[str, frozenset[str]]], ...] = (
         (Tables.notes_num, partial(reparse_financial_notes, identity=resolver), _window_ciks(scopes, Tables.notes_num)),
-        (
-            Tables.pension_facts,
-            partial(reparse_financial_statements, identity=resolver, run_date=run_date),
-            _window_ciks(scopes, Tables.pension_facts),
-        ),
         (Tables.insider_transactions, partial(reparse_insider_transactions, identity=resolver, run_date=run_date), events),
     )
     done: dict[str, tuple[str, ...]] = {}

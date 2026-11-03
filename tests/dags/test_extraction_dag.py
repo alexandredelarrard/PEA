@@ -93,11 +93,11 @@ def test_freshness_inventory_comes_only_from_schema():
     print("  OK: schema.py is the sole table/cadence/date-column source of truth")
 
 
-#: identity producers, in stage order: the zip downloads (Form 3/4/5, Notes, Statements, FTD, SEC current tickers),
+#: identity producers, in stage order: the zip downloads (Form 3/4/5, Notes, FTD, SEC current tickers),
 #: then the identity step (captures, build, propagation).
 IDENTITY_DOWNLOADS = {"zips_download"}
-#: the two zip ingests (D-16a): the insider quarters alone, and notes + statements + FTD.
-ZIP_INGESTS = {"zips_ingest_insider": "insider", "zips_ingest_datasets": "notes --only statements --only ftd"}
+#: the two zip ingests (D-16a): the insider quarters alone, and notes + FTD.
+ZIP_INGESTS = {"zips_ingest_insider": "insider", "zips_ingest_datasets": "notes --only ftd"}
 #: the six EDGAR document walks; each waits for the one nightly `edgar_index` refresh (P7b).
 EDGAR_WALKS = {"insider_edgar", "sec_13d", "sec_13g", "sec_8k_items", "filing_text", "def14a_edgar"}
 #: every task that reads the lineage; each must start after `identity`.

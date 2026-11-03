@@ -567,13 +567,13 @@ def insider_edgar(config_path: str, tickers: str | None, full: bool, as_of: date
     _edgar_step(config_path, tickers, None, full, as_of, no_cap).run_insider()
 
 
-_ZIP_DOWNLOADS = ("insider", "notes", "statements", "ftd", "sec-tickers")
-_ZIP_INGESTS = ("insider", "notes", "statements", "ftd")
+_ZIP_DOWNLOADS = ("insider", "notes", "ftd", "sec-tickers")
+_ZIP_INGESTS = ("insider", "notes", "ftd")
 
 
 @cli.command(
     name="zips-download",
-    help="Cache the SEC bulk zips (Form 3/4/5, Notes, Financial Statements, FTD) and snapshot SEC's current tickers "
+    help="Cache the SEC bulk zips (Form 3/4/5, Notes, FTD) and snapshot SEC's current tickers "
     f"(the one table written). --only runs the named source(s) ({', '.join(_ZIP_DOWNLOADS)}). SEC-bulk.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
@@ -586,7 +586,6 @@ def zips_download(config_path: str, full: bool, as_of: datetime | None, only: tu
     sources = {
         "insider": step.run_download_insider,
         "notes": step.run_download_financial_notes,
-        "statements": step.run_download_financial_statements,
         "ftd": step.run_download_fails_to_deliver,
         "sec-tickers": step.run_download_sec_tickers,
     }
@@ -596,7 +595,7 @@ def zips_download(config_path: str, full: bool, as_of: datetime | None, only: tu
 
 @cli.command(
     name="zips-ingest",
-    help="Parse the cached SEC bulk zips into insider_transactions (zip quarters), notes_num/notes_text, pension_facts and the "
+    help="Parse the cached SEC bulk zips into insider_transactions (zip quarters), notes_num/notes_text and the "
     f"two FTD tables, downloading a pending period not cached yet. --only runs the named source(s) ({', '.join(_ZIP_INGESTS)}); "
     "-F re-parses every cached period; --repair-availability only repairs the stored Notes clocks. SEC-bulk.",
 )
@@ -617,7 +616,6 @@ def zips_ingest(config_path: str, tickers: str | None, full: bool, as_of: dateti
     sources = {
         "insider": step.run_ingest_insider,
         "notes": step.run_ingest_financial_notes,
-        "statements": step.run_ingest_financial_statements,
         "ftd": step.run_ingest_fails_to_deliver,
     }
     for name in only or _ZIP_INGESTS:

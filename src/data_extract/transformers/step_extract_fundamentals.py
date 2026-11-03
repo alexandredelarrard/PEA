@@ -8,7 +8,7 @@ Fundamentals / financials extraction:
     rides the facts walk and lands in `fundamentals_employees`. `FundamentalsValidator`
     follows at Phase 5b.
 Both layers are dormant in `run()` (the `fundamentals` command runs them). Earnings surprises are
-`StepExtractPrices.run_earnings_surprises`; the notes and financial-statement zips are `StepExtractZips`.
+`StepExtractPrices.run_earnings_surprises`; the notes zips are `StepExtractZips`.
 """
 
 from omegaconf import DictConfig

@@ -15,23 +15,21 @@ from src.data_extract import cli as cli_mod
 from src.data_extract.transformers import step_extract_zips as module
 from src.data_extract.transformers.step_extract_zips import StepExtractZips, ZipsOptions
 
-DOWNLOADS = ("insider_download", "notes_download", "statements_download", "ftd_download", "sec_tickers")
-INGESTS = ("insider_ingest", "notes_ingest", "statements_ingest", "ftd_ingest")
+DOWNLOADS = ("insider_download", "notes_download", "ftd_download", "sec_tickers")
+INGESTS = ("insider_ingest", "notes_ingest", "ftd_ingest")
 METHODS = {
     "insider_download": "run_download_insider",
     "notes_download": "run_download_financial_notes",
-    "statements_download": "run_download_financial_statements",
     "ftd_download": "run_download_fails_to_deliver",
     "sec_tickers": "run_download_sec_tickers",
     "insider_ingest": "run_ingest_insider",
     "notes_ingest": "run_ingest_financial_notes",
-    "statements_ingest": "run_ingest_financial_statements",
     "ftd_ingest": "run_ingest_fails_to_deliver",
 }
 
 
 def _config() -> SimpleNamespace:
-    paths = SimpleNamespace(insider_transactions="insider", financial_notes="notes", financial_statements="statements", fails_deliver="ftd")
+    paths = SimpleNamespace(insider_transactions="insider", financial_notes="notes", fails_deliver="ftd")
     return SimpleNamespace(data_extract=SimpleNamespace(years_history=15), local=SimpleNamespace(paths=paths))
 
 
@@ -56,13 +54,11 @@ def _stub(monkeypatch: pytest.MonkeyPatch, calls: list[tuple[str, tuple, dict]],
     monkeypatch.setattr(module, "notes_periods", periods)
     monkeypatch.setattr(module, "download_insider_transactions", mark("insider_download", []))
     monkeypatch.setattr(module, "download_notes_periods", mark("notes_download"))
-    monkeypatch.setattr(module, "download_financial_statements", mark("statements_download"))
     monkeypatch.setattr(module, "download_fails_to_deliver", mark("ftd_download"))
     monkeypatch.setattr(module, "download_sec_company_tickers", mark("sec_tickers"))
     monkeypatch.setattr(module, "fetch_insider_transactions", mark("insider_ingest"))
     monkeypatch.setattr(module, "ingest_financial_notes", mark("notes_ingest"))
     monkeypatch.setattr(module, "repair_notes_availability", mark("notes_repair"))
-    monkeypatch.setattr(module, "fetch_financial_statements", mark("statements_ingest"))
     monkeypatch.setattr(module, "fetch_fails_to_deliver", mark("ftd_ingest"))
     return scrapes
 
@@ -101,13 +97,11 @@ def test_options_reach_every_source(monkeypatch: pytest.MonkeyPatch) -> None:
     assert insider_args[1:] == (["AAA"], 15) and insider_kwargs == {"reparse": True, "as_of": as_of, "all_tickers": ["AAA", "BBB"]}
     scope = seen["notes_ingest"][0][2]
     assert (scope.tickers, list(scope.all_tickers), scope.run_date, scope.full) == (["AAA"], ["AAA", "BBB"], as_of, True)
-    statements_args, statements_kwargs = seen["statements_ingest"]
-    assert statements_args[1:] == (["AAA"], 15) and statements_kwargs["reparse"] and statements_kwargs["as_of"] == as_of
     ftd_args, ftd_kwargs = seen["ftd_ingest"]
     assert ftd_args[1:] == (["AAA"], True, as_of) and ftd_kwargs == {"all_tickers": ["AAA", "BBB"]}
 
     print("\n=== SANITY CHECK: StepExtractZips options ===")
-    print("  tickers, universe, full and run date declared once in the init reach all four ingests")
+    print("  tickers, universe, full and run date declared once in the init reach all three ingests")
 
 
 def test_repair_availability_only_repairs_the_notes_clocks(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -158,4 +152,4 @@ def test_cli_only_runs_the_named_sources(monkeypatch: pytest.MonkeyPatch) -> Non
     assert order == ["notes_ingest", "ftd_ingest", "insider_download", *INGESTS], order
 
     print("\n=== SANITY CHECK: CLI --only (D-16) ===")
-    print("  zips-ingest --only notes --only ftd -> 2 sources; zips-download --only insider -> 1; zips-ingest -> all 4")
+    print("  zips-ingest --only notes --only ftd -> 2 sources; zips-download --only insider -> 1; zips-ingest -> all 3")

@@ -1,4 +1,4 @@
-"""Zips step: the SEC bulk data sets (Form 3/4/5, Notes, Financial Statements, fails-to-deliver) and SEC's ticker list.
+"""Zips step: the SEC bulk data sets (Form 3/4/5, Notes, fails-to-deliver) and SEC's ticker list.
 
 The download phase only caches archives (its one write is the one-row `sec_company_tickers` snapshot); the identity
 step reads those caches; the ingest phase then parses the cached archives into their tables, still downloading a
@@ -23,7 +23,6 @@ from src.data_extract.utils.zips.fetch_financial_notes import (
     notes_periods,
     repair_notes_availability,
 )
-from src.data_extract.utils.zips.fetch_financial_statements import download_financial_statements, fetch_financial_statements, statement_quarters
 from src.data_extract.utils.zips.fetch_insider_transactions import download_insider_transactions, fetch_insider_transactions
 from src.data_extract.utils.zips.zip_archive import ZipScope
 from src.utils.step import Step
@@ -48,7 +47,6 @@ class StepExtractZips(Step):
         self._options = options or ZipsOptions()
         paths = config.local.paths
         self._notes_cache = cache_dir(context, paths.financial_notes)
-        self._statements_cache = cache_dir(context, paths.financial_statements)
         self._years_history = int(config.data_extract.years_history)
         self._all_tickers = load_universe_tickers(context)
         self._run_date = run_date(self._options.as_of)
@@ -69,9 +67,6 @@ class StepExtractZips(Step):
     def run_download_financial_notes(self) -> int:
         return download_notes_periods(self._context, self._notes_cache, self._notes_period_list())
 
-    def run_download_financial_statements(self) -> int:
-        return download_financial_statements(self._context, self._statements_cache, statement_quarters(self._years_history, self._run_date))
-
     def run_download_fails_to_deliver(self) -> int:
         return download_fails_to_deliver(self._context, self._years_history, self._options.full, self._run_date)
 
@@ -81,7 +76,6 @@ class StepExtractZips(Step):
     def run_download(self) -> None:
         self.run_download_insider()
         self.run_download_financial_notes()
-        self.run_download_financial_statements()
         self.run_download_fails_to_deliver()
         self.run_download_sec_tickers()
 
@@ -96,12 +90,6 @@ class StepExtractZips(Step):
             return repair_notes_availability(self._context, self._notes_cache)
         return ingest_financial_notes(self._context, self._notes_cache, self._scope, self._notes_period_list())
 
-    def run_ingest_financial_statements(self) -> int:
-        scope = self._scope
-        return fetch_financial_statements(
-            self._context, scope.tickers, self._years_history, reparse=scope.full, as_of=scope.run_date, all_tickers=scope.all_tickers
-        )
-
     def run_ingest_fails_to_deliver(self) -> int:
         scope = self._scope
         return fetch_fails_to_deliver(self._context, scope.tickers, scope.full, scope.run_date, all_tickers=scope.all_tickers)
@@ -109,7 +97,6 @@ class StepExtractZips(Step):
     def run_ingest(self) -> None:
         self.run_ingest_insider()
         self.run_ingest_financial_notes()
-        self.run_ingest_financial_statements()
         self.run_ingest_fails_to_deliver()
 
     def run(self) -> None:

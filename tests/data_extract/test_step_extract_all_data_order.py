@@ -23,7 +23,6 @@ DOMAIN_STEPS = (*PRE_EDGAR_STEPS, *EDGAR_AND_LLM, "behavioral")
 IDENTITY_STAGE = (
     "insider_download",
     "notes_download",
-    "statements_download",
     "ftd_download",
     "sec_tickers",
     "dei_capture",
@@ -35,7 +34,7 @@ IDENTITY_STAGE = (
     "identity_refresh",
     "propagate",
 )
-ZIP_INGESTS = ("insider_ingest", "notes_ingest", "statements_ingest", "ftd_ingest")
+ZIP_INGESTS = ("insider_ingest", "notes_ingest", "ftd_ingest")
 
 
 def _step(monkeypatch, order: list[str], *, boom: str | None = None) -> Any:
@@ -57,12 +56,10 @@ def _step(monkeypatch, order: list[str], *, boom: str | None = None) -> Any:
     monkeypatch.setattr(zips_module, "notes_periods", lambda context, years_history, today: ["2026q1"])
     monkeypatch.setattr(zips_module, "download_insider_transactions", mark("insider_download", []))
     monkeypatch.setattr(zips_module, "download_notes_periods", mark("notes_download", 0))
-    monkeypatch.setattr(zips_module, "download_financial_statements", mark("statements_download", 0))
     monkeypatch.setattr(zips_module, "download_fails_to_deliver", mark("ftd_download", 0))
     monkeypatch.setattr(zips_module, "download_sec_company_tickers", mark("sec_tickers", 0))
     monkeypatch.setattr(zips_module, "fetch_insider_transactions", mark("insider_ingest", 0))
     monkeypatch.setattr(zips_module, "ingest_financial_notes", mark("notes_ingest", 0))
-    monkeypatch.setattr(zips_module, "fetch_financial_statements", mark("statements_ingest", 0))
     monkeypatch.setattr(zips_module, "fetch_fails_to_deliver", mark("ftd_ingest", 0))
     monkeypatch.setattr(identity_module, "cache_dir", lambda context, name: Path("cache") / name)
     monkeypatch.setattr(identity_module, "load_universe_tickers", lambda context: ["AAA", "BBB"])
@@ -110,7 +107,6 @@ def _step(monkeypatch, order: list[str], *, boom: str | None = None) -> Any:
             paths=SimpleNamespace(
                 insider_transactions="sec_insider_transactions",
                 financial_notes="notes",
-                financial_statements="statements",
                 fails_deliver="sec_fails_to_deliver",
             )
         ),

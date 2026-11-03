@@ -23,6 +23,12 @@ This page records the latest migrated measurements of the local PostgreSQL volum
 
 The measured environment was PostgreSQL 16 in container `pea_db`, database `pea`, local owner role `alexandre`, backed by volume `stock_pick_strat_pgdata`. At the August snapshot it occupied roughly 19 GB and held 41 physical tables in `public`.
 
+## Universe table cutover (pending, 2026-11-03)
+
+- Code reads the universe from `tickers_universe` through `context.universe`; the table is not in the live volume until the user runs the cutover: C1 `data_extract universe` creates it, C2 compares it with `sp500_tickers`, C3 backs up then drops `sp500_tickers`.
+- Until C3, `sp500_tickers` is still present but no code reads it. Until C1, every stage raises `UniverseError` (table missing) and names the command to run.
+- Back up `tickers_universe` before ever dropping it: a rebuild loses `universe_added_on`, so every ticker would look new and be backfilled.
+
 ## Disposable text-cube test state (2026-10-22)
 
 At the end of user-authorized real-model validation for commit `96e77f81`, the existing PostgreSQL database was intentionally left as a disposable test database. Only the text source/cube were narrowed: `earnings_call_sections` held 253 real calls/19,210 paragraphs across eight tickers, and `cube_part_text` held 15,639 rebuilt rows across seven output tickers. Existing sentiment/embedding tables remained, with selected calls generated or repaired. Price, issuer-identity and release tables were unchanged by that test.

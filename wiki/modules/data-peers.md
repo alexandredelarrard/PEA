@@ -42,7 +42,7 @@ The shared output folder contains `sector_peers.json` and its retained `sector_p
 
 ## Dependencies
 
-The module reads prices and the universe through [DataStore](./data-store.md), uses shared market-series utilities, and consumes the embedding client exposed by [GPT extraction](./gpt-extract.md).
+The module reads the universe through `context.universe` and the universe tickers' prices through [DataStore](./data-store.md), uses shared market-series utilities, and consumes the embedding client exposed by [GPT extraction](./gpt-extract.md).
 
 ## Participates in
 

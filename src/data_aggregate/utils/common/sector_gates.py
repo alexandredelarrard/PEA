@@ -33,19 +33,27 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from src.utils.tickers_universe.vocabulary import (
+    BANKS,
+    ENERGY,
+    EQUITY_REITS,
+    FINANCIALS,
+    INSURANCE,
+    PHARMA_BIOTECH_LIFE_SCIENCES,
+    UTILITIES,
+)
 
 __all__ = ["UnknownKpiFamilyError", "row_gate", "family_tickers", "mask_columns"]
 
-# The GICS scope each sector-KPI family is defined for, as (level, accepted values). The names
-# are `tickers_universe.vocabulary` values (checked by a test).
+# The GICS scope each sector-KPI family is defined for, as (level, accepted values).
 SECTOR_KPI_SCOPE: dict[str, tuple[str, tuple[str, ...]]] = {
-    "bank": ("industry_group", ("Banks",)),
-    "insurance": ("industry_group", ("Insurance",)),
-    "financials": ("sector", ("Financials",)),
-    "reit": ("industry_group", ("Equity Real Estate Investment Trusts (REITs)",)),
-    "energy": ("sector", ("Energy",)),
-    "utilities": ("sector", ("Utilities",)),
-    "pharma": ("industry_group", ("Pharmaceuticals, Biotechnology & Life Sciences",)),
+    "bank": ("industry_group", (BANKS,)),
+    "insurance": ("industry_group", (INSURANCE,)),
+    "financials": ("sector", (FINANCIALS,)),
+    "reit": ("industry_group", (EQUITY_REITS,)),
+    "energy": ("sector", (ENERGY,)),
+    "utilities": ("sector", (UTILITIES,)),
+    "pharma": ("industry_group", (PHARMA_BIOTECH_LIFE_SCIENCES,)),
 }
 
 

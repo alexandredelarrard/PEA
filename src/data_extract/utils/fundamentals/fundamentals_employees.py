@@ -854,9 +854,6 @@ def fetch_fundamentals_employees(
     context.ensure_edgar_identity()
     configure(context)
     cik_map = universe_rows(context, tickers)
-    missing = set(tickers) - set(cik_map["ticker"])
-    if missing:
-        raise ValueError(f"Employee extraction has no roster CIK for {', '.join(sorted(missing))}")
     since = pd.Timestamp.today().normalize() - pd.DateOffset(years=years_history)
 
     # get lineage and key dates

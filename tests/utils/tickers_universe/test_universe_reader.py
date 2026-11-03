@@ -60,7 +60,18 @@ def test_gics_accessors_and_added_on(sqlite_store) -> None:
     frame = pd.DataFrame({"ticker": ["XOM", "AAPL", "NEW", "ZZZ"]})
 
     assert universe.attach_gics(frame)["sector"].tolist()[:2] == ["Energy", "Information Technology"]
-    assert universe.gics_codes(frame.copy())["sector"].tolist() == [0, 1, -1, -1]
+    assert universe.gics_codes(frame)["sector"].tolist() == [0, 1, -1, -1] and list(frame.columns) == ["ticker"]
     assert universe.new_since(7, pd.Timestamp("2026-11-02")) == {"NEW"}
     assert set(universe.added_on_dates(["NEW", "AAPL"], pd.Timestamp("2026-10-01"))) == {"AAPL"}
-    print("\n=== SANITY CHECK: GICS and dates === names attached, sorted codes with -1 for unknown, NEW is the only new ticker.")
+    print("\n=== SANITY CHECK: GICS and dates === names attached, sorted codes with -1 for unknown (input untouched), NEW is the only new ticker.")
+
+
+def test_class_separators_resolve_to_the_yfinance_spelling(sqlite_store) -> None:
+    assert universe_config(make_config(["BRK.B", "aapl"], {"BRK.B": ["BRK.A"]})) == (["AAPL", "BRK-B"], {"BRK-B": ["BRK-A"]})
+    universe = seed_universe(sqlite_store, ["AAPL", "BRK-B"], aliases={"BRK-B": ["BRK-A"]})
+
+    assert universe.subset(["brk.b", "BRK/B", "AAPL"]) == ["BRK-B", "AAPL"]
+    assert universe.roster["ticker"].tolist() == ["AAPL", "BRK-B"]
+    with pytest.raises(UniverseError, match=r"BRK-A \(alias of BRK-B\)"):
+        universe.subset(["BRK.A"])
+    print("\n=== SANITY CHECK: class separators === BRK.B and BRK/B resolve to BRK-B; -t BRK.A is named as the alias of BRK-B.")

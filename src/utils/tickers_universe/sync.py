@@ -5,8 +5,9 @@ sync.py  (src/utils/tickers_universe/sync.py)
 
 * A row is removed when its ticker leaves the yml and built when one enters: name, CIK and GICS
   from Wikipedia's S&P 500 table (Sharadar's name and `secfilings` CIK, NULL GICS, for a ticker
-  Wikipedia does not list); `universe_added_on` = 2000-01-01 when the ticker already has prices
-  (an established name, so a first build does not mark everything new), else `as_of`.
+  Wikipedia does not list; Sharadar's CIK for a blank Wikipedia CIK); `universe_added_on` =
+  2000-01-01 when the ticker already has prices (an established name, so a first build does not
+  mark everything new), else `as_of`.
 * name, CIK, GICS and `universe_added_on` of an existing row are never rewritten.
 * `cusips` and the Sharadar category columns follow `sharadar_tickers` every run; only rows that
   differ are written, so an unchanged night writes nothing.
@@ -109,17 +110,20 @@ def _cusips(sharadar: pd.DataFrame, symbols: list[str]) -> str | None:
 
 def _new_rows(store: DataStore, entering: list[str], sharadar: pd.DataFrame, as_of: pd.Timestamp) -> pd.DataFrame:
     """Carried columns for tickers with no stored row: Wikipedia first, Sharadar's name and CIK otherwise."""
+    priced = set(store.distinct(Tables.prices, "ticker", where={"ticker": entering}))
     wiki = wikipedia_sp500().drop_duplicates("ticker").set_index("ticker").reindex(entering)
+
+    # Sharadar fills what Wikipedia lacks: the name of an unlisted ticker, any blank CIK.
     missing = wiki.index[wiki["name"].isna()].tolist()
     if missing:
         logger.warning("%s not in Wikipedia's S&P 500 table: Sharadar name and CIK, NULL GICS", missing)
         wiki.loc[missing, "name"] = sharadar.loc[missing, "name"]
-        wiki.loc[missing, "cik"] = [pad_cik(s) for s in sharadar.loc[missing, "secfilings"].str.extract(r"CIK=(\d+)", expand=False).fillna("")]
+    blank = wiki.index[wiki["cik"].fillna("").eq("")].tolist()
+    wiki.loc[blank, "cik"] = [pad_cik(s) for s in sharadar.loc[blank, "secfilings"].str.extract(r"CIK=(\d+)", expand=False).fillna("")]
     no_cik = sorted(wiki.index[wiki["cik"].fillna("").eq("")])
     if no_cik:
         raise UniverseError(f"no CIK from Wikipedia or Sharadar for {no_cik}")
-    priced = set(store.distinct(Tables.prices, "ticker", where={"ticker": entering}))
-    wiki["universe_added_on"] = [ESTABLISHED_ADDED_ON if t in priced else pd.Timestamp(as_of).normalize() for t in entering]
+    wiki["universe_added_on"] = [ESTABLISHED_ADDED_ON if t in priced else as_of for t in entering]
     logger.info("%d ticker(s) enter %s (%d already priced)", len(entering), Tables.tickers_universe, len(priced))
     return wiki.reset_index(names="ticker")[CARRIED_COLUMNS]
 

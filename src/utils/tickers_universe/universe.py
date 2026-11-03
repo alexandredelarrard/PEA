@@ -17,7 +17,7 @@ from omegaconf import DictConfig
 
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
-from src.utils.string import normalise_ticker, yahoo_symbol
+from src.utils.string import yahoo_symbol
 
 GICS_COLUMNS = ("sector", "industry_group")
 SYNC_COMMAND = "python -m src data_extract universe"
@@ -31,13 +31,13 @@ def universe_config(config: DictConfig) -> tuple[list[str], dict[str, list[str]]
     """The sorted `universe.tickers` and the `universe.aliases` map (owner -> alias symbols), validated."""
     if "universe" not in config:
         raise UniverseError("configs/universe.yml is missing (no `universe` key in the config)")
-    raw = [normalise_ticker(t) for t in config.universe.get("tickers") or []]
+    raw = [yahoo_symbol(t) for t in config.universe.get("tickers") or []]
     if not raw:
         raise UniverseError("configs/universe.yml lists no ticker")
     duplicated = sorted({t for t in raw if raw.count(t) > 1})
     if duplicated:
         raise UniverseError(f"configs/universe.yml lists these tickers twice: {duplicated}")
-    aliases = {normalise_ticker(owner): [yahoo_symbol(a) for a in symbols] for owner, symbols in (config.universe.get("aliases") or {}).items()}
+    aliases = {yahoo_symbol(owner): [yahoo_symbol(a) for a in symbols] for owner, symbols in (config.universe.get("aliases") or {}).items()}
     orphans = sorted(set(aliases) - set(raw))
     if orphans:
         raise UniverseError(f"configs/universe.yml aliases keys not in its tickers: {orphans}")
@@ -71,6 +71,11 @@ class Universe:
         return frozenset(self._alias_owner)
 
     @property
+    def roster(self) -> pd.DataFrame:
+        """`ticker, cik` of every universe ticker."""
+        return self._frame[["ticker", "cik"]].copy()
+
+    @property
     def cik_by_ticker(self) -> dict[str, str]:
         return dict(zip(self._frame["ticker"], self._frame["cik"], strict=True))
 
@@ -94,11 +99,12 @@ class Universe:
         return out
 
     def gics_codes(self, df: pd.DataFrame) -> pd.DataFrame:
-        """`df` with `sector` and `industry_group` as int16 category codes (sorted names present in `df`; unknown -> -1)."""
+        """A copy of `df` with `sector` and `industry_group` as int16 category codes (sorted names present in `df`; unknown -> -1)."""
+        out = df.copy()
         for column in GICS_COLUMNS:
-            cats = df["ticker"].astype(str).map(self._gics_map(column)).astype("category")
-            df[column] = cats.cat.codes.astype("int16")
-        return df
+            cats = out["ticker"].astype(str).map(self._gics_map(column)).astype("category")
+            out[column] = cats.cat.codes.astype("int16")
+        return out
 
     def added_on_dates(self, tickers: Collection[str], as_of: pd.Timestamp) -> dict[str, pd.Timestamp]:
         """`universe_added_on` of each of `tickers` on or before `as_of`."""
@@ -122,8 +128,8 @@ class Universe:
         return not self.outside(tickers)
 
     def subset(self, names: Iterable[str]) -> list[str]:
-        """`names` normalised and de-duplicated in order; raises listing every name outside the universe."""
-        wanted = list(dict.fromkeys(t for t in (normalise_ticker(n) for n in names) if t))
+        """`names` in yfinance spelling and de-duplicated in order; raises listing every name outside the universe."""
+        wanted = list(dict.fromkeys(t for t in (yahoo_symbol(n) for n in names) if t))
         known = set(self._tickers)
         unknown = [f"{t} (alias of {self._alias_owner[t]})" if t in self._alias_owner else t for t in wanted if t not in known]
         if unknown:

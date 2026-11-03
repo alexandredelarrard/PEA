@@ -44,12 +44,17 @@ def store(sqlite_store, roster, monkeypatch):
     sharadar["lastupdated"] = pd.to_datetime(sharadar["lastupdated"])
     sqlite_store.save(Tables.sharadar_tickers, sharadar)
     sqlite_store.save(Tables.prices, pd.DataFrame({"ticker": roster["ticker"], "date": pd.Timestamp("2026-10-30"), "close": 1.0}))
-    page = roster.assign(Symbol=roster["ticker"].str.replace("-", "."), CIK=roster["cik"].astype(int)).rename(
+    page = parse_sp500_table_from(roster)
+    monkeypatch.setattr(sync_module, "wikipedia_sp500", lambda: page)
+    return sqlite_store
+
+
+def parse_sp500_table_from(roster: pd.DataFrame) -> pd.DataFrame:
+    """The roster rendered as Wikipedia's table (`.` class separator, unpadded CIK) and parsed back."""
+    page = roster.assign(Symbol=roster["ticker"].str.replace("-", "."), CIK=pd.to_numeric(roster["cik"]).astype("Int64")).rename(
         columns={"name": "Security", "sector": "GICS Sector", "sub_industry": "GICS Sub-Industry"}
     )
-    html = page[["Symbol", "Security", "GICS Sector", "GICS Sub-Industry", "CIK"]].to_html(index=False)
-    monkeypatch.setattr(sync_module, "wikipedia_sp500", lambda: parse_sp500_table(html))
-    return sqlite_store
+    return parse_sp500_table(page[["Symbol", "Security", "GICS Sector", "GICS Sub-Industry", "CIK"]].to_html(index=False))
 
 
 def test_first_build_matches_the_pre_change_roster(store, roster, config) -> None:
@@ -136,3 +141,36 @@ def test_a_ticker_without_a_sharadar_row_aborts(store) -> None:
     assert not store.exists(Tables.tickers_universe)
     print("\n=== SANITY CHECK: unmatched ticker ===")
     print("  FOO has no Sharadar row -> UniverseError naming it, nothing written.")
+
+
+def test_alias_cusips_join_the_union_and_a_listed_row_beats_a_delisted_one(store, config) -> None:
+    extra = pd.DataFrame(
+        {
+            "table": ["fundamentals", "fundamentals"],
+            "permaticker": [900001, 900002],
+            "ticker": ["GOOG", "AAPL"],
+            "name": ["ALPHABET INC CLASS C", "OLD APPLE"],
+            "isdelisted": ["N", "Y"],
+            "cusips": ["99999X999", "11111X111"],
+            "lastupdated": pd.to_datetime(["2026-08-01", "2026-10-01"]),
+        }
+    )
+    store.save(Tables.sharadar_tickers, extra)
+    sync(store, config, AS_OF)
+    built = Universe(store, config).frame.set_index("ticker")
+
+    assert built.loc["GOOGL", "cusips"] == "02079K305 38259P508 99999X999"
+    assert built.loc["AAPL", "sharadar_name"] == "APPLE INC" and built.loc["AAPL", "cusips"] == "037833100"
+    print("\n=== SANITY CHECK: Sharadar row choice ===")
+    print("  GOOG's own CUSIP joins GOOGL's union; AAPL keeps its listed row over a newer delisted one.")
+
+
+def test_a_blank_wikipedia_cik_takes_sharadars(store, roster, config, monkeypatch) -> None:
+    page = parse_sp500_table_from(roster.assign(cik=roster["cik"].where(roster["ticker"] != "AAPL")))
+    monkeypatch.setattr(sync_module, "wikipedia_sp500", lambda: page)
+    sync(store, config, AS_OF)
+    built = Universe(store, config).frame.set_index("ticker")
+
+    assert built.loc["AAPL", "cik"] == "0000320193" and built.loc["AAPL", "name"] == "Apple Inc."
+    print("\n=== SANITY CHECK: blank Wikipedia CIK ===")
+    print("  AAPL listed on Wikipedia with no CIK takes Sharadar's secfilings CIK 0000320193; the Wikipedia name stays.")

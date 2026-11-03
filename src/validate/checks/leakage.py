@@ -142,7 +142,7 @@ def _longest_prefix_sources(
 def _last_universe_session(context: Context, reference: Table | str) -> pd.Timestamp | None:
     """The reference table's latest date over universe tickers (`prices` also holds secondary share classes)."""
     universe = set(context.universe.tickers)
-    by_ticker = context.store.max_date_by(reference, "ticker") if universe else {}
+    by_ticker = context.store.max_date_by(reference, "ticker")
     if not by_ticker:
         return context.store.max_date(reference)
     dates = [day for ticker, day in by_ticker.items() if ticker in universe]

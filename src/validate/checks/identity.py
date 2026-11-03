@@ -391,10 +391,10 @@ def check_identity(context: Context, *, tickers: Sequence[str] | None = None) ->
         pd.DataFrame(columns=list(REMOVAL_COLUMNS)),
     )
     lineage = _lineage(context)
-    roster = context.universe.frame[["ticker", "cik"]]
+    roster = context.universe.roster
     if lineage is None:
         return empty
-    scope = sorted(set(tickers) & set(roster["ticker"])) if tickers else sorted(roster["ticker"])
+    scope = sorted(tickers) if tickers else sorted(roster["ticker"])
     if "role" not in lineage.columns:
         return _unmigrated_report(context, _from_old_shape(lineage, roster), scope)
     removals = pending_removals(context, lineage, scope)

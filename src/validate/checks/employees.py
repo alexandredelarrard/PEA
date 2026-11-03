@@ -241,7 +241,7 @@ def check_employees(
     table = Tables.fundamentals_employees.name
     start: pd.Timestamp = since if since is not None else _window_start(context)
     directory = directory if directory is not None else index_dir(context)
-    roster = context.universe.frame[["ticker", "cik"]]
+    roster = context.universe.roster
     lineage = _lineage(context)
     empty = pd.DataFrame()
     if lineage is None:

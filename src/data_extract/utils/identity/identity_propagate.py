@@ -274,8 +274,7 @@ def propagate_identity(
     """
     resolver = identity or load_identity(context)
     run_date = pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize()
-    universe = [ticker for ticker in tickers if ticker in resolver.roster_cik]
-    scopes = {ticker: resolver.filing_scope(ticker) for ticker in universe}
+    scopes = {ticker: resolver.filing_scope(ticker) for ticker in tickers}
     changed = _changed({ticker: scope.scope_changed_at for ticker, scope in scopes.items()}, run_date, every=every_ticker)
     if changed:
         context.log.info("identity propagate: %d ticker lineage scope(s) to re-check: %s", len(changed), ", ".join(changed))
@@ -284,8 +283,8 @@ def propagate_identity(
         records += _purge(context, spec, changed, resolver, dry_run=dry_run)
     reparsed = {} if dry_run else _reparse_bulk(context, changed, scopes, resolver, run_date)
     records += _refresh_insider(context, resolver, changed, dry_run=dry_run)
-    records += _refresh_fails(context, universe, run_date, dry_run=dry_run, every=every_ticker)
-    records += _refresh_short_volume(context, resolver, universe, run_date, dry_run=dry_run, every=every_ticker)
+    records += _refresh_fails(context, tickers, run_date, dry_run=dry_run, every=every_ticker)
+    records += _refresh_short_volume(context, resolver, tickers, run_date, dry_run=dry_run, every=every_ticker)
     removals = pd.DataFrame(records, columns=list(REMOVAL_COLUMNS))
     purged_facts = sorted(set(removals.loc[removals["table"] == Tables.fundamentals_facts.name, "ticker"]))
     if purged_facts and not dry_run:

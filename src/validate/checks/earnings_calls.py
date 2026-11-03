@@ -463,7 +463,7 @@ def _coverage(context: Context) -> tuple[dict[str, Any], dict[str, float], dict[
     )
     lineage = context.store.load(Tables.entity_lineage, columns=["cik", "entity_id", "role", "valid_from", "valid_to"], optional=True)
     lineage = None if lineage is None else lineage.drop_duplicates(ignore_index=True)
-    roster = context.universe.frame[["ticker", "cik"]]
+    roster = context.universe.roster
     identity = _identity(tenure, lineage, roster_tickers, roster)
     analysis_symbols = sorted(
         set(roster_tickers) | {symbol for entity in identity.roster_entity.values() for symbol in identity.aliases_by_entity.get(entity, set())}

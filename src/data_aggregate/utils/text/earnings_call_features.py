@@ -76,7 +76,7 @@ def sentiment_kpis(sentiment: pd.DataFrame) -> pd.DataFrame:
 def load_issuer_identity(context: Context) -> tuple[pd.DataFrame | None, pd.DataFrame | None, pd.DataFrame | None]:
     """Canonical roster, consolidating lineage and trusted symbol ownership for stored calls."""
     # Load each identity table once with its consumer projection.
-    roster = context.universe.frame[["ticker", "cik"]]
+    roster = context.universe.roster
     lineage = context.store.load(Tables.entity_lineage, columns=["cik", "entity_id", "role", "valid_from", "valid_to"], optional=True)
     tenure = context.store.load(
         Tables.symbol_tenure, columns=["symbol", "issuer_cik", "valid_from", "valid_to"], where={"source": ["form345", "manual"]}, optional=True

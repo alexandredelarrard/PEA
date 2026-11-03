@@ -864,7 +864,9 @@ def test_missing_report_period_keeps_filing_date_and_a_foreign_cik_is_skipped_an
     foreign = Filing("foreign", "2025-03-01", "We had 9 employees.")
     foreign.cik = "0000000002"
     foreign.html = lambda: pytest.fail("a foreign filing was read or sent to the LLM")
-    identity = SimpleNamespace(owns=lambda ticker, cik: str(cik).zfill(10) == "0000000001", filing_scope=lambda t: FilingScope.roster_only(t, "0000000001"))
+    identity = SimpleNamespace(
+        owns=lambda ticker, cik: str(cik).zfill(10) == "0000000001", filing_scope=lambda t: FilingScope.roster_only(t, "0000000001")
+    )
     scope = mod.EdgarScope(identity)
     result = build(monkeypatch, [filing, foreign], {"no-period": answer(40000, "We had 40,000 employees.")}, scope=scope)
     assert result.frame["as_of"].tolist() == [pd.Timestamp("2024-03-01")]
@@ -1061,14 +1063,6 @@ def test_a_rerun_without_full_makes_no_llm_call_for_decided_dates(monkeypatch, s
         f"\nSANITY: night one sent {first} filings and stored 3 rows (found, not_disclosed, unsupported); the rerun without -F "
         f"made {len(tasks) - first} LLM calls, so NULL-status rows count as decided."
     )
-
-
-def test_missing_roster_cik_cannot_certify_coverage(monkeypatch):
-    context = SimpleNamespace(ensure_edgar_identity=lambda: None)
-    monkeypatch.setattr(mod, "universe_rows", lambda *args: pd.DataFrame(columns=["ticker", "cik"]))
-    with pytest.raises(ValueError, match="no roster CIK for AAA"):
-        mod.fetch_fundamentals_employees(context, ["AAA"], 15)
-    print("\nSANITY: an unresolved requested ticker cannot be reported as fully covered.")
 
 
 def test_cli_still_dispatches_explicit_full_replay(monkeypatch):

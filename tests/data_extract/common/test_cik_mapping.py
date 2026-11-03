@@ -1,59 +1,52 @@
-"""
-Ticker -> CIK resolution. `sp500_tickers` is the single source of truth (it carries
-`cik` + `name` + GICS), so `load_cik_mapping` reads it directly; the redundant,
-SEC-sourced `cik_mapping` table (whose company_tickers.json feed mismapped active
-tickers like XOM to a non-filing shell) was retired.
+"""Ticker -> CIK, name and GICS come from `context.universe` (the `tickers_universe` rows); `load_cik_mapping` is gone.
 
-test_load_cik_mapping_reads_sp500_tickers — reads sp500_tickers, zero-pads the CIK,
-    and preserves the name and GICS columns callers rely on.
+test_universe_rows_are_the_requested_universe_rows — `universe_rows` keeps the 10-digit CIK, the name and GICS.
+test_fundamentals_gics_come_from_the_universe — the XBRL regime GICS dict equals the universe rows.
 """
 
 from __future__ import annotations
 
+import importlib.util
 from types import SimpleNamespace
 from typing import Any
 
-import pandas as pd
+from src.data_extract.utils.edgar_extract.edgar_driver import universe_rows
+from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import fundamentals_fetch
+from tests.support.universe import seed_universe
 
-from src.data_extract.utils.edgar_extract import sec_utils
+ROWS = {
+    "XOM": {"name": "ExxonMobil", "cik": "0000034088", "sector": "Energy", "industry_group": "Energy", "sub_industry": "Integrated Oil & Gas"},
+    "AAPL": {
+        "name": "Apple",
+        "cik": "0000320193",
+        "sector": "Information Technology",
+        "industry_group": "Technology Hardware & Equipment",
+        "sub_industry": "Technology Hardware, Storage & Peripherals",
+    },
+    "JPM": {"name": "JPMorgan", "cik": "0000019617", "sector": "Financials", "industry_group": "Banks", "sub_industry": "Diversified Banks"},
+}
 
 
-def test_load_cik_mapping_reads_sp500_tickers(sqlite_store):
-    sp500 = pd.DataFrame(
-        [
-            {
-                "ticker": "XOM",
-                "name": "ExxonMobil",
-                "cik": "0000034088",
-                "sector": "Energy",
-                "industry_group": "Energy",
-                "sub_industry": "Integrated Oil & Gas",
-            },
-            {
-                "ticker": "AAPL",
-                "name": "Apple",
-                "cik": "320193",  # deliberately not zero-padded
-                "sector": "Information Technology",
-                "industry_group": "Technology Hardware & Equipment",
-                "sub_industry": "Technology Hardware, Storage & Peripherals",
-            },
-        ]
-    )
+def test_universe_rows_are_the_requested_universe_rows(sqlite_store):
+    context: Any = SimpleNamespace(universe=seed_universe(sqlite_store, list(ROWS), rows=ROWS))
 
-    sqlite_store.replace("sp500_tickers", sp500)  # the ONLY table it may read (no cik_mapping)
-    context: Any = SimpleNamespace(store=sqlite_store)
-    m = sec_utils.load_cik_mapping(context)
-    d = {r["ticker"]: r for _, r in m.iterrows()}
+    rows = universe_rows(context, ["XOM", "AAPL"])
+    by_ticker = {r["ticker"]: r for _, r in rows.iterrows()}
 
-    # CIK zero-padded to 10 digits for SEC URLs (even when stored short)
-    assert d["AAPL"]["cik"] == "0000320193"
-    assert d["XOM"]["cik"] == "0000034088"
-    # name and GICS preserved (callers do r.get("name"))
-    assert {"name", "sector", "industry_group", "sub_industry"} <= set(m.columns)
-    assert d["XOM"]["name"] == "ExxonMobil"
-    assert d["XOM"]["sector"] == "Energy"
+    assert set(by_ticker) == {"XOM", "AAPL"}
+    assert by_ticker["AAPL"]["cik"] == "0000320193" and by_ticker["XOM"]["name"] == "ExxonMobil"
+    assert {"name", "sector", "industry_group", "sub_industry"} <= set(rows.columns)
+    assert importlib.util.find_spec("src.data_extract.utils.edgar_extract.sec_utils") is None
+    print("\n=== SANITY CHECK: universe rows ===")
+    print(f"  {sorted(by_ticker)} from context.universe; CIK {by_ticker['AAPL']['cik']}, name and GICS kept; sec_utils is gone. Validated.")
 
-    print("\n=== SANITY CHECK: load_cik_mapping from sp500_tickers ===")
-    print(
-        f"  reads sp500_tickers only; CIK zero-padded (AAPL {d['AAPL']['cik']}); name and GICS preserved. Redundant cik_mapping retired. Validated."
-    )
+
+def test_fundamentals_gics_come_from_the_universe(sqlite_store):
+    context: Any = SimpleNamespace(universe=seed_universe(sqlite_store, list(ROWS), rows=ROWS), config_dir="./configs")
+
+    gics = fundamentals_fetch(context).parse.keywords["gics_by_ticker"]
+
+    levels = ("sector", "industry_group", "sub_industry")
+    assert gics == {ticker: {level: row[level] for level in levels} for ticker, row in ROWS.items()}
+    print("\n=== SANITY CHECK: XBRL regime GICS ===")
+    print(f"  {len(gics)} tickers, three GICS levels each, equal to the tickers_universe rows. Validated.")

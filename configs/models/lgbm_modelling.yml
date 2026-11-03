@@ -5,69 +5,34 @@
 # LightGBM handles NaN/sparsity natively.
 lgbm:
   task: regression             # regression | classification (classification needs a {0,1} label)
-  learning_rate: 0.005
+  learning_rate: 0.004
   max_depth: 6
-  num_leaves: 31
-  subsample: 0.8
+  subsample: 0.78
   bagging_freq: 1
   colsample_bytree: 0.75
-  min_child_samples: 100
+  min_child_samples: 120
   lambda_l1: 5.0
   lambda_l2: 5.0
   num_boost_round: 600
-  early_stopping_rounds: 100
+  early_stopping_rounds: 80
   eval_metric: rmse
-  # Type registry shared by LGBM and RF; select these names in each feature list.
+
   categoricals:
   - industry_group
   - sector
 
   # Shared by LGBM and RF at all horizons, aligned to selected fitted inputs.
   monotonic:
-    enabled: false
+    enabled: true
     features:
-    # - f_reported_expected_eps_yield: 1   # OFF: linear sign opposite (coefficient and cluster net effect)
-    # - f_intangibles_to_assets: -1
-    # - f_pct_independent_directors: 1
-    # - ma_ratio_200: -1   # OFF: linear sign opposite (coefficient and cluster net effect)
-    # - ma_ratio_50: -1
-    # - rsi_14: -1
-    # - f_ceo_pay_vs_revenue_growth: 1   # OFF: sign differs between horizons; against literature: excess CEO pay growth -> agency cost -> negative (Bebchuk-Fried; Core et al.)
-    # - f_earnings_sue_lag3: -1   # OFF: against literature: SUE autocorrelation is positive at lags 1-3 (Bernard-Thomas); linear sign opposite (coefficient and cluster net effect)
-    # - f_auditor_vote_dissent: -1
-    # - f_y_rev_growth_accel: 1   # OFF: linear sign opposite (coefficient and cluster net effect)
-    # - f_sustainable_growth_rate: 1
-    # - f_option_overhang: 1   # OFF: sign differs between horizons; against literature: option overhang = future dilution -> negative (Core; Pontiff-Woodgate); linear sign opposite (coefficient and cluster net effect)
-    # - f_fcf_to_ev_vs_peers: 1   # OFF: sign differs between horizons
-    # - f_returnOnEquity: 1
-    # - f_board_dissent_median: 1
-    # - f_accruals_ratio: -1
-    # - f_reported_expected_eps_growth_qoq: -1
-    # - f_diluted_shares_growth: -1   # OFF: linear sign opposite (coefficient and cluster net effect)
-    # - f_director_equity_pay_pct_vs_peers: 1
-    # - f_dividend_growth: 1
-    # - f_book_yield: -1   # OFF: against literature: book-to-market value premium is positive (Fama-French); linear sign opposite (coefficient and cluster net effect)
-    # - f_board_tenure_dispersion: -1
-    # - f_payout_ratio: 1
-    # - f_board_dissent_breadth_20_vs_peers: 1
-    # - f_rd_capitalized_roic: 1
-    # - f_days_since_earnings: 1
-    # - f_auditor_tenure: 1
-    # - f_shareholder_yield: 1
-    # - f_oldest_director_age: -1
-    # - f_log_ceo_total_comp: 1   # OFF: sign differs between horizons; against literature: overpaid CEOs underperform (Cooper-Gulen-Rau); linear sign opposite (coefficient and cluster net effect)
-    # - f_avg_board_tenure_vs_hist: 1
-    # - f_dso_vs_hist: 1   # OFF: against literature: receivables build vs history -> lower returns (Sloan/Thomas-Zhang accrual family)
-    # - f_gmroi_vs_hist: 1
-    # - f_fcf_margin_vs_hist: 1
-    # - f_capex_to_dep: -1
-    # - f_sales_yield_vs_hist: -1   # OFF: against literature: cheaper than own history (higher sales yield) -> positive value signal; linear sign opposite (coefficient and cluster net effect)
-    # - f_insider_ownership_pct: -1
-    # - f_ebitda_to_ev_vs_hist: 1   # OFF: sign differs between horizons
-    # - f_intrinsic_yield: 1
-    # - f_ceo_pay_slice_delta_1y: 1   # OFF: against literature: rising CEO pay slice -> entrenchment, lower value (Bebchuk-Cremers-Peyer)
-    # - f_eps_surprise_4q_avg: 1
-    # - f_ocf_yield: 1   # OFF: linear sign opposite (coefficient and cluster net effect)
+      - f_rd_capitalized_roic: 1
+      - f_sbc_intensity: 1
+      - f_ic_insider_buy_value_mcap_180d: 1
+      - f_board_size_vs_peers: -1
+      - f_returnOnEquity: 1
+      - f_book_yield: -1
+      - f_revenue_cagr_3y: -1
+      - f_fcf_margin: 1
 
   columns:
   # PRICES / MOMENTUM cube (27)
@@ -669,16 +634,12 @@ lgbm:
     - f_board_size_vs_peers
     - f_ceo_excess_dissent
     - f_ceo_pay_slice
-    # - f_classified_board_removed   # OFF tier 2: insignificant + unstable + weak contribution
     - f_director_cash_fee_pct_vs_peers
     - f_director_equity_pay_pct
     - f_founder_ceo
     - f_governance_improvement_count
-    - f_majority_voting_added
-    # - f_majority_voting_removed   # OFF tier 2: insignificant + unstable + weak contribution
     - f_pay_return_peer_misalignment
     - f_pay_revenue_peer_misalignment
-    # - f_pay_up_return_down_severity   # OFF tier 2: insignificant + unstable + weak contribution
 
     # CATEGORICALS (2)
     - industry_group
@@ -728,7 +689,6 @@ lgbm:
     - f_intangibles_to_assets_vs_hist
     - f_intangibles_to_equity
     - f_margin_expansion_delta
-    - f_negative_equity
     - f_nwc_elasticity_vs_hist
     - f_operatingMargins
     - f_operatingMargins_vs_hist
@@ -760,7 +720,6 @@ lgbm:
     - f_ic_insider_cfo_buy_mcap_180d
     - f_ic_insider_director_buy_mcap_180d
     - f_ic_insider_net_buy_ratio_180d
-    - f_ic_insider_purchase_pct_prior
 
     # GOVERNANCE cube (101)
     - f_board_size
@@ -769,13 +728,9 @@ lgbm:
     - f_ceo_pay_slice
     - f_ceo_pay_vs_revenue_growth
     - f_director_equity_pay_pct
-    - f_founder_ceo
-    # - f_governance_improvement_count   # OFF tier 2: insignificant + unstable + weak contribution
-    # - f_majority_voting_added   # OFF tier 2: insignificant + unstable + weak contribution
     - f_pay_return_peer_misalignment
     - f_pay_revenue_gap
     - f_pay_revenue_peer_misalignment
-    - f_pay_up_return_down_severity
 
     # CATEGORICALS (2)
     - industry_group

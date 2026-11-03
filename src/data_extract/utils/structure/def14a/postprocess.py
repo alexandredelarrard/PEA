@@ -13,7 +13,8 @@ import pandas as pd
 from pydantic import BaseModel, ValidationError
 
 from src.data_extract.utils.edgar_extract.empty_markers import marker_mask
-from src.data_extract.utils.schemas.def14a_schema import (
+from src.data_extract.utils.structure.def14a.basis import complete_director_years, correct_basis
+from src.data_extract.utils.structure.def14a.def14a_schema import (
     BeneficialOwner,
     Def14AExtract,
     DirectorCompensation,
@@ -21,7 +22,6 @@ from src.data_extract.utils.schemas.def14a_schema import (
     ExecutiveCompensation,
     GovernanceProfile,
 )
-from src.data_extract.utils.structure.def14a.basis import complete_director_years, correct_basis
 from src.data_extract.utils.structure.def14a.flatten import (
     _CHILD_SPEC,
     _DIRECTOR_COMPONENT_COLS,

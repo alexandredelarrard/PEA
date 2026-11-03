@@ -43,28 +43,11 @@ BROWSER_HEADERS = {
     "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36; contact@example.com")
 }
 
-# Tickers EXCLUDED from the modelling universe for INSUFFICIENT HISTORY (< 4 years of price
-# data): recent IPOs / spin-offs that can't support the cube's multi-year look-backs.
-INSUFFICIENT_HISTORY_TICKERS: frozenset[str] = frozenset(
-    {
-        "HONA",  # Honeywell Aerospace spin-off (2026)
-        "FDXF",  # FedEx Freight spin-off (2026)
-        "Q",  # recent listing (2025)
-        "SNDK",  # Sandisk / Western Digital spin-off (2025)
-        "GEV",  # GE Vernova spin-off (2024)
-        "SOLV",  # Solventum / 3M spin-off (2024)
-        "VLTO",  # Veralto / Danaher spin-off (2023)
-        "KVUE",  # Kenvue / J&J spin-off (2023)
-        "GEHC",  # GE HealthCare spin-off (2022, ~3.6y -- closest to the 4y cutoff)
-    }
-)
-
 # --------------------------------------------------------------------------- #
 # SEC EDGAR endpoints (free, no key; require a descriptive User-Agent)         #
 # --------------------------------------------------------------------------- #
 SEC_SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 SEC_SUBMISSIONS_PAGE_URL = "https://data.sec.gov/submissions/{name}"
-SEC_COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 SEC_COMPANY_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 
 # A 13F-HR must be filed within 45 days of quarter-end, so a quarter's positions only
@@ -115,7 +98,6 @@ FUNDAMENTALS_CATALOGUE_SUBDIR = "fundamentals"
 FUNDAMENTALS_KPIS_FILENAME = "fundamentals_kpis.json"
 FUNDAMENTALS_REGIMES_FILENAME = "fundamentals_regimes.json"
 FUNDAMENTALS_EXCEPTIONS_FILENAME = "fundamentals_exceptions.json"
-FUNDAMENTALS_ROSTERS_FILENAME = "fundamentals_rosters.json"
 
 # --------------------------------------------------------------------------- #
 # Sharadar SF1 fundamentals (Sharadar DIRECT, api.sharadar.com).               #
@@ -548,46 +530,6 @@ SHARADAR_SEC_COUNTERPART: dict[str, tuple[tuple[str, ...], str]] = {
     "payables": (("accountsPayable",), "exact"),
 }
 
-#: Fields describing a DISCRETE EVENT rather than a continuing state or flow. A zero here is a
-#: fact -- "no business was acquired this quarter", "no debt was issued" -- and the mixed-ticker
-#: heuristic below is exactly WRONG for them: of course a company that acquired something in Q2
-#: reports zero in Q1. Only a SEC contradiction can null one of these.
-#:
-#: `ncfdiv` and `dps` are deliberately NOT here even though they look similar. Every DJIA
-#: constituent pays a dividend every quarter, so a zero in those is a gap, not a quiet quarter.
-SHARADAR_EVENT_FIELDS: frozenset[str] = frozenset(
-    {
-        "ncfbus",
-        "ncfinv",
-        "ncfcommon",
-        "ncfdebt",
-        "ncfx",
-        "netincdis",
-    }
-)
-
-#: Share of the zeros THE SEC LAYER COULD ACTUALLY JUDGE (a non-null counterpart) that must be
-#: contradicted before the diagnostic proposes `"null"`. A rate over the judged cells, not over
-#: all zeros: a field where 4 of 4 checkable zeros are wrong is a broken column, and dividing
-#: those 4 by the 140 zeros nobody could check would hide it.
-#:
-#: Low on purpose. The question is "can a 0 in this column be read as a real 0?", and once any
-#: measurable slice is provably wrong with nothing in the payload distinguishing those cells
-#: from the rest, the answer is no for the whole column. Nulling also moves Sharadar TOWARDS
-#: the SEC layer's own treatment: where the SEC path has no value it stores NULL, never 0.
-SHARADAR_ZERO_RULE_CONTRADICTION_SHARE = 0.02
-
-#: How many zeros the SEC layer must be able to judge before its verdict is used at all. Three
-#: cells is not a rate, it is an anecdote.
-SHARADAR_ZERO_RULE_MIN_CHECKED = 3
-
-#: Share of a field's zeros sitting in tickers that report the SAME field non-zero in another
-#: quarter. This is the Sharadar-INTERNAL signal, and it is the only one available for the 21
-#: fields with no SEC counterpart: a bank has no inventory in any quarter (structural, and
-#: `"keep"` is right), but a bank with 4.2bn of interest expense in Q2 and 0 in Q1 is a fill,
-#: not a fact. Not applied to `SHARADAR_EVENT_FIELDS`.
-SHARADAR_ZERO_RULE_MIXED_SHARE = 0.5
-
 # --------------------------------------------------------------------------- #
 # Sharadar phase-4 MERGE -- the Sharadar TTM frame + the SEC-owned block ->     #
 # `fundamentals_history`, plus the gap check that proposes overrides and the    #
@@ -725,7 +667,7 @@ CUSIP_TICKER_OVERRIDES: dict[str, str] = {
     #    ranking prefers the ETF; mapping it to IVZ would book QQQ's holdings as Invesco Ltd.
     #    Invesco Ltd is Bermuda-domiciled, so its identifier is a G-prefixed CINS.
     #  * FDXF / HONA — not real tickers (FedEx is FDX, Honeywell is HON, both already present).
-    #    These look like corrupt rows in `sp500_tickers`, not a mapping gap.
+    #    These were corrupt rows in the old Wikipedia roster, not a mapping gap.
 }
 
 # --------------------------------------------------------------------------- #
@@ -756,8 +698,6 @@ DATA_FRESHNESS_MAX_AGE_DAYS: dict[str, int] = {
     "quarterly": 140,
     "yearly": 460,
 }
-# cadence tiers from the tightest to the loosest (daily -> yearly)
-DATA_FRESHNESS_CADENCE_ORDER: tuple[str, ...] = ("daily", "weekly", "biweekly", "monthly", "quarterly", "yearly")
 
 # --------------------------------------------------------------------------- #
 # Incremental cube-part builds (Airflow data_aggregation DAG)                  #
@@ -774,41 +714,3 @@ FUNDAMENTALS_REFRESH_TRADING_DAYS = 45
 # the frame each owning step writes) and stay out of sql/schema.sql. `parts.py` adds only the
 # build ORCHESTRATION on top (CLI command, warm-up window, binding look-backs).
 
-# --------------------------------------------------------------------------- #
-# GICS sectors / industry groups (values as stored in `sp500_tickers`, carried  #
-# onto every `fundamentals_history_sec` row by the extractor)                  #
-# --------------------------------------------------------------------------- #
-GICS_SECTOR_ENERGY = "Energy"
-GICS_SECTOR_FINANCIALS = "Financials"
-GICS_SECTOR_REAL_ESTATE = "Real Estate"
-GICS_SECTOR_UTILITIES = "Utilities"
-
-GICS_GROUP_BANKS = "Banks"
-GICS_GROUP_FINANCIAL_SERVICES = "Financial Services"
-GICS_GROUP_INSURANCE = "Insurance"
-GICS_GROUP_EQUITY_REITS = "Equity Real Estate Investment Trusts (REITs)"
-GICS_GROUP_REAL_ESTATE_MGMT = "Real Estate Management & Development"
-GICS_GROUP_PHARMA_BIOTECH = "Pharmaceuticals, Biotechnology & Life Sciences"
-
-# The GICS scope each sector-KPI FAMILY is DEFINED for, as (level, accepted values).
-# `sector_gates.py` masks every sector KPI with this instead of asking "did the filer
-# report tag X", which mis-fired in BOTH directions:
-#   * a tag that is not sector-exclusive leaked the KPI into the wrong sector --
-#     `InterestIncomeExpenseNet` is used by 59 non-Financials, so bank NIM / ROA /
-#     operating margin were computed for industrials & health care; `OperatingLease-
-#     LeaseIncome` did the same for FFO on utilities and IT names;
-#   * a tag that IS sector-exclusive but rarely tagged starved it -- only 3 of 21
-#     Energy names tag `OilAndGasProperty*`, so EBITDAX / DD&A intensity were empty
-#     for 86% of the sector.
-# `fundamentals_history_sec` carries sector + industry_group only (no sub-industry), so
-# `energy` is scoped at sector level: services / refiners simply report no exploration
-# expense or oil&gas property, leaving those KPIs NaN as before.
-SECTOR_KPI_SCOPE: dict[str, tuple[str, tuple[str, ...]]] = {
-    "bank": ("industry_group", (GICS_GROUP_BANKS,)),
-    "insurance": ("industry_group", (GICS_GROUP_INSURANCE,)),
-    "financials": ("sector", (GICS_SECTOR_FINANCIALS,)),
-    "reit": ("industry_group", (GICS_GROUP_EQUITY_REITS,)),
-    "energy": ("sector", (GICS_SECTOR_ENERGY,)),
-    "utilities": ("sector", (GICS_SECTOR_UTILITIES,)),
-    "pharma": ("industry_group", (GICS_GROUP_PHARMA_BIOTECH,)),
-}

@@ -73,7 +73,9 @@ These rules are compulsory for every future coding change:
 - Logical parts of a function are separated by 1 jumped line and one line comment explaining what the block does.
 - No global variable imported from constants.py when only used by its sub package functions. At the top of the function instead or in utils of the sub package part of the codebase.
 
-- Default assessed ticker lists come from [load_universe_tickers](../../src/utils/universe.py) and are already normalized. CLI `-t` input is a comma-separated string: split it first and call [normalise_ticker](../../src/utils/string.py) once per symbol. Downstream lists need no repeated normalization; reuse the complete universe snapshot when guarding subset writes. Normalize raw source/config symbols with the shared helper, preserving source-specific security-marker semantics.
+- Tickers, CIKs, names, GICS and entry dates come from `context.universe` (`self._universe` in a step), never a table read of the roster and never a complete-universe parameter; [universe.yml](../../configs/universe.yml) is the only hand-edited ticker list. `context.universe.tickers` is already normalized. CLI `-t` input is a comma-separated string: split it and pass it to `context.universe.subset`, which normalizes each symbol and refuses names outside the universe. Downstream lists need no repeated normalization; guard subset writes with `context.universe.outside(scope)` or `is_full(tickers)`. Normalize raw source/config symbols with the shared helper, preserving source-specific security-marker semantics.
+
+- The run date is `run_date(as_of)` from `src/utils/string.py` (the `--as-of` date at midnight, or today); do not re-derive `pd.Timestamp(as_of or today).normalize()` inline, and name a local holding it `start_date`, not `run_date`.
 
 A static scan of function length, nesting depth, and pass-throughs is part of refactor validation.
 

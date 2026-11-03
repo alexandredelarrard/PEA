@@ -23,12 +23,13 @@ from src.data_extract.transformers import step_extract_edgar as step_edgar
 from src.data_extract.transformers import step_extract_zips as step_zips
 from src.data_extract.utils.common import bulk_cache
 from src.data_extract.utils.common.identity import build_identity
-from src.data_extract.utils.insider.insider_common import BULK_DATE_FORMATS, build_insider_frame, screen_insider_rows
+from src.data_extract.utils.edgar_extract.insider_common import BULK_DATE_FORMATS, build_insider_frame, screen_insider_rows
 from src.data_extract.utils.zips import fetch_insider_transactions as ins
 from src.data_store.schema import Resume, Tables
 from src.data_store.store import DataStore
 from tests.canonical_schema import create_canonical
 from tests.data_extract.test_cli_options import stub_zips_step
+from tests.support.universe import as_roster, seed_universe
 
 # Repo root = the first ancestor holding pyproject.toml, NOT a fixed `parents[N]`.
 # This file moved down one directory level once already (into the mirrored
@@ -139,7 +140,7 @@ def test_insider_parse_and_universe_filter_synthetic():
                 }
             ]
         ),
-        roster=pd.DataFrame([{"ticker": "AAPL", "cik": "0000320193"}]),
+        roster_cik=as_roster(pd.DataFrame([{"ticker": "AAPL", "cik": "0000320193"}])),
     )
     filt, rejected = screen_insider_rows(out, ["AAPL"], identity)
     assert set(filt["ticker"]) == {"AAPL"}
@@ -174,10 +175,8 @@ def test_insider_work_list_comes_from_the_stored_quarters_alone(tmp_path):
         "insider_transactions",
         pd.DataFrame([{"accession_number": "a1", "security_type": "nonderiv", "row_sequence": 1, "ticker": "AAPL", "quarter": "2024q1"}]),
     )
-    ds.save(
-        "sp500_tickers", pd.DataFrame({"ticker": ["AAPL", "MSFT", "NVDA"], "added_on": pd.to_datetime(["2000-01-01", "2000-01-01", "2024-06-25"])})
-    )
-    context: Any = SimpleNamespace(store=ds, config=SimpleNamespace(data_extract=SimpleNamespace(redundant_ticks=[])))
+    universe = seed_universe(ds, ["AAPL", "MSFT", "NVDA"], rows={"NVDA": {"universe_added_on": pd.Timestamp("2024-06-25")}})
+    context: Any = SimpleNamespace(store=ds, universe=universe)
     quarters, as_of = ["2024q1", "2024q2"], pd.Timestamp("2024-07-01")
 
     work = archive_worklist(context, (Tables.insider_transactions,), quarters, {"2024q1"}, ["AAPL", "MSFT", "NVDA"], as_of)
@@ -246,7 +245,7 @@ def test_insider_download_cli_runs_only_the_download(monkeypatch):
     config = SimpleNamespace(data_extract=SimpleNamespace(years_history=15))
     context = SimpleNamespace(name="ctx", config=config, config_dir="configs")
     monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, context))
-    stub_zips_step(monkeypatch, config, lambda ctx: ["AAA"])
+    stub_zips_step(monkeypatch, config)
     monkeypatch.setattr(step_zips, "download_insider_transactions", lambda context: calls.append("download") or [])
     monkeypatch.setattr(step_zips, "fetch_insider_transactions", lambda *a, **k: calls.append("parse"))
     monkeypatch.setattr(step_edgar, "run_edgar_fetch", lambda *a, **k: calls.append("edgar"))

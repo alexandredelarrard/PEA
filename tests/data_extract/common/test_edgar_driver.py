@@ -188,7 +188,7 @@ def test_registrant_filings_drops_done_accessions_filters_since_and_sorts_oldest
     monkeypatch.setattr("edgar.Company", lambda cik: types.SimpleNamespace(get_filings=lambda form: listed))
 
     out = resolve_registrant_filings(
-        FilingScope.roster_only("AAPL", "320193"), ["8-K"], since=pd.Timestamp("2021-01-01"), done_accessions=frozenset({"c"})
+        FilingScope.roster_only("AAPL", "0000320193"), ["8-K"], since=pd.Timestamp("2021-01-01"), done_accessions=frozenset({"c"})
     )
 
     # "a" is pre-since, "c" is already stored -> only b, d survive, oldest first
@@ -202,7 +202,7 @@ def test_registrant_filings_without_since_returns_everything_sorted(monkeypatch)
     listed = [_filing("c", "2023-06-01"), _filing("a", "2020-01-01")]
     monkeypatch.setattr("edgar.Company", lambda cik: types.SimpleNamespace(get_filings=lambda form: listed))
 
-    got = resolve_registrant_filings(FilingScope.roster_only("AAPL", "320193"), ["8-K"], since=None, done_accessions=frozenset())
+    got = resolve_registrant_filings(FilingScope.roster_only("AAPL", "0000320193"), ["8-K"], since=None, done_accessions=frozenset())
 
     assert [f.accession_number for f in got] == ["a", "c"]
 

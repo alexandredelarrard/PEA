@@ -17,7 +17,7 @@ SEC and merged history rebuilt.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import partial
 
@@ -26,11 +26,11 @@ import pandas as pd
 from src.context import Context
 from src.data_extract.utils.common.identity import FilingScope, Identity, load_identity, load_source_identity
 from src.data_extract.utils.common.resume import recently_changed
+from src.data_extract.utils.edgar_extract.insider_store import patch_insider_source
 from src.data_extract.utils.fundamentals.build_history import build_fundamentals_history
 from src.data_extract.utils.fundamentals_sharadar.merge_history import build_merged_history
-from src.data_extract.utils.insider.insider_store import patch_insider_source
 from src.data_extract.utils.institutionals.fetch_short_interest import change_stamps, restamp_short_volume
-from src.data_extract.utils.institutionals.security_tape import outside_scope, restamp_targets
+from src.data_extract.utils.institutionals.security_tape import restamp_targets
 from src.data_extract.utils.zips.fetch_fails_to_deliver import load_fails_master, master_stamps, prepare_master, restamp_fails
 from src.data_extract.utils.zips.fetch_financial_notes import reparse_financial_notes
 from src.data_extract.utils.zips.fetch_insider_transactions import reparse_insider_transactions, restamp_insider_lineage
@@ -47,7 +47,7 @@ from src.utils.filer_tables import (
     window_owner_mask,
     windowed_filer_mask,
 )
-from src.utils.string import pad_cik
+from src.utils.string import pad_cik, run_date
 
 #: Tickers read per scoped load, and keys per targeted delete.
 _TICKER_CHUNK = 50
@@ -203,9 +203,7 @@ def _reparse_bulk(
     return done
 
 
-def _refresh_fails(
-    context: Context, tickers: Sequence[str], as_of: pd.Timestamp, *, dry_run: bool, every: bool, others: frozenset[str]
-) -> list[dict]:
+def _refresh_fails(context: Context, tickers: Sequence[str], as_of: pd.Timestamp, *, dry_run: bool, every: bool) -> list[dict]:
     """Re-stamp the stored FTD lines of companies whose master rows changed recently; rebuild their rows."""
     if not context.store.exists(Tables.sec_fails_to_deliver_security):
         return []
@@ -217,7 +215,7 @@ def _refresh_fails(
     if not changed:
         return []
     context.log.info("identity propagate: re-stamping FTD lines for %d company(ies): %s", len(changed), ", ".join(changed))
-    records = restamp_fails(context, changed, tickers, identity=cohort, dry_run=dry_run, others=others)
+    records = restamp_fails(context, changed, tickers, identity=cohort, dry_run=dry_run)
     _warn(context, Tables.sec_fails_to_deliver.name, records, dry_run=dry_run)
     return records
 
@@ -262,7 +260,6 @@ def propagate_identity(
     every_ticker: bool = False,
     identity: Identity | None = None,
     as_of: pd.Timestamp | None = None,
-    all_tickers: Collection[str] | None = None,
 ) -> PropagationResult:
     """Purge, re-parse and rebuild for the lineage changes inside the re-check window on `as_of` (default
     today); `dry_run` only lists removals.
@@ -270,20 +267,18 @@ def propagate_identity(
     `every_ticker` (`identity --only propagate --full`) checks every ticker whatever its stamp; the tapes then re-stamp every company.
     """
     resolver = identity or load_identity(context)
-    run_date = pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize()
-    universe = [ticker for ticker in tickers if ticker in resolver.roster_cik]
-    others = outside_scope(context, universe, all_tickers)
-    scopes = {ticker: resolver.filing_scope(ticker) for ticker in universe}
-    changed = _changed({ticker: scope.scope_changed_at for ticker, scope in scopes.items()}, run_date, every=every_ticker)
+    start_date = run_date(as_of)
+    scopes = {ticker: resolver.filing_scope(ticker) for ticker in tickers}
+    changed = _changed({ticker: scope.scope_changed_at for ticker, scope in scopes.items()}, start_date, every=every_ticker)
     if changed:
         context.log.info("identity propagate: %d ticker lineage scope(s) to re-check: %s", len(changed), ", ".join(changed))
     records: list[dict] = []
     for spec in PURGE_TABLES:
         records += _purge(context, spec, changed, resolver, dry_run=dry_run)
-    reparsed = {} if dry_run else _reparse_bulk(context, changed, scopes, resolver, run_date)
+    reparsed = {} if dry_run else _reparse_bulk(context, changed, scopes, resolver, start_date)
     records += _refresh_insider(context, resolver, changed, dry_run=dry_run)
-    records += _refresh_fails(context, universe, run_date, dry_run=dry_run, every=every_ticker, others=others)
-    records += _refresh_short_volume(context, resolver, universe, run_date, dry_run=dry_run, every=every_ticker)
+    records += _refresh_fails(context, tickers, start_date, dry_run=dry_run, every=every_ticker)
+    records += _refresh_short_volume(context, resolver, tickers, start_date, dry_run=dry_run, every=every_ticker)
     removals = pd.DataFrame(records, columns=list(REMOVAL_COLUMNS))
     purged_facts = sorted(set(removals.loc[removals["table"] == Tables.fundamentals_facts.name, "ticker"]))
     if purged_facts and not dry_run:

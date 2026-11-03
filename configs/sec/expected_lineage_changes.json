@@ -1,6 +1,6 @@
 {
   "_README": [
-    "Hypotheses the explained-difference regression gate (scripts/identity_regression_gate.py) checks against the rows it computes at a cutover. This file describes the traded-security realignment of PLD, JCI, DD and DOW (run 2026-10-07-traded-security-realignment, change_set traded_security_realignment).",
+    "Hypotheses the explained-difference regression gate (tests/support/identity_regression_gate.py) checks against the rows it computes at a cutover. This file describes the traded-security realignment of PLD, JCI, DD and DOW (run 2026-10-07-traded-security-realignment, change_set traded_security_realignment).",
     "kind: filing_lineage (accessions added to or removed from a filer table, or from the filings feeding fundamentals_history_sec), market_tape (changed FTD / short-volume lines) or insider (rows leaving canonical insider history). reason: the gate reason that must explain every row of the hypothesis.",
     "status stays `hypothesis` until the gate produces the matching rows; `expected` is the measured count (null = reported, never failed), `source` where and when it was measured.",
     "Narrowing: table (filing_lineage, default fundamentals_history_sec); ciks (filer CIK for filing_lineage, issuer CIK for insider); cusips and tape_source (market_tape: ftd, finra or <source>_ticker_grain); dates lists ticker-grain rows a hypothesis explains by name (reason other_issuer_line).",

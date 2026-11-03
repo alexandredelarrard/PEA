@@ -22,6 +22,7 @@ from src.utils.cutover_continuity import load_vendor_exceptions
 from src.utils.predecessor_series import load_vendor_series
 from tests.canonical_schema import create_canonical
 from tests.data_extract.fake_context import extract_config
+from tests.support.universe import as_roster, seed_universe
 
 CONFIG_DIR = Path(__file__).resolve().parents[3] / "configs"
 BUILT_AT = pd.Timestamp("2026-10-04 12:00:00")
@@ -78,7 +79,7 @@ def _roster(*pairs: tuple[str, str]) -> pd.DataFrame:
 
 
 def _derive(observations: pd.DataFrame, lineage: pd.DataFrame, roster: pd.DataFrame, manual: sm.SecurityManual | None = None, **kw) -> sm.MasterBuild:
-    return sm.derive_security_master(observations, lineage, roster, manual or sm.SecurityManual.empty(), built_at=BUILT_AT, **kw)
+    return sm.derive_security_master(observations, lineage, as_roster(roster), manual or sm.SecurityManual.empty(), built_at=BUILT_AT, **kw)
 
 
 def _rows(build: sm.MasterBuild, cusip: str, symbol: str | None = None) -> pd.DataFrame:
@@ -497,7 +498,7 @@ def test_scope_changed_at_is_carried_for_unchanged_companies():
     first = _derive(obs, lineage, roster).rows
     later = pd.Timestamp("2026-10-05 12:00:00")
     grown = pd.concat([obs, _obs("58933Y105", "MRK", "MERCK & CO INC;COM USD0.01", "2011-01-05", "2011-02-02")], ignore_index=True)
-    second = sm.derive_security_master(grown, lineage, roster, sm.SecurityManual.empty(), built_at=later, existing=first).rows
+    second = sm.derive_security_master(grown, lineage, as_roster(roster), sm.SecurityManual.empty(), built_at=later, existing=first).rows
     stamps = second.groupby("canonical_company")["scope_changed_at"].max().to_dict()
     assert stamps == {"GOOGL": BUILT_AT, "MRK": later}, stamps
     print("\n=== SANITY CHECK: scope_changed_at ===\n  GOOGL unchanged keeps its stamp; MRK's master rows changed and carry the new build time")
@@ -536,7 +537,7 @@ def _identity(lineage: pd.DataFrame, roster_pair: tuple[str, str], master: pd.Da
             "source": ["form345"],
         }
     )
-    return build_identity(lineage=lineage, tenure=tenure, roster=_roster(roster_pair), master=master)
+    return build_identity(lineage=lineage, tenure=tenure, roster_cik=as_roster(_roster(roster_pair)), master=master)
 
 
 def test_security_on_answers_by_cusip_or_symbol_and_none_outside():
@@ -1040,7 +1041,6 @@ def test_build_reads_finra_trading_days_through_the_store(sqlite_store, tmp_path
     create_canonical(
         sqlite_store.engine,
         [
-            Tables.sp500_tickers,
             Tables.entity_lineage,
             Tables.symbol_tenure,
             Tables.security_master,
@@ -1053,11 +1053,11 @@ def test_build_reads_finra_trading_days_through_the_store(sqlite_store, tmp_path
         Tables.sec_fails_to_deliver_security,
         obs[["date", "trade_date", "cusip", "source_symbol", "description", "price", "period", "fails_quantity"]],
     )
-    sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["STZ"], "cik": ["0000016918"]}))
+    universe = seed_universe(sqlite_store, ["STZ"], rows={"STZ": {"cik": "0000016918"}})
     finra = _finra("STZ/B", "2020-02-07", "2022-10-14").assign(market="N", short_volume=1.0, short_exempt_volume=0.0, total_volume=2.0)
     sqlite_store.save(Tables.sec_short_volume_security, finra)
     context = SimpleNamespace(
-        store=sqlite_store, paths={"DATA_STORE": tmp_path}, log=logging.getLogger("test.master"), config_dir=str(CONFIG_DIR), config=extract_config()
+        store=sqlite_store, paths={"DATA_STORE": tmp_path}, log=logging.getLogger("test.master"), config_dir=str(CONFIG_DIR), config=extract_config(), universe=universe
     )
     rows = sm.build_security_master(context, STZ, str(CONFIG_DIR), built_at=BUILT_AT)
     stzb = rows[rows["cusip"].eq("21036P207")]
@@ -1243,7 +1243,6 @@ def test_build_reads_common_symbol_days_through_the_store(sqlite_store, tmp_path
     create_canonical(
         sqlite_store.engine,
         [
-            Tables.sp500_tickers,
             Tables.entity_lineage,
             Tables.symbol_tenure,
             Tables.security_master,
@@ -1256,11 +1255,11 @@ def test_build_reads_common_symbol_days_through_the_store(sqlite_store, tmp_path
         Tables.sec_fails_to_deliver_security,
         obs[["date", "trade_date", "cusip", "source_symbol", "description", "price", "period", "fails_quantity"]],
     )
-    sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["EG"], "cik": ["0001095073"]}))
+    universe = seed_universe(sqlite_store, ["EG"], rows={"EG": {"cik": "0001095073"}})
     finra = _finra("EG", "2023-07-10", "2024-06-28", freq="B").assign(market="N", short_volume=1.0, short_exempt_volume=0.0, total_volume=2.0)
     sqlite_store.save(Tables.sec_short_volume_security, finra)
     context = SimpleNamespace(
-        store=sqlite_store, paths={"DATA_STORE": tmp_path}, log=logging.getLogger("test.master"), config_dir=str(CONFIG_DIR), config=extract_config()
+        store=sqlite_store, paths={"DATA_STORE": tmp_path}, log=logging.getLogger("test.master"), config_dir=str(CONFIG_DIR), config=extract_config(), universe=universe
     )
     rows = sm.build_security_master(context, EG, str(CONFIG_DIR), built_at=BUILT_AT)
     assert rows[rows["source_symbol"].eq("EG")]["valid_from"].min() == pd.Timestamp("2023-07-10")

@@ -23,6 +23,7 @@ from src.utils.string import run_date
 from tests.canonical_schema import create_canonical
 from tests.conftest import DATA, make_frames
 from tests.data_aggregate.test_short_flow_features import build_short_flow_feature_panel
+from tests.support.universe import seed_universe
 
 
 def download_and_capture(context: Any, years_history: int = 31, full: bool = False, as_of: pd.Timestamp | None = None) -> int:
@@ -37,7 +38,6 @@ def sqlite_store(sqlite_store):
     create_canonical(
         sqlite_store.engine,
         [
-            Tables.sp500_tickers,
             Tables.entity_lineage,
             Tables.symbol_tenure,
             Tables.security_master,
@@ -50,14 +50,13 @@ def sqlite_store(sqlite_store):
     return sqlite_store
 
 
-def _context(sqlite_store, tmp_path) -> Any:
+def _context(sqlite_store, tmp_path, universe: tuple[str, ...] = ("AAPL",)) -> Any:
     return SimpleNamespace(
         store=sqlite_store,
         log=logging.getLogger("test.ftd"),
         paths={"DATA_STORE": tmp_path},
-        config=SimpleNamespace(
-            local=SimpleNamespace(paths=SimpleNamespace(fails_deliver="sec_fails_to_deliver")), data_extract=SimpleNamespace(redundant_ticks=[])
-        ),
+        config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(fails_deliver="sec_fails_to_deliver"))),
+        universe=seed_universe(sqlite_store, universe),
     )
 
 
@@ -210,7 +209,7 @@ _REUSE_MASTER = [
 def test_full_rebuild_keys_on_cusip_excludes_a_reused_symbol_and_is_repeatable(sqlite_store, monkeypatch, tmp_path):
     """FB and META are one CUSIP (one META key); IR before 2020 is the TT entity's CUSIP; the Weight Watchers
     2015 WTW line is a CUSIP the master does not hold, so it is never stored under Willis Towers Watson."""
-    ctx = _context(sqlite_store, tmp_path)
+    ctx = _context(sqlite_store, tmp_path, ("META", "TT", "IR", "WTW"))
     sqlite_store.replace(Tables.security_master, _master(_REUSE_MASTER))
     raw_by_period = {
         "201501a": (
@@ -252,9 +251,8 @@ def test_full_rebuild_keys_on_cusip_excludes_a_reused_symbol_and_is_repeatable(s
 
 def test_a_scoped_full_run_upserts_its_company_and_never_replaces_the_tables(sqlite_store, monkeypatch, tmp_path):
     """`zips-ingest --only ftd -t META -F` re-reads the cache for META's CUSIPs only and upserts; TT's stored row survives."""
-    ctx = _context(sqlite_store, tmp_path)
+    ctx = _context(sqlite_store, tmp_path, ("META", "TT"))
     sqlite_store.replace(Tables.security_master, _master(_REUSE_MASTER))
-    sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["META", "TT"], "cik": ["0001326801", "0001466258"]}))
     sqlite_store.save(
         Tables.sec_fails_to_deliver,
         pd.DataFrame(

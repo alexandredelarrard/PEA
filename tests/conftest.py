@@ -343,7 +343,8 @@ def real_frames() -> dict[str, Any]:
 def real_pipeline(real_frames: dict[str, Any]) -> dict[str, Any]:
     """End-to-end real-data aggregate pieces computed once: peers, sector
     returns, factor panel, rolling betas and multi-horizon targets."""
-    from src.data_aggregate.utils.common.gics import load_gics_maps
+    from src.utils.config import read_config
+    from src.utils.tickers_universe.universe import Universe
     from src.data_aggregate.utils.target.betas import estimate_all_betas
     from src.data_aggregate.utils.target.factors import (
         assemble_factor_panel,
@@ -368,8 +369,8 @@ def real_pipeline(real_frames: dict[str, Any]) -> dict[str, Any]:
 
     peers = build_peer_dict(stock_ret, top_k=20, weighting="corr", min_obs=120)
     # mirror StepCubeTarget._gics_groups: GICS sector + industry_group neutralization
-    context = type("Ctx", (), {"store": store})()
-    sector_groups = load_gics_maps(cast(Any, context))
+    universe = Universe(store, read_config(path=str(Path(__file__).resolve().parents[1] / "configs")))
+    sector_groups = {"sector": universe.sector_map, "industry_group": universe.industry_group_map}
 
     # mirror StepCubeTarget._factor_panel: market + style + commodity + currency + macro
     chars = build_characteristics(stock_close_total, stock_ret, fundamentals, resvol_window=63, stock_close_split=stock_close)

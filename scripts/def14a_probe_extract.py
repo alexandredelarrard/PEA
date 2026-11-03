@@ -35,8 +35,8 @@ if str(ROOT) not in sys.path:
 
 from src.context import get_config_context
 from src.data_extract.utils.edgar_extract.html_text import html_to_text
-from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
 from src.data_extract.utils.structure.def14a.carve import prepare_def14a_sections
+from src.data_extract.utils.structure.def14a.def14a_schema import Def14AExtract
 from src.data_extract.utils.structure.def14a.flatten import _child_frames, _flatten
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 

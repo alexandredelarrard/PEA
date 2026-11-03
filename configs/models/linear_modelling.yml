@@ -409,8 +409,9 @@ linear:
     30:
     # PRICES / MOMENTUM cube (27)
     - volume_trend_63
-    - seasonal_h60
+    # - seasonal_h60
     - seasonal_h90
+
     # FUNDAMENTALS cube (218)
     - f_accruals_ratio
     - f_acquisition_intensity_vs_hist
@@ -419,13 +420,13 @@ linear:
     # - f_book_yield   # OFF tier 2: insignificant + unstable + weak contribution
     - f_current_ratio
     - f_days_since_earnings
-    - f_debtToEquity_vs_hist
+    # - f_debtToEquity_vs_hist
     - f_deferred_rev_intensity
     - f_deferred_rev_intensity_vs_hist
     - f_dividend_growth
     - f_dividend_payout_ratio
     - f_dividend_yield
-    - f_dps_growth
+    # - f_dps_growth
     - f_dso_change_vs_hist
     - f_dso_vs_hist
     # - f_earnings_sue_lag0   # OFF tier 2: insignificant + unstable + weak contribution
@@ -470,12 +471,14 @@ linear:
     - f_sbc_to_ocf
     - f_sbc_to_ocf_vs_hist
     - f_y_margin_vs_ttm_vs_hist
+
     # TEXT cube (earnings calls) (10)
-    - f_ec_answers_tone_delta
+    # - f_ec_answers_tone_delta
     - f_ec_qa_coherence_mean
     - f_ec_qa_qq_distance
     # - f_ec_questions_only_qq_distance   # OFF tier 1: ~zero contribution (SHAP/coef) in >=5 of 6 folds
     - f_ec_questions_tone
+
     # INSTITUTIONALS cube (insider, short volume/FTD, 13D/G) (29)
     - f_ic_insider_buy_value_mcap_180d
     # - f_ic_insider_buy_value_mcap_60d   # OFF tier 1: ~zero contribution (SHAP/coef) in >=5 of 6 folds
@@ -486,7 +489,7 @@ linear:
     - f_board_dissent_median
     # - f_board_independence_delta_1y   # OFF tier 2: insignificant + unstable + weak contribution
     - f_board_independence_drop_10pp
-    - f_board_size
+    # - f_board_size
     # - f_board_size_vs_peers   # OFF tier 2: insignificant + unstable + weak contribution
     - f_board_turnover
     - f_ceo_equity_pay_pct
@@ -504,15 +507,17 @@ linear:
     # - f_majority_voting_added   # OFF tier 1: ~zero contribution (SHAP/coef) in >=5 of 6 folds
     - f_oldest_director_age
     - f_pay_return_peer_misalignment
+
     60:
     # PRICES / MOMENTUM cube (27)
     - downside_vol_63
     - volume_trend_63
     - seasonal_h90
+
     # FUNDAMENTALS cube (218)
     - f_accruals_ratio
     - f_accruals_vs_hist
-    - f_acquisition_intensity_vs_hist
+    # - f_acquisition_intensity_vs_hist
     # - f_asset_growth   # OFF tier 1: ~zero contribution (SHAP/coef) in >=5 of 6 folds
     - f_book_yield
     - f_capex_intensity_vs_hist
@@ -520,11 +525,11 @@ linear:
     - f_days_since_earnings
     - f_debtToEquity_vs_hist
     - f_deferred_rev_intensity
-    - f_deferred_rev_intensity_vs_hist
+    # - f_deferred_rev_intensity_vs_hist
     - f_dividend_growth
     - f_dividend_payout_ratio
     - f_dividend_yield
-    - f_dps_growth
+    # - f_dps_growth
     - f_dso_change
     - f_dso_change_vs_hist
     - f_dso_vs_hist
@@ -550,7 +555,7 @@ linear:
     - f_nwc_elasticity_vs_hist
     - f_operatingMargins_vs_hist
     - f_option_overhang_vs_hist
-    - f_payout_ratio
+    # - f_payout_ratio
     - f_payout_ratio_vs_hist
     - f_piotroski_f_score
     # - f_profit_improvement_to_assets   # OFF tier 2: insignificant + unstable + weak contribution
@@ -563,7 +568,7 @@ linear:
     - f_returnOnEquity_vs_hist
     - f_revenue_per_employee_vs_hist
     - f_roa_vol_8q
-    - f_roic_ex_intangibles
+    # - f_roic_ex_intangibles
     - f_roic_incl_intangibles
     - f_roic_incl_intangibles_vs_peers
     - f_sbc_intensity
@@ -571,28 +576,31 @@ linear:
     - f_sbc_to_ocf_vs_hist
     - f_y_margin_vs_ttm
     - f_y_margin_vs_ttm_vs_hist
+
     # TEXT cube (earnings calls) (10)
     - f_ec_answers_tone_delta
     - f_ec_qa_qq_distance
     - f_ec_questions_only_qq_distance
     - f_ec_questions_tone
+
     # INSTITUTIONALS cube (insider, short volume/FTD, 13D/G) (29)
     - f_ic_insider_buy_value_mcap_180d
     - f_ic_insider_buy_value_mcap_60d
     - f_ic_insider_director_buy_mcap_180d
+
     # GOVERNANCE cube (101)
     - f_avg_board_tenure_vs_hist
     - f_board_age_dispersion
     - f_board_dissent_median
     - f_board_independence_delta_1y
     - f_board_size
-    - f_board_size_vs_peers
+    # - f_board_size_vs_peers
     # - f_board_turnover   # OFF tier 2: insignificant + unstable + weak contribution
     - f_ceo_equity_pay_pct
     - f_ceo_excess_dissent
     - f_ceo_pay_slice
     - f_ceo_pay_slice_delta_1y
-    - f_ceo_vs_nonemployee_dissent
+    # - f_ceo_vs_nonemployee_dissent
     - f_director_cash_fee_pct
     - f_director_equity_pay_pct
     - f_founder_ceo
@@ -600,15 +608,16 @@ linear:
     - f_insider_ownership_pct_vs_peers
     - f_lead_independent_director_added
     - f_log_ceo_total_comp
-    - f_majority_voting_added
     - f_oldest_director_age
     - f_pay_return_peer_misalignment
     - f_pay_revenue_peer_misalignment
+
     90:
     # PRICES / MOMENTUM cube (27)
     - rel_volume_5_63
     - volume_trend_63
     - seasonal_h90
+
     # FUNDAMENTALS cube (218)
     - f_accruals_ratio
     - f_acquisition_intensity_vs_hist
@@ -617,7 +626,7 @@ linear:
     - f_days_since_earnings
     - f_debtToEquity_vs_hist
     - f_deferred_rev_intensity
-    - f_deferred_rev_intensity_vs_hist
+    # - f_deferred_rev_intensity_vs_hist
     - f_dividend_growth
     - f_dividend_payout_ratio
     - f_dividend_yield
@@ -666,22 +675,25 @@ linear:
     - f_sbc_to_ocf_vs_hist
     - f_sustainable_growth_rate
     - f_y_margin_vs_ttm_vs_hist
+
     # TEXT cube (earnings calls) (10)
     - f_ec_answers_tone_delta
-    - f_ec_qa_qq_distance
+    # - f_ec_qa_qq_distance
     - f_ec_questions_only_qq_distance
     - f_ec_questions_tone
+
     # INSTITUTIONALS cube (insider, short volume/FTD, 13D/G) (29)
     - f_ic_insider_buy_value_mcap_180d
     - f_ic_insider_buy_value_mcap_60d
     - f_ic_insider_director_buy_mcap_180d
     # - f_ic_insider_purchase_pct_prior   # OFF tier 1: ~zero contribution (SHAP/coef) in >=5 of 6 folds
+
     # GOVERNANCE cube (101)
     - f_avg_board_tenure_vs_hist
     - f_board_dissent_median
     - f_board_independence_delta_1y
     - f_board_size
-    - f_board_size_vs_peers
+    # - f_board_size_vs_peers
     - f_board_turnover
     - f_ceo_equity_pay_pct
     - f_ceo_excess_dissent

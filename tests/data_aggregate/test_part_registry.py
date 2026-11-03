@@ -79,10 +79,8 @@ def test_every_substep_constructs_and_binds_its_part(sqlite_store):
 
     Text uses an explicit table; its public-run test verifies the persistence target.
     """
-    import pandas as pd
     from omegaconf import OmegaConf
 
-    sqlite_store.replace(Tables.sp500_tickers, pd.DataFrame({"ticker": ["AAA", "BBB"]}))
     config = OmegaConf.create(
         {
             # no market_ticker / other_tickers: the market and commodity/FX series are named
@@ -92,12 +90,9 @@ def test_every_substep_constructs_and_binds_its_part(sqlite_store):
                 "earnings_calls": {"availability_lag_days": 2, "sentiment_model": "fixture/tone", "refresh_calendar_days": 30},
             },
             "gpt": {"embedding": {"model": "fixture/embedding", "batch_size": 128, "max_chars": 28000}},
-            "data_extract": {"redundant_ticks": []},
         }
     )
-    # `config` on the context too: sub-steps resolve their universe through
-    # `load_universe_tickers`, which reads `data_extract.redundant_ticks` off `context.config`.
-    # `config_dir` too: `StepCubePrices.__init__` reads the Yahoo bug register from it, and
+    # `config_dir` on the context: `StepCubePrices.__init__` reads the Yahoo bug register from it, and
     # doing that at construction is deliberate -- an unapproved register must fail the step
     # before it loads 1.9M price rows, which means this test exercises that path.
     ctx = SimpleNamespace(

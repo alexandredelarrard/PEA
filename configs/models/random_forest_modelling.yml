@@ -13,7 +13,7 @@ random_forest:
   feature_fraction: 0.7        # column subsample per tree -> decorrelates the trees
   max_depth: 8                 # fuller trees than the GBDT; variance averaged out by bagging
   num_leaves: 127
-  min_child_samples: 100
+  min_child_samples: 120
   lambda_l1: 2.0
   lambda_l2: 2.0
 

@@ -15,13 +15,13 @@ import pytest
 from sqlalchemy import create_engine
 
 from src.data_extract.utils.common.identity import FilingScope
-from src.data_extract.utils.schemas.def14a_schema import BeneficialOwner as _BeneficialOwner
-from src.data_extract.utils.schemas.def14a_schema import Def14AExtract as _Def14AExtract
-from src.data_extract.utils.schemas.def14a_schema import DirectorCompensation as _DirectorCompensation
-from src.data_extract.utils.schemas.def14a_schema import DirectorInfo as _DirectorInfo
-from src.data_extract.utils.schemas.def14a_schema import ExecutiveCompensation as _ExecutiveCompensation
-from src.data_extract.utils.schemas.def14a_schema import GovernanceProfile as _GovernanceProfile
 from src.data_extract.utils.structure.def14a import flatten as flatten_mod
+from src.data_extract.utils.structure.def14a.def14a_schema import BeneficialOwner as _BeneficialOwner
+from src.data_extract.utils.structure.def14a.def14a_schema import Def14AExtract as _Def14AExtract
+from src.data_extract.utils.structure.def14a.def14a_schema import DirectorCompensation as _DirectorCompensation
+from src.data_extract.utils.structure.def14a.def14a_schema import DirectorInfo as _DirectorInfo
+from src.data_extract.utils.structure.def14a.def14a_schema import ExecutiveCompensation as _ExecutiveCompensation
+from src.data_extract.utils.structure.def14a.def14a_schema import GovernanceProfile as _GovernanceProfile
 from src.data_extract.utils.structure.def14a.fetch import _subject_is_accepted
 from src.data_extract.utils.structure.def14a.flatten import _flatten, _result_frames
 from src.data_store.schema import Tables
@@ -32,7 +32,7 @@ from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
 from tests.data_extract.fake_context import extract_config
 
 #: A stand-in identity whose every ticker is listed from its roster CIK alone.
-_ROSTER_ONLY = SimpleNamespace(filing_scope=lambda ticker: FilingScope.roster_only(ticker, "1"))
+_ROSTER_ONLY = SimpleNamespace(filing_scope=lambda ticker: FilingScope.roster_only(ticker, "0000000001"))
 
 BeneficialOwner: Any = _BeneficialOwner
 Def14AExtract: Any = _Def14AExtract
@@ -242,9 +242,7 @@ def test_disjoint_subject_never_becomes_an_llm_task(tmp_path, monkeypatch):
             return []
 
     monkeypatch.setattr(mod, "LLMExtractor", FakeLLM)
-    monkeypatch.setattr(
-        mod, "load_cik_mapping", lambda *_: pd.DataFrame([{"ticker": "PSKY", "cik": "0002041610", "name": "Paramount Skydance Corp"}])
-    )
+    monkeypatch.setattr(mod, "universe_rows", lambda *_: pd.DataFrame([{"ticker": "PSKY", "cik": "0002041610", "name": "Paramount Skydance Corp"}]))
     # PSKY's register chain makes it a multi-window scope, so its proxies' subject headers are checked.
     psky = dated_identity(
         [("PSKY", "0000813828", "cik_window", SENTINEL, "2025-08-07"), ("PSKY", "0002041610", "cik_window", "2025-08-07", None)],
@@ -329,7 +327,7 @@ def test_every_ticker_is_listed_over_the_full_window_on_every_run(tmp_path, monk
     listed: dict[str, Any] = {}
     _stub_proxy_listing(monkeypatch, mod, listed)
     monkeypatch.setattr(mod, "LLMExtractor", _extractor_double([], []))
-    monkeypatch.setattr(mod, "load_cik_mapping", lambda *_: pd.DataFrame({"ticker": ["AA", "CC"], "cik": ["1", "2"], "name": ["A", "C"]}))
+    monkeypatch.setattr(mod, "universe_rows", lambda *_: pd.DataFrame({"ticker": ["AA", "CC"], "cik": ["1", "2"], "name": ["A", "C"]}))
 
     mod.fetch_def14a_llm(context, context.config, ["AA", "CC"], mod.section_extractors(context, context.config))
     first = dict(listed)
@@ -361,7 +359,7 @@ def test_a_lineage_expansion_lists_the_new_window_on_the_next_run_with_no_run_st
     monkeypatch.setattr(mod, "list_filings", fake_list)
     monkeypatch.setattr(mod, "load_identity", lambda context: identity)
     monkeypatch.setattr(mod, "LLMExtractor", _extractor_double([], []))
-    monkeypatch.setattr(mod, "load_cik_mapping", lambda *_: pd.DataFrame({"ticker": ["CC"], "cik": ["2"], "name": ["C"]}))
+    monkeypatch.setattr(mod, "universe_rows", lambda *_: pd.DataFrame({"ticker": ["CC"], "cik": ["2"], "name": ["C"]}))
 
     mod.fetch_def14a_llm(context, context.config, ["CC"], mod.section_extractors(context, context.config))
 
@@ -388,7 +386,7 @@ def test_section_extractors_run_two_wide_whatever_config_gpt_threads(tmp_path, m
 
     _stub_proxy_listing(monkeypatch, mod, {})
     monkeypatch.setattr(mod, "LLMExtractor", _RecordingExtractor)
-    monkeypatch.setattr(mod, "load_cik_mapping", lambda *_: pd.DataFrame({"ticker": ["ZZ"], "cik": ["1"], "name": ["Z"]}))
+    monkeypatch.setattr(mod, "universe_rows", lambda *_: pd.DataFrame({"ticker": ["ZZ"], "cik": ["1"], "name": ["Z"]}))
 
     mod.fetch_def14a_llm(context, context.config, ["ZZ"], mod.section_extractors(context, context.config))
 
@@ -424,6 +422,6 @@ def test_llm_proxies_are_listed_per_scope_window_with_the_seam_margin(monkeypatc
     assert listed == ["0000813828", "0002041610"]
     assert sorted(out["accession_number"]) == ["1610-2025-07-20", "1610-2026-04-02", "3828-2024-04-01", "3828-2025-08-20"]
     assert mod.accepted_subjects(scope) == frozenset({"0000813828", "0002041610"})
-    assert mod.accepted_subjects(FilingScope.roster_only("AAPL", "320193")) == frozenset()
+    assert mod.accepted_subjects(FilingScope.roster_only("AAPL", "0000320193")) == frozenset()
     print("\n=== SANITY: DEF 14A LLM per-window listing ===")
     print("  both PSKY CIKs listed; the predecessor's 2026 proxy (past its margin) dropped; margin proxies on both sides kept")

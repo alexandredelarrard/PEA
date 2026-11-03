@@ -16,11 +16,11 @@ import pandas as pd
 import pytest
 
 from src.data_extract.utils.edgar_extract.empty_markers import marker_frame
-from src.data_extract.utils.schemas.def14a_schema import Def14AExtract as _Def14AExtract
-from src.data_extract.utils.schemas.vote_schema import Item507Extract as _Item507Extract
+from src.data_extract.utils.structure.def14a.def14a_schema import Def14AExtract as _Def14AExtract
 from src.data_extract.utils.structure.def14a.flatten import _result_frames as def14a_result_frames
 from src.data_extract.utils.structure.votes import fetch as votes_fetch
 from src.data_extract.utils.structure.votes.flatten import _marker_frame as votes_marker_frame
+from src.data_extract.utils.structure.votes.vote_schema import Item507Extract as _Item507Extract
 from src.data_store.schema import Tables
 from src.gpt_extract.transformers.gpt_getter import _frames_by_table
 from src.gpt_extract.utils.schemas_gpt import LlmResult, LlmTask

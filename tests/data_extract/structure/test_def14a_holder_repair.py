@@ -13,8 +13,8 @@ import pytest
 
 from src.context import Context
 from src.data_extract.utils.common.identity import FilingScope
-from src.data_extract.utils.schemas.def14a_schema import Def14AExtract, OwnershipExtract
 from src.data_extract.utils.structure.def14a import fetch
+from src.data_extract.utils.structure.def14a.def14a_schema import Def14AExtract, OwnershipExtract
 from src.data_extract.utils.structure.def14a.holders import reconcile_holders
 from src.data_extract.utils.structure.def14a.postprocess import append_answer, postprocess_section, refresh_archive
 from src.data_extract.utils.structure.def14a.retry import SECTIONS, reservation_frame
@@ -200,8 +200,8 @@ def test_public_replay_cleans_ge_aliases_without_source_or_provider(
     context = cast(Context, SimpleNamespace(store=sqlite_store, log=logging.getLogger("test.def14a.holders")))
     config = extract_config(data_extract={"years_history": 31})
     filings = pd.DataFrame([{**stamp, "filing_date": stamp["as_of"]}])
-    identity = SimpleNamespace(filing_scope=lambda _: FilingScope.roster_only("GE", "40545"))
-    monkeypatch.setattr(fetch, "load_cik_mapping", lambda *_: pd.DataFrame([dict(ticker="GE", name="GE")]))
+    identity = SimpleNamespace(filing_scope=lambda _: FilingScope.roster_only("GE", "0000040545"))
+    monkeypatch.setattr(fetch, "universe_rows", lambda *_: pd.DataFrame([dict(ticker="GE", name="GE")]))
     monkeypatch.setattr(fetch, "load_identity", lambda *_: identity)
     monkeypatch.setattr(fetch, "_listed_proxies", lambda *_: filings.copy())
     monkeypatch.setattr(fetch, "_finalise_gender", lambda *_: None)

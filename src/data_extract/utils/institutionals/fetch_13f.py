@@ -57,9 +57,8 @@ from src.data_extract.utils.institutionals.value_units import (
 from src.data_store.schema import Resume, Table, Tables
 from src.data_store.store import DataStore
 from src.utils.institutional_vintages import literal_13f_cusip, reconcile_13f_source
-from src.utils.string import pad_cik, pad_cik_series
+from src.utils.string import pad_cik, pad_cik_series, run_date
 from src.utils.superinvestor_roster import roster_cik_union
-from src.utils.universe import load_universe_tickers
 
 logger = logging.getLogger(__name__)
 _CHECKED = r"(?:\[\s*[xX]\s*\]|\{\s*[xX]\s*\}|\(\s*[xX]\s*\))"
@@ -118,9 +117,6 @@ _BOOK_COLS = [
 
 #: The columns `parse_legacy_information_table` emits; an empty-cover book carries them with no rows.
 _LEGACY_INFO_COLS = ["CUSIP", "NAMEOFISSUER", "TITLEOFCLASS", "VALUE", "SSHPRNAMT", "SSHPRNAMTTYPE", "PUTCALL"]
-
-#: Legacy diagnostic reduction key; immutable source storage also keys by accession.
-_BOOK_KEY = ["cik", "period", "cusip"]
 
 # Cheap source sanity check; aggregation validates units/values against historical quotes.
 _IMPLIED_PRICE_BAND = (1.0, 5000.0)
@@ -337,25 +333,12 @@ def _read_filing(stamp: FilingStamp) -> pd.DataFrame | ReadFailure:
         return ReadFailure(transient=isinstance(e, TransientReadError), reason=f"{type(e).__name__}: {e}")
 
 
-def _resolve_tickers(book: pd.DataFrame, cmap: pd.DataFrame, universe: set[str]) -> pd.DataFrame:
-    """The `sec13f_hr` slice of a book: CUSIPs the map resolves to a universe ticker, `_HR_COLS`."""
-    out = book[[c for c in _HR_COLS if c != "ticker"]].merge(cmap, on="cusip", how="inner")
-    return out[out["ticker"].isin(universe)][_HR_COLS]
-
-
 def _suspect_prices(df: pd.DataFrame) -> int:
     """Source common positions with extreme implied prices, before aggregate P1 repair."""
     if df.empty:
         return 0
     implied = (df["value_usd"] / df["shares"].where(df["shares"] > 0)).dropna()
     return int((~implied.between(*_IMPLIED_PRICE_BAND)).sum())
-
-
-def _latest_per_key(df_book: pd.DataFrame) -> pd.DataFrame:
-    """One row per `_BOOK_KEY`, the last filed winning: a stable sort on `filing_date`, so rows
-    passed in (filed, amendment last, accession) order keep a same-day amendment after its
-    original. Also keeps a PK from repeating in one upsert, which Postgres rejects."""
-    return df_book.sort_values("filing_date", kind="stable").drop_duplicates(subset=_BOOK_KEY, keep="last")
 
 
 def _padded(df: pd.DataFrame) -> pd.DataFrame:
@@ -654,8 +637,6 @@ def fetch_13f(
     save_every: int = 100,
     filing_window: tuple[str, str] | None = None,
     as_of: pd.Timestamp | None = None,
-    *,
-    all_tickers: list[str] | None = None,
 ) -> int:
     """Save verified original/amendment accessions separately, oldest first in the resume window.
 
@@ -664,10 +645,10 @@ def fetch_13f(
     """
     context.ensure_edgar_identity()
     configure(context)
-    run_date = cast(pd.Timestamp, pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize())
+    start_date = run_date(as_of)
     universe = set(tickers)
-    scoped = bool(set(load_universe_tickers(context) if all_tickers is None else all_tickers) - universe)
-    since, until = _resolve_window(context, years_history, filing_window, run_date, scoped)
+    scoped = not context.universe.is_full(universe)
+    since, until = _resolve_window(context, years_history, filing_window, start_date, scoped)
 
     # load CIKs of super investors
     roster_ciks = roster_cik_union(context)

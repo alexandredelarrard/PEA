@@ -10,8 +10,8 @@ as extra OHLCV rows INSIDE `prices` -- and the old test pinned exactly that. Eve
 the separation at the SOURCE is what let all of those go, so it is worth a test.
 
 Guarantees:
-  (1) the equity universe handed to every sub-step (`StepExtractAllData._resolve_tickers`) is
-      `sp500_tickers` and nothing else;
+  (1) the equity universe handed to every sub-step by `StepExtractAllData` is `context.universe`
+      and nothing else;
   (2) `fetch_macro` writes ONLY `prices_macro`, with the (date, ticker, close) schema, and
       never touches `prices`;
   (3) the one yfinance response is SPLIT: `prices` gets clean OHLCV, the ex-dates go only to
@@ -25,34 +25,48 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pandas as pd
-from omegaconf import OmegaConf
 
 from src.constants.constants_price import MACRO_PRICE_SERIES
+from src.data_extract import step_extract_all_data as all_data
 from src.data_extract.step_extract_all_data import StepExtractAllData
 from src.data_extract.utils.prices import fetch_macro as fm
 from src.data_extract.utils.prices import fetch_prices as fp
 from src.data_store.schema import Tables
+from tests.support.universe import seed_universe
 
 
-def test_equity_universe_is_sp500_tickers_only(sqlite_store):
-    sqlite_store.replace("sp500_tickers", pd.DataFrame({"ticker": ["AAPL", "MSFT", "XOM"]}))
-    cfg = OmegaConf.create({"data_extract": {"refresh_universe": False, "redundant_ticks": []}})
-    fake = SimpleNamespace(
-        # `load_universe_tickers` reads `redundant_ticks` off the context's own config, so the
-        # stub context needs it too -- not just the step's `_config`.
-        _context=SimpleNamespace(store=sqlite_store, config=cfg),
-        _config=cfg,
-        _log=logging.getLogger("test"),
-    )
-    # bind the method to a fake self (avoids constructing the sub-steps / hitting the DB)
-    tickers = StepExtractAllData._resolve_tickers(cast(Any, fake))
+def test_equity_universe_is_the_universe_only(sqlite_store, monkeypatch):
+    received: dict[str, list[str]] = {}
 
+    def step(name: str) -> Any:
+        return SimpleNamespace(
+            run=lambda tickers=None, **kwargs: received.setdefault(name, tickers),
+            run_download=lambda: None,
+            run_ingest=lambda: None,
+            run_def14a=lambda: None,
+            run_8k_votes=lambda: None,
+        )
+
+    for name in ("StepExtractZips", "StepExtractIdentity", "StepExtractEdgar", "StepExtractLlm"):
+        monkeypatch.setattr(all_data, name, lambda context, config, options, _name=name: step(_name))
+    monkeypatch.setattr(all_data, "fetch_sharadar_tickers", lambda context: received.setdefault("sharadar_tickers", []))
+    monkeypatch.setattr(all_data, "sync", lambda store, config, as_of: received.setdefault("universe_sync", []))
+    fake = cast(Any, object.__new__(StepExtractAllData))
+    fake._context = SimpleNamespace(store=sqlite_store, universe=seed_universe(sqlite_store, ["AAPL", "MSFT", "XOM"]))
+    fake._config, fake._log = None, logging.getLogger("test")
+    for name in ("prices", "institutionals", "fundamentals_sharadar", "fundamentals", "behavioral"):
+        setattr(fake, f"_{name}", step(name))
+
+    StepExtractAllData.run(fake)
+
+    tickers = received["prices"]
+    assert list(received)[:2] == ["sharadar_tickers", "universe_sync"]  # the universe is synced before any fetcher
     assert tickers == ["AAPL", "MSFT", "XOM"]  # universe only, sorted
     for symbol in MACRO_PRICE_SERIES:
         assert symbol not in tickers, f"{symbol} leaked into the equity universe"
 
-    print("\n=== SANITY CHECK: equity universe is sp500_tickers only ===")
-    print(f"  _resolve_tickers -> {tickers}")
+    print("\n=== SANITY CHECK: equity universe is context.universe only ===")
+    print(f"  prices step received {tickers}")
     print(
         f"  none of {list(MACRO_PRICE_SERIES)} present -- and there is no longer an `other_tickers` config key that could put them there. Validated."
     )
@@ -113,9 +127,11 @@ def _yf_frame(ticker: str, dividend: float | None = None) -> pd.DataFrame:
 def test_price_fetch_writes_clean_ohlcv_and_the_ex_dates_elsewhere(sqlite_store, monkeypatch):
     """`prices` gets clean OHLCV; the dividend column of the same response lands only in `prices_dividends`."""
     monkeypatch.setattr(fp, "download_ohlcv", lambda *a, **k: _yf_frame("AAPL", dividend=0.24))
-    ctx = SimpleNamespace(store=sqlite_store)
+    ctx = SimpleNamespace(store=sqlite_store, universe=seed_universe(sqlite_store, ["AAPL"]))
 
-    fp.fetch_prices_and_actions(cast(Any, ctx), tickers=["AAPL"], years_history=15, pause=0.0)
+    session = fp.YahooSession(pause=0.0)
+    for fetch in (fp.fetch_price_actions, fp.fetch_dividends, fp.fetch_prices):
+        fetch(cast(Any, ctx), session, tickers=["AAPL"], years_history=15)
 
     # assert on what LANDED, not on the return value: these fetchers write to the store
     saved = sqlite_store.load(Tables.prices)

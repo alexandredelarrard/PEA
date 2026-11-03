@@ -8,8 +8,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.data_extract.utils.edgar_extract.insider_common import BULK_DATE_FORMATS, OWNER_SUMMARY_COLUMNS, XML_DATE_FORMATS, build_insider_frame
 from src.data_extract.utils.edgar_extract.insider_edgar_parser import extract_xml_strings
-from src.data_extract.utils.insider.insider_common import BULK_DATE_FORMATS, OWNER_SUMMARY_COLUMNS, XML_DATE_FORMATS, build_insider_frame
 from src.data_extract.utils.zips.fetch_insider_transactions import extract_bulk_strings
 from tests.fixtures.insider_zip import fixture_accessions, xml_frame, zip_frame, zip_path
 

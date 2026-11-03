@@ -21,7 +21,6 @@ from src.data_peers.utils.sector_peers import (
 from src.data_store.schema import Tables
 from src.utils.macro import load_macro_series
 from src.utils.step import Step
-from src.utils.universe import load_universe_tickers
 
 
 class StepDeducePeers(Step):
@@ -50,8 +49,7 @@ class StepDeducePeers(Step):
 
     def load_prices(self):
         self._log.info("Loading prices from DB table 'prices'")
-        self._tickers = load_universe_tickers(self._context)
-        self.prices_long = self._context.store.load(Tables.prices, where={"ticker": self._tickers})
+        self.prices_long = self._context.store.load(Tables.prices, where={"ticker": self._universe.tickers})
 
     def load_pre_computed_peers(self, peers_path):
         self.peers = load_peer_dict(peers_path)
@@ -80,15 +78,8 @@ class StepDeducePeers(Step):
 
         self.close_total = self.close_total.loc[market.reindex(self.close_total.index).notna()]
         self.returns = du.daily_returns(self.close_total)
-        # no market column to drop: `prices` is the equity universe and nothing else
+        # prices were read for the universe tickers only, so peers are built among them alone
         self.stock_ret = self.returns
-        # restrict to the authoritative universe (sp500_tickers) so peers are built
-        # ONLY among analysed names — swap that table and the peer graph reroutes.
-        universe = [t for t in self._tickers if t in self.stock_ret.columns]
-        if universe:
-            self.stock_ret = self.stock_ret[universe]
-        else:
-            self._log.warning("sp500_tickers empty -> peers over ALL priced names; seed the universe table to scope peers")
         self._log.info("Normalized prices: %s dates, %s stocks", self.close_total.shape[0], self.stock_ret.shape[1])
 
     def _embedding_similarity(self):

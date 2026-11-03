@@ -3,7 +3,7 @@
     python -m src data_extract <command> [-c ./configs] [-t AAPL,MSFT]
 
 Every command builds a fresh Context, resolves the ticker universe (or a --tickers subset) and runs its
-fetcher. Fetchers resume from the DB, so a nightly rerun pulls only new data. `seed-universe` must run first.
+fetcher. Fetchers resume from the DB, so a nightly rerun pulls only new data. `sharadar-tickers` then `universe` must run first.
 """
 
 import json
@@ -107,13 +107,12 @@ from src.data_extract.utils.institutionals.fetch_13f_managers import fetch_13f_m
 from src.data_extract.utils.institutionals.fetch_short_interest import fetch_short_interest
 from src.data_extract.utils.institutionals.fetch_superinvestors import rebuild_roster, upsert_roster_snapshot
 from src.data_extract.utils.prices.fetch_macro import fetch_macro
-from src.data_extract.utils.prices.fetch_prices import fetch_prices_and_actions
-from src.data_extract.utils.prices.fetch_tickers import get_sp500_tickers
+from src.data_extract.utils.prices.fetch_prices import YahooSession, fetch_dividends, fetch_price_actions, fetch_prices
 from src.data_store.schema import Table, Tables, freshness_tables, marker_tables, resolve
 from src.utils.cli_helper import SpecialHelpOrder
 from src.utils.freshness import PREDICTION_INPUTS, fresh_share, last_dates_by_key, max_age_days, table_freshness
-from src.utils.string import normalise_ticker, run_date
-from src.utils.universe import load_universe_tickers, unverified_ciks
+from src.utils.string import run_date
+from src.utils.tickers_universe.sync import sync
 
 
 @click.group(cls=SpecialHelpOrder)
@@ -122,16 +121,8 @@ def cli() -> None:
 
 
 def _tickers(context: Context, tickers: str | None) -> list[str]:
-    """The --tickers subset if given, else the full sp500_tickers universe."""
-    if tickers:
-        return list(dict.fromkeys(ticker for raw in tickers.split(",") if (ticker := normalise_ticker(raw))))
-    return load_universe_tickers(context)
-
-
-def _ticker_scope(context: Context, tickers: str | None) -> tuple[list[str], list[str]]:
-    """CLI selection and the full analysis universe, read once for scoped-write guards."""
-    universe = load_universe_tickers(context)
-    return (_tickers(context, tickers) if tickers else universe), universe
+    """The --tickers subset, checked against the universe, else the whole universe."""
+    return context.universe.subset(tickers.split(",")) if tickers else context.universe.tickers
 
 
 def _market_as_of(as_of: datetime | None) -> pd.Timestamp | None:
@@ -166,8 +157,8 @@ def _table_status(context: Context, table: Table, universe: list[str], as_of: pd
 
 def _extraction_status_report(context: Context, *, as_of: pd.Timestamp | None = None) -> dict[str, object]:
     """Freshness report over exactly the tables and cadences declared by the schema registry."""
-    as_of = (as_of if as_of is not None else pd.Timestamp.today()).normalize()
-    universe = load_universe_tickers(context)
+    as_of = run_date(as_of)
+    universe = context.universe.tickers
     min_share = float(context.config.data_extract.prediction_fresh_share)
     statuses = {table.name: _table_status(context, table, universe, as_of, min_share) for table in freshness_tables()}
     behind = [name for name, status in statuses.items() if not status["ok"]]
@@ -194,34 +185,18 @@ def extraction_status(config_path: str, as_of: datetime | None) -> None:
     click.echo(json.dumps(report, sort_keys=True))
 
 
-# --- Universe seed (must run first; everything else resolves the universe from it) ---
-@cli.command(help="Seed the sp500_tickers universe (idempotent; scrapes only if empty or --full).", help_priority=1)
+# --- Universe (runs after sharadar-tickers and before every other command) ---
+@cli.command(help="Sync tickers_universe with configs/universe.yml and sharadar_tickers (writes only what changed).", help_priority=1)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option(*FULL_ARGS, **FULL_KWARGS)
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
-def seed_universe(config_path: str, full: bool, as_of: datetime | None) -> None:
+def universe(config_path: str, as_of: datetime | None) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
-    if full or context.store.row_count(Tables.sp500_tickers) == 0:
-        context.log.info(f"Seeding {Tables.sp500_tickers} via the S&P 500 scraper (full={full})")
-        get_sp500_tickers(context, as_of=run_date(as_of))
-    context.log.info("Universe ready: %d tickers.", len(load_universe_tickers(context)))
-    # A wrong CIK is invisible downstream (prices key on the ticker), so it is reported here; warned, not raised,
-    # because a genuine recent spin-off has no filing rows either.
-    suspect = [r for r in unverified_ciks(context) if r["shape"] == "SUSPECT CIK"]
-    for row in suspect:
-        context.log.warning(
-            "%s: CIK %s appears in NO filing table (%s) yet the ticker HAS price history — verify the company ID against EDGAR",
-            row["ticker"],
-            row["cik"],
-            ", ".join(row["filing_tables_checked"]),
-        )
-    if suspect:
-        context.log.warning("%d universe CIK(s) unconfirmed by any filing table.", len(suspect))
+    sync(context.store, context.config, run_date(as_of))
 
 
 # --- Prices / market / macro ---
 @cli.command(
-    help="Daily OHLCV, dividend and split ex-dates from one yfinance download (prices, prices_dividends, prices_splits). HEAVY.", help_priority=2
+    help="Daily OHLCV, dividend and split ex-dates through one yfinance session (prices_splits, prices_dividends, prices). HEAVY.", help_priority=2
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*TICKERS_ARGS, **TICKERS_KWARGS)
@@ -231,7 +206,12 @@ def price_history(config_path: str, tickers: str | None, full: bool, as_of: date
     """`--full` re-pulls the whole window for every requested ticker; new tickers, holes and splits need no flag."""
     _, context = get_config_context(config_path, use_cache=False, save=False)
     years_history = int(context.config.data_extract.years_history)
-    fetch_prices_and_actions(context, tickers=_tickers(context, tickers), years_history=years_history, full=full, as_of=_market_as_of(as_of))
+    names, as_of_date, session = _tickers(context, tickers), _market_as_of(as_of), YahooSession()
+
+    # Splits first: their windows are planned from the stored `prices`, which `fetch_prices` then advances.
+    fetch_price_actions(context, session, tickers=names, years_history=years_history, full=full, as_of=as_of_date)
+    fetch_dividends(context, session, tickers=names, years_history=years_history, full=full, as_of=as_of_date)
+    fetch_prices(context, session, tickers=names, years_history=years_history, full=full, as_of=as_of_date)
 
 
 @cli.command(
@@ -246,8 +226,7 @@ def price_history(config_path: str, tickers: str | None, full: bool, as_of: date
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 def short_interest(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
-    names, _ = _ticker_scope(context, tickers)
-    fetch_short_interest(context, tickers=names, full=full, as_of=_market_as_of(as_of))
+    fetch_short_interest(context, tickers=_tickers(context, tickers), full=full, as_of=_market_as_of(as_of))
 
 
 @cli.command(help="ALL macro / market series -> prices_macro (yfinance + FRED). Light.")
@@ -273,14 +252,12 @@ def thirteen_f(config_path: str, tickers: str | None, filing_window: str | None,
         if len(parts) != 2 or not all(parts):
             raise click.BadParameter("--filing-window must be FROM:TO, e.g. 2024-01-01:2024-03-01")
         window = (parts[0], parts[1])
-    names, universe = _ticker_scope(context, tickers)
     fetch_13f(
         context,
-        tickers=names,
+        tickers=_tickers(context, tickers),
         years_history=int(config.data_extract.years_history),
         filing_window=window,
         as_of=run_date(as_of),
-        all_tickers=universe,
     )
 
 
@@ -296,8 +273,7 @@ def thirteen_f_backfill(config_path: str, tickers: str | None, full: bool, as_of
     """Tickers added inside `sec13f_hr`'s overlap: discover from 2013 Q2, skipping verified completed accessions.
     `-t X` narrows the new tickers (an established X does nothing); `-t X -F` re-reads every data set for X."""
     _, context = get_config_context(config_path, use_cache=False, save=False)
-    names, universe = _ticker_scope(context, tickers)
-    fetch_13f_backfill(context, tickers=names if tickers else None, as_of=run_date(as_of), full=full, all_tickers=universe)
+    fetch_13f_backfill(context, tickers=_tickers(context, tickers) if tickers else None, as_of=run_date(as_of), full=full)
 
 
 @cli.command(name="thirteen-f-managers", help="FULL 13F portfolios of the superinvestor roster (all securities, CUSIP grain).")
@@ -477,7 +453,7 @@ def fundamentals_sharadar(config_path: str, tickers: str | None, full: bool, as_
 
 @cli.command(
     name="sharadar-tickers",
-    help="Sharadar entity dimension (permaticker, currency, category) -> sharadar_tickers. Full refresh. Prerequisite of fundamentals-sharadar.",
+    help="Sharadar entity dimension (permaticker, currency, category, CUSIPs) -> sharadar_tickers. Full refresh. Runs before `universe` and fundamentals-sharadar.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 def sharadar_tickers(config_path: str) -> None:
@@ -496,7 +472,7 @@ def sharadar_actions(config_path: str, full: bool, as_of: datetime | None) -> No
 
 @cli.command(
     name="sharadar-sp500",
-    help="S&P 500 membership events (added / removed / historical, from 1992) -> sharadar_sp500. Ingested only; universe.py is NOT re-pointed (D27).",
+    help="S&P 500 membership events (added / removed / historical, from 1992) -> sharadar_sp500. Ingested only; the universe is configs/universe.yml.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
@@ -789,7 +765,7 @@ def edgar_index_command(config_path: str, full: bool, as_of: datetime | None) ->
         click.echo(f"{quarter}\t{n_rows}")
 
 
-def _document_fetches(context: Context, cik_map: pd.DataFrame) -> dict[str, EdgarFetch]:
+def _document_fetches(context: Context) -> dict[str, EdgarFetch]:
     """Every EDGAR document fetch, keyed by its done table's name."""
     fetches = (
         SEC_8K_FETCH,
@@ -797,7 +773,7 @@ def _document_fetches(context: Context, cik_map: pd.DataFrame) -> dict[str, Edga
         SEC_13G_FETCH,
         FILING_TEXT_FETCH,
         DEF14A_EDGAR_FETCH,
-        fundamentals_fetch(context, cik_map),
+        fundamentals_fetch(context),
         INSIDER_EDGAR_FETCH,
     )
     return {fetch.done.name: fetch for fetch in fetches}
@@ -812,7 +788,7 @@ def _document_fetches(context: Context, cik_map: pd.DataFrame) -> dict[str, Edga
 def resume_plan(config_path: str, tickers: str | None, table_name: str | None, timings: bool, as_of: datetime | None) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
     run = EdgarRun.load(context, _tickers(context, tickers), as_of=as_of)
-    fetches = _document_fetches(context, run.cik_map)
+    fetches = _document_fetches(context)
     if table_name is not None and table_name not in fetches:
         raise click.BadParameter(f"not an EDGAR document table: {table_name}; one of {sorted(fetches)}", param_hint="--table")
     for name, fetch in fetches.items():

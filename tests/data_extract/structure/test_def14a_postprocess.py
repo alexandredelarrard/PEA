@@ -7,7 +7,7 @@ import json
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.schemas.def14a_schema import (
+from src.data_extract.utils.structure.def14a.def14a_schema import (
     AuditExtract,
     Def14AExtract,
     DirectorPayExtract,

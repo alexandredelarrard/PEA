@@ -21,6 +21,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pandas as pd
@@ -39,7 +40,9 @@ from src.data_extract.utils.identity.entity_lineage import (
     IdentityError,
     TwoUniverseTickersOneEntityError,
 )
+from src.data_store.schema import Tables
 from src.utils.string import pad_cik, pad_cik_series
+from tests.support.universe import as_roster, universe_of
 
 CONFIG_DIR = "./configs"
 
@@ -79,7 +82,7 @@ def _simple() -> Identity:
                 ("BBB", "0000000900", pd.Timestamp("2006-01-01"), None, 50),
             ]
         ),
-        roster=_roster([("AAA", "0000000200"), ("BBB", "0000000900")]),
+        roster_cik=as_roster(_roster([("AAA", "0000000200"), ("BBB", "0000000900")])),
     )
 
 
@@ -146,7 +149,7 @@ def test_two_universe_tickers_in_one_entity_raises_and_names_both():
                 ]
             ),
             tenure=_tenure([("DD", "0001666700", pd.Timestamp("2019-06-01"), None, 10), ("DOW", "0001751788", pd.Timestamp("2019-04-01"), None, 10)]),
-            roster=_roster([("DD", "0001666700"), ("DOW", "0001751788")]),
+            roster_cik=as_roster(_roster([("DD", "0001666700"), ("DOW", "0001751788")])),
         )
     message = str(excinfo.value)
     for token in ("DD", "DOW", "0001666700", "0001751788", "owner_overlap"):
@@ -164,7 +167,7 @@ def test_a_cik_in_two_entities_raises():
         build_identity(
             lineage=_lineage([("0000000100", "E0000000100", "register"), ("0000000100", "E0000000200", "owner_overlap")]),
             tenure=_tenure([("AAA", "0000000100", pd.Timestamp("2006-01-01"), None, 5)]),
-            roster=_roster([("AAA", "0000000100")]),
+            roster_cik=as_roster(_roster([("AAA", "0000000100")])),
         )
 
     print("\n=== SANITY CHECK: one CIK, one entity ===")
@@ -194,7 +197,7 @@ def test_tenure_is_half_open_on_both_boundaries():
                 ("AAA", "0000000700", pd.Timestamp("2015-01-01"), None, 900),
             ]
         ),
-        roster=_roster([("AAA", "0000000700")]),
+        roster_cik=as_roster(_roster([("AAA", "0000000700")])),
     )
     assert identity.entity_for("AAA", "2005-12-31") is None  # before valid_from
     assert identity.entity_for("AAA", "2006-01-01") == "E0000000100"  # valid_from INCLUDED
@@ -215,7 +218,7 @@ def test_postgres_date_round_trip_compares_both_directions():
     identity = build_identity(
         lineage=_lineage([("0000000100", "E0000000100", "roster")]),
         tenure=_tenure([("AAA", "0000000100", dt.date(2006, 1, 1), dt.date(2015, 1, 1), 5), ("AAA", "0000000200", dt.date(2015, 1, 1), None, 5)]),
-        roster=_roster([("AAA", "0000000100")]),
+        roster_cik=as_roster(_roster([("AAA", "0000000100")])),
     )
     assert identity.entity_for("AAA", dt.date(2010, 1, 1)) == "E0000000100"
     assert identity.entity_for("AAA", pd.Timestamp("2010-01-01")) == "E0000000100"
@@ -245,7 +248,7 @@ def test_a_dateless_lookup_raises_when_the_symbol_changed_hands():
                 ("AAA", "0000000700", pd.Timestamp("2006-01-01"), pd.Timestamp("2009-01-01"), 20),
             ]
         ),
-        roster=_roster([("AAA", "0000000100")]),
+        roster_cik=as_roster(_roster([("AAA", "0000000100")])),
     )
     with pytest.raises(AmbiguousSymbolTenureError, match="AAA"):
         reused.entity_for("AAA", None)
@@ -264,14 +267,14 @@ def test_ambiguity_is_entity_grain_not_cik_grain():
     one_entity = build_identity(
         lineage=_lineage([("0000000100", "E0000000100", "register"), ("0000000200", "E0000000100", "register")]),
         tenure=_tenure([("AAA", "0000000100", pd.Timestamp("2006-01-01"), None, 10), ("AAA", "0000000200", pd.Timestamp("2010-01-01"), None, 10)]),
-        roster=_roster([("AAA", "0000000200")]),
+        roster_cik=as_roster(_roster([("AAA", "0000000200")])),
     )
     assert one_entity.entity_for("AAA", "2012-01-01") == "E0000000100"  # overlap, no raise
 
     two_entities = build_identity(
         lineage=_lineage([("0000000100", "E0000000100", "roster")]),
         tenure=_tenure([("AAA", "0000000100", pd.Timestamp("2006-01-01"), None, 10), ("AAA", "0000000700", pd.Timestamp("2010-01-01"), None, 10)]),
-        roster=_roster([("AAA", "0000000100")]),
+        roster_cik=as_roster(_roster([("AAA", "0000000100")])),
     )
     with pytest.raises(AmbiguousSymbolTenureError):
         two_entities.entity_for("AAA", "2012-01-01")
@@ -341,7 +344,7 @@ def _dated() -> Identity:
     return build_identity(
         lineage=lineage,
         tenure=_tenure([("AAA", "0000000200", pd.Timestamp("2015-10-02"), None, 10), ("BBB", "0000000900", pd.Timestamp("2006-01-01"), None, 10)]),
-        roster=_roster([("AAA", "0000000200"), ("BBB", "0000000900"), ("CCC", "0000000710")]),
+        roster_cik=as_roster(_roster([("AAA", "0000000200"), ("BBB", "0000000900"), ("CCC", "0000000710")])),
     )
 
 
@@ -429,7 +432,7 @@ def test_dei_tenure_rows_do_not_reach_the_tenure_resolver():
         ],
         ignore_index=True,
     )
-    identity = build_identity(lineage=_lineage([("0000000200", "E0000000200", "roster")]), tenure=tenure, roster=_roster([("AAA", "0000000200")]))
+    identity = build_identity(lineage=_lineage([("0000000200", "E0000000200", "roster")]), tenure=tenure, roster_cik=as_roster(_roster([("AAA", "0000000200")])))
     assert identity.entity_for("AAA", "2020-01-01") == "E0000000200"
     assert identity.filing_scope("AAA").event_ciks == ("0000000200",)
 
@@ -480,7 +483,7 @@ def test_a_tape_symbol_never_maps_an_interval_evidenced_by_dei_alone():
     )
     rows["sources"] = ["", "dei,form345,roster", "dei"]
     identity = build_identity(
-        lineage=rows, tenure=_tenure([("AAA", "0000000100", pd.Timestamp("2006-01-01"), None, 10)]), roster=_roster([("AAA", "0000000100")])
+        lineage=rows, tenure=_tenure([("AAA", "0000000100", pd.Timestamp("2006-01-01"), None, 10)]), roster_cik=as_roster(_roster([("AAA", "0000000100")]))
     )
     assert identity.tape_interval("AAA", "2020-01-02") is not None
     assert identity.tape_interval("AAA-PR-C", "2020-01-02") is None
@@ -500,7 +503,7 @@ def test_d19_is_the_lineage_builds_check_and_is_not_repeated_at_load():
     identity = build_identity(
         lineage=_lineage([("0000000100", "E0000000100", "roster"), ("0000000900", "E0000000900", "roster")]),
         tenure=_tenure([("AAA", "0000000700", pd.Timestamp("2006-01-01"), None, 500), ("BBB", "0000000800", pd.Timestamp("2006-01-01"), None, 500)]),
-        roster=_roster([("AAA", "0000000100"), ("BBB", "0000000900")]),
+        roster_cik=as_roster(_roster([("AAA", "0000000100"), ("BBB", "0000000900")])),
     )
     assert identity.universe_entity("AAA") == "E0000000100" and identity.universe_entity("BBB") == "E0000000900"
 
@@ -516,9 +519,12 @@ def test_an_empty_table_is_a_loud_raise_not_an_empty_map(empty):
     frames: dict[str, Any] = dict(
         lineage=_lineage([("0000000100", "E0000000100", "roster")]),
         tenure=_tenure([("AAA", "0000000100", pd.Timestamp("2006-01-01"), None, 5)]),
-        roster=_roster([("AAA", "0000000100")]),
+        roster_cik=as_roster(_roster([("AAA", "0000000100")])),
     )
-    frames[empty] = frames[empty].iloc[0:0]
+    if empty == "roster":
+        frames["roster_cik"] = {}
+    else:
+        frames[empty] = frames[empty].iloc[0:0]
     with pytest.raises(IdentityError):
         build_identity(**frames)
 
@@ -542,39 +548,62 @@ def test_load_identity_caches_per_context_and_not_across_them():
             return self._frames.get(name) if kwargs.get("optional") else self._frames[name]
 
     class _Ctx:
-        def __init__(self, frames):
-            self.store = _Store(frames)
+        def __init__(self, cik, ticker):
+            self.store = _Store(frames(cik, ticker))
+            self.universe = universe_of([ticker], rows={ticker: {"cik": cik}})
             self.config_dir = CONFIG_DIR
-            self.config = type("Config", (), {"data_extract": type("Extract", (), {"redundant_ticks": []})()})()
 
     def frames(cik, ticker):
         return {
             "entity_lineage": _lineage([(cik, f"E{cik}", "roster")]),
             "symbol_tenure": _tenure([(ticker, cik, pd.Timestamp("2006-01-01"), None, 5)]),
-            "sp500_tickers": _roster([(ticker, cik)]),
         }
 
-    first: Any = _Ctx(frames("0000000100", "AAA"))
-    second: Any = _Ctx(frames("0000000900", "BBB"))
+    first: Any = _Ctx("0000000100", "AAA")
+    second: Any = _Ctx("0000000900", "BBB")
     a, b = load_identity(first), load_identity(second)
     assert load_identity(first) is a  # same context -> cached instance
-    assert len(first.store.reads) == 4, "A cached lookup must not read any identity table again."
+    assert len(first.store.reads) == 3, "A cached lookup must not read any identity table again."
     refreshed = load_identity(first, refresh=True)
     assert refreshed is not a and refreshed.roster_cik == a.roster_cik
-    assert load_identity(first) is refreshed and len(first.store.reads) == 8
+    assert load_identity(first) is refreshed and len(first.store.reads) == 6
     assert a is not b
     assert set(a.roster_cik) == {"AAA"} and set(b.roster_cik) == {"BBB"}
 
     first.store._frames = frames("0000000500", "CCC")
+    first.universe = universe_of(["CCC"], rows={"CCC": {"cik": "0000000500"}})
     assert load_identity(first) is refreshed
     updated = load_identity(first, refresh=True)
     assert set(updated.roster_cik) == {"CCC"} and load_identity(first) is updated
-    assert load_identity(second) is b and len(first.store.reads) == 12 and len(second.store.reads) == 4
+    assert load_identity(second) is b and len(first.store.reads) == 9 and len(second.store.reads) == 3
 
     print("\n=== SANITY CHECK: per-context caching ===")
     print(f"  context 1 -> {sorted(a.roster_cik)}; context 2 -> {sorted(b.roster_cik)}")
-    print("  OK: four table reads per build, none for cached lookups; refresh sees changed tables and never leaks across contexts")
+    print("  OK: three table reads per build (the roster is context.universe), none for cached lookups; refresh never leaks across contexts")
     print("  -> load_registrants may use @cache only because its key is a config directory.")
+
+
+def test_load_identity_takes_its_roster_and_aliases_from_the_universe():
+    """The roster is the universe (3 tickers), not every lineage entity; `redundant_symbols` are its alias symbols."""
+    frames = {
+        Tables.entity_lineage.name: _lineage([(c, f"E{c}", "roster") for c in ("0000000100", "0000000200", "0000000300", "0000000400")]),
+        Tables.symbol_tenure.name: _tenure(
+            [(t, c, pd.Timestamp("2006-01-01"), None, 5) for t, c in (("AAA", "0000000100"), ("GOOGL", "0000000200"), ("CCC", "0000000300"))]
+        ),
+    }
+    store = SimpleNamespace(load=lambda table, **kwargs: frames.get(table.name))
+    rows = {"AAA": {"cik": "0000000100"}, "GOOGL": {"cik": "0000000200"}, "CCC": {"cik": "0000000300"}}
+    universe = universe_of(["AAA", "GOOGL", "CCC"], aliases={"GOOGL": ["GOOG"]}, rows=rows)
+    context: Any = SimpleNamespace(store=store, universe=universe, config_dir=CONFIG_DIR)
+
+    identity = load_identity(context)
+
+    assert identity.redundant_symbols == frozenset({"GOOG"})
+    assert identity.roster_cik == {"AAA": "0000000100", "CCC": "0000000300", "GOOGL": "0000000200"}
+    with pytest.raises(UnknownUniverseTickerError, match="DDD"):
+        identity.universe_entity("DDD")  # its CIK 0000000400 has a lineage row but the ticker is not in the universe
+    print("\n=== SANITY CHECK: identity roster from the universe ===")
+    print(f"  roster {sorted(identity.roster_cik)}, redundant {sorted(identity.redundant_symbols)}; DDD (lineage only) is unknown.")
 
 
 def test_pad_cik_handles_every_spelling_in_the_repo():
@@ -750,7 +779,7 @@ def test_only_one_alphabet_ticker_is_investable(live):
 def test_no_live_entity_holds_two_universe_tickers(live):
     """`build_identity` raises on this, so reaching the fixture at all proves it -- asserted
     explicitly anyway because it is the invariant the whole design rests on."""
-    assert len(live.ticker_by_entity) == len(live.roster_cik) == 500
+    assert len(live.ticker_by_entity) == len(live.roster_cik) == 491
 
     print("\n=== SANITY CHECK: one entity per universe ticker ===")
     print(f"  {len(live.roster_cik)} tickers -> {len(live.ticker_by_entity)} entities, 0 collisions")
@@ -764,7 +793,7 @@ def test_a_fresh_start_window_admits_filings_from_its_start_and_refuses_earlier_
     identity = build_identity(
         lineage=lineage,
         tenure=_tenure([("EXE", "0000895126", pd.Timestamp("2021-02-10"), None, 10)]),
-        roster=_roster([("EXE", "0000895126")]),
+        roster_cik=as_roster(_roster([("EXE", "0000895126")])),
     )
     (window,) = identity.filing_scope("EXE").windows
     assert (window.cik, window.valid_from, window.valid_to) == ("0000895126", pd.Timestamp("2021-02-10"), None)

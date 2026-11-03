@@ -24,10 +24,16 @@ from src.data_aggregate.utils.text.earnings_call_features import (
 )
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from tests.support.universe import seed_universe
 
 EARNINGS_CALL_SENTIMENT_CACHE_MODEL = "fixture/tone:speaker-clean-v2"
 
 _QDATE = {"2023Q1": "2023-02-01", "2023Q2": "2023-05-01", "2023Q3": "2023-08-01"}
+
+
+def _roster(tickers: list[str], ciks: list[str]) -> pd.DataFrame:
+    """The universe roster as `context.universe.frame` holds it: 10-digit CIKs."""
+    return pd.DataFrame({"ticker": tickers, "cik": [c.zfill(10) for c in ciks]})
 
 
 def _canonical_tenure(roster: pd.DataFrame) -> pd.DataFrame:
@@ -41,7 +47,7 @@ def test_canonical_calls_require_a_consolidating_issuer_window() -> None:
             "as_of": pd.to_datetime(["2008-01-30", "2024-05-09", "2021-02-01", "2022-01-01", "2024-02-01", "2024-02-01"]),
         }
     )
-    roster = pd.DataFrame({"ticker": ["CEG", "NEW", "EVENT"], "cik": ["1", "3", "4"]})
+    roster = _roster(["CEG", "NEW", "EVENT"], ["1", "3", "4"])
     lineage = pd.DataFrame(
         {
             "cik": ["1", "2", "3", "4"],
@@ -62,7 +68,7 @@ def test_canonical_calls_require_a_consolidating_issuer_window() -> None:
 
 def test_canonical_ticker_keeps_calls_before_the_symbol_change() -> None:
     calls = pd.DataFrame({"ticker": ["ECHO", "ECHO", "UNKNOWN"], "as_of": pd.to_datetime(["2008-05-13", "2026-08-03", "2026-08-03"])})
-    roster = pd.DataFrame({"ticker": ["ECHO"], "cik": ["1"]})
+    roster = _roster(["ECHO"], ["1"])
     lineage = pd.DataFrame({"cik": ["1"], "entity_id": ["E1"]}).assign(role="cik_window", valid_from="1900-01-01", valid_to=None)
     identified = attach_issuer_identity(calls, roster, lineage, _canonical_tenure(roster))
     assert identified["issuer_id"].tolist() == ["E1", "E1"]
@@ -77,7 +83,7 @@ def test_reused_alias_requires_dated_own_support_but_preserves_uncontested_histo
             "as_of": pd.to_datetime(["2008-01-30", "2024-05-09", "2015-05-13", "2013-04-30", "2024-02-01", "2008-02-01"]),
         }
     )
-    roster = pd.DataFrame({"ticker": ["CEG", "ECHO", "FOXA", "CRH"], "cik": ["1", "2", "3", "4"]})
+    roster = _roster(["CEG", "ECHO", "FOXA", "CRH"], ["1", "2", "3", "4"])
     lineage = pd.DataFrame({"cik": ["1", "2", "3", "4"], "entity_id": ["E1", "E2", "E3", "E4"]}).assign(
         role="cik_window", valid_from="1900-01-01", valid_to=None
     )
@@ -96,7 +102,7 @@ def test_reused_alias_requires_dated_own_support_but_preserves_uncontested_histo
 
 @pytest.mark.parametrize(("variant", "expected"), [("overlap", [1, 3]), ("same_entity", [0, 1, 3]), ("alternate", [0, 1, 3]), ("unknown", [1, 3])])
 def test_canonical_support_requires_unambiguous_alias_inside_its_cik_window(variant: str, expected: list[int]) -> None:
-    roster = pd.DataFrame({"ticker": ["NEW"], "cik": ["2"]})
+    roster = _roster(["NEW"], ["2"])
     lineage = pd.DataFrame(
         {
             "cik": ["1", "2", "3"],
@@ -379,7 +385,7 @@ def test_identity_excludes_unknown_and_ambiguous_rows_and_preserves_deltas() -> 
         }
     )
     lineage = pd.DataFrame({"cik": ["1", "2"], "entity_id": ["E1", "E1"]}).assign(role="cik_window", valid_from="1900-01-01", valid_to=None)
-    roster = pd.DataFrame({"ticker": ["NEW"], "cik": ["2"]})
+    roster = _roster(["NEW"], ["2"])
     prepared = prepare_earnings_call_kpis(attach_issuer_identity(calls, roster, lineage, _canonical_tenure(roster)))
     newest = prepared.iloc[-1]
     assert math.isclose(float(newest["ec_prep_tone_delta"]), 0.3)
@@ -387,14 +393,14 @@ def test_identity_excludes_unknown_and_ambiguous_rows_and_preserves_deltas() -> 
     ambiguous = pd.concat(
         [
             roster,
-            pd.DataFrame({"ticker": ["NEW"], "cik": ["3"]}),
+            _roster(["NEW"], ["3"]),
         ],
         ignore_index=True,
     )
     ambiguous_lineage = pd.concat([lineage, pd.DataFrame({"cik": ["3"], "entity_id": ["E2"]})], ignore_index=True)
     assert attach_issuer_identity(calls.tail(1), ambiguous, ambiguous_lineage, _canonical_tenure(ambiguous)).empty
     unresolved = pd.concat(
-        [roster, pd.DataFrame({"ticker": ["NEW"], "cik": ["9"]})],
+        [roster, _roster(["NEW"], ["9"])],
         ignore_index=True,
     )
     assert attach_issuer_identity(calls.tail(1), unresolved, lineage, _canonical_tenure(unresolved)).empty
@@ -409,7 +415,7 @@ def test_identity_excludes_unknown_and_ambiguous_rows_and_preserves_deltas() -> 
 def test_issuer_identity_reads_roster_and_distinct_lineage_pairs(sqlite_store) -> None:
     """The dated `entity_lineage` has several rows per CIK and `symbol_tenure` gains `dei` rows; the attach must not move."""
     calls = pd.DataFrame({"ticker": ["NEW", "NEW"], "quarter": ["2023Q4", "2024Q1"], "as_of": pd.to_datetime(["2023-11-01", "2024-02-01"])})
-    sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["NEW"], "cik": ["2"]}))
+    universe = seed_universe(sqlite_store, ["NEW"], rows={"NEW": {"cik": "0000000002"}})
     sqlite_store.save(
         Tables.entity_lineage,
         pd.DataFrame(
@@ -438,11 +444,11 @@ def test_issuer_identity_reads_roster_and_distinct_lineage_pairs(sqlite_store) -
         ),
     )
 
-    roster, lineage, tenure = ec.load_issuer_identity(cast(Context, SimpleNamespace(store=sqlite_store)))
+    roster, lineage, tenure = ec.load_issuer_identity(cast(Context, SimpleNamespace(store=sqlite_store, universe=universe)))
     identified = attach_issuer_identity(calls, roster, lineage, tenure)
 
     assert roster is not None and lineage is not None
-    assert roster["cik"].astype(str).tolist() == ["2"] and len(lineage) == 4
+    assert roster["cik"].tolist() == ["0000000002"] and len(lineage) == 4
     assert identified["issuer_id"].tolist() == ["E1", "E1"]
     print("\n=== SANITY CHECK: issuer identity inputs ===")
     print("  four lineage rows keep predecessor/current windows; canonical NEW reads roster CIK2 and retains both historical calls.")

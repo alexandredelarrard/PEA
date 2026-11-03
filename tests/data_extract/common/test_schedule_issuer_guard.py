@@ -49,5 +49,5 @@ def test_an_unrelated_issuer_is_still_rejected():
 
 def test_a_single_cik_ticker_keeps_exactly_its_roster_cik():
     assert _subjects("AAPL", "0000320193") == {"0000320193"}
-    assert EdgarScope().filing_scope("AAPL", "320193").event_ciks == ("0000320193",)
+    assert EdgarScope().filing_scope("AAPL", "0000320193").event_ciks == ("0000320193",)
     print("\n=== SANITY: a single-CIK scope (with or without identity) is its roster CIK ===")

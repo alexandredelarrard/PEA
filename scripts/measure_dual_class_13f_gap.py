@@ -2,7 +2,7 @@
 
 `fetch_13f._resolve_tickers` ends `return out[out["ticker"].isin(universe)]`. `GOOG` and
 `GOOGL` are ONE CIK but TWO CUSIPs (`02079K107` Class C, `02079K305` Class A), so OpenFIGI maps
-them to two tickers -- and `configs.yml: redundant_ticks` excludes `GOOG` from the universe, so
+them to two tickers -- and `configs/universe.yml` lists `GOOG` only as an alias of `GOOGL`, so
 every manager's Alphabet CLASS-C position fails that `isin` and is dropped silently. Same shape
 for `FOX` (Fox Corp Class B) and `NWS` (News Corp Class B).
 
@@ -31,7 +31,6 @@ import pandas as pd
 
 from src.context import get_config_context
 from src.data_store.schema import Tables
-from src.utils.universe import load_universe_tickers
 
 CONFIG_DIR = "./configs"
 OUT = Path("reports") / pd.Timestamp.today().strftime("%Y-%m-%d")
@@ -45,8 +44,8 @@ PAIRS = {"GOOG": "GOOGL", "FOX": "FOXA", "NWS": "NWSA"}
 def main() -> None:
     _, context = get_config_context(CONFIG_DIR, use_cache=False, save=False)
     OUT.mkdir(parents=True, exist_ok=True)
-    universe = set(load_universe_tickers(context))
-    excluded = {str(t).strip().upper() for t in context.config.data_extract.redundant_ticks}
+    universe = set(context.universe.tickers)
+    excluded = set(context.universe.alias_symbols) | {"EA"}
 
     cmap = context.store.load(Tables.cusip_ticker_map, columns=["cusip", "ticker"])
     if cmap is None:

@@ -16,7 +16,7 @@ Add a source without bypassing the store boundary, losing point-in-time provenan
 
 1. Define the source's grain, identifiers, publication clock, primary key, date column, and freshness semantics.
 2. Add exactly one `Table` declaration to [schema.py](../../src/data_store/schema.py), including the smallest safe read projection.
-3. Regenerate [sql/schema.sql](../../sql/schema.sql) through [scripts/generate_schema_sql.py](../../scripts/generate_schema_sql.py) when the table is managed.
+3. Regenerate [sql/schema.sql](../../sql/schema.sql) through [sql/generate_schema_sql.py](../../sql/generate_schema_sql.py) when the table is managed. A fetcher takes its tickers, CIKs and GICS from `context.universe` (never a table read of the roster).
 4. Implement the fetcher under the owning [data_extract utils package](../../src/data_extract/utils/) and accept `Context` rather than constructing a store.
 5. Declare the table's `Resume` contract (and an `empty_marker` when a read can find nothing) in [schema.py](../../src/data_store/schema.py), and plan the work list through [resume.py](../../src/data_extract/utils/common/resume.py) (dated series and archives) or [document_resume.py](../../src/data_extract/utils/edgar_extract/document_resume.py) (EDGAR documents) at the source's actual retrieval grain.
 6. Save bounded work per ticker, filing, or source chunk so interruption loses minimal progress.

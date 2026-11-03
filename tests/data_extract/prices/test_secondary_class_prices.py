@@ -17,6 +17,7 @@ from omegaconf import OmegaConf
 
 from src.data_extract.utils.prices import fetch_prices as fp
 from src.data_store.schema import Tables
+from tests.support.universe import seed_universe
 
 MASTER_COLUMNS = ("security_id", "canonical_company", "market_symbol", "lineage_role", "valid_from", "valid_to")
 _AS_OF = pd.Timestamp("2026-10-03")
@@ -85,7 +86,10 @@ def _seed_stored(store: Any, universe: list[str], classes: list[str]) -> None:
 
 def _context(store: Any) -> Any:
     return SimpleNamespace(
-        store=store, log=logging.getLogger("test.secondary_prices"), config=OmegaConf.create({"data_extract": {"years_history": 15}})
+        store=store,
+        log=logging.getLogger("test.secondary_prices"),
+        config=OmegaConf.create({"data_extract": {"years_history": 15}}),
+        universe=seed_universe(store, ["BRK-B", "GOOGL", "WBD"]),
     )
 
 
@@ -102,7 +106,7 @@ def test_fetch_list_is_the_universe_plus_its_current_secondary_classes(fetched):
     assert fp.secondary_class_symbols(cast(Any, ctx), ["BRK-B", "GOOGL", "WBD"]) == {"BRK-A": "BRK-B", "GOOG": "GOOGL"}
     _seed_stored(store, ["BRK-B", "GOOGL", "WBD"], [])
 
-    fp.fetch_prices_and_actions(cast(Any, ctx), tickers=["BRK-B", "GOOGL", "WBD"], years_history=15, as_of=_AS_OF)
+    fp.fetch_prices(cast(Any, ctx), fp.YahooSession(pause=0.0), tickers=["BRK-B", "GOOGL", "WBD"], years_history=15, as_of=_AS_OF)
 
     stored = set(store.load(Tables.prices, columns=["ticker"])["ticker"])
     assert stored == {"BRK-B", "GOOGL", "WBD", "BRK-A", "GOOG"}, stored
@@ -120,16 +124,20 @@ def test_a_split_in_a_class_response_repulls_that_class_and_stores_only_the_univ
     responses["GOOGL"] = _bars(["GOOGL"], "2026-09-29", split=20.0)
     responses["GOOG"] = _bars(["GOOG"], "2026-09-29", split=20.0)
 
-    fp.fetch_prices_and_actions(cast(Any, _context(store)), tickers=["BRK-B", "GOOGL"], years_history=15, as_of=_AS_OF)
+    ctx, session = cast(Any, _context(store)), fp.YahooSession(pause=0.0)
+    fp.fetch_price_actions(ctx, session, tickers=["BRK-B", "GOOGL"], years_history=15, as_of=_AS_OF)
+    fp.fetch_prices(ctx, session, tickers=["BRK-B", "GOOGL"], years_history=15, as_of=_AS_OF)
 
-    assert calls[-1] == (["GOOG", "GOOGL"], _FLOOR), calls
+    assert calls[-1] == (["GOOG"], _FLOOR), "GOOGL's whole window was already pulled by fetch_price_actions on the same session"
     assert store.load(Tables.prices_splits)["ticker"].tolist() == ["GOOGL"]
     print("\n=== SANITY CHECK: split vintage ===")
-    print("  the 2026-09-29 split in GOOGL's and GOOG's own responses re-pulls both over the whole window; only GOOGL's split is stored")
+    print(
+        "  the 2026-09-29 split in GOOGL's and GOOG's own responses re-pulls both over the whole window (GOOGL's once, for the session); only GOOGL's split is stored"
+    )
 
 
 def test_a_ticker_subset_fetches_only_its_own_classes(fetched):
     store, _, _ = fetched
-    fp.fetch_prices_and_actions(cast(Any, _context(store)), tickers=["WBD"], years_history=15, as_of=_AS_OF)
+    fp.fetch_prices(cast(Any, _context(store)), fp.YahooSession(pause=0.0), tickers=["WBD"], years_history=15, as_of=_AS_OF)
     assert set(store.load(Tables.prices, columns=["ticker"])["ticker"]) == {"WBD"}
     print("\n=== SANITY CHECK: subset ===\n  -t WBD fetches WBD alone: its classes DISCB and DISCK are delisted")

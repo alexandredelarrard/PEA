@@ -11,7 +11,7 @@ tags:
 
 ## Summary
 
-The repository includes operational scripts around the core package. Portfolio analysis is a standalone offline HTML report, with no application server. Scripts generate DDL, profile data, produce feature catalogues and evidence, investigate source defects, manage registrant and DEF 14A migrations, and create definition-of-done reports.
+The repository includes operational scripts around the core package. Portfolio analysis is a standalone offline HTML report, with no application server. Scripts profile data, investigate source defects, manage registrant and DEF 14A migrations, and create definition-of-done reports. `scripts/` is deletable: nothing in `src/` or `tests/` imports it. The tools that tests import live in `tests/support/`, and the DDL generator lives in `sql/`.
 
 ## Responsibilities
 
@@ -23,14 +23,14 @@ The repository includes operational scripts around the core package. Portfolio a
 ## Public API / entry points
 
 - [main.py](../../main.py) constructs a context and selected steps but leaves execution calls commented until explicitly enabled.
-- Individual files under `scripts/` expose command-line `main()` functions where applicable.
+- Individual files under `scripts/` and `tests/support/` expose command-line `main()` functions where applicable.
 
 ## Key files
 
-- [scripts/generate_schema_sql.py](../../scripts/generate_schema_sql.py) renders [sql/schema.sql](../../sql/schema.sql) from the registry.
-- [scripts/cube_feature_catalogue.py](../../scripts/cube_feature_catalogue.py), [scripts/cube_governance_catalogue.py](../../scripts/cube_governance_catalogue.py), and [scripts/cube_institutionals_catalogue.py](../../scripts/cube_institutionals_catalogue.py) maintain feature inventories.
-- [institutionals_feature_quality.py](../../scripts/institutionals_feature_quality.py) runs read-only quality gates on the institutional feature part against a frozen input manifest. Its source-table list names the one `insider_transactions` table, so a manifest frozen before the single-table insider change is rejected with `manifest source tables differ`; re-freeze it before reuse.
-- Registrant, identity, and DEF 14A research scripts remain isolated under `scripts/`.
+- [sql/generate_schema_sql.py](../../sql/generate_schema_sql.py) renders [sql/schema.sql](../../sql/schema.sql) from the registry (`python sql/generate_schema_sql.py`).
+- [cube_feature_catalogue.py](../../tests/support/cube_feature_catalogue.py), [cube_governance_catalogue.py](../../tests/support/cube_governance_catalogue.py), [cube_institutionals_catalogue.py](../../tests/support/cube_institutionals_catalogue.py) and [cube_sec_thirteen_catalogue.py](../../tests/support/cube_sec_thirteen_catalogue.py) in `tests/support/` maintain feature inventories.
+- [institutionals_feature_quality.py](../../tests/support/institutionals_feature_quality.py) runs read-only quality gates on the institutional feature part against a frozen input manifest. Its source-table list names the one `insider_transactions` table, so a manifest frozen before the single-table insider change is rejected with `manifest source tables differ`; re-freeze it before reuse.
+- [detect_registrant_cutovers.py](../../tests/support/detect_registrant_cutovers.py), [identity_regression_gate.py](../../tests/support/identity_regression_gate.py) and [def14a_legacy_purge.py](../../tests/support/def14a_legacy_purge.py) are the test-imported registrant, identity and DEF 14A tools; other research scripts remain isolated under `scripts/`.
 
 ## Dependencies
 

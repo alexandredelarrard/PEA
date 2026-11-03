@@ -40,7 +40,6 @@ from src.data_extract.utils.institutionals.security_tape import (
     commit_tape_source,
     load_tape_cohorts,
     nullable,
-    outside_scope,
     restamp_targets,
     scope_tape_rows,
     stamp_changed,
@@ -101,7 +100,7 @@ SEC_FTD_ZIP_PREFIX = "cnsfails"  # a cached archive is named `{prefix}{period}.z
 
 def ftd_periods(years_history: int, today: pd.Timestamp | None = None) -> list[str]:
     """Semi-monthly file tags ('YYYYMMa'/'YYYYMMb') from the data-set era to now."""
-    today = (today or pd.Timestamp.today()).normalize()
+    today = run_date(today)
     source_start = pd.Timestamp(cast(str, cast(Resume, Tables.sec_fails_to_deliver_security.resume).source_start))
     out: list[str] = []
     for y in range(max(today.year - years_history, source_start.year), today.year + 1):
@@ -294,7 +293,7 @@ def _settlement_quantity(summed: pd.DataFrame, basis: ShareBasis | None) -> pd.S
     if basis is None:
         return result
     symbols = summed["market_symbol"].map(yahoo_symbol)
-    canonical = summed["ticker"].map(yahoo_symbol)
+    canonical = summed["ticker"]
     trade = pd.to_datetime(summed["trade_date"])
     settlement = pd.to_datetime(summed["date"])
     class_quantity = basis.rebase(quantity, symbols, settlement, trade)
@@ -304,7 +303,7 @@ def _settlement_quantity(summed: pd.DataFrame, basis: ShareBasis | None) -> pd.S
 
 
 def _checked_ftd_grain(
-    source: pd.DataFrame, master: pd.DataFrame, universe: frozenset[str], basis: ShareBasis | None, held: pd.DataFrame | None = None
+    source: pd.DataFrame, master: pd.DataFrame, universe: Collection[str], basis: ShareBasis | None, held: pd.DataFrame | None = None
 ) -> pd.DataFrame:
     """Infer absence only on a fully parsed period's actual served dates and supported company scope."""
     stamped = stamp_lines(source, master)
@@ -352,7 +351,7 @@ def empty_fails_grain() -> pd.DataFrame:
     )
 
 
-def _scope_fails_source(source: pd.DataFrame, master: pd.DataFrame, universe: frozenset[str]) -> pd.DataFrame:
+def _scope_fails_source(source: pd.DataFrame, master: pd.DataFrame, universe: Collection[str]) -> pd.DataFrame:
     """Retain all relevant actual lines plus compact, actual served-calendar evidence."""
     selected = master.loc[master["canonical_company"].isin(universe)]
     relevant = source["cusip"].isin(selected["cusip"]) | source["source_symbol"].map(squash).isin(selected["source_symbol"].map(squash))
@@ -423,12 +422,11 @@ def load_fails_basis(context: Context, master: pd.DataFrame) -> ShareBasis:
 
 
 def _prepare_fails_period(
-    context: Context, source: pd.DataFrame, master: pd.DataFrame, universe: frozenset[str], identity: dict[Table, pd.DataFrame], basis: ShareBasis
+    context: Context, source: pd.DataFrame, master: pd.DataFrame, universe: Collection[str], basis: ShareBasis
 ) -> tuple[dict[Table, pd.DataFrame], dict[Table, dict[str, object] | None]]:
     """Prepare one actual source period's exact raw/derived pair and guarded scopes."""
     periods = sorted(set(source["period"].astype(str))) or [str(source.attrs["period"])]
-    roster = identity[Tables.sp500_tickers]
-    others = sorted(set(roster["ticker"].astype(str)) - universe) if "ticker" in roster else []
+    others = sorted(context.universe.outside(universe))
     held = (
         context.store.load(
             Tables.sec_fails_to_deliver_security,
@@ -466,15 +464,15 @@ def _write_fails_period(
 
 
 def _save_fails_period(
-    context: Context, source: pd.DataFrame, master: pd.DataFrame, universe: frozenset[str], identity: dict[Table, pd.DataFrame], basis: ShareBasis
+    context: Context, source: pd.DataFrame, master: pd.DataFrame, universe: Collection[str], identity: dict[Table, pd.DataFrame], basis: ShareBasis
 ) -> tuple[int, int]:
     """Commit one actual source period's existing pair together."""
-    frames, scopes = _prepare_fails_period(context, source, master, universe, identity, basis)
+    frames, scopes = _prepare_fails_period(context, source, master, universe, basis)
     return _write_fails_period(context, frames, scopes, identity)
 
 
 def _rebuild_from_cache(
-    context: Context, master: pd.DataFrame, universe: frozenset[str], others: frozenset[str], identity: dict[Table, pd.DataFrame], basis: ShareBasis
+    context: Context, master: pd.DataFrame, universe: Collection[str], identity: dict[Table, pd.DataFrame], basis: ShareBasis
 ) -> tuple[int, int]:
     """Validate every required cached original before bounded atomic period replacements."""
     cache = cache_dir(context, context.config.local.paths.fails_deliver)
@@ -502,13 +500,17 @@ def _rebuild_from_cache(
         n_raw, n_saved = _save_fails_period(context, source, master, universe, identity, basis)
         raw += n_raw
         saved += n_saved
-    logger.info("FTD rebuild: %d validated periods; %d raw and %d ticker rows; %d outside companies retained", len(frames), raw, saved, len(others))
+    logger.info(
+        "FTD rebuild: %d validated periods; %d raw and %d ticker rows; %d outside companies retained",
+        len(frames),
+        raw,
+        saved,
+        len(context.universe.outside(universe)),
+    )
     return raw, saved
 
 
-def _stamp_new(
-    context: Context, master: pd.DataFrame, universe: frozenset[str], others: frozenset[str], identity: dict[Table, pd.DataFrame], basis: ShareBasis
-) -> int:
+def _stamp_new(context: Context, master: pd.DataFrame, universe: Collection[str], identity: dict[Table, pd.DataFrame], basis: ShareBasis) -> int:
     """Reconcile pending units and recover required originals missing from the cache."""
     stored, pending = fails_source_periods(context.store)
     cache = cache_dir(context, context.config.local.paths.fails_deliver)
@@ -523,7 +525,12 @@ def _stamp_new(
         scoped = _scope_fails_source(source, master, universe)
         _, written = _save_fails_period(context, scoped, master, universe, identity, basis)
         saved += written
-    logger.info("FTD: %d pending periods reconciled; %d ticker rows; %d outside companies retained", len(pending), saved, len(others))
+    logger.info(
+        "FTD: %d pending periods reconciled; %d ticker rows; %d outside companies retained",
+        len(pending),
+        saved,
+        len(context.universe.outside(universe)),
+    )
     return saved
 
 
@@ -548,7 +555,7 @@ def _lost_fails_records(gone: list[pd.DataFrame]) -> list[dict]:
 
 
 def _recover_fails_companies(
-    context: Context, master: pd.DataFrame, universe: frozenset[str], identity: dict[Table, pd.DataFrame], basis: ShareBasis, dry_run: bool = False
+    context: Context, master: pd.DataFrame, universe: Collection[str], identity: dict[Table, pd.DataFrame], basis: ShareBasis, dry_run: bool = False
 ) -> tuple[int, list[dict]]:
     """A changed scope needs actual source units again, including periods where this issuer was absent."""
     stored = context.store.load(Tables.sec_fails_to_deliver, columns=["ticker", "date", "period"], where={"ticker": sorted(universe)}, optional=True)
@@ -560,7 +567,7 @@ def _recover_fails_companies(
         if source is None:
             logger.warning("FTD: %s original unavailable; scope proof remains unknown", period)
             continue
-        frames, scopes = _prepare_fails_period(context, source, master, universe, identity, basis)
+        frames, scopes = _prepare_fails_period(context, source, master, universe, basis)
         if not dry_run:
             _, written = _write_fails_period(context, frames, scopes, identity)
             saved += written
@@ -591,7 +598,6 @@ def restamp_fails(
     identity: dict[Table, pd.DataFrame] | None = None,
     dry_run: bool = False,
     as_of: pd.Timestamp | None = None,
-    others: frozenset[str] | None = None,
 ) -> list[dict]:
     """Reconcile the complete originals needed by changed companies with atomic scoped source pairs.
 
@@ -610,8 +616,7 @@ def restamp_fails(
         companies = restamp_targets(context, Tables.sec_fails_to_deliver_security, master_stamps(master), as_of)
     if not companies:
         return []
-    universe = frozenset(tickers)
-    others = outside_scope(context, universe) if others is None else others
+    others = context.universe.outside(tickers)
     names = sorted(set(companies) - others)
     if not names:
         return []
@@ -621,10 +626,10 @@ def restamp_fails(
     fresh = stamp_lines(stored, master)
     mine = ~(stored["ticker"].isin(others) | fresh["ticker"].isin(others))
     changed = stamp_changed(stored, fresh) & fresh["security_id"].notna() & mine
-    rebuilt = [name for name in names if name in universe]
+    rebuilt = [name for name in names if name in tickers]
     records = []
     if rebuilt:
-        _, records = _recover_fails_companies(context, master, frozenset(rebuilt), cohort, load_fails_basis(context, master), dry_run)
+        _, records = _recover_fails_companies(context, master, rebuilt, cohort, load_fails_basis(context, master), dry_run)
     logger.info("FTD: %d line(s) of %d company(ies) re-stamped%s", int(changed.sum()), len(names), " (dry run)" if dry_run else "")
     return records
 
@@ -694,7 +699,6 @@ def fetch_fails_to_deliver(
     full: bool = False,
     as_of: pd.Timestamp | None = None,
     *,
-    all_tickers: Collection[str] | None = None,
     identity: Identity | None = None,
 ) -> int:
     """Stamp the stored raw FTD lines from `security_master` and rebuild `sec_fails_to_deliver`; returns ticker rows written.
@@ -702,21 +706,20 @@ def fetch_fails_to_deliver(
     Incremental runs reread or recover the complete originals for pending units and changed issuer scopes. `full`
     rebuilds both tables from every cached ZIP; a scoped (`-t`) run replaces only its guarded issuer source pairs.
     """
-    universe = frozenset(tickers)
     cohort = identity.source_cohort if identity is not None else load_source_identity(context.store)
     master = prepare_master(cohort[Tables.security_master]) if not cohort[Tables.security_master].empty else None
     if master is None or master.empty:
         logger.warning("FTD: no security_master yet (run `identity` first); nothing stamped")
         return 0
-    others = outside_scope(context, universe, all_tickers)
     basis = load_fails_basis(context, master)
     if full:
-        _, saved = _rebuild_from_cache(context, master, universe, others, cohort, basis)
+        _, saved = _rebuild_from_cache(context, master, tickers, cohort, basis)
     else:
-        saved = _stamp_new(context, master, universe, others, cohort, basis)
+        saved = _stamp_new(context, master, tickers, cohort, basis)
         changed = restamp_targets(context, Tables.sec_fails_to_deliver_security, master_stamps(master), as_of)
-        if set(changed) & universe:
-            recovered, _ = _recover_fails_companies(context, master, frozenset(set(changed) & universe), cohort, basis)
+        scoped = [name for name in changed if name in tickers]
+        if scoped:
+            recovered, _ = _recover_fails_companies(context, master, scoped, cohort, basis)
             saved += recovered
     return saved
 

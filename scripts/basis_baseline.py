@@ -42,7 +42,6 @@ if str(ROOT) not in sys.path:
 
 from src.context import get_config_context
 from src.data_store.schema import Tables
-from src.utils.universe import load_universe_tickers
 
 #: Years the research tabulated. Kept explicit so a rerun in 2027 still diffs against the
 #: same rows rather than silently gaining a column.
@@ -464,7 +463,7 @@ def main() -> None:
     _, context = get_config_context("./configs", use_cache=False, save=False)
     store = context.store
 
-    frames = load_frames(store, load_universe_tickers(context))
+    frames = load_frames(store, context.universe.tickers)
     panel = build_panel(frames)
     prices = frames["prices"]
 

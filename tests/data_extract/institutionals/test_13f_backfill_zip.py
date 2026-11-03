@@ -22,7 +22,6 @@ from edgar.thirteenf.models import ThirteenF
 
 from src.data_aggregate.utils.common.inputs import load_source
 from src.data_extract.utils.common import bulk_cache
-from src.data_extract.utils.edgar_extract.sec_utils import CIK_MAPPING_COLS
 from src.data_extract.utils.institutionals import fetch_13f as f13
 from src.data_extract.utils.institutionals import fetch_13f_backfill as fb
 from src.data_extract.utils.institutionals.fetch_13f import save_13f_filing
@@ -30,6 +29,7 @@ from src.data_extract.utils.institutionals.fetch_superinvestors import activity_
 from src.data_store.schema import Tables
 from tests.data_extract.edgar_fixtures import fake_context
 from tests.data_extract.institutionals.test_13f_one_walk import ROSTER, _seed_roster
+from tests.support.universe import seed_universe
 
 _AS_OF = pd.Timestamp("2026-09-30")
 _NEW, _NEW_CUSIP = "NEWCO", "111111111"
@@ -169,15 +169,9 @@ def _edgartools_book(filing: tuple) -> pd.DataFrame:
 
 def _ctx(tmp_path: Any, store: Any, added_on: dict[str, str]) -> Any:
     tickers = ["AAPL", "MSFT", _NEW]
-    ctx = fake_context(tmp_path, store, tickers, redundant_ticks=[])
-    store.drop(Tables.sp500_tickers)
-    store.save(
-        Tables.sp500_tickers,
-        pd.DataFrame(
-            {col: ["x"] * len(tickers) for col in CIK_MAPPING_COLS}
-            | {"ticker": tickers, "cik": ["1", "2", "3"], "added_on": [pd.Timestamp(added_on.get(t, "2000-01-01")) for t in tickers]}
-        ),
-    )
+    ctx = fake_context(tmp_path, store, tickers)
+    rows = {t: {"universe_added_on": pd.Timestamp(added_on.get(t, "2000-01-01"))} for t in tickers}
+    ctx.universe = seed_universe(store, tickers, rows=rows)
     store.save(Tables.cusip_ticker_map, pd.DataFrame({"cusip": list(_MAP), "ticker": list(_MAP.values())}))
     _seed_roster(store, [ROSTER])
     cache = tmp_path / str(ctx.config.local.paths.sec_13f_datasets)
@@ -372,7 +366,7 @@ def test_the_gap_after_the_newest_data_set_is_walked_once_per_ticker(tmp_path, f
 
     assert len(walks) == 1, walks  # the completed walk's marker marks it done
     assert walks[0]["tickers"] == [_NEW] and walks[0]["filing_window"] == ("2024-09-01", "2026-09-28")
-    assert set(walks[0]["all_tickers"]) == {"AAPL", "MSFT", _NEW}, "The gap walk reuses the complete universe, not its new-name subset."
+    assert ctx.universe.outside(walks[0]["tickers"]) == {"AAPL", "MSFT"}, "the gap walk is a scoped run of the universe"
     print("\n=== SANITY: 13F gap walk ===")
     print(f"  NEWCO joined 2026-09-28, newest data set ends 2024-08-31 -> one EDGAR walk {walks[0]['filing_window']};")
     print("  night 2 finds the walk's NEWCO marker and walks nothing. Validated.")
@@ -606,24 +600,6 @@ def test_a_ticker_added_after_as_of_is_not_backfilled_yet(tmp_path, filing_store
     assert walks == []  # under -F the data sets are read, but a ticker that has not joined yet has no gap to walk
     print("\n=== SANITY: 13F backfill and a future added_on ===")
     print("  NEWCO added 2026-10-03, run date 2026-09-30: the night reads nothing; -t NEWCO -F reads the data sets, no gap walk. Validated.")
-
-
-def test_gap_tickers_without_added_on_column_is_empty(tmp_path: Any, filing_store: Any) -> None:
-    tickers = ["AAPL", _NEW]
-    ctx = fake_context(tmp_path, filing_store, tickers, redundant_ticks=[])
-    filing_store.drop(Tables.sp500_tickers)
-    filing_store.save(
-        Tables.sp500_tickers, pd.DataFrame({col: ["x"] * len(tickers) for col in CIK_MAPPING_COLS} | {"ticker": tickers, "cik": ["1", "3"]})
-    )
-    assert "added_on" not in filing_store.columns(Tables.sp500_tickers)
-
-    since = pd.Timestamp("2024-09-01")
-    nightly = fb.gap_tickers(ctx, tickers, since, _AS_OF, full=False)
-    forced = fb.gap_tickers(ctx, tickers, since, _AS_OF, full=True)
-
-    assert nightly == {} and forced == {}
-    print("\n=== SANITY: 13F gap tickers before the added_on migration ===")
-    print(f"  sp500_tickers without added_on -> gap_tickers {nightly} nightly and {forced} under -F, no KeyError. Validated.")
 
 
 def test_normal_zip_backfill_preserves_whole_original_and_amended_books(tmp_path, filing_store, monkeypatch):

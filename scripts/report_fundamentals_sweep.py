@@ -38,7 +38,9 @@ import pandas as pd  # noqa: E402
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_IN = ROOT / "data" / "fundamentals_sweep"
 
-from src.constants.constants import FUNDAMENTALS_CATALOGUE_SUBDIR, FUNDAMENTALS_ROSTERS_FILENAME  # noqa: E402
+from src.constants.constants import FUNDAMENTALS_CATALOGUE_SUBDIR  # noqa: E402
+
+FUNDAMENTALS_ROSTERS_FILENAME = "fundamentals_rosters.json"
 
 #: The join key a value is compared on across the two resolution settings. It is the FACT's
 #: identity, not the row's: same filing, same field, same period shape, same window. Anything

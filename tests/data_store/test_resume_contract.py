@@ -39,7 +39,7 @@ from src.data_store.schema import (
     resume_tables,
 )
 from src.data_store.store import DataStore
-from src.utils.universe import added_on_map
+from tests.support.universe import seed_universe
 
 _SCHEMA_SQL = Path(__file__).resolve().parents[2] / "sql" / "schema.sql"
 
@@ -124,13 +124,13 @@ def test_contract_and_marker_columns_exist_with_compatible_types() -> None:
             assert sql_type == "TEXT", f"{table.name}.{col} is {sql_type}, sentinel {sentinel!r} needs TEXT"
         else:
             assert isinstance(sentinel, int | float) and sql_type in _NUMERIC_SQL, f"{table.name}.{col} is {sql_type}, sentinel {sentinel!r}"
-    assert "added_on" in types[Tables.sp500_tickers.name] and types[Tables.sp500_tickers.name]["added_on"] == "DATE"
+    assert types[Tables.tickers_universe.name]["universe_added_on"] == "DATE"
 
     print("\n=== SANITY CHECK: contract columns in the DDL ===")
     for table in marker_tables():
         assert table.empty_marker is not None
         print(f"  {table.name}.{table.empty_marker[0]} {types[table.name][table.empty_marker[0]]} <- {table.empty_marker[1]!r}")
-    print("  every key/frontier/period/marker column exists, sentinels fit their SQL type, sp500_tickers.added_on is DATE. Validated.")
+    print("  every key/frontier/period/marker column exists, sentinels fit their SQL type, tickers_universe.universe_added_on is DATE. Validated.")
 
 
 def test_sequence_sentinels_cannot_collide_with_real_rows() -> None:
@@ -150,7 +150,7 @@ def test_sequence_sentinels_cannot_collide_with_real_rows() -> None:
 
 
 def test_document_contract_forms_are_the_forms_each_fetcher_lists(monkeypatch: pytest.MonkeyPatch, sqlite_store: DataStore) -> None:
-    context = cast(Context, SimpleNamespace(config_dir="configs", store=sqlite_store))
+    context = cast(Context, SimpleNamespace(config_dir="configs", store=sqlite_store, universe=seed_universe(sqlite_store, ["AAA"])))
     cik_map = pd.DataFrame({"ticker": ["AAA"], "sector": [None], "industry_group": [None], "sub_industry": [None]})
     fetched = (
         SEC_8K_FETCH,
@@ -159,7 +159,7 @@ def test_document_contract_forms_are_the_forms_each_fetcher_lists(monkeypatch: p
         INSIDER_EDGAR_FETCH,
         DEF14A_EDGAR_FETCH,
         FILING_TEXT_FETCH,
-        fundamentals_fetch(context, cik_map),
+        fundamentals_fetch(context),
     )
     planned: list[tuple[Table, Sequence[str]]] = []
 
@@ -173,9 +173,7 @@ def test_document_contract_forms_are_the_forms_each_fetcher_lists(monkeypatch: p
         plan_fetch(
             context,
             fetch,
-            EdgarRun(
-                list(keys["ticker"]), keys, EdgarScope(), pd.Timestamp("2026-10-13"), 10, added_on_map(context.store, pd.Timestamp("2026-10-13"))
-            ),
+            EdgarRun(list(keys["ticker"]), keys, EdgarScope(), pd.Timestamp("2026-10-13"), 10),
         )
         assert planned[-1][0] is fetch.done
         assert planned[-1][1] is cast(Resume, fetch.done.resume).forms

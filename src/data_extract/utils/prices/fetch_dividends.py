@@ -2,8 +2,7 @@
 fetch_dividends.py  (src/data_extract/utils/prices/fetch_dividends.py)
 ------------------------------------------------------------------------
 Row shaping for `prices_dividends`: cash dividends keyed on the EX-date, one row per session
-(0 when none). The download is `fetch_prices.fetch_prices_and_actions`, which shares one
-yfinance `actions=True` response between prices, dividends and splits.
+(0 when none). The fetch is `fetch_prices.fetch_dividends`.
 """
 
 from __future__ import annotations

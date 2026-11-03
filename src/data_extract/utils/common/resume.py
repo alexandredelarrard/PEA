@@ -26,8 +26,7 @@ from src.context import Context
 from src.data_extract.utils.common.bulk_cache import period_end
 from src.data_extract.utils.common.incremental import stored_values
 from src.data_store.schema import Resume, Table, Tables
-from src.utils.string import normalise_ticker
-from src.utils.universe import load_universe_tickers, new_tickers
+from src.utils.string import run_date
 
 logger = logging.getLogger(__name__)
 
@@ -50,13 +49,13 @@ def recently_changed(stamps: Mapping[str, pd.Timestamp | None], as_of: pd.Timest
 
     Every re-check it drives is idempotent, so a key seen on several runs inside the window costs reads only,
     and a failed run is healed by the next one."""
-    since = pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize() - pd.Timedelta(days=days)
+    since = run_date(as_of) - pd.Timedelta(days=days)
     return sorted(str(key) for key, stamp in stamps.items() if stamp is not None and not pd.isna(stamp) and pd.Timestamp(stamp) >= since)
 
 
 def document_floor(table: Table, as_of: pd.Timestamp, years_history: int, runtime_floor: pd.Timestamp | None = None) -> pd.Timestamp:
     """The earliest filing date listed: `as_of - years_history`, the source start or the runtime floor, whichever is latest."""
-    floors = [pd.Timestamp(as_of).normalize() - pd.DateOffset(years=years_history)]
+    floors = [run_date(as_of) - pd.DateOffset(years=years_history)]
     if table.resume is not None and table.resume.source_start is not None:
         floors.append(pd.Timestamp(table.resume.source_start))
     if runtime_floor is not None:
@@ -186,7 +185,7 @@ def series_windows(
     # get per ticker, first, last date and n count
     df_stats = context.store.key_stats(table, key_col, date_col, where={key_col: list(keys)}) if stored is None else stored[0]
     stats = dict(zip(map(str, df_stats["key"]), zip(df_stats["first"], df_stats["last"], map(int, df_stats["n"]), strict=True), strict=True))
-    new = set() if full else new_tickers(context.store, table.resume.overlap_days, as_of)
+    new = set() if full else context.universe.new_since(table.resume.overlap_days, as_of)
     table_max = context.store.max_date(table, date_col) if stored is None else stored[1]
     reach = _listing_floors(context, listing, key_col, [key for key in keys if key in new], floor)
 
@@ -233,7 +232,6 @@ class ArchiveWork:
     screen: list[str]
     scoped: bool
     held: list[str] = field(default_factory=list)
-    universe: list[str] = field(default_factory=list)
 
     def units(self) -> Iterator[tuple[str, list[str]]]:
         """`(period, keys to keep)` in period order; a period is never in both lists."""
@@ -268,14 +266,14 @@ def _new_rowless_keys(context: Context, tables: Sequence[Table], keys: Collectio
 
     An archive row carries its period; a row without one (an EDGAR row or marker of a table both
     legs write) does not make the key's archive history stored."""
-    new = new_tickers(context.store, ARCHIVE_NEW_KEY_DAYS, as_of) & set(keys)
+    new = context.universe.new_since(ARCHIVE_NEW_KEY_DAYS, as_of) & set(keys)
     for table in tables:
         if not new:
             break
         key_col = cast(str, cast(Resume, table.resume).key)
         if {key_col, _period_column(table)} <= set(context.store.columns(table)):
             where = {key_col: sorted(new), _period_column(table): context.store.NOT_NULL}
-            new -= {normalise_ticker(k) for k in context.store.distinct(table, key_col, where=where)}
+            new -= set(context.store.distinct(table, key_col, where=where))
     return new
 
 
@@ -288,7 +286,6 @@ def archive_worklist(
     as_of: pd.Timestamp,
     *,
     full: bool = False,
-    all_tickers: Collection[str] | None = None,
 ) -> ArchiveWork:
     """Which archive periods to parse, and for which keys, from the stored periods of `tables` alone.
 
@@ -298,8 +295,7 @@ def archive_worklist(
     keys = sorted(set(keys))
     listed, stored = archive_periods(context, tables, published)
     missing = [p for p in listed if p not in stored]
-    universe = set(load_universe_tickers(context) if all_tickers is None else all_tickers)
-    scoped = bool(universe - set(keys))
+    scoped = not context.universe.is_full(keys)
     rescan_keys = keys if full else sorted(_new_rowless_keys(context, tables, keys, as_of))
     on_disk = set(cached)
     rescan = [p for p in listed if p in stored and (full or p in on_disk)] if rescan_keys else []
@@ -318,8 +314,7 @@ def archive_worklist(
         rescan=rescan,
         keys=keys,
         rescan_keys=rescan_keys,
-        screen=sorted(universe | set(keys)),
+        screen=sorted(set(context.universe.tickers) | set(keys)),
         scoped=scoped,
         held=held,
-        universe=sorted(universe),
     )

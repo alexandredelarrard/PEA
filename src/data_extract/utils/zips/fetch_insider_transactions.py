@@ -18,7 +18,7 @@ no EDGAR filing.
 from __future__ import annotations
 
 import logging
-from collections.abc import Collection, Sequence
+from collections.abc import Sequence
 from math import isfinite
 from pathlib import Path
 from typing import cast
@@ -42,7 +42,7 @@ from src.data_extract.utils.common.bulk_cache import (
 )
 from src.data_extract.utils.common.identity import Identity, load_identity
 from src.data_extract.utils.common.resume import ArchiveWork, archive_worklist
-from src.data_extract.utils.insider.insider_common import (
+from src.data_extract.utils.edgar_extract.insider_common import (
     BULK_DATE_FORMATS,
     INSIDER_COLUMNS,
     INSIDER_FIELDS,
@@ -61,10 +61,10 @@ from src.data_extract.utils.insider.insider_common import (
     stamp_lineage,
     top_counts,
 )
-from src.data_extract.utils.insider.insider_store import patch_insider_source, save_insider_source
+from src.data_extract.utils.edgar_extract.insider_store import patch_insider_source, save_insider_source
 from src.data_store.schema import Resume, Tables
 from src.utils.filer_tables import FilerTable, removal_records
-from src.utils.string import pad_cik_series
+from src.utils.string import pad_cik_series, run_date
 
 logger = logging.getLogger(__name__)
 
@@ -339,16 +339,6 @@ def _rejected_stored_accessions(context: Context, universe: Sequence[str], ident
     )
 
 
-def _sweep_universe(universe: list[str], tickers: Sequence[str]) -> list[str]:
-    """The already-loaded analysis universe when `tickers` equal it, else `[]` (sweep skipped).
-    The sweep adjudicates against that loaded list, never the raw run tickers: on a `--tickers`
-    subset every other company's rows would read as rejects."""
-    if universe and set(tickers) == set(universe):
-        return universe
-    logger.info("insider: stored-row sweep skipped -- the run's %d ticker(s) are not the %d-ticker universe", len(tickers), len(universe))
-    return []
-
-
 def _screen_stored_rows(context: Context, universe: Sequence[str], identity: Identity) -> int:
     """Re-adjudicate stored rows against today's universe, delete the rejects (the upsert cannot
     remove rows) and log their exclusion summary. Returns the rows deleted.
@@ -507,8 +497,6 @@ def fetch_insider_transactions(
     years_history: int,
     reparse: bool = False,
     as_of: pd.Timestamp | None = None,
-    *,
-    all_tickers: Collection[str] | None = None,
 ) -> int:
     """Download (cached) the insider data sets and ingest each quarter of the work list with
     `store_zip_quarter` (a pending quarter also logs its `report_zip_quarter` lines), save the kept
@@ -520,13 +508,11 @@ def fetch_insider_transactions(
     """
     identity = load_identity(context)
     cache = cache_dir(context, context.config.local.paths.insider_transactions)
-    run_date = pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize()
+    start_date = run_date(as_of)
     first_year = pd.Timestamp(cast(str, cast(Resume, Tables.insider_transactions.resume).source_start)).year
-    span = (run_date.year - first_year + 1) if reparse else years_history + 1
-    quarters = quarter_periods(span, first_year, run_date)
-    work = archive_worklist(
-        context, (Tables.insider_transactions,), quarters, cached_periods(cache), tickers, run_date, full=reparse, all_tickers=all_tickers
-    )
+    span = (start_date.year - first_year + 1) if reparse else years_history + 1
+    quarters = quarter_periods(span, first_year, start_date)
+    work = archive_worklist(context, (Tables.insider_transactions,), quarters, cached_periods(cache), tickers, start_date, full=reparse)
 
     units, rescanned = _insider_work_units(work, cached_periods(cache))
     saved = notes_saved = 0
@@ -547,8 +533,10 @@ def fetch_insider_transactions(
         notes_saved += len(df_notes)
     log_exclusions(logger, f"zip run ({len(units)} quarter(s))", excluded)
 
-    sweep_universe = _sweep_universe(work.universe, work.keys)
-    deleted = _screen_stored_rows(context, sweep_universe, identity) if sweep_universe else 0
+    # The sweep adjudicates against the whole universe: on a `--tickers` subset every other company's rows would read as rejects.
+    deleted = 0 if work.scoped else _screen_stored_rows(context, context.universe.tickers, identity)
+    if work.scoped:
+        logger.info("insider: stored-row sweep skipped -- the run's %d ticker(s) are not the whole universe", len(work.keys))
     logger.info(
         "insider_transactions: saved %d zip row(s) (+%d footnotes) over %d pending + %d rescanned quarter(s) of %s -> %s; sweep deleted %d",
         saved,

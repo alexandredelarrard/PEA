@@ -11,7 +11,6 @@ from typing import Any
 
 import pytest
 
-from src.data_extract.transformers import step_extract_zips as zips_module
 from src.data_extract.transformers.step_extract_zips import StepExtractZips
 from src.data_extract.utils.common import bulk_cache
 from src.data_extract.utils.identity import sec_tickers
@@ -48,7 +47,6 @@ def _offline(monkeypatch: pytest.MonkeyPatch, downloads: list[str]) -> None:
         monkeypatch.setattr(module, "ensure_zip", fake_zip)
     monkeypatch.setattr(notes, "_scrape_available_periods", lambda context: ["2026q1"])
     monkeypatch.setattr(sec_tickers, "sec_get", lambda context, url: SimpleNamespace(json=lambda: PAYLOAD))
-    monkeypatch.setattr(zips_module, "load_universe_tickers", lambda context: ["AAPL"])
 
 
 def test_run_download_writes_only_the_sec_tickers_snapshot(sqlite_store, tmp_path, monkeypatch):

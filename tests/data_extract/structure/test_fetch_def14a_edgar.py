@@ -237,7 +237,7 @@ def _ba_context(tmp_path, sqlite_store, monkeypatch, filings: list) -> Any:
     context = fake_context(tmp_path, sqlite_store, ["BA"], ciks=["12927"])
     seed_index(context, [(12927, "BOEING CO", f.form, str(f.filing_date), f.accession_number) for f in filings])
     patch_index_filings(monkeypatch, {f.accession_number: f for f in filings})
-    scope = FilingScope.roster_only("BA", "12927")
+    scope = FilingScope.roster_only("BA", "0000012927")
     monkeypatch.setattr(edgar_driver, "load_identity", lambda _context: SimpleNamespace(filing_scope=lambda _ticker: scope))
     return context
 

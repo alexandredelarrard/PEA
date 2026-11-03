@@ -20,6 +20,7 @@ from src.data_extract.transformers.step_extract_llm import LlmOptions, StepExtra
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 from src.gpt_extract.transformers.step_gpt_extracter import GptExtracter
 from tests.data_extract.fake_context import extract_config
+from tests.support.universe import universe_of
 
 RUNS = ("run_def14a", "run_8k_votes", "run_employees")
 COMMANDS = {"def14a": "run_def14a", "sec-8k-votes": "run_8k_votes", "fundamentals-employees": "run_employees"}
@@ -31,8 +32,18 @@ def _config() -> Any:
     return extract_config(data_extract={"years_history": 15})
 
 
-def _context(config: Any) -> Any:
-    return SimpleNamespace(config=config, config_dir="configs")
+class _Context(SimpleNamespace):
+    """A stub context whose universe read is recorded by `on_read`."""
+
+    @property
+    def universe(self) -> Any:
+        self.on_read()
+        return self.tickers_universe
+
+
+def _context(config: Any, fetchers: Fetchers | None = None) -> Any:
+    on_read = (lambda: fetchers.call("universe")) if fetchers is not None else (lambda: None)
+    return _Context(config=config, config_dir="configs", on_read=on_read, tickers_universe=universe_of(["AAA", "BBB"]))
 
 
 def _clear_keys(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -58,7 +69,6 @@ class Fetchers:
             "fetch_fundamentals_employees",
             lambda context, tickers, years_history, full=False: self.call("run_employees", tickers=tickers, years=years_history, full=full),
         )
-        monkeypatch.setattr(step_mod, "load_universe_tickers", lambda context: self.call("universe") or ["AAA", "BBB"])
 
     def call(self, name: str, **kwargs: Any) -> None:
         self.order.append(name)
@@ -91,8 +101,9 @@ def counted(monkeypatch: pytest.MonkeyPatch) -> Counter:
 def test_the_extractors_are_built_once_and_reused_by_every_run(monkeypatch: pytest.MonkeyPatch, counted: Counter) -> None:
     fetchers = Fetchers(monkeypatch)
     config = _config()
-    step = StepExtractLlm(_context(config), config)
+    step = StepExtractLlm(_context(config, fetchers), config)
     built = dict(counted)
+    assert "universe" not in fetchers.order, "constructing the step reads no universe (REQ-014)"
     for _ in range(2):
         step.run_def14a()
         step.run_8k_votes()
@@ -106,7 +117,9 @@ def test_the_extractors_are_built_once_and_reused_by_every_run(monkeypatch: pyte
     assert {extractor.threads for extractor in def14a[0].values()} == {2} and votes[0].threads == int(config.gpt.threads)
     assert fetchers.order.count("universe") == 1
     print("\n=== SANITY: StepExtractLlm setup (AC-010) ===")
-    print(f"  init: {built}; 2x run_def14a + 2x run_8k_votes added nothing and reused the same 6 extractors; no provider built.")
+    print(
+        f"  init: {built}; 2x run_def14a + 2x run_8k_votes added nothing and reused the same 6 extractors; no provider built; universe read once, on first use."
+    )
 
 
 def test_a_missing_key_raises_in_the_init_and_nothing_runs(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -115,7 +128,7 @@ def test_a_missing_key_raises_in_the_init_and_nothing_runs(monkeypatch: pytest.M
     config = _config()
 
     with pytest.raises(OSError, match="No API key for provider 'open_ai'"):
-        StepExtractLlm(_context(config), config)
+        StepExtractLlm(_context(config, fetchers), config)
 
     assert [name for name in fetchers.order if name != "universe"] == []
     print("\n=== SANITY: missing key (D-11) ===")

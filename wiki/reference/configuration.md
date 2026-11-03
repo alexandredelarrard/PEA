@@ -30,7 +30,8 @@ Callers use attribute access such as `self._config.build_cube.targets.horizons`.
 
 | Top-level key | Owner | Responsibility |
 | --- | --- | --- |
-| `seed`, `data_extract` | [configs.yml](../../configs/configs.yml) | Global random seed, history windows, source refresh switches, redundant tickers, the SEC retry policy, document retry rounds, the per-run document cap, and the prediction fresh-share threshold. |
+| `seed`, `data_extract` | [configs.yml](../../configs/configs.yml) | Global random seed, history windows, source refresh switches, the SEC retry policy, document retry rounds, the per-run document cap, and the prediction fresh-share threshold. |
+| `universe` | [universe.yml](../../configs/universe.yml) | The traded universe and the only hand-edited ticker list: `tickers` (491 quoted yfinance symbols) and `aliases` (other share-class symbols of a universe ticker: GOOGL→GOOG, FOXA→FOX, NWSA→NWS, BRK-B→BRK-A). Validated on load (non-empty, no duplicates, every alias key in `tickers`); `data_extract universe` syncs `tickers_universe` from it. |
 | `local.paths` | [paths.yml](../../configs/paths.yml) | Repository root, artifact store, output, model, log, and peer-dictionary locations, and the source caches, including the local EDGAR filing index (`sec_edgar_index`) and the SEC 13F data sets (`sec_13f_datasets`). |
 | `logging` | [logging.yml](../../configs/logging.yml) | Standard-library logging tree and the in-memory log format. |
 | `peers` | [peers.yml](../../configs/peers.yml) | Business-similarity and return-correlation peer construction. |
@@ -87,8 +88,7 @@ Key distinctions:
 - `years_history` scopes ordinary equity/filing walks;
 - `macro_years_history` owns the long macro window;
 - `sharadar_years_history` is separate because entitlement and response size differ;
-- `refresh_universe` controls replacement of the current roster;
-- redundant class tickers prevent double-counting after the retained class is active;
+- the universe holds one ticker per issuer; a second share class is an `aliases` entry in [universe.yml](../../configs/universe.yml), never a `tickers` entry, so no class is counted twice;
 - `earnings_calls` in [data.yml](../../configs/data.yml) tunes the defeatbeta transcript extractor: `read_workers: 4` (parallel HuggingFace row-group reads; writes stay on one thread). The dataset repo and file path are module constants of the extractor;
 - In [build_cube.yml](../../configs/build_cube.yml), build_cube.earnings_calls owns sentiment_model (yiyanghkust/finbert-tone), refresh_calendar_days (30) and availability_lag_days (2). [StepCubeText](../../src/data_aggregate/transformers/step_cube_text.py) validates them once; embeddings use the existing gpt.embedding model/batch_size/max_chars settings in gpt.yml. Feature eligibility is the first session on/after call date plus the calendar-day lag; raw/saved dates stay unchanged and all twelve features retain their 66-session lifetime. Daily feature writes use the stored frontier minus 30 calendar days with bounded required call history. Older changes need a full text-part rebuild and cube assembly; valid model outputs are reused;
 - `sec_retry` (3 attempts, waits of 5 s then 20 s, Retry-After capped at 120 s) is the one retry policy of every SEC request, applied by [sec_io.py](../../src/data_extract/utils/common/sec_io.py);
@@ -207,7 +207,7 @@ A multi-source feature becomes eligible only when all required source clocks hav
 
 ## Constants versus configuration
 
-Use configuration for research choices and operational tuning. Use [constants.py](../../src/constants/constants.py) for URLs, date formats, source series, taxonomy facts, model identifiers, GICS names, plausibility bounds, and other facts that should not vary between runs. Use the [table registry](./table-catalog.md) for table names, grain, and the extracted SEC forms in each table's `Resume.forms`.
+Use configuration for research choices and operational tuning. Use [constants.py](../../src/constants/constants.py) for URLs, date formats, source series, taxonomy facts, model identifiers, plausibility bounds, and other facts that should not vary between runs. The GICS sector and industry-group vocabulary lives with its owner in [vocabulary.py](../../src/utils/tickers_universe/vocabulary.py). Use the [table registry](./table-catalog.md) for table names, grain, and the extracted SEC forms in each table's `Resume.forms`.
 
 ## Related
 

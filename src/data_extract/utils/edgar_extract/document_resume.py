@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
 import pandas as pd
@@ -20,7 +20,6 @@ from src.data_extract.utils.common.registrant import listing_ciks, resolve_regis
 from src.data_extract.utils.common.resume import DONE_TABLE, KEY_ESTABLISHED, KEY_NEW, KEY_ROWLESS, document_floor, stored_accessions
 from src.data_extract.utils.edgar_extract import edgar_index
 from src.data_store.schema import Table
-from src.utils.universe import new_in_window
 
 logger = logging.getLogger(__name__)
 
@@ -79,8 +78,7 @@ def _cap(units: dict[str, pd.DataFrame], cap: int | None, desc: str) -> tuple[di
 @dataclass(frozen=True)
 class WorklistRequest:
     """One walk's planning inputs: the `keys` (`ticker`, `cik`) on the `as_of` run date, the table's `forms`, the
-    `identity` (None: roster CIKs only), the `years_history` window, the run's `added_on` map (read once per run),
-    the runtime floor, the done-accession scope and filter, `full` re-read and the per-run `cap` (None: uncapped).
+    `identity` (None: roster CIKs only), the `years_history` window, the runtime floor, the done-accession scope and filter, `full` re-read and the per-run `cap` (None: uncapped).
     `listing_floor` replaces the window floor (a source-history fetch lists from its source start); `done_accessions`
     replaces the scope/filter read with the fetch's own stored-set rule."""
 
@@ -89,7 +87,6 @@ class WorklistRequest:
     forms: Sequence[str]
     identity: Identity | None
     years_history: int
-    added_on: Mapping[str, pd.Timestamp]
     runtime_floor: pd.Timestamp | None = None
     done_scope: str = DONE_TABLE
     done_where: dict[str, object] | None = None
@@ -129,7 +126,7 @@ def document_worklist(context: Context, table: Table, request: WorklistRequest) 
         done = stored_accessions(context, table, list(roster), request.done_scope, request.done_where)
     read_done = time.perf_counter()
     overlap = table.resume.overlap_days if table.resume is not None else 0
-    new = new_in_window(request.added_on, overlap, as_of) if overlap else set()
+    new = context.universe.new_since(overlap, as_of) if overlap else set()
     units: dict[str, pd.DataFrame] = {}
     counts: dict[str, int] = {}
     for ticker in roster:

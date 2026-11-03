@@ -31,7 +31,7 @@ from src.data_store.schema import Resume, Tables
 from src.utils.string import run_date
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
 
-AAPL_SCOPE = ZipScope(tickers=["AAPL"], all_tickers=None, run_date=run_date(None), full=False)
+AAPL_SCOPE = ZipScope(tickers=["AAPL"], run_date=run_date(None), full=False)
 
 # --------------------------------------------------------------------------- #
 # Synthetic in-memory notes zip                                                  #
@@ -542,7 +542,7 @@ def test_fetch_stamps_one_archive_clock_on_numeric_and_text_rows(tmp_path, monke
 
     monkeypatch.setattr(fn, "load_identity", lambda context: IDENTITY)
     monkeypatch.setattr(fn, "cache_dir", lambda context, key: tmp_path)
-    monkeypatch.setattr(fn, "archive_worklist", lambda context, tables, periods, cached, keys, as_of, full, all_tickers=None: _work(list(periods)))
+    monkeypatch.setattr(fn, "archive_worklist", lambda context, tables, periods, cached, keys, as_of, full: _work(list(periods)))
     monkeypatch.setattr(fn, "_periods_missing_available_at", lambda context: set())
     monkeypatch.setattr(zip_archive, "ensure_zip", lambda *args, **kwargs: path)
     monkeypatch.setattr(fn, "stored_period_clock", lambda context, tables, period: None)
@@ -598,7 +598,7 @@ def test_fetch_stamps_new_zip_with_successful_download_date(tmp_path: Path, monk
     monkeypatch.setattr(bulk_cache, "datetime", Clock)
     monkeypatch.setattr(fn, "load_identity", lambda context: IDENTITY)
     monkeypatch.setattr(fn, "cache_dir", lambda context, key: tmp_path)
-    monkeypatch.setattr(fn, "archive_worklist", lambda context, tables, periods, cached, keys, as_of, full, all_tickers=None: _work(list(periods)))
+    monkeypatch.setattr(fn, "archive_worklist", lambda context, tables, periods, cached, keys, as_of, full: _work(list(periods)))
     monkeypatch.setattr(fn, "_periods_missing_available_at", lambda context: set())
     monkeypatch.setattr(fn, "stored_period_clock", lambda context, tables, period: None)
     monkeypatch.setattr(zip_archive, "ensure_zip", download)

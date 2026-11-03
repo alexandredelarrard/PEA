@@ -50,7 +50,6 @@ from typing import cast
 import numpy as np
 import pandas as pd
 
-from src.context import Context
 from tests.conftest import make_frames
 from tests.data_aggregate.pipeline_fingerprint import frame_digest
 
@@ -78,7 +77,7 @@ def _select_fundamentals() -> pd.DataFrame:
     NOT the frame production feeds in:
 
       * `sector` / `industry_group` are not columns of `fundamentals_history` at all -- they are
-        a `sp500_tickers` lookup. Without them `sector_gates.row_gate` fails closed and the whole
+        a `tickers_universe` lookup. Without them `sector_gates.row_gate` fails closed and the whole
         sector-KPI layer is fingerprinted as empty (and the per-sector draw above has nothing to
         iterate over).
       * `revenueGrowth` / `earningsGrowth` are `CUBE_TIME_COLUMNS`: only the cube can compute
@@ -88,21 +87,19 @@ def _select_fundamentals() -> pd.DataFrame:
     from dotenv import load_dotenv
 
     load_dotenv(ROOT / ".env")  # so `python -m ...aggregate_fingerprint` works standalone
-    from types import SimpleNamespace
 
-    from src.data_aggregate.utils.common.gics import attach_gics_columns
     from src.data_aggregate.utils.common.pit import add_cube_time_growth
     from src.data_store.store import DataStore
+    from src.utils.config import read_config
     from src.utils.db import get_engine
+    from src.utils.tickers_universe.universe import Universe
 
     store = DataStore(get_engine())
     fh = store.load("fundamentals_history")
     assert fh is not None
     if fh.empty:
         raise RuntimeError("fundamentals_history is empty -> cannot build the aggregation fingerprint (run the extraction step first)")
-    # `attach_gics_columns` reads `context.store` and nothing else
-    context = cast(Context, SimpleNamespace(store=store))
-    fh = attach_gics_columns(add_cube_time_growth(fh), context)
+    fh = Universe(store, read_config(path=str(ROOT / "configs"))).attach_gics(add_cube_time_growth(fh))
     picked: list[str] = []
     for sector in sorted(fh["sector"].dropna().astype(str).unique()):
         names = sorted(fh.loc[fh["sector"].astype(str) == sector, "ticker"].unique())

@@ -23,9 +23,10 @@ from src.data_peers.step_deduce_peers import StepDeducePeers
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.freshness import StaleInputsError, check_prediction_inputs
-from src.utils.universe import unverified_ciks
 from src.validate.checks import check_coverage, check_leakage
+from src.utils.tickers_universe.universe import Universe
 from src.validate.utils import prices as vprices
+from tests.support.universe import seed_universe, universe_config
 
 UNIVERSE = ["AAA", "BBB"]
 EXTRA = "BRK-A"
@@ -52,14 +53,14 @@ def _prices(tickers: list[str], sessions: pd.DatetimeIndex, level: float) -> pd.
 
 def _config() -> DictConfig:
     loaded = cast(DictConfig, OmegaConf.load("configs/validate.yml"))
-    config = cast(DictConfig, OmegaConf.create({"validate": loaded["validate"], "data_extract": {"redundant_ticks": []}}))
+    config = cast(DictConfig, OmegaConf.create({"validate": loaded["validate"]}))
     config.validate.defaults["universe_expected"] = len(UNIVERSE)
     return config
 
 
 def _store(extra: bool) -> DataStore:
     store = DataStore(create_engine("sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False}))
-    store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": UNIVERSE, "cik": ["0000000001", "0000000002"]}))
+    seed_universe(store, UNIVERSE)
     frames = [_prices(UNIVERSE, SESSIONS, 100.0)]
     if extra:
         frames.append(_prices([EXTRA], SESSIONS.append(pd.DatetimeIndex([SESSIONS[-1] + pd.offsets.BDay(1)])), 600_000.0))
@@ -68,7 +69,8 @@ def _store(extra: bool) -> DataStore:
 
 
 def _context(store: DataStore) -> Any:
-    return SimpleNamespace(store=store, config=_config(), log=logging.getLogger("test.prices_readers"))
+    universe = Universe(store, universe_config(UNIVERSE))
+    return SimpleNamespace(store=store, config=_config(), log=logging.getLogger("test.prices_readers"), universe=universe)
 
 
 def _same(read: Callable[[Any], Any], name: str) -> Any:
@@ -103,7 +105,7 @@ class _StopError(Exception):
 def test_cube_prices_reads_the_universe_only():
     def read(context: Any) -> pd.DataFrame:
         step = StepCubePrices.__new__(StepCubePrices)
-        step._store, step._tickers, step._log, step._bugfix = context.store, list(UNIVERSE), context.log, {}
+        step._store, step._context, step._log, step._bugfix = context.store, context, context.log, {}
         captured: dict[str, pd.DataFrame] = {}
         step._plan_window = lambda full: SimpleNamespace(since=None)  # type: ignore[method-assign]
 
@@ -127,10 +129,6 @@ def test_peer_deduction_reads_the_universe_only():
         return step.prices_long.sort_values(["ticker", "date"])
 
     _same(read, "step_deduce_peers.load_prices")
-
-
-def test_unverified_ciks_is_unchanged():
-    _same(unverified_ciks, "utils.universe.unverified_ciks")
 
 
 def test_validate_price_invariants_read_the_universe_only(monkeypatch):

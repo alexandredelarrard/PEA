@@ -26,11 +26,9 @@ from src.data_extract.utils.common.incremental import matches_stored
 from src.data_extract.utils.identity.entity_lineage import (
     ROLE_SYMBOL,
     ROLE_WINDOW,
-    ROSTER_COLUMNS,
     SENTINEL_START,
     entity_by_cik_map,
     entity_or_singleton,
-    roster_cik_map,
 )
 from src.data_extract.utils.identity.identity_store import save_identity
 from src.data_extract.utils.identity.symbol_tenure import DEI_SOURCE
@@ -393,11 +391,10 @@ def _tape_intervals(lineage: pd.DataFrame) -> pd.DataFrame:
     return tape.sort_values(["key", "cik", "valid_from"], ignore_index=True)
 
 
-def _lineage_view(lineage: pd.DataFrame, roster: pd.DataFrame) -> _Lineage:
+def _lineage_view(lineage: pd.DataFrame, roster_cik: Mapping[str, str]) -> _Lineage:
     rows = lineage.copy()
     rows["cik"] = pad_cik_series(rows["cik"])
     entity_by_cik = entity_by_cik_map(rows)
-    roster_cik = roster_cik_map(roster)
     ticker_by_entity = {entity_or_singleton(entity_by_cik, cik): ticker for ticker, cik in sorted(roster_cik.items())}
     windows: dict[str, list[Span]] = {}
     for cik, start, end in rows.loc[rows["role"].eq(ROLE_WINDOW), ["cik", "valid_from", "valid_to"]].to_numpy().tolist():
@@ -1319,7 +1316,7 @@ def _sec_maps(sec_tickers: pd.DataFrame | None) -> tuple[dict[tuple[str, str], s
 def derive_security_master(
     observations: pd.DataFrame,
     lineage: pd.DataFrame,
-    roster: pd.DataFrame,
+    roster_cik: Mapping[str, str],
     manual: SecurityManual,
     *,
     built_at: pd.Timestamp,
@@ -1334,7 +1331,7 @@ def derive_security_master(
     `finra_presence` (`source_symbol`, `date`) are stored RegSHO days: trading evidence a line runs over.
     """
     obs = _prepare(observations)
-    view = _lineage_view(lineage, roster)
+    view = _lineage_view(lineage, roster_cik)
     flags = _Flags()
     sec_symbols, sec_exchange = _sec_maps(sec_tickers)
     finra = frozenset(squash(s) for s in finra_symbols if "/" in str(s))
@@ -1445,8 +1442,6 @@ def build_security_master(
             "security_master: no stored FTD lines (run `zips-download --only ftd`, then `identity --only capture-ftd`); table left unchanged"
         )
         return pd.DataFrame(columns=list(TABLE_COLUMNS))
-    roster = context.store.load(Tables.sp500_tickers, columns=list(ROSTER_COLUMNS))
-    assert roster is not None
     sec_tickers = context.store.load(Tables.sec_company_tickers, project=True, optional=True)
     existing = context.store.load(Tables.security_master, project=True, optional=True)
     evidence = context.store.load(
@@ -1463,7 +1458,7 @@ def build_security_master(
     build = derive_security_master(
         observations,
         lineage,
-        roster,
+        context.universe.cik_by_ticker,
         manual,
         built_at=built_at or pd.Timestamp.now().floor("s"),
         sec_tickers=sec_tickers,

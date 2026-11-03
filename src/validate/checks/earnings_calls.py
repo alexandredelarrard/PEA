@@ -20,7 +20,6 @@ from src.data_store.schema import Table, Tables, resolve
 from src.utils.string import pad_cik_series
 from src.utils.text.earnings_call_split import split_call
 from src.utils.text.text_metrics import assess_earnings_call_sections, clean_earnings_call_paragraphs
-from src.utils.universe import load_universe_tickers
 from src.validate.result import CheckResult, Finding, full_table_only
 
 CHECK = "earnings_calls"
@@ -454,7 +453,7 @@ def _coverage_summary(roster_tickers: list[str], scan: _CallScan, coverage: _Tic
 
 def _coverage(context: Context) -> tuple[dict[str, Any], dict[str, float], dict[str, list[pd.Timestamp]]]:
     """(coverage summary, coverage ratio per roster ticker, valid call dates per roster ticker)."""
-    roster_tickers = load_universe_tickers(context)
+    roster_tickers = context.universe.tickers
     releases = context.store.load(Tables.earnings_surprises, columns=["ticker", "earnings_date"], optional=True)
     tenure = context.store.load(
         Tables.symbol_tenure,
@@ -464,11 +463,7 @@ def _coverage(context: Context) -> tuple[dict[str, Any], dict[str, float], dict[
     )
     lineage = context.store.load(Tables.entity_lineage, columns=["cik", "entity_id", "role", "valid_from", "valid_to"], optional=True)
     lineage = None if lineage is None else lineage.drop_duplicates(ignore_index=True)
-    roster = (
-        context.store.load(Tables.sp500_tickers, columns=["ticker", "cik"], optional=True)
-        if "cik" in context.store.columns(Tables.sp500_tickers)
-        else None
-    )
+    roster = context.universe.roster
     identity = _identity(tenure, lineage, roster_tickers, roster)
     analysis_symbols = sorted(
         set(roster_tickers) | {symbol for entity in identity.roster_entity.values() for symbol in identity.aliases_by_entity.get(entity, set())}

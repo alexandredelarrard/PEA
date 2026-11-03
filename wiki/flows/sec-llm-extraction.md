@@ -28,7 +28,7 @@ The `def14a` CLI calls `StepExtractLlm.run_def14a`, which invokes `fetch_def14a_
 | `def14a_ownership` | `Tables.def14a_ownership`, plus parent insider/CEO summaries |
 | `def14a_governance` | `Tables.def14a_directors`, plus parent board, CEO age/identity and governance disclosures |
 
-Each action has its own schema in [def14a_schema.py](../../src/data_extract/utils/schemas/def14a_schema.py), prompt pair under [prompt_templates](../../src/gpt_extract/prompt_templates), and existing-size budget in [gpt.yml](../../configs/gpt.yml). [carve.py](../../src/data_extract/utils/structure/def14a/carve.py) classifies the filing once and selects domain-specific tables/prose, nearby source units and relevant footnotes. Named historical director payments can be retained without a modern Item 402(k) table; there is no pre-2008 exclusion.
+Each action has its own schema in [def14a_schema.py](../../src/data_extract/utils/structure/def14a/def14a_schema.py), prompt pair under [prompt_templates](../../src/gpt_extract/prompt_templates), and existing-size budget in [gpt.yml](../../configs/gpt.yml). [carve.py](../../src/data_extract/utils/structure/def14a/carve.py) classifies the filing once and selects domain-specific tables/prose, nearby source units and relevant footnotes. Named historical director payments can be retained without a modern Item 402(k) table; there is no pre-2008 exclusion.
 
 ~~~mermaid
 sequenceDiagram

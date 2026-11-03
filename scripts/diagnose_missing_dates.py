@@ -34,7 +34,6 @@ from src.context import get_config_context
 from src.data_aggregate.utils.assemble.cube import TARGET_COL_RE
 from src.data_store.schema import Tables
 from src.utils.macro import load_macro_wide
-from src.utils.universe import load_universe_tickers
 
 
 def _window(a: str, b: str) -> tuple[pd.Timestamp, pd.Timestamp]:
@@ -70,7 +69,7 @@ def main(lo: str, hi: str):
     win = store.load(
         Tables.prices,
         columns=["date", "ticker", "close_split"],
-        where={"ticker": load_universe_tickers(context)},
+        where={"ticker": context.universe.tickers},
         since=lo_date,
         until=hi_date,
         optional=True,

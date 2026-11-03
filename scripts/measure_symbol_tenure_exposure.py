@@ -16,7 +16,7 @@ MISSTATE THE DEFECT.
 
     held                today's holder of the ticker also held the symbol on that date
     other_entity        ANOTHER entity held it -- the defect being sized
-    not_in_roster       the ticker has LEFT `sp500_tickers`, so there is no entity to compare
+    not_in_roster       the ticker has LEFT the universe, so there is no entity to compare
                         against. ⚠ Reported separately after a first version of this script
                         labelled all 2,060 `EA` and 1,934 `AVB` fails rows `other_entity`:
                         `universe_entity` has nothing to return for a departed ticker, so a
@@ -70,7 +70,7 @@ def _classify(identity, symbol: str, day: pd.Timestamp, expected: str | None, bl
     """One (symbol, date) -> one of the six buckets in the module docstring.
 
     ⚠ `expected is None` IS CHECKED FIRST AND IT IS NOT A DISAGREEMENT. A ticker that has left
-    `sp500_tickers` has no entity to compare against, and `None != holder` for every real
+    the universe has no entity to compare against, and `None != holder` for every real
     holder -- which is how a first version of this script reported all 3,994 `EA` + `AVB` fails
     rows as another company's. They are a survivorship artefact, not symbol reuse.
     """

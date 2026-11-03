@@ -20,13 +20,14 @@ import pytest
 
 from src.data_aggregate.utils.institutionals import inputs as institutional_inputs
 from src.data_extract.utils.common.identity import build_identity
+from src.data_extract.utils.edgar_extract import insider_common as ic
 from src.data_extract.utils.identity import identity_propagate as prop
 from src.data_extract.utils.identity import security_master as sm
-from src.data_extract.utils.insider import insider_common as ic
 from src.data_extract.utils.zips import fetch_insider_transactions as ins
 from src.data_store import ddl
 from src.data_store.schema import Tables
 from tests.data_extract.fake_context import extract_config
+from tests.support.universe import as_roster
 
 OLD_MERCK, SGP = "0000064978", "0000310158"
 OLD_PROLOGIS, AMB = "0000899881", "0001045609"
@@ -105,7 +106,7 @@ def _identity(*, mergers: tuple[sm.MergerBoundary, ...] = (), **kwargs: Any) -> 
     )
     roster = pd.DataFrame([{"ticker": t, "cik": c} for t, c in ROSTER.items()])
     shipped = sm.merger_boundaries(sm.load_security_manual(None))
-    return build_identity(_lineage(**kwargs), tenure, roster, co_registrant_ciks=CO_REGISTRANTS, mergers=(*shipped, *mergers))
+    return build_identity(_lineage(**kwargs), tenure, as_roster(roster), co_registrant_ciks=CO_REGISTRANTS, mergers=(*shipped, *mergers))
 
 
 def _tx(
@@ -468,7 +469,7 @@ def test_a_config_edit_restamps_and_purges_on_the_next_propagation_without_a_lin
         ]
     )
     roster = pd.DataFrame([{"ticker": t, "cik": c} for t, c in ROSTER.items()])
-    before = build_identity(_lineage(), tenure, roster, co_registrant_ciks=(DLR_LP,), mergers=())
+    before = build_identity(_lineage(), tenure, as_roster(roster), co_registrant_ciks=(DLR_LP,), mergers=())
     rows = [
         _tx("sgp_day", SGP, "SGP", code="A", txn="2009-11-03", filed="2009-11-05"),
         _tx("util", PCG_UTILITY, "PCG", txn="2022-06-01", filed="2022-06-03"),

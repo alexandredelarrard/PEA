@@ -142,7 +142,9 @@ class Tables:
     # ----------------------------------------------------------------- #
     # Reference / dimension                                             #
     # ----------------------------------------------------------------- #
-    sp500_tickers = Table("sp500_tickers", ("ticker",), KIND_REFERENCE, date_type_cols=("added_on",))
+    # The traded universe, one row per `configs/universe.yml` ticker. Written only by
+    # `src/utils/tickers_universe/sync.py`, read only through `context.universe`.
+    tickers_universe = Table("tickers_universe", ("ticker",), KIND_REFERENCE, date_type_cols=("universe_added_on",))
 
     superinvestor_roster = Table(
         "superinvestor_roster",
@@ -748,7 +750,7 @@ class Tables:
         resume=Resume(RESUME_SERIES, "ticker", "date", 95),
     )
     # Sharadar's own ticker dimension, filtered to `table=fundamentals` (17,826 rows
-    # measured 2026-08-26). Kept vendor-shaped and SEPARATE from `sp500_tickers`: this one
+    # measured 2026-08-26). Kept vendor-shaped and SEPARATE from `tickers_universe`: this one
     # carries `permaticker` -- Sharadar's stable entity id, which survives a ticker change
     # and is NOT a column in SF1 -- plus `currency`, which the fundamentals fetch reads to
     # enforce the USD assertion (D20). There is no `cik` column in any Sharadar table.
@@ -783,7 +785,7 @@ class Tables:
     # ⚠ `secfilings` IS THE ONLY PLACE A CIK APPEARS IN ANY SHARADAR TABLE -- it is an EDGAR
     # browse URL and the CIK is embedded in its query string (`...&CIK=0000320193&...`).
     # Every one of the 17,867 rows carries one, so it is a full-coverage third opinion on
-    # ticker->CIK, independent of both the Wikipedia-sourced `sp500_tickers.cik` and EDGAR's
+    # ticker->CIK, independent of both the Wikipedia-sourced `tickers_universe.cik` and EDGAR's
     # own ticker table. `relatedtickers` is added alongside it for the same reason.
     # `cusips` and `figi` are likewise stored and unread; they are the natural inputs to the
     # deferred `cusip_ticker_map` date axis, which is out of scope here.
@@ -809,8 +811,8 @@ class Tables:
         resume=Resume(RESUME_SERIES, None, "date", 7),
     )
     # S&P 500 index membership events (added / removed / historical), back to 1992. Ingested
-    # for the survivorship-bias fix, which is a SEPARATE task: `src/utils/universe.py` still
-    # resolves the universe from `sp500_tickers` and is deliberately not touched here (D27).
+    # for the survivorship-bias fix, which is a SEPARATE task: the traded universe is the flat
+    # `configs/universe.yml` list and does not read this table.
     sharadar_sp500 = Table(
         "sharadar_sp500",
         ("date", "ticker", "action"),

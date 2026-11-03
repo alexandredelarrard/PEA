@@ -11,7 +11,6 @@ from omegaconf import DictConfig
 from src.context import Context
 from src.data_aggregate.utils.common.assembly import part_has_rows
 from src.data_aggregate.utils.common.frames import downcast_float32, normalize_date_col
-from src.data_aggregate.utils.common.gics import apply_categorical_codes
 from src.data_aggregate.utils.common.incremental import COLUMNS_CHANGED, PartWindow, write_part
 from src.data_aggregate.utils.common.panel_merge import PANEL_KEYS, PanelMerger
 from src.data_aggregate.utils.common.part_status import cube_part_edge_report
@@ -96,7 +95,7 @@ class StepAssembleCube(Step):
         peers = load_peers_or_raise(self._context, self._config)
         peer_json = {ticker: json.dumps(peers.get(ticker, {}), ensure_ascii=False) for ticker in root["ticker"].unique()}
         root["peers"] = root["ticker"].map(peer_json)
-        return apply_categorical_codes(root, self._context)
+        return self._universe.gics_codes(root)
 
     def _read_part(self, table: Table, columns: Sequence[str] | None, since: pd.Timestamp | None, *, optional: bool) -> pd.DataFrame | None:
         """One part projected on its configured columns (all when None/empty), float32 payload."""

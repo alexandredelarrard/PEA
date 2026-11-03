@@ -16,9 +16,9 @@ from src.data_extract.utils.common.identity import FilingScope, load_identity
 from src.data_extract.utils.common.registrant import header_subject_ciks
 from src.data_extract.utils.common.resume import document_floor
 from src.data_extract.utils.common.sec_io import TransientReadError, sec_get
+from src.data_extract.utils.edgar_extract.edgar_driver import universe_rows
 from src.data_extract.utils.edgar_extract.edgar_fillings import list_filings
 from src.data_extract.utils.edgar_extract.html_text import html_to_text
-from src.data_extract.utils.edgar_extract.sec_utils import load_cik_mapping
 from src.data_extract.utils.structure.def14a.carve import prepare_def14a_payloads
 from src.data_extract.utils.structure.def14a.gender import (
     basis_distribution,
@@ -232,7 +232,7 @@ def fetch_def14a_llm(
     (`section_extractors`) holds one extractor per section; their worker count bounds the answers in flight.
     """
     # Read the ticker map and preserve each registrant's filing windows.
-    cik_map = load_cik_mapping(context, tickers)
+    cik_map = universe_rows(context, tickers)
     identity = load_identity(context)
     years = int(config.data_extract.years_history)
     floor = document_floor(Tables.def14a_llm, pd.Timestamp.today(), years)

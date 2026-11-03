@@ -25,22 +25,22 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.schemas.def14a_schema import (
+from src.data_extract.utils.structure.def14a.def14a_schema import (
     BeneficialOwner as _BeneficialOwner,
 )
-from src.data_extract.utils.schemas.def14a_schema import (
+from src.data_extract.utils.structure.def14a.def14a_schema import (
     Def14AExtract as _Def14AExtract,
 )
-from src.data_extract.utils.schemas.def14a_schema import (
+from src.data_extract.utils.structure.def14a.def14a_schema import (
     DirectorCompensation as _DirectorCompensation,
 )
-from src.data_extract.utils.schemas.def14a_schema import (
+from src.data_extract.utils.structure.def14a.def14a_schema import (
     DirectorInfo as _DirectorInfo,
 )
-from src.data_extract.utils.schemas.def14a_schema import (
+from src.data_extract.utils.structure.def14a.def14a_schema import (
     ExecutiveCompensation as _ExecutiveCompensation,
 )
-from src.data_extract.utils.schemas.def14a_schema import (
+from src.data_extract.utils.structure.def14a.def14a_schema import (
     GovernanceProfile as _GovernanceProfile,
 )
 from src.data_extract.utils.structure.def14a.flatten import _child_frames, _flatten

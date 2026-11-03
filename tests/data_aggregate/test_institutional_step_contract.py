@@ -359,7 +359,11 @@ def test_builder_payload_reads_are_unique_with_optional_sources_absent(
             return _original(table, *args, **kwargs)
 
         monkeypatch.setattr(sqlite_store, method, capture)
-    result = step.build_panel()
+    result = (
+        step.build_panel()
+        if cls is StepCubeInstitutionals
+        else step.build_panel(PartWindow(None, None), existing_columns=sqlite_store.columns(Tables.cube_part_sec_thirteen))
+    )
     if cls is StepCubeInstitutionals:
         assert list(result.columns) == ["date", "ticker", *INSTITUTIONAL_COLUMNS]
         assert result[list(INSTITUTIONAL_COLUMNS)].isna().all().all()

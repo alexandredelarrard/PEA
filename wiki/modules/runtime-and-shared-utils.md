@@ -29,10 +29,10 @@ This module supplies the process-wide runtime used by every extraction, aggregat
 
 ## Key files
 
-- [src/context.py](../../src/context.py) assembles the runtime and exposes `context.store`, `context.log`, and `context.paths`.
+- [src/context.py](../../src/context.py) assembles the runtime and exposes `context.store`, `context.log`, `context.paths` and `context.universe` (lazy, cached, read-only).
 - [src/utils/step.py](../../src/utils/step.py) implements the [Step pattern](../concepts/step-pattern.md).
 - [src/utils/db.py](../../src/utils/db.py) creates the SQLAlchemy engine handed to [DataStore](./data-store.md).
-- [src/utils/universe.py](../../src/utils/universe.py) resolves the current equity universe. `load_universe_tickers(context)` returns the normalized analysis list after configured exclusions; callers reuse it unchanged. CLI CSV text is split before [normalise_ticker](../../src/utils/string.py) is applied to individual symbols. Scope guards share the loaded complete list across nested source calls; CIK, GICS and entry-date metadata reads keep their projected roster columns.
+- [src/utils/tickers_universe/](../../src/utils/tickers_universe/) owns the traded universe. [universe.py](../../src/utils/tickers_universe/universe.py): `Universe`, the read-only reader behind `context.universe` (`tickers`, `frame`, `cik_by_ticker`, `sector_map`, `industry_group_map`, `attach_gics`, `gics_codes`, `alias_symbols`, `new_since`, `added_on_dates`, `outside`, `is_full`, `subset`), `UniverseError` (table missing, empty or out of step with the yml, or a name outside the universe) and `universe_config` (validates [universe.yml](../../configs/universe.yml): non-empty, no duplicates, every alias key in `tickers`). [sync.py](../../src/utils/tickers_universe/sync.py) is the only writer of `tickers_universe`; [wikipedia_bootstrap.py](../../src/utils/tickers_universe/wikipedia_bootstrap.py) parses the Wikipedia S&P 500 table and maps a GICS sub-industry to its industry group (deleted once Sharadar categories replace GICS); [vocabulary.py](../../src/utils/tickers_universe/vocabulary.py) lists the 11 GICS sectors and 25 industry groups.
 - [src/utils/macro.py](../../src/utils/macro.py) reads named market and macro series.
 
 ## Dependencies

@@ -7,8 +7,8 @@ import json
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.schemas.def14a_schema import Def14AExtract, ExecutivePayExtract, OwnershipExtract
 from src.data_extract.utils.structure.def14a.carve import prepare_def14a_payloads
+from src.data_extract.utils.structure.def14a.def14a_schema import Def14AExtract, ExecutivePayExtract, OwnershipExtract
 from src.data_extract.utils.structure.def14a.postprocess import (
     append_answer,
     archived_answers,

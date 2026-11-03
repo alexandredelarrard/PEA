@@ -255,7 +255,7 @@ class StepCubeInstitutionals(Step):
 
         # Raw FINRA/FTD observations become ordinary shares on one explicit terminal basis.
         idx = pd.DatetimeIndex(frames.trading_index).normalize().unique().sort_values()
-        columns = pd.Index(sorted(map(str, frames.universe)), name="ticker")
+        columns = pd.Index(frames.universe, name="ticker")
         df_tenure = short_flow._proven_tenure_mask(idx, columns, lines, df_finra)
         df_short = institutional_inputs.short_quantity_history(df_short, quantity_basis)
         df_shares_out = institutional_inputs.daily_share_quantities(shares, idx, quantity_basis)

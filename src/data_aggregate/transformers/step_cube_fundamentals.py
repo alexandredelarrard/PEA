@@ -29,7 +29,6 @@ from omegaconf import DictConfig
 
 from src.constants.constants import FUNDAMENTALS_REFRESH_TRADING_DAYS
 from src.context import Context
-from src.data_aggregate.utils.common.gics import attach_gics_columns
 from src.data_aggregate.utils.common.incremental import (
     COLUMNS_CHANGED,
     plan_window,
@@ -240,7 +239,7 @@ class StepCubeFundamentals(Step):
         """`fundamentals_history` with GICS attached, loaded ONCE for five builders.
 
         The GICS join happens HERE, after the load, and returns a new frame rather than
-        projecting the two columns out of the store: `sp500_tickers` is the authority for
+        projecting the two columns out of the store: `tickers_universe` is the authority for
         sector membership and `fundamentals_history` has never carried it, so this is a
         lookup, not a column the read could have asked for. Without it every sector KPI is
         gated off (`sector_gates.row_gate` fails closed on the absent column)."""
@@ -261,7 +260,7 @@ class StepCubeFundamentals(Step):
             f" since {pd.Timestamp(since).date()}" if since is not None else "",
         )
         df = add_cube_time_growth(df)
-        return attach_gics_columns(df, self._context, self._log)
+        return self._universe.attach_gics(df)
 
     def _load_optional(
         self,
@@ -447,7 +446,7 @@ class StepCubeFundamentals(Step):
         + buyback yield. RECONCILES the per-share ex-date history (`dividends`, primary) with
         the SEC cash-flow `dividendsPaid` total (gap-fill + payout/coverage). Non-payers get a
         real 0 yield so they rank correctly."""
-        dividends = self._load_optional(Tables.dividends, "dividend history", "fetch_prices_and_actions -> StepExtractPrices", frames.universe)
+        dividends = self._load_optional(Tables.dividends, "dividend history", "fetch_dividends -> StepExtractPrices", frames.universe)
         if dividends is None:
             return None
         return build_dividend_feature_panel(

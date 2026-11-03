@@ -23,18 +23,16 @@ import pytest
 
 from src.data_aggregate.utils.institutionals.frontiers import schedule_complete_through
 from src.data_extract import cli as cli_mod
-from src.data_extract.utils.common import resume
 from src.data_extract.utils.common.identity import Identity, build_identity
 from src.data_extract.utils.edgar_extract import edgar_driver, edgar_index
 from src.data_extract.utils.edgar_extract import fetch_insider_edgar as edgar
-from src.data_extract.utils.edgar_extract.sec_utils import CIK_MAPPING_COLS
 from src.data_extract.utils.identity.identity_store import load_source_identity
 from src.data_extract.utils.zips import fetch_insider_transactions as ins
 from src.data_store.schema import Tables
-from src.utils.universe import added_on_map
 from tests.canonical_schema import create_canonical
 from tests.data_extract.edgar_fixtures import seed_index
 from tests.data_extract.fake_context import extract_config
+from tests.support.universe import as_roster, seed_universe
 
 AAA_CIK = "0000000001"
 OTHER_CIK = "0000000099"  # an unrelated issuer whose filings claim `AAA`
@@ -226,16 +224,15 @@ def identity() -> Identity:
                 }
             ]
         ),
-        roster=pd.DataFrame([{"ticker": "AAA", "cik": AAA_CIK}]),
+        roster_cik=as_roster(pd.DataFrame([{"ticker": "AAA", "cik": AAA_CIK}])),
     )
 
 
 def _context(tmp_path: Path, store: Any, universe: tuple[str, ...] = ("AAA",)) -> Any:
-    """A fake context whose `sp500_tickers` (the analysis universe) holds `universe`, CIKs 1, 2, ..."""
+    """A fake context whose universe holds `universe`, CIKs 1, 2, ..."""
     create_canonical(
         store.engine,
         [
-            Tables.sp500_tickers,
             Tables.entity_lineage,
             Tables.symbol_tenure,
             Tables.security_master,
@@ -243,20 +240,14 @@ def _context(tmp_path: Path, store: Any, universe: tuple[str, ...] = ("AAA",)) -
             Tables.insider_footnotes,
         ],
     )
-    store.save(
-        Tables.sp500_tickers,
-        pd.DataFrame(
-            {col: [str(i + 1).zfill(10) if col == "cik" else f"{col}-{t}" for i, t in enumerate(universe)] for col in CIK_MAPPING_COLS}
-            | {"ticker": list(universe)}
-        ),
-    )
     return SimpleNamespace(
         store=store,
         paths={"DATA_STORE": tmp_path},
         log=logging.getLogger("tests.insider_load_flow"),
-        config=extract_config(data_extract={"redundant_ticks": []}),
+        config=extract_config(data_extract={}),
         ensure_edgar_identity=lambda: None,
         config_dir=tmp_path,
+        universe=seed_universe(store, universe),
     )
 
 
@@ -497,7 +488,7 @@ def identity_two() -> Identity:
                 for s, cik in pairs
             ]
         ),
-        roster=pd.DataFrame([{"ticker": s, "cik": cik} for s, cik in pairs]),
+        roster_cik=as_roster(pd.DataFrame([{"ticker": s, "cik": cik} for s, cik in pairs])),
     )
 
 
@@ -546,13 +537,8 @@ def test_cli_csv_tickers_sweep_against_the_loaded_universe(tmp_path, sqlite_stor
     df_before = _table(sqlite_store)
 
     caplog.clear()
-    names, universe = cli_mod._ticker_scope(context, " bbb ,aaa")
-
-    def unexpected_universe_read(context):
-        raise AssertionError("The archive planner and sweep must reuse the CLI universe snapshot.")
-
-    monkeypatch.setattr(resume, "load_universe_tickers", unexpected_universe_read)
-    ins.fetch_insider_transactions(context, tickers=names, all_tickers=universe, years_history=1)
+    names = cli_mod._tickers(context, " bbb ,aaa")
+    ins.fetch_insider_transactions(context, tickers=names, years_history=1)
     df_after = _table(sqlite_store)
 
     sweep = next(message for message in _messages(caplog, logging.INFO) if message.startswith("insider: stored-row sweep -- "))
@@ -724,7 +710,6 @@ def test_empty_work_reconciles_the_window_and_planning_never_enters_the_scope(
         edgar_driver.EdgarScope(identity_two),
         pd.Timestamp("2026-07-08"),
         15,
-        added_on_map(context.store, pd.Timestamp("2026-07-08")),
     )
     plan = edgar_driver.plan_fetch(context, descriptor, run)
     assert plan.size == 0 and floor_reads == ["quarter", "quarter"]

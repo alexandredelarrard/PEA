@@ -20,6 +20,7 @@ from src.data_store.errors import UnknownTableError
 from src.data_store.schema import Tables, name_of
 from src.modelling.utils.panel import load_frame
 from src.utils.config import read_config
+from tests.support.universe import universe_of
 
 
 def _parts() -> dict[str, pd.DataFrame]:
@@ -27,7 +28,6 @@ def _parts() -> dict[str, pd.DataFrame]:
     tables = {part.name: grid.assign(**{f"v_{i}": np.array([1.2, 2.3])}) for i, part in enumerate(CUBE_PARTS)}
     tables[Tables.cube_part_prices.name] = grid.assign(close_split=[10.123456789, 12.123456789])
     tables[Tables.cube_part_targets.name] = grid.iloc[:1].assign(target_zscore_h60=0.5)
-    tables[Tables.sp500_tickers.name] = pd.DataFrame({"ticker": ["AAA"], "sector": ["Tech"], "industry_group": ["Software"]})
     tables[Tables.prices.name] = grid.copy()
     return tables
 
@@ -42,12 +42,13 @@ def _config(**assembly: Any) -> Any:
         "compulsory_parts": [p.name for p in _ASSEMBLED if p.table not in _OPTIONAL],
         **assembly,
     }
-    return OmegaConf.create({"build_cube": {"assembly": policy}, "data_extract": {"redundant_ticks": []}})
+    return OmegaConf.create({"build_cube": {"assembly": policy}})
 
 
 def _step(store: Any, monkeypatch: pytest.MonkeyPatch, config: Any = None) -> StepAssembleCube:
     config = config if config is not None else _config()
-    context = SimpleNamespace(store=store, config=config, log=logging.getLogger(__name__), config_dir="configs")
+    universe = universe_of(["AAA"], rows={"AAA": {"sector": "Tech", "industry_group": "Software"}})
+    context = SimpleNamespace(store=store, config=config, log=logging.getLogger(__name__), config_dir="configs", universe=universe)
     step = StepAssembleCube(context=context, config=config)
     step._context = cast(Context, context)
     step._config = config

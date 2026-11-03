@@ -14,6 +14,7 @@ from click.testing import CliRunner
 from src.data_extract import cli as cli_mod
 from src.data_extract.transformers import step_extract_zips as module
 from src.data_extract.transformers.step_extract_zips import StepExtractZips, ZipsOptions
+from tests.support.universe import universe_of
 
 DOWNLOADS = ("insider_download", "notes_download", "ftd_download", "sec_tickers")
 INGESTS = ("insider_ingest", "notes_ingest", "ftd_ingest")
@@ -50,7 +51,6 @@ def _stub(monkeypatch: pytest.MonkeyPatch, calls: list[tuple[str, tuple, dict]],
         return ["2026q1"]
 
     monkeypatch.setattr(module, "cache_dir", lambda context, name: Path("cache") / name)
-    monkeypatch.setattr(module, "load_universe_tickers", lambda context: ["AAA", "BBB"])
     monkeypatch.setattr(module, "notes_periods", periods)
     monkeypatch.setattr(module, "download_insider_transactions", mark("insider_download", []))
     monkeypatch.setattr(module, "download_notes_periods", mark("notes_download"))
@@ -64,7 +64,7 @@ def _stub(monkeypatch: pytest.MonkeyPatch, calls: list[tuple[str, tuple, dict]],
 
 
 def _context() -> SimpleNamespace:
-    return SimpleNamespace(config=_config(), config_dir="configs", log=logging.getLogger(__name__))
+    return SimpleNamespace(config=_config(), config_dir="configs", log=logging.getLogger(__name__), universe=universe_of(["AAA", "BBB"]))
 
 
 def test_run_downloads_then_ingests_with_one_notes_period_list(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -94,14 +94,14 @@ def test_options_reach_every_source(monkeypatch: pytest.MonkeyPatch) -> None:
 
     seen = {name: (args, kwargs) for name, args, kwargs in calls}
     insider_args, insider_kwargs = seen["insider_ingest"]
-    assert insider_args[1:] == (["AAA"], 15) and insider_kwargs == {"reparse": True, "as_of": as_of, "all_tickers": ["AAA", "BBB"]}
+    assert insider_args[1:] == (["AAA"], 15) and insider_kwargs == {"reparse": True, "as_of": as_of}
     scope = seen["notes_ingest"][0][2]
-    assert (scope.tickers, list(scope.all_tickers), scope.run_date, scope.full) == (["AAA"], ["AAA", "BBB"], as_of, True)
+    assert (scope.tickers, scope.run_date, scope.full) == (["AAA"], as_of, True)
     ftd_args, ftd_kwargs = seen["ftd_ingest"]
-    assert ftd_args[1:] == (["AAA"], True, as_of) and ftd_kwargs == {"all_tickers": ["AAA", "BBB"]}
+    assert ftd_args[1:] == (["AAA"], True, as_of) and ftd_kwargs == {}
 
     print("\n=== SANITY CHECK: StepExtractZips options ===")
-    print("  tickers, universe, full and run date declared once in the init reach all three ingests")
+    print("  tickers, full and run date declared once in the init reach all three ingests")
 
 
 def test_repair_availability_only_repairs_the_notes_clocks(monkeypatch: pytest.MonkeyPatch) -> None:

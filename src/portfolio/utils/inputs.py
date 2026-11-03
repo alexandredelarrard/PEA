@@ -14,7 +14,6 @@ from src.portfolio.utils.contracts import MarketInputs, Settings
 from src.utils.predecessor_series import load_level_actions
 from src.utils.price_adjustments import load_bugfix
 from src.utils.price_basis import load_share_basis
-from src.utils.universe import load_universe_tickers
 
 
 def _wide(frame: pd.DataFrame, field: str) -> pd.DataFrame:
@@ -23,7 +22,7 @@ def _wide(frame: pd.DataFrame, field: str) -> pd.DataFrame:
 
 def load_market(context: Context, config: DictConfig, settings: Settings, metadata: dict[str, Any]) -> MarketInputs:
     """Reuse stored split/total-return prices and the shared corporate-action resolver."""
-    names = load_universe_tickers(context)
+    names = context.universe.tickers
     end = settings.end if settings.end is not None else pd.Timestamp.today().normalize()
 
     # Calendar-day buffer covers the configured full trading-session windows without downloading history.
@@ -38,10 +37,8 @@ def load_market(context: Context, config: DictConfig, settings: Settings, metada
     macro = context.store.load(
         Tables.prices_macro, columns=["date", "ticker", "close"], where={"ticker": MACRO_MARKET_SERIES}, since=since, until=end
     )
-    universe = context.store.load(Tables.sp500_tickers, columns=["ticker", "sector"], where={"ticker": names})
+    sectors = pd.Series(context.universe.sector_map, name="sector")
 
-    if universe is None or universe.empty:
-        raise ValueError("No current sector classification")
     if macro is None or macro.empty:
         raise ValueError("No stored S&P total-return proxy")
     if prices is None or prices.empty:
@@ -72,5 +69,5 @@ def load_market(context: Context, config: DictConfig, settings: Settings, metada
 
     # set index
     market = macro.set_index("date")["close"].sort_index().astype(float)
-    sectors = universe.set_index("ticker")["sector"].reindex(quotes.columns)
+    sectors = sectors.reindex(quotes.columns)
     return MarketInputs(pd.DataFrame(), quotes, returns, _wide(prices, "share_basis"), market, sectors, metadata)

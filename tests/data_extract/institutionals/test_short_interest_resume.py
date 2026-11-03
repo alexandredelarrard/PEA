@@ -27,7 +27,6 @@ def sqlite_store(sqlite_store):
     create_canonical(
         sqlite_store.engine,
         [
-            Tables.sp500_tickers,
             Tables.entity_lineage,
             Tables.symbol_tenure,
             Tables.security_master,
@@ -42,7 +41,7 @@ def sqlite_store(sqlite_store):
 
 def _context(store, tmp_path: Path | None = None) -> Any:
     return SimpleNamespace(
-        store=store, paths={"DATA_STORE": tmp_path}, log=logging.getLogger("test.regsho"), config=extract_config(data_extract={"redundant_ticks": []})
+        store=store, paths={"DATA_STORE": tmp_path}, log=logging.getLogger("test.regsho"), config=extract_config(data_extract={})
     )
 
 
@@ -199,7 +198,6 @@ def test_full_aborts_before_any_write_on_a_fetch_error_or_an_empty_source(sqlite
 def test_a_run_upserts_its_tickers_and_leaves_every_other_key(sqlite_store, monkeypatch):
     """A `-t` run re-reads the planned days for its tickers only: another key's rows survive."""
     sqlite_store.replace(Tables.security_master, _master())
-    sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["LEN", "OTHR"], "cik": ["0000920760", "0000000009"]}))
     sqlite_store.save(
         Tables.short_interest,
         pd.DataFrame(
@@ -209,7 +207,6 @@ def test_a_run_upserts_its_tickers_and_leaves_every_other_key(sqlite_store, monk
     monkeypatch.setattr(pd.Timestamp, "today", classmethod(lambda cls, tz=None: pd.Timestamp("2018-08-02")))
     _serve(monkeypatch, {"20180801": [("LEN", 3.0, 4.0)], "20180802": [("LEN", 5.0, 6.0)]})
     context = _context(sqlite_store)
-    context.config = extract_config(data_extract={"redundant_ticks": []})
 
     si.fetch_short_interest(context, ["LEN"], pause=0.0, full=True, identity=_identity(store=sqlite_store))
 

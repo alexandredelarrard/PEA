@@ -17,7 +17,6 @@ from typing import Any, cast
 import pandas as pd
 import pytest
 
-from scripts import identity_regression_gate as gate
 from src.data_extract.utils.common.identity import Identity, build_identity
 from src.data_extract.utils.common.registrant import resolve_registrant_entries
 from src.data_extract.utils.edgar_extract import schedule_rows
@@ -26,6 +25,8 @@ from src.data_extract.utils.edgar_extract.fetch_13g_edgar import SCHEDULE_13G
 from src.data_extract.utils.identity import identity_propagate as prop
 from src.data_store.schema import Resume, Tables
 from src.validate.checks.identity import pending_removals
+from tests.support import identity_regression_gate as gate
+from tests.support.universe import as_roster
 
 SENTINEL = "1900-01-01"
 OLD_JCI, TYCO = "0000053669", "0000833444"  # JCI's prices are Tyco's; old Johnson Controls is the acquired target
@@ -90,7 +91,7 @@ def _roster() -> pd.DataFrame:
 
 
 def _identity() -> Identity:
-    return build_identity(lineage=_lineage(), tenure=_tenure(), roster=_roster())
+    return build_identity(lineage=_lineage(), tenure=_tenure(), roster_cik=as_roster(_roster()))
 
 
 def _index(rows: list[tuple[str, str, str, str]]) -> pd.DataFrame:
@@ -109,7 +110,7 @@ class _Context:
         self.log = logging.getLogger("test.event_window_traded_view")
         self.config_dir = str(CONFIG_DIR)
         self.paths = {"DATA_STORE": data_store}
-        self.config = types.SimpleNamespace(data_extract=types.SimpleNamespace(redundant_ticks=[], years_history=15))
+        self.config = types.SimpleNamespace(data_extract=types.SimpleNamespace(years_history=15))
 
 
 # --------------------------------------------------------------------------- no deferral left

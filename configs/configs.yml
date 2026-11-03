@@ -5,7 +5,6 @@ data_extract:
   macro_years_history: 31
   sharadar_years_history: 31 # SF1's earliest filing date is 1993-12-22
   sharadar_request_pace: 0.35
-  redundant_ticks: ["GOOG", "FOX", "NWS", "EA", "BRK-A"] #EA got acquired; BRK-A is a separate class from roster BRK-B
   # The one retry policy for every SEC request (`utils/common/sec_io.py`): HTTP 429/502/503/504
   # (and, for requests-based GETs and downloads, connection errors) get `attempts` calls in total,
   # waiting `waits` seconds between them (the last repeats); a Retry-After lengthens a wait up to the cap.

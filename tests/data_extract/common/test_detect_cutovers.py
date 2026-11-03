@@ -21,7 +21,7 @@ from typing import Any
 import pandas as pd
 import pytest
 
-import scripts.detect_registrant_cutovers as detect
+import tests.support.detect_registrant_cutovers as detect
 
 BOUNDARY = "2019-03-20"
 

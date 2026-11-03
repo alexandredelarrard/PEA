@@ -24,6 +24,7 @@ from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp
 from src.data_extract.utils.identity import entity_lineage as lineage_module
 from src.data_extract.utils.identity.entity_lineage import derive_entity_lineage
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity, filing, patch_company
+from tests.support.universe import as_roster
 
 LOGGER = "src.data_extract.utils.common.registrant"
 REPO = Path(__file__).resolve().parents[3]
@@ -306,12 +307,12 @@ def test_an_uncurated_extra_cik_warns_lists_the_roster_cik_and_is_backlogged(tmp
     roster = pd.DataFrame([{"ticker": "ABC", "cik": "0000000200"}])
     monkeypatch.setattr(lineage_module, "AUTO_WINDOWS_ENABLED", False)
     with caplog.at_level(logging.WARNING):
-        build = derive_entity_lineage(tenure, roster, pd.DataFrame(columns=["issuer_cik", "owner_cik_raw"]), str(tmp_path / "configs"), dei=dei)
+        build = derive_entity_lineage(tenure, as_roster(roster), pd.DataFrame(columns=["issuer_cik", "owner_cik_raw"]), str(tmp_path / "configs"), dei=dei)
     backlog = build.backlog[build.backlog["kind"].eq("multi_cik_no_window")]
     assert len(backlog) == 1 and backlog["cik"].iloc[0] == "0000000100"
     assert "curation backlog" in caplog.text and "multi_cik_no_window" in caplog.text
 
-    identity = build_identity(lineage=build.rows, tenure=tenure, roster=roster)
+    identity = build_identity(lineage=build.rows, tenure=tenure, roster_cik=as_roster(roster))
     built = patch_company(monkeypatch, {100: [filing("pred", "2012-02-01", 100)], 200: [filing("succ", "2020-02-01", 200)]})
     assert _list(identity, "ABC", ["10-K"]) == ["succ"]
     assert built == [200]

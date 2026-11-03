@@ -24,7 +24,6 @@ from src.data_extract.utils.identity.security_master import build_security_maste
 from src.data_extract.utils.identity.symbol_tenure import Form345Scan, build_symbol_tenure, load_built_tenure, scan_form345_cache
 from src.utils.step import Step
 from src.utils.string import run_date
-from src.utils.universe import load_universe_tickers
 
 
 @dataclass(frozen=True)
@@ -48,9 +47,6 @@ class StepExtractIdentity(Step):
         self._notes_cache = cache_dir(context, paths.financial_notes)
         self._ftd_cache = cache_dir(context, paths.fails_deliver)
         self._years_history = int(config.data_extract.years_history)
-        self._redundant_symbols = frozenset(config.data_extract.redundant_ticks)
-        self._all_tickers = load_universe_tickers(context)
-        self._tickers = self._options.tickers or self._all_tickers
         self._run_date = run_date(self._options.as_of)
         self._scan: Form345Scan | None = None
         self._tenure: pd.DataFrame | None = None
@@ -81,7 +77,6 @@ class StepExtractIdentity(Step):
             self._form345_scan().owner_pairs,
             str(self._config_dir),
             approved_rekeys=self._options.approved_rekeys,
-            redundant_symbols=self._redundant_symbols,
         )
         return self._lineage
 
@@ -95,12 +90,11 @@ class StepExtractIdentity(Step):
         """Carry the lineage changes into the stored rows, under the resolver reloaded once from the rebuilt tables."""
         return propagate_identity(
             self._context,
-            self._tickers,
+            self._options.tickers or self._universe.tickers,
             dry_run=self._options.dry_run,
             every_ticker=self._options.full,
             identity=load_identity(self._context, refresh=True),
             as_of=self._run_date,
-            all_tickers=self._all_tickers,
         )
 
     def run(self) -> None:

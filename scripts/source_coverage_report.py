@@ -42,7 +42,6 @@ import pandas as pd
 from src.constants.constants import DEFAULT_CONFIG_DIR
 from src.context import Context, get_config_context
 from src.data_store.schema import Tables
-from src.utils.universe import load_universe_tickers
 
 #: (label, Table, date column). The sources the institutionals feature families read, plus
 #: `prices` and the fundamentals history as reference denominators -- a source that starts late
@@ -72,7 +71,7 @@ def _unit(table) -> str:
 def ticker_coverage(context: Context, since_year: int) -> pd.DataFrame:
     """Distinct tickers (or manager CIKs) present per calendar year, one column per source (`prices`: universe tickers only)."""
     since = pd.Timestamp(f"{since_year}-01-01")
-    universe = load_universe_tickers(context)
+    universe = context.universe.tickers
     columns: dict[str, pd.Series] = {}
     for label, table, date_col in _SOURCES:
         if not context.store.exists(table):
@@ -137,7 +136,7 @@ def _md_table(df: pd.DataFrame, index_label: str | None = None) -> str:
 
 
 def build_report(context: Context, since_year: int) -> str:
-    universe = context.store.row_count(Tables.sp500_tickers)
+    universe = len(context.universe.tickers)
     coverage = ticker_coverage(context, since_year)
     mpt = managers_per_ticker(context)
     breaks = coverage_breaks(mpt)

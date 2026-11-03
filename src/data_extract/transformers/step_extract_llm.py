@@ -10,6 +10,7 @@ need inside `fundamentals_employees`, at most one per concurrent ticker worker, 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import cached_property
 
 from omegaconf import DictConfig
 
@@ -21,7 +22,6 @@ from src.data_extract.utils.structure.votes import VOTES_ACTION, fetch_8k_votes_
 # `gpt_extract` is a shared service like `src/utils/`, the sanctioned cross-import (model, keys, prompts, thread pool).
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 from src.utils.step import Step
-from src.utils.universe import load_universe_tickers
 
 
 @dataclass(frozen=True)
@@ -36,13 +36,18 @@ class StepExtractLlm(Step):
     def __init__(self, context: Context, config: DictConfig, options: LlmOptions | None = None) -> None:
         super().__init__(context=context, config=config)
         options = options or LlmOptions()
-        self._tickers = options.tickers or load_universe_tickers(context)
+        self._requested = options.tickers
         self._full = options.full
         self._years_history = int(config.data_extract.years_history)
         self._def14a = section_extractors(context, config)
         self._votes = LLMExtractor(context, config, action=VOTES_ACTION)
         for provider in (self._votes.default_api, EMPLOYEES_PROVIDER):
             self._votes._require_key(provider)
+
+    @cached_property
+    def _tickers(self) -> list[str]:
+        """The `-t` subset, else the universe (read once, on first use)."""
+        return self._requested or self._universe.tickers
 
     def run_def14a(self) -> None:
         fetch_def14a_llm(self._context, self._config, self._tickers, self._def14a)

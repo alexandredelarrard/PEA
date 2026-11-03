@@ -13,7 +13,6 @@ from src.data_extract.utils.institutionals.fetch_13f_managers import fetch_13f_m
 from src.data_extract.utils.institutionals.fetch_short_interest import fetch_short_interest
 from src.data_extract.utils.institutionals.fetch_superinvestors import upsert_roster_snapshot
 from src.utils.step import Step
-from src.utils.universe import load_universe_tickers
 
 
 class StepExtractInstitutionals(Step):
@@ -21,12 +20,11 @@ class StepExtractInstitutionals(Step):
         super().__init__(context=context, config=config)
         self.config = self._context.config
 
-    def run(self, tickers: list[str], *, all_tickers: list[str] | None = None) -> None:
+    def run(self, tickers: list[str]) -> None:
         years_history = int(self.config.data_extract.years_history)
-        universe = load_universe_tickers(self._context) if all_tickers is None else all_tickers
 
         # One walk over every 13F-HR since the stored frontier: the S&P 500 slice and the roster managers' complete books.
-        fetch_13f(self._context, tickers=tickers, years_history=years_history, all_tickers=universe)
+        fetch_13f(self._context, tickers=tickers, years_history=years_history)
 
         # Point-in-time roster snapshot, written only on change; after the 13F pull, whose filings are the activity gate's evidence.
         upsert_roster_snapshot(self._context)

@@ -253,7 +253,7 @@ def _observe_quiet_windows(
     necessary. Unknown officer/director attribution cannot establish role inactivity.
     """
     idx = pd.DatetimeIndex(frames.trading_index).normalize().unique().sort_values()
-    columns = pd.Index(sorted(map(str, frames.universe)), name="ticker")
+    columns = pd.Index(frames.universe, name="ticker")
     listed = _listed(frames.close_split, idx, columns)
     insider_floor, plan_floor, frontier = coverage.insider_floor, coverage.plan_floor, coverage.complete_through
     buy, sell = activity["code"].eq("P"), activity["code"].eq("S")

@@ -1,6 +1,6 @@
-"""Super step orchestrating the data-extraction sub-steps over one universe from `sp500_tickers`.
+"""Super step orchestrating the data-extraction sub-steps over the universe (`context.universe`).
 
-The universe is seeded via the S&P 500 scraper only when the table is empty. Order: zip downloads (Form 3/4/5,
+Order: Sharadar tickers -> universe sync -> zip downloads (Form 3/4/5,
 Notes, FTD, SEC current tickers) -> `StepExtractIdentity` (Notes and FTD captures,
 symbol_tenure + entity_lineage + security_master -> propagation) -> zip ingests (insider zip quarters, notes,
 FTD) -> prices (+ earnings surprises) -> institutionals (13F, roster, managers, short interest) ->
@@ -25,10 +25,10 @@ from src.data_extract.transformers.step_extract_institutionals import (
 from src.data_extract.transformers.step_extract_llm import LlmOptions, StepExtractLlm
 from src.data_extract.transformers.step_extract_prices import StepExtractPrices
 from src.data_extract.transformers.step_extract_zips import StepExtractZips, ZipsOptions
-from src.data_extract.utils.prices.fetch_tickers import get_sp500_tickers
-from src.data_store.schema import Tables
+from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import fetch_sharadar_tickers
 from src.utils.step import Step
-from src.utils.universe import load_universe_tickers
+from src.utils.string import run_date
+from src.utils.tickers_universe.sync import sync
 
 
 class StepExtractAllData(Step):
@@ -42,16 +42,11 @@ class StepExtractAllData(Step):
         self._fundamentals = StepExtractFundamentals(context=context, config=config)
         self._behavioral = StepExtractBehavioral(context=context, config=config)
 
-    def _resolve_tickers(self) -> list[str]:
-        if self._context.store.row_count(Tables.sp500_tickers) == 0:
-            get_sp500_tickers(self._context)
-            self._log.info("Extracted ticker list")
-        universe = load_universe_tickers(self._context)
-        self._log.info(f"Equity universe: {len(universe)} tickers from {Tables.sp500_tickers}")
-        return universe
-
     def run(self) -> None:
-        tickers = self._resolve_tickers()
+        fetch_sharadar_tickers(self._context)
+        sync(self._context.store, self._config, run_date(None))
+        tickers = self._universe.tickers
+        self._log.info(f"Equity universe: {len(tickers)} tickers")
 
         zips = StepExtractZips(self._context, self._config, ZipsOptions(tickers=tickers))
         zips.run_download()
@@ -60,7 +55,7 @@ class StepExtractAllData(Step):
 
         # run each extract big block
         self._prices.run(tickers=tickers)
-        self._institutionals.run(tickers=tickers, all_tickers=tickers)
+        self._institutionals.run(tickers=tickers)
         self._fundamentals_sharadar.run(tickers=tickers, full=False)
         self._fundamentals.run(tickers=tickers, full=False)
         StepExtractEdgar(self._context, self._config, EdgarOptions(tickers=tickers)).run()

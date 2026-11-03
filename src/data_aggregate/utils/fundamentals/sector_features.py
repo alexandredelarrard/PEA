@@ -22,7 +22,7 @@ Derived, sector-specific fundamental KPIs computed from `fundamentals_history`. 
 ⚠ THE GICS COLUMNS MUST BE ON THE FRAME. `row_gate` fails CLOSED, so a caller that hands
 this a bare `fundamentals_history` gets every sector KPI silently gated off — which is what
 happened for the whole life of this module until `step_cube_fundamentals` started attaching
-them (`gics.attach_gics_columns`). The reference data was in `sp500_tickers` the entire time.
+them (`context.universe.attach_gics`). The reference data is in `tickers_universe`.
 
 Every KPI is point-in-time (computed from TTM flows / period-end levels keyed on
 the filing date `as_of`) and unit-free (a ratio), so it is comparable across

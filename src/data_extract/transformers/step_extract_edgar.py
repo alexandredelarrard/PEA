@@ -13,6 +13,7 @@ needs no refresh of its own. The DEF 14A LLM pass and the 8-K vote parser read w
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import cached_property
 
 import pandas as pd
 from omegaconf import DictConfig
@@ -28,7 +29,6 @@ from src.data_extract.utils.edgar_extract.fetch_filing_text import FILING_TEXT_F
 from src.data_extract.utils.edgar_extract.fetch_insider_edgar import INSIDER_EDGAR_FETCH
 from src.utils.step import Step
 from src.utils.string import run_date
-from src.utils.universe import load_universe_tickers
 
 
 @dataclass(frozen=True)
@@ -55,11 +55,14 @@ def widest_index_years(years_history: int, run_date: pd.Timestamp) -> int:
 class StepExtractEdgar(Step):
     def __init__(self, context: Context, config: DictConfig, options: EdgarOptions | None = None) -> None:
         super().__init__(context=context, config=config)
-        options = options or EdgarOptions()
-        self._run = EdgarRun.load(
-            context, options.tickers or load_universe_tickers(context), options.years, as_of=options.as_of, full=options.full, no_cap=options.no_cap
-        )
+        self._options = options or EdgarOptions()
         self._indexed_years: int | None = None
+
+    @cached_property
+    def _run(self) -> EdgarRun:
+        """The run state (CIKs, identity, cap), read once on first use so constructing the step reads nothing."""
+        o = self._options
+        return EdgarRun.load(self._context, o.tickers or self._universe.tickers, o.years, as_of=o.as_of, full=o.full, no_cap=o.no_cap)
 
     def _refresh(self, years_history: int) -> None:
         refresh_index(self._context, self._run, years_history)

@@ -23,8 +23,8 @@ import pandas as pd
 import pytest
 from omegaconf import DictConfig, OmegaConf
 
-from src.constants.constants import INSUFFICIENT_HISTORY_TICKERS
 from src.data_store.schema import Tables
+from src.utils.tickers_universe.universe import Universe
 from src.validate.checks import (
     check_bounds,
     check_catalogue,
@@ -37,6 +37,7 @@ from src.validate.checks import (
     check_timeseries,
 )
 from src.validate.spec import UndeclaredTableError
+from tests.support.universe import seed_universe
 
 #: The part the synthetic frames borrow their grain from: `pk == (date, ticker)`, `date_col ==
 #: date`, which is the shape every `cube_part_*` table has. Using a REGISTERED table means the
@@ -47,10 +48,10 @@ SESSIONS = pd.bdate_range("2024-01-01", periods=40)
 
 
 class _Ctx:
-    """The two attributes every check touches on a `Context`."""
+    """The attributes the checks touch on a `Context`; `universe` only for the checks that read it."""
 
-    def __init__(self, store, config):
-        self.store, self.config = store, config
+    def __init__(self, store, config, universe: Universe | None = None):
+        self.store, self.config, self.universe = store, config, universe
 
 
 def _config(**defaults: Any) -> DictConfig:
@@ -59,7 +60,7 @@ def _config(**defaults: Any) -> DictConfig:
     Loading the shipped file is deliberate: it makes every one of these tests a check that
     the config still carries every key `TableSpec` requires."""
     loaded = cast(DictConfig, OmegaConf.load("configs/validate.yml"))
-    config = cast(DictConfig, OmegaConf.create({"validate": loaded["validate"], "data_extract": {"redundant_ticks": []}}))
+    config = cast(DictConfig, OmegaConf.create({"validate": loaded["validate"]}))
     for key, value in defaults.items():
         config.validate.defaults[key] = value
     return config
@@ -109,28 +110,28 @@ def test_grain_finds_a_duplicated_declared_key(sqlite_store, capsys):
 # --------------------------------------------------------------------------------------- #
 # coverage                                                                                #
 # --------------------------------------------------------------------------------------- #
-def test_coverage_files_the_hole_and_not_the_declared_exclusions(sqlite_store, capsys):
+def test_coverage_files_the_hole_and_not_the_declared_aliases(sqlite_store, capsys):
     """THE D-08 REGRESSION GUARD, plus the defect coverage is actually for.
 
-    A universe exclusion absent from the table must not be a defect -- it is absent by
-    declaration, and filing it is the false positive `momentum/_scripts/08` recorded. A
-    traded session missing INSIDE a ticker's own span must be.
+    A share-class alias declared in `configs/universe.yml` and absent from the table must not
+    be a defect -- it is outside the universe by declaration, and filing it is the false
+    positive `momentum/_scripts/08` recorded. A traded session missing INSIDE a ticker's own
+    span must be.
     """
-    excluded = sorted(INSUFFICIENT_HISTORY_TICKERS)[0]
-    roster = ["AAA", "BBB", excluded]
-    sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": roster}))
-    sqlite_store.save(Tables.prices, _panel(roster, close=lambda i, t: 10.0 + i))
+    excluded = "AAAB"
+    universe = seed_universe(sqlite_store, ["AAA", "BBB"], aliases={"AAA": [excluded]})
+    sqlite_store.save(Tables.prices, _panel(["AAA", "BBB", excluded], close=lambda i, t: 10.0 + i))
 
     # AAA complete; BBB missing three sessions in the middle of its own span.
     panel = _panel(["AAA", "BBB"], f_x=lambda i, t: float(i))
     holed = panel.drop(panel[(panel["ticker"] == "BBB") & panel["date"].isin(list(SESSIONS[20:23]))].index)
     sqlite_store.save(PART, holed)
-    context: Any = _Ctx(sqlite_store, _config(universe_expected=2))
+    context: Any = _Ctx(sqlite_store, _config(universe_expected=2), universe)
 
     result = check_coverage(context, PART, config=context.config)
 
     named = {f.ticker for f in result.findings if f.score >= 4}
-    assert result.metrics["universe"] == 2, "the exclusion must never enter the universe"
+    assert result.metrics["universe"] == 2, "the alias must never enter the universe"
     assert excluded not in result.metrics["absent"] and excluded not in named
     assert named == {"BBB"}, f"expected only BBB, got {named}"
     assert result.status == "fail"
@@ -140,13 +141,13 @@ def test_coverage_files_the_hole_and_not_the_declared_exclusions(sqlite_store, c
     sqlite_store.replace(PART, panel)
     clean = check_coverage(context, PART, config=context.config)
     assert clean.status == "pass"
-    assert [f.score for f in clean.findings] == [1, 1], "info only: exclusions and depth"
+    assert [f.score for f in clean.findings] == [1, 1], "info only: aliases and depth"
     info = clean.findings[0].evidence
     with capsys.disabled():
         print(
             f"\n  coverage: BBB at {result.metrics['interior']['min']:.1%} of its own traded "
             f"sessions -> filed; {excluded} absent and NOT filed "
-            f"({len(info['exclusions'])} declared exclusions reported as info); "
+            f"({len(info['exclusions'])} declared aliases reported as info); "
             f"hole filled -> {clean.status.upper()}"
         )
 
@@ -530,7 +531,7 @@ def test_leakage_catches_a_label_that_reaches_the_last_price(sqlite_store, capsy
         ["AAA", "BBB"], f_ret_h30=label(5), f_ret_h60=label(10), f_ret_h90=label(15), f_vol_h30=label(5), f_vol_h60=label(10), f_vol_h90=label(15)
     )
     sqlite_store.save(Tables.cube_part_targets, clean)
-    context: Any = _Ctx(sqlite_store, _config())
+    context: Any = _Ctx(sqlite_store, _config(), seed_universe(sqlite_store, ["AAA", "BBB"]))
 
     ok = check_leakage(context, Tables.cube_part_targets, config=context.config)
     ladder = [e for e in ok.metrics["horizon_ladder"] if e["family"] == "f_ret"]

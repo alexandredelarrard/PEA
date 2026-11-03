@@ -31,7 +31,7 @@ import sys
 
 import pandas as pd
 
-from scripts.detect_registrant_cutovers import all_filings, submissions
+from tests.support.detect_registrant_cutovers import all_filings, submissions
 from src.context import get_config_context
 
 #: ticker -> (proposed predecessor CIKs oldest-first, the cut the research gives, what the

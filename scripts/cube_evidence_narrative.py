@@ -156,7 +156,7 @@ MISSING: list[tuple] = [
 # each query is named beside its table so every figure is re-derivable.
 #
 #   gate arithmetic   fill within scope = count(f_<kpi>_xs) / count(*) over the rows whose
-#                     ticker is in SECTOR_KPI_SCOPE[family], joined cube -> sp500_tickers
+#                     ticker is in SECTOR_KPI_SCOPE[family], joined cube -> tickers_universe
 #   floor             count("f_debtToEquity_xs") over cube_part_fundamentals (the best-covered
 #                     FUNDAMENTALS column; the dividend columns are a PRICE-path anchor and
 #                     give a misleading 0.61%)
@@ -487,7 +487,7 @@ def closing(m: dict) -> list[tuple]:
         ("h2", "3.4 Two things worth saying plainly"),
         (
             "p",
-            "**The GICS snapshot is a known look-ahead.** `sp500_tickers` holds today's "
+            "**The GICS snapshot is a known look-ahead.** `tickers_universe` holds today's "
             "classification with no date axis, so a name that changed sector carries its 2026 "
             "label back to 1995. It is accepted rather than unnoticed: it is the same look-ahead "
             "the peer basket already carries (one static 2026-vintage embedding basket over the "
@@ -783,9 +783,9 @@ def closing(m: dict) -> list[tuple]:
         (
             "p",
             "Thirteen tickers carry no fundamentals, but **eleven of them are supposed to**. Eight "
-            "(GEHC, GEV, HONA, KVUE, Q, SNDK, SOLV, VLTO) are in `INSUFFICIENT_HISTORY_TICKERS` — "
-            "under four years of price history, excluded by `load_universe_tickers`. `EA` was "
-            "acquired and sits in `redundant_ticks`. Those must not be “fixed”.",
+            "(GEHC, GEV, HONA, KVUE, Q, SNDK, SOLV, VLTO) have under four years of price history "
+            "and are left out of `configs/universe.yml`. `EA` was acquired and is left out too. "
+            "Those must not be “fixed”.",
         ),
         (
             "p",

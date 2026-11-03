@@ -15,7 +15,6 @@ from src.modelling.utils.artifacts import load_ensemble, read_metadata
 from src.modelling.utils.ensemble import blend_horizons, ensemble_predict, ir_horizon_weights
 from src.modelling.utils.metrics import per_day_zscore
 from src.utils.modelling_runs import select_run
-from src.utils.universe import load_universe_tickers
 
 
 def check_date(record: dict[str, Any], key: str, cutoff: pd.Timestamp) -> None:
@@ -82,7 +81,7 @@ def load_scores(context: Context, config: DictConfig, directory: Path, metadata:
     missing = set(columns) - set(context.store.columns(Tables.cube))
     if missing:
         raise ValueError(f"Missing model input columns: {sorted(missing)}")
-    names = load_universe_tickers(context)
+    names = context.universe.tickers
     start = pd.Timestamp(config.portfolio.start)
     rows = []
     for month in pd.period_range(start, end, freq="M"):

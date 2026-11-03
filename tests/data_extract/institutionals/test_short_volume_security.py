@@ -24,6 +24,7 @@ from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from tests.canonical_schema import create_canonical
 from tests.data_extract.fake_context import extract_config
+from tests.support.universe import as_roster
 
 REPO = Path(__file__).resolve().parents[3]
 BUILT = pd.Timestamp("2026-10-04 12:00:00")
@@ -133,7 +134,7 @@ def _identity(master: pd.DataFrame | None = None, *, store: DataStore | None = N
         ]
     )
     roster = pd.DataFrame([{"ticker": t, "cik": c} for t, c in ROSTER.items()])
-    resolver = build_identity(_lineage(), tenure, roster, master=_master() if master is None else master)
+    resolver = build_identity(_lineage(), tenure, as_roster(roster), master=_master() if master is None else master)
     if store is not None:
         create_canonical(store.engine, list(resolver.source_cohort))
         for table, frame in resolver.source_cohort.items():
@@ -156,7 +157,7 @@ def _context(store, tmp_path: Path) -> Any:
         store=store,
         paths={"DATA_STORE": tmp_path},
         log=logging.getLogger("test.short_volume"),
-        config=extract_config(data_extract={"years_history": 15, "redundant_ticks": []}),
+        config=extract_config(data_extract={"years_history": 15}),
     )
 
 

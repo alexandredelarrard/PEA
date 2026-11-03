@@ -122,7 +122,7 @@ class StepCubeSecThirteen(Step):
     def build_panel(self, window: PartWindow | None = None, *, existing_columns: Sequence[str] | None = None) -> pd.DataFrame:
         
         resources = self._load_resources()
-        saved_columns = list(existing_columns)
+        saved_columns = self._store.columns(Tables.cube_part_sec_thirteen) if existing_columns is None else list(existing_columns)
         window = window or PartWindow(None, None)
 
         # Keep sparse full history for genuine lag comparisons and bounded daily projection.

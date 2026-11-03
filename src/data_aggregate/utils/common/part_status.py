@@ -10,7 +10,6 @@ from src.context import Context
 from src.data_aggregate.utils.common.assembly import part_has_rows
 from src.data_aggregate.utils.common.parts import CUBE_PARTS, TERMINAL_TABLES
 from src.data_store.schema import Tables
-from src.utils.universe import load_universe_tickers
 
 _LAG_TOLERANCE_DAYS = 4
 
@@ -29,7 +28,7 @@ def _edge_detail(part_max: pd.Timestamp | None, reference: pd.Timestamp | None) 
 def cube_part_edge_report(context: Context) -> dict[str, Any]:
     store = context.store
     optional = set(context.config.build_cube.assembly.optional_parts)
-    universe = set(load_universe_tickers(context))
+    universe = set(context.universe.tickers)
     maxima = store.max_date_by(Tables.prices, "ticker")
     reference = max((day for ticker, day in maxima.items() if ticker in universe), default=None)
     details: dict[str, dict[str, Any]] = {}
@@ -105,7 +104,7 @@ def part_status_report(context: Context) -> dict[str, Any]:
         Tables.prices.name: {
             "max_date": reference,
             "ok": reference is not None,
-            "refresh_command": "price-history (seed-universe if universe is absent)",
+            "refresh_command": "price-history (universe if tickers_universe is absent)",
         },
         Tables.cube_part_institutionals.name: {"insider_transactions": insider_status},
     }

@@ -55,3 +55,9 @@ def universe_of(
     """A `Universe` over its own in-memory store, for a stub context that has no store to seed."""
     engine = create_engine("sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False})
     return seed_universe(DataStore(engine), tickers, aliases=aliases, rows=rows)
+
+
+def universe_in(store: DataStore) -> Universe:
+    """The `Universe` over the `tickers_universe` rows a test already seeded into `store`."""
+    seeded = store.load(Tables.tickers_universe, columns=["ticker"])
+    return Universe(store, universe_config(list(seeded["ticker"])))

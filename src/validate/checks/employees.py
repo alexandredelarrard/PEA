@@ -241,15 +241,13 @@ def check_employees(
     table = Tables.fundamentals_employees.name
     start: pd.Timestamp = since if since is not None else _window_start(context)
     directory = directory if directory is not None else index_dir(context)
-    roster = context.store.load(Tables.sp500_tickers, columns=["ticker", "cik"], optional=True)
+    roster = context.universe.frame[["ticker", "cik"]]
     lineage = _lineage(context)
     empty = pd.DataFrame()
-    if roster is None or roster.empty or lineage is None:
-        return EmployeesReport(CheckResult.abstained(CHECK, table, "sp500_tickers or entity_lineage is empty"), empty, empty, empty, empty, empty)
-    roster = roster.assign(cik=pad_cik_series(roster["cik"]))
-    wanted = {normalise_ticker(t) for t in tickers} if tickers else None
-    roster = roster[roster["ticker"].map(normalise_ticker).isin(wanted)] if wanted is not None else roster
-    scope = sorted(roster["ticker"].astype(str))
+    if lineage is None:
+        return EmployeesReport(CheckResult.abstained(CHECK, table, "entity_lineage is empty"), empty, empty, empty, empty, empty)
+    roster = roster[roster["ticker"].isin(tickers)] if tickers else roster
+    scope = sorted(roster["ticker"])
     if "role" not in lineage.columns:
         lineage = _from_old_shape(lineage, roster)
     stored = context.store.load(Tables.fundamentals_employees, where={"ticker": scope}, optional=True)

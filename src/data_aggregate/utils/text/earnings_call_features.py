@@ -76,7 +76,7 @@ def sentiment_kpis(sentiment: pd.DataFrame) -> pd.DataFrame:
 def load_issuer_identity(context: Context) -> tuple[pd.DataFrame | None, pd.DataFrame | None, pd.DataFrame | None]:
     """Canonical roster, consolidating lineage and trusted symbol ownership for stored calls."""
     # Load each identity table once with its consumer projection.
-    roster = context.store.load(Tables.sp500_tickers, columns=["ticker", "cik"], optional=True)
+    roster = context.universe.frame[["ticker", "cik"]]
     lineage = context.store.load(Tables.entity_lineage, columns=["cik", "entity_id", "role", "valid_from", "valid_to"], optional=True)
     tenure = context.store.load(
         Tables.symbol_tenure, columns=["symbol", "issuer_cik", "valid_from", "valid_to"], where={"source": ["form345", "manual"]}, optional=True
@@ -112,7 +112,7 @@ def attach_issuer_identity(
     lineage = entity_lineage.assign(cik=pad_cik_series(entity_lineage["cik"]))[["cik", "entity_id"]].drop_duplicates()
     memberships = lineage.groupby("cik")["entity_id"].agg(["size", "count", "nunique", "first"])
     valid = memberships[(memberships["size"] == memberships["count"]) & memberships["nunique"].eq(1)]
-    current = roster.assign(cik=pad_cik_series(roster["cik"]))[["ticker", "cik"]].drop_duplicates()
+    current = roster[["ticker", "cik"]].drop_duplicates()
     current["entity_id"] = current["cik"].map(valid["first"])
     owners = current.groupby("ticker")["entity_id"].agg(["size", "count", "nunique", "first"])
     owners = owners[(owners["size"] == owners["count"]) & owners["nunique"].eq(1)]

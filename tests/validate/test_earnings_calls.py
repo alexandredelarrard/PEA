@@ -14,6 +14,7 @@ from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.validate.checks.earnings_calls import _coverage, _identity, _linked, check_earnings_calls
 from tests.fixtures.earnings_call_rows import synthetic_call
+from tests.support.universe import seed_universe, universe_in
 
 _USEFUL = "Revenue growth and margin guidance remained strong for customers this quarter. " * 12
 _QUESTION = "Can you talk about revenue growth and the margin guidance for next year?"
@@ -53,7 +54,7 @@ def _cube(tickers: list[str]) -> pd.DataFrame:
 
 def _seed_identity(store: DataStore, tickers: list[str]) -> None:
     roster = pd.DataFrame({"ticker": tickers, "cik": [str(i) for i in range(1, len(tickers) + 1)]})
-    store.save(Tables.sp500_tickers, roster)
+    seed_universe(store, tickers, rows={t: {"cik": c} for t, c in zip(roster["ticker"], roster["cik"], strict=True)})
     store.save(
         Tables.entity_lineage,
         roster[["cik"]].assign(entity_id="E" + roster["cik"], role="cik_window", symbol="", valid_from="1900-01-01", valid_to=None),
@@ -67,7 +68,7 @@ def _seed_identity(store: DataStore, tickers: list[str]) -> None:
 
 
 def test_coverage_keeps_ingestion_validated_canonical_history_before_rename(sqlite_store) -> None:
-    sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["ECHO"], "cik": ["1"]}))
+    seed_universe(sqlite_store, ["ECHO"], rows={"ECHO": {"cik": "1"}})
     sqlite_store.save(
         Tables.entity_lineage,
         pd.DataFrame({"cik": ["1"], "entity_id": ["E1"], "role": ["cik_window"], "symbol": [""], "valid_from": ["1900-01-01"], "valid_to": [None]}),
@@ -92,7 +93,7 @@ def test_coverage_keeps_ingestion_validated_canonical_history_before_rename(sqli
         pd.concat([_valid_call("ECHO", quarter, date) for quarter, date in zip(["2008Q1", "2026Q2"], dates, strict=True)], ignore_index=True),
     )
     summary, _, valid = _coverage(
-        cast(Context, SimpleNamespace(store=sqlite_store, config=SimpleNamespace(data_extract=SimpleNamespace(redundant_ticks=[]))))
+        cast(Context, SimpleNamespace(store=sqlite_store, universe=universe_in(sqlite_store)))
     )
     assert valid["ECHO"] == list(pd.to_datetime(dates))
     assert summary["valid_calls"] == 2
@@ -100,7 +101,7 @@ def test_coverage_keeps_ingestion_validated_canonical_history_before_rename(sqli
 
 
 def test_coverage_excludes_canonical_calls_outside_consolidating_windows(sqlite_store) -> None:
-    sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["CEG"], "cik": ["1"]}))
+    seed_universe(sqlite_store, ["CEG"], rows={"CEG": {"cik": "1"}})
     sqlite_store.save(
         Tables.entity_lineage,
         pd.DataFrame({"cik": ["1"], "entity_id": ["E1"], "role": ["cik_window"], "symbol": [""], "valid_from": ["2022-01-01"], "valid_to": [None]}),
@@ -118,7 +119,7 @@ def test_coverage_excludes_canonical_calls_outside_consolidating_windows(sqlite_
         pd.concat([_valid_call("CEG", quarter, date) for quarter, date in zip(["2007Q4", "2024Q1"], dates, strict=True)], ignore_index=True),
     )
     summary, _, valid = _coverage(
-        cast(Context, SimpleNamespace(store=sqlite_store, config=SimpleNamespace(data_extract=SimpleNamespace(redundant_ticks=[]))))
+        cast(Context, SimpleNamespace(store=sqlite_store, universe=universe_in(sqlite_store)))
     )
     assert valid["CEG"] == [pd.Timestamp(dates[1])]
     assert [row["quarter"] for row in summary["coverage_by_calendar_quarter"]] == ["2024Q2"]
@@ -220,7 +221,7 @@ def test_earnings_call_validator_reports_coverage_schema_and_quality(sqlite_stor
     sqlite_store.save(Tables.earnings_call_sections, paragraphs)
     sqlite_store.save(Tables.cube_part_text, _cube(["AAA", "BBB"]))
 
-    context = cast(Context, SimpleNamespace(store=sqlite_store, config=SimpleNamespace(data_extract=SimpleNamespace(redundant_ticks=[]))))
+    context = cast(Context, SimpleNamespace(store=sqlite_store, universe=universe_in(sqlite_store)))
     result = check_earnings_calls(context, Tables.cube_part_text, config=_config())
     coverage = cast(dict, result.metrics["coverage"])
     assert result.status == "fail"
@@ -259,7 +260,7 @@ def test_grain_and_split_defects_fail_the_validator(sqlite_store) -> None:
     sqlite_store.save(Tables.cube_part_text, _cube(["AAA", "BBB", "CCC"]))
 
     result = check_earnings_calls(
-        cast(Context, SimpleNamespace(store=sqlite_store, config=SimpleNamespace(data_extract=SimpleNamespace(redundant_ticks=[])))),
+        cast(Context, SimpleNamespace(store=sqlite_store, universe=universe_in(sqlite_store))),
         Tables.cube_part_text,
         config=_config(),
     )
@@ -295,7 +296,7 @@ def test_two_calls_on_one_ticker_date_fail_the_validator(sqlite_store) -> None:
     sqlite_store.save(Tables.cube_part_text, _cube(["AAA", "BBB"]))
 
     result = check_earnings_calls(
-        cast(Context, SimpleNamespace(store=sqlite_store, config=SimpleNamespace(data_extract=SimpleNamespace(redundant_ticks=[])))),
+        cast(Context, SimpleNamespace(store=sqlite_store, universe=universe_in(sqlite_store))),
         Tables.cube_part_text,
         config=_config(),
     )
@@ -313,7 +314,7 @@ def test_two_calls_on_one_ticker_date_fail_the_validator(sqlite_store) -> None:
 
 @pytest.mark.parametrize("has_call", [False, True])
 def test_coverage_uses_point_in_time_lineage_and_provider_presence(sqlite_store: Any, has_call: bool) -> None:
-    sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["NEW", "BRK-B"]}))
+    seed_universe(sqlite_store, ["NEW", "BRK-B"], rows={"NEW": {"cik": "1"}, "BRK-B": {"cik": "3"}})
     sqlite_store.save(
         Tables.entity_lineage,
         pd.DataFrame(
@@ -360,7 +361,7 @@ def test_coverage_uses_point_in_time_lineage_and_provider_presence(sqlite_store:
     )
 
     summary, ratios, valid_dates = _coverage(
-        cast(Context, SimpleNamespace(store=sqlite_store, config=SimpleNamespace(data_extract=SimpleNamespace(redundant_ticks=[]))))
+        cast(Context, SimpleNamespace(store=sqlite_store, universe=universe_in(sqlite_store)))
     )
 
     assert summary["roster_tickers"] == 2
@@ -379,7 +380,7 @@ def test_coverage_uses_point_in_time_lineage_and_provider_presence(sqlite_store:
 
 def test_coverage_reads_distinct_lineage_pairs_and_only_form345_manual_tenure(sqlite_store) -> None:
     """The dated `entity_lineage` holds several rows per CIK and `symbol_tenure` gains `dei` rows; coverage must not move."""
-    sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["NEW"]}))
+    seed_universe(sqlite_store, ["NEW"], rows={"NEW": {"cik": "1"}})
     sqlite_store.save(
         Tables.entity_lineage,
         pd.DataFrame(
@@ -418,7 +419,7 @@ def test_coverage_reads_distinct_lineage_pairs_and_only_form345_manual_tenure(sq
     )
 
     summary, ratios, valid_dates = _coverage(
-        cast(Context, SimpleNamespace(store=sqlite_store, config=SimpleNamespace(data_extract=SimpleNamespace(redundant_ticks=[]))))
+        cast(Context, SimpleNamespace(store=sqlite_store, universe=universe_in(sqlite_store)))
     )
 
     assert summary["tickers_measured"] == 1

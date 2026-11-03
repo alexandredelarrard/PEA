@@ -21,6 +21,7 @@ from src.modelling.steps import step_long_short
 from src.modelling.steps.step_long_short import StepLongShort
 from src.utils.freshness import PREDICTION_INPUTS, StaleInputsError
 from tests.modelling.model_fixtures import make_config
+from tests.support.universe import universe_of
 
 TICKERS = [f"T{i:02d}" for i in range(20)]
 TODAY = pd.Timestamp.today().normalize()
@@ -36,7 +37,6 @@ class _Member:
 
 def _seed(store: Any) -> None:
     """Every universe key fresh, and the cube ending on the last price date."""
-    store.replace(Tables.sp500_tickers, pd.DataFrame({"ticker": TICKERS}))
     store.replace(Tables.prices, pd.DataFrame({"ticker": TICKERS, "date": LAST_PRICE, "close_split": 10.0}))
     store.replace(
         Tables.sharadar_fundamentals,
@@ -57,7 +57,7 @@ def _step(tmp_path: Path, store: Any, monkeypatch: pytest.MonkeyPatch, min_share
     cfg = make_config(
         model={"target_type": "rank", "models_dir": str(tmp_path / "models")},
         build_cube={"output": {}},
-        data_extract={"prediction_fresh_share": min_share, "redundant_ticks": []},
+        data_extract={"prediction_fresh_share": min_share},
     )
     meta = {"horizons": [30], "feature_cols": ["f0"], "categorical_cols": [], "model_types": ["stub"], "train_ic_ir": {"30": 1.0}}
     monkeypatch.setattr(step_long_short, "read_metadata", lambda directory: meta)
@@ -69,7 +69,7 @@ def _step(tmp_path: Path, store: Any, monkeypatch: pytest.MonkeyPatch, min_share
     monkeypatch.setattr(step_long_short, "load_ensemble", pinned_members)
     paths = {"DATA_STORE": tmp_path / "data", "OUTPUT_DIR": tmp_path / "out", "MODELS_DIR": tmp_path / "models"}
     context: Any = SimpleNamespace(
-        store=store, save=False, log=logging.getLogger("predict-freshness"), config=cfg, config_dir=Path("configs"), paths=paths
+        store=store, save=False, log=logging.getLogger("predict-freshness"), config=cfg, config_dir=Path("configs"), paths=paths, universe=universe_of(TICKERS)
     )
     return StepLongShort(context=context, config=cfg)
 

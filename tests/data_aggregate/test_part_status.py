@@ -19,6 +19,7 @@ from src.data_aggregate.utils.common.parts import CUBE_PARTS, TERMINAL_TABLES
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from tests.data_extract.fake_context import extract_config
+from tests.support.universe import universe_of
 
 LOG = logging.getLogger(__name__)
 SOURCE = "cube_part_institutionals:insider_transactions"
@@ -26,13 +27,11 @@ SOURCE = "cube_part_institutionals:insider_transactions"
 
 def _context(store: Any) -> Any:
     config = extract_config(source_freshness={"insider_max_lag_days": 4})
-    config.data_extract = {"redundant_ticks": []}
     config.build_cube = {"assembly": {"optional_parts": [Tables.cube_part_text.name, Tables.cube_part_institutionals.name]}}
-    return SimpleNamespace(store=store, config=config, log=LOG)
+    return SimpleNamespace(store=store, config=config, log=LOG, universe=universe_of(["AAA"]))
 
 
 def _seed_prices(sqlite_store: DataStore) -> None:
-    sqlite_store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": ["AAA"]}))
     sqlite_store.replace(
         Tables.cube_part_prices,
         pd.DataFrame(
@@ -249,7 +248,7 @@ def test_stored_session_reference_and_missing_source(source_date: str | None) ->
     assert report["reference_price_date"] == source_date
     if source_date is None:
         assert Tables.prices.name in report["behind"]
-        assert report["sources"][Tables.prices.name]["refresh_command"] == "price-history (seed-universe if universe is absent)"
+        assert report["sources"][Tables.prices.name]["refresh_command"] == "price-history (universe if tickers_universe is absent)"
     print(
-        "SANITY: stored preceding-session date is enough regardless of wall clock; unknown source reference fails closed and names seed-universe recovery."
+        "SANITY: stored preceding-session date is enough regardless of wall clock; unknown source reference fails closed and names the universe recovery."
     )

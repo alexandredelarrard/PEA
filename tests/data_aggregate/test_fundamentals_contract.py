@@ -70,15 +70,11 @@ class _SourceStore:
 def test_every_direct_source_read_is_pushed_down_to_the_price_universe(monkeypatch):
     store = _SourceStore()
     step = StepCubeFundamentals.__new__(StepCubeFundamentals)
-    step._context = SimpleNamespace(store=store)
+    step._context = SimpleNamespace(store=store, universe=SimpleNamespace(attach_gics=lambda frame: frame))
     step._log = logging.getLogger("test")
     monkeypatch.setattr(
         "src.data_aggregate.transformers.step_cube_fundamentals.add_cube_time_growth",
         lambda frame: frame,
-    )
-    monkeypatch.setattr(
-        "src.data_aggregate.transformers.step_cube_fundamentals.attach_gics_columns",
-        lambda frame, context, log: frame,
     )
 
     source_since = pd.Timestamp("2020-09-04")

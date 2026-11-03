@@ -15,6 +15,7 @@ from src.data_aggregate.transformers import step_cube_prices as price_step
 from src.data_aggregate.utils.common.level_basis import apply_return_seams, measure_quote_seams, measure_seams
 from src.data_store.schema import Tables
 from src.utils.price_adjustments import load_bugfix
+from tests.support.universe import universe_of
 
 
 @pytest.fixture(scope="module")
@@ -105,7 +106,7 @@ def test_refused_return_repair_cannot_emit_unprotected_returns(
     actual = cast(Any, step)
     actual._store = CaptureStore()
     actual._bugfix = blob
-    actual._tickers = [ticker]
+    actual._context = SimpleNamespace(universe=universe_of([ticker]))
     actual._log = logging.getLogger(__name__)
     writes: list[pd.DataFrame] = []
     monkeypatch.setattr(step, "_plan_window", lambda full: SimpleNamespace(since=None))

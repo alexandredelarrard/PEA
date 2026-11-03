@@ -38,7 +38,6 @@ from src.data_aggregate.utils.common.level_basis import (
     load_share_basis,
 )
 from src.data_store.schema import Tables
-from src.utils.universe import load_universe_tickers
 
 #: Invariant 1's band. 1% absorbs the as-of join (a filing date is often not a trading day)
 #: and Sharadar's four-significant-figure rounding, and is an order of magnitude tighter than
@@ -178,7 +177,7 @@ def _as_ns(frame: pd.DataFrame, column: str) -> pd.DataFrame:
 # --------------------------------------------------------------------------- #
 def _price_scope(context: Context, tickers: list[str] | None) -> dict[str, Any]:
     """The `prices` filter: the given tickers, else the universe (`prices` also holds secondary share classes)."""
-    return {"ticker": list(tickers) if tickers else load_universe_tickers(context)}
+    return {"ticker": list(tickers) if tickers else context.universe.tickers}
 
 
 def load_panel(context: Context, tickers: list[str] | None = None, since: str | pd.Timestamp | None = None) -> pd.DataFrame:

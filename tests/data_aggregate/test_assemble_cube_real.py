@@ -20,10 +20,11 @@ from src.data_aggregate.utils.common.parts import CUBE_PARTS
 from src.data_store.schema import Tables
 from src.modelling.utils.panel import load_frame
 from src.utils.config import read_config
-from src.utils.universe import load_universe_tickers
+from src.utils.tickers_universe.universe import Universe
 from src.validate.checks.grain import check_grain
 from src.validate.result import jsonable
 from tests.conftest import _store
+from tests.support.universe import seed_universe
 
 
 def _record(out_dir: Path, result: dict[str, Any]) -> None:
@@ -45,8 +46,8 @@ def test_real_source_assembly_replay(sqlite_store: Any, monkeypatch: pytest.Monk
     if missing:
         _record(tmp_path, {"status": "abstain", "reason": "missing compulsory sources", "parts": missing, "metadata": _metadata(source)})
         pytest.skip(f"real candidate replay incomplete: compulsory parts absent/empty: {missing}")
-    live_context = SimpleNamespace(store=source, config=config)
-    universe = set(load_universe_tickers(cast(Context, live_context)))
+    live_universe = Universe(source, config)
+    universe = set(live_universe.tickers)
     tickers = [ticker for ticker in ("AAPL", "MSFT", "JPM") if ticker in universe]
     assert len(tickers) == 3, "named source-backed sample must be available"
     horizon = max(config.build_cube.targets.horizons)
@@ -77,15 +78,17 @@ def test_real_source_assembly_replay(sqlite_store: Any, monkeypatch: pytest.Monk
         pytest.skip("existing peer artifact unavailable; no production peer recomputation allowed")
     peers = json.loads(peers_path.read_text(encoding="utf-8"))
     monkeypatch.setattr("src.data_aggregate.transformers.step_assemble_cube.load_peers_or_raise", lambda *_: peers)
-    reference = source.load(Tables.sp500_tickers, columns=["ticker", "sector", "industry_group"], where={"ticker": tickers})
-    assert reference is not None
-    sqlite_store.replace(Tables.sp500_tickers, reference)
+    reference = live_universe.frame.set_index("ticker").loc[tickers, ["cik", "sector", "industry_group"]]
+    replay_universe = seed_universe(sqlite_store, tickers, rows=reference.to_dict(orient="index"))
     for part in CUBE_PARTS:
         frame = snapshot.get(part.name)
         if frame is not None and not frame.empty:
             sqlite_store.replace(part.table, frame)
     sqlite_store.replace(Tables.prices, snapshot[Tables.cube_part_prices.name][["date", "ticker"]])
-    context = cast(Context, SimpleNamespace(store=sqlite_store, config=config, log=logging.getLogger(__name__), config_dir=Path("configs").resolve()))
+    context = cast(
+        Context,
+        SimpleNamespace(store=sqlite_store, config=config, log=logging.getLogger(__name__), config_dir=Path("configs").resolve(), universe=replay_universe),
+    )
     StepAssembleCube(context, config).run()
     cube = sqlite_store.load(Tables.cube, columns=sqlite_store.columns(Tables.cube))
     assert cube is not None

@@ -18,6 +18,7 @@ from src.data_aggregate.utils.institutionals.insider_positions import position_u
 from src.data_aggregate.utils.sec_thirteen.institutional_features import _daily_owned_shares
 from src.data_store.schema import Tables
 from src.utils.price_adjustments import ShareBasis, load_bugfix, resolve_share_events
+from tests.support.universe import universe_of
 
 
 @pytest.fixture(scope="module")
@@ -155,8 +156,7 @@ def test_ordinary_price_builder_refuses_changed_share_policy_before_write(source
     step = price_step.StepCubePrices.__new__(price_step.StepCubePrices)
     actual = cast(Any, step)
     actual._store = GuardStore()
-    actual._context = SimpleNamespace(store=actual._store, log=context.log, config_dir=context.config_dir)
-    actual._tickers = ["IVZ"]
+    actual._context = SimpleNamespace(store=actual._store, log=context.log, config_dir=context.config_dir, universe=universe_of(["IVZ"]))
     actual._bugfix = blob
     actual._log = logging.getLogger(__name__)
     monkeypatch.setattr(step, "_plan_window", lambda full: SimpleNamespace(since=None))

@@ -45,7 +45,6 @@ from src.modelling.utils.panel import load_frame
 from src.utils.freshness import check_prediction_inputs
 from src.utils.modelling_runs import contained_path, new_run_id, read_fitting_configuration, run_directory, select_run
 from src.utils.step import Step
-from src.utils.universe import load_universe_tickers
 
 # metadata.json name of each family block's resolved columns (kept for the strategies / app)
 _FAMILY_BLOCKS: dict[str, type[BaseModel]] = {"linear": LinearRegression, "lgbm": LightGBMModel, "rf": RandomForestModel}
@@ -629,7 +628,7 @@ class StepLongShort(Step):
         predicted_at = pd.Timestamp.now().floor("s")
         store = self._context.store
         min_share = float(self._config.data_extract.prediction_fresh_share)
-        shares = check_prediction_inputs(store, load_universe_tickers(self._context), pd.Timestamp(self._today), min_share)
+        shares = check_prediction_inputs(store, self._universe.tickers, pd.Timestamp(self._today), min_share)
         self._log.info("run_predict: per-key fresh share %s (minimum %.2f)", {name: round(share, 3) for name, share in shares.items()}, min_share)
 
         dates = sorted(pd.Timestamp(d).normalize() for d in store.distinct(Tables.cube, "date", order="desc", limit=int(n_dates)))

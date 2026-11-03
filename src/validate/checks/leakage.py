@@ -60,7 +60,6 @@ from omegaconf import DictConfig
 
 from src.context import Context
 from src.data_store.schema import Table, Tables, resolve
-from src.utils.universe import load_universe_tickers
 from src.validate.frame import as_ts, column_groups, feature_columns
 from src.validate.io import CHUNK_ROWS, cache_used, read_columns
 from src.validate.result import CheckResult, Finding, full_table_only
@@ -149,7 +148,7 @@ def _longest_prefix_sources(
 
 def _last_universe_session(context: Context, reference: Table | str) -> pd.Timestamp | None:
     """The reference table's latest date over universe tickers (`prices` also holds secondary share classes)."""
-    universe = set(load_universe_tickers(context))
+    universe = set(context.universe.tickers)
     by_ticker = context.store.max_date_by(reference, "ticker") if universe else {}
     if not by_ticker:
         return context.store.max_date(reference)

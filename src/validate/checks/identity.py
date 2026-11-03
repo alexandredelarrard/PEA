@@ -232,9 +232,8 @@ def _flags(context: Context, lineage: pd.DataFrame) -> pd.DataFrame:
         Tables.symbol_tenure, columns=_EVIDENCE_COLUMNS, where={"issuer_cik": ciks, "source": ["dei", "form345"]}, optional=True
     )
     activity = cik_activity(evidence if evidence is not None else pd.DataFrame(columns=_EVIDENCE_COLUMNS))
-    redundant = frozenset(normalise_ticker(t) for t in context.config.data_extract.redundant_ticks)
     master = context.store.load(Tables.security_master, columns=list(MASTER_COLUMNS), optional=True)
-    return identity_flags(lineage, activity, redundant_symbols=redundant, master=master)
+    return identity_flags(lineage, activity, redundant_symbols=context.universe.alias_symbols, master=master)
 
 
 def _removal_findings(removals: pd.DataFrame) -> list[Finding]:
@@ -392,11 +391,10 @@ def check_identity(context: Context, *, tickers: Sequence[str] | None = None) ->
         pd.DataFrame(columns=list(REMOVAL_COLUMNS)),
     )
     lineage = _lineage(context)
-    roster = context.store.load(Tables.sp500_tickers, columns=["ticker", "cik"], optional=True)
-    if lineage is None or roster is None or roster.empty:
+    roster = context.universe.frame[["ticker", "cik"]]
+    if lineage is None:
         return empty
-    roster = roster.assign(ticker=roster["ticker"].map(normalise_ticker), cik=pad_cik_series(roster["cik"]))
-    scope = sorted({normalise_ticker(t) for t in tickers} & set(roster["ticker"])) if tickers else sorted(roster["ticker"])
+    scope = sorted(set(tickers) & set(roster["ticker"])) if tickers else sorted(roster["ticker"])
     if "role" not in lineage.columns:
         return _unmigrated_report(context, _from_old_shape(lineage, roster), scope)
     removals = pending_removals(context, lineage, scope)

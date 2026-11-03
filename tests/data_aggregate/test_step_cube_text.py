@@ -21,6 +21,7 @@ from src.data_aggregate.transformers.step_cube_text import StepCubeText
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from tests.fixtures.earnings_call_rows import FIXTURE_PATHS, fixture_paragraphs
+from tests.support.universe import seed_universe
 
 
 class ReplayStore:
@@ -112,7 +113,7 @@ def seeded_case(base: DataStore, stems: list[str]) -> tuple[Context, DictConfig,
     prices = pd.MultiIndex.from_product([calendar, tickers], names=["date", "ticker"]).to_frame(index=False)
     store.replace(Tables.cube_part_prices, prices.assign(close_split=100.0))
     ciks = [str(i + 1).zfill(10) for i in range(len(tickers))]
-    store.replace(Tables.sp500_tickers, pd.DataFrame({"ticker": tickers, "cik": ciks}))
+    universe = seed_universe(base, tickers)
     store.replace(
         Tables.entity_lineage,
         pd.DataFrame({"cik": ciks, "symbol": tickers, "entity_id": ciks, "role": "cik_window", "valid_from": "2000-01-01", "valid_to": None}),
@@ -131,7 +132,7 @@ def seeded_case(base: DataStore, stems: list[str]) -> tuple[Context, DictConfig,
             "gpt": {"embedding": {"model": "text-embedding-3-small", "batch_size": 128, "max_chars": 28000}},
         }
     )
-    context = cast(Context, SimpleNamespace(store=store, log=logging.getLogger("test.text"), config=config, config_dir=Path("configs")))
+    context = cast(Context, SimpleNamespace(store=store, log=logging.getLogger("test.text"), config=config, config_dir=Path("configs"), universe=universe))
     return context, config, store
 
 

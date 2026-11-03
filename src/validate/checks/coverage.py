@@ -5,13 +5,9 @@ Which names are in the table, and for how much of the history they could have be
 
 THREE THINGS THIS CHECK REFUSES TO DO, each because doing it produced a false result before:
 
-1. **It never compares against `sp500_tickers`.** That table is 500 rows with no date column
-   -- a snapshot, not a point-in-time roster. The universe is `load_universe_tickers`, which
-   is 491: the roster minus `INSUFFICIENT_HISTORY_TICKERS` and
-   `config.data_extract.redundant_ticks`. The nine names in that difference
-   (`FDXF GEHC GEV HONA KVUE Q SNDK SOLV VLTO`) are absent BY DECLARATION, and reporting them
-   as missing data is the false positive `momentum/_scripts/08` recorded as D-08. The
-   exclusion set is IMPORTED here, never copied, so it cannot go stale against the constant.
+1. **It measures against `context.universe`**, the tickers of `configs/universe.yml`. The
+   share-class aliases declared there (`GOOG`, `FOX`, `NWS`, `BRK-A`) are outside the universe
+   by declaration and reported as INFO, never as unknown names.
 
 2. **It never measures a ticker against the table's own date range.** `KHC` did not exist
    before 2015 and `SW`, `MRVL` and `CBOE` are each legitimately absent from early quarters of
@@ -49,10 +45,8 @@ import numpy as np
 import pandas as pd
 from omegaconf import DictConfig
 
-from src.constants.constants import INSUFFICIENT_HISTORY_TICKERS
 from src.context import Context
 from src.data_store.schema import Table, Tables, resolve
-from src.utils.universe import load_universe_tickers
 from src.validate.frame import as_ts
 from src.validate.io import cache_used, read_columns
 from src.validate.result import CheckResult, Finding, full_table_only
@@ -69,14 +63,6 @@ _MAX_FINDINGS = 20
 #: The share of the table's distinct dates that must be `prices` sessions before a
 #: per-session coverage ratio means anything. See point 3 of the module docstring.
 _SESSION_GRID_MIN = 0.99
-
-
-def _exclusions(context: Context) -> set[str]:
-    """The declared universe exclusions, IMPORTED from the two places that own them.
-
-    ⚠ Never inline this list. `load_universe_tickers` subtracts exactly this set, so a copy
-    that drifted would make this check report names the universe had already dropped."""
-    return set(INSUFFICIENT_HISTORY_TICKERS) | {str(t).strip().upper() for t in context.config.data_extract.redundant_ticks}
 
 
 def _panel(frame: pd.DataFrame, ticker_col: str, date_col: str) -> pd.DataFrame:
@@ -124,11 +110,9 @@ def check_coverage(
             CHECK, spec_t.name, f"coverage is a (ticker x session) question and this table has date_col={date_col!r}, ticker column={ticker_col!r}"
         )
 
-    universe = load_universe_tickers(context)
-    if not universe:
-        return CheckResult.abstained(CHECK, spec_t.name, "load_universe_tickers returned nothing -- `sp500_tickers` is empty or absent")
+    universe = context.universe.tickers
     universe_set = set(universe)
-    excluded = _exclusions(context)
+    excluded = set(context.universe.alias_symbols)
 
     # -- the reference grid: one row per (ticker, session) that actually traded ---------- #
     ref_cols = context.store.columns(reference)
@@ -175,7 +159,7 @@ def check_coverage(
         findings.append(
             Finding.at(
                 5,
-                observed=f"load_universe_tickers returned {len(universe)} names",
+                observed=f"configs/universe.yml lists {len(universe)} names",
                 expected=f"{spec.universe_expected} (configs/validate.yml universe_expected)",
                 universe=len(universe),
                 declared=spec.universe_expected,
@@ -224,16 +208,16 @@ def check_coverage(
             )
         )
 
-    # -- 4. the declared exclusions, reported so a reader can see they were considered ---- #
+    # -- 4. the declared aliases, reported so a reader can see they were considered ------- #
     #    INFO by construction -- these are absent on purpose. See `_FAIL_FLOOR` in result.py.
     excluded_present = sorted(present & excluded)
     findings.append(
         Finding.at(
             1,
-            observed=f"{len(excluded)} declared exclusions; {len(excluded_present)} of them "
+            observed=f"{len(excluded)} declared aliases; {len(excluded_present)} of them "
             f"carry rows here ({', '.join(excluded_present) if excluded_present else 'none'})",
-            expected="informational: INSUFFICIENT_HISTORY_TICKERS u data_extract.redundant_ticks "
-            "are outside the universe by declaration, and their absence is not a defect",
+            expected="informational: the share-class aliases of configs/universe.yml are outside "
+            "the universe by declaration, and their absence is not a defect",
             exclusions=sorted(excluded),
             present=excluded_present,
         )

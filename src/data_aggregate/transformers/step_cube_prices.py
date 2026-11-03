@@ -49,7 +49,6 @@ from src.data_peers.utils.sector_peers import compute_sector_returns
 from src.data_store.schema import Tables
 from src.utils.macro import load_macro_series
 from src.utils.step import Step
-from src.utils.universe import load_universe_tickers
 
 PRICE_COLS = ["date", "open", "high", "low", "close_split", "close_total", "volume", "ticker"]
 #: Sharadar's as-reported quarterly dimension -- the only one whose `price` is a single dated
@@ -64,8 +63,6 @@ class StepCubePrices(Step):
         self._cfg = config.build_cube
         self._part = part_for(Tables.cube_part_prices)
         self._store = context.store
-        self._tickers = load_universe_tickers(context)
-        self._log.info(f"Ticker universe: {len(self._tickers)} tickers from {Tables.sp500_tickers}")
 
         # Read at construction so a malformed or unapproved register fails the step before it
         # has loaded 1.9M price rows, not after.
@@ -74,10 +71,10 @@ class StepCubePrices(Step):
     def run(self, full: bool = False) -> None:
 
         window = self._plan_window(full)
-        raw = self._store.load(Tables.prices, since=window.since, columns=PRICE_COLS, where={"ticker": self._tickers})
+        raw = self._store.load(Tables.prices, since=window.since, columns=PRICE_COLS, where={"ticker": self._universe.tickers})
         assert raw is not None
         self._log.info(f"Loading {Tables.prices} since={window.since if window.since else 'full'}")
-        
+
         raw = apply_volume_scale(raw, self._bugfix)
 
         # long to wide format
@@ -180,7 +177,7 @@ class StepCubePrices(Step):
         """Restrict every frame to the analysis universe (SORTED -- see
         `universe_columns`), then add the persisted return and peer-basket return."""
 
-        universe = universe_columns(self._tickers, wide["close_split"])
+        universe = universe_columns(self._universe.tickers, wide["close_split"])
         out = {k: v.reindex(columns=universe) for k, v in wide.items()}
         out["ret"] = returns.reindex(columns=universe)
         out["sector_ret"] = self._sector_returns(out["ret"], peers)
@@ -229,7 +226,7 @@ class StepCubePrices(Step):
         no price leg at all."""
         if not self._bugfix:
             return
-        
+
         applied = apply_split_vintage(wide, self._bugfix, vendor)
         applied += apply_return_seams(wide, self._bugfix)
         listed = sum(len(v) for v in (self._bugfix.get("split_vintage") or {}).values()) + sum(
@@ -246,7 +243,7 @@ class StepCubePrices(Step):
         bit-for-bit whatever this one does."""
         if not self._bugfix:
             return
-        
+
         applied = apply_null_ret(returns, self._bugfix, self._log.info)
         listed = sum(len(v) for v in (self._bugfix.get("null_ret") or {}).values())
         self._log.info("price bugfix: %d of %d registered null_ret repair(s) applied", applied, listed)

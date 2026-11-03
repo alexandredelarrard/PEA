@@ -30,8 +30,13 @@ def test_ten_fields_agree_with_models_bounds_and_fresh_schema() -> None:
         config = OmegaConf.load(Path("configs/models") / file)
         assert isinstance(config, DictConfig)
         settings = config[family]
-        actual = [name for name in settings.columns if name.startswith("f_ec_")]
-        assert len(actual) == 10 and set(actual) == expected
+        # `columns` is the candidate list (the forest borrows LightGBM's when it sets none);
+        # `columns_by_horizon` holds per-horizon selections, which may keep a subset.
+        if "columns" in settings:
+            actual = [name for name in settings.columns if name.startswith("f_ec_")]
+            assert len(actual) == 10 and set(actual) == expected
+        selected = {name for names in (settings.get("columns_by_horizon") or {}).values() for name in names or [] if name.startswith("f_ec_")}
+        assert selected <= expected, f"{file} selects retired earnings-call fields: {sorted(selected - expected)}"
     bounds = OmegaConf.load("configs/validate.yml").validate.tables.cube_part_text.bounds
     assert set(bounds) == expected
     for name, limits in bounds.items():

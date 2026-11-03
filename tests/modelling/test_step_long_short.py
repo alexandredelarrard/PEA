@@ -30,6 +30,7 @@ from src.modelling.utils.ensemble import PREDICTION_COLUMNS, ensemble_predict
 from src.modelling.utils.metrics import daily_ic
 from src.utils.config import read_config
 from tests.modelling.model_fixtures import make_config, signal_panel
+from tests.support.universe import universe_of
 
 HORIZONS = (30, 60)
 META_KEYS = {
@@ -104,6 +105,7 @@ def _setup(
     sqlite_store.replace(Tables.cube, cube)
     sqlite_store.replace(Tables.cube_part_prices, cube[["date", "ticker"]])
     spy = _SpyStore(sqlite_store)
+    universe = universe_of(sorted(cube["ticker"].unique()))
     dates = sorted(cube["date"].unique())
     base = {
         "model": {
@@ -116,7 +118,7 @@ def _setup(
         },
         "build_cube": {"output": {"save_cv_results": True, "save_signal": True}},
         "train": {"start_date": str(pd.Timestamp(dates[0]).date()), "end_date": str(pd.Timestamp(dates[-40]).date())},
-        "data_extract": {"prediction_fresh_share": 0.95, "redundant_ticks": []},
+        "data_extract": {"prediction_fresh_share": 0.95},
     }
     cfg = OmegaConf.merge(make_config(**base), OmegaConf.create(overrides))
     paths = {
@@ -126,7 +128,7 @@ def _setup(
         "MODELS_DIR": tmp_path / "models",
         "CUBE_CV_RESULTS_PATH": tmp_path / "cv.parquet",
     }
-    context: Any = SimpleNamespace(store=spy, save=save, log=logging.getLogger("step-test"), config=cfg, config_dir=Path("configs"), paths=paths)
+    context: Any = SimpleNamespace(store=spy, save=save, log=logging.getLogger("step-test"), config=cfg, config_dir=Path("configs"), paths=paths, universe=universe)
     return StepLongShort(context=context, config=cfg), spy, cfg  # type: ignore[arg-type]
 
 

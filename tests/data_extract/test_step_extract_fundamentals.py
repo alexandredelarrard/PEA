@@ -2,7 +2,7 @@
 StepExtractFundamentals wiring test. Both fundamentals layers (`fetch_fundamentals_sec`, the per-filing
 XBRL facts walk, and `build_fundamentals_history`, its publication-event replay) are commented out in
 `run()`; the `fundamentals` command runs them. Earnings surprises moved to
-`StepExtractPrices.run_earnings_surprises` (`test_step_extract_prices.py`), the notes and statements zips
+`StepExtractPrices.run_earnings_surprises` (`test_step_extract_prices.py`), the notes zips
 to `StepExtractZips`. `fetch_insider_transactions` is `StepExtractZips.run_ingest_insider`.
 """
 

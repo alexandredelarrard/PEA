@@ -1,5 +1,5 @@
 """Shared SEC bulk helpers: one zip reader with a per-site corrupt policy, the cached-archive listing
-and the period calendar used by statements, notes, insider and fails-to-deliver."""
+and the period calendar used by notes, insider and fails-to-deliver."""
 
 from __future__ import annotations
 

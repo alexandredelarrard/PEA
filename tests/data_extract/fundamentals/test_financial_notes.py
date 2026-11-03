@@ -206,8 +206,7 @@ def test_read_notes_empty_when_universe_disjoint(zip_path):
     assert num.empty and txt.empty
 
 
-_PRIMARY = "PensionAndOtherPostretirementDefinedBenefitPlansLiabilitiesNoncurrent"
-_VARIANT = "DefinedBenefitPensionPlanLiabilitiesNoncurrent"
+_PRIMARY, _VARIANT = fn._NET_LIABILITY_TAGS
 _PBO = "DefinedBenefitPlanBenefitObligation"
 _PRE_COLS = ["adsh", "report", "line", "stmt", "inpth", "tag", "version", "prole", "plabel", "negating"]
 HWM = "0000004281-22-000004"  # variant on the balance sheet, primary only on a footnote (OPEB-only)
@@ -612,10 +611,7 @@ def test_fetch_stamps_new_zip_with_successful_download_date(tmp_path: Path, monk
 
 
 def test_net_pension_liability_tags_kept_only_undimensioned_and_without_coreg() -> None:
-    liability_tags = [
-        "PensionAndOtherPostretirementDefinedBenefitPlansLiabilitiesNoncurrent",
-        "DefinedBenefitPensionPlanLiabilitiesNoncurrent",
-    ]
+    liability_tags = list(fn._NET_LIABILITY_TAGS)
     cols = ["adsh", "tag", "dimn", "coreg"]
     rows = [
         ("A", liability_tags[0], 0, ""),  # keep

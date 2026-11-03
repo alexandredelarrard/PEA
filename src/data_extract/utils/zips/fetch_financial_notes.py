@@ -51,6 +51,10 @@ _NOTES_TABLES = (Tables.notes_num, Tables.notes_text)
 # Curated footnote pension tags (undimensioned totals); discount-rate tags are percentages, not USD. The two recognized
 # net-liability tags (`_NET_LIABILITY_TAGS`) are kept only on the filing's balance sheet (`pre.tsv` stmt BS): a footnote
 # line (OPEB-only, a sub-plan) carries the same undimensioned tag with another fact.
+_NET_LIABILITY_TAGS = (
+    "PensionAndOtherPostretirementDefinedBenefitPlansLiabilitiesNoncurrent",  # primary
+    "DefinedBenefitPensionPlanLiabilitiesNoncurrent",  # pension-only variant
+)
 _NOTES_NUM_TAGS = frozenset(
     {
         "DefinedBenefitPlanBenefitObligation",  # PBO
@@ -65,17 +69,8 @@ _NOTES_NUM_TAGS = frozenset(
         "DefinedBenefitPlanExpectedFutureBenefitPaymentsNextTwelveMonths",  # near-term cash outflow
         "DefinedBenefitPlanAssumptionsUsedCalculatingNetPeriodicBenefitCostDiscountRate",
         "DefinedBenefitPlanWeightedAverageAssumptionsUsedCalculatingBenefitObligationDiscountRate",
-        "PensionAndOtherPostretirementDefinedBenefitPlansLiabilitiesNoncurrent",  # recognized net liability (balance sheet)
-        "DefinedBenefitPensionPlanLiabilitiesNoncurrent",  # recognized net liability, pension-only variant
     }
-)
-
-_NET_LIABILITY_TAGS = frozenset(
-    {
-        "PensionAndOtherPostretirementDefinedBenefitPlansLiabilitiesNoncurrent",
-        "DefinedBenefitPensionPlanLiabilitiesNoncurrent",
-    }
-)
+) | frozenset(_NET_LIABILITY_TAGS)
 
 # High-signal note TextBlock elements, a few variants per theme.
 _NOTES_TEXT_TAGS = frozenset(

@@ -43,22 +43,6 @@ BROWSER_HEADERS = {
     "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36; contact@example.com")
 }
 
-# Tickers EXCLUDED from the modelling universe for INSUFFICIENT HISTORY (< 4 years of price
-# data): recent IPOs / spin-offs that can't support the cube's multi-year look-backs.
-INSUFFICIENT_HISTORY_TICKERS: frozenset[str] = frozenset(
-    {
-        "HONA",  # Honeywell Aerospace spin-off (2026)
-        "FDXF",  # FedEx Freight spin-off (2026)
-        "Q",  # recent listing (2025)
-        "SNDK",  # Sandisk / Western Digital spin-off (2025)
-        "GEV",  # GE Vernova spin-off (2024)
-        "SOLV",  # Solventum / 3M spin-off (2024)
-        "VLTO",  # Veralto / Danaher spin-off (2023)
-        "KVUE",  # Kenvue / J&J spin-off (2023)
-        "GEHC",  # GE HealthCare spin-off (2022, ~3.6y -- closest to the 4y cutoff)
-    }
-)
-
 # --------------------------------------------------------------------------- #
 # SEC EDGAR endpoints (free, no key; require a descriptive User-Agent)         #
 # --------------------------------------------------------------------------- #
@@ -718,7 +702,7 @@ CUSIP_TICKER_OVERRIDES: dict[str, str] = {
     #    ranking prefers the ETF; mapping it to IVZ would book QQQ's holdings as Invesco Ltd.
     #    Invesco Ltd is Bermuda-domiciled, so its identifier is a G-prefixed CINS.
     #  * FDXF / HONA — not real tickers (FedEx is FDX, Honeywell is HON, both already present).
-    #    These look like corrupt rows in `sp500_tickers`, not a mapping gap.
+    #    These were corrupt rows in the old Wikipedia roster, not a mapping gap.
 }
 
 # --------------------------------------------------------------------------- #

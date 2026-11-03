@@ -5,19 +5,6 @@
 -- The cube_part_* tables are deliberately absent: they are private plumbing
 -- between the cube sub-steps and are created by their owning step.
 
--- [reference] sp500_tickers  (pk: ticker)
-
-CREATE TABLE IF NOT EXISTS "sp500_tickers" (
-    "ticker" TEXT NOT NULL,
-    "name" TEXT,
-    "sector" TEXT,
-    "industry_group" TEXT,
-    "sub_industry" TEXT,
-    "cik" TEXT,
-    "added_on" DATE,
-    PRIMARY KEY ("ticker")
-);
-
 -- [reference] tickers_universe  (pk: ticker)
 -- The traded universe, one row per `configs/universe.yml` ticker. Written only by
 -- `src/utils/tickers_universe/sync.py`, read only through `context.universe`.
@@ -364,7 +351,7 @@ CREATE INDEX IF NOT EXISTS ix_cusip_ticker_map_ticker ON "cusip_ticker_map" ("ti
 -- which is why build_cube.yml and SECTOR_KPI_SCOPE need no renaming.
 --
 -- Gone from the legacy shape, each deliberately: `sector` / `industry_group` (a
--- slowly-changing dimension, joined from sp500_tickers rather than duplicated into a
+-- slowly-changing dimension, joined from tickers_universe rather than duplicated into a
 -- point-in-time table); `revenueGrowth` / `earningsGrowth` (computed by pit.py at cube time
 -- on a fixed 365-day as_of offset -- a row offset is ~9 months once an amendment row exists);
 -- `employees` (text-sourced, so it lives in fundamentals_employees and a failed parse cannot

@@ -18,9 +18,9 @@ from src.constants.constants import DEFAULT_CONFIG_DIR
 CONFIG_ARGS = ("-c", "--config-path")
 CONFIG_KWARGS: dict[str, Any] = dict(default=DEFAULT_CONFIG_DIR, show_default=True, help="Path to the OmegaConf configs directory.")
 
-# optional comma-separated ticker subset; default = the full universe from `sp500_tickers`
+# optional comma-separated ticker subset; default = the full universe of configs/universe.yml
 TICKERS_ARGS = ("-t", "--tickers")
-TICKERS_KWARGS: dict[str, Any] = dict(default=None, help="Comma-separated ticker subset (default: full sp500_tickers universe).")
+TICKERS_KWARGS: dict[str, Any] = dict(default=None, help="Comma-separated ticker subset (default: the full configs/universe.yml universe).")
 
 # Replay the command's whole input window instead of resuming from stored progress.
 FULL_ARGS = ("-F", "--full")

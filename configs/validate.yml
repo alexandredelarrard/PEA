@@ -41,8 +41,7 @@ validate:
     frozen_min_days: 30
     # Fewer names than this on a date and a cross-sectional statistic is noise, not a ranking.
     min_tickers_xs: 20
-    # `load_universe_tickers` -- sp500_tickers (500) minus INSUFFICIENT_HISTORY_TICKERS and
-    # data_extract.redundant_ticks. NOT 500: sp500_tickers is a snapshot with no date column.
+    # The number of tickers in configs/universe.yml.
     universe_expected: 491
     # The floor on BOTH of `coverage`'s per-ticker shares -- the interior of a ticker's own
     # span in the table, and its last `recent_sessions`. Measured 2026-09-21 over 491 names on

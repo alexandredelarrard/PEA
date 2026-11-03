@@ -176,7 +176,7 @@
     "`regime` is the other SEC-owned column that is not in the 60 (D18/D18b). Headcount is",
     "not a merged column: the cube reads `fundamentals_employees` directly.",
     "`regime` is the FILING'S RESOLUTION REGIME, stamped per filing by the SEC facts",
-    "layer. ⚠ It is NOT derived from GICS via `sp500_tickers`: that would silently change what",
+    "layer. ⚠ It is NOT derived from GICS via `tickers_universe`: that would silently change what",
     "the column MEANS, from 'how this filing's KPIs were resolved' to 'what sector this company",
     "is in'. Those are different facts that happen to correlate.",
     "",

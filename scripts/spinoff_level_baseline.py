@@ -61,7 +61,6 @@ from src.constants.constants import SHARADAR_ACTION_SPINOFF, SHARADAR_ACTION_SPL
 from src.context import get_config_context
 from src.data_extract.utils.fundamentals_sharadar.field_map import split_events
 from src.data_store.schema import Tables
-from src.utils.universe import load_universe_tickers
 from src.validate.utils.prices import MCAP_TOLERANCE, PRICE_TOLERANCE, load_panel
 
 #: Names with a spinoff in their history and no `sharadar_actions` row to explain it -- the
@@ -726,7 +725,7 @@ def main() -> None:
         "cross_sectional_impact": cross_sectional_impact(panel),
         "dividend_leg": dividend_leg_question(store, panel),
         "earnings_leg": earnings_leg_question(store, panel),
-        "return_controls": return_controls(store, load_universe_tickers(context)),
+        "return_controls": return_controls(store, context.universe.tickers),
     }
 
     out = Path(args.out)

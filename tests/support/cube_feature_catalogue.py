@@ -29,10 +29,10 @@ Merging them would put 85 governance names in the fundamentals generator's `unus
 fail every run -- the second direction is only meaningful against a named table.
 """
 
+from src.data_store.schema import Tables
 from tests.support.cube_governance_catalogue import GOVERNANCE
 from tests.support.cube_institutionals_catalogue import INSTITUTIONALS
 from tests.support.cube_sec_thirteen_catalogue import SEC_THIRTEEN
-from src.data_store.schema import Tables
 
 #: characteristic -> (family, what it does, why it is right, how to read the tail)
 #:

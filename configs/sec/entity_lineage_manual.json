@@ -40,7 +40,7 @@
 
   "_d19_allowlist": {
     "_README": [
-      "THE D19 CROSS-CHECK'S EXCEPTION LIST. D19 asserts that `entity_of(sp500_tickers.cik[T])`",
+      "THE D19 CROSS-CHECK'S EXCEPTION LIST. D19 asserts that `entity_of(tickers_universe.cik[T])`",
       "agrees with the entity of the CIK that dominates symbol T in `symbol_tenure` today. It",
       "exists because the roster CIK comes from Wikipedia and has been wrong before (XOM, found",
       "2026-09-09), and a disagreement is that class of defect until proven otherwise.",

@@ -8,7 +8,7 @@ with a single 1 in that member's own row. OLS then fits that member's residual e
 a valid-looking `target_rank ~ 0.50`. Two present members split the column and each keeps
 exactly half its label. Measured on the live h=60 panel before the fix: 5,230 cells exactly
 zero (`F` lost 48.7% of its history, `CSGP` 21.5%) plus 16,960 cells at half the label. The
-cause is that `sp500_tickers` carries CURRENT index membership, so 1996's
+cause is that `tickers_universe` carries CURRENT index membership, so 1996's
 `Automobiles & Components` holds only `F` until `TSLA`'s first target in 2010.
 
 `xs_project_out`'s existing whole-day guard cannot see it: `present.sum() > design.shape[1]`

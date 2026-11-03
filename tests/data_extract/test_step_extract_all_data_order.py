@@ -21,6 +21,7 @@ from tests.support.universe import seed_universe
 PRE_EDGAR_STEPS = ("prices", "institutionals", "fundamentals_sharadar", "fundamentals")
 EDGAR_AND_LLM = ("edgar", "llm_init", "def14a_llm", "votes_llm")
 DOMAIN_STEPS = (*PRE_EDGAR_STEPS, *EDGAR_AND_LLM, "behavioral")
+UNIVERSE_STAGE = ("sharadar_tickers", "universe_sync")
 IDENTITY_STAGE = (
     "insider_download",
     "notes_download",
@@ -53,6 +54,8 @@ def _step(monkeypatch, store, order: list[str], *, boom: str | None = None) -> A
 
         return call
 
+    monkeypatch.setattr(all_data_module, "fetch_sharadar_tickers", mark("sharadar_tickers"))
+    monkeypatch.setattr(all_data_module, "sync", mark("universe_sync"))
     monkeypatch.setattr(zips_module, "cache_dir", lambda context, name: Path("cache") / name)
     monkeypatch.setattr(zips_module, "notes_periods", lambda context, years_history, today: ["2026q1"])
     monkeypatch.setattr(zips_module, "download_insider_transactions", mark("insider_download", []))
@@ -115,7 +118,7 @@ def _step(monkeypatch, store, order: list[str], *, boom: str | None = None) -> A
         ),
     )
     step = cast(Any, object.__new__(StepExtractAllData))
-    step._context = SimpleNamespace(config=config, config_dir="./configs", universe=seed_universe(store, ["AAA", "BBB"]))
+    step._context = SimpleNamespace(config=config, config_dir="./configs", store=store, universe=seed_universe(store, ["AAA", "BBB"]))
     step._config = config
     step._log = logging.getLogger("test_step_extract_all_data_order")
     for name in (*PRE_EDGAR_STEPS, "behavioral"):
@@ -140,10 +143,10 @@ def test_identity_stage_runs_before_every_domain_step(monkeypatch, sqlite_store)
     order: list[str] = []
     _step(monkeypatch, sqlite_store, order).run()
 
-    assert order == [*IDENTITY_STAGE, *ZIP_INGESTS, *DOMAIN_STEPS], order
+    assert order == [*UNIVERSE_STAGE, *IDENTITY_STAGE, *ZIP_INGESTS, *DOMAIN_STEPS], order
 
     print("\n=== SANITY CHECK: StepExtractAllData order (AC-011, AC-038, AC-040) ===")
-    print(f"  identity stage: {' -> '.join(IDENTITY_STAGE)}")
+    print(f"  universe: {' -> '.join(UNIVERSE_STAGE)}, then identity stage: {' -> '.join(IDENTITY_STAGE)}")
     print(f"  then zip ingests: {' -> '.join(ZIP_INGESTS)}")
     print(f"  then domain steps: {' -> '.join(DOMAIN_STEPS)}")
     print("  OK: decision-1 order; the LLM step is built after the EDGAR step; every consumer reads the propagated lineage")

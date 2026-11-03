@@ -3,7 +3,7 @@
     python -m src data_extract <command> [-c ./configs] [-t AAPL,MSFT]
 
 Every command builds a fresh Context, resolves the ticker universe (or a --tickers subset) and runs its
-fetcher. Fetchers resume from the DB, so a nightly rerun pulls only new data. `seed-universe` must run first.
+fetcher. Fetchers resume from the DB, so a nightly rerun pulls only new data. `sharadar-tickers` then `universe` must run first.
 """
 
 import json
@@ -448,7 +448,7 @@ def fundamentals_sharadar(config_path: str, tickers: str | None, full: bool, as_
 
 @cli.command(
     name="sharadar-tickers",
-    help="Sharadar entity dimension (permaticker, currency, category) -> sharadar_tickers. Full refresh. Prerequisite of fundamentals-sharadar.",
+    help="Sharadar entity dimension (permaticker, currency, category, CUSIPs) -> sharadar_tickers. Full refresh. Runs before `universe` and fundamentals-sharadar.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 def sharadar_tickers(config_path: str) -> None:
@@ -467,7 +467,7 @@ def sharadar_actions(config_path: str, full: bool, as_of: datetime | None) -> No
 
 @cli.command(
     name="sharadar-sp500",
-    help="S&P 500 membership events (added / removed / historical, from 1992) -> sharadar_sp500. Ingested only; universe.py is NOT re-pointed (D27).",
+    help="S&P 500 membership events (added / removed / historical, from 1992) -> sharadar_sp500. Ingested only; the universe is configs/universe.yml.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)

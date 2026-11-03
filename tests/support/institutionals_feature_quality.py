@@ -64,7 +64,7 @@ def _source_tables(part: Table) -> tuple[Table, ...]:
         return (*common, Tables.sec13f_hr, Tables.sec13f_manager_holdings, Tables.superinvestor_roster, Tables.cusip_ticker_map)
     return (
         *common,
-        Tables.sp500_tickers,
+        Tables.tickers_universe,
         Tables.symbol_tenure,
         Tables.security_master,
         Tables.def14a_executive_comp,

@@ -24,7 +24,6 @@ def _inventory(store: DataStore) -> tuple[pd.DataFrame, pd.DataFrame, dict[Table
     create_canonical(
         store.engine,
         [
-            Tables.sp500_tickers,
             Tables.entity_lineage,
             Tables.symbol_tenure,
             Tables.security_master,
@@ -50,7 +49,6 @@ def _inventory(store: DataStore) -> tuple[pd.DataFrame, pd.DataFrame, dict[Table
     )
     notes = pd.DataFrame({"accession_number": ["a"], "footnote_id": ["F1"], "footnote_text": ["known original"]})
     identities = {
-        Tables.sp500_tickers: pd.DataFrame({"ticker": ["AAA"], "cik": ["0000000001"]}),
         Tables.entity_lineage: pd.DataFrame(
             {
                 "entity_id": ["E1"],

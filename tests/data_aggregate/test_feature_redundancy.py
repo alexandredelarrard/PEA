@@ -52,7 +52,9 @@ from src.data_aggregate.utils.fundamentals.sector_features import (
 )
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from src.utils.config import read_config
 from src.utils.db import get_engine
+from src.utils.tickers_universe.universe import Universe
 
 #: |r| at or above which two features are the SAME SIGNAL, not two views of one.
 #: Deliberately not 1.0: `net_debt_to_ebitdare` reduced to `net_debt_to_ebitda` at 0.9998,
@@ -100,8 +102,7 @@ def feature_frames() -> dict[str, pd.DataFrame]:
     fh["as_of"] = pd.to_datetime(fh["as_of"])
     fh = add_cube_time_growth(fh)
 
-    ref = store.load(Tables.sp500_tickers, columns=["ticker", "sector", "industry_group"])
-    fh = fh.merge(ref, on="ticker", how="left")
+    fh = Universe(store, read_config(path="configs")).attach_gics(fh)
 
     px = store.load(Tables.prices, columns=["date", "ticker", "close_split"], where={"ticker": _TICKERS})
     px["date"] = pd.to_datetime(px["date"])

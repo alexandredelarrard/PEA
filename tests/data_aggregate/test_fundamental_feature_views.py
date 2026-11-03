@@ -10,7 +10,6 @@ import pandas as pd
 import pytest
 from omegaconf import OmegaConf
 
-from tests.support.cube_feature_catalogue import CATALOGUE, split
 from src.context import define_global_paths
 from src.data_aggregate.utils.common.frames import ratio
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
@@ -26,7 +25,9 @@ from src.data_aggregate.utils.fundamentals.feature_views import (
 )
 from src.data_store.schema import Tables
 from src.utils.config import read_config
+from src.utils.tickers_universe.universe import Universe
 from tests.conftest import _store
+from tests.support.cube_feature_catalogue import CATALOGUE, split
 
 EXPECTED_HISTORY_FEATURES = frozenset(
     {
@@ -184,7 +185,7 @@ def test_new_valuation_views_real_yearly_cross_sections() -> None:
     peers = load_peers(context)
     if not peers:
         pytest.skip("existing peer cache is unavailable; this check never reconstructs it")
-    metadata = context.store.load(Tables.sp500_tickers, columns=["ticker", "sector"])
+    metadata = Universe(context.store, read_config(path="configs")).frame[["ticker", "sector"]]
     names = metadata.ticker.astype(str).to_list()
     calendar = pd.DatetimeIndex(pd.to_datetime(context.store.distinct(Tables.cube_part_fundamentals, "date")))
     recent = pd.Series(calendar[calendar >= "2022-01-01"])

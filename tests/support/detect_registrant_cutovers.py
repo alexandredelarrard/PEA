@@ -742,14 +742,14 @@ def oracle3(context, ticker: str, cik: str, truncation: str) -> dict:
 # --------------------------------------------------------------------------------------- #
 # Driver                                                                                   #
 # --------------------------------------------------------------------------------------- #
-#: `sp500_tickers.cik` comes from WIKIPEDIA (`prices/fetch_tickers.py`), and Wikipedia had
+#: `tickers_universe.cik` comes from WIKIPEDIA (`tickers_universe/wikipedia_bootstrap.py`), and Wikipedia had
 #: already moved XOM to the holdco -- so the roster itself carried the defect. Sharadar's
 #: `secfilings` URL is an independent oracle on the same question.
 ROSTER_CROSSCHECK_SQL = """
 WITH sh AS (SELECT ticker, lpad(regexp_replace(secfilings, '^.*CIK=0*', ''), 10, '0') AS sh_cik
             FROM sharadar_tickers WHERE secfilings LIKE '%CIK=%')
 SELECT s.ticker, lpad(s.cik::text, 10, '0') AS roster_cik, sh.sh_cik
-FROM sp500_tickers s JOIN sh USING(ticker)
+FROM tickers_universe s JOIN sh USING(ticker)
 WHERE lpad(s.cik::text, 10, '0') <> sh.sh_cik
 ORDER BY 1
 """
@@ -884,7 +884,7 @@ def main(argv: list[str] | None = None) -> int:
         roster = pd.DataFrame(
             cast(
                 Any,
-                conn.execute(text("select ticker, lpad(cik::text, 10, '0') as cik from sp500_tickers")).mappings().all(),
+                conn.execute(text("select ticker, cik from tickers_universe")).mappings().all(),
             )
         )
         # The archive-start test's denominator. Read here because the connection closes
@@ -933,7 +933,7 @@ def main(argv: list[str] | None = None) -> int:
         print(crosscheck.to_string(index=False))
         if not unexplained_cik.empty:
             print(
-                "  ⚠ `sp500_tickers.cik` comes from Wikipedia, and Wikipedia had "
+                "  ⚠ `tickers_universe.cik` comes from Wikipedia, and Wikipedia had "
                 "already moved XOM to the holdco. Sharadar is an independent oracle and was "
                 "right there, so investigate each row rather than overriding the roster."
             )
@@ -1002,7 +1002,7 @@ def main(argv: list[str] | None = None) -> int:
         for i, ticker in enumerate(todo, 1):
             cik = ciks.get(ticker)
             if cik is None:
-                results.append({"ticker": ticker, "cls": "unresolved", "why": "not in sp500_tickers"})
+                results.append({"ticker": ticker, "cls": "unresolved", "why": "not in tickers_universe"})
                 continue
             r = oracle3(context, ticker, cik, anchor.get(ticker) or str(cand.loc[cand["ticker"] == ticker, "first_8k"].iloc[0]))
             r["roster_cik"] = cik

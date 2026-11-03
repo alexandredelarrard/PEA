@@ -17,7 +17,7 @@ from typing import cast
 import pandas as pd
 import pytest
 
-from scripts import identity_regression_gate as gate
+from tests.support import identity_regression_gate as gate
 from src.constants.constants import CANONICAL_CURRENT, CANONICAL_PREDECESSOR
 from src.data_extract.utils.common.identity import Identity, build_identity
 from src.data_extract.utils.common.registrant import Combine, combine_for, resolve_registrant_entries

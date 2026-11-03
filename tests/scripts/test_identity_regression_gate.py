@@ -19,7 +19,7 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from scripts import identity_regression_gate as gate
+from tests.support import identity_regression_gate as gate
 from src.data_extract.utils.common.identity import CikWindow, FilingScope
 from src.data_store.schema import Tables
 from tests.data_extract.fake_context import extract_config

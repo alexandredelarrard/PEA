@@ -24,7 +24,7 @@ from typing import Any, cast
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from src.constants.constants import CANONICAL_ROLES, SECONDARY_CLASS  # noqa: E402
 from src.data_extract.utils.common.identity import FilingScope, Identity, UnknownUniverseTickerError, load_identity  # noqa: E402

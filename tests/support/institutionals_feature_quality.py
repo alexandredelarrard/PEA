@@ -18,15 +18,15 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from scipy.stats import ks_2samp
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 # Project imports intentionally follow the repository-root path bootstrap.
 # ruff: noqa: E402
 
-from scripts.cube_institutionals_catalogue import INSTITUTIONALS as NON_THIRTEEN
-from scripts.cube_sec_thirteen_catalogue import SEC_THIRTEEN
+from tests.support.cube_institutionals_catalogue import INSTITUTIONALS as NON_THIRTEEN
+from tests.support.cube_sec_thirteen_catalogue import SEC_THIRTEEN
 
 INSTITUTIONALS = {**NON_THIRTEEN, **SEC_THIRTEEN}
 from src.context import get_config_context

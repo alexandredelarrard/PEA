@@ -37,7 +37,7 @@ import pandas as pd
 from dotenv import find_dotenv, load_dotenv
 from sqlalchemy import text
 
-from scripts.cube_feature_catalogue import CATALOGUE, split
+from tests.support.cube_feature_catalogue import CATALOGUE, split
 
 TABLE = "cube_part_fundamentals"
 NUMERIC = {"double precision", "real", "numeric", "integer", "bigint", "smallint"}

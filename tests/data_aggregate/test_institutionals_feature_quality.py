@@ -10,7 +10,7 @@ import pandas as pd
 import pyarrow.parquet as pq
 import pytest
 
-from scripts import institutionals_feature_quality as quality
+from tests.support import institutionals_feature_quality as quality
 from src.data_store.schema import Table, Tables
 
 

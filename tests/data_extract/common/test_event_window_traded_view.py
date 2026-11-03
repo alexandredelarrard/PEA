@@ -17,7 +17,7 @@ from typing import Any, cast
 import pandas as pd
 import pytest
 
-from scripts import identity_regression_gate as gate
+from tests.support import identity_regression_gate as gate
 from src.data_extract.utils.common.identity import Identity, build_identity
 from src.data_extract.utils.common.registrant import resolve_registrant_entries
 from src.data_extract.utils.edgar_extract import schedule_rows

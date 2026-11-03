@@ -7,7 +7,7 @@ deleted, so the DB is now the only source of column types. A table that does not
 the database yet is emitted as a `-- SKIPPED` comment rather than guessed at.
 
 Run:
-    python -m scripts.generate_schema_sql
+    python sql/generate_schema_sql.py
 """
 
 from __future__ import annotations

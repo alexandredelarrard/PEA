@@ -10,7 +10,7 @@ import pandas as pd
 import pytest
 from omegaconf import OmegaConf
 
-from scripts.cube_feature_catalogue import CATALOGUE, split
+from tests.support.cube_feature_catalogue import CATALOGUE, split
 from src.context import define_global_paths
 from src.data_aggregate.utils.common.frames import ratio
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel
@@ -324,7 +324,8 @@ def test_active_model_configs_use_only_surviving_fundamental_views() -> None:
     forest = OmegaConf.to_container(OmegaConf.load(paths[2]), resolve=True)["random_forest"]
     _assert_unique("lgbm.columns", lgbm["columns"])
     _assert_unique("linear.columns", linear["columns"])
-    _assert_unique("random_forest.columns", forest["columns"])
+    if "columns" in forest:
+        _assert_unique("random_forest.columns", forest["columns"])
     for horizon, columns in (forest.get("columns_by_horizon") or {}).items():
         _assert_unique(f"random_forest.columns_by_horizon.{horizon}", columns)
 

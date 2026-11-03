@@ -700,7 +700,7 @@ add(
     "pension_retirement_liability",
     "pension_risk",
     "The coalesced recognised net pension/OPEB deficit level.",
-    "Gap-filled across three sources in order of directness (Notes recognised net liability, companyfacts `pensionDeficit`, footnote PBO minus plan assets) using `combine_first` -- NOT a sum, so there is no OPEB double count.",
+    "Gap-filled across two `notes_num` sources in order of directness (recognised net liability, footnote PBO minus plan assets) using `combine_first` -- NOT a sum, so there is no OPEB double count.",
     "Floored at 0: only underfunding is debt-like, an overfunded plan is not a negative liability.",
 )
 add(

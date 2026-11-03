@@ -48,7 +48,7 @@ MISSING: list[tuple] = [
         "`NoninterestExpense`, `ProvisionForLoanAndLeaseLosses`, "
         "`FinancingReceivableRecordedInvestmentNonaccrualStatus`",
         "High — bank tags are dimensioned by portfolio segment, so `companyfacts` drops many "
-        "of them and the Financial Statement Data Sets are the real source",
+        "of them and the SEC bulk notes data sets are the real source",
     ),
     (
         "2",
@@ -56,7 +56,7 @@ MISSING: list[tuple] = [
         "Held-to-maturity securities at fair value vs amortised cost",
         "The other half of the SVB signal. `aoci_to_equity` catches only the AFS mark; the HTM hole is where the capital actually went.",
         "SEC **NOTES** sets (`notes_num`) — footnote fair-value tags, the same table the pension features already read",
-        "Medium — the plumbing exists (`load_tagged_facts`), only the tag list is new",
+        "Medium — the plumbing exists (`load_notes_num_scoped`), only the tag list is new",
     ),
     (
         "3",
@@ -600,11 +600,11 @@ def closing(m: dict) -> list[tuple]:
         ),
         (
             "p",
-            "**Pension (83.3%–93.5% null)** is *not* a gate. Only 199 of 489 tickers ever receive "
-            "a value and mean per-ticker fill is 20.9% of the live span. Two causes compound: much "
-            "of the index is DC-only and correctly has no projected benefit obligation to "
-            "disclose, *and* one of the pool's three documented sources contributes literally "
-            "nothing. That is D2.",
+            "**Pension (83.3%–93.5% null)** is *not* a gate. Only a minority of tickers ever "
+            "receive a value. Two causes compound: much of the index is DC-only and correctly has "
+            "no projected benefit obligation to disclose, *and* the pool once documented a "
+            "companyfacts source that contributed literally nothing (the pool now has two "
+            "`notes_num` sources). That is D2.",
         ),
         ("h2", "4.3 D1 — `cash` is destroyed wherever `investmentsc` is absent"),
         (

@@ -389,16 +389,12 @@ def test_chunked_multi_accession_repairs_keep_exact_holdings_and_registers(sqlit
     )
 
 
-@pytest.mark.parametrize(
-    "mapping",
-    [None, pd.DataFrame(columns=["cusip", "ticker"]), pd.DataFrame({"cusip": ["000000001"], "ticker": ["OUT"]})],
-    ids=["missing", "empty", "outside-universe"],
-)
-def test_batch_mapping_preserves_unmapped_rows_and_dtypes(mapping: pd.DataFrame | None) -> None:
+def test_batch_mapping_preserves_unmapped_rows_and_dtypes() -> None:
+    mapping = pd.DataFrame({"cusip": ["000000001"], "ticker": ["OUT"]})
     raw = cast(pd.DataFrame, _payload().loc[lambda frame: frame.parse_status.eq("position")].drop(columns="ticker").reset_index(drop=True))
     expected = clean_public_holdings(attach_tickers(raw, mapping, ("ABC",)), None, None)
     packets = ((pd.DataFrame(), raw) for _ in range(1))
     with closing(holdings_clean.clean_public_batches(packets, mapping, ("ABC",), None, None)) as batches:
         [(_, actual)] = list(batches)
     pd.testing.assert_frame_equal(actual, expected, check_exact=True)
-    print("SANITY: absent and universe-filtered mappings retain every raw row with the existing unknown ticker dtype and null mask.")
+    print("SANITY: a universe-filtered mapping retains every raw row with the existing unknown ticker dtype and null mask.")

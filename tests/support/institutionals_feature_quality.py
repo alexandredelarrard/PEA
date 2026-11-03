@@ -33,6 +33,7 @@ from src.context import get_config_context
 from src.data_aggregate.transformers.step_cube_institutionals import StepCubeInstitutionals
 from src.data_aggregate.transformers.step_cube_sec_thirteen import StepCubeSecThirteen
 from src.data_aggregate.utils.common.availability import InstitutionalAvailability
+from src.data_aggregate.utils.common.incremental import PartWindow
 from src.data_store.schema import Table, Tables, resolve
 from src.utils.config import read_config
 from src.validate.checks.catalogue import _load as load_catalogue
@@ -442,7 +443,9 @@ def build_candidate(
     context.paths["SECTOR_PEERS_PATH"] = peer_path
     sources = _verify_source_identity(context.store, manifest, part=part)
     if part == Tables.cube_part_sec_thirteen:
-        panel = StepCubeSecThirteen(context=context, config=config_node).build_panel()
+        panel = StepCubeSecThirteen(context=context, config=config_node).build_panel(
+            PartWindow(None, None), existing_columns=context.store.columns(Tables.cube_part_sec_thirteen)
+        )
         builder = f"{StepCubeSecThirteen.__name__}.build_panel()"
     else:
         panel = StepCubeInstitutionals(context=context, config=config_node).build_panel()

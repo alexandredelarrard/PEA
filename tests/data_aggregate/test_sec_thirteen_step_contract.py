@@ -38,12 +38,14 @@ def _manager_batch_owner(
     df_close = pd.DataFrame(100.0, index=grid, columns=["AAA"])
     frames = PriceFrames(trading_index=grid, universe=("AAA",), peers={"AAA": {"AAA": 1.0}}, close_split=df_close, level_factor=df_close / 100.0)
     ciks = frozenset(cik for filings, holdings in packets for df_rows in (filings, holdings) for cik in df_rows.cik)
-    resources = SecThirteenResources(frames, None, resolve_share_events(None, None, {}), None, None, {"": ciks})
+    # The stored manager table has no ticker column: tickers come only from the CUSIP map.
+    cusip_map = pd.DataFrame({"cusip": ["999999999"], "ticker": ["ZZZ"]})
+    resources = SecThirteenResources(frames, None, resolve_share_events(None, None, {}), None, cusip_map, {"": ciks})
     closed: list[bool] = []
 
     def source(*args: Any, **kwargs: Any) -> Generator[tuple[pd.DataFrame, pd.DataFrame]]:
         try:
-            yield from packets
+            yield from ((filings, holdings.drop(columns="ticker")) for filings, holdings in packets)
         finally:
             closed.append(True)
 
@@ -146,7 +148,7 @@ def test_sec_thirteen_executes_broad_and_elite_once(sqlite_store: Any, monkeypat
     elite = Mock(return_value=SuperinvestorFeatureHistory(levels, pd.DataFrame()))
     monkeypatch.setattr(step, "_institutional_features", broad)
     monkeypatch.setattr(step, "_superinvestor_history", elite)
-    result = step.build_panel()
+    result = step.build_panel(PartWindow(None, None), existing_columns=sqlite_store.columns(Tables.cube_part_sec_thirteen))
     assert step._store is sqlite_store and step._part.table == Tables.cube_part_sec_thirteen
     assert broad.call_count == elite.call_count == 1
     assert set(result.columns) == {"date", "ticker", "f_ic_inst_concentration"} | {"f_" + name for name in EMISSION}

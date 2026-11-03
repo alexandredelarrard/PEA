@@ -677,9 +677,7 @@ def _pension_pool(notes_num: pd.DataFrame | None, idx: pd.DatetimeIndex) -> tupl
     The overhang is gap-filled (`combine_first`, NOT a sum -> no OPEB double-count)
     across two `notes_num` sources in order of directness:
       1) the recognized net liability (the two balance-sheet tags),
-      2) the footnote funded status = PBO - plan assets.
-    A third leg that read a `pensionDeficit` column off `fundamentals_history` was removed:
-    that column does not exist on the Sharadar-first schema."""
+      2) the footnote funded status = PBO - plan assets."""
     pbo = _notes_num_daily(notes_num, _FN_PBO_TAG, idx, instant=True)
     plan_assets = _notes_num_daily(notes_num, _FN_PLAN_ASSETS_TAG, idx, instant=True)
     fn_deficit = pd.DataFrame()

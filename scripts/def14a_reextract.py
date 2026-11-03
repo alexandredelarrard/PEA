@@ -47,8 +47,8 @@ import pandas as pd
 
 from src.context import Context, get_config_context
 from src.data_extract.utils.common.identity import FilingScope, load_identity
+from src.data_extract.utils.edgar_extract.edgar_driver import universe_rows
 from src.data_extract.utils.edgar_extract.html_text import html_to_text
-from src.data_extract.utils.edgar_extract.sec_utils import load_cik_mapping
 from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
 from src.data_extract.utils.structure.def14a.carve import prepare_def14a_sections
 from src.data_extract.utils.structure.def14a.fetch import (
@@ -266,7 +266,7 @@ def _extract(ctx: Context, config, work: pd.DataFrame, workers: int) -> tuple[in
     as soon as that ticker's last call in the batch returns.
     """
     _require_legacy_write(ctx)
-    cik_map = load_cik_mapping(ctx, sorted(work["ticker"].unique()))
+    cik_map = universe_rows(ctx, sorted(work["ticker"].unique()))
     extractor = LLMExtractor(ctx, config, action="def14a", threads=workers)
     ok, failed, rejected, unresolved = 0, 0, 0, 0
     batch: list[tuple[str, dict]] = []

@@ -41,8 +41,8 @@ if str(ROOT) not in sys.path:
 from src.constants.constants import SEC_ARCHIVES_BASE_URL
 from src.context import get_config_context
 from src.data_extract.utils.common.sec_io import sec_get
+from src.data_extract.utils.edgar_extract.edgar_driver import universe_rows
 from src.data_extract.utils.edgar_extract.edgar_fillings import list_filings
-from src.data_extract.utils.edgar_extract.sec_utils import load_cik_mapping
 from src.data_store.schema import Resume, Tables
 
 #: NEVER change -- the baseline is keyed to it. Phase 6 must resolve the identical 23 tickers
@@ -91,7 +91,7 @@ def resolve_tickers(context, out_dir: Path) -> list[str]:
     fixed seed. Re-reads a previously resolved list from `manifest.json` so a Phase-6 rerun
     compares the SAME population even after the backfill has added tickers.
 
-    Drawn from `def14a_llm` and not `sp500_tickers` on purpose -- a ticker with no baseline
+    Drawn from `def14a_llm` and not `context.universe` on purpose -- a ticker with no baseline
     rows gives nothing to compare against.
     """
     manifest = out_dir / "baseline" / "manifest.json"
@@ -157,7 +157,7 @@ def cache_filings(context, tickers: list[str], years: int, out_dir: Path) -> pd.
     precisely "fetch the .txt instead", and proving it needs the before and the after.
     """
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    cik_map = load_cik_mapping(context, tickers)
+    cik_map = universe_rows(context, tickers)
     rows, n_fetched, n_hit = [], 0, 0
 
     for _, r in cik_map.iterrows():

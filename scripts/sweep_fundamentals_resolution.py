@@ -40,7 +40,7 @@ from typing import Any, cast
 import pandas as pd  # noqa: E402
 from dotenv import load_dotenv  # noqa: E402
 
-from src.constants.constants import FUNDAMENTALS_CATALOGUE_SUBDIR, FUNDAMENTALS_ROSTERS_FILENAME  # noqa: E402
+from src.constants.constants import FUNDAMENTALS_CATALOGUE_SUBDIR  # noqa: E402
 from src.context import get_config_context  # noqa: E402
 from src.data_extract.utils.common.identity import FilingScope, load_identity  # noqa: E402
 from src.data_extract.utils.common.registrant import resolve_registrant_filings  # noqa: E402
@@ -57,6 +57,7 @@ load_dotenv(ROOT / ".env")
 #: Where the ledgers land. Under `data/` because it is a cache of a paid-for network walk,
 #: not a source: deleting it costs wall-clock and nothing else.
 DEFAULT_OUT = ROOT / "data" / "fundamentals_sweep"
+FUNDAMENTALS_ROSTERS_FILENAME = "fundamentals_rosters.json"
 
 #: The rosters, and WHY each ticker is on its list -- the property that made both of them
 #: useful. Owned by `configs/fundamentals/fundamentals_rosters.json`; keys prefixed with `_`

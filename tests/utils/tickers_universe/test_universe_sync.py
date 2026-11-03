@@ -1,6 +1,6 @@
 """`sync` builds `tickers_universe` from scratch on live-exported fixtures and keeps it current.
 
-Fixtures (read-only exports of 2026-11-02): `roster.csv` is `sp500_tickers` (500 rows),
+Fixtures (read-only exports of 2026-11-02): `roster.csv` is the pre-refactor roster table (500 rows),
 `sharadar_tickers.csv` the Sharadar rows of the 491 universe tickers and their alias symbols.
 The Wikipedia page is rendered from the roster, so the parser, the `.`->`-` spelling, the CIK
 padding and the sub-industry dictionary are checked against the stored values.

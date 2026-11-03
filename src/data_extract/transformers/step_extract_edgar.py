@@ -28,7 +28,6 @@ from src.data_extract.utils.edgar_extract.fetch_filing_text import FILING_TEXT_F
 from src.data_extract.utils.edgar_extract.fetch_insider_edgar import INSIDER_EDGAR_FETCH
 from src.utils.step import Step
 from src.utils.string import run_date
-from src.utils.universe import load_universe_tickers
 
 
 @dataclass(frozen=True)
@@ -57,7 +56,7 @@ class StepExtractEdgar(Step):
         super().__init__(context=context, config=config)
         options = options or EdgarOptions()
         self._run = EdgarRun.load(
-            context, options.tickers or load_universe_tickers(context), options.years, as_of=options.as_of, full=options.full, no_cap=options.no_cap
+            context, options.tickers or self._universe.tickers, options.years, as_of=options.as_of, full=options.full, no_cap=options.no_cap
         )
         self._indexed_years: int | None = None
 

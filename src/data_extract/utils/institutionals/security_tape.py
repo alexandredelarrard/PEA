@@ -21,7 +21,6 @@ from src.data_store.schema import Table
 from src.data_store.store import NOT_NULL, DataStore, Where
 from src.utils.batching import batched_tuples
 from src.utils.filer_tables import filing_window
-from src.utils.universe import load_universe_tickers
 
 #: The four columns stamped from the security master on every stored tape line.
 STAMP_COLUMNS = ["security_id", "ticker", "lineage_role", "security_class"]
@@ -40,11 +39,6 @@ def restamp_targets(
     changed = set(stamps) if every else set(recently_changed(stamps, as_of))
     stored = {str(t) for t in context.store.distinct(table, "ticker") if t is not None and not pd.isna(t)} if context.store.exists(table) else set()
     return sorted(changed | (stored - set(stamps)))
-
-
-def outside_scope(context: Context, scope: Collection[str], all_tickers: Collection[str] | None = None) -> frozenset[str]:
-    """The universe companies outside `scope`: a scoped run neither deletes nor re-stamps their rows (empty when unscoped)."""
-    return frozenset(load_universe_tickers(context) if all_tickers is None else all_tickers) - frozenset(scope)
 
 
 def nullable(values: pd.Series) -> pd.Series:

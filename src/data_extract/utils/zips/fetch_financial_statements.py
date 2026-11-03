@@ -11,7 +11,6 @@ comes from `fetch_financial_notes.py`.
 from __future__ import annotations
 
 import logging
-from collections.abc import Collection
 from datetime import date
 from pathlib import Path
 from typing import cast
@@ -154,8 +153,6 @@ def fetch_financial_statements(
     years_history: int,
     reparse: bool = False,
     as_of: pd.Timestamp | None = None,
-    *,
-    all_tickers: Collection[str] | None = None,
 ) -> int:
     """Extract universe pension facts over `years_history` into `pension_facts`; returns rows upserted.
 
@@ -168,9 +165,7 @@ def fetch_financial_statements(
     cache = cache_dir(context, context.config.local.paths.financial_statements)
     start_date = run_date(as_of)
     periods = statement_quarters(years_history, start_date)
-    work = archive_worklist(
-        context, (Tables.pension_facts,), periods, cached_periods(cache), tickers, start_date, full=reparse, all_tickers=all_tickers
-    )
+    work = archive_worklist(context, (Tables.pension_facts,), periods, cached_periods(cache), tickers, start_date, full=reparse)
 
     saved = 0
     for q, keys in tqdm(list(work.units()), desc="financial-statement data sets"):

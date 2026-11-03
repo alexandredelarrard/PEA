@@ -365,7 +365,6 @@ def ingest_financial_notes(context: Context, cache: Path, scope: ZipScope, perio
         scope.tickers,
         scope.run_date,
         full=scope.full,
-        all_tickers=scope.all_tickers,
     )
     units = dict(work.units())
     n_num = n_txt = 0

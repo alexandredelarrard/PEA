@@ -15,10 +15,9 @@ from src.data_extract.utils.common.resume import (
 )
 from src.data_extract.utils.edgar_extract.document_resume import WorklistRequest, document_worklist
 from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp, marker_row
-from src.data_extract.utils.edgar_extract.sec_utils import CIK_MAPPING_COLS
 from src.data_store.schema import Tables
-from src.utils.universe import added_on_map
 from tests.data_extract.edgar_fixtures import fake_context, fake_filing, seed_index
+from tests.support.universe import seed_universe
 
 _AS_OF = pd.Timestamp("2026-09-30")
 _FORMS = ("8-K", "8-K/A")
@@ -31,20 +30,15 @@ def _rows(cik: int, dates: list[str], prefix: str) -> list[tuple]:
 def _universe(ctx, tickers: dict[str, str], added_on: dict[str, str] | None = None) -> pd.DataFrame:
     cik_map = pd.DataFrame({"ticker": list(tickers), "cik": [c.zfill(10) for c in tickers.values()]})
     if added_on is not None:
-        ctx.store.drop(Tables.sp500_tickers)  # recreated with the column
-        ctx.store.save(
-            Tables.sp500_tickers,
-            pd.DataFrame(
-                {col: ["x"] * len(tickers) for col in CIK_MAPPING_COLS}
-                | {"ticker": list(tickers), "cik": list(tickers.values()), "added_on": [pd.Timestamp(added_on.get(t, "2000-01-01")) for t in tickers]}
-            ),
-        )
+        rows = {t: {"cik": c.zfill(10), "universe_added_on": pd.Timestamp(added_on.get(t, "2000-01-01"))} for t, c in tickers.items()}
+        ctx.store.drop(Tables.tickers_universe)
+        ctx.universe = seed_universe(ctx.store, list(tickers), rows=rows)
     return cik_map
 
 
 def _plan(ctx, cik_map: pd.DataFrame, as_of: pd.Timestamp = _AS_OF, table=Tables.sec_8k, **kwargs):
     defaults = {"forms": _FORMS, "identity": None, "years_history": 5}
-    request = WorklistRequest(keys=cik_map, as_of=as_of, added_on=added_on_map(ctx.store, as_of), **(defaults | kwargs))
+    request = WorklistRequest(keys=cik_map, as_of=as_of, **(defaults | kwargs))
     return document_worklist(ctx, table, request)
 
 
@@ -366,7 +360,7 @@ _NOTES = (Tables.notes_num, Tables.notes_text)
 
 
 def _archive_ctx(tmp_path, store, tickers: list[str], added_on: dict[str, str] | None = None):
-    ctx = fake_context(tmp_path, store, tickers, redundant_ticks=[])
+    ctx = fake_context(tmp_path, store, tickers)
     if added_on is not None:
         _universe(ctx, {t: str(i + 1) for i, t in enumerate(tickers)}, added_on=added_on)
     return ctx
@@ -478,3 +472,21 @@ def test_m3_a_ticker_run_then_a_full_run_re_parses_nothing(tmp_path, sqlite_stor
     print("\n=== SANITY CHECK: M3 -t then full ===")
     print("  -t AAA parses nothing (2026q2 parsed for AAA alone would hide it from BBB) and leaves 2026q2 to the")
     print("  full run, which parses only 2026q2; -t AAA -F re-reads the stored quarters for AAA; -F re-reads everything.")
+
+
+def test_m3_scope_is_judged_against_the_universe_not_the_run(tmp_path, sqlite_store):
+    """A 2-of-5 run is scoped by `universe.is_full`: unparsed periods are held, the screen is the whole universe."""
+    universe = ["AAA", "BBB", "CCC", "DDD", "EEE"]
+    ctx = _archive_ctx(tmp_path, sqlite_store, universe, added_on={"CCC": "2026-09-29"})
+    for ticker in universe:
+        _save_pension(sqlite_store, ticker, ["2026q1"])
+    published = ["2026q1", "2026q2"]
+
+    scoped = _archive(ctx, (Tables.pension_facts,), published, ["AAA", "CCC"])
+    full = _archive(ctx, (Tables.pension_facts,), published, universe)
+
+    assert ctx.universe.outside(["AAA", "CCC"]) == frozenset({"BBB", "DDD", "EEE"})
+    assert scoped.scoped and scoped.pending == [] and scoped.held == ["2026q2"] and scoped.screen == universe
+    assert not full.scoped and full.pending == ["2026q2"] and full.held == []
+    print("\n=== SANITY CHECK: M3 scope from the universe ===")
+    print(f"  -t AAA,CCC of 5: held {scoped.held}, screen {scoped.screen}; the 5-ticker run parses {full.pending}.")

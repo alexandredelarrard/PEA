@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Collection, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -19,10 +19,9 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class ZipScope:
-    """One ingest's tickers (the `-t` subset or the universe), the universe, the run date and `full` re-parse."""
+    """One ingest's tickers (the `-t` subset or the universe), the run date and `full` re-parse."""
 
     tickers: list[str]
-    all_tickers: Collection[str] | None
     run_date: pd.Timestamp
     full: bool
 

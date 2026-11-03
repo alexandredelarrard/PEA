@@ -16,40 +16,28 @@ from src.data_extract.transformers import step_extract_identity as step_identity
 from src.data_extract.transformers import step_extract_zips as step_zips
 from src.data_store.schema import Tables
 from tests.data_extract.edgar_fixtures import stub_edgar_step
+from tests.support.universe import seed_universe
 
 
-def test_cli_tickers_split_csv_before_normalizing(monkeypatch: pytest.MonkeyPatch) -> None:
-    context = SimpleNamespace()
-    load = Mock(side_effect=AssertionError("Explicit CLI tickers must not load the universe."))
-    monkeypatch.setattr(cli_mod, "load_universe_tickers", load)
+def test_cli_tickers_split_csv_before_normalizing(sqlite_store: Any) -> None:
+    context = SimpleNamespace(universe=seed_universe(sqlite_store, ["AAPL", "BRK.B", "BRK/B", "MSFT"]))
 
     assert cli_mod._tickers(context, " aapl ,msft, ,AAPL,brk.b,brk/b ") == ["AAPL", "MSFT", "BRK.B", "BRK/B"]
-    load.assert_not_called()
     print("SANITY: -t CSV splits on commas, normalizes each symbol once, and preserves share-class separators.")
 
 
-def test_cli_default_reuses_the_normalized_universe_list(monkeypatch: pytest.MonkeyPatch) -> None:
-    context = SimpleNamespace()
-    universe = ["AAPL", "MSFT"]
-    load = Mock(return_value=universe)
-    monkeypatch.setattr(cli_mod, "load_universe_tickers", load)
-    monkeypatch.setattr(cli_mod, "normalise_ticker", Mock(side_effect=AssertionError("Universe tickers are already normalized.")))
+def test_cli_default_is_the_universe_list(sqlite_store: Any) -> None:
+    context = SimpleNamespace(universe=seed_universe(sqlite_store, ["AAPL", "MSFT"]))
 
-    assert cli_mod._tickers(context, None) is universe
-    load.assert_called_once_with(context)
-    load.reset_mock()
-    selected, complete = cli_mod._ticker_scope(context, None)
-    assert selected is universe and complete is universe
-    load.assert_called_once_with(context)
-    print("SANITY: omitted -t returns the universe list unchanged; scoped-write guards share its single read.")
+    assert cli_mod._tickers(context, None) == ["AAPL", "MSFT"]
+    print("SANITY: omitted -t returns the universe list unchanged.")
 
 
-def test_cli_short_interest_passes_the_normalized_subset(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cli_short_interest_passes_the_normalized_subset(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     config = SimpleNamespace(data_extract=SimpleNamespace(years_history=31))
-    context = SimpleNamespace(config=config, log=Mock())
+    context = SimpleNamespace(config=config, log=Mock(), universe=seed_universe(sqlite_store, ["AAA", "BBB"]))
     fetch = Mock()
     monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, context))
-    monkeypatch.setattr(cli_mod, "load_universe_tickers", Mock(return_value=["AAA", "BBB"]))
     monkeypatch.setattr(cli_mod, "fetch_short_interest", fetch)
 
     result = CliRunner().invoke(cli_mod.cli, ["short-interest", "-t", " aaa ,AAA", "-F"])
@@ -58,50 +46,42 @@ def test_cli_short_interest_passes_the_normalized_subset(monkeypatch: pytest.Mon
     print("SANITY: short-interest passes the normalized CSV subset and the full flag to the source.")
 
 
-def stub_zips_step(monkeypatch: pytest.MonkeyPatch, config: SimpleNamespace, load: Any) -> None:
-    """Make `StepExtractZips` constructible on a stub config: caches, universe and the Notes landing scrape stubbed."""
+def stub_zips_step(monkeypatch: pytest.MonkeyPatch, config: SimpleNamespace) -> None:
+    """Make `StepExtractZips` constructible on a stub config: caches and the Notes landing scrape stubbed."""
     config.local = SimpleNamespace(
         paths=SimpleNamespace(insider_transactions="insider", financial_notes="notes", financial_statements="statements", fails_deliver="ftd")
     )
     monkeypatch.setattr(step_zips, "cache_dir", lambda ctx, name: Path(name))
-    monkeypatch.setattr(step_zips, "load_universe_tickers", load)
     monkeypatch.setattr(step_zips, "notes_periods", lambda ctx, years, today: ["2026q1"])
 
 
 @pytest.mark.parametrize("command,target", [(["zips-ingest", "--only", "insider"], "fetch_insider_transactions")])
-def test_cli_subset_and_complete_universe_reach_the_source(command: list[str], target: str, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cli_subset_reaches_the_source(command: list[str], target: str, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     config = SimpleNamespace(data_extract=SimpleNamespace(years_history=31))
-    context = SimpleNamespace(config=config, log=Mock(), config_dir="configs")
-    universe = ["AAA", "BBB"]
-    load = Mock(return_value=universe)
+    context = SimpleNamespace(config=config, log=Mock(), config_dir="configs", universe=seed_universe(sqlite_store, ["AAA", "BBB"]))
     fetch = Mock()
     monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, context))
-    monkeypatch.setattr(cli_mod, "load_universe_tickers", load)
-    stub_zips_step(monkeypatch, config, load)
+    stub_zips_step(monkeypatch, config)
     monkeypatch.setattr(step_zips, target, fetch)
 
     result = CliRunner().invoke(cli_mod.cli, [*command, "-t", " aaa ,AAA", "-F"])
     assert result.exit_code == 0, result.exception
-    assert fetch.call_args.args[1] == ["AAA"]
-    assert fetch.call_args.kwargs["all_tickers"] is universe
-    load.assert_called_once_with(context)
-    print(f"SANITY: {command} passes the normalized CSV subset and one complete universe snapshot to protect other rows.")
+    assert fetch.call_args.args[1] == ["AAA"] and "all_tickers" not in fetch.call_args.kwargs
+    print(f"SANITY: {command} passes the normalized CSV subset; the source judges the scope against context.universe.")
 
 
-def test_cli_backfill_keeps_the_missing_subset_distinct(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cli_backfill_keeps_the_missing_subset_distinct(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     config = SimpleNamespace(data_extract=SimpleNamespace(years_history=31))
-    context = SimpleNamespace(config=config, log=Mock())
+    context = SimpleNamespace(config=config, log=Mock(), universe=seed_universe(sqlite_store, ["AAA", "BBB"]))
     fetch = Mock()
     monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, context))
-    monkeypatch.setattr(cli_mod, "load_universe_tickers", lambda ctx: ["AAA", "BBB"])
     monkeypatch.setattr(cli_mod, "fetch_13f_backfill", fetch)
     runner = CliRunner()
 
     for flags, expected in (([], None), (["-t", " aaa ,bbb"], ["AAA", "BBB"])):
         result = runner.invoke(cli_mod.cli, ["thirteen-f-backfill", *flags])
         assert result.exit_code == 0, result.exception
-        assert fetch.call_args.kwargs["tickers"] == expected
-        assert fetch.call_args.kwargs["all_tickers"] == ["AAA", "BBB"]
+        assert fetch.call_args.kwargs["tickers"] == expected and "all_tickers" not in fetch.call_args.kwargs
     print("SANITY: 13F backfill retains None for omitted -t (new names); explicit CSV reaches the source as a list.")
 
 
@@ -111,14 +91,13 @@ def stub_identity_step(monkeypatch: pytest.MonkeyPatch, config: SimpleNamespace,
     config.data_extract.redundant_ticks = []
     context.config_dir = "configs"
     monkeypatch.setattr(step_identity, "cache_dir", lambda ctx, name: Path(name))
-    monkeypatch.setattr(step_identity, "load_universe_tickers", lambda ctx: ["AAA", "BBB"])
     monkeypatch.setattr(step_identity, "load_identity", lambda ctx, refresh=False: object())
 
 
 @pytest.fixture
-def context(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+def context(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     config = SimpleNamespace(data_extract=SimpleNamespace(years_history=31))
-    context = SimpleNamespace(config=config, log=Mock(), store=Mock(), ensure_edgar_identity=Mock())
+    context = SimpleNamespace(config=config, log=Mock(), store=Mock(), ensure_edgar_identity=Mock(), universe=seed_universe(sqlite_store, ["AAA"]))
     context.store.row_count.return_value = 1
     monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, context))
     monkeypatch.setattr(cli_mod, "_tickers", lambda ctx, names: ["AAA"])
@@ -155,7 +134,7 @@ def test_full_reaches_the_existing_source_operation(
         stub_identity_step(monkeypatch, context.config, context)
         monkeypatch.setattr(step_identity, target, record)
     elif command.startswith("zips-ingest "):
-        stub_zips_step(monkeypatch, context.config, lambda ctx: ["AAA"])
+        stub_zips_step(monkeypatch, context.config)
         monkeypatch.setattr(step_zips, target, record)
     elif command == "edgar-index":
         monkeypatch.setattr(cli_mod.edgar_index, target, record)

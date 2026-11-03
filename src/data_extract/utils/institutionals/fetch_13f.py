@@ -59,7 +59,6 @@ from src.data_store.store import DataStore
 from src.utils.institutional_vintages import literal_13f_cusip, reconcile_13f_source
 from src.utils.string import pad_cik, pad_cik_series
 from src.utils.superinvestor_roster import roster_cik_union
-from src.utils.universe import load_universe_tickers
 
 logger = logging.getLogger(__name__)
 _CHECKED = r"(?:\[\s*[xX]\s*\]|\{\s*[xX]\s*\}|\(\s*[xX]\s*\))"
@@ -654,8 +653,6 @@ def fetch_13f(
     save_every: int = 100,
     filing_window: tuple[str, str] | None = None,
     as_of: pd.Timestamp | None = None,
-    *,
-    all_tickers: list[str] | None = None,
 ) -> int:
     """Save verified original/amendment accessions separately, oldest first in the resume window.
 
@@ -666,7 +663,7 @@ def fetch_13f(
     configure(context)
     run_date = cast(pd.Timestamp, pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize())
     universe = set(tickers)
-    scoped = bool(set(load_universe_tickers(context) if all_tickers is None else all_tickers) - universe)
+    scoped = not context.universe.is_full(universe)
     since, until = _resolve_window(context, years_history, filing_window, run_date, scoped)
 
     # load CIKs of super investors

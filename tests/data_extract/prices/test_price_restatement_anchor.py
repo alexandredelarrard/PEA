@@ -28,6 +28,7 @@ from src.data_extract.utils.prices import fetch_prices as fp
 from src.data_extract.utils.prices.anchor_check import anchor_restated
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
+from tests.support.universe import seed_universe
 
 _FIELDS = ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
 _ACTIONS = ["Dividends", "Stock Splits"]
@@ -120,7 +121,7 @@ def yahoo(monkeypatch: pytest.MonkeyPatch) -> FakeYahoo:
 
 def _context(store: DataStore) -> Any:
     config = OmegaConf.create({"data_extract": {"years_history": 1, "macro_years_history": 1}})
-    return SimpleNamespace(store=store, log=logging.getLogger("test.anchor"), config=config, config_dir=".")
+    return SimpleNamespace(store=store, log=logging.getLogger("test.anchor"), config=config, config_dir=".", universe=seed_universe(store, _UNIVERSE))
 
 
 def _seed(

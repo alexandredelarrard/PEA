@@ -40,7 +40,6 @@ from src.data_extract.utils.institutionals.security_tape import (
     commit_tape_source,
     load_tape_cohorts,
     nullable,
-    outside_scope,
     restamp_targets,
     scope_tape_rows,
     stamp_changed,
@@ -591,7 +590,6 @@ def restamp_fails(
     identity: dict[Table, pd.DataFrame] | None = None,
     dry_run: bool = False,
     as_of: pd.Timestamp | None = None,
-    others: frozenset[str] | None = None,
 ) -> list[dict]:
     """Reconcile the complete originals needed by changed companies with atomic scoped source pairs.
 
@@ -611,7 +609,7 @@ def restamp_fails(
     if not companies:
         return []
     universe = frozenset(tickers)
-    others = outside_scope(context, universe) if others is None else others
+    others = context.universe.outside(universe)
     names = sorted(set(companies) - others)
     if not names:
         return []
@@ -694,7 +692,6 @@ def fetch_fails_to_deliver(
     full: bool = False,
     as_of: pd.Timestamp | None = None,
     *,
-    all_tickers: Collection[str] | None = None,
     identity: Identity | None = None,
 ) -> int:
     """Stamp the stored raw FTD lines from `security_master` and rebuild `sec_fails_to_deliver`; returns ticker rows written.
@@ -708,7 +705,7 @@ def fetch_fails_to_deliver(
     if master is None or master.empty:
         logger.warning("FTD: no security_master yet (run `identity` first); nothing stamped")
         return 0
-    others = outside_scope(context, universe, all_tickers)
+    others = context.universe.outside(universe)
     basis = load_fails_basis(context, master)
     if full:
         _, saved = _rebuild_from_cache(context, master, universe, others, cohort, basis)

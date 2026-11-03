@@ -25,6 +25,7 @@ from src.data_store.store import DataStore
 from src.utils import filer_tables
 from tests.canonical_schema import create_canonical
 from tests.data_extract.fake_context import extract_config
+from tests.support.universe import seed_universe
 
 SENTINEL = "1900-01-01"
 #: The run date: AFTER falls inside the 7-day re-check window before it, BEFORE does not.
@@ -94,8 +95,9 @@ def _context(store, tmp_path) -> SimpleNamespace:
         store=store,
         paths={"DATA_STORE": tmp_path},
         log=logging.getLogger(LOGGER),
-        config=extract_config(data_extract={"years_history": 15, "manifest_full_rescan_days": 30, "redundant_ticks": []}),
+        config=extract_config(data_extract={"years_history": 15, "manifest_full_rescan_days": 30}),
         config_dir="./configs",
+        universe=seed_universe(store, list(ROSTER), rows={t: {"cik": c} for t, c in ROSTER.items()}),
     )
 
 

@@ -25,6 +25,7 @@ from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore
 from tests.canonical_schema import create_canonical
 from tests.data_extract.fake_context import extract_config
+from tests.support.universe import seed_universe
 
 REPO = Path(__file__).resolve().parents[3]
 BUILT = pd.Timestamp("2026-10-04 12:00:00")
@@ -213,7 +214,6 @@ def sqlite_store(sqlite_store):
     create_canonical(
         sqlite_store.engine,
         [
-            Tables.sp500_tickers,
             Tables.entity_lineage,
             Tables.symbol_tenure,
             Tables.security_master,
@@ -307,6 +307,7 @@ def _context(store, tmp_path: Path) -> Any:
         paths={"DATA_STORE": tmp_path},
         config=extract_config(data_extract={"years_history": 15}),
         config_dir=str(REPO / "configs"),
+        universe=seed_universe(store, UNIVERSE, rows={t: {"cik": ROSTER[t]} for t in UNIVERSE}),
     )
 
 
@@ -755,9 +756,9 @@ def test_e32_an_unchanged_master_restamps_nothing(sqlite_store, tmp_path, monkey
 
 
 def _with_universe(context: Any, store) -> Any:
-    """`context` over a stored `sp500_tickers` universe, so a run on fewer tickers is a scoped (`-t`) run."""
-    store.save(Tables.sp500_tickers, pd.DataFrame({"ticker": [*UNIVERSE, "BRK-B"], "cik": [ROSTER[t] for t in UNIVERSE] + ["0001067983"]}))
-    context.config = extract_config(data_extract={"years_history": 15, "redundant_ticks": []})
+    """`context` over a universe holding BRK-B too, so a run on fewer tickers is a scoped (`-t`) run."""
+    rows = {t: {"cik": ROSTER[t]} for t in UNIVERSE} | {"BRK-B": {"cik": "0001067983"}}
+    context.universe = seed_universe(store, [*UNIVERSE, "BRK-B"], rows=rows)
     return context
 
 

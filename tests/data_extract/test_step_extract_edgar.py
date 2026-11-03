@@ -17,6 +17,7 @@ from src.data_extract.transformers.step_extract_edgar import EdgarOptions, StepE
 from src.data_extract.utils.edgar_extract import edgar_driver, edgar_index
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, EdgarRun
 from tests.data_extract.edgar_fixtures import walk_call
+from tests.support.universe import universe_of
 
 RUNS = ("run_insider", "run_13d", "run_13g", "run_8k", "run_filing_text", "run_def14a_ecd")
 FETCHES = {
@@ -38,6 +39,15 @@ COMMANDS = {
 CIK_MAP = pd.DataFrame({"ticker": ["AAA", "BBB"], "cik": ["0000000001", "0000000002"]})
 
 
+class _Context(SimpleNamespace):
+    """A stub context that records its universe read in `reads`."""
+
+    @property
+    def universe(self) -> Any:
+        self.reads.append("universe")
+        return self.tickers_universe
+
+
 class Driver:
     """Records every declared read and driver call; `boom` names the fetch whose walk raises."""
 
@@ -49,9 +59,8 @@ class Driver:
         self.reads: list[str] = []
         self.boom = FETCHES[boom] if boom else None
         self.runs: list[EdgarRun] = []
-        monkeypatch.setattr(step_mod, "load_universe_tickers", self.universe)
+        self.tickers_universe = universe_of(["AAA", "BBB"])
         monkeypatch.setattr(edgar_driver, "load_cik_mapping", self.cik_mapping)
-        monkeypatch.setattr(edgar_driver, "load_added_on", lambda ctx, day: {})
         monkeypatch.setattr(edgar_driver, "load_identity", self.identity)
         monkeypatch.setattr(step_mod, "run_edgar_fetch", self.fetch)
         monkeypatch.setattr(step_mod, "refresh_index", self.refresh)
@@ -61,9 +70,8 @@ class Driver:
         self.refreshes.append(years_history)
         self.events.append(f"refresh {years_history}y")
 
-    def universe(self, context: Any) -> list[str]:
-        self.reads.append("universe")
-        return ["AAA", "BBB"]
+    def context(self, config: Any) -> _Context:
+        return _Context(config=config, config_dir="configs", reads=self.reads, tickers_universe=self.tickers_universe)
 
     def cik_mapping(self, context: Any, tickers: list[str]) -> pd.DataFrame:
         self.reads.append("cik_map")
@@ -88,14 +96,14 @@ def _config() -> SimpleNamespace:
     return SimpleNamespace(data_extract=SimpleNamespace(years_history=15, max_documents_per_run=100))
 
 
-def _step(options: EdgarOptions | None = None) -> StepExtractEdgar:
+def _step(driver: Driver, options: EdgarOptions | None = None) -> StepExtractEdgar:
     config = _config()
-    return StepExtractEdgar(SimpleNamespace(config=config, config_dir="configs"), config, options)  # type: ignore[arg-type]
+    return StepExtractEdgar(driver.context(config), config, options)  # type: ignore[arg-type]
 
 
 def test_run_walks_the_six_fetches_in_order_on_state_declared_once(monkeypatch: pytest.MonkeyPatch) -> None:
     driver = Driver(monkeypatch)
-    _step(EdgarOptions(as_of=pd.Timestamp("2026-10-31 15:00"))).run()
+    _step(driver, EdgarOptions(as_of=pd.Timestamp("2026-10-31 15:00"))).run()
 
     assert driver.order == [FETCHES[name].done.desc for name in RUNS]
     assert driver.reads == ["universe", "cik_map", "identity"], "the universe, the CIK mapping and the identity are read once, in the init"
@@ -114,7 +122,7 @@ def test_run_walks_the_six_fetches_in_order_on_state_declared_once(monkeypatch: 
 
 def test_options_reach_every_walk_and_a_subset_skips_the_universe_read(monkeypatch: pytest.MonkeyPatch) -> None:
     driver = Driver(monkeypatch)
-    _step(EdgarOptions(tickers=["BBB"], years=3, full=True, no_cap=True)).run()
+    _step(driver, EdgarOptions(tickers=["BBB"], years=3, full=True, no_cap=True)).run()
 
     assert driver.reads == ["cik_map", "identity"]
     assert {(tuple(call["tickers"]), call["years_history"], call["full"], call["no_cap"]) for call in driver.calls} == {(("BBB",), 3, True, True)}
@@ -126,7 +134,7 @@ def test_options_reach_every_walk_and_a_subset_skips_the_universe_read(monkeypat
 @pytest.mark.parametrize("boom", RUNS)
 def test_a_failing_walk_raises_from_its_own_run_only(monkeypatch: pytest.MonkeyPatch, boom: str) -> None:
     driver = Driver(monkeypatch, boom=boom)
-    step = _step()
+    step = _step(driver)
 
     with pytest.raises(RuntimeError, match="simulated"):
         getattr(step, boom)()
@@ -148,12 +156,12 @@ def test_a_failing_walk_raises_from_its_own_run_only(monkeypatch: pytest.MonkeyP
 def test_edgar_commands_call_their_step_operation(monkeypatch: pytest.MonkeyPatch, command: str) -> None:
     driver = Driver(monkeypatch)
     config = _config()
-    monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, SimpleNamespace(config=config, config_dir="configs")))
+    monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, driver.context(config)))
 
     result = CliRunner().invoke(cli_mod.cli, [command, "-t", "bbb", "--as-of", "2026-09-30"])
 
     assert result.exit_code == 0, result.output
-    assert driver.order == [FETCHES[COMMANDS[command]].done.desc] and driver.reads == ["cik_map", "identity"]
+    assert driver.order == [FETCHES[COMMANDS[command]].done.desc] and driver.reads == ["universe", "cik_map", "identity"]
     assert driver.calls[0]["tickers"] == ["BBB"] and driver.calls[0]["as_of"] == pd.Timestamp("2026-09-30")
     print(f"\n=== SANITY: `{command}` -> StepExtractEdgar.{COMMANDS[command]} ===")
     print(f"  one walk ({driver.order[0]}) over ['BBB'] on 2026-09-30, CIK mapping and identity read once.")
@@ -165,7 +173,7 @@ INSIDER_YEARS = 2026 - pd.Timestamp(str(step_mod.INSIDER_EDGAR_FETCH.done.resume
 
 def test_run_refreshes_the_index_once_over_the_widest_window_before_the_walks(monkeypatch: pytest.MonkeyPatch) -> None:
     driver = Driver(monkeypatch)
-    _step(EdgarOptions(as_of=pd.Timestamp("2026-10-31"))).run()
+    _step(driver, EdgarOptions(as_of=pd.Timestamp("2026-10-31"))).run()
 
     assert driver.refreshes == [max(15, INSIDER_YEARS)], "one refresh per run(), over the insider walk's source-start window"
     assert driver.events[0].startswith("refresh") and len(driver.events) == 7
@@ -176,7 +184,7 @@ def test_run_refreshes_the_index_once_over_the_widest_window_before_the_walks(mo
 @pytest.mark.parametrize("name", RUNS)
 def test_a_walk_alone_refreshes_its_own_window_once(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
     driver = Driver(monkeypatch)
-    step = _step(EdgarOptions(as_of=pd.Timestamp("2026-10-31")))
+    step = _step(driver, EdgarOptions(as_of=pd.Timestamp("2026-10-31")))
     getattr(step, name)()
     getattr(step, name)()
 
@@ -189,9 +197,9 @@ def test_a_walk_alone_refreshes_its_own_window_once(monkeypatch: pytest.MonkeyPa
 @pytest.mark.parametrize("name", RUNS)
 def test_a_walk_alone_skips_a_refresh_already_done_today(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
     driver = Driver(monkeypatch, refreshed_today=True)
-    getattr(_step(), name)()
+    getattr(_step(driver), name)()
     backdated = Driver(monkeypatch, refreshed_today=True)
-    getattr(_step(EdgarOptions(as_of=pd.Timestamp("2026-10-31"))), name)()
+    getattr(_step(backdated, EdgarOptions(as_of=pd.Timestamp("2026-10-31"))), name)()
 
     assert driver.refreshes == [] and len(driver.calls) == 1, "today's nightly refresh covers a lone walk, the source-history insider walk included"
     assert backdated.refreshes != [], "a backdated run never relies on today's refresh"

@@ -112,7 +112,7 @@ from src.data_extract.utils.prices.fetch_tickers import get_sp500_tickers
 from src.data_store.schema import Table, Tables, freshness_tables, marker_tables, resolve
 from src.utils.cli_helper import SpecialHelpOrder
 from src.utils.freshness import PREDICTION_INPUTS, fresh_share, last_dates_by_key, max_age_days, table_freshness
-from src.utils.string import normalise_ticker, run_date
+from src.utils.string import run_date
 from src.utils.tickers_universe.sync import sync
 from src.utils.universe import load_universe_tickers, unverified_ciks
 
@@ -125,12 +125,6 @@ def cli() -> None:
 def _tickers(context: Context, tickers: str | None) -> list[str]:
     """The --tickers subset, checked against the universe, else the whole universe."""
     return context.universe.subset(tickers.split(",")) if tickers else context.universe.tickers
-
-
-def _ticker_scope(context: Context, tickers: str | None) -> tuple[list[str], list[str]]:
-    """CLI selection and the full analysis universe, read once for scoped-write guards."""
-    universe = load_universe_tickers(context)
-    return (_tickers(context, tickers) if tickers else universe), universe
 
 
 def _market_as_of(as_of: datetime | None) -> pd.Timestamp | None:
@@ -166,7 +160,7 @@ def _table_status(context: Context, table: Table, universe: list[str], as_of: pd
 def _extraction_status_report(context: Context, *, as_of: pd.Timestamp | None = None) -> dict[str, object]:
     """Freshness report over exactly the tables and cadences declared by the schema registry."""
     as_of = (as_of if as_of is not None else pd.Timestamp.today()).normalize()
-    universe = load_universe_tickers(context)
+    universe = context.universe.tickers
     min_share = float(context.config.data_extract.prediction_fresh_share)
     statuses = {table.name: _table_status(context, table, universe, as_of, min_share) for table in freshness_tables()}
     behind = [name for name, status in statuses.items() if not status["ok"]]
@@ -254,8 +248,7 @@ def price_history(config_path: str, tickers: str | None, full: bool, as_of: date
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
 def short_interest(config_path: str, tickers: str | None, full: bool, as_of: datetime | None) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
-    names, _ = _ticker_scope(context, tickers)
-    fetch_short_interest(context, tickers=names, full=full, as_of=_market_as_of(as_of))
+    fetch_short_interest(context, tickers=_tickers(context, tickers), full=full, as_of=_market_as_of(as_of))
 
 
 @cli.command(help="ALL macro / market series -> prices_macro (yfinance + FRED). Light.")
@@ -281,14 +274,12 @@ def thirteen_f(config_path: str, tickers: str | None, filing_window: str | None,
         if len(parts) != 2 or not all(parts):
             raise click.BadParameter("--filing-window must be FROM:TO, e.g. 2024-01-01:2024-03-01")
         window = (parts[0], parts[1])
-    names, universe = _ticker_scope(context, tickers)
     fetch_13f(
         context,
-        tickers=names,
+        tickers=_tickers(context, tickers),
         years_history=int(config.data_extract.years_history),
         filing_window=window,
         as_of=run_date(as_of),
-        all_tickers=universe,
     )
 
 
@@ -304,8 +295,7 @@ def thirteen_f_backfill(config_path: str, tickers: str | None, full: bool, as_of
     """Tickers added inside `sec13f_hr`'s overlap: discover from 2013 Q2, skipping verified completed accessions.
     `-t X` narrows the new tickers (an established X does nothing); `-t X -F` re-reads every data set for X."""
     _, context = get_config_context(config_path, use_cache=False, save=False)
-    names, universe = _ticker_scope(context, tickers)
-    fetch_13f_backfill(context, tickers=names if tickers else None, as_of=run_date(as_of), full=full, all_tickers=universe)
+    fetch_13f_backfill(context, tickers=_tickers(context, tickers) if tickers else None, as_of=run_date(as_of), full=full)
 
 
 @cli.command(name="thirteen-f-managers", help="FULL 13F portfolios of the superinvestor roster (all securities, CUSIP grain).")

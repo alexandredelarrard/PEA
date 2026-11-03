@@ -18,6 +18,7 @@ from src.data_extract.utils.zips import fetch_fails_to_deliver as ftd
 from src.data_store.schema import Tables
 from tests.canonical_schema import create_canonical
 from tests.data_extract.institutionals.test_fails_to_deliver import _HEADER, _scope_lineage
+from tests.support.universe import universe_of
 
 STAGES = ("dei", "ftd", "scan", "tenure", "lineage", "master", "refresh", "propagate")
 
@@ -41,7 +42,6 @@ def _stub_stages(monkeypatch: pytest.MonkeyPatch, order: list[str], boom: str | 
         return call
 
     monkeypatch.setattr(module, "cache_dir", lambda context, name: Path(name))
-    monkeypatch.setattr(module, "load_universe_tickers", lambda context: ["AAA", "BBB"])
     monkeypatch.setattr(module, "capture_pending_dei", mark("dei", 0))
     monkeypatch.setattr(module, "capture_ftd_cusips", mark("ftd", 0))
     monkeypatch.setattr(module, "scan_form345_cache", mark("scan", scan))
@@ -55,7 +55,9 @@ def _stub_stages(monkeypatch: pytest.MonkeyPatch, order: list[str], boom: str | 
 
 
 def _context(store: Any = None, tmp_path: Path | None = None) -> SimpleNamespace:
-    return SimpleNamespace(store=store, log=logging.getLogger("test.identity_step"), paths={"DATA_STORE": tmp_path}, config_dir="configs")
+    return SimpleNamespace(
+        store=store, log=logging.getLogger("test.identity_step"), paths={"DATA_STORE": tmp_path}, config_dir="configs", universe=universe_of(["AAA", "BBB"])
+    )
 
 
 def test_run_captures_first_then_builds_and_propagates_with_one_scan(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -113,7 +115,7 @@ def test_options_reach_the_propagation_and_the_lineage_build(monkeypatch: pytest
 
     assert calls["lineage"]["approved_rekeys"] == {("E1", "E2")} and calls["lineage"]["redundant_symbols"] == {"GOOG"}
     propagate = calls["propagate"]
-    assert propagate["tickers"] == ["AAA"] and propagate["all_tickers"] == ["AAA", "BBB"]
+    assert propagate["tickers"] == ["AAA"] and "all_tickers" not in propagate
     assert propagate["dry_run"] and propagate["every_ticker"] and propagate["as_of"] == pd.Timestamp("2026-10-30")
     print("\n=== SANITY CHECK: identity options ===")
     print("  --approve-rekey and redundant_ticks reach the lineage; -t, --full, --dry-run and --as-of reach the propagation")
@@ -129,7 +131,6 @@ def test_cold_start_sequence_captures_ftd_once_a_lineage_exists(sqlite_store: An
     monkeypatch.setattr(ftd, "ftd_periods", lambda *args, **kwargs: sorted(raw_by_period))
     monkeypatch.setattr(ftd, "cached_ftd_periods", lambda cache: set(raw_by_period))
     monkeypatch.setattr(ftd, "read_zip_text", lambda path, log=None: read.append(path.name) or raw_by_period[path.stem.removeprefix("cnsfails")])
-    monkeypatch.setattr(module, "load_universe_tickers", lambda ctx: ["ABC"])
     monkeypatch.setattr(module, "scan_form345_cache", lambda cache: SimpleNamespace(owner_pairs=pd.DataFrame()))
     monkeypatch.setattr(module, "build_symbol_tenure", lambda *args: pd.DataFrame())
     monkeypatch.setattr(

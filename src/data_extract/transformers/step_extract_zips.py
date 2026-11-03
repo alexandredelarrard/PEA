@@ -28,7 +28,6 @@ from src.data_extract.utils.zips.fetch_insider_transactions import download_insi
 from src.data_extract.utils.zips.zip_archive import ZipScope
 from src.utils.step import Step
 from src.utils.string import run_date
-from src.utils.universe import load_universe_tickers
 
 
 @dataclass(frozen=True)
@@ -50,12 +49,13 @@ class StepExtractZips(Step):
         self._notes_cache = cache_dir(context, paths.financial_notes)
         self._statements_cache = cache_dir(context, paths.financial_statements)
         self._years_history = int(config.data_extract.years_history)
-        self._all_tickers = load_universe_tickers(context)
         self._run_date = run_date(self._options.as_of)
-        self._scope = ZipScope(
-            tickers=self._options.tickers or self._all_tickers, all_tickers=self._all_tickers, run_date=self._run_date, full=self._options.full
-        )
         self._notes_periods: list[str] | None = None
+
+    @property
+    def _scope(self) -> ZipScope:
+        """The ingest scope: the `-t` subset, else the universe (read on first use)."""
+        return ZipScope(tickers=self._options.tickers or self._universe.tickers, run_date=self._run_date, full=self._options.full)
 
     def _notes_period_list(self) -> list[str]:
         """The Notes periods of the window on the run date, scraped once per step."""
@@ -87,9 +87,7 @@ class StepExtractZips(Step):
 
     def run_ingest_insider(self) -> int:
         scope = self._scope
-        return fetch_insider_transactions(
-            self._context, scope.tickers, self._years_history, reparse=scope.full, as_of=scope.run_date, all_tickers=scope.all_tickers
-        )
+        return fetch_insider_transactions(self._context, scope.tickers, self._years_history, reparse=scope.full, as_of=scope.run_date)
 
     def run_ingest_financial_notes(self) -> int:
         if self._options.repair_availability:
@@ -98,13 +96,11 @@ class StepExtractZips(Step):
 
     def run_ingest_financial_statements(self) -> int:
         scope = self._scope
-        return fetch_financial_statements(
-            self._context, scope.tickers, self._years_history, reparse=scope.full, as_of=scope.run_date, all_tickers=scope.all_tickers
-        )
+        return fetch_financial_statements(self._context, scope.tickers, self._years_history, reparse=scope.full, as_of=scope.run_date)
 
     def run_ingest_fails_to_deliver(self) -> int:
         scope = self._scope
-        return fetch_fails_to_deliver(self._context, scope.tickers, scope.full, scope.run_date, all_tickers=scope.all_tickers)
+        return fetch_fails_to_deliver(self._context, scope.tickers, scope.full, scope.run_date)
 
     def run_ingest(self) -> None:
         self.run_ingest_insider()

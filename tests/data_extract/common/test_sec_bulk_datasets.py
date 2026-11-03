@@ -34,6 +34,7 @@ from src.data_store.store import DataStore
 from tests.canonical_schema import create_canonical
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
 from tests.data_extract.test_cli_options import stub_zips_step
+from tests.support.universe import seed_universe
 
 # Repo root = the first ancestor holding pyproject.toml, NOT a fixed `parents[N]`.
 # This file moved down one directory level once already (into the mirrored
@@ -184,10 +185,8 @@ def test_insider_work_list_comes_from_the_stored_quarters_alone(tmp_path):
         "insider_transactions",
         pd.DataFrame([{"accession_number": "a1", "security_type": "nonderiv", "row_sequence": 1, "ticker": "AAPL", "quarter": "2024q1"}]),
     )
-    ds.save(
-        "sp500_tickers", pd.DataFrame({"ticker": ["AAPL", "MSFT", "NVDA"], "added_on": pd.to_datetime(["2000-01-01", "2000-01-01", "2024-06-25"])})
-    )
-    context: Any = SimpleNamespace(store=ds, config=SimpleNamespace(data_extract=SimpleNamespace(redundant_ticks=[])))
+    universe = seed_universe(ds, ["AAPL", "MSFT", "NVDA"], rows={"NVDA": {"universe_added_on": pd.Timestamp("2024-06-25")}})
+    context: Any = SimpleNamespace(store=ds, universe=universe)
     quarters, as_of = ["2024q1", "2024q2"], pd.Timestamp("2024-07-01")
 
     work = archive_worklist(context, (Tables.insider_transactions,), quarters, {"2024q1"}, ["AAPL", "MSFT", "NVDA"], as_of)
@@ -256,7 +255,7 @@ def test_insider_download_cli_runs_only_the_download(monkeypatch):
     config = SimpleNamespace(data_extract=SimpleNamespace(years_history=15))
     context = SimpleNamespace(name="ctx", config=config, config_dir="configs")
     monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, context))
-    stub_zips_step(monkeypatch, config, lambda ctx: ["AAA"])
+    stub_zips_step(monkeypatch, config)
     monkeypatch.setattr(step_zips, "download_insider_transactions", lambda context: calls.append("download") or [])
     monkeypatch.setattr(step_zips, "fetch_insider_transactions", lambda *a, **k: calls.append("parse"))
     monkeypatch.setattr(step_edgar, "run_edgar_fetch", lambda *a, **k: calls.append("edgar"))
@@ -347,7 +346,10 @@ def test_pension_future_cached_zip_uses_new_york_file_date(tmp_path: Path) -> No
 def test_pension_fetch_preserves_two_zip_vintages(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     store = DataStore(create_engine("sqlite:///:memory:"))
     context = SimpleNamespace(
-        store=store, config_dir="configs", config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(financial_statements="unused")))
+        store=store,
+        config_dir="configs",
+        config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(financial_statements="unused"))),
+        universe=seed_universe(store, ["BDX"]),
     )
     tag = "PensionAndOtherPostretirementDefinedBenefitPlansLiabilitiesNoncurrent"
 
@@ -392,7 +394,10 @@ def test_pension_fetch_preserves_two_zip_vintages(tmp_path: Path, monkeypatch: p
 def test_pension_new_zip_uses_successful_download_day_and_preserves_it(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     store = DataStore(create_engine("sqlite:///:memory:"))
     context = SimpleNamespace(
-        store=store, config_dir="configs", config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(financial_statements="unused")))
+        store=store,
+        config_dir="configs",
+        config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(financial_statements="unused"))),
+        universe=seed_universe(store, ["BDX"]),
     )
     path = tmp_path / "2026q3.zip"
 
@@ -472,11 +477,11 @@ def test_pension_new_key_re_reads_a_cached_stored_quarter_for_itself_only(tmp_pa
         store=store,
         config_dir="configs",
         config=SimpleNamespace(
-            local=SimpleNamespace(paths=SimpleNamespace(financial_statements="unused")), data_extract=SimpleNamespace(redundant_ticks=[])
+            local=SimpleNamespace(paths=SimpleNamespace(financial_statements="unused")),
         ),
+        universe=seed_universe(store, ["AAA", "NEW"], rows={"NEW": {"universe_added_on": pd.Timestamp("2026-09-28")}}),
     )
     _pension_zip(tmp_path / "2026q1.zip", [("adsh-a", "1", "999", "20260210"), ("adsh-n", "2", "500", "20260211")])
-    store.save("sp500_tickers", pd.DataFrame({"ticker": ["AAA", "NEW"], "added_on": pd.to_datetime(["2000-01-01", "2026-09-28"])}))
     stored = pd.DataFrame(
         [
             {

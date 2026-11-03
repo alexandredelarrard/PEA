@@ -32,6 +32,7 @@ from src.data_extract.utils.edgar_extract.fetch_insider_edgar import INSIDER_EDG
 from src.data_store.schema import Tables
 from tests.data_extract.edgar_fixtures import fake_filing, stub_edgar_step
 from tests.data_extract.test_cli_options import stub_identity_step, stub_zips_step
+from tests.support.universe import seed_universe
 
 DAG_FILE = Path(__file__).resolve().parents[2] / "src" / "dags" / "dag_data_extraction.py"
 
@@ -117,7 +118,6 @@ def test_resume_plan_prints_one_line_per_document_table(monkeypatch: pytest.Monk
     monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, SimpleNamespace(name="ctx", config=config)))
     monkeypatch.setattr(cli_mod, "_tickers", lambda ctx, names: ["AAA"])
     monkeypatch.setattr(edgar_driver, "load_cik_mapping", lambda ctx, names: pd.DataFrame({"ticker": ["AAA"], "cik": ["0000000001"]}))
-    monkeypatch.setattr(edgar_driver, "load_added_on", lambda ctx, day: {})
     monkeypatch.setattr(edgar_driver, "load_identity", lambda ctx: None)
     monkeypatch.setattr(cli_mod, "_document_fetches", lambda ctx, cik_map: {"sec_8k": SEC_8K_FETCH, "sec_13g": SEC_13G_FETCH})
     work = DocumentWork(units={"AAA": pd.DataFrame({"accession": ["x"]})}, counts={"forward": 1}, uncapped=1)
@@ -148,13 +148,12 @@ def test_steps_import_and_dag_parses() -> None:
 
 
 @pytest.fixture
-def insider_calls(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict[str, Any]]]:
+def insider_calls(sqlite_store: Any, monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict[str, Any]]]:
     calls: list[tuple[str, dict[str, Any]]] = []
     config = SimpleNamespace(data_extract=SimpleNamespace(years_history=15, max_documents_per_run=100))
-    context = SimpleNamespace(name="ctx", config=config, config_dir="configs")
+    context = SimpleNamespace(name="ctx", config=config, config_dir="configs", universe=seed_universe(sqlite_store, ["AAPL", "ALL"]))
     monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, context))
-    monkeypatch.setattr(cli_mod, "load_universe_tickers", lambda ctx: ["ALL"])
-    stub_zips_step(monkeypatch, config, lambda ctx: ["ALL"])
+    stub_zips_step(monkeypatch, config)
     monkeypatch.setattr(
         step_zips, "fetch_insider_transactions", lambda context, tickers, years, **kwargs: calls.append(("bulk", {"tickers": tickers, **kwargs}))
     )
@@ -191,14 +190,15 @@ def test_the_insider_bulk_parse_and_its_live_edgar_tail_run_as_separate_commands
     print("  the two in order run both halves. OK: the DAG can schedule the walk in its own pool.")
 
 
-def test_f109_f115_identity_propagate_every_ticker_and_notes_download_years_reach_their_functions(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_f109_f115_identity_propagate_every_ticker_and_notes_download_years_reach_their_functions(
+    sqlite_store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """`identity --only propagate`, and `zips-download --only notes` then `identity --only capture-dei`."""
     config = SimpleNamespace(data_extract=SimpleNamespace(years_history=31))
     calls: list[tuple[str, dict[str, Any]]] = []
-    context = SimpleNamespace(name="ctx")
+    context = SimpleNamespace(name="ctx", universe=seed_universe(sqlite_store, ["AAA"]))
     monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, context))
     monkeypatch.setattr(cli_mod, "_tickers", lambda ctx, names: ["AAA"])
-    monkeypatch.setattr(cli_mod, "load_universe_tickers", lambda ctx: ["AAA"])
     stub_identity_step(monkeypatch, config, context)
     monkeypatch.setattr(step_identity, "capture_pending_dei", lambda ctx, cache, **kwargs: calls.append(("dei", kwargs)) or 0)
     monkeypatch.setattr(
@@ -206,7 +206,7 @@ def test_f109_f115_identity_propagate_every_ticker_and_notes_download_years_reac
         "propagate_identity",
         lambda context, tickers, **kwargs: calls.append(("propagate", kwargs)) or SimpleNamespace(removals=pd.DataFrame()),
     )
-    stub_zips_step(monkeypatch, config, lambda ctx: ["AAA"])
+    stub_zips_step(monkeypatch, config)
     monkeypatch.setattr(step_zips, "notes_periods", lambda ctx, years, today: calls.append(("periods", {"years": years})) or ["2026q1"])
     monkeypatch.setattr(step_zips, "download_notes_periods", lambda ctx, cache, periods: calls.append(("notes", {"periods": periods})) or 0)
 

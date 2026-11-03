@@ -31,6 +31,7 @@ from tests.conftest import DATA
 from tests.data_extract.fake_context import extract_config
 from tests.data_extract.institutionals.test_fails_to_deliver import download_and_capture
 from tests.data_extract.institutionals.test_short_volume_security import _identity, _master
+from tests.support.universe import seed_universe
 
 
 @pytest.fixture
@@ -49,6 +50,10 @@ def sqlite_store(sqlite_store: DataStore) -> DataStore:
         ],
     )
     return sqlite_store
+
+
+def _len_universe(store: DataStore) -> Any:
+    return seed_universe(store, ["LEN"], rows={"LEN": {"cik": "0000920760"}})
 
 
 def _archive(path: Path, members: dict[str, str]) -> None:
@@ -88,7 +93,7 @@ def test_failed_finra_source_preserves_last_good_rows(sqlite_store: DataStore, m
     assert before_raw is not None
     before = sqlite_store.load(Tables.short_interest)
     assert before is not None
-    context = cast(Any, SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path}, config=extract_config(), log=logging.getLogger(__name__)))
+    context = cast(Any, SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path}, config=extract_config(), log=logging.getLogger(__name__), universe=_len_universe(sqlite_store)))
     monkeypatch.setattr(finra, "_plan_days", lambda *args, **kwargs: pd.DatetimeIndex([day]))
     monkeypatch.setattr(finra, "_fetch_day", lambda *args, **kwargs: payload)
 
@@ -153,7 +158,7 @@ def test_malformed_ftd_lines_cannot_be_a_complete_source(row: str) -> None:
 
 def test_checked_finra_absence_has_no_fabricated_total(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     day = pd.Timestamp("2026-07-01")
-    context = cast(Any, SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path}, config=extract_config(), log=logging.getLogger(__name__)))
+    context = cast(Any, SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path}, config=extract_config(), log=logging.getLogger(__name__), universe=_len_universe(sqlite_store)))
     monkeypatch.setattr(finra, "_plan_days", lambda *args, **kwargs: pd.DatetimeIndex([day]))
     monkeypatch.setattr(finra, "_fetch_day", lambda *args, **kwargs: _file().splitlines()[0] + "\n0\n")
     identity = _identity(store=sqlite_store)
@@ -169,7 +174,7 @@ def test_checked_finra_absence_has_no_fabricated_total(sqlite_store: DataStore, 
 
 
 def test_normal_ftd_retry_recovers_old_null_quantity_once(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    context = cast(Any, SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path}, config=extract_config(), log=logging.getLogger(__name__)))
+    context = cast(Any, SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path}, config=extract_config(), log=logging.getLogger(__name__), universe=_len_universe(sqlite_store)))
     identity = _identity(store=sqlite_store)
     for table, frame in identity.source_cohort.items():
         if not frame.empty:
@@ -200,11 +205,11 @@ def test_normal_ftd_retry_recovers_old_null_quantity_once(sqlite_store: DataStor
         return reader(ctx, cache, period, download=download)
 
     monkeypatch.setattr(ftd, "read_ftd_period", observed)
-    ftd.fetch_fails_to_deliver(context, ["LEN"], as_of=pd.Timestamp("2027-02-01"), all_tickers=["LEN"], identity=identity)
+    ftd.fetch_fails_to_deliver(context, ["LEN"], as_of=pd.Timestamp("2027-02-01"), identity=identity)
     assert requested == ["202607a"], "normal FTD planning skipped a NULL derived period because its raw rows and ZIP already existed"
     rows = sqlite_store.load(Tables.sec_fails_to_deliver, where={"ticker": "LEN"})
     assert rows is not None and rows["fails_quantity"].tolist() == [12.0] and rows["source_checked_at"].notna().all()
-    ftd.fetch_fails_to_deliver(context, ["LEN"], as_of=pd.Timestamp("2027-02-01"), all_tickers=["LEN"], identity=identity)
+    ftd.fetch_fails_to_deliver(context, ["LEN"], as_of=pd.Timestamp("2027-02-01"), identity=identity)
     assert requested == ["202607a"]
     print(
         "SANITY: normal FTD planning rereads a complete original for an old NULL quantity outside the 7-day scope window; successful paired refill is idempotent."
@@ -328,7 +333,7 @@ def test_missing_or_invalid_secondary_factor_cannot_create_checked_absence(ratio
 
 @pytest.mark.parametrize("bad", ["malformed", "wrong-period"])
 def test_ftd_normal_planner_retries_bad_cached_payload(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, bad: str) -> None:
-    context = cast(Any, SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path}, config=extract_config(), log=logging.getLogger(__name__)))
+    context = cast(Any, SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path}, config=extract_config(), log=logging.getLogger(__name__), universe=_len_universe(sqlite_store)))
     identity = _identity(store=sqlite_store)
     for table, frame in identity.source_cohort.items():
         if not frame.empty:
@@ -397,7 +402,7 @@ def test_pending_ftd_download_cannot_restore_a_stale_derived_cohort(
     concurrent: bool,
     proof_column: bool,
 ) -> None:
-    context = cast(Any, SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path}, config=extract_config(), log=logging.getLogger(__name__)))
+    context = cast(Any, SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path}, config=extract_config(), log=logging.getLogger(__name__), universe=_len_universe(sqlite_store)))
     for table, frame in _identity(store=sqlite_store).source_cohort.items():
         if not frame.empty:
             sqlite_store.save(table, frame)
@@ -474,7 +479,7 @@ def test_insider_normal_planner_retries_invalid_cached_quarter(
     members = _bulk_members()
     path = tmp_path / context.config.local.paths.insider_transactions / "2026q3.zip"
     _archive(path, members)
-    assert insider_zip.fetch_insider_transactions(context, ["LEN"], 1, all_tickers=["LEN"], as_of=pd.Timestamp("2026-10-01")) == 1
+    assert insider_zip.fetch_insider_transactions(context, ["LEN"], 1, as_of=pd.Timestamp("2026-10-01")) == 1
     sqlite_store.save(
         Tables.insider_transactions,
         pd.DataFrame(
@@ -502,13 +507,13 @@ def test_insider_normal_planner_retries_invalid_cached_quarter(
         return 200
 
     monkeypatch.setattr("src.data_extract.utils.common.bulk_cache.download", download)
-    assert insider_zip.fetch_insider_transactions(context, ["LEN"], 1, reparse=True, all_tickers=["LEN"], as_of=pd.Timestamp("2026-10-01")) == 0
+    assert insider_zip.fetch_insider_transactions(context, ["LEN"], 1, reparse=True, as_of=pd.Timestamp("2026-10-01")) == 0
     stored_frame = sqlite_store.load(Tables.insider_transactions)
     assert stored_frame is not None
     pd.testing.assert_frame_equal(stored_frame, before)
     assert path.exists() and not requests
     path.unlink()
-    assert insider_zip.fetch_insider_transactions(context, ["LEN"], 1, all_tickers=["LEN"], as_of=pd.Timestamp("2026-10-01")) == 1
+    assert insider_zip.fetch_insider_transactions(context, ["LEN"], 1, as_of=pd.Timestamp("2026-10-01")) == 1
     recovered_rows = sqlite_store.load(Tables.insider_transactions)
     assert recovered_rows is not None
     assert len(requests) == 1 and recovered_rows["shares"].tolist() == [12.0]
@@ -584,7 +589,7 @@ def test_real_2026q1_insider_zip_validates_on_a_copy(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("fail", [False, True], ids=["unchanged", "rollback"])
 def test_finra_restamp_preserves_or_atomically_rolls_back_source_pair(sqlite_store: DataStore, tmp_path: Path, fail: bool) -> None:
-    context = cast(Any, SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path}, config=extract_config(), log=logging.getLogger(__name__)))
+    context = cast(Any, SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path}, config=extract_config(), log=logging.getLogger(__name__), universe=_len_universe(sqlite_store)))
     identity = _identity(store=sqlite_store)
     for table, frame in identity.source_cohort.items():
         if not frame.empty:
@@ -668,7 +673,7 @@ def test_ftd_b_zip_retains_documented_day15_overlap(tmp_path: Path) -> None:
 
 
 def test_identity_propagation_ftd_restamp_certifies_the_classified_cohort(sqlite_store: DataStore, tmp_path: Path) -> None:
-    context = cast(Any, SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path}, config=extract_config(), log=logging.getLogger(__name__)))
+    context = cast(Any, SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path}, config=extract_config(), log=logging.getLogger(__name__), universe=_len_universe(sqlite_store)))
     identity = _identity(store=sqlite_store)
     for table, frame in identity.source_cohort.items():
         if not frame.empty:
@@ -690,7 +695,7 @@ def test_identity_propagation_ftd_restamp_certifies_the_classified_cohort(sqlite
             }
         ),
     )
-    assert identity_propagate._refresh_fails(context, ["LEN"], pd.Timestamp("2026-10-06"), dry_run=False, every=True, others=frozenset()) == []
+    assert identity_propagate._refresh_fails(context, ["LEN"], pd.Timestamp("2026-10-06"), dry_run=False, every=True) == []
     rows = sqlite_store.load(Tables.sec_fails_to_deliver)
     assert rows is not None
     assert rows["fails_quantity"].tolist() == [12.0] and rows["source_checked_at"].notna().all()
@@ -745,7 +750,7 @@ def test_zip_reconciliation_refuses_concurrently_changed_edgar_payload(sqlite_st
 def test_generic_identity_purge_uses_guarded_insider_issuer_deletion(
     sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    context = cast(Any, SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path}, config=extract_config(), log=logging.getLogger(__name__)))
+    context = cast(Any, SimpleNamespace(store=sqlite_store, paths={"DATA_STORE": tmp_path}, config=extract_config(), log=logging.getLogger(__name__), universe=_len_universe(sqlite_store)))
     identity = _identity(store=sqlite_store)
     for table, frame in identity.source_cohort.items():
         if not frame.empty:
@@ -771,7 +776,7 @@ def test_generic_identity_purge_uses_guarded_insider_issuer_deletion(
     for name in ("_refresh_insider", "_refresh_fails", "_refresh_short_volume"):
         monkeypatch.setattr(identity_propagate, name, lambda *args, **kwargs: [])
     identity_propagate.propagate_identity(
-        context, ["LEN"], every_ticker=True, identity=identity, as_of=pd.Timestamp("2026-10-08"), all_tickers=["LEN", "AAA"]
+        context, ["LEN"], every_ticker=True, identity=identity, as_of=pd.Timestamp("2026-10-08")
     )
     kept = sqlite_store.load(Tables.insider_transactions)
     assert kept is not None
@@ -794,7 +799,7 @@ def _parser_identity_context(store: DataStore, directory: Path) -> tuple[Any, Id
             Tables.insider_footnotes,
         ],
     )
-    context = SimpleNamespace(store=store, paths={"DATA_STORE": directory}, config=extract_config(), log=logging.getLogger(__name__))
+    context = SimpleNamespace(store=store, paths={"DATA_STORE": directory}, config=extract_config(), log=logging.getLogger(__name__), universe=_len_universe(store))
     identity = _identity()
     for table, frame in identity.source_cohort.items():
         if not frame.empty:
@@ -843,6 +848,6 @@ def test_actual_bulk_parser_run_writes_the_quarter(sqlite_store: DataStore, monk
     members = _bulk_members()
     members["FOOTNOTES.TSV"] += "0000920760-26-000001\tF1\tActual source note\n"
     _archive(tmp_path / context.config.local.paths.insider_transactions / "2026q3.zip", members)
-    insider_zip.fetch_insider_transactions(context, ["LEN"], 1, all_tickers=["LEN"], as_of=pd.Timestamp("2026-10-06"))
+    insider_zip.fetch_insider_transactions(context, ["LEN"], 1, as_of=pd.Timestamp("2026-10-06"))
     assert sqlite_store.row_count(Tables.insider_transactions) > 0 and sqlite_store.row_count(Tables.insider_footnotes) == 1
     print("SANITY: actual bulk parsing writes the quarter's rows and its one footnote.")

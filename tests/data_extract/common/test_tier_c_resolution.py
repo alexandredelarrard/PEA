@@ -30,6 +30,7 @@ from src.data_extract.utils.zips.zip_archive import ZipScope
 from src.data_store.schema import Tables
 from src.utils.string import run_date
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
+from tests.support.universe import seed_universe
 
 #: GOOGL (Google Inc -> Alphabet, 2015-10-02), VTRS (Mylan -> Viatris, 2020-11-07), APA (Apache -> APA Corp, 2021-03-01).
 IDENTITY = dated_identity(
@@ -87,6 +88,7 @@ def _context(store: Any, tmp_path) -> SimpleNamespace:
         store=store,
         config_dir=str(tmp_path / "no_register"),
         config=SimpleNamespace(local=SimpleNamespace(paths=SimpleNamespace(financial_notes="unused", financial_statements="unused"))),
+        universe=seed_universe(store, UNIVERSE),
     )
 
 
@@ -108,7 +110,7 @@ def test_notes_rows_resolve_through_the_lineage_window_of_their_filer(sqlite_sto
     monkeypatch.setattr(fn, "archive_available_at", lambda *args, **kwargs: date(2025, 1, 13))
     monkeypatch.setattr(fn, "_repair_stored_clocks", lambda *args, **kwargs: {})
 
-    scope = ZipScope(tickers=UNIVERSE, all_tickers=None, run_date=run_date(None), full=False)
+    scope = ZipScope(tickers=UNIVERSE, run_date=run_date(None), full=False)
     fn.ingest_financial_notes(_context(sqlite_store, tmp_path), tmp_path, scope, [period])
 
     stored = sqlite_store.load(Tables.notes_num, columns=["adsh", "ticker"])

@@ -49,7 +49,6 @@ def test_institutionals_consume_the_upstream_identity_in_one_resolver(monkeypatc
         return identity
 
     monkeypatch.setattr(module, "load_identity", load)
-    monkeypatch.setattr(module, "load_universe_tickers", lambda context: ["AAA"])
 
     def short(*args, **kwargs):
         assert kwargs["identity"] is identity

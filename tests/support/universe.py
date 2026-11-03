@@ -6,6 +6,8 @@ from collections.abc import Mapping, Sequence
 
 import pandas as pd
 from omegaconf import DictConfig, OmegaConf
+from sqlalchemy import create_engine
+from sqlalchemy.pool import StaticPool
 
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
@@ -42,3 +44,14 @@ def seed_universe(
     )
     store.save(Tables.tickers_universe, frame)
     return Universe(store, universe_config(tickers, aliases))
+
+
+def universe_of(
+    tickers: Sequence[str],
+    *,
+    aliases: Mapping[str, Sequence[str]] | None = None,
+    rows: Mapping[str, Mapping[str, object]] | None = None,
+) -> Universe:
+    """A `Universe` over its own in-memory store, for a stub context that has no store to seed."""
+    engine = create_engine("sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False})
+    return seed_universe(DataStore(engine), tickers, aliases=aliases, rows=rows)

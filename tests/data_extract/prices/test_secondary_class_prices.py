@@ -17,6 +17,7 @@ from omegaconf import OmegaConf
 
 from src.data_extract.utils.prices import fetch_prices as fp
 from src.data_store.schema import Tables
+from tests.support.universe import seed_universe
 
 MASTER_COLUMNS = ("security_id", "canonical_company", "market_symbol", "lineage_role", "valid_from", "valid_to")
 _AS_OF = pd.Timestamp("2026-10-03")
@@ -85,7 +86,10 @@ def _seed_stored(store: Any, universe: list[str], classes: list[str]) -> None:
 
 def _context(store: Any) -> Any:
     return SimpleNamespace(
-        store=store, log=logging.getLogger("test.secondary_prices"), config=OmegaConf.create({"data_extract": {"years_history": 15}})
+        store=store,
+        log=logging.getLogger("test.secondary_prices"),
+        config=OmegaConf.create({"data_extract": {"years_history": 15}}),
+        universe=seed_universe(store, ["BRK-B", "GOOGL", "WBD"]),
     )
 
 

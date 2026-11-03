@@ -21,6 +21,7 @@ from src.data_store.schema import Tables
 from src.utils.string import pad_cik
 from tests.data_extract.fake_context import extract_config
 from tests.fixtures.superinvestor_config import write_roster_config
+from tests.support.universe import seed_universe
 
 MASTER_HEADER = """Description:           Master Index of EDGAR Dissemination Feed
 Last Data Received:    September 30, 2026
@@ -46,13 +47,16 @@ def master_text(rows: Iterable[tuple[int | str, str, str, str, str]]) -> str:
 
 
 def fake_context(tmp_path, store, tickers: list[str], ciks: list[str] | None = None, **data_extract: Any) -> Any:
-    """A Context stand-in for the driver: `sp500_tickers` seeded with every column `load_cik_mapping` projects,
-    and a `config_dir` holding empty roster overrides (`<config_dir>/superinvestors/overrides.json`)."""
+    """A Context stand-in for the driver: `tickers_universe` seeded (name and GICS columns `<col>-<ticker>`) as its
+    `universe`, and a `config_dir` holding empty roster overrides (`<config_dir>/superinvestors/overrides.json`)."""
     ciks = ciks or [str(i + 1) for i in range(len(tickers))]
     store.save(
         Tables.sp500_tickers,
         pd.DataFrame({col: [f"{col}-{t}" for t in tickers] for col in CIK_MAPPING_COLS} | {"ticker": tickers, "cik": ciks}),
     )
+    labels = ("name", "sector", "industry_group", "sub_industry")
+    rows = {t: {"cik": pad_cik(c)} | {col: f"{col}-{t}" for col in labels} for t, c in zip(tickers, ciks, strict=True)}
+    universe = seed_universe(store, tickers, rows=rows) if tickers else None
     warnings: list[str] = []
     errors: list[str] = []
     infos: list[str] = []
@@ -67,6 +71,7 @@ def fake_context(tmp_path, store, tickers: list[str], ciks: list[str] | None = N
         config=extract_config(data_extract={"years_history": 15, **data_extract}),
         ensure_edgar_identity=lambda: None,
         config_dir=write_roster_config(tmp_path),
+        universe=universe,
     )
     ctx.warnings, ctx.errors, ctx.infos = warnings, errors, infos
     return ctx
@@ -146,12 +151,11 @@ def walk_call(fetch: EdgarFetch, run: EdgarRun) -> dict[str, Any]:
 
 
 def stub_edgar_step(monkeypatch: pytest.MonkeyPatch, driver: Any) -> None:
-    """Make `StepExtractEdgar` constructible offline: the CIK mapping, `added_on`, the identity and the index refresh stubbed, each
+    """Make `StepExtractEdgar` constructible offline: the CIK mapping, the identity and the index refresh stubbed, each
     driver call handed to `driver(context, **walk_call(fetch, run))`."""
     from src.data_extract.transformers import step_extract_edgar
 
     monkeypatch.setattr(edgar_driver, "load_cik_mapping", lambda ctx, names: pd.DataFrame({"ticker": names, "cik": ["0"] * len(names)}))
-    monkeypatch.setattr(edgar_driver, "load_added_on", lambda ctx, day: {})
     monkeypatch.setattr(edgar_driver, "load_identity", lambda ctx: None)
     monkeypatch.setattr(step_extract_edgar, "refresh_index", lambda ctx, run, years_history: None)
     monkeypatch.setattr(edgar_index, "refreshed_today", lambda ctx, years_history: False)

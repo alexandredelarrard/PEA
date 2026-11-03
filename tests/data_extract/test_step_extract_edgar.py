@@ -103,10 +103,12 @@ def _step(driver: Driver, options: EdgarOptions | None = None) -> StepExtractEdg
 
 def test_run_walks_the_six_fetches_in_order_on_state_declared_once(monkeypatch: pytest.MonkeyPatch) -> None:
     driver = Driver(monkeypatch)
-    _step(driver, EdgarOptions(as_of=pd.Timestamp("2026-10-31 15:00"))).run()
+    step = _step(driver, EdgarOptions(as_of=pd.Timestamp("2026-10-31 15:00")))
+    assert driver.reads == [], "constructing the step reads nothing (REQ-014)"
+    step.run()
 
     assert driver.order == [FETCHES[name].done.desc for name in RUNS]
-    assert driver.reads == ["universe", "cik_map", "identity"], "the universe, the CIK mapping and the identity are read once, in the init"
+    assert driver.reads == ["universe", "cik_map", "identity"], "the universe, the CIK mapping and the identity are read once, on first use"
     first = driver.calls[0]
     assert first["cik_map"]["ticker"].tolist() == ["AAA", "BBB"] and first["tickers"] == ["AAA", "BBB"]
     assert all(run is driver.runs[0] for run in driver.runs), "every walk receives the one declared EdgarRun"
@@ -116,7 +118,7 @@ def test_run_walks_the_six_fetches_in_order_on_state_declared_once(monkeypatch: 
     }
     print("\n=== SANITY: StepExtractEdgar.run order ===")
     print(
-        f"  {' -> '.join(driver.order)}; one universe, CIK mapping and identity read, one EdgarRun (cap 100) shared by all 6 walks; window 15y, run date 2026-10-31."
+        f"  {' -> '.join(driver.order)}; nothing read at construction; one universe, CIK mapping and identity read, one EdgarRun (cap 100) shared by all 6 walks; window 15y, run date 2026-10-31."
     )
 
 

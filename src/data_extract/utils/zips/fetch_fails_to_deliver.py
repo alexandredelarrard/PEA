@@ -472,7 +472,7 @@ def _save_fails_period(
 
 
 def _rebuild_from_cache(
-    context: Context, master: pd.DataFrame, universe: frozenset[str], others: frozenset[str], identity: dict[Table, pd.DataFrame], basis: ShareBasis
+    context: Context, master: pd.DataFrame, universe: frozenset[str], identity: dict[Table, pd.DataFrame], basis: ShareBasis
 ) -> tuple[int, int]:
     """Validate every required cached original before bounded atomic period replacements."""
     cache = cache_dir(context, context.config.local.paths.fails_deliver)
@@ -500,13 +500,17 @@ def _rebuild_from_cache(
         n_raw, n_saved = _save_fails_period(context, source, master, universe, identity, basis)
         raw += n_raw
         saved += n_saved
-    logger.info("FTD rebuild: %d validated periods; %d raw and %d ticker rows; %d outside companies retained", len(frames), raw, saved, len(others))
+    logger.info(
+        "FTD rebuild: %d validated periods; %d raw and %d ticker rows; %d outside companies retained",
+        len(frames),
+        raw,
+        saved,
+        len(context.universe.outside(universe)),
+    )
     return raw, saved
 
 
-def _stamp_new(
-    context: Context, master: pd.DataFrame, universe: frozenset[str], others: frozenset[str], identity: dict[Table, pd.DataFrame], basis: ShareBasis
-) -> int:
+def _stamp_new(context: Context, master: pd.DataFrame, universe: frozenset[str], identity: dict[Table, pd.DataFrame], basis: ShareBasis) -> int:
     """Reconcile pending units and recover required originals missing from the cache."""
     stored, pending = fails_source_periods(context.store)
     cache = cache_dir(context, context.config.local.paths.fails_deliver)
@@ -521,7 +525,12 @@ def _stamp_new(
         scoped = _scope_fails_source(source, master, universe)
         _, written = _save_fails_period(context, scoped, master, universe, identity, basis)
         saved += written
-    logger.info("FTD: %d pending periods reconciled; %d ticker rows; %d outside companies retained", len(pending), saved, len(others))
+    logger.info(
+        "FTD: %d pending periods reconciled; %d ticker rows; %d outside companies retained",
+        len(pending),
+        saved,
+        len(context.universe.outside(universe)),
+    )
     return saved
 
 
@@ -704,12 +713,11 @@ def fetch_fails_to_deliver(
     if master is None or master.empty:
         logger.warning("FTD: no security_master yet (run `identity` first); nothing stamped")
         return 0
-    others = context.universe.outside(universe)
     basis = load_fails_basis(context, master)
     if full:
-        _, saved = _rebuild_from_cache(context, master, universe, others, cohort, basis)
+        _, saved = _rebuild_from_cache(context, master, universe, cohort, basis)
     else:
-        saved = _stamp_new(context, master, universe, others, cohort, basis)
+        saved = _stamp_new(context, master, universe, cohort, basis)
         changed = restamp_targets(context, Tables.sec_fails_to_deliver_security, master_stamps(master), as_of)
         if set(changed) & universe:
             recovered, _ = _recover_fails_companies(context, master, frozenset(set(changed) & universe), cohort, basis)

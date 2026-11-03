@@ -103,6 +103,7 @@ def test_the_extractors_are_built_once_and_reused_by_every_run(monkeypatch: pyte
     config = _config()
     step = StepExtractLlm(_context(config, fetchers), config)
     built = dict(counted)
+    assert "universe" not in fetchers.order, "constructing the step reads no universe (REQ-014)"
     for _ in range(2):
         step.run_def14a()
         step.run_8k_votes()
@@ -116,7 +117,9 @@ def test_the_extractors_are_built_once_and_reused_by_every_run(monkeypatch: pyte
     assert {extractor.threads for extractor in def14a[0].values()} == {2} and votes[0].threads == int(config.gpt.threads)
     assert fetchers.order.count("universe") == 1
     print("\n=== SANITY: StepExtractLlm setup (AC-010) ===")
-    print(f"  init: {built}; 2x run_def14a + 2x run_8k_votes added nothing and reused the same 6 extractors; no provider built.")
+    print(
+        f"  init: {built}; 2x run_def14a + 2x run_8k_votes added nothing and reused the same 6 extractors; no provider built; universe read once, on first use."
+    )
 
 
 def test_a_missing_key_raises_in_the_init_and_nothing_runs(monkeypatch: pytest.MonkeyPatch) -> None:

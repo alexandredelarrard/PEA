@@ -60,7 +60,7 @@ def _load(
     """The catalogue as `{field: description}`, from JSON or from a `.py`.
 
     A `.py` may expose either `CATALOGUE` (one table's sheet, as the per-report catalogues do)
-    or `CATALOGUES` keyed by table name, which is the shape `scripts/cube_feature_catalogue.py`
+    or `CATALOGUES` keyed by table name, which is the shape `tests/support/cube_feature_catalogue.py`
     already ships for `cube_part_fundamentals` and `cube_part_governance`. Keyed wins when both
     are present: a file that registers several tables and also holds one of them under the bare
     name would otherwise hand every table the same sheet.
@@ -88,7 +88,7 @@ def _reconciling_prefix(catalogued: set[str], live: set[str]) -> tuple[str, str,
 
     ⚠ WITHOUT THIS THE CHECK REPORTS ITS OWN MISCONFIGURATION AS 216 DEFECTS. Measured
     2026-09-21: `institutionals_catalogue.py` keys on `ic_act_percent_of_class` while the live
-    column is `f_ic_act_percent_of_class`, and `scripts/cube_feature_catalogue.py` keys on
+    column is `f_ic_act_percent_of_class`, and `tests/support/cube_feature_catalogue.py` keys on
     `auditor_tenure` against a live `f_auditor_tenure`. The intersection is EMPTY, so every one
     of the 89 entries reads as a dead catalogued name and every one of the 127 live columns as
     undocumented -- two findings per feature, none of them true, burying the real question,

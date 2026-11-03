@@ -523,24 +523,6 @@ SHARADAR_SEC_COUNTERPART: dict[str, tuple[tuple[str, ...], str]] = {
     "payables": (("accountsPayable",), "exact"),
 }
 
-#: Fields describing a DISCRETE EVENT rather than a continuing state or flow. A zero here is a
-#: fact -- "no business was acquired this quarter", "no debt was issued" -- and the mixed-ticker
-#: heuristic below is exactly WRONG for them: of course a company that acquired something in Q2
-#: reports zero in Q1. Only a SEC contradiction can null one of these.
-#:
-#: `ncfdiv` and `dps` are deliberately NOT here even though they look similar. Every DJIA
-#: constituent pays a dividend every quarter, so a zero in those is a gap, not a quiet quarter.
-SHARADAR_EVENT_FIELDS: frozenset[str] = frozenset(
-    {
-        "ncfbus",
-        "ncfinv",
-        "ncfcommon",
-        "ncfdebt",
-        "ncfx",
-        "netincdis",
-    }
-)
-
 # --------------------------------------------------------------------------- #
 # Sharadar phase-4 MERGE -- the Sharadar TTM frame + the SEC-owned block ->     #
 # `fundamentals_history`, plus the gap check that proposes overrides and the    #

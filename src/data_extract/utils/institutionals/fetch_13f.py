@@ -118,9 +118,6 @@ _BOOK_COLS = [
 #: The columns `parse_legacy_information_table` emits; an empty-cover book carries them with no rows.
 _LEGACY_INFO_COLS = ["CUSIP", "NAMEOFISSUER", "TITLEOFCLASS", "VALUE", "SSHPRNAMT", "SSHPRNAMTTYPE", "PUTCALL"]
 
-#: Legacy diagnostic reduction key; immutable source storage also keys by accession.
-_BOOK_KEY = ["cik", "period", "cusip"]
-
 # Cheap source sanity check; aggregation validates units/values against historical quotes.
 _IMPLIED_PRICE_BAND = (1.0, 5000.0)
 

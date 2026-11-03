@@ -1,5 +1,5 @@
 """
-cube_governance_catalogue.py  (scripts/)
+cube_governance_catalogue.py  (tests/support/)
 --------------------------------------------------------------------------------------------
 The PROSE half of `cube_part_governance`, in the same shape `cube_feature_catalogue.py` holds
 for `cube_part_fundamentals`: characteristic -> (family, what, why, tail).

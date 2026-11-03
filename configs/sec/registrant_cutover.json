@@ -48,7 +48,7 @@
     "can tell that from a company that genuinely filed nothing. A wrong entry cannot raise on",
     "its own, which is why every segment carries `evidence` and why the loader raises on every",
     "malformed entry it CAN detect. Add an entry only with three oracles agreeing; see",
-    "`scripts/detect_registrant_cutovers.py`.",
+    "`tests/support/detect_registrant_cutovers.py`.",
     "",
     "A curated JSON rather than a `tickers_universe` column: a new row is built from",
     "Wikipedia, so a roster refresh would silently overwrite hand-established evidence. And",

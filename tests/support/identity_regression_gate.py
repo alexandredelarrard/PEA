@@ -6,8 +6,8 @@ stamps and the master takes each tape line's old issuer from them, an older one 
 `gate_summary.txt`, and exits 1 when a row has no reason or a hypothesis of
 `configs/sec/expected_lineage_changes.json` does not hold, 2 when the run itself fails.
 
-  python scripts/identity_regression_gate.py snapshot <dir> [-c ./configs] [-t TICKER ...]
-  python scripts/identity_regression_gate.py diff <dir> [-o <out dir>] [-c ./configs] [-t TICKER ...] [--skip-hypothesis ID ...] [--store-url URL]
+  python tests/support/identity_regression_gate.py snapshot <dir> [-c ./configs] [-t TICKER ...]
+  python tests/support/identity_regression_gate.py diff <dir> [-o <out dir>] [-c ./configs] [-t TICKER ...] [--skip-hypothesis ID ...] [--store-url URL]
 """
 
 from __future__ import annotations

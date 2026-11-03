@@ -1,5 +1,5 @@
 """
-cube_feature_catalogue.py  (scripts/)
+cube_feature_catalogue.py  (tests/support/)
 --------------------------------------------------------------------------------------------
 The PROSE half of the `cube_part_fundamentals` evidence report: what each characteristic
 measures, why its null rate is the right one, and how to read its tail.

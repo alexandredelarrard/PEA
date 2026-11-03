@@ -1,5 +1,5 @@
 """
-detect_registrant_cutovers.py  (scripts/)
+detect_registrant_cutovers.py  (tests/support/)
 --------------------------------------------------------------------------------------------
 Find every registrant boundary in the universe, classify what is NOT one, and propose the
 register entry. Re-runnable, and non-zero on an unclassified candidate so it can stand as a
@@ -60,9 +60,9 @@ Exits non-zero while any candidate is unresolved, ambiguous or unconfirmed, so i
 a nightly check: this defect class is silent by construction, and a one-off repair decays
 unless the next reorganisation announces itself.
 
-    "$PY" scripts/detect_registrant_cutovers.py --offline
-    "$PY" scripts/detect_registrant_cutovers.py --classify --out o3.json --report classified.md
-    "$PY" scripts/detect_registrant_cutovers.py --offline --out o3.json --report classified.md
+    "$PY" tests/support/detect_registrant_cutovers.py --offline
+    "$PY" tests/support/detect_registrant_cutovers.py --classify --out o3.json --report classified.md
+    "$PY" tests/support/detect_registrant_cutovers.py --offline --out o3.json --report classified.md
 """
 
 from __future__ import annotations
@@ -1088,7 +1088,7 @@ def classified_report(cand: pd.DataFrame, late: pd.DataFrame, results: list[dict
         "",
         "Population: every ticker whose `sec_8k` archive starts more than "
         f"{LAG_YEARS:g} years after its first price. Produced by "
-        "`scripts/detect_registrant_cutovers.py --classify`.",
+        "`tests/support/detect_registrant_cutovers.py --classify`.",
         "",
         "| class | n | what phase 9 does |",
         "|---|---:|---|",

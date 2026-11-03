@@ -1,4 +1,4 @@
-"""`scripts/def14a_legacy_purge.py` never selects an empty-filing marker: a marker owns no director
+"""`tests/support/def14a_legacy_purge.py` never selects an empty-filing marker: a marker owns no director
 row and carries no new-schema column, so without the store's marker filter it would fall in the
 delete set and its proxy would be sent to the LLM again."""
 

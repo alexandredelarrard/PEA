@@ -1,4 +1,4 @@
-"""The explained-difference regression gate (P22, `scripts/identity_regression_gate.py`).
+"""The explained-difference regression gate (P22, `tests/support/identity_regression_gate.py`).
 
 Known-truth fixtures on the real CIKs, CUSIPs and seams: ACE / old Chubb (event-only acquired target), Merck /
 Schering-Plough (outside its window), BRK-A (ratio 1,500), FITB's preferred, XOM's placeholder, WBD's superseded

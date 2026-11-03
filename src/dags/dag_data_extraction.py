@@ -19,7 +19,8 @@ Flow: sharadar_tickers -> universe -> (fetchers, with source dependencies) -> ex
 the data_aggregation DAG. Every task has `retries: 3`, so four attempts in all. No source blocks
 the night: `extraction_status` and `identity_check` run on ALL_DONE, so they start once every fetcher
 has finished, failed or not. The aggregation trigger runs only when `identity_check` succeeds (the
-hard identity gate); extraction itself never waits for it. Identity stage: zips_download -> identity
+hard identity gate); extraction itself never waits for it. Tasks on ALL_DONE are still guarded by the universe reader, which raises when `tickers_universe`
+differs from `configs/universe.yml`. Identity stage: zips_download -> identity
 (captures, symbol_tenure + entity_lineage + security_master, propagation; offline) -> every task that reads
 the lineage, the two zip ingests included (price_history waits for identity: it reads the master's current
 secondary classes); a failed identity run leaves those consumers unrun. identity and price_history run on

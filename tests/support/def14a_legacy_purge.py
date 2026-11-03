@@ -1,5 +1,5 @@
 """
-def14a_legacy_purge.py  (scripts/)
+def14a_legacy_purge.py  (tests/support/)
 --------------------------------------------------------------------------------------------
 Snapshot every DEF 14A table to parquet, then delete the LEGACY-vintage rows of `def14a_llm`
 so the extraction re-runs on them. It does NOT run the extraction: a snapshot, a delete and a
@@ -30,8 +30,8 @@ the store's default marker filter, so a proxy already answered without evidence 
 The fetcher lists every ticker's whole history on each run, so a deleted row is listed again
 by the next run.
 
-    "$PY" scripts/def14a_legacy_purge.py [-c ./configs]             # dry run + snapshot
-    "$PY" scripts/def14a_legacy_purge.py [-c ./configs] --confirm   # snapshot, then delete
+    "$PY" tests/support/def14a_legacy_purge.py [-c ./configs]             # dry run + snapshot
+    "$PY" tests/support/def14a_legacy_purge.py [-c ./configs] --confirm   # snapshot, then delete
 """
 
 from __future__ import annotations

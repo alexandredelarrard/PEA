@@ -7,7 +7,7 @@ compare stamps, and write only the ticker rows that changed.
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Mapping
 from typing import cast
 
 import numpy as np
@@ -18,15 +18,11 @@ from src.context import Context
 from src.data_extract.utils.common.resume import recently_changed
 from src.data_store.schema import Table
 from src.data_store.store import NOT_NULL, DataStore, Where
-from src.utils.batching import batched_tuples
 
 #: The four columns stamped from the security master on every stored tape line.
 STAMP_COLUMNS = ["security_id", "ticker", "lineage_role", "security_class"]
 #: Roles whose lines are summed into the ticker grain.
 SUMMED_ROLES = (*CANONICAL_ROLES, SECONDARY_CLASS)
-#: Tickers per scoped load, and keys per targeted load or delete.
-TICKER_CHUNK = 50
-KEY_CHUNK = 500
 
 
 def restamp_targets(
@@ -42,12 +38,6 @@ def restamp_targets(
 def nullable(values: pd.Series) -> pd.Series:
     """`values` as objects with missing values as None (the store's NULL)."""
     return values.astype(object).where(values.notna(), None)
-
-
-def load_chunked(context: Context, table: Table, columns: Sequence[str], column: str, values: Sequence[str], size: int) -> list[pd.DataFrame]:
-    """The non-empty loads of `table` where `column` is in each chunk of `values`."""
-    frames = [context.store.load(table, columns=list(columns), where={column: list(chunk)}, optional=True) for chunk in batched_tuples(values, size)]
-    return [frame for frame in frames if frame is not None]
 
 
 def stamp_changed(old: pd.DataFrame, new: pd.DataFrame, old_suffix: str = "") -> pd.Series:

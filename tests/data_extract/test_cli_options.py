@@ -20,10 +20,25 @@ from tests.support.universe import seed_universe
 
 
 def test_cli_tickers_split_csv_before_normalizing(sqlite_store: Any) -> None:
-    context = SimpleNamespace(universe=seed_universe(sqlite_store, ["AAPL", "BRK.B", "BRK/B", "MSFT"]))
+    context = SimpleNamespace(universe=seed_universe(sqlite_store, ["AAPL", "BRK-B", "MSFT"]))
 
-    assert cli_mod._tickers(context, " aapl ,msft, ,AAPL,brk.b,brk/b ") == ["AAPL", "MSFT", "BRK.B", "BRK/B"]
-    print("SANITY: -t CSV splits on commas, normalizes each symbol once, and preserves share-class separators.")
+    assert cli_mod._tickers(context, " aapl ,msft, ,AAPL,brk.b,brk/b ") == ["AAPL", "MSFT", "BRK-B"]
+    print("SANITY: -t CSV splits on commas and normalizes each symbol once to the yfinance spelling (brk.b, brk/b -> BRK-B).")
+
+
+@pytest.mark.parametrize("names,message", [("GOOG", "GOOG (alias of GOOGL)"), ("AAA,FOO", "FOO")])
+def test_cli_refuses_names_outside_the_universe_before_any_fetch(
+    names: str, message: str, sqlite_store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = SimpleNamespace(data_extract=SimpleNamespace(years_history=31))
+    context = SimpleNamespace(config=config, log=Mock(), universe=seed_universe(sqlite_store, ["AAA", "GOOGL"], aliases={"GOOGL": ["GOOG"]}))
+    fetch = Mock(side_effect=AssertionError("fetched before the subset check"))
+    monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (config, context))
+    monkeypatch.setattr(cli_mod, "fetch_short_interest", fetch)
+
+    result = CliRunner().invoke(cli_mod.cli, ["short-interest", "-t", names])
+    assert result.exit_code != 0 and message in str(result.exception) and not fetch.called
+    print(f"SANITY: -t {names} exits non-zero naming {message!r}; the fetcher was never called.")
 
 
 def test_cli_default_is_the_universe_list(sqlite_store: Any) -> None:

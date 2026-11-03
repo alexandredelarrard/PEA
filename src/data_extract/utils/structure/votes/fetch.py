@@ -24,10 +24,10 @@ from tqdm import tqdm
 
 from src.context import Context
 from src.data_extract.utils.common.incremental import stored_values
-from src.data_extract.utils.schemas.vote_schema import Item507Extract
 from src.data_extract.utils.structure.votes.flatten import _marker_frame, _prepare_frame, _proposal_rows
 from src.data_extract.utils.structure.votes.guard import rejection_reason
 from src.data_extract.utils.structure.votes.roles import _role_map, _role_source
+from src.data_extract.utils.structure.votes.vote_schema import Item507Extract
 from src.data_store.schema import Table, Tables
 
 # `gpt_extract` is a shared service like `src/utils/`, the sanctioned cross-import (model, keys, prompts, thread pool).

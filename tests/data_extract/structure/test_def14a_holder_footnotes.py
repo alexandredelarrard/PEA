@@ -11,7 +11,7 @@ import pandas as pd
 import pytest
 
 from src.context import Context
-from src.data_extract.utils.schemas.def14a_schema import Def14AExtract, OwnershipExtract
+from src.data_extract.utils.structure.def14a.def14a_schema import Def14AExtract, OwnershipExtract
 from src.data_extract.utils.structure.def14a.holders import _holder_name, normalize_name, reconcile_holders
 from src.data_extract.utils.structure.def14a.postprocess import postprocess_section, refresh_archive
 from src.data_extract.utils.structure.def14a.retry import SECTIONS

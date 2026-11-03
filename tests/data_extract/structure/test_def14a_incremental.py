@@ -15,13 +15,13 @@ import pytest
 from sqlalchemy import create_engine
 
 from src.data_extract.utils.common.identity import FilingScope
-from src.data_extract.utils.schemas.def14a_schema import BeneficialOwner as _BeneficialOwner
-from src.data_extract.utils.schemas.def14a_schema import Def14AExtract as _Def14AExtract
-from src.data_extract.utils.schemas.def14a_schema import DirectorCompensation as _DirectorCompensation
-from src.data_extract.utils.schemas.def14a_schema import DirectorInfo as _DirectorInfo
-from src.data_extract.utils.schemas.def14a_schema import ExecutiveCompensation as _ExecutiveCompensation
-from src.data_extract.utils.schemas.def14a_schema import GovernanceProfile as _GovernanceProfile
 from src.data_extract.utils.structure.def14a import flatten as flatten_mod
+from src.data_extract.utils.structure.def14a.def14a_schema import BeneficialOwner as _BeneficialOwner
+from src.data_extract.utils.structure.def14a.def14a_schema import Def14AExtract as _Def14AExtract
+from src.data_extract.utils.structure.def14a.def14a_schema import DirectorCompensation as _DirectorCompensation
+from src.data_extract.utils.structure.def14a.def14a_schema import DirectorInfo as _DirectorInfo
+from src.data_extract.utils.structure.def14a.def14a_schema import ExecutiveCompensation as _ExecutiveCompensation
+from src.data_extract.utils.structure.def14a.def14a_schema import GovernanceProfile as _GovernanceProfile
 from src.data_extract.utils.structure.def14a.fetch import _subject_is_accepted
 from src.data_extract.utils.structure.def14a.flatten import _flatten, _result_frames
 from src.data_store.schema import Tables

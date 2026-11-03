@@ -25,18 +25,6 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.schemas.def14a_schema import (
-    Def14AExtract as _Def14AExtract,
-)
-from src.data_extract.utils.schemas.def14a_schema import (
-    DirectorInfo as _DirectorInfo,
-)
-from src.data_extract.utils.schemas.def14a_schema import (
-    ExecutiveCompensation as _ExecutiveCompensation,
-)
-from src.data_extract.utils.schemas.def14a_schema import (
-    GovernanceProfile as _GovernanceProfile,
-)
 from src.data_extract.utils.structure.def14a.carve import (
     _COMPENSATION_CONTENT_RE,
     _DIRECTOR_MAX_FRAC,
@@ -47,6 +35,18 @@ from src.data_extract.utils.structure.def14a.carve import (
     _SAYONPAY_CONTENT_RE,
     _densest_window,
     prepare_def14a_sections,
+)
+from src.data_extract.utils.structure.def14a.def14a_schema import (
+    Def14AExtract as _Def14AExtract,
+)
+from src.data_extract.utils.structure.def14a.def14a_schema import (
+    DirectorInfo as _DirectorInfo,
+)
+from src.data_extract.utils.structure.def14a.def14a_schema import (
+    ExecutiveCompensation as _ExecutiveCompensation,
+)
+from src.data_extract.utils.structure.def14a.def14a_schema import (
+    GovernanceProfile as _GovernanceProfile,
 )
 from src.data_extract.utils.structure.def14a.flatten import _flatten
 

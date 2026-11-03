@@ -25,7 +25,7 @@ from src.data_extract.transformers import step_extract_edgar as step_edgar
 from src.data_extract.transformers import step_extract_zips as step_zips
 from src.data_extract.utils.common import bulk_cache
 from src.data_extract.utils.common.identity import build_identity
-from src.data_extract.utils.insider.insider_common import BULK_DATE_FORMATS, build_insider_frame, screen_insider_rows
+from src.data_extract.utils.edgar_extract.insider_common import BULK_DATE_FORMATS, build_insider_frame, screen_insider_rows
 from src.data_extract.utils.zips import fetch_financial_statements as fin
 from src.data_extract.utils.zips import fetch_insider_transactions as ins
 from src.data_extract.utils.zips import zip_archive

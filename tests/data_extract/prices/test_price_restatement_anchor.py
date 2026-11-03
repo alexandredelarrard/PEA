@@ -7,7 +7,7 @@ stored calendar year) with Yahoo's fresh `close_split` and re-pulls on a mismatc
 Known-truth fixtures: a synthetic deterministic price path per ticker, a spinoff modelled as a factor
 `_FACTOR` on every bar before the ex-date (volume on the same basis), a fake `yf.download` that honours
 tickers, dates and the `actions` flag and records its calls. No network. Everything is driven through the
-public `fetch_prices_and_actions`; an anchor download is any call with `actions=False` (the resume and the
+public `fetch_prices`; an anchor download is any call with `actions=False` (the resume and the
 re-pull downloads carry `actions=True`). `anchor_restated` is the pure comparison.
 """
 
@@ -143,7 +143,7 @@ def _seed(
 
 
 def _fetch(store: DataStore, *, full: bool = False, universe: list[str] | None = None) -> None:
-    fp.fetch_prices_and_actions(_context(store), universe or _UNIVERSE, years_history=1, full=full, as_of=_AS_OF, pause=0.0)
+    fp.fetch_prices(_context(store), fp.YahooSession(pause=0.0), universe or _UNIVERSE, years_history=1, full=full, as_of=_AS_OF)
 
 
 def _stored(store: DataStore, ticker: str, column: str = "close_split") -> pd.Series:

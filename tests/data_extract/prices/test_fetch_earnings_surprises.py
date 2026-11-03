@@ -1,5 +1,5 @@
 """Tests for the incremental earnings-surprise extraction
-(src/data_extract/fetch_earnings_surprises.py).
+(src/data_extract/utils/prices/fetch_earnings_surprises.py).
 
 The network download is not exercised here; what matters is the INCREMENTAL
 plan: unseen tickers get a full pull, stale tickers (no reported quarter within
@@ -15,8 +15,8 @@ from typing import Any, cast
 import numpy as np
 import pandas as pd
 
-from src.data_extract.utils.fundamentals import fetch_earnings_surprises as surprises
-from src.data_extract.utils.fundamentals.fetch_earnings_surprises import _RECENT_LIMIT, _plan_fetch, _resume_dates
+from src.data_extract.utils.prices import fetch_earnings_surprises as surprises
+from src.data_extract.utils.prices.fetch_earnings_surprises import _RECENT_LIMIT, _plan_fetch, _resume_dates
 from src.data_store.schema import Resume, Tables
 
 

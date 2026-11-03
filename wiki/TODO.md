@@ -220,7 +220,7 @@ Deferred from the shared-driver refactor of `src/data_extract`. Stored-value cha
   - [edgar_driver.py](../src/data_extract/utils/edgar_extract/edgar_driver.py): inline the one-use `_build_ticker` hop into `_walk_ticker`; move `num_or_null` (13D/13G only) into [schedule_rows.py](../src/data_extract/utils/edgar_extract/schedule_rows.py).
   - [fetch_13f.py](../src/data_extract/utils/institutionals/fetch_13f.py): collapse `_record`'s if/else (only `backfill_window` differs); delete `position_type` (test-only caller); share one suspect-price warning with the manager catch-up and drop the leading underscore on the names `fetch_13f_managers` imports.
   - 13D/13G: derive `fetch_13g_edgar._COLS` from the 13D columns; run 13D frames through `finalise_frame` like 13G (low risk: PK dedup); build `_ITEM_HEADING_ANYWHERE` from `item_heading` (low risk); one cached `FilingStamp.text` for the best-effort text read in 13D and filing text.
-  - Insider: `date_formats` is the last per-source argument of `build_insider_frame` in [insider_common.py](../src/data_extract/utils/insider/insider_common.py); fold it into the source; drop the two redundant empty-frame conditionals in `fetch_insider_edgar.py`.
+  - Insider: `date_formats` is the last per-source argument of `build_insider_frame` in [insider_common.py](../src/data_extract/utils/edgar_extract/insider_common.py); fold it into the source; drop the two redundant empty-frame conditionals in `fetch_insider_edgar.py`.
   - Elsewhere: delete the unread `on_date` parameter of `Identity.owns`; vectorise `fundamentals_employees._done_dates`; use `Counter` for the vote tallies in `votes/fetch.py`; one `bulk_cache` helper for the period-archive fetch shared by financial statements and notes (keep each caller's clock precedence); `pad_cik_series` in `fetch_tickers.py` (low risk: odd inputs).
   - Constants (needs approval): move `SEC_13D_FORMS`, `SEC_13G_FORMS`, `SEC_INSIDER_FORMS` and `SEC_8K_FORMS`, each with one `src` consumer, next to their fetchers.
 
@@ -308,7 +308,7 @@ Deferred from the identity manual-review run (local run dir `reports/validate/20
 
 ## Governance cube — potential leadership features (deferred)
 
-Recorded at the user's request on 2026-10-24 as future research, **not implementation work for today**. Assess source coverage and point-in-time predictive usefulness before extending the [extraction schemas](../src/data_extract/utils/schemas/def14a_schema.py) or [governance builder](../src/data_aggregate/transformers/step_cube_governance.py).
+Recorded at the user's request on 2026-10-24 as future research, **not implementation work for today**. Assess source coverage and point-in-time predictive usefulness before extending the [extraction schemas](../src/data_extract/utils/structure/def14a/def14a_schema.py) or [governance builder](../src/data_aggregate/transformers/step_cube_governance.py).
 
 - **Career and continuity:** company joining year, internal promotion versus external appointment, prior CEO/CFO roles and explicitly dated operating experience. Keep company, CEO and board tenure distinct.
 - **Oversight and engagement:** audit financial-expert designation, audit/compensation/nomination committee memberships and chairs, and explicit attendance deficiencies. Distinguish group assertions from individual percentages.

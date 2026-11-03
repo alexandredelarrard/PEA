@@ -13,8 +13,8 @@ import pytest
 
 from src.context import Context
 from src.data_extract.utils.common.identity import FilingScope
-from src.data_extract.utils.schemas.def14a_schema import Def14AExtract, OwnershipExtract
 from src.data_extract.utils.structure.def14a import fetch
+from src.data_extract.utils.structure.def14a.def14a_schema import Def14AExtract, OwnershipExtract
 from src.data_extract.utils.structure.def14a.holders import reconcile_holders
 from src.data_extract.utils.structure.def14a.postprocess import append_answer, postprocess_section, refresh_archive
 from src.data_extract.utils.structure.def14a.retry import SECTIONS, reservation_frame

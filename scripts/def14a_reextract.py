@@ -49,8 +49,8 @@ from src.context import Context, get_config_context
 from src.data_extract.utils.common.identity import FilingScope, load_identity
 from src.data_extract.utils.edgar_extract.html_text import html_to_text
 from src.data_extract.utils.edgar_extract.sec_utils import load_cik_mapping
-from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
 from src.data_extract.utils.structure.def14a.carve import prepare_def14a_sections
+from src.data_extract.utils.structure.def14a.def14a_schema import Def14AExtract
 from src.data_extract.utils.structure.def14a.fetch import (
     _fetch_filing_html,
     _list_scope_windows,

@@ -115,7 +115,9 @@ def test_price_fetch_writes_clean_ohlcv_and_the_ex_dates_elsewhere(sqlite_store,
     monkeypatch.setattr(fp, "download_ohlcv", lambda *a, **k: _yf_frame("AAPL", dividend=0.24))
     ctx = SimpleNamespace(store=sqlite_store)
 
-    fp.fetch_prices_and_actions(cast(Any, ctx), tickers=["AAPL"], years_history=15, pause=0.0)
+    session = fp.YahooSession(pause=0.0)
+    for fetch in (fp.fetch_price_actions, fp.fetch_dividends, fp.fetch_prices):
+        fetch(cast(Any, ctx), session, tickers=["AAPL"], years_history=15)
 
     # assert on what LANDED, not on the return value: these fetchers write to the store
     saved = sqlite_store.load(Tables.prices)

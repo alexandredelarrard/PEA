@@ -10,7 +10,7 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
+from src.data_extract.utils.structure.def14a.def14a_schema import Def14AExtract
 from src.data_extract.utils.structure.def14a.postprocess import append_answer, postprocess_section, refresh_archive
 from src.data_extract.utils.structure.def14a.retry import SECTIONS
 from src.data_store.schema import Tables

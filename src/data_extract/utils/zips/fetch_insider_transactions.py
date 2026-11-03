@@ -42,7 +42,7 @@ from src.data_extract.utils.common.bulk_cache import (
 )
 from src.data_extract.utils.common.identity import Identity, load_identity
 from src.data_extract.utils.common.resume import ArchiveWork, archive_worklist
-from src.data_extract.utils.insider.insider_common import (
+from src.data_extract.utils.edgar_extract.insider_common import (
     BULK_DATE_FORMATS,
     INSIDER_COLUMNS,
     INSIDER_FIELDS,
@@ -61,7 +61,7 @@ from src.data_extract.utils.insider.insider_common import (
     stamp_lineage,
     top_counts,
 )
-from src.data_extract.utils.insider.insider_store import patch_insider_source, save_insider_source
+from src.data_extract.utils.edgar_extract.insider_store import patch_insider_source, save_insider_source
 from src.data_store.schema import Resume, Tables
 from src.utils.filer_tables import FilerTable, removal_records
 from src.utils.string import pad_cik_series, run_date

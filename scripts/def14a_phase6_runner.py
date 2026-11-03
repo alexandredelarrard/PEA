@@ -49,15 +49,15 @@ if str(ROOT) not in sys.path:
 
 from src.context import get_config_context
 from src.data_extract.utils.edgar_extract.html_text import html_to_text
-from src.data_extract.utils.schemas.def14a_schema import Def14AExtract
-from src.data_extract.utils.schemas.vote_schema import Item507Extract
 from src.data_extract.utils.structure.def14a.carve import prepare_def14a_sections
+from src.data_extract.utils.structure.def14a.def14a_schema import Def14AExtract
 from src.data_extract.utils.structure.def14a.flatten import _child_frames, _flatten
 from src.data_extract.utils.structure.votes.fetch import _SOURCE_COLS
 from src.data_extract.utils.structure.votes.flatten import _prepare_frame as _prepare_vote_frame
 from src.data_extract.utils.structure.votes.flatten import _proposal_rows
 from src.data_extract.utils.structure.votes.guard import rejection_reason
 from src.data_extract.utils.structure.votes.roles import _role_map
+from src.data_extract.utils.structure.votes.vote_schema import Item507Extract
 from src.data_store.schema import Resume, Tables
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 from src.gpt_extract.transformers.step_gpt_extracter import with_gpt_overrides

@@ -206,6 +206,59 @@ def test_read_notes_empty_when_universe_disjoint(zip_path):
     assert num.empty and txt.empty
 
 
+_PRIMARY = "PensionAndOtherPostretirementDefinedBenefitPlansLiabilitiesNoncurrent"
+_VARIANT = "DefinedBenefitPensionPlanLiabilitiesNoncurrent"
+_PBO = "DefinedBenefitPlanBenefitObligation"
+_PRE_COLS = ["adsh", "report", "line", "stmt", "inpth", "tag", "version", "prole", "plabel", "negating"]
+HWM = "0000004281-22-000004"  # variant on the balance sheet, primary only on a footnote (OPEB-only)
+IBM = "0000051143-20-001334"  # primary on the balance sheet, variant only on a footnote
+
+
+def _net_liability_zip(path: Path, pre: list[tuple[str, str, str]] | None) -> Path:
+    """Notes zip with undimensioned net-liability and PBO rows on two accessions; `pre` = (adsh, tag, stmt) rows, None = no pre.tsv."""
+    sub = [
+        "\t".join(_SUB_COLS),
+        *(_row(_SUB_COLS, adsh=a, cik="320193", form="10-K", period="20211231", fy="2021", fp="FY", filed="20220201") for a in (HWM, IBM)),
+    ]
+    num = ["\t".join(_NUM_COLS)]
+    for adsh in (HWM, IBM):
+        for tag, value in ((_PRIMARY, 153), (_VARIANT, 771), (_PBO, 5000)):
+            num.append(_row(_NUM_COLS, adsh=adsh, tag=tag, ddate="20211231", qtrs="0", uom="USD", dimn="0", value=value))
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("sub.tsv", "\n".join(sub))
+        z.writestr("num.tsv", "\n".join(num))
+        z.writestr("txt.tsv", "\t".join(_TXT_COLS))
+        if pre is not None:
+            rows = ["\t".join(_PRE_COLS)] + [_row(_PRE_COLS, adsh=a, tag=t, stmt=s) for a, t, s in pre]
+            z.writestr("pre.tsv", "\n".join(rows))
+    return path
+
+
+def test_net_liability_tags_kept_only_when_on_the_balance_sheet(tmp_path):
+    pre = [
+        (HWM, _VARIANT, "BS"),  # HWM: variant is the balance-sheet line
+        (HWM, _PRIMARY, ""),  # primary is an OPEB-only footnote line
+        (HWM, _PBO, ""),
+        (IBM, _PRIMARY, "BS"),  # IBM: primary is the balance-sheet line
+        (IBM, _VARIANT, "CF"),
+    ]
+    num, _ = fn._read_notes(_net_liability_zip(tmp_path / "2022q1_notes.zip", pre), IDENTITY, {"AAPL"})
+    kept = {(r.adsh, r.tag) for r in num.itertuples()}
+    assert kept == {(HWM, _VARIANT), (HWM, _PBO), (IBM, _PRIMARY), (IBM, _PBO)}
+    print("\n=== SANITY: net-liability tags need a balance-sheet presentation ===")
+    print(f"  kept = {sorted(kept)}")
+    print("  -> HWM footnote-only primary dropped, IBM balance-sheet primary kept, PBO untouched.")
+
+
+def test_net_liability_tags_dropped_with_warning_when_pre_is_missing(tmp_path, caplog):
+    with caplog.at_level("WARNING", logger=fn.logger.name):
+        num, _ = fn._read_notes(_net_liability_zip(tmp_path / "2022q1_notes.zip", None), IDENTITY, {"AAPL"})
+    assert set(num["tag"]) == {_PBO} and len(num) == 2
+    assert "pre.tsv" in caplog.text and "2022q1_notes.zip" in caplog.text
+    print("\n=== SANITY: pre.tsv missing ===")
+    print(f"  tags kept = {sorted(set(num['tag']))}; warning logged = {'pre.tsv' in caplog.text}")
+
+
 def test_join_num_drops_nan_value():
     sub_meta = pd.DataFrame(
         {

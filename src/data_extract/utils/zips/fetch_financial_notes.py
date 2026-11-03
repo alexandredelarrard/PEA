@@ -48,7 +48,9 @@ CHUNK_ROWS = 500_000
 _LANDING_URL = "https://www.sec.gov/data-research/sec-markets-data/financial-statement-notes-data-sets"
 _NOTES_TABLES = (Tables.notes_num, Tables.notes_text)
 
-# Curated footnote pension tags (undimensioned totals); discount-rate tags are percentages, not USD.
+# Curated footnote pension tags (undimensioned totals); discount-rate tags are percentages, not USD. The two recognized
+# net-liability tags (`_NET_LIABILITY_TAGS`) are kept only on the filing's balance sheet (`pre.tsv` stmt BS): a footnote
+# line (OPEB-only, a sub-plan) carries the same undimensioned tag with another fact.
 _NOTES_NUM_TAGS = frozenset(
     {
         "DefinedBenefitPlanBenefitObligation",  # PBO
@@ -65,6 +67,13 @@ _NOTES_NUM_TAGS = frozenset(
         "DefinedBenefitPlanWeightedAverageAssumptionsUsedCalculatingBenefitObligationDiscountRate",
         "PensionAndOtherPostretirementDefinedBenefitPlansLiabilitiesNoncurrent",  # recognized net liability (balance sheet)
         "DefinedBenefitPensionPlanLiabilitiesNoncurrent",  # recognized net liability, pension-only variant
+    }
+)
+
+_NET_LIABILITY_TAGS = frozenset(
+    {
+        "PensionAndOtherPostretirementDefinedBenefitPlansLiabilitiesNoncurrent",
+        "DefinedBenefitPensionPlanLiabilitiesNoncurrent",
     }
 )
 
@@ -97,6 +106,7 @@ _NOTES_TEXT_TAGS = frozenset(
 _SUB_USECOLS = frozenset({"adsh", "cik", "form", "fy", "fp", "filed"})
 _NUM_USECOLS = frozenset({"adsh", "tag", "ddate", "qtrs", "uom", "dimn", "coreg", "footnote", "value"})
 _TXT_USECOLS = frozenset({"adsh", "tag", "ddate", "qtrs", "dimn", "coreg", "escaped", "txtlen", "footnote", "value"})
+_PRE_USECOLS = frozenset({"adsh", "tag", "stmt"})
 _FACT_PK = ["adsh", "tag", "ddate", "qtrs"]
 _NOTES_ZIP_NAME = re.compile(r"(\d{4}(?:q[1-4]|_\d{2}))_notes\.zip")
 _NUM_OUT = ["cik", "ticker", "adsh", "tag", "ddate", "qtrs", "uom", "value", "footnote", "form", "fy", "fp", "filed", "period", "available_at"]
@@ -271,8 +281,34 @@ def _consolidated_rows(chunk: pd.DataFrame, adsh_set: set[str], tags: frozenset[
     return chunk["adsh"].isin(adsh_set) & chunk["tag"].isin(tags) & (dimn == 0) & (coreg == "")
 
 
+def _balance_sheet_rows(chunk: pd.DataFrame, adsh_set: set[str]) -> pd.Series:
+    """`pre.tsv` rows presenting a net-liability tag of a universe filing on the balance sheet (stmt BS)."""
+    return chunk["adsh"].isin(adsh_set) & chunk["tag"].isin(_NET_LIABILITY_TAGS) & (chunk["stmt"] == "BS")
+
+
+def _on_balance_sheet(num: pd.DataFrame, pre: pd.DataFrame, zip_name: str) -> pd.DataFrame:
+    """`num` without the net-liability rows the filing does not present on its balance sheet.
+
+    A footnote line (OPEB-only, a sub-plan) carries the same undimensioned tag with a different fact, so a
+    net-liability row survives only when `pre` lists its (adsh, tag) with stmt BS. A zip without `pre.tsv`
+    keeps no net-liability row (warned), never an unchecked one. Pure besides the warning.
+    """
+    net = num["tag"].isin(_NET_LIABILITY_TAGS)
+    if not net.any():
+        return num
+    if "adsh" not in pre.columns:
+        logger.warning("%s: no pre.tsv, dropping the %d net-liability rows (balance-sheet presentation unknown)", zip_name, net.sum())
+        return num[~net].reset_index(drop=True)
+    shown = pd.MultiIndex.from_frame(pre[["adsh", "tag"]].drop_duplicates())
+    keep = ~net | pd.MultiIndex.from_frame(num[["adsh", "tag"]]).isin(shown)
+    return num[keep].reset_index(drop=True)
+
+
 def _read_notes(path: Path, identity: Identity, universe: set[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """One notes zip -> `(num facts, text)` for universe filings; num/txt stream in chunks keeping consolidated curated rows."""
+    """One notes zip -> `(num facts, text)` for universe filings; num/txt stream in chunks keeping consolidated curated rows.
+
+    The net-liability tags need a balance-sheet presentation in `pre.tsv` (`_on_balance_sheet`).
+    """
     empty = (pd.DataFrame(), pd.DataFrame())
     subs = read_zip_tables(path, {"sub.tsv": ZipRead(usecols=_SUB_USECOLS)}, on_corrupt="delete", log=logger)
     if not subs:
@@ -285,10 +321,14 @@ def _read_notes(path: Path, identity: Identity, universe: set[str]) -> tuple[pd.
         member: ZipRead(usecols=usecols, keep=partial(_consolidated_rows, adsh_set=adsh_set, tags=tags), chunksize=CHUNK_ROWS, skip_bad_lines=True)
         for member, usecols, tags in (("num.tsv", _NUM_USECOLS, _NOTES_NUM_TAGS), ("txt.tsv", _TXT_USECOLS, _NOTES_TEXT_TAGS))
     }
+    specs["pre.tsv"] = ZipRead(
+        usecols=_PRE_USECOLS, keep=partial(_balance_sheet_rows, adsh_set=adsh_set), chunksize=CHUNK_ROWS, required=False, skip_bad_lines=True
+    )
     tables = read_zip_tables(path, specs, on_corrupt="delete", log=logger)
     if not tables:
         return empty
-    return _join_notes_num(tables["num.tsv"], sub_meta), _join_notes_text(tables["txt.tsv"], sub_meta)
+    num = _on_balance_sheet(tables["num.tsv"], tables["pre.tsv"], path.name)
+    return _join_notes_num(num, sub_meta), _join_notes_text(tables["txt.tsv"], sub_meta)
 
 
 def _repair_stored_clocks(context: Context, cache: Path, overwrite: bool) -> dict[str, date]:

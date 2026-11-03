@@ -41,6 +41,30 @@ def test_cli_refuses_names_outside_the_universe_before_any_fetch(
     print(f"SANITY: -t {names} exits non-zero naming {message!r}; the fetcher was never called.")
 
 
+@pytest.mark.parametrize(
+    "only,expected",
+    [
+        ((), ["sec-tickers", "sharadar-tickers", "sync"]),
+        (("--only", "sync"), ["sync"]),
+        (("--only", "sharadar-tickers", "--only", "sec-tickers"), ["sharadar-tickers", "sec-tickers"]),
+    ],
+)
+def test_cli_universe_runs_the_named_parts_in_order(only: tuple[str, ...], expected: list[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    ran: list[str] = []
+    step = SimpleNamespace(
+        run_sec_tickers=lambda: ran.append("sec-tickers"),
+        run_sharadar_tickers=lambda: ran.append("sharadar-tickers"),
+        run_sync=lambda: ran.append("sync"),
+    )
+    monkeypatch.setattr(cli_mod, "get_config_context", lambda path, **kwargs: (None, None))
+    monkeypatch.setattr(cli_mod, "StepExtractUniverse", lambda context, config, as_of: step)
+
+    result = CliRunner().invoke(cli_mod.cli, ["universe", *only])
+    assert result.exit_code == 0, result.exception
+    assert ran == expected
+    print(f"SANITY: `universe {' '.join(only)}` ran {ran}.")
+
+
 def test_cli_default_is_the_universe_list(sqlite_store: Any) -> None:
     context = SimpleNamespace(universe=seed_universe(sqlite_store, ["AAPL", "MSFT"]))
 

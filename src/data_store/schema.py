@@ -785,8 +785,7 @@ class Tables:
     # ⚠ `secfilings` IS THE ONLY PLACE A CIK APPEARS IN ANY SHARADAR TABLE -- it is an EDGAR
     # browse URL and the CIK is embedded in its query string (`...&CIK=0000320193&...`).
     # Every one of the 17,867 rows carries one, so it is a full-coverage third opinion on
-    # ticker->CIK, independent of both the Wikipedia-sourced `tickers_universe.cik` and EDGAR's
-    # own ticker table. `relatedtickers` is added alongside it for the same reason.
+    # ticker->CIK, independent of the SEC-sourced `tickers_universe.cik`. `relatedtickers` is added alongside it for the same reason.
     # `cusips` and `figi` are likewise stored and unread; they are the natural inputs to the
     # deferred `cusip_ticker_map` date axis, which is out of scope here.
     # Corporate actions: dividends, splits, spinoffs, acquisitions, name/SIC changes and

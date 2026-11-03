@@ -26,7 +26,7 @@ sequenceDiagram
   participant Peers as Peer deduction
   participant Cube as Cube builders
   participant Predict as Prediction DAG
-  Airflow->>Extract: seed universe
+  Airflow->>Extract: SEC + Sharadar ticker lists, sync universe
   Airflow->>Extract: download SEC bulk zips
   Airflow->>Extract: build and propagate identity
   Airflow->>Extract: ingest zips, refresh EDGAR index

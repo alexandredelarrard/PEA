@@ -15,18 +15,18 @@ import pytest
 from src.data_extract import step_extract_all_data as all_data_module
 from src.data_extract.step_extract_all_data import StepExtractAllData
 from src.data_extract.transformers import step_extract_identity as identity_module
+from src.data_extract.transformers import step_extract_universe as universe_module
 from src.data_extract.transformers import step_extract_zips as zips_module
 from tests.support.universe import seed_universe
 
 PRE_EDGAR_STEPS = ("prices", "institutionals", "fundamentals_sharadar", "fundamentals")
 EDGAR_AND_LLM = ("edgar", "llm_init", "def14a_llm", "votes_llm")
 DOMAIN_STEPS = (*PRE_EDGAR_STEPS, *EDGAR_AND_LLM, "behavioral")
-UNIVERSE_STAGE = ("sharadar_tickers", "universe_sync")
+UNIVERSE_STAGE = ("sec_tickers", "sharadar_tickers", "universe_sync")
 IDENTITY_STAGE = (
     "insider_download",
     "notes_download",
     "ftd_download",
-    "sec_tickers",
     "dei_capture",
     "ftd_capture",
     "form345_scan",
@@ -53,14 +53,14 @@ def _step(monkeypatch, store, order: list[str], *, boom: str | None = None) -> A
 
         return call
 
-    monkeypatch.setattr(all_data_module, "fetch_sharadar_tickers", mark("sharadar_tickers"))
-    monkeypatch.setattr(all_data_module, "sync", mark("universe_sync"))
+    monkeypatch.setattr(universe_module, "download_sec_company_tickers", mark("sec_tickers", 0))
+    monkeypatch.setattr(universe_module, "fetch_sharadar_tickers", mark("sharadar_tickers"))
+    monkeypatch.setattr(universe_module, "sync", mark("universe_sync", 0))
     monkeypatch.setattr(zips_module, "cache_dir", lambda context, name: Path("cache") / name)
     monkeypatch.setattr(zips_module, "notes_periods", lambda context, years_history, today: ["2026q1"])
     monkeypatch.setattr(zips_module, "download_insider_transactions", mark("insider_download", []))
     monkeypatch.setattr(zips_module, "download_notes_periods", mark("notes_download", 0))
     monkeypatch.setattr(zips_module, "download_fails_to_deliver", mark("ftd_download", 0))
-    monkeypatch.setattr(zips_module, "download_sec_company_tickers", mark("sec_tickers", 0))
     monkeypatch.setattr(zips_module, "fetch_insider_transactions", mark("insider_ingest", 0))
     monkeypatch.setattr(zips_module, "ingest_financial_notes", mark("notes_ingest", 0))
     monkeypatch.setattr(zips_module, "fetch_fails_to_deliver", mark("ftd_ingest", 0))

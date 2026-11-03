@@ -3,14 +3,13 @@ sync.py  (src/utils/tickers_universe/sync.py)
 ---------------------------------------------
 `sync`: the only writer of `tickers_universe`. Keeps one row per `universe.yml` ticker.
 
-* A row is removed when its ticker leaves the yml and built when one enters: name, CIK and GICS
-  from Wikipedia's S&P 500 table (Sharadar's name and `secfilings` CIK, NULL GICS, for a ticker
-  Wikipedia does not list; Sharadar's CIK for a blank Wikipedia CIK); `universe_added_on` =
-  2000-01-01 when the ticker already has prices (an established name, so a first build does not
-  mark everything new), else `as_of`.
-* name, CIK, GICS and `universe_added_on` of an existing row are never rewritten.
-* `cusips` and the Sharadar category columns follow `sharadar_tickers` every run; only rows that
-  differ are written, so an unchanged night writes nothing.
+* A row is removed when its ticker leaves the yml and built when one enters: CIK and name from the
+  `sec_company_tickers` snapshot (Sharadar's `secfilings` CIK and name for a ticker the SEC no longer
+  lists); `universe_added_on` = 2000-01-01 when the ticker already has prices (an established name, so
+  a first build does not mark everything new), else `as_of`.
+* name, CIK and `universe_added_on` of an existing row are never rewritten.
+* GICS follows the yml (`universe_classification`), `cusips` and the Sharadar category columns follow
+  `sharadar_tickers`, every run; only rows that differ are written, so an unchanged night writes nothing.
 * A yml ticker with no Sharadar row aborts the sync.
 """
 
@@ -24,13 +23,12 @@ from omegaconf import DictConfig
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.string import pad_cik, yahoo_symbol
-from src.utils.tickers_universe.universe import UniverseError, universe_config
-from src.utils.tickers_universe.wikipedia_bootstrap import wikipedia_sp500
+from src.utils.tickers_universe.universe import UniverseError, universe_classification, universe_config
 
 logger = logging.getLogger(__name__)
 
 ESTABLISHED_ADDED_ON = pd.Timestamp("2000-01-01")
-CARRIED_COLUMNS = ["ticker", "name", "cik", "sector", "industry_group", "sub_industry", "universe_added_on"]
+CARRIED_COLUMNS = ["ticker", "name", "cik", "universe_added_on"]
 #: sharadar_tickers column -> tickers_universe column
 SHARADAR_COLUMNS = {
     "permaticker": "permaticker",
@@ -51,8 +49,9 @@ SHARADAR_READ = ["ticker", "isdelisted", "lastupdated", "cusips", "secfilings", 
 
 
 def sync(store: DataStore, config: DictConfig, as_of: pd.Timestamp) -> int:
-    """Bring `tickers_universe` in line with `universe.yml` and `sharadar_tickers`; returns the rows written."""
+    """Bring `tickers_universe` in line with `universe.yml`, `sec_company_tickers` and `sharadar_tickers`; returns the rows written."""
     tickers, aliases = universe_config(config)
+    gics = universe_classification(config)
     stored = store.load(Tables.tickers_universe, optional=True)
     sharadar = _sharadar_rows(store, [*tickers, *(a for symbols in aliases.values() for a in symbols)])
     unmatched = sorted(set(tickers) - set(sharadar.index))
@@ -63,7 +62,12 @@ def sync(store: DataStore, config: DictConfig, as_of: pd.Timestamp) -> int:
     entering = sorted(set(tickers) - set(kept["ticker"]))
     built = _new_rows(store, entering, sharadar, as_of) if entering else None
     carried = pd.concat([f for f in (kept, built) if f is not None and not f.empty], ignore_index=True)
-    table = carried.merge(_sharadar_columns(sharadar, tickers, aliases), on="ticker", how="left").sort_values("ticker").reset_index(drop=True)
+    table = (
+        carried.merge(gics, left_on="ticker", right_index=True, how="left")
+        .merge(_sharadar_columns(sharadar, tickers, aliases), on="ticker", how="left")
+        .sort_values("ticker")
+        .reset_index(drop=True)
+    )
 
     leaving = sorted(set(stored["ticker"]) - set(tickers)) if stored is not None else []
     if leaving:
@@ -109,23 +113,23 @@ def _cusips(sharadar: pd.DataFrame, symbols: list[str]) -> str | None:
 
 
 def _new_rows(store: DataStore, entering: list[str], sharadar: pd.DataFrame, as_of: pd.Timestamp) -> pd.DataFrame:
-    """Carried columns for tickers with no stored row: Wikipedia first, Sharadar's name and CIK otherwise."""
+    """Carried columns for tickers with no stored row: the SEC snapshot first, Sharadar's name and CIK otherwise."""
     priced = set(store.distinct(Tables.prices, "ticker", where={"ticker": entering}))
-    wiki = wikipedia_sp500().drop_duplicates("ticker").set_index("ticker").reindex(entering)
+    sec = store.load(Tables.sec_company_tickers, columns=["ticker", "cik", "name"], where={"ticker": entering}, optional=True)
+    rows = (sec if sec is not None else pd.DataFrame(columns=["ticker", "cik", "name"])).set_index("ticker").reindex(entering)
 
-    # Sharadar fills what Wikipedia lacks: the name of an unlisted ticker, any blank CIK.
-    missing = wiki.index[wiki["name"].isna()].tolist()
-    if missing:
-        logger.warning("%s not in Wikipedia's S&P 500 table: Sharadar name and CIK, NULL GICS", missing)
-        wiki.loc[missing, "name"] = sharadar.loc[missing, "name"]
-    blank = wiki.index[wiki["cik"].fillna("").eq("")].tolist()
-    wiki.loc[blank, "cik"] = [pad_cik(s) for s in sharadar.loc[blank, "secfilings"].str.extract(r"CIK=(\d+)", expand=False).fillna("")]
-    no_cik = sorted(wiki.index[wiki["cik"].fillna("").eq("")])
+    unlisted = rows.index[rows["cik"].isna()].tolist()
+    if unlisted:
+        logger.warning("%s not in %s: Sharadar name and CIK", unlisted, Tables.sec_company_tickers)
+        cik = sharadar.loc[unlisted, "secfilings"].str.extract(r"CIK=(\d+)", expand=False)
+        rows.loc[unlisted, "cik"] = [pad_cik(c) if isinstance(c, str) else None for c in cik]
+        rows.loc[unlisted, "name"] = sharadar.loc[unlisted, "name"]
+    no_cik = sorted(rows.index[rows["cik"].isna()])
     if no_cik:
-        raise UniverseError(f"no CIK from Wikipedia or Sharadar for {no_cik}")
-    wiki["universe_added_on"] = [ESTABLISHED_ADDED_ON if t in priced else as_of for t in entering]
+        raise UniverseError(f"no CIK from {Tables.sec_company_tickers} or Sharadar for {no_cik}")
+    rows["universe_added_on"] = [ESTABLISHED_ADDED_ON if t in priced else as_of for t in entering]
     logger.info("%d ticker(s) enter %s (%d already priced)", len(entering), Tables.tickers_universe, len(priced))
-    return wiki.reset_index(names="ticker")[CARRIED_COLUMNS]
+    return rows.reset_index(names="ticker")[CARRIED_COLUMNS]
 
 
 def _changed_rows(table: pd.DataFrame, stored: pd.DataFrame | None) -> pd.DataFrame:

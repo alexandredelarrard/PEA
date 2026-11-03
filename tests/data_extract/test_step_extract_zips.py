@@ -16,13 +16,12 @@ from src.data_extract.transformers import step_extract_zips as module
 from src.data_extract.transformers.step_extract_zips import StepExtractZips, ZipsOptions
 from tests.support.universe import universe_of
 
-DOWNLOADS = ("insider_download", "notes_download", "ftd_download", "sec_tickers")
+DOWNLOADS = ("insider_download", "notes_download", "ftd_download")
 INGESTS = ("insider_ingest", "notes_ingest", "ftd_ingest")
 METHODS = {
     "insider_download": "run_download_insider",
     "notes_download": "run_download_financial_notes",
     "ftd_download": "run_download_fails_to_deliver",
-    "sec_tickers": "run_download_sec_tickers",
     "insider_ingest": "run_ingest_insider",
     "notes_ingest": "run_ingest_financial_notes",
     "ftd_ingest": "run_ingest_fails_to_deliver",
@@ -55,7 +54,6 @@ def _stub(monkeypatch: pytest.MonkeyPatch, calls: list[tuple[str, tuple, dict]],
     monkeypatch.setattr(module, "download_insider_transactions", mark("insider_download", []))
     monkeypatch.setattr(module, "download_notes_periods", mark("notes_download"))
     monkeypatch.setattr(module, "download_fails_to_deliver", mark("ftd_download"))
-    monkeypatch.setattr(module, "download_sec_company_tickers", mark("sec_tickers"))
     monkeypatch.setattr(module, "fetch_insider_transactions", mark("insider_ingest"))
     monkeypatch.setattr(module, "ingest_financial_notes", mark("notes_ingest"))
     monkeypatch.setattr(module, "repair_notes_availability", mark("notes_repair"))

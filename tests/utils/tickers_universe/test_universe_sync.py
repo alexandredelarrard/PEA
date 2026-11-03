@@ -1,9 +1,8 @@
 """`sync` builds `tickers_universe` from scratch on live-exported fixtures and keeps it current.
 
-Fixtures (read-only exports of 2026-11-02): `roster.csv` is the pre-refactor roster table (500 rows),
-`sharadar_tickers.csv` the Sharadar rows of the 491 universe tickers and their alias symbols.
-The Wikipedia page is rendered from the roster, so the parser, the `.`->`-` spelling, the CIK
-padding and the sub-industry dictionary are checked against the stored values.
+Fixtures (read-only exports): `roster.csv` is the pre-refactor roster table (500 rows, 2026-11-02),
+`sharadar_tickers.csv` the Sharadar rows of the 491 universe tickers and their alias symbols (2026-11-02),
+`sec_company_tickers.csv` the SEC snapshot rows of the same symbols (2026-10-23).
 """
 
 from __future__ import annotations
@@ -16,11 +15,8 @@ import pytest
 
 from src.data_store.schema import Tables
 from src.utils.config import read_config
-from src.utils.tickers_universe import sync as sync_module
 from src.utils.tickers_universe.sync import sync
 from src.utils.tickers_universe.universe import Universe, UniverseError
-from src.utils.tickers_universe.vocabulary import GICS_INDUSTRY_GROUPS, GICS_SECTORS
-from src.utils.tickers_universe.wikipedia_bootstrap import parse_sp500_table
 from tests.support.universe import universe_config
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "universe"
@@ -33,48 +29,48 @@ def roster() -> pd.DataFrame:
 
 
 @pytest.fixture
+def sec() -> pd.DataFrame:
+    return pd.read_csv(FIXTURES / "sec_company_tickers.csv", dtype=str, parse_dates=["fetched_at"])
+
+
+@pytest.fixture
 def config():
     return read_config(path=str(Path(__file__).resolve().parents[3] / "configs"))
 
 
 @pytest.fixture
-def store(sqlite_store, roster, monkeypatch):
+def store(sqlite_store, roster, sec):
     sharadar = pd.read_csv(FIXTURES / "sharadar_tickers.csv", dtype=str).assign(table="fundamentals")
     sharadar["permaticker"] = sharadar["permaticker"].astype("int64")
     sharadar["lastupdated"] = pd.to_datetime(sharadar["lastupdated"])
     sqlite_store.save(Tables.sharadar_tickers, sharadar)
+    sqlite_store.save(Tables.sec_company_tickers, sec)
     sqlite_store.save(Tables.prices, pd.DataFrame({"ticker": roster["ticker"], "date": pd.Timestamp("2026-10-30"), "close": 1.0}))
-    page = parse_sp500_table_from(roster)
-    monkeypatch.setattr(sync_module, "wikipedia_sp500", lambda: page)
     return sqlite_store
 
 
-def parse_sp500_table_from(roster: pd.DataFrame) -> pd.DataFrame:
-    """The roster rendered as Wikipedia's table (`.` class separator, unpadded CIK) and parsed back."""
-    page = roster.assign(Symbol=roster["ticker"].str.replace("-", "."), CIK=pd.to_numeric(roster["cik"]).astype("Int64")).rename(
-        columns={"name": "Security", "sector": "GICS Sector", "sub_industry": "GICS Sub-Industry"}
-    )
-    return parse_sp500_table(page[["Symbol", "Security", "GICS Sector", "GICS Sub-Industry", "CIK"]].to_html(index=False))
+def _entries(config, tickers: list[str]) -> dict[str, dict[str, str]]:
+    return {t: dict(config.universe.tickers[t]) for t in tickers}
 
 
-def test_first_build_matches_the_pre_change_roster(store, roster, config) -> None:
+def test_first_build_takes_sec_identity_and_the_yml_gics(store, roster, sec, config) -> None:
     written = sync(store, config, AS_OF)
     universe = Universe(store, config)
     built = universe.frame.set_index("ticker")
     expected = roster.set_index("ticker").loc[universe.tickers]
-    columns = ["name", "cik", "sector", "industry_group", "sub_industry"]
-    diff = (built[columns] != expected[columns]).any(axis=1)
+    gics = ["cik", "sector", "industry_group", "sub_industry"]
+    diff = (built[gics] != expected[gics]).any(axis=1)
 
     assert written == len(universe.tickers) == 491
-    assert not diff.any(), built[columns][diff]
+    assert not diff.any(), built[gics][diff]
+    assert built["name"].tolist() == sec.set_index("ticker").loc[universe.tickers, "name"].tolist()
     assert set(built["universe_added_on"].astype(str)) == {"2000-01-01"}
     assert built.loc["GOOGL", "cusips"] == "02079K305 38259P508"
     assert built.loc["BRK-B", "cusips"] == "084670207 084670702"
     assert built["cusips"].notna().all()
-    assert set(built["sector"]) <= GICS_SECTORS and set(built["industry_group"]) <= GICS_INDUSTRY_GROUPS
     print("\n=== SANITY CHECK: first build ===")
-    print(f"  {written} rows; name/cik/3 GICS columns equal the roster for all 491; every row has CUSIPs;")
-    print(f"  {built['sector'].nunique()} sectors / {built['industry_group'].nunique()} groups, all in the vocabulary.")
+    print(f"  {written} rows; CIK (SEC) and the 3 GICS columns (yml) equal the pre-refactor roster for all 491; names are SEC's;")
+    print(f"  every row has CUSIPs; {built['sector'].nunique()} sectors / {built['industry_group'].nunique()} groups.")
 
 
 def test_gics_codes_equal_the_pre_change_codes(store, config) -> None:
@@ -103,7 +99,7 @@ def test_second_sync_writes_nothing_and_keeps_the_table(store, config) -> None:
     print("  a second sync the next day writes 0 rows; the frame (incl. universe_added_on) is identical.")
 
 
-def test_a_sharadar_change_rewrites_only_that_row_and_never_the_carried_columns(store, config, monkeypatch) -> None:
+def test_a_sharadar_change_rewrites_only_that_row_and_never_the_carried_columns(store, sec, config) -> None:
     sync(store, config, AS_OF)
     store.save(
         Tables.sharadar_tickers,
@@ -113,16 +109,39 @@ def test_a_sharadar_change_rewrites_only_that_row_and_never_the_carried_columns(
     row = Universe(store, config).frame.set_index("ticker").loc["AAPL"]
 
     assert written == 1
-    assert row["category"] == "X" and row["sharadar_name"] == "NEW" and row["name"] == "Apple Inc."
+    assert row["category"] == "X" and row["sharadar_name"] == "NEW" and row["name"] == sec.set_index("ticker").loc["AAPL", "name"]
     print("\n=== SANITY CHECK: nightly refresh ===")
-    print("  one Sharadar change -> 1 row written; the carried name stays the roster's.")
+    print("  one Sharadar change -> 1 row written; the carried name stays the SEC one.")
+
+
+def test_a_gics_edit_in_the_yml_rewrites_only_that_row(store, config) -> None:
+    sync(store, config, AS_OF)
+    entries = _entries(config, list(config.universe.tickers))
+    entries["AAPL"] = {"sector": "Information Technology", "industry": "Semiconductors"}
+    written = sync(store, universe_config(entries, config.universe.aliases), AS_OF)
+    row = Universe(store, config).frame.set_index("ticker").loc["AAPL"]
+
+    assert written == 1
+    assert (row["sub_industry"], row["industry_group"]) == ("Semiconductors", "Semiconductors & Semiconductor Equipment")
+    print("\n=== SANITY CHECK: yml GICS ===")
+    print("  AAPL's yml industry edited -> 1 row written, its industry group derived from the vocabulary.")
+
+
+def test_an_invalid_gics_entry_aborts_naming_every_ticker(store, config) -> None:
+    entries = _entries(config, ["AAPL", "MSFT", "JPM"])
+    entries["AAPL"] = {"sector": "Financials", "industry": "Semiconductors"}
+    entries["MSFT"] = {"sector": "Information Technology", "industry": "Fintech"}
+    with pytest.raises(UniverseError, match=r"AAPL .*MSFT"):
+        sync(store, universe_config(entries), AS_OF)
+    assert not store.exists(Tables.tickers_universe)
+    print("\n=== SANITY CHECK: invalid GICS ===")
+    print("  a sub-industry outside its sector (AAPL) and an unknown one (MSFT) -> one UniverseError naming both, nothing written.")
 
 
 def test_entering_and_leaving_tickers(store, config) -> None:
     sync(store, config, AS_OF)
     tickers = [t for t in config.universe.tickers if t != "ZTS"]
-    small = universe_config(tickers, config.universe.aliases)
-    sync(store, small, AS_OF)
+    sync(store, universe_config(_entries(config, tickers), config.universe.aliases), AS_OF)
     store.delete(Tables.prices, {"ticker": ["ZTS"]})
     sync(store, config, AS_OF + pd.Timedelta(days=3))
     universe = Universe(store, config)
@@ -136,8 +155,9 @@ def test_entering_and_leaving_tickers(store, config) -> None:
 
 
 def test_a_ticker_without_a_sharadar_row_aborts(store) -> None:
+    gics = {"sector": "Information Technology", "industry": "Application Software"}
     with pytest.raises(UniverseError, match="FOO"):
-        sync(store, universe_config(["AAPL", "FOO"]), AS_OF)
+        sync(store, universe_config({"AAPL": gics, "FOO": gics}), AS_OF)
     assert not store.exists(Tables.tickers_universe)
     print("\n=== SANITY CHECK: unmatched ticker ===")
     print("  FOO has no Sharadar row -> UniverseError naming it, nothing written.")
@@ -165,12 +185,11 @@ def test_alias_cusips_join_the_union_and_a_listed_row_beats_a_delisted_one(store
     print("  GOOG's own CUSIP joins GOOGL's union; AAPL keeps its listed row over a newer delisted one.")
 
 
-def test_a_blank_wikipedia_cik_takes_sharadars(store, roster, config, monkeypatch) -> None:
-    page = parse_sp500_table_from(roster.assign(cik=roster["cik"].where(roster["ticker"] != "AAPL")))
-    monkeypatch.setattr(sync_module, "wikipedia_sp500", lambda: page)
+def test_a_ticker_the_sec_no_longer_lists_takes_sharadars_cik_and_name(store, config) -> None:
+    store.delete(Tables.sec_company_tickers, {"ticker": ["AAPL"]})
     sync(store, config, AS_OF)
     built = Universe(store, config).frame.set_index("ticker")
 
-    assert built.loc["AAPL", "cik"] == "0000320193" and built.loc["AAPL", "name"] == "Apple Inc."
-    print("\n=== SANITY CHECK: blank Wikipedia CIK ===")
-    print("  AAPL listed on Wikipedia with no CIK takes Sharadar's secfilings CIK 0000320193; the Wikipedia name stays.")
+    assert built.loc["AAPL", "cik"] == "0000320193" and built.loc["AAPL", "name"] == "APPLE INC"
+    print("\n=== SANITY CHECK: SEC-unlisted ticker ===")
+    print("  AAPL missing from the SEC snapshot takes Sharadar's secfilings CIK 0000320193 and Sharadar's name.")

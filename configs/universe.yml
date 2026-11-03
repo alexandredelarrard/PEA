@@ -1,6 +1,8 @@
 # universe.yml -- THE traded universe: the only hand-edited list of tickers.
 # `python -m src data_extract universe` syncs `tickers_universe` from it; every stage reads
 # `context.universe`. A ticker outside `tickers` is ignored everywhere.
+# `tickers`: ticker -> its GICS `sector` and GICS sub-industry (`industry`); the industry group is derived
+# from `src/utils/tickers_universe/vocabulary.py`. Adding a ticker = one line here.
 # `aliases`: other share-class symbols of a universe ticker (identity tape-mix, transcripts).
 universe:
   aliases:
@@ -9,494 +11,494 @@ universe:
     GOOGL: [GOOG]
     NWSA: [NWS]
   tickers:
-    - "A"
-    - "AAPL"
-    - "ABBV"
-    - "ABNB"
-    - "ABT"
-    - "ACGL"
-    - "ACN"
-    - "ADBE"
-    - "ADI"
-    - "ADM"
-    - "ADP"
-    - "ADSK"
-    - "AEE"
-    - "AEP"
-    - "AES"
-    - "AFL"
-    - "AIG"
-    - "AIZ"
-    - "AJG"
-    - "AKAM"
-    - "ALB"
-    - "ALGN"
-    - "ALL"
-    - "ALLE"
-    - "AMAT"
-    - "AMCR"
-    - "AMD"
-    - "AME"
-    - "AMGN"
-    - "AMP"
-    - "AMT"
-    - "AMZN"
-    - "ANET"
-    - "AON"
-    - "AOS"
-    - "APA"
-    - "APD"
-    - "APH"
-    - "APO"
-    - "APP"
-    - "APTV"
-    - "ARE"
-    - "ARES"
-    - "ATO"
-    - "AVGO"
-    - "AVY"
-    - "AWK"
-    - "AXON"
-    - "AXP"
-    - "AZO"
-    - "BA"
-    - "BAC"
-    - "BALL"
-    - "BAX"
-    - "BBY"
-    - "BDX"
-    - "BEN"
-    - "BF-B"
-    - "BG"
-    - "BIIB"
-    - "BKNG"
-    - "BKR"
-    - "BLDR"
-    - "BLK"
-    - "BMY"
-    - "BNY"
-    - "BR"
-    - "BRK-B"
-    - "BRO"
-    - "BSX"
-    - "BX"
-    - "BXP"
-    - "C"
-    - "CAH"
-    - "CARR"
-    - "CASY"
-    - "CAT"
-    - "CB"
-    - "CBOE"
-    - "CBRE"
-    - "CCI"
-    - "CCL"
-    - "CDNS"
-    - "CDW"
-    - "CEG"
-    - "CF"
-    - "CFG"
-    - "CHD"
-    - "CHRW"
-    - "CHTR"
-    - "CI"
-    - "CIEN"
-    - "CINF"
-    - "CL"
-    - "CLX"
-    - "CMCSA"
-    - "CME"
-    - "CMG"
-    - "CMI"
-    - "CMS"
-    - "CNC"
-    - "CNP"
-    - "COF"
-    - "COHR"
-    - "COIN"
-    - "COO"
-    - "COP"
-    - "COR"
-    - "COST"
-    - "CPAY"
-    - "CPRT"
-    - "CPT"
-    - "CRH"
-    - "CRL"
-    - "CRM"
-    - "CRWD"
-    - "CSCO"
-    - "CSGP"
-    - "CSX"
-    - "CTAS"
-    - "CTSH"
-    - "CTVA"
-    - "CVNA"
-    - "CVS"
-    - "CVX"
-    - "D"
-    - "DAL"
-    - "DASH"
-    - "DD"
-    - "DDOG"
-    - "DE"
-    - "DECK"
-    - "DELL"
-    - "DG"
-    - "DGX"
-    - "DHI"
-    - "DHR"
-    - "DIS"
-    - "DLR"
-    - "DLTR"
-    - "DOC"
-    - "DOV"
-    - "DOW"
-    - "DPZ"
-    - "DRI"
-    - "DTE"
-    - "DUK"
-    - "DVA"
-    - "DVN"
-    - "DXCM"
-    - "EBAY"
-    - "ECHO"
-    - "ECL"
-    - "ED"
-    - "EFX"
-    - "EG"
-    - "EIX"
-    - "EL"
-    - "ELV"
-    - "EME"
-    - "EMR"
-    - "EOG"
-    - "EQIX"
-    - "EQT"
-    - "ERIE"
-    - "ES"
-    - "ESS"
-    - "ETN"
-    - "ETR"
-    - "EVRG"
-    - "EW"
-    - "EXC"
-    - "EXE"
-    - "EXPD"
-    - "EXPE"
-    - "EXR"
-    - "F"
-    - "FANG"
-    - "FAST"
-    - "FCX"
-    - "FDS"
-    - "FDX"
-    - "FE"
-    - "FERG"
-    - "FFIV"
-    - "FICO"
-    - "FIS"
-    - "FISV"
-    - "FITB"
-    - "FIX"
-    - "FLEX"
-    - "FOXA"
-    - "FRT"
-    - "FSLR"
-    - "FTNT"
-    - "FTV"
-    - "GD"
-    - "GDDY"
-    - "GE"
-    - "GEN"
-    - "GILD"
-    - "GIS"
-    - "GL"
-    - "GLW"
-    - "GM"
-    - "GNRC"
-    - "GOOGL"
-    - "GPC"
-    - "GPN"
-    - "GRMN"
-    - "GS"
-    - "GWW"
-    - "HAL"
-    - "HAS"
-    - "HBAN"
-    - "HCA"
-    - "HD"
-    - "HIG"
-    - "HII"
-    - "HLT"
-    - "HON"
-    - "HOOD"
-    - "HPE"
-    - "HPQ"
-    - "HRL"
-    - "HSIC"
-    - "HST"
-    - "HSY"
-    - "HUBB"
-    - "HUM"
-    - "HWM"
-    - "IBKR"
-    - "IBM"
-    - "ICE"
-    - "IDXX"
-    - "IEX"
-    - "IFF"
-    - "INCY"
-    - "INTC"
-    - "INTU"
-    - "INVH"
-    - "IP"
-    - "IQV"
-    - "IR"
-    - "IRM"
-    - "ISRG"
-    - "IT"
-    - "ITW"
-    - "IVZ"
-    - "J"
-    - "JBHT"
-    - "JBL"
-    - "JCI"
-    - "JKHY"
-    - "JNJ"
-    - "JPM"
-    - "KDP"
-    - "KEY"
-    - "KEYS"
-    - "KHC"
-    - "KIM"
-    - "KKR"
-    - "KLAC"
-    - "KMB"
-    - "KMI"
-    - "KO"
-    - "KR"
-    - "L"
-    - "LDOS"
-    - "LEN"
-    - "LH"
-    - "LHX"
-    - "LII"
-    - "LIN"
-    - "LITE"
-    - "LLY"
-    - "LMT"
-    - "LNT"
-    - "LOW"
-    - "LRCX"
-    - "LULU"
-    - "LUV"
-    - "LVS"
-    - "LYB"
-    - "LYV"
-    - "MA"
-    - "MAA"
-    - "MAR"
-    - "MAS"
-    - "MCD"
-    - "MCHP"
-    - "MCK"
-    - "MCO"
-    - "MDLZ"
-    - "MDT"
-    - "MET"
-    - "META"
-    - "MGM"
-    - "MKC"
-    - "MLM"
-    - "MMM"
-    - "MNST"
-    - "MO"
-    - "MOS"
-    - "MPC"
-    - "MPWR"
-    - "MRK"
-    - "MRNA"
-    - "MRSH"
-    - "MRVL"
-    - "MS"
-    - "MSCI"
-    - "MSFT"
-    - "MSI"
-    - "MTB"
-    - "MTD"
-    - "MU"
-    - "NCLH"
-    - "NDAQ"
-    - "NDSN"
-    - "NEE"
-    - "NEM"
-    - "NFLX"
-    - "NI"
-    - "NKE"
-    - "NOC"
-    - "NOW"
-    - "NRG"
-    - "NSC"
-    - "NTAP"
-    - "NTRS"
-    - "NUE"
-    - "NVDA"
-    - "NVR"
-    - "NWSA"
-    - "NXPI"
-    - "O"
-    - "ODFL"
-    - "OKE"
-    - "OMC"
-    - "ON"
-    - "ORCL"
-    - "ORLY"
-    - "OTIS"
-    - "OXY"
-    - "PANW"
-    - "PAYX"
-    - "PCAR"
-    - "PCG"
-    - "PEG"
-    - "PEP"
-    - "PFE"
-    - "PFG"
-    - "PG"
-    - "PGR"
-    - "PH"
-    - "PHM"
-    - "PKG"
-    - "PLD"
-    - "PLTR"
-    - "PM"
-    - "PNC"
-    - "PNR"
-    - "PNW"
-    - "PODD"
-    - "PPG"
-    - "PPL"
-    - "PRU"
-    - "PSA"
-    - "PSKY"
-    - "PSX"
-    - "PTC"
-    - "PWR"
-    - "PYPL"
-    - "QCOM"
-    - "RCL"
-    - "RDDT"
-    - "REG"
-    - "REGN"
-    - "RF"
-    - "RJF"
-    - "RL"
-    - "RMD"
-    - "ROK"
-    - "ROL"
-    - "ROP"
-    - "ROST"
-    - "RSG"
-    - "RTX"
-    - "RVTY"
-    - "SBAC"
-    - "SBUX"
-    - "SCHW"
-    - "SHW"
-    - "SJM"
-    - "SLB"
-    - "SMCI"
-    - "SNA"
-    - "SNPS"
-    - "SO"
-    - "SPG"
-    - "SPGI"
-    - "SRE"
-    - "STE"
-    - "STLD"
-    - "STT"
-    - "STX"
-    - "STZ"
-    - "SW"
-    - "SWK"
-    - "SWKS"
-    - "SYF"
-    - "SYK"
-    - "SYY"
-    - "T"
-    - "TAP"
-    - "TDG"
-    - "TDY"
-    - "TECH"
-    - "TEL"
-    - "TER"
-    - "TFC"
-    - "TGT"
-    - "TJX"
-    - "TKO"
-    - "TMO"
-    - "TMUS"
-    - "TPL"
-    - "TPR"
-    - "TRGP"
-    - "TRMB"
-    - "TROW"
-    - "TRV"
-    - "TSCO"
-    - "TSLA"
-    - "TSN"
-    - "TT"
-    - "TTD"
-    - "TTWO"
-    - "TXN"
-    - "TXT"
-    - "TYL"
-    - "UAL"
-    - "UBER"
-    - "UDR"
-    - "UHS"
-    - "ULTA"
-    - "UNH"
-    - "UNP"
-    - "UPS"
-    - "URI"
-    - "USB"
-    - "V"
-    - "VEEV"
-    - "VICI"
-    - "VLO"
-    - "VMC"
-    - "VMRK"
-    - "VRSK"
-    - "VRSN"
-    - "VRT"
-    - "VRTX"
-    - "VST"
-    - "VTR"
-    - "VTRS"
-    - "VZ"
-    - "WAB"
-    - "WAT"
-    - "WBD"
-    - "WDAY"
-    - "WDC"
-    - "WEC"
-    - "WELL"
-    - "WFC"
-    - "WM"
-    - "WMB"
-    - "WMT"
-    - "WRB"
-    - "WSM"
-    - "WST"
-    - "WTW"
-    - "WY"
-    - "WYNN"
-    - "XEL"
-    - "XOM"
-    - "XYL"
-    - "XYZ"
-    - "YUM"
-    - "ZBH"
-    - "ZBRA"
-    - "ZTS"
+    "A": {sector: "Health Care", industry: "Life Sciences Tools & Services"}
+    "AAPL": {sector: "Information Technology", industry: "Technology Hardware, Storage & Peripherals"}
+    "ABBV": {sector: "Health Care", industry: "Biotechnology"}
+    "ABNB": {sector: "Consumer Discretionary", industry: "Hotels, Resorts & Cruise Lines"}
+    "ABT": {sector: "Health Care", industry: "Health Care Equipment"}
+    "ACGL": {sector: "Financials", industry: "Property & Casualty Insurance"}
+    "ACN": {sector: "Information Technology", industry: "IT Consulting & Other Services"}
+    "ADBE": {sector: "Information Technology", industry: "Application Software"}
+    "ADI": {sector: "Information Technology", industry: "Semiconductors"}
+    "ADM": {sector: "Consumer Staples", industry: "Agricultural Products & Services"}
+    "ADP": {sector: "Industrials", industry: "Human Resource & Employment Services"}
+    "ADSK": {sector: "Information Technology", industry: "Application Software"}
+    "AEE": {sector: "Utilities", industry: "Multi-Utilities"}
+    "AEP": {sector: "Utilities", industry: "Electric Utilities"}
+    "AES": {sector: "Utilities", industry: "Independent Power Producers & Energy Traders"}
+    "AFL": {sector: "Financials", industry: "Life & Health Insurance"}
+    "AIG": {sector: "Financials", industry: "Multi-line Insurance"}
+    "AIZ": {sector: "Financials", industry: "Multi-line Insurance"}
+    "AJG": {sector: "Financials", industry: "Insurance Brokers"}
+    "AKAM": {sector: "Information Technology", industry: "Internet Services & Infrastructure"}
+    "ALB": {sector: "Materials", industry: "Specialty Chemicals"}
+    "ALGN": {sector: "Health Care", industry: "Health Care Supplies"}
+    "ALL": {sector: "Financials", industry: "Property & Casualty Insurance"}
+    "ALLE": {sector: "Industrials", industry: "Building Products"}
+    "AMAT": {sector: "Information Technology", industry: "Semiconductor Materials & Equipment"}
+    "AMCR": {sector: "Materials", industry: "Paper & Plastic Packaging Products & Materials"}
+    "AMD": {sector: "Information Technology", industry: "Semiconductors"}
+    "AME": {sector: "Industrials", industry: "Electrical Components & Equipment"}
+    "AMGN": {sector: "Health Care", industry: "Biotechnology"}
+    "AMP": {sector: "Financials", industry: "Asset Management & Custody Banks"}
+    "AMT": {sector: "Real Estate", industry: "Telecom Tower REITs"}
+    "AMZN": {sector: "Consumer Discretionary", industry: "Broadline Retail"}
+    "ANET": {sector: "Information Technology", industry: "Communications Equipment"}
+    "AON": {sector: "Financials", industry: "Insurance Brokers"}
+    "AOS": {sector: "Industrials", industry: "Building Products"}
+    "APA": {sector: "Energy", industry: "Oil & Gas Exploration & Production"}
+    "APD": {sector: "Materials", industry: "Industrial Gases"}
+    "APH": {sector: "Information Technology", industry: "Electronic Components"}
+    "APO": {sector: "Financials", industry: "Asset Management & Custody Banks"}
+    "APP": {sector: "Communication Services", industry: "Advertising"}
+    "APTV": {sector: "Consumer Discretionary", industry: "Automotive Parts & Equipment"}
+    "ARE": {sector: "Real Estate", industry: "Office REITs"}
+    "ARES": {sector: "Financials", industry: "Asset Management & Custody Banks"}
+    "ATO": {sector: "Utilities", industry: "Gas Utilities"}
+    "AVGO": {sector: "Information Technology", industry: "Semiconductors"}
+    "AVY": {sector: "Materials", industry: "Paper & Plastic Packaging Products & Materials"}
+    "AWK": {sector: "Utilities", industry: "Water Utilities"}
+    "AXON": {sector: "Industrials", industry: "Aerospace & Defense"}
+    "AXP": {sector: "Financials", industry: "Consumer Finance"}
+    "AZO": {sector: "Consumer Discretionary", industry: "Automotive Retail"}
+    "BA": {sector: "Industrials", industry: "Aerospace & Defense"}
+    "BAC": {sector: "Financials", industry: "Diversified Banks"}
+    "BALL": {sector: "Materials", industry: "Metal, Glass & Plastic Containers"}
+    "BAX": {sector: "Health Care", industry: "Health Care Equipment"}
+    "BBY": {sector: "Consumer Discretionary", industry: "Computer & Electronics Retail"}
+    "BDX": {sector: "Health Care", industry: "Health Care Equipment"}
+    "BEN": {sector: "Financials", industry: "Asset Management & Custody Banks"}
+    "BF-B": {sector: "Consumer Staples", industry: "Distillers & Vintners"}
+    "BG": {sector: "Consumer Staples", industry: "Agricultural Products & Services"}
+    "BIIB": {sector: "Health Care", industry: "Biotechnology"}
+    "BKNG": {sector: "Consumer Discretionary", industry: "Hotels, Resorts & Cruise Lines"}
+    "BKR": {sector: "Energy", industry: "Oil & Gas Equipment & Services"}
+    "BLDR": {sector: "Industrials", industry: "Building Products"}
+    "BLK": {sector: "Financials", industry: "Asset Management & Custody Banks"}
+    "BMY": {sector: "Health Care", industry: "Pharmaceuticals"}
+    "BNY": {sector: "Financials", industry: "Asset Management & Custody Banks"}
+    "BR": {sector: "Industrials", industry: "Data Processing & Outsourced Services"}
+    "BRK-B": {sector: "Financials", industry: "Multi-Sector Holdings"}
+    "BRO": {sector: "Financials", industry: "Insurance Brokers"}
+    "BSX": {sector: "Health Care", industry: "Health Care Equipment"}
+    "BX": {sector: "Financials", industry: "Asset Management & Custody Banks"}
+    "BXP": {sector: "Real Estate", industry: "Office REITs"}
+    "C": {sector: "Financials", industry: "Diversified Banks"}
+    "CAH": {sector: "Health Care", industry: "Health Care Distributors"}
+    "CARR": {sector: "Industrials", industry: "Building Products"}
+    "CASY": {sector: "Consumer Staples", industry: "Food Retail"}
+    "CAT": {sector: "Industrials", industry: "Construction Machinery & Heavy Transportation Equipment"}
+    "CB": {sector: "Financials", industry: "Property & Casualty Insurance"}
+    "CBOE": {sector: "Financials", industry: "Financial Exchanges & Data"}
+    "CBRE": {sector: "Real Estate", industry: "Real Estate Services"}
+    "CCI": {sector: "Real Estate", industry: "Telecom Tower REITs"}
+    "CCL": {sector: "Consumer Discretionary", industry: "Hotels, Resorts & Cruise Lines"}
+    "CDNS": {sector: "Information Technology", industry: "Application Software"}
+    "CDW": {sector: "Information Technology", industry: "Technology Distributors"}
+    "CEG": {sector: "Utilities", industry: "Electric Utilities"}
+    "CF": {sector: "Materials", industry: "Fertilizers & Agricultural Chemicals"}
+    "CFG": {sector: "Financials", industry: "Regional Banks"}
+    "CHD": {sector: "Consumer Staples", industry: "Household Products"}
+    "CHRW": {sector: "Industrials", industry: "Air Freight & Logistics"}
+    "CHTR": {sector: "Communication Services", industry: "Cable & Satellite"}
+    "CI": {sector: "Health Care", industry: "Health Care Services"}
+    "CIEN": {sector: "Information Technology", industry: "Communications Equipment"}
+    "CINF": {sector: "Financials", industry: "Property & Casualty Insurance"}
+    "CL": {sector: "Consumer Staples", industry: "Household Products"}
+    "CLX": {sector: "Consumer Staples", industry: "Household Products"}
+    "CMCSA": {sector: "Communication Services", industry: "Cable & Satellite"}
+    "CME": {sector: "Financials", industry: "Financial Exchanges & Data"}
+    "CMG": {sector: "Consumer Discretionary", industry: "Restaurants"}
+    "CMI": {sector: "Industrials", industry: "Construction Machinery & Heavy Transportation Equipment"}
+    "CMS": {sector: "Utilities", industry: "Multi-Utilities"}
+    "CNC": {sector: "Health Care", industry: "Managed Health Care"}
+    "CNP": {sector: "Utilities", industry: "Multi-Utilities"}
+    "COF": {sector: "Financials", industry: "Consumer Finance"}
+    "COHR": {sector: "Information Technology", industry: "Electronic Components"}
+    "COIN": {sector: "Financials", industry: "Financial Exchanges & Data"}
+    "COO": {sector: "Health Care", industry: "Health Care Supplies"}
+    "COP": {sector: "Energy", industry: "Oil & Gas Exploration & Production"}
+    "COR": {sector: "Health Care", industry: "Health Care Distributors"}
+    "COST": {sector: "Consumer Staples", industry: "Consumer Staples Merchandise Retail"}
+    "CPAY": {sector: "Financials", industry: "Transaction & Payment Processing Services"}
+    "CPRT": {sector: "Industrials", industry: "Diversified Support Services"}
+    "CPT": {sector: "Real Estate", industry: "Multi-Family Residential REITs"}
+    "CRH": {sector: "Materials", industry: "Construction Materials"}
+    "CRL": {sector: "Health Care", industry: "Life Sciences Tools & Services"}
+    "CRM": {sector: "Information Technology", industry: "Application Software"}
+    "CRWD": {sector: "Information Technology", industry: "Systems Software"}
+    "CSCO": {sector: "Information Technology", industry: "Communications Equipment"}
+    "CSGP": {sector: "Real Estate", industry: "Real Estate Services"}
+    "CSX": {sector: "Industrials", industry: "Rail Transportation"}
+    "CTAS": {sector: "Industrials", industry: "Diversified Support Services"}
+    "CTSH": {sector: "Information Technology", industry: "IT Consulting & Other Services"}
+    "CTVA": {sector: "Materials", industry: "Fertilizers & Agricultural Chemicals"}
+    "CVNA": {sector: "Consumer Discretionary", industry: "Automotive Retail"}
+    "CVS": {sector: "Health Care", industry: "Health Care Services"}
+    "CVX": {sector: "Energy", industry: "Integrated Oil & Gas"}
+    "D": {sector: "Utilities", industry: "Multi-Utilities"}
+    "DAL": {sector: "Industrials", industry: "Passenger Airlines"}
+    "DASH": {sector: "Consumer Discretionary", industry: "Specialized Consumer Services"}
+    "DD": {sector: "Industrials", industry: "Industrial Conglomerates"}
+    "DDOG": {sector: "Information Technology", industry: "Application Software"}
+    "DE": {sector: "Industrials", industry: "Agricultural & Farm Machinery"}
+    "DECK": {sector: "Consumer Discretionary", industry: "Footwear"}
+    "DELL": {sector: "Information Technology", industry: "Technology Hardware, Storage & Peripherals"}
+    "DG": {sector: "Consumer Staples", industry: "Consumer Staples Merchandise Retail"}
+    "DGX": {sector: "Health Care", industry: "Health Care Services"}
+    "DHI": {sector: "Consumer Discretionary", industry: "Homebuilding"}
+    "DHR": {sector: "Health Care", industry: "Life Sciences Tools & Services"}
+    "DIS": {sector: "Communication Services", industry: "Movies & Entertainment"}
+    "DLR": {sector: "Real Estate", industry: "Data Center REITs"}
+    "DLTR": {sector: "Consumer Staples", industry: "Consumer Staples Merchandise Retail"}
+    "DOC": {sector: "Real Estate", industry: "Health Care REITs"}
+    "DOV": {sector: "Industrials", industry: "Industrial Machinery & Supplies & Components"}
+    "DOW": {sector: "Materials", industry: "Commodity Chemicals"}
+    "DPZ": {sector: "Consumer Discretionary", industry: "Restaurants"}
+    "DRI": {sector: "Consumer Discretionary", industry: "Restaurants"}
+    "DTE": {sector: "Utilities", industry: "Multi-Utilities"}
+    "DUK": {sector: "Utilities", industry: "Electric Utilities"}
+    "DVA": {sector: "Health Care", industry: "Health Care Services"}
+    "DVN": {sector: "Energy", industry: "Oil & Gas Exploration & Production"}
+    "DXCM": {sector: "Health Care", industry: "Health Care Equipment"}
+    "EBAY": {sector: "Consumer Discretionary", industry: "Broadline Retail"}
+    "ECHO": {sector: "Communication Services", industry: "Wireless Telecommunication Services"}
+    "ECL": {sector: "Materials", industry: "Specialty Chemicals"}
+    "ED": {sector: "Utilities", industry: "Multi-Utilities"}
+    "EFX": {sector: "Industrials", industry: "Research & Consulting Services"}
+    "EG": {sector: "Financials", industry: "Reinsurance"}
+    "EIX": {sector: "Utilities", industry: "Electric Utilities"}
+    "EL": {sector: "Consumer Staples", industry: "Personal Care Products"}
+    "ELV": {sector: "Health Care", industry: "Managed Health Care"}
+    "EME": {sector: "Industrials", industry: "Construction & Engineering"}
+    "EMR": {sector: "Industrials", industry: "Electrical Components & Equipment"}
+    "EOG": {sector: "Energy", industry: "Oil & Gas Exploration & Production"}
+    "EQIX": {sector: "Real Estate", industry: "Data Center REITs"}
+    "EQT": {sector: "Energy", industry: "Oil & Gas Exploration & Production"}
+    "ERIE": {sector: "Financials", industry: "Insurance Brokers"}
+    "ES": {sector: "Utilities", industry: "Electric Utilities"}
+    "ESS": {sector: "Real Estate", industry: "Multi-Family Residential REITs"}
+    "ETN": {sector: "Industrials", industry: "Electrical Components & Equipment"}
+    "ETR": {sector: "Utilities", industry: "Electric Utilities"}
+    "EVRG": {sector: "Utilities", industry: "Electric Utilities"}
+    "EW": {sector: "Health Care", industry: "Health Care Equipment"}
+    "EXC": {sector: "Utilities", industry: "Electric Utilities"}
+    "EXE": {sector: "Energy", industry: "Oil & Gas Exploration & Production"}
+    "EXPD": {sector: "Industrials", industry: "Air Freight & Logistics"}
+    "EXPE": {sector: "Consumer Discretionary", industry: "Hotels, Resorts & Cruise Lines"}
+    "EXR": {sector: "Real Estate", industry: "Self-Storage REITs"}
+    "F": {sector: "Consumer Discretionary", industry: "Automobile Manufacturers"}
+    "FANG": {sector: "Energy", industry: "Oil & Gas Exploration & Production"}
+    "FAST": {sector: "Industrials", industry: "Trading Companies & Distributors"}
+    "FCX": {sector: "Materials", industry: "Copper"}
+    "FDS": {sector: "Financials", industry: "Financial Exchanges & Data"}
+    "FDX": {sector: "Industrials", industry: "Air Freight & Logistics"}
+    "FE": {sector: "Utilities", industry: "Electric Utilities"}
+    "FERG": {sector: "Industrials", industry: "Building Products"}
+    "FFIV": {sector: "Information Technology", industry: "Communications Equipment"}
+    "FICO": {sector: "Information Technology", industry: "Application Software"}
+    "FIS": {sector: "Financials", industry: "Transaction & Payment Processing Services"}
+    "FISV": {sector: "Financials", industry: "Transaction & Payment Processing Services"}
+    "FITB": {sector: "Financials", industry: "Regional Banks"}
+    "FIX": {sector: "Industrials", industry: "Construction & Engineering"}
+    "FLEX": {sector: "Information Technology", industry: "Electronic Manufacturing Services"}
+    "FOXA": {sector: "Communication Services", industry: "Broadcasting"}
+    "FRT": {sector: "Real Estate", industry: "Retail REITs"}
+    "FSLR": {sector: "Information Technology", industry: "Semiconductors"}
+    "FTNT": {sector: "Information Technology", industry: "Systems Software"}
+    "FTV": {sector: "Industrials", industry: "Industrial Machinery & Supplies & Components"}
+    "GD": {sector: "Industrials", industry: "Aerospace & Defense"}
+    "GDDY": {sector: "Information Technology", industry: "Internet Services & Infrastructure"}
+    "GE": {sector: "Industrials", industry: "Aerospace & Defense"}
+    "GEN": {sector: "Information Technology", industry: "Systems Software"}
+    "GILD": {sector: "Health Care", industry: "Biotechnology"}
+    "GIS": {sector: "Consumer Staples", industry: "Packaged Foods & Meats"}
+    "GL": {sector: "Financials", industry: "Life & Health Insurance"}
+    "GLW": {sector: "Information Technology", industry: "Electronic Components"}
+    "GM": {sector: "Consumer Discretionary", industry: "Automobile Manufacturers"}
+    "GNRC": {sector: "Industrials", industry: "Heavy Electrical Equipment"}
+    "GOOGL": {sector: "Communication Services", industry: "Interactive Media & Services"}
+    "GPC": {sector: "Consumer Discretionary", industry: "Distributors"}
+    "GPN": {sector: "Financials", industry: "Transaction & Payment Processing Services"}
+    "GRMN": {sector: "Consumer Discretionary", industry: "Consumer Electronics"}
+    "GS": {sector: "Financials", industry: "Investment Banking & Brokerage"}
+    "GWW": {sector: "Industrials", industry: "Industrial Machinery & Supplies & Components"}
+    "HAL": {sector: "Energy", industry: "Oil & Gas Equipment & Services"}
+    "HAS": {sector: "Consumer Discretionary", industry: "Leisure Products"}
+    "HBAN": {sector: "Financials", industry: "Regional Banks"}
+    "HCA": {sector: "Health Care", industry: "Health Care Facilities"}
+    "HD": {sector: "Consumer Discretionary", industry: "Home Improvement Retail"}
+    "HIG": {sector: "Financials", industry: "Property & Casualty Insurance"}
+    "HII": {sector: "Industrials", industry: "Aerospace & Defense"}
+    "HLT": {sector: "Consumer Discretionary", industry: "Hotels, Resorts & Cruise Lines"}
+    "HON": {sector: "Industrials", industry: "Industrial Conglomerates"}
+    "HOOD": {sector: "Financials", industry: "Investment Banking & Brokerage"}
+    "HPE": {sector: "Information Technology", industry: "Technology Hardware, Storage & Peripherals"}
+    "HPQ": {sector: "Information Technology", industry: "Technology Hardware, Storage & Peripherals"}
+    "HRL": {sector: "Consumer Staples", industry: "Packaged Foods & Meats"}
+    "HSIC": {sector: "Health Care", industry: "Health Care Distributors"}
+    "HST": {sector: "Real Estate", industry: "Hotel & Resort REITs"}
+    "HSY": {sector: "Consumer Staples", industry: "Packaged Foods & Meats"}
+    "HUBB": {sector: "Industrials", industry: "Industrial Machinery & Supplies & Components"}
+    "HUM": {sector: "Health Care", industry: "Managed Health Care"}
+    "HWM": {sector: "Industrials", industry: "Aerospace & Defense"}
+    "IBKR": {sector: "Financials", industry: "Investment Banking & Brokerage"}
+    "IBM": {sector: "Information Technology", industry: "IT Consulting & Other Services"}
+    "ICE": {sector: "Financials", industry: "Financial Exchanges & Data"}
+    "IDXX": {sector: "Health Care", industry: "Health Care Equipment"}
+    "IEX": {sector: "Industrials", industry: "Industrial Machinery & Supplies & Components"}
+    "IFF": {sector: "Materials", industry: "Specialty Chemicals"}
+    "INCY": {sector: "Health Care", industry: "Biotechnology"}
+    "INTC": {sector: "Information Technology", industry: "Semiconductors"}
+    "INTU": {sector: "Information Technology", industry: "Application Software"}
+    "INVH": {sector: "Real Estate", industry: "Single-Family Residential REITs"}
+    "IP": {sector: "Materials", industry: "Paper & Plastic Packaging Products & Materials"}
+    "IQV": {sector: "Health Care", industry: "Life Sciences Tools & Services"}
+    "IR": {sector: "Industrials", industry: "Industrial Machinery & Supplies & Components"}
+    "IRM": {sector: "Real Estate", industry: "Other Specialized REITs"}
+    "ISRG": {sector: "Health Care", industry: "Health Care Equipment"}
+    "IT": {sector: "Information Technology", industry: "IT Consulting & Other Services"}
+    "ITW": {sector: "Industrials", industry: "Industrial Machinery & Supplies & Components"}
+    "IVZ": {sector: "Financials", industry: "Asset Management & Custody Banks"}
+    "J": {sector: "Industrials", industry: "Construction & Engineering"}
+    "JBHT": {sector: "Industrials", industry: "Cargo Ground Transportation"}
+    "JBL": {sector: "Information Technology", industry: "Electronic Manufacturing Services"}
+    "JCI": {sector: "Industrials", industry: "Building Products"}
+    "JKHY": {sector: "Financials", industry: "Transaction & Payment Processing Services"}
+    "JNJ": {sector: "Health Care", industry: "Pharmaceuticals"}
+    "JPM": {sector: "Financials", industry: "Diversified Banks"}
+    "KDP": {sector: "Consumer Staples", industry: "Soft Drinks & Non-alcoholic Beverages"}
+    "KEY": {sector: "Financials", industry: "Regional Banks"}
+    "KEYS": {sector: "Information Technology", industry: "Electronic Equipment & Instruments"}
+    "KHC": {sector: "Consumer Staples", industry: "Packaged Foods & Meats"}
+    "KIM": {sector: "Real Estate", industry: "Retail REITs"}
+    "KKR": {sector: "Financials", industry: "Asset Management & Custody Banks"}
+    "KLAC": {sector: "Information Technology", industry: "Semiconductor Materials & Equipment"}
+    "KMB": {sector: "Consumer Staples", industry: "Household Products"}
+    "KMI": {sector: "Energy", industry: "Oil & Gas Storage & Transportation"}
+    "KO": {sector: "Consumer Staples", industry: "Soft Drinks & Non-alcoholic Beverages"}
+    "KR": {sector: "Consumer Staples", industry: "Food Retail"}
+    "L": {sector: "Financials", industry: "Multi-line Insurance"}
+    "LDOS": {sector: "Industrials", industry: "Diversified Support Services"}
+    "LEN": {sector: "Consumer Discretionary", industry: "Homebuilding"}
+    "LH": {sector: "Health Care", industry: "Health Care Services"}
+    "LHX": {sector: "Industrials", industry: "Aerospace & Defense"}
+    "LII": {sector: "Industrials", industry: "Building Products"}
+    "LIN": {sector: "Materials", industry: "Industrial Gases"}
+    "LITE": {sector: "Information Technology", industry: "Communications Equipment"}
+    "LLY": {sector: "Health Care", industry: "Pharmaceuticals"}
+    "LMT": {sector: "Industrials", industry: "Aerospace & Defense"}
+    "LNT": {sector: "Utilities", industry: "Electric Utilities"}
+    "LOW": {sector: "Consumer Discretionary", industry: "Home Improvement Retail"}
+    "LRCX": {sector: "Information Technology", industry: "Semiconductor Materials & Equipment"}
+    "LULU": {sector: "Consumer Discretionary", industry: "Apparel, Accessories & Luxury Goods"}
+    "LUV": {sector: "Industrials", industry: "Passenger Airlines"}
+    "LVS": {sector: "Consumer Discretionary", industry: "Casinos & Gaming"}
+    "LYB": {sector: "Materials", industry: "Specialty Chemicals"}
+    "LYV": {sector: "Communication Services", industry: "Movies & Entertainment"}
+    "MA": {sector: "Financials", industry: "Transaction & Payment Processing Services"}
+    "MAA": {sector: "Real Estate", industry: "Multi-Family Residential REITs"}
+    "MAR": {sector: "Consumer Discretionary", industry: "Hotels, Resorts & Cruise Lines"}
+    "MAS": {sector: "Industrials", industry: "Building Products"}
+    "MCD": {sector: "Consumer Discretionary", industry: "Restaurants"}
+    "MCHP": {sector: "Information Technology", industry: "Semiconductors"}
+    "MCK": {sector: "Health Care", industry: "Health Care Distributors"}
+    "MCO": {sector: "Financials", industry: "Financial Exchanges & Data"}
+    "MDLZ": {sector: "Consumer Staples", industry: "Packaged Foods & Meats"}
+    "MDT": {sector: "Health Care", industry: "Health Care Equipment"}
+    "MET": {sector: "Financials", industry: "Life & Health Insurance"}
+    "META": {sector: "Communication Services", industry: "Interactive Media & Services"}
+    "MGM": {sector: "Consumer Discretionary", industry: "Casinos & Gaming"}
+    "MKC": {sector: "Consumer Staples", industry: "Packaged Foods & Meats"}
+    "MLM": {sector: "Materials", industry: "Construction Materials"}
+    "MMM": {sector: "Industrials", industry: "Industrial Conglomerates"}
+    "MNST": {sector: "Consumer Staples", industry: "Soft Drinks & Non-alcoholic Beverages"}
+    "MO": {sector: "Consumer Staples", industry: "Tobacco"}
+    "MOS": {sector: "Materials", industry: "Fertilizers & Agricultural Chemicals"}
+    "MPC": {sector: "Energy", industry: "Oil & Gas Refining & Marketing"}
+    "MPWR": {sector: "Information Technology", industry: "Semiconductors"}
+    "MRK": {sector: "Health Care", industry: "Pharmaceuticals"}
+    "MRNA": {sector: "Health Care", industry: "Biotechnology"}
+    "MRSH": {sector: "Financials", industry: "Insurance Brokers"}
+    "MRVL": {sector: "Information Technology", industry: "Semiconductors"}
+    "MS": {sector: "Financials", industry: "Investment Banking & Brokerage"}
+    "MSCI": {sector: "Financials", industry: "Financial Exchanges & Data"}
+    "MSFT": {sector: "Information Technology", industry: "Systems Software"}
+    "MSI": {sector: "Information Technology", industry: "Communications Equipment"}
+    "MTB": {sector: "Financials", industry: "Regional Banks"}
+    "MTD": {sector: "Health Care", industry: "Life Sciences Tools & Services"}
+    "MU": {sector: "Information Technology", industry: "Semiconductors"}
+    "NCLH": {sector: "Consumer Discretionary", industry: "Hotels, Resorts & Cruise Lines"}
+    "NDAQ": {sector: "Financials", industry: "Financial Exchanges & Data"}
+    "NDSN": {sector: "Industrials", industry: "Industrial Machinery & Supplies & Components"}
+    "NEE": {sector: "Utilities", industry: "Multi-Utilities"}
+    "NEM": {sector: "Materials", industry: "Gold"}
+    "NFLX": {sector: "Communication Services", industry: "Movies & Entertainment"}
+    "NI": {sector: "Utilities", industry: "Multi-Utilities"}
+    "NKE": {sector: "Consumer Discretionary", industry: "Apparel, Accessories & Luxury Goods"}
+    "NOC": {sector: "Industrials", industry: "Aerospace & Defense"}
+    "NOW": {sector: "Information Technology", industry: "Systems Software"}
+    "NRG": {sector: "Utilities", industry: "Independent Power Producers & Energy Traders"}
+    "NSC": {sector: "Industrials", industry: "Rail Transportation"}
+    "NTAP": {sector: "Information Technology", industry: "Technology Hardware, Storage & Peripherals"}
+    "NTRS": {sector: "Financials", industry: "Asset Management & Custody Banks"}
+    "NUE": {sector: "Materials", industry: "Steel"}
+    "NVDA": {sector: "Information Technology", industry: "Semiconductors"}
+    "NVR": {sector: "Consumer Discretionary", industry: "Homebuilding"}
+    "NWSA": {sector: "Communication Services", industry: "Publishing"}
+    "NXPI": {sector: "Information Technology", industry: "Semiconductors"}
+    "O": {sector: "Real Estate", industry: "Retail REITs"}
+    "ODFL": {sector: "Industrials", industry: "Cargo Ground Transportation"}
+    "OKE": {sector: "Energy", industry: "Oil & Gas Storage & Transportation"}
+    "OMC": {sector: "Communication Services", industry: "Advertising"}
+    "ON": {sector: "Information Technology", industry: "Semiconductors"}
+    "ORCL": {sector: "Information Technology", industry: "Application Software"}
+    "ORLY": {sector: "Consumer Discretionary", industry: "Automotive Retail"}
+    "OTIS": {sector: "Industrials", industry: "Industrial Machinery & Supplies & Components"}
+    "OXY": {sector: "Energy", industry: "Oil & Gas Exploration & Production"}
+    "PANW": {sector: "Information Technology", industry: "Systems Software"}
+    "PAYX": {sector: "Industrials", industry: "Human Resource & Employment Services"}
+    "PCAR": {sector: "Industrials", industry: "Construction Machinery & Heavy Transportation Equipment"}
+    "PCG": {sector: "Utilities", industry: "Multi-Utilities"}
+    "PEG": {sector: "Utilities", industry: "Electric Utilities"}
+    "PEP": {sector: "Consumer Staples", industry: "Soft Drinks & Non-alcoholic Beverages"}
+    "PFE": {sector: "Health Care", industry: "Pharmaceuticals"}
+    "PFG": {sector: "Financials", industry: "Life & Health Insurance"}
+    "PG": {sector: "Consumer Staples", industry: "Personal Care Products"}
+    "PGR": {sector: "Financials", industry: "Property & Casualty Insurance"}
+    "PH": {sector: "Industrials", industry: "Industrial Machinery & Supplies & Components"}
+    "PHM": {sector: "Consumer Discretionary", industry: "Homebuilding"}
+    "PKG": {sector: "Materials", industry: "Paper & Plastic Packaging Products & Materials"}
+    "PLD": {sector: "Real Estate", industry: "Industrial REITs"}
+    "PLTR": {sector: "Information Technology", industry: "Application Software"}
+    "PM": {sector: "Consumer Staples", industry: "Tobacco"}
+    "PNC": {sector: "Financials", industry: "Diversified Banks"}
+    "PNR": {sector: "Industrials", industry: "Industrial Machinery & Supplies & Components"}
+    "PNW": {sector: "Utilities", industry: "Multi-Utilities"}
+    "PODD": {sector: "Health Care", industry: "Health Care Equipment"}
+    "PPG": {sector: "Materials", industry: "Specialty Chemicals"}
+    "PPL": {sector: "Utilities", industry: "Electric Utilities"}
+    "PRU": {sector: "Financials", industry: "Life & Health Insurance"}
+    "PSA": {sector: "Real Estate", industry: "Self-Storage REITs"}
+    "PSKY": {sector: "Communication Services", industry: "Movies & Entertainment"}
+    "PSX": {sector: "Energy", industry: "Oil & Gas Refining & Marketing"}
+    "PTC": {sector: "Information Technology", industry: "Application Software"}
+    "PWR": {sector: "Industrials", industry: "Construction & Engineering"}
+    "PYPL": {sector: "Financials", industry: "Transaction & Payment Processing Services"}
+    "QCOM": {sector: "Information Technology", industry: "Semiconductors"}
+    "RCL": {sector: "Consumer Discretionary", industry: "Hotels, Resorts & Cruise Lines"}
+    "RDDT": {sector: "Communication Services", industry: "Interactive Media & Services"}
+    "REG": {sector: "Real Estate", industry: "Retail REITs"}
+    "REGN": {sector: "Health Care", industry: "Biotechnology"}
+    "RF": {sector: "Financials", industry: "Regional Banks"}
+    "RJF": {sector: "Financials", industry: "Investment Banking & Brokerage"}
+    "RL": {sector: "Consumer Discretionary", industry: "Apparel, Accessories & Luxury Goods"}
+    "RMD": {sector: "Health Care", industry: "Health Care Equipment"}
+    "ROK": {sector: "Industrials", industry: "Electrical Components & Equipment"}
+    "ROL": {sector: "Industrials", industry: "Environmental & Facilities Services"}
+    "ROP": {sector: "Information Technology", industry: "Electronic Equipment & Instruments"}
+    "ROST": {sector: "Consumer Discretionary", industry: "Apparel Retail"}
+    "RSG": {sector: "Industrials", industry: "Environmental & Facilities Services"}
+    "RTX": {sector: "Industrials", industry: "Aerospace & Defense"}
+    "RVTY": {sector: "Health Care", industry: "Health Care Equipment"}
+    "SBAC": {sector: "Real Estate", industry: "Telecom Tower REITs"}
+    "SBUX": {sector: "Consumer Discretionary", industry: "Restaurants"}
+    "SCHW": {sector: "Financials", industry: "Investment Banking & Brokerage"}
+    "SHW": {sector: "Materials", industry: "Specialty Chemicals"}
+    "SJM": {sector: "Consumer Staples", industry: "Packaged Foods & Meats"}
+    "SLB": {sector: "Energy", industry: "Oil & Gas Equipment & Services"}
+    "SMCI": {sector: "Information Technology", industry: "Technology Hardware, Storage & Peripherals"}
+    "SNA": {sector: "Industrials", industry: "Industrial Machinery & Supplies & Components"}
+    "SNPS": {sector: "Information Technology", industry: "Application Software"}
+    "SO": {sector: "Utilities", industry: "Electric Utilities"}
+    "SPG": {sector: "Real Estate", industry: "Retail REITs"}
+    "SPGI": {sector: "Financials", industry: "Financial Exchanges & Data"}
+    "SRE": {sector: "Utilities", industry: "Multi-Utilities"}
+    "STE": {sector: "Health Care", industry: "Health Care Equipment"}
+    "STLD": {sector: "Materials", industry: "Steel"}
+    "STT": {sector: "Financials", industry: "Asset Management & Custody Banks"}
+    "STX": {sector: "Information Technology", industry: "Technology Hardware, Storage & Peripherals"}
+    "STZ": {sector: "Consumer Staples", industry: "Distillers & Vintners"}
+    "SW": {sector: "Materials", industry: "Paper & Plastic Packaging Products & Materials"}
+    "SWK": {sector: "Industrials", industry: "Industrial Machinery & Supplies & Components"}
+    "SWKS": {sector: "Information Technology", industry: "Semiconductors"}
+    "SYF": {sector: "Financials", industry: "Consumer Finance"}
+    "SYK": {sector: "Health Care", industry: "Health Care Equipment"}
+    "SYY": {sector: "Consumer Staples", industry: "Food Distributors"}
+    "T": {sector: "Communication Services", industry: "Integrated Telecommunication Services"}
+    "TAP": {sector: "Consumer Staples", industry: "Brewers"}
+    "TDG": {sector: "Industrials", industry: "Aerospace & Defense"}
+    "TDY": {sector: "Information Technology", industry: "Electronic Equipment & Instruments"}
+    "TECH": {sector: "Health Care", industry: "Life Sciences Tools & Services"}
+    "TEL": {sector: "Information Technology", industry: "Electronic Manufacturing Services"}
+    "TER": {sector: "Information Technology", industry: "Semiconductor Materials & Equipment"}
+    "TFC": {sector: "Financials", industry: "Diversified Banks"}
+    "TGT": {sector: "Consumer Staples", industry: "Consumer Staples Merchandise Retail"}
+    "TJX": {sector: "Consumer Discretionary", industry: "Apparel Retail"}
+    "TKO": {sector: "Communication Services", industry: "Movies & Entertainment"}
+    "TMO": {sector: "Health Care", industry: "Life Sciences Tools & Services"}
+    "TMUS": {sector: "Communication Services", industry: "Wireless Telecommunication Services"}
+    "TPL": {sector: "Energy", industry: "Oil & Gas Exploration & Production"}
+    "TPR": {sector: "Consumer Discretionary", industry: "Apparel, Accessories & Luxury Goods"}
+    "TRGP": {sector: "Energy", industry: "Oil & Gas Storage & Transportation"}
+    "TRMB": {sector: "Information Technology", industry: "Application Software"}
+    "TROW": {sector: "Financials", industry: "Asset Management & Custody Banks"}
+    "TRV": {sector: "Financials", industry: "Property & Casualty Insurance"}
+    "TSCO": {sector: "Consumer Discretionary", industry: "Other Specialty Retail"}
+    "TSLA": {sector: "Consumer Discretionary", industry: "Automobile Manufacturers"}
+    "TSN": {sector: "Consumer Staples", industry: "Packaged Foods & Meats"}
+    "TT": {sector: "Industrials", industry: "Building Products"}
+    "TTD": {sector: "Communication Services", industry: "Advertising"}
+    "TTWO": {sector: "Communication Services", industry: "Interactive Home Entertainment"}
+    "TXN": {sector: "Information Technology", industry: "Semiconductors"}
+    "TXT": {sector: "Industrials", industry: "Aerospace & Defense"}
+    "TYL": {sector: "Information Technology", industry: "Application Software"}
+    "UAL": {sector: "Industrials", industry: "Passenger Airlines"}
+    "UBER": {sector: "Industrials", industry: "Passenger Ground Transportation"}
+    "UDR": {sector: "Real Estate", industry: "Multi-Family Residential REITs"}
+    "UHS": {sector: "Health Care", industry: "Health Care Facilities"}
+    "ULTA": {sector: "Consumer Discretionary", industry: "Other Specialty Retail"}
+    "UNH": {sector: "Health Care", industry: "Managed Health Care"}
+    "UNP": {sector: "Industrials", industry: "Rail Transportation"}
+    "UPS": {sector: "Industrials", industry: "Air Freight & Logistics"}
+    "URI": {sector: "Industrials", industry: "Trading Companies & Distributors"}
+    "USB": {sector: "Financials", industry: "Diversified Banks"}
+    "V": {sector: "Financials", industry: "Transaction & Payment Processing Services"}
+    "VEEV": {sector: "Health Care", industry: "Health Care Technology"}
+    "VICI": {sector: "Real Estate", industry: "Hotel & Resort REITs"}
+    "VLO": {sector: "Energy", industry: "Oil & Gas Refining & Marketing"}
+    "VMC": {sector: "Materials", industry: "Construction Materials"}
+    "VMRK": {sector: "Real Estate", industry: "Multi-Family Residential REITs"}
+    "VRSK": {sector: "Industrials", industry: "Research & Consulting Services"}
+    "VRSN": {sector: "Information Technology", industry: "Internet Services & Infrastructure"}
+    "VRT": {sector: "Industrials", industry: "Electrical Components & Equipment"}
+    "VRTX": {sector: "Health Care", industry: "Biotechnology"}
+    "VST": {sector: "Utilities", industry: "Electric Utilities"}
+    "VTR": {sector: "Real Estate", industry: "Health Care REITs"}
+    "VTRS": {sector: "Health Care", industry: "Pharmaceuticals"}
+    "VZ": {sector: "Communication Services", industry: "Integrated Telecommunication Services"}
+    "WAB": {sector: "Industrials", industry: "Construction Machinery & Heavy Transportation Equipment"}
+    "WAT": {sector: "Health Care", industry: "Life Sciences Tools & Services"}
+    "WBD": {sector: "Communication Services", industry: "Broadcasting"}
+    "WDAY": {sector: "Information Technology", industry: "Application Software"}
+    "WDC": {sector: "Information Technology", industry: "Technology Hardware, Storage & Peripherals"}
+    "WEC": {sector: "Utilities", industry: "Electric Utilities"}
+    "WELL": {sector: "Real Estate", industry: "Health Care REITs"}
+    "WFC": {sector: "Financials", industry: "Diversified Banks"}
+    "WM": {sector: "Industrials", industry: "Environmental & Facilities Services"}
+    "WMB": {sector: "Energy", industry: "Oil & Gas Storage & Transportation"}
+    "WMT": {sector: "Consumer Staples", industry: "Consumer Staples Merchandise Retail"}
+    "WRB": {sector: "Financials", industry: "Property & Casualty Insurance"}
+    "WSM": {sector: "Consumer Discretionary", industry: "Homefurnishing Retail"}
+    "WST": {sector: "Health Care", industry: "Health Care Supplies"}
+    "WTW": {sector: "Financials", industry: "Insurance Brokers"}
+    "WY": {sector: "Real Estate", industry: "Timber REITs"}
+    "WYNN": {sector: "Consumer Discretionary", industry: "Casinos & Gaming"}
+    "XEL": {sector: "Utilities", industry: "Multi-Utilities"}
+    "XOM": {sector: "Energy", industry: "Integrated Oil & Gas"}
+    "XYL": {sector: "Industrials", industry: "Industrial Machinery & Supplies & Components"}
+    "XYZ": {sector: "Financials", industry: "Transaction & Payment Processing Services"}
+    "YUM": {sector: "Consumer Discretionary", industry: "Restaurants"}
+    "ZBH": {sector: "Health Care", industry: "Health Care Equipment"}
+    "ZBRA": {sector: "Information Technology", industry: "Electronic Equipment & Instruments"}
+    "ZTS": {sector: "Health Care", industry: "Pharmaceuticals"}

@@ -7,7 +7,7 @@ LOAD, not by big group: the light sources fan out freely, while the heavy / long
 capped by Airflow POOLS (created in airflow-init):
 
   * sec_bulk (2 slots)  — the SEC bulk zips: zips_download (Form 3/4/5, Notes and FTD
-                          zips + the SEC current-tickers GET), zips_ingest_insider (the Form 3/4/5 zip
+                          zips), zips_ingest_insider (the Form 3/4/5 zip
                           parse) and zips_ingest_datasets (notes, FTD; disk + SEC bandwidth bound)
   * sec_api  (2 slots)  — per-ticker EDGAR API (shared 10 req/s); each task consumes both
                           slots, so only one EDGAR walk runs at a time (edgar_index and insider_edgar included)
@@ -15,7 +15,7 @@ capped by Airflow POOLS (created in airflow-init):
                           superinvestors, earnings calls  (+ the one heavy yfinance pull:
                           price_history)
 
-Flow: sharadar_tickers -> universe -> (fetchers, with source dependencies) -> extraction_status -> identity_check -> trigger
+Flow: [sec_company_tickers, sharadar_tickers] -> universe_sync -> (fetchers, with source dependencies) -> extraction_status -> identity_check -> trigger
 the data_aggregation DAG. Every task has `retries: 3`, so four attempts in all. No source blocks
 the night: `extraction_status` and `identity_check` run on ALL_DONE, so they start once every fetcher
 has finished, failed or not. The aggregation trigger runs only when `identity_check` succeeds (the
@@ -87,10 +87,11 @@ def fetch(
     )
 
 
-# 0) universe — Sharadar's ticker dimension first (market-wide), then `tickers_universe` is synced
-#    from configs/universe.yml; every fetcher reads it, so a failed sync stops the night
-sharadar_tickers = fetch("sharadar-tickers")
-universe_sync = fetch("universe")
+# 0) universe (StepExtractUniverse) — the SEC and Sharadar ticker lists in parallel, then `tickers_universe` is
+#    synced from configs/universe.yml; every fetcher reads it, so a failed sync stops the night
+sec_company_tickers = fetch("universe --only sec-tickers", task_id="sec_company_tickers")
+sharadar_tickers = fetch("universe --only sharadar-tickers", task_id="sharadar_tickers")
+universe_sync = fetch("universe --only sync", task_id="universe_sync")
 
 # 1) LIGHT / fast — fan out in the default pool
 macro = fetch("macro")
@@ -205,7 +206,7 @@ identity_consumers = [
 ]
 edgar_walks = [insider_edgar, sec_13d, sec_13g, sec_8k_items, filing_text, def14a_edgar]
 
-sharadar_tickers >> universe_sync >> all_fetchers
+[sec_company_tickers, sharadar_tickers] >> universe_sync >> all_fetchers
 identity >> price_history  # the fetch list adds the security master's current secondary classes
 zips_download >> identity >> identity_consumers
 identity >> edgar_index >> edgar_walks  # the walks plan on tonight's index and skip their own refresh

@@ -742,9 +742,9 @@ def oracle3(context, ticker: str, cik: str, truncation: str) -> dict:
 # --------------------------------------------------------------------------------------- #
 # Driver                                                                                   #
 # --------------------------------------------------------------------------------------- #
-#: `tickers_universe.cik` comes from WIKIPEDIA (`tickers_universe/wikipedia_bootstrap.py`), and Wikipedia had
-#: already moved XOM to the holdco -- so the roster itself carried the defect. Sharadar's
-#: `secfilings` URL is an independent oracle on the same question.
+#: `tickers_universe.cik` comes from the SEC ticker list (`sec_company_tickers`), which follows a
+#: holding-company reorganisation at once (XOM -> the holdco). Sharadar's `secfilings` URL is an
+#: independent oracle on the same question.
 ROSTER_CROSSCHECK_SQL = """
 WITH sh AS (SELECT ticker, lpad(regexp_replace(secfilings, '^.*CIK=0*', ''), 10, '0') AS sh_cik
             FROM sharadar_tickers WHERE secfilings LIKE '%CIK=%')
@@ -756,7 +756,7 @@ ORDER BY 1
 
 
 def roster_crosscheck(conn, registrants: dict) -> pd.DataFrame:
-    """Tickers where the Wikipedia-derived roster CIK disagrees with Sharadar's.
+    """Tickers where the roster CIK disagrees with Sharadar's.
 
     Measured 2026-09-09: 498 scored, 497 agree, and the single disagreement is XOM -- where
     SHARADAR IS RIGHT. That check, had it existed, would have caught XOM a year early for
@@ -933,9 +933,9 @@ def main(argv: list[str] | None = None) -> int:
         print(crosscheck.to_string(index=False))
         if not unexplained_cik.empty:
             print(
-                "  ⚠ `tickers_universe.cik` comes from Wikipedia, and Wikipedia had "
-                "already moved XOM to the holdco. Sharadar is an independent oracle and was "
-                "right there, so investigate each row rather than overriding the roster."
+                "  ⚠ `tickers_universe.cik` comes from the SEC ticker list, which follows a "
+                "holding-company reorganisation at once (XOM -> the holdco). Sharadar is an independent "
+                "oracle, so investigate each row rather than overriding the roster."
             )
 
     if args.audit_chains:

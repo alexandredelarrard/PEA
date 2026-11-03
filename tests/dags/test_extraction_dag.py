@@ -26,8 +26,8 @@ STRICT_EDGAR_FILES = (
     "src/data_extract/utils/edgar_extract/fetch_def14a_edgar.py",
     "src/data_extract/utils/edgar_extract/fetch_filing_text.py",
 )
+UNIVERSE_TASKS = ("sec_company_tickers", "sharadar_tickers", "universe_sync")
 REQUIRED_COMMANDS = {
-    "sharadar-tickers",
     "universe",
     "macro",
     "short-interest",
@@ -257,7 +257,7 @@ def test_identity_stage_orders_downloads_identity_consumers_and_status(monkeypat
     assert params["extraction_status"]["trigger_rule"] == "all_done"
     assert graph["extraction_status"] == {"identity_check"}
     # AC-039 / P37: the identity validator runs after the report and is the hard gate on aggregation
-    fetchers = set(graph) - {"identity_check", "extraction_status", "trigger_data_aggregation", "sharadar_tickers", "universe"}
+    fetchers = set(graph) - {"identity_check", "extraction_status", "trigger_data_aggregation", *UNIVERSE_TASKS}
     assert all("extraction_status" in graph[task] for task in fetchers), sorted(t for t in fetchers if "extraction_status" not in graph[t])
     assert graph["identity_check"] == {"trigger_data_aggregation"} and params["identity_check"]["trigger_rule"] == "all_done"
     assert params["trigger_data_aggregation"]["trigger_rule"] == "all_success"
@@ -343,7 +343,7 @@ def test_a_failed_fetcher_never_blocks_aggregation_but_a_failed_identity_check_d
     assert gate.trigger_rule == ALL_DONE and check.trigger_rule == ALL_DONE and trigger.trigger_rule == ALL_SUCCESS
     assert trigger.upstream == {"identity_check"} and check.upstream == {"extraction_status"}
     fetchers = {
-        task_id for task_id in dag.tasks if task_id not in {"sharadar_tickers", "universe", "identity_check", "extraction_status", "trigger_data_aggregation"}
+        task_id for task_id in dag.tasks if task_id not in {*UNIVERSE_TASKS, "identity_check", "extraction_status", "trigger_data_aggregation"}
     }
     assert gate.upstream == fetchers, "the report, then the identity check, wait for every fetcher"
     assert {"thirteen_f"} <= dag.tasks["thirteen_f_backfill"].upstream, "one EDGAR walk at a time: the backfill follows the nightly 13F walk"
@@ -483,7 +483,7 @@ def test_sharadar_actions_is_an_sec_independent_task():
     dag = load_dag(DAG_FILE)
     task = dag.tasks["sharadar_actions"]
     assert str(task.kwargs["bash_command"]).split(" data_extract ", 1)[1].split()[0] == "sharadar-actions"
-    assert task.upstream == {"universe"}, "no SEC edge: it waits for the universe sync only"
+    assert task.upstream == {"universe_sync"}, "no SEC edge: it waits for the universe sync only"
     assert "sharadar_actions" in dag.tasks["extraction_status"].upstream
     assert "sharadar_actions" not in dag.tasks["fundamentals_sharadar"].upstream
     assert dag.tasks["fundamentals_sharadar"].upstream >= {"fundamentals"}
@@ -504,13 +504,18 @@ def test_sharadar_actions_is_an_sec_independent_task():
     print("  fundamentals failure -> sharadar_actions success, fundamentals_sharadar upstream_failed; schedule/start_date unchanged")
 
 
-def test_the_universe_is_synced_after_sharadar_tickers_and_before_every_fetcher():
-    """AC-016: sharadar-tickers -> universe -> every other extract task; no seed-universe task."""
+def test_the_universe_is_synced_after_both_ticker_lists_and_before_every_fetcher():
+    """[sec_company_tickers, sharadar_tickers] -> universe_sync -> every other extract task, each a `universe --only` part."""
     dag = load_dag(DAG_FILE)
-    sync = dag.tasks["universe"]
-    assert str(sync.kwargs["bash_command"]).split(" data_extract ", 1)[1].split()[0] == "universe"
-    assert sync.upstream == {"sharadar_tickers"} and dag.tasks["sharadar_tickers"].upstream == set()
-    roots = {task_id for task_id, task in dag.tasks.items() if task.upstream == {"universe"}}
-    assert "seed_universe" not in dag.tasks and roots, "fetchers hang off the universe sync"
+    parts = {task_id: str(dag.tasks[task_id].kwargs["bash_command"]).split(" data_extract ", 1)[1].split(" -c ")[0] for task_id in UNIVERSE_TASKS}
+    assert parts == {
+        "sec_company_tickers": "universe --only sec-tickers",
+        "sharadar_tickers": "universe --only sharadar-tickers",
+        "universe_sync": "universe --only sync",
+    }
+    assert dag.tasks["universe_sync"].upstream == {"sec_company_tickers", "sharadar_tickers"}
+    assert dag.tasks["sec_company_tickers"].upstream == set() and dag.tasks["sharadar_tickers"].upstream == set()
+    roots = {task_id for task_id, task in dag.tasks.items() if task.upstream == {"universe_sync"}}
+    assert roots, "fetchers hang off the universe sync"
     print("\n=== SANITY CHECK: universe ordering ===")
-    print(f"  sharadar_tickers -> universe -> {len(roots)} root fetchers; seed_universe is gone.")
+    print(f"  [sec_company_tickers, sharadar_tickers] -> universe_sync -> {len(roots)} root fetchers.")

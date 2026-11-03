@@ -15,8 +15,10 @@ from src.utils.string import pad_cik
 from src.utils.tickers_universe.universe import Universe
 
 
-def universe_config(tickers: Sequence[str], aliases: Mapping[str, Sequence[str]] | None = None) -> DictConfig:
-    return OmegaConf.create({"universe": {"tickers": list(tickers), "aliases": {k: list(v) for k, v in (aliases or {}).items()}}})
+def universe_config(tickers: Sequence[str] | Mapping[str, Mapping[str, str]], aliases: Mapping[str, Sequence[str]] | None = None) -> DictConfig:
+    """The `universe` config of `tickers`: a ticker -> {sector, industry} mapping, or bare names (no classification)."""
+    entries = {t: dict(v) for t, v in tickers.items()} if isinstance(tickers, Mapping) else {t: {} for t in tickers}
+    return OmegaConf.create({"universe": {"tickers": entries, "aliases": {k: list(v) for k, v in (aliases or {}).items()}}})
 
 
 def seed_universe(

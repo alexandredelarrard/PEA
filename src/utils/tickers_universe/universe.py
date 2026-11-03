@@ -10,7 +10,7 @@ CIKs), so consumers do not re-normalise them.
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable
+from collections.abc import Collection, Iterable, Mapping
 
 import pandas as pd
 from omegaconf import DictConfig
@@ -18,6 +18,7 @@ from omegaconf import DictConfig
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore
 from src.utils.string import yahoo_symbol
+from src.utils.tickers_universe.vocabulary import GICS_GROUP_SECTOR, GICS_SUB_INDUSTRY_GROUP
 
 GICS_COLUMNS = ("sector", "industry_group")
 SYNC_COMMAND = "python -m src data_extract universe"
@@ -28,10 +29,13 @@ class UniverseError(RuntimeError):
 
 
 def universe_config(config: DictConfig) -> tuple[list[str], dict[str, list[str]]]:
-    """The sorted `universe.tickers` and the `universe.aliases` map (owner -> alias symbols), validated."""
+    """The sorted `universe.tickers` keys and the `universe.aliases` map (owner -> alias symbols), validated."""
     if "universe" not in config:
         raise UniverseError("configs/universe.yml is missing (no `universe` key in the config)")
-    raw = [yahoo_symbol(t) for t in config.universe.get("tickers") or []]
+    entries = config.universe.get("tickers") or {}
+    if not isinstance(entries, Mapping):
+        raise UniverseError("configs/universe.yml `tickers` must map each ticker to its `sector` and `industry`")
+    raw = [yahoo_symbol(t) for t in entries]
     if not raw:
         raise UniverseError("configs/universe.yml lists no ticker")
     duplicated = sorted({t for t in raw if raw.count(t) > 1})
@@ -42,6 +46,21 @@ def universe_config(config: DictConfig) -> tuple[list[str], dict[str, list[str]]
     if orphans:
         raise UniverseError(f"configs/universe.yml aliases keys not in its tickers: {orphans}")
     return sorted(raw), aliases
+
+
+def universe_classification(config: DictConfig) -> pd.DataFrame:
+    """`sector`, `industry_group`, `sub_industry` per universe ticker (indexed, sorted): the yml `sector` and
+    `industry` (a GICS sub-industry), the group derived from the vocabulary. Raises listing every invalid entry."""
+    rows, invalid = {}, []
+    for ticker, entry in config.universe.tickers.items():
+        sector, industry = (entry or {}).get("sector"), (entry or {}).get("industry")
+        group = GICS_SUB_INDUSTRY_GROUP.get(industry)
+        if group is None or GICS_GROUP_SECTOR[group] != sector:
+            invalid.append(f"{ticker} ({sector!r}, {industry!r})")
+        rows[yahoo_symbol(ticker)] = {"sector": sector, "industry_group": group, "sub_industry": industry}
+    if invalid:
+        raise UniverseError(f"configs/universe.yml: unknown GICS sub-industry or one outside its sector for {', '.join(invalid)}")
+    return pd.DataFrame.from_dict(rows, orient="index").sort_index()
 
 
 class Universe:

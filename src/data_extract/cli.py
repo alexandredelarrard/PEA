@@ -75,6 +75,7 @@ from src.data_extract.transformers.step_extract_fundamentals_sharadar import (
 from src.data_extract.transformers.step_extract_identity import IdentityOptions, StepExtractIdentity
 from src.data_extract.transformers.step_extract_llm import LlmOptions, StepExtractLlm
 from src.data_extract.transformers.step_extract_prices import StepExtractPrices
+from src.data_extract.transformers.step_extract_universe import StepExtractUniverse
 from src.data_extract.transformers.step_extract_zips import StepExtractZips, ZipsOptions
 from src.data_extract.utils.behavioral.fetch_earnings_call_transcripts import (
     extract_earnings_calls as _extract_earnings_calls,
@@ -92,7 +93,6 @@ from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import fetch_fun
 from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import (
     fetch_sharadar_actions,
     fetch_sharadar_sp500,
-    fetch_sharadar_tickers,
 )
 from src.data_extract.utils.fundamentals_sharadar.gap_check import (
     DEFAULT_REPORT_PATH as GAP_REPORT_PATH,
@@ -112,7 +112,6 @@ from src.data_store.schema import Table, Tables, freshness_tables, marker_tables
 from src.utils.cli_helper import SpecialHelpOrder
 from src.utils.freshness import PREDICTION_INPUTS, fresh_share, last_dates_by_key, max_age_days, table_freshness
 from src.utils.string import run_date
-from src.utils.tickers_universe.sync import sync
 
 
 @click.group(cls=SpecialHelpOrder)
@@ -185,13 +184,24 @@ def extraction_status(config_path: str, as_of: datetime | None) -> None:
     click.echo(json.dumps(report, sort_keys=True))
 
 
-# --- Universe (runs after sharadar-tickers and before every other command) ---
-@cli.command(help="Sync tickers_universe with configs/universe.yml and sharadar_tickers (writes only what changed).", help_priority=1)
+# --- Universe (runs before every other command) ---
+_UNIVERSE_PARTS = ("sec-tickers", "sharadar-tickers", "sync")
+
+
+@cli.command(
+    help="Refresh sec_company_tickers and sharadar_tickers, then sync tickers_universe with configs/universe.yml "
+    f"(writes only what changed). --only runs the named part(s) ({', '.join(_UNIVERSE_PARTS)}).",
+    help_priority=1,
+)
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
-def universe(config_path: str, as_of: datetime | None) -> None:
-    _, context = get_config_context(config_path, use_cache=False, save=False)
-    sync(context.store, context.config, run_date(as_of))
+@click.option("--only", "only", type=click.Choice(_UNIVERSE_PARTS), multiple=True, help="Run only this part; repeatable.")
+def universe(config_path: str, as_of: datetime | None, only: tuple[str, ...]) -> None:
+    config, context = get_config_context(config_path, use_cache=False, save=False)
+    step = StepExtractUniverse(context, config, run_date(as_of))
+    parts = {"sec-tickers": step.run_sec_tickers, "sharadar-tickers": step.run_sharadar_tickers, "sync": step.run_sync}
+    for name in only or _UNIVERSE_PARTS:
+        parts[name]()
 
 
 # --- Prices / market / macro ---
@@ -451,16 +461,6 @@ def fundamentals_sharadar(config_path: str, tickers: str | None, full: bool, as_
     step.run(tickers=_tickers(context, tickers), full=full, config_dir=config_path, as_of=run_date(as_of))
 
 
-@cli.command(
-    name="sharadar-tickers",
-    help="Sharadar entity dimension (permaticker, currency, category, CUSIPs) -> sharadar_tickers. Full refresh. Runs before `universe` and fundamentals-sharadar.",
-)
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-def sharadar_tickers(config_path: str) -> None:
-    _, context = get_config_context(config_path, use_cache=False, save=False)
-    fetch_sharadar_tickers(context)
-
-
 @cli.command(name="sharadar-actions", help="Sharadar corporate actions (dividends, splits, spinoffs, acquisitions, relations) -> sharadar_actions.")
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
@@ -543,14 +543,13 @@ def insider_edgar(config_path: str, tickers: str | None, full: bool, as_of: date
     _edgar_step(config_path, tickers, None, full, as_of, no_cap).run_insider()
 
 
-_ZIP_DOWNLOADS = ("insider", "notes", "ftd", "sec-tickers")
+_ZIP_DOWNLOADS = ("insider", "notes", "ftd")
 _ZIP_INGESTS = ("insider", "notes", "ftd")
 
 
 @cli.command(
     name="zips-download",
-    help="Cache the SEC bulk zips (Form 3/4/5, Notes, FTD) and snapshot SEC's current tickers "
-    f"(the one table written). --only runs the named source(s) ({', '.join(_ZIP_DOWNLOADS)}). SEC-bulk.",
+    help=f"Cache the SEC bulk zips (Form 3/4/5, Notes, FTD); writes no table. --only runs the named source(s) ({', '.join(_ZIP_DOWNLOADS)}). SEC-bulk.",
 )
 @click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
 @click.option(*FULL_ARGS, **FULL_KWARGS)
@@ -563,7 +562,6 @@ def zips_download(config_path: str, full: bool, as_of: datetime | None, only: tu
         "insider": step.run_download_insider,
         "notes": step.run_download_financial_notes,
         "ftd": step.run_download_fails_to_deliver,
-        "sec-tickers": step.run_download_sec_tickers,
     }
     for name in only or _ZIP_DOWNLOADS:
         sources[name]()

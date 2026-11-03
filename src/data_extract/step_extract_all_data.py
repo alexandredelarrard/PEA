@@ -1,7 +1,7 @@
 """Super step orchestrating the data-extraction sub-steps over the universe (`context.universe`).
 
-Order: Sharadar tickers -> universe sync -> zip downloads (Form 3/4/5,
-Notes, FTD, SEC current tickers) -> `StepExtractIdentity` (Notes and FTD captures,
+Order: `StepExtractUniverse` (SEC and Sharadar ticker lists, universe sync) -> zip downloads (Form 3/4/5,
+Notes, FTD) -> `StepExtractIdentity` (Notes and FTD captures,
 symbol_tenure + entity_lineage + security_master -> propagation) -> zip ingests (insider zip quarters, notes,
 FTD) -> prices (+ earnings surprises) -> institutionals (13F, roster, managers, short interest) ->
 Sharadar -> fundamentals -> EDGAR (insider, 13D, 13G, 8-K, filing text, DEF 14A ECD) -> LLM (DEF 14A, 8-K votes)
@@ -24,11 +24,10 @@ from src.data_extract.transformers.step_extract_institutionals import (
 )
 from src.data_extract.transformers.step_extract_llm import LlmOptions, StepExtractLlm
 from src.data_extract.transformers.step_extract_prices import StepExtractPrices
+from src.data_extract.transformers.step_extract_universe import StepExtractUniverse
 from src.data_extract.transformers.step_extract_zips import StepExtractZips, ZipsOptions
-from src.data_extract.utils.fundamentals_sharadar.fetch_sharadar import fetch_sharadar_tickers
 from src.utils.step import Step
 from src.utils.string import run_date
-from src.utils.tickers_universe.sync import sync
 
 
 class StepExtractAllData(Step):
@@ -43,8 +42,7 @@ class StepExtractAllData(Step):
         self._behavioral = StepExtractBehavioral(context=context, config=config)
 
     def run(self) -> None:
-        fetch_sharadar_tickers(self._context)
-        sync(self._context.store, self._config, run_date(None))
+        StepExtractUniverse(self._context, self._config, run_date(None)).run()
         tickers = self._universe.tickers
         self._log.info(f"Equity universe: {len(tickers)} tickers")
 

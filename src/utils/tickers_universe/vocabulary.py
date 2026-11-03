@@ -1,8 +1,8 @@
 """
 vocabulary.py  (src/utils/tickers_universe/vocabulary.py)
 ---------------------------------------------------------
-The GICS vocabulary, once: the 11 sector and 25 industry-group names `tickers_universe` stores,
-and each group's sub-industries (the Wikipedia bootstrap maps a sub-industry to its group).
+The GICS vocabulary, once: sector -> industry group -> sub-industry. `configs/universe.yml` declares each
+ticker's sector and sub-industry; the industry group is derived here.
 
 GICS in `tickers_universe` is today's classification projected backwards over the whole
 history (no date axis), the same look-ahead the static peer basket already carries.
@@ -19,22 +19,6 @@ BANKS = "Banks"
 INSURANCE = "Insurance"
 EQUITY_REITS = "Equity Real Estate Investment Trusts (REITs)"
 PHARMA_BIOTECH_LIFE_SCIENCES = "Pharmaceuticals, Biotechnology & Life Sciences"
-
-GICS_SECTORS: frozenset[str] = frozenset(
-    {
-        "Communication Services",
-        "Consumer Discretionary",
-        "Consumer Staples",
-        ENERGY,
-        FINANCIALS,
-        "Health Care",
-        "Industrials",
-        "Information Technology",
-        MATERIALS,
-        "Real Estate",
-        UTILITIES,
-    }
-)
 
 # industry group -> its sub-industries (GICS 2023, S&P 500 coverage)
 GICS_SUB_INDUSTRIES: dict[str, list[str]] = {
@@ -223,4 +207,36 @@ GICS_SUB_INDUSTRIES: dict[str, list[str]] = {
     ],
 }
 
+#: industry group -> its sector
+GICS_GROUP_SECTOR: dict[str, str] = {
+    ENERGY: ENERGY,
+    MATERIALS: MATERIALS,
+    "Capital Goods": "Industrials",
+    "Commercial & Professional Services": "Industrials",
+    "Transportation": "Industrials",
+    "Automobiles & Components": "Consumer Discretionary",
+    "Consumer Durables & Apparel": "Consumer Discretionary",
+    "Consumer Services": "Consumer Discretionary",
+    "Consumer Discretionary Distribution & Retail": "Consumer Discretionary",
+    "Consumer Staples Distribution & Retail": "Consumer Staples",
+    "Food, Beverage & Tobacco": "Consumer Staples",
+    "Household & Personal Products": "Consumer Staples",
+    "Health Care Equipment & Services": "Health Care",
+    PHARMA_BIOTECH_LIFE_SCIENCES: "Health Care",
+    BANKS: FINANCIALS,
+    "Financial Services": FINANCIALS,
+    INSURANCE: FINANCIALS,
+    "Software & Services": "Information Technology",
+    "Technology Hardware & Equipment": "Information Technology",
+    "Semiconductors & Semiconductor Equipment": "Information Technology",
+    "Telecommunication Services": "Communication Services",
+    "Media & Entertainment": "Communication Services",
+    "Real Estate Management & Development": "Real Estate",
+    EQUITY_REITS: "Real Estate",
+    UTILITIES: UTILITIES,
+}
+
+GICS_SECTORS: frozenset[str] = frozenset(GICS_GROUP_SECTOR.values())
 GICS_INDUSTRY_GROUPS: frozenset[str] = frozenset(GICS_SUB_INDUSTRIES)
+#: sub-industry -> its industry group
+GICS_SUB_INDUSTRY_GROUP: dict[str, str] = {sub: group for group, subs in GICS_SUB_INDUSTRIES.items() for sub in subs}

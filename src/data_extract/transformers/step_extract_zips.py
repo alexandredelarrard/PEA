@@ -1,7 +1,6 @@
-"""Zips step: the SEC bulk data sets (Form 3/4/5, Notes, fails-to-deliver) and SEC's ticker list.
+"""Zips step: the SEC bulk data sets (Form 3/4/5, Notes, fails-to-deliver).
 
-The download phase only caches archives (its one write is the one-row `sec_company_tickers` snapshot); the identity
-step reads those caches; the ingest phase then parses the cached archives into their tables, still downloading a
+The download phase only caches archives; the identity step reads those caches; the ingest phase then parses the cached archives into their tables, still downloading a
 pending period not cached yet. The insider ingest runs without an insider source run: the EDGAR walk owns its own.
 The Notes period list (one landing-page scrape) is shared by both phases.
 """
@@ -15,7 +14,6 @@ from omegaconf import DictConfig
 
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import cache_dir
-from src.data_extract.utils.identity.sec_tickers import download_sec_company_tickers
 from src.data_extract.utils.zips.fetch_fails_to_deliver import download_fails_to_deliver, fetch_fails_to_deliver
 from src.data_extract.utils.zips.fetch_financial_notes import (
     download_notes_periods,
@@ -70,14 +68,10 @@ class StepExtractZips(Step):
     def run_download_fails_to_deliver(self) -> int:
         return download_fails_to_deliver(self._context, self._years_history, self._options.full, self._run_date)
 
-    def run_download_sec_tickers(self) -> int:
-        return download_sec_company_tickers(self._context)
-
     def run_download(self) -> None:
         self.run_download_insider()
         self.run_download_financial_notes()
         self.run_download_fails_to_deliver()
-        self.run_download_sec_tickers()
 
     def run_ingest_insider(self) -> int:
         scope = self._scope

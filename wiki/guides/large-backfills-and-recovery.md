@@ -55,7 +55,6 @@ Then apply the approved register change and recover each source according to its
 ~~~bash
 rtk "$PY" -m src data_extract zips-ingest --only insider -F
 rtk "$PY" -m src data_extract zips-ingest --only notes --full
-rtk "$PY" -m src data_extract zips-ingest --only statements --full
 rtk "$PY" -m src data_extract fundamentals-facts -t TICKER1,TICKER2
 rtk "$PY" -m src data_extract fundamentals-employees -t TICKER1,TICKER2
 rtk "$PY" -m src data_extract sec-8k-items -t TICKER1,TICKER2

@@ -221,7 +221,7 @@ Deferred from the shared-driver refactor of `src/data_extract`. Stored-value cha
   - [fetch_13f.py](../src/data_extract/utils/institutionals/fetch_13f.py): collapse `_record`'s if/else (only `backfill_window` differs); delete `position_type` (test-only caller); share one suspect-price warning with the manager catch-up and drop the leading underscore on the names `fetch_13f_managers` imports.
   - 13D/13G: derive `fetch_13g_edgar._COLS` from the 13D columns; run 13D frames through `finalise_frame` like 13G (low risk: PK dedup); build `_ITEM_HEADING_ANYWHERE` from `item_heading` (low risk); one cached `FilingStamp.text` for the best-effort text read in 13D and filing text.
   - Insider: `date_formats` is the last per-source argument of `build_insider_frame` in [insider_common.py](../src/data_extract/utils/insider/insider_common.py); fold it into the source; drop the two redundant empty-frame conditionals in `fetch_insider_edgar.py`.
-  - Elsewhere: delete the unread `on_date` parameter of `Identity.owns`; vectorise `fundamentals_employees._done_dates`; use `Counter` for the vote tallies in `votes/fetch.py`; one `bulk_cache` helper for the period-archive fetch shared by financial statements and notes (keep each caller's clock precedence); `pad_cik_series` in `fetch_tickers.py` (low risk: odd inputs).
+  - Elsewhere: delete the unread `on_date` parameter of `Identity.owns`; vectorise `fundamentals_employees._done_dates`; use `Counter` for the vote tallies in `votes/fetch.py`; one `bulk_cache` helper for the period-archive fetch (the notes fetcher is its only caller now); `pad_cik_series` in `fetch_tickers.py` (low risk: odd inputs).
   - Constants (needs approval): move `SEC_13D_FORMS`, `SEC_13G_FORMS`, `SEC_INSIDER_FORMS` and `SEC_8K_FORMS`, each with one `src` consumer, next to their fetchers.
 
 ## Data-extract functional-step follow-ups
@@ -363,6 +363,16 @@ Reconsider when any of these holds:
 - a model review finds the tone features' importance or sign unstable across CV folds by era.
 
 Candidate fixes to compare then: per-date cross-sectional demeaning of role tone, or separately evaluated time detrending. Keep the approved ten-column contract unless measurements and a user decision justify a change; do not silently restore retired history features.
+
+## SEC Notes pension net liability: user actions
+
+The Financial Statement data sets source is removed; `notes_num` carries the two recognized net pension liability tags. In order:
+
+1. Merge branch `harness/pension-facts-into-notes-num` into `dev`.
+2. `rtk "$PY" -m src data_extract zips-ingest --only notes -F -c ./configs` re-parses all 82 cached Notes zips (28 GB) to add the 2 tags to history; an estimate of 1 to 1.5 h, one process, low priority.
+3. Rebuild `cube_part_fundamentals` with `-F`, then reassemble `cube`.
+4. `DROP TABLE pension_facts` in the live database (orphaned; no code reads it).
+5. Delete `data/sec_financial_statements/` (71 zips, 5.6 GB).
 
 ## Documentation retirement
 

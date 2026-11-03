@@ -293,6 +293,8 @@ def _on_balance_sheet(num: pd.DataFrame, pre: pd.DataFrame, zip_name: str) -> pd
     net-liability row survives only when `pre` lists its (adsh, tag) with stmt BS. A zip without `pre.tsv`
     keeps no net-liability row (warned), never an unchecked one. Pure besides the warning.
     """
+    if num.empty:
+        return num
     net = num["tag"].isin(_NET_LIABILITY_TAGS)
     if not net.any():
         return num

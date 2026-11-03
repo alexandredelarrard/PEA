@@ -259,6 +259,13 @@ def test_net_liability_tags_dropped_with_warning_when_pre_is_missing(tmp_path, c
     print(f"  tags kept = {sorted(set(num['tag']))}; warning logged = {'pre.tsv' in caplog.text}")
 
 
+def test_on_balance_sheet_accepts_a_column_less_empty_num() -> None:
+    out = fn._on_balance_sheet(pd.DataFrame(), pd.DataFrame(), "2022q1_notes.zip")
+    assert out.empty
+    print("\n=== SANITY: header-only num.tsv ===")
+    print("  a column-less empty num frame passes through without a KeyError. Validated.")
+
+
 def test_join_num_drops_nan_value():
     sub_meta = pd.DataFrame(
         {

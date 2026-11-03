@@ -48,7 +48,6 @@ BROWSER_HEADERS = {
 # --------------------------------------------------------------------------- #
 SEC_SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 SEC_SUBMISSIONS_PAGE_URL = "https://data.sec.gov/submissions/{name}"
-SEC_COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 SEC_COMPANY_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 
 # A 13F-HR must be filed within 45 days of quarter-end, so a quarter's positions only
@@ -92,7 +91,6 @@ FUNDAMENTALS_CATALOGUE_SUBDIR = "fundamentals"
 FUNDAMENTALS_KPIS_FILENAME = "fundamentals_kpis.json"
 FUNDAMENTALS_REGIMES_FILENAME = "fundamentals_regimes.json"
 FUNDAMENTALS_EXCEPTIONS_FILENAME = "fundamentals_exceptions.json"
-FUNDAMENTALS_ROSTERS_FILENAME = "fundamentals_rosters.json"
 
 # --------------------------------------------------------------------------- #
 # Sharadar SF1 fundamentals (Sharadar DIRECT, api.sharadar.com).               #
@@ -543,28 +541,6 @@ SHARADAR_EVENT_FIELDS: frozenset[str] = frozenset(
     }
 )
 
-#: Share of the zeros THE SEC LAYER COULD ACTUALLY JUDGE (a non-null counterpart) that must be
-#: contradicted before the diagnostic proposes `"null"`. A rate over the judged cells, not over
-#: all zeros: a field where 4 of 4 checkable zeros are wrong is a broken column, and dividing
-#: those 4 by the 140 zeros nobody could check would hide it.
-#:
-#: Low on purpose. The question is "can a 0 in this column be read as a real 0?", and once any
-#: measurable slice is provably wrong with nothing in the payload distinguishing those cells
-#: from the rest, the answer is no for the whole column. Nulling also moves Sharadar TOWARDS
-#: the SEC layer's own treatment: where the SEC path has no value it stores NULL, never 0.
-SHARADAR_ZERO_RULE_CONTRADICTION_SHARE = 0.02
-
-#: How many zeros the SEC layer must be able to judge before its verdict is used at all. Three
-#: cells is not a rate, it is an anecdote.
-SHARADAR_ZERO_RULE_MIN_CHECKED = 3
-
-#: Share of a field's zeros sitting in tickers that report the SAME field non-zero in another
-#: quarter. This is the Sharadar-INTERNAL signal, and it is the only one available for the 21
-#: fields with no SEC counterpart: a bank has no inventory in any quarter (structural, and
-#: `"keep"` is right), but a bank with 4.2bn of interest expense in Q2 and 0 in Q1 is a fill,
-#: not a fact. Not applied to `SHARADAR_EVENT_FIELDS`.
-SHARADAR_ZERO_RULE_MIXED_SHARE = 0.5
-
 # --------------------------------------------------------------------------- #
 # Sharadar phase-4 MERGE -- the Sharadar TTM frame + the SEC-owned block ->     #
 # `fundamentals_history`, plus the gap check that proposes overrides and the    #
@@ -733,8 +709,6 @@ DATA_FRESHNESS_MAX_AGE_DAYS: dict[str, int] = {
     "quarterly": 140,
     "yearly": 460,
 }
-# cadence tiers from the tightest to the loosest (daily -> yearly)
-DATA_FRESHNESS_CADENCE_ORDER: tuple[str, ...] = ("daily", "weekly", "biweekly", "monthly", "quarterly", "yearly")
 
 # --------------------------------------------------------------------------- #
 # Incremental cube-part builds (Airflow data_aggregation DAG)                  #

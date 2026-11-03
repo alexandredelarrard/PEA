@@ -138,18 +138,3 @@ DELETE_KWARGS: dict[str, Any] = dict(is_flag=True, default=False, help="Delete t
 REPORT_PATH_ARGS = ("--report", "report_path")
 REPORT_PATH_KWARGS: dict[str, Any] = dict(default=None, help="Where to write the markdown report (default: the command's report path).")
 
-NO_WRITE_ARGS = ("--no-write",)
-NO_WRITE_KWARGS: dict[str, Any] = dict(is_flag=True, default=False, help="Print only; write no file.")
-
-# The D14 coverage gate. A feature below this share of non-null cells INSIDE its own
-# availability window is listed for the cut -- never scored over all history, which would fail
-# a 2024-12-17 feature for a property of the calendar.
-#
-# ⚠ NO `default` HERE ON PURPOSE. The number lives beside the gate that applies it
-# (`src/validate/institutionals.COVERAGE_FLOOR`) and the call site passes it in, so the floor
-# is declared once. A copy here would be a second declaration of D14 -- and the one that gets
-# edited is never the one that is read.
-COVERAGE_FLOOR_ARGS = ("--coverage-floor",)
-COVERAGE_FLOOR_KWARGS: dict[str, Any] = dict(
-    type=float, show_default=True, help="Coverage gate: a feature below this non-null share inside its availability window is listed for the cut."
-)

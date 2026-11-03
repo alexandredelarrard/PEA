@@ -422,7 +422,7 @@ def load_fails_basis(context: Context, master: pd.DataFrame) -> ShareBasis:
 
 
 def _prepare_fails_period(
-    context: Context, source: pd.DataFrame, master: pd.DataFrame, universe: frozenset[str], identity: dict[Table, pd.DataFrame], basis: ShareBasis
+    context: Context, source: pd.DataFrame, master: pd.DataFrame, universe: frozenset[str], basis: ShareBasis
 ) -> tuple[dict[Table, pd.DataFrame], dict[Table, dict[str, object] | None]]:
     """Prepare one actual source period's exact raw/derived pair and guarded scopes."""
     periods = sorted(set(source["period"].astype(str))) or [str(source.attrs["period"])]
@@ -467,7 +467,7 @@ def _save_fails_period(
     context: Context, source: pd.DataFrame, master: pd.DataFrame, universe: frozenset[str], identity: dict[Table, pd.DataFrame], basis: ShareBasis
 ) -> tuple[int, int]:
     """Commit one actual source period's existing pair together."""
-    frames, scopes = _prepare_fails_period(context, source, master, universe, identity, basis)
+    frames, scopes = _prepare_fails_period(context, source, master, universe, basis)
     return _write_fails_period(context, frames, scopes, identity)
 
 
@@ -558,7 +558,7 @@ def _recover_fails_companies(
         if source is None:
             logger.warning("FTD: %s original unavailable; scope proof remains unknown", period)
             continue
-        frames, scopes = _prepare_fails_period(context, source, master, universe, identity, basis)
+        frames, scopes = _prepare_fails_period(context, source, master, universe, basis)
         if not dry_run:
             _, written = _write_fails_period(context, frames, scopes, identity)
             saved += written

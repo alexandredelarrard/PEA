@@ -336,25 +336,12 @@ def _read_filing(stamp: FilingStamp) -> pd.DataFrame | ReadFailure:
         return ReadFailure(transient=isinstance(e, TransientReadError), reason=f"{type(e).__name__}: {e}")
 
 
-def _resolve_tickers(book: pd.DataFrame, cmap: pd.DataFrame, universe: set[str]) -> pd.DataFrame:
-    """The `sec13f_hr` slice of a book: CUSIPs the map resolves to a universe ticker, `_HR_COLS`."""
-    out = book[[c for c in _HR_COLS if c != "ticker"]].merge(cmap, on="cusip", how="inner")
-    return out[out["ticker"].isin(universe)][_HR_COLS]
-
-
 def _suspect_prices(df: pd.DataFrame) -> int:
     """Source common positions with extreme implied prices, before aggregate P1 repair."""
     if df.empty:
         return 0
     implied = (df["value_usd"] / df["shares"].where(df["shares"] > 0)).dropna()
     return int((~implied.between(*_IMPLIED_PRICE_BAND)).sum())
-
-
-def _latest_per_key(df_book: pd.DataFrame) -> pd.DataFrame:
-    """One row per `_BOOK_KEY`, the last filed winning: a stable sort on `filing_date`, so rows
-    passed in (filed, amendment last, accession) order keep a same-day amendment after its
-    original. Also keeps a PK from repeating in one upsert, which Postgres rejects."""
-    return df_book.sort_values("filing_date", kind="stable").drop_duplicates(subset=_BOOK_KEY, keep="last")
 
 
 def _padded(df: pd.DataFrame) -> pd.DataFrame:

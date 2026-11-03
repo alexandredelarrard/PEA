@@ -672,21 +672,6 @@ class PricesReport:
 #: 1e-4 is ~30x that headroom -- enough that a handful of new vendor hiccups warn rather than
 #: halt the nightly, tight enough that a systemic re-corruption cannot slip through.
 SPIKE_BLOCK_SHARE = 1e-4
-#: Invariant 1 does NOT block. ⚠ The reason USED to be "12.6% fails on a correct table
-#: because Sharadar is the inconsistent side", and that reason was wrong -- see the module
-#: docstring. With `S(d)` applied the identity closes at **98.30%** (measured 2026-09-01,
-#: 50,762 joined rows), and the residual ~1.8% is four NAMED clusters:
-#:
-#:     MNST  122 rows  ratio 2.0     Yahoo never applied its own published 2026-08-11 split
-#:     V      74 rows  ratio 0.94    `sharesbas` is Class A, `marketcap` is as-converted
-#:     APA/SJM/HBAN/ORCL ~79 rows    stock dividends Sharadar's `price` ignores
-#:     ~20 small names, <=102 rows   as-of join noise, median 2 rows/ticker
-#:
-#: So a gate here is now a DEFENSIBLE decision rather than an impossible one. It is still
-#: `None`, because choosing the threshold is a separate decision with its own evidence, and
-#: because two of those four clusters are open work whose row counts will move. Set it only
-#: with a measured number and a stated reason -- never to make a cluster pass.
-MCAP_BLOCK_SHARE = None
 
 
 def gate(report: PricesReport) -> tuple[bool, str]:

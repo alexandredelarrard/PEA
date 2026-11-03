@@ -69,13 +69,6 @@ log = logging.getLogger(__name__)
 
 CHECK = "leakage"
 
-#: A label's horizon in days, read out of its own name. `_h30` -> 30. NOT a default: a table
-#: must DECLARE `label_pattern` before the horizon half runs on it, because an `_h<n>` suffix
-#: does not mean "forward label". `cube_part_momentum` carries `seasonal_h30/h60/h90`, which are
-#: BACKWARD-looking seasonality features computed from past same-calendar-window returns -- they
-#: correctly run to the last session, and matched blind they produced 5 findings at score 10.
-HORIZON_PATTERN = r"_h(\d+)$"
-
 #: Columns read at once by the PIT half -- one group is one pass over the table.
 GROUP = 8
 

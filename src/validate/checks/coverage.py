@@ -76,15 +76,6 @@ def _at(frame: pd.DataFrame, row: str, column: str) -> Any:
     return cast(Any, frame.at[row, column])
 
 
-def _expected_sessions(sessions: np.ndarray, start: Any, end: Any) -> int:
-    """How many reference sessions fall in `[start, end]`."""
-    if pd.isna(start) or pd.isna(end) or end < start:
-        return 0
-    lo = int(np.searchsorted(sessions, np.datetime64(pd.Timestamp(start)), side="left"))
-    hi = int(np.searchsorted(sessions, np.datetime64(pd.Timestamp(end)), side="right"))
-    return max(hi - lo, 0)
-
-
 def check_coverage(
     context: Context,
     table: Table | str,

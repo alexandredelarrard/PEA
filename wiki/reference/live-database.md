@@ -23,11 +23,11 @@ This page records the latest migrated measurements of the local PostgreSQL volum
 
 The measured environment was PostgreSQL 16 in container `pea_db`, database `pea`, local owner role `alexandre`, backed by volume `stock_pick_strat_pgdata`. At the August snapshot it occupied roughly 19 GB and held 41 physical tables in `public`.
 
-## Universe table cutover (pending, 2026-11-03)
+## Universe table cutover (2026-11-03)
 
-- Code reads the universe from `tickers_universe` through `context.universe`; the table is not in the live volume until the user runs the cutover: C1 `data_extract universe` creates it, C2 compares it with `sp500_tickers`, C3 backs up then drops `sp500_tickers`.
-- Until C3, `sp500_tickers` is still present but no code reads it. Until C1, every stage raises `UniverseError` (table missing) and names the command to run.
-- Back up `tickers_universe` before ever dropping it: a rebuild loses `universe_added_on`, so every ticker would look new and be backfilled.
+- `tickers_universe` was built on 2026-11-03 (C1): 491 rows, CIK and CUSIPs on every row, GICS (`sector`, `industry_group`, `sub_industry`) copied from `sp500_tickers` for all 491 by user decision (six universe tickers, BLDR CTVA PSKY TAP TTD WBD, are no longer on Wikipedia's S&P 500 page), `universe_added_on` 2000-01-01 everywhere. A second `sync` wrote 0 rows. GICS maps and integer codes equal the pre-refactor baseline (C2).
+- Code reads the universe only through `context.universe`. `sp500_tickers` is still present but no code reads it; C3 (back it up, then drop it) is the user's step.
+- Back up `tickers_universe` before ever dropping it: a rebuild loses `universe_added_on` and the carried GICS, so every ticker would look new and be backfilled, and off-Wikipedia tickers would lose their GICS.
 
 ## Disposable text-cube test state (2026-10-22)
 

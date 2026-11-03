@@ -11,12 +11,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.data_aggregate.utils.fundamentals.fundamental_features import _NET_PENSION_TAGS, _net_pension_daily
+from src.constants.constants import SEC_NET_PENSION_LIABILITY_TAGS
+from src.data_aggregate.utils.fundamentals.fundamental_features import _net_pension_daily
 from src.data_aggregate.utils.institutionals.insider_features import InsiderCoverage
 from tests.conftest import make_frames
 from tests.data_aggregate.insider_pit_reference import build_prepared_insider_panel as build_insider_feature_panel
 
-PRIMARY, VARIANT = _NET_PENSION_TAGS
+PRIMARY, VARIANT = SEC_NET_PENSION_LIABILITY_TAGS
 
 
 def test_net_pension_daily_pit_latest_period_and_primary_preference():

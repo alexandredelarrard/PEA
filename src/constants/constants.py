@@ -98,6 +98,13 @@ SEC_13F_SOURCE_ACCOUNTED = "source_accounted:"
 SEC_13F_INFERRED_HOLDINGS_REPORT = "13F HOLDINGS REPORT (inferred)"
 SEC_13F_SCHEMA_VALUE_FACTORS: dict[str, float] = {"X0101": 1000.0, "X0102": 1000.0, "X0202": 1.0}
 
+# The two recognized net DB-pension liability tags (balance-sheet facts): the notes fetcher keeps them only on the
+# filing's balance sheet and the fundamentals cube reads them back from `notes_num`. Primary first, pension-only variant second.
+SEC_NET_PENSION_LIABILITY_TAGS: tuple[str, str] = (
+    "PensionAndOtherPostretirementDefinedBenefitPlansLiabilitiesNoncurrent",  # primary
+    "DefinedBenefitPensionPlanLiabilitiesNoncurrent",  # pension-only variant
+)
+
 # The three JSON files that ARE the fundamentals contract -- one entry per KPI (tier, kind,
 # sign, unit, definition, primary-source authority, and how to resolve it), the regime ->
 # statement-template map, and the measured (regime, field) expected-absence register. JSON

@@ -23,7 +23,7 @@ import pytest
 
 import src.data_extract.utils.zips.fetch_financial_notes as fn
 import src.data_extract.utils.zips.zip_archive as zip_archive
-from src.constants.constants import MARKET_TIMEZONE
+from src.constants.constants import MARKET_TIMEZONE, SEC_NET_PENSION_LIABILITY_TAGS
 from src.data_extract.utils.common import bulk_cache
 from src.data_extract.utils.common.resume import ArchiveWork
 from src.data_extract.utils.zips.zip_archive import ZipScope
@@ -206,7 +206,7 @@ def test_read_notes_empty_when_universe_disjoint(zip_path):
     assert num.empty and txt.empty
 
 
-_PRIMARY, _VARIANT = fn._NET_LIABILITY_TAGS
+_PRIMARY, _VARIANT = SEC_NET_PENSION_LIABILITY_TAGS
 _PBO = "DefinedBenefitPlanBenefitObligation"
 _PRE_COLS = ["adsh", "report", "line", "stmt", "inpth", "tag", "version", "prole", "plabel", "negating"]
 HWM = "0000004281-22-000004"  # variant on the balance sheet, primary only on a footnote (OPEB-only)
@@ -611,7 +611,7 @@ def test_fetch_stamps_new_zip_with_successful_download_date(tmp_path: Path, monk
 
 
 def test_net_pension_liability_tags_kept_only_undimensioned_and_without_coreg() -> None:
-    liability_tags = list(fn._NET_LIABILITY_TAGS)
+    liability_tags = list(SEC_NET_PENSION_LIABILITY_TAGS)
     cols = ["adsh", "tag", "dimn", "coreg"]
     rows = [
         ("A", liability_tags[0], 0, ""),  # keep

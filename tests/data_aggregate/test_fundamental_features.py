@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.constants.constants import SEC_NET_PENSION_LIABILITY_TAGS
 from src.data_aggregate.utils.common.frames import ratio
 from src.data_aggregate.utils.common.panel import build_peer_relative_panel, peer_relative
 from src.data_aggregate.utils.common.pit import fiscal_change_to_daily
@@ -26,7 +27,6 @@ from src.data_aggregate.utils.fundamentals.feature_views import build_fundamenta
 from src.data_aggregate.utils.fundamentals.fundamental_features import (
     _FN_PBO_TAG,
     _FN_PLAN_ASSETS_TAG,
-    _NET_PENSION_TAGS,
     _derived_fields,
     _pegy_fields,
     _self_history_z,
@@ -1078,13 +1078,13 @@ def test_load_notes_num_scoped_reads_only_needed_tags(sqlite_store):
             "filed": "2025-02-14",
             "available_at": "2025-03-12",
         }
-        for i, tag in enumerate((_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, *_NET_PENSION_TAGS, "SomeOtherFootnoteTag", "AnotherUnusedTag"))
+        for i, tag in enumerate((_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, *SEC_NET_PENSION_LIABILITY_TAGS, "SomeOtherFootnoteTag", "AnotherUnusedTag"))
     ]
     ctx = _Ctx(sqlite_store)
     assert load_notes_num_scoped(ctx) is None  # cold DB: table absent -> None, not a raise
     sqlite_store.save("notes_num", pd.DataFrame(rows))
     out = load_notes_num_scoped(ctx)
-    assert set(out["tag"]) == {_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, *_NET_PENSION_TAGS}, "non-pension footnote tags leaked in"
+    assert set(out["tag"]) == {_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, *SEC_NET_PENSION_LIABILITY_TAGS}, "non-pension footnote tags leaked in"
     assert len(out) == 4, f"expected only the 4 pension tags, got {len(out)}"
     assert list(out.columns) == ["ticker", "tag", "ddate", "qtrs", "value", "filed", "available_at", "adsh"]
     # no matching row -> None (builder then treats pension as unavailable)

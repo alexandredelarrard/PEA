@@ -21,6 +21,7 @@ from typing import cast
 import pandas as pd
 from tqdm import tqdm
 
+from src.constants.constants import SEC_NET_PENSION_LIABILITY_TAGS
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import (
     ZipRead,
@@ -49,12 +50,8 @@ _LANDING_URL = "https://www.sec.gov/data-research/sec-markets-data/financial-sta
 _NOTES_TABLES = (Tables.notes_num, Tables.notes_text)
 
 # Curated footnote pension tags (undimensioned totals); discount-rate tags are percentages, not USD. The two recognized
-# net-liability tags (`_NET_LIABILITY_TAGS`) are kept only on the filing's balance sheet (`pre.tsv` stmt BS): a footnote
+# net-liability tags (`SEC_NET_PENSION_LIABILITY_TAGS`) are kept only on the filing's balance sheet (`pre.tsv` stmt BS): a footnote
 # line (OPEB-only, a sub-plan) carries the same undimensioned tag with another fact.
-_NET_LIABILITY_TAGS = (
-    "PensionAndOtherPostretirementDefinedBenefitPlansLiabilitiesNoncurrent",  # primary
-    "DefinedBenefitPensionPlanLiabilitiesNoncurrent",  # pension-only variant
-)
 _NOTES_NUM_TAGS = frozenset(
     {
         "DefinedBenefitPlanBenefitObligation",  # PBO
@@ -70,7 +67,7 @@ _NOTES_NUM_TAGS = frozenset(
         "DefinedBenefitPlanAssumptionsUsedCalculatingNetPeriodicBenefitCostDiscountRate",
         "DefinedBenefitPlanWeightedAverageAssumptionsUsedCalculatingBenefitObligationDiscountRate",
     }
-) | frozenset(_NET_LIABILITY_TAGS)
+) | frozenset(SEC_NET_PENSION_LIABILITY_TAGS)
 
 # High-signal note TextBlock elements, a few variants per theme.
 _NOTES_TEXT_TAGS = frozenset(
@@ -278,7 +275,7 @@ def _consolidated_rows(chunk: pd.DataFrame, adsh_set: set[str], tags: frozenset[
 
 def _balance_sheet_rows(chunk: pd.DataFrame, adsh_set: set[str]) -> pd.Series:
     """`pre.tsv` rows presenting a net-liability tag of a universe filing on the balance sheet (stmt BS)."""
-    return chunk["adsh"].isin(adsh_set) & chunk["tag"].isin(_NET_LIABILITY_TAGS) & (chunk["stmt"] == "BS")
+    return chunk["adsh"].isin(adsh_set) & chunk["tag"].isin(SEC_NET_PENSION_LIABILITY_TAGS) & (chunk["stmt"] == "BS")
 
 
 def _on_balance_sheet(num: pd.DataFrame, pre: pd.DataFrame, zip_name: str) -> pd.DataFrame:
@@ -290,7 +287,7 @@ def _on_balance_sheet(num: pd.DataFrame, pre: pd.DataFrame, zip_name: str) -> pd
     """
     if num.empty:
         return num
-    net = num["tag"].isin(_NET_LIABILITY_TAGS)
+    net = num["tag"].isin(SEC_NET_PENSION_LIABILITY_TAGS)
     if not net.any():
         return num
     if "adsh" not in pre.columns:

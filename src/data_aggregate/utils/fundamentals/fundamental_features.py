@@ -105,6 +105,7 @@ from collections.abc import Callable
 import numpy as np
 import pandas as pd
 
+from src.constants.constants import SEC_NET_PENSION_LIABILITY_TAGS
 from src.context import Context
 from src.data_aggregate.utils.common import capital
 from src.data_aggregate.utils.common.frames import ratio, sanitize
@@ -376,11 +377,6 @@ def _beneish_m_score(daily, idx: pd.DatetimeIndex, prior=None) -> pd.DataFrame:
     return m.where(support).replace([np.inf, -np.inf], np.nan)
 
 
-_NET_PENSION_TAGS = (
-    "PensionAndOtherPostretirementDefinedBenefitPlansLiabilitiesNoncurrent",  # primary
-    "DefinedBenefitPensionPlanLiabilitiesNoncurrent",  # variant
-)
-
 # Footnote pension tags from the NOTES sets (`notes_num`): the projected benefit
 # obligation and fair value of plan assets, both INSTANT (balance-type) facts the
 # primary statements never expose.
@@ -401,8 +397,8 @@ def _net_pension_daily(notes_num: pd.DataFrame | None, idx: pd.DatetimeIndex) ->
     """Recognized net DB-pension liability from the two `notes_num` balance-sheet tags,
     point-in-time. The primary tag is preferred; the pension-only variant fills gaps.
     Empty frame if `notes_num` is unavailable."""
-    primary = _notes_num_daily(notes_num, _NET_PENSION_TAGS[0], idx)
-    variant = _notes_num_daily(notes_num, _NET_PENSION_TAGS[1], idx)
+    primary = _notes_num_daily(notes_num, SEC_NET_PENSION_LIABILITY_TAGS[0], idx)
+    variant = _notes_num_daily(notes_num, SEC_NET_PENSION_LIABILITY_TAGS[1], idx)
     if primary.empty:
         return variant
     if variant.empty:
@@ -454,7 +450,7 @@ def load_notes_num_scoped(
     read. None if the table is absent/empty, lacks `available_at`, or no row matches."""
     if "available_at" not in context.store.columns(_NOTES_NUM_TABLE):
         return None
-    where: dict[str, object] = {"tag": [_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, *_NET_PENSION_TAGS]}
+    where: dict[str, object] = {"tag": [_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, *SEC_NET_PENSION_LIABILITY_TAGS]}
     if tickers:
         where["ticker"] = list(tickers)
     df = context.store.load(_NOTES_NUM_TABLE, columns=_FACT_COLS, where=where, since=since, optional=True)

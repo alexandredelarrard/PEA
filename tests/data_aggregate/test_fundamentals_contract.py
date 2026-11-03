@@ -106,10 +106,10 @@ def test_every_direct_source_read_is_pushed_down_to_the_price_universe(monkeypat
 
 
 def test_sec_fact_reads_are_ticker_and_date_bounded():
+    from src.constants.constants import SEC_NET_PENSION_LIABILITY_TAGS
     from src.data_aggregate.utils.fundamentals.fundamental_features import (
         _FN_PBO_TAG,
         _FN_PLAN_ASSETS_TAG,
-        _NET_PENSION_TAGS,
         load_notes_num_scoped,
     )
 
@@ -130,7 +130,7 @@ def test_sec_fact_reads_are_ticker_and_date_bounded():
         assert kwargs["since"] == source_since, (table, kwargs)
     assert "available_at" in store.calls[0][1]["columns"]
     assert "adsh" in store.calls[0][1]["columns"]
-    assert set(store.calls[0][1]["where"]["tag"]) == {_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, *_NET_PENSION_TAGS}
+    assert set(store.calls[0][1]["where"]["tag"]) == {_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, *SEC_NET_PENSION_LIABILITY_TAGS}
     print("\n=== SANITY CHECK: SEC fact source bounds ===")
     print("  the single notes_num read pushes ticker universe, tag projection, and six-year date bound into the store. Validated.")
 

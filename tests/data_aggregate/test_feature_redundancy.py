@@ -31,6 +31,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from src.constants.constants import SEC_NET_PENSION_LIABILITY_TAGS
 from src.data_aggregate.utils.common.pit import (
     add_cube_time_growth,
     fundamentals_to_daily,
@@ -41,7 +42,6 @@ from src.data_aggregate.utils.fundamentals.fundamental_features import (
     _FACT_COLS,
     _FN_PBO_TAG,
     _FN_PLAN_ASSETS_TAG,
-    _NET_PENSION_TAGS,
     _NOTES_NUM_TABLE,
     _derived_fields,
 )
@@ -116,7 +116,7 @@ def feature_frames() -> dict[str, pd.DataFrame]:
         idx=idx,
         close=close,
         yoy_periods=infer_yoy_periods(fh),
-        notes_num=_facts(_NOTES_NUM_TABLE, (_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, *_NET_PENSION_TAGS)),
+        notes_num=_facts(_NOTES_NUM_TABLE, (_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, *SEC_NET_PENSION_LIABILITY_TAGS)),
     )
     kdf = compute_sector_kpis(fh)
     for name in SECTOR_KPI_COLS:

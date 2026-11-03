@@ -113,6 +113,7 @@ from src.data_store.schema import Table, Tables, freshness_tables, marker_tables
 from src.utils.cli_helper import SpecialHelpOrder
 from src.utils.freshness import PREDICTION_INPUTS, fresh_share, last_dates_by_key, max_age_days, table_freshness
 from src.utils.string import normalise_ticker, run_date
+from src.utils.tickers_universe.sync import sync
 from src.utils.universe import load_universe_tickers, unverified_ciks
 
 
@@ -122,10 +123,8 @@ def cli() -> None:
 
 
 def _tickers(context: Context, tickers: str | None) -> list[str]:
-    """The --tickers subset if given, else the full sp500_tickers universe."""
-    if tickers:
-        return list(dict.fromkeys(ticker for raw in tickers.split(",") if (ticker := normalise_ticker(raw))))
-    return load_universe_tickers(context)
+    """The --tickers subset, checked against the universe, else the whole universe."""
+    return context.universe.subset(tickers.split(",")) if tickers else context.universe.tickers
 
 
 def _ticker_scope(context: Context, tickers: str | None) -> tuple[list[str], list[str]]:
@@ -192,6 +191,15 @@ def extraction_status(config_path: str, as_of: datetime | None) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
     report = _extraction_status_report(context, as_of=run_date(as_of))
     click.echo(json.dumps(report, sort_keys=True))
+
+
+# --- Universe (runs after sharadar-tickers and before every other command) ---
+@cli.command(help="Sync tickers_universe with configs/universe.yml and sharadar_tickers (writes only what changed).", help_priority=1)
+@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
+@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
+def universe(config_path: str, as_of: datetime | None) -> None:
+    _, context = get_config_context(config_path, use_cache=False, save=False)
+    sync(context.store, context.config, run_date(as_of))
 
 
 # --- Universe seed (must run first; everything else resolves the universe from it) ---

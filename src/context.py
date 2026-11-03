@@ -16,6 +16,7 @@ from src.utils.config import read_config
 from src.utils.db import get_engine
 from src.utils.seed import set_seed
 from src.utils.ssl_setup import configure_corporate_ca, corporate_session
+from src.utils.tickers_universe.universe import Universe
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +98,7 @@ class Context:
         self._sec_user_agent: str | None = None
         self._edgar_identity_set = False
         self._sec_session: requests.Session | None = None
+        self._universe: Universe | None = None
 
     def _setup_logging(self):
         """Setup logging configuration"""
@@ -145,6 +147,13 @@ class Context:
     @property
     def random_state(self) -> int:
         return self._config.seed
+
+    @property
+    def universe(self) -> Universe:
+        """The traded universe (`configs/universe.yml` x `tickers_universe`), read on first use and cached."""
+        if self._universe is None:
+            self._universe = Universe(self.store, self._config)
+        return self._universe
 
     @property
     def sec_user_agent(self) -> str:

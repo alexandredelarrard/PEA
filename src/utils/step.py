@@ -7,6 +7,7 @@ from omegaconf import DictConfig
 
 from src.context import Context
 from src.utils.string import camel_to_snake
+from src.utils.tickers_universe.universe import Universe
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -31,6 +32,11 @@ class Step:
     @property
     def name(self):
         return self._name
+
+    @property
+    def _universe(self) -> Universe:
+        """`context.universe`, read on first use, so constructing a step reads nothing."""
+        return self._context.universe
 
     @abstractmethod
     def run(self, *args, **kwargs):

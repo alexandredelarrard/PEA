@@ -369,7 +369,7 @@ Candidate fixes to compare then: per-date cross-sectional demeaning of role tone
 The Financial Statement data sets source is removed; `notes_num` carries the two recognized net pension liability tags. In order:
 
 1. Merge branch `harness/pension-facts-into-notes-num` into `dev`.
-2. `rtk "$PY" -m src data_extract zips-ingest --only notes -F -c ./configs` re-parses all 82 cached Notes zips (28 GB) to add the 2 tags to history; an estimate of 1 to 1.5 h, one process, low priority.
+2. `rtk "$PY" -m src data_extract zips-ingest --only notes -F -c ./configs` re-parses all 82 cached Notes zips (28 GB) to add the 2 tags to history; an estimate of 1.5 to 2 h (1 to 1.5 h of num/txt parsing plus about 10 to 20 min for the chunked `pre.tsv` read over 82 zips), one process, low priority.
 3. Rebuild `cube_part_fundamentals` with `-F`, then reassemble `cube`.
 4. `DROP TABLE pension_facts` in the live database (orphaned; no code reads it).
 5. Delete `data/sec_financial_statements/` (71 zips, 5.6 GB).

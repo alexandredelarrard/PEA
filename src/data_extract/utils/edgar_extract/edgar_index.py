@@ -171,7 +171,7 @@ def refresh(context: Context, as_of: pd.Timestamp, years_history: int, *, rebuil
     """Bring the cache up to `as_of` over `years_history`; rows written per downloaded quarter.
 
     A transient SEC failure on one quarter is logged and leaves that quarter's previous file in place."""
-    as_of = pd.Timestamp(as_of).normalize()
+    as_of = run_date(as_of)
     directory = index_dir(context)
     current = Quarter.of(as_of)
     written: dict[str, int] = {}

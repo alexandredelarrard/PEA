@@ -27,6 +27,7 @@ from src.data_store.schema import Resume, Tables
 from src.gpt_extract.transformers.gpt_getter import LLMExtractor
 from src.gpt_extract.transformers.step_gpt_extracter import with_gpt_overrides
 from src.gpt_extract.utils.schemas_gpt import LlmResult, LlmTask
+from src.utils.string import run_date
 
 # The stored row: filer identity, the guarded components, their basis and status, and where they were read.
 FRAME_COLUMNS = [
@@ -858,7 +859,7 @@ def fetch_fundamentals_employees(
     missing = set(tickers) - set(cik_map["ticker"])
     if missing:
         raise ValueError(f"Employee extraction has no roster CIK for {', '.join(sorted(missing))}")
-    since = pd.Timestamp.today().normalize() - pd.DateOffset(years=years_history)
+    since = run_date(None) - pd.DateOffset(years=years_history)
 
     # get lineage and key dates
     scope = EdgarScope(load_identity(context))

@@ -26,7 +26,7 @@ from src.context import Context
 from src.data_extract.utils.common.bulk_cache import period_end
 from src.data_extract.utils.common.incremental import stored_values
 from src.data_store.schema import Resume, Table, Tables
-from src.utils.string import normalise_ticker
+from src.utils.string import normalise_ticker, run_date
 from src.utils.universe import load_universe_tickers, new_tickers
 
 logger = logging.getLogger(__name__)
@@ -50,13 +50,13 @@ def recently_changed(stamps: Mapping[str, pd.Timestamp | None], as_of: pd.Timest
 
     Every re-check it drives is idempotent, so a key seen on several runs inside the window costs reads only,
     and a failed run is healed by the next one."""
-    since = pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize() - pd.Timedelta(days=days)
+    since = run_date(as_of) - pd.Timedelta(days=days)
     return sorted(str(key) for key, stamp in stamps.items() if stamp is not None and not pd.isna(stamp) and pd.Timestamp(stamp) >= since)
 
 
 def document_floor(table: Table, as_of: pd.Timestamp, years_history: int, runtime_floor: pd.Timestamp | None = None) -> pd.Timestamp:
     """The earliest filing date listed: `as_of - years_history`, the source start or the runtime floor, whichever is latest."""
-    floors = [pd.Timestamp(as_of).normalize() - pd.DateOffset(years=years_history)]
+    floors = [run_date(as_of) - pd.DateOffset(years=years_history)]
     if table.resume is not None and table.resume.source_start is not None:
         floors.append(pd.Timestamp(table.resume.source_start))
     if runtime_floor is not None:

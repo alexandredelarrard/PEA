@@ -43,6 +43,7 @@ from src.context import Context
 from src.data_extract.utils.common.sessions import last_completed_session
 from src.data_store.schema import Tables
 from src.utils.ssl_setup import configure_corporate_ca
+from src.utils.string import run_date
 
 # ORDERING, not a side-effect to tidy away: importing `download_ohlcv` pulls in yfinance,
 # which imports curl_cffi at module load and FREEZES its CA bundle then -- so the combined
@@ -232,7 +233,7 @@ def _is_up_to_date(context: Context) -> bool:
     core = [last_by_series[s] for s in MACRO_CORE_LEVEL_SERIES if s in last_by_series]
     if len(core) < len(MACRO_CORE_LEVEL_SERIES):
         return False  # a core series has no rows at all
-    last_expected = pd.Timestamp.today().normalize() - pd.tseries.offsets.BDay(1)
+    last_expected = run_date(None) - pd.tseries.offsets.BDay(1)
     return bool(min(core) >= last_expected)
 
 

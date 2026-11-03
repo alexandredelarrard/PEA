@@ -17,6 +17,7 @@ from tqdm import tqdm
 from src.context import Context
 from src.data_extract.utils.common.rate_limit import call_with_retries
 from src.data_store.schema import Resume, Tables
+from src.utils.string import run_date
 
 _RENAME = {
     "EPS Estimate": "eps_estimate",
@@ -96,7 +97,7 @@ def _plan_fetch(
     Tickers with no stored forward row fall back to `refetch_window_days` since the last reported date; the rest
     are skipped.
     """
-    today = pd.Timestamp.today().normalize()
+    today = run_date(None)
     plan = []
     for t in tickers:
         last = last_reported.get(t)

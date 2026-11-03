@@ -250,10 +250,10 @@ def _plan_days(context: Context, full: bool, as_of: pd.Timestamp | None) -> pd.D
     """The business days to read, up to today: from the earlier of the table's latest day and today less its overlap
     (one file serves every ticker, so the latest day is table-wide), or from the source start when `full` or empty."""
     resume = cast(Resume, Tables.short_interest.resume)
-    today = run_date(as_of)
+    start_date = run_date(as_of)
     latest = context.store.max_date(Tables.short_interest)
-    start = pd.Timestamp(resume.source_start) if full or latest is None else min(latest, today - pd.Timedelta(days=resume.overlap_days))
-    return pd.bdate_range(start, today)
+    start = pd.Timestamp(resume.source_start) if full or latest is None else min(latest, start_date - pd.Timedelta(days=resume.overlap_days))
+    return pd.bdate_range(start, start_date)
 
 
 def _company_rows(context: Context, identity: Identity, companies: Sequence[str]) -> pd.DataFrame:
@@ -456,18 +456,17 @@ def fetch_short_interest(
     """Fetch the `_plan_days` RegSHO day files, store their lines stamped and rebuild `short_interest` for those days.
     `full` aborts before any write on a fetch error or when no day is served. Stored rows are re-stamped by `identity --only propagate`,
     which runs first."""
-    universe = frozenset(tickers)
     days = list(_plan_days(context, full, as_of))
     resolver = identity or load_identity(context)
-    logger.info(f"Fetching {len(days)} RegSHO day-file(s) for {len(universe)} tickers")
-    raw, successful, errors = _read_regsho_days(days, resolver, universe, pause)
+    logger.info(f"Fetching {len(days)} RegSHO day-file(s) for {len(tickers)} tickers")
+    raw, successful, errors = _read_regsho_days(days, resolver, tickers, pause)
 
     if full and (errors or not successful):
         raise RuntimeError(f"RegSHO full: {len(errors)} fetch error(s) {errors[:5]}, {len(successful)} served; aborting before any write")
 
-    stamped = stamp_short_volume(raw, resolver, universe) if not raw.empty else pd.DataFrame(columns=[*SECURITY_COLUMNS, "conversion_ratio"])
+    stamped = stamp_short_volume(raw, resolver, tickers) if not raw.empty else pd.DataFrame(columns=[*SECURITY_COLUMNS, "conversion_ratio"])
     stamped = stamped.astype(dict.fromkeys(_VOLUMES, "float64"))
-    grain = _checked_regsho_grain(stamped, successful, resolver, universe)
+    grain = _checked_regsho_grain(stamped, successful, resolver, tickers)
     if not stamped.empty:
         _log_stamps(stamped)
 
@@ -477,8 +476,8 @@ def fetch_short_interest(
             context.store,
             {Tables.sec_short_volume_security: stamped[list(SECURITY_COLUMNS)], Tables.short_interest: grain},
             {
-                Tables.sec_short_volume_security: {"ticker": sorted(universe), "date": successful},
-                Tables.short_interest: {"ticker": sorted(universe), "date": successful},
+                Tables.sec_short_volume_security: {"ticker": sorted(tickers), "date": successful},
+                Tables.short_interest: {"ticker": sorted(tickers), "date": successful},
             },
         )
         written = counts[Tables.short_interest]

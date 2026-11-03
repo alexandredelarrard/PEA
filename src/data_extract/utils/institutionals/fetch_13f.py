@@ -57,7 +57,7 @@ from src.data_extract.utils.institutionals.value_units import (
 from src.data_store.schema import Resume, Table, Tables
 from src.data_store.store import DataStore
 from src.utils.institutional_vintages import literal_13f_cusip, reconcile_13f_source
-from src.utils.string import pad_cik, pad_cik_series
+from src.utils.string import pad_cik, pad_cik_series, run_date
 from src.utils.superinvestor_roster import roster_cik_union
 from src.utils.universe import load_universe_tickers
 
@@ -664,10 +664,10 @@ def fetch_13f(
     """
     context.ensure_edgar_identity()
     configure(context)
-    run_date = cast(pd.Timestamp, pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today()).normalize())
+    start_date = run_date(as_of)
     universe = set(tickers)
     scoped = bool(set(load_universe_tickers(context) if all_tickers is None else all_tickers) - universe)
-    since, until = _resolve_window(context, years_history, filing_window, run_date, scoped)
+    since, until = _resolve_window(context, years_history, filing_window, start_date, scoped)
 
     # load CIKs of super investors
     roster_ciks = roster_cik_union(context)

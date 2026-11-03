@@ -10,6 +10,7 @@ from src.context import Context
 from src.data_extract.utils.common.gics import industry_group
 from src.data_extract.utils.identity.identity_store import save_identity
 from src.data_store.schema import Tables
+from src.utils.string import run_date
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +66,7 @@ def get_sp500_tickers(context: Context, as_of: pd.Timestamp | None = None) -> No
     df_stored = context.store.load(Tables.sp500_tickers, columns=projection, optional=True) if stored_cols else None
     if stored_cols and "added_on" not in stored_cols and df_stored is None:
         df_stored = pd.DataFrame(columns=projection)
-    run_date = cast(pd.Timestamp, pd.Timestamp(as_of if as_of is not None else pd.Timestamp.today())).normalize()
+    start_date = run_date(as_of)
 
     url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
     response = requests.get(url, headers=BROWSER_HEADERS, timeout=30)
@@ -91,5 +92,5 @@ def get_sp500_tickers(context: Context, as_of: pd.Timestamp | None = None) -> No
     df = _dedupe_share_classes(df)
 
     keep = [c for c in ["ticker", "name", "sector", "industry_group", "sub_industry", "cik"] if c in df.columns]
-    save_identity(context.store, Tables.sp500_tickers, _with_added_on(cast(pd.DataFrame, df[keep]), df_stored, run_date))
+    save_identity(context.store, Tables.sp500_tickers, _with_added_on(cast(pd.DataFrame, df[keep]), df_stored, start_date))
     logger.info(f"Saved {len(df)} tickers to DB table {Tables.sp500_tickers}")

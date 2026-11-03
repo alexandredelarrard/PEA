@@ -22,6 +22,7 @@ from src.constants.constants import MARKET_TIMEZONE
 from src.context import Context
 from src.data_extract.utils.common.sec_io import TransientReadError, download
 from src.data_store.schema import Table, name_of
+from src.utils.string import run_date
 
 __all__ = [
     "ZipRead",
@@ -248,5 +249,5 @@ def stored_period_clock(context: Context, tables: Sequence[Table], period: str, 
 
 def quarter_periods(years_history: int, first_year: int, today: pd.Timestamp | None = None) -> list[str]:
     """`YYYYqN` tags covering the last `years_history` years, never before `first_year`."""
-    now = (today or pd.Timestamp.today()).normalize()
+    now = run_date(today)
     return [f"{year}q{q}" for year in range(now.year - years_history, now.year + 1) if year >= first_year for q in range(1, 5)]
